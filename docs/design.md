@@ -157,7 +157,8 @@ unit; sub-page slabs would be purged in page groups, only when every slab
 in the group is idle, and a workload that frees at random leaves `Empty`
 slabs in groups that never are. Page groups remain only for a faked page
 in the tests. The geometry is the class table itself, rewritten in place
-at init (`lg_slab`, `nslots`, `slab_bits` of the raised classes), so the
+at init (`lg_slab`, `nslots`, `slab_bits` and `slab_mask` of the raised
+classes), so the
 `free` and `sdallocx` fast paths still load the class line from a
 link-time constant address and their machine code is unchanged on 4 KiB
 hosts; the table lives in writable memory as a result, like the
@@ -168,10 +169,25 @@ Slab number and slot index are:
 
 ```
 slab   = (p - base_c) >> lg_slab_c
-offset = p & (slab_size_c - 1)
-slot   = offset * reciprocal_c >> 32       // precomputed fixed-point divide
-valid  = slot * size_c == offset && slot < nslots_c
+offset = p & slab_mask_c                   // slab_size_c - 1
+slot   = (offset * inv_odd_c).rotate_right(tz_c)   // 32-bit
+valid  = slot < nslots_c
 ```
+
+The slot-start test is one multiply, one rotate and one compare
+(Granlund and Montgomery's divisibility test,
+`Class::slot_of_offset` in `layout/`). With `size_c = d << tz_c`, `d` odd,
+`inv_odd_c` is `d`'s inverse modulo `2^32`: when `size_c` divides `offset`,
+the product is `(offset / size_c) << tz_c` and the rotate gives the slot.
+Any other offset either has a set bit below `tz_c`, which the rotate moves
+into the top bits, or is a multiple of `2^tz_c` but not of `d`, whose
+product lands above `(2^(32 - tz_c) - 1) / d`; both are at least `nslots_c`
+because `nslots_c * size_c` is at most the slab, `2^22`. The test accepts
+exactly the slot starts, with the same slot as a division would give,
+which `slot_of_offset_is_exactly_the_reciprocal_check` checks for every
+byte offset of every class's slab at every supported page size. Each table
+entry is 32 bytes (20 of fields), so the entry's address is one shifted
+add.
 
 The size class of a request uses the same lookup shape as jemalloc and
 mimalloc: a small table for requests up to 1024 bytes and a
@@ -462,8 +478,9 @@ entry points in `api/` are built from them.
 `free(p)`:
 1. If `p` is null return. Classify `p` (section 2). Huge: slow path.
    Invalid: abort.
-2. Compute slab and slot; verify `slot * size == offset`; load the class
-   bitmap word; verify the bit is set. Otherwise abort.
+2. Compute slab and slot; verify the offset is a slot start (section 3:
+   multiply, rotate, compare against `nslots`); load the class bitmap
+   word; verify the bit is set. Otherwise abort.
 3. The opt-in hardening: one byte (`Shared::push_flags`, on a line step 2
    already loaded), zero by default, tested once. `PUSH_SCAN`
    (`double_free_scan`): compare `p` against the top four cache entries

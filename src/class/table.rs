@@ -484,7 +484,7 @@ impl SlabTable {
         if rel >= self.nslabs << cls.lg_slab {
             invalid_pointer(p as usize, self.class as usize, "outside the class region");
         }
-        let (slot, valid) = cls.slot_of_offset(rel & (cls.slab_size() - 1));
+        let (slot, valid) = cls.slot_of_offset(rel & cls.slab_mask());
         if !valid {
             invalid_pointer(p as usize, self.class as usize, "not a slot start");
         }

@@ -219,15 +219,64 @@ fn slab_geometry() {
         }
         // The thresholds' unit is a 64 KiB slab's worth of slots.
         assert_eq!(c.compact_slots(), slab.max(1 << LG_COMPACT_UNIT) / c.size());
-        // The reciprocal is exact for every multiple of the size.
-        assert_eq!(c.recip as u64, (1u64 << 32).div_ceil(c.size() as u64));
+        // The slot-start test's constants.
+        assert_eq!(c.slab_mask(), slab - 1, "class {i}");
+        assert_eq!(c.tz as u32, c.size().trailing_zeros(), "class {i}");
+        assert_eq!(((c.size() >> c.tz) as u32).wrapping_mul(c.inv_odd), 1, "class {i}");
     }
+}
+
+/// The slot-start check by a fixed-point reciprocal and a multiply back:
+/// `slot = offset * ceil(2^32 / size) >> 32`, valid when `slot < nslots`
+/// and `slot * size == offset`. The reference [`Class::slot_of_offset`]
+/// is held to.
+fn reciprocal_slot_of_offset(cls: &Class, offset: usize) -> (usize, bool) {
+    let recip = (1u64 << 32).div_ceil(cls.size() as u64);
+    let slot = ((offset as u64 * recip) >> 32) as usize;
+    (slot, slot < cls.nslots() && slot * cls.size() == offset)
+}
+
+/// Design 3: `slot_of_offset`'s multiply-and-rotate test accepts exactly
+/// the offsets the reciprocal check and the definition (`size` divides
+/// the offset, the quotient is below `nslots`) accept, with the same slot,
+/// for every byte offset of a slab of every class in the table of every
+/// supported page size (4, 8, 16, 32 and 64 KiB; the table above 64 KiB
+/// is the 64 KiB one).
+#[test]
+fn slot_of_offset_is_exactly_the_reciprocal_check() {
+    let mut seen: Vec<Class> = Vec::new();
+    let mut offsets = 0usize;
+    for lg_page in LG_MIN_SLAB..=LG_SMALL_SLAB {
+        for (c, cls) in classes_for_page(lg_page).iter().enumerate() {
+            if seen.contains(cls) {
+                continue;
+            }
+            seen.push(*cls);
+            let size = cls.size();
+            let mut accepted = 0;
+            for off in 0..cls.slab_size() {
+                let (slot, valid) = cls.slot_of_offset(off);
+                let (rslot, rvalid) = reciprocal_slot_of_offset(cls, off);
+                if valid != rvalid || valid != (off % size == 0 && off / size < cls.nslots()) {
+                    panic!("class {c} ({size} B, slab 2^{}) offset {off}: new {valid}, reciprocal {rvalid}", cls.lg_slab);
+                }
+                if valid {
+                    assert_eq!((slot, rslot), (off / size, off / size), "class {c} offset {off}");
+                    accepted += 1;
+                }
+            }
+            assert_eq!(accepted, cls.nslots(), "class {c}");
+            offsets += cls.slab_size();
+        }
+    }
+    assert!(seen.len() > NCLASSES, "the raised classes were covered too");
+    assert!(offsets > 1 << 24);
 }
 
 /// Design 3: the geometry a kernel with pages
 /// above 4 KiB adopts. Every class's slab is at least the page (up to
 /// 64 KiB), only the 512..1024-byte classes change, and for those the
-/// slot arithmetic, the reciprocal, the bitmap and descriptor
+/// slot arithmetic and its constants, the bitmap and descriptor
 /// invariants and the compaction unit hold as at 4 KiB.
 #[test]
 fn page_sized_geometry_for_large_pages() {
@@ -246,12 +295,9 @@ fn page_sized_geometry_for_large_pages() {
         let t = classes_for_page(lg_page);
         let mut changed = 0;
         for (c, (cls, base)) in t.iter().zip(BASE_CLASSES.iter()).enumerate() {
-            assert_eq!((cls.size, cls.recip), (base.size, base.recip), "class {c}");
-            assert_eq!(
-                cls.lg_slab as u32,
-                (base.lg_slab as u32).max(lg_page),
-                "class {c} at 2^{lg_page}"
-            );
+            assert_eq!((cls.size, cls.inv_odd, cls.tz), (base.size, base.inv_odd, base.tz), "class {c}");
+            assert_eq!(cls.slab_mask(), cls.slab_size() - 1, "class {c}");
+            assert_eq!(cls.lg_slab as u32, (base.lg_slab as u32).max(lg_page), "class {c} at 2^{lg_page}");
             assert_eq!(cls.lg_slab as u32, lg_slab_at(cls.size(), lg_page));
             assert!(
                 cls.slab_size() >= 1 << lg_page,
@@ -272,7 +318,7 @@ fn page_sized_geometry_for_large_pages() {
                 "class {c}: waste"
             );
             // Slot arithmetic round-trips for every slot and rejects
-            // every other quantum-aligned offset; the reciprocal is exact.
+            // every other quantum-aligned offset.
             for slot in 0..cls.nslots() {
                 assert_eq!(
                     cls.slot_of_offset(slot * cls.size()),
