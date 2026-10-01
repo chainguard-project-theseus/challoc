@@ -1,5 +1,5 @@
 # Development container for challoc. The library builds and runs on Linux
-# only; everything happens inside this Wolfi image. See CLAUDE.md and the
+# only; everything happens inside this Wolfi image. See CONTRIBUTING.md and the
 # Makefile (`make dev`).
 #
 # Four stages, each built on the one before, so a package added for one

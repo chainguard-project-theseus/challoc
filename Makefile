@@ -4,7 +4,7 @@
 # `##` comments below; the benchmark harness, its two tiers and every
 # harness's variables are described in bench/README.md and in each script's
 # header, the GCE side in bench/gce/README.md, the environment (target volumes)
-# in CLAUDE.md.
+# in CONTRIBUTING.md.
 #
 # `target/` inside the container is a named Docker volume, one per
 # architecture, so Linux artifacts never mix with host artifacts and builds do
@@ -102,7 +102,7 @@ endef
 # reads it (a recursively expanded variable: `make build` runs no probe).
 HOST_CPU = $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //' | grep . || lscpu 2>/dev/null | grep -m1 'Model name' | sed 's/.*: *//')
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare jemalloc-compat fuzz bench-build quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes jvm-bench postgres-bench jvm-soak help print-docker-run test-all
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare jemalloc-compat install install-jemalloc-compat fuzz bench-build quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes jvm-bench postgres-bench jvm-soak help print-docker-run test-all
 
 help: ## list the targets (this text; the `##` comments in the Makefile)
 	@awk -F' ## ' '/ ## / { n = $$1; if (n ~ /^\$$\(eval/) { sub(/^[^,]*,/, "", n); sub(/,.*/, "", n) } else { sub(/:.*/, "", n) } if (n !~ /^[a-zA-Z0-9_-]+$$/) next; printf "  %-22s %s\n", n, $$2 }' $(MAKEFILE_LIST)
@@ -214,6 +214,22 @@ test-cgroup-compare: image ## the cgroup runs under CGROUP_ALLOCS (jemalloc mima
 jemalloc-compat: DOCKER_FLAGS = -e QUANTUM=$(QUANTUM) $(if $(PREFIX),-e PREFIX=$(PREFIX))
 jemalloc-compat: image ## build with the jemalloc-soname feature and stage libjemalloc.so.2 under target/jemalloc-compat/stage (QUANTUM=8|16, PREFIX=<dir>)
 	$(DOCKER_RUN) sh scripts/jemalloc-compat.sh
+
+# install, install-jemalloc-compat: build in the container, then
+# scripts/install.sh writes the file set under DESTDIR/PREFIX (README.md,
+# "Installing"). The paths are the container's: /src is the repository, so
+# the default DESTDIR (dist, relative to /src) lands in ./dist on the host;
+# an absolute DESTDIR outside /src disappears with the container, and the
+# script's listing is then the only record of what it wrote.
+INSTALL_VARS = PREFIX LIBDIR INCLUDEDIR
+DESTDIR ?= dist
+install: DOCKER_FLAGS = -e DESTDIR="$(DESTDIR)" $(call env_flags,$(INSTALL_VARS))
+install: image ## build, then install libchalloc.so.0, its headers and challoc.pc under DESTDIR (dist) + PREFIX (/usr/local); LIBDIR, INCLUDEDIR, QUANTUM
+	$(DOCKER_RUN) sh -c 'cargo build --release $(FEATURES) && sh scripts/install.sh challoc'
+
+install-jemalloc-compat: DOCKER_FLAGS = -e QUANTUM=$(QUANTUM) -e DESTDIR="$(DESTDIR)" $(call env_flags,$(INSTALL_VARS))
+install-jemalloc-compat: image ## build with the jemalloc-soname feature, then install libjemalloc.so.2, jemalloc.h and jemalloc.pc as install does
+	$(DOCKER_RUN) sh -c 'sh scripts/jemalloc-compat.sh && sh scripts/install.sh jemalloc-compat'
 
 FUZZ_OPS     ?= 10000000
 FUZZ_THREADS ?= 4

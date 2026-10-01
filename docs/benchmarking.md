@@ -23,7 +23,7 @@ driver and the kernel, CPU and Chainguard OS matrices are in
 - **Emulated x86_64 is never used for numbers.** `PLATFORM=linux/amd64`
   on Apple silicon runs under emulation and is for correctness only.
 - **The supported floor and the ceiling.** The floor is a Chainguard OS
-  (Wolfi, glibc 2.44+) container on any host kernel from 5.10 up; the
+  (Wolfi, glibc 2.44+) container on any host kernel from 5.14 up; the
   kernel and CPU matrices prove it on real kernels, including 64 KiB-page
   aarch64. The ceiling is the same binary lighting every kernel and CPU
   feature the host offers, probed at runtime: the compiler baseline stays
