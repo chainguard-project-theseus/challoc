@@ -28,9 +28,9 @@
 //! their own; nothing takes a class or huge lock while holding metadata;
 //! the statistics locks and the background state lock are leaves, only
 //! ever held alone), so a thread that is mid-operation when another thread
-//! forks can always finish and release. Parent and child release in reverse. The
-//! child also marks the background thread absent. Other threads' heaps are
-//! left alone in the child, as in every other allocator.
+//! forks can always finish and release. Parent and child release in
+//! reverse. The child also marks the background thread absent. Other
+//! threads' heaps are left alone in the child, as in every other allocator.
 //!
 //! The prepare handler also blocks every signal on the forking thread and the
 //! parent and child handlers restore the mask after their unlocks. glibc's
@@ -86,9 +86,10 @@ use crate::sys::features::{FeatureLine, Features};
 /// The crate version as a NUL-terminated static string (`"0.1.0"`; the
 /// soname's major, design 13.6, follows its major); with `challoc_features`
 /// and the size-returning entry points of design 13.7 (`libc.rs`) the whole
-/// challoc-specific surface, declared in `<challoc/challoc.h>`. A program or test that wants to know whether
-/// challoc is the loaded allocator looks this symbol up with `dlsym`; it
-/// reads and writes no allocator state and does not initialise anything.
+/// challoc-specific surface, declared in `<challoc/challoc.h>`. A program
+/// or test that wants to know whether challoc is the loaded allocator looks
+/// this symbol up with `dlsym`; it reads and writes no allocator state and
+/// does not initialise anything.
 /// `mallctl("version")` stays jemalloc-shaped (`5.3.0-0-gchalloc`) for
 /// parsers of that string.
 #[unsafe(no_mangle)]
@@ -203,11 +204,10 @@ pub fn feature_line() -> &'static str {
 
 /// `challoc_features()`: the feature report as one NUL-terminated line of
 /// `key=value` pairs (design.md sections 16 and 17): the kernel probes
-/// (`page_size`, `guard_install`, `mseal`, `anon_name`,
-/// ...) then `pac`. The string is static, built
-/// once at init without allocating, and identical to the `Kernel and CPU
-/// features:` line of `malloc_stats_print`. Initialises the allocator if
-/// needed.
+/// (`page_size`, `guard_install`, `mseal`, `anon_name`, ...) then `pac`.
+/// The string is static, built once at init without allocating, and
+/// identical to the `Kernel and CPU features:` line of
+/// `malloc_stats_print`. Initialises the allocator if needed.
 #[unsafe(no_mangle)]
 pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
     let _ = shared();

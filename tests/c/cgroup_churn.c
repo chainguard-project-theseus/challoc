@@ -1,7 +1,7 @@
 /*
- * The cgroup churn test. Allocate a working
- * set (400 MiB by default) in a mix of 1 KiB slab objects, 32 KiB medium
- * objects and 1 MiB huge runs, touch it, free all of it and idle. In a
+ * The cgroup churn test. Allocate a working set (400 MiB by default) in a
+ * mix of 1 KiB slab objects, 32 KiB medium objects and 1 MiB huge runs,
+ * touch it, free all of it and idle. In a
  * `docker run --memory=512m` container with the design 11 policy on
  * (the default) RSS must fall below 100 MiB within 2 s: the freed memory
  * exceeds the retention cap (5% of the limit) and the first decay walk
@@ -22,7 +22,7 @@
  *                    allocators).
  *
  * `report` and `--any-allocator` are bench probes, not tests: they print
- * the RSS curve for the results file (`make test-cgroup-compare`) and pass
+ * the RSS curve for comparison (`make test-cgroup-compare`) and pass
  * whatever it shows. The tests are `purge` and `keep` under challoc.
  *
  * Idle means what an idle server does: the program sleeps in 10 ms steps
@@ -155,8 +155,8 @@ static void challoc_policy_line(void)
     len = sizeof v;
     if (mallctl("stats.cgroup.full_purges", &v, &len, NULL, 0) == 0)
         full = v;
-    /* The two-advice purge: which advice the next
-     * batch takes and how many batches each has issued. A failing run
+    /* The two-advice purge: which advice the next batch takes and how
+     * many batches each has issued. A failing run
      * shows here whether the freed memory was returned lazily (resident
      * until the kernel reclaims it) rather than not purged at all. */
     len = sizeof v;

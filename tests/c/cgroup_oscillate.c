@@ -1,6 +1,6 @@
 /*
- * The cgroup oscillation test. The live set
- * swings between LOW (200 MiB) and HIGH (480 MiB) of requested bytes in a
+ * The cgroup oscillation test. The live set swings between LOW (200 MiB)
+ * and HIGH (480 MiB) of requested bytes in a
  * `docker run --memory=512m` container for SECONDS (300) and the process
  * must still be alive at the end: with the design 11 policy the memory
  * freed on the way down (over the 5% retention cap; above 90% of the
@@ -46,8 +46,9 @@
 enum { MAX_OBJECTS = 1500000, SAMPLE_EVERY = 8 * MIB, TRICKLE_MS = 10 };
 /*
  * The page-rounding envelope of a kernel with pages larger than 4 KiB.
- * Measured on 6.8.0-139-generic-64k against 4 KiB kernels with the same object
- * sequence: at the top of the swing `memory.stat` anon is 5 MiB higher
+ * On a 64 KiB-page kernel (Ubuntu's 6.8 generic-64k), against 4 KiB
+ * kernels with the same object sequence: at the top of the swing
+ * `memory.stat` anon is 5 MiB higher
  * (the allocator's page-rounded metadata tables +1, its Empty 4 KiB slabs
  * scattered through 64 KiB page groups that are never all idle +2, which
  * a 4 KiB kernel purges, and this program's own data segments +2) and

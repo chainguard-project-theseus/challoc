@@ -1,27 +1,27 @@
 /*
- * Transparent huge pages behind the `thp` key (design 7, 10
- * and 17): the advice is issued where the key and the kernel
- * say so, and nowhere under the default. One mode per process:
+ * Transparent huge pages behind the `thp` key (design 7, 10 and 17): the
+ * advice is issued where the key and the kernel say so, and nowhere under
+ * the default. One mode per process:
  *
  *   thp never    no key: after 8 MiB of 64-byte blocks the VMA holding
  *                them has no `hg` in its VmFlags, stats.thp.mode is 0 and
- *                no range was advised (byte for byte the allocator before
- *                the key had a mechanism); and the VMA has `nh` (MADV_NOHUGEPAGE issued on the
- *                reservation) on every kernel with THP, so that on a host
- *                whose global mode is `always` (read from sysfs; Chainguard
- *                OS and Debian's kernels) the 8 MiB touched show
- *                AnonHugePages 0 kB and THPeligible 0. The huge region is
- *                the other way (by design, measured on Chainguard OS): the
- *                8 MiB huge run carries no `nh`, stats.thp.nohuge_ranges
+ *                no range was advised; and the VMA has `nh`
+ *                (MADV_NOHUGEPAGE issued on the reservation) on every
+ *                kernel with THP, so that on a host whose global mode is
+ *                `always` (read from sysfs; Chainguard OS and Debian's
+ *                kernels) the 8 MiB touched show AnonHugePages 0 kB and
+ *                THPeligible 0. The huge region is the other way (by
+ *                design): the 8 MiB huge run carries no `nh`,
+ *                stats.thp.nohuge_ranges
  *                reads 2 (classes, metadata), the thp: line says `huge
  *                follows host`, and on an `always` host the run shows
  *                THPeligible 1 and AnonHugePages again, as jemalloc's
  *                large allocations do (every PMD range of the run a huge
  *                page or a thp_fault_fallback in /proc/vmstat; a SKIP
  *                when the host had no free huge page at all). On a
- *                `madvise` host the
- *                AnonHugePages checks pass trivially and the program says
- *                so; the `nh` checks are the both-ways part there;
+ *                `madvise` host the AnonHugePages checks pass trivially
+ *                and the program says so; the `nh` checks are the
+ *                both-ways part there;
  *   thp always   MALLOC_CONF=thp:always: opt.thp reads "always" (or
  *                "never" when a cgroup limit under 1 GiB forced it, a pass
  *                with a note); with the PMD size enabled in sysfs (the
@@ -323,9 +323,8 @@ int main(int argc, char **argv)
         CHECK(stat_of("stats.thp.huge_ranges") == 0 && stat_of("stats.thp.meta_ranges") == 0, "advice under never");
         CHECK(strstr(thp_report, " (classes, metadata; huge follows host)") != NULL, "thp: line does not say what never covers");
         size_t nohuge = stat_of("stats.thp.nohuge_ranges");
-        /* Never means
-         * never for the class and metadata regions on every host; the huge
-         * region follows the host's policy. */
+        /* Never means never for the class and metadata regions on every
+         * host; the huge region follows the host's policy. */
         if (strcmp(thp, "none") == 0) {
             CHECK(nohuge == 0, "stats.thp.nohuge_ranges %zu on a kernel without THP", nohuge);
             printf("thp never: the kernel has no THP; nothing to forbid\n");

@@ -8,8 +8,8 @@ use super::*;
 /// The protocol knob (module docs).
 #[derive(Clone, Copy, Debug)]
 pub struct Variant {
-    /// Plan Phase 1.5 task 7 (c): a zero pick's bits are claimed in
-    /// `take` under the lock. `false` replays the pre-fix order.
+    /// `claim_prefix`: a zero pick's bits are claimed in `take` under the
+    /// lock. `false` replays the pre-fix order.
     pub prefix_claim: bool,
 }
 
@@ -26,8 +26,8 @@ pub struct Scenario {
     pub lg_group: u8,
 }
 
-/// The calloc race scenario (plan Phase 1.5 task 7, the campaign's
-/// mechanism and `class::tests::a_zero_pick_never_receives_a_slot_another_claim_used_in_between`):
+/// The calloc race scenario (the mechanism of
+/// `class::tests::a_zero_pick_never_receives_a_slot_another_claim_used_in_between`):
 /// A refills one slot from a `Fresh` slab; B refills one slot from the
 /// same class, writes it and frees it. Then, so the same window opens on
 /// a `Purged` slab: A frees, purges, and refills again while B does its

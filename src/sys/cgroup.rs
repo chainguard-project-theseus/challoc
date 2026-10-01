@@ -2,21 +2,21 @@
 //!
 //! This is the measurement layer only: where the process's cgroup is, what
 //! its effective memory limits are, how much it is charged right now, and
-//! whether the kernel has raised the `high`/`max` event counters. The policy that acts on the figures is
-//! `policy.rs` (design 11): the headroom band over
-//! the effective limit (the retention cap, the decay window, cache GC at
-//! every tick and the immediate purge above 90%), the lazy-or-eager purge
-//! advice (`MADV_FREE` under 70% of a known limit, `MADV_DONTNEED` above),
-//! the full purge on a `high` event and the `thp:always` force to `never`
-//! under 1 GiB; `stats.cgroup.*` and `malloc_stats_print` expose the same
-//! figures.
+//! whether the kernel has raised the `high`/`max` event counters. The
+//! policy that acts on the figures is `policy.rs` (design 11): the
+//! headroom band over the effective limit (the retention cap, the decay
+//! window, cache GC at every tick and the immediate purge above 90%), the
+//! lazy-or-eager purge advice (`MADV_FREE` under 70% of a known limit,
+//! `MADV_DONTNEED` above), the full purge on a `high` event and the
+//! `thp:always` force to `never` under 1 GiB; `stats.cgroup.*` and
+//! `malloc_stats_print` expose the same figures.
 //!
 //! Everything is read with raw `open`/`read`/`close` on fixed-size stack
 //! buffers through `sys`, never libc stdio, and nothing here allocates. The
 //! parsers at the top of the module are pure functions over byte slices and
 //! are unit tested on the host with captured file contents; the runtime
-//! half (`discover`, `sample`) is Linux-only and exercised
-//! in the container.
+//! half (`discover`, `sample`) is Linux-only and exercised in the
+//! container.
 //!
 //! Costs: discovery is one read of `/proc/self/cgroup`, one line scan of
 //! `/proc/self/mountinfo` and two small reads per level of the cgroup path,

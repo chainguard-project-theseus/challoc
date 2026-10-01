@@ -1,14 +1,13 @@
 /*
  * Alignment holes in the huge region are usable memory.
  *
- * A regression found on real hardware (kernel 7.0, MADV_GUARD_INSTALL
- * present): in guard-install mode the huge allocator committed only the
- * pages of an aligned run itself, so the hole it left between the old
- * high-water mark and the aligned start, recorded as a free extent, stayed
- * PROT_NONE, and the first block placed in that hole faulted on its first
- * write. The PROT_NONE-guard fallback mode commits every block's own pages
- * on allocation and never had the problem, which is why Docker's 6.10
- * kernel on the Mac never saw it. The driver in src/api/c_programs.rs runs this
+ * In guard-install mode (a kernel with MADV_GUARD_INSTALL) the huge
+ * allocator must commit the hole it leaves between the old high-water mark
+ * and an aligned run's start, which it records as a free extent: a hole
+ * left PROT_NONE faults on the first write of the first block placed in
+ * it. The PROT_NONE-guard fallback mode commits every block's own pages on
+ * allocation, so only a kernel with guard regions (6.13+) exercises the
+ * guard-install path. The driver in src/api/c_programs.rs runs this
  * program in the probed guard mode and again with MALLOC_CONF=guards:false.
  *
  * Two hole shapes, in this order so the second finds the mark it needs:
@@ -51,7 +50,7 @@ static int fill_below(uintptr_t lo, uintptr_t top, uint32_t seed)
         CHECK(malloc_usable_size(c) >= RUN, "usable %zu < %d", malloc_usable_size(c), RUN);
         if ((uintptr_t)c > lo)
             in_hole++;
-        fill(c, RUN, seed + (uint32_t)nheld); /* faulted here before the fix */
+        fill(c, RUN, seed + (uint32_t)nheld); /* faults if the hole is PROT_NONE */
         held[nheld++] = c;
     }
     return in_hole;

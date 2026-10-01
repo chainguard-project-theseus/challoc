@@ -1,6 +1,6 @@
 //! challoc: a C-ABI malloc replacement for Linux, written in `no_std` Rust.
 //!
-//! See `docs/design.md` for the design and `docs/plan.md` for the task list.
+//! See `docs/design.md` for the design.
 //! Consumers are C programs; every entry point is a top-level
 //! `pub extern "C"` function. The crate never allocates through anything but
 //! its own machinery and never unwinds: `panic = "abort"` in every profile.

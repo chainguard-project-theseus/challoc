@@ -358,7 +358,6 @@ unsafe impl Send for Inner {}
 /// handful of L1 sets: on Apple silicon (128-byte lines, sets indexed by
 /// page-offset bits) single-threaded `alloc-test` slowed from 2.13 s to
 /// 2.52 s. `_tail` makes the stride 640 = 5 lines, which visits every set.
-/// See `bench/results/2026-09-16-aarch64-*.md`.
 #[repr(C, align(128))]
 pub struct ClassState {
     class: u16,
@@ -881,7 +880,7 @@ impl ClassState {
     /// against the slab descriptor's `arena` (a line `dec_live` reads
     /// anyway): the word routed the batch here, so a descriptor that
     /// disagrees means one of them is corrupt, and the batch aborts before
-    /// a bit is cleared (`owner_mismatch`, the 2026-09-18 review's item 16).
+    /// a bit is cleared (`owner_mismatch`).
     /// Modelled at `model::Model::step_release`, `protocol::Release::FetchAnd`
     /// (the `fetch_and` and the double-free check) and `SubLive`.
     ///
