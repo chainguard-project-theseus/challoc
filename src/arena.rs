@@ -485,8 +485,8 @@ impl Arenas {
         }
     }
 
-    /// Every arena that exists, in index order (for decay, purge, stats
-    /// and the fork handlers).
+    /// Every arena that exists, in index order (`Shared::set_decay_ms`,
+    /// `policy::empty_bytes`).
     pub fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Arena> + 'a {
         let n = self.count() as usize;
         (0..n).filter_map(move |i| {

@@ -411,8 +411,6 @@ fn init() {
     }
 }
 
-} // verus!
-
 /// Block signals, then take every allocator lock so the child inherits a
 /// consistent heap and no signal handler on this thread can re-enter the
 /// allocator (or fork again) while the locks are held.
@@ -427,13 +425,20 @@ fn init() {
 extern "C" fn fork_prepare() {
     let mask = sys::block_all_signals();
     let s = shared();
-    s.tcaches.raw_lock().lock();
+    tcaches_lock(s).lock();
     s.arenas.raw_lock().lock();
-    for a in s.arenas.iter() {
-        for c in 0..NCLASSES {
-            a.classes[c].raw_lock().lock();
+    // Each `for a in s.arenas.iter()` is spelled as the scan `Arenas::iter`
+    // makes, through `Arenas::get_existing` (Verus does not specify the
+    // iterator), and `a.classes[c]` as `Arena::class`, as in
+    // `fork_release`.
+    let n = s.arenas.count() as usize;
+    for i in 0..n {
+        if let Some(a) = s.arenas.get_existing(i as u16) {
+            for c in 0..NCLASSES {
+                a.class(c).raw_lock().lock();
+            }
+            sets_of(a).raw_lock().lock();
         }
-        a.sets().raw_lock().lock();
     }
     for c in 0..NCLASSES {
         s.tables()[c].raw_lock().lock();
@@ -441,16 +446,29 @@ extern "C" fn fork_prepare() {
     s.huge.raw_lock().lock();
     s.meta.raw_lock().lock();
     s.stats.raw().lock();
-    for a in s.arenas.iter() {
-        a.stats_raw_lock().lock();
+    let n = s.arenas.count() as usize;
+    for i in 0..n {
+        if let Some(a) = s.arenas.get_existing(i as u16) {
+            a.stats_raw_lock().lock();
+        }
     }
     purge::background::fork_lock();
     // SAFETY: every allocator lock is held, so no other forking thread can
     // touch the slot until `fork_release` has read it (see `FORK_SIGMASK`).
-    unsafe { (*FORK_SIGMASK.0.get()).write(mask) };
+    unsafe { save_sigmask(mask) };
 }
 
-verus! {
+/// Save the signal mask for `fork_release`. Trusted: a write of the
+/// `UnsafeCell` behind [`FORK_SIGMASK`].
+///
+/// # Safety
+/// The caller holds every allocator lock (see [`FORK_SIGMASK`]).
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn save_sigmask(mask: u64) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { (*FORK_SIGMASK.0.get()).write(mask) };
+}
 
 /// The signal mask `fork_prepare` saved. Trusted: a read of the
 /// `UnsafeCell` behind [`FORK_SIGMASK`].
@@ -465,16 +483,10 @@ unsafe fn saved_sigmask() -> u64 {
     unsafe { (*FORK_SIGMASK.0.get()).assume_init() }
 }
 
-// The fork handlers' accessors of the heap and arena modules, outside
-// `verus!` until those modules' ports. Each is a trusted wrapper that
-// claims nothing; delete each when its callee enters `verus!`.
-
-/// `s.tables()`, the slab tables.
-#[verifier::external_body]
-#[inline(always)]
-fn tables_of(s: &Shared) -> &[crate::class::SlabTable; NCLASSES] {
-    s.tables()
-}
+// The fork handlers' accessors outside `verus!`: `Arena::sets` (a
+// raw-pointer dereference) and the explicit-cache table (`heap/tcaches.rs`).
+// Each is a trusted wrapper that claims nothing; delete each when its
+// callee enters `verus!`.
 
 /// `a.sets()`, the arena's slab set table (a raw-pointer dereference).
 #[verifier::external_body]
@@ -524,7 +536,7 @@ fn fork_release() {
         decreases c,
     {
         c -= 1;
-        tables_of(s)[c].raw_lock().unlock();
+        s.tables()[c].raw_lock().unlock();
     }
     let mut i = n;
     while i > 0

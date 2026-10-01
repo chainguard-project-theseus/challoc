@@ -1189,6 +1189,19 @@ impl ClassState {
                 by (bit_vector);
         }
     }
+
+    /// The state's slab count is its class region's in the process's
+    /// regions (`SlabTable::inv`). No code: a proof step for callers that
+    /// hold the state by reference.
+    #[inline(always)]
+    pub fn nslabs_are_the_region_s(&self)
+        ensures
+            self.spec_nslabs() as int == process_regions().spec_nslabs(self.spec_class() as int),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+    }
 }
 
 /// A class region's slots all have numbers in a `usize`: `nslabs` slabs of

@@ -21,28 +21,12 @@ pub(crate) fn thp_name(k: crate::config::Thp) -> &'static core::ffi::CStr {
     k.name()
 }
 
-/// [`crate::api::mallctl::VERSION_STR`], the jemalloc-shaped version
-/// string the report's `Version:` line and JSON `version` print.
-#[verifier::external_body]
-#[inline(always)]
-pub(crate) fn version_str() -> &'static str {
-    crate::api::mallctl::VERSION_STR
-}
-
-/// `shared.tcaches.len()`, the explicit caches handed out (`heap/`,
-/// outside `verus!`).
+/// `shared.tcaches.len()`, the explicit caches handed out
+/// (`heap/tcaches.rs`, outside `verus!`).
 #[verifier::external_body]
 #[inline(always)]
 pub(crate) fn tcaches_len(shared: &crate::heap::Shared) -> usize {
     shared.tcaches.len()
-}
-
-/// `shared.decay_ns()`, arena 0's live decay period (`heap/`, outside
-/// `verus!`).
-#[verifier::external_body]
-#[inline(always)]
-pub(crate) fn shared_decay_ns(shared: &crate::heap::Shared) -> u64 {
-    shared.decay_ns()
 }
 
 /// `writeln!(out, "{}", v)`, for a value whose `Display` is outside

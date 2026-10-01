@@ -1026,37 +1026,13 @@ impl Utilization {
     };
 }
 
-// The heap module's accessors the keys call, outside `verus!` until that
-// module's port. Each is a trusted wrapper that claims only what the
-// callee's body shows; delete each when its callee enters `verus!`.
-
-/// `shared.table(class)`: class `class`'s slab table, the element of
-/// `Shared::tables` (`Shared::table`'s body).
-#[verifier::external_body]
-#[inline(always)]
-fn shared_table(shared: &Shared, class: usize) -> (r: &crate::class::SlabTable)
-    requires
-        class < NCLASSES,
-    ensures
-        *r == shared.tables[class as int],
-{
-    shared.table(class)
-}
-
-/// `shared.arena(index)`: arena `index` if it exists. Nothing is claimed
-/// about the arena.
-#[verifier::external_body]
-#[inline(always)]
-fn shared_arena(shared: &Shared, index: u16) -> Option<&crate::arena::Arena> {
-    shared.arena(index)
-}
-
-/// `shared.decay_ns()`: arena 0's decay period. Nothing is claimed.
-#[verifier::external_body]
-#[inline(always)]
-fn shared_decay_ns(shared: &Shared) -> u64 {
-    shared.decay_ns()
-}
+// The heap module's calls the keys make that are outside `verus!`:
+// `Shared::set_decay_ms` (an iterator over the arenas), `Heap::set_arena`
+// (a raw-pointer dereference of a cache node), `Heap::set_tcache_enabled`
+// (a walk of raw node pointers), and the explicit-cache table
+// (`heap/tcaches.rs`: its `AtomicPtr<Heap>` table makes `Heap` reach
+// itself through `Shared`). Each is a trusted wrapper that claims nothing;
+// delete each when its callee enters `verus!`.
 
 /// `shared.set_decay_ms(ms)`: every arena's decay period. Nothing is
 /// claimed.
@@ -1066,49 +1042,11 @@ fn shared_set_decay_ms(shared: &Shared, ms: i64) {
     shared.set_decay_ms(ms)
 }
 
-/// `heap::existing_heap(shared)`: the calling thread's heap, if it has one.
-/// Nothing is claimed about the heap.
-#[verifier::external_body]
-#[inline(always)]
-fn existing_heap(shared: &Shared) -> Option<&'static mut Heap> {
-    heap::existing_heap(shared)
-}
-
-/// `heap::heap_for_thread(shared)`: the calling thread's heap, created if
-/// need be; `None` while the thread is creating or has torn down its heap.
-/// Nothing is claimed about the heap.
-#[verifier::external_body]
-#[inline(always)]
-fn heap_for_thread(shared: &Shared) -> Option<&mut Heap> {
-    heap::heap_for_thread(shared)
-}
-
-/// `h.flush_all(shared)`. Nothing is claimed.
-#[verifier::external_body]
-#[inline(always)]
-fn heap_flush_all(h: &mut Heap, shared: &Shared) {
-    h.flush_all(shared)
-}
-
-/// `h.arena()`, the heap's home arena. Nothing is claimed.
-#[verifier::external_body]
-#[inline(always)]
-fn heap_arena(h: &Heap) -> u16 {
-    h.arena()
-}
-
 /// `h.set_arena(shared, arena)`. Nothing is claimed.
 #[verifier::external_body]
 #[inline(always)]
 fn heap_set_arena(h: &mut Heap, shared: &Shared, arena: u16) {
     h.set_arena(shared, arena)
-}
-
-/// `h.tcache_enabled()`. Nothing is claimed.
-#[verifier::external_body]
-#[inline(always)]
-fn heap_tcache_enabled(h: &Heap) -> bool {
-    h.tcache_enabled()
 }
 
 /// `h.set_tcache_enabled(shared, on)`. Nothing is claimed.
@@ -1142,17 +1080,6 @@ fn tcaches_destroy(shared: &Shared, t: u16) -> bool {
     shared.tcaches.destroy(shared, t)
 }
 
-/// `shared.regions.slab_addr(class, s)` for a slab of an arena's class
-/// state of `class`. Trusted: that the slab lies in the class region,
-/// `slab_addr`'s precondition. Every class state is built over its
-/// class's region (`Shared::init`, `Arena::build`), but no verified
-/// invariant ties a class state's slab count to the regions yet.
-#[verifier::external_body]
-#[inline(always)]
-fn partial_slab_addr(shared: &Shared, class: usize, s: usize) -> usize {
-    shared.regions.slab_addr(class, s)
-}
-
 /// The utilisation figures of `p` (see the module docs). `verbose` adds
 /// the bin-wide figures and `slabcur_addr`, which cost one class lock.
 pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilization
@@ -1166,7 +1093,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            let t = shared_table(shared, class);
+            let t = shared.table(class);
             let cls = t.class();
             if !t.is_allocated(slab as usize, slot as usize) {
                 return u;
@@ -1204,7 +1131,8 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
                     u.bin_nregs = st.curslabs() * cls.nslots();
                     u.bin_nfree = u.bin_nregs.saturating_sub(curregs);
                     if let Some(s) = cs.lowest_partial() {
-                        u.slabcur_addr = addr_to_ptr(partial_slab_addr(shared, class, s)) as *mut c_void;
+                        cs.nslabs_are_the_region_s();
+                        u.slabcur_addr = addr_to_ptr(shared.regions.slab_addr(class, s)) as *mut c_void;
                     }
                 }
             }
@@ -1233,7 +1161,7 @@ pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16>
     }
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
-            let t = shared_table(shared, class as usize);
+            let t = shared.table(class as usize);
             if t.is_allocated(slab as usize, slot as usize) {
                 Some(t.owner(slab as usize))
             } else {
@@ -1467,9 +1395,12 @@ fn arena_stats(shared: &Shared, i: usize) -> (r: Result<ArenaStats, c_int>)
 
 /// Return the calling thread's cached slots before a purge so the purge
 /// can reach the slabs they pin (`malloc_trim` does the same).
-fn flush_caller(shared: &Shared) {
-    if let Some(h) = existing_heap(shared) {
-        heap_flush_all(h, shared);
+fn flush_caller(shared: &Shared)
+    requires
+        shared.wf(),
+{
+    if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
+        h.flush_all(shared);
     }
 }
 
@@ -1479,7 +1410,7 @@ fn thread_heap<'a>(shared: &'a Shared) -> (r: Result<&'a mut Heap, c_int>)
     ensures
         r matches Err(e) ==> e == EAGAIN,
 {
-    heap_for_thread(shared).ok_or(EAGAIN)
+    heap::heap_for_thread(shared).ok_or(EAGAIN)
 }
 
 /// Copy a reading out with its type's size.
@@ -1569,7 +1500,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 let arena = shared.arenas.get_existing(arena_index(i)?).ok_or(ENOENT)?;
                 arena.decay(now);
                 if i == 0 {
-                    let d = shared_decay_ns(shared);
+                    let d = shared.decay_ns();
                     if d != purge::NEVER {
                         shared.huge.decay(now, d);
                     }
@@ -1599,9 +1530,9 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 if let Some(ms) = new {
                     shared_set_decay_ms(shared, ms as i64);
                 }
-                return io.read(ms_of(shared_decay_ns(shared)));
+                return io.read(ms_of(shared.decay_ns()));
             }
-            let arena = shared_arena(shared, arena_index(i)?).ok_or(ENOENT)?;
+            let arena = shared.arena(arena_index(i)?).ok_or(ENOENT)?;
             if let Some(ms) = new {
                 arena.set_decay_ms(ms as i64);
             }
@@ -1617,24 +1548,24 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             if let Some(on) = io.write_bool()? {
                 heap_set_tcache_enabled(h, shared, on);
             }
-            io.read(heap_tcache_enabled(h))
+            io.read(h.tcache_enabled())
         },
         ThreadArena => {
             let h = thread_heap(shared)?;
             if let Some(a) = io.write::<c_uint>()? {
-                if a as usize >= MAX_ARENAS || shared_arena(shared, a as u16).is_none() {
+                if a as usize >= MAX_ARENAS || shared.arena(a as u16).is_none() {
                     return Err(EFAULT);
                 }
                 heap_set_arena(h, shared, a as u16);
             }
-            io.read(heap_arena(h) as c_uint)
+            io.read(h.arena() as c_uint)
         },
         TcacheCreate => {
             io.read_only()?;
             // `existing_heap(shared).map_or(0, |h| h.arena())`, spelled as
             // a `match`.
-            let home = match existing_heap(shared) {
-                Some(h) => heap_arena(h),
+            let home = match heap::existing_heap(heap::shared_ptr(shared)) {
+                Some(h) => h.arena(),
                 None => 0,
             };
             let t = tcaches_create(shared, home).ok_or(EFAULT)?;

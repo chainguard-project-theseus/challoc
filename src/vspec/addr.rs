@@ -134,8 +134,8 @@ pub proof fn axiom_moved_block(p: *mut u8, old: usize, q: *mut u8, len: usize)
 /// only when it holds no allocated slot. `zero_slot` clears a slot being
 /// freed. The producer that would ensure it: `Shared::classify_free`,
 /// which checks the slot's bitmap bit and gives `p` to every `zero_slot`
-/// caller (`Heap::free_slow_in`, `Heap::percpu_free_slow` and
-/// `heap::free_direct`, which pass it on without stating it).
+/// caller (`Heap::free_slow_in` and `heap::free_direct`, which pass it on
+/// without stating it).
 #[verifier::external_body]
 pub proof fn axiom_slot_writable(class: usize, p: *mut u8)
     requires

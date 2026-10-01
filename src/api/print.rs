@@ -30,8 +30,7 @@ use crate::purge;
 use crate::stats::{self, ArenaStats, Snapshot, fig_add, fig_mul};
 use crate::sys::bytes_is;
 use crate::vspec::print::{
-    base_slab_sizes, shared_decay_ns, stats_allocated, tcaches_len, thp_name, version_str,
-    writeln_display,
+    base_slab_sizes, stats_allocated, tcaches_len, thp_name, writeln_display,
 };
 use vstd::prelude::verus;
 #[cfg(verus_only)]
@@ -306,7 +305,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     // JSON form keeps its top-level "jemalloc" object. The `Version:` line
     // that follows says which library produced the report.
     writeln!(out, "___ Begin jemalloc statistics ___")?;
-    writeln!(out, "Version: \"{}\"", version_str())?;
+    writeln!(out, "Version: \"{}\"", super::mallctl::VERSION_STR)?;
     writeln!(out, "Build-time option settings")?;
     writeln!(out, "  config.debug: false")?;
     writeln!(out, "  config.stats: true")?;
@@ -396,7 +395,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     )?;
     // The huge tier's own decay period (`huge_dirty_decay_ms`, design 7),
     // named only when it differs from arena 0's, which it follows otherwise.
-    if shared.huge_decay_ns() != shared_decay_ns(shared) {
+    if shared.huge_decay_ns() != shared.decay_ns() {
         write!(
             out,
             ", dirty_decay_ms {} (huge_dirty_decay_ms)",
@@ -499,9 +498,9 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
     write!(
         out,
         " decay_ms {}",
-        decay_ms(p.effective_decay_ns(shared_decay_ns(shared)))
+        decay_ms(p.effective_decay_ns(shared.decay_ns()))
     )?;
-    if shared.huge_decay_ns() != shared_decay_ns(shared) {
+    if shared.huge_decay_ns() != shared.decay_ns() {
         write!(
             out,
             " huge_decay_ms {}",
@@ -642,10 +641,10 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 /// One class lock hold per non-full slab; only classes with non-full slabs
 /// are listed.
 ///
-/// Trusted: `bits(i).allocated(nslots)` needs `nslots` within the
-/// table's slab bits, which `ClassState::table` states no postcondition
-/// for, `live * 8` has no bound, and `{:?}` of an array is outside what
-/// vstd's formatting specifies.
+/// Trusted: `is_partial(i)` needs `i` below the class's slab count, and
+/// nothing bounds `committed_slabs` (an atomic load) by it; `live * 8`
+/// has no bound (`SlabDesc::live` states none); and `{:?}` of an array is
+/// outside what vstd's formatting specifies.
 #[verifier::external_body]
 fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::Result {
     let mut header = false;
@@ -811,7 +810,7 @@ fn json_general<W: Write>(
         cg.limit(),
         cg.high(),
         cg.current(),
-        match shared.policy.effective_decay_ns(shared_decay_ns(shared)) {
+        match shared.policy.effective_decay_ns(shared.decay_ns()) {
             crate::purge::NEVER => -1i64,
             ns => (ns / 1_000_000) as i64,
         },
@@ -914,7 +913,7 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
     let snap = stats::collect(shared);
     writeln!(out, "{{")?;
     writeln!(out, "\t\"jemalloc\": {{")?;
-    writeln!(out, "\t\t\"version\": \"{}\",", version_str())?;
+    writeln!(out, "\t\t\"version\": \"{}\",", super::mallctl::VERSION_STR)?;
     writeln!(out, "\t\t\"implementation\": \"challoc\",")?;
     if !o.no_general {
         json_general(out, shared, &snap, !o.no_arenas)?;
@@ -1156,6 +1155,7 @@ fn stderr_target() -> Target {
 #[cfg(not(test))]
 mod exports {
     use core::ffi::{c_char, c_int, c_void};
+    use vstd::prelude::verus;
 
     export_pair! {
         fn malloc_stats_print / je_malloc_stats_print(write_cb: super::WriteCb, cbopaque: *mut c_void, opts: *const c_char) {
@@ -1163,7 +1163,7 @@ mod exports {
         }
     }
 
-    vstd::prelude::verus! {
+    verus! {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
