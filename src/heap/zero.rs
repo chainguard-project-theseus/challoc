@@ -142,6 +142,28 @@ impl CachePerms {
         }
     }
 
+    /// A header `p` that `old` does not own joining it with nothing cached
+    /// keeps [`CachePerms::zero_ok`].
+    pub(super) proof fn lemma_zero_insert(old: CachePerms, new: CachePerms, p: *mut CacheHeader)
+        requires
+            old.zero_ok(),
+            !old.hdrs.contains_key(p),
+            new.hdrs == old.hdrs.insert(p, new.hdrs[p]),
+            new.cls == old.cls.insert(p, new.cls[p]),
+            new.slots == old.slots,
+            new.zero == old.zero,
+            new.hdr(p).len == 0,
+        ensures
+            new.zero_ok(),
+    {
+        assert forall|p2: *mut CacheHeader, j: int|
+            #![trigger new.ent(p2, j)]
+            new.hdrs.contains_key(p2) && Self::in_prefix(new.hdr(p2), j) implies new.zero_at(p2, j) by {
+            assert(p2 != p);
+            assert(old.zero_at(p2, j));
+        }
+    }
+
     /// A store to header `p` alone that keeps its stack base and does not
     /// grow its zero prefix keeps [`CachePerms::zero_ok`].
     pub(super) proof fn lemma_zero_hdr(old: CachePerms, new: CachePerms, p: *mut CacheHeader)

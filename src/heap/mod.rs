@@ -547,8 +547,15 @@ pub proof fn lemma_plain_stored(e: *mut u8, p: *mut u8, c: int, base: *mut *mut 
     crate::sys::pac::axiom_auth_sign(p@.addr, base@.addr);
 }
 
-/// The header for `class` in `others` node `node` ([`Heap::node_cache_ptr`]).
-pub uninterp spec fn node_hdr(node: *mut ArenaCaches, class: int) -> *mut CacheHeader;
+/// The header for `class` in `others` node `node` ([`Heap::node_cache_ptr`]):
+/// `class` lines past the node's first, which holds `arena`, `pad` and
+/// `next` (`ArenaCaches::caches` is at offset 64), with the node's
+/// provenance.
+pub open spec fn node_hdr(node: *mut ArenaCaches, class: int) -> *mut CacheHeader {
+    vstd::raw_ptr::ptr_mut_from_data::<CacheHeader>(
+        vstd::raw_ptr::PtrData { addr: (node@.addr + 64 + 64 * class) as usize, provenance: node@.provenance, metadata: () },
+    )
+}
 
 /// The `others` list `new` is `old` with nodes added at the head: each
 /// node keeps its place counted from the end.
@@ -621,9 +628,9 @@ spec fn cell_ok(p: *mut CacheHeader, hp: PointsTo<CacheHeader>, slots: Map<*mut 
 /// Header `p`, holding `h`, and once it has one its stack lie in the
 /// metadata region (whole-allocator theorem 4): every header is part of a
 /// heap or an `others` node and every stack a block, each from
-/// `Shared::meta` ([`Heap::ensure_cache`] for stacks; the heap's own and
-/// its nodes' headers join the permissions in trusted code, heap creation
-/// and `Heap::other_caches`, which take their blocks from it).
+/// `Shared::meta` ([`Heap::ensure_cache`] for stacks, `Heap::other_caches`
+/// for nodes; the heap's own headers join the permissions in trusted
+/// code, heap creation, which takes its block from it).
 spec fn cell_in_meta(p: *mut CacheHeader, h: CacheHeader) -> bool {
     &&& process_regions().in_meta(p@.addr as int, 64)
     &&& h.cap != 0 ==> process_regions().in_meta(h.slots@.addr as int, 8 * h.cap)
@@ -2280,6 +2287,54 @@ impl CachePerms {
     {
     }
 
+    /// A header `old` does not own joining it unused (no stack, nothing
+    /// cached), as a header of class `c`, keeps everything `old` had.
+    proof fn lemma_insert_unused(old: CachePerms, new: CachePerms, p: *mut CacheHeader, c: int)
+        requires
+            old.wf(),
+            old.tracks(),
+            old.zero_ok(),
+            old.tokened(),
+            !old.hdrs.contains_key(p),
+            new.hdrs == old.hdrs.insert(p, new.hdrs[p]),
+            new.cls == old.cls.insert(p, c),
+            new.slots == old.slots,
+            new.owner == old.owner,
+            new.toks == old.toks,
+            new.zero == old.zero,
+            cell_ok(p, new.hdrs[p], new.slots),
+            new.hdr(p).cap == 0,
+        ensures
+            new.keeps(old),
+            new.follows(old),
+            new.zero_ok(),
+            new.tokened(),
+    {
+        assert forall|q: *mut CacheHeader| #[trigger] new.hdrs.contains_key(q) implies cell_ok(q, new.hdrs[q], new.slots) by {
+            if q != p {
+                assert(cell_ok(q, old.hdrs[q], old.slots));
+            }
+        }
+        assert forall|q: *mut CacheHeader, i: int|
+            #![trigger new.ent(q, i)]
+            new.hdrs.contains_key(q) && 0 <= i < new.hdr(q).cap implies {
+                &&& new.owner.contains_key(new.ent(q, i))
+                &&& new.owner[new.ent(q, i)] == (q, i)
+                &&& (i < new.hdr(q).len ==> new.holds(new.cls[q], new.ent(q, i), new.hdr(q).slots))
+            } by {
+            assert(q != p);
+            assert(new.ent(q, i) == old.ent(q, i));
+        }
+        assert forall|q: *mut CacheHeader, i: int|
+            #![trigger new.ent(q, i)]
+            new.hdrs.contains_key(q) && 0 <= i < new.hdr(q).len implies new.tok_at(q, i) by {
+            assert(q != p);
+            assert(new.ent(q, i) == old.ent(q, i));
+            assert(old.tok_at(q, i));
+        }
+        CachePerms::lemma_zero_insert(old, new, p);
+    }
+
     /// Writing one owned stack entry keeps every stack owned.
     proof fn lemma_write_grows(old: Map<*mut *mut u8, PointsTo<*mut u8>>, new: Map<*mut *mut u8, PointsTo<*mut u8>>, q: *mut *mut u8)
         requires
@@ -2383,12 +2438,13 @@ impl Heap {
     /// every heap a verified path is handed (TLS, `tcache.create`): the
     /// unverified writers of cache memory
     /// (`create_detached`, `set_arena`'s swap, `set_tcache_enabled`,
-    /// `destroy`, `free_caches`, `other_caches` and
+    /// `destroy`, `free_caches` and
     /// [`stack_mut`], the slice the refill, flush and rebuild borrow)
     /// are taken to keep it (they move whole caches between headers of
     /// one class, drop entries, or add `EMPTY` headers), and
     /// each verified one proves it keeps it. The `others` list is
-    /// [`Heap::list`] ([`Heap::list_ok`]). A heap exists only once the
+    /// [`Heap::list`] ([`Heap::list_ok`]); of its unverified writers,
+    /// `set_arena`'s swap keeps the nodes and `destroy` frees the heap. A heap exists only once the
     /// process's `Shared` is published, so its regions come with it
     /// ([`regions_ok`]). The home headers are also the
     /// plain field `caches`, which the permissions do not track: verified
@@ -2551,6 +2607,17 @@ impl Heap {
         if 1 <= r <= self.list_len() {
             assert(self.list@[self.list@.len() - r] == self.node_from_end(r));
         }
+    }
+
+    /// The `others` list has fewer than `usize::MAX` nodes.
+    ///
+    /// Trusted: its nodes are distinct metadata blocks of more than 4 KiB
+    /// each (`node_block_layout`), so there are fewer than 2^52 of them.
+    #[verifier::external_body]
+    proof fn axiom_list_bound(&self)
+        ensures
+            self.list_len() < usize::MAX,
+    {
     }
 
     /// [`Heap::keeps`] keeps every node of the `others` list in its place

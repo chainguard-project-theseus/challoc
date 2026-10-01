@@ -95,6 +95,15 @@ pub exec const CACHE_HEADER: usize
 // Verus checks the size and alignment `CACHE_HEADER` names.
 global layout CacheHeader is size == 64, align == 64;
 
+/// The size and alignment `global layout` gives [`CacheHeader`], for
+/// modules that do not see the declaration.
+pub(super) proof fn lemma_header_layout()
+    ensures
+        vstd::layout::size_of::<CacheHeader>() == 64,
+        vstd::layout::align_of::<CacheHeader>() == 64,
+{
+}
+
 impl CacheHeader {
     /// The header invariant: the run lies inside the entries not popped
     /// since the last GC, which lie inside the stack, which lies inside
@@ -112,29 +121,36 @@ impl CacheHeader {
 const _: () = assert!(CACHE_HEADER == 64);
 const _: () = assert!(core::mem::offset_of!(CacheHeader, slots) < 64 - 8);
 
-impl CacheHeader {
-    /// A header that has never been used: both fast paths fall through to
-    /// the slow path, which gives it a capacity and a stack.
-    pub const EMPTY: CacheHeader = CacheHeader {
-        len: 0,
-        cap: 0,
-        low_water: 0,
-        zeroed: 0,
-        slots: ptr::null_mut(),
-        allocs: 0,
-        compact_mask: u32::MAX,
-        run_end: 0,
-        moved: 0,
-        probe_refilled: 0,
-        arena: 0,
-        mode: MODE_OFF,
-        unsorted_flushes: 0,
-    };
-}
-
 verus! {
 
 impl CacheHeader {
+    /// A header that has never been used: both fast paths fall through to
+    /// the slow path, which gives it a capacity and a stack.
+    pub(super) exec const EMPTY: CacheHeader
+        ensures
+            Self::EMPTY.len == 0,
+            Self::EMPTY.cap == 0,
+            Self::EMPTY.low_water == 0,
+            Self::EMPTY.zeroed == 0,
+            Self::EMPTY.run_end == 0,
+    {
+        CacheHeader {
+            len: 0,
+            cap: 0,
+            low_water: 0,
+            zeroed: 0,
+            slots: ptr::null_mut(),
+            allocs: 0,
+            compact_mask: u32::MAX,
+            run_end: 0,
+            moved: 0,
+            probe_refilled: 0,
+            arena: 0,
+            mode: MODE_OFF,
+            unsorted_flushes: 0,
+        }
+    }
+
     /// Metadata layout of a stack of `cap` slots.
     pub const fn slots_layout(cap: u32) -> (r: Layout)
         ensures
