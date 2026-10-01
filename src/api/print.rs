@@ -21,14 +21,23 @@ use core::ffi::{CStr, c_char, c_int, c_void};
 use core::fmt::{self, Write};
 
 use super::jemalloc::malloc_write;
-use super::mallctl::VERSION_STR;
 use crate::QUANTUM;
 use crate::arena::Arena;
 use crate::config::{INERT_KEYS, KEYS, PercpuArena, Value};
 use crate::heap::Shared;
-use crate::layout::{CLASSES, NBINS};
+use crate::layout::{CLASSES, NBINS, NCLASSES};
 use crate::purge;
-use crate::stats::{self, ArenaStats, Snapshot};
+use crate::stats::{self, ArenaStats, Snapshot, fig_add, fig_mul};
+use crate::sys::bytes_is;
+use crate::vspec::print::{
+    base_slab_sizes, shared_decay_ns, stats_allocated, tcaches_len, thp_name, version_str,
+    writeln_display,
+};
+use vstd::prelude::verus;
+#[cfg(verus_only)]
+use vstd::prelude::*;
+#[cfg(verus_only)]
+use vstd::string::StringSliceAdditionalSpecFns;
 
 /// `void (*write_cb)(void *cbopaque, const char *s)`.
 pub type WriteCb = Option<unsafe extern "C" fn(*mut c_void, *const c_char)>;
@@ -43,6 +52,14 @@ enum Target {
     Stderr,
 }
 
+verus! {
+
+/// Opaque: `Target` holds a function pointer type, which Verus rejects.
+#[verifier::external_type_specification]
+#[verifier::external_body]
+#[allow(dead_code)]
+struct ExTarget(Target);
+
 /// A `fmt::Write` that buffers up to 1023 bytes and forwards them,
 /// NUL-terminated where the target wants a C string.
 struct Sink {
@@ -52,7 +69,10 @@ struct Sink {
 }
 
 impl Sink {
-    fn new(target: Target) -> Sink {
+    fn new(target: Target) -> (r: Sink)
+        ensures
+            r.len == 0,
+    {
         Sink {
             target,
             buf: [0; 1024],
@@ -60,6 +80,10 @@ impl Sink {
         }
     }
 
+    /// Hand the buffered bytes to the target and empty the buffer.
+    /// Trusted: calls the caller's callback (a function pointer), the
+    /// `malloc_message` path, `fwrite` or `write(2)`; claims nothing.
+    #[verifier::external_body]
     fn flush(&mut self) {
         if self.len == 0 {
             return;
@@ -92,6 +116,72 @@ impl Sink {
     }
 }
 
+/// The longest prefix of `s` that fits in `room` bytes and ends on a
+/// character boundary, so slicing `s` there cannot panic. For a non-empty
+/// `s`, 0 only when its first character does not fit: `room >= 4` always
+/// takes one.
+#[inline(always)]
+fn char_cut(s: &str, room: usize) -> (n: usize)
+    requires
+        // Every `str` fits in memory (at most `isize::MAX` bytes).
+        s.spec_bytes().len() <= usize::MAX,
+    ensures
+        n <= s.spec_bytes().len(),
+        n <= room,
+        vstd::utf8::is_char_boundary(s.spec_bytes(), n as int),
+        s@.len() > 0 && room >= 4 ==> n > 0,
+{
+    proof {
+        lemma_first_char_boundary(s);
+    }
+    let ghost first = vstd::utf8::length_of_first_scalar(s.spec_bytes());
+    let mut n = s.len().min(room);
+    assert(n == s.spec_bytes().len() || n == room);
+    while !s.is_char_boundary(n)
+        invariant
+            n <= s.spec_bytes().len(),
+            n <= room,
+            vstd::utf8::is_char_boundary(s.spec_bytes(), 0),
+            s@.len() > 0 ==> 1 <= first <= 4 && first <= s.spec_bytes().len()
+                && vstd::utf8::is_char_boundary(s.spec_bytes(), first),
+            s@.len() > 0 && room >= 4 ==> first <= n,
+        decreases n,
+    {
+        n -= 1;
+    }
+    n
+}
+
+/// A non-empty `str` starts with a character of 1 to 4 bytes, which ends
+/// on a character boundary, as 0 is one.
+proof fn lemma_first_char_boundary(s: &str)
+    ensures
+        vstd::utf8::valid_utf8(s.spec_bytes()),
+        vstd::utf8::is_char_boundary(s.spec_bytes(), 0),
+        s@.len() > 0 ==> {
+            let first = vstd::utf8::length_of_first_scalar(s.spec_bytes());
+            &&& 1 <= first <= 4
+            &&& first <= s.spec_bytes().len()
+            &&& vstd::utf8::is_char_boundary(s.spec_bytes(), first)
+        },
+{
+    let b = s.spec_bytes();
+    vstd::utf8::encode_utf8_valid_utf8(s@);
+    vstd::utf8::encode_utf8_decode_utf8(s@);
+    if s@.len() > 0 {
+        assert(b.len() > 0);
+        assert(vstd::utf8::valid_utf8(vstd::utf8::pop_first_scalar(b)));
+        assert(vstd::utf8::is_char_boundary(vstd::utf8::pop_first_scalar(b), 0));
+    }
+}
+
+} // verus!
+
+// Outside `verus!`: `room` needs `len < 1024`, which only a type invariant
+// on `Sink` could state, and Verus rejects the `&mut` of `buf` below
+// under one (a call through a field of such a type must be `no_unwind`,
+// and `fmt::Write` fixes `write_str`'s unwind specification). The
+// character-boundary cut is [`char_cut`], verified.
 impl Write for Sink {
     fn write_str(&mut self, mut s: &str) -> fmt::Result {
         while !s.is_empty() {
@@ -102,10 +192,7 @@ impl Write for Sink {
             }
             // Cut on a character boundary: slicing `s` inside a multi-byte
             // character would panic in the middle of a report.
-            let mut n = s.len().min(room);
-            while !s.is_char_boundary(n) {
-                n -= 1;
-            }
+            let n = char_cut(s, room);
             if n == 0 {
                 self.flush();
                 continue;
@@ -118,6 +205,8 @@ impl Write for Sink {
     }
 }
 
+verus! {
+
 /// Parsed `opts`.
 #[derive(Default)]
 struct Opts {
@@ -127,19 +216,41 @@ struct Opts {
     no_bins: bool,
 }
 
+/// Byte `i` of the caller's option string. Trusted: a raw read, within
+/// the string by jemalloc's contract ([`Opts::parse`]).
+///
+/// # Safety
+/// `opts + i` is a readable byte of the caller's string.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn opt_byte(opts: *const c_char, i: usize) -> u8 {
+    // SAFETY: guaranteed by the caller.
+    unsafe { opts.add(i).read() as u8 }
+}
+
 impl Opts {
     /// `opts` is the caller's option string: null, or readable up to and
     /// including its NUL terminator (jemalloc's contract); at most 64
     /// bytes are read, so a longer string is truncated, never overrun.
-    fn parse(opts: *const c_char) -> Opts {
-        let mut o = Opts::default();
+    fn parse(opts: *const c_char) -> (o: Opts)
+        ensures
+            opts@.addr == 0 ==> !o.json && !o.no_general && !o.no_arenas && !o.no_bins,
+    {
+        // `Opts::default()`, spelled out: Verus does not see the derived
+        // `Default`.
+        let mut o = Opts {
+            json: false,
+            no_general: false,
+            no_arenas: false,
+            no_bins: false,
+        };
         if opts.is_null() {
             return o;
         }
         for i in 0..64 {
             // SAFETY: the caller's NUL-terminated option string; reads stop
             // at the terminator or after 64 bytes.
-            let b = unsafe { opts.add(i).read() } as u8;
+            let b = unsafe { opt_byte(opts, i) };
             match b {
                 0 => break,
                 b'J' => o.json = true,
@@ -153,20 +264,22 @@ impl Opts {
     }
 }
 
-/// Every existing arena with its live figures.
-fn for_each_arena(shared: &Shared, mut f: impl FnMut(&Arena, &ArenaStats)) {
-    for arena in shared.arenas.iter() {
-        let s = stats::collect_arena(shared, arena);
-        f(arena, &s);
-    }
-}
-
 /// A configuration value's name (`config::Value::Str`, the `thp` key).
+/// Trusted: `CStr::to_str`, which vstd does not specify; nothing is
+/// claimed about the result.
+#[verifier::external_body]
 fn word(s: &CStr) -> &str {
     s.to_str().unwrap_or("?")
 }
 
-fn decay_ms(ns: u64) -> i64 {
+fn decay_ms(ns: u64) -> (r: i64)
+    ensures
+        r == if ns == purge::NEVER {
+            -1
+        } else {
+            (ns / 1_000_000) as int
+        },
+{
     if ns == purge::NEVER {
         -1
     } else {
@@ -178,22 +291,35 @@ fn decay_ms(ns: u64) -> i64 {
 // Text report.
 // ---------------------------------------------------------------------------
 
-fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt::Result {
+// The indexed loops stand for `for key in KEYS`: Verus does not specify a
+// slice's `IntoIterator`.
+#[allow(clippy::needless_range_loop)]
+fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt::Result
+    requires
+        shared.wf(),
+{
+    proof {
+        shared.lemma_wf();
+    }
     // jemalloc's banner, not "challoc statistics": consumers key on it (Valkey's
     // `MEMORY MALLOC-STATS` coverage test asserts `*jemalloc*`), just as the
     // JSON form keeps its top-level "jemalloc" object. The `Version:` line
     // that follows says which library produced the report.
     writeln!(out, "___ Begin jemalloc statistics ___")?;
-    writeln!(out, "Version: \"{}\"", VERSION_STR)?;
+    writeln!(out, "Version: \"{}\"", version_str())?;
     writeln!(out, "Build-time option settings")?;
     writeln!(out, "  config.debug: false")?;
     writeln!(out, "  config.stats: true")?;
     writeln!(out, "  config.quantum: {QUANTUM}")?;
     writeln!(out, "Run-time option settings")?;
-    for key in KEYS {
-        let note = if key == &"thp" && shared.policy.thp_forced() {
+    // `for key in KEYS`, with an index: Verus does not specify a slice's
+    // `IntoIterator`.
+    let keys = KEYS;
+    for k in 0..keys.len() {
+        let key = &keys[k];
+        let note = if bytes_is(key.as_bytes(), b"thp") && shared.policy.thp_forced() {
             " (accepted, no effect; forced to never by a cgroup limit under 1 GiB)"
-        } else if key == &"percpu_arena" && shared.config.percpu_arena != PercpuArena::Disabled {
+        } else if bytes_is(key.as_bytes(), b"percpu_arena") && shared.config.percpu_arena != PercpuArena::Disabled {
             " (accepted, no effect; caches are per thread)"
         } else {
             ""
@@ -210,7 +336,9 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     // An inert key (`config::INERT_KEYS`) is parsed and validated but has
     // no field and is read by nothing; say so, so a report never suggests
     // the feature is on.
-    for key in INERT_KEYS {
+    let inert = INERT_KEYS;
+    for k in 0..inert.len() {
+        let key = &inert[k];
         writeln!(out, "  opt.{}: accepted, no effect", key)?;
     }
     writeln!(out, "Kernel and CPU features: {}", super::feature_line())?;
@@ -234,29 +362,24 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
         "Arenas: {} ({} automatic), explicit caches: {}",
         snap.narenas,
         shared.arenas.auto(),
-        shared.tcaches.len()
+        tcaches_len(shared)
     )?;
     writeln!(out, "Quantum size: {}", QUANTUM)?;
     writeln!(out, "Page size: {}", shared.regions.page_size())?;
     if let Some((lo, hi)) = crate::layout::page_sized_classes() {
         // Design 3: on a kernel whose page is larger than a class's table
         // slab, the class's slab is the page.
-        let base = |f: fn(usize, usize) -> usize| {
-            (lo..=hi)
-                .map(|c| crate::layout::BASE_CLASSES[c].slab_size())
-                .reduce(f)
-                .unwrap_or(0)
-        };
+        let (base_min, base_max) = base_slab_sizes(lo, hi);
         writeln!(
             out,
             "Page-sized slabs: classes {}..{} ({}..{} bytes) at {} bytes ({}..{} in the table)",
             lo,
             hi,
-            CLASSES[lo].size(),
-            CLASSES[hi].size(),
-            CLASSES[lo].slab_size(),
-            base(usize::min),
-            base(usize::max)
+            CLASSES.table()[lo].size(),
+            CLASSES.table()[hi].size(),
+            CLASSES.table()[lo].slab_size(),
+            base_min,
+            base_max
         )?;
     }
     let t = &snap.totals;
@@ -273,7 +396,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     )?;
     // The huge tier's own decay period (`huge_dirty_decay_ms`, design 7),
     // named only when it differs from arena 0's, which it follows otherwise.
-    if shared.huge_decay_ns() != shared.decay_ns() {
+    if shared.huge_decay_ns() != shared_decay_ns(shared) {
         write!(
             out,
             ", dirty_decay_ms {} (huge_dirty_decay_ms)",
@@ -290,7 +413,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     // Design 11: the figures as last sampled (a sample is taken here if the
     // 10 ms window allows), or why nothing is tracked.
     shared.cgroup.sample(crate::sys::now_coarse_ns());
-    writeln!(out, "{}", shared.cgroup)?;
+    writeln_display(out, &shared.cgroup)?;
     policy_line(out, shared)?;
     advice_line(out)?;
     thp_line(out)
@@ -305,7 +428,7 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
     write!(
         out,
         "thp: {} -> {} ({})",
-        word(crate::thp::key().name()),
+        word(thp_name(crate::thp::key())),
         d.mode.name(),
         d.reason.text()
     )?;
@@ -320,11 +443,13 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
         )?;
     }
     if d.mode != crate::thp::Mode::Off {
-        write!(out, " slab_min {}", 1usize << d.lg_slab_min)?;
-        write!(out, " pmd {}", 1usize << d.lg_pmd)?;
+        // `1usize << lg`, as `wrapping_shl`: what `<<` compiles to in
+        // release, and the thresholds are atomics no invariant bounds.
+        write!(out, " slab_min {}", 1usize.wrapping_shl(d.lg_slab_min as u32))?;
+        write!(out, " pmd {}", 1usize.wrapping_shl(d.lg_pmd as u32))?;
         match d.lg_meta {
             crate::thp::NO_SIZE => write!(out, " meta off")?,
-            lg => write!(out, " meta {}", 1usize << lg)?,
+            lg => write!(out, " meta {}", 1usize.wrapping_shl(lg as u32))?,
         }
         write!(out, " huge {}", if d.huge { "on" } else { "off" })?;
     }
@@ -334,17 +459,28 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
         s.class_ranges, s.class_bytes, s.chunks, s.huge_ranges, s.meta_ranges, s.failures
     )?;
     // Design 17: the host's global mode.
+    // `map_or("none", ThpSetting::name)`, spelled as a `match`: Verus does
+    // not take a function item as a closure.
     writeln!(
         out,
         "; host {}",
-        crate::thp::host_mode().map_or("none", crate::sys::thp_host::ThpSetting::name)
+        match crate::thp::host_mode() {
+            Some(m) => m.name(),
+            None => "none",
+        }
     )
 }
 
 /// The `cgroup policy:` line (design 11): the band as last evaluated and
 /// what it gives arena 0.
-fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
+fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
+    requires
+        shared.wf(),
+{
     use crate::policy::{Band, FRAC_ONE};
+    proof {
+        crate::policy::frac_one_value();
+    }
     let p = &shared.policy;
     if !shared.cgroup.tracked() {
         return writeln!(out, "cgroup policy: off (not tracked)");
@@ -363,9 +499,9 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
     write!(
         out,
         " decay_ms {}",
-        decay_ms(p.effective_decay_ns(shared.decay_ns()))
+        decay_ms(p.effective_decay_ns(shared_decay_ns(shared)))
     )?;
-    if shared.huge_decay_ns() != shared.decay_ns() {
+    if shared.huge_decay_ns() != shared_decay_ns(shared) {
         write!(
             out,
             " huge_decay_ms {}",
@@ -433,13 +569,15 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
         "  small:               {:>14} {:>12} {:>12} {:>12}",
         s.small_allocated, s.small_active, s.small_dirty, s.small_retained
     )?;
+    // `fig_add` is `+` as the build computes it (the figures have no
+    // proved bound).
     writeln!(
         out,
         "  large:               {:>14} {:>12} {:>12} {:>12}  ({} huge runs)",
         s.large_allocated,
         s.large_active,
-        s.large_dirty + s.huge_dirty,
-        s.large_retained + s.huge_retained,
+        fig_add(s.large_dirty, s.huge_dirty),
+        fig_add(s.large_retained, s.huge_retained),
         s.large_runs
     )?;
     writeln!(
@@ -462,33 +600,36 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
         "  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped"
     )?;
     let mut large_header = false;
-    for (j, b) in s.bins.iter().enumerate() {
-        if b.curslabs + b.empty_slabs + b.purged_slabs == 0 {
-            continue;
+    // `for (j, b) in s.bins.iter().enumerate()` with its `continue`, as an
+    // indexed loop and an `if`: Verus specifies neither `Enumerate` nor
+    // `continue` in a `for`.
+    for j in 0..NCLASSES {
+        let b = &s.bins[j];
+        if fig_add(fig_add(b.curslabs, b.empty_slabs), b.purged_slabs) != 0 {
+            if j >= NBINS && !large_header {
+                large_header = true;
+                writeln!(out, "  large classes (slab-allocated, not bins):")?;
+            }
+            writeln!(
+                out,
+                "  {:>13} {:>3} {:>8} {:>10} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10} {:>10} {:>6} {:>6} {:>6} {:>7}",
+                b.size,
+                j,
+                b.nregs,
+                b.slab_size,
+                b.curregs,
+                b.curslabs,
+                b.nonfull_slabs,
+                b.empty_slabs,
+                b.purged_slabs,
+                b.refilled,
+                b.compacted,
+                b.compact_on,
+                b.compact_off,
+                b.gate_refill,
+                b.clamped
+            )?;
         }
-        if j >= NBINS && !large_header {
-            large_header = true;
-            writeln!(out, "  large classes (slab-allocated, not bins):")?;
-        }
-        writeln!(
-            out,
-            "  {:>13} {:>3} {:>8} {:>10} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10} {:>10} {:>6} {:>6} {:>6} {:>7}",
-            b.size,
-            j,
-            b.nregs,
-            b.slab_size,
-            b.curregs,
-            b.curslabs,
-            b.nonfull_slabs,
-            b.empty_slabs,
-            b.purged_slabs,
-            b.refilled,
-            b.compacted,
-            b.compact_on,
-            b.compact_off,
-            b.gate_refill,
-            b.clamped
-        )?;
     }
     slab_histogram(out, arena, s)
 }
@@ -500,6 +641,12 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 /// bitmap's set bits, and the non-full slabs missing from the partial set.
 /// One class lock hold per non-full slab; only classes with non-full slabs
 /// are listed.
+///
+/// Trusted: `bits(i).allocated(nslots)` needs `nslots` within the
+/// table's slab bits, which `ClassState::table` states no postcondition
+/// for, `live * 8` has no bound, and `{:?}` of an array is outside what
+/// vstd's formatting specifies.
+#[verifier::external_body]
 fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::Result {
     let mut header = false;
     for (j, b) in s.bins.iter().enumerate() {
@@ -548,19 +695,29 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
     Ok(())
 }
 
-fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result {
+fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
+    requires
+        shared.wf(),
+{
     let snap = stats::collect(shared);
     if !o.no_general {
         text_general(out, shared, &snap)?;
     }
     if !o.no_arenas {
-        let mut r = Ok(());
-        for_each_arena(shared, |a, s| {
-            if r.is_ok() {
-                r = text_arena(out, a, s, !o.no_bins);
+        // `for_each_arena` with a closure that keeps the first error,
+        // spelled as the scan `Arenas::iter` makes (`stats::arena_at`):
+        // Verus does not model the closure's mutable captures. An error
+        // returns at once, where the closure skipped the remaining arenas.
+        let n = shared.arenas.count() as usize;
+        for i in 0..n
+            invariant
+                shared.wf(),
+        {
+            if let Some(a) = stats::arena_at(shared, i) {
+                let s = stats::collect_arena(shared, a);
+                text_arena(out, a, &s, !o.no_bins)?;
             }
-        });
-        r?;
+        }
     }
     writeln!(out, "--- End jemalloc statistics ---")
 }
@@ -573,32 +730,43 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
 /// arena/bin geometry, the background thread, the `thp`, `cgroup` and
 /// `stats` objects. `arenas_follow` says whether a `stats.arenas` object
 /// follows (the `stats` line then ends with a comma).
+// As in `text_general`.
+#[allow(clippy::needless_range_loop)]
 fn json_general<W: Write>(
     out: &mut W,
     shared: &Shared,
     snap: &Snapshot,
     arenas_follow: bool,
-) -> fmt::Result {
+) -> fmt::Result
+    requires
+        shared.wf(),
+{
+    proof {
+        shared.lemma_wf();
+    }
     writeln!(
         out,
         "\t\t\"config\": {{\"debug\": false, \"stats\": true, \"quantum\": {QUANTUM}}},"
     )?;
     writeln!(out, "\t\t\"opt\": {{")?;
     let mut first = true;
-    for key in KEYS {
-        let Some(v) = shared.config.get(key.as_bytes()) else {
-            continue;
-        };
-        if !first {
-            writeln!(out, ",")?;
-        }
-        first = false;
-        match v {
-            Value::Bool(b) => write!(out, "\t\t\t\"{key}\": {b}")?,
-            Value::Int(i) => write!(out, "\t\t\t\"{key}\": {i}")?,
-            Value::Uint(u) => write!(out, "\t\t\t\"{key}\": {u}")?,
-            Value::Size(n) => write!(out, "\t\t\t\"{key}\": {n}")?,
-            Value::Str(s) => write!(out, "\t\t\t\"{key}\": \"{}\"", word(s))?,
+    // `for key in KEYS` with its `let .. else { continue }`, with an index
+    // and an `if let`: Verus does not specify a slice's `IntoIterator`.
+    let keys = KEYS;
+    for k in 0..keys.len() {
+        let key = &keys[k];
+        if let Some(v) = shared.config.get(key.as_bytes()) {
+            if !first {
+                writeln!(out, ",")?;
+            }
+            first = false;
+            match v {
+                Value::Bool(b) => write!(out, "\t\t\t\"{key}\": {b}")?,
+                Value::Int(i) => write!(out, "\t\t\t\"{key}\": {i}")?,
+                Value::Uint(u) => write!(out, "\t\t\t\"{key}\": {u}")?,
+                Value::Size(n) => write!(out, "\t\t\t\"{key}\": {n}")?,
+                Value::Str(s) => write!(out, "\t\t\t\"{key}\": \"{}\"", word(s))?,
+            }
         }
     }
     writeln!(out)?;
@@ -619,7 +787,7 @@ fn json_general<W: Write>(
     writeln!(
         out,
         "\t\t\"thp\": {{\"key\": \"{}\", \"mode\": \"{}\", \"reason\": \"{}\", \"class_ranges\": {}, \"class_bytes\": {}, \"chunks\": {}, \"huge_ranges\": {}, \"meta_ranges\": {}, \"failures\": {}, \"nohuge_ranges\": {}, \"host\": \"{}\"}},",
-        word(crate::thp::key().name()),
+        word(thp_name(crate::thp::key())),
         td.mode.name(),
         td.reason.text(),
         ts.class_ranges,
@@ -629,7 +797,10 @@ fn json_general<W: Write>(
         ts.meta_ranges,
         ts.failures,
         ts.nohuge_ranges,
-        crate::thp::host_mode().map_or("none", crate::sys::thp_host::ThpSetting::name)
+        match crate::thp::host_mode() {
+            Some(m) => m.name(),
+            None => "none",
+        }
     )?;
     let cg = &shared.cgroup;
     cg.sample(crate::sys::now_coarse_ns());
@@ -640,7 +811,7 @@ fn json_general<W: Write>(
         cg.limit(),
         cg.high(),
         cg.current(),
-        match shared.policy.effective_decay_ns(shared.decay_ns()) {
+        match shared.policy.effective_decay_ns(shared_decay_ns(shared)) {
             crate::purge::NEVER => -1i64,
             ns => (ns / 1_000_000) as i64,
         },
@@ -691,8 +862,8 @@ fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
         "\t\t\t\t\"large\": {{\"allocated\": {}, \"active\": {}, \"dirty\": {}, \"retained\": {}, \"runs\": {}}},",
         s.large_allocated,
         s.large_active,
-        s.large_dirty + s.huge_dirty,
-        s.large_retained + s.huge_retained,
+        fig_add(s.large_dirty, s.huge_dirty),
+        fig_add(s.large_retained, s.huge_retained),
         s.large_runs
     )?;
     writeln!(
@@ -706,7 +877,14 @@ fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
     )?;
     if bins {
         writeln!(out, "\t\t\t\t\"bins\": [")?;
-        for (j, b) in s.bins[..NBINS].iter().enumerate() {
+        // `for (j, b) in s.bins[..NBINS].iter().enumerate()`, with an
+        // index.
+        let nbins = nbins();
+        for j in 0..nbins
+            invariant
+                nbins <= NCLASSES,
+        {
+            let b = &s.bins[j];
             writeln!(
                 out,
                 "\t\t\t\t\t{{\"size\": {}, \"nregs\": {}, \"slab_size\": {}, \"curregs\": {}, \"curslabs\": {}, \"nonfull_slabs\": {}, \"empty_slabs\": {}, \"purged_slabs\": {}}}{}",
@@ -718,7 +896,7 @@ fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
                 b.nonfull_slabs,
                 b.empty_slabs,
                 b.purged_slabs,
-                if j + 1 == NBINS { "" } else { "," }
+                if j + 1 == nbins { "" } else { "," }
             )?;
         }
         writeln!(out, "\t\t\t\t]")?;
@@ -729,31 +907,36 @@ fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 /// The JSON report (`J`): the `jemalloc` object with `version` and
 /// `implementation`, then [`json_general`] and the `stats.arenas` object of
 /// [`json_arena`]s, each under its option letter as in [`text_report`].
-fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result {
+fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
+    requires
+        shared.wf(),
+{
     let snap = stats::collect(shared);
     writeln!(out, "{{")?;
     writeln!(out, "\t\"jemalloc\": {{")?;
-    writeln!(out, "\t\t\"version\": \"{VERSION_STR}\",")?;
+    writeln!(out, "\t\t\"version\": \"{}\",", version_str())?;
     writeln!(out, "\t\t\"implementation\": \"challoc\",")?;
     if !o.no_general {
         json_general(out, shared, &snap, !o.no_arenas)?;
     }
     if !o.no_arenas {
         writeln!(out, "\t\t\"stats.arenas\": {{")?;
-        let mut r = Ok(());
+        // The closure of `for_each_arena`, spelled as in `text_report`.
         let mut first = true;
-        for_each_arena(shared, |a, s| {
-            if r.is_ok() {
+        let n = shared.arenas.count() as usize;
+        for i in 0..n
+            invariant
+                shared.wf(),
+        {
+            if let Some(a) = stats::arena_at(shared, i) {
+                let s = stats::collect_arena(shared, a);
                 if !first {
-                    r = writeln!(out, ",");
+                    writeln!(out, ",")?;
                 }
                 first = false;
-                if r.is_ok() {
-                    r = json_arena(out, a, s, !o.no_bins);
-                }
+                json_arena(out, a, &s, !o.no_bins)?;
             }
-        });
-        r?;
+        }
         writeln!(out)?;
         writeln!(out, "\t\t}}")?;
     }
@@ -761,11 +944,26 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
     writeln!(out, "}}")
 }
 
-/// `malloc_stats_print(write_cb, cbopaque, opts)`.
-pub fn malloc_stats_print(write_cb: WriteCb, cbopaque: *mut c_void, opts: *const c_char) {
+/// [`NBINS`], which is at most `NCLASSES` (`layout.rs` asserts it at
+/// compile time; the verifier cannot see the `exec const`'s value), as a
+/// constant the compiler folds.
+#[inline(always)]
+fn nbins() -> (r: usize)
+    ensures
+        r <= NCLASSES,
+{
+    let n = NBINS;
+    if n < NCLASSES { n } else { NCLASSES }
+}
+
+/// [`malloc_stats_print`] into `target`. Verified apart from the target:
+/// `WriteCb` is a function pointer type, which Verus rejects, so the
+/// entry point outside `verus!` only builds the `Target`.
+#[inline(always)]
+fn stats_print(target: Target, opts: *const c_char) {
     let shared = super::shared();
     let o = Opts::parse(opts);
-    let mut sink = Sink::new(Target::Callback(write_cb, cbopaque));
+    let mut sink = Sink::new(target);
     let _ = if o.json {
         json_report(&mut sink, shared, &o)
     } else {
@@ -773,6 +971,15 @@ pub fn malloc_stats_print(write_cb: WriteCb, cbopaque: *mut c_void, opts: *const
     };
     sink.flush();
 }
+
+} // verus!
+
+/// `malloc_stats_print(write_cb, cbopaque, opts)`.
+pub fn malloc_stats_print(write_cb: WriteCb, cbopaque: *mut c_void, opts: *const c_char) {
+    stats_print(Target::Callback(write_cb, cbopaque), opts)
+}
+
+verus! {
 
 // ---------------------------------------------------------------------------
 // glibc.
@@ -782,19 +989,25 @@ fn xml_heap<W: Write>(out: &mut W, nr: usize, s: &ArenaStats) -> fmt::Result {
     writeln!(out, "<heap nr=\"{nr}\">")?;
     writeln!(out, "<sizes>")?;
     let mut count = 0usize;
-    for b in s.bins[..NBINS].iter() {
-        if b.curregs == 0 {
-            continue;
+    // `for b in s.bins[..NBINS].iter()` with its `continue`, with an index
+    // and an `if`.
+    let nbins = nbins();
+    for j in 0..nbins
+        invariant
+            nbins <= NCLASSES,
+    {
+        let b = &s.bins[j];
+        if b.curregs != 0 {
+            count = fig_add(count, b.curregs);
+            writeln!(
+                out,
+                "<size from=\"{}\" to=\"{}\" total=\"{}\" count=\"{}\"/>",
+                b.size,
+                b.size,
+                fig_mul(b.curregs, b.size),
+                b.curregs
+            )?;
         }
-        count += b.curregs;
-        writeln!(
-            out,
-            "<size from=\"{}\" to=\"{}\" total=\"{}\" count=\"{}\"/>",
-            b.size,
-            b.size,
-            b.curregs * b.size,
-            b.curregs
-        )?;
     }
     writeln!(out, "</sizes>")?;
     writeln!(out, "<total type=\"fast\" count=\"0\" size=\"0\"/>")?;
@@ -810,19 +1023,34 @@ fn xml_heap<W: Write>(out: &mut W, nr: usize, s: &ArenaStats) -> fmt::Result {
     writeln!(out, "</heap>")
 }
 
-fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
+fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
+    requires
+        shared.wf(),
+{
     writeln!(out, "<malloc version=\"1\">")?;
-    let mut r = Ok(());
-    for_each_arena(shared, |a, s| {
-        if r.is_ok() {
-            r = xml_heap(out, a.index() as usize, s);
+    // The closure of `for_each_arena`, spelled as in `text_report`.
+    let n = shared.arenas.count() as usize;
+    for i in 0..n
+        invariant
+            shared.wf(),
+    {
+        if let Some(a) = stats::arena_at(shared, i) {
+            let s = stats::collect_arena(shared, a);
+            xml_heap(out, a.index() as usize, &s)?;
         }
-    });
-    r?;
+    }
     let all = stats::collect_all(shared);
-    let count: usize = all.bins[..NBINS].iter().map(|b| b.curregs).sum();
-    let large_count: usize =
-        all.large_runs + all.bins[NBINS..].iter().map(|b| b.curregs).sum::<usize>();
+    // The two `iter().map(..).sum()`s over `bins[..NBINS]` and
+    // `bins[NBINS..]`, as one indexed loop.
+    let (mut count, mut large) = (0usize, 0usize);
+    for j in 0..NCLASSES {
+        if j < NBINS {
+            count = fig_add(count, all.bins[j].curregs);
+        } else {
+            large = fig_add(large, all.bins[j].curregs);
+        }
+    }
+    let large_count = fig_add(all.large_runs, large);
     writeln!(out, "<total type=\"fast\" count=\"0\" size=\"0\"/>")?;
     writeln!(
         out,
@@ -841,17 +1069,25 @@ fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
     writeln!(out, "</malloc>")
 }
 
+/// Set the calling thread's `errno`. Trusted: a write through
+/// `__errno_location`.
+#[verifier::external_body]
+#[inline(always)]
+fn set_errno(e: c_int) {
+    // SAFETY: `__errno_location` returns the calling thread's `errno`.
+    unsafe { *libc::__errno_location() = e };
+}
+
 /// glibc's `malloc_info(options, stream)`: the `<malloc version="1">`
 /// document with one `<heap>` per arena and the totals. `options` must be
 /// 0 and `stream` non-null, else `-1` with `errno = EINVAL`, as in glibc.
 pub fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
     if options != 0 || stream.is_null() {
-        // SAFETY: `__errno_location` returns the calling thread's `errno`.
-        unsafe { *libc::__errno_location() = crate::sys::Errno::EINVAL.0 };
+        set_errno(crate::sys::Errno::EINVAL.0);
         return -1;
     }
     let shared = super::shared();
-    let mut sink = Sink::new(Target::File(stream));
+    let mut sink = Sink::new(file_target(stream));
     let _ = xml_report(&mut sink, shared);
     sink.flush();
     0
@@ -861,32 +1097,57 @@ pub fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
 /// challoc's meaning of each figure (see `glibc.rs` for the mapping).
 pub fn malloc_stats() {
     let shared = super::shared();
-    let mut sink = Sink::new(Target::Stderr);
-    let _ = (|| -> fmt::Result {
-        let mut r = Ok(());
-        for_each_arena(shared, |a, s| {
-            if r.is_ok() {
-                r = (|| {
-                    writeln!(sink, "Arena {}:", a.index())?;
-                    writeln!(
-                        sink,
-                        "system bytes     = {:>10}",
-                        s.resident.saturating_sub(s.large_allocated)
-                    )?;
-                    writeln!(sink, "in use bytes     = {:>10}", s.small_allocated)
-                })();
-            }
-        });
-        r?;
-        let all = stats::collect_all(shared);
-        writeln!(sink, "Total (incl. mmap):")?;
-        writeln!(sink, "system bytes     = {:>10}", all.resident)?;
-        writeln!(sink, "in use bytes     = {:>10}", all.allocated())?;
-        writeln!(sink, "max mmap regions = {:>10}", all.large_runs)?;
-        writeln!(sink, "max mmap bytes   = {:>10}", all.large_allocated)
-    })();
+    let mut sink = Sink::new(stderr_target());
+    let _ = glibc_stats(&mut sink, shared);
     sink.flush();
 }
+
+/// The lines of [`malloc_stats`]: the immediately called closure, as a
+/// function (Verus does not model its mutable captures).
+fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result
+    requires
+        shared.wf(),
+{
+    let n = shared.arenas.count() as usize;
+    for i in 0..n
+        invariant
+            shared.wf(),
+    {
+        if let Some(a) = stats::arena_at(shared, i) {
+            let s = stats::collect_arena(shared, a);
+            writeln!(sink, "Arena {}:", a.index())?;
+            writeln!(
+                sink,
+                "system bytes     = {:>10}",
+                s.resident.saturating_sub(s.large_allocated)
+            )?;
+            writeln!(sink, "in use bytes     = {:>10}", s.small_allocated)?;
+        }
+    }
+    let all = stats::collect_all(shared);
+    writeln!(sink, "Total (incl. mmap):")?;
+    writeln!(sink, "system bytes     = {:>10}", all.resident)?;
+    writeln!(sink, "in use bytes     = {:>10}", stats_allocated(&all))?;
+    writeln!(sink, "max mmap regions = {:>10}", all.large_runs)?;
+    writeln!(sink, "max mmap bytes   = {:>10}", all.large_allocated)
+}
+
+/// `Target::File(stream)`. Trusted: builds a variant of a type Verus
+/// sees as opaque (it holds a function pointer).
+#[verifier::external_body]
+#[inline(always)]
+fn file_target(stream: *mut libc::FILE) -> Target {
+    Target::File(stream)
+}
+
+/// `Target::Stderr`. Trusted: as [`file_target`].
+#[verifier::external_body]
+#[inline(always)]
+fn stderr_target() -> Target {
+    Target::Stderr
+}
+
+} // verus!
 
 // ---------------------------------------------------------------------------
 // C ABI. Compiled out of the test binary (see `libc.rs`).
@@ -902,6 +1163,8 @@ mod exports {
         }
     }
 
+    vstd::prelude::verus! {
+
     #[unsafe(no_mangle)]
     pub extern "C" fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
         super::malloc_info(options, stream)
@@ -911,6 +1174,8 @@ mod exports {
     pub extern "C" fn malloc_stats() {
         super::malloc_stats()
     }
+
+    } // verus!
 }
 
 #[cfg(test)]

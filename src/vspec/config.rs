@@ -22,6 +22,10 @@ pub assume_specification<T: core::marker::PointeeSized, U>[ <*const T>::cast::<U
         r@.addr == p@.addr,
 ;
 
+/// `CStr::as_ptr`: the address of the string; nothing is claimed about
+/// it.
+pub assume_specification[ core::ffi::CStr::as_ptr ](s: &core::ffi::CStr) -> *const core::ffi::c_char;
+
 /// `char::to_digit` (`core` documentation): the digits are `0`..`9`, then
 /// `a`..`z` and `A`..`Z` for 10..35, and only those below `radix` count;
 /// panics for a radix outside `2..=36`.

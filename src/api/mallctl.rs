@@ -63,13 +63,22 @@ use crate::arena::{ARENAS_ALL, MAX_ARENAS};
 use crate::config::{KEYS, Value};
 use crate::heap::{self, Heap, Shared};
 use crate::huge::RunState;
-use crate::layout::{CLASSES, Kind, NBINS};
+use crate::layout::{CLASSES, Kind, NBINS, NCLASSES};
 use crate::purge;
 use crate::stats::{self, ArenaStats, BinStats};
 use crate::sys;
 use crate::sys::Errno;
+use crate::sys::bytes_is;
+use crate::vspec::addr::addr_to_ptr;
 use Op::*;
 use Reading::*;
+#[cfg(verus_only)]
+use vstd::prelude::*;
+use vstd::prelude::{Ghost, verus};
+#[cfg(verus_only)]
+use vstd::string::*;
+
+verus! {
 
 // `mallctl`'s return codes as `c_int`; the numbers live in `sys::errno`.
 const EPERM: c_int = Errno::EPERM.0;
@@ -81,10 +90,18 @@ const EINVAL: c_int = Errno::EINVAL.0;
 /// `version`: jemalloc's `<major>.<minor>.<bugfix>-<nrev>-g<gid>` shape,
 /// so parsers that split on `-` and `.` (tikv-jemalloc-ctl, Redis's
 /// `mem_allocator` line) work; the "gid" says who this really is.
-pub const VERSION_STR: &str = "5.3.0-0-gchalloc";
+// The lifetime is spelled out: `verus!` builds a `const` as a function in
+// the verifier's view.
+#[allow(clippy::redundant_static_lifetimes)]
+pub const VERSION_STR: &'static str = "5.3.0-0-gchalloc";
+
+} // verus!
+
 const VERSION_CSTR: &[u8] = b"5.3.0-0-gchalloc\0";
 const _: () = assert!(VERSION_CSTR.len() == VERSION_STR.len() + 1);
 const EMPTY_CSTR: &[u8] = b"\0";
+
+verus! {
 
 /// Longest MIB (`stats.arenas.<i>.bins.<j>.curregs` has 6 components).
 pub const MAX_MIB: usize = 8;
@@ -120,7 +137,6 @@ enum Op {
 /// registered, design 13.4), so `stats.arenas.4097.*` answers zeros and
 /// `arena.4097.*` is `ENOENT` like every index at or above `MAX_ARENAS`.
 const ARENAS_DESTROYED: usize = 4097;
-const _: () = assert!(ARENAS_DESTROYED >= MAX_ARENAS && ARENAS_DESTROYED != ARENAS_ALL as usize);
 
 /// A read-only key's answer, tagged with the C type the caller's buffer
 /// must have (`*oldlenp` is checked against it).
@@ -144,17 +160,45 @@ enum Reading {
     U64Ptr(*const u64),
 }
 
+} // verus!
+
+const _: () = assert!(ARENAS_DESTROYED >= MAX_ARENAS && ARENAS_DESTROYED != ARENAS_ALL as usize);
+
 /// A read-only key's implementation: the MIB (for its numeric components)
 /// in, the answer or an error code out. The allocator state is [`shared`],
 /// not a parameter: a reader is called through a pointer, and a `&Shared`
 /// argument the optimiser cannot trace to the one static would cost every
 /// function downstream (`heap_for_thread`, `stats::snapshot`,
 /// `Config::get`) the constant it is specialised on today.
-type Reader = fn(&[usize]) -> Result<Reading, c_int>;
+///
+/// A newtype so the name tree can hold it inside `verus!`, which rejects
+/// function pointer types: the verified code only carries it and calls
+/// it through [`call`].
+#[derive(Copy, Clone)]
+struct Reader(fn(&[usize]) -> Result<Reading, c_int>);
+
+verus! {
+
+#[verifier::external_type_specification]
+#[verifier::external_body]
+// Never constructed: it only names `Reader` to the verifier.
+#[allow(dead_code)]
+struct ExReader(Reader);
+
+/// `read(mib)`. Trusted: a call through a function pointer; nothing is
+/// claimed about the reading.
+#[verifier::external_body]
+#[inline(always)]
+fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int> {
+    (read.0)(mib)
+}
 
 /// The allocator state, initialised (the readers run inside `mallctl`,
 /// after its own [`super::shared`]).
-fn shared() -> &'static Shared {
+fn shared() -> (r: &'static Shared)
+    ensures
+        r.wf(),
+{
     super::shared()
 }
 
@@ -189,19 +233,14 @@ impl Node {
     }
 }
 
-const NUMERIC: &str = "*";
+// The lifetime is spelled out, as for `VERSION_STR`.
+#[allow(clippy::redundant_static_lifetimes)]
+const NUMERIC: &'static str = "*";
 
 const fn op(name: &'static str, o: Op) -> Node {
     Node {
         name,
         entry: Entry::Op(o),
-    }
-}
-
-const fn stat(name: &'static str, read: Reader) -> Node {
-    Node {
-        name,
-        entry: Entry::Read(read),
     }
 }
 
@@ -214,6 +253,15 @@ const fn dir(name: &'static str, children: &'static [Node]) -> Node {
 
 const fn num(children: &'static [Node]) -> Node {
     dir(NUMERIC, children)
+}
+
+} // verus!
+
+const fn stat(name: &'static str, read: fn(&[usize]) -> Result<Reading, c_int>) -> Node {
+    Node {
+        name,
+        entry: Entry::Read(Reader(read)),
+    }
 }
 
 const fn opt_nodes() -> [Node; KEYS.len()] {
@@ -448,55 +496,238 @@ static ROOT: [Node; 12] = [
 // Name and MIB resolution.
 // ---------------------------------------------------------------------------
 
-fn split_component(name: &[u8]) -> (&[u8], Option<&[u8]>) {
-    match name.iter().position(|&b| b == b'.') {
-        Some(i) => (&name[..i], Some(&name[i + 1..])),
-        None => (name, None),
+verus! {
+
+/// The decimal value of the digits `s` (`strtoumax(.., 10)` without the
+/// overflow clamp).
+spec fn decimal(s: Seq<u8>) -> int
+    decreases s.len(),
+{
+    if s.len() == 0 {
+        0
+    } else {
+        decimal(s.drop_last()) * 10 + (s.last() - 48)
     }
 }
 
-/// A decimal component (jemalloc parses these with `strtoumax(.., 10)`).
-fn parse_index(s: &[u8]) -> Option<usize> {
+/// Every byte of `s` is `0`..`9`.
+spec fn all_digits(s: Seq<u8>) -> bool {
+    forall|i: int| 0 <= i < s.len() ==> 48 <= #[trigger] s[i] <= 57
+}
+
+/// Digits spell a non-negative number that only grows as digits are
+/// appended.
+proof fn lemma_decimal_grows(s: Seq<u8>, j: int)
+    requires
+        all_digits(s),
+        0 <= j <= s.len(),
+    ensures
+        0 <= decimal(s.subrange(0, j)) <= decimal(s),
+    decreases s.len(),
+{
+    if s.len() > 0 {
+        let d = s.drop_last();
+        assert(all_digits(d)) by {
+            assert forall|i: int| 0 <= i < d.len() implies 48 <= #[trigger] d[i] <= 57 by {
+                assert(d[i] == s[i]);
+            }
+        }
+        lemma_decimal_grows(d, d.len() as int);
+        assert(d.subrange(0, d.len() as int) =~= d);
+        if j < s.len() {
+            lemma_decimal_grows(d, j);
+            assert(d.subrange(0, j) =~= s.subrange(0, j));
+        } else {
+            assert(s.subrange(0, j) =~= s);
+        }
+        assert(48 <= s[s.len() - 1] <= 57);
+    } else {
+        assert(s.subrange(0, j) =~= s);
+    }
+}
+
+/// The first component of a dotted name and the rest after its dot, if
+/// there is a dot.
+fn split_component(name: &[u8]) -> (r: (&[u8], Option<&[u8]>))
+    ensures
+        forall|j: int| 0 <= j < r.0@.len() ==> #[trigger] r.0@[j] != 46,
+        r.1 is None ==> r.0@ == name@,
+        r.1 matches Some(t) ==> name@ == r.0@ + seq![46u8] + t@,
+{
+    // `match name.iter().position(|&b| b == b'.')`, spelled out: Verus
+    // does not specify `Iterator::position`.
+    let mut i = 0;
+    while i < name.len()
+        invariant
+            i <= name@.len(),
+            forall|j: int| 0 <= j < i ==> #[trigger] name@[j] != 46,
+        decreases name@.len() - i,
+    {
+        if name[i] == b'.' {
+            let r = (&name[..i], Some(&name[i + 1..]));
+            proof {
+                assert(name@ =~= name@.subrange(0, i as int) + seq![46u8] + name@.subrange(
+                    i + 1,
+                    name@.len() as int,
+                ));
+            }
+            return r;
+        }
+        i += 1;
+    }
+    (name, None)
+}
+
+/// A decimal component (jemalloc parses these with `strtoumax(.., 10)`):
+/// its value, or `None` when it is empty, holds a byte that is not a
+/// digit, or does not fit a `size_t`.
+fn parse_index(s: &[u8]) -> (r: Option<usize>)
+    ensures
+        r is Some <==> s@.len() > 0 && all_digits(s@) && decimal(s@) <= usize::MAX,
+        r matches Some(v) ==> v == decimal(s@),
+{
     if s.is_empty() {
         return None;
     }
     let mut v: usize = 0;
-    for &b in s {
+    // `for &b in s`, spelled out with an index for the invariant.
+    let mut k = 0;
+    while k < s.len()
+        invariant
+            k <= s@.len(),
+            all_digits(s@.subrange(0, k as int)),
+            v == decimal(s@.subrange(0, k as int)),
+        decreases s@.len() - k,
+    {
+        let b = s[k];
         if !b.is_ascii_digit() {
             return None;
         }
-        v = v.checked_mul(10)?.checked_add((b - b'0') as usize)?;
+        let ghost next = s@.subrange(0, k + 1);
+        proof {
+            assert(next.drop_last() =~= s@.subrange(0, k as int));
+            assert(all_digits(next));
+        }
+        // `v.checked_mul(10)?.checked_add(..)?`, each `?` spelled out so
+        // the proof can say why the overflow means no number fits.
+        let Some(t) = v.checked_mul(10) else {
+            proof {
+                if all_digits(s@) {
+                    lemma_decimal_grows(s@, k + 1);
+                }
+            }
+            return None;
+        };
+        let Some(w) = t.checked_add((b - b'0') as usize) else {
+            proof {
+                if all_digits(s@) {
+                    lemma_decimal_grows(s@, k + 1);
+                }
+            }
+            return None;
+        };
+        v = w;
+        k += 1;
+    }
+    proof {
+        assert(s@.subrange(0, k as int) =~= s@);
     }
     Some(v)
 }
 
-fn child(nodes: &'static [Node], comp: &[u8]) -> Option<(usize, &'static Node)> {
-    if let [n] = nodes {
-        if n.name == NUMERIC {
-            return parse_index(comp).map(|i| (i, n));
-        }
-    }
-    nodes
-        .iter()
-        .position(|n| n.name.as_bytes() == comp)
-        .map(|i| (i, &nodes[i]))
+/// The node is the numeric wildcard [`NUMERIC`].
+spec fn numeric(n: Node) -> bool {
+    n.name.spec_bytes() == NUMERIC.spec_bytes()
 }
 
-fn child_by_index(nodes: &'static [Node], i: usize) -> Option<&'static Node> {
-    match nodes {
-        [n] if n.name == NUMERIC => Some(n),
-        _ => nodes.get(i),
+/// `n.name == NUMERIC`.
+#[inline(always)]
+fn is_numeric(n: &Node) -> (r: bool)
+    ensures
+        r == numeric(*n),
+{
+    bytes_is(n.name.as_bytes(), NUMERIC.as_bytes())
+}
+
+/// [`ROOT`]. Trusted: the address of a static outside `verus!`, whose
+/// initialiser holds the readers as closures.
+#[verifier::external_body]
+#[inline(always)]
+fn root() -> &'static [Node] {
+    &ROOT
+}
+
+/// The child of `nodes` that `comp` names, with its MIB entry: the
+/// number itself under a numeric node, else the child's index.
+fn child(nodes: &'static [Node], comp: &[u8]) -> (r: Option<(usize, &'static Node)>)
+    ensures
+        r matches Some((i, n)) ==> {
+            ||| nodes@.len() == 1 && numeric(nodes@[0]) && *n == nodes@[0] && comp@.len() > 0
+                && all_digits(comp@) && i == decimal(comp@)
+            ||| i < nodes@.len() && *n == nodes@[i as int] && n.name.spec_bytes() == comp@
+        },
+{
+    // `if let [n] = nodes` and `nodes.iter().position(..).map(..)`,
+    // spelled out: Verus supports neither slice patterns nor
+    // `Iterator::position`.
+    if nodes.len() == 1 {
+        let n = &nodes[0];
+        if is_numeric(n) {
+            return match parse_index(comp) {
+                Some(i) => Some((i, n)),
+                None => None,
+            };
+        }
     }
+    let mut i = 0;
+    while i < nodes.len()
+        invariant
+            i <= nodes@.len(),
+        decreases nodes@.len() - i,
+    {
+        if bytes_is(nodes[i].name.as_bytes(), comp) {
+            return Some((i, &nodes[i]));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The child of `nodes` at MIB entry `i`.
+fn child_by_index(nodes: &'static [Node], i: usize) -> (r: Option<&'static Node>)
+    ensures
+        r matches Some(n) ==> {
+            ||| nodes@.len() == 1 && numeric(nodes@[0]) && *n == nodes@[0]
+            ||| i < nodes@.len() && *n == nodes@[i as int]
+        },
+        !(nodes@.len() == 1 && numeric(nodes@[0])) ==> (r is Some <==> i < nodes@.len()),
+{
+    // `match nodes { [n] if n.name == NUMERIC => .., _ => .. }`, spelled
+    // out (no slice patterns in Verus).
+    if nodes.len() == 1 && is_numeric(&nodes[0]) {
+        return Some(&nodes[0]);
+    }
+    nodes.get(i)
 }
 
 /// Resolve a dotted name to its MIB. The node reached may be interior
 /// (`mallctlnametomib("arenas")` is valid in jemalloc); using it as a key
-/// is then `ENOENT`.
-fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> Result<(usize, &'static Node), c_int> {
-    let mut nodes: &'static [Node] = &ROOT;
+/// is then `ENOENT`. Writes `mib[..len]` only.
+fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> (r: Result<(usize, &'static Node), c_int>)
+    ensures
+        r matches Ok((len, _)) ==> 1 <= len <= MAX_MIB && forall|j: int|
+            len <= j < MAX_MIB ==> #[trigger] final(mib)[j] == old(mib)[j],
+        r matches Err(e) ==> e == ENOENT,
+{
+    let mut nodes: &'static [Node] = root();
     let mut rest = name;
     let mut len = 0;
-    loop {
+    loop
+        invariant
+            len <= MAX_MIB,
+            forall|j: int| len <= j < MAX_MIB ==> #[trigger] mib[j] == old(mib)[j],
+        decreases rest@.len(),
+    {
         if len == MAX_MIB {
             return Err(ENOENT);
         }
@@ -511,23 +742,41 @@ fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> Result<(usize, &'stat
                     return Err(ENOENT);
                 };
                 nodes = children;
+                proof {
+                    assert(rest@.len() == comp@.len() + 1 + t@.len());
+                }
                 rest = t;
-            }
+            },
         }
     }
 }
 
 /// The node a MIB names; `ENOENT` for a bad index or an empty MIB.
-fn mib_to_node(mib: &[usize]) -> Result<&'static Node, c_int> {
-    let mut nodes: &'static [Node] = &ROOT;
+fn mib_to_node(mib: &[usize]) -> (r: Result<&'static Node, c_int>)
+    ensures
+        r matches Err(e) ==> e == ENOENT,
+        mib@.len() == 0 ==> r is Err,
+{
+    let mut nodes: &'static [Node] = root();
     let mut last: Option<&'static Node> = None;
-    for &i in mib {
-        let n = child_by_index(nodes, i).ok_or(ENOENT)?;
+    // `for &i in mib`, spelled out with an index for the invariant.
+    let mut k = 0;
+    while k < mib.len()
+        invariant
+            k <= mib@.len(),
+            k > 0 ==> last is Some,
+            k == 0 ==> last is None,
+        decreases mib@.len() - k,
+    {
+        let n = child_by_index(nodes, mib[k]).ok_or(ENOENT)?;
         nodes = n.children();
         last = Some(n);
+        k += 1;
     }
     last.ok_or(ENOENT)
 }
+
+} // verus!
 
 /// The name of the key a MIB names; `ENOENT` for an interior node or a
 /// bad index.
@@ -541,6 +790,36 @@ fn mib_to_key(mib: &[usize]) -> Result<&'static str, c_int> {
     }
 }
 
+verus! {
+
+/// Byte `n` of the caller's name. Trusted: a raw read; the `mallctl`
+/// contract makes the name readable up to and including its NUL, and
+/// [`cstr`] reads no further.
+///
+/// # Safety
+/// `p + n` is a byte of the caller's name, at or before its NUL.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn name_byte(p: *const u8, n: usize) -> u8 {
+    // SAFETY: guaranteed by the caller.
+    unsafe { p.add(n).read() }
+}
+
+/// The caller's name's first `n` bytes, borrowed for the call. Trusted:
+/// [`cstr`] has just read them.
+///
+/// # Safety
+/// The `n` bytes at `p` are readable for the duration of the call.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn name_bytes(p: *const u8, n: usize) -> (r: &'static [u8])
+    ensures
+        r@.len() == n,
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe { core::slice::from_raw_parts(p, n) }
+}
+
 /// A C string as bytes, at most [`MAX_NAME`] long. `None` for null or a
 /// string of `MAX_NAME` bytes or more.
 ///
@@ -548,7 +827,11 @@ fn mib_to_key(mib: &[usize]) -> Result<&'static str, c_int> {
 /// including its NUL terminator (the `mallctl` contract); at most
 /// `MAX_NAME` bytes are ever read, and the slice borrows the caller's
 /// memory for the duration of the call.
-fn cstr(p: *const c_char) -> Option<&'static [u8]> {
+fn cstr(p: *const c_char) -> (r: Option<&'static [u8]>)
+    ensures
+        r matches Some(s) ==> s@.len() < MAX_NAME,
+        p@.addr == 0 ==> r is None,
+{
     if p.is_null() {
         return None;
     }
@@ -556,14 +839,18 @@ fn cstr(p: *const c_char) -> Option<&'static [u8]> {
     let mut n = 0;
     // SAFETY: the caller passes a NUL-terminated name; reads stop at the
     // terminator or the cap.
-    while n < MAX_NAME && unsafe { p.add(n).read() } != 0 {
+    while n < MAX_NAME && unsafe { name_byte(p, n) } != 0
+        invariant
+            n <= MAX_NAME,
+        decreases MAX_NAME - n,
+    {
         n += 1;
     }
     if n == MAX_NAME {
         return None;
     }
     // SAFETY: `n` bytes before the terminator were just read.
-    Some(unsafe { core::slice::from_raw_parts(p, n) })
+    Some(unsafe { name_bytes(p, n) })
 }
 
 // ---------------------------------------------------------------------------
@@ -579,10 +866,59 @@ pub struct Io {
     pub newlen: usize,
 }
 
+/// `*oldlenp`. Trusted: a raw read of the caller's length pointer.
+///
+/// # Safety
+/// `oldlenp` is the caller's out-pointer per the `mallctl` contract.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn old_len(oldlenp: *mut usize) -> usize {
+    // SAFETY: guaranteed by the caller.
+    unsafe { *oldlenp }
+}
+
+/// Copy the first `n` bytes of `v` to `oldp`. Trusted: a raw copy into
+/// the caller's buffer.
+///
+/// # Safety
+/// `oldp` holds `*oldlenp >= n` writable bytes.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn copy_prefix<T: Copy>(v: &T, oldp: *mut c_void, n: usize) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { ptr::copy_nonoverlapping(v as *const T as *const u8, oldp as *mut u8, n) };
+}
+
+/// Store `v` at `oldp`. Trusted: a raw unaligned write.
+///
+/// # Safety
+/// `oldp` holds `*oldlenp == size_of::<T>()` writable bytes.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn store<T: Copy>(oldp: *mut c_void, v: T) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { ptr::write_unaligned(oldp as *mut T, v) };
+}
+
+/// The value at `newp`. Trusted: a raw unaligned read.
+///
+/// # Safety
+/// `newp` holds `newlen == size_of::<T>()` readable bytes.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn load<T: Copy>(newp: *const c_void) -> T {
+    // SAFETY: guaranteed by the caller.
+    unsafe { ptr::read_unaligned(newp as *const T) }
+}
+
 impl Io {
     /// Copy `v` out if the caller asked for it. A wrong `*oldlenp` copies
     /// the common prefix and fails with `EINVAL`.
-    fn read<T: Copy>(&self, v: T) -> Result<(), c_int> {
+    fn read<T: Copy>(&self, v: T) -> (r: Result<(), c_int>)
+        ensures
+            r matches Err(e) ==> e == EINVAL,
+            self.oldp@.addr == 0 || self.oldlenp@.addr == 0 ==> r is Ok,
+    {
         if self.oldp.is_null() || self.oldlenp.is_null() {
             return Ok(());
         }
@@ -590,22 +926,23 @@ impl Io {
         // SAFETY: `oldp`/`oldlenp` are the caller's out-pointers per the
         // `mallctl` contract; `*oldlenp` bytes are writable at `oldp`.
         unsafe {
-            let have = *self.oldlenp;
+            let have = old_len(self.oldlenp);
             if have != want {
-                ptr::copy_nonoverlapping(
-                    &v as *const T as *const u8,
-                    self.oldp as *mut u8,
-                    have.min(want),
-                );
+                copy_prefix(&v, self.oldp, have.min(want));
                 return Err(EINVAL);
             }
-            ptr::write_unaligned(self.oldp as *mut T, v);
+            store(self.oldp, v);
         }
         Ok(())
     }
 
     /// The new value, if the caller passed one; `EINVAL` on a size mismatch.
-    fn write<T: Copy>(&self) -> Result<Option<T>, c_int> {
+    fn write<T: Copy>(&self) -> (r: Result<Option<T>, c_int>)
+        ensures
+            r matches Err(e) ==> e == EINVAL,
+            self.newp@.addr == 0 <==> r == Ok::<Option<T>, c_int>(None),
+            r matches Ok(Some(_)) ==> self.newlen == size_of::<T>(),
+    {
         if self.newp.is_null() {
             return Ok(None);
         }
@@ -613,15 +950,26 @@ impl Io {
             return Err(EINVAL);
         }
         // SAFETY: `newlen == size_of::<T>()` readable bytes at `newp`.
-        Ok(Some(unsafe { ptr::read_unaligned(self.newp as *const T) }))
+        Ok(Some(unsafe { load(self.newp) }))
     }
 
     /// A C `bool`: any non-zero byte is true.
-    fn write_bool(&self) -> Result<Option<bool>, c_int> {
-        Ok(self.write::<u8>()?.map(|b| b != 0))
+    fn write_bool(&self) -> (r: Result<Option<bool>, c_int>)
+        ensures
+            r matches Err(e) ==> e == EINVAL,
+            self.newp@.addr == 0 <==> r == Ok::<Option<bool>, c_int>(None),
+    {
+        Ok(self.write::<u8>()?.map(|b: u8| -> (r: bool)
+            ensures
+                r == (b != 0),
+            { b != 0 }))
     }
 
-    fn read_only(&self) -> Result<(), c_int> {
+    fn read_only(&self) -> (r: Result<(), c_int>)
+        ensures
+            r is Ok <==> self.newp@.addr == 0 && self.newlen == 0,
+            r matches Err(e) ==> e == EPERM,
+    {
         if self.newp.is_null() && self.newlen == 0 {
             Ok(())
         } else {
@@ -629,7 +977,11 @@ impl Io {
         }
     }
 
-    fn write_only(&self) -> Result<(), c_int> {
+    fn write_only(&self) -> (r: Result<(), c_int>)
+        ensures
+            r is Ok <==> self.oldp@.addr == 0 && self.oldlenp@.addr == 0,
+            r matches Err(e) ==> e == EPERM,
+    {
         if self.oldp.is_null() && self.oldlenp.is_null() {
             Ok(())
         } else {
@@ -637,7 +989,10 @@ impl Io {
         }
     }
 
-    fn void(&self) -> Result<(), c_int> {
+    fn void(&self) -> (r: Result<(), c_int>)
+        ensures
+            r matches Err(e) ==> e == EPERM,
+    {
         self.read_only()?;
         self.write_only()
     }
@@ -661,7 +1016,7 @@ pub struct Utilization {
 }
 
 impl Utilization {
-    const ZERO: Utilization = Utilization {
+    exec const ZERO: Utilization = Utilization {
         slabcur_addr: ptr::null_mut(),
         nfree: 0,
         nregs: 0,
@@ -671,14 +1026,147 @@ impl Utilization {
     };
 }
 
+// The heap module's accessors the keys call, outside `verus!` until that
+// module's port. Each is a trusted wrapper that claims only what the
+// callee's body shows; delete each when its callee enters `verus!`.
+
+/// `shared.table(class)`: class `class`'s slab table, the element of
+/// `Shared::tables` (`Shared::table`'s body).
+#[verifier::external_body]
+#[inline(always)]
+fn shared_table(shared: &Shared, class: usize) -> (r: &crate::class::SlabTable)
+    requires
+        class < NCLASSES,
+    ensures
+        *r == shared.tables[class as int],
+{
+    shared.table(class)
+}
+
+/// `shared.arena(index)`: arena `index` if it exists. Nothing is claimed
+/// about the arena.
+#[verifier::external_body]
+#[inline(always)]
+fn shared_arena(shared: &Shared, index: u16) -> Option<&crate::arena::Arena> {
+    shared.arena(index)
+}
+
+/// `shared.decay_ns()`: arena 0's decay period. Nothing is claimed.
+#[verifier::external_body]
+#[inline(always)]
+fn shared_decay_ns(shared: &Shared) -> u64 {
+    shared.decay_ns()
+}
+
+/// `shared.set_decay_ms(ms)`: every arena's decay period. Nothing is
+/// claimed.
+#[verifier::external_body]
+#[inline(always)]
+fn shared_set_decay_ms(shared: &Shared, ms: i64) {
+    shared.set_decay_ms(ms)
+}
+
+/// `heap::existing_heap(shared)`: the calling thread's heap, if it has one.
+/// Nothing is claimed about the heap.
+#[verifier::external_body]
+#[inline(always)]
+fn existing_heap(shared: &Shared) -> Option<&'static mut Heap> {
+    heap::existing_heap(shared)
+}
+
+/// `heap::heap_for_thread(shared)`: the calling thread's heap, created if
+/// need be; `None` while the thread is creating or has torn down its heap.
+/// Nothing is claimed about the heap.
+#[verifier::external_body]
+#[inline(always)]
+fn heap_for_thread(shared: &Shared) -> Option<&mut Heap> {
+    heap::heap_for_thread(shared)
+}
+
+/// `h.flush_all(shared)`. Nothing is claimed.
+#[verifier::external_body]
+#[inline(always)]
+fn heap_flush_all(h: &mut Heap, shared: &Shared) {
+    h.flush_all(shared)
+}
+
+/// `h.arena()`, the heap's home arena. Nothing is claimed.
+#[verifier::external_body]
+#[inline(always)]
+fn heap_arena(h: &Heap) -> u16 {
+    h.arena()
+}
+
+/// `h.set_arena(shared, arena)`. Nothing is claimed.
+#[verifier::external_body]
+#[inline(always)]
+fn heap_set_arena(h: &mut Heap, shared: &Shared, arena: u16) {
+    h.set_arena(shared, arena)
+}
+
+/// `h.tcache_enabled()`. Nothing is claimed.
+#[verifier::external_body]
+#[inline(always)]
+fn heap_tcache_enabled(h: &Heap) -> bool {
+    h.tcache_enabled()
+}
+
+/// `h.set_tcache_enabled(shared, on)`. Nothing is claimed.
+#[verifier::external_body]
+#[inline(always)]
+fn heap_set_tcache_enabled(h: &mut Heap, shared: &Shared, on: bool) {
+    h.set_tcache_enabled(shared, on)
+}
+
+/// `shared.tcaches.create(shared, home)`: a fresh explicit cache's id.
+/// Nothing is claimed.
+#[verifier::external_body]
+#[inline(always)]
+fn tcaches_create(shared: &Shared, home: u16) -> Option<u16> {
+    shared.tcaches.create(shared, home)
+}
+
+/// `shared.tcaches.flush(shared, t)`: whether `t` was a live cache.
+/// Nothing is claimed.
+#[verifier::external_body]
+#[inline(always)]
+fn tcaches_flush(shared: &Shared, t: u16) -> bool {
+    shared.tcaches.flush(shared, t)
+}
+
+/// `shared.tcaches.destroy(shared, t)`: whether `t` was a live cache.
+/// Nothing is claimed.
+#[verifier::external_body]
+#[inline(always)]
+fn tcaches_destroy(shared: &Shared, t: u16) -> bool {
+    shared.tcaches.destroy(shared, t)
+}
+
+/// `shared.regions.slab_addr(class, s)` for a slab of an arena's class
+/// state of `class`. Trusted: that the slab lies in the class region,
+/// `slab_addr`'s precondition. Every class state is built over its
+/// class's region (`Shared::init`, `Arena::build`), but no verified
+/// invariant ties a class state's slab count to the regions yet.
+#[verifier::external_body]
+#[inline(always)]
+fn partial_slab_addr(shared: &Shared, class: usize, s: usize) -> usize {
+    shared.regions.slab_addr(class, s)
+}
+
 /// The utilisation figures of `p` (see the module docs). `verbose` adds
 /// the bin-wide figures and `slabcur_addr`, which cost one class lock.
-pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilization {
+pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilization
+    requires
+        shared.wf(),
+{
+    proof {
+        shared.lemma_wf();
+    }
     let mut u = Utilization::ZERO;
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            let t = shared.table(class);
+            let t = shared_table(shared, class);
             let cls = t.class();
             if !t.is_allocated(slab as usize, slot as usize) {
                 return u;
@@ -705,14 +1193,22 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
                 if let Some(a) = shared.arenas.get_existing(d.arena()) {
                     let cs = a.class(class);
                     let (st, curregs) = cs.bin_stats();
+                    proof {
+                        let (c, k, n) = ((st.committed - st.empty - st.purged) as int, st.committed as int, cls.nslots as int);
+                        assert(c * n <= k * n) by (nonlinear_arith)
+                            requires
+                                c <= k,
+                                n >= 0,
+                        ;
+                    }
                     u.bin_nregs = st.curslabs() * cls.nslots();
                     u.bin_nfree = u.bin_nregs.saturating_sub(curregs);
                     if let Some(s) = cs.lowest_partial() {
-                        u.slabcur_addr = shared.regions.slab_addr(class, s) as *mut c_void;
+                        u.slabcur_addr = addr_to_ptr(partial_slab_addr(shared, class, s)) as *mut c_void;
                     }
                 }
             }
-        }
+        },
         Kind::Huge { page } => {
             if let Some(r) = shared.huge.lookup(page) {
                 if r.start == page && r.state == RunState::Active {
@@ -720,24 +1216,30 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
                     u.size = r.usable;
                 }
             }
-        }
-        Kind::Invalid => {}
+        },
+        Kind::Invalid => {},
     }
     u
 }
 
 /// The arena that owns the live allocation `p` (`arenas.lookup`), without
 /// aborting on anything else.
-pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16> {
+pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16>
+    requires
+        shared.wf(),
+{
+    proof {
+        shared.lemma_wf();
+    }
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
-            let t = shared.table(class as usize);
+            let t = shared_table(shared, class as usize);
             if t.is_allocated(slab as usize, slot as usize) {
                 Some(t.owner(slab as usize))
             } else {
                 None
             }
-        }
+        },
         Kind::Huge { page } => {
             let r = shared.huge.lookup(page)?;
             if r.start == page && r.state == RunState::Active {
@@ -745,21 +1247,73 @@ pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16> {
             } else {
                 None
             }
-        }
+        },
         Kind::Invalid => None,
+    }
+}
+
+/// Pointer `i` of the caller's `newp` array, whose byte length the caller
+/// gave as `newlen`. Trusted: a raw unaligned read of the 8 bytes at
+/// `ptrs + 8 * i`, which the precondition puts inside those `newlen` bytes
+/// (that `newp` holds `newlen` bytes is the `mallctl` caller's contract).
+///
+/// # Safety
+/// `ptrs` holds `newlen` readable bytes.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn query_ptr(ptrs: *const *const c_void, i: usize, Ghost(newlen): Ghost<usize>) -> *const c_void
+    requires
+        (i + 1) * 8 <= newlen,
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe { ptrs.add(i).read_unaligned() }
+}
+
+/// Store triple `i`, `(nfree, nregs, size)`, into the caller's `oldp`
+/// array, whose byte length the caller gave as `*oldlenp == oldlen`.
+/// Trusted: raw unaligned writes of words `3 * i .. 3 * i + 3`, which the
+/// precondition puts inside those `oldlen` bytes (that `oldp` holds
+/// `*oldlenp` bytes is the `mallctl` caller's contract).
+///
+/// # Safety
+/// `out` holds `oldlen` writable bytes.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn store_triple(
+    out: *mut usize,
+    i: usize,
+    nfree: usize,
+    nregs: usize,
+    size: usize,
+    Ghost(oldlen): Ghost<usize>,
+)
+    requires
+        (3 * i + 3) * 8 <= oldlen,
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        out.add(3 * i).write_unaligned(nfree);
+        out.add(3 * i + 1).write_unaligned(nregs);
+        out.add(3 * i + 2).write_unaligned(size);
     }
 }
 
 /// `experimental.utilization.batch_query`: `newp` is an array of pointers,
 /// `oldp` an array of `(nfree, nregs, size)` triples of the same count.
-fn batch_query(shared: &Shared, io: &Io) -> Result<(), c_int> {
+/// Only an exact fit is accepted: `newlen` is `8 * n` and `*oldlenp` is
+/// `24 * n` for some `n > 0`, so every read and write of the loop stays
+/// inside the caller's buffers.
+fn batch_query(shared: &Shared, io: &Io) -> Result<(), c_int>
+    requires
+        shared.wf(),
+{
     if io.oldp.is_null() || io.oldlenp.is_null() || io.newp.is_null() {
         return Err(EINVAL);
     }
     let psz = size_of::<*const c_void>();
     let tsz = 3 * size_of::<usize>();
     // SAFETY: `oldlenp` is the caller's length pointer.
-    let oldlen = unsafe { *io.oldlenp };
+    let oldlen = unsafe { old_len(io.oldlenp) };
     let n = io.newlen / psz;
     // `checked_mul`: a count whose triples overflow must not wrap onto
     // the caller's `oldlen` and send the loop past both arrays.
@@ -768,20 +1322,37 @@ fn batch_query(shared: &Shared, io: &Io) -> Result<(), c_int> {
     }
     let ptrs = io.newp as *const *const c_void;
     let out = io.oldp as *mut usize;
-    for i in 0..n {
+    for i in 0..n
+        invariant
+            shared.wf(),
+            n * 8 <= io.newlen,
+            n * 24 == oldlen,
+    {
+        proof {
+            assert((i + 1) * 8 <= n * 8) by (nonlinear_arith)
+                requires
+                    i < n,
+            ;
+            assert((3 * i + 3) * 8 <= n * 24) by (nonlinear_arith)
+                requires
+                    i < n,
+            ;
+        }
         // SAFETY: `n` pointers are readable at `newp` and `3 * n` words
         // writable at `oldp`, both checked against the caller's lengths.
         unsafe {
-            let u = utilization(shared, ptrs.add(i).read_unaligned(), false);
-            out.add(3 * i).write_unaligned(u.nfree);
-            out.add(3 * i + 1).write_unaligned(u.nregs);
-            out.add(3 * i + 2).write_unaligned(u.size);
+            let u = utilization(shared, query_ptr(ptrs, i, Ghost(io.newlen)), false);
+            store_triple(out, i, u.nfree, u.nregs, u.size, Ghost(oldlen));
         }
     }
     Ok(())
 }
 
-fn arena_index(i: usize) -> Result<u16, c_int> {
+fn arena_index(i: usize) -> (r: Result<u16, c_int>)
+    ensures
+        r matches Ok(a) ==> a == i && i < MAX_ARENAS,
+        r matches Err(e) ==> e == ENOENT && i >= MAX_ARENAS,
+{
     if i < MAX_ARENAS {
         Ok(i as u16)
     } else {
@@ -790,7 +1361,10 @@ fn arena_index(i: usize) -> Result<u16, c_int> {
 }
 
 /// `mib[i]`, or an index that matches nothing when the MIB is shorter.
-fn at(mib: &[usize], i: usize) -> usize {
+fn at(mib: &[usize], i: usize) -> (r: usize)
+    ensures
+        r == if i < mib@.len() { mib@[i as int] } else { usize::MAX },
+{
     mib.get(i).copied().unwrap_or(usize::MAX)
 }
 
@@ -808,21 +1382,42 @@ fn opt_value(mib: &[usize]) -> Result<Reading, c_int> {
 }
 
 /// `arenas.bin.<j>.*`: the bin's class; `ENOENT` past `arenas.nbins`.
-fn bin_class(mib: &[usize]) -> Result<crate::layout::Class, c_int> {
-    CLASSES[..NBINS].get(at(mib, 2)).copied().ok_or(ENOENT)
+// `CLASSES[..NBINS].get(j)`, spelled with `CLASSES.table()`, the verified
+// view of the table.
+// `j < NCLASSES` is redundant for the compiler, not for the verifier, which
+// cannot see `NBINS`'s value.
+#[allow(clippy::redundant_comparisons)]
+fn bin_class(mib: &[usize]) -> (r: Result<crate::layout::Class, c_int>)
+    ensures
+        r matches Err(e) ==> e == ENOENT,
+{
+    let j = at(mib, 2);
+    if j < NBINS && j < NCLASSES {
+        Ok(CLASSES.table()[j])
+    } else {
+        Err(ENOENT)
+    }
 }
 
-/// `stats.arenas.<i>.bins.<j>.*`: the stored bin figures.
+/// `stats.arenas.<i>.bins.<j>.*`: the stored bin figures. (`bins[..NBINS]
+/// .get(j)`, spelled out as in `bin_class`.)
+#[allow(clippy::redundant_comparisons)]
 fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int> {
-    arena_stats(shared(), at(mib, 2))?.bins[..NBINS]
-        .get(at(mib, 4))
-        .copied()
-        .ok_or(ENOENT)
+    let a = arena_stats(shared(), at(mib, 2))?;
+    let j = at(mib, 4);
+    if j < NBINS && j < NCLASSES {
+        Ok(a.bins[j])
+    } else {
+        Err(ENOENT)
+    }
 }
 
 /// The tracked cgroup, or `ENOENT`: like jemalloc's keys behind a disabled
 /// build option, the name resolves and the read says the facility is off.
-fn tracked() -> Result<&'static crate::sys::cgroup::Cgroup, c_int> {
+fn tracked() -> (r: Result<&'static crate::sys::cgroup::Cgroup, c_int>)
+    ensures
+        r matches Err(e) ==> e == ENOENT,
+{
     let s = shared();
     if s.cgroup.tracked() {
         Ok(&s.cgroup)
@@ -835,12 +1430,18 @@ fn tracked() -> Result<&'static crate::sys::cgroup::Cgroup, c_int> {
 /// `MALLCTL_ARENAS_ALL` or, jemalloc's pre-5.0 convention that it still
 /// honours, `arenas.narenas`. Redis and Valkey (`jemalloc_purge`, behind
 /// `MEMORY PURGE` and `FLUSHALL`) use the latter.
-fn all_arenas(shared: &Shared, i: usize) -> bool {
+fn all_arenas(shared: &Shared, i: usize) -> (r: bool)
+    ensures
+        i == ARENAS_ALL ==> r,
+{
     i == ARENAS_ALL as usize || i == shared.arenas.count() as usize
 }
 
 /// `arena.<i>.dirty_decay_ms` value of a period in nanoseconds.
-fn ms_of(ns: u64) -> isize {
+fn ms_of(ns: u64) -> (r: isize)
+    ensures
+        r == if ns == purge::NEVER { -1 } else { (ns / 1_000_000) as int },
+{
     if ns == purge::NEVER {
         -1
     } else {
@@ -851,7 +1452,10 @@ fn ms_of(ns: u64) -> isize {
 /// The stored statistics of arena `i`, the `MALLCTL_ARENAS_ALL` merge, or
 /// the zeros of `MALLCTL_ARENAS_DESTROYED` (both recognised before the
 /// range check, which they fail).
-fn arena_stats(shared: &Shared, i: usize) -> Result<ArenaStats, c_int> {
+fn arena_stats(shared: &Shared, i: usize) -> (r: Result<ArenaStats, c_int>)
+    ensures
+        r matches Err(e) ==> e == ENOENT,
+{
     if i == ARENAS_ALL as usize {
         return Ok(stats::arena_stats_all(shared));
     }
@@ -864,19 +1468,25 @@ fn arena_stats(shared: &Shared, i: usize) -> Result<ArenaStats, c_int> {
 /// Return the calling thread's cached slots before a purge so the purge
 /// can reach the slabs they pin (`malloc_trim` does the same).
 fn flush_caller(shared: &Shared) {
-    if let Some(h) = heap::existing_heap(shared) {
-        h.flush_all(shared);
+    if let Some(h) = existing_heap(shared) {
+        heap_flush_all(h, shared);
     }
 }
 
 /// The calling thread's heap; `EAGAIN` while the thread is creating or
 /// has torn down its heap.
-fn thread_heap<'a>(shared: &'a Shared) -> Result<&'a mut Heap, c_int> {
-    heap::heap_for_thread(shared).ok_or(EAGAIN)
+fn thread_heap<'a>(shared: &'a Shared) -> (r: Result<&'a mut Heap, c_int>)
+    ensures
+        r matches Err(e) ==> e == EAGAIN,
+{
+    heap_for_thread(shared).ok_or(EAGAIN)
 }
 
 /// Copy a reading out with its type's size.
-fn read_out(io: &Io, r: Reading) -> Result<(), c_int> {
+fn read_out(io: &Io, r: Reading) -> (res: Result<(), c_int>)
+    ensures
+        res matches Err(e) ==> e == EINVAL,
+{
     match r {
         Bool(v) => io.read(v),
         Unsigned(v) => io.read(v),
@@ -892,13 +1502,16 @@ fn read_out(io: &Io, r: Reading) -> Result<(), c_int> {
 /// Perform the key `node` names with the numeric components of `mib`:
 /// a read-only key through its reader, an [`Op`] as an arm. `ENOENT` for
 /// an interior node.
-fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int> {
+fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int>
+    requires
+        shared.wf(),
+{
     let op = match node.entry {
         Entry::Dir(_) => return Err(ENOENT),
         Entry::Read(read) => {
             io.read_only()?;
-            return read_out(io, read(mib)?);
-        }
+            return read_out(io, call(read, mib)?);
+        },
         Entry::Op(op) => op,
     };
     match op {
@@ -907,7 +1520,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 stats::epoch(shared);
             }
             io.read(stats::snapshot(shared).epoch)
-        }
+        },
         BackgroundThread => {
             if let Some(on) = io.write_bool()? {
                 purge::background::request(on);
@@ -916,7 +1529,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 }
             }
             io.read(purge::background::present())
-        }
+        },
         MaxBackgroundThreads => {
             if let Some(n) = io.write::<usize>()? {
                 if n == 0 {
@@ -924,17 +1537,17 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 }
             }
             io.read(1usize)
-        }
+        },
         ArenasCreate => {
             // `newp` may carry extent hooks, which challoc has no use for.
             let i = shared.arenas.create(shared).ok_or(EAGAIN)?;
             io.read(i as c_uint)
-        }
+        },
         ArenasLookup => {
             let p = io.write::<*const c_void>()?.ok_or(EINVAL)?;
             let a = owner_of(shared, p).ok_or(EFAULT)?;
             io.read(a as c_uint)
-        }
+        },
         ArenaPurge => {
             io.void()?;
             flush_caller(shared);
@@ -945,7 +1558,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 purge::purge_arena(shared, arena_index(i)?).ok_or(ENOENT)?;
             }
             Ok(())
-        }
+        },
         ArenaDecay => {
             io.void()?;
             let now = sys::now_coarse_ns();
@@ -956,14 +1569,14 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 let arena = shared.arenas.get_existing(arena_index(i)?).ok_or(ENOENT)?;
                 arena.decay(now);
                 if i == 0 {
-                    let d = shared.decay_ns();
+                    let d = shared_decay_ns(shared);
                     if d != purge::NEVER {
                         shared.huge.decay(now, d);
                     }
                 }
             }
             Ok(())
-        }
+        },
         ArenaDestroy => {
             io.void()?;
             let i = at(mib, 1);
@@ -973,7 +1586,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             flush_caller(shared);
             purge::purge_arena(shared, arena_index(i)?).ok_or(ENOENT)?;
             Ok(())
-        }
+        },
         ArenaDirtyDecayMs => {
             let i = at(mib, 1);
             let new = io.write::<isize>()?;
@@ -984,44 +1597,49 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             }
             if i == ARENAS_ALL as usize {
                 if let Some(ms) = new {
-                    shared.set_decay_ms(ms as i64);
+                    shared_set_decay_ms(shared, ms as i64);
                 }
-                return io.read(ms_of(shared.decay_ns()));
+                return io.read(ms_of(shared_decay_ns(shared)));
             }
-            let arena = shared.arena(arena_index(i)?).ok_or(ENOENT)?;
+            let arena = shared_arena(shared, arena_index(i)?).ok_or(ENOENT)?;
             if let Some(ms) = new {
                 arena.set_decay_ms(ms as i64);
             }
             io.read(ms_of(arena.decay_ns()))
-        }
+        },
         ThreadTcacheFlush => {
             io.void()?;
             flush_caller(shared);
             Ok(())
-        }
+        },
         ThreadTcacheEnabled => {
             let h = thread_heap(shared)?;
             if let Some(on) = io.write_bool()? {
-                h.set_tcache_enabled(shared, on);
+                heap_set_tcache_enabled(h, shared, on);
             }
-            io.read(h.tcache_enabled())
-        }
+            io.read(heap_tcache_enabled(h))
+        },
         ThreadArena => {
             let h = thread_heap(shared)?;
             if let Some(a) = io.write::<c_uint>()? {
-                if a as usize >= MAX_ARENAS || shared.arena(a as u16).is_none() {
+                if a as usize >= MAX_ARENAS || shared_arena(shared, a as u16).is_none() {
                     return Err(EFAULT);
                 }
-                h.set_arena(shared, a as u16);
+                heap_set_arena(h, shared, a as u16);
             }
-            io.read(h.arena() as c_uint)
-        }
+            io.read(heap_arena(h) as c_uint)
+        },
         TcacheCreate => {
             io.read_only()?;
-            let home = heap::existing_heap(shared).map_or(0, |h| h.arena());
-            let t = shared.tcaches.create(shared, home).ok_or(EFAULT)?;
+            // `existing_heap(shared).map_or(0, |h| h.arena())`, spelled as
+            // a `match`.
+            let home = match existing_heap(shared) {
+                Some(h) => heap_arena(h),
+                None => 0,
+            };
+            let t = tcaches_create(shared, home).ok_or(EFAULT)?;
             io.read(t as c_uint)
-        }
+        },
         TcacheFlush | TcacheDestroy => {
             io.write_only()?;
             let t = io.write::<c_uint>()?.ok_or(EINVAL)?;
@@ -1029,20 +1647,28 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 return Err(EFAULT);
             }
             let ok = match op {
-                TcacheFlush => shared.tcaches.flush(shared, t as u16),
-                _ => shared.tcaches.destroy(shared, t as u16),
+                TcacheFlush => tcaches_flush(shared, t as u16),
+                _ => tcaches_destroy(shared, t as u16),
             };
-            if ok { Ok(()) } else { Err(EFAULT) }
-        }
+            if ok {
+                Ok(())
+            } else {
+                Err(EFAULT)
+            }
+        },
         UtilQuery => {
             let p = io.write::<*const c_void>()?.ok_or(EINVAL)?;
             io.read(utilization(shared, p, true))
-        }
+        },
         UtilBatchQuery => batch_query(shared, io),
     }
 }
 
-fn result(r: Result<(), c_int>) -> c_int {
+fn result(r: Result<(), c_int>) -> (c: c_int)
+    ensures
+        r is Ok ==> c == 0,
+        r matches Err(e) ==> c == e,
+{
     match r {
         Ok(()) => 0,
         Err(e) => e,
@@ -1079,6 +1705,36 @@ pub fn mallctl(
     ))
 }
 
+/// `*miblenp`. Trusted: a raw read of the caller's capacity pointer.
+///
+/// # Safety
+/// `miblenp` is the caller's non-null capacity pointer.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn mib_cap(miblenp: *mut usize) -> usize {
+    // SAFETY: guaranteed by the caller.
+    unsafe { *miblenp }
+}
+
+/// Copy `mib[..len]` out to `mibp` and store `len` at `miblenp`. Trusted:
+/// raw writes.
+///
+/// # Safety
+/// `mibp` holds `*miblenp >= len` writable `size_t`s; `miblenp` is the
+/// caller's non-null capacity pointer.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn mib_out(mib: &[usize; MAX_MIB], mibp: *mut usize, miblenp: *mut usize, len: usize)
+    requires
+        len <= MAX_MIB,
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        ptr::copy_nonoverlapping(mib.as_ptr(), mibp, len);
+        *miblenp = len;
+    }
+}
+
 /// `mallctlnametomib(name, mibp, miblenp)`: `*miblenp` is the capacity in
 /// and the length out.
 pub fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> c_int {
@@ -1096,13 +1752,27 @@ pub fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usi
     // SAFETY: the caller's capacity pointer and an array of that many
     // `size_t`.
     unsafe {
-        if *miblenp < len {
+        if mib_cap(miblenp) < len {
             return EINVAL;
         }
-        ptr::copy_nonoverlapping(mib.as_ptr(), mibp, len);
-        *miblenp = len;
+        mib_out(&mib, mibp, miblenp, len);
     }
     0
+}
+
+/// Copy the caller's `miblen` MIB entries into `local`. Trusted: a raw
+/// read.
+///
+/// # Safety
+/// `miblen` entries are readable at `mib`.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn mib_in(mib: *const usize, local: &mut [usize; MAX_MIB], miblen: usize)
+    requires
+        miblen <= MAX_MIB,
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe { ptr::copy_nonoverlapping(mib, local.as_mut_ptr(), miblen) };
 }
 
 /// `mallctlbymib(mib, miblen, oldp, oldlenp, newp, newlen)`.
@@ -1119,7 +1789,7 @@ pub fn mallctlbymib(
     }
     let mut local = [0usize; MAX_MIB];
     // SAFETY: `miblen` entries are readable at `mib`.
-    unsafe { ptr::copy_nonoverlapping(mib, local.as_mut_ptr(), miblen) };
+    unsafe { mib_in(mib, &mut local, miblen) };
     let node = match mib_to_node(&local[..miblen]) {
         Ok(n) => n,
         Err(e) => return e,
@@ -1137,6 +1807,8 @@ pub fn mallctlbymib(
         },
     ))
 }
+
+} // verus!
 
 // ---------------------------------------------------------------------------
 // C ABI. Compiled out of the test binary (see `libc.rs`).
