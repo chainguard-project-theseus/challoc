@@ -1438,11 +1438,6 @@ impl Shared {
             a = next;
         }
     }
-
-    /// The decay period new arenas start with (`dirty_decay_ms`).
-    pub fn default_decay_ns(&self) -> u64 {
-        crate::purge::decay_ns_from_ms(self.config.dirty_decay_ms)
-    }
 }
 
 } // verus!

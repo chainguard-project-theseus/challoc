@@ -10,7 +10,7 @@ use crate::layout::NCLASSES;
 
 use super::{CacheHeader, FOREIGN, Heap, Shared};
 #[cfg(verus_only)]
-use super::{CachePerms, cell_ok, lemma_handed_ok, node_hdr};
+use super::{CachePerms, cell_ok, lemma_handed_ok, node_hdr, node_placed};
 #[cfg(verus_only)]
 use crate::class::slot_loc;
 #[cfg(verus_only)]
@@ -101,12 +101,59 @@ unsafe fn node_link(node: *mut ArenaCaches, arena: u16, pad: u8, next: &*mut Are
     requires
         head.is_range(node@.addr as int, 64),
         head.provenance() == node@.provenance,
+        node@.addr % 64 == 0,
 {
     // SAFETY: guaranteed by the caller.
     unsafe {
         ptr::write(&raw mut (*node).arena, arena);
         ptr::write(&raw mut (*node).pad, pad);
         ptr::write(&raw mut (*node).next, *next);
+    }
+}
+
+/// `&mut (*o).caches` for node `o`, the `r`-th from the end of heap `h`'s
+/// `others` list, as plain headers, for the walks that fold and free
+/// them while they hold `h` mutably (`Heap::set_tcache_enabled`): the
+/// reference is not tied to a borrow of `h`. Trusted: a reference through
+/// the raw node pointer; nothing is claimed about the headers.
+///
+/// # Safety
+/// `o` is a live node owned by `h` (the requires), and nothing else
+/// refers to its headers while the reference lives; that second half is
+/// the caller's to keep, which verification does not check.
+#[inline(always)]
+#[verifier::external_body]
+pub(super) unsafe fn node_caches_mut<'a>(o: *mut ArenaCaches, Ghost(h): Ghost<Heap>, Ghost(r): Ghost<int>) -> &'a mut [CacheHeader; NCLASSES]
+    requires
+        h.wf(),
+        1 <= r <= h.list_len(),
+        o == h.node_from_end(r),
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe { &mut (*o).caches }
+}
+
+/// `Heap::set_arena`'s exchange: node `node`'s headers and the home
+/// headers `home` trade places, and the node becomes the cache of `old`,
+/// the home arena being left.
+///
+/// Trusted: place projections through the raw node pointer. The
+/// permissions describe headers by address, so the moved headers leave
+/// them stale ([`Heap::wf`] names this swap among the unverified writers).
+///
+/// # Safety
+/// `node` is a live node owned by `h` (the requires), the heap whose home
+/// headers `home` are.
+#[inline(always)]
+#[verifier::external_body]
+pub(super) unsafe fn swap_home(node: *mut ArenaCaches, home: &mut [CacheHeader; NCLASSES], old: u16, Ghost(h): Ghost<Heap>)
+    requires
+        h.owns_node(node),
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        core::mem::swap(&mut (*node).caches, home);
+        (*node).arena = old;
     }
 }
 
@@ -125,25 +172,32 @@ fn assert_not_home(arena: &u16, home: &u16)
 }
 
 impl Heap {
-    /// The header for `class` in an `others` node.
-    ///
-    /// Trusted: `&raw mut` through the raw node pointer; the claim is that
-    /// `caches` starts 64 bytes into the node, which a `const` assertion
-    /// below checks.
+    /// The header for `class` in an `others` node: `class` lines past the
+    /// node's second, where `caches` starts (the `const` assertion below).
     ///
     /// # Safety
     /// `node` is a live node owned by this heap.
     #[inline]
-    #[verifier::external_body]
     pub(super) unsafe fn node_cache_ptr(node: *mut ArenaCaches, class: usize) -> (r: *mut CacheHeader)
         requires
             class < NCLASSES,
+            node_placed(node),
         ensures
             r == node_hdr(node, class as int),
     {
+        proof {
+            super::cache::lemma_header_layout();
+            crate::vspec::ptr::axiom_ptr_add_addr(node as *mut u8, 64);
+            let first = crate::vspec::ptr::ptr_add(node as *mut u8, 64usize) as *mut CacheHeader;
+            assert(first@.addr == node@.addr + 64 && first@.provenance == node@.provenance);
+            assert(class as int * 64 <= 64 * NCLASSES) by (nonlinear_arith)
+                requires
+                    class < NCLASSES;
+            crate::vspec::ptr::axiom_ptr_add_addr(first, class);
+        }
         debug_assert!(class < NCLASSES);
         // SAFETY: guaranteed by the caller; `class < NCLASSES`.
-        unsafe { (&raw mut (*node).caches).cast::<CacheHeader>().add(class) }
+        unsafe { ((node as *mut u8).add(64) as *mut CacheHeader).add(class) }
     }
 
     /// `(*o).next` for node `o`, the `r`-th from the end of the `others`
@@ -151,8 +205,10 @@ impl Heap {
     ///
     /// Trusted: a read through the raw node pointer. The claim is that the
     /// nodes' `next` fields chain the list as [`Heap::list`] has it
-    /// ([`Heap::list_ok`]): `other_caches` links a node in at the head,
-    /// and `destroy`, the one writer that unlinks nodes, frees the heap.
+    /// ([`Heap::list_ok`]): `create_detached` starts the list empty,
+    /// `other_caches` links a node in at the head, `set_arena`'s swap
+    /// ([`swap_home`]) leaves `next` alone, and `destroy`, the one writer
+    /// that unlinks nodes, frees the heap.
     ///
     /// # Safety
     /// `o` is a live node owned by this heap (the requires).
@@ -304,10 +360,11 @@ const _: () = assert!(core::mem::offset_of!(ArenaCaches, caches) == 64);
 
 impl Heap {
     /// The nodes of an `others` list headed by `head`, in list order, for
-    /// the cold walks (statistics, flush, GC, `cache_in`, destruction).
-    /// Each node's `next` is read before the node is yielded, so a caller
-    /// may free the node it was handed. The lookup on the cross-arena free
-    /// path ([`Heap::other_caches`]) keeps its own loop.
+    /// the cold walks Verus does not check (`destroy`, `cache_in`). Each
+    /// node's `next` is read before the node is yielded, so a caller may
+    /// free the node it was handed. The verified walks (statistics, flush,
+    /// GC, `set_tcache_enabled`, the lookup in [`Heap::other_caches`])
+    /// spell the same loop out over [`Heap::node_next`].
     pub(super) fn nodes(head: *mut ArenaCaches) -> impl Iterator<Item = *mut ArenaCaches> {
         let mut o = head;
         core::iter::from_fn(move || {
@@ -423,6 +480,12 @@ impl Heap {
             }
         }
         let tracked (head, mut rest) = raw.split(Set::range(base, base + 64));
+        proof {
+            crate::vspec::ptr::axiom_raw_valid(&head, node as *mut u8, 64);
+            assert(Set::range(base + 64, base + 64 + 64 * NCLASSES) <= rest.dom());
+            crate::vspec::ptr::axiom_raw_valid(&rest, node_hdr(node, 0) as *mut u8, 64 * NCLASSES);
+            assert(node_placed(node));
+        }
         let ghost h0 = *self;
         let ghost others0 = self.others;
         // SAFETY: as above.
@@ -441,6 +504,7 @@ impl Heap {
                 rest.contains_range(base + 64 + 64 * c, 64 * (NCLASSES - c)),
                 base == node@.addr,
                 base % 64 == 0,
+                node_placed(node),
                 crate::layout::process_regions().in_meta(base, 64 + 64 * NCLASSES),
                 forall|k: int| 0 <= k < c ==> self.owns(#[trigger] node_hdr(node, k)) && self.hdr_class(node_hdr(node, k)) == k,
                 c > 0 ==> !h0.owns(node_hdr(node, 0)),

@@ -711,12 +711,10 @@ pub fn free_direct(shared: &Shared, p: *mut u8)
     }
 }
 
-/// `shared` as the raw pointer [`existing_heap`] takes. Trusted: Verus has no
-/// reference-to-pointer cast; nothing is claimed about the pointer.
+/// `shared` as the raw pointer [`existing_heap`] takes.
 #[inline(always)]
-#[verifier::external_body]
 pub(crate) fn shared_ptr(shared: &Shared) -> *const Shared {
-    shared
+    ptr::from_ref(shared)
 }
 
 /// Trusted: aborts.

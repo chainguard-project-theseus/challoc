@@ -73,7 +73,7 @@ use core::ptr;
 
 use crate::layout::{CLASSES, NCLASSES};
 
-use others::node_block_layout;
+use others::{node_block_layout, node_caches_mut, swap_home};
 pub(crate) use paths::shared_ptr;
 use paths::{invalid_free, shared_of};
 #[cfg(test)]
@@ -555,6 +555,19 @@ pub open spec fn node_hdr(node: *mut ArenaCaches, class: int) -> *mut CacheHeade
     vstd::raw_ptr::ptr_mut_from_data::<CacheHeader>(
         vstd::raw_ptr::PtrData { addr: (node@.addr + 64 + 64 * class) as usize, provenance: node@.provenance, metadata: () },
     )
+}
+
+/// Node `node`'s first line and its headers lie inside the block it was
+/// carved from ([`crate::vspec::ptr::in_alloc`]), so
+/// [`Heap::node_cache_ptr`]'s offsets are in bounds and do not wrap.
+/// [`Heap::owns_node`] carries the bound from the node's creation
+/// (`Heap::other_caches`, from the block's permission) for as long as the
+/// heap owns the node: a node block is freed only with its heap
+/// (`destroy`).
+pub open spec fn node_placed(node: *mut ArenaCaches) -> bool {
+    &&& crate::vspec::ptr::in_alloc(node as *mut u8, 64)
+    &&& crate::vspec::ptr::in_alloc(node_hdr(node, 0), 64 * NCLASSES)
+    &&& node@.addr + 64 + 64 * NCLASSES <= usize::MAX
 }
 
 /// The `others` list `new` is `old` with nodes added at the head: each
@@ -1374,6 +1387,18 @@ proof fn axiom_fresh_stack(tracked perms: &mut CachePerms, hdr: *mut CacheHeader
                 &&& final(perms).owner[q] == old(perms).owner[q]
             },
 {
+}
+
+/// `assert_eq!(*len, 0, ..)`, [`Heap::free_caches`]'s abort on a cache that
+/// still holds slots: `*len == 0` after it returns. Trusted: as
+/// [`assert_refill_empty`].
+#[verifier::external_body]
+#[inline(always)]
+fn assert_flushed(len: &u32)
+    ensures
+        *len == 0,
+{
+    assert_eq!(*len, 0, "heap: freeing a cache that was not flushed");
 }
 
 /// `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap
@@ -2436,15 +2461,15 @@ impl Heap {
     /// those entries holds its slot's token ([`CachePerms::tokened`],
     /// `verus/TODO.md`, "Uniqueness: slot tokens"). Assumed of
     /// every heap a verified path is handed (TLS, `tcache.create`): the
-    /// unverified writers of cache memory
-    /// (`create_detached`, `set_arena`'s swap, `set_tcache_enabled`,
-    /// `destroy`, `free_caches` and
-    /// [`stack_mut`], the slice the refill, flush and rebuild borrow)
-    /// are taken to keep it (they move whole caches between headers of
-    /// one class, drop entries, or add `EMPTY` headers), and
-    /// each verified one proves it keeps it. The `others` list is
-    /// [`Heap::list`] ([`Heap::list_ok`]); of its unverified writers,
-    /// `set_arena`'s swap keeps the nodes and `destroy` frees the heap. A heap exists only once the
+    /// writers of cache memory the permissions do not follow
+    /// (`create_detached`, `destroy`, `set_arena`'s swap [`swap_home`],
+    /// `free_caches` and [`stack_mut`], the slice the refill, flush and
+    /// rebuild borrow) are taken to keep it (they move whole caches
+    /// between headers of one class, drop entries, or add `EMPTY`
+    /// headers), and every other writer proves it keeps it. The `others`
+    /// list is [`Heap::list`] ([`Heap::list_ok`]): `create_detached`
+    /// starts it empty, `other_caches` links nodes in, and `destroy` frees
+    /// the heap. A heap exists only once the
     /// process's `Shared` is published, so its regions come with it
     /// ([`regions_ok`]). The home headers are also the
     /// plain field `caches`, which the permissions do not track: verified
@@ -2483,6 +2508,11 @@ impl Heap {
         &&& l.len() > 0 ==> self.others == l[0]
         &&& forall|i: int| 0 <= i < l.len() ==> (#[trigger] l[i])@.addr != 0 && self.owns_node(l[i])
         &&& forall|i: int, j: int| 0 <= i < j < l.len() ==> l[i] != l[j]
+    }
+
+    /// The home arena ([`Heap::arena`]).
+    pub closed spec fn home(&self) -> u16 {
+        self.arena
     }
 
     /// The length of the `others` list ([`Heap::list`]).
@@ -2562,10 +2592,12 @@ impl Heap {
     }
 
     /// Every header of `node` is one this heap owns, the header for class
-    /// `c` caching class `c`.
+    /// `c` caching class `c`, and the node is placed ([`node_placed`]).
     pub closed spec fn owns_node(&self, node: *mut ArenaCaches) -> bool {
-        forall|c: int| #![trigger node_hdr(node, c)] 0 <= c < NCLASSES ==> self.owns(node_hdr(node, c)) && self.hdr_class(node_hdr(node, c)) == c
+        &&& forall|c: int| #![trigger node_hdr(node, c)] 0 <= c < NCLASSES ==> self.owns(node_hdr(node, c)) && self.hdr_class(node_hdr(node, c)) == c
+        &&& node_placed(node)
     }
+
 
     /// The class owned header `p` caches ([`CachePerms::cls`]).
     pub closed spec fn hdr_class(&self, p: *mut CacheHeader) -> int {
@@ -2609,12 +2641,17 @@ impl Heap {
         }
     }
 
-    /// The `others` list has fewer than `usize::MAX` nodes.
+    /// The `others` list of a well-formed heap has fewer than `usize::MAX`
+    /// nodes.
     ///
     /// Trusted: its nodes are distinct metadata blocks of more than 4 KiB
-    /// each (`node_block_layout`), so there are fewer than 2^52 of them.
+    /// each (`node_block_layout`), whose headers the heap holds disjoint
+    /// permissions to ([`Heap::owns_node`]), so there are fewer than 2^52
+    /// of them.
     #[verifier::external_body]
     proof fn axiom_list_bound(&self)
+        requires
+            self.wf(),
         ensures
             self.list_len() < usize::MAX,
     {
@@ -2631,6 +2668,30 @@ impl Heap {
             b.node_from_end(r) == a.node_from_end(r),
     {
         assert(b.list@[b.list@.len() - r] == a.list@[a.list@.len() - r]);
+    }
+
+    /// A change to the cache permissions alone, which keeps them as
+    /// [`Heap::keeps`] asks, keeps the heap: the `others` list and its
+    /// nodes' ownership come along unchanged. For writers that never touch
+    /// the list, so their proofs need not carry [`Heap::list_ok`].
+    proof fn lemma_keeps_perms(old: Heap, new: Heap)
+        requires
+            old.wf(),
+            new.list == old.list,
+            new.others == old.others,
+            new.perms@.keeps(old.perms@),
+            new.perms@.follows(old.perms@),
+            new.perms@.zero_ok(),
+            new.perms@.tokened(),
+        ensures
+            new.keeps(old),
+    {
+        assert forall|i: int| 0 <= i < new.list@.len() implies new.owns_node(#[trigger] new.list@[i]) by {
+            assert(old.owns_node(old.list@[i]));
+            assert forall|c: int| #![trigger node_hdr(new.list@[i], c)] 0 <= c < NCLASSES implies new.owns(node_hdr(new.list@[i], c)) && new.hdr_class(node_hdr(new.list@[i], c)) == c by {
+                assert(old.perms@.hdrs.contains_key(node_hdr(old.list@[i], c)));
+            }
+        }
     }
 
     /// [`Heap::keeps`] is transitive.
@@ -2679,14 +2740,12 @@ impl Heap {
 
 
     /// Reset every (flushed) header of one array to [`CacheHeader::EMPTY`]
-    /// and free its stack. Trusted: a `for` over `iter_mut` and
-    /// `assert_eq!`; it writes the headers through the plain field, so the
-    /// permissions are stale afterwards ([`Heap::wf`]).
-    #[verifier::external_body]
+    /// and free its stack. It writes the headers through the plain field,
+    /// so the permissions are stale afterwards ([`Heap::wf`]).
     fn free_caches(shared: &Shared, caches: &mut [CacheHeader; NCLASSES]) {
         for cache in caches.iter_mut() {
             if cache.cap != 0 {
-                assert_eq!(cache.len, 0, "heap: freeing a cache that was not flushed");
+                assert_flushed(&cache.len);
                 shared
                     .meta
                     .free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap));
@@ -2719,8 +2778,8 @@ impl Heap {
     /// node for the old home.
     ///
     /// No postcondition: `free_caches` resets the home headers through the
-    /// plain field, so the permissions are stale afterwards ([`Heap::wf`]);
-    /// the caller, `set_arena`, is unverified.
+    /// plain field, so the permissions are stale afterwards ([`Heap::wf`]),
+    /// and the caller, `set_arena`, claims nothing either.
     fn drop_home_caches(&mut self, shared: &Shared)
         requires
             shared.wf(),
@@ -3010,6 +3069,96 @@ impl Heap {
         }
     }
 
+    /// `thread.tcache.enabled` write. Turning caches off folds the derived
+    /// counters into `uncached` (so `thread.allocated` keeps counting),
+    /// flushes and frees every cache of every arena, and makes
+    /// `ensure_cache` refuse to create new ones; turning them on lets the
+    /// next slow path create caches again.
+    ///
+    /// No postcondition: `free_caches` leaves the permissions stale, as
+    /// for [`Heap::drop_home_caches`].
+    pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool)
+        requires
+            shared.wf(),
+            old(self).wf(),
+    {
+        self.tcache_enabled = on;
+        if on {
+            return;
+        }
+        self.flush_all(shared);
+        Self::fold_counters(&mut self.uncached, &self.caches);
+        Self::free_caches(shared, &mut self.caches);
+        // The walk of `flush_all`. Folding and freeing a node's headers
+        // leaves the list as it is; the permissions go stale, as above.
+        let mut o = self.others;
+        let ghost mut r = self.list_len();
+        proof {
+            self.lemma_list(r);
+        }
+        while !o.is_null()
+            invariant
+                self.wf(),
+                0 <= r <= self.list_len(),
+                r > 0 ==> o == self.node_from_end(r),
+                r == 0 ==> o@.addr == 0,
+            decreases r,
+        {
+            proof {
+                self.lemma_list(r);
+            }
+            // SAFETY: `others` is a list of live metadata blocks owned by
+            // this heap.
+            let next = unsafe { self.node_next(o, Ghost(r)) };
+            let ghost h = *self;
+            unsafe {
+                Self::fold_counters(&mut self.uncached, node_caches_mut(o, Ghost(h), Ghost(r)));
+                Self::free_caches(shared, node_caches_mut(o, Ghost(h), Ghost(r)));
+            }
+            proof {
+                r = r - 1;
+            }
+            o = next;
+        }
+    }
+
+    /// Change the home arena (`thread.arena`). The caches of the old home
+    /// move to the `others` list and the new home's, if any, take their
+    /// place, so nothing is flushed. `arena` must exist.
+    ///
+    /// No postcondition: the swap moves headers the permissions describe
+    /// by address ([`swap_home`]), and `drop_home_caches` leaves them
+    /// stale.
+    pub fn set_arena(&mut self, shared: &Shared, arena: u16)
+        requires
+            shared.wf(),
+            old(self).wf(),
+            (old(self).home() as usize) < crate::arena::MAX_ARENAS,
+            (arena as usize) < crate::arena::MAX_ARENAS,
+    {
+        if arena == self.arena {
+            return;
+        }
+        let old = self.arena;
+        let node = self.other_caches(shared, arena, true);
+        if node.is_null() {
+            // No metadata for a new node: the caches of the new home start
+            // empty and the old home's must go back first.
+            self.drop_home_caches(shared);
+        } else {
+            // SAFETY: `node` is a live block owned by this heap.
+            let ghost h = *self;
+            unsafe {
+                swap_home(node, &mut self.caches, old, Ghost(h));
+            }
+        }
+        self.arena = arena;
+        if self.bound {
+            shared.arenas.unbind(old);
+            shared.arenas.bind(arena);
+        }
+    }
+
     /// Count a slow-path entry and run periodic work every
     /// [`PERIODIC_EVERY`] of them: cache GC when the interval has elapsed,
     /// then decay (or starting the background thread that will do it,
@@ -3231,56 +3380,6 @@ impl Heap {
     #[cfg(test)]
     pub fn tid(&self) -> u32 {
         self.tid
-    }
-
-    /// Change the home arena (`thread.arena`). The caches of the old home
-    /// move to the `others` list and the new home's, if any, take their
-    /// place, so nothing is flushed. `arena` must exist.
-    pub fn set_arena(&mut self, shared: &Shared, arena: u16) {
-        if arena == self.arena {
-            return;
-        }
-        let old = self.arena;
-        let node = self.other_caches(shared, arena, true);
-        if node.is_null() {
-            // No metadata for a new node: the caches of the new home start
-            // empty and the old home's must go back first.
-            self.drop_home_caches(shared);
-        } else {
-            // SAFETY: `node` is a live block owned by this heap.
-            unsafe {
-                core::mem::swap(&mut (*node).caches, &mut self.caches);
-                (*node).arena = old;
-            }
-        }
-        self.arena = arena;
-        if self.bound {
-            shared.arenas.unbind(old);
-            shared.arenas.bind(arena);
-        }
-    }
-
-    /// `thread.tcache.enabled` write. Turning caches off folds the derived
-    /// counters into `uncached` (so `thread.allocated` keeps counting),
-    /// flushes and frees every cache of every arena, and makes
-    /// `ensure_cache` refuse to create new ones; turning them on lets the
-    /// next slow path create caches again.
-    pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool) {
-        self.tcache_enabled = on;
-        if on {
-            return;
-        }
-        self.flush_all(shared);
-        Self::fold_counters(&mut self.uncached, &self.caches);
-        Self::free_caches(shared, &mut self.caches);
-        for o in Self::nodes(self.others) {
-            // SAFETY: `others` is a list of live metadata blocks owned by
-            // this heap.
-            unsafe {
-                Self::fold_counters(&mut self.uncached, &(*o).caches);
-                Self::free_caches(shared, &mut (*o).caches);
-            }
-        }
     }
 
     /// Slow-path entries so far (the periodic tick's counter).

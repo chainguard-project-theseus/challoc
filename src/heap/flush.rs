@@ -315,6 +315,9 @@ impl Heap {
             final(self).keeps(*old(self)),
             final(self).hdr(cache).len == old(self).hdr(cache).len - n,
     {
+        // The flush writes the permissions alone; `lemma_keeps_perms`
+        // carries the `others` list across, so its conjuncts stay hidden.
+        hide(Heap::list_ok);
         broadcast use crate::class::lemma_aset;
         if n == 0 {
             proof {
@@ -562,6 +565,9 @@ impl Heap {
                 }
                 CachePerms::lemma_tok_update(old_perms, *perms, cache);
             }
+        }
+        proof {
+            Heap::lemma_keeps_perms(*old(self), *self);
         }
     }
 }
