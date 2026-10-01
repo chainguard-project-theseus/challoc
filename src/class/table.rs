@@ -289,6 +289,7 @@ impl SlabTable {
     /// `2^57`, inside a user-space mapping, `Regions::reserve`) and that
     /// they are the process's ([`process_regions`](crate::layout::process_regions)),
     /// which is what the type invariant needs of `regions`.
+    #[verifier::spinoff_prover]
     pub fn new(meta: &Meta, regions: &Regions, class: usize, guard_interval: u32) -> (r: Option<SlabTable>)
         requires
             regions.wf(),
@@ -1282,7 +1283,7 @@ impl SlabTable {
     /// The address of slot `slot` of slab `slab`. A slot below `nslots` is
     /// a slot start of the class region; a bit index up to `slab_bits`
     /// reaches here from a claim, whose padding bits above `nslots` are
-    /// never claimable ([`ClassState::claim_with`](super::ClassState::claim_with) names the assumption).
+    /// never claimable (`class::axiom_no_padding_won` names the assumption).
     #[inline]
     pub(super) fn slot_ptr(&self, slab: usize, slot: usize) -> (r: *mut u8)
         requires

@@ -1843,7 +1843,13 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
         };
         // Thread A: one lock hold, one pick of one slot of slab 0.
         let mut picks = [Pick::EMPTY; MAX_PICKS];
-        let np = cs.plan(&env.meta, 1, &mut picks, Tracked::assume_new());
+        let np = cs.plan(
+            &env.meta,
+            1,
+            &mut picks,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert_eq!(np, 1);
         assert_eq!((picks[0].slab, picks[0].n, picks[0].state), (0, 1, prior));
         assert!(
@@ -1885,6 +1891,8 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
                 &mut out,
                 &mut zeroed,
                 None,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
                 Tracked::assume_new(),
                 Tracked::assume_new(),
                 Ghost::assume_new()
@@ -2007,7 +2015,13 @@ fn a_plan_over_a_slab_with_live_above_nslots_aborts() {
     let nslots = cs.class().nslots();
     cs.desc(slab).add_live(nslots + 1);
     let mut picks = [Pick::EMPTY; MAX_PICKS];
-    cs.plan(&env.meta, 1, &mut picks, Tracked::assume_new());
+    cs.plan(
+        &env.meta,
+        1,
+        &mut picks,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
 }
 
 #[test]
@@ -2022,7 +2036,13 @@ fn a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts() {
     // Corrupt the count: the set still holds the slab.
     cs.inner.lock().stats.empty = 0;
     let mut picks = [Pick::EMPTY; MAX_PICKS];
-    cs.plan(&env.meta, 1, &mut picks, Tracked::assume_new());
+    cs.plan(
+        &env.meta,
+        1,
+        &mut picks,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
 }
 
 #[test]
@@ -2203,7 +2223,13 @@ fn a_plan_that_takes_a_purged_slab_the_counts_do_not_know_aborts() {
     // Corrupt the count: the set still holds the slab.
     cs.inner.lock().stats.purged = 0;
     let mut picks = [Pick::EMPTY; MAX_PICKS];
-    cs.plan(&env.meta, 1, &mut picks, Tracked::assume_new());
+    cs.plan(
+        &env.meta,
+        1,
+        &mut picks,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
 }
 
 /// `walk_empty`, the one walk behind `purge_empty` and both passes of
