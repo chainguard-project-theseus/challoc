@@ -44,6 +44,7 @@ TOOLS = {
     "sentinel": "bench/tools/sentinel.c",
     "valkey_model": "bench/probes/valkey_model.c",
     "churn": "bench/probes/churn.c",
+    "execloop": "bench/tools/execloop.c",
 }
 
 
@@ -64,7 +65,7 @@ def compile_tools(root: str, tools_dir: str) -> None:
 
 
 def ensure_bench_programs(root: str, bin_dir: str, rows: list[Row], allow_build: bool) -> None:
-    missing = sorted({a.split("/")[-1] for r in rows for a in r.cmd if a.startswith("{bin}/") and not os.path.exists(os.path.join(bin_dir, a.split("/")[-1]))})
+    missing = sorted({a[len("{bin}/") :] for r in rows for a in r.cmd if a.startswith("{bin}/") and not os.path.exists(os.path.join(bin_dir, a[len("{bin}/") :]))})
     if not missing:
         return
     if not allow_build:
@@ -201,6 +202,7 @@ def run_one(
     logs: str,
     tag: str,
     pad: int,
+    values: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], str]:
     rt_file = os.path.join(logs, f"{tag}.rt")
     out_file = os.path.join(logs, f"{tag}.out")
@@ -212,7 +214,7 @@ def run_one(
     # `rt env VARS prog`: the allocator is loaded into the program, not rt.
     inner = ["env"]
     for k, v in row.env.items():
-        inner.append(f"{k}={v}")
+        inner.append(f"{k}={expand(v, values) if values is not None else v}")
     lib, _ = variant.lib_for(row.features)
     if lib:
         inner.append(f"LD_PRELOAD={lib}")
@@ -297,7 +299,7 @@ def execute(args) -> int:
     tools_dir = os.path.join(work, "tools")
     bin_dir = args.bin or os.path.join(target, "bench-bin")
     nproc = os.cpu_count() or 1
-    values = {**rows.vars, **((launch.get("vars") or {}) if launch else {}), **dict(kv.split("=", 1) for kv in (args.var or [])), "bin": bin_dir, "tools": tools_dir, "root": root, "nproc": str(nproc), "nproc16": str(min(nproc, 16))}
+    values = {**rows.vars, **((launch.get("vars") or {}) if launch else {}), **dict(kv.split("=", 1) for kv in (args.var or [])), "bin": bin_dir, "tools": tools_dir, "root": root, "nproc": str(nproc), "nproc2": str(2 * nproc), "nproc16": str(min(nproc, 16))}
 
     # Rows whose files are missing are dropped with a note (python rows
     # outside the image, espresso before bench/build.sh).
@@ -456,7 +458,7 @@ def execute(args) -> int:
                     if row.is_driver:
                         rt, parsed = run_driver(row, v, values, tools_dir, logs, tag, pad)
                     else:
-                        rt, text = run_one(row, v, argv, tools_dir, logs, tag, pad)
+                        rt, text = run_one(row, v, argv, tools_dir, logs, tag, pad, values)
                         parsed = parse(row, text, rt) if rt.get("exit") == 0 else None
                     score = parsed.score if parsed else None
                     err = "" if score is not None else (parsed.error if parsed else f"exit {rt.get('exit')}")

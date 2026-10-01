@@ -1,5 +1,5 @@
 # bench/ruby/gc_churn.rb: Ruby's allocation shape as the C allocator sees it
-# (docs/plan.md Phase 1.5 task 4b, the GC.stat row of bench/ruby-bench.sh).
+# (the ruby-gc-churn row of bench/rows.toml).
 #
 # Ruby 3.4 keeps objects up to 640 bytes inside its own mmap'ed heap pages
 # (variable-width slots), so what reaches malloc is the buffers that do not

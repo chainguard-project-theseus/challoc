@@ -3,29 +3,59 @@
 # toolchain. It is Dockerfile.dev's `test` stage (the Rust toolchain, the C
 # compiler, python3) plus the stock allocators the quick suite compares
 # against and the prebuilt bench/build.sh programs (mimalloc-bench, redis,
-# libmimalloc), with the challoc crate's dependencies fetched so a variant
-# builds without the network.
+# libmimalloc, jemalloc 5.3.0 and 5.4.0, rocksdb, wrk2, z3, onnxruntime),
+# with the challoc crate's dependencies fetched so a variant builds without
+# the network.
 #
 # Built and pushed by bench/cb/image.sh (`make bench-image`), which builds
 # the `test` stage first and passes it as DEV_IMAGE; the pushed digest per
 # architecture goes into bench/internal-image.lock. A VM whose pull fails builds
 # this same file from the bundled tree (bench/cb/boot.sh).
 ARG DEV_IMAGE=cb-dev-test:local
+
+# Fleetbench (google/fleetbench, pinned): its protobuf arena benchmark,
+# built with bazel and clang against the system malloc (--custom_malloc),
+# so the allocator under test comes in through LD_PRELOAD like everywhere
+# else. (The TCMalloc empirical driver needs TCMalloc's MallocExtension
+# properties and aborts under any other allocator, so it is not built.)
+# Its own stage: the bazel toolchain stays out of the bench image.
+FROM cgr.dev/chainguard/wolfi-base@sha256:d59fd2d1d21e913b12a8d56064e9aaf61f818289bd18b17132a0c4fde2358cea AS fleetbench
+RUN apk add --no-cache bazel-8 clang build-base git python-3.13 openjdk-21 libstdc++-dev \
+      bash autoconf automake libtool m4 patch perl coreutils findutils
+ARG FLEETBENCH_REV=baed3f9ba8febf9ccc1c581ce9e1cc0ef50a8fb7
+RUN git clone -q https://github.com/google/fleetbench /fb && cd /fb && git checkout -q "$FLEETBENCH_REV" \
+ && JAVA_HOME=/usr/lib/jvm/java-21-openjdk bazel build --config=clang --config=opt \
+      --custom_malloc=@bazel_tools//tools/cpp:malloc --copt=-Wno-error --copt=-Wno-deprecated-attributes \
+      fleetbench/proto:proto_benchmark \
+ && mkdir -p /out && cp bazel-bin/fleetbench/proto/proto_benchmark /out/ \
+ && echo "fleetbench $FLEETBENCH_REV" > /out/version.txt \
+ && /out/proto_benchmark --benchmark_list_tests > /out/proto.tests
+
 FROM ${DEV_IMAGE}
 
-RUN apk add --no-cache jemalloc tcmalloc-minimal \
+# The stock allocators. Wolfi's jemalloc is pinned to the 5.3.1 build the
+# `jemalloc` variant has measured since 2026-09-21, so a rebuilt image does
+# not move it; jemalloc 5.3.0 and 5.4.0 from the release tarballs are the
+# jemalloc53 and jemalloc54 variants (bench/build.sh).
+RUN apk add --no-cache jemalloc=5.3.1-r3 tcmalloc-minimal \
  && test -f /usr/lib/libjemalloc.so.2 && test -f /usr/lib/libtcmalloc_minimal.so.4
+
+# What bench/build.sh needs beyond the test stage: patch (shbench), bash,
+# perl and gflags (rocksdb's db_bench), LuaJIT 2.1, OpenSSL and zlib
+# headers (wrk2), curl, and pip (onnxruntime).
+RUN apk add --no-cache patch bash perl curl gflags-dev luajit luajit-dev openssl-dev zlib-dev py3.13-pip
 
 # bench/build.sh writes under target/; only what it reads is copied, so an
 # unrelated change to the tree does not rebuild this layer.
 COPY bench/build.sh /src/bench/build.sh
 COPY bench/tools /src/bench/tools
 COPY bench/probes /src/bench/probes
-COPY bench/pin.c bench/sampler.c /src/bench/
+COPY bench/sampler.c /src/bench/
 RUN cd /src && sh bench/build.sh \
  && mkdir -p /opt/cb \
  && mv target/bench-bin /opt/cb/bench-bin \
  && rm -rf target bench
+COPY --from=fleetbench /out /opt/cb/bench-bin/fleetbench
 
 # The crate's dependencies (libc), so `cargo build` in a VM needs no
 # crates.io round trip. A variant with a different lock still builds: the
@@ -33,14 +63,19 @@ RUN cd /src && sh bench/build.sh \
 COPY Cargo.toml Cargo.lock /tmp/cb-fetch/
 RUN cd /tmp/cb-fetch && mkdir src && : > src/lib.rs && cargo fetch && cd / && rm -rf /tmp/cb-fetch
 
-# The driver rows (bench/drivers/, bench/rows.toml): Valkey's build and
-# load generators (openssl-dev for BUILD_TLS, memtier), Ruby's build
-# dependencies (tests/consumers/ruby-build.sh) and the JDK with `ab` for the
-# JVM rows. Last, so the layers above stay cached when this list changes.
-RUN apk add --no-cache tcl openssl-dev memtier-benchmark \
-      autoconf ruby-3.4 jemalloc-dev yaml-dev zlib-dev libffi-dev tzdata \
-      openjdk-21 apache2-utils \
- && test -x /usr/lib/jvm/java-21-openjdk/bin/javac && command -v memtier_benchmark ab >/dev/null
+# The driver and application rows (bench/drivers/, bench/rows.toml):
+# Valkey's build and load generators (tcl, memtier), Ruby's build
+# dependencies (tests/consumers/ruby-build.sh; ruby-3.4 is also the Ruby
+# rows' interpreter), the JDK with `ab` for the JVM rows, Node.js, PostgreSQL,
+# nginx (the proxy row, under wrk2), ghostscript (the gs row), fluent-bit
+# (the idle sidecar row) and strace (the startup rows' syscall counts).
+# Last, so the layers above stay cached when this list changes.
+RUN apk add --no-cache tcl memtier-benchmark \
+      autoconf ruby-3.4 jemalloc-dev=5.3.1-r3 yaml-dev zlib-dev libffi-dev tzdata \
+      openjdk-21 apache2-utils nodejs-22 postgresql-17 postgresql-17-client \
+      nginx-stable ghostscript fluent-bit-4.2 strace \
+ && test -x /usr/lib/jvm/java-21-openjdk/bin/javac \
+ && command -v memtier_benchmark ab node pgbench nginx gs fluent-bit strace >/dev/null
 # The fixed runpath the Valkey driver links against (one Valkey build;
 # each challoc variant is swapped in by a symlink).
 RUN mkdir -p /opt/challoc/lib

@@ -1,5 +1,4 @@
-"""Score parsers for the rows of bench/rows.toml, ported from bench/lib.sh
-(run_row's awk scorers, ops_of, run_churn).
+"""Score parsers for the rows of bench/rows.toml.
 
 Each parser takes the program's combined stdout/stderr and the rt record
 (bench/tools/rt.c, RT_JSON) and returns a Parsed: the score, the operation
@@ -35,7 +34,7 @@ def _num(s: str) -> float | None:
 def parse_larson(out: str, rt: dict[str, Any], row: Row) -> Parsed:
     # "Throughput =  44512345 operations per second, relative time: ..."
     # larson's relative time is 1e9/throughput, not the run time: the ops
-    # are throughput x the fixed duration (lib.sh ops_of).
+    # are throughput x the fixed duration.
     for line in out.splitlines():
         if "Throughput" in line:
             f = line.split()
@@ -110,12 +109,22 @@ def parse_wall(out: str, rt: dict[str, Any], row: Row) -> Parsed:
     return Parsed(round(float(w), 6), ops=float(row.ops) if row.ops else None)
 
 
+def parse_regex(out: str, rt: dict[str, Any], row: Row) -> Parsed:
+    # The row's pattern (one group); the last match is the score, so a
+    # program that prints a running figure is scored by its final one.
+    for m in reversed(re.findall(row.pattern, out, flags=re.MULTILINE)):
+        if (v := _num(m)) is not None:
+            return Parsed(v, ops=float(row.ops) if row.ops else None)
+    return Parsed(None, error=f"no match for {row.pattern!r}")
+
+
 PARSERS: dict[str, Callable[[str, dict[str, Any], Row], Parsed]] = {
     "larson": parse_larson,
     "xmalloc": parse_xmalloc,
     "valkey_model.write": parse_valkey_write,
     "churn.occ": parse_churn,
     "wall": parse_wall,
+    "regex": parse_regex,
 }
 
 
@@ -123,4 +132,10 @@ def parse(row: Row, out: str, rt: dict[str, Any]) -> Parsed:
     p = PARSERS[row.parser](out, rt, row)
     if p.score is not None and p.score <= 0:
         return Parsed(None, error=f"non-positive score {p.score}")
+    # The run's peak RSS (rt's maxrss: the largest process of the run's
+    # tree), so a row can compare it as a metric of its own
+    # (`metrics = [{ name = "maxrss_mib", ... }]`).
+    kib = rt.get("maxrss_kib")
+    if p.score is not None and isinstance(kib, (int, float)) and kib > 0:
+        p.extra.setdefault("maxrss_mib", round(kib / 1024.0, 3))
     return p

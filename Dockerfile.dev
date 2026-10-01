@@ -45,7 +45,7 @@ FROM test AS consumers
 # Valkey (tests/consumers/valkey-build.sh): tcl for its test suite,
 # openssl-dev for BUILD_TLS=yes (Ruby's openssl extension uses it too),
 # memtier_benchmark for the soak's second load generator
-# (bench/valkey-soak.sh).
+# (bench/drivers/valkey-soak.sh).
 RUN apk add --no-cache tcl openssl-dev memtier-benchmark
 
 # Ruby (tests/consumers/ruby-build.sh): a git checkout of Ruby needs
@@ -58,30 +58,30 @@ RUN apk add --no-cache autoconf ruby-3.4 jemalloc-dev yaml-dev zlib-dev libffi-d
 
 FROM consumers AS bench
 
-# The stock allocators of the benchmark harness (bench/lib.sh): Wolfi's
+# The stock allocators of a local `cb run` (bench/README.md): Wolfi's
 # jemalloc and tcmalloc-minimal (gperftools 2.18.1, no profiler hooks);
 # mimalloc is built from source by bench/build.sh.
 RUN apk add --no-cache jemalloc tcmalloc-minimal \
  && test -f /usr/lib/libtcmalloc_minimal.so.4
 
-# Python rows (bench/python-bench.sh): python-3.13 (from the test stage)
+# The Python rows (bench/rows.toml): python-3.13 (from the test stage)
 # and its pip (Wolfi has no free-threaded 3.13 package).
 RUN apk add --no-cache py3.13-pip
 
-# Node.js rows (bench/node-bench.sh): nodejs-22 is the node the harness
+# The Node.js rows: nodejs-22 is the node the harness
 # measures. apache2-utils gives `ab`, the load generator of the Node.js and
 # JVM server rows (Wolfi has no wrk or oha package).
 RUN apk add --no-cache nodejs-22 apache2-utils \
  && node --version && ab -V | head -1
 
-# JVM rows (bench/jvm-bench.sh): openjdk-21, the JDK (javac compiles
-# bench/jvm/HttpBench.java at run time; it lives under
+# The JVM rows (bench/drivers/jvm-bench.sh): openjdk-21, the JDK (javac
+# compiles bench/drivers/jvm/HttpBench.java at run time; it lives under
 # /usr/lib/jvm/java-21-openjdk and is not on PATH, the script finds it);
 # `ab` from the layer above is its load generator.
 RUN apk add --no-cache openjdk-21 \
  && test -x /usr/lib/jvm/java-21-openjdk/bin/javac
 
-# PostgreSQL rows (bench/postgres-bench.sh): postgresql-17 carries initdb,
+# The PostgreSQL rows (bench/drivers/postgres.sh): postgresql-17 carries initdb,
 # pg_ctl, pgbench and postgres; postgresql-17-client carries psql.
 RUN apk add --no-cache postgresql-17 postgresql-17-client \
  && pgbench --version && test -x /usr/bin/psql

@@ -1,4 +1,4 @@
-"""regex_bench.py: regular expressions over generated text (bench/python-bench.sh).
+"""regex_bench.py: regular expressions over generated text (the python rows of bench/rows.toml).
 
 Generates a text of WORDS pseudo-words, numbers, dates and e-mail-like
 tokens (about 3 MB), then ROUNDS times runs findall, finditer with group

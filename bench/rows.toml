@@ -2,8 +2,6 @@
 #
 # A row is one program run as a fresh process under bench/tools/rt with the
 # variant's library in LD_PRELOAD (nothing for glibc) and its MALLOC_CONF.
-# Ported from bench/lib.sh (bench_args, ops_of, unit_of, higher_is_better,
-# secs_of); the shell harnesses keep their own copy until they are retired.
 #
 # Fields:
 #   cmd        argv; {name} is replaced from [vars], the command line's
@@ -30,6 +28,13 @@
 #              the quick rows are the median wall time on the C4/C4A cells
 #              (cb launch, 2026-09-30) plus process start
 #   needs      files that must exist ({...} expanded) or the row is skipped
+#   pattern    parser "regex": a regular expression with one group; the
+#              last match in the output is the score
+#   metrics    (timed rows too) more figures compared as rows of their own;
+#              every timed run records maxrss_mib (rt's peak RSS of the
+#              run's largest process), so `metrics = [{ name = "maxrss_mib",
+#              unit = "MiB", better = "lower", class = "soak-rss" }]` gives
+#              a row its RSS verdict
 #
 # Driver rows (kind = "soak" or "driver"): a script under bench/drivers/
 # runs once per run with the variant in its environment (CB_ALLOC
@@ -62,6 +67,16 @@ valkey_soak_settle = "60"
 ruby_soak_secs = "600"
 jvm_soak_secs = "1200"
 jvm_server_secs = "300"
+# Application and startup rows (the defaults are the full suite's; a smoke
+# run shortens them with --var).
+ort_iters = "120"
+rocksdb_num = "2000000"
+nginx_secs = "20"
+nginx_rate = "12000"
+node_server_secs = "30"
+pg_secs = "30"
+sidecar_idle = "60"
+startup_n = "500"
 
 # Practical thresholds delta (owner decision O9), in percent.
 [class]
@@ -187,7 +202,7 @@ fixed_work = true
 est_s = 4
 
 [row.espresso]
-cmd = ["{bin}/espresso", "{root}/target/bench-src/mimalloc-bench/bench/espresso/largest.espresso"]
+cmd = ["{bin}/espresso", "{bin}/inputs/largest.espresso"]
 parser = "wall"
 unit = "s"
 better = "lower"
@@ -195,7 +210,7 @@ threads = 1
 class = "st"
 fixed_work = true
 est_s = 4
-needs = ["{root}/target/bench-src/mimalloc-bench/bench/espresso/largest.espresso"]
+needs = ["{bin}/inputs/largest.espresso"]
 
 [row.mstress]
 cmd = ["{bin}/mstress", "{nproc}", "50", "25"]
@@ -429,3 +444,616 @@ threads = 0
 class = "st"
 requires = ["challoc"]
 est_s = 600
+
+# ---- the rest of mimalloc-bench (bench/build.sh; bench.sh's arguments) ---
+
+# larson's sized-delete build (-fsized-deallocation): the sized free path.
+[row.larsonN-sized]
+cmd = ["{bin}/larson-sized", "5", "8", "1000", "5000", "100", "4141", "{nproc}"]
+parser = "larson"
+unit = "M ops/s"
+better = "higher"
+threads = 0
+class = "mt"
+secs = 5
+est_s = 7
+
+# False sharing: objects allocated by one thread, written by others
+# (cache-scratch: passed to the threads; cache-thrash: each thread its own).
+# The N rows run 20000 iterations instead of mimalloc-bench's 1000, which
+# finish in 30..50 ms on 16..32 threads (process start-up would dominate).
+[row.cache-scratch1]
+cmd = ["{bin}/cache-scratch", "1", "1000", "1", "2000000", "{nproc}"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+est_s = 3
+
+[row.cache-scratchN]
+cmd = ["{bin}/cache-scratch", "{nproc}", "20000", "1", "2000000", "{nproc}"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 0
+class = "mt"
+fixed_work = true
+est_s = 3
+
+[row.cache-thrash1]
+cmd = ["{bin}/cache-thrash", "1", "1000", "1", "2000000", "{nproc}"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+est_s = 3
+
+[row.cache-thrashN]
+cmd = ["{bin}/cache-thrash", "{nproc}", "20000", "1", "2000000", "{nproc}"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 0
+class = "mt"
+fixed_work = true
+est_s = 3
+
+# Large blocks (5..25 MiB): the huge tier.
+[row.malloc-large]
+cmd = ["{bin}/malloc-large"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
+est_s = 4
+
+# rpmalloc's benchmark: random sizes 8..16000, cross-thread frees; scored
+# by the memory operations per CPU second it reports. 200 loops instead of
+# mimalloc-bench's 500 (16 s a run at 500; the rate does not depend on it).
+[row.rptestN]
+cmd = ["{bin}/rptest", "{nproc}", "0", "1", "2", "200", "1000", "100", "8", "16000"]
+parser = "regex"
+pattern = '(\d+) memory ops/CPU second'
+unit = "ops/CPU s"
+better = "higher"
+threads = 0
+class = "mt"
+est_s = 7
+
+# SmartHeap's sh6bench and sh8bench (sources fetched by bench/build.sh)
+# on twice the CPUs.
+[row.sh6benchN]
+cmd = ["{bin}/sh6bench", "{nproc2}"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 0
+class = "mt"
+fixed_work = true
+needs = ["{bin}/sh6bench"]
+est_s = 4
+
+[row.sh8benchN]
+cmd = ["{bin}/sh8bench", "{nproc2}"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 0
+class = "mt"
+fixed_work = true
+needs = ["{bin}/sh8bench"]
+est_s = 6
+
+# glibc's bench-malloc-thread: 2 s of random 4..32768-byte malloc/free per
+# thread; scored by the iterations it counts.
+[row.glibc-thread]
+cmd = ["{bin}/glibc-thread", "{nproc}"]
+parser = "regex"
+pattern = '^(\d+) iterations'
+unit = "iterations"
+better = "higher"
+threads = 0
+class = "mt"
+est_s = 3
+
+# Real programs: barnes (the Barnes-Hut N-body), ghostscript on a 770 KB
+# PDF, z3 on an SMT problem.
+[row.barnes]
+cmd = ["sh", "-c", "exec {bin}/barnes < {bin}/inputs/barnes.input"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+needs = ["{bin}/barnes", "{bin}/inputs/barnes.input"]
+est_s = 3
+
+[row.gs]
+cmd = ["gs", "-dBATCH", "-dNODISPLAY", "-q", "{bin}/inputs/large.pdf"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+needs = ["{bin}/inputs/large.pdf"]
+est_s = 3
+
+[row.z3]
+cmd = ["{bin}/z3/bin/z3", "-smt2", "{bin}/inputs/z3-test1.smt2"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+needs = ["{bin}/z3/bin/z3", "{bin}/inputs/z3-test1.smt2"]
+est_s = 5
+
+# mimalloc-bench's lua row: `make -j` of Lua 5.4 with the allocator in the
+# compiler (bench/drivers/compile.sh).
+[row.lua]
+kind = "driver"
+driver = "drivers/compile.sh"
+metric = "wall_s"
+unit = "s"
+better = "lower"
+class = "mt"
+env = { PROJECT = "lua", JOBS = "{nproc}" }
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
+est_s = 6
+
+# Ruby string churn (rbstress) on Wolfi's ruby-3.4, which links
+# libjemalloc.so.2: challoc is the jemalloc-soname build (its soname
+# satisfies that DT_NEEDED), the stock variants are the jemalloc builds;
+# glibc, tcmalloc and mimalloc cannot replace it cleanly.
+[row.rbstress1]
+cmd = ["ruby", "{bin}/inputs/rbstress.rb", "1"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+features = "jemalloc-soname"
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54"]
+needs = ["{bin}/inputs/rbstress.rb"]
+est_s = 6
+
+[row.rbstressN]
+cmd = ["ruby", "{bin}/inputs/rbstress.rb", "{nproc}"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 0
+class = "mt"
+fixed_work = true
+features = "jemalloc-soname"
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54"]
+needs = ["{bin}/inputs/rbstress.rb"]
+est_s = 8
+
+# A leaking program (10 threads, 5 and 50 rounds): time and peak RSS.
+[row.mleak10]
+cmd = ["{bin}/mleak", "5"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 10
+class = "mt"
+fixed_work = true
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
+est_s = 2
+
+[row.mleak100]
+cmd = ["{bin}/mleak", "50"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 10
+class = "mt"
+fixed_work = true
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
+est_s = 6
+
+# ---- applications (bench/drivers/; bench/build.sh builds them) ----------
+
+# RocksDB db_bench: fillrandom, readrandom on 8 threads, readwhilewriting.
+[row.rocksdb]
+kind = "driver"
+driver = "drivers/rocksdb.sh"
+metric = "readrandom_ops"
+unit = "ops/s"
+better = "higher"
+class = "server"
+env = { NUM = "{rocksdb_num}" }
+metrics = [
+  { name = "fillrandom_ops", unit = "ops/s", better = "higher", class = "server" },
+  { name = "readwhilewriting_ops", unit = "ops/s", better = "higher", class = "server" },
+  { name = "maxrss_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+]
+est_s = 30
+
+# nginx gzip proxy to an nginx backend under wrk2 at a fixed rate: CPU per
+# request, p99, RSS.
+[row.nginx-proxy]
+kind = "driver"
+driver = "drivers/nginx.sh"
+metric = "cpu_us_req"
+unit = "us/req"
+better = "lower"
+class = "server"
+env = { SECS = "{nginx_secs}", RATE = "{nginx_rate}" }
+metrics = [
+  { name = "p99_ms", unit = "ms", better = "lower", class = "server" },
+  { name = "rss_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+]
+est_s = 32
+
+# The compile rows: one cc1 over the sqlite amalgamation (-O2).
+[row.compile-sqlite]
+kind = "driver"
+driver = "drivers/compile.sh"
+metric = "wall_s"
+unit = "s"
+better = "lower"
+class = "st"
+env = { PROJECT = "sqlite" }
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
+est_s = 35
+
+# ONNX Runtime CPU inference with the arena off (bench/probes/ort/mlp.py):
+# 0.5..4 MiB activations through the allocator, 4 intra-op threads.
+[row.ort-mlp]
+cmd = ["python3", "{root}/bench/probes/ort/mlp.py", "run", "{bin}/inputs/ort-mlp.onnx", "{ort_iters}", "4"]
+env = { PYTHONPATH = "{bin}/pylib-ort" }
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 4
+class = "mt"
+fixed_work = true
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
+needs = ["{bin}/inputs/ort-mlp.onnx"]
+est_s = 8
+
+# ---- startup (bench/drivers/startup.sh, bench/tools/execloop.c) ---------
+# Wall time per exec-to-exit of a small program over N sequential runs,
+# plus the system calls of one run under strace.
+
+[row.startup-true]
+kind = "driver"
+driver = "drivers/startup.sh"
+metric = "per_run_ms"
+unit = "ms"
+better = "lower"
+class = "st"
+env = { STARTUP = "true", N = "2000" }
+metrics = [
+  { name = "syscalls", unit = "calls", better = "lower", class = "st" },
+  { name = "mm_syscalls", unit = "calls", better = "lower", class = "st" },
+]
+est_s = 5
+
+[row.startup-cc]
+kind = "driver"
+driver = "drivers/startup.sh"
+metric = "per_run_ms"
+unit = "ms"
+better = "lower"
+class = "st"
+env = { STARTUP = "cc", N = "200" }
+metrics = [
+  { name = "syscalls", unit = "calls", better = "lower", class = "st" },
+  { name = "mm_syscalls", unit = "calls", better = "lower", class = "st" },
+]
+est_s = 12
+
+[row.startup-py]
+kind = "driver"
+driver = "drivers/startup.sh"
+metric = "per_run_ms"
+unit = "ms"
+better = "lower"
+class = "st"
+env = { STARTUP = "py", N = "{startup_n}" }
+metrics = [
+  { name = "syscalls", unit = "calls", better = "lower", class = "st" },
+  { name = "mm_syscalls", unit = "calls", better = "lower", class = "st" },
+]
+est_s = 10
+
+[row.startup-ruby]
+kind = "driver"
+driver = "drivers/startup.sh"
+metric = "per_run_ms"
+unit = "ms"
+better = "lower"
+class = "st"
+env = { STARTUP = "ruby", N = "200" }
+features = "jemalloc-soname"
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54"]
+metrics = [
+  { name = "syscalls", unit = "calls", better = "lower", class = "st" },
+  { name = "mm_syscalls", unit = "calls", better = "lower", class = "st" },
+]
+est_s = 10
+
+[row.startup-node]
+kind = "driver"
+driver = "drivers/startup.sh"
+metric = "per_run_ms"
+unit = "ms"
+better = "lower"
+class = "st"
+env = { STARTUP = "node", N = "100" }
+metrics = [
+  { name = "syscalls", unit = "calls", better = "lower", class = "st" },
+  { name = "mm_syscalls", unit = "calls", better = "lower", class = "st" },
+]
+est_s = 8
+
+[row.startup-java]
+kind = "driver"
+driver = "drivers/startup.sh"
+metric = "per_run_ms"
+unit = "ms"
+better = "lower"
+class = "st"
+env = { STARTUP = "java", N = "30" }
+metrics = [
+  { name = "syscalls", unit = "calls", better = "lower", class = "st" },
+  { name = "mm_syscalls", unit = "calls", better = "lower", class = "st" },
+]
+est_s = 10
+
+# ---- idle sidecar (bench/drivers/sidecar.sh) -----------------------------
+# fluent-bit: an HTTP-input burst, then idle; scored by the RSS it settles
+# at. Wolfi's fluent-bit links libjemalloc.so.2 (as the Ruby rows).
+[row.sidecar-fluentbit]
+kind = "driver"
+driver = "drivers/sidecar.sh"
+metric = "rss_settle_mib"
+unit = "MiB"
+better = "lower"
+class = "soak-rss"
+env = { IDLE = "{sidecar_idle}" }
+features = "jemalloc-soname"
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54"]
+metrics = [
+  { name = "rss_peak_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+  { name = "burst_s", unit = "s", better = "lower", class = "server" },
+]
+est_s = 75
+
+# ---- consumer runtimes (the former ruby-, node-, python- and
+# postgres-bench.sh tiers) --------------------------------------------------
+
+# Ruby 3.4 (Wolfi's, jemalloc-soname as the rbstress rows): ruby's own
+# benchmark scripts (from the 3.4.11 release tarball) and gc_churn.rb.
+[row.ruby-binary-trees]
+cmd = ["ruby", "{bin}/inputs/ruby-benchmark/so_binary_trees.rb"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+features = "jemalloc-soname"
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54"]
+needs = ["{bin}/inputs/ruby-benchmark/so_binary_trees.rb"]
+est_s = 6
+
+[row.ruby-hash-aref-str]
+cmd = ["ruby", "{bin}/inputs/ruby-benchmark/hash_aref_str.rb"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+features = "jemalloc-soname"
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54"]
+needs = ["{bin}/inputs/ruby-benchmark/hash_aref_str.rb"]
+est_s = 3
+
+[row.ruby-array-sample]
+cmd = ["ruby", "{bin}/inputs/ruby-benchmark/array_sample_100k__1k.rb"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+features = "jemalloc-soname"
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54"]
+needs = ["{bin}/inputs/ruby-benchmark/array_sample_100k__1k.rb"]
+est_s = 3
+
+[row.ruby-sort-block]
+cmd = ["ruby", "{bin}/inputs/ruby-benchmark/array_sort_block.rb"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+features = "jemalloc-soname"
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54"]
+needs = ["{bin}/inputs/ruby-benchmark/array_sort_block.rb"]
+est_s = 3
+
+# Long-lived medium buffers, bursts of short-lived ones, ten full GCs.
+[row.ruby-gc-churn]
+cmd = ["ruby", "{root}/bench/ruby/gc_churn.rb", "10", "10"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+features = "jemalloc-soname"
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54"]
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
+est_s = 6
+
+# Node.js 22: JSON round trips of a 177 KiB object, and the http server.
+[row.node-json-churn]
+cmd = ["node", "{root}/bench/node/json_churn.js"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
+est_s = 6
+
+[row.node-server]
+kind = "driver"
+driver = "drivers/node-server.sh"
+metric = "json_rps"
+unit = "req/s"
+better = "higher"
+class = "server"
+env = { SECS = "{node_server_secs}" }
+metrics = [
+  { name = "blob_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "rss_peak_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+]
+est_s = 40
+
+# Python 3.13 stdlib workloads beside python1 (json): PYTHONMALLOC unset
+# (pymalloc serves objects under 512 bytes) and =malloc (every object
+# through the allocator).
+[row.python-dict-list]
+cmd = ["python3", "{root}/bench/probes/python/dict_list_bench.py"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+est_s = 4
+
+[row.python-dict-list-malloc]
+cmd = ["python3", "{root}/bench/probes/python/dict_list_bench.py"]
+env = { PYTHONMALLOC = "malloc" }
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+est_s = 4
+
+[row.python-regex]
+cmd = ["python3", "{root}/bench/probes/python/regex_bench.py"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+est_s = 4
+
+[row.python-regex-malloc]
+cmd = ["python3", "{root}/bench/probes/python/regex_bench.py"]
+env = { PYTHONMALLOC = "malloc" }
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+est_s = 4
+
+[row.python-object-graph]
+cmd = ["python3", "{root}/bench/probes/python/object_graph_bench.py"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+est_s = 4
+
+[row.python-object-graph-malloc]
+cmd = ["python3", "{root}/bench/probes/python/object_graph_bench.py"]
+env = { PYTHONMALLOC = "malloc" }
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+est_s = 4
+
+# PostgreSQL 17 under pgbench (bench/drivers/postgres.sh): select-only at
+# 100 and 500 clients, TPC-B, and a connection per transaction.
+[row.pg-select100]
+kind = "driver"
+driver = "drivers/postgres.sh"
+metric = "tps"
+unit = "tps"
+better = "higher"
+class = "server"
+env = { ROW = "select100", SECS = "{pg_secs}" }
+metrics = [{ name = "pss_peak_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
+est_s = 40
+
+[row.pg-tpcb100]
+kind = "driver"
+driver = "drivers/postgres.sh"
+metric = "tps"
+unit = "tps"
+better = "higher"
+class = "server"
+env = { ROW = "tpcb100", SECS = "{pg_secs}" }
+metrics = [{ name = "pss_peak_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
+est_s = 40
+
+[row.pg-select500]
+kind = "driver"
+driver = "drivers/postgres.sh"
+metric = "tps"
+unit = "tps"
+better = "higher"
+class = "server"
+env = { ROW = "select500", SECS = "{pg_secs}" }
+metrics = [{ name = "pss_peak_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
+est_s = 45
+
+[row.pg-connect20]
+kind = "driver"
+driver = "drivers/postgres.sh"
+metric = "tps"
+unit = "tps"
+better = "higher"
+class = "server"
+env = { ROW = "connect20", SECS = "{pg_secs}" }
+metrics = [{ name = "conn_ms", unit = "ms", better = "lower", class = "server" }]
+est_s = 40
+
+# ---- Fleetbench (bench/Dockerfile.cb's fleetbench stage, system malloc) --
+# Google's fleet-representative suite: the protobuf arena benchmark (the
+# TCMalloc empirical driver requires TCMalloc itself). Scored by the
+# geometric mean of the benchmarks' real time per iteration
+# (bench/drivers/fleetbench.sh).
+[row.fleetbench-proto]
+kind = "driver"
+driver = "drivers/fleetbench.sh"
+metric = "geomean_ns"
+unit = "ns"
+better = "lower"
+class = "st"
+env = { PROGRAM = "proto_benchmark", MIN_TIME = "3s" }
+est_s = 8

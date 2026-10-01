@@ -1,6 +1,6 @@
 #!/bin/sh
-# pg-rss-sampler.sh: the RSS sidecar of bench/postgres-bench.sh (docs/plan.md
-# Phase 3 task 5 (b)). Every INTERVAL seconds until DIR/stop exists it reads
+# pg-rss-sampler.sh: the RSS sidecar of bench/drivers/postgres.sh. Every
+# INTERVAL seconds until DIR/stop exists it reads
 # /proc/<pid>/smaps_rollup for every `postgres` process of OSUSER (the
 # postmaster, its client backends and its auxiliary processes) and prints
 # one sample to stdout:
@@ -22,7 +22,7 @@
 # is where the allocators differ; Pss_Shmem is the process's share of the
 # shared memory segment.
 #
-# It runs as OSUSER (postgres-bench.sh starts it with `su`): the container's
+# It runs as OSUSER (postgres.sh starts it with `su`): the container's
 # root has no CAP_SYS_PTRACE and cannot read another uid's smaps_rollup, the
 # owner of the processes can. One `pgrep`, one `ps` and one awk per sample;
 # awk reads the smaps_rollup files with getline, so a process that exits

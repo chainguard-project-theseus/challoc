@@ -29,7 +29,7 @@
 # reset to the commit, and the working tree (uncommitted and untracked
 # files included) is rsynced over it, so `git diff HEAD` on the VM shows
 # the local changes and git-based scripts (scripts/codegen-diff.sh,
-# bench/quick.sh) work. Not shipped: .git and every path git ignores
+# cb run) work. Not shipped: .git and every path git ignores
 # (target/, `.tmp-*` logs, .claude/ worktrees) except `.tmp-*.sh` scripts;
 # files the VM has under those paths survive. --base REF also pushes REF
 # (refs/devvm/NAME-base), checks it out at ~/w/.base/NAME and exports

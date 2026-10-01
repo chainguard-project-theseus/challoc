@@ -30,7 +30,7 @@
  * nothing: null) and "pmc_note" says why. The run itself never depends on
  * the counters.
  *
- *   rt --probe   the old bench/gce/pmu-probe.c: count cycles and
+ *   rt --probe   count cycles and
  *                instructions of a spin loop in this process and print
  *                "pmu cycles=<n> instructions=<n> [..._open_errno=..] paranoid=<p>";
  *                exit 0 when cycles counted. For hosts without a perf binary.

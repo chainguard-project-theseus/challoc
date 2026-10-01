@@ -1,4 +1,4 @@
-"""json_bench.py: JSON encode/decode of a large structure (bench/python-bench.sh).
+"""json_bench.py: JSON encode/decode of a large structure (the python rows of bench/rows.toml).
 
 Builds a list of RECORDS dicts (ints, floats, short and medium strings, a
 tag list and a nested metrics dict, about 6 MB as JSON), then ROUNDS times

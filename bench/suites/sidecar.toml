@@ -1,0 +1,20 @@
+# sidecar: the idle-sidecar row (fluent-bit, burst then idle, scored by
+# the RSS it settles at) and the startup rows inside a memory-limited
+# container, the shape a sidecar runs in: the cgroup limit is what
+# challoc's purge policy reads (docs/design.md), so this is where it
+# differs from an allocator that does not look. 512 MiB with swap off.
+description = "idle sidecar and startup rows in a 512 MiB container: challoc vs jemalloc 5.4.0"
+cells = "tag:ref"
+variants = ["jemalloc54", "challoc=head"]
+controls = []
+rows = ["sidecar-fluentbit", "startup-true", "startup-py", "startup-ruby"]
+container = { profile = "perfmon", memory = "512m" }
+replicas = 3
+blocks = 2
+warmup_blocks = 0
+shard_seconds = 900
+looks = 1
+budget_usd = 5
+
+[local]
+blocks = 1

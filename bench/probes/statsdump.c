@@ -1,7 +1,7 @@
 /* statsdump: a shared object preloaded after the allocator under test
  * (LD_PRELOAD=<allocator>:statsdump.so) that calls malloc_stats_print at
  * process exit when the loaded allocator exports it (jemalloc, challoc), so
- * a program that cannot call it itself (a JVM, bench/jvm-bench.sh) still
+ * a program that cannot call it itself (a JVM, bench/drivers/jvm-bench.sh) still
  * leaves the allocator's own view (allocated, active, resident, retained,
  * per-class occupancy) on stderr. jemalloc's MALLOC_CONF=stats_print:true
  * does the same thing; challoc accepts that key but does not act on it

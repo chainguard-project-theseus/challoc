@@ -31,8 +31,8 @@
  * "as the cgroup sees it" figure the plan asks for, next to the server's
  * VmHWM.
  *
- * Built on demand by bench/lib.sh (ensure_probe cgpeak) like the other
- * probes; the Makefile's CGROUP_PEAK=1 gives the container a writable
+ * Built on demand by bench/drivers/lib.sh (ensure_probe cgpeak); the
+ * Makefile's CGROUP_PEAK=1 gives the container a writable
  * cgroup tree.
  */
 #define _GNU_SOURCE
