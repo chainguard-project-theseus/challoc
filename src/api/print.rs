@@ -100,7 +100,16 @@ impl Write for Sink {
                 self.flush();
                 continue;
             }
-            let n = s.len().min(room);
+            // Cut on a character boundary: slicing `s` inside a multi-byte
+            // character would panic in the middle of a report.
+            let mut n = s.len().min(room);
+            while !s.is_char_boundary(n) {
+                n -= 1;
+            }
+            if n == 0 {
+                self.flush();
+                continue;
+            }
             self.buf[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
             self.len += n;
             s = &s[n..];
@@ -939,6 +948,22 @@ mod tests {
             },
         );
         String::from_utf8(CAPTURE.lock().unwrap().clone()).unwrap()
+    }
+
+    /// A two-byte character that lands on the last free byte of the
+    /// 1023-byte buffer: the sink must not slice the `str` inside it, and
+    /// the bytes reach the callback whole and in order.
+    #[test]
+    fn sink_splits_a_character_at_the_buffer_end() {
+        let _serial = REPORT.lock().unwrap_or_else(|e| e.into_inner());
+        CAPTURE.lock().unwrap().clear();
+        let mut sink = Sink::new(Target::Callback(Some(capture), 0xC0FFEE as *mut c_void));
+        let head = "x".repeat(1022);
+        sink.write_str(&head).unwrap();
+        sink.write_str("\u{e9} tail").unwrap();
+        sink.flush();
+        let got = String::from_utf8(CAPTURE.lock().unwrap().clone()).unwrap();
+        assert_eq!(got, std::format!("{head}\u{e9} tail"));
     }
 
     /// Page-sized slabs (design 3): after init no class has a slab
