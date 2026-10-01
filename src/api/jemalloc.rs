@@ -50,10 +50,20 @@
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 
+#[cfg(verus_only)]
+use super::libc::lemma_class_aligned;
 use super::libc::{class_for, old_size_or_keep, usable_size};
 use crate::heap::Shared;
+#[cfg(verus_only)]
+use crate::heap::mallocx::MALLOCX_ZERO;
 use crate::heap::mallocx::{self, Flags, Tcache};
+#[cfg(verus_only)]
+use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind};
+use crate::vspec::zero::Zeroed;
+#[cfg(verus_only)]
+use vstd::prelude::*;
+use vstd::prelude::{Ghost, Tracked, int, verus};
 
 /// `void (*malloc_message)(void *cbopaque, const char *s)`; null when the
 /// program has not installed one.
@@ -114,22 +124,27 @@ pub fn malloc_write(s: &[u8]) {
         }
     }
 }
+verus! {
 
+/// Trusted: aborts (formatting is outside what Verus checks).
+#[verifier::external_body]
 #[cold]
 #[inline(never)]
 fn not_an_allocation(what: &str, p: *mut u8) -> ! {
-    crate::sys::abort_fmt(format_args!(
-        "{what} of {:#x}: not an allocation",
-        p as usize
-    ))
+    crate::sys::abort_fmt(format_args!("{what} of {:#x}: not an allocation", p as usize))
 }
 
 /// The usable size `mallocx(size, flags)` gives: the class size at the
 /// flags' alignment, or the huge run's page-rounded size. `None` when the
 /// size cannot be represented (`nallocx` returns 0).
-fn usable_for(shared: &Shared, size: usize, f: &Flags) -> Option<usize> {
+fn usable_for(shared: &Shared, size: usize, f: &Flags) -> (r: Option<usize>)
+    requires
+        f.lg_align < 64,
+    ensures
+        r matches Some(u) ==> size <= u,
+{
     match class_for(size, f.align()) {
-        Some(c) => Some(CLASSES[c].size()),
+        Some(c) => Some(CLASSES.table()[c].size()),
         None => shared.huge.usable_for(size),
     }
 }
@@ -137,29 +152,76 @@ fn usable_for(shared: &Shared, size: usize, f: &Flags) -> Option<usize> {
 /// `mallocx`'s core: allocate `size` bytes per `f`, zeroing the whole
 /// usable size when `MALLOCX_ZERO` is set and the memory is not already
 /// known to be zero. Null on exhaustion or for an arena or explicit cache
-/// that does not exist (`errno` untouched).
-fn alloc_with(shared: &Shared, size: usize, f: &Flags) -> *mut u8 {
+/// that does not exist (`errno` untouched). With `MALLOCX_ZERO`, a
+/// non-null result comes with a [`Zeroed`] token for at least its `size`
+/// bytes.
+fn alloc_with(shared: &Shared, size: usize, f: &Flags) -> (r: (*mut u8, Tracked<Zeroed>))
+    requires
+        f.lg_align < 64,
+        shared.wf(),
+    ensures
+        crate::heap::fits(r.0, size as int, (1usize << f.lg_align) as int),
+        r.0@.addr != 0 && f.zero ==> r.1@.covers(r.0, size as int),
+{
     let align = f.align();
-    let (p, usable, zeroed) = match class_for(size, align) {
+    proof {
+        crate::meta::lemma_is_pow2_shl(f.lg_align as usize);
+        shared.lemma_regions_ok();
+    }
+    let (p, usable, zeroed, z) = match class_for(size, align) {
         Some(c) => {
-            let (p, z, _) = mallocx::alloc(shared, c, f.arena, f.tcache);
-            (p, CLASSES[c].size(), z)
+            let (p, zero, z) = mallocx::alloc(shared, c, f.arena, f.tcache);
+            proof {
+                if p@.addr != 0 {
+                    lemma_class_aligned(c, align);
+                    crate::heap::lemma_slot_fits(p, c as int, size as int, align);
+                }
+            }
+            (p, CLASSES.table()[c].size(), zero, z)
         }
         None => {
-            let (p, z, _) = mallocx::alloc_huge(shared, size, align, f.arena, f.tcache);
-            (p, shared.huge.usable_for(size).unwrap_or(0), z)
+            let (p, zero, z) = mallocx::alloc_huge(shared, size, align, f.arena, f.tcache);
+            proof {
+                if p@.addr != 0 {
+                    crate::heap::lemma_huge_fits(p, size, align, align);
+                }
+            }
+            let u = shared.huge.usable_for(size);
+            proof {
+                shared.lemma_huge_usable(size);
+            }
+            (p, u.unwrap_or(0), zero, z)
         }
     };
     if !p.is_null() && f.zero && !zeroed {
+        proof {
+            broadcast use vstd::layout::align_of_u8;
+            crate::vspec::addr::axiom_fresh_block(p, usable);
+        }
         // SAFETY: `p` is a fresh allocation of `usable` bytes.
-        unsafe { ptr::write_bytes(p, 0, usable) };
+        let z = unsafe { crate::vspec::zero::write_zero(p, usable) };
+        return (p, z);
     }
-    p
+    (p, z)
 }
 
 /// `mallocx(size, flags)`. `size == 0` gets the smallest class, as
 /// `malloc(0)` does.
-pub fn mallocx(size: usize, flags: c_int) -> *mut u8 {
+pub fn mallocx(size: usize, flags: c_int) -> (r: *mut u8)
+    ensures
+        crate::heap::fits(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
+{
+    mallocx_zeroed(size, flags).0
+}
+
+/// [`mallocx`] with the proof that `MALLOCX_ZERO` memory reads as zero:
+/// with the flag, a non-null result comes with a [`Zeroed`] token for at
+/// least its `size` bytes.
+pub fn mallocx_zeroed(size: usize, flags: c_int) -> (r: (*mut u8, Tracked<Zeroed>))
+    ensures
+        crate::heap::fits(r.0, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
+        r.0@.addr != 0 && (flags as u32) & MALLOCX_ZERO != 0 ==> r.1@.covers(r.0, size as int),
+{
     let f = Flags::decode(flags as u32);
     alloc_with(super::shared(), size, &f)
 }
@@ -171,28 +233,66 @@ pub fn mallocx(size: usize, flags: c_int) -> *mut u8 {
 /// `min(old usable, size)`, free `p` through the flags' cache.
 /// `MALLOCX_ZERO` zeroes the bytes beyond the copied prefix of a moved
 /// block. On failure `p` is intact and null comes back.
-pub fn rallocx(p: *mut u8, size: usize, flags: c_int) -> *mut u8 {
+pub fn rallocx(p: *mut u8, size: usize, flags: c_int) -> (r: *mut u8)
+    ensures
+        r != p ==> crate::heap::fits(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
+        crate::heap::fits(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int)
+            || super::libc::kept(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
+        p@.addr != 0 ==> crate::heap::free_target(p),
+{
+    rallocx_zeroed(p, size, flags).0
+}
+
+/// [`rallocx`] with the proof that `MALLOCX_ZERO` memory past the copy
+/// reads as zero: with the flag, a new block (null `p`, or a moved block)
+/// comes with a [`Zeroed`] token for its bytes from `k` to `size`, where
+/// `k`, the ghost second result, is the number of bytes copied from `p`
+/// (0 for a null `p`), at most `size`.
+pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int) -> (r: (*mut u8, Ghost<int>, Tracked<Zeroed>))
+    ensures
+        r.0 != p ==> crate::heap::fits(r.0, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
+        crate::heap::fits(r.0, size as int, (1usize << ((flags as u32) & 0x3f)) as int)
+            || super::libc::kept(r.0, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
+        p@.addr != 0 ==> crate::heap::free_target(p),
+        r.0@.addr != 0 && r.0 != p && (flags as u32) & MALLOCX_ZERO != 0 ==> {
+            &&& 0 <= r.1@ <= size
+            &&& r.2@.addr() == r.0@.addr + r.1@
+            &&& r.2@.len() >= size - r.1@
+        },
+{
     let f = Flags::decode(flags as u32);
     if p.is_null() {
-        return alloc_with(super::shared(), size, &f);
+        let (q, z) = alloc_with(super::shared(), size, &f);
+        return (q, Ghost(0), z);
     }
-    let Some(shared) = super::shared_if_ready() else {
-        not_an_allocation("rallocx", p)
-    };
-    let Some(old) = old_size_or_keep(shared, "rallocx", p, size, f.align()) else {
-        return p;
-    };
-    let q = alloc_with(shared, size, &f);
+    let Some(shared) = super::shared_if_ready() else { not_an_allocation("rallocx", p) };
+    let align = f.align();
+    proof {
+        let lg = f.lg_align;
+        assert((1usize << lg) > 0) by (bit_vector)
+            requires lg < 64;
+        crate::meta::lemma_is_pow2_shl(lg as usize);
+    }
+    let Some(old) = old_size_or_keep(shared, "rallocx", p, size, align) else { return (p, Ghost(0), Tracked(Zeroed::empty(0))) };
+    let (q, Tracked(z)) = alloc_with(shared, size, &f);
     if q.is_null() {
-        return q;
+        return (q, Ghost(0), Tracked(z));
     }
+    proof {
+        broadcast use vstd::layout::align_of_u8;
+        crate::vspec::addr::axiom_moved_block(p, old, q, size);
+    }
+    let ghost k = if old < size { old as int } else { size as int };
+    // The copy writes the first `k` bytes of `q`; the rest of the token
+    // is what stays zero.
+    let tracked tail = if f.zero { z.split(k).1 } else { Zeroed::empty(0) };
     // SAFETY: `p` has `old` readable bytes, `q` at least `size` writable
     // ones, and they are distinct allocations. `alloc_with` already zeroed
     // `q` when `MALLOCX_ZERO` asked for it, so the tail past the copy is
     // zero.
     unsafe { ptr::copy_nonoverlapping(p, q, old.min(size)) };
     mallocx::free(shared, p, f.tcache);
-    q
+    (q, Ghost(k), Tracked(tail))
 }
 
 /// `xallocx(p, size, extra, flags)`: resize in place only. challoc never
@@ -207,22 +307,21 @@ pub fn sallocx(p: *mut u8, _flags: c_int) -> usize {
     if p.is_null() {
         not_an_allocation("sallocx", p);
     }
-    let Some(shared) = super::shared_if_ready() else {
-        not_an_allocation("sallocx", p)
-    };
+    let Some(shared) = super::shared_if_ready() else { not_an_allocation("sallocx", p) };
     usable_size(shared, p)
 }
 
 /// `dallocx(p, flags)`: free through the flags' cache (`MALLOCX_TCACHE_NONE`
 /// releases the slot straight to its slab bitmap). Null is a no-op.
-pub fn dallocx(p: *mut u8, flags: c_int) {
+pub fn dallocx(p: *mut u8, flags: c_int)
+    ensures
+        p@.addr != 0 ==> crate::heap::free_target(p),
+{
     if p.is_null() {
         return;
     }
     let f = Flags::decode(flags as u32);
-    let Some(shared) = super::shared_if_ready() else {
-        not_an_allocation("dallocx", p)
-    };
+    let Some(shared) = super::shared_if_ready() else { not_an_allocation("dallocx", p) };
     mallocx::free(shared, p, f.tcache);
 }
 
@@ -239,7 +338,10 @@ pub fn dallocx(p: *mut u8, flags: c_int) {
 /// [`sdallocx_flags`], a call, so that the compiler cannot merge the two
 /// sized fast paths behind a test of the hint.
 #[inline(always)]
-pub fn sdallocx(p: *mut u8, size: usize, flags: c_int) {
+pub fn sdallocx(p: *mut u8, size: usize, flags: c_int)
+    ensures
+        p@.addr != 0 ==> crate::heap::free_target(p),
+{
     if flags == 0 {
         return super::libc::free_sized(p, size);
     }
@@ -249,7 +351,10 @@ pub fn sdallocx(p: *mut u8, size: usize, flags: c_int) {
 /// `sdallocx` with non-zero flags: the decoded alignment's class as the
 /// hint through the default cache, or an explicit cache or none.
 #[inline(never)]
-fn sdallocx_flags(p: *mut u8, size: usize, flags: c_int) {
+fn sdallocx_flags(p: *mut u8, size: usize, flags: c_int)
+    ensures
+        p@.addr != 0 ==> crate::heap::free_target(p),
+{
     let f = Flags::decode(flags as u32);
     match f.tcache {
         Tcache::Default => super::libc::free_sized_hint(p, size, class_for(size, f.align())),
@@ -264,14 +369,15 @@ fn sdallocx_flags(p: *mut u8, size: usize, flags: c_int) {
 /// `sdallocx` through an explicit cache or none.
 #[cold]
 #[inline(never)]
-fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int) {
+fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int)
+    ensures
+        p@.addr != 0 ==> crate::heap::free_target(p),
+{
     if p.is_null() {
         return;
     }
     let f = Flags::decode(flags as u32);
-    let Some(shared) = super::shared_if_ready() else {
-        not_an_allocation("sdallocx", p)
-    };
+    let Some(shared) = super::shared_if_ready() else { not_an_allocation("sdallocx", p) };
     let hint = class_for(size, f.align());
     if let Tcache::Explicit(t) = f.tcache {
         if let Some(h) = shared.tcaches.get(t) {
@@ -286,7 +392,10 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int) {
 
 /// `nallocx(size, flags)`: the usable size `mallocx` would give, or 0 when
 /// the request cannot be represented.
-pub fn nallocx(size: usize, flags: c_int) -> usize {
+pub fn nallocx(size: usize, flags: c_int) -> (r: usize)
+    ensures
+        r == 0 || size <= r,
+{
     let f = Flags::decode(flags as u32);
     usable_for(super::shared(), size, &f).unwrap_or(0)
 }
@@ -313,32 +422,28 @@ pub fn nallocx(size: usize, flags: c_int) -> usize {
 /// initialised. Never aborts: a defragmenter asks about pointers it owns,
 /// and a wrong answer only costs it a move. Cold: two class-lock
 /// acquisitions per call, as the verbose utilization query.
+#[allow(non_shorthand_field_patterns)] // `verus!`'s expansion of the `let`-`else`
 #[cold]
 #[inline(never)]
 pub fn get_defrag_hint(p: *const u8) -> c_int {
-    let Some(shared) = super::shared_if_ready() else {
-        return 0;
-    };
-    let Kind::Slab { class, slab, slot } = shared.regions.classify(p as usize) else {
-        return 0;
-    };
+    let Some(shared) = super::shared_if_ready() else { return 0 };
+    proof {
+        shared.lemma_wf();
+    }
+    let Kind::Slab { class, slab, slot } = shared.regions.classify(p as usize) else { return 0 };
     let class = class as usize;
     let t = shared.table(class);
     let (slab, slot) = (slab as usize, slot as usize);
     if !t.is_allocated(slab, slot) {
         return 0;
     }
-    let Some(d) = t.desc_if_committed(slab) else {
-        return 0;
-    };
+    let Some(d) = t.desc_if_committed(slab) else { return 0 };
     let cls = t.class();
     let live = d.live();
     if live >= cls.nslots() {
         return 0;
     }
-    let Some(a) = shared.arenas.get_existing(d.arena()) else {
-        return 0;
-    };
+    let Some(a) = shared.arenas.get_existing(d.arena()) else { return 0 };
     let cs = a.class(class);
     let slabcur = cs.lowest_partial();
     if slabcur == Some(slab) {
@@ -351,8 +456,20 @@ pub fn get_defrag_hint(p: *const u8) -> c_int {
         curregs = curregs.saturating_sub(dc.live());
         curslabs = curslabs.saturating_sub(1);
     }
+    proof {
+        // `live` is below the class's `nslots` and `curslabs` at most the
+        // committed slabs, whose product with `nslots` fits.
+        let n = class_table()[class as int].nslots as int;
+        let c = st.committed as int;
+        assert((live as int) * (curslabs as int) <= c * n) by (nonlinear_arith)
+            requires
+                0 <= live < n,
+                0 <= curslabs <= c;
+    }
     (live * curslabs <= curregs) as c_int
 }
+
+} // verus!
 
 // ---------------------------------------------------------------------------
 // C ABI. Compiled out of the test binary (see `libc.rs`).

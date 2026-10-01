@@ -32,22 +32,55 @@
 //! class at or above `max(size, align)` always qualifies, so the search
 //! never leaves the medium tier for alignments up to `MEDIUM_MAX`. Anything
 //! larger is a huge run, which the huge allocator aligns itself.
-
 use core::ffi::c_int;
 use core::ptr;
 
 use crate::QUANTUM;
 use crate::heap::{self, Shared};
+#[cfg(verus_only)]
+use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, class_of};
 use crate::sys::Errno;
+use crate::vspec::zero::Zeroed;
+#[cfg(verus_only)]
+use vstd::arithmetic::power2::pow2;
+#[cfg(verus_only)]
+use vstd::prelude::*;
+use vstd::prelude::{Tracked, verus};
+
+verus! {
 
 // The codes as `c_int`, for `errno` and `posix_memalign`'s return; the
-// numbers live in `sys::errno`.
-const ENOMEM: c_int = Errno::ENOMEM.0;
-const EINVAL: c_int = Errno::EINVAL.0;
+// numbers live in `sys::errno` (checked below).
+pub const ENOMEM: c_int = 12;
+pub const EINVAL: c_int = 22;
 
+} // verus!
+
+const _: () = assert!(ENOMEM == Errno::ENOMEM.0 && EINVAL == Errno::EINVAL.0);
+
+verus! {
+
+/// `x` is a power of two, as `usize::is_power_of_two` answers.
+pub open spec fn is_pow2(x: usize) -> bool {
+    exists|k: nat| k < 64 && x as nat == #[trigger] pow2(k)
+}
+
+/// A power of two is at least 1.
+proof fn lemma_pow2_pos(x: usize)
+    requires
+        is_pow2(x),
+    ensures
+        x >= 1,
+{
+    let k = choose|k: nat| k < 64 && x as nat == #[trigger] pow2(k);
+    vstd::arithmetic::power2::lemma_pow2_pos(k);
+}
+
+/// Trusted: writes the calling thread's `errno` through libc's pointer.
+#[verifier::external_body]
 #[inline(always)]
-fn set_errno(e: c_int) {
+pub(super) fn set_errno(e: c_int) {
     // SAFETY: `__errno_location` returns the calling thread's `errno`.
     unsafe { *::libc::__errno_location() = e };
 }
@@ -55,7 +88,10 @@ fn set_errno(e: c_int) {
 /// Null with `errno = ENOMEM`.
 #[cold]
 #[inline(never)]
-fn enomem() -> *mut u8 {
+fn enomem() -> (r: *mut u8)
+    ensures
+        r@.addr == 0,
+{
     set_errno(ENOMEM);
     ptr::null_mut()
 }
@@ -63,52 +99,130 @@ fn enomem() -> *mut u8 {
 /// Null with `errno = EINVAL`.
 #[cold]
 #[inline(never)]
-fn einval() -> *mut u8 {
+fn einval() -> (r: *mut u8)
+    ensures
+        r@.addr == 0,
+{
     set_errno(EINVAL);
     ptr::null_mut()
+}
+
+/// [`class_of`] with the facts about the class table the entry points
+/// rely on: the class is in the table, its slot size is at least `n`, and
+/// so is every later class's (the table is sorted by size).
+#[inline(always)]
+pub(super) fn class_index(n: usize) -> (r: Option<usize>)
+    ensures
+        r is Some <==> n <= MEDIUM_MAX,
+        r matches Some(c) ==> c < NCLASSES,
+        r matches Some(c) ==> forall|j: int| c <= j < NCLASSES ==> n <= #[trigger] class_table()[j].size,
+{
+    let r = class_of(n);
+    proof {
+        if let Some(c) = r {
+            assert forall|j: int| c <= j < NCLASSES implies n <= #[trigger] class_table()[j].size by {
+                crate::vspec::class::axiom_class_table_wf(j);
+                if j > c {
+                    crate::layout::lemma_class_size_mono(c as int, j);
+                }
+            }
+        }
+    }
+    r
+}
+
+/// A slot result of the class `class_index(size)` (or any later one)
+/// returned serves `malloc(size)` ([`heap::fits`] at the quantum).
+proof fn lemma_class_fits(p: *mut u8, c: int, size: usize)
+    requires
+        heap::regions_ok(),
+        0 <= c < NCLASSES,
+        size <= class_table()[c].size,
+        p@.addr != 0 ==> crate::layout::process_regions().is_slot(c, p@.addr),
+    ensures
+        heap::fits(p, size as int, QUANTUM as int),
+{
+    if p@.addr != 0 {
+        heap::lemma_slot_fits_quantum(p, c, size as int);
+    }
+}
+
+/// A huge result for `size` bytes at `align` serves them at `align`, and
+/// at the quantum.
+proof fn lemma_huge_result(p: *mut u8, size: usize, align: usize)
+    requires
+        heap::regions_ok(),
+        is_pow2(align),
+        p@.addr != 0 ==> crate::layout::huge_block(p@.addr, size, align),
+    ensures
+        heap::fits(p, size as int, align as int),
+        heap::fits(p, size as int, QUANTUM as int),
+{
+    if p@.addr != 0 {
+        heap::lemma_quantum_pow2();
+        heap::lemma_huge_fits(p, size, align, align);
+        heap::lemma_huge_fits(p, size, align, QUANTUM);
+    }
 }
 
 /// Huge allocation on the calling thread, counted in its heap when it has
 /// one. `align` is a power of two; `1` means none.
 #[cold]
 #[inline(never)]
-fn alloc_huge(shared: &Shared, size: usize, align: usize) -> (*mut u8, bool) {
+fn alloc_huge(shared: &Shared, size: usize, align: usize) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+    requires
+        shared.wf(),
+        is_pow2(align),
+    ensures
+        r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
+        r.0@.addr != 0 ==> size <= shared.huge_usable(size),
+        r.0@.addr != 0 ==> shared.huge_ok(size),
+        r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
+{
     match heap::heap_for_thread(shared) {
-        Some(h) => {
-            let (p, zero, _) = h.alloc_huge(shared, size, align);
-            (p, zero)
-        }
-        None => {
-            let (p, zero, _) = shared.alloc_huge(size, align, 0);
-            (p, zero)
-        }
+        Some(h) => h.alloc_huge(shared, size, align),
+        None => shared.alloc_huge(size, align, 0),
     }
 }
 
-/// `malloc`.
+/// `malloc`. A non-null result is a block of at least `size` bytes in a
+/// class or huge region, aligned to the quantum ([`heap::fits`]).
 #[inline(always)]
-pub fn malloc(size: usize) -> *mut u8 {
+pub fn malloc(size: usize) -> (r: *mut u8)
+    ensures
+        heap::fits(r, size as int, QUANTUM as int),
+{
     // The fast path is a cache pop with no calls in it; everything else
     // (init, heap creation, refill, huge, ENOMEM) is one tail call away so
     // the exported `malloc` needs no stack frame.
-    let Some(c) = class_of(size) else {
-        return malloc_slow(size);
-    };
+    let Some(c) = class_index(size) else { return malloc_slow(size) };
     let shared = super::shared_ptr();
-    let Some(h) = heap::existing_heap(shared) else {
-        return malloc_slow(size);
-    };
+    let Some(h) = heap::existing_heap(shared) else { return malloc_slow(size) };
     // SAFETY: this thread's heap exists, so this thread observed `READY`
     // (the byte was read once inside `existing_heap`; this is the same
     // load, merged by the compiler).
     let flags = unsafe { heap::fast_flags(shared) };
+    proof {
+        h.lemma_wf_regions();
+    }
     match h.alloc_fast(c, flags) {
-        Some(p) => p,
+        Some(p) => {
+            proof {
+                lemma_class_fits(p, c as int, size);
+            }
+            p
+        },
         // The class, not the size: the declined pop (an empty cache or
         // the scheduled pop) goes straight to the slow path of its class,
         // `heap::alloc_declined`, not through a second classification and
         // a second fast pop.
-        None => malloc_slow_class(c),
+        None => {
+            let p = malloc_slow_class(c);
+            proof {
+                lemma_class_fits(p, c as int, size);
+            }
+            p
+        },
     }
 }
 
@@ -117,7 +231,12 @@ pub fn malloc(size: usize) -> *mut u8 {
 /// `heap::alloc_declined`, null with `errno = ENOMEM` on failure.
 #[cold]
 #[inline(never)]
-fn malloc_slow_class(class: usize) -> *mut u8 {
+fn malloc_slow_class(class: usize) -> (r: *mut u8)
+    requires
+        class < NCLASSES,
+    ensures
+        r@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r@.addr),
+{
     let p = heap::alloc_declined(super::shared(), class);
     if p.is_null() { enomem() } else { p }
 }
@@ -126,26 +245,57 @@ fn malloc_slow_class(class: usize) -> *mut u8 {
 /// heap yet, empty cache, huge size). Shared with the C++ `operator new`
 /// family in `cxx.rs`, whose failure handling differs from `malloc`'s.
 #[inline(always)]
-pub(super) fn malloc_fast(size: usize) -> Option<*mut u8> {
-    let c = class_of(size)?;
+pub(super) fn malloc_fast(size: usize) -> (r: Option<*mut u8>)
+    ensures
+        r matches Some(p) ==> heap::fits(p, size as int, QUANTUM as int),
+{
+    let c = class_index(size)?;
     let shared = super::shared_ptr();
     let h = heap::existing_heap(shared)?;
     // SAFETY: this thread's heap exists, so this thread observed `READY`
     // (the byte was read once inside `existing_heap`; this is the same
     // load, merged by the compiler).
     let flags = unsafe { heap::fast_flags(shared) };
-    h.alloc_fast(c, flags)
+    proof {
+        h.lemma_wf_regions();
+    }
+    let r = h.alloc_fast(c, flags);
+    proof {
+        if let Some(p) = r {
+            lemma_class_fits(p, c as int, size);
+        }
+    }
+    r
 }
 
 /// Everything `malloc` does off its fast path. Null with `errno = ENOMEM`
 /// on failure.
 #[cold]
 #[inline(never)]
-pub(super) fn malloc_slow(size: usize) -> *mut u8 {
+pub(super) fn malloc_slow(size: usize) -> (r: *mut u8)
+    ensures
+        heap::fits(r, size as int, QUANTUM as int),
+{
     let shared = super::shared();
-    let p = match class_of(size) {
-        Some(c) => heap::alloc(shared, c),
-        None => alloc_huge(shared, size, 1).0,
+    proof {
+        crate::meta::lemma_is_pow2_one();
+        shared.lemma_regions_ok();
+    }
+    let p = match class_index(size) {
+        Some(c) => {
+            let p = heap::alloc(shared, c);
+            proof {
+                lemma_class_fits(p, c as int, size);
+            }
+            p
+        },
+        None => {
+            let p = alloc_huge(shared, size, 1).0;
+            proof {
+                lemma_huge_result(p, size, 1);
+            }
+            p
+        },
     };
     if p.is_null() { enomem() } else { p }
 }
@@ -153,31 +303,68 @@ pub(super) fn malloc_slow(size: usize) -> *mut u8 {
 /// `calloc`. Skips the `memset` when the slot or run is known to read as
 /// zero (fresh or purged memory).
 #[inline(always)]
-pub fn calloc(n: usize, m: usize) -> *mut u8 {
-    let Some(size) = n.checked_mul(m) else {
-        return enomem();
-    };
+pub fn calloc(n: usize, m: usize) -> (r: *mut u8)
+    ensures
+        n * m > usize::MAX ==> r@.addr == 0,
+        heap::fits(r, n * m, QUANTUM as int),
+{
+    calloc_zeroed(n, m).0
+}
+
+/// [`calloc`] with the proof that its memory reads as zero: a non-null
+/// result comes with a [`Zeroed`] token for its `n * m` bytes (the
+/// "Zeroed memory" theorem of `verus/TODO.md`), from the `memset` or from
+/// the allocator's report that the slot or run is known zero.
+#[inline(always)]
+pub fn calloc_zeroed(n: usize, m: usize) -> (r: (*mut u8, Tracked<Zeroed>))
+    ensures
+        n * m > usize::MAX ==> r.0@.addr == 0,
+        heap::fits(r.0, n * m, QUANTUM as int),
+        r.0@.addr != 0 ==> r.1@.covers(r.0, n * m),
+{
+    let Some(size) = n.checked_mul(m) else { return (enomem(), Tracked(Zeroed::empty(0))) };
     let shared = super::shared();
-    let (p, zeroed) = match class_of(size) {
+    proof {
+        crate::meta::lemma_is_pow2_one();
+        shared.lemma_regions_ok();
+    }
+    let (p, zeroed, z) = match class_index(size) {
         Some(c) => {
-            let (p, zeroed, _) = heap::alloc_zeroed(shared, c);
-            (p, zeroed)
-        }
-        None => alloc_huge(shared, size, 1),
+            let r = heap::alloc_zeroed(shared, c);
+            proof {
+                lemma_class_fits(r.0, c as int, size);
+            }
+            r
+        },
+        None => {
+            let r = alloc_huge(shared, size, 1);
+            proof {
+                lemma_huge_result(r.0, size, 1);
+            }
+            r
+        },
     };
     if p.is_null() {
-        return enomem();
+        return (enomem(), Tracked(Zeroed::empty(0)));
     }
     if !zeroed {
+        proof {
+            broadcast use vstd::layout::align_of_u8;
+            crate::vspec::addr::axiom_fresh_block(p, size);
+        }
         // SAFETY: `p` is a fresh allocation of at least `size` bytes.
-        unsafe { ptr::write_bytes(p, 0, size) };
+        let z = unsafe { crate::vspec::zero::write_zero(p, size) };
+        return (p, z);
     }
-    p
+    (p, z)
 }
 
 /// `free`. Null is a no-op; anything that is not a live allocation aborts.
 #[inline(always)]
-pub fn free(p: *mut u8) {
+pub fn free(p: *mut u8)
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+{
     if p.is_null() {
         return;
     }
@@ -201,7 +388,12 @@ pub fn free(p: *mut u8) {
 /// invalid or double free through this path is caught when the cache
 /// flushes it, not at the call; a hint that does not match aborts.
 #[inline(always)]
-pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>) {
+pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>)
+    requires
+        hint matches Some(c) ==> c < NCLASSES,
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+{
     // A huge size (no hint) has no fast path: straight to the slow one,
     // so the fast path carries a plain class and no test of the hint.
     let Some(c) = hint else {
@@ -224,7 +416,10 @@ pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>) {
 /// exact `free` behind the null test.
 #[cold]
 #[inline(never)]
-fn free_sized_unhinted(p: *mut u8, size: usize) {
+fn free_sized_unhinted(p: *mut u8, size: usize)
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+{
     if !p.is_null() {
         free_sized_slow(p, size, None)
     }
@@ -235,7 +430,10 @@ fn free_sized_unhinted(p: *mut u8, size: usize) {
 /// check, and a bad pointer the usual message).
 #[cold]
 #[inline(never)]
-fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>) {
+fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>)
+    ensures
+        heap::free_target(p),
+{
     match super::shared_if_ready() {
         Some(shared) => {
             shared.check_size_hint(p, size, hint);
@@ -248,19 +446,21 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>) {
 /// C23 `free_sized(p, size)`: `size` must be the size requested from
 /// `malloc`/`calloc`/`realloc` (or any size in the same class).
 #[inline(always)]
-pub fn free_sized(p: *mut u8, size: usize) {
-    free_sized_hint(p, size, class_of(size))
+pub fn free_sized(p: *mut u8, size: usize)
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+{
+    free_sized_hint(p, size, class_index(size))
 }
 
 /// C23 `free_aligned_sized(p, align, size)`: the arguments given to
 /// `aligned_alloc`. An alignment that is not a power of two matches no
 /// class and aborts on a slab pointer.
-pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize) {
-    let hint = if align.is_power_of_two() {
-        class_for(size, align)
-    } else {
-        None
-    };
+pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize)
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+{
+    let hint = if align.is_power_of_two() { class_for(size, align) } else { None };
     free_sized_hint(p, size, hint)
 }
 
@@ -270,13 +470,18 @@ pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize) {
 /// same message it always did).
 #[cold]
 #[inline(never)]
-fn free_slow(p: *mut u8) {
+fn free_slow(p: *mut u8)
+    ensures
+        heap::free_target(p),
+{
     match super::shared_if_ready() {
         Some(shared) => heap::free(shared, p),
         None => free_before_init(p),
     }
 }
 
+/// Trusted: aborts (formatting is outside what Verus checks).
+#[verifier::external_body]
 #[cold]
 #[inline(never)]
 fn free_before_init(p: *mut u8) -> ! {
@@ -292,14 +497,19 @@ fn free_before_init(p: *mut u8) -> ! {
 /// slot from the dense arrays, `check_live` tests the bit, and the size is
 /// the class's.
 #[inline(always)]
-pub fn usable_size(shared: &Shared, p: *mut u8) -> usize {
+pub fn usable_size(shared: &Shared, p: *mut u8) -> usize
+    requires
+        shared.wf(),
+{
+    proof {
+        shared.lemma_wf();
+        shared.lemma_huge_pages();
+    }
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            shared
-                .table(class)
-                .check_live(slab as usize, slot as usize, p as usize);
-            CLASSES[class].size()
+            shared.table(class).check_live(slab as usize, slot as usize, p as usize);
+            class_size(class)
         }
         Kind::Huge { page } => shared.huge.usable_size(page),
         Kind::Invalid => not_an_allocation(p),
@@ -308,6 +518,8 @@ pub fn usable_size(shared: &Shared, p: *mut u8) -> usize {
 
 /// The abort of [`usable_size`] for a pointer outside every allocation,
 /// out of line so the query needs no frame for the message.
+/// Trusted: aborts (formatting is outside what Verus checks).
+#[verifier::external_body]
 #[cold]
 #[inline(never)]
 fn not_an_allocation(p: *mut u8) -> ! {
@@ -316,7 +528,10 @@ fn not_an_allocation(p: *mut u8) -> ! {
 
 /// `malloc_usable_size`. Zero for null.
 #[inline(always)]
-pub fn malloc_usable_size(p: *mut u8) -> usize {
+pub fn malloc_usable_size(p: *mut u8) -> (r: usize)
+    ensures
+        p@.addr == 0 ==> r == 0,
+{
     if p.is_null() {
         return 0;
     }
@@ -326,47 +541,120 @@ pub fn malloc_usable_size(p: *mut u8) -> usize {
     }
 }
 
+/// The class [`class_for`] picks for `align` has a size that `align`
+/// divides: a multiple of the quantum at or below it, of `align` above.
+pub(super) proof fn lemma_class_aligned(c: usize, align: usize)
+    requires
+        c < NCLASSES,
+        crate::meta::is_pow2(align),
+        align <= QUANTUM || class_table()[c as int].size as usize & (align - 1) as usize == 0,
+    ensures
+        (class_table()[c as int].size as int) % (align as int) == 0,
+{
+    crate::vspec::class::axiom_class_table_wf(c as int);
+    crate::meta::lemma_pow2_bits(align);
+    let s = class_table()[c as int].size as usize;
+    if align <= QUANTUM {
+        crate::layout::lemma_class_size_quantum(c as int);
+        crate::heap::lemma_quantum_pow2();
+        let k = choose|k: nat| k < 64 && QUANTUM as nat == #[trigger] vstd::arithmetic::power2::pow2(k);
+        vstd::arithmetic::div_mod::lemma_mod_self_0(align as int);
+        crate::layout::lemma_pow2_divides_pow2(align, align as int, k);
+        crate::layout::lemma_aligned_down(s as int, QUANTUM as int, align as int);
+    } else {
+        assert(s & ((align - 1) as usize) == 0 ==> s % align == 0) by (bit_vector)
+            requires
+                align > 0,
+                align & sub(align, 1) == 0,
+        ;
+    }
+}
+
+/// What `realloc` and `rallocx` return when they keep `p` for `size`
+/// bytes at `align` ([`old_size_or_keep`]): in the process's regions,
+/// well formed and separated, a multiple of `align` and of the quantum,
+/// and either a slot of a class at least `size` bytes large (the slab
+/// half of `Regions::user_block`, so `heap::fits` for `size` at `align`)
+/// or a page start of the huge region. A kept run's size bound, `size`
+/// at most the run's usable bytes, is the huge table's: its descriptors
+/// state no bound on the usable bytes against the region, so `size`
+/// bytes of the region from `p` is not stated.
+pub open spec fn kept(p: *mut u8, size: int, align: int) -> bool {
+    &&& heap::regions_ok()
+    &&& (p@.addr as int) % align == 0
+    &&& (p@.addr as int) % (QUANTUM as int) == 0
+    &&& (exists|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr) && size <= class_table()[c].size)
+        || crate::layout::process_regions().is_huge_block(p@.addr, 1)
+}
+
+/// The abort of [`old_size_or_keep`] for a pointer that is not an
+/// allocation, standing for the `abort_fmt` the build keeps inline (moved
+/// into a helper, the abort changes `old_size_or_keep`'s code).
+/// Trusted: aborts (formatting is outside what Verus checks).
+#[cfg(verus_only)]
+#[verifier::external_body]
+fn realloc_not_an_allocation(what: &str, p: *mut u8) -> ! {
+    crate::sys::abort_fmt(format_args!("{what} of {:#x}: not an allocation", p as usize))
+}
+
 /// The reallocation decision shared by `realloc` and `rallocx`: `None`
 /// when the live allocation `p` already serves `size` bytes at `align`
 /// (a power of two; 1 or the quantum means the natural alignment) and
 /// keeps its pointer, that is when the new size maps to `p`'s class
 /// (whose slots satisfy the alignment by construction) or to a huge run
-/// of the same number of pages at a start that satisfies it; otherwise
-/// `Some(old)`, the usable bytes of `p`, the most a move has to copy.
-/// Aborts, naming `what`, unless `p` is a live slab slot or huge run
-/// start.
-pub(super) fn old_size_or_keep(
-    shared: &Shared,
-    what: &str,
-    p: *mut u8,
-    size: usize,
-    align: usize,
-) -> Option<usize> {
+/// of the same number of pages at a start that satisfies it ([`kept`]);
+/// otherwise `Some(old)`, the usable bytes of `p`, the most a move has to
+/// copy. Aborts, naming `what`, unless `p` is a live slab slot or huge
+/// run start; so it returns only for a free target.
+///
+/// The abort for a pointer that is no allocation formats inline in the
+/// build; the verifier sees [`realloc_not_an_allocation`], the same abort
+/// out of line.
+pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: usize, align: usize) -> (r: Option<usize>)
+    requires
+        shared.wf(),
+        is_pow2(align),
+    ensures
+        heap::free_target(p),
+        r is None ==> kept(p, size as int, align as int),
+{
+    proof {
+        shared.lemma_wf();
+        shared.lemma_huge_pages();
+        shared.lemma_regions_ok();
+        lemma_pow2_pos(align);
+    }
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            shared
-                .table(class)
-                .check_live(slab as usize, slot as usize, p as usize);
+            shared.table(class).check_live(slab as usize, slot as usize, p as usize);
             if class_for(size, align) == Some(class) {
+                proof {
+                    lemma_class_aligned(class, align);
+                    heap::lemma_slot_fits(p, class as int, size as int, align);
+                    heap::lemma_slot_fits_quantum(p, class as int, size as int);
+                }
                 return None;
             }
-            Some(CLASSES[class].size())
+            Some(class_size(class))
         }
         Kind::Huge { page } => {
             let old = shared.huge.usable_size(page);
-            if class_for(size, align).is_none()
-                && shared.huge.usable_for(size) == Some(old)
-                && (p as usize) % align == 0
-            {
+            if class_for(size, align).is_none() && shared.huge.usable_for(size) == Some(old) && (p as usize) % align == 0 {
+                proof {
+                    heap::lemma_quantum_pow2();
+                    heap::lemma_huge_fits(p, 0, align, QUANTUM);
+                }
                 return None;
             }
             Some(old)
         }
-        Kind::Invalid => crate::sys::abort_fmt(format_args!(
-            "{what} of {:#x}: not an allocation",
-            p as usize
-        )),
+        Kind::Invalid => {
+            #[cfg(verus_only)]
+            realloc_not_an_allocation(what, p);
+            #[cfg(not(verus_only))]
+            crate::sys::abort_fmt(format_args!("{what} of {:#x}: not an allocation", p as usize))
+        }
     }
 }
 
@@ -374,7 +662,13 @@ pub(super) fn old_size_or_keep(
 /// same class or the same number of huge pages (`old_size_or_keep`);
 /// otherwise allocate, copy `min(old usable, new size)`, free. On failure
 /// the old block is intact.
-pub fn realloc(p: *mut u8, size: usize) -> *mut u8 {
+pub fn realloc(p: *mut u8, size: usize) -> (r: *mut u8)
+    ensures
+        p@.addr != 0 && size == 0 ==> r@.addr == 0,
+        r != p ==> heap::fits(r, size as int, QUANTUM as int),
+        heap::fits(r, size as int, QUANTUM as int) || kept(r, size as int, 1),
+        p@.addr != 0 ==> heap::free_target(p),
+{
     if p.is_null() {
         return malloc(size);
     }
@@ -382,15 +676,18 @@ pub fn realloc(p: *mut u8, size: usize) -> *mut u8 {
         free(p);
         return ptr::null_mut();
     }
-    let Some(shared) = super::shared_if_ready() else {
-        free_before_init(p)
-    };
-    let Some(old) = old_size_or_keep(shared, "realloc", p, size, 1) else {
-        return p;
-    };
+    let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
+    proof {
+        crate::meta::lemma_is_pow2_one();
+    }
+    let Some(old) = old_size_or_keep(shared, "realloc", p, size, 1) else { return p };
     let q = malloc(size);
     if q.is_null() {
         return q;
+    }
+    proof {
+        broadcast use vstd::layout::align_of_u8;
+        crate::vspec::addr::axiom_moved_block(p, old, q, size);
     }
     // SAFETY: `p` has `old` readable bytes, `q` at least `size` writable
     // ones, and they are distinct allocations.
@@ -400,12 +697,20 @@ pub fn realloc(p: *mut u8, size: usize) -> *mut u8 {
 }
 
 /// `reallocarray`: `realloc(p, n * m)` with overflow reported as `ENOMEM`.
-pub fn reallocarray(p: *mut u8, n: usize, m: usize) -> *mut u8 {
+pub fn reallocarray(p: *mut u8, n: usize, m: usize) -> (r: *mut u8)
+    ensures
+        n * m > usize::MAX ==> r@.addr == 0,
+        r != p ==> heap::fits(r, n * m, QUANTUM as int),
+        heap::fits(r, n * m, QUANTUM as int) || kept(r, n * m, 1),
+        p@.addr != 0 && n * m <= usize::MAX ==> heap::free_target(p),
+{
     match n.checked_mul(m) {
         Some(size) => realloc(p, size),
         None => enomem(),
     }
 }
+
+} // verus!
 
 // ---------------------------------------------------------------------------
 // challoc's size-returning entry points (design 13.7): `challoc_malloc_usable`,
@@ -421,9 +726,13 @@ pub fn reallocarray(p: *mut u8, n: usize, m: usize) -> *mut u8 {
 // The fast paths of `malloc`, `free` and `sdallocx` are not touched.
 // ---------------------------------------------------------------------------
 
+verus! {
+
 /// Store `n` through `usable` unless it is null (`usable` is optional for
 /// the three allocating entry points; a null makes them plain
 /// `malloc`/`calloc`/`realloc`).
+/// Trusted: writes through the caller's pointer.
+#[verifier::external_body]
 #[inline(always)]
 fn store_usable(usable: *mut usize, n: usize) {
     if !usable.is_null() {
@@ -433,13 +742,18 @@ fn store_usable(usable: *mut usize, n: usize) {
 }
 
 /// `CLASSES[class].size()` for a class a fast path produced: below
-/// `NCLASSES` by construction (`class_of`, `checked_slot`), so no bounds
+/// `NCLASSES` by construction (`class_index`, `checked_slot`), so no bounds
 /// check and no panic call sits in the inlined body (design 6.3).
 #[inline(always)]
-fn class_size(class: usize) -> usize {
+fn class_size(class: usize) -> (r: usize)
+    requires
+        class < NCLASSES,
+    ensures
+        r == class_table()[class as int].size,
+{
     debug_assert!(class < NCLASSES);
     // SAFETY: as above.
-    unsafe { CLASSES.get_unchecked(class) }.size()
+    unsafe { CLASSES.table().get_unchecked(class) }.size()
 }
 
 /// `challoc_malloc_usable(size, usable)`: `malloc(size)`, and the block's
@@ -449,13 +763,9 @@ fn class_size(class: usize) -> usize {
 /// pop used; everything else is one tail call away, as in `malloc`.
 #[inline(always)]
 pub fn malloc_usable(size: usize, usable: *mut usize) -> *mut u8 {
-    let Some(c) = class_of(size) else {
-        return malloc_usable_huge(size, usable);
-    };
+    let Some(c) = class_index(size) else { return malloc_usable_huge(size, usable) };
     let shared = super::shared_ptr();
-    let Some(h) = heap::existing_heap(shared) else {
-        return malloc_usable_class(c, usable);
-    };
+    let Some(h) = heap::existing_heap(shared) else { return malloc_usable_class(c, usable) };
     // SAFETY: as in `malloc`.
     let flags = unsafe { heap::fast_flags(shared) };
     match h.alloc_fast(c, flags) {
@@ -473,7 +783,10 @@ pub fn malloc_usable(size: usize, usable: *mut usize) -> *mut u8 {
 /// null with `errno = ENOMEM` on failure.
 #[cold]
 #[inline(never)]
-fn malloc_usable_class(class: usize, usable: *mut usize) -> *mut u8 {
+fn malloc_usable_class(class: usize, usable: *mut usize) -> *mut u8
+    requires
+        class < NCLASSES,
+{
     let p = heap::alloc_declined(super::shared(), class);
     if p.is_null() {
         store_usable(usable, 0);
@@ -489,7 +802,10 @@ fn malloc_usable_class(class: usize, usable: *mut usize) -> *mut u8 {
 #[inline(never)]
 fn malloc_usable_huge(size: usize, usable: *mut usize) -> *mut u8 {
     let shared = super::shared();
-    let (p, _) = alloc_huge(shared, size, 1);
+    proof {
+        crate::meta::lemma_is_pow2_one();
+    }
+    let (p, _, _) = alloc_huge(shared, size, 1);
     if p.is_null() {
         store_usable(usable, 0);
         return enomem();
@@ -503,40 +819,59 @@ fn malloc_usable_huge(size: usize, usable: *mut usize) -> *mut u8 {
 /// zero, not only the `n * m` bytes asked for: the caller is told it owns
 /// the usable bytes (Valkey's `zcalloc_usable` hands them on), and that is
 /// what jemalloc's `calloc` zeroes.
-pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> *mut u8 {
+pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> (r: *mut u8)
+    ensures
+        n * m > usize::MAX ==> r@.addr == 0,
+{
+    calloc_usable_zeroed(n, m, usable).0
+}
+
+/// [`calloc_usable`] with the proof that its memory reads as zero, for
+/// requests of a slab class: a non-null result comes with a [`Zeroed`]
+/// token for its `n * m` bytes. For a huge request the zero report of the run
+/// is proved as for [`calloc_zeroed`], but the `memset` length is the
+/// run's usable size read back from its descriptor ([`usable_size`]),
+/// which the proof does not relate to the request.
+#[inline(always)]
+pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize) -> (r: (*mut u8, Tracked<Zeroed>))
+    ensures
+        n * m > usize::MAX ==> r.0@.addr == 0,
+        r.0@.addr != 0 && n * m <= MEDIUM_MAX ==> r.1@.covers(r.0, n * m),
+{
     let Some(size) = n.checked_mul(m) else {
         store_usable(usable, 0);
-        return enomem();
+        return (enomem(), Tracked(Zeroed::empty(0)));
     };
     let shared = super::shared();
-    let (p, zeroed, u) = match class_of(size) {
+    proof {
+        crate::meta::lemma_is_pow2_one();
+    }
+    let (p, zeroed, u, z) = match class_index(size) {
         Some(c) => {
-            let (p, zeroed, _) = heap::alloc_zeroed(shared, c);
-            (p, zeroed, class_size(c))
+            let (p, zeroed, z) = heap::alloc_zeroed(shared, c);
+            (p, zeroed, class_size(c), z)
         }
         None => {
-            let (p, zeroed) = alloc_huge(shared, size, 1);
-            (
-                p,
-                zeroed,
-                if p.is_null() {
-                    0
-                } else {
-                    usable_size(shared, p)
-                },
-            )
+            let (p, zeroed, z) = alloc_huge(shared, size, 1);
+            (p, zeroed, if p.is_null() { 0 } else { usable_size(shared, p) }, z)
         }
     };
     if p.is_null() {
         store_usable(usable, 0);
-        return enomem();
+        return (enomem(), Tracked(Zeroed::empty(0)));
     }
-    if !zeroed {
+    let z = if !zeroed {
+        proof {
+            broadcast use vstd::layout::align_of_u8;
+            crate::vspec::addr::axiom_fresh_block(p, u);
+        }
         // SAFETY: `p` is a fresh allocation of `u` usable bytes.
-        unsafe { ptr::write_bytes(p, 0, u) };
-    }
+        unsafe { crate::vspec::zero::write_zero(p, u) }
+    } else {
+        z
+    };
     store_usable(usable, u);
-    p
+    (p, z)
 }
 
 /// `challoc_realloc_usable(p, size, usable)`: `realloc(p, size)` with the
@@ -545,7 +880,11 @@ pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> *mut u8 {
 /// place reports its class size from the classification `realloc` does
 /// anyway; a moved block reports what the `malloc_usable` that made it
 /// reported.
-pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> *mut u8 {
+pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> (r: *mut u8)
+    ensures
+        p@.addr != 0 && size == 0 ==> r@.addr == 0,
+        p@.addr != 0 ==> heap::free_target(p),
+{
     if p.is_null() {
         return malloc_usable(size, usable);
     }
@@ -554,9 +893,7 @@ pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> *mut u8 {
         store_usable(usable, 0);
         return ptr::null_mut();
     }
-    let Some(shared) = super::shared_if_ready() else {
-        free_before_init(p)
-    };
+    let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
     let (keep, old) = realloc_old(shared, p, size);
     if keep {
         store_usable(usable, old);
@@ -565,6 +902,10 @@ pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> *mut u8 {
     let q = malloc_usable(size, usable);
     if q.is_null() {
         return q;
+    }
+    proof {
+        broadcast use vstd::layout::align_of_u8;
+        crate::vspec::addr::axiom_moved_block(p, old, q, size);
     }
     // SAFETY: `p` has `old` readable bytes, `q` at least `size` writable
     // ones, and they are distinct allocations.
@@ -576,28 +917,51 @@ pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> *mut u8 {
 /// [`old_size_or_keep`]'s decision for `realloc` (alignment 1) with the
 /// old usable size reported in both outcomes: `(keep, usable)`, `keep`
 /// when `size` maps to `p`'s class or to a huge run of the same page
-/// count. The same checks and aborts as `old_size_or_keep`, which stays as
-/// it is so `realloc` and `rallocx` are untouched.
-fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (bool, usize) {
+/// count ([`kept`]). The same checks and aborts as `old_size_or_keep`, in
+/// a function of its own so that `realloc` and `rallocx` keep their code.
+///
+/// The abort for a pointer that is no allocation formats inline in the
+/// build; the verifier sees [`realloc_not_an_allocation`], the same abort
+/// out of line.
+fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (r: (bool, usize))
+    requires
+        shared.wf(),
+    ensures
+        heap::free_target(p),
+        r.0 ==> kept(p, size as int, 1),
+{
+    proof {
+        shared.lemma_wf();
+        shared.lemma_huge_pages();
+        shared.lemma_regions_ok();
+    }
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            shared
-                .table(class)
-                .check_live(slab as usize, slot as usize, p as usize);
-            (class_of(size) == Some(class), CLASSES[class].size())
+            shared.table(class).check_live(slab as usize, slot as usize, p as usize);
+            proof {
+                crate::vspec::class::axiom_class_table_wf(class as int);
+                if size <= class_table()[class as int].size {
+                    heap::lemma_slot_fits_quantum(p, class as int, size as int);
+                }
+            }
+            (class_of(size) == Some(class), class_size(class))
         }
         Kind::Huge { page } => {
             let old = shared.huge.usable_size(page);
-            (
-                class_of(size).is_none() && shared.huge.usable_for(size) == Some(old),
-                old,
-            )
+            proof {
+                crate::meta::lemma_is_pow2_one();
+                heap::lemma_quantum_pow2();
+                heap::lemma_huge_fits(p, 0, 1, QUANTUM);
+            }
+            (class_of(size).is_none() && shared.huge.usable_for(size) == Some(old), old)
         }
-        Kind::Invalid => crate::sys::abort_fmt(format_args!(
-            "realloc of {:#x}: not an allocation",
-            p as usize
-        )),
+        Kind::Invalid => {
+            #[cfg(verus_only)]
+            realloc_not_an_allocation("realloc", p);
+            #[cfg(not(verus_only))]
+            crate::sys::abort_fmt(format_args!("realloc of {:#x}: not an allocation", p as usize))
+        }
     }
 }
 
@@ -609,7 +973,11 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (bool, usize) {
 /// size from the same classification the exact `free` then repeats, so a
 /// bad pointer dies with `free`'s message.
 #[inline(always)]
-pub fn free_usable(p: *mut u8) -> usize {
+pub fn free_usable(p: *mut u8) -> (r: usize)
+    ensures
+        p@.addr == 0 ==> r == 0,
+        p@.addr != 0 ==> heap::free_target(p),
+{
     if p.is_null() {
         return 0;
     }
@@ -628,14 +996,19 @@ pub fn free_usable(p: *mut u8) -> usize {
 /// double free, and the huge table's for a run that is not live), then the
 /// exact `free` (heap creation, a full cache, another arena, the huge
 /// release).
+///
 #[cold]
 #[inline(never)]
-fn free_usable_slow(p: *mut u8) -> usize {
-    let Some(shared) = super::shared_if_ready() else {
-        free_before_init(p)
-    };
+fn free_usable_slow(p: *mut u8) -> (r: usize)
+    ensures
+        heap::free_target(p),
+{
+    let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
+    proof {
+        shared.lemma_wf();
+    }
     let usable = match shared.classify_free(p) {
-        Ok((class, _)) => CLASSES[class].size(),
+        Ok((class, _)) => class_size(class),
         Err(page) => shared.huge.usable_size(page),
     };
     heap::free(shared, p);
@@ -647,10 +1020,17 @@ fn free_usable_slow(p: *mut u8) -> usize {
 /// above `size` whose slot size is a multiple of `align`. `None` when the
 /// request is a huge run, either because `size` is above `MEDIUM_MAX` or
 /// because `align` is. Shared by `aligned_alloc`, `mallocx`, `rallocx`
-/// and `nallocx`.
+/// and `nallocx`. The mask in the second postcondition says "a multiple
+/// of `align`" because every caller passes a power of two.
 #[inline]
-pub(super) fn class_for(size: usize, align: usize) -> Option<usize> {
-    let c = class_of(size)?;
+pub(super) fn class_for(size: usize, align: usize) -> (r: Option<usize>)
+    ensures
+        r matches Some(c) ==> c < NCLASSES && size <= class_table()[c as int].size,
+        r matches Some(c) ==> align <= QUANTUM || class_table()[c as int].size as usize & (align - 1) as usize == 0,
+        size <= MEDIUM_MAX && align <= QUANTUM ==> r is Some,
+        size > MEDIUM_MAX || align > MEDIUM_MAX ==> r is None,
+{
+    let c = class_index(size)?;
     if align <= QUANTUM {
         return Some(c);
     }
@@ -663,9 +1043,18 @@ pub(super) fn class_for(size: usize, align: usize) -> Option<usize> {
     // this is inlined into (`sdallocx`: a call in the body costs the fast
     // path a frame it otherwise needs no part of, design 6.3), and `align`
     // is a power of two so the divisibility test is a mask.
+    let ghost c0 = c;
     let mut c = c;
-    loop {
-        let cls = CLASSES.get(c)?;
+    loop
+        invariant
+            c0 <= c,
+            c0 < NCLASSES,
+            QUANTUM < align <= MEDIUM_MAX,
+            size <= MEDIUM_MAX,
+            forall|j: int| c0 <= j < NCLASSES ==> size <= #[trigger] class_table()[j].size,
+        decreases NCLASSES - c,
+    {
+        let cls = CLASSES.table().get(c)?;
         if cls.size() & (align - 1) == 0 {
             return Some(c);
         }
@@ -675,32 +1064,117 @@ pub(super) fn class_for(size: usize, align: usize) -> Option<usize> {
 
 /// Allocate `size` bytes aligned to `align`, a power of two. Null with
 /// `errno = ENOMEM` on exhaustion.
-pub fn alloc_aligned(align: usize, size: usize) -> *mut u8 {
+pub fn alloc_aligned(align: usize, size: usize) -> (r: *mut u8)
+    requires
+        is_pow2(align),
+    ensures
+        heap::fits(r, size as int, align as int),
+{
     debug_assert!(align.is_power_of_two());
     if align <= QUANTUM {
-        return malloc(size);
+        let p = malloc(size);
+        proof {
+            heap::lemma_quantum_pow2();
+            let k = choose|k: nat| k < 64 && QUANTUM as nat == #[trigger] pow2(k);
+            assert(is_pow2(QUANTUM));
+            lemma_fits_down(p, size as int, QUANTUM, align);
+        }
+        return p;
     }
     let shared = super::shared();
+    proof {
+        shared.lemma_regions_ok();
+    }
     let p = match class_for(size, align) {
-        Some(c) => heap::alloc(shared, c),
-        None => alloc_huge(shared, size, align).0,
+        Some(c) => {
+            let p = heap::alloc(shared, c);
+            proof {
+                if p@.addr != 0 {
+                    crate::vspec::class::axiom_class_table_wf(c as int);
+                    lemma_mask_mod(class_table()[c as int].size as usize, align);
+                    heap::lemma_slot_fits(p, c as int, size as int, align);
+                }
+            }
+            p
+        },
+        None => {
+            let p = alloc_huge(shared, size, align).0;
+            proof {
+                lemma_huge_result(p, size, align);
+            }
+            p
+        },
     };
     if p.is_null() { enomem() } else { p }
 }
 
+/// A result aligned to the quantum is aligned to every smaller power of
+/// two.
+proof fn lemma_fits_down(p: *mut u8, size: int, big: usize, align: usize)
+    requires
+        heap::fits(p, size, big as int),
+        is_pow2(big),
+        is_pow2(align),
+        align <= big,
+    ensures
+        heap::fits(p, size, align as int),
+{
+    if p@.addr != 0 {
+        let k = choose|k: nat| k < 64 && big as nat == #[trigger] pow2(k);
+        vstd::arithmetic::power2::lemma_pow2_pos(k);
+        lemma_pow2_pos(align);
+        vstd::arithmetic::div_mod::lemma_mod_self_0(align as int);
+        crate::layout::lemma_pow2_divides_pow2(align, align as int, k);
+        crate::layout::lemma_aligned_down(p@.addr as int, big as int, align as int);
+    }
+}
+
+/// For a power of two `a`, `x & (a - 1) == 0` says `a` divides `x`.
+proof fn lemma_mask_mod(x: usize, a: usize)
+    requires
+        is_pow2(a),
+    ensures
+        x & ((a - 1) as usize) == 0 ==> (x as int) % (a as int) == 0,
+{
+    crate::meta::lemma_pow2_bits(a);
+    assert(x & ((a - 1) as usize) == 0 ==> x % a == 0) by (bit_vector)
+        requires
+            a > 0,
+            a & sub(a, 1) == 0,
+    ;
+}
+
 /// `aligned_alloc` and `memalign`: `EINVAL` unless `align` is a power of
 /// two. glibc does not require `size` to be a multiple of `align`.
-pub fn aligned_alloc(align: usize, size: usize) -> *mut u8 {
+pub fn aligned_alloc(align: usize, size: usize) -> (r: *mut u8)
+    ensures
+        !is_pow2(align) ==> r@.addr == 0,
+        is_pow2(align) ==> heap::fits(r, size as int, align as int),
+{
     if !align.is_power_of_two() {
         return einval();
     }
     alloc_aligned(align, size)
 }
 
+/// Store the allocation through `posix_memalign`'s out-pointer.
+/// Trusted: writes through the caller's pointer.
+#[verifier::external_body]
+#[inline(always)]
+fn store_out(out: *mut *mut u8, p: *mut u8) {
+    // SAFETY: the caller passes a valid out-pointer.
+    unsafe { *out = p };
+}
+
 /// `posix_memalign`. Returns 0, `EINVAL` (alignment not a power of two or
 /// not a multiple of `sizeof(void *)`) or `ENOMEM`; never touches `errno`
 /// on the `EINVAL` path.
-pub fn posix_memalign(out: *mut *mut u8, align: usize, size: usize) -> c_int {
+pub fn posix_memalign(out: *mut *mut u8, align: usize, size: usize) -> (r: c_int)
+    ensures
+        r == 0 || r == ENOMEM || r == EINVAL,
+        // `sizeof(void *)` is 8 on every target challoc builds for.
+        r == EINVAL <==> !(is_pow2(align) && align % 8 == 0),
+{
     if !align.is_power_of_two() || align % core::mem::size_of::<*mut u8>() != 0 {
         return EINVAL;
     }
@@ -708,24 +1182,86 @@ pub fn posix_memalign(out: *mut *mut u8, align: usize, size: usize) -> c_int {
     if p.is_null() {
         return ENOMEM;
     }
-    // SAFETY: the caller passes a valid out-pointer.
-    unsafe { *out = p };
+    store_out(out, p);
     0
 }
 
+/// `shared.regions.page_size()`, the process's page (`1 << lg_page` of
+/// its regions), a power of two: `Regions::wf` (part of `Shared::wf`)
+/// bounds `lg_page` below 64.
+#[inline(always)]
+fn page_size(shared: &Shared) -> (r: usize)
+    requires
+        shared.wf(),
+    ensures
+        is_pow2(r),
+        r == 1usize << crate::layout::process_regions().lg_page,
+{
+    proof {
+        shared.lemma_wf();
+    }
+    let r = shared.regions.page_size();
+    proof {
+        let k = shared.regions.lg_page as nat;
+        vstd::arithmetic::power2::lemma2_to64();
+        vstd::arithmetic::power2::lemma2_to64_rest();
+        if k < 63 {
+            vstd::arithmetic::power2::lemma_pow2_strictly_increases(k, 63);
+        }
+        vstd::bits::lemma_usize_shl_is_mul(1, k as usize);
+        assert(r as nat == vstd::arithmetic::power2::pow2(k));
+    }
+    r
+}
+
 /// `valloc`: page-aligned.
-pub fn valloc(size: usize) -> *mut u8 {
-    let page = super::shared().regions.page_size();
+pub fn valloc(size: usize) -> (r: *mut u8)
+    ensures
+        heap::fits(r, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
+{
+    let page = page_size(super::shared());
     alloc_aligned(page, size)
 }
 
 /// `pvalloc`: page-aligned, size rounded up to a whole page.
-pub fn pvalloc(size: usize) -> *mut u8 {
-    let page = super::shared().regions.page_size();
-    let Some(rounded) = size.checked_add(page - 1) else {
-        return enomem();
-    };
-    alloc_aligned(page, rounded & !(page - 1))
+pub fn pvalloc(size: usize) -> (r: *mut u8)
+    ensures
+        heap::fits(r, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
+{
+    let page = page_size(super::shared());
+    proof { lemma_pow2_pos(page); }
+    let Some(rounded) = size.checked_add(page - 1) else { return enomem() };
+    let p = alloc_aligned(page, rounded & !(page - 1));
+    proof {
+        let m = rounded & !((page - 1) as usize);
+        crate::meta::lemma_pow2_bits(page);
+        assert(m >= size) by (bit_vector)
+            requires
+                page > 0,
+                page & sub(page, 1) == 0,
+                rounded == size + (page - 1),
+                m == rounded & !((page - 1) as usize),
+        ;
+        if p@.addr != 0 {
+            lemma_user_block_shrink(p@.addr, m as int, size as int);
+        }
+    }
+    p
+}
+
+/// A block for `big` bytes is one for `small <= big`.
+proof fn lemma_user_block_shrink(p: usize, big: int, small: int)
+    requires
+        crate::layout::process_regions().user_block(p, big),
+        0 <= small <= big,
+    ensures
+        crate::layout::process_regions().user_block(p, small),
+{
+    let r = crate::layout::process_regions();
+    if exists|c: int| #[trigger] r.is_slot(c, p) && big <= class_table()[c].size {
+        let c = choose|c: int| #[trigger] r.is_slot(c, p) && big <= class_table()[c].size;
+        assert(r.is_slot(c, p) && small <= class_table()[c].size);
+    }
 }
 
 /// `malloc_trim`: return the calling thread's cached slots to their slabs,
@@ -733,14 +1269,14 @@ pub fn pvalloc(size: usize) -> *mut u8 {
 /// section 8). Returns 1 if anything was purged, 0 otherwise or before
 /// init. `pad` is glibc's top-of-heap allowance and has no meaning here.
 pub fn malloc_trim(_pad: usize) -> c_int {
-    let Some(shared) = super::shared_if_ready() else {
-        return 0;
-    };
-    if let Some(h) = heap::existing_heap(shared) {
+    let Some(shared) = super::shared_if_ready() else { return 0 };
+    if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
         h.flush_all(shared);
     }
     (crate::purge::purge_all(shared) > 0) as c_int
 }
+
+} // verus!
 
 // ---------------------------------------------------------------------------
 // C ABI. Compiled out of the test binary (see the module docs).
