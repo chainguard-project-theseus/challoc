@@ -1178,7 +1178,7 @@ fn shared_storage_ptr() -> (p: *mut Shared)
 
 ### S32. `publish_features`
 
-src/api/mod.rs:375. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:377. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The published feature report: `FEATURE_LINE` from `features`, then `FEATURES`.
@@ -1189,7 +1189,7 @@ unsafe fn publish_features(features: Features)
 
 ### S33. `register_fork_handlers`
 
-src/api/mod.rs:387. Kind: external_body. Category: function pointer.
+src/api/mod.rs:389. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > Register the fork handlers, aborting if glibc refuses.
@@ -1200,7 +1200,7 @@ fn register_fork_handlers()
 
 ### S34. `save_sigmask`
 
-src/api/mod.rs:503. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:505. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > Save the signal mask for `fork_release`.
@@ -1211,7 +1211,7 @@ unsafe fn save_sigmask(mask: u64)
 
 ### S35. `saved_sigmask`
 
-src/api/mod.rs:516. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:518. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The signal mask `fork_prepare` saved.
@@ -1222,7 +1222,7 @@ unsafe fn saved_sigmask() -> u64
 
 ### S36. `tcaches_lock`
 
-src/api/mod.rs:528. Kind: external_body. Category: allocator invariant.
+src/api/mod.rs:530. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `s.tcaches.raw_lock()`, the explicit-cache table's lock.

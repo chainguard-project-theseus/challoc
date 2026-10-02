@@ -1,0 +1,285 @@
+--- a/src/api/cxx.rs
++++ b/src/api/cxx.rs
+@@ -43,7 +43,12 @@
+ /// Address of libstdc++'s `std::get_new_handler()`, or null when no
+ /// libstdc++ is loaded in the process.
+ #[inline(never)]
++#[cfg(miri)]
+ fn get_new_handler_addr() -> *const c_void {
++    core::ptr::null()
++}
++#[cfg(not(miri))]
++fn get_new_handler_addr() -> *const c_void {
+     let out: *const c_void;
+     // SAFETY: a GOT load of a weak undefined symbol; no memory is written.
+     unsafe {
+@@ -72,6 +77,9 @@
+ /// Trusted: inline assembly.
+ #[verifier::external_body]
+ #[inline(never)]
++#[cfg(miri)]
++fn throw_bad_alloc_addr() -> *const c_void { core::ptr::null() }
++#[cfg(not(miri))]
+ fn throw_bad_alloc_addr() -> *const c_void {
+     let out: *const c_void;
+     // SAFETY: as in `get_new_handler_addr`.
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -1456,6 +1456,9 @@
+     /// assembly; nothing is claimed about the address.
+     #[verifier::external_body]
+     #[inline(never)]
++    #[cfg(miri)]
++    fn malloc_conf_addr() -> *const c_void { (&raw const crate::api::jemalloc::malloc_conf).cast() }
++    #[cfg(not(miri))]
+     fn malloc_conf_addr() -> *const c_void {
+         let out: *const c_void;
+         // SAFETY: a GOT load of a defined data symbol; no memory is written.
+@@ -1481,6 +1484,9 @@
+     /// this one), or null. Trusted: as `malloc_conf_addr`.
+     #[verifier::external_body]
+     #[inline(never)]
++    #[cfg(miri)]
++    fn je_malloc_conf_addr() -> *const c_void { core::ptr::null() }
++    #[cfg(not(miri))]
+     fn je_malloc_conf_addr() -> *const c_void {
+         let out: *const c_void;
+         // SAFETY: as in `malloc_conf_addr`.
+--- a/src/layout/regions.rs
++++ b/src/layout/regions.rs
+@@ -1703,7 +1703,7 @@
+ {
+     // SAFETY: `c < NCLASSES` (the caller's contract).
+     let p = unsafe { CLASSES.as_ptr().add(c) };
+-    #[cfg(target_arch = "x86_64")]
++    #[cfg(all(target_arch = "x86_64", not(miri)))]
+     let p = {
+         let mut p = p;
+         // SAFETY: an empty instruction sequence; `p` comes out unchanged.
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -8,7 +8,7 @@
+ //! library itself never does.
+ 
+ #![no_std]
+-#![deny(warnings)]
++#![cfg_attr(not(miri), deny(warnings))]
+ #![deny(unsafe_op_in_unsafe_fn)]
+ 
+ #[cfg(test)]
+--- a/src/rseq.rs
++++ b/src/rseq.rs
+@@ -159,6 +159,9 @@
+ /// Trusted: inline assembly; nothing is claimed about the addresses.
+ #[verifier::external_body]
+ #[inline(never)]
++#[cfg(miri)]
++fn symbols() -> (*const isize, *const u32, *const u32) { (core::ptr::null(), core::ptr::null(), core::ptr::null()) }
++#[cfg(not(miri))]
+ fn symbols() -> (*const isize, *const u32, *const u32) {
+     let (so, ss, sf): (*const isize, *const u32, *const u32);
+     // SAFETY: GOT loads of three weak symbols; no memory is dereferenced.
+--- a/src/sys/auxv.rs
++++ b/src/sys/auxv.rs
+@@ -56,9 +56,14 @@
+ 
+ } // verus!
+ 
++#[cfg(not(miri))]
+ unsafe extern "C" {
+     /// glibc's `getauxval(3)`: the value for `kind`, 0 when absent.
+     pub safe fn getauxval(kind: usize) -> usize;
++}
++#[cfg(miri)]
++pub fn getauxval(kind: usize) -> usize {
++    if kind == AT_PAGESZ { 4096 } else { 0 }
+ }
+ 
+ #[cfg(test)]
+--- a/src/sys/raw.rs
++++ b/src/sys/raw.rs
+@@ -8,7 +8,7 @@
+ //! These are the trusted base of the verified wrappers in `sys`: each is
+ //! `external_body` and specified as returning some word, nothing more.
+ 
+-#[cfg(target_arch = "x86_64")]
++#[cfg(all(target_arch = "x86_64", not(miri)))]
+ mod imp {
+     use core::arch::asm;
+     use vstd::prelude::*;
+@@ -225,6 +225,131 @@
+     }
+ 
+     } // verus!
++}
++
++#[cfg(miri)]
++mod imp {
++    use crate::sys::nr;
++    pub unsafe fn syscall0(n: usize) -> usize {
++        unsafe { emu(n, [0; 6]) }
++    }
++    pub unsafe fn syscall1(n: usize, a: usize) -> usize {
++        unsafe { emu(n, [a, 0, 0, 0, 0, 0]) }
++    }
++    pub unsafe fn syscall2(n: usize, a: usize, b: usize) -> usize {
++        unsafe { emu(n, [a, b, 0, 0, 0, 0]) }
++    }
++    pub unsafe fn syscall3(n: usize, a: usize, b: usize, c: usize) -> usize {
++        unsafe { emu(n, [a, b, c, 0, 0, 0]) }
++    }
++    pub unsafe fn syscall4(n: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
++        unsafe { emu(n, [a, b, c, d, 0, 0]) }
++    }
++    pub unsafe fn syscall5(n: usize, a: usize, b: usize, c: usize, d: usize, e: usize) -> usize {
++        unsafe { emu(n, [a, b, c, d, e, 0]) }
++    }
++    pub unsafe fn syscall6(
++        n: usize,
++        a: usize,
++        b: usize,
++        c: usize,
++        d: usize,
++        e: usize,
++        f: usize,
++    ) -> usize {
++        unsafe { emu(n, [a, b, c, d, e, f]) }
++    }
++    fn neg(e: i32) -> usize {
++        (-(e as isize)) as usize
++    }
++    fn errno() -> i32 {
++        unsafe { *libc::__errno_location() }
++    }
++    fn ret(r: isize) -> usize {
++        if r < 0 { neg(errno()) } else { r as usize }
++    }
++    fn p(a: usize) -> *mut u8 {
++        core::ptr::with_exposed_provenance_mut(a)
++    }
++    unsafe fn zero(a: usize, len: usize) {
++        unsafe { core::ptr::write_bytes(p(a), 0, len) }
++    }
++    unsafe fn emu(n: usize, a: [usize; 6]) -> usize {
++        unsafe {
++            match n {
++                nr::MMAP => {
++                    let flags = a[3] as i32;
++                    if a[4] as i32 != -1 {
++                        return neg(libc::ENOSYS);
++                    }
++                    if flags & libc::MAP_FIXED != 0 {
++                        zero(a[0], a[1]);
++                        return a[0];
++                    }
++                    // Without `MAP_FIXED` the address is only a hint.
++                    // Miri materialises every mapping: refuse the real layout's
++                    // terabyte reservations rather than exhaust the host.
++                    if a[1] > 2 << 30 {
++                        return neg(libc::ENOMEM);
++                    }
++                    let r = libc::mmap(
++                        core::ptr::null_mut(),
++                        a[1],
++                        libc::PROT_READ | libc::PROT_WRITE,
++                        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
++                        -1,
++                        0,
++                    );
++                    if r == libc::MAP_FAILED {
++                        neg(libc::ENOMEM)
++                    } else {
++                        r.expose_provenance()
++                    }
++                }
++                // Reservations stay mapped read-write: protections, unmaps and
++                // guards are not modelled. A discarded range reads zero again.
++                nr::MUNMAP | nr::MPROTECT => 0,
++                nr::MADVISE => match a[2] as i32 {
++                    libc::MADV_DONTNEED => {
++                        zero(a[0], a[1]);
++                        0
++                    }
++                    libc::MADV_FREE | 14 | 15 | 25 => 0,
++                    _ => neg(libc::EINVAL),
++                },
++                nr::READ => ret(libc::read(a[0] as i32, p(a[1]).cast(), a[2])),
++                nr::WRITE => ret(libc::write(a[0] as i32, p(a[1]).cast(), a[2])),
++                nr::CLOSE => ret(libc::close(a[0] as i32) as isize),
++                // `sys::open` passes `AT_FDCWD` and the crate opens absolute
++                // paths only, so the directory argument is dropped.
++                nr::OPENAT => {
++                    ret(libc::open(p(a[1]).cast(), a[2] as i32, a[3] as libc::c_uint) as isize)
++                }
++                nr::GETPID => libc::getpid() as usize,
++                nr::GETTID => libc::gettid() as usize,
++                nr::CLOCK_GETTIME => ret(libc::clock_gettime(a[0] as i32, p(a[1]).cast()) as isize),
++                // The kernel returns the bytes of mask it wrote; Miri's CPU
++                // set fits in the first word.
++                nr::SCHED_GETAFFINITY => {
++                    let r = libc::sched_getaffinity(0, a[1], p(a[2]).cast());
++                    if r < 0 { neg(errno()) } else { 8 }
++                }
++                nr::GETRANDOM => ret(libc::getrandom(p(a[0]).cast(), a[1], a[2] as u32)),
++                nr::FUTEX => ret(libc::syscall(
++                    libc::SYS_futex,
++                    p(a[0]).cast::<u32>(),
++                    a[1] as i32,
++                    a[2] as u32,
++                    p(a[3]).cast::<libc::timespec>().cast_const(),
++                    p(a[4]).cast::<u32>(),
++                    a[5] as u32,
++                ) as isize),
++                nr::EXIT_GROUP => libc::_exit(a[0] as i32),
++                nr::TGKILL => libc::abort(),
++                _ => neg(libc::ENOSYS),
++            }
++        }
++    }
+ }
+ 
+ pub use imp::*;
+--- a/src/sys/tls.rs
++++ b/src/sys/tls.rs
+@@ -23,6 +23,7 @@
+ //! itself: the only dynamic relocation is the `TPOFF64` / `TLS_TPREL64` fixup
+ //! of the GOT entry, which the test below checks with `readelf`.
+ 
++#[cfg_attr(miri, allow(unused_imports))]
+ use core::arch::{asm, global_asm};
+ use core::ffi::c_void;
+ use vstd::prelude::verus;
+@@ -66,6 +67,7 @@
+ /// this thread.
+ #[inline(always)]
+ #[verifier::external_body]
++#[cfg(not(miri))]
+ pub fn get() -> *mut c_void {
+     let out: *mut c_void;
+     // SAFETY: reads the calling thread's own `.tbss` slot through the thread
+@@ -137,6 +139,7 @@
+ /// Write the calling thread's slot.
+ #[inline(always)]
+ #[verifier::external_body]
++#[cfg(not(miri))]
+ pub fn set(value: *mut c_void) {
+     // SAFETY: writes the calling thread's own `.tbss` slot; see `get`.
+     unsafe {
+@@ -326,4 +329,17 @@
+             "challoc_tls slot leaked as a dynamic symbol:\n{dynsyms}"
+         );
+     }
++}
++
++#[cfg(miri)]
++extern crate std;
++#[cfg(miri)]
++std::thread_local! { static SLOT: core::cell::Cell<*mut c_void> = const { core::cell::Cell::new(core::ptr::null_mut()) }; }
++#[cfg(miri)]
++pub fn get() -> *mut c_void {
++    SLOT.with(|s| s.get())
++}
++#[cfg(miri)]
++pub fn set(value: *mut c_void) {
++    SLOT.with(|s| s.set(value))
+ }
