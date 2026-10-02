@@ -167,7 +167,7 @@ core::sync::atomic::compiler_fence	atomics primitive	loom/GenMC
 crate::layout::adopt_page_geometry	UnsafeCell/volatile/transmute	RefinedRust
 core::fmt::Formatter::<'a>::write_str	core library	Kani
 core::fmt::Formatter::<'a>::write_fmt	function pointer	Kani
-libc::pthread_setspecific	FFI/syscall	none (assumption)
+pthread_setspecific	FFI/syscall	none (assumption)
 seed	FFI/syscall	none (assumption)
 src/sys/auxv.rs:getauxval	FFI/syscall	none (assumption)
 Reader	function pointer	Kani

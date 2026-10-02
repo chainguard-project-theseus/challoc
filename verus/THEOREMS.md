@@ -106,8 +106,10 @@ and aborts at run time (theorem 3 is not voided for it).
   result is a permutation of the batch (the flush's tokens follow it).
 - `thread::fast_flags` (`heap/thread.rs:170`): the `PUSH_PAC` bit read
   through a raw pointer is `pac_mode()`.
-- TLS asm: `sys::tls::get` (`sys/tls.rs:69`), `get_tp` (aarch64,
-  `:118`), `set` (`:140`); they claim nothing.
+- TLS asm: `sys::tls::get` (`sys/tls.rs:125`), `get_tp` (aarch64,
+  `:180`), `set` (`:205`); a read returns the `TlsSlot` token's value
+  and `set` makes the written value the token's (theorem 8), nothing
+  more.
 
 **Class table.**
 - `ClassTable::table` (`layout/mod.rs:1115`) and `Regions::class_entry`
@@ -1220,6 +1222,172 @@ an owned slab, and ensures its pick's owner; `plan` collects
   token survives between the calls).
 - `checked_slot`'s owner test on the `free` fast path reads through
   `owner_unchecked` (trusted, unchanged); it only picks the cache.
+
+## 8. Re-entrant heap registration
+
+Read at this section's commit (the `file:line`s are the `fn` line there).
+
+**Model.** The calling thread's TLS slot is per-thread ghost state: a
+`sys::tls::TlsSlot` token (`sys/tls.rs:83`) whose `value()` is what the
+slot holds and whose `creates()` counts the `Heap::create` calls made
+with it. `get`, `get_tp` (`sys/tls.rs:125`, `:164`, `:180`) take it
+shared and return its value; `set` (`:205`) takes it `&mut` and makes
+the written value its value. `Heap::create` (`heap/mod.rs:4107`) takes
+it `&mut`, leaves the value alone and adds one to `creates`; it is the
+only caller of `TlsSlot::note_create` (`sys/tls.rs:107`), the only
+writer of `creates`. A function handed only `&TlsSlot` can therefore
+neither write the slot nor create a thread heap through that token, and
+one handed `&mut TlsSlot` states what it does to both in its `ensures`.
+That it does neither at all also needs that nothing it calls makes a
+token of its own: `TlsSlot::entry` is `pub(crate)`, and its only callers
+are the four top-level users of the slot named in the premises below
+(checked by inspection).
+
+The public readers keep their signatures: `heap_for_thread` and
+`existing_heap` (`heap/thread.rs:83`, `:200`) make the token at entry
+(`TlsSlot::entry`, `sys/tls.rs:102`, value unconstrained until read)
+and run the cores `heap_for_thread_in` and `existing_heap_in`
+(`heap/thread.rs:100`, `:212`), which carry the contracts.
+
+`ThreadKey::set` (`heap/shared.rs:291`) is the call that may re-enter:
+glibc's `pthread_setspecific` `calloc`s a second-level block of 32 keys
+the first time a thread sets a non-null value for a key in it (keys from
+index 32 up; the first 32 live in the thread descriptor). Its wrapper
+`heap::shared::pthread_setspecific` (`heap/shared.rs:326`,
+`external_body`) models every nested allocator entry as a core holding
+the token the outer call lends it: it requires `reentry_benign` of the
+slot and ensures the token unchanged, which is what the cores guarantee
+at a benign value (below).
+
+**Statement** (`heap/thread.rs:43`, `:100`, `:153`, `:212`;
+`heap/shared.rs:291`):
+
+```rust
+pub open spec fn reentry_benign(v: usize) -> bool {
+    v == TLS_CREATING || v == TLS_EXITED
+}
+
+pub fn heap_for_thread_in<'a>(shared: &'a Shared, Tracked(tls): Tracked<&mut TlsSlot>)
+    -> (r: Option<&'a mut Heap>)
+    requires shared.wf(),
+    ensures
+        r matches Some(h) ==> h.wf(),
+        reentry_benign(old(tls).value()) ==> r is None && *final(tls) == *old(tls),
+        old(tls).value() > TLS_EXITED ==> r is Some && *final(tls) == *old(tls),
+        old(tls).value() == 0 ==> final(tls).creates() == old(tls).creates() + 1,
+        old(tls).value() == 0 && r is None ==> final(tls).value() == 0,
+
+pub fn existing_heap_in(shared: *const Shared, Tracked(tls): Tracked<&TlsSlot>)
+    -> (r: Option<&'static mut Heap>)
+    ensures
+        r matches Some(h) ==> h.wf(),
+        r is None <==> tls.value() <= TLS_EXITED,
+
+fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize,
+    Tracked(tls): Tracked<&mut TlsSlot>) -> (r: Option<&'a mut Heap>)
+    requires shared.wf(), slot == old(tls).value(),
+    ensures
+        r matches Some(h) ==> h.wf(),
+        slot != 0 ==> r is None && *final(tls) == *old(tls),
+        slot == 0 ==> final(tls).creates() == old(tls).creates() + 1,
+        slot == 0 && r is None ==> final(tls).value() == 0,
+
+pub fn set(&self, heap: *mut Heap, Tracked(tls): Tracked<&mut TlsSlot>)  // ThreadKey
+    requires reentry_benign(old(tls).value()),
+    ensures *final(tls) == *old(tls),
+```
+
+(Line breaks added.) While `create_heap_for_thread` is inside
+`ThreadKey::set`, the slot holds `TLS_CREATING`: the call's `requires`
+is checked there, after `set(TLS_CREATING)` and before the heap is
+published. A nested `heap_for_thread` or `existing_heap` on that thread
+then returns `None` and leaves the token exactly as it found it: the
+slot still holds `TLS_CREATING`, no `Heap::create` call was made, and no
+heap was handed out or published. `existing_heap_in` holds only a
+shared borrow of the token, and its callees (`tls_heap_slot`,
+`fast_flags`, `heap_from_slot`) make none of their own. The same holds at
+`TLS_EXITED`, after the thread's destructor has run. On an empty slot
+`heap_for_thread` makes exactly one `Heap::create` call and leaves the
+slot empty unless it returns a heap; above the sentinels it returns the
+published heap and writes nothing.
+
+**If `Heap::create` itself allocated.** `Heap::create` runs on the
+empty slot, before `TLS_CREATING` is set, and its contract says it
+leaves the token's value alone: the model has no nested entry there.
+That rests on a premise checked by inspection, not by Verus: nothing
+`Heap::create` reaches calls code that can allocate. Its callees are
+`assign_home` (`Arenas::assign`, atomics and the arenas lock),
+`create_detached`, which calls `Meta::alloc_raw` (verified; the
+metadata lock, and `mprotect` as a raw syscall on its commit path) and
+`init_fields` (`tid()` and `now_ns()`: `gettid` and `clock_gettime` as
+raw syscalls), `mark_bound`, and `Arenas::unbind` on the null path. The
+abort paths (`sys::abort_fmt`, which writes with a raw `write` and
+raises `SIGABRT`, and the panic handler, which aborts) do not return.
+None calls libc. If one allocated, the precise outcome would be:
+- a nested `existing_heap` sees the empty slot and returns `None` (the
+  theorem's conclusion still holds for it);
+- a nested `heap_for_thread` sees the empty slot and makes its own
+  `Heap::create` call. If the outer call holds the arenas or metadata
+  lock at that point, the nested one blocks on it (the `Lock` is not
+  re-entrant): the thread deadlocks. Otherwise the nested call creates,
+  registers and publishes a second heap `H2`; when the outer call
+  resumes it overwrites the slot with `TLS_CREATING` and then its own
+  heap `H1`, and the key with `H1`. `H2` is never destroyed: its
+  metadata block, its arena binding (`Arenas::assign`'s count) and any
+  slots cached in it are stranded. Blocks the nested call returned stay
+  valid allocations. If `Heap::create` allocated on every call, the
+  nesting would recurse until the stack overflowed;
+- in the model the outer token is then stale, so the premise below
+  fails and the theorem does not apply to that outer call.
+A signal handler that allocates while `Heap::create` runs is the same
+case (allocation is not async-signal-safe, and challoc does not claim
+it).
+
+**Premises beyond the common ones.**
+- The slot premise (`sys/tls.rs:83`): a token is not read after
+  the slot has changed other than through it. `TlsSlot::entry`
+  (`pub(crate)`, verified body, trusted in effect) makes a token with an
+  unconstrained value at each top-level user of the slot:
+  `heap_for_thread`, `existing_heap`, `heap_destructor`
+  (`heap/thread.rs:59`, writes `TLS_EXITED`) and the background thread's
+  `create` (`purge/background.rs:230`). An entry nested in another
+  stands for the outer token lent to it, which the nested call leaves
+  unchanged when the value is benign. Writers of the slot are
+  `create_heap_for_thread` (only on an empty slot), `heap_destructor`
+  and `create`, all through their tokens. `create` parks a slot above
+  the sentinels on `TLS_CREATING` across `pthread_join` and
+  `pthread_create` and then restores it; when the slot is empty it
+  does not park, a nested allocation there may create this thread's
+  heap, and `create` does not read its token again, so the premise
+  holds.
+- `heap::shared::pthread_setspecific` (`external_body`): an FFI call
+  whose nested allocator entries reach the slot only through the cores
+  (or, at a benign value, `create`, which then writes nothing), holding
+  the token it is lent. It replaces the `assume_specification`
+  of `libc::pthread_setspecific` (formerly in `vspec/heap.rs`), which
+  claimed nothing.
+- `sys::tls::get`, `get_tp`, `set` (inline asm, `external_body`): a read
+  returns the token's value; a write makes it the token's value.
+- `Heap::create` makes no call that can allocate (above).
+
+**Where the statement is weaker than the code.**
+- It covers only the slot and heap creation. A nested call's other
+  effects (class locks, the heapless slow paths it takes) are outside
+  it; that `create_heap_for_thread` holds no allocator lock across
+  `ThreadKey::set` is not stated here.
+- After a successful creation the theorem does not state that the slot
+  holds a value above the sentinels (it does: the heap address, or the
+  address signed under PAC, which keeps its low 48 bits).
+- When `pthread_key_create` failed (`ThreadKey::valid` false) no
+  `pthread_setspecific` call is made and the heap is never destroyed at
+  thread exit; the theorem is silent on that.
+- The background thread's `create` parks only a slot above the
+  sentinels. On an empty slot, a nested allocation in `pthread_create`
+  or `pthread_join` creates this thread's heap in the ordinary way; the
+  theorem says nothing about that nested creation.
+- The token makes the claim per thread only by construction: nothing in
+  the model names the thread, and a token never crosses threads because
+  the slot is thread-local.
 
 ## Interface contract
 

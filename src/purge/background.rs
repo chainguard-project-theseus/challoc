@@ -258,10 +258,11 @@ fn create(
     // `pthread_create` allocates the new thread's DTV with `calloc`
     // and `pthread_join` frees an exited thread's key data, neither of
     // which may re-enter this thread's heap mid-operation.
-    let saved = crate::sys::tls::get();
+    let tracked mut tls = crate::sys::tls::TlsSlot::entry();
+    let saved = crate::sys::tls::get(Tracked(&tls));
     let park = saved as usize > TLS_EXITED;
     if park {
-        crate::sys::tls::set(addr_to_ptr(TLS_CREATING) as *mut c_void);
+        crate::sys::tls::set(addr_to_ptr(TLS_CREATING) as *mut c_void, Tracked(&mut tls));
     }
     // The previous thread exited at a wake-up (`request(false)`) but
     // glibc's exit path still runs on the stack until the kernel has
@@ -306,7 +307,7 @@ fn create(
         None => None,
     };
     if park {
-        crate::sys::tls::set(saved);
+        crate::sys::tls::set(saved, Tracked(&mut tls));
     }
     (stack.unwrap_or(0), thread)
 }

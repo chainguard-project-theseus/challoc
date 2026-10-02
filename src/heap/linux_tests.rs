@@ -7,6 +7,7 @@ use core::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::vec::Vec;
+use vstd::prelude::Tracked;
 
 use super::tests::live;
 use crate::testutil::{TestShared, shared, xorshift};
@@ -35,11 +36,11 @@ fn heap_is_created_on_first_use_through_tls() {
     let s = shared();
     assert!(s.has_thread_key());
     std::thread::spawn(move || {
-        assert!(tls::get().is_null());
+        assert!(tls::get(Tracked::assume_new()).is_null());
         let c = class_of(100).unwrap();
         let p = alloc(s, c, Tracked::assume_new());
         assert!(!p.is_null());
-        let raw = tls::get() as usize;
+        let raw = tls::get(Tracked::assume_new()) as usize;
         assert!(raw > TLS_EXITED);
         // The slot holds the heap pointer, signed with the thread
         // pointer when PAC is on (`existing_heap` authenticates it).
@@ -47,7 +48,7 @@ fn heap_is_created_on_first_use_through_tls() {
         let h = hp as usize;
         if s.pac() {
             assert_eq!(pac::strip(raw), h);
-            assert_eq!(pac::auth(raw, tls::get_tp().1), h);
+            assert_eq!(pac::auth(raw, tls::get_tp(Tracked::assume_new()).1), h);
         } else {
             assert_eq!(raw, h);
         }
@@ -57,7 +58,7 @@ fn heap_is_created_on_first_use_through_tls() {
         assert_eq!(heap.stats().allocated, CLASSES[c].size() as u64);
         // Same heap on the next call.
         let q = alloc(s, c, Tracked::assume_new());
-        assert_eq!(tls::get() as usize, raw);
+        assert_eq!(tls::get(Tracked::assume_new()) as usize, raw);
         assert_ne!(p, q);
         fill(p, CLASSES[c].size(), 0xa5);
         fill(q, CLASSES[c].size(), 0x5a);
@@ -142,7 +143,7 @@ fn thread_exit_flushes_and_frees_the_heap() {
             // Exit with `ps` live and a non-empty cache; the live ones
             // stay allocated, the cached ones must be released.
             leaked.fetch_add(ps.len(), Ordering::Relaxed);
-            assert!(tls::get() as usize > TLS_EXITED);
+            assert!(tls::get(Tracked::assume_new()) as usize > TLS_EXITED);
         }));
     }
     for h in handles {
@@ -164,18 +165,18 @@ fn creating_and_exited_sentinels_are_served_directly() {
         let c = class_of(32).unwrap();
         let meta_before = s.meta.stats().allocated;
         // Inside heap creation: no heap, served from the slab bitmap.
-        tls::set(TLS_CREATING as *mut c_void);
+        tls::set(TLS_CREATING as *mut c_void, Tracked::assume_new());
         let p = alloc(s, c, Tracked::assume_new());
         assert!(!p.is_null());
-        assert_eq!(tls::get() as usize, TLS_CREATING);
+        assert_eq!(tls::get(Tracked::assume_new()) as usize, TLS_CREATING);
         assert_eq!(s.meta.stats().allocated, meta_before);
         assert_eq!(live(s, c), 1);
         free(s, p, Tracked::assume_new());
         assert_eq!(live(s, c), 0);
         // Real heap.
-        tls::set(core::ptr::null_mut());
+        tls::set(core::ptr::null_mut(), Tracked::assume_new());
         let p = alloc(s, c, Tracked::assume_new());
-        let raw = tls::get();
+        let raw = tls::get(Tracked::assume_new());
         assert!(raw as usize > TLS_EXITED);
         // The key holds the plain pointer, the slot the signed one.
         let h = existing_heap(s).unwrap() as *mut Heap as *mut c_void;
@@ -197,7 +198,7 @@ fn creating_and_exited_sentinels_are_served_directly() {
             0
         );
         unsafe { heap_destructor(h) };
-        assert_eq!(tls::get() as usize, TLS_EXITED);
+        assert_eq!(tls::get(Tracked::assume_new()) as usize, TLS_EXITED);
         assert_eq!(s.meta.stats().allocated, meta_before);
         assert_eq!(live(s, c), 0);
         // The slab went `Empty` when everything was released, so its
@@ -205,7 +206,7 @@ fn creating_and_exited_sentinels_are_served_directly() {
         let (q, zero, _) = alloc_zeroed(s, c, Tracked::assume_new());
         assert!(!q.is_null());
         assert!(!zero || is_zero(q, 32));
-        assert_eq!(tls::get() as usize, TLS_EXITED);
+        assert_eq!(tls::get(Tracked::assume_new()) as usize, TLS_EXITED);
         assert_eq!(s.meta.stats().allocated, meta_before);
         free(s, q, Tracked::assume_new());
         assert_eq!(live(s, c), 0);
@@ -355,7 +356,7 @@ fn cache_entries_and_the_tls_heap_pointer_are_signed() {
                 .any(|(&e, &p)| e != p)
         );
         // The TLS slot: signed heap pointer, thread pointer as modifier.
-        let (raw, tp) = tls::get_tp();
+        let (raw, tp) = tls::get_tp(Tracked::assume_new());
         assert_eq!(pac::strip(raw as usize), hp as usize);
         assert_eq!(pac::auth(raw as usize, tp), hp as usize);
         // Pops authenticate and hand the plain slots back, LIFO.
@@ -396,7 +397,7 @@ fn corrupted_cache_entry_or_heap_pointer_faults() {
         assert!(len >= 1);
         let top = unsafe { *slots.add(len - 1) } as usize;
         assert_eq!(pac::auth(top, slots as usize), p as usize);
-        let (raw, tp) = tls::get_tp();
+        let (raw, tp) = tls::get_tp(Tracked::assume_new());
         let raw = raw as usize;
         // A bit whose flip changes the PAC of both pointers.
         let bit = (12..40)
@@ -415,7 +416,7 @@ fn corrupted_cache_entry_or_heap_pointer_faults() {
                         let e = slots.add(len - 1);
                         *e = ((*e as usize) ^ bit) as *mut u8;
                     } else {
-                        tls::set((raw ^ bit) as *mut c_void);
+                        tls::set((raw ^ bit) as *mut c_void, Tracked::assume_new());
                     }
                     let q = alloc(s, c, Tracked::assume_new());
                     core::ptr::write_volatile(q, 1);

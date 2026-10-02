@@ -190,7 +190,7 @@ pub(crate) struct TestHeap {
 
 impl TestHeap {
     pub(crate) fn new(s: &'static Shared) -> TestHeap {
-        let (h, _) = Heap::create(s);
+        let (h, _) = Heap::create(s, vstd::prelude::Tracked::assume_new());
         assert!(!h.is_null());
         TestHeap { h, s }
     }

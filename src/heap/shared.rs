@@ -31,11 +31,14 @@ use crate::vspec::zero::Zeroed;
 
 use super::heap_destructor;
 use super::tcaches::Tcaches;
+#[cfg(verus_only)]
+use super::thread::reentry_benign;
 use super::{Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
 #[cfg(verus_only)]
 use crate::class::slot_loc;
 #[cfg(verus_only)]
 use crate::class::{aset, distinct, ptr_addrs};
+use crate::sys::tls::TlsSlot;
 #[cfg(verus_only)]
 use vstd::layout::size_of;
 use vstd::prelude::verus;
@@ -283,16 +286,52 @@ verus! {
 
 impl ThreadKey {
     /// Register `heap` for destruction when the calling thread exits.
-    pub fn set(&self, heap: *mut Heap) {
+    /// `pthread_setspecific` may re-enter the allocator on this thread, so
+    /// the slot (`tls`) must hold a sentinel ([`reentry_benign`]); the
+    /// call leaves it as it was.
+    pub fn set(&self, heap: *mut Heap, Tracked(tls): Tracked<&mut TlsSlot>)
+        requires
+            reentry_benign(old(tls).value()),
+        ensures
+            *final(tls) == *old(tls),
+    {
         if !self.valid {
             return;
         }
         // SAFETY: the key was created by `create`; glibc stores the
         // pointer without dereferencing it.
-        if unsafe { libc::pthread_setspecific(self.key, heap as *const c_void) } != 0 {
+        if unsafe { pthread_setspecific(self.key, heap as *const c_void, Tracked(tls)) } != 0 {
             crate::sys::abort_fmt(format_args!("heap: pthread_setspecific failed"));
         }
     }
+}
+
+/// `pthread_setspecific(3)`: stores `value` for the calling thread under
+/// `key` without dereferencing it; 0 on success, an error number
+/// otherwise (nothing is claimed about it). It may allocate (glibc
+/// `calloc`s a second-level block of 32 keys the first time a thread
+/// sets a non-null value for a key in it), re-entering the allocator on
+/// this thread. Each nested entry stands for a `heap::thread` core
+/// holding `tls`, lent to it ([`TlsSlot`]): at a [`reentry_benign`]
+/// value the cores return `None` and leave the token as they found it
+/// ([`heap_for_thread_in`](super::thread::heap_for_thread_in),
+/// [`existing_heap_in`](super::thread::existing_heap_in)), and the
+/// background thread's `create` writes nothing, so the call leaves `tls`
+/// unchanged. Trusted: an FFI call, and the premise that every nested
+/// entry reaches the slot through those.
+///
+/// # Safety
+/// `key` was created by `pthread_key_create`.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tracked(tls): Tracked<&mut TlsSlot>) -> (r: i32)
+    requires
+        reentry_benign(old(tls).value()),
+    ensures
+        *final(tls) == *old(tls),
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe { libc::pthread_setspecific(key, value) }
 }
 
 pub(super) fn now_ns() -> u64 {

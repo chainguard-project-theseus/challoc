@@ -4149,14 +4149,21 @@ impl Heap {
     /// Create a heap in the metadata region for the calling thread, homed
     /// on the least-loaded automatic arena and counted there
     /// (`Arenas::assign`; `destroy` releases the binding). Null if the
-    /// region is exhausted. Does not touch TLS or the thread key. With
-    /// the heap, the permissions to its caches ([`CachePerms::fresh`]).
-    fn create(shared: &Shared) -> (r: (*mut Heap, Tracked<CachePerms>))
+    /// region is exhausted. Does not touch TLS or the thread key, and makes
+    /// no call that can allocate. With the heap, the permissions to its
+    /// caches ([`CachePerms::fresh`]). The call is counted on the thread's
+    /// slot token (`TlsSlot::creates`), which it otherwise leaves alone.
+    fn create(shared: &Shared, Tracked(tls): Tracked<&mut crate::sys::tls::TlsSlot>) -> (r: (*mut Heap, Tracked<CachePerms>))
         requires
             shared.wf(),
         ensures
             r.0@.addr != 0 ==> r.1@.fresh(r.0),
+            final(tls).value() == old(tls).value(),
+            final(tls).creates() == old(tls).creates() + 1,
     {
+        proof {
+            tls.note_create();
+        }
         let arena = assign_home(shared);
         let (h, perms) = Self::create_detached(shared, arena);
         if h.is_null() {

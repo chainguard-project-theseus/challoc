@@ -25,7 +25,10 @@
 
 use core::arch::{asm, global_asm};
 use core::ffi::c_void;
+use vstd::prelude::Tracked;
 use vstd::prelude::verus;
+#[cfg(verus_only)]
+use vstd::prelude::*;
 
 // One zeroed, pointer-aligned, pointer-sized slot in `.tbss`. Fresh threads
 // therefore start with a null slot, which the allocator treats as "no heap
@@ -58,15 +61,71 @@ global_asm!(
 
 verus! {
 
-// The accessors are inline assembly, trusted: none claims anything about
-// the value it reads, and `set` claims nothing about what it wrote. The
-// x86_64 `get_tp` is verified: it only pairs `get` with 0.
+/// Ghost: the calling thread's slot, as per-thread ghost state. `value`
+/// is what the slot holds; `creates` counts the `Heap::create` calls made
+/// with this token (`Heap::create` takes it `&mut` and is the only caller
+/// of [`note_create`](TlsSlot::note_create)). The accessors below take
+/// it, so a function handed only `&TlsSlot` neither writes the slot nor
+/// creates a thread heap through it; that it does not do so at all also
+/// needs that nothing it calls makes a token of its own (only the
+/// top-level slot users below do).
+///
+/// Premise of the model (`verus/THEOREMS.md`, "Re-entrant heap
+/// registration"): a token is not read after the slot has changed other
+/// than through it. [`entry`](TlsSlot::entry) makes one, with an
+/// unconstrained value that the first read pins, at each top-level user
+/// of the slot: `heap_for_thread`, `existing_heap`, `heap_destructor` and
+/// the background thread's `create`. An entry nested in another (the
+/// allocator re-entered from `pthread_setspecific`) stands for the outer
+/// token lent to it, which the nested call leaves as it found it
+/// (`heap::thread`).
+#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+pub tracked struct TlsSlot {
+    ghost value: usize,
+    ghost creates: vstd::prelude::nat,
+}
+
+impl TlsSlot {
+    /// The slot's value.
+    pub closed spec fn value(self) -> usize {
+        self.value
+    }
+
+    /// The `Heap::create` calls made with this token.
+    pub closed spec fn creates(self) -> nat {
+        self.creates
+    }
+
+    /// The calling thread's token at a top-level user of the slot:
+    /// nothing is known of its value until the slot is read. Trusted in
+    /// effect (the slot premise above), though its body is checked.
+    pub(crate) proof fn entry() -> (tracked r: TlsSlot) {
+        TlsSlot { value: arbitrary(), creates: 0 }
+    }
+
+    /// Count a `Heap::create` call (made only there).
+    pub(crate) proof fn note_create(tracked &mut self)
+        ensures
+            final(self).value() == old(self).value(),
+            final(self).creates() == old(self).creates() + 1,
+    {
+        self.creates = self.creates + 1;
+    }
+}
+
+// The accessors are inline assembly, trusted: a read returns the token's
+// value and `set` makes the written value the token's (the premise
+// above); nothing else is claimed. The x86_64 `get_tp` is verified: it
+// only pairs `get` with 0.
 
 /// Read the calling thread's slot. Null until [`set`] has been called on
 /// this thread.
 #[inline(always)]
 #[verifier::external_body]
-pub fn get() -> *mut c_void {
+pub fn get(Tracked(slot): Tracked<&TlsSlot>) -> (r: *mut c_void)
+    ensures
+        r as usize == slot.value(),
+{
     let out: *mut c_void;
     // SAFETY: reads the calling thread's own `.tbss` slot through the thread
     // pointer; the slot exists for every thread because the object is in the
@@ -102,20 +161,26 @@ pub fn get() -> *mut c_void {
 /// register move.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-pub fn get_tp() -> (*mut c_void, usize) {
-    (get(), 0)
+pub fn get_tp(Tracked(slot): Tracked<&TlsSlot>) -> (r: (*mut c_void, usize))
+    ensures
+        r.0 as usize == slot.value(),
+{
+    (get(Tracked(slot)), 0)
 }
 
 /// Read the calling thread's slot together with the thread pointer
 /// (`tpidr_el0`), the modifier the heap pointer is signed with when pointer
 /// authentication is on (`sys::pac`, design 6.1): one asm sequence that
 /// keeps the thread pointer it loads to reach the slot, so the caller's
-/// `autda` costs no extra register move. Trusted; nothing is claimed about
-/// either value.
+/// `autda` costs no extra register move. Trusted: the slot value is the
+/// token's; nothing is claimed about the thread pointer.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[verifier::external_body]
-pub fn get_tp() -> (*mut c_void, usize) {
+pub fn get_tp(Tracked(slot): Tracked<&TlsSlot>) -> (r: (*mut c_void, usize))
+    ensures
+        r.0 as usize == slot.value(),
+{
     let out: *mut c_void;
     let tp: usize;
     // SAFETY: as in `get`.
@@ -137,7 +202,11 @@ pub fn get_tp() -> (*mut c_void, usize) {
 /// Write the calling thread's slot.
 #[inline(always)]
 #[verifier::external_body]
-pub fn set(value: *mut c_void) {
+pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsSlot>)
+    ensures
+        final(slot).value() == value as usize,
+        final(slot).creates() == old(slot).creates(),
+{
     // SAFETY: writes the calling thread's own `.tbss` slot; see `get`.
     unsafe {
         #[cfg(target_arch = "x86_64")]
@@ -175,18 +244,19 @@ mod tests {
     use std::process::Command;
     use std::string::String;
     use std::{env, format, vec::Vec};
+    use vstd::prelude::Tracked;
 
     #[test]
     fn slot_starts_null_and_round_trips() {
         // A fresh thread so no other test on this thread has touched the slot.
         std::thread::spawn(|| {
-            assert!(get().is_null());
+            assert!(get(Tracked::assume_new()).is_null());
             let mut x = 0u8;
             let p = &mut x as *mut u8 as *mut c_void;
-            set(p);
-            assert_eq!(get(), p);
-            set(core::ptr::null_mut());
-            assert!(get().is_null());
+            set(p, Tracked::assume_new());
+            assert_eq!(get(Tracked::assume_new()), p);
+            set(core::ptr::null_mut(), Tracked::assume_new());
+            assert!(get(Tracked::assume_new()).is_null());
         })
         .join()
         .unwrap();
@@ -195,14 +265,14 @@ mod tests {
     #[test]
     fn get_tp_agrees_with_get_and_names_the_thread_pointer() {
         std::thread::spawn(|| {
-            let (v, tp) = get_tp();
+            let (v, tp) = get_tp(Tracked::assume_new());
             assert!(v.is_null());
             let mut x = 0u8;
             let p = &mut x as *mut u8 as *mut c_void;
-            set(p);
-            let (v2, tp2) = get_tp();
+            set(p, Tracked::assume_new());
+            let (v2, tp2) = get_tp(Tracked::assume_new());
             assert_eq!(v2, p);
-            assert_eq!(v2, get());
+            assert_eq!(v2, get(Tracked::assume_new()));
             assert_eq!(tp, tp2, "the thread pointer is stable within a thread");
             #[cfg(target_arch = "aarch64")]
             {
@@ -213,7 +283,7 @@ mod tests {
             }
             #[cfg(target_arch = "x86_64")]
             assert_eq!(tp, 0);
-            set(core::ptr::null_mut());
+            set(core::ptr::null_mut(), Tracked::assume_new());
         })
         .join()
         .unwrap();
@@ -228,12 +298,19 @@ mod tests {
                 let tx = tx.clone();
                 let barrier = barrier.clone();
                 std::thread::spawn(move || {
-                    assert!(get().is_null(), "thread {i}: slot not null at start");
+                    assert!(
+                        get(Tracked::assume_new()).is_null(),
+                        "thread {i}: slot not null at start"
+                    );
                     let mut local = 0u64;
                     let mine = &mut local as *mut u64 as *mut c_void;
-                    set(mine);
+                    set(mine, Tracked::assume_new());
                     barrier.wait(); // everyone has written
-                    assert_eq!(get(), mine, "thread {i}: slot clobbered");
+                    assert_eq!(
+                        get(Tracked::assume_new()),
+                        mine,
+                        "thread {i}: slot clobbered"
+                    );
                     tx.send(mine as usize).unwrap();
                     barrier.wait(); // keep `local` alive until all have read
                 })
