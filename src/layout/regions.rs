@@ -56,6 +56,30 @@ pub open spec fn disjoint(a: int, alen: int, b: int, blen: int) -> bool {
     a + alen <= b || b + blen <= a
 }
 
+/// The first byte of the process's `Shared` (`api`'s `SHARED` static,
+/// [`Shared::storage`](crate::heap::Shared::storage)): the lock values of
+/// `Meta`, the huge allocator and the class tables, arena 0 and the
+/// statistics. It lives in the writable data of the object challoc is
+/// linked into, which the loader maps before any allocator code runs.
+pub open spec fn shared_static_addr() -> int {
+    crate::heap::Shared::storage()@.addr as int
+}
+
+/// The bytes of the process's `Shared` ([`shared_static_addr`]). Closed, so
+/// that the layout of `Shared` stays out of the proofs that mention
+/// `Regions::separated` but not the static
+/// ([`lemma_shared_static_len`] unfolds it).
+pub closed spec fn shared_static_len() -> int {
+    vstd::layout::size_of::<crate::heap::Shared>() as int
+}
+
+/// [`shared_static_len`] is the size of a `Shared`.
+pub proof fn lemma_shared_static_len()
+    ensures
+        shared_static_len() == vstd::layout::size_of::<crate::heap::Shared>() as int,
+{
+}
+
 /// The process's regions: the `regions` of the one `Shared` a process
 /// publishes (`Shared::wf` ties them together). The allocation paths that hold no `Shared`
 /// (a cache pop, a slab table's slot address) state their results
@@ -140,8 +164,9 @@ impl Regions {
     /// gap), the strides ending below `2^48`; the huge base is
     /// `MAX_SLAB`-aligned and the page is between 4 KiB and `MAX_SLAB`; and
     /// the superblock's strides, the huge region and the metadata region
-    /// are pairwise disjoint. [`from_parts`] proves it from its arguments;
-    /// the disjointness comes from its caller ([`from_parts`]'s
+    /// are pairwise disjoint, and none holds a byte of the process's
+    /// `Shared` static ([`Regions::outside`]). [`from_parts`] proves it from
+    /// its arguments; the disjointness comes from its caller ([`from_parts`]'s
     /// preconditions say what).
     ///
     /// [`from_parts`]: Regions::from_parts
@@ -160,6 +185,22 @@ impl Regions {
         &&& disjoint(self.superblock as int, NCLASSES * stride, self.huge_base as int, self.huge_len as int)
         &&& disjoint(self.superblock as int, NCLASSES * stride, self.meta_base as int, self.meta_len as int)
         &&& disjoint(self.huge_base as int, self.huge_len as int, self.meta_base as int, self.meta_len as int)
+        &&& self.outside(shared_static_addr(), shared_static_len())
+    }
+
+    /// `[a, a + len)` shares no byte with the class superblock's strides,
+    /// the huge region or the metadata region. [`separated`] says so of
+    /// the process's `Shared` static ([`shared_static_addr`]): the three
+    /// reservations are `mmap`s that the kernel places apart from the
+    /// loaded object's data (`linux::Reserved::is_apart_from_static`,
+    /// trusted).
+    ///
+    /// [`separated`]: Regions::separated
+    pub open spec fn outside(self, a: int, len: int) -> bool {
+        let stride = (1usize << self.lg_stride) as int;
+        &&& disjoint(self.superblock as int, NCLASSES * stride, a, len)
+        &&& disjoint(self.huge_base as int, self.huge_len as int, a, len)
+        &&& disjoint(self.meta_base as int, self.meta_len as int, a, len)
     }
 
     /// What `Shared::init` needs of its regions beyond [`wf`] and
@@ -279,6 +320,9 @@ impl Regions {
             disjoint(maps[0].addr as int, maps[0].len as int, maps[1].addr as int, maps[1].len as int),
             disjoint(maps[0].addr as int, maps[0].len as int, maps[2].addr as int, maps[2].len as int),
             disjoint(maps[1].addr as int, maps[1].len as int, maps[2].addr as int, maps[2].len as int),
+            // The process's `Shared` static is in none of them
+            // (`linux::Reserved::is_apart_from_static`, trusted).
+            forall|i: int| 0 <= i < 3 ==> disjoint(#[trigger] maps[i].addr as int, maps[i].len as int, shared_static_addr(), shared_static_len()),
             huge.0 & ((MAX_SLAB - 1) as usize) == 0,
             12 <= lg_page <= LG_MAX_SLAB,
         ensures
@@ -350,6 +394,10 @@ impl Regions {
                 lemma_mod_lin3(superblock as int, j, stride, 1, offsets[j] as int, m);
                 assert((j + 1) * stride == j * stride + stride) by (nonlinear_arith);
             }
+            // Each region lies inside its mapping, which the static is not in.
+            assert(disjoint(maps[0].addr as int, maps[0].len as int, shared_static_addr(), shared_static_len()));
+            assert(disjoint(maps[1].addr as int, maps[1].len as int, shared_static_addr(), shared_static_len()));
+            assert(disjoint(maps[2].addr as int, maps[2].len as int, shared_static_addr(), shared_static_len()));
         }
         Regions {
             superblock,
@@ -953,6 +1001,42 @@ impl Regions {
         }
     }
 
+    /// A block an allocation may return ([`Regions::user_block`]) shares no
+    /// byte with a range [`Regions::outside`] the regions, such as the
+    /// process's `Shared` static ([`Regions::separated`]): the block lies in
+    /// a class region, inside its stride of the superblock, or in the huge
+    /// region.
+    pub proof fn lemma_user_block_outside(self, p: usize, size: int, a: int, len: int)
+        requires
+            self.wf(),
+            self.separated(),
+            self.user_block(p, size),
+            size >= 0,
+            self.outside(a, len),
+        ensures
+            disjoint(p as int, if size < 1 { 1 } else { size }, a, len),
+    {
+        let stride = (1usize << self.lg_stride) as int;
+        let n = if size < 1 { 1 } else { size };
+        self.lemma_user_block_separated(p, size);
+        if !(self.huge_base <= p && p + n <= self.huge_base + self.huge_len) {
+            let c = choose|c: int|
+                0 <= c < NCLASSES && #[trigger] self.class_base[c] <= p && p + n <= self.class_base[c] + (1usize << self.lg_region);
+            assert(self.superblock + c * stride <= self.class_base[c]);
+            assert(self.class_base[c] + (1usize << self.lg_region) <= self.superblock + (c + 1) * stride);
+            assert((c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)
+                requires
+                    c < NCLASSES,
+                    stride >= 0,
+            ;
+            assert(0 <= c * stride) by (nonlinear_arith)
+                requires
+                    c >= 0,
+                    stride >= 0,
+            ;
+        }
+    }
+
     /// Alignment of a slot: a slot start of a class whose size is a
     /// multiple of the power of two `align` is itself a multiple of it
     /// (class bases are `MAX_SLAB`-aligned and slabs are powers of two no
@@ -1065,7 +1149,7 @@ mod linux {
         LG_REGION_PREFERRED, LG_SLIDE, MAX_SLAB, Mapping, NCLASSES, Regions,
     };
     #[cfg(verus_only)]
-    use super::{MAX_SEALED, disjoint};
+    use super::{MAX_SEALED, disjoint, shared_static_addr, shared_static_len};
     #[cfg(verus_only)]
     use crate::sys::pac::user_va_limit;
     use crate::sys::{self, Errno, MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
@@ -1091,6 +1175,21 @@ mod linux {
         pub uninterp spec fn addr(&self) -> usize;
 
         pub uninterp spec fn len(&self) -> usize;
+
+        /// Trusted (the kernel's `mmap` contract): a live reservation does
+        /// not overlap the process's `Shared` static
+        /// ([`shared_static_addr`]). The static is in the writable data of
+        /// the object challoc is linked into, which the loader mapped before
+        /// any allocator code ran and which stays mapped for the life of the
+        /// process; `mmap` without `MAP_FIXED` never places a mapping over a
+        /// live one.
+        #[verifier::external_body]
+        pub proof fn is_apart_from_static(tracked &self)
+            ensures
+                disjoint(self.addr() as int, self.len() as int, shared_static_addr(), shared_static_len()),
+        {
+            unimplemented!()
+        }
 
         /// Trusted (the kernel's `mmap` contract): two live mappings do not
         /// overlap. `mmap` without `MAP_FIXED` never places a mapping over
@@ -1525,6 +1624,9 @@ mod linux {
                 a.is_disjoint(&b);
                 a.is_disjoint(_meta_tok.borrow());
                 b.is_disjoint(_meta_tok.borrow());
+                a.is_apart_from_static();
+                b.is_apart_from_static();
+                _meta_tok.borrow().is_apart_from_static();
             }
 
             let superblock = align_base(sb_map.addr);

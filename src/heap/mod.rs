@@ -198,21 +198,26 @@ pub proof fn theorem_region_separation(p: *mut u8, size: int, align: int)
 }
 
 /// Metadata integrity (whole-allocator theorem 4, `verus/TODO.md`): a
-/// non-null block an
-/// allocation returned ([`fits`]) shares no byte with the metadata the
-/// allocator keeps in the metadata region
-/// ([`Regions::in_meta`](crate::layout::Regions::in_meta)). Each conjunct
-/// names one kind of it and who writes it:
+/// non-null block an allocation returned ([`fits`]) shares no byte with
+/// the metadata the allocator keeps in the metadata region
+/// ([`Regions::in_meta`](crate::layout::Regions::in_meta)), nor with the
+/// process's `Shared` static. Each conjunct names one kind of it and who
+/// writes it:
 ///
 /// - Every range the process's `Meta` hands out ([`Meta::holds`](crate::meta::Meta::holds),
 ///   which `Meta::alloc`, `alloc_zeroed`, `reserve`, `reserve_committed`
 ///   and `reserve_table` ensure of their results): heaps, `others` nodes,
 ///   cache stacks, huge descriptors and tables, arenas, set tables,
-///   the background thread's stack. `Meta` itself writes
-///   only its free objects' link words and reused objects it zeroes, both
-///   inside ranges it handed out (a fact of its lock invariant,
-///   `meta::Inner::lemma_links_in_region`, and `Meta::alloc_zeroed`'s
-///   block; not a conjunct here, since the lock's value is not in scope).
+///   the background thread's stack, and the reused object
+///   `Meta::alloc_zeroed` clears.
+/// - The free-list link word of every free object in every value the
+///   metadata lock admits ([`Meta::is_link`](crate::meta::Meta::is_link)),
+///   the one word `Meta` writes outside what it hands out
+///   (`Meta::lemma_link_held`, from `meta::Inner::lemma_links_in_region`).
+/// - The process's `Shared` static (the lock values of `Meta`, the huge
+///   allocator and the class tables, arena 0, the statistics), which lies
+///   outside all three reservations ([`Regions::outside`](crate::layout::Regions::outside),
+///   a conjunct of `Regions::separated`).
 /// - Each class table's descriptors, owner words and bitmap words, at the
 ///   addresses its trusted accessors compute (`SlabTable::desc_addr`,
 ///   `owner_addr`, `bit_word_addr`; `SlabTable::meta_ok`); bitmap words
@@ -224,13 +229,27 @@ pub proof fn theorem_region_separation(p: *mut u8, size: int, align: int)
 ///   bitmap word of a value the huge lock protects
 ///   (`huge::Inner::lemma_in_meta`, `TwoLevelBitmap::lemma_words_placed`).
 ///
-/// Not metadata-region memory, and so outside the theorem: the `Shared`
-/// static (the lock values of `Meta`, the huge allocator and the class
-/// tables, arena 0, the statistics) and thread-local storage. What else
-/// it does not reach is listed in `verus/TODO.md`: memory written through
-/// `&` references to atomics (owner words, descriptors and bitmap words
-/// are located, not written through permissions) and
-/// the arenas' slab-set bitmaps.
+/// Trusted premises: `Shared::wf` of the published value
+/// (`api::shared_ref`); the kernel's `mmap` contract for the three
+/// reservations (`layout::regions::linux::try_reserve`,
+/// `Reserved::is_disjoint` and `Reserved::is_apart_from_static`);
+/// `Meta`'s lock axioms (`vspec::meta::axiom_meta_lock_inv`,
+/// `axiom_meta_lock_frame`) and the `Unbacked` token for the metadata
+/// region (`Reserved::into_unbacked`, handed to `Meta::owning`); the
+/// class tables' trusted accessors' address arithmetic;
+/// `vspec::ptr::axiom_ptr_add_addr`; the trusted constructors
+/// `TwoLevelBitmap::from_raw` and `from_raw_chunked` (`place`).
+///
+/// Not covered (`verus/TODO.md`): descriptors and owner words are written
+/// through `&` references to atomics, located by the accessors but not
+/// tied to permissions; bitmap words are written through `WordPerm`s held
+/// in the table's word invariants, whose addresses the theorem does not
+/// tie to `bit_word_addr` (that needs a `class::table` lemma); the
+/// last word of a bitmap whose bit count is not a multiple of 64; the
+/// arenas' slab-set bitmaps. Thread-local storage is not apart from every
+/// block: a thread whose stack the program allocated (`pthread_attr_setstack`
+/// over a `malloc`ed buffer) has its static TLS block, and so challoc's
+/// heap pointer slot, inside that buffer.
 pub(crate) proof fn theorem_metadata_integrity(shared: &Shared, p: *mut u8, size: int, align: int)
     requires
         shared.wf(),
@@ -242,6 +261,8 @@ pub(crate) proof fn theorem_metadata_integrity(shared: &Shared, p: *mut u8, size
             let n = if size < 1 { 1 } else { size };
             let b = p@.addr as int;
             &&& forall|a: int, len: int| len >= 0 && #[trigger] shared.meta.holds(a, len) ==> disjoint(b, n, a, len)
+            &&& forall|x: int| #[trigger] shared.meta.is_link(x) ==> disjoint(b, n, x, 8)
+            &&& disjoint(b, n, crate::layout::shared_static_addr(), crate::layout::shared_static_len())
             &&& forall|c: int, slab: int|
                 0 <= c < NCLASSES && 0 <= slab < shared.tables[c].spec_nslabs() ==> disjoint(
                     b,
@@ -279,6 +300,11 @@ pub(crate) proof fn theorem_metadata_integrity(shared: &Shared, p: *mut u8, size
     ) by {
         r.lemma_user_block_apart(a, size, x, len);
     }
+    assert forall|x: int| #[trigger] shared.meta.is_link(x) implies disjoint(a as int, if size < 1 { 1 } else { size }, x, 8) by {
+        shared.meta.lemma_link_held(x);
+        r.lemma_user_block_apart(a, size, x, 8);
+    }
+    r.lemma_user_block_outside(a, size, crate::layout::shared_static_addr(), crate::layout::shared_static_len());
     assert forall|c: int, slab: int| 0 <= c < NCLASSES && 0 <= slab < shared.tables[c].spec_nslabs() implies disjoint(
         a as int,
         if size < 1 { 1 } else { size },
@@ -1015,6 +1041,7 @@ spec fn toks_kept(new: Map<*mut *mut u8, GhostSingleton<int>>, old: Map<*mut *mu
 
 /// Entries `k..n` of the stack at `slots` take the tokens `from[n - 1 - i]`:
 /// a claimed batch of `n` slots, reversed onto the stack.
+#[verifier::spinoff_prover]
 proof fn move_reversed(
     tracked from: &mut Map<int, GhostSingleton<int>>,
     tracked to: &mut Map<*mut *mut u8, GhostSingleton<int>>,

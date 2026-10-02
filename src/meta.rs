@@ -278,6 +278,50 @@ pub open spec fn align_up_spec(x: usize, a: usize) -> usize {
     ((x + a - 1) as usize) & !((a - 1) as usize)
 }
 
+/// `len` rounded up to whole 8-byte words: what [`Meta::reserve_table`]
+/// holds of a table, so that a table of `u64` words ending in a partial
+/// word (a class bitmap whose bit count is not a multiple of 64) owns that
+/// word.
+pub open spec fn words_up(len: int) -> int {
+    (len + 7) / 8 * 8
+}
+
+/// A length rounded up to whole words fits in a room of whole pages that
+/// holds the length.
+proof fn lemma_words_up_fit(page: usize, room: int, len: int)
+    requires
+        MIN_ALIGN <= page,
+        page & sub(page, 1) == 0,
+        room % (page as int) == 0,
+        0 <= len <= room,
+    ensures
+        words_up(len) <= room,
+{
+    assert(page % 8 == 0) by (bit_vector)
+        requires
+            16 <= page,
+            page & sub(page, 1) == 0,
+    ;
+    let (p, k) = (page as int, page as int / 8);
+    let m = (room / p) * k;
+    assert(room == m * 8) by {
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(room, p);
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(p, 8);
+        assert(room == m * 8) by (nonlinear_arith)
+            requires
+                room == p * (room / p),
+                p == 8 * k,
+                m == (room / p) * k,
+        ;
+    }
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(room + 7, 8, m, 7);
+    vstd::arithmetic::div_mod::lemma_div_is_ordered(len + 7, room + 7, 8);
+    assert((len + 7) / 8 * 8 <= m * 8) by (nonlinear_arith)
+        requires
+            (len + 7) / 8 <= m,
+    ;
+}
+
 /// Bin sizes, ascending.
 pub exec static BINS: [u32; NBINS]
     ensures
@@ -1479,6 +1523,27 @@ impl Inner {
     {
     }
 
+    /// `a` is the address of a free object's link word: a block on one of
+    /// the free lists, whose permission [`Inner::free`] keeps and
+    /// [`Inner::alloc`] writes through (whole-allocator theorem 4).
+    pub(crate) closed spec fn is_link(&self, a: int) -> bool {
+        exists|k: *mut FreeNode| #[trigger] self.perms@.contains_key(k) && k@.addr == a
+    }
+
+    /// A free object's link word lies in the region
+    /// ([`Inner::lemma_links_in_region`]).
+    pub(crate) proof fn lemma_link_in_region(&self, a: int)
+        requires
+            self.wf(),
+            self.is_link(a),
+        ensures
+            self.spec_base() <= a,
+            a + 8 <= self.spec_base() + self.spec_len(),
+    {
+        self.lemma_links_in_region();
+        let k = choose|k: *mut FreeNode| #[trigger] self.perms@.contains_key(k) && k@.addr == a;
+    }
+
     /// The invariant of the metadata lock.
     pub(crate) closed spec fn wf(&self) -> bool {
         &&& self.region_wf()
@@ -2520,24 +2585,45 @@ impl Meta {
     /// when the object side cannot hold it, it is a
     /// [`reserve`](Meta::reserve). Either way the owner calls
     /// [`commit`](Meta::commit) on the pages it uses before touching them.
+    /// The table's range rounded up to whole words ([`words_up`]) is the
+    /// allocator's too: each table is whole pages.
     pub fn reserve_table(&self, len: usize, align: usize) -> (r: Option<usize>)
         requires
             is_pow2(align),
         ensures
             r matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
             r matches Some(s) ==> self.holds(s as int, len as int),
+            r matches Some(s) ==> self.holds(s as int, words_up(len as int)),
     {
         broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
 
         let tracked mut claim = GhostSubmap::<int, bool>::dummy();
         let mut g = self.inner.lock();
         if g.eager_ok(len) {
+            let ghost g1 = g@;
             if let Some(p) = g.reserve_eager(len, align, Tracked(&mut claim)) {
+                proof {
+                    let (page, l) = (g1.page, if len == 0 { 1usize } else { len });
+                    lemma_align_bits(l, page, (l + (page - 1)) as usize);
+                    lemma_words_up_fit(page, align_up_spec(l, page) as int, len as int);
+                }
                 return Some(p);
             }
         }
+        let ghost g2 = g@;
         let tracked mut given = Unbacked::empty(0);
-        g.reserve(len, align, Tracked(&mut claim), Tracked(&mut given))
+        let r = g.reserve(len, align, Tracked(&mut claim), Tracked(&mut given));
+        proof {
+            if let Some(s) = r {
+                assert(g2.wf());
+                assert(g2.top as int % g2.page as int == 0);
+                assert(s as int % g2.page as int == 0);
+                vstd::arithmetic::div_mod::lemma_small_mod(0, g2.page as nat);
+                lemma_sub_mod_noop(g2.top as int, s as int, g2.page as int);
+                lemma_words_up_fit(g2.page, g2.top - s, len as int);
+            }
+        }
+        r
     }
 
     /// The ghost identity of the live-object records ([`Inner::live_id`];
@@ -2578,6 +2664,36 @@ impl Meta {
     pub open spec fn holds(&self, a: int, len: int) -> bool {
         &&& self.spec_base() <= a
         &&& a + len <= self.spec_base() + self.spec_len()
+    }
+
+    /// `v` is a value the metadata lock may hold: its invariant
+    /// ([`Inner::wf`], `vspec::meta::axiom_meta_lock_inv`) over this
+    /// allocator's region (`axiom_meta_lock_frame`). Every guard of the lock
+    /// reads and writes one.
+    pub(crate) closed spec fn admits(&self, v: Inner) -> bool {
+        &&& crate::lock::lock_inv(v)
+        &&& crate::lock::lock_frame(lock_init(self.inner), v)
+    }
+
+    /// `a` is the link word of a free object in some value the lock admits
+    /// ([`Meta::admits`], [`Inner::is_link`]): the one word `Meta` writes
+    /// outside the objects it hands out.
+    pub closed spec fn is_link(&self, a: int) -> bool {
+        exists|v: Inner| self.admits(v) && #[trigger] v.is_link(a)
+    }
+
+    /// A free object's link word lies in what this allocator
+    /// [`holds`](Meta::holds) (whole-allocator theorem 4).
+    pub proof fn lemma_link_held(&self, a: int)
+        requires
+            self.is_link(a),
+        ensures
+            self.holds(a, 8),
+    {
+        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
+
+        let v = choose|v: Inner| self.admits(v) && #[trigger] v.is_link(a);
+        v.lemma_link_in_region(a);
     }
 
     /// This allocator's region is the process's metadata region

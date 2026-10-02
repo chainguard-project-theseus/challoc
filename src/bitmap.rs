@@ -1877,6 +1877,14 @@ pub open spec fn l1_row(j: int) -> int {
     65 * j
 }
 
+/// Words from its first that a chunked view of `l1` level-1 words and
+/// row stride `stride` spans: up to and including its word in the last
+/// row, row `65 * l1 - 1`, at offset `(65 * l1 - 1) * stride`. The other
+/// words of each row belong to other views.
+pub open spec fn chunked_span(l1: int, stride: int) -> int {
+    if l1 == 0 { 0 } else { (65 * l1 - 1) * stride + 1 }
+}
+
 /// Row of level-0 word `w` in a chunked view.
 pub open spec fn l0_row(w: int) -> int {
     65 * (w / 64) + 1 + w % 64
@@ -2129,7 +2137,7 @@ impl TwoLevelBitmap {
     /// Words from `ptr` that the view spans: every word offset it holds
     /// is below this.
     spec fn span(&self) -> int {
-        if self.chunked { 65 * self.l1_words * self.stride } else { self.l1_words + self.l0_words }
+        if self.chunked { chunked_span(self.l1_words as int, self.stride as int) } else { self.l1_words + self.l0_words }
     }
 
     /// Where the view lies: the address of its first word and the bytes
@@ -2181,7 +2189,7 @@ impl TwoLevelBitmap {
             let k = self.l1o(j);
             assert(self.ok(k));
             if self.chunked {
-                assert(l1_row(j) * s + 1 <= 65 * n1 * s) by (nonlinear_arith)
+                assert(l1_row(j) * s + 1 <= (65 * n1 - 1) * s + 1) by (nonlinear_arith)
                     requires 0 <= j < n1, s >= 1;
             }
             assert(k + 1 <= self.span() && (k as usize) as int == k);
@@ -2192,7 +2200,7 @@ impl TwoLevelBitmap {
             assert(self.ok(k));
             if self.chunked {
                 assert(w / 64 < n1);
-                assert(l0_row(w) * s + 1 <= 65 * n1 * s) by (nonlinear_arith)
+                assert(l0_row(w) * s + 1 <= (65 * n1 - 1) * s + 1) by (nonlinear_arith)
                     requires 0 <= l0_row(w) < 65 * n1, s >= 1;
             }
             assert(k + 1 <= self.span() && (k as usize) as int == k);
@@ -2619,7 +2627,7 @@ impl TwoLevelBitmap {
             65 * ((((nbits as int) + 63) / 64 + 63) / 64) * (stride as int) * 8 <= isize::MAX,
         ensures
             r.fresh(nbits),
-            r.place() == (ptr@.addr as int, 8 * (65 * ((((nbits as int) + 63) / 64 + 63) / 64) * (stride as int))),
+            r.place() == (ptr@.addr as int, 8 * chunked_span((((nbits as int) + 63) / 64 + 63) / 64, stride as int)),
     {
         let l0_words = nbits.div_ceil(64);
         debug_assert!(stride >= 1);
