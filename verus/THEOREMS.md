@@ -1,6 +1,6 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the six whole-allocator theorems as the code states them:
+Reference for the seven whole-allocator theorems as the code states them:
 the Verus statement, the entry points it covers, and every trusted
 premise it rests on, with `file:line`. Read at `b2cad68` (branch
 `verus`); line numbers are the `fn`/`axiom` line at that commit.
@@ -135,7 +135,8 @@ type's invariant; the theorems that use one name it. Also:
 
 **Memory model.** Sequential consistency. Atomic loads return any
 value (vstd); the three bitmap word writers (`vspec/word.rs:59`, `:76`,
-`:92`) are one atomic step each and ignore the ordering. See
+`:92`) are one atomic step each and ignore the ordering, as is the one
+word load that returns its value (`vspec::word::load`, theorem 7). See
 `verus/WEAKMEM.md`.
 
 **Abort stand-in.** One site remains where Verus sees a trusted `-> !`
@@ -305,7 +306,9 @@ pub open spec fn free_target(p: *mut u8) -> bool {
 ```
 
 Each entry point ensures `p@.addr != 0 ==> free_target(p)`: it returns
-only for a slot start or a huge page start; anything else aborts.
+only for a slot start or a huge page start; anything else aborts. Since
+theorem 7, `is_slot` excludes guard slabs, so a pointer into one aborts
+too (`theorem_guard_free`).
 
 **Entry points.**
 
@@ -646,9 +649,146 @@ symbols carry no token.
   `covers_usable` for its whole usable size (row 13 of
   the interface contract).
 
+## 7. Guard pages
+
+Read at this section's commit (the `file:line`s are the `fn`/`axiom`
+line there).
+
+**Statement** (`heap/mod.rs:212`, `:243`; `layout/regions.rs:110`,
+`:284`):
+
+```rust
+pub open spec fn guard_slab(c: int, slab: int) -> bool {
+    guard_of(guard_geom(c).0, guard_geom(c).1, slab as usize)
+}
+
+pub open spec fn is_slot(self, c: int, p: usize) -> bool {
+    &&& self.is_slot_addr(c, p)
+    &&& !guard_slab(c, self.slab_index(c, p))
+}
+
+pub proof fn theorem_guard_pages(p: *mut u8, size: int, align: int, c: int, slab: int)
+    requires
+        fits(p, size, align),
+        p@.addr != 0,
+        size >= 0,
+        0 <= c < NCLASSES,
+        0 <= slab < process_regions().spec_nslabs(c),
+        guard_slab(c, slab),
+    ensures
+        disjoint(p@.addr as int, if size < 1 { 1 } else { size },
+            process_regions().slab_span(c, slab).0,
+            process_regions().slab_span(c, slab).1),
+
+pub proof fn theorem_guard_free(p: *mut u8, c: int, slab: int)
+    requires
+        regions_ok(),
+        free_target(p),
+        0 <= c < NCLASSES,
+        0 <= slab < process_regions().spec_nslabs(c),
+        guard_slab(c, slab),
+    ensures
+        disjoint(p@.addr as int, 1,
+            process_regions().slab_span(c, slab).0,
+            process_regions().slab_span(c, slab).1),
+```
+
+(Line breaks added.) No byte of a non-null block an allocation returns
+lies in a guard slab of any class region, and a free that returns acted
+on no address in one. A guard slab is what `SlabTable::is_guard_slab`
+(`class/table.rs:1529`) names: every `guard_interval`-th page group,
+counted from 1. `commit_slab` (`class/table.rs:2232`) puts the guard on
+it: `MADV_GUARD_INSTALL` on the page group's first page, or the whole
+slab or page group left `PROT_NONE` when the advice fails, or (under
+`thp:always` with PMD chunks) no marker, the slab left unused. Either
+way the guard page is inside the guard slabs, so the theorem covers it.
+With guards off the mask is all ones and no slab is a guard slab.
+
+`guard_of` (`layout/regions.rs:96`) is `is_guard_slab`'s formula;
+`guard_geom(c)` (`:105`) is the process's class `c` table's
+`(lg_slabs_per_page, guard_mask)`. `is_slot_addr` (`:266`) is the old
+`is_slot` (slot `slot < nslots` of slab `slab < nslabs`, guard slabs
+included); `slab_index` and `guard_of` are opaque, revealed only in
+`Regions::lemma_slab_index` and the two guard tests. `is_slot` is in
+`user_block`, so in `fits` (theorem 1), and in `slot_start`, so in
+`free_target` (theorem 3): every row of the interface contract whose R
+or B cell cites them now carries the guard exclusion, with no change to
+any entry point's `ensures`. The proofs are
+`Regions::lemma_user_block_not_guard` (`layout/regions.rs:1080`): a slot
+lies inside its own slab, which `is_slot` puts outside the guard slabs,
+and inside its class region, apart from every other class region and
+from the huge region (`separated`); a huge block lies in the huge
+region.
+
+**Where `is_slot` is established.**
+- Claims: `lemma_real_is_slot` (`class/mod.rs:3760`) takes the bit's
+  slab from `SlotToks::entry` (`:3419`), which now records that the slab
+  is not a guard slab. `finish` gets it from `picks_marks` (`:3864`),
+  which `take` ensures from the class lock's `ready` (`:855`:
+  `!spec_is_guard`). The zero picks' `slot_ptr`
+  (`class/table.rs`) states `is_slot` under the same premise.
+- Unsized frees: `SlabTable::is_set_unchecked` (`class/table.rs:1826`)
+  ensures `r ==> !guard_slab(class, slab)`. It now reads the word through
+  `vspec::word::load` (`vspec/word.rs:96`) inside the word's invariant,
+  where `bitmap::guards_ok` (`bitmap.rs:697`) holds: a guard slab's bits
+  keep their fresh markers, so `marks_ok` makes them clear
+  (`lemma_guard_clear`, `:722`). `check_live` and `check_located`
+  (`class/table.rs:2169`, `:2135`) re-export it; `Shared::classify_free`,
+  `set_slot` (so `checked_slot`, the `free` fast path) and the three
+  `api/libc.rs` `check_live` callers (`usable_size`,
+  `old_size_or_keep`, `realloc_old`) turn it into `is_slot`.
+- Sized frees: `Shared::sized_slot` (`heap/shared.rs:1806`) through
+  `GuardTest::is_guard`, which now ensures its formula;
+  `GuardTest::lemma_is_guard` (`:175`, `bit_vector`) proves the folded
+  test (`(slab + spp) & (mask << lg) == 0`) equal to `guard_of` for
+  every slab of a region (`slab < 2^26`, `lg <= 26`), and `Shared::wf`
+  (`:1416`) now states that `guard_test[c]` tests the class's geometry
+  (`GuardTest::of`, `:204`, which `init` stores).
+- Cached slots: the cache invariant already holds `is_slot` of every
+  entry, so pops, refills, flushes and rebuilds carry the guard
+  exclusion unchanged.
+
+`bitmap::guards_ok` is kept by every word writer: `fresh_word_invs`
+starts every bit fresh, claims and releases leave the markers alone,
+and `AtomicBitmap::init` (`bitmap.rs:1233`) now requires a slab that is
+not a guard slab (`lemma_guards_move`, `:922`); `take_group` calls it
+only past the `is_guard_slab` test.
+
+**Huge runs.** Each run's guard follows its usable pages inside its
+extent, and live extents are pairwise apart (`huge::Inner::wf`).
+`Inner::theorem_run_guards` (`huge/mod.rs:941`) states the consequence
+for every value the huge lock admits: the usable pages of a live run
+share no page with the guard pages of any live run, its own included.
+
+**Premises beyond the common ones.**
+- `table::axiom_slot_loc` (`class/table.rs:902`) now also fixes
+  `guard_geom(c)` to the table's geometry: the same one-table-per-class
+  assumption that names the slot tokens' authority, no new kind of
+  premise.
+- `heap::shared::axiom_shared_built` (`heap/shared.rs:664`) now also
+  states the stored guard tests, as it states the tables.
+- `vspec::word::load` (`external_body`, one atomic load of the word, as
+  the three writers are one atomic step each); its result is the
+  permission's value under sequential consistency.
+- Class lock axioms for `ready`, and `api::shared_ref`'s `Shared::wf`
+  for the guard tests and the table geometry the free paths read.
+
+**Where the statement is weaker than the code.**
+- Huge runs are covered only at the lock invariant: `alloc_run` does not
+  tie its result to a descriptor, so no entry point states that a
+  returned huge block avoids other runs' guard pages. In fallback mode
+  (no `MADV_GUARD_INSTALL`) a reused extent may hold a stale `PROT_NONE`
+  guard that `take` re-commits; that commit is not modelled.
+- `theorem_guard_free` says that a pointer into a guard slab aborts,
+  not which message it prints (`guard_free` for a handed-out guard slab
+  through `check_live`'s `not_live`, `never_committed` past the
+  watermark, `invalid_free` for a mid-slot address).
+- The kernel's guard semantics (a fault on access) are not modelled: the
+  theorem is about where blocks lie, not about what the guard does.
+
 ## Interface contract
 
-The six theorems above checked against challoc's exported C ABI: one
+The seven theorems above checked against challoc's exported C ABI: one
 row per exported symbol (`je_` twins and C++ array forms share their
 row), one column per interface property. Read from the `ensures` of
 each entry point's Rust function at `ccbf1dd`; the `file:line`s in
@@ -669,14 +809,16 @@ about `*usable`.
 
 Properties:
 
-- **R**: the result fits and is aligned (`heap::fits`, `heap/mod.rs:167`).
+- **R**: the result fits and is aligned (`heap::fits`, `heap/mod.rs:167`);
+  since theorem 7 a slab result is never in a guard slab.
 - **D**: the result is disjoint from every other live block.
 - **Z**: the result is zeroed where the API promises it.
 - **C**: contents are preserved (realloc family).
 - **F**: failure semantics: NULL, `errno`, return code, the old block
   intact after a failed realloc, overflow in `calloc`/`reallocarray`.
 - **B**: bad input (invalid or double free, bad alignment) aborts or is
-  a documented no-op. It never corrupts silently.
+  a documented no-op. It never corrupts silently. Since theorem 7 a
+  free target is never in a guard slab, so a free into one aborts.
 - **U**: size consistency: `nallocx` equals `mallocx`'s usable size;
   `sallocx` and `malloc_usable_size` give the block's real usable size.
 
@@ -973,7 +1115,8 @@ alone):
 | I1 region separation                     | P    | th. 1, heap/mod.rs:182 |
 | I2 metadata integrity                    | P    | th. 4, heap/mod.rs:253 |
 | I3 uniqueness (no slot handed out twice) | p    | theorem 5              |
-| I4 guard pages never handed out          | p    | below                  |
+| I4 guard pages never handed out (slabs)  | P    | th. 7 (section 7)      |
+| I4 guard pages never handed out (huge)   | p    | th. 7 (section 7)      |
 | I5 purge never discards live data        | -    | below                  |
 
 - I1, I2: for every result an entry point states `fits` for, with the
@@ -981,15 +1124,14 @@ alone):
 - I3: a slot is unique while it is cached, held by a bitmap word or in
   flight (*(D)* above). There is no model of live blocks, and the `free`
   side rests on `axiom_free_token` (`class/mod.rs:3954`).
-- I4: for slabs, the class lock invariant `slab_core`
-  (`class/mod.rs:811`) keeps a guard slab uncommitted and `Fresh`;
-  `ready` (`:855`) excludes it from `ClassState::take`; `commit_slab`
-  (`class/table.rs:1599`) ensures `usable == !spec_is_guard(s)`. But
-  `Regions::is_slot`, and so `fits`, does not exclude guard slabs, so no
-  entry point states it. For huge runs, `spec_run_usable`
-  (`huge/mod.rs:2787`) puts the guard after the usable pages inside the
-  region. That the guard is no part of another run's usable pages is
-  not stated.
+- I4: theorem 7 (lines as in section 7). For slabs, `Regions::is_slot`
+  excludes the guard slabs, so every `fits` (the R column) and every
+  `free_target` (the B column) states it per result: `theorem_guard_pages` and
+  `theorem_guard_free` (`heap/mod.rs:212`, `:243`). For huge runs it is
+  stated only of the huge lock's values (`Inner::theorem_run_guards`,
+  `huge/mod.rs:941`): no entry point ties its huge result to a live
+  descriptor, and fallback-mode stale `PROT_NONE` guards are not
+  modelled.
 - I5: class purges run only on slabs in the `empty` set, and
   `walk_empty` (`class/decay.rs:265`) checks at run time that the
   descriptor says `Empty` with `live() == 0`, aborting otherwise
@@ -1036,5 +1178,7 @@ alone):
    of rows 3, 4, 14 and 17 to `P`, and with it `rallocx`'s `k` for huge
    blocks (Z of row 17).
 7. **Purge and guards**: tie the empty set and `purge::Batch` ranges to
-   slot and extent tokens (I5, and theorem 6's purge premise), and add
-   `!spec_is_guard` to `is_slot` (I4).
+   slot and extent tokens (I5, and theorem 6's purge premise). The guard
+   half is done for slabs (`!guard_slab` is in `is_slot`, theorem 7);
+   for huge runs, tie `Huge::alloc_run`'s result to its live descriptor
+   so `theorem_run_guards` holds per result (I4, huge row).
