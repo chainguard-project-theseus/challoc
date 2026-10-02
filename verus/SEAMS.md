@@ -1593,7 +1593,7 @@ fn page_group_is_idle(&self, Ghost(g): Ghost<Inner>, slab: usize, spp: usize) ->
 
 ### S62. `axiom_class_lock_inv`
 
-src/class/mod.rs:1296. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:1353. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Assumption (`lock.rs`): the class lock's value keeps the set/count seam's invariant, ghost link included, while the lock is free.
@@ -1607,7 +1607,7 @@ broadcast axiom fn axiom_class_lock_inv(v: Inner)
 
 ### S63. `axiom_class_lock`
 
-src/class/mod.rs:1304. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:1361. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Assumption (`lock.rs`): the sets behind a class lock stay over the slab count they were created with.
@@ -1621,7 +1621,7 @@ broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
 
 ### S64. `PartialEqSpecImpl for State`
 
-src/class/mod.rs:1313. Kind: spec_impl. Category: core library.
+src/class/mod.rs:1370. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1638,7 +1638,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for State {
 
 ### S65. `ClassState::owner_locked`
 
-src/class/mod.rs:1342. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1399. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Bridge (trusted): under this arena's class lock, a slab's group's owner word names this arena exactly when the slab is one of its owned slabs.
@@ -1654,7 +1654,7 @@ fn owner_locked(&self, g: &Inner, slab: usize) -> (r: u16)
 
 ### S66. `ClassState::state_locked`
 
-src/class/mod.rs:1372. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1429. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Bridge (trusted): under an arena's class lock, the descriptor of a slab the arena owns holds the state its ghost records.
@@ -1670,7 +1670,7 @@ fn state_locked(&self, g: &Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>) -> (r
 
 ### S67. `ClassState::set_state_locked`
 
-src/class/mod.rs:1393. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1450. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Bridge (trusted): `SlabDesc::set_state` on an owned slab's descriptor, with the ghost state updated to match (the write side of [`state_locked`]'s assumption).
@@ -1699,7 +1699,7 @@ fn set_state_locked(&self, g: &mut Inner, d: &SlabDesc, Ghost(slab): Ghost<usize
 
 ### S68. `ClassState::dirty_locked`
 
-src/class/mod.rs:1429. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1486. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Bridge (trusted): under an arena's class lock, the descriptor of a slab the arena owns holds the `dirty_at` stamp its ghost records.
@@ -1715,7 +1715,7 @@ fn dirty_locked(&self, g: &Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>) -> (r
 
 ### S69. `ClassState::set_dirty_locked`
 
-src/class/mod.rs:1447. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1504. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Bridge (trusted): `SlabDesc::set_dirty_at` on an owned slab's descriptor, with the ghost stamp updated to match (the write side of [`dirty_locked`]'s assumption).
@@ -1743,7 +1743,7 @@ fn set_dirty_locked(&self, g: &mut Inner, d: &SlabDesc, Ghost(slab): Ghost<usize
 
 ### S70. `ClassState::table`
 
-src/class/mod.rs:1478. Kind: external_body. Category: raw pointer (internal).
+src/class/mod.rs:1535. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The class's shared table.
@@ -1758,7 +1758,7 @@ pub fn table(&self) -> (r: &SlabTable)
 
 ### S71. `ClassState::take_checks`
 
-src/class/mod.rs:2254. Kind: external_body. Category: panic/abort.
+src/class/mod.rs:2311. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > `take`'s debug checks: the slab's owner word and its descriptor's arena name this arena.
@@ -1774,7 +1774,7 @@ fn take_checks(&self, g: &Inner, desc: &SlabDesc, slab: usize, live: usize)
 
 ### S72. `table_ptr`
 
-src/class/mod.rs:2441. Kind: external_body. Category: raw pointer (internal).
+src/class/mod.rs:2498. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `table` as the pointer a [`ClassState`] keeps, which [`table_at`] maps back to the table.
@@ -1787,7 +1787,7 @@ fn table_ptr(table: &SlabTable) -> (p: *const SlabTable)
 
 ### S73. `ClassState::claim_with`
 
-src/class/mod.rs:2687. Kind: no_decreases. Category: termination.
+src/class/mod.rs:2746. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > The loop of [`claim`] and [`claim_random`].
@@ -1805,7 +1805,7 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
 
 ### S74. `axiom_fresh_slots_zero`
 
-src/class/mod.rs:3583. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:3642. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `vspec::sys::axiom_fresh_anon_zero` (`mmap(2)`: a private anonymous mapping reads as zero until it is first written) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -1834,7 +1834,7 @@ axiom fn axiom_fresh_slots_zero(
 
 ### S75. `axiom_discarded_slots_zero`
 
-src/class/mod.rs:3621. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:3680. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `vspec::sys::axiom_discarded_zero` (`madvise(2)`: after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -1863,7 +1863,7 @@ axiom fn axiom_discarded_slots_zero(
 
 ### S76. `axiom_free_token`
 
-src/class/mod.rs:3976. Kind: axiom. Category: C-program contract.
+src/class/mod.rs:4035. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the `free` contract, where a slot the program frees enters the allocator: the program's free paths in `heap/`.

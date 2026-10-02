@@ -786,6 +786,91 @@ share no page with the guard pages of any live run, its own included.
 - The kernel's guard semantics (a fault on access) are not modelled: the
   theorem is about where blocks lie, not about what the guard does.
 
+## Shuffle is a permutation
+
+The coordinator assigns this theorem its number at merge. The
+`file:line`s are the `fn` line at this section's commit.
+
+**Statement** (`class/mod.rs:308`, `:334`, and the `ensures` of
+`shuffle_zero`, `:198`):
+
+```rust
+pub(crate) open spec fn permutes(s: Seq<*mut u8>, o: Seq<*mut u8>) -> bool {
+    s.to_multiset() == o.to_multiset()
+}
+
+pub(crate) fn shuffle_zero(out: &mut [*mut u8], rng: &mut u64, /* ghost: zero and slot tokens */)
+    ensures
+        final(out)@.len() == old(out)@.len(),
+        permutes(final(out)@, old(out)@),
+        // ... every entry comes from the input (`from_seq`); the zero
+        // and slot tokens follow their entries ...
+
+pub(crate) proof fn theorem_shuffle_permutation(s: Seq<*mut u8>, o: Seq<*mut u8>, p: *mut u8)
+    requires
+        permutes(s, o),
+    ensures
+        s.len() == o.len(),
+        s.to_multiset().count(p) == o.to_multiset().count(p),
+        s.contains(p) == o.contains(p),
+        s.no_duplicates() == o.no_duplicates(),
+```
+
+(Abridged where marked.) The `slot_randomize` shuffle loses no slot and
+duplicates none: after it, every pointer occurs in the batch exactly as
+many times as before, whatever `rng` holds. `theorem_shuffle_permutation`
+spells out the consequences: same length, same count of every pointer,
+same membership, and no duplicates after exactly when none before.
+`shuffle` (`:178`, test-only) has the same `ensures`.
+
+**Proof.** The Fisher-Yates loop (`for i in (1..len).rev()`, swap `i`
+with `j = xorshift(rng) % (i + 1)`) keeps `permutes(out@, old(out)@)` as
+an invariant; `lemma_swap_permutes` (`:313`) shows one `<[T]>::swap`
+leaves the multiset unchanged (the update-twice spec of `swap` in
+`vspec/slice.rs`, with vstd's `to_multiset_update`). `j <= i < len` is
+also checked (the `swap` precondition and the `%`), so the swap is in bounds and the remainder by `i + 1` never
+divides by zero. Nothing about `xorshift`'s output is used.
+
+**Where it applies.** `ClassState::claim_random_zero` (`:2662`) is the
+only caller outside tests: with `slot_randomize`, `Heap::claim`
+(`heap/flush.rs:47`) calls it for every refill and run rebuild, and it
+shuffles `out[..n]` right after `claim_with` writes the batch. Inside
+it, a verified assertion states `permutes(out[..n], mid[..n])`: the
+batch handed out is the batch `claim_with` claimed, reordered. The slot
+tokens (theorem 5) and zero tokens (theorem 6) of each entry move with
+it, so `claim_random_zero` ensures the same token postconditions as
+`claim_tokens`. That the batch has no duplicates in the first place
+follows from its slot tokens (`keyed`: one token of the class's
+authority per entry, and two such tokens are disjoint), but no lemma
+states it for the claimed batch; `class::gather` derives it when a
+batch's tokens are collected.
+
+**Premises beyond the common ones.** None. The proof uses only the
+`assume_specification` of `<[T]>::swap` (`vspec/slice.rs:39`) and
+vstd's multiset lemmas.
+
+**Scope.**
+- Randomness is out of scope: nothing is claimed about the distribution
+  of the permutation, the quality of `xorshift`, or the seed from
+  `Heap::rng` (`heap/flush.rs:89`; `seed` is a trusted `getrandom`
+  read, or a clock read when that fails). The theorem holds for every `rng` value, including a stuck or
+  adversarial one.
+- The random start word of each pick that scans the bitmap in `finish`
+  (not a `Fresh` or `Purged` prefix; `(xorshift(r) as usize) % words`)
+  changes which free slots are claimed; the claim contract (slot tokens,
+  `is_slot`, theorem 5's token protocol) is proved for every start word.
+
+**Where the statement is weaker than the code.**
+- `permutes` is stated on `shuffle_zero`'s argument and, inside
+  `claim_random_zero`, on the claimed batch; no entry point's `ensures`
+  says the batch was shuffled from `claim_with`'s output, because the
+  pre-shuffle batch has no name outside the function (exposing it would
+  need a ghost return value, a signature change). Callers see only the
+  token postconditions, which say nothing about order.
+- The flush's grouping (`flush::group_by_slab`, `external_body`) is a
+  different reordering, assumed to be a permutation (common premises),
+  not covered here.
+
 ## Interface contract
 
 The seven theorems above checked against challoc's exported C ABI: one

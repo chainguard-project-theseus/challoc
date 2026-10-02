@@ -70,7 +70,7 @@ These candidates would extend the guarantees beyond the seven theorems in [THEOR
 - **No leak on thread exit** (lane running): The heap destructor returns every cached block, so an exiting thread strands no memory. The proof needs to account for every cached block as the destructor releases it.
 - **Fork safety:** After `fork`, the child holds no allocator lock owned by a thread that no longer exists. Fork tests check this today; a proof needs to track lock ownership across the fork handlers.
 - **Arena isolation:** A block from arena A is never released into arena B; a wrong-arena free aborts. The proof needs to carry arena ownership through the free paths.
-- **Shuffle is a permutation:** Slot randomization hands out every slot exactly once. This can prove preservation of slots without making a claim about randomness.
+- **Shuffle is a permutation** (done; [THEOREMS.md](THEOREMS.md), "Shuffle is a permutation"): `shuffle_zero` ensures `permutes` (the multiset of the batch is unchanged) for every `rng` value, and `theorem_shuffle_permutation` derives equal counts, membership and duplicate-freedom. Randomness is out of scope. Still open: name the pre-shuffle batch in `claim_random_zero`'s `ensures` (needs a ghost return value).
 - **Exact stats:** `mallinfo`, `malloc_stats`, and mallctl statistics equal the true sums over live blocks. This needs a live-block accounting model.
 - **Zero-on-free:** With `zero_on_free` set, a freed block’s bytes are zero before reuse. This needs to carry the zeroing claim through the free and allocation paths.
 

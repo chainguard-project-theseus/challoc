@@ -172,11 +172,13 @@ pub(crate) fn xorshift(state: &mut u64) -> u64 {
     x
 }
 
-/// Fisher-Yates shuffle of `out` with [`xorshift`].
+/// Fisher-Yates shuffle of `out` with [`xorshift`]: a permutation
+/// ([`permutes`]), whatever `rng` holds.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn shuffle(out: &mut [*mut u8], rng: &mut u64)
     ensures
         final(out)@.len() == old(out)@.len(),
+        permutes(final(out)@, old(out)@),
         forall|i: int| 0 <= i < old(out)@.len() ==> #[trigger] from_seq(final(out)@, old(out)@, i),
 {
     let tracked mut z = Map::tracked_empty();
@@ -207,6 +209,7 @@ pub(crate) fn shuffle_zero(
         loc matches Some(l) ==> keyed(*old(t), ptr_addrs(old(out)@), l, 0, old(out)@.len() as int),
     ensures
         final(out)@.len() == old(out)@.len(),
+        permutes(final(out)@, old(out)@),
         forall|i: int| 0 <= i < old(out)@.len() ==> #[trigger] from_seq(final(out)@, old(out)@, i),
         zeroed ==> tokens_cover(*final(z), final(out)@, size),
         loc matches Some(l) ==> keyed(*final(t), ptr_addrs(final(out)@), l, 0, final(out)@.len() as int),
@@ -218,6 +221,7 @@ pub(crate) fn shuffle_zero(
     for i in (1..out.len()).rev()
         invariant
             out@.len() == old(out)@.len(),
+            permutes(out@, old(out)@),
             forall|k: int| 0 <= k < old(out)@.len() ==> #[trigger] from_seq(out@, old(out)@, k),
             loc matches Some(l) ==> keyed(*t, ptr_addrs(out@), l, 0, out@.len() as int),
             keyed_frame(*t, *old(t), 0, old(out)@.len() as int),
@@ -227,6 +231,7 @@ pub(crate) fn shuffle_zero(
         let ghost cur = out@;
         out.swap(i, j);
         proof {
+            lemma_swap_permutes(cur, i as int, j as int);
             assert forall|k: int| 0 <= k < old(out)@.len() implies #[trigger] from_seq(out@, old(out)@, k) by {
                 let src = if k == i as int { j as int } else if k == j as int { i as int } else { k };
                 assert(from_seq(cur, old(out)@, src));
@@ -295,6 +300,58 @@ pub(crate) fn shuffle_zero(
                 assert(tokens_cover(*z, out@, size));
             }
         }
+    }
+}
+
+/// `s` is a permutation of `o`: every pointer occurs in `s` as many
+/// times as in `o`.
+pub(crate) open spec fn permutes(s: Seq<*mut u8>, o: Seq<*mut u8>) -> bool {
+    s.to_multiset() == o.to_multiset()
+}
+
+/// Swapping two entries of `s` (what `<[T]>::swap` does) permutes it.
+proof fn lemma_swap_permutes(s: Seq<*mut u8>, i: int, j: int)
+    requires
+        0 <= i < s.len(),
+        0 <= j < s.len(),
+    ensures
+        permutes(s.update(i, s[j]).update(j, s[i]), s),
+{
+    broadcast use vstd::seq_lib::to_multiset_update, vstd::seq_lib::to_multiset_contains, vstd::multiset::group_multiset_axioms;
+    let m = s.to_multiset();
+    let s1 = s.update(i, s[j]);
+    assert(s1[j] == s[j]);
+    assert(s1.to_multiset() == m.insert(s[j]).remove(s[i]));
+    assert(m.contains(s[i]));
+    assert(m.insert(s[j]).remove(s[i]).insert(s[i]).remove(s[j]) =~= m);
+}
+
+/// Shuffle is a permutation: a batch related by [`permutes`] (what
+/// [`shuffle`] and [`shuffle_zero`] ensure, whatever `rng` holds) has
+/// the batch's length, holds every pointer as many times as the batch
+/// did, and so has no duplicates exactly when the batch had none: the
+/// shuffle loses no slot and duplicates none.
+pub(crate) proof fn theorem_shuffle_permutation(s: Seq<*mut u8>, o: Seq<*mut u8>, p: *mut u8)
+    requires
+        permutes(s, o),
+    ensures
+        s.len() == o.len(),
+        s.to_multiset().count(p) == o.to_multiset().count(p),
+        s.contains(p) == o.contains(p),
+        s.no_duplicates() == o.no_duplicates(),
+{
+    broadcast use vstd::seq_lib::to_multiset_len, vstd::seq_lib::to_multiset_contains;
+    assert(s.len() == s.to_multiset().len());
+    assert(o.len() == o.to_multiset().len());
+    vstd::seq_lib::to_multiset_contains(s, p);
+    vstd::seq_lib::to_multiset_contains(o, p);
+    if o.no_duplicates() {
+        o.lemma_multiset_has_no_duplicates();
+        s.lemma_multiset_has_no_duplicates_conv();
+    }
+    if s.no_duplicates() {
+        s.lemma_multiset_has_no_duplicates();
+        o.lemma_multiset_has_no_duplicates_conv();
     }
 }
 
@@ -2632,6 +2689,8 @@ impl ClassState {
         shuffle_zero(&mut out[..c.n], rng, Ghost(c.zeroed), Ghost(size), Tracked(&mut z), Ghost(Some(self.spec_table().spec_slots().loc)), Tracked(&mut toks.toks));
         proof {
             assert(out@.subrange(0, c.n as int) == out@[..c.n as int]);
+            // The batch handed out is the batch `claim_with` wrote, reordered.
+            assert(permutes(out@.subrange(0, c.n as int), mid.subrange(0, c.n as int)));
             toks.lemma_owns_keyed(self.spec_table(), out@, c.n as int);
             assert(toks.bits == t0.bits);
             assert forall|j: int| !(0 <= j < c.n) implies (#[trigger] toks.toks.contains_key(j)) == o0.toks.contains_key(j) by {
