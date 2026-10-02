@@ -40,8 +40,9 @@ category's default does not fit.
 ## Recording a non-Verus result
 
 A seam leaves "trusted" only with a record: one file per seam under
-`verus/seams/`, named after the item (`verus/seams/sys-raw-syscall3.md`),
-in five parts.
+`verus/seams/`, named after the item (`verus/seams/sys-raw-syscall3.md`;
+the architecture after the module path when items of one name differ by
+architecture, `verus/seams/sys-raw-aarch64-syscall3.md`), in five parts.
 
 1. **Contract.** The Verus contract, copied from the entry below, at a
    named commit.
@@ -558,19 +559,19 @@ the full name, the line and the contract.
 | S228 | `syscall5` | body | asm | Isla | trusted |
 | S229 | `syscall6` | body | asm | Isla | trusted |
 | S230 | `syscall0` | body | asm | Isla | trusted |
-| S231 | `syscall1` | body | asm | Isla | trusted |
+| S231 | `syscall1` | body | asm | Isla | discharged |
 | S232 | `syscall2` | body | asm | Isla | trusted |
-| S233 | `syscall3` | body | asm | Isla | trusted |
+| S233 | `syscall3` | body | asm | Isla | discharged |
 | S234 | `syscall4` | body | asm | Isla | trusted |
 | S235 | `syscall5` | body | asm | Isla | trusted |
-| S236 | `syscall6` | body | asm | Isla | trusted |
+| S236 | `syscall6` | body | asm | Isla | discharged |
 
 ### src/sys/tls.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
 | S237 | `get` | body | asm | Isla | trusted |
-| S238 | `get_tp` | body | asm | Isla | trusted |
+| S238 | `get_tp` | body | asm | Isla | discharged |
 | S239 | `set` | body | asm | Isla | trusted |
 
 ### src/thp.rs
@@ -3918,7 +3919,7 @@ pub unsafe fn syscall0(nr: usize) -> usize
 ### S231. `syscall1`
 
 src/sys/raw.rs:143. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall1.md).
 
 ```rust
 pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
@@ -3936,7 +3937,7 @@ pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
 ### S233. `syscall3`
 
 src/sys/raw.rs:166. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall3.md).
 
 ```rust
 pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize
@@ -3970,7 +3971,7 @@ pub unsafe fn syscall5(
 ### S236. `syscall6`
 
 src/sys/raw.rs:209. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall6.md).
 
 ```rust
 pub unsafe fn syscall6(
@@ -3998,7 +3999,7 @@ pub fn get() -> *mut c_void
 ### S238. `get_tp`
 
 src/sys/tls.rs:118. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-tls-get_tp.md).
 
 > Read the calling thread's slot together with the thread pointer (`tpidr_el0`), the modifier the heap pointer is signed with when pointer authentication is on (`sys::pac`, design 6.1): one asm sequence that keeps the thread pointer it loads to reach the slot, so the caller's `autda` costs no extra register move.
 

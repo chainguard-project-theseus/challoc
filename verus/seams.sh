@@ -27,8 +27,10 @@
 # proposed discharging tool. Categories and tools come from heuristics on
 # the item's kind, path, name and body; verus/seams.overrides (one
 # `name<TAB>category<TAB>tool[<TAB>status]` per line, `#` comments; the
-# name as printed in the ledger, or `file:name` for one of several items of
-# that name) overrides them and carries every status other than "trusted".
+# name as printed in the ledger, `file:name` for one of several items of
+# that name, or `file:name#N` for the Nth seam of that name in the file, in
+# ledger (source) order, where one file has several) overrides them and
+# carries every status other than "trusted".
 # The output depends only on the tree: files are read in byte order.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -394,7 +396,8 @@ END {
     for (i = 1; i <= ntool; i++) toolok[tools[i]] = 1
     for (e = 1; e <= n; e++) {
         key = efile[e] ":" ename[e]
-        if (key in ocat) ok = key; else if (ename[e] in ocat) ok = ename[e]; else ok = ""
+        keyn = key "#" (++nocc[key])
+        if (keyn in ocat) ok = keyn; else if (key in ocat) ok = key; else if (ename[e] in ocat) ok = ename[e]; else ok = ""
         if (ok != "") {
             oseen[ok] = 1; ecat[e] = ocat[ok]; etool[e] = otool[ok]
             estat[e] = ostat[ok] == "" ? "trusted" : ostat[ok]
@@ -528,8 +531,9 @@ category's default does not fit.
 ## Recording a non-Verus result
 
 A seam leaves "trusted" only with a record: one file per seam under
-`verus/seams/`, named after the item (`verus/seams/sys-raw-syscall3.md`),
-in five parts.
+`verus/seams/`, named after the item (`verus/seams/sys-raw-syscall3.md`;
+the architecture after the module path when items of one name differ by
+architecture, `verus/seams/sys-raw-aarch64-syscall3.md`), in five parts.
 
 1. **Contract.** The Verus contract, copied from the entry below, at a
    named commit.

@@ -4,10 +4,12 @@
 #
 #   name<TAB>category<TAB>tool[<TAB>status]
 #
-# `name` is the item as the ledger prints it, or `file:name` where several
-# items share a name. Category and tool are spelled as in the ledger's
-# header; status defaults to "trusted" (see "Recording a non-Verus result"
-# in verus/SEAMS.md). A line that matches no seam is an error.
+# `name` is the item as the ledger prints it, `file:name` where several
+# items share a name, or `file:name#N` for the Nth of several seams of that
+# name in one file (ledger order, which is source order). Category and
+# tool are spelled as in the ledger's header; status defaults to
+# "trusted" (see "Recording a non-Verus result" in verus/SEAMS.md). A
+# line that matches no seam is an error.
 Handler	function pointer	Kani
 installed_handler	function pointer	Kani
 oom	termination	none (assumption)
@@ -166,3 +168,8 @@ src/sys/auxv.rs:getauxval	FFI/syscall	none (assumption)
 Reader	function pointer	Kani
 Target	function pointer	Kani
 libc::FILE	FFI/syscall	none (assumption)
+# Discharged with Isla (verus/ISLA.md); `#2` is the aarch64 `mod imp`.
+src/sys/raw.rs:syscall1#2	inline asm	Islaris/Isla	discharged (verus/seams/sys-raw-aarch64-syscall1.md)
+src/sys/raw.rs:syscall3#2	inline asm	Islaris/Isla	discharged (verus/seams/sys-raw-aarch64-syscall3.md)
+src/sys/raw.rs:syscall6#2	inline asm	Islaris/Isla	discharged (verus/seams/sys-raw-aarch64-syscall6.md)
+src/sys/tls.rs:get_tp	inline asm	Islaris/Isla	discharged (verus/seams/sys-tls-get_tp.md)

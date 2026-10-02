@@ -1,0 +1,8 @@
+# The asm! blocks the Isla records discharge (verus/ISLA.md), verbatim up
+# to whitespace: FILE<TAB>FN<TAB>ASM. run.sh fails when no asm! call in
+# fn FN reads ASM, so a changed template fails until its record is
+# revisited.
+src/sys/raw.rs	syscall1	asm!("svc 0", in("x8") nr, inlateout("x0") a0 => ret, options(nostack));
+src/sys/raw.rs	syscall3	asm!("svc 0", in("x8") nr, inlateout("x0") a0 => ret, in("x1") a1, in("x2") a2, options(nostack));
+src/sys/raw.rs	syscall6	asm!("svc 0", in("x8") nr, inlateout("x0") a0 => ret, in("x1") a1, in("x2") a2, in("x3") a3, in("x4") a4, in("x5") a5, options(nostack));
+src/sys/tls.rs	get_tp	asm!( "adrp {off}, :gottprel:challoc_tls", "ldr {off}, [{off}, :gottprel_lo12:challoc_tls]", "mrs {tp}, tpidr_el0", "ldr {out}, [{tp}, {off}]", off = out(reg) _, tp = out(reg) tp, out = out(reg) out, options(nostack, readonly, preserves_flags), );

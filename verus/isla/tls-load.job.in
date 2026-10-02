@@ -1,0 +1,39 @@
+# The TLS slot load (tls::get_tp's aarch64 asm; verus/seams/sys-tls-get_tp.md):
+#   adrp @A@, :gottprel:challoc_tls      (R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21)
+#   ldr  @A@, [@A@, :gottprel_lo12:...]  (R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC)
+#   mrs  @B@, tpidr_el0
+#   ldr  @C@, [@B@, @A@]
+# run.sh prepends the four insn lines and `writes`.
+no-mem-write
+flags-preserved
+mem-reads 2
+# `got` is G(GTPREL(challoc_tls)), the address of the GOT entry the linker
+# allocates for the slot's offset from the thread pointer. The two
+# relocations as the AArch64 ELF ABI defines them: ADRP's immediate is
+# Page(got) - Page(P) >> 12, P the ADRP's own address (init._PC), checked
+# by the linker to fit 21 signed bits; the LDR's scaled imm12 is got[11:3].
+decl got 64
+assume (= (concat seg.1.immhi seg.1.immlo) ((_ extract 32 12) (bvsub (bvand got #xfffffffffffff000) (bvand init._PC #xfffffffffffff000))))
+assume (= ((_ sign_extend 31) ((_ extract 32 0) (bvsub (bvand got #xfffffffffffff000) (bvand init._PC #xfffffffffffff000)))) (bvsub (bvand got #xfffffffffffff000) (bvand init._PC #xfffffffffffff000)))
+assume (= seg.2.imm12 ((_ zero_extend 3) ((_ extract 11 3) got)))
+# Residual (ELF and Linux): GOT entries are 8-byte aligned; code, the GOT
+# entry and the thread's static TLS block are user addresses (below 2^48),
+# so the model's untranslated access (MMU off) reads the address itself.
+assume (= ((_ extract 2 0) got) #b000)
+assume (bvult init._PC #x0001000000000000)
+assume (bvult got #x0001000000000000)
+decl mem.1.val 64
+assume (bvult (bvadd init.TPIDR_EL0 mem.1.val) #x0001000000000000)
+# With the MMU off every data access is to Device memory, where an
+# unaligned one faults; the slot is 8-byte aligned (`.p2align 3` in
+# tls.rs's `.tbss`, which the TLS layout honours), so it does not.
+assume (= ((_ extract 2 0) (bvadd init.TPIDR_EL0 mem.1.val)) #b000)
+# The first load reads exactly the GOT entry; the second reads the
+# thread pointer plus the offset it held; the outputs are the slot's
+# value and the thread pointer; the sequence falls through.
+assert (= mem.1.addr got)
+assert (= mem.2.addr (bvadd init.TPIDR_EL0 mem.1.val))
+assert (= final.@C@ mem.2.val)
+assert (= final.@B@ init.TPIDR_EL0)
+assert (= final.@A@ mem.1.val)
+assert (= final._PC (bvadd init._PC #x0000000000000010))
