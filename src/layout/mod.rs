@@ -1573,9 +1573,9 @@ pub use regions::{
 };
 #[cfg(verus_only)]
 pub use regions::{
-    axiom_process_page_at_most_64k, bit_slots_in, disjoint, huge_block, lemma_aligned_down,
-    lemma_mod_lin3, lemma_pow2_divides_pow2, lemma_shared_static_len, process_regions,
-    shared_static_addr, shared_static_len, slots_in,
+    axiom_process_page_at_most_64k, bit_slots_in, disjoint, guard_geom, guard_of, guard_slab,
+    huge_block, lemma_aligned_down, lemma_mod_lin3, lemma_pow2_divides_pow2,
+    lemma_shared_static_len, process_regions, shared_static_addr, shared_static_len, slots_in,
 };
 
 #[cfg(test)]

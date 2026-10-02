@@ -12,11 +12,13 @@
 //! `open_atomic_invariant!` block) that passes the caller's ordering
 //! through unchanged, and `#[inline(always)]` leaves the machine code of
 //! the bare `core` call. The bitmap's loads stay plain `core` loads: vstd
-//! specifies their result as any value, which transfers no tokens.
+//! specifies their result as any value, which transfers no tokens. The
+//! one exception is [`load`], for the `free` path's bit test, whose result
+//! is the word's value (a set bit is not in a guard slab).
 //!
 //! Trusted, all of it:
 //! - each wrapped `core` operation is one atomic operation on the word (a
-//!   read-modify-write, or a store), as `core` documents;
+//!   load, a read-modify-write, or a store), as `core` documents;
 //! - the proof model is sequentially consistent: the specifications ignore
 //!   `ordering`, so nothing here proves that `Relaxed`, `Acquire` and
 //!   `Release` are strong enough (`verus/TODO.md`, Tier 4);
@@ -83,6 +85,23 @@ pub fn store(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&
     no_unwind
 {
     w.store(v, ordering)
+}
+
+/// `w.load(ordering)`: the permission's value. The bitmap's other loads
+/// stay plain `core` loads; this one is for `SlabTable::is_set_unchecked`,
+/// whose set bit proves the slab is not a guard slab (`bitmap::guards_ok`).
+#[inline(always)]
+#[verifier::external_body]
+#[verifier::atomic]
+pub fn load(w: &AtomicU64, ordering: Ordering, Tracked(perm): Tracked<&WordPerm>) -> (r: u64)
+    requires
+        perm.addr() == word_addr(w),
+    ensures
+        r == perm.value(),
+    opens_invariants none
+    no_unwind
+{
+    w.load(ordering)
 }
 
 /// `w.fetch_and(v, ordering)`.

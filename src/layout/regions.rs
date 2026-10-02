@@ -87,6 +87,30 @@ pub proof fn lemma_shared_static_len()
 /// regions; the assumption is about the shipped library.
 pub uninterp spec fn process_regions() -> Regions;
 
+/// Slab `slab` is a guard slab of a class table whose slabs per page is
+/// `1 << lg` and whose guard mask is `mask` (`SlabTable::is_guard_slab`):
+/// every `mask + 1`-th page group, counted from 1. With guards off the
+/// mask is all ones and only page group `u32::MAX` would match, which no
+/// region has.
+#[verifier::opaque]
+pub open spec fn guard_of(lg: u8, mask: u32, slab: usize) -> bool {
+    let pg = (slab >> lg) as u32;
+    (if pg == u32::MAX { 0u32 } else { (pg + 1) as u32 }) & mask == 0
+}
+
+/// The guard geometry of the process's class `c` table: its
+/// `lg_slabs_per_page` and `guard_mask`. Uninterpreted; the table fixes
+/// it (`class::table::axiom_slot_loc`, the one-table-per-class
+/// assumption the slot tokens' authority already rests on).
+pub uninterp spec fn guard_geom(c: int) -> (u8, u32);
+
+/// Slab `slab` of class `c`'s region is one of the process's guard slabs
+/// (`SlabTable::is_guard_slab` of the process's class `c` table): never
+/// committed past its first page and never handed out.
+pub open spec fn guard_slab(c: int, slab: int) -> bool {
+    guard_of(guard_geom(c).0, guard_geom(c).1, slab as usize)
+}
+
 /// The process's page is at most 64 KiB: Linux on x86_64 uses 4 KiB pages
 /// and on aarch64 4, 16 or 64 KiB. Trusted: a kernel fact the code relies on
 /// without checking it (the background thread's stack keeps one page as its
@@ -236,13 +260,89 @@ impl Regions {
     }
 
     /// `p` is a slot start of class `c`: slot `slot < nslots` of slab
-    /// `slab` of the class region, for some slab and slot. What the slab
-    /// paths hand out.
-    pub open spec fn is_slot(self, c: int, p: usize) -> bool {
+    /// `slab` of the class region, for some slab and slot, guard slabs
+    /// included. What the pointer arithmetic of the free paths checks
+    /// ([`Regions::slab_slot`], [`Regions::slot_in_class`]).
+    pub open spec fn is_slot_addr(self, c: int, p: usize) -> bool {
         &&& 0 <= c < NCLASSES
         &&& exists|slab: int, slot: int|
             0 <= slab < self.spec_nslabs(c) && 0 <= slot < class_table()[c].nslots
                 && p as int == #[trigger] self.slot_at(c, slab, slot)
+    }
+
+    /// The slab of class `c`'s region that address `p` falls in.
+    #[verifier::opaque]
+    pub open spec fn slab_index(self, c: int, p: usize) -> int {
+        (p - self.class_base[c]) / ((1usize << class_table()[c].lg_slab) as int)
+    }
+
+    /// `p` is a slot start of class `c` ([`Regions::is_slot_addr`]) in a
+    /// slab that is not one of the process's guard slabs ([`guard_slab`]).
+    /// What the slab paths hand out, and what a free that returns acted
+    /// on: a guard slab's slots are never handed out (whole-allocator
+    /// theorem 7, `verus/THEOREMS.md`).
+    pub open spec fn is_slot(self, c: int, p: usize) -> bool {
+        &&& self.is_slot_addr(c, p)
+        &&& !guard_slab(c, self.slab_index(c, p))
+    }
+
+    /// The slab of slot `slot` of slab `slab` is `slab`.
+    pub proof fn lemma_slab_index(self, c: int, slab: int, slot: int, p: usize)
+        requires
+            0 <= c < NCLASSES,
+            0 <= slot < class_table()[c].nslots,
+            p as int == self.slot_at(c, slab, slot),
+        ensures
+            self.slab_index(c, p) == slab,
+    {
+        reveal(Regions::slab_index);
+        crate::vspec::class::axiom_class_table_wf(c);
+        let cls = class_table()[c];
+        let lg = cls.lg_slab;
+        vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+        vstd::bits::lemma_usize_shl_is_mul(1, lg as usize);
+        let s = (1usize << lg) as int;
+        assert(0 <= slot * (cls.size as int) < s) by (nonlinear_arith)
+            requires
+                0 <= slot < cls.nslots,
+                (cls.nslots as int) * (cls.size as int) <= s,
+                cls.size > 0,
+        ;
+        assert(self.slot_at(c, slab, slot) - self.class_base[c] == slab * s + slot * (cls.size as int));
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(
+            slab * s + slot * (cls.size as int), s, slab, slot * (cls.size as int));
+    }
+
+    /// Slot `slot` of slab `slab` of class `c`, in the region and not in a
+    /// guard slab, is a slot start ([`Regions::is_slot`]).
+    pub proof fn lemma_is_slot(self, c: int, slab: int, slot: int, p: usize)
+        requires
+            0 <= c < NCLASSES,
+            0 <= slab < self.spec_nslabs(c),
+            0 <= slot < class_table()[c].nslots,
+            p as int == self.slot_at(c, slab, slot),
+            !guard_slab(c, slab),
+        ensures
+            self.is_slot(c, p),
+            self.is_slot_addr(c, p),
+    {
+        self.lemma_slab_index(c, slab, slot, p);
+    }
+
+    /// A class region has at most `2^26` slabs (`2^38` bytes of slabs of at
+    /// least 4 KiB).
+    pub proof fn lemma_nslabs_bound(self, c: int)
+        requires
+            self.wf(),
+            0 <= c < NCLASSES,
+        ensures
+            self.spec_nslabs(c) <= 0x400_0000,
+    {
+        crate::vspec::class::axiom_class_table_wf(c);
+        let (lr, ls) = (self.lg_region, class_table()[c].lg_slab);
+        assert(LG_REGION_PREFERRED == 38 && super::LG_MIN_SLAB == 12);
+        assert((1usize << lr) >> ls <= 0x400_0000) by (bit_vector)
+            requires lr <= 38, 12 <= ls;
     }
 
     /// [`Regions::is_slot`] with the slot bound relaxed to the bitmap's
@@ -530,7 +630,9 @@ impl Regions {
                 &&& slab == rel >> cls.lg_slab
                 &&& slot < cls.nslots
                 &&& rel & (((1usize << cls.lg_slab) - 1) as usize) == slot * cls.size
-                &&& self.is_slot(c as int, p)
+                &&& self.is_slot_addr(c as int, p)
+                &&& p as int == self.slot_at(c as int, slab as int, slot as int)
+                &&& (slab as int) < self.spec_nslabs(c as int)
             },
     {
         let c = p.wrapping_sub(self.superblock) >> self.lg_stride;
@@ -590,7 +692,9 @@ impl Regions {
                 &&& slab == rel >> cls.lg_slab
                 &&& slot < cls.nslots
                 &&& rel & (((1usize << cls.lg_slab) - 1) as usize) == slot * cls.size
-                &&& self.is_slot(class as int, p)
+                &&& self.is_slot_addr(class as int, p)
+                &&& p as int == self.slot_at(class as int, slab as int, slot as int)
+                &&& (slab as int) < self.spec_nslabs(class as int)
             },
     {
         debug_assert!(class < NCLASSES);
@@ -639,8 +743,9 @@ impl Regions {
     pub fn classify(&self, p: usize) -> (r: Kind)
         requires self.wf(),
         ensures
-            r matches Kind::Slab { class, slab: _, slot } ==>
-                class < NCLASSES && slot < class_table()[class as int].nslots && self.is_slot(class as int, p),
+            r matches Kind::Slab { class, slab, slot } ==>
+                class < NCLASSES && slot < class_table()[class as int].nslots && self.is_slot_addr(class as int, p)
+                    && p as int == self.slot_at(class as int, slab as int, slot as int) && (slab as int) < self.spec_nslabs(class as int),
             r matches Kind::Huge { page } ==> page <= self.huge_len >> self.lg_page,
             // Exact: a page start of the huge region, `page` its index.
             r matches Kind::Huge { page } ==> self.is_huge_block(p, 1) && page == ((p - self.huge_base) as usize) >> self.lg_page,
@@ -802,7 +907,8 @@ impl Regions {
     /// What [`Regions::slab_slot`] and [`Regions::slot_in_class`] check
     /// (the offset from the class base is inside the region, and its part
     /// inside the slab is a whole number of slots below `nslots`) makes
-    /// `p` a slot start.
+    /// `p` a slot start, guard slabs included, at slot `slot` of slab
+    /// `rel >> lg_slab`.
     pub proof fn lemma_slot_of(self, c: int, p: usize, slot: usize)
         requires
             self.wf(),
@@ -812,7 +918,9 @@ impl Regions {
             p.wrapping_sub(self.class_base[c]) & (((1usize << class_table()[c].lg_slab) - 1) as usize)
                 == slot * class_table()[c].size,
         ensures
-            self.is_slot(c, p),
+            self.is_slot_addr(c, p),
+            p as int == self.slot_at(c, (p.wrapping_sub(self.class_base[c]) >> class_table()[c].lg_slab) as int, slot as int),
+            (p.wrapping_sub(self.class_base[c]) >> class_table()[c].lg_slab) < self.spec_nslabs(c),
     {
         crate::vspec::class::axiom_class_table_wf(c);
         let b = self.class_base[c];
@@ -950,6 +1058,107 @@ impl Regions {
                     c >= 0,
                     stride >= 0,
             ;
+        }
+    }
+
+    /// Slab `slab` of class `c`'s region: its `2^lg_slab` bytes.
+    pub open spec fn slab_span(self, c: int, slab: int) -> (int, int) {
+        let s = (1usize << class_table()[c].lg_slab) as int;
+        (self.class_base[c] + slab * s, s)
+    }
+
+    /// Guard pages are never handed out, for one block: no byte of a
+    /// [`user_block`] (its `size` bytes, at least one) lies in a guard
+    /// slab ([`guard_slab`]) of any class. A slot lies inside its own slab,
+    /// which [`is_slot`] puts outside the guard slabs, and inside its class
+    /// region, which is apart from every other class region and from the
+    /// huge region ([`separated`]); a huge block lies in the huge region.
+    ///
+    /// [`user_block`]: Regions::user_block
+    /// [`is_slot`]: Regions::is_slot
+    /// [`separated`]: Regions::separated
+    pub proof fn lemma_user_block_not_guard(self, p: usize, size: int, c: int, slab: int)
+        requires
+            self.wf(),
+            self.separated(),
+            self.user_block(p, size),
+            size >= 0,
+            0 <= c < NCLASSES,
+            0 <= slab < self.spec_nslabs(c),
+            guard_slab(c, slab),
+        ensures
+            disjoint(p as int, if size < 1 { 1 } else { size }, self.slab_span(c, slab).0, self.slab_span(c, slab).1),
+    {
+        let n = if size < 1 { 1 } else { size };
+        let stride = (1usize << self.lg_stride) as int;
+        let region = (1usize << self.lg_region) as int;
+        let (lo, s) = self.slab_span(c, slab);
+        crate::vspec::class::axiom_class_table_wf(c);
+        let lg = class_table()[c].lg_slab;
+        vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+        vstd::bits::lemma_usize_shl_is_mul(1, lg as usize);
+        // The guard slab lies in class `c`'s region.
+        let lr = self.lg_region;
+        assert(0 <= slab * s && slab * s + s <= region) by {
+            let ru = 1usize << lr;
+            let nslabs = ru >> lg;
+            let lgu = lg as usize;
+            assert(nslabs == ru >> lgu) by (bit_vector)
+                requires nslabs == ru >> lg, lgu == lg as usize;
+            vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(nslabs, lgu, ru);
+            assert(nslabs * s <= ru);
+            assert(slab * s + s <= nslabs * s && 0 <= slab * s) by (nonlinear_arith)
+                requires 0 <= slab < nslabs, s >= 0;
+        }
+        assert(self.superblock + c * stride <= lo && lo + s <= self.superblock + (c + 1) * stride);
+        assert(0 <= c * stride && (c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)
+            requires 0 <= c < NCLASSES, stride >= 0;
+        if exists|c2: int| #[trigger] self.is_slot(c2, p) && size <= class_table()[c2].size {
+            let c2 = choose|c2: int| #[trigger] self.is_slot(c2, p) && size <= class_table()[c2].size;
+            let (slab2, slot2) = choose|slab2: int, slot2: int|
+                0 <= slab2 < self.spec_nslabs(c2) && 0 <= slot2 < class_table()[c2].nslots
+                    && p as int == #[trigger] self.slot_at(c2, slab2, slot2);
+            crate::vspec::class::axiom_class_table_wf(c2);
+            let cls2 = class_table()[c2];
+            vstd::bits::lemma_usize_pow2_no_overflow(cls2.lg_slab as nat);
+            vstd::bits::lemma_usize_shl_is_mul(1, cls2.lg_slab as usize);
+            let s2 = (1usize << cls2.lg_slab) as int;
+            // The slot lies inside its slab.
+            assert(0 <= slot2 * (cls2.size as int) && slot2 * (cls2.size as int) + cls2.size as int <= s2) by (nonlinear_arith)
+                requires
+                    0 <= slot2 < cls2.nslots,
+                    (cls2.nslots as int) * (cls2.size as int) <= s2,
+                    cls2.size > 0,
+            ;
+            assert(n <= cls2.size);
+            let lo2 = self.class_base[c2] + slab2 * s2;
+            assert(lo2 <= p && p + n <= lo2 + s2);
+            if c2 == c {
+                self.lemma_slab_index(c, slab2, slot2, p);
+                assert(slab2 != slab);
+                if slab < slab2 {
+                    assert(slab * s + s <= slab2 * s) by (nonlinear_arith)
+                        requires slab + 1 <= slab2, s >= 0;
+                } else {
+                    assert(slab2 * s + s <= slab * s) by (nonlinear_arith)
+                        requires slab2 + 1 <= slab, s >= 0;
+                }
+            } else {
+                self.lemma_slot_in_region(c2, p);
+                assert(self.superblock + c2 * stride <= self.class_base[c2]);
+                assert(self.class_base[c2] + region <= self.superblock + (c2 + 1) * stride);
+                if c2 < c {
+                    assert((c2 + 1) * stride <= c * stride) by (nonlinear_arith)
+                        requires c2 + 1 <= c, stride >= 0;
+                } else {
+                    assert((c + 1) * stride <= c2 * stride) by (nonlinear_arith)
+                        requires c + 1 <= c2, stride >= 0;
+                }
+            }
+        } else {
+            // A huge block lies in the huge region, apart from the
+            // superblock.
+            assert(self.is_huge_block(p, n));
         }
     }
 

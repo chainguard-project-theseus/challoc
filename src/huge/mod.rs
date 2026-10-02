@@ -932,6 +932,39 @@ impl Inner {
             ==> self.elist@.contains(d)
     }
 
+    /// Guard pages are never handed out, for huge runs (whole-allocator
+    /// theorem 7, `verus/THEOREMS.md`): in every value the huge lock
+    /// admits, the usable pages of a live run (`Active`, the pages before
+    /// its [`GUARD_PAGES`]) share no page with the guard pages of any live
+    /// run, its own included: each run's guard follows its usable pages
+    /// (`run_ok`) and live extents are pairwise apart.
+    proof fn theorem_run_guards(&self, d1: *mut HugeDesc, d2: *mut HugeDesc)
+        requires
+            self.wf(),
+            self.descs@.contains_key(d1),
+            self.descs@.contains_key(d2),
+            self.descs@[d1].value().state == RunState::Active as u8,
+            self.descs@[d2].value().state == RunState::Active as u8,
+        ensures
+            ({
+                let (v1, v2) = (self.descs@[d1].value(), self.descs@[d2].value());
+                &&& v1.pages > GUARD_PAGES
+                &&& v2.pages > GUARD_PAGES
+                &&& crate::layout::disjoint(
+                    v1.start as int,
+                    v1.pages - GUARD_PAGES,
+                    v2.start + v2.pages - GUARD_PAGES,
+                    GUARD_PAGES as int,
+                )
+            }),
+    {
+        assert(run_ok(self.descs@[d1].value(), self.lg@));
+        assert(run_ok(self.descs@[d2].value(), self.lg@));
+        if d1 != d2 {
+            assert(apart(self.descs@[d1].value(), self.descs@[d2].value()));
+        }
+    }
+
     /// `d` is a live descriptor: the lock's value holds its permission,
     /// which every descriptor read and write goes through.
     pub(crate) closed spec fn has_desc(&self, d: *mut HugeDesc) -> bool {

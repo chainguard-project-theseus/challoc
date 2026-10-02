@@ -462,8 +462,9 @@ pub open spec fn word_ns() -> int {
 /// What one class bitmap's slot tokens are about: the authority, the
 /// markers' authority (see "Slot tokens" above), the bits per slab
 /// (`Class::slab_bits`), the slots per slab, the bits of the whole region
-/// (`nslabs * slab_bits`), and the slot geometry (the class region's base,
-/// the slab size and the slot size).
+/// (`nslabs * slab_bits`), the slot geometry (the class region's base,
+/// the slab size and the slot size), and the guard geometry (the table's
+/// `lg_slabs_per_page` and `guard_mask`, [`Slots::guard`]).
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[allow(dead_code)]
 pub ghost struct Slots {
@@ -475,9 +476,17 @@ pub ghost struct Slots {
     pub base: int,
     pub slab_size: int,
     pub size: int,
+    pub glg: u8,
+    pub gmask: u32,
 }
 
 impl Slots {
+    /// Slab `slab` is a guard slab (`SlabTable::is_guard_slab`): its bits
+    /// keep their fresh markers, so they stay clear ([`guards_ok`]).
+    pub open spec fn guard(self, slab: int) -> bool {
+        crate::layout::guard_of(self.glg, self.gmask, slab as usize)
+    }
+
     /// Bit `b` of the class bitmap is a slot: slot `b % sb` of slab
     /// `b / sb` is below `nslots`, and the slab is in the region.
     pub open spec fn real(self, b: int) -> bool {
@@ -681,9 +690,19 @@ pub open spec fn marks_ok(s: Slots, j: int, x: u64, u: Set<int>, d: Set<int>) ->
         }
 }
 
+/// The guard slabs' bits of word `j` of class bitmap `s` keep their fresh
+/// markers in `u`, the fresh markers its invariant holds: a guard slab is
+/// never initialised (`SlabTable::take_group` skips it), so by
+/// [`marks_ok`] its bits are clear.
+pub open spec fn guards_ok(s: Slots, j: int, u: Set<int>) -> bool {
+    forall|b: int| #![trigger u.contains(fresh_mark(b))]
+        64 * j <= b < 64 * j + 64 && s.guard(b / s.sb) ==> u.contains(fresh_mark(b))
+}
+
 /// A bitmap word's invariant: the word's permission, the tokens of
-/// exactly the slots whose bits are clear, and the markers of its bits'
-/// initialisation ([`marks_ok`]).
+/// exactly the slots whose bits are clear, the markers of its bits'
+/// initialisation ([`marks_ok`]), and a guard slab's bits never
+/// initialised ([`guards_ok`]).
 pub struct WordPred;
 
 impl InvariantPredicate<WordKey, (WordPerm, GhostSubset<int>, GhostSubset<int>, GhostSubset<int>)> for WordPred {
@@ -694,7 +713,21 @@ impl InvariantPredicate<WordKey, (WordPerm, GhostSubset<int>, GhostSubset<int>, 
         &&& v.2.id() == k.slots.mloc
         &&& v.3.id() == k.slots.mloc
         &&& marks_ok(k.slots, k.j, v.0.value(), v.2@, v.3@)
+        &&& guards_ok(k.slots, k.j, v.2@)
     }
+}
+
+/// A guard slab's bit is clear in every value its word's invariant
+/// admits ([`guards_ok`], [`marks_ok`]).
+pub proof fn lemma_guard_clear(k: WordKey, v: WordVal, b: int)
+    requires
+        WordPred::inv(k, v),
+        64 * k.j <= b < 64 * k.j + 64,
+        k.slots.guard(b / k.slots.sb),
+    ensures
+        !has_bit(v.0.value(), (b - 64 * k.j) as u64),
+{
+    assert(v.2@.contains(fresh_mark(b)));
 }
 
 /// What a bitmap word's invariant holds.
@@ -779,6 +812,7 @@ pub proof fn fresh_word_invs(
         assert(t.id() == s.loc);
         assert(t@ == addrs(s, free_bits(s, j, p.value())));
         assert(marks_ok(s, j, p.value(), u@, d@));
+        assert(guards_ok(s, j, u@));
         let tracked inv = AtomicInvariant::<WordKey, WordVal, WordPred>::new(k, (p, t, u, d), word_ns());
         let tracked mut r = fresh_word_invs(perms, toks, marks, s, base, (n - 1) as nat);
         r.tracked_insert(j, inv);
@@ -880,6 +914,28 @@ proof fn lemma_marks_move(s: Slots, j: int, x0: u64, x1: u64, u0: Set<int>, d0: 
         }
     }
     assert(free_bits(s, j, x1) =~= free_bits(s, j, x0));
+}
+
+/// Initialising bits `a..b` of word `j`, inside slab `slab`, which is not
+/// a guard slab: their fresh markers leave the invariant and the guard
+/// slabs' bits keep theirs.
+proof fn lemma_guards_move(s: Slots, j: int, u0: Set<int>, a: int, b: int, slab: int)
+    requires
+        guards_ok(s, j, u0),
+        s.sb > 0,
+        slab * s.sb <= a <= b <= slab * s.sb + s.sb,
+        !s.guard(slab),
+    ensures
+        guards_ok(s, j, u0.difference(fresh_marks(a, b))),
+{
+    broadcast use lemma_marks;
+    let u1 = u0.difference(fresh_marks(a, b));
+    assert forall|c: int| 64 * j <= c < 64 * j + 64 && s.guard(c / s.sb) implies #[trigger] u1.contains(fresh_mark(c)) by {
+        if a <= c < b {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(c, s.sb, slab, c - slab * s.sb);
+        }
+        assert(u0.contains(fresh_mark(c)));
+    }
 }
 
 /// The padding word `init` stores at word `lo / 64` of a whole-word view
@@ -1163,7 +1219,8 @@ impl<'a> AtomicBitmap<'a> {
     /// `nbits` must be non-zero and fit the view. Atomic on a shared word,
     /// so a neighbouring slab that is already active is not disturbed.
     ///
-    /// It runs once per slab (`slab`, the view's), when
+    /// It runs once per slab (`slab`, the view's, never a guard slab:
+    /// [`guards_ok`] keeps a guard slab's fresh markers), when
     /// `SlabTable::take_group` hands the slab's group out, with the init
     /// markers of the slab's bits (`f`, which the table holds until then):
     /// holding them rules out a slab already initialised, so every bit
@@ -1183,6 +1240,7 @@ impl<'a> AtomicBitmap<'a> {
             self.spec_first() + self.spec_nbits() <= self.spec_slots().nbits,
             f.id() == self.spec_slots().mloc,
             f@ == init_marks(self.spec_first(), self.spec_first() + self.spec_nbits()),
+            !self.spec_slots().guard(slab),
         ensures
             self.inited_by(r@),
     {
@@ -1225,6 +1283,7 @@ impl<'a> AtomicBitmap<'a> {
                     self.spec_nbits() == sl.sb,
                     0 <= slab,
                     first == slab * sl.sb,
+                    !sl.guard(slab),
                     end <= sl.nbits,
                     sl.wf(),
                     f.id() == sl.mloc,
@@ -1285,6 +1344,7 @@ impl<'a> AtomicBitmap<'a> {
                             lemma_slab_bit(sl, slab, c - first);
                         }
                         lemma_marks_move(sl, j, x0, pad, u@, d@, 64 * j, 64 * j + 64);
+                        lemma_guards_move(sl, j, u@, 64 * j, 64 * j + 64, slab);
                         let tracked uw = u.split(fresh_marks(64 * j, 64 * j + 64));
                         p.combine(uw.persist());
                         d.combine(fw);
@@ -1350,6 +1410,7 @@ impl<'a> AtomicBitmap<'a> {
                         assert(has_bit(self.mask, k));
                     }
                     lemma_marks_move(sl, j, x0, x0, u@, d@, first, mid);
+                    lemma_guards_move(sl, j, u@, first, mid, slab);
                     let tracked ur = u.split(fresh_marks(first, mid));
                     p.combine(ur.persist());
                     d.combine(fr);
@@ -1379,6 +1440,7 @@ impl<'a> AtomicBitmap<'a> {
                             lemma_bit_ops(x0, pad, (c - 64 * j) as u64);
                         }
                         lemma_marks_move(sl, j, x0, x0 | pad, u@, d@, mid, end);
+                        lemma_guards_move(sl, j, u@, mid, end, slab);
                         let tracked up = u.split(fresh_marks(mid, end));
                         p.combine(up.persist());
                         let tracked fp = f.take();

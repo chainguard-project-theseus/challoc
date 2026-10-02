@@ -548,6 +548,10 @@ pub fn usable_size(shared: &Shared, p: *mut u8) -> (r: usize)
             let class = class as usize;
             shared.table(class).check_live(slab as usize, slot as usize, p as usize);
             proof {
+                // `check_live` returned: not a guard slab.
+                crate::layout::process_regions().lemma_is_slot(class as int, slab as int, slot as int, p as usize);
+            }
+            proof {
                 // A slot lies in its class region, which is apart from
                 // the huge region.
                 lemma_slot_not_huge(crate::layout::process_regions(), class as int, p as usize);
@@ -669,6 +673,10 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
             shared.table(class).check_live(slab as usize, slot as usize, p as usize);
+            proof {
+                // `check_live` returned: not a guard slab.
+                crate::layout::process_regions().lemma_is_slot(class as int, slab as int, slot as int, p as usize);
+            }
             if class_for(size, align) == Some(class) {
                 proof {
                     lemma_class_aligned(class, align);
@@ -1153,6 +1161,10 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (r: (bool, usize))
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
             shared.table(class).check_live(slab as usize, slot as usize, p as usize);
+            proof {
+                // `check_live` returned: not a guard slab.
+                crate::layout::process_regions().lemma_is_slot(class as int, slab as int, slot as int, p as usize);
+            }
             proof {
                 crate::vspec::class::axiom_class_table_wf(class as int);
                 if size <= class_table()[class as int].size {

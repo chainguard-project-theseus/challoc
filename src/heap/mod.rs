@@ -197,6 +197,68 @@ pub proof fn theorem_region_separation(p: *mut u8, size: int, align: int)
     process_regions().lemma_user_block_separated(p@.addr, size);
 }
 
+/// Guard pages are never handed out (whole-allocator theorem 7,
+/// `verus/THEOREMS.md`): no byte of a non-null block an allocation
+/// returned ([`fits`]) lies in a guard slab of any class region
+/// ([`guard_slab`](crate::layout::guard_slab)), the slabs `SlabTable`
+/// keeps for its guard pages (`MADV_GUARD_INSTALL` on the page group's
+/// first page, or the whole slab or page group left `PROT_NONE`).
+/// Every slab path's result is a slot start ([`Regions::is_slot`]), which
+/// excludes them: a claim takes slots only from slabs that are not guard
+/// slabs (the class lock's `ready`), and the free paths push only slots
+/// whose slab is not one (theorem 3, [`free_target`]).
+///
+/// [`Regions::is_slot`]: crate::layout::Regions::is_slot
+pub proof fn theorem_guard_pages(p: *mut u8, size: int, align: int, c: int, slab: int)
+    requires
+        fits(p, size, align),
+        p@.addr != 0,
+        size >= 0,
+        0 <= c < NCLASSES,
+        0 <= slab < process_regions().spec_nslabs(c),
+        crate::layout::guard_slab(c, slab),
+    ensures
+        crate::layout::disjoint(
+            p@.addr as int,
+            if size < 1 { 1 } else { size },
+            process_regions().slab_span(c, slab).0,
+            process_regions().slab_span(c, slab).1,
+        ),
+{
+    process_regions().lemma_user_block_not_guard(p@.addr, size, c, slab);
+}
+
+/// The free side of theorem 7: a free that returns acted on no address in
+/// a guard slab. Every free entry point ensures [`free_target`] of the
+/// non-null pointer it returns for, so a pointer into a guard slab aborts
+/// before any cache push or bitmap release (which require
+/// [`Regions::is_slot`]): the exact path's bit test
+/// (`SlabTable::check_live`, by name in `guard_free` for a handed-out
+/// guard slab, whose bits are never set), the fast path's
+/// (`Shared::checked_slot`, which then falls back to the exact path), or
+/// the sized path's guard test (`Shared::sized_slot`, then
+/// `check_size_hint` and the exact path).
+///
+/// [`Regions::is_slot`]: crate::layout::Regions::is_slot
+pub proof fn theorem_guard_free(p: *mut u8, c: int, slab: int)
+    requires
+        regions_ok(),
+        free_target(p),
+        0 <= c < NCLASSES,
+        0 <= slab < process_regions().spec_nslabs(c),
+        crate::layout::guard_slab(c, slab),
+    ensures
+        crate::layout::disjoint(p@.addr as int, 1, process_regions().slab_span(c, slab).0, process_regions().slab_span(c, slab).1),
+{
+    let r = process_regions();
+    if slot_start(p) {
+        let c2 = choose|c2: int| #[trigger] r.is_slot(c2, p@.addr);
+        assert(r.is_slot(c2, p@.addr) && 0 <= class_table()[c2].size);
+    }
+    assert(r.user_block(p@.addr, 0));
+    r.lemma_user_block_not_guard(p@.addr, 0, c, slab);
+}
+
 /// Metadata integrity (whole-allocator theorem 4, `verus/TODO.md`): a
 /// non-null block an allocation returned ([`fits`]) shares no byte with
 /// the metadata the allocator keeps in the metadata region
@@ -419,7 +481,9 @@ pub open spec fn slot_start(p: *mut u8) -> bool {
 /// pointer that is not a free target reaches no cache, bitmap or huge
 /// table write before the abort. It may reach one other metadata write:
 /// a thread's first `free` creates the thread's heap (`heap_for_thread`)
-/// before it classifies the pointer.
+/// before it classifies the pointer. A slot start is never in a guard
+/// slab ([`Regions::is_slot`](crate::layout::Regions::is_slot)), so a
+/// pointer into one aborts too ([`theorem_guard_free`]).
 ///
 /// Not proved: that the block is live. A slot start whose bit is clear
 /// aborts on the exact paths (`SlabTable::check_located` and

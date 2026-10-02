@@ -469,6 +469,8 @@ impl SlabTable {
             let lgs = u64_trailing_zeros(slabs_per_page as u64) as u8;
             assert(slabs_per_page == 1usize << lgs) by (bit_vector)
                 requires slabs_per_page == 1usize << j64, lgs as u64 == j64;
+            assert(lgs <= 26) by (bit_vector)
+                requires slabs_per_page == 1usize << j64, lgs as u64 == j64, j64 < 64, slabs_per_page <= 0x400_0000;
             assert(nslabs & sub(slabs_per_page, 1) == 0) by (bit_vector)
                 requires nslabs % slabs_per_page == 0, slabs_per_page == 1usize << j64, j64 < 64;
             let lp = regions.lg_page;
@@ -489,10 +491,12 @@ impl SlabTable {
             base: regions.class_base[class as int] as int,
             slab_size: (1usize << cls.lg_slab) as int,
             size: cls.size as int,
+            glg: u64_trailing_zeros(slabs_per_page as u64) as u8,
+            gmask: guard_interval.wrapping_sub(1),
         };
         let tracked (slot_auth, all) = GhostSetAuth::<int>::new(crate::bitmap::slot_set(geo));
         proof {
-            axiom_slot_loc(class as int, slot_auth.id());
+            axiom_slot_loc(class as int, slot_auth.id(), geo.glg, geo.gmask);
         }
         let ghost nwords = (geo.nbits + 63) / 64;
         // The markers: the fresh ones of every bit for the word
@@ -509,6 +513,8 @@ impl SlabTable {
             base: geo.base,
             slab_size: geo.slab_size,
             size: geo.size,
+            glg: geo.glg,
+            gmask: geo.gmask,
         };
         let ghost bits_base = (bits.spec_base() + stagger) as usize;
         proof {
@@ -603,7 +609,7 @@ fn group_geometry(group: usize, slabs_per_page: usize)
 
 
 /// `1 << k` has `k` trailing zeros.
-proof fn lemma_tz_shl(x: usize, k: u64)
+pub proof fn lemma_tz_shl(x: usize, k: u64)
     requires
         k < 64,
         x == 1usize << k,
@@ -673,6 +679,7 @@ verus! {
 /// words that hold `nslabs * sb` bits, and to the owner words of the
 /// hand-out groups of `group` slabs; initialised (`axiom_init_descs` and
 /// its siblings). [`SlabTable::perms_ok`]'s three maps.
+#[verifier::spinoff_prover]
 proof fn table_perms(
     tracked draw: PointsToRaw,
     tracked braw: PointsToRaw,
@@ -885,10 +892,17 @@ pub uninterp spec fn slot_loc(c: int) -> Loc;
 /// makes is the class's. It names the authority for the thread caches,
 /// whose tokens come from every arena's refills of the class. Two calls
 /// for one class with two authorities would prove `false`, so it is
-/// private to this module and `SlabTable::new` is its one call.
-axiom fn axiom_slot_loc(c: int, loc: Loc)
+/// private to this module and `SlabTable::new` is its one call. For the
+/// same reason the table's guard geometry (`glg`, its `lg_slabs_per_page`,
+/// and `gmask`, its `guard_mask`) is the class's
+/// ([`guard_geom`](crate::layout::guard_geom)): the guard slabs that
+/// `Regions::is_slot` excludes are this table's. A second call for one
+/// class with another guard interval would prove `false` too: `init`
+/// builds each table once and aborts on failure, never retrying.
+axiom fn axiom_slot_loc(c: int, loc: Loc, glg: u8, gmask: u32)
     ensures
-        slot_loc(c) == loc;
+        slot_loc(c) == loc,
+        crate::layout::guard_geom(c) == (glg, gmask);
 
 /// Trusted: the permissions of the `n` words of the table at `base` that
 /// `Meta::reserve_table` has just returned, each holding zero: the table
@@ -1151,7 +1165,9 @@ impl SlabTable {
     /// builds the tables over the one `Shared`'s regions), so the region
     /// is class `class`'s region of the process's regions.
     /// It also holds the permissions `new` carved for the three arrays
-    /// ([`SlabTable::perms_ok`]).
+    /// ([`SlabTable::perms_ok`]), and its guard geometry is the class's
+    /// ([`guard_geom`](crate::layout::guard_geom), `axiom_slot_loc`), with
+    /// page groups of at most `2^26` slabs.
     ///
     /// [`process_regions`]: crate::layout::process_regions
     #[verifier::type_invariant]
@@ -1160,7 +1176,7 @@ impl SlabTable {
         &&& class_table()[self.class as int].wf()
         &&& self.slab_bits == class_table()[self.class as int].slab_bits
         &&& self.slab_bits >= 64 ==> self.slab_bits % 64 == 0
-        &&& self.lg_slabs_per_page < 64
+        &&& self.lg_slabs_per_page <= 26
         &&& self.lg_group < 64
         &&& self.lg_page < 64
         &&& self.slabs_per_page >= 1
@@ -1179,6 +1195,7 @@ impl SlabTable {
         &&& self.nslabs as int == process_regions().spec_nslabs(self.class as int)
         &&& words_wf(self.word_invs@, self.spec_slots(), self.bits_base, self.spec_nwords())
         &&& self.spec_slots().loc == slot_loc(self.class as int)
+        &&& crate::layout::guard_geom(self.class as int) == (self.lg_slabs_per_page, self.guard_mask)
         &&& self.perms_ok()
     }
 
@@ -1360,6 +1377,8 @@ impl SlabTable {
             base: self.base as int,
             slab_size: (1usize << class_table()[self.class as int].lg_slab) as int,
             size: class_table()[self.class as int].size as int,
+            glg: self.lg_slabs_per_page,
+            gmask: self.guard_mask,
         }
     }
 
@@ -1439,8 +1458,19 @@ impl SlabTable {
     ///
     /// [`is_guard_slab`]: SlabTable::is_guard_slab
     pub closed spec fn spec_is_guard(&self, slab: usize) -> bool {
-        let pg = (slab >> self.lg_slabs_per_page) as u32;
-        (if pg == u32::MAX { 0u32 } else { (pg + 1) as u32 }) & self.guard_mask == 0
+        crate::layout::guard_of(self.lg_slabs_per_page, self.guard_mask, slab)
+    }
+
+    /// The table's guard slabs are the process's guard slabs of its class
+    /// ([`guard_slab`](crate::layout::guard_slab), which
+    /// `Regions::is_slot` excludes) and its slot tokens' ([`Slots::guard`]).
+    pub(super) proof fn lemma_guard_slab(&self, slab: int)
+        requires
+            self.inv(),
+        ensures
+            self.spec_is_guard(slab as usize) == crate::layout::guard_slab(self.spec_class() as int, slab),
+            self.spec_is_guard(slab as usize) == self.spec_slots().guard(slab),
+    {
     }
 
     /// The slab range of hand-out group `group` ([`group_range`]): `group`
@@ -1502,6 +1532,7 @@ impl SlabTable {
     {
         proof {
             use_type_invariant(self);
+            reveal(crate::layout::guard_of);
         }
         let page_group = (slab >> self.lg_slabs_per_page) as u32;
         page_group.wrapping_add(1) & self.guard_mask == 0
@@ -1519,7 +1550,13 @@ impl SlabTable {
     ///
     /// [`is_guard_slab`]: SlabTable::is_guard_slab
     #[inline]
-    pub fn guard_mask(&self) -> u32 {
+    pub fn guard_mask(&self) -> (r: u32)
+        ensures
+            r == crate::layout::guard_geom(self.spec_class() as int).1,
+    {
+        proof {
+            use_type_invariant(self);
+        }
         self.guard_mask
     }
 
@@ -1533,6 +1570,8 @@ impl SlabTable {
             r == self.spec_slabs_per_page(),
             r & sub(r, 1) == 0,
             self.spec_nslabs() & sub(r, 1) == 0,
+            r == 1usize << crate::layout::guard_geom(self.spec_class() as int).0,
+            crate::layout::guard_geom(self.spec_class() as int).0 <= 26,
     {
         proof {
             use_type_invariant(self);
@@ -1784,10 +1823,13 @@ impl SlabTable {
     ///
     /// [`is_handed_out`]: SlabTable::is_handed_out
     #[inline(always)]
-    pub unsafe fn is_set_unchecked(&self, slab: usize, slot: usize) -> bool
+    pub unsafe fn is_set_unchecked(&self, slab: usize, slot: usize) -> (r: bool)
         requires
             slab < self.spec_nslabs(),
             slot < class_table()[self.spec_class() as int].nslots,
+        ensures
+            // A guard slab's bits are never set (`bitmap::guards_ok`).
+            r ==> !self.spec_is_guard(slab) && !crate::layout::guard_slab(self.spec_class() as int, slab as int),
     {
         proof {
             use_type_invariant(self);
@@ -1795,14 +1837,33 @@ impl SlabTable {
             assert(slot < self.slab_bits);
         }
         let bit = slab * self.slab_bits as usize + slot;
+        let ghost j = bit as int / 64;
         proof {
-            assert(bit as int / 64 < self.spec_nwords());
-            assert(self.word_perms@.contains_key(bit as int / 64));
+            assert(j < self.spec_nwords());
+            assert(self.word_perms@.contains_key(j));
+            assert(self.word_invs@.contains_key(j));
         }
         let word = addr_to_ptr(self.bits_base + (bit / 64) * 8) as *const AtomicU64;
         // The caller guarantees the word is inside the handed-out part of
         // the bitmap (committed).
-        (ptr_ref(word, Tracked(self.word_perms.borrow().tracked_borrow(bit as int / 64))).load(Ordering::Relaxed) >> (bit % 64)) & 1 == 1
+        let w = ptr_ref(word, Tracked(self.word_perms.borrow().tracked_borrow(j)));
+        let tracked inv = self.word_invs.borrow().tracked_borrow(j);
+        let x;
+        vstd::open_atomic_invariant!(inv => pair => {
+            let tracked (perm, g, u, d) = pair;
+            x = crate::vspec::word::load(w, Ordering::Relaxed, Tracked(&perm));
+            proof {
+                self.lemma_guard_slab(slab as int);
+                if self.spec_is_guard(slab) {
+                    let s = self.spec_slots();
+                    crate::bitmap::lemma_slab_bit(s, slab as int, slot as int);
+                    crate::bitmap::lemma_guard_clear(inv.constant(), (perm, g, u, d), bit as int);
+                    assert((bit - 64 * j) as u64 == (bit % 64) as u64);
+                }
+                pair = (perm, g, u, d);
+            }
+        });
+        (x >> (bit % 64)) & 1 == 1
     }
 
     /// Whether `slot` of `slab` is marked allocated (or cached); `false`
@@ -1963,7 +2024,7 @@ impl SlabTable {
             slot < class_table()[self.spec_class() as int].slab_bits,
         ensures
             r@.addr == process_regions().slot_at(self.spec_class() as int, slab as int, slot as int),
-            slot < class_table()[self.spec_class() as int].nslots
+            slot < class_table()[self.spec_class() as int].nslots && !crate::layout::guard_slab(self.spec_class() as int, slab as int)
                 ==> process_regions().is_slot(self.spec_class() as int, r@.addr),
             process_regions().is_bit_slot(self.spec_class() as int, r@.addr),
     {
@@ -2003,6 +2064,9 @@ impl SlabTable {
             assert(a as int == process_regions().slot_at(c, slab as int, 0) - 0);
             assert(process_regions().slot_at(c, slab as int, slot as int) == a + slot * (cls.size as int));
             assert((1usize << 57usize) == 0x200_0000_0000_0000usize) by (bit_vector);
+            if slot < cls.nslots {
+                process_regions().lemma_slab_index(c, slab as int, slot as int, (a + slot * (cls.size as int)) as usize);
+            }
         }
         crate::vspec::addr::addr_to_ptr(a + slot * cls.size())
     }
@@ -2071,6 +2135,9 @@ impl SlabTable {
     pub fn check_located(&self, slab: usize, slot: usize, p: usize) -> u16
         requires
             slot < class_table()[self.spec_class() as int].nslots,
+        ensures
+            slab < self.spec_nslabs(),
+            !crate::layout::guard_slab(self.spec_class() as int, slab as int),
     {
         self.check_live(slab, slot, p);
         // SAFETY: `check_live` returned, so `slab` is below the watermark.
@@ -2104,6 +2171,8 @@ impl SlabTable {
             slot < class_table()[self.spec_class() as int].nslots,
         ensures
             slab < self.spec_nslabs(),
+            // A guard slab's bits are clear: it aborts by name.
+            !crate::layout::guard_slab(self.spec_class() as int, slab as int),
     {
         if !self.is_handed_out(slab) {
             never_committed(self.class as usize, slab);
@@ -2511,6 +2580,7 @@ impl SlabTable {
                                 requires slab < self.spec_nslabs(), sl.nbits == self.spec_nslabs() * sl.sb, f == slab * sl.sb, sl.sb > 0;
                             crate::bitmap::lemma_marks_sub(f, f + sl.sb, f, self.spec_nslabs() * sl.sb);
                             crate::bitmap::lemma_marks_split(f, f + sl.sb, self.spec_nslabs() * sl.sb);
+                            self.lemma_guard_slab(slab as int);
                         }
                         let tracked fs = gi.fresh.borrow_mut().split(init_marks(f, f + sl.sb));
                         let Tracked(m) = self.bits_unchecked(slab).init(cls.nslots(), Ghost(slab as int), Tracked(fs));

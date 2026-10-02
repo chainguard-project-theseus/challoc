@@ -122,7 +122,7 @@ pub(crate) use sets::Set;
 pub use sets::SetTable;
 pub use table::SlabTable;
 #[cfg(verus_only)]
-pub use table::slot_loc;
+pub use table::{lemma_tz_shl, slot_loc};
 use verify::{fresh_with_live, release_into_fresh};
 
 verus! {
@@ -2139,6 +2139,7 @@ impl ClassState {
             *final(pm) == old(pm).insert(*old(np) as int, final(pm)[*old(np) as int]),
             final(pm)[*old(np) as int].id() == self.spec_table().spec_slots().mloc,
             slab_marked(self.spec_table(), final(picks)[*old(np) as int].slab as int, final(pm)[*old(np) as int]@),
+            !self.spec_table().spec_is_guard(final(picks)[*old(np) as int].slab as usize),
     {
         proof {
             use_type_invariant(self);
@@ -2670,7 +2671,8 @@ impl ClassState {
     /// slot starts (`Regions::is_slot`) because a claim never wins a
     /// padding bit: `plan` hands `finish` the fresh markers of each pick's
     /// slab, which show `AtomicBitmap::init` set its padding bits
-    /// (`AtomicBitmap::claim_word`).
+    /// (`AtomicBitmap::claim_word`), and `plan` picks no guard slab (the
+    /// class lock's `ready`; `picks_marks`), so none is in a guard slab.
     ///
     /// The zero tokens ([`claim_zero_ok`]): a claim is zeroed only when
     /// every pick of every plan was a zero pick (`finish` clears the flag
@@ -2962,6 +2964,7 @@ impl ClassState {
                     &&& #[trigger] pm.contains_key(j)
                     &&& pm[j].id() == s.mloc
                     &&& slab_marked(*_t0, picks@[j].slab as int, pm[j]@)
+                    &&& !_t0.spec_is_guard(picks@[j].slab as usize)
                 } by {
                     assert(pm0.contains_key(j));
                 }
@@ -2977,6 +2980,11 @@ impl ClassState {
                 assert(cur@ == pick_addrs(*_t0, picks@[pi]));
             }
             let slab = pick.slab as usize;
+            proof {
+                // The pick's slab is not a guard slab (`picks_marks`).
+                assert(pm0.contains_key(pi));
+                assert(!_t0.spec_is_guard(slab));
+            }
             let want = pick.n as usize;
             let ghost f = slab * s.sb;
             if pick.zero {
@@ -3001,6 +3009,7 @@ impl ClassState {
                         s.sb == sb,
                         s.nslots == nslots,
                         f == slab * s.sb,
+                        !_t0.spec_is_guard(slab),
                         cur.id() == s.loc,
                         k < want ==> zc.addr() == s.addr(f + k),
                         zc.len() == (want - k) * s.size,
@@ -3033,6 +3042,7 @@ impl ClassState {
                         let tracked one = cur.split_singleton(s.addr(b));
                         let old_t = *otoks;
                         otoks.put(base + got + k, b, one);
+                        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(b, s.sb, slab as int, k as int);
                         SlotToks::lemma_extend(old_t, *otoks, *old(otoks), *_t0, o1, out@, base, (got + k) as int, b);
                         // Slot `k`'s zero token, split off the pick's.
                         assert(out@[got + k]@.addr as int == s.addr(b));
@@ -3115,6 +3125,7 @@ impl ClassState {
                     s.sb == sb,
                     s.nslots == nslots,
                     f == slab * s.sb,
+                    !_t0.spec_is_guard(slab),
                     otoks.holds(*_t0, out@, base, 0, (got + k) as int),
                     otoks.frame(*old(otoks), base, base + got + k),
                     !*zeroed,
@@ -3169,6 +3180,7 @@ impl ClassState {
                         s.wf(),
                         s.sb == sb,
                         f == slab * s.sb,
+                        !_t0.spec_is_guard(slab),
                         wt.id() == s.loc,
                         wt@ == word_addrs(*_t0, slab as int, w as int, m),
                         subset(m, bits),
@@ -3216,6 +3228,7 @@ impl ClassState {
                         assert(wt@.contains(s.addr(bit)));
                         let tracked one = wt.split_singleton(s.addr(bit));
                         otoks.put(base + got + k, bit, one);
+                        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(bit, s.sb, slab as int, (w * 64 + b) as int);
                         SlotToks::lemma_extend(old_t, *otoks, *old(otoks), *_t0, o1, out@, base, (got + k) as int, bit);
                     }
                     k += 1;
@@ -3402,13 +3415,14 @@ impl SlotToks {
     }
 
     /// Key `key` holds the bit behind `p` (in the region, at `p`), which
-    /// is a slot, and `p`'s token.
+    /// is a slot of a slab that is not a guard slab, and `p`'s token.
     pub open spec fn entry(self, t: SlabTable, p: *mut u8, key: int) -> bool {
         let s = t.spec_slots();
         &&& self.bits.contains_key(key)
         &&& 0 <= self.bits[key] < s.nbits
         &&& p@.addr as int == s.addr(self.bits[key])
         &&& s.real(self.bits[key])
+        &&& !t.spec_is_guard((self.bits[key] / s.sb) as usize)
         &&& self.toks.contains_key(key)
         &&& self.toks[key].id() == s.loc
         &&& self.toks[key]@ == p@.addr as int
@@ -3519,6 +3533,7 @@ impl SlotToks {
             0 <= bit < t.spec_slots().nbits,
             o2[n]@.addr as int == t.spec_slots().addr(bit),
             t.spec_slots().real(bit),
+            !t.spec_is_guard((bit / t.spec_slots().sb) as usize),
             new.toks.contains_key(base + n),
             new.toks[base + n].id() == t.spec_slots().loc,
             new.toks[base + n]@ == o2[n]@.addr as int,
@@ -3740,12 +3755,13 @@ proof fn lemma_next_slot_addr(s: Slots, slab: int, k: int)
     assert((k + 1) * s.size == k * s.size + s.size) by (nonlinear_arith);
 }
 
-/// A bit that is a slot is at a slot start of the class
-/// (`Regions::is_slot`).
+/// A bit that is a slot of a slab that is not a guard slab is at a slot
+/// start of the class (`Regions::is_slot`).
 proof fn lemma_real_is_slot(t: SlabTable, b: int, p: usize)
     requires
         t.inv(),
         t.spec_slots().real(b),
+        !t.spec_is_guard((b / t.spec_slots().sb) as usize),
         p as int == t.spec_slots().addr(b),
     ensures
         process_regions().is_slot(t.spec_class() as int, p),
@@ -3763,6 +3779,8 @@ proof fn lemma_real_is_slot(t: SlabTable, b: int, p: usize)
     assert(slab * s.sb + slot == b) by (nonlinear_arith)
         requires b == s.sb * slab + slot;
     assert(p as int == process_regions().slot_at(t.spec_class() as int, slab, slot));
+    t.lemma_guard_slab(slab);
+    process_regions().lemma_is_slot(t.spec_class() as int, slab, slot, p);
 }
 
 /// Claimed bits, which are all slots: the entries are slot starts
@@ -3841,12 +3859,14 @@ proof fn lemma_picks_toks_step(
 }
 
 /// `pm` holds, by pick index, the fresh markers of the slab of each of
-/// picks `lo..hi`: `init` ran on it (`AtomicBitmap::inited_by`).
+/// picks `lo..hi`: `init` ran on it (`AtomicBitmap::inited_by`), so it is
+/// not a guard slab.
 spec fn picks_marks(t: SlabTable, p: Seq<Pick>, lo: int, hi: int, pm: Map<int, GhostPersistentSubset<int>>) -> bool {
     forall|j: int| lo <= j < hi ==> {
         &&& #[trigger] pm.contains_key(j)
         &&& pm[j].id() == t.spec_slots().mloc
         &&& slab_marked(t, p[j].slab as int, pm[j]@)
+        &&& !t.spec_is_guard(p[j].slab as usize)
     }
 }
 
@@ -3867,6 +3887,7 @@ proof fn lemma_picks_marks_step(
         m1 == m0.insert(k, m1[k]),
         m1[k].id() == t.spec_slots().mloc,
         slab_marked(t, p1[k].slab as int, m1[k]@),
+        !t.spec_is_guard(p1[k].slab as usize),
     ensures
         picks_marks(t, p1, 0, k + 1, m1),
 {
@@ -3874,6 +3895,7 @@ proof fn lemma_picks_marks_step(
         &&& #[trigger] m1.contains_key(j)
         &&& m1[j].id() == t.spec_slots().mloc
         &&& slab_marked(t, p1[j].slab as int, m1[j]@)
+        &&& !t.spec_is_guard(p1[j].slab as usize)
     } by {
         if j < k {
             assert(m0.contains_key(j));
@@ -4669,7 +4691,7 @@ impl ClassState {
                 _t.lemma_slot_bit(slab as int, slot as int);
                 _t.lemma_slots_wf();
                 assert(process_regions().slot_at(self.spec_class() as int, slab as int, slot as int) == p@.addr);
-                assert(process_regions().is_slot(self.spec_class() as int, p@.addr));
+                assert(process_regions().is_slot_addr(self.spec_class() as int, p@.addr));
             }
             // The slot's token, from the batch's.
             proof {

@@ -143,14 +143,78 @@ pub struct GuardTest {
 verus! {
 
 impl GuardTest {
-    /// Whether `slab` is a guard slab of the class this pair describes.
-    #[inline(always)]
-    pub(super) fn is_guard(self, slab: usize) -> bool {
+    /// `self` is the test of a table whose slabs per page is `1 << lg` (at
+    /// most a region's `2^26` slabs) and
+    /// whose guard mask is `mask` ([`GuardTest::of`]).
+    pub(super) closed spec fn tests(self, lg: u8, mask: u32) -> bool {
+        &&& lg <= 26
+        &&& self.add == 1u32 << lg
+        &&& self.mask == mask << lg
+    }
+
+    /// What [`GuardTest::is_guard`] computes.
+    pub(super) closed spec fn spec_is_guard(self, slab: usize) -> bool {
         (slab as u32).wrapping_add(self.add) & self.mask == 0
     }
 
-    pub(super) fn of(table: &SlabTable) -> GuardTest {
+    /// Whether `slab` is a guard slab of the class this pair describes.
+    #[inline(always)]
+    pub(super) fn is_guard(self, slab: usize) -> (r: bool)
+        ensures
+            r == self.spec_is_guard(slab),
+    {
+        (slab as u32).wrapping_add(self.add) & self.mask == 0
+    }
+
+    /// The folded test agrees with the table's ([`guard_of`]) on every
+    /// slab of a region (at most `2^26`), whose page groups are at most
+    /// the region (`lg <= 26`): `slab + (1 << lg)` neither wraps nor
+    /// reaches the mask bits the shift drops.
+    ///
+    /// [`guard_of`]: crate::layout::guard_of
+    pub(super) proof fn lemma_is_guard(self, lg: u8, mask: u32, slab: usize)
+        requires
+            self.tests(lg, mask),
+            slab < 0x400_0000,
+        ensures
+            self.spec_is_guard(slab) == crate::layout::guard_of(lg, mask, slab),
+    {
+        reveal(crate::layout::guard_of);
+        let (add, m) = (self.add, self.mask);
+        let s = slab as u32;
+        let pg = (slab >> lg) as u32;
+        assert(s < 0x400_0000u32 && pg == s >> lg && pg < 0x400_0000u32) by (bit_vector)
+            requires slab < 0x400_0000, s == slab as u32, pg == (slab >> lg) as u32;
+        assert(add <= 0x400_0000u32) by (bit_vector)
+            requires add == 1u32 << lg, lg <= 26;
+        let sum = (s + add) as u32;
+        let pg1 = (pg + 1) as u32;
+        assert((sum & m == 0) == (pg1 & mask == 0)) by (bit_vector)
+            requires
+                add == 1u32 << lg,
+                m == mask << lg,
+                lg <= 26,
+                s < 0x400_0000u32,
+                sum == s + add,
+                pg == s >> lg,
+                pg1 == pg + 1,
+        ;
+    }
+
+    pub(super) fn of(table: &SlabTable) -> (r: GuardTest)
+        ensures
+            r.tests(crate::layout::guard_geom(table.spec_class() as int).0, crate::layout::guard_geom(table.spec_class() as int).1),
+    {
         let lg_spp = table.slabs_per_page().trailing_zeros();
+        proof {
+            let lg = crate::layout::guard_geom(table.spec_class() as int).0;
+            let spp = table.spec_slabs_per_page();
+            assert(spp == 1usize << (lg as u64)) by (bit_vector)
+                requires spp == 1usize << lg;
+            crate::class::lemma_tz_shl(spp, lg as u64);
+            assert(spp as u32 == 1u32 << lg) by (bit_vector)
+                requires spp == 1usize << lg, lg <= 26;
+        }
         GuardTest {
             add: table.slabs_per_page() as u32,
             mask: table.guard_mask().wrapping_shl(lg_spp),
@@ -613,6 +677,7 @@ axiom fn axiom_shared_built(
     ensures
         shared_at(p).push_flags == parts.push_flags.value(),
         shared_at(p).tables == tables.value(),
+        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] shared_at(p).guard_test[c] == guard_tests[c].value(),
         shared_at(p).meta == parts.meta.value(),
         shared_at(p).huge == parts.huge.value(),
         shared_at(p).config == parts.config.value(),
@@ -896,6 +961,7 @@ impl Shared {
         ensures
             final(pg).ptr() == old(pg).ptr(),
             final(pg).is_init(),
+            final(pg).value() == g,
     {
         proof {
             axiom_shared_layout();
@@ -1225,6 +1291,9 @@ impl Shared {
                 invariant
                     guard_tests_at(guard_tests, this),
                     elems_init(guard_tests, 0, c as int),
+                    forall|d: int| 0 <= d < NCLASSES ==> (#[trigger] tables[d]).spec_class() == d,
+                    forall|d: int| 0 <= d < c ==> (#[trigger] guard_tests[d]).value().tests(
+                        crate::layout::guard_geom(d).0, crate::layout::guard_geom(d).1),
             {
                 let ghost before = guard_tests;
                 proof {
@@ -1237,7 +1306,8 @@ impl Shared {
                         && guard_tests[d].ptr() == ptr_add(field_ptr::<Shared, GuardTest>(this, S_GUARD_TEST), d as usize) by {
                         assert(before.contains_key(d));
                     }
-                    assert forall|d: int| 0 <= d < c + 1 implies (#[trigger] guard_tests[d]).is_init() by {
+                    assert forall|d: int| 0 <= d < c + 1 implies (#[trigger] guard_tests[d]).is_init()
+                        && guard_tests[d].value().tests(crate::layout::guard_geom(d).0, crate::layout::guard_geom(d).1) by {
                         if d != c {
                             assert(before[d] == guard_tests[d]);
                         }
@@ -1327,7 +1397,9 @@ impl Shared {
     /// changes afterwards (every field is written once, before the
     /// `Shared` is published): the address-space layout is well formed and
     /// separated and is the process's ([`crate::layout::process_regions`]);
-    /// `tables[c]` is class `c`'s table; `huge` covers exactly the huge
+    /// `tables[c]` is class `c`'s table, and `guard_test[c]` its guard test
+    /// ([`GuardTest::of`], over the class's guard geometry,
+    /// [`guard_geom`](crate::layout::guard_geom)); `huge` covers exactly the huge
     /// region's pages, starting at the huge base with the regions' page;
     /// the [`PUSH_PAC`] bit is [`super::pac_mode`], set only where the process
     /// may execute the PAC instructions (`sys::pac::pac_available`, from the
@@ -1351,6 +1423,7 @@ impl Shared {
         &&& super::pac_mode() ==> crate::sys::pac::pac_available()
         &&& self.config.wf()
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].spec_class() == c
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.guard_test[c].tests(crate::layout::guard_geom(c).0, crate::layout::guard_geom(c).1)
         &&& self.huge.spec_npages() == self.huge_pages()
         &&& self.meta.spec_base() == self.regions.meta_base
         &&& self.meta.spec_len() == self.regions.meta_len
@@ -1693,6 +1766,10 @@ impl Shared {
             Kind::Slab { class, slab, slot } => {
                 let class = class as usize;
                 let arena = self.table(class).check_located(slab as usize, slot as usize, p as usize);
+                proof {
+                    // `check_located` returned: not a guard slab.
+                    self.regions.lemma_is_slot(class as int, slab as int, slot as int, p as usize);
+                }
                 Ok((class, arena))
             }
             Kind::Huge { page } => Err(page),
@@ -1739,6 +1816,14 @@ impl Shared {
         // (`slot_in_class` relies on the same).
         if unsafe { self.guard_test.get_unchecked(class) }.is_guard(slab) {
             return None;
+        }
+        proof {
+            // The dense test is the table's (`Shared::wf`), so the slab is
+            // not a guard slab.
+            let c = class as int;
+            self.regions.lemma_nslabs_bound(c);
+            self.guard_test[c].lemma_is_guard(crate::layout::guard_geom(c).0, crate::layout::guard_geom(c).1, slab);
+            self.regions.lemma_is_slot(c, slab as int, _slot as int, p as usize);
         }
         Some(class)
     }
@@ -1918,6 +2003,10 @@ impl Shared {
         // `slot < nslots`.
         if !unsafe { table.is_set_unchecked(slab, slot) } {
             return None;
+        }
+        proof {
+            // A set bit is not in a guard slab.
+            self.regions.lemma_is_slot(class as int, slab as int, slot as int, p as usize);
         }
         Some((class, table, slab))
     }
