@@ -2,9 +2,9 @@
 
 ## Where things stand
 
-Checked October 2, 2026, on branch `verus` at `e790f43` plus the `THEOREMS.md` commit, based on upstream main `0f6ae74`:
+Checked October 2, 2026, on the integration branch at the counts refresh, rebased onto upstream main `c2962c8`:
 
-- `verus-count` skips `#[cfg(test)]` modules. It reports 960 of 1,156 non-test functions verified (83.0%) and 20,092 of 21,907 function lines (91.7%). Another 163 functions inside `verus!` are trusted.
+- `verus-count` skips `#[cfg(test)]` modules. It reports 991 of 1,172 non-test functions verified (84.6%) and 21,150 of 22,811 function lines (92.7%). Another 150 functions inside `verus!` are trusted.
 - `quantum16`, `quantum8`, and `--target aarch64-unknown-linux-gnu` verify with zero errors. `.github/workflows/verus.yaml` runs all three.
 - The hot set — `malloc`, `free`, `calloc`, `realloc`, `sdallocx`, `free_sized`, and everything inlined into them — compiles to the same machine code as upstream on x86_64 and aarch64. The codegen check lists the functions that differ; all are cold (78 on x86_64).
 - All six whole-allocator theorems hold for the thread-cache configuration. [THEOREMS.md](THEOREMS.md) gives their exact statements and premises.
@@ -15,9 +15,9 @@ Verification found these bugs:
 
 - [#1](https://github.com/chainguard-dev/challoc/pull/1), a batch query length wrap and out-of-bounds write; [#2](https://github.com/chainguard-dev/challoc/pull/2), an abort sink UTF-8 split; [#3](https://github.com/chainguard-dev/challoc/pull/3), a cpuset count overflow; and [#4](https://github.com/chainguard-dev/challoc/pull/4), a per-CPU `push_batch` zero-prefix error, were merged.
 - [#5](https://github.com/chainguard-dev/challoc/pull/5), an x86_64 pop that read the zero prefix outside its rseq section, and [#6](https://github.com/chainguard-dev/challoc/pull/6), its model, were approved and then closed when upstream removed the per-CPU mode.
-- [#71](https://github.com/chainguard-dev/challoc/pull/71), a report sink UTF-8 split, remains a draft.
+- [#71](https://github.com/chainguard-dev/challoc/pull/71), a report sink UTF-8 split, was merged; the sink’s character-boundary cut (`api::print::char_cut`) is verified.
 
-A background purge wake-up can also be lost at startup. In `purge/background.rs`, `start` publishes `PRESENT` after the thread’s first scan. A free in that window does not kick the thread, which can then sleep without a timeout. Reading the code confirms the path; it has not yet been reported.
+A background purge wake-up could also be lost at startup: `start` published `PRESENT` after the thread’s first scan, and a free in that window did not kick the thread, which could then sleep without a timeout. [#72](https://github.com/chainguard-dev/challoc/pull/72), merged, has `start` kick the thread once it is published.
 
 ## Coverage ceiling
 
@@ -46,7 +46,7 @@ Other tools could cover much of the remainder: Islaris for inline assembly, Refi
 - Thread `Meta`’s `PointsToRaw` permissions through heap, node, and cache-stack allocations and through `Arenas::build`. This could replace trusted raw-pointer helpers and the block-validity axioms used by `write_bytes` and `copy_nonoverlapping`. `src/huge/table.rs`, `src/meta.rs`, and `src/heap/` show the existing permission pattern.
 - Reduce the class and commit lock axioms’ reliance on trusted bridges: `owner_locked`, `state_locked`, `set_state_locked`, `dirty_locked`, and `set_dirty_locked` in `class/mod.rs`, and the bound on `SlabTable::committed_slabs`.
 - Reduce the trusted construction boundary around heap creation, `Arenas::build`, in-place field access, and publication of `Shared`. `Shared::init` verifies using the token from `Regions::reserve_owning` and `Meta::owning`; `Meta::new` is test-only. Heap creation still writes headers through raw pointers, and heap accessors assume `Heap::wf`.
-- Revisit `config::TABLE`, mallctl readers, print sinks, and `fmt::Display` implementations when Verus supports their function-pointer and formatting patterns. The report sink split is tracked in draft [#71](https://github.com/chainguard-dev/challoc/pull/71).
+- Revisit `config::TABLE`, mallctl readers, print sinks, and `fmt::Display` implementations when Verus supports their function-pointer and formatting patterns. `Sink::write_str` stays outside `verus!`: its room computation needs a type invariant on `Sink`, under which Verus rejects the `&mut` borrow of the buffer in a call that may unwind; its character-boundary cut (#71) is the verified `char_cut`.
 
 ### Theorem premises
 
@@ -59,7 +59,7 @@ All six theorems are in the code. [THEOREMS.md](THEOREMS.md) records where each 
 
 ### Weak memory and external models
 
-- Carry out the weak-memory checks in [WEAKMEM.md](WEAKMEM.md). Verus assumes sequential consistency and does not establish that the shipped `Relaxed`, `Acquire`, and `Release` orderings suffice. The background purge wake-up needs a reproduced check and a fix.
+- Carry out the weak-memory checks in [WEAKMEM.md](WEAKMEM.md). Verus assumes sequential consistency and does not establish that the shipped `Relaxed`, `Acquire`, and `Release` orderings suffice. #72 fixes the background purge wake-up’s startup race; its weak-memory form (WEAKMEM.md P3) still needs a fix.
 - Model the kernel and CPU boundary before reducing trust in assembly and syscall wrappers, including `sys/raw.rs`’s syscall functions, TLS, PAC, and CPU instructions. The kernel contracts for `mmap`, `madvise`, and `mprotect` remain premises.
 - Use a liveness-capable model for lock waits and `claim_with`. The Verus theorems state partial correctness: they describe calls that return.
 
