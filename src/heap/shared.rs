@@ -7,7 +7,11 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::arena::{Arena, Arenas};
+use crate::arena::{Arena, Arenas, Held, elem_at, field_at, fits};
+#[cfg(verus_only)]
+use crate::arena::{
+    elems_at, elems_init, elems_uninit, field_fits, field_ptr, split_array, storage_ok, take_field,
+};
 use crate::class::SlabTable;
 use crate::config::Config;
 use crate::huge::Huge;
@@ -16,6 +20,11 @@ use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
+use crate::policy::Policy;
+use crate::stats::Snapshot;
+use crate::sys::cgroup::Cgroup;
+#[cfg(verus_only)]
+use crate::vspec::ptr::{axiom_ptr_add_addr, axiom_raw_valid, in_alloc, ptr_add};
 use crate::vspec::unbacked::Unbacked;
 use crate::vspec::zero::Zeroed;
 
@@ -26,10 +35,13 @@ use super::{Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
 use crate::class::slot_loc;
 #[cfg(verus_only)]
 use crate::class::{aset, distinct, ptr_addrs};
+#[cfg(verus_only)]
+use vstd::layout::size_of;
 use vstd::prelude::verus;
 #[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{Tracked, int};
+use vstd::raw_ptr::{PointsTo, ptr_mut_write, ptr_ref};
 use vstd::resource::set::{GhostSingleton, GhostSubset};
 
 verus! {
@@ -169,7 +181,13 @@ pub(crate) struct ThreadKey {
 
 } // verus!
 
+verus! {
+
 impl ThreadKey {
+    /// A new key whose destructor is `heap_destructor`; `valid` says
+    /// whether `pthread_key_create` gave one. Trusted: passes a function
+    /// pointer, which Verus does not support.
+    #[verifier::external_body]
     pub fn create() -> ThreadKey {
         let mut key: libc::pthread_key_t = 0;
         // SAFETY: `key` is a valid out-pointer; the destructor is a plain
@@ -180,7 +198,11 @@ impl ThreadKey {
             valid: rc == 0,
         }
     }
+}
 
+} // verus!
+
+impl ThreadKey {
     #[cfg(test)]
     pub fn valid(&self) -> bool {
         self.valid
@@ -361,7 +383,8 @@ pub uninterp spec fn shared_storage() -> *mut Shared;
 /// The `Shared` built in place at `p`: [`Shared::init`] writes each field
 /// once, before anything reads it, and nothing writes the fields
 /// [`Shared::wf`] reads afterwards, so the value is one value.
-/// Uninterpreted; the in-place writers below fix the fields `wf` names.
+/// Uninterpreted; [`axiom_shared_regions`] and [`axiom_shared_built`]
+/// fix the fields `wf` names from the permissions `init` wrote them through.
 pub uninterp spec fn shared_at(p: *mut Shared) -> Shared;
 
 /// Assumption: one `Shared` per process. The process's regions and its
@@ -380,24 +403,6 @@ pub(crate) axiom fn axiom_process_shared()
         super::pac_mode() == (shared_at(shared_storage()).push_flags & PUSH_PAC != 0),
 ;
 
-/// Ghost record of an in-place build of the `Shared` at [`Build::at`]: the
-/// fields [`Shared::wf`] names that have been written ([`F_REGIONS`] for
-/// `regions` and `meta`, and the rest; table `c` is `F_TABLE + c`), so
-/// each is written once.
-/// Trusted: only [`Shared::begin`] makes one, and it must be called once
-/// per storage (its one caller, `Shared::init`, builds each storage once);
-/// two tokens for one storage could write a field twice.
-#[verifier::external_body]
-pub tracked struct Build {
-    _p: (),
-}
-
-pub spec const F_REGIONS: int = 0;
-pub spec const F_FLAGS: int = 1;
-pub spec const F_HUGE: int = 2;
-pub spec const F_CONFIG: int = 3;
-pub spec const F_TABLE: int = 100;
-
 impl Shared {
     /// [`shared_storage`], for modules outside `heap`.
     pub open spec fn storage() -> *mut Shared {
@@ -410,201 +415,644 @@ impl Shared {
     }
 }
 
-impl Build {
-    pub uninterp spec fn at(&self) -> *mut Shared;
+// Byte offsets of `Shared`'s fields: `offset_of!`, which Verus cannot
+// evaluate, so their values are opaque to it; `axiom_shared_layout`
+// states what verified code relies on, and the build checks it.
+#[verifier::external_body]
+const S_MULTI_ARENA: usize = core::mem::offset_of!(Shared, multi_arena);
+#[verifier::external_body]
+const S_PUSH_FLAGS: usize = core::mem::offset_of!(Shared, push_flags);
+#[verifier::external_body]
+const S_REGIONS: usize = core::mem::offset_of!(Shared, regions);
+#[verifier::external_body]
+const S_GUARD_TEST: usize = core::mem::offset_of!(Shared, guard_test);
+#[verifier::external_body]
+const S_TABLES: usize = core::mem::offset_of!(Shared, tables);
+#[verifier::external_body]
+const S_ARENA0: usize = core::mem::offset_of!(Shared, arena0);
+#[verifier::external_body]
+const S_META: usize = core::mem::offset_of!(Shared, meta);
+#[verifier::external_body]
+const S_HUGE: usize = core::mem::offset_of!(Shared, huge);
+#[verifier::external_body]
+const S_GC_INTERVAL_NS: usize = core::mem::offset_of!(Shared, gc_interval_ns);
+#[verifier::external_body]
+const S_POLICY: usize = core::mem::offset_of!(Shared, policy);
+#[verifier::external_body]
+const S_CONFIG: usize = core::mem::offset_of!(Shared, config);
+#[verifier::external_body]
+const S_KEY: usize = core::mem::offset_of!(Shared, key);
+#[verifier::external_body]
+const S_ARENAS: usize = core::mem::offset_of!(Shared, arenas);
+#[verifier::external_body]
+const S_TCACHES: usize = core::mem::offset_of!(Shared, tcaches);
+#[verifier::external_body]
+const S_STATS: usize = core::mem::offset_of!(Shared, stats);
+#[verifier::external_body]
+const S_CGROUP: usize = core::mem::offset_of!(Shared, cgroup);
 
-    pub uninterp spec fn done(&self) -> vstd::set::Set<int>;
+/// `Shared`'s layout (`repr(C)`): each field at its offset, aligned, and
+/// ending by the next one's offset, the last by the size. Trusted, and
+/// checked by the build: the `const` assertion after this block
+/// evaluates the same conditions with `arena::fits`.
+axiom fn axiom_shared_layout()
+    ensures
+        field_fits::<Shared, AtomicBool>(S_MULTI_ARENA, S_PUSH_FLAGS as int),
+        field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGIONS as int),
+        field_fits::<Shared, Regions>(S_REGIONS, S_GUARD_TEST as int),
+        field_fits::<Shared, [GuardTest; NCLASSES]>(S_GUARD_TEST, S_TABLES as int),
+        field_fits::<Shared, [SlabTable; NCLASSES]>(S_TABLES, S_ARENA0 as int),
+        field_fits::<Shared, Arena>(S_ARENA0, S_META as int),
+        field_fits::<Shared, Meta>(S_META, S_HUGE as int),
+        field_fits::<Shared, Huge>(S_HUGE, S_GC_INTERVAL_NS as int),
+        field_fits::<Shared, u64>(S_GC_INTERVAL_NS, S_POLICY as int),
+        field_fits::<Shared, Policy>(S_POLICY, S_CONFIG as int),
+        field_fits::<Shared, Config>(S_CONFIG, S_KEY as int),
+        field_fits::<Shared, ThreadKey>(S_KEY, S_ARENAS as int),
+        field_fits::<Shared, Arenas>(S_ARENAS, S_TCACHES as int),
+        field_fits::<Shared, Tcaches>(S_TCACHES, S_STATS as int),
+        // Over several lines, as in `arena::axiom_arena_layout`.
+        field_fits::<
+            Shared,
+            Lock<Snapshot>,
+        >(S_STATS, S_CGROUP as int),
+        field_fits::<Shared, Cgroup>(S_CGROUP, size_of::<Shared>() as int),
+        size_of::<Shared>() <= isize::MAX,
+;
 
-    /// Every table is written.
-    pub open spec fn tables_done(&self) -> bool {
-        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.done().contains(F_TABLE + c)
+} // verus!
+
+// `axiom_shared_layout`, checked.
+const _: () = assert!(
+    fits::<Shared, AtomicBool>(S_MULTI_ARENA, S_PUSH_FLAGS)
+        && fits::<Shared, u8>(S_PUSH_FLAGS, S_REGIONS)
+        && fits::<Shared, Regions>(S_REGIONS, S_GUARD_TEST)
+        && fits::<Shared, [GuardTest; NCLASSES]>(S_GUARD_TEST, S_TABLES)
+        && fits::<Shared, [SlabTable; NCLASSES]>(S_TABLES, S_ARENA0)
+        && fits::<Shared, Arena>(S_ARENA0, S_META)
+        && fits::<Shared, Meta>(S_META, S_HUGE)
+        && fits::<Shared, Huge>(S_HUGE, S_GC_INTERVAL_NS)
+        && fits::<Shared, u64>(S_GC_INTERVAL_NS, S_POLICY)
+        && fits::<Shared, Policy>(S_POLICY, S_CONFIG)
+        && fits::<Shared, Config>(S_CONFIG, S_KEY)
+        && fits::<Shared, ThreadKey>(S_KEY, S_ARENAS)
+        && fits::<Shared, Arenas>(S_ARENAS, S_TCACHES)
+        && fits::<Shared, Tcaches>(S_TCACHES, S_STATS)
+        && fits::<Shared, Lock<Snapshot>>(S_STATS, S_CGROUP)
+        && fits::<Shared, Cgroup>(S_CGROUP, core::mem::size_of::<Shared>())
+        && core::mem::size_of::<Shared>() <= isize::MAX as usize
+);
+
+verus! {
+
+/// The permissions to the fields of a `Shared` under construction but
+/// its regions (frozen once written: [`axiom_shared_regions`]) and its
+/// guard tests and tables, which are maps of their own, element by
+/// element ([`Shared::split`]). `arena0` and `arenas` are [`Held`]
+/// because `Arena::init` and `Arenas::init` take theirs out and
+/// hand them back.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+tracked struct SharedParts {
+    tracked multi_arena: PointsTo<AtomicBool>,
+    tracked push_flags: PointsTo<u8>,
+    tracked arena0: Held<Arena>,
+    tracked meta: PointsTo<Meta>,
+    tracked huge: PointsTo<Huge>,
+    tracked gc_interval_ns: PointsTo<u64>,
+    tracked policy: PointsTo<Policy>,
+    tracked config: PointsTo<Config>,
+    tracked key: PointsTo<ThreadKey>,
+    tracked arenas: Held<Arenas>,
+    tracked tcaches: PointsTo<Tcaches>,
+    tracked stats: PointsTo<Lock<Snapshot>>,
+    tracked cgroup: PointsTo<Cgroup>,
+}
+
+/// The `Shared` at `p` is [`storage_ok`], and the arrays inside it are
+/// inside its allocation.
+spec fn shared_ok(p: *mut Shared) -> bool {
+    &&& storage_ok(p)
+    &&& in_alloc(field_ptr::<Shared, GuardTest>(p, S_GUARD_TEST), NCLASSES as int * size_of::<GuardTest>())
+    &&& NCLASSES * size_of::<GuardTest>() <= isize::MAX
+    &&& in_alloc(field_ptr::<Shared, SlabTable>(p, S_TABLES), NCLASSES as int * size_of::<SlabTable>())
+    &&& NCLASSES * size_of::<SlabTable>() <= isize::MAX
+    &&& field_ptr::<Shared, SlabTable>(p, S_TABLES)@.addr + NCLASSES * size_of::<SlabTable>() <= usize::MAX
+}
+
+impl SharedParts {
+    /// Each permission is to its field of the `Shared` at `p`
+    /// ([`shared_ok`]); `arena0` and `arenas` when they are held.
+    spec fn at(&self, p: *mut Shared) -> bool {
+        &&& shared_ok(p)
+        &&& self.multi_arena.ptr() == field_ptr::<Shared, AtomicBool>(p, S_MULTI_ARENA)
+        &&& self.push_flags.ptr() == field_ptr::<Shared, u8>(p, S_PUSH_FLAGS)
+        &&& (self.arena0.perm matches Some(a) ==> a.ptr() == field_ptr::<Shared, Arena>(p, S_ARENA0))
+        &&& self.meta.ptr() == field_ptr::<Shared, Meta>(p, S_META)
+        &&& self.huge.ptr() == field_ptr::<Shared, Huge>(p, S_HUGE)
+        &&& self.gc_interval_ns.ptr() == field_ptr::<Shared, u64>(p, S_GC_INTERVAL_NS)
+        &&& self.policy.ptr() == field_ptr::<Shared, Policy>(p, S_POLICY)
+        &&& self.config.ptr() == field_ptr::<Shared, Config>(p, S_CONFIG)
+        &&& self.key.ptr() == field_ptr::<Shared, ThreadKey>(p, S_KEY)
+        &&& (self.arenas.perm matches Some(a) ==> a.ptr() == field_ptr::<Shared, Arenas>(p, S_ARENAS))
+        &&& self.tcaches.ptr() == field_ptr::<Shared, Tcaches>(p, S_TCACHES)
+        &&& self.stats.ptr() == field_ptr::<Shared, Lock<Snapshot>>(p, S_STATS)
+        &&& self.cgroup.ptr() == field_ptr::<Shared, Cgroup>(p, S_CGROUP)
+    }
+
+    /// Every field is written.
+    spec fn written(&self) -> bool {
+        &&& self.multi_arena.is_init()
+        &&& self.push_flags.is_init()
+        &&& self.arena0.perm matches Some(a) && a.is_init()
+        &&& self.meta.is_init()
+        &&& self.huge.is_init()
+        &&& self.gc_interval_ns.is_init()
+        &&& self.policy.is_init()
+        &&& self.config.is_init()
+        &&& self.key.is_init()
+        &&& self.arenas.perm matches Some(a) && a.is_init()
+        &&& self.tcaches.is_init()
+        &&& self.stats.is_init()
+        &&& self.cgroup.is_init()
     }
 }
 
-/// The in-place writes and reads of [`Shared::init`], each trusted: Verus
-/// has no raw-pointer field projection. Each writes or reads the fields it
-/// names and nothing else, in `init`'s order, and `this` must be the
-/// storage `init` was handed; a writer's postcondition is the field of
-/// [`shared_at`] it fixes.
+/// The guard test permissions of the `Shared` at `p`, element by element.
+spec fn guard_tests_at(m: Map<int, PointsTo<GuardTest>>, p: *mut Shared) -> bool {
+    elems_at(m, field_ptr::<Shared, GuardTest>(p, S_GUARD_TEST), 0, NCLASSES as int)
+}
+
+/// The table permissions of the `Shared` at `p`, element by element.
+spec fn tables_at(m: Map<int, PointsTo<SlabTable>>, p: *mut Shared) -> bool {
+    elems_at(m, field_ptr::<Shared, SlabTable>(p, S_TABLES), 0, NCLASSES as int)
+}
+
+/// The written fields of the `Shared` at `p` (`Shared::split`'s parts and
+/// guard tests, every one initialised, and the tables joined into their
+/// array), as the value [`shared_at`] names: the fields [`Shared::wf`]
+/// reads are what their permissions hold. Trusted, as
+/// `arena::axiom_arena_assemble` is: vstd has no way to join typed
+/// permissions, and the permissions cover every field at its offset. The
+/// permissions are used up, so nothing verified writes the fields
+/// afterwards; that nothing unverified does is `shared_at`'s own
+/// assumption.
+axiom fn axiom_shared_built(
+    tracked parts: SharedParts,
+    tracked guard_tests: Map<int, PointsTo<GuardTest>>,
+    tracked tables: PointsTo<[SlabTable; NCLASSES]>,
+    p: *mut Shared,
+)
+    requires
+        parts.at(p),
+        parts.written(),
+        guard_tests_at(guard_tests, p),
+        elems_init(guard_tests, 0, NCLASSES as int),
+        tables.ptr() == field_ptr::<Shared, [SlabTable; NCLASSES]>(p, S_TABLES),
+        tables.is_init(),
+    ensures
+        shared_at(p).push_flags == parts.push_flags.value(),
+        shared_at(p).tables == tables.value(),
+        shared_at(p).meta == parts.meta.value(),
+        shared_at(p).huge == parts.huge.value(),
+        shared_at(p).config == parts.config.value(),
+;
+
+/// The regions of the `Shared` at `p` are what the permission to its
+/// `regions` field holds, once that permission is frozen
+/// (`vstd::modes::tracked_static_ref`, right after [`Shared::put_head`]
+/// writes the field): no verified code can write the field again, so the
+/// value is the built one. Trusted, as [`axiom_shared_built`] is; stated
+/// apart because `init` needs it before the build is done (the process's
+/// regions, [`axiom_process_shared`], are the arena's and the tables').
+axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Shared)
+    requires
+        pr.ptr() == field_ptr::<Shared, Regions>(p, S_REGIONS),
+        pr.is_init(),
+    ensures
+        shared_at(p).regions == pr.value(),
+;
+
+/// The statistics an `epoch` stores (`stats.rs`): any value will do.
+axiom fn axiom_snapshot_lock_inv()
+    ensures
+        forall|v: Snapshot| #[trigger] crate::lock::lock_inv(v),
+;
+
 impl Shared {
-    /// A build of fresh storage at `this`: nothing written yet.
+    /// The permission to `init`'s storage, uninitialised. Trusted:
+    /// `init`'s caller hands over writable storage for a `Shared` that
+    /// nothing else uses (its safety contract), and builds each storage
+    /// once (`api::init` the static's; the tests a fresh leaked box each
+    /// time): two permissions for one storage could write a field twice.
+    /// The storage is a Rust object, so it does not wrap the address
+    /// space.
     #[allow(unused_variables)]
     #[verifier::external_body]
     #[inline(always)]
-    fn begin(this: *mut Shared) -> (b: Tracked<Build>)
+    fn begin(this: *mut Shared) -> (r: Tracked<PointsTo<Shared>>)
         ensures
-            b@.at() == this,
-            b@.done() == vstd::set::Set::<int>::empty(),
+            r@.ptr() == this,
+            r@.is_uninit(),
+            this@.addr + size_of::<Shared>() <= usize::MAX,
     {
         Tracked::assume_new()
     }
 
+    /// The permissions to the fields of the uninitialised `Shared` `perm`
+    /// is to: [`take_field`] for each field at the offsets
+    /// [`axiom_shared_layout`] gives, and the guard tests and the tables
+    /// split by [`split_array`]; the regions' permission last.
+    proof fn split(tracked perm: PointsTo<Shared>) -> (tracked r: (
+        SharedParts,
+        Map<int, PointsTo<GuardTest>>,
+        Map<int, PointsTo<SlabTable>>,
+        PointsTo<Regions>,
+    ))
+        requires
+            perm.is_uninit(),
+            perm.ptr()@.addr + size_of::<Shared>() <= usize::MAX,
+        ensures
+            r.0.at(perm.ptr()),
+            r.0.multi_arena.is_uninit(),
+            r.0.push_flags.is_uninit(),
+            r.3.ptr() == field_ptr::<Shared, Regions>(perm.ptr(), S_REGIONS),
+            r.3.is_uninit(),
+            r.0.arena0.perm matches Some(a) && a.is_uninit(),
+            r.0.meta.is_uninit(),
+            r.0.huge.is_uninit(),
+            r.0.gc_interval_ns.is_uninit(),
+            r.0.policy.is_uninit(),
+            r.0.config.is_uninit(),
+            r.0.key.is_uninit(),
+            r.0.arenas.perm matches Some(a) && a.is_uninit(),
+            r.0.tcaches.is_uninit(),
+            r.0.stats.is_uninit(),
+            r.0.cgroup.is_uninit(),
+            guard_tests_at(r.1, perm.ptr()),
+            elems_uninit(r.1, 0, NCLASSES as int),
+            tables_at(r.2, perm.ptr()),
+            elems_uninit(r.2, 0, NCLASSES as int),
+    {
+        broadcast use vstd::raw_ptr::group_raw_ptr_axioms;
+
+        axiom_shared_layout();
+        let p = perm.ptr();
+        perm.is_nonnull();
+        perm.is_aligned();
+        let tracked raw = perm.into_raw();
+        axiom_raw_valid(&raw, p as *mut u8, size_of::<Shared>() as int);
+        let tracked (multi_arena, raw) = take_field::<Shared, AtomicBool>(raw, p, S_MULTI_ARENA, S_PUSH_FLAGS as int);
+        let tracked (push_flags, raw) = take_field::<Shared, u8>(raw, p, S_PUSH_FLAGS, S_REGIONS as int);
+        let tracked (regions, raw) = take_field::<Shared, Regions>(raw, p, S_REGIONS, S_GUARD_TEST as int);
+        let tracked (guard_test, raw) = take_field::<Shared, [GuardTest; NCLASSES]>(
+            raw,
+            p,
+            S_GUARD_TEST,
+            S_TABLES as int,
+        );
+        let tracked (tables, raw) = take_field::<Shared, [SlabTable; NCLASSES]>(raw, p, S_TABLES, S_ARENA0 as int);
+        let tracked (arena0, raw) = take_field::<Shared, Arena>(raw, p, S_ARENA0, S_META as int);
+        let tracked (meta, raw) = take_field::<Shared, Meta>(raw, p, S_META, S_HUGE as int);
+        let tracked (huge, raw) = take_field::<Shared, Huge>(raw, p, S_HUGE, S_GC_INTERVAL_NS as int);
+        let tracked (gc_interval_ns, raw) = take_field::<Shared, u64>(raw, p, S_GC_INTERVAL_NS, S_POLICY as int);
+        let tracked (policy, raw) = take_field::<Shared, Policy>(raw, p, S_POLICY, S_CONFIG as int);
+        let tracked (config, raw) = take_field::<Shared, Config>(raw, p, S_CONFIG, S_KEY as int);
+        let tracked (key, raw) = take_field::<Shared, ThreadKey>(raw, p, S_KEY, S_ARENAS as int);
+        let tracked (arenas, raw) = take_field::<Shared, Arenas>(raw, p, S_ARENAS, S_TCACHES as int);
+        let tracked (tcaches, raw) = take_field::<Shared, Tcaches>(raw, p, S_TCACHES, S_STATS as int);
+        let tracked (stats, raw) = take_field::<Shared, Lock<Snapshot>>(raw, p, S_STATS, S_CGROUP as int);
+        let tracked (cgroup, _raw) = take_field::<Shared, Cgroup>(raw, p, S_CGROUP, size_of::<Shared>() as int);
+        crate::arena::axiom_array_layout::<GuardTest, NCLASSES>();
+        crate::arena::axiom_array_layout::<SlabTable, NCLASSES>();
+        let tracked guard_tests = split_array(guard_test);
+        let tracked tables = split_array(tables);
+        crate::arena::lemma_field_cast::<Shared, [GuardTest; NCLASSES], GuardTest>(p, S_GUARD_TEST);
+        crate::arena::lemma_field_cast::<Shared, [SlabTable; NCLASSES], SlabTable>(p, S_TABLES);
+        (
+            SharedParts {
+                multi_arena,
+                push_flags,
+                arena0: Held { perm: Some(arena0) },
+                meta,
+                huge,
+                gc_interval_ns,
+                policy,
+                config,
+                key,
+                arenas: Held { perm: Some(arenas) },
+                tcaches,
+                stats,
+                cgroup,
+            },
+            guard_tests,
+            tables,
+            regions,
+        )
+    }
+}
+
+/// [`Tcaches::init`] on the field at `p`, through the permission to it.
+/// Trusted: `Tcaches::init` (`heap/tcaches.rs`) is not verified; it
+/// writes every field of the registry.
+///
+/// # Safety
+/// As `Tcaches::init`.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn init_tcaches(p: *mut Tcaches, Tracked(perm): Tracked<&mut PointsTo<Tcaches>>)
+    requires
+        old(perm).ptr() == p,
+        old(perm).is_uninit(),
+    ensures
+        final(perm).ptr() == p,
+        final(perm).is_init(),
+{
+    // SAFETY: as the caller guarantees.
+    unsafe { Tcaches::init(p) }
+}
+
+/// The in-place writes and reads of [`Shared::init`], each through the
+/// permission to the field it writes or reads (`SharedParts`), in
+/// `init`'s order; `this` is the storage `init` was handed.
+impl Shared {
     /// `meta`, `regions` and `multi_arena` (false); the written metadata
     /// allocator.
-    #[verifier::external_body]
     #[inline(always)]
-    unsafe fn put_head<'a>(this: *mut Shared, meta: Meta, regions: Regions, Tracked(b): Tracked<&mut Build>) -> (r: &'a Meta)
+    unsafe fn put_head<'a>(
+        this: *mut Shared,
+        meta: Meta,
+        regions: Regions,
+        Tracked(pm): Tracked<&'a mut PointsTo<Meta>>,
+        Tracked(pr): Tracked<&mut PointsTo<Regions>>,
+        Tracked(pa): Tracked<&mut PointsTo<AtomicBool>>,
+    ) -> (r: &'a Meta)
         requires
-            old(b).at() == this,
-            !old(b).done().contains(F_REGIONS),
+            shared_ok(this),
+            old(pm).ptr() == field_ptr::<Shared, Meta>(this, S_META),
+            old(pr).ptr() == field_ptr::<Shared, Regions>(this, S_REGIONS),
+            old(pa).ptr() == field_ptr::<Shared, AtomicBool>(this, S_MULTI_ARENA),
         ensures
-            final(b).at() == this,
-            final(b).done() == old(b).done().insert(F_REGIONS),
-            shared_at(this).regions == regions,
-            shared_at(this).meta == meta,
+            final(pm).ptr() == old(pm).ptr(),
+            final(pm).is_init(),
+            final(pm).value() == meta,
+            final(pr).ptr() == old(pr).ptr(),
+            final(pr).is_init(),
+            final(pr).value() == regions,
+            final(pa).ptr() == old(pa).ptr(),
+            final(pa).is_init(),
             *r == meta,
     {
-        // SAFETY: `init`'s caller guarantees `this` is writable and
-        // unaliased; the fields are never moved.
+        proof {
+            axiom_shared_layout();
+        }
+        // SAFETY: the fields of `init`'s storage, through their
+        // permissions; never moved.
         unsafe {
-            let meta_ptr = &raw mut (*this).meta;
-            ptr::write(meta_ptr, meta);
-            ptr::write(&raw mut (*this).regions, regions);
-            ptr::write(&raw mut (*this).multi_arena, AtomicBool::new(false));
-            &*meta_ptr
+            let meta_ptr = field_at(this, S_META);
+            ptr_mut_write(meta_ptr, Tracked(&mut *pm), meta);
+            ptr_mut_write(field_at(this, S_REGIONS), Tracked(pr), regions);
+            ptr_mut_write(field_at(this, S_MULTI_ARENA), Tracked(pa), AtomicBool::new(false));
+            ptr_ref(meta_ptr, Tracked(&*pm))
         }
     }
 
     /// `push_flags`; the written regions.
-    #[verifier::external_body]
     #[inline(always)]
-    unsafe fn put_flags<'a>(this: *mut Shared, flags: u8, Tracked(b): Tracked<&mut Build>) -> (r: &'a Regions)
+    unsafe fn put_flags<'a>(
+        this: *mut Shared,
+        flags: u8,
+        Tracked(pf): Tracked<&mut PointsTo<u8>>,
+        Tracked(pr): Tracked<&'a PointsTo<Regions>>,
+    ) -> (r: &'a Regions)
         requires
-            old(b).at() == this,
-            old(b).done().contains(F_REGIONS),
-            !old(b).done().contains(F_FLAGS),
+            shared_ok(this),
+            old(pf).ptr() == field_ptr::<Shared, u8>(this, S_PUSH_FLAGS),
+            pr.ptr() == field_ptr::<Shared, Regions>(this, S_REGIONS),
+            pr.is_init(),
         ensures
-            final(b).at() == this,
-            final(b).done() == old(b).done().insert(F_FLAGS),
-            shared_at(this).push_flags == flags,
-            *r == shared_at(this).regions,
+            final(pf).ptr() == old(pf).ptr(),
+            final(pf).is_init(),
+            final(pf).value() == flags,
+            *r == pr.value(),
     {
+        proof {
+            axiom_shared_layout();
+        }
         // SAFETY: as in `put_head`; `regions` was written by `put_head`.
         unsafe {
-            ptr::write(&raw mut (*this).push_flags, flags);
-            &(*this).regions
+            ptr_mut_write(field_at(this, S_PUSH_FLAGS), Tracked(pf), flags);
+            ptr_ref(field_at(this, S_REGIONS), Tracked(pr))
         }
     }
 
-    /// `tables[c]`.
-    #[verifier::external_body]
+    /// `tables[c]`, through the permission `pt` to it.
     #[inline(always)]
-    unsafe fn put_table(this: *mut Shared, c: usize, t: SlabTable, Tracked(b): Tracked<&mut Build>)
+    unsafe fn put_table(this: *mut Shared, c: usize, t: SlabTable, Tracked(pt): Tracked<&mut PointsTo<SlabTable>>)
         requires
-            old(b).at() == this,
+            shared_ok(this),
             c < NCLASSES,
-            !old(b).done().contains(F_TABLE + c),
+            old(pt).ptr() == ptr_add(field_ptr::<Shared, SlabTable>(this, S_TABLES), c),
         ensures
-            final(b).at() == this,
-            final(b).done() == old(b).done().insert(F_TABLE + c),
-            shared_at(this).tables[c as int] == t,
+            final(pt).ptr() == old(pt).ptr(),
+            final(pt).is_init(),
+            final(pt).value() == t,
     {
-        // SAFETY: as in `put_head`.
-        unsafe { ptr::write(&raw mut (*this).tables[c], t) }
+        proof {
+            axiom_shared_layout();
+        }
+        // SAFETY: element `c` of the field, through its permission.
+        unsafe {
+            let tables: *mut SlabTable = field_at(this, S_TABLES);
+            ptr_mut_write(elem_at(tables, c, NCLASSES), Tracked(pt), t)
+        }
     }
 
-    /// Every table, written by [`Shared::put_table`].
-    #[verifier::external_body]
+    /// Every table, written by [`Shared::put_table`] and joined into the
+    /// array `pt`.
     #[inline(always)]
-    unsafe fn tables_of<'a>(this: *mut Shared, Tracked(b): Tracked<&Build>) -> (r: &'a [SlabTable; NCLASSES])
+    unsafe fn tables_of<'a>(this: *mut Shared, Tracked(pt): Tracked<&'a PointsTo<[SlabTable; NCLASSES]>>) -> (r: &'a [SlabTable; NCLASSES])
         requires
-            b.at() == this,
-            b.tables_done(),
+            shared_ok(this),
+            pt.ptr() == field_ptr::<Shared, [SlabTable; NCLASSES]>(this, S_TABLES),
+            pt.is_init(),
         ensures
-            *r == shared_at(this).tables,
+            *r == pt.value(),
     {
+        proof {
+            axiom_shared_layout();
+        }
         // SAFETY: written by `put_table`; never moved.
-        unsafe { &(*this).tables }
+        unsafe { ptr_ref(field_at(this, S_TABLES), Tracked(pt)) }
     }
 
-    /// `guard_test[c]`.
-    #[verifier::external_body]
+    /// `guard_test[c]`, through the permission `pg` to it.
     #[inline(always)]
-    unsafe fn put_guard_test(this: *mut Shared, c: usize, g: GuardTest) {
-        // SAFETY: as in `put_head`.
-        unsafe { ptr::write(&raw mut (*this).guard_test[c], g) }
+    unsafe fn put_guard_test(this: *mut Shared, c: usize, g: GuardTest, Tracked(pg): Tracked<&mut PointsTo<GuardTest>>)
+        requires
+            shared_ok(this),
+            c < NCLASSES,
+            old(pg).ptr() == ptr_add(field_ptr::<Shared, GuardTest>(this, S_GUARD_TEST), c),
+        ensures
+            final(pg).ptr() == old(pg).ptr(),
+            final(pg).is_init(),
+    {
+        proof {
+            axiom_shared_layout();
+        }
+        // SAFETY: element `c` of the field, through its permission.
+        unsafe {
+            let guard_test: *mut GuardTest = field_at(this, S_GUARD_TEST);
+            ptr_mut_write(elem_at(guard_test, c, NCLASSES), Tracked(pg), g)
+        }
     }
 
     /// The storage of arena 0.
-    #[verifier::external_body]
     #[inline(always)]
-    unsafe fn arena0_ptr(this: *mut Shared) -> *mut Arena {
+    unsafe fn arena0_ptr(this: *mut Shared) -> (r: *mut Arena)
+        requires
+            shared_ok(this),
+        ensures
+            r == field_ptr::<Shared, Arena>(this, S_ARENA0),
+    {
+        proof {
+            axiom_shared_layout();
+        }
         // SAFETY: a projection inside `init`'s storage; nothing is read.
-        unsafe { &raw mut (*this).arena0 }
+        unsafe { field_at(this, S_ARENA0) }
     }
 
     /// `huge`.
-    #[verifier::external_body]
     #[inline(always)]
-    unsafe fn put_huge(this: *mut Shared, h: Huge, Tracked(b): Tracked<&mut Build>)
+    unsafe fn put_huge(this: *mut Shared, h: Huge, Tracked(ph): Tracked<&mut PointsTo<Huge>>)
         requires
-            old(b).at() == this,
-            !old(b).done().contains(F_HUGE),
+            shared_ok(this),
+            old(ph).ptr() == field_ptr::<Shared, Huge>(this, S_HUGE),
         ensures
-            final(b).at() == this,
-            final(b).done() == old(b).done().insert(F_HUGE),
-            shared_at(this).huge == h,
+            final(ph).ptr() == old(ph).ptr(),
+            final(ph).is_init(),
+            final(ph).value() == h,
     {
+        proof {
+            axiom_shared_layout();
+        }
         // SAFETY: as in `put_head`.
-        unsafe { ptr::write(&raw mut (*this).huge, h) }
+        unsafe { ptr_mut_write(field_at(this, S_HUGE), Tracked(ph), h) }
     }
 
     /// `gc_interval_ns` and the two registries (`Arenas::init` with
     /// `arena0`, `Tcaches::init`).
-    #[verifier::external_body]
     #[inline(always)]
-    unsafe fn put_registries(this: *mut Shared, gc_interval_ns: u64, arena0: *mut Arena, narenas: u32) {
+    unsafe fn put_registries(
+        this: *mut Shared,
+        gc_interval_ns: u64,
+        arena0: *mut Arena,
+        narenas: u32,
+        Tracked(pg): Tracked<&mut PointsTo<u64>>,
+        Tracked(pa): Tracked<&mut Held<Arenas>>,
+        Tracked(pt): Tracked<&mut PointsTo<Tcaches>>,
+    )
+        requires
+            shared_ok(this),
+            old(pg).ptr() == field_ptr::<Shared, u64>(this, S_GC_INTERVAL_NS),
+            old(pa).perm matches Some(a) && a.ptr() == field_ptr::<Shared, Arenas>(this, S_ARENAS) && a.is_uninit(),
+            old(pt).ptr() == field_ptr::<Shared, Tcaches>(this, S_TCACHES),
+            old(pt).is_uninit(),
+        ensures
+            final(pg).ptr() == old(pg).ptr(),
+            final(pg).is_init(),
+            final(pa).perm matches Some(a) && a.ptr() == field_ptr::<Shared, Arenas>(this, S_ARENAS) && a.is_init(),
+            final(pt).ptr() == old(pt).ptr(),
+            final(pt).is_init(),
+    {
+        proof {
+            axiom_shared_layout();
+        }
         // SAFETY: as in `put_head`; `arena0` is inside the same `Shared`.
         unsafe {
-            ptr::write(&raw mut (*this).gc_interval_ns, gc_interval_ns);
-            Arenas::init(&raw mut (*this).arenas, arena0, narenas);
-            Tcaches::init(&raw mut (*this).tcaches);
+            ptr_mut_write(field_at(this, S_GC_INTERVAL_NS), Tracked(pg), gc_interval_ns);
+            Arenas::init(field_at(this, S_ARENAS), arena0, narenas, Tracked(pa));
+            init_tcaches(field_at(this, S_TCACHES), Tracked(pt));
         }
     }
 
     /// `cgroup`; the written record.
-    #[verifier::external_body]
     #[inline(always)]
-    unsafe fn put_cgroup<'a>(this: *mut Shared, cgroup: crate::sys::cgroup::Cgroup) -> &'a crate::sys::cgroup::Cgroup {
+    unsafe fn put_cgroup<'a>(this: *mut Shared, cgroup: Cgroup, Tracked(pc): Tracked<&'a mut PointsTo<Cgroup>>) -> (r: &'a Cgroup)
+        requires
+            shared_ok(this),
+            old(pc).ptr() == field_ptr::<Shared, Cgroup>(this, S_CGROUP),
+        ensures
+            final(pc).ptr() == old(pc).ptr(),
+            final(pc).is_init(),
+            *r == cgroup,
+    {
+        proof {
+            axiom_shared_layout();
+        }
         // SAFETY: as in `put_head`; never moved.
         unsafe {
-            ptr::write(&raw mut (*this).cgroup, cgroup);
-            &(*this).cgroup
+            let cgroup_ptr = field_at(this, S_CGROUP);
+            ptr_mut_write(cgroup_ptr, Tracked(&mut *pc), cgroup);
+            ptr_ref(cgroup_ptr, Tracked(&*pc))
         }
     }
 
     /// `policy`; the written policy.
-    #[verifier::external_body]
     #[inline(always)]
-    unsafe fn put_policy<'a>(this: *mut Shared, policy: crate::policy::Policy) -> &'a crate::policy::Policy {
+    unsafe fn put_policy<'a>(this: *mut Shared, policy: Policy, Tracked(pp): Tracked<&'a mut PointsTo<Policy>>) -> (r: &'a Policy)
+        requires
+            shared_ok(this),
+            old(pp).ptr() == field_ptr::<Shared, Policy>(this, S_POLICY),
+        ensures
+            final(pp).ptr() == old(pp).ptr(),
+            final(pp).is_init(),
+            *r == policy,
+    {
+        proof {
+            axiom_shared_layout();
+        }
         // SAFETY: as in `put_head`; never moved.
         unsafe {
-            ptr::write(&raw mut (*this).policy, policy);
-            &(*this).policy
+            let policy_ptr = field_at(this, S_POLICY);
+            ptr_mut_write(policy_ptr, Tracked(&mut *pp), policy);
+            ptr_ref(policy_ptr, Tracked(&*pp))
         }
     }
 
     /// `config`, then the thread-exit key (`ThreadKey::create`) and the
     /// empty statistics.
-    #[verifier::external_body]
     #[inline(always)]
-    unsafe fn put_tail(this: *mut Shared, config: Config, Tracked(b): Tracked<&mut Build>)
+    unsafe fn put_tail(
+        this: *mut Shared,
+        config: Config,
+        Tracked(pc): Tracked<&mut PointsTo<Config>>,
+        Tracked(pk): Tracked<&mut PointsTo<ThreadKey>>,
+        Tracked(ps): Tracked<&mut PointsTo<Lock<Snapshot>>>,
+    )
         requires
-            old(b).at() == this,
-            !old(b).done().contains(F_CONFIG),
+            shared_ok(this),
+            old(pc).ptr() == field_ptr::<Shared, Config>(this, S_CONFIG),
+            old(pk).ptr() == field_ptr::<Shared, ThreadKey>(this, S_KEY),
+            old(ps).ptr() == field_ptr::<Shared, Lock<Snapshot>>(this, S_STATS),
         ensures
-            final(b).at() == this,
-            final(b).done() == old(b).done().insert(F_CONFIG),
-            shared_at(this).config == config,
+            final(pc).ptr() == old(pc).ptr(),
+            final(pc).is_init(),
+            final(pc).value() == config,
+            final(pk).ptr() == old(pk).ptr(),
+            final(pk).is_init(),
+            final(ps).ptr() == old(ps).ptr(),
+            final(ps).is_init(),
     {
+        proof {
+            axiom_shared_layout();
+            axiom_snapshot_lock_inv();
+        }
         // SAFETY: as in `put_head`.
         unsafe {
-            ptr::write(&raw mut (*this).config, config);
-            ptr::write(&raw mut (*this).key, ThreadKey::create());
-            ptr::write(
-                &raw mut (*this).stats,
-                Lock::new(crate::stats::Snapshot::EMPTY),
-            );
+            ptr_mut_write(field_at(this, S_CONFIG), Tracked(pc), config);
+            ptr_mut_write(field_at(this, S_KEY), Tracked(pk), ThreadKey::create());
+            ptr_mut_write(field_at(this, S_STATS), Tracked(ps), Lock::new(Snapshot::EMPTY));
         }
     }
 
@@ -616,7 +1064,8 @@ impl Shared {
     /// `MADV_GUARD_INSTALL` support), the registries and the thread-exit
     /// key. Returns `false` if the metadata region cannot hold the tables,
     /// leaving `this` unusable. On `true` the built value satisfies
-    /// [`Shared::wf`]; verified apart from the in-place writes above.
+    /// [`Shared::wf`]. Every field is written through the permission to it,
+    /// carved from the storage's ([`Shared::begin`], [`Shared::split`]).
     ///
     /// # Safety
     /// `this` must point to writable storage for a `Shared` that nothing
@@ -637,6 +1086,7 @@ impl Shared {
     /// VMA per guard, see `class/`).
     // The second loop writes `guard_test[c]` of the storage from `tables[c]`.
     #[allow(clippy::needless_range_loop)]
+    #[verifier::loop_isolation(false)]
     pub unsafe fn init(
         this: *mut Shared,
         regions: Regions,
@@ -666,7 +1116,13 @@ impl Shared {
         };
         let guard_install = guard_install && config.guards;
         let decay_ns = crate::purge::decay_ns_from_ms(config.dirty_decay_ms);
-        let Tracked(mut b) = Shared::begin(this);
+        let Tracked(perm) = Shared::begin(this);
+        let tracked (mut parts, mut guard_tests, mut table_perms, mut regions_perm) = Shared::split(perm);
+        proof {
+            assert(shared_ok(this));
+            crate::arena::lemma_field_cast::<Shared, [SlabTable; NCLASSES], SlabTable>(this, S_TABLES);
+        }
+        let ghost regions0 = regions;
         proof {
             assert(crate::config::MAX_GUARD_SLAB_INTERVAL == 0x40_0000) by (compute);
             axiom_process_shared();
@@ -677,14 +1133,22 @@ impl Shared {
             ;
             crate::meta::lemma_is_pow2_shl(lg as usize);
         }
-        // SAFETY: the caller guarantees `this` is writable and unaliased.
+        // SAFETY: the caller guarantees `this` is writable and unaliased;
+        // every write goes through the permission to its field.
         unsafe {
             let meta = Shared::put_head(
                 this,
                 Meta::owning(regions.meta_base, regions.meta_len, regions.page_size(), space),
                 regions,
-                Tracked(&mut b),
+                Tracked(&mut parts.meta),
+                Tracked(&mut regions_perm),
+                Tracked(&mut parts.multi_arena),
             );
+            // Frozen: nothing writes the field again.
+            let tracked regions_perm = vstd::modes::tracked_static_ref(regions_perm);
+            proof {
+                axiom_shared_regions(regions_perm, this);
+            }
             let regions = Shared::put_flags(
                 this,
                 (if config.double_free_scan {
@@ -697,11 +1161,12 @@ impl Shared {
                     } else {
                         0
                     }),
-                Tracked(&mut b),
+                Tracked(&mut parts.push_flags),
+                Tracked(regions_perm),
             );
             proof {
                 // The `PUSH_PAC` bit is set only from `pac` (the probe).
-                let f = shared_at(this).push_flags;
+                let f = parts.push_flags.value();
                 let x: u8 = if config.double_free_scan { PUSH_SCAN } else { 0 };
                 let y: u8 = if config.zero_on_free { PUSH_ZERO } else { 0 };
                 let z: u8 = if pac && config.pac_pointers { PUSH_PAC } else { 0 };
@@ -715,23 +1180,11 @@ impl Shared {
             }
             for c in 0..NCLASSES
                 invariant
-                    b.at() == this,
-                    *regions == shared_at(this).regions,
-                    regions.wf(),
-                    regions.separated(),
-                    regions.ready(),
-                    *regions == crate::layout::process_regions(),
-                    guard_interval == 0 || (2 <= guard_interval <= 0x40_0000 && crate::meta::is_pow2(
-                        guard_interval as usize,
-                    )),
-                    b.done().contains(F_REGIONS),
-                    b.done().contains(F_FLAGS),
-                    !b.done().contains(F_HUGE),
-                    !b.done().contains(F_CONFIG),
-                    forall|d: int| 0 <= d < NCLASSES ==> (#[trigger] b.done().contains(F_TABLE + d)) == (d < c),
-                    forall|d: int| 0 <= d < c ==> (#[trigger] shared_at(this).tables[d]).spec_class() == d,
-                    meta.is_process(),
-                    forall|d: int| 0 <= d < c ==> (#[trigger] shared_at(this).tables[d]).meta_ok(),
+                    tables_at(table_perms, this),
+                    elems_init(table_perms, 0, c as int),
+                    elems_uninit(table_perms, c as int, NCLASSES as int),
+                    forall|d: int| 0 <= d < c ==> (#[trigger] table_perms[d]).value().spec_class() == d,
+                    forall|d: int| 0 <= d < c ==> (#[trigger] table_perms[d]).value().meta_ok(),
             {
                 match SlabTable::new(
                     meta,
@@ -739,16 +1192,64 @@ impl Shared {
                     c,
                     guard_interval_for(c, regions.page_size(), guard_interval),
                 ) {
-                    Some(t) => Shared::put_table(this, c, t, Tracked(&mut b)),
+                    Some(t) => {
+                        let ghost before = table_perms;
+                        proof {
+                            assert(table_perms.contains_key(c as int));
+                        }
+                        let tracked pt = table_perms.tracked_borrow_mut(c as int);
+                        Shared::put_table(this, c, t, Tracked(pt));
+                        proof {
+                            assert forall|d: int| 0 <= d < NCLASSES implies #[trigger] table_perms.contains_key(d)
+                                && table_perms[d].ptr() == ptr_add(field_ptr::<Shared, SlabTable>(this, S_TABLES), d as usize) by {
+                                assert(before.contains_key(d));
+                            }
+                            assert forall|d: int| 0 <= d < NCLASSES implies (d < c + 1 ==> (#[trigger] table_perms[d]).is_init()
+                                && table_perms[d].value().spec_class() == d && table_perms[d].value().meta_ok())
+                                && (c + 1 <= d ==> table_perms[d].is_uninit()) by {
+                                if d != c {
+                                    assert(before[d] == table_perms[d]);
+                                }
+                            }
+                        }
+                    },
                     None => return false,
                 }
             }
-            let tables = Shared::tables_of(this, Tracked(&b));
-            for c in 0..NCLASSES {
-                Shared::put_guard_test(this, c, GuardTest::of(&tables[c]));
+            let tracked tables_perm = crate::arena::axiom_array_join(
+                field_ptr::<Shared, [SlabTable; NCLASSES]>(this, S_TABLES),
+                table_perms,
+            );
+            let tables = Shared::tables_of(this, Tracked(&tables_perm));
+            for c in 0..NCLASSES
+                invariant
+                    guard_tests_at(guard_tests, this),
+                    elems_init(guard_tests, 0, c as int),
+            {
+                let ghost before = guard_tests;
+                proof {
+                    assert(guard_tests.contains_key(c as int));
+                }
+                let tracked pg = guard_tests.tracked_borrow_mut(c as int);
+                Shared::put_guard_test(this, c, GuardTest::of(&tables[c]), Tracked(pg));
+                proof {
+                    assert forall|d: int| 0 <= d < NCLASSES implies #[trigger] guard_tests.contains_key(d)
+                        && guard_tests[d].ptr() == ptr_add(field_ptr::<Shared, GuardTest>(this, S_GUARD_TEST), d as usize) by {
+                        assert(before.contains_key(d));
+                    }
+                    assert forall|d: int| 0 <= d < c + 1 implies (#[trigger] guard_tests[d]).is_init() by {
+                        if d != c {
+                            assert(before[d] == guard_tests[d]);
+                        }
+                    }
+                }
             }
             let arena0 = Shared::arena0_ptr(this);
-            if !Arena::init(arena0, meta, regions, tables, 0, decay_ns) {
+            proof {
+                axiom_shared_layout();
+                axiom_ptr_add_addr(this as *mut u8, S_ARENA0);
+            }
+            if !Arena::init(arena0, meta, regions, tables, 0, decay_ns, Tracked(&mut parts.arena0)) {
                 return false;
             }
             match Huge::new(meta, regions, guard_install) {
@@ -757,12 +1258,24 @@ impl Shared {
                     // `huge_dirty_decay_ms:0`: a freed run is purged at
                     // once rather than at the next decay pass (design 7).
                     h.set_purge_on_free(config.huge_dirty_decay_ms == Some(0));
-                    Shared::put_huge(this, h, Tracked(&mut b))
+                    Shared::put_huge(this, h, Tracked(&mut parts.huge))
                 }
                 None => return false,
             }
-            Shared::put_registries(this, GC_INTERVAL_NS, arena0, config.narenas);
-            let cgroup = Shared::put_cgroup(this, crate::sys::cgroup::Cgroup::discover(config.cgroup));
+            Shared::put_registries(
+                this,
+                GC_INTERVAL_NS,
+                arena0,
+                config.narenas,
+                Tracked(&mut parts.gc_interval_ns),
+                Tracked(&mut parts.arenas),
+                Tracked(&mut parts.tcaches),
+            );
+            let cgroup = Shared::put_cgroup(
+                this,
+                crate::sys::cgroup::Cgroup::discover(config.cgroup),
+                Tracked(&mut parts.cgroup),
+            );
             // Design 11: under an effective limit below 1 GiB a configured
             // `thp:always` is forced to `never` in the stored configuration
             // (`auto` is left alone; the report says so); the policy's
@@ -775,6 +1288,7 @@ impl Shared {
             let policy = Shared::put_policy(
                 this,
                 crate::policy::Policy::new(cgroup.rises().0, thp_forced),
+                Tracked(&mut parts.policy),
             );
             // Applied once on the discovery sample, so the band and the cap
             // are published before the first 10 ms window closes (nothing
@@ -786,11 +1300,19 @@ impl Shared {
                 0,
                 cgroup.rises().0,
             );
-            Shared::put_tail(this, config, Tracked(&mut b));
-        }
-        proof {
-            let s = shared_at(this);
-            assert(s.huge_pages() == s.regions.huge_len >> s.regions.lg_page);
+            Shared::put_tail(
+                this,
+                config,
+                Tracked(&mut parts.config),
+                Tracked(&mut parts.key),
+                Tracked(&mut parts.stats),
+            );
+            proof {
+                axiom_shared_built(parts, guard_tests, tables_perm, this);
+                let s = shared_at(this);
+                assert(s.regions == regions0);
+                assert(s.huge_pages() == s.regions.huge_len >> s.regions.lg_page);
+            }
         }
         true
     }
