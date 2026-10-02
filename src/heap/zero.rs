@@ -142,6 +142,20 @@ impl CachePerms {
         }
     }
 
+    /// [`CachePerms::zero_ok`] from its definition: every entry of every
+    /// owned header's zero prefix has its token (for proofs that move
+    /// whole headers, `CachePerms::lemma_swap`, or start from no header,
+    /// `CachePerms::tracked_empty`).
+    pub(super) proof fn lemma_zero_intro(&self)
+        requires
+            forall|p: *mut CacheHeader, i: int|
+                #![trigger self.ent(p, i)]
+                self.hdrs.contains_key(p) && Self::in_prefix(self.hdr(p), i) ==> self.zero_at(p, i),
+        ensures
+            self.zero_ok(),
+    {
+    }
+
     /// A header `p` that `old` does not own joining it with nothing cached
     /// keeps [`CachePerms::zero_ok`].
     pub(super) proof fn lemma_zero_insert(old: CachePerms, new: CachePerms, p: *mut CacheHeader)

@@ -10,7 +10,7 @@ use crate::vspec::addr::addr_to_ptr;
 
 use super::PUSH_PAC;
 use super::paths::shared_of;
-use super::tcaches::heap_at;
+use super::tcaches::{heap_at, heap_new};
 use super::{Heap, Shared};
 use vstd::prelude::verus;
 #[cfg(verus_only)]
@@ -95,8 +95,11 @@ fn tls_value_for(shared: &Shared, h: *mut Heap) -> *mut c_void
 /// Create, register and publish the calling thread's heap (`slot` is its
 /// TLS value, 0 when it has none yet); `None` while a creation is in
 /// progress, after the exit destructor ran, or when the metadata region is
-/// exhausted. The new heap is well formed ([`Heap::wf`]), as
-/// [`heap_at`] assumes of every heap `Heap::create` returns.
+/// exhausted. The new heap is well formed ([`Heap::wf`]): its ghost state
+/// is the permissions `Heap::create` returns, which own its home headers,
+/// all empty ([`CachePerms::fresh`](super::CachePerms::fresh)), an empty
+/// `others` list, and the record of where the home headers are
+/// (`Heap::home_hdrs`, [`home_hdr`](super::home_hdr) of the new heap).
 #[cold]
 #[inline(never)]
 fn create_heap_for_thread(shared: &Shared, slot: usize) -> (r: Option<&mut Heap>)
@@ -108,7 +111,7 @@ fn create_heap_for_thread(shared: &Shared, slot: usize) -> (r: Option<&mut Heap>
     if slot != 0 {
         return None;
     }
-    let h = Heap::create(shared);
+    let (h, Tracked(perms)) = Heap::create(shared);
     if h.is_null() {
         return None;
     }
@@ -116,7 +119,15 @@ fn create_heap_for_thread(shared: &Shared, slot: usize) -> (r: Option<&mut Heap>
     shared.key.set(h);
     crate::sys::tls::set(tls_value_for(shared, h));
     // SAFETY: freshly created and owned by this thread.
-    Some(unsafe { heap_at(h) })
+    let heap = unsafe { heap_new(h) };
+    proof {
+        shared.lemma_wf();
+        heap.perms = Tracked(perms);
+        heap.list = Ghost(Seq::empty());
+        heap.home_hdrs = Ghost(Seq::new(crate::layout::NCLASSES as nat, |c: int| super::home_hdr(h, c)));
+        heap.lemma_fresh_wf(h);
+    }
+    Some(heap)
 }
 
 /// The calling thread's heap if it already exists, with no attempt to

@@ -56,11 +56,13 @@ verus! {
 
 /// A heap [`Heap::create`] or [`Heap::create_detached`] returned and
 /// nothing has destroyed: an explicit cache's non-null table entry, or
-/// the calling thread's heap, new or at exit. Trusted: Verus has no
-/// raw-pointer dereference, and such a heap is well formed
-/// ([`Heap::wf`]), as every heap a verified path is handed: it starts
-/// with every header `EMPTY`, and every writer keeps `wf` (the trusted
-/// ones [`Heap::wf`] lists by assumption).
+/// the calling thread's heap at exit. Trusted: Verus has no raw-pointer
+/// dereference, and such a heap is well formed ([`Heap::wf`]), as every
+/// existing heap a verified path is handed: creation makes it so
+/// ([`CachePerms::fresh`](super::CachePerms::fresh); `Tcaches::create`
+/// takes no reference to its heap, so it drops them), every
+/// writer of its caches proves it keeps `wf`, and no ghost state carries
+/// that from one call to the next.
 ///
 /// # Safety
 /// `p` is such a heap, and nothing else uses it while the reference
@@ -75,10 +77,32 @@ pub(super) unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
     unsafe { &mut *p }
 }
 
+/// The heap [`Heap::create`] has just returned, as a reference, before
+/// its ghost state is installed: its `others` field is null, as
+/// `init_fields` stored it. Trusted: Verus has no raw-pointer
+/// dereference. Nothing is claimed about its ghost fields: the caller
+/// installs the permissions creation returned (`create_heap_for_thread`).
+///
+/// # Safety
+/// `p` is a heap `Heap::create` has just returned, and nothing else uses
+/// it while the reference lives.
+#[verifier::external_body]
+#[inline(always)]
+pub(super) unsafe fn heap_new<'a>(p: *mut Heap) -> (r: &'a mut Heap)
+    ensures
+        r.others@.addr == 0,
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe { &mut *p }
+}
+
 impl Tcaches {
     /// `tcache.create`: a new explicit cache, home arena `arena`. `None`
     /// when the table or the metadata region is full.
-    pub fn create(&self, shared: &Shared, arena: u16) -> Option<u16> {
+    pub fn create(&self, shared: &Shared, arena: u16) -> Option<u16>
+        requires
+            shared.wf(),
+    {
         let _g = self.lock.lock();
         // The first null entry, lowest index first.
         let mut slot = 0;
@@ -92,7 +116,7 @@ impl Tcaches {
                 return None;
             }
         }
-        let h = Heap::create_detached(shared, arena);
+        let (h, _) = Heap::create_detached(shared, arena);
         if h.is_null() {
             return None;
         }

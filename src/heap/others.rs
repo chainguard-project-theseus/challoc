@@ -112,8 +112,8 @@ unsafe fn node_link(node: *mut ArenaCaches, arena: u16, pad: u8, next: &*mut Are
 }
 
 /// `&mut (*o).caches` for node `o`, the `r`-th from the end of heap `h`'s
-/// `others` list, as plain headers, for the walks that fold and free
-/// them while they hold `h` mutably (`Heap::set_tcache_enabled`): the
+/// `others` list, as plain headers, for the walk that folds them while it
+/// holds `h` mutably (`Heap::set_tcache_enabled`): the
 /// reference is not tied to a borrow of `h`. Trusted: a reference through
 /// the raw node pointer; nothing is claimed about the headers.
 ///
@@ -133,28 +133,25 @@ pub(super) unsafe fn node_caches_mut<'a>(o: *mut ArenaCaches, Ghost(h): Ghost<He
     unsafe { &mut (*o).caches }
 }
 
-/// `Heap::set_arena`'s exchange: node `node`'s headers and the home
-/// headers `home` trade places, and the node becomes the cache of `old`,
-/// the home arena being left.
+/// `(*node).arena = arena`: the last step of `Heap::set_arena`'s
+/// exchange, once node `node`'s headers and the home headers have traded
+/// places (`Heap::swap_hdrs`), makes the node the cache of `arena`, the
+/// home arena being left.
 ///
-/// Trusted: place projections through the raw node pointer. The
-/// permissions describe headers by address, so the moved headers leave
-/// them stale ([`Heap::wf`] names this swap among the unverified writers).
+/// Trusted: a store through the raw node pointer, to the node's first
+/// line, which no header permission covers ([`node_link`] used it up);
+/// nothing is claimed.
 ///
 /// # Safety
-/// `node` is a live node owned by `h` (the requires), the heap whose home
-/// headers `home` are.
+/// `node` is a live node owned by `h` (the requires).
 #[inline(always)]
 #[verifier::external_body]
-pub(super) unsafe fn swap_home(node: *mut ArenaCaches, home: &mut [CacheHeader; NCLASSES], old: u16, Ghost(h): Ghost<Heap>)
+pub(super) unsafe fn node_set_arena(node: *mut ArenaCaches, arena: u16, Ghost(h): Ghost<Heap>)
     requires
         h.owns_node(node),
 {
     // SAFETY: guaranteed by the caller.
-    unsafe {
-        core::mem::swap(&mut (*node).caches, home);
-        (*node).arena = old;
-    }
+    unsafe { (*node).arena = arena };
 }
 
 /// [`Heap::other_caches`]'s abort on a node for the home arena, which its
@@ -206,9 +203,9 @@ impl Heap {
     /// Trusted: a read through the raw node pointer. The claim is that the
     /// nodes' `next` fields chain the list as [`Heap::list`] has it
     /// ([`Heap::list_ok`]): `create_detached` starts the list empty,
-    /// `other_caches` links a node in at the head, `set_arena`'s swap
-    /// ([`swap_home`]) leaves `next` alone, and `destroy`, the one writer
-    /// that unlinks nodes, frees the heap.
+    /// `other_caches` links a node in at the head, `set_arena`'s exchange
+    /// (`Heap::swap_hdrs`, [`node_set_arena`]) leaves `next` alone, and
+    /// `destroy`, the one writer that unlinks nodes, frees the heap.
     ///
     /// # Safety
     /// `o` is a live node owned by this heap (the requires).
@@ -410,6 +407,7 @@ impl Heap {
         ensures
             final(self).keeps(*old(self)),
             r@.addr != 0 ==> final(self).owns_node(r),
+            r@.addr != 0 ==> final(self).in_list(r),
     {
         proof {
             self.lemma_list(0);
@@ -433,6 +431,7 @@ impl Heap {
         {
             proof {
                 self.lemma_list(r);
+                self.lemma_in_list(r);
             }
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
@@ -507,7 +506,7 @@ impl Heap {
                 node_placed(node),
                 crate::layout::process_regions().in_meta(base, 64 + 64 * NCLASSES),
                 forall|k: int| 0 <= k < c ==> self.owns(#[trigger] node_hdr(node, k)) && self.hdr_class(node_hdr(node, k)) == k,
-                c > 0 ==> !h0.owns(node_hdr(node, 0)),
+                forall|k: int| 0 <= k < c ==> !h0.owns(#[trigger] node_hdr(node, k)),
         {
             let ghost a = base + 64 + 64 * c;
             proof {
@@ -533,6 +532,7 @@ impl Heap {
                     hp.is_disjoint(other);
                     assert(false);
                 }
+                assert(!h0.owns(cache));
             }
             ptr_mut_write(cache, Tracked(&mut hp), CacheHeader::EMPTY);
             let ghost before = *self;
@@ -555,11 +555,22 @@ impl Heap {
                 assert(h0.owns(node_hdr(h0.list@[i], 0)));
             }
             assert(self.list@[0] == node);
+            assert(self.list@.contains(node));
             assert forall|i: int| 1 <= i < self.list@.len() implies self.list@[i] == h0.list@[i - 1] by {}
             assert forall|i: int| 0 <= i < h0.list@.len() implies self.owns_node(#[trigger] h0.list@[i]) by {
                 h0.lemma_list(h0.list@.len() - i);
                 assert(h0.list@[i] == h0.node_from_end(h0.list@.len() - i));
                 Heap::lemma_keeps_node(h0, s1, h0.list@[i]);
+            }
+            // The new node's headers were not the heap's before, so none
+            // is a home header.
+            assert forall|cc: int, i: int, k: int|
+                0 <= cc < NCLASSES && 0 <= i < self.list@.len() && 0 <= k < NCLASSES
+                    implies #[trigger] self.home_hdrs@[cc] != #[trigger] node_hdr(self.list@[i], k) by {
+                assert(h0.owns(h0.home_hdrs@[cc]));
+                if i > 0 {
+                    assert(self.list@[i] == h0.list@[i - 1]);
+                }
             }
         }
         node
@@ -607,6 +618,7 @@ impl Heap {
     ) -> (r: *mut CacheHeader)
         requires
             class < NCLASSES,
+            old(self).wf(),
             node@.addr == 0 || old(self).owns_node(node),
         ensures
             *final(self) == *old(self),

@@ -9,14 +9,14 @@ use crate::layout::NCLASSES;
 use crate::sys::pac;
 use crate::vspec::addr::addr_to_ptr;
 
-use super::{CachePerms, FOREIGN, Heap, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
-use super::{MODE_OFF, MODE_PROBE};
 #[cfg(verus_only)]
 use super::{
-    axiom_fresh_stack, cell_ok, lemma_handed_ok, lemma_plain_stored, lemma_stack_push,
-    lemma_stack_shrink, pac_mode, popped, regions_ok, slot_in, slot_ptr, slot_start, slot_token,
-    stack_ok,
+    ArenaCaches, axiom_fresh_stack, cell_ok, lemma_handed_ok, lemma_plain_stored, lemma_stack_push,
+    lemma_stack_shrink, node_hdr, pac_mode, popped, regions_ok, slot_in, slot_ptr, slot_start,
+    slot_token, stack_ok,
 };
+use super::{CachePerms, FOREIGN, Heap, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
+use super::{MODE_OFF, MODE_PROBE};
 #[cfg(verus_only)]
 use crate::class::slot_loc;
 #[cfg(verus_only)]
@@ -300,22 +300,48 @@ verus! {
 
 impl Heap {
     /// The home header for `class`: `heap + 128 + 64 * class`, no load.
-    /// Trusted: `&raw mut` and the array-to-element cast; the home headers
-    /// are owned by every heap (`create_detached` makes them), and the one
-    /// for `class` caches class `class`.
+    /// Trusted: `&raw mut` and the array-to-element cast, which compute
+    /// the address creation wrote the header at ([`home_hdr`](super::home_hdr)
+    /// of the heap's address), as the heap's record has it
+    /// ([`Heap::home_ptr`]). `create_heap_for_thread` makes the record; for
+    /// a heap `tcaches::heap_at` or `thread::heap_from_slot` hands out it
+    /// is assumed with `wf`. It holds of a heap at the address it was
+    /// created at: verified code never moves, swaps or builds a `Heap`.
     #[inline(always)]
     #[verifier::external_body]
-    pub(super) fn cache_ptr(&mut self, class: usize) -> (r: *mut CacheHeader)
+    fn home_ptr_at(&mut self, class: usize) -> (r: *mut CacheHeader)
         requires
             class < NCLASSES,
         ensures
             *final(self) == *old(self),
-            old(self).owns(r),
-            old(self).hdr_class(r) == class,
+            r == old(self).home_ptr(class as int),
     {
         debug_assert!(class < NCLASSES);
         // SAFETY: `class_of` only yields indices below `NCLASSES`.
         unsafe { (&raw mut self.caches).cast::<CacheHeader>().add(class) }
+    }
+
+    /// The home header for `class` ([`Heap::home_ok`]): owned, caching
+    /// `class`, and no header of a node on the `others` list.
+    #[inline(always)]
+    pub(super) fn cache_ptr(&mut self, class: usize) -> (r: *mut CacheHeader)
+        requires
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            *final(self) == *old(self),
+            old(self).owns(r),
+            old(self).hdr_class(r) == class,
+            forall|n: *mut ArenaCaches, k: int| old(self).in_list(n) && 0 <= k < NCLASSES ==> r != #[trigger] node_hdr(n, k),
+    {
+        let r = self.home_ptr_at(class);
+        proof {
+            assert forall|n: *mut ArenaCaches, k: int| old(self).in_list(n) && 0 <= k < NCLASSES implies r != #[trigger] node_hdr(n, k) by {
+                let i = choose|i: int| 0 <= i < self.list@.len() && self.list@[i] == n;
+                assert(self.home_hdrs@[class as int] != node_hdr(self.list@[i], k));
+            }
+        }
+        r
     }
 
     /// Pop the top entry of a non-empty cache. Touches only the header
