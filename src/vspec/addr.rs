@@ -112,20 +112,20 @@ pub proof fn axiom_fresh_block(p: *mut u8, len: usize)
 /// A `realloc` move: `p` is a live block of `old` usable bytes (the
 /// classification `old_size_or_keep` or `realloc_old` made), and `q` a
 /// non-null block the allocation paths just returned for at least `len`
-/// bytes. `p` is valid for reads of `old` bytes, `q` for writes of `len`,
-/// and the two do not overlap (a fresh block is never a live one). The
-/// producers that would ensure it: the classification, for `p`; `malloc`,
-/// `malloc_usable` and jemalloc's `alloc_with`, for `q` and for the
-/// disjointness.
+/// bytes, apart from `p`. `p` is valid for reads of `old` bytes and `q`
+/// for writes of `len`. The producers that would ensure it: the
+/// classification, for `p`; `malloc`, `malloc_usable` and jemalloc's
+/// `alloc_with`, for `q`. That the two do not overlap is the caller's
+/// premise, from the blocks' tokens (`heap::live::Live::theorem_apart`).
 #[verifier::external_body]
 pub proof fn axiom_moved_block(p: *mut u8, old: usize, q: *mut u8, len: usize)
     requires
         p@.addr != 0,
         q@.addr != 0,
+        p@.addr + old <= q@.addr || q@.addr + len <= p@.addr,
     ensures
         crate::vspec::ptr::valid_reads(p as *const u8, old as int),
         crate::vspec::ptr::valid_writes(q, len as int),
-        p@.addr + old <= q@.addr || q@.addr + len <= p@.addr,
 {
 }
 

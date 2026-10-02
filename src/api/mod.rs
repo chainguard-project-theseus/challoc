@@ -942,11 +942,11 @@ mod tests {
         // with nobody else touching the allocator.
         let old_ns = s.decay_ns();
         s.set_decay_ms(1);
-        let (p, _, _) = s.alloc_huge(8 << 20, 4096, 0);
+        let (p, _, _) = s.alloc_huge(8 << 20, 4096, 0, vstd::prelude::Tracked::assume_new());
         assert!(!p.is_null());
         unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
         let page = (p as usize - s.regions.huge_base) >> s.regions.lg_page;
-        s.free_huge(page);
+        s.free_huge(page, vstd::prelude::Tracked::assume_new());
         // No check that the run is still `Empty` here: with a 1 ms decay
         // the thread can purge it before this thread runs again (seen on
         // a loaded Docker VM); the loop below is the assertion.
@@ -1054,7 +1054,7 @@ mod tests {
         assert!(!purge::background::present());
         let old_ns = s.decay_ns();
         s.set_decay_ms(1);
-        let (p, _, _) = s.alloc_huge(8 << 20, 4096, 0);
+        let (p, _, _) = s.alloc_huge(8 << 20, 4096, 0, vstd::prelude::Tracked::assume_new());
         assert!(!p.is_null());
         unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
         let page = (p as usize - s.regions.huge_base) >> s.regions.lg_page;
@@ -1083,7 +1083,7 @@ mod tests {
                     return;
                 }
                 let none_before = s.huge.oldest_empty() == 0;
-                s.free_huge(page);
+                s.free_huge(page, vstd::prelude::Tracked::assume_new());
                 let first = none_before && s.huge.oldest_empty() != 0;
                 hook_seen.store(if first { 3 } else { 2 }, Ordering::SeqCst);
             }));
@@ -1103,7 +1103,7 @@ mod tests {
         // or hook behind for the other background tests.
         purge::background::BEFORE_PUBLISH.lock().unwrap().take();
         if hook_state.load(Ordering::SeqCst) < 2 {
-            s.free_huge(page);
+            s.free_huge(page, vstd::prelude::Tracked::assume_new());
         }
         s.set_decay_ms((old_ns / 1_000_000) as i64);
         purge::background::request(false);

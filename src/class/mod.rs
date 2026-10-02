@@ -2594,21 +2594,6 @@ impl ClassState {
         self.claim_with(meta, out, None, Tracked(&mut toks)).0
     }
 
-    /// [`claim`] with the zero tokens of the slots it wrote: one per slot
-    /// when the claim is zeroed ([`claim_zero_ok`]).
-    ///
-    /// [`claim`]: ClassState::claim
-    pub fn claim_zero(&self, meta: &Meta, out: &mut [*mut u8]) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
-        ensures
-            r.0.n <= old(out)@.len(),
-            final(out)@.len() == old(out)@.len(),
-            slots_in(final(out)@, self.spec_class() as int, 0, r.0.n as int),
-            claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
-    {
-        let tracked mut toks = SlotToks::empty();
-        self.claim_with(meta, out, None, Tracked(&mut toks))
-    }
-
     /// [`claim`], with the claimed slots' tokens: `toks` gets the token of
     /// `out[i]` under key `i`, for every `i < n`, and keeps its other keys;
     /// and the zero tokens of the slots it wrote, one per slot when the
@@ -4021,24 +4006,6 @@ proof fn lemma_word_pop(s: Slots, f: int, w: int, m0: u64, b: u64)
     assert(mask_bits(s, f, w, m0) =~= rhs);
 }
 
-/// Trusted: the `free` contract, where a slot the program frees enters
-/// the allocator: the program's free paths in `heap/`. Each call stands
-/// for one free of one slot, and at most one of its tokens may be live at
-/// a time. Whoever frees a slot owns it (a block `malloc` returned and not
-/// freed since), so it holds the slot's token; for C
-/// callers this is the documented contract of `free`. The axiom is only as
-/// sound as that contract: two calls for one slot while its token exists
-/// elsewhere give two tokens of one slot, from which a proof can derive
-/// `false`. Under the contract the double-free aborts of the release paths
-/// are unreachable. The cache paths (flush, run rebuild, GC) must not call
-/// it: a flushed slot's token comes from the cache that held it.
-pub axiom fn axiom_free_token(c: int, p: *mut u8) -> (tracked r: GhostSingleton<int>)
-    requires
-        process_regions().is_slot(c, p@.addr),
-    ensures
-        r.id() == slot_loc(c),
-        r@ == p@.addr as int;
-
 /// The addresses of a batch of slot pointers, as the tokens name them.
 pub open spec fn ptr_addrs(s: Seq<*mut u8>) -> Seq<int> {
     Seq::new(s.len(), |i: int| s[i]@.addr as int)
@@ -4584,9 +4551,9 @@ impl ClassState {
     /// whose addresses are distinct, and gives up those of the released
     /// prefix, which go back to their bitmap words (`release_slab`). A batch
     /// with one slot twice cannot be given its tokens, and a slot whose bit
-    /// is clear has its token in the word, so under the `free` contract both
-    /// double-free aborts (the scratch bit and the class bit) are
-    /// unreachable.
+    /// is clear has its token in the word, so under the `free` contract
+    /// (`heap::live::axiom_c_claim`) both double-free aborts (the scratch
+    /// bit and the class bit) are unreachable.
     ///
     /// [`release_with`]: ClassState::release_with
     // The counter carries a Verus invariant.

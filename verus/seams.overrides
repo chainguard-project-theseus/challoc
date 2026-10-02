@@ -54,7 +54,7 @@ ClassState::take_checks	panic/abort	Kani
 table_ptr	raw pointer (internal)	RefinedRust
 axiom_fresh_slots_zero	allocator invariant	RefinedRust
 axiom_discarded_slots_zero	allocator invariant	RefinedRust
-axiom_free_token	C-program contract	none (assumption)
+axiom_c_claim	C-program contract	none (assumption)
 SetTable::set_table_ptr	raw pointer (internal)	Kani
 axiom_table_bytes	allocator invariant	RefinedRust
 Set::ensure	raw pointer (internal)	RefinedRust
@@ -113,7 +113,7 @@ Shared::begin	allocator invariant	RefinedRust
 init_tcaches	allocator invariant	RefinedRust
 heap_at	raw pointer (internal)	RefinedRust
 heap_new	raw pointer (internal)	RefinedRust
-mint_allocated	allocator invariant	none (assumption)
+axiom_run_locs	allocator invariant	RefinedRust
 axiom_zero_entry	raw pointer (internal)	RefinedRust
 ClassTable	UnsafeCell/volatile/transmute	RefinedRust
 axiom_process_page_at_most_64k	platform/kernel fact	none (assumption)
@@ -149,7 +149,6 @@ axiom_slot_writable	allocator invariant	RefinedRust
 axiom_huge_writable	allocator invariant	RefinedRust
 check	panic/abort	Kani
 axiom_class_table_wf	allocator invariant	RefinedRust
-axiom_owned_run	C-program contract	none (assumption)
 thp_name	core library	Kani
 stats_allocated	core library	Kani
 axiom_ptr_add_addr	core library	Kani

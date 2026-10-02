@@ -50,7 +50,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     };
     // A run's `dirty_at` after its free, from the huge allocator's gate.
     let free_at = |s: &Shared, p: *mut u8| {
-        s.free_huge(page_of(s, p));
+        s.free_huge(page_of(s, p), Tracked::assume_new());
         s.huge.oldest_empty()
     };
     let size = 300 * 1024;
@@ -71,7 +71,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     assert_eq!(s.huge_decay_ns(), crate::purge::NEVER);
     s.arena0.set_decay_ms(10_000);
     // A freed run is still `Empty` two seconds in on the 10 s window.
-    let p = s.alloc_huge(size, 16, 0).0;
+    let p = s.alloc_huge(size, 16, 0, Tracked::assume_new()).0;
     assert!(!p.is_null());
     let t0 = free_at(s, p);
     assert!(t0 > 0);
@@ -102,7 +102,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
         "its own period"
     );
     s.arena0.set_decay_ms(10_000);
-    let p = s.alloc_huge(size, 16, 0).0;
+    let p = s.alloc_huge(size, 16, 0, Tracked::assume_new()).0;
     let t0 = free_at(s, p);
     assert_eq!(
         s.huge.lookup(page_of(s, p)).unwrap().state,
@@ -135,8 +135,8 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     .build();
     assert!(s.huge.purge_on_free());
     assert_eq!(s.huge_decay_ns(), 0);
-    let p = s.alloc_huge(size, 16, 0).0;
-    s.free_huge(page_of(s, p));
+    let p = s.alloc_huge(size, 16, 0, Tracked::assume_new()).0;
+    s.free_huge(page_of(s, p), Tracked::assume_new());
     assert_eq!(s.huge.oldest_empty(), 0);
     assert_eq!((s.huge.stats().empty, s.huge.stats().purged), (0, 1));
     assert_eq!(
@@ -155,7 +155,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     assert!(!s.huge.purge_on_free());
     assert_eq!(s.huge_decay_ns(), crate::purge::NEVER);
     assert_eq!(s.decay_ns(), 10 * S);
-    let p = s.alloc_huge(size, 16, 0).0;
+    let p = s.alloc_huge(size, 16, 0, Tracked::assume_new()).0;
     let t0 = free_at(s, p);
     assert_eq!(crate::purge::decay(s, t0 + 1000 * S), None);
     assert_eq!(
@@ -200,23 +200,25 @@ impl TestHeap {
     }
 
     pub(crate) fn alloc(&self, c: usize) -> *mut u8 {
-        let p = self.heap().alloc(self.s, c);
+        let p = self.heap().alloc(self.s, c, Tracked::assume_new());
         assert!(!p.is_null());
         p
     }
 
     pub(crate) fn alloc_zeroed(&self, c: usize) -> (*mut u8, bool) {
-        let (p, z) = self.heap().alloc_zeroed(self.s, c);
+        let (p, z) = self.heap().alloc_zeroed(self.s, c, Tracked::assume_new());
         assert!(!p.is_null());
         (p, z)
     }
 
     pub(crate) fn free(&self, p: *mut u8) {
-        self.heap().free(self.s, p)
+        self.heap().free(self.s, p, Tracked::assume_new())
     }
 
     pub(crate) fn alloc_huge(&self, size: usize, align: usize) -> (*mut u8, bool) {
-        let (p, zero, _) = self.heap().alloc_huge(self.s, size, align);
+        let (p, zero, _) = self
+            .heap()
+            .alloc_huge(self.s, size, align, Tracked::assume_new());
         (p, zero)
     }
 
@@ -846,7 +848,14 @@ fn sized_free_past_the_watermark_aborts_at_the_flush() {
     let committed = s.arena0.class(c).committed_slabs();
     let beyond = s.regions.slab_addr(c, committed + 1) as *mut u8;
     assert!(
-        free_sized_fast(s, t.heap(), beyond, Some(c), s.push_flags()),
+        free_sized_fast(
+            s,
+            t.heap(),
+            beyond,
+            Some(c),
+            s.push_flags(),
+            Tracked::assume_new()
+        ),
         "the fast path took it"
     );
     t.free(p);
@@ -1357,11 +1366,11 @@ fn periodic_work_runs_gc_on_the_interval() {
 fn direct_paths_bypass_the_cache() {
     let s = shared();
     let c = class_with(256);
-    let (p, zero, _) = s.alloc_direct(&s.arena0, c);
+    let (p, zero, _) = s.alloc_direct(&s.arena0, c, Tracked::assume_new());
     assert!(!p.is_null() && zero);
     assert_eq!(p as usize, s.regions.slab_addr(c, 0));
     assert_eq!(live(s, c), 1);
-    let (q, zero, _) = s.alloc_direct(&s.arena0, c);
+    let (q, zero, _) = s.alloc_direct(&s.arena0, c, Tracked::assume_new());
     assert_eq!(q as usize, p as usize + 256);
     assert!(!zero);
     s.free_direct(0, c, p, Tracked::assume_new());
@@ -1743,7 +1752,7 @@ fn direct_claims_do_not_block_compaction_but_cache_refills_do() {
             if !direct.is_null() {
                 s.free_direct(0, c, direct, Tracked::assume_new());
             }
-            let (p, _, _) = s.alloc_direct(&s.arena0, c);
+            let (p, _, _) = s.alloc_direct(&s.arena0, c, Tracked::assume_new());
             assert!(!p.is_null());
             direct = p;
         }
@@ -1985,7 +1994,10 @@ fn huge_runs_go_through_the_heap_without_caches() {
     let (p, zero) = t.alloc_huge(size, 16);
     assert!(!p.is_null() && zero);
     assert_eq!(s.regions.classify(p as usize), Kind::Huge { page: 0 });
-    assert_eq!(s.huge.usable_size(0), s.huge.usable_for(size).unwrap());
+    assert_eq!(
+        s.huge.usable_size(0, Tracked::assume_new()),
+        s.huge.usable_for(size).unwrap()
+    );
     assert_eq!(t.stats().allocated, s.huge.usable_for(size).unwrap() as u64);
     let (q, _) = t.alloc_huge(size, 1 << 20);
     assert_eq!(q as usize % (1 << 20), 0);
@@ -1998,12 +2010,19 @@ fn huge_runs_go_through_the_heap_without_caches() {
     assert!((0..NCLASSES).all(|c| t.heap().cache(c).is_none()));
     assert_eq!(s.huge.stats().runs, 1);
     // The heap-less path frees huge runs too.
-    s.free_huge(match s.regions.classify(q as usize) {
-        Kind::Huge { page } => page,
-        other => panic!("{other:?}"),
-    });
+    s.free_huge(
+        match s.regions.classify(q as usize) {
+            Kind::Huge { page } => page,
+            other => panic!("{other:?}"),
+        },
+        Tracked::assume_new(),
+    );
     assert_eq!(s.huge.stats().runs, 0);
-    assert!(s.alloc_huge(usize::MAX, 1, 0).0.is_null());
+    assert!(
+        s.alloc_huge(usize::MAX, 1, 0, Tracked::assume_new())
+            .0
+            .is_null()
+    );
 }
 /// Design 11: the periodic tick's GC interval is the configured one
 /// until the policy's immediate band, where it is 0; the effective
@@ -2145,7 +2164,7 @@ fn automatic_arenas_are_assigned_least_loaded_and_built_lazily() {
     assert!(s.multi_arena());
     assert_eq!(s.arena0.classes[c].desc(0).arena(), 1);
     assert_eq!(s.classify_free(p), Ok((c, 1)));
-    t.heap().free(s, p);
+    t.heap().free(s, p, Tracked::assume_new());
     assert_eq!(t.heap().cache(c).unwrap().len(), HALF);
     // `thread.arena` moves the binding with the heap.
     t.heap().set_arena(s, 3);
@@ -2246,9 +2265,9 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     let p0 = t.alloc(c);
     let h = t.heap();
     assert_eq!(h.arena(), 0);
-    let (p1, zero) = h.alloc_in(s, a1, c);
+    let (p1, zero) = h.alloc_in(s, a1, c, Tracked::assume_new());
     assert!(!p1.is_null() && zero);
-    let (p2, _) = h.alloc_in(s, a2, c);
+    let (p2, _) = h.alloc_in(s, a2, c, Tracked::assume_new());
     assert_eq!(s.classify_free(p0), Ok((c, 0)));
     assert_eq!(s.classify_free(p1), Ok((c, a1)));
     assert_eq!(s.classify_free(p2), Ok((c, a2)));
@@ -2267,17 +2286,17 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     );
     assert_eq!(s.arena0.classes[c].stats().committed, per_refill);
     // Non-existent arena: null, nothing touched.
-    assert!(h.alloc_in(s, 77, c).0.is_null());
+    assert!(h.alloc_in(s, 77, c, Tracked::assume_new()).0.is_null());
     // The fast path takes only the home arena's slots; the others go onto
     // the one FOREIGN cache, whatever their arena, never onto the arena's
     // own node.
-    assert!(free_fast(s, h, p0, s.push_flags()));
-    assert!(!free_fast(s, h, p1, s.push_flags()));
-    assert!(!free_fast(s, h, p2, s.push_flags()));
+    assert!(free_fast(s, h, p0, s.push_flags(), Tracked::assume_new()));
+    assert!(!free_fast(s, h, p1, s.push_flags(), Tracked::assume_new()));
+    assert!(!free_fast(s, h, p2, s.push_flags(), Tracked::assume_new()));
     assert_eq!(h.cache(c).unwrap().len(), HALF);
     assert!(h.cache_in(FOREIGN, c).is_none());
-    h.free(s, p1);
-    h.free(s, p2);
+    h.free(s, p1, Tracked::assume_new());
+    h.free(s, p2, Tracked::assume_new());
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 2);
     assert_eq!(
         h.cache_in(FOREIGN, c).unwrap().cap(),
@@ -2289,8 +2308,8 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     assert!(!h.cache_in(FOREIGN, c).unwrap().compacting());
     // Nothing pops from it: a default allocation is the home's LIFO top,
     // an explicit one the arena node's.
-    assert_eq!(h.alloc(s, c), p0);
-    let (p3, _) = h.alloc_in(s, a1, c);
+    assert_eq!(h.alloc(s, c, Tracked::assume_new()), p0);
+    let (p3, _) = h.alloc_in(s, a1, c, Tracked::assume_new());
     assert_ne!(p3, p1);
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 2);
     // Byte counters cover every cache.
@@ -2299,8 +2318,8 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     assert_eq!(st.deallocated, 3 * 64);
     // Flushing returns everything to the right owner: every slot of the
     // three arenas is back in its bitmap and the refills' slabs are Empty.
-    h.free(s, p0);
-    h.free(s, p3);
+    h.free(s, p0, Tracked::assume_new());
+    h.free(s, p3, Tracked::assume_new());
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 3);
     h.flush_all(s);
     assert_eq!(h.cache(c).unwrap().len(), 0);
@@ -2317,7 +2336,7 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     }
     // Direct paths against an explicit arena.
     let a = s.arena(a1).unwrap();
-    let (d, _, _) = s.alloc_direct(a, c);
+    let (d, _, _) = s.alloc_direct(a, c, Tracked::assume_new());
     assert_eq!(s.classify_free(d), Ok((c, a1)));
     assert_eq!(a.classes[c].desc(s.arena0.classes[c].locate(d).0).live(), 1);
     s.free_direct(a1, c, d, Tracked::assume_new());
@@ -2351,8 +2370,8 @@ fn destroying_the_last_heap_of_an_arena_purges_it() {
     let c = class_with(64);
     let pa = a.alloc(c);
     let pb = b.alloc(c);
-    a.heap().free(s, pa);
-    b.heap().free(s, pb);
+    a.heap().free(s, pa, Tracked::assume_new());
+    b.heap().free(s, pb, Tracked::assume_new());
     let per_refill = HALF.div_ceil(CLASSES[c].nslots());
     // Arena 1 loses its only heap: flushed and purged.
     b.destroy();
@@ -2364,7 +2383,7 @@ fn destroying_the_last_heap_of_an_arena_purges_it() {
     let b3 = TestHeap::new(s);
     assert_eq!(b3.heap().arena(), 1);
     let pb3 = b3.alloc(c);
-    b3.heap().free(s, pb3);
+    b3.heap().free(s, pb3, Tracked::assume_new());
     b3.destroy();
     let s1 = s.arena(1).unwrap().classes[c].stats();
     assert_eq!(
@@ -2402,16 +2421,16 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
     assert_eq!(s.config.cap_for(0, a1, c), 0);
     h.set_arena(s, a1);
     // Default path: arena 0.
-    let (d, _) = h.alloc_zeroed(s, c);
+    let (d, _) = h.alloc_zeroed(s, c, Tracked::assume_new());
     assert_eq!(s.classify_free(d), Ok((c, 0)));
     // The home arena named explicitly: stays home.
-    let (p, _) = h.alloc_in(s, a1, c);
+    let (p, _) = h.alloc_in(s, a1, c, Tracked::assume_new());
     assert_eq!(s.classify_free(p), Ok((c, a1)));
     assert_eq!(s.arena(a1).unwrap().classes[c].stats().committed, 1);
     // A foreign arena named explicitly, through a heap that caches
     // nothing of that class there: no node, no cache, right arena.
     let before = s.meta.stats().allocated;
-    let (q, _) = h.alloc_in(s, 0, c);
+    let (q, _) = h.alloc_in(s, 0, c, Tracked::assume_new());
     assert_eq!(s.classify_free(q), Ok((c, 0)));
     assert_eq!(
         s.meta.stats().allocated,
@@ -2422,9 +2441,9 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
     assert!(h.cache(c).is_none());
     let st = h.stats();
     assert_eq!(st.allocated, 3 * 64 * 1024);
-    h.free(s, d);
-    h.free(s, p);
-    h.free(s, q);
+    h.free(s, d, Tracked::assume_new());
+    h.free(s, p, Tracked::assume_new());
+    h.free(s, q, Tracked::assume_new());
     assert_eq!(s.meta.stats().allocated, before);
     assert_eq!(h.stats().deallocated, 3 * 64 * 1024);
     assert_eq!(s.arena(a1).unwrap().classes[c].stats().empty, 1);
@@ -2443,7 +2462,7 @@ fn dropping_the_home_caches_keeps_the_thread_counters() {
     let p = t.alloc(c);
     let q = t.alloc(c);
     let h = t.heap();
-    h.free(s, p);
+    h.free(s, p, Tracked::assume_new());
     let before = h.stats();
     assert_eq!((before.allocated, before.deallocated), (128, 64));
     let meta_before = s.meta.stats().allocated;
@@ -2458,7 +2477,7 @@ fn dropping_the_home_caches_keeps_the_thread_counters() {
         (after.allocated, after.deallocated),
         (before.allocated, before.deallocated)
     );
-    h.free(s, q);
+    h.free(s, q, Tracked::assume_new());
     let again = h.stats();
     assert_eq!((again.allocated, again.deallocated), (128, 128));
     assert!(h.cache(c).is_some(), "the slow path created a new cache");
@@ -2474,7 +2493,7 @@ fn set_arena_swaps_cache_arrays() {
     let c = class_with(64);
     let p0 = t.alloc(c);
     let h = t.heap();
-    let (p1, _) = h.alloc_in(s, a1, c);
+    let (p1, _) = h.alloc_in(s, a1, c, Tracked::assume_new());
     h.set_arena(s, a1);
     assert_eq!(h.arena(), a1);
     assert_eq!(h.cache(c).unwrap().len(), HALF - 1);
@@ -2482,12 +2501,12 @@ fn set_arena_swaps_cache_arrays() {
     // Plain allocation now comes from arena 1's cache; a plain free of an
     // arena-0 slot is foreign now and goes onto the FOREIGN cache, not
     // onto arena 0's node.
-    let q = h.alloc(s, c);
+    let q = h.alloc(s, c, Tracked::assume_new());
     assert_eq!(s.classify_free(q), Ok((c, a1)));
-    assert!(free_fast(s, h, p1, s.push_flags()));
-    assert!(!free_fast(s, h, p0, s.push_flags()));
-    h.free(s, p0);
-    h.free(s, q);
+    assert!(free_fast(s, h, p1, s.push_flags(), Tracked::assume_new()));
+    assert!(!free_fast(s, h, p0, s.push_flags(), Tracked::assume_new()));
+    h.free(s, p0, Tracked::assume_new());
+    h.free(s, q, Tracked::assume_new());
     assert_eq!(h.cache(c).unwrap().len(), HALF);
     assert_eq!(h.cache_in(0, c).unwrap().len(), HALF - 1);
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 1);
@@ -2513,10 +2532,10 @@ fn explicit_caches_create_flush_destroy() {
     assert!(s.tcaches.get(u16::MAX).is_none());
     let c = class_with(64);
     let h = s.tcaches.get(t0).unwrap();
-    let (p, _) = h.alloc_in(s, 0, c);
+    let (p, _) = h.alloc_in(s, 0, c, Tracked::assume_new());
     assert!(!p.is_null());
     assert_eq!(h.cache(c).unwrap().len(), HALF - 1);
-    h.free(s, p);
+    h.free(s, p, Tracked::assume_new());
     assert_eq!(h.cache(c).unwrap().len(), HALF);
     assert!(s.tcaches.flush(s, t0));
     assert_eq!(s.tcaches.get(t0).unwrap().cache(c).unwrap().len(), 0);
@@ -2624,7 +2643,14 @@ fn zero_on_free_clears_the_slot_on_the_plain_sized_and_direct_paths() {
     // exact route, which clears the slot in `free_slow_in`.
     unsafe { ptr::write_bytes(p, 0xA5, size) };
     assert!(
-        !free_sized_fast(s, t.heap(), p, Some(c), s.push_flags()),
+        !free_sized_fast(
+            s,
+            t.heap(),
+            p,
+            Some(c),
+            s.push_flags(),
+            Tracked::assume_new()
+        ),
         "the fast push accepted a slot under zero_on_free"
     );
     assert!(
@@ -2652,7 +2678,7 @@ fn zero_on_free_clears_the_slot_on_the_plain_sized_and_direct_paths() {
     }
     // Direct release (`MALLOCX_TCACHE_NONE`), with no cache involved.
     unsafe { ptr::write_bytes(p, 0xA5, size) };
-    super::free_direct(s, p);
+    super::free_direct(s, p, Tracked::assume_new());
     assert!(
         bytes_of(p, size).iter().all(|&b| b == 0),
         "direct free left bytes"
@@ -2681,7 +2707,7 @@ fn zero_on_free_clears_a_huge_run() {
         assert!(usable >= n);
         unsafe { ptr::write_bytes(p, 0xA5, usable) };
         if direct {
-            super::free_direct(s, p)
+            super::free_direct(s, p, Tracked::assume_new())
         } else {
             t.free(p)
         }
@@ -2777,8 +2803,9 @@ fn slot_randomize_shuffles_the_batch_and_keeps_the_slot_set() {
     .build();
     let t = TestHeap::new(s);
     let cs = &s.arena0.classes[c];
-    let (first_z, zeroed): (Vec<*mut u8>, Vec<bool>) =
-        (0..batch).map(|_| t.heap().alloc_zeroed(s, c)).unzip();
+    let (first_z, zeroed): (Vec<*mut u8>, Vec<bool>) = (0..batch)
+        .map(|_| t.heap().alloc_zeroed(s, c, Tracked::assume_new()))
+        .unzip();
     assert!(
         zeroed.iter().all(|&z| z),
         "the first batch from a Fresh slab is zero whatever its order"
@@ -2881,7 +2908,7 @@ fn a_scheduled_pop_aborts_when_the_run_reaches_past_the_length() {
     unsafe {
         (*k).mode = MODE_COMPACT;
         (*k).run_end = len + 1;
-        h.pop_compact_run(k, c, len);
+        h.pop_compact_run(k, c, len, Tracked::assume_new());
     }
 }
 
@@ -2934,8 +2961,8 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
     let h = t.heap();
     assert_eq!(Heap::nodes(h.others).count(), 0);
     let c = class_with(64);
-    let (p1, _) = h.alloc_in(s, a1, c);
-    let (p2, _) = h.alloc_in(s, a2, c);
+    let (p1, _) = h.alloc_in(s, a1, c, Tracked::assume_new());
+    let (p2, _) = h.alloc_in(s, a2, c, Tracked::assume_new());
     assert!(!p1.is_null() && !p2.is_null());
     let arenas: Vec<u16> = Heap::nodes(h.others)
         .map(|o| unsafe { (*o).arena })
@@ -2953,8 +2980,8 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
     );
     // The plain frees of the two arenas' slots create the FOREIGN node,
     // the newest.
-    h.free(s, p1);
-    h.free(s, p2);
+    h.free(s, p1, Tracked::assume_new());
+    h.free(s, p2, Tracked::assume_new());
     assert_eq!(h.stats().deallocated, 2 * 64);
     let arenas: Vec<u16> = Heap::nodes(h.others)
         .map(|o| unsafe { (*o).arena })
@@ -3082,17 +3109,26 @@ fn huge_run_pages_are_counted_from_the_descriptor() {
     assert_eq!(qinfo.pages, info.pages);
     assert_eq!(s.arena0.large(), (2, 2 * info.pages));
     // `alloc_run` reports the descriptor's pages, and the free the same.
-    let (r, _) = s.huge.alloc_run(&s.meta, 5 * page_size() + 1, 1, 0);
+    let (r, _) = s
+        .huge
+        .alloc_run(&s.meta, 5 * page_size() + 1, 1, 0, Tracked::assume_new());
     assert!(!r.ptr.is_null());
     assert_eq!(r.pages, 6 + GUARD_PAGES);
     assert_eq!(r.pages, s.huge.lookup(page_of(r.ptr)).unwrap().pages);
-    assert_eq!(s.huge.free_run(&s.meta, page_of(r.ptr)).pages, r.pages);
+    assert_eq!(
+        s.huge
+            .free_run(&s.meta, page_of(r.ptr), Tracked::assume_new())
+            .pages,
+        r.pages
+    );
     t.free(p);
     assert_eq!(s.arena0.large(), (1, info.pages));
     t.free(q);
     assert_eq!(s.arena0.large(), (0, 0));
     assert_eq!(
-        s.huge.alloc_run(&s.meta, usize::MAX, 1, 0).0,
+        s.huge
+            .alloc_run(&s.meta, usize::MAX, 1, 0, Tracked::assume_new())
+            .0,
         crate::huge::Placed::NONE
     );
     t.destroy();
@@ -3124,7 +3160,7 @@ fn a_free_routed_to_an_unbuilt_arena_aborts() {
     assert!(s.arenas.get_existing(5).is_none());
     table.corrupt_owner_word(&s.meta, slab as usize / table.group(), 5);
     assert_eq!(s.classify_free(p), Ok((c, 5)));
-    h.free(s, p);
+    h.free(s, p, Tracked::assume_new());
     h.flush_all(s);
 }
 
@@ -3144,7 +3180,7 @@ fn a_huge_first_allocation_builds_the_home_arena() {
     assert!(!hp.is_null());
     let h = unsafe { &mut *hp };
     assert!(s.arenas.get_existing(2).is_none());
-    let (p, _, _) = h.alloc_huge(s, 300 * 1024, 16);
+    let (p, _, _) = h.alloc_huge(s, 300 * 1024, 16, Tracked::assume_new());
     assert!(!p.is_null());
     let a2 = s
         .arenas
@@ -3152,7 +3188,7 @@ fn a_huge_first_allocation_builds_the_home_arena() {
         .expect("built by the huge allocation");
     assert_eq!(a2.large().0, 1);
     assert_eq!(s.huge.lookup(0).unwrap().arena, 2);
-    h.free(s, p);
+    h.free(s, p, Tracked::assume_new());
     assert_eq!(a2.large(), (0, 0));
     unsafe { Heap::destroy(hp, s) };
 }
@@ -3160,7 +3196,7 @@ fn a_huge_first_allocation_builds_the_home_arena() {
 #[test]
 #[should_panic(expected = "arena 77 does not exist")]
 fn a_huge_allocation_in_an_arena_that_does_not_exist_aborts() {
-    shared().alloc_huge(300 * 1024, 16, 77);
+    shared().alloc_huge(300 * 1024, 16, 77, Tracked::assume_new());
 }
 
 /// `pop_fast` is the one body behind `alloc_fast` and `alloc_zeroed`:
@@ -3177,7 +3213,7 @@ fn pop_fast_pops_the_top_with_the_zero_flag() {
         None,
         "no cache yet"
     );
-    assert_eq!(t.heap().alloc_fast(c, flags), None);
+    assert_eq!(t.heap().alloc_fast(c, flags, Tracked::assume_new()), None);
     let first = t.alloc(c);
     // The refill batch is a fresh slab: the zero prefix covers it all.
     let len = t.len(c);
@@ -3188,7 +3224,10 @@ fn pop_fast_pops_the_top_with_the_zero_flag() {
     );
     assert_eq!(t.len(c), len - 1);
     let top = t.cached_plain(c)[len - 2];
-    assert_eq!(t.heap().alloc_fast(c, flags), Some(top));
+    assert_eq!(
+        t.heap().alloc_fast(c, flags, Tracked::assume_new()),
+        Some(top)
+    );
     // A slot pushed back is no longer known zero (the push clips the
     // prefix), and the flag says so.
     t.free(first);
@@ -3222,7 +3261,7 @@ fn checked_slot_any_is_checked_slot_without_the_arena_test() {
     let c = class_with(64);
     let p0 = t.alloc(c);
     let h = t.heap();
-    let (p1, _) = h.alloc_in(s, a1, c);
+    let (p1, _) = h.alloc_in(s, a1, c, Tracked::assume_new());
     assert!(s.multi_arena());
     assert_eq!(
         (s.checked_slot(p0, h), s.checked_slot_any(p0)),
@@ -3249,8 +3288,8 @@ fn checked_slot_any_is_checked_slot_without_the_arena_test() {
         (None, None)
     );
     // A freed slot's bit clears at the flush; until then it is cached and set.
-    h.free(s, p0);
-    h.free(s, p1);
+    h.free(s, p0, Tracked::assume_new());
+    h.free(s, p1, Tracked::assume_new());
     assert_eq!(s.checked_slot_any(p0), Some(c));
     h.flush_all(s);
     assert_eq!(

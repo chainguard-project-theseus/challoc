@@ -36,7 +36,7 @@ use core::ffi::c_int;
 use core::ptr;
 
 use crate::QUANTUM;
-use crate::heap::{self, Shared};
+use crate::heap::{self, Live, Shared};
 #[cfg(verus_only)]
 use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, class_of};
@@ -198,11 +198,27 @@ proof fn lemma_slot_not_huge(r: crate::layout::Regions, c: int, p: usize)
     ;
 }
 
+/// A slot of class `c` handed out for `size` bytes, with its token, gives
+/// them ([`Live::gives`]).
+pub(super) proof fn lemma_class_gives(blk: Live, p: *mut u8, c: int, size: usize)
+    requires
+        0 <= c < NCLASSES,
+        size <= class_table()[c].size,
+        p@.addr != 0 ==> blk.slot_block(p, c),
+    ensures
+        blk.gives(p, size as int),
+{
+    if p@.addr != 0 {
+        blk.lemma_slot_len(p, c);
+    }
+}
+
 /// Huge allocation on the calling thread, counted in its heap when it has
-/// one. `align` is a power of two; `1` means none.
+/// one. `align` is a power of two; `1` means none. `blk` gets the run's
+/// token.
 #[cold]
 #[inline(never)]
-fn alloc_huge(shared: &Shared, size: usize, align: usize) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+fn alloc_huge(shared: &Shared, size: usize, align: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
         shared.wf(),
         is_pow2(align),
@@ -210,28 +226,41 @@ fn alloc_huge(shared: &Shared, size: usize, align: usize) -> (r: (*mut u8, bool,
         r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
         r.0@.addr != 0 ==> size <= shared.huge_usable(size),
         r.0@.addr != 0 ==> shared.huge_ok(size),
-        r.0@.addr != 0 ==> crate::huge::allocated(r.0@.addr, size),
         r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
+        r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == shared.huge_usable(size),
 {
     match heap::heap_for_thread(shared) {
-        Some(h) => h.alloc_huge(shared, size, align),
-        None => shared.alloc_huge(size, align, 0),
+        Some(h) => h.alloc_huge(shared, size, align, Tracked(blk)),
+        None => shared.alloc_huge(size, align, 0, Tracked(blk)),
     }
 }
 
 /// `malloc`. A non-null result is a block of at least `size` bytes in a
-/// class or huge region, aligned to the quantum ([`heap::fits`]).
+/// class or huge region, aligned to the quantum ([`heap::fits`]). Its
+/// token ([`malloc_block`]) goes to C with the block.
 #[inline(always)]
 pub fn malloc(size: usize) -> (r: *mut u8)
     ensures
         heap::fits(r, size as int, QUANTUM as int),
 {
+    let tracked mut blk = Live::empty();
+    malloc_block(size, Tracked(&mut blk))
+}
+
+/// [`malloc`] with the block's token: `blk` gets the token of the block
+/// returned, which has at least `size` usable bytes ([`Live::gives`]).
+#[inline(always)]
+pub fn malloc_block(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+    ensures
+        heap::fits(r, size as int, QUANTUM as int),
+        final(blk).gives(r, size as int),
+{
     // The fast path is a cache pop with no calls in it; everything else
     // (init, heap creation, refill, huge, ENOMEM) is one tail call away so
     // the exported `malloc` needs no stack frame.
-    let Some(c) = class_index(size) else { return malloc_slow(size) };
+    let Some(c) = class_index(size) else { return malloc_slow(size, Tracked(blk)) };
     let shared = super::shared_ptr();
-    let Some(h) = heap::existing_heap(shared) else { return malloc_slow(size) };
+    let Some(h) = heap::existing_heap(shared) else { return malloc_slow(size, Tracked(blk)) };
     // SAFETY: this thread's heap exists, so this thread observed `READY`
     // (the byte was read once inside `existing_heap`; this is the same
     // load, merged by the compiler).
@@ -239,10 +268,11 @@ pub fn malloc(size: usize) -> (r: *mut u8)
     proof {
         h.lemma_wf_regions();
     }
-    match h.alloc_fast(c, flags) {
+    match h.alloc_fast(c, flags, Tracked(blk)) {
         Some(p) => {
             proof {
                 lemma_class_fits(p, c as int, size);
+                lemma_class_gives(*blk, p, c as int, size);
             }
             p
         },
@@ -251,9 +281,10 @@ pub fn malloc(size: usize) -> (r: *mut u8)
         // `heap::alloc_declined`, not through a second classification and
         // a second fast pop.
         None => {
-            let p = malloc_slow_class(c);
+            let p = malloc_slow_class(c, Tracked(blk));
             proof {
                 lemma_class_fits(p, c as int, size);
+                lemma_class_gives(*blk, p, c as int, size);
             }
             p
         },
@@ -265,13 +296,14 @@ pub fn malloc(size: usize) -> (r: *mut u8)
 /// `heap::alloc_declined`, null with `errno = ENOMEM` on failure.
 #[cold]
 #[inline(never)]
-fn malloc_slow_class(class: usize) -> (r: *mut u8)
+fn malloc_slow_class(class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
     requires
         class < NCLASSES,
     ensures
         r@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r@.addr),
+        r@.addr != 0 ==> final(blk).slot_block(r, class as int),
 {
-    let p = heap::alloc_declined(super::shared(), class);
+    let p = heap::alloc_declined(super::shared(), class, Tracked(blk));
     if p.is_null() { enomem() } else { p }
 }
 
@@ -279,9 +311,10 @@ fn malloc_slow_class(class: usize) -> (r: *mut u8)
 /// heap yet, empty cache, huge size). Shared with the C++ `operator new`
 /// family in `cxx.rs`, whose failure handling differs from `malloc`'s.
 #[inline(always)]
-pub(super) fn malloc_fast(size: usize) -> (r: Option<*mut u8>)
+pub(super) fn malloc_fast(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: Option<*mut u8>)
     ensures
         r matches Some(p) ==> heap::fits(p, size as int, QUANTUM as int),
+        r matches Some(p) ==> final(blk).gives(p, size as int),
 {
     let c = class_index(size)?;
     let shared = super::shared_ptr();
@@ -293,10 +326,11 @@ pub(super) fn malloc_fast(size: usize) -> (r: Option<*mut u8>)
     proof {
         h.lemma_wf_regions();
     }
-    let r = h.alloc_fast(c, flags);
+    let r = h.alloc_fast(c, flags, Tracked(blk));
     proof {
         if let Some(p) = r {
             lemma_class_fits(p, c as int, size);
+            lemma_class_gives(*blk, p, c as int, size);
         }
     }
     r
@@ -306,9 +340,10 @@ pub(super) fn malloc_fast(size: usize) -> (r: Option<*mut u8>)
 /// on failure.
 #[cold]
 #[inline(never)]
-pub(super) fn malloc_slow(size: usize) -> (r: *mut u8)
+pub(super) fn malloc_slow(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
     ensures
         heap::fits(r, size as int, QUANTUM as int),
+        final(blk).gives(r, size as int),
 {
     let shared = super::shared();
     proof {
@@ -317,14 +352,15 @@ pub(super) fn malloc_slow(size: usize) -> (r: *mut u8)
     }
     let p = match class_index(size) {
         Some(c) => {
-            let p = heap::alloc(shared, c);
+            let p = heap::alloc(shared, c, Tracked(blk));
             proof {
                 lemma_class_fits(p, c as int, size);
+                lemma_class_gives(*blk, p, c as int, size);
             }
             p
         },
         None => {
-            let p = alloc_huge(shared, size, 1).0;
+            let p = alloc_huge(shared, size, 1, Tracked(blk)).0;
             proof {
                 lemma_huge_result(p, size, 1);
             }
@@ -335,26 +371,29 @@ pub(super) fn malloc_slow(size: usize) -> (r: *mut u8)
 }
 
 /// `calloc`. Skips the `memset` when the slot or run is known to read as
-/// zero (fresh or purged memory).
+/// zero (fresh or purged memory). The block's token goes to C with it.
 #[inline(always)]
 pub fn calloc(n: usize, m: usize) -> (r: *mut u8)
     ensures
         n * m > usize::MAX ==> r@.addr == 0,
         heap::fits(r, n * m, QUANTUM as int),
 {
-    calloc_zeroed(n, m).0
+    let tracked mut blk = Live::empty();
+    calloc_zeroed(n, m, Tracked(&mut blk)).0
 }
 
 /// [`calloc`] with the proof that its memory reads as zero: a non-null
 /// result comes with a [`Zeroed`] token for its `n * m` bytes (the
 /// "Zeroed memory" theorem of `verus/TODO.md`), from the `memset` or from
-/// the allocator's report that the slot or run is known zero.
+/// the allocator's report that the slot or run is known zero; and `blk`
+/// gets the block's token.
 #[inline(always)]
-pub fn calloc_zeroed(n: usize, m: usize) -> (r: (*mut u8, Tracked<Zeroed>))
+pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, Tracked<Zeroed>))
     ensures
         n * m > usize::MAX ==> r.0@.addr == 0,
         heap::fits(r.0, n * m, QUANTUM as int),
         r.0@.addr != 0 ==> r.1@.covers(r.0, n * m),
+        final(blk).gives(r.0, n * m),
 {
     let Some(size) = n.checked_mul(m) else { return (enomem(), Tracked(Zeroed::empty(0))) };
     let shared = super::shared();
@@ -364,14 +403,15 @@ pub fn calloc_zeroed(n: usize, m: usize) -> (r: (*mut u8, Tracked<Zeroed>))
     }
     let (p, zeroed, z) = match class_index(size) {
         Some(c) => {
-            let r = heap::alloc_zeroed(shared, c);
+            let r = heap::alloc_zeroed(shared, c, Tracked(blk));
             proof {
                 lemma_class_fits(r.0, c as int, size);
+                lemma_class_gives(*blk, r.0, c as int, size);
             }
             r
         },
         None => {
-            let r = alloc_huge(shared, size, 1);
+            let r = alloc_huge(shared, size, 1, Tracked(blk));
             proof {
                 lemma_huge_result(r.0, size, 1);
             }
@@ -394,25 +434,42 @@ pub fn calloc_zeroed(n: usize, m: usize) -> (r: (*mut u8, Tracked<Zeroed>))
 }
 
 /// `free`. Null is a no-op; anything that is not a live allocation aborts.
+/// C holds the token of the block it frees ([`heap::live::axiom_c_claim`],
+/// the one trusted step of the C contract).
 #[inline(always)]
 pub fn free(p: *mut u8)
     ensures
         p@.addr != 0 ==> heap::free_target(p),
 {
+    let tracked blk = heap::live::axiom_c_claim(p);
+    free_block(p, Tracked(blk))
+}
+
+/// [`free`] with the caller's token for `p` ([`Live::claims`]), which the
+/// free takes back.
+#[inline(always)]
+pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>)
+    requires
+        blk.claims(p),
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> blk.block(p),
+{
     if p.is_null() {
         return;
     }
+    let tracked mut blk = blk;
     // As in `malloc`: the check-and-push has no calls, and every other
     // outcome, including the aborts, is reached through one tail call.
     if let Some(h) = heap::existing_heap(super::shared_ptr()) {
         // SAFETY: this thread's heap exists, so this thread observed
         // `READY` when it created the heap.
         let shared = unsafe { super::shared_unchecked() };
-        if heap::free_fast(shared, h, p, shared.push_flags()) {
+        if heap::free_fast(shared, h, p, shared.push_flags(), Tracked(&mut blk)) {
             return;
         }
     }
-    free_slow(p)
+    free_slow(p, Tracked(blk))
 }
 
 /// Sized free on the calling thread's heap: `hint` is the class the size
@@ -420,7 +477,8 @@ pub fn free(p: *mut u8)
 /// size. On the fast path the hint replaces the slab descriptor's bit test
 /// (design 6.3): a slot whose class matches is pushed at once, so an
 /// invalid or double free through this path is caught when the cache
-/// flushes it, not at the call; a hint that does not match aborts.
+/// flushes it, not at the call; a hint that does not match aborts. C
+/// holds the token of the block it frees ([`heap::live::axiom_c_claim`]).
 #[inline(always)]
 pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>)
     requires
@@ -428,10 +486,26 @@ pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>)
     ensures
         p@.addr != 0 ==> heap::free_target(p),
 {
+    let tracked blk = heap::live::axiom_c_claim(p);
+    free_sized_block(p, size, hint, Tracked(blk))
+}
+
+/// [`free_sized_hint`] with the caller's token for `p` ([`Live::claims`]),
+/// which the free takes back: the token of the live block `p`.
+#[inline(always)]
+pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>)
+    requires
+        hint matches Some(c) ==> c < NCLASSES,
+        blk.claims(p),
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> blk.block(p),
+{
+    let tracked mut blk = blk;
     // A huge size (no hint) has no fast path: straight to the slow one,
     // so the fast path carries a plain class and no test of the hint.
     let Some(c) = hint else {
-        return free_sized_unhinted(p, size);
+        return free_sized_unhinted(p, size, Tracked(blk));
     };
     if p.is_null() {
         return;
@@ -439,23 +513,26 @@ pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>)
     if let Some(h) = heap::existing_heap(super::shared_ptr()) {
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_unchecked() };
-        if heap::free_sized_fast(shared, h, p, Some(c), shared.push_flags()) {
+        if heap::free_sized_fast(shared, h, p, Some(c), shared.push_flags(), Tracked(&mut blk)) {
             return;
         }
     }
-    free_sized_slow(p, size, hint)
+    free_sized_slow(p, size, hint, Tracked(blk))
 }
 
 /// The sized free of a size no class holds (a huge run, or nothing): the
 /// exact `free` behind the null test.
 #[cold]
 #[inline(never)]
-fn free_sized_unhinted(p: *mut u8, size: usize)
+fn free_sized_unhinted(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>)
+    requires
+        blk.claims(p),
     ensures
         p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> blk.block(p),
 {
     if !p.is_null() {
-        free_sized_slow(p, size, None)
+        free_sized_slow(p, size, None, Tracked(blk))
     }
 }
 
@@ -464,14 +541,17 @@ fn free_sized_unhinted(p: *mut u8, size: usize)
 /// check, and a bad pointer the usual message).
 #[cold]
 #[inline(never)]
-fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>)
+fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>)
+    requires
+        blk.claims(p),
     ensures
         heap::free_target(p),
+        blk.block(p),
 {
     match super::shared_if_ready() {
         Some(shared) => {
             shared.check_size_hint(p, size, hint);
-            heap::free(shared, p)
+            heap::free(shared, p, Tracked(blk))
         }
         None => free_before_init(p),
     }
@@ -504,12 +584,15 @@ pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize)
 /// same message it always did).
 #[cold]
 #[inline(never)]
-fn free_slow(p: *mut u8)
+fn free_slow(p: *mut u8, Tracked(blk): Tracked<Live>)
+    requires
+        blk.claims(p),
     ensures
         heap::free_target(p),
+        blk.block(p),
 {
     match super::shared_if_ready() {
-        Some(shared) => heap::free(shared, p),
+        Some(shared) => heap::free(shared, p, Tracked(blk)),
         None => free_before_init(p),
     }
 }
@@ -529,19 +612,22 @@ fn free_before_init(p: *mut u8) -> ! {
 /// path's route (design 6.3): `Regions::classify` finds class, slab and
 /// slot from the dense arrays, `check_live` tests the bit, and the size is
 /// the class's. A huge run's is what its descriptor records
-/// ([`crate::huge::Huge::usable_size`]).
+/// ([`crate::huge::Huge::usable_size`]). With a token that claims `p`
+/// ([`Live::claims`]), the result is the block's usable bytes.
 #[inline(always)]
-pub fn usable_size(shared: &Shared, p: *mut u8) -> (r: usize)
+pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>) -> (r: usize)
     requires
         shared.wf(),
     ensures
         heap::free_target(p),
         crate::layout::process_regions().is_huge_block(p as usize, 1) ==> shared.huge_run_usable(p as usize, r),
         usable_of(p, r as int),
+        blk.claims(p) ==> blk.block(p) && r == blk.len(),
 {
     proof {
         shared.lemma_wf();
         shared.lemma_huge_pages();
+        shared.lemma_regions_ok();
     }
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
@@ -557,14 +643,22 @@ pub fn usable_size(shared: &Shared, p: *mut u8) -> (r: usize)
                 lemma_slot_not_huge(crate::layout::process_regions(), class as int, p as usize);
                 shared.lemma_regions_ok();
                 crate::vspec::usable::lemma_usable_slot(p, class as int, 0);
+                if blk.claims(p) {
+                    blk.lemma_claims_slot(p, class as int);
+                    blk.lemma_claimed_block(p);
+                    blk.lemma_slot_len(p, class as int);
+                }
             }
             class_size(class)
         }
         Kind::Huge { page } => {
-            let r = shared.huge.usable_size(page);
+            let r = shared.huge.usable_size(page, Tracked(blk.run_ref()));
             proof {
                 shared.lemma_huge_run_usable(p as usize, r);
                 crate::vspec::usable::lemma_usable_run(shared, p, r);
+                if blk.claims(p) {
+                    shared.lemma_run_page(p, page, *blk);
+                }
             }
             r
         },
@@ -591,8 +685,9 @@ pub fn malloc_usable_size(p: *mut u8) -> (r: usize)
     if p.is_null() {
         return 0;
     }
+    let tracked none = Live::empty();
     match super::shared_if_ready() {
-        Some(shared) => usable_size(shared, p),
+        Some(shared) => usable_size(shared, p, Tracked(&none)),
         None => free_before_init(p),
     }
 }
@@ -652,16 +747,21 @@ pub open spec fn kept(p: *mut u8, size: int, align: int) -> bool {
 /// otherwise `Some(old)`, the usable bytes of `p`, the most a move has to
 /// copy: the class's size for a slot. Aborts, naming `what`, unless `p`
 /// is a live slab slot or huge run start; so it returns only for a free
-/// target.
-pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: usize, align: usize) -> (r: Option<usize>)
+/// target, and `blk`, the caller's token for `p` ([`Live::claims`]), is
+/// then the live block's, with `old` usable bytes, or `size` or more when
+/// `p` is kept.
+pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: usize, align: usize, Tracked(blk): Tracked<&Live>) -> (r: Option<usize>)
     requires
         shared.wf(),
         is_pow2(align),
+        blk.claims(p),
     ensures
         heap::free_target(p),
         r is None ==> kept(p, size as int, align as int),
         r matches Some(o) ==> forall|c: int|
             #[trigger] crate::layout::process_regions().is_slot(c, p@.addr) ==> o == class_table()[c].size,
+        r is None ==> blk.gives(p, size as int),
+        r matches Some(o) ==> blk.block(p) && o == blk.len(),
 {
     proof {
         shared.lemma_wf();
@@ -676,6 +776,11 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
             proof {
                 // `check_live` returned: not a guard slab.
                 crate::layout::process_regions().lemma_is_slot(class as int, slab as int, slot as int, p as usize);
+            }
+            proof {
+                blk.lemma_claims_slot(p, class as int);
+                blk.lemma_claimed_block(p);
+                blk.lemma_slot_len(p, class as int);
             }
             if class_for(size, align) == Some(class) {
                 proof {
@@ -695,8 +800,9 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
             Some(class_size(class))
         }
         Kind::Huge { page } => {
-            let old = shared.huge.usable_size(page);
+            let old = shared.huge.usable_size(page, Tracked(blk.run_ref()));
             proof {
+                shared.lemma_run_page(p, page, *blk);
                 // A page start of the huge region is no slot.
                 assert forall|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr)
                     implies false by {
@@ -719,7 +825,8 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
 /// `realloc`. The same pointer comes back when the new size maps to the
 /// same class or the same number of huge pages (`old_size_or_keep`);
 /// otherwise allocate, copy `min(old usable, new size)`, free. On failure
-/// the old block is intact.
+/// the old block is intact. C holds the token of the block it passes
+/// ([`heap::live::axiom_c_claim`]), and gets the result's.
 pub fn realloc(p: *mut u8, size: usize) -> (r: *mut u8)
     ensures
         p@.addr != 0 && size == 0 ==> r@.addr == 0,
@@ -727,30 +834,65 @@ pub fn realloc(p: *mut u8, size: usize) -> (r: *mut u8)
         heap::fits(r, size as int, QUANTUM as int) || kept(r, size as int, 1),
         p@.addr != 0 ==> heap::free_target(p),
 {
+    let tracked blk = heap::live::axiom_c_claim(p);
+    let tracked mut out = Live::empty();
+    realloc_block(p, size, Tracked(blk), Tracked(&mut out))
+}
+
+/// [`realloc`] with the tokens: `blk` is the caller's for `p`
+/// ([`Live::claims`]), and `out` gets the result's: a new block's, or
+/// `blk` itself when `p` is kept or the move fails (`p` is then still the
+/// caller's). The new block is disjoint from `p`
+/// ([`Live::theorem_apart`]) for the copy.
+#[inline(always)]
+pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Tracked(out): Tracked<&mut Live>) -> (r: *mut u8)
+    requires
+        blk.claims(p),
+    ensures
+        p@.addr != 0 && size == 0 ==> r@.addr == 0,
+        r != p ==> heap::fits(r, size as int, QUANTUM as int),
+        heap::fits(r, size as int, QUANTUM as int) || kept(r, size as int, 1),
+        p@.addr != 0 ==> heap::free_target(p),
+        final(out).gives(r, size as int),
+        p@.addr != 0 ==> blk.block(p),
+        p@.addr != 0 && size != 0 && r@.addr == 0 ==> *final(out) == blk,
+{
     if p.is_null() {
-        return malloc(size);
+        return malloc_block(size, Tracked(out));
     }
     if size == 0 {
-        free(p);
+        free_block(p, Tracked(blk));
         return ptr::null_mut();
     }
     let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
     proof {
         crate::meta::lemma_is_pow2_one();
     }
-    let Some(old) = old_size_or_keep(shared, "realloc", p, size, 1) else { return p };
-    let q = malloc(size);
+    let tracked mut blk = blk;
+    let Some(old) = old_size_or_keep(shared, "realloc", p, size, 1, Tracked(&blk)) else {
+        proof {
+            out.set(blk);
+        }
+        return p;
+    };
+    let q = malloc_block(size, Tracked(out));
     if q.is_null() {
+        // The block at `p` stays the caller's, with its token.
+        proof {
+            out.set(blk);
+        }
         return q;
     }
     proof {
         broadcast use vstd::layout::align_of_u8;
+        shared.lemma_regions_ok();
+        blk.theorem_apart(out);
         crate::vspec::addr::axiom_moved_block(p, old, q, size);
     }
     // SAFETY: `p` has `old` readable bytes, `q` at least `size` writable
     // ones, and they are distinct allocations.
     unsafe { ptr::copy_nonoverlapping(p, q, old.min(size)) };
-    heap::free(shared, p);
+    heap::free(shared, p, Tracked(blk));
     q
 }
 
@@ -824,13 +966,15 @@ fn class_size(class: usize) -> (r: usize)
 /// usable size, what `malloc_usable_size` would return for it, stored
 /// through `usable` (left alone when `usable` is null; 0 on a null return).
 /// The same pop as `malloc` with the class size added from the class the
-/// pop used; everything else is one tail call away, as in `malloc`.
+/// pop used; everything else is one tail call away, as in `malloc`. The
+/// block's token goes to C with it.
 #[inline(always)]
 pub fn malloc_usable(size: usize, usable: *mut usize) -> (r: *mut u8)
     ensures
         heap::fits(r, size as int, QUANTUM as int),
 {
-    malloc_usable_stored(size, usable).0
+    let tracked mut blk = Live::empty();
+    malloc_usable_stored(size, usable, Tracked(&mut blk)).0
 }
 
 /// [`malloc_usable`] with the token for what it stored through `usable`:
@@ -838,22 +982,25 @@ pub fn malloc_usable(size: usize, usable: *mut usize) -> (r: *mut u8)
 /// rounded up to whole pages for a huge run). It stores 0 for a null
 /// result, which is not stated: the regions' spec does not rule out a
 /// slot at address 0, and the fast path's pop states only that it is one.
+/// `blk` gets the block's token, as in [`malloc_block`].
 #[inline(always)]
-pub fn malloc_usable_stored(size: usize, usable: *mut usize) -> (r: (*mut u8, Tracked<Stored>))
+pub fn malloc_usable_stored(size: usize, usable: *mut usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, Tracked<Stored>))
     ensures
         heap::fits(r.0, size as int, QUANTUM as int),
         r.1@.ptr() == usable,
         r.0@.addr != 0 ==> usable_is(r.0, size as int, r.1@.val() as int),
+        final(blk).gives(r.0, size as int),
 {
-    let Some(c) = class_index(size) else { return malloc_usable_huge(size, usable) };
+    let Some(c) = class_index(size) else { return malloc_usable_huge(size, usable, Tracked(blk)) };
     let shared = super::shared_ptr();
     let Some(h) = heap::existing_heap(shared) else {
-        let (p, s) = malloc_usable_class(c, usable);
+        let (p, s) = malloc_usable_class(c, usable, Tracked(blk));
         proof {
             lemma_class_fits(p, c as int, size);
             if p@.addr != 0 {
                 crate::vspec::usable::lemma_usable_slot(p, c as int, size as int);
             }
+            lemma_class_gives(*blk, p, c as int, size);
         }
         return (p, s);
     };
@@ -862,22 +1009,24 @@ pub fn malloc_usable_stored(size: usize, usable: *mut usize) -> (r: (*mut u8, Tr
     proof {
         h.lemma_wf_regions();
     }
-    match h.alloc_fast(c, flags) {
+    match h.alloc_fast(c, flags, Tracked(blk)) {
         Some(p) => {
             let s = store_usable(usable, class_size(c));
             proof {
                 lemma_class_fits(p, c as int, size);
                 crate::vspec::usable::lemma_usable_slot(p, c as int, size as int);
+                lemma_class_gives(*blk, p, c as int, size);
             }
             (p, s)
         }
         None => {
-            let (p, s) = malloc_usable_class(c, usable);
+            let (p, s) = malloc_usable_class(c, usable, Tracked(blk));
             proof {
                 lemma_class_fits(p, c as int, size);
                 if p@.addr != 0 {
                     crate::vspec::usable::lemma_usable_slot(p, c as int, size as int);
                 }
+                lemma_class_gives(*blk, p, c as int, size);
             }
             (p, s)
         },
@@ -890,12 +1039,13 @@ pub fn malloc_usable_stored(size: usize, usable: *mut usize) -> (r: (*mut u8, Tr
 /// null with `errno = ENOMEM` on failure.
 #[cold]
 #[inline(never)]
-fn malloc_usable_class(class: usize, usable: *mut usize) -> (r: (*mut u8, Tracked<Stored>))
+fn malloc_usable_class(class: usize, usable: *mut usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, Tracked<Stored>))
     requires
         class < NCLASSES,
     ensures
         heap::regions_ok(),
         r.0@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r.0@.addr),
+        r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
         r.1@.ptr() == usable,
         r.0@.addr == 0 ==> r.1@.val() == 0,
         r.0@.addr != 0 ==> r.1@.val() == class_table()[class as int].size,
@@ -904,7 +1054,7 @@ fn malloc_usable_class(class: usize, usable: *mut usize) -> (r: (*mut u8, Tracke
     proof {
         shared.lemma_regions_ok();
     }
-    let p = heap::alloc_declined(shared, class);
+    let p = heap::alloc_declined(shared, class, Tracked(blk));
     if p.is_null() {
         let s = store_usable(usable, 0);
         return (enomem(), s);
@@ -917,19 +1067,20 @@ fn malloc_usable_class(class: usize, usable: *mut usize) -> (r: (*mut u8, Tracke
 /// huge table, the same read `malloc_usable_size` does.
 #[cold]
 #[inline(never)]
-fn malloc_usable_huge(size: usize, usable: *mut usize) -> (r: (*mut u8, Tracked<Stored>))
+fn malloc_usable_huge(size: usize, usable: *mut usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, Tracked<Stored>))
     ensures
         heap::fits(r.0, size as int, QUANTUM as int),
         r.1@.ptr() == usable,
         r.0@.addr == 0 ==> r.1@.val() == 0,
         r.0@.addr != 0 ==> usable_is(r.0, size as int, r.1@.val() as int),
+        final(blk).gives(r.0, size as int),
 {
     let shared = super::shared();
     proof {
         crate::meta::lemma_is_pow2_one();
         shared.lemma_regions_ok();
     }
-    let (p, _, _) = alloc_huge(shared, size, 1);
+    let (p, _, _) = alloc_huge(shared, size, 1, Tracked(blk));
     proof {
         lemma_huge_result(p, size, 1);
     }
@@ -937,25 +1088,27 @@ fn malloc_usable_huge(size: usize, usable: *mut usize) -> (r: (*mut u8, Tracked<
         let s = store_usable(usable, 0);
         return (enomem(), s);
     }
-    let s = store_usable(usable, usable_size(shared, p));
+    let s = store_usable(usable, usable_size(shared, p, Tracked(&*blk)));
     proof {
-        // The run `alloc_huge` just returned, still this caller's: its
+        // The run `alloc_huge` just returned, with its token: its
         // descriptor records `size` rounded up to whole pages.
+        blk.lemma_claims(p);
         lemma_huge_usable(shared, p, size, s@.val());
     }
     (p, s)
 }
 
-/// The usable size [`usable_size`] reads for the run `alloc_huge` just
-/// returned for `size` bytes, still the caller's, is `size` rounded up to
-/// whole pages ([`crate::vspec::huge::axiom_owned_run`]).
+/// The usable size of the run `alloc_huge` just returned for `size`
+/// bytes, as the block's token states it (`u` is the token's
+/// [`Live::len`], which `alloc_huge` ensures is `shared.huge_usable(size)`),
+/// is `size` rounded up to whole pages.
 proof fn lemma_huge_usable(shared: &Shared, p: *mut u8, size: usize, u: usize)
     requires
         shared.wf(),
         p@.addr != 0,
         crate::layout::huge_block(p@.addr, size, 1),
-        crate::huge::allocated(p@.addr, size),
-        crate::layout::process_regions().is_huge_block(p@.addr, 1) ==> shared.huge_run_usable(p@.addr, u),
+        size <= shared.huge_usable(size),
+        u == shared.huge_usable(size),
     ensures
         crate::layout::process_regions().is_huge_block(p@.addr, 1),
         size <= u,
@@ -965,7 +1118,6 @@ proof fn lemma_huge_usable(shared: &Shared, p: *mut u8, size: usize, u: usize)
     shared.lemma_wf();
     shared.lemma_regions_ok();
     assert(crate::layout::process_regions().is_huge_block(p@.addr, 1));
-    crate::vspec::huge::axiom_owned_run(shared, p@.addr, size, u);
     shared.lemma_huge_usable(size);
     crate::vspec::usable::lemma_usable_huge(p, size as int);
 }
@@ -974,13 +1126,14 @@ proof fn lemma_huge_usable(shared: &Shared, p: *mut u8, size: usize, u: usize)
 /// size stored as in [`malloc_usable`]. The whole usable size reads as
 /// zero, not only the `n * m` bytes asked for: the caller is told it owns
 /// the usable bytes (Valkey's `zcalloc_usable` hands them on), and that is
-/// what jemalloc's `calloc` zeroes.
+/// what jemalloc's `calloc` zeroes. The block's token goes to C with it.
 pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> (r: *mut u8)
     ensures
         n * m > usize::MAX ==> r@.addr == 0,
         heap::fits(r, n * m, QUANTUM as int),
 {
-    calloc_usable_zeroed(n, m, usable).0
+    let tracked mut blk = Live::empty();
+    calloc_usable_zeroed(n, m, usable, Tracked(&mut blk)).0
 }
 
 /// [`calloc_usable`] with the proof that its memory reads as zero, and
@@ -988,12 +1141,12 @@ pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> (r: *mut u8)
 /// with a [`Zeroed`] token for its `n * m` bytes and for its whole usable
 /// size ([`covers_usable`]), and `usable` holds that size ([`usable_is`]:
 /// the class's size, or `n * m` rounded up to whole pages); a null result
-/// stores 0. For a huge request the `memset` length is the run's usable
-/// size read back from its descriptor ([`usable_size`]), which is the
-/// request rounded up to whole pages while the block is this caller's
-/// ([`crate::vspec::huge::axiom_owned_run`]).
+/// stores 0. `blk` gets the block's token. For a huge request the `memset`
+/// length is the run's usable size read back from its descriptor
+/// ([`usable_size`]), which is the usable size of the block's token: the
+/// request rounded up to whole pages.
 #[inline(always)]
-pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize) -> (r: (*mut u8, Tracked<Zeroed>, Tracked<Stored>))
+pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, Tracked<Zeroed>, Tracked<Stored>))
     ensures
         n * m > usize::MAX ==> r.0@.addr == 0,
         heap::fits(r.0, n * m, QUANTUM as int),
@@ -1002,6 +1155,7 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize) -> (r: (*mut
         r.2@.ptr() == usable,
         r.0@.addr == 0 ==> r.2@.val() == 0,
         r.0@.addr != 0 ==> usable_is(r.0, n * m, r.2@.val() as int),
+        final(blk).gives(r.0, n * m),
 {
     let Some(size) = n.checked_mul(m) else {
         let s = store_usable(usable, 0);
@@ -1016,7 +1170,7 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize) -> (r: (*mut
     let ghost mut cls: int = -1;
     let (p, zeroed, u, z) = match class_index(size) {
         Some(c) => {
-            let (p, zeroed, z) = heap::alloc_zeroed(shared, c);
+            let (p, zeroed, z) = heap::alloc_zeroed(shared, c, Tracked(blk));
             proof {
                 cls = c as int;
                 lemma_class_fits(p, c as int, size);
@@ -1026,19 +1180,22 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize) -> (r: (*mut
                         crate::vspec::zero::lemma_covers_slot(z@, p, c as int, 0, size as int);
                     }
                 }
+                lemma_class_gives(*blk, p, c as int, size);
             }
             (p, zeroed, class_size(c), z)
         }
         None => {
-            let (p, zeroed, z) = alloc_huge(shared, size, 1);
+            let (p, zeroed, z) = alloc_huge(shared, size, 1, Tracked(blk));
             proof {
                 lemma_huge_result(p, size, 1);
+                if p@.addr != 0 {
+                    blk.lemma_claims(p);
+                }
             }
-            let u = if p.is_null() { 0 } else { usable_size(shared, p) };
+            let u = if p.is_null() { 0 } else { usable_size(shared, p, Tracked(&*blk)) };
             proof {
                 if p@.addr != 0 {
-                    // The run `alloc_huge` just returned, still this
-                    // caller's.
+                    // The run `alloc_huge` just returned, with its token.
                     lemma_huge_usable(shared, p, size, u);
                     if zeroed {
                         shared.lemma_huge_usable(size);
@@ -1082,7 +1239,8 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize) -> (r: (*mut
 /// when null comes back, `realloc(p, 0)` included). The block kept in
 /// place reports its class size from the classification `realloc` does
 /// anyway; a moved block reports what the `malloc_usable` that made it
-/// reported.
+/// reported. C holds the token of the block it passes
+/// ([`heap::live::axiom_c_claim`]), and gets the result's.
 pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> (r: *mut u8)
     ensures
         p@.addr != 0 && size == 0 ==> r@.addr == 0,
@@ -1090,15 +1248,20 @@ pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> (r: *mut u
         heap::fits(r, size as int, QUANTUM as int) || kept(r, size as int, 1),
         p@.addr != 0 ==> heap::free_target(p),
 {
-    realloc_usable_stored(p, size, usable).0
+    let tracked blk = heap::live::axiom_c_claim(p);
+    let tracked mut out = Live::empty();
+    realloc_usable_stored(p, size, usable, Tracked(blk), Tracked(&mut out)).0
 }
 
 /// [`realloc_usable`] with the token for what it stored through `usable`:
 /// for a non-null result, its usable size for a request of `size` bytes
 /// ([`usable_is`]), whether the block was kept (the class's size, or a
 /// run's usable size equal to `size` rounded up to whole pages: [`kept`]'s
-/// test) or moved (what [`malloc_usable_stored`] stored).
-pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize) -> (r: (*mut u8, Tracked<Stored>))
+/// test) or moved (what [`malloc_usable_stored`] stored). The block
+/// tokens are as in [`realloc_block`].
+pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracked(blk): Tracked<Live>, Tracked(out): Tracked<&mut Live>) -> (r: (*mut u8, Tracked<Stored>))
+    requires
+        blk.claims(p),
     ensures
         p@.addr != 0 && size == 0 ==> r.0@.addr == 0,
         r.0 != p ==> heap::fits(r.0, size as int, QUANTUM as int),
@@ -1106,33 +1269,46 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize) -> (r:
         p@.addr != 0 ==> heap::free_target(p),
         r.1@.ptr() == usable,
         r.0@.addr != 0 ==> usable_is(r.0, size as int, r.1@.val() as int),
+        final(out).gives(r.0, size as int),
+        p@.addr != 0 ==> blk.block(p),
+        p@.addr != 0 && size != 0 && r.0@.addr == 0 ==> *final(out) == blk,
 {
     if p.is_null() {
-        return malloc_usable_stored(size, usable);
+        return malloc_usable_stored(size, usable, Tracked(out));
     }
     if size == 0 {
-        free(p);
+        free_block(p, Tracked(blk));
         let s = store_usable(usable, 0);
         return (ptr::null_mut(), s);
     }
     let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
-    let (keep, old) = realloc_old(shared, p, size);
+    let tracked mut blk = blk;
+    let (keep, old) = realloc_old(shared, p, size, Tracked(&blk));
     if keep {
         let s = store_usable(usable, old);
+        proof {
+            out.set(blk);
+        }
         return (p, s);
     }
-    let (q, s) = malloc_usable_stored(size, usable);
+    let (q, s) = malloc_usable_stored(size, usable, Tracked(out));
     if q.is_null() {
+        // The block at `p` stays the caller's, with its token.
+        proof {
+            out.set(blk);
+        }
         return (q, s);
     }
     proof {
         broadcast use vstd::layout::align_of_u8;
+        shared.lemma_regions_ok();
+        blk.theorem_apart(out);
         crate::vspec::addr::axiom_moved_block(p, old, q, size);
     }
     // SAFETY: `p` has `old` readable bytes, `q` at least `size` writable
     // ones, and they are distinct allocations.
     unsafe { ptr::copy_nonoverlapping(p, q, old.min(size)) };
-    heap::free(shared, p);
+    heap::free(shared, p, Tracked(blk));
     (q, s)
 }
 
@@ -1142,15 +1318,20 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize) -> (r:
 /// count ([`kept`]). The same checks and aborts as `old_size_or_keep`, in
 /// a function of its own so that `realloc` and `rallocx` keep their code.
 /// The usable size is `p`'s ([`usable_of`]) and, for a kept block, the
-/// usable size of a request of `size` bytes ([`usable_is`]).
-fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (r: (bool, usize))
+/// usable size of a request of `size` bytes ([`usable_is`]). `blk` as for
+/// `old_size_or_keep`.
+fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&Live>) -> (r: (bool, usize))
     requires
         shared.wf(),
+        blk.claims(p),
     ensures
         heap::free_target(p),
         r.0 ==> kept(p, size as int, 1),
         usable_of(p, r.1 as int),
         r.0 ==> usable_is(p, size as int, r.1 as int),
+        blk.block(p),
+        r.1 == blk.len(),
+        r.0 ==> size <= blk.len(),
 {
     proof {
         shared.lemma_wf();
@@ -1171,11 +1352,14 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (r: (bool, usize))
                     heap::lemma_slot_fits_quantum(p, class as int, size as int);
                 }
                 crate::vspec::usable::lemma_usable_slot(p, class as int, size as int);
+                blk.lemma_claims_slot(p, class as int);
+                blk.lemma_claimed_block(p);
+                blk.lemma_slot_len(p, class as int);
             }
             (class_of(size) == Some(class), class_size(class))
         }
         Kind::Huge { page } => {
-            let old = shared.huge.usable_size(page);
+            let old = shared.huge.usable_size(page, Tracked(blk.run_ref()));
             proof {
                 crate::meta::lemma_is_pow2_one();
                 heap::lemma_quantum_pow2();
@@ -1184,6 +1368,7 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (r: (bool, usize))
                 crate::vspec::usable::lemma_usable_run(shared, p, old);
                 shared.lemma_huge_usable(size);
                 crate::vspec::usable::lemma_usable_huge(p, size as int);
+                shared.lemma_run_page(p, page, *blk);
             }
             (class_of(size).is_none() && shared.huge.usable_for(size) == Some(old), old)
         }
@@ -1197,7 +1382,8 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (r: (bool, usize))
 /// several arenas, the push), reporting the class it verified; every other
 /// outcome, the aborts included, goes through one cold call that takes the
 /// size from the same classification the exact `free` then repeats, so a
-/// bad pointer dies with `free`'s message.
+/// bad pointer dies with `free`'s message. C holds the token of the block
+/// it frees ([`heap::live::axiom_c_claim`]).
 #[inline(always)]
 pub fn free_usable(p: *mut u8) -> (r: usize)
     ensures
@@ -1205,35 +1391,58 @@ pub fn free_usable(p: *mut u8) -> (r: usize)
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> usable_of(p, r as int),
 {
+    let tracked blk = heap::live::axiom_c_claim(p);
+    free_usable_block(p, Tracked(blk))
+}
+
+/// [`free_usable`] with the caller's token for `p` ([`Live::claims`]),
+/// which the free takes back: the token of the live block `p`, whose
+/// usable size is the result.
+#[inline(always)]
+pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>) -> (r: usize)
+    requires
+        blk.claims(p),
+    ensures
+        p@.addr == 0 ==> r == 0,
+        p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> usable_of(p, r as int),
+        p@.addr != 0 ==> blk.block(p) && r == blk.len(),
+{
+    let tracked mut blk = blk;
+    let ghost b0 = blk;
     if p.is_null() {
         return 0;
     }
     if let Some(h) = heap::existing_heap(super::shared_ptr()) {
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_unchecked() };
-        if let Some(class) = heap::free_fast_class(shared, h, p, shared.push_flags()) {
+        if let Some(class) = heap::free_fast_class(shared, h, p, shared.push_flags(), Tracked(&mut blk)) {
             proof {
                 shared.lemma_regions_ok();
                 crate::vspec::usable::lemma_usable_slot(p, class as int, 0);
+                b0.lemma_slot_len(p, class as int);
             }
             return class_size(class);
         }
     }
-    free_usable_slow(p)
+    free_usable_slow(p, Tracked(blk))
 }
 
 /// Everything `free_usable` does off its fast path: the size first, from
 /// the classification `free` makes (its aborts for an invalid, stale or
 /// double free, and the huge table's for a run that is not live), then the
 /// exact `free` (heap creation, a full cache, another arena, the huge
-/// release).
-///
+/// release). The size is the usable size of the caller's token for `p`.
 #[cold]
 #[inline(never)]
-fn free_usable_slow(p: *mut u8) -> (r: usize)
+fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>) -> (r: usize)
+    requires
+        blk.claims(p),
     ensures
         heap::free_target(p),
         usable_of(p, r as int),
+        r == blk.len(),
+        blk.block(p),
 {
     let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
     proof {
@@ -1244,19 +1453,23 @@ fn free_usable_slow(p: *mut u8) -> (r: usize)
         Ok((class, _)) => {
             proof {
                 crate::vspec::usable::lemma_usable_slot(p, class as int, 0);
+                blk.lemma_claims_slot(p, class as int);
+                blk.lemma_claimed_block(p);
+                blk.lemma_slot_len(p, class as int);
             }
             class_size(class)
         },
         Err(page) => {
-            let u = shared.huge.usable_size(page);
+            let u = shared.huge.usable_size(page, Tracked(blk.run_ref()));
             proof {
                 shared.lemma_huge_run_usable(p@.addr, u);
                 crate::vspec::usable::lemma_usable_run(shared, p, u);
+                shared.lemma_run_page(p, page, blk);
             }
             u
         },
     };
-    heap::free(shared, p);
+    heap::free(shared, p, Tracked(blk));
     usable
 }
 
@@ -1401,16 +1614,17 @@ pub(super) fn class_for(size: usize, align: usize) -> (r: Option<usize>)
 }
 
 /// Allocate `size` bytes aligned to `align`, a power of two. Null with
-/// `errno = ENOMEM` on exhaustion.
-pub fn alloc_aligned(align: usize, size: usize) -> (r: *mut u8)
+/// `errno = ENOMEM` on exhaustion. `blk` gets the block's token.
+pub fn alloc_aligned(align: usize, size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
     requires
         is_pow2(align),
     ensures
         heap::fits(r, size as int, align as int),
+        final(blk).gives(r, size as int),
 {
     debug_assert!(align.is_power_of_two());
     if align <= QUANTUM {
-        let p = malloc(size);
+        let p = malloc_block(size, Tracked(blk));
         proof {
             heap::lemma_quantum_pow2();
             let k = choose|k: nat| k < 64 && QUANTUM as nat == #[trigger] pow2(k);
@@ -1425,18 +1639,19 @@ pub fn alloc_aligned(align: usize, size: usize) -> (r: *mut u8)
     }
     let p = match class_for(size, align) {
         Some(c) => {
-            let p = heap::alloc(shared, c);
+            let p = heap::alloc(shared, c, Tracked(blk));
             proof {
                 if p@.addr != 0 {
                     crate::vspec::class::axiom_class_table_wf(c as int);
                     lemma_mask_mod(class_table()[c as int].size as usize, align);
                     heap::lemma_slot_fits(p, c as int, size as int, align);
                 }
+                lemma_class_gives(*blk, p, c as int, size);
             }
             p
         },
         None => {
-            let p = alloc_huge(shared, size, align).0;
+            let p = alloc_huge(shared, size, align, Tracked(blk)).0;
             proof {
                 lemma_huge_result(p, size, align);
             }
@@ -1483,16 +1698,28 @@ proof fn lemma_mask_mod(x: usize, a: usize)
 }
 
 /// `aligned_alloc` and `memalign`: `EINVAL` unless `align` is a power of
-/// two. glibc does not require `size` to be a multiple of `align`.
+/// two. glibc does not require `size` to be a multiple of `align`. The
+/// block's token goes to C with it.
 pub fn aligned_alloc(align: usize, size: usize) -> (r: *mut u8)
     ensures
         !is_pow2(align) ==> r@.addr == 0,
         is_pow2(align) ==> heap::fits(r, size as int, align as int),
 {
+    let tracked mut blk = Live::empty();
+    aligned_alloc_block(align, size, Tracked(&mut blk))
+}
+
+/// [`aligned_alloc`] with the block's token, as [`malloc_block`].
+pub fn aligned_alloc_block(align: usize, size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+    ensures
+        !is_pow2(align) ==> r@.addr == 0,
+        is_pow2(align) ==> heap::fits(r, size as int, align as int),
+        final(blk).gives(r, size as int),
+{
     if !align.is_power_of_two() {
         return einval();
     }
-    alloc_aligned(align, size)
+    alloc_aligned(align, size, Tracked(blk))
 }
 
 /// Store the allocation through `posix_memalign`'s out-pointer.
@@ -1506,17 +1733,32 @@ fn store_out(out: *mut *mut u8, p: *mut u8) {
 
 /// `posix_memalign`. Returns 0, `EINVAL` (alignment not a power of two or
 /// not a multiple of `sizeof(void *)`) or `ENOMEM`; never touches `errno`
-/// on the `EINVAL` path.
+/// on the `EINVAL` path. The block's token goes to C with it.
 pub fn posix_memalign(out: *mut *mut u8, align: usize, size: usize) -> (r: c_int)
     ensures
         r == 0 || r == ENOMEM || r == EINVAL,
         // `sizeof(void *)` is 8 on every target challoc builds for.
         r == EINVAL <==> !(is_pow2(align) && align % 8 == 0),
 {
+    let tracked mut blk = Live::empty();
+    posix_memalign_block(out, align, size, Tracked(&mut blk))
+}
+
+/// [`posix_memalign`] with the token of the block it stores: on a 0
+/// return, `blk` gets the token of a block of at least `size` bytes
+/// aligned to `align` (the stored pointer, which `store_out` does not
+/// state).
+pub fn posix_memalign_block(out: *mut *mut u8, align: usize, size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: c_int)
+    ensures
+        r == 0 || r == ENOMEM || r == EINVAL,
+        // `sizeof(void *)` is 8 on every target challoc builds for.
+        r == EINVAL <==> !(is_pow2(align) && align % 8 == 0),
+        r == 0 ==> exists|p: *mut u8| p@.addr != 0 && #[trigger] final(blk).gives(p, size as int) && heap::fits(p, size as int, align as int),
+{
     if !align.is_power_of_two() || align % core::mem::size_of::<*mut u8>() != 0 {
         return EINVAL;
     }
-    let p = alloc_aligned(align, size);
+    let p = alloc_aligned(align, size, Tracked(blk));
     if p.is_null() {
         return ENOMEM;
     }
@@ -1552,24 +1794,45 @@ fn page_size(shared: &Shared) -> (r: usize)
     r
 }
 
-/// `valloc`: page-aligned.
+/// `valloc`: page-aligned. The block's token goes to C with it.
 pub fn valloc(size: usize) -> (r: *mut u8)
     ensures
         heap::fits(r, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
 {
-    let page = page_size(super::shared());
-    alloc_aligned(page, size)
+    let tracked mut blk = Live::empty();
+    valloc_block(size, Tracked(&mut blk))
 }
 
-/// `pvalloc`: page-aligned, size rounded up to a whole page.
+/// [`valloc`] with the block's token, as [`malloc_block`].
+pub fn valloc_block(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+    ensures
+        heap::fits(r, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
+        final(blk).gives(r, size as int),
+{
+    let page = page_size(super::shared());
+    alloc_aligned(page, size, Tracked(blk))
+}
+
+/// `pvalloc`: page-aligned, size rounded up to a whole page. The block's
+/// token goes to C with it.
 pub fn pvalloc(size: usize) -> (r: *mut u8)
     ensures
         heap::fits(r, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
 {
+    let tracked mut blk = Live::empty();
+    pvalloc_block(size, Tracked(&mut blk))
+}
+
+/// [`pvalloc`] with the block's token, as [`malloc_block`].
+pub fn pvalloc_block(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+    ensures
+        heap::fits(r, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
+        final(blk).gives(r, size as int),
+{
     let page = page_size(super::shared());
     proof { lemma_pow2_pos(page); }
     let Some(rounded) = size.checked_add(page - 1) else { return enomem() };
-    let p = alloc_aligned(page, rounded & !(page - 1));
+    let p = alloc_aligned(page, rounded & !(page - 1), Tracked(blk));
     proof {
         let m = rounded & !((page - 1) as usize);
         crate::meta::lemma_pow2_bits(page);

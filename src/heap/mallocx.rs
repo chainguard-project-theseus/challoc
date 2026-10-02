@@ -138,14 +138,16 @@ fn invalid_tcache(id: u16) -> ! {
 
 /// Routing of a `MALLOCX` allocation of a non-huge class on the calling
 /// thread. `None` from the arena lookup (an index `arenas.create` never
-/// handed out) gives null. The flag says the memory is known zero.
-pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+/// handed out) gives null. The flag says the memory is known zero; `blk`
+/// gets the block's token.
+pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache, Tracked(blk): Tracked<&mut super::Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
         class < crate::layout::NCLASSES,
         shared.wf(),
     ensures
         r.0@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r.0@.addr),
         r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, crate::layout::class_table()[class as int].size as int),
+        r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
 {
     match tcache {
         Tcache::Default => match crate::heap::heap_for_thread(shared) {
@@ -155,20 +157,20 @@ pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache) 
                 }
                 match arena {
                     Some(a) => {
-                        let (p, zero) = h.alloc_in(shared, a, class);
+                        let (p, zero) = h.alloc_in(shared, a, class, Tracked(blk));
                         let ghost take = p@.addr != 0 && zero;
                         let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
                         (p, zero, z)
                     },
                     None => {
-                        let (p, zero) = h.alloc_zeroed(shared, class);
+                        let (p, zero) = h.alloc_zeroed(shared, class, Tracked(blk));
                         let ghost take = p@.addr != 0 && zero;
                         let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
                         (p, zero, z)
                     },
                 }
             },
-            None => alloc_direct(shared, class, arena.unwrap_or(0)),
+            None => alloc_direct(shared, class, arena.unwrap_or(0), Tracked(blk)),
         },
         Tcache::Explicit(t) => {
             let Some(h) = shared.tcaches.get(t) else {
@@ -181,13 +183,13 @@ pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache) 
             // shared class to it (`Heap::alloc_in`).
             match arena {
                 Some(a) => {
-                    let (p, zero) = h.alloc_in(shared, a, class);
+                    let (p, zero) = h.alloc_in(shared, a, class, Tracked(blk));
                     let ghost take = p@.addr != 0 && zero;
                     let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
                     (p, zero, z)
                 },
                 None => {
-                    let (p, zero) = h.alloc_zeroed(shared, class);
+                    let (p, zero) = h.alloc_zeroed(shared, class, Tracked(blk));
                     let ghost take = p@.addr != 0 && zero;
                     let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
                     (p, zero, z)
@@ -198,7 +200,7 @@ pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache) 
             let a = arena
                 .or_else(|| crate::heap::existing_heap(crate::heap::shared_ptr(shared)).map(|h| h.arena()))
                 .unwrap_or(0);
-            let (p, zero, z) = alloc_direct(shared, class, a);
+            let (p, zero, z) = alloc_direct(shared, class, a, Tracked(blk));
             if !p.is_null() {
                 if let Some(h) = crate::heap::existing_heap(crate::heap::shared_ptr(shared)) {
                     h.count_direct_alloc(class);
@@ -210,16 +212,17 @@ pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache) 
 }
 
 /// One slot of `class` straight from `arena`'s slab bitmaps.
-fn alloc_direct(shared: &Shared, class: usize, arena: u16) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+fn alloc_direct(shared: &Shared, class: usize, arena: u16, Tracked(blk): Tracked<&mut super::Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
         shared.wf(),
         class < crate::layout::NCLASSES,
     ensures
         r.0@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r.0@.addr),
         r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, crate::layout::class_table()[class as int].size as int),
+        r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
 {
     match shared.arena(arena) {
-        Some(a) => shared.alloc_direct(a, class),
+        Some(a) => shared.alloc_direct(a, class, Tracked(blk)),
         None => (ptr::null_mut(), false, Tracked(Zeroed::empty(0))),
     }
 }
@@ -232,6 +235,7 @@ pub fn alloc_huge(
     align: usize,
     arena: Option<u16>,
     tcache: Tcache,
+    Tracked(blk): Tracked<&mut super::Live>,
 ) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
         shared.wf(),
@@ -241,6 +245,7 @@ pub fn alloc_huge(
         r.0@.addr != 0 ==> size <= shared.huge_usable(size),
         r.0@.addr != 0 ==> shared.huge_ok(size),
         r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
+        r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == shared.huge_usable(size),
 {
     let a = match (arena, tcache) {
         (Some(a), _) => a,
@@ -254,26 +259,29 @@ pub fn alloc_huge(
         return (ptr::null_mut(), false, Tracked(Zeroed::empty(0)));
     }
     match crate::heap::heap_for_thread(shared) {
-        Some(h) => h.alloc_huge_in(shared, size, align, a),
-        None => shared.alloc_huge(size, align, a),
+        Some(h) => h.alloc_huge_in(shared, size, align, a, Tracked(blk)),
+        None => shared.alloc_huge(size, align, a, Tracked(blk)),
     }
 }
 
 /// Routing of a `MALLOCX` free (`dallocx`, `sdallocx`) on the calling
-/// thread. Aborts unless `p` is a live allocation.
-pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache)
+/// thread. Aborts unless `p` is a live allocation. `blk` is the caller's
+/// token for `p` ([`Live::claims`](super::Live::claims)).
+pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<super::Live>)
     requires
         shared.wf(),
+        blk.claims(p),
     ensures
         crate::heap::free_target(p),
+        blk.block(p),
 {
     match tcache {
-        Tcache::Default => crate::heap::free(shared, p),
+        Tcache::Default => crate::heap::free(shared, p, Tracked(blk)),
         Tcache::Explicit(t) => match shared.tcaches.get(t) {
-            Some(h) => h.free(shared, p),
+            Some(h) => h.free(shared, p, Tracked(blk)),
             None => invalid_tcache(t),
         },
-        Tcache::None => crate::heap::free_direct(shared, p),
+        Tcache::None => crate::heap::free_direct(shared, p, Tracked(blk)),
     }
 }
 

@@ -1508,6 +1508,74 @@ impl Shared {
         vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(np, lg, len);
     }
 
+    /// The run token [`Huge::alloc_run`] returned for the run at `p`
+    /// ([`Huge::run_token`]) is a live block's in the process's terms: `p`
+    /// is the address of its first page, and its usable pages lie in the
+    /// huge region.
+    proof fn lemma_run_token(&self, t: crate::huge::RunToken, p: *mut u8)
+        requires
+            self.wf(),
+            t.wf(),
+            self.huge.spec_base() + t.start() * self.huge.spec_page() == p@.addr,
+            t.start() + t.npages() <= self.huge.spec_npages(),
+        ensures
+            super::live::page_addr(t.start()) == p@.addr as int,
+            crate::layout::process_regions().is_huge_block(p@.addr, super::live::run_usable(t.npages())),
+    {
+        let (len, lg32) = (self.regions.huge_len, self.regions.lg_page);
+        let lg = lg32 as usize;
+        let np = len >> lg32;
+        vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+        vstd::bits::lemma_usize_shl_is_mul(1, lg);
+        assert(np == len >> lg) by (bit_vector)
+            requires
+                np == len >> lg32,
+                lg == lg32 as usize,
+        ;
+        vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(np, lg, len);
+        t.lemma_wf();
+        let pg = self.huge.spec_page();
+        let (s, n) = (t.start(), t.npages());
+        assert(pg > 0);
+        assert((s + n) * pg <= np * pg) by (nonlinear_arith)
+            requires
+                s + n <= np,
+                pg > 0,
+        ;
+        assert(s * pg + (n - crate::huge::GUARD_PAGES) * pg + pg == (s + n) * pg) by (nonlinear_arith)
+            requires
+                crate::huge::GUARD_PAGES == 1,
+        ;
+        assert((n - crate::huge::GUARD_PAGES) * pg > 0) by (nonlinear_arith)
+            requires
+                n > crate::huge::GUARD_PAGES,
+                pg > 0,
+        ;
+        vstd::arithmetic::div_mod::lemma_mod_multiples_basic(s, pg);
+    }
+
+    /// A token that claims `p`, a page start of the huge region with page
+    /// index `page`, is the live block's, and holds the token of the run
+    /// at `page` whose usable bytes, in this `Shared`'s pages, are the
+    /// block's.
+    pub(crate) proof fn lemma_run_page(&self, p: *mut u8, page: usize, blk: super::Live)
+        requires
+            self.wf(),
+            blk.claims(p),
+            crate::layout::process_regions().is_huge_block(p@.addr, 1),
+            page == ((p@.addr - crate::layout::process_regions().huge_base) as usize) >> crate::layout::process_regions().lg_page,
+        ensures
+            blk.block(p),
+            blk.run_opt() is Some,
+            blk.run_opt().unwrap().wf(),
+            blk.run_opt().unwrap().start() == page,
+            blk.len() == (blk.run_opt().unwrap().npages() - crate::huge::GUARD_PAGES) * self.huge.spec_page(),
+    {
+        self.lemma_regions_ok();
+        blk.lemma_run_page(p, page);
+        blk.lemma_claimed_block(p);
+    }
+
     /// The usable bytes of a huge run for `size` ([`Huge::spec_usable`]).
     pub closed spec fn huge_usable(&self, size: usize) -> int {
         self.huge.spec_usable(size)
@@ -1707,20 +1775,31 @@ impl Shared {
 
     /// Claim one slot of `class` in `arena` straight from the slab bitmaps,
     /// bypassing every cache. Null when the region is exhausted. The flag
-    /// says the memory is known zero.
-    pub fn alloc_direct(&self, arena: &Arena, class: usize) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+    /// says the memory is known zero; `blk` gets the slot's token.
+    pub fn alloc_direct(&self, arena: &Arena, class: usize, Tracked(blk): Tracked<&mut super::Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
             class < NCLASSES,
         ensures
             r.0@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, class_table()[class as int].size as int),
+            r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
     {
         let mut out = [ptr::null_mut()];
-        let (c, Tracked(mut z)) = arena.class(class).claim_zero(&self.meta, &mut out);
+        let cs = arena.class(class);
+        cs.slot_tokens_are_the_class_s();
+        let tracked mut toks = crate::class::SlotToks::empty();
+        let (c, Tracked(mut z)) = cs.claim_tokens(&self.meta, &mut out, Tracked(&mut toks));
         if c.n == 0 {
             (ptr::null_mut(), false, Tracked(Zeroed::empty(0)))
         } else {
             let tracked t = if c.zeroed { z.tracked_remove(0) } else { Zeroed::empty(0) };
+            proof {
+                toks.lemma_owns_keyed(cs.spec_table(), out@, c.n as int);
+                assert(toks.toks.contains_key(0));
+                assert(out@.subrange(0, c.n as int)[0] == out@[0]);
+                let tracked s = toks.toks.tracked_remove(0);
+                blk.set(super::Live::from_slot(s, class as int, out[0]));
+            }
             (out[0], c.zeroed, Tracked(t))
         }
     }
@@ -1886,7 +1965,7 @@ impl Shared {
     /// an automatic arena not built yet (a thread whose first allocation
     /// is huge) is built here, an index that does not exist aborts. Null
     /// on exhaustion; the flag says the memory is known zero.
-    pub fn alloc_huge(&self, size: usize, align: usize, arena: u16) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+    pub fn alloc_huge(&self, size: usize, align: usize, arena: u16, Tracked(blk): Tracked<&mut super::Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
             self.wf(),
             crate::meta::is_pow2(align),
@@ -1894,17 +1973,21 @@ impl Shared {
             r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
             r.0@.addr != 0 ==> size <= self.huge_usable(size),
             r.0@.addr != 0 ==> self.huge_ok(size),
-            r.0@.addr != 0 ==> crate::huge::allocated(r.0@.addr, size),
             r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, self.huge_usable(size)),
+            r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == self.huge_usable(size),
     {
         proof {
             self.lemma_huge_aligned();
         }
         let Some(a) = self.arena(arena) else { no_such_arena(arena) };
-        let (r, z) = self.huge.alloc_run(&self.meta, size, align, arena);
+        let tracked mut tok = vstd::map::Map::<int, crate::huge::RunToken>::tracked_empty();
+        let (r, z) = self.huge.alloc_run(&self.meta, size, align, arena, Tracked(&mut tok));
         proof {
             if r.ptr@.addr != 0 {
                 self.lemma_run_is_block(r.ptr@.addr, size, align);
+                let tracked t = tok.tracked_remove(0);
+                self.lemma_run_token(t, r.ptr);
+                blk.set(super::Live::from_run(t, r.ptr));
             }
         }
         if !r.ptr.is_null() {
@@ -1926,7 +2009,8 @@ impl Shared {
             self.wf(),
             page <= self.huge_pages(),
     {
-        let n = self.huge.usable_size(page);
+        let tracked none = Option::<crate::huge::RunToken>::None;
+        let n = self.huge.usable_size(page, Tracked(&none));
         proof {
             broadcast use vstd::layout::align_of_u8;
             crate::vspec::addr::axiom_huge_writable(self.regions, page, n);
@@ -1938,12 +2022,14 @@ impl Shared {
 
     /// Free the huge run starting at `page`. Aborts unless it is a live
     /// run start. Returns the usable bytes released.
-    pub fn free_huge(&self, page: usize) -> usize
+    pub fn free_huge(&self, page: usize, Tracked(tok): Tracked<crate::huge::RunToken>) -> usize
         requires
             self.wf(),
             page <= self.huge_pages(),
+            tok.wf(),
+            tok.start() == page,
     {
-        let run = self.huge.free_run(&self.meta, page);
+        let run = self.huge.free_run(&self.meta, page, Tracked(tok));
         self.owner(run.arena).note_huge_free(run.pages);
         run.usable
     }

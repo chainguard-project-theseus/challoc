@@ -31,8 +31,9 @@ pub open spec fn usable_is(p: *mut u8, size: int, n: int) -> bool {
 /// at `p` ([`run_bytes`]), the shape of what the run's descriptor
 /// records. That the descriptor records
 /// [`huge_usable`](crate::vspec::zero::huge_usable) of the request is
-/// `vspec::huge::axiom_owned_run`, for a caller that holds the run it
-/// allocated.
+/// what a caller holding the run's token knows
+/// (`heap::live::Live::len`, which `alloc_huge` states and
+/// `libc::usable_size` reads back with the token).
 pub open spec fn usable_of(p: *mut u8, n: int) -> bool {
     &&& forall|c: int| #[trigger] process_regions().is_slot(c, p@.addr) ==> n == class_table()[c].size
     &&& process_regions().is_huge_block(p@.addr, 1) ==> run_bytes(p@.addr, n)
@@ -105,8 +106,8 @@ pub proof fn lemma_usable_run(shared: &crate::heap::Shared, p: *mut u8, n: usize
 /// and `malloc_usable_size` of it equal `nallocx(size, flags)` for every
 /// slab-class result. For a huge run the query states the descriptor's
 /// bounds ([`run_bytes`]); its equality to the request's page-rounded
-/// size is `vspec::huge::axiom_owned_run`, which the allocating entry
-/// points apply at their own allocation.
+/// size comes from the run's token (`heap::live::Live::len`), which the
+/// allocating entry points hold at their own allocation.
 pub proof fn theorem_usable_consistent(p: *mut u8, size: int, n: int, r: int)
     requires
         crate::heap::slot_start(p),

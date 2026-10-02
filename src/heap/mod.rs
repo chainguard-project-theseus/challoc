@@ -37,6 +37,7 @@
 mod cache;
 mod compact;
 mod flush;
+pub mod live;
 pub mod mallocx;
 mod others;
 mod paths;
@@ -57,6 +58,7 @@ use compact::{
     PROBE_MASK,
 };
 pub use compact::{MODE_OFF, MODE_PROBE};
+pub use live::Live;
 pub use others::ArenaCaches;
 pub use paths::{
     alloc, alloc_declined, alloc_zeroed, free, free_direct, free_fast, free_fast_class,
@@ -602,6 +604,21 @@ pub open spec fn slot_token(out: Map<int, GhostSingleton<int>>, c: int, ok: bool
     &&& out.contains_key(0)
     &&& out[0].id() == slot_loc(c)
     &&& ok ==> out[0]@ == p@.addr as int
+}
+
+/// Hand out slot `p` of class `c`: its slot token, `out[0]`
+/// ([`slot_token`]), becomes the block's [`Live`] token in `blk`, which
+/// the allocation paths return to their callers (`verus/THEOREMS.md`,
+/// "Interface contract", gap 1).
+pub proof fn hand_out(tracked out: &mut Map<int, GhostSingleton<int>>, tracked blk: &mut Live, c: int, p: *mut u8)
+    requires
+        slot_token(*old(out), c, true, p),
+        process_regions().is_slot(c, p@.addr),
+    ensures
+        final(blk).slot_block(p, c),
+{
+    let tracked t = out.tracked_remove(0);
+    *blk = Live::from_slot(t, c, p);
 }
 
 /// A pop from `cache` that took the top entry's slot token: `new` keeps
@@ -1997,7 +2014,7 @@ impl CachePerms {
     /// `at` takes the top entry's slot and token, the served slot's token
     /// leaves, and every other entry keeps its own.
     #[verifier::spinoff_prover]
-    proof fn lemma_tokened_compact(tracked toks: &mut Map<*mut *mut u8, GhostSingleton<int>>, o: CachePerms, new: CachePerms, p: *mut CacheHeader, at: int, top: int)
+    proof fn lemma_tokened_compact(tracked toks: &mut Map<*mut *mut u8, GhostSingleton<int>>, o: CachePerms, new: CachePerms, p: *mut CacheHeader, at: int, top: int) -> (tracked served: GhostSingleton<int>)
         requires
             o.wf(),
             o.tracks(),
@@ -2014,13 +2031,15 @@ impl CachePerms {
             new.slots[o.ent(p, at)].value() == o.slots[o.ent(p, top)].value(),
         ensures
             (CachePerms { toks: *final(toks), ..new }).tokened(),
+            served.id() == slot_loc(o.cls[p]),
+            served@ == plain(o.slots[o.ent(p, at)].value(), o.hdr(p).slots) as int,
     {
         let q = o.ent(p, at);
         let qt = o.ent(p, top);
         assert(cell_ok(p, o.hdrs[p], o.slots));
         o.lemma_tok_get(p, at);
         o.lemma_tok_get(p, top);
-        let tracked _served = toks.tracked_remove(q);
+        let tracked served = toks.tracked_remove(q);
         if top != at {
             let tracked u = toks.tracked_remove(qt);
             toks.tracked_insert(q, u);
@@ -2044,6 +2063,7 @@ impl CachePerms {
             }
         }
         CachePerms::lemma_tok_update(o, r, p);
+        served
     }
 
     /// [`Heap::rebuild_run`]'s token step, from the facts its slices and
@@ -2939,8 +2959,8 @@ impl Heap {
     /// heap: it stands for a slot of its header's class, and that slot is
     /// in no `held`, any other holder of tokens of the class's authority
     /// (the bitmap words' invariants, which hold the free slots'; a claim
-    /// in flight; the token the `free` contract gives for the block the
-    /// program frees, `class::axiom_free_token`). A heap is well formed
+    /// in flight; a live block's token, `heap::live::Live`, which the
+    /// program holds from the allocation to the free). A heap is well formed
     /// from creation on ([`CachePerms::fresh`]: it caches nothing) and
     /// every writer of its caches keeps it so (see [`Heap::wf`] for the
     /// premises).
@@ -2991,6 +3011,35 @@ impl Heap {
             h.perms_back(*final(perms)),
     {
         CachePerms::theorem_uniqueness_cached(perms, p1, i1, p2, i2);
+    }
+
+    /// Whole-allocator theorem 5 against the program's blocks: a slot this
+    /// heap caches is no live block of its class ([`Live`], the token the
+    /// program holds from the allocation to the free), so no slot is
+    /// handed out while a cache still holds it, nor cached while it is
+    /// live.
+    pub proof fn theorem_uniqueness_live(
+        h: Heap,
+        tracked perms: &CachePerms,
+        tracked blk: &mut Live,
+        p: *mut CacheHeader,
+        i: int,
+    )
+        requires
+            h.wf(),
+            h.perms_are(*perms),
+            h.owns(p),
+            0 <= i < h.cached_len(p),
+            old(blk).slot_of(h.hdr_class(p)),
+        ensures
+            h.cached(p, i) != old(blk).addr(),
+            final(blk).slot_of(h.hdr_class(p)),
+            final(blk).addr() == old(blk).addr(),
+            final(blk).len() == old(blk).len(),
+            final(blk).wf() == old(blk).wf(),
+    {
+        perms.lemma_tok_get(p, i);
+        blk.lemma_slot_apart(perms.toks.tracked_borrow(perms.ent(p, i)), h.hdr_class(p));
     }
 
     /// Whole-allocator theorem 5 across heaps: a slot two well-formed

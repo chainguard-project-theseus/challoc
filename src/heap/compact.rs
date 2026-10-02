@@ -26,12 +26,12 @@ use crate::layout::NCLASSES;
 use crate::sys::pac;
 use crate::vspec::addr::addr_to_ptr;
 
-use super::{CacheHeader, CachePerms, Heap, Shared, shared_of, stack_mut};
+use super::{CacheHeader, CachePerms, Heap, Live, Shared, shared_of, stack_mut};
 #[cfg(verus_only)]
 use super::{
-    cell_ok, lemma_handed_ok, lemma_rebuild_moves, lemma_rebuild_tracks, lemma_stack_fill,
-    lemma_stack_grow, lemma_stack_shrink, pac_mode, plain, regions_ok, slot_in, slot_ptr,
-    slots_grow, stored, zero,
+    cell_ok, hand_out, lemma_handed_ok, lemma_rebuild_moves, lemma_rebuild_tracks,
+    lemma_stack_fill, lemma_stack_grow, lemma_stack_shrink, pac_mode, plain, regions_ok, slot_in,
+    slot_ptr, slots_grow, stored, zero,
 };
 #[cfg(verus_only)]
 use crate::class::{ptr_addrs, slot_loc};
@@ -185,6 +185,7 @@ impl Heap {
         cache: *mut CacheHeader,
         class: usize,
         len: u32,
+        Tracked(blk): Tracked<&mut Live>,
     ) -> (r: (*mut u8, bool))
         requires
             class < NCLASSES,
@@ -197,6 +198,7 @@ impl Heap {
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+            r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
     {
         broadcast use lemma_handed_ok;
         let tracked mut spare = Map::<int, GhostSingleton<int>>::tracked_empty();
@@ -233,7 +235,11 @@ impl Heap {
                     }
                     match verdict {
                         Verdict::Refilling | Verdict::Dense => {
-                            return Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare));
+                            let r = Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare));
+                            proof {
+                                hand_out(&mut spare, blk, class as int, r.0);
+                            }
+                            return r;
                         }
                         Verdict::Fragmented => {}
                     }
@@ -243,11 +249,17 @@ impl Heap {
                     proof {
                         Heap::lemma_set(h1, *self, cache, *h);
                     }
-                    return self.pop_compact_run(cache, class, len);
+                    return self.pop_compact_run(cache, class, len, Tracked(blk));
                 }
-                _ => return Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare)),
+                _ => {
+                    let r = Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare));
+                    proof {
+                        hand_out(&mut spare, blk, class as int, r.0);
+                    }
+                    return r;
+                },
             }
-            self.pop_compact_run(cache, class, len)
+            self.pop_compact_run(cache, class, len, Tracked(blk))
         }
     }
 
@@ -261,6 +273,7 @@ impl Heap {
         cache: *mut CacheHeader,
         class: usize,
         len: u32,
+        Tracked(blk): Tracked<&mut Live>,
     ) -> (r: (*mut u8, bool))
         requires
             class < NCLASSES,
@@ -273,6 +286,7 @@ impl Heap {
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+            r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
     {
         broadcast use lemma_handed_ok;
         broadcast use vstd::layout::layout_of_references_and_pointers_for_sized_types;
@@ -282,7 +296,13 @@ impl Heap {
             let pac = shared_of(self.shared).pac();
             match self.hdr_ref(cache).mode {
                 MODE_COMPACT => {}
-                _ => return Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare)),
+                _ => {
+                    let r = Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare));
+                    proof {
+                        hand_out(&mut spare, blk, class as int, r.0);
+                    }
+                    return r;
+                },
             }
             let mut len = len;
             if self.hdr_ref(cache).run_end == 0 {
@@ -305,7 +325,11 @@ impl Heap {
                             return (ptr::null_mut(), false);
                         }
                     }
-                    return Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare));
+                    let r = Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare));
+                    proof {
+                        hand_out(&mut spare, blk, class as int, r.0);
+                    }
+                    return r;
                 }
             }
             let ghost old_perms = self.perms@;
@@ -405,13 +429,16 @@ impl Heap {
                     }
                 }
                 CachePerms::lemma_zero_update(old_perms, *perms, cache);
-                // The served slot's slot token leaves with it; the top entry's
-                // moves with its slot to `at`.
+                // The served slot's slot token leaves with it, as the
+                // block's token; the top entry's moves with its slot to
+                // `at`.
                 let ghost before_t = *perms;
-                CachePerms::lemma_tokened_compact(&mut perms.toks, old_perms, before_t, cache, at as int, top as int);
+                let tracked served = CachePerms::lemma_tokened_compact(&mut perms.toks, old_perms, before_t, cache, at as int, top as int);
                 assert(*perms == (CachePerms { toks: perms.toks, ..before_t }));
                 CachePerms::lemma_zero_same(before_t, *perms);
                 CachePerms::lemma_same_but_tokens(mid, *perms, old_perms);
+                assert(served@ == p@.addr as int);
+                blk.set(Live::from_slot(served, class as int, p));
             }
             (p, zero)
         }

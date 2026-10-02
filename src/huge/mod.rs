@@ -70,6 +70,7 @@ use vstd::prelude::*;
 #[cfg(verus_only)]
 use vstd::raw_ptr::PointsToRaw;
 use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_mut_write, ptr_ref};
+use vstd::resource::set::{GhostSetAuth, GhostSingleton, GhostSubset};
 
 mod table;
 
@@ -440,6 +441,14 @@ pub(crate) struct Inner {
     /// Ghost: the region's page shift (`Huge::lg_page`), fixed at creation.
     #[allow(dead_code)]
     lg: Ghost<u32>,
+    /// Ghost: the authority of the `Active` descriptors' extents
+    /// ([`run_loc`]); each run's holder has its [`RunToken`].
+    #[allow(dead_code)]
+    runs: Tracked<GhostSetAuth<(int, int)>>,
+    /// Ghost: the authority of the `Active` descriptors' pages
+    /// ([`page_loc`]).
+    #[allow(dead_code)]
+    pgs: Tracked<GhostSetAuth<int>>,
 }
 
 /// Pages of the descriptors in `l`.
@@ -613,22 +622,87 @@ pub open spec fn desc_in_meta(d: *mut HugeDesc) -> bool {
     crate::layout::process_regions().in_meta(d@.addr as int, vstd::layout::size_of::<HugeDesc>() as int)
 }
 
-/// [`Huge::alloc_run`] returned the run at address `a` for a request of
-/// `size` bytes, at some point. Uninterpreted: only `alloc_run`'s
-/// postcondition states it, through [`mint_allocated`], so a proof holds
-/// it only for an address and size an allocation produced.
-/// `vspec::huge::axiom_owned_run` takes it as the premise that ties a
-/// block to its request.
-pub uninterp spec fn allocated(a: usize, size: usize) -> bool;
+/// The authority of the live runs' extents ([`RunToken`]): one per
+/// process, the huge allocator's ([`Huge::new`], `axiom_run_locs`).
+pub uninterp spec fn run_loc() -> vstd::resource::Loc;
 
-/// [`allocated`] for the run [`Huge::alloc_run`] is returning. Trusted
-/// only as the definition of `allocated`; private to this module, and
-/// called once, at `alloc_aligned`'s return.
-#[verifier::external_body]
-proof fn mint_allocated(a: usize, size: usize)
+/// The authority of the live runs' pages ([`RunToken`]).
+pub uninterp spec fn page_loc() -> vstd::resource::Loc;
+
+/// Trusted: [`Huge::new`] runs once per process, for the process's
+/// `Shared` (`Shared::init`), so the run authorities it makes are the
+/// process's ([`run_loc`], [`page_loc`]), as `class::table::axiom_slot_loc`
+/// for the slot authorities. One call, in `Huge::new`.
+axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc)
     ensures
-        allocated(a, size),
-{
+        run_loc() == r,
+        page_loc() == p,
+;
+
+/// Ghost token of a live huge run: its extent `(start, npages)`, the run's
+/// first page and its page count with the guard, as a singleton of the
+/// extents' authority ([`run_loc`]), and its pages as a subset of the
+/// pages' authority ([`page_loc`]). [`Huge::alloc_run`] hands one out with
+/// every run and [`Huge::free_run`] takes it back; the huge lock's
+/// invariant ([`Inner::wf`]) holds the authorities, whose sets are the
+/// `Active` descriptors' extents and pages. Two tokens' pages are
+/// disjoint ([`RunToken::lemma_apart`]), whoever holds them.
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub tracked struct RunToken {
+    tracked ext: GhostSingleton<(int, int)>,
+    tracked pages: GhostSubset<int>,
+}
+
+impl RunToken {
+    /// The run's first page (an index into the region).
+    pub closed spec fn start(self) -> int {
+        self.ext@.0
+    }
+
+    /// The run's pages, its guard included.
+    pub closed spec fn npages(self) -> int {
+        self.ext@.1
+    }
+
+    /// The token is a run's: of the process's authorities, its pages
+    /// `start..start + npages`, more than the guard.
+    pub closed spec fn wf(self) -> bool {
+        &&& self.ext.id() == run_loc()
+        &&& self.pages.id() == page_loc()
+        &&& self.pages@ == vstd::set_lib::set_int_range(self.start(), self.start() + self.npages())
+        &&& 0 <= self.start()
+        &&& GUARD_PAGES < self.npages()
+    }
+
+    /// A run token's extent: from a page of the region on, more than the
+    /// guard.
+    pub proof fn lemma_wf(&self)
+        requires
+            self.wf(),
+        ensures
+            0 <= self.start(),
+            GUARD_PAGES < self.npages(),
+    {
+    }
+
+    /// Two run tokens hold disjoint page ranges.
+    pub proof fn lemma_apart(tracked &mut self, tracked other: &RunToken)
+        requires
+            old(self).wf(),
+            other.wf(),
+        ensures
+            final(self).wf(),
+            final(self).start() == old(self).start(),
+            final(self).npages() == old(self).npages(),
+            final(self).start() + final(self).npages() <= other.start() || other.start() + other.npages() <= final(self).start(),
+    {
+        self.pages.disjoint(&other.pages);
+        let lo = if self.start() < other.start() { other.start() } else { self.start() };
+        if lo < self.start() + self.npages() && lo < other.start() + other.npages() {
+            assert(self.pages@.contains(lo) && other.pages@.contains(lo));
+        }
+    }
 }
 
 /// Two live descriptors are at different addresses: their permissions
@@ -733,6 +807,110 @@ spec fn keyed(t: Table, v: HugeDesc, d: *mut HugeDesc) -> bool {
 /// Two extents share no page.
 spec fn apart(a: HugeDesc, b: HugeDesc) -> bool {
     a.start + a.pages <= b.start || b.start + b.pages <= a.start
+}
+
+/// `v` is the `Active` run with extent `e`, `(start, pages)`.
+spec fn run_at(v: HugeDesc, e: (int, int)) -> bool {
+    &&& v.state == RunState::Active as u8
+    &&& v.start == e.0
+    &&& v.pages == e.1
+}
+
+/// `v` is an `Active` run with page `k`.
+spec fn run_page(v: HugeDesc, k: int) -> bool {
+    &&& v.state == RunState::Active as u8
+    &&& v.start <= k < v.start + v.pages
+}
+
+/// The extents of the `Active` descriptors in `descs`: what the extents'
+/// authority holds ([`Inner::wf`]).
+spec fn active_runs(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> vstd::set::Set<(int, int)> {
+    descs.dom().filter(|d: *mut HugeDesc| descs[d].value().state == RunState::Active as u8).map(
+        |d: *mut HugeDesc| (descs[d].value().start as int, descs[d].value().pages as int),
+    )
+}
+
+/// The pages of the `Active` descriptors in `descs`: what the pages'
+/// authority holds ([`Inner::wf`]). A descriptor's pages are below `2^33`.
+spec fn active_pages(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> vstd::set::Set<int> {
+    vstd::set_lib::set_int_range(0, 0x2_0000_0000).filter(
+        |k: int| exists|d: *mut HugeDesc| #[trigger] descs.contains_key(d) && run_page(descs[d].value(), k),
+    )
+}
+
+/// What [`active_runs`] and [`active_pages`] contain.
+proof fn lemma_active(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>)
+    ensures
+        forall|e: (int, int)| #[trigger] active_runs(descs).contains(e)
+            <==> exists|d: *mut HugeDesc| #[trigger] descs.contains_key(d) && run_at(descs[d].value(), e),
+        forall|k: int| #[trigger] active_pages(descs).contains(k)
+            <==> exists|d: *mut HugeDesc| #[trigger] descs.contains_key(d) && run_page(descs[d].value(), k),
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, vstd::set::Set::lemma_map_contains};
+    let act = descs.dom().filter(|d: *mut HugeDesc| descs[d].value().state == RunState::Active as u8);
+    assert forall|e: (int, int)| #[trigger] active_runs(descs).contains(e)
+        <==> exists|d: *mut HugeDesc| #[trigger] descs.contains_key(d) && run_at(descs[d].value(), e) by {
+        if active_runs(descs).contains(e) {
+            let d = choose|d: *mut HugeDesc| act.contains(d) && e == (descs[d].value().start as int, descs[d].value().pages as int);
+            assert(descs.contains_key(d) && run_at(descs[d].value(), e));
+        }
+        if exists|d: *mut HugeDesc| #[trigger] descs.contains_key(d) && run_at(descs[d].value(), e) {
+            let d = choose|d: *mut HugeDesc| #[trigger] descs.contains_key(d) && run_at(descs[d].value(), e);
+            assert(act.contains(d));
+        }
+    }
+    assert forall|k: int| #[trigger] active_pages(descs).contains(k)
+        <==> exists|d: *mut HugeDesc| #[trigger] descs.contains_key(d) && run_page(descs[d].value(), k) by {
+        if exists|d: *mut HugeDesc| #[trigger] descs.contains_key(d) && run_page(descs[d].value(), k) {
+            let d = choose|d: *mut HugeDesc| #[trigger] descs.contains_key(d) && run_page(descs[d].value(), k);
+            let v = descs[d].value();
+            assert(v.start + v.pages <= 0x2_0000_0000);
+        }
+    }
+}
+
+/// The `Active` descriptors of `d1` and `d2` are the same, with the same
+/// extents: their run authorities' sets are equal.
+proof fn lemma_active_frame(d1: Map<*mut HugeDesc, PointsTo<HugeDesc>>, d2: Map<*mut HugeDesc, PointsTo<HugeDesc>>)
+    requires
+        forall|x: *mut HugeDesc| #[trigger] d1.contains_key(x) && d1[x].value().state == RunState::Active as u8 ==> {
+            &&& d2.contains_key(x)
+            &&& d2[x].value().state == RunState::Active as u8
+            &&& d2[x].value().start == d1[x].value().start
+            &&& d2[x].value().pages == d1[x].value().pages
+        },
+        forall|x: *mut HugeDesc| #[trigger] d2.contains_key(x) && d2[x].value().state == RunState::Active as u8 ==> {
+            &&& d1.contains_key(x)
+            &&& d1[x].value().state == RunState::Active as u8
+        },
+    ensures
+        active_runs(d1) == active_runs(d2),
+        active_pages(d1) == active_pages(d2),
+{
+    lemma_active(d1);
+    lemma_active(d2);
+    assert forall|e: (int, int)| active_runs(d1).contains(e) <==> active_runs(d2).contains(e) by {
+        if active_runs(d1).contains(e) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d1.contains_key(x) && run_at(d1[x].value(), e);
+            assert(d2.contains_key(x) && run_at(d2[x].value(), e));
+        }
+        if active_runs(d2).contains(e) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d2.contains_key(x) && run_at(d2[x].value(), e);
+            assert(d1.contains_key(x) && run_at(d1[x].value(), e));
+        }
+    }
+    assert forall|k: int| active_pages(d1).contains(k) <==> active_pages(d2).contains(k) by {
+        if active_pages(d1).contains(k) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d1.contains_key(x) && run_page(d1[x].value(), k);
+            assert(d2.contains_key(x) && run_page(d2[x].value(), k));
+        }
+        if active_pages(d2).contains(k) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d2.contains_key(x) && run_page(d2[x].value(), k);
+            assert(d1.contains_key(x) && run_page(d1[x].value(), k));
+        }
+    }
+    assert(active_runs(d1) =~= active_runs(d2));
+    assert(active_pages(d1) =~= active_pages(d2));
 }
 
 /// What an extent adds to tally `k`: its count (`k` 0 to 2) or its pages
@@ -899,7 +1077,8 @@ impl Inner {
     /// descriptor it or the `Empty` list names is live and consistent;
     /// the live descriptors (`all`) are the extents, pairwise disjoint,
     /// each under its keys in the table and nowhere else, and the counters
-    /// are their tallies, whose pages sum to `next_page`.
+    /// are their tallies, whose pages sum to `next_page`; the run
+    /// authorities ([`RunToken`]) hold the `Active` extents and their pages.
     pub(crate) closed spec fn wf(&self) -> bool {
         &&& self.table.wf()
         &&& perms_ok(self.descs@)
@@ -930,6 +1109,10 @@ impl Inner {
         &&& self.table.spec_count() == tally(self.all@, self.descs@, 6)
         &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) && self.descs@[d].value().state == RunState::Empty as u8
             ==> self.elist@.contains(d)
+        &&& self.runs@.id() == run_loc()
+        &&& self.pgs@.id() == page_loc()
+        &&& self.runs@@ == active_runs(self.descs@)
+        &&& self.pgs@@ == active_pages(self.descs@)
     }
 
     /// Guard pages are never handed out, for huge runs (whole-allocator
@@ -1054,6 +1237,8 @@ impl Inner {
         &&& self.np == o.np
         &&& self.lg == o.lg
         &&& self.all == o.all
+        &&& self.runs == o.runs
+        &&& self.pgs == o.pgs
         &&& links_only(o.descs@, self.descs@)
     }
 
@@ -2130,11 +2315,99 @@ proof fn lemma_took_elist(g0: Inner, g1: Inner, t: Take)
     }
 }
 
+/// A take makes the run the one new `Active` descriptor: the run
+/// authorities gain its extent and its pages, which no `Active`
+/// descriptor had (it is apart from every other extent).
+proof fn lemma_took_active(g0: Inner, g1: Inner, t: Take)
+    requires
+        g0.wf(),
+        g1.took(g0, t),
+    ensures
+        !active_runs(g0.descs@).contains((t.vr.start as int, t.vr.pages as int)),
+        active_pages(g0.descs@).disjoint(vstd::set_lib::set_int_range(t.vr.start as int, t.vr.start + t.vr.pages)),
+        active_runs(g1.descs@) == active_runs(g0.descs@).insert((t.vr.start as int, t.vr.pages as int)),
+        active_pages(g1.descs@) == active_pages(g0.descs@).union(vstd::set_lib::set_int_range(t.vr.start as int, t.vr.start + t.vr.pages)),
+{
+    let d0 = g0.descs@;
+    let d1 = g1.descs@;
+    lemma_active(d0);
+    lemma_active(d1);
+    let er = (t.vr.start as int, t.vr.pages as int);
+    let range = vstd::set_lib::set_int_range(t.vr.start as int, t.vr.start + t.vr.pages);
+    // An old `Active` extent is not `ext` and keeps its value.
+    assert forall|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && d0[x].value().state == RunState::Active as u8 implies {
+        &&& !(t.has_ext && x == t.ext)
+        &&& x != t.run
+        &&& d1.contains_key(x)
+        &&& same_but_links(d0[x].value(), d1[x].value())
+        &&& apart(d0[x].value(), t.vr)
+    } by {
+        assert(t.model(d0, x) == Some(d0[x].value()));
+        assert(d1.contains_key(x) <==> t.model(d0, x) is Some);
+        assert(d1.contains_key(x));
+        assert(same_but_links(t.model(d0, x).unwrap(), d1[x].value()));
+        lemma_took_apart(g0, t, x, t.vr);
+    }
+    // A new `Active` extent is the run or an old one.
+    assert forall|x: *mut HugeDesc| #[trigger] d1.contains_key(x) && d1[x].value().state == RunState::Active as u8 implies
+        x == t.run || (d0.contains_key(x) && same_but_links(d0[x].value(), d1[x].value())) by {
+        assert(same_but_links(t.model(d0, x).unwrap(), d1[x].value()));
+    }
+    assert(d1.contains_key(t.run) && same_but_links(t.vr, d1[t.run].value())) by {
+        assert(t.model(d0, t.run) == Some(t.vr));
+    }
+    assert forall|k: int| active_pages(d0).contains(k) implies !range.contains(k) by {
+        let x = choose|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && run_page(d0[x].value(), k);
+    }
+    assert(!active_runs(d0).contains(er)) by {
+        if active_runs(d0).contains(er) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && run_at(d0[x].value(), er);
+            assert(apart(d0[x].value(), t.vr));
+        }
+    }
+    assert forall|e: (int, int)| active_runs(d1).contains(e) <==> active_runs(d0).insert(er).contains(e) by {
+        if active_runs(d1).contains(e) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d1.contains_key(x) && run_at(d1[x].value(), e);
+            if x != t.run {
+                assert(d0.contains_key(x) && run_at(d0[x].value(), e));
+            }
+        }
+        if active_runs(d0).contains(e) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && run_at(d0[x].value(), e);
+            assert(d1.contains_key(x) && run_at(d1[x].value(), e));
+        }
+        if e == er {
+            assert(d1.contains_key(t.run) && run_at(d1[t.run].value(), e));
+        }
+    }
+    assert forall|k: int| active_pages(d1).contains(k) <==> active_pages(d0).union(range).contains(k) by {
+        if active_pages(d1).contains(k) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d1.contains_key(x) && run_page(d1[x].value(), k);
+            if x != t.run {
+                assert(d0.contains_key(x) && run_page(d0[x].value(), k));
+            }
+        }
+        if active_pages(d0).contains(k) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && run_page(d0[x].value(), k);
+            assert(d1.contains_key(x) && run_page(d1[x].value(), k));
+        }
+        if range.contains(k) {
+            assert(d1.contains_key(t.run) && run_page(d1[t.run].value(), k));
+        }
+    }
+    assert(active_runs(d1) =~= active_runs(d0).insert(er));
+    assert(active_pages(d1) =~= active_pages(d0).union(range));
+}
+
 /// A take keeps `Inner::wf`.
 proof fn lemma_took_wf(g0: Inner, g1: Inner, t: Take)
     requires
         g0.wf(),
         g1.took(g0, t),
+        g1.runs@.id() == run_loc(),
+        g1.pgs@.id() == page_loc(),
+        g1.runs@@ == active_runs(g1.descs@),
+        g1.pgs@@ == active_pages(g1.descs@),
     ensures
         g1.wf(),
 {
@@ -2204,6 +2477,8 @@ impl Inner {
             final(self).stats == old(self).stats,
             final(self).np == old(self).np,
             final(self).lg == old(self).lg,
+            final(self).runs == old(self).runs,
+            final(self).pgs == old(self).pgs,
     {
         let ghost d0 = self.descs@;
         let ghost l0 = self.elist@;
@@ -2340,6 +2615,15 @@ impl Huge {
         let free = Set::new(meta, page, npages)?;
         let table = Table::new(meta, page)?;
         let tracked descs = Map::tracked_empty();
+        // The run authorities, empty: no run is live yet.
+        let tracked (runs, _) = GhostSetAuth::<(int, int)>::new(vstd::set::Set::empty());
+        let tracked (pgs, _) = GhostSetAuth::<int>::new(vstd::set::Set::empty());
+        proof {
+            axiom_run_locs(runs.id(), pgs.id());
+            lemma_active(descs);
+            assert(active_runs(descs) =~= vstd::set::Set::empty());
+            assert(active_pages(descs) =~= vstd::set::Set::empty());
+        }
         proof {
             let lg = regions.lg_page;
             let p = pow2(lg as nat) as int;
@@ -2382,6 +2666,8 @@ impl Huge {
                 all: Ghost(Seq::empty()),
                 np: Ghost(npages),
                 lg: Ghost(regions.lg_page),
+                runs: Tracked(runs),
+                pgs: Tracked(pgs),
             }),
         })
     }
@@ -2472,6 +2758,16 @@ impl Huge {
         &&& a + size <= end
         &&& a + self.spec_page() <= end
         &&& (a as int) % (align as int) == 0
+    }
+
+    /// `t[0]` is the token of the run `r` [`Huge::alloc_run`] placed: of
+    /// the run's first page and page count, inside the region.
+    pub open spec fn run_token(&self, t: Map<int, RunToken>, r: Placed) -> bool {
+        &&& t.contains_key(0)
+        &&& t[0].wf()
+        &&& self.spec_base() + t[0].start() * self.spec_page() == r.ptr@.addr
+        &&& t[0].npages() == r.pages
+        &&& t[0].start() + t[0].npages() <= self.spec_npages()
     }
 
     /// A run of `usable` pages (enough for `size` bytes) and its guard at
@@ -2808,13 +3104,15 @@ impl Huge {
 
     /// Usable bytes of the live run starting at `page`. Aborts otherwise.
     /// The result is the bytes of the run's usable pages, as its descriptor
-    /// counts them (`Huge::take` writes `usable` from the pages it commits).
-    pub fn usable_size(&self, page: usize) -> (r: usize)
+    /// counts them (`Huge::take` writes `usable` from the pages it commits):
+    /// the usable pages of the run token `tok` holds, if it is this run's.
+    pub fn usable_size(&self, page: usize, Tracked(tok): Tracked<&Option<RunToken>>) -> (r: usize)
         requires
             page <= self.spec_npages(),
         ensures
             page < self.spec_npages(),
             self.spec_run_usable(page, r),
+            tok is Some && tok.unwrap().wf() && tok.unwrap().start() == page ==> r == (tok.unwrap().npages() - GUARD_PAGES) * self.spec_page(),
     {
         broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
 
@@ -2831,6 +3129,7 @@ impl Huge {
         if g.desc(d).state() != RunState::Active {
             already_free(self.addr(page));
         }
+        let _gi: &Inner = &g;
         proof {
             // A live descriptor's pages lie below the mark.
             assert(g@.descs@.contains_key(d));
@@ -2839,6 +3138,12 @@ impl Huge {
             assert(v.start == page && g@.next_page <= g@.np@);
             // An `Active` descriptor's usable pages and guard are its pages.
             assert(run_ok(v, g@.lg@));
+            // A token of this run has its extent ([`lemma_token_extent`]).
+            if tok is Some && tok.unwrap().wf() && tok.unwrap().start() == page {
+                let tracked t = tok.tracked_borrow();
+                t.ext.agree(_gi.runs.borrow());
+                lemma_token_extent(g@, d, page as int, t.npages());
+            }
             let p = self.spec_page();
             assert(v.usable >= p && (v.usable as int) % p == 0) by {
                 vstd::arithmetic::div_mod::lemma_mod_multiples_basic(v.pages - GUARD_PAGES, p);
@@ -3069,6 +3374,23 @@ impl Huge {
             }
             // The extents are where they were; `d` changed state only.
             let d2 = g.descs@;
+            // The run authorities are untouched: `d` was `Empty`, and the
+            // `Active` extents are as they were.
+            assert forall|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && d0[x].value().state == RunState::Active as u8 implies {
+                &&& d2.contains_key(x)
+                &&& d2[x].value().state == RunState::Active as u8
+                &&& d2[x].value().start == d0[x].value().start
+                &&& d2[x].value().pages == d0[x].value().pages
+            } by {
+                assert(same_but_links(d0[x].value(), d1[x].value()));
+            }
+            assert forall|x: *mut HugeDesc| #[trigger] d2.contains_key(x) && d2[x].value().state == RunState::Active as u8 implies {
+                &&& d0.contains_key(x)
+                &&& d0[x].value().state == RunState::Active as u8
+            } by {
+                assert(same_but_links(d0[x].value(), d1[x].value()));
+            }
+            lemma_active_frame(d0, d2);
             assert forall|x: *mut HugeDesc| #[trigger] d2.contains_key(x) implies keyed(g.table, d2[x].value(), x) by {
                 assert(same_but_links(d0[x].value(), d1[x].value()));
             }
@@ -3416,6 +3738,7 @@ impl Huge {
         arena: u16,
         Tracked(run_perm): Tracked<PointsTo<HugeDesc>>,
         Tracked(spare_perm): Tracked<PointsTo<HugeDesc>>,
+        Tracked(tok): Tracked<&mut Map<int, RunToken>>,
     ) -> (r: (bool, Tracked<Zeroed>))
         requires
             old(g).wf(),
@@ -3437,6 +3760,10 @@ impl Huge {
             final(g).spec_lg() == old(g).spec_lg(),
             final(g).descs@.contains_key(run),
             final(g).descs@[run].value().pages == p.pages,
+            final(tok).contains_key(0),
+            final(tok)[0].wf(),
+            final(tok)[0].start() == p.start,
+            final(tok)[0].npages() == p.pages,
             r.0 ==> r.1@.addr() == self.base + p.start * self.spec_page()
                 && r.1@.len() == (p.pages - GUARD_PAGES) * self.spec_page(),
     {
@@ -3741,6 +4068,15 @@ impl Huge {
             assert(g.free.map.wf() && g.free.map.spec_nbits() == g.np@);
             assert(elist_ok(g.empty_head, g.empty_tail, g.elist@, g.descs@));
             assert(g.took(*old(g), t));
+            // The run's token: its extent and pages enter the run
+            // authorities, which held neither.
+            lemma_took_active(*old(g), *g, t);
+            let ghost gt = *g;
+            let tracked ext = g.runs.borrow_mut().insert((s as int, need as int));
+            let tracked pages = g.pgs.borrow_mut().insert_set(vstd::set_lib::set_int_range(s as int, s + need));
+            tok.tracked_insert(0, RunToken { ext, pages });
+            assert(*g == (Inner { runs: g.runs, pgs: g.pgs, ..gt }));
+            assert(g.took(*old(g), t));
             lemma_took_wf(*old(g), *g, t);
         }
         proof {
@@ -3767,7 +4103,9 @@ impl Huge {
     /// [`Huge::alloc_run`] as the pointer and the zero flag alone.
     #[cfg(test)]
     pub fn alloc(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
-        let r = self.alloc_run(meta, size, align, arena).0;
+        let r = self
+            .alloc_run(meta, size, align, arena, Tracked::assume_new())
+            .0;
         (r.ptr, r.zeroed)
     }
 }
@@ -3783,7 +4121,7 @@ impl Huge {
     /// drifts from what the free subtracts); [`Placed::NONE`] when the
     /// region, the metadata region or the kernel refuses.
     #[inline]
-    pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> (r: (Placed, Tracked<Zeroed>))
+    pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>) -> (r: (Placed, Tracked<Zeroed>))
         requires
             crate::meta::is_pow2(align),
             self.spec_base_aligned(),
@@ -3794,16 +4132,17 @@ impl Huge {
             r.0.ptr@.addr != 0 && r.0.zeroed ==> r.1@.covers(r.0.ptr, self.spec_usable(size)),
             r.0.ptr@.addr != 0 ==> size <= self.spec_usable(size),
             r.0.ptr@.addr != 0 ==> size + self.spec_page() - 1 <= usize::MAX,
-            r.0.ptr@.addr != 0 ==> allocated(r.0.ptr@.addr, size),
+            r.0.ptr@.addr != 0 ==> self.run_token(*final(tok), r.0),
+            r.0.ptr@.addr != 0 ==> (final(tok)[0].npages() - GUARD_PAGES) * self.spec_page() == self.spec_usable(size),
     {
         assert!(align.is_power_of_two(), "huge: alignment not a power of two");
-        self.alloc_aligned(meta, size, align, arena)
+        self.alloc_aligned(meta, size, align, arena, Tracked(tok))
     }
 
     /// [`Huge::alloc_run`] for an `align` already known to be a power of
     /// two.
     #[inline(always)]
-    fn alloc_aligned(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> (r: (Placed, Tracked<Zeroed>))
+    fn alloc_aligned(&self, meta: &Meta, size: usize, align: usize, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>) -> (r: (Placed, Tracked<Zeroed>))
         requires
             crate::meta::is_pow2(align),
             self.spec_base_aligned(),
@@ -3814,7 +4153,8 @@ impl Huge {
             r.0.ptr@.addr != 0 && r.0.zeroed ==> r.1@.covers(r.0.ptr, self.spec_usable(size)),
             r.0.ptr@.addr != 0 ==> size <= self.spec_usable(size),
             r.0.ptr@.addr != 0 ==> size + self.spec_page() - 1 <= usize::MAX,
-            r.0.ptr@.addr != 0 ==> allocated(r.0.ptr@.addr, size),
+            r.0.ptr@.addr != 0 ==> self.run_token(*final(tok), r.0),
+            r.0.ptr@.addr != 0 ==> (final(tok)[0].npages() - GUARD_PAGES) * self.spec_page() == self.spec_usable(size),
     {
         broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
         proof {
@@ -3875,7 +4215,7 @@ impl Huge {
         // `check_zero` needs the extent's state before `take` may free it.
         let _gi: &Inner = &g;
         let prior = if purge::check_zero() { Some(self.prior_state(s, ext, Tracked(_gi.descs.borrow()))) } else { None };
-        let (zeroed, z) = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena, run_perm, spare_perm);
+        let (zeroed, z) = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena, run_perm, spare_perm, Tracked(tok));
         // `take` wrote the run's descriptor; the lock is still held.
         let pages = g.desc(run).pages();
         self.sync_oldest(&g);
@@ -3884,8 +4224,6 @@ impl Huge {
         }
         proof {
             self.lemma_run_at(s, usable_pages, size, align);
-            // The run this call hands out, for `vspec::huge::axiom_owned_run`.
-            mint_allocated((self.base + s * pow2(self.lg_page as nat)) as usize, size);
         }
         (Placed { ptr: crate::vspec::addr::addr_to_ptr(self.addr(s)), zeroed, pages }, z)
     }
@@ -3955,7 +4293,7 @@ impl Huge {
     /// [`Huge::free_run`] returning only the usable bytes released.
     #[cfg(test)]
     pub fn free(&self, meta: &Meta, page: usize) -> usize {
-        self.free_run(meta, page).usable
+        self.free_run(meta, page, Tracked::assume_new()).usable
     }
 
     /// Oldest `Empty` extent's `dirty_at`, read under the lock (the decay
@@ -4350,11 +4688,83 @@ proof fn lemma_freed_extents(g0: Inner, g1: Inner, m: Merge)
     }
 }
 
+/// A free makes the run's descriptor free (merged into the survivor, or
+/// retired): the run authorities lose its extent and its pages, which no
+/// other `Active` descriptor has.
+proof fn lemma_freed_active(g0: Inner, g1: Inner, m: Merge)
+    requires
+        g0.wf(),
+        g1.freed(g0, m),
+    ensures
+        active_runs(g1.descs@) == active_runs(g0.descs@).remove((m.vd.start as int, m.vd.pages as int)),
+        active_pages(g1.descs@) == active_pages(g0.descs@).difference(
+            vstd::set_lib::set_int_range(m.vd.start as int, m.vd.start + m.vd.pages),
+        ),
+{
+    let d0 = g0.descs@;
+    let d1 = g1.descs@;
+    lemma_active(d0);
+    lemma_active(d1);
+    let ed = (m.vd.start as int, m.vd.pages as int);
+    let range = vstd::set_lib::set_int_range(m.vd.start as int, m.vd.start + m.vd.pages);
+    assert(desc_ok(m.vd, g0.next_page));
+    // An `Active` descriptor afterwards is an old one other than the run.
+    assert forall|x: *mut HugeDesc| #[trigger] d1.contains_key(x) && d1[x].value().state == RunState::Active as u8 implies {
+        &&& d0.contains_key(x)
+        &&& x != m.d
+        &&& same_but_links(d0[x].value(), d1[x].value())
+        &&& apart(d0[x].value(), m.vd)
+    } by {
+        assert(same_but_links(m.model(d0, x).unwrap(), d1[x].value()));
+    }
+    // An old `Active` descriptor other than the run stays.
+    assert forall|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && d0[x].value().state == RunState::Active as u8 && x != m.d implies {
+        &&& d1.contains_key(x)
+        &&& same_but_links(d0[x].value(), d1[x].value())
+        &&& apart(d0[x].value(), m.vd)
+    } by {
+        assert(!m.part(x));
+        assert(x != m.surv);
+        assert(m.model(d0, x) == Some(d0[x].value()));
+        assert(d1.contains_key(x) <==> m.model(d0, x) is Some);
+        assert(d1.contains_key(x));
+        assert(same_but_links(m.model(d0, x).unwrap(), d1[x].value()));
+    }
+    assert forall|e: (int, int)| active_runs(d1).contains(e) <==> active_runs(d0).remove(ed).contains(e) by {
+        if active_runs(d1).contains(e) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d1.contains_key(x) && run_at(d1[x].value(), e);
+            assert(d0.contains_key(x) && run_at(d0[x].value(), e));
+        }
+        if active_runs(d0).contains(e) && e != ed {
+            let x = choose|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && run_at(d0[x].value(), e);
+            assert(x != m.d);
+            assert(d1.contains_key(x) && run_at(d1[x].value(), e));
+        }
+    }
+    assert forall|k: int| active_pages(d1).contains(k) <==> active_pages(d0).difference(range).contains(k) by {
+        if active_pages(d1).contains(k) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d1.contains_key(x) && run_page(d1[x].value(), k);
+            assert(d0.contains_key(x) && run_page(d0[x].value(), k));
+        }
+        if active_pages(d0).contains(k) && !range.contains(k) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && run_page(d0[x].value(), k);
+            assert(x != m.d);
+            assert(d1.contains_key(x) && run_page(d1[x].value(), k));
+        }
+    }
+    assert(active_runs(d1) =~= active_runs(d0).remove(ed));
+    assert(active_pages(d1) =~= active_pages(d0).difference(range));
+}
+
 /// A free keeps `Inner::wf`.
 proof fn lemma_freed_wf(g0: Inner, g1: Inner, m: Merge)
     requires
         g0.wf(),
         g1.freed(g0, m),
+        g1.runs@.id() == run_loc(),
+        g1.pgs@.id() == page_loc(),
+        g1.runs@@ == active_runs(g1.descs@),
+        g1.pgs@@ == active_pages(g1.descs@),
     ensures
         g1.wf(),
 {
@@ -4610,6 +5020,11 @@ proof fn lemma_free_end(g0: Inner, gr: Inner, gl: Inner, g1: Inner, m: Merge)
         g1.free.map.wf(),
         g1.free.map.in_meta(),
         g1.free.map.spec_nbits() == g1.np@,
+        // The run authorities without the run's token.
+        g1.runs@.id() == run_loc(),
+        g1.pgs@.id() == page_loc(),
+        g1.runs@@ == active_runs(g0.descs@).remove((m.vd.start as int, m.vd.pages as int)),
+        g1.pgs@@ == active_pages(g0.descs@).difference(vstd::set_lib::set_int_range(m.vd.start as int, m.vd.start + m.vd.pages)),
     ensures
         g1.wf(),
 {
@@ -4701,7 +5116,43 @@ proof fn lemma_free_end(g0: Inner, gr: Inner, gl: Inner, g1: Inner, m: Merge)
         }
     }
     assert(g1.freed(g0, m));
+    lemma_freed_active(g0, g1, m);
     lemma_freed_wf(g0, g1, m);
+}
+
+/// The run authorities of a well-formed state (`wf`, for proofs that hide
+/// it).
+proof fn lemma_run_auths(g0: Inner)
+    requires
+        g0.wf(),
+    ensures
+        g0.runs@.id() == run_loc(),
+        g0.pgs@.id() == page_loc(),
+        g0.runs@@ == active_runs(g0.descs@),
+        g0.pgs@@ == active_pages(g0.descs@),
+{
+}
+
+/// The extent `(s, n)` of a run token, which the extents' authority
+/// holds, is that of the `Active` descriptor `d` that starts at `s`: no
+/// other extent has page `s`.
+proof fn lemma_token_extent(g0: Inner, d: *mut HugeDesc, s: int, n: int)
+    requires
+        g0.wf(),
+        g0.runs@@.contains((s, n)),
+        g0.descs@.contains_key(d),
+        g0.descs@[d].value().state == RunState::Active as u8,
+        g0.descs@[d].value().start == s,
+    ensures
+        n == g0.descs@[d].value().pages,
+{
+    lemma_active(g0.descs@);
+    let x = choose|x: *mut HugeDesc| #[trigger] g0.descs@.contains_key(x) && run_at(g0.descs@[x].value(), (s, n));
+    if x != d {
+        assert(desc_ok(g0.descs@[x].value(), g0.next_page));
+        assert(desc_ok(g0.descs@[d].value(), g0.next_page));
+        assert(apart(g0.descs@[x].value(), g0.descs@[d].value()));
+    }
 }
 
 /// What [`Huge::free_run`] reads from `wf` before it changes anything.
@@ -4792,9 +5243,11 @@ impl Huge {
     /// cost moving with unrelated items elsewhere in the crate.
     #[verifier::rlimit(40)]
     #[verifier::loop_isolation(false)]
-    pub fn free_run(&self, meta: &Meta, page: usize) -> (r: RunInfo)
+    pub fn free_run(&self, meta: &Meta, page: usize, Tracked(tok): Tracked<RunToken>) -> (r: RunInfo)
         requires
             meta.is_process(),
+            tok.wf(),
+            tok.start() == page,
         ensures
             r.pages <= u32::MAX,
     {
@@ -4835,6 +5288,17 @@ impl Huge {
         }
         if start != page {
             not_a_run(self.addr(page));
+        }
+        // The run's token: its extent is this run's (one `Active` extent
+        // starts at `page`), and it leaves the run authorities.
+        let _gm: &mut Inner = &mut g;
+        proof {
+            lemma_run_auths(g0);
+            tok.ext.agree(_gm.runs.borrow());
+            lemma_token_extent(g0, d, tok.start(), tok.npages());
+            let tracked RunToken { ext, pages } = tok;
+            _gm.runs.borrow_mut().delete_singleton(ext);
+            _gm.pgs.borrow_mut().delete(pages);
         }
         let addr = self.addr(page);
         proof {
@@ -4994,6 +5458,8 @@ impl Huge {
                 g@.stats == ge.stats,
                 g@.np == ge.np,
                 g@.lg == ge.lg,
+                g@.runs == ge.runs,
+                g@.pgs == ge.pgs,
             decreases 3 - k2,
         {
             let x = match iter.next() {

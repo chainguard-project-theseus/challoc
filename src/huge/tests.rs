@@ -122,7 +122,7 @@ impl Env {
             Kind::Huge { page } => page,
             other => panic!("{p:?} classified as {other:?}"),
         };
-        let n = h.free_run(&self.meta, page).usable;
+        let n = h.free_run(&self.meta, page, Tracked::assume_new()).usable;
         h.audit();
         n
     }
@@ -188,7 +188,7 @@ fn first_run_is_at_the_base_and_zero() {
             dirty_at: 0
         }
     );
-    assert_eq!(h.usable_size(0), pages * page_size());
+    assert_eq!(h.usable_size(0, Tracked::assume_new()), pages * page_size());
     assert_eq!(h.lookup(pages), None, "guard page is not keyed");
     let st = h.stats();
     assert_eq!(st.runs, 1);
@@ -198,7 +198,10 @@ fn first_run_is_at_the_base_and_zero() {
     let (q, zero) = env.alloc(&h, 1, 1);
     assert!(zero);
     assert_eq!(env.page_of(q), pages + GUARD_PAGES);
-    assert_eq!(h.usable_size(env.page_of(q)), page_size());
+    assert_eq!(
+        h.usable_size(env.page_of(q), Tracked::assume_new()),
+        page_size()
+    );
     assert_eq!(env.free(&h, p), pages * page_size());
     assert_eq!(env.free(&h, q), page_size());
 }
@@ -616,7 +619,7 @@ fn a_zero_byte_request_gets_one_page() {
         (info.pages, info.usable, info.state),
         (1 + GUARD_PAGES, page_size(), RunState::Active)
     );
-    assert_eq!(h.usable_size(page), page_size());
+    assert_eq!(h.usable_size(page, Tracked::assume_new()), page_size());
     assert_eq!(env.free(&h, p), page_size());
     assert_eq!(h.stats().runs, 0);
 }
@@ -648,7 +651,7 @@ fn table_grows_and_lookups_survive_backward_shift() {
     // remaining key must still resolve.
     for (i, &page) in runs.iter().enumerate() {
         if i % 3 == 0 {
-            h.free_run(&env.meta, page);
+            h.free_run(&env.meta, page, Tracked::assume_new());
         }
     }
     h.audit();
@@ -658,12 +661,12 @@ fn table_grows_and_lookups_survive_backward_shift() {
             assert_eq!(info.state, RunState::Empty);
         } else {
             assert_eq!(info.state, RunState::Active);
-            assert_eq!(h.usable_size(page), page_size());
+            assert_eq!(h.usable_size(page, Tracked::assume_new()), page_size());
         }
     }
     for (i, &page) in runs.iter().enumerate() {
         if i % 3 != 0 {
-            h.free_run(&env.meta, page);
+            h.free_run(&env.meta, page, Tracked::assume_new());
         }
     }
     h.audit();
@@ -741,7 +744,7 @@ fn randomised_model_check() {
                 assert_eq!(p as usize % align, 0);
                 let page = env.page_of(p);
                 let n = size.div_ceil(page_size());
-                assert_eq!(h.usable_size(page), n * page_size());
+                assert_eq!(h.usable_size(page, Tracked::assume_new()), n * page_size());
                 for &(q, m, _) in &live {
                     assert!(
                         page + n + GUARD_PAGES <= q || q + m + GUARD_PAGES <= page,
@@ -779,7 +782,7 @@ fn randomised_model_check() {
     }
     assert!(zero_flags > 0);
     for (page, _, _) in live.drain(..) {
-        h.free_run(&env.meta, page);
+        h.free_run(&env.meta, page, Tracked::assume_new());
     }
     h.audit();
     let st = h.stats();
@@ -899,7 +902,7 @@ fn concurrent_runs_are_disjoint() {
                 }
             }
             for (page, _) in held {
-                h.free_run(&env.meta, page);
+                h.free_run(&env.meta, page, Tracked::assume_new());
             }
             got
         }));
@@ -969,7 +972,7 @@ fn usable_size_of_a_bad_pointer_aborts() {
     let env = Env::new();
     let h = env.huge();
     let (p, _) = env.alloc(&h, 4 * page_size(), 1);
-    h.usable_size(env.page_of(p) + 2);
+    h.usable_size(env.page_of(p) + 2, Tracked::assume_new());
 }
 
 #[test]

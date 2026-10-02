@@ -11,11 +11,11 @@ use crate::vspec::addr::addr_to_ptr;
 
 #[cfg(verus_only)]
 use super::{
-    ArenaCaches, axiom_fresh_stack, cell_ok, lemma_handed_ok, lemma_plain_stored, lemma_stack_push,
-    lemma_stack_shrink, node_hdr, pac_mode, popped, regions_ok, slot_in, slot_ptr, slot_start,
-    slot_token, stack_ok,
+    ArenaCaches, axiom_fresh_stack, cell_ok, hand_out, lemma_handed_ok, lemma_plain_stored,
+    lemma_stack_push, lemma_stack_shrink, node_hdr, pac_mode, popped, regions_ok, slot_in,
+    slot_ptr, slot_start, slot_token, stack_ok,
 };
-use super::{CachePerms, FOREIGN, Heap, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
+use super::{CachePerms, FOREIGN, Heap, Live, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
 use super::{MODE_OFF, MODE_PROBE};
 #[cfg(verus_only)]
 use crate::class::slot_loc;
@@ -356,7 +356,7 @@ impl Heap {
     /// runs `tick`, whose GC may flush this cache, and reloads it. `pac`
     /// is `Shared::pac()`: whether the entry is stored signed.
     #[inline(always)]
-    pub(super) unsafe fn pop(&mut self, cache: *mut CacheHeader, class: usize, len: u32, pac: bool) -> (r: (*mut u8, bool))
+    pub(super) unsafe fn pop(&mut self, cache: *mut CacheHeader, class: usize, len: u32, pac: bool, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool))
         requires
             class < NCLASSES,
             old(self).wf(),
@@ -369,6 +369,7 @@ impl Heap {
             final(self).keeps(*old(self)),
             r.0@.addr != 0 && pac == pac_mode() ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 && pac == pac_mode() ==> final(self).handed_ok(r.0, class as int),
+            r.0@.addr != 0 && pac == pac_mode() ==> final(blk).slot_block(r.0, class as int),
     {
         broadcast use lemma_handed_ok;
         let ghost old_perms = self.perms@;
@@ -387,7 +388,7 @@ impl Heap {
                 CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
             }
             // SAFETY: guaranteed by the caller.
-            return unsafe { self.pop_compact(cache, class, len) };
+            return unsafe { self.pop_compact(cache, class, len, Tracked(blk)) };
         }
         proof {
             CachePerms::lemma_update(old_perms, self.perms@, cache);
@@ -396,7 +397,13 @@ impl Heap {
             CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
         }
         // SAFETY: guaranteed by the caller.
-        unsafe { Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare)) }
+        let r = unsafe { Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare)) };
+        proof {
+            if pac == pac_mode() {
+                hand_out(&mut spare, blk, class as int, r.0);
+            }
+        }
+        r
     }
 
     /// The ordinary pop of the top entry, `allocs` already counted. With

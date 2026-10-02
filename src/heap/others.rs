@@ -273,6 +273,7 @@ impl Heap {
         shared: &Shared,
         arena: u16,
         class: usize,
+        Tracked(blk): Tracked<&mut super::Live>,
     ) -> (r: (*mut u8, bool))
         requires
             shared.wf(),
@@ -282,6 +283,7 @@ impl Heap {
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+            r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
     {
         broadcast use lemma_handed_ok;
         proof {
@@ -299,10 +301,10 @@ impl Heap {
             let len = self.hdr_ref(cache).len;
             if len != 0 {
                 // SAFETY: a real cache with `len` entries.
-                return unsafe { self.pop(cache, class, len, shared.pac()) };
+                return unsafe { self.pop(cache, class, len, shared.pac(), Tracked(blk)) };
             }
         }
-        self.alloc_slow_in(shared, arena, class)
+        self.alloc_slow_in(shared, arena, class, Tracked(blk))
     }
 
     /// Free of a slot whose slab belongs to another arena than the home

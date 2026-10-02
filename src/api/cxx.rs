@@ -33,6 +33,8 @@ use core::ffi::c_void;
 use core::ptr;
 
 use super::libc;
+use crate::heap::Live;
+use vstd::prelude::Tracked;
 use vstd::prelude::verus;
 #[cfg(verus_only)]
 use vstd::prelude::*;
@@ -165,14 +167,15 @@ fn call_handler(handler: Handler) {
 /// The `operator new` failure protocol: call the `new_handler` and retry
 /// until an attempt succeeds or no handler is installed, then throw
 /// `std::bad_alloc` (or return null for the `nothrow_t` forms). `align` is
-/// 0 for the unaligned operators.
+/// 0 for the unaligned operators. `blk` gets the block's token.
 #[cold]
 #[inline(never)]
 #[verifier::exec_allows_no_decreases_clause] // ends only when the program's handler frees memory, is removed or throws
-fn oom(size: usize, align: usize, nothrow: bool) -> (r: *mut u8)
+fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
     ensures
         align == 0 ==> crate::heap::fits(r, size as int, crate::QUANTUM as int),
         align != 0 && libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
+        final(blk).gives(r, size as int),
 {
     loop {
         let Some(handler) = installed_handler() else {
@@ -183,9 +186,9 @@ fn oom(size: usize, align: usize, nothrow: bool) -> (r: *mut u8)
         };
         call_handler(handler);
         let p = if align == 0 {
-            libc::malloc(size)
+            libc::malloc_block(size, Tracked(blk))
         } else {
-            libc::aligned_alloc(align, size)
+            libc::aligned_alloc_block(align, size, Tracked(blk))
         };
         if !p.is_null() {
             return p;
@@ -196,29 +199,29 @@ fn oom(size: usize, align: usize, nothrow: bool) -> (r: *mut u8)
 /// `malloc`'s slow path with the `new` failure protocol on top.
 #[cold]
 #[inline(never)]
-fn new_slow(size: usize, nothrow: bool) -> (r: *mut u8)
+fn new_slow(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
+        final(blk).gives(r, size as int),
 {
-    let p = libc::malloc_slow(size);
+    let p = libc::malloc_slow(size, Tracked(blk));
     if p.is_null() {
-        oom(size, 0, nothrow)
+        oom(size, 0, nothrow, Tracked(blk))
     } else {
         p
     }
 }
 
 /// `operator new(size)` and `operator new[](size)`: `malloc`'s fast path
-/// inline, everything else one tail call away.
+/// inline, everything else one tail call away. The block's token goes to
+/// C++ with it.
 #[inline(always)]
 pub fn new(size: usize) -> (r: *mut u8)
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
 {
-    match libc::malloc_fast(size) {
-        Some(p) => p,
-        None => new_slow(size, false),
-    }
+    let tracked mut blk = Live::empty();
+    new_block(size, false, Tracked(&mut blk))
 }
 
 /// The `nothrow_t` forms: null on failure after the handler loop.
@@ -227,25 +230,47 @@ pub fn new_nothrow(size: usize) -> (r: *mut u8)
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
 {
-    match libc::malloc_fast(size) {
+    let tracked mut blk = Live::empty();
+    new_block(size, true, Tracked(&mut blk))
+}
+
+/// [`new`] (`nothrow` false) and [`new_nothrow`] with the block's token,
+/// as `libc::malloc_block`.
+#[inline(always)]
+pub fn new_block(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+    ensures
+        crate::heap::fits(r, size as int, crate::QUANTUM as int),
+        final(blk).gives(r, size as int),
+{
+    match libc::malloc_fast(size, Tracked(blk)) {
         Some(p) => p,
-        None => new_slow(size, true),
+        None => new_slow(size, nothrow, Tracked(blk)),
     }
 }
 
-/// The `align_val_t` forms.
+/// The `align_val_t` forms. The block's token goes to C++ with it.
 pub fn new_aligned(size: usize, align: usize, nothrow: bool) -> (r: *mut u8)
     ensures
         libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
+{
+    let tracked mut blk = Live::empty();
+    new_aligned_block(size, align, nothrow, Tracked(&mut blk))
+}
+
+/// [`new_aligned`] with the block's token, as `libc::malloc_block`.
+pub fn new_aligned_block(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+    ensures
+        libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
+        final(blk).gives(r, size as int),
 {
     proof {
         if libc::is_pow2(align) {
             libc::lemma_pow2_pos(align);
         }
     }
-    let p = libc::aligned_alloc(align, size);
+    let p = libc::aligned_alloc_block(align, size, Tracked(blk));
     if p.is_null() {
-        oom(size, align, nothrow)
+        oom(size, align, nothrow, Tracked(blk))
     } else {
         p
     }
