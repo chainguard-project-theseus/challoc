@@ -1,0 +1,168 @@
+# verus/seams.overrides: categories and tools for the seams verus/seams.sh
+# cannot classify from the item's kind, path and body, and the status of
+# every seam that is no longer only trusted.
+#
+#   name<TAB>category<TAB>tool[<TAB>status]
+#
+# `name` is the item as the ledger prints it, or `file:name` where several
+# items share a name. Category and tool are spelled as in the ledger's
+# header; status defaults to "trusted" (see "Recording a non-Verus result"
+# in verus/SEAMS.md). A line that matches no seam is an error.
+Handler	function pointer	Kani
+installed_handler	function pointer	Kani
+oom	termination	none (assumption)
+src/api/libc.rs:set_errno	FFI/syscall	none (assumption)
+store_usable	raw pointer from C caller	Miri (evidence only)
+store_out	raw pointer from C caller	Miri (evidence only)
+root	function pointer	Kani
+old_len	raw pointer from C caller	Miri (evidence only)
+heap_set_arena	allocator invariant	RefinedRust
+heap_set_tcache_enabled	allocator invariant	RefinedRust
+tcaches_flush	allocator invariant	RefinedRust
+mib_cap	raw pointer from C caller	Miri (evidence only)
+shared_ptr	UnsafeCell/volatile/transmute	RefinedRust
+tcaches_lock	allocator invariant	RefinedRust
+src/api/print.rs:word	core library	Kani
+src/api/print.rs:set_errno	FFI/syscall	none (assumption)
+file_target	function pointer	Kani
+stderr_target	function pointer	Kani
+Arena::axiom_array_layout	core library	Kani
+Arena::axiom_array_join	raw pointer (internal)	RefinedRust
+A_INDEX	core library	Kani
+A_DECAY_NS	core library	Kani
+A_SETS	core library	Kani
+A_SETS_PERM	core library	Kani
+A_CLASSES	core library	Kani
+A_LARGE	core library	Kani
+A_STATS	core library	Kani
+A_LAST_EXIT_PURGE	core library	Kani
+axiom_arena_layout	core library	Kani
+axiom_arena_assemble	raw pointer (internal)	RefinedRust
+arena_at	raw pointer (internal)	RefinedRust
+from_raw	raw pointer (internal)	RefinedRust
+from_raw_chunked	raw pointer (internal)	RefinedRust
+ClassState::page_group_is_idle	allocator invariant	RefinedRust
+ClassState::owner_locked	allocator invariant	RefinedRust
+ClassState::state_locked	allocator invariant	RefinedRust
+ClassState::set_state_locked	allocator invariant	RefinedRust
+ClassState::dirty_locked	allocator invariant	RefinedRust
+ClassState::set_dirty_locked	allocator invariant	RefinedRust
+ClassState::table	raw pointer (internal)	RefinedRust
+ClassState::take_checks	panic/abort	Kani
+table_ptr	raw pointer (internal)	RefinedRust
+axiom_fresh_slots_zero	allocator invariant	RefinedRust
+axiom_discarded_slots_zero	allocator invariant	RefinedRust
+axiom_free_token	C-program contract	none (assumption)
+SetTable::set_table_ptr	raw pointer (internal)	Kani
+axiom_table_bytes	allocator invariant	RefinedRust
+Set::ensure	raw pointer (internal)	RefinedRust
+axiom_slot_loc	allocator invariant	RefinedRust
+axiom_fresh_words	allocator invariant	RefinedRust
+axiom_init_descs	raw pointer (internal)	RefinedRust
+axiom_init_owners	raw pointer (internal)	RefinedRust
+axiom_init_words	raw pointer (internal)	RefinedRust
+SlabTable::owner_unchecked	raw pointer (internal)	RefinedRust
+desc_ptr_addr	raw pointer (internal)	Kani
+Config::set_listed	function pointer	Kani
+Config::get	function pointer	Kani
+KEYS	function pointer	Kani
+read_slot	raw pointer from C caller	Miri (evidence only)
+byte_at	raw pointer from C caller	Miri (evidence only)
+bytes_at	raw pointer from C caller	Miri (evidence only)
+env_var	raw pointer from C caller	Miri (evidence only)
+group_by_slab	core library	Kani
+addr_mix	raw pointer (internal)	Kani
+axiom_fresh_stack	allocator invariant	RefinedRust
+assert_flushed	panic/abort	Kani
+assert_refill_empty	panic/abort	Kani
+Heap::axiom_list_bound	allocator invariant	RefinedRust
+assign_home	allocator invariant	RefinedRust
+mark_bound	raw pointer (internal)	RefinedRust
+node_caches_mut	raw pointer (internal)	RefinedRust
+node_set_arena	raw pointer (internal)	RefinedRust
+assert_not_home	panic/abort	Kani
+Heap::node_next	raw pointer (internal)	RefinedRust
+Heap::node_arena	raw pointer (internal)	RefinedRust
+Heap::node_caches	raw pointer (internal)	RefinedRust
+debug_scheduled	panic/abort	Kani
+shared_of	raw pointer (internal)	RefinedRust
+axiom_process_shared	allocator invariant	RefinedRust
+ThreadKey::create	function pointer	Kani
+S_MULTI_ARENA	core library	Kani
+S_PUSH_FLAGS	core library	Kani
+S_REGIONS	core library	Kani
+S_GUARD_TEST	core library	Kani
+S_TABLES	core library	Kani
+S_ARENA0	core library	Kani
+S_META	core library	Kani
+S_HUGE	core library	Kani
+S_GC_INTERVAL_NS	core library	Kani
+S_POLICY	core library	Kani
+S_CONFIG	core library	Kani
+S_KEY	core library	Kani
+S_ARENAS	core library	Kani
+S_TCACHES	core library	Kani
+S_STATS	core library	Kani
+S_CGROUP	core library	Kani
+axiom_shared_layout	core library	Kani
+axiom_shared_built	raw pointer (internal)	RefinedRust
+axiom_shared_regions	raw pointer (internal)	RefinedRust
+Shared::begin	allocator invariant	RefinedRust
+init_tcaches	allocator invariant	RefinedRust
+heap_at	raw pointer (internal)	RefinedRust
+heap_new	raw pointer (internal)	RefinedRust
+mint_allocated	allocator invariant	none (assumption)
+axiom_zero_entry	raw pointer (internal)	RefinedRust
+ClassTable	UnsafeCell/volatile/transmute	RefinedRust
+axiom_process_page_at_most_64k	platform/kernel fact	none (assumption)
+Reserved	platform/kernel fact	none (assumption)
+Reserved::is_disjoint	platform/kernel fact	none (assumption)
+Reserved::is_apart_from_static	platform/kernel fact	none (assumption)
+Reserved::into_unbacked	platform/kernel fact	none (assumption)
+src/layout/regions.rs:word	core library	Kani
+class_entry	UnsafeCell/volatile/transmute	RefinedRust
+axiom_acquired	allocator invariant	RefinedRust
+LockGuard::drop	atomics primitive	loom/GenMC
+Meta::commit	allocator invariant	RefinedRust
+Meta::free	allocator invariant	RefinedRust
+empty_bytes	panic/abort	Kani
+total_bytes	core library	Kani
+errno_location	FFI/syscall	none (assumption)
+errno_read	FFI/syscall	none (assumption)
+errno_write	FFI/syscall	none (assumption)
+pthread_join	FFI/syscall	none (assumption)
+spawn	FFI/syscall	none (assumption)
+read_global	raw pointer (internal)	RefinedRust
+fig_add	core library	Kani
+fig_mul	core library	Kani
+fig_add64	core library	Kani
+scan_lines	termination	none (assumption)
+Features::fmt	function pointer	Kani
+getrandom_exact	termination	none (assumption)
+read_full	termination	none (assumption)
+write_all	termination	none (assumption)
+axiom_user_va_limit	platform/kernel fact	none (assumption)
+axiom_auth_sign	platform/kernel fact	none (assumption)
+axiom_slot_writable	allocator invariant	RefinedRust
+axiom_huge_writable	allocator invariant	RefinedRust
+check	panic/abort	Kani
+axiom_class_table_wf	allocator invariant	RefinedRust
+axiom_owned_run	C-program contract	none (assumption)
+thp_name	core library	Kani
+stats_allocated	core library	Kani
+axiom_ptr_add_addr	core library	Kani
+axiom_raw_valid	raw pointer (internal)	RefinedRust
+axiom_fresh_anon_zero	platform/kernel fact	none (assumption)
+axiom_discarded_zero	platform/kernel fact	none (assumption)
+Unbacked::commit	platform/kernel fact	none (assumption)
+WordPerm	atomics primitive	loom/GenMC
+core::sync::atomic::compiler_fence	atomics primitive	loom/GenMC
+crate::layout::adopt_page_geometry	UnsafeCell/volatile/transmute	RefinedRust
+core::fmt::Formatter::<'a>::write_str	core library	Kani
+core::fmt::Formatter::<'a>::write_fmt	function pointer	Kani
+libc::pthread_setspecific	FFI/syscall	none (assumption)
+seed	FFI/syscall	none (assumption)
+src/sys/auxv.rs:getauxval	FFI/syscall	none (assumption)
+Reader	function pointer	Kani
+Target	function pointer	Kani
+libc::FILE	FFI/syscall	none (assumption)
