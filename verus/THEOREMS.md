@@ -629,3 +629,338 @@ symbols carry no token.
   not state `old`.
 - `calloc_usable_zeroed` gives no token for huge requests: the huge
   `memset` length (`Huge::usable_size`) is not tied to the run.
+
+## Interface contract
+
+The six theorems above checked against challoc's exported C ABI: one
+row per exported symbol (`je_` twins and C++ array forms share their
+row), one column per interface property. Read from the `ensures` of
+each entry point's Rust function at `ccbf1dd`; the `file:line`s in
+this section are the `fn` line at that commit (the sections above are
+at `b2cad68`). All the trusted premises listed above apply to every
+cell. Every `extern "C"` wrapper is in `verus!` with no contract of its
+own and only casts, except `malloc_stats_print`. So the Rust function's
+`ensures` is the symbol's contract, and a verified body cannot panic or
+overflow. Where that function is `.0` of a `_zeroed` twin (`calloc`,
+`challoc_calloc_usable`, `mallocx`), the Z cell rests on the twin's
+`ensures`: the zero token is ghost, so the exported function returns
+the same block.
+
+Properties:
+
+- **R**: the result fits and is aligned (`heap::fits`, `heap/mod.rs:167`).
+- **D**: the result is disjoint from every other live block.
+- **Z**: the result is zeroed where the API promises it.
+- **C**: contents are preserved (realloc family).
+- **F**: failure semantics: NULL, `errno`, return code, the old block
+  intact after a failed realloc, overflow in `calloc`/`reallocarray`.
+- **B**: bad input (invalid or double free, bad alignment) aborts or is
+  a documented no-op. It never corrupts silently.
+- **U**: size consistency: `nallocx` equals `mallocx`'s usable size;
+  `sallocx` and `malloc_usable_size` give the block's real usable size.
+
+Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
+
+| #  | Entry point                                 | R | D | Z | C | F | B | U |
+|----|---------------------------------------------|---|---|---|---|---|---|---|
+| 1  | `malloc`                                    | P | p | . | . | p | . | . |
+| 2  | `calloc`                                    | P | p | P | . | p | . | . |
+| 3  | `realloc`                                   | p | p | . | - | p | p | . |
+| 4  | `reallocarray`                              | p | p | . | - | p | p | . |
+| 5  | `aligned_alloc`, `memalign`                 | P | p | . | . | p | P | . |
+| 6  | `posix_memalign`                            | p | p | . | . | p | P | . |
+| 7  | `valloc`                                    | P | p | . | . | p | . | . |
+| 8  | `pvalloc`                                   | p | p | . | . | p | . | . |
+| 9  | `malloc_usable_size`                        | . | . | . | . | P | p | - |
+| 10 | `free`                                      | . | . | . | . | - | p | . |
+| 11 | `free_sized`, `free_aligned_sized`          | . | . | . | . | - | p | . |
+| 12 | `challoc_malloc_usable`                     | P | p | . | . | p | . | - |
+| 13 | `challoc_calloc_usable`                     | P | p | p | . | p | . | - |
+| 14 | `challoc_realloc_usable`                    | p | p | . | - | p | p | - |
+| 15 | `challoc_free_usable`                       | . | . | . | . | P | p | - |
+| 16 | `mallocx`                                   | P | p | P | . | p | - | . |
+| 17 | `rallocx`                                   | p | p | p | - | p | p | . |
+| 18 | `xallocx`                                   | . | . | . | . | . | p | - |
+| 19 | `sallocx`                                   | . | . | . | . | . | p | - |
+| 20 | `dallocx`                                   | . | . | . | . | . | p | . |
+| 21 | `sdallocx`                                  | . | . | . | . | . | p | . |
+| 22 | `nallocx`                                   | . | . | . | . | p | . | p |
+| 23 | `operator new`, `new[]`                     | P | p | . | . | p | . | . |
+| 24 | `new`, `new[]` (`nothrow_t`)                | P | p | . | . | p | . | . |
+| 25 | `new`, `new[]` (`align_val_t`, 4 forms)     | P | p | . | . | p | - | . |
+| 26 | `delete`, `delete[]` (unsized, 8 forms)     | . | . | . | . | . | p | . |
+| 27 | `delete`, `delete[]` (sized)                | . | . | . | . | . | p | . |
+| 28 | `delete`, `delete[]` (sized, aligned)       | . | . | . | . | . | p | . |
+| 29 | `malloc_trim`                               | . | . | . | . | P | . | . |
+| 30 | `mallopt`                                   | . | . | . | . | P | . | . |
+| 31 | `mallinfo`, `mallinfo2`                     | . | . | . | . | . | . | . |
+| 32 | `malloc_stats`, `malloc_info`               | . | . | . | . | - | . | . |
+| 33 | `malloc_stats_print`                        | . | . | . | . | . | - | . |
+| 34 | `mallctl`, `mallctlnametomib`, `..bymib`    | . | . | . | . | - | - | . |
+| 35 | `get_defrag_hint`                           | . | . | . | . | P | - | . |
+| 36 | `challoc_version`, `challoc_features`       | . | . | . | . | . | . | . |
+| 37 | `malloc_conf`, `malloc_message`, `je_..`    | . | . | . | . | . | . | . |
+
+Notes that recur below:
+
+- *(D)*: no entry point states disjointness. Theorem 5
+  (`Heap::theorem_uniqueness_held`, `theorem_uniqueness`,
+  `theorem_uniqueness_apart`, `heap/mod.rs:2883`, `:2908`, `:2935`)
+  proves that a cached slot is held by no other cache,
+  bitmap word or claim. But `Heap::alloc_fast` (`heap/paths.rs:54`) drops
+  the slot's token at hand-out, so nothing states that the result is
+  apart from the program's live blocks. Huge runs have no token:
+  `huge::allocated` (`huge/mod.rs:622`) is uninterpreted and minted by a
+  trusted lemma. Hence `p` for every allocating row.
+- *(errno)*: `set_errno` (`api/libc.rs:83`, `api/print.rs:1045`) is
+  `external_body` with no `ensures`, and no spec models `errno`. A
+  "NULL with `ENOMEM`" contract is proved only for its NULL half
+  (`enomem`, `einval`, `api/libc.rs:91`, `:102`, ensure `r@.addr == 0`).
+  Nothing proves that the failure paths are the only NULL returns, or
+  that `free` preserves `errno`.
+- *(live)*: `free_target` (`heap/mod.rs:432`, theorem 3) is proved. A
+  pointer that is not a slot start or a huge page start aborts. Liveness
+  (bit clear: a double free, a stale pointer, a never-allocated slot) is
+  caught at run time by `SlabTable::check_live` (`class/table.rs:1540`)
+  through the trusted `is_set_unchecked` (`:1317`), or by
+  `Huge::free_run` (`huge/mod.rs:4779`) for runs (**unconfirmed**:
+  read from its doc comment; its `ensures` states only `r.pages`). No
+  `ensures` says that a non-live pointer aborts. Under the free contract
+  (`axiom_free_token`), a double free makes the proof context
+  inconsistent.
+- *(U-slot)*: `usable_size` (`api/libc.rs:522`) ensures
+  `huge_run_usable(p, r)` (`heap/shared.rs:936`) for a huge page start
+  only. For a slot it returns `class_size(class)` (`api/libc.rs:781`,
+  which ensures `r == class_table()[c].size`), but the slot equality is
+  not in `usable_size`'s `ensures`, and the callers below re-export
+  neither half.
+
+Per row (cells marked `P` without a note are the cited `ensures`
+alone):
+
+1. `malloc` (`api/libc.rs:213`). R: `fits(r, size, QUANTUM)`. D: *(D)*.
+   F: *(errno)*. Not stated: NULL only on exhaustion; `malloc(0)` is
+   non-NULL (the module doc promises a distinct slot).
+2. `calloc` (`api/libc.rs:328`, `.0` of `calloc_zeroed`, `:341`). R:
+   `fits(r, n * m, QUANTUM)`. Z: `r.1@.covers(r.0, n * m)` (theorem 6).
+   F: `n * m > usize::MAX ==> r@.addr == 0` is proved; the rest is
+   *(errno)*.
+3. `realloc` (`api/libc.rs:698`). R: `r != p ==> fits(r, size, QUANTUM)`
+   and `fits(..) || kept(r, size, 1)` (`kept`, `:617`). A kept huge block
+   has no size bound. D: *(D)*. Also, `realloc`'s move takes its
+   disjointness from the trusted `axiom_moved_block`
+   (`vspec/addr.rs:121`). C: the code copies `min(old, size)` bytes, with
+   `old` the class size for a slot (`old_size_or_keep`, `:635`).
+   `ptr::copy_nonoverlapping` has no byte-level spec, so contents are not
+   modelled. F: `p != 0 && size == 0 ==> r@.addr == 0` is proved. Not
+   stated: on a NULL from the move, `p` is still live; the code returns
+   before `heap::free`. B: `p != 0 ==> free_target(p)`, *(live)*.
+4. `reallocarray` (`api/libc.rs:733`). As `realloc` for `n * m`. F also
+   proves `n * m > usize::MAX ==> r@.addr == 0`. B: `free_target(p)` only
+   when `n * m` does not overflow (an overflowing call returns NULL
+   without looking at `p`).
+5. `aligned_alloc`, `memalign` (`api/libc.rs:1228`). R:
+   `is_pow2(align) ==> fits(r, size, align)`. B:
+   `!is_pow2(align) ==> r@.addr == 0` is proved; `EINVAL` is *(errno)*.
+   challoc's `memalign` rejects a non-power-of-two alignment, unlike
+   glibc's, which rounds the alignment up (the module doc names the
+   `EINVAL`). F: *(errno)*.
+6. `posix_memalign` (`api/libc.rs:1251`). R: `alloc_aligned`
+   (`:1146`) ensures `fits(p, size, align)`, but `store_out` (`:1243`,
+   `external_body`) claims nothing about `*out`. F: the return code is
+   `0`, `ENOMEM` or `EINVAL`. Not stated: `0` iff an allocation was
+   stored, and `*out` untouched on failure. B:
+   `r == EINVAL <==> !(is_pow2(align) && align % 8 == 0)`.
+7. `valloc` (`api/libc.rs:1297`). R: `fits` at the page
+   (`1 << lg_page`). F: *(errno)*.
+8. `pvalloc` (`api/libc.rs:1306`). R: `fits(r, size, page)`. The
+   page-rounded size the code allocates is not stated. F: the
+   `checked_add` overflow returns `enomem()`, which is not in the
+   `ensures`; the rest is *(errno)*.
+9. `malloc_usable_size` (`api/libc.rs:565`). F: `p == 0 ==> r == 0`. B:
+   `p != 0 ==> free_target(p)`, *(live)*. Before init, a non-NULL `p`
+   aborts (`free_before_init`, `:508`). U: *(U-slot)*.
+10. `free` (`api/libc.rs:386`). B: `p != 0 ==> free_target(p)`, *(live)*;
+    NULL is a no-op (early return; not in the `ensures`). F: `errno`
+    preservation (the module doc's promise) is *(errno)*. A thread's
+    first `free` may create its heap before the abort (theorem 3).
+11. `free_sized`, `free_aligned_sized` (`api/libc.rs:471`, `:481`). B:
+    `free_target(p)`, *(live)*. The size hint is checked against the slot's
+    class only on the slow path (`Shared::check_size_hint`,
+    `heap/shared.rs:1363`, verified, no `ensures`). On the fast path
+    (`free_sized_fast`, `heap/paths.rs:583`) a matching-class slot is
+    pushed untested; its liveness is checked when the cache flushes. A
+    non-power-of-two alignment gives no hint and aborts on a slab pointer.
+    F: as `free`.
+12. `challoc_malloc_usable` (`api/libc.rs:798`). R, D, F: as `malloc`.
+    U: `store_usable` (`:770`, `external_body`) claims nothing, so
+    `*usable` is unstated.
+13. `challoc_calloc_usable` (`api/libc.rs:890`, `calloc_usable_zeroed`,
+    `:905`). R, F: as `calloc`. Z: the token covers `n * m` bytes. The
+    whole usable size, which the doc promises and the code zeroes
+    (`write_zero(p, u)`), is not stated. For huge runs the token rests on
+    `axiom_owned_run` (`vspec/huge.rs:77`). U: as row 12.
+14. `challoc_realloc_usable` (`api/libc.rs:969`). R, D, C, F, B: as
+    `realloc` (the keep decision is `realloc_old`, `:1010`). U: as row 12.
+15. `challoc_free_usable` (`api/libc.rs:1055`). F: `p == 0 ==> r == 0`.
+    B: as `free`. U: the returned size is not stated (`class_size` on the
+    fast path; `free_usable_slow`, `:1081`, takes the class size or
+    `Huge::usable_size`).
+16. `mallocx` (`api/jemalloc.rs:231`, `.0` of `mallocx_zeroed`, `:243`).
+    R: `fits(r, size, 1 << (flags & 0x3f))`. With no `MALLOCX_LG_ALIGN`
+    this is alignment 1, weaker than the quantum the code gives. Z: with
+    `MALLOCX_ZERO`, `covers(r, size)` and `covers_usable(.., 0, size)`
+    (`vspec/zero.rs:109`, the whole usable size; theorem
+    `vspec::zero::theorem_zeroed_memory`, `:240`). F: NULL on failure
+    with `errno` untouched (`alloc_with`'s doc) is not stated beyond
+    `fits` allowing NULL. B: an arena or explicit cache that does not
+    exist returns NULL (doc of `alloc_with`, `:160`); not stated.
+17. `rallocx` (`api/jemalloc.rs:260`, `rallocx_zeroed`, `:278`). R: as
+    `realloc` at `1 << (flags & 0x3f)`, `kept` at that alignment. Z: for a
+    new or moved block with `MALLOCX_ZERO`, a token from offset `k` to
+    the usable end (`covers_usable`). `k == 0` for a NULL `p` and
+    `min(class size, size)` for a slot `p`. For a huge `p`, `k` is only
+    `0 <= k <= size`: `old_size_or_keep` does not state `old` for a run.
+    A kept block gets no token; jemalloc zeroes only past the old real
+    size, which a kept block keeps. C, F, B: as `realloc`; NULL `p`
+    allocates.
+18. `xallocx` (`api/jemalloc.rs:332`). Never resizes; returns
+    `sallocx(p, 0)`. B: `free_target(p)` unconditionally, so NULL aborts.
+    U: the result is unstated.
+19. `sallocx` (`api/jemalloc.rs:340`). B: `free_target(p)`
+    unconditionally; NULL aborts (`not_an_allocation`, `:135`); *(live)*.
+    U: *(U-slot)*.
+20. `dallocx` (`api/jemalloc.rs:353`). B: `p != 0 ==> free_target(p)`,
+    *(live)*. With `MALLOCX_TCACHE_NONE` the release tests the bit
+    immediately (**unconfirmed**, from the doc comment).
+21. `sdallocx` (`api/jemalloc.rs:378`). B: `p != 0 ==> free_target(p)`,
+    *(live)*. jemalloc's `nallocx(size, flags) == sallocx(p)` contract
+    is checked as in row 11: `flags == 0` is `free_sized`, and
+    `sdallocx_flags`/`sdallocx_routed` (`:391`, `:409`) hint
+    `class_for(size, align)`.
+22. `nallocx` (`api/jemalloc.rs:432`). F, U: `r == 0 || size <= r`. Not
+    stated: that `r` equals the usable size `mallocx(size, flags)` gives.
+    Both use `class_for` and `Huge::usable_for` (`usable_for`, `:142`;
+    `alloc_with`), and `covers_usable` names the same sizes, but no
+    lemma connects them. Not stated either: when `r == 0`.
+23. `operator new`, `new[]` (`api/cxx.rs:214`). R:
+    `fits(r, size, QUANTUM)`. F: the C++ contract (never NULL; throws
+    `std::bad_alloc` after the `new_handler` loop) is not stated. `oom`
+    (`:172`) returns only a non-NULL pointer when `nothrow` is false, and
+    `throw_bad_alloc` (`:131`) is `-> !`, but no `ensures` says
+    `r@.addr != 0`. `oom` has no `decreases` (it waits on the program's
+    handler).
+24. `new` `nothrow_t` (`api/cxx.rs:226`). R: as row 23. F: NULL after
+    the handler loop; not stated beyond `fits`.
+25. `new` `align_val_t` (`api/cxx.rs:237`). R: `is_pow2(align) ==>
+    fits(r, size, align)`. F: as rows 23 and 24 by `nothrow`. B: a
+    non-power-of-two alignment (undefined in C++) makes `aligned_alloc`
+    return NULL, so the handler loop runs; nothing is stated.
+26. Unsized `delete` forms, with or without `align_val_t` or `nothrow_t`
+    (`cxx::delete`, `api/cxx.rs:256`). B: as `free`; the alignment is
+    ignored.
+27. Sized `delete` (`cxx::delete_sized`, `api/cxx.rs:267`). B: as
+    `free_sized`.
+28. Sized aligned `delete` (`cxx::delete_sized_aligned`,
+    `api/cxx.rs:278`). B: as `free_aligned_sized`.
+29. `malloc_trim` (`api/libc.rs:1350`). F: `r == 0 || r == 1`. Not stated:
+    whether anything was purged.
+30. `mallopt` (`api/glibc.rs:72`). F: `r == 1` (accepted and ignored).
+31. `mallinfo2` (`api/glibc.rs:82`) ensures `fordblks <= arena` and the
+    three zero fields; `mallinfo` (`:115`) is verified with no contract.
+    The figures are unbounded counters (`fig_add`, `fig_mul`).
+32. `malloc_stats`, `malloc_info` (`api/print.rs:1067`, `:1053`):
+    verified bodies, no contract. F: `malloc_info`'s `-1` with `EINVAL`
+    for bad arguments is *(errno)* and not in an `ensures`. The sinks
+    (`file_target`, `stderr_target`, `:1108`, `:1115`) are
+    `external_body`.
+33. `malloc_stats_print` (`api/print.rs:947`): outside `verus!`, with its
+    `export_pair!` wrapper (`:1131`); unverified. B: the program's
+    `opts` string and callback are read through trusted code.
+34. `mallctl`, `mallctlnametomib`, `mallctlbymib` (`api/mallctl.rs:1585`,
+    `:1646`, `:1685`): verified bodies, no `ensures` on the return code
+    (`result`, `:1573`, maps `Err(e)` to `e`). Every access to the
+    caller's memory is `external_body` and claims at most bounds:
+    `name_byte`, `name_bytes`, `old_len`, `copy_prefix`, `store`, `load`,
+    `query_ptr`, `store_triple`, `mib_cap`, `mib_out`, `mib_in` (`:803`
+    to `:1676`). So B (a bad `oldlenp` or `newlen`, an unknown name) is
+    not stated; the batch-query length check (bug #1) is verified inside
+    the body.
+35. `get_defrag_hint` (`api/jemalloc.rs:465`). F: `r == 0 || r == 1`. B:
+    "never aborts" for a foreign pointer cannot be stated, because an
+    abort satisfies every postcondition. The body is verified.
+36. `challoc_version` (`api/mod.rs:123`), `challoc_features` (`:296`):
+    verified, no contract.
+37. Data symbols `malloc_conf`, `malloc_message`, `je_malloc_message`
+    (`api/jemalloc.rs:76`-`:90`): no code. `message_hook` and
+    `malloc_write`, which read the hooks, are unverified.
+
+### Internal properties under every row
+
+| Property                                 | Code | Where                  |
+|------------------------------------------|------|------------------------|
+| I1 region separation                     | P    | th. 1, heap/mod.rs:182 |
+| I2 metadata integrity                    | P    | th. 4, heap/mod.rs:253 |
+| I3 uniqueness (no slot handed out twice) | p    | theorem 5              |
+| I4 guard pages never handed out          | p    | below                  |
+| I5 purge never discards live data        | -    | below                  |
+
+- I1, I2: for every result an entry point states `fits` for, with the
+  premises and the "not covered" lists of sections 1 and 4.
+- I3: a slot is unique while it is cached, held by a bitmap word or in
+  flight (*(D)* above). There is no model of live blocks, and the `free`
+  side rests on `axiom_free_token` (`class/mod.rs:3954`).
+- I4: for slabs, the class lock invariant `slab_core`
+  (`class/mod.rs:811`) keeps a guard slab uncommitted and `Fresh`;
+  `ready` (`:855`) excludes it from `ClassState::take`; `commit_slab`
+  (`class/table.rs:1599`) ensures `usable == !spec_is_guard(s)`. But
+  `Regions::is_slot`, and so `fits`, does not exclude guard slabs, so no
+  entry point states it. For huge runs, `spec_run_usable`
+  (`huge/mod.rs:2787`) puts the guard after the usable pages inside the
+  region. That the guard is no part of another run's usable pages is
+  not stated.
+- I5: class purges run only on slabs in the `empty` set, and
+  `walk_empty` (`class/decay.rs:265`) checks at run time that the
+  descriptor says `Empty` with `live() == 0`, aborting otherwise
+  (`not_empty`, `:315`). `page_group_is_idle` (`:207`) is trusted. No
+  invariant ties `live() == 0` to "no slot of the slab is allocated or
+  cached". `purge::Batch`'s "ranges are free" (`purge.rs:218`) is a doc
+  comment; `Batch::wf` states only bounds. Theorem 6's
+  `axiom_discarded_zero` premises lean on the same unproved fact.
+
+### Gaps, by cells turned to `P`
+
+1. **Live-block ghost model**: `malloc` and friends hand the caller the
+   slot's token (or a run token in place of the uninterpreted
+   `huge::allocated`); every free consumes one. This turns the D column
+   (16 rows) and I3 to `P`, removes `axiom_free_token`, and turns
+   *(live)* B cells (15 rows) to `P`: a non-live free has no token
+   and the run-time check becomes provably reached. It also derives
+   `axiom_moved_block`'s disjointness. Largest gain, largest effort.
+2. **`errno` as ghost state**: give `set_errno` an `ensures` over a
+   ghost per-thread `errno`, and add `r@.addr == 0 <==> failure` to the
+   allocating entry points. This turns the F cells of rows 1-8, 12-14
+   and 32 (and `free`'s preservation, rows 10, 11) to `P` or nearly so.
+   Mostly spec work; the hot paths keep their code.
+3. **Usable-size contract**: add the slot half to `usable_size`, re-export
+   it from `malloc_usable_size`, `sallocx`, `xallocx` and
+   `challoc_free_usable`, state `*usable` through a spec for
+   `store_usable`, and prove `nallocx(size, flags)` equal to
+   `mallocx`'s usable size (`usable_for` against `alloc_with`). This turns
+   the whole U column (8 rows) to `P`, plus row 13's Z (zero the usable
+   size, as the code does). Cheap: `ensures` and small lemmas.
+4. **Failure-path contracts**: `r@.addr == 0 ==> p` still live for the
+   realloc family (needs 1, or a ghost "not freed" result);
+   `posix_memalign`'s `*out` through a `PointsTo` for `store_out`;
+   `!nothrow ==> r@.addr != 0` for `operator new` (provable from `oom`'s
+   loop today). Rows 3, 4, 6, 14, 17, 23-25.
+5. **Byte contents**: a `PointsToRaw`-level spec of user blocks and of
+   `copy_nonoverlapping` would turn the C column (4 rows) to `P`. It
+   needs the permissions threading that `TODO.md` lists.
+6. **Huge `kept` bound**: state a run's usable bytes against the region
+   in the huge descriptors (theorem 1's "weaker than the code"). Turns R
+   of rows 3, 4, 14 and 17 to `P`, and with it `rallocx`'s `k` for huge
+   blocks (Z of row 17).
+7. **Purge and guards**: tie the empty set and `purge::Batch` ranges to
+   slot and extent tokens (I5, and theorem 6's purge premise), and add
+   `!spec_is_guard` to `is_slot` (I4).
