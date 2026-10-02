@@ -74,6 +74,15 @@ These candidates would extend the guarantees beyond the seven theorems in [THEOR
 - **Exact stats:** `mallinfo`, `malloc_stats`, and mallctl statistics equal the true sums over live blocks. This needs a live-block accounting model.
 - **Zero-on-free:** With `zero_on_free` set, a freed block’s bytes are zero before reuse. This needs to carry the zeroing claim through the free and allocation paths.
 
+- **No allocator lock across external calls** (lane running): Callbacks, `malloc_message`, and `fwrite` reached from `malloc_stats_print` or `malloc_info` run while the calling thread holds no allocator lock. These calls can allocate, so holding a lock could deadlock; `print.rs` states the rule in a comment but has no contract for it.
+- **Re-entrant heap registration** (lane running): While `create_heap_for_thread` is inside `ThreadKey::set`, a nested `heap_for_thread` or `existing_heap` returns `None`, leaves `TLS_CREATING` intact, and creates no heap. The proof must cover allocation from `pthread_setspecific` during registration.
+- **Huge free extents are maximally coalesced** (lane running): Whenever the huge lock is released, no two free descriptors touch: `end(a) != start(b)`. The existing self-check asserts this at run time; the proof needs to preserve it through `take` and `free_run`.
+- **Pressure never lengthens decay** (lane running): For a fixed cgroup limit, higher usage never produces a longer effective decay period. Prove monotonicity of `band` and `effective_decay_ns`.
+- **MIB round-trip:** If `name_to_mib` succeeds, `mib_to_node` returns the same node and indices. `mallctlnametomib` returns `EINVAL` for a short buffer, whereas jemalloc returns a partial MIB; keep that compatibility difference explicit.
+- **`MALLOCX_TCACHE_NONE` bypasses thread caches:** Allocations and frees with this flag neither take nor insert a slot in any heap cache. Valkey’s defragmenter relies on this behavior.
+- **Lowest-address huge placement:** `Huge::find` returns the lowest page that fits the requested size and alignment. The maximal-coalescing proof can simplify the free-extent cases.
+- **Lock order is acyclic:** Every blocking lock acquisition has a higher rank than each lock the thread holds, ruling out lock-order deadlocks. This needs a ghost set of held locks through every guard and must cover the nesting order documented by `fork_prepare`.
+
 Research, likely beyond Verus:
 
 - **Bounded memory:** Bound RSS by a function of live bytes. This needs a model of retained and committed memory.
