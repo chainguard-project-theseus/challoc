@@ -217,6 +217,7 @@ pub fn usage_ppm(limit: u64, current: u64) -> (ppm: u64)
         current >= limit ==> ppm == 1_000_000,
         current < limit <= 0x800_0000_0000 ==> ppm == current * 1_000_000 / limit as int,
         current == 0 < limit ==> ppm == 0,
+        ppm == spec_usage_ppm(limit, current),
 {
     if current >= limit {
         return 1_000_000;
@@ -230,6 +231,8 @@ pub fn usage_ppm(limit: u64, current: u64) -> (ppm: u64)
             limit <= 0x800_0000_0000 ==> c == current && l == limit,
             current == 0 ==> c == 0,
             (1u64 << 43u64) == 0x800_0000_0000,
+            current < limit,
+            scaled_ppm(c, l) == scaled_ppm(current, limit),
         decreases l,
     {
         assert(c >> 1u64 <= l >> 1u64 && l >> 1u64 > 0 && l >> 1u64 < l && (c == 0 ==> c >> 1u64 == 0)) by (bit_vector)
@@ -237,6 +240,7 @@ pub fn usage_ppm(limit: u64, current: u64) -> (ppm: u64)
                 c <= l,
                 l > 0x800_0000_0000u64,
         ;
+        assert(c >> 1u64 == c / 2 && l >> 1u64 == l / 2) by (bit_vector);
         c >>= 1;
         l >>= 1;
     }
@@ -252,6 +256,217 @@ pub fn usage_ppm(limit: u64, current: u64) -> (ppm: u64)
     c * 1_000_000 / l
 }
 
+/// [`usage_ppm`]'s loop: below the limit, both figures are halved until
+/// the limit fits 43 bits, then `c * 10^6 / l`.
+pub open spec fn scaled_ppm(c: u64, l: u64) -> int
+    decreases l,
+{
+    if l > 0x800_0000_0000 {
+        scaled_ppm((c / 2) as u64, (l / 2) as u64)
+    } else if l == 0 {
+        1_000_000
+    } else {
+        c * 1_000_000 / l as int
+    }
+}
+
+/// [`usage_ppm`] for every `limit` and `current`.
+pub open spec fn spec_usage_ppm(limit: u64, current: u64) -> int {
+    if current >= limit {
+        1_000_000
+    } else {
+        scaled_ppm(current, limit)
+    }
+}
+
+/// [`band`] for every `limit` and `current`.
+pub open spec fn spec_band(limit: u64, current: u64) -> Band {
+    if limit == UNLIMITED || limit == 0 {
+        Band::Unlimited
+    } else {
+        let ppm = spec_usage_ppm(limit, current);
+        if ppm < SCALED_FROM_PPM {
+            Band::Low
+        } else if ppm >= IMMEDIATE_FROM_PPM {
+            Band::Immediate
+        } else {
+            Band::Scaled(((ppm - SCALED_FROM_PPM) * 0x1_0000 / 200_000) as u32)
+        }
+    }
+}
+
+/// [`effective_decay_ns`] for every `base` and well-formed `band`.
+pub open spec fn spec_effective_decay_ns(base: u64, band: Band) -> int {
+    if base == NEVER {
+        NEVER as int
+    } else {
+        match band {
+            Band::Unlimited | Band::Low => base as int,
+            Band::Scaled(f) => if base <= FLOOR_NS {
+                base as int
+            } else {
+                base - (base - FLOOR_NS) * f / 0x1_0000
+            },
+            Band::Immediate => 0,
+        }
+    }
+}
+
+impl Band {
+    /// `self` is the row of `other` or a lower one (less pressure): rows
+    /// in the table's order, and within the scaled band by position.
+    /// `Unlimited` compares only with itself.
+    pub open spec fn le(self, other: Band) -> bool {
+        match (self, other) {
+            (Band::Unlimited, Band::Unlimited) => true,
+            (Band::Low, Band::Low) | (Band::Low, Band::Scaled(_)) | (Band::Low, Band::Immediate) => true,
+            (Band::Scaled(f), Band::Scaled(g)) => f <= g,
+            (Band::Scaled(_), Band::Immediate) => true,
+            (Band::Immediate, Band::Immediate) => true,
+            _ => false,
+        }
+    }
+}
+
+/// [`scaled_ppm`] is at most `10^6` while `c <= l`.
+pub proof fn lemma_scaled_ppm_bound(c: u64, l: u64)
+    requires
+        c <= l,
+    ensures
+        0 <= scaled_ppm(c, l) <= 1_000_000,
+    decreases l,
+{
+    if l > 0x800_0000_0000 {
+        lemma_scaled_ppm_bound((c / 2) as u64, (l / 2) as u64);
+    } else if l > 0 {
+        lemma_mul_inequality(c as int, l as int, 1_000_000);
+        lemma_div_is_ordered(c * 1_000_000, l * 1_000_000, l as int);
+        lemma_fundamental_div_mod_converse_div(l * 1_000_000, l as int, 1_000_000, 0);
+    }
+}
+
+/// [`scaled_ppm`] is monotone in usage for a fixed limit.
+pub proof fn lemma_scaled_ppm_monotone(c1: u64, c2: u64, l: u64)
+    requires
+        c1 <= c2,
+    ensures
+        scaled_ppm(c1, l) <= scaled_ppm(c2, l),
+    decreases l,
+{
+    if l > 0x800_0000_0000 {
+        lemma_scaled_ppm_monotone((c1 / 2) as u64, (c2 / 2) as u64, (l / 2) as u64);
+    } else if l > 0 {
+        lemma_mul_inequality(c1 as int, c2 as int, 1_000_000);
+        lemma_div_is_ordered(c1 * 1_000_000, c2 * 1_000_000, l as int);
+    }
+}
+
+/// [`spec_usage_ppm`] is monotone in usage for a fixed limit, and at most
+/// `10^6`.
+pub proof fn lemma_usage_ppm_monotone(limit: u64, c1: u64, c2: u64)
+    requires
+        c1 <= c2,
+    ensures
+        0 <= spec_usage_ppm(limit, c1) <= spec_usage_ppm(limit, c2) <= 1_000_000,
+{
+    if c1 < limit {
+        lemma_scaled_ppm_bound(c1, limit);
+    }
+    if c2 < limit {
+        lemma_scaled_ppm_bound(c2, limit);
+        lemma_scaled_ppm_monotone(c1, c2, limit);
+    }
+}
+
+/// [`spec_band`] is a well-formed band.
+pub proof fn lemma_band_wf(limit: u64, current: u64)
+    ensures
+        spec_band(limit, current).wf(),
+{
+    if limit != UNLIMITED && limit != 0 {
+        let ppm = spec_usage_ppm(limit, current);
+        if SCALED_FROM_PPM <= ppm < IMMEDIATE_FROM_PPM {
+            lemma_mul_inequality(ppm - SCALED_FROM_PPM, 199_999, 0x1_0000);
+            lemma_div_is_ordered((ppm - SCALED_FROM_PPM) * 0x1_0000, 199_999 * 0x1_0000int, 200_000);
+        }
+    }
+}
+
+/// Band monotonicity: for a fixed limit, more usage never gives a lower
+/// row, nor a lower position within the scaled band.
+pub proof fn lemma_band_monotone(limit: u64, c1: u64, c2: u64)
+    requires
+        c1 <= c2,
+    ensures
+        spec_band(limit, c1).le(spec_band(limit, c2)),
+{
+    lemma_usage_ppm_monotone(limit, c1, c2);
+    lemma_band_wf(limit, c1);
+    lemma_band_wf(limit, c2);
+    if limit != UNLIMITED && limit != 0 {
+        let p1 = spec_usage_ppm(limit, c1);
+        let p2 = spec_usage_ppm(limit, c2);
+        if SCALED_FROM_PPM <= p1 && p2 < IMMEDIATE_FROM_PPM {
+            lemma_mul_inequality(p1 - SCALED_FROM_PPM, p2 - SCALED_FROM_PPM, 0x1_0000);
+            lemma_div_is_ordered(
+                (p1 - SCALED_FROM_PPM) * 0x1_0000,
+                (p2 - SCALED_FROM_PPM) * 0x1_0000,
+                200_000,
+            );
+        }
+    }
+}
+
+/// [`spec_effective_decay_ns`] never lengthens as the band rises.
+pub proof fn lemma_decay_monotone(base: u64, lo: Band, hi: Band)
+    requires
+        lo.wf(),
+        hi.wf(),
+        lo.le(hi),
+    ensures
+        spec_effective_decay_ns(base, hi) <= spec_effective_decay_ns(base, lo),
+{
+    if base != NEVER && base > FLOOR_NS {
+        let d = base - FLOOR_NS;
+        if let Band::Scaled(f) = lo {
+            lemma_mul_inequality(f as int, 0x1_0000, d);
+            lemma_div_is_ordered(d * f, d * 0x1_0000, 0x1_0000);
+            lemma_fundamental_div_mod_converse_div(d * 0x1_0000, 0x1_0000, d, 0);
+            if let Band::Scaled(g) = hi {
+                lemma_mul_inequality(f as int, g as int, d);
+                lemma_div_is_ordered(d * f, d * g, 0x1_0000);
+            }
+        }
+        if let Band::Scaled(g) = hi {
+            lemma_mul_inequality(0, g as int, d);
+            lemma_div_is_ordered(0, d * g, 0x1_0000);
+        }
+    }
+}
+
+/// Theorem (verus/THEOREMS.md, "Pressure never lengthens decay"): for a
+/// fixed effective limit and configured period `base`, higher usage
+/// never gives a lower band nor a longer effective decay period.
+/// [`band`] and [`effective_decay_ns`] ensure they compute
+/// [`spec_band`] and [`spec_effective_decay_ns`].
+pub proof fn theorem_pressure_never_lengthens_decay(base: u64, limit: u64, c1: u64, c2: u64)
+    requires
+        c1 <= c2,
+    ensures
+        spec_band(limit, c1).wf(),
+        spec_band(limit, c2).wf(),
+        spec_band(limit, c1).le(spec_band(limit, c2)),
+        spec_effective_decay_ns(base, spec_band(limit, c2)) <= spec_effective_decay_ns(
+            base,
+            spec_band(limit, c1),
+        ),
+{
+    lemma_band_wf(limit, c1);
+    lemma_band_wf(limit, c2);
+    lemma_band_monotone(limit, c1, c2);
+    lemma_decay_monotone(base, spec_band(limit, c1), spec_band(limit, c2));
+}
+
 /// The row for `limit` (the effective `min(high, max)`) and `current`.
 pub fn band(limit: u64, current: u64) -> (b: Band)
     ensures
@@ -259,6 +474,7 @@ pub fn band(limit: u64, current: u64) -> (b: Band)
         b == Band::Unlimited <==> limit == UNLIMITED || limit == 0,
         limit != UNLIMITED && limit != 0 && current >= limit ==> b == Band::Immediate,
         limit != UNLIMITED && current == 0 ==> b == Band::Unlimited || b == Band::Low,
+        b == spec_band(limit, current),
 {
     if limit == UNLIMITED || limit == 0 {
         return Band::Unlimited;
@@ -356,6 +572,7 @@ pub fn effective_decay_ns(base: u64, band: Band) -> (ns: u64)
             },
             Band::Immediate => ns == 0,
         },
+        ns == spec_effective_decay_ns(base, band),
 {
     if base == NEVER {
         return NEVER;
@@ -720,6 +937,24 @@ mod tests {
             band((256 << 20).min(L), 200 << 20),
             Band::Scaled(frac16(200 * 1_000_000 / 256 - 700_000, 200_000))
         );
+    }
+
+    /// The period half of `theorem_pressure_never_lengthens_decay`, sampled:
+    /// rising usage under a fixed limit, including limits past the 43 bits
+    /// `usage_ppm` halves down to.
+    #[test]
+    fn rising_usage_never_lengthens_the_period() {
+        for limit in [100, L, 3 * GIB + 7, (1 << 50) + 12_345, u64::MAX - 1] {
+            for base in [0, 200 * MS, FLOOR_NS, BASE, NEVER - 1, NEVER] {
+                let mut last = u64::MAX;
+                for i in 0..=4_000u64 {
+                    let current = (limit / 4_000).saturating_mul(i).max(i);
+                    let ns = effective_decay_ns(base, band(limit, current));
+                    assert!(ns <= last, "{limit} {base} {current}: {ns} > {last}");
+                    last = ns;
+                }
+            }
+        }
     }
 
     #[test]

@@ -1,6 +1,7 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the seven whole-allocator theorems as the code states them:
+Reference for the seven whole-allocator theorems (sections 1-7) and the
+cgroup policy's theorem (section 8) as the code states them:
 the Verus statement, the entry points it covers, and every trusted
 premise it rests on, with `file:line`. Read at `b2cad68` (branch
 `verus`); line numbers are the `fn`/`axiom` line at that commit.
@@ -1809,9 +1810,91 @@ extent touching the mark, returning it or `None`. Merges of `Empty` and
   lowest fit) is not proved; only that fresh pages mean no free extent
   touches the mark.
 
+## 8. Pressure never lengthens decay
+
+Read at this section's commit (the `file:line`s are the `fn` line
+there).
+
+**Statement** (`policy.rs:452`):
+
+```rust
+pub proof fn theorem_pressure_never_lengthens_decay(base: u64, limit: u64, c1: u64, c2: u64)
+    requires
+        c1 <= c2,
+    ensures
+        spec_band(limit, c1).wf(),
+        spec_band(limit, c2).wf(),
+        spec_band(limit, c1).le(spec_band(limit, c2)),
+        spec_effective_decay_ns(base, spec_band(limit, c2))
+            <= spec_effective_decay_ns(base, spec_band(limit, c1)),
+```
+
+(Line breaks added.) For one effective limit `limit` and one configured
+period `base` (nanoseconds, `NEVER` included), more usage never gives a
+lower band and never a longer effective decay period. The cgroup
+policy's table (`policy.rs` module doc) is therefore monotone: as
+`memory.current` rises toward the limit a period above 1 s stays, shrinks
+linearly to 1 s across 70% to 90%, then drops to 0, and never goes back
+up while usage keeps rising.
+
+`Band::le` (`policy.rs:319`) is the table's row order `Low` < `Scaled`
+< `Immediate`, by position within `Scaled`; `Unlimited` compares only
+with itself (for `limit == 0` or `UNLIMITED` both bands are
+`Unlimited` and the periods are equal). Band monotonicity alone is
+`lemma_band_monotone` (`:397`), and the period's monotonicity in the
+band is `lemma_decay_monotone` (`:421`), for any two well-formed bands
+in that order.
+
+The spec functions are the code's arithmetic exactly, for every input:
+`usage_ppm` (`:214`) ensures `ppm == spec_usage_ppm(limit, current)`,
+`band` (`:471`) ensures `b == spec_band(limit, current)` and
+`effective_decay_ns` (`:561`) ensures `ns ==
+spec_effective_decay_ns(base, band)`. `scaled_ppm` (`:261`) models
+`usage_ppm`'s loop, which halves usage and limit together until the
+limit fits 43 bits: the number of halvings depends on the limit alone,
+so it is the same for both usages, and halving keeps their order
+(`lemma_scaled_ppm_monotone`); `spec_usage_ppm` covers every limit,
+past `2^43` bytes included. `frac16`'s exact contract (`den <= 2^47`)
+covers `band`'s constant denominator 200 000, and `mul16`'s is exact.
+
+**Entry points.** None: no C symbol's `ensures` changes. The theorem is
+about two pure functions: `band`, which `evaluate` (`:853`, from
+`purge::on_tick` and the background thread) and `Shared::init`
+(`heap/shared.rs`) call, and `effective_decay_ns`, which
+`Policy::effective_decay_ns` (`:740`) applies to the stored band for
+the decay walks (`purge.rs`), `stats.cgroup.decay_ms`
+(`api/mallctl.rs`) and the reports (`api/print.rs`).
+
+**Premises beyond the common ones.** None: the proof uses no axiom,
+`external_body` or `assume_specification`; the three functions and
+`frac16`, `mul16` verify in place. The common premises are not used
+either.
+
+**Scope and where the statement is weaker than the code.**
+- One limit. `evaluate` passes `min(memory.max, memory.high)` up the
+  hierarchy as sampled; when that changes between two samples (`docker
+  update`, a write to `memory.high`), the two bands are not comparable
+  by this theorem, and a higher limit at the same usage does lengthen
+  the period, as it should.
+- Pure functions only. `Policy` stores the band as atomics
+  (`frac16`, `immediate`, `limited`; `Policy::apply`) and
+  `Policy::band` (`:703`) rebuilds it: that round trip is not proved
+  (`position` is `external_body` because Verus has no view of an
+  `AtomicU32`'s value), and it maps `Scaled(0)` back to `Low`, which
+  gives the same period. Concurrent `evaluate` calls or a reader between
+  `apply`'s stores (a torn `limited`/`frac16`/`immediate` triple) are
+  not covered, nor is what the decay walks do with the period.
+- Monotone in the usage sample, not in time: two samples taken in the
+  other order (usage falling) lengthen the period again, by design.
+- `NEVER` (`dirty_decay_ms:-1`) stays `NEVER` in every band; the
+  theorem holds there with equality.
+- The test `policy::tests::rising_usage_never_lengthens_the_period`
+  samples the period half of the theorem at runtime, including limits
+  past `2^43`.
+
 ## Interface contract
 
-The seven theorems above checked against challoc's exported C ABI: one
+Theorems 1-7 above checked against challoc's exported C ABI: one
 row per exported symbol (`je_` twins and C++ array forms share their
 row), one column per interface property. Read from the `ensures` of
 each entry point's Rust function at `ccbf1dd`; the `file:line`s in

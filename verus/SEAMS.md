@@ -3435,7 +3435,7 @@ pub fn free(&self, p: *mut u8, layout: Layout)
 
 ### S189. `Policy::position`
 
-src/policy.rs:478. Kind: external_body. Category: atomics primitive.
+src/policy.rs:695. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > The stored position in the scaled band.
@@ -3448,7 +3448,7 @@ fn position(&self) -> (f: u32)
 
 ### S190. `empty_bytes`
 
-src/policy.rs:624. Kind: external_body. Category: panic/abort.
+src/policy.rs:841. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > `Empty` bytes held by every class of every arena and by the huge allocator: one lock hold per class that has an `Empty` slab (the lock-free `oldest_empty` says which), one for the huge allocator.
