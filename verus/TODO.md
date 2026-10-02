@@ -59,6 +59,26 @@ All seven theorems are in the code. [THEOREMS.md](THEOREMS.md) records where eac
 - **Guard pages:** Done for slabs. `Regions::is_slot` excludes the process's guard slabs (`layout::guard_slab`, fixed per class by `table::axiom_slot_loc`), so every `fits` and every `free_target` carries the exclusion; `heap::theorem_guard_pages` and `theorem_guard_free` state it. The unsized free paths learn it from the bit test: `is_set_unchecked` reads the word through `vspec::word::load` inside its invariant, where `bitmap::guards_ok` keeps a guard slab's bits clear; the sized path's `GuardTest` is proved equal to the table's test. Machine code is unchanged on x86_64 (aarch64 is checked at integration). Still open: huge runs are covered only at the huge lock invariant (`huge::Inner::theorem_run_guards`); tie `alloc_run`'s result to its descriptor to state it per result, and model the fallback mode's re-commit of stale `PROT_NONE` guards.
 - **PAC:** Done. `sign`, `auth`, `strip`, and `mask` require `pac_available()`, meaning every CPU the process runs on implements FEAT_PAuth. `pac::available()` establishes it; `Shared::init` proves the `Shared::wf` premise `pac_mode() ==> pac_available()`, which hot paths carry as ghost-only requirements. One trusted fact in `sys/auxv.rs` links both `HWCAP_PACA` and `HWCAP_PACG` in `getauxval(AT_HWCAP)` to system-wide PAuth availability on aarch64. Machine code is unchanged.
 
+### Theorem candidates
+
+These candidates would extend the guarantees beyond the seven theorems in [THEOREMS.md](THEOREMS.md).
+
+- **No syscall on the fast path** (lane running): The `malloc` and `free` thread-cache fast paths make no system call. A ghost counter at the syscall seams could prove a performance guarantee that tests cannot establish.
+- **The fast path never hangs** (lane running): The thread-cache paths acquire no lock and terminate in a bounded number of steps. This needs termination proofs and a no-lock-acquired property; the hot loops currently have termination exemptions.
+- **No leak on thread exit** (lane running): The heap destructor returns every cached block, so an exiting thread strands no memory. The proof needs to account for every cached block as the destructor releases it.
+- **Fork safety:** After `fork`, the child holds no allocator lock owned by a thread that no longer exists. Fork tests check this today; a proof needs to track lock ownership across the fork handlers.
+- **Arena isolation:** A block from arena A is never released into arena B; a wrong-arena free aborts. The proof needs to carry arena ownership through the free paths.
+- **Shuffle is a permutation:** Slot randomization hands out every slot exactly once. This can prove preservation of slots without making a claim about randomness.
+- **Exact stats:** `mallinfo`, `malloc_stats`, and mallctl statistics equal the true sums over live blocks. This needs a live-block accounting model.
+- **Zero-on-free:** With `zero_on_free` set, a freed block’s bytes are zero before reuse. This needs to carry the zeroing claim through the free and allocation paths.
+
+Research, likely beyond Verus:
+
+- **Bounded memory:** Bound RSS by a function of live bytes. This needs a model of retained and committed memory.
+- **Purge within the decay time:** Return eligible memory within the decay time. This is a liveness property of the purge thread and its wake-ups.
+
+The gap list already tracks the live-block model, purge never discarding live data, bad input, realloc contents, errno failure semantics, and the huge kept bound.
+
 ### Weak memory and external models
 
 - Carry out the weak-memory checks in [WEAKMEM.md](WEAKMEM.md). Verus assumes sequential consistency and does not establish that the shipped `Relaxed`, `Acquire`, and `Release` orderings suffice. #72 fixes the background purge wake-up’s startup race; its weak-memory form (WEAKMEM.md P3) still needs a fix.
