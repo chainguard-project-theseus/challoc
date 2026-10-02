@@ -9,7 +9,10 @@ use crate::layout::{class_table, process_regions};
 use crate::lock::{Lock, RawLock};
 use crate::meta::Meta;
 use crate::sys::Errno;
+#[cfg(verus_only)]
+use crate::vspec::addr::cast_provenance;
 use vstd::prelude::*;
+use vstd::raw_ptr::PointsToRaw;
 
 verus! {
 
@@ -36,6 +39,14 @@ pub(crate) struct Lazy {
 }
 
 impl Lazy {
+    /// The table lies below the metadata limit, so the rounding in
+    /// [`Lazy::ensure`] does not wrap: what `reserve` proves of the
+    /// reservation, and nothing moves `base` or `len` afterwards.
+    #[verifier::type_invariant]
+    spec fn inv(self) -> bool {
+        self.base + self.len <= crate::meta::va_limit()
+    }
+
     /// A table of no bytes: `ensure` is a no-op on it.
     pub(crate) exec const EMPTY: Lazy = Lazy { base: 0, len: 0, committed: 0 };
 
@@ -83,7 +94,80 @@ impl Lazy {
             committed: 0,
         })
     }
+
+    /// [`reserve`](Lazy::reserve), with the permission to the table's
+    /// bytes, its length rounded up to a whole word ([`axiom_table_bytes`]),
+    /// and the alignment `Meta::reserve_table` gives its start.
+    pub(crate) fn reserve_raw(meta: &Meta, len: usize, align: usize) -> (r: (Option<Lazy>, Tracked<PointsToRaw>))
+        requires
+            crate::meta::is_pow2(align),
+        ensures
+            r.0 matches Some(l) ==> l.spec_base() + l.spec_len() <= crate::meta::va_limit() && l.spec_len() == len && l.spec_committed() == 0,
+            r.0 matches Some(l) ==> meta.holds(l.spec_base() as int, len as int),
+            r.0 matches Some(l) ==> l.spec_base() % align == 0,
+            r.0 matches Some(l) ==> r.1@.is_range(l.spec_base() as int, (len + 7) / 8 * 8),
+            r.0 matches Some(l) ==> r.1@.provenance() == cast_provenance(),
+    {
+        proof {
+            broadcast use lemma_shl_pow2;
+        }
+        // On a folio boundary, as in `reserve`.
+        let folio = crate::thp::meta_folio_size();
+        let Some(base) = meta.reserve_table(len, align.max(folio)) else {
+            return (None, Tracked(PointsToRaw::empty(cast_provenance())));
+        };
+        proof {
+            // The larger of two powers of two is a multiple of the smaller.
+            crate::meta::lemma_pow2_bits(align);
+            if folio > align {
+                let k = choose|k: u64| k < 64 && folio == #[trigger] (1usize << k);
+                let a = align;
+                assert(folio % a == 0) by (bit_vector)
+                    requires a & sub(a, 1) == 0, a > 0, k < 64, folio == 1usize << k, folio > a;
+                let (q, r) = (base as int / folio as int, folio as int / a as int);
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod(base as int, folio as int);
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod(folio as int, a as int);
+                assert(base as int == (q * r) * a) by (nonlinear_arith)
+                    requires base as int == folio * q, folio as int == a * r;
+                vstd::arithmetic::div_mod::lemma_mod_multiples_basic(q * r, a as int);
+            }
+        }
+        let tracked raw = axiom_table_bytes(base, (len + 7) / 8 * 8);
+        (Some(Lazy { base, len, committed: 0 }), Tracked(raw))
+    }
 }
+
+/// Trusted: the permission to the bytes of the table at `base` that
+/// `Meta::reserve_table` has just returned for `len` bytes, rounded up to
+/// a whole word. A table is carved once, never freed and handed to no one
+/// else, and `Meta` carves whole pages from a page-aligned start
+/// (`Inner::reserve`, `Inner::reserve_eager`), so the rounding stays
+/// inside the table's last page. Private, and [`Lazy::reserve_raw`] is
+/// its one call.
+///
+/// Not the only permission `Meta`'s proofs know of: an eager table's
+/// bytes go to `Inner::handed` in `Inner::reserve_eager`, and
+/// `Meta::reserve_table` leaves them there. Nothing hands that copy out
+/// (the next `Meta::reserve_committed_raw` replaces it, or drops it on
+/// failure), so the two never meet in one proof; a `Meta` method that
+/// returned the table's permission (from `handed` on the eager side, from
+/// the `Unbacked` token `reserve_table` drops on the reservation side)
+/// would replace this axiom.
+///
+/// Premise nothing checks: Verus does not model page protection. On the
+/// reservation side the bytes stay `PROT_NONE` until `Lazy::ensure`
+/// commits their page, and the holder of the permission reads only pages
+/// it has committed. `SlabTable`, the one holder, keeps that by its
+/// watermark: a slab's descriptor, bitmap words and owner word are
+/// committed before the watermark passes the slab, and every read is of a
+/// slab below a value the watermark held (the `# Safety` contracts of
+/// `desc_unchecked`, `bits_unchecked`, `is_set_unchecked`, `owner_word`
+/// and `owner_at`).
+axiom fn axiom_table_bytes(base: usize, len: int) -> (tracked r: PointsToRaw)
+    ensures
+        r.is_range(base as int, len),
+        r.provenance() == cast_provenance(),
+;
 
 /// A slab-number (or huge-page) set: a [`TwoLevelBitmap`] over a lazily
 /// committed table, either its own ([`Set::new`], `huge/`) or one view
@@ -165,19 +249,20 @@ impl SetTable {
 impl Lazy {
     /// Make the first `upto` bytes committed. The table's end rounded up
     /// to `page` bounds what is ever committed, so `committed <= len +
-    /// page` holds after every call with the same `page`.
+    /// page` holds after every call with the same `page` (and the
+    /// watermark only grows, so a call never breaks the bound).
     pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, upto: usize) -> (r: Result<(), Errno>)
         requires
             1 <= page <= 0x8000_0000_0000_0000,
             upto <= 0x4000_0000_0000_0000,
-            old(self).spec_len() <= 0x4000_0000_0000_0000,
-            old(self).spec_committed() <= old(self).spec_len() + page,
-            old(self).spec_base() + old(self).spec_len() + page <= usize::MAX,
         ensures
             final(self).spec_base() == old(self).spec_base(),
             final(self).spec_len() == old(self).spec_len(),
-            final(self).spec_committed() <= final(self).spec_len() + page,
+            old(self).spec_committed() <= old(self).spec_len() + page ==> final(self).spec_committed() <= final(self).spec_len() + page,
     {
+        proof {
+            use_type_invariant(&*self);
+        }
         // With metadata THP on (`thp.rs`) the commit is rounded to the
         // folio so the first touch of a table page maps one folio; the
         // table's own end is still the limit.
@@ -240,6 +325,17 @@ pub(crate) open spec fn reserved(groups: [Group; SET_GROUPS], nslabs: [usize; SE
 }
 
 impl SetTable {
+    /// The commit geometry [`SetTable::ensure`] relies on: a page that
+    /// [`Lazy::ensure`] takes, groups of at most three sets per class and
+    /// at most `2^26` slabs. `new` proves it, and nothing writes the
+    /// fields afterwards.
+    #[verifier::type_invariant]
+    spec fn inv(self) -> bool {
+        &&& 1 <= self.page <= 0x8000_0000_0000_0000
+        &&& forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] self.groups[g].stride <= 3 * NCLASSES
+        &&& forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] self.nslabs[g] <= 0x400_0000
+    }
+
     /// What [`SetTable::new`] builds over `regions` for class `c`
     /// ([`placed`] and [`reserved`]).
     pub(crate) open spec fn class_ok(&self, regions: Regions, c: int) -> bool {
@@ -349,9 +445,13 @@ impl Set {
     /// Commit the level-0 words that hold every bit up to and including
     /// `slab`. Only the store changes; the bitmap view is the same.
     ///
-    /// Trusted: `Lazy::ensure`'s preconditions are facts about the table
-    /// `new` or `in_table` sized, which no invariant of `Set` records, and
-    /// the shared store is followed through a raw pointer.
+    /// Trusted: the preconditions of `Lazy::ensure` (a page it takes and a
+    /// commit end below `2^62`) and of `SetTable::ensure` (the set's group
+    /// and a slab below its slab count) are facts about the table `new` or
+    /// `in_table` sized and about the caller's page and slab, which no
+    /// invariant of `Set` records and the callers (`ClassState::ensure_sets`,
+    /// `huge/`) do not state; and the shared store is followed through a raw
+    /// pointer.
     #[verifier::external_body]
     pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, slab: usize) -> (r: Result<(), Errno>)
         ensures
@@ -371,9 +471,11 @@ impl Set {
 verus! {
 
 /// Assumption (`lock.rs`): the commit watermarks behind
-/// [`SetTable::tables`] keep no invariant verified code relies on: their
-/// one holder, `SetTable::ensure`, is outside `verus!`, and no verified
-/// code reads them.
+/// [`SetTable::tables`] keep no invariant beyond their type's: the bounds
+/// `SetTable::ensure` needs are `Lazy`'s type invariant and
+/// `SetTable`'s, and `Lazy::ensure` takes any watermark. Their one
+/// writer, `SetTable::ensure`, is verified; the test-only
+/// `committed_ranges` only reads.
 pub broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
     ensures
         #[trigger] crate::lock::lock_inv(v),
@@ -403,6 +505,7 @@ impl SetTable {
                 regions.wf(),
                 forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] groups[g].count <= c,
                 forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] nslabs[g] <= 0x400_0000,
+                forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] groups[g].stride <= 3 * NCLASSES,
                 forall|d: int| 0 <= d < c ==> #[trigger] placed(pos, groups, nslabs, *regions, d),
         {
             let g = Self::group_of(c);
@@ -442,6 +545,7 @@ impl SetTable {
             invariant
                 forall|h: int| 0 <= h < SET_GROUPS ==> #[trigger] groups[h].count <= NCLASSES,
                 forall|h: int| 0 <= h < SET_GROUPS ==> #[trigger] nslabs[h] <= 0x400_0000,
+                forall|h: int| 0 <= h < SET_GROUPS ==> #[trigger] groups[h].stride <= 3 * NCLASSES,
                 forall|d: int| 0 <= d < NCLASSES ==> #[trigger] placed(pos, groups, nslabs, *regions, d),
                 forall|d: int| 0 <= d < NCLASSES && group_spec(d) < g ==> #[trigger] reserved(groups, nslabs, d),
                 crate::meta::is_pow2(page),
@@ -492,6 +596,9 @@ impl SetTable {
                 assert(placed(pos, groups, nslabs, *regions, c));
             }
         }
+        proof {
+            crate::meta::lemma_pow2_bits(page);
+        }
         Some(SetTable {
             groups,
             nslabs,
@@ -502,16 +609,31 @@ impl SetTable {
     }
 }
 
-} // verus!
-
 impl SetTable {
     /// Commit the rows of group `g` up to the level-0 word of `slab` (and
     /// so its chunk's level-1 word and every row before).
-    fn ensure(&self, meta: &Meta, g: usize, slab: usize) -> Result<(), Errno> {
+    fn ensure(&self, meta: &Meta, g: usize, slab: usize) -> (r: Result<(), Errno>)
+        requires
+            g < SET_GROUPS,
+            slab < self.nslabs[g as int],
+    {
+        proof {
+            use_type_invariant(self);
+            let w = slab / 64;
+            assert(w <= 0x10_0000);
+            assert(65 * (w / 64) + 1 + w % 64 <= 65 * 0x4000 + 64);
+            let (r1, s) = (65 * (w / 64) + 1 + w % 64 + 1, self.groups[g as int].stride as int);
+            assert(8 * r1 * s <= 8 * (65 * 0x4000 + 65) * (3 * NCLASSES)) by (nonlinear_arith)
+                requires 0 <= r1 <= 65 * 0x4000 + 65, 0 <= s <= 3 * NCLASSES;
+        }
         let row = TwoLevelBitmap::chunked_l0_row(slab / 64);
         self.tables.lock()[g].ensure(meta, self.page, 8 * (row + 1) * self.groups[g].stride)
     }
+}
 
+} // verus!
+
+impl SetTable {
     /// Tests: committed byte ranges of the groups.
     #[cfg(test)]
     pub fn committed_ranges(&self) -> [(usize, usize); SET_GROUPS] {

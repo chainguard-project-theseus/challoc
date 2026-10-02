@@ -240,7 +240,8 @@ a huge page start with no size bound.
   `class::axiom_class_lock_inv`, `axiom_class_lock`
   (`class/mod.rs:1288`, `:1296`), `table::axiom_table_lock_inv`,
   `_frame` (`class/table.rs:127`, `:134`), `next_slab_locked`
-  (`class/table.rs:1968`), `bits_unchecked` (`class/table.rs:1258`).
+  (`class/table.rs:1968`); `bits_unchecked` is verified, through the
+  word permissions of `table::axiom_init_words` (`class/table.rs:996`).
   **Unconfirmed** which of these the `is_slot` ensures of
   `ClassState::claim` needs; the slot address comes from
   `claim_with`'s verified `slots_in`.
@@ -424,11 +425,19 @@ the assumed `Heap::wf` and the huge lock axiom.
   this `Meta`).
 - `Shared::put_head` and `put_table` store what they are given
   (common premise); `SlabTable::new` (`class/table.rs:325`) proves
-  `meta_ok` from `Lazy::reserve`.
-- Trusted class accessors compute the named addresses: `desc_unchecked`
-  (`class/table.rs:1225`), `bits_unchecked` (`:1258`),
-  `is_set_unchecked` (`:1288`), `owner_unchecked` (`:1316`),
-  `owner_word` (`:1986`).
+  `meta_ok` from `Lazy::reserve_raw`.
+- The class table accessors `desc_unchecked`, `bits_unchecked`,
+  `is_set_unchecked`, `owner_word` and `owner_at` read through
+  permissions carved from the three reservations
+  (`SlabTable::perms_ok`): `sets::axiom_table_bytes`
+  (`class/sets.rs:166`, the table's bytes; an eager table's copy also
+  stays in `meta::Inner::handed`, never handed out),
+  `table::axiom_init_descs`, `_owners`, `_words` (`class/table.rs:974`,
+  `:984`, `:996`, the values are initialised), `words_ref` (`:1013`, a
+  slice over consecutive word permissions) and `watermark` (`:1580`, at
+  most the slab count). Premise: only committed pages are read (the
+  accessors' `# Safety`). `owner_unchecked` (`:1835`) is trusted for
+  `slab` below the slab count, which its one outside caller tests.
 - `TwoLevelBitmap::from_raw`, `from_raw_chunked` (`bitmap.rs:2584`,
   `:2616`): their `place` ensures.
 - `heap::axiom_fresh_stack` (`heap/mod.rs:1362`): a stack `Meta::alloc`
@@ -540,8 +549,10 @@ free path takes one from `axiom_free_token`.
   `fetch_or`, `store`, `fetch_and` (`:59`, `:76`, `:92`) are single
   atomic steps whose result is the permission's value (ordering
   ignored).
-- `SlabTable::bits_unchecked` (`class/table.rs:1258`): the view's words
-  are the class bitmap's words for a slab below the watermark.
+- `SlabTable::bits_unchecked` is verified: the view's words are the
+  class bitmap's through the permissions of `table::axiom_init_words`
+  (`class/table.rs:996`), whose `word_addr` ties them to the word
+  invariants.
 - Class and commit lock axioms (`class/mod.rs:1288`, `:1296`,
   `class/table.rs:127`, `:134`), the class lock bridges
   `owner_locked`, `state_locked`, `set_state_locked`, `dirty_locked`,
