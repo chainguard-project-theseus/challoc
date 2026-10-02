@@ -1,0 +1,252 @@
+# Weak-memory checking: scope and plan
+
+The Verus proofs assume sequential consistency: vstd's `std` atomic
+specifications return any value for a load and ignore the ordering, and
+the bitmap word wrappers (`vspec/word.rs:59`, `:76`, `:92`) are single
+atomic steps whose specification drops the `Ordering` argument. Nothing
+checks that the `Relaxed`, `Acquire` and `Release` orderings are strong
+enough. This file says which protocols need that check, what loom and
+GenMC would each need, and a plan. Read at the commit that verifies
+`Tcaches::create`, rebased onto upstream `c2962c8`; line numbers are
+from that tree.
+
+Marked **unconfirmed**: facts read from the code or tool documentation
+and not run.
+
+## Inventory
+
+226 non-test lines carry an `Ordering::` (`grep`, excluding `tests.rs`,
+`linux_tests.rs`, inline `#[cfg(test)]` code and `src/model/`). About
+three quarters are `Relaxed` statistics, configuration and heuristics
+(`thp.rs` 43, `purge.rs` 30, `policy.rs` 24, `sys/cgroup.rs` 24). The
+protocols below cover about 40 sites. There is no `fence` or
+`compiler_fence` call; `sys/raw.rs`'s syscall asm has no `nomem`, so
+each syscall is a compiler barrier.
+
+| File | Sites | Atomics |
+|---|---|---|
+| `thp.rs` | 43 | init-time config and counters |
+| `purge.rs` | 30 | flags, counters, `Decayer` (`:410`, `:412`) |
+| `policy.rs`, `sys/cgroup.rs` | 24, 24 | sampled policy, all `Relaxed` |
+| `arena.rs` | 21 | registry `AtomicPtr`s, count, stats |
+| `slab.rs` | 16 | `SlabDesc`: state, arena, `live`, dirty |
+| `class/mod.rs` | 15 | class counters |
+| `class/table.rs` | 11 | watermark; bitmap and owner words |
+| `api/mod.rs` | 9 | `STATE`, `INIT_TID`, `SEALED` |
+| `purge/background.rs` | 9 | `PRESENT`, `REQUESTED`, `SEQ` |
+| `bitmap.rs` | 8 | `&[AtomicU64]` words |
+| `heap/tcaches.rs` | 5 | `[AtomicPtr<u8>; 1024]` |
+| `lock.rs` | 5 | the lock word |
+| `huge/mod.rs` | 4 | `retain_max`, `purge_on_free` |
+| `heap/shared.rs` | 2 | `multi_arena` |
+
+## Protocols that matter
+
+### P1. Slab bitmap claim and release
+
+- Claim: `AtomicBitmap::claim_word` reads the word `Relaxed` as a hint
+  (`bitmap.rs:1507`), then `fetch_or(Acquire)` (`:1551`). Release:
+  `fetch_and(Release)` (`bitmap.rs:1733`), then `SlabDesc::sub_live`,
+  `fetch_sub(AcqRel)` (`slab.rs:251`).
+- Edge: the releaser's `fetch_and` synchronises with the next claimer's
+  `fetch_or`, so the previous owner's writes to the slot happen before
+  the next owner's (comment at `bitmap.rs:1548`). Intermediate claims on
+  the word are RMWs, so the release sequence continues through them.
+- Reservation: under the class lock `take` reads `live` `Acquire`
+  (`slab.rs:237`) and adds with `AcqRel` (`slab.rs:243`); releasers clear
+  bits before they subtract, so a reader of the lower `live` sees the
+  cleared bits (`slab.rs:233`).
+- Init: `AtomicBitmap::init` writes `Relaxed` (a store at `bitmap.rs:1279`,
+  `fetch_and` and `fetch_or` at `:1345`, `:1371`) under the commit
+  lock, published by `committed_slabs.store(Release)`
+  (`class/table.rs:1933`); owner words likewise (`class/table.rs:1925`).
+- What to check: no slot is held by two threads; slot data is
+  race-free across a release and the next claim; a claimer that
+  reserved a slot (`live`) finds a clear bit. A stale `Relaxed` hint
+  costs passes; `MAX_EMPTY_PASSES` (0x40_0000, `class/mod.rs:3121`)
+  empty passes in a row reach the `reservation_unmet` abort (`:3124`). A
+  bounded checker reaches that only with the constant lowered for the
+  harness.
+
+### P2. `Lock`
+
+- `RawLock` (`lock.rs`) is a futex mutex over one `u32` (Drepper's
+  "mutex 3"): `compare_exchange(0, 1, Acquire, Relaxed)` (`lock.rs:57`),
+  a `Relaxed` spin of up to 100 rounds (`:82`), `swap(2, Acquire)` and
+  `FUTEX_WAIT` (`:89`, `:92`, `:117`), unlock `swap(0, Release)`
+  (`:99`) and `FUTEX_WAKE` if the old value was 2 (`:100`, `:123`).
+- Every lock value (class `Inner`, the commit lock's `TableInner`, sets,
+  `meta::Inner`, `huge::Inner`, arena registry, stats, `Tcaches`,
+  background `STATE`) is plain data under the lock, with no atomics.
+  Checking the lock covers them. (`Huge` itself keeps `retain_max`,
+  `purge_on_free` and a `Decayer` outside the lock: out of scope.)
+- What to check: mutual exclusion, acquire/release of the protected
+  data, no lost wake-up between the `swap(2)` and `FUTEX_WAIT`.
+
+### P3. Background thread wake-up
+
+- `SEQ` is the futex word: `kick` does `fetch_add(SeqCst)` then
+  `futex_wake` (`purge/background.rs:117`, `:119`); the thread loads
+  `SEQ` `SeqCst` before its pass (`:419`) and waits on that value
+  (`:447`). `PRESENT` and `REQUESTED` are `Relaxed` (`:88`, `:93`,
+  `:100`, `:198`, `:423`, and `:485`, `:486` in `fork_child`).
+- `wake` kicks only if `present()` (`purge/background.rs:111`);
+  `note_empty` calls it on a class's first `Empty` slab
+  (`purge.rs:528`), and `Decayer::note_first_empty` (`purge.rs:444`)
+  reports only the first.
+- Candidate lost wake-up, possible even under SC (found by reading,
+  **not reproduced**): the new thread's first pass reads a class's
+  `oldest_empty` as 0 and computes no deadline; a free then empties the
+  class's first slab, `wake` sees `PRESENT` still false (the starter has
+  not reached `purge/background.rs:198`) and does not kick; the thread
+  sleeps with no timeout (`:426`-`:447`). From then on `on_tick` skips
+  foreground decay because `present()` is true (`purge.rs:602`), and the
+  class's later empties do not wake it because `oldest_empty` is set.
+  The class's `Empty` slabs stay resident until another wake.
+  Fixed upstream by chainguard-dev/challoc PR #72 (in the base,
+  `c2962c8`): once it has stored `PRESENT`, `start` kicks the thread
+  (`purge/background.rs:207`), which makes it scan again.
+- Under weak memory the window does not close by reordering the
+  existing steps: the free stores `oldest_empty` and loads `PRESENT`,
+  `start` stores `PRESENT`, the thread loads `oldest_empty`, all
+  `Relaxed`. That is the store-buffering shape: both loads may read the
+  old values unless the four accesses are `SeqCst` or fenced.
+
+### P4. Publishing `Shared`
+
+- `init_slow` (`api/mod.rs:319`):
+  `compare_exchange(UNINIT, INITIALISING, Acquire, Acquire)`, `init()`,
+  `STATE.store(READY, Release)`; readers `load(Acquire)` (`:221`,
+  `:236`), waiters spin `Acquire` (`:336`). Published by it: `SHARED`,
+  `FEATURES`, `FEATURE_LINE` (`UnsafeCell`s, `api/mod.rs:168`), the class
+  table's page geometry (`layout::adopt_page_geometry`), and the
+  init-time `Relaxed` configuration stores (thp, purge, background,
+  `SEALED`).
+- The fast paths skip the `READY` load (`shared_unchecked`,
+  `shared_ptr`, `api/mod.rs:250`, `:261`): the thread's own TLS heap
+  pointer is the witness, since heaps are created under `shared()`.
+  This crosses no thread; the TLS slot is per thread
+  (`sys/tls.rs:69`, `:140`).
+- This is the premise `api::shared_ref` (`api/mod.rs:207`) states for
+  the proofs: the published value is the one `Shared::init` built.
+- What to check: every `READY` reader sees the built value, including
+  the page geometry, which is a plain write.
+
+### P5. The free fast path's `Relaxed` reads
+
+- The free path reads `multi_arena` (`heap/shared.rs:981`), the
+  watermark (`class/table.rs:1200`, `:1214`), the bitmap bit (`:1293`)
+  and the owner word (`:1320`) `Relaxed`, with no acquire. The argument
+  (`class/table.rs:1179`-`:1194`, `heap/shared.rs:55`) is that the
+  program frees after it allocates, so happens-before runs from the
+  allocation.
+- A pointer handed between threads through a non-synchronising channel
+  (a `Relaxed` atomic) breaks that chain. A stale `multi_arena == false`
+  skips the arena check and the slot goes to the wrong arena's cache; a
+  stale bit weakens only the double-free check.
+- What to check: with a synchronising hand-off, a free never aborts
+  spuriously and never misroutes; with a `Relaxed` hand-off, which
+  outcomes appear (to document, not to fix).
+
+### P6. Explicit caches and the arena registry
+
+- `Tcaches::create` stores `Release` under the table lock
+  (`heap/tcaches.rs:99`); `get` loads `Acquire` without it (`:127`);
+  `destroy` swaps `AcqRel` (`:160`), then frees. Concurrent use of one
+  explicit cache, or use after `destroy`, is the caller's bug, as in
+  jemalloc.
+- Arena entries: `Release` stores (`arena.rs:485`, `:625`), `Acquire`
+  loads (`:494`, `:553`, `:573`, `:653`); `count` likewise (`:643`,
+  `:707`).
+- Thread heaps are touched only by their own thread; no code walks
+  another thread's heap.
+
+### Out of scope
+
+Statistics and heuristics whose stale values change only reports or
+timing: class counters (`class/mod.rs:1811`-`:1859`, `:2172`, `:4647`),
+`Arena::large`, `Decayer::next_walk`, `policy.rs`, `sys/cgroup.rs`,
+`thp.rs` (written at init). `LAZY_EVER` (`purge.rs:372`) is global and written
+under whichever class or huge lock flushes the batch; different locks
+do not order it. The read that matters is `take`'s, of a slab whose
+last discard was flushed under that slab's own lock (`class/mod.rs:2180`),
+so that lock orders the one store it must see; covered by P2.
+
+## What each tool needs
+
+### loom
+
+loom runs a test body under every interleaving it can reach and models
+part of C11 (stale `Relaxed`/`Acquire` loads within a bounded store
+history; **unconfirmed**: no load buffering). Its `UnsafeCell` reports
+data races, which is the check P1 needs for slot data.
+
+- Shim: every file imports `core::sync::atomic` directly (16 non-test
+  lines in 16 files,
+  e.g. `lock.rs:20`, `bitmap.rs:21`, `vspec/word.rs:32`). A
+  `crate::sync::atomic` module re-exporting `core`'s, or `loom`'s under
+  `cfg(loom)`, plus `cfg(loom)` in `Cargo.toml`'s `check-cfg` list and a
+  `cfg(loom)` dev-dependency. A re-export is the same type, so vstd's
+  specifications and the release machine code are unchanged (to confirm
+  with the disassembly check).
+- Futex: loom has no futex. `sys::futex_wait`/`futex_wake`
+  (`sys/mod.rs:586`, `:612`) need a `cfg(loom)` stand-in, for example a
+  per-address `loom::sync::Condvar`.
+- What loom cannot take as is: atomics made from raw metadata memory
+  (`class/table.rs:1265`, `:1290`, `:1317`, `:1991` cast addresses to
+  `&AtomicU64`/`&AtomicU16`); `static` atomics built in `const` context
+  (`STATE`, `SEQ`, `PRESENT`, the `thp`/`purge` statics), since loom's
+  constructors are not `const` and its state is per test; `no_std` (the
+  crate already links `std` under `cfg(test)`). So: real code for the
+  struct-based protocols (P1 through `AtomicBitmap::from_words` over a
+  slice of loom atomics, P2 through `RawLock`), small copies for the
+  static-based ones (P3, P4).
+
+### GenMC
+
+GenMC checks C and C++ programs under RC11 (and IMM) by exhaustive,
+stateless exploration with no bound on store history, so it finds the
+weak behaviours loom's bound can miss. It reads C through its own clang
+front end. Feeding it rustc's LLVM IR would need matching LLVM versions
+and a way to map Rust's atomics and the futex syscall onto GenMC's
+primitives (**unconfirmed**; not tried). The practical route is C models
+of P1, P2 and P3 written to mirror the Rust line by line, with the Rust
+line numbers in comments, kept in step by review.
+
+### The existing model
+
+`src/model/` is a sequentially consistent interleaving explorer of the
+slab protocol (`model/mod.rs:1`-`:58`): one class, 2 slabs of 4 slots,
+1-2 arenas, 2-3 threads; Refill, Write, Release and Purge split into
+`class/`'s atomic steps; depth-first search with memoisation
+(`model/steps.rs:784`); invariants for no double hold, held bit set,
+the calloc zero claim, `live` bounds and set membership
+(`model/steps.rs:621`-`:780`). It has no orderings or stale reads, no
+lock or futex internals, no publication and nothing of the background
+thread. Its invariants are the properties P1's loom and GenMC checks
+should assert.
+
+## Plan
+
+| Step | Work | Days |
+|---|---|---|
+| 0 | `crate::sync::atomic` shim, 16 imports, check-cfg; disasm | 0.5 |
+| 1 | loom: `RawLock` with a futex stand-in (P2) | 1-2 |
+| 2 | loom: bitmap claim/release, `live`, slot data cells (P1) | 2-3 |
+| 3 | loom: background wake-up copy; try the P3 race | 1 |
+| 4 | loom: `READY` publication copy, free hand-off (P4, P5) | 1-2 |
+| 5 | GenMC: C models of P1-P3 under RC11 | 3-4 |
+| 6 | CI: `RUSTFLAGS="--cfg loom" cargo test --release loom_` | 0.5 |
+
+About 9-13 days. Steps 1-3 carry most of the value: P1 is the one
+protocol whose orderings guard user data, P2 guards every lock value,
+and P3 has a candidate bug to confirm or refute. Step 0 touches 16
+files outside `verus/` and needs the codegen check; steps 1-4 add test
+code only. A confirmed P3 race is a fix in `purge/background.rs`, outside this
+plan: `start` calls `kick()` after it stores `PRESENT`, with the four
+accesses above made `SeqCst` (or fenced).
+
+What stays assumed after the plan: the Verus proofs are still SC
+proofs. The checks above show that the shipped orderings give the
+happens-before edges the SC proofs rely on, for small configurations;
+they do not lift the proofs to weak memory.
