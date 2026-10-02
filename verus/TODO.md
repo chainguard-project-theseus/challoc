@@ -48,6 +48,8 @@ Other tools could cover much of the remainder: Islaris for inline assembly, Refi
 - Reduce the trusted construction boundary around heap creation, `Arenas::build`, in-place field access, and publication of `Shared`. `Shared::init` verifies using the token from `Regions::reserve_owning` and `Meta::owning`; `Meta::new` is test-only. Heap creation still writes headers through raw pointers, and heap accessors assume `Heap::wf`.
 - Revisit `config::TABLE`, mallctl readers, print sinks, and `fmt::Display` implementations when Verus supports their function-pointer and formatting patterns. `Sink::write_str` stays outside `verus!`: its room computation needs a type invariant on `Sink`, under which Verus rejects the `&mut` borrow of the buffer in a call that may unwind; its character-boundary cut (#71) is the verified `char_cut`.
 
+- **Seam audit (queued):** After the Kani lane and live-block merge land, split the 359 seams in [SEAMS.md](SEAMS.md) by category across 3–4 lanes. For each seam, try to derive `false` from edge cases such as equal pointers, zero sizes, and address 0; check whether its `ensures` holds for the body, using Kani or Miri for small cases; and ask whether the seam is still needed. The equal-pointer case exposed `axiom_moved_block` as unsound, while the live-block lane removed `axiom_free_token`, `mint_allocated`, and `axiom_owned_run`. Ask reviewers to find false contracts. Record findings with each seam and put fixes in the code or ledger.
+
 ### Theorem premises
 
 All seven theorems are in the code. [THEOREMS.md](THEOREMS.md) records where each statement is narrower than the allocator’s behavior and which trusted premises it uses. The active lanes are:
