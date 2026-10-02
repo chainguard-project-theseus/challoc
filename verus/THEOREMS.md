@@ -285,8 +285,9 @@ is `p % align == 0`. Lemmas: `lemma_slot_fits` (`heap/mod.rs:413`),
   `usable` bytes (`Huge::spec_usable`, `huge/mod.rs:2400`), which the
   code hands out.
 - The slab fit is `size <= class size`, true but not "the class size is
-  usable": `malloc_usable_size` (`api/libc.rs:530`) ensures only
-  `free_target`, not its result.
+  usable": `fits` does not say it. The size-returning entry points do
+  (`vspec::usable::usable_is` and `usable_of`, the U column of the
+  interface contract below).
 
 ## 3. Invalid free
 
@@ -576,7 +577,7 @@ free path takes one from `axiom_free_token`.
 | Function (`file:line`) | Token on a non-null result |
 |---|---|
 | `calloc_zeroed` (`api/libc.rs:319`) | `covers(r.0, n * m)` |
-| `calloc_usable_zeroed` (`api/libc.rs:853`) | `n * m`, if `<= MEDIUM_MAX` |
+| `calloc_usable_zeroed` (`api/libc.rs:853`) | `n * m`, and `covers_usable(.., 0, n * m)` |
 | `mallocx_zeroed` (`api/jemalloc.rs:220`) | `size`, with `MALLOCX_ZERO` |
 | `rallocx_zeroed` (`api/jemalloc.rs:251`) | `size - k` bytes from `r + k` |
 
@@ -639,8 +640,11 @@ symbols carry no token.
 - `rallocx_zeroed`'s `k` is any value in `0..=size`; the code copies
   `min(old, size)` with `old` from `old_size_or_keep`, whose ensures does
   not state `old`.
-- `calloc_usable_zeroed` gives no token for huge requests: the huge
-  `memset` length (`Huge::usable_size`) is not tied to the run.
+- `calloc_usable_zeroed`'s huge `memset` length (`Huge::usable_size`)
+  is tied to the run only through `vspec::huge::axiom_owned_run`
+  (`r == huge_usable(size)`), from which `lemma_covers_huge` gives
+  `covers_usable` for its whole usable size (row 13 of
+  the interface contract).
 
 ## Interface contract
 
@@ -649,14 +653,19 @@ row per exported symbol (`je_` twins and C++ array forms share their
 row), one column per interface property. Read from the `ensures` of
 each entry point's Rust function at `ccbf1dd`; the `file:line`s in
 this section are the `fn` line at that commit (the sections above are
-at `b2cad68`). All the trusted premises listed above apply to every
-cell. Every `extern "C"` wrapper is in `verus!` with no contract of its
+at `b2cad68`). The U column, row 13's Z and row 22's F were revised
+later, by the usable-size work (gap 3 below); items it added are cited
+by name. All the trusted premises listed above apply to every cell. Every `extern "C"` wrapper is in `verus!` with no contract of its
 own and only casts, except `malloc_stats_print`. So the Rust function's
 `ensures` is the symbol's contract, and a verified body cannot panic or
 overflow. Where that function is `.0` of a `_zeroed` twin (`calloc`,
 `challoc_calloc_usable`, `mallocx`), the Z cell rests on the twin's
 `ensures`: the zero token is ghost, so the exported function returns
-the same block.
+the same block. Likewise the U cells of rows 12 and 14 rest on the
+`_stored` twins' `ensures` (`malloc_usable_stored`,
+`realloc_usable_stored`) and row 13's on `calloc_usable_zeroed`'s third
+result: `malloc_usable` and `realloc_usable` themselves state nothing
+about `*usable`.
 
 Properties:
 
@@ -683,20 +692,20 @@ Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
 | 6  | `posix_memalign`                            | p | p | . | . | p | P | . |
 | 7  | `valloc`                                    | P | p | . | . | p | . | . |
 | 8  | `pvalloc`                                   | p | p | . | . | p | . | . |
-| 9  | `malloc_usable_size`                        | . | . | . | . | P | p | - |
+| 9  | `malloc_usable_size`                        | . | . | . | . | P | p | p |
 | 10 | `free`                                      | . | . | . | . | - | p | . |
 | 11 | `free_sized`, `free_aligned_sized`          | . | . | . | . | - | p | . |
-| 12 | `challoc_malloc_usable`                     | P | p | . | . | p | . | - |
-| 13 | `challoc_calloc_usable`                     | P | p | p | . | p | . | - |
-| 14 | `challoc_realloc_usable`                    | p | p | . | - | p | p | - |
-| 15 | `challoc_free_usable`                       | . | . | . | . | P | p | - |
+| 12 | `challoc_malloc_usable`                     | P | p | . | . | p | . | P |
+| 13 | `challoc_calloc_usable`                     | P | p | P | . | p | . | P |
+| 14 | `challoc_realloc_usable`                    | p | p | . | - | p | p | P |
+| 15 | `challoc_free_usable`                       | . | . | . | . | P | p | p |
 | 16 | `mallocx`                                   | P | p | P | . | p | - | . |
 | 17 | `rallocx`                                   | p | p | p | - | p | p | . |
-| 18 | `xallocx`                                   | . | . | . | . | . | p | - |
-| 19 | `sallocx`                                   | . | . | . | . | . | p | - |
+| 18 | `xallocx`                                   | . | . | . | . | . | p | p |
+| 19 | `sallocx`                                   | . | . | . | . | . | p | p |
 | 20 | `dallocx`                                   | . | . | . | . | . | p | . |
 | 21 | `sdallocx`                                  | . | . | . | . | . | p | . |
-| 22 | `nallocx`                                   | . | . | . | . | p | . | p |
+| 22 | `nallocx`                                   | . | . | . | . | P | . | P |
 | 23 | `operator new`, `new[]`                     | P | p | . | . | p | . | . |
 | 24 | `new`, `new[]` (`nothrow_t`)                | P | p | . | . | p | . | . |
 | 25 | `new`, `new[]` (`align_val_t`, 4 forms)     | P | p | . | . | p | - | . |
@@ -740,12 +749,31 @@ Notes that recur below:
   `ensures` says that a non-live pointer aborts. Under the free contract
   (`axiom_free_token`), a double free makes the proof context
   inconsistent.
-- *(U-slot)*: `usable_size` (`api/libc.rs:522`) ensures
-  `huge_run_usable(p, r)` (`heap/shared.rs:936`) for a huge page start
-  only. For a slot it returns `class_size(class)` (`api/libc.rs:781`,
-  which ensures `r == class_table()[c].size`), but the slot equality is
-  not in `usable_size`'s `ensures`, and the callers below re-export
-  neither half.
+- *(U)*: the size specs are in `vspec/usable.rs`. `usable_is(p, size,
+  n)` is the usable size of a block an allocation of `size` bytes
+  returned: the class's size for a slot, `huge_usable(size)` (`size`
+  rounded up to whole pages) for a huge page start, the ends
+  `covers_usable` names. `usable_of(p, n)` is what a query reads for a
+  live block: the class's size for a slot; for a huge page start only
+  `run_bytes(p, n)`, the descriptor's shape (whole pages, at least one,
+  guard inside the region). `usable_size` ensures `usable_of`, and
+  `malloc_usable_size`, `sallocx`, `xallocx` and `free_usable` re-export
+  it. So a query of a slot is exact, and
+  `vspec::usable::theorem_usable_consistent` proves that it reads what
+  the allocation stated (`r == n` for a slot). A query of a huge run is
+  not tied to the request: the run's request size lives in no ghost
+  state a C caller hands back, so that needs gap 1's run token. Hence
+  `p` for rows 9, 15, 18 and 19. The allocating `_usable` entry points
+  are `.0` of `_stored` twins (`malloc_usable_stored`,
+  `realloc_usable_stored`; `calloc_usable_zeroed`'s third result) that
+  return the `Stored` token of `store_usable` (`external_body`, its
+  ensures `s@.ptr() == usable && s@.val() == n`), the last store through
+  `usable`. They state `usable_is(r, size, s@.val())` for a non-null
+  result. For a huge run they read the size back with `usable_size` right
+  after `alloc_huge`, and `vspec::huge::axiom_owned_run`, which states
+  `r == huge_usable(size)` (the descriptor `Huge::take` wrote: it
+  takes `usable_pages(size)` pages plus the guard), makes it the
+  request's page-rounded size.
 
 Per row (cells marked `P` without a note are the cited `ensures`
 alone):
@@ -791,7 +819,8 @@ alone):
    `ensures`; the rest is *(errno)*.
 9. `malloc_usable_size` (`api/libc.rs:565`). F: `p == 0 ==> r == 0`. B:
    `p != 0 ==> free_target(p)`, *(live)*. Before init, a non-NULL `p`
-   aborts (`free_before_init`, `:508`). U: *(U-slot)*.
+   aborts (`free_before_init`, `:508`). U: `p != 0 ==> usable_of(p, r)`,
+   exact for a slot, the descriptor's shape for a huge run, *(U)*.
 10. `free` (`api/libc.rs:386`). B: `p != 0 ==> free_target(p)`, *(live)*;
     NULL is a no-op (early return; not in the `ensures`). F: `errno`
     preservation (the module doc's promise) is *(errno)*. A thread's
@@ -804,26 +833,43 @@ alone):
     pushed untested; its liveness is checked when the cache flushes. A
     non-power-of-two alignment gives no hint and aborts on a slab pointer.
     F: as `free`.
-12. `challoc_malloc_usable` (`api/libc.rs:798`). R, D, F: as `malloc`.
-    U: `store_usable` (`:770`, `external_body`) claims nothing, so
-    `*usable` is unstated.
+12. `challoc_malloc_usable` (`api/libc.rs:798`, `.0` of
+    `malloc_usable_stored`). R, D, F: as `malloc`. U: the `Stored` token
+    of the last store through `usable` has `ptr() == usable` and, for a
+    non-null result, `usable_is(r, size, val())`: the class's size, or
+    `size` rounded up to whole pages for a huge run (*(U)*, through
+    `axiom_owned_run`). That the class is `nallocx(size, 0)`'s (the
+    smallest that holds `size` bytes) is true of `class_index` but not
+    exported here. Not stated either: the 0 stored for a null result
+    (`Heap::alloc_fast`'s pop states a slot, and the regions' spec does
+    not rule out a slot at address 0).
 13. `challoc_calloc_usable` (`api/libc.rs:890`, `calloc_usable_zeroed`,
-    `:905`). R, F: as `calloc`. Z: the token covers `n * m` bytes. The
-    whole usable size, which the doc promises and the code zeroes
-    (`write_zero(p, u)`), is not stated. For huge runs the token rests on
-    `axiom_owned_run` (`vspec/huge.rs:77`). U: as row 12.
-14. `challoc_realloc_usable` (`api/libc.rs:969`). R, D, C, F, B: as
-    `realloc` (the keep decision is `realloc_old`, `:1010`). U: as row 12.
+    `:905`). R, F: as `calloc`. Z: the token covers `n * m` bytes and
+    `covers_usable(r.1, r.0, 0, n * m)`, the whole usable size the doc
+    promises and the code zeroes (`write_zero(p, u)`, or the known-zero
+    token of `heap::alloc_zeroed` or `alloc_huge`). For huge runs the
+    `memset` length rests on `axiom_owned_run` (`vspec/huge.rs:77`). U:
+    as row 12, for `n * m`, and the null result's 0 is stated.
+14. `challoc_realloc_usable` (`api/libc.rs:969`, `.0` of
+    `realloc_usable_stored`). R, D, C, F, B: as `realloc` (the keep
+    decision is `realloc_old`, `:1010`). U: as row 12. A kept block's
+    size is `realloc_old`'s, which ensures `usable_of(p, old)` and, when
+    kept, `usable_is(p, size, old)` (for a run, `usable_for(size) ==
+    Some(old)` is the keep test); a moved block's is
+    `malloc_usable_stored`'s.
 15. `challoc_free_usable` (`api/libc.rs:1055`). F: `p == 0 ==> r == 0`.
-    B: as `free`. U: the returned size is not stated (`class_size` on the
-    fast path; `free_usable_slow`, `:1081`, takes the class size or
-    `Huge::usable_size`).
+    B: as `free`. U: `p != 0 ==> usable_of(p, r)`, *(U)*: the class size
+    from `heap::free_fast_class`, which ensures `is_slot(c, p)`, or
+    from `free_usable_slow`'s classification (`:1081`), or
+    `Huge::usable_size` there.
 16. `mallocx` (`api/jemalloc.rs:231`, `.0` of `mallocx_zeroed`, `:243`).
     R: `fits(r, size, 1 << (flags & 0x3f))`. With no `MALLOCX_LG_ALIGN`
     this is alignment 1, weaker than the quantum the code gives. Z: with
     `MALLOCX_ZERO`, `covers(r, size)` and `covers_usable(.., 0, size)`
     (`vspec/zero.rs:109`, the whole usable size; theorem
-    `vspec::zero::theorem_zeroed_memory`, `:240`). F: NULL on failure
+    `vspec::zero::theorem_zeroed_memory`, `:240`). Also, for a non-NULL
+    result, `usable_is(r, size, nalloc_usable(size, flags & 0x3f))` (row
+    22). F: NULL on failure
     with `errno` untouched (`alloc_with`'s doc) is not stated beyond
     `fits` allowing NULL. B: an arena or explicit cache that does not
     exist returns NULL (doc of `alloc_with`, `:160`); not stated.
@@ -838,10 +884,12 @@ alone):
     allocates.
 18. `xallocx` (`api/jemalloc.rs:332`). Never resizes; returns
     `sallocx(p, 0)`. B: `free_target(p)` unconditionally, so NULL aborts.
-    U: the result is unstated.
+    U: `usable_of(p, r)`, as row 19.
 19. `sallocx` (`api/jemalloc.rs:340`). B: `free_target(p)`
     unconditionally; NULL aborts (`not_an_allocation`, `:135`); *(live)*.
-    U: *(U-slot)*.
+    U: `usable_of(p, r)`, *(U)*. For a slot `mallocx(size, flags)`
+    returned, `theorem_usable_consistent` gives `r == nallocx(size,
+    flags)`, jemalloc's contract.
 20. `dallocx` (`api/jemalloc.rs:353`). B: `p != 0 ==> free_target(p)`,
     *(live)*. With `MALLOCX_TCACHE_NONE` the release tests the bit
     immediately (**unconfirmed**, from the doc comment).
@@ -850,11 +898,22 @@ alone):
     is checked as in row 11: `flags == 0` is `free_sized`, and
     `sdallocx_flags`/`sdallocx_routed` (`:391`, `:409`) hint
     `class_for(size, align)`.
-22. `nallocx` (`api/jemalloc.rs:432`). F, U: `r == 0 || size <= r`. Not
-    stated: that `r` equals the usable size `mallocx(size, flags)` gives.
-    Both use `class_for` and `Huge::usable_for` (`usable_for`, `:142`;
-    `alloc_with`), and `covers_usable` names the same sizes, but no
-    lemma connects them. Not stated either: when `r == 0`.
+22. `nallocx` (`api/jemalloc.rs:432`). F, U: `r == 0 || size <= r` and
+    `r == nalloc_usable(size, flags & 0x3f)` (`api/jemalloc.rs`), the
+    size of `spec_class_for(size, 1 << (flags & 0x3f))`, or
+    `huge_usable(size)`, or 0 when the page rounding overflows. `mallocx`
+    and `mallocx_zeroed` (through `alloc_with`) ensure
+    `r != 0 ==> usable_is(r, size, nalloc_usable(size, flags & 0x3f))`,
+    so `nallocx(size, flags)` is the usable size `mallocx(size, flags)`
+    gives. The two calls agree because `class_for` ensures
+    `r == spec_class_for(size, align)` for a power-of-two `align`, the
+    smallest class that serves the request (`least_class`, from
+    `class_of`'s and `class_index`'s new minimality: no smaller class
+    holds `size` bytes), and `Huge::usable_for` is `Huge::spec_usable`.
+    F: `r == 0` exactly when no class serves the request and `size`
+    rounded up to a page overflows (class sizes and `huge_usable` are
+    positive); `mallocx` then returns NULL (`alloc_huge` ensures
+    `huge_ok(size)` of a non-NULL run).
 23. `operator new`, `new[]` (`api/cxx.rs:214`). R:
     `fits(r, size, QUANTUM)`. F: the C++ contract (never NULL; throws
     `std::bad_alloc` after the `new_handler` loop) is not stated. `oom`
@@ -954,13 +1013,16 @@ alone):
    allocating entry points. This turns the F cells of rows 1-8, 12-14
    and 32 (and `free`'s preservation, rows 10, 11) to `P` or nearly so.
    Mostly spec work; the hot paths keep their code.
-3. **Usable-size contract**: add the slot half to `usable_size`, re-export
-   it from `malloc_usable_size`, `sallocx`, `xallocx` and
-   `challoc_free_usable`, state `*usable` through a spec for
-   `store_usable`, and prove `nallocx(size, flags)` equal to
-   `mallocx`'s usable size (`usable_for` against `alloc_with`). This turns
-   the whole U column (8 rows) to `P`, plus row 13's Z (zero the usable
-   size, as the code does). Cheap: `ensures` and small lemmas.
+3. **Usable-size contract**: done for rows 12, 13, 14 and 22 (U to `P`)
+   and row 13's Z, *(U)*. `usable_size` states both halves
+   (`usable_of`), and `malloc_usable_size`, `sallocx`, `xallocx` and
+   `challoc_free_usable` re-export it; `*usable` is a `Stored` token from
+   `store_usable`; `nallocx` and `mallocx` share `nalloc_usable`. Left:
+   the huge half of a query (rows 9, 15, 18, 19 stay `p`), which needs
+   the run's request size in ghost state the caller holds (gap 1's run
+   token), and the 0 that `challoc_malloc_usable` and
+   `challoc_realloc_usable` store for NULL (a slot at address 0 is not
+   ruled out by `Regions::wf`).
 4. **Failure-path contracts**: `r@.addr == 0 ==> p` still live for the
    realloc family (needs 1, or a ghost "not freed" result);
    `posix_memalign`'s `*out` through a `PointsTo` for `store_out`;

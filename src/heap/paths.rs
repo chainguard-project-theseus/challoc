@@ -558,7 +558,7 @@ pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> 
         old(h).wf(),
     ensures
         final(h).keeps(*old(h)),
-        r matches Some(c) ==> c < NCLASSES,
+        r matches Some(c) ==> c < NCLASSES && process_regions().is_slot(c as int, p@.addr),
         flags & PUSH_ZERO != 0 ==> r is None,
         r is Some ==> free_target(p),
 {

@@ -50,9 +50,9 @@
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 
-#[cfg(verus_only)]
-use super::libc::lemma_class_aligned;
 use super::libc::{class_for, old_size_or_keep, usable_size};
+#[cfg(verus_only)]
+use super::libc::{lemma_class_aligned, spec_class_for};
 use crate::heap::Shared;
 #[cfg(verus_only)]
 use crate::heap::mallocx::MALLOCX_ZERO;
@@ -60,9 +60,11 @@ use crate::heap::mallocx::{self, Flags, Tcache};
 #[cfg(verus_only)]
 use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind};
+#[cfg(verus_only)]
+use crate::vspec::usable::{usable_is, usable_of};
 use crate::vspec::zero::Zeroed;
 #[cfg(verus_only)]
-use crate::vspec::zero::{covers_usable, lemma_covers_huge, lemma_covers_slot};
+use crate::vspec::zero::{covers_usable, huge_usable, lemma_covers_huge, lemma_covers_slot};
 #[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, int, verus};
@@ -136,15 +138,39 @@ fn not_an_allocation(what: &str, p: *mut u8) -> ! {
     crate::sys::abort_fmt(format_args!("{what} of {:#x}: not an allocation", p as usize))
 }
 
+/// The usable size `mallocx(size, flags)` gives and `nallocx(size, flags)`
+/// returns, for `lg_align` the flags' `MALLOCX_LG_ALIGN`: the size of the
+/// smallest class that serves `size` bytes at `1 << lg_align`
+/// ([`spec_class_for`]), or for a huge request `size` rounded up to whole
+/// pages ([`huge_usable`]), 0 when that rounding overflows.
+pub open spec fn nalloc_usable(size: usize, lg_align: u32) -> int {
+    match spec_class_for(size, 1usize << lg_align) {
+        Some(c) => class_table()[c as int].size as int,
+        None => if size + (1usize << crate::layout::process_regions().lg_page) - 1 <= usize::MAX {
+            huge_usable(size as int)
+        } else {
+            0
+        },
+    }
+}
+
 /// The usable size `mallocx(size, flags)` gives: the class size at the
 /// flags' alignment, or the huge run's page-rounded size. `None` when the
 /// size cannot be represented (`nallocx` returns 0).
 fn usable_for(shared: &Shared, size: usize, f: &Flags) -> (r: Option<usize>)
     requires
         f.lg_align < 64,
+        shared.wf(),
     ensures
         r matches Some(u) ==> size <= u,
+        r matches Some(u) ==> u == nalloc_usable(size, f.lg_align),
+        r is None ==> nalloc_usable(size, f.lg_align) == 0,
 {
+    proof {
+        crate::meta::lemma_is_pow2_shl(f.lg_align as usize);
+        shared.lemma_wf();
+        shared.lemma_huge_usable(size);
+    }
     match class_for(size, f.align()) {
         Some(c) => Some(CLASSES.table()[c].size()),
         None => shared.huge.usable_for(size),
@@ -165,6 +191,7 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags) -> (r: (*mut u8, Tracked<
         crate::heap::fits(r.0, size as int, (1usize << f.lg_align) as int),
         r.0@.addr != 0 && f.zero ==> r.1@.covers(r.0, size as int),
         r.0@.addr != 0 && f.zero ==> covers_usable(r.1@, r.0, 0, size as int),
+        r.0@.addr != 0 ==> usable_is(r.0, size as int, nalloc_usable(size, f.lg_align)),
 {
     let align = f.align();
     proof {
@@ -182,6 +209,7 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags) -> (r: (*mut u8, Tracked<
                 if p@.addr != 0 {
                     lemma_class_aligned(c, align);
                     crate::heap::lemma_slot_fits(p, c as int, size as int, align);
+                    crate::vspec::usable::lemma_usable_slot(p, c as int, size as int);
                     if zero {
                         lemma_covers_slot(z@, p, c as int, 0, size as int);
                     }
@@ -194,6 +222,7 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags) -> (r: (*mut u8, Tracked<
             proof {
                 if p@.addr != 0 {
                     crate::heap::lemma_huge_fits(p, size, align, align);
+                    crate::vspec::usable::lemma_usable_huge(p, size as int);
                 }
             }
             let u = shared.huge.usable_for(size);
@@ -231,6 +260,7 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags) -> (r: (*mut u8, Tracked<
 pub fn mallocx(size: usize, flags: c_int) -> (r: *mut u8)
     ensures
         crate::heap::fits(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
+        r@.addr != 0 ==> usable_is(r, size as int, nalloc_usable(size, (flags as u32) & 0x3f)),
 {
     mallocx_zeroed(size, flags).0
 }
@@ -245,6 +275,7 @@ pub fn mallocx_zeroed(size: usize, flags: c_int) -> (r: (*mut u8, Tracked<Zeroed
         crate::heap::fits(r.0, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
         r.0@.addr != 0 && (flags as u32) & MALLOCX_ZERO != 0 ==> r.1@.covers(r.0, size as int),
         r.0@.addr != 0 && (flags as u32) & MALLOCX_ZERO != 0 ==> covers_usable(r.1@, r.0, 0, size as int),
+        r.0@.addr != 0 ==> usable_is(r.0, size as int, nalloc_usable(size, (flags as u32) & 0x3f)),
 {
     let f = Flags::decode(flags as u32);
     alloc_with(super::shared(), size, &f)
@@ -332,6 +363,7 @@ pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int) -> (r: (*mut u8, Gh
 pub fn xallocx(p: *mut u8, _size: usize, _extra: usize, _flags: c_int) -> (r: usize)
     ensures
         crate::heap::free_target(p),
+        usable_of(p, r as int),
 {
     sallocx(p, 0)
 }
@@ -340,6 +372,7 @@ pub fn xallocx(p: *mut u8, _size: usize, _extra: usize, _flags: c_int) -> (r: us
 pub fn sallocx(p: *mut u8, _flags: c_int) -> (r: usize)
     ensures
         crate::heap::free_target(p),
+        usable_of(p, r as int),
 {
     if p.is_null() {
         not_an_allocation("sallocx", p);
@@ -432,6 +465,7 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int)
 pub fn nallocx(size: usize, flags: c_int) -> (r: usize)
     ensures
         r == 0 || size <= r,
+        r == nalloc_usable(size, (flags as u32) & 0x3f),
 {
     let f = Flags::decode(flags as u32);
     usable_for(super::shared(), size, &f).unwrap_or(0)

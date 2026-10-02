@@ -628,6 +628,56 @@ pub proof fn lemma_class_size_mono(i: int, j: int)
     }
 }
 
+/// Above the linear classes, the class before `j` is `j`'s doubling base
+/// `2^lg` plus `k` quarters of it, `k` being `j`'s place in its doubling:
+/// `(4 + k) * 2^(lg - 2)`.
+pub proof fn lemma_class_size_prev(j: int)
+    requires
+        LINEAR_CLASSES <= j < NCLASSES,
+    ensures
+        spec_class_size(j - 1) == (4 + (j - LINEAR_CLASSES as int) % 4)
+            * vstd::arithmetic::power2::pow2((LG_LINEAR_MAX as int + (j - LINEAR_CLASSES as int) / 4 - 2) as nat),
+{
+    vstd::arithmetic::power2::lemma2_to64();
+    let i = j - 1;
+    let gj = (j - LINEAR_CLASSES as int) / 4;
+    let kj = (j - LINEAR_CLASSES as int) % 4;
+    let lg = (LG_LINEAR_MAX as int + gj) as nat;
+    lemma_quarter(lg);
+    let b = vstd::arithmetic::power2::pow2(lg) as int;
+    let q = vstd::arithmetic::power2::pow2((lg - 2) as nat) as int;
+    assert(b / 4 == q && b == 4 * q);
+    if j == LINEAR_CLASSES {
+        assert(gj == 0 && kj == 0 && lg == LG_LINEAR_MAX);
+        assert(b == 8 * QUANTUM);
+        assert(spec_class_size(i) == 8 * QUANTUM);
+    } else if kj > 0 {
+        assert((i - LINEAR_CLASSES as int) / 4 == gj && (i - LINEAR_CLASSES as int) % 4 == kj - 1);
+        assert(spec_class_size(i) == b + kj * q);
+        assert(b + kj * q == (4 + kj) * q) by (nonlinear_arith)
+            requires b == 4 * q;
+    } else {
+        // `i` closes the previous doubling at `2 * 2^(lg - 1)`, which is `2^lg`.
+        assert((i - LINEAR_CLASSES as int) / 4 == gj - 1 && (i - LINEAR_CLASSES as int) % 4 == 3);
+        lemma_quarter((lg - 1) as nat);
+        vstd::arithmetic::power2::lemma_pow2_adds((lg - 1) as nat, 1);
+        let b1 = vstd::arithmetic::power2::pow2((lg - 1) as nat) as int;
+        assert(spec_class_size(i) == b1 + 4 * (b1 / 4));
+        assert(2 * b1 == b);
+        assert(b1 / 4 * 4 == b1) by { lemma_quarter((lg - 1) as nat); }
+        assert(spec_class_size(i) == b);
+    }
+}
+
+/// No class below `c` holds `n` bytes: `c` is the smallest class at or
+/// above `n` when it holds them. Opaque, so that its quantifier stays
+/// out of the proofs that only pass it on (`build_small_lookup`,
+/// `SMALL_LOOKUP`'s postcondition): `reveal` it where it is proved or used.
+#[verifier::opaque]
+pub open spec fn classes_below(c: int, n: int) -> bool {
+    forall|j: int| 0 <= j < c ==> #[trigger] spec_class_size(j) < n
+}
+
 /// The last class is [`MEDIUM_MAX`].
 pub proof fn lemma_last_class_size()
     ensures
@@ -1168,6 +1218,14 @@ pub unsafe fn adopt_page_geometry(lg_page: u32) -> usize {
 
 verus! {
 
+/// `a` has `b`'s size and slot-start constants: what
+/// [`apply_page_geometry`] keeps of every entry.
+spec fn keeps_size(a: Class, b: Class) -> bool {
+    &&& a.size == b.size
+    &&& a.inv_odd == b.inv_odd
+    &&& a.tz == b.tz
+}
+
 /// [`adopt_page_geometry`] over any table (the tests run it on a copy).
 /// It writes the geometry fields only, so a table whose entries are well
 /// formed and sized [`spec_class_size`] stays so (what
@@ -1188,11 +1246,7 @@ pub(crate) fn apply_page_geometry(table: &mut [Class; NCLASSES], lg_page: u32) -
     for c in 0..NCLASSES
         invariant
             changed <= c,
-            forall|i: int| 0 <= i < NCLASSES ==> {
-                &&& #[trigger] table[i].size == old(table)[i].size
-                &&& table[i].inv_odd == old(table)[i].inv_odd
-                &&& table[i].tz == old(table)[i].tz
-            },
+            forall|i: int| 0 <= i < NCLASSES ==> keeps_size(#[trigger] table[i], old(table)[i]),
             forall|i: int| c <= i < NCLASSES ==> #[trigger] table[i] == old(table)[i],
             forall|i: int| 0 <= i < c ==> #[trigger] table[i] == old(table)[i] || {
                 &&& table[i].lg_slab == want[i].lg_slab
@@ -1211,11 +1265,18 @@ pub(crate) fn apply_page_geometry(table: &mut [Class; NCLASSES], lg_page: u32) -
         }
     }
     proof {
+        assert forall|i: int| 0 <= i < NCLASSES implies {
+            &&& #[trigger] table[i].size == old(table)[i].size
+            &&& table[i].inv_odd == old(table)[i].inv_odd
+            &&& table[i].tz == old(table)[i].tz
+        } by {
+            assert(keeps_size(table[i], old(table)[i]));
+        }
         assert forall|i: int| 0 <= i < NCLASSES && old(table)[i].wf() && old(table)[i].size == spec_class_size(i)
             implies #[trigger] table[i].wf() by {
             if table[i] != old(table)[i] {
                 assert(want[i].wf() && want[i].size == spec_class_size(i));
-                assert(table[i].size == old(table)[i].size && table[i].tz == old(table)[i].tz && table[i].inv_odd == old(table)[i].inv_odd);
+                assert(keeps_size(table[i], old(table)[i]));
                 assert(table[i].inv_ok() == old(table)[i].inv_ok());
             }
         }
@@ -1297,7 +1358,7 @@ const fn max_slab_words() -> (m: usize)
 const fn class_of_slow(n: usize) -> (r: Option<usize>)
     ensures
         r matches Some(c) ==> c < NCLASSES && n <= spec_class_size(c as int),
-        r matches Some(c) ==> forall|j: int| 0 <= j < c ==> #[trigger] spec_class_size(j) < n,
+        r matches Some(c) ==> classes_below(c as int, n as int),
         n <= MEDIUM_MAX ==> r is Some,
 {
     let mut i = 0;
@@ -1309,6 +1370,9 @@ const fn class_of_slow(n: usize) -> (r: Option<usize>)
     {
         // `class_size_at(i)` is `BASE_CLASSES[i].size`.
         if class_size_at(i) >= n {
+            proof {
+                reveal(classes_below);
+            }
             return Some(i);
         }
         i += 1;
@@ -1327,7 +1391,8 @@ const SMALL_LOOKUP_LEN: usize = SMALL_MAX / QUANTUM + 1;
 const fn build_small_lookup() -> (out: [u8; SMALL_LOOKUP_LEN])
     ensures
         forall|i: int| 0 <= i < SMALL_LOOKUP_LEN ==> (#[trigger] out[i] as int) < NCLASSES
-            && i * QUANTUM <= spec_class_size(out[i] as int),
+            && i * QUANTUM <= spec_class_size(out[i] as int)
+            && classes_below(out[i] as int, i * QUANTUM),
 {
     let mut out = [0u8; SMALL_LOOKUP_LEN];
     let mut i = 0;
@@ -1335,7 +1400,8 @@ const fn build_small_lookup() -> (out: [u8; SMALL_LOOKUP_LEN])
         invariant
             i <= SMALL_LOOKUP_LEN,
             forall|j: int| 0 <= j < i ==> (#[trigger] out[j] as int) < NCLASSES
-                && j * QUANTUM <= spec_class_size(out[j] as int),
+                && j * QUANTUM <= spec_class_size(out[j] as int)
+                && classes_below(out[j] as int, j * QUANTUM),
         decreases SMALL_LOOKUP_LEN - i,
     {
         // Entry `i` serves every request that rounds up to `i` quanta.
@@ -1353,7 +1419,8 @@ const fn build_small_lookup() -> (out: [u8; SMALL_LOOKUP_LEN])
 exec static SMALL_LOOKUP: [u8; SMALL_LOOKUP_LEN]
     ensures
         forall|i: int| 0 <= i < SMALL_LOOKUP_LEN ==> (#[trigger] SMALL_LOOKUP[i] as int) < NCLASSES
-            && i * QUANTUM <= spec_class_size(SMALL_LOOKUP[i] as int),
+            && i * QUANTUM <= spec_class_size(SMALL_LOOKUP[i] as int)
+            && classes_below(SMALL_LOOKUP[i] as int, i * QUANTUM),
 {
     build_small_lookup()
 }
@@ -1365,7 +1432,11 @@ pub fn class_of(n: usize) -> (r: Option<usize>)
     ensures
         r is Some <==> n <= MEDIUM_MAX,
         r matches Some(c) ==> c < NCLASSES && n <= spec_class_size(c as int),
+        r matches Some(c) ==> classes_below(c as int, n as int),
 {
+    proof {
+        reveal(classes_below);
+    }
     if n <= SMALL_MAX {
         proof {
             let q = ((n + QUANTUM - 1) as int) / (QUANTUM as int);
@@ -1376,6 +1447,27 @@ pub fn class_of(n: usize) -> (r: Option<usize>)
                     (n + QUANTUM - 1) as int == QUANTUM * q + ((n + QUANTUM - 1) as int) % (QUANTUM as int),
                     ((n + QUANTUM - 1) as int) % (QUANTUM as int) < QUANTUM;
             assert(q < SMALL_LOOKUP_LEN);
+            // Every class below the entry's is below `q` quanta, so, a
+            // multiple of the quantum, at most `q - 1` of them: below `n`.
+            // (`SMALL_LOOKUP` cannot be read here; its entry is below
+            // `NCLASSES` and `classes_below` it at `q` quanta.)
+            assert forall|j: int| 0 <= j < NCLASSES && #[trigger] spec_class_size(j) < q * QUANTUM implies spec_class_size(j) < n by {
+                lemma_class_size_quantum(j);
+                let s = spec_class_size(j);
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod(s, QUANTUM as int);
+                let t = s / (QUANTUM as int);
+                assert(s < q * QUANTUM);
+                assert(t * QUANTUM < q * QUANTUM) by (nonlinear_arith)
+                    requires s == QUANTUM * t + 0, s < q * QUANTUM;
+                assert(t <= q - 1) by (nonlinear_arith)
+                    requires t * QUANTUM < q * QUANTUM, QUANTUM > 0;
+                assert(t * QUANTUM <= (q - 1) * QUANTUM) by (nonlinear_arith)
+                    requires t <= q - 1, QUANTUM > 0;
+                assert((q - 1) * QUANTUM < n) by (nonlinear_arith)
+                    requires
+                        (n + QUANTUM - 1) as int == QUANTUM * q + ((n + QUANTUM - 1) as int) % (QUANTUM as int),
+                        ((n + QUANTUM - 1) as int) % (QUANTUM as int) >= 0;
+            }
         }
         Some(SMALL_LOOKUP[(n + QUANTUM - 1) / QUANTUM] as usize)
     } else if n <= MEDIUM_MAX {
@@ -1431,6 +1523,27 @@ pub fn class_of(n: usize) -> (r: Option<usize>)
             assert(spec_class_size(c as int) == 4 * q + (k + 1) * q);
             assert(n <= (5 + k) * q);
             assert(4 * q + (k + 1) * q == (5 + k) * q) by (nonlinear_arith);
+            // `m` is at least `2^lg` plus `k` quarters, the size of the
+            // class before `c`: every class below `c` is below `n`.
+            let low = (4 + ku) as u64;
+            assert(low << sub(l, 2u64) <= mu) by (bit_vector)
+                requires
+                    46 <= lz <= 53,
+                    l == 63 - lz,
+                    low == 4 + ku,
+                    (mu >> sub(63u64, lz)) & 1u64 != 0u64,
+                    mu >> sub(64u64, lz) == 0,
+                    ku == (mu >> sub(l, 2u64)) & 3u64;
+            assert(low * vstd::arithmetic::power2::pow2((l - 2) as nat) <= 8 * 0x8000) by (nonlinear_arith)
+                requires low <= 8, vstd::arithmetic::power2::pow2((l - 2) as nat) <= 0x8000;
+            vstd::bits::lemma_u64_shl_is_mul(low, sub(l, 2u64));
+            lemma_class_size_prev(c as int);
+            assert(spec_class_size(c - 1) == (4 + k) * q);
+            assert forall|j: int| 0 <= j < c implies #[trigger] spec_class_size(j) < n by {
+                if j < c - 1 {
+                    lemma_class_size_mono(j, c - 1);
+                }
+            }
         }
         Some(LINEAR_CLASSES + 4 * (lg - LG_LINEAR_MAX) as usize + k)
     } else {

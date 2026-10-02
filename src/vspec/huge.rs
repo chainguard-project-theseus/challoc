@@ -50,13 +50,16 @@ pub(crate) broadcast axiom fn axiom_huge_lock_frame(a: crate::huge::Inner, b: cr
 /// [`Huge::alloc_run`] returned at `p` for `size` bytes ([`allocated`])
 /// keeps the descriptor `Huge::take` wrote for it, with the usable bytes
 /// of its committed pages ([`Huge::spec_usable`]`(size)`, at least
-/// `size`), until its owner frees it: nothing else writes an `Active`
+/// `size`: `alloc_run` takes `usable_pages(size)` pages plus the guard),
+/// until its owner frees it: nothing else writes an `Active`
 /// descriptor. So while the caller that allocated the block at `p` still
 /// holds it, the usable size [`Huge::usable_size`] reads for its page
-/// (`r`, a [`Huge::spec_run_usable`]) covers the request. The premise
-/// that the block has not been freed since is the caller's, as for
-/// `vspec::addr::axiom_fresh_block`; the one call site is
-/// `libc::calloc_usable_zeroed`, right after its `alloc_huge`.
+/// (`r`, a [`Huge::spec_run_usable`]) is `spec_usable(size)`, which
+/// covers the request. The premise that the block has not been freed
+/// since is the caller's, as for `vspec::addr::axiom_fresh_block`; the
+/// call sites are `libc::calloc_usable_zeroed` and
+/// `libc::malloc_usable_huge` (through `libc::lemma_huge_usable`), each
+/// right after its `alloc_huge`.
 ///
 /// [`Huge::alloc_run`]: crate::huge::Huge::alloc_run
 /// [`allocated`]: crate::huge::allocated
@@ -70,6 +73,7 @@ pub proof fn axiom_owned_run(shared: &crate::heap::Shared, p: usize, size: usize
         shared.huge_run_usable(p, r),
     ensures
         size <= r,
+        r == shared.huge_usable(size),
 {
 }
 

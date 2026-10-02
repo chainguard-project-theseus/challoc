@@ -882,7 +882,7 @@ fn oom(size: usize, align: usize, nothrow: bool) -> (r: *mut u8)
 
 ### S7. `set_errno`
 
-src/api/libc.rs:83. Kind: external_body. Category: FFI/syscall.
+src/api/libc.rs:88. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: writes the calling thread's `errno` through libc's pointer.
@@ -893,18 +893,23 @@ pub(super) fn set_errno(e: c_int)
 
 ### S8. `store_usable`
 
-src/api/libc.rs:770. Kind: external_body. Category: raw pointer from C caller.
+src/api/libc.rs:788. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
-> Store `n` through `usable` unless it is null (`usable` is optional for the three allocating entry points; a null makes them plain `malloc`/`calloc`/`realloc`).
+> Store `n` through `usable` unless it is null (`usable` is optional for the three allocating entry points; a null makes them plain `malloc`/`calloc`/`realloc`), with the [`Stored`] token for the store.
+
+Body mints Tracked at line 797.
 
 ```rust
-fn store_usable(usable: *mut usize, n: usize)
+fn store_usable(usable: *mut usize, n: usize) -> (s: Tracked<Stored>)
+    ensures
+        s@.ptr() == usable,
+        s@.val() == n,
 ```
 
 ### S9. `store_out`
 
-src/api/libc.rs:1243. Kind: external_body. Category: raw pointer from C caller.
+src/api/libc.rs:1490. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store the allocation through `posix_memalign`'s out-pointer.
@@ -3054,7 +3059,7 @@ proof fn axiom_zero_entry(tracked perm: PointsTo<Entry>, tracked z: Zeroed) -> (
 
 ### S163. `ClassTable`
 
-src/layout/mod.rs:1096. Kind: external_body type. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1146. Kind: external_body type. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The size-class table in use, indexed by class number: [`BASE_CLASSES`] with the slab geometry of the classes below the kernel page raised to the page by [`adopt_page_geometry`] once at init.
@@ -3065,7 +3070,7 @@ pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 
 ### S164. `ClassTable::new`
 
-src/layout/mod.rs:1103. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1153. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 ```rust
@@ -3074,7 +3079,7 @@ const fn new(table: [Class; NCLASSES]) -> ClassTable
 
 ### S165. `ClassTable::table`
 
-src/layout/mod.rs:1115. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1165. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The table, for verified code.
@@ -4678,7 +4683,7 @@ pub(crate) broadcast axiom fn axiom_huge_lock_frame(a: crate::huge::Inner, b: cr
 
 ### S289. `axiom_owned_run`
 
-src/vspec/huge.rs:67. Kind: external_body proof. Category: C-program contract.
+src/vspec/huge.rs:70. Kind: external_body proof. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: the C contract of `free`, `realloc` and the sized frees, that only a block's owner frees or reallocates it.
@@ -4690,6 +4695,7 @@ pub proof fn axiom_owned_run(shared: &crate::heap::Shared, p: usize, size: usize
         shared.huge_run_usable(p, r),
     ensures
         size <= r,
+        r == shared.huge_usable(size),
 ```
 
 ### S290. `Layout`
