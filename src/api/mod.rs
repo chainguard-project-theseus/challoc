@@ -287,7 +287,11 @@ fn init() {
     // published, and `regions` are live reservations this process owns.
     unsafe {
         let ok = Shared::init(
-            (*SHARED.0.get()).as_mut_ptr(),
+            // The cell's own pointer, not `as_mut_ptr` through a `&mut`:
+            // `init` keeps pointers derived from it, and writes through
+            // the readers' `&Shared` would invalidate ones derived from a
+            // `&mut`.
+            SHARED.0.get().cast::<Shared>(),
             regions,
             config,
             features.guard_install,
