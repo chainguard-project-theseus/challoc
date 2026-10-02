@@ -840,7 +840,10 @@ mod tests {
         use core::sync::atomic::{AtomicU8, Ordering};
         use std::sync::Arc;
         let _serial = FORK_TEST.lock().unwrap();
-        let s = shared();
+        // A private allocator: the process-wide one is shared with the
+        // tests that do not take `FORK_TEST`, whose huge frees could
+        // leave a run `Empty` before the hook's.
+        let s = crate::testutil::shared();
         assert!(!purge::background::present());
         let old_ns = s.decay_ns();
         s.set_decay_ms(1);

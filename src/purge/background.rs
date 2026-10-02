@@ -262,8 +262,9 @@ pub fn thread() -> Option<::libc::pthread_t> {
 }
 
 extern "C" fn main(arg: *mut c_void) -> *mut c_void {
-    // SAFETY: `start` passed the process-wide `Shared`, which lives for
-    // the rest of the process; the name is NUL-terminated.
+    // SAFETY: `start` passed a `Shared` that lives for the rest of the
+    // process (the process-wide one, or a leaked test fixture); the name
+    // is NUL-terminated.
     let shared = unsafe { &*(arg as *const Shared) };
     let _ = unsafe { sys::prctl(PR_SET_NAME, b"challoc-bg\0".as_ptr() as usize, 0, 0, 0) };
     loop {
