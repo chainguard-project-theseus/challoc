@@ -1380,6 +1380,8 @@ fn flush_caller(shared: &Shared)
 /// The calling thread's heap; `EAGAIN` while the thread is creating or
 /// has torn down its heap.
 fn thread_heap<'a>(shared: &'a Shared) -> (r: Result<&'a mut Heap, c_int>)
+    requires
+        shared.wf(),
     ensures
         r matches Err(e) ==> e == EAGAIN,
 {

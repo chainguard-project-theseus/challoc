@@ -179,6 +179,8 @@ impl CacheHeader {
     /// stack base `slots` as the modifier ([`PUSH_PAC`]).
     #[inline]
     pub(super) fn sign_all(slots: *mut *mut u8, entries: &mut [*mut u8])
+        requires
+            pac::pac_available(),
         ensures
             final(entries)@.len() == old(entries)@.len(),
             forall|i: int| 0 <= i < old(entries)@.len() ==>
@@ -189,6 +191,7 @@ impl CacheHeader {
         for e in it: entries
             invariant
                 m == slots@.addr,
+                pac::pac_available(),
                 it.seq().len() == e0.len(),
                 forall|i: int| 0 <= i < it.seq().len() ==> *(#[trigger] it.seq()[i]) == e0[i],
                 forall|i: int| 0 <= i < it.index() ==> (*final(#[trigger] it.seq()[i]))@.addr == pac::spec_sign(e0[i]@.addr, m),
@@ -200,6 +203,8 @@ impl CacheHeader {
     /// Authenticate every entry of `entries` (signed) in place.
     #[inline]
     pub(super) fn auth_all(slots: *mut *mut u8, entries: &mut [*mut u8])
+        requires
+            pac::pac_available(),
         ensures
             final(entries)@.len() == old(entries)@.len(),
             forall|i: int| 0 <= i < old(entries)@.len() ==>
@@ -210,6 +215,7 @@ impl CacheHeader {
         for e in it: entries
             invariant
                 m == slots@.addr,
+                pac::pac_available(),
                 it.seq().len() == e0.len(),
                 forall|i: int| 0 <= i < it.seq().len() ==> *(#[trigger] it.seq()[i]) == e0[i],
                 forall|i: int| 0 <= i < it.index() ==> (*final(#[trigger] it.seq()[i]))@.addr == pac::spec_auth(e0[i]@.addr, m),
@@ -332,6 +338,7 @@ impl Heap {
             old(self).hdr_class(cache) == class,
             len == old(self).hdr(cache).len,
             len > 0,
+            pac ==> pac::pac_available(),
         ensures
             final(self).keeps(*old(self)),
             r.0@.addr != 0 && pac == pac_mode() ==> process_regions().is_slot(class as int, r.0@.addr),
@@ -391,6 +398,7 @@ impl Heap {
             old(perms).hdrs.contains_key(cache),
             len == old(perms).hdr(cache).len,
             len > 0,
+            pac ==> pac::pac_available(),
         ensures
             final(perms).keeps(*old(perms)),
             final(perms).follows(*old(perms)),
@@ -505,6 +513,7 @@ impl Heap {
     pub fn push_fast(&mut self, class: usize, p: *mut u8, flags: u8, Tracked(tk): Tracked<&mut Map<int, GhostSingleton<int>>>) -> (r: bool)
         requires
             (flags & PUSH_PAC != 0) == pac_mode(),
+            (flags & PUSH_PAC != 0) ==> pac::pac_available(),
             process_regions().is_slot(class as int, p@.addr),
             class < NCLASSES,
             old(self).wf(),
@@ -553,6 +562,7 @@ impl Heap {
             old(perms).zero_ok(),
             old(perms).hdrs.contains_key(cache),
             (flags & PUSH_PAC != 0) == pac_mode(),
+            (flags & PUSH_PAC != 0) ==> pac::pac_available(),
             regions_ok(),
             process_regions().is_slot(old(perms).cls[cache], p@.addr),
             slot_start(p),
@@ -661,6 +671,7 @@ impl Heap {
             old(perms).zero_ok(),
             old(perms).hdrs.contains_key(cache),
             pac == pac_mode(),
+            pac ==> pac::pac_available(),
             regions_ok(),
             process_regions().is_slot(old(perms).cls[cache], p@.addr),
             slot_start(p),

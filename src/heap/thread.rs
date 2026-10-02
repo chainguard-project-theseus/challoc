@@ -60,6 +60,8 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
 /// not be stored beyond the call.
 #[inline(always)]
 pub fn heap_for_thread(shared: &Shared) -> (r: Option<&mut Heap>)
+    requires
+        shared.wf(),
     ensures
         r matches Some(h) ==> h.wf(),
 {
@@ -78,7 +80,10 @@ pub fn heap_for_thread(shared: &Shared) -> (r: Option<&mut Heap>)
 
 /// The slot value for heap `h` on the calling thread: `h` signed with the
 /// thread pointer when `shared.pac()`, else `h` itself.
-fn tls_value_for(shared: &Shared, h: *mut Heap) -> *mut c_void {
+fn tls_value_for(shared: &Shared, h: *mut Heap) -> *mut c_void
+    requires
+        shared.wf(),
+{
     if shared.pac() {
         let (_, tp) = crate::sys::tls::get_tp();
         addr_to_ptr(pac::sign(h as usize, tp)) as *mut c_void
@@ -95,6 +100,8 @@ fn tls_value_for(shared: &Shared, h: *mut Heap) -> *mut c_void {
 #[cold]
 #[inline(never)]
 fn create_heap_for_thread(shared: &Shared, slot: usize) -> (r: Option<&mut Heap>)
+    requires
+        shared.wf(),
     ensures
         r matches Some(h) ==> h.wf(),
 {
@@ -164,12 +171,16 @@ pub fn tls_heap_slot() -> (r: Option<(usize, usize)>)
 ///
 /// Trusted: a field read through a raw pointer. The pointer is the
 /// process's `Shared` (every caller passes `api::shared_ptr` or the
-/// published reference), whose `PUSH_PAC` bit is [`super::pac_mode`].
+/// published reference), whose `PUSH_PAC` bit is [`super::pac_mode`]. It
+/// is the well-formed `Shared` `init` built (`Shared::wf`, the claim
+/// `api::shared_ref` makes), so the bit is set only when
+/// `sys::pac::pac_available`.
 #[inline(always)]
 #[verifier::external_body]
 pub unsafe fn fast_flags(shared: *const Shared) -> (r: u8)
     ensures
         (r & PUSH_PAC != 0) == super::pac_mode(),
+        (r & PUSH_PAC != 0) ==> crate::sys::pac::pac_available(),
 {
     // SAFETY: guaranteed by the caller.
     unsafe { ptr::read(&raw const (*shared).push_flags) }
@@ -189,6 +200,8 @@ pub unsafe fn fast_flags(shared: *const Shared) -> (r: u8)
 #[inline(always)]
 #[verifier::external_body]
 pub unsafe fn heap_from_slot(t: usize, tp: usize, pac: bool) -> (r: &'static mut Heap)
+    requires
+        pac ==> crate::sys::pac::pac_available(),
     ensures
         r.wf(),
 {

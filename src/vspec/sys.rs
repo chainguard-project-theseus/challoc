@@ -70,16 +70,6 @@ pub assume_specification[ u64::is_power_of_two ](x: u64) -> (r: bool)
         r <==> exists|k: nat| k < 64 && x as nat == #[trigger] vstd::arithmetic::power2::pow2(k),
 ;
 
-/// glibc's `getauxval(3)`: some word, 0 when the key is absent. The
-/// kernel's page (`AT_PAGESZ`) is at most 64 KiB: Linux uses 4 KiB pages
-/// on x86_64 and 4, 16 or 64 KiB on aarch64 (the fact
-/// `layout::axiom_process_page_at_most_64k` states of the regions).
-#[cfg(target_os = "linux")]
-pub assume_specification[ crate::sys::auxv::getauxval ](kind: usize) -> (r: usize)
-    ensures
-        kind == crate::sys::auxv::AT_PAGESZ ==> r <= 0x1_0000,
-;
-
 #[verifier::external_type_specification]
 #[verifier::external_body]
 pub struct ExUtf8Error(core::str::Utf8Error);

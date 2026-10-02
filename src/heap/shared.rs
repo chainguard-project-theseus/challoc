@@ -666,6 +666,7 @@ impl Shared {
             space@.addr() == regions.meta_base,
             space@.len() == regions.meta_len,
             config.wf(),
+            pac ==> crate::sys::pac::pac_available(),
         ensures
             r ==> shared_at(this).wf(),
     {
@@ -711,6 +712,20 @@ impl Shared {
                     }),
                 Tracked(&mut b),
             );
+            proof {
+                // The `PUSH_PAC` bit is set only from `pac` (the probe).
+                let f = shared_at(this).push_flags;
+                let x: u8 = if config.double_free_scan { PUSH_SCAN } else { 0 };
+                let y: u8 = if config.zero_on_free { PUSH_ZERO } else { 0 };
+                let z: u8 = if pac && config.pac_pointers { PUSH_PAC } else { 0 };
+                assert(f == x | y | z);
+                assert((x | y | z) & 4u8 != 0 ==> z == 4u8) by (bit_vector)
+                    requires
+                        x == 0 || x == 1,
+                        y == 0 || y == 2,
+                        z == 0 || z == 4,
+                ;
+            }
             for c in 0..NCLASSES
                 invariant
                     b.at() == this,
@@ -805,7 +820,9 @@ impl Shared {
     /// separated and is the process's ([`crate::layout::process_regions`]);
     /// `tables[c]` is class `c`'s table; `huge` covers exactly the huge
     /// region's pages, starting at the huge base with the regions' page;
-    /// the [`PUSH_PAC`] bit is [`super::pac_mode`]; `meta` allocates from
+    /// the [`PUSH_PAC`] bit is [`super::pac_mode`], set only where the process
+    /// may execute the PAC instructions (`sys::pac::pac_available`, from the
+    /// probe `init` was given); `meta` allocates from
     /// the metadata region, which holds every class table's descriptors,
     /// bitmap and owner words.
     ///
@@ -822,6 +839,7 @@ impl Shared {
         &&& self.huge.spec_base() == self.regions.huge_base
         &&& self.huge.spec_page() == (1usize << self.regions.lg_page) as int
         &&& (self.push_flags & PUSH_PAC != 0) == super::pac_mode()
+        &&& super::pac_mode() ==> crate::sys::pac::pac_available()
         &&& self.config.wf()
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].spec_class() == c
         &&& self.huge.spec_npages() == self.huge_pages()
@@ -956,6 +974,7 @@ impl Shared {
             self.huge.spec_base() == self.regions.huge_base,
             self.huge.spec_page() == (1usize << self.regions.lg_page) as int,
             (self.flags() & PUSH_PAC != 0) == super::pac_mode(),
+            super::pac_mode() ==> crate::sys::pac::pac_available(),
             forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].spec_class() == c,
             self.huge.spec_npages() == self.huge_pages(),
             self.config.wf(),
@@ -1002,6 +1021,7 @@ impl Shared {
         ensures
             r == self.flags(),
             self.wf() ==> ((r & PUSH_PAC != 0) == super::pac_mode()),
+            self.wf() && (r & PUSH_PAC != 0) ==> crate::sys::pac::pac_available(),
     {
         self.push_flags
     }
@@ -1012,6 +1032,7 @@ impl Shared {
         ensures
             r == (self.flags() & PUSH_PAC != 0),
             self.wf() ==> r == super::pac_mode(),
+            self.wf() && r ==> crate::sys::pac::pac_available(),
     {
         self.push_flags & PUSH_PAC != 0
     }

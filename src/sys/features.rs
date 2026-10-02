@@ -397,6 +397,7 @@ impl Features {
             crate::meta::is_pow2(r.page_size),
             r.page_size <= 1usize << 33 ==> r.thp.lg_pmd < 64,
             r.page_size <= 0x1_0000,
+            r.pac ==> crate::sys::pac::pac_available(),
     {
         let page_size = page_size();
         Features {

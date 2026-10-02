@@ -55,6 +55,7 @@ impl Heap {
         requires
             class < NCLASSES,
             old(self).wf(),
+            (flags & PUSH_PAC != 0) ==> pac::pac_available(),
         ensures
             final(self).keeps(*old(self)),
             r matches Some(p) ==> ((flags & PUSH_PAC != 0) == pac_mode() ==> process_regions().is_slot(class as int, p@.addr)),
@@ -80,6 +81,7 @@ impl Heap {
         requires
             class < NCLASSES,
             old(self).wf(),
+            (flags & PUSH_PAC != 0) ==> pac::pac_available(),
         ensures
             final(self).keeps(*old(self)),
             r matches Some((p, _)) ==> ((flags & PUSH_PAC != 0) == pac_mode() ==> process_regions().is_slot(class as int, p@.addr)),
@@ -521,6 +523,7 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> (r: bo
     requires
         shared.wf(),
         (flags & PUSH_PAC != 0) == pac_mode(),
+        (flags & PUSH_PAC != 0) ==> pac::pac_available(),
         old(h).wf(),
     ensures
         final(h).keeps(*old(h)),
@@ -551,6 +554,7 @@ pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> 
     requires
         shared.wf(),
         (flags & PUSH_PAC != 0) == pac_mode(),
+        (flags & PUSH_PAC != 0) ==> pac::pac_available(),
         old(h).wf(),
     ensures
         final(h).keeps(*old(h)),
@@ -580,6 +584,7 @@ pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<u
     requires
         shared.wf(),
         (flags & PUSH_PAC != 0) == pac_mode(),
+        (flags & PUSH_PAC != 0) ==> pac::pac_available(),
         hint matches Some(c) ==> c < NCLASSES,
         old(h).wf(),
     ensures

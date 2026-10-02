@@ -12,7 +12,12 @@
 //! are the identity on x86_64 and the caller never emits them unless
 //! [`available`] said yes at init (the instructions are UNDEFINED on a CPU
 //! without the extension, so they are gated by a runtime flag, never by a
-//! build setting: the compiler baseline stays `armv8-a`).
+//! build setting: the compiler baseline stays `armv8-a`). The verifier
+//! checks the gate: each of [`sign`], [`auth`], [`strip`] and [`mask`]
+//! requires [`pac_available`]; the trusted `AT_HWCAP` fact behind
+//! [`available`] is its one source, `Shared::init` sets the flag only when
+//! `available` returned true, and `Shared::wf` carries the implication to
+//! the paths that read the flag.
 //!
 //! What a failed authentication does depends on the CPU: with FEAT_FPAC
 //! (Neoverse V2, Apple M2 and later) `autda` itself faults (the kernel
@@ -68,10 +73,21 @@ pub const HWCAP_PACA: u64 = 1 << 30;
 #[cfg(any(test, target_arch = "aarch64"))]
 pub const HWCAP_PACG: u64 = 1 << 31;
 
+/// The process may execute the data-key A instructions [`sign`], [`auth`]
+/// and [`strip`] (`pacda`, `autda`, `xpacd`): every CPU it runs on
+/// implements FEAT_PAuth. Without it the three are UNDEFINED on aarch64
+/// (`SIGILL`). Uninterpreted; the one fact about it is
+/// the trusted `AT_HWCAP` reading in `sys::auxv`, which [`available`]
+/// turns into its contract.
+pub uninterp spec fn pac_available() -> bool;
+
 /// Whether the kernel exposes pointer authentication with the address key
 /// (`HWCAP_PACA`) and the generic key (`HWCAP_PACG`) to this process.
 /// False on x86_64.
-pub fn available() -> bool {
+pub fn available() -> (r: bool)
+    ensures
+        r ==> pac_available(),
+{
     #[cfg(target_arch = "aarch64")]
     {
         use super::auxv::{AT_HWCAP, getauxval};
@@ -127,7 +143,9 @@ pub fn fpac() -> bool {
 /// because every thread signs with the data key A it got at `exec` and
 /// inherited through `clone`. Trusted: the program never resets that key
 /// (`prctl(PR_PAC_RESET_KEYS)` resets the calling thread's alone, after
-/// which entries signed before fail to authenticate).
+/// which entries signed before fail to authenticate) and never toggles it
+/// (`prctl(PR_PAC_SET_ENABLED_KEYS)`: a disabled key makes `pacda` and
+/// `autda` leave the pointer as it is).
 pub uninterp spec fn spec_sign(p: usize, modifier: usize) -> usize;
 
 /// What [`auth`] returns for `p` and `modifier`.
@@ -162,12 +180,14 @@ pub broadcast axiom fn axiom_auth_sign(p: usize, modifier: usize)
 ;
 
 /// Sign `p` with data key A and `modifier` (`pacda`). Only when
-/// [`available`] is true; `p` must be a plain (unsigned) pointer, since
+/// [`pac_available`]; `p` must be a plain (unsigned) pointer, since
 /// signing a signed pointer corrupts its PAC.
 /// Inline assembly on aarch64, outside what Verus checks.
 #[verifier::external_body]
 #[inline(always)]
 pub fn sign(p: usize, modifier: usize) -> (r: usize)
+    requires
+        pac_available(),
     ensures
         r == spec_sign(p, modifier),
 {
@@ -203,6 +223,8 @@ pub fn sign(p: usize, modifier: usize) -> (r: usize)
 #[verifier::external_body]
 #[inline(always)]
 pub fn auth(p: usize, modifier: usize) -> (r: usize)
+    requires
+        pac_available(),
     ensures
         r == spec_auth(p, modifier),
 {
@@ -233,11 +255,14 @@ pub fn auth(p: usize, modifier: usize) -> (r: usize)
 
 /// Strip the PAC from `p` without authenticating it (`xpacd`): the address
 /// a signed or corrupted entry names, for abort messages and tests. Only
-/// when [`available`] is true.
+/// when [`pac_available`].
 /// Inline assembly on aarch64, outside what Verus checks.
 #[verifier::external_body]
 #[inline]
-pub fn strip(p: usize) -> usize {
+pub fn strip(p: usize) -> usize
+    requires
+        pac_available(),
+{
     #[cfg(target_arch = "aarch64")]
     {
         #[cfg(test)]
@@ -266,9 +291,12 @@ pub fn strip(p: usize) -> usize {
 /// whose value `xpacd` extends into the field), found by asking `xpacd`
 /// what it clears from an address with bits 54:0 set. `!mask()` is the
 /// address key a signed entry sorts by without authentication. Only when
-/// [`available`] is true; `0` on x86_64.
+/// [`pac_available`]; `0` on x86_64.
 #[inline]
-pub fn mask() -> usize {
+pub fn mask() -> usize
+    requires
+        pac_available(),
+{
     let probe = 0x007f_ffff_ffff_ffffusize;
     probe & !strip(probe)
 }

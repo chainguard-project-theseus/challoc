@@ -31,6 +31,29 @@ pub const AT_RSEQ_FEATURE_SIZE: usize = 27;
 /// skips the environment sources when it is set).
 pub const AT_SECURE: usize = 23;
 
+/// glibc's `getauxval(3)`: some word, 0 when the key is absent. The
+/// kernel's page (`AT_PAGESZ`) is at most 64 KiB: Linux uses 4 KiB pages
+/// on x86_64 and 4, 16 or 64 KiB on aarch64 (the fact
+/// `layout::axiom_process_page_at_most_64k` states of the regions).
+#[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
+pub assume_specification[ getauxval ](kind: usize) -> (r: usize)
+    ensures
+        kind == AT_PAGESZ ==> r <= 0x1_0000,
+;
+
+/// As above, and on arm64: an `AT_HWCAP` word with `HWCAP_PACA` and
+/// `HWCAP_PACG` set means the process may execute the data-key A
+/// instructions ([`crate::sys::pac::pac_available`]). Trusted (Linux
+/// `arch/arm64`): the kernel sets `HWCAP_PACA` only when every CPU
+/// implements FEAT_PAuth with an address-key algorithm (a CPU without it
+/// is not brought online), and glibc returns the word the kernel wrote.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub assume_specification[ getauxval ](kind: usize) -> (r: usize)
+    ensures
+        kind == AT_PAGESZ ==> r <= 0x1_0000,
+        kind == AT_HWCAP ==> (r as u64 & crate::sys::pac::HWCAP_PACA != 0 && r as u64 & crate::sys::pac::HWCAP_PACG != 0 ==> crate::sys::pac::pac_available()),
+;
+
 } // verus!
 
 unsafe extern "C" {

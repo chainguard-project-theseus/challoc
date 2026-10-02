@@ -55,7 +55,7 @@ All six theorems are in the code. [THEOREMS.md](THEOREMS.md) records where each 
 - **Uniqueness:** Prove that a new heap starts with empty caches and account for writers whose permissions the proof does not follow. Model live blocks so allocation hands a slot token to the caller and free takes it back, replacing `class::axiom_free_token`.
 - **Zeroed memory:** Widen the stated guarantees where the code zeros more bytes. `mallocx_zeroed` states `size` bytes even when the code zeros the usable size; `rallocx_zeroed` does not tie its copied prefix length `k` to the old block’s usable size.
 - **Metadata integrity:** Cover writes through atomics, the `Shared` static, TLS, and metadata outside the current region-based statement. Tie the relevant writes to permissions.
-- **PAC:** Establish the availability premise for pointer authentication on aarch64. The present `sign` and `auth` contracts do not require PAuth to be available.
+- **PAC:** Done. `sign`, `auth`, `strip`, and `mask` require `pac_available()`, meaning every CPU the process runs on implements FEAT_PAuth. `pac::available()` establishes it; `Shared::init` proves the `Shared::wf` premise `pac_mode() ==> pac_available()`, which hot paths carry as ghost-only requirements. One trusted fact in `sys/auxv.rs` links both `HWCAP_PACA` and `HWCAP_PACG` in `getauxval(AT_HWCAP)` to system-wide PAuth availability on aarch64. Machine code is unchanged.
 
 ### Weak memory and external models
 
