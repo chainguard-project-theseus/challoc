@@ -726,16 +726,30 @@ pub(super) proof fn lemma_class_aligned(c: usize, align: usize)
 /// well formed and separated, a multiple of `align` and of the quantum,
 /// and either a slot of a class at least `size` bytes large (the slab
 /// half of `Regions::user_block`, so `heap::fits` for `size` at `align`)
-/// or a page start of the huge region. A kept run's size bound, `size`
-/// at most the run's usable bytes, is the huge table's: its descriptors
-/// state no bound on the usable bytes against the region, so `size`
-/// bytes of the region from `p` is not stated.
+/// or a page start of the huge region with `size` bytes (at least one) of
+/// the region from it (the huge half of `Regions::user_block`): `size` is
+/// at most the run's usable bytes, which its descriptor keeps inside the
+/// region (`vspec::usable::lemma_run_bytes_block`). So a kept block
+/// [`fits`](heap::fits) `size` bytes at `align` and at the quantum
+/// ([`lemma_kept_fits`]).
 pub open spec fn kept(p: *mut u8, size: int, align: int) -> bool {
     &&& heap::regions_ok()
     &&& (p@.addr as int) % align == 0
     &&& (p@.addr as int) % (QUANTUM as int) == 0
     &&& (exists|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr) && size <= class_table()[c].size)
-        || crate::layout::process_regions().is_huge_block(p@.addr, 1)
+        || crate::layout::process_regions().is_huge_block(p@.addr, if size < 1 { 1 } else { size })
+}
+
+/// A kept block fits: [`kept`] is the slab or huge half of
+/// `Regions::user_block`, at `align` and at the quantum. Verus unfolds
+/// both open specs, so the realloc family needs no call; this states it.
+pub proof fn lemma_kept_fits(p: *mut u8, size: int, align: int)
+    requires
+        kept(p, size, align),
+    ensures
+        heap::fits(p, size, align),
+        heap::fits(p, size, QUANTUM as int),
+{
 }
 
 /// The reallocation decision shared by `realloc` and `rallocx`: `None`
@@ -744,8 +758,9 @@ pub open spec fn kept(p: *mut u8, size: int, align: int) -> bool {
 /// keeps its pointer, that is when the new size maps to `p`'s class
 /// (whose slots satisfy the alignment by construction) or to a huge run
 /// of the same number of pages at a start that satisfies it ([`kept`]);
-/// otherwise `Some(old)`, the usable bytes of `p`, the most a move has to
-/// copy: the class's size for a slot. Aborts, naming `what`, unless `p`
+/// otherwise `Some(old)`, the usable bytes of `p` ([`usable_of`]), the most
+/// a move has to copy: the class's size for a slot, the run's usable bytes
+/// from its descriptor for a huge page start. Aborts, naming `what`, unless `p`
 /// is a live slab slot or huge run start; so it returns only for a free
 /// target, and `blk`, the caller's token for `p` ([`Live::claims`]), is
 /// then the live block's, with `old` usable bytes, or `size` or more when
@@ -758,8 +773,7 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
     ensures
         heap::free_target(p),
         r is None ==> kept(p, size as int, align as int),
-        r matches Some(o) ==> forall|c: int|
-            #[trigger] crate::layout::process_regions().is_slot(c, p@.addr) ==> o == class_table()[c].size,
+        r matches Some(o) ==> usable_of(p, o as int),
         r is None ==> blk.gives(p, size as int),
         r matches Some(o) ==> blk.block(p) && o == blk.len(),
 {
@@ -791,11 +805,9 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
                 return None;
             }
             proof {
-                // A slot belongs to one class.
-                assert forall|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr)
-                    implies c == class as int by {
-                    crate::vspec::zero::lemma_slot_unique(class as int, c, p@.addr);
-                }
+                // A slot belongs to one class, and its usable size is the
+                // class's.
+                crate::vspec::usable::lemma_usable_slot(p, class as int, size as int);
             }
             Some(class_size(class))
         }
@@ -803,16 +815,18 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
             let old = shared.huge.usable_size(page, Tracked(blk.run_ref()));
             proof {
                 shared.lemma_run_page(p, page, *blk);
-                // A page start of the huge region is no slot.
-                assert forall|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr)
-                    implies false by {
-                    crate::vspec::zero::lemma_slot_not_huge(c, p@.addr);
-                }
+                // What the descriptor reads is `p`'s usable size; a page
+                // start of the huge region is no slot.
+                shared.lemma_huge_run_usable(p as usize, old);
+                crate::vspec::usable::lemma_usable_run(shared, p, old);
             }
             if class_for(size, align).is_none() && shared.huge.usable_for(size) == Some(old) && (p as usize) % align == 0 {
                 proof {
                     heap::lemma_quantum_pow2();
                     heap::lemma_huge_fits(p, 0, align, QUANTUM);
+                    // `size` is at most the run's usable bytes, which lie
+                    // in the region.
+                    crate::vspec::usable::lemma_run_bytes_block(p@.addr, old as int, size as int);
                 }
                 return None;
             }
@@ -830,8 +844,7 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
 pub fn realloc(p: *mut u8, size: usize) -> (r: *mut u8)
     ensures
         p@.addr != 0 && size == 0 ==> r@.addr == 0,
-        r != p ==> heap::fits(r, size as int, QUANTUM as int),
-        heap::fits(r, size as int, QUANTUM as int) || kept(r, size as int, 1),
+        heap::fits(r, size as int, QUANTUM as int),
         p@.addr != 0 ==> heap::free_target(p),
 {
     let tracked blk = heap::live::axiom_c_claim(p);
@@ -850,8 +863,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         blk.claims(p),
     ensures
         p@.addr != 0 && size == 0 ==> r@.addr == 0,
-        r != p ==> heap::fits(r, size as int, QUANTUM as int),
-        heap::fits(r, size as int, QUANTUM as int) || kept(r, size as int, 1),
+        heap::fits(r, size as int, QUANTUM as int),
         p@.addr != 0 ==> heap::free_target(p),
         final(out).gives(r, size as int),
         p@.addr != 0 ==> blk.block(p),
@@ -900,8 +912,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
 pub fn reallocarray(p: *mut u8, n: usize, m: usize) -> (r: *mut u8)
     ensures
         n * m > usize::MAX ==> r@.addr == 0,
-        r != p ==> heap::fits(r, n * m, QUANTUM as int),
-        heap::fits(r, n * m, QUANTUM as int) || kept(r, n * m, 1),
+        heap::fits(r, n * m, QUANTUM as int),
         p@.addr != 0 && n * m <= usize::MAX ==> heap::free_target(p),
 {
     match n.checked_mul(m) {
@@ -1244,8 +1255,7 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(blk)
 pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> (r: *mut u8)
     ensures
         p@.addr != 0 && size == 0 ==> r@.addr == 0,
-        r != p ==> heap::fits(r, size as int, QUANTUM as int),
-        heap::fits(r, size as int, QUANTUM as int) || kept(r, size as int, 1),
+        heap::fits(r, size as int, QUANTUM as int),
         p@.addr != 0 ==> heap::free_target(p),
 {
     let tracked blk = heap::live::axiom_c_claim(p);
@@ -1264,8 +1274,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         blk.claims(p),
     ensures
         p@.addr != 0 && size == 0 ==> r.0@.addr == 0,
-        r.0 != p ==> heap::fits(r.0, size as int, QUANTUM as int),
-        heap::fits(r.0, size as int, QUANTUM as int) || kept(r.0, size as int, 1),
+        heap::fits(r.0, size as int, QUANTUM as int),
         p@.addr != 0 ==> heap::free_target(p),
         r.1@.ptr() == usable,
         r.0@.addr != 0 ==> usable_is(r.0, size as int, r.1@.val() as int),
@@ -1369,6 +1378,11 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
                 shared.lemma_huge_usable(size);
                 crate::vspec::usable::lemma_usable_huge(p, size as int);
                 shared.lemma_run_page(p, page, *blk);
+                // A kept run has `size <= old` (`usable_for`), and its
+                // usable bytes lie in the region.
+                if size <= old {
+                    crate::vspec::usable::lemma_run_bytes_block(p@.addr, old as int, size as int);
+                }
             }
             (class_of(size).is_none() && shared.huge.usable_for(size) == Some(old), old)
         }

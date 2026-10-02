@@ -218,23 +218,30 @@ only cast.
 |---|---|
 | `malloc` (`api/libc.rs:191`) | `size`, `QUANTUM` |
 | `calloc`, `calloc_zeroed` (`api/libc.rs:306`, `:319`) | `n * m`, `QUANTUM` |
-| `realloc` (`api/libc.rs:646`) | `size`, `QUANTUM`, if `r != p` |
-| `reallocarray` (`api/libc.rs:681`) | `n * m`, `QUANTUM`, if `r != p` |
+| `realloc` (`api/libc.rs:646`) | `size`, `QUANTUM` |
+| `reallocarray` (`api/libc.rs:681`) | `n * m`, `QUANTUM` |
 | `aligned_alloc` = `memalign` (`api/libc.rs:1167`) | `size`, `align` (pow2) |
 | `valloc`, `pvalloc` (`api/libc.rs:1236`, `:1245`) | `size`, the page |
 | `malloc_usable` (`api/libc.rs:746`) | `size`, `QUANTUM` |
 | `calloc_usable` (`api/libc.rs:838`) | `n * m`, `QUANTUM` |
-| `realloc_usable` (`api/libc.rs:908`) | `size`, `QUANTUM`, if `r != p` |
+| `realloc_usable` (`api/libc.rs:908`) | `size`, `QUANTUM` |
 | `mallocx` (`api/jemalloc.rs:210`) | `size`, `1 << (flags & 0x3f)` |
-| `rallocx` (`api/jemalloc.rs:236`) | as `mallocx`, if `r != p` |
+| `rallocx` (`api/jemalloc.rs:236`) | as `mallocx` |
 | `cxx::new`, `new_nothrow` (`api/cxx.rs:214`, `:226`) | `size`, `QUANTUM` |
 | `cxx::new_aligned` (`api/cxx.rs:237`) | `size`, `align` (pow2) |
 
-A kept block (`r == p`) satisfies `fits(..) || kept(..)`
-(`api/libc.rs:582`): `kept(r, size, 1)` for `realloc`, `reallocarray`
-and `realloc_usable`, `kept(r, size, 1 << (flags & 0x3f))` for
-`rallocx`. `kept` is a quantum-aligned slot of a large enough class, or
-a huge page start with no size bound.
+A kept block (`r == p`) is included: the realloc family ensures `fits`
+for every result (revised by gap 6 below). The keep decision
+(`old_size_or_keep`, `realloc_old`) ensures `kept(p, size, align)`
+(`api/libc.rs`), a quantum-aligned slot of a large enough class, or a
+huge page start with `max(size, 1)` bytes of the region from it, which
+unfolds to `fits` at `align` and at the quantum (`lemma_kept_fits`
+states it). The huge
+half's bound: the keep test is `usable_for(size) == Some(old)`, so
+`size <= old`, and `old`, the usable bytes `Huge::usable_size` reads
+from the run's descriptor, ensures `spec_run_usable` (the usable pages
+and the guard inside the region); `vspec::usable::lemma_run_bytes_block`
+turns that into `is_huge_block(p, max(size, 1))`.
 
 **Premises beyond the common ones.**
 - Slab results: `CachePerms::tracks` (`heap/mod.rs:1458`), part of the
@@ -248,7 +255,10 @@ a huge page start with no size bound.
   present on aarch64.
 - Huge results: `vspec::huge::axiom_huge_lock_inv`, `_frame`
   (`vspec/huge.rs:44`, `:52`); `Huge::alloc_run`
-  (`huge/mod.rs:3685`) is verified.
+  (`huge/mod.rs:3685`) is verified. A kept run's bound rests on the
+  same axioms: `Huge::usable_size` reads its `spec_run_usable` from a
+  live `Active` descriptor under the huge lock invariant (`run_ok`,
+  `desc_ok`).
 - Class lock and commit lock invariants for the claim path:
   `class::axiom_class_lock_inv`, `axiom_class_lock`
   (`class/mod.rs:1288`, `:1296`), `table::axiom_table_lock_inv`,
@@ -260,8 +270,6 @@ a huge page start with no size bound.
   `claim_with`'s verified `slots_in`.
 
 **Where the statement is weaker than the code.**
-- A kept huge block has no `size` bound (`kept`, `api/libc.rs:582`):
-  the huge descriptors state no `usable` bound against the region.
 - `mallocx` with no alignment flag is stated at alignment 1, not the
   quantum, though with no `MALLOCX_LG_ALIGN` the code returns a class or
   run aligned to at least the quantum.
@@ -574,7 +582,7 @@ they are held, share no byte. Two slots of one class are two tokens of
 one authority, so different slots, a class size or more apart; slots of
 two classes lie in two class regions; a slot and a run lie in the
 superblock and the huge region; two runs hold disjoint page subsets.
-`Heap::theorem_uniqueness_live` (`heap/mod.rs:2957`): a slot a
+`Heap::theorem_uniqueness_live` (`heap/mod.rs:3021`): a slot a
 well-formed heap caches is no live block of its class.
 
 **Entry points.** The allocating entry points' cores return the token
@@ -645,8 +653,12 @@ r.0@.addr != 0 && r.0 != p && (flags as u32) & MALLOCX_ZERO != 0 ==> {
     &&& 0 <= r.1@ <= size
     &&& r.2@.addr() == r.0@.addr + r.1@
     &&& r.2@.len() >= size - r.1@
+    // ...
 },
 ```
+
+(Excerpt: the clause also states `covers_usable`, `k`'s value for a
+null `p`, and `k == min(o, size)` for an `o` with `usable_of(p, o)`.)
 
 `calloc` and `mallocx` are `.0` of the `_zeroed` forms; the exported
 symbols carry no token.
@@ -693,10 +705,17 @@ symbols carry no token.
   known zero, and that token covers them; on the known-zero path the
   token comes from `mallocx::alloc` with no length stated as `usable`.
   Its ensures says `size`.
-- `rallocx_zeroed`'s `k` is any value in `0..=size` for a huge `p`; the
-  code copies `min(old, size)` with `old` from `old_size_or_keep`, which
-  now ensures `old == blk.len()` (the run token's usable bytes), but
-  `rallocx_zeroed`'s `ensures` ties `k` only for a slot.
+- `rallocx_zeroed`'s `k` is `min(old, size)` for some `old` with
+  `usable_of(p, old)` (revised by gap 6: `old_size_or_keep` ensures
+  `usable_of(p, old)` of the `old` it returns, and the code copies
+  `min(old, size)`). That is exact for a slot `p` (the class's size). For
+  a huge `p`, `usable_of` states only the shape of `old` (`run_bytes`:
+  whole pages, at least one, inside the region), not the descriptor's
+  value; the value comes from `p`'s token: `old_size_or_keep` also
+  ensures `old == blk.len()` (gap 1), and `rallocx_zeroed` ensures
+  `k == min(blk.len(), size)`. That token is the one `axiom_c_claim`
+  gives for C's pointer, so for a huge `p` `k` is exact under the `free`
+  contract only.
 
 ## 7. Guard pages
 
@@ -823,9 +842,12 @@ share no page with the guard pages of any live run, its own included.
   for the guard tests and the table geometry the free paths read.
 
 **Where the statement is weaker than the code.**
-- Huge runs are covered only at the lock invariant: `alloc_run` does not
-  tie its result to a descriptor, so no entry point states that a
-  returned huge block avoids other runs' guard pages. In fallback mode
+- Huge runs are covered only at the lock invariant: `alloc_run` now
+  returns its run's token (gap 1's `RunToken`, an `Active` descriptor's
+  extent in the authorities `Inner::wf` holds), but no lemma turns
+  `theorem_run_guards` into a per-result statement over the token, so no
+  entry point states that a returned huge block avoids other runs' guard
+  pages. In fallback mode
   (no `MADV_GUARD_INSTALL`) a reused extent may hold a stale `PROT_NONE`
   guard that `take` re-commits; that commit is not modelled.
 - `theorem_guard_free` says that a pointer into a guard slab aborts,
@@ -928,8 +950,10 @@ row), one column per interface property. Read from the `ensures` of
 each entry point's Rust function at `ccbf1dd`; the `file:line`s in
 this section are the `fn` line at that commit (the sections above are
 at `b2cad68`). The U column, row 13's Z and row 22's F were revised
-later, by the usable-size work (gap 3 below); items it added are cited
-by name. All the trusted premises listed above apply to every cell. Every `extern "C"` wrapper is in `verus!` with no contract of its
+later, by the usable-size work (gap 3 below), and the R cells of rows 3,
+4, 14 and 17 by the huge `kept` bound (gap 6); items they added are
+cited by name. All the trusted premises listed above apply to every
+cell. Every `extern "C"` wrapper is in `verus!` with no contract of its
 own and only casts, except `malloc_stats_print`. So the Rust function's
 `ensures` is the symbol's contract, and a verified body cannot panic or
 overflow. Where that function is `.0` of a `_zeroed` twin (`calloc`,
@@ -939,7 +963,8 @@ the same block. Likewise the U cells of rows 12 and 14 rest on the
 `_stored` twins' `ensures` (`malloc_usable_stored`,
 `realloc_usable_stored`) and row 13's on `calloc_usable_zeroed`'s third
 result: `malloc_usable` and `realloc_usable` themselves state nothing
-about `*usable`. The D cells and the *(live)* B cells rest on a
+about `*usable`. The D cells, the *(live)* B cells, row 15's U and row
+17's Z rest on a
 `_block` core (`malloc_block`, `free_block`, ...; for rows 12 to 14 the
 `_stored` twins and `calloc_usable_zeroed`, which take the token too)
 that the Rust entry point calls with a fresh `Live` token (allocations:
@@ -977,8 +1002,8 @@ Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
 |----|---------------------------------------------|---|---|---|---|---|---|---|
 | 1  | `malloc`                                    | P | P | . | . | p | . | . |
 | 2  | `calloc`                                    | P | P | P | . | p | . | . |
-| 3  | `realloc`                                   | p | P | . | - | p | p | . |
-| 4  | `reallocarray`                              | p | P | . | - | p | p | . |
+| 3  | `realloc`                                   | P | P | . | - | p | p | . |
+| 4  | `reallocarray`                              | P | P | . | - | p | p | . |
 | 5  | `aligned_alloc`, `memalign`                 | P | P | . | . | p | P | . |
 | 6  | `posix_memalign`                            | p | p | . | . | p | P | . |
 | 7  | `valloc`                                    | P | P | . | . | p | . | . |
@@ -988,10 +1013,10 @@ Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
 | 11 | `free_sized`, `free_aligned_sized`          | . | . | . | . | - | p | . |
 | 12 | `challoc_malloc_usable`                     | P | P | . | . | p | . | P |
 | 13 | `challoc_calloc_usable`                     | P | P | P | . | p | . | P |
-| 14 | `challoc_realloc_usable`                    | p | P | . | - | p | p | P |
+| 14 | `challoc_realloc_usable`                    | P | P | . | - | p | p | P |
 | 15 | `challoc_free_usable`                       | . | . | . | . | P | p | P |
 | 16 | `mallocx`                                   | P | P | P | . | p | - | . |
-| 17 | `rallocx`                                   | p | P | p | - | p | p | . |
+| 17 | `rallocx`                                   | P | P | P | - | p | p | . |
 | 18 | `xallocx`                                   | . | . | . | . | . | p | p |
 | 19 | `sallocx`                                   | . | . | . | . | . | p | p |
 | 20 | `dallocx`                                   | . | . | . | . | . | p | . |
@@ -1020,7 +1045,7 @@ Notes that recur below:
   `r` (`Live::block`) with at least the request's usable bytes. Two live
   tokens are disjoint (`Live::theorem_apart`, `heap/live.rs:423`), and a
   cached slot is no live block (`Heap::theorem_uniqueness_live`,
-  `heap/mod.rs:2957`), so the result shares no byte with any other
+  `heap/mod.rs:3021`), so the result shares no byte with any other
   block the program holds, under the `free` contract for C's blocks.
   Slot tokens come from the class authorities (theorem 5); run tokens
   from the huge allocator's (`huge::RunToken`, `huge/mod.rs:652`), in
@@ -1050,9 +1075,9 @@ Notes that recur below:
   `covers_usable` names. `usable_of(p, n)` is what a query reads for a
   live block: the class's size for a slot; for a huge page start only
   `run_bytes(p, n)`, the descriptor's shape (whole pages, at least one,
-  guard inside the region). `usable_size` ensures `usable_of`, and
-  `malloc_usable_size`, `sallocx`, `xallocx` and `free_usable` re-export
-  it. So a query of a slot is exact, and
+  guard inside the region). `usable_size` ensures `usable_of`,
+  `malloc_usable_size`, `sallocx` and `xallocx` re-export it, and
+  `free_usable` states it from its own classification. So a query of a slot is exact, and
   `vspec::usable::theorem_usable_consistent` proves that it reads what
   the allocation stated (`r == n` for a slot). With a token that claims
   `p`, `usable_size` also ensures `r == blk.len()` (`Live::len`, the
@@ -1083,15 +1108,17 @@ alone):
    `fits(r, n * m, QUANTUM)`. Z: `r.1@.covers(r.0, n * m)` (theorem 6).
    F: `n * m > usize::MAX ==> r@.addr == 0` is proved; the rest is
    *(errno)*.
-3. `realloc` (`api/libc.rs:698`). R: `r != p ==> fits(r, size, QUANTUM)`
-   and `fits(..) || kept(r, size, 1)` (`kept`, `:617`). A kept huge block
-   has no size bound. D: *(D)* (`realloc_block`); a kept `p` comes back
-   with the caller's own token. The move's disjointness from `p` is
-   proved (`Live::theorem_apart` on the two blocks' tokens), and
-   `axiom_moved_block` (`vspec/addr.rs:121`) grants only the two blocks'
-   validity, with the disjointness as its precondition. C: the code
-   copies `min(old, size)` bytes, with `old` the block's usable bytes
-   (`old_size_or_keep`, `:635`; the class size for a slot).
+3. `realloc` (`api/libc.rs:698`). R: `fits(r, size, QUANTUM)`, a kept
+   block included (gap 6: `kept`, `:617`, now bounds a kept run by
+   `size`, and unfolds to `fits`, `lemma_kept_fits`). D: *(D)*
+   (`realloc_block`); a kept `p` comes back with the caller's own token.
+   The move's disjointness from `p` is proved (`Live::theorem_apart` on
+   the two blocks' tokens), and `axiom_moved_block` (`vspec/addr.rs:121`)
+   grants only the two blocks' validity, with the disjointness as its
+   precondition. C: the code copies `min(old, size)` bytes, with
+   `usable_of(p, old)` and `old == blk.len()`, the block's usable bytes
+   (`old_size_or_keep`, `:635`): the class size for a slot, a run token's
+   usable pages for a huge `p`.
    `ptr::copy_nonoverlapping` has no byte-level spec, so contents are not
    modelled. F: `p != 0 && size == 0 ==> r@.addr == 0` is proved, and the
    core (`realloc_block`) gives the caller back its own token for `p` on a
@@ -1171,7 +1198,10 @@ alone):
     class size, or the run's usable pages, from its token on both paths):
     the class size from `heap::free_fast_class`, which ensures
     `is_slot(c, p)`, or from `free_usable_slow`'s classification
-    (`:1081`), or `Huge::usable_size` there.
+    (`:1081`), or `Huge::usable_size` there. The `r == blk.len()` half
+    is the core's; at the export `blk` is the token `axiom_c_claim` gives
+    for C's `p`, so for a huge run it holds under the `free` contract
+    (the `usable_of` half needs no token).
 16. `mallocx` (`api/jemalloc.rs:231`, `.0` of `mallocx_zeroed`, `:243`).
     R: `fits(r, size, 1 << (flags & 0x3f))`. With no `MALLOCX_LG_ALIGN`
     this is alignment 1, weaker than the quantum the code gives. Z: with
@@ -1183,14 +1213,21 @@ alone):
     with `errno` untouched (`alloc_with`'s doc) is not stated beyond
     `fits` allowing NULL. B: an arena or explicit cache that does not
     exist returns NULL (doc of `alloc_with`, `:160`); not stated.
-17. `rallocx` (`api/jemalloc.rs:260`, `rallocx_zeroed`, `:278`). R: as
-    `realloc` at `1 << (flags & 0x3f)`, `kept` at that alignment. Z: for a
-    new or moved block with `MALLOCX_ZERO`, a token from offset `k` to
-    the usable end (`covers_usable`). `k == 0` for a NULL `p` and
-    `min(class size, size)` for a slot `p`. For a huge `p`, `k` is only
-    `0 <= k <= size`: `old_size_or_keep` states `old` for a run (the token's
-    usable bytes), but `rallocx_zeroed` does not tie `k` to it.
-    A kept block gets no token; jemalloc zeroes only past the old real
+17. `rallocx` (`api/jemalloc.rs:260`, `rallocx_zeroed`, `:278`). R:
+    `fits(r, size, 1 << (flags & 0x3f))`, a kept block included, as
+    `realloc` (gap 6). Z: for a new or moved block with `MALLOCX_ZERO`,
+    a token from offset `k` to the usable end (`covers_usable`). `k == 0`
+    for a NULL `p`; for a non-NULL `p`, `k == min(old, size)` for an
+    `old` with `usable_of(p, old)` (`old_size_or_keep` ensures it of the
+    `old` it returns), so `min(class size, size)` for a slot `p`. For a
+    huge `p`, `usable_of` gives only the shape of `old` (`run_bytes`:
+    whole pages, at least one, inside the region), not the descriptor's
+    value the code copies; `rallocx_zeroed` also ensures
+    `k == min(blk.len(), size)`, the usable bytes of `p`'s token
+    (`old_size_or_keep` ensures `old == blk.len()`, gap 1), which is the
+    old run's usable size. So Z is `P` under the `free` contract, as D:
+    at the export, `blk` is the token `axiom_c_claim` gives for C's `p`.
+    A kept block gets no `Zeroed` token; jemalloc zeroes only past the old real
     size, which a kept block keeps. C, F, B: as `realloc`; NULL `p`
     allocates.
 18. `xallocx` (`api/jemalloc.rs:332`). Never resizes; returns
@@ -1300,9 +1337,9 @@ alone):
   `free_target` (the B column) states it per result: `theorem_guard_pages` and
   `theorem_guard_free` (`heap/mod.rs:212`, `:243`). For huge runs it is
   stated only of the huge lock's values (`Inner::theorem_run_guards`,
-  `huge/mod.rs:941`): no entry point ties its huge result to a live
-  descriptor, and fallback-mode stale `PROT_NONE` guards are not
-  modelled.
+  `huge/mod.rs:941`): `alloc_run` returns the run's token (gap 1), but
+  no lemma states the guard exclusion per result over it, and
+  fallback-mode stale `PROT_NONE` guards are not modelled.
 - I5: class purges run only on slabs in the `empty` set, and
   `walk_empty` (`class/decay.rs:265`) checks at run time that the
   descriptor says `Empty` with `live() == 0`, aborting otherwise
@@ -1334,9 +1371,10 @@ alone):
    Mostly spec work; the hot paths keep their code.
 3. **Usable-size contract**: done for rows 12, 13, 14 and 22 (U to `P`)
    and row 13's Z, *(U)*; row 15's U is `P` from gap 1 (the freed
-   block's token). `usable_size` states both halves (`usable_of`), and
-   `malloc_usable_size`, `sallocx`, `xallocx` and `challoc_free_usable`
-   re-export it; `*usable` is a `Stored` token from `store_usable`;
+   block's token, under the `free` contract for a huge run).
+   `usable_size` states both halves (`usable_of`), `malloc_usable_size`,
+   `sallocx` and `xallocx` re-export it, and `challoc_free_usable`
+   states it from its own classification; `*usable` is a `Stored` token from `store_usable`;
    `nallocx` and `mallocx` share `nalloc_usable`. Left: the huge half
    of a query (rows 9, 18, 19 stay `p`): `usable_size` with the block's
    run token gives exactly its usable bytes (gap 1), but the queries
@@ -1353,12 +1391,22 @@ alone):
 5. **Byte contents**: a `PointsToRaw`-level spec of user blocks and of
    `copy_nonoverlapping` would turn the C column (4 rows) to `P`. It
    needs the permissions threading that `TODO.md` lists.
-6. **Huge `kept` bound**: state a run's usable bytes against the region
-   in the huge descriptors (theorem 1's "weaker than the code"). Turns R
-   of rows 3, 4, 14 and 17 to `P`, and with it `rallocx`'s `k` for huge
-   blocks (Z of row 17).
+6. **Huge `kept` bound**: done for R (rows 3, 4, 14 and 17 to `P`).
+   `Huge::usable_size` already ensures `spec_run_usable` from the run's
+   descriptor (usable pages and guard inside the region);
+   `vspec::usable::lemma_run_bytes_block` puts any `size <= old` of a
+   huge page start in the region, so `kept`'s huge half carries
+   `is_huge_block(p, max(size, 1))` and every realloc-family result
+   `fits` (`kept` unfolds to it, `lemma_kept_fits`). Ghost-only: no
+   machine code changed. Z of row 17: `old_size_or_keep` now ensures
+   `usable_of(p, old)`, so `rallocx`'s `k` is `min(old, size)` for some
+   `old` of a run's shape; `usable_of` does not name the descriptor's
+   value, but with gap 1 `old_size_or_keep` also ensures `old ==
+   blk.len()` and `rallocx_zeroed` ensures `k == min(blk.len(), size)`,
+   so Z is `P` under the `free` contract (merge of gaps 1 and 6).
 7. **Purge and guards**: tie the empty set and `purge::Batch` ranges to
    slot and extent tokens (I5, and theorem 6's purge premise). The guard
    half is done for slabs (`!guard_slab` is in `is_slot`, theorem 7);
-   for huge runs, tie `Huge::alloc_run`'s result to its live descriptor
-   so `theorem_run_guards` holds per result (I4, huge row).
+   for huge runs, `Huge::alloc_run`'s result now comes with its run
+   token (gap 1); state `theorem_run_guards` per result over that token
+   (I4, huge row).

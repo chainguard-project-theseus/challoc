@@ -899,12 +899,12 @@ pub(super) fn set_errno(e: c_int)
 
 ### S8. `store_usable`
 
-src/api/libc.rs:938. Kind: external_body. Category: raw pointer from C caller.
+src/api/libc.rs:949. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store `n` through `usable` unless it is null (`usable` is optional for the three allocating entry points; a null makes them plain `malloc`/`calloc`/`realloc`), with the [`Stored`] token for the store.
 
-Body mints Tracked at line 947.
+Body mints Tracked at line 958.
 
 ```rust
 fn store_usable(usable: *mut usize, n: usize) -> (s: Tracked<Stored>)
@@ -915,7 +915,7 @@ fn store_usable(usable: *mut usize, n: usize) -> (s: Tracked<Stored>)
 
 ### S9. `store_out`
 
-src/api/libc.rs:1729. Kind: external_body. Category: raw pointer from C caller.
+src/api/libc.rs:1743. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store the allocation through `posix_memalign`'s out-pointer.
@@ -5704,12 +5704,12 @@ pub fn fetch_and(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Track
 
 ### S358. `write_zero`
 
-src/vspec/zero.rs:298. Kind: external_body. Category: raw pointer (internal).
+src/vspec/zero.rs:300. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `write_bytes(p, 0, n)`, returning the token for what it wrote.
 
-Body mints Tracked at line 307.
+Body mints Tracked at line 309.
 
 ```rust
 pub unsafe fn write_zero(p: *mut u8, n: usize) -> (z: Tracked<Zeroed>)

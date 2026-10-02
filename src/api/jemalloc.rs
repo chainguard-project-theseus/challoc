@@ -297,9 +297,7 @@ pub fn mallocx_zeroed(size: usize, flags: c_int, Tracked(blk): Tracked<&mut Live
 /// and gets the result's.
 pub fn rallocx(p: *mut u8, size: usize, flags: c_int) -> (r: *mut u8)
     ensures
-        r != p ==> crate::heap::fits(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
-        crate::heap::fits(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int)
-            || super::libc::kept(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
+        crate::heap::fits(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
         p@.addr != 0 ==> crate::heap::free_target(p),
 {
     let tracked blk = crate::heap::live::axiom_c_claim(p);
@@ -311,10 +309,13 @@ pub fn rallocx(p: *mut u8, size: usize, flags: c_int) -> (r: *mut u8)
 /// reads as zero: with the flag, a new block (null `p`, or a moved block)
 /// comes with a [`Zeroed`] token for its bytes from `k` to the end of its
 /// usable size ([`covers_usable`]), where `k`, the ghost second result, is
-/// the number of bytes copied from `p`: `min(old usable, size)`, which is
-/// `min(class size, size)` for a slot `p` and 0 for a null `p`. For a huge
-/// `p` the old usable size is what `Huge::usable_size` reads from the
-/// run's descriptor, which `k` is not tied to here. `blk` is the caller's
+/// the number of bytes copied from `p`: `min(old usable, size)` for `old`
+/// the usable size a query of `p` reads ([`usable_of`]), which is
+/// `min(class size, size)` for a slot `p`, and 0 for a null `p`. For a
+/// huge `p`, `old` is what `Huge::usable_size` reads from the run's
+/// descriptor, of which `usable_of` states only the shape (whole pages,
+/// at least one, inside the region), not the value; the value is the
+/// usable size of `p`'s token (`k == min(blk.len(), size)`). `blk` is the caller's
 /// token for `p` ([`Live::claims`]), and `out` gets the result's: a new
 /// block's, or `blk` itself when `p` is kept or the move fails (`p` is
 /// then still the caller's).
@@ -322,9 +323,7 @@ pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Track
     requires
         blk.claims(p),
     ensures
-        r.0 != p ==> crate::heap::fits(r.0, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
-        crate::heap::fits(r.0, size as int, (1usize << ((flags as u32) & 0x3f)) as int)
-            || super::libc::kept(r.0, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
+        crate::heap::fits(r.0, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
         p@.addr != 0 ==> crate::heap::free_target(p),
         r.0@.addr != 0 && r.0 != p && (flags as u32) & MALLOCX_ZERO != 0 ==> {
             &&& 0 <= r.1@ <= size
@@ -332,6 +331,11 @@ pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Track
             &&& r.2@.len() >= size - r.1@
             &&& covers_usable(r.2@, r.0, r.1@, size as int)
             &&& p@.addr == 0 ==> r.1@ == 0
+            &&& p@.addr != 0 ==> exists|o: int| #[trigger] usable_of(p, o) && r.1@ == (if o < size { o } else { size as int })
+            // The same `o` is the usable size of `p`'s token: exact for a
+            // huge `p` too.
+            &&& p@.addr != 0 ==> r.1@ == (if blk.len() < size { blk.len() } else { size as int })
+            // The slot case of the `usable_of` line, spelled out for callers.
             &&& p@.addr != 0 ==> forall|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr)
                 ==> r.1@ == (if class_table()[c].size < size { class_table()[c].size as int } else { size as int })
         },
@@ -374,6 +378,10 @@ pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Track
         crate::vspec::addr::axiom_moved_block(p, old, q, size);
     }
     let ghost k = if old < size { old as int } else { size as int };
+    proof {
+        // `old` is the usable size a query of `p` reads.
+        assert(usable_of(p, old as int));
+    }
     // The copy writes the first `k` bytes of `q`; the rest of the token
     // is what stays zero.
     let tracked tail = if f.zero { z.split(k).1 } else { Zeroed::empty(0) };

@@ -227,7 +227,9 @@ pub open spec fn block_usable(p: usize, size: int) -> int {
 ///   rounded up to whole pages for a huge run.
 /// - `rallocx(p, size, MALLOCX_ZERO)` with a new block `q`
 ///   (`jemalloc::rallocx_zeroed`): `from` is `k`, the bytes copied from
-///   `p`, `min(class size, size)` for a slot `p` and 0 for a null `p`.
+///   `p`, `min(class size, size)` for a slot `p` and 0 for a null `p`;
+///   for a huge `p`, `min(old, size)` for an `old` of a run's shape
+///   (`vspec::usable::usable_of`).
 ///
 /// `calloc(n, m)` (`libc::calloc_zeroed`) and `challoc_calloc_usable`
 /// (`libc::calloc_usable_zeroed`, slab-class requests) state the

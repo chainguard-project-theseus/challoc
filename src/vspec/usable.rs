@@ -99,6 +99,57 @@ pub proof fn lemma_usable_run(shared: &crate::heap::Shared, p: *mut u8, n: usize
     }
 }
 
+/// The usable bytes of a run lie in the huge region: `n` bytes that can
+/// be the usable size of a run at the huge page start `p` ([`run_bytes`],
+/// what [`Huge::usable_size`](crate::huge::Huge::usable_size) reads from
+/// the run's descriptor) are `n` bytes of the region from `p` on, so any
+/// `size` up to `n` is a huge block of `size` bytes.
+pub proof fn lemma_run_bytes_block(p: usize, n: int, size: int)
+    requires
+        crate::heap::regions_ok(),
+        process_regions().is_huge_block(p, 1),
+        run_bytes(p, n),
+        size <= n,
+    ensures
+        process_regions().is_huge_block(p, if size < 1 { 1 } else { size }),
+{
+    let r = process_regions();
+    let lg32 = r.lg_page;
+    let lg = lg32 as usize;
+    let rel = (p - r.huge_base) as usize;
+    let len = r.huge_len;
+    let page = rel >> lg32;
+    let np = len >> lg32;
+    let one = 1usize << lg32;
+    assert(page == rel >> lg && np == len >> lg && one == 1usize << lg) by (bit_vector)
+        requires
+            page == rel >> lg32,
+            np == len >> lg32,
+            one == 1usize << lg32,
+            lg == lg32 as usize,
+            lg32 < 64,
+    ;
+    vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+    vstd::bits::lemma_usize_shl_is_mul(1, lg);
+    vstd::bits::lemma_usize_shr_is_div(rel, lg);
+    vstd::bits::lemma_usize_shr_is_div(len, lg);
+    let pg = one as int;
+    assert(pg == vstd::arithmetic::power2::pow2(lg as nat));
+    vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
+    // The page index times the page is `p`'s offset (a page start), and
+    // the region's whole pages are at most its length.
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(rel as int, pg);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(len as int, pg);
+    vstd::arithmetic::div_mod::lemma_mod_bound(len as int, pg);
+    assert(page * pg == rel);
+    assert(np * pg <= len);
+    assert(0 <= crate::huge::GUARD_PAGES * pg) by (nonlinear_arith)
+        requires
+            pg > 0,
+    ;
+    assert(p + n <= r.huge_base + len);
+}
+
 /// Size consistency (`verus/THEOREMS.md`, the U column): a query of a
 /// slot that an allocation of `size` bytes returned reads the usable size
 /// the allocation stated. With `nallocx`'s and `mallocx`'s postconditions

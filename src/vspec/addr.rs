@@ -114,8 +114,8 @@ pub proof fn axiom_fresh_block(p: *mut u8, len: usize)
 /// non-null block the allocation paths just returned for at least `len`
 /// bytes, apart from `p`. `p` is valid for reads of `old` bytes and `q`
 /// for writes of `len`. The producers that would ensure it: the
-/// classification, for `p`; `malloc`, `malloc_usable` and jemalloc's
-/// `alloc_with`, for `q`. That the two do not overlap is the caller's
+/// classification, for `p`; `malloc_block`, `malloc_usable_stored` and
+/// jemalloc's `alloc_with`, for `q`. That the two do not overlap is the caller's
 /// premise, from the blocks' tokens (`heap::live::Live::theorem_apart`).
 #[verifier::external_body]
 pub proof fn axiom_moved_block(p: *mut u8, old: usize, q: *mut u8, len: usize)
