@@ -41,6 +41,14 @@ static PRESENT: AtomicBool = AtomicBool::new(false);
 static REQUESTED: AtomicBool = AtomicBool::new(false);
 /// Futex word the thread sleeps on; bumped by [`wake`].
 static SEQ: AtomicU32 = AtomicU32::new(0);
+/// Run once by the next `start` that creates a thread, after the
+/// creation and before the thread is published, for tests.
+#[cfg(test)]
+pub static BEFORE_PUBLISH: std::sync::Mutex<Option<std::boxed::Box<dyn FnOnce() + Send>>> =
+    std::sync::Mutex::new(None);
+/// Waits the thread has started with no timeout, for tests.
+#[cfg(test)]
+pub static UNTIMED_WAITS: AtomicU32 = AtomicU32::new(0);
 
 #[inline]
 pub fn present() -> bool {
@@ -104,13 +112,30 @@ pub fn start(shared: &Shared) -> bool {
     // SAFETY: `errno` is this thread's `errno` slot (above), valid for
     // the life of the thread.
     unsafe { *errno = saved_errno };
-    let mut g = STATE.lock();
-    g.creating = false;
-    g.stack = stack;
-    g.thread = thread;
-    g.present = thread.is_some();
-    PRESENT.store(g.present, Ordering::Relaxed);
-    g.present
+    #[cfg(test)]
+    if thread.is_some() {
+        let hook = BEFORE_PUBLISH.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+    let present = {
+        let mut g = STATE.lock();
+        g.creating = false;
+        g.stack = stack;
+        g.thread = thread;
+        g.present = thread.is_some();
+        PRESENT.store(g.present, Ordering::Relaxed);
+        g.present
+    };
+    // A class's first `Empty` slab may have arrived after the thread's
+    // last scan, which left it asleep with no deadline, and its `wake`
+    // did nothing while the thread was not yet present: make it look
+    // again.
+    if present {
+        kick();
+    }
+    present
 }
 
 /// Create the thread on `stack` (reserving the stack first if there is
@@ -261,6 +286,10 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
                 nsec: (ns % 1_000_000_000) as i64,
             }
         });
+        #[cfg(test)]
+        if timeout.is_none() {
+            UNTIMED_WAITS.fetch_add(1, Ordering::SeqCst);
+        }
         // SAFETY: `SEQ` is a live, aligned `u32`; `timeout` outlives
         // the call. Every outcome (wake, EAGAIN, ETIMEDOUT, EINTR) just
         // means "look again".

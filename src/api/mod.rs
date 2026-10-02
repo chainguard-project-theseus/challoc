@@ -825,6 +825,99 @@ mod tests {
         );
     }
 
+    /// A first `Empty` that lands while `start` is publishing the thread
+    /// is purged: the thread has already scanned and gone to sleep with
+    /// no deadline, and the free's `wake` does nothing because the
+    /// thread is not yet present, so `start` must kick it once it is.
+    /// Run alone, it fails without that kick; in the full suite another
+    /// test's first `Empty` can wake the thread instead and hide it.
+    #[test]
+    fn background_thread_purges_an_empty_from_its_startup() {
+        use core::sync::atomic::{AtomicU8, Ordering};
+        use std::sync::Arc;
+        let _serial = FORK_TEST.lock().unwrap();
+        let s = shared();
+        assert!(!purge::background::present());
+        let old_ns = s.decay_ns();
+        s.set_decay_ms(1);
+        let (p, _) = s.alloc_huge(8 << 20, 4096, 0);
+        assert!(!p.is_null());
+        unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
+        let page = (p as usize - s.regions.huge_base) >> s.regions.lg_page;
+        // Nothing else `Empty` in the huge allocator, so the free in the
+        // hook is its first.
+        s.huge.purge_empty(u64::MAX);
+        // 0: the hook did not run; 1: the thread never slept without a
+        // deadline; 2: the free was not the first `Empty`; 3: ready.
+        let hook_state = Arc::new(AtomicU8::new(0));
+        let hook_seen = Arc::clone(&hook_state);
+        let waits = purge::background::UNTIMED_WAITS.load(Ordering::SeqCst);
+        *purge::background::BEFORE_PUBLISH.lock().unwrap() =
+            Some(std::boxed::Box::new(move || {
+                // No panics here: unwinding out of `start` would leave the
+                // state marked as creating for every later test.
+                let mut asleep = false;
+                for _ in 0..1000 {
+                    if purge::background::UNTIMED_WAITS.load(Ordering::SeqCst) != waits {
+                        asleep = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                if !asleep {
+                    hook_seen.store(1, Ordering::SeqCst);
+                    return;
+                }
+                let none_before = s.huge.oldest_empty() == 0;
+                s.free_huge(page);
+                let first = none_before && s.huge.oldest_empty() != 0;
+                hook_seen.store(if first { 3 } else { 2 }, Ordering::SeqCst);
+            }));
+        purge::background::request(true);
+        let started = purge::background::start(s);
+        let mut purged = false;
+        if started && hook_state.load(Ordering::SeqCst) == 3 {
+            for _ in 0..400 {
+                if s.huge.oldest_empty() == 0 && s.huge.stats().empty == 0 {
+                    purged = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        // Clean up before asserting, so a failure here leaves no thread
+        // or hook behind for the other background tests.
+        purge::background::BEFORE_PUBLISH.lock().unwrap().take();
+        if hook_state.load(Ordering::SeqCst) < 2 {
+            s.free_huge(page);
+        }
+        s.set_decay_ms((old_ns / 1_000_000) as i64);
+        purge::background::request(false);
+        for _ in 0..400 {
+            if !purge::background::present() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let stopped = !purge::background::present();
+        if stopped {
+            purge::background::join_exited();
+        }
+        assert!(started, "background thread did not start");
+        assert_eq!(
+            hook_state.load(Ordering::SeqCst),
+            3,
+            "hook: 0 did not run, 1 the thread never slept without a deadline, \
+             2 the free was not the first Empty"
+        );
+        assert!(
+            purged,
+            "background thread slept through a first Empty from its startup: {:?}",
+            s.huge.stats()
+        );
+        assert!(stopped, "background thread did not stop");
+    }
+
     /// One stack for the life of the process (design 8.1): a
     /// stop/start cycle joins the exited thread and hands the same
     /// reservation to the next one, so toggling `background_thread` does
