@@ -724,12 +724,10 @@ pub(crate) fn shared_ptr(shared: &Shared) -> *const Shared {
     ptr::from_ref(shared)
 }
 
-/// Trusted: aborts.
 #[cold]
 #[inline(never)]
-#[verifier::external_body]
 pub(super) fn invalid_free(p: usize) -> ! {
-    panic!("invalid free of {p:#x}: not an allocation")
+    crate::sys::abort_fmt(format_args!("invalid free of {p:#x}: not an allocation"))
 }
 
 /// `zero_on_free`: clear the class-size bytes of slot `p`. Called from the
@@ -762,9 +760,8 @@ pub(super) unsafe fn zero_slot(class: usize, p: *mut u8)
 /// frame for this call.
 #[cold]
 #[inline(never)]
-#[verifier::external_body]
 pub(super) fn cached_twice(p: *mut u8) -> ! {
-    panic!("double free of {:#x}: the slot is already in the thread cache", p as usize)
+    crate::sys::abort_fmt(format_args!("double free of {:#x}: the slot is already in the thread cache", p as usize))
 }
 
 /// [`Heap::alloc_slow`]'s `debug_assert!` that a non-empty home cache

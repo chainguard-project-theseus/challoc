@@ -770,10 +770,7 @@ impl Table {
                 },
     {
         if !(self.count + 1 < self.cap()) {
-            #[cfg(verus_only)]
-            table_full();
-            #[cfg(not(verus_only))]
-            panic!("huge: descriptor table full");
+            crate::sys::abort_fmt(format_args!("huge: descriptor table full"));
         }
         let ghost cap = self.spec_cap();
         let ghost v = self.view();
@@ -1530,19 +1527,6 @@ proof fn lemma_shift_done(v: Seq<Entry>, lg: u32, i: int, jp: int, j: int, v0: S
             }
         }
     }
-}
-
-/// [`Table::insert`]'s abort when the table has no room for another key.
-///
-/// Verification only (`verus_only`): Verus sees this call where the build
-/// keeps the `panic!` in place, which leaves `insert`, and the huge free
-/// path it is inlined into, unchanged. Trusted: the `-> !` is the whole
-/// specification, and the `panic!` it stands for never returns; the two
-/// copies of the message must be kept in step.
-#[cfg(verus_only)]
-#[verifier::external_body]
-fn table_full() -> ! {
-    panic!("huge: descriptor table full")
 }
 
 } // verus!

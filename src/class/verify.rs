@@ -3,6 +3,8 @@
 
 #[cfg(test)]
 use super::abort::wrong_arena;
+#[cfg(verus_only)]
+use super::table::bits_shape;
 use super::{ClassState, Pick, SlabTable};
 #[cfg(verus_only)]
 use crate::layout::class_table;
@@ -89,6 +91,7 @@ impl ClassState {
                 slab < self.spec_nslabs(),
                 *cls == class_table()[self.spec_class() as int],
                 cls.wf(),
+                bits_shape(bm, class_table()[self.spec_class() as int].slab_bits as usize),
         {
             let p = self.slot_ptr(slab, slot);
             // SAFETY: a slot of a committed slab; the class lock is held.
@@ -124,10 +127,17 @@ impl ClassState {
     /// [`check_fresh_slab_is_zero`](ClassState::check_fresh_slab_is_zero)'s
     /// abort, inlined into it.
     #[inline(always)]
-    #[verifier::external_body]
-    fn fresh_slab_dirty(&self, slab: usize, slot: usize, p: *mut u8, word: u64, bm: &crate::bitmap::AtomicBitmap<'_>) -> ! {
+    fn fresh_slab_dirty(&self, slab: usize, slot: usize, p: *mut u8, word: u64, bm: &crate::bitmap::AtomicBitmap<'_>) -> !
+        requires
+            bits_shape(*bm, class_table()[self.spec_class() as int].slab_bits as usize),
+    {
+        proof {
+            use_type_invariant(self);
+            broadcast use crate::vspec::class::axiom_class_table_wf;
+            assert(class_table()[self.spec_class() as int].wf());
+        }
         let cls = self.class();
-        panic!(
+        crate::sys::abort_fmt(format_args!(
             "check_zero: class {} slab {slab} (arena {}) is Fresh before its first claim but slot {slot} at {:#x} reads {word:#x} ({} of {} bits set, watermark {}, descriptor at {:#x})",
             self.class,
             self.arena,
@@ -135,32 +145,55 @@ impl ClassState {
             bm.allocated(cls.nslots()),
             cls.nslots(),
             self.table().committed_slabs(),
-            self.desc(slab) as *const SlabDesc as usize
-        );
+            desc_ptr_addr(self.desc(slab))
+        ));
     }
 
     /// [`check_shadow`](ClassState::check_shadow)'s abort, inlined into it.
     #[inline(always)]
-    #[verifier::external_body]
     fn shadow_written(&self, slab: usize, at: &str, d: &SlabDesc, state: u8, shadow: u8) -> ! {
-        panic!(
+        crate::sys::abort_fmt(format_args!(
             "check_zero: class {} slab {slab} (arena {}) descriptor at {:#x} was written outside the API, seen at {at}: state byte {state:#x}, shadow {shadow:#x} (says {:?}), live {}, arena field {}, dirty_at {}",
             self.class,
             self.arena,
-            d as *const SlabDesc as usize,
-            State::try_from_u8(shadow.wrapping_sub(1)),
+            desc_ptr_addr(d),
+            Says(State::try_from_u8(shadow.wrapping_sub(1))),
             d.live(),
             d.arena(),
             d.dirty_at()
-        )
+        ))
     }
 }
+
+/// The decoded shadow byte of [`ClassState::shadow_written`]'s message,
+/// formatted as its `Option<State>` (Verus specifies `Debug` per type,
+/// and has nothing for `Option`).
+struct Says(Option<State>);
+
+// The derived `Debug` of `Option<State>` writes under any formatter
+// (ghost only: ordinary builds have no `std_specs`).
+#[cfg(verus_only)]
+impl vstd::std_specs::fmt::DebugSpecImpl for Says {
+    open spec fn fmt_req(&self, f: &core::fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
+
+} // verus!
+
+impl core::fmt::Debug for Says {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+verus! {
 
 /// The address of `d`, for an abort message. Trusted: Verus has no
 /// reference-to-pointer cast; nothing is claimed about the address.
 #[inline(always)]
 #[verifier::external_body]
-fn desc_ptr_addr(d: &SlabDesc) -> usize {
+pub(super) fn desc_ptr_addr(d: &SlabDesc) -> usize {
     d as *const SlabDesc as usize
 }
 
@@ -179,35 +212,32 @@ unsafe fn read_word(p: *mut u8, off: usize) -> u64 {
 /// `check_zero` invariant: a slab with live slots was `Fresh` at selection.
 #[cold]
 #[inline(never)]
-#[verifier::external_body]
 pub(super) fn fresh_with_live(class: usize, slab: usize, arena: u16, desc: &SlabDesc, set: usize) -> ! {
-    panic!(
+    crate::sys::abort_fmt(format_args!(
         "check_zero: class {class} slab {slab} (arena {arena}) is Fresh with live {} ({set} bits set, owner {}, dirty_at {}), descriptor at {:#x}",
         desc.live(),
         desc.arena(),
         desc.dirty_at(),
-        desc as *const SlabDesc as usize
-    )
+        desc_ptr_addr(desc)
+    ))
 }
 
 /// `check_zero` invariant: a release reached a slab that reads `Fresh`.
 #[cold]
 #[inline(never)]
-#[verifier::external_body]
 pub(super) fn release_into_fresh(class: usize, slab: usize, arena: u16, desc: &SlabDesc, n: usize) -> ! {
-    panic!(
+    crate::sys::abort_fmt(format_args!(
         "check_zero: release of {n} slot(s) into class {class} slab {slab} (arena {arena}) whose descriptor reads Fresh (live {}, owner {}, dirty_at {}), descriptor at {:#x}",
         desc.live(),
         desc.arena(),
         desc.dirty_at(),
-        desc as *const SlabDesc as usize
-    )
+        desc_ptr_addr(desc)
+    ))
 }
 
 /// The `check_zero` abort: a slot handed out as zero has a dirty word.
 #[cold]
 #[inline(never)]
-#[verifier::external_body]
 #[allow(clippy::too_many_arguments)]
 fn dirty_zero_slot(
     class: usize,
@@ -221,10 +251,10 @@ fn dirty_zero_slot(
 ) -> ! {
     let advice = purge::advice_name();
     let (state, live, owner, set, nslots, _) = now;
-    panic!(
+    crate::sys::abort_fmt(format_args!(
         "check_zero: slot {p:#x} (class {class}, size {size}, slab {}, arena {arena}) was handed out as zero from a {:?} slab but its word at offset {off} reads {word:#x} (purge advice {advice}; descriptor at {:#x} now {state:?} live {live} owner {owner}, {set} of {nslots} bits set, pick of {} slots)",
         pick.slab, pick.state, now.5, pick.n
-    )
+    ))
 }
 
 } // verus!

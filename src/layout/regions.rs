@@ -1448,13 +1448,14 @@ mod linux {
     }
 
     /// The abort of [`Regions::reserve_owning`] for a page size that is not a
-    /// power of two from 4 KiB to `MAX_SLAB`, standing for the `assert!` the
-    /// build keeps.
-    /// Trusted: aborts.
-    #[cfg(verus_only)]
-    #[verifier::external_body]
-    fn bad_page_size(page_size: usize) -> ! {
-        panic!("page size {page_size}")
+    /// power of two from 4 KiB to `MAX_SLAB`, with the message of the
+    /// `assert!` it replaced.
+    #[cold]
+    #[inline(never)]
+    fn bad_page_size() -> ! {
+        sys::abort_fmt(format_args!(
+            "assertion failed: page_size.is_power_of_two() && (0x1000..=MAX_SLAB).contains(&page_size)"
+        ))
     }
 
     /// `1 << k` has `k` trailing zeros.
@@ -1518,12 +1519,9 @@ mod linux {
                 res.1@.addr() == res.0.meta_base,
                 res.1@.len() == res.0.meta_len,
         {
-            #[cfg(verus_only)]
             if !(page_size.is_power_of_two() && (0x1000..=MAX_SLAB).contains(&page_size)) {
-                bad_page_size(page_size);
+                bad_page_size();
             }
-            #[cfg(not(verus_only))]
-            assert!(page_size.is_power_of_two() && (0x1000..=MAX_SLAB).contains(&page_size));
             let lg_page = page_size.trailing_zeros();
             proof {
                 crate::sys::pac::axiom_user_va_limit();

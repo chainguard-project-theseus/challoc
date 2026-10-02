@@ -4,7 +4,7 @@
 
 Checked October 2, 2026, on branch `verus` at `e790f43` plus the `THEOREMS.md` commit, based on upstream main `0f6ae74`:
 
-- `verus-count` skips `#[cfg(test)]` modules. It reports 927 of 1,164 non-test functions verified (79.6%) and 19,879 of 21,894 function lines (90.8%). Another 200 functions inside `verus!` are trusted.
+- `verus-count` skips `#[cfg(test)]` modules. It reports 960 of 1,156 non-test functions verified (83.0%) and 20,092 of 21,907 function lines (91.7%). Another 163 functions inside `verus!` are trusted.
 - `quantum16`, `quantum8`, and `--target aarch64-unknown-linux-gnu` verify with zero errors. `.github/workflows/verus.yaml` runs all three.
 - The hot set — `malloc`, `free`, `calloc`, `realloc`, `sdallocx`, `free_sized`, and everything inlined into them — compiles to the same machine code as upstream on x86_64 and aarch64. The codegen check lists the functions that differ; all are cold (78 on x86_64).
 - All six whole-allocator theorems hold for the thread-cache configuration. [THEOREMS.md](THEOREMS.md) gives their exact statements and premises.
@@ -21,11 +21,11 @@ A background purge wake-up can also be lost at startup. In `purge/background.rs`
 
 ## Coverage ceiling
 
-About 1,250 unverified function lines are beyond Verus’s current reach: inline assembly (~330), FFI, syscalls, and function pointers (~230), `UnsafeCell`, volatile access, `transmute`, and `from_ne_bytes` (~330), `panic!` aborts (~280, because vstd’s `panic!` requires `false`), atomics and the panic handler (~100), and raw pointers from C callers (~100). These categories overlap. Keeping upstream’s exact code, identical hot-path codegen, and no new soundness risk puts coverage near a soft ceiling.
+About 1,050 unverified function lines are beyond Verus’s current reach: inline assembly (~330), FFI, syscalls, and function pointers (~230), `UnsafeCell`, volatile access, `transmute`, and `from_ne_bytes` (~330), atomics and the panic handler (~100), and raw pointers from C callers (~100). These categories overlap. Keeping upstream’s exact code, identical hot-path codegen, and no new soundness risk puts coverage near a soft ceiling.
 
 Possible relaxations and rough gains:
 
-- Change `panic!` aborts to `abort_fmt`: ~50 functions and ~280 lines. Aborts would lose their file and line.
+- Done: `panic!` aborts now format through `abort_fmt` (33 more functions verify; aborts lose their file and line).
 - Allow codegen drift for cold raw-pointer permissions: ~40 functions and ~350 lines.
 - Rewrite cold iterators: ~5 functions and ~80 lines.
 - Allow hot-path codegen changes after Dan’s benchmarks: ~10 functions and ~80 lines.

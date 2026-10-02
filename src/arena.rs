@@ -560,12 +560,11 @@ unsafe fn arena_at<'a>(p: *mut Arena) -> &'a Arena {
 }
 
 /// An arena's bound count went below zero: a heap was unbound twice, or
-/// never bound. Trusted: `panic!` formats its message.
+/// never bound.
 #[cold]
 #[inline(never)]
-#[verifier::external_body]
 fn unbind_unbound(index: u16) -> ! {
-    panic!("arena {index}: unbinding a heap that was never bound")
+    crate::sys::abort_fmt(format_args!("arena {index}: unbinding a heap that was never bound"))
 }
 
 impl Arenas {

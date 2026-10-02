@@ -1,6 +1,4 @@
-//! Specifications for `huge/mod.rs`: its aborts (formatted panics, which
-//! Verus does not model) never return, and the lock invariant of its
-//! state.
+//! Specifications for `huge/mod.rs`: the lock invariant of its state.
 
 use vstd::prelude::*;
 
@@ -8,14 +6,6 @@ use vstd::prelude::*;
 use crate::vspec::lock::{lock_frame, lock_inv};
 
 verus! {
-
-pub assume_specification[ crate::huge::bad_run_state_byte ](v: u8) -> !;
-
-pub assume_specification[ crate::huge::huge_count_underflow ](state: crate::huge::RunState) -> !;
-
-pub assume_specification[ crate::huge::not_a_run ](p: usize) -> !;
-
-pub assume_specification[ crate::huge::already_free ](p: usize) -> !;
 
 /// Assumption: every holder of the huge lock leaves `huge::Inner::wf`
 /// true when it unlocks, so the lock's invariant is `Inner::wf`. Read it

@@ -399,19 +399,19 @@ impl HugeStats {
     }
 }
 
-} // verus!
-
 #[cold]
 #[inline(never)]
 pub(crate) fn bad_run_state_byte(v: u8) -> ! {
-    panic!("huge: run state byte {v:#x} is not a run state")
+    sys::abort_fmt(format_args!("huge: run state byte {v:#x} is not a run state"))
 }
 
 #[cold]
 #[inline(never)]
 pub(crate) fn huge_count_underflow(state: RunState) -> ! {
-    panic!("huge: {state:?} extent count underflow")
+    sys::abort_fmt(format_args!("huge: {state:?} extent count underflow"))
 }
+
+} // verus!
 
 verus! {
 
@@ -2238,27 +2238,10 @@ impl Inner {
         let d = self.table.get(page);
         // Table entries are live descriptors.
         if d.is_null() || self.desc(d).start() != page || !self.desc(d).state().is_free() {
-            #[cfg(verus_only)]
-            no_extent(page);
-            #[cfg(not(verus_only))]
-            panic!("huge: free page {page} has no extent");
+            sys::abort_fmt(format_args!("huge: free page {page} has no extent"));
         }
         d
     }
-}
-
-/// [`Inner::extent_at`]'s abort: a set free bit with no free extent
-/// starting there.
-///
-/// Verification only (`verus_only`): Verus sees this call where the build
-/// keeps the formatted `panic!` in place, so the huge allocation path
-/// `extent_at` is inlined into keeps its code. Trusted: the `-> !` is the
-/// whole specification, and the `panic!` it stands for never returns; the
-/// two copies of the message must be kept in step.
-#[cfg(verus_only)]
-#[verifier::external_body]
-fn no_extent(page: usize) -> ! {
-    panic!("huge: free page {page} has no extent")
 }
 
 } // verus!
@@ -4783,7 +4766,7 @@ impl Huge {
             r.pages <= u32::MAX,
     {
         hide(Inner::wf);
-        broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
+        broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame, crate::vspec::fmt::lemma_errno_fmt_req};
 
         proof {
             use_type_invariant(self);
@@ -4832,10 +4815,7 @@ impl Huge {
         }
         if self.guard_install {
             if let Err(e) = guard_remove(addr + (n - GUARD_PAGES) * page_size, GUARD_PAGES * page_size) {
-                #[cfg(verus_only)]
-                guard_remove_failed(addr, e);
-                #[cfg(not(verus_only))]
-                panic!("huge: madvise(MADV_GUARD_REMOVE) of {addr:#x} failed: {e}");
+                sys::abort_fmt(format_args!("huge: madvise(MADV_GUARD_REMOVE) of {addr:#x} failed: {e}"));
             }
         }
         let now = now_ns().max(1);
@@ -5119,21 +5099,17 @@ impl Huge {
     }
 }
 
-} // verus!
-
 #[cold]
 #[inline(never)]
 pub(crate) fn not_a_run(p: usize) -> ! {
-    panic!("invalid free of {p:#x}: not the start of a huge allocation")
+    sys::abort_fmt(format_args!("invalid free of {p:#x}: not the start of a huge allocation"))
 }
 
 #[cold]
 #[inline(never)]
 pub(crate) fn already_free(p: usize) -> ! {
-    panic!("double free of {p:#x}: huge allocation already freed")
+    sys::abort_fmt(format_args!("double free of {p:#x}: huge allocation already freed"))
 }
-
-verus! {
 
 /// [`Huge::free_run`]'s abort for a page that is not in the descriptor
 /// table, where the build calls [`not_a_run`] with the page's address.
@@ -5149,23 +5125,6 @@ fn not_a_run_page(page: usize) -> ! {
     panic!("invalid free of huge page {page}: not the start of a huge allocation")
 }
 
-/// [`Huge::free_run`]'s abort when the kernel refuses to remove a freed
-/// run's guard.
-///
-/// Verification only (`verus_only`): Verus sees this call where the build
-/// keeps the formatted `panic!` in place, because every out-of-line form
-/// tried changed the code of `Shared::free_huge`, which `free_run` is
-/// inlined into. Trusted: the `-> !` is the whole specification, and the
-/// `panic!` it stands for never returns; the two copies of the message
-/// must be kept in step.
-#[cfg(verus_only)]
-#[verifier::external_body]
-fn guard_remove_failed(addr: usize, e: Errno) -> ! {
-    panic!("huge: madvise(MADV_GUARD_REMOVE) of {addr:#x} failed: {e}")
-}
-
-} // verus!
-
 /// The `check_zero` abort: a huge run handed out as zero has a dirty word.
 #[cold]
 #[inline(never)]
@@ -5179,10 +5138,12 @@ fn dirty_zero_run(
     word: u64,
 ) -> ! {
     let advice = purge::advice_name();
-    panic!(
+    sys::abort_fmt(format_args!(
         "check_zero: huge run {run:#x} ({pages} pages from page {page}, arena {arena}) was handed out as zero from {prior} pages but the word at {at:#x} reads {word:#x} (purge advice {advice})"
-    )
+    ))
 }
+
+} // verus!
 
 #[cfg(test)]
 mod tests;

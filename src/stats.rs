@@ -426,13 +426,11 @@ fn huge_usable_pages(index: u16, runs: usize, pages: usize) -> (r: usize)
     pages - guards
 }
 
-/// The abort of [`huge_usable_pages`]. Trusted for the formatted message
-/// only.
-#[verifier::external_body]
+/// The abort of [`huge_usable_pages`].
 #[cold]
 #[inline(never)]
 fn huge_pages_short(index: u16, runs: usize, pages: usize) -> ! {
-    panic!("stats: arena {}: {runs} huge runs in {pages} pages", index)
+    crate::sys::abort_fmt(format_args!("stats: arena {}: {runs} huge runs in {pages} pages", index))
 }
 
 /// What an [`epoch`] stores in `Shared`: the totals plus the raw huge and

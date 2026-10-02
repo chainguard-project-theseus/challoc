@@ -138,13 +138,13 @@ value (vstd); the three bitmap word writers (`vspec/word.rs:59`, `:76`,
 `:92`) are one atomic step each and ignore the ordering. See
 `verus/WEAKMEM.md`.
 
-**Abort stand-ins.** Verus sees a trusted `-> !` call where the build
-keeps an abort of its own, a `panic!` or `assert!` or, at
-`huge/mod.rs:4711`, a call to `not_a_run` (`#[cfg(verus_only)]`), at:
-`class/decay.rs:292`, `purge.rs:638`, `huge/mod.rs:2199`, `:4711`,
-`:4744`, `class/table.rs:1764`, `:1882`, `heap/shared.rs:207`, `:1449`,
-`huge/table.rs:774`, `layout/regions.rs:1424`. The panic handler
-(`lib.rs`) aborts. An abort satisfies every postcondition.
+**Abort stand-in.** One site remains where Verus sees a trusted `-> !`
+call in place of the build's abort (`#[cfg(verus_only)]`):
+`huge/mod.rs:4786`, where the build calls `not_a_run(self.addr(page))`
+and the address of an unvalidated page cannot be bounded. Every other
+abort helper verifies in place and ends in `sys::abort_fmt`, which
+writes the message and raises `SIGABRT` (`sys/abort.rs`). The panic
+handler (`lib.rs`) aborts. An abort satisfies every postcondition.
 
 **Termination not proved** (`exec_allows_no_decreases_clause`):
 `lock.rs:80` `lock_slow`, `class/mod.rs:2672` `claim_with`,
@@ -330,8 +330,9 @@ class, `Shared::free_huge` (`:1312`) a page index from
 `Shared::classify_free` (`:1139`).
 
 **Premises beyond the common ones.**
-- Every abort ends in a trusted `-> !` helper (`heap::paths::invalid_free`,
-  `heap/paths.rs:724`, and the class and huge abort helpers).
+- Every abort ends in `sys::abort_fmt`, which never returns: the abort
+  helpers (`heap::paths::invalid_free`, `heap/paths.rs:729`, and the
+  class and huge abort helpers) verify and call it.
 - `Shared::classify_free` and `Regions::classify` are verified; the
   sized fast path's `slot_in_class` and `Regions::slab_slot` read the
   class table through `class_entry` (common premise).

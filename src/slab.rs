@@ -32,9 +32,8 @@ pub const DESC_ALIGN: usize = 64;
 
 #[cold]
 #[inline(never)]
-#[verifier::external_body]
 fn bad_state_byte(v: u8) -> ! {
-    panic!("slab: state byte {v:#x} is not a slab state")
+    crate::sys::abort_fmt(format_args!("slab: state byte {v:#x} is not a slab state"))
 }
 
 /// Lifecycle of a committed slab.

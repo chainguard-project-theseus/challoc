@@ -1326,13 +1326,10 @@ verus! {
 /// Two copies of one slot in a cache at flush time, one on each side of
 /// the split (`Heap::flush`): the flush would have released one and kept
 /// the other.
-///
-/// Trusted: aborts with a formatted message.
 #[cold]
 #[inline(never)]
-#[verifier::external_body]
 pub(super) fn straddling_double_free(p: *mut u8, class: usize) -> ! {
-    panic!("double free of {:#x} (class {class}): both copies cached, one at the flush boundary", p as usize)
+    crate::sys::abort_fmt(format_args!("double free of {:#x} (class {class}): both copies cached, one at the flush boundary", p as usize))
 }
 
 } // verus!

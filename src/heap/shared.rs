@@ -203,22 +203,9 @@ impl ThreadKey {
         // SAFETY: the key was created by `create`; glibc stores the
         // pointer without dereferencing it.
         if unsafe { libc::pthread_setspecific(self.key, heap as *const c_void) } != 0 {
-            #[cfg(verus_only)]
-            setspecific_failed();
-            #[cfg(not(verus_only))]
-            panic!("heap: pthread_setspecific failed");
+            crate::sys::abort_fmt(format_args!("heap: pthread_setspecific failed"));
         }
     }
-}
-
-/// What Verus sees for [`ThreadKey::set`]'s `panic!`; the build keeps the
-/// `panic!` inline, so `set` keeps its code. Trusted: the `-> !` is the
-/// whole specification, and the `panic!` it stands for never returns; the
-/// two copies of the message must be kept in step.
-#[cfg(verus_only)]
-#[verifier::external_body]
-fn setspecific_failed() -> ! {
-    panic!("heap: pthread_setspecific failed")
 }
 
 pub(super) fn now_ns() -> u64 {
@@ -1480,10 +1467,7 @@ impl Shared {
             if next == a {
                 // `release_owned` stopped at a slab it says is not ours while
                 // the descriptor says it is: the descriptor changed under us.
-                #[cfg(verus_only)]
-                arena_changed(class, a);
-                #[cfg(not(verus_only))]
-                panic!("heap: slab of class {class} changed arena {a} during a flush");
+                crate::sys::abort_fmt(format_args!("heap: slab of class {class} changed arena {a} during a flush"));
             }
             a = next;
         }
@@ -1533,42 +1517,27 @@ impl Shared {
 
 verus! {
 
-/// Trusted: aborts.
 #[cold]
 #[inline(never)]
-#[verifier::external_body]
 fn no_such_arena(index: u16) -> ! {
-    panic!("arena {index} does not exist")
+    crate::sys::abort_fmt(format_args!("arena {index} does not exist"))
 }
 
 /// [`Shared::check_size_hint`]'s abort: the size hint names a class other
-/// than slot `p`'s `class`. Trusted: aborts.
+/// than slot `p`'s `class`.
 #[cold]
 #[inline(never)]
-#[verifier::external_body]
-fn hint_mismatch(p: *mut u8, size: usize, class: u32) -> ! {
-    panic!(
+fn hint_mismatch(p: *mut u8, size: usize, class: u32) -> !
+    requires
+        (class as usize) < NCLASSES,
+{
+    crate::sys::abort_fmt(format_args!(
         "sized free of {:#x}: size hint {} does not match the allocation (class {}, {} bytes)",
         p as usize,
         size,
         class,
-        CLASSES[class as usize].size()
-    );
-}
-
-} // verus!
-
-verus! {
-
-/// What Verus sees for [`Shared::release_routed`]'s `panic!` on a slab
-/// whose arena changed during a flush; the build keeps the `panic!`
-/// inline, so `release_routed` keeps its code. Trusted: the `-> !` is the
-/// whole specification, and the `panic!` it stands for never returns; the
-/// two copies of the message must be kept in step.
-#[cfg(verus_only)]
-#[verifier::external_body]
-fn arena_changed(class: usize, a: u16) -> ! {
-    panic!("heap: slab of class {class} changed arena {a} during a flush")
+        CLASSES.table()[class as usize].size()
+    ));
 }
 
 } // verus!

@@ -134,6 +134,8 @@ pub fn abort(msg: &str) -> ! {
 #[inline(never)]
 pub fn abort_fmt(args: fmt::Arguments<'_>) -> ! {
     use fmt::Write as _;
+    #[cfg(test)]
+    test_unwind(args);
     let mut out = Stderr::new();
     // Errors from the sink are impossible (it never fails), so ignore.
     let _ = out.write_str("challoc: ");
@@ -192,17 +194,37 @@ macro_rules! abort {
     };
 }
 
+/// Test builds: unwind with the message instead of aborting, the way a
+/// `panic!` does under the test harness, so `should_panic` and
+/// `catch_unwind` tests of the heap-inconsistency aborts see the message
+/// and the state after it. The abort tests below opt back in to the real
+/// abort ([`tests::REAL_ABORT`]). Release builds have no such path.
+#[cfg(test)]
+fn test_unwind(args: fmt::Arguments<'_>) {
+    if !tests::REAL_ABORT.load(core::sync::atomic::Ordering::Relaxed) {
+        panic!("{args}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::sync::atomic::{AtomicBool, Ordering};
     use std::os::unix::process::ExitStatusExt;
     use std::process::Command;
     use std::{env, format};
 
     const ABORT_ENV: &str = "CHALLOC_SYS_TEST_ABORT";
 
+    /// Set in an abort child: [`abort_fmt`] aborts for real instead of
+    /// unwinding ([`test_unwind`]).
+    pub(super) static REAL_ABORT: AtomicBool = AtomicBool::new(false);
+
     #[test]
     fn abort_child_hook() {
+        if env::var_os(ABORT_ENV).is_some() {
+            REAL_ABORT.store(true, Ordering::Relaxed);
+        }
         match env::var(ABORT_ENV).as_deref() {
             Ok("plain") => abort("test abort"),
             Ok("fmt") => abort!("bad free of {:#x} ({})", 0xdead_beef_usize, "unknown"),

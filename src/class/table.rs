@@ -1702,17 +1702,11 @@ impl SlabTable {
 }
 
 /// [`SlabTable::install_guard`]'s abort: the guard slab of `class` at `s`
-/// could be neither guarded nor re-protected. Inlined and
-/// `track_caller`, so the caller keeps the code and the location its
-/// `panic!` had in place; the arguments are the references `panic!`
-/// formats.
-/// Trusted: `panic!` formats its message; the `-> !` is the whole
-/// specification, and honest.
+/// could be neither guarded nor re-protected. Inlined, so the caller
+/// keeps the abort it had in place.
 #[inline(always)]
-#[track_caller]
-#[verifier::external_body]
 fn guard_unprotectable(class: &u16, s: &usize) -> ! {
-    panic!("class {}: cannot re-protect guard slab {}", *class, *s)
+    crate::sys::abort_fmt(format_args!("class {}: cannot re-protect guard slab {}", *class, *s))
 }
 
 } // verus!
@@ -1793,10 +1787,7 @@ impl SlabTable {
         watermark_aligned(s, self.lg_group);
         let (_, end) = self.group_range(s >> self.lg_group);
         if purge::check_zero() && s != self.committed_slabs.load(Ordering::Relaxed) {
-            #[cfg(verus_only)]
-            watermark_mismatch(&class, &s, &self.committed_slabs.load(Ordering::Relaxed));
-            #[cfg(not(verus_only))]
-            panic!("check_zero: class {class}: take_group at next_slab {s} but the watermark is {}", self.committed_slabs.load(Ordering::Relaxed));
+            crate::sys::abort_fmt(format_args!("check_zero: class {class}: take_group at next_slab {s} but the watermark is {}", self.committed_slabs.load(Ordering::Relaxed)));
         }
         proof {
             assert(NCLASSES <= 64 && PAD_ALIGN == 128);
@@ -1937,16 +1928,13 @@ impl SlabTable {
                             let d = SlabDesc::at(self.desc_base, class, slab);
                             let (st, sh) = d.state_bytes();
                             if sh != 0 || d.live() != 0 || st != 0 {
-                                #[cfg(verus_only)]
-                                slab_not_zero(&class, &slab, &s, &end, &arena, d, &st, &sh);
-                                #[cfg(not(verus_only))]
-                                panic!(
+                                crate::sys::abort_fmt(format_args!(
                                     "check_zero: class {class}: take_group re-hands slab {slab} (group {s}..{end}, arena {arena}): descriptor at {:#x} has state {st} shadow {sh} live {} arena {} dirty_at {}",
-                                    d as *const SlabDesc as usize,
+                                    super::verify::desc_ptr_addr(d),
                                     d.live(),
                                     d.arena(),
                                     d.dirty_at()
-                                );
+                                ));
                             }
                         }
                         SlabDesc::at(self.desc_base, class, slab).init(arena);
@@ -2131,10 +2119,10 @@ impl SlabTable {
 
 /// `take_group`'s debug check that the watermark is group-aligned, which
 /// the precondition (proved from [`TableInner::inv`]) says it is.
-/// Inlined and `track_caller`, as [`guard_unprotectable`]. A
-/// `debug_assert!` of the equality: Verus does not support
-/// `debug_assert_eq!` (its failure path is
-/// `core::panicking::assert_failed`).
+/// Inlined and `track_caller`, so the caller keeps the code and the
+/// location of the check it had in place. A `debug_assert!` of the
+/// equality: Verus does not support `debug_assert_eq!` (its failure path
+/// is `core::panicking::assert_failed`).
 #[inline(always)]
 #[track_caller]
 fn watermark_aligned(s: usize, lg_group: u8)
@@ -2147,43 +2135,6 @@ fn watermark_aligned(s: usize, lg_group: u8)
             requires lg_group < 64;
     }
     debug_assert!(s & ((1 << lg_group) - 1) == 0, "take_group: the watermark is group-aligned");
-}
-
-/// `take_group`'s `check_zero` abort: the watermark the table publishes
-/// disagrees with the next slab under the commit lock.
-///
-/// Verification only (`verus_only`): Verus sees this call where the build
-/// keeps the `panic!` in place, because every out-of-line or inlined helper
-/// tried changed the code of the refill path `take_group` is inlined into
-/// (`next_fresh_slab`) on both architectures. Trusted: the `-> !` is the
-/// whole specification, and the `panic!` it stands for never returns; the
-/// two copies of the message must be kept in step.
-#[cfg(verus_only)]
-#[verifier::external_body]
-fn watermark_mismatch(class: &usize, s: &usize, watermark: &usize) -> ! {
-    panic!("check_zero: class {}: take_group at next_slab {} but the watermark is {}", *class, *s, *watermark)
-}
-
-/// `take_group`'s `check_zero` abort: a slab it is about to hand out has a
-/// descriptor that is not all zero. Verification only, as
-/// [`watermark_mismatch`].
-#[cfg(verus_only)]
-#[verifier::external_body]
-fn slab_not_zero(class: &usize, slab: &usize, s: &usize, end: &usize, arena: &u16, d: &SlabDesc, st: &u8, sh: &u8) -> ! {
-    panic!(
-        "check_zero: class {}: take_group re-hands slab {} (group {}..{}, arena {}): descriptor at {:#x} has state {} shadow {} live {} arena {} dirty_at {}",
-        *class,
-        *slab,
-        *s,
-        *end,
-        *arena,
-        d as *const SlabDesc as usize,
-        *st,
-        *sh,
-        d.live(),
-        d.arena(),
-        d.dirty_at()
-    );
 }
 
 } // verus!

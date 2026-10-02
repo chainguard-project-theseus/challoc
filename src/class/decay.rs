@@ -288,32 +288,13 @@ impl ClassState {
             }
             let desc = self.desc(slab);
             if !(desc.state() == State::Empty && desc.live() == 0) {
-                #[cfg(verus_only)]
-                not_empty(self.class, slab);
-                #[cfg(not(verus_only))]
-                panic!("class {}: slab {slab} in the empty set is not empty", self.class);
+                crate::sys::abort_fmt(format_args!("class {}: slab {slab} in the empty set is not empty", self.class));
             }
             let dirty_at = self.dirty_locked(g, desc, Ghost(slab));
             v.visit(self, g, slab, dirty_at);
             next = g.empty.map.lowest_set_from(slab + 1);
         }
     }
-}
-
-/// `walk_empty`'s abort: a slab of the empty set whose descriptor says
-/// it is not empty (`live` is not modelled, so the check stays).
-///
-/// Verification only (`verus_only`): Verus sees this call where the build
-/// keeps the `panic!` in place, because the inlined helper changed the
-/// code of the purge walks `walk_empty` is inlined into
-/// (`Arena::purge_all`, `Arena::decay_with`) on both architectures.
-/// Trusted: the `-> !` is the whole specification, and the `panic!` it
-/// stands for never returns; the two copies of the message must be kept
-/// in step.
-#[cfg(verus_only)]
-#[verifier::external_body]
-fn not_empty(class: u16, slab: usize) -> ! {
-    panic!("class {}: slab {slab} in the empty set is not empty", class)
 }
 
 /// The purge half of both purge walks: the page groups purged, their

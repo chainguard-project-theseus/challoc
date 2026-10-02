@@ -49,3 +49,23 @@ pub broadcast proof fn lemma_errno_fmt_req(e: crate::sys::Errno, f: &core::fmt::
 }
 
 } // verus!
+
+verus! {
+
+// The derived `Debug` of a fieldless enum writes the variant's name under
+// any formatter. Ghost only, as for `Errno` above.
+#[cfg(verus_only)]
+impl vstd::std_specs::fmt::DebugSpecImpl for crate::slab::State {
+    open spec fn fmt_req(&self, f: &core::fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
+
+#[cfg(verus_only)]
+impl vstd::std_specs::fmt::DebugSpecImpl for crate::huge::RunState {
+    open spec fn fmt_req(&self, f: &core::fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
+
+} // verus!

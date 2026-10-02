@@ -625,35 +625,22 @@ verus! {
 /// Issue `advice` on `ranges`, which are free (the [`Batch`]
 /// invariant; this is the one place the batch's ranges reach the
 /// kernel). A failed range aborts. Needs at most [`MAX_BATCH`] ranges.
+// Not isolated: the loop body sees the `broadcast use` of the function.
+#[verifier::loop_isolation(false)]
 fn discard(ranges: &[(usize, usize)], advice: Advice)
     requires
         ranges.len() <= MAX_BATCH,
 {
+    broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
+
     let advice = advice.madv();
     for &(addr, len) in ranges {
         // SAFETY: the ranges are page-aligned parts of our own mappings
         // that the caller holds free (the `Batch` invariant).
         if let Err(e) = unsafe { sys::madvise(addr, len, advice) } {
-            #[cfg(verus_only)]
-            discard_failed(advice, addr, len, e);
-            #[cfg(not(verus_only))]
-            panic!("purge: madvise({advice}) of {addr:#x}+{len:#x} failed: {e}");
+            sys::abort_fmt(format_args!("purge: madvise({advice}) of {addr:#x}+{len:#x} failed: {e}"));
         }
     }
-}
-
-/// `discard`'s abort: the kernel refused to discard a free range.
-///
-/// Verification only (`verus_only`): Verus sees this call where the build
-/// keeps the `panic!` in place, so `Batch::flush`, which `discard` is
-/// inlined into and which the free of a huge run that purges at once
-/// calls, compiles as it always has. Trusted: the `-> !` is the whole
-/// specification, and the `panic!` it stands for never returns; the two
-/// copies of the message must be kept in step.
-#[cfg(verus_only)]
-#[verifier::external_body]
-fn discard_failed(advice: i32, addr: usize, len: usize, e: sys::Errno) -> ! {
-    panic!("purge: madvise({advice}) of {addr:#x}+{len:#x} failed: {e}")
 }
 
 } // verus!
