@@ -127,11 +127,16 @@ verus! {
 // zero claims of `calloc` and `mallocx(MALLOCX_ZERO)` rest on
 // (`vspec::zero`). Each axiom states a kernel fact about a range and
 // leaves the premise that the range is in the state it names to its call
-// sites, which check what the allocator's state records (a slab's or an
-// extent's state under its lock, the huge region's high-water mark, the
-// process-wide `purge::purged_is_zero` flag) right before the call; what
-// that record means is the allocator protocol each call site's comment
-// names.
+// sites. The slab forms of these facts, `class::axiom_fresh_slots_zero`
+// and `class::axiom_discarded_slots_zero`, require the part of that
+// premise the caller's ghost state proves; the rest is what the
+// allocator's state records (a slab's or an extent's state under
+// its lock, the huge region's high-water mark, the process-wide
+// `purge::purged_is_zero` flag) right before the call, and what that
+// record means is the allocator protocol each axiom's doc names. The
+// metadata region does not use them: `Meta` takes its zero tokens from
+// `vspec::unbacked::Unbacked::commit`, for bytes its ghost state proves
+// never handed out.
 
 /// `mmap(2)`: a private anonymous mapping reads as zero until it is first
 /// written. Changing its protection (`mprotect`), populating it
@@ -139,21 +144,12 @@ verus! {
 /// `MADV_COLLAPSE`) and guard markers (`MADV_GUARD_INSTALL`/`REMOVE`)
 /// leave the contents alone.
 ///
-/// Premise, the caller's: the `len` bytes at `addr` lie in one of this
-/// process's reservations (`Regions::reserve`) and nothing has written
-/// them since it was mapped, or written anything but zero. Call sites:
-/// `huge::zero_run`, from `Huge::take`, for pages at or past the huge
+/// Premise, the caller's and trusted: the `len` bytes at `addr` lie in the
+/// huge region (`Regions::reserve`) and nothing has written them since it
+/// was mapped, or written anything but zero. Call site: `huge::zero_run`,
+/// from `Huge::take` under the huge lock, for pages at or past the huge
 /// region's high-water mark, which only `take` raises and which no run
-/// has covered. `Meta::alloc_zeroed`, for an object at or above the
-/// bump pointer before the call (the bump pointer only rises, and nothing
-/// writes above it), and `Meta::reserve_committed_raw`, for a table carved
-/// above the bump pointer or committed from the reservation side (never
-/// handed out before: nothing gives a table back, and a failed commit
-/// returns its uncommitted range unwritten). The same fact, for a
-/// `Fresh` slab `ClassState::take` claims from (no slot of it was ever claimed; the prefault pass's
-/// populate, which writes zeros at most, publishes it `Purged` instead),
-/// backs the trusted token ensures of `ClassState::claim_with`, which
-/// does not call this axiom.
+/// has covered.
 pub(crate) axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: crate::vspec::zero::Zeroed)
     requires
         0 <= len,
@@ -166,18 +162,14 @@ pub(crate) axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: cr
 /// reads return zero-fill-on-demand pages (`MADV_FREE` gives no such
 /// guarantee: the old contents stay until the kernel reclaims the page).
 ///
-/// Premise, the caller's: the `len` bytes at `addr` were discarded with
-/// `MADV_DONTNEED`, or never written but with zeros, and nothing has
-/// written them since. Call site: `huge::zero_run`, from `Huge::take`,
-/// for a `Purged` extent; the same fact backs `ClassState::claim_with`'s
-/// token ensures for a `Purged` slab `ClassState::take` claims from. Each
-/// holds while
-/// `purge::purged_is_zero` reads true under the lock: no batch of the
-/// process has used `MADV_FREE` (`purge::Batch::flush` clears the flag
-/// before it issues one), `Purged` is set only in the lock hold that
-/// flushes the discard of the slab or extent (or, for a slab, by the
-/// prefault pass on a fresh slab it populated), and a `Purged` slab or
-/// extent has no allocated slot or run.
+/// Premise, the caller's and trusted: the `len` bytes at `addr` were
+/// discarded with `MADV_DONTNEED`, or never written but with zeros, and
+/// nothing has written them since. Call site: `huge::zero_run`, from
+/// `Huge::take` under the huge lock, for a `Purged` extent while
+/// `purge::purged_is_zero` reads true: no batch of the process has used
+/// `MADV_FREE` (`purge::Batch::flush` clears the flag before it issues
+/// one), `Purged` is set only in the lock hold that flushes the extent's
+/// discard, and a `Purged` extent has no allocated run.
 pub(crate) axiom fn axiom_discarded_zero(addr: int, len: int) -> (tracked z: crate::vspec::zero::Zeroed)
     requires
         0 <= len,

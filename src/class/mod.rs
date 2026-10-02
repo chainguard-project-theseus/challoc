@@ -1381,7 +1381,10 @@ impl ClassState {
 
     /// Bridge (trusted): `SlabDesc::set_state` on an owned slab's
     /// descriptor, with the ghost state updated to match (the write side
-    /// of [`state_locked`]'s assumption). Nothing else changes.
+    /// of [`state_locked`]'s assumption). Nothing else changes. Never to
+    /// `Fresh`: an owned slab that left `Fresh` does not return to it,
+    /// which the zero claim of a `Fresh` slab rests on
+    /// (`axiom_fresh_slots_zero`).
     ///
     /// [`state_locked`]: ClassState::state_locked
     #[allow(unused_variables)]
@@ -1392,6 +1395,7 @@ impl ClassState {
             old(g).table@ == self.spec_table(),
             *d == desc_at(self.spec_table(), slab),
             old(g).owns(slab as nat),
+            s != State::Fresh,
         ensures
             final(g).states@ == old(g).states@.insert(slab as nat, s),
             final(g).partial == old(g).partial,
@@ -2198,25 +2202,21 @@ impl ClassState {
         }
         // The zero pick's bytes, slots `0..n` of the slab: a `Fresh` slab
         // was never handed out since its pages were mapped, so they are
-        // fresh anonymous memory (`axiom_fresh_anon_zero`); a `Purged` one
+        // fresh anonymous memory (`axiom_fresh_slots_zero`); a `Purged` one
         // was discarded with `MADV_DONTNEED` in the lock hold that made it
         // `Purged` and has had no allocated slot since, and
         // `purged_is_zero` read true under this lock
-        // (`axiom_discarded_zero`). `claim_prefix` claimed the slots in
-        // this lock hold, so nothing else writes them before this claim
-        // hands them out.
-        let ghost s = _t.spec_slots();
-        let ghost len = n as int * s.size;
+        // (`axiom_discarded_slots_zero`). `g0` is the lock value before
+        // `take` made the slab `Active`, and `pt` holds the uniqueness
+        // tokens of the slots `claim_prefix` claimed in this hold.
         proof {
             _t.lemma_slots_wf();
-            assert(len >= 0) by (nonlinear_arith)
-                requires len == n as int * s.size, s.size > 0;
         }
         let tracked zt = if zero {
             if state == State::Fresh {
-                crate::vspec::sys::axiom_fresh_anon_zero(s.addr(slab as int * s.sb), len)
+                axiom_fresh_slots_zero(g0, *_t, slab as int, n as int, &pt)
             } else {
-                crate::vspec::sys::axiom_discarded_zero(s.addr(slab as int * s.sb), len)
+                axiom_discarded_slots_zero(g0, *_t, slab as int, n as int, &pt)
             }
         } else {
             Zeroed::empty(0)
@@ -3545,6 +3545,83 @@ impl SlotToks {
     }
 
 }
+
+/// `vspec::sys::axiom_fresh_anon_zero` (`mmap(2)`: a private anonymous
+/// mapping reads as zero until it is first written) for slots `0..n` of
+/// slab `slab` of table `t`: their `n * size` bytes from slot 0 read as
+/// zero.
+///
+/// Required, so proved at the call site: the slab is `Fresh` in the
+/// ghost state of its arena's class lock value `g` (which the descriptor
+/// matches while the lock is held: `ClassState::state_locked`), and the
+/// caller holds the slots' uniqueness tokens (`held`), so none of them is
+/// allocated, cached or in another claim at the call.
+///
+/// Premise, the caller's and trusted: a slab whose ghost state is `Fresh`
+/// was never written since its class region was mapped. That rests on
+/// `take_group` initialising each group's descriptors once, to `Fresh`,
+/// through the trusted `SlabDesc::init` (the assumption of
+/// `ClassState::state_locked`), on a slab leaving `Fresh` only through
+/// `ClassState::set_state_locked`, which never sets `Fresh` (verified
+/// callers), and on `take` moving a slab to `Active` before it claims a
+/// slot. Call site: `ClassState::take`.
+axiom fn axiom_fresh_slots_zero(
+    g: Inner,
+    t: SlabTable,
+    slab: int,
+    n: int,
+    tracked held: &GhostSubset<int>,
+) -> (tracked z: Zeroed)
+    requires
+        g.table@ == t,
+        g.owns(slab as nat),
+        g.st(slab as nat) == State::Fresh,
+        0 <= slab,
+        0 <= n,
+        held.id() == t.spec_slots().loc,
+        prefix_addrs(t, slab, n).subset_of(held@),
+    ensures
+        z.addr() == t.spec_slots().addr(slab * t.spec_slots().sb),
+        z.len() == n * t.spec_slots().size,
+;
+
+/// `vspec::sys::axiom_discarded_zero` (`madvise(2)`: after
+/// `MADV_DONTNEED`, private anonymous memory reads as zero) for slots
+/// `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0
+/// read as zero.
+///
+/// Required, so proved at the call site: the slab is `Purged` in the
+/// ghost state of its arena's class lock value `g`, and the caller holds
+/// the slots' uniqueness tokens, as for `axiom_fresh_slots_zero`.
+///
+/// Premise, the caller's and trusted: `purge::purged_is_zero` read true
+/// under that lock, and then a `Purged` slab was discarded with
+/// `MADV_DONTNEED` and not written since: no batch of the process has
+/// used `MADV_FREE` (`purge::Batch::flush` sets the flag before it issues
+/// one, and the lock orders that store before this read), `Purged` is set
+/// only in the lock hold that flushes the slab's discard
+/// (`ClassState::purge_empty`, `purge_curve`), and a `Purged` slab has no
+/// allocated slot until a claim makes it `Active`. Call site:
+/// `ClassState::take`.
+axiom fn axiom_discarded_slots_zero(
+    g: Inner,
+    t: SlabTable,
+    slab: int,
+    n: int,
+    tracked held: &GhostSubset<int>,
+) -> (tracked z: Zeroed)
+    requires
+        g.table@ == t,
+        g.owns(slab as nat),
+        g.st(slab as nat) == State::Purged,
+        0 <= slab,
+        0 <= n,
+        held.id() == t.spec_slots().loc,
+        prefix_addrs(t, slab, n).subset_of(held@),
+    ensures
+        z.addr() == t.spec_slots().addr(slab * t.spec_slots().sb),
+        z.len() == n * t.spec_slots().size,
+;
 
 /// The tokens a pick holds: the prefix a zero pick claimed under the lock.
 spec fn pick_addrs(t: SlabTable, p: Pick) -> VSet<int> {

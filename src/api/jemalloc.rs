@@ -62,6 +62,8 @@ use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind};
 use crate::vspec::zero::Zeroed;
 #[cfg(verus_only)]
+use crate::vspec::zero::{covers_usable, lemma_covers_huge, lemma_covers_slot};
+#[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, int, verus};
 
@@ -153,8 +155,8 @@ fn usable_for(shared: &Shared, size: usize, f: &Flags) -> (r: Option<usize>)
 /// usable size when `MALLOCX_ZERO` is set and the memory is not already
 /// known to be zero. Null on exhaustion or for an arena or explicit cache
 /// that does not exist (`errno` untouched). With `MALLOCX_ZERO`, a
-/// non-null result comes with a [`Zeroed`] token for at least its `size`
-/// bytes.
+/// non-null result comes with a [`Zeroed`] token for its whole usable
+/// size ([`covers_usable`]), which is at least `size`.
 fn alloc_with(shared: &Shared, size: usize, f: &Flags) -> (r: (*mut u8, Tracked<Zeroed>))
     requires
         f.lg_align < 64,
@@ -162,19 +164,27 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags) -> (r: (*mut u8, Tracked<
     ensures
         crate::heap::fits(r.0, size as int, (1usize << f.lg_align) as int),
         r.0@.addr != 0 && f.zero ==> r.1@.covers(r.0, size as int),
+        r.0@.addr != 0 && f.zero ==> covers_usable(r.1@, r.0, 0, size as int),
 {
     let align = f.align();
     proof {
         crate::meta::lemma_is_pow2_shl(f.lg_align as usize);
         shared.lemma_regions_ok();
+        shared.lemma_wf();
     }
+    // The class `p` is a slot of, or -1 for a huge run.
+    let ghost mut cls: int = -1;
     let (p, usable, zeroed, z) = match class_for(size, align) {
         Some(c) => {
             let (p, zero, z) = mallocx::alloc(shared, c, f.arena, f.tcache);
             proof {
+                cls = c as int;
                 if p@.addr != 0 {
                     lemma_class_aligned(c, align);
                     crate::heap::lemma_slot_fits(p, c as int, size as int, align);
+                    if zero {
+                        lemma_covers_slot(z@, p, c as int, 0, size as int);
+                    }
                 }
             }
             (p, CLASSES.table()[c].size(), zero, z)
@@ -189,6 +199,9 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags) -> (r: (*mut u8, Tracked<
             let u = shared.huge.usable_for(size);
             proof {
                 shared.lemma_huge_usable(size);
+                if p@.addr != 0 && zero {
+                    lemma_covers_huge(z@, p, 0, size as int);
+                }
             }
             (p, u.unwrap_or(0), zero, z)
         }
@@ -200,6 +213,14 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags) -> (r: (*mut u8, Tracked<
         }
         // SAFETY: `p` is a fresh allocation of `usable` bytes.
         let z = unsafe { crate::vspec::zero::write_zero(p, usable) };
+        proof {
+            // `usable` is the block's usable size.
+            if cls >= 0 {
+                lemma_covers_slot(z@, p, cls, 0, size as int);
+            } else {
+                lemma_covers_huge(z@, p, 0, size as int);
+            }
+        }
         return (p, z);
     }
     (p, z)
@@ -215,12 +236,15 @@ pub fn mallocx(size: usize, flags: c_int) -> (r: *mut u8)
 }
 
 /// [`mallocx`] with the proof that `MALLOCX_ZERO` memory reads as zero:
-/// with the flag, a non-null result comes with a [`Zeroed`] token for at
-/// least its `size` bytes.
+/// with the flag, a non-null result comes with a [`Zeroed`] token for its
+/// whole usable size ([`covers_usable`]: the class's size for a slot,
+/// `size` rounded up to whole pages for a huge run), which is at least
+/// `size`.
 pub fn mallocx_zeroed(size: usize, flags: c_int) -> (r: (*mut u8, Tracked<Zeroed>))
     ensures
         crate::heap::fits(r.0, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
         r.0@.addr != 0 && (flags as u32) & MALLOCX_ZERO != 0 ==> r.1@.covers(r.0, size as int),
+        r.0@.addr != 0 && (flags as u32) & MALLOCX_ZERO != 0 ==> covers_usable(r.1@, r.0, 0, size as int),
 {
     let f = Flags::decode(flags as u32);
     alloc_with(super::shared(), size, &f)
@@ -245,9 +269,12 @@ pub fn rallocx(p: *mut u8, size: usize, flags: c_int) -> (r: *mut u8)
 
 /// [`rallocx`] with the proof that `MALLOCX_ZERO` memory past the copy
 /// reads as zero: with the flag, a new block (null `p`, or a moved block)
-/// comes with a [`Zeroed`] token for its bytes from `k` to `size`, where
-/// `k`, the ghost second result, is the number of bytes copied from `p`
-/// (0 for a null `p`), at most `size`.
+/// comes with a [`Zeroed`] token for its bytes from `k` to the end of its
+/// usable size ([`covers_usable`]), where `k`, the ghost second result, is
+/// the number of bytes copied from `p`: `min(old usable, size)`, which is
+/// `min(class size, size)` for a slot `p` and 0 for a null `p`. For a huge
+/// `p` the old usable size is what `Huge::usable_size` reads from the
+/// run's descriptor, which `k` is not tied to here.
 pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int) -> (r: (*mut u8, Ghost<int>, Tracked<Zeroed>))
     ensures
         r.0 != p ==> crate::heap::fits(r.0, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
@@ -258,6 +285,10 @@ pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int) -> (r: (*mut u8, Gh
             &&& 0 <= r.1@ <= size
             &&& r.2@.addr() == r.0@.addr + r.1@
             &&& r.2@.len() >= size - r.1@
+            &&& covers_usable(r.2@, r.0, r.1@, size as int)
+            &&& p@.addr == 0 ==> r.1@ == 0
+            &&& p@.addr != 0 ==> forall|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr)
+                ==> r.1@ == (if class_table()[c].size < size { class_table()[c].size as int } else { size as int })
         },
 {
     let f = Flags::decode(flags as u32);

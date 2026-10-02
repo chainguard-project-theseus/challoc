@@ -50,8 +50,6 @@ use crate::vspec::addr::cast_provenance;
 use crate::vspec::layout::{layout_align, layout_ok, layout_size};
 #[cfg(verus_only)]
 use crate::vspec::meta::{axiom_meta_lock_frame, axiom_meta_lock_inv};
-#[cfg(verus_only)]
-use crate::vspec::sys::axiom_fresh_anon_zero;
 use crate::vspec::unbacked::Unbacked;
 use crate::vspec::zero::{Zeroed, write_zero};
 #[cfg(verus_only)]
@@ -561,6 +559,21 @@ pub(crate) struct Inner {
     /// [`reserve_committed`]: Inner::reserve_committed
     #[allow(dead_code)]
     handed: Tracked<PointsToRaw>,
+    /// Ghost: the token that `fresh`'s bytes read as zero. They came out
+    /// of `unbacked` (`Unbacked::commit`), and since then only `fresh`
+    /// has held a permission to them.
+    #[allow(dead_code)]
+    fresh_zero: Tracked<Zeroed>,
+    /// Ghost: the zero token of the fresh object [`alloc`] or the table
+    /// [`reserve_eager`] or [`reserve_committed`] handed out last, for
+    /// [`Meta::alloc_zeroed`] and [`Meta::reserve_committed_raw`] to take;
+    /// `wf` says nothing of it.
+    ///
+    /// [`alloc`]: Inner::alloc
+    /// [`reserve_eager`]: Inner::reserve_eager
+    /// [`reserve_committed`]: Inner::reserve_committed
+    #[allow(dead_code)]
+    handed_zero: Tracked<Zeroed>,
 }
 
 /// Bytes on the free lists of bins `0..n`.
@@ -1232,6 +1245,42 @@ proof fn put_unbacked(tracked u: &mut Unbacked, tracked v: Unbacked)
     vstd::modes::tracked_swap(u, &mut t);
 }
 
+/// Move the token out of `z`, leaving an empty one.
+proof fn take_zero(tracked z: &mut Zeroed) -> (tracked out: Zeroed)
+    ensures
+        out == *old(z),
+{
+    let tracked mut t = Zeroed::empty(0);
+    vstd::modes::tracked_swap(z, &mut t);
+    t
+}
+
+/// Put `v` into `z`.
+proof fn put_zero(tracked z: &mut Zeroed, tracked v: Zeroed)
+    ensures
+        *final(z) == v,
+{
+    let tracked mut t = v;
+    vstd::modes::tracked_swap(z, &mut t);
+}
+
+/// The `n` bytes `skip` bytes into `z`, and the rest past them; the first
+/// `skip` bytes are dropped.
+proof fn cut_zero(tracked z: Zeroed, skip: int, n: int) -> (tracked r: (Zeroed, Zeroed))
+    requires
+        0 <= skip,
+        0 <= n,
+        skip + n <= z.len(),
+    ensures
+        r.0.addr() == z.addr() + skip,
+        r.0.len() == n,
+        r.1.addr() == z.addr() + skip + n,
+        r.1.len() == z.len() - skip - n,
+{
+    let tracked (_pad, rest) = z.split(skip);
+    rest.split(n)
+}
+
 /// `[lo, hi)` split at `mid`.
 proof fn split_at(tracked r: PointsToRaw, lo: int, mid: int, hi: int) -> (tracked res: (PointsToRaw, PointsToRaw))
     requires
@@ -1374,12 +1423,14 @@ impl Inner {
 
     /// The ghost state [`Inner`] holds for its bytes: the permission to the
     /// committed bytes above the bump pointer (with the provenance of the
-    /// region's addresses), the uncommitted address space below the
-    /// reservations, and the permission to each free block's bytes past
-    /// its link word.
+    /// region's addresses) and the token that they read as zero, the
+    /// uncommitted address space below the reservations, and the permission
+    /// to each free block's bytes past its link word.
     spec fn raw_wf(&self) -> bool {
         &&& self.fresh@.is_range(self.bump as int, self.committed - self.bump)
         &&& self.fresh@.provenance() == cast_provenance()
+        &&& self.fresh_zero@.addr() == self.bump
+        &&& self.fresh_zero@.len() == self.committed - self.bump
         &&& self.unbacked@.addr() == self.committed
         &&& self.unbacked@.len() == self.top - self.committed
         &&& forall|b: int, i: int|
@@ -1467,6 +1518,8 @@ impl Inner {
         let tracked unbacked = space;
         let tracked tails = Map::tracked_empty();
         let tracked handed = PointsToRaw::empty(cast_provenance());
+        let tracked fresh_zero = Zeroed::empty(base as int);
+        let tracked handed_zero = Zeroed::empty(0);
         let r = Inner {
             base,
             len,
@@ -1486,6 +1539,8 @@ impl Inner {
             unbacked: Tracked(unbacked),
             tails: Tracked(tails),
             handed: Tracked(handed),
+            fresh_zero: Tracked(fresh_zero),
+            handed_zero: Tracked(handed_zero),
         };
         proof {
             assert(free_bytes(r.lists@, NBINS as nat) == 0) by {
@@ -1526,6 +1581,7 @@ impl Inner {
                     committed: final(self).committed,
                     fresh: final(self).fresh,
                     unbacked: final(self).unbacked,
+                    fresh_zero: final(self).fresh_zero,
                     ..*old(self)
                 })
             },
@@ -1556,14 +1612,18 @@ impl Inner {
             }
             let delta = want - self.committed;
             proof {
-                // The pages just committed move from `unbacked` to `fresh`.
+                // The pages just committed move from `unbacked` to `fresh`,
+                // with their zero token.
                 let (lo, c0) = (self.bump as int, self.committed as int);
                 let tracked u = take_unbacked(self.unbacked.borrow_mut());
                 let tracked (a, b) = u.split(want - c0);
                 put_unbacked(self.unbacked.borrow_mut(), b);
                 // `commit_range` returned `Ok` for exactly `[c0, want)`.
+                let tracked (raw, z) = a.commit();
                 let tracked f = take_raw(self.fresh.borrow_mut());
-                put_raw(self.fresh.borrow_mut(), join_at(f, a.commit(), lo, c0, want as int));
+                put_raw(self.fresh.borrow_mut(), join_at(f, raw, lo, c0, want as int));
+                let tracked fz = take_zero(self.fresh_zero.borrow_mut());
+                put_zero(self.fresh_zero.borrow_mut(), fz.join(z));
             }
             self.committed = want;
             return Ok(delta);
@@ -1613,6 +1673,7 @@ impl Inner {
                 &&& final(claim)@ == claim_map(s as int, s + tlen, false)
                 &&& final(self).handed@.is_range(s as int, tlen as int)
                 &&& final(self).handed@.provenance() == cast_provenance()
+                &&& final(self).handed_zero@.addr() == s && final(self).handed_zero@.len() == tlen
                 &&& old(self).bump <= s
                 &&& s % align == 0
                 &&& s % old(self).page == 0
@@ -1662,13 +1723,17 @@ impl Inner {
         self.stats.committed = self.stats.committed + delta - len;
         // Fresh memory above the old bump pointer: zero, never written.
         proof {
-            // The table leaves `fresh` for `handed`; its alignment padding is
+            // The table leaves `fresh` for `handed`, and its zero token
+            // `fresh_zero` for `handed_zero`; its alignment padding is
             // dropped.
             let tracked f = take_raw(self.fresh.borrow_mut());
             let tracked (_pad, rest) = split_at(f, self.bump as int, start as int, self.committed as int);
             let tracked (mine, rest) = split_at(rest, start as int, end as int, self.committed as int);
             put_raw(self.fresh.borrow_mut(), rest);
             put_raw(self.handed.borrow_mut(), mine);
+            let tracked (mine_z, rest_z) = cut_zero(take_zero(self.fresh_zero.borrow_mut()), start - self.bump, end - start);
+            put_zero(self.fresh_zero.borrow_mut(), rest_z);
+            put_zero(self.handed_zero.borrow_mut(), mine_z);
         }
         self.bump = end;
         self.stats.bumped = end - self.base;
@@ -1708,6 +1773,8 @@ impl Inner {
                 &&& final(self).stats.allocated == old(self).stats.allocated + bin_size(bin as int)
                 &&& (p as usize == old(self).free[bin as int] as usize && final(self).bump == old(self).bump) || (
                 old(self).bump <= p as usize && final(self).bump == p as usize + bin_size(bin as int))
+                &&& old(self).bump <= p as usize ==> final(self).handed_zero@.addr() == p as usize
+                    && final(self).handed_zero@.len() == bin_size(bin as int)
             } }),
     {
         proof {
@@ -1798,6 +1865,10 @@ impl Inner {
         let tracked (blk, rest) = split_at(rest, start as int, end as int, self.committed as int);
         proof {
             put_raw(self.fresh.borrow_mut(), rest);
+            // The object's zero token, the same cut of `fresh_zero`.
+            let tracked (mine_z, rest_z) = cut_zero(take_zero(self.fresh_zero.borrow_mut()), start - self.bump, end - start);
+            put_zero(self.fresh_zero.borrow_mut(), rest_z);
+            put_zero(self.handed_zero.borrow_mut(), mine_z);
         }
         self.bump = end;
         self.stats.bumped = end - self.base;
@@ -2118,6 +2189,7 @@ impl Inner {
             r matches Some(s) ==> old(self).base <= s && s + len <= old(self).base + old(self).len,
             r matches Some(s) ==> final(self).handed@.contains_range(s as int, len as int),
             r matches Some(s) ==> final(self).handed@.provenance() == cast_provenance(),
+            r matches Some(s) ==> final(self).handed_zero@.addr() == s && final(self).handed_zero@.len() >= len,
     {
         let tracked mut claim = GhostSubmap::<int, bool>::dummy();
         if self.eager_ok(len) {
@@ -2170,7 +2242,9 @@ impl Inner {
         // new `top`, so it took the `commit_range` branch.
         proof {
             assert(self.top_committed == pre.top_committed + (old_top - start));
-            put_raw(self.handed.borrow_mut(), given.commit());
+            let tracked (raw, z) = given.commit();
+            put_raw(self.handed.borrow_mut(), raw);
+            put_zero(self.handed_zero.borrow_mut(), z);
         }
         Some(start)
     }
@@ -2301,8 +2375,9 @@ impl Meta {
     /// [`alloc`](Meta::alloc), then zero the object if it was reused; with
     /// the permission to the object's `layout.size()` bytes and the token
     /// that they read as zero: a reused object is cleared here, and a fresh
-    /// one lies above the old bump pointer, which nothing has written since
-    /// the kernel mapped the region (`vspec::sys::axiom_fresh_anon_zero`).
+    /// one lies above the old bump pointer, whose bytes carry the token
+    /// `Unbacked::commit` returned when they were committed
+    /// (`Inner::fresh_zero`).
     pub fn alloc_zeroed(&self, layout: Layout) -> (r: (*mut u8, Tracked<PointsToRaw>, Tracked<Zeroed>))
         requires
             layout_align(layout) <= MAX_ALIGN,
@@ -2340,11 +2415,14 @@ impl Meta {
         proof {
             lemma_align_in_bin(p as usize, layout, bin);
             assert(g@.wf());
+        }
+        let _gi: &mut Inner = &mut g;
+        let tracked fz = take_zero(_gi.handed_zero.borrow_mut());
+        proof {
             if p@.addr != 0 && before <= p@.addr {
-                // Fresh: above the old bump pointer, committed by
-                // `commit_bump_to` and never written since the region was
-                // mapped (nothing writes above the bump pointer).
-                z = axiom_fresh_anon_zero(p@.addr as int, bin_size(bin as int));
+                // Fresh: above the old bump pointer, carved from `fresh`
+                // with its cut of `fresh_zero` (`Inner::alloc`).
+                z = fz;
             }
         }
         // The bin's slack past `layout.size()` is dropped.
@@ -2410,17 +2488,17 @@ impl Meta {
         let r = g.reserve_committed(len, align);
         let _gi: &mut Inner = &mut g;
         let tracked raw = take_raw(_gi.handed.borrow_mut());
-        // On failure `handed` holds whatever an earlier call left; none of it
-        // goes out.
+        let tracked hz = take_zero(_gi.handed_zero.borrow_mut());
+        // On failure `handed` and `handed_zero` hold whatever an earlier
+        // call left; none of it goes out.
         let tracked raw = raw_if(raw, r is Some);
         let tracked mut z = Zeroed::empty(0);
         proof {
-            assert(g@.wf());
             if let Some(s) = r {
-                // The range was carved above the bump pointer or committed
-                // from the uncommitted reservation side, and nothing hands
-                // a table back: never written since the region was mapped.
-                z = axiom_fresh_anon_zero(s as int, len as int);
+                // The range was carved from `fresh` with its cut of
+                // `fresh_zero`, or committed from `unbacked`
+                // (`Inner::reserve_committed`).
+                z = zero_prefix(hz, len as int);
             }
         }
         (r, Tracked(raw), Tracked(z))

@@ -5,6 +5,8 @@
 
 #[cfg(verus_only)]
 use crate::vspec::addr::cast_provenance;
+#[cfg(verus_only)]
+use crate::vspec::zero::Zeroed;
 use vstd::prelude::*;
 #[cfg(verus_only)]
 use vstd::raw_ptr::PointsToRaw;
@@ -68,19 +70,27 @@ impl Unbacked {
         Unbacked { addr: self.addr, len: self.len + next.len }
     }
 
-    /// The permission to the bytes, once they are committed. Trusted (the
-    /// kernel's `mprotect` contract), with a premise its callers keep and
-    /// nothing checks: call it only after `mprotect` made exactly this range
-    /// readable and writable (`meta::commit_range` returned `Ok`); the range
-    /// is then ordinary memory this process owns, addressed through
-    /// integer-to-pointer casts. Call sites: `meta::Inner::commit_bump_to`
-    /// and `meta::Inner::reserve_committed`, each right after its
-    /// successful commit of the token's range.
+    /// The permission to the bytes, once they are committed, and the token
+    /// that they read as zero. Trusted for two kernel facts, with a premise
+    /// its callers keep and nothing checks: call it only after `mprotect`
+    /// made exactly this range readable and writable
+    /// (`meta::commit_range` returned `Ok`). Then `mprotect(2)`: the range
+    /// is ordinary memory this process owns, addressed through
+    /// integer-to-pointer casts. And `mmap(2)`: a private anonymous mapping
+    /// reads as zero until it is first written, which this range never
+    /// was, because an `Unbacked` token stands for bytes that have been
+    /// `PROT_NONE` since their reservation mapped them (the token's doc:
+    /// minted only from a fresh reservation, and no permission to them
+    /// exists before this call consumes the token). Call sites:
+    /// `meta::Inner::commit_bump_to` and `meta::Inner::reserve_committed`,
+    /// each right after its successful commit of the token's range.
     #[verifier::external_body]
-    pub proof fn commit(tracked self) -> (tracked r: PointsToRaw)
+    pub proof fn commit(tracked self) -> (tracked r: (PointsToRaw, Zeroed))
         ensures
-            r.is_range(self.addr(), self.len()),
-            r.provenance() == cast_provenance(),
+            r.0.is_range(self.addr(), self.len()),
+            r.0.provenance() == cast_provenance(),
+            r.1.addr() == self.addr(),
+            r.1.len() == self.len(),
     {
         unimplemented!()
     }

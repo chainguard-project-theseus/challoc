@@ -79,7 +79,10 @@ impl State {
 
     /// Memory of a slab in this state is known to read as zero.
     #[inline]
-    pub const fn is_zero(self) -> bool {
+    pub const fn is_zero(self) -> (r: bool)
+        ensures
+            r == (self == State::Fresh || self == State::Purged),
+    {
         matches!(self, State::Fresh | State::Purged)
     }
 }

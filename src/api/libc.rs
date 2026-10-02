@@ -629,8 +629,9 @@ pub open spec fn kept(p: *mut u8, size: int, align: int) -> bool {
 /// (whose slots satisfy the alignment by construction) or to a huge run
 /// of the same number of pages at a start that satisfies it ([`kept`]);
 /// otherwise `Some(old)`, the usable bytes of `p`, the most a move has to
-/// copy. Aborts, naming `what`, unless `p` is a live slab slot or huge
-/// run start; so it returns only for a free target.
+/// copy: the class's size for a slot. Aborts, naming `what`, unless `p`
+/// is a live slab slot or huge run start; so it returns only for a free
+/// target.
 pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: usize, align: usize) -> (r: Option<usize>)
     requires
         shared.wf(),
@@ -638,6 +639,8 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
     ensures
         heap::free_target(p),
         r is None ==> kept(p, size as int, align as int),
+        r matches Some(o) ==> forall|c: int|
+            #[trigger] crate::layout::process_regions().is_slot(c, p@.addr) ==> o == class_table()[c].size,
 {
     proof {
         shared.lemma_wf();
@@ -657,10 +660,24 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
                 }
                 return None;
             }
+            proof {
+                // A slot belongs to one class.
+                assert forall|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr)
+                    implies c == class as int by {
+                    crate::vspec::zero::lemma_slot_unique(class as int, c, p@.addr);
+                }
+            }
             Some(class_size(class))
         }
         Kind::Huge { page } => {
             let old = shared.huge.usable_size(page);
+            proof {
+                // A page start of the huge region is no slot.
+                assert forall|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr)
+                    implies false by {
+                    crate::vspec::zero::lemma_slot_not_huge(c, p@.addr);
+                }
+            }
             if class_for(size, align).is_none() && shared.huge.usable_for(size) == Some(old) && (p as usize) % align == 0 {
                 proof {
                     heap::lemma_quantum_pow2();
