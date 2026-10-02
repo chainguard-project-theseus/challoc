@@ -128,11 +128,11 @@ impl TestShared {
             (align_up(mb, page_size()), META_LEN),
             hb,
         );
-        let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
-        assert!(unsafe {
-            Shared::init(b.as_mut_ptr(), regions, self.config, self.guards, self.pac)
-        });
-        unsafe { b.assume_init_ref() }
+        // One raw pointer for `init` and the returned `&Shared`, as in
+        // `api::init`: `init` keeps pointers derived from it.
+        let p = Box::into_raw(Box::new(MaybeUninit::<Shared>::uninit())).cast::<Shared>();
+        assert!(unsafe { Shared::init(p, regions, self.config, self.guards, self.pac) });
+        unsafe { &*p }
     }
 }
 
