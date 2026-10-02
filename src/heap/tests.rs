@@ -581,24 +581,24 @@ fn fast_paths_decline_the_scan_hit_and_the_scheduled_pop() {
     let flags = s.push_flags();
     let a = t.alloc(c);
     t.free(a);
-    let k = t.heap().cache(c).unwrap() as *const CacheHeader as *mut CacheHeader;
-    // SAFETY: the test owns the heap; `allocs + 1` lands on the mask.
-    unsafe { (*k).allocs = (*k).compact_mask as u64 };
-    let allocs = unsafe { (*k).allocs };
+    // The test owns the heap; `allocs + 1` lands on the mask.
+    let k = &mut t.heap().caches[c];
+    k.allocs = k.compact_mask as u64;
+    let allocs = k.allocs;
     let len = t.cache(c).len();
     assert!(
         t.heap().pop_fast(c, flags, Tracked::assume_new()).is_none(),
         "a due schedule declines the fast pop"
     );
     assert_eq!(
-        (unsafe { (*k).allocs }, t.cache(c).len()),
+        (t.cache(c).allocs, t.cache(c).len()),
         (allocs, len),
         "nothing counted, nothing popped"
     );
     let b = t.alloc(c);
     assert!(!b.is_null());
     assert_eq!(
-        unsafe { (*k).allocs },
+        t.cache(c).allocs,
         allocs.wrapping_add(1),
         "the slow path counted the one pop"
     );
@@ -1317,9 +1317,7 @@ fn periodic_work_runs_gc_on_the_interval() {
     let c = class_with(16);
     let d = class_with(48);
     for interval in [0u64, super::shared::GC_INTERVAL_NS] {
-        let s = shared();
-        // SAFETY: nothing else references `s` yet; the field is plain data.
-        unsafe { (*(s as *const Shared as *mut Shared)).gc_interval_ns = interval };
+        let s = TestShared::new().gc_interval_ns(interval).build();
         let t = TestHeap::new(s);
         // Prime class d: one refill, HALF - 1 cached, low water HALF - 1.
         t.alloc(d);
@@ -1486,8 +1484,8 @@ fn pop_checked(t: &TestHeap, c: usize) -> *mut u8 {
 /// The run invariant: descending, distinct, a prefix of the cache no
 /// longer than the low-water mark.
 fn check_run(t: &TestHeap, c: usize) {
-    let k = t.cache(c);
     let run = t.run_plain(c);
+    let k = t.cache(c);
     assert!(
         run.windows(2).all(|w| w[0] > w[1]),
         "run not descending: {run:?}"
@@ -2244,10 +2242,10 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     let a1 = s.arenas.create(s).unwrap();
     let a2 = s.arenas.create(s).unwrap();
     let t = TestHeap::new(s);
-    let h = t.heap();
-    assert_eq!(h.arena(), 0);
     let c = class_with(64);
     let p0 = t.alloc(c);
+    let h = t.heap();
+    assert_eq!(h.arena(), 0);
     let (p1, zero) = h.alloc_in(s, a1, c);
     assert!(!p1.is_null() && zero);
     let (p2, _) = h.alloc_in(s, a2, c);
@@ -2291,7 +2289,7 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     assert!(!h.cache_in(FOREIGN, c).unwrap().compacting());
     // Nothing pops from it: a default allocation is the home's LIFO top,
     // an explicit one the arena node's.
-    assert_eq!(t.alloc(c), p0);
+    assert_eq!(h.alloc(s, c), p0);
     let (p3, _) = h.alloc_in(s, a1, c);
     assert_ne!(p3, p1);
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 2);
@@ -2441,10 +2439,10 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
 fn dropping_the_home_caches_keeps_the_thread_counters() {
     let s = shared();
     let t = TestHeap::new(s);
-    let h = t.heap();
     let c = class_with(64);
     let p = t.alloc(c);
     let q = t.alloc(c);
+    let h = t.heap();
     h.free(s, p);
     let before = h.stats();
     assert_eq!((before.allocated, before.deallocated), (128, 64));
@@ -2473,9 +2471,9 @@ fn set_arena_swaps_cache_arrays() {
     let s = shared();
     let a1 = s.arenas.create(s).unwrap();
     let t = TestHeap::new(s);
-    let h = t.heap();
     let c = class_with(64);
     let p0 = t.alloc(c);
+    let h = t.heap();
     let (p1, _) = h.alloc_in(s, a1, c);
     h.set_arena(s, a1);
     assert_eq!(h.arena(), a1);
@@ -2484,7 +2482,7 @@ fn set_arena_swaps_cache_arrays() {
     // Plain allocation now comes from arena 1's cache; a plain free of an
     // arena-0 slot is foreign now and goes onto the FOREIGN cache, not
     // onto arena 0's node.
-    let q = t.alloc(c);
+    let q = h.alloc(s, c);
     assert_eq!(s.classify_free(q), Ok((c, a1)));
     assert!(free_fast(s, h, p1, s.push_flags()));
     assert!(!free_fast(s, h, p0, s.push_flags()));
@@ -3115,10 +3113,10 @@ fn a_free_routed_to_an_unbuilt_arena_aborts() {
     })
     .build();
     let t = TestHeap::new(s);
-    let h = t.heap();
-    assert_eq!(h.arena(), 0);
     let c = class_with(64);
     let p = t.alloc(c);
+    let h = t.heap();
+    assert_eq!(h.arena(), 0);
     let Kind::Slab { slab, .. } = s.regions.classify(p as usize) else {
         panic!("not a slab slot")
     };
@@ -3174,29 +3172,28 @@ fn pop_fast_pops_the_top_with_the_zero_flag() {
     let t = TestHeap::new(s);
     let c = class_with(64);
     let flags = s.push_flags();
-    let h = t.heap();
     assert_eq!(
-        h.pop_fast(c, flags, Tracked::assume_new()),
+        t.heap().pop_fast(c, flags, Tracked::assume_new()),
         None,
         "no cache yet"
     );
-    assert_eq!(h.alloc_fast(c, flags), None);
+    assert_eq!(t.heap().alloc_fast(c, flags), None);
     let first = t.alloc(c);
     // The refill batch is a fresh slab: the zero prefix covers it all.
     let len = t.len(c);
     let top = t.cached_plain(c)[len - 1];
     assert_eq!(
-        h.pop_fast(c, flags, Tracked::assume_new()),
+        t.heap().pop_fast(c, flags, Tracked::assume_new()),
         Some((top, true))
     );
     assert_eq!(t.len(c), len - 1);
     let top = t.cached_plain(c)[len - 2];
-    assert_eq!(h.alloc_fast(c, flags), Some(top));
+    assert_eq!(t.heap().alloc_fast(c, flags), Some(top));
     // A slot pushed back is no longer known zero (the push clips the
     // prefix), and the flag says so.
     t.free(first);
     assert_eq!(
-        h.pop_fast(c, flags, Tracked::assume_new()),
+        t.heap().pop_fast(c, flags, Tracked::assume_new()),
         Some((first, false))
     );
     assert_eq!(
@@ -3205,7 +3202,11 @@ fn pop_fast_pops_the_top_with_the_zero_flag() {
         "below the pushed entry the prefix still holds"
     );
     t.flush_all();
-    assert_eq!(h.pop_fast(c, flags, Tracked::assume_new()), None, "flushed");
+    assert_eq!(
+        t.heap().pop_fast(c, flags, Tracked::assume_new()),
+        None,
+        "flushed"
+    );
     t.destroy();
 }
 
@@ -3218,9 +3219,9 @@ fn checked_slot_any_is_checked_slot_without_the_arena_test() {
     let s = shared();
     let a1 = s.arenas.create(s).unwrap();
     let t = TestHeap::new(s);
-    let h = t.heap();
     let c = class_with(64);
     let p0 = t.alloc(c);
+    let h = t.heap();
     let (p1, _) = h.alloc_in(s, a1, c);
     assert!(s.multi_arena());
     assert_eq!(

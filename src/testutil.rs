@@ -61,6 +61,7 @@ pub(crate) struct TestShared {
     config: Config,
     guards: bool,
     pac: bool,
+    gc_interval_ns: Option<u64>,
 }
 
 impl TestShared {
@@ -83,6 +84,7 @@ impl TestShared {
             config,
             guards: false,
             pac: pac::available(),
+            gc_interval_ns: None,
         }
     }
 
@@ -98,6 +100,13 @@ impl TestShared {
     /// take.
     pub(crate) fn pac(mut self, available: bool) -> TestShared {
         self.pac = available;
+        self
+    }
+
+    /// Replace the GC interval `Shared::init` stores
+    /// (`Shared::gc_interval_ns`).
+    pub(crate) fn gc_interval_ns(mut self, ns: u64) -> TestShared {
+        self.gc_interval_ns = Some(ns);
         self
     }
 
@@ -128,12 +137,14 @@ impl TestShared {
             (align_up(mb, page_size()), META_LEN),
             hb,
         );
-        // One raw pointer for `init` and the returned `&Shared`, as in
-        // `api::init`: `init` keeps pointers derived from it.
-        let p = Box::into_raw(Box::new(MaybeUninit::<Shared>::uninit())).cast::<Shared>();
+        // One raw pointer for the init, the field edit and the final
+        // reference: `init` keeps pointers derived from it (the arena
+        // registries), which a reborrow through a `&mut` in between would
+        // invalidate (Miri, `verus/MIRI.md`).
+        let b: *mut Shared = Box::into_raw(Box::new(MaybeUninit::<Shared>::uninit())).cast();
         assert!(unsafe {
             Shared::init(
-                p,
+                b,
                 regions,
                 vstd::prelude::Tracked::assume_new(),
                 self.config,
@@ -141,7 +152,12 @@ impl TestShared {
                 self.pac,
             )
         });
-        unsafe { &*p }
+        if let Some(ns) = self.gc_interval_ns {
+            // SAFETY: initialised above; nothing else references it yet.
+            unsafe { (*b).gc_interval_ns = ns };
+        }
+        // SAFETY: initialised above and leaked.
+        unsafe { &*b }
     }
 }
 
