@@ -32,6 +32,11 @@ libc = { version = "0.2", default-features = false }
 # ordinary builds; without default features vstd needs neither std nor alloc.
 vstd = { version = "=0.0.0-2026-09-20-0158", default-features = false }
 
+# Model checking of the atomics protocols (`verus/WEAKMEM.md`):
+# `RUSTFLAGS="--cfg loom" cargo test --release loom_`.
+[target.'cfg(loom)'.dev-dependencies]
+loom = "0.7"
+
 [profile.dev]
 panic = "abort"
 
@@ -54,4 +59,4 @@ verify = true
 [lints.rust]
 # `cfg(verus_only)` guards imports of ghost items, which ordinary builds
 # erase; Verus sets it during verification.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_only)', 'cfg(verus_keep_ghost)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_only)', 'cfg(verus_keep_ghost)', 'cfg(loom)'] }

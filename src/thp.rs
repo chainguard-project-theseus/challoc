@@ -46,7 +46,7 @@
 //! group, per PMD chunk, per huge run or per metadata commit. The fast
 //! paths never read this module.
 
-use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use crate::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use crate::config::Thp as Key;
 use crate::sys::features::Features;

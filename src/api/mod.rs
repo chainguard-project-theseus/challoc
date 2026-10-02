@@ -94,9 +94,9 @@ pub mod print;
 #[cfg(test)]
 mod c_programs;
 
+use crate::sync::atomic::{AtomicU32, Ordering};
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::config;
 use crate::heap::Shared;

@@ -94,8 +94,8 @@ each syscall is a compiler barrier.
   `note_empty` calls it on a class's first `Empty` slab
   (`purge.rs:528`), and `Decayer::note_first_empty` (`purge.rs:444`)
   reports only the first.
-- Candidate lost wake-up, possible even under SC (found by reading,
-  **not reproduced**): the new thread's first pass reads a class's
+- Lost wake-up, possible even under SC (found by reading; reproduced
+  by loom, "loom results" below): the new thread's first pass reads a class's
   `oldest_empty` as 0 and computes no deadline; a free then empties the
   class's first slab, `wake` sees `PRESENT` still false (the starter has
   not reached `purge/background.rs:198`) and does not kick; the thread
@@ -110,7 +110,8 @@ each syscall is a compiler barrier.
   existing steps: the free stores `oldest_empty` and loads `PRESENT`,
   `start` stores `PRESENT`, the thread loads `oldest_empty`, all
   `Relaxed`. That is the store-buffering shape: both loads may read the
-  old values unless the four accesses are `SeqCst` or fenced.
+  old values unless the four accesses are `SeqCst` or fenced (loom
+  reproduces it with PR #72's kick, as shipped; "loom results" below).
 
 ### P4. Publishing `Shared`
 
@@ -187,11 +188,12 @@ data races, which is the check P1 needs for slot data.
   `crate::sync::atomic` module re-exporting `core`'s, or `loom`'s under
   `cfg(loom)`, plus `cfg(loom)` in `Cargo.toml`'s `check-cfg` list and a
   `cfg(loom)` dev-dependency. A re-export is the same type, so vstd's
-  specifications and the release machine code are unchanged (to confirm
-  with the disassembly check).
+  specifications and the release machine code are unchanged (done; the
+  x86_64 disassembly is identical, "loom results" below).
 - Futex: loom has no futex. `sys::futex_wait`/`futex_wake`
   (`sys/mod.rs:586`, `:612`) need a `cfg(loom)` stand-in, for example a
-  per-address `loom::sync::Condvar`.
+  per-address `loom::sync::Condvar` (done: `loom_tests/futex.rs`, one
+  condition variable for a model's one futex word, waking one waiter).
 - What loom cannot take as is: atomics made from raw metadata memory
   (`class/table.rs:1265`, `:1290`, `:1317`, `:1991` cast addresses to
   `&AtomicU64`/`&AtomicU16`); `static` atomics built in `const` context
@@ -226,25 +228,117 @@ lock or futex internals, no publication and nothing of the background
 thread. Its invariants are the properties P1's loom and GenMC checks
 should assert.
 
+## loom results (plan steps 0-3)
+
+Run with loom 0.7.2: `RUSTFLAGS="--cfg loom" cargo test --release
+loom_` (about 50 s of model checking after the build). The tests are in
+`src/loom_tests/`; the module comment there says how the build is
+cut down.
+
+- Shim: `src/sync.rs` re-exports `core::sync::atomic` and
+  `core::hint::spin_loop`, or loom's under `cfg(loom)`; the 16 imports
+  and `lock.rs`'s spin go through it. The release `libchalloc.so`
+  (x86_64) disassembles identically to the tree before it, and Verus
+  verifies all three configurations unchanged. Under `cfg(loom)`,
+  `lib.rs` compiles only `bitmap`, `lock`, `sync` and `vspec` (less
+  `vspec/print.rs`): every other module builds its statics in `const`
+  context. `RawLock::new` has a non-`const` twin there, `Lock<T>` is
+  left out (its `const fn new`), and `lock.rs` sleeps on the stand-in
+  `loom_tests/futex.rs`: one loom mutex and condition variable for the
+  model's one futex word (checked), the compare under the mutex as
+  the kernel's is under the hash-bucket lock, and a wake of one
+  waiter (`notify_one`, as `FUTEX_WAKE` with `n == 1`; waking all
+  would hide a lost wake-up). `SPINS` is 2 under loom.
+- Bounds: every model is exhaustive (no preemption bound) except the
+  three-thread lock, bounded at 5 preemptions (6 s; 7 takes 87 s;
+  unbounded did not finish in 25 minutes).
+- P2 (`RawLock`, real code): two and three lockers bump a loom
+  `UnsafeCell` counter. No race (mutual exclusion and the
+  acquire/release edge), the count is exact, and no deadlock (no lost
+  wake-up between the `swap(2)` and the sleep, nor for a sleeper
+  behind another waiter). Two controls show the deadlock check can
+  fail: a mutant
+  whose woken waiter retakes the lock by CAS to `LOCKED`, dropping a
+  sleeper's `CONTENDED` mark, deadlocks
+  (`loom_lock_dropped_mark_loses_a_wake_up`), and a bare wait on the
+  stand-in deadlocks (`loom_futex_stand_in_sleeps`).
+- P1 (bitmap, real `AtomicBitmap` code over one loom word; the class
+  steps around it are copies citing `slab.rs` and `class/mod.rs`): two
+  owners release while a third thread reserves through `live` under the
+  real `RawLock` and claims; one owner releases two slots to two
+  claimers; `init` published by `Release`/`Acquire`. Slot data is a
+  loom `UnsafeCell` per slot. No race between a release and the next
+  owner, disjoint masks, no padding claimed, no double release, and the
+  `live` reservation is met on the first pass (one pass more per
+  competing claimer): the `Relaxed` hint load always sees a bit that
+  `live` promised, because the `Acquire` load of `live` reads the
+  releaser's `AcqRel` `fetch_sub`, which follows its `Release`
+  `fetch_and`. A control (`loom_bitmap_unclaimed_write_is_a_race`)
+  shows the slot-data check has teeth. Not modelled: sub-word views,
+  more than one word, purge, the claim's `xorshift` start word.
+- P3 (copy of `purge/background.rs`, `purge.rs`): both lost wake-ups
+  reproduce, as a loom deadlock with the thread asleep without a
+  deadline:
+  - `loom_background_startup_race`: the tree before PR #72 (`start` does
+    not kick). Reachable under SC.
+  - `loom_background_kick_store_buffering`: as shipped, with
+    chainguard-dev/challoc PR #72's fix (`start` calls `kick()` after it
+    stores `PRESENT`) and the shipped `Relaxed` orderings. The free
+    stores `oldest_empty` and reads `PRESENT == false`; `start` stores
+    `PRESENT` and kicks; the thread, woken by that kick (it synchronises
+    with it through `SEQ`), still reads `oldest_empty == 0`. Not
+    reachable under SC; a real ordering bug of the fixed code.
+  - The fix that passes (`loom_background_kick_with_fences`): a
+    `fence(SeqCst)` in `wake` before the `present()` load (after the
+    caller's `oldest_empty` store) and one in `start` between
+    `PRESENT.store` and `kick()`. Under C++20 (P0668) the two fences
+    are totally ordered: if `start`'s comes first, the free reads
+    `PRESENT == true` and kicks; if the free's comes first, the thread
+    reads the free's store, since `start`'s fence happens before the
+    thread's load (through the kick and `SEQ`) and a load reading 0
+    would put `start`'s fence before the free's. loom's `SeqCst` fence
+    is stronger than C++20's (it joins the fenced threads' views into
+    one clock), so the pass rests on that argument; the failures are
+    behaviours C++20 allows. Either fence alone still fails
+    (`..._free_fence_only`, `..._start_fence_only`). Both sites are off
+    the fast paths: `wake` runs on a class's first `Empty` slab and on
+    a decay-period change, `start` once per thread start. Making the
+    four accesses `SeqCst` instead is also correct under C++20, but
+    loom regards `SeqCst` accesses as `AcqRel` and reports a false
+    deadlock (`..._seqcst_accesses`, ignored; loom's README,
+    "Unsupported features"), so only the fenced form is checked here.
+  - Hardware: the model leaves out the class lock the free releases
+    before `wake` and the state lock `start` stores `PRESENT` under. A
+    `Release` swap does not keep a later load behind an earlier store,
+    so in C++20 they change nothing; on x86_64 the swap is an `xchg`, a
+    full barrier, so the store-buffering lost wake-up needs aarch64 (or
+    a compiler that moves the accesses) to show on hardware. The
+    startup race needs neither.
+  PR #72 put the kick in `purge/background.rs`; the two fences are not
+  there, and are not part of this change.
+
 ## Plan
 
-| Step | Work | Days |
-|---|---|---|
-| 0 | `crate::sync::atomic` shim, 16 imports, check-cfg; disasm | 0.5 |
-| 1 | loom: `RawLock` with a futex stand-in (P2) | 1-2 |
-| 2 | loom: bitmap claim/release, `live`, slot data cells (P1) | 2-3 |
-| 3 | loom: background wake-up copy; try the P3 race | 1 |
-| 4 | loom: `READY` publication copy, free hand-off (P4, P5) | 1-2 |
-| 5 | GenMC: C models of P1-P3 under RC11 | 3-4 |
-| 6 | CI: `RUSTFLAGS="--cfg loom" cargo test --release loom_` | 0.5 |
+| Step | Work | Days | Status |
+|---|---|---|---|
+| 0 | `crate::sync::atomic` shim, 16 imports, check-cfg; disasm | 0.5 | done |
+| 1 | loom: `RawLock` with a futex stand-in (P2) | 1-2 | done |
+| 2 | loom: bitmap claim/release, `live`, slot data cells (P1) | 2-3 | done |
+| 3 | loom: background wake-up copy; try the P3 race | 1 | done |
+| 4 | loom: `READY` publication copy, free hand-off (P4, P5) | 1-2 | open |
+| 5 | GenMC: C models of P1-P3 under RC11 | 3-4 | open |
+| 6 | CI: `RUSTFLAGS="--cfg loom" cargo test --release loom_` | 0.5 | open |
 
 About 9-13 days. Steps 1-3 carry most of the value: P1 is the one
 protocol whose orderings guard user data, P2 guards every lock value,
 and P3 has a candidate bug to confirm or refute. Step 0 touches 16
 files outside `verus/` and needs the codegen check; steps 1-4 add test
-code only. A confirmed P3 race is a fix in `purge/background.rs`, outside this
-plan: `start` calls `kick()` after it stores `PRESENT`, with the four
-accesses above made `SeqCst` (or fenced).
+code only. The P3 races are confirmed ("loom results"). PR #72 (in the
+base) added the kick after `start` stores `PRESENT`, which closes the
+startup race; the rest of the fix is in `purge/background.rs`, outside
+this plan: a `fence(SeqCst)` between that store and the kick and one in
+`wake` (the four accesses made `SeqCst` also work, but loom cannot check
+that form).
 
 What stays assumed after the plan: the Verus proofs are still SC
 proofs. The checks above show that the shipped orderings give the

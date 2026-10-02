@@ -80,13 +80,13 @@ use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
 use crate::meta::Meta;
 use crate::purge::{self, Decayer};
 use crate::slab::{SlabDesc, State};
+use crate::sync::atomic::{AtomicU64, Ordering};
 use crate::sys::Errno;
 #[cfg(verus_only)]
 use crate::vspec::core_int::popcount;
 #[cfg(verus_only)]
 use crate::vspec::lock::{lock_frame, lock_init, lock_inv};
 use crate::vspec::zero::Zeroed;
-use core::sync::atomic::{AtomicU64, Ordering};
 #[cfg(verus_only)]
 use table::{
     bits_ghost, bits_shape, desc_at, guard_marked, lemma_bit_in_slab, slab_marked, slab_mask_of,

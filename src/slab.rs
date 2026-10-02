@@ -17,7 +17,7 @@
 //! `dirty_at` is the coarse monotonic time the slab became `Empty`, or 0 in
 //! any other state.
 
-use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use crate::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 use crate::layout::{Class, NCLASSES, build_classes, classes_for_page};
 use vstd::prelude::*;

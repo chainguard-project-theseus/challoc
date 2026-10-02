@@ -29,7 +29,7 @@
 //! goes through these wrappers (`AtomicBitmap::init`, `claim_word` and
 //! `release`), each inside the word's invariant (`bitmap::WordPred`).
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use crate::sync::atomic::{AtomicU64, Ordering};
 use vstd::prelude::*;
 
 verus! {

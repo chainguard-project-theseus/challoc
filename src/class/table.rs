@@ -18,6 +18,7 @@ use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
 use crate::meta::Meta;
 use crate::purge;
 use crate::slab::{DESC_ALIGN, SlabDesc, desc_stride};
+use crate::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use crate::sys::{self, Errno, MADV_GUARD_INSTALL, PROT_NONE, PROT_READ, PROT_WRITE};
 use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_only)]
@@ -26,7 +27,6 @@ use crate::vspec::addr::cast_provenance;
 use crate::vspec::lock::{lock_frame, lock_init, lock_inv};
 #[cfg(verus_only)]
 use crate::vspec::word::{WordPerm, word_addr};
-use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 #[cfg(verus_only)]
 use vstd::arithmetic::power2::pow2;
 use vstd::prelude::*;

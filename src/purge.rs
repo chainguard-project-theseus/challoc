@@ -36,7 +36,7 @@
 //! `serial` lock the class tests share in `purge/tests.rs`, and the one that
 //! needs a kernel in `purge/linux_tests.rs`.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use crate::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::heap::Shared;
 pub use crate::policy::Advice;

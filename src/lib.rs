@@ -10,6 +10,9 @@
 #![no_std]
 #![deny(warnings)]
 #![deny(unsafe_op_in_unsafe_fn)]
+// The `cfg(loom)` build is cut down to the modules its tests check
+// (`loom_tests`), which leaves the rest of their API unused.
+#![cfg_attr(loom, allow(dead_code))]
 
 #[cfg(test)]
 extern crate std;
@@ -46,26 +49,50 @@ pub const QUANTUM: usize = 8;
 
 } // verus!
 
+// `cfg(loom)` (`loom_tests`, `verus/WEAKMEM.md`) builds only the modules
+// whose real code the loom tests check, over loom's atomics: the rest
+// build their statics in `const` context, which loom's atomics cannot be.
+#[cfg(not(loom))]
 pub(crate) mod api;
+#[cfg(not(loom))]
 pub(crate) mod arena;
 pub(crate) mod bitmap;
+#[cfg(not(loom))]
 pub(crate) mod class;
+#[cfg(not(loom))]
 pub(crate) mod config;
+#[cfg(not(loom))]
 pub(crate) mod heap;
+#[cfg(not(loom))]
 pub(crate) mod huge;
+#[cfg(not(loom))]
 pub(crate) mod layout;
 pub(crate) mod lock;
+#[cfg(loom)]
+#[cfg(test)]
+mod loom_tests;
+#[cfg(not(loom))]
 pub(crate) mod meta;
+#[cfg(not(loom))]
 #[cfg(test)]
 mod model;
+#[cfg(not(loom))]
 pub(crate) mod policy;
+#[cfg(not(loom))]
 pub(crate) mod purge;
+#[cfg(not(loom))]
 pub(crate) mod rseq;
+#[cfg(not(loom))]
 pub(crate) mod slab;
+#[cfg(not(loom))]
 pub(crate) mod stats;
+pub(crate) mod sync;
+#[cfg(not(loom))]
 pub(crate) mod sys;
+#[cfg(not(loom))]
 #[cfg(test)]
 mod testutil;
+#[cfg(not(loom))]
 pub(crate) mod thp;
 #[allow(dead_code)]
 mod vspec;

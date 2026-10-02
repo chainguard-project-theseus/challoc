@@ -2,8 +2,8 @@
 //! the decay passes and the cgroup sampling on its own stack, started by
 //! configuration or `mallctl("background_thread")`.
 
+use crate::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::heap::{Shared, TLS_CREATING, TLS_EXITED};
 use crate::lock::Lock;

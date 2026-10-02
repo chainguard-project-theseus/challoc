@@ -31,8 +31,8 @@
 //! array (`SlabTable`, never the descriptor) to pick the cache; with one
 //! arena that load is skipped, since every slab and every heap is arena 0.
 
+use crate::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use crate::class::{ClassState, SetTable, SlabTable};
 use crate::heap::Shared;

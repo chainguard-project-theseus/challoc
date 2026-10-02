@@ -18,7 +18,7 @@
 //! `tzcnt`s. The prefix is tracked by the highest level-1 word that can be
 //! non-zero, so a heap with a few thousand slabs scans one word.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use crate::sync::atomic::{AtomicU64, Ordering};
 use vstd::prelude::*;
 
 #[cfg(verus_only)]
@@ -3516,6 +3516,8 @@ impl<'a> AtomicBitmap<'a> {
     }
 }
 
+// Not under loom: these run outside a loom model.
+#[cfg(not(loom))]
 #[cfg(test)]
 mod tests {
     use super::*;

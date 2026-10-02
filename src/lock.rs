@@ -10,14 +10,16 @@
 //! sleeping.
 //!
 //! The spin between two polls of the word is `core::hint::spin_loop`
-//! (`pause` on x86_64, `isb` on aarch64); after [`SPINS`] rounds the waiter
-//! falls through to the futex (design 5).
+//! (`pause` on x86_64, `isb` on aarch64; loom's under `cfg(loom)`, through
+//! `crate::sync::hint`); after [`SPINS`] rounds the waiter falls through
+//! to the futex (design 5).
 //!
 //! Nothing on the `malloc`/`free` fast path takes a lock.
 
+use crate::sync::atomic::{AtomicU32, Ordering};
+#[cfg(not(loom))]
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicU32, Ordering};
 use vstd::prelude::*;
 
 verus! {
@@ -30,7 +32,12 @@ const CONTENDED: u32 = 2;
 /// (a few dozen instructions), so a holder is usually gone within this.
 /// One round is one poll of the word and one `pause` (or `isb`); the
 /// phase is 5..15 us.
+#[cfg(not(loom))]
 const SPINS: u32 = 100;
+/// Under loom each spin round is a branch of every explored execution;
+/// two keep the spin-then-sleep path reachable at a small cost.
+#[cfg(loom)]
+const SPINS: u32 = 2;
 
 /// The bare mutex word. Use [`Lock`] when there is data to protect; use this
 /// directly only where the data is elsewhere (fork handlers, state machines).
@@ -46,6 +53,7 @@ impl Default for RawLock {
 }
 
 impl RawLock {
+    #[cfg(not(loom))]
     pub const fn new() -> RawLock {
         RawLock { state: AtomicU32::new(UNLOCKED) }
     }
@@ -82,7 +90,7 @@ impl RawLock {
             if self.state.load(Ordering::Relaxed) == UNLOCKED && self.try_acquire() {
                 return;
             }
-            core::hint::spin_loop();
+            crate::sync::hint::spin_loop();
         }
         // Announce a possible waiter, then sleep while the word stays
         // CONTENDED. A spurious wake or `EINTR` just loops: `swap` re-checks.
@@ -109,7 +117,9 @@ impl RawLock {
     }
 }
 
-// The futex calls; neither returns anything the callers use.
+// The futex calls; neither returns anything the callers use. Under loom,
+// the stand-ins in `loom_tests::futex`.
+#[cfg(not(loom))]
 #[inline]
 fn wait(state: &AtomicU32, val: u32) {
     // SAFETY: `state` is a live, aligned `u32` for the duration of the call.
@@ -117,6 +127,7 @@ fn wait(state: &AtomicU32, val: u32) {
     let _ = unsafe { crate::sys::futex_wait(state.as_ptr(), val, None) };
 }
 
+#[cfg(not(loom))]
 #[inline]
 fn wake(state: &AtomicU32) {
     // SAFETY: `state` is a live, aligned `u32`.
@@ -125,6 +136,20 @@ fn wake(state: &AtomicU32) {
 
 } // verus!
 
+#[cfg(loom)]
+use crate::loom_tests::futex::{wait, wake};
+
+#[cfg(loom)]
+impl RawLock {
+    /// loom's atomics have no `const` constructor.
+    pub fn new() -> RawLock {
+        RawLock {
+            state: AtomicU32::new(UNLOCKED),
+        }
+    }
+}
+
+#[cfg(not(loom))]
 verus! {
 
 /// A [`RawLock`] guarding a value.
@@ -222,9 +247,12 @@ const _: () = assert!(core::mem::align_of::<Padded<u8>>() == PAD_ALIGN);
 
 // SAFETY: access to `value` is serialised by `raw`, so sharing the lock
 // across threads is sound whenever the value could be moved between them.
+#[cfg(not(loom))]
 unsafe impl<T: Send> Sync for Lock<T> {}
+#[cfg(not(loom))]
 unsafe impl<T: Send> Send for Lock<T> {}
 
+#[cfg(not(loom))]
 verus! {
 
 impl<T> Lock<T> {
@@ -362,6 +390,7 @@ impl<T> Drop for LockGuard<'_, T> {
 
 } // verus!
 
+#[cfg(not(loom))]
 #[cfg(test)]
 mod tests {
     use super::*;

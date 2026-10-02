@@ -3199,7 +3199,7 @@ unsafe fn class_entry(c: usize) -> (r: &'static super::Class)
 
 ### S174. `RawLock::lock_slow`
 
-src/lock.rs:80. Kind: no_decreases. Category: termination.
+src/lock.rs:88. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > Termination is not claimed: the wait ends when another thread releases the lock.
@@ -3210,7 +3210,7 @@ fn lock_slow(&self)
 
 ### S175. `axiom_acquired`
 
-src/lock.rs:177. Kind: axiom. Category: allocator invariant.
+src/lock.rs:202. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > The lock invariant's assumption where it enters for a guard (the other entry is [`Lock::get_unlocked`], for a holder of the raw lock): the guard of a lock this thread has just acquired holds a value that satisfies [`lock_inv`] (every earlier holder restored it) and keeps [`lock_frame`] of the value the lock was created with.
@@ -3227,7 +3227,7 @@ axiom fn axiom_acquired<T>(l: Lock<T>, g: LockGuard<'_, T>)
 
 ### S176. `Lock::get_unlocked`
 
-src/lock.rs:296. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:324. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > Access the value without locking.
@@ -3241,7 +3241,7 @@ pub unsafe fn get_unlocked(&self) -> (r: &mut T)
 
 ### S177. `LockGuard::deref`
 
-src/lock.rs:325. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:353. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 ```rust
@@ -3252,7 +3252,7 @@ fn deref(&self) -> (r: &T)
 
 ### S178. `LockGuard::deref_mut`
 
-src/lock.rs:337. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:365. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 ```rust
@@ -3264,7 +3264,7 @@ fn deref_mut(&mut self) -> (r: &mut T)
 
 ### S179. `LockGuard::drop`
 
-src/lock.rs:355. Kind: external_body. Category: atomics primitive.
+src/lock.rs:383. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 ```rust

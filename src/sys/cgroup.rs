@@ -25,8 +25,8 @@
 //! paths only; the limit walk is repeated at most once per
 //! [`LIMIT_INTERVAL_NS`] so a `docker update --memory` is seen.
 
+use crate::sync::atomic::{AtomicU64, Ordering};
 use core::fmt;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(verus_only)]
 use super::{after_line, find_byte, lemma_line_step, line_len, opt_view, parse_decimal_spec};

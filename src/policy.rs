@@ -55,7 +55,7 @@
 //! report says so ([`Policy::thp_forced`], `opt.thp` reads `never`). The
 //! rule itself is `thp::forced_by_limit`.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use crate::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::heap::Shared;
 use crate::purge::NEVER;

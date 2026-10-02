@@ -47,9 +47,9 @@
 //! (`Table`), `tests` the allocator's tests and `linux_tests` the ones
 //! that need the process's own regions.
 
+use crate::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::alloc::Layout;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::class::Set;
 use crate::layout::Regions;

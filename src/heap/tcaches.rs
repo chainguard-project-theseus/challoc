@@ -6,8 +6,8 @@
 //! releases straight against the slab bitmaps (the defragmenter relies on
 //! this to land allocations in the fullest slabs).
 
+use crate::sync::atomic::{AtomicPtr, Ordering};
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::lock::Lock;
 

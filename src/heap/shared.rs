@@ -3,9 +3,9 @@
 //! key and the thread id, clock and seed a heap reads, and the sized fast
 //! path's [`GuardTest`].
 
+use crate::sync::atomic::{AtomicBool, Ordering};
 use core::ffi::c_void;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::arena::{Arena, Arenas, Held, elem_at, field_at, fits};
 #[cfg(verus_only)]
