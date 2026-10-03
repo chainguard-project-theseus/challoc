@@ -84,10 +84,17 @@ pub struct Arena {
 unsafe impl Sync for Arena {}
 unsafe impl Send for Arena {}
 
+/// Makes the next [`Arena::init`] over the metadata allocator at this
+/// address fail before it allocates anything, as an exhausted region
+/// would, for tests.
+#[cfg(test)]
+pub static FAIL_INIT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
 impl Arena {
     /// Initialise `this` in place as arena `index` over `tables`. Returns
     /// `false` if the metadata region cannot hold the slab sets, leaving
-    /// `this` unusable.
+    /// `this` unusable until a later `init` over the same storage
+    /// succeeds.
     ///
     /// # Safety
     /// `this` must point to writable storage for an `Arena` that nothing
@@ -104,13 +111,28 @@ impl Arena {
         unsafe {
             ptr::write(&raw mut (*this).index, index);
             ptr::write(&raw mut (*this).decay_ns, AtomicU64::new(decay_ns));
+            #[cfg(test)]
+            if FAIL_INIT
+                .compare_exchange(
+                    meta as *const Meta as usize,
+                    0,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                return false;
+            }
             let sets_ptr = meta.alloc(core::alloc::Layout::new::<SetTable>()) as *mut SetTable;
             if sets_ptr.is_null() {
                 return false;
             }
             match SetTable::new(meta, regions) {
                 Some(sets) => ptr::write(sets_ptr, sets),
-                None => return false,
+                None => {
+                    meta.free(sets_ptr as *mut u8, core::alloc::Layout::new::<SetTable>());
+                    return false;
+                }
             }
             ptr::write(&raw mut (*this).sets, sets_ptr as *const SetTable);
             let sets: &SetTable = &*sets_ptr;
@@ -285,6 +307,11 @@ pub struct Arenas {
     /// `unbind` subtracts); explicit caches are not counted.
     bound: [AtomicU32; MAX_ARENAS],
     table: [AtomicPtr<Arena>; MAX_ARENAS],
+    /// The storage of a build whose `Arena::init` failed, for the next
+    /// build to reuse: a reservation is never freed, so a retry under
+    /// metadata pressure would otherwise strand one per attempt. Null
+    /// when there is none; only touched under `lock`.
+    spare: AtomicPtr<Arena>,
 }
 
 impl Arenas {
@@ -308,6 +335,7 @@ impl Arenas {
                 ptr::write(&raw mut (*bound)[i], AtomicU32::new(0));
             }
             (*table)[0].store(arena0, Ordering::Release);
+            ptr::write(&raw mut (*this).spare, AtomicPtr::new(ptr::null_mut()));
         }
     }
 
@@ -429,15 +457,20 @@ impl Arenas {
     /// Build arena `index` in the metadata region and publish it. Called
     /// with the creation lock held and the slot known to be empty.
     fn build<'a>(&'a self, shared: &'a Shared, index: u16) -> Option<&'a Arena> {
-        let layout = core::alloc::Layout::new::<Arena>();
-        // Never freed, so a reservation (page aligned, which covers the
-        // 128-byte class state alignment) rather than an object.
-        let p = shared.meta.reserve_committed(
-            layout.size(),
-            layout.align().max(shared.regions.page_size()),
-        )? as *mut Arena;
-        // SAFETY: fresh, zeroed, exclusively owned storage of the right
-        // size and alignment; the tables live in `Shared` for the process.
+        let mut p = self.spare.swap(ptr::null_mut(), Ordering::Relaxed);
+        if p.is_null() {
+            let layout = core::alloc::Layout::new::<Arena>();
+            // Never freed, so a reservation (page aligned, which covers the
+            // 128-byte class state alignment) rather than an object.
+            p = shared.meta.reserve_committed(
+                layout.size(),
+                layout.align().max(shared.regions.page_size()),
+            )? as *mut Arena;
+        }
+        // SAFETY: exclusively owned storage of the right size and
+        // alignment, fresh or left by a failed build (never published;
+        // `init` writes every field); the tables live in `Shared` for the
+        // process.
         let ok = unsafe {
             Arena::init(
                 p,
@@ -449,8 +482,7 @@ impl Arenas {
             )
         };
         if !ok {
-            // The reservation is lost; the metadata region is exhausted
-            // anyway.
+            self.spare.store(p, Ordering::Relaxed);
             return None;
         }
         shared.set_multi_arena();
