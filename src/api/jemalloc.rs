@@ -969,8 +969,8 @@ mod tests {
         // (Written again: this is a fresh slot of the Lua arena's cache,
         // the one freed above went to the FOREIGN cache.)
         unsafe { core::ptr::write_bytes(p, 0xa5, size) };
-        assert_eq!(api_libc::realloc(p, size), p);
-        let q = api_libc::realloc(p, size * 4);
+        assert_eq!(api_libc::plain::realloc(p, size), p);
+        let q = api_libc::plain::realloc(p, size * 4);
         assert_ne!(q, p);
         assert_eq!(unsafe { *q }, 0xa5);
         // Across classes, plain realloc lands in the caller's home arena.

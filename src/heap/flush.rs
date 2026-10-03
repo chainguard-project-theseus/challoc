@@ -308,7 +308,7 @@ impl Heap {
     /// # Safety
     /// `cache` is this heap's real cache for `(arena, class)` and `n <= len`.
     #[verifier::spinoff_prover]
-    #[verifier::rlimit(200)]
+    #[verifier::rlimit(300)]
     pub(super) unsafe fn flush(&mut self, shared: &Shared, arena: u16, cache: *mut CacheHeader, class: usize, n: usize)
         requires
             crate::sys::may_syscall(),

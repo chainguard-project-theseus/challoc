@@ -13,7 +13,8 @@
 Handler	function pointer	Kani
 installed_handler	function pointer	Kani
 oom	termination	none (assumption)
-src/api/libc.rs:set_errno	FFI/syscall	none (assumption)
+set_errno	FFI/syscall	none (assumption)
+lend	C-program contract	none (assumption)
 store_usable	raw pointer from C caller	Miri (evidence only)
 store_out	raw pointer from C caller	Miri (evidence only)
 root	function pointer	Kani
@@ -29,7 +30,6 @@ arena_held	allocator invariant	RefinedRust
 count_held	allocator invariant	RefinedRust
 src/purge/background.rs:state	UnsafeCell/volatile/transmute	RefinedRust
 src/api/print.rs:word	core library	Kani
-src/api/print.rs:set_errno	FFI/syscall	none (assumption)
 axiom_unlocked	C-program contract	none (assumption)
 Unlocked	C-program contract	none (assumption)
 file_target	function pointer	Kani

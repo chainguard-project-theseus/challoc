@@ -627,6 +627,10 @@ impl Heap {
                     }
                 }
                 assert(perms.hdrs =~= p1.hdrs.insert(cache, perms.hdrs[cache]));
+                assert(crate::class::claim_zero_ok(claim, claimed, ztok, class as int));
+                if claim.zeroed {
+                    assert forall|k: int| 0 <= k < nn implies #[trigger] ztok.contains_key(k) && ztok[k].covers(claimed[k], class_table()[p1.cls[cache]].size as int) by {}
+                }
                 CachePerms::lemma_rebuild_some(perms, ztok, &mut toks, p1, s2, cache, len as int, want as int, nn, claim.zeroed, claimed, out@, all0, all@);
                 Heap::lemma_keeps_trans(*old(self), h1, *self);
             }

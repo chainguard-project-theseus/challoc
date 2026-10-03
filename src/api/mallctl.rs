@@ -1798,7 +1798,8 @@ mod exports {
 mod tests {
     use super::*;
     use crate::api::jemalloc::{dallocx, mallocx};
-    use crate::api::libc::{free, malloc};
+    use crate::api::libc::free;
+    use crate::api::libc::plain::malloc;
     use crate::config::Config;
     use crate::heap::mallocx::{MALLOCX_TCACHE_NONE, mallocx_arena, mallocx_tcache};
     use std::ffi::CString;

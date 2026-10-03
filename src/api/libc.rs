@@ -16,7 +16,8 @@
 //!
 //! - Failure returns null with `errno = ENOMEM`; `aligned_alloc` and
 //!   `memalign` set `EINVAL` for a bad alignment; `posix_memalign` returns
-//!   the error and leaves `errno` alone.
+//!   the error, and leaves `errno` alone on `EINVAL` (its `ENOMEM` path
+//!   sets `errno = ENOMEM` too, as glibc's may).
 //! - `free` preserves `errno`. Nothing on its path calls into libc: the
 //!   fast path touches only the heap, the cache, the slab's bitmap word
 //!   and (with several arenas) its owner word, never the descriptor
@@ -41,6 +42,7 @@ use crate::heap::{self, Live, Shared};
 use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, class_of};
 use crate::sys::Errno;
+use crate::vspec::errno::{ThreadErrno, set_errno};
 use crate::vspec::usable::Stored;
 #[cfg(verus_only)]
 use crate::vspec::usable::{usable_is, usable_of};
@@ -82,33 +84,27 @@ pub(super) proof fn lemma_pow2_pos(x: usize)
     vstd::arithmetic::power2::lemma_pow2_pos(k);
 }
 
-/// Trusted: writes the calling thread's `errno` through libc's pointer.
-#[verifier::external_body]
-#[inline(always)]
-pub(super) fn set_errno(e: c_int) {
-    // SAFETY: `__errno_location` returns the calling thread's `errno`.
-    unsafe { *::libc::__errno_location() = e };
-}
-
 /// Null with `errno = ENOMEM`.
 #[cold]
 #[inline(never)]
-fn enomem() -> (r: *mut u8)
+fn enomem(Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     ensures
         r@.addr == 0,
+        final(errno).val() == ENOMEM,
 {
-    set_errno(ENOMEM);
+    set_errno(ENOMEM, Tracked(errno));
     ptr::null_mut()
 }
 
 /// Null with `errno = EINVAL`.
 #[cold]
 #[inline(never)]
-fn einval() -> (r: *mut u8)
+fn einval(Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     ensures
         r@.addr == 0,
+        final(errno).val() == EINVAL,
 {
-    set_errno(EINVAL);
+    set_errno(EINVAL, Tracked(errno));
     ptr::null_mut()
 }
 
@@ -169,6 +165,27 @@ proof fn lemma_class_fits(p: *mut u8, c: int, size: usize)
     if p@.addr != 0 {
         heap::lemma_slot_fits_quantum(p, c, size as int);
     }
+}
+
+/// A slot is never at address 0: the class superblock lies above it
+/// (`Regions::separated`, from the kernel's `mmap` contract), so a fast
+/// pop is never mistaken for a failure.
+proof fn lemma_slot_nonnull(c: int, p: usize)
+    requires
+        heap::regions_ok(),
+        crate::layout::process_regions().is_slot(c, p),
+    ensures
+        p != 0,
+{
+    let r = crate::layout::process_regions();
+    let (slab, slot) = choose|slab: int, slot: int|
+        0 <= slab < r.spec_nslabs(c) && 0 <= slot < class_table()[c].nslots
+            && p as int == #[trigger] r.slot_at(c, slab, slot);
+    let stride = (1usize << r.lg_stride) as int;
+    vstd::arithmetic::mul::lemma_mul_nonnegative(slab, (1usize << class_table()[c].lg_slab) as int);
+    vstd::arithmetic::mul::lemma_mul_nonnegative(slot, class_table()[c].size as int);
+    vstd::arithmetic::mul::lemma_mul_nonnegative(c, stride);
+    assert(r.superblock + c * stride <= r.class_base[c]);
 }
 
 /// A huge result for `size` bytes at `align` serves them at `align`, and
@@ -249,35 +266,38 @@ fn alloc_huge(shared: &Shared, size: usize, align: usize, Tracked(blk): Tracked<
 }
 
 /// `malloc`. A non-null result is a block of at least `size` bytes in a
-/// class or huge region, aligned to the quantum ([`heap::fits`]). Its
-/// token ([`malloc_block`]) goes to C with the block.
+/// class or huge region, aligned to the quantum ([`heap::fits`]); a null
+/// one comes with `errno = ENOMEM`. Its token ([`malloc_block`]) goes to
+/// C with the block.
 #[inline(always)]
-pub fn malloc(size: usize) -> (r: *mut u8)
+pub fn malloc(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
         heap::fits(r, size as int, QUANTUM as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let tracked mut blk = Live::empty();
-    malloc_block(size, Tracked(&mut blk))
+    malloc_block(size, Tracked(&mut blk), Tracked(errno))
 }
 
 /// [`malloc`] with the block's token: `blk` gets the token of the block
 /// returned, which has at least `size` usable bytes ([`Live::gives`]).
 #[inline(always)]
-pub fn malloc_block(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+pub fn malloc_block(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
         heap::fits(r, size as int, QUANTUM as int),
         final(blk).gives(r, size as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     // The fast path is a cache pop with no calls in it; everything else
     // (init, heap creation, refill, huge, ENOMEM) is one tail call away so
     // the exported `malloc` needs no stack frame.
-    let Some(c) = class_index(size) else { return malloc_slow(size, Tracked(blk)) };
+    let Some(c) = class_index(size) else { return malloc_slow(size, Tracked(blk), Tracked(errno)) };
     let shared = super::shared_ptr();
-    let Some(h) = heap::existing_heap(shared) else { return malloc_slow(size, Tracked(blk)) };
+    let Some(h) = heap::existing_heap(shared) else { return malloc_slow(size, Tracked(blk), Tracked(errno)) };
     // SAFETY: this thread's heap exists, so this thread observed `READY`
     // (the byte was read once inside `existing_heap`; this is the same
     // load, merged by the compiler).
@@ -290,6 +310,7 @@ pub fn malloc_block(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u
             proof {
                 lemma_class_fits(p, c as int, size);
                 lemma_class_gives(*blk, p, c as int, size);
+                lemma_slot_nonnull(c as int, p@.addr);
             }
             p
         },
@@ -298,7 +319,7 @@ pub fn malloc_block(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u
         // `heap::alloc_declined`, not through a second classification and
         // a second fast pop.
         None => {
-            let p = malloc_slow_class(c, Tracked(blk));
+            let p = malloc_slow_class(c, Tracked(blk), Tracked(errno));
             proof {
                 lemma_class_fits(p, c as int, size);
                 lemma_class_gives(*blk, p, c as int, size);
@@ -313,16 +334,17 @@ pub fn malloc_block(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u
 /// `heap::alloc_declined`, null with `errno = ENOMEM` on failure.
 #[cold]
 #[inline(never)]
-fn malloc_slow_class(class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+fn malloc_slow_class(class: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
         class < NCLASSES,
     ensures
         r@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r@.addr),
         r@.addr != 0 ==> final(blk).slot_block(r, class as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let p = heap::alloc_declined(super::shared(), class, Tracked(blk));
-    if p.is_null() { enomem() } else { p }
+    if p.is_null() { enomem(Tracked(errno)) } else { p }
 }
 
 /// The cache pop alone: `None` whenever anything is off the fast path (no
@@ -333,6 +355,7 @@ pub(super) fn malloc_fast(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: 
     ensures
         r matches Some(p) ==> heap::fits(p, size as int, QUANTUM as int),
         r matches Some(p) ==> final(blk).gives(p, size as int),
+        r matches Some(p) ==> p@.addr != 0,
     opens_invariants none
 {
     let Some(c) = class_index(size) else { return None };
@@ -350,6 +373,7 @@ pub(super) fn malloc_fast(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: 
         if let Some(p) = r {
             lemma_class_fits(p, c as int, size);
             lemma_class_gives(*blk, p, c as int, size);
+            lemma_slot_nonnull(c as int, p@.addr);
         }
     }
     r
@@ -359,12 +383,13 @@ pub(super) fn malloc_fast(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: 
 /// on failure.
 #[cold]
 #[inline(never)]
-pub(super) fn malloc_slow(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+pub(super) fn malloc_slow(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
         heap::fits(r, size as int, QUANTUM as int),
         final(blk).gives(r, size as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let shared = super::shared();
     proof {
@@ -388,21 +413,22 @@ pub(super) fn malloc_slow(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: 
             p
         },
     };
-    if p.is_null() { enomem() } else { p }
+    if p.is_null() { enomem(Tracked(errno)) } else { p }
 }
 
 /// `calloc`. Skips the `memset` when the slot or run is known to read as
 /// zero (fresh or purged memory). The block's token goes to C with it.
 #[inline(always)]
-pub fn calloc(n: usize, m: usize) -> (r: *mut u8)
+pub fn calloc(n: usize, m: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
         n * m > usize::MAX ==> r@.addr == 0,
         heap::fits(r, n * m, QUANTUM as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let tracked mut blk = Live::empty();
-    calloc_zeroed(n, m, Tracked(&mut blk)).0
+    calloc_zeroed(n, m, Tracked(&mut blk), Tracked(errno)).0
 }
 
 /// [`calloc`] with the proof that its memory reads as zero: a non-null
@@ -411,7 +437,7 @@ pub fn calloc(n: usize, m: usize) -> (r: *mut u8)
 /// the allocator's report that the slot or run is known zero; and `blk`
 /// gets the block's token.
 #[inline(always)]
-pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, Tracked<Zeroed>))
+pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: (*mut u8, Tracked<Zeroed>))
     requires
         crate::sys::may_syscall(),
     ensures
@@ -419,8 +445,9 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>) -> (r
         heap::fits(r.0, n * m, QUANTUM as int),
         r.0@.addr != 0 ==> r.1@.covers(r.0, n * m),
         final(blk).gives(r.0, n * m),
+        r.0@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
-    let Some(size) = n.checked_mul(m) else { return (enomem(), Tracked(Zeroed::empty(0))) };
+    let Some(size) = n.checked_mul(m) else { return (enomem(Tracked(errno)), Tracked(Zeroed::empty(0))) };
     let shared = super::shared();
     proof {
         crate::meta::lemma_is_pow2_one();
@@ -444,7 +471,7 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>) -> (r
         },
     };
     if p.is_null() {
-        return (enomem(), Tracked(Zeroed::empty(0)));
+        return (enomem(Tracked(errno)), Tracked(Zeroed::empty(0)));
     }
     if !zeroed {
         proof {
@@ -941,19 +968,22 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
 /// `realloc`. The same pointer comes back when the new size maps to the
 /// same class or the same number of huge pages (`old_size_or_keep`);
 /// otherwise allocate, copy `min(old usable, new size)`, free. On failure
-/// the old block is intact. C holds the token of the block it passes
+/// the old block is intact and `errno = ENOMEM`; `realloc(p, 0)`'s null
+/// leaves `errno` alone. C holds the token of the block it passes
 /// ([`heap::live::axiom_c_claim`]), and gets the result's.
-pub fn realloc(p: *mut u8, size: usize) -> (r: *mut u8)
+pub fn realloc(p: *mut u8, size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
         p@.addr != 0 && size == 0 ==> r@.addr == 0,
         heap::fits(r, size as int, QUANTUM as int),
         p@.addr != 0 ==> heap::free_target(p),
+        r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
+        p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
     let tracked blk = heap::live::axiom_c_claim(p);
     let tracked mut out = Live::empty();
-    realloc_block(p, size, Tracked(blk), Tracked(&mut out))
+    realloc_block(p, size, Tracked(blk), Tracked(&mut out), Tracked(errno))
 }
 
 /// [`realloc`] with the tokens: `blk` is the caller's for `p`
@@ -962,7 +992,7 @@ pub fn realloc(p: *mut u8, size: usize) -> (r: *mut u8)
 /// caller's). The new block is disjoint from `p`
 /// ([`Live::theorem_apart`]) for the copy.
 #[inline(always)]
-pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Tracked(out): Tracked<&mut Live>) -> (r: *mut u8)
+pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Tracked(out): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
         blk.claims(p),
@@ -973,9 +1003,11 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         final(out).gives(r, size as int),
         p@.addr != 0 ==> blk.block(p),
         p@.addr != 0 && size != 0 && r@.addr == 0 ==> *final(out) == blk,
+        r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
+        p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
     if p.is_null() {
-        return malloc_block(size, Tracked(out));
+        return malloc_block(size, Tracked(out), Tracked(errno));
     }
     if size == 0 {
         free_block(p, Tracked(blk));
@@ -992,7 +1024,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         }
         return p;
     };
-    let q = malloc_block(size, Tracked(out));
+    let q = malloc_block(size, Tracked(out), Tracked(errno));
     if q.is_null() {
         // The block at `p` stays the caller's, with its token.
         proof {
@@ -1014,17 +1046,19 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
 }
 
 /// `reallocarray`: `realloc(p, n * m)` with overflow reported as `ENOMEM`.
-pub fn reallocarray(p: *mut u8, n: usize, m: usize) -> (r: *mut u8)
+pub fn reallocarray(p: *mut u8, n: usize, m: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
-        n * m > usize::MAX ==> r@.addr == 0,
+        n * m > usize::MAX ==> r@.addr == 0 && final(errno).val() == ENOMEM,
         heap::fits(r, n * m, QUANTUM as int),
         p@.addr != 0 && n * m <= usize::MAX ==> heap::free_target(p),
+        r@.addr == 0 && !(p@.addr != 0 && n * m == 0) ==> final(errno).val() == ENOMEM,
+        p@.addr != 0 && n * m == 0 ==> final(errno).val() == old(errno).val(),
 {
     match n.checked_mul(m) {
-        Some(size) => realloc(p, size),
-        None => enomem(),
+        Some(size) => realloc(p, size, Tracked(errno)),
+        None => enomem(Tracked(errno)),
     }
 }
 
@@ -1087,24 +1121,23 @@ fn class_size(class: usize) -> (r: usize)
 /// pop used; everything else is one tail call away, as in `malloc`. The
 /// block's token goes to C with it.
 #[inline(always)]
-pub fn malloc_usable(size: usize, usable: *mut usize) -> (r: *mut u8)
+pub fn malloc_usable(size: usize, usable: *mut usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
         heap::fits(r, size as int, QUANTUM as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let tracked mut blk = Live::empty();
-    malloc_usable_stored(size, usable, Tracked(&mut blk)).0
+    malloc_usable_stored(size, usable, Tracked(&mut blk), Tracked(errno)).0
 }
 
 /// [`malloc_usable`] with the token for what it stored through `usable`:
 /// the block's usable size ([`usable_is`]: its class's size, or `size`
-/// rounded up to whole pages for a huge run). It stores 0 for a null
-/// result, which is not stated: the regions' spec does not rule out a
-/// slot at address 0, and the fast path's pop states only that it is one.
+/// rounded up to whole pages for a huge run), and 0 for a null result.
 /// `blk` gets the block's token, as in [`malloc_block`].
 #[inline(always)]
-pub fn malloc_usable_stored(size: usize, usable: *mut usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, Tracked<Stored>))
+pub fn malloc_usable_stored(size: usize, usable: *mut usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: (*mut u8, Tracked<Stored>))
     requires
         crate::sys::may_syscall(),
     ensures
@@ -1112,11 +1145,13 @@ pub fn malloc_usable_stored(size: usize, usable: *mut usize, Tracked(blk): Track
         r.1@.ptr() == usable,
         r.0@.addr != 0 ==> usable_is(r.0, size as int, r.1@.val() as int),
         final(blk).gives(r.0, size as int),
+        r.0@.addr == 0 ==> r.1@.val() == 0,
+        r.0@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
-    let Some(c) = class_index(size) else { return malloc_usable_huge(size, usable, Tracked(blk)) };
+    let Some(c) = class_index(size) else { return malloc_usable_huge(size, usable, Tracked(blk), Tracked(errno)) };
     let shared = super::shared_ptr();
     let Some(h) = heap::existing_heap(shared) else {
-        let (p, s) = malloc_usable_class(c, usable, Tracked(blk));
+        let (p, s) = malloc_usable_class(c, usable, Tracked(blk), Tracked(errno));
         proof {
             lemma_class_fits(p, c as int, size);
             if p@.addr != 0 {
@@ -1136,13 +1171,14 @@ pub fn malloc_usable_stored(size: usize, usable: *mut usize, Tracked(blk): Track
             let s = store_usable(usable, class_size(c));
             proof {
                 lemma_class_fits(p, c as int, size);
+                lemma_slot_nonnull(c as int, p@.addr);
                 crate::vspec::usable::lemma_usable_slot(p, c as int, size as int);
                 lemma_class_gives(*blk, p, c as int, size);
             }
             (p, s)
         }
         None => {
-            let (p, s) = malloc_usable_class(c, usable, Tracked(blk));
+            let (p, s) = malloc_usable_class(c, usable, Tracked(blk), Tracked(errno));
             proof {
                 lemma_class_fits(p, c as int, size);
                 if p@.addr != 0 {
@@ -1161,7 +1197,7 @@ pub fn malloc_usable_stored(size: usize, usable: *mut usize, Tracked(blk): Track
 /// null with `errno = ENOMEM` on failure.
 #[cold]
 #[inline(never)]
-fn malloc_usable_class(class: usize, usable: *mut usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, Tracked<Stored>))
+fn malloc_usable_class(class: usize, usable: *mut usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: (*mut u8, Tracked<Stored>))
     requires
         crate::sys::may_syscall(),
         class < NCLASSES,
@@ -1172,6 +1208,7 @@ fn malloc_usable_class(class: usize, usable: *mut usize, Tracked(blk): Tracked<&
         r.1@.ptr() == usable,
         r.0@.addr == 0 ==> r.1@.val() == 0,
         r.0@.addr != 0 ==> r.1@.val() == class_table()[class as int].size,
+        r.0@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let shared = super::shared();
     proof {
@@ -1180,7 +1217,7 @@ fn malloc_usable_class(class: usize, usable: *mut usize, Tracked(blk): Tracked<&
     let p = heap::alloc_declined(shared, class, Tracked(blk));
     if p.is_null() {
         let s = store_usable(usable, 0);
-        return (enomem(), s);
+        return (enomem(Tracked(errno)), s);
     }
     let s = store_usable(usable, class_size(class));
     (p, s)
@@ -1190,7 +1227,7 @@ fn malloc_usable_class(class: usize, usable: *mut usize, Tracked(blk): Tracked<&
 /// huge table, the same read `malloc_usable_size` does.
 #[cold]
 #[inline(never)]
-fn malloc_usable_huge(size: usize, usable: *mut usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, Tracked<Stored>))
+fn malloc_usable_huge(size: usize, usable: *mut usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: (*mut u8, Tracked<Stored>))
     requires
         crate::sys::may_syscall(),
     ensures
@@ -1199,6 +1236,7 @@ fn malloc_usable_huge(size: usize, usable: *mut usize, Tracked(blk): Tracked<&mu
         r.0@.addr == 0 ==> r.1@.val() == 0,
         r.0@.addr != 0 ==> usable_is(r.0, size as int, r.1@.val() as int),
         final(blk).gives(r.0, size as int),
+        r.0@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let shared = super::shared();
     proof {
@@ -1211,7 +1249,7 @@ fn malloc_usable_huge(size: usize, usable: *mut usize, Tracked(blk): Tracked<&mu
     }
     if p.is_null() {
         let s = store_usable(usable, 0);
-        return (enomem(), s);
+        return (enomem(Tracked(errno)), s);
     }
     let s = store_usable(usable, usable_size(shared, p, Tracked(&*blk)));
     proof {
@@ -1252,15 +1290,16 @@ proof fn lemma_huge_usable(shared: &Shared, p: *mut u8, size: usize, u: usize)
 /// zero, not only the `n * m` bytes asked for: the caller is told it owns
 /// the usable bytes (Valkey's `zcalloc_usable` hands them on), and that is
 /// what jemalloc's `calloc` zeroes. The block's token goes to C with it.
-pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> (r: *mut u8)
+pub fn calloc_usable(n: usize, m: usize, usable: *mut usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
         n * m > usize::MAX ==> r@.addr == 0,
         heap::fits(r, n * m, QUANTUM as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let tracked mut blk = Live::empty();
-    calloc_usable_zeroed(n, m, usable, Tracked(&mut blk)).0
+    calloc_usable_zeroed(n, m, usable, Tracked(&mut blk), Tracked(errno)).0
 }
 
 /// [`calloc_usable`] with the proof that its memory reads as zero, and
@@ -1273,7 +1312,7 @@ pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> (r: *mut u8)
 /// ([`usable_size`]), which is the usable size of the block's token: the
 /// request rounded up to whole pages.
 #[inline(always)]
-pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, Tracked<Zeroed>, Tracked<Stored>))
+pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: (*mut u8, Tracked<Zeroed>, Tracked<Stored>))
     requires
         crate::sys::may_syscall(),
     ensures
@@ -1285,10 +1324,11 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(blk)
         r.0@.addr == 0 ==> r.2@.val() == 0,
         r.0@.addr != 0 ==> usable_is(r.0, n * m, r.2@.val() as int),
         final(blk).gives(r.0, n * m),
+        r.0@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let Some(size) = n.checked_mul(m) else {
         let s = store_usable(usable, 0);
-        return (enomem(), Tracked(Zeroed::empty(0)), s);
+        return (enomem(Tracked(errno)), Tracked(Zeroed::empty(0)), s);
     };
     let shared = super::shared();
     proof {
@@ -1338,7 +1378,7 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(blk)
     };
     if p.is_null() {
         let s = store_usable(usable, 0);
-        return (enomem(), Tracked(Zeroed::empty(0)), s);
+        return (enomem(Tracked(errno)), Tracked(Zeroed::empty(0)), s);
     }
     let z = if !zeroed {
         proof {
@@ -1370,17 +1410,19 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(blk)
 /// anyway; a moved block reports what the `malloc_usable` that made it
 /// reported. C holds the token of the block it passes
 /// ([`heap::live::axiom_c_claim`]), and gets the result's.
-pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> (r: *mut u8)
+pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
         p@.addr != 0 && size == 0 ==> r@.addr == 0,
         heap::fits(r, size as int, QUANTUM as int),
         p@.addr != 0 ==> heap::free_target(p),
+        r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
+        p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
     let tracked blk = heap::live::axiom_c_claim(p);
     let tracked mut out = Live::empty();
-    realloc_usable_stored(p, size, usable, Tracked(blk), Tracked(&mut out)).0
+    realloc_usable_stored(p, size, usable, Tracked(blk), Tracked(&mut out), Tracked(errno)).0
 }
 
 /// [`realloc_usable`] with the token for what it stored through `usable`:
@@ -1389,7 +1431,7 @@ pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> (r: *mut u
 /// run's usable size equal to `size` rounded up to whole pages: [`kept`]'s
 /// test) or moved (what [`malloc_usable_stored`] stored). The block
 /// tokens are as in [`realloc_block`].
-pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracked(blk): Tracked<Live>, Tracked(out): Tracked<&mut Live>) -> (r: (*mut u8, Tracked<Stored>))
+pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracked(blk): Tracked<Live>, Tracked(out): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: (*mut u8, Tracked<Stored>))
     requires
         blk.claims(p),
         crate::sys::may_syscall(),
@@ -1402,9 +1444,12 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         final(out).gives(r.0, size as int),
         p@.addr != 0 ==> blk.block(p),
         p@.addr != 0 && size != 0 && r.0@.addr == 0 ==> *final(out) == blk,
+        r.0@.addr == 0 ==> r.1@.val() == 0,
+        r.0@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
+        p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
     if p.is_null() {
-        return malloc_usable_stored(size, usable, Tracked(out));
+        return malloc_usable_stored(size, usable, Tracked(out), Tracked(errno));
     }
     if size == 0 {
         free_block(p, Tracked(blk));
@@ -1421,7 +1466,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         }
         return (p, s);
     }
-    let (q, s) = malloc_usable_stored(size, usable, Tracked(out));
+    let (q, s) = malloc_usable_stored(size, usable, Tracked(out), Tracked(errno));
     if q.is_null() {
         // The block at `p` stays the caller's, with its token.
         proof {
@@ -1755,17 +1800,18 @@ pub(super) fn class_for(size: usize, align: usize) -> (r: Option<usize>)
 
 /// Allocate `size` bytes aligned to `align`, a power of two. Null with
 /// `errno = ENOMEM` on exhaustion. `blk` gets the block's token.
-pub fn alloc_aligned(align: usize, size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+pub fn alloc_aligned(align: usize, size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
         is_pow2(align),
     ensures
         heap::fits(r, size as int, align as int),
         final(blk).gives(r, size as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     debug_assert!(align.is_power_of_two());
     if align <= QUANTUM {
-        let p = malloc_block(size, Tracked(blk));
+        let p = malloc_block(size, Tracked(blk), Tracked(errno));
         proof {
             heap::lemma_quantum_pow2();
             let k = choose|k: nat| k < 64 && QUANTUM as nat == #[trigger] pow2(k);
@@ -1799,7 +1845,7 @@ pub fn alloc_aligned(align: usize, size: usize, Tracked(blk): Tracked<&mut Live>
             p
         },
     };
-    if p.is_null() { enomem() } else { p }
+    if p.is_null() { enomem(Tracked(errno)) } else { p }
 }
 
 /// A result aligned to the quantum is aligned to every smaller power of
@@ -1841,30 +1887,32 @@ proof fn lemma_mask_mod(x: usize, a: usize)
 /// `aligned_alloc` and `memalign`: `EINVAL` unless `align` is a power of
 /// two. glibc does not require `size` to be a multiple of `align`. The
 /// block's token goes to C with it.
-pub fn aligned_alloc(align: usize, size: usize) -> (r: *mut u8)
+pub fn aligned_alloc(align: usize, size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
-        !is_pow2(align) ==> r@.addr == 0,
+        !is_pow2(align) ==> r@.addr == 0 && final(errno).val() == EINVAL,
         is_pow2(align) ==> heap::fits(r, size as int, align as int),
+        is_pow2(align) && r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let tracked mut blk = Live::empty();
-    aligned_alloc_block(align, size, Tracked(&mut blk))
+    aligned_alloc_block(align, size, Tracked(&mut blk), Tracked(errno))
 }
 
 /// [`aligned_alloc`] with the block's token, as [`malloc_block`].
-pub fn aligned_alloc_block(align: usize, size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+pub fn aligned_alloc_block(align: usize, size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
-        !is_pow2(align) ==> r@.addr == 0,
+        !is_pow2(align) ==> r@.addr == 0 && final(errno).val() == EINVAL,
         is_pow2(align) ==> heap::fits(r, size as int, align as int),
+        is_pow2(align) && r@.addr == 0 ==> final(errno).val() == ENOMEM,
         final(blk).gives(r, size as int),
 {
     if !align.is_power_of_two() {
-        return einval();
+        return einval(Tracked(errno));
     }
-    alloc_aligned(align, size, Tracked(blk))
+    alloc_aligned(align, size, Tracked(blk), Tracked(errno))
 }
 
 /// Store the allocation through `posix_memalign`'s out-pointer.
@@ -1878,24 +1926,27 @@ fn store_out(out: *mut *mut u8, p: *mut u8) {
 
 /// `posix_memalign`. Returns 0, `EINVAL` (alignment not a power of two or
 /// not a multiple of `sizeof(void *)`) or `ENOMEM`; never touches `errno`
-/// on the `EINVAL` path. The block's token goes to C with it.
-pub fn posix_memalign(out: *mut *mut u8, align: usize, size: usize) -> (r: c_int)
+/// on the `EINVAL` path. The `ENOMEM` path is `alloc_aligned`'s, which
+/// also sets `errno = ENOMEM`. The block's token goes to C with it.
+pub fn posix_memalign(out: *mut *mut u8, align: usize, size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: c_int)
     requires
         crate::sys::may_syscall(),
     ensures
         r == 0 || r == ENOMEM || r == EINVAL,
         // `sizeof(void *)` is 8 on every target challoc builds for.
         r == EINVAL <==> !(is_pow2(align) && align % 8 == 0),
+        r == EINVAL ==> final(errno).val() == old(errno).val(),
+        r == ENOMEM ==> final(errno).val() == ENOMEM,
 {
     let tracked mut blk = Live::empty();
-    posix_memalign_block(out, align, size, Tracked(&mut blk))
+    posix_memalign_block(out, align, size, Tracked(&mut blk), Tracked(errno))
 }
 
 /// [`posix_memalign`] with the token of the block it stores: on a 0
 /// return, `blk` gets the token of a block of at least `size` bytes
 /// aligned to `align` (the stored pointer, which `store_out` does not
 /// state).
-pub fn posix_memalign_block(out: *mut *mut u8, align: usize, size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: c_int)
+pub fn posix_memalign_block(out: *mut *mut u8, align: usize, size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: c_int)
     requires
         crate::sys::may_syscall(),
     ensures
@@ -1903,11 +1954,13 @@ pub fn posix_memalign_block(out: *mut *mut u8, align: usize, size: usize, Tracke
         // `sizeof(void *)` is 8 on every target challoc builds for.
         r == EINVAL <==> !(is_pow2(align) && align % 8 == 0),
         r == 0 ==> exists|p: *mut u8| p@.addr != 0 && #[trigger] final(blk).gives(p, size as int) && heap::fits(p, size as int, align as int),
+        r == EINVAL ==> final(errno).val() == old(errno).val(),
+        r == ENOMEM ==> final(errno).val() == ENOMEM,
 {
     if !align.is_power_of_two() || align % core::mem::size_of::<*mut u8>() != 0 {
         return EINVAL;
     }
-    let p = alloc_aligned(align, size, Tracked(blk));
+    let p = alloc_aligned(align, size, Tracked(blk), Tracked(errno));
     if p.is_null() {
         return ENOMEM;
     }
@@ -1944,52 +1997,56 @@ fn page_size(shared: &Shared) -> (r: usize)
 }
 
 /// `valloc`: page-aligned. The block's token goes to C with it.
-pub fn valloc(size: usize) -> (r: *mut u8)
+pub fn valloc(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
         heap::fits(r, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let tracked mut blk = Live::empty();
-    valloc_block(size, Tracked(&mut blk))
+    valloc_block(size, Tracked(&mut blk), Tracked(errno))
 }
 
 /// [`valloc`] with the block's token, as [`malloc_block`].
-pub fn valloc_block(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+pub fn valloc_block(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
         heap::fits(r, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
         final(blk).gives(r, size as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let page = page_size(super::shared());
-    alloc_aligned(page, size, Tracked(blk))
+    alloc_aligned(page, size, Tracked(blk), Tracked(errno))
 }
 
 /// `pvalloc`: page-aligned, size rounded up to a whole page. The block's
 /// token goes to C with it.
-pub fn pvalloc(size: usize) -> (r: *mut u8)
+pub fn pvalloc(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
         heap::fits(r, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let tracked mut blk = Live::empty();
-    pvalloc_block(size, Tracked(&mut blk))
+    pvalloc_block(size, Tracked(&mut blk), Tracked(errno))
 }
 
 /// [`pvalloc`] with the block's token, as [`malloc_block`].
-pub fn pvalloc_block(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+pub fn pvalloc_block(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
         heap::fits(r, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
         final(blk).gives(r, size as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let page = page_size(super::shared());
     proof { lemma_pow2_pos(page); }
-    let Some(rounded) = size.checked_add(page - 1) else { return enomem() };
-    let p = alloc_aligned(page, rounded & !(page - 1), Tracked(blk));
+    let Some(rounded) = size.checked_add(page - 1) else { return enomem(Tracked(errno)) };
+    let p = alloc_aligned(page, rounded & !(page - 1), Tracked(blk), Tracked(errno));
     proof {
         let m = rounded & !((page - 1) as usize);
         crate::meta::lemma_pow2_bits(page);
@@ -2061,7 +2118,8 @@ mod exports {
         proof {
             crate::sys::grant_syscalls();
         }
-        super::malloc(size) as *mut c_void
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::malloc(size, Tracked(&mut errno)) as *mut c_void
     }
 
     #[unsafe(no_mangle)]
@@ -2069,7 +2127,8 @@ mod exports {
         proof {
             crate::sys::grant_syscalls();
         }
-        super::malloc(size) as *mut c_void
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::malloc(size, Tracked(&mut errno)) as *mut c_void
     }
 
     #[unsafe(no_mangle)]
@@ -2121,25 +2180,32 @@ mod exports {
 
     verified_export_pair! {
         fn calloc / je_calloc(n: usize, m: usize) -> *mut c_void {
-            super::calloc(n, m) as *mut c_void
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::calloc(n, m, Tracked(&mut errno)) as *mut c_void
         }
         fn realloc / je_realloc(p: *mut c_void, size: usize) -> *mut c_void {
-            super::realloc(p as *mut u8, size) as *mut c_void
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::realloc(p as *mut u8, size, Tracked(&mut errno)) as *mut c_void
         }
         fn aligned_alloc / je_aligned_alloc(align: usize, size: usize) -> *mut c_void {
-            super::aligned_alloc(align, size) as *mut c_void
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::aligned_alloc(align, size, Tracked(&mut errno)) as *mut c_void
         }
         fn memalign / je_memalign(align: usize, size: usize) -> *mut c_void {
-            super::aligned_alloc(align, size) as *mut c_void
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::aligned_alloc(align, size, Tracked(&mut errno)) as *mut c_void
         }
         fn posix_memalign / je_posix_memalign(out: *mut *mut c_void, align: usize, size: usize) -> c_int {
-            super::posix_memalign(out as *mut *mut u8, align, size)
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::posix_memalign(out as *mut *mut u8, align, size, Tracked(&mut errno))
         }
         fn valloc / je_valloc(size: usize) -> *mut c_void {
-            super::valloc(size) as *mut c_void
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::valloc(size, Tracked(&mut errno)) as *mut c_void
         }
         fn pvalloc / je_pvalloc(size: usize) -> *mut c_void {
-            super::pvalloc(size) as *mut c_void
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::pvalloc(size, Tracked(&mut errno)) as *mut c_void
         }
         fn malloc_usable_size / je_malloc_usable_size(p: *mut c_void) -> usize {
             super::malloc_usable_size(p as *mut u8)
@@ -2153,7 +2219,8 @@ mod exports {
         proof {
             crate::sys::grant_syscalls();
         }
-        super::reallocarray(p as *mut u8, n, m) as *mut c_void
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::reallocarray(p as *mut u8, n, m, Tracked(&mut errno)) as *mut c_void
     }
 
     /// C23 `free_sized`: the size is checked against the class and stands
@@ -2191,7 +2258,8 @@ mod exports {
         proof {
             crate::sys::grant_syscalls();
         }
-        super::malloc_usable(size, usable) as *mut c_void
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::malloc_usable(size, usable, Tracked(&mut errno)) as *mut c_void
     }
 
     #[unsafe(no_mangle)]
@@ -2199,7 +2267,8 @@ mod exports {
         proof {
             crate::sys::grant_syscalls();
         }
-        super::calloc_usable(n, m, usable) as *mut c_void
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::calloc_usable(n, m, usable, Tracked(&mut errno)) as *mut c_void
     }
 
     #[unsafe(no_mangle)]
@@ -2211,7 +2280,8 @@ mod exports {
         proof {
             crate::sys::grant_syscalls();
         }
-        super::realloc_usable(p as *mut u8, size, usable) as *mut c_void
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::realloc_usable(p as *mut u8, size, usable, Tracked(&mut errno)) as *mut c_void
     }
 
     #[unsafe(no_mangle)]
@@ -2225,8 +2295,68 @@ mod exports {
     } // verus!
 }
 
+/// The entry points with their C signatures, for the tests: each lends the
+/// test thread's `errno` the way the export wrappers do.
+#[cfg(test)]
+pub(crate) mod plain {
+    use core::ffi::c_int;
+    use vstd::prelude::Tracked;
+
+    pub fn set_errno(e: c_int) {
+        crate::vspec::errno::set_errno(e, Tracked::assume_new())
+    }
+
+    pub fn malloc(size: usize) -> *mut u8 {
+        super::malloc(size, Tracked::assume_new())
+    }
+
+    pub fn calloc(n: usize, m: usize) -> *mut u8 {
+        super::calloc(n, m, Tracked::assume_new())
+    }
+
+    pub fn realloc(p: *mut u8, size: usize) -> *mut u8 {
+        super::realloc(p, size, Tracked::assume_new())
+    }
+
+    pub fn reallocarray(p: *mut u8, n: usize, m: usize) -> *mut u8 {
+        super::reallocarray(p, n, m, Tracked::assume_new())
+    }
+
+    pub fn aligned_alloc(align: usize, size: usize) -> *mut u8 {
+        super::aligned_alloc(align, size, Tracked::assume_new())
+    }
+
+    pub fn posix_memalign(out: *mut *mut u8, align: usize, size: usize) -> c_int {
+        super::posix_memalign(out, align, size, Tracked::assume_new())
+    }
+
+    pub fn valloc(size: usize) -> *mut u8 {
+        super::valloc(size, Tracked::assume_new())
+    }
+
+    pub fn pvalloc(size: usize) -> *mut u8 {
+        super::pvalloc(size, Tracked::assume_new())
+    }
+
+    pub fn malloc_usable(size: usize, usable: *mut usize) -> *mut u8 {
+        super::malloc_usable(size, usable, Tracked::assume_new())
+    }
+
+    pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> *mut u8 {
+        super::calloc_usable(n, m, usable, Tracked::assume_new())
+    }
+
+    pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> *mut u8 {
+        super::realloc_usable(p, size, usable, Tracked::assume_new())
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::plain::{
+        aligned_alloc, calloc, calloc_usable, malloc, malloc_usable, posix_memalign, pvalloc,
+        realloc, realloc_usable, reallocarray, set_errno, valloc,
+    };
     use super::*;
     use crate::layout::{MEDIUM_MAX, class_size_of};
     use std::process::Command;

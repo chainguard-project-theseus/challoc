@@ -31,6 +31,7 @@ use crate::layout::{CLASSES, NBINS, NCLASSES};
 use crate::purge;
 use crate::stats::{self, ArenaStats, Snapshot, fig_add, fig_mul};
 use crate::sys::bytes_is;
+use crate::vspec::errno::{ThreadErrno, set_errno};
 use crate::vspec::print::{base_slab_sizes, stats_allocated, thp_name};
 #[cfg(verus_only)]
 use vstd::prelude::*;
@@ -1169,24 +1170,19 @@ fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
     writeln!(out, "</malloc>")
 }
 
-/// Set the calling thread's `errno`. Trusted: a write through
-/// `__errno_location`.
-#[verifier::external_body]
-#[inline(always)]
-fn set_errno(e: c_int) {
-    // SAFETY: `__errno_location` returns the calling thread's `errno`.
-    unsafe { *libc::__errno_location() = e };
-}
-
 /// glibc's `malloc_info(options, stream)`: the `<malloc version="1">`
 /// document with one `<heap>` per arena and the totals. `options` must be
 /// 0 and `stream` non-null, else `-1` with `errno = EINVAL`, as in glibc.
-pub fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int
+pub fn malloc_info(options: c_int, stream: *mut libc::FILE, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: c_int)
     requires
         crate::sys::may_syscall(),
+    ensures
+        r == 0 || r == -1,
+        r == -1 <==> options != 0 || stream@.addr == 0,
+        r == -1 ==> final(errno).val() == crate::sys::Errno::EINVAL.0,
 {
     if options != 0 || stream.is_null() {
-        set_errno(crate::sys::Errno::EINVAL.0);
+        set_errno(crate::sys::Errno::EINVAL.0, Tracked(errno));
         return -1;
     }
     let shared = super::shared();
@@ -1266,7 +1262,7 @@ fn stderr_target() -> Target {
 #[cfg(not(test))]
 mod exports {
     use core::ffi::{c_char, c_int, c_void};
-    use vstd::prelude::verus;
+    use vstd::prelude::{Tracked, verus};
 
     export_pair! {
         fn malloc_stats_print / je_malloc_stats_print(write_cb: super::WriteCb, cbopaque: *mut c_void, opts: *const c_char) {
@@ -1281,7 +1277,8 @@ mod exports {
         proof {
             crate::sys::grant_syscalls();
         }
-        super::malloc_info(options, stream)
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::malloc_info(options, stream, Tracked(&mut errno))
     }
 
     #[unsafe(no_mangle)]
@@ -1298,7 +1295,8 @@ mod exports {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::libc::{free, malloc};
+    use crate::api::libc::free;
+    use crate::api::libc::plain::malloc;
     use std::string::String;
     use std::sync::Mutex;
     use std::vec::Vec;
@@ -1825,7 +1823,7 @@ mod tests {
         let big = malloc(1 << 20);
         let f = unsafe { libc::tmpfile() };
         assert!(!f.is_null());
-        assert_eq!(malloc_info(0, f), 0);
+        assert_eq!(malloc_info(0, f, Tracked::assume_new()), 0);
         unsafe { libc::rewind(f) };
         let mut buf = std::vec![0u8; 1 << 16];
         let n = unsafe { libc::fread(buf.as_mut_ptr() as *mut c_void, 1, buf.len(), f) };
@@ -1846,9 +1844,12 @@ mod tests {
             xml.matches("<heap nr=").count(),
             xml.matches("</heap>").count()
         );
-        assert_eq!(malloc_info(1, f), -1);
+        assert_eq!(malloc_info(1, f, Tracked::assume_new()), -1);
         assert_eq!(unsafe { *libc::__errno_location() }, 22);
-        assert_eq!(malloc_info(0, core::ptr::null_mut()), -1);
+        assert_eq!(
+            malloc_info(0, core::ptr::null_mut(), Tracked::assume_new()),
+            -1
+        );
         free(big);
         for p in live {
             free(p);
@@ -1977,7 +1978,7 @@ mod tests {
                 unsafe { libc::setvbuf(f, core::ptr::null_mut(), libc::_IONBF, 0) },
                 0
             );
-            assert_eq!(malloc_info(0, f), 0);
+            assert_eq!(malloc_info(0, f, Tracked::assume_new()), 0);
             let during = calls.load(core::sync::atomic::Ordering::Relaxed);
             unsafe { libc::fclose(f) };
             assert!(during >= 1, "no write during malloc_info");

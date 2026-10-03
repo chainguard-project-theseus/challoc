@@ -185,19 +185,20 @@ impl Regions {
     /// [`wf`](Regions::wf): every class base is `MAX_SLAB`-aligned and
     /// class `c`'s region lies inside stride `c` of the superblock (so the
     /// class regions are pairwise disjoint and each is followed by its
-    /// gap), the strides ending below `2^48`; the huge base is
-    /// `MAX_SLAB`-aligned and the page is between 4 KiB and `MAX_SLAB`; and
-    /// the superblock's strides, the huge region and the metadata region
-    /// are pairwise disjoint, and none holds a byte of the process's
-    /// `Shared` static ([`Regions::outside`]). [`from_parts`] proves it from
-    /// its arguments; the disjointness comes from its caller ([`from_parts`]'s
-    /// preconditions say what).
+    /// gap), the strides starting above address 0 and ending below `2^48`;
+    /// the huge base is `MAX_SLAB`-aligned and the page is between 4 KiB
+    /// and `MAX_SLAB`; and the superblock's strides, the huge region and
+    /// the metadata region are pairwise disjoint, and none holds a byte of
+    /// the process's `Shared` static ([`Regions::outside`]). [`from_parts`]
+    /// proves it from its arguments; the disjointness comes from its caller
+    /// ([`from_parts`]'s preconditions say what).
     ///
     /// [`from_parts`]: Regions::from_parts
     pub open spec fn separated(self) -> bool {
         let stride = (1usize << self.lg_stride) as int;
         let region = (1usize << self.lg_region) as int;
         &&& 12 <= self.lg_page <= LG_MAX_SLAB
+        &&& 0 < self.superblock
         &&& self.superblock + NCLASSES * stride <= 0x1_0000_0000_0000
         &&& self.superblock + NCLASSES * stride <= crate::sys::pac::user_va_limit()
         &&& forall|c: int| 0 <= c < NCLASSES ==> {
@@ -410,8 +411,10 @@ impl Regions {
             // (`linux::Reserved::is_disjoint`, trusted).
             maps[0].addr <= superblock,
             superblock + (NCLASSES << lg_stride) <= maps[0].addr + maps[0].len,
-            // The class superblock is user space (`sys::pac::user_va_limit`,
-            // at most `2^48`).
+            // The class superblock is user space, above address 0 (the
+            // kernel places no mapping there) and below
+            // `sys::pac::user_va_limit` (at most `2^48`).
+            0 < superblock,
             superblock + (NCLASSES << lg_stride) <= crate::sys::pac::user_va_limit(),
             maps[1].addr <= huge.0,
             huge.0 + huge.1 <= maps[1].addr + maps[1].len,

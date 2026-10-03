@@ -34,10 +34,10 @@ use core::ptr;
 
 use super::libc;
 use crate::heap::Live;
-use vstd::prelude::Tracked;
-use vstd::prelude::verus;
+use crate::vspec::errno::ThreadErrno;
 #[cfg(verus_only)]
 use vstd::prelude::*;
+use vstd::prelude::{Tracked, verus};
 
 /// `std::new_handler`: `void (*)()`, null when none is installed.
 type NewHandler = Option<unsafe extern "C" fn()>;
@@ -178,7 +178,7 @@ fn call_handler(handler: Handler)
 #[cold]
 #[inline(never)]
 #[verifier::exec_allows_no_decreases_clause] // ends only when the program's handler frees memory, is removed or throws
-fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
@@ -201,9 +201,9 @@ fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live
         };
         call_handler(handler);
         let p = if align == 0 {
-            libc::malloc_block(size, Tracked(blk))
+            libc::malloc_block(size, Tracked(blk), Tracked(errno))
         } else {
-            libc::aligned_alloc_block(align, size, Tracked(blk))
+            libc::aligned_alloc_block(align, size, Tracked(blk), Tracked(errno))
         };
         if !p.is_null() {
             return p;
@@ -214,16 +214,16 @@ fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live
 /// `malloc`'s slow path with the `new` failure protocol on top.
 #[cold]
 #[inline(never)]
-fn new_slow(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+fn new_slow(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
         final(blk).gives(r, size as int),
 {
-    let p = libc::malloc_slow(size, Tracked(blk));
+    let p = libc::malloc_slow(size, Tracked(blk), Tracked(errno));
     if p.is_null() {
-        oom(size, 0, nothrow, Tracked(blk))
+        oom(size, 0, nothrow, Tracked(blk), Tracked(errno))
     } else {
         p
     }
@@ -233,32 +233,32 @@ fn new_slow(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -> (r:
 /// inline, everything else one tail call away. The block's token goes to
 /// C++ with it.
 #[inline(always)]
-pub fn new(size: usize) -> (r: *mut u8)
+pub fn new(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
 {
     let tracked mut blk = Live::empty();
-    new_block(size, false, Tracked(&mut blk))
+    new_block(size, false, Tracked(&mut blk), Tracked(errno))
 }
 
 /// The `nothrow_t` forms: null on failure after the handler loop.
 #[inline(always)]
-pub fn new_nothrow(size: usize) -> (r: *mut u8)
+pub fn new_nothrow(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
 {
     let tracked mut blk = Live::empty();
-    new_block(size, true, Tracked(&mut blk))
+    new_block(size, true, Tracked(&mut blk), Tracked(errno))
 }
 
 /// [`new`] (`nothrow` false) and [`new_nothrow`] with the block's token,
 /// as `libc::malloc_block`.
 #[inline(always)]
-pub fn new_block(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+pub fn new_block(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
@@ -267,7 +267,7 @@ pub fn new_block(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -
 {
     match libc::malloc_fast(size, Tracked(blk)) {
         Some(p) => p,
-        None => new_slow(size, nothrow, Tracked(blk)),
+        None => new_slow(size, nothrow, Tracked(blk), Tracked(errno)),
     }
 }
 
@@ -277,7 +277,7 @@ pub fn new_block(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -
 /// the handler loop. Zero is the exception: [`oom`] reads it as the
 /// unaligned operators' marker, so after a `new_handler` call the retry is
 /// `malloc`'s.
-pub fn new_aligned(size: usize, align: usize, nothrow: bool) -> (r: *mut u8)
+pub fn new_aligned(size: usize, align: usize, nothrow: bool, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
@@ -285,11 +285,11 @@ pub fn new_aligned(size: usize, align: usize, nothrow: bool) -> (r: *mut u8)
         align != 0 && !libc::is_pow2(align) ==> r@.addr == 0,
 {
     let tracked mut blk = Live::empty();
-    new_aligned_block(size, align, nothrow, Tracked(&mut blk))
+    new_aligned_block(size, align, nothrow, Tracked(&mut blk), Tracked(errno))
 }
 
 /// [`new_aligned`] with the block's token, as `libc::malloc_block`.
-pub fn new_aligned_block(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+pub fn new_aligned_block(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_syscall(),
     ensures
@@ -302,9 +302,9 @@ pub fn new_aligned_block(size: usize, align: usize, nothrow: bool, Tracked(blk):
             libc::lemma_pow2_pos(align);
         }
     }
-    let p = libc::aligned_alloc_block(align, size, Tracked(blk));
+    let p = libc::aligned_alloc_block(align, size, Tracked(blk), Tracked(errno));
     if p.is_null() {
-        oom(size, align, nothrow, Tracked(blk))
+        oom(size, align, nothrow, Tracked(blk), Tracked(errno))
     } else {
         p
     }
@@ -359,7 +359,7 @@ pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize)
 #[cfg(not(test))]
 mod exports {
     use core::ffi::c_void;
-    use vstd::prelude::verus;
+    use vstd::prelude::{Tracked, verus};
 
     verus! {
 
@@ -369,7 +369,8 @@ mod exports {
         proof {
             crate::sys::grant_syscalls();
         }
-        super::new(size) as *mut c_void
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::new(size, Tracked(&mut errno)) as *mut c_void
     }
 
     /// `operator new[](size_t)`
@@ -378,7 +379,8 @@ mod exports {
         proof {
             crate::sys::grant_syscalls();
         }
-        super::new(size) as *mut c_void
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::new(size, Tracked(&mut errno)) as *mut c_void
     }
 
     /// `operator new(size_t, const std::nothrow_t&)`
@@ -387,7 +389,8 @@ mod exports {
         proof {
             crate::sys::grant_syscalls();
         }
-        super::new_nothrow(size) as *mut c_void
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::new_nothrow(size, Tracked(&mut errno)) as *mut c_void
     }
 
     /// `operator new[](size_t, const std::nothrow_t&)`
@@ -396,7 +399,8 @@ mod exports {
         proof {
             crate::sys::grant_syscalls();
         }
-        super::new_nothrow(size) as *mut c_void
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::new_nothrow(size, Tracked(&mut errno)) as *mut c_void
     }
 
     /// `operator new(size_t, std::align_val_t)`
@@ -405,7 +409,8 @@ mod exports {
         proof {
             crate::sys::grant_syscalls();
         }
-        super::new_aligned(size, align, false) as *mut c_void
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::new_aligned(size, align, false, Tracked(&mut errno)) as *mut c_void
     }
 
     /// `operator new[](size_t, std::align_val_t)`
@@ -414,7 +419,8 @@ mod exports {
         proof {
             crate::sys::grant_syscalls();
         }
-        super::new_aligned(size, align, false) as *mut c_void
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::new_aligned(size, align, false, Tracked(&mut errno)) as *mut c_void
     }
 
     /// `operator new(size_t, std::align_val_t, const std::nothrow_t&)`
@@ -427,7 +433,8 @@ mod exports {
         proof {
             crate::sys::grant_syscalls();
         }
-        super::new_aligned(size, align, true) as *mut c_void
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::new_aligned(size, align, true, Tracked(&mut errno)) as *mut c_void
     }
 
     /// `operator new[](size_t, std::align_val_t, const std::nothrow_t&)`
@@ -440,7 +447,8 @@ mod exports {
         proof {
             crate::sys::grant_syscalls();
         }
-        super::new_aligned(size, align, true) as *mut c_void
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::new_aligned(size, align, true, Tracked(&mut errno)) as *mut c_void
     }
 
     /// `operator delete(void*)`
