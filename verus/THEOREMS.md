@@ -4236,6 +4236,141 @@ breaking its contract; no path sets such a bit.
   the words in memory is the bitmap module's verified model; the second
   level's summary bits are part of that model, not of this statement.
 
+## 30. Decay deadline soundness (per gate, over the loaded values)
+
+A theorem about one decay gate, `purge::Decayer`, over the values its
+lock-free loads see: the deadline it returns is never earlier than
+`now`, and never later than one step of the period it was called with
+past the oldest `Empty` member's stamp or `now`, whichever is later. A
+`next_walk` more than one step away (stored under a longer period, since
+shortened) is never returned. The bound is about what the body does with
+what it loaded: callers get only its `t >= now` half (below). That the
+background thread wakes at the deadline (the futex wait,
+`note_decay_changed`) is out of scope.
+
+The `file:line`s are the `fn` line at this section's commit.
+
+**Statement** (`purge.rs:635`, over the spec of `decay` at `:609`):
+
+```rust
+// purge.rs:530
+pub fn decay(&self, now: u64, decay_ns: u64, walk: impl FnOnce(u64, &Curve)) -> (r: Option<u64>)
+    ensures
+        r matches Some(t) ==> t >= now,
+        exists|oldest: u64, next: u64, after: u64|
+            r == #[trigger] Decayer::spec_decay(now, decay_ns, oldest, next, after),
+
+pub proof fn theorem_decay_deadline(now: u64, decay_ns: u64, oldest: u64, next: u64, after: u64)
+    ensures
+        ({
+            let r = Decayer::spec_decay(now, decay_ns, oldest, next, after);
+            let step = Decayer::spec_step(decay_ns);
+            &&& r is None <==> oldest == 0 || (Decayer::spec_walks(now, decay_ns, oldest, next)
+                && after == 0)
+            &&& r matches Some(t) ==> now <= t && t <= (if oldest <= now { now } else { oldest })
+                + step
+            &&& r matches Some(t) ==> (oldest <= now ==> t <= now + step)
+            &&& r matches Some(t) ==> (t == now ==> Decayer::spec_walks(now, decay_ns, oldest, next)
+                && (step == 0 || now == u64::MAX))
+        }),
+```
+
+`oldest` is the first `oldest_empty` load, `next` the `next_walk` load
+and `after` the `oldest_empty` load after the walk; a load the call does
+not make is a free variable of the existential. `spec_step(d)` is
+`d / STEPS`, `Curve::step_ns`'s exact spec (`purge/curve.rs:313`) for
+`Curve::new(d)`. `spec_walks` (`:597`) is the walk's condition:
+something `Empty`, its first step over, and `next` not within one step
+after `now`. `spec_decay` (`:609`) is the code's branches with
+`saturating_add` spelled as `sat_add` (`:583`); it is `closed` (only
+`purge.rs` sees its body), so callers reason through the theorem.
+
+In words: `decay` returns `None` exactly when the oldest-`Empty` load is
+0 or a walk ran and the load after it reads 0. A deadline is at most
+`max(oldest, now) + step`, so, with the oldest member stamped no later
+than `now`, at most one step past `now`. That is the period-change case
+of `decay` (`next - now <= step`): after `set_decay_ms` (`arena.rs`) or
+a pressure band (theorem 18) lowers the period, the next call no longer
+returns a deadline computed with the old step: it returns the end of the
+oldest member's first (new) step, or walks and returns one new step from
+`now`. A deadline equal to `now` (the background thread then sleeps
+`MIN_SLEEP_NS`) needs a zero step (`decay_ns < STEPS`) or saturation,
+and only follows a walk.
+
+With theorem 18 (`purge.rs:656`):
+
+```rust
+pub proof fn theorem_decay_deadline_under_pressure(base: u64, limit: u64, c1: u64, c2: u64,
+    p1: u64, p2: u64, now: u64, oldest: u64, next: u64, after: u64)
+    requires
+        c1 <= c2,
+        p1 == spec_effective_decay_ns(base, spec_band(limit, c1)),
+        p2 == spec_effective_decay_ns(base, spec_band(limit, c2)),
+    ensures
+        Decayer::spec_step(p2) <= Decayer::spec_step(p1),
+        Decayer::spec_decay(now, p2, oldest, next, after) matches Some(t)
+            ==> t <= (if oldest <= now { now } else { oldest }) + Decayer::spec_step(p1),
+```
+
+At one limit and configured period, higher usage never gives a longer
+step, so the deadline bound under it is no later than under lower usage.
+`Policy::effective_decay_ns` (`policy.rs:740`), the period
+`purge::decay` passes to every gate, ensures `ns <= base`: the stored
+band never lengthens a configured step either.
+
+**Covers.** Both gates: `ClassState::decay_with` (`class/decay.rs:915`)
+and `Huge::decay_with` (`huge/mod.rs:4129`) ensure `decay`'s contract
+for the `decay_ns` they are given (also through `mallctl
+arena.<i>.decay`, which passes the unscaled period). `Arena::decay_with`
+and `purge::decay` (`purge.rs:745`, through `earliest`) take the minimum
+of the per-gate deadlines; the background thread (`purge/background.rs:429`)
+sleeps until `purge::decay`'s result, and `on_tick` discards it. No C
+symbol's `ensures` changes.
+
+**Premises beyond the common ones.** None: no axiom, `external_body` or
+`assume_specification` is added or used. The loads are `core` atomics,
+which vstd specifies with any value, which is why the statement is over
+the values seen. The walk closure's `ensures` are not used.
+
+**Scope and where the statement is weaker than the code.**
+- What callers can use. The witnesses are existential, so a caller
+  cannot discharge `oldest <= now`: what `decay`'s and `decay_with`'s
+  `ensures` give a caller is `t >= now`, and (through the theorem)
+  `t == now` only when `decay_ns < STEPS` or `now == u64::MAX`. The
+  one-step bound states what the body does with what it loaded; tying
+  `oldest` to a clock reading no later than `now` needs the stamps and
+  the coarse clock as ghost state.
+- Per gate, not per thread wait. `Arena::decay_with` and `purge::decay`
+  combine the gates' deadlines by `min` (`map_or`, `earliest`), and the
+  background thread sleeps `max(deadline - now, MIN_SLEEP_NS)`; that the
+  combined deadline is at most each gate's, and so the wait at most one
+  step (or 1 ms) of the shortest period of any gate whose oldest member
+  is stamped by `now` and that returns a deadline, is read off those
+  bodies, not proved.
+- Over loaded values, not the atomics. The theorem does not say the
+  loads return the gate's current state: concurrent `set_oldest_empty`
+  and `note_first_empty` calls (under the owner's lock, read here
+  without it) can change `oldest_empty` between the two loads, and the
+  `Relaxed` orderings are not modelled (`verus/WEAKMEM.md`). Because it
+  is per call over what the call saw, it holds for concurrent calls on
+  one gate (`arena.<i>.decay` through `mallctl` beside the background
+  thread), but says nothing about which call's `next_walk` store wins.
+- Stamps after `now`. An `oldest` later than `now` (a stamp from another
+  thread's later coarse clock read) gives a deadline up to `oldest +
+  step`; the theorem bounds it by that, not by `now + step`.
+- Not that the walk runs at most once per step: the store of `next_walk`
+  and the guard are in `decay`'s body, but no ghost history of walks is
+  kept, so "at most once per step" is not an `ensures`.
+- The `NEVER` period: callers skip it (`Arena::decay_with`, the huge
+  branch of `purge::decay`, `mallctl arena.0.decay`'s huge call);
+  `decay` itself would return deadlines up to
+  `sat_add(max(oldest, now), NEVER / STEPS)`, within the bound.
+- The period is the one passed in: that it is the arena's current
+  `decay_ns` after `set_decay_ms` is the caller's load (any value, as
+  above), and theorem 18's link from usage to period is for the pure
+  functions only (theorem 18's own scope, including the `Policy` atomics
+  round trip).
+
 ## Interface contract
 
 The per-call theorems above (1-3, 5-7 and the "Bad input" section)

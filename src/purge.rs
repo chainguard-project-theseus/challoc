@@ -522,37 +522,161 @@ impl Decayer {
     /// republishes the oldest `dirty_at`) at most once per step. Returns
     /// the owner's next deadline (the end of the oldest member's first
     /// step, or of the current step), `None` when nothing is `Empty`.
-    /// Lock-free unless a walk is due.
+    /// Lock-free unless a walk is due. The result is [`spec_decay`] of
+    /// the values the call's loads see (`verus/THEOREMS.md`, "Decay
+    /// deadline soundness").
+    ///
+    /// [`spec_decay`]: Decayer::spec_decay
     pub fn decay(&self, now: u64, decay_ns: u64, walk: impl FnOnce(u64, &Curve)) -> (r: Option<u64>)
         requires
             forall|t: u64, c: &Curve| walk.requires((t, c)),
         ensures
             r matches Some(t) ==> t >= now,
+            exists|oldest: u64, next: u64, after: u64|
+                r == #[trigger] Decayer::spec_decay(now, decay_ns, oldest, next, after),
     {
         let oldest = self.oldest_empty();
         if oldest == 0 {
+            proof {
+                assert(Decayer::spec_decay(now, decay_ns, oldest, 0, 0) == None::<u64>);
+            }
             return None;
         }
         let curve = Curve::new(decay_ns);
         let step = curve.step_ns();
         let first = oldest.saturating_add(step);
         if now < first {
+            proof {
+                assert(Decayer::spec_decay(now, decay_ns, oldest, 0, 0) == Some(first));
+            }
             return Some(first);
         }
         // A deadline further away than one step was set under a longer
         // period since shortened: walk now.
         let next = self.next_walk.load(Ordering::Relaxed);
         if now < next && next - now <= step {
+            proof {
+                assert(Decayer::spec_decay(now, decay_ns, oldest, next, 0) == Some(next));
+            }
             return Some(next);
         }
         walk(now, &curve);
+        let ghost seen = next;
         let next = now.saturating_add(step);
         self.next_walk.store(next, Ordering::Relaxed);
-        if self.oldest_empty() == 0 {
+        let after = self.oldest_empty();
+        proof {
+            assert(Decayer::spec_decay(now, decay_ns, oldest, seen, after) == if after == 0 {
+                None
+            } else {
+                Some(next)
+            });
+        }
+        if after == 0 {
             None
         } else {
             Some(next)
         }
+    }
+
+    /// `a + b` saturated at `u64::MAX` (`u64::saturating_add`).
+    pub open spec fn sat_add(a: u64, b: u64) -> u64 {
+        if a + b > u64::MAX { u64::MAX } else { (a + b) as u64 }
+    }
+
+    /// One step of the curve for `decay_ns` ([`Curve::step_ns`]).
+    pub open spec fn spec_step(decay_ns: u64) -> u64 {
+        decay_ns / STEPS as u64
+    }
+
+    /// `decay(now, decay_ns, _)` runs the walk: something is `Empty` on
+    /// entry (`oldest`, the first `oldest_empty` load), its first step is
+    /// over, and the stored deadline (`next`, the `next_walk` load) is
+    /// not within one step after `now`: it has passed, or it was set
+    /// under a longer period.
+    pub open spec fn spec_walks(now: u64, decay_ns: u64, oldest: u64, next: u64) -> bool {
+        let step = Decayer::spec_step(decay_ns);
+        &&& oldest != 0
+        &&& now >= Decayer::sat_add(oldest, step)
+        &&& !(now < next && next - now <= step)
+    }
+
+    /// What `decay(now, decay_ns, _)` returns when its loads see `oldest`
+    /// (`oldest_empty` on entry), `next` (`next_walk`) and `after`
+    /// (`oldest_empty` after the walk, as the walk republished it or a
+    /// concurrent writer left it). A load the call does not make does not
+    /// matter.
+    pub closed spec fn spec_decay(now: u64, decay_ns: u64, oldest: u64, next: u64, after: u64) -> Option<u64> {
+        let step = Decayer::spec_step(decay_ns);
+        if oldest == 0 {
+            None
+        } else if now < Decayer::sat_add(oldest, step) {
+            Some(Decayer::sat_add(oldest, step))
+        } else if now < next && next - now <= step {
+            Some(next)
+        } else if after == 0 {
+            None
+        } else {
+            Some(Decayer::sat_add(now, step))
+        }
+    }
+
+    /// Decay deadline soundness: whatever its loads see,
+    /// [`decay`](Decayer::decay) returns `None` exactly when nothing is
+    /// `Empty` on entry or the walk ran and the `oldest_empty` load after
+    /// it reads 0; a deadline is no earlier than `now` and at most one
+    /// step of the period it was called with past `max(oldest, now)`.
+    /// When the oldest `Empty` member is not stamped after `now`, the
+    /// deadline is at most one step of the current period past `now`: a
+    /// `next_walk` more than one step away (set under a longer period
+    /// since shortened: `arena.<i>.dirty_decay_ms`, a pressure band) is
+    /// never returned. A deadline equal to `now` comes only from a zero
+    /// step or saturation, and only after a walk.
+    pub proof fn theorem_decay_deadline(now: u64, decay_ns: u64, oldest: u64, next: u64, after: u64)
+        ensures
+            ({
+                let r = Decayer::spec_decay(now, decay_ns, oldest, next, after);
+                let step = Decayer::spec_step(decay_ns);
+                &&& r is None <==> oldest == 0 || (Decayer::spec_walks(now, decay_ns, oldest, next)
+                    && after == 0)
+                &&& r matches Some(t) ==> now <= t && t <= (if oldest <= now { now } else { oldest })
+                    + step
+                &&& r matches Some(t) ==> (oldest <= now ==> t <= now + step)
+                &&& r matches Some(t) ==> (t == now ==> Decayer::spec_walks(now, decay_ns, oldest, next)
+                    && (step == 0 || now == u64::MAX))
+            }),
+    {
+    }
+
+    /// Decay deadline soundness under pressure (with theorem 18): at one
+    /// limit and one configured period `base`, the bound on `decay`'s
+    /// deadline at usage `c2` is no later than at a lower usage `c1`,
+    /// whatever the loads see. `p1` and `p2` are the effective periods
+    /// for `c1` and `c2` (theorem 18's `spec_effective_decay_ns`).
+    pub proof fn theorem_decay_deadline_under_pressure(
+        base: u64,
+        limit: u64,
+        c1: u64,
+        c2: u64,
+        p1: u64,
+        p2: u64,
+        now: u64,
+        oldest: u64,
+        next: u64,
+        after: u64,
+    )
+        requires
+            c1 <= c2,
+            p1 == crate::policy::spec_effective_decay_ns(base, crate::policy::spec_band(limit, c1)),
+            p2 == crate::policy::spec_effective_decay_ns(base, crate::policy::spec_band(limit, c2)),
+        ensures
+            Decayer::spec_step(p2) <= Decayer::spec_step(p1),
+            Decayer::spec_decay(now, p2, oldest, next, after) matches Some(t) ==> t <= (if oldest
+                <= now { now } else { oldest }) + Decayer::spec_step(p1),
+    {
+        crate::policy::theorem_pressure_never_lengthens_decay(base, limit, c1, c2);
+        vstd::arithmetic::div_mod::lemma_div_is_ordered(p2 as int, p1 as int, STEPS as int);
+        Decayer::theorem_decay_deadline(now, p2, oldest, next, after);
     }
 }
 

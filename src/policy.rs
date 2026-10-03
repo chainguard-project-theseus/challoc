@@ -737,7 +737,10 @@ impl Policy {
 
     /// The period the walks use for an arena configured with `base`.
     #[inline]
-    pub fn effective_decay_ns(&self, base: u64) -> u64 {
+    pub fn effective_decay_ns(&self, base: u64) -> (ns: u64)
+        ensures
+            ns <= base,
+    {
         if !self.limited.load(Ordering::Relaxed) {
             return base;
         }

@@ -4222,9 +4222,13 @@ impl Huge {
 
     /// [`decay`](Huge::decay) with the cgroup policy's keep ratio (design
     /// 11), as `ClassState::decay_with`.
-    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64>
+    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> (r: Option<u64>)
         requires
             crate::sys::may_syscall(),
+        ensures
+            r matches Some(t) ==> t >= now,
+            exists|oldest: u64, next: u64, after: u64|
+                r == #[trigger] crate::purge::Decayer::spec_decay(now, decay_ns, oldest, next, after),
     {
         self.gate.decay(now, decay_ns, |now, curve| {
             self.purge_curve(now, curve, keep16);
