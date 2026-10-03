@@ -116,26 +116,28 @@ unsafe fn node_link(node: *mut ArenaCaches, arena: u16, pad: u8, next: &*mut Are
     }
 }
 
-/// `&mut (*o).caches` for node `o`, the `r`-th from the end of heap `h`'s
+/// `&(*o).caches` for node `o`, the `r`-th from the end of heap `h`'s
 /// `others` list, as plain headers, for the walk that folds them while it
-/// holds `h` mutably (`Heap::set_tcache_enabled`): the
-/// reference is not tied to a borrow of `h`. Trusted: a reference through
-/// the raw node pointer; nothing is claimed about the headers.
+/// holds `h` mutably (`Heap::set_tcache_enabled`): the reference is not
+/// tied to a borrow of `h`. Trusted: a reference through the raw node
+/// pointer; nothing is claimed about the headers. Shared, not `&mut`: the
+/// walk only reads them, and a write through a reference no permission
+/// follows would leave the headers' permissions in `h` stale.
 ///
 /// # Safety
-/// `o` is a live node owned by `h` (the requires), and nothing else
-/// refers to its headers while the reference lives; that second half is
-/// the caller's to keep, which verification does not check.
+/// `o` is a live node owned by `h` (the requires), and nothing writes its
+/// headers while the reference lives; that second half is the caller's
+/// to keep, which verification does not check.
 #[inline(always)]
 #[verifier::external_body]
-pub(super) unsafe fn node_caches_mut<'a>(o: *mut ArenaCaches, Ghost(h): Ghost<Heap>, Ghost(r): Ghost<int>) -> &'a mut [CacheHeader; NCLASSES]
+pub(super) unsafe fn node_caches_detached<'a>(o: *mut ArenaCaches, Ghost(h): Ghost<Heap>, Ghost(r): Ghost<int>) -> &'a [CacheHeader; NCLASSES]
     requires
         h.wf(),
         1 <= r <= h.list_len(),
         o == h.node_from_end(r),
 {
     // SAFETY: guaranteed by the caller.
-    unsafe { &mut (*o).caches }
+    unsafe { &(*o).caches }
 }
 
 /// `(*node).arena = arena`: the last step of `Heap::set_arena`'s
@@ -696,7 +698,7 @@ impl Heap {
 mod kani_aborts {
     use super::assert_not_home;
 
-    /// S129 `assert_not_home`, `requires *arena != *home`: under it the
+    /// S128 `assert_not_home`, `requires *arena != *home`: under it the
     /// call returns, for every pair.
     #[kani::proof]
     fn assert_not_home_returns() {

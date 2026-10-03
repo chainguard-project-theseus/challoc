@@ -1,6 +1,6 @@
 # `Arena::axiom_array_layout`
 
-Seam S47 of `verus/SEAMS.md`: src/arena.rs:311. Kind: axiom. Category: core library.
+Seam S47 of `verus/SEAMS.md`: src/arena.rs:313. Kind: axiom. Category: core library.
 Discharged by Kani.
 
 ## Contract

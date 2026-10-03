@@ -1142,8 +1142,8 @@ extern "C" fn fork_child() {
         crate::sys::grant_syscalls();
         crate::sys::grant_aborts();
     }
-    let tracked state = axiom_fork_resumed_state();
-    purge::background::fork_child(Tracked(&state));
+    let tracked mut state = axiom_fork_resumed_state();
+    purge::background::fork_child(Tracked(&mut state));
     fork_release(Tracked(state));
 }
 

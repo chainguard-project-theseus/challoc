@@ -227,6 +227,7 @@ impl Tcaches {
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            shared.wf(),
             old(ord).allows(rank_tcaches()),
         ensures
             *final(ord) == *old(ord),

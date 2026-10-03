@@ -29,7 +29,7 @@ use crate::vspec::word::WordPerm;
 #[cfg(verus_only)]
 use crate::vspec::word::word_addr;
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
-use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_ref};
+use vstd::raw_ptr::{PointsTo, PointsToRaw, ptr_mut_ref, ptr_ref};
 use vstd::resource::Loc;
 use vstd::resource::set::{GhostPersistentSubset, GhostSubset};
 #[cfg(verus_only)]
@@ -2651,10 +2651,23 @@ impl TwoLevelBitmap {
     /// `ptr` must be valid for reads and writes of `words_needed(nbits)`
     /// `u64`s for as long as the set is used, must be zeroed, and must not be
     /// accessed by anything else while the set exists.
+    ///
+    /// Trusted: the view's word permissions are `words`, the permission to
+    /// those bytes, as `u64`s that read as zero. The view takes `words`
+    /// (ghost) for them, so no two views hold one word: with nothing taken,
+    /// two calls on one pointer gave two permissions for one word, which
+    /// proves `false` (`verus/audit/memory.md`, `from_raw`).
+    // `words` is read only by the requires (ghost).
+    #[allow(unused_variables)]
     #[verifier::external_body]
-    pub const unsafe fn from_raw(nbits: usize, ptr: *mut u64) -> (r: TwoLevelBitmap)
+    pub const unsafe fn from_raw(nbits: usize, ptr: *mut u64, Tracked(words): Tracked<PointsToRaw>) -> (r: TwoLevelBitmap)
         requires
             ((((nbits as int) + 63) / 64 + 63) / 64 + ((nbits as int) + 63) / 64) * 8 <= isize::MAX,
+            words.is_range(ptr@.addr as int, 8 * ((((nbits as int) + 63) / 64 + 63) / 64 + ((nbits as int) + 63) / 64)),
+            words.provenance() == ptr@.provenance,
+            // `u64`'s alignment (8 on both targets): a permission to
+            // misaligned bytes would otherwise become aligned `PointsTo<u64>`s.
+            ptr@.addr as int % 8 == 0,
         ensures
             r.fresh(nbits),
             r.place() == (ptr@.addr as int, 8 * ((((nbits as int) + 63) / 64 + 63) / 64 + ((nbits as int) + 63) / 64)),
@@ -3993,7 +4006,8 @@ mod tests {
         let mut storage = vec![0u64; TwoLevelBitmap::words_needed(nbits)];
         // SAFETY: the vector is zeroed, sized by `words_needed`, and lives
         // exactly as long as the bitmap in the same struct.
-        let bm = unsafe { TwoLevelBitmap::from_raw(nbits, storage.as_mut_ptr()) };
+        let bm =
+            unsafe { TwoLevelBitmap::from_raw(nbits, storage.as_mut_ptr(), Tracked::assume_new()) };
         Owned {
             _storage: storage,
             bm,

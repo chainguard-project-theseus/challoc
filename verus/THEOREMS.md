@@ -97,7 +97,7 @@ and the call does not return (theorem 3, which is not voided for it).
 - Writers the permissions do not follow, assumed to keep `wf`:
   `others::swap_home` (`heap/others.rs:149`), `Heap::free_caches`
   (`heap/mod.rs:2745`, verified, but it writes the untracked `caches`
-  field), `node_caches_mut` (`heap/others.rs:126`). `Heap::set_arena`
+  field). `Heap::set_arena`
   (`heap/mod.rs:3132`) ensures nothing; the next `heap_from_slot`
   assumes `wf` again.
 - Trusted, but stated over the permissions: `stack_mut`
@@ -517,8 +517,7 @@ the assumed `Heap::wf` and the huge lock axiom.
   `:984`, `:996`, the values are initialised), `words_ref` (`:1013`, a
   slice over consecutive word permissions) and `watermark` (`:1580`, at
   most the slab count). Premise: only committed pages are read (the
-  accessors' `# Safety`). `owner_unchecked` (`:1835`) is trusted for
-  `slab` below the slab count, which its one outside caller tests.
+  accessors' `# Safety`).
 - `TwoLevelBitmap::from_raw`, `from_raw_chunked` (`bitmap.rs:2584`,
   `:2616`): their `place` ensures.
 - `heap::axiom_fresh_stack` (`heap/mod.rs:1362`): a stack `Meta::alloc`
@@ -1055,7 +1054,7 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   `mrs`), `pac::auth` and `sign` (PAC instructions), `Heap::home_ptr_at`
   and `cached_recently` (`heap/cache.rs`, address arithmetic and loads),
   `arena_volatile` (`heap/mod.rs`, a volatile read),
-  `SlabTable::owner_unchecked`, `load_owner` (a `Relaxed` load) and
+  `load_owner` (a `Relaxed` load) and
   `watermark` (`class/table.rs`),
   `vspec::word::load` (an atomic load), `layout::regions::class_entry`
   (an empty `asm!`), `addr_to_ptr`, `api::shared_ptr` and `shared_ref`.
@@ -1204,7 +1203,7 @@ paths, verified unless marked trusted:
 - **Free checks:** `Shared::push_flags`, `multi_arena`, `checked_slot`,
   `set_slot`, `sized_slot`, `GuardTest::is_guard`,
   `Heap::arena_volatile` (trusted); `SlabTable::watermark` (trusted),
-  `is_handed_out`, `is_set_unchecked`, `owner_unchecked` (trusted),
+  `is_handed_out`, `is_set_unchecked`, `owner_unchecked`,
   `owner_at`, `load_owner` (trusted).
 - **Layout:** `Regions::slab_slot`, `slot_in_class`, `region_len`, the
   free function `layout::regions::class_entry` (trusted);
@@ -1231,7 +1230,7 @@ library's machine code is identical to the previous commit's on x86_64.
   - `tls::get` and `get_tp` (asm), `fast_flags` (a field read),
     `heap_from_slot` (calls `pac::auth`), `home_ptr_at`.
   - `cached_recently` (the loop above), `arena_volatile`,
-    `owner_unchecked` (calls `owner_at`), `watermark`, `class_entry`.
+    `watermark`, `class_entry`.
   - `pac::sign` and `auth` (asm; under `cfg(test)` a counter
     increment), `addr_to_ptr`.
 - **New wrappers.** `vspec::atomic::load_bool`: the `core`
@@ -1951,7 +1950,7 @@ an owned slab, and ensures its pick's owner; `plan` collects
   postcondition (the huge lock's ghost descriptors carry it, but no
   token survives between the calls).
 - `checked_slot`'s owner test on the `free` fast path reads through
-  `owner_unchecked` (trusted, unchanged); it only picks the cache.
+  `owner_unchecked` (verified); it only picks the cache.
 
 ## 15. Re-entrant heap registration
 

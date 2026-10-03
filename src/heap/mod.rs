@@ -78,7 +78,7 @@ use crate::lock::LockOrder;
 #[cfg(verus_only)]
 use crate::lock::{rank_arenas, rank_class, rank_meta};
 
-use others::{node_block_layout, node_caches_mut, node_set_arena};
+use others::{node_block_layout, node_caches_detached, node_set_arena};
 pub(crate) use paths::shared_ptr;
 use paths::{invalid_free, shared_of};
 #[cfg(test)]
@@ -5142,7 +5142,7 @@ impl Heap {
             let next = unsafe { self.node_next(o, Ghost(r)) };
             let ghost h = *self;
             unsafe {
-                Self::fold_counters(&mut self.uncached, node_caches_mut(o, Ghost(h), Ghost(r)));
+                Self::fold_counters(&mut self.uncached, node_caches_detached(o, Ghost(h), Ghost(r)));
             }
             proof {
                 assert(self.owns_node(o));
@@ -5722,6 +5722,8 @@ impl Heap {
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            // `flush_all`'s, which the body calls.
+            shared.wf(),
             old(ord).allows(rank_class(0, 0)),
         ensures
             *final(ord) == *old(ord),
@@ -5817,7 +5819,7 @@ mod kani_aborts {
     use super::{assert_flushed, assert_refill_empty};
     use crate::kani_proofs::must_not_return;
 
-    /// S118 `assert_flushed`, `ensures *len == 0`: on any other `len` the
+    /// S117 `assert_flushed`, `ensures *len == 0`: on any other `len` the
     /// call never returns.
     #[kani::proof]
     #[kani::should_panic]
@@ -5829,7 +5831,7 @@ mod kani_aborts {
         }
     }
 
-    /// S119 `assert_refill_empty`, `ensures *len == 0`: as
+    /// S118 `assert_refill_empty`, `ensures *len == 0`: as
     /// `assert_flushed`.
     #[kani::proof]
     #[kani::should_panic]

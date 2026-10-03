@@ -271,7 +271,8 @@ proof fn lemma_mul_aligned(i: int, sz: int, m: int)
 
 /// The permission to the field of type `T` at byte offset `off` of the
 /// `S` at `base`, taken from `raw`, which holds the bytes of the `S` from
-/// that field on; what is left holds them from `next` on.
+/// that field on; what is left holds them from `next` on, and every byte
+/// of `raw` but the field's.
 pub(crate) proof fn take_field<S, T>(tracked raw: PointsToRaw, base: *mut S, off: usize, next: int) -> (tracked r: (
     PointsTo<T>,
     PointsToRaw,
@@ -287,6 +288,7 @@ pub(crate) proof fn take_field<S, T>(tracked raw: PointsToRaw, base: *mut S, off
         r.0.ptr()@.addr == base@.addr + off,
         r.0.is_uninit(),
         r.1.contains_range(base@.addr + next, size_of::<S>() - next),
+        r.1.dom() == raw.dom().difference(Set::range(base@.addr + off, base@.addr + off + size_of::<T>())),
         r.1.provenance() == raw.provenance(),
 {
     broadcast use vstd::layout::layout_of_primitives, vstd::layout::align_nonzero, vstd::raw_ptr::group_raw_ptr_axioms;
@@ -553,12 +555,34 @@ spec fn classes_at(m: Map<int, PointsTo<ClassState>>, p: *mut Arena) -> bool {
     elems_at(m, field_ptr::<Arena, ClassState>(p, A_CLASSES), 0, NCLASSES as int)
 }
 
+/// Byte `x` is in the field of type `T` at offset `off` of the `Arena`
+/// at `p`.
+spec fn in_field<T>(x: int, p: *mut Arena, off: usize) -> bool {
+    p@.addr + off <= x < p@.addr + off + size_of::<T>()
+}
+
+/// Every byte of the `Arena` at `p` is `pad`'s or a field's: what
+/// [`Arena::split`] keeps of the storage once it has taken the fields
+/// (the padding), which [`axiom_arena_assemble`] takes back.
+spec fn pad_covers(pad: PointsToRaw, p: *mut Arena) -> bool {
+    forall|x: int|
+        p@.addr <= x < p@.addr + size_of::<Arena>() ==> #[trigger] pad.dom().contains(x)
+            || in_field::<u16>(x, p, A_INDEX)
+            || in_field::<AtomicU64>(x, p, A_DECAY_NS)
+            || in_field::<*const SetTable>(x, p, A_SETS)
+            || in_field::<Tracked<PointsTo<SetTable>>>(x, p, A_SETS_PERM)
+            || in_field::<[ClassState; NCLASSES]>(x, p, A_CLASSES)
+            || in_field::<AtomicU64>(x, p, A_LARGE)
+            || in_field::<Lock<ArenaStats>>(x, p, A_STATS)
+            || in_field::<AtomicU64>(x, p, A_LAST_EXIT_PURGE)
+}
+
 impl Arena {
     /// The permissions to the fields of the uninitialised `Arena` `perm`
     /// is to: [`take_field`] for each field at the offsets
     /// [`axiom_arena_layout`] gives, and the class states split by
-    /// [`split_array`].
-    proof fn split(tracked perm: PointsTo<Arena>) -> (tracked r: (ArenaParts, Map<int, PointsTo<ClassState>>))
+    /// [`split_array`]; and the bytes left over, the padding.
+    proof fn split(tracked perm: PointsTo<Arena>) -> (tracked r: (ArenaParts, Map<int, PointsTo<ClassState>>, PointsToRaw))
         requires
             perm.is_uninit(),
             perm.ptr()@.addr + size_of::<Arena>() <= usize::MAX,
@@ -573,6 +597,8 @@ impl Arena {
             r.0.last_exit_purge.is_uninit(),
             classes_at(r.1, perm.ptr()),
             elems_uninit(r.1, 0, NCLASSES as int),
+            pad_covers(r.2, perm.ptr()),
+            r.2.provenance() == perm.ptr()@.provenance,
     {
         broadcast use vstd::raw_ptr::group_raw_ptr_axioms;
 
@@ -594,7 +620,7 @@ impl Arena {
         let tracked (classes, raw) = take_field::<Arena, [ClassState; NCLASSES]>(raw, p, A_CLASSES, A_LARGE as int);
         let tracked (large, raw) = take_field::<Arena, AtomicU64>(raw, p, A_LARGE, A_STATS as int);
         let tracked (stats, raw) = take_field::<Arena, Lock<ArenaStats>>(raw, p, A_STATS, A_LAST_EXIT_PURGE as int);
-        let tracked (last_exit_purge, _raw) = take_field::<Arena, AtomicU64>(
+        let tracked (last_exit_purge, pad) = take_field::<Arena, AtomicU64>(
             raw,
             p,
             A_LAST_EXIT_PURGE,
@@ -603,7 +629,7 @@ impl Arena {
         axiom_array_layout::<ClassState, NCLASSES>();
         let tracked classes = split_array(classes);
         lemma_field_cast::<Arena, [ClassState; NCLASSES], ClassState>(p, A_CLASSES);
-        (ArenaParts { index, decay_ns, sets, sets_perm, large, stats, last_exit_purge }, classes)
+        (ArenaParts { index, decay_ns, sets, sets_perm, large, stats, last_exit_purge }, classes, pad)
     }
 }
 
@@ -611,14 +637,23 @@ impl Arena {
 /// class states, every one initialised), as the `Arena`: the value of
 /// each field is what its permission holds. Trusted: vstd has no way to
 /// join typed permissions; the permissions cover every field at its
-/// offset, so their bytes are the `Arena`'s (padding aside). The type
-/// invariant `Arena::inv` is a precondition, so the value is one an
+/// offset, and `pad` every byte between and around them
+/// ([`pad_covers`]), so their bytes are the `Arena`'s. (Without `pad`,
+/// a caller that kept a padding byte's permission would hold it and the
+/// `Arena`'s, two permissions for one byte, which proves `false`.) The
+/// type invariant `Arena::inv` is a precondition, so the value is one an
 /// `Arena` may hold.
-axiom fn axiom_arena_assemble(tracked parts: ArenaParts, tracked classes: Map<int, PointsTo<ClassState>>, p: *mut Arena) -> (tracked a:
-    PointsTo<Arena>)
+axiom fn axiom_arena_assemble(
+    tracked parts: ArenaParts,
+    tracked classes: Map<int, PointsTo<ClassState>>,
+    tracked pad: PointsToRaw,
+    p: *mut Arena,
+) -> (tracked a: PointsTo<Arena>)
     requires
         parts.at(p),
         classes_at(classes, p),
+        pad_covers(pad, p),
+        pad.provenance() == p@.provenance,
         parts.index.is_init(),
         parts.decay_ns.is_init(),
         parts.sets.is_init(),
@@ -827,7 +862,7 @@ impl Arena {
             r ==> (final(slot).perm matches Some(p) && p.ptr() == this && p.is_init() && p.value().spec_index() == index),
             *final(ord) == *old(ord),
     {
-        let tracked (mut parts, mut classes) = Arena::split(slot.perm.tracked_take());
+        let tracked (mut parts, mut classes, pad) = Arena::split(slot.perm.tracked_take());
         // SAFETY: the caller guarantees `this` is writable and unaliased;
         // every write goes through the permission to its field.
         unsafe {
@@ -879,7 +914,7 @@ impl Arena {
             Arena::put_tail(this, index, Tracked(&mut parts));
         }
         proof {
-            slot.perm = Some(axiom_arena_assemble(parts, classes, this));
+            slot.perm = Some(axiom_arena_assemble(parts, classes, pad, this));
         }
         true
     }

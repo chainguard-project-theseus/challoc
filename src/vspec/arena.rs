@@ -8,11 +8,16 @@ use crate::vspec::lock::lock_inv;
 
 verus! {
 
-/// `AtomicPtr::load`, which vstd does not specify: any pointer.
+/// `AtomicPtr::load`, which vstd does not specify: any pointer. It panics
+/// for a `Release` or `AcqRel` ordering.
 pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::load ](
     a: &core::sync::atomic::Atomic<*mut T>,
     order: core::sync::atomic::Ordering,
-) -> *mut T;
+) -> *mut T
+    requires
+        !(order is Release),
+        !(order is AcqRel),
+;
 
 /// `AtomicPtr::store`, which vstd does not specify. It panics for an
 /// `Acquire` or `AcqRel` ordering.

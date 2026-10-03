@@ -67,7 +67,6 @@ axiom_fresh_words	allocator invariant	RefinedRust
 axiom_init_descs	raw pointer (internal)	RefinedRust
 axiom_init_owners	raw pointer (internal)	RefinedRust
 axiom_init_words	raw pointer (internal)	RefinedRust
-SlabTable::owner_unchecked	raw pointer (internal)	RefinedRust
 load_owner	allocator invariant	RefinedRust
 store_owner	allocator invariant	RefinedRust
 desc_ptr_addr	raw pointer (internal)	Kani	discharged (verus/seams/class-verify-desc_ptr_addr.md)
@@ -86,7 +85,7 @@ assert_refill_empty	panic/abort	Kani	discharged (verus/seams/heap-assert_refill_
 Heap::axiom_list_bound	allocator invariant	RefinedRust
 assign_home	allocator invariant	RefinedRust
 mark_bound	raw pointer (internal)	RefinedRust
-node_caches_mut	raw pointer (internal)	RefinedRust
+node_caches_detached	raw pointer (internal)	RefinedRust
 node_set_arena	raw pointer (internal)	RefinedRust
 assert_not_home	panic/abort	Kani	discharged (verus/seams/heap-others-assert_not_home.md)
 Heap::node_next	raw pointer (internal)	RefinedRust

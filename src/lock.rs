@@ -142,8 +142,14 @@ impl RawLock {
     }
 
     /// Release. Must be called by the holder exactly once per acquire.
+    /// Private: every release outside this file goes through
+    /// [`RawLock::unlock_held`], which takes the hold's token back, or a
+    /// guard's drop. A public release without a token let a caller
+    /// release and re-take the lock, holding two [`LockHeld`] tokens for one
+    /// lock and so two [`Lock::get_unlocked`] references
+    /// (`verus/audit/memory.md`, `Lock::get_unlocked`).
     #[inline]
-    pub fn unlock(&self)
+    fn release(&self)
         requires
             crate::sys::may_syscall(),
     {
@@ -198,14 +204,14 @@ impl RawLock {
         Tracked(LockHeld { lock: *self })
     }
 
-    /// [`RawLock::unlock`] by the holder, which hands its token back.
+    /// [`RawLock::release`] by the holder, which hands its token back.
     #[inline(always)]
     pub fn unlock_held(&self, Tracked(t): Tracked<LockHeld>)
         requires
             crate::sys::may_syscall(),
             t.held() == *self,
     {
-        self.unlock();
+        self.release();
     }
 
     /// Whether some thread currently holds the lock. Diagnostic only.
@@ -449,6 +455,12 @@ impl RawLock {
             state: AtomicU32::new(UNLOCKED),
         }
     }
+
+    /// The release, for the loom models (`loom_tests`), which take and
+    /// release the bare word.
+    pub fn unlock(&self) {
+        self.release()
+    }
 }
 
 #[cfg(not(loom))]
@@ -657,13 +669,17 @@ impl<T> Lock<T> {
     /// [`lock_inv`] and keeps [`lock_frame`]. The caller is a holder like
     /// any other and must leave the invariant true; a verified caller ends
     /// with an explicit `assert(lock_inv(*r))`. The caller shows its hold
-    /// with the raw lock's [`LockHeld`] token (ghost).
+    /// with the raw lock's [`LockHeld`] token (ghost), borrowed mutably for
+    /// as long as the reference lives: two references to the value at once
+    /// would be two values to Verus, each with the invariant's ghost state
+    /// (`verus/audit/memory.md`, `Lock::get_unlocked`).
     #[inline]
     #[verifier::external_body]
-    pub unsafe fn get_unlocked(&self, Tracked(held): Tracked<&LockHeld>) -> (r: &mut T)
+    pub unsafe fn get_unlocked<'a>(&'a self, Tracked(held): Tracked<&'a mut LockHeld>) -> (r: &'a mut T)
         requires
-            held.held() == self.spec_raw(),
+            old(held).held() == self.spec_raw(),
         ensures
+            *final(held) == *old(held),
             lock_inv(*r),
             lock_frame(lock_init(*self), *r),
     {
@@ -715,7 +731,7 @@ impl<T> DerefMut for LockGuard<'_, T> {
 }
 
 // Trusted: Verus wants a destructor that opens no invariant and cannot
-// unwind, and `RawLock::unlock` is not marked either way. The body is the
+// unwind, and `RawLock::release` is not marked either way. The body is the
 // release, and claims nothing; its `no_unwind` rests on the
 // `panic = "abort"` profiles (test builds unwind).
 impl<T> Drop for LockGuard<'_, T> {
@@ -725,7 +741,7 @@ impl<T> Drop for LockGuard<'_, T> {
         opens_invariants none
         no_unwind
     {
-        self.lock.raw.unlock();
+        self.lock.raw.release();
     }
 }
 
@@ -744,12 +760,12 @@ mod tests {
         assert!(l.try_lock());
         assert!(l.is_locked());
         assert!(!l.try_lock());
-        l.unlock();
+        l.release();
         assert!(!l.is_locked());
         assert_eq!(l.state.load(Ordering::Relaxed), UNLOCKED);
         l.lock();
         assert!(!l.try_lock());
-        l.unlock();
+        l.release();
         assert!(!l.is_locked());
     }
 
@@ -854,13 +870,13 @@ mod tests {
             std::thread::spawn(move || {
                 l.lock();
                 let acquired_at = Instant::now();
-                l.unlock();
+                l.release();
                 acquired_at
             })
         };
         // The announce: the spin phase ends with the swap to `CONTENDED`.
         if !within_bound(|| l.state.load(Ordering::Relaxed) == CONTENDED) {
-            l.unlock();
+            l.release();
             panic!("the waiter did not announce itself within {BOUND:?}");
         }
         // Parked: while the lock stays held the word stays `CONTENDED`
@@ -870,7 +886,7 @@ mod tests {
         let word = l.state.load(Ordering::Relaxed);
         let through = waiter.is_finished();
         let released_at = Instant::now();
-        l.unlock();
+        l.release();
         assert_eq!(word, CONTENDED, "the word changed while the lock was held");
         assert!(!through, "the waiter got through while the lock was held");
         // Released: the wake reaches the waiter. On failure the waiter

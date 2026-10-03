@@ -299,6 +299,7 @@ pub unsafe fn fast_flags(shared: *const Shared) -> (r: u8)
 #[verifier::external_body]
 pub unsafe fn heap_from_slot(t: usize, tp: usize, pac: bool) -> (r: &'static mut Heap)
     requires
+        pac == super::pac_mode(),
         pac ==> crate::sys::pac::pac_available(),
     ensures
         r.wf(),

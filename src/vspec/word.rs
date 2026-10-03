@@ -71,13 +71,16 @@ pub fn fetch_or(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracke
     w.fetch_or(v, ordering)
 }
 
-/// `w.store(v, ordering)`.
+/// `w.store(v, ordering)`, which panics for an `Acquire` or `AcqRel`
+/// ordering.
 #[inline(always)]
 #[verifier::external_body]
 #[verifier::atomic]
 pub fn store(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&mut WordPerm>)
     requires
         old(perm).addr() == word_addr(w),
+        !(ordering is Acquire),
+        !(ordering is AcqRel),
     ensures
         final(perm).addr() == old(perm).addr(),
         final(perm).value() == v,
@@ -87,7 +90,8 @@ pub fn store(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&
     w.store(v, ordering)
 }
 
-/// `w.load(ordering)`: the permission's value. The bitmap's other loads
+/// `w.load(ordering)`: the permission's value (it panics for a `Release`
+/// or `AcqRel` ordering). The bitmap's other loads
 /// stay plain `core` loads; this one is for `SlabTable::is_set_unchecked`,
 /// whose set bit proves the slab is not a guard slab (`bitmap::guards_ok`).
 #[inline(always)]
@@ -96,6 +100,8 @@ pub fn store(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&
 pub fn load(w: &AtomicU64, ordering: Ordering, Tracked(perm): Tracked<&WordPerm>) -> (r: u64)
     requires
         perm.addr() == word_addr(w),
+        !(ordering is Release),
+        !(ordering is AcqRel),
     ensures
         r == perm.value(),
     opens_invariants none

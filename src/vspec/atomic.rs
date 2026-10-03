@@ -19,10 +19,13 @@ use vstd::prelude::*;
 
 verus! {
 
-/// `a.load(order)`.
+/// `a.load(order)`, which panics for a `Release` or `AcqRel` ordering.
 #[inline(always)]
 #[verifier::external_body]
 pub fn load_bool(a: &AtomicBool, order: Ordering) -> bool
+    requires
+        !(order is Release),
+        !(order is AcqRel),
     opens_invariants none
 {
     a.load(order)

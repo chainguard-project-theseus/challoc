@@ -442,6 +442,7 @@ impl Set {
         requires
             crate::sys::may_syscall(),
             crate::meta::is_pow2(page),
+            page >= 8,
             page <= 0x8000_0000_0000_0000,
             nslabs <= 0x1_0000_0000,
             old(ord).allows(rank_meta()),
@@ -457,11 +458,31 @@ impl Set {
         }
         let l0_words = nslabs.div_ceil(64);
         let l1_words = l0_words.div_ceil(64);
-        let mut table = Lazy::reserve(meta, 8 * TwoLevelBitmap::words_needed(nslabs), page, Tracked(ord))?;
+        let (table, words) = Lazy::reserve_raw(meta, 8 * TwoLevelBitmap::words_needed(nslabs), page, Tracked(ord));
+        let mut table = table?;
+        proof {
+            // The table starts on a page, a power of two of at least 8, so
+            // it is aligned for `u64` (`from_raw`'s requires).
+            let (b, pg) = (table.base, page);
+            crate::meta::lemma_pow2_bits(pg);
+            assert(b % pg == 0);
+            assert(b & sub(pg, 1) == 0) by (bit_vector)
+                requires
+                    pg & sub(pg, 1) == 0,
+                    pg > 0,
+                    b % pg == 0,
+            ;
+            assert(b % 8 == 0) by (bit_vector)
+                requires
+                    b & sub(pg, 1) == 0,
+                    pg & sub(pg, 1) == 0,
+                    pg >= 8,
+            ;
+        }
         // Level 1 is small and touched by every operation: commit it now.
         table.ensure(meta, page, 8 * l1_words, Tracked(ord)).ok()?;
         // SAFETY: the words come from a fresh, zero, never-freed reservation.
-        let map = unsafe { TwoLevelBitmap::from_raw(nslabs, crate::vspec::addr::addr_to_ptr(table.base) as *mut u64) };
+        let map = unsafe { TwoLevelBitmap::from_raw(nslabs, crate::vspec::addr::addr_to_ptr(table.base) as *mut u64, words) };
         proof {
             map.lemma_fresh(nslabs);
         }

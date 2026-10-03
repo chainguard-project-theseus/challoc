@@ -548,9 +548,11 @@ verus! {
 /// this thread (`fork_prepare` took it; `held` is the hold). Leaves the
 /// state's lock invariant true, so the value the child's next locker
 /// reads is consistent.
-pub fn fork_child(Tracked(held): Tracked<&LockHeld>)
+pub fn fork_child(Tracked(held): Tracked<&mut LockHeld>)
     requires
-        held.held() == state_lock(),
+        old(held).held() == state_lock(),
+    ensures
+        *final(held) == *old(held),
 {
     // SAFETY: the forking thread holds the lock; the child is single
     // threaded.

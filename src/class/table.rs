@@ -1730,6 +1730,10 @@ impl SlabTable {
     #[inline(always)]
     #[verifier::external_body]
     fn watermark(&self, order: Ordering) -> (r: usize)
+        requires
+            // `core`'s load panics for these two.
+            !(order is Release),
+            !(order is AcqRel),
         ensures
             r <= self.spec_nslabs(),
         opens_invariants none
@@ -2012,17 +2016,18 @@ impl SlabTable {
     /// # Safety
     /// `slab` must have been handed out ([`is_handed_out`]).
     ///
-    /// Trusted: `slab` is below the slab count, which a handed-out slab is
-    /// ([`is_handed_out`]'s postcondition); the read is
-    /// [`owner_at`](SlabTable::owner_at)'s. Its one caller outside this
-    /// file, `Shared::checked_slot`, has `slab` from `Shared::set_slot`,
-    /// which tested `is_handed_out` but does not say so in its
-    /// postcondition.
+    /// The read is [`owner_at`](SlabTable::owner_at)'s; a handed-out slab
+    /// is below the slab count ([`is_handed_out`]'s postcondition), which
+    /// its one caller outside this file, `Shared::checked_slot`, has from
+    /// `Shared::set_slot`.
     ///
     /// [`is_handed_out`]: SlabTable::is_handed_out
-    #[verifier::external_body]
     #[inline(always)]
-    pub unsafe fn owner_unchecked(&self, slab: usize) -> u16 opens_invariants none {
+    pub unsafe fn owner_unchecked(&self, slab: usize) -> u16
+        requires
+            slab < self.spec_nslabs(),
+        opens_invariants none
+    {
         // SAFETY: the caller's.
         unsafe { self.owner_at(slab) }
     }
