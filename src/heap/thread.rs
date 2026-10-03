@@ -41,7 +41,8 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
 /// The calling thread's heap, created on first use. `None` when the thread
 /// must be served without a cache: heap creation is in progress on it
 /// (`pthread_setspecific` re-entered the allocator), its destructor has run,
-/// or the metadata region is exhausted.
+/// the metadata region is exhausted, or the thread-exit key cannot take
+/// the heap.
 ///
 /// The `&mut Heap` is exclusive by construction, not by the type system:
 /// only the owning thread reaches its heap through TLS, and every entry
@@ -87,7 +88,15 @@ fn create_heap_for_thread(shared: &Shared, slot: usize) -> Option<&mut Heap> {
         return None;
     }
     crate::sys::tls::set(TLS_CREATING as *mut c_void);
-    shared.key.set(h);
+    if !shared.key.set(h) {
+        // Thread exit could not free the heap, so it goes now and this
+        // call is served without one; the next call tries again, as
+        // after a failed `Heap::create`.
+        // SAFETY: created above and never published.
+        unsafe { Heap::destroy(h, shared) };
+        crate::sys::tls::set(ptr::null_mut());
+        return None;
+    }
     crate::sys::tls::set(tls_value_for(shared, h));
     // SAFETY: freshly created and owned by this thread.
     Some(unsafe { &mut *h })

@@ -645,7 +645,11 @@ recursion by the `TLS_CREATING` sentinel in the slot; an allocation in
 that window, or after the destructor has set `TLS_EXITED` (another key's
 destructor), is served straight from the slab bitmaps with no cache
 (`alloc_direct`). glibc does not allocate for the first 32 keys, so the
-recursion path is expected never to run, but it must be correct.
+recursion path is expected never to run, but it must be correct. Past
+them a thread's first `pthread_setspecific` in each block of 32 keys
+allocates a second-level block and fails if that allocation does; the new heap is then freed and the call is served
+with no cache, like one whose heap could not be allocated, and the next
+call tries again.
 
 When the last thread heap homed on an arena is destroyed, the arena's
 `Empty` slabs are purged at once (jemalloc's `tcache_destroy` rule),

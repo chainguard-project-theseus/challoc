@@ -138,6 +138,11 @@ const _: () = assert!(
             / 128
 );
 
+/// Makes the next [`ThreadKey::set`] on the thread with this kernel id
+/// fail as `pthread_setspecific` would, for tests.
+#[cfg(test)]
+pub static FAIL_SETSPECIFIC: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 /// The `pthread_key` whose destructor tears down a thread's heap.
 pub(super) struct ThreadKey {
     key: libc::pthread_key_t,
@@ -167,15 +172,24 @@ impl ThreadKey {
     }
 
     /// Register `heap` for destruction when the calling thread exits.
-    pub fn set(&self, heap: *mut Heap) {
+    /// `false` if `pthread_setspecific` fails, which for a live key
+    /// happens only past glibc's first 32 keys, when it cannot allocate
+    /// the second-level block; `true` without registering when the key
+    /// does not exist.
+    pub fn set(&self, heap: *mut Heap) -> bool {
         if !self.valid {
-            return;
+            return true;
+        }
+        #[cfg(test)]
+        if FAIL_SETSPECIFIC
+            .compare_exchange(tid(), 0, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return false;
         }
         // SAFETY: the key was created by `create`; glibc stores the
         // pointer without dereferencing it.
-        if unsafe { libc::pthread_setspecific(self.key, heap as *const c_void) } != 0 {
-            panic!("heap: pthread_setspecific failed");
-        }
+        unsafe { libc::pthread_setspecific(self.key, heap as *const c_void) == 0 }
     }
 }
 
