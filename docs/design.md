@@ -856,8 +856,11 @@ ancestor; usually none inside a cgroup namespace, where the process
 mostly sits at the mount), from the periodic tick of the slow path
 (`purge::on_tick`), the background thread's loop, a
 `stats.cgroup.current` read and `malloc_stats_print`; the fast paths
-never see it. A PSI trigger on `memory.pressure` was prototyped and
-removed: it measured no effect over the tick (#19, tag
+never see it. A caller's `now` older than the last sample is not due, so
+the window only moves forward. A `memory.current` read that fails keeps
+the last figure, which the `cgroup:` line marks `(stale)` until a read
+succeeds. A PSI trigger on `memory.pressure` was prototyped and removed:
+it measured no effect over the tick (#19, tag
 `archive/prototype-2026-09-30`).
 
 Policy. It is evaluated where a sample was taken, so at most once per
