@@ -425,7 +425,19 @@ impl SlabTable {
     #[inline(always)]
     pub unsafe fn is_set_unchecked(&self, slab: usize, slot: usize) -> bool {
         let bit = slab * self.slab_bits as usize + slot;
-        let word = (self.bits_base + (bit / 64) * 8) as *const AtomicU64;
+        #[allow(unused_mut)]
+        let mut index = bit / 64;
+        // On aarch64 the word index goes through an empty `asm!`: left
+        // alone, LLVM rewrites `(bit >> 6) << 3` as `(bit >> 3) & !7`, a
+        // shift and a mask ahead of the load on `free`'s dependent chain,
+        // where `bit >> 6` and a scaled `ldr` is one instruction. x86_64
+        // already scales the index in the load.
+        #[cfg(target_arch = "aarch64")]
+        // SAFETY: an empty template; `index` comes out unchanged.
+        unsafe {
+            core::arch::asm!("/* {0} */", inout(reg) index, options(pure, nomem, nostack, preserves_flags))
+        };
+        let word = (self.bits_base + index * 8) as *const AtomicU64;
         // SAFETY: the caller guarantees the word is inside the handed-out
         // part of the bitmap.
         (unsafe { (*word).load(Ordering::Relaxed) } >> (bit % 64)) & 1 == 1
