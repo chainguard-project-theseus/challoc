@@ -16,25 +16,29 @@ pub const TLS_CREATING: usize = 1;
 /// TLS slot value after this thread's heap destructor has run.
 pub const TLS_EXITED: usize = 2;
 
-/// Destructor of the thread-exit key: mark the thread as exited, then flush
-/// and free its heap. The sentinel goes first so that anything allocating
-/// on this thread from here on (a signal handler landing in the middle of
-/// `Heap::destroy`, another key's destructor afterwards) is served without
-/// a heap instead of reaching the one being freed through `existing_heap`
+/// Destructor of the thread-exit key: mark the thread as exited, then park
+/// its heap for the next thread homed on its arena (`Heap::park`) or, when
+/// it cannot be parked, flush and free it. The sentinel goes first so that
+/// anything allocating on this thread from here on (a signal handler
+/// landing in the middle of `Heap::destroy`, another key's destructor
+/// afterwards) is served without a heap instead of reaching the one being
+/// parked or freed through `existing_heap`
 ///
 /// # Safety
 /// `p` is the heap pointer registered with `pthread_setspecific` by
 /// `create_heap_for_thread`, called on the thread that owns it; after this
-/// returns the heap is freed and the TLS slot holds `TLS_EXITED`, so it
-/// must not be reached through TLS again (the sentinel is what stops
-/// `existing_heap` from handing it out).
+/// returns the heap is parked or freed and the TLS slot holds
+/// `TLS_EXITED`, so it must not be reached through TLS again (the sentinel
+/// is what stops `existing_heap` from handing it out).
 pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
     let h = p as *mut Heap;
     crate::sys::tls::set(TLS_EXITED as *mut c_void);
     // SAFETY: the pointer was registered by `heap_for_thread` for this thread.
     unsafe {
         let shared = &*(*h).shared;
-        Heap::destroy(h, shared);
+        if !Heap::park(h, shared) {
+            Heap::destroy(h, shared);
+        }
     }
 }
 

@@ -652,8 +652,22 @@ that needs more falls back to `rallocx`, as jemalloc's contract allows.
 
 ### 6.5 Thread exit
 
-A `pthread_key` created at init has a destructor that flushes all of the
-thread's caches and frees the heap (`heap/thread.rs`).
+A `pthread_key` created at init has a destructor that parks the heap or,
+when it cannot, flushes all of the thread's caches and frees the heap
+(`heap/thread.rs`). Parking (`Heap::park`) keeps the heap of a thread
+homed on an automatic arena, home caches and all, in that arena's slot
+(`Shared::parked`, one per arena below `PARK_SLOTS`, 64); the caches of
+other arenas are flushed and the arena binding is released as for a
+destroyed heap. The next heap `Arenas::assign` homes on that arena is the
+parked one (`Heap::create`), its thread counters rebased to zero, so a
+program that replaces threads (larson's chained workers, a pool that
+recycles threads) skips the exit flush and the next thread's refills: a
+larson1 generation switch cost about 940k instructions against jemalloc's
+425k before (aarch64, C4A). A heap leaving an arena whose slot is taken
+is destroyed. What a parked heap holds is what the exited thread would
+hold idle, one heap per arena at most; the full purge (`malloc_trim`,
+`arena.<all>.purge`, the cgroup `high` purge) destroys every parked heap
+first (`Shared::drain_parked`).
 `pthread_setspecific` is called once at heap creation, guarded against
 recursion by the `TLS_CREATING` sentinel in the slot; an allocation in
 that window, or after the destructor has set `TLS_EXITED` (another key's

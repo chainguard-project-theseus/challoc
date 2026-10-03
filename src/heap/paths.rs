@@ -143,17 +143,19 @@ impl Heap {
 
     /// `bytes` were allocated on this thread without passing through a
     /// cache (a huge run, or a slot served straight from a slab): count
-    /// them in `thread.allocated`. The one way `uncached` grows.
+    /// them in `thread.allocated`. The one way `uncached` grows. Wrapping,
+    /// as every thread counter: a heap taken over from an exited thread
+    /// starts below zero (`Heap::adopt`).
     #[inline]
     pub(super) fn count_uncached_alloc(&mut self, bytes: usize) {
-        self.uncached.allocated += bytes as u64;
+        self.uncached.allocated = self.uncached.allocated.wrapping_add(bytes as u64);
     }
 
     /// `bytes` were freed on this thread without passing through a cache:
     /// count them in `thread.deallocated`.
     #[inline]
     pub(super) fn count_uncached_free(&mut self, bytes: usize) {
-        self.uncached.deallocated += bytes as u64;
+        self.uncached.deallocated = self.uncached.deallocated.wrapping_add(bytes as u64);
     }
 
     /// A slot of `class` was claimed directly (`MALLOCX_TCACHE_NONE`) on

@@ -116,8 +116,11 @@ fn calloc_flag_is_honest_about_memory() {
     .unwrap();
 }
 
+/// Thread exit parks a heap with its caches for the next thread on its
+/// arena, one per arena, and flushes and frees the rest (design 6.5);
+/// draining the parked ones returns every cached slot and every heap.
 #[test]
-fn thread_exit_flushes_and_frees_the_heap() {
+fn thread_exit_parks_or_frees_the_heap() {
     let s = shared();
     let c = class_of(64).unwrap();
     let meta_before = s.meta.stats().allocated;
@@ -140,7 +143,8 @@ fn thread_exit_flushes_and_frees_the_heap() {
                 check(p, 64, t);
             }
             // Exit with `ps` live and a non-empty cache; the live ones
-            // stay allocated, the cached ones must be released.
+            // stay allocated, the cached ones are released (now, or when
+            // the parked heap is drained).
             leaked.fetch_add(ps.len(), Ordering::Relaxed);
             assert!(tls::get() as usize > TLS_EXITED);
         }));
@@ -148,6 +152,12 @@ fn thread_exit_flushes_and_frees_the_heap() {
     for h in handles {
         h.join().unwrap();
     }
+    let parked = s.drain_parked();
+    assert!(
+        (1..=16).contains(&parked),
+        "{parked} heaps parked by 16 exits"
+    );
+    assert_eq!(s.drain_parked(), 0);
     assert_eq!(live(s, c), leaked.load(Ordering::Relaxed));
     // Heaps and caches went back to the metadata allocator.
     assert_eq!(s.meta.stats().allocated, meta_before);
@@ -188,8 +198,9 @@ fn creating_and_exited_sentinels_are_served_directly() {
         free(s, p);
         // Run the destructor by hand (glibc clears the key's value
         // before calling it, so do the same to avoid a second run at
-        // thread exit): heap gone, slot says exited, and later calls go
-        // direct without creating another heap.
+        // thread exit): heap parked (then drained, so gone), slot says
+        // exited, and later calls go direct without creating another
+        // heap.
         let key = s.thread_key().expect("key");
         assert_eq!(unsafe { libc::pthread_getspecific(key) }, h);
         assert_eq!(
@@ -198,6 +209,7 @@ fn creating_and_exited_sentinels_are_served_directly() {
         );
         unsafe { heap_destructor(h) };
         assert_eq!(tls::get() as usize, TLS_EXITED);
+        assert_eq!(s.drain_parked(), 1);
         assert_eq!(s.meta.stats().allocated, meta_before);
         assert_eq!(live(s, c), 0);
         // The slab went `Empty` when everything was released, so its
@@ -476,6 +488,8 @@ fn producer_consumer_across_threads_with_patterns() {
     });
     producer.join().unwrap();
     assert_eq!(consumer.join().unwrap(), 20_000);
+    // The exited threads' heaps are parked with their caches (design 6.5).
+    s.drain_parked();
     assert_eq!(live(s, c), 0);
 }
 
@@ -521,6 +535,8 @@ fn eight_threads_hammer_disjoint_pointers() {
     for h in handles {
         h.join().unwrap();
     }
+    // The exited threads' heaps are parked with their caches (design 6.5).
+    s.drain_parked();
     for &c in &classes {
         assert_eq!(live(s, c), 0, "class {c}");
     }

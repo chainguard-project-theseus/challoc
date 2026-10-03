@@ -120,6 +120,9 @@ pub const PUSH_ZERO: u8 = 2;
 /// when the kernel exposes `HWCAP_PACA`/`PACG` and `pac_pointers` is not
 /// `false`; never set on x86_64.
 pub const PUSH_PAC: u8 = 4;
+/// Automatic arenas whose exited thread heaps are parked for the next
+/// thread homed there (`Heap::park`): the default `narenas` is at most 64.
+pub const PARK_SLOTS: usize = 64;
 /// `Shared::free_flags` bit, never in `push_flags`: more than one arena
 /// exists, so plain `free` compares the slot's owner word with the heap's
 /// home arena before pushing.
@@ -187,10 +190,19 @@ const _: () = assert!(core::mem::offset_of!(Heap, caches) == 128);
 impl Heap {
     /// Create a heap in the metadata region for the calling thread, homed
     /// on the least-loaded automatic arena and counted there
-    /// (`Arenas::assign`; `destroy` releases the binding). Null if the
-    /// region is exhausted. Does not touch TLS or the thread key.
+    /// (`Arenas::assign`; `destroy` releases the binding). The heap an
+    /// exited thread parked on that arena ([`Heap::park`]) is taken over
+    /// with its caches when there is one. Null if the region is exhausted.
+    /// Does not touch TLS or the thread key.
     pub fn create(shared: &Shared) -> *mut Heap {
         let arena = shared.arenas.assign();
+        let parked = shared.take_parked(arena);
+        if !parked.is_null() {
+            // SAFETY: a parked heap belongs to no thread; `take_parked`
+            // handed it to this one alone.
+            unsafe { (*parked).adopt() };
+            return parked;
+        }
         let h = Self::create_detached(shared, arena);
         if h.is_null() {
             shared.arenas.unbind(arena);
@@ -245,7 +257,66 @@ impl Heap {
         let heap = unsafe { &mut *h };
         heap.flush_all(shared);
         Self::free_caches(shared, &mut heap.caches);
-        for o in Self::nodes(heap.others) {
+        heap.drop_others(shared);
+        heap.release_binding(shared);
+        shared.meta.free(h as *mut u8, Layout::new::<Heap>());
+    }
+
+    /// Thread exit (design 6.5): hand the heap of an exiting thread, with
+    /// its home caches as they are, to the next thread homed on the same
+    /// automatic arena ([`Heap::create`]) instead of flushing them to the
+    /// slabs for that thread to refill. The caches of other arenas (the
+    /// `others` nodes, [`FOREIGN`] among them) are flushed and freed and
+    /// the arena binding is released here, as [`Heap::destroy`] does. One
+    /// heap per arena waits (`Shared::park`); `false` when the arena's
+    /// slot is taken or the heap is not a bound thread heap with caches,
+    /// and the caller destroys it. `malloc_trim` and the full purge
+    /// destroy the heaps that wait (`Shared::drain_parked`).
+    ///
+    /// # Safety
+    /// As for [`Heap::destroy`]; on `true` the heap is owned by the slot.
+    pub unsafe fn park(h: *mut Heap, shared: &Shared) -> bool {
+        // SAFETY: the caller gives us exclusive ownership of the heap.
+        let heap = unsafe { &mut *h };
+        if !heap.bound || !heap.tcache_enabled || !shared.can_park(heap.arena) {
+            return false;
+        }
+        heap.flush_others(shared);
+        heap.drop_others(shared);
+        heap.release_binding(shared);
+        shared.park(heap.arena, h)
+    }
+
+    /// Take over a parked heap for the calling thread: its binding was
+    /// released when it was parked and `Arenas::assign` has just counted
+    /// the new thread on the same arena. The thread counters restart from
+    /// zero over the caches as they stand (`thread.allocated` is per
+    /// thread), so they are rebased rather than reset.
+    fn adopt(&mut self) {
+        let mut held = ThreadStats::default();
+        Self::fold_counters(&mut held, &self.caches);
+        self.uncached = ThreadStats {
+            allocated: 0u64.wrapping_sub(held.allocated),
+            deallocated: 0u64.wrapping_sub(held.deallocated),
+        };
+        self.snapshot = ThreadStats::default();
+        self.tid = tid();
+        self.bound = true;
+    }
+
+    /// Flush the caches of every arena but the home one.
+    fn flush_others(&mut self, shared: &Shared) {
+        for o in Self::nodes(self.others) {
+            // SAFETY: `others` is a list of live metadata blocks owned by
+            // this heap.
+            let arena = unsafe { (*o).arena };
+            self.flush_arena(shared, arena, o);
+        }
+    }
+
+    /// Free the (flushed) `others` nodes and their stacks.
+    fn drop_others(&mut self, shared: &Shared) {
+        for o in Self::nodes(self.others) {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap; the iterator has read `next` already, so the
             // block can go.
@@ -255,15 +326,22 @@ impl Heap {
                 shared.meta.free(block, node_block_layout());
             }
         }
-        heap.others = ptr::null_mut();
-        if heap.bound {
-            let arena = heap.arena;
+        self.others = ptr::null_mut();
+    }
+
+    /// Release a thread heap's arena binding (nothing for an explicit cache
+    /// or a heap already released), purging the arena's `Empty` slabs when
+    /// it was the last heap homed there.
+    fn release_binding(&mut self, shared: &Shared) {
+        if self.bound {
+            self.bound = false;
+            let arena = self.arena;
             shared.arenas.unbind(arena);
             // jemalloc's rule (`tcache_destroy`): the last thread homed on
             // an arena leaves, so nothing will refill its `Empty` slabs
             // soon; purge them now instead of letting them sit for the
-            // decay window. The caches just flushed above are most of
-            // them. Not with a background thread, which decays on its own
+            // decay window. The caches the heap flushed are most of
+            // them (a parked heap keeps its home caches). Not with a background thread, which decays on its own
             // schedule (as jemalloc), and at most once per decay period
             // per arena (`Arena::take_exit_purge`: thread churn would
             // purge and refault the same slabs at every exit). Design 13.3.
@@ -275,7 +353,6 @@ impl Heap {
                 }
             }
         }
-        shared.meta.free(h as *mut u8, Layout::new::<Heap>());
     }
 
     /// Reset every (flushed) header of one array to [`CacheHeader::EMPTY`]

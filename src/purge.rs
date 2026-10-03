@@ -402,8 +402,11 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
 
 /// Purge every `Empty` slab of every arena and every huge extent
 /// regardless of age, eagerly (`malloc_trim(0)`, the `high`-rise full
-/// purge: the memory is wanted back now). Returns how many were purged.
+/// purge: the memory is wanted back now). The heaps parked by exited
+/// threads are destroyed first, so their cached slots are in the slabs the
+/// purge sees (design 6.5). Returns how many were purged.
 pub fn purge_all(shared: &Shared) -> usize {
+    shared.drain_parked();
     let _explicit = Explicit::enter();
     let mut n = 0;
     for arena in shared.arenas.iter() {

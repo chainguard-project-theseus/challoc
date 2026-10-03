@@ -2325,6 +2325,71 @@ fn heap_churn_reuses_the_vacated_arena() {
     assert!((0..8).all(|i| s.arenas.bound(i) == 0));
 }
 
+/// Thread exit parks the heap with its home caches (design 6.5): the next
+/// heap homed on the same arena is that heap, its caches as they were and
+/// its thread counters at zero; a heap leaving an arena whose slot is
+/// taken is not parked; the full purge destroys the parked heap, so the
+/// next heap on that arena starts empty.
+#[test]
+fn an_exited_heap_is_parked_and_taken_over_on_its_arena() {
+    let s = TestShared::with(Config {
+        narenas: 4,
+        ..Config::DEFAULT
+    })
+    .build();
+    let main = TestHeap::new(s);
+    let c = class_with(64);
+    let w = TestHeap::new(s);
+    assert_eq!(w.heap().arena(), 1);
+    let ps: Vec<*mut u8> = (0..10).map(|_| w.alloc(c)).collect();
+    for &p in &ps {
+        w.free(p);
+    }
+    let len = w.len(c);
+    let cached = w.cached_plain(c);
+    assert!(len >= ps.len());
+    assert_ne!(w.stats(), ThreadStats::default());
+    let wp = w.h;
+    // SAFETY: `w` is not used again; the slot owns the heap.
+    assert!(unsafe { Heap::park(wp, s) });
+    assert_eq!(s.arenas.bound(1), 0, "a parked heap is not bound");
+    let n = TestHeap::new(s);
+    assert_eq!(n.h, wp, "the next heap on arena 1 is the parked one");
+    assert_eq!(n.heap().arena(), 1);
+    assert_eq!(s.arenas.bound(1), 1);
+    assert_eq!(n.cached_plain(c), cached);
+    assert_eq!(n.stats(), ThreadStats::default());
+    let q = n.alloc(c);
+    assert_eq!(q, *cached.last().unwrap(), "the pop is the parked top");
+    assert_eq!(n.stats().allocated, 64);
+    n.free(q);
+    assert_eq!(n.stats().deallocated, 64);
+    // A second heap moved onto arena 1 while `n` waits there is not
+    // parked.
+    let y = TestHeap::new(s);
+    assert_ne!(y.heap().arena(), 1);
+    y.heap().set_arena(s, 1);
+    // SAFETY: as above.
+    assert!(unsafe { Heap::park(n.h, s) });
+    // SAFETY: on `false` the caller still owns the heap.
+    assert!(!unsafe { Heap::park(y.h, s) });
+    assert_eq!(
+        s.arenas.bound(1),
+        0,
+        "a refused park still releases the binding"
+    );
+    y.destroy();
+    // The full purge destroys the parked heap: a new heap on arena 1 is
+    // fresh.
+    crate::purge::purge_all(s);
+    let f = TestHeap::new(s);
+    assert_eq!(f.heap().arena(), 1);
+    assert!(f.heap().cache(c).is_none());
+    f.destroy();
+    main.destroy();
+    assert!((0..4).all(|i| s.arenas.bound(i) == 0));
+}
+
 /// `narenas:0` (the default) is resolved at init from the CPU count
 /// and stored, so `opt.narenas` and `arenas.auto` agree on it.
 #[test]

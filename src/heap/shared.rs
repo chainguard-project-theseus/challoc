@@ -5,7 +5,7 @@
 
 use core::ffi::c_void;
 use core::ptr;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
 
 use crate::arena::{Arena, Arenas};
 use crate::class::SlabTable;
@@ -17,7 +17,7 @@ use crate::meta::Meta;
 
 use super::heap_destructor;
 use super::tcaches::Tcaches;
-use super::{FREE_ROUTE, Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
+use super::{FREE_ROUTE, Heap, PARK_SLOTS, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
 
 /// The cache GC period (design 6.4): 10 s.
 pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
@@ -91,6 +91,11 @@ pub struct Shared {
     pub(super) key: ThreadKey,
     pub arenas: Arenas,
     pub tcaches: Tcaches,
+    /// The heap of an exited thread waiting, caches and all, for the next
+    /// thread homed on the same automatic arena (design 6.5,
+    /// [`Heap::park`]): one slot per arena below [`PARK_SLOTS`], null when
+    /// empty.
+    parked: [AtomicPtr<Heap>; PARK_SLOTS],
     /// Process-wide statistics as of the last `epoch` (`stats.rs`).
     pub stats: Lock<crate::stats::Snapshot>,
     /// The memory cgroup as last sampled (design 11; `sys::cgroup`). Cold:
@@ -322,6 +327,10 @@ impl Shared {
             ptr::write(&raw mut (*this).gc_interval_ns, GC_INTERVAL_NS);
             Arenas::init(&raw mut (*this).arenas, arena0, config.narenas);
             Tcaches::init(&raw mut (*this).tcaches);
+            let parked = &raw mut (*this).parked;
+            for i in 0..PARK_SLOTS {
+                ptr::write(&raw mut (*parked)[i], AtomicPtr::new(ptr::null_mut()));
+            }
             ptr::write(
                 &raw mut (*this).cgroup,
                 crate::sys::cgroup::Cgroup::discover(config.cgroup),
@@ -440,6 +449,48 @@ impl Shared {
     #[inline(always)]
     pub fn zero_on_free(&self) -> bool {
         self.push_flags & PUSH_ZERO != 0
+    }
+
+    /// Whether a heap homed on `arena` can be parked at thread exit: an
+    /// automatic arena with a slot ([`Heap::park`]).
+    pub(super) fn can_park(&self, arena: u16) -> bool {
+        (arena as usize) < PARK_SLOTS && (arena as u32) < self.arenas.auto()
+    }
+
+    /// Park `h`, homed on `arena`, in the arena's slot. `false` when the
+    /// slot holds a heap already; the caller keeps `h`. Release: the next
+    /// owner reads the caches this thread wrote.
+    pub(super) fn park(&self, arena: u16, h: *mut Heap) -> bool {
+        self.parked[arena as usize]
+            .compare_exchange(ptr::null_mut(), h, Ordering::Release, Ordering::Relaxed)
+            .is_ok()
+    }
+
+    /// Take the heap parked on `arena`, null when there is none.
+    pub(super) fn take_parked(&self, arena: u16) -> *mut Heap {
+        match self.parked.get(arena as usize) {
+            Some(slot) if !slot.load(Ordering::Relaxed).is_null() => {
+                slot.swap(ptr::null_mut(), Ordering::Acquire)
+            }
+            _ => ptr::null_mut(),
+        }
+    }
+
+    /// Destroy every parked heap, returning its cached slots to their slabs
+    /// (`malloc_trim` and the full purge want them back before they purge).
+    /// Returns how many there were.
+    pub fn drain_parked(&self) -> usize {
+        let mut n = 0;
+        for slot in &self.parked {
+            let h = slot.swap(ptr::null_mut(), Ordering::Acquire);
+            if !h.is_null() {
+                // SAFETY: a parked heap belongs to no thread and the swap
+                // took it out of the slot, so this call owns it.
+                unsafe { Heap::destroy(h, self) };
+                n += 1;
+            }
+        }
+        n
     }
 
     /// A second arena is being built (`Arenas::build`).
