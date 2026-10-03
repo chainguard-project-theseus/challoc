@@ -38,6 +38,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use crate::arena::Arena;
 use crate::heap::Shared;
 pub use crate::policy::Advice;
 use crate::sys;
@@ -388,16 +389,44 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
         }
     };
     for arena in shared.arenas.iter() {
-        // Each arena's own period, scaled by the policy's band.
-        fold(arena.decay_with(now, policy.effective_decay_ns(arena.decay_ns()), keep16));
+        fold(decay_one(shared, arena, now, keep16));
     }
-    // The huge allocator is shared by every arena: its own period when
-    // `huge_dirty_decay_ms` is set, else arena 0's (design 7).
-    let decay_ns = policy.effective_decay_ns(shared.huge_decay_ns());
-    if decay_ns != NEVER {
-        fold(shared.huge.decay_with(now, decay_ns, keep16));
-    }
+    fold(decay_huge(shared, now, keep16));
     next
+}
+
+/// `arena.<i>.decay`: the decay walks of one arena (plus, for arena 0,
+/// the huge extents, which belong to no single arena's sets) that are due
+/// at `now`, on the periods and keep ratio [`decay`] gives them. `None`
+/// if the arena does not exist.
+pub fn decay_arena(shared: &Shared, index: u16, now: u64) -> Option<()> {
+    let arena = shared.arenas.get_existing(index)?;
+    let keep16 = shared.policy.keep16();
+    decay_one(shared, arena, now, keep16);
+    if index == 0 {
+        decay_huge(shared, now, keep16);
+    }
+    Some(())
+}
+
+/// One arena's walks on its own period, scaled by the policy's band.
+fn decay_one(shared: &Shared, arena: &Arena, now: u64, keep16: u32) -> Option<u64> {
+    arena.decay_with(
+        now,
+        shared.policy.effective_decay_ns(arena.decay_ns()),
+        keep16,
+    )
+}
+
+/// The huge allocator's walk. It is shared by every arena: its own period
+/// when `huge_dirty_decay_ms` is set, else arena 0's (design 7), scaled by
+/// the policy's band.
+fn decay_huge(shared: &Shared, now: u64, keep16: u32) -> Option<u64> {
+    let decay_ns = shared.policy.effective_decay_ns(shared.huge_decay_ns());
+    if decay_ns == NEVER {
+        return None;
+    }
+    shared.huge.decay_with(now, decay_ns, keep16)
 }
 
 /// Purge every `Empty` slab of every arena and every huge extent

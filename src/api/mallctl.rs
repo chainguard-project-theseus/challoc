@@ -956,14 +956,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             if all_arenas(shared, i) {
                 purge::decay(shared, now);
             } else {
-                let arena = shared.arenas.get_existing(arena_index(i)?).ok_or(ENOENT)?;
-                arena.decay(now);
-                if i == 0 {
-                    let d = shared.decay_ns();
-                    if d != purge::NEVER {
-                        shared.huge.decay(now, d);
-                    }
-                }
+                purge::decay_arena(shared, arena_index(i)?, now).ok_or(ENOENT)?;
             }
             Ok(())
         }
@@ -1330,6 +1323,87 @@ mod tests {
             (sorted.len(), sorted.first(), sorted.last()),
             (seen.len(), Some(&1), Some(&(seen.len() as u64))),
             "(distinct, lowest, highest) epoch numbers read back"
+        );
+    }
+
+    /// `arena.0.decay` walks the huge extents on the period `purge::decay`
+    /// gives them, as `arena.<MALLCTL_ARENAS_ALL>.decay` does: the huge
+    /// tier's own (`huge_dirty_decay_ms`, design 7) rather than arena 0's,
+    /// and both halves scaled by the cgroup policy's band (design 11).
+    #[test]
+    fn arena_decay_uses_the_periods_of_the_decay_driver() {
+        use crate::policy::Band;
+        let decay = |s: &Shared, i: u16| {
+            let mut mib = [0usize; MAX_MIB];
+            let name = std::format!("arena.{i}.decay");
+            let (len, node) = name_to_mib(name.as_bytes(), &mut mib).unwrap();
+            let io = Io {
+                oldp: ptr::null_mut(),
+                oldlenp: ptr::null_mut(),
+                newp: ptr::null(),
+                newlen: 0,
+            };
+            assert_eq!(ctl(s, node, &mib[..len], &io), Ok(()), "{name}");
+        };
+        let free_huge_run = |s: &Shared| {
+            let p = s.alloc_huge(300 * 1024, 16, 0).0;
+            match s.regions.classify(p as usize) {
+                Kind::Huge { page } => s.free_huge(page),
+                other => panic!("{other:?}"),
+            };
+            assert_eq!((s.huge.stats().empty, s.huge.stats().purged), (1, 0));
+        };
+
+        // `huge_dirty_decay_ms:-1` never purges a huge run by decay, even
+        // with arena 0 purging at once.
+        let s = crate::testutil::TestShared::with(Config {
+            narenas: 1,
+            dirty_decay_ms: 0,
+            huge_dirty_decay_ms: Some(-1),
+            ..Config::DEFAULT
+        })
+        .build();
+        free_huge_run(s);
+        decay(s, 0);
+        assert_eq!(
+            (s.huge.stats().empty, s.huge.stats().purged),
+            (1, 0),
+            "huge_dirty_decay_ms:-1: retained"
+        );
+
+        // Above 90% of a cgroup limit every period is 0: a slab and a huge
+        // run freed a moment ago both go, though both windows are 10 s.
+        let s = crate::testutil::TestShared::with(Config {
+            narenas: 1,
+            ..Config::DEFAULT
+        })
+        .build();
+        let class = CLASSES.len() - 1;
+        let p = s.alloc_direct(&s.arena0, class).0;
+        assert!(!p.is_null());
+        s.free_direct(0, class, p);
+        assert_eq!(s.arena0.class(class).stats().empty, 1);
+        free_huge_run(s);
+        s.policy.apply(Band::Immediate, 512 << 20, 0, 0);
+        // Only arena 0's call walks the huge extents.
+        let a = s.arenas.create(s).unwrap();
+        decay(s, a);
+        assert_eq!(
+            (s.huge.stats().empty, s.huge.stats().purged),
+            (1, 0),
+            "arena.{a}.decay leaves the huge run"
+        );
+        decay(s, 0);
+        let slabs = s.arena0.class(class).stats();
+        assert_eq!(
+            (slabs.empty, slabs.purged),
+            (0, 1),
+            "immediate band: the slab is purged"
+        );
+        assert_eq!(
+            (s.huge.stats().empty, s.huge.stats().purged),
+            (0, 1),
+            "immediate band: the huge run is purged"
         );
     }
 

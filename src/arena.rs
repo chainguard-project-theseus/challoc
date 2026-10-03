@@ -232,15 +232,10 @@ impl Arena {
         crate::purge::note_decay_changed();
     }
 
-    /// Decay step over every class (see `ClassState::decay`): the earliest
-    /// next deadline, `None` when nothing is `Empty` or decay is off.
-    pub fn decay(&self, now: u64) -> Option<u64> {
-        self.decay_with(now, self.decay_ns(), crate::policy::KEEP_ALL)
-    }
-
-    /// [`decay`](Arena::decay) with the period the cgroup policy gives
-    /// this arena and its keep ratio for the retention cap (design 11);
-    /// `NEVER` does nothing.
+    /// Decay step over every class (see `ClassState::decay_with`) with
+    /// the period the cgroup policy gives this arena and its keep ratio
+    /// for the retention cap (design 11): the earliest next deadline,
+    /// `None` when nothing is `Empty`; `NEVER` does nothing.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64> {
         if decay_ns == crate::purge::NEVER {
             return None;
