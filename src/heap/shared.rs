@@ -290,12 +290,21 @@ impl Shared {
             ptr::write(&raw mut (*this).free_flags, AtomicU8::new(push_flags));
             let regions = &*(&raw const (*this).regions);
             let tables = &raw mut (*this).tables;
-            for c in 0..NCLASSES {
-                match SlabTable::new(
+            let mut bits = [const { None }; NCLASSES];
+            for (c, b) in bits.iter_mut().enumerate() {
+                match SlabTable::reserve_bits(meta, regions, c) {
+                    Some(l) => *b = Some(l),
+                    None => return false,
+                }
+            }
+            for (c, b) in bits.into_iter().enumerate() {
+                let Some(b) = b else { return false };
+                match SlabTable::with_bits(
                     meta,
                     regions,
                     c,
                     guard_interval_for(c, regions.page_size(), guard_interval),
+                    b,
                 ) {
                     Some(t) => ptr::write(&raw mut (*tables)[c], t),
                     None => return false,

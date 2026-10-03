@@ -81,7 +81,9 @@ stacks, huge descriptors) grow from a bump pointer at the base, committed
 in 64 KiB chunks, and the never-freed tables (a class's descriptor array,
 slot bitmap and owner array, an arena's set tables, the huge free-page
 bitmap, the background thread's stack) are reserved downward from the top
-and committed page by page as slab numbers grow. Each committed table
+and committed page by page as slab numbers grow (the class bitmaps are
+`PROT_READ` rather than `PROT_NONE` until then, for the `free` check of
+6.3). Each committed table
 prefix is its own VMA, so to keep the mapping count (and the cost of
 `fork`) down a table of at most `meta::EAGER_MAX` (8 MiB) is carved from
 the object side instead, writable from the start (`Meta::reserve_table`;
@@ -476,15 +478,24 @@ entry points in `api/` are built from them.
 4. `p = slots[--len]` (`autda p, slots` when `PUSH_PAC`, 6.2); return `p`.
 
 `free(p)`:
-1. If `p` is null return. Classify `p` (section 2). Huge: slow path.
-   Invalid: abort.
+1. Classify `p` (section 2). Huge: slow path. Invalid: abort. Null is
+   in no class region and leaves for the slow path, which returns for it
+   (no test of its own on the fast path, as in jemalloc's `free`).
 2. Compute slab and slot; verify the offset is a slot start (section 3:
    multiply, rotate, compare against `nslots`); load the class bitmap
-   word; verify the bit is set. Otherwise abort.
-3. The opt-in hardening: one byte (`Shared::push_flags`, on a line step 2
-   already loaded), zero by default on every host (`pac_pointers` defaults
-   to false, so a CPU with pointer authentication is no exception), tested
-   once. `PUSH_SCAN`
+   word; verify the bit is set. Otherwise abort. The hand-out watermark
+   is not compared first: the bitmap reservation reads as zero past its
+   committed pages (`Meta::reserve_table_readable`, `PROT_READ`: no
+   commit charge, no RSS) and a slab never handed out has no bit set, so
+   the bit test alone sends it to the slow path, which names it
+   (`was never allocated`). The 52 bitmaps are reserved back to back so
+   their unused tails are one mapping.
+3. The opt-in hardening: one byte (`Shared::free_flags`, `push_flags`
+   plus the `FREE_ROUTE` bit of step 4, on a line step 2 already
+   loaded), zero by default on every host with one arena (`pac_pointers`
+   defaults to false, so a CPU with pointer authentication is no
+   exception), tested once; `FREE_ROUTE` alone is the second compare.
+   `PUSH_SCAN`
    (`double_free_scan`): compare `p` against the top four cache entries
    and abort on a match, a double free whose first copy is still cached
    (the sized push does the same). `PUSH_ZERO` (`zero_on_free`): `memset`
@@ -496,7 +507,8 @@ entry points in `api/` are built from them.
    about 3..4% on `larson1` and up to 14% on the Valkey model;
    `zero_on_free`'s `memset` per free is far over a 3% budget on Valkey's
    1 KiB values.
-4. `heap = tls()`; with several arenas load `owner[slab / group]` and,
+4. `heap = tls()`; with several arenas (`FREE_ROUTE`, set when a second
+   arena is built) load `owner[slab / group]` and,
    if it is not the heap's home arena, take the cold path (`free_other`,
    which pushes onto the heap's one *foreign* cache for the class,
    `Heap::others` keyed `FOREIGN`, creating it on first use); otherwise
@@ -1060,7 +1072,7 @@ automatic arena with the fewest bound heaps (jemalloc's
 `arena_choose_hard`); the binding is released when the heap is destroyed
 and moves with `thread.arena`. So `t` live threads use `min(t, narenas)`
 arenas, a single-threaded program stays on arena 0 and never pays the
-`free` routing (`multi_arena` is set only when a second arena is built),
+`free` routing (`FREE_ROUTE` is set only when a second arena is built),
 and thread churn reuses the arena an exited thread left. Arenas are not
 needed for correctness or lock scalability (slabs are not thread-owned)
 but for cache locality: under one shared arena every refill interleaves
