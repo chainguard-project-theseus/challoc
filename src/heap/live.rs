@@ -136,6 +136,18 @@ impl Live {
     {
     }
 
+    /// A live block has usable bytes: a class's size, or a run's pages.
+    pub proof fn lemma_len_pos(&self)
+        requires
+            self.wf(),
+        ensures
+            self.len() > 0,
+    {
+        if self.run is None {
+            crate::vspec::class::axiom_class_table_wf(self.class);
+        }
+    }
+
     /// The token a free of `p` takes: if `p` is a slot start, the token of
     /// the slot, of a class `p` is a slot of; else, if `p` is a page start
     /// of the huge region, the token of the run that starts there, its

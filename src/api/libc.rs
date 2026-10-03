@@ -866,13 +866,254 @@ pub proof fn lemma_kept_fits(p: *mut u8, size: int, align: int)
 {
 }
 
+/// The keep rule of `realloc` and `rallocx` ([`old_size_or_keep`],
+/// [`realloc_old`]), exactly: they return the live block `p`, of `len`
+/// usable bytes, for `size` bytes at `align` (a power of two; 1 or the
+/// quantum means the natural alignment) when `p` is a slot of the class
+/// [`class_for`] picks for `size` at `align` ([`spec_class_for`], the
+/// smallest serving class), or when `p` is a huge run start, no class
+/// serves `size` at `align`, `size` rounded up to whole pages
+/// ([`huge_usable`](crate::vspec::zero::huge_usable)) is the run's usable
+/// bytes and `p` is a multiple of `align`; and they move it otherwise. A
+/// run is never kept for a size some class serves, so a run allocated
+/// for a small size at an alignment above `MEDIUM_MAX` moves on every
+/// `realloc`, to a slot for any size a class serves, its usable size
+/// included ([`lemma_keeps_usable`]).
+pub open spec fn keeps(p: *mut u8, size: usize, align: usize, len: int) -> bool {
+    ||| exists|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr) && spec_class_for(size, align) == Some(c as usize)
+    ||| {
+        &&& crate::layout::process_regions().is_huge_block(p@.addr, 1)
+        &&& spec_class_for(size, align) is None
+        &&& crate::vspec::zero::huge_usable(size as int) == len
+        &&& (p@.addr as int) % (align as int) == 0
+    }
+}
+
+/// For a slot of class `c`, [`keeps`] is "`size` at `align` maps to `c`".
+proof fn lemma_keeps_slot(p: *mut u8, c: int, size: usize, align: usize, len: int)
+    requires
+        heap::regions_ok(),
+        crate::layout::process_regions().is_slot(c, p@.addr),
+    ensures
+        keeps(p, size, align, len) <==> spec_class_for(size, align) == Some(c as usize),
+{
+    crate::vspec::zero::lemma_slot_not_huge(c, p@.addr);
+    assert forall|c2: int| #[trigger] crate::layout::process_regions().is_slot(c2, p@.addr) implies c2 == c by {
+        crate::vspec::zero::lemma_slot_unique(c, c2, p@.addr);
+    }
+}
+
+/// For a huge page start, [`keeps`] is its run half: no slot is one.
+proof fn lemma_keeps_run(p: *mut u8, size: usize, align: usize, len: int)
+    requires
+        heap::regions_ok(),
+        crate::layout::process_regions().is_huge_block(p@.addr, 1),
+    ensures
+        keeps(p, size, align, len) <==> {
+            &&& spec_class_for(size, align) is None
+            &&& crate::vspec::zero::huge_usable(size as int) == len
+            &&& (p@.addr as int) % (align as int) == 0
+        },
+{
+    assert forall|c: int| !#[trigger] crate::layout::process_regions().is_slot(c, p@.addr) by {
+        if crate::layout::process_regions().is_slot(c, p@.addr) {
+            crate::vspec::zero::lemma_slot_not_huge(c, p@.addr);
+        }
+    }
+}
+
+/// The process's page is a positive power of two, and the huge region's
+/// whole pages are at most its length.
+proof fn lemma_page_bytes()
+    requires
+        heap::regions_ok(),
+    ensures
+        ({
+            let r = crate::layout::process_regions();
+            let pg = (1usize << r.lg_page) as int;
+            &&& pg == pow2(r.lg_page as nat)
+            &&& pg > 0
+            &&& ((r.huge_len >> r.lg_page) as int) * pg <= r.huge_len
+        }),
+{
+    let r = crate::layout::process_regions();
+    let lg32 = r.lg_page;
+    let lg = lg32 as usize;
+    let len = r.huge_len;
+    let np = len >> lg32;
+    let one = 1usize << lg32;
+    assert(np == len >> lg && one == 1usize << lg) by (bit_vector)
+        requires
+            np == len >> lg32,
+            one == 1usize << lg32,
+            lg == lg32 as usize,
+            lg32 < 64,
+    ;
+    vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+    vstd::bits::lemma_usize_shl_is_mul(1, lg);
+    vstd::bits::lemma_usize_shr_is_div(len, lg);
+    let pg = one as int;
+    vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(len as int, pg);
+    vstd::arithmetic::div_mod::lemma_mod_bound(len as int, pg);
+}
+
+/// What `Huge::usable_for(size)` reads against a run's usable bytes
+/// `old` ([`usable_of`]): when it is defined it is `size` rounded up to
+/// whole pages, and when `size` rounded up overflows it is no run's usable
+/// size. So `usable_for(size) == Some(old)` exactly when
+/// `huge_usable(size) == old`.
+proof fn lemma_usable_for_run(shared: &Shared, p: *mut u8, size: usize, old: usize)
+    requires
+        shared.wf(),
+        crate::layout::process_regions().is_huge_block(p@.addr, 1),
+        usable_of(p, old as int),
+    ensures
+        size + shared.huge.spec_page() - 1 <= usize::MAX ==> shared.huge.spec_usable(size) == crate::vspec::zero::huge_usable(size as int),
+        crate::vspec::zero::huge_usable(size as int) == old ==> size + shared.huge.spec_page() - 1 <= usize::MAX,
+{
+    shared.lemma_wf();
+    let r = crate::layout::process_regions();
+    let pg = (1usize << r.lg_page) as int;
+    assert(shared.huge.spec_page() == pg);
+    let page = ((p@.addr - r.huge_base) as usize) >> r.lg_page;
+    let h = r.huge_len;
+    let lg = r.lg_page;
+    // `run_bytes`: the run and its guard lie below `(h >> lg) * pg <= h`.
+    assert(page * pg + old + crate::huge::GUARD_PAGES * pg <= ((h >> lg) as int) * pg);
+    lemma_page_bytes();
+    assert(page * pg >= 0) by (nonlinear_arith)
+        requires
+            pg > 0,
+    ;
+    let s = size + pg - 1;
+    let n = s / pg;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(s, pg);
+    vstd::arithmetic::div_mod::lemma_mod_pos_bound(s, pg);
+    if s > usize::MAX {
+        // `n * pg > s - pg >= usize::MAX - pg + 1 > old`.
+        assert(n * pg > s - pg) by (nonlinear_arith)
+            requires
+                s == pg * n + s % pg,
+                s % pg < pg,
+        ;
+        assert(n != 0);
+    }
+}
+
+/// Some class serves `size` bytes at alignment 1 when one at or below
+/// class `c` is at least `size` bytes large.
+proof fn lemma_class_for_one(size: usize, c: int)
+    requires
+        0 <= c < NCLASSES,
+        size <= class_table()[c].size,
+    ensures
+        spec_class_for(size, 1) is Some,
+    decreases c,
+{
+    if exists|j: int| 0 <= j < c && #[trigger] class_serves(j, size as int, 1) {
+        let j = choose|j: int| 0 <= j < c && #[trigger] class_serves(j, size as int, 1);
+        lemma_class_for_one(size, j);
+    } else {
+        lemma_class_for_some(size, 1, c);
+    }
+}
+
+/// [`class_of`] is [`class_for`] at alignment 1: the class at or above
+/// `size` with every class below it smaller than `size`, `None` above
+/// `MEDIUM_MAX`.
+proof fn lemma_class_of_for(size: usize)
+    ensures
+        forall|c: int|
+            0 <= c < NCLASSES && size <= crate::layout::spec_class_size(c) && #[trigger] crate::layout::classes_below(c, size as int)
+                ==> spec_class_for(size, 1) == Some(c as usize),
+        size > MEDIUM_MAX ==> spec_class_for(size, 1) is None,
+{
+    assert forall|c: int|
+        0 <= c < NCLASSES && size <= crate::layout::spec_class_size(c) && #[trigger] crate::layout::classes_below(c, size as int)
+            implies spec_class_for(size, 1) == Some(c as usize) by {
+        reveal(crate::layout::classes_below);
+        crate::vspec::class::axiom_class_table_wf(c);
+        assert forall|j: int| 0 <= j < c implies !#[trigger] class_serves(j, size as int, 1) by {
+            crate::vspec::class::axiom_class_table_wf(j);
+            assert(crate::layout::spec_class_size(j) < size);
+        }
+        lemma_class_for_some(size, 1, c);
+    }
+    if size > MEDIUM_MAX {
+        assert forall|j: int| 0 <= j < NCLASSES implies !#[trigger] class_serves(j, size as int, 1) by {
+            crate::vspec::class::axiom_class_table_wf(j);
+        }
+        lemma_class_for_none(size, 1);
+    }
+}
+
+/// `realloc(p, n)` for `p`'s usable size `n` ([`usable_of`]) keeps `p`
+/// ([`keeps`], with the run's usable bytes `n`) exactly when `p` is a
+/// slot, or a run of more than `MEDIUM_MAX` usable bytes: a slot's usable
+/// size is its class's, which maps back to the class, and a run's is
+/// whole pages, which round up to themselves, but a run of `MEDIUM_MAX`
+/// bytes or fewer (allocated for a small size at an alignment above
+/// `MEDIUM_MAX`) has a usable size some class serves.
+pub proof fn lemma_keeps_usable(p: *mut u8, n: usize)
+    requires
+        heap::regions_ok(),
+        heap::free_target(p),
+        usable_of(p, n as int),
+    ensures
+        keeps(p, n, 1, n as int) <==> heap::slot_start(p) || n > MEDIUM_MAX,
+{
+    let r = crate::layout::process_regions();
+    if heap::slot_start(p) {
+        let c = choose|c: int| #[trigger] r.is_slot(c, p@.addr);
+        crate::vspec::class::axiom_class_table_wf(c);
+        assert(n == class_table()[c].size);
+        assert forall|j: int| 0 <= j < c implies !#[trigger] class_serves(j, n as int, 1) by {
+            crate::vspec::class::axiom_class_table_wf(j);
+            crate::layout::lemma_class_size_mono(j, c);
+        }
+        lemma_class_for_some(n, 1, c);
+        lemma_keeps_slot(p, c, n, 1, n as int);
+    } else {
+        lemma_keeps_run(p, n, 1, n as int);
+        let lg = r.lg_page;
+        let pg = (1usize << lg) as int;
+        lemma_page_bytes();
+        // `n` is whole pages, at least one, so it rounds up to itself.
+        let k = (n as int) / pg;
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(n as int, pg);
+        assert(n + pg - 1 == pg * k + (pg - 1));
+        vstd::arithmetic::div_mod::lemma_div_multiples_vanish_fancy(k, pg - 1, pg);
+        assert(k != 0) by (nonlinear_arith)
+            requires
+                n == pg * k,
+                n >= pg,
+                pg > 0,
+        ;
+        assert((n + pg - 1) / pg == k);
+        assert(k * pg == n) by (nonlinear_arith)
+            requires
+                n == pg * k,
+        ;
+        assert(crate::vspec::zero::huge_usable(n as int) == n);
+        if n > MEDIUM_MAX {
+            lemma_class_of_for(n);
+        } else {
+            crate::layout::lemma_last_class_size();
+            crate::vspec::class::axiom_class_table_wf(NCLASSES - 1);
+            lemma_class_for_one(n, NCLASSES - 1);
+        }
+    }
+}
+
 /// The reallocation decision shared by `realloc` and `rallocx`: `None`
 /// when the live allocation `p` already serves `size` bytes at `align`
 /// (a power of two; 1 or the quantum means the natural alignment) and
-/// keeps its pointer, that is when the new size maps to `p`'s class
-/// (whose slots satisfy the alignment by construction) or to a huge run
-/// of the same number of pages at a start that satisfies it ([`kept`]);
-/// otherwise `Some(old)`, the usable bytes of `p` ([`usable_of`]), the most
+/// keeps its pointer, exactly when the new size maps to `p`'s class
+/// (whose slots satisfy the alignment by construction) or, when no class
+/// serves it, to a huge run of the same number of pages at a start that
+/// satisfies it ([`keeps`]; the kept block fits: [`kept`]); otherwise
+/// `Some(old)`, the usable bytes of `p` ([`usable_of`]), the most
 /// a move has to copy: the class's size for a slot, the run's usable bytes
 /// from its descriptor for a huge page start. Aborts, naming `what`, unless `p`
 /// is a live slab slot or huge run start; so it returns only for a free
@@ -888,6 +1129,7 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
     ensures
         heap::free_target(p),
         r is None ==> kept(p, size as int, align as int),
+        r is None <==> keeps(p, size, align, blk.len()),
         r matches Some(o) ==> usable_of(p, o as int),
         r is None ==> blk.gives(p, size as int),
         r matches Some(o) ==> blk.block(p) && o == blk.len(),
@@ -910,6 +1152,7 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
                 blk.lemma_claims_slot(p, class as int);
                 blk.lemma_claimed_block(p);
                 blk.lemma_slot_len(p, class as int);
+                lemma_keeps_slot(p, class as int, size, align, blk.len());
             }
             if class_for(size, align) == Some(class) {
                 proof {
@@ -934,6 +1177,9 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
                 // start of the huge region is no slot.
                 shared.lemma_huge_run_usable(p as usize, old);
                 crate::vspec::usable::lemma_usable_run(shared, p, old);
+                // The test is `keeps`'s run half.
+                lemma_keeps_run(p, size, align, blk.len());
+                lemma_usable_for_run(shared, p, size, old);
             }
             if class_for(size, align).is_none() && shared.huge.usable_for(size) == Some(old) && (p as usize) % align == 0 {
                 proof {
@@ -952,7 +1198,8 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
 }
 
 /// `realloc`. The same pointer comes back when the new size maps to the
-/// same class or the same number of huge pages (`old_size_or_keep`);
+/// same class or, for a size no class serves, the same number of huge
+/// pages (`old_size_or_keep`; exactly then: [`keeps`] in [`realloc_block`]);
 /// otherwise allocate, copy `min(old usable, new size)`, free. On failure
 /// the old block is intact and `errno = ENOMEM`; `realloc(p, 0)`'s null
 /// leaves `errno` alone. C holds the token of the block it passes
@@ -989,6 +1236,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         final(out).gives(r, size as int),
         p@.addr != 0 ==> blk.block(p),
         p@.addr != 0 && size != 0 && r@.addr == 0 ==> *final(out) == blk,
+        p@.addr != 0 && size != 0 ==> (r@.addr == p@.addr <==> keeps(p, size, 1, blk.len())),
         r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
         p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
@@ -1023,12 +1271,46 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         shared.lemma_regions_ok();
         blk.theorem_apart(out);
         crate::vspec::addr::axiom_moved_block(p, old, q, size);
+        // The new block is apart from `p`'s, so not at `p`: a move.
+        blk.lemma_len_pos();
+        assert(q@.addr != p@.addr);
     }
     // SAFETY: `p` has `old` readable bytes, `q` at least `size` writable
     // ones, and they are distinct allocations.
     unsafe { ptr::copy_nonoverlapping(p, q, old.min(size)) };
     heap::free(shared, p, Tracked(blk));
     q
+}
+
+/// Realloc keeps whenever it can (`verus/THEOREMS.md`), composed as C
+/// calls it: `n = malloc_usable_size(p)` ([`usable_size`], the live block's
+/// usable size with its token `blk`), then `realloc(p, n)`
+/// ([`realloc_block`] with the same token, as `axiom_c_claim` gives it)
+/// returns `p` exactly when `p` is a slot, or a run of more than
+/// `MEDIUM_MAX` usable bytes ([`lemma_keeps_usable`]).
+///
+/// Verification only (`cfg(verus_only)`): the build has no such function.
+#[cfg(verus_only)]
+fn theorem_realloc_to_usable_size(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: (usize, *mut u8))
+    requires
+        crate::sys::may_syscall(),
+        blk.claims(p),
+        p@.addr != 0,
+    ensures
+        heap::free_target(p),
+        usable_of(p, r.0 as int),
+        r.1@.addr == p@.addr <==> heap::slot_start(p) || r.0 > MEDIUM_MAX,
+{
+    let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
+    let n = usable_size(shared, p, Tracked(&blk));
+    proof {
+        shared.lemma_regions_ok();
+        blk.lemma_len_pos();
+        lemma_keeps_usable(p, n);
+    }
+    let tracked mut out = Live::empty();
+    let q = realloc_block(p, n, Tracked(blk), Tracked(&mut out), Tracked(errno));
+    (n, q)
 }
 
 /// `reallocarray`: `realloc(p, n * m)` with overflow reported as `ENOMEM`.
@@ -1430,6 +1712,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         final(out).gives(r.0, size as int),
         p@.addr != 0 ==> blk.block(p),
         p@.addr != 0 && size != 0 && r.0@.addr == 0 ==> *final(out) == blk,
+        p@.addr != 0 && size != 0 ==> (r.0@.addr == p@.addr <==> keeps(p, size, 1, blk.len())),
         r.0@.addr == 0 ==> r.1@.val() == 0,
         r.0@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
         p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
@@ -1465,6 +1748,9 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         shared.lemma_regions_ok();
         blk.theorem_apart(out);
         crate::vspec::addr::axiom_moved_block(p, old, q, size);
+        // The new block is apart from `p`'s, so not at `p`: a move.
+        blk.lemma_len_pos();
+        assert(q@.addr != p@.addr);
     }
     // SAFETY: `p` has `old` readable bytes, `q` at least `size` writable
     // ones, and they are distinct allocations.
@@ -1475,9 +1761,10 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
 
 /// [`old_size_or_keep`]'s decision for `realloc` (alignment 1) with the
 /// old usable size reported in both outcomes: `(keep, usable)`, `keep`
-/// when `size` maps to `p`'s class or to a huge run of the same page
-/// count ([`kept`]). The same checks and aborts as `old_size_or_keep`, in
-/// a function of its own so that `realloc` and `rallocx` keep their code.
+/// exactly when `size` maps to `p`'s class or, with no class, to a huge
+/// run of the same page count ([`keeps`]; it fits: [`kept`]). The same
+/// checks and aborts as `old_size_or_keep`, in a function of its own so
+/// that `realloc` and `rallocx` keep their code.
 /// The usable size is `p`'s ([`usable_of`]) and, for a kept block, the
 /// usable size of a request of `size` bytes ([`usable_is`]). `blk` as for
 /// `old_size_or_keep`.
@@ -1489,6 +1776,7 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
     ensures
         heap::free_target(p),
         r.0 ==> kept(p, size as int, 1),
+        r.0 <==> keeps(p, size, 1, blk.len()),
         usable_of(p, r.1 as int),
         r.0 ==> usable_is(p, size as int, r.1 as int),
         blk.block(p),
@@ -1517,6 +1805,9 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
                 blk.lemma_claims_slot(p, class as int);
                 blk.lemma_claimed_block(p);
                 blk.lemma_slot_len(p, class as int);
+                // `class_of` is `class_for` at alignment 1.
+                lemma_class_of_for(size);
+                lemma_keeps_slot(p, class as int, size, 1, blk.len());
             }
             (class_of(size) == Some(class), class_size(class))
         }
@@ -1536,6 +1827,10 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
                 if size <= old {
                     crate::vspec::usable::lemma_run_bytes_block(p@.addr, old as int, size as int);
                 }
+                // The test is `keeps`'s run half.
+                lemma_class_of_for(size);
+                lemma_keeps_run(p, size, 1, blk.len());
+                lemma_usable_for_run(shared, p, size, old);
             }
             (class_of(size).is_none() && shared.huge.usable_for(size) == Some(old), old)
         }
@@ -2484,6 +2779,30 @@ mod tests {
         let r = reallocarray(ptr::null_mut(), 8, 8);
         assert!(malloc_usable_size(r) >= 64);
         free(r);
+    }
+
+    /// `realloc(p, malloc_usable_size(p))` keeps `p` for every slot class
+    /// and for runs above `MEDIUM_MAX` (`libc::keeps`, "Realloc keeps
+    /// whenever it can" in `verus/THEOREMS.md`), and a slot is kept for the
+    /// smallest and the largest size of its class.
+    #[test]
+    fn realloc_to_usable_size_keeps() {
+        for c in 0..crate::layout::NCLASSES {
+            let s = class_size(c);
+            let p = malloc(s);
+            assert_eq!(malloc_usable_size(p), s);
+            assert_eq!(realloc(p, s), p, "class {c} ({s} bytes)");
+            let below = if c == 0 { 1 } else { class_size(c - 1) + 1 };
+            assert_eq!(realloc(p, below), p, "class {c} from {below} bytes");
+            free(p);
+        }
+        let page = super::super::shared().regions.page_size();
+        for n in [MEDIUM_MAX + 1, MEDIUM_MAX + page + 1, 3 << 20] {
+            let p = malloc(n);
+            let u = malloc_usable_size(p);
+            assert_eq!(realloc(p, u), p, "run of {n} bytes");
+            free(p);
+        }
     }
 
     #[test]

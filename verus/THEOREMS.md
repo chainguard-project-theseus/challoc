@@ -3529,6 +3529,141 @@ premises (`axiom_class_table_wf`).
   documented no-op; that NULL is no free target says only that they
   cannot have acted on a block there.
 
+## 25. Realloc keeps whenever it can
+
+The coordinator assigns this theorem its number at merge. The
+`file:line`s are the `fn`/`spec` line at this section's commit.
+
+**Statement** (`api/libc.rs:896`, `:1072`, `:1137`, `:1242`, `:1308`,
+`:1716`, `:1785`; `api/jemalloc.rs:344`):
+
+```rust
+// The keep rule, exactly: a slot of the class `class_for` picks, or a run
+// start when no class serves `size` at `align`, `size` rounds up to the
+// run's usable bytes `len` and `p` is a multiple of `align`.
+pub open spec fn keeps(p: *mut u8, size: usize, align: usize, len: int) -> bool {
+    ||| exists|c: int| process_regions().is_slot(c, p@.addr)
+            && spec_class_for(size, align) == Some(c as usize)
+    ||| process_regions().is_huge_block(p@.addr, 1)
+            && spec_class_for(size, align) is None
+            && huge_usable(size as int) == len
+            && (p@.addr as int) % (align as int) == 0
+}
+
+fn old_size_or_keep(shared, what, p, size, align, blk: &Live) -> (r: Option<usize>)
+    ensures r is None <==> keeps(p, size, align, blk.len()), ...
+fn realloc_old(shared, p, size, blk: &Live) -> (r: (bool, usize))
+    ensures r.0 <==> keeps(p, size, 1, blk.len()), ...
+fn realloc_block(p, size, blk: Live, out, errno) -> (r: *mut u8)
+    ensures p@.addr != 0 && size != 0
+        ==> (r@.addr == p@.addr <==> keeps(p, size, 1, blk.len())), ...
+fn realloc_usable_stored(p, size, usable, blk: Live, out, errno) -> (r: (*mut u8, _))
+    ensures p@.addr != 0 && size != 0
+        ==> (r.0@.addr == p@.addr <==> keeps(p, size, 1, blk.len())), ...
+fn rallocx_zeroed(p, size, flags, blk: Live, out) -> (r: (*mut u8, _, _))
+    ensures p@.addr != 0
+        ==> (r.0@.addr == p@.addr <==> keeps(p, size, 1usize << (flags & 0x3f), blk.len())), ...
+
+// The corollary: for `p`'s usable size `n` (`usable_of`), the rule keeps
+// exactly a slot, or a run of more than MEDIUM_MAX usable bytes.
+pub proof fn lemma_keeps_usable(p: *mut u8, n: usize)
+    requires regions_ok(), free_target(p), usable_of(p, n as int),
+    ensures keeps(p, n, 1, n as int) <==> slot_start(p) || n > MEDIUM_MAX,
+
+// Composed as C calls it (verification only, cfg(verus_only)):
+// n = malloc_usable_size(p) (usable_size with p's token), then realloc(p, n).
+fn theorem_realloc_to_usable_size(p, blk: Live, errno) -> (r: (usize, *mut u8))
+    requires may_syscall(), blk.claims(p), p@.addr != 0,
+    ensures
+        free_target(p),
+        usable_of(p, r.0 as int),
+        r.1@.addr == p@.addr <==> slot_start(p) || r.0 > MEDIUM_MAX,
+```
+
+(Abridged: the `ensures` above are added to the existing ones.) In
+words: `realloc(p, size)` with `size != 0` returns `p` exactly when `size`
+maps to `p`'s class (`class_of(size)` is `p`'s class: `size` lies in
+`(size of the class below, size of p's class]`), or when `p` is a huge run
+start, `size > MEDIUM_MAX` and `size` rounded up to whole pages is the
+run's usable size; otherwise it moves (or fails, returning null). The
+earlier `kept` (`:863`) remains the forward half: a kept block fits.
+`rallocx` adds the alignment: a slot of the class `class_for(size, align)`
+picks, or a run start that is a multiple of `align`. The move case is
+`r != p` because the new block's token and `p`'s are apart
+(`Live::theorem_apart`) and both have usable bytes (`Live::lemma_len_pos`,
+`heap/live.rs:140`).
+
+**Corollary and finding.** `realloc(p, malloc_usable_size(p))` keeps every
+slot and every run of more than `MEDIUM_MAX` usable bytes, and **moves a
+run of `MEDIUM_MAX` bytes or fewer**: its usable size maps to a class, and
+the rule keeps a run only for a size no class serves. Such runs exist:
+`aligned_alloc`, `memalign`, `posix_memalign` and `mallocx` with an
+alignment above `MEDIUM_MAX` and a size of `MEDIUM_MAX` or less get a run
+of the size rounded up to whole pages (one page for a size up to a
+page), at most `MEDIUM_MAX` bytes (`class_for` returns `None` for any
+`align > MEDIUM_MAX`). So
+`p = aligned_alloc(512 KiB, 16)`, `n = malloc_usable_size(p)` (one page,
+4096 on x86_64), `realloc(p, n)` returns a new slot, and so does every
+`realloc` of `p` to a size a class serves. The move is correct (contents
+are copied, the result fits; `realloc` owes no alignment beyond the
+quantum), and jemalloc also moves a large extent to a small size, but
+it is a block the allocator could keep. Reproduction:
+`p = aligned_alloc(2 * MEDIUM_MAX, 16); realloc(p, malloc_usable_size(p))`
+returns a different pointer;
+`realloc_to_usable_size_keeps` checks the kept cases for every class and
+three run sizes. Keeping it would change the run half of the rule (keep a
+run whenever `huge_usable(size) == len`, whatever `class_of(size)` says),
+an exec change on `realloc`'s path left to the coordinator.
+
+**Proof.** `lemma_keeps_slot` (`:907`) and `lemma_keeps_run` (`:921`)
+reduce `keeps` to its slot or run half (one class per slot,
+`vspec::zero::lemma_slot_unique`; no slot is a huge page start,
+`lemma_slot_not_huge`). The slot half is the test the code makes:
+`class_for`'s `spec_class_for` postcondition, and for `realloc_old`'s
+`class_of` `lemma_class_of_for` (`:1039`: the class at or above `size`
+with every class below smaller is the least serving class at alignment
+1, and none serves above `MEDIUM_MAX`). The run half is the code's
+`usable_for(size) == Some(old)`: `lemma_usable_for_run` (`:980`) shows
+`usable_for`'s value is `huge_usable(size)` whenever it is defined, and
+that when `size` rounded up overflows no run's usable size equals it (a
+run and its guard page lie in the huge region, so `old <= usize::MAX -
+page`). `old` is `blk.len()` by `Huge::usable_size`'s token
+postcondition. The corollary: a slot's usable size is its class's size,
+which `lemma_class_size_mono` makes the least serving class; a run's is
+whole pages (`run_bytes`), which round up to themselves, and maps to no
+class exactly above `MEDIUM_MAX` (`lemma_class_for_one`, `:1020`, finds
+a serving class below the last, whose size is `MEDIUM_MAX`).
+
+**Premises beyond the common ones.**
+- The C contract `heap::live::axiom_c_claim` (`heap/live.rs:679`): the
+  token `realloc` takes for `p` is the live block's, so `blk.len()` is the
+  usable size `malloc_usable_size` reads.
+- `vspec::class::axiom_class_table_wf` (`vspec/class.rs:12`): the class
+  table holds `spec_class_size`.
+- Nothing else new: `class_of`, `class_for`, `Huge::usable_for` and
+  `Huge::usable_size` are verified.
+
+**Scope.** `realloc`, `reallocarray` and `challoc_realloc_usable` (through
+`realloc_block` and `realloc_usable_stored`), and `rallocx` (through
+`rallocx_zeroed`), for a non-null `p` they are allowed to free. `size ==
+0` frees `p` (`realloc`) and is outside the rule there; `rallocx` applies
+the rule to 0 too.
+
+**Where the statement is weaker than the code.**
+- It is stated on the `_block` cores, with the caller's token: the C
+  entry points `realloc`, `realloc_usable` and `rallocx` make the token
+  inside (`axiom_c_claim`), so their own `ensures` cannot name its
+  `len`, and do not state the rule.
+- `malloc_usable_size` takes no token, so its `ensures` (`usable_of`)
+  does not pin a run's usable size to its descriptor's value; the
+  composition goes through `usable_size` with `p`'s token
+  (`theorem_realloc_to_usable_size`), which is what `malloc_usable_size`
+  runs, with an empty token.
+- `theorem_realloc_to_usable_size` composes the two calls in one
+  function, with the same token for both, as `axiom_c_claim` would give
+  it at each call; nothing ties two separate C calls (another thread
+  could free `p` between them, which the C contract forbids).
+
 ## Interface contract
 
 The per-call theorems above (1-3, 5-7 and the "Bad input" section)

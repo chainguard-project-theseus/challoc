@@ -52,7 +52,7 @@ use core::ptr;
 
 use super::libc::{class_for, old_size_or_keep, usable_size};
 #[cfg(verus_only)]
-use super::libc::{lemma_class_aligned, spec_class_for};
+use super::libc::{keeps, lemma_class_aligned, spec_class_for};
 #[cfg(verus_only)]
 use crate::heap::mallocx::MALLOCX_ZERO;
 use crate::heap::mallocx::{self, Flags, Tcache};
@@ -306,11 +306,12 @@ pub fn mallocx_zeroed(size: usize, flags: c_int, Tracked(blk): Tracked<&mut Live
 }
 
 /// `rallocx(p, size, flags)`: in place when the new size maps to the same
-/// class (whose slots satisfy the requested alignment by construction) or
-/// the same number of huge pages at a start that satisfies it
-/// (`libc::old_size_or_keep`); otherwise allocate per `flags`, copy
-/// `min(old usable, size)`, free `p` through the flags' cache.
-/// `MALLOCX_ZERO` zeroes the bytes beyond the copied prefix of a moved
+/// class (whose slots satisfy the requested alignment by construction)
+/// or, for a size no class serves at the alignment, to the same number of
+/// huge pages at a start that satisfies it (`libc::old_size_or_keep`;
+/// exactly then: `libc::keeps` in [`rallocx_zeroed`]); otherwise
+/// allocate per `flags`, copy `min(old usable, size)`, free `p` through
+/// the flags' cache. `MALLOCX_ZERO` zeroes the bytes beyond the copied prefix of a moved
 /// block. On failure `p` is intact and null comes back. C holds the
 /// token of the block it passes ([`crate::heap::live::axiom_c_claim`]),
 /// and gets the result's.
@@ -364,6 +365,7 @@ pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Track
         final(out).gives(r.0, size as int),
         p@.addr != 0 ==> blk.block(p),
         p@.addr != 0 && r.0@.addr == 0 ==> *final(out) == blk,
+        p@.addr != 0 ==> (r.0@.addr == p@.addr <==> keeps(p, size, (1usize << ((flags as u32) & 0x3f)), blk.len())),
 {
     let f = Flags::decode(flags as u32);
     if p.is_null() {
@@ -398,6 +400,10 @@ pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Track
         shared.lemma_regions_ok();
         blk.theorem_apart(out);
         crate::vspec::addr::axiom_moved_block(p, old, q, size);
+        // The new block is apart from `p`'s, so not at `p`: a move.
+        blk.lemma_len_pos();
+        out.lemma_len_pos();
+        assert(q@.addr != p@.addr);
     }
     let ghost k = if old < size { old as int } else { size as int };
     proof {

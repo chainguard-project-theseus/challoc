@@ -916,12 +916,12 @@ fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live
 
 ### S7. `store_usable`
 
-src/api/libc.rs:1076. Kind: external_body. Category: raw pointer from C caller.
+src/api/libc.rs:1358. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store `n` through `usable` unless it is null (`usable` is optional for the three allocating entry points; a null makes them plain `malloc`/`calloc`/`realloc`), with the [`Stored`] token for the store.
 
-Body mints Tracked at line 1085.
+Body mints Tracked at line 1367.
 
 ```rust
 fn store_usable(usable: *mut usize, n: usize) -> (s: Tracked<Stored>)
@@ -932,7 +932,7 @@ fn store_usable(usable: *mut usize, n: usize) -> (s: Tracked<Stored>)
 
 ### S8. `store_out`
 
-src/api/libc.rs:1915. Kind: external_body. Category: raw pointer from C caller.
+src/api/libc.rs:2210. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store the allocation through `posix_memalign`'s out-pointer.
@@ -2467,7 +2467,7 @@ pub assume_specification[ seed ]() -> u64
 
 ### S115. `axiom_c_claim`
 
-src/heap/live.rs:710. Kind: axiom. Category: C-program contract.
+src/heap/live.rs:722. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The C contract of `free`, `realloc` and the sized frees: only a block's holder frees or reallocates it, and the holder of the block at `p` holds its token, which the allocation that made it handed to C with the block.
