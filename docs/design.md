@@ -418,9 +418,9 @@ struct CacheHeader {                         // one per (arena, class), 64 bytes
 }
 ```
 
-The headers are dense inside the heap: `malloc` reaches `len` at `heap +
-128 + 64 * c` with no pointer load, and a thread's headers share one
-page. Each class's stack is its own metadata object, allocated on the
+The headers are dense at the start of the heap: `malloc` reaches `len`
+at `heap + 64 * c` with no pointer load and no offset to add, and a
+thread's headers share one page. Each class's stack is its own metadata object, allocated on the
 class's first slow path (`Heap::ensure_cache`), so a thread pays only for
 the classes it touches; one contiguous slot block per heap cost a freeing
 thread three to four times the L1D fills. The per-thread byte counters
@@ -529,18 +529,23 @@ remain for explicit `MALLOCX_ARENA` allocations and `thread.arena`.
 
 `sdallocx(p, n, flags)`, `free_sized(p, n)`, `free_aligned_sized(p, a, n)`
 (the sized path):
-1. If `p` is null return. `c_hint = class_for(n, align)` (huge: slow
-   path). `sdallocx` with `flags == 0` (what Valkey passes on every free)
+1. `c_hint = class_for(n, align)` (huge: slow path, which returns on a
+   null `p`). `sdallocx` with `flags == 0` (what Valkey passes on every free)
    tests that first and takes `free_sized`'s path, `c_hint = class_of(n)`,
    without decoding the flags (alignment shift, tcache bits), as
    jemalloc's `sdallocx` does; any other flags take a call
    (`sdallocx_flags`), so the compiler cannot merge the two inlined sized
    paths behind a test of the hint, and a huge size leaves for the slow
    path before the heap lookup. The hint names the region: `rel = p - class_base[c_hint]`; if
-   `rel` is past the region or not a slot start, slow path. A guard slab
-   goes to the slow path too, tested with one 8-byte load from a dense
-   per-class pair (`Shared::guard_test[c]`, `GuardTest`: `(slab +
-   slabs_per_page) & mask == 0`). The class table line is not touched.
+   `rel` is past the region (one compare with the stored region length,
+   which also sends a null `p` to the slow path: there is no separate
+   null test) or not a slot start, slow path. A guard slab goes to the
+   slow path too (`(slab + slabs_per_page) & mask == 0`, `GuardTest`).
+   Every per-class constant of this step (the region base, the slot-start
+   test's mask, multiplier, rotation and slot count, the slab shift, the
+   guard pair) is one 32-byte entry, `Shared::sized[c]` (`SizedClass`),
+   copied at init, so the step reads one line of class data. The class
+   table line is not touched.
 2. `heap = tls()`; `cache = heap.caches[c]`; if `len == cap`, slow path.
    `slots[len++] = p`. Neither the bitmap word nor the owner word is
    loaded.
@@ -1539,7 +1544,7 @@ src/heap/paths.rs     the inlined fast paths, the cold slow paths, free_other
 src/heap/flush.rs     refill and flush; group_by_slab and the straddling double-free abort
 src/heap/compact.rs   the compacting cache: probe/compact modes, scheduled pop, rebuild (6.4)
 src/heap/others.rs    caches for other arenas (ArenaCaches) and the FOREIGN flush-only cache
-src/heap/shared.rs    Shared: process-wide state, init, the free checks and routing, GuardTest, the thread-exit key
+src/heap/shared.rs    Shared: process-wide state, init, the free checks and routing, SizedClass and GuardTest, the thread-exit key
 src/heap/thread.rs    thread lifecycle (6.5): TLS sentinels, heap creation, the exit destructor
 src/heap/tcaches.rs   explicit caches (tcache.create)
 src/heap/mallocx.rs   MALLOCX_* flag decoding and the mallocx/dallocx routing

@@ -52,6 +52,12 @@ pub struct Regions {
     pub superblock: usize,
     pub lg_region: u32,
     pub lg_stride: u32,
+    /// `1 << lg_region`, stored so that the sized free's region bound
+    /// (`Shared::sized_slot`) is one compare with a memory operand:
+    /// against the shift LLVM emits a load of the shift count, a copy, a
+    /// shift and a test (3 instructions more on x86_64 per `sdallocx`).
+    /// On the line `free_flags` and `superblock` share.
+    region_len: usize,
     /// Start of each class region, `MAX_SLAB`-aligned, inside its stride.
     pub class_base: [usize; NCLASSES],
     pub huge_base: usize,
@@ -93,6 +99,7 @@ impl Regions {
             superblock,
             lg_region,
             lg_stride,
+            region_len: 1 << lg_region,
             class_base,
             huge_base: huge.0,
             huge_len: huge.1,
@@ -107,7 +114,7 @@ impl Regions {
 
     #[inline]
     pub const fn region_len(&self) -> usize {
-        1 << self.lg_region
+        self.region_len
     }
 
     #[cfg(test)]
@@ -261,9 +268,12 @@ impl Regions {
     /// subtraction and a compare replace [`slab_slot`]'s superblock
     /// subtraction, stride shift, bound check and class compare. `class`
     /// must be below `NCLASSES` (what `class_of`/`class_for` return).
+    /// The reference form of the sized fast path's test, which reads the
+    /// same constants from `heap::SizedClass` (the tests check the two
+    /// against each other).
     ///
     /// [`slab_slot`]: Regions::slab_slot
-    #[inline(always)]
+    #[cfg(test)]
     pub fn slot_in_class(&self, class: usize, p: usize) -> Option<(usize, usize)> {
         debug_assert!(class < NCLASSES);
         // SAFETY: the caller's `class` is an index `class_of` produced.

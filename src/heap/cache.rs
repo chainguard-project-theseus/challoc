@@ -200,7 +200,7 @@ impl CacheHeader {
 }
 
 impl Heap {
-    /// The home header for `class`: `heap + 128 + 64 * class`, no load.
+    /// The home header for `class`: `heap + 64 * class`, no load.
     #[inline(always)]
     pub(super) fn cache_ptr(&mut self, class: usize) -> *mut CacheHeader {
         debug_assert!(class < NCLASSES);

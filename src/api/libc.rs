@@ -201,9 +201,9 @@ pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>) {
     let Some(c) = hint else {
         return free_sized_unhinted(p, size);
     };
-    if p.is_null() {
-        return;
-    }
+    // No null test here: null is below every class region, so its offset
+    // from the hint's region base wraps past the region bound and
+    // `slot_in_class` declines it; the slow path returns on null.
     let sp = super::shared_base();
     if let Some(h) = heap::existing_heap(sp) {
         // SAFETY: as in `free`.
@@ -225,12 +225,16 @@ fn free_sized_unhinted(p: *mut u8, size: usize) {
     }
 }
 
-/// Off the sized fast path: the hint mismatch abort, then everything the
-/// exact `free` does (so a full cache or a huge run still gets the exact
-/// check, and a bad pointer the usual message).
+/// Off the sized fast path: a null pointer (which the fast path's region
+/// bound declines rather than testing for), the hint mismatch abort, then
+/// everything the exact `free` does (so a full cache or a huge run still
+/// gets the exact check, and a bad pointer the usual message).
 #[cold]
 #[inline(never)]
 fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>) {
+    if p.is_null() {
+        return;
+    }
     match super::shared_if_ready() {
         Some(shared) => {
             shared.check_size_hint(p, size, hint);

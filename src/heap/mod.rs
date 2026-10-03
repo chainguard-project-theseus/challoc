@@ -4,7 +4,7 @@
 //! Every thread that allocates gets a [`Heap`] in the metadata region,
 //! reached through the one TLS slot in `sys/tls.rs`. A heap holds one
 //! [`CacheHeader`] per size class inline, one 64-byte line each at
-//! `heap + 128 + 64 * class`, so `malloc` reaches the header without
+//! `heap + 64 * class`, so `malloc` reaches the header without
 //! loading a pointer first. A header points at its stack of `cap` slot
 //! pointers: slots marked allocated in their slab bitmaps but not live in
 //! the program. The stack is a metadata object of its own, allocated on
@@ -64,7 +64,7 @@ pub use paths::{
 };
 pub use shared::Shared;
 #[cfg(test)]
-use shared::{GuardTest, guard_interval_for};
+use shared::{GuardTest, SizedClass, guard_interval_for};
 pub use thread::{TLS_CREATING, TLS_EXITED, fast_flags};
 pub use thread::{existing_heap, heap_destructor, heap_for_thread, tls_heap_slot};
 
@@ -144,10 +144,17 @@ impl ThreadStats {
 /// One thread's allocator state (design 6.2). Lives in the metadata region;
 /// reached through the TLS slot. Also the shape of an explicit cache
 /// (`tcache.create`), which is a heap owned by no thread. `repr(C)` so the
-/// header array sits at a fixed offset the fast paths can add to the TLS
-/// pointer.
+/// header array sits at offset 0: `caches[c]` is the TLS pointer plus
+/// `64 * c`, one `shl` and one `add` on the `malloc`, `free` and `sdallocx`
+/// fast paths, where the earlier offset of 128 cost each of them a second
+/// `add` on x86_64 (the header is addressed by three or four accesses, so
+/// LLVM materialises its address rather than folding the offset).
 #[repr(C)]
 pub struct Heap {
+    /// Caches of the home arena, one line per class; first, so the fast
+    /// paths add no offset to the heap pointer (above), and the small
+    /// fields below share the two lines after them.
+    caches: [CacheHeader; NCLASSES],
     shared: *const Shared,
     tid: u32,
     /// Home arena: where plain `malloc` allocates from, and the arena whose
@@ -177,12 +184,9 @@ pub struct Heap {
     /// randomised claim seeds it from `getrandom`, so the
     /// default configuration makes no syscall per heap creation.
     rng: u64,
-    /// Caches of the home arena, one line per class; last, so the small
-    /// fields above share two lines and `caches[c]` is `heap + 128 + 64 * c`.
-    caches: [CacheHeader; NCLASSES],
 }
 
-const _: () = assert!(core::mem::offset_of!(Heap, caches) == 128);
+const _: () = assert!(core::mem::offset_of!(Heap, caches) == 0);
 
 impl Heap {
     /// Create a heap in the metadata region for the calling thread, homed

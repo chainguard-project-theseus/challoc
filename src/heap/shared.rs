@@ -1,7 +1,7 @@
 //! [`Shared`], the process-wide allocator state every heap works against,
 //! and the checks it performs for the fast and slow paths; the thread-exit
 //! key and the thread id, clock and seed a heap reads, and the sized fast
-//! path's [`GuardTest`].
+//! path's [`SizedClass`] and [`GuardTest`].
 
 use core::ffi::c_void;
 use core::ptr;
@@ -67,11 +67,11 @@ pub struct Shared {
     /// one predicted branch.
     pub(super) push_flags: u8,
     pub regions: Regions,
-    /// The sized fast path's guard test per class: a dense array (8 bytes
-    /// per class, seven lines for all 52) so `sized_slot` never touches
-    /// the 384-byte class table line (it reads neither the watermark nor
-    /// the descriptor; both checks are the flush's).
-    pub(super) guard_test: [GuardTest; NCLASSES],
+    /// Everything the sized fast path reads per class, one 32-byte entry
+    /// each ([`SizedClass`]), so `sized_slot` touches one line of class
+    /// data and never the 384-byte class table line (it reads neither the
+    /// watermark nor the descriptor; both checks are the flush's).
+    pub(super) sized: [SizedClass; NCLASSES],
     tables: [SlabTable; NCLASSES],
     pub arena0: Arena,
     pub meta: Meta,
@@ -143,6 +143,56 @@ const _: () = assert!(
         == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, lg_stride))
             / 128
 );
+
+/// The sized fast path's per-class constants (`Shared::sized_slot`), copied
+/// at init from the three places they live for everything else: the class
+/// region's base (`Regions::class_base`), the slab geometry and slot-start
+/// test (`CLASSES[c]`, [`crate::layout::Class::slot_of_offset`]) and the
+/// guard test ([`GuardTest`]). One entry per class, 32 bytes and 32-byte
+/// aligned, so a sized free reads one line of class data instead of three
+/// (base, geometry, guard) and addresses it with one shift of the class
+/// index (on x86_64 two instructions fewer per `sdallocx` than the
+/// 32-byte `CLASSES` entry and the two 8-byte arrays). Never written after
+/// init; `sized_class_agrees_with_the_layout` checks every field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C, align(32))]
+pub struct SizedClass {
+    pub(super) base: usize,
+    pub(super) slab_mask: u32,
+    pub(super) inv_odd: u32,
+    pub(super) nslots: u32,
+    pub(super) guard: GuardTest,
+    pub(super) tz: u8,
+    pub(super) lg_slab: u8,
+}
+
+const _: () = assert!(core::mem::size_of::<SizedClass>() == 32);
+
+impl SizedClass {
+    pub(super) fn of(regions: &Regions, class: usize, table: &SlabTable) -> SizedClass {
+        let cls = &CLASSES[class];
+        SizedClass {
+            base: regions.class_base[class],
+            slab_mask: cls.slab_mask,
+            inv_odd: cls.inv_odd,
+            nslots: cls.nslots,
+            guard: GuardTest::of(table),
+            tz: cls.tz,
+            lg_slab: cls.lg_slab,
+        }
+    }
+
+    /// [`Regions::slot_in_class`] and the guard test on this entry alone:
+    /// whether `rel` (the pointer minus `base`, already checked against
+    /// the region length) is a slot start in a non-guard slab.
+    #[inline(always)]
+    pub(super) fn accepts(&self, rel: usize) -> bool {
+        let q = (rel as u32 & self.slab_mask)
+            .wrapping_mul(self.inv_odd)
+            .rotate_right(self.tz as u32);
+        q < self.nslots && !self.guard.is_guard(rel >> self.lg_slab)
+    }
+}
 
 /// The `pthread_key` whose destructor tears down a thread's heap.
 pub(super) struct ThreadKey {
@@ -301,9 +351,12 @@ impl Shared {
                     None => return false,
                 }
             }
-            let guard_test = &raw mut (*this).guard_test;
+            let sized = &raw mut (*this).sized;
             for c in 0..NCLASSES {
-                ptr::write(&raw mut (*guard_test)[c], GuardTest::of(&(*tables)[c]));
+                ptr::write(
+                    &raw mut (*sized)[c],
+                    SizedClass::of(regions, c, &(*tables)[c]),
+                );
             }
             let arena0 = &raw mut (*this).arena0;
             if !Arena::init(arena0, meta, regions, &*tables, 0, decay_ns) {
@@ -548,11 +601,11 @@ impl Shared {
     /// The sized free's check (`sdallocx`, `free_sized`; design 6.3): `p`
     /// must be a slot start in a non-guard slab of the class the size hint
     /// names, `hint` (`class_for(size, align)`, `None` for a huge size).
-    /// Arithmetic on the pointer and two dense lines: the hint names the
-    /// region, so [`Regions::slot_in_class`] checks the pointer against
-    /// that region alone (no superblock classification and no class
-    /// compare), and the guard test is one
-    /// 8-byte load from [`GuardTest`]'s dense array. Neither the slab
+    /// Arithmetic on the pointer and one 32-byte entry of class constants
+    /// ([`SizedClass`]): the hint names the region, so the pointer is
+    /// checked against that region alone (the [`Regions::slot_in_class`]
+    /// test: no superblock classification and no class compare), then
+    /// the slot-start and guard tests. Neither the slab
     /// descriptor nor the class table line is touched: the bit test that
     /// makes plain `free` exact is left to the flush, and so is the
     /// watermark. A slot start in a slab no arena has been handed, or in
@@ -573,13 +626,41 @@ impl Shared {
     #[inline(always)]
     pub(super) fn sized_slot(&self, p: *mut u8, hint: Option<usize>) -> Option<usize> {
         let class = hint?;
-        let (slab, _slot) = self.regions.slot_in_class(class, p as usize)?;
-        // SAFETY: `class_of`/`class_for` only produce `class < NCLASSES`
-        // (`slot_in_class` relies on the same).
-        if unsafe { self.guard_test.get_unchecked(class) }.is_guard(slab) {
+        // SAFETY: `class_of`/`class_for` only produce `class < NCLASSES`.
+        let e = unsafe { self.sized_entry(class) };
+        let rel = (p as usize).wrapping_sub(e.base);
+        if rel >= self.regions.region_len() || !e.accepts(rel) {
             return None;
         }
         Some(class)
+    }
+
+    /// `&self.sized[class]` for [`Shared::sized_slot`], `class <
+    /// NCLASSES`. On x86_64 the array's address goes through an empty
+    /// `asm!` (as `layout`'s `class_entry` does for `CLASSES`), so it is
+    /// one `lea`: left alone, LLVM addresses the base load as `(scaled
+    /// index, SHARED, offset)` and then adds `SHARED` and the array's
+    /// offset to the index again, separately, for the other fields, two
+    /// instructions more per `sdallocx`.
+    ///
+    /// # Safety
+    /// `class < NCLASSES`.
+    #[inline(always)]
+    unsafe fn sized_entry(&self, class: usize) -> &SizedClass {
+        debug_assert!(class < NCLASSES);
+        let p: *const SizedClass = self.sized.as_ptr();
+        #[cfg(target_arch = "x86_64")]
+        let p = {
+            let mut p = p;
+            // SAFETY: an empty instruction sequence; `p` comes out unchanged.
+            unsafe {
+                core::arch::asm!("/* {0} */", inout(reg) p, options(pure, nomem, nostack, preserves_flags))
+            };
+            p
+        };
+        // SAFETY: `class < NCLASSES` (the caller's contract), so this is an
+        // entry of `sized`, never written after init.
+        unsafe { &*p.add(class) }
     }
 
     /// The sized free's abort: a slab pointer whose class is not the one

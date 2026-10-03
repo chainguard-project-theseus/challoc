@@ -295,11 +295,11 @@ fn default_caps_follow_the_design_table() {
         assert_eq!(l.size(), 8 * cap as usize);
         assert_eq!(l.align(), 16);
     }
-    // One line per header, headers dense in the heap, the small fields
-    // on the two lines before them.
+    // One line per header, headers dense at the start of the heap, the
+    // small fields on the two lines after them.
     assert_eq!(core::mem::size_of::<CacheHeader>(), 64);
     assert_eq!(core::mem::align_of::<CacheHeader>(), 64);
-    assert_eq!(core::mem::offset_of!(Heap, caches), 128);
+    assert_eq!(core::mem::offset_of!(Heap, caches), 0);
     assert_eq!(
         core::mem::size_of::<Heap>(),
         128 + 64 * NCLASSES,
@@ -738,6 +738,62 @@ fn a_sorted_whole_cache_flush_spans_slabs_and_catches_a_duplicate() {
     );
 }
 
+/// The sized fast path's [`SizedClass`] entries are the layout's constants
+/// (region base, `CLASSES` geometry, guard test), and `sized_slot` accepts
+/// exactly what the reference form accepts (`Regions::slot_in_class` and
+/// `SlabTable::is_guard_slab`): every offset of the first slabs, the
+/// slabs around the region end, the bytes just outside the region and
+/// null, with guards on and off.
+#[test]
+fn sized_class_agrees_with_the_layout() {
+    for s in [TestShared::new().guards().build(), shared()] {
+        let r = &s.regions;
+        for c in 0..NCLASSES {
+            let t = s.table(c);
+            let e = s.sized[c];
+            assert_eq!(e, SizedClass::of(r, c, t));
+            let cls = &CLASSES[c];
+            assert_eq!(e.base, r.class_base[c]);
+            assert_eq!(
+                (e.slab_mask, e.inv_odd, e.nslots, e.tz, e.lg_slab),
+                (cls.slab_mask, cls.inv_odd, cls.nslots, cls.tz, cls.lg_slab)
+            );
+            let base = r.class_base[c];
+            let len = r.region_len();
+            let slab = cls.slab_size();
+            let reference = |p: usize| match r.slot_in_class(c, p) {
+                Some((sl, _)) if !t.is_guard_slab(sl) => Some(c),
+                _ => None,
+            };
+            let check = |p: usize| {
+                assert_eq!(
+                    s.sized_slot(p as *mut u8, Some(c)),
+                    reference(p),
+                    "class {c} pointer {p:#x}"
+                );
+            };
+            let step = (cls.size() / 4).max(1);
+            for off in (0..(4 * slab).min(len)).step_by(step) {
+                check(base + off);
+            }
+            let n = t.nslabs();
+            for sl in (0..64.min(n)).chain(n.saturating_sub(4)..n) {
+                check(base + sl * slab);
+                check(base + sl * slab + cls.size());
+            }
+            for p in [
+                0,
+                base - 1,
+                base - cls.size(),
+                base + len,
+                base + len + cls.size(),
+            ] {
+                check(p);
+            }
+        }
+    }
+}
+
 /// The dense [`GuardTest`] the sized fast path reads agrees with
 /// [`SlabTable::is_guard_slab`] for every class over the first slabs of
 /// the region and around its end, with guards on and off.
@@ -746,7 +802,7 @@ fn guard_test_agrees_with_the_tables() {
     for s in [TestShared::new().guards().build(), shared()] {
         for c in 0..NCLASSES {
             let t = s.table(c);
-            let g = s.guard_test[c];
+            let g = s.sized[c].guard;
             assert_eq!(g, GuardTest::of(t));
             let n = t.nslabs();
             for slab in (0..1024.min(n)).chain(n.saturating_sub(64)..n) {

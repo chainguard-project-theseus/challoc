@@ -418,8 +418,8 @@ pub const BASE_CLASSES: [Class; NCLASSES] = build_classes();
 /// the page by [`adopt_page_geometry`] once at init. It is a table at a
 /// fixed address, not a pointer selected at init
 /// and not a runtime shift where `lg_slab` is read, so the `free` and
-/// `sdallocx` fast paths (`Regions::slab_slot`, `Regions::slot_in_class`)
-/// load a class's geometry exactly as they did from the compile-time
+/// `sdallocx` fast paths (`Regions::slab_slot`; `heap::SizedClass` is
+/// copied from it at init) load a class's geometry exactly as they did from the compile-time
 /// table: one indexed load per field from a link-time constant address,
 /// nothing dependent added. The price is that the table lives in
 /// writable memory; the process-wide state the fast paths already trust
