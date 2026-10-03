@@ -76,6 +76,14 @@ for baselines, `fetch` copies results back, `down` stops the VMs.
   never allocates through anything but its own machinery.
 - Stable Rust only. Thread-local state goes through the asm accessor in
   `src/sys/tls.rs`, never `thread_local!`.
+- The build needs a C++ compiler for one file, `src/api/cxx_handler.cpp`:
+  the catch that lets the `nothrow_t` operators return null when the
+  `new_handler` throws (Rust cannot catch a C++ exception). build.rs
+  compiles it with `CXX_<target>`, `CXX` or `c++` (`<arch>-linux-gnu-g++`
+  when cross-compiling). The file includes no headers and references the
+  C++ runtime only weakly, so the library never needs libstdc++;
+  `cxx_symbols_in_release_so` checks that. No other C or C++ goes into
+  the library.
 - Every exported function is a top-level `pub extern "C"` function with
   `#[unsafe(no_mangle)]` or `#[unsafe(export_name = "...")]`.
 - Every kernel and CPU feature is probed at run time and has a fallback.
