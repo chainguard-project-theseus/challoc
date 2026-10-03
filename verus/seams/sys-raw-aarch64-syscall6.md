@@ -10,9 +10,7 @@ for Isla (verus/ISLA.md).
 ## 1. Contract
 
 Entry S240 of verus/SEAMS.md at 8635213 (`src/sys/raw.rs:248`, kind
-external_body, one `requires`, the system-call capability of theorem 8
-(`verus/THEOREMS.md`), no `ensures`; at d865271, where the record was
-first checked, the same with no `requires`):
+external_body, `requires crate::sys::may_syscall()`, no `ensures`):
 
 ```rust
 pub unsafe fn syscall6(
@@ -28,7 +26,7 @@ pub unsafe fn syscall6(
         crate::sys::may_syscall(),
 ```
 
-The body Verus does not see, at d865271:
+The body Verus does not see, at 8635213:
 
 ```rust
 asm!("svc 0", in("x8") nr, inlateout("x0") a0 => ret, in("x1") a1,
@@ -47,7 +45,7 @@ and checked by `verus/isla/check.rs` with Z3 4.16.0. Reproduce with
    status names is the one under `#[cfg(target_arch = "aarch64")]`.
 2. **Compiled code.** Every `svc`, `hvc` and `smc` in the aarch64
    release build is `svc #0`, encoding `d4000001` (266 instances at
-   d865271).
+   8635213).
 3. **Isla.** `svc #0` executed at Non-secure EL0 in AArch64 state, with
    the PC and the vector bases symbolic. With HCR_EL2 clear
    (`verus/isla/svc0.job`, four traces, all feasible) every trace takes
@@ -66,21 +64,18 @@ and checked by `verus/isla/check.rs` with Z3 4.16.0. Reproduce with
 The contract has no `ensures`: Verus assumes only that
 the call returns some `usize` and changes nothing it tracks. The kernel's
 effects (the mapping `mmap` creates, the bytes `read` stores) are the
-contracts of the `sys` wrappers, separate seams (FFI/syscall, tool none),
-or, where a verified wrapper passes the address of a Rust local for the
-kernel to write (`clock_gettime`, `ncpus`, `block_all_signals`), the
-`&mut` borrow that made the address: `ptr::from_mut` and
-`<[T]>::as_mut_ptr` state nothing of their referent afterwards, so Verus
-treats it as overwritten (verus/audit/c-boundary.md).
+contracts of the `sys` wrappers, separate seams (FFI/syscall, tool none).
 What the stub itself must do is the asm block's interface: enter the
 kernel with the syscall number in x8 and the arguments in x0-x5, leave
 every register the block does not declare as an output as it was, and
 resume at the next instruction with the result in x0.
 
-- **The `requires`.** `may_syscall()` is a capability with no meaning
-  (an opaque `true`): it restricts which verified callers may reach the
-  stub and asks nothing of the machine state, so it neither adds to nor
-  takes from what Isla must show. What Isla ran from is EL0 in AArch64 state,
+- **`requires crate::sys::may_syscall()`.** An opaque capability with
+  no meaning (`src/sys/mod.rs`: granted only at the roots of the call
+  graph, it tracks which paths may enter the kernel). It restricts the
+  callers and nothing here relies on it: the facts below hold without
+  it, so they hold under it.
+- **The machine state.** What Isla ran from is EL0 in AArch64 state,
   Non-secure, with the PC and the vector bases symbolic and these pinned:
   PSTATE.{EL,nRW}, SCR_EL3 = 0x401 (NS, RW), HCR_EL2 = 0 (a kernel at
   EL1) or E2H, TGE and RW (a VHE kernel at EL2), and the configuration's
@@ -134,15 +129,13 @@ VHE job given Linux's HCR_EL2 value, the target EL asserted, the
 architecture of the ledger entry checked, and two soundness holes in
 `check.rs` (an inexpressible write could be read back as the initial
 value; writes through a field accessor were not checked) fixed, with
-negative controls for both. A human review is pending.
-
-On 2026-10-03 the C and kernel boundary audit (verus/audit/c-boundary.md)
-found part 1 quoting the contract of d865271, which the record check of
-`verus/isla/run.sh` (part 1 of its checks) rejected against the ledger
-at 8635213, and revised parts 1 and 3 for the current contract. The asm
-block is unchanged, so the Isla facts stand; `run.sh` has not been
-rerun since (no Isla toolchain in that environment), and the revision
-awaits the same fresh-context and human review as the rest.
+negative controls for both. Updated on 2026-10-03 to the contract at
+8635213 (the `may_syscall` precondition, added after d865271), and
+reviewed with the other Isla records on 2026-10-03 by a fresh-context
+reviewer (a Claude subagent with no prior context of this work), told
+to look for translations that overclaim. It found nothing specific to
+the syscall records; its checker finding (`fallthrough` did not prove
+PC + 4) does not touch the `svc` jobs. A human review is pending.
 
 ## 5. Tests
 

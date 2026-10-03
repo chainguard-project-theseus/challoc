@@ -1,0 +1,17 @@
+# `brk #0x1` (sys::trap's aarch64 asm, and LLVM's trap; verus/seams/
+# sys-linux-trap.md; evidence only) at Non-secure EL0 in AArch64 state,
+# HCR_EL2 and MDCR_EL2 clear: every trace takes the software breakpoint
+# exception to EL1, with EC 0x3C (BRK from AArch64), IL set and the
+# comment 1 in the syndrome, the breakpoint itself as the return address
+# (a handler that returns re-executes it), the PC at EL1's vector for a
+# synchronous exception from a lower EL using AArch64, PSTATE at EL1 on
+# SP_EL1. No user register and no memory is written; it never falls
+# through.
+insn brk1.trace brk
+no-mem-write
+mem-reads 0
+assert (= final.ESR_EL1 #xf2000001)
+assert (= final.ELR_EL1 init._PC)
+assert (= final._PC (concat ((_ extract 63 11) init.VBAR_EL1) #b10000000000))
+assert (= final.PSTATE.EL #b01)
+assert (= final.PSTATE.SP #b1)

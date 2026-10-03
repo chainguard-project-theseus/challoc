@@ -1,0 +1,18 @@
+# The round trip (axiom_auth_sign's aarch64 half;
+# verus/seams/sys-pac-axiom_auth_sign.md): `pacda x0, x1` then
+# `autda x0, x1`, the canonical forms of sign and auth (pac-det.job.in
+# shows every site computes the same function), in one configuration
+# (pac-footprint.job.in), from a pointer below the configuration's VA
+# limit 2^@VA@. Authenticating what signing returned, with the same
+# modifier and key, gives the pointer back, whether or not EnDA is set.
+# ComputePAC is uninterpreted: both instructions apply it to the same
+# arguments, so its definition (QARMA or an implementation's own) does
+# not matter.
+abstract ComputePAC
+writes R0
+no-mem-write
+mem-reads 0
+flags-preserved
+assume (= ((_ extract 63 @VA@) init.R0) @ZEROS@)
+assert (= final.R0 init.R0)
+assert (= final._PC (bvadd init._PC #x0000000000000008))

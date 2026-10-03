@@ -87,12 +87,12 @@ documentation (kernel, ISA, C standard) its contract follows.
 
 | tool | short | seams |
 |---|---|---:|
-| Islaris/Isla | Isla | 26 |
+| Islaris/Isla | Isla | 27 |
 | RefinedRust | RR | 119 |
 | Kani | Kani | 156 |
 | loom/GenMC | GenMC | 11 |
 | Miri (evidence only) | Miri | 18 |
-| none (assumption) | none | 39 |
+| none (assumption) | none | 38 |
 
 | kind | short | seams |
 |---|---|---:|
@@ -123,7 +123,8 @@ Seams by category and tool:
 | panic/abort | Kani | 9 |
 | atomics primitive | Kani | 2 |
 | atomics primitive | loom/GenMC | 8 |
-| platform/kernel fact | none (assumption) | 10 |
+| platform/kernel fact | Islaris/Isla | 1 |
+| platform/kernel fact | none (assumption) | 9 |
 | C-program contract | none (assumption) | 7 |
 | termination | RefinedRust | 1 |
 | termination | loom/GenMC | 3 |
@@ -563,10 +564,10 @@ the full name, the line and the contract.
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
 | S226 | `axiom_user_va_limit` | axiom | platform | none | trusted |
-| S227 | `axiom_auth_sign` | axiom | platform | none | trusted |
-| S228 | `sign` | body | asm | Isla | trusted |
-| S229 | `auth` | body | asm | Isla | trusted |
-| S230 | `strip` | body | asm | Isla | trusted |
+| S227 | `axiom_auth_sign` | axiom | platform | Isla | discharged |
+| S228 | `sign` | body | asm | Isla | discharged |
+| S229 | `auth` | body | asm | Isla | discharged |
+| S230 | `strip` | body | asm | Isla | discharged |
 
 ### src/sys/raw.rs
 
@@ -579,12 +580,12 @@ the full name, the line and the contract.
 | S235 | `syscall4` | body | asm | Isla | trusted |
 | S236 | `syscall5` | body | asm | Isla | trusted |
 | S237 | `syscall6` | body | asm | Isla | trusted |
-| S238 | `syscall0` | body | asm | Isla | trusted |
+| S238 | `syscall0` | body | asm | Isla | discharged |
 | S239 | `syscall1` | body | asm | Isla | discharged |
-| S240 | `syscall2` | body | asm | Isla | trusted |
+| S240 | `syscall2` | body | asm | Isla | discharged |
 | S241 | `syscall3` | body | asm | Isla | discharged |
-| S242 | `syscall4` | body | asm | Isla | trusted |
-| S243 | `syscall5` | body | asm | Isla | trusted |
+| S242 | `syscall4` | body | asm | Isla | discharged |
+| S243 | `syscall5` | body | asm | Isla | discharged |
 | S244 | `syscall6` | body | asm | Isla | discharged |
 
 ### src/sys/tls.rs
@@ -4118,7 +4119,7 @@ pub axiom fn axiom_user_va_limit()
 ### S227. `axiom_auth_sign`
 
 src/sys/pac.rs:175. Kind: axiom. Category: platform/kernel fact.
-Tool: none (assumption). Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-pac-axiom_auth_sign.md).
 
 > Trusted (Armv8.3 PAuth, and the identity on x86_64): authenticating what signing a plain user address returned, with the same modifier, gives the address back.
 
@@ -4134,7 +4135,7 @@ pub broadcast axiom fn axiom_auth_sign(p: usize, modifier: usize)
 ### S228. `sign`
 
 src/sys/pac.rs:188. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-pac-sign.md).
 
 > Sign `p` with data key A and `modifier` (`pacda`).
 
@@ -4150,7 +4151,7 @@ pub fn sign(p: usize, modifier: usize) -> (r: usize)
 ### S229. `auth`
 
 src/sys/pac.rs:226. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-pac-auth.md).
 
 > Authenticate `p`, signed by [`sign`] with the same `modifier` (`autda`): the plain pointer, or a fault / a non-canonical pointer (module doc) when the two disagree.
 
@@ -4166,7 +4167,7 @@ pub fn auth(p: usize, modifier: usize) -> (r: usize)
 ### S230. `strip`
 
 src/sys/pac.rs:264. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-pac-strip.md).
 
 > Strip the PAC from `p` without authenticating it (`xpacd`): the address a signed or corrupted entry names, for abort messages and tests.
 
@@ -4271,7 +4272,7 @@ pub unsafe fn syscall6(
 ### S238. `syscall0`
 
 src/sys/raw.rs:153. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall0.md).
 
 ```rust
 pub unsafe fn syscall0(nr: usize) -> usize
@@ -4293,7 +4294,7 @@ pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
 ### S240. `syscall2`
 
 src/sys/raw.rs:181. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall2.md).
 
 ```rust
 pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
@@ -4315,7 +4316,7 @@ pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize
 ### S242. `syscall4`
 
 src/sys/raw.rs:211. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall4.md).
 
 ```rust
 pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize
@@ -4326,7 +4327,7 @@ pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) ->
 ### S243. `syscall5`
 
 src/sys/raw.rs:226. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall5.md).
 
 ```rust
 pub unsafe fn syscall5(

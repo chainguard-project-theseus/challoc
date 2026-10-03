@@ -1,0 +1,6 @@
+; Negative control (run.sh): continues at PC + 8, not PC + 4.
+(trace
+  (declare-const v1 (_ BitVec 64))
+  (read-reg |_PC| nil v1)
+  (define-const v3 (bvadd v1 #x0000000000000008))
+  (write-reg |_PC| nil v3))

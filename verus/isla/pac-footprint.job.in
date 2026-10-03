@@ -1,0 +1,15 @@
+# One PAC instruction at a site (pac::sign's `pacda`, auth's `autda`,
+# strip's `xpacd`; verus/seams/sys-pac-*.md), in one configuration:
+# Non-secure EL0, FEAT_PAuth on, the PAC traps off (SCR_EL3.API, and
+# HCR_EL2.API or E2H+TGE), the translation control pinned to Linux's for
+# one VA size, SCTLR (EnDA among it) symbolic. run.sh prepends the insn
+# line and substitutes @D@ (the destination register). ComputePAC, the
+# PAC algorithm, is uninterpreted: what follows holds for any function of
+# its arguments.
+abstract ComputePAC
+writes @D@
+no-mem-write
+mem-reads 0
+flags-preserved
+# Every path falls through: no trap, no fault, no branch.
+assert (= final._PC (bvadd init._PC #x0000000000000004))

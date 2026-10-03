@@ -6,32 +6,53 @@
 //!
 //! The job is a line-oriented file (`#` comments):
 //!
-//!   insn FILE fallthrough|svc  next instruction: the `isla-footprint -s`
+//!   insn FILE KIND             next instruction: the `isla-footprint -s`
 //!                              output in FILE, and what a normal trace of
-//!                              it does (falls through to PC+4 / takes the
-//!                              SVC exception to EL1 or EL2)
+//!                              it does: `fallthrough` (no exception, and
+//!                              the PC provably ends at PC+4), `ret` (no
+//!                              exception; the PC as the asserts say), `svc`
+//!                              or `brk` (takes an exception to EL1 or EL2)
+//!   copy NAME                  start a copy of the machine: the `insn`
+//!                              lines after it run from their own initial
+//!                              state, named `NAME.init.R` and so on (a
+//!                              relational job: two copies and assumptions
+//!                              equating their inputs); without `copy`
+//!                              lines there is one unnamed copy
+//!   abstract FN                Isla's `--abstract FN` calls are an
+//!                              uninterpreted function of their arguments,
+//!                              shared by every copy (the record argues FN
+//!                              is a function); any other abstract call is
+//!                              an error
 //!   writes REG...              the registers (or REG.FIELD) the sequence may
 //!                              write besides the PC and PSTATE's non-flag
 //!                              fields (anything else written is an error;
 //!                              system registers an exception entry writes
-//!                              are allowed only for `svc`)
+//!                              are allowed only for `svc` and `brk`)
 //!   no-mem-write               no trace writes memory
 //!   flags-preserved            no trace writes PSTATE.{N,Z,C,V}
-//!   mem-reads N                every normal combination reads memory N times
+//!   mem-reads N                every normal combination reads memory N
+//!                              times (in each copy)
+//!   mem-writes N               every normal combination writes memory N
+//!                              times (in each copy)
 //!   decl NAME BITS             a free bit-vector constant for assume/assert
+//!                              (not a name the checker generates)
 //!   assume SMT                 a residual assumption (named in the record)
 //!   assert SMT                 a property of every normal combination
 //!
 //! In SMT text, `init.R` and `final.R` are register R before and after the
 //! sequence (`init.R.F`, `final.R.F` for field F of a struct register such
 //! as PSTATE), `seg.K.NAME` is the symbolic opcode field NAME of
-//! instruction K (from 1, `isla-footprint --partial`), and `mem.J.addr`,
+//! instruction K (from 1, `isla-footprint --partial`), `mem.J.addr`,
 //! `mem.J.val` are the J-th memory read of the sequence (from 1; address as
-//! Isla's model issues it, value as read).
+//! Isla's model issues it, value as read) and `wmem.J.addr`, `wmem.J.val`
+//! the J-th memory write (address, value written). In a copy named C each
+//! of these is `C.init.R`, `C.seg.K.NAME`, `C.mem.J.addr` and so on, with K
+//! counted within the copy.
 //!
-//! For every choice of one trace per instruction the checker links the
-//! traces (each register read equals the value the sequence last wrote to
-//! it, or its `init.` value; reads of a register the sequence never wrote
+//! For every choice of one trace per instruction (of every copy) the
+//! checker links the traces (each register read equals the value the
+//! copy's sequence last wrote to it, or its `init.` value; reads of a
+//! register the sequence never wrote
 //! and that Isla gave a literal are left as they are; a read of a register
 //! whose last write the checker could not express is an error), conjoins
 //! every trace's path condition (dropping conjuncts it cannot express,
@@ -292,16 +313,32 @@ fn die(msg: &str) -> ! {
     process::exit(2)
 }
 
+/// One copy of the machine: its name prefix for SMT symbols (`""` for the
+/// unnamed copy, `"a_"` for `copy a`) and its instructions.
+struct Copy {
+    name: String,
+    prefix: String,
+    insns: Vec<Insn>,
+}
+
 #[derive(Default)]
 struct Job {
-    insns: Vec<Insn>,
+    copies: Vec<Copy>,
+    abstracts: BTreeSet<String>,
     writes: BTreeSet<String>,
     no_mem_write: bool,
     flags_preserved: bool,
     mem_reads: Option<usize>,
+    mem_writes: Option<usize>,
     decls: Vec<(String, u32)>,
     assumes: Vec<String>,
     asserts: Vec<String>,
+}
+
+impl Job {
+    fn insns(&self) -> impl Iterator<Item = &Insn> {
+        self.copies.iter().flat_map(|c| c.insns.iter())
+    }
 }
 
 fn load_job(path: &str) -> Job {
@@ -323,17 +360,51 @@ fn load_job(path: &str) -> Job {
                 let mut w = rest.split_whitespace();
                 let f = w.next().unwrap_or_else(|| die("insn: no file"));
                 let kind = w.next().unwrap_or("fallthrough");
-                if kind != "fallthrough" && kind != "svc" {
+                if !["fallthrough", "ret", "svc", "brk"].contains(&kind) {
                     die(&format!("insn: unknown kind {kind}"));
                 }
                 let f = dir.join(f);
-                job.insns.push(load_insn(&f.to_string_lossy(), kind));
+                if job.copies.is_empty() {
+                    job.copies.push(Copy {
+                        name: String::new(),
+                        prefix: String::new(),
+                        insns: Vec::new(),
+                    });
+                }
+                let insn = load_insn(&f.to_string_lossy(), kind);
+                job.copies.last_mut().unwrap().insns.push(insn);
+            }
+            "copy" => {
+                let ok = !rest.is_empty()
+                    && rest.bytes().all(|c| c.is_ascii_alphanumeric())
+                    && rest.as_bytes()[0].is_ascii_lowercase();
+                if !ok
+                    || job
+                        .copies
+                        .iter()
+                        .any(|c| c.name.is_empty() || c.name == rest)
+                {
+                    die(&format!(
+                        "copy {rest}: bad, repeated or after an unnamed insn"
+                    ));
+                }
+                job.copies.push(Copy {
+                    name: rest.to_string(),
+                    prefix: format!("{rest}_"),
+                    insns: Vec::new(),
+                });
+            }
+            "abstract" => {
+                job.abstracts.insert(rest.to_string());
             }
             "writes" => job.writes.extend(rest.split_whitespace().map(String::from)),
             "no-mem-write" => job.no_mem_write = true,
             "flags-preserved" => job.flags_preserved = true,
             "mem-reads" => {
                 job.mem_reads = Some(rest.parse().unwrap_or_else(|_| die("mem-reads N")))
+            }
+            "mem-writes" => {
+                job.mem_writes = Some(rest.parse().unwrap_or_else(|_| die("mem-writes N")))
             }
             "decl" => {
                 let mut w = rest.split_whitespace();
@@ -350,6 +421,26 @@ fn load_job(path: &str) -> Job {
             "assume" => job.assumes.push(rest.to_string()),
             "assert" => job.asserts.push(rest.to_string()),
             _ => die(&format!("{path}: unknown line {line}")),
+        }
+    }
+    // A `decl` must not name what the checker generates itself: a trace's
+    // constants (`t1_v5`, `a_t1_v5`) or an abstract function.
+    for (n, _) in &job.decls {
+        let s = n.replace('.', "_");
+        let base = job
+            .copies
+            .iter()
+            .find_map(|c| {
+                s.strip_prefix(c.prefix.as_str())
+                    .filter(|_| !c.prefix.is_empty())
+            })
+            .unwrap_or(&s);
+        let trace_const = base
+            .strip_prefix('t')
+            .and_then(|r| r.split_once('_'))
+            .is_some_and(|(k, _)| !k.is_empty() && k.bytes().all(|c| c.is_ascii_digit()));
+        if trace_const || s.starts_with("abstract_") {
+            die(&format!("decl {n}: a name the checker generates"));
         }
     }
     job
@@ -378,9 +469,11 @@ fn is_user_reg(r: &str) -> bool {
 }
 
 /// The Sail model's own bookkeeping, not architectural state: `SEE` (the
-/// decoder's search position) and the `__`-prefixed helpers.
+/// decoder's search position), `BTypeNext` (the value FEAT_BTI's
+/// PSTATE.BTYPE takes at the next instruction, already free as a PSTATE
+/// non-flag field) and the `__`-prefixed helpers.
 fn is_model_internal(r: &str) -> bool {
-    r == "SEE" || r.starts_with("__")
+    r == "SEE" || r == "BTypeNext" || r.starts_with("__")
 }
 
 /// Rewrite the job's dotted names in SMT text to SMT symbols
@@ -405,16 +498,47 @@ fn job_smt(s: &str) -> String {
     out
 }
 
+/// The job's own names in SMT text from `job_smt`: `init_`, `final_`,
+/// `seg_`, `mem_` and `wmem_` names (after a copy's prefix) and `decl`
+/// constants.
+fn job_names<'a>(job: &Job, text: &'a str) -> Vec<&'a str> {
+    text.split(|c: char| c.is_whitespace() || c == '(' || c == ')')
+        .filter(|t| {
+            let base = job
+                .copies
+                .iter()
+                .filter(|c| !c.prefix.is_empty())
+                .find_map(|c| t.strip_prefix(c.prefix.as_str()))
+                .unwrap_or(t);
+            ["init_", "final_", "seg_", "mem_", "wmem_"]
+                .iter()
+                .any(|p| base.starts_with(p))
+                || job.decls.iter().any(|(n, _)| n.replace('.', "_") == *t)
+        })
+        .collect()
+}
+
 struct Built {
     smt: String,
     abnormal: Vec<String>,
     violations: Vec<String>,
-    mem_reads: usize,
+    /// Memory reads and writes, per copy.
+    mem_reads: Vec<usize>,
+    mem_writes: Vec<usize>,
+    /// Per `fallthrough` instruction: a label and the SMT formula that it
+    /// continues at PC + 4.
+    falls: Vec<(String, String)>,
 }
 
-/// The SMT script for one combination (trace `pick[k]` of instruction k):
-/// declarations, path conditions, register links and the job's
-/// declarations and assumptions; plus what the combination's events break.
+/// The SMT script for one combination (trace `pick[k]` of instruction k,
+/// counting through the copies in order): declarations, path conditions,
+/// register links and the job's declarations and assumptions; plus what
+/// the combination's events break. With fewer picks than instructions, the
+/// script for that prefix: its traces, no `final.` values for the copy it
+/// stops in, and only the assumptions whose job names (`init.`, `seg.`,
+/// `mem.` and the rest) it declares. Every constraint of a prefix's script
+/// is one of the full script's, so an unsatisfiable prefix has no feasible
+/// completion.
 fn build(job: &Job, pick: &[usize]) -> Built {
     let mut smt = String::new();
     let mut declared: BTreeSet<String> = BTreeSet::new();
@@ -423,198 +547,337 @@ fn build(job: &Job, pick: &[usize]) -> Built {
             writeln!(smt, "(declare-const {name} {})", ty.smt()).unwrap();
         }
     };
-    // Register -> (SMT term of its current value, sort).
-    let mut state: BTreeMap<String, Option<(String, Ty)>> = BTreeMap::new();
+    // Abstract function -> (argument sorts, result sort), declared once
+    // for every copy, so equal arguments give equal results everywhere.
+    let mut funs: BTreeMap<String, (Vec<Ty>, Ty)> = BTreeMap::new();
     let mut abnormal = Vec::new();
     let mut violations = Vec::new();
-    let mut mem = 0usize;
-    for (k, (insn, &t)) in job.insns.iter().zip(pick).enumerate() {
-        let k1 = k + 1;
-        for (name, bits) in insn.segs.values() {
-            decl(&mut smt, &format!("seg_{k1}_{name}"), Ty::Bv(*bits));
+    let mut mem_reads = Vec::new();
+    let mut mem_writes = Vec::new();
+    let mut falls = Vec::new();
+    let mut picks = pick.iter();
+    let full = pick.len() == job.insns().count();
+    for copy in &job.copies {
+        if picks.len() == 0 {
+            break;
         }
-        let pre = format!("t{k1}_");
-        let mut vars: HashMap<String, Ty> = HashMap::new();
-        let mut wrote_pc = false;
-        let mut wrote_exc = false;
-        for ev in &insn.traces[t] {
-            let Sx::List(l) = ev else { continue };
-            let head = l.first().and_then(atom).unwrap_or("");
-            let ren = |a: &str| -> Option<(String, Ty)> {
-                if let Some((n, w)) = insn.segs.get(a) {
-                    Some((format!("seg_{k1}_{n}"), Ty::Bv(*w)))
-                } else {
-                    vars.get(a).map(|ty| (format!("{pre}{a}"), *ty))
-                }
+        let p = &copy.prefix;
+        let label = if copy.name.is_empty() {
+            String::new()
+        } else {
+            format!("copy {} ", copy.name)
+        };
+        // Register -> (SMT term of its current value, sort).
+        let mut state: BTreeMap<String, Option<(String, Ty)>> = BTreeMap::new();
+        let mut mem = 0usize;
+        let mut wmem = 0usize;
+        let mut partial = false;
+        for (k, insn) in copy.insns.iter().enumerate() {
+            let Some(&t) = picks.next() else {
+                partial = true;
+                break;
             };
-            match head {
-                "declare-const" => {
-                    let v = atom(&l[1]).unwrap_or("");
-                    if insn.segs.contains_key(v) {
-                        continue;
+            let k1 = k + 1;
+            for (name, bits) in insn.segs.values() {
+                decl(&mut smt, &format!("{p}seg_{k1}_{name}"), Ty::Bv(*bits));
+            }
+            let pre = format!("{p}t{k1}_");
+            let mut vars: HashMap<String, Ty> = HashMap::new();
+            let mut wrote_pc = false;
+            let mut wrote_exc = false;
+            // The PC as the instruction first reads it and as it last
+            // writes it (None inside: not expressible).
+            let mut pc_in: Option<Option<String>> = None;
+            let mut pc_out: Option<Option<String>> = None;
+            for ev in &insn.traces[t] {
+                let Sx::List(l) = ev else { continue };
+                let head = l.first().and_then(atom).unwrap_or("");
+                let ren = |a: &str| -> Option<(String, Ty)> {
+                    if let Some((n, w)) = insn.segs.get(a) {
+                        Some((format!("{p}seg_{k1}_{n}"), Ty::Bv(*w)))
+                    } else {
+                        vars.get(a).map(|ty| (format!("{pre}{a}"), *ty))
                     }
-                    if let Some(ty) = smt_type(&l[2]) {
-                        decl(&mut smt, &format!("{pre}{v}"), ty);
-                        vars.insert(v.to_string(), ty);
-                    }
-                }
-                "define-const" => {
-                    let v = atom(&l[1]).unwrap_or("").to_string();
-                    if let Some((e, ty)) = emit(&l[2], &ren) {
-                        writeln!(smt, "(define-fun {pre}{v} () {} {e})", ty.smt()).unwrap();
-                        vars.insert(v, ty);
-                    }
-                }
-                "assert" => {
-                    // A dropped conjunct only weakens the path condition:
-                    // a property proved without it still holds.
-                    if let Some((e, _)) = emit(&l[1], &ren) {
-                        writeln!(smt, "(assert {e})").unwrap();
-                    }
-                }
-                "read-reg" | "write-reg" => {
-                    let r = reg_name(&l[1]);
-                    // The field a write names (`((_ field |EL|))`), if any.
-                    let field = match &l[2] {
-                        Sx::List(acc) => match acc.first() {
-                            Some(Sx::List(f)) if f.len() == 3 => Some(reg_name(&f[2])),
-                            _ => Some("?".to_string()),
-                        },
-                        _ => None,
-                    };
-                    // Isla gives a struct register's whole value even for a
-                    // field access: track each field as its own location
-                    // `R.F`; a plain register is the location `R`.
-                    let locs: Vec<(String, Option<(String, Ty)>, bool)> = match &l[3] {
-                        Sx::List(s)
-                            if atom(&s[0]) == Some("_") && atom(&s[1]) == Some("struct") =>
-                        {
-                            s[2..]
-                                .iter()
-                                .map(|f| match f {
-                                    Sx::List(p) if p.len() == 2 => (
-                                        format!("{r}.{}", reg_name(&p[0])),
-                                        emit(&p[1], &ren),
-                                        atom(&p[1]).is_some_and(is_var),
-                                    ),
-                                    _ => (format!("{r}.?"), None, false),
-                                })
-                                .collect()
+                };
+                match head {
+                    "declare-const" => {
+                        let v = atom(&l[1]).unwrap_or("");
+                        if insn.segs.contains_key(v) {
+                            continue;
                         }
-                        v => vec![(r.clone(), emit(v, &ren), atom(v).is_some_and(is_var))],
-                    };
-                    if head == "read-reg" {
-                        for (loc, val, var) in locs {
-                            let Some((val, ty)) = val else { continue };
-                            match state.get(&loc) {
-                                Some(None) => violations.push(format!(
-                                    "insn {k1} reads {loc}, which an earlier write left inexpressible"
-                                )),
-                                Some(Some((c, _))) => writeln!(smt, "(assert (= {val} {c}))").unwrap(),
-                                None if var => {
-                                    let i = format!("init_{}", loc.replace('.', "_"));
-                                    decl(&mut smt, &i, ty);
-                                    writeln!(smt, "(assert (= {val} {i}))").unwrap();
-                                    state.insert(loc, Some((i, ty)));
-                                }
-                                // A literal the model's configuration fixed.
-                                None => {}
+                        if let Some(ty) = smt_type(&l[2]) {
+                            decl(&mut smt, &format!("{pre}{v}"), ty);
+                            vars.insert(v.to_string(), ty);
+                        }
+                    }
+                    "define-const" => {
+                        let v = atom(&l[1]).unwrap_or("").to_string();
+                        if let Some((e, ty)) = emit(&l[2], &ren) {
+                            writeln!(smt, "(define-fun {pre}{v} () {} {e})", ty.smt()).unwrap();
+                            vars.insert(v, ty);
+                        }
+                    }
+                    "assert" => {
+                        // A dropped conjunct only weakens the path condition:
+                        // a property proved without it still holds.
+                        if let Some((e, _)) = emit(&l[1], &ren) {
+                            writeln!(smt, "(assert {e})").unwrap();
+                        }
+                    }
+                    "abstract-call" => {
+                        // `(abstract-call |F| RET ARG...)`: RET, a fresh
+                        // constant, is F applied to the arguments.
+                        let f = reg_name(&l[1]);
+                        let ret = l.get(2).and_then(|r| emit(r, &ren));
+                        let args: Option<Vec<(String, Ty)>> =
+                            l.iter().skip(3).map(|a| emit(a, &ren)).collect();
+                        let (Some((ret, rt)), Some(args)) = (ret, args) else {
+                            violations.push(format!(
+                                "{label}insn {k1}: abstract call of {f} not expressible"
+                            ));
+                            continue;
+                        };
+                        if !job.abstracts.contains(&f) {
+                            violations.push(format!(
+                                "{label}insn {k1}: abstract call of {f}, which the job does not name"
+                            ));
+                            continue;
+                        }
+                        let sig = (args.iter().map(|a| a.1).collect::<Vec<_>>(), rt);
+                        match funs.get(&f) {
+                            Some(s) if *s != sig => {
+                                violations.push(format!(
+                                    "{label}insn {k1}: abstract call of {f} with another signature"
+                                ));
+                                continue;
+                            }
+                            Some(_) => {}
+                            None => {
+                                let params: Vec<String> = sig.0.iter().map(|t| t.smt()).collect();
+                                writeln!(
+                                    smt,
+                                    "(declare-fun abstract_{f} ({}) {})",
+                                    params.join(" "),
+                                    rt.smt()
+                                )
+                                .unwrap();
+                                funs.insert(f.clone(), sig);
                             }
                         }
-                        continue;
+                        let a: Vec<&str> = args.iter().map(|a| a.0.as_str()).collect();
+                        writeln!(smt, "(assert (= {ret} (abstract_{f} {})))", a.join(" ")).unwrap();
                     }
-                    let written = match &field {
-                        Some(f) => format!("{r}.{f}"),
-                        None => r.clone(),
-                    };
-                    if r == "_PC" {
-                        wrote_pc = true;
-                    } else if EXC_REGS.contains(&r.as_str()) {
-                        wrote_exc = true;
-                    } else if is_model_internal(&r)
-                        || job.writes.contains(&r)
-                        || job.writes.contains(&written)
-                    {
-                    } else if r == "PSTATE" {
-                        // PSTATE's other fields are bookkeeping (BTYPE) or,
-                        // in an exception entry, the new EL and masks.
-                        let f = field.as_deref().unwrap_or("?");
-                        if job.flags_preserved && (FLAGS.contains(&f) || f == "?") {
-                            violations.push(format!("insn {k1} writes PSTATE.{f}"));
+                    "read-reg" | "write-reg" => {
+                        let r = reg_name(&l[1]);
+                        // The field a write names (`((_ field |EL|))`), if any.
+                        let field = match &l[2] {
+                            Sx::List(acc) => match acc.first() {
+                                Some(Sx::List(f)) if f.len() == 3 => Some(reg_name(&f[2])),
+                                _ => Some("?".to_string()),
+                            },
+                            _ => None,
+                        };
+                        // Isla gives a struct register's whole value even for a
+                        // field access: track each field as its own location
+                        // `R.F`; a plain register is the location `R`.
+                        let locs: Vec<(String, Option<(String, Ty)>, bool)> = match &l[3] {
+                            Sx::List(s)
+                                if atom(&s[0]) == Some("_") && atom(&s[1]) == Some("struct") =>
+                            {
+                                s[2..]
+                                    .iter()
+                                    .map(|f| match f {
+                                        Sx::List(q) if q.len() == 2 => (
+                                            format!("{r}.{}", reg_name(&q[0])),
+                                            emit(&q[1], &ren),
+                                            atom(&q[1]).is_some_and(is_var),
+                                        ),
+                                        _ => (format!("{r}.?"), None, false),
+                                    })
+                                    .collect()
+                            }
+                            v => vec![(r.clone(), emit(v, &ren), atom(v).is_some_and(is_var))],
+                        };
+                        if r == "_PC" {
+                            let v = locs.first().and_then(|l| l.1.as_ref()).map(|v| v.0.clone());
+                            if head == "write-reg" {
+                                pc_out = Some(v);
+                            } else if pc_in.is_none() {
+                                pc_in = Some(v);
+                            }
                         }
-                    } else if is_user_reg(&r) || insn.kind != "svc" {
-                        // An exception entry writes system state; user
-                        // registers never.
-                        violations.push(format!("insn {k1} writes {written}"));
+                        if head == "read-reg" {
+                            for (loc, val, var) in locs {
+                                let Some((val, ty)) = val else { continue };
+                                match state.get(&loc) {
+                                    Some(None) => violations.push(format!(
+                                        "{label}insn {k1} reads {loc}, which an earlier write left inexpressible"
+                                    )),
+                                    Some(Some((c, _))) => {
+                                        writeln!(smt, "(assert (= {val} {c}))").unwrap()
+                                    }
+                                    None if var => {
+                                        let i = format!("{p}init_{}", loc.replace('.', "_"));
+                                        decl(&mut smt, &i, ty);
+                                        writeln!(smt, "(assert (= {val} {i}))").unwrap();
+                                        state.insert(loc, Some((i, ty)));
+                                    }
+                                    // A literal the model's configuration fixed.
+                                    None => {}
+                                }
+                            }
+                            continue;
+                        }
+                        let written = match &field {
+                            Some(f) => format!("{r}.{f}"),
+                            None => r.clone(),
+                        };
+                        let exc = insn.kind == "svc" || insn.kind == "brk";
+                        if r == "_PC" {
+                            wrote_pc = true;
+                        } else if EXC_REGS.contains(&r.as_str()) {
+                            wrote_exc = true;
+                        } else if is_model_internal(&r)
+                            || job.writes.contains(&r)
+                            || job.writes.contains(&written)
+                        {
+                        } else if r == "PSTATE" {
+                            // PSTATE's other fields are bookkeeping (BTYPE) or,
+                            // in an exception entry, the new EL and masks.
+                            let f = field.as_deref().unwrap_or("?");
+                            if job.flags_preserved && (FLAGS.contains(&f) || f == "?") {
+                                violations.push(format!("{label}insn {k1} writes PSTATE.{f}"));
+                            }
+                        } else if is_user_reg(&r) || !exc {
+                            // An exception entry writes system state; user
+                            // registers never.
+                            violations.push(format!("{label}insn {k1} writes {written}"));
+                        }
+                        for (loc, val, _) in locs {
+                            // An inexpressible value poisons the location: a
+                            // later read of it is an error, never linked to a
+                            // stale or initial value.
+                            state.insert(loc, val);
+                        }
                     }
-                    for (loc, val, _) in locs {
-                        // An inexpressible value poisons the location: a
-                        // later read of it is an error, never linked to a
-                        // stale or initial value.
-                        state.insert(loc, val);
+                    "read-mem" => {
+                        mem += 1;
+                        let (Some((v, vt)), Some((a, at))) = (emit(&l[1], &ren), emit(&l[3], &ren))
+                        else {
+                            violations
+                                .push(format!("{label}insn {k1}: memory read not expressible"));
+                            continue;
+                        };
+                        let bytes: u32 = atom(&l[4]).and_then(|b| b.parse().ok()).unwrap_or(0);
+                        if vt != Ty::Bv(8 * bytes) {
+                            violations.push(format!(
+                                "{label}insn {k1}: memory read of {bytes} bytes has sort {vt:?}"
+                            ));
+                        }
+                        if l.len() != 5 {
+                            violations.push(format!("{label}insn {k1}: tagged memory read"));
+                        }
+                        decl(&mut smt, &format!("{p}mem_{mem}_addr"), at);
+                        decl(&mut smt, &format!("{p}mem_{mem}_val"), vt);
+                        writeln!(smt, "(assert (= {p}mem_{mem}_addr {a}))").unwrap();
+                        writeln!(smt, "(assert (= {p}mem_{mem}_val {v}))").unwrap();
                     }
+                    "write-mem" => {
+                        // `(write-mem vS KIND ADDR DATA BYTES)`.
+                        wmem += 1;
+                        if job.no_mem_write {
+                            violations.push(format!("{label}insn {k1} writes memory"));
+                        }
+                        let (Some((a, at)), Some((v, vt))) = (
+                            l.get(3).and_then(|x| emit(x, &ren)),
+                            l.get(4).and_then(|x| emit(x, &ren)),
+                        ) else {
+                            violations
+                                .push(format!("{label}insn {k1}: memory write not expressible"));
+                            continue;
+                        };
+                        let bytes: u32 = l
+                            .get(5)
+                            .and_then(atom)
+                            .and_then(|b| b.parse().ok())
+                            .unwrap_or(0);
+                        if vt != Ty::Bv(8 * bytes) {
+                            violations.push(format!(
+                                "{label}insn {k1}: memory write of {bytes} bytes has sort {vt:?}"
+                            ));
+                        }
+                        if l.len() != 6 {
+                            violations.push(format!("{label}insn {k1}: tagged memory write"));
+                        }
+                        decl(&mut smt, &format!("{p}wmem_{wmem}_addr"), at);
+                        decl(&mut smt, &format!("{p}wmem_{wmem}_val"), vt);
+                        writeln!(smt, "(assert (= {p}wmem_{wmem}_addr {a}))").unwrap();
+                        writeln!(smt, "(assert (= {p}wmem_{wmem}_val {v}))").unwrap();
+                    }
+                    // Events with no effect on registers or memory: path
+                    // bookkeeping, model-level assumptions about registers the
+                    // configuration fixed, and tracing.
+                    "assume-reg" | "assume" | "branch" | "branch-address" | "cycle" | "call"
+                    | "return" | "define-enum" | "instr" | "mark-reg" => {}
+                    // Anything else (a tag access, an announced write, an
+                    // abstract primop, an event a newer Isla adds) fails
+                    // closed.
+                    other => violations.push(format!("{label}insn {k1}: unknown event {other}")),
                 }
-                "read-mem" => {
-                    mem += 1;
-                    let (Some((v, vt)), Some((a, at))) = (emit(&l[1], &ren), emit(&l[3], &ren))
-                    else {
-                        violations.push(format!("insn {k1}: memory read not expressible"));
-                        continue;
-                    };
-                    let bytes: u32 = atom(&l[4]).and_then(|b| b.parse().ok()).unwrap_or(0);
-                    if vt != Ty::Bv(8 * bytes) {
-                        violations.push(format!(
-                            "insn {k1}: memory read of {bytes} bytes has sort {vt:?}"
-                        ));
-                    }
-                    decl(&mut smt, &format!("mem_{mem}_addr"), at);
-                    decl(&mut smt, &format!("mem_{mem}_val"), vt);
-                    writeln!(smt, "(assert (= mem_{mem}_addr {a}))").unwrap();
-                    writeln!(smt, "(assert (= mem_{mem}_val {v}))").unwrap();
+            }
+            let normal = match insn.kind.as_str() {
+                "svc" | "brk" => wrote_exc && wrote_pc,
+                _ => !wrote_exc && wrote_pc,
+            };
+            if !normal {
+                abnormal.push(format!("{label}insn {k1} ({}) trace {}", insn.file, t + 1));
+            }
+            // A `fallthrough` instruction must continue at its own PC + 4
+            // (checked like an assert), so a job's later instructions are
+            // the ones that run.
+            if insn.kind == "fallthrough" {
+                match (pc_in, pc_out) {
+                    (Some(Some(i)), Some(Some(o))) => falls.push((
+                        format!("{label}insn {k1} falls through"),
+                        format!("(= {o} (bvadd {i} #x0000000000000004))"),
+                    )),
+                    _ => violations.push(format!(
+                        "{label}insn {k1}: PC read or write not expressible"
+                    )),
                 }
-                "write-mem" => {
-                    if job.no_mem_write {
-                        violations.push(format!("insn {k1} writes memory"));
-                    }
-                }
-                // Events with no effect on registers or memory: path
-                // bookkeeping, model-level assumptions about registers the
-                // configuration fixed, and tracing.
-                "assume-reg" | "assume" | "branch" | "branch-address" | "cycle" | "call"
-                | "return" | "define-enum" | "instr" | "mark-reg" => {}
-                // Anything else (a tag access, an announced write, an
-                // event a newer Isla adds) fails closed.
-                other => violations.push(format!("insn {k1}: unknown event {other}")),
             }
         }
-        let normal = match insn.kind.as_str() {
-            "svc" => wrote_exc && wrote_pc,
-            _ => !wrote_exc && wrote_pc,
-        };
-        if !normal {
-            abnormal.push(format!("insn {k1} ({}) trace {}", insn.file, t + 1));
+        if partial {
+            break;
         }
-    }
-    // `final.R` for every location with an expressible value; a job that
-    // asserts about a poisoned one names an undeclared constant, which Z3
-    // rejects (a failure, not a pass).
-    for (r, v) in &state {
-        let Some((v, ty)) = v else { continue };
-        let f = format!("final_{}", r.replace('.', "_"));
-        decl(&mut smt, &f, *ty);
-        writeln!(smt, "(assert (= {f} {v}))").unwrap();
+        // `final.R` for every location with an expressible value; a job that
+        // asserts about a poisoned one names an undeclared constant, which Z3
+        // rejects (a failure, not a pass).
+        for (r, v) in &state {
+            let Some((v, ty)) = v else { continue };
+            let f = format!("{p}final_{}", r.replace('.', "_"));
+            decl(&mut smt, &f, *ty);
+            writeln!(smt, "(assert (= {f} {v}))").unwrap();
+        }
+        mem_reads.push(mem);
+        mem_writes.push(wmem);
     }
     for (n, b) in &job.decls {
         decl(&mut smt, &n.replace('.', "_"), Ty::Bv(*b));
     }
     for a in &job.assumes {
-        writeln!(smt, "(assert {})", job_smt(a)).unwrap();
+        let a = job_smt(a);
+        if full || job_names(job, &a).iter().all(|n| declared.contains(*n)) {
+            writeln!(smt, "(assert {a})").unwrap();
+        }
     }
     Built {
         smt,
         abnormal,
         violations,
-        mem_reads: mem,
+        mem_reads,
+        mem_writes,
+        falls,
     }
 }
 
@@ -645,14 +908,36 @@ fn main() {
         die("usage: isla-check JOB");
     }
     let job = load_job(&args[1]);
-    if job.insns.is_empty() {
-        die("job has no insn lines");
+    if job.copies.is_empty() || job.copies.iter().any(|c| c.insns.is_empty()) {
+        die("job has no insn lines, or a copy with none");
     }
-    let counts: Vec<usize> = job.insns.iter().map(|i| i.traces.len()).collect();
+    let counts: Vec<usize> = job.insns().map(|i| i.traces.len()).collect();
     let total: usize = counts.iter().product();
-    let mut pick = vec![0usize; counts.len()];
-    let (mut feasible, mut checked, mut failed) = (0, 0, 0);
-    for _ in 0..total {
+    // Depth first over the choices of one trace per instruction: `pick` is
+    // the current prefix and `next` the trace to try after it. A prefix
+    // whose script is unsatisfiable is not extended (build's doc).
+    let mut pick: Vec<usize> = Vec::new();
+    let mut next = 0usize;
+    let (mut feasible, mut checked, mut failed, mut pruned) = (0, 0, 0, 0usize);
+    loop {
+        if next == counts[pick.len()] {
+            match pick.pop() {
+                Some(t) => {
+                    next = t + 1;
+                    continue;
+                }
+                None => break,
+            }
+        }
+        pick.push(next);
+        next = 0;
+        if pick.len() < counts.len() {
+            if z3(&build(&job, &pick).smt, "") == "unsat" {
+                pruned += counts[pick.len()..].iter().product::<usize>();
+                next = pick.pop().unwrap() + 1;
+            }
+            continue;
+        }
         let b = build(&job, &pick);
         if env::var_os("ISLA_CHECK_DUMP").is_some() {
             println!("; combination {pick:?}\n{}", b.smt);
@@ -674,12 +959,31 @@ fn main() {
                     failed += 1;
                     println!("FAIL {label}: {v}");
                 }
-                if job.mem_reads.is_some_and(|n| n != b.mem_reads) {
+                if job
+                    .mem_reads
+                    .is_some_and(|n| b.mem_reads.iter().any(|m| *m != n))
+                {
                     failed += 1;
                     println!(
-                        "FAIL {label}: {} memory reads, expected {:?}",
+                        "FAIL {label}: {:?} memory reads, expected {:?}",
                         b.mem_reads, job.mem_reads
                     );
+                }
+                if job
+                    .mem_writes
+                    .is_some_and(|n| b.mem_writes.iter().any(|m| *m != n))
+                {
+                    failed += 1;
+                    println!(
+                        "FAIL {label}: {:?} memory writes, expected {:?}",
+                        b.mem_writes, job.mem_writes
+                    );
+                }
+                for (what, f) in &b.falls {
+                    if z3(&b.smt, &format!("(assert (not {f}))")) != "unsat" {
+                        failed += 1;
+                        println!("FAIL {label}: not proved that {what}");
+                    }
                 }
                 for a in &job.asserts {
                     checked += 1;
@@ -690,13 +994,7 @@ fn main() {
                 }
             }
         }
-        for k in (0..pick.len()).rev() {
-            pick[k] += 1;
-            if pick[k] < counts[k] {
-                break;
-            }
-            pick[k] = 0;
-        }
+        next = pick.pop().unwrap() + 1;
     }
     if feasible == 0 {
         failed += 1;
@@ -708,7 +1006,7 @@ fn main() {
         format!("{failed} FAILED")
     };
     println!(
-        "{}: {total} combinations, {feasible} feasible, {checked} assertion checks, {verdict}",
+        "{}: {total} combinations ({pruned} cut at an infeasible prefix), {feasible} feasible, {checked} assertion checks, {verdict}",
         args[1]
     );
     process::exit(if failed == 0 { 0 } else { 1 });

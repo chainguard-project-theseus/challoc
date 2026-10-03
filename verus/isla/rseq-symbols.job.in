@@ -1,0 +1,58 @@
+# rseq::symbols on aarch64 (verus/seams/rseq-symbols.md; evidence only):
+# three GOT loads (as got-fn.job.in), then the compiler's stores of the
+# tuple through the return-area pointer the caller passes in x0, then ret:
+#   adrp x8, :got:__rseq_offset;  ldr x8, [x8, :got_lo12:__rseq_offset]
+#   adrp x9, :got:__rseq_size;    ldr x9, [x9, :got_lo12:__rseq_size]
+#   adrp x10, :got:__rseq_flags;  ldr x10, [x10, :got_lo12:__rseq_flags]
+#   stp x8, x9, [x0];  str x10, [x0, #16];  ret
+insn adrp-x8.trace fallthrough
+insn ldr-x8.trace fallthrough
+insn adrp-x9.trace fallthrough
+insn ldr-x9.trace fallthrough
+insn adrp-x10.trace fallthrough
+insn ldr-x10.trace fallthrough
+insn stp-x8-x9-x0.trace fallthrough
+insn str-x10-x0-16.trace fallthrough
+insn ret.trace ret
+writes R8 R9 R10
+flags-preserved
+mem-reads 3
+mem-writes 3
+# The three GOT entries, each pair's relocations as in got-fn.job.in with
+# P the ADRP's own address (the function's start, +8, +16).
+decl got1 64
+decl got2 64
+decl got3 64
+assume (= (concat seg.1.immhi seg.1.immlo) ((_ extract 32 12) (bvsub (bvand got1 #xfffffffffffff000) (bvand init._PC #xfffffffffffff000))))
+assume (= ((_ sign_extend 31) ((_ extract 32 0) (bvsub (bvand got1 #xfffffffffffff000) (bvand init._PC #xfffffffffffff000)))) (bvsub (bvand got1 #xfffffffffffff000) (bvand init._PC #xfffffffffffff000)))
+assume (= seg.2.imm12 ((_ zero_extend 3) ((_ extract 11 3) got1)))
+assume (= (concat seg.3.immhi seg.3.immlo) ((_ extract 32 12) (bvsub (bvand got2 #xfffffffffffff000) (bvand (bvadd init._PC #x0000000000000008) #xfffffffffffff000))))
+assume (= ((_ sign_extend 31) ((_ extract 32 0) (bvsub (bvand got2 #xfffffffffffff000) (bvand (bvadd init._PC #x0000000000000008) #xfffffffffffff000)))) (bvsub (bvand got2 #xfffffffffffff000) (bvand (bvadd init._PC #x0000000000000008) #xfffffffffffff000)))
+assume (= seg.4.imm12 ((_ zero_extend 3) ((_ extract 11 3) got2)))
+assume (= (concat seg.5.immhi seg.5.immlo) ((_ extract 32 12) (bvsub (bvand got3 #xfffffffffffff000) (bvand (bvadd init._PC #x0000000000000010) #xfffffffffffff000))))
+assume (= ((_ sign_extend 31) ((_ extract 32 0) (bvsub (bvand got3 #xfffffffffffff000) (bvand (bvadd init._PC #x0000000000000010) #xfffffffffffff000)))) (bvsub (bvand got3 #xfffffffffffff000) (bvand (bvadd init._PC #x0000000000000010) #xfffffffffffff000)))
+assume (= seg.6.imm12 ((_ zero_extend 3) ((_ extract 11 3) got3)))
+# Residual (ELF, Linux and the Rust ABI): GOT entries are 8-byte aligned;
+# code, GOT and the return area are user addresses below 2^48; the return
+# area is the 8-byte aligned 24-byte tuple the caller passes in x0.
+assume (= ((_ extract 2 0) got1) #b000)
+assume (= ((_ extract 2 0) got2) #b000)
+assume (= ((_ extract 2 0) got3) #b000)
+assume (bvult init._PC #x0001000000000000)
+assume (bvult got1 #x0001000000000000)
+assume (bvult got2 #x0001000000000000)
+assume (bvult got3 #x0001000000000000)
+assume (= ((_ extract 2 0) init.R0) #b000)
+assume (bvult init.R0 #x0000ffffffffffe0)
+# It reads exactly the three GOT entries, in order, writes their contents
+# to the return area's three words and nothing else, and returns.
+assert (= mem.1.addr got1)
+assert (= mem.2.addr got2)
+assert (= mem.3.addr got3)
+assert (= wmem.1.addr init.R0)
+assert (= wmem.1.val mem.1.val)
+assert (= wmem.2.addr (bvadd init.R0 #x0000000000000008))
+assert (= wmem.2.val mem.2.val)
+assert (= wmem.3.addr (bvadd init.R0 #x0000000000000010))
+assert (= wmem.3.val mem.3.val)
+assert (= final._PC init.R30)
