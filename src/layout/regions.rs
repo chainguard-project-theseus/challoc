@@ -186,6 +186,8 @@ impl Regions {
     /// class `c`'s region lies inside stride `c` of the superblock (so the
     /// class regions are pairwise disjoint and each is followed by its
     /// gap), the strides starting above address 0 and ending below `2^48`;
+    /// every class base and the huge base are above address 0, so no slot
+    /// and no huge page start is null ([`Regions::lemma_block_nonzero`]);
     /// the huge base is `MAX_SLAB`-aligned and the page is between 4 KiB
     /// and `MAX_SLAB`; and the superblock's strides, the huge region and
     /// the metadata region are pairwise disjoint, and none holds a byte of
@@ -203,9 +205,11 @@ impl Regions {
         &&& self.superblock + NCLASSES * stride <= crate::sys::pac::user_va_limit()
         &&& forall|c: int| 0 <= c < NCLASSES ==> {
             &&& (#[trigger] self.class_base[c] as int) % (MAX_SLAB as int) == 0
+            &&& 0 < self.class_base[c]
             &&& self.superblock + c * stride <= self.class_base[c]
             &&& self.class_base[c] + region <= self.superblock + (c + 1) * stride
         }
+        &&& 0 < self.huge_base
         &&& (self.huge_base as int) % (MAX_SLAB as int) == 0
         &&& disjoint(self.superblock as int, NCLASSES * stride, self.huge_base as int, self.huge_len as int)
         &&& disjoint(self.superblock as int, NCLASSES * stride, self.meta_base as int, self.meta_len as int)
@@ -417,6 +421,8 @@ impl Regions {
             0 < superblock,
             superblock + (NCLASSES << lg_stride) <= crate::sys::pac::user_va_limit(),
             maps[1].addr <= huge.0,
+            // The huge region is user space too, above address 0.
+            0 < huge.0,
             huge.0 + huge.1 <= maps[1].addr + maps[1].len,
             maps[2].addr <= meta.0,
             meta.0 + meta.1 <= maps[2].addr + maps[2].len,
@@ -488,10 +494,12 @@ impl Regions {
             lemma_pow2_multiple(lg_stride);
             assert forall|j: int| 0 <= j < NCLASSES implies {
                 &&& (#[trigger] class_base[j] as int) % m == 0
+                &&& 0 < class_base[j]
                 &&& superblock + j * stride <= class_base[j]
                 &&& class_base[j] + region <= superblock + (j + 1) * stride
             } by {
                 let jj = j as usize;
+                vstd::arithmetic::mul::lemma_mul_nonnegative(j, stride);
                 lemma_shl_mul(jj, lg_stride);
                 lemma_mask_mod(offsets[j]);
                 lemma_mod_lin3(superblock as int, j, stride, 1, offsets[j] as int, m);
@@ -1116,6 +1124,29 @@ impl Regions {
         // A whole number of slots.
         assert(z > 0);
         vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(slot * z, z, slot, 0);
+    }
+
+    /// No block at address 0: with separated regions every slot start of
+    /// a class and every page start of the huge region is non-zero, as
+    /// each lies at or above its region's base, which
+    /// [`separated`](Regions::separated) puts above address 0. So a null
+    /// pointer is never a block an allocation can return.
+    pub proof fn lemma_block_nonzero(self, c: int, p: usize, len: int, size: int)
+        requires
+            self.wf(),
+            self.separated(),
+        ensures
+            self.is_slot(c, p) ==> p != 0,
+            self.is_huge_block(p, len) ==> p != 0,
+            self.user_block(p, size) ==> p != 0,
+    {
+        if self.is_slot(c, p) {
+            self.lemma_slot_in_region(c, p);
+        }
+        if self.user_block(p, size) && !self.is_huge_block(p, if size < 1 { 1 } else { size }) {
+            let c2 = choose|c2: int| #[trigger] self.is_slot(c2, p) && size <= class_table()[c2].size;
+            self.lemma_slot_in_region(c2, p);
+        }
     }
 
     /// A slot of class `c` lies, whole, in class `c`'s region.

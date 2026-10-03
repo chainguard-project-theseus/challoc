@@ -425,6 +425,9 @@ pub fn xallocx(p: *mut u8, _size: usize, _extra: usize, _flags: c_int) -> (r: us
     ensures
         crate::heap::free_target(p),
         usable_of(p, r as int),
+        // NULL aborts (no block is at address 0), and the size is positive.
+        p@.addr != 0,
+        0 < r,
 {
     sallocx(p, 0)
 }
@@ -436,6 +439,8 @@ pub fn sallocx(p: *mut u8, _flags: c_int) -> (r: usize)
     ensures
         crate::heap::free_target(p),
         usable_of(p, r as int),
+        p@.addr != 0,
+        0 < r,
 {
     if p.is_null() {
         not_an_allocation("sallocx", p);

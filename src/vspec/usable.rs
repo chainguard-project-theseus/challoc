@@ -171,6 +171,83 @@ pub proof fn theorem_usable_consistent(p: *mut u8, size: int, n: int, r: int)
     assert(process_regions().is_slot(c, p@.addr));
 }
 
+/// A query's usable size is positive (`verus/THEOREMS.md`, "No block at
+/// address 0"): a slot's is its class's size, at least the quantum, and a
+/// huge page start's at least one page. With `free_target(p) ==> p != 0`
+/// (`heap::theorem_no_block_at_zero`), a query that returns 0 was given
+/// NULL.
+pub proof fn lemma_usable_of_pos(p: *mut u8, n: int)
+    requires
+        crate::heap::regions_ok(),
+        crate::heap::free_target(p),
+        usable_of(p, n),
+    ensures
+        0 < n,
+{
+    let r = process_regions();
+    if crate::heap::slot_start(p) {
+        let c = choose|c: int| #[trigger] r.is_slot(c, p@.addr);
+        crate::vspec::class::axiom_class_table_wf(c);
+    } else {
+        let lg = r.lg_page;
+        assert((1usize << lg) > 0) by (bit_vector)
+            requires
+                lg < 64,
+        ;
+    }
+}
+
+/// The usable size an allocation of `size` bytes states of a block
+/// ([`usable_is`]) is positive: its class's size, or `size` rounded up to
+/// whole pages and at least one page.
+pub proof fn lemma_usable_is_pos(p: *mut u8, size: int, n: int)
+    requires
+        crate::heap::regions_ok(),
+        0 <= size,
+        process_regions().user_block(p@.addr, size),
+        usable_is(p, size, n),
+    ensures
+        0 < n,
+{
+    let r = process_regions();
+    if exists|c: int| #[trigger] r.is_slot(c, p@.addr) && size <= class_table()[c].size {
+        let c = choose|c: int| #[trigger] r.is_slot(c, p@.addr) && size <= class_table()[c].size;
+        crate::vspec::class::axiom_class_table_wf(c);
+    } else {
+        let lg = r.lg_page;
+        assert((1usize << lg) > 0) by (bit_vector)
+            requires
+                lg < 64,
+        ;
+        let pg = (1usize << lg) as int;
+        let k = (size + pg - 1) / pg;
+        vstd::arithmetic::div_mod::lemma_div_pos_is_pos(size + pg - 1, pg);
+        if k != 0 {
+            vstd::arithmetic::mul::lemma_mul_strictly_positive(k, pg);
+        }
+        assert(r.is_huge_block(p@.addr, 1));
+    }
+}
+
+/// The usable-size store is 0 exactly for NULL (`verus/THEOREMS.md`, "No
+/// block at address 0"): the allocating `_usable` entry points' `_stored`
+/// twins store [`usable_is`] of a non-null result and 0 of a null one, and
+/// a block's usable size is positive, so a caller can read a failure from
+/// either the pointer or the size.
+pub proof fn theorem_stored_zero_iff_null(p: *mut u8, size: int, align: int, n: int)
+    requires
+        crate::heap::fits(p, size, align),
+        0 <= size,
+        p@.addr != 0 ==> usable_is(p, size, n),
+        p@.addr == 0 ==> n == 0,
+    ensures
+        n == 0 <==> p@.addr == 0,
+{
+    if p@.addr != 0 {
+        lemma_usable_is_pos(p, size, n);
+    }
+}
+
 /// Ghost token: an entry point stored `val` through the caller's
 /// out-pointer `ptr` (and nothing, when `ptr` is null), the last store it
 /// makes through it, so `*ptr == val` when it returns.

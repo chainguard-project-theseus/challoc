@@ -167,27 +167,6 @@ proof fn lemma_class_fits(p: *mut u8, c: int, size: usize)
     }
 }
 
-/// A slot is never at address 0: the class superblock lies above it
-/// (`Regions::separated`, from the kernel's `mmap` contract), so a fast
-/// pop is never mistaken for a failure.
-proof fn lemma_slot_nonnull(c: int, p: usize)
-    requires
-        heap::regions_ok(),
-        crate::layout::process_regions().is_slot(c, p),
-    ensures
-        p != 0,
-{
-    let r = crate::layout::process_regions();
-    let (slab, slot) = choose|slab: int, slot: int|
-        0 <= slab < r.spec_nslabs(c) && 0 <= slot < class_table()[c].nslots
-            && p as int == #[trigger] r.slot_at(c, slab, slot);
-    let stride = (1usize << r.lg_stride) as int;
-    vstd::arithmetic::mul::lemma_mul_nonnegative(slab, (1usize << class_table()[c].lg_slab) as int);
-    vstd::arithmetic::mul::lemma_mul_nonnegative(slot, class_table()[c].size as int);
-    vstd::arithmetic::mul::lemma_mul_nonnegative(c, stride);
-    assert(r.superblock + c * stride <= r.class_base[c]);
-}
-
 /// A huge result for `size` bytes at `align` serves them at `align`, and
 /// at the quantum.
 proof fn lemma_huge_result(p: *mut u8, size: usize, align: usize)
@@ -310,7 +289,7 @@ pub fn malloc_block(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno
             proof {
                 lemma_class_fits(p, c as int, size);
                 lemma_class_gives(*blk, p, c as int, size);
-                lemma_slot_nonnull(c as int, p@.addr);
+                heap::theorem_no_block_at_zero(p, c as int, 0);
             }
             p
         },
@@ -373,7 +352,7 @@ pub(super) fn malloc_fast(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: 
         if let Some(p) = r {
             lemma_class_fits(p, c as int, size);
             lemma_class_gives(*blk, p, c as int, size);
-            lemma_slot_nonnull(c as int, p@.addr);
+            heap::theorem_no_block_at_zero(p, c as int, 0);
         }
     }
     r
@@ -749,11 +728,15 @@ pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>) ->
         crate::layout::process_regions().is_huge_block(p as usize, 1) ==> shared.huge_run_usable(p as usize, r),
         usable_of(p, r as int),
         blk.claims(p) ==> blk.block(p) && r == blk.len(),
+        // No block at address 0: NULL aborts, and the size is positive.
+        p@.addr != 0,
+        0 < r,
 {
     proof {
         shared.lemma_wf();
         shared.lemma_huge_pages();
         shared.lemma_regions_ok();
+        heap::theorem_no_block_at_zero(p, 0, 0);
     }
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
@@ -769,6 +752,7 @@ pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>) ->
                 lemma_slot_not_huge(crate::layout::process_regions(), class as int, p as usize);
                 shared.lemma_regions_ok();
                 crate::vspec::usable::lemma_usable_slot(p, class as int, 0);
+                crate::vspec::usable::lemma_usable_of_pos(p, class_table()[class as int].size as int);
                 if blk.claims(p) {
                     blk.lemma_claims_slot(p, class as int);
                     blk.lemma_claimed_block(p);
@@ -782,6 +766,7 @@ pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>) ->
             proof {
                 shared.lemma_huge_run_usable(p as usize, r);
                 crate::vspec::usable::lemma_usable_run(shared, p, r);
+                crate::vspec::usable::lemma_usable_of_pos(p, r as int);
                 if blk.claims(p) {
                     shared.lemma_run_page(p, page, *blk);
                 }
@@ -809,6 +794,7 @@ pub fn malloc_usable_size(p: *mut u8) -> (r: usize)
         p@.addr == 0 ==> r == 0,
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> usable_of(p, r as int),
+        p@.addr != 0 ==> 0 < r,
 {
     if p.is_null() {
         return 0;
@@ -1171,7 +1157,7 @@ pub fn malloc_usable_stored(size: usize, usable: *mut usize, Tracked(blk): Track
             let s = store_usable(usable, class_size(c));
             proof {
                 lemma_class_fits(p, c as int, size);
-                lemma_slot_nonnull(c as int, p@.addr);
+                heap::theorem_no_block_at_zero(p, c as int, 0);
                 crate::vspec::usable::lemma_usable_slot(p, c as int, size as int);
                 lemma_class_gives(*blk, p, c as int, size);
             }
@@ -1573,6 +1559,7 @@ pub fn free_usable(p: *mut u8) -> (r: usize)
         p@.addr == 0 ==> r == 0,
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> usable_of(p, r as int),
+        p@.addr != 0 ==> 0 < r,
 {
     let tracked blk = heap::live::axiom_c_claim(p);
     free_usable_block(p, Tracked(blk))
@@ -1590,6 +1577,7 @@ pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>) -> (r: usize)
         p@.addr == 0 ==> r == 0,
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> usable_of(p, r as int),
+        p@.addr != 0 ==> 0 < r,
         p@.addr != 0 ==> blk.block(p) && r == blk.len(),
 {
     let tracked mut blk = blk;
@@ -1605,6 +1593,7 @@ pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>) -> (r: usize)
                 shared.lemma_regions_ok();
                 crate::vspec::usable::lemma_usable_slot(p, class as int, 0);
                 b0.lemma_slot_len(p, class as int);
+                crate::vspec::class::axiom_class_table_wf(class as int);
             }
             return class_size(class);
         }
@@ -1628,6 +1617,7 @@ fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>) -> (r: usize)
         usable_of(p, r as int),
         r == blk.len(),
         blk.block(p),
+        0 < r,
 {
     let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
     proof {
@@ -1654,6 +1644,9 @@ fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>) -> (r: usize)
             u
         },
     };
+    proof {
+        blk.lemma_nonnull();
+    }
     heap::free(shared, p, Tracked(blk));
     usable
 }

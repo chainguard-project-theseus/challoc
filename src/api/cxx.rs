@@ -188,6 +188,7 @@ fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live
         // block: `aligned_alloc` refuses it on every attempt.
         align != 0 && !libc::is_pow2(align) ==> r@.addr == 0,
         final(blk).gives(r, size as int),
+        !nothrow ==> r@.addr != 0,
 {
     loop
         invariant
@@ -220,6 +221,7 @@ fn new_slow(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>, Tracke
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
         final(blk).gives(r, size as int),
+        !nothrow ==> r@.addr != 0,
 {
     let p = libc::malloc_slow(size, Tracked(blk), Tracked(errno));
     if p.is_null() {
@@ -238,6 +240,8 @@ pub fn new(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u
         crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
+        // The C++ contract: a throwing `operator new` never returns null.
+        r@.addr != 0,
 {
     let tracked mut blk = Live::empty();
     new_block(size, false, Tracked(&mut blk), Tracked(errno))
@@ -264,6 +268,7 @@ pub fn new_block(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>, T
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
         final(blk).gives(r, size as int),
+        !nothrow ==> r@.addr != 0,
 {
     match libc::malloc_fast(size, Tracked(blk)) {
         Some(p) => p,
@@ -283,6 +288,7 @@ pub fn new_aligned(size: usize, align: usize, nothrow: bool, Tracked(errno): Tra
     ensures
         libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
         align != 0 && !libc::is_pow2(align) ==> r@.addr == 0,
+        !nothrow ==> r@.addr != 0,
 {
     let tracked mut blk = Live::empty();
     new_aligned_block(size, align, nothrow, Tracked(&mut blk), Tracked(errno))
@@ -296,6 +302,7 @@ pub fn new_aligned_block(size: usize, align: usize, nothrow: bool, Tracked(blk):
         libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
         align != 0 && !libc::is_pow2(align) ==> r@.addr == 0,
         final(blk).gives(r, size as int),
+        !nothrow ==> r@.addr != 0,
 {
     proof {
         if libc::is_pow2(align) {

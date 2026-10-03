@@ -2297,7 +2297,8 @@ through `slab_slot`'s completeness; *(C)* is the `free` contract.
 - NULL: `free`, `free_sized`, `dallocx`, `sdallocx` and the `delete`s
   return at once for NULL (not stated: there is no model of the
   allocator state a no-op leaves alone); `malloc_usable_size(NULL)` is 0
-  (proved); `sallocx` and `xallocx` abort for NULL by an explicit test.
+  (proved); `sallocx` and `xallocx` abort for NULL (proved: they ensure
+  `p@.addr != 0`, from their explicit test and "No block at address 0").
 - Before the first allocation, every free or query of a non-NULL
   pointer aborts (`free_before_init`); a thread's first `free` may
   create its heap before the abort (theorem 3).
@@ -3211,6 +3212,138 @@ and subtract from the `large` word are the token's
   be unchanged while the run is live (not proved; the run token carries
   no arena).
 
+## 24. No block at address 0
+
+The coordinator assigns this theorem its number at merge. The
+`file:line`s are the `fn` line at this section's commit.
+
+**Statement.** No slot, no huge run and no block an allocation may
+return is at address 0. So a null pointer is never a block: an
+allocating entry point's non-null result is its block and NULL is its
+failure; a query or free of NULL that is not a documented no-op aborts;
+a usable size is never 0 for a block, so 0 marks NULL; two live blocks
+are at two addresses; and a throwing `operator new` never returns NULL.
+
+```rust
+// layout/regions.rs:199: `separated` now carries both bases
+&&& forall|c: int| 0 <= c < NCLASSES ==> { ... &&& 0 < self.class_base[c] ... }
+&&& 0 < self.huge_base
+
+// layout/regions.rs:1134
+pub proof fn lemma_block_nonzero(self, c: int, p: usize, len: int, size: int)
+    requires self.wf(), self.separated(),
+    ensures
+        self.is_slot(c, p) ==> p != 0,
+        self.is_huge_block(p, len) ==> p != 0,
+        self.user_block(p, size) ==> p != 0,
+
+// heap/mod.rs:559
+pub proof fn theorem_no_block_at_zero(p: *mut u8, c: int, size: int)
+    requires regions_ok(),
+    ensures
+        process_regions().is_slot(c, p@.addr) ==> p@.addr != 0,
+        process_regions().is_huge_block(p@.addr, 1) ==> p@.addr != 0,
+        process_regions().user_block(p@.addr, size) ==> p@.addr != 0,
+        free_target(p) ==> p@.addr != 0,
+
+// heap/live.rs:475, :494
+pub proof fn lemma_nonnull(&self)                                  // Live
+    requires regions_ok(), self.wf(),
+    ensures self.addr() != 0, 0 < self.len(),
+pub proof fn theorem_distinct(tracked &mut self, tracked other: &Live)
+    requires regions_ok(), old(self).wf(), other.wf(),
+    ensures final(self).addr() != 0, final(self).addr() != other.addr(), /* and theorem_apart's frame */
+
+// vspec/usable.rs:179, :203, :237
+pub proof fn lemma_usable_of_pos(p: *mut u8, n: int)
+    requires regions_ok(), free_target(p), usable_of(p, n),
+    ensures 0 < n,
+pub proof fn lemma_usable_is_pos(p: *mut u8, size: int, n: int)
+    requires regions_ok(), 0 <= size, process_regions().user_block(p@.addr, size), usable_is(p, size, n),
+    ensures 0 < n,
+pub proof fn theorem_stored_zero_iff_null(p: *mut u8, size: int, align: int, n: int)
+    requires fits(p, size, align), 0 <= size,
+        p@.addr != 0 ==> usable_is(p, size, n), p@.addr == 0 ==> n == 0,
+    ensures n == 0 <==> p@.addr == 0,
+
+// api/libc.rs:722 (usable_size), api/jemalloc.rs:436 (sallocx), :422 (xallocx)
+fn usable_size(shared, p, blk)        ensures p@.addr != 0, 0 < r, /* and its U ensures */
+fn sallocx(p, flags), xallocx(p, ..)  ensures p@.addr != 0, 0 < r,
+// api/libc.rs:790, :1555, :1572, :1611
+fn malloc_usable_size(p), free_usable(p), free_usable_block(p, blk)
+                                      ensures p@.addr != 0 ==> 0 < r,
+fn free_usable_slow(p, blk)           ensures 0 < r,
+
+// api/cxx.rs:238 (new); :181, :218, :265, :285, :298 (oom, new_slow, new_block,
+// new_aligned, new_aligned_block)
+fn new(size)                          ensures r@.addr != 0,
+fn oom, new_slow, new_block, new_aligned, new_aligned_block
+                                      ensures !nothrow ==> r@.addr != 0,
+```
+
+**Covers / stated in.** The interface contract's rows 1 and 12-15
+(`malloc(0)`, the `_usable` stores and queries), 9 (`malloc_usable_size`),
+18 and 19 (`sallocx`, `xallocx`: NULL aborts), and 23-25 (`operator new`).
+Every `fits` result and every `Live::gives` token (rows 1-8, 12-17,
+23-25): a non-null result is the block `fits` names, and every `wf`
+token (the one `gives` names for a non-null result) is at a non-zero
+address. The fast
+pops (`malloc_block`, `malloc_fast`, `malloc_usable_stored`, `:266`,
+`:333`, `:1126`) prove their non-null results with it, in place of the
+former `libc::lemma_slot_nonnull`.
+
+**Proof.** `from_parts` (`layout/regions.rs:386`) proves `0 <
+class_base[c]` from `0 < superblock` (`class_base[c]` is at least
+`superblock + c * stride`), and requires `0 < huge.0`; `reserve`
+(`:1903`) proves `0 < superblock` and `0 < huge.0` from the reserved
+mappings' `addr > 0` (`try_reserve`'s `0 < a`, `:1634`), as
+`align_base` and `slab_multiple` only add to the mapping's address. A
+slot start lies at or above its class base (`lemma_slot_in_region`) and
+a huge page start at or above the huge base. A slot's usable size is
+its class's size, at least the quantum (`axiom_class_table_wf`); a huge
+run's is at least one page (`run_bytes`, `huge_usable`). Two live
+tokens' usable bytes are disjoint and each holds at least one, so their
+addresses differ. `operator new`: `oom` returns a non-null block or,
+with `nothrow`, NULL; without `nothrow` its exhausted loop is
+`throw_bad_alloc` (`-> !`), and `malloc_fast`'s `Some(p)` is non-null
+(a slot).
+
+**Premises beyond the common ones.** None new: the kernel's `mmap`
+contract (`try_reserve`, already a common premise) and the class table
+premises (`axiom_class_table_wf`).
+
+**Scope.**
+- `malloc(0)` returns NULL only with `ENOMEM` (row 1's F); a non-null
+  `malloc(0)` is a block (`fits`) with its own token
+  (`malloc_block`'s `gives`), at least one usable byte and an address
+  no other live block has (`theorem_distinct`): the distinct pointer
+  the module doc of `api::libc` promises. That it is a class-0 slot is
+  what the code does (`class_index(0)`), not stated.
+- The `_usable` entry points: `*usable` is 0 exactly when the result is
+  NULL (`theorem_stored_zero_iff_null` over the `_stored` twins'
+  `ensures`); `malloc_usable_size` and `challoc_free_usable` return 0
+  exactly for NULL.
+- `sallocx`, `xallocx`: NULL aborts (proved; formerly an explicit test
+  read off the code, "Bad input").
+- Throwing `operator new` (unaligned and `align_val_t`): never NULL.
+  With a non-power-of-two `align_val_t` and no `nothrow`, the two
+  `ensures` (`r@.addr == 0` and `r@.addr != 0`) together say the call
+  does not return: it throws `bad_alloc` or loops in the handler.
+
+**Where the statement is weaker than the code.**
+- `malloc(0)` being non-NULL is not stated: like every allocation it
+  returns NULL on exhaustion, which has no spec. What is proved is
+  that NULL is only the failure (with `ENOMEM`) and a non-NULL result
+  is a distinct block.
+- `theorem_stored_zero_iff_null` is a corollary over the `_stored`
+  twins' `ensures`, not an `ensures` of theirs; it applies to each by
+  its `fits`, `usable_is` and null-store conjuncts.
+- `operator new`: whether a `new_handler` that never frees memory makes
+  the loop run forever is not stated (`oom` has no `decreases`).
+- The free side: `free` and the sized frees return for NULL as a
+  documented no-op; that NULL is no free target says only that they
+  cannot have acted on a block there.
+
 ## Interface contract
 
 Theorems 1-7 above checked against challoc's exported C ABI (theorems
@@ -3300,7 +3433,7 @@ Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
 | 20 | `dallocx`                                   | . | . | . | . | . | p | . |
 | 21 | `sdallocx`                                  | . | . | . | . | . | p | . |
 | 22 | `nallocx`                                   | . | . | . | . | P | . | P |
-| 23 | `operator new`, `new[]`                     | P | P | . | . | p | . | . |
+| 23 | `operator new`, `new[]`                     | P | P | . | . | P | . | . |
 | 24 | `new`, `new[]` (`nothrow_t`)                | P | P | . | . | p | . | . |
 | 25 | `new`, `new[]` (`align_val_t`, 4 forms)     | P | P | . | . | p | p | . |
 | 26 | `delete`, `delete[]` (unsized, 8 forms)     | . | . | . | . | . | p | . |
@@ -3346,8 +3479,9 @@ Notes that recur below:
   `posix_memalign`'s untouched `errno` on `EINVAL` (row 6). So every
   null an allocating entry point returns is a failure that set `errno`,
   and every non-null one is a block (`fits`). The fast pops return no
-  null: a slot is never at address 0 (`libc::lemma_slot_nonnull`, from
-  `Regions::separated`'s new `0 < superblock`, which `from_parts`
+  null: a slot is never at address 0 ("No block at address 0",
+  `heap::theorem_no_block_at_zero`, from `Regions::separated`'s
+  `0 < class_base[c]` and `0 < huge_base`, which `from_parts` proves or
   requires and `reserve` proves from `try_reserve`'s `0 < a`, the
   kernel's `mmap` contract). A function that is not handed the token
   (`free`, the sized frees, the `*allocx` family) cannot reach
@@ -3419,9 +3553,12 @@ alone):
 
 1. `malloc` (`api/libc.rs:213`). R: `fits(r, size, QUANTUM)`. D: *(D)*.
    F: `r@.addr == 0 ==> final(errno).val() == ENOMEM` (*(errno)*): every
-   NULL is a failure that set `ENOMEM`. Not stated: NULL only on
-   exhaustion (exhaustion has no spec); `malloc(0)` is non-NULL (the
-   module doc promises a distinct slot).
+   NULL is a failure that set `ENOMEM`, and no block is NULL ("No block
+   at address 0"). A non-NULL `malloc(0)` is a distinct block, at an
+   address no other live block has (`Live::theorem_distinct`), as the
+   module doc promises. Not stated: NULL only on exhaustion (exhaustion
+   has no spec), so `malloc(0)` may be NULL with `ENOMEM` like any
+   allocation.
 2. `calloc` (`api/libc.rs:328`, `.0` of `calloc_zeroed`, `:341`). R:
    `fits(r, n * m, QUANTUM)`. Z: `r.1@.covers(r.0, n * m)` (theorem 6).
    F: `n * m > usize::MAX ==> r@.addr == 0` and `r@.addr == 0 ==>
@@ -3471,7 +3608,8 @@ alone):
 8. `pvalloc` (`api/libc.rs:1306`). R: `fits(r, size, page)`. The
    page-rounded size the code allocates is not stated. F: NULL with
    `ENOMEM`, the `checked_add` overflow included.
-9. `malloc_usable_size` (`api/libc.rs:565`). F: `p == 0 ==> r == 0`. B:
+9. `malloc_usable_size` (`api/libc.rs:565`). F: `p == 0 ==> r == 0` and
+   `p != 0 ==> 0 < r` (0 exactly for NULL, "No block at address 0"). B:
    `p != 0 ==> free_target(p)`, *(live)*. Before init, a non-NULL `p`
    aborts (`free_before_init`, `:508`). U: `p != 0 ==> usable_of(p, r)`,
    exact for a slot, the descriptor's shape for a huge run, *(U)*.
@@ -3502,7 +3640,9 @@ alone):
     non-null result, `usable_is(r, size, val())`: the class's size, or
     `size` rounded up to whole pages for a huge run (*(U)*, from the
     run token `alloc_huge` returns); for a null result, `val() == 0`
-    (the fast pop's slot is not null, `lemma_slot_nonnull`). That the
+    (the fast pop's slot is not null, `theorem_no_block_at_zero`). So
+    `val() == 0` exactly for NULL (`theorem_stored_zero_iff_null`: a
+    block's usable size is positive, "No block at address 0"). That the
     class is `nallocx(size, 0)`'s (the smallest that holds `size` bytes)
     is true of `class_index` but not exported here.
 13. `challoc_calloc_usable` (`api/libc.rs:890`, `calloc_usable_zeroed`,
@@ -3514,7 +3654,7 @@ alone):
     (`usable_size` with the token `alloc_huge` returned,
     `huge_usable(n * m)`), so no trusted premise remains
     (`axiom_owned_run` is gone). U: as row 12, for `n * m`, and the null
-    result's 0 is stated.
+    result's 0 is stated (0 exactly for NULL, as row 12).
 14. `challoc_realloc_usable` (`api/libc.rs:969`, `.0` of
     `realloc_usable_stored`). R, D, C, F, B: as `realloc` (the keep
     decision is `realloc_old`, `:1010`). U: as row 12. A kept block's
@@ -3522,7 +3662,9 @@ alone):
     kept, `usable_is(p, size, old)` (for a run, `usable_for(size) ==
     Some(old)` is the keep test); a moved block's is
     `malloc_usable_stored`'s.
-15. `challoc_free_usable` (`api/libc.rs:1055`). F: `p == 0 ==> r == 0`.
+15. `challoc_free_usable` (`api/libc.rs:1055`). F: `p == 0 ==> r == 0`
+    and `p != 0 ==> 0 < r`, so 0 exactly for NULL ("No block at address
+    0").
     B: as `free` (`free_usable_block`). U: `p != 0 ==> usable_of(p, r)`,
     *(U)*, and `r == blk.len()`, the freed block's usable bytes (the
     class size, or the run's usable pages, from its token on both paths):
@@ -3568,11 +3710,13 @@ alone):
     size, which a kept block keeps. C, F, B: as `realloc`, except that
     `errno` is untouched (no token, as row 16); NULL `p` allocates.
 18. `xallocx` (`api/jemalloc.rs:332`). Never resizes; returns
-    `sallocx(p, 0)`. B: `free_target(p)` unconditionally, so NULL aborts.
-    U: `usable_of(p, r)`, as row 19.
-19. `sallocx` (`api/jemalloc.rs:340`). B: `free_target(p)`
-    unconditionally; NULL aborts (`not_an_allocation`, `:135`); *(live)*.
-    U: `usable_of(p, r)`, *(U)*. For a slot `mallocx(size, flags)`
+    `sallocx(p, 0)`. B: `free_target(p)` and `p@.addr != 0`
+    unconditionally, so NULL aborts. U: `usable_of(p, r)` and `0 < r`,
+    as row 19.
+19. `sallocx` (`api/jemalloc.rs:340`). B: `free_target(p)` and
+    `p@.addr != 0` unconditionally: NULL aborts (`not_an_allocation`,
+    `:135`), now stated ("No block at address 0"); *(live)*.
+    U: `usable_of(p, r)` and `0 < r`, *(U)*. For a slot `mallocx(size, flags)`
     returned, `theorem_usable_consistent` gives `r == nallocx(size,
     flags)`, jemalloc's contract.
 20. `dallocx` (`api/jemalloc.rs:440`). B: `p != 0 ==> free_target(p)`,
@@ -3604,16 +3748,20 @@ alone):
     positive); `mallocx` then returns NULL (`alloc_huge` ensures
     `huge_ok(size)` of a non-NULL run).
 23. `operator new`, `new[]` (`api/cxx.rs:214`). R:
-    `fits(r, size, QUANTUM)`. F: the C++ contract (never NULL; throws
-    `std::bad_alloc` after the `new_handler` loop) is not stated. `oom`
-    (`:172`) returns only a non-NULL pointer when `nothrow` is false, and
-    `throw_bad_alloc` (`:131`) is `-> !`, but no `ensures` says
-    `r@.addr != 0`. `oom` has no `decreases` (it waits on the program's
-    handler).
+    `fits(r, size, QUANTUM)`. F: the C++ contract, never NULL: `new`
+    ensures `r@.addr != 0` ("No block at address 0"), from `new_block`,
+    `new_slow` and `oom`'s `!nothrow ==> r@.addr != 0` and the fast
+    pop's non-null slot. `oom` returns a pointer only after a non-null
+    test or, with `nothrow`, NULL; otherwise it leaves through
+    `throw_bad_alloc` (`-> !`, which throws `std::bad_alloc` or aborts
+    when libstdc++ is absent). `oom` has no `decreases` (it waits on the
+    program's handler).
 24. `new` `nothrow_t` (`api/cxx.rs:226`). R: as row 23. F: NULL after
     the handler loop; not stated beyond `fits`.
 25. `new` `align_val_t` (`api/cxx.rs:260`). R: `is_pow2(align) ==>
-    fits(r, size, align)`. F: as rows 23 and 24 by `nothrow`. B: a
+    fits(r, size, align)`. F: the throwing forms as row 23
+    (`new_aligned` ensures `!nothrow ==> r@.addr != 0`); `p` because
+    the `nothrow_t` forms' NULL is not stated beyond `fits` (row 24). B: a
     non-power-of-two alignment (undefined in C++) makes `aligned_alloc`
     return NULL, so the handler loop runs; `new_aligned` ensures
     `align != 0 && !is_pow2(align) ==> r@.addr == 0` (NULL for the
@@ -3751,14 +3899,16 @@ alone):
    run token gives exactly its usable bytes (gap 1), but the queries
    take no token (giving them one would add an `axiom_c_claim` site for
    a call that frees nothing). The 0 that `challoc_malloc_usable` and
-   `challoc_realloc_usable` store for NULL is stated since gap 2 (a
-   slot is never at address 0, `lemma_slot_nonnull`).
+   `challoc_realloc_usable` store for NULL is stated since gap 2, and
+   since "No block at address 0" a stored or returned 0 means NULL
+   exactly (`theorem_stored_zero_iff_null`; the queries' `p != 0 ==>
+   0 < r`).
 4. **Failure-path contracts**: `r@.addr == 0 ==> p` still live for the
    realloc family is now in the cores (`realloc_block`,
    `realloc_usable_stored`, `rallocx_zeroed` give back the caller's
    token); what is left is `posix_memalign`'s `*out` through a `PointsTo`
-   for `store_out`, and `!nothrow ==> r@.addr != 0` for `operator new`
-   (provable from `oom`'s loop today). Rows 6 and 23-25.
+   for `store_out` (row 6). `!nothrow ==> r@.addr != 0` for `operator new`
+   is done ("No block at address 0": row 23's F to `P`).
 5. **Byte contents**: a `PointsToRaw`-level spec of user blocks and of
    `copy_nonoverlapping` would turn the C column (4 rows) to `P`. It
    needs the permissions threading that `TODO.md` lists.

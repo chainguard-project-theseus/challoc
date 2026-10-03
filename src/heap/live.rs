@@ -466,6 +466,49 @@ impl Live {
         }
     }
 
+    /// No live block at address 0 (`verus/THEOREMS.md`, "No block at
+    /// address 0"): a live token's block is a slot start or a huge page
+    /// start ([`Regions::lemma_block_nonzero`]), with at least one usable
+    /// byte (a class's size, or a run's pages before its guard).
+    ///
+    /// [`Regions::lemma_block_nonzero`]: crate::layout::Regions::lemma_block_nonzero
+    pub proof fn lemma_nonnull(&self)
+        requires
+            crate::heap::regions_ok(),
+            self.wf(),
+        ensures
+            self.addr() != 0,
+            0 < self.len(),
+    {
+        process_regions().lemma_block_nonzero(self.class, self.addr, self.len(), 0);
+        if self.run is None {
+            crate::vspec::class::axiom_class_table_wf(self.class);
+        }
+    }
+
+    /// Two live blocks are at two addresses ([`Live::theorem_apart`] with
+    /// [`Live::lemma_nonnull`]: their usable bytes are disjoint and each
+    /// has at least one). So `malloc(0)` returns, when it does not fail,
+    /// a pointer no other live block has: a block of its own, as the
+    /// module doc of `api::libc` promises.
+    pub proof fn theorem_distinct(tracked &mut self, tracked other: &Live)
+        requires
+            crate::heap::regions_ok(),
+            old(self).wf(),
+            other.wf(),
+        ensures
+            final(self).wf(),
+            final(self).addr() == old(self).addr(),
+            final(self).len() == old(self).len(),
+            forall|p: *mut u8| #[trigger] old(self).claims(p) ==> final(self).claims(p),
+            final(self).addr() != 0,
+            final(self).addr() != other.addr(),
+    {
+        self.theorem_apart(other);
+        self.lemma_nonnull();
+        other.lemma_nonnull();
+    }
+
     /// Purge never discards live data, for huge purges (whole-allocator
     /// theorem "Purge never discards live data", `verus/THEOREMS.md`): a
     /// byte a huge purge may discard, one of a page of the huge region the

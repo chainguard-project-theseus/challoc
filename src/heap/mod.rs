@@ -549,6 +549,30 @@ pub proof fn theorem_free_target_aligned(p: *mut u8)
     }
 }
 
+/// No block at address 0 (`verus/THEOREMS.md`): with the process's regions
+/// well formed and separated, no slot start, no huge page start, no block
+/// an allocation of `size` bytes may return
+/// ([`Regions::user_block`](crate::layout::Regions::user_block)) and no
+/// free target is null. So a NULL result is never a block, and a pointer
+/// an entry point ensures [`free_target`] of is non-null: where that holds
+/// unconditionally (`sallocx`, `xallocx`, `usable_size`), NULL aborts.
+pub proof fn theorem_no_block_at_zero(p: *mut u8, c: int, size: int)
+    requires
+        regions_ok(),
+    ensures
+        process_regions().is_slot(c, p@.addr) ==> p@.addr != 0,
+        process_regions().is_huge_block(p@.addr, 1) ==> p@.addr != 0,
+        process_regions().user_block(p@.addr, size) ==> p@.addr != 0,
+        free_target(p) ==> p@.addr != 0,
+{
+    let r = process_regions();
+    r.lemma_block_nonzero(c, p@.addr, 1, size);
+    if slot_start(p) {
+        let c2 = choose|c2: int| #[trigger] r.is_slot(c2, p@.addr);
+        r.lemma_block_nonzero(c2, p@.addr, 1, size);
+    }
+}
+
 /// A slot of class `c` serves `size` bytes at `align` when the class is at
 /// least `size` bytes and its size a multiple of `align`.
 pub proof fn lemma_slot_fits(p: *mut u8, c: int, size: int, align: usize)

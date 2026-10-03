@@ -911,16 +911,17 @@ fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live
         // block: `aligned_alloc` refuses it on every attempt.
         align != 0 && !libc::is_pow2(align) ==> r@.addr == 0,
         final(blk).gives(r, size as int),
+        !nothrow ==> r@.addr != 0,
 ```
 
 ### S7. `store_usable`
 
-src/api/libc.rs:1090. Kind: external_body. Category: raw pointer from C caller.
+src/api/libc.rs:1076. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store `n` through `usable` unless it is null (`usable` is optional for the three allocating entry points; a null makes them plain `malloc`/`calloc`/`realloc`), with the [`Stored`] token for the store.
 
-Body mints Tracked at line 1099.
+Body mints Tracked at line 1085.
 
 ```rust
 fn store_usable(usable: *mut usize, n: usize) -> (s: Tracked<Stored>)
@@ -931,7 +932,7 @@ fn store_usable(usable: *mut usize, n: usize) -> (s: Tracked<Stored>)
 
 ### S8. `store_out`
 
-src/api/libc.rs:1922. Kind: external_body. Category: raw pointer from C caller.
+src/api/libc.rs:1915. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store the allocation through `posix_memalign`'s out-pointer.
@@ -2466,7 +2467,7 @@ pub assume_specification[ seed ]() -> u64
 
 ### S115. `axiom_c_claim`
 
-src/heap/live.rs:667. Kind: axiom. Category: C-program contract.
+src/heap/live.rs:710. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The C contract of `free`, `realloc` and the sized frees: only a block's holder frees or reallocates it, and the holder of the block at `p` holds its token, which the allocation that made it handed to C with the block.
@@ -2480,7 +2481,7 @@ pub axiom fn axiom_c_claim(p: *mut u8) -> (tracked r: Live)
 
 ### S116. `stack_mut`
 
-src/heap/mod.rs:1582. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:1606. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `slots[start..start + len]` as a slice, for the slice operations of the refill, the flush and the run rebuild (claims, selections, sorts, reversals).
@@ -2514,7 +2515,7 @@ unsafe fn stack_mut<'a>(
 
 ### S117. `axiom_fresh_stack`
 
-src/heap/mod.rs:1635. Kind: external_body proof. Category: allocator invariant.
+src/heap/mod.rs:1659. Kind: external_body proof. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > The `cap` entries of the fresh stack `slots` join `perms`, unwritten, as entries `0..cap` of header `hdr` (`CachePerms::owner`).
@@ -2551,7 +2552,7 @@ proof fn axiom_fresh_stack(tracked perms: &mut CachePerms, hdr: *mut CacheHeader
 
 ### S118. `assert_flushed`
 
-src/heap/mod.rs:1715. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:1739. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > `assert_eq!(*len, 0, ..)`, the abort of [`Heap::free_caches`] and [`Heap::free_caches_in`] on a cache that still holds slots: `*len == 0` after it returns.
@@ -2564,7 +2565,7 @@ fn assert_flushed(len: &u32)
 
 ### S119. `assert_refill_empty`
 
-src/heap/mod.rs:1729. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:1753. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap inconsistency: `*len == 0` after it returns, as for `vspec::check`.
@@ -2577,7 +2578,7 @@ fn assert_refill_empty(len: &u32)
 
 ### S120. `Heap::axiom_list_bound`
 
-src/heap/mod.rs:3384. Kind: external_body proof. Category: allocator invariant.
+src/heap/mod.rs:3408. Kind: external_body proof. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > The `others` list of a well-formed heap has fewer than `usize::MAX` nodes.
@@ -2592,7 +2593,7 @@ proof fn axiom_list_bound(&self)
 
 ### S121. `arena_volatile`
 
-src/heap/mod.rs:3798. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/heap/mod.rs:3822. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::checked_slot`]): a plain load is hoisted above the multi-arena flag test and touches the heap's header line on every single-arena `free`.
@@ -2603,7 +2604,7 @@ pub(super) fn arena_volatile(&self) -> u16 opens_invariants none
 
 ### S122. `init_fields`
 
-src/heap/mod.rs:4650. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:4674. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The fields of a fresh heap before its home headers, stored field by field ([`Heap::create_detached`]).
@@ -2618,7 +2619,7 @@ unsafe fn init_fields(h: *mut Heap, shared: &Shared, arena: u16, Tracked(head): 
 
 ### S123. `assign_home`
 
-src/heap/mod.rs:4677. Kind: external_body. Category: allocator invariant.
+src/heap/mod.rs:4701. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > [`Arenas::assign`](crate::arena::Arenas::assign) on the process's arenas.
@@ -2633,7 +2634,7 @@ fn assign_home(shared: &Shared) -> (r: u16)
 
 ### S124. `mark_bound`
 
-src/heap/mod.rs:4694. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:4718. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `(*h).bound = true` for a heap [`Heap::create`] has just made.
@@ -2644,7 +2645,7 @@ unsafe fn mark_bound(h: *mut Heap)
 
 ### S125. `Heap::destroy`
 
-src/heap/mod.rs:4874. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:4898. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > Flush every cache, free them and the heap itself back to the metadata allocator.
@@ -3267,7 +3268,7 @@ pub axiom fn axiom_process_page_at_most_64k()
 
 ### S172. `Reserved`
 
-src/layout/regions.rs:1539. Kind: external_body type. Category: platform/kernel fact.
+src/layout/regions.rs:1570. Kind: external_body type. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Ghost ownership of one live reservation, `len()` bytes from `addr()`, that [`try_reserve`] obtained from the kernel.
@@ -3278,7 +3279,7 @@ pub tracked struct Reserved
 
 ### S173. `Reserved::is_apart_from_static`
 
-src/layout/regions.rs:1556. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:1587. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): a live reservation does not overlap the process's `Shared` static ([`shared_static_addr`]).
@@ -3291,7 +3292,7 @@ pub proof fn is_apart_from_static(tracked &self)
 
 ### S174. `Reserved::is_disjoint`
 
-src/layout/regions.rs:1567. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:1598. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): two live mappings do not overlap.
@@ -3305,7 +3306,7 @@ pub proof fn is_disjoint(tracked &mut self, tracked other: &Self)
 
 ### S175. `Reserved::into_unbacked`
 
-src/layout/regions.rs:1583. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:1614. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > The reservation as uncommitted address space this process owns, for the one owner that commits it piece by piece (`Meta`, for the metadata region).
@@ -3319,12 +3320,12 @@ pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
 
 ### S176. `try_reserve`
 
-src/layout/regions.rs:1603. Kind: external_body. Category: FFI/syscall.
+src/layout/regions.rs:1634. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Reserve address space with `PROT_NONE`, `MAP_NORESERVE`: on success, the address and the token for the `len` bytes there.
 
-Body mints Tracked at line 1611.
+Body mints Tracked at line 1642.
 
 ```rust
 fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
@@ -3336,7 +3337,7 @@ fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
 
 ### S177. `word`
 
-src/layout/regions.rs:1797. Kind: external_body. Category: core library.
+src/layout/regions.rs:1828. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > Word `i` of the random bytes (`8 * i` on, the target's byte order).
@@ -3349,7 +3350,7 @@ fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
 
 ### S178. `class_entry`
 
-src/layout/regions.rs:2181. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/regions.rs:2212. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > `&CLASSES[c]` for the fast paths' classification, `c < NCLASSES`.
