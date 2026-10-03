@@ -365,11 +365,16 @@ fn free_fast_with<'h>(
 ) -> Option<usize> {
     let (class, table, slab) = shared.set_slot(p)?;
     let (h, flags) = heap();
-    let pushed = if flags == 0 {
-        h.push_fast(class, p, 0)
-    } else {
-        (flags & FREE_ROUTE == 0 || Shared::home_owns(table, slab, h))
-            && h.push_fast(class, p, flags & !FREE_ROUTE)
+    // The two default configurations (one arena, several arenas) each get
+    // one compare and the plain push; the opt-in hardening takes the
+    // general dispatch.
+    let pushed = match flags {
+        0 => h.push_fast(class, p, 0),
+        FREE_ROUTE => Shared::home_owns(table, slab, h) && h.push_fast(class, p, 0),
+        _ => {
+            (flags & FREE_ROUTE == 0 || Shared::home_owns(table, slab, h))
+                && h.push_fast(class, p, flags & !FREE_ROUTE)
+        }
     };
     if pushed { Some(class) } else { None }
 }
