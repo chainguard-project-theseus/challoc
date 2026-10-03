@@ -136,15 +136,26 @@ fn batch_fills_and_flushes() {
     assert!(purged_is_zero());
 }
 
+/// For the advice tests, in a fork child: an explicit purge another
+/// thread had in flight at the fork never ends there (that thread is not
+/// in the child), so its count is dropped; nothing else is reset.
+fn forget_other_threads_explicit_purges() {
+    EXPLICIT.store(0, Ordering::Relaxed);
+}
+
 /// The default (no limit) discards with `MADV_DONTNEED`, so purged
 /// memory is zero. The headroom band is exercised end to end by
 /// `tests/c/cgroup_lazy.c`; issuing a lazy batch here would make the flag sticky for the class
-/// and huge tests that read it.
+/// and huge tests that read it. In a fork child: in this process an
+/// explicit purge of another test reads as "explicit purge" (#69).
 #[test]
 fn purged_memory_is_zero_by_default() {
-    assert!(purged_is_zero());
-    assert_eq!(advice(), Advice::Eager);
-    assert_eq!(advice_reason(), "no headroom known");
+    crate::testutil::in_fork_child("purge default advice", 30_000, || {
+        forget_other_threads_explicit_purges();
+        assert!(purged_is_zero());
+        assert_eq!(advice(), Advice::Eager);
+        assert_eq!(advice_reason(), "no headroom known");
+    });
 }
 
 /// The advice's process-wide wiring: the
@@ -158,6 +169,7 @@ fn purged_memory_is_zero_by_default() {
 #[test]
 fn advice_follows_headroom_band_key_and_explicit_purges() {
     crate::testutil::in_fork_child("purge advice", 30_000, || {
+        forget_other_threads_explicit_purges();
         assert_eq!(advice(), Advice::Eager);
         set_headroom(true, false);
         assert_eq!(advice(), Advice::Lazy);
