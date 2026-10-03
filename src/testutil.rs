@@ -1,5 +1,7 @@
 //! Test fixtures shared across modules: [`TestShared`], the one builder of
-//! a [`Shared`] over a synthetic layout, and a deterministic [`xorshift`].
+//! a [`Shared`] over a synthetic layout, a deterministic [`xorshift`], and
+//! [`global_state`], the guard of the tests that write or assert the
+//! process-wide allocator's settings.
 
 use core::mem::MaybeUninit;
 use std::boxed::Box;
@@ -149,4 +151,59 @@ pub(crate) fn xorshift(state: &mut u64) -> u64 {
     x ^= x << 17;
     *state = x;
     x
+}
+
+/// The tests of the process-wide allocator (`api::shared()`) that write a
+/// process-wide setting (decay, the background thread request, the stats
+/// epoch, the fork handlers' lock state) or assert one take turns on this
+/// guard. libtest runs the tests of one process in parallel, and without it
+/// one test's write lands between another's write and its assertion (#69).
+/// Tests that only allocate and free need not take it: none of the guarded
+/// assertions depends on another thread not allocating, and the one that
+/// would (every lock free after the fork handlers) runs in a fork child.
+static GLOBAL_STATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take [`GLOBAL_STATE`]; a panic in one holder must not fail the rest.
+pub(crate) fn global_state() -> std::sync::MutexGuard<'static, ()> {
+    GLOBAL_STATE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Run `f` in a child of a real `fork` and assert that it returned. The
+/// child has one thread, so a check of process-wide state there cannot be
+/// raced by the other tests of this process, and what `f` writes (a
+/// sticky flag, a lock state) never reaches them (#69). A panic in `f`
+/// exits the child with status 1 (its message goes to stderr) instead of
+/// unwinding into a copy of the test harness; a child still running after
+/// `timeout_ms` is killed and fails the test. The test binary's own
+/// allocator is glibc's, which `fork` leaves usable in the child, so `f`
+/// may allocate and use `assert!`.
+pub(crate) fn in_fork_child(what: &str, timeout_ms: u64, f: impl FnOnce()) {
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "{what}: fork failed");
+    if pid == 0 {
+        let r = std::panic::catch_unwind(core::panic::AssertUnwindSafe(f));
+        unsafe { libc::_exit(if r.is_ok() { 0 } else { 1 }) };
+    }
+    let mut status = 0;
+    let mut waited = 0;
+    loop {
+        let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        assert!(r >= 0, "{what}: waitpid failed");
+        if r == pid {
+            break;
+        }
+        if waited >= timeout_ms {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+                libc::waitpid(pid, &mut status, 0);
+            }
+            panic!("{what}: fork child still running after {timeout_ms} ms");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        waited += 10;
+    }
+    assert!(
+        libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+        "{what}: fork child failed (status {status:#x}; its panic is on stderr)"
+    );
 }
