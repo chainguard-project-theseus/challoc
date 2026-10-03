@@ -76,6 +76,7 @@ impl Lazy {
 
     pub(crate) fn reserve(meta: &Meta, len: usize, align: usize) -> (r: Option<Lazy>)
         requires
+            crate::sys::may_syscall(),
             crate::meta::is_pow2(align),
         ensures
             r matches Some(l) ==> l.spec_base() + l.spec_len() <= crate::meta::va_limit() && l.spec_len() == len && l.spec_committed() == 0,
@@ -100,6 +101,7 @@ impl Lazy {
     /// and the alignment `Meta::reserve_table` gives its start.
     pub(crate) fn reserve_raw(meta: &Meta, len: usize, align: usize) -> (r: (Option<Lazy>, Tracked<PointsToRaw>))
         requires
+            crate::sys::may_syscall(),
             crate::meta::is_pow2(align),
         ensures
             r.0 matches Some(l) ==> l.spec_base() + l.spec_len() <= crate::meta::va_limit() && l.spec_len() == len && l.spec_committed() == 0,
@@ -261,6 +263,7 @@ impl Lazy {
     /// watermark only grows, so a call never breaks the bound).
     pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, upto: usize) -> (r: Result<(), Errno>)
         requires
+            crate::sys::may_syscall(),
             1 <= page <= 0x8000_0000_0000_0000,
             upto <= 0x4000_0000_0000_0000,
         ensures
@@ -420,6 +423,7 @@ impl Set {
     /// A set over `0..nslabs` on its own table.
     pub(crate) fn new(meta: &Meta, page: usize, nslabs: usize) -> (r: Option<Set>)
         requires
+            crate::sys::may_syscall(),
             crate::meta::is_pow2(page),
             page <= 0x8000_0000_0000_0000,
             nslabs <= 0x1_0000_0000,
@@ -462,6 +466,8 @@ impl Set {
     /// pointer.
     #[verifier::external_body]
     pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, slab: usize) -> (r: Result<(), Errno>)
+        requires
+            crate::sys::may_syscall(),
         ensures
             final(self).map == old(self).map,
             final(self).l1_words == old(self).l1_words,
@@ -494,6 +500,7 @@ impl SetTable {
     /// `ensure`). `None` if the metadata region cannot hold them.
     pub(crate) fn new(meta: &Meta, regions: &Regions) -> (r: Option<SetTable>)
         requires
+            crate::sys::may_syscall(),
             regions.wf(),
         ensures
             r matches Some(t) ==> t.over(*regions),
@@ -551,6 +558,7 @@ impl SetTable {
         let mut tables = [Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY];
         for g in 0..SET_GROUPS
             invariant
+                crate::sys::may_syscall(),
                 forall|h: int| 0 <= h < SET_GROUPS ==> #[trigger] groups[h].count <= NCLASSES,
                 forall|h: int| 0 <= h < SET_GROUPS ==> #[trigger] nslabs[h] <= 0x400_0000,
                 forall|h: int| 0 <= h < SET_GROUPS ==> #[trigger] groups[h].stride <= 3 * NCLASSES,
@@ -622,6 +630,7 @@ impl SetTable {
     /// so its chunk's level-1 word and every row before).
     fn ensure(&self, meta: &Meta, g: usize, slab: usize) -> (r: Result<(), Errno>)
         requires
+            crate::sys::may_syscall(),
             g < SET_GROUPS,
             slab < self.nslabs[g as int],
     {

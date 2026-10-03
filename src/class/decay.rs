@@ -172,6 +172,7 @@ pub(super) trait EmptyVisitor {
     /// out of the empty set.
     fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64)
         requires
+            crate::sys::may_syscall(),
             old(self).inv(cs, *old(g)),
             old(self).last() < slab,
             walk_ok(cs, *old(g)),
@@ -235,6 +236,8 @@ impl ClassState {
     /// Bytes of this arena's `Empty` slabs of the class (one lock hold):
     /// at most the class region, which ends below `2^57`.
     pub fn empty_bytes(&self) -> (r: usize)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r <= 0x200_0000_0000_0000,
     {
@@ -264,6 +267,7 @@ impl ClassState {
     /// every visit moves past the slab it visited.
     pub(super) fn walk_empty<V: EmptyVisitor>(&self, g: &mut Inner, v: &mut V)
         requires
+            crate::sys::may_syscall(),
             walk_ok(self, *old(g)),
             old(v).inv(self, *old(g)),
             old(v).last() == -1,
@@ -274,6 +278,7 @@ impl ClassState {
         let mut next = g.empty.map.lowest_set();
         while let Some(slab) = next
             invariant
+                crate::sys::may_syscall(),
                 walk_ok(self, *g),
                 v.inv(self, *g),
                 next matches Some(x) ==> v.last() < x && g.empty.map@.contains(x as nat),
@@ -353,6 +358,7 @@ impl Purger {
     #[inline(always)]
     fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64, purge: bool)
         requires
+            crate::sys::may_syscall(),
             old(self).inv(cs, *old(g)),
             old(self).last@ < slab,
             walk_ok(cs, *old(g)),
@@ -438,6 +444,8 @@ impl ClassState {
     /// purged, at most the slab count: each purged slab is below the end
     /// of the last page group pushed, inside the class region.
     pub fn purge_empty(&self, cutoff: u64) -> (r: usize)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r <= self.spec_nslabs(),
     {
@@ -507,6 +515,7 @@ impl ClassState {
     #[allow(clippy::while_let_loop)]
     fn purge_group(&self, g: &mut Inner, slab: usize, spp: usize, batch: &mut Batch) -> (n: usize)
         requires
+            crate::sys::may_syscall(),
             old(g).inv(),
             old(g).table@ == self.spec_table(),
             old(g).nbits() == self.spec_nslabs(),
@@ -716,7 +725,10 @@ impl ClassState {
     /// discards go out in batches under the class lock, as `purge_empty`.
     /// Recomputes `oldest_empty` from the survivors. Returns the number
     /// purged.
-    fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize {
+    fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         broadcast use {super::axiom_class_lock, super::axiom_class_lock_inv};
         proof {
             use_type_invariant(self);
@@ -774,7 +786,10 @@ impl ClassState {
     /// [`decay`](ClassState::decay) with the cgroup policy's keep ratio
     /// (design 11): the walk keeps at most `keep16 / 65536` of its `Empty`
     /// slabs on top of the curve's allowance.
-    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64> {
+    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64>
+        requires
+            crate::sys::may_syscall(),
+    {
         self.gate.decay(now, decay_ns, |now, curve| {
             self.purge_curve(now, curve, keep16);
         })

@@ -71,10 +71,20 @@ macro_rules! verified_export_pair {
         $(
             $(#[$m])*
             #[unsafe(no_mangle)]
-            pub extern "C" fn $name($($arg: $ty),*) $(-> $ret)? $body
+            pub extern "C" fn $name($($arg: $ty),*) $(-> $ret)? {
+                proof {
+                    crate::sys::grant_syscalls();
+                }
+                $body
+            }
             $(#[$m])*
             #[unsafe(no_mangle)]
-            pub extern "C" fn $je($($arg: $ty),*) $(-> $ret)? $body
+            pub extern "C" fn $je($($arg: $ty),*) $(-> $ret)? {
+                proof {
+                    crate::sys::grant_syscalls();
+                }
+                $body
+            }
         )*
         } // verus!
     };
@@ -220,6 +230,8 @@ unsafe fn shared_ref() -> (r: &'static Shared)
 /// The process's allocator state, initialising it on first use.
 #[inline(always)]
 pub fn shared() -> (r: &'static Shared)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r.wf(),
 {
@@ -286,7 +298,10 @@ verus! {
 
 /// The feature line (`Features`'s `Display`, built at init). Initialises
 /// the allocator if needed.
-pub fn feature_line() -> &'static str {
+pub fn feature_line() -> &'static str
+    requires
+        crate::sys::may_syscall(),
+{
     let _ = shared();
     // SAFETY: `shared()` returned, so `READY` has been observed.
     unsafe { FEATURE_LINE.get() }.as_str()
@@ -300,6 +315,9 @@ pub fn feature_line() -> &'static str {
 /// `malloc_stats_print`. Initialises the allocator if needed.
 #[unsafe(no_mangle)]
 pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
+    proof {
+        crate::sys::grant_syscalls();
+    }
     let _ = shared();
     // SAFETY: `shared()` returned, so `READY` has been observed.
     unsafe { FEATURE_LINE.get() }.as_ptr()
@@ -323,6 +341,8 @@ verus! {
 #[inline(never)]
 #[verifier::exec_allows_no_decreases_clause]
 fn init_slow() -> (r: &'static Shared)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r.wf(),
 {
@@ -354,7 +374,10 @@ exec static SEALED: AtomicU32 = AtomicU32::new(0);
 
 /// How many ranges init sealed with `mseal` (for `malloc_stats_print` and
 /// tests). Initialises the allocator if needed.
-pub fn sealed_ranges() -> u32 {
+pub fn sealed_ranges() -> u32
+    requires
+        crate::sys::may_syscall(),
+{
     let _ = shared();
     SEALED.load(Ordering::Relaxed)
 }
@@ -392,7 +415,10 @@ unsafe fn publish_features(features: Features) {
 /// function pointers, which Verus does not support, and formats the abort.
 #[verifier::external_body]
 #[inline(always)]
-fn register_fork_handlers() {
+fn register_fork_handlers()
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: the three handlers are plain `extern "C"` functions that only
     // touch allocator locks.
     let rc =
@@ -411,7 +437,10 @@ fn register_fork_handlers() {
 /// metadata allocator owns the metadata region's address space, which
 /// `reserve_owning` hands over; `init_slow` runs it once, before it
 /// publishes `READY`.
-fn init() {
+fn init()
+    requires
+        crate::sys::may_syscall(),
+{
     let features = Features::probe();
     // The slab geometry of the classes whose table slab is below the page
     // (design 3, page-sized slabs): written once here, before any other
@@ -711,6 +740,9 @@ fn count_held(s: &Shared, Tracked(held): Tracked<&ForkHeld>) -> (r: u32)
 /// Fork safety, first half: it returns holding [`fork_holds`], one token
 /// per lock of the fork lock list (asserted at the end).
 extern "C" fn fork_prepare() {
+    proof {
+        crate::sys::grant_syscalls();
+    }
     let mask = sys::block_all_signals();
     let s = shared();
     let Tracked(t) = s.tcaches_lock().lock_held();
@@ -730,6 +762,7 @@ extern "C" fn fork_prepare() {
     let n = s.arenas.count() as usize;
     for i in 0..n
         invariant
+            crate::sys::may_syscall(),
             forall|j: int| #[trigger] arenas.contains_key(j) ==> 0 <= j < i,
             forall|k: ForkLock| #[trigger] toks.contains_key(k) <==> (k == ForkLock::Tcaches || k
                 == ForkLock::Arenas || arena_part(k, arenas.dom())),
@@ -743,6 +776,7 @@ extern "C" fn fork_prepare() {
             }
             for c in 0..NCLASSES
                 invariant
+                    crate::sys::may_syscall(),
                     arenas == before.insert(i as int, *a),
                     forall|j: int| #[trigger] before.contains_key(j) ==> 0 <= j < i,
                     forall|k: ForkLock| #[trigger] toks.contains_key(k) <==> (k == ForkLock::Tcaches
@@ -773,6 +807,7 @@ extern "C" fn fork_prepare() {
     let tracked mut held = ForkHeld { n: n as int, arenas, toks };
     for c in 0..NCLASSES
         invariant
+            crate::sys::may_syscall(),
             held.wf(*s),
             forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
                     k == ForkLock::Tcaches || k == ForkLock::Arenas || arena_part(k, held.arenas().dom())
@@ -799,6 +834,7 @@ extern "C" fn fork_prepare() {
     let n = count_held(s, Tracked(&held)) as usize;
     for i in 0..n
         invariant
+            crate::sys::may_syscall(),
             n == held.n(),
             held.wf(*s),
             forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
@@ -858,6 +894,7 @@ unsafe fn saved_sigmask() -> u64 {
 /// `RawLock::unlock_held`; it ends holding none (asserted at the end).
 fn fork_release(Tracked(state): Tracked<LockHeld>)
     requires
+        crate::sys::may_syscall(),
         state.held() == purge::background::state_lock(),
 {
     let s = shared();
@@ -877,6 +914,7 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
     let mut i = n;
     while i > 0
         invariant
+            crate::sys::may_syscall(),
             i <= n == held.n(),
             held.wf(*s),
             forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
@@ -902,6 +940,7 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
     let mut c = NCLASSES;
     while c > 0
         invariant
+            crate::sys::may_syscall(),
             c <= NCLASSES,
             n == held.n(),
             held.wf(*s),
@@ -918,6 +957,7 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
     let mut i = n;
     while i > 0
         invariant
+            crate::sys::may_syscall(),
             i <= n == held.n(),
             held.wf(*s),
             forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
@@ -935,6 +975,7 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
             let mut c = NCLASSES;
             while c > 0
                 invariant
+                    crate::sys::may_syscall(),
                     c <= NCLASSES,
                     i < n == held.n(),
                     held.arenas().contains_key(i as int),
@@ -967,6 +1008,9 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
 /// The parent keeps its threads; the forking thread releases what its
 /// prepare handler took.
 extern "C" fn fork_parent() {
+    proof {
+        crate::sys::grant_syscalls();
+    }
     let tracked state = axiom_fork_resumed_state();
     fork_release(Tracked(state));
 }
@@ -975,6 +1019,9 @@ extern "C" fn fork_parent() {
 /// releasing them is exactly right. Before that, with everything still
 /// locked, the background thread is marked absent (design 8.1).
 extern "C" fn fork_child() {
+    proof {
+        crate::sys::grant_syscalls();
+    }
     let tracked state = axiom_fork_resumed_state();
     purge::background::fork_child(Tracked(&state));
     fork_release(Tracked(state));
@@ -1612,5 +1659,120 @@ mod tests {
         );
 
         unsafe { ::libc::pthread_sigmask(::libc::SIG_SETMASK, &before, core::ptr::null_mut()) };
+    }
+
+    /// Theorem 8's premises on its capability (`sys::may_syscall`), read
+    /// from the source: `grant_syscalls` is called only in the body of an
+    /// `extern "C"` function or of one that never returns (a call belongs
+    /// to the nearest `fn` item line above it), and `may_syscall` appears
+    /// only as a `requires` or loop invariant clause of its own, apart from
+    /// its definition, the grant and `Stderr`'s type invariant.
+    #[test]
+    fn syscall_grants_only_at_roots() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let mut entries: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
+            entries.sort();
+            for path in entries {
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        /// Whether `t` starts a `fn` item: qualifiers, then `fn `.
+        fn fn_item(t: &str) -> bool {
+            let mut t = t;
+            loop {
+                let rest = [
+                    "pub ",
+                    "const ",
+                    "unsafe ",
+                    "extern \"C\" ",
+                    "proof ",
+                    "open ",
+                    "closed ",
+                ]
+                .iter()
+                .find_map(|q| t.strip_prefix(q))
+                .or_else(|| {
+                    t.strip_prefix("pub(")
+                        .and_then(|r| r.split_once(") ").map(|(_, r)| r))
+                });
+                match rest {
+                    Some(r) => t = r,
+                    None => return t.starts_with("fn "),
+                }
+            }
+        }
+        // Spelled in parts, so that this test's own lines match nothing.
+        let grant = std::format!("{}{}", "grant_", "syscalls");
+        let cap = std::format!("{}{}", "may_", "syscall");
+        let clause = std::format!("crate::sys::{cap}(),");
+        let allowed = [
+            (
+                "sys/mod.rs",
+                std::format!("pub open spec fn {cap}() -> bool {{"),
+            ),
+            ("sys/mod.rs", std::format!("pub proof fn {grant}()")),
+            ("sys/mod.rs", std::format!("{cap}(),")),
+            ("sys/mod.rs", std::format!("reveal({cap});")),
+            (
+                "sys/abort.rs",
+                std::format!("self.len <= 512 && crate::sys::{cap}()"),
+            ),
+        ];
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&src, &mut files);
+        let mut grants = 0;
+        for path in &files {
+            let rel = path.strip_prefix(&src).unwrap().to_str().unwrap();
+            let text = std::fs::read_to_string(path).unwrap();
+            let (mut sig, mut kw) = ("", "");
+            for (i, line) in text.lines().enumerate() {
+                let t = line.trim();
+                if t.starts_with("//") {
+                    continue;
+                }
+                if fn_item(t) {
+                    sig = t;
+                }
+                if let Some(k) = [
+                    "requires",
+                    "ensures",
+                    "invariant",
+                    "invariant_except_break",
+                    "decreases",
+                ]
+                .iter()
+                .find(|k| t == **k)
+                {
+                    kw = k;
+                }
+                let at = || std::format!("{rel}:{}: `{t}`", i + 1);
+                if allowed.iter().any(|(f, a)| *f == rel && t == a.as_str()) {
+                    continue;
+                }
+                if t.contains(grant.as_str()) {
+                    grants += 1;
+                    assert!(
+                        sig.contains("extern \"C\" fn ") || sig.contains(") -> !"),
+                        "{}: a syscall grant in `{sig}`",
+                        at()
+                    );
+                } else if t.contains(cap.as_str()) {
+                    assert!(
+                        t == clause && kw != "ensures" && kw != "decreases",
+                        "{}: `{cap}` used other than as a requires or invariant clause",
+                        at()
+                    );
+                }
+            }
+        }
+        assert!(grants > 0);
     }
 }

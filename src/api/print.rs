@@ -88,7 +88,10 @@ axiom fn axiom_unlocked() -> (tracked u: Unlocked);
 /// allocates cannot deadlock on one.
 #[verifier::external_body]
 #[inline(always)]
-fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&Unlocked>) {
+fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&Unlocked>)
+    requires
+        crate::sys::may_syscall(),
+{
     match *target {
         Target::Callback(Some(cb), opaque) => {
             buf[len] = 0;
@@ -122,7 +125,12 @@ struct Sink {
 }
 
 impl Sink {
+    /// Requires theorem 8's capability: a write may flush to the kernel,
+    /// and `write_str` is outside `verus!`, so a sink is built only where a
+    /// system call may be made.
     fn new(target: Target, permit: Tracked<Unlocked>) -> (r: Sink)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r.len == 0,
     {
@@ -136,7 +144,10 @@ impl Sink {
 
     /// Hand the buffered bytes to the target ([`emit`], under the
     /// report's permit) and empty the buffer.
-    fn flush(&mut self) {
+    fn flush(&mut self)
+        requires
+            crate::sys::may_syscall(),
+    {
         if self.len == 0 {
             return;
         }
@@ -325,6 +336,7 @@ fn decay_ms(ns: u64) -> (r: i64)
 #[allow(clippy::needless_range_loop)]
 fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt::Result
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     proof {
@@ -581,7 +593,10 @@ fn advice_line<W: Write>(out: &mut W) -> fmt::Result {
     )
 }
 
-fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) -> fmt::Result {
+fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) -> fmt::Result
+    requires
+        crate::sys::may_syscall(),
+{
     writeln!(out, "arenas[{}]:", arena.index())?;
     writeln!(out, "  dirty_decay_ms: {}", decay_ms(arena.decay_ns()))?;
     writeln!(
@@ -671,7 +686,10 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 /// One class lock hold per non-full slab; only classes with non-full slabs
 /// are listed.
 #[allow(clippy::while_let_loop)]
-fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::Result {
+fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::Result
+    requires
+        crate::sys::may_syscall(),
+{
     let mut header = false;
     // `for (j, b) in s.bins.iter().enumerate()` and `for i in
     // 0..cs.committed_slabs()`, with their `continue`s, spelled out: Verus
@@ -679,6 +697,7 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
     let mut classes = 0..NCLASSES;
     loop
         invariant
+            crate::sys::may_syscall(),
             classes.start <= classes.end == NCLASSES,
         decreases classes.end - classes.start,
     {
@@ -698,6 +717,7 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
         let mut committed = 0..cs.committed_slabs();
         loop
             invariant
+                crate::sys::may_syscall(),
                 committed.start <= committed.end <= cs.spec_nslabs(),
                 slabs <= committed.start,
                 mismatched <= committed.start,
@@ -766,6 +786,7 @@ fn hist_line<W: Write>(
 
 fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     let snap = stats::collect(shared);
@@ -780,6 +801,7 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
         let n = shared.arenas.count() as usize;
         for i in 0..n
             invariant
+                crate::sys::may_syscall(),
                 shared.wf(),
         {
             if let Some(a) = stats::arena_at(shared, i) {
@@ -808,6 +830,7 @@ fn json_general<W: Write>(
     arenas_follow: bool,
 ) -> fmt::Result
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     proof {
@@ -978,6 +1001,7 @@ fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 /// [`json_arena`]s, each under its option letter as in [`text_report`].
 fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     let snap = stats::collect(shared);
@@ -995,6 +1019,7 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
         let n = shared.arenas.count() as usize;
         for i in 0..n
             invariant
+                crate::sys::may_syscall(),
                 shared.wf(),
         {
             if let Some(a) = stats::arena_at(shared, i) {
@@ -1029,7 +1054,10 @@ fn nbins() -> (r: usize)
 /// `WriteCb` is a function pointer type, which Verus rejects, so the
 /// entry point outside `verus!` only builds the `Target`.
 #[inline(always)]
-fn stats_print(target: Target, opts: *const c_char) {
+fn stats_print(target: Target, opts: *const c_char)
+    requires
+        crate::sys::may_syscall(),
+{
     let shared = super::shared();
     let o = Opts::parse(opts);
     let tracked u = axiom_unlocked();
@@ -1095,6 +1123,7 @@ fn xml_heap<W: Write>(out: &mut W, nr: usize, s: &ArenaStats) -> fmt::Result {
 
 fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     writeln!(out, "<malloc version=\"1\">")?;
@@ -1102,6 +1131,7 @@ fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
     let n = shared.arenas.count() as usize;
     for i in 0..n
         invariant
+            crate::sys::may_syscall(),
             shared.wf(),
     {
         if let Some(a) = stats::arena_at(shared, i) {
@@ -1151,7 +1181,10 @@ fn set_errno(e: c_int) {
 /// glibc's `malloc_info(options, stream)`: the `<malloc version="1">`
 /// document with one `<heap>` per arena and the totals. `options` must be
 /// 0 and `stream` non-null, else `-1` with `errno = EINVAL`, as in glibc.
-pub fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
+pub fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int
+    requires
+        crate::sys::may_syscall(),
+{
     if options != 0 || stream.is_null() {
         set_errno(crate::sys::Errno::EINVAL.0);
         return -1;
@@ -1166,7 +1199,10 @@ pub fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
 
 /// glibc's `malloc_stats()`: a few lines on stderr in glibc's layout, with
 /// challoc's meaning of each figure (see `glibc.rs` for the mapping).
-pub fn malloc_stats() {
+pub fn malloc_stats()
+    requires
+        crate::sys::may_syscall(),
+{
     let shared = super::shared();
     let tracked u = axiom_unlocked();
     let mut sink = Sink::new(stderr_target(), Tracked(u));
@@ -1178,11 +1214,13 @@ pub fn malloc_stats() {
 /// function (Verus does not model its mutable captures).
 fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     let n = shared.arenas.count() as usize;
     for i in 0..n
         invariant
+            crate::sys::may_syscall(),
             shared.wf(),
     {
         if let Some(a) = stats::arena_at(shared, i) {
@@ -1240,11 +1278,17 @@ mod exports {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::malloc_info(options, stream)
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn malloc_stats() {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::malloc_stats()
     }
 

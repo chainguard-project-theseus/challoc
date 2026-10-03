@@ -553,6 +553,8 @@ fn write_decimal(out: &mut [u8], mut v: u64) -> (n: usize)
 /// The THP table from `/sys/kernel/mm/transparent_hugepage` (about ten
 /// sysfs reads on a 4 KiB kernel).
 pub fn probe(page: usize) -> (r: Thp)
+    requires
+        crate::sys::may_syscall(),
     ensures
         0 < page <= 1usize << 33 ==> r.lg_pmd < 64,
 {

@@ -1177,6 +1177,7 @@ mod linux {
     /// Read `dir/name` into `buf`; `None` when absent.
     fn read_in(dir: &[u8], name: &[u8], buf: &mut [u8]) -> (r: Option<usize>)
         requires
+            crate::sys::may_syscall(),
             dir@.len() + FILE_ROOM <= PATH_CAP,
             name@.len() + 2 <= FILE_ROOM,
         ensures
@@ -1191,6 +1192,7 @@ mod linux {
     /// `dir/name` parsed as a limit file; `None` when absent or malformed.
     fn read_limit(dir: &[u8], name: &[u8]) -> Option<u64>
         requires
+            crate::sys::may_syscall(),
             dir@.len() + FILE_ROOM <= PATH_CAP,
             name@.len() + 2 <= FILE_ROOM,
     {
@@ -1205,6 +1207,8 @@ mod linux {
     /// and leaves it in the scan buffer, where it is parsed again for the
     /// copy.
     fn mountinfo_cgroup2(mount: &mut [u8; PATH_CAP]) -> (r: usize)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r <= PATH_CAP,
     {
@@ -1238,7 +1242,10 @@ mod linux {
     impl Cgroup {
         /// Design 10 step 7: find the cgroup and read its limits once.
         /// With `enabled == false` (`cgroup:false`) nothing is opened.
-        pub fn discover(enabled: bool) -> Cgroup {
+        pub fn discover(enabled: bool) -> Cgroup
+            requires
+                crate::sys::may_syscall(),
+        {
             if !enabled {
                 return Cgroup::untracked(State::Disabled);
             }
@@ -1280,7 +1287,10 @@ mod linux {
 
         /// The effective limits: the minimum of `memory.max` and of
         /// `memory.high` over the levels from the leaf to the mount.
-        fn walk_limits(&self, now: u64) {
+        fn walk_limits(&self, now: u64)
+            requires
+                crate::sys::may_syscall(),
+        {
             self.limits_at.store(now, Ordering::Relaxed);
             let (dir, mlen) = (self.dir(), self.mount_len as usize);
             self.limit.store(
@@ -1309,7 +1319,10 @@ mod linux {
 
         /// Read `memory.current` and `memory.events` now, unconditionally,
         /// and re-walk the limits if [`LIMIT_INTERVAL_NS`] has passed.
-        fn sample_now(&self, now: u64) {
+        fn sample_now(&self, now: u64)
+            requires
+                crate::sys::may_syscall(),
+        {
             if self.has_current {
                 if let Some(v) = read_limit(self.dir(), b"memory.current") {
                     self.current.store(v, Ordering::Relaxed);
@@ -1329,7 +1342,10 @@ mod linux {
         /// Sample if at least [`SAMPLE_INTERVAL_NS`] of the coarse clock
         /// has passed since the last sample; one thread wins the interval.
         /// `true` when this call read the files. Slow paths only.
-        pub fn sample(&self, now: u64) -> bool {
+        pub fn sample(&self, now: u64) -> bool
+            requires
+                crate::sys::may_syscall(),
+        {
             if !self.tracked() {
                 return false;
             }

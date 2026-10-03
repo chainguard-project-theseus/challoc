@@ -98,7 +98,10 @@ pub fn requested() -> bool {
 /// Ask for (or, with `false`, stop asking for) a background thread. The
 /// next periodic tick creates it; a running thread that finds the
 /// request withdrawn exits at its next wake-up.
-pub fn request(on: bool) {
+pub fn request(on: bool)
+    requires
+        crate::sys::may_syscall(),
+{
     REQUESTED.store(on, Ordering::Relaxed);
     if !on {
         // Unconditional: a thread the bookkeeping has already forgotten
@@ -109,13 +112,19 @@ pub fn request(on: bool) {
 
 /// Bump the futex word and wake the thread if it is waiting. Cheap
 /// enough for the rare "first `Empty` slab of a class" transition.
-pub fn wake() {
+pub fn wake()
+    requires
+        crate::sys::may_syscall(),
+{
     if present() {
         kick();
     }
 }
 
-fn kick() {
+fn kick()
+    requires
+        crate::sys::may_syscall(),
+{
     SEQ.fetch_add(1, Ordering::SeqCst);
     // SAFETY: `SEQ` is a live, aligned `u32`.
     let _ = unsafe { sys::futex_wake(SEQ.as_ptr(), 1) };
@@ -162,6 +171,7 @@ unsafe fn errno_write(errno: *mut i32, v: i32) {
 /// `pthread_create` / `pthread_join` may set it on their way.
 pub fn start(shared: &Shared) -> bool
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     broadcast use axiom_state_lock_inv;
@@ -218,7 +228,10 @@ pub fn start(shared: &Shared) -> bool
 /// `t` is a joinable thread this module created and never joined.
 #[verifier::external_body]
 #[inline(always)]
-unsafe fn pthread_join(t: ::libc::pthread_t) -> i32 {
+unsafe fn pthread_join(t: ::libc::pthread_t) -> i32
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: guaranteed by the caller.
     unsafe { ::libc::pthread_join(t, core::ptr::null_mut()) }
 }
@@ -234,6 +247,7 @@ fn create(
     previous: Option<::libc::pthread_t>,
 ) -> (r: (usize, Option<::libc::pthread_t>))
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
         stack + STACK_SIZE <= usize::MAX,
     ensures
@@ -319,7 +333,10 @@ fn create(
 /// Trusted: raw pthread calls, and the thread's entry is a function
 /// pointer.
 #[verifier::external_body]
-fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t> {
+fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t>
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: plain pthread attribute calls on a local; the stack is
     // ours and committed.
     unsafe {
@@ -410,11 +427,15 @@ const THREAD_NAME: [u8; 11] = [b'c', b'h', b'a', b'l', b'l', b'o', b'c', b'-', b
 /// `request(false)`.
 #[verifier::exec_allows_no_decreases_clause]
 extern "C" fn main(arg: *mut c_void) -> *mut c_void {
+    proof {
+        crate::sys::grant_syscalls();
+    }
     let shared = shared_arg(arg);
     // SAFETY: the name is NUL-terminated.
     let _ = unsafe { sys::prctl(PR_SET_NAME, THREAD_NAME.as_ptr() as usize, 0, 0, 0) };
     loop
         invariant
+            crate::sys::may_syscall(),
             shared.wf(),
     {
         // Read the sequence before scanning, so a bump that lands
@@ -470,6 +491,8 @@ fn state() -> (r: &'static Lock<State>)
 /// Take the state lock (fork prepare, after the metadata lock); the
 /// token is the hold.
 pub fn fork_lock() -> (t: Tracked<LockHeld>)
+    requires
+        crate::sys::may_syscall(),
     ensures
         t@.held() == state_lock(),
 {
@@ -480,6 +503,7 @@ pub fn fork_lock() -> (t: Tracked<LockHeld>)
 /// handing back the token of the hold.
 pub fn fork_unlock(Tracked(t): Tracked<LockHeld>)
     requires
+        crate::sys::may_syscall(),
         t.held() == state_lock(),
 {
     state().raw().unlock_held(Tracked(t))

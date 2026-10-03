@@ -668,6 +668,8 @@ impl Arena {
     /// on constants, so the build folds it away).
     #[inline(always)]
     fn alloc_sets(meta: &Meta) -> (r: (*mut SetTable, Tracked<Option<PointsTo<SetTable>>>))
+        requires
+            crate::sys::may_syscall(),
         ensures
             r.0@.addr != 0 ==> r.1@ is Some && r.1@->0.ptr() == r.0 && r.1@->0.is_uninit(),
     {
@@ -796,6 +798,7 @@ impl Arena {
         Tracked(slot): Tracked<&mut Held<Arena>>,
     ) -> (r: bool)
         requires
+            crate::sys::may_syscall(),
             old(slot).perm matches Some(p) && p.ptr() == this && p.is_uninit(),
             this@.addr + size_of::<Arena>() <= usize::MAX,
             regions.wf(),
@@ -908,6 +911,8 @@ impl Arena {
     /// `Empty` bytes over every class (one lock hold per class that has
     /// any), for the cgroup policy's retention figure.
     pub fn empty_bytes(&self) -> (r: usize)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r <= NCLASSES * 0x200_0000_0000_0000,
     {
@@ -915,6 +920,7 @@ impl Arena {
         let mut c = 0;
         while c < NCLASSES
             invariant
+                crate::sys::may_syscall(),
                 c <= NCLASSES,
                 sum <= c * 0x200_0000_0000_0000,
             decreases NCLASSES - c,
@@ -931,6 +937,8 @@ impl Arena {
     /// Purge every `Empty` slab of every class whatever its age. Returns
     /// how many were purged.
     pub fn purge_all(&self) -> (r: usize)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r <= NCLASSES * 0x2000_0000_0000,
     {
@@ -938,6 +946,7 @@ impl Arena {
         let mut c = 0;
         while c < NCLASSES
             invariant
+                crate::sys::may_syscall(),
                 c <= NCLASSES,
                 sum <= c * 0x2000_0000_0000,
             decreases NCLASSES - c,
@@ -1001,12 +1010,18 @@ impl Arena {
     }
 
     /// The statistics stored by the last `epoch`.
-    pub fn stats(&self) -> ArenaStats {
+    pub fn stats(&self) -> ArenaStats
+        requires
+            crate::sys::may_syscall(),
+    {
         *self.stats.lock()
     }
 
     /// Store the statistics of an `epoch`.
-    pub fn store_stats(&self, s: &ArenaStats) {
+    pub fn store_stats(&self, s: &ArenaStats)
+        requires
+            crate::sys::may_syscall(),
+    {
         broadcast use axiom_arena_stats_lock_inv;
 
         *self.stats.lock() = *s;
@@ -1072,7 +1087,10 @@ impl Arena {
     /// Change the decay period; `-1` turns purging off. Takes effect at the
     /// next periodic tick, or at once for a background thread, which is
     /// woken to recompute its deadline.
-    pub fn set_decay_ms(&self, ms: i64) {
+    pub fn set_decay_ms(&self, ms: i64)
+        requires
+            crate::sys::may_syscall(),
+    {
         self.decay_ns
             .store(crate::purge::decay_ns_from_ms(ms), Ordering::Relaxed);
         crate::purge::note_decay_changed();
@@ -1080,19 +1098,28 @@ impl Arena {
 
     /// Decay step over every class (see `ClassState::decay`): the earliest
     /// next deadline, `None` when nothing is `Empty` or decay is off.
-    pub fn decay(&self, now: u64) -> Option<u64> {
+    pub fn decay(&self, now: u64) -> Option<u64>
+        requires
+            crate::sys::may_syscall(),
+    {
         self.decay_with(now, self.decay_ns(), crate::policy::KEEP_ALL)
     }
 
     /// [`decay`](Arena::decay) with the period the cgroup policy gives
     /// this arena and its keep ratio for the retention cap (design 11);
     /// `NEVER` does nothing.
-    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64> {
+    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64>
+        requires
+            crate::sys::may_syscall(),
+    {
         if decay_ns == crate::purge::NEVER {
             return None;
         }
         let mut next: Option<u64> = None;
-        for cs in self.classes.iter() {
+        for cs in self.classes.iter()
+            invariant
+                crate::sys::may_syscall(),
+        {
             if let Some(d) = cs.decay_with(now, decay_ns, keep16) {
                 next = Some(next.map_or(d, |n| n.min(d)));
             }
@@ -1248,6 +1275,7 @@ impl Arenas {
     #[inline]
     pub fn get<'a>(&'a self, shared: &'a Shared, index: u16) -> (r: Option<&'a Arena>)
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
         ensures
             r matches Some(a) ==> a.spec_index() == index,
@@ -1269,6 +1297,7 @@ impl Arenas {
     #[inline(never)]
     fn materialise<'a>(&'a self, shared: &'a Shared, index: u16) -> (r: Option<&'a Arena>)
         requires
+            crate::sys::may_syscall(),
             (index as usize) < MAX_ARENAS,
             shared.wf(),
         ensures
@@ -1293,6 +1322,7 @@ impl Arenas {
     /// the tables in class order).
     fn build<'a>(&'a self, shared: &'a Shared, index: u16) -> (r: Option<&'a Arena>)
         requires
+            crate::sys::may_syscall(),
             (index as usize) < MAX_ARENAS,
             shared.wf(),
         ensures
@@ -1358,6 +1388,7 @@ impl Arenas {
     /// metadata region is full.
     pub fn create(&self, shared: &Shared) -> Option<u16>
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
     {
         let mut g = self.lock.lock();
@@ -1401,6 +1432,7 @@ impl Arenas {
     /// binding with [`Arenas::unbind`] when the heap is destroyed.
     pub fn assign(&self) -> (r: u16)
         requires
+            crate::sys::may_syscall(),
             self.spec_auto() <= MAX_ARENAS,
         ensures
             r < MAX_ARENAS,

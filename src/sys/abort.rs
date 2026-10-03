@@ -28,13 +28,17 @@ pub struct Stderr {
 }
 
 impl Stderr {
-    /// At most the buffer is pending.
+    /// At most the buffer is pending, and the sink was built where a system
+    /// call may be made (its flush is one; theorem 8).
     #[verifier::type_invariant]
     spec fn wf(&self) -> bool {
-        self.len <= 512
+        self.len <= 512 && crate::sys::may_syscall()
     }
 
-    pub const fn new() -> Self {
+    pub const fn new() -> Self
+        requires
+            crate::sys::may_syscall(),
+    {
         Stderr {
             buf: [0; 512],
             len: 0,
@@ -60,6 +64,9 @@ impl Stderr {
     }
 }
 
+// Outside the proofs: building a `Stderr` needs `may_syscall` (its type
+// invariant), which `Default::default` cannot require.
+#[verifier::external]
 impl Default for Stderr {
     fn default() -> Self {
         Self::new()
@@ -107,6 +114,7 @@ impl fmt::Write for Stderr {
             let mut i = 0;
             while i < n
                 invariant
+                    crate::sys::may_syscall(),
                     self.len + n <= 512,
                     n <= b@.len(),
                     i <= n,
@@ -133,6 +141,11 @@ pub fn abort(msg: &str) -> ! {
 #[cold]
 #[inline(never)]
 pub fn abort_fmt(args: fmt::Arguments<'_>) -> ! {
+    proof {
+        // A root of theorem 8: the abort's write and `SIGABRT`, after which
+        // nothing returns.
+        crate::sys::grant_syscalls();
+    }
     use fmt::Write as _;
     #[cfg(test)]
     test_unwind(args);
@@ -150,7 +163,10 @@ pub fn abort_fmt(args: fmt::Arguments<'_>) -> ! {
 /// disposition to default and deliver again. `exit_group` is the last
 /// resort so the process never continues past an inconsistency.
 #[cold]
-fn die() -> ! {
+fn die() -> !
+    requires
+        crate::sys::may_syscall(),
+{
     let set: u64 = 1 << (SIGABRT - 1);
     let pid = getpid() as isize as usize;
     let tid = gettid() as isize as usize;

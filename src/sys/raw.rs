@@ -17,7 +17,10 @@ mod imp {
 
     #[verifier::external_body]
     #[inline(always)]
-    pub unsafe fn syscall0(nr: usize) -> usize {
+    pub unsafe fn syscall0(nr: usize) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         let ret: usize;
         // SAFETY: caller guarantees the syscall number and argument contract.
         unsafe {
@@ -29,7 +32,10 @@ mod imp {
 
     #[verifier::external_body]
     #[inline(always)]
-    pub unsafe fn syscall1(nr: usize, a0: usize) -> usize {
+    pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         let ret: usize;
         // SAFETY: as above.
         unsafe {
@@ -41,7 +47,10 @@ mod imp {
 
     #[verifier::external_body]
     #[inline(always)]
-    pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize {
+    pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         let ret: usize;
         // SAFETY: as above.
         unsafe {
@@ -53,7 +62,10 @@ mod imp {
 
     #[verifier::external_body]
     #[inline(always)]
-    pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
+    pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         let ret: usize;
         // SAFETY: as above.
         unsafe {
@@ -65,7 +77,10 @@ mod imp {
 
     #[verifier::external_body]
     #[inline(always)]
-    pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize {
+    pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         let ret: usize;
         // SAFETY: as above.
         unsafe {
@@ -85,7 +100,10 @@ mod imp {
         a2: usize,
         a3: usize,
         a4: usize,
-    ) -> usize {
+    ) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         let ret: usize;
         // SAFETY: as above.
         unsafe {
@@ -106,7 +124,10 @@ mod imp {
         a3: usize,
         a4: usize,
         a5: usize,
-    ) -> usize {
+    ) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         let ret: usize;
         // SAFETY: as above.
         unsafe {
@@ -129,7 +150,10 @@ mod imp {
 
     #[verifier::external_body]
     #[inline(always)]
-    pub unsafe fn syscall0(nr: usize) -> usize {
+    pub unsafe fn syscall0(nr: usize) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         let ret: usize;
         // SAFETY: caller guarantees the syscall number and argument contract.
         unsafe {
@@ -140,7 +164,10 @@ mod imp {
 
     #[verifier::external_body]
     #[inline(always)]
-    pub unsafe fn syscall1(nr: usize, a0: usize) -> usize {
+    pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         let ret: usize;
         // SAFETY: as above.
         unsafe {
@@ -151,7 +178,10 @@ mod imp {
 
     #[verifier::external_body]
     #[inline(always)]
-    pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize {
+    pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         let ret: usize;
         // SAFETY: as above.
         unsafe {
@@ -163,7 +193,10 @@ mod imp {
 
     #[verifier::external_body]
     #[inline(always)]
-    pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
+    pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         let ret: usize;
         // SAFETY: as above.
         unsafe {
@@ -175,7 +208,10 @@ mod imp {
 
     #[verifier::external_body]
     #[inline(always)]
-    pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize {
+    pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         let ret: usize;
         // SAFETY: as above.
         unsafe {
@@ -194,7 +230,10 @@ mod imp {
         a2: usize,
         a3: usize,
         a4: usize,
-    ) -> usize {
+    ) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         let ret: usize;
         // SAFETY: as above.
         unsafe {
@@ -214,7 +253,10 @@ mod imp {
         a3: usize,
         a4: usize,
         a5: usize,
-    ) -> usize {
+    ) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         let ret: usize;
         // SAFETY: as above.
         unsafe {

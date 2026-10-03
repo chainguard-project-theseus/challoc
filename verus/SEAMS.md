@@ -849,12 +849,13 @@ Tool: Kani. Status: trusted.
 ```rust
 fn call_throw_bad_alloc(t: *const c_void) -> !
     requires
+        crate::sys::may_syscall(),
         t@.addr != 0,
 ```
 
 ### S3. `Handler`
 
-src/api/cxx.rs:146. Kind: external_body type. Category: function pointer.
+src/api/cxx.rs:150. Kind: external_body type. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > The installed `new_handler`, opaque to Verus (which has no function pointer types).
@@ -865,7 +866,7 @@ struct Handler(unsafe extern "C" fn());
 
 ### S4. `installed_handler`
 
-src/api/cxx.rs:152. Kind: external_body. Category: function pointer.
+src/api/cxx.rs:156. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > [`new_handler`] as a [`Handler`].
@@ -876,24 +877,28 @@ fn installed_handler() -> Option<Handler>
 
 ### S5. `call_handler`
 
-src/api/cxx.rs:161. Kind: external_body. Category: function pointer.
+src/api/cxx.rs:165. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > Call the program's `new_handler`.
 
 ```rust
 fn call_handler(handler: Handler)
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S6. `oom`
 
-src/api/cxx.rs:174. Kind: no_decreases. Category: termination.
+src/api/cxx.rs:181. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > The `operator new` failure protocol: call the `new_handler` and retry until an attempt succeeds or no handler is installed, then throw `std::bad_alloc` (or return null for the `nothrow_t` forms).
 
 ```rust
 fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+    requires
+        crate::sys::may_syscall(),
     ensures
         align == 0 ==> crate::heap::fits(r, size as int, crate::QUANTUM as int),
         align != 0 && libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
@@ -916,12 +921,12 @@ pub(super) fn set_errno(e: c_int)
 
 ### S8. `store_usable`
 
-src/api/libc.rs:970. Kind: external_body. Category: raw pointer from C caller.
+src/api/libc.rs:1056. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store `n` through `usable` unless it is null (`usable` is optional for the three allocating entry points; a null makes them plain `malloc`/`calloc`/`realloc`), with the [`Stored`] token for the store.
 
-Body mints Tracked at line 979.
+Body mints Tracked at line 1065.
 
 ```rust
 fn store_usable(usable: *mut usize, n: usize) -> (s: Tracked<Stored>)
@@ -932,7 +937,7 @@ fn store_usable(usable: *mut usize, n: usize) -> (s: Tracked<Stored>)
 
 ### S9. `store_out`
 
-src/api/libc.rs:1764. Kind: external_body. Category: raw pointer from C caller.
+src/api/libc.rs:1874. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store the allocation through `posix_memalign`'s out-pointer.
@@ -959,11 +964,13 @@ Tool: Kani. Status: trusted.
 
 ```rust
 fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S12. `root`
 
-src/api/mallctl.rs:656. Kind: external_body. Category: function pointer.
+src/api/mallctl.rs:661. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > [`ROOT`].
@@ -974,7 +981,7 @@ fn root() -> &'static [Node]
 
 ### S13. `name_byte`
 
-src/api/mallctl.rs:803. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:808. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Byte `n` of the caller's name.
@@ -985,7 +992,7 @@ unsafe fn name_byte(p: *const u8, n: usize) -> u8
 
 ### S14. `name_bytes`
 
-src/api/mallctl.rs:815. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:820. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The caller's name's first `n` bytes, borrowed for the call.
@@ -998,7 +1005,7 @@ unsafe fn name_bytes(p: *const u8, n: usize) -> (r: &'static [u8])
 
 ### S15. `old_len`
 
-src/api/mallctl.rs:875. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:880. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > `*oldlenp`.
@@ -1009,7 +1016,7 @@ unsafe fn old_len(oldlenp: *mut usize) -> usize
 
 ### S16. `copy_prefix`
 
-src/api/mallctl.rs:887. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:892. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Copy the first `n` bytes of `v` to `oldp`.
@@ -1020,7 +1027,7 @@ unsafe fn copy_prefix<T: Copy>(v: &T, oldp: *mut c_void, n: usize)
 
 ### S17. `store`
 
-src/api/mallctl.rs:898. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:903. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store `v` at `oldp`.
@@ -1031,7 +1038,7 @@ unsafe fn store<T: Copy>(oldp: *mut c_void, v: T)
 
 ### S18. `load`
 
-src/api/mallctl.rs:909. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:914. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The value at `newp`.
@@ -1042,40 +1049,46 @@ unsafe fn load<T: Copy>(newp: *const c_void) -> T
 
 ### S19. `heap_set_arena`
 
-src/api/mallctl.rs:1037. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:1042. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `h.set_arena(shared, arena)`.
 
 ```rust
 fn heap_set_arena(h: &mut Heap, shared: &Shared, arena: u16)
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S20. `heap_set_tcache_enabled`
 
-src/api/mallctl.rs:1044. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:1052. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `h.set_tcache_enabled(shared, on)`.
 
 ```rust
 fn heap_set_tcache_enabled(h: &mut Heap, shared: &Shared, on: bool)
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S21. `tcaches_flush`
 
-src/api/mallctl.rs:1052. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:1063. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `shared.tcaches.flush(shared, t)`: whether `t` was a live cache.
 
 ```rust
 fn tcaches_flush(shared: &Shared, t: u16) -> bool
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S22. `query_ptr`
 
-src/api/mallctl.rs:1165. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:1181. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Pointer `i` of the caller's `newp` array, whose byte length the caller gave as `newlen`.
@@ -1088,7 +1101,7 @@ unsafe fn query_ptr(ptrs: *const *const c_void, i: usize, Ghost(newlen): Ghost<u
 
 ### S23. `store_triple`
 
-src/api/mallctl.rs:1183. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:1199. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store triple `i`, `(nfree, nregs, size)`, into the caller's `oldp` array, whose byte length the caller gave as `*oldlenp == oldlen`.
@@ -1108,7 +1121,7 @@ unsafe fn store_triple(
 
 ### S24. `mib_cap`
 
-src/api/mallctl.rs:1620. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:1654. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > `*miblenp`.
@@ -1119,7 +1132,7 @@ unsafe fn mib_cap(miblenp: *mut usize) -> usize
 
 ### S25. `mib_out`
 
-src/api/mallctl.rs:1633. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:1667. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Copy `mib[..len]` out to `mibp` and store `len` at `miblenp`.
@@ -1132,7 +1145,7 @@ unsafe fn mib_out(mib: &[usize; MAX_MIB], mibp: *mut usize, miblenp: *mut usize,
 
 ### S26. `mib_in`
 
-src/api/mallctl.rs:1676. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:1710. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Copy the caller's `miblen` MIB entries into `local`.
@@ -1145,7 +1158,7 @@ unsafe fn mib_in(mib: *const usize, local: &mut [usize; MAX_MIB], miblen: usize)
 
 ### S27. `Global::get`
 
-src/api/mod.rs:157. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:167. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > Trusted: reads the storage (the `# Safety` contract).
@@ -1156,7 +1169,7 @@ unsafe fn get(&self) -> &T
 
 ### S28. `shared_ref`
 
-src/api/mod.rs:211. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:221. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > `SHARED` as a reference, the one read of the static every accessor below makes.
@@ -1170,7 +1183,7 @@ unsafe fn shared_ref() -> (r: &'static Shared)
 
 ### S29. `shared_ptr`
 
-src/api/mod.rs:255. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:267. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The allocator state's address, with no readiness check and no reference formed: what the fast paths hand `heap::existing_heap`, which reads one byte through it only after the thread's TLS slot has proved init complete.
@@ -1181,20 +1194,22 @@ pub fn shared_ptr() -> *const Shared opens_invariants none
 
 ### S30. `init_slow`
 
-src/api/mod.rs:325. Kind: no_decreases. Category: termination.
+src/api/mod.rs:343. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > The first caller runs `init` and publishes `READY`; a concurrent one waits for it (termination is not claimed: the wait ends when the other thread's `init` does); the initialising thread re-entering aborts.
 
 ```rust
 fn init_slow() -> (r: &'static Shared)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r.wf(),
 ```
 
 ### S31. `shared_storage_ptr`
 
-src/api/mod.rs:366. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:389. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The storage of [`SHARED`], the process's [`Shared::storage`].
@@ -1207,7 +1222,7 @@ fn shared_storage_ptr() -> (p: *mut Shared)
 
 ### S32. `publish_features`
 
-src/api/mod.rs:383. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:406. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The published feature report: `FEATURE_LINE` from `features`, then `FEATURES`.
@@ -1218,18 +1233,20 @@ unsafe fn publish_features(features: Features)
 
 ### S33. `register_fork_handlers`
 
-src/api/mod.rs:395. Kind: external_body. Category: function pointer.
+src/api/mod.rs:418. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > Register the fork handlers, aborting if glibc refuses.
 
 ```rust
 fn register_fork_handlers()
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S34. `axiom_fork_resumed_state`
 
-src/api/mod.rs:649. Kind: axiom. Category: C-program contract.
+src/api/mod.rs:678. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_holds`] (glibc runs them on the forking thread, after `_Fork`; in the child that thread is the copy of the forking one), and nothing released a lock in between: signals are blocked from the prepare handler's first step, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) do not take an allocator lock.
@@ -1243,7 +1260,7 @@ axiom fn axiom_fork_resumed_state() -> (tracked state: LockHeld)
 
 ### S35. `axiom_fork_resumed`
 
-src/api/mod.rs:658. Kind: axiom. Category: C-program contract.
+src/api/mod.rs:687. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise: see [`axiom_fork_resumed_state`]; the rest of the hold, at the `Shared` the release reads, with the arena count and the arenas `fork_prepare` read (`n` and `arenas` are those reads, which the ensures does not name: the premise is that they are).
@@ -1257,7 +1274,7 @@ axiom fn axiom_fork_resumed(s: &Shared, tracked state: &LockHeld) -> (tracked he
 
 ### S36. `arena_held`
 
-src/api/mod.rs:673. Kind: external_body. Category: allocator invariant.
+src/api/mod.rs:702. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `s.arenas.get_existing(i as u16)` while `held` holds the creation lock: the arena `fork_prepare` found at `i`.
@@ -1275,7 +1292,7 @@ fn arena_held<'a>(s: &'a Shared, i: usize, Tracked(held): Tracked<&ForkHeld>) ->
 
 ### S37. `count_held`
 
-src/api/mod.rs:689. Kind: external_body. Category: allocator invariant.
+src/api/mod.rs:718. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `s.arenas.count()` while `held` holds the creation lock: the count `fork_prepare` read.
@@ -1291,7 +1308,7 @@ fn count_held(s: &Shared, Tracked(held): Tracked<&ForkHeld>) -> (r: u32)
 
 ### S38. `save_sigmask`
 
-src/api/mod.rs:834. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:870. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > Save the signal mask for `fork_release`.
@@ -1302,7 +1319,7 @@ unsafe fn save_sigmask(mask: u64)
 
 ### S39. `saved_sigmask`
 
-src/api/mod.rs:847. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:883. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The signal mask `fork_prepare` saved.
@@ -1353,11 +1370,13 @@ Tool: none (assumption). Status: trusted.
 
 ```rust
 fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&Unlocked>)
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S44. `opt_byte`
 
-src/api/print.rs:255. Kind: external_body. Category: raw pointer from C caller.
+src/api/print.rs:266. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Byte `i` of the caller's option string.
@@ -1368,7 +1387,7 @@ unsafe fn opt_byte(opts: *const c_char, i: usize) -> u8
 
 ### S45. `word`
 
-src/api/print.rs:300. Kind: external_body. Category: core library.
+src/api/print.rs:311. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > A configuration value's name (`config::Value::Str`, the `thp` key).
@@ -1379,7 +1398,7 @@ fn word(s: &CStr) -> &str
 
 ### S46. `hist_line`
 
-src/api/print.rs:751. Kind: external_body. Category: function pointer.
+src/api/print.rs:771. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > One class's line of [`slab_histogram`].
@@ -1398,7 +1417,7 @@ fn hist_line<W: Write>(
 
 ### S47. `set_errno`
 
-src/api/print.rs:1146. Kind: external_body. Category: FFI/syscall.
+src/api/print.rs:1176. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Set the calling thread's `errno`.
@@ -1409,7 +1428,7 @@ fn set_errno(e: c_int)
 
 ### S48. `file_target`
 
-src/api/print.rs:1211. Kind: external_body. Category: function pointer.
+src/api/print.rs:1249. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > `Target::File(stream)`.
@@ -1420,7 +1439,7 @@ fn file_target(stream: *mut libc::FILE) -> Target
 
 ### S49. `stderr_target`
 
-src/api/print.rs:1218. Kind: external_body. Category: function pointer.
+src/api/print.rs:1256. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > `Target::Stderr`.
@@ -1607,7 +1626,7 @@ axiom fn axiom_arena_assemble(tracked parts: ArenaParts, tracked classes: Map<in
 
 ### S62. `Arenas::init`
 
-src/arena.rs:1161. Kind: external_body. Category: atomics primitive.
+src/arena.rs:1188. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Initialise `this` in place with `arena0` at index 0 and `narenas` automatic indices (clamped to `1..=MAX_ARENAS`), through the permission to its storage in `slot`, handed back initialised.
@@ -1622,7 +1641,7 @@ pub unsafe fn init(this: *mut Arenas, arena0: *mut Arena, narenas: u32, Tracked(
 
 ### S63. `arena_at`
 
-src/arena.rs:1217. Kind: external_body. Category: raw pointer (internal).
+src/arena.rs:1244. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The arena a non-null registry entry points at.
@@ -1672,7 +1691,7 @@ pub const unsafe fn from_raw_chunked(nbits: usize, ptr: *mut u64, stride: usize)
 
 ### S66. `ClassState::page_group_is_idle`
 
-src/class/decay.rs:207. Kind: external_body. Category: allocator invariant.
+src/class/decay.rs:208. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Whether the page group of `slab` (`spp` slabs, `spp > 1`) can be discarded: every slab in it is committed, owned by this arena, and `Fresh`, `Empty` or `Purged`.
@@ -1691,7 +1710,7 @@ fn page_group_is_idle(&self, Ghost(g): Ghost<Inner>, slab: usize, spp: usize) ->
 
 ### S67. `axiom_class_lock_inv`
 
-src/class/mod.rs:1362. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:1364. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Assumption (`lock.rs`): the class lock's value keeps the set/count seam's invariant, ghost link included, while the lock is free.
@@ -1705,7 +1724,7 @@ broadcast axiom fn axiom_class_lock_inv(v: Inner)
 
 ### S68. `axiom_class_lock`
 
-src/class/mod.rs:1370. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:1372. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Assumption (`lock.rs`): the sets behind a class lock stay over the slab count they were created with.
@@ -1719,7 +1738,7 @@ broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
 
 ### S69. `PartialEqSpecImpl for State`
 
-src/class/mod.rs:1379. Kind: spec_impl. Category: core library.
+src/class/mod.rs:1381. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1736,7 +1755,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for State {
 
 ### S70. `ClassState::owner_locked`
 
-src/class/mod.rs:1412. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1414. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Bridge (trusted): under this arena's class lock, a slab's group's owner word names this arena exactly when the slab is one of its owned slabs; the word's value is [`slab_owner`] (the read in its body, `SlabTable::owner`, ensures it).
@@ -1753,7 +1772,7 @@ fn owner_locked(&self, g: &Inner, slab: usize) -> (r: u16)
 
 ### S71. `ClassState::state_locked`
 
-src/class/mod.rs:1443. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1445. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Bridge (trusted): under an arena's class lock, the descriptor of a slab the arena owns holds the state its ghost records.
@@ -1769,7 +1788,7 @@ fn state_locked(&self, g: &Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>) -> (r
 
 ### S72. `ClassState::set_state_locked`
 
-src/class/mod.rs:1464. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1466. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Bridge (trusted): `SlabDesc::set_state` on an owned slab's descriptor, with the ghost state updated to match (the write side of [`state_locked`]'s assumption).
@@ -1798,7 +1817,7 @@ fn set_state_locked(&self, g: &mut Inner, d: &SlabDesc, Ghost(slab): Ghost<usize
 
 ### S73. `ClassState::dirty_locked`
 
-src/class/mod.rs:1500. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1502. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Bridge (trusted): under an arena's class lock, the descriptor of a slab the arena owns holds the `dirty_at` stamp its ghost records.
@@ -1814,7 +1833,7 @@ fn dirty_locked(&self, g: &Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>) -> (r
 
 ### S74. `ClassState::set_dirty_locked`
 
-src/class/mod.rs:1518. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1520. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Bridge (trusted): `SlabDesc::set_dirty_at` on an owned slab's descriptor, with the ghost stamp updated to match (the write side of [`dirty_locked`]'s assumption).
@@ -1842,7 +1861,7 @@ fn set_dirty_locked(&self, g: &mut Inner, d: &SlabDesc, Ghost(slab): Ghost<usize
 
 ### S75. `ClassState::table`
 
-src/class/mod.rs:1549. Kind: external_body. Category: raw pointer (internal).
+src/class/mod.rs:1551. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The class's shared table.
@@ -1857,7 +1876,7 @@ pub fn table(&self) -> (r: &SlabTable)
 
 ### S76. `ClassState::take_checks`
 
-src/class/mod.rs:2347. Kind: external_body. Category: panic/abort.
+src/class/mod.rs:2359. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > `take`'s debug checks: the slab's owner word and its descriptor's arena name this arena.
@@ -1873,7 +1892,7 @@ fn take_checks(&self, g: &Inner, desc: &SlabDesc, slab: usize, live: usize)
 
 ### S77. `table_ptr`
 
-src/class/mod.rs:2534. Kind: external_body. Category: raw pointer (internal).
+src/class/mod.rs:2552. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `table` as the pointer a [`ClassState`] keeps, which [`table_at`] maps back to the table.
@@ -1886,13 +1905,15 @@ fn table_ptr(table: &SlabTable) -> (p: *const SlabTable)
 
 ### S78. `ClassState::claim_with`
 
-src/class/mod.rs:2768. Kind: no_decreases. Category: termination.
+src/class/mod.rs:2794. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > The loop of [`claim`] and [`claim_random`].
 
 ```rust
 fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>, Tracked(toks): Tracked<&mut SlotToks>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+    requires
+        crate::sys::may_syscall(),
     ensures
         r.0.n <= old(out)@.len(),
         final(out)@.len() == old(out)@.len(),
@@ -1904,7 +1925,7 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
 
 ### S79. `axiom_fresh_slots_zero`
 
-src/class/mod.rs:3669. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:3699. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `vspec::sys::axiom_fresh_anon_zero` (`mmap(2)`: a private anonymous mapping reads as zero until it is first written) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -1933,7 +1954,7 @@ axiom fn axiom_fresh_slots_zero(
 
 ### S80. `axiom_discarded_slots_zero`
 
-src/class/mod.rs:3707. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:3737. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `vspec::sys::axiom_discarded_zero` (`madvise(2)`: after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -1962,7 +1983,7 @@ axiom fn axiom_discarded_slots_zero(
 
 ### S81. `axiom_table_bytes`
 
-src/class/sets.rs:166. Kind: axiom. Category: allocator invariant.
+src/class/sets.rs:168. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Trusted: the permission to the bytes of the table at `base` that `Meta::reserve_table` has just returned for `len` bytes, rounded up to a whole word.
@@ -1977,7 +1998,7 @@ axiom fn axiom_table_bytes(base: usize, len: int) -> (tracked r: PointsToRaw)
 
 ### S82. `SetTable::set_table_ptr`
 
-src/class/sets.rs:364. Kind: external_body. Category: raw pointer (internal).
+src/class/sets.rs:367. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted.
 
 > `table` as the pointer [`Store::Shared`] keeps.
@@ -1988,13 +2009,15 @@ fn set_table_ptr(table: &SetTable) -> *const SetTable
 
 ### S83. `Set::ensure`
 
-src/class/sets.rs:464. Kind: external_body. Category: raw pointer (internal).
+src/class/sets.rs:468. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > Commit the level-0 words that hold every bit up to and including `slab`.
 
 ```rust
 pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, slab: usize) -> (r: Result<(), Errno>)
+    requires
+        crate::sys::may_syscall(),
     ensures
         final(self).map == old(self).map,
         final(self).l1_words == old(self).l1_words,
@@ -2002,7 +2025,7 @@ pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, slab: usize) -> (r: Re
 
 ### S84. `axiom_set_tables_lock_inv`
 
-src/class/sets.rs:487. Kind: axiom. Category: allocator invariant.
+src/class/sets.rs:493. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Assumption (`lock.rs`): the commit watermarks behind [`SetTable::tables`] keep no invariant beyond their type's: the bounds `SetTable::ensure` needs are `Lazy`'s type invariant and `SetTable`'s, and `Lazy::ensure` takes any watermark.
@@ -2078,7 +2101,7 @@ fn store_owner(w: &AtomicU16, arena: u16, Ghost(t): Ghost<SlabTable>, Ghost(grou
 
 ### S89. `axiom_slot_loc`
 
-src/class/table.rs:967. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:977. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Trusted: `SlabTable::new` runs once per class in a process (`Shared::init`, its one caller, builds the class tables of the one `Shared`, as `layout::process_regions` assumes), so the authority it makes is the class's.
@@ -2092,7 +2115,7 @@ axiom fn axiom_slot_loc(c: int, loc: Loc, glg: u8, gmask: u32)
 
 ### S90. `axiom_fresh_words`
 
-src/class/table.rs:981. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:991. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Trusted: the permissions of the `n` words of the table at `base` that `Meta::reserve_table` has just returned, each holding zero: the table has never been written (`meta.rs`: carved once and never freed), and nothing but the bitmap views reaches it.
@@ -2105,7 +2128,7 @@ axiom fn axiom_fresh_words(base: usize, n: nat) -> (tracked r: Map<int, WordPerm
 
 ### S91. `axiom_init_descs`
 
-src/class/table.rs:1053. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1063. Kind: axiom. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > Trusted: the descriptors at the permissions `perms` carved for keys `0..n` hold values.
@@ -2120,7 +2143,7 @@ axiom fn axiom_init_descs(tracked perms: Map<int, PointsTo<SlabDesc>>, n: int) -
 
 ### S92. `axiom_init_owners`
 
-src/class/table.rs:1063. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1073. Kind: axiom. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > Trusted: the owner words at the permissions `perms` carved for keys `0..n` hold values, as [`axiom_init_descs`] (an `AtomicU16` is valid for every bit pattern).
@@ -2135,7 +2158,7 @@ axiom fn axiom_init_owners(tracked perms: Map<int, PointsTo<AtomicU16>>, n: int)
 
 ### S93. `axiom_init_words`
 
-src/class/table.rs:1075. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1085. Kind: axiom. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > Trusted: the class bitmap words at the permissions `perms` carved for keys `0..n` hold values, as [`axiom_init_descs`], and each is the word at its permission's address, the identity [`word_addr`] names (the identity the word permissions of [`axiom_fresh_words`] are for).
@@ -2151,7 +2174,7 @@ axiom fn axiom_init_words(tracked perms: Map<int, PointsTo<AtomicU64>>, n: int) 
 
 ### S94. `words_ref`
 
-src/class/table.rs:1092. Kind: external_body. Category: raw pointer (internal).
+src/class/table.rs:1102. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `core::slice::from_raw_parts(p, n)` over `n` class bitmap words whose permissions `perms` holds from key `j0` on, at `p`, `p + 8`, ...
@@ -2171,7 +2194,7 @@ fn words_ref<'a>(p: *const AtomicU64, n: usize, Ghost(j0): Ghost<int>, Tracked(p
 
 ### S95. `SlabTable::watermark`
 
-src/class/table.rs:1692. Kind: external_body. Category: atomics primitive.
+src/class/table.rs:1702. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > The watermark, loaded with `order` (inlined, so the caller's load is the bare `core` one with its ordering).
@@ -2185,7 +2208,7 @@ fn watermark(&self, order: Ordering) -> (r: usize)
 
 ### S96. `SlabTable::owner_unchecked`
 
-src/class/table.rs:1972. Kind: external_body. Category: raw pointer (internal).
+src/class/table.rs:1985. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The arena that owns `slab`'s group, without a watermark check.
@@ -2312,7 +2335,7 @@ fn parse_from(cfg: &mut Config, text: &[u8], source: &str, out: &mut sys::Stderr
 
 ### S106. `read_slot`
 
-src/config.rs:1446. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1448. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The `const char *` the symbol at `slot` holds.
@@ -2323,7 +2346,7 @@ unsafe fn read_slot(slot: *const *const c_char) -> *const c_char
 
 ### S107. `malloc_conf_addr`
 
-src/config.rs:1459. Kind: external_body. Category: inline asm.
+src/config.rs:1461. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Address of the `malloc_conf` global the loader resolved: the program's own definition when it has one, else the library's null slot (`api::jemalloc::malloc_conf`).
@@ -2334,7 +2357,7 @@ fn malloc_conf_addr() -> *const c_void
 
 ### S108. `je_malloc_conf_addr`
 
-src/config.rs:1484. Kind: external_body. Category: inline asm.
+src/config.rs:1486. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Address of the weak `je_malloc_conf` global (Redis and Valkey define this one), or null.
@@ -2345,7 +2368,7 @@ fn je_malloc_conf_addr() -> *const c_void
 
 ### S109. `byte_at`
 
-src/config.rs:1541. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1543. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The byte at `p + n`.
@@ -2356,7 +2379,7 @@ unsafe fn byte_at(p: *const u8, n: usize) -> u8
 
 ### S110. `bytes_at`
 
-src/config.rs:1553. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1555. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The `n` bytes at `p` as a slice.
@@ -2369,7 +2392,7 @@ unsafe fn bytes_at(p: *const u8, n: usize) -> (r: &'static [u8])
 
 ### S111. `env_var`
 
-src/config.rs:1568. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1570. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The value of environment variable `name` (no `=` in it), read from `environ` without `getenv`.
@@ -2399,7 +2422,7 @@ fn home_ptr_at(&mut self, class: usize) -> (r: *mut CacheHeader)
 
 ### S113. `Heap::cached_recently`
 
-src/heap/cache.rs:658. Kind: external_body. Category: raw pointer (internal).
+src/heap/cache.rs:660. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `double_free_scan`'s compare (design 6.3 step 3): whether `e`, the entry as it would be stored (signed under `pac`), is one of the top four of the `len` entries in `slots`.
@@ -2416,7 +2439,7 @@ pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8, 
 
 ### S114. `group_by_slab`
 
-src/heap/flush.rs:697. Kind: external_body. Category: core library.
+src/heap/flush.rs:703. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > Group a flush's released batch by slab, in place, and return its lowest address.
@@ -2433,7 +2456,7 @@ pub(super) fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8])
 
 ### S115. `addr_mix`
 
-src/heap/flush.rs:1430. Kind: external_body. Category: raw pointer (internal).
+src/heap/flush.rs:1436. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted.
 
 > `rng`'s mix of the heap's address into its seed: the address of `h`, rotated left by 17 bits.
@@ -2444,13 +2467,16 @@ fn addr_mix(h: &Heap) -> u64
 
 ### S116. `seed`
 
-src/heap/flush.rs:1437. Kind: assume_spec. Category: FFI/syscall.
+src/heap/flush.rs:1443. Kind: assume_spec. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `seed` reads `getrandom(2)` (or the clock).
 
 ```rust
-pub assume_specification[ seed ]() -> u64;
+pub assume_specification[ seed ]() -> u64
+    requires
+        crate::sys::may_syscall(),
+;
 ```
 
 ### S117. `axiom_c_claim`
@@ -2581,7 +2607,7 @@ proof fn axiom_list_bound(&self)
 
 ### S123. `arena_volatile`
 
-src/heap/mod.rs:3754. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/heap/mod.rs:3762. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::checked_slot`]): a plain load is hoisted above the multi-arena flag test and touches the heap's header line on every single-arena `free`.
@@ -2592,7 +2618,7 @@ pub(super) fn arena_volatile(&self) -> u16 opens_invariants none
 
 ### S124. `init_fields`
 
-src/heap/mod.rs:4593. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:4614. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The fields of a fresh heap before its home headers, stored field by field ([`Heap::create_detached`]).
@@ -2600,26 +2626,29 @@ Tool: RefinedRust. Status: trusted.
 ```rust
 unsafe fn init_fields(h: *mut Heap, shared: &Shared, arena: u16, Tracked(head): Tracked<vstd::raw_ptr::PointsToRaw>)
     requires
+        crate::sys::may_syscall(),
         head.is_range(h@.addr as int, 128),
         head.provenance() == h@.provenance,
 ```
 
 ### S125. `assign_home`
 
-src/heap/mod.rs:4619. Kind: external_body. Category: allocator invariant.
+src/heap/mod.rs:4641. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > [`Arenas::assign`](crate::arena::Arenas::assign) on the process's arenas.
 
 ```rust
 fn assign_home(shared: &Shared) -> (r: u16)
+    requires
+        crate::sys::may_syscall(),
     ensures
         (r as usize) < crate::arena::MAX_ARENAS,
 ```
 
 ### S126. `mark_bound`
 
-src/heap/mod.rs:4634. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:4658. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `(*h).bound = true` for a heap [`Heap::create`] has just made.
@@ -2630,13 +2659,15 @@ unsafe fn mark_bound(h: *mut Heap)
 
 ### S127. `Heap::destroy`
 
-src/heap/mod.rs:4812. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:4838. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > Flush every cache, free them and the heap itself back to the metadata allocator.
 
 ```rust
 pub unsafe fn destroy(h: *mut Heap, shared: &Shared)
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S128. `node_link`
@@ -2745,7 +2776,7 @@ pub(super) unsafe fn node_caches(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int
 
 ### S135. `debug_scheduled`
 
-src/heap/paths.rs:904. Kind: external_body. Category: panic/abort.
+src/heap/paths.rs:920. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`Heap::alloc_slow`]'s `debug_assert!` that a non-empty home cache reached it through a scheduled pop the fast pop declined (design 6.4): `allocs`, the pop's count, has no bit of `mask` set.
@@ -2756,7 +2787,7 @@ fn debug_scheduled(allocs: u64, mask: u32)
 
 ### S136. `shared_of`
 
-src/heap/paths.rs:914. Kind: external_body. Category: raw pointer (internal).
+src/heap/paths.rs:930. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The `Shared` a heap was created on, with a lifetime free of the heap's borrow (so the heap can be borrowed mutably while it is used).
@@ -2776,11 +2807,13 @@ Tool: Kani. Status: trusted.
 
 ```rust
 pub fn create() -> ThreadKey
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S138. `pthread_setspecific`
 
-src/heap/shared.rs:328. Kind: external_body. Category: FFI/syscall.
+src/heap/shared.rs:333. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_setspecific(3)`: stores `value` for the calling thread under `key` without dereferencing it; 0 on success, an error number otherwise (nothing is claimed about it).
@@ -2788,6 +2821,7 @@ Tool: none (assumption). Status: trusted.
 ```rust
 unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tracked(tls): Tracked<&mut TlsSlot>) -> (r: i32)
     requires
+        crate::sys::may_syscall(),
         reentry_benign(old(tls).value()),
     ensures
         *final(tls) == *old(tls),
@@ -2795,7 +2829,7 @@ unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tr
 
 ### S139. `axiom_process_shared`
 
-src/heap/shared.rs:505. Kind: axiom. Category: allocator invariant.
+src/heap/shared.rs:520. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Assumption: one `Shared` per process.
@@ -2810,7 +2844,7 @@ pub(crate) axiom fn axiom_process_shared()
 
 ### S140. `S_MULTI_ARENA`
 
-src/heap/shared.rs:527. Kind: external_body const. Category: core library.
+src/heap/shared.rs:542. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2819,7 +2853,7 @@ const S_MULTI_ARENA: usize = core::mem::offset_of!(Shared, multi_arena);
 
 ### S141. `S_PUSH_FLAGS`
 
-src/heap/shared.rs:529. Kind: external_body const. Category: core library.
+src/heap/shared.rs:544. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2828,7 +2862,7 @@ const S_PUSH_FLAGS: usize = core::mem::offset_of!(Shared, push_flags);
 
 ### S142. `S_REGIONS`
 
-src/heap/shared.rs:531. Kind: external_body const. Category: core library.
+src/heap/shared.rs:546. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2837,7 +2871,7 @@ const S_REGIONS: usize = core::mem::offset_of!(Shared, regions);
 
 ### S143. `S_GUARD_TEST`
 
-src/heap/shared.rs:533. Kind: external_body const. Category: core library.
+src/heap/shared.rs:548. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2846,7 +2880,7 @@ const S_GUARD_TEST: usize = core::mem::offset_of!(Shared, guard_test);
 
 ### S144. `S_TABLES`
 
-src/heap/shared.rs:535. Kind: external_body const. Category: core library.
+src/heap/shared.rs:550. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2855,7 +2889,7 @@ const S_TABLES: usize = core::mem::offset_of!(Shared, tables);
 
 ### S145. `S_ARENA0`
 
-src/heap/shared.rs:537. Kind: external_body const. Category: core library.
+src/heap/shared.rs:552. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2864,7 +2898,7 @@ const S_ARENA0: usize = core::mem::offset_of!(Shared, arena0);
 
 ### S146. `S_META`
 
-src/heap/shared.rs:539. Kind: external_body const. Category: core library.
+src/heap/shared.rs:554. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2873,7 +2907,7 @@ const S_META: usize = core::mem::offset_of!(Shared, meta);
 
 ### S147. `S_HUGE`
 
-src/heap/shared.rs:541. Kind: external_body const. Category: core library.
+src/heap/shared.rs:556. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2882,7 +2916,7 @@ const S_HUGE: usize = core::mem::offset_of!(Shared, huge);
 
 ### S148. `S_GC_INTERVAL_NS`
 
-src/heap/shared.rs:543. Kind: external_body const. Category: core library.
+src/heap/shared.rs:558. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2891,7 +2925,7 @@ const S_GC_INTERVAL_NS: usize = core::mem::offset_of!(Shared, gc_interval_ns);
 
 ### S149. `S_POLICY`
 
-src/heap/shared.rs:545. Kind: external_body const. Category: core library.
+src/heap/shared.rs:560. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2900,7 +2934,7 @@ const S_POLICY: usize = core::mem::offset_of!(Shared, policy);
 
 ### S150. `S_CONFIG`
 
-src/heap/shared.rs:547. Kind: external_body const. Category: core library.
+src/heap/shared.rs:562. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2909,7 +2943,7 @@ const S_CONFIG: usize = core::mem::offset_of!(Shared, config);
 
 ### S151. `S_KEY`
 
-src/heap/shared.rs:549. Kind: external_body const. Category: core library.
+src/heap/shared.rs:564. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2918,7 +2952,7 @@ const S_KEY: usize = core::mem::offset_of!(Shared, key);
 
 ### S152. `S_ARENAS`
 
-src/heap/shared.rs:551. Kind: external_body const. Category: core library.
+src/heap/shared.rs:566. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2927,7 +2961,7 @@ const S_ARENAS: usize = core::mem::offset_of!(Shared, arenas);
 
 ### S153. `S_TCACHES`
 
-src/heap/shared.rs:553. Kind: external_body const. Category: core library.
+src/heap/shared.rs:568. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2936,7 +2970,7 @@ const S_TCACHES: usize = core::mem::offset_of!(Shared, tcaches);
 
 ### S154. `S_STATS`
 
-src/heap/shared.rs:555. Kind: external_body const. Category: core library.
+src/heap/shared.rs:570. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2945,7 +2979,7 @@ const S_STATS: usize = core::mem::offset_of!(Shared, stats);
 
 ### S155. `S_CGROUP`
 
-src/heap/shared.rs:557. Kind: external_body const. Category: core library.
+src/heap/shared.rs:572. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2954,7 +2988,7 @@ const S_CGROUP: usize = core::mem::offset_of!(Shared, cgroup);
 
 ### S156. `axiom_shared_layout`
 
-src/heap/shared.rs:563. Kind: axiom. Category: core library.
+src/heap/shared.rs:578. Kind: axiom. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `Shared`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last by the size.
@@ -2988,7 +3022,7 @@ axiom fn axiom_shared_layout()
 
 ### S157. `axiom_shared_built`
 
-src/heap/shared.rs:705. Kind: axiom. Category: raw pointer (internal).
+src/heap/shared.rs:720. Kind: axiom. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The written fields of the `Shared` at `p` (`Shared::split`'s parts and guard tests, every one initialised, and the tables joined into their array), as the value [`shared_at`] names: the fields [`Shared::wf`] reads are what their permissions hold.
@@ -3020,7 +3054,7 @@ axiom fn axiom_shared_built(
 
 ### S158. `axiom_shared_regions`
 
-src/heap/shared.rs:735. Kind: axiom. Category: raw pointer (internal).
+src/heap/shared.rs:750. Kind: axiom. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The regions of the `Shared` at `p` are what the permission to its `regions` field holds, once that permission is frozen (`vstd::modes::tracked_static_ref`, right after [`Shared::put_head`] writes the field): no verified code can write the field again, so the value is the built one.
@@ -3037,7 +3071,7 @@ axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Sh
 
 ### S159. `axiom_snapshot_lock_inv`
 
-src/heap/shared.rs:744. Kind: axiom. Category: allocator invariant.
+src/heap/shared.rs:759. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > The statistics an `epoch` stores (`stats.rs`): any value will do.
@@ -3051,12 +3085,12 @@ axiom fn axiom_snapshot_lock_inv()
 
 ### S160. `Shared::begin`
 
-src/heap/shared.rs:760. Kind: external_body. Category: allocator invariant.
+src/heap/shared.rs:775. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > The permission to `init`'s storage, uninitialised.
 
-Body mints Tracked at line 766.
+Body mints Tracked at line 781.
 
 ```rust
 fn begin(this: *mut Shared) -> (r: Tracked<PointsTo<Shared>>)
@@ -3068,7 +3102,7 @@ fn begin(this: *mut Shared) -> (r: Tracked<PointsTo<Shared>>)
 
 ### S161. `init_tcaches`
 
-src/heap/shared.rs:870. Kind: external_body. Category: allocator invariant.
+src/heap/shared.rs:885. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > [`Tcaches::init`] on the field at `p`, through the permission to it.
@@ -3111,7 +3145,7 @@ pub(super) unsafe fn heap_new<'a>(p: *mut Heap) -> (r: &'a mut Heap)
 
 ### S164. `fast_flags`
 
-src/heap/thread.rs:260. Kind: external_body. Category: raw pointer (internal).
+src/heap/thread.rs:266. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `Shared::push_flags` through a raw pointer (`api::shared_ptr`).
@@ -3126,7 +3160,7 @@ pub unsafe fn fast_flags(shared: *const Shared) -> (r: u8)
 
 ### S165. `heap_from_slot`
 
-src/heap/thread.rs:283. Kind: external_body. Category: raw pointer (internal).
+src/heap/thread.rs:289. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The heap a TLS slot value names: authenticated against the thread pointer when `pac` ([`PUSH_PAC`]), the value itself otherwise.
@@ -3157,7 +3191,7 @@ axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc)
 
 ### S167. `Huge::check_zero`
 
-src/huge/mod.rs:4535. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/huge/mod.rs:4582. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The `check_zero` debug mode: the first and last word of every usable page of a run reported zero must read zero.
@@ -3168,12 +3202,12 @@ fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: 
 
 ### S168. `not_a_run_page`
 
-src/huge/mod.rs:6026. Kind: abort_standin. Category: panic/abort.
+src/huge/mod.rs:6074. Kind: abort_standin. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`Huge::free_run`]'s abort for a page that is not in the descriptor table, where the build calls [`not_a_run`] with the page's address.
 
-Stands in at: src/huge/mod.rs:5668 (`Huge::free_run`).
+Stands in at: src/huge/mod.rs:5716 (`Huge::free_run`).
 
 ```rust
 fn not_a_run_page(page: usize) -> !
@@ -3305,17 +3339,19 @@ Tool: none (assumption). Status: trusted.
 
 > Reserve address space with `PROT_NONE`, `MAP_NORESERVE`: on success, the address and the token for the `len` bytes there.
 
-Body mints Tracked at line 1606.
+Body mints Tracked at line 1608.
 
 ```rust
 fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r matches Ok((a, t)) ==> t@.addr() == a && t@.len() == len && 0 < a && a + len <= user_va_limit(),
 ```
 
 ### S179. `word`
 
-src/layout/regions.rs:1786. Kind: external_body. Category: core library.
+src/layout/regions.rs:1794. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > Word `i` of the random bytes (`8 * i` on, the target's byte order).
@@ -3328,7 +3364,7 @@ fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
 
 ### S180. `class_entry`
 
-src/layout/regions.rs:2162. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/regions.rs:2178. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > `&CLASSES[c]` for the fast paths' classification, `c < NCLASSES`.
@@ -3346,18 +3382,20 @@ unsafe fn class_entry(c: usize) -> (r: &'static super::Class)
 
 ### S181. `RawLock::lock_slow`
 
-src/lock.rs:93. Kind: no_decreases. Category: termination.
+src/lock.rs:95. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > Termination is not claimed: the wait ends when another thread releases the lock.
 
 ```rust
 fn lock_slow(&self)
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S182. `axiom_acquired`
 
-src/lock.rs:256. Kind: axiom. Category: allocator invariant.
+src/lock.rs:276. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > The lock invariant's assumption where it enters for a guard (the other entry is [`Lock::get_unlocked`], for a holder of the raw lock): the guard of a lock this thread has just acquired holds a value that satisfies [`lock_inv`] (every earlier holder restored it) and keeps [`lock_frame`] of the value the lock was created with.
@@ -3374,7 +3412,7 @@ axiom fn axiom_acquired<T>(l: Lock<T>, g: LockGuard<'_, T>)
 
 ### S183. `Lock::get_unlocked`
 
-src/lock.rs:389. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:411. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > Access the value without locking.
@@ -3390,7 +3428,7 @@ pub unsafe fn get_unlocked(&self, Tracked(held): Tracked<&LockHeld>) -> (r: &mut
 
 ### S184. `LockGuard::deref`
 
-src/lock.rs:420. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:442. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 ```rust
@@ -3401,7 +3439,7 @@ fn deref(&self) -> (r: &T)
 
 ### S185. `LockGuard::deref_mut`
 
-src/lock.rs:432. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:454. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 ```rust
@@ -3413,7 +3451,7 @@ fn deref_mut(&mut self) -> (r: &mut T)
 
 ### S186. `LockGuard::drop`
 
-src/lock.rs:450. Kind: external_body. Category: atomics primitive.
+src/lock.rs:472. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 ```rust
@@ -3424,28 +3462,32 @@ fn drop(&mut self)
 
 ### S187. `Meta::commit`
 
-src/meta.rs:2731. Kind: external_body. Category: allocator invariant.
+src/meta.rs:2753. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Make `[addr, addr + len)`, page aligned and inside a reservation or an eagerly carved table, readable and writable (accounting only for the latter): [`commit_claimed`] with the caller's claim to the range.
 
-Body mints Ghost at line 2732; mints Tracked at line 2732.
+Body mints Ghost at line 2757; mints Tracked at line 2757.
 
 ```rust
 pub fn commit(&self, addr: usize, len: usize) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S188. `Meta::free`
 
-src/meta.rs:2778. Kind: external_body. Category: allocator invariant.
+src/meta.rs:2804. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Return an object allocated with the same `layout`: [`free_claimed`] with the caller's claims to it.
 
-Body mints Tracked at line 2779.
+Body mints Tracked at line 2808.
 
 ```rust
 pub fn free(&self, p: *mut u8, layout: Layout)
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S189. `Policy::position`
@@ -3485,7 +3527,7 @@ fn drop(&mut self)
 
 ### S192. `total_bytes`
 
-src/purge.rs:392. Kind: external_body. Category: core library.
+src/purge.rs:394. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > The sum of the lengths of `ranges`.
@@ -3512,7 +3554,7 @@ broadcast axiom fn axiom_state_lock_inv(v: State)
 
 ### S194. `errno_location`
 
-src/purge/background.rs:128. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:137. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > This thread's `errno` slot.
@@ -3523,7 +3565,7 @@ fn errno_location() -> *mut i32
 
 ### S195. `errno_read`
 
-src/purge/background.rs:140. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:149. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The `errno` at `errno`.
@@ -3534,7 +3576,7 @@ unsafe fn errno_read(errno: *mut i32) -> i32
 
 ### S196. `errno_write`
 
-src/purge/background.rs:151. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:160. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Store `v` at `errno`.
@@ -3545,29 +3587,33 @@ unsafe fn errno_write(errno: *mut i32, v: i32)
 
 ### S197. `pthread_join`
 
-src/purge/background.rs:221. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:231. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_join(t, NULL)`: 0 or an error number.
 
 ```rust
 unsafe fn pthread_join(t: ::libc::pthread_t) -> i32
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S198. `spawn`
 
-src/purge/background.rs:322. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:336. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_create` on the committed `[base, base + len)`, joinable so a restart can wait for its exit.
 
 ```rust
 fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t>
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S199. `shared_arg`
 
-src/purge/background.rs:396. Kind: external_body. Category: raw pointer (internal).
+src/purge/background.rs:413. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The `Shared` that [`spawn`] passes as the thread's argument.
@@ -3580,7 +3626,7 @@ fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
 
 ### S200. `main`
 
-src/purge/background.rs:412. Kind: no_decreases. Category: termination.
+src/purge/background.rs:429. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > The thread's body: decay and sample until the request is withdrawn.
@@ -3591,7 +3637,7 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void
 
 ### S201. `state`
 
-src/purge/background.rs:463. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/purge/background.rs:484. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > `&STATE`.
@@ -3823,13 +3869,15 @@ fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
 
 ### S219. `getrandom`
 
-src/sys/mod.rs:513. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:569. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `getrandom(2)`.
 
 ```rust
 pub fn getrandom(buf: &mut [u8], flags: u32) -> (r: Result<usize, Errno>)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r matches Ok(n) ==> n <= old(buf)@.len(),
         final(buf)@.len() == old(buf)@.len(),
@@ -3837,24 +3885,28 @@ pub fn getrandom(buf: &mut [u8], flags: u32) -> (r: Result<usize, Errno>)
 
 ### S220. `getrandom_exact`
 
-src/sys/mod.rs:533. Kind: no_decreases. Category: termination.
+src/sys/mod.rs:591. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > Fill `buf` completely from `getrandom`, retrying short reads and `EINTR`.
 
 ```rust
 pub fn getrandom_exact(buf: &mut [u8]) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S221. `read`
 
-src/sys/mod.rs:677. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:755. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `read(2)`.
 
 ```rust
 pub fn read(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r matches Ok(n) ==> n <= old(buf)@.len(),
         final(buf)@.len() == old(buf)@.len(),
@@ -3862,13 +3914,15 @@ pub fn read(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
 
 ### S222. `read_full`
 
-src/sys/mod.rs:697. Kind: no_decreases. Category: termination.
+src/sys/mod.rs:777. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > Read as much of `buf` as the file yields, retrying `EINTR`.
 
 ```rust
 pub fn read_full(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r matches Ok(n) ==> n <= old(buf)@.len(),
         final(buf)@.len() == old(buf)@.len(),
@@ -3876,31 +3930,35 @@ pub fn read_full(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
 
 ### S223. `write`
 
-src/sys/mod.rs:741. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:825. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `write(2)`.
 
 ```rust
 pub fn write(fd: i32, buf: &[u8]) -> (r: Result<usize, Errno>)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r matches Ok(n) ==> n <= buf@.len(),
 ```
 
 ### S224. `write_all`
 
-src/sys/mod.rs:760. Kind: no_decreases. Category: termination.
+src/sys/mod.rs:846. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > Write all of `buf`, retrying short writes and `EINTR`.
 
 ```rust
 pub fn write_all(fd: i32, buf: &[u8])
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S225. `trap`
 
-src/sys/mod.rs:919. Kind: external_body. Category: inline asm.
+src/sys/mod.rs:1029. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Architecture trap instruction, for the impossible case where the kernel returns from a terminating syscall.
@@ -3991,47 +4049,57 @@ Tool: Islaris/Isla. Status: trusted.
 
 ```rust
 pub unsafe fn syscall0(nr: usize) -> usize
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S232. `syscall1`
 
-src/sys/raw.rs:32. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:35. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 ```rust
 pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S233. `syscall2`
 
-src/sys/raw.rs:44. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:50. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 ```rust
 pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S234. `syscall3`
 
-src/sys/raw.rs:56. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:65. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 ```rust
 pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S235. `syscall4`
 
-src/sys/raw.rs:68. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:80. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 ```rust
 pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S236. `syscall5`
 
-src/sys/raw.rs:81. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:96. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 ```rust
@@ -4043,11 +4111,13 @@ pub unsafe fn syscall5(
     a3: usize,
     a4: usize,
 ) -> usize
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S237. `syscall6`
 
-src/sys/raw.rs:101. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:119. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 ```rust
@@ -4060,56 +4130,68 @@ pub unsafe fn syscall6(
     a4: usize,
     a5: usize,
 ) -> usize
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S238. `syscall0`
 
-src/sys/raw.rs:132. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:153. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 ```rust
 pub unsafe fn syscall0(nr: usize) -> usize
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S239. `syscall1`
 
-src/sys/raw.rs:143. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:167. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall1.md).
 
 ```rust
 pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S240. `syscall2`
 
-src/sys/raw.rs:154. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:181. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 ```rust
 pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S241. `syscall3`
 
-src/sys/raw.rs:166. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:196. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall3.md).
 
 ```rust
 pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S242. `syscall4`
 
-src/sys/raw.rs:178. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:211. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 ```rust
 pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S243. `syscall5`
 
-src/sys/raw.rs:190. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:226. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 ```rust
@@ -4121,11 +4203,13 @@ pub unsafe fn syscall5(
     a3: usize,
     a4: usize,
 ) -> usize
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S244. `syscall6`
 
-src/sys/raw.rs:209. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:248. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall6.md).
 
 ```rust
@@ -4138,6 +4222,8 @@ pub unsafe fn syscall6(
     a4: usize,
     a5: usize,
 ) -> usize
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ### S245. `get`

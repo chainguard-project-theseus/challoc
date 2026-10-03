@@ -1709,28 +1709,43 @@ const PROT_RW: i32 = 3;
 const MADV_GUARD_INSTALL: i32 = 102;
 const MADV_GUARD_REMOVE: i32 = 103;
 
-fn commit(addr: usize, len: usize) -> Result<(), Errno> {
+fn commit(addr: usize, len: usize) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: inside our own reservation; adding permissions to pages
     // nobody holds cannot break anything.
     unsafe { sys::mprotect(addr, len, PROT_RW) }
 }
 
-fn protect_none(addr: usize, len: usize) -> Result<(), Errno> {
+fn protect_none(addr: usize, len: usize) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: the page is a guard that no caller may touch.
     unsafe { sys::mprotect(addr, len, PROT_NONE) }
 }
 
-fn guard_install(addr: usize, len: usize) -> Result<(), Errno> {
+fn guard_install(addr: usize, len: usize) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: as `protect_none`.
     unsafe { sys::madvise(addr, len, MADV_GUARD_INSTALL) }
 }
 
-fn guard_remove(addr: usize, len: usize) -> Result<(), Errno> {
+fn guard_remove(addr: usize, len: usize) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: the run is being freed; the guard protects nothing now.
     unsafe { sys::madvise(addr, len, MADV_GUARD_REMOVE) }
 }
 
-fn now_ns() -> u64 {
+fn now_ns() -> u64
+    requires
+        crate::sys::may_syscall(),
+{
     sys::now_coarse_ns()
 }
 
@@ -1751,6 +1766,8 @@ verus! {
 /// process's.
 #[inline(always)]
 fn alloc_desc(meta: &Meta) -> (r: (*mut HugeDesc, Tracked<Option<PointsTo<HugeDesc>>>))
+    requires
+        crate::sys::may_syscall(),
     ensures
         r.0@.addr != 0 ==> r.1@ is Some && r.1@->0.ptr() == r.0 && r.1@->0.is_uninit(),
         r.0@.addr != 0 ==> meta.holds(r.0@.addr as int, vstd::layout::size_of::<HugeDesc>() as int),
@@ -1790,6 +1807,7 @@ proof fn desc_perm(tracked raw: PointsToRaw, d: *mut HugeDesc) -> (tracked r: Op
 #[inline(always)]
 fn free_desc(meta: &Meta, d: *mut HugeDesc, _perm: Tracked<PointsTo<HugeDesc>>)
     requires
+        crate::sys::may_syscall(),
         d@.addr != 0,
         _perm@.ptr() == d,
 {
@@ -2640,6 +2658,7 @@ impl Inner {
     /// descriptor still reads `Active` here and is in no list).
     fn retire(&mut self, meta: &Meta, d: *mut HugeDesc)
         requires
+            crate::sys::may_syscall(),
             perms_ok(old(self).descs@),
             elist_ok(old(self).empty_head, old(self).empty_tail, old(self).elist@, old(self).descs@),
             old(self).descs@.contains_key(d),
@@ -2774,6 +2793,7 @@ impl Huge {
     /// cannot hold the tables.
     pub fn new(meta: &Meta, regions: &Regions, guard_install: bool) -> (r: Option<Huge>)
         requires
+            crate::sys::may_syscall(),
             regions.wf(),
             0 < regions.huge_len >> regions.lg_page <= u32::MAX,
             regions.huge_base + regions.huge_len <= crate::meta::va_limit(),
@@ -3209,6 +3229,7 @@ impl Huge {
     /// the problem because it commits `[s, s + usable)` on every call.
     fn prepare(&self, s: usize, usable: usize, watermark: usize) -> Result<(), Errno>
         requires
+            crate::sys::may_syscall(),
             s + usable + GUARD_PAGES <= self.npages,
             watermark <= self.npages,
     {
@@ -3259,6 +3280,8 @@ impl Huge {
     /// Bytes in `Empty` extents (one lock hold), for the cgroup policy's
     /// retention figure: at most the region.
     pub fn empty_bytes(&self) -> (r: usize)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r <= crate::meta::va_limit(),
     {
@@ -3304,6 +3327,7 @@ impl Huge {
     /// the usable pages of the run token `tok` holds, if it is this run's.
     pub fn usable_size(&self, page: usize, Tracked(tok): Tracked<&Option<RunToken>>) -> (r: usize)
         requires
+            crate::sys::may_syscall(),
             page <= self.spec_npages(),
         ensures
             page < self.spec_npages(),
@@ -3360,7 +3384,10 @@ impl Huge {
     }
 
     /// Descriptor of the extent starting or ending at `page`, if any.
-    pub fn lookup(&self, page: usize) -> Option<RunInfo> {
+    pub fn lookup(&self, page: usize) -> Option<RunInfo>
+        requires
+            crate::sys::may_syscall(),
+    {
         broadcast use axiom_huge_lock_inv;
 
         let g = self.inner.lock();
@@ -3379,7 +3406,10 @@ impl Huge {
         })
     }
 
-    pub fn stats(&self) -> HugeStats {
+    pub fn stats(&self) -> HugeStats
+        requires
+            crate::sys::may_syscall(),
+    {
         broadcast use axiom_huge_lock_inv;
 
         let g = self.inner.lock();
@@ -3393,6 +3423,8 @@ impl Huge {
     /// (`u64::MAX` for all): `MADV_DONTNEED`, then `Purged`. Returns the
     /// number purged, at most the region's pages.
     pub fn purge_empty(&self, cutoff: u64) -> (r: usize)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r <= u32::MAX,
     {
@@ -3414,6 +3446,7 @@ impl Huge {
         let mut batch = Batch::new();
         loop
             invariant
+                crate::sys::may_syscall(),
                 g@.wf(),
                 g@.spec_np() == self.npages,
                 g@.spec_lg() == self.lg_page,
@@ -3491,6 +3524,7 @@ impl Huge {
     #[verifier::rlimit(40)]
     fn purge_extent(&self, g: &mut Inner, d: *mut HugeDesc, batch: &mut Batch) -> (r: usize)
         requires
+            crate::sys::may_syscall(),
             old(g).wf(),
             old(g).spec_np() == self.npages,
             old(g).spec_lg() == self.lg_page,
@@ -3664,7 +3698,10 @@ impl Huge {
     /// remaining excess is skipped for younger ones that fit), so a lone
     /// extent lasts until its weight is zero, the end of the window, as
     /// before. Returns the number of extents purged.
-    fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize {
+    fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         broadcast use axiom_huge_lock_inv, axiom_huge_lock_frame;
 
         let mut g = self.inner.lock();
@@ -3764,6 +3801,7 @@ impl Huge {
             }
             while !d.is_null() && excess > 0
                 invariant
+                    crate::sys::may_syscall(),
                     g@.wf(),
                     g@.spec_np() == self.npages,
                     g@.spec_lg() == self.lg_page,
@@ -3843,13 +3881,19 @@ impl Huge {
     /// runs `purge_curve` over the list at most once per step of the
     /// curve and returns the next deadline, `None` when nothing is
     /// `Empty`. Lock-free unless a walk is due.
-    pub fn decay(&self, now: u64, decay_ns: u64) -> Option<u64> {
+    pub fn decay(&self, now: u64, decay_ns: u64) -> Option<u64>
+        requires
+            crate::sys::may_syscall(),
+    {
         self.decay_with(now, decay_ns, crate::policy::KEEP_ALL)
     }
 
     /// [`decay`](Huge::decay) with the cgroup policy's keep ratio (design
     /// 11), as `ClassState::decay_with`.
-    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64> {
+    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64>
+        requires
+            crate::sys::may_syscall(),
+    {
         self.gate.decay(now, decay_ns, |now, curve| {
             self.purge_curve(now, curve, keep16);
         })
@@ -3989,6 +4033,7 @@ impl Huge {
         Tracked(tok): Tracked<&mut Map<int, RunToken>>,
     ) -> (r: (bool, Tracked<Zeroed>))
         requires
+            crate::sys::may_syscall(),
             old(g).wf(),
             old(g).spec_np() == self.npages,
             old(g).spec_lg() == self.lg_page,
@@ -4385,6 +4430,7 @@ impl Huge {
     #[inline]
     pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>) -> (r: (Placed, Tracked<Zeroed>))
         requires
+            crate::sys::may_syscall(),
             crate::meta::is_pow2(align),
             self.spec_base_aligned(),
             meta.is_process(),
@@ -4406,6 +4452,7 @@ impl Huge {
     #[inline(always)]
     fn alloc_aligned(&self, meta: &Meta, size: usize, align: usize, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>) -> (r: (Placed, Tracked<Zeroed>))
         requires
+            crate::sys::may_syscall(),
             crate::meta::is_pow2(align),
             self.spec_base_aligned(),
             meta.is_process(),
@@ -5641,6 +5688,7 @@ impl Huge {
     #[verifier::loop_isolation(false)]
     pub fn free_run(&self, meta: &Meta, page: usize, Tracked(tok): Tracked<RunToken>) -> (r: RunInfo)
         requires
+            crate::sys::may_syscall(),
             meta.is_process(),
             tok.wf(),
             tok.start() == page,

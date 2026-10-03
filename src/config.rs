@@ -1373,6 +1373,8 @@ mod linux {
     /// result is well formed: the defaults are (`Config::lemma_default_wf`)
     /// and every source goes through `Config::parse`, which keeps it.
     pub fn load() -> (r: Config)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r.wf(),
     {
@@ -1615,6 +1617,7 @@ mod linux {
     /// missing, unreadable or its first line is empty.
     pub fn first_line_of<'b>(path: &[u8], buf: &'b mut [u8]) -> (r: Option<&'b [u8]>)
         requires
+            crate::sys::may_syscall(),
             path@.len() > 0,
             path@.last() == 0,
         ensures

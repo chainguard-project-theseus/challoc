@@ -1598,6 +1598,8 @@ mod linux {
     /// mmap_min_addr)`.
     #[verifier::external_body]
     fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r matches Ok((a, t)) ==> t@.addr() == a && t@.len() == len && 0 < a && a + len <= user_va_limit(),
     {
@@ -1631,6 +1633,7 @@ mod linux {
     /// failure. Returns the mapping and the `lg` that fit.
     fn reserve_shrinking(what: &str, mut lg: u32, lg_min: u32, extra: usize) -> (r: (Mapping, u32, Tracked<Reserved>))
         requires
+            crate::sys::may_syscall(),
             lg_min <= lg <= 40,
             extra <= 0x8000_0000,
         ensures
@@ -1641,6 +1644,7 @@ mod linux {
         let ghost lg0 = lg;
         loop
             invariant
+                crate::sys::may_syscall(),
                 lg_min <= lg <= lg0 <= 40,
                 extra <= 0x8000_0000,
             decreases lg,
@@ -1678,6 +1682,8 @@ mod linux {
     /// the minimum, then as a last resort drops the stride to 2x the region
     /// (gap 1x, below the design's 1.25x preference but still a full gap).
     fn reserve_superblock() -> (r: (Mapping, u32, u32, Tracked<Reserved>))
+        requires
+            crate::sys::may_syscall(),
         ensures
             LG_REGION_MIN <= r.1 <= LG_REGION_PREFERRED,
             r.1 < r.2 <= r.1 + 2,
@@ -1688,6 +1694,7 @@ mod linux {
         let mut lg_stride = lg_region + 2;
         loop
             invariant
+                crate::sys::may_syscall(),
                 LG_REGION_MIN <= lg_region <= LG_REGION_PREFERRED,
                 lg_region < lg_stride <= lg_region + 2,
             decreases lg_region + lg_stride,
@@ -1722,6 +1729,7 @@ mod linux {
 
     fn name_mapping(m: Mapping, name: &'static [u8])
         requires
+            crate::sys::may_syscall(),
             name@.len() > 0,
             name@.last() == 0,
     {
@@ -1806,7 +1814,10 @@ mod linux {
     /// anything in them is committed; the huge region follows the host's
     /// policy (`thp::Reservation`), so `thp.rs` skips it by kind.
     #[inline(always)]
-    fn advise_reservations(sb_map: Mapping, huge_map: Mapping, meta_map: Mapping) {
+    fn advise_reservations(sb_map: Mapping, huge_map: Mapping, meta_map: Mapping)
+        requires
+            crate::sys::may_syscall(),
+    {
         use crate::thp::{Reservation, advise_reservation};
         advise_reservation(Reservation::Classes, sb_map.addr, sb_map.len);
         advise_reservation(Reservation::Huge, huge_map.addr, huge_map.len);
@@ -1878,6 +1889,8 @@ mod linux {
         // The index carries a Verus invariant.
         #[allow(clippy::needless_range_loop)]
         pub fn reserve_owning(page_size: usize, anon_name: bool) -> (res: (Regions, Tracked<Unbacked>))
+            requires
+                crate::sys::may_syscall(),
             ensures
                 res.0.wf(),
                 res.0.separated(),
@@ -1928,6 +1941,7 @@ mod linux {
             let mut i = 0;
             while i < 3
                 invariant
+                    crate::sys::may_syscall(),
                     0 <= i <= 3,
                     slide == 0x4000_0000,
                     MAX_SLAB == 0x40_0000,
@@ -2093,12 +2107,14 @@ mod linux {
         /// `malloc_stats_print`.
         pub fn seal(&self) -> u32
             requires
+                crate::sys::may_syscall(),
                 self.wf(),
         {
             let (ranges, n) = self.never_committed();
             let mut sealed: u32 = 0;
             for m in it: &ranges[..n]
                 invariant
+                    crate::sys::may_syscall(),
                     sealed as int <= it.index(),
                     it.seq().len() == n,
                     n <= MAX_SEALED,

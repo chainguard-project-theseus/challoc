@@ -120,6 +120,7 @@ verus! {
 #[inline(always)]
 fn call_throw_bad_alloc(t: *const c_void) -> !
     requires
+        crate::sys::may_syscall(),
         t@.addr != 0,
 {
     // SAFETY: `std::__throw_bad_alloc` takes no arguments and never returns.
@@ -130,7 +131,10 @@ fn call_throw_bad_alloc(t: *const c_void) -> !
 /// Throw `std::bad_alloc` from libstdc++, or abort when it is not loaded.
 #[cold]
 #[inline(never)]
-fn throw_bad_alloc() -> ! {
+fn throw_bad_alloc() -> !
+    requires
+        crate::sys::may_syscall(),
+{
     let t = throw_bad_alloc_addr();
     if t.is_null() {
         crate::sys::abort_fmt(format_args!(
@@ -158,7 +162,10 @@ fn installed_handler() -> Option<Handler> {
 /// here.
 #[verifier::external_body]
 #[inline(always)]
-fn call_handler(handler: Handler) {
+fn call_handler(handler: Handler)
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: a `void (*)()` installed by the program through
     // `std::set_new_handler`; it may throw, which unwinds through here.
     unsafe { (handler.0)() }
@@ -172,6 +179,8 @@ fn call_handler(handler: Handler) {
 #[inline(never)]
 #[verifier::exec_allows_no_decreases_clause] // ends only when the program's handler frees memory, is removed or throws
 fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+    requires
+        crate::sys::may_syscall(),
     ensures
         align == 0 ==> crate::heap::fits(r, size as int, crate::QUANTUM as int),
         align != 0 && libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
@@ -180,7 +189,10 @@ fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live
         align != 0 && !libc::is_pow2(align) ==> r@.addr == 0,
         final(blk).gives(r, size as int),
 {
-    loop {
+    loop
+        invariant
+            crate::sys::may_syscall(),
+    {
         let Some(handler) = installed_handler() else {
             if nothrow {
                 return ptr::null_mut();
@@ -203,6 +215,8 @@ fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live
 #[cold]
 #[inline(never)]
 fn new_slow(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+    requires
+        crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
         final(blk).gives(r, size as int),
@@ -220,6 +234,8 @@ fn new_slow(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -> (r:
 /// C++ with it.
 #[inline(always)]
 pub fn new(size: usize) -> (r: *mut u8)
+    requires
+        crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
 {
@@ -230,6 +246,8 @@ pub fn new(size: usize) -> (r: *mut u8)
 /// The `nothrow_t` forms: null on failure after the handler loop.
 #[inline(always)]
 pub fn new_nothrow(size: usize) -> (r: *mut u8)
+    requires
+        crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
 {
@@ -241,6 +259,8 @@ pub fn new_nothrow(size: usize) -> (r: *mut u8)
 /// as `libc::malloc_block`.
 #[inline(always)]
 pub fn new_block(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+    requires
+        crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
         final(blk).gives(r, size as int),
@@ -258,6 +278,8 @@ pub fn new_block(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -
 /// unaligned operators' marker, so after a `new_handler` call the retry is
 /// `malloc`'s.
 pub fn new_aligned(size: usize, align: usize, nothrow: bool) -> (r: *mut u8)
+    requires
+        crate::sys::may_syscall(),
     ensures
         libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
         align != 0 && !libc::is_pow2(align) ==> r@.addr == 0,
@@ -268,6 +290,8 @@ pub fn new_aligned(size: usize, align: usize, nothrow: bool) -> (r: *mut u8)
 
 /// [`new_aligned`] with the block's token, as `libc::malloc_block`.
 pub fn new_aligned_block(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+    requires
+        crate::sys::may_syscall(),
     ensures
         libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
         align != 0 && !libc::is_pow2(align) ==> r@.addr == 0,
@@ -289,6 +313,8 @@ pub fn new_aligned_block(size: usize, align: usize, nothrow: bool, Tracked(blk):
 /// The unsized `operator delete` forms: `free`, with any alignment ignored.
 #[inline(always)]
 pub fn delete(p: *mut u8)
+    requires
+        crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
 {
@@ -300,6 +326,8 @@ pub fn delete(p: *mut u8)
 /// `class_of(size)` is the slot's class.
 #[inline(always)]
 pub fn delete_sized(p: *mut u8, size: usize)
+    requires
+        crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 ==> crate::heap::hint_ok(p, libc::spec_class_for(size, 1)),
@@ -312,6 +340,8 @@ pub fn delete_sized(p: *mut u8, size: usize)
 /// passed to `aligned_alloc`.
 #[inline(always)]
 pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize)
+    requires
+        crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 ==> crate::heap::hint_ok(p, if libc::is_pow2(align) { libc::spec_class_for(size, align) } else { None }),
@@ -336,36 +366,54 @@ mod exports {
     /// `operator new(size_t)`
     #[unsafe(export_name = "_Znwm")]
     pub extern "C" fn new(size: usize) -> *mut c_void {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::new(size) as *mut c_void
     }
 
     /// `operator new[](size_t)`
     #[unsafe(export_name = "_Znam")]
     pub extern "C" fn new_array(size: usize) -> *mut c_void {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::new(size) as *mut c_void
     }
 
     /// `operator new(size_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZnwmRKSt9nothrow_t")]
     pub extern "C" fn new_nothrow(size: usize, _tag: *const c_void) -> *mut c_void {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::new_nothrow(size) as *mut c_void
     }
 
     /// `operator new[](size_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZnamRKSt9nothrow_t")]
     pub extern "C" fn new_array_nothrow(size: usize, _tag: *const c_void) -> *mut c_void {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::new_nothrow(size) as *mut c_void
     }
 
     /// `operator new(size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZnwmSt11align_val_t")]
     pub extern "C" fn new_aligned(size: usize, align: usize) -> *mut c_void {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::new_aligned(size, align, false) as *mut c_void
     }
 
     /// `operator new[](size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZnamSt11align_val_t")]
     pub extern "C" fn new_array_aligned(size: usize, align: usize) -> *mut c_void {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::new_aligned(size, align, false) as *mut c_void
     }
 
@@ -376,6 +424,9 @@ mod exports {
         align: usize,
         _tag: *const c_void,
     ) -> *mut c_void {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::new_aligned(size, align, true) as *mut c_void
     }
 
@@ -386,60 +437,90 @@ mod exports {
         align: usize,
         _tag: *const c_void,
     ) -> *mut c_void {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::new_aligned(size, align, true) as *mut c_void
     }
 
     /// `operator delete(void*)`
     #[unsafe(export_name = "_ZdlPv")]
     pub extern "C" fn delete(p: *mut c_void) {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::delete(p as *mut u8)
     }
 
     /// `operator delete[](void*)`
     #[unsafe(export_name = "_ZdaPv")]
     pub extern "C" fn delete_array(p: *mut c_void) {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::delete(p as *mut u8)
     }
 
     /// `operator delete(void*, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdlPvRKSt9nothrow_t")]
     pub extern "C" fn delete_nothrow(p: *mut c_void, _tag: *const c_void) {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::delete(p as *mut u8)
     }
 
     /// `operator delete[](void*, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdaPvRKSt9nothrow_t")]
     pub extern "C" fn delete_array_nothrow(p: *mut c_void, _tag: *const c_void) {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::delete(p as *mut u8)
     }
 
     /// `operator delete(void*, size_t)`
     #[unsafe(export_name = "_ZdlPvm")]
     pub extern "C" fn delete_sized(p: *mut c_void, size: usize) {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::delete_sized(p as *mut u8, size)
     }
 
     /// `operator delete[](void*, size_t)`
     #[unsafe(export_name = "_ZdaPvm")]
     pub extern "C" fn delete_array_sized(p: *mut c_void, size: usize) {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::delete_sized(p as *mut u8, size)
     }
 
     /// `operator delete(void*, std::align_val_t)`
     #[unsafe(export_name = "_ZdlPvSt11align_val_t")]
     pub extern "C" fn delete_aligned(p: *mut c_void, _align: usize) {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::delete(p as *mut u8)
     }
 
     /// `operator delete[](void*, std::align_val_t)`
     #[unsafe(export_name = "_ZdaPvSt11align_val_t")]
     pub extern "C" fn delete_array_aligned(p: *mut c_void, _align: usize) {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::delete(p as *mut u8)
     }
 
     /// `operator delete(void*, std::align_val_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdlPvSt11align_val_tRKSt9nothrow_t")]
     pub extern "C" fn delete_aligned_nothrow(p: *mut c_void, _align: usize, _tag: *const c_void) {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::delete(p as *mut u8)
     }
 
@@ -450,18 +531,27 @@ mod exports {
         _align: usize,
         _tag: *const c_void,
     ) {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::delete(p as *mut u8)
     }
 
     /// `operator delete(void*, size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZdlPvmSt11align_val_t")]
     pub extern "C" fn delete_sized_aligned(p: *mut c_void, size: usize, align: usize) {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::delete_sized_aligned(p as *mut u8, size, align)
     }
 
     /// `operator delete[](void*, size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZdaPvmSt11align_val_t")]
     pub extern "C" fn delete_array_sized_aligned(p: *mut c_void, size: usize, align: usize) {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::delete_sized_aligned(p as *mut u8, size, align)
     }
 

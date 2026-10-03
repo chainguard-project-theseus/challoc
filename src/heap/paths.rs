@@ -34,6 +34,7 @@ impl Heap {
     #[inline(always)]
     pub fn alloc(&mut self, shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
         requires
+            crate::sys::may_syscall(),
             class < NCLASSES,
             shared.wf(),
             old(self).wf(),
@@ -160,6 +161,7 @@ impl Heap {
     #[inline(always)]
     pub fn alloc_zeroed(&mut self, shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool))
         requires
+            crate::sys::may_syscall(),
             class < NCLASSES,
             shared.wf(),
             old(self).wf(),
@@ -191,6 +193,7 @@ impl Heap {
     /// gets the block's token.
     pub fn alloc_in(&mut self, shared: &Shared, arena: u16, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool))
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
             class < NCLASSES,
             old(self).wf(),
@@ -226,6 +229,7 @@ impl Heap {
     #[inline(always)]
     pub fn free(&mut self, shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
             blk.claims(p),
@@ -268,6 +272,7 @@ impl Heap {
     #[inline(never)]
     pub fn alloc_huge(&mut self, shared: &Shared, size: usize, align: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
+            crate::sys::may_syscall(),
             old(self).wf(),
             shared.wf(),
             crate::meta::is_pow2(align),
@@ -286,6 +291,7 @@ impl Heap {
     /// Huge allocation on this thread in `arena` (which must exist).
     pub fn alloc_huge_in(&mut self, shared: &Shared, size: usize, align: usize, arena: u16, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
+            crate::sys::may_syscall(),
             old(self).wf(),
             shared.wf(),
             crate::meta::is_pow2(align),
@@ -309,6 +315,7 @@ impl Heap {
     #[inline(never)]
     pub(super) fn free_huge(&mut self, shared: &Shared, page: usize, Tracked(tok): Tracked<crate::huge::RunToken>)
         requires
+            crate::sys::may_syscall(),
             old(self).wf(),
             shared.wf(),
             page <= shared.huge_pages(),
@@ -382,6 +389,7 @@ impl Heap {
     #[inline(never)]
     pub(super) fn alloc_slow(&mut self, shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool))
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
             class < NCLASSES,
             old(self).wf(),
@@ -435,6 +443,7 @@ impl Heap {
     /// The slow allocation path for any arena.
     pub(super) fn alloc_slow_in(&mut self, shared: &Shared, arena: u16, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool))
         requires
+            crate::sys::may_syscall(),
             class < NCLASSES,
             shared.wf(),
             old(self).wf(),
@@ -477,6 +486,7 @@ impl Heap {
     #[inline(never)]
     pub(super) fn free_slow(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
         requires
+            crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
             tok.id() == slot_loc(class as int),
             tok@ == p@.addr as int,
@@ -499,6 +509,7 @@ impl Heap {
     /// is cached, exactly as it would be handed out; design 6.3).
     pub(super) fn free_slow_in(&mut self, shared: &Shared, arena: u16, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
         requires
+            crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
             tok.id() == slot_loc(class as int),
             tok@ == p@.addr as int,
@@ -715,6 +726,7 @@ proof fn lend_slot(tracked blk: &mut Live, tracked tk: &mut Map<int, GhostSingle
 #[inline(always)]
 pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
     requires
+        crate::sys::may_syscall(),
         class < NCLASSES,
         shared.wf(),
     ensures
@@ -739,6 +751,7 @@ pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) ->
 #[inline(always)]
 pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
         class < NCLASSES,
     ensures
@@ -756,6 +769,7 @@ pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut 
 #[inline(always)]
 pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
+        crate::sys::may_syscall(),
         class < NCLASSES,
         shared.wf(),
     ensures
@@ -783,6 +797,7 @@ pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Li
 #[inline(always)]
 pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
         blk.claims(p),
     ensures
@@ -801,6 +816,7 @@ pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
 /// as for [`free`].
 pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
         blk.claims(p),
     ensures

@@ -101,6 +101,7 @@ impl Tcaches {
     /// when the table or the metadata region is full.
     pub fn create(&self, shared: &Shared, arena: u16) -> Option<u16>
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
     {
         let _g = self.lock.lock();
@@ -172,6 +173,7 @@ impl Tcaches {
     /// `false` if there is no such cache.
     pub fn flush(&self, shared: &Shared, id: u16) -> bool
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
     {
         match self.get(id) {
@@ -185,7 +187,10 @@ impl Tcaches {
 
     /// `tcache.destroy`: flush and free `id`. `false` if there is no such
     /// cache.
-    pub fn destroy(&self, shared: &Shared, id: u16) -> bool {
+    pub fn destroy(&self, shared: &Shared, id: u16) -> bool
+        requires
+            crate::sys::may_syscall(),
+    {
         let _g = self.lock.lock();
         let i = id as usize;
         if i >= MAX_TCACHES {

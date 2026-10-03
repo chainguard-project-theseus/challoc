@@ -452,10 +452,16 @@ pub fn forced_by_limit(key: Key, limit: u64) -> (r: bool)
 /// read) and give the class and metadata reservations already made the
 /// `never` advice (the module doc; the huge reservation was never recorded
 /// and stays with the host's policy, as under a configured `never`).
-pub fn force_never() {
+pub fn force_never()
+    requires
+        crate::sys::may_syscall(),
+{
     let d = Decision::off(Reason::Forced, load_lg_pmd());
     store(&d);
-    for (addr, len) in RESERVATIONS.iter() {
+    for (addr, len) in RESERVATIONS.iter()
+        invariant
+            crate::sys::may_syscall(),
+    {
         let len = len.load(Ordering::Relaxed);
         if len != 0 {
             advise_nohugepage(addr.load(Ordering::Relaxed), len);
@@ -491,7 +497,10 @@ impl Reservation {
 /// THP, `MADV_NOHUGEPAGE`d here (the module doc); the huge reservation is
 /// neither (it follows the host's policy). Returns whether the advice was
 /// issued.
-pub fn advise_reservation(kind: Reservation, addr: usize, len: usize) -> bool {
+pub fn advise_reservation(kind: Reservation, addr: usize, len: usize) -> bool
+    requires
+        crate::sys::may_syscall(),
+{
     if kind.follows_host() {
         return false;
     }
@@ -519,7 +528,10 @@ pub fn is_never() -> bool {
 
 /// `MADV_NOHUGEPAGE` on a reservation, counted; nothing on a kernel
 /// without THP.
-fn advise_nohugepage(addr: usize, len: usize) -> bool {
+fn advise_nohugepage(addr: usize, len: usize) -> bool
+    requires
+        crate::sys::may_syscall(),
+{
     if len == 0 || KERNEL_THP.load(Ordering::Relaxed) == 0 {
         return false;
     }
@@ -688,19 +700,28 @@ pub fn chunk(addr: usize, len: usize, lo: usize, hi: usize, pmd: usize) -> (r: (
     (start, end.min(hi))
 }
 
-fn madvise_hugepage(addr: usize, len: usize) -> bool {
+fn madvise_hugepage(addr: usize, len: usize) -> bool
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: the callers pass ranges inside the allocator's own
     // reservations; `MADV_HUGEPAGE` changes a VMA flag, never contents.
     unsafe { crate::sys::madvise(addr, len, crate::sys::MADV_HUGEPAGE) }.is_ok()
 }
 
-fn madvise_nohugepage(addr: usize, len: usize) -> bool {
+fn madvise_nohugepage(addr: usize, len: usize) -> bool
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: a reservation this process owns; `MADV_NOHUGEPAGE` sets a
     // VMA flag, never contents.
     unsafe { crate::sys::madvise(addr, len, crate::sys::MADV_NOHUGEPAGE) }.is_ok()
 }
 
-fn advise(addr: usize, len: usize, ranges: &AtomicU64, count: bool) -> bool {
+fn advise(addr: usize, len: usize, ranges: &AtomicU64, count: bool) -> bool
+    requires
+        crate::sys::may_syscall(),
+{
     if len == 0 {
         return true;
     }
@@ -718,7 +739,10 @@ fn advise(addr: usize, len: usize, ranges: &AtomicU64, count: bool) -> bool {
 /// `MADV_HUGEPAGE` on a class region range (a slab group, or a PMD chunk
 /// from any of its slabs: `count` says whether this call is the one that
 /// starts the range, so the counters see each range once).
-pub fn advise_class(addr: usize, len: usize, count: bool) -> bool {
+pub fn advise_class(addr: usize, len: usize, count: bool) -> bool
+    requires
+        crate::sys::may_syscall(),
+{
     let ok = advise(addr, len, &CLASS_RANGES, count);
     if ok && count {
         CLASS_BYTES.fetch_add(len as u64, Ordering::Relaxed);
@@ -730,12 +754,18 @@ pub fn advise_class(addr: usize, len: usize, count: bool) -> bool {
 }
 
 /// `MADV_HUGEPAGE` on a huge run.
-pub fn advise_huge(addr: usize, len: usize) -> bool {
+pub fn advise_huge(addr: usize, len: usize) -> bool
+    requires
+        crate::sys::may_syscall(),
+{
     advise(addr, len, &HUGE_RANGES, true)
 }
 
 /// `MADV_HUGEPAGE` on a metadata commit.
-pub fn advise_meta(addr: usize, len: usize) -> bool {
+pub fn advise_meta(addr: usize, len: usize) -> bool
+    requires
+        crate::sys::may_syscall(),
+{
     advise(addr, len, &META_RANGES, true)
 }
 

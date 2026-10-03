@@ -362,6 +362,7 @@ impl Heap {
     #[inline(always)]
     pub(super) unsafe fn pop(&mut self, cache: *mut CacheHeader, class: usize, len: u32, pac: bool, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool))
         requires
+            crate::sys::may_syscall(),
             class < NCLASSES,
             old(self).wf(),
             old(self).owns(cache),
@@ -519,6 +520,7 @@ impl Heap {
     #[inline(always)]
     pub(super) fn push(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
         requires
+            crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
             tok.id() == slot_loc(class as int),
             tok@ == p@.addr as int,
@@ -815,6 +817,7 @@ impl Heap {
         class: usize,
     ) -> (r: *mut CacheHeader)
         requires
+            crate::sys::may_syscall(),
             class < NCLASSES,
             shared.wf(),
             old(self).wf(),

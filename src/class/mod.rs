@@ -970,6 +970,8 @@ impl Inner {
     /// stores change.
     #[inline(always)]
     fn ensure_sets(&mut self, meta: &Meta, page: usize, slab: usize) -> (r: Result<(), Errno>)
+        requires
+            crate::sys::may_syscall(),
         ensures
             final(self).same_sets(*old(self)),
     {
@@ -1788,6 +1790,7 @@ impl ClassState {
     /// (`AtomicBitmap::release`).
     fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen, Tracked(tok): Tracked<GhostSubset<int>>)
         requires
+            crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
             word < words_of(class_table()[self.spec_class() as int].slab_bits as usize),
             subset(mask, slab_mask_of(class_table()[self.spec_class() as int].slab_bits as usize)),
@@ -1846,6 +1849,7 @@ impl ClassState {
     #[allow(clippy::explicit_auto_deref)]
     fn reopen(&self, reopen: &mut Reopen)
         requires
+            crate::sys::may_syscall(),
             old(reopen).len <= MAX_PICKS,
             old(reopen).below(self.spec_nslabs()),
         ensures
@@ -1888,6 +1892,7 @@ impl ClassState {
 
     fn dec_live(&self, slab: usize, n: usize)
         requires
+            crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
     {
         if purge::check_zero() {
@@ -1958,6 +1963,8 @@ impl ClassState {
 
     /// Lowest slab in the partial set, if any (for tests and stats).
     pub fn lowest_partial(&self) -> (r: Option<usize>)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r matches Some(s) ==> s < self.spec_nslabs(),
     {
@@ -1972,6 +1979,7 @@ impl ClassState {
     /// `api::print`).
     pub fn is_partial(&self, slab: usize) -> bool
         requires
+            crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
     {
         broadcast use {axiom_class_lock, axiom_class_lock_inv};
@@ -1989,6 +1997,7 @@ impl ClassState {
     #[allow(clippy::explicit_auto_deref)]
     fn on_live_zero(&self, slab: usize)
         requires
+            crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
     {
         broadcast use {axiom_class_lock, axiom_class_lock_inv};
@@ -2062,6 +2071,8 @@ impl ClassState {
         Tracked(pz): Tracked<&mut Map<int, Zeroed>>,
         Tracked(pm): Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
     ) -> (np: usize)
+        requires
+            crate::sys::may_syscall(),
         ensures
             picks_zero(self.spec_table(), final(picks)@, 0, np as int, *final(pz)),
             picks_marks(self.spec_table(), final(picks)@, 0, np as int, *final(pm)),
@@ -2135,6 +2146,7 @@ impl ClassState {
         }
         while remaining > 0 && np < MAX_PICKS
             invariant
+                crate::sys::may_syscall(),
                 g@.inv(),
                 g@.nbits() == self.spec_nslabs(),
                 g@.arena@ == self.arena,
@@ -2378,6 +2390,8 @@ impl ClassState {
     /// is counted (`clamped`); the count cannot tell the legitimate
     /// transient from a bookkeeping bug, the reader of the bins table can.
     pub fn bin_stats(&self) -> (r: (ClassStats, usize))
+        requires
+            crate::sys::may_syscall(),
         ensures
             r.0.empty + r.0.purged <= r.0.committed <= self.spec_nslabs(),
             (r.0.committed as int) * (class_table()[self.spec_class() as int].nslots as int) <= usize::MAX,
@@ -2422,6 +2436,8 @@ impl ClassState {
     /// cache and no program, and those slabs' total slot count. The
     /// compaction gate in `heap/` reads this; one lock hold.
     pub fn holes(&self) -> (r: (usize, usize))
+        requires
+            crate::sys::may_syscall(),
         ensures
             r.0 <= r.1,
             (r.1 as int) <= (self.spec_nslabs() as int) * (class_table()[self.spec_class() as int].nslots as int),
@@ -2460,6 +2476,7 @@ impl ClassState {
         Tracked(toks): Tracked<GhostSubset<int>>,
     )
         requires
+            crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
             lo <= hi,
             hi < old(local)@.len(),
@@ -2486,6 +2503,7 @@ impl ClassState {
         }
         for w in it: lo..=hi
             invariant
+                crate::sys::may_syscall(),
                 slab < self.spec_nslabs(),
                 hi < old(local)@.len(),
                 hi < words_of(class_table()[self.spec_class() as int].slab_bits as usize),
@@ -2622,6 +2640,8 @@ impl ClassState {
     /// [`plan`]: ClassState::plan
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn claim(&self, meta: &Meta, out: &mut [*mut u8]) -> (r: Claim)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
@@ -2638,6 +2658,8 @@ impl ClassState {
     ///
     /// [`claim`]: ClassState::claim
     pub fn claim_tokens(&self, meta: &Meta, out: &mut [*mut u8], Tracked(toks): Tracked<&mut SlotToks>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+        requires
+            crate::sys::may_syscall(),
         ensures
             r.0.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
@@ -2665,6 +2687,8 @@ impl ClassState {
     /// [`claim_random_zero`]: ClassState::claim_random_zero
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn claim_random(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64) -> (r: Claim)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
@@ -2682,6 +2706,8 @@ impl ClassState {
     /// [`claim_tokens`]: ClassState::claim_tokens
     #[verifier::spinoff_prover]
     pub fn claim_random_zero(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64, Tracked(toks): Tracked<&mut SlotToks>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+        requires
+            crate::sys::may_syscall(),
         ensures
             r.0.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
@@ -2766,6 +2792,8 @@ impl ClassState {
     #[verifier::spinoff_prover]
     #[verifier::exec_allows_no_decreases_clause]
     fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>, Tracked(toks): Tracked<&mut SlotToks>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+        requires
+            crate::sys::may_syscall(),
         ensures
             r.0.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
@@ -2789,6 +2817,7 @@ impl ClassState {
         let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
         while got < out.len()
             invariant
+                crate::sys::may_syscall(),
                 t == self.spec_table(),
                 s == t.spec_slots(),
                 t.inv(),
@@ -2832,7 +2861,7 @@ impl ClassState {
                     }
                 }
                 if zeroed {
-                    assert forall|i: int| 0 <= i < got implies #[trigger] z.contains_key(0 + i) && z[0 + i].covers(out@[i], s.size) by {
+                    assert forall|i: int| 0 <= i < got implies #[trigger] z.contains_key(i) && z[i].covers(out@[i], s.size) by {
                         if i < g0 {
                             assert(zeroed0);
                             lemma_zero_keys_at(z0, o0, 0, 0, g0, s.size, i);
@@ -2843,6 +2872,7 @@ impl ClassState {
                             lemma_zero_keys_at(z, sub, g0, 0, got - g0, s.size, i - g0);
                         }
                     }
+                    lemma_zero_keys_from0(z, out@, got as int, s.size);
                 }
             }
         }
@@ -3817,6 +3847,19 @@ proof fn lemma_zero_keys_at(z: Map<int, Zeroed>, out: Seq<*mut u8>, base: int, l
     assert(z.contains_key(base + i));
 }
 
+/// [`zero_keys`] at base 0 from its entries keyed `i` (the quantifier's
+/// trigger, `0 + i`, need not match a caller's `i`).
+proof fn lemma_zero_keys_from0(z: Map<int, Zeroed>, out: Seq<*mut u8>, hi: int, size: int)
+    requires
+        forall|i: int| 0 <= i < hi ==> #[trigger] z.contains_key(i) && z[i].covers(out[i], size),
+    ensures
+        zero_keys(z, out, 0, 0, hi, size),
+{
+    assert forall|i: int| 0 <= i < hi implies #[trigger] z.contains_key(0 + i) && z[0 + i].covers(out[i], size) by {
+        assert(z.contains_key(i));
+    }
+}
+
 /// Every key of `new` outside `lo..hi` is as in `old`.
 pub open spec fn zero_frame(new: Map<int, Zeroed>, old: Map<int, Zeroed>, lo: int, hi: int) -> bool {
     forall|k: int| #![trigger new.contains_key(k)] #![trigger old.contains_key(k)] !(lo <= k < hi) ==> {
@@ -4561,6 +4604,7 @@ impl ClassState {
     /// [`release_owned`]: ClassState::release_owned
     pub fn release_with(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<GhostSubset<int>>)
         requires
+            crate::sys::may_syscall(),
             bag.id() == slot_loc(self.spec_class() as int),
             aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= bag@,
             distinct(ptr_addrs(ptrs@), 0, ptrs@.len() as int),
@@ -4614,6 +4658,7 @@ impl ClassState {
     #[allow(clippy::explicit_counter_loop)]
     pub fn release_owned(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<&mut GhostSubset<int>>) -> (r: usize)
         requires
+            crate::sys::may_syscall(),
             old(bag).id() == slot_loc(self.spec_class() as int),
             aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= old(bag)@,
             distinct(ptr_addrs(ptrs@), 0, ptrs@.len() as int),
@@ -4663,6 +4708,7 @@ impl ClassState {
         let mut i = 0usize;
         for &p in it: ptrs.iter()
             invariant_except_break
+                crate::sys::may_syscall(),
                 i == it.index(),
                 end == ptrs@.len(),
             invariant

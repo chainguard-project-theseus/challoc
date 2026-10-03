@@ -395,15 +395,24 @@ verus! {
 // allocator reserved (the callers pass slab or page-group ranges below
 // the region's end), so changing its protection or installing a guard
 // affects only pages nothing else in the process maps.
-fn commit(addr: usize, len: usize) -> Result<(), Errno> {
+fn commit(addr: usize, len: usize) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
+{
     unsafe { sys::mprotect(addr, len, PROT_READ | PROT_WRITE) }
 }
 
-fn decommit(addr: usize, len: usize) -> Result<(), Errno> {
+fn decommit(addr: usize, len: usize) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
+{
     unsafe { sys::mprotect(addr, len, PROT_NONE) }
 }
 
-fn guard(addr: usize, len: usize) -> Result<(), Errno> {
+fn guard(addr: usize, len: usize) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
+{
     unsafe { sys::madvise(addr, len, MADV_GUARD_INSTALL) }
 }
 
@@ -431,6 +440,7 @@ impl SlabTable {
     #[verifier::spinoff_prover]
     pub fn new(meta: &Meta, regions: &Regions, class: usize, guard_interval: u32) -> (r: Option<SlabTable>)
         requires
+            crate::sys::may_syscall(),
             regions.wf(),
             regions.separated(),
             *regions == process_regions(),
@@ -1708,7 +1718,10 @@ impl SlabTable {
     }
 
     /// Guard slabs committed so far.
-    pub fn guards(&self) -> usize {
+    pub fn guards(&self) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
         self.inner.lock().guards
     }
 
@@ -2315,6 +2328,7 @@ impl SlabTable {
     /// slab stays uncommitted and may be retried).
     pub(super) fn commit_slab(&self, s: usize) -> (r: Option<bool>)
         requires
+            crate::sys::may_syscall(),
             s < self.spec_nslabs(),
         ensures
             r matches Some(usable) ==> usable == !self.spec_is_guard(s),
@@ -2371,6 +2385,7 @@ impl SlabTable {
     /// when the plain commit fails too.
     fn commit_page_group(&self, addr: usize, len: usize, mode: crate::thp::Mode) -> Option<()>
         requires
+            crate::sys::may_syscall(),
             self.base <= addr <= self.base + (self.spec_nslabs() << class_table()[self.spec_class() as int].lg_slab),
             addr + len <= usize::MAX,
     {
@@ -2407,7 +2422,10 @@ impl SlabTable {
     /// fails, fall back to leaving the whole slab (or page group, `len`)
     /// `PROT_NONE`: a hard guard at the cost of a VMA split. A slab that
     /// can be neither guarded nor re-protected aborts.
-    fn install_guard(&self, s: usize, addr: usize, page: usize, len: usize) {
+    fn install_guard(&self, s: usize, addr: usize, page: usize, len: usize)
+        requires
+            crate::sys::may_syscall(),
+    {
         if guard(addr, page).is_ok() {
             return;
         }
@@ -2465,6 +2483,7 @@ impl SlabTable {
         Tracked(inited): Tracked<&mut GhostPersistentSubset<int>>,
     ) -> (r: Option<(usize, usize)>)
         requires
+            crate::sys::may_syscall(),
             old(sets).table@ == *self,
             old(sets).arena@ == arena,
             old(sets).base(),

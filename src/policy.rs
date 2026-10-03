@@ -850,7 +850,10 @@ pub fn empty_bytes(shared: &Shared) -> u64 {
 /// limit this is a few loads; with one it sums the `Empty` bytes and
 /// publishes the outcome on `shared.policy`, waking a background thread
 /// when the band changed or a full purge is owed.
-pub fn evaluate(shared: &Shared) {
+pub fn evaluate(shared: &Shared)
+    requires
+        crate::sys::may_syscall(),
+{
     let cg = &shared.cgroup;
     let p = &shared.policy;
     let limit = cg.limit().min(cg.high());

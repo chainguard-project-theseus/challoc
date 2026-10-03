@@ -189,13 +189,18 @@ struct ExReader(Reader);
 /// claimed about the reading.
 #[verifier::external_body]
 #[inline(always)]
-fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int> {
+fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     (read.0)(mib)
 }
 
 /// The allocator state, initialised (the readers run inside `mallctl`,
 /// after its own [`super::shared`]).
 fn shared() -> (r: &'static Shared)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r.wf(),
 {
@@ -1034,14 +1039,20 @@ impl Utilization {
 /// `h.set_arena(shared, arena)`. Nothing is claimed.
 #[verifier::external_body]
 #[inline(always)]
-fn heap_set_arena(h: &mut Heap, shared: &Shared, arena: u16) {
+fn heap_set_arena(h: &mut Heap, shared: &Shared, arena: u16)
+    requires
+        crate::sys::may_syscall(),
+{
     h.set_arena(shared, arena)
 }
 
 /// `h.set_tcache_enabled(shared, on)`. Nothing is claimed.
 #[verifier::external_body]
 #[inline(always)]
-fn heap_set_tcache_enabled(h: &mut Heap, shared: &Shared, on: bool) {
+fn heap_set_tcache_enabled(h: &mut Heap, shared: &Shared, on: bool)
+    requires
+        crate::sys::may_syscall(),
+{
     h.set_tcache_enabled(shared, on)
 }
 
@@ -1049,7 +1060,10 @@ fn heap_set_tcache_enabled(h: &mut Heap, shared: &Shared, on: bool) {
 /// Nothing is claimed.
 #[verifier::external_body]
 #[inline(always)]
-fn tcaches_flush(shared: &Shared, t: u16) -> bool {
+fn tcaches_flush(shared: &Shared, t: u16) -> bool
+    requires
+        crate::sys::may_syscall(),
+{
     shared.tcaches.flush(shared, t)
 }
 
@@ -1057,6 +1071,7 @@ fn tcaches_flush(shared: &Shared, t: u16) -> bool {
 /// the bin-wide figures and `slabcur_addr`, which cost one class lock.
 pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilization
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     proof {
@@ -1127,6 +1142,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
 /// aborting on anything else.
 pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16>
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     proof {
@@ -1206,6 +1222,7 @@ unsafe fn store_triple(
 /// inside the caller's buffers.
 fn batch_query(shared: &Shared, io: &Io) -> Result<(), c_int>
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     if io.oldp.is_null() || io.oldlenp.is_null() || io.newp.is_null() {
@@ -1225,6 +1242,7 @@ fn batch_query(shared: &Shared, io: &Io) -> Result<(), c_int>
     let out = io.oldp as *mut usize;
     for i in 0..n
         invariant
+            crate::sys::may_syscall(),
             shared.wf(),
             n * 8 <= io.newlen,
             n * 24 == oldlen,
@@ -1271,7 +1289,10 @@ fn at(mib: &[usize], i: usize) -> (r: usize)
 
 /// `opt.<key>`: the key's value with its jemalloc type, the
 /// `config::Value` variant's.
-fn opt_value(mib: &[usize]) -> Result<Reading, c_int> {
+fn opt_value(mib: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     let key = KEYS.get(at(mib, 1)).ok_or(ENOENT)?;
     Ok(match shared().config.get(key.as_bytes()).ok_or(ENOENT)? {
         Value::Bool(b) => Bool(b),
@@ -1303,7 +1324,10 @@ fn bin_class(mib: &[usize]) -> (r: Result<crate::layout::Class, c_int>)
 /// `stats.arenas.<i>.bins.<j>.*`: the stored bin figures. (`bins[..NBINS]
 /// .get(j)`, spelled out as in `bin_class`.)
 #[allow(clippy::redundant_comparisons)]
-fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int> {
+fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     let a = arena_stats(shared(), at(mib, 2))?;
     let j = at(mib, 4);
     if j < NBINS && j < NCLASSES {
@@ -1316,6 +1340,8 @@ fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int> {
 /// The tracked cgroup, or `ENOENT`: like jemalloc's keys behind a disabled
 /// build option, the name resolves and the read says the facility is off.
 fn tracked() -> (r: Result<&'static crate::sys::cgroup::Cgroup, c_int>)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r matches Err(e) ==> e == ENOENT,
 {
@@ -1354,6 +1380,8 @@ fn ms_of(ns: u64) -> (r: isize)
 /// the zeros of `MALLCTL_ARENAS_DESTROYED` (both recognised before the
 /// range check, which they fail).
 fn arena_stats(shared: &Shared, i: usize) -> (r: Result<ArenaStats, c_int>)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r matches Err(e) ==> e == ENOENT,
 {
@@ -1370,6 +1398,7 @@ fn arena_stats(shared: &Shared, i: usize) -> (r: Result<ArenaStats, c_int>)
 /// can reach the slabs they pin (`malloc_trim` does the same).
 fn flush_caller(shared: &Shared)
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
@@ -1381,6 +1410,7 @@ fn flush_caller(shared: &Shared)
 /// has torn down its heap.
 fn thread_heap<'a>(shared: &'a Shared) -> (r: Result<&'a mut Heap, c_int>)
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
     ensures
         r matches Err(e) ==> e == EAGAIN,
@@ -1410,6 +1440,7 @@ fn read_out(io: &Io, r: Reading) -> (res: Result<(), c_int>)
 /// an interior node.
 fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int>
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     let op = match node.entry {
@@ -1588,7 +1619,10 @@ pub fn mallctl(
     oldlenp: *mut usize,
     newp: *const c_void,
     newlen: usize,
-) -> c_int {
+) -> c_int
+    requires
+        crate::sys::may_syscall(),
+{
     let Some(name) = cstr(name) else {
         return EINVAL;
     };
@@ -1689,7 +1723,10 @@ pub fn mallctlbymib(
     oldlenp: *mut usize,
     newp: *const c_void,
     newlen: usize,
-) -> c_int {
+) -> c_int
+    requires
+        crate::sys::may_syscall(),
+{
     if mib.is_null() || miblen == 0 || miblen > MAX_MIB {
         return EINVAL;
     }

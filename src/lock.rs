@@ -79,6 +79,8 @@ impl RawLock {
     /// `verus/THEOREMS.md`).
     #[inline]
     pub fn lock(&self)
+        requires
+            crate::sys::may_syscall(),
         opens_invariants any
     {
         if !self.try_acquire() {
@@ -90,7 +92,10 @@ impl RawLock {
     /// releases the lock.
     #[cold]
     #[verifier::exec_allows_no_decreases_clause]
-    fn lock_slow(&self) {
+    fn lock_slow(&self)
+        requires
+            crate::sys::may_syscall(),
+    {
         for _ in 0..SPINS {
             if self.state.load(Ordering::Relaxed) == UNLOCKED && self.try_acquire() {
                 return;
@@ -100,7 +105,10 @@ impl RawLock {
         // Announce a possible waiter, then sleep while the word stays
         // CONTENDED. A spurious wake or `EINTR` just loops: `swap` re-checks.
         let mut c = self.state.swap(CONTENDED, Ordering::Acquire);
-        while c != UNLOCKED {
+        while c != UNLOCKED
+            invariant
+                crate::sys::may_syscall(),
+        {
             wait(&self.state, CONTENDED);
             c = self.state.swap(CONTENDED, Ordering::Acquire);
         }
@@ -108,7 +116,10 @@ impl RawLock {
 
     /// Release. Must be called by the holder exactly once per acquire.
     #[inline]
-    pub fn unlock(&self) {
+    pub fn unlock(&self)
+        requires
+            crate::sys::may_syscall(),
+    {
         if self.state.swap(UNLOCKED, Ordering::Release) == CONTENDED {
             wake(&self.state);
         }
@@ -119,6 +130,8 @@ impl RawLock {
     /// handlers).
     #[inline(always)]
     pub fn lock_held(&self) -> (t: Tracked<LockHeld>)
+        requires
+            crate::sys::may_syscall(),
         ensures
             t@.held() == *self,
     {
@@ -130,6 +143,7 @@ impl RawLock {
     #[inline(always)]
     pub fn unlock_held(&self, Tracked(t): Tracked<LockHeld>)
         requires
+            crate::sys::may_syscall(),
             t.held() == *self,
     {
         self.unlock();
@@ -175,7 +189,10 @@ impl LockHeld {
 // the stand-ins in `loom_tests::futex`.
 #[cfg(not(loom))]
 #[inline]
-fn wait(state: &AtomicU32, val: u32) {
+fn wait(state: &AtomicU32, val: u32)
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: `state` is a live, aligned `u32` for the duration of the call.
     // Every error (EAGAIN: already changed; EINTR: signal) means "re-check".
     let _ = unsafe { crate::sys::futex_wait(state.as_ptr(), val, None) };
@@ -183,7 +200,10 @@ fn wait(state: &AtomicU32, val: u32) {
 
 #[cfg(not(loom))]
 #[inline]
-fn wake(state: &AtomicU32) {
+fn wake(state: &AtomicU32)
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: `state` is a live, aligned `u32`.
     let _ = unsafe { crate::sys::futex_wake(state.as_ptr(), 1) };
 }
@@ -323,6 +343,8 @@ impl<T> Lock<T> {
     /// invariant, as [`RawLock::lock`] does.
     #[inline]
     pub fn lock(&self) -> (g: LockGuard<'_, T>)
+        requires
+            crate::sys::may_syscall(),
         ensures
             lock_inv(g@),
             lock_frame(lock_init(*self), g@),

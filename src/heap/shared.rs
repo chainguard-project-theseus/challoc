@@ -257,7 +257,10 @@ impl ThreadKey {
     /// whether `pthread_key_create` gave one. Trusted: passes a function
     /// pointer, which Verus does not support.
     #[verifier::external_body]
-    pub fn create() -> ThreadKey {
+    pub fn create() -> ThreadKey
+        requires
+            crate::sys::may_syscall(),
+    {
         let mut key: libc::pthread_key_t = 0;
         // SAFETY: `key` is a valid out-pointer; the destructor is a plain
         // `extern "C"` function that only touches allocator state.
@@ -292,6 +295,7 @@ impl ThreadKey {
     /// call leaves it as it was.
     pub fn set(&self, heap: *mut Heap, Tracked(tls): Tracked<&mut TlsSlot>)
         requires
+            crate::sys::may_syscall(),
             reentry_benign(old(tls).value()),
         ensures
             *final(tls) == *old(tls),
@@ -312,7 +316,8 @@ impl ThreadKey {
 /// otherwise (nothing is claimed about it). It may allocate (glibc
 /// `calloc`s a second-level block of 32 keys the first time a thread
 /// sets a non-null value for a key in it), re-entering the allocator on
-/// this thread. Each nested entry stands for a `heap::thread` core
+/// this thread, so it may reach the kernel (`may_syscall`, theorem 8).
+/// Each nested entry stands for a `heap::thread` core
 /// holding `tls`, lent to it ([`TlsSlot`]): at a [`reentry_benign`]
 /// value the cores return `None` and leave the token as they found it
 /// ([`heap_for_thread_in`](super::thread::heap_for_thread_in),
@@ -327,6 +332,7 @@ impl ThreadKey {
 #[inline(always)]
 unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tracked(tls): Tracked<&mut TlsSlot>) -> (r: i32)
     requires
+        crate::sys::may_syscall(),
         reentry_benign(old(tls).value()),
     ensures
         *final(tls) == *old(tls),
@@ -335,15 +341,24 @@ unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tr
     unsafe { libc::pthread_setspecific(key, value) }
 }
 
-pub(super) fn now_ns() -> u64 {
+pub(super) fn now_ns() -> u64
+    requires
+        crate::sys::may_syscall(),
+{
     crate::sys::now_coarse_ns()
 }
 
-pub(super) fn tid() -> u32 {
+pub(super) fn tid() -> u32
+    requires
+        crate::sys::may_syscall(),
+{
     crate::sys::gettid() as u32
 }
 
-pub(super) fn ncpus() -> u32 {
+pub(super) fn ncpus() -> u32
+    requires
+        crate::sys::may_syscall(),
+{
     crate::sys::ncpus()
 }
 
@@ -1139,6 +1154,7 @@ impl Shared {
         Tracked(ps): Tracked<&mut PointsTo<Lock<Snapshot>>>,
     )
         requires
+            crate::sys::may_syscall(),
             shared_ok(this),
             old(pc).ptr() == field_ptr::<Shared, Config>(this, S_CONFIG),
             old(pk).ptr() == field_ptr::<Shared, ThreadKey>(this, S_KEY),
@@ -1204,6 +1220,7 @@ impl Shared {
         pac: bool,
     ) -> (r: bool)
         requires
+            crate::sys::may_syscall(),
             this == shared_storage(),
             regions.wf(),
             regions.separated(),
@@ -1831,6 +1848,7 @@ impl Shared {
     #[inline]
     pub fn arena(&self, index: u16) -> (r: Option<&Arena>)
         requires
+            crate::sys::may_syscall(),
             self.wf(),
         ensures
             r matches Some(a) ==> a.spec_index() == index,
@@ -1891,6 +1909,7 @@ impl Shared {
     /// says the memory is known zero; `blk` gets the slot's token.
     pub fn alloc_direct(&self, arena: &Arena, class: usize, Tracked(blk): Tracked<&mut super::Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
+            crate::sys::may_syscall(),
             class < NCLASSES,
         ensures
             r.0@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r.0@.addr),
@@ -1905,6 +1924,13 @@ impl Shared {
         if c.n == 0 {
             (ptr::null_mut(), false, Tracked(Zeroed::empty(0)))
         } else {
+            proof {
+                assert(crate::class::claim_zero_ok(c, out@, z, class as int));
+                if c.zeroed {
+                    assert(z.contains_key(0));
+                    assert(z[0].covers(out@[0], class_table()[class as int].size as int));
+                }
+            }
             let tracked t = if c.zeroed { z.tracked_remove(0) } else { Zeroed::empty(0) };
             proof {
                 toks.lemma_owns_keyed(cs.spec_table(), out@, c.n as int);
@@ -1922,6 +1948,7 @@ impl Shared {
     /// `tok` is the slot's token; it goes back to the slot's bitmap word.
     pub fn free_direct(&self, arena: u16, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
         requires
+            crate::sys::may_syscall(),
             class < NCLASSES,
             crate::layout::process_regions().is_slot(class as int, p@.addr),
             tok.id() == slot_loc(class as int),
@@ -2090,6 +2117,7 @@ impl Shared {
     /// on exhaustion; the flag says the memory is known zero.
     pub fn alloc_huge(&self, size: usize, align: usize, arena: u16, Tracked(blk): Tracked<&mut super::Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
+            crate::sys::may_syscall(),
             self.wf(),
             crate::meta::is_pow2(align),
         ensures
@@ -2129,6 +2157,7 @@ impl Shared {
     #[inline(never)]
     pub fn zero_huge(&self, page: usize)
         requires
+            crate::sys::may_syscall(),
             self.wf(),
             page <= self.huge_pages(),
     {
@@ -2147,6 +2176,7 @@ impl Shared {
     /// run start. Returns the usable bytes released.
     pub fn free_huge(&self, page: usize, Tracked(tok): Tracked<crate::huge::RunToken>) -> usize
         requires
+            crate::sys::may_syscall(),
             self.wf(),
             page <= self.huge_pages(),
             tok.wf(),
@@ -2261,6 +2291,7 @@ impl Shared {
     /// [`slot_owner`]: crate::class::slot_owner
     pub fn release_routed(&self, arena: u16, class: usize, ptrs: &[*mut u8], Tracked(bag): Tracked<&mut GhostSubset<int>>)
         requires
+            crate::sys::may_syscall(),
             self.wf(),
             class < NCLASSES,
             old(bag).id() == slot_loc(class as int),
@@ -2280,6 +2311,7 @@ impl Shared {
         }
         loop
             invariant
+                crate::sys::may_syscall(),
                 self.wf(),
                 class < NCLASSES,
                 done <= ptrs@.len(),
@@ -2341,11 +2373,17 @@ impl Shared {
     /// off. Takes effect at the next periodic tick, or at once for a
     /// background thread (each arena setter wakes it).
     /// `arena.<i>.dirty_decay_ms` goes through `Arena::set_decay_ms` instead.
-    pub fn set_decay_ms(&self, ms: i64) {
+    pub fn set_decay_ms(&self, ms: i64)
+        requires
+            crate::sys::may_syscall(),
+    {
         // The arenas `Arenas::iter` walks: every built index below the
         // count, in order.
         let n = self.arenas.count() as usize;
-        for i in 0..n {
+        for i in 0..n
+            invariant
+                crate::sys::may_syscall(),
+        {
             if let Some(a) = self.arenas.get_existing(i as u16) {
                 a.set_decay_ms(ms);
             }

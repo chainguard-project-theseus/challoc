@@ -1,6 +1,6 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the whole-allocator theorems (sections 1-7 and 10) and the
+Reference for the whole-allocator theorems (sections 1-10) and the
 cgroup policy's theorem as the code states them: the Verus statement,
 the entry points it covers, and every trusted premise it rests on, with
 `file:line`. Read at `b2cad68` (branch `verus`); line numbers are the
@@ -861,6 +861,165 @@ share no page with the guard pages of any live run, its own included.
   watermark, `invalid_free` for a mid-slot address).
 - The kernel's guard semantics (a fault on access) are not modelled: the
   theorem is about where blocks lie, not about what the guard does.
+
+## 8. No syscall on the fast path
+
+Read at this section's commit (the `file:line`s are the `fn` line
+there).
+
+**Statement** (`sys/mod.rs:103`, `:113`; `api/libc.rs:441`):
+
+```rust
+#[verifier::opaque]
+pub open spec fn may_syscall() -> bool { true }
+
+pub proof fn grant_syscalls()
+    ensures
+        may_syscall(),
+
+#[cfg(verus_only)]
+fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8)
+```
+
+(Bodies elided.) `may_syscall()` is a capability: every function that
+can enter the kernel requires it, and the thread-cache fast paths do
+not. The fast paths make no system call. They are, as the entry points
+call them:
+
+- `malloc`: `class_index` (`api/libc.rs:120`), `api::shared_ptr`
+  (`api/mod.rs:262`), `heap::existing_heap` (`heap/thread.rs:153`: the
+  TLS read and `heap_from_slot`), `heap::fast_flags` (`:196`) and
+  `Heap::alloc_fast` (`heap/paths.rs:55`), whose body is `pop_fast`
+  (`:81`). `calloc`'s cache pop is the same `pop_fast`, and
+  `operator new`'s fast path is `malloc_fast` (`api/libc.rs:286`).
+- `free`: `existing_heap`, `shared_ptr`, `api::shared_unchecked`
+  (`api/mod.rs:273`), `Shared::push_flags` and `heap::free_fast`
+  (`heap/paths.rs:533`), with the check (`Shared::checked_slot`) and the
+  push (`Heap::push_fast`) inside it.
+- `free_sized`, and `sdallocx` with no flags: `class_index`, `shared_ptr`,
+  `existing_heap`, `shared_unchecked` and `heap::free_sized_fast`
+  (`heap/paths.rs:594`).
+- `challoc_free_usable`: `existing_heap`, `shared_ptr`,
+  `shared_unchecked`, `heap::free_fast_class` (`heap/paths.rs:564`) and
+  `class_size` (`api/libc.rs:890`).
+
+`theorem_no_syscall_on_fast_paths`, a verification-only function
+(`cfg(verus_only)`; the build has none), makes these calls where
+`may_syscall()` does not hold, and verifies. It takes the block tokens
+as the entry points do (`Live::empty()` for a pop, `axiom_c_claim` for
+a free), which are ghost. So none of these functions
+requires it, and neither does anything they call. `malloc_fast` is a
+second witness: it makes the same calls and does not require it either.
+Each entry point's body (its `_block` core: `malloc_block`, `free_block`,
+`free_sized_block`, `free_usable_block`; each core requires
+`may_syscall()`) calls nothing else before its slow-path tail
+call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
+`free_sized_unhinted` for a size no class holds, `free_sized_slow`,
+`free_usable_slow`), which requires `may_syscall()`.
+
+**Why the capability can be trusted.**
+- The only instructions that enter the kernel are the `syscall`/`svc 0`
+  in `sys/raw.rs` (`syscall0`..`syscall6`, both architectures,
+  `sys/raw.rs:20`, `:153`), each `requires may_syscall()`.
+- Every trusted body or specification that can reach the kernel, by a
+  syscall, a libc call, a call through a function pointer or a verified
+  function it calls unchecked, `requires may_syscall()` too:
+  `sys::getrandom`, `read`, `write` (`sys/mod.rs:569`, `:755`, `:825`),
+  `linux::try_reserve` (`layout/regions.rs:1443`), `ThreadKey::create`
+  (`heap/shared.rs:255`), `register_fork_handlers` (`api/mod.rs:412`),
+  `background::spawn` and `pthread_join` (`purge/background.rs:333`,
+  `:229`), `init_fields`, `assign_home`, `Heap::destroy`
+  (`heap/mod.rs:4060`, `:4087`, `:4277`), `Meta::commit`, `Meta::free`
+  (`meta.rs:2745`, `:2796`), mallctl's reader call `call` and
+  `heap_set_arena`, `heap_set_tcache_enabled`, `tcaches_flush`
+  (`api/mallctl.rs:192`, `:1042`, `:1052`, `:1063`), `print::emit`
+  (the report's only call-out, theorem 16), the C++ `call_handler`,
+  `call_throw_bad_alloc` (`api/cxx.rs:163`, `:119`), the
+  `pthread_setspecific` wrapper (which may allocate; `heap/shared.rs`,
+  from theorem 15, in place of an `assume_specification`), `Set::ensure`
+  (`class/sets.rs`, which commits set words through `Meta`; its
+  capability and `Inner::ensure_sets`' were added at the merge), and
+  the `assume_specification` of `flush::seed` (`getrandom`,
+  `heap/flush.rs:1365`).
+- `may_syscall` is opaque, so a verified function can prove it only from
+  its own `requires` (or a loop invariant that carries it in from
+  there), from `grant_syscalls`, or from the type invariant of a
+  `Stderr` (the abort's sink, `sys/abort.rs:34`), which only a context
+  that holds it can build (`Stderr::new` requires it; `Default` is outside
+  the proofs).
+- `grant_syscalls` is called only in the bodies of `extern "C"`
+  functions and of `sys::abort_fmt` (`sys/abort.rs:143`), which never
+  returns; a panic, a failed `vspec::check` included, reaches it through
+  the `#[panic_handler]` (`lib.rs:108`). Outside tests, no Rust code
+  calls an `extern "C"` function of the crate.
+  `api::tests::syscall_grants_only_at_roots` checks the source: every
+  grant is in an `extern "C"` or `-> !` function, and `may_syscall`
+  appears only as a `requires` or loop invariant clause, apart from its
+  definition, the grant and `Stderr`'s invariant.
+- The later theorems' code follows the same discipline (merged after
+  this section's commit). Fork safety (theorem 13): `RawLock::lock_held`
+  and `unlock_held`, `purge::background::fork_lock` and `fork_unlock`,
+  and `fork_release` require `may_syscall()`; `fork_prepare`,
+  `fork_parent` and `fork_child` are `extern "C"` and grant it.
+  Re-entrant heap registration (theorem 15): `heap_for_thread_in`,
+  `ThreadKey::set` and its `pthread_setspecific` wrapper require it,
+  while `existing_heap_in`, `tls_heap_slot` and `tls::get`/`get_tp`
+  (which only take the `TlsSlot` token) do not, so the fast paths stay
+  as above. No allocator lock across external calls (theorem 16):
+  `print::emit`, `Sink::new` and `Sink::flush` require it.
+
+So a system call happens only below a frame that requires
+`may_syscall()` or grants it, or that holds a value only such a frame
+can make (below). Below a fast-path function no frame does, except
+inside `abort_fmt`. A fast-path call that returns made no system call.
+
+**Premises beyond the common ones.**
+- The trusted bodies the fast paths reach make no system call:
+  `heap_from_slot` (`heap/thread.rs:218`, PAC `autda` and a cast),
+  `fast_flags` (a raw read), `sys::tls::get` and `get_tp` (a TLS load,
+  `mrs`), `pac::auth` and `sign` (PAC instructions), `Heap::home_ptr_at`
+  and `cached_recently` (`heap/cache.rs`, address arithmetic and loads),
+  `arena_volatile` (`heap/mod.rs`, a volatile read),
+  `SlabTable::owner_unchecked`, `load_owner` (a `Relaxed` load) and
+  `watermark` (`class/table.rs`),
+  `vspec::word::load` (an atomic load), `layout::regions::class_entry`
+  (an empty `asm!`), `addr_to_ptr`, `api::shared_ptr` and `shared_ref`.
+  So do the `core` functions they use (`Option::map`, `?`, atomics,
+  pointer arithmetic), which the common premises already trust.
+- Two values reach the kernel from code with no `requires`, and only a
+  frame with the capability can make them. `LockGuard::drop`
+  (`lock.rs:403`, `external_body`; a destructor cannot have a
+  `requires`) may `FUTEX_WAKE`, and a guard comes only from `Lock::lock`
+  (`lock.rs:288`). `Sink`'s `fmt::Write::write_str` (outside `verus!`,
+  reached through `core::fmt`) flushes, and a sink comes only from
+  `Sink::new` (`api/print.rs:74`). Both require `may_syscall()`, and no
+  fast-path function takes either as an argument.
+- The test checks where the grants are, not who calls the functions
+  that make them: that no verified code calls an `extern "C"` function
+  of the crate is read from the source.
+- The trusted specifications are consistent as formulas. The proof
+  needs no runtime fact: `may_syscall` is true but opaque, so even a
+  false premise at run time (a double free voiding `axiom_c_claim`)
+  gives a fast-path function no way to establish it.
+
+**What it does not cover.**
+- The slow paths. Refill, flush, heap creation, `init` on the first call,
+  huge blocks, `errno` and the scheduled pop that `pop_fast` declines all
+  run behind a call that requires `may_syscall()`. `calloc` reaches its
+  pop through `api::shared` and `heap_for_thread`, which may initialise
+  or create a heap; only the pop itself is covered. `realloc` and
+  `free_aligned_sized`'s hint (`class_for`) are not covered.
+- Faults. The first touch of a fresh slot or cache stack page can fault,
+  and so can `PROT_NONE` guards and swapped-out pages. A page fault is a
+  trap the kernel takes, not a system call, and no proof here models it.
+- Machine code. The theorem is about the verified source. The build
+  inlines these functions into the exported `malloc` and `free`, and on
+  x86_64 at this commit their machine code has no `syscall` instruction.
+  It leaves them only by a jump to `malloc_slow` or `free_slow`. That is
+  a reading of the disassembly, not a proof.
+- Termination. The theorem says which instructions run, not that the
+  fast path finishes: that is theorem 9 ("The fast path never hangs"),
+  whose invariant masks cover the same functions.
 
 ## 9. The fast path never hangs
 
@@ -2201,8 +2360,8 @@ either.
 
 ## Interface contract
 
-Theorems 1-7 above checked against challoc's exported C ABI (theorem 10
-is the I6 row below): one row per exported symbol (`je_` twins and C++
+Theorems 1-7 above checked against challoc's exported C ABI (theorems 8
+and 10 are the I6 and I7 rows below): one row per exported symbol (`je_` twins and C++
 array forms share their row), one column per interface property. Read
 from the `ensures` of each entry point's Rust function at `ccbf1dd`;
 the `file:line`s in this section are the `fn` line at that commit (the sections above are
@@ -2599,7 +2758,8 @@ alone):
 | I4 guard pages never handed out (slabs)  | P    | th. 7 (section 7)      |
 | I4 guard pages never handed out (huge)   | p    | th. 7 (section 7)      |
 | I5 purge never discards live data        | -    | below                  |
-| I6 no cached slot lost at thread exit    | p    | th. 10 (section 10)    |
+| I6 no syscall on the cache fast paths    | P    | th. 8 (section 8)      |
+| I7 no cached slot lost at thread exit    | p    | th. 10 (section 10)    |
 
 - I1, I2: for every result an entry point states `fits` for, with the
   premises and the "not covered" lists of sections 1 and 4.
@@ -2624,7 +2784,11 @@ alone):
   cached". `purge::Batch`'s "ranges are free" (`purge.rs:218`) is a doc
   comment; `Batch::wf` states only bounds. Theorem 6's
   `axiom_discarded_zero` premises lean on the same unproved fact.
-- I6: theorem 10 (`Heap::flush_all`, `heap/mod.rs:3891`): the flush
+- I6: theorem 8 (lines as in section 8). The cache fast paths of rows
+  1, 10, 11 (`free_sized`), 15, 21 (no flags), 23, 24, 26 and 27, and
+  row 2's pop, make no system call; everything else they do is behind a
+  call that requires `may_syscall()`. Other rows may enter the kernel.
+- I7: theorem 10 (`Heap::flush_all`, `heap/mod.rs:3891`): the flush
   `destroy` runs first empties every home and node header and appends
   exactly what they held to the released log, each slot's token handed
   to `release_routed` with it. `destroy` itself is trusted, and section

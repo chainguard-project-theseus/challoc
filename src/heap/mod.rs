@@ -3444,8 +3444,14 @@ impl Heap {
     /// writes the headers through the plain field, so the permissions are
     /// stale afterwards ([`Heap::wf`]); [`Heap::free_caches_in`] is the
     /// form that keeps them.
-    fn free_caches(shared: &Shared, caches: &mut [CacheHeader; NCLASSES]) {
-        for cache in caches.iter_mut() {
+    fn free_caches(shared: &Shared, caches: &mut [CacheHeader; NCLASSES])
+        requires
+            crate::sys::may_syscall(),
+    {
+        for cache in caches.iter_mut()
+            invariant
+                crate::sys::may_syscall(),
+        {
             if cache.cap != 0 {
                 assert_flushed(&cache.len);
                 shared
@@ -3465,6 +3471,7 @@ impl Heap {
     /// whose `free` takes the whole block.
     fn free_caches_in(&mut self, shared: &Shared, node: *mut ArenaCaches)
         requires
+            crate::sys::may_syscall(),
             old(self).wf(),
             node@.addr == 0 || old(self).owns_node(node),
         ensures
@@ -3476,6 +3483,7 @@ impl Heap {
         }
         for class in 0..NCLASSES
             invariant
+                crate::sys::may_syscall(),
                 self.wf(),
                 self.same_shape(*old(self)),
                 node@.addr == 0 || self.owns_node(node),
@@ -3765,6 +3773,7 @@ impl Heap {
     /// permissions ([`Heap::free_caches_in`]).
     fn drop_home_caches(&mut self, shared: &Shared)
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
         ensures
@@ -3871,6 +3880,7 @@ impl Heap {
     /// (whole-allocator theorem 10).
     fn flush_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches)
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
             node@.addr == 0 || old(self).owns_node(node),
@@ -3891,6 +3901,7 @@ impl Heap {
         }
         for class in 0..NCLASSES
             invariant
+                crate::sys::may_syscall(),
                 self.keeps(*old(self)),
                 self.same_shape(*old(self)),
                 node@.addr == 0 || old(self).owns_node(node),
@@ -3988,6 +3999,7 @@ impl Heap {
     /// they reach their bitmap words is read from the verified bodies).
     pub fn flush_all(&mut self, shared: &Shared)
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
         ensures
@@ -4021,6 +4033,7 @@ impl Heap {
         }
         while !o.is_null()
             invariant
+                crate::sys::may_syscall(),
                 shared.wf(),
                 self.keeps(*old(self)),
                 self.same_shape(*old(self)),
@@ -4189,6 +4202,7 @@ impl Heap {
     /// low-water tracking from the current length.
     pub fn gc(&mut self, shared: &Shared)
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
         ensures
@@ -4204,6 +4218,7 @@ impl Heap {
         }
         while !o.is_null()
             invariant
+                crate::sys::may_syscall(),
                 shared.wf(),
                 self.keeps(*old(self)),
                 0 <= r <= self.list_len(),
@@ -4233,6 +4248,7 @@ impl Heap {
     #[allow(clippy::while_let_loop, reason = "the desugared `for`, which Verus needs for `continue`")]
     fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches)
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
             node@.addr == 0 || old(self).owns_node(node),
@@ -4247,6 +4263,7 @@ impl Heap {
         let mut iter = 0..NCLASSES;
         loop
             invariant
+                crate::sys::may_syscall(),
                 iter.end == NCLASSES,
                 iter.start <= NCLASSES,
                 self.keeps(*old(self)),
@@ -4300,6 +4317,7 @@ impl Heap {
     /// permissions ([`Heap::free_caches_in`]).
     pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool)
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
         ensures
@@ -4321,6 +4339,7 @@ impl Heap {
         }
         while !o.is_null()
             invariant
+                crate::sys::may_syscall(),
                 self.wf(),
                 0 <= r <= self.list_len(),
                 r > 0 ==> o == self.node_from_end(r),
@@ -4353,6 +4372,7 @@ impl Heap {
     /// through their permissions ([`Heap::swap_hdrs`]).
     pub fn set_arena(&mut self, shared: &Shared, arena: u16)
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
             (old(self).home() as usize) < crate::arena::MAX_ARENAS,
@@ -4406,6 +4426,7 @@ impl Heap {
     /// `epoch` (`stats.rs`), not here.
     fn tick(&mut self, shared: &Shared)
         requires
+            crate::sys::may_syscall(),
             old(self).wf(),
             shared.wf(),
         ensures
@@ -4592,6 +4613,7 @@ global layout Heap is size == 3712, align == 64;
 #[verifier::external_body]
 unsafe fn init_fields(h: *mut Heap, shared: &Shared, arena: u16, Tracked(head): Tracked<vstd::raw_ptr::PointsToRaw>)
     requires
+        crate::sys::may_syscall(),
         head.is_range(h@.addr as int, 128),
         head.provenance() == h@.provenance,
 {
@@ -4617,6 +4639,8 @@ unsafe fn init_fields(h: *mut Heap, shared: &Shared, arena: u16, Tracked(head): 
 #[inline(always)]
 #[verifier::external_body]
 fn assign_home(shared: &Shared) -> (r: u16)
+    requires
+        crate::sys::may_syscall(),
     ensures
         (r as usize) < crate::arena::MAX_ARENAS,
 {
@@ -4660,6 +4684,7 @@ impl Heap {
     /// slot token (`TlsSlot::creates`), which it otherwise leaves alone.
     fn create(shared: &Shared, Tracked(tls): Tracked<&mut crate::sys::tls::TlsSlot>) -> (r: (*mut Heap, Tracked<CachePerms>))
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
         ensures
             r.0@.addr != 0 ==> r.1@.fresh(r.0),
@@ -4685,6 +4710,7 @@ impl Heap {
     /// heap, the permissions to its caches ([`CachePerms::fresh`]).
     fn create_detached(shared: &Shared, arena: u16) -> (r: (*mut Heap, Tracked<CachePerms>))
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
         ensures
             r.0@.addr != 0 ==> r.1@.fresh(r.0),
@@ -4809,7 +4835,10 @@ impl Heap {
     /// `h` must come from [`Heap::create`] on `shared` and no longer be in
     /// use by any thread.
     #[verifier::external_body]
-    pub unsafe fn destroy(h: *mut Heap, shared: &Shared) {
+    pub unsafe fn destroy(h: *mut Heap, shared: &Shared)
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: the caller gives us exclusive ownership of the heap.
         let heap = unsafe { &mut *h };
         heap.flush_all(shared);

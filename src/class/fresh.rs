@@ -31,6 +31,7 @@ impl ClassState {
     /// the metadata region or a commit is exhausted.
     pub(super) fn next_slab(&self, g: &mut Inner, meta: &Meta) -> (r: Option<usize>)
         requires
+            crate::sys::may_syscall(),
             old(g).inv(),
             old(g).nbits() == self.spec_nslabs(),
             old(g).arena@ == self.arena,
@@ -112,6 +113,7 @@ impl ClassState {
     #[inline(never)]
     pub(super) fn next_fresh_slab(&self, g: &mut Inner, meta: &Meta) -> (r: Option<usize>)
         requires
+            crate::sys::may_syscall(),
             old(g).inv(),
             old(g).nbits() == self.spec_nslabs(),
             old(g).arena@ == self.arena,
@@ -138,6 +140,7 @@ impl ClassState {
         let page = 1usize << table.lg_page;
         loop
             invariant
+                crate::sys::may_syscall(),
                 g.inv(),
                 g.nbits() == self.spec_nslabs(),
                 g.nbits() == old(g).nbits(),

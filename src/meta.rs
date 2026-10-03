@@ -1028,7 +1028,10 @@ const _: () = assert!(PROT_RW == crate::sys::PROT_READ | crate::sys::PROT_WRITE)
 
 verus! {
 
-fn commit_range(addr: usize, len: usize) -> Result<(), Errno> {
+fn commit_range(addr: usize, len: usize) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: the range is inside our own PROT_NONE reservation and nothing
     // is mapped over it; adding permissions cannot invalidate anything.
     unsafe { crate::sys::mprotect(addr, len, PROT_RW) }
@@ -1632,6 +1635,7 @@ impl Inner {
     /// `commit` calls count that table's pages as it uses them).
     fn commit_bump_to(&mut self, end: usize) -> (r: Result<usize, Errno>)
         requires
+            crate::sys::may_syscall(),
             old(self).region_wf(),
             old(self).raw_wf(),
             old(self).base <= end <= old(self).top,
@@ -1700,6 +1704,8 @@ impl Inner {
     /// doc): small enough, and the kernel neither charges writable bytes
     /// against a commit limit nor may back the region with PMD pages.
     fn eager_ok(&mut self, len: usize) -> (r: bool)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r ==> len <= EAGER_MAX,
             *final(self) == (Inner { eager: final(self).eager, ..*old(self) }),
@@ -1724,6 +1730,7 @@ impl Inner {
         Tracked(claim): Tracked<&mut GhostSubmap<int, bool>>,
     ) -> (r: Option<usize>)
         requires
+            crate::sys::may_syscall(),
             old(self).wf(),
             len <= EAGER_MAX,
             is_pow2(align),
@@ -1820,6 +1827,7 @@ impl Inner {
     /// Take an object of bin `bin`, with the permission to its bytes.
     fn alloc(&mut self, bin: usize) -> (res: (*mut u8, Tracked<PointsToRaw>))
         requires
+            crate::sys::may_syscall(),
             old(self).wf(),
             bin < NBINS,
         ensures
@@ -2172,6 +2180,7 @@ impl Inner {
         Tracked(claim): Tracked<&mut GhostSubmap<int, bool>>,
     ) -> (r: Result<(), Errno>)
         requires
+            crate::sys::may_syscall(),
             old(self).wf(),
             addr % old(self).page == 0,
             len % old(self).page == 0,
@@ -2242,6 +2251,7 @@ impl Inner {
     /// [`Meta::reserve_committed`] under the lock.
     fn reserve_committed(&mut self, len: usize, align: usize) -> (r: Option<usize>)
         requires
+            crate::sys::may_syscall(),
             old(self).wf(),
             is_pow2(align),
         ensures
@@ -2346,7 +2356,10 @@ proof fn lemma_free_bytes_zero(lists: Seq<Seq<*mut FreeNode>>, n: nat)
 /// kernel honours `MAP_NORESERVE` (`vm.overcommit_memory` 0 or 1; under 2
 /// every writable page is charged to the commit limit and a forked child
 /// is charged again). Read once, on the first table.
-fn eager_policy() -> bool {
+fn eager_policy() -> bool
+    requires
+        crate::sys::may_syscall(),
+{
     if !crate::thp::is_never() {
         return false;
     }
@@ -2411,6 +2424,7 @@ impl Meta {
     #[inline(always)]
     pub fn alloc(&self, layout: Layout) -> (p: *mut u8)
         requires
+            crate::sys::may_syscall(),
             layout_align(layout) <= MAX_ALIGN,
             layout_size(layout) <= MAX_BINNED,
         ensures
@@ -2424,6 +2438,7 @@ impl Meta {
     /// `layout.size()` bytes.
     pub fn alloc_raw(&self, layout: Layout) -> (r: (*mut u8, Tracked<PointsToRaw>))
         requires
+            crate::sys::may_syscall(),
             layout_align(layout) <= MAX_ALIGN,
             layout_size(layout) <= MAX_BINNED,
         ensures
@@ -2453,6 +2468,7 @@ impl Meta {
     /// (`Inner::fresh_zero`).
     pub fn alloc_zeroed(&self, layout: Layout) -> (r: (*mut u8, Tracked<PointsToRaw>, Tracked<Zeroed>))
         requires
+            crate::sys::may_syscall(),
             layout_align(layout) <= MAX_ALIGN,
             layout_size(layout) <= MAX_BINNED,
         ensures
@@ -2513,6 +2529,7 @@ impl Meta {
     /// thread's stack guard).
     pub fn reserve(&self, len: usize, align: usize) -> (r: Option<usize>)
         requires
+            crate::sys::may_syscall(),
             is_pow2(align),
         ensures
             r matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
@@ -2532,6 +2549,7 @@ impl Meta {
     #[inline(always)]
     pub fn reserve_committed(&self, len: usize, align: usize) -> (r: Option<usize>)
         requires
+            crate::sys::may_syscall(),
             is_pow2(align),
         ensures
             r matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
@@ -2549,6 +2567,7 @@ impl Meta {
     /// inlined into its callers.
     pub fn reserve_committed_raw(&self, len: usize, align: usize) -> (r: (Option<usize>, Tracked<PointsToRaw>, Tracked<Zeroed>))
         requires
+            crate::sys::may_syscall(),
             is_pow2(align),
         ensures
             r.0 matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
@@ -2580,6 +2599,8 @@ impl Meta {
     }
 
     pub fn stats(&self) -> (r: MetaStats)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r.identities(),
     {
@@ -2599,6 +2620,7 @@ impl Meta {
     /// allocator's too: each table is whole pages.
     pub fn reserve_table(&self, len: usize, align: usize) -> (r: Option<usize>)
         requires
+            crate::sys::may_syscall(),
             is_pow2(align),
         ensures
             r matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
@@ -2728,7 +2750,10 @@ impl Meta {
     ///
     /// [`commit_claimed`]: Meta::commit_claimed
     #[verifier::external_body]
-    pub fn commit(&self, addr: usize, len: usize) -> Result<(), Errno> {
+    pub fn commit(&self, addr: usize, len: usize) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         self.commit_claimed(addr, len, Ghost::assume_new(), Tracked::assume_new())
     }
 
@@ -2745,6 +2770,7 @@ impl Meta {
         Tracked(claim): Tracked<GhostSubmap<int, bool>>,
     ) -> Result<(), Errno>
         requires
+            crate::sys::may_syscall(),
             addr % self.page() == 0,
             len % self.page() == 0,
             len > 0,
@@ -2775,7 +2801,10 @@ impl Meta {
     ///
     /// [`free_claimed`]: Meta::free_claimed
     #[verifier::external_body]
-    pub fn free(&self, p: *mut u8, layout: Layout) {
+    pub fn free(&self, p: *mut u8, layout: Layout)
+        requires
+            crate::sys::may_syscall(),
+    {
         self.free_claimed(p, layout, Tracked::assume_new(), Tracked::assume_new())
     }
 
@@ -2790,6 +2819,7 @@ impl Meta {
         Tracked(claim): Tracked<GhostPointsTo<*mut FreeNode, nat>>,
     )
         requires
+            crate::sys::may_syscall(),
             p@.addr != 0,
             layout_size(layout) <= MAX_BINNED,
             raw.is_range(p as usize as int, bin_size(bin_for_spec(layout) as int)),

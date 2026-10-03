@@ -80,6 +80,8 @@ pub fn mallopt(_param: c_int, _value: c_int) -> (r: c_int)
 /// computes them (`stats::fig_add`, `fig_mul`): no verified invariant
 /// bounds the counters.
 pub fn mallinfo2() -> (r: MallInfo2)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r.fordblks <= r.arena,
         r.smblks == 0 && r.usmblks == 0 && r.fsmblks == 0,
@@ -112,7 +114,10 @@ pub fn mallinfo2() -> (r: MallInfo2)
 }
 
 /// `mallinfo()`: [`mallinfo2`] saturated into `int`s.
-pub fn mallinfo() -> MallInfo {
+pub fn mallinfo() -> MallInfo
+    requires
+        crate::sys::may_syscall(),
+{
     let m = mallinfo2();
     let clamp = |v: usize| v.min(c_int::MAX as usize) as c_int;
     MallInfo {
@@ -149,11 +154,17 @@ mod exports {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn mallinfo() -> super::MallInfo {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::mallinfo()
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn mallinfo2() -> super::MallInfo2 {
+        proof {
+            crate::sys::grant_syscalls();
+        }
         super::mallinfo2()
     }
 

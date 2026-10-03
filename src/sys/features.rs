@@ -321,14 +321,20 @@ pub fn page_size() -> (r: usize)
 }
 
 /// Map a fresh private anonymous scratch page with the given protection.
-fn scratch(page: usize, prot: i32) -> Option<usize> {
+fn scratch(page: usize, prot: i32) -> Option<usize>
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: fresh anonymous private mapping, no fixed address.
     unsafe { sys::mmap(0, page, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) }.ok()
 }
 
 /// Release a scratch page. Failure is a heap inconsistency: we just
 /// mapped it, so it is unmapped only if something is very wrong.
-fn release(addr: usize, page: usize) {
+fn release(addr: usize, page: usize)
+    requires
+        crate::sys::may_syscall(),
+{
     broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
     // SAFETY: `addr` is a scratch page nothing else references.
     if let Err(e) = unsafe { sys::munmap(addr, page) } {
@@ -339,7 +345,10 @@ fn release(addr: usize, page: usize) {
 /// `MADV_GUARD_INSTALL` then `MADV_GUARD_REMOVE` on a scratch page. Both
 /// must succeed for the feature to count: a kernel that installs guards
 /// it cannot remove would break slab reuse.
-pub fn probe_guard_install(page: usize) -> bool {
+pub fn probe_guard_install(page: usize) -> bool
+    requires
+        crate::sys::may_syscall(),
+{
     let Some(addr) = scratch(page, PROT_READ | PROT_WRITE) else {
         return false;
     };
@@ -355,7 +364,10 @@ pub fn probe_guard_install(page: usize) -> bool {
 /// `mseal` a `PROT_NONE` scratch page. On success the page can never be
 /// unmapped again, so it is left in place: one VMA, zero resident bytes.
 /// On failure the page is released.
-pub fn probe_mseal(page: usize) -> bool {
+pub fn probe_mseal(page: usize) -> bool
+    requires
+        crate::sys::may_syscall(),
+{
     let Some(addr) = scratch(page, PROT_NONE) else {
         return false;
     };
@@ -376,7 +388,10 @@ const PROBE_NAME: [u8; 14] = [
 ];
 
 /// `PR_SET_VMA_ANON_NAME` on a scratch page.
-pub fn probe_anon_name(page: usize) -> bool {
+pub fn probe_anon_name(page: usize) -> bool
+    requires
+        crate::sys::may_syscall(),
+{
     let Some(addr) = scratch(page, PROT_NONE) else {
         return false;
     };
@@ -392,6 +407,8 @@ impl Features {
     /// calling it again is harmless but leaks a sealed page, so init
     /// stores the result. Pure apart from that page.
     pub fn probe() -> (r: Features)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r.page_size != 0,
             crate::meta::is_pow2(r.page_size),

@@ -276,6 +276,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut super::Live>,
     ) -> (r: (*mut u8, bool))
         requires
+            crate::sys::may_syscall(),
             shared.wf(),
             class < NCLASSES,
             old(self).wf(),
@@ -319,6 +320,7 @@ impl Heap {
     #[inline(never)]
     pub(super) fn free_other(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
         requires
+            crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
             tok.id() == slot_loc(class as int),
             tok@ == p@.addr as int,
@@ -403,6 +405,7 @@ impl Heap {
         create: bool,
     ) -> (r: *mut ArenaCaches)
         requires
+            crate::sys::may_syscall(),
             old(self).wf(),
             shared.wf(),
             create ==> arena != old(self).arena,
@@ -587,6 +590,7 @@ impl Heap {
         class: usize,
     ) -> (r: *mut CacheHeader)
         requires
+            crate::sys::may_syscall(),
             class < NCLASSES,
             old(self).wf(),
             shared.wf(),

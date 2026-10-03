@@ -197,6 +197,7 @@ pub open spec fn tcache_checked(size: usize, flags: c_int) -> bool {
 /// block's token.
 fn alloc_with(shared: &Shared, size: usize, f: &Flags, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, Tracked<Zeroed>))
     requires
+        crate::sys::may_syscall(),
         f.lg_align < 64,
         shared.wf(),
     ensures
@@ -273,6 +274,8 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags, Tracked(blk): Tracked<&mu
 /// `mallocx(size, flags)`. `size == 0` gets the smallest class, as
 /// `malloc(0)` does. The block's token goes to C with it.
 pub fn mallocx(size: usize, flags: c_int) -> (r: *mut u8)
+    requires
+        crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
         r@.addr != 0 ==> usable_is(r, size as int, nalloc_usable(size, (flags as u32) & 0x3f)),
@@ -288,6 +291,8 @@ pub fn mallocx(size: usize, flags: c_int) -> (r: *mut u8)
 /// `size` rounded up to whole pages for a huge run), which is at least
 /// `size`; and `blk` gets the block's token.
 pub fn mallocx_zeroed(size: usize, flags: c_int, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, Tracked<Zeroed>))
+    requires
+        crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r.0, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
         r.0@.addr != 0 && (flags as u32) & MALLOCX_ZERO != 0 ==> r.1@.covers(r.0, size as int),
@@ -310,6 +315,8 @@ pub fn mallocx_zeroed(size: usize, flags: c_int, Tracked(blk): Tracked<&mut Live
 /// token of the block it passes ([`crate::heap::live::axiom_c_claim`]),
 /// and gets the result's.
 pub fn rallocx(p: *mut u8, size: usize, flags: c_int) -> (r: *mut u8)
+    requires
+        crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
         p@.addr != 0 ==> crate::heap::free_target(p),
@@ -336,6 +343,7 @@ pub fn rallocx(p: *mut u8, size: usize, flags: c_int) -> (r: *mut u8)
 pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<Live>, Tracked(out): Tracked<&mut Live>) -> (r: (*mut u8, Ghost<int>, Tracked<Zeroed>))
     requires
         blk.claims(p),
+        crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r.0, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
         p@.addr != 0 ==> crate::heap::free_target(p),
@@ -412,6 +420,8 @@ pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Track
 /// changes a block's class or run in place, so the result is always the
 /// current usable size; a caller that needs more must `rallocx`.
 pub fn xallocx(p: *mut u8, _size: usize, _extra: usize, _flags: c_int) -> (r: usize)
+    requires
+        crate::sys::may_syscall(),
     ensures
         crate::heap::free_target(p),
         usable_of(p, r as int),
@@ -421,6 +431,8 @@ pub fn xallocx(p: *mut u8, _size: usize, _extra: usize, _flags: c_int) -> (r: us
 
 /// `sallocx(p, flags)`: usable size of the live allocation `p`.
 pub fn sallocx(p: *mut u8, _flags: c_int) -> (r: usize)
+    requires
+        crate::sys::may_syscall(),
     ensures
         crate::heap::free_target(p),
         usable_of(p, r as int),
@@ -438,6 +450,8 @@ pub fn sallocx(p: *mut u8, _flags: c_int) -> (r: usize)
 /// holds the token of the block it frees
 /// ([`crate::heap::live::axiom_c_claim`]).
 pub fn dallocx(p: *mut u8, flags: c_int)
+    requires
+        crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
@@ -450,6 +464,7 @@ pub fn dallocx(p: *mut u8, flags: c_int)
 /// the free takes back: the token of the live block `p`.
 pub fn dallocx_block(p: *mut u8, flags: c_int, Tracked(blk): Tracked<Live>)
     requires
+        crate::sys::may_syscall(),
         blk.claims(p),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
@@ -479,6 +494,8 @@ pub fn dallocx_block(p: *mut u8, flags: c_int, Tracked(blk): Tracked<Live>)
 /// sized fast paths behind a test of the hint.
 #[inline(always)]
 pub fn sdallocx(p: *mut u8, size: usize, flags: c_int)
+    requires
+        crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
@@ -493,6 +510,7 @@ pub fn sdallocx(p: *mut u8, size: usize, flags: c_int)
 #[inline(always)]
 pub fn sdallocx_block(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<Live>)
     requires
+        crate::sys::may_syscall(),
         blk.claims(p),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
@@ -524,6 +542,7 @@ pub fn sdallocx_block(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Track
 fn sdallocx_flags(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<Live>)
     requires
         blk.claims(p),
+        crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
@@ -550,6 +569,7 @@ fn sdallocx_flags(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<L
 fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<Live>)
     requires
         blk.claims(p),
+        crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
@@ -580,6 +600,8 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<
 /// `nallocx(size, flags)`: the usable size `mallocx` would give, or 0 when
 /// the request cannot be represented.
 pub fn nallocx(size: usize, flags: c_int) -> (r: usize)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r == 0 || size <= r,
         r == nalloc_usable(size, (flags as u32) & 0x3f),
@@ -614,6 +636,8 @@ pub fn nallocx(size: usize, flags: c_int) -> (r: usize)
 #[cold]
 #[inline(never)]
 pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r == 0 || r == 1,
 {

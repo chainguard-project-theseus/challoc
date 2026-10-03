@@ -57,6 +57,9 @@ pub open spec fn reentry_benign(v: usize) -> bool {
 /// must not be reached through TLS again (the sentinel is what stops
 /// `existing_heap` from handing it out).
 pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
+    proof {
+        crate::sys::grant_syscalls();
+    }
     let h = p as *mut Heap;
     let tracked mut tls = TlsSlot::entry();
     crate::sys::tls::set(addr_to_ptr(TLS_EXITED) as *mut c_void, Tracked(&mut tls));
@@ -82,6 +85,7 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
 #[inline(always)]
 pub fn heap_for_thread(shared: &Shared) -> (r: Option<&mut Heap>)
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
     ensures
         r matches Some(h) ==> h.wf(),
@@ -99,6 +103,7 @@ pub fn heap_for_thread(shared: &Shared) -> (r: Option<&mut Heap>)
 #[inline(always)]
 pub fn heap_for_thread_in<'a>(shared: &'a Shared, Tracked(tls): Tracked<&mut TlsSlot>) -> (r: Option<&'a mut Heap>)
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
     ensures
         r matches Some(h) ==> h.wf(),
@@ -152,6 +157,7 @@ fn tls_value_for(shared: &Shared, h: *mut Heap, Tracked(tls): Tracked<&TlsSlot>)
 #[inline(never)]
 fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(tls): Tracked<&mut TlsSlot>) -> (r: Option<&'a mut Heap>)
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
         slot == old(tls).value(),
     ensures

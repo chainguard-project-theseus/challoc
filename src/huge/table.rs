@@ -449,6 +449,7 @@ impl Table {
     #[allow(clippy::type_complexity)]
     fn storage(meta: &Meta, page: usize, lg_cap: u32) -> (r: Option<(*mut Entry, bool, Tracked<Map<int, PointsTo<Entry>>>)>)
         requires
+            crate::sys::may_syscall(),
             lg_cap <= 58,
             meta::is_pow2(page),
             16 <= page,
@@ -501,6 +502,7 @@ impl Table {
     /// permissions this value still holds are never used again.
     fn release(&self, meta: &Meta)
         requires
+            crate::sys::may_syscall(),
             self.storage_ok(),
     {
         if self.binned {
@@ -575,6 +577,7 @@ impl Table {
 
     pub(super) fn new(meta: &Meta, page: usize) -> (r: Option<Table>)
         requires
+            crate::sys::may_syscall(),
             meta.is_process(),
             meta::is_pow2(page),
             16 <= page,
@@ -1067,6 +1070,7 @@ impl Table {
     /// failure the table is unchanged and still works, only fuller.
     pub(super) fn ensure(&mut self, meta: &Meta, page: usize, extra: usize) -> (r: Result<(), ()>)
         requires
+            crate::sys::may_syscall(),
             old(self).wf(),
             meta.is_process(),
             meta::is_pow2(page),

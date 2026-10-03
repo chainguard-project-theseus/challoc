@@ -596,6 +596,8 @@ verus! {
 
 /// The current figures of one class state (one lock hold).
 pub fn collect_bin(cs: &ClassState) -> (r: BinStats)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r.size == class_table()[cs.spec_class() as int].size,
         r.nregs == class_table()[cs.spec_class() as int].nslots,
@@ -637,6 +639,7 @@ pub(crate) fn arena_at(shared: &Shared, i: usize) -> Option<&Arena> {
 /// counters the caller read (they are folded into arena 0 only).
 fn collect_arena_with(shared: &Shared, arena: &Arena, huge: &HugeStats, meta: &MetaStats) -> (r: ArenaStats)
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
     ensures
         r.pmuzzy == 0,
@@ -644,7 +647,10 @@ fn collect_arena_with(shared: &Shared, arena: &Arena, huge: &HugeStats, meta: &M
     proof { shared.lemma_wf(); }
     let page = shared.regions.page_size();
     let mut a = ArenaStats::empty(arena.index());
-    for c in 0..NCLASSES {
+    for c in 0..NCLASSES
+        invariant
+            crate::sys::may_syscall(),
+    {
         a.bins[c] = collect_bin(arena.class(c));
         let bin = &a.bins[c];
         if c < NBINS {
@@ -696,6 +702,7 @@ fn collect_arena_with(shared: &Shared, arena: &Arena, huge: &HugeStats, meta: &M
 /// The current figures of `arena`, not stored.
 pub fn collect_arena(shared: &Shared, arena: &Arena) -> (r: ArenaStats)
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     collect_arena_with(shared, arena, &shared.huge.stats(), &shared.meta.stats())
@@ -706,6 +713,7 @@ pub fn collect_arena(shared: &Shared, arena: &Arena) -> (r: ArenaStats)
 /// when stored, the current one otherwise).
 fn collect_into(shared: &Shared, store: bool) -> Snapshot
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     let huge = shared.huge.stats();
@@ -715,6 +723,7 @@ fn collect_into(shared: &Shared, store: bool) -> Snapshot
     let n = shared.arenas.count();
     for i in 0..n as usize
         invariant
+            crate::sys::may_syscall(),
             shared.wf(),
             narenas <= i <= n,
     {
@@ -750,6 +759,7 @@ fn collect_into(shared: &Shared, store: bool) -> Snapshot
 /// [`Snapshot`]. Returns the new epoch number.
 pub fn epoch(shared: &Shared) -> u64
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     collect_into(shared, true).epoch
@@ -758,26 +768,35 @@ pub fn epoch(shared: &Shared) -> u64
 /// The current totals without storing them (for `malloc_stats_print`).
 pub fn collect(shared: &Shared) -> Snapshot
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     collect_into(shared, false)
 }
 
 /// The snapshot stored by the last [`epoch`] (all zero before the first).
-pub fn snapshot(shared: &Shared) -> Snapshot {
+pub fn snapshot(shared: &Shared) -> Snapshot
+    requires
+        crate::sys::may_syscall(),
+{
     *shared.stats.lock()
 }
 
 /// The [`ArenaStats`] stored by the last [`epoch`] for arena `index`, or
 /// `None` if the arena does not exist. An arena created since the last
 /// epoch reports zeros.
-pub fn arena_stats(shared: &Shared, index: u16) -> Option<ArenaStats> {
+pub fn arena_stats(shared: &Shared, index: u16) -> Option<ArenaStats>
+    requires
+        crate::sys::may_syscall(),
+{
     Some(shared.arenas.get_existing(index)?.stats())
 }
 
 /// `stats.arenas.4096.*` (`MALLCTL_ARENAS_ALL`): every existing arena's
 /// stored figures summed. Its `index` is 4096.
 pub fn arena_stats_all(shared: &Shared) -> (r: ArenaStats)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r.index == crate::arena::ARENAS_ALL as u16,
 {
@@ -785,6 +804,7 @@ pub fn arena_stats_all(shared: &Shared) -> (r: ArenaStats)
     let n = shared.arenas.count();
     for i in 0..n as usize
         invariant
+            crate::sys::may_syscall(),
             all.index == crate::arena::ARENAS_ALL as u16,
     {
         if let Some(arena) = arena_at(shared, i) {
@@ -798,6 +818,7 @@ pub fn arena_stats_all(shared: &Shared) -> (r: ArenaStats)
 /// `mallinfo` and `malloc_stats`, which glibc defines as live).
 pub fn collect_all(shared: &Shared) -> (r: ArenaStats)
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
     ensures
         r.index == crate::arena::ARENAS_ALL as u16,
@@ -808,6 +829,7 @@ pub fn collect_all(shared: &Shared) -> (r: ArenaStats)
     let n = shared.arenas.count();
     for i in 0..n as usize
         invariant
+            crate::sys::may_syscall(),
             shared.wf(),
             all.index == crate::arena::ARENAS_ALL as u16,
     {

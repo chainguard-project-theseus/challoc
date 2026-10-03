@@ -82,6 +82,43 @@ pub const STDERR_FILENO: i32 = 2;
 
 } // verus!
 
+// ---- theorem 8: which functions may enter the kernel -------------------
+
+verus! {
+
+/// The caller may make a system call (theorem 8 in `verus/THEOREMS.md`).
+/// Every instruction that enters the kernel is inside a function that
+/// requires this: the `raw::syscall0`..`syscall6` seams, and every
+/// trusted body or specification that can reach the kernel (`read`,
+/// `write`, `getrandom`, `seed`, the pthread calls, `Meta::commit`,
+/// `Meta::free`, the report sink's flush, ...; THEOREMS.md lists them).
+/// So a verified function can reach the kernel only if its own `requires`
+/// (or its loop's invariant) carries the fact, or it calls
+/// [`grant_syscalls`], or it holds a `Stderr` (whose type invariant
+/// carries it). The thread-cache fast paths have none of these, so they
+/// make no system call.
+///
+/// Opaque, with no meaning: a capability, not a claim about the world.
+#[verifier::opaque]
+pub open spec fn may_syscall() -> bool {
+    true
+}
+
+/// Grant [`may_syscall`]. Called only at the roots of the allocator's
+/// call graph: the bodies of `extern "C"` functions (the C caller lets the
+/// allocator enter the kernel; outside tests no Rust code calls them) and
+/// of functions that never return (only `abort_fmt`: the abort's write
+/// and `SIGABRT`). `api::tests::syscall_grants_only_at_roots` checks the
+/// source for that.
+pub proof fn grant_syscalls()
+    ensures
+        may_syscall(),
+{
+    reveal(may_syscall);
+}
+
+} // verus!
+
 // ---- pure helpers shared by the probes and the cgroup parsers ----------
 
 verus! {
@@ -396,7 +433,10 @@ mod linux {
         flags: i32,
         fd: i32,
         offset: usize,
-    ) -> Result<usize, Errno> {
+    ) -> Result<usize, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe {
             raw::syscall6(
@@ -416,7 +456,10 @@ mod linux {
     /// # Safety
     /// Nothing may still reference the range.
     #[inline]
-    pub unsafe fn munmap(addr: usize, len: usize) -> Result<(), Errno> {
+    pub unsafe fn munmap(addr: usize, len: usize) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe { raw::syscall2(nr::MUNMAP, addr, len) }).map(|_| ())
     }
@@ -426,7 +469,10 @@ mod linux {
     /// # Safety
     /// Removing permissions from memory in use faults later accesses.
     #[inline]
-    pub unsafe fn mprotect(addr: usize, len: usize, prot: i32) -> Result<(), Errno> {
+    pub unsafe fn mprotect(addr: usize, len: usize, prot: i32) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe { raw::syscall3(nr::MPROTECT, addr, len, prot as isize as usize) })
             .map(|_| ())
@@ -437,7 +483,10 @@ mod linux {
     /// # Safety
     /// `MADV_DONTNEED`/`MADV_FREE` discard contents the caller must not need.
     #[inline]
-    pub unsafe fn madvise(addr: usize, len: usize, advice: i32) -> Result<(), Errno> {
+    pub unsafe fn madvise(addr: usize, len: usize, advice: i32) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe { raw::syscall3(nr::MADVISE, addr, len, advice as isize as usize) })
             .map(|_| ())
@@ -449,7 +498,10 @@ mod linux {
     /// # Safety
     /// Irreversible; the range must never need to change again.
     #[inline]
-    pub unsafe fn mseal(addr: usize, len: usize, flags: usize) -> Result<(), Errno> {
+    pub unsafe fn mseal(addr: usize, len: usize, flags: usize) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe { raw::syscall3(nr::MSEAL, addr, len, flags) }).map(|_| ())
     }
@@ -466,6 +518,7 @@ mod linux {
         name: &'static [u8],
     ) -> Result<(), Errno>
         requires
+            crate::sys::may_syscall(),
             name@.len() > 0,
             name@.last() == 0,
     {
@@ -495,7 +548,10 @@ mod linux {
         arg3: usize,
         arg4: usize,
         arg5: usize,
-    ) -> Result<usize, Errno> {
+    ) -> Result<usize, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe {
             raw::syscall5(nr::PRCTL, option as isize as usize, arg2, arg3, arg4, arg5)
@@ -511,6 +567,8 @@ mod linux {
     #[verifier::external_body]
     #[inline]
     pub fn getrandom(buf: &mut [u8], flags: u32) -> (r: Result<usize, Errno>)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r matches Ok(n) ==> n <= old(buf)@.len(),
             final(buf)@.len() == old(buf)@.len(),
@@ -530,10 +588,14 @@ mod linux {
     /// `EINTR`. Fails only if the kernel refuses outright. May spin as long
     /// as the kernel keeps answering `EINTR`.
     #[verifier::exec_allows_no_decreases_clause]
-    pub fn getrandom_exact(buf: &mut [u8]) -> Result<(), Errno> {
+    pub fn getrandom_exact(buf: &mut [u8]) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         let mut filled = 0;
         while filled < buf.len()
             invariant
+                crate::sys::may_syscall(),
                 filled <= buf@.len(),
                 buf@.len() == old(buf)@.len(),
         {
@@ -559,7 +621,10 @@ mod linux {
         timeout: *const Timespec,
         uaddr2: *const u32,
         val3: u32,
-    ) -> Result<usize, Errno> {
+    ) -> Result<usize, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe {
             raw::syscall6(
@@ -587,7 +652,10 @@ mod linux {
         uaddr: *const u32,
         val: u32,
         timeout: Option<&Timespec>,
-    ) -> Result<(), Errno> {
+    ) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         let ts = timeout.map_or(core::ptr::null(), |t| core::ptr::from_ref(t));
         // SAFETY: forwarded to the caller's contract.
         unsafe {
@@ -609,7 +677,10 @@ mod linux {
     /// # Safety
     /// `uaddr` must be a live, 4-byte-aligned `u32`.
     #[inline]
-    pub unsafe fn futex_wake(uaddr: *const u32, n: u32) -> Result<usize, Errno> {
+    pub unsafe fn futex_wake(uaddr: *const u32, n: u32) -> Result<usize, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: forwarded to the caller's contract.
         unsafe {
             futex(
@@ -625,7 +696,10 @@ mod linux {
 
     /// `clock_gettime(2)`.
     #[inline]
-    pub fn clock_gettime(clock: i32) -> Result<Timespec, Errno> {
+    pub fn clock_gettime(clock: i32) -> Result<Timespec, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         let mut ts = Timespec { sec: 0, nsec: 0 };
         // SAFETY: `ts` is a live, writable `Timespec` matching the kernel ABI.
         decode(unsafe {
@@ -637,7 +711,10 @@ mod linux {
     /// Monotonic coarse clock in nanoseconds; the only clock the allocator
     /// reads on its own behalf (design.md section 11).
     #[inline]
-    pub fn now_coarse_ns() -> u64 {
+    pub fn now_coarse_ns() -> u64
+        requires
+            crate::sys::may_syscall(),
+    {
         match clock_gettime(CLOCK_MONOTONIC_COARSE) {
             Ok(ts) => ts.as_nanos(),
             // COARSE is older than our floor kernel; this is unreachable, but
@@ -652,6 +729,7 @@ mod linux {
     /// NUL-terminated.
     pub fn open(path: &[u8], flags: i32) -> Result<i32, Errno>
         requires
+            crate::sys::may_syscall(),
             path@.len() > 0,
             path@.last() == 0,
     {
@@ -675,6 +753,8 @@ mod linux {
     #[verifier::external_body]
     #[inline]
     pub fn read(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r matches Ok(n) ==> n <= old(buf)@.len(),
             final(buf)@.len() == old(buf)@.len(),
@@ -695,6 +775,8 @@ mod linux {
     /// long as the kernel keeps answering `EINTR`.
     #[verifier::exec_allows_no_decreases_clause]
     pub fn read_full(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r matches Ok(n) ==> n <= old(buf)@.len(),
             final(buf)@.len() == old(buf)@.len(),
@@ -702,6 +784,7 @@ mod linux {
         let mut filled = 0;
         while filled < buf.len()
             invariant
+                crate::sys::may_syscall(),
                 filled <= buf@.len(),
                 buf@.len() == old(buf)@.len(),
         {
@@ -721,6 +804,7 @@ mod linux {
     /// read. A file longer than `buf` is cut at `buf.len()`.
     pub fn read_small_file(path: &[u8], buf: &mut [u8]) -> (r: Option<usize>)
         requires
+            crate::sys::may_syscall(),
             path@.len() > 0,
             path@.last() == 0,
         ensures
@@ -739,6 +823,8 @@ mod linux {
     #[verifier::external_body]
     #[inline]
     pub fn write(fd: i32, buf: &[u8]) -> (r: Result<usize, Errno>)
+        requires
+            crate::sys::may_syscall(),
         ensures
             r matches Ok(n) ==> n <= buf@.len(),
     {
@@ -757,10 +843,14 @@ mod linux {
     /// is swallowed: this is used on the abort path, where there is nothing
     /// better to do. May spin as long as the kernel keeps answering `EINTR`.
     #[verifier::exec_allows_no_decreases_clause]
-    pub fn write_all(fd: i32, buf: &[u8]) {
+    pub fn write_all(fd: i32, buf: &[u8])
+        requires
+            crate::sys::may_syscall(),
+    {
         let mut done = 0;
         while done < buf.len()
             invariant
+                crate::sys::may_syscall(),
                 done <= buf@.len(),
         {
             match write(fd, &buf[done..]) {
@@ -774,7 +864,10 @@ mod linux {
 
     /// `close(2)`.
     #[inline]
-    pub fn close(fd: i32) -> Result<(), Errno> {
+    pub fn close(fd: i32) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: no pointers.
         decode(unsafe { raw::syscall1(nr::CLOSE, fd as isize as usize) }).map(|_| ())
     }
@@ -782,13 +875,19 @@ mod linux {
     // ---- process ---------------------------------------------------------
 
     #[inline]
-    pub fn getpid() -> i32 {
+    pub fn getpid() -> i32
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: no arguments; cannot fail.
         unsafe { raw::syscall0(nr::GETPID) as i32 }
     }
 
     #[inline]
-    pub fn gettid() -> i32 {
+    pub fn gettid() -> i32
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: no arguments; cannot fail.
         unsafe { raw::syscall0(nr::GETTID) as i32 }
     }
@@ -820,6 +919,8 @@ mod linux {
     /// it with `EINVAL`; 8192 CPUs covers every supported kernel. 1 when
     /// the call fails (a seccomp filter, or a wider mask), never 0.
     pub fn ncpus() -> (r: u32)
+        requires
+            crate::sys::may_syscall(),
         ensures
             1 <= r <= 8192,
     {
@@ -856,7 +957,10 @@ mod linux {
     /// `rt_sigprocmask(SIG_BLOCK, all)`: block every blockable signal on the
     /// calling thread and return the mask that was in force before. The
     /// kernel silently leaves `SIGKILL` and `SIGSTOP` unblocked.
-    pub fn block_all_signals() -> u64 {
+    pub fn block_all_signals() -> u64
+        requires
+            crate::sys::may_syscall(),
+    {
         let all: u64 = !0;
         let mut old: u64 = 0;
         // SAFETY: both pointers are live 8-byte sigsets for the whole call.
@@ -877,7 +981,10 @@ mod linux {
 
     /// `rt_sigprocmask(SIG_SETMASK, mask)`: restore a mask saved by
     /// [`block_all_signals`] on the calling thread.
-    pub fn set_signal_mask(mask: u64) {
+    pub fn set_signal_mask(mask: u64)
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: `mask` is a live 8-byte sigset; the old-set pointer is null.
         let r = unsafe {
             raw::syscall4(
@@ -903,7 +1010,10 @@ mod linux {
     }
 
     /// `exit_group(2)`: terminate every thread in the process.
-    pub fn exit_group(status: i32) -> ! {
+    pub fn exit_group(status: i32) -> !
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: no pointers; does not return.
         unsafe {
             raw::syscall1(nr::EXIT_GROUP, status as isize as usize);

@@ -302,6 +302,7 @@ impl Batch {
     /// first if the batch is full.
     pub fn push(&mut self, addr: usize, len: usize)
         requires
+            crate::sys::may_syscall(),
             old(self).wf(),
             addr + len <= usize::MAX,
             old(self).total() + len <= usize::MAX,
@@ -354,6 +355,7 @@ impl Batch {
     /// invariant), which is what makes the discard sound.
     pub fn flush(&mut self)
         requires
+            crate::sys::may_syscall(),
             old(self).wf(),
         ensures
             final(self).wf(),
@@ -504,12 +506,16 @@ fn arena_count(shared: &Shared) -> (n: usize)
 /// Purge every `Empty` slab of every arena and every huge extent
 /// regardless of age, eagerly (`malloc_trim(0)`, the `high`-rise full
 /// purge: the memory is wanted back now). Returns how many were purged.
-pub fn purge_all(shared: &Shared) -> usize {
+pub fn purge_all(shared: &Shared) -> usize
+    requires
+        crate::sys::may_syscall(),
+{
     let _explicit = Explicit::enter();
     let mut n: usize = 0;
     let count = arena_count(shared);
     for i in 0..count
         invariant
+            crate::sys::may_syscall(),
             count <= crate::arena::MAX_ARENAS,
             n <= i * 0x8_0000_0000_0000,
     {
@@ -524,7 +530,10 @@ pub fn purge_all(shared: &Shared) -> usize {
 /// A class or the huge allocator went from no `Empty` slab to one: wake a
 /// background thread that may be sleeping without a deadline.
 #[inline]
-pub fn note_empty() {
+pub fn note_empty()
+    requires
+        crate::sys::may_syscall(),
+{
     background::wake();
 }
 
@@ -532,7 +541,10 @@ pub fn note_empty() {
 /// run time): wake a background thread whose deadline was computed with
 /// the old period, so a shorter period takes effect now rather than at
 /// the next wake-up.
-pub fn note_decay_changed() {
+pub fn note_decay_changed()
+    requires
+        crate::sys::may_syscall(),
+{
     background::wake();
 }
 
@@ -540,7 +552,10 @@ pub fn note_decay_changed() {
 /// nanoseconds) and return the earliest future deadline, `None` when
 /// nothing is `Empty` or decay is off. Lock-free for a class with nothing
 /// due.
-pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
+pub fn decay(shared: &Shared, now: u64) -> Option<u64>
+    requires
+        crate::sys::may_syscall(),
+{
     // Design 11: a `memory.events` `high` rise owes one full purge, run
     // before the walks so they see the survivors (none, normally).
     let policy = &shared.policy;
@@ -552,6 +567,7 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
     let count = arena_count(shared);
     for i in 0..count
         invariant
+            crate::sys::may_syscall(),
             count <= crate::arena::MAX_ARENAS,
     {
         if let Some(arena) = shared.arenas.get_existing(i as u16) {
@@ -581,7 +597,10 @@ fn earliest(next: Option<u64>, d: Option<u64>) -> Option<u64> {
 /// `arena.<i>.purge`: purge every `Empty` slab of one arena regardless of
 /// age (plus, for arena 0, the huge extents, which belong to no single
 /// arena's sets), eagerly. `None` if the arena does not exist.
-pub fn purge_arena(shared: &Shared, index: u16) -> Option<usize> {
+pub fn purge_arena(shared: &Shared, index: u16) -> Option<usize>
+    requires
+        crate::sys::may_syscall(),
+{
     let _explicit = Explicit::enter();
     let arena = shared.arenas.get_existing(index)?;
     let mut n = arena.purge_all();
@@ -596,6 +615,7 @@ pub fn purge_arena(shared: &Shared, index: u16) -> Option<usize> {
 /// thread is doing it.
 pub fn on_tick(shared: &Shared, now: u64)
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     sample(shared, now);
@@ -612,7 +632,10 @@ pub fn on_tick(shared: &Shared, now: u64)
 /// of the coarse clock, and the policy evaluated on the sample that was
 /// taken; nothing at all when the cgroup is untracked or the window has
 /// not passed. Slow paths only (the periodic tick, the background thread).
-fn sample(shared: &Shared, now: u64) {
+fn sample(shared: &Shared, now: u64)
+    requires
+        crate::sys::may_syscall(),
+{
     if shared.cgroup.sample(now) {
         crate::policy::evaluate(shared);
     }
@@ -629,6 +652,7 @@ verus! {
 #[verifier::loop_isolation(false)]
 fn discard(ranges: &[(usize, usize)], advice: Advice)
     requires
+        crate::sys::may_syscall(),
         ranges.len() <= MAX_BATCH,
 {
     broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
