@@ -388,8 +388,9 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
         }
     };
     // Design 6.5: exited threads' heaps parked too long go back to their
-    // slabs first, so the walks below see the slabs they free.
-    fold(shared.expire_parked(now));
+    // slabs first, so the walks below see the slabs they free; all of
+    // them when no background thread runs to expire them later.
+    fold(shared.expire_parked(now, background::present_fenced()));
     for arena in shared.arenas.iter() {
         // Each arena's own period, scaled by the policy's band.
         fold(arena.decay_with(now, policy.effective_decay_ns(arena.decay_ns()), keep16));

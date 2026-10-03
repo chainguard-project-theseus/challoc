@@ -55,6 +55,15 @@ pub fn present() -> bool {
     PRESENT.load(Ordering::Relaxed)
 }
 
+/// [`present`] ordered (`SeqCst`) after a park and before a drain of the
+/// parked heaps (`Heap::retire`, design 6.5): a heap is parked only while
+/// this thread runs to expire it, and the stop below clears `PRESENT`
+/// before it drains the slots.
+#[inline]
+pub fn present_fenced() -> bool {
+    PRESENT.load(Ordering::SeqCst)
+}
+
 #[inline]
 pub fn requested() -> bool {
     REQUESTED.load(Ordering::Relaxed)
@@ -272,9 +281,17 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
         // between the scan and the wait makes the wait return at once.
         let seq = SEQ.load(Ordering::SeqCst);
         if !requested() {
-            let mut g = STATE.lock();
-            g.present = false;
-            PRESENT.store(false, Ordering::Relaxed);
+            {
+                let mut g = STATE.lock();
+                g.present = false;
+                PRESENT.store(false, Ordering::SeqCst);
+            }
+            // Nothing expires a parked heap from here on: return them all
+            // to their slabs (design 6.5). A thread parking concurrently
+            // sees `PRESENT` clear and undoes its own park
+            // (`Heap::retire`). Outside the state lock, the last in the
+            // lock order, since the flushes take class locks.
+            shared.drain_parked();
             return core::ptr::null_mut();
         }
         let now = sys::now_coarse_ns();

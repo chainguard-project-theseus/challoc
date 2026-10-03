@@ -55,13 +55,22 @@
  *                                 challoc_free_usable of it
  *   negative double_free_after_exit malloc and free(p) on a thread that then
  *                                 exits with p cached, and free(p) on main
- *                                 after 300 ms with the background thread
- *                                 on: the exited heap is parked with its
- *                                 caches for at most PARK_TTL_NS (100 ms,
- *                                 design 6.5), then returned to the slabs,
- *                                 so the slot bit is clear again
+ *                                 at once, default configuration: with no
+ *                                 background thread the exit flushes the
+ *                                 heap (design 6.5), so the bit is clear
+ *   negative double_free_after_exit_bg the same with the background thread
+ *                                 on, free(p) after 300 ms: the exited heap
+ *                                 is parked with its caches for at most
+ *                                 PARK_TTL_NS (100 ms), then returned to the
+ *                                 slabs, so the slot bit is clear again
+ *   negative double_free_after_bg_stop the same, but the background thread
+ *                                 is stopped after the exit and free(p)
+ *                                 follows as soon as it is gone: the stop
+ *                                 drains the parked heaps, nothing else
+ *                                 would expire them
  */
 #include "common.h"
+#include <dirent.h>
 #include <stdbool.h>
 
 /* Enough blocks of one class that freeing them all flushes the thread cache
@@ -143,6 +152,38 @@ static void *free_and_exit(void *arg)
     *(uintptr_t *)arg = (uintptr_t)p;
     free(p);
     return NULL;
+}
+
+/* The victim of the double_free_after_* modes: a 64-byte slot freed on a
+ * thread that has exited since, so it was in that thread's home cache. */
+static void *slot_cached_by_exited_thread(void)
+{
+    pthread_t t;
+    uintptr_t p = 0;
+    REQUIRE(pthread_create(&t, NULL, free_and_exit, &p) == 0, "pthread_create");
+    REQUIRE(pthread_join(t, NULL) == 0, "pthread_join");
+    return (void *)p;
+}
+
+static void set_background_thread(bool on)
+{
+    REQUIRE(mallctl != NULL, "mallctl not exported");
+    REQUIRE(mallctl("background_thread", NULL, NULL, &on, sizeof on) == 0,
+            "background_thread");
+}
+
+/* Threads of this process, from /proc/self/task. */
+static int task_count(void)
+{
+    DIR *d = opendir("/proc/self/task");
+    REQUIRE(d != NULL, "opendir /proc/self/task");
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL)
+        if (e->d_name[0] != '.')
+            n++;
+    closedir(d);
+    return n;
 }
 
 static int cmp_ptr(const void *a, const void *b)
@@ -367,19 +408,27 @@ int main(int argc, char **argv)
         size_t u = challoc_free_usable(bad); /* must abort: the run is no longer live */
         printf("free_usable of the freed huge run %p returned %zu\n", bad, u);
     } else if (strcmp(mode, "double_free_after_exit") == 0) {
-        bool on = true;
-        REQUIRE(mallctl != NULL, "mallctl not exported");
-        REQUIRE(mallctl("background_thread", NULL, NULL, &on, sizeof on) == 0,
-                "background_thread");
-        pthread_t t;
-        uintptr_t p = 0;
-        REQUIRE(pthread_create(&t, NULL, free_and_exit, &p) == 0, "pthread_create");
-        REQUIRE(pthread_join(t, NULL) == 0, "pthread_join");
-        bad = (void *)p;
+        bad = slot_cached_by_exited_thread();
+        free(bad); /* must abort: the exit flushed the cache, the bit is clear */
+    } else if (strcmp(mode, "double_free_after_exit_bg") == 0) {
+        set_background_thread(true);
+        bad = slot_cached_by_exited_thread();
         struct timespec ts = {0, 300 * 1000 * 1000};
         while (nanosleep(&ts, &ts) != 0)
             ;
         free(bad); /* must abort: the parked heap expired, the slot bit is clear */
+    } else if (strcmp(mode, "double_free_after_bg_stop") == 0) {
+        set_background_thread(true);
+        REQUIRE(task_count() == 2, "the background thread did not start");
+        bad = slot_cached_by_exited_thread();
+        set_background_thread(false);
+        /* The stopping thread drains the parked heaps, then exits. */
+        for (int i = 0; task_count() > 1; i++) {
+            REQUIRE(i < 10000, "the background thread did not stop");
+            struct timespec ts = {0, 100 * 1000};
+            nanosleep(&ts, NULL);
+        }
+        free(bad); /* must abort: the stop drained the parked heap */
     } else {
         REQUIRE(0, "unknown mode %s", mode);
     }

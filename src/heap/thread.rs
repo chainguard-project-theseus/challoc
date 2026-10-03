@@ -17,8 +17,9 @@ pub const TLS_CREATING: usize = 1;
 pub const TLS_EXITED: usize = 2;
 
 /// Destructor of the thread-exit key: mark the thread as exited, then park
-/// its heap for the next thread homed on its arena (`Heap::park`) or, when
-/// it cannot be parked, flush and free it. The sentinel goes first so that
+/// its heap for the next thread homed on its arena while a background
+/// thread runs to bound the wait or, otherwise, flush and free it
+/// (`Heap::retire`). The sentinel goes first so that
 /// anything allocating on this thread from here on (a signal handler
 /// landing in the middle of `Heap::destroy`, another key's destructor
 /// afterwards) is served without a heap instead of reaching the one being
@@ -36,9 +37,7 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
     // SAFETY: the pointer was registered by `heap_for_thread` for this thread.
     unsafe {
         let shared = &*(*h).shared;
-        if !Heap::park(h, shared) {
-            Heap::destroy(h, shared);
-        }
+        Heap::retire(h, shared);
     }
 }
 

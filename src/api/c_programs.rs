@@ -636,12 +636,16 @@ ctests! {
         negative!("free_usable_huge_twice", SIGABRT, &["double free of 0x", "huge allocation already freed"],
             stdout_lacks: &["returned"]),
     ];
-    /// A stale free of a slot an exited thread left cached: its heap is
-    /// parked for at most `PARK_TTL_NS` (design 6.5), then the background
-    /// thread's decay pass returns the cache to the slabs and the bit test
-    /// catches the free.
+    /// A stale free of a slot an exited thread left cached (design 6.5):
+    /// in the default configuration the exit flushes the heap and the bit
+    /// test catches the free at once; with the background thread the heap
+    /// is parked for at most `PARK_TTL_NS`, then the decay pass returns
+    /// the cache to the slabs; stopping the background thread drains the
+    /// parked heaps.
     c_negative_double_free_after_exit => [
         negative!("double_free_after_exit", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"]),
+        negative!("double_free_after_exit_bg", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"]),
+        negative!("double_free_after_bg_stop", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"]),
     ];
 }
 

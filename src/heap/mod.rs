@@ -273,6 +273,52 @@ impl Heap {
         shared.meta.free(h as *mut u8, Layout::new::<Heap>());
     }
 
+    /// Thread exit (design 6.5): park the heap ([`Heap::park`]) only while
+    /// the background thread runs, the one thing that expires a parked heap
+    /// after [`PARK_TTL_NS`] whatever the program does; otherwise flush and
+    /// free it ([`Heap::destroy`]), so a stale `free` of a slot it had
+    /// cached is caught by the bit test at once. A park that races with the
+    /// background thread stopping is undone here (the stop drains the slots
+    /// it sees, `background::main`): the `SeqCst` park and recheck against
+    /// the `SeqCst` clear and drain mean one side sees the other.
+    ///
+    /// # Safety
+    /// As for [`Heap::destroy`].
+    pub unsafe fn retire(h: *mut Heap, shared: &Shared) {
+        use crate::purge::background;
+        // SAFETY: the caller gives us exclusive ownership of the heap.
+        let (arena, was_bound) = unsafe { ((*h).arena, (*h).bound) };
+        if !background::present_fenced() {
+            // SAFETY: as above.
+            unsafe { Heap::destroy(h, shared) };
+            return;
+        }
+        // SAFETY: as above.
+        if !unsafe { Heap::park(h, shared) } {
+            // A refused park may have released the binding already, with
+            // no exit purge (`release_binding(.., false)`): do it here.
+            // SAFETY: on `false` the heap is still ours.
+            let released = was_bound && !unsafe { (*h).bound };
+            // SAFETY: as above.
+            unsafe { Heap::destroy(h, shared) };
+            if released {
+                Self::exit_purge(shared, arena);
+            }
+            return;
+        }
+        if background::present_fenced() {
+            return;
+        }
+        // The background thread stopped while this heap was parking, and
+        // its drain may have missed it: take back whatever the slot holds.
+        let g = shared.take_parked(arena);
+        if !g.is_null() {
+            // SAFETY: the swap took it out of the slot; ours alone.
+            unsafe { Heap::destroy(g, shared) };
+            Self::exit_purge(shared, arena);
+        }
+    }
+
     /// Thread exit (design 6.5): hand the heap of an exiting thread, with
     /// its home caches as they are, to the next thread homed on the same
     /// automatic arena ([`Heap::create`]) instead of flushing them to the

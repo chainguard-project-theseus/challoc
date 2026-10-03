@@ -460,11 +460,13 @@ impl Shared {
     }
 
     /// Park `h`, homed on `arena`, in the arena's slot. `false` when the
-    /// slot holds a heap already; the caller keeps `h`. Release: the next
-    /// owner reads the caches this thread wrote.
+    /// slot holds a heap already; the caller keeps `h`. Release, so the
+    /// next owner reads the caches this thread wrote; `SeqCst`, so it is
+    /// ordered before `Heap::retire`'s recheck of the background thread
+    /// against the stopping thread's clear and drain.
     pub(super) fn park(&self, arena: u16, h: *mut Heap) -> bool {
         self.parked[arena as usize]
-            .compare_exchange(ptr::null_mut(), h, Ordering::Release, Ordering::Relaxed)
+            .compare_exchange(ptr::null_mut(), h, Ordering::SeqCst, Ordering::Relaxed)
             .is_ok()
     }
 
@@ -472,7 +474,7 @@ impl Shared {
     pub(super) fn take_parked(&self, arena: u16) -> *mut Heap {
         match self.parked.get(arena as usize) {
             Some(slot) if !slot.load(Ordering::Relaxed).is_null() => {
-                slot.swap(ptr::null_mut(), Ordering::Acquire)
+                slot.swap(ptr::null_mut(), Ordering::SeqCst)
             }
             _ => ptr::null_mut(),
         }
@@ -490,12 +492,13 @@ impl Shared {
 
     /// Destroy the parked heaps that have waited [`PARK_TTL_NS`] (design
     /// 6.5: the decay pass, on the background thread or a periodic tick),
-    /// purging an arena no thread is homed on as a thread exit would
-    /// (`Heap::exit_purge`). Returns when the next of the others is due,
-    /// `None` when none waits. Each occupied slot is taken while it is
-    /// looked at and put back when it is not due: a thread homed there in
-    /// that window just starts a fresh heap.
-    pub fn expire_parked(&self, now: u64) -> Option<u64> {
+    /// every parked heap when `bounded` is false (no background thread
+    /// runs to expire the rest later), purging an arena no thread is homed
+    /// on as a thread exit would (`Heap::exit_purge`). Returns when the
+    /// next of the others is due, `None` when none waits. Each occupied
+    /// slot is taken while it is looked at and put back when it is not
+    /// due: a thread homed there in that window just starts a fresh heap.
+    pub fn expire_parked(&self, now: u64, bounded: bool) -> Option<u64> {
         let n = (self.arenas.auto() as usize).min(PARK_SLOTS);
         let mut next: Option<u64> = None;
         for (i, slot) in self.parked[..n].iter().enumerate() {
@@ -509,7 +512,7 @@ impl Shared {
             // SAFETY: the swap took `h` out of its slot, so this call owns
             // it until it is parked again or destroyed.
             unsafe {
-                if !Self::parked_too_long(h, now) {
+                if bounded && !Self::parked_too_long(h, now) {
                     let due = (*h).last_gc.saturating_add(PARK_TTL_NS);
                     if self.park(i as u16, h) {
                         next = Some(next.map_or(due, |d| d.min(due)));
@@ -529,7 +532,9 @@ impl Shared {
     pub fn drain_parked(&self) -> usize {
         let mut n = 0;
         for slot in &self.parked {
-            let h = slot.swap(ptr::null_mut(), Ordering::Acquire);
+            // `SeqCst`: the background thread's stop clears `PRESENT`
+            // before this drain (`Heap::retire`).
+            let h = slot.swap(ptr::null_mut(), Ordering::SeqCst);
             if !h.is_null() {
                 // SAFETY: a parked heap belongs to no thread and the swap
                 // took it out of the slot, so this call owns it.

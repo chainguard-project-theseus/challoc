@@ -652,9 +652,10 @@ that needs more falls back to `rallocx`, as jemalloc's contract allows.
 
 ### 6.5 Thread exit
 
-A `pthread_key` created at init has a destructor that parks the heap or,
-when it cannot, flushes all of the thread's caches and frees the heap
-(`heap/thread.rs`). Parking (`Heap::park`) keeps the heap of a thread
+A `pthread_key` created at init has a destructor that flushes all of the
+thread's caches and frees the heap (`heap/thread.rs`, `Heap::retire`) or,
+only while the background thread (8.1) runs, parks it. Parking
+(`Heap::park`) keeps the heap of a thread
 homed on an automatic arena, home caches and all, in that arena's slot
 (`Shared::parked`, one per arena below `PARK_SLOTS`, 64); the caches of
 other arenas are flushed and the arena binding is released as for a
@@ -665,20 +666,33 @@ recycles threads) skips the exit flush and the next thread's refills: a
 larson1 generation switch cost about 940k instructions against jemalloc's
 425k before (aarch64, C4A). A heap leaving an arena whose slot is taken
 is destroyed. A parked heap waits at most `PARK_TTL_NS` (100 ms):
-the decay pass (the background thread, woken by the park, or the next
-periodic tick) destroys one that has waited that long, purging its arena
-as the exit would when no thread is homed there, and a thread arriving
-later starts fresh (`Shared::expire_parked`). The bound matters for two
-reasons. While parked, the heap's cached slots keep their slot bits set,
-so a stale `free` of one passes the bit test (it is pushed to the freeing
-thread's cache and caught, if at all, at a flush), the same gap a live
-thread's cache has, now extended past the thread's exit by at most the
-TTL; and the cached slots keep their slabs from going `Empty`, so the
-memory would otherwise never decay. The full purge (`malloc_trim`,
-`arena.<all>.purge`, the cgroup `high` purge) destroys every parked heap
-at once (`Shared::drain_parked`). A heap taken over reseeds
-`slot_randomize` (`rng` back to 0): the parked heap is in every forked
-child, which would otherwise continue the same sequence.
+the background thread's decay pass, woken by the park, destroys one that
+has waited that long, purging its arena as the exit would when no thread
+is homed there, and a thread arriving later starts fresh
+(`Shared::expire_parked`). The bound matters for two reasons. While
+parked, the heap's cached slots keep their slot bits set, so a stale
+`free` of one passes the bit test (it is pushed to the freeing thread's
+cache and caught, if at all, at a flush), the same gap a live thread's
+cache has, now extended past the thread's exit by at most the TTL; and
+the cached slots keep their slabs from going `Empty`, so the memory would
+otherwise never decay. That is why parking needs the background thread:
+without it nothing runs on a schedule (the periodic tick needs 64 slow
+paths on one heap), so in an idle or fast-path-only process a parked
+heap would wait, and the gap stay open, for good. The default
+configuration (`background_thread:false`) therefore never parks, and a
+stale `free` after a thread's exit aborts at the call. Stopping the
+background thread clears its presence, then destroys every parked heap; a
+thread parking at that moment rechecks the presence after its `SeqCst`
+park and takes its heap back (`Heap::retire`), so one side always sees
+the other. A periodic tick's decay pass with no background thread
+destroys any parked heap it finds, and a fork child, which has no
+background thread, destroys them in the `atfork` child handler (a heap
+the parent's background thread had taken out of its slot at the fork is
+lost in the child with its cached slots, as other threads' heaps are,
+section 9). The full purge (`malloc_trim`, `arena.<all>.purge`, the
+cgroup `high` purge) destroys every parked heap at once
+(`Shared::drain_parked`). A heap taken over reseeds `slot_randomize`
+(`rng` back to 0), as a fresh heap does.
 `pthread_setspecific` is called once at heap creation, guarded against
 recursion by the `TLS_CREATING` sentinel in the slot; an allocation in
 that window, or after the destructor has set `TLS_EXITED` (another key's
@@ -1306,9 +1320,10 @@ Always on:
 - Size-class isolation in separate randomised regions with unmapped gaps.
 - Invalid-free and stale double-free detection on every plain `free`
   (the sized path defers the bit test to the flush, 6.3). "Stale" means
-  the slot left every cache: a slot still cached, by a live thread or by
-  an exited thread's parked heap for at most 100 ms (6.5), is caught at
-  the flush instead.
+  the slot left every cache: a slot still cached by a live thread, or,
+  only with `background_thread:true`, by an exited thread's parked heap
+  for at most 100 ms (6.5), is caught at the flush instead. In the
+  default configuration a thread's exit flushes its caches.
 - A guard after every huge run (`MADV_GUARD_INSTALL`, else `PROT_NONE`).
 - Abort, never continue, on any inconsistency: a message on stderr via
   `write(2)`, then `abort()` (`sys/abort.rs`).

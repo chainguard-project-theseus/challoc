@@ -404,10 +404,13 @@ extern "C" fn fork_parent() {
 
 /// The child has one thread; the locks were held by the forking thread, so
 /// releasing them is exactly right. Before that, with everything still
-/// locked, the background thread is marked absent (design 8.1).
+/// locked, the background thread is marked absent (design 8.1); after it,
+/// the heaps parked by exited threads go back to their slabs, since no
+/// background thread expires them in the child (design 6.5).
 extern "C" fn fork_child() {
     purge::background::fork_child();
     fork_release();
+    shared().drain_parked();
 }
 
 #[cfg(test)]

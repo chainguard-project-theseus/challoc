@@ -2432,7 +2432,7 @@ fn a_parked_heap_expires_after_the_park_ttl() {
     // SAFETY: parked, untouched by any thread here.
     let at = unsafe { (*w.h).last_gc };
     assert_eq!(
-        s.expire_parked(at + PARK_TTL_NS - 1),
+        s.expire_parked(at + PARK_TTL_NS - 1, true),
         Some(at + PARK_TTL_NS)
     );
     assert_eq!(live_in(s, 1, c), cached, "not due: still parked");
