@@ -1037,40 +1037,47 @@ unsafe fn old_len(oldlenp: *mut usize) -> usize
 
 ### S16. `copy_prefix`
 
-src/api/mallctl.rs:1622. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:1625. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Copy the first `n` bytes of `v` to `oldp`.
 
 ```rust
-unsafe fn copy_prefix<T: Copy>(v: &T, oldp: *mut c_void, n: usize)
+unsafe fn copy_prefix<T: Copy>(v: &T, oldp: *mut c_void, n: usize, Ghost(oldlen): Ghost<usize>)
+    requires
+        n <= size_of::<T>(),
+        n <= oldlen,
 ```
 
 ### S17. `store`
 
-src/api/mallctl.rs:1633. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:1642. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store `v` at `oldp`.
 
 ```rust
-unsafe fn store<T: Copy>(oldp: *mut c_void, v: T)
+unsafe fn store<T: Copy>(oldp: *mut c_void, v: T, Ghost(oldlen): Ghost<usize>)
+    requires
+        oldlen == size_of::<T>(),
 ```
 
 ### S18. `load`
 
-src/api/mallctl.rs:1644. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:1659. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The value at `newp`.
 
 ```rust
-unsafe fn load<T: Copy>(newp: *const c_void) -> T
+unsafe fn load<T: Copy>(newp: *const c_void, Ghost(newlen): Ghost<usize>) -> T
+    requires
+        newlen == size_of::<T>(),
 ```
 
 ### S19. `heap_set_arena`
 
-src/api/mallctl.rs:1771. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:1789. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `h.set_arena(shared, arena)`.
@@ -1084,7 +1091,7 @@ fn heap_set_arena(h: &mut Heap, shared: &Shared, arena: u16)
 
 ### S20. `query_ptr`
 
-src/api/mallctl.rs:1891. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:1909. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Pointer `i` of the caller's `newp` array, whose byte length the caller gave as `newlen`.
@@ -1097,7 +1104,7 @@ unsafe fn query_ptr(ptrs: *const *const c_void, i: usize, Ghost(newlen): Ghost<u
 
 ### S21. `store_triple`
 
-src/api/mallctl.rs:1909. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:1927. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store triple `i`, `(nfree, nregs, size)`, into the caller's `oldp` array, whose byte length the caller gave as `*oldlenp == oldlen`.
@@ -1117,7 +1124,7 @@ unsafe fn store_triple(
 
 ### S22. `mib_cap`
 
-src/api/mallctl.rs:2385. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:2403. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > `*miblenp`.
@@ -1128,20 +1135,21 @@ unsafe fn mib_cap(miblenp: *mut usize) -> usize
 
 ### S23. `mib_out`
 
-src/api/mallctl.rs:2398. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:2417. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Copy `mib[..len]` out to `mibp` and store `len` at `miblenp`.
 
 ```rust
-unsafe fn mib_out(mib: &[usize; MAX_MIB], mibp: *mut usize, miblenp: *mut usize, len: usize)
+unsafe fn mib_out(mib: &[usize; MAX_MIB], mibp: *mut usize, miblenp: *mut usize, len: usize, Ghost(cap): Ghost<usize>)
     requires
         len <= MAX_MIB,
+        len <= cap,
 ```
 
 ### S24. `mib_in`
 
-src/api/mallctl.rs:2441. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:2462. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Copy the caller's `miblen` MIB entries into `local`.
@@ -1244,7 +1252,7 @@ fn register_fork_handlers()
 
 ### S32. `axiom_fork_resumed_state`
 
-src/api/mod.rs:743. Kind: axiom. Category: C-program contract.
+src/api/mod.rs:745. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_holds`] (glibc runs them on the forking thread, after `_Fork`; in the child that thread is the copy of the forking one), and nothing released a lock in between: signals are blocked from the prepare handler's first step, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) do not take an allocator lock.
@@ -1258,13 +1266,15 @@ axiom fn axiom_fork_resumed_state() -> (tracked state: LockHeld)
 
 ### S33. `axiom_fork_resumed`
 
-src/api/mod.rs:752. Kind: axiom. Category: C-program contract.
+src/api/mod.rs:757. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise: see [`axiom_fork_resumed_state`]; the rest of the hold, at the `Shared` the release reads, with the arena count and the arenas `fork_prepare` read (`n` and `arenas` are those reads, which the ensures does not name: the premise is that they are).
 
 ```rust
 axiom fn axiom_fork_resumed(s: &Shared, tracked state: &LockHeld) -> (tracked held: ForkHeld)
+    requires
+        state.held() == purge::background::state_lock(),
     ensures
         fork_holds(*s, held, *state),
 ;
@@ -1272,7 +1282,7 @@ axiom fn axiom_fork_resumed(s: &Shared, tracked state: &LockHeld) -> (tracked he
 
 ### S34. `arena_held`
 
-src/api/mod.rs:767. Kind: external_body. Category: allocator invariant.
+src/api/mod.rs:774. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `s.arenas.get_existing(i as u16)` while `held` holds the creation lock: the arena `fork_prepare` found at `i`.
@@ -1290,7 +1300,7 @@ fn arena_held<'a>(s: &'a Shared, i: usize, Tracked(held): Tracked<&ForkHeld>) ->
 
 ### S35. `count_held`
 
-src/api/mod.rs:783. Kind: external_body. Category: allocator invariant.
+src/api/mod.rs:790. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `s.arenas.count()` while `held` holds the creation lock: the count `fork_prepare` read.
@@ -1306,7 +1316,7 @@ fn count_held(s: &Shared, Tracked(held): Tracked<&ForkHeld>) -> (r: u32)
 
 ### S36. `save_sigmask`
 
-src/api/mod.rs:936. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:943. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > Save the signal mask for `fork_release`.
@@ -1317,7 +1327,7 @@ unsafe fn save_sigmask(mask: u64)
 
 ### S37. `saved_sigmask`
 
-src/api/mod.rs:949. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:956. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The signal mask `fork_prepare` saved.
@@ -1361,7 +1371,7 @@ axiom fn axiom_unlocked() -> (tracked u: Unlocked);
 
 ### S41. `emit`
 
-src/api/print.rs:92. Kind: external_body. Category: FFI/syscall.
+src/api/print.rs:93. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Hand `buf[..len]` to `target`: the report's only calls out of the allocator.
@@ -1370,11 +1380,12 @@ Tool: none (assumption). Status: trusted.
 fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&Unlocked>)
     requires
         crate::sys::may_syscall(),
+        len < 1024,
 ```
 
 ### S42. `opt_byte`
 
-src/api/print.rs:267. Kind: external_body. Category: raw pointer from C caller.
+src/api/print.rs:272. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Byte `i` of the caller's option string.
@@ -1385,7 +1396,7 @@ unsafe fn opt_byte(opts: *const c_char, i: usize) -> u8
 
 ### S43. `word`
 
-src/api/print.rs:312. Kind: external_body. Category: core library.
+src/api/print.rs:317. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/api-print-word.md).
 
 > A configuration value's name (`config::Value::Str`, the `thp` key).
@@ -1396,7 +1407,7 @@ fn word(s: &CStr) -> &str
 
 ### S44. `hist_line`
 
-src/api/print.rs:779. Kind: external_body. Category: function pointer.
+src/api/print.rs:784. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-print-hist_line.md).
 
 > One class's line of [`slab_histogram`].
@@ -1415,7 +1426,7 @@ fn hist_line<W: Write>(
 
 ### S45. `file_target`
 
-src/api/print.rs:1266. Kind: external_body. Category: function pointer.
+src/api/print.rs:1271. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-print-file_target.md).
 
 > `Target::File(stream)`.
@@ -1426,7 +1437,7 @@ fn file_target(stream: *mut libc::FILE) -> Target
 
 ### S46. `stderr_target`
 
-src/api/print.rs:1273. Kind: external_body. Category: function pointer.
+src/api/print.rs:1278. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-print-stderr_target.md).
 
 > `Target::Stderr`.
@@ -2479,7 +2490,7 @@ pub assume_specification[ seed ]() -> u64
 
 ### S114. `axiom_c_claim`
 
-src/heap/live.rs:722. Kind: axiom. Category: C-program contract.
+src/heap/live.rs:724. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The C contract of `free`, `realloc` and the sized frees: only a block's holder frees or reallocates it, and the holder of the block at `p` holds its token, which the allocation that made it handed to C with the block.
@@ -3600,7 +3611,7 @@ unsafe fn pthread_join(t: ::libc::pthread_t) -> i32
 
 ### S194. `spawn`
 
-src/purge/background.rs:338. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:339. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_create` on the committed `[base, base + len)`, joinable so a restart can wait for its exit.
@@ -3610,11 +3621,12 @@ fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t>
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        shared.wf(),
 ```
 
 ### S195. `shared_arg`
 
-src/purge/background.rs:416. Kind: external_body. Category: raw pointer (internal).
+src/purge/background.rs:418. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The `Shared` that [`spawn`] passes as the thread's argument.
@@ -3627,7 +3639,7 @@ fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
 
 ### S196. `main`
 
-src/purge/background.rs:432. Kind: no_decreases. Category: termination.
+src/purge/background.rs:434. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > The thread's body: decay and sample until the request is withdrawn.
@@ -3638,7 +3650,7 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void
 
 ### S197. `state`
 
-src/purge/background.rs:489. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/purge/background.rs:491. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > `&STATE`.

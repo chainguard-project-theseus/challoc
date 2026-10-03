@@ -9,11 +9,15 @@ for Isla (verus/ISLA.md).
 
 ## 1. Contract
 
-Entry S231 of verus/SEAMS.md at d865271 (`src/sys/raw.rs:143`, kind
-external_body, no `requires`, no `ensures`):
+Entry S235 of verus/SEAMS.md at 8635213 (`src/sys/raw.rs:167`, kind
+external_body, one `requires`, the system-call capability of theorem 8
+(`verus/THEOREMS.md`), no `ensures`; at d865271, where the record was
+first checked, the same with no `requires`):
 
 ```rust
 pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
+    requires
+        crate::sys::may_syscall(),
 ```
 
 The body Verus does not see, at d865271:
@@ -50,16 +54,24 @@ and checked by `verus/isla/check.rs` with Z3 4.16.0. Reproduce with
 
 ## 3. Translation
 
-The contract has no `requires` and no `ensures`: Verus assumes only that
+The contract has no `ensures`: Verus assumes only that
 the call returns some `usize` and changes nothing it tracks. The kernel's
 effects (the mapping `mmap` creates, the bytes `read` stores) are the
-contracts of the `sys` wrappers, separate seams (FFI/syscall, tool none).
+contracts of the `sys` wrappers, separate seams (FFI/syscall, tool none),
+or, where a verified wrapper passes the address of a Rust local for the
+kernel to write (`clock_gettime`, `ncpus`, `block_all_signals`), the
+`&mut` borrow that made the address: `ptr::from_mut` and
+`<[T]>::as_mut_ptr` state nothing of their referent afterwards, so Verus
+treats it as overwritten (verus/audit/c-boundary.md).
 What the stub itself must do is the asm block's interface: enter the
 kernel with the syscall number in x8 and the arguments in x0, leave
 every register the block does not declare as an output as it was, and
 resume at the next instruction with the result in x0.
 
-- **No `requires`.** What Isla ran from is EL0 in AArch64 state,
+- **The `requires`.** `may_syscall()` is a capability with no meaning
+  (an opaque `true`): it restricts which verified callers may reach the
+  stub and asks nothing of the machine state, so it neither adds to nor
+  takes from what Isla must show. What Isla ran from is EL0 in AArch64 state,
   Non-secure, with the PC and the vector bases symbolic and these pinned:
   PSTATE.{EL,nRW}, SCR_EL3 = 0x401 (NS, RW), HCR_EL2 = 0 (a kernel at
   EL1) or E2H, TGE and RW (a VHE kernel at EL2), and the configuration's
@@ -114,6 +126,14 @@ architecture of the ledger entry checked, and two soundness holes in
 `check.rs` (an inexpressible write could be read back as the initial
 value; writes through a field accessor were not checked) fixed, with
 negative controls for both. A human review is pending.
+
+On 2026-10-03 the C and kernel boundary audit (verus/audit/c-boundary.md)
+found part 1 quoting the contract of d865271, which the record check of
+`verus/isla/run.sh` (part 1 of its checks) rejected against the ledger
+at 8635213, and revised parts 1 and 3 for the current contract. The asm
+block is unchanged, so the Isla facts stand; `run.sh` has not been
+rerun since (no Isla toolchain in that environment), and the revision
+awaits the same fresh-context and human review as the rest.
 
 ## 5. Tests
 

@@ -7,11 +7,16 @@ as named residual assumptions (part 3).
 
 ## 1. Contract
 
-Entry S238 of verus/SEAMS.md at d865271 (`src/sys/tls.rs:118`, kind
-external_body, no `requires`, no `ensures`):
+Entry S242 of verus/SEAMS.md at 8635213 (`src/sys/tls.rs:182`, kind
+external_body, no `requires`, one `ensures`: the slot value is the ghost
+token's; at d865271, where the record was first checked, the function
+took no token and had no `ensures`):
 
 ```rust
-pub fn get_tp() -> (*mut c_void, usize)
+pub fn get_tp(Tracked(slot): Tracked<&TlsSlot>) -> (r: (*mut c_void, usize))
+    ensures
+        r.0 as usize == slot.value(),
+    opens_invariants none
 ```
 
 The body Verus does not see, at d865271:
@@ -74,7 +79,8 @@ and checked by `verus/isla/check.rs` with Z3 4.16.0. Reproduce with
 
 ## 3. Translation
 
-The contract has no `requires` and no `ensures`: Verus assumes only that
+The contract has no `requires`, and its one `ensures` is about the
+first result (below): Verus assumes that
 the call returns some pair and changes nothing it tracks. What the block
 must do is honour its declared interface: write only its three outputs
 (`off`, `tp`, `out`), write no memory (`readonly`) and in particular
@@ -83,7 +89,8 @@ memory check discharges both), leave the condition flags alone
 (`preserves_flags`), fall through to the next instruction, and not
 fault.
 
-- **No `requires`.** Isla ran from EL0 in AArch64 state, Non-secure,
+- **No `requires`.** (`opens_invariants none` is about ghost
+  invariants, nothing the machine sees.) Isla ran from EL0 in AArch64 state, Non-secure,
   with the PC symbolic, PSTATE.{EL,nRW} and SCR_EL3 = 0x401 pinned,
   HCR_EL2 clear and the configuration's defaults for the rest (the MMU
   off among them; see the gaps), under the assumptions in part 2. The
@@ -102,9 +109,14 @@ fault.
     window, as `axiom_user_va_limit` assumes for `sys::pac`); the slot is
     8-byte aligned because its section is (`.p2align 3`) and the TLS
     layout honours section alignment.
-- **The return value.** Fact 3 shows more than the contract asks: `out`
-  is the 8 bytes of the calling thread's slot and `tp` is TPIDR_EL0, the
-  doc comment's claim. Verus relies on neither (no `ensures`).
+- **The return value.** Fact 3: `out` is the 8 bytes of the calling
+  thread's slot and `tp` is TPIDR_EL0, the doc comment's claim. The
+  `ensures` says `out` is `slot.value()`, the ghost token's value; that
+  the token's value is what the slot holds is not an Isla fact but the
+  premise of the `TlsSlot` model (`src/sys/tls.rs`: a token is not read
+  after the slot changed other than through it), the same premise the
+  trusted `get` and `set` rest on, a named residual here. Nothing is
+  claimed about `tp`.
 - **The interface.** Fact 3's footprint is exactly the declared one:
   writes to A, B, C and the PC only, no memory write, no flag write, a
   fall-through PC. That the compiler binds `off`, `tp` and `out` to the
@@ -145,6 +157,14 @@ two soundness holes in `check.rs` (an inexpressible write could be read
 back as the initial value; writes through a field accessor were not
 checked) fixed, with negative controls for both. A human review is
 pending.
+
+On 2026-10-03 the C and kernel boundary audit (verus/audit/c-boundary.md)
+found part 1 quoting the contract of d865271, which the record check of
+`verus/isla/run.sh` (part 1 of its checks) rejected against the ledger
+at 8635213, and revised parts 1 and 3 for the current contract. The asm
+block is unchanged, so the Isla facts stand; `run.sh` has not been
+rerun since (no Isla toolchain in that environment), and the revision
+awaits the same fresh-context and human review as the rest.
 
 ## 5. Tests
 

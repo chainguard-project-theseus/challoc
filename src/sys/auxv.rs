@@ -6,9 +6,9 @@
 //! from the vector the kernel put on the initial stack, saved at startup:
 //! no syscall, no allocation, safe from within `malloc`, which is how
 //! glibc's own malloc learns the page size (`GLRO(dl_pagesize)`). The
-//! readers are `sys::features` (`AT_PAGESZ`) and `sys::pac` (`AT_HWCAP`);
-//! `config.rs` declares its own `getauxval` for `AT_SECURE` and keeps that
-//! constant beside it.
+//! readers are `sys::features` (`AT_PAGESZ`), `sys::pac` (`AT_HWCAP`) and
+//! `config::load` (`AT_SECURE`), all through the one declaration and
+//! specification below.
 
 use vstd::prelude::*;
 

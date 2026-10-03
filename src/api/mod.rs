@@ -739,7 +739,9 @@ pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: LockHeld) -
 /// the `&Shared` the release reads (the same object: `shared` returns
 /// the one static). Each handler calls them once, which nothing
 /// enforces: a second call would hand out a second token for a held
-/// lock, so no lemma may claim that two tokens of one lock are apart.
+/// lock, so no lemma may claim that two tokens of one lock are apart,
+/// and two tokens would also let `Lock::get_unlocked` hand out two
+/// `&mut` to one value, which Verus would take as independent.
 axiom fn axiom_fork_resumed_state() -> (tracked state: LockHeld)
     ensures
         state.held() == purge::background::state_lock(),
@@ -748,8 +750,13 @@ axiom fn axiom_fork_resumed_state() -> (tracked state: LockHeld)
 /// Premise: see [`axiom_fork_resumed_state`]; the rest of the hold, at
 /// the `Shared` the release reads, with the arena count and the arenas
 /// `fork_prepare` read (`n` and `arenas` are those reads, which the
-/// ensures does not name: the premise is that they are).
+/// ensures does not name: the premise is that they are). `state` must be
+/// the state lock's token: a fact about a token the caller already has is
+/// a requirement, never a conclusion (ensured, it let a token of any other
+/// lock prove `false`).
 axiom fn axiom_fork_resumed(s: &Shared, tracked state: &LockHeld) -> (tracked held: ForkHeld)
+    requires
+        state.held() == purge::background::state_lock(),
     ensures
         fork_holds(*s, held, *state),
 ;

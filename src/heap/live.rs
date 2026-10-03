@@ -711,8 +711,10 @@ pub proof fn lemma_run_interior(a: usize, len: int, b: usize)
 /// `free_sized_hint`, `realloc`, `realloc_usable`, `free_usable`,
 /// `jemalloc::rallocx`, `dallocx`, `sdallocx`; the C++ `delete`s go
 /// through the `libc` ones) calls it once, for the pointer C passed, and
-/// passes the token to the verified core. It needs no well-formed
-/// regions: some token claims any pointer. The axiom is only as sound as
+/// passes the token to the verified core (as does, once per branch, the
+/// verification-only `libc::theorem_no_syscall_on_fast_paths`). It needs
+/// no well-formed regions: some token claims any pointer. The axiom is
+/// only as sound as
 /// the contract: a pointer freed twice, or one never allocated that
 /// happens to be a slot or huge page start, has no token in C's hands,
 /// and two tokens of one slot or overlapping runs let a proof derive

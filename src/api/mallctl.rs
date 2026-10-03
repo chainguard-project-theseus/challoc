@@ -1613,35 +1613,53 @@ unsafe fn old_len(oldlenp: *mut usize) -> usize {
 }
 
 /// Copy the first `n` bytes of `v` to `oldp`. Trusted: a raw copy into
-/// the caller's buffer.
+/// the caller's buffer, whose byte length the caller gave as
+/// `*oldlenp == oldlen`. The precondition keeps the copy inside `v` and
+/// inside those `oldlen` bytes (that `oldp` holds `*oldlenp` bytes is the
+/// `mallctl` caller's contract).
 ///
 /// # Safety
-/// `oldp` holds `*oldlenp >= n` writable bytes.
+/// `oldp` holds `oldlen` writable bytes.
 #[verifier::external_body]
 #[inline(always)]
-unsafe fn copy_prefix<T: Copy>(v: &T, oldp: *mut c_void, n: usize) {
+unsafe fn copy_prefix<T: Copy>(v: &T, oldp: *mut c_void, n: usize, Ghost(oldlen): Ghost<usize>)
+    requires
+        n <= size_of::<T>(),
+        n <= oldlen,
+{
     // SAFETY: guaranteed by the caller.
     unsafe { ptr::copy_nonoverlapping(v as *const T as *const u8, oldp as *mut u8, n) };
 }
 
-/// Store `v` at `oldp`. Trusted: a raw unaligned write.
+/// Store `v` at `oldp`. Trusted: a raw unaligned write of the
+/// `size_of::<T>()` bytes the precondition says `*oldlenp == oldlen`
+/// gives (the `mallctl` caller's contract).
 ///
 /// # Safety
-/// `oldp` holds `*oldlenp == size_of::<T>()` writable bytes.
+/// `oldp` holds `oldlen` writable bytes.
 #[verifier::external_body]
 #[inline(always)]
-unsafe fn store<T: Copy>(oldp: *mut c_void, v: T) {
+unsafe fn store<T: Copy>(oldp: *mut c_void, v: T, Ghost(oldlen): Ghost<usize>)
+    requires
+        oldlen == size_of::<T>(),
+{
     // SAFETY: guaranteed by the caller.
     unsafe { ptr::write_unaligned(oldp as *mut T, v) };
 }
 
-/// The value at `newp`. Trusted: a raw unaligned read.
+/// The value at `newp`. Trusted: a raw unaligned read of the
+/// `size_of::<T>()` bytes the precondition says `newlen` gives (the
+/// `mallctl` caller's contract). Every `T` it is used at (integers and
+/// raw pointers) is valid for any bytes.
 ///
 /// # Safety
-/// `newp` holds `newlen == size_of::<T>()` readable bytes.
+/// `newp` holds `newlen` readable bytes.
 #[verifier::external_body]
 #[inline(always)]
-unsafe fn load<T: Copy>(newp: *const c_void) -> T {
+unsafe fn load<T: Copy>(newp: *const c_void, Ghost(newlen): Ghost<usize>) -> T
+    requires
+        newlen == size_of::<T>(),
+{
     // SAFETY: guaranteed by the caller.
     unsafe { ptr::read_unaligned(newp as *const T) }
 }
@@ -1663,10 +1681,10 @@ impl Io {
         unsafe {
             let have = old_len(self.oldlenp);
             if have != want {
-                copy_prefix(&v, self.oldp, have.min(want));
+                copy_prefix(&v, self.oldp, have.min(want), Ghost(have));
                 return Err(EINVAL);
             }
-            store(self.oldp, v);
+            store(self.oldp, v, Ghost(have));
         }
         Ok(())
     }
@@ -1685,7 +1703,7 @@ impl Io {
             return Err(EINVAL);
         }
         // SAFETY: `newlen == size_of::<T>()` readable bytes at `newp`.
-        Ok(Some(unsafe { load(self.newp) }))
+        Ok(Some(unsafe { load(self.newp, Ghost(self.newlen)) }))
     }
 
     /// A C `bool`: any non-zero byte is true.
@@ -2388,16 +2406,18 @@ unsafe fn mib_cap(miblenp: *mut usize) -> usize {
 }
 
 /// Copy `mib[..len]` out to `mibp` and store `len` at `miblenp`. Trusted:
-/// raw writes.
+/// raw writes, of `len` words the precondition puts inside the capacity
+/// `*miblenp == cap` the caller gave.
 ///
 /// # Safety
-/// `mibp` holds `*miblenp >= len` writable `size_t`s; `miblenp` is the
-/// caller's non-null capacity pointer.
+/// `mibp` holds `cap` writable `size_t`s; `miblenp` is the caller's
+/// non-null capacity pointer.
 #[verifier::external_body]
 #[inline(always)]
-unsafe fn mib_out(mib: &[usize; MAX_MIB], mibp: *mut usize, miblenp: *mut usize, len: usize)
+unsafe fn mib_out(mib: &[usize; MAX_MIB], mibp: *mut usize, miblenp: *mut usize, len: usize, Ghost(cap): Ghost<usize>)
     requires
         len <= MAX_MIB,
+        len <= cap,
 {
     // SAFETY: guaranteed by the caller.
     unsafe {
@@ -2423,10 +2443,11 @@ pub fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usi
     // SAFETY: the caller's capacity pointer and an array of that many
     // `size_t`.
     unsafe {
-        if mib_cap(miblenp) < len {
+        let cap = mib_cap(miblenp);
+        if cap < len {
             return EINVAL;
         }
-        mib_out(&mib, mibp, miblenp, len);
+        mib_out(&mib, mibp, miblenp, len, Ghost(cap));
     }
     0
 }

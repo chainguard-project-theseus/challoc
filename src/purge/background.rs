@@ -333,12 +333,14 @@ fn create(
 /// thread inherits an empty mask and never runs an application handler.
 ///
 /// Trusted: raw pthread calls, and the thread's entry is a function
-/// pointer.
+/// pointer. `shared` is well formed: the thread's [`shared_arg`] ensures
+/// it of the pointer passed here.
 #[verifier::external_body]
 fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t>
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        shared.wf(),
 {
     // SAFETY: plain pthread attribute calls on a local; the stack is
     // ours and committed.

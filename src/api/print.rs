@@ -86,12 +86,14 @@ axiom fn axiom_unlocked() -> (tracked u: Unlocked);
 /// the `malloc_message` path ([`malloc_write`]: the hook, or `write(2)` to
 /// stderr), `fwrite` or `write(2)`; claims nothing. The permit `u` says
 /// that the calling thread holds no allocator lock, so a callee that
-/// allocates cannot deadlock on one.
+/// allocates cannot deadlock on one. `len < 1024`: the body stores the
+/// NUL at `buf[len]` and hands on `len` bytes of `buf`.
 #[verifier::external_body]
 #[inline(always)]
 fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&Unlocked>)
     requires
         crate::sys::may_syscall(),
+        len < 1024,
 {
     match *target {
         Target::Callback(Some(cb), opaque) => {
@@ -144,7 +146,9 @@ impl Sink {
     }
 
     /// Hand the buffered bytes to the target ([`emit`], under the
-    /// report's permit) and empty the buffer.
+    /// report's permit) and empty the buffer. `write_str` keeps `len`
+    /// at most 1023, outside `verus!` (no type invariant can say it, see
+    /// there), so the bound is checked.
     fn flush(&mut self)
         requires
             crate::sys::may_syscall(),
@@ -152,6 +156,7 @@ impl Sink {
         if self.len == 0 {
             return;
         }
+        crate::vspec::check::check(self.len < 1024, "report buffer overrun");
         emit(&self.target, &mut self.buf, self.len, Tracked(self.permit.borrow()));
         self.len = 0;
     }
