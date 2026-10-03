@@ -1,15 +1,19 @@
 # `Arena::axiom_array_layout`
 
-Seam S47 of `verus/SEAMS.md`: src/arena.rs:305. Kind: axiom. Category: core library.
+Seam S47 of `verus/SEAMS.md`: src/arena.rs:309. Kind: axiom. Category: core library.
 Discharged by Kani.
 
 ## Contract
 
-At commit 7d4e997 (checked again there; the record was written at
+As changed by the library-and-control seam audit on base 8635213
+(`verus/audit/library-control.md`; Kani rerun pending), from the
+contract checked at commit 7d4e997 (the record was written at
 ae82d5b):
 
 ```rust
 pub(crate) axiom fn axiom_array_layout<T, const N: usize>()
+    requires
+        N * size_of::<T>() <= isize::MAX,
     ensures
         size_of::<[T; N]>() == N * size_of::<T>(),
         align_of::<[T; N]>() == align_of::<T>(),
@@ -33,7 +37,8 @@ Reproduce: `sh verus/kani/run.sh --harness arena::kani_layout::array_layout_inst
 
 ## Translation
 
-- An axiom: no `requires`.
+- `requires N * size_of::<T>() <= isize::MAX`: every checked instance
+  meets it (the array exists); the harness need not assume it.
 - `ensures size_of::<[T; N]>() == N * size_of::<T>()` and
   `align_of::<[T; N]>() == align_of::<T>()`: the two assertions of
   `array_layout::<T, N>`.
@@ -42,7 +47,12 @@ Reproduce: `sh verus/kani/run.sh --harness arena::kani_layout::array_layout_inst
   `grep -rn split_array src`) and a spread of others. For all `T` and
   `N` it is the Rust reference's statement of array layout (an array
   is `N` elements laid out with stride `size_of::<T>()`, which is a
-  multiple of the alignment).
+  multiple of the alignment) for every array that has a layout, which
+  the `requires` names: an array of more than `isize::MAX` bytes has
+  none, and without the `requires` the axiom proved `false` with vstd's
+  `layout_for_type_is_valid` at `[u64; usize::MAX]`. The three callers'
+  instances get the bound from `axiom_arena_layout` and
+  `axiom_shared_layout`.
 - Gap: the instances are checked for x86_64 only (no build-time
   assertion checks array layout); aarch64 lays arrays out by the same
   rule. `verus/kani/run.sh` runs the harnesses under both quanta,

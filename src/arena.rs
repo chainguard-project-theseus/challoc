@@ -301,8 +301,14 @@ pub(crate) proof fn take_field<S, T>(tracked raw: PointsToRaw, base: *mut S, off
 
 /// An array of `N` `T`s is `N` `T`s back to back, aligned as one: the
 /// size and alignment the Rust reference gives arrays. Trusted (vstd
-/// states no array layout).
+/// states no array layout). Only for an array whose elements fit in an
+/// `isize`: a longer one has no layout (rustc rejects it as too big), yet
+/// Verus still names its `size_of`, which vstd bounds by `isize::MAX`
+/// (`layout_for_type_is_valid`), so without the `requires` the axiom at
+/// `[u64; usize::MAX]` proves `false` (`verus/audit/library-control.md`).
 pub(crate) axiom fn axiom_array_layout<T, const N: usize>()
+    requires
+        N * size_of::<T>() <= isize::MAX,
     ensures
         size_of::<[T; N]>() == N * size_of::<T>(),
         align_of::<[T; N]>() == align_of::<T>(),
@@ -379,7 +385,7 @@ pub(crate) proof fn split_array<T, const N: usize>(tracked a: PointsTo<[T; N]>) 
     requires
         a.is_uninit(),
         a.ptr()@.addr + size_of::<[T; N]>() <= usize::MAX,
-        size_of::<[T; N]>() <= isize::MAX,
+        N * size_of::<T>() <= isize::MAX,
     ensures
         elems_at(m, a.ptr() as *mut T, 0, N as int),
         elems_uninit(m, 0, N as int),
@@ -451,6 +457,7 @@ axiom fn axiom_arena_layout()
         field_fits::<Arena, *const SetTable>(A_SETS, A_SETS_PERM as int),
         field_fits::<Arena, Tracked<PointsTo<SetTable>>>(A_SETS_PERM, A_CLASSES as int),
         field_fits::<Arena, [ClassState; NCLASSES]>(A_CLASSES, A_LARGE as int),
+        NCLASSES * size_of::<ClassState>() <= isize::MAX,
         field_fits::<Arena, AtomicU64>(A_LARGE, A_STATS as int),
         // Over several lines: `api`'s lock inventory test reads a line
         // `name: ...Lock<...>` as a lock field.
@@ -480,6 +487,7 @@ const _: () = assert!(
         && fits::<Arena, *const SetTable>(A_SETS, A_SETS_PERM)
         && fits::<Arena, Tracked<PointsTo<SetTable>>>(A_SETS_PERM, A_CLASSES)
         && fits::<Arena, [ClassState; NCLASSES]>(A_CLASSES, A_LARGE)
+        && NCLASSES as u128 * core::mem::size_of::<ClassState>() as u128 <= isize::MAX as u128
         && fits::<Arena, AtomicU64>(A_LARGE, A_STATS)
         && fits::<Arena, Lock<ArenaStats>>(A_STATS, A_LAST_EXIT_PURGE)
         && fits::<Arena, AtomicU64>(A_LAST_EXIT_PURGE, core::mem::size_of::<Arena>())
@@ -1573,6 +1581,7 @@ pub(crate) mod kani_layout {
         assert!(field_fits::<Arena, [ClassState; NCLASSES]>(
             A_CLASSES, A_LARGE
         ));
+        assert!(NCLASSES as u128 * size_of::<ClassState>() as u128 <= isize::MAX as u128);
         assert!(field_fits::<Arena, AtomicU64>(A_LARGE, A_STATS));
         assert!(field_fits::<Arena, Lock<ArenaStats>>(
             A_STATS,

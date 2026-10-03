@@ -585,6 +585,8 @@ axiom fn axiom_shared_layout()
         field_fits::<Shared, Regions>(S_REGIONS, S_GUARD_TEST as int),
         field_fits::<Shared, [GuardTest; NCLASSES]>(S_GUARD_TEST, S_TABLES as int),
         field_fits::<Shared, [SlabTable; NCLASSES]>(S_TABLES, S_ARENA0 as int),
+        NCLASSES * size_of::<GuardTest>() <= isize::MAX,
+        NCLASSES * size_of::<SlabTable>() <= isize::MAX,
         field_fits::<Shared, Arena>(S_ARENA0, S_META as int),
         field_fits::<Shared, Meta>(S_META, S_HUGE as int),
         field_fits::<Shared, Huge>(S_HUGE, S_GC_INTERVAL_NS as int),
@@ -612,6 +614,8 @@ const _: () = assert!(
         && fits::<Shared, Regions>(S_REGIONS, S_GUARD_TEST)
         && fits::<Shared, [GuardTest; NCLASSES]>(S_GUARD_TEST, S_TABLES)
         && fits::<Shared, [SlabTable; NCLASSES]>(S_TABLES, S_ARENA0)
+        && NCLASSES as u128 * core::mem::size_of::<GuardTest>() as u128 <= isize::MAX as u128
+        && NCLASSES as u128 * core::mem::size_of::<SlabTable>() as u128 <= isize::MAX as u128
         && fits::<Shared, Arena>(S_ARENA0, S_META)
         && fits::<Shared, Meta>(S_META, S_HUGE)
         && fits::<Shared, Huge>(S_HUGE, S_GC_INTERVAL_NS)
@@ -2569,6 +2573,8 @@ mod kani_layout {
         assert!(field_fits::<Shared, [SlabTable; NCLASSES]>(
             S_TABLES, S_ARENA0
         ));
+        assert!(NCLASSES as u128 * size_of::<GuardTest>() as u128 <= isize::MAX as u128);
+        assert!(NCLASSES as u128 * size_of::<SlabTable>() as u128 <= isize::MAX as u128);
         assert!(field_fits::<Shared, Arena>(S_ARENA0, S_META));
         assert!(field_fits::<Shared, Meta>(S_META, S_HUGE));
         assert!(field_fits::<Shared, Huge>(S_HUGE, S_GC_INTERVAL_NS));

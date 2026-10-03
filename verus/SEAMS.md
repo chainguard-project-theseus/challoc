@@ -1437,13 +1437,15 @@ fn stderr_target() -> Target
 
 ### S47. `Arena::axiom_array_layout`
 
-src/arena.rs:305. Kind: axiom. Category: core library.
+src/arena.rs:309. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-Arena-axiom_array_layout.md).
 
 > An array of `N` `T`s is `N` `T`s back to back, aligned as one: the size and alignment the Rust reference gives arrays.
 
 ```rust
 pub(crate) axiom fn axiom_array_layout<T, const N: usize>()
+    requires
+        N * size_of::<T>() <= isize::MAX,
     ensures
         size_of::<[T; N]>() == N * size_of::<T>(),
         align_of::<[T; N]>() == align_of::<T>(),
@@ -1452,7 +1454,7 @@ pub(crate) axiom fn axiom_array_layout<T, const N: usize>()
 
 ### S48. `Arena::axiom_array_join`
 
-src/arena.rs:405. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:411. Kind: axiom. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The initialised elements of an array, as the array: the value whose element `i` each holds.
@@ -1475,7 +1477,7 @@ pub(crate) axiom fn axiom_array_join<T, const N: usize>(base: *mut [T; N], track
 
 ### S49. `A_INDEX`
 
-src/arena.rs:427. Kind: external_body const. Category: core library.
+src/arena.rs:433. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_INDEX.md).
 
 ```rust
@@ -1484,7 +1486,7 @@ const A_INDEX: usize = core::mem::offset_of!(Arena, index);
 
 ### S50. `A_DECAY_NS`
 
-src/arena.rs:429. Kind: external_body const. Category: core library.
+src/arena.rs:435. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_DECAY_NS.md).
 
 ```rust
@@ -1493,7 +1495,7 @@ const A_DECAY_NS: usize = core::mem::offset_of!(Arena, decay_ns);
 
 ### S51. `A_SETS`
 
-src/arena.rs:431. Kind: external_body const. Category: core library.
+src/arena.rs:437. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_SETS.md).
 
 ```rust
@@ -1502,7 +1504,7 @@ const A_SETS: usize = core::mem::offset_of!(Arena, sets);
 
 ### S52. `A_SETS_PERM`
 
-src/arena.rs:433. Kind: external_body const. Category: core library.
+src/arena.rs:439. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_SETS_PERM.md).
 
 ```rust
@@ -1511,7 +1513,7 @@ const A_SETS_PERM: usize = core::mem::offset_of!(Arena, sets_perm);
 
 ### S53. `A_CLASSES`
 
-src/arena.rs:435. Kind: external_body const. Category: core library.
+src/arena.rs:441. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_CLASSES.md).
 
 ```rust
@@ -1520,7 +1522,7 @@ const A_CLASSES: usize = core::mem::offset_of!(Arena, classes);
 
 ### S54. `A_LARGE`
 
-src/arena.rs:437. Kind: external_body const. Category: core library.
+src/arena.rs:443. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_LARGE.md).
 
 ```rust
@@ -1529,7 +1531,7 @@ const A_LARGE: usize = core::mem::offset_of!(Arena, large);
 
 ### S55. `A_STATS`
 
-src/arena.rs:439. Kind: external_body const. Category: core library.
+src/arena.rs:445. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_STATS.md).
 
 ```rust
@@ -1538,7 +1540,7 @@ const A_STATS: usize = core::mem::offset_of!(Arena, stats);
 
 ### S56. `A_LAST_EXIT_PURGE`
 
-src/arena.rs:441. Kind: external_body const. Category: core library.
+src/arena.rs:447. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_LAST_EXIT_PURGE.md).
 
 ```rust
@@ -1547,7 +1549,7 @@ const A_LAST_EXIT_PURGE: usize = core::mem::offset_of!(Arena, last_exit_purge);
 
 ### S57. `axiom_arena_layout`
 
-src/arena.rs:447. Kind: axiom. Category: core library.
+src/arena.rs:453. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-axiom_arena_layout.md).
 
 > `Arena`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last by the size.
@@ -1560,6 +1562,7 @@ axiom fn axiom_arena_layout()
         field_fits::<Arena, *const SetTable>(A_SETS, A_SETS_PERM as int),
         field_fits::<Arena, Tracked<PointsTo<SetTable>>>(A_SETS_PERM, A_CLASSES as int),
         field_fits::<Arena, [ClassState; NCLASSES]>(A_CLASSES, A_LARGE as int),
+        NCLASSES * size_of::<ClassState>() <= isize::MAX,
         field_fits::<Arena, AtomicU64>(A_LARGE, A_STATS as int),
         // Over several lines: `api`'s lock inventory test reads a line
         // `name: ...Lock<...>` as a lock field.
@@ -1574,7 +1577,7 @@ axiom fn axiom_arena_layout()
 
 ### S58. `axiom_arena_assemble`
 
-src/arena.rs:607. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:615. Kind: axiom. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The written fields of the `Arena` at `p` (`Arena::split`'s parts and class states, every one initialised), as the `Arena`: the value of each field is what its permission holds.
@@ -1613,7 +1616,7 @@ axiom fn axiom_arena_assemble(tracked parts: ArenaParts, tracked classes: Map<in
 
 ### S59. `Arenas::init`
 
-src/arena.rs:1208. Kind: external_body. Category: atomics primitive.
+src/arena.rs:1216. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Initialise `this` in place with `arena0` at index 0 and `narenas` automatic indices (clamped to `1..=MAX_ARENAS`), through the permission to its storage in `slot`, handed back initialised.
@@ -1628,7 +1631,7 @@ pub unsafe fn init(this: *mut Arenas, arena0: *mut Arena, narenas: u32, Tracked(
 
 ### S60. `arena_at`
 
-src/arena.rs:1264. Kind: external_body. Category: raw pointer (internal).
+src/arena.rs:1272. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The arena a non-null registry entry points at.
@@ -3003,6 +3006,8 @@ axiom fn axiom_shared_layout()
         field_fits::<Shared, Regions>(S_REGIONS, S_GUARD_TEST as int),
         field_fits::<Shared, [GuardTest; NCLASSES]>(S_GUARD_TEST, S_TABLES as int),
         field_fits::<Shared, [SlabTable; NCLASSES]>(S_TABLES, S_ARENA0 as int),
+        NCLASSES * size_of::<GuardTest>() <= isize::MAX,
+        NCLASSES * size_of::<SlabTable>() <= isize::MAX,
         field_fits::<Shared, Arena>(S_ARENA0, S_META as int),
         field_fits::<Shared, Meta>(S_META, S_HUGE as int),
         field_fits::<Shared, Huge>(S_HUGE, S_GC_INTERVAL_NS as int),
@@ -3024,7 +3029,7 @@ axiom fn axiom_shared_layout()
 
 ### S154. `axiom_shared_built`
 
-src/heap/shared.rs:723. Kind: axiom. Category: raw pointer (internal).
+src/heap/shared.rs:727. Kind: axiom. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The written fields of the `Shared` at `p` (`Shared::split`'s parts and guard tests, every one initialised, and the tables joined into their array), as the value [`shared_at`] names: the fields [`Shared::wf`] reads are what their permissions hold.
@@ -3056,7 +3061,7 @@ axiom fn axiom_shared_built(
 
 ### S155. `axiom_shared_regions`
 
-src/heap/shared.rs:753. Kind: axiom. Category: raw pointer (internal).
+src/heap/shared.rs:757. Kind: axiom. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The regions of the `Shared` at `p` are what the permission to its `regions` field holds, once that permission is frozen (`vstd::modes::tracked_static_ref`, right after [`Shared::put_head`] writes the field): no verified code can write the field again, so the value is the built one.
@@ -3073,12 +3078,12 @@ axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Sh
 
 ### S156. `Shared::begin`
 
-src/heap/shared.rs:772. Kind: external_body. Category: allocator invariant.
+src/heap/shared.rs:776. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > The permission to `init`'s storage, uninitialised.
 
-Body mints Tracked at line 778.
+Body mints Tracked at line 782.
 
 ```rust
 fn begin(this: *mut Shared) -> (r: Tracked<PointsTo<Shared>>)
@@ -3090,7 +3095,7 @@ fn begin(this: *mut Shared) -> (r: Tracked<PointsTo<Shared>>)
 
 ### S157. `init_tcaches`
 
-src/heap/shared.rs:882. Kind: external_body. Category: allocator invariant.
+src/heap/shared.rs:886. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > [`Tcaches::init`] on the field at `p`, through the permission to it.
@@ -5485,44 +5490,48 @@ pub assume_specification<'a, T, F: FnMut(&'a T) -> K, K: PartialOrd>[ <[T]>::is_
 
 ### S331. `<[T]>::select_nth_unstable`
 
-src/vspec/slice.rs:86. Kind: assume_spec. Category: core library.
+src/vspec/slice.rs:91. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
-> `s.select_nth_unstable(index)`: panics unless `index` is in bounds; permutes `s`.
+> `s.select_nth_unstable(index)`: panics unless `index` is in bounds; permutes `s` and returns it as the `index` elements before position `index`, the element there and the rest.
 
 ```rust
-pub assume_specification<T: Ord>[ <[T]>::select_nth_unstable ](s: &mut [T], index: usize) -> (&mut [T], &mut T, &mut [T])
+pub assume_specification<T: Ord>[ <[T]>::select_nth_unstable ](s: &mut [T], index: usize) -> (r: (&mut [T], &mut T, &mut [T]))
     requires
         index < old(s)@.len(),
     ensures
-        final(s)@.len() == old(s)@.len(),
-        final(s)@.to_multiset() == old(s)@.to_multiset(),
-        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
+        r.0@.len() == index,
+        r.0@.len() + 1 + r.2@.len() == old(s)@.len(),
+        (r.0@ + seq![*r.1] + r.2@).to_multiset() == old(s)@.to_multiset(),
+        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] (r.0@ + seq![*r.1] + r.2@)[i]),
+        final(s)@ == final(r.0)@ + seq![*final(r.1)] + final(r.2)@,
 ;
 ```
 
 ### S332. `<[T]>::select_nth_unstable_by_key::<K, F>`
 
-src/vspec/slice.rs:96. Kind: assume_spec. Category: core library.
+src/vspec/slice.rs:103. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `s.select_nth_unstable_by_key(index, f)`, as `select_nth_unstable`.
 
 ```rust
-pub assume_specification<T, K: Ord, F: FnMut(&T) -> K>[ <[T]>::select_nth_unstable_by_key::<K, F> ](s: &mut [T], index: usize, f: F) -> (&mut [T], &mut T, &mut [T])
+pub assume_specification<T, K: Ord, F: FnMut(&T) -> K>[ <[T]>::select_nth_unstable_by_key::<K, F> ](s: &mut [T], index: usize, f: F) -> (r: (&mut [T], &mut T, &mut [T]))
     requires
         index < old(s)@.len(),
         forall|x: &T| #[trigger] f.requires((x,)),
     ensures
-        final(s)@.len() == old(s)@.len(),
-        final(s)@.to_multiset() == old(s)@.to_multiset(),
-        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
+        r.0@.len() == index,
+        r.0@.len() + 1 + r.2@.len() == old(s)@.len(),
+        (r.0@ + seq![*r.1] + r.2@).to_multiset() == old(s)@.to_multiset(),
+        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] (r.0@ + seq![*r.1] + r.2@)[i]),
+        final(s)@ == final(r.0)@ + seq![*final(r.1)] + final(r.2)@,
 ;
 ```
 
 ### S333. `<[T]>::sort_unstable`
 
-src/vspec/slice.rs:107. Kind: assume_spec. Category: core library.
+src/vspec/slice.rs:116. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `s.sort_unstable()`: permutes `s`.
@@ -5538,7 +5547,7 @@ pub assume_specification<T: Ord>[ <[T]>::sort_unstable ](s: &mut [T])
 
 ### S334. `<[T]>::sort_unstable_by_key::<K, F>`
 
-src/vspec/slice.rs:115. Kind: assume_spec. Category: core library.
+src/vspec/slice.rs:124. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `s.sort_unstable_by_key(f)`: permutes `s`.
@@ -5556,7 +5565,7 @@ pub assume_specification<T, K: Ord, F: FnMut(&T) -> K>[ <[T]>::sort_unstable_by_
 
 ### S335. `<[T]>::get_unchecked_mut::<I>`
 
-src/vspec/slice.rs:127. Kind: assume_spec. Category: core library.
+src/vspec/slice.rs:136. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-slice-get_unchecked_mut.md).
 
 > `get_unchecked_mut` is `index_mut` without the bounds check: its safety contract is that the index is in bounds, so it has `index_mut`'s precondition.
@@ -5571,7 +5580,7 @@ pub assume_specification<T, I>[ <[T]>::get_unchecked_mut::<I> ](slice: &mut [T],
 
 ### S336. `<[T]>::swap_with_slice`
 
-src/vspec/slice.rs:138. Kind: assume_spec. Category: core library.
+src/vspec/slice.rs:147. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-slice-swap_with_slice.md).
 
 > `a.swap_with_slice(b)`: panics unless the lengths are equal.
@@ -5588,7 +5597,7 @@ pub assume_specification<T>[ <[T]>::swap_with_slice ](a: &mut [T], b: &mut [T])
 
 ### S337. `<[T]>::rotate_left`
 
-src/vspec/slice.rs:147. Kind: assume_spec. Category: core library.
+src/vspec/slice.rs:156. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `s.rotate_left(mid)`: panics unless `mid <= s.len()`.
@@ -5604,7 +5613,7 @@ pub assume_specification<T>[ <[T]>::rotate_left ](s: &mut [T], mid: usize)
 
 ### S338. `core::array::IntoIter<T, N>`
 
-src/vspec/slice.rs:166. Kind: ext_type_spec. Category: core library.
+src/vspec/slice.rs:175. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `core::array::IntoIter`, the iterator `for x in [a, b]` walks.
@@ -5615,7 +5624,7 @@ pub struct ExArrayIntoIter<T, const N: usize>(core::array::IntoIter<T, N>);
 
 ### S339. `<[T; N] as core::iter::IntoIterator>::into_iter`
 
-src/vspec/slice.rs:172. Kind: assume_spec. Category: core library.
+src/vspec/slice.rs:181. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-array-IntoIterator-into_iter.md).
 
 > The iterator starts with every element of the array, in order.
@@ -5632,7 +5641,7 @@ pub assume_specification<T, const N: usize>[ <[T; N] as core::iter::IntoIterator
 
 ### S340. `<core::array::IntoIter<T, N> as core::iter::Iterator>::next`
 
-src/vspec/slice.rs:182. Kind: assume_spec. Category: core library.
+src/vspec/slice.rs:191. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-array-IntoIter-Iterator-next.md).
 
 > `next` hands out the front element, or `None` once every element has been handed out.
@@ -5650,7 +5659,7 @@ pub assume_specification<T, const N: usize>[ <core::array::IntoIter<T, N> as cor
 
 ### S341. `array_get_unchecked`
 
-src/vspec/slice.rs:203. Kind: external_body. Category: core library.
+src/vspec/slice.rs:212. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `a.get_unchecked(i)` on an array, for the fast paths: vstd's array-to-slice coercion (`vstd::array::array_as_slice`) declares Verus's default invariant mask, `any`, which a function that opens none cannot call (`vspec::atomic`, theorem 9 of `verus/THEOREMS.md`).

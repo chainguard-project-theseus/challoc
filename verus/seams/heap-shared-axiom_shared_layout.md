@@ -5,7 +5,9 @@ Discharged by Kani.
 
 ## Contract
 
-At commit 7d4e997 (checked again there; the record was written at
+As changed by the library-and-control seam audit on base 8635213
+(`verus/audit/library-control.md`; Kani rerun pending), from the
+contract checked at commit 7d4e997 (the record was written at
 ae82d5b):
 
 ```rust
@@ -16,6 +18,8 @@ axiom fn axiom_shared_layout()
         field_fits::<Shared, Regions>(S_REGIONS, S_GUARD_TEST as int),
         field_fits::<Shared, [GuardTest; NCLASSES]>(S_GUARD_TEST, S_TABLES as int),
         field_fits::<Shared, [SlabTable; NCLASSES]>(S_TABLES, S_ARENA0 as int),
+        NCLASSES * size_of::<GuardTest>() <= isize::MAX,
+        NCLASSES * size_of::<SlabTable>() <= isize::MAX,
         field_fits::<Shared, Arena>(S_ARENA0, S_META as int),
         field_fits::<Shared, Meta>(S_META, S_HUGE as int),
         field_fits::<Shared, Huge>(S_HUGE, S_GC_INTERVAL_NS as int),
@@ -42,7 +46,9 @@ each of the sixteen `S_*` offsets equals its field's `offset_of!`,
 and for each field, with its type `T` and the next field's offset (the
 last: `size_of::<Shared>()`) as `next`, `field_fits::<Shared, T>(off, next)`
 holds (restated with its `int` sum in `u128`), as does
-`size_of::<Shared>() <= isize::MAX`.
+`size_of::<Shared>() <= isize::MAX`, `NCLASSES * size_of::<GuardTest>()
+<= isize::MAX` and `NCLASSES * size_of::<SlabTable>() <= isize::MAX`
+(in `u128`).
 
 Reproduce: `sh verus/kani/run.sh --harness heap::shared::kani_layout::shared_layout` (both quanta;
 `--harness` takes the full path).
@@ -53,6 +59,10 @@ Reproduce: `sh verus/kani/run.sh --harness heap::shared::kani_layout::shared_lay
 - Each `ensures field_fits::<Shared, T>(S_X, S_NEXT as int)`: one
   `assert!`, with the same types in the same order (`field_fits` as in
   `arena::axiom_arena_layout`'s record).
+- `ensures NCLASSES * size_of::<GuardTest>() <= isize::MAX` and the
+  same for `SlabTable` (the `requires` of `axiom_array_layout` at the
+  two arrays): the two `assert!`s after the `tables` field's, their
+  products in `u128`.
 - `ensures size_of::<Shared>() <= isize::MAX`: the last assertion.
 
 The layout is the target's: Kani evaluates it for x86_64; every

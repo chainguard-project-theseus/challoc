@@ -30,7 +30,7 @@ Reproduce: `sh verus/kani/run.sh --harness kani_proofs::core_int::u32_is_power_o
 
 The inputs are `kani::any()` machine integers with no bound
 other than the contract's `requires`, so the check is exhaustive; the
-reference loops run at most 65 times and the harness's `kani::unwind`
+reference loop runs at most 33 times and the harness's `kani::unwind`
 bound makes Kani prove that with an unwinding assertion. The spec
 functions are Verus `spec fn`s, erased from builds, so the harness
 restates them as exec `spec_*` functions in `src/kani/core_int.rs` that follow the same

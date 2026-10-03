@@ -1,11 +1,13 @@
 # `axiom_arena_layout`
 
-Seam S57 of `verus/SEAMS.md`: src/arena.rs:447. Kind: axiom. Category: core library.
+Seam S57 of `verus/SEAMS.md`: src/arena.rs:453. Kind: axiom. Category: core library.
 Discharged by Kani.
 
 ## Contract
 
-At commit 7d4e997 (checked again there; the record was written at
+As changed by the library-and-control seam audit on base 8635213
+(`verus/audit/library-control.md`; Kani rerun pending), from the
+contract checked at commit 7d4e997 (the record was written at
 ae82d5b):
 
 ```rust
@@ -16,6 +18,7 @@ axiom fn axiom_arena_layout()
         field_fits::<Arena, *const SetTable>(A_SETS, A_SETS_PERM as int),
         field_fits::<Arena, Tracked<PointsTo<SetTable>>>(A_SETS_PERM, A_CLASSES as int),
         field_fits::<Arena, [ClassState; NCLASSES]>(A_CLASSES, A_LARGE as int),
+        NCLASSES * size_of::<ClassState>() <= isize::MAX,
         field_fits::<Arena, AtomicU64>(A_LARGE, A_STATS as int),
         // Over several lines: `api`'s lock inventory test reads a line
         // `name: ...Lock<...>` as a lock field.
@@ -35,7 +38,8 @@ each of the eight `A_*` offsets equals its field's `offset_of!`, and
 for each field, with its type `T` and the next field's offset (the
 last: `size_of::<Arena>()`) as `next`, `field_fits::<Arena, T>(off, next)`
 holds (restated with its `int` sum in `u128`), as does
-`size_of::<Arena>() <= isize::MAX`.
+`size_of::<Arena>() <= isize::MAX` and
+`NCLASSES * size_of::<ClassState>() <= isize::MAX` (in `u128`).
 
 Reproduce: `sh verus/kani/run.sh --harness arena::kani_layout::arena_layout` (both quanta;
 `--harness` takes the full path).
@@ -48,6 +52,9 @@ Reproduce: `sh verus/kani/run.sh --harness arena::kani_layout::arena_layout` (bo
   `off % align_of::<T>() == 0`, `align_of::<Arena>() % align_of::<T>() == 0`
   and `off + size_of::<T>() <= next`, with vstd's `size_of`/`align_of`
   read as `core::mem`'s (vstd's are uninterpreted for these types).
+- `ensures NCLASSES * size_of::<ClassState>() <= isize::MAX` (the
+  `requires` of `axiom_array_layout` at the `classes` array): the
+  `assert!` after the `classes` field's, its product in `u128`.
 - `ensures size_of::<Arena>() <= isize::MAX`: the last assertion.
 
 The layout is the target's: Kani evaluates it for x86_64; every

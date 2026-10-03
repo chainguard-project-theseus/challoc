@@ -82,25 +82,34 @@ pub assume_specification<'a, T, F: FnMut(&'a T) -> K, K: PartialOrd>[ <[T]>::is_
 ;
 
 /// `s.select_nth_unstable(index)`: panics unless `index` is in bounds;
-/// permutes `s`.
-pub assume_specification<T: Ord>[ <[T]>::select_nth_unstable ](s: &mut [T], index: usize) -> (&mut [T], &mut T, &mut [T])
+/// permutes `s` and returns it as the `index` elements before position
+/// `index`, the element there and the rest. The permutation is stated of
+/// the three parts' values on return, and `s`'s final value is theirs:
+/// a caller may write through them (the parts reborrow `s`), so a
+/// contract on `final(s)` alone would let a verified caller prove `s`
+/// still a permutation after such a write (`verus/audit/library-control.md`).
+pub assume_specification<T: Ord>[ <[T]>::select_nth_unstable ](s: &mut [T], index: usize) -> (r: (&mut [T], &mut T, &mut [T]))
     requires
         index < old(s)@.len(),
     ensures
-        final(s)@.len() == old(s)@.len(),
-        final(s)@.to_multiset() == old(s)@.to_multiset(),
-        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
+        r.0@.len() == index,
+        r.0@.len() + 1 + r.2@.len() == old(s)@.len(),
+        (r.0@ + seq![*r.1] + r.2@).to_multiset() == old(s)@.to_multiset(),
+        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] (r.0@ + seq![*r.1] + r.2@)[i]),
+        final(s)@ == final(r.0)@ + seq![*final(r.1)] + final(r.2)@,
 ;
 
 /// `s.select_nth_unstable_by_key(index, f)`, as `select_nth_unstable`.
-pub assume_specification<T, K: Ord, F: FnMut(&T) -> K>[ <[T]>::select_nth_unstable_by_key::<K, F> ](s: &mut [T], index: usize, f: F) -> (&mut [T], &mut T, &mut [T])
+pub assume_specification<T, K: Ord, F: FnMut(&T) -> K>[ <[T]>::select_nth_unstable_by_key::<K, F> ](s: &mut [T], index: usize, f: F) -> (r: (&mut [T], &mut T, &mut [T]))
     requires
         index < old(s)@.len(),
         forall|x: &T| #[trigger] f.requires((x,)),
     ensures
-        final(s)@.len() == old(s)@.len(),
-        final(s)@.to_multiset() == old(s)@.to_multiset(),
-        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
+        r.0@.len() == index,
+        r.0@.len() + 1 + r.2@.len() == old(s)@.len(),
+        (r.0@ + seq![*r.1] + r.2@).to_multiset() == old(s)@.to_multiset(),
+        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] (r.0@ + seq![*r.1] + r.2@)[i]),
+        final(s)@ == final(r.0)@ + seq![*final(r.1)] + final(r.2)@,
 ;
 
 /// `s.sort_unstable()`: permutes `s`.

@@ -29,7 +29,7 @@ Reproduce: `sh verus/kani/run.sh --harness kani_proofs::stats::fig_mul_exact` (b
 - `ensures a * b <= usize::MAX ==> r == a * b`: the antecedent is the
   `kani::assume`, the consequent the assertion.
 
-Gap: Kani runs the debug build, where an overflowing sum panics (an
+Gap: Kani runs the debug build, where an overflowing product panics (an
 abort, as the contract's comment says); the shipped library wraps.
 Neither case is covered by the `ensures`, which claims the exact
 result only when it fits, and neither is undefined behaviour, so the
