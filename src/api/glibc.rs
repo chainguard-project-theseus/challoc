@@ -37,6 +37,8 @@
 use core::ffi::c_int;
 
 use crate::layout::NCLASSES;
+#[cfg(verus_only)]
+use crate::lock::axiom_entry;
 use crate::stats::{self, fig_add, fig_mul};
 use vstd::prelude::*;
 
@@ -105,7 +107,7 @@ pub fn mallinfo2(Tracked(rd): Tracked<&mut Ghost<(Seq<stats::ArenaStats>, Seq<in
         shared.lemma_wf();
     }
     let tracked mut sd = Ghost((Seq::<stats::ArenaStats>::empty(), Seq::<int>::empty()));
-    let all = stats::collect_all(shared, Tracked(&mut sd));
+    let all = stats::collect_all(shared, Tracked(&mut sd), Tracked(&mut axiom_entry()));
     proof {
         *rd = Ghost((sd@.0, sd@.1, all));
     }

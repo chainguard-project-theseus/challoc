@@ -9,6 +9,9 @@ use crate::arena::Arena;
 use crate::layout::CLASSES;
 #[cfg(verus_only)]
 use crate::layout::{NCLASSES, process_regions, slots_in};
+use crate::lock::LockOrder;
+#[cfg(verus_only)]
+use crate::lock::rank_class;
 use crate::sys::pac;
 use crate::vspec::addr::addr_to_ptr;
 use crate::vspec::zero::Zeroed;
@@ -50,11 +53,14 @@ impl Heap {
         cs: &crate::class::ClassState,
         out: &mut [*mut u8],
         Tracked(toks): Tracked<&mut crate::class::SlotToks>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: (crate::class::Claim, Tracked<Map<int, Zeroed>>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
         ensures
+            *final(ord) == *old(ord),
             final(self).perms == old(self).perms,
             final(self).list == old(self).list,
             final(self).keys == old(self).keys,
@@ -72,9 +78,9 @@ impl Heap {
         cs.slot_tokens_are_the_class_s();
         let r = if slot_randomize(shared) {
             let rng = self.rng();
-            cs.claim_random_zero(&shared.meta, out, rng, Tracked(toks))
+            cs.claim_random_zero(&shared.meta, out, rng, Tracked(toks), Tracked(ord))
         } else {
-            cs.claim_tokens(&shared.meta, out, Tracked(toks))
+            cs.claim_tokens(&shared.meta, out, Tracked(toks), Tracked(ord))
         };
         proof {
             toks.lemma_owns_keyed(cs.spec_table(), out@, r.0.n as int);
@@ -123,10 +129,11 @@ impl Heap {
     /// from `ensure_cache` on a fresh header, or after re-reading `len`
     /// following a `tick`. The `assert_eq!` ([`assert_refill_empty`]) is
     /// the abort on a heap inconsistency, not the contract.
-    pub(super) unsafe fn refill(&mut self, shared: &Shared, arena: &Arena, cache: *mut CacheHeader, class: usize) -> (r: u32)
+    pub(super) unsafe fn refill(&mut self, shared: &Shared, arena: &Arena, cache: *mut CacheHeader, class: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: u32)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
             class < NCLASSES,
             old(self).wf(),
             old(self).owns(cache),
@@ -134,6 +141,7 @@ impl Heap {
             shared.wf(),
             old(self).hdr(cache).cap != 0,
         ensures
+            *final(ord) == *old(ord),
             final(self).keeps(*old(self)),
             r == final(self).hdr(cache).len,
     {
@@ -155,7 +163,7 @@ impl Heap {
             // The claimed slots' tokens, by index into `out`.
             let tracked mut toks = crate::class::SlotToks::empty();
             let cs = arena.class(class);
-            let (claim, Tracked(mut ztok)) = self.claim(shared, cs, out, Tracked(&mut toks));
+            let (claim, Tracked(mut ztok)) = self.claim(shared, cs, out, Tracked(&mut toks), Tracked(ord));
             let ghost claimed = out@;
             proof {
                 assert(toks.owns(cs.spec_table(), claimed, 0, 0, claim.n as int));
@@ -312,11 +320,12 @@ impl Heap {
     /// # Safety
     /// `cache` is this heap's real cache for `(arena, class)` and `n <= len`.
     #[verifier::spinoff_prover]
-    #[verifier::rlimit(300)]
-    pub(super) unsafe fn flush(&mut self, shared: &Shared, arena: u16, cache: *mut CacheHeader, class: usize, n: usize)
+    #[verifier::rlimit(500)]
+    pub(super) unsafe fn flush(&mut self, shared: &Shared, arena: u16, cache: *mut CacheHeader, class: usize, n: usize, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
             class < NCLASSES,
             shared.wf(),
             old(self).wf(),
@@ -324,6 +333,7 @@ impl Heap {
             old(self).hdr_class(cache) == class,
             n <= old(self).hdr(cache).len,
         ensures
+            *final(ord) == *old(ord),
             final(self).keeps(*old(self)),
             final(self).hdr(cache).len == old(self).hdr(cache).len - n,
             final(self).same_shape(*old(self)),
@@ -534,7 +544,7 @@ impl Heap {
             // The `FOREIGN` cache's batch starts wherever its first slab
             // belongs; `release_routed` follows the owner words from there.
             let owner = if arena == FOREIGN { shared.arena_of_slot(class, *high.get_unchecked(0)) } else { arena };
-            shared.release_routed(owner, class, high, Tracked(&mut bag));
+            shared.release_routed(owner, class, high, Tracked(&mut bag), Tracked(ord));
             proof {
                 // Theorem 10: every cached slot is kept or released.
                 let hr = ptr_addrs(high@);

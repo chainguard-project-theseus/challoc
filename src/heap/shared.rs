@@ -18,8 +18,12 @@ use crate::huge::Huge;
 #[cfg(verus_only)]
 use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
-use crate::lock::Lock;
 use crate::lock::RawLock;
+use crate::lock::{Lock, LockOrder};
+#[cfg(verus_only)]
+use crate::lock::{
+    axiom_entry, rank_arenas, rank_class, rank_huge, rank_meta, rank_stats, rank_tcaches,
+};
 use crate::meta::Meta;
 use crate::policy::Policy;
 use crate::stats::Snapshot;
@@ -46,7 +50,7 @@ use vstd::layout::size_of;
 use vstd::prelude::verus;
 #[cfg(verus_only)]
 use vstd::prelude::*;
-use vstd::prelude::{Tracked, int};
+use vstd::prelude::{Ghost, Tracked, int};
 use vstd::raw_ptr::{PointsTo, ptr_mut_write, ptr_ref};
 use vstd::resource::set::{GhostSingleton, GhostSubset};
 
@@ -745,6 +749,7 @@ axiom fn axiom_shared_built(
         shared_at(p).huge == parts.huge.value(),
         shared_at(p).config == parts.config.value(),
         parts.arena0.perm matches Some(a) && shared_at(p).arena0 == a.value(),
+        shared_at(p).stats == parts.stats.value(),
 ;
 
 /// The regions of the `Shared` at `p` are what the permission to its
@@ -1168,6 +1173,7 @@ impl Shared {
             final(pk).is_init(),
             final(ps).ptr() == old(ps).ptr(),
             final(ps).is_init(),
+            final(ps).value().rank() == rank_stats(),
     {
         proof {
             axiom_shared_layout();
@@ -1177,7 +1183,7 @@ impl Shared {
         unsafe {
             ptr_mut_write(field_at(this, S_CONFIG), Tracked(pc), config);
             ptr_mut_write(field_at(this, S_KEY), Tracked(pk), ThreadKey::create());
-            ptr_mut_write(field_at(this, S_STATS), Tracked(ps), Lock::new(Snapshot::EMPTY));
+            ptr_mut_write(field_at(this, S_STATS), Tracked(ps), Lock::new(Snapshot::EMPTY, Ghost(rank_stats())));
         }
     }
 
@@ -1234,6 +1240,10 @@ impl Shared {
         ensures
             r ==> shared_at(this).wf(),
     {
+        // Premise (lock order): no allocator lock exists before this
+        // `Shared` is built (`init_slow` runs `init` once, before the
+        // `Shared` is published), so this thread holds none.
+        let tracked mut ord = axiom_entry();
         let mut config = config;
         config.narenas = config.effective_narenas(ncpus());
         let guard_interval = if guard_install {
@@ -1313,12 +1323,14 @@ impl Shared {
                     elems_uninit(table_perms, c as int, NCLASSES as int),
                     forall|d: int| 0 <= d < c ==> (#[trigger] table_perms[d]).value().spec_class() == d,
                     forall|d: int| 0 <= d < c ==> (#[trigger] table_perms[d]).value().meta_ok(),
+                    ord.allows(rank_meta()),
             {
                 match SlabTable::new(
                     meta,
                     regions,
                     c,
                     guard_interval_for(c, regions.page_size(), guard_interval),
+                    Tracked(&mut ord),
                 ) {
                     Some(t) => {
                         let ghost before = table_perms;
@@ -1381,10 +1393,10 @@ impl Shared {
                 axiom_shared_layout();
                 axiom_ptr_add_addr(this as *mut u8, S_ARENA0);
             }
-            if !Arena::init(arena0, meta, regions, tables, 0, decay_ns, Tracked(&mut parts.arena0)) {
+            if !Arena::init(arena0, meta, regions, tables, 0, decay_ns, Tracked(&mut parts.arena0), Tracked(&mut ord)) {
                 return false;
             }
-            match Huge::new(meta, regions, guard_install) {
+            match Huge::new(meta, regions, guard_install, Tracked(&mut ord)) {
                 Some(h) => {
                     h.set_retain_max(config.huge_retain_max);
                     // `huge_dirty_decay_ms:0`: a freed run is purged at
@@ -1491,6 +1503,7 @@ impl Shared {
         &&& self.meta.spec_len() == self.regions.meta_len
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok()
         &&& self.arena0.spec_index() == 0
+        &&& self.stats.rank() == rank_stats()
     }
 
     /// `meta` is the process's metadata allocator ([`Shared::wf`]).
@@ -1775,11 +1788,21 @@ impl Shared {
         )
     }
 
+    /// The process statistics lock's rank in the lock order (`lock.rs`).
+    pub(crate) proof fn lemma_ranks(&self)
+        requires
+            self.wf(),
+        ensures
+            self.stats.rank() == rank_stats(),
+    {
+    }
+
     /// The explicit-cache table lock, for the fork handlers.
     #[inline(always)]
     pub fn tcaches_lock(&self) -> (r: &RawLock)
         ensures
             *r == self.spec_fork_locks().0,
+            r.rank() == rank_tcaches(),
     {
         self.tcaches.raw_lock()
     }
@@ -1789,6 +1812,7 @@ impl Shared {
     pub fn arenas_lock(&self) -> (r: &RawLock)
         ensures
             *r == self.spec_fork_locks().1,
+            r.rank() == rank_arenas(),
     {
         self.arenas.raw_lock()
     }
@@ -1798,6 +1822,7 @@ impl Shared {
     pub fn huge_lock(&self) -> (r: &RawLock)
         ensures
             *r == self.spec_fork_locks().2,
+            r.rank() == rank_huge(),
     {
         self.huge.raw_lock()
     }
@@ -1807,6 +1832,7 @@ impl Shared {
     pub fn meta_lock(&self) -> (r: &RawLock)
         ensures
             *r == self.spec_fork_locks().3,
+            r.rank() == rank_meta(),
     {
         self.meta.raw_lock()
     }
@@ -1816,6 +1842,7 @@ impl Shared {
     pub fn stats_lock(&self) -> (r: &RawLock)
         ensures
             *r == self.spec_fork_locks().4,
+            self.wf() ==> r.rank() == rank_stats(),
     {
         self.stats.raw()
     }
@@ -1899,18 +1926,20 @@ impl Shared {
     }
     /// touch; see `Arenas::get`).
     #[inline]
-    pub fn arena(&self, index: u16) -> (r: Option<&Arena>)
+    pub fn arena(&self, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&Arena>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_arenas()),
             self.wf(),
         ensures
+            *final(ord) == *old(ord),
             r matches Some(a) ==> a.spec_index() == index,
     {
         if index == 0 {
             return Some(&self.arena0);
         }
-        self.arenas.get(self, index)
+        self.arenas.get(self, index, Tracked(ord))
     }
 
     /// Arena `index`, which must exist: the index came from a slab or run
@@ -1963,12 +1992,14 @@ impl Shared {
     /// Claim one slot of `class` in `arena` straight from the slab bitmaps,
     /// bypassing every cache. Null when the region is exhausted. The flag
     /// says the memory is known zero; `blk` gets the slot's token.
-    pub fn alloc_direct(&self, arena: &Arena, class: usize, Tracked(blk): Tracked<&mut super::Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+    pub fn alloc_direct(&self, arena: &Arena, class: usize, Tracked(blk): Tracked<&mut super::Live>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
             class < NCLASSES,
         ensures
+            *final(ord) == *old(ord),
             r.0@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, class_table()[class as int].size as int),
             r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
@@ -1977,7 +2008,7 @@ impl Shared {
         let cs = arena.class(class);
         cs.slot_tokens_are_the_class_s();
         let tracked mut toks = crate::class::SlotToks::empty();
-        let (c, Tracked(mut z)) = cs.claim_tokens(&self.meta, &mut out, Tracked(&mut toks));
+        let (c, Tracked(mut z)) = cs.claim_tokens(&self.meta, &mut out, Tracked(&mut toks), Tracked(ord));
         if c.n == 0 {
             (ptr::null_mut(), false, Tracked(Zeroed::empty(0)))
         } else {
@@ -2003,15 +2034,17 @@ impl Shared {
     /// Release one slot straight to its slab bitmap through its owning
     /// arena. Aborts unless `p` is an allocated slot of `class` in `arena`.
     /// `tok` is the slot's token; it goes back to the slot's bitmap word.
-    pub fn free_direct(&self, arena: u16, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
+    pub fn free_direct(&self, arena: u16, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
             class < NCLASSES,
             crate::layout::process_regions().is_slot(class as int, p@.addr),
             tok.id() == slot_loc(class as int),
             tok@ == p@.addr as int,
         ensures
+            *final(ord) == *old(ord),
             // Arena isolation: it returns only if `arena` owns the slot's
             // slab, the arena it released the slot into.
             self.wf() ==> crate::class::slot_owner(class as int, p@.addr) == arena,
@@ -2025,7 +2058,7 @@ impl Shared {
             crate::class::lemma_aset_step(a, 0, 0, 1);
             assert(aset(a, 0, 1) =~= set![p@.addr as int]);
         }
-        self.owner(arena).class(class).release_with(&[p], Tracked(bag));
+        self.owner(arena).class(class).release_with(&[p], Tracked(bag), Tracked(ord));
     }
 
     /// Classify `p` for `free`: `Ok((class, arena))` for an allocated slab
@@ -2174,13 +2207,15 @@ impl Shared {
     /// an automatic arena not built yet (a thread whose first allocation
     /// is huge) is built here, an index that does not exist aborts. Null
     /// on exhaustion; the flag says the memory is known zero.
-    pub fn alloc_huge(&self, size: usize, align: usize, arena: u16, Tracked(blk): Tracked<&mut super::Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+    pub fn alloc_huge(&self, size: usize, align: usize, arena: u16, Tracked(blk): Tracked<&mut super::Live>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_arenas()),
             self.wf(),
             crate::meta::is_pow2(align),
         ensures
+            *final(ord) == *old(ord),
             r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
             r.0@.addr != 0 ==> size <= self.huge_usable(size),
             r.0@.addr != 0 ==> self.huge_ok(size),
@@ -2190,9 +2225,9 @@ impl Shared {
         proof {
             self.lemma_huge_aligned();
         }
-        let Some(a) = self.arena(arena) else { no_such_arena(arena) };
+        let Some(a) = self.arena(arena, Tracked(ord)) else { no_such_arena(arena) };
         let tracked mut tok = vstd::map::Map::<int, crate::huge::RunToken>::tracked_empty();
-        let (r, z) = self.huge.alloc_run(&self.meta, size, align, arena, Tracked(&mut tok));
+        let (r, z) = self.huge.alloc_run(&self.meta, size, align, arena, Tracked(&mut tok), Tracked(ord));
         proof {
             if r.ptr@.addr != 0 {
                 self.lemma_run_is_block(r.ptr@.addr, size, align);
@@ -2240,17 +2275,20 @@ impl Shared {
 
     /// Free the huge run starting at `page`. Aborts unless it is a live
     /// run start. Returns the usable bytes released.
-    pub fn free_huge(&self, page: usize, Tracked(tok): Tracked<crate::huge::RunToken>) -> usize
+    pub fn free_huge(&self, page: usize, Tracked(tok): Tracked<crate::huge::RunToken>, Tracked(ord): Tracked<&mut LockOrder>) -> usize
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_huge()),
             self.wf(),
             page <= self.huge_pages(),
             tok.wf(),
             tok.start() == page,
+        ensures
+            *final(ord) == *old(ord),
     {
         let ghost np = tok.npages();
-        let run = self.huge.free_run(&self.meta, page, Tracked(tok));
+        let run = self.huge.free_run(&self.meta, page, Tracked(tok), Tracked(ord));
         // Exact stats: the pages `note_huge_free` subtracts are the token's.
         proof {
             assert(run.pages == np);
@@ -2363,10 +2401,11 @@ impl Shared {
     ///
     /// [`release_owned`]: crate::class::ClassState::release_owned
     /// [`slot_owner`]: crate::class::slot_owner
-    pub fn release_routed(&self, arena: u16, class: usize, ptrs: &[*mut u8], Tracked(bag): Tracked<&mut GhostSubset<int>>)
+    pub fn release_routed(&self, arena: u16, class: usize, ptrs: &[*mut u8], Tracked(bag): Tracked<&mut GhostSubset<int>>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
             self.wf(),
             class < NCLASSES,
             old(bag).id() == slot_loc(class as int),
@@ -2375,6 +2414,7 @@ impl Shared {
         ensures
             final(bag).id() == old(bag).id(),
             final(bag)@ == old(bag)@ - aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int),
+            *final(ord) == *old(ord),
     {
         broadcast use crate::class::lemma_aset;
         let ghost pa = ptr_addrs(ptrs@);
@@ -2389,6 +2429,8 @@ impl Shared {
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 self.wf(),
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
                 class < NCLASSES,
                 done <= ptrs@.len(),
                 pa == ptr_addrs(ptrs@),
@@ -2413,7 +2455,7 @@ impl Shared {
                 crate::class::lemma_aset_shift(pa, ra, d0, 0, rest.len() as int);
                 crate::class::lemma_aset_split(pa, 0, d0, ptrs@.len() as int);
             }
-            done += self.owner(a).class(class).release_owned(&ptrs[done..], Tracked(&mut *bag));
+            done += self.owner(a).class(class).release_owned(&ptrs[done..], Tracked(&mut *bag), Tracked(ord));
             proof {
                 let r = done - d0;
                 crate::class::lemma_aset_split(pa, d0, done as int, ptrs@.len() as int);
@@ -2540,7 +2582,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S137..S152, S153: each `S_*` is its field's `offset_of!`, and the
+    /// S138..S153, S154: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {

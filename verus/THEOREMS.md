@@ -1,6 +1,6 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the thirty-two whole-allocator theorems as the code
+Reference for the thirty-three whole-allocator theorems as the code
 states them: the Verus statement, the entry points it covers, and every
 trusted premise it rests on, with `file:line`. Read at `b2cad68`
 (branch `verus`); line numbers are the `fn`/`axiom` line at that commit,
@@ -10,7 +10,7 @@ open work; this file says what the code proves today. Each title and
 first paragraph claims only what is proved: where a theorem holds only
 at a lock invariant, rests on a source test or on the C-boundary
 assumption (`axiom_c_claim`), the title or the first paragraph says so.
-The sections are numbered 1 to 23 in order; "Bad input" (the B column)
+The sections are numbered 1 to 33 in order; "Bad input" (the B column)
 and the interface contract are not numbered.
 
 Marked **unconfirmed**: facts read from comments, not checked against
@@ -1660,11 +1660,11 @@ What is proved: under the mutex and handoff premises below,
 and the parent and child handlers release each of them once. Not proved: that
 `listed` names every lock in the crate (a source test checks it,
 `fork_lock_list_matches_the_source_tree`), that the prepare handler
-terminates (a `lock` that never returns satisfies everything), the
-acquisition order, and compatibility with other `pthread_atfork`
-handlers (the handoff premise assumes those registered before
-challoc's take no allocator lock). Reclaiming the caches of threads the
-child no longer has is out of scope (design 9 leaves them marked).
+terminates (a `lock` that never returns satisfies everything), and
+compatibility with other `pthread_atfork` handlers (the handoff
+premise assumes those registered before challoc's take no allocator
+lock). Reclaiming the caches of threads the child no longer has is
+out of scope (design 9 leaves them marked).
 
 Read at this section's commit (the `file:line`s are the `fn`/`axiom`
 line there).
@@ -1792,10 +1792,10 @@ axioms below are the other source.
   either axiom would hand out a second token for a held lock and still
   verify (it does not prove false, since no lemma says two tokens of one
   lock are apart).
-- The order is not proved: the statement says which locks are held, not
-  that `fork_prepare` takes them in the nesting order (design 9) that
-  rules out a deadlock with a thread mid-operation. The release order
-  is unstated too.
+- The acquisition order is theorem 33, "Lock order is acyclic": every
+  acquisition of `fork_prepare` ranks above the locks it already
+  holds, except the slab-set locks, which are gated by the arena's
+  class locks. The release order is unstated.
 - Partial correctness: a `lock` that never returns (a deadlock in
   prepare) satisfies everything. A prepare handler registered before
   challoc's (one that runs after ours) that allocates on a slow path
@@ -4775,6 +4775,159 @@ the base commit outside the readers). The 43 `stats.*` and `arenas.*`
 reader closures became named functions with the same normalized
 disassembly (one `FnOnce::call_once` body each before, a named symbol
 now); nothing else changed.
+## 33. Lock order is acyclic
+
+Read at this section's commit (the `file:line`s are the `fn`/`axiom`
+line there).
+
+**Statement.** Every allocator lock has a fixed rank, and a blocking
+acquisition ranks above every allocator lock its thread holds, so no
+set of threads can each wait for a lock the next one holds (around such a
+cycle the ranks would climb back to where they started). The one
+exception, the slab-set locks in `fork_prepare`, is a gated acquisition
+that cannot block or be waited on (below).
+
+```rust
+// lock.rs: the ranks, lowest first (spec fns, lock.rs:263-308).
+rank_tcaches()                 0x100_0000              explicit-cache table lock
+rank_arenas()                  0x200_0000              arena creation lock
+rank_class(i, c)               0x300_0000 + 0x100 i + c   class c of arena i
+rank_table(c)                  0x400_0000 + c          slab table of class c
+rank_sets(i)                   0x500_0000 + i          slab sets of arena i (gated)
+rank_huge(), rank_meta(), rank_stats()  0x600_0000, 0x700_0000, 0x800_0000
+rank_arena_stats(i)            0x900_0000 + i
+rank_state()                   0xA00_0000              background thread state
+
+// lock.rs:585: a guard acquisition.
+pub fn lock<'a>(&'a self, Tracked(ord): Tracked<&'a mut LockOrder<'_>>,
+                Tracked(under): Tracked<&mut LockOrder<'a>>) -> (g: LockGuard<'a, T>)
+    requires old(ord).allows(self.rank()),          // ord.top() < rank
+    ensures  *final(ord) == *old(ord), final(under).top() == self.rank(), ...
+
+// lock.rs:163: a raw acquisition (the fork handlers).
+pub fn lock_held(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (t: Tracked<LockHeld>)
+    requires old(ord).root(), old(ord).allows(self.rank()),
+    ensures  t@.held() == *self, final(ord).root(), final(ord).top() == self.rank(),
+```
+
+A `LockOrder` (`lock.rs:357`, ghost, fields private to `lock.rs`) bounds
+the ranks of the locks its owner holds (`top()`). `Lock::lock` borrows
+the caller's token for the guard's lifetime `'a` and hands out another
+at the lock's rank, also of lifetime `'a`, for the code under the guard;
+Verus's lifetime checker rejects any use of the caller's token while the
+guard or the handed-out token is in use (checked on a scratch file: a
+second `lock` with the frozen token fails `E0499`). A handed-out token
+used after its guard is dropped bounds a lock no longer held, which only
+forbids more. Raw holds outlive any guard, so `lock_held` needs a root
+token (`root()`: from `axiom_entry`, never handed out under a guard) and
+raises it in place. `RawLock::lock` itself requires `lock_rs_only()`, a
+`true` whose body is closed, so verified code outside `lock.rs` cannot
+acquire except through these two. Every function that may take a lock
+takes its caller's token (`Tracked<&mut LockOrder>`, `requires
+old(ord).allows(rank_x())` for the lowest rank it takes, `ensures
+*final(ord) == *old(ord)`), so the bound follows the call chain.
+
+The ranks are ghost fields of `RawLock` (`#[cfg(verus_only)]`: a `Ghost`
+field breaks `repr(transparent)`, which ordinary builds keep), set by
+`RawLock::new(Ghost(rank))` / `Lock::new(v, Ghost(rank))`, and tied to
+each lock by its owner's type invariant: `ClassState` (class `c` of
+arena `arena`), `SlabTable`, `SetTable` (`gated`), `Huge`, `Meta`,
+`Arena` (sets and statistics), `Arenas`, `Tcaches`, and `Shared::wf`
+(the process statistics lock). The fork accessors (`raw_lock`,
+`stats_raw_lock`, `Arena::sets`, `Shared::*_lock`) state the rank.
+
+**What is threaded** (every acquisition below is checked):
+
+| Path | Nesting checked |
+|---|---|
+| slow allocation: `alloc_slow_in` (`heap/paths.rs:488`) → `tick`, `Shared::arena`, `ensure_cache`, `alloc_direct`, `refill` → `Heap::claim` → `claim_with` → `plan` (class) → `next_slab` → `next_fresh_slab` → `take_group` (table) → `ensure_sets` → `Set::ensure` → `SetTable::ensure` (sets) → `Lazy::ensure` → `Meta::commit` (meta); `commit_slab` (table) | Class(i,c) < Table(c) < Sets(i) < Meta; Arenas < Meta (`materialise` → `build` → `Arena::init`); the GC and decay of `tick` |
+| slow free: `free_slow_in` (`:565`) → `flush` → `release_routed` → `release_owned` → `release_slab` → `dec_live` → `on_live_zero` (class), `reopen` (class); `Shared::free_direct` | class locks one at a time |
+| huge: `Shared::alloc_huge` → `alloc_run` → `alloc_aligned` (huge; the lowest-fit `find` runs under it) → `alloc_desc`, `free_desc`, `Table::ensure`, `Set::ensure` (own store), `take` → `retire` (meta); `free_run` (huge) → `Table::ensure`, `retire` (meta) | Huge < Meta |
+| cache flushes and routing: `Heap::flush_all` (`tcache.flush` through `Tcaches::flush`, `thread.tcache.flush` and `arena.<i>.purge` through `flush_caller`, `thread.tcache.enabled` through `set_tcache_enabled`) → `flush_arena` → `flush` → `release_routed` (class) and `free_caches_in` → `Meta::free` (meta); `gc` → `gc_arena` → `flush`; `set_arena` → `other_caches` (meta, when it creates a node) | class locks one at a time, then Meta |
+| arena creation `Arenas::create`, heap creation `Heap::create` → `assign_home` (arenas) and `create_detached` (meta), explicit caches `Tcaches::create`/`destroy` (tcaches → meta / class, meta, huge) | Tcaches < Arenas, Meta, Class, Huge |
+| purge `purge_all`, `purge_arena`, `decay` → `Arena::decay_with`, `ClassState::decay_with`, `Huge::decay_with`, `on_tick`, `sample` → `policy::evaluate`; background `start` (state, then meta) and `main` | class, huge, state locks one at a time |
+| statistics `epoch`, `collect`, `collect_all` (with their exact-stats ghost outputs), `mallinfo2`, `snapshot`, `arena_stats(_all)` (class → table, huge, meta, arena and process statistics), `mallctl` `ctl` and its named readers (`stats.*`, `stats.cgroup.empty_bytes`), `utilization`, `owner_of`, `get_defrag_hint`, `malloc_trim` | each lock with nothing above it held |
+| `fork_prepare` (`api/mod.rs:819`) | Tcaches < Arenas < Class(i, c) (arenas ascending, classes ascending) < Table(c) < Huge < Meta < Stats < ArenaStats(i) < State, through one root token; Sets(i) gated |
+
+`fork_prepare` proves it with loop invariants `ord.top() <
+rank_class(i, 0)`, `< rank_class(i, c)`, `< rank_table(c)`, `<
+rank_arena_stats(i)`; the arena indices it visits are below
+`MAX_ARENAS` (`Arenas::count`, now trusted for that bound, `arena.rs:1569`),
+so the `u16` arena indices of the arenas it finds increase with `i`.
+
+**The gated locks** (`lock.rs:327`, `RawLock::lock_held_gated`,
+`lock.rs:188`). The code does not follow `fork_prepare`'s documented
+nesting order (design 9): at run time `take_group` holds Class(i,c) and
+Table(c) and takes Sets(i) (`SetTable::ensure` through `ensure_sets`),
+while `fork_prepare` takes Sets(i) before every Table lock. No total
+order fits both, so the ranks follow the run-time paths (Table < Sets)
+and `fork_prepare` takes Sets(i) as a gated lock: it holds the tokens
+of every class lock of arena `i` (`lock_held_gated` requires them, with
+their ranks), and every other thread that takes a slab-set lock holds
+one of that arena's class locks while it holds or waits for it, so no
+other thread holds Sets(i) or waits for it. The gated acquisition does
+not raise the token. This is not a deadlock: verified as above, plus
+the gate premise below.
+
+**Premises beyond the common ones.**
+- *Entry points hold no allocator lock* (`axiom_entry`, `lock.rs:400`;
+  ledger category "C-program contract"). The roots: `alloc_slow_in`,
+  `free_slow_in`, `alloc_huge_in`, `Heap::free_huge`, `paths::free_direct`
+  and the no-heap `alloc_direct` arms of `paths::alloc`,
+  `alloc_declined`, `alloc_zeroed` (`heap/paths.rs`); `pop_compact`,
+  `pop_compact_run`, `rebuild_run` (`heap/compact.rs`); the `mallocx`
+  routes (`heap/mallocx.rs:254`, `:294`); `libc::alloc_huge`,
+  `malloc_trim` (`api/libc.rs`); `Huge::usable_size` (`huge/mod.rs`,
+  called from the `api::libc` and `api::jemalloc` entry points and
+  `Shared::zero_huge` on the free paths); `ctl`, `utilization`, `owner_of`,
+  `arena_stats`, and the named readers `cgroup_empty_bytes` and
+  `stats_allocated` to `stats_retained` (`api/mallctl.rs`; `mallctl`
+  calls them through its node table); `get_defrag_hint`; the report and
+  `mallinfo2` call sites (`api/print.rs`, `api/glibc.rs`), and the same
+  call in theorem 32's verification-only witness
+  `theorem_read_only_never_aborts` (`api/mod.rs`);
+  `Shared::init` (no lock exists yet); `create_heap_for_thread` and
+  `heap_destructor` (`heap/thread.rs`); the background thread's `main`;
+  `fork_prepare`. The fast paths take no lock (theorem 9), and no
+  allocator entry point is re-entered while a lock is held: allocator
+  code calls nothing that may allocate with a lock held (theorem 16 for
+  the reports' calls out, by inspection elsewhere), and a signal
+  handler that allocates is outside the C contract (the fork handlers
+  block signals).
+- *Closures* (`axiom_held_below`, `lock.rs:410`): the decay walks'
+  closures in `ClassState::decay_with` and `Huge::decay_with`
+  (`Decayer::decay` takes a closure, which cannot carry a token). Both
+  functions take the caller's token and require it below the lock the
+  closure takes, so the premise restates a checked precondition for code
+  that runs during the call.
+- *The gate*: the only acquisition of a slab-set lock other than
+  `fork_prepare`'s, `SetTable::ensure`, runs under `take_group`, which
+  `plan` calls with the class's lock held, on that class's sets (the
+  lock value), whose shared store is that arena's table
+  (`Set::ensure`). A token does not say which locks are held, so this is
+  by inspection.
+- *Trusted bodies with honest specs*: `Set::ensure` (requires the
+  slab-set rank for a shared store), `policy::empty_bytes`,
+  `Heap::destroy`, `assign_home`, `Meta::commit`, `Meta::free`, and the
+  `mallctl` wrapper `heap_set_arena`: each states the lowest rank its
+  body takes; `purge::background::state` names `STATE`'s rank.
+- *Ranks set in unverified constructors*: `Arenas::init` and
+  `Tcaches::init` create their locks with the ranks their type
+  invariants state, as they create the rest of the value.
+- *The mutex*, as for fork safety: `lock` returns only once this thread
+  holds the lock.
+
+**Where the statement is weaker than the code.**
+- Partial correctness and per-thread: the theorem rules out circular
+  wait among allocator locks, not a lock held forever (a holder that
+  never returns), and it says nothing about the futex itself.
+- The ranks of a held set are bounded by `top()`, not tracked exactly;
+  a token does not know which locks its owner holds, so the gate
+  premise is by inspection.
+- Code outside `verus!` and trusted bodies are covered by the premises
+  above, not checked: chiefly `Heap::destroy` (class, metadata, huge).
+- `fork_release` takes no lock and is not part of the statement; the
+  release order is unstated.
 
 ## Interface contract
 

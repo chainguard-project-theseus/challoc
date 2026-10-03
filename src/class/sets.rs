@@ -6,7 +6,9 @@ use crate::bitmap::TwoLevelBitmap;
 use crate::layout::{CLASSES, LG_MAX_SLAB, LG_MIN_SLAB, NCLASSES, Regions};
 #[cfg(verus_only)]
 use crate::layout::{class_table, process_regions};
-use crate::lock::{Lock, RawLock};
+use crate::lock::{Lock, LockOrder, RawLock};
+#[cfg(verus_only)]
+use crate::lock::{gated, rank_meta, rank_sets};
 use crate::meta::Meta;
 use crate::sys::Errno;
 #[cfg(verus_only)]
@@ -74,13 +76,15 @@ impl Lazy {
         self.committed
     }
 
-    pub(crate) fn reserve(meta: &Meta, len: usize, align: usize) -> (r: Option<Lazy>)
+    pub(crate) fn reserve(meta: &Meta, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<Lazy>)
         requires
             crate::sys::may_syscall(),
             crate::meta::is_pow2(align),
+            old(ord).allows(rank_meta()),
         ensures
             r matches Some(l) ==> l.spec_base() + l.spec_len() <= crate::meta::va_limit() && l.spec_len() == len && l.spec_committed() == 0,
             r matches Some(l) ==> meta.holds(l.spec_base() as int, len as int),
+            *final(ord) == *old(ord),
     {
         proof {
             broadcast use lemma_shl_pow2;
@@ -88,7 +92,7 @@ impl Lazy {
         // With metadata THP on (`thp.rs`) the table starts on a folio
         // boundary, so the rounded commits of `ensure` cover whole aligned
         // folios and the kernel can map them as such.
-        let base = meta.reserve_table(len, align.max(crate::thp::meta_folio_size()))?;
+        let base = meta.reserve_table(len, align.max(crate::thp::meta_folio_size()), Tracked(ord))?;
         Some(Lazy {
             base,
             len,
@@ -99,23 +103,25 @@ impl Lazy {
     /// [`reserve`](Lazy::reserve), with the permission to the table's
     /// bytes, its length rounded up to a whole word ([`axiom_table_bytes`]),
     /// and the alignment `Meta::reserve_table` gives its start.
-    pub(crate) fn reserve_raw(meta: &Meta, len: usize, align: usize) -> (r: (Option<Lazy>, Tracked<PointsToRaw>))
+    pub(crate) fn reserve_raw(meta: &Meta, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Option<Lazy>, Tracked<PointsToRaw>))
         requires
             crate::sys::may_syscall(),
             crate::meta::is_pow2(align),
+            old(ord).allows(rank_meta()),
         ensures
             r.0 matches Some(l) ==> l.spec_base() + l.spec_len() <= crate::meta::va_limit() && l.spec_len() == len && l.spec_committed() == 0,
             r.0 matches Some(l) ==> meta.holds(l.spec_base() as int, len as int),
             r.0 matches Some(l) ==> l.spec_base() % align == 0,
             r.0 matches Some(l) ==> r.1@.is_range(l.spec_base() as int, (len + 7) / 8 * 8),
             r.0 matches Some(l) ==> r.1@.provenance() == cast_provenance(),
+            *final(ord) == *old(ord),
     {
         proof {
             broadcast use lemma_shl_pow2;
         }
         // On a folio boundary, as in `reserve`.
         let folio = crate::thp::meta_folio_size();
-        let Some(base) = meta.reserve_table(len, align.max(folio)) else {
+        let Some(base) = meta.reserve_table(len, align.max(folio), Tracked(ord)) else {
             return (None, Tracked(PointsToRaw::empty(cast_provenance())));
         };
         proof {
@@ -246,6 +252,7 @@ impl SetTable {
     pub fn raw_lock(&self) -> (r: &RawLock)
         ensures
             *r == self.spec_raw_lock(),
+            r.rank() == self.rank(),
     {
         self.tables.raw()
     }
@@ -261,14 +268,16 @@ impl Lazy {
     /// to `page` bounds what is ever committed, so `committed <= len +
     /// page` holds after every call with the same `page` (and the
     /// watermark only grows, so a call never breaks the bound).
-    pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, upto: usize) -> (r: Result<(), Errno>)
+    pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, upto: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),
             1 <= page <= 0x8000_0000_0000_0000,
+            old(ord).allows(rank_meta()),
             upto <= 0x4000_0000_0000_0000,
         ensures
             final(self).spec_base() == old(self).spec_base(),
             final(self).spec_len() == old(self).spec_len(),
+            *final(ord) == *old(ord),
             old(self).spec_committed() <= old(self).spec_len() + page ==> final(self).spec_committed() <= final(self).spec_len() + page,
     {
         proof {
@@ -291,7 +300,7 @@ impl Lazy {
         }
         let want = ((upto + unit - 1) & !(unit - 1)).min((self.len + page - 1) & !(page - 1));
         if want > self.committed {
-            meta.commit(self.base + self.committed, want - self.committed)?;
+            meta.commit(self.base + self.committed, want - self.committed, Tracked(ord))?;
             self.committed = want;
         }
         Ok(())
@@ -345,6 +354,13 @@ impl SetTable {
         &&& 1 <= self.page <= 0x8000_0000_0000_0000
         &&& forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] self.groups[g].stride <= 3 * NCLASSES
         &&& forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] self.nslabs[g] <= 0x400_0000
+        &&& gated(self.tables.rank())
+    }
+
+    /// The commit lock's rank: arena `i`'s slab-set lock,
+    /// `rank_sets(i)` (a gated lock).
+    pub closed spec fn rank(&self) -> int {
+        self.tables.rank()
     }
 
     /// What [`SetTable::new`] builds over `regions` for class `c`
@@ -381,6 +397,7 @@ impl Set {
             r.map.wf(),
             r.map.spec_nbits() == table.nslabs[group_spec(class as int)],
             r.map@ == vstd::set::Set::<nat>::empty(),
+            r.store is Shared,
     {
         debug_assert!(kind < SETS_PER_CLASS);
         let g = SetTable::group_of(class);
@@ -421,15 +438,18 @@ verus! {
 
 impl Set {
     /// A set over `0..nslabs` on its own table.
-    pub(crate) fn new(meta: &Meta, page: usize, nslabs: usize) -> (r: Option<Set>)
+    pub(crate) fn new(meta: &Meta, page: usize, nslabs: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<Set>)
         requires
             crate::sys::may_syscall(),
             crate::meta::is_pow2(page),
             page <= 0x8000_0000_0000_0000,
             nslabs <= 0x1_0000_0000,
+            old(ord).allows(rank_meta()),
         ensures
             r matches Some(s) ==> s.map.wf() && s.map.spec_nbits() == nslabs && s.map@ == vstd::set::Set::<nat>::empty(),
             r matches Some(s) ==> (meta.is_process() ==> s.map.in_meta()),
+            r matches Some(s) ==> s.store is Own,
+            *final(ord) == *old(ord),
     {
         proof {
             let k = choose|k: nat| k < 64 && page as nat == #[trigger] vstd::arithmetic::power2::pow2(k);
@@ -437,9 +457,9 @@ impl Set {
         }
         let l0_words = nslabs.div_ceil(64);
         let l1_words = l0_words.div_ceil(64);
-        let mut table = Lazy::reserve(meta, 8 * TwoLevelBitmap::words_needed(nslabs), page)?;
+        let mut table = Lazy::reserve(meta, 8 * TwoLevelBitmap::words_needed(nslabs), page, Tracked(ord))?;
         // Level 1 is small and touched by every operation: commit it now.
-        table.ensure(meta, page, 8 * l1_words).ok()?;
+        table.ensure(meta, page, 8 * l1_words, Tracked(ord)).ok()?;
         // SAFETY: the words come from a fresh, zero, never-freed reservation.
         let map = unsafe { TwoLevelBitmap::from_raw(nslabs, crate::vspec::addr::addr_to_ptr(table.base) as *mut u64) };
         proof {
@@ -464,18 +484,27 @@ impl Set {
     /// invariant of `Set` records and the callers (`ClassState::ensure_sets`,
     /// `huge/`) do not state; and the shared store is followed through a raw
     /// pointer.
+    ///
+    /// Lock order: an own store's commit takes the metadata lock; a shared
+    /// store's takes the slab-set lock of the table's arena, then the
+    /// metadata lock (`SetTable::ensure`). Every slab-set lock ranks at
+    /// least `rank_sets(0)`.
     #[verifier::external_body]
-    pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, slab: usize) -> (r: Result<(), Errno>)
+    pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, slab: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
+            old(self).store is Shared ==> old(ord).allows(rank_sets(0)),
         ensures
             final(self).map == old(self).map,
             final(self).l1_words == old(self).l1_words,
+            (final(self).store is Own) == (old(self).store is Own),
+            *final(ord) == *old(ord),
     {
         match &mut self.store {
-            Store::Own(table) => table.ensure(meta, page, 8 * (self.l1_words + slab / 64 + 1)),
+            Store::Own(table) => table.ensure(meta, page, 8 * (self.l1_words + slab / 64 + 1), Tracked(ord)),
             // SAFETY: the table outlives the set (`Store::Shared`).
-            Store::Shared(table, g) => unsafe { &**table }.ensure(meta, *g as usize, slab),
+            Store::Shared(table, g) => unsafe { &**table }.ensure(meta, *g as usize, slab, Tracked(ord)),
         }
     }
 }
@@ -498,12 +527,14 @@ pub broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
 impl SetTable {
     /// Reserve the tables (address space only; rows are committed by
     /// `ensure`). `None` if the metadata region cannot hold them.
-    pub(crate) fn new(meta: &Meta, regions: &Regions) -> (r: Option<SetTable>)
+    pub(crate) fn new(meta: &Meta, regions: &Regions, Ghost(arena): Ghost<u16>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<SetTable>)
         requires
             crate::sys::may_syscall(),
             regions.wf(),
+            old(ord).allows(rank_meta()),
         ensures
-            r matches Some(t) ==> t.over(*regions),
+            r matches Some(t) ==> t.over(*regions) && t.rank() == rank_sets(arena as int),
+            *final(ord) == *old(ord),
     {
         broadcast use axiom_set_tables_lock_inv;
         let page = regions.page_size();
@@ -565,6 +596,8 @@ impl SetTable {
                 forall|d: int| 0 <= d < NCLASSES ==> #[trigger] placed(pos, groups, nslabs, *regions, d),
                 forall|d: int| 0 <= d < NCLASSES && group_spec(d) < g ==> #[trigger] reserved(groups, nslabs, d),
                 crate::meta::is_pow2(page),
+                ord.allows(rank_meta()),
+                *ord == *old(ord),
         {
             if groups[g].count != 0 {
                 let ghost groups0 = groups;
@@ -580,7 +613,7 @@ impl SetTable {
                     assert(r8 * grp.stride <= 8 * (65 * 0x4001) * (3 * NCLASSES)) by (nonlinear_arith)
                         requires r8 <= 8 * 65 * 0x4001, grp.stride <= 3 * NCLASSES, grp.stride >= 0;
                 }
-                let t = Lazy::reserve(meta, 8 * rows * grp.stride, page)?;
+                let t = Lazy::reserve(meta, 8 * rows * grp.stride, page, Tracked(ord))?;
                 grp.base = t.base;
                 tables[g] = t;
                 groups[g] = grp;
@@ -619,7 +652,7 @@ impl SetTable {
             groups,
             nslabs,
             pos,
-            tables: Lock::new(tables),
+            tables: Lock::new(tables, Ghost(rank_sets(arena as int))),
             page,
         })
     }
@@ -628,11 +661,17 @@ impl SetTable {
 impl SetTable {
     /// Commit the rows of group `g` up to the level-0 word of `slab` (and
     /// so its chunk's level-1 word and every row before).
-    fn ensure(&self, meta: &Meta, g: usize, slab: usize) -> (r: Result<(), Errno>)
+    ///
+    /// Lock order: takes this table's commit lock (a gated lock, so the
+    /// caller also holds a gate: [`gated`]), then the metadata lock.
+    fn ensure(&self, meta: &Meta, g: usize, slab: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),
             g < SET_GROUPS,
             slab < self.nslabs[g as int],
+            old(ord).allows(rank_sets(0)),
+        ensures
+            *final(ord) == *old(ord),
     {
         proof {
             use_type_invariant(self);
@@ -644,7 +683,8 @@ impl SetTable {
                 requires 0 <= r1 <= 65 * 0x4000 + 65, 0 <= s <= 3 * NCLASSES;
         }
         let row = TwoLevelBitmap::chunked_l0_row(slab / 64);
-        self.tables.lock()[g].ensure(meta, self.page, 8 * (row + 1) * self.groups[g].stride)
+        let tracked mut under = LockOrder::spare();
+        self.tables.lock(Tracked(ord), Tracked(&mut under))[g].ensure(meta, self.page, 8 * (row + 1) * self.groups[g].stride, Tracked(&mut under))
     }
 }
 
@@ -654,7 +694,7 @@ impl SetTable {
     /// Tests: committed byte ranges of the groups.
     #[cfg(test)]
     pub fn committed_ranges(&self) -> [(usize, usize); SET_GROUPS] {
-        let t = self.tables.lock();
+        let t = self.tables.lock_t();
         let mut out = [(0usize, 0usize); SET_GROUPS];
         for g in 0..SET_GROUPS {
             out[g] = (t[g].base, t[g].committed);

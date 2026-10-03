@@ -8,14 +8,16 @@ use core::ffi::c_void;
 use crate::heap::{Shared, TLS_CREATING, TLS_EXITED};
 #[cfg(verus_only)]
 use crate::lock::RawLock;
-use crate::lock::{Lock, LockHeld};
+use crate::lock::{Lock, LockHeld, LockOrder};
+#[cfg(verus_only)]
+use crate::lock::{axiom_entry, rank_meta, rank_state};
 use crate::sys::{self, Timespec};
 use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_only)]
 use crate::vspec::lock::lock_inv;
 #[cfg(verus_only)]
 use vstd::prelude::*;
-use vstd::prelude::{Tracked, verus};
+use vstd::prelude::{Ghost, Tracked, verus};
 
 verus! {
 
@@ -63,7 +65,7 @@ exec static STATE: Lock<State> = {
         creating: false,
         stack: 0,
         thread: None,
-    })
+    }, Ghost(rank_state()))
 };
 /// Mirror of `STATE.present` for the lock-free check on every tick.
 exec static PRESENT: AtomicBool = AtomicBool::new(false);
@@ -169,16 +171,19 @@ unsafe fn errno_write(errno: *mut i32, v: i32) {
 /// `errno` is preserved: this runs from `free`'s slow path (design
 /// section 1 promises `free` leaves `errno` alone) and glibc's
 /// `pthread_create` / `pthread_join` may set it on their way.
-pub fn start(shared: &Shared) -> bool
+pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> bool
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
+        old(ord).allows(rank_meta()),
+    ensures
+        *final(ord) == *old(ord),
 {
     broadcast use axiom_state_lock_inv;
 
     let (stack, previous) = {
-        let mut g = STATE.lock();
+        let mut g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         if g.present {
             return true;
         }
@@ -191,7 +196,7 @@ pub fn start(shared: &Shared) -> bool
     // SAFETY: `__errno_location` returns this thread's `errno`.
     let errno = errno_location();
     let saved_errno = unsafe { errno_read(errno) };
-    let (stack, thread) = create(shared, stack, previous);
+    let (stack, thread) = create(shared, stack, previous, Tracked(ord));
     // SAFETY: `errno` is this thread's `errno` slot (above), valid for
     // the life of the thread.
     unsafe { errno_write(errno, saved_errno) };
@@ -203,7 +208,7 @@ pub fn start(shared: &Shared) -> bool
         }
     }
     let present = {
-        let mut g = STATE.lock();
+        let mut g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         g.creating = false;
         g.stack = stack;
         g.thread = thread;
@@ -246,14 +251,17 @@ fn create(
     shared: &Shared,
     stack: usize,
     previous: Option<::libc::pthread_t>,
+    Tracked(ord): Tracked<&mut LockOrder>,
 ) -> (r: (usize, Option<::libc::pthread_t>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
         stack + STACK_SIZE <= usize::MAX,
+        old(ord).allows(rank_meta()),
     ensures
         r.0 + STACK_SIZE <= usize::MAX,
+        *final(ord) == *old(ord),
 {
     broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
 
@@ -307,9 +315,9 @@ fn create(
         }
         // `.filter(|&s| shared.meta.commit(..).is_ok())`, spelled out:
         // vstd does not specify `Option::filter`.
-        match shared.meta.reserve(STACK_SIZE, page) {
+        match shared.meta.reserve(STACK_SIZE, page, Tracked(ord)) {
             Some(s) => {
-                if shared.meta.commit(s + page, STACK_SIZE - page).is_ok() {
+                if shared.meta.commit(s + page, STACK_SIZE - page, Tracked(ord)).is_ok() {
                     Some(s)
                 } else {
                     None
@@ -380,7 +388,7 @@ fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t>
 #[cfg(test)]
 pub fn join_exited() -> bool {
     let t = {
-        let mut g = STATE.lock();
+        let mut g = STATE.lock_t();
         if g.present || g.creating {
             return false;
         }
@@ -399,13 +407,13 @@ pub fn join_exited() -> bool {
 /// The stack reservation (0 before the first start), for tests.
 #[cfg(test)]
 pub fn stack() -> usize {
-    STATE.lock().stack
+    STATE.lock_t().stack
 }
 
 /// The last thread created and not yet joined, for tests.
 #[cfg(test)]
 pub fn thread() -> Option<::libc::pthread_t> {
-    STATE.lock().thread
+    STATE.lock_t().thread
 }
 
 verus! {
@@ -437,6 +445,8 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
         crate::sys::grant_aborts();
     }
     let shared = shared_arg(arg);
+    // Premise (lock order): a new thread holds no allocator lock.
+    let tracked mut ord = axiom_entry();
     // SAFETY: the name is NUL-terminated.
     let _ = unsafe { sys::prctl(PR_SET_NAME, THREAD_NAME.as_ptr() as usize, 0, 0, 0) };
     loop
@@ -444,19 +454,20 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
+            ord.top() == 0,
     {
         // Read the sequence before scanning, so a bump that lands
         // between the scan and the wait makes the wait return at once.
         let seq = SEQ.load(Ordering::SeqCst);
         if !requested() {
-            let mut g = STATE.lock();
+            let mut g = state().lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
             g.present = false;
             PRESENT.store(false, Ordering::Relaxed);
             return core::ptr::null_mut();
         }
         let now = sys::now_coarse_ns();
-        super::sample(shared, now);
-        let deadline = super::decay(shared, now);
+        super::sample(shared, now, Tracked(&mut ord));
+        let deadline = super::decay(shared, now, Tracked(&mut ord));
         // `deadline.map(|deadline| ..)`, spelled as a `match`.
         let timeout = match deadline {
             Some(deadline) => {
@@ -485,25 +496,31 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
 pub uninterp spec fn state_lock() -> RawLock;
 
 /// `&STATE`. Trusted: names its raw lock [`state_lock`], which holds
-/// because `STATE` is one static.
+/// because `STATE` is one static, and its rank, the one `STATE` is
+/// created with.
 #[verifier::external_body]
 #[inline(always)]
 fn state() -> (r: &'static Lock<State>)
     ensures
         r.spec_raw() == state_lock(),
+        r.rank() == rank_state(),
 {
     &STATE
 }
 
 /// Take the state lock (fork prepare, after the metadata lock); the
-/// token is the hold.
-pub fn fork_lock() -> (t: Tracked<LockHeld>)
+/// token is the hold, and `ord` (a root) is raised to its rank.
+pub fn fork_lock(Tracked(ord): Tracked<&mut LockOrder>) -> (t: Tracked<LockHeld>)
     requires
         crate::sys::may_syscall(),
+        old(ord).root(),
+        old(ord).allows(rank_state()),
     ensures
         t@.held() == state_lock(),
+        final(ord).root(),
+        final(ord).top() == rank_state(),
 {
-    state().raw().lock_held()
+    state().raw().lock_held(Tracked(ord))
 }
 
 /// Release the state lock (fork parent and child, before the others),

@@ -58,6 +58,9 @@
 use crate::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::heap::Shared;
+use crate::lock::LockOrder;
+#[cfg(verus_only)]
+use crate::lock::rank_class;
 use crate::purge::NEVER;
 use crate::sys::cgroup::UNLIMITED;
 #[cfg(verus_only)]
@@ -843,28 +846,35 @@ impl Policy {
 /// the kernel, and `Arenas::iter` indexes the registry below
 /// `arenas.count()`, which panics only if that count is past
 /// `MAX_ARENAS`: an integrity check (theorem "Read-only APIs never
-/// abort").
+/// abort"). Lock order: it takes class locks, then the huge lock, one at
+/// a time.
 #[verifier::external_body]
-pub fn empty_bytes(shared: &Shared) -> u64
+pub fn empty_bytes(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u64
     requires
         crate::sys::may_syscall(),
         crate::sys::may_abort_corrupt(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
 {
     let mut total = 0u64;
     for arena in shared.arenas.iter() {
-        total += arena.empty_bytes() as u64;
+        total += arena.empty_bytes(Tracked(&mut *ord)) as u64;
     }
-    total + shared.huge.empty_bytes() as u64
+    total + shared.huge.empty_bytes(Tracked(ord)) as u64
 }
 
 /// Evaluate the table against the cgroup record after a sample. Without a
 /// limit this is a few loads; with one it sums the `Empty` bytes and
 /// publishes the outcome on `shared.policy`, waking a background thread
 /// when the band changed or a full purge is owed.
-pub fn evaluate(shared: &Shared)
+pub fn evaluate(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
 {
     let cg = &shared.cgroup;
     let p = &shared.policy;
@@ -879,7 +889,7 @@ pub fn evaluate(shared: &Shared)
         }
         return;
     }
-    let retention = empty_bytes(shared);
+    let retention = empty_bytes(shared, Tracked(ord));
     let changed = p.apply(b, limit, retention, cg.rises().0);
     // The purge side's mirror of "under 70% of a known limit", read at
     // each batch flush for the advice (the module doc): the band as just

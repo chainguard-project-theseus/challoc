@@ -9,12 +9,14 @@
 use crate::sync::atomic::{AtomicPtr, Ordering};
 use core::ptr;
 
-use crate::lock::Lock;
+use crate::lock::{Lock, LockOrder};
+#[cfg(verus_only)]
+use crate::lock::{rank_class, rank_tcaches};
 
 use super::{Heap, Shared};
-use vstd::prelude::verus;
 #[cfg(verus_only)]
 use vstd::prelude::*;
+use vstd::prelude::{Ghost, Tracked, verus};
 
 verus! {
 
@@ -32,6 +34,15 @@ pub struct Tcaches {
     table: [AtomicPtr<u8>; MAX_TCACHES],
 }
 
+impl Tcaches {
+    /// The table lock is the explicit-cache table lock of the lock order
+    /// (`init` creates it so; trusted with `init`).
+    #[verifier::type_invariant]
+    spec fn rank_ok(self) -> bool {
+        self.lock.rank() == rank_tcaches()
+    }
+}
+
 } // verus!
 
 impl Tcaches {
@@ -43,7 +54,9 @@ impl Tcaches {
     pub unsafe fn init(this: *mut Tcaches) {
         // SAFETY: the caller guarantees `this` is writable and unaliased.
         unsafe {
-            ptr::write(&raw mut (*this).lock, Lock::new(()));
+            // Rank `rank_tcaches()` (the type invariant, trusted with this
+            // function, which is not verified).
+            ptr::write(&raw mut (*this).lock, Lock::new((), Ghost::assume_new()));
             let table = &raw mut (*this).table;
             for i in 0..MAX_TCACHES {
                 ptr::write(&raw mut (*table)[i], AtomicPtr::new(ptr::null_mut()));
@@ -99,12 +112,21 @@ pub(super) unsafe fn heap_new<'a>(p: *mut Heap) -> (r: &'a mut Heap)
 impl Tcaches {
     /// `tcache.create`: a new explicit cache, home arena `arena`. `None`
     /// when the table or the metadata region is full.
-    pub fn create(&self, shared: &Shared, arena: u16) -> Option<u16>
+    // Not isolated: the search returns while the guard borrows `ord`.
+    #[verifier::loop_isolation(false)]
+    pub fn create(&self, shared: &Shared, arena: u16, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u16>
         requires
             crate::sys::may_syscall(),
             shared.wf(),
+            old(ord).allows(rank_tcaches()),
+        ensures
+            *final(ord) == *old(ord),
     {
-        let _g = self.lock.lock();
+        proof {
+            use_type_invariant(self);
+        }
+        let tracked mut under = LockOrder::spare();
+        let _g = self.lock.lock(Tracked(ord), Tracked(&mut under));
         // The first null entry, lowest index first.
         let mut slot = 0;
         while !self.table[slot].load(Ordering::Relaxed).is_null()
@@ -117,7 +139,7 @@ impl Tcaches {
                 return None;
             }
         }
-        let (h, _) = Heap::create_detached(shared, arena);
+        let (h, _) = Heap::create_detached(shared, arena, Tracked(&mut under));
         if h.is_null() {
             return None;
         }
@@ -127,12 +149,16 @@ impl Tcaches {
 
     /// The table lock, for the fork handlers. It is the outermost
     /// allocator lock: `create` and `destroy` hold it across
-    /// `Heap::create_detached` / `Heap::destroy`, which take the arena
-    /// creation, class and metadata locks.
+    /// `Heap::create_detached` / `Heap::destroy`, which take the metadata
+    /// lock, and the class, metadata and huge locks.
     pub fn raw_lock(&self) -> (r: &crate::lock::RawLock)
         ensures
             *r == self.spec_raw_lock(),
+            r.rank() == rank_tcaches(),
     {
+        proof {
+            use_type_invariant(self);
+        }
         self.lock.raw()
     }
 
@@ -173,17 +199,19 @@ impl Tcaches {
     /// `false` if there is no such cache. Afterwards every home and
     /// `others`-node cache of the explicit cache's heap is empty
     /// ([`Heap::flush_all`]; theorem "cache flush completeness").
-    pub fn flush(&self, shared: &Shared, id: u16) -> (r: bool)
+    pub fn flush(&self, shared: &Shared, id: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: bool)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
+            old(ord).allows(rank_class(0, 0)),
         ensures
             id as usize >= MAX_TCACHES ==> !r,
+            *final(ord) == *old(ord),
     {
         match self.get(id) {
             Some(h) => {
-                h.flush_all(shared);
+                h.flush_all(shared, Tracked(ord));
                 proof {
                     assert(h.drained());
                 }
@@ -195,12 +223,19 @@ impl Tcaches {
 
     /// `tcache.destroy`: flush and free `id`. `false` if there is no such
     /// cache.
-    pub fn destroy(&self, shared: &Shared, id: u16) -> bool
+    pub fn destroy(&self, shared: &Shared, id: u16, Tracked(ord): Tracked<&mut LockOrder>) -> bool
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_tcaches()),
+        ensures
+            *final(ord) == *old(ord),
     {
-        let _g = self.lock.lock();
+        proof {
+            use_type_invariant(self);
+        }
+        let tracked mut under = LockOrder::spare();
+        let _g = self.lock.lock(Tracked(ord), Tracked(&mut under));
         let i = id as usize;
         if i >= MAX_TCACHES {
             return false;
@@ -211,7 +246,7 @@ impl Tcaches {
         }
         // SAFETY: `p` came from `create_detached` and is now unreachable
         // through the table.
-        unsafe { Heap::destroy(p, shared) };
+        unsafe { Heap::destroy(p, shared, Tracked(&mut under)) };
         true
     }
 

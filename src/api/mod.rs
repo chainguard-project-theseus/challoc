@@ -116,13 +116,13 @@ use crate::heap::Shared;
 use crate::layout::{self, NCLASSES, Regions};
 use crate::lock::LockHeld;
 #[cfg(verus_only)]
-use crate::lock::RawLock;
+use crate::lock::{RawLock, axiom_entry, rank_arena_stats, rank_class, rank_table};
 use crate::purge;
 use crate::sys;
 use crate::sys::features::{FeatureLine, Features};
 #[cfg(verus_only)]
 use vstd::prelude::*;
-use vstd::prelude::{Map, Tracked, int, verus};
+use vstd::prelude::{Ghost, Map, Tracked, int, verus};
 
 verus! {
 
@@ -371,7 +371,10 @@ fn theorem_read_only_never_aborts(
     // `mallinfo2` (and `mallinfo`, which adds clamps) after its
     // `shared()`: the calls its body makes.
     let tracked mut sd = Ghost((Seq::<crate::stats::ArenaStats>::empty(), Seq::<int>::empty()));
-    let all = crate::stats::collect_all(shared, Tracked(&mut sd));
+    // Premise (lock order), as at `mallinfo2`'s call site: an entry
+    // point holds no allocator lock.
+    let tracked mut ord = crate::lock::axiom_entry();
+    let all = crate::stats::collect_all(shared, Tracked(&mut sd), Tracked(&mut ord));
     let _ = shared.regions.page_size();
     let _ = crate::stats::fig_add(all.small_allocated, all.large_allocated);
     let _ = crate::stats::fig_mul(all.pdirty, all.large_runs);
@@ -811,6 +814,15 @@ fn count_held(s: &Shared, Tracked(held): Tracked<&ForkHeld>) -> (r: u32)
 ///
 /// Fork safety, first half: it returns holding [`fork_holds`], one token
 /// per lock of the fork lock list (asserted at the end).
+///
+/// Lock order (theorem "Lock order is acyclic", `verus/THEOREMS.md`):
+/// every acquisition ranks above every lock taken before it
+/// ([`crate::lock::LockOrder`]), except each arena's slab-set lock. At
+/// run time that lock is taken under a class lock and the class's slab
+/// table lock (`SlabTable::take_group`), so it ranks above the table
+/// locks, which are taken here after it. It is a gated lock
+/// ([`crate::lock::gated`]): taken here with all of its arena's class
+/// locks held, no other thread can hold it or wait for it.
 extern "C" fn fork_prepare() {
     proof {
         crate::sys::grant_syscalls();
@@ -818,12 +830,16 @@ extern "C" fn fork_prepare() {
     }
     let mask = sys::block_all_signals();
     let s = shared();
-    let Tracked(t) = s.tcaches_lock().lock_held();
+    // Premise (lock order): the thread that calls `fork` holds no
+    // allocator lock (no allocator code forks, and the prepare handlers
+    // that run before ours have returned).
+    let tracked mut ord = axiom_entry();
+    let Tracked(t) = s.tcaches_lock().lock_held(Tracked(&mut ord));
     let tracked mut toks: Map<ForkLock, LockHeld> = Map::tracked_empty();
     proof {
         toks.tracked_insert(ForkLock::Tcaches, t);
     }
-    let Tracked(t) = s.arenas_lock().lock_held();
+    let Tracked(t) = s.arenas_lock().lock_held(Tracked(&mut ord));
     proof {
         toks.tracked_insert(ForkLock::Arenas, t);
     }
@@ -836,11 +852,15 @@ extern "C" fn fork_prepare() {
     for i in 0..n
         invariant
             crate::sys::may_syscall(),
+            n <= crate::arena::MAX_ARENAS,
             forall|j: int| #[trigger] arenas.contains_key(j) ==> 0 <= j < i,
+            forall|j: int| #[trigger] arenas.contains_key(j) ==> arenas[j].spec_index() as int == j,
             forall|k: ForkLock| #[trigger] toks.contains_key(k) <==> (k == ForkLock::Tcaches || k
                 == ForkLock::Arenas || arena_part(k, arenas.dom())),
             forall|k: ForkLock| #[trigger]
                 toks.contains_key(k) ==> toks[k].held() == lock_at(*s, arenas, k),
+            ord.root(),
+            ord.top() < rank_class(i as int, 0),
     {
         if let Some(a) = s.arenas.get_existing(i as u16) {
             let ghost before = arenas;
@@ -851,19 +871,34 @@ extern "C" fn fork_prepare() {
                 invariant
                     crate::sys::may_syscall(),
                     arenas == before.insert(i as int, *a),
+                    a.spec_index() as int == i,
+                    i < crate::arena::MAX_ARENAS,
                     forall|j: int| #[trigger] before.contains_key(j) ==> 0 <= j < i,
                     forall|k: ForkLock| #[trigger] toks.contains_key(k) <==> (k == ForkLock::Tcaches
                         || k == ForkLock::Arenas || arena_part(k, before.dom()) || (
                     k matches ForkLock::Class(j, d) && j == i && 0 <= d < c)),
                     forall|k: ForkLock| #[trigger]
                         toks.contains_key(k) ==> toks[k].held() == lock_at(*s, arenas, k),
+                    forall|d: int| 0 <= d < c ==> #[trigger] toks[ForkLock::Class(i as int, d)].held().rank() == rank_class(i as int, d),
+                    ord.root(),
+                    ord.top() < rank_class(i as int, c as int),
             {
-                let Tracked(t) = a.class(c).raw_lock().lock_held();
+                let Tracked(t) = a.class(c).raw_lock().lock_held(Tracked(&mut ord));
                 proof {
                     toks.tracked_insert(ForkLock::Class(i as int, c as int), t);
                 }
             }
-            let Tracked(t) = a.sets().raw_lock().lock_held();
+            // The slab-set lock is gated by this arena's class locks, all
+            // held now: no order is checked, and `ord` stays at the last
+            // class lock (`lock::gated`).
+            let ghost key = |c: int| ForkLock::Class(i as int, c);
+            proof {
+                assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] toks.contains_key(key(c))
+                    && toks[key(c)].held().rank() == rank_class(i as int, c) by {
+                    assert(toks.contains_key(key(c)));
+                }
+            }
+            let Tracked(t) = a.sets().raw_lock().lock_held_gated::<ForkLock>(Tracked(&toks), Ghost(key));
             proof {
                 toks.tracked_insert(ForkLock::Sets(i as int), t);
                 assert forall|k: ForkLock| #[trigger] toks.contains_key(k) <==> (k
@@ -882,25 +917,30 @@ extern "C" fn fork_prepare() {
         invariant
             crate::sys::may_syscall(),
             held.wf(*s),
+            held.n() <= crate::arena::MAX_ARENAS,
+            forall|j: int| #[trigger] held.arenas().contains_key(j) ==> held.arenas()[j].spec_index() as int == j,
             forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
                     k == ForkLock::Tcaches || k == ForkLock::Arenas || arena_part(k, held.arenas().dom())
                         || (k matches ForkLock::Table(d) && 0 <= d < c)
             ),
+            ord.root(),
+            ord.top() < rank_table(c as int),
+            s.wf(),
     {
-        let Tracked(t) = s.tables()[c].raw_lock().lock_held();
+        let Tracked(t) = s.tables()[c].raw_lock().lock_held(Tracked(&mut ord));
         proof {
             held.put(ForkLock::Table(c as int), t);
         }
     }
-    let Tracked(t) = s.huge_lock().lock_held();
+    let Tracked(t) = s.huge_lock().lock_held(Tracked(&mut ord));
     proof {
         held.put(ForkLock::Huge, t);
     }
-    let Tracked(t) = s.meta_lock().lock_held();
+    let Tracked(t) = s.meta_lock().lock_held(Tracked(&mut ord));
     proof {
         held.put(ForkLock::Meta, t);
     }
-    let Tracked(t) = s.stats_lock().lock_held();
+    let Tracked(t) = s.stats_lock().lock_held(Tracked(&mut ord));
     proof {
         held.put(ForkLock::Stats, t);
     }
@@ -910,21 +950,25 @@ extern "C" fn fork_prepare() {
             crate::sys::may_syscall(),
             n == held.n(),
             held.wf(*s),
+            n <= crate::arena::MAX_ARENAS,
+            forall|j: int| #[trigger] held.arenas().contains_key(j) ==> held.arenas()[j].spec_index() as int == j,
             forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
                     k == ForkLock::Tcaches || k == ForkLock::Arenas || arena_part(k, held.arenas().dom())
                         || table_part(k) || k == ForkLock::Huge || k == ForkLock::Meta || k
                         == ForkLock::Stats || (k matches ForkLock::ArenaStats(j) && j < i
                         && held.arenas().contains_key(j))
             ),
+            ord.root(),
+            ord.top() < rank_arena_stats(i as int),
     {
         if let Some(a) = arena_held(s, i, Tracked(&held)) {
-            let Tracked(t) = a.stats_raw_lock().lock_held();
+            let Tracked(t) = a.stats_raw_lock().lock_held(Tracked(&mut ord));
             proof {
                 held.put(ForkLock::ArenaStats(i as int), t);
             }
         }
     }
-    let Tracked(state) = purge::background::fork_lock();
+    let Tracked(state) = purge::background::fork_lock(Tracked(&mut ord));
     proof {
         assert(fork_holds(*s, held, state));
     }
@@ -1316,7 +1360,10 @@ mod tests {
                 "arena.rs:Arena.stats" => {
                     for &a in arenas {
                         state(
-                            s.arena(a).unwrap().stats_raw_lock().is_locked(),
+                            s.arena(a, Tracked::assume_new())
+                                .unwrap()
+                                .stats_raw_lock()
+                                .is_locked(),
                             &std::format!("arena {a} stats"),
                         );
                     }
@@ -1329,7 +1376,9 @@ mod tests {
                     for &a in arenas {
                         for c in 0..NCLASSES {
                             state(
-                                s.arena(a).unwrap().classes[c].raw_lock().is_locked(),
+                                s.arena(a, Tracked::assume_new()).unwrap().classes[c]
+                                    .raw_lock()
+                                    .is_locked(),
                                 &std::format!("arena {a} class {c}"),
                             );
                         }
@@ -1338,7 +1387,11 @@ mod tests {
                 "class/sets.rs:SetTable.tables" => {
                     for &a in arenas {
                         state(
-                            s.arena(a).unwrap().sets().raw_lock().is_locked(),
+                            s.arena(a, Tracked::assume_new())
+                                .unwrap()
+                                .sets()
+                                .raw_lock()
+                                .is_locked(),
                             &std::format!("arena {a} sets"),
                         );
                     }
@@ -1384,7 +1437,7 @@ mod tests {
         let _serial = FORK_TEST.lock().unwrap();
         let s = shared();
         // A second arena so the handlers have more than arena 0 to cover.
-        let extra = s.arenas.create(s).unwrap();
+        let extra = s.arenas.create(s, Tracked::assume_new()).unwrap();
         let arenas = [0, extra];
         fork_prepare();
         assert_locks(s, &arenas, true);
@@ -1423,11 +1476,14 @@ mod tests {
         assert!(!tasks().iter().any(|n| n == "challoc-bg"));
         purge::background::request(true);
         assert!(
-            purge::background::start(s),
+            purge::background::start(s, Tracked::assume_new()),
             "background thread did not start"
         );
         assert!(purge::background::present());
-        assert!(purge::background::start(s), "second start is idempotent");
+        assert!(
+            purge::background::start(s, Tracked::assume_new()),
+            "second start is idempotent"
+        );
         // The name is set by the thread itself; give it a moment.
         let mut seen = false;
         for _ in 0..200 {
@@ -1443,17 +1499,27 @@ mod tests {
         // with nobody else touching the allocator.
         let old_ns = s.decay_ns();
         s.set_decay_ms(1);
-        let (p, _, _) = s.alloc_huge(8 << 20, 4096, 0, vstd::prelude::Tracked::assume_new());
+        let (p, _, _) = s.alloc_huge(
+            8 << 20,
+            4096,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert!(!p.is_null());
         unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
         let page = (p as usize - s.regions.huge_base) >> s.regions.lg_page;
-        s.free_huge(page, vstd::prelude::Tracked::assume_new());
+        s.free_huge(
+            page,
+            vstd::prelude::Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         // No check that the run is still `Empty` here: with a 1 ms decay
         // the thread can purge it before this thread runs again (seen on
         // a loaded Docker VM); the loop below is the assertion.
         let mut purged = false;
         for _ in 0..400 {
-            if s.huge.oldest_empty() == 0 && s.huge.stats().empty == 0 {
+            if s.huge.oldest_empty() == 0 && s.huge.stats(Tracked::assume_new()).empty == 0 {
                 purged = true;
                 break;
             }
@@ -1462,7 +1528,7 @@ mod tests {
         assert!(
             purged,
             "background thread did not purge the freed run: {:?}",
-            s.huge.stats()
+            s.huge.stats(Tracked::assume_new())
         );
         s.set_decay_ms((old_ns / 1_000_000) as i64);
 
@@ -1555,13 +1621,19 @@ mod tests {
         assert!(!purge::background::present());
         let old_ns = s.decay_ns();
         s.set_decay_ms(1);
-        let (p, _, _) = s.alloc_huge(8 << 20, 4096, 0, vstd::prelude::Tracked::assume_new());
+        let (p, _, _) = s.alloc_huge(
+            8 << 20,
+            4096,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert!(!p.is_null());
         unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
         let page = (p as usize - s.regions.huge_base) >> s.regions.lg_page;
         // Nothing else `Empty` in the huge allocator, so the free in the
         // hook is its first.
-        s.huge.purge_empty(u64::MAX);
+        s.huge.purge_empty(u64::MAX, Tracked::assume_new());
         // 0: the hook did not run; 1: the thread never slept without a
         // deadline; 2: the free was not the first `Empty`; 3: ready.
         let hook_state = Arc::new(AtomicU8::new(0));
@@ -1584,16 +1656,20 @@ mod tests {
                     return;
                 }
                 let none_before = s.huge.oldest_empty() == 0;
-                s.free_huge(page, vstd::prelude::Tracked::assume_new());
+                s.free_huge(
+                    page,
+                    vstd::prelude::Tracked::assume_new(),
+                    Tracked::assume_new(),
+                );
                 let first = none_before && s.huge.oldest_empty() != 0;
                 hook_seen.store(if first { 3 } else { 2 }, Ordering::SeqCst);
             }));
         purge::background::request(true);
-        let started = purge::background::start(s);
+        let started = purge::background::start(s, Tracked::assume_new());
         let mut purged = false;
         if started && hook_state.load(Ordering::SeqCst) == 3 {
             for _ in 0..400 {
-                if s.huge.oldest_empty() == 0 && s.huge.stats().empty == 0 {
+                if s.huge.oldest_empty() == 0 && s.huge.stats(Tracked::assume_new()).empty == 0 {
                     purged = true;
                     break;
                 }
@@ -1604,7 +1680,11 @@ mod tests {
         // or hook behind for the other background tests.
         purge::background::BEFORE_PUBLISH.lock().unwrap().take();
         if hook_state.load(Ordering::SeqCst) < 2 {
-            s.free_huge(page, vstd::prelude::Tracked::assume_new());
+            s.free_huge(
+                page,
+                vstd::prelude::Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
         }
         s.set_decay_ms((old_ns / 1_000_000) as i64);
         purge::background::request(false);
@@ -1628,7 +1708,7 @@ mod tests {
         assert!(
             purged,
             "background thread slept through a first Empty from its startup: {:?}",
-            s.huge.stats()
+            s.huge.stats(Tracked::assume_new())
         );
         assert!(stopped, "background thread did not stop");
     }
@@ -1653,7 +1733,7 @@ mod tests {
         assert!(!purge::background::present());
         purge::background::request(true);
         assert!(
-            purge::background::start(s),
+            purge::background::start(s, Tracked::assume_new()),
             "background thread did not start"
         );
         let stack = purge::background::stack();
@@ -1662,7 +1742,10 @@ mod tests {
             purge::background::request(false);
             wait_absent();
             purge::background::request(true);
-            assert!(purge::background::start(s), "restart {cycle} failed");
+            assert!(
+                purge::background::start(s, Tracked::assume_new()),
+                "restart {cycle} failed"
+            );
             assert!(purge::background::present());
             assert_eq!(
                 purge::background::stack(),

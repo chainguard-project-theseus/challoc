@@ -1,6 +1,6 @@
 # `Option::<T>::is_some_and`
 
-Seam S348 of `verus/SEAMS.md`: src/vspec/sys.rs:46. Kind: assume_spec. Category: core library.
+Seam S352 of `verus/SEAMS.md`: src/vspec/sys.rs:46. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

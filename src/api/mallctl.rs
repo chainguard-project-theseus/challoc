@@ -64,6 +64,9 @@ use crate::config::{KEYS, Value};
 use crate::heap::{self, Heap, Shared};
 use crate::huge::RunState;
 use crate::layout::{CLASSES, Kind, NBINS, NCLASSES};
+use crate::lock::LockOrder;
+#[cfg(verus_only)]
+use crate::lock::{axiom_entry, rank_class};
 use crate::purge;
 use crate::stats::{self, ArenaStats, BinStats};
 use crate::sys;
@@ -74,7 +77,7 @@ use Op::*;
 use Reading::*;
 #[cfg(verus_only)]
 use vstd::prelude::*;
-use vstd::prelude::{Ghost, verus};
+use vstd::prelude::{Ghost, Tracked, verus};
 #[cfg(verus_only)]
 use vstd::string::*;
 
@@ -537,7 +540,8 @@ fn cgroup_empty_bytes(_m: &[usize]) -> Result<Reading, c_int>
         crate::sys::may_syscall(),
 {
     tracked()?;
-    Ok(Size(crate::policy::empty_bytes(shared()) as usize))
+    // Premise (lock order): called from `mallctl`, which holds no lock.
+    Ok(Size(crate::policy::empty_bytes(shared(), Tracked(&mut axiom_entry())) as usize))
 }
 
 fn cgroup_full_purges(_m: &[usize]) -> Result<Reading, c_int>
@@ -622,42 +626,48 @@ fn stats_allocated(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
 {
-    Ok(Size(stats::snapshot(shared()).totals.allocated))
+    // Premise (lock order): called from `mallctl`, which holds no lock.
+    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.allocated))
 }
 
 fn stats_active(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
 {
-    Ok(Size(stats::snapshot(shared()).totals.active))
+    // Premise (lock order): called from `mallctl`, which holds no lock.
+    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.active))
 }
 
 fn stats_metadata(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
 {
-    Ok(Size(stats::snapshot(shared()).totals.metadata))
+    // Premise (lock order): called from `mallctl`, which holds no lock.
+    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.metadata))
 }
 
 fn stats_resident(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
 {
-    Ok(Size(stats::snapshot(shared()).totals.resident))
+    // Premise (lock order): called from `mallctl`, which holds no lock.
+    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.resident))
 }
 
 fn stats_mapped(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
 {
-    Ok(Size(stats::snapshot(shared()).totals.mapped))
+    // Premise (lock order): called from `mallctl`, which holds no lock.
+    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.mapped))
 }
 
 fn stats_retained(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
 {
-    Ok(Size(stats::snapshot(shared()).totals.retained))
+    // Premise (lock order): called from `mallctl`, which holds no lock.
+    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.retained))
 }
 
 } // verus!
@@ -1786,12 +1796,15 @@ impl Utilization {
 /// `h.set_arena(shared, arena)`. Nothing is claimed.
 #[verifier::external_body]
 #[inline(always)]
-fn heap_set_arena(h: &mut Heap, shared: &Shared, arena: u16)
+fn heap_set_arena(h: &mut Heap, shared: &Shared, arena: u16, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
 {
-    h.set_arena(shared, arena)
+    h.set_arena(shared, arena, Tracked(ord))
 }
 
 /// The utilisation figures of `p` (see the module docs). `verbose` adds
@@ -1804,6 +1817,9 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
     proof {
         shared.lemma_wf();
     }
+    // Premise (lock order): called from the `mallctl` entry points, which
+    // hold no lock.
+    let tracked mut ord = axiom_entry();
     let mut u = Utilization::ZERO;
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
@@ -1834,7 +1850,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
             if verbose {
                 if let Some(a) = shared.arenas.get_existing(d.arena()) {
                     let cs = a.class(class);
-                    let (st, curregs) = cs.bin_stats();
+                    let (st, curregs) = cs.bin_stats(Tracked(&mut ord));
                     proof {
                         let (c, k, n) = ((st.committed - st.empty - st.purged) as int, st.committed as int, cls.nslots as int);
                         assert(c * n <= k * n) by (nonlinear_arith)
@@ -1845,7 +1861,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
                     }
                     u.bin_nregs = st.curslabs() * cls.nslots();
                     u.bin_nfree = u.bin_nregs.saturating_sub(curregs);
-                    if let Some(s) = cs.lowest_partial() {
+                    if let Some(s) = cs.lowest_partial(Tracked(&mut ord)) {
                         cs.nslabs_are_the_region_s();
                         u.slabcur_addr = addr_to_ptr(shared.regions.slab_addr(class, s)) as *mut c_void;
                     }
@@ -1853,7 +1869,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
             }
         },
         Kind::Huge { page } => {
-            if let Some(r) = shared.huge.lookup(page) {
+            if let Some(r) = shared.huge.lookup(page, Tracked(&mut ord)) {
                 if r.start == page && r.state == RunState::Active {
                     u.nregs = 1;
                     u.size = r.usable;
@@ -1876,6 +1892,9 @@ pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16>
     proof {
         shared.lemma_wf();
     }
+    // Premise (lock order): called from the `mallctl` entry points, which
+    // hold no lock.
+    let tracked mut ord = axiom_entry();
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let t = shared.table(class as usize);
@@ -1886,7 +1905,7 @@ pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16>
             }
         },
         Kind::Huge { page } => {
-            let r = shared.huge.lookup(page)?;
+            let r = shared.huge.lookup(page, Tracked(&mut ord))?;
             if r.start == page && r.state == RunState::Active {
                 Some(r.arena)
             } else {
@@ -2117,24 +2136,27 @@ fn arena_stats(shared: &Shared, i: usize) -> (r: Result<ArenaStats, c_int>)
         r matches Err(e) ==> e == ENOENT,
 {
     if i == ARENAS_ALL as usize {
-        return Ok(stats::arena_stats_all(shared));
+        return Ok(stats::arena_stats_all(shared, Tracked(&mut axiom_entry())));
     }
     if i == ARENAS_DESTROYED {
         return Ok(ArenaStats::empty(ARENAS_DESTROYED as u16));
     }
-    stats::arena_stats(shared, arena_index(i)?).ok_or(ENOENT)
+    stats::arena_stats(shared, arena_index(i)?, Tracked(&mut axiom_entry())).ok_or(ENOENT)
 }
 
 /// Return the calling thread's cached slots before a purge so the purge
 /// can reach the slabs they pin (`malloc_trim` does the same).
-fn flush_caller(shared: &Shared)
+fn flush_caller(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
 {
     if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
-        h.flush_all(shared);
+        h.flush_all(shared, Tracked(ord));
         // Every home and `others`-node cache of the thread's heap is
         // empty (theorem "cache flush completeness").
         proof {
@@ -2186,6 +2208,8 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
         // Both entry points pass the node the MIB resolves to.
         resolve(root_nodes(), mib@) == Some(*node),
 {
+    // Premise (lock order): `mallctl`'s caller holds no allocator lock.
+    let tracked mut ord = axiom_entry();
     let op = match node.entry {
         Entry::Dir(_) => return Err(ENOENT),
         Entry::Read(read) => {
@@ -2197,14 +2221,14 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
     match op {
         Epoch => {
             if io.write::<u64>()?.is_some() {
-                stats::epoch(shared);
+                stats::epoch(shared, Tracked(&mut ord));
             }
-            io.read(stats::snapshot(shared).epoch)
+            io.read(stats::snapshot(shared, Tracked(&mut ord)).epoch)
         },
         BackgroundThread => {
             if let Some(on) = io.write_bool()? {
                 purge::background::request(on);
-                if on && !purge::background::present() && !purge::background::start(shared) {
+                if on && !purge::background::present() && !purge::background::start(shared, Tracked(&mut ord)) {
                     return Err(EAGAIN);
                 }
             }
@@ -2220,7 +2244,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
         },
         ArenasCreate => {
             // `newp` may carry extent hooks, which challoc has no use for.
-            let i = shared.arenas.create(shared).ok_or(EAGAIN)?;
+            let i = shared.arenas.create(shared, Tracked(&mut ord)).ok_or(EAGAIN)?;
             io.read(i as c_uint)
         },
         ArenasLookup => {
@@ -2230,12 +2254,12 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
         },
         ArenaPurge => {
             io.void()?;
-            flush_caller(shared);
+            flush_caller(shared, Tracked(&mut ord));
             let i = at(mib, 1);
             if all_arenas(shared, i) {
-                purge::purge_all(shared);
+                purge::purge_all(shared, Tracked(&mut ord));
             } else {
-                purge::purge_arena(shared, arena_index(i)?).ok_or(ENOENT)?;
+                purge::purge_arena(shared, arena_index(i)?, Tracked(&mut ord)).ok_or(ENOENT)?;
             }
             Ok(())
         },
@@ -2244,14 +2268,14 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             let now = sys::now_coarse_ns();
             let i = at(mib, 1);
             if all_arenas(shared, i) {
-                purge::decay(shared, now);
+                purge::decay(shared, now, Tracked(&mut ord));
             } else {
                 let arena = shared.arenas.get_existing(arena_index(i)?).ok_or(ENOENT)?;
-                arena.decay(now);
+                arena.decay(now, Tracked(&mut ord));
                 if i == 0 {
                     let d = shared.decay_ns();
                     if d != purge::NEVER {
-                        shared.huge.decay(now, d);
+                        shared.huge.decay(now, d, Tracked(&mut ord));
                     }
                 }
             }
@@ -2263,8 +2287,8 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             if i == 0 || i == ARENAS_ALL as usize {
                 return Err(EFAULT);
             }
-            flush_caller(shared);
-            purge::purge_arena(shared, arena_index(i)?).ok_or(ENOENT)?;
+            flush_caller(shared, Tracked(&mut ord));
+            purge::purge_arena(shared, arena_index(i)?, Tracked(&mut ord)).ok_or(ENOENT)?;
             Ok(())
         },
         ArenaDirtyDecayMs => {
@@ -2281,7 +2305,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 }
                 return io.read(ms_of(shared.decay_ns()));
             }
-            let arena = shared.arena(arena_index(i)?).ok_or(ENOENT)?;
+            let arena = shared.arena(arena_index(i)?, Tracked(&mut ord)).ok_or(ENOENT)?;
             if let Some(ms) = new {
                 arena.set_decay_ms(ms as i64);
             }
@@ -2289,13 +2313,13 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
         },
         ThreadTcacheFlush => {
             io.void()?;
-            flush_caller(shared);
+            flush_caller(shared, Tracked(&mut ord));
             Ok(())
         },
         ThreadTcacheEnabled => {
             let h = thread_heap(shared)?;
             if let Some(on) = io.write_bool()? {
-                h.set_tcache_enabled(shared, on);
+                h.set_tcache_enabled(shared, on, Tracked(&mut ord));
                 // Off: every cache of the thread's heap is freed, so empty
                 // (theorem "cache flush completeness").
                 proof {
@@ -2307,10 +2331,10 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
         ThreadArena => {
             let h = thread_heap(shared)?;
             if let Some(a) = io.write::<c_uint>()? {
-                if a as usize >= MAX_ARENAS || shared.arena(a as u16).is_none() {
+                if a as usize >= MAX_ARENAS || shared.arena(a as u16, Tracked(&mut ord)).is_none() {
                     return Err(EFAULT);
                 }
-                heap_set_arena(h, shared, a as u16);
+                heap_set_arena(h, shared, a as u16, Tracked(&mut ord));
             }
             io.read(h.arena() as c_uint)
         },
@@ -2322,7 +2346,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 Some(h) => h.arena(),
                 None => 0,
             };
-            let t = shared.tcaches.create(shared, home).ok_or(EFAULT)?;
+            let t = shared.tcaches.create(shared, home, Tracked(&mut ord)).ok_or(EFAULT)?;
             io.read(t as c_uint)
         },
         TcacheFlush | TcacheDestroy => {
@@ -2332,8 +2356,8 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 return Err(EFAULT);
             }
             let ok = match op {
-                TcacheFlush => shared.tcaches.flush(shared, t as u16),
-                _ => shared.tcaches.destroy(shared, t as u16),
+                TcacheFlush => shared.tcaches.flush(shared, t as u16, Tracked(&mut ord)),
+                _ => shared.tcaches.destroy(shared, t as u16, Tracked(&mut ord)),
             };
             if ok {
                 Ok(())
@@ -3404,7 +3428,10 @@ mod tests {
         // Decay period per arena, and for all.
         assert_eq!(set(&std::format!("arena.{a}.dirty_decay_ms"), 250isize), 0);
         assert_eq!(get::<isize>(&std::format!("arena.{a}.dirty_decay_ms")), 250);
-        assert_eq!(s.arena(a as u16).unwrap().decay_ns(), 250_000_000);
+        assert_eq!(
+            s.arena(a as u16, Tracked::assume_new()).unwrap().decay_ns(),
+            250_000_000
+        );
         assert_eq!(set(&std::format!("arena.{a}.dirty_decay_ms"), -1isize), 0);
         assert_eq!(get::<isize>(&std::format!("arena.{a}.dirty_decay_ms")), -1);
         assert_eq!(
@@ -3420,7 +3447,7 @@ mod tests {
         // Free everything in the arena, then purge: its Empty slab goes.
         dallocx(p, 0);
         dallocx(h, 0);
-        let arena = s.arena(a as u16).unwrap();
+        let arena = s.arena(a as u16, Tracked::assume_new()).unwrap();
         let c = crate::layout::class_of(500).unwrap();
         // The slot sits in this thread's cache for arena `a` until the
         // purge flushes the caller.

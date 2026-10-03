@@ -39,9 +39,9 @@
 use core::alloc::Layout;
 use core::ptr;
 
+use crate::lock::{Lock, LockOrder, RawLock};
 #[cfg(verus_only)]
-use crate::lock::lock_init;
-use crate::lock::{Lock, RawLock};
+use crate::lock::{lock_init, rank_meta};
 use crate::sys::Errno;
 use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_only)]
@@ -850,6 +850,14 @@ proof fn lemma_live_remove(m: Map<*mut FreeNode, nat>, k: *mut FreeNode)
 /// writes it in place with [`Meta::owning`] when the regions are reserved.
 pub struct Meta {
     inner: Lock<Inner>,
+}
+
+impl Meta {
+    /// The lock is the metadata lock of the lock order.
+    #[verifier::type_invariant]
+    spec fn rank_ok(self) -> bool {
+        self.inner.rank() == rank_meta()
+    }
 }
 
 #[inline]
@@ -2398,7 +2406,7 @@ impl Meta {
     {
         broadcast use axiom_meta_lock_inv;
 
-        Meta { inner: Lock::new(Inner::new(base, len, page, Tracked(space))) }
+        Meta { inner: Lock::new(Inner::new(base, len, page, Tracked(space)), Ghost(rank_meta())) }
     }
 
     /// The lock, for the fork handlers.
@@ -2406,7 +2414,11 @@ impl Meta {
     pub fn raw_lock(&self) -> (r: &RawLock)
         ensures
             *r == self.spec_raw_lock(),
+            r.rank() == rank_meta(),
     {
+        proof {
+            use_type_invariant(self);
+        }
         self.inner.raw()
     }
 
@@ -2414,6 +2426,7 @@ impl Meta {
     pub closed spec fn spec_raw_lock(&self) -> RawLock {
         self.inner.spec_raw()
     }
+
 
     /// Allocate an object. Contents are unspecified: fresh memory is zero,
     /// reused memory holds whatever its last owner left. Null when the region
@@ -2423,36 +2436,43 @@ impl Meta {
     /// MAX_BINNED` or `align > MAX_ALIGN`): that is a bug, not a resource
     /// failure.
     #[inline(always)]
-    pub fn alloc(&self, layout: Layout) -> (p: *mut u8)
+    pub fn alloc(&self, layout: Layout, Tracked(ord): Tracked<&mut LockOrder>) -> (p: *mut u8)
         requires
             crate::sys::may_syscall(),
             layout_align(layout) <= MAX_ALIGN,
             layout_size(layout) <= MAX_BINNED,
+            old(ord).allows(rank_meta()),
         ensures
             p as usize != 0 ==> (p as usize) % layout_align(layout) == 0,
             p as usize != 0 ==> self.holds(p as int, layout_size(layout) as int),
+            *final(ord) == *old(ord),
     {
-        self.alloc_raw(layout).0
+        self.alloc_raw(layout, Tracked(ord)).0
     }
 
     /// [`alloc`](Meta::alloc), with the permission to the object's
     /// `layout.size()` bytes.
-    pub fn alloc_raw(&self, layout: Layout) -> (r: (*mut u8, Tracked<PointsToRaw>))
+    pub fn alloc_raw(&self, layout: Layout, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, Tracked<PointsToRaw>))
         requires
             crate::sys::may_syscall(),
             layout_align(layout) <= MAX_ALIGN,
             layout_size(layout) <= MAX_BINNED,
+            old(ord).allows(rank_meta()),
         ensures
             r.0 as usize != 0 ==> (r.0 as usize) % layout_align(layout) == 0,
             r.0 as usize != 0 ==> self.holds(r.0 as int, layout_size(layout) as int),
             r.0 as usize != 0 ==> r.1@.is_range(r.0 as usize as int, layout_size(layout) as int),
             r.0 as usize != 0 ==> r.1@.provenance() == r.0@.provenance,
+            *final(ord) == *old(ord),
     {
         broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
+        proof {
+            use_type_invariant(self);
+        }
 
         assert!(layout.align() <= MAX_ALIGN, "meta: alignment too large for an object");
         let Some(bin) = bin_for(layout) else { panic!("meta: object too large") };
-        let (p, Tracked(raw)) = self.inner.lock().alloc(bin);
+        let (p, Tracked(raw)) = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).alloc(bin);
         proof {
             lemma_align_in_bin(p as usize, layout, bin);
         }
@@ -2467,12 +2487,14 @@ impl Meta {
     /// one lies above the old bump pointer, whose bytes carry the token
     /// `Unbacked::commit` returned when they were committed
     /// (`Inner::fresh_zero`).
-    pub fn alloc_zeroed(&self, layout: Layout) -> (r: (*mut u8, Tracked<PointsToRaw>, Tracked<Zeroed>))
+    pub fn alloc_zeroed(&self, layout: Layout, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, Tracked<PointsToRaw>, Tracked<Zeroed>))
         requires
             crate::sys::may_syscall(),
             layout_align(layout) <= MAX_ALIGN,
             layout_size(layout) <= MAX_BINNED,
+            old(ord).allows(rank_meta()),
         ensures
+            *final(ord) == *old(ord),
             r.0 as usize != 0 ==> (r.0 as usize) % layout_align(layout) == 0,
             r.0 as usize != 0 ==> self.holds(r.0 as int, layout_size(layout) as int),
             r.0 as usize != 0 ==> r.1@.is_range(r.0 as usize as int, layout_size(layout) as int),
@@ -2484,7 +2506,10 @@ impl Meta {
 
         assert!(layout.align() <= MAX_ALIGN, "meta: alignment too large for an object");
         let Some(bin) = bin_for(layout) else { panic!("meta: object too large") };
-        let mut g = self.inner.lock();
+        proof {
+            use_type_invariant(self);
+        }
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let before = g.bump;
         let (p, Tracked(raw)) = g.alloc(bin);
         let tracked mut z = Zeroed::empty(0);
@@ -2528,19 +2553,24 @@ impl Meta {
     /// used from its base up, [`reserve_table`](Meta::reserve_table); this
     /// is for a reservation that needs a `PROT_NONE` part (the background
     /// thread's stack guard).
-    pub fn reserve(&self, len: usize, align: usize) -> (r: Option<usize>)
+    pub fn reserve(&self, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
         requires
             crate::sys::may_syscall(),
             is_pow2(align),
+            old(ord).allows(rank_meta()),
         ensures
             r matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
             r matches Some(s) ==> self.holds(s as int, len as int),
+            *final(ord) == *old(ord),
     {
         broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
+        proof {
+            use_type_invariant(self);
+        }
 
         let tracked mut claim = GhostSubmap::<int, bool>::dummy();
         let tracked mut given = Unbacked::empty(0);
-        self.inner.lock().reserve(len, align, Tracked(&mut claim), Tracked(&mut given))
+        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).reserve(len, align, Tracked(&mut claim), Tracked(&mut given))
     }
 
     /// [`reserve_table`](Meta::reserve_table) and commit the whole range.
@@ -2548,15 +2578,17 @@ impl Meta {
     // Only the tests call it since `Arenas::build` takes the permission.
     #[cfg_attr(not(test), allow(dead_code))]
     #[inline(always)]
-    pub fn reserve_committed(&self, len: usize, align: usize) -> (r: Option<usize>)
+    pub fn reserve_committed(&self, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
         requires
             crate::sys::may_syscall(),
             is_pow2(align),
+            old(ord).allows(rank_meta()),
         ensures
             r matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
             r matches Some(s) ==> self.holds(s as int, len as int) && s > 0,
+            *final(ord) == *old(ord),
     {
-        self.reserve_committed_raw(len, align).0
+        self.reserve_committed_raw(len, align, Tracked(ord)).0
     }
 
     /// [`reserve_committed`](Meta::reserve_committed), with the permission
@@ -2566,11 +2598,13 @@ impl Meta {
     /// `Inner::handed`, not a tracked parameter of `Inner::reserve_committed`
     /// or `reserve_eager`: such a parameter changes how `Huge::alloc_run` is
     /// inlined into its callers.
-    pub fn reserve_committed_raw(&self, len: usize, align: usize) -> (r: (Option<usize>, Tracked<PointsToRaw>, Tracked<Zeroed>))
+    pub fn reserve_committed_raw(&self, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Option<usize>, Tracked<PointsToRaw>, Tracked<Zeroed>))
         requires
             crate::sys::may_syscall(),
             is_pow2(align),
+            old(ord).allows(rank_meta()),
         ensures
+            *final(ord) == *old(ord),
             r.0 matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
             r.0 matches Some(s) ==> self.holds(s as int, len as int) && s > 0,
             r.0 matches Some(s) ==> r.1@.contains_range(s as int, len as int),
@@ -2578,8 +2612,11 @@ impl Meta {
             r.0 matches Some(s) ==> r.2@.addr() == s && r.2@.len() == len,
     {
         broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
+        proof {
+            use_type_invariant(self);
+        }
 
-        let mut g = self.inner.lock();
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let r = g.reserve_committed(len, align);
         let _gi: &mut Inner = &mut g;
         let tracked raw = take_raw(_gi.handed.borrow_mut());
@@ -2599,16 +2636,21 @@ impl Meta {
         (r, Tracked(raw), Tracked(z))
     }
 
-    pub fn stats(&self) -> (r: MetaStats)
+    pub fn stats(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: MetaStats)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
         ensures
             r.identities(),
             r.len <= va_limit(),
+            *final(ord) == *old(ord),
     {
         broadcast use axiom_meta_lock_inv;
+        proof {
+            use_type_invariant(self);
+        }
 
-        self.inner.lock().stats()
+        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).stats()
     }
 
     /// A never-freed table of `len` bytes aligned to `align` whose owner
@@ -2620,19 +2662,24 @@ impl Meta {
     /// [`commit`](Meta::commit) on the pages it uses before touching them.
     /// The table's range rounded up to whole words ([`words_up`]) is the
     /// allocator's too: each table is whole pages.
-    pub fn reserve_table(&self, len: usize, align: usize) -> (r: Option<usize>)
+    pub fn reserve_table(&self, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
         requires
             crate::sys::may_syscall(),
             is_pow2(align),
+            old(ord).allows(rank_meta()),
         ensures
             r matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
             r matches Some(s) ==> self.holds(s as int, len as int),
             r matches Some(s) ==> self.holds(s as int, words_up(len as int)),
+            *final(ord) == *old(ord),
     {
         broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
+        proof {
+            use_type_invariant(self);
+        }
 
         let tracked mut claim = GhostSubmap::<int, bool>::dummy();
-        let mut g = self.inner.lock();
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         if g.eager_ok(len) {
             let ghost g1 = g@;
             if let Some(p) = g.reserve_eager(len, align, Tracked(&mut claim)) {
@@ -2752,11 +2799,14 @@ impl Meta {
     ///
     /// [`commit_claimed`]: Meta::commit_claimed
     #[verifier::external_body]
-    pub fn commit(&self, addr: usize, len: usize) -> Result<(), Errno>
+    pub fn commit(&self, addr: usize, len: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
+        ensures
+            *final(ord) == *old(ord),
     {
-        self.commit_claimed(addr, len, Ghost::assume_new(), Tracked::assume_new())
+        self.commit_claimed(addr, len, Ghost::assume_new(), Tracked::assume_new(), Tracked(ord))
     }
 
     /// [`commit`](Meta::commit), given `claim`, the claim to the range's
@@ -2770,7 +2820,8 @@ impl Meta {
         len: usize,
         Ghost(top_side): Ghost<bool>,
         Tracked(claim): Tracked<GhostSubmap<int, bool>>,
-    ) -> Result<(), Errno>
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),
             addr % self.page() == 0,
@@ -2779,11 +2830,17 @@ impl Meta {
             claim.id() == self.pages_id(),
             claim@.dom() == set_int_range(addr as int, addr + len),
             forall|a: int| #[trigger] claim@.dom().contains(a) ==> claim@[a] == top_side,
+            old(ord).allows(rank_meta()),
+        ensures
+            *final(ord) == *old(ord),
     {
         broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
+        proof {
+            use_type_invariant(self);
+        }
 
         let tracked mut claim = claim;
-        self.inner.lock().commit(addr, len, Ghost(top_side), Tracked(&mut claim))
+        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).commit(addr, len, Ghost(top_side), Tracked(&mut claim))
     }
 
     /// Return an object allocated with the same `layout`: [`free_claimed`]
@@ -2803,11 +2860,14 @@ impl Meta {
     ///
     /// [`free_claimed`]: Meta::free_claimed
     #[verifier::external_body]
-    pub fn free(&self, p: *mut u8, layout: Layout)
+    pub fn free(&self, p: *mut u8, layout: Layout, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
+        ensures
+            *final(ord) == *old(ord),
     {
-        self.free_claimed(p, layout, Tracked::assume_new(), Tracked::assume_new())
+        self.free_claimed(p, layout, Tracked::assume_new(), Tracked::assume_new(), Tracked(ord))
     }
 
     /// [`free`](Meta::free), given `raw`, the permission to the object's
@@ -2819,6 +2879,7 @@ impl Meta {
         layout: Layout,
         Tracked(raw): Tracked<PointsToRaw>,
         Tracked(claim): Tracked<GhostPointsTo<*mut FreeNode, nat>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     )
         requires
             crate::sys::may_syscall(),
@@ -2829,12 +2890,18 @@ impl Meta {
             claim.id() == self.live_id(),
             claim.key() == p as *mut FreeNode,
             claim.value() == bin_for_spec(layout),
+            old(ord).allows(rank_meta()),
+        ensures
+            *final(ord) == *old(ord),
     {
         broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
+        proof {
+            use_type_invariant(self);
+        }
 
         assert!(!p.is_null(), "meta: free of null");
         let Some(bin) = bin_for(layout) else { panic!("meta: free with an impossible layout") };
-        self.inner.lock().free(p, bin, Tracked(raw), Tracked(claim));
+        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).free(p, bin, Tracked(raw), Tracked(claim));
     }
 }
 
@@ -2892,25 +2959,25 @@ impl Meta {
     /// reservation side (`false`), whatever the host's policy says.
     #[cfg(test)]
     pub fn set_eager_for_test(&self, on: bool) {
-        self.inner.lock().eager = if on { EAGER_ON } else { EAGER_OFF };
+        self.inner.lock_t().eager = if on { EAGER_ON } else { EAGER_OFF };
     }
 
     /// Tests: whether the host's policy allows eager tables.
     #[cfg(test)]
     pub fn eager_allowed(&self) -> bool {
-        self.inner.lock().eager_ok(1)
+        self.inner.lock_t().eager_ok(1)
     }
 
     /// Start of the region.
     #[cfg(test)]
     pub fn base(&self) -> usize {
-        self.inner.lock().base
+        self.inner.lock_t().base
     }
 
     /// Lowest reserved address; the object area may grow up to here.
     #[cfg(test)]
     pub fn top(&self) -> usize {
-        self.inner.lock().top
+        self.inner.lock_t().top
     }
 }
 
@@ -3050,7 +3117,7 @@ mod tests {
         assert_eq!(m.base(), b.base);
         assert_eq!(m.top(), b.base + b.len);
         assert_eq!(
-            m.stats(),
+            m.stats(Tracked::assume_new()),
             MetaStats {
                 len: 1 << 20,
                 ..MetaStats::default()
@@ -3063,11 +3130,11 @@ mod tests {
         let b = Backing::new(4 << 20);
         let m = b.meta();
         let l = layout(200, 8);
-        let p = m.alloc(l);
+        let p = m.alloc(l, Tracked::assume_new());
         assert!(!p.is_null());
         assert_eq!(p as usize, b.base, "first object sits at the base");
         assert_eq!(p as usize % CACHE_LINE, 0);
-        let s = m.stats();
+        let s = m.stats(Tracked::assume_new());
         assert_eq!(s.committed, chunk(), "one chunk committed");
         assert_eq!(s.allocated, 256, "200 rounds up to the 256 bin");
         assert_eq!(s.bumped, 256);
@@ -3076,15 +3143,18 @@ mod tests {
         assert!(slice.iter().all(|&x| x == 0));
         slice.fill(0xA5);
         // Small objects pack at 16 and do not disturb the chunk.
-        let q = m.alloc(layout(1, 1));
-        let r = m.alloc(layout(16, 16));
+        let q = m.alloc(layout(1, 1), Tracked::assume_new());
+        let r = m.alloc(layout(16, 16), Tracked::assume_new());
         assert_eq!(q as usize, b.base + 256);
         assert_eq!(r as usize, b.base + 272);
-        assert_eq!(m.stats().committed, chunk());
+        assert_eq!(m.stats(Tracked::assume_new()).committed, chunk());
         // Crossing the chunk boundary commits the next one.
-        let big = m.alloc(layout(MAX_BINNED, 64));
+        let big = m.alloc(layout(MAX_BINNED, 64), Tracked::assume_new());
         assert!(!big.is_null());
-        assert_eq!(m.stats().committed, align_up(MAX_BINNED + 512, chunk()));
+        assert_eq!(
+            m.stats(Tracked::assume_new()).committed,
+            align_up(MAX_BINNED + 512, chunk())
+        );
         unsafe { core::slice::from_raw_parts_mut(big, MAX_BINNED) }.fill(1);
     }
 
@@ -3093,35 +3163,35 @@ mod tests {
         let b = Backing::new(1 << 20);
         let m = b.meta();
         let l = layout(100, 8);
-        let a = m.alloc(l);
-        let c = m.alloc(l);
-        let d = m.alloc(layout(1000, 8));
-        let bumped = m.stats().bumped;
-        m.free(a, l);
-        m.free(c, l);
-        assert_eq!(m.stats().allocated, 1024);
+        let a = m.alloc(l, Tracked::assume_new());
+        let c = m.alloc(l, Tracked::assume_new());
+        let d = m.alloc(layout(1000, 8), Tracked::assume_new());
+        let bumped = m.stats(Tracked::assume_new()).bumped;
+        m.free(a, l, Tracked::assume_new());
+        m.free(c, l, Tracked::assume_new());
+        assert_eq!(m.stats(Tracked::assume_new()).allocated, 1024);
         // Same bin: last freed comes back first, nothing new is bumped.
-        assert_eq!(m.alloc(l), c);
-        assert_eq!(m.alloc(l), a);
-        assert_eq!(m.stats().bumped, bumped);
+        assert_eq!(m.alloc(l, Tracked::assume_new()), c);
+        assert_eq!(m.alloc(l, Tracked::assume_new()), a);
+        assert_eq!(m.stats(Tracked::assume_new()).bumped, bumped);
         // Different bin: not served from that list.
-        m.free(a, l);
-        let e = m.alloc(layout(200, 8));
+        m.free(a, l, Tracked::assume_new());
+        let e = m.alloc(layout(200, 8), Tracked::assume_new());
         assert_ne!(e, a);
-        assert!(m.stats().bumped > bumped);
-        m.free(d, layout(1000, 8));
-        assert_eq!(m.alloc(layout(1000, 8)), d);
+        assert!(m.stats(Tracked::assume_new()).bumped > bumped);
+        m.free(d, layout(1000, 8), Tracked::assume_new());
+        assert_eq!(m.alloc(layout(1000, 8), Tracked::assume_new()), d);
         // alloc_zeroed scrubs a reused block but leaves fresh ones alone.
         unsafe { core::slice::from_raw_parts_mut(d, 1024) }.fill(0xFF);
-        m.free(d, layout(1000, 8));
-        let z = m.alloc_zeroed(layout(1000, 8)).0;
+        m.free(d, layout(1000, 8), Tracked::assume_new());
+        let z = m.alloc_zeroed(layout(1000, 8), Tracked::assume_new()).0;
         assert_eq!(z, d);
         assert!(
             unsafe { core::slice::from_raw_parts(z, 1024) }
                 .iter()
                 .all(|&x| x == 0)
         );
-        let fresh = m.alloc_zeroed(layout(5000, 8)).0;
+        let fresh = m.alloc_zeroed(layout(5000, 8), Tracked::assume_new()).0;
         assert!(
             unsafe { core::slice::from_raw_parts(fresh, 5000) }
                 .iter()
@@ -3136,7 +3206,7 @@ mod tests {
         for align in [1usize, 2, 4, 8, 16, 32, 64, 128] {
             for size in [1usize, 15, 16, 17, 48, 49, 64, 65, 96, 300, 4097] {
                 let l = layout(size, align);
-                let p = m.alloc(l);
+                let p = m.alloc(l, Tracked::assume_new());
                 assert!(!p.is_null());
                 assert_eq!(p as usize % align, 0, "size {size} align {align}");
                 assert_eq!(p as usize % bin_align(bin_for(l).unwrap()), 0);
@@ -3154,7 +3224,7 @@ mod tests {
         let l = layout(1024, 8);
         let mut got = Vec::new();
         loop {
-            let p = m.alloc(l);
+            let p = m.alloc(l, Tracked::assume_new());
             if p.is_null() {
                 break;
             }
@@ -3165,18 +3235,18 @@ mod tests {
             16 * page_size() / 1024,
             "16 pages hold exactly that many 1 KiB objects"
         );
-        assert_eq!(m.stats().committed, 16 * page_size());
-        assert_eq!(m.stats().bumped, 16 * page_size());
-        assert!(m.alloc(layout(1, 1)).is_null());
+        assert_eq!(m.stats(Tracked::assume_new()).committed, 16 * page_size());
+        assert_eq!(m.stats(Tracked::assume_new()).bumped, 16 * page_size());
+        assert!(m.alloc(layout(1, 1), Tracked::assume_new()).is_null());
         assert_eq!(
-            m.reserve(page_size(), page_size()),
+            m.reserve(page_size(), page_size(), Tracked::assume_new()),
             None,
             "no room left for a reservation"
         );
         // Freeing one makes exactly one more available.
-        m.free(got.pop().unwrap(), l);
-        assert!(!m.alloc(l).is_null());
-        assert!(m.alloc(l).is_null());
+        m.free(got.pop().unwrap(), l, Tracked::assume_new());
+        assert!(!m.alloc(l, Tracked::assume_new()).is_null());
+        assert!(m.alloc(l, Tracked::assume_new()).is_null());
         // Distinct pointers throughout.
         got.sort_unstable();
         got.dedup();
@@ -3188,25 +3258,32 @@ mod tests {
         let b = Backing::new(64 * page_size());
         let m = b.meta();
         let end = b.base + b.len;
-        let r1 = m.reserve(3 * page_size(), page_size()).unwrap();
+        let r1 = m
+            .reserve(3 * page_size(), page_size(), Tracked::assume_new())
+            .unwrap();
         assert_eq!(r1, end - 3 * page_size());
         assert_eq!(m.top(), r1);
         // Sub-page lengths round up; large alignment rounds the start down.
-        let r2 = m.reserve(10, 8 * page_size()).unwrap();
+        let r2 = m
+            .reserve(10, 8 * page_size(), Tracked::assume_new())
+            .unwrap();
         assert_eq!(r2 % (8 * page_size()), 0);
         assert!(r2 + page_size() <= r1);
         assert_eq!(m.top(), r2);
-        let s = m.stats();
+        let s = m.stats(Tracked::assume_new());
         assert_eq!(s.reserved, end - r2);
         assert_eq!(s.committed, 0, "reservations are uncommitted");
         // Commit part of r1, write into it.
-        m.commit(r1 + page_size(), page_size()).unwrap();
-        assert_eq!(m.stats().committed, page_size());
+        m.commit(r1 + page_size(), page_size(), Tracked::assume_new())
+            .unwrap();
+        assert_eq!(m.stats(Tracked::assume_new()).committed, page_size());
         unsafe { core::slice::from_raw_parts_mut((r1 + page_size()) as *mut u8, page_size()) }
             .fill(7);
         // A small reserve_committed is zero and writable, and (eager) sits
         // on the object side, not below r2.
-        let r3 = m.reserve_committed(2 * page_size(), page_size()).unwrap();
+        let r3 = m
+            .reserve_committed(2 * page_size(), page_size(), Tracked::assume_new())
+            .unwrap();
         assert_eq!(
             r3, b.base,
             "a small committed reservation is carved from the object side"
@@ -3215,7 +3292,7 @@ mod tests {
         let sl = unsafe { core::slice::from_raw_parts_mut(r3 as *mut u8, 2 * page_size()) };
         assert!(sl.iter().all(|&x| x == 0));
         sl.fill(9);
-        let s = m.stats();
+        let s = m.stats(Tracked::assume_new());
         assert_eq!(
             s.committed,
             page_size() + align_up(2 * page_size(), chunk()),
@@ -3226,16 +3303,25 @@ mod tests {
         // Objects and reservations never overlap: fill the rest with
         // objects and check the boundary.
         let mut n = 0;
-        while !m.alloc(layout(page_size(), 8)).is_null() {
+        while !m
+            .alloc(layout(page_size(), 8), Tracked::assume_new())
+            .is_null()
+        {
             n += 1;
         }
-        assert_eq!(m.stats().bumped, m.top() - b.base);
+        assert_eq!(m.stats(Tracked::assume_new()).bumped, m.top() - b.base);
         assert_eq!(n, (m.top() - b.base) / page_size() - 2);
-        assert_eq!(m.reserve(page_size(), page_size()), None);
-        assert_eq!(m.reserve_table(page_size(), page_size()), None);
+        assert_eq!(
+            m.reserve(page_size(), page_size(), Tracked::assume_new()),
+            None
+        );
+        assert_eq!(
+            m.reserve_table(page_size(), page_size(), Tracked::assume_new()),
+            None
+        );
         // Object side writable exactly up to the reservation boundary;
         // committed counts r1's page, r3 and the objects' chunks.
-        let s = m.stats();
+        let s = m.stats(Tracked::assume_new());
         assert_eq!(s.writable, page_size() + (m.top() - b.base));
         assert_eq!(s.committed, page_size() + (m.top() - b.base));
     }
@@ -3249,29 +3335,38 @@ mod tests {
         let m = b.meta();
         let end = b.base + b.len;
         let big = m
-            .reserve_table(EAGER_MAX + page_size(), page_size())
+            .reserve_table(EAGER_MAX + page_size(), page_size(), Tracked::assume_new())
             .unwrap();
         assert_eq!(
             big,
             end - EAGER_MAX - page_size(),
             "larger than EAGER_MAX: from the top"
         );
-        assert_eq!(m.stats().eager, 0);
-        assert_eq!(m.stats().reserved, EAGER_MAX + page_size());
-        m.commit(big, page_size()).unwrap();
-        let s = m.stats();
+        assert_eq!(m.stats(Tracked::assume_new()).eager, 0);
+        assert_eq!(
+            m.stats(Tracked::assume_new()).reserved,
+            EAGER_MAX + page_size()
+        );
+        m.commit(big, page_size(), Tracked::assume_new()).unwrap();
+        let s = m.stats(Tracked::assume_new());
         assert_eq!((s.committed, s.writable), (page_size(), page_size()));
         m.set_eager_for_test(false);
-        let small = m.reserve_table(page_size(), page_size()).unwrap();
+        let small = m
+            .reserve_table(page_size(), page_size(), Tracked::assume_new())
+            .unwrap();
         assert_eq!(small, big - page_size(), "eager off: from the top too");
-        assert_eq!(m.stats().eager, 0);
-        let c = m.reserve_committed(3 * page_size(), page_size()).unwrap();
+        assert_eq!(m.stats(Tracked::assume_new()).eager, 0);
+        let c = m
+            .reserve_committed(3 * page_size(), page_size(), Tracked::assume_new())
+            .unwrap();
         assert_eq!(c, small - 3 * page_size());
-        assert_eq!(m.stats().committed, 4 * page_size());
+        assert_eq!(m.stats(Tracked::assume_new()).committed, 4 * page_size());
         m.set_eager_for_test(true);
-        let e = m.reserve_table(page_size(), page_size()).unwrap();
+        let e = m
+            .reserve_table(page_size(), page_size(), Tracked::assume_new())
+            .unwrap();
         assert_eq!(e, b.base, "eager on again: from the base");
-        assert_eq!(m.stats().eager, page_size());
+        assert_eq!(m.stats(Tracked::assume_new()).eager, page_size());
     }
 
     /// Eager tables, objects and more tables interleave on the object side
@@ -3283,34 +3378,45 @@ mod tests {
         let b = Backing::new(16 << 20);
         let m = b.meta();
         m.set_eager_for_test(true);
-        let o1 = m.alloc(layout(200, 8));
+        let o1 = m.alloc(layout(200, 8), Tracked::assume_new());
         assert_eq!(o1 as usize, b.base);
-        let t1 = m.reserve_table(3 * page_size(), page_size()).unwrap();
+        let t1 = m
+            .reserve_table(3 * page_size(), page_size(), Tracked::assume_new())
+            .unwrap();
         assert_eq!(
             t1,
             b.base + page_size(),
             "page aligned, right after the objects' page"
         );
-        let t2 = m.reserve_table(10, 8 * page_size()).unwrap();
+        let t2 = m
+            .reserve_table(10, 8 * page_size(), Tracked::assume_new())
+            .unwrap();
         assert_eq!(t2 % (8 * page_size()), 0);
         assert!(t2 >= t1 + 3 * page_size());
-        let o2 = m.alloc(layout(1000, 8));
+        let o2 = m.alloc(layout(1000, 8), Tracked::assume_new());
         assert_eq!(
             o2 as usize,
             t2 + page_size(),
             "objects resume right after the table"
         );
-        let t3 = m.reserve_table(EAGER_MAX, page_size()).unwrap();
+        let t3 = m
+            .reserve_table(EAGER_MAX, page_size(), Tracked::assume_new())
+            .unwrap();
         assert!(t3 >= o2 as usize + 1024);
-        let before = m.stats();
+        let before = m.stats(Tracked::assume_new());
         assert_eq!(before.eager, 3 * page_size() + page_size() + EAGER_MAX);
         assert_eq!(before.bumped, t3 + EAGER_MAX - b.base);
         assert!(before.writable >= before.bumped && before.writable % page_size() == 0);
         assert!(before.committed <= before.writable);
         // The owner's commits: writable does not move, committed counts.
-        m.commit(t1, page_size()).unwrap();
-        m.commit(t3 + EAGER_MAX - page_size(), page_size()).unwrap();
-        let after = m.stats();
+        m.commit(t1, page_size(), Tracked::assume_new()).unwrap();
+        m.commit(
+            t3 + EAGER_MAX - page_size(),
+            page_size(),
+            Tracked::assume_new(),
+        )
+        .unwrap();
+        let after = m.stats(Tracked::assume_new());
         assert_eq!(after.writable, before.writable);
         assert_eq!(after.committed, before.committed + 2 * page_size());
         // Every byte of every table is writable and zero.
@@ -3321,7 +3427,7 @@ mod tests {
             sl[len - 1] = 1;
         }
         // Identities.
-        let s = m.stats();
+        let s = m.stats(Tracked::assume_new());
         assert!(s.allocated + s.eager <= s.bumped && s.bumped <= s.writable && s.writable <= s.len);
         assert!(s.bumped + s.reserved <= s.len);
     }
@@ -3335,30 +3441,45 @@ mod tests {
         let b = Backing::new(16 * page_size());
         let m = b.meta();
         m.set_eager_for_test(true);
-        let top = m.reserve(4 * page_size(), page_size()).unwrap();
+        let top = m
+            .reserve(4 * page_size(), page_size(), Tracked::assume_new())
+            .unwrap();
         assert_eq!(top, b.base + 12 * page_size());
         // 10 pages fit on the object side (12 free); the chunk commit
         // stops at the reservations (under 4 KiB pages; a 64 KiB-page
         // chunk is one page, so the frontier stops at the table's end).
-        let t1 = m.reserve_table(10 * page_size(), page_size()).unwrap();
+        let t1 = m
+            .reserve_table(10 * page_size(), page_size(), Tracked::assume_new())
+            .unwrap();
         assert_eq!(t1, b.base);
         assert_eq!(
-            m.stats().writable,
+            m.stats(Tracked::assume_new()).writable,
             align_up(10 * page_size(), chunk()).min(12 * page_size())
         );
         // 3 more do not: not eagerly (past `top`), not as a reservation
         // (the frontier is at `top`).
-        assert_eq!(m.reserve_table(3 * page_size(), page_size()), None);
-        assert_eq!(m.reserve_committed(3 * page_size(), page_size()), None);
+        assert_eq!(
+            m.reserve_table(3 * page_size(), page_size(), Tracked::assume_new()),
+            None
+        );
+        assert_eq!(
+            m.reserve_committed(3 * page_size(), page_size(), Tracked::assume_new()),
+            None
+        );
         assert_eq!(m.top(), top, "a failed table reserves nothing");
         // 2 do, eagerly; then nothing, while an object in the free list
         // still does.
-        let t2 = m.reserve_table(2 * page_size(), page_size()).unwrap();
+        let t2 = m
+            .reserve_table(2 * page_size(), page_size(), Tracked::assume_new())
+            .unwrap();
         assert_eq!(t2, b.base + 10 * page_size());
-        assert_eq!(m.reserve_table(page_size(), page_size()), None);
+        assert_eq!(
+            m.reserve_table(page_size(), page_size(), Tracked::assume_new()),
+            None
+        );
         let l = layout(16, 8);
-        assert!(m.alloc(l).is_null());
-        let s = m.stats();
+        assert!(m.alloc(l, Tracked::assume_new()).is_null());
+        let s = m.stats(Tracked::assume_new());
         assert_eq!(
             (s.bumped, s.eager, s.reserved, s.writable),
             (
@@ -3369,9 +3490,11 @@ mod tests {
             )
         );
         assert_eq!(s.committed, 0, "nothing asked for yet");
-        m.commit(t1, 10 * page_size()).unwrap();
-        m.commit(t2, 2 * page_size()).unwrap();
-        assert_eq!(m.stats().committed, 12 * page_size());
+        m.commit(t1, 10 * page_size(), Tracked::assume_new())
+            .unwrap();
+        m.commit(t2, 2 * page_size(), Tracked::assume_new())
+            .unwrap();
+        assert_eq!(m.stats(Tracked::assume_new()).committed, 12 * page_size());
     }
 
     /// The host policy: eager carving is on under the default `thp:never`
@@ -3391,13 +3514,25 @@ mod tests {
     fn reserve_too_large_fails_cleanly() {
         let b = Backing::new(8 * page_size());
         let m = b.meta();
-        assert_eq!(m.reserve(9 * page_size(), page_size()), None);
-        assert_eq!(m.reserve(usize::MAX, page_size()), None);
-        assert_eq!(m.reserve(page_size(), 1 << 40), None);
-        assert_eq!(m.stats().reserved, 0);
+        assert_eq!(
+            m.reserve(9 * page_size(), page_size(), Tracked::assume_new()),
+            None
+        );
+        assert_eq!(
+            m.reserve(usize::MAX, page_size(), Tracked::assume_new()),
+            None
+        );
+        assert_eq!(m.reserve(page_size(), 1 << 40, Tracked::assume_new()), None);
+        assert_eq!(m.stats(Tracked::assume_new()).reserved, 0);
         assert_eq!(m.top(), b.base + b.len);
-        assert_eq!(m.reserve(8 * page_size(), page_size()), Some(b.base));
-        assert_eq!(m.alloc(layout(1, 1)), ptr::null_mut());
+        assert_eq!(
+            m.reserve(8 * page_size(), page_size(), Tracked::assume_new()),
+            Some(b.base)
+        );
+        assert_eq!(
+            m.alloc(layout(1, 1), Tracked::assume_new()),
+            ptr::null_mut()
+        );
     }
 
     #[test]
@@ -3405,11 +3540,12 @@ mod tests {
     fn free_of_foreign_pointer_aborts() {
         let b = Backing::new(1 << 16);
         let m = b.meta();
-        let _ = m.alloc(layout(64, 8));
+        let _ = m.alloc(layout(64, 8), Tracked::assume_new());
         let mut foreign = [0u8; 128];
         m.free(
             align_up(foreign.as_mut_ptr() as usize, 64) as *mut u8,
             layout(64, 8),
+            Tracked::assume_new(),
         );
     }
 
@@ -3418,8 +3554,8 @@ mod tests {
     fn free_of_misaligned_pointer_aborts() {
         let b = Backing::new(1 << 16);
         let m = b.meta();
-        let p = m.alloc(layout(64, 8));
-        m.free(unsafe { p.add(8) }, layout(64, 8));
+        let p = m.alloc(layout(64, 8), Tracked::assume_new());
+        m.free(unsafe { p.add(8) }, layout(64, 8), Tracked::assume_new());
     }
 
     #[test]
@@ -3427,8 +3563,8 @@ mod tests {
     fn free_beyond_bump_aborts() {
         let b = Backing::new(1 << 16);
         let m = b.meta();
-        let p = m.alloc(layout(64, 8));
-        m.free(unsafe { p.add(64) }, layout(64, 8));
+        let p = m.alloc(layout(64, 8), Tracked::assume_new());
+        m.free(unsafe { p.add(64) }, layout(64, 8), Tracked::assume_new());
     }
 
     #[test]
@@ -3436,7 +3572,7 @@ mod tests {
     fn oversized_object_aborts() {
         let b = Backing::new(1 << 16);
         let m = b.meta();
-        let _ = m.alloc(layout(MAX_BINNED + 1, 8));
+        let _ = m.alloc(layout(MAX_BINNED + 1, 8), Tracked::assume_new());
     }
 
     #[test]
@@ -3444,7 +3580,7 @@ mod tests {
     fn overaligned_object_aborts() {
         let b = Backing::new(1 << 16);
         let m = b.meta();
-        let _ = m.alloc(layout(64, 256));
+        let _ = m.alloc(layout(64, 256), Tracked::assume_new());
     }
 
     #[test]
@@ -3453,8 +3589,8 @@ mod tests {
         // Several pages, so the one-page reservation leaves room below it.
         let b = Backing::new(4 * page_size());
         let m = b.meta();
-        let _ = m.reserve(page_size(), page_size());
-        let _ = m.commit(b.base, page_size());
+        let _ = m.reserve(page_size(), page_size(), Tracked::assume_new());
+        let _ = m.commit(b.base, page_size(), Tracked::assume_new());
     }
 
     /// Random alloc/free against a model: no overlap, alignment, contents
@@ -3476,7 +3612,7 @@ mod tests {
                 };
                 let align = 1usize << (xorshift(&mut s) % 7);
                 let l = layout(size, align);
-                let p = m.alloc(l);
+                let p = m.alloc(l, Tracked::assume_new());
                 assert!(!p.is_null());
                 let bin = BINS[bin_for(l).unwrap()] as usize;
                 assert_eq!(p as usize % align, 0);
@@ -3499,10 +3635,10 @@ mod tests {
                 let (p, l, fill) = live.swap_remove(i);
                 let slice = unsafe { core::slice::from_raw_parts(p, l.size()) };
                 assert!(slice.iter().all(|&x| x == fill), "contents clobbered");
-                m.free(p, l);
+                m.free(p, l, Tracked::assume_new());
                 expect_allocated -= BINS[bin_for(l).unwrap()] as usize;
             }
-            let st = m.stats();
+            let st = m.stats(Tracked::assume_new());
             assert_eq!(st.allocated, expect_allocated);
             assert!(st.allocated <= st.bumped && st.bumped <= st.committed);
             assert!(st.committed <= st.len && st.committed % page_size() == 0);
@@ -3510,15 +3646,15 @@ mod tests {
         // Free everything, then the same sequence of layouts reuses memory.
         let layouts: Vec<Layout> = live.iter().map(|(_, l, _)| *l).collect();
         for (p, l, _) in live.drain(..) {
-            m.free(p, l);
+            m.free(p, l, Tracked::assume_new());
         }
-        assert_eq!(m.stats().allocated, 0);
-        let bumped = m.stats().bumped;
+        assert_eq!(m.stats(Tracked::assume_new()).allocated, 0);
+        let bumped = m.stats(Tracked::assume_new()).bumped;
         for l in &layouts {
-            assert!(!m.alloc(*l).is_null());
+            assert!(!m.alloc(*l, Tracked::assume_new()).is_null());
         }
         assert_eq!(
-            m.stats().bumped,
+            m.stats(Tracked::assume_new()).bumped,
             bumped,
             "everything came from the free lists"
         );
@@ -3541,7 +3677,7 @@ mod tests {
                         if live.len() < 64 && xorshift(&mut s) % 3 != 0 {
                             let size = (xorshift(&mut s) as usize) % 2048 + 1;
                             let l = layout(size, 1 << (xorshift(&mut s) % 7));
-                            let p = m.alloc(l);
+                            let p = m.alloc(l, Tracked::assume_new());
                             assert!(!p.is_null());
                             unsafe { core::slice::from_raw_parts_mut(p, size) }.fill(fill);
                             live.push((p, l));
@@ -3549,18 +3685,18 @@ mod tests {
                             let (p, l) = live.swap_remove((xorshift(&mut s) as usize) % (i + 1));
                             let sl = unsafe { core::slice::from_raw_parts(p, l.size()) };
                             assert!(sl.iter().all(|&x| x == fill), "thread {t} block clobbered");
-                            m.free(p, l);
+                            m.free(p, l, Tracked::assume_new());
                         }
                     }
                     for (p, l) in live {
                         let sl = unsafe { core::slice::from_raw_parts(p, l.size()) };
                         assert!(sl.iter().all(|&x| x == fill));
-                        m.free(p, l);
+                        m.free(p, l, Tracked::assume_new());
                     }
                 });
             }
         });
-        assert_eq!(m.stats().allocated, 0);
+        assert_eq!(m.stats(Tracked::assume_new()).allocated, 0);
         assert!(!m.raw_lock().is_locked());
     }
 
@@ -3604,22 +3740,25 @@ mod tests {
         let m = b.meta();
         m.set_eager_for_test(true);
         for _ in 0..10 {
-            assert!(!m.alloc(layout(1000, 8)).is_null());
+            assert!(!m.alloc(layout(1000, 8), Tracked::assume_new()).is_null());
         }
-        let small = m.reserve_committed(3 * page_size(), page_size()).unwrap();
+        let small = m
+            .reserve_committed(3 * page_size(), page_size(), Tracked::assume_new())
+            .unwrap();
         assert_eq!(
             small,
             b.base + align_up(10 * 1024, page_size()),
             "page aligned, after the ten 1 KiB objects"
         );
         let big = m
-            .reserve_table(EAGER_MAX + page_size(), page_size())
+            .reserve_table(EAGER_MAX + page_size(), page_size(), Tracked::assume_new())
             .unwrap();
-        m.commit(big + page_size(), page_size()).unwrap();
+        m.commit(big + page_size(), page_size(), Tracked::assume_new())
+            .unwrap();
         // The object side's frontier: the chunks through the small table's
         // end (one chunk under 4 KiB pages, four pages under 64 KiB pages).
         let front = align_up(small + 3 * page_size() - b.base, chunk());
-        let st = m.stats();
+        let st = m.stats(Tracked::assume_new());
         assert_eq!(
             st.committed,
             front + page_size(),
@@ -3659,10 +3798,10 @@ mod tests {
     fn a_double_free_of_the_list_head_aborts() {
         let b = Backing::new(1 << 16);
         let m = b.meta();
-        let p = m.alloc(layout(64, 8));
+        let p = m.alloc(layout(64, 8), Tracked::assume_new());
         assert!(!p.is_null());
-        m.free(p, layout(64, 8));
-        m.free(p, layout(64, 8));
+        m.free(p, layout(64, 8), Tracked::assume_new());
+        m.free(p, layout(64, 8), Tracked::assume_new());
     }
 
     #[test]
@@ -3670,12 +3809,12 @@ mod tests {
         // Documents the limit of the check: only the head is compared.
         let b = Backing::new(1 << 16);
         let m = b.meta();
-        let p = m.alloc(layout(64, 8));
-        let q = m.alloc(layout(64, 8));
-        m.free(p, layout(64, 8));
-        m.free(q, layout(64, 8));
-        assert_eq!(m.alloc(layout(64, 8)), q);
-        assert_eq!(m.alloc(layout(64, 8)), p);
+        let p = m.alloc(layout(64, 8), Tracked::assume_new());
+        let q = m.alloc(layout(64, 8), Tracked::assume_new());
+        m.free(p, layout(64, 8), Tracked::assume_new());
+        m.free(q, layout(64, 8), Tracked::assume_new());
+        assert_eq!(m.alloc(layout(64, 8), Tracked::assume_new()), q);
+        assert_eq!(m.alloc(layout(64, 8), Tracked::assume_new()), p);
     }
 
     /// Many small tables with objects between them are one `rw-p` mapping
@@ -3688,7 +3827,10 @@ mod tests {
         m.set_eager_for_test(true);
         let mut tables = Vec::new();
         for i in 0..40usize {
-            assert!(!m.alloc(layout(64 + i * 16, 8)).is_null());
+            assert!(
+                !m.alloc(layout(64 + i * 16, 8), Tracked::assume_new())
+                    .is_null()
+            );
             let len = (1 + i % 7) * page_size() + (i % 3) * 100;
             let t = m
                 .reserve_table(
@@ -3698,13 +3840,14 @@ mod tests {
                     } else {
                         page_size()
                     },
+                    Tracked::assume_new(),
                 )
                 .unwrap();
-            m.commit(t, page_size()).unwrap();
+            m.commit(t, page_size(), Tracked::assume_new()).unwrap();
             unsafe { core::ptr::write_volatile(t as *mut u64, i as u64 + 1) };
             tables.push((t, len));
         }
-        let s = m.stats();
+        let s = m.stats(Tracked::assume_new());
         assert_eq!(s.reserved, 0, "nothing on the reservation side");
         assert_eq!(
             s.eager,

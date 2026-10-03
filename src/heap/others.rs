@@ -7,6 +7,9 @@ use core::alloc::Layout;
 use core::ptr;
 
 use crate::layout::NCLASSES;
+use crate::lock::LockOrder;
+#[cfg(verus_only)]
+use crate::lock::rank_meta;
 
 use super::{CacheHeader, FOREIGN, Heap, Shared};
 #[cfg(verus_only)]
@@ -305,7 +308,7 @@ impl Heap {
         proof {
             shared.lemma_wf();
         }
-        let node = self.other_caches(shared, arena, false);
+        let node = self.other_caches(shared, arena, false, Tracked(&mut LockOrder::spare()));
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap.
             let cache = unsafe { Self::node_cache_ptr(node, class) };
@@ -353,7 +356,7 @@ impl Heap {
             tk.tracked_insert(0, tok);
             shared.lemma_wf();
         }
-        let node = self.other_caches(shared, FOREIGN, false);
+        let node = self.other_caches(shared, FOREIGN, false, Tracked(&mut LockOrder::spare()));
         if !node.is_null() {
             proof {
                 assert(self.owns(node_hdr(node, class as int)));
@@ -421,13 +424,16 @@ impl Heap {
         shared: &Shared,
         arena: u16,
         create: bool,
+        Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: *mut ArenaCaches)
         requires
             crate::sys::may_syscall(),
             old(self).wf(),
             shared.wf(),
             create ==> arena != old(self).arena,
+            create ==> old(ord).allows(rank_meta()),
         ensures
+            *final(ord) == *old(ord),
             final(self).keeps(*old(self)),
             r@.addr != 0 ==> final(self).owns_node(r),
             r@.addr != 0 ==> final(self).in_list(r),
@@ -484,7 +490,7 @@ impl Heap {
             shared.lemma_meta();
             assert(crate::meta::MAX_BINNED == 0x10_0000usize) by (compute_only);
         }
-        let (block, Tracked(raw)) = shared.meta.alloc_raw(node_block_layout());
+        let (block, Tracked(raw)) = shared.meta.alloc_raw(node_block_layout(), Tracked(ord));
         if block.is_null() {
             return ptr::null_mut();
         }
@@ -622,13 +628,16 @@ impl Heap {
         shared: &Shared,
         arena: u16,
         class: usize,
+        Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: *mut CacheHeader)
         requires
             crate::sys::may_syscall(),
             class < NCLASSES,
             old(self).wf(),
             shared.wf(),
+            old(ord).allows(rank_meta()),
         ensures
+            *final(ord) == *old(ord),
             final(self).keeps(*old(self)),
             r@.addr != 0 ==> final(self).owns(r) && final(self).hdr_class(r) == class,
             r@.addr != 0 ==> final(self).routes(arena, class as int, r),
@@ -640,7 +649,7 @@ impl Heap {
             }
             return self.cache_ptr(class);
         }
-        let node = self.other_caches(shared, arena, true);
+        let node = self.other_caches(shared, arena, true, Tracked(ord));
         if node.is_null() {
             return ptr::null_mut();
         }
@@ -687,7 +696,7 @@ impl Heap {
 mod kani_aborts {
     use super::assert_not_home;
 
-    /// S128 `assert_not_home`, `requires *arena != *home`: under it the
+    /// S129 `assert_not_home`, `requires *arena != *home`: under it the
     /// call returns, for every pair.
     #[kani::proof]
     fn assert_not_home_returns() {

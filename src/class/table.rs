@@ -14,7 +14,9 @@ use crate::bitmap::{has_bit, subset};
 use crate::layout::{CLASSES, Class, Regions};
 #[cfg(verus_only)]
 use crate::layout::{NCLASSES, class_table, process_regions};
-use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
+use crate::lock::{Lock, LockOrder, PAD_ALIGN, Padded, RawLock};
+#[cfg(verus_only)]
+use crate::lock::{rank_meta, rank_table};
 use crate::meta::Meta;
 use crate::purge;
 use crate::slab::{DESC_ALIGN, SlabDesc, desc_stride};
@@ -438,7 +440,7 @@ impl SlabTable {
     /// they are the process's ([`process_regions`](crate::layout::process_regions)),
     /// which is what the type invariant needs of `regions`.
     #[verifier::spinoff_prover]
-    pub fn new(meta: &Meta, regions: &Regions, class: usize, guard_interval: u32) -> (r: Option<SlabTable>)
+    pub fn new(meta: &Meta, regions: &Regions, class: usize, guard_interval: u32, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<SlabTable>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -448,12 +450,14 @@ impl SlabTable {
             class < NCLASSES,
             guard_interval != 1,
             guard_interval == 0 || exists|k: nat| k < 32 && guard_interval as nat == #[trigger] pow2(k),
+            old(ord).allows(rank_meta()),
         ensures
             r matches Some(t) ==> {
                 &&& t.spec_class() == class
                 &&& t.spec_nslabs() == (1usize << regions.lg_region) >> class_table()[class as int].lg_slab
                 &&& meta.is_process() ==> t.meta_ok()
             },
+            *final(ord) == *old(ord),
     {
         broadcast use axiom_table_lock_inv;
         proof {
@@ -511,11 +515,11 @@ impl SlabTable {
         // (`slab::strides_of` makes the stride 16, 32 or 64; the table it
         // fills is not visible to the verifier).
         crate::vspec::check::check(stride >= 16 && stride % 16 == 0, "class: descriptor stride is not whole headers");
-        let (descs, _draw) = Lazy::reserve_raw(meta, stagger + nslabs * stride, align);
+        let (descs, _draw) = Lazy::reserve_raw(meta, stagger + nslabs * stride, align, Tracked(ord));
         let descs = descs?;
-        let (bits, _braw) = Lazy::reserve_raw(meta, stagger + (nslabs * cls.slab_bits()).div_ceil(8), align);
+        let (bits, _braw) = Lazy::reserve_raw(meta, stagger + (nslabs * cls.slab_bits()).div_ceil(8), align, Tracked(ord));
         let bits = bits?;
-        let (owners, _oraw) = Lazy::reserve_raw(meta, stagger + nslabs.div_ceil(group) * 2, align);
+        let (owners, _oraw) = Lazy::reserve_raw(meta, stagger + nslabs.div_ceil(group) * 2, align, Tracked(ord));
         let owners = owners?;
         proof {
             broadcast use vstd::std_specs::bits::axiom_u64_trailing_zeros;
@@ -616,9 +620,38 @@ impl SlabTable {
         let tracked (dmap, wmap, omap) = table_perms(
             _draw.get(), _braw.get(), _oraw.get(), descs.spec_base() as int, bits.spec_base() as int, owners.spec_base() as int,
             align, stagger as int, stride as int, nslabs as int, cls.slab_bits as int, group as int, class as int);
+        let bits_base = bits.start() + stagger;
+        let owners_base = owners.start() + stagger;
+        let desc_base = descs.start() + stagger;
+        let inner = Padded(Lock::new(TableInner {
+            descs,
+            bits,
+            owners,
+            next_slab: 0,
+            guards: 0,
+            page: Ghost(page),
+            group: Ghost(group),
+            nslabs: Ghost(nslabs),
+            sb: Ghost(cls.slab_bits as usize),
+            mloc: Ghost(mark_auth.id()),
+            fresh: Tracked(imarks),
+        }, Ghost(rank_table(class as int))));
+        proof {
+            assert(lock_init(inner.0).page@ == 1usize << regions.lg_page);
+            assert(lock_init(inner.0).group@ == group);
+            assert(lock_init(inner.0).nslabs@ == nslabs);
+            assert(lock_init(inner.0).sb@ == cls.slab_bits as usize);
+            assert(lock_init(inner.0).mloc@ == mark_auth.id());
+            assert(inner.0.rank() == rank_table(class as int));
+            assert(words_wf(word_invs, slots, bits_base, nwords));
+            assert(slots.loc == slot_loc(class as int));
+            assert(crate::layout::guard_geom(class as int) == (geo.glg, geo.gmask));
+            assert(regions.class_base[class as int] == process_regions().class_base[class as int]);
+            assert(nslabs as int == process_regions().spec_nslabs(class as int));
+        }
         Some(SlabTable {
-            bits_base: bits.start() + stagger,
-            owners_base: owners.start() + stagger,
+            bits_base,
+            owners_base,
             committed_slabs: AtomicUsize::new(0),
             slab_bits: cls.slab_bits() as u16,
             class: class as u16,
@@ -632,20 +665,8 @@ impl SlabTable {
             group: group as u32,
             base: regions.class_base[class],
             nslabs,
-            desc_base: descs.start() + stagger,
-            inner: Padded(Lock::new(TableInner {
-                descs,
-                bits,
-                owners,
-                next_slab: 0,
-                guards: 0,
-                page: Ghost(page),
-                group: Ghost(group),
-                nslabs: Ghost(nslabs),
-                sb: Ghost(cls.slab_bits as usize),
-                mloc: Ghost(mark_auth.id()),
-                fresh: Tracked(imarks),
-            })),
+            desc_base,
+            inner,
             _tail: [0; TABLE_TAIL],
             slot_auth: Tracked(slot_auth),
             word_invs: Tracked(word_invs),
@@ -879,6 +900,9 @@ proof fn carve_words(tracked raw: PointsToRaw, base: int, n: int) -> (tracked r:
         && perm_at(r[j], base + 8 * j)
         && word_addr(&r[j].value()) == base + 8 * j by {
         assert(carved.contains_key(0 + j));
+        assert(j * 8 == 8 * j && base + 8 * j <= usize::MAX) by (nonlinear_arith)
+            requires 0 <= j < n, base + n * 8 <= usize::MAX;
+        assert(carved[0 + j].ptr()@.addr == base + 8 * j);
     }
     r
 }
@@ -1273,6 +1297,7 @@ impl SlabTable {
         &&& self.spec_slots().loc == slot_loc(self.class as int)
         &&& crate::layout::guard_geom(self.class as int) == (self.lg_slabs_per_page, self.guard_mask)
         &&& self.perms_ok()
+        &&& self.inner.0.rank() == rank_table(self.class as int)
     }
 
     /// Hand-out groups of the region (owner words).
@@ -1584,7 +1609,11 @@ impl SlabTable {
     pub fn raw_lock(&self) -> (r: &RawLock)
         ensures
             *r == self.spec_raw_lock(),
+            r.rank() == rank_table(self.spec_class() as int),
     {
+        proof {
+            use_type_invariant(self);
+        }
         self.inner.raw()
     }
 
@@ -1679,9 +1708,9 @@ impl SlabTable {
     pub(crate) fn corrupt_owner_word(&self, meta: &Meta, group: usize, arena: u16) {
         let page = 1usize << self.lg_page;
         let stagger = desc_stagger(self.class as usize);
-        let mut g = self.inner.lock();
+        let mut g = self.inner.lock_t();
         g.owners
-            .ensure(meta, page, stagger + group * 2 + 2)
+            .ensure(meta, page, stagger + group * 2 + 2, Tracked::assume_new())
             .expect("owner page");
         drop(g);
         // SAFETY: the word's page was just committed.
@@ -1719,11 +1748,17 @@ impl SlabTable {
     }
 
     /// Guard slabs committed so far.
-    pub fn guards(&self) -> usize
+    pub fn guards(&self, Tracked(ord): Tracked<&mut LockOrder>) -> usize
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_table(0)),
+        ensures
+            *final(ord) == *old(ord),
     {
-        self.inner.lock().guards
+        proof {
+            use_type_invariant(self);
+        }
+        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).guards
     }
 
     /// Descriptor of a handed-out slab. Aborts for a slab that was never
@@ -2340,13 +2375,15 @@ impl SlabTable {
     /// is a guard slab. `Some(true)` for a slab ready to allocate from,
     /// `Some(false)` for a guard slab, `None` when `mprotect` fails (the
     /// slab stays uncommitted and may be retried).
-    pub(super) fn commit_slab(&self, s: usize) -> (r: Option<bool>)
+    pub(super) fn commit_slab(&self, s: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<bool>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             s < self.spec_nslabs(),
+            old(ord).allows(rank_table(0)),
         ensures
             r matches Some(usable) ==> usable == !self.spec_is_guard(s),
+            *final(ord) == *old(ord),
     {
         broadcast use axiom_table_lock_inv;
         proof {
@@ -2354,7 +2391,7 @@ impl SlabTable {
         }
         let cls = self.class();
         let page = 1usize << self.lg_page;
-        let mut g = self.inner.lock();
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let addr = self.slab_addr(s);
         // A slab smaller than a page is committed with its whole page
         // group when the group's first slab comes up; a group is whole
@@ -2500,10 +2537,12 @@ impl SlabTable {
         sets: &mut Inner,
         sets_page: usize,
         Tracked(inited): Tracked<&mut GhostPersistentSubset<int>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: Option<(usize, usize)>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_table(0)),
             old(sets).table@ == *self,
             old(sets).arena@ == arena,
             old(sets).base(),
@@ -2511,6 +2550,7 @@ impl SlabTable {
             old(inited).id() == self.spec_slots().mloc,
         ensures
             final(sets).same_sets(*old(sets)),
+            *final(ord) == *old(ord),
             final(inited).id() == old(inited).id(),
             old(inited)@.subset_of(final(inited)@),
             r matches Some((s, e)) ==> s < e <= self.spec_nslabs()
@@ -2530,7 +2570,8 @@ impl SlabTable {
         let page = 1usize << self.lg_page;
         let class = self.class as usize;
         let stagger = desc_stagger(class);
-        let mut g = self.inner.lock();
+        let tracked mut under = LockOrder::spare();
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
         let s = self.next_slab_locked(&*g, &*sets);
         if s >= self.nslabs {
             return None;
@@ -2558,10 +2599,10 @@ impl SlabTable {
                     requires end <= 0x400_0000, d <= 0xffff_ffff;
             }
         }
-        g.descs.ensure(meta, page, stagger + end * desc_stride(class)).ok()?;
-        g.bits.ensure(meta, page, stagger + (end * cls.slab_bits()).div_ceil(8)).ok()?;
-        g.owners.ensure(meta, page, stagger + ((end - 1) >> self.lg_group) * 2 + 2).ok()?;
-        sets.ensure_sets(meta, sets_page, end - 1).ok()?;
+        g.descs.ensure(meta, page, stagger + end * desc_stride(class), Tracked(&mut under)).ok()?;
+        g.bits.ensure(meta, page, stagger + (end * cls.slab_bits()).div_ceil(8), Tracked(&mut under)).ok()?;
+        g.owners.ensure(meta, page, stagger + ((end - 1) >> self.lg_group) * 2 + 2, Tracked(&mut under)).ok()?;
+        sets.ensure_sets(meta, sets_page, end - 1, Tracked(&mut under)).ok()?;
         // The owner word and the descriptors' arena field record the same
         // fact (design section 4) and are written together only here, so
         // a group about to be handed out must show them agreeing: both

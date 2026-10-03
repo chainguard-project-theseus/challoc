@@ -5,6 +5,8 @@
 use core::ptr;
 
 use crate::layout::{CLASSES, NCLASSES};
+#[cfg(verus_only)]
+use crate::lock::axiom_entry;
 use crate::sys::pac;
 use crate::vspec::addr::addr_to_ptr;
 use crate::vspec::zero::Zeroed;
@@ -318,7 +320,9 @@ impl Heap {
             r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
             r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == shared.huge_usable(size),
     {
-        let (p, zero, z) = shared.alloc_huge(size, align, arena, Tracked(blk));
+        // Premise (lock order): huge allocations come from the entry points
+        // and the slow paths, which hold no lock.
+        let (p, zero, z) = shared.alloc_huge(size, align, arena, Tracked(blk), Tracked(&mut axiom_entry()));
         if !p.is_null() {
             self.count_uncached_alloc(shared.huge.usable_for(size).unwrap_or(0));
         }
@@ -354,7 +358,9 @@ impl Heap {
                 super::zero::theorem_zero_on_free_huge(&z, shared, page);
             }
         }
-        let n = shared.free_huge(page, Tracked(tok));
+        // Premise (lock order): a free of a huge run comes from an entry
+        // point, which holds no lock.
+        let n = shared.free_huge(page, Tracked(tok), Tracked(&mut axiom_entry()));
         self.count_uncached_free(n);
     }
 
@@ -497,12 +503,15 @@ impl Heap {
         proof {
             shared.lemma_wf();
         }
-        self.tick(shared);
-        let Some(a) = shared.arena(arena) else { return (ptr::null_mut(), false) };
-        let cache = self.ensure_cache(shared, arena, class);
+        // Premise (lock order): the slow allocation path is entered from a
+        // fast path or an entry point, none of which holds a lock.
+        let tracked mut ord = axiom_entry();
+        self.tick(shared, Tracked(&mut ord));
+        let Some(a) = shared.arena(arena, Tracked(&mut ord)) else { return (ptr::null_mut(), false) };
+        let cache = self.ensure_cache(shared, arena, class, Tracked(&mut ord));
         let ghost s1 = *self;
         if cache.is_null() {
-            let (p, zero, t) = shared.alloc_direct(a, class, Tracked(blk));
+            let (p, zero, t) = shared.alloc_direct(a, class, Tracked(blk), Tracked(&mut ord));
             if !p.is_null() {
                 self.count_direct_alloc(class);
             }
@@ -512,7 +521,7 @@ impl Heap {
         }
         // SAFETY: `cache` is this heap's real cache for `(arena, class)`.
         unsafe {
-            let len = self.refill(shared, a, cache, class);
+            let len = self.refill(shared, a, cache, class, Tracked(&mut ord));
             proof {
                 Heap::lemma_keeps_routes(s1, *self, arena, class as int, cache);
                 self.lemma_poppable(arena, class as int, cache);
@@ -579,14 +588,17 @@ impl Heap {
         proof {
             old(self).lemma_wf_regions();
         }
+        // Premise (lock order): the slow free path is entered from a fast
+        // path or an entry point, none of which holds a lock.
+        let tracked mut ord = axiom_entry();
         // `arena` is the home arena, or `FOREIGN` for another arena's
         // slot (`free_other`); a real arena is materialised first, since
         // `ensure_cache` reads its class state for the header (a heap
         // whose first allocation is huge, or whose home moved, may not
         // have built it).
-        let cache = if arena == FOREIGN || shared.arena(arena).is_some() { self.ensure_cache(shared, arena, class) } else { ptr::null_mut() };
+        let cache = if arena == FOREIGN || shared.arena(arena, Tracked(&mut ord)).is_some() { self.ensure_cache(shared, arena, class, Tracked(&mut ord)) } else { ptr::null_mut() };
         if cache.is_null() {
-            self.tick(shared);
+            self.tick(shared, Tracked(&mut ord));
             // No cache for this class here: straight to the slab, through
             // the arena its slab belongs to.
             proof {
@@ -594,7 +606,7 @@ impl Heap {
                     super::zero::theorem_zero_on_free(&z, &tok, p, class as int);
                 }
             }
-            shared.free_direct(shared.arena_of_slot(class, p), class, p, Tracked(tok));
+            shared.free_direct(shared.arena_of_slot(class, p), class, p, Tracked(tok), Tracked(&mut ord));
             self.count_direct_free(class);
             return;
         }
@@ -613,12 +625,12 @@ impl Heap {
                     cached_twice(p);
                 }
             }
-            self.tick(shared);
+            self.tick(shared, Tracked(&mut ord));
             if self.hdr_ref(cache).len == self.hdr_ref(cache).cap {
                 // A home cache keeps its lowest half (design 6.4); the
                 // FOREIGN cache, popped by nothing, releases everything.
                 let n = if arena == FOREIGN { self.hdr_ref(cache).cap } else { (self.hdr_ref(cache).cap / 2).max(1) };
-                self.flush(shared, arena, cache, class, n as usize);
+                self.flush(shared, arena, cache, class, n as usize, Tracked(&mut ord));
                 proof {
                     // Cache routing: a full `FOREIGN` cache is released whole.
                     if arena == FOREIGN {
@@ -806,7 +818,9 @@ pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) ->
 {
     match heap_for_thread(shared) {
         Some(h) => h.alloc(shared, class, Tracked(blk)),
-        None => shared.alloc_direct(&shared.arena0, class, Tracked(blk)).0,
+        // Premise (lock order, `lock::axiom_entry`): the C caller holds no
+        // allocator lock.
+        None => shared.alloc_direct(&shared.arena0, class, Tracked(blk), Tracked(&mut axiom_entry())).0,
     }
 }
 
@@ -832,7 +846,9 @@ pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut 
 {
     match heap_for_thread(shared) {
         Some(h) => h.alloc_slow(shared, class, Tracked(blk)).0,
-        None => shared.alloc_direct(&shared.arena0, class, Tracked(blk)).0,
+        // Premise (lock order, `lock::axiom_entry`): the C caller holds no
+        // allocator lock.
+        None => shared.alloc_direct(&shared.arena0, class, Tracked(blk), Tracked(&mut axiom_entry())).0,
     }
 }
 
@@ -860,7 +876,9 @@ pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Li
             let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
             (p, zero, z)
         },
-        None => shared.alloc_direct(&shared.arena0, class, Tracked(blk)),
+        // Premise (lock order, `lock::axiom_entry`): the C caller holds no
+        // allocator lock.
+        None => shared.alloc_direct(&shared.arena0, class, Tracked(blk), Tracked(&mut axiom_entry())),
     }
 }
 
@@ -902,6 +920,9 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
         shared.lemma_wf();
         shared.lemma_regions_ok();
     }
+    // Premise (lock order): called from the entry points, which hold no
+    // lock.
+    let tracked mut ord = axiom_entry();
     match shared.classify_free(p) {
         Ok((class, arena)) => {
             proof {
@@ -925,7 +946,7 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
                     super::zero::theorem_zero_on_free(&z, &tok, p, class as int);
                 }
             }
-            shared.free_direct(arena, class, p, Tracked(tok));
+            shared.free_direct(arena, class, p, Tracked(tok), Tracked(&mut ord));
             if let Some(h) = existing_heap(shared_ptr(shared)) {
                 let ghost before = *h;
                 h.count_direct_free(class);
@@ -952,7 +973,7 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
                 }
             }
             let tracked t = blk.take_run(p, page);
-            let n = shared.free_huge(page, Tracked(t));
+            let n = shared.free_huge(page, Tracked(t), Tracked(&mut ord));
             if let Some(h) = existing_heap(shared_ptr(shared)) {
                 let ghost before = *h;
                 h.count_uncached_free(n);
@@ -1070,7 +1091,7 @@ mod kani_aborts {
     use super::debug_scheduled;
     use crate::kani_proofs::must_not_return;
 
-    /// S132 `debug_scheduled`, no `requires`, no `ensures`: with debug
+    /// S133 `debug_scheduled`, no `requires`, no `ensures`: with debug
     /// assertions on (Kani's build, and the tests'), it returns exactly
     /// when `allocs as u32` has no bit of `mask`, and otherwise never
     /// returns.

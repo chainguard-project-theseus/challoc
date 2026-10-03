@@ -16,9 +16,12 @@
 //!
 //! Nothing on the `malloc`/`free` fast path takes a lock.
 
+#[cfg(verus_only)]
+use crate::layout::NCLASSES;
 use crate::sync::atomic::{AtomicU32, Ordering};
 #[cfg(not(loom))]
 use core::cell::UnsafeCell;
+use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use vstd::prelude::*;
 
@@ -41,21 +44,41 @@ const SPINS: u32 = 2;
 
 /// The bare mutex word. Use [`Lock`] when there is data to protect; use this
 /// directly only where the data is elsewhere (fork handlers, state machines).
-#[repr(transparent)]
+#[cfg_attr(not(verus_only), repr(transparent))]
 pub struct RawLock {
     state: AtomicU32,
+    /// Ghost: the lock's rank in the lock order ([`LockOrder`]), fixed at
+    /// creation. Verus-only, as is dropping `repr(transparent)` there:
+    /// `repr(transparent)` rejects a `Ghost` field (its fields are
+    /// private), and ordinary builds keep the one-word struct as it is.
+    #[cfg(verus_only)]
+    rank: Ghost<int>,
 }
 
+#[cfg(not(loom))]
 impl Default for RawLock {
     fn default() -> Self {
-        Self::new()
+        Self::new(Ghost(arbitrary()))
     }
 }
 
 impl RawLock {
+    /// A free lock of rank `rank` (ghost).
     #[cfg(not(loom))]
-    pub const fn new() -> RawLock {
-        RawLock { state: AtomicU32::new(UNLOCKED) }
+    pub const fn new(Ghost(rank): Ghost<int>) -> (l: RawLock)
+        ensures
+            l.rank() == rank,
+    {
+        RawLock {
+            state: AtomicU32::new(UNLOCKED),
+            #[cfg(verus_only)]
+            rank: Ghost(rank),
+        }
+    }
+
+    /// The lock's rank in the lock order.
+    pub closed spec fn rank(self) -> int {
+        self.rank@
     }
 
     /// The bare CAS from `UNLOCKED` to `LOCKED`.
@@ -76,11 +99,15 @@ impl RawLock {
     /// Acquire, blocking as needed. Opens any invariant (stated, though it
     /// is Verus's default): a function that declares a narrower mask, as
     /// the `malloc` and `free` fast paths do, cannot call it (theorem 9 of
-    /// `verus/THEOREMS.md`).
+    /// `verus/THEOREMS.md`). Verified callers outside this module cannot
+    /// meet the `lock_rs_only` requirement (its body is closed): they
+    /// acquire through [`Lock::lock`] or [`RawLock::lock_held`], which
+    /// check the lock order.
     #[inline]
     pub fn lock(&self)
         requires
             crate::sys::may_syscall(),
+            lock_rs_only(),
         opens_invariants any
     {
         if !self.try_acquire() {
@@ -128,10 +155,42 @@ impl RawLock {
     /// [`RawLock::lock`], returning the hold as a [`LockHeld`] token, for
     /// code that holds several raw locks with no guard (the fork
     /// handlers).
+    ///
+    /// Lock order: the lock ranks above every lock `ord` bounds, and `ord`
+    /// is raised to it. The hold outlives any guard, so `ord` must be a
+    /// root ([`LockOrder::root`]), which no guard's scope bounds.
     #[inline(always)]
-    pub fn lock_held(&self) -> (t: Tracked<LockHeld>)
+    pub fn lock_held(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (t: Tracked<LockHeld>)
         requires
             crate::sys::may_syscall(),
+            old(ord).root(),
+            old(ord).allows(self.rank()),
+        ensures
+            t@.held() == *self,
+            final(ord).root(),
+            final(ord).top() == self.rank(),
+    {
+        self.lock();
+        proof {
+            ord.top = self.rank();
+        }
+        Tracked(LockHeld { lock: *self })
+    }
+
+    /// [`RawLock::lock_held`] for a gated lock ([`gated`]) while this
+    /// thread holds all of its gates: `gates` holds, under key `key(c)`,
+    /// the token of the gate of rank `gate_rank(self.rank(), c)` for each
+    /// class `c`. No order is checked and no token raised: every other
+    /// thread holds one of the gates while it holds or waits for a gated
+    /// lock (the premise in [`gated`]), so while this thread holds them
+    /// all, no other thread holds the lock or waits for it.
+    #[inline(always)]
+    pub fn lock_held_gated<K>(&self, Tracked(gates): Tracked<&Map<K, LockHeld>>, Ghost(key): Ghost<spec_fn(int) -> K>) -> (t: Tracked<LockHeld>)
+        requires
+            crate::sys::may_syscall(),
+            gated(self.rank()),
+            forall|c: int| 0 <= c < NCLASSES ==> #[trigger] gates.contains_key(key(c))
+                && gates[key(c)].held().rank() == gate_rank(self.rank(), c),
         ensures
             t@.held() == *self,
     {
@@ -184,6 +243,175 @@ impl LockHeld {
         self.lock
     }
 }
+
+/// True, but only inside this module (the body is closed): the
+/// requirement of the unchecked [`RawLock::lock`].
+pub closed spec fn lock_rs_only() -> bool {
+    true
+}
+
+/// The lock order (theorem "Lock order is acyclic", `verus/THEOREMS.md`).
+/// Every allocator lock has a rank, fixed when it is created
+/// ([`RawLock::new`]): the explicit-cache table lock, the arena creation
+/// lock, the class locks (by arena, then class), the slab table locks (by
+/// class), the slab-set locks (by arena), the huge, metadata and process
+/// statistics locks, the arena statistics locks (by arena) and the
+/// background thread's state lock, in that order. A blocking acquisition
+/// ranks above every allocator lock the thread holds ([`LockOrder`]), so
+/// no set of threads can each wait for a lock the next one holds: around
+/// such a cycle the ranks would climb back to where they started.
+pub open spec fn rank_tcaches() -> int {
+    0x100_0000
+}
+
+/// The arena creation lock.
+pub open spec fn rank_arenas() -> int {
+    0x200_0000
+}
+
+/// The class lock of class `c` (below `0x100`) of arena `i`.
+pub open spec fn rank_class(i: int, c: int) -> int {
+    0x300_0000 + i * 0x100 + c
+}
+
+/// The slab table lock of class `c`.
+pub open spec fn rank_table(c: int) -> int {
+    0x400_0000 + c
+}
+
+/// The slab-set lock of arena `i`.
+pub open spec fn rank_sets(i: int) -> int {
+    0x500_0000 + i
+}
+
+/// The huge lock.
+pub open spec fn rank_huge() -> int {
+    0x600_0000
+}
+
+/// The metadata lock.
+pub open spec fn rank_meta() -> int {
+    0x700_0000
+}
+
+/// The process statistics lock.
+pub open spec fn rank_stats() -> int {
+    0x800_0000
+}
+
+/// The statistics lock of arena `i`.
+pub open spec fn rank_arena_stats(i: int) -> int {
+    0x900_0000 + i
+}
+
+/// The background thread's state lock.
+pub open spec fn rank_state() -> int {
+    0xA00_0000
+}
+
+/// Above every lock's rank: a [`LockOrder::spare`] allows nothing.
+pub open spec fn rank_spare() -> int {
+    0xB00_0000
+}
+
+/// The gated locks: the slab-set locks (arena `i`'s is `rank_sets(i)`,
+/// `i < 2^16`), whose gates are the same arena's class locks
+/// ([`gate_rank`]). Premise: a thread that takes a gated lock other than
+/// through [`RawLock::lock_held_gated`] holds one of its gates while it
+/// holds or waits for it. The one such acquisition, `SetTable::ensure`,
+/// runs only under `SlabTable::take_group`, which a class's `plan` calls
+/// with that class's lock held, on the class's sets (the lock's value);
+/// their shared store is that arena's slab-set table (`Set::ensure`).
+/// A [`LockOrder`] does not say which locks are held, so this is checked
+/// by inspection.
+pub open spec fn gated(r: int) -> bool {
+    0x500_0000 <= r < 0x500_0000 + 0x1_0000
+}
+
+/// The rank of gate `c` (the lock of class `c` of the same arena) of
+/// the gated lock of rank `r`.
+pub open spec fn gate_rank(r: int, c: int) -> int {
+    rank_class(r - 0x500_0000, c)
+}
+
+/// Ghost: a bound on the ranks of the allocator locks its owner holds
+/// ([`LockOrder::top`]). A blocking acquisition requires one whose top is
+/// below the lock's rank. [`Lock::lock`] borrows it for the guard's
+/// lifetime and hands out another, at the lock's rank, for the code under
+/// the guard; [`RawLock::lock_held`] raises a root in place. Every
+/// function that may take a lock takes its caller's (`Tracked<&mut
+/// LockOrder>`), so the bound follows the call chain.
+///
+/// Sources: [`axiom_entry`] (a root, where the thread holds no allocator
+/// lock), [`axiom_held_below`] (where it holds only locks below a rank),
+/// the tokens [`Lock::lock`] hands out, and [`LockOrder::spare`], which
+/// allows nothing. The fields are private to this module.
+///
+/// The token [`Lock::lock`] hands out has the lifetime `'a` of the
+/// guard's borrow, which also borrows the caller's token: the caller's
+/// lower bound is unusable until the guard and every use of the token
+/// handed out are gone. A handed-out token used after its guard is
+/// dropped bounds a lock no longer held, which only forbids more.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct LockOrder<'a> {
+    ghost top: int,
+    ghost root: bool,
+    ghost life: PhantomData<&'a ()>,
+}
+
+impl<'a> LockOrder<'a> {
+    /// Every allocator lock this token's owner holds ranks at most this
+    /// (0: none), gated locks taken through [`RawLock::lock_held_gated`]
+    /// aside.
+    pub closed spec fn top(self) -> int {
+        self.top
+    }
+
+    /// A root: from [`axiom_entry`], kept for a whole entry point, not
+    /// handed out under a guard ([`RawLock::lock_held`] needs one).
+    pub closed spec fn root(self) -> bool {
+        self.root
+    }
+
+    /// The owner may block on a lock of rank `r`.
+    pub open spec fn allows(self, r: int) -> bool {
+        self.top() < r
+    }
+
+    /// A token that allows nothing, to receive the one [`Lock::lock`]
+    /// hands out.
+    pub proof fn spare() -> (tracked o: LockOrder<'a>)
+        ensures
+            o.top() == rank_spare(),
+            !o.root(),
+    {
+        LockOrder { top: rank_spare(), root: false, life: PhantomData }
+    }
+}
+
+/// Premise (an entry point): the calling thread holds no allocator lock.
+/// Each use is listed in `verus/THEOREMS.md` ("Lock order is acyclic"):
+/// the slow paths the fast paths call (which take no lock), and the
+/// entry points that start them. No allocator entry point is re-entered
+/// while a lock is held: allocator code calls nothing that may allocate
+/// with a lock held, a signal handler that allocates is outside the C
+/// contract (and the fork handlers block signals).
+pub axiom fn axiom_entry<'a>() -> (tracked o: LockOrder<'a>)
+    ensures
+        o.top() == 0,
+        o.root(),
+;
+
+/// Premise: the calling thread holds only allocator locks ranked below
+/// `r`. Stands in for a token not threaded down from an entry point;
+/// each use is listed in `verus/THEOREMS.md` with the locks its callers
+/// hold.
+pub axiom fn axiom_held_below<'a>(r: int) -> (tracked o: LockOrder<'a>)
+    ensures
+        o.top() < r,
+        !o.root(),
+;
 
 // The futex calls; neither returns anything the callers use. Under loom,
 // the stand-ins in `loom_tests::futex`.
@@ -330,32 +558,56 @@ unsafe impl<T: Send> Send for Lock<T> {}
 verus! {
 
 impl<T> Lock<T> {
-    pub const fn new(value: T) -> (l: Lock<T>)
+    /// A lock of rank `rank` (ghost) guarding `value`.
+    pub const fn new(value: T, Ghost(rank): Ghost<int>) -> (l: Lock<T>)
         requires
             lock_inv(value),
         ensures
             lock_init(l) == value,
+            l.rank() == rank,
     {
-        Lock { raw: RawLock::new(), value: UnsafeCell::new(value), init: Ghost(value) }
+        Lock { raw: RawLock::new(Ghost(rank)), value: UnsafeCell::new(value), init: Ghost(value) }
+    }
+
+    /// The lock's rank in the lock order ([`LockOrder`]).
+    pub open spec fn rank(&self) -> int {
+        self.spec_raw().rank()
     }
 
     /// Acquire and return a guard that releases on drop. Opens any
     /// invariant, as [`RawLock::lock`] does.
+    ///
+    /// Lock order: the lock ranks above every lock `ord` bounds. `ord` is
+    /// borrowed for the guard's lifetime `'a`, and `under` receives the
+    /// bound for the code under the guard, at the lock's rank, with the
+    /// same lifetime: while the guard or `under` is in use, `ord` is not.
     #[inline]
-    pub fn lock(&self) -> (g: LockGuard<'_, T>)
+    pub fn lock<'a>(&'a self, Tracked(ord): Tracked<&'a mut LockOrder<'_>>, Tracked(under): Tracked<&mut LockOrder<'a>>) -> (g: LockGuard<'a, T>)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(self.rank()),
         ensures
             lock_inv(g@),
             lock_frame(lock_init(*self), g@),
+            *final(ord) == *old(ord),
+            final(under).top() == self.rank(),
+            !final(under).root(),
         opens_invariants any
     {
         self.raw.lock();
         let g = LockGuard { lock: self };
         proof {
             axiom_acquired(*self, g);
+            *under = LockOrder { top: self.rank(), root: false, life: PhantomData };
         }
         g
+    }
+
+    /// [`Lock::lock`] for the tests, which keep no lock order tokens.
+    #[cfg(test)]
+    #[verifier::external]
+    pub fn lock_t(&self) -> LockGuard<'_, T> {
+        self.lock(Tracked::assume_new(), Tracked::assume_new())
     }
 
     /// Acquire without blocking.
@@ -487,7 +739,7 @@ mod tests {
 
     #[test]
     fn raw_lock_state_machine() {
-        let l = RawLock::new();
+        let l = RawLock::new(Ghost::assume_new());
         assert!(!l.is_locked());
         assert!(l.try_lock());
         assert!(l.is_locked());
@@ -503,15 +755,15 @@ mod tests {
 
     #[test]
     fn guard_releases_on_drop() {
-        let l = Lock::new(5u32);
+        let l = Lock::new(5u32, Ghost::assume_new());
         {
-            let mut g = l.lock();
+            let mut g = l.lock_t();
             *g += 1;
             assert!(l.try_lock().is_none());
             assert!(l.raw().is_locked());
         }
         assert!(!l.raw().is_locked());
-        assert_eq!(*l.lock(), 6);
+        assert_eq!(*l.lock_t(), 6);
         assert_eq!(*l.try_lock().unwrap(), 6);
     }
 
@@ -521,17 +773,17 @@ mod tests {
     fn contended_counter_is_exact() {
         const THREADS: u64 = 8;
         const ITERS: u64 = 50_000;
-        let l = Lock::new(0u64);
+        let l = Lock::new(0u64, Ghost::assume_new());
         std::thread::scope(|s| {
             for _ in 0..THREADS {
                 s.spawn(|| {
                     for _ in 0..ITERS {
-                        *l.lock() += 1;
+                        *l.lock_t() += 1;
                     }
                 });
             }
         });
-        assert_eq!(*l.lock(), THREADS * ITERS);
+        assert_eq!(*l.lock_t(), THREADS * ITERS);
         assert_eq!(l.raw().state.load(Ordering::Relaxed), UNLOCKED);
     }
 
@@ -539,13 +791,13 @@ mod tests {
     /// every waiter must still get through.
     #[test]
     fn sleepers_are_woken() {
-        let l = Lock::new(Vec::new());
+        let l = Lock::new(Vec::new(), Ghost::assume_new());
         std::thread::scope(|s| {
             for t in 0..4u32 {
                 let l = &l;
                 s.spawn(move || {
                     for i in 0..20u32 {
-                        let mut g = l.lock();
+                        let mut g = l.lock_t();
                         g.push(t * 100 + i);
                         std::thread::sleep(std::time::Duration::from_micros(200));
                     }
@@ -553,7 +805,7 @@ mod tests {
             }
         });
         {
-            let v = l.lock();
+            let v = l.lock_t();
             assert_eq!(v.len(), 80);
             for t in 0..4u32 {
                 let mine: Vec<u32> = v.iter().copied().filter(|x| x / 100 == t).collect();
@@ -595,7 +847,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
-        let l = Arc::new(RawLock::new());
+        let l = Arc::new(RawLock::new(Ghost::assume_new()));
         l.lock();
         let waiter = {
             let l = Arc::clone(&l);

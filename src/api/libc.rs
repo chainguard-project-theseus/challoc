@@ -41,6 +41,8 @@ use crate::heap::{self, Live, Shared};
 #[cfg(verus_only)]
 use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, class_of};
+#[cfg(verus_only)]
+use crate::lock::axiom_entry;
 use crate::sys::Errno;
 use crate::vspec::errno::{ThreadErrno, set_errno};
 use crate::vspec::usable::Stored;
@@ -241,7 +243,9 @@ fn alloc_huge(shared: &Shared, size: usize, align: usize, Tracked(blk): Tracked<
 {
     match heap::heap_for_thread(shared) {
         Some(h) => h.alloc_huge(shared, size, align, Tracked(blk)),
-        None => shared.alloc_huge(size, align, 0, Tracked(blk)),
+        // Premise (lock order, `lock::axiom_entry`): the C caller holds no
+        // allocator lock.
+        None => shared.alloc_huge(size, align, 0, Tracked(blk), Tracked(&mut axiom_entry())),
     }
 }
 
@@ -2429,10 +2433,12 @@ pub fn malloc_trim(_pad: usize) -> (r: c_int)
         r == 0 || r == 1,
 {
     let Some(shared) = super::shared_if_ready() else { return 0 };
+    // Premise (lock order): `malloc_trim`'s caller holds no allocator lock.
+    let tracked mut ord = axiom_entry();
     if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
-        h.flush_all(shared);
+        h.flush_all(shared, Tracked(&mut ord));
     }
-    (crate::purge::purge_all(shared) > 0) as c_int
+    (crate::purge::purge_all(shared, Tracked(&mut ord)) > 0) as c_int
 }
 
 } // verus!

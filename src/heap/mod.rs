@@ -74,6 +74,9 @@ use core::alloc::Layout;
 use core::ptr;
 
 use crate::layout::{CLASSES, NCLASSES};
+use crate::lock::LockOrder;
+#[cfg(verus_only)]
+use crate::lock::{rank_arenas, rank_class, rank_meta};
 
 use others::{node_block_layout, node_caches_mut, node_set_arena};
 pub(crate) use paths::shared_ptr;
@@ -3820,21 +3823,26 @@ impl Heap {
     /// writes the headers through the plain field, so the permissions are
     /// stale afterwards ([`Heap::wf`]); [`Heap::free_caches_in`] is the
     /// form that keeps them.
-    fn free_caches(shared: &Shared, caches: &mut [CacheHeader; NCLASSES])
+    fn free_caches(shared: &Shared, caches: &mut [CacheHeader; NCLASSES], Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
+        ensures
+            *final(ord) == *old(ord),
     {
         for cache in caches.iter_mut()
             invariant
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
+                ord.allows(rank_meta()),
+                *ord == *old(ord),
         {
             if cache.cap != 0 {
                 assert_flushed(&cache.len);
                 shared
                     .meta
-                    .free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap));
+                    .free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap), Tracked(ord));
             }
             *cache = CacheHeader::EMPTY;
         }
@@ -3849,13 +3857,15 @@ impl Heap {
     /// whose `free` takes the whole block. The array's headers must be
     /// flushed, so the `assert_flushed` abort is never reached; no other
     /// header changes, and the released log stays as it is.
-    fn free_caches_in(&mut self, shared: &Shared, node: *mut ArenaCaches)
+    fn free_caches_in(&mut self, shared: &Shared, node: *mut ArenaCaches, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
             old(self).wf(),
             node@.addr == 0 || old(self).owns_node(node),
             forall|c: int| 0 <= c < NCLASSES ==> #[trigger] old(self).cached_len(old(self).array_hdr(node, c)) == 0,
         ensures
+            *final(ord) == *old(ord),
             final(self).wf(),
             final(self).same_shape(*old(self)),
             final(self).tcache_on() == old(self).tcache_on(),
@@ -3874,6 +3884,8 @@ impl Heap {
                 self.tcache_on() == old(self).tcache_on(),
                 crate::sys::may_syscall(),
                 forall|c: int| 0 <= c < NCLASSES ==> #[trigger] old(self).cached_len(old(self).array_hdr(node, c)) == 0,
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
                 self.wf(),
                 self.same_shape(*old(self)),
                 node@.addr == 0 || self.owns_node(node),
@@ -3908,7 +3920,7 @@ impl Heap {
                 assert_flushed(&h.len);
                 shared
                     .meta
-                    .free(h.slots as *mut u8, CacheHeader::slots_layout(h.cap));
+                    .free(h.slots as *mut u8, CacheHeader::slots_layout(h.cap), Tracked(ord));
             }
             *h = CacheHeader::EMPTY;
             proof {
@@ -4200,18 +4212,20 @@ impl Heap {
     ///
     /// The heap stays well formed: the headers are reset through their
     /// permissions ([`Heap::free_caches_in`]).
-    fn drop_home_caches(&mut self, shared: &Shared)
+    fn drop_home_caches(&mut self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
             shared.wf(),
             old(self).wf(),
         ensures
+            *final(ord) == *old(ord),
             final(self).wf(),
             final(self).same_shape(*old(self)),
     {
         let home = self.arena;
-        self.flush_arena(shared, home, ptr::null_mut());
+        self.flush_arena(shared, home, ptr::null_mut(), Tracked(ord));
         let ghost hf = *self;
         Self::fold_counters(&mut self.uncached, &self.caches);
         proof {
@@ -4219,7 +4233,7 @@ impl Heap {
                 assert(hf.cached_len(old(self).array_hdr(ptr::null_mut(), c)) == 0);
             }
         }
-        self.free_caches_in(shared, ptr::null_mut());
+        self.free_caches_in(shared, ptr::null_mut(), Tracked(ord));
     }
 
     /// Add the byte counters a cache array stands for (`allocs` pops and
@@ -4318,14 +4332,16 @@ impl Heap {
     /// none of its headers caches anything, the released log has gained
     /// the slots they held, and no other header has changed what it holds
     /// (whole-allocator theorem 10).
-    fn flush_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches)
+    fn flush_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
             shared.wf(),
             old(self).wf(),
             node@.addr == 0 || old(self).owns_node(node),
         ensures
+            *final(ord) == *old(ord),
             final(self).keeps(*old(self)),
             final(self).same_shape(*old(self)),
             final(self).tcache_on() == old(self).tcache_on(),
@@ -4346,6 +4362,8 @@ impl Heap {
                 crate::sys::may_abort(),
                 self.tcache_on() == old(self).tcache_on(),
                 crate::sys::may_syscall(),
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
                 self.keeps(*old(self)),
                 self.same_shape(*old(self)),
                 node@.addr == 0 || old(self).owns_node(node),
@@ -4377,7 +4395,7 @@ impl Heap {
                 let cache = self.header_in(node, class);
                 let len = self.hdr_ref(cache).len as usize;
                 if len != 0 {
-                    self.flush(shared, arena, cache, class, len);
+                    self.flush(shared, arena, cache, class, len, Tracked(ord));
                     proof {
                         assert(self.held(hc).len() == self.cached_len(hc));
                         assert(self.held(hc).to_set() =~= Set::empty());
@@ -4441,13 +4459,15 @@ impl Heap {
     /// they held ([`Heap::held_all`]), each handed with its token to
     /// `Shared::release_routed`, which proves it used up their tokens (that
     /// they reach their bitmap words is read from the verified bodies).
-    pub fn flush_all(&mut self, shared: &Shared)
+    pub fn flush_all(&mut self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
             shared.wf(),
             old(self).wf(),
         ensures
+            *final(ord) == *old(ord),
             final(self).keeps(*old(self)),
             final(self).same_shape(*old(self)),
             final(self).tcache_on() == old(self).tcache_on(),
@@ -4455,7 +4475,7 @@ impl Heap {
             log_adds(final(self).released(), old(self).released(), old(self).held_all()),
     {
         let home = self.arena;
-        self.flush_arena(shared, home, ptr::null_mut());
+        self.flush_arena(shared, home, ptr::null_mut(), Tracked(ord));
         // `for o in Self::nodes(self.others)`, spelled out: Verus has no
         // `from_fn`. As the iterator does, the node's `next` is read before
         // its turn. `r` counts the nodes left, this one included.
@@ -4482,6 +4502,8 @@ impl Heap {
                 crate::sys::may_abort(),
                 self.tcache_on() == old(self).tcache_on(),
                 crate::sys::may_syscall(),
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
                 shared.wf(),
                 self.keeps(*old(self)),
                 self.same_shape(*old(self)),
@@ -4526,7 +4548,7 @@ impl Heap {
             // this heap.
             let next = unsafe { self.node_next(o, Ghost(r)) };
             let arena = unsafe { self.node_arena(o, Ghost(r)) };
-            self.flush_arena(shared, arena, o);
+            self.flush_arena(shared, arena, o, Tracked(ord));
             proof {
                 Heap::lemma_keeps_trans(*old(self), h0, *self);
                 if r > 1 {
@@ -4655,19 +4677,21 @@ impl Heap {
     /// the home arena is `FOREIGN`, else trimmed; a node's header emptied
     /// or trimmed (the node's arena is not modelled, hence the
     /// disjunction; [`Heap::gc_arena`] states the exact case per array).
-    pub fn gc(&mut self, shared: &Shared)
+    pub fn gc(&mut self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
             shared.wf(),
             old(self).wf(),
         ensures
+            *final(ord) == *old(ord),
             final(self).keeps(*old(self)),
             final(self).same_shape(*old(self)),
             final(self).gc_all(*old(self)),
     {
         let home = self.arena;
-        self.gc_arena(shared, home, ptr::null_mut());
+        self.gc_arena(shared, home, ptr::null_mut(), Tracked(ord));
         // The walk of `flush_all`.
         let mut o = self.others;
         let ghost mut r = self.list_len();
@@ -4689,6 +4713,8 @@ impl Heap {
             invariant
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
                 shared.wf(),
                 self.keeps(*old(self)),
                 self.same_shape(*old(self)),
@@ -4734,7 +4760,7 @@ impl Heap {
             // SAFETY: as in `flush_all`.
             let next = unsafe { self.node_next(o, Ghost(r)) };
             let arena = unsafe { self.node_arena(o, Ghost(r)) };
-            self.gc_arena(shared, arena, o);
+            self.gc_arena(shared, arena, o, Tracked(ord));
             proof {
                 Heap::lemma_keeps_trans(*old(self), h0, *self);
                 Heap::lemma_same_trans(*old(self), h0, *self);
@@ -4802,14 +4828,16 @@ impl Heap {
     /// left as [`Heap::gc_left`] says (emptied when `arena` is `FOREIGN`),
     /// and no other header changes.
     #[allow(clippy::while_let_loop, reason = "the desugared `for`, which Verus needs for `continue`")]
-    fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches)
+    fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
             shared.wf(),
             old(self).wf(),
             node@.addr == 0 || old(self).owns_node(node),
         ensures
+            *final(ord) == *old(ord),
             final(self).keeps(*old(self)),
             final(self).same_shape(*old(self)),
             forall|c: int| #![trigger old(self).array_hdr(node, c)] 0 <= c < NCLASSES ==> final(self).gc_left(*old(self), old(self).array_hdr(node, c), arena == FOREIGN),
@@ -4829,6 +4857,8 @@ impl Heap {
             invariant
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
                 iter.end == NCLASSES,
                 iter.start <= NCLASSES,
                 old(self).wf(),
@@ -4871,7 +4901,7 @@ impl Heap {
                     // Never popped: everything it holds went unused.
                     let len = self.hdr_ref(cache).len as usize;
                     if len > 0 {
-                        self.flush(shared, arena, cache, class, len);
+                        self.flush(shared, arena, cache, class, len, Tracked(ord));
                         proof {
                             Heap::lemma_keeps_trans(*old(self), h0, *self);
                             Heap::lemma_same_trans(*old(self), h0, *self);
@@ -4880,7 +4910,7 @@ impl Heap {
                         }
                     }
                 } else if lw > 0 {
-                    self.flush(shared, arena, cache, class, lw - lw / 4);
+                    self.flush(shared, arena, cache, class, lw - lw / 4, Tracked(ord));
                     proof {
                         Heap::lemma_keeps_trans(*old(self), h0, *self);
                         Heap::lemma_same_trans(*old(self), h0, *self);
@@ -4966,6 +4996,7 @@ impl Heap {
     /// `h0`, which still had `old`'s value of it (or skipped, unused). So
     /// the loop invariant holds again with `next`, the class after
     /// `class`.
+    #[verifier::spinoff_prover]
     proof fn lemma_gc_step(old: Heap, h0: Heap, h: Heap, node: *mut ArenaCaches, hc: *mut CacheHeader, class: int, next: int, foreign: bool, skipped: bool)
         requires
             0 <= class < NCLASSES,
@@ -5004,8 +5035,12 @@ impl Heap {
             old.owns(p) && !old.in_array(node, next, p) implies #[trigger] h.hdr(p) == old.hdr(p) && h.held(p) == old.held(p) by {
             assert(p != hc);
             assert(!old.in_array(node, class, p));
-            assert(h0.hdr(p) == old.hdr(p) && h0.held(p) == old.held(p));
+            assert(h0.kept_outside(old, node, class));
+            assert(h0.hdr(p) == old.hdr(p));
+            assert(h0.held(p) == old.held(p));
             assert(h0.owns(p));
+            assert(h.hdr(p) == h0.hdr(p));
+            assert(h.held(p) == h0.held(p));
         }
         assert(h.kept_outside(old, node, next));
     }
@@ -5023,13 +5058,15 @@ impl Heap {
     /// node on the `others` list without a stack ([`Heap::cleared`]), so
     /// caching nothing ([`Heap::drained`]), with the released log extended
     /// by exactly what they held, as [`Heap::flush_all`] states.
-    pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool)
+    pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
             shared.wf(),
             old(self).wf(),
         ensures
+            *final(ord) == *old(ord),
             final(self).wf(),
             final(self).tcache_on() == on,
             on ==> final(self).caches_same(*old(self)),
@@ -5043,7 +5080,7 @@ impl Heap {
             return;
         }
         let ghost h_off = *self;
-        self.flush_all(shared);
+        self.flush_all(shared, Tracked(ord));
         let ghost hf = *self;
         proof {
             Heap::lemma_held_all_same(*old(self), h_off);
@@ -5055,7 +5092,7 @@ impl Heap {
             }
         }
         let ghost h2 = *self;
-        self.free_caches_in(shared, ptr::null_mut());
+        self.free_caches_in(shared, ptr::null_mut(), Tracked(ord));
         // The walk of `flush_all`. Folding and freeing a node's headers
         // leaves the list as it is.
         let mut o = self.others;
@@ -5081,6 +5118,8 @@ impl Heap {
             invariant
                 self.tcache_on() == on,
                 crate::sys::may_syscall(),
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
                 self.wf(),
                 self.same_shape(*old(self)),
                 self.released() == hf.released(),
@@ -5113,7 +5152,7 @@ impl Heap {
                 }
             }
             let ghost h1 = *self;
-            self.free_caches_in(shared, o);
+            self.free_caches_in(shared, o, Tracked(ord));
             proof {
                 Heap::lemma_same_trans(*old(self), h1, *self);
                 // Only `o`'s headers changed.
@@ -5172,27 +5211,29 @@ impl Heap {
     ///
     /// The heap stays well formed: the exchange goes header by header
     /// through their permissions ([`Heap::swap_hdrs`]).
-    pub fn set_arena(&mut self, shared: &Shared, arena: u16)
+    pub fn set_arena(&mut self, shared: &Shared, arena: u16, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
             shared.wf(),
             old(self).wf(),
             (old(self).home() as usize) < crate::arena::MAX_ARENAS,
             (arena as usize) < crate::arena::MAX_ARENAS,
         ensures
+            *final(ord) == *old(ord),
             final(self).wf(),
     {
         if arena == self.arena {
             return;
         }
         let old = self.arena;
-        let node = self.other_caches(shared, arena, true);
+        let node = self.other_caches(shared, arena, true, Tracked(ord));
         let ghost h1 = *self;
         if node.is_null() {
             // No metadata for a new node: the caches of the new home start
             // empty and the old home's must go back first.
-            self.drop_home_caches(shared);
+            self.drop_home_caches(shared, Tracked(ord));
         } else {
             // The node's headers and the home headers trade places, and
             // the node becomes the cache of `old`, the home arena being
@@ -5250,13 +5291,15 @@ impl Heap {
     /// then decay (or starting the background thread that will do it,
     /// `purge::on_tick`). Nothing else: thread statistics are merged by
     /// `epoch` (`stats.rs`), not here.
-    fn tick(&mut self, shared: &Shared)
+    fn tick(&mut self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
             old(self).wf(),
             shared.wf(),
         ensures
+            *final(ord) == *old(ord),
             final(self).keeps(*old(self)),
     {
         self.slow_ticks = self.slow_ticks.wrapping_add(1);
@@ -5264,9 +5307,9 @@ impl Heap {
             let now = now_ns();
             if now.wrapping_sub(self.last_gc) >= shared.gc_interval() {
                 self.last_gc = now;
-                self.gc(shared);
+                self.gc(shared, Tracked(ord));
             }
-            crate::purge::on_tick(shared, now);
+            crate::purge::on_tick(shared, now, Tracked(ord));
         }
     }
 
@@ -5467,13 +5510,15 @@ unsafe fn init_fields(h: *mut Heap, shared: &Shared, arena: u16, Tracked(head): 
 /// `Arenas::init` clamps to `MAX_ARENAS`, and `Shared::wf` does not state.
 #[inline(always)]
 #[verifier::external_body]
-fn assign_home(shared: &Shared) -> (r: u16)
+fn assign_home(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: u16)
     requires
         crate::sys::may_syscall(),
+        old(ord).allows(rank_arenas()),
     ensures
         (r as usize) < crate::arena::MAX_ARENAS,
+        *final(ord) == *old(ord),
 {
-    shared.arenas.assign()
+    shared.arenas.assign(Tracked(ord))
 }
 
 /// `(*h).bound = true` for a heap [`Heap::create`] has just made.
@@ -5511,21 +5556,23 @@ impl Heap {
     /// no call that can allocate. With the heap, the permissions to its
     /// caches ([`CachePerms::fresh`]). The call is counted on the thread's
     /// slot token (`TlsSlot::creates`), which it otherwise leaves alone.
-    fn create(shared: &Shared, Tracked(tls): Tracked<&mut crate::sys::tls::TlsSlot>) -> (r: (*mut Heap, Tracked<CachePerms>))
+    fn create(shared: &Shared, Tracked(tls): Tracked<&mut crate::sys::tls::TlsSlot>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut Heap, Tracked<CachePerms>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
+            old(ord).allows(rank_arenas()),
         ensures
             r.0@.addr != 0 ==> r.1@.fresh(r.0),
             final(tls).value() == old(tls).value(),
             final(tls).creates() == old(tls).creates() + 1,
+            *final(ord) == *old(ord),
     {
         proof {
             tls.note_create();
         }
-        let arena = assign_home(shared);
-        let (h, perms) = Self::create_detached(shared, arena);
+        let arena = assign_home(shared, Tracked(ord));
+        let (h, perms) = Self::create_detached(shared, arena, Tracked(ord));
         if h.is_null() {
             shared.arenas.unbind(arena);
         } else {
@@ -5538,12 +5585,14 @@ impl Heap {
     /// Create a heap homed on `arena` (an explicit cache, or a thread heap
     /// before it is registered). Null if the region is exhausted. With the
     /// heap, the permissions to its caches ([`CachePerms::fresh`]).
-    fn create_detached(shared: &Shared, arena: u16) -> (r: (*mut Heap, Tracked<CachePerms>))
+    fn create_detached(shared: &Shared, arena: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut Heap, Tracked<CachePerms>))
         requires
             crate::sys::may_syscall(),
             shared.wf(),
+            old(ord).allows(rank_meta()),
         ensures
             r.0@.addr != 0 ==> r.1@.fresh(r.0),
+            *final(ord) == *old(ord),
     {
         proof {
             shared.lemma_meta();
@@ -5551,7 +5600,7 @@ impl Heap {
             cache::lemma_header_layout();
             assert(crate::meta::MAX_BINNED == 0x10_0000usize) by (compute_only);
         }
-        let (block, Tracked(raw)) = shared.meta.alloc_raw(Layout::new::<Heap>());
+        let (block, Tracked(raw)) = shared.meta.alloc_raw(Layout::new::<Heap>(), Tracked(ord));
         let h = block as *mut Heap;
         if h.is_null() {
             let tracked none = CachePerms::tracked_empty();
@@ -5664,24 +5713,31 @@ impl Heap {
     /// # Safety
     /// `h` must come from [`Heap::create`] on `shared` and no longer be in
     /// use by any thread.
+    ///
+    /// Lock order (trusted with the body): the flush takes class locks,
+    /// the frees the metadata lock, and the exit purge class locks and
+    /// the huge lock, one at a time.
     #[verifier::external_body]
-    pub unsafe fn destroy(h: *mut Heap, shared: &Shared)
+    pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
     {
         // SAFETY: the caller gives us exclusive ownership of the heap.
         let heap = unsafe { &mut *h };
-        heap.flush_all(shared);
-        Self::free_caches(shared, &mut heap.caches);
+        heap.flush_all(shared, Tracked(&mut *ord));
+        Self::free_caches(shared, &mut heap.caches, Tracked(&mut *ord));
         for o in Self::nodes(heap.others) {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap; the iterator has read `next` already, so the
             // block can go.
             unsafe {
-                Self::free_caches(shared, &mut (*o).caches);
+                Self::free_caches(shared, &mut (*o).caches, Tracked(&mut *ord));
                 let block = (o as *mut u8).sub(64 * (*o).pad as usize);
-                shared.meta.free(block, node_block_layout());
+                shared.meta.free(block, node_block_layout(), Tracked(&mut *ord));
             }
         }
         heap.others = ptr::null_mut();
@@ -5699,12 +5755,12 @@ impl Heap {
             if shared.arenas.bound(arena) == 0 && !crate::purge::background::present() {
                 if let Some(a) = shared.arenas.get_existing(arena) {
                     if a.take_exit_purge(now_ns()) {
-                        crate::purge::purge_arena(shared, arena);
+                        crate::purge::purge_arena(shared, arena, Tracked(&mut *ord));
                     }
                 }
             }
         }
-        shared.meta.free(h as *mut u8, Layout::new::<Heap>());
+        shared.meta.free(h as *mut u8, Layout::new::<Heap>(), Tracked(ord));
     }
 }
 
@@ -5761,7 +5817,7 @@ mod kani_aborts {
     use super::{assert_flushed, assert_refill_empty};
     use crate::kani_proofs::must_not_return;
 
-    /// S117 `assert_flushed`, `ensures *len == 0`: on any other `len` the
+    /// S118 `assert_flushed`, `ensures *len == 0`: on any other `len` the
     /// call never returns.
     #[kani::proof]
     #[kani::should_panic]
@@ -5773,7 +5829,7 @@ mod kani_aborts {
         }
     }
 
-    /// S118 `assert_refill_empty`, `ensures *len == 0`: as
+    /// S119 `assert_refill_empty`, `ensures *len == 0`: as
     /// `assert_flushed`.
     #[kani::proof]
     #[kani::should_panic]

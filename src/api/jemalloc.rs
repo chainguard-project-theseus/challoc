@@ -61,6 +61,8 @@ use crate::heap::{Live, Shared};
 use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind};
 #[cfg(verus_only)]
+use crate::lock::axiom_entry;
+#[cfg(verus_only)]
 use crate::vspec::usable::{usable_is, usable_of};
 use crate::vspec::zero::Zeroed;
 #[cfg(verus_only)]
@@ -689,11 +691,14 @@ pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
     }
     let Some(a) = shared.arenas.get_existing(d.arena()) else { return 0 };
     let cs = a.class(class);
-    let slabcur = cs.lowest_partial();
+    // Premise (lock order): called from the entry point, which holds no
+    // lock.
+    let tracked mut ord = axiom_entry();
+    let slabcur = cs.lowest_partial(Tracked(&mut ord));
     if slabcur == Some(slab) {
         return 0;
     }
-    let (st, mut curregs) = cs.bin_stats();
+    let (st, mut curregs) = cs.bin_stats(Tracked(&mut ord));
     let mut curslabs = st.curslabs();
     if let Some(dc) = slabcur.and_then(|s| t.desc_if_committed(s)) {
         // Take the current slab out of the average, as jemalloc does.
@@ -918,8 +923,14 @@ mod tests {
         use crate::heap::{FOREIGN, Heap, existing_heap};
         use crate::layout::NCLASSES;
         let s = shared();
-        let lua = s.arenas.create(s).expect("arenas.create");
-        let t = s.tcaches.create(s, 0).expect("tcache.create");
+        let lua = s
+            .arenas
+            .create(s, Tracked::assume_new())
+            .expect("arenas.create");
+        let t = s
+            .tcaches
+            .create(s, 0, Tracked::assume_new())
+            .expect("tcache.create");
         let sizes = [16usize, 100, 300, 1000, 4096];
         // Give the caches something to hold: the home caches, the Lua
         // arena's, the foreign one (a plain free of a Lua slot) and the
@@ -985,13 +996,16 @@ mod tests {
         for (p, flags) in kept {
             dallocx(p, flags as c_int);
         }
-        assert!(s.tcaches.destroy(s, t));
+        assert!(s.tcaches.destroy(s, t, Tracked::assume_new()));
     }
 
     #[test]
     fn mallocx_routes_arenas_and_caches() {
         let s = shared();
-        let lua = s.arenas.create(s).expect("arenas.create");
+        let lua = s
+            .arenas
+            .create(s, Tracked::assume_new())
+            .expect("arenas.create");
         let c = crate::layout::class_of(300).unwrap();
         // Default cache, explicit arena.
         let p = mallocx(300, mallocx_arena(lua) as c_int);
@@ -1012,20 +1026,26 @@ mod tests {
         dallocx(d, flags);
         assert_eq!(desc.live(), live - 1);
         // Explicit cache.
-        let t = s.tcaches.create(s, 0).expect("tcache.create");
+        let t = s
+            .tcaches
+            .create(s, 0, Tracked::assume_new())
+            .expect("tcache.create");
         let flags = mallocx_tcache(t) as c_int;
         let e = mallocx(300, flags);
         let th = s.tcaches.get(t).unwrap();
         let before = th.cache_in(0, c).map_or(0, |cc| cc.len());
         dallocx(e, flags);
         assert_eq!(th.cache_in(0, c).unwrap().len(), before + 1);
-        assert!(s.tcaches.destroy(s, t));
+        assert!(s.tcaches.destroy(s, t, Tracked::assume_new()));
         // Huge runs record the arena.
         let h = mallocx(2 << 20, mallocx_arena(lua) as c_int);
         let Err(page) = s.classify_free(h) else {
             panic!("not huge")
         };
-        assert_eq!(s.huge.lookup(page).unwrap().arena, lua);
+        assert_eq!(
+            s.huge.lookup(page, Tracked::assume_new()).unwrap().arena,
+            lua
+        );
         dallocx(h, 0);
         // Nonexistent arena or explicit cache: null, not an abort.
         assert!(mallocx(300, mallocx_arena(4000) as c_int).is_null());
@@ -1047,7 +1067,10 @@ mod tests {
         use crate::heap;
         use crate::layout::class_of;
         let s = shared();
-        let lua = s.arenas.create(s).expect("arenas.create");
+        let lua = s
+            .arenas
+            .create(s, Tracked::assume_new())
+            .expect("arenas.create");
         assert!(s.multi_arena());
         let c = class_of(200).unwrap();
         let size = crate::layout::CLASSES[c].size();
@@ -1136,11 +1159,17 @@ mod tests {
         let Err(page) = s.classify_free(hp) else {
             panic!("not huge")
         };
-        assert_eq!(s.huge.lookup(page).unwrap().arena, lua);
+        assert_eq!(
+            s.huge.lookup(page, Tracked::assume_new()).unwrap().arena,
+            lua
+        );
         api_libc::free(hp);
 
         // Explicit cache.
-        let t = s.tcaches.create(s, 0).expect("tcache.create");
+        let t = s
+            .tcaches
+            .create(s, 0, Tracked::assume_new())
+            .expect("tcache.create");
         let f = Flags::decode(mallocx_tcache(t) | mallocx_arena(lua));
         assert_eq!(f.tcache, Tcache::Explicit(t));
         let (e, _, _) = mallocx::alloc(s, c, f.arena, f.tcache, Tracked::assume_new());
@@ -1156,10 +1185,10 @@ mod tests {
             th.cache_in(heap::FOREIGN, c).unwrap().len(),
             before_foreign + 1
         );
-        assert!(s.tcaches.flush(s, t));
+        assert!(s.tcaches.flush(s, t, Tracked::assume_new()));
         assert_eq!(th.cache_in(lua, c).unwrap().len(), 0);
         assert_eq!(th.cache_in(heap::FOREIGN, c).unwrap().len(), 0);
-        assert!(s.tcaches.destroy(s, t));
+        assert!(s.tcaches.destroy(s, t, Tracked::assume_new()));
 
         // Cross-thread: another thread allocates from the Lua arena and its
         // own home arena; this thread frees both with plain `free`, both
@@ -1183,7 +1212,7 @@ mod tests {
         assert_ne!(other, home);
         assert_ne!(other, lua);
         let h = heap::existing_heap(s).unwrap();
-        h.flush_all(s);
+        h.flush_all(s, Tracked::assume_new());
         for (i, &p) in ptrs.iter().enumerate() {
             let p = p as *mut u8;
             assert_eq!(unsafe { *p }, i as u8);
@@ -1214,18 +1243,18 @@ mod tests {
             64,
             "both arenas' slots on the one FOREIGN cache"
         );
-        h.flush_all(s);
+        h.flush_all(s, Tracked::assume_new());
         // Per-arena purge covers the Lua arena's slabs only.
-        let lua_arena = s.arena(lua).unwrap();
+        let lua_arena = s.arena(lua, Tracked::assume_new()).unwrap();
         let empty_before = lua_arena.classes[c].stats().empty;
         assert!(
             empty_before >= 1,
             "the Lua arena's slab should be Empty after the flush"
         );
-        let purged = crate::purge::purge_arena(s, lua).unwrap();
+        let purged = crate::purge::purge_arena(s, lua, Tracked::assume_new()).unwrap();
         assert!(purged >= empty_before);
         assert_eq!(lua_arena.classes[c].stats().empty, 0);
-        assert!(crate::purge::purge_arena(s, 4000).is_none());
+        assert!(crate::purge::purge_arena(s, 4000, Tracked::assume_new()).is_none());
     }
 
     #[test]
@@ -1257,7 +1286,10 @@ mod tests {
     fn get_defrag_hint_follows_the_utilization_data() {
         use crate::api::mallctl::utilization;
         let s = shared();
-        let a = s.arenas.create(s).expect("arenas.create");
+        let a = s
+            .arenas
+            .create(s, Tracked::assume_new())
+            .expect("arenas.create");
         let flags = (mallocx_arena(a) | MALLOCX_TCACHE_NONE) as c_int;
         let c = crate::layout::class_of(100).unwrap();
         let cls = &CLASSES[c];
@@ -1276,7 +1308,7 @@ mod tests {
             .map(|(_, p)| *p)
             .collect();
         let t = s.table(c);
-        let cs = s.arena(a).unwrap().class(c);
+        let cs = s.arena(a, Tracked::assume_new()).unwrap().class(c);
         let mut moved = 0;
         for &p in &live {
             let hint = get_defrag_hint(p);
@@ -1284,7 +1316,7 @@ mod tests {
             assert_eq!(u.nregs, cls.nslots());
             // The reference: jemalloc's rule over the same figures.
             let (slab, _) = t.locate(p);
-            let slabcur = cs.lowest_partial();
+            let slabcur = cs.lowest_partial(Tracked::assume_new());
             let mut curslabs = u.bin_nregs / u.nregs;
             let mut curregs = u.bin_nregs - u.bin_nfree;
             if let Some(sc) = slabcur {
@@ -1347,13 +1379,13 @@ mod tests {
             "the utilization query keeps jemalloc's large-extent shape"
         );
         let tm = s.table(cm);
-        let csm = s.arena(a).unwrap().class(cm);
+        let csm = s.arena(a, Tracked::assume_new()).unwrap().class(cm);
         let (lone_slab, _) = tm.locate(*big.last().unwrap());
         assert_eq!(tm.desc(lone_slab).live(), 1);
         let lone_hint = get_defrag_hint(*big.last().unwrap());
         assert_eq!(
             lone_hint,
-            (csm.lowest_partial() != Some(lone_slab)) as c_int,
+            (csm.lowest_partial(Tracked::assume_new()) != Some(lone_slab)) as c_int,
             "the lone block moves unless its slab is the current one"
         );
         for p in &big[..2 * clm.nslots()] {

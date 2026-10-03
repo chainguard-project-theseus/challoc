@@ -39,7 +39,9 @@ use crate::heap::Shared;
 #[cfg(verus_only)]
 use crate::layout::process_regions;
 use crate::layout::{NCLASSES, Regions};
-use crate::lock::Lock;
+use crate::lock::{Lock, LockOrder};
+#[cfg(verus_only)]
+use crate::lock::{rank_arena_stats, rank_arenas, rank_class, rank_meta, rank_sets};
 use crate::meta::Meta;
 use crate::stats::ArenaStats;
 use crate::vspec::addr::addr_to_ptr;
@@ -629,6 +631,8 @@ axiom fn axiom_arena_assemble(tracked parts: ArenaParts, tracked classes: Map<in
         forall|c: int| 0 <= c < NCLASSES ==> (#[trigger] classes[c]).value().spec_arena() == parts.index.value(),
         parts.sets_perm.value()@.ptr() == parts.sets.value(),
         parts.sets_perm.value()@.is_init(),
+        parts.stats.value().rank() == rank_arena_stats(parts.index.value() as int),
+        parts.sets_perm.value()@.value().rank() == rank_sets(parts.index.value() as int),
     ensures
         a.ptr() == p,
         a.is_init(),
@@ -675,19 +679,21 @@ impl Arena {
     /// with the permission to it. The table fits an object (the check is
     /// on constants, so the build folds it away).
     #[inline(always)]
-    fn alloc_sets(meta: &Meta) -> (r: (*mut SetTable, Tracked<Option<PointsTo<SetTable>>>))
+    fn alloc_sets(meta: &Meta, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut SetTable, Tracked<Option<PointsTo<SetTable>>>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
         ensures
             r.0@.addr != 0 ==> r.1@ is Some && r.1@->0.ptr() == r.0 && r.1@->0.is_uninit(),
+            *final(ord) == *old(ord),
     {
         let layout = core::alloc::Layout::new::<SetTable>();
         crate::vspec::check::check(
             layout.size() <= crate::meta::MAX_BINNED && layout.align() <= crate::meta::MAX_ALIGN,
             "arena: slab set table larger than an object",
         );
-        let (p, Tracked(raw)) = meta.alloc_raw(layout);
+        let (p, Tracked(raw)) = meta.alloc_raw(layout, Tracked(ord));
         let p = p as *mut SetTable;
         let tracked perm = table_perm(raw, p);
         (p, Tracked(perm))
@@ -771,6 +777,7 @@ impl Arena {
             final(parts).sets_perm == old(parts).sets_perm,
             final(parts).large.is_init(),
             final(parts).stats.is_init(),
+            final(parts).stats.value().rank() == rank_arena_stats(index as int),
             final(parts).last_exit_purge.is_init(),
     {
         broadcast use axiom_arena_stats_lock_inv;
@@ -781,7 +788,7 @@ impl Arena {
         // SAFETY: the fields of `init`'s storage, through their permissions.
         unsafe {
             ptr_mut_write(field_at(this, A_LARGE), Tracked(&mut parts.large), AtomicU64::new(0));
-            ptr_mut_write(field_at(this, A_STATS), Tracked(&mut parts.stats), Lock::new(ArenaStats::empty(index)));
+            ptr_mut_write(field_at(this, A_STATS), Tracked(&mut parts.stats), Lock::new(ArenaStats::empty(index), Ghost(rank_arena_stats(index as int))));
             ptr_mut_write(field_at(this, A_LAST_EXIT_PURGE), Tracked(&mut parts.last_exit_purge), AtomicU64::new(0));
         }
     }
@@ -805,10 +812,12 @@ impl Arena {
         index: u16,
         decay_ns: u64,
         Tracked(slot): Tracked<&mut Held<Arena>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: bool)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
             old(slot).perm matches Some(p) && p.ptr() == this && p.is_uninit(),
             this@.addr + size_of::<Arena>() <= usize::MAX,
             regions.wf(),
@@ -816,17 +825,18 @@ impl Arena {
             forall|c: int| 0 <= c < NCLASSES ==> #[trigger] tables[c].spec_class() == c,
         ensures
             r ==> (final(slot).perm matches Some(p) && p.ptr() == this && p.is_init() && p.value().spec_index() == index),
+            *final(ord) == *old(ord),
     {
         let tracked (mut parts, mut classes) = Arena::split(slot.perm.tracked_take());
         // SAFETY: the caller guarantees `this` is writable and unaliased;
         // every write goes through the permission to its field.
         unsafe {
             Arena::put_head(this, index, decay_ns, Tracked(&mut parts));
-            let (sets_ptr, Tracked(perm)) = Arena::alloc_sets(meta);
+            let (sets_ptr, Tracked(perm)) = Arena::alloc_sets(meta, Tracked(ord));
             if sets_ptr.is_null() {
                 return false;
             }
-            let sets = match SetTable::new(meta, regions) {
+            let sets = match SetTable::new(meta, regions, Ghost(index), Tracked(ord)) {
                 Some(sets) => {
                     let tracked mut perm = perm.tracked_unwrap();
                     ptr_mut_write(sets_ptr, Tracked(&mut perm), sets);
@@ -879,6 +889,7 @@ impl Arena {
     pub fn sets(&self) -> (r: &SetTable)
         ensures
             *r == self.spec_sets(),
+            r.rank() == rank_sets(self.spec_index() as int),
     {
         proof {
             use_type_invariant(self);
@@ -916,15 +927,19 @@ impl Arena {
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.classes[c].spec_arena() == self.index
         &&& self.sets_perm@.ptr() == self.sets
         &&& self.sets_perm@.is_init()
+        &&& self.stats.rank() == rank_arena_stats(self.index as int)
+        &&& self.sets_perm@.value().rank() == rank_sets(self.index as int)
     }
 
     /// `Empty` bytes over every class (one lock hold per class that has
     /// any), for the cgroup policy's retention figure.
-    pub fn empty_bytes(&self) -> (r: usize)
+    pub fn empty_bytes(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
         ensures
             r <= NCLASSES * 0x200_0000_0000_0000,
+            *final(ord) == *old(ord),
     {
         let mut sum = 0usize;
         let mut c = 0;
@@ -932,12 +947,14 @@ impl Arena {
             invariant
                 crate::sys::may_syscall(),
                 c <= NCLASSES,
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
                 sum <= c * 0x200_0000_0000_0000,
             decreases NCLASSES - c,
         {
             let cs = &self.classes[c];
             if cs.oldest_empty() != 0 {
-                sum += cs.empty_bytes();
+                sum += cs.empty_bytes(Tracked(ord));
             }
             c += 1;
         }
@@ -946,12 +963,14 @@ impl Arena {
 
     /// Purge every `Empty` slab of every class whatever its age. Returns
     /// how many were purged.
-    pub fn purge_all(&self) -> (r: usize)
+    pub fn purge_all(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
         ensures
             r <= NCLASSES * 0x2000_0000_0000,
+            *final(ord) == *old(ord),
     {
         let mut sum = 0usize;
         let mut c = 0;
@@ -960,12 +979,14 @@ impl Arena {
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 c <= NCLASSES,
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
                 sum <= c * 0x2000_0000_0000,
             decreases NCLASSES - c,
         {
             let cs = &self.classes[c];
             cs.nslabs_fit();
-            sum += cs.purge_empty(u64::MAX);
+            sum += cs.purge_empty(u64::MAX, Tracked(ord));
             c += 1;
         }
         sum
@@ -1030,26 +1051,37 @@ impl Arena {
 
     /// The statistics stored by the last `epoch`: they satisfy the
     /// accounting identities (the lock's invariant).
-    pub fn stats(&self) -> (r: ArenaStats)
+    pub fn stats(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: ArenaStats)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_arena_stats(0)),
         ensures
             r.identities(),
+            *final(ord) == *old(ord),
     {
         broadcast use axiom_arena_stats_lock_inv;
 
-        *self.stats.lock()
+        proof {
+            use_type_invariant(self);
+        }
+        *self.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare()))
     }
 
     /// Store the statistics of an `epoch`.
-    pub fn store_stats(&self, s: &ArenaStats)
+    pub fn store_stats(&self, s: &ArenaStats, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_arena_stats(0)),
             s.identities(),
+        ensures
+            *final(ord) == *old(ord),
     {
         broadcast use axiom_arena_stats_lock_inv;
+        proof {
+            use_type_invariant(self);
+        }
 
-        *self.stats.lock() = *s;
+        *self.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare())) = *s;
     }
 
     /// The statistics lock, for the fork handlers (a leaf: never held
@@ -1057,7 +1089,11 @@ impl Arena {
     pub fn stats_raw_lock(&self) -> (r: &crate::lock::RawLock)
         ensures
             *r == self.spec_stats_lock(),
+            r.rank() == rank_arena_stats(self.spec_index() as int),
     {
+        proof {
+            use_type_invariant(self);
+        }
         self.stats.raw()
     }
 
@@ -1123,21 +1159,27 @@ impl Arena {
 
     /// Decay step over every class (see `ClassState::decay`): the earliest
     /// next deadline, `None` when nothing is `Empty` or decay is off.
-    pub fn decay(&self, now: u64) -> Option<u64>
+    pub fn decay(&self, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
     {
-        self.decay_with(now, self.decay_ns(), crate::policy::KEEP_ALL)
+        self.decay_with(now, self.decay_ns(), crate::policy::KEEP_ALL, Tracked(ord))
     }
 
     /// [`decay`](Arena::decay) with the period the cgroup policy gives
     /// this arena and its keep ratio for the retention cap (design 11);
     /// `NEVER` does nothing.
-    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64>
+    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
     {
         if decay_ns == crate::purge::NEVER {
             return None;
@@ -1147,8 +1189,10 @@ impl Arena {
             invariant
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
         {
-            if let Some(d) = cs.decay_with(now, decay_ns, keep16) {
+            if let Some(d) = cs.decay_with(now, decay_ns, keep16, Tracked(ord)) {
                 next = Some(next.map_or(d, |n| n.min(d)));
             }
         }
@@ -1222,7 +1266,7 @@ impl Arenas {
         let auto = narenas.clamp(1, MAX_ARENAS as u32);
         // SAFETY: the caller guarantees `this` is writable and unaliased.
         unsafe {
-            ptr::write(&raw mut (*this).lock, Lock::new(auto));
+            ptr::write(&raw mut (*this).lock, Lock::new(auto, Ghost(rank_arenas())));
             ptr::write(&raw mut (*this).count, AtomicU32::new(auto));
             ptr::write(&raw mut (*this).auto, auto);
             let table = &raw mut (*this).table;
@@ -1305,13 +1349,15 @@ impl Arenas {
     /// been built yet is built here (cold); an explicit index that
     /// `create` has not handed out, or one beyond the table, is `None`.
     #[inline]
-    pub fn get<'a>(&'a self, shared: &'a Shared, index: u16) -> (r: Option<&'a Arena>)
+    pub fn get<'a>(&'a self, shared: &'a Shared, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&'a Arena>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
+            old(ord).allows(rank_arenas()),
         ensures
             r matches Some(a) ==> a.spec_index() == index,
+            *final(ord) == *old(ord),
     {
         let i = index as usize;
         if i >= MAX_ARENAS {
@@ -1323,30 +1369,36 @@ impl Arenas {
             // after `Arena::init` with a release store.
             return Some(unsafe { arena_at(p, Ghost(index)) });
         }
-        self.materialise(shared, index)
+        self.materialise(shared, index, Tracked(ord))
     }
 
     #[cold]
     #[inline(never)]
-    fn materialise<'a>(&'a self, shared: &'a Shared, index: u16) -> (r: Option<&'a Arena>)
+    fn materialise<'a>(&'a self, shared: &'a Shared, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&'a Arena>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             (index as usize) < MAX_ARENAS,
             shared.wf(),
+            old(ord).allows(rank_arenas()),
         ensures
             r matches Some(a) ==> a.spec_index() == index,
+            *final(ord) == *old(ord),
     {
         if index as u32 >= self.auto {
             return None;
         }
-        let _g = self.lock.lock();
+        proof {
+            use_type_invariant(self);
+        }
+        let tracked mut under = LockOrder::spare();
+        let _g = self.lock.lock(Tracked(ord), Tracked(&mut under));
         let p = self.table[index as usize].load(Ordering::Acquire);
         if !p.is_null() {
             // SAFETY: as in `get`.
             return Some(unsafe { arena_at(p, Ghost(index)) });
         }
-        self.build(shared, index)
+        self.build(shared, index, Tracked(&mut under))
     }
 
     /// Build arena `index` in the metadata region and publish it. Called
@@ -1354,14 +1406,16 @@ impl Arenas {
     /// `shared` is the published `Shared`, whose `wf` gives
     /// `Arena::init`'s preconditions (the process's well-formed regions and
     /// the tables in class order).
-    fn build<'a>(&'a self, shared: &'a Shared, index: u16) -> (r: Option<&'a Arena>)
+    fn build<'a>(&'a self, shared: &'a Shared, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&'a Arena>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             (index as usize) < MAX_ARENAS,
             shared.wf(),
+            old(ord).allows(rank_meta()),
         ensures
             r matches Some(a) ==> a.spec_index() == index,
+            *final(ord) == *old(ord),
     {
         let layout = core::alloc::Layout::new::<Arena>();
         proof {
@@ -1376,7 +1430,7 @@ impl Arenas {
         // Never freed, so a reservation (page aligned, which covers the
         // 128-byte class state alignment) rather than an object.
         let align = layout.align().max(shared.regions.page_size());
-        let (s, Tracked(raw), _) = shared.meta.reserve_committed_raw(layout.size(), align);
+        let (s, Tracked(raw), _) = shared.meta.reserve_committed_raw(layout.size(), align, Tracked(ord));
         let s = s?;
         let p = addr_to_ptr(s) as *mut Arena;
         let tracked mut slot = Held::<Arena> { perm: None };
@@ -1406,6 +1460,7 @@ impl Arenas {
                 index,
                 shared.default_decay_ns(),
                 Tracked(&mut slot),
+                Tracked(ord),
             )
         };
         if !ok {
@@ -1421,18 +1476,25 @@ impl Arenas {
 
     /// `arenas.create`: a new explicit arena. `None` when the table or the
     /// metadata region is full.
-    pub fn create(&self, shared: &Shared) -> Option<u16>
+    pub fn create(&self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u16>
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
+            old(ord).allows(rank_arenas()),
+        ensures
+            *final(ord) == *old(ord),
     {
-        let mut g = self.lock.lock();
+        proof {
+            use_type_invariant(self);
+        }
+        let tracked mut under = LockOrder::spare();
+        let mut g = self.lock.lock(Tracked(ord), Tracked(&mut under));
         let index = *g;
         if index as usize >= MAX_ARENAS {
             return None;
         }
-        self.build(shared, index as u16)?;
+        self.build(shared, index as u16, Tracked(&mut under))?;
         *g = index + 1;
         self.count.store(index + 1, Ordering::Release);
         Some(index as u16)
@@ -1466,18 +1528,23 @@ impl Arenas {
     /// nothing else ever bound) never builds a second arena and never
     /// pays the `multi_arena` routing on `free`. The caller undoes the
     /// binding with [`Arenas::unbind`] when the heap is destroyed.
-    pub fn assign(&self) -> (r: u16)
+    pub fn assign(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: u16)
         requires
             crate::sys::may_syscall(),
             self.spec_auto() <= MAX_ARENAS,
+            old(ord).allows(rank_arenas()),
         ensures
             r < MAX_ARENAS,
+            *final(ord) == *old(ord),
     {
         if self.auto == 1 {
             self.bound[0].fetch_add(1, Ordering::Relaxed);
             return 0;
         }
-        let _g = self.lock.lock();
+        proof {
+            use_type_invariant(self);
+        }
+        let _g = self.lock.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let mut best = 0usize;
         // (bound heaps, not yet built): the smallest wins.
         let mut best_key = (u32::MAX, true);
@@ -1499,9 +1566,18 @@ impl Arenas {
         best as u16
     }
 
-    /// Number of arena indices in use (`arenas.narenas`).
+    /// Number of arena indices in use (`arenas.narenas`). Trusted: at most
+    /// [`MAX_ARENAS`], which its two writers keep (`init` stores the
+    /// automatic count it clamped to `1..=MAX_ARENAS`, `create` stores
+    /// `index + 1` for an `index` below it); Verus gives the load any
+    /// value. The fork handlers' lock order needs the bound (they visit
+    /// the indices below the count as `u16` arena indices).
     #[inline]
-    pub fn count(&self) -> u32 {
+    #[verifier::external_body]
+    pub fn count(&self) -> (r: u32)
+        ensures
+            r as usize <= MAX_ARENAS,
+    {
         self.count.load(Ordering::Acquire)
     }
 
@@ -1532,7 +1608,11 @@ impl Arenas {
     pub fn raw_lock(&self) -> (r: &crate::lock::RawLock)
         ensures
             *r == self.spec_raw_lock(),
+            r.rank() == rank_arenas(),
     {
+        proof {
+            use_type_invariant(self);
+        }
         self.lock.raw()
     }
 
@@ -1540,6 +1620,14 @@ impl Arenas {
     pub closed spec fn spec_raw_lock(&self) -> crate::lock::RawLock {
         self.lock.spec_raw()
     }
+
+    /// The creation lock is the arena creation lock of the lock order
+    /// (`init` creates it so; trusted with `init`).
+    #[verifier::type_invariant]
+    spec fn rank_ok(self) -> bool {
+        self.lock.rank() == rank_arenas()
+    }
+
 }
 
 } // verus!

@@ -1,6 +1,6 @@
 # `PartialEqSpecImpl for sys::cgroup::State`
 
-Seam S357 of `verus/SEAMS.md`: src/vspec/sys.rs:101. Kind: spec_impl. Category: core library.
+Seam S361 of `verus/SEAMS.md`: src/vspec/sys.rs:101. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract

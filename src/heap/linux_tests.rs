@@ -121,7 +121,7 @@ fn calloc_flag_is_honest_about_memory() {
 fn thread_exit_flushes_and_frees_the_heap() {
     let s = shared();
     let c = class_of(64).unwrap();
-    let meta_before = s.meta.stats().allocated;
+    let meta_before = s.meta.stats(Tracked::assume_new()).allocated;
     let leaked = Arc::new(AtomicUsize::new(0));
     let mut handles = Vec::new();
     for t in 0..16u8 {
@@ -151,7 +151,7 @@ fn thread_exit_flushes_and_frees_the_heap() {
     }
     assert_eq!(live(s, c), leaked.load(Ordering::Relaxed));
     // Heaps and caches went back to the metadata allocator.
-    assert_eq!(s.meta.stats().allocated, meta_before);
+    assert_eq!(s.meta.stats(Tracked::assume_new()).allocated, meta_before);
     assert_eq!(
         s.arena0.classes[c].desc(0).state(),
         crate::slab::State::Active
@@ -163,13 +163,13 @@ fn creating_and_exited_sentinels_are_served_directly() {
     let s = shared();
     std::thread::spawn(move || {
         let c = class_of(32).unwrap();
-        let meta_before = s.meta.stats().allocated;
+        let meta_before = s.meta.stats(Tracked::assume_new()).allocated;
         // Inside heap creation: no heap, served from the slab bitmap.
         tls::set(TLS_CREATING as *mut c_void, Tracked::assume_new());
         let p = alloc(s, c, Tracked::assume_new());
         assert!(!p.is_null());
         assert_eq!(tls::get(Tracked::assume_new()) as usize, TLS_CREATING);
-        assert_eq!(s.meta.stats().allocated, meta_before);
+        assert_eq!(s.meta.stats(Tracked::assume_new()).allocated, meta_before);
         assert_eq!(live(s, c), 1);
         free(s, p, Tracked::assume_new());
         assert_eq!(live(s, c), 0);
@@ -185,7 +185,7 @@ fn creating_and_exited_sentinels_are_served_directly() {
         } else {
             assert_eq!(raw, h);
         }
-        assert!(s.meta.stats().allocated > meta_before);
+        assert!(s.meta.stats(Tracked::assume_new()).allocated > meta_before);
         free(s, p, Tracked::assume_new());
         // Run the destructor by hand (glibc clears the key's value
         // before calling it, so do the same to avoid a second run at
@@ -199,7 +199,7 @@ fn creating_and_exited_sentinels_are_served_directly() {
         );
         unsafe { heap_destructor(h) };
         assert_eq!(tls::get(Tracked::assume_new()) as usize, TLS_EXITED);
-        assert_eq!(s.meta.stats().allocated, meta_before);
+        assert_eq!(s.meta.stats(Tracked::assume_new()).allocated, meta_before);
         assert_eq!(live(s, c), 0);
         // The slab went `Empty` when everything was released, so its
         // memory is dirty and the flag must say so.
@@ -207,7 +207,7 @@ fn creating_and_exited_sentinels_are_served_directly() {
         assert!(!q.is_null());
         assert!(!zero || is_zero(q, 32));
         assert_eq!(tls::get(Tracked::assume_new()) as usize, TLS_EXITED);
-        assert_eq!(s.meta.stats().allocated, meta_before);
+        assert_eq!(s.meta.stats(Tracked::assume_new()).allocated, meta_before);
         free(s, q, Tracked::assume_new());
         assert_eq!(live(s, c), 0);
         // The key holds no value now, so thread exit runs no destructor.
@@ -285,7 +285,7 @@ fn heap_off_pac_executes_no_pac_instruction() {
                 free(s, q, Tracked::assume_new());
             }
             let h = existing_heap(s).expect("a heap") as *mut Heap;
-            unsafe { (*h).flush_arena(s, 0, ptr::null_mut()) };
+            unsafe { (*h).flush_arena(s, 0, ptr::null_mut(), Tracked::assume_new()) };
             let ops = pac::test_ops() - before;
             let expect_some = !forced_off && pac::available();
             if (ops == 0) != !expect_some {
@@ -586,15 +586,18 @@ fn changed_arena_child() {
         ..Config::DEFAULT
     })
     .build();
-    assert_eq!(s.arenas.create(s), Some(1));
+    assert_eq!(s.arenas.create(s, Tracked::assume_new()), Some(1));
     let c = class_of(64).unwrap();
-    let (a0, a1) = (s.arena(0).unwrap(), s.arena(1).unwrap());
+    let (a0, a1) = (
+        s.arena(0, Tracked::assume_new()).unwrap(),
+        s.arena(1, Tracked::assume_new()).unwrap(),
+    );
     // Two slots per slab: neither release empties its slab or reopens
     // it, so the only `ClassState` write is the `released` add.
-    let (p1, _, _) = s.alloc_direct(a1, c, Tracked::assume_new());
-    let (q1, _, _) = s.alloc_direct(a1, c, Tracked::assume_new());
-    let (p0, _, _) = s.alloc_direct(a0, c, Tracked::assume_new());
-    let (q0, _, _) = s.alloc_direct(a0, c, Tracked::assume_new());
+    let (p1, _, _) = s.alloc_direct(a1, c, Tracked::assume_new(), Tracked::assume_new());
+    let (q1, _, _) = s.alloc_direct(a1, c, Tracked::assume_new(), Tracked::assume_new());
+    let (p0, _, _) = s.alloc_direct(a0, c, Tracked::assume_new(), Tracked::assume_new());
+    let (q0, _, _) = s.alloc_direct(a0, c, Tracked::assume_new(), Tracked::assume_new());
     assert!(!p0.is_null() && !q0.is_null() && !p1.is_null() && !q1.is_null());
     let t = s.table(c);
     let (slab0, _) = t.locate(p0);
@@ -614,7 +617,13 @@ fn changed_arena_child() {
         assert_eq!(libc::sigaction(libc::SIGSEGV, &sa, ptr::null_mut()), 0);
         assert_eq!(libc::mprotect(base as *mut c_void, len, libc::PROT_READ), 0);
     }
-    s.release_routed(1, c, &[p1, p0], Tracked::assume_new());
+    s.release_routed(
+        1,
+        c,
+        &[p1, p0],
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     std::eprintln!(
         "release_routed returned (handler ran: {})",
         FLIP_DONE.load(Ordering::Relaxed)

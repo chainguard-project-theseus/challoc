@@ -1,6 +1,6 @@
 # `u64::is_power_of_two`
 
-Seam S350 of `verus/SEAMS.md`: src/vspec/sys.rs:68. Kind: assume_spec. Category: core library.
+Seam S354 of `verus/SEAMS.md`: src/vspec/sys.rs:68. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

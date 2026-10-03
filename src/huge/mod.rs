@@ -53,7 +53,9 @@ use core::ptr;
 
 use crate::class::Set;
 use crate::layout::Regions;
-use crate::lock::{Lock, RawLock};
+use crate::lock::{Lock, LockOrder, RawLock};
+#[cfg(verus_only)]
+use crate::lock::{axiom_entry, axiom_held_below, rank_huge, rank_meta};
 use crate::meta::Meta;
 use crate::purge::{self, Batch, Curve, Decayer};
 use crate::sys::{self, Errno};
@@ -1260,6 +1262,7 @@ impl Inner {
         &&& self.free.map.wf()
         &&& self.free.map.in_meta()
         &&& self.free.map.spec_nbits() == self.np@
+        &&& self.free.store is Own
         &&& self.all@.no_duplicates()
         &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) <==> self.all@.contains(d)
         &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> keyed(self.table, self.descs@[d].value(), d)
@@ -1893,6 +1896,7 @@ impl Huge {
         &&& self.base + self.npages * pow2(self.lg_page as nat) <= crate::meta::va_limit()
         &&& lock_init(self.inner).spec_np() == self.npages
         &&& lock_init(self.inner).spec_lg() == self.lg_page
+        &&& self.inner.rank() == rank_huge()
     }
 }
 
@@ -1967,18 +1971,20 @@ verus! {
 /// is exhausted. The block is `meta`'s, so metadata when `meta` is the
 /// process's.
 #[inline(always)]
-fn alloc_desc(meta: &Meta) -> (r: (*mut HugeDesc, Tracked<Option<PointsTo<HugeDesc>>>))
+fn alloc_desc(meta: &Meta, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut HugeDesc, Tracked<Option<PointsTo<HugeDesc>>>))
     requires
         crate::sys::may_syscall(),
+        old(ord).allows(rank_meta()),
     ensures
         r.0@.addr != 0 ==> r.1@ is Some && r.1@->0.ptr() == r.0 && r.1@->0.is_uninit(),
         r.0@.addr != 0 ==> meta.holds(r.0@.addr as int, vstd::layout::size_of::<HugeDesc>() as int),
         r.0@.addr != 0 && meta.is_process() ==> desc_in_meta(r.0),
+        *final(ord) == *old(ord),
 {
     proof {
         crate::meta::lemma_consts();
     }
-    let (p, Tracked(raw)) = meta.alloc_raw(Layout::new::<HugeDesc>());
+    let (p, Tracked(raw)) = meta.alloc_raw(Layout::new::<HugeDesc>(), Tracked(ord));
     let d = p as *mut HugeDesc;
     let tracked perm = desc_perm(raw, d);
     (d, Tracked(perm))
@@ -2007,13 +2013,16 @@ proof fn desc_perm(tracked raw: PointsToRaw, d: *mut HugeDesc) -> (tracked r: Op
 /// one, and its caller contract (the block is no longer used) is trusted
 /// there.
 #[inline(always)]
-fn free_desc(meta: &Meta, d: *mut HugeDesc, _perm: Tracked<PointsTo<HugeDesc>>)
+fn free_desc(meta: &Meta, d: *mut HugeDesc, _perm: Tracked<PointsTo<HugeDesc>>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
         d@.addr != 0,
         _perm@.ptr() == d,
+        old(ord).allows(rank_meta()),
+    ensures
+        *final(ord) == *old(ord),
 {
-    meta.free(d as *mut u8, Layout::new::<HugeDesc>());
+    meta.free(d as *mut u8, Layout::new::<HugeDesc>(), Tracked(ord));
 }
 
 /// Where a run may be taken ([`Huge::find`]'s answer): fresh pages at or
@@ -2292,6 +2301,7 @@ impl Inner {
         &&& self.free.map.wf()
         &&& self.free.map.in_meta()
         &&& self.free.map.spec_nbits() == self.np@
+        &&& self.free.store is Own
         &&& self.elist@ == t.elist_after(g0.elist@)
         &&& elist_ok(self.empty_head, self.empty_tail, self.elist@, self.descs@)
     }
@@ -2891,7 +2901,7 @@ impl Inner {
     /// Give a dropped descriptor back to `meta`, leaving the `Empty` list
     /// first when it is a member (every `Empty` extent is; a freed run's
     /// descriptor still reads `Active` here and is in no list).
-    fn retire(&mut self, meta: &Meta, d: *mut HugeDesc)
+    fn retire(&mut self, meta: &Meta, d: *mut HugeDesc, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -2900,7 +2910,9 @@ impl Inner {
             old(self).descs@.contains_key(d),
             old(self).all@.contains(d),
             old(self).descs@[d].value().state == RunState::Empty as u8 ==> old(self).elist@.contains(d),
+            old(ord).allows(rank_meta()),
         ensures
+            *final(ord) == *old(ord),
             final(self).descs@.dom() == old(self).descs@.dom().remove(d),
             perms_ok(final(self).descs@),
             forall|x: *mut HugeDesc| #[trigger] final(self).descs@.contains_key(x) ==> same_but_links(
@@ -2973,7 +2985,7 @@ impl Inner {
                 }
             }
         }
-        free_desc(meta, d, Tracked(perm));
+        free_desc(meta, d, Tracked(perm), Tracked(ord));
     }
 
     /// The free extent starting at `page`, which must be a set free bit
@@ -3041,7 +3053,7 @@ impl Huge {
     /// bitmap and descriptor table in `meta`. `guard_install` should be the
     /// probed `MADV_GUARD_INSTALL` support. `None` if the metadata region
     /// cannot hold the tables.
-    pub fn new(meta: &Meta, regions: &Regions, guard_install: bool) -> (r: Option<Huge>)
+    pub fn new(meta: &Meta, regions: &Regions, guard_install: bool, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<Huge>)
         requires
             crate::sys::may_syscall(),
             regions.wf(),
@@ -3049,10 +3061,12 @@ impl Huge {
             regions.huge_base + regions.huge_len <= crate::meta::va_limit(),
             (1usize << regions.lg_page) >= crate::meta::MIN_ALIGN,
             meta.is_process(),
+            old(ord).allows(rank_meta()),
         ensures
             r matches Some(h) ==> h.spec_npages() == (regions.huge_len >> regions.lg_page) as int
                 && h.spec_page() == (1usize << regions.lg_page) as int
                 && h.spec_base() == regions.huge_base,
+            *final(ord) == *old(ord),
     {
         broadcast use axiom_huge_lock_inv;
 
@@ -3070,8 +3084,8 @@ impl Huge {
             assert(page as nat == pow2(lg as nat));
             assert(crate::meta::is_pow2(page));
         }
-        let free = Set::new(meta, page, npages)?;
-        let table = Table::new(meta, page)?;
+        let free = Set::new(meta, page, npages, Tracked(ord))?;
+        let table = Table::new(meta, page, Tracked(ord))?;
         let tracked descs = Map::tracked_empty();
         // The run authorities, empty: no run is live yet.
         let tracked (runs, _) = GhostSetAuth::<(int, int)>::new(vstd::set::Set::empty());
@@ -3126,7 +3140,7 @@ impl Huge {
                 lg: Ghost(regions.lg_page),
                 runs: Tracked(runs),
                 pgs: Tracked(pgs),
-            }),
+            }, Ghost(rank_huge())),
         })
     }
 
@@ -3135,7 +3149,11 @@ impl Huge {
     pub fn raw_lock(&self) -> (r: &RawLock)
         ensures
             *r == self.spec_raw_lock(),
+            r.rank() == rank_huge(),
     {
+        proof {
+            use_type_invariant(self);
+        }
         self.inner.raw()
     }
 
@@ -3583,10 +3601,12 @@ impl Huge {
 
     /// Bytes in `Empty` extents (one lock hold), for the cgroup policy's
     /// retention figure: at most the region.
-    pub fn empty_bytes(&self) -> (r: usize)
+    pub fn empty_bytes(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_huge()),
         ensures
+            *final(ord) == *old(ord),
             r <= crate::meta::va_limit(),
     {
         broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
@@ -3594,7 +3614,7 @@ impl Huge {
         proof {
             use_type_invariant(self);
         }
-        let g = self.inner.lock();
+        let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         proof {
             assert(g@.stats.empty_pages <= g@.next_page <= self.npages);
             self.lemma_pages(g@.stats.empty_pages as usize);
@@ -3645,7 +3665,11 @@ impl Huge {
             use_type_invariant(self);
             self.lemma_page();
         }
-        let g = self.inner.lock();
+        // Premise (lock order): the callers (the `api::libc` and
+        // `api::jemalloc` entry points, and `Shared::zero_huge` on the free
+        // paths) hold no allocator lock.
+        let tracked mut ord = axiom_entry();
+        let g = self.inner.lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
         let d = g.table.get(page);
         // Table entries are live descriptors.
         if d.is_null() || g.desc(d).start() != page {
@@ -3689,13 +3713,19 @@ impl Huge {
     }
 
     /// Descriptor of the extent starting or ending at `page`, if any.
-    pub fn lookup(&self, page: usize) -> Option<RunInfo>
+    pub fn lookup(&self, page: usize, Tracked(ord): Tracked<&mut LockOrder>) -> Option<RunInfo>
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_huge()),
+        ensures
+            *final(ord) == *old(ord),
     {
         broadcast use axiom_huge_lock_inv;
 
-        let g = self.inner.lock();
+        proof {
+            use_type_invariant(self);
+        }
+        let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let d = g.table.get(page);
         if d.is_null() {
             return None;
@@ -3713,15 +3743,20 @@ impl Huge {
 
     /// The extent counters, from one lock hold. The free extents' pages
     /// are among the region's, at most `u32::MAX`.
-    pub fn stats(&self) -> (r: HugeStats)
+    pub fn stats(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: HugeStats)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_huge()),
         ensures
             r.empty_pages + r.purged_pages <= u32::MAX,
+            *final(ord) == *old(ord),
     {
         broadcast use axiom_huge_lock_inv;
 
-        let g = self.inner.lock();
+        proof {
+            use_type_invariant(self);
+        }
+        let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         proof {
             g@.table.lemma_wf_storage();
         }
@@ -3731,16 +3766,21 @@ impl Huge {
     /// Purge every `Empty` extent whose `dirty_at` is at or before `cutoff`
     /// (`u64::MAX` for all): `MADV_DONTNEED`, then `Purged`. Returns the
     /// number purged, at most the region's pages.
-    pub fn purge_empty(&self, cutoff: u64) -> (r: usize)
+    pub fn purge_empty(&self, cutoff: u64, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_huge()),
         ensures
+            *final(ord) == *old(ord),
             r <= u32::MAX,
     {
         broadcast use axiom_huge_lock_inv, axiom_huge_lock_frame;
 
-        let mut g = self.inner.lock();
+        proof {
+            use_type_invariant(self);
+        }
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         proof {
             use_type_invariant(self);
             self.lemma_page();
@@ -4048,14 +4088,20 @@ impl Huge {
     /// remaining excess is skipped for younger ones that fit), so a lone
     /// extent lasts until its weight is zero, the end of the window, as
     /// before. Returns the number of extents purged.
-    fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize
+    fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> usize
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_huge()),
+        ensures
+            *final(ord) == *old(ord),
     {
         broadcast use axiom_huge_lock_inv, axiom_huge_lock_frame;
 
-        let mut g = self.inner.lock();
+        proof {
+            use_type_invariant(self);
+        }
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         proof {
             use_type_invariant(self);
             self.lemma_page();
@@ -4237,27 +4283,36 @@ impl Huge {
     /// runs `purge_curve` over the list at most once per step of the
     /// curve and returns the next deadline, `None` when nothing is
     /// `Empty`. Lock-free unless a walk is due.
-    pub fn decay(&self, now: u64, decay_ns: u64) -> Option<u64>
+    pub fn decay(&self, now: u64, decay_ns: u64, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_huge()),
+        ensures
+            *final(ord) == *old(ord),
     {
-        self.decay_with(now, decay_ns, crate::policy::KEEP_ALL)
+        self.decay_with(now, decay_ns, crate::policy::KEEP_ALL, Tracked(ord))
     }
 
     /// [`decay`](Huge::decay) with the cgroup policy's keep ratio (design
     /// 11), as `ClassState::decay_with`.
-    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> (r: Option<u64>)
+    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u64>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_huge()),
         ensures
+            *final(ord) == *old(ord),
             r matches Some(t) ==> t >= now,
             exists|oldest: u64, next: u64, after: u64|
                 r == #[trigger] crate::purge::Decayer::spec_decay(now, decay_ns, oldest, next, after),
     {
         self.gate.decay(now, decay_ns, |now, curve| {
-            self.purge_curve(now, curve, keep16);
+            // Premise (lock order): the closure cannot carry the caller's
+            // token; `ord`, which `decay_with` requires, bounds the same
+            // locks (this thread's, unchanged since the call).
+            let tracked mut ord = axiom_held_below(rank_huge());
+            self.purge_curve(now, curve, keep16, Tracked(&mut ord));
         })
     }
 
@@ -4483,10 +4538,12 @@ impl Huge {
         Tracked(run_perm): Tracked<PointsTo<HugeDesc>>,
         Tracked(spare_perm): Tracked<PointsTo<HugeDesc>>,
         Tracked(tok): Tracked<&mut Map<int, RunToken>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: (bool, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
             old(g).wf(),
             old(g).spec_np() == self.npages,
             old(g).spec_lg() == self.lg_page,
@@ -4501,6 +4558,7 @@ impl Huge {
             (old(g).table.spec_count() + 3) * 2 <= old(g).table.spec_cap(),
             take_ok(p, old(g).descs@, old(g).next_page),
         ensures
+            *final(ord) == *old(ord),
             final(g).wf(),
             final(g).spec_np() == old(g).spec_np(),
             final(g).spec_lg() == old(g).spec_lg(),
@@ -4729,7 +4787,7 @@ impl Huge {
                         }
                     }
                 }
-                g.retire(meta, ext);
+                g.retire(meta, ext, Tracked(ord));
             }
             proof {
                 assert(took_free(f0, g.free.map.view(), s as int, end as int, old_mark as int));
@@ -4779,7 +4837,7 @@ impl Huge {
         g.stats.next_page = g.next_page;
         if !spare_used {
             let tracked sp = spare_slot.tracked_unwrap();
-            free_desc(meta, spare, Tracked(sp));
+            free_desc(meta, spare, Tracked(sp), Tracked(ord));
         }
         proof {
             let t = Take {
@@ -4867,7 +4925,14 @@ impl Huge {
     #[cfg(test)]
     pub fn alloc(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
         let r = self
-            .alloc_run(meta, size, align, arena, Tracked::assume_new())
+            .alloc_run(
+                meta,
+                size,
+                align,
+                arena,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
             .0;
         (r.ptr, r.zeroed)
     }
@@ -4884,14 +4949,16 @@ impl Huge {
     /// drifts from what the free subtracts); [`Placed::NONE`] when the
     /// region, the metadata region or the kernel refuses.
     #[inline]
-    pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>) -> (r: (Placed, Tracked<Zeroed>))
+    pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             crate::meta::is_pow2(align),
             self.spec_base_aligned(),
             meta.is_process(),
+            old(ord).allows(rank_huge()),
         ensures
+            *final(ord) == *old(ord),
             r.0.pages <= u32::MAX,
             r.0.ptr@.addr != 0 ==> self.spec_run_at(r.0.ptr@.addr, size, align),
             r.0.ptr@.addr != 0 && r.0.zeroed ==> r.1@.covers(r.0.ptr, self.spec_usable(size)),
@@ -4901,20 +4968,22 @@ impl Huge {
             r.0.ptr@.addr != 0 ==> (final(tok)[0].npages() - GUARD_PAGES) * self.spec_page() == self.spec_usable(size),
     {
         assert!(align.is_power_of_two(), "huge: alignment not a power of two");
-        self.alloc_aligned(meta, size, align, arena, Tracked(tok))
+        self.alloc_aligned(meta, size, align, arena, Tracked(tok), Tracked(ord))
     }
 
     /// [`Huge::alloc_run`] for an `align` already known to be a power of
     /// two.
     #[inline(always)]
-    fn alloc_aligned(&self, meta: &Meta, size: usize, align: usize, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>) -> (r: (Placed, Tracked<Zeroed>))
+    fn alloc_aligned(&self, meta: &Meta, size: usize, align: usize, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             crate::meta::is_pow2(align),
             self.spec_base_aligned(),
             meta.is_process(),
+            old(ord).allows(rank_huge()),
         ensures
+            *final(ord) == *old(ord),
             r.0.pages <= u32::MAX,
             r.0.ptr@.addr != 0 ==> self.spec_run_at(r.0.ptr@.addr, size, align),
             r.0.ptr@.addr != 0 && r.0.zeroed ==> r.1@.covers(r.0.ptr, self.spec_usable(size)),
@@ -4941,19 +5010,20 @@ impl Huge {
             return (Placed::NONE, Tracked(Zeroed::empty(0)));
         }
         let page = self.page_size();
-        let mut g = self.inner.lock();
+        let tracked mut under = LockOrder::spare();
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
         let Some((s, ext)) = self.find(&g, need, align) else { return (Placed::NONE, Tracked(Zeroed::empty(0))) };
         let end = s + need;
 
         // Everything fallible happens before any state changes.
-        let (run, _run_opt) = alloc_desc(meta);
+        let (run, _run_opt) = alloc_desc(meta, Tracked(&mut under));
         if run.is_null() {
             return (Placed::NONE, Tracked(Zeroed::empty(0)));
         }
         let run_perm = Tracked(_run_opt.get().tracked_unwrap());
-        let (spare, _spare_opt) = alloc_desc(meta);
+        let (spare, _spare_opt) = alloc_desc(meta, Tracked(&mut under));
         if spare.is_null() {
-            free_desc(meta, run, run_perm);
+            free_desc(meta, run, run_perm, Tracked(&mut under));
             return (Placed::NONE, Tracked(Zeroed::empty(0)));
         }
         let spare_perm = Tracked(_spare_opt.get().tracked_unwrap());
@@ -4970,19 +5040,19 @@ impl Huge {
             assert(stat(g@.stats, 1) == tally(g@.all@, g@.descs@, 1));
             assert(stat(g@.stats, 2) == tally(g@.all@, g@.descs@, 2));
         }
-        let ok = g.table.ensure(meta, page, 3).is_ok()
-            && (end <= g.next_page || g.free.ensure(meta, page, end - 1).is_ok())
+        let ok = g.table.ensure(meta, page, 3, Tracked(&mut under)).is_ok()
+            && (end <= g.next_page || g.free.ensure(meta, page, end - 1, Tracked(&mut under)).is_ok())
             && self.prepare(s, usable_pages, g.next_page).is_ok();
         if !ok {
-            free_desc(meta, run, run_perm);
-            free_desc(meta, spare, spare_perm);
+            free_desc(meta, run, run_perm, Tracked(&mut under));
+            free_desc(meta, spare, spare_perm, Tracked(&mut under));
             return (Placed::NONE, Tracked(Zeroed::empty(0)));
         }
 
         // `check_zero` needs the extent's state before `take` may free it.
         let _gi: &Inner = &g;
         let prior = if purge::check_zero() { Some(self.prior_state(s, ext, Tracked(_gi.descs.borrow()))) } else { None };
-        let (zeroed, z) = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena, run_perm, spare_perm, Tracked(tok));
+        let (zeroed, z) = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena, run_perm, spare_perm, Tracked(tok), Tracked(&mut under));
         // `take` wrote the run's descriptor; the lock is still held.
         let pages = g.desc(run).pages();
         self.sync_oldest(&g);
@@ -5064,14 +5134,15 @@ impl Huge {
     /// [`Huge::free_run`] returning only the usable bytes released.
     #[cfg(test)]
     pub fn free(&self, meta: &Meta, page: usize) -> usize {
-        self.free_run(meta, page, Tracked::assume_new()).usable
+        self.free_run(meta, page, Tracked::assume_new(), Tracked::assume_new())
+            .usable
     }
 
     /// Oldest `Empty` extent's `dirty_at`, read under the lock (the decay
     /// driver reads the copy in [`Huge::oldest_empty`] instead).
     #[cfg(test)]
     pub fn oldest_dirty_at(&self) -> Option<u64> {
-        let g = self.inner.lock();
+        let g = self.inner.lock_t();
         if g.empty_head.is_null() {
             None
         } else {
@@ -5083,7 +5154,7 @@ impl Huge {
     /// Walk every structure and check the invariants; for tests.
     #[cfg(test)]
     fn audit(&self) {
-        let g = self.inner.lock();
+        let g = self.inner.lock_t();
         let st = g.stats;
         assert_eq!(
             st.run_pages + st.empty_pages + st.purged_pages,
@@ -5332,6 +5403,7 @@ impl Inner {
         &&& self.free.map.wf()
         &&& self.free.map.in_meta()
         &&& self.free.map.spec_nbits() == self.np@
+        &&& self.free.store is Own
         &&& elist_ok(self.empty_head, self.empty_tail, self.elist@, self.descs@)
         &&& self.stats.empty == self.elist@.len()
         &&& self.stats.empty_pages == epages(self.elist@, self.descs@)
@@ -5907,6 +5979,7 @@ proof fn lemma_free_end(g0: Inner, gr: Inner, gl: Inner, g1: Inner, m: Merge)
         g1.free.map.wf(),
         g1.free.map.in_meta(),
         g1.free.map.spec_nbits() == g1.np@,
+        g1.free.store is Own,
         // The run authorities without the run's token.
         g1.runs@.id() == run_loc(),
         g1.pgs@.id() == page_loc(),
@@ -6466,14 +6539,16 @@ impl Huge {
     #[verifier::rlimit(120)]
     #[verifier::spinoff_prover]
     #[verifier::loop_isolation(false)]
-    pub fn free_run(&self, meta: &Meta, page: usize, Tracked(tok): Tracked<RunToken>) -> (r: RunInfo)
+    pub fn free_run(&self, meta: &Meta, page: usize, Tracked(tok): Tracked<RunToken>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: RunInfo)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             meta.is_process(),
             tok.wf(),
             tok.start() == page,
+            old(ord).allows(rank_huge()),
         ensures
+            *final(ord) == *old(ord),
             r.pages <= u32::MAX,
             r.pages == tok.npages(),
     {
@@ -6485,7 +6560,8 @@ impl Huge {
             self.lemma_page();
         }
         let page_size = self.page_size();
-        let mut g = self.inner.lock();
+        let tracked mut under = LockOrder::spare();
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
         let ghost g0 = g@;
         let ghost d0 = g0.descs@;
         let ghost t0 = g0.table;
@@ -6576,7 +6652,7 @@ impl Huge {
         // reads only at or below the cap.
         let ghost pof = st == RunState::Purged && usable <= cap;
         // Best effort: a fuller table still works, only slower.
-        let _ = g.table.ensure(meta, page_size, 2);
+        let _ = g.table.ensure(meta, page_size, 2, Tracked(&mut under));
         g.drop_extent(d, Ghost(Seq::empty()));
         let ghost gb = g@;
 
@@ -6693,6 +6769,7 @@ impl Huge {
         let ghost mut k2: int = 0;
         loop
             invariant
+                under.allows(rank_meta()),
                 0 <= k2 <= 3,
                 array_iter_rest(iter) == seq![d, pred, succ].skip(k2),
                 perms_ok(g@.descs@),
@@ -6732,7 +6809,7 @@ impl Huge {
                     lemma_retire_ok(g0, g@, m2, k2, x);
                 }
                 let ghost gr = g@;
-                g.retire(meta, x);
+                g.retire(meta, x, Tracked(&mut under));
                 proof {
                     lemma_retired(g0, gr, g@, m2, k2, x);
                 }
@@ -6837,7 +6914,7 @@ impl Huge {
             } else {
                 t0.lookup(key)
             } by {}
-            assert(g0.free.map.in_meta()) by {
+            assert(g0.free.map.in_meta() && g0.free.store is Own) by {
                 reveal(Inner::wf);
             }
             assert(gl.free.map.place() == g0.free.map.place());

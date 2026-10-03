@@ -127,13 +127,26 @@ impl Env {
     /// A fresh set table for one arena (leaked: the states point at it).
     fn sets(&self) -> &'static SetTable {
         std::boxed::Box::leak(std::boxed::Box::new(
-            SetTable::new(&self.meta, &self.regions).expect("set table"),
+            SetTable::new(
+                &self.meta,
+                &self.regions,
+                Ghost::assume_new(),
+                Tracked::assume_new(),
+            )
+            .expect("set table"),
         ))
     }
 
     fn table(&self, c: usize, guard_interval: u32) -> &'static SlabTable {
         std::boxed::Box::leak(std::boxed::Box::new(
-            SlabTable::new(&self.meta, &self.regions, c, guard_interval).expect("slab table"),
+            SlabTable::new(
+                &self.meta,
+                &self.regions,
+                c,
+                guard_interval,
+                Tracked::assume_new(),
+            )
+            .expect("slab table"),
         ))
     }
 
@@ -150,7 +163,7 @@ impl Env {
 
     fn claim(&self, cs: &ClassState, n: usize) -> (Vec<*mut u8>, Claim) {
         let mut out = vec![ptr::null_mut(); n];
-        let c = cs.claim(&self.meta, &mut out);
+        let c = cs.claim(&self.meta, &mut out, Tracked::assume_new());
         out.truncate(c.n);
         (out, c)
     }
@@ -164,12 +177,13 @@ impl Env {
 fn set_scans_never_read_uncommitted_words() {
     let env = Env::new();
     let nbits = 1 << 21;
-    let mut set = Set::new(&env.meta, page_size(), nbits).expect("set");
+    let mut set = Set::new(&env.meta, page_size(), nbits, Tracked::assume_new()).expect("set");
     assert_eq!(set.map.lowest_set(), None);
     assert_eq!(set.map.lowest_set_from(0), None);
     assert_eq!(set.map.lowest_set_from(12345), None);
     assert_eq!(set.map.lowest_set_from(nbits - 1), None);
-    set.ensure(&env.meta, page_size(), 100).unwrap();
+    set.ensure(&env.meta, page_size(), 100, Tracked::assume_new())
+        .unwrap();
     set.map.set(100);
     assert_eq!(set.map.lowest_set_from(0), Some(100));
     assert_eq!(set.map.lowest_set_from(100), Some(100));
@@ -259,7 +273,7 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     // Slab 0 goes Empty; its group mates 1..4 are Active, so nothing is purged.
     cs.release(&p[..n]);
     assert_eq!(cs.desc(0).state(), State::Empty);
-    assert_eq!(cs.purge_empty(u64::MAX), 0);
+    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 0);
     assert_eq!(cs.desc(0).state(), State::Empty);
     assert_eq!(cs.oldest_empty(), cs.desc(0).dirty_at());
     // Another arena gets the next group (slabs 128..256: groups are
@@ -276,7 +290,7 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     assert_eq!(cs.table().owner(128), 1);
     assert_eq!(cs.table().owner(5), 0);
     assert_eq!(cs.table().committed_slabs(), 256);
-    assert_eq!(cs.table().guards(), 0);
+    assert_eq!(cs.table().guards(Tracked::assume_new()), 0);
     let (r, _) = env.claim(&cs, 3 * n);
     assert_eq!(r.len(), 3 * n);
     for s in [0, 5, 6] {
@@ -308,8 +322,8 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
             ..Default::default()
         }
     );
-    assert_eq!(other.purge_empty(u64::MAX), 0);
-    assert_eq!(cs.purge_empty(u64::MAX), 3);
+    assert_eq!(other.purge_empty(u64::MAX, Tracked::assume_new()), 0);
+    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 3);
     for s in 4..7 {
         assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
     }
@@ -329,7 +343,7 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     cs.release(&in_slab(&r, 0));
     let oldest = cs.desc(1).dirty_at();
     assert!(cs.desc(0).dirty_at() >= oldest);
-    assert_eq!(cs.purge_empty(oldest), 4);
+    assert_eq!(cs.purge_empty(oldest, Tracked::assume_new()), 4);
     for s in 0..4 {
         assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
         assert_eq!(cs.desc(s).dirty_at(), 0);
@@ -350,7 +364,7 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     assert_eq!(z[0] as usize, base);
     cs.release(&z);
     assert_eq!(cs.desc(0).state(), State::Empty);
-    assert_eq!(cs.purge_empty(u64::MAX), 1);
+    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 1);
     assert_eq!(cs.desc(0).state(), State::Purged);
     assert_eq!(
         cs.stats(),
@@ -368,7 +382,7 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     assert_eq!(in_slab(&g, 7).len(), n);
     assert_eq!(in_slab(&g, 11).len(), n);
     assert_eq!(in_slab(&g, 16).len(), 1);
-    assert_eq!(cs.table().guards(), 4);
+    assert_eq!(cs.table().guards(Tracked::assume_new()), 4);
     assert_eq!(cs.stats().committed, 13);
     assert_eq!(cs.table().committed_slabs(), 256);
     for s in 12..16 {
@@ -614,21 +628,21 @@ fn filling_a_slab_moves_on_and_release_reopens_it() {
     assert!(cs.table().bits(0).is_full());
     // A whole fresh slab reserved by one plan leaves the partial set at
     // once; nothing in it could be released before the claim finished.
-    assert!(!cs.is_partial(0));
+    assert!(!cs.is_partial(0, Tracked::assume_new()));
     assert_eq!(cs.stats().nonfull, 0);
     let (next, claim) = env.claim(&cs, 1);
     assert_eq!(claim, Claim { n: 1, zeroed: true });
     assert_eq!(next[0] as usize, env.regions.slab_addr(c, 1));
-    assert!(!cs.is_partial(0));
-    assert!(cs.is_partial(1));
+    assert!(!cs.is_partial(0, Tracked::assume_new()));
+    assert!(cs.is_partial(1, Tracked::assume_new()));
     assert_eq!(cs.stats().committed, 2);
     assert_eq!(cs.stats().nonfull, 1);
     // Releasing one slot in slab 0 puts it back, and first fit picks it
     // before slab 1.
     let victim = all[n / 2];
     cs.release(&[victim]);
-    assert!(cs.is_partial(0));
-    assert_eq!(cs.lowest_partial(), Some(0));
+    assert!(cs.is_partial(0, Tracked::assume_new()));
+    assert_eq!(cs.lowest_partial(Tracked::assume_new()), Some(0));
     assert_eq!(cs.desc(0).live(), n - 1);
     assert!(!cs.table().is_allocated(0, n / 2));
     let (again, claim) = env.claim(&cs, 2);
@@ -655,15 +669,15 @@ fn filling_a_live_slab_leaves_a_stale_bit_until_the_next_plan() {
     let (b, _) = env.claim(&cs, 3);
     assert_eq!(a.len() + b.len(), n);
     assert!(cs.table().bits(0).is_full());
-    assert!(cs.is_partial(0));
+    assert!(cs.is_partial(0, Tracked::assume_new()));
     assert_eq!(cs.stats().nonfull, 1);
     // The next plan notices, clears it and commits slab 1 in the same
     // lock hold.
     let (q, claim) = env.claim(&cs, 2);
     assert_eq!(claim, Claim { n: 2, zeroed: true });
     assert_eq!(q[0] as usize, env.regions.slab_addr(c, 1));
-    assert!(!cs.is_partial(0));
-    assert!(cs.is_partial(1));
+    assert!(!cs.is_partial(0, Tracked::assume_new()));
+    assert!(cs.is_partial(1, Tracked::assume_new()));
     assert_eq!(
         cs.stats(),
         ClassStats {
@@ -674,7 +688,7 @@ fn filling_a_live_slab_leaves_a_stale_bit_until_the_next_plan() {
     );
     // A release into the full slab reopens it and first fit prefers it.
     cs.release(&[a[5]]);
-    assert!(cs.is_partial(0));
+    assert!(cs.is_partial(0, Tracked::assume_new()));
     let (r, claim) = env.claim(&cs, 1);
     assert_eq!(
         claim,
@@ -706,7 +720,7 @@ fn one_plan_spans_many_slabs_and_release_reopens_them_all() {
     for s in 0..slabs {
         assert_eq!(all[s * n] as usize, env.regions.slab_addr(c, s));
         assert!(cs.table().bits(s).is_full());
-        assert!(!cs.is_partial(s));
+        assert!(!cs.is_partial(s, Tracked::assume_new()));
     }
     assert_eq!(
         cs.stats(),
@@ -721,7 +735,10 @@ fn one_plan_spans_many_slabs_and_release_reopens_them_all() {
     let victims: Vec<*mut u8> = (0..slabs).map(|s| all[s * n + s % n]).collect();
     cs.release(&victims);
     for s in 0..slabs {
-        assert!(cs.is_partial(s), "slab {s} not reopened");
+        assert!(
+            cs.is_partial(s, Tracked::assume_new()),
+            "slab {s} not reopened"
+        );
         assert_eq!(cs.desc(s).live(), n - 1);
     }
     assert_eq!(cs.stats().nonfull, slabs);
@@ -740,14 +757,14 @@ fn one_plan_spans_many_slabs_and_release_reopens_them_all() {
     // being cleared; each later plan cleared the previous plan's full
     // slabs on its way past, leaving only the last one stale.
     assert_eq!(cs.stats().nonfull, 1);
-    assert!(cs.is_partial(slabs - 1));
+    assert!(cs.is_partial(slabs - 1, Tracked::assume_new()));
     // Releasing a whole slab in one batch empties it; the reopen list
     // must not put an Empty slab back into the partial set.
     let mut whole: Vec<*mut u8> = all[3 * n..4 * n].to_vec();
     whole.sort();
     cs.release(&whole);
     assert_eq!(cs.desc(3).state(), State::Empty);
-    assert!(!cs.is_partial(3));
+    assert!(!cs.is_partial(3, Tracked::assume_new()));
     assert_eq!(cs.stats().empty, 1);
     assert_eq!(cs.stats().nonfull, 1);
     // And the same for the slab with the stale bit.
@@ -755,7 +772,7 @@ fn one_plan_spans_many_slabs_and_release_reopens_them_all() {
     whole.sort();
     cs.release(&whole);
     assert_eq!(cs.desc(slabs - 1).state(), State::Empty);
-    assert!(!cs.is_partial(slabs - 1));
+    assert!(!cs.is_partial(slabs - 1, Tracked::assume_new()));
     assert_eq!(cs.stats().empty, 2);
     assert_eq!(cs.stats().nonfull, 0);
 }
@@ -774,7 +791,7 @@ fn release_all_makes_empty_then_reuse_then_purge() {
     assert_eq!(d.state(), State::Empty);
     assert_eq!(d.live(), 0);
     assert!(d.dirty_at() > 0);
-    assert!(!cs.is_partial(0));
+    assert!(!cs.is_partial(0, Tracked::assume_new()));
     assert_eq!(
         cs.stats(),
         ClassStats {
@@ -806,9 +823,9 @@ fn release_all_makes_empty_then_reuse_then_purge() {
     cs.release(&q);
     assert_eq!(d.state(), State::Empty);
     // Purge with a cutoff before dirty_at does nothing; after it purges.
-    assert_eq!(cs.purge_empty(d.dirty_at() - 1), 0);
+    assert_eq!(cs.purge_empty(d.dirty_at() - 1, Tracked::assume_new()), 0);
     assert_eq!(d.state(), State::Empty);
-    assert_eq!(cs.purge_empty(u64::MAX), 1);
+    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 1);
     assert_eq!(d.state(), State::Purged);
     assert_eq!(d.dirty_at(), 0);
     assert_eq!(
@@ -943,7 +960,7 @@ fn decay_purges_the_oldest_empty_slabs_along_the_curve() {
     let (r, _) = env.claim(&cs, nslots * 2);
     cs.release(&r);
     assert!(cs.oldest_empty() > 0);
-    assert_eq!(cs.purge_empty(u64::MAX), 2);
+    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 2);
     assert_eq!(cs.oldest_empty(), 0);
 }
 
@@ -984,7 +1001,7 @@ fn purge_batches_a_whole_region() {
     assert_eq!(claim.n, nslots * n);
     cs.release(&p);
     assert_eq!(cs.stats().empty, n);
-    assert_eq!(cs.purge_empty(u64::MAX), n);
+    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), n);
     assert_eq!(cs.stats().purged, n);
     assert_eq!(cs.oldest_empty(), 0);
     for s in 0..n {
@@ -1071,7 +1088,10 @@ fn guard_slabs_are_skipped() {
     // `commit_slab` of a guard slab (here slab 11, handed out with the
     // group of slab 8 and not yet reached): committed, the guard installed
     // (`install_guard`), counted, never handed out.
-    assert_eq!(cs.table().commit_slab(11), Some(false));
+    assert_eq!(
+        cs.table().commit_slab(11, Tracked::assume_new()),
+        Some(false)
+    );
     assert_eq!(cs.stats().guards, 3);
     assert_eq!(
         cs.committed_slabs(),
@@ -1110,9 +1130,9 @@ fn works_for_every_class() {
         }
         cs.release(&p);
         assert_eq!(cs.desc(0).state(), State::Empty, "class {c}");
-        assert_eq!(cs.purge_empty(u64::MAX), 1);
+        assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 1);
     }
-    let s = env.meta.stats();
+    let s = env.meta.stats(Tracked::assume_new());
     // The tables are reservations or, at this layout's sizes, eager carves.
     assert!(s.reserved + s.eager > 0 && s.committed > 0);
 }
@@ -1142,7 +1162,7 @@ fn metadata_exhaustion_is_reported_not_fatal() {
         (0x2000_0000_0000, 2 * page_size()),
         page_size().trailing_zeros(),
     );
-    assert!(SlabTable::new(&meta, &regions, 0, 0).is_none());
+    assert!(SlabTable::new(&meta, &regions, 0, 0, Tracked::assume_new()).is_none());
 }
 
 /// Two arenas over one class region: slabs are handed out in address
@@ -1156,12 +1176,12 @@ fn metadata_exhaustion_is_reported_not_fatal() {
 #[test]
 fn set_table_of_many_classes_touches_one_page_per_slab_size() {
     let env = Env::new();
-    let before = env.meta.stats().committed;
+    let before = env.meta.stats(Tracked::assume_new()).committed;
     let sets = env.sets();
     // The set tables commit nothing of their own; the ones small enough to
     // be carved from the object side (`meta::EAGER_MAX`) bring at most
     // their alignment padding and one chunk's rounding into the count.
-    let slack = env.meta.stats().committed - before;
+    let slack = env.meta.stats(Tracked::assume_new()).committed - before;
     assert!(
         slack < crate::meta::COMMIT_CHUNK + SET_GROUPS * env.regions.page_size(),
         "reservation only, slack {slack}"
@@ -1232,8 +1252,8 @@ fn two_arenas_share_one_region() {
     assert_eq!(cs0.desc(1).arena(), 1);
     assert_eq!(cs0.locate(p0[0]).0, 0);
     assert_eq!(cs1.locate(p1[0]).0, 1);
-    assert!(cs0.is_partial(0) && !cs0.is_partial(1));
-    assert!(cs1.is_partial(1) && !cs1.is_partial(0));
+    assert!(cs0.is_partial(0, Tracked::assume_new()) && !cs0.is_partial(1, Tracked::assume_new()));
+    assert!(cs1.is_partial(1, Tracked::assume_new()) && !cs1.is_partial(0, Tracked::assume_new()));
     assert_eq!(cs0.stats().committed, 1);
     assert_eq!(cs1.stats().committed, 1);
     // Each arena keeps growing past the other's slabs.
@@ -1250,7 +1270,7 @@ fn two_arenas_share_one_region() {
     assert_eq!(cs1.desc(2).state(), State::Empty);
     assert_eq!(cs1.stats().empty, 2);
     assert_eq!(cs0.stats().empty, 0);
-    assert_eq!(cs1.purge_empty(u64::MAX), 2);
+    assert_eq!(cs1.purge_empty(u64::MAX, Tracked::assume_new()), 2);
     assert_eq!(cs0.stats().purged, 0);
     assert_eq!(cs1.stats().purged, 2);
     cs0.release(&p0);
@@ -1571,14 +1591,14 @@ fn randomised_model_check() {
             match d.state() {
                 State::Empty => {
                     assert_eq!(d.live(), 0);
-                    assert!(!cs.is_partial(s));
+                    assert!(!cs.is_partial(s, Tracked::assume_new()));
                     empty += 1;
                 }
                 State::Active => {
-                    assert!(d.live() > 0 || cs.is_partial(s));
+                    assert!(d.live() > 0 || cs.is_partial(s, Tracked::assume_new()));
                     if !bm.is_full() {
                         assert!(
-                            cs.is_partial(s),
+                            cs.is_partial(s, Tracked::assume_new()),
                             "slab {s} has free slots but is not partial"
                         );
                     }
@@ -1594,7 +1614,10 @@ fn randomised_model_check() {
     let st = cs.stats();
     assert_eq!(st.empty, st.committed);
     assert_eq!(st.nonfull, 0);
-    assert_eq!(cs.purge_empty(u64::MAX), st.committed);
+    assert_eq!(
+        cs.purge_empty(u64::MAX, Tracked::assume_new()),
+        st.committed
+    );
     let st = cs.stats();
     assert_eq!(st.purged, st.committed);
     assert_eq!(st.empty, 0);
@@ -1691,7 +1714,7 @@ fn purge_never_races_a_claim() {
         std::thread::spawn(move || {
             let mut n = 0;
             while !stop.load(core::sync::atomic::Ordering::Relaxed) {
-                n += cs.purge_empty(u64::MAX);
+                n += cs.purge_empty(u64::MAX, Tracked::assume_new());
                 purged.store(n, core::sync::atomic::Ordering::Relaxed);
             }
             n
@@ -1755,7 +1778,7 @@ fn purge_zeroes_memory_and_commit_is_visible() {
     assert!(!claim.zeroed);
     assert_eq!(unsafe { *q[0] }, 0xAB);
     cs.release(&q);
-    assert_eq!(cs.purge_empty(u64::MAX), 1);
+    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 1);
     let (r, claim) = env.claim(&cs, 5);
     assert_eq!(r, p);
     assert!(claim.zeroed);
@@ -1778,7 +1801,7 @@ fn purge_zeroes_memory_and_commit_is_visible() {
     // Descriptors live in the metadata region and got committed too.
     let d = cs.desc(0) as *const SlabDesc as usize;
     assert!(env.regions.in_meta(d));
-    assert!(env.meta.stats().committed >= page_size());
+    assert!(env.meta.stats(Tracked::assume_new()).committed >= page_size());
 }
 
 /// `check_zero` on a healthy heap: every
@@ -1796,7 +1819,7 @@ fn check_zero_passes_fresh_and_purged_slabs() {
         unsafe { *q = 0xAB };
     }
     cs.release(&p);
-    assert_eq!(cs.purge_empty(u64::MAX), 1);
+    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 1);
     let (q, claim) = env.claim(&cs, 5);
     assert_eq!(q, p);
     assert!(claim.zeroed);
@@ -1813,7 +1836,7 @@ fn check_zero_aborts_on_a_dirty_purged_slab() {
     let cs = env.class(small_class(), 0);
     let (p, _) = env.claim(&cs, 2);
     cs.release(&p);
-    assert_eq!(cs.purge_empty(u64::MAX), 1);
+    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 1);
     // The last word of the second slot: the check reads both ends.
     let size = cs.class().size();
     unsafe { ptr::write_volatile(p[1].add(size - 8) as *mut u64, 0xDEAD_BEEF) };
@@ -1847,6 +1870,7 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
             &env.meta,
             1,
             &mut picks,
+            Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
@@ -1929,7 +1953,7 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
             break;
         }
         // Round 2: the same window on the slab once purged.
-        assert_eq!(cs.purge_empty(u64::MAX), 1);
+        assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 1);
         assert_eq!(cs.desc(0).state(), State::Purged);
         if !purge::purged_is_zero() {
             break;
@@ -1985,19 +2009,19 @@ fn guard_slab_faults_when_supported() {
 fn bin_stats_counts_every_curregs_clamp() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
-    let (_, curregs) = cs.bin_stats();
+    let (_, curregs) = cs.bin_stats(Tracked::assume_new());
     assert_eq!((curregs, cs.clamped()), (0, 0));
     // No slab committed, so the capacity is zero: a `claimed` ahead of
     // `released` (the window `bin_stats` documents) is clamped to it and
     // the clamp is counted.
     cs.claimed.store(3, Ordering::Relaxed);
-    let (_, curregs) = cs.bin_stats();
+    let (_, curregs) = cs.bin_stats(Tracked::assume_new());
     assert_eq!((curregs, cs.clamped()), (0, 1));
-    let (_, curregs) = cs.bin_stats();
+    let (_, curregs) = cs.bin_stats(Tracked::assume_new());
     assert_eq!((curregs, cs.clamped()), (0, 2));
     // Caught up: no clamp, the count stays.
     cs.released.store(3, Ordering::Relaxed);
-    let (_, curregs) = cs.bin_stats();
+    let (_, curregs) = cs.bin_stats(Tracked::assume_new());
     assert_eq!((curregs, cs.clamped()), (0, 2));
 }
 
@@ -2008,7 +2032,9 @@ fn a_plan_over_a_slab_with_live_above_nslots_aborts() {
     let cs = env.class(small_class(), 0);
     let (b, claim) = env.claim(&cs, 1);
     assert_eq!(claim.n, 1);
-    let slab = cs.lowest_partial().expect("the slab is partial");
+    let slab = cs
+        .lowest_partial(Tracked::assume_new())
+        .expect("the slab is partial");
     cs.release(&b[..1]);
     assert_eq!(cs.stats().empty, 1);
     // Corrupt the descriptor of the now `Empty` slab: `live` past the
@@ -2021,6 +2047,7 @@ fn a_plan_over_a_slab_with_live_above_nslots_aborts() {
         &env.meta,
         1,
         &mut picks,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -2037,12 +2064,13 @@ fn a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts() {
     cs.release(&b[..1]);
     assert_eq!(cs.stats().empty, 1);
     // Corrupt the count: the set still holds the slab.
-    cs.inner.lock().stats.empty = 0;
+    cs.inner.lock_t().stats.empty = 0;
     let mut picks = [Pick::EMPTY; MAX_PICKS];
     cs.plan(
         &env.meta,
         1,
         &mut picks,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -2058,8 +2086,8 @@ fn a_purge_of_an_empty_slab_the_counts_do_not_know_aborts() {
     assert_eq!(claim.n, 1);
     cs.release(&b[..1]);
     assert_eq!(cs.stats().empty, 1);
-    cs.inner.lock().stats.empty = 0;
-    cs.purge_empty(u64::MAX);
+    cs.inner.lock_t().stats.empty = 0;
+    cs.purge_empty(u64::MAX, Tracked::assume_new());
 }
 
 /// `claim_prefix`'s cross-check: a `Fresh` slab (handed out, not yet
@@ -2129,7 +2157,7 @@ fn claim_random_hands_out_the_same_slots_in_a_random_order() {
     let cs = env.class(c, 0);
     let mut rng = 0x2545_f491_4f6c_dd1du64;
     let mut out = vec![ptr::null_mut(); n];
-    let claim = cs.claim_random(&env.meta, &mut out, &mut rng);
+    let claim = cs.claim_random(&env.meta, &mut out, &mut rng, Tracked::assume_new());
     assert_eq!(claim.n, n);
     assert!(
         claim.zeroed,
@@ -2155,10 +2183,10 @@ fn claim_random_hands_out_the_same_slots_in_a_random_order() {
     cs.release(&out);
     assert_eq!(cs.desc(0).state(), State::Empty);
     let mut half = vec![ptr::null_mut(); n / 2];
-    let c1 = cs.claim_random(&env.meta, &mut half, &mut rng);
+    let c1 = cs.claim_random(&env.meta, &mut half, &mut rng, Tracked::assume_new());
     assert_eq!((c1.n, c1.zeroed), (n / 2, false), "an Empty slab is dirty");
     let mut rest = vec![ptr::null_mut(); n - n / 2];
-    let c2 = cs.claim_random(&env.meta, &mut rest, &mut rng);
+    let c2 = cs.claim_random(&env.meta, &mut rest, &mut rng, Tracked::assume_new());
     assert_eq!(
         (c2.n, c2.zeroed),
         (n - n / 2, false),
@@ -2190,7 +2218,7 @@ fn the_set_helpers_keep_the_counts_in_step_with_the_bits() {
         }
     );
     {
-        let mut g = cs.inner.lock();
+        let mut g = cs.inner.lock_t();
         g.empty_take(0);
         assert!(!g.empty.map.is_set(0));
         assert_eq!((g.stats.empty, g.stats.purged), (1, 0));
@@ -2224,15 +2252,16 @@ fn a_plan_that_takes_a_purged_slab_the_counts_do_not_know_aborts() {
     let (b, claim) = env.claim(&cs, 1);
     assert_eq!(claim.n, 1);
     cs.release(&b);
-    assert_eq!(cs.purge_empty(u64::MAX), 1);
+    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 1);
     assert_eq!(cs.stats().purged, 1);
     // Corrupt the count: the set still holds the slab.
-    cs.inner.lock().stats.purged = 0;
+    cs.inner.lock_t().stats.purged = 0;
     let mut picks = [Pick::EMPTY; MAX_PICKS];
     cs.plan(
         &env.meta,
         1,
         &mut picks,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -2270,7 +2299,7 @@ fn walk_empty_visits_the_set_in_address_order_and_skips_what_the_visitor_takes()
             self.0.push(slab);
         }
     }
-    let mut g = cs.inner.lock();
+    let mut g = cs.inner.lock_t();
     let mut seen = Seen(Vec::new());
     cs.walk_empty(&mut g, &mut seen);
     assert_eq!(
@@ -2305,7 +2334,7 @@ fn a_purge_over_an_empty_set_slab_that_is_not_empty_aborts() {
     // Corrupt the descriptor: the set says `Empty`, the state byte says
     // `Active`.
     cs.desc(1).set_state(State::Active);
-    cs.purge_empty(u64::MAX);
+    cs.purge_empty(u64::MAX, Tracked::assume_new());
 }
 
 /// `min_nonzero`: the fold of the purge walks over `dirty_at`

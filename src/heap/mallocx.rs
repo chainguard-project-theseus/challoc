@@ -8,6 +8,8 @@
 use core::ptr;
 
 use super::Shared;
+#[cfg(verus_only)]
+use crate::lock::axiom_entry;
 use crate::vspec::zero::Zeroed;
 use vstd::prelude::verus;
 #[cfg(verus_only)]
@@ -247,8 +249,11 @@ fn alloc_direct(shared: &Shared, class: usize, arena: u16, Tracked(blk): Tracked
         r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, crate::layout::class_table()[class as int].size as int),
         r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
 {
-    match shared.arena(arena) {
-        Some(a) => shared.alloc_direct(a, class, Tracked(blk)),
+    // Premise (lock order): called from the `mallocx` entry points, which
+    // hold no lock.
+    let tracked mut ord = axiom_entry();
+    match shared.arena(arena, Tracked(&mut ord)) {
+        Some(a) => shared.alloc_direct(a, class, Tracked(blk), Tracked(&mut ord)),
         None => (ptr::null_mut(), false, Tracked(Zeroed::empty(0))),
     }
 }
@@ -284,12 +289,15 @@ pub fn alloc_huge(
         },
         (None, _) => crate::heap::existing_heap(crate::heap::shared_ptr(shared)).map_or(0, |h| h.arena()),
     };
-    if shared.arena(a).is_none() {
+    // Premise (lock order): called from the `mallocx` entry points, which
+    // hold no lock.
+    let tracked mut ord = axiom_entry();
+    if shared.arena(a, Tracked(&mut ord)).is_none() {
         return (ptr::null_mut(), false, Tracked(Zeroed::empty(0)));
     }
     match crate::heap::heap_for_thread(shared) {
         Some(h) => h.alloc_huge_in(shared, size, align, a, Tracked(blk)),
-        None => shared.alloc_huge(size, align, a, Tracked(blk)),
+        None => shared.alloc_huge(size, align, a, Tracked(blk), Tracked(&mut ord)),
     }
 }
 

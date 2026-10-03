@@ -15,6 +15,8 @@
 use core::ffi::c_void;
 use core::ptr;
 
+#[cfg(verus_only)]
+use crate::lock::axiom_entry;
 use crate::sys::pac;
 use crate::sys::tls::TlsSlot;
 use crate::vspec::addr::addr_to_ptr;
@@ -67,7 +69,9 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
     // SAFETY: the pointer was registered by `heap_for_thread` for this thread.
     unsafe {
         let shared = shared_of(heap_at(h).shared);
-        Heap::destroy(h, shared);
+        // Premise (lock order): a TLS destructor runs at thread exit, outside
+        // any allocator call, so this thread holds no lock.
+        Heap::destroy(h, shared, Tracked(&mut axiom_entry()));
     }
 }
 
@@ -173,7 +177,9 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(tls): Tra
     if slot != 0 {
         return None;
     }
-    let (h, Tracked(perms)) = Heap::create(shared, Tracked(tls));
+    // Premise (lock order): reached from the first allocation of a thread,
+    // on its slow path, with no lock held.
+    let (h, Tracked(perms)) = Heap::create(shared, Tracked(tls), Tracked(&mut axiom_entry()));
     if h.is_null() {
         return None;
     }

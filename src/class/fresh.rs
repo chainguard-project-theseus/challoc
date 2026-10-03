@@ -3,6 +3,9 @@
 
 use super::abort::slab_count_underflow;
 use super::{ClassState, Inner};
+use crate::lock::LockOrder;
+#[cfg(verus_only)]
+use crate::lock::rank_table;
 use crate::meta::Meta;
 use vstd::prelude::*;
 
@@ -29,7 +32,7 @@ impl ClassState {
     /// slabs inside a group are committed as guards and skipped. The
     /// commit lock nests inside the class lock. `None` when the region,
     /// the metadata region or a commit is exhausted.
-    pub(super) fn next_slab(&self, g: &mut Inner, meta: &Meta) -> (r: Option<usize>)
+    pub(super) fn next_slab(&self, g: &mut Inner, meta: &Meta, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -37,7 +40,9 @@ impl ClassState {
             old(g).nbits() == self.spec_nslabs(),
             old(g).arena@ == self.arena,
             old(g).table@ == self.spec_table(),
+            old(ord).allows(rank_table(0)),
         ensures
+            *final(ord) == *old(ord),
             final(g).nbits() == old(g).nbits(),
             final(g).arena == old(g).arena,
             final(g).table == old(g).table,
@@ -84,7 +89,7 @@ impl ClassState {
             }
             return Some(s);
         }
-        let r = self.next_fresh_slab(g, meta);
+        let r = self.next_fresh_slab(g, meta, Tracked(ord));
         proof {
             if let Some(s) = r {
                 assert(g.slab_ok(s as nat));
@@ -112,7 +117,7 @@ impl ClassState {
     ///
     /// [`next_slab`]: ClassState::next_slab
     #[inline(never)]
-    pub(super) fn next_fresh_slab(&self, g: &mut Inner, meta: &Meta) -> (r: Option<usize>)
+    pub(super) fn next_fresh_slab(&self, g: &mut Inner, meta: &Meta, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -120,7 +125,9 @@ impl ClassState {
             old(g).nbits() == self.spec_nslabs(),
             old(g).arena@ == self.arena,
             old(g).table@ == self.spec_table(),
+            old(ord).allows(rank_table(0)),
         ensures
+            *final(ord) == *old(ord),
             final(g).inv(),
             final(g).nbits() == old(g).nbits(),
             r matches Some(s) ==> s < self.spec_nslabs()
@@ -144,6 +151,8 @@ impl ClassState {
             invariant
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
+                ord.allows(rank_table(0)),
+                *ord == *old(ord),
                 g.inv(),
                 g.nbits() == self.spec_nslabs(),
                 g.nbits() == old(g).nbits(),
@@ -166,7 +175,7 @@ impl ClassState {
                 // The fresh markers of the group's slabs join the ghost
                 // with them.
                 let tracked mut im = g.inited.borrow().duplicate();
-                let (start, end) = table.take_group(meta, self.arena, g, page, Tracked(&mut im))?;
+                let (start, end) = table.take_group(meta, self.arena, g, page, Tracked(&mut im), Tracked(ord))?;
                 let ghost g0 = *g;
                 proof {
                     assert(g0.same_sets(ga));
@@ -199,7 +208,7 @@ impl ClassState {
                 }
             }
             let s = g.group_next;
-            let usable = table.commit_slab(s)?;
+            let usable = table.commit_slab(s, Tracked(ord))?;
             let ghost g1 = *g;
             g.group_next = s + 1;
             proof {

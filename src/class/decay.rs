@@ -5,6 +5,9 @@ use super::abort::slab_count_underflow;
 use super::{ClassState, Inner};
 #[cfg(verus_only)]
 use crate::layout::class_table;
+use crate::lock::LockOrder;
+#[cfg(verus_only)]
+use crate::lock::{axiom_held_below, rank_class};
 use crate::purge::{Batch, Curve, STEPS};
 use crate::slab::State;
 use vstd::prelude::*;
@@ -271,10 +274,12 @@ impl ClassState {
 
     /// Bytes of this arena's `Empty` slabs of the class (one lock hold):
     /// at most the class region, which ends below `2^57`.
-    pub fn empty_bytes(&self) -> (r: usize)
+    pub fn empty_bytes(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
         ensures
+            *final(ord) == *old(ord),
             r <= 0x200_0000_0000_0000,
     {
         broadcast use {super::axiom_class_lock, super::axiom_class_lock_inv, super::lemma_inv_counts};
@@ -288,7 +293,7 @@ impl ClassState {
                     requires 0 <= e <= n, p >= 0;
             }
         }
-        self.inner.lock().stats.empty * self.class().slab_size()
+        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).stats.empty * self.class().slab_size()
     }
 }
 
@@ -526,11 +531,13 @@ impl ClassState {
     /// Recomputes `oldest_empty` from the survivors. Returns the number
     /// purged, at most the slab count: each purged slab is below the end
     /// of the last page group pushed, inside the class region.
-    pub fn purge_empty(&self, cutoff: u64) -> (r: usize)
+    pub fn purge_empty(&self, cutoff: u64, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
         ensures
+            *final(ord) == *old(ord),
             r <= self.spec_nslabs(),
     {
         broadcast use {super::axiom_class_lock, super::axiom_class_lock_inv};
@@ -538,7 +545,7 @@ impl ClassState {
             use_type_invariant(self);
         }
         let spp = self.table().slabs_per_page();
-        let mut g = self.inner.lock();
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let mut v = PurgeOlder { cutoff, p: Purger::new(spp, Ghost(self.spec_table()), Ghost(g@.states@)) };
         proof {
             assert(0usize & sub(spp, 1) == 0) by (bit_vector);
@@ -853,17 +860,20 @@ impl ClassState {
     /// discards go out in batches under the class lock, as `purge_empty`.
     /// Recomputes `oldest_empty` from the survivors. Returns the number
     /// purged.
-    fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize
+    fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> usize
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
     {
         broadcast use {super::axiom_class_lock, super::axiom_class_lock_inv};
         proof {
             use_type_invariant(self);
         }
         let spp = self.table().slabs_per_page();
-        let mut g = self.inner.lock();
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         // First pass: the age histogram of the empty set and its allowance.
         let mut h = Histogram { now, curve, counts: [0u32; STEPS], total: 0, weighted: 0, oldest: 0, last: Ghost(-1) };
         proof {
@@ -915,23 +925,29 @@ impl ClassState {
     /// lock only when a walk is due.
     #[cfg(test)]
     pub fn decay(&self, now: u64, decay_ns: u64) -> Option<u64> {
-        self.decay_with(now, decay_ns, crate::policy::KEEP_ALL)
+        self.decay_with(now, decay_ns, crate::policy::KEEP_ALL, Tracked::assume_new())
     }
 
     /// [`decay`](ClassState::decay) with the cgroup policy's keep ratio
     /// (design 11): the walk keeps at most `keep16 / 65536` of its `Empty`
     /// slabs on top of the curve's allowance.
-    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> (r: Option<u64>)
+    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u64>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
         ensures
+            *final(ord) == *old(ord),
             r matches Some(t) ==> t >= now,
             exists|oldest: u64, next: u64, after: u64|
                 r == #[trigger] crate::purge::Decayer::spec_decay(now, decay_ns, oldest, next, after),
     {
         self.gate.decay(now, decay_ns, |now, curve| {
-            self.purge_curve(now, curve, keep16);
+            // Premise (lock order): the closure cannot carry the caller's
+            // token; `ord`, which `decay_with` requires, bounds the same
+            // locks (this thread's, unchanged since the call).
+            let tracked mut ord = axiom_held_below(rank_class(0, 0));
+            self.purge_curve(now, curve, keep16, Tracked(&mut ord));
         })
     }
 }

@@ -28,6 +28,8 @@ use crate::heap::Shared;
 #[cfg(verus_only)]
 use crate::layout::class_table;
 use crate::layout::{CLASSES, NBINS, NCLASSES};
+#[cfg(verus_only)]
+use crate::lock::axiom_entry;
 use crate::purge;
 use crate::stats::{self, ArenaStats, Snapshot, fig_add, fig_mul};
 use crate::sys::bytes_is;
@@ -562,11 +564,15 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
         crate::sys::cgroup::UNLIMITED => write!(out, " retention_cap max")?,
         c => write!(out, " retention_cap {c}")?,
     }
+    // Out of the `writeln!` so that its ghost argument is erased (the
+    // `verus!` expansion does not reach into a macro's arguments).
+    // Premise (lock order): the report takes no lock around this.
+    let empty_bytes = crate::policy::empty_bytes(shared, Tracked(&mut axiom_entry()));
     writeln!(
         out,
         " keep {}% empty_bytes {} full_purges {}{} thp {}",
         p.keep16() as u64 * 100 / FRAC_ONE as u64,
-        crate::policy::empty_bytes(shared),
+        empty_bytes,
         p.full_purges(),
         if p.full_purge_pending() {
             " (one pending)"
@@ -761,7 +767,8 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
             if cs.table().bits(i).allocated(nslots) != live {
                 mismatched += 1;
             }
-            if live < nslots && !cs.is_partial(i) {
+            // Premise (lock order): the report takes no lock around this.
+            if live < nslots && !cs.is_partial(i, Tracked(&mut axiom_entry())) {
                 unlisted += 1;
             }
         }
@@ -803,7 +810,7 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
         crate::sys::may_syscall(),
         shared.wf(),
 {
-    let snap = stats::collect(shared);
+    let snap = stats::collect(shared, Tracked(&mut axiom_entry()));
     if !o.no_general {
         text_general(out, shared, &snap)?;
     }
@@ -820,7 +827,7 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
                 shared.wf(),
         {
             if let Some(a) = stats::arena_at(shared, i) {
-                let s = stats::collect_arena(shared, a);
+                let s = stats::collect_arena(shared, a, Tracked(&mut axiom_entry()));
                 text_arena(out, a, &s, !o.no_bins)?;
             }
         }
@@ -912,6 +919,9 @@ fn json_general<W: Write>(
     )?;
     let cg = &shared.cgroup;
     cg.sample(crate::sys::now_coarse_ns());
+    // Out of the `writeln!`, as in `policy_line`. Premise (lock order):
+    // the report takes no lock around this.
+    let empty_bytes = crate::policy::empty_bytes(shared, Tracked(&mut axiom_entry()));
     writeln!(
         out,
         "\t\t\"cgroup\": {{\"tracked\": {}, \"limit\": {}, \"high\": {}, \"current\": {}, \"decay_ms\": {}, \"retention_cap\": {}, \"empty_bytes\": {}, \"full_purges\": {}, \"thp_forced\": {}, \"purge_advice\": \"{}\", \"lazy_purges\": {}, \"eager_purges\": {}, \"purged_is_zero\": {}}},",
@@ -924,7 +934,7 @@ fn json_general<W: Write>(
             ns => (ns / 1_000_000) as i64,
         },
         shared.policy.cap(),
-        crate::policy::empty_bytes(shared),
+        empty_bytes,
         shared.policy.full_purges(),
         shared.policy.thp_forced(),
         purge::advice().name(),
@@ -1021,7 +1031,7 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
         crate::sys::may_syscall(),
         shared.wf(),
 {
-    let snap = stats::collect(shared);
+    let snap = stats::collect(shared, Tracked(&mut axiom_entry()));
     writeln!(out, "{{")?;
     writeln!(out, "\t\"jemalloc\": {{")?;
     writeln!(out, "\t\t\"version\": \"{}\",", super::mallctl::VERSION_STR)?;
@@ -1041,7 +1051,7 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
                 shared.wf(),
         {
             if let Some(a) = stats::arena_at(shared, i) {
-                let s = stats::collect_arena(shared, a);
+                let s = stats::collect_arena(shared, a, Tracked(&mut axiom_entry()));
                 if !first {
                     writeln!(out, ",")?;
                 }
@@ -1156,12 +1166,12 @@ fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
             shared.wf(),
     {
         if let Some(a) = stats::arena_at(shared, i) {
-            let s = stats::collect_arena(shared, a);
+            let s = stats::collect_arena(shared, a, Tracked(&mut axiom_entry()));
             xml_heap(out, a.index() as usize, &s)?;
         }
     }
     let tracked mut rd: Ghost<(Seq<stats::ArenaStats>, Seq<int>)> = Ghost(arbitrary());
-    let all = stats::collect_all(shared, Tracked(&mut rd));
+    let all = stats::collect_all(shared, Tracked(&mut rd), Tracked(&mut axiom_entry()));
     // The two `iter().map(..).sum()`s over `bins[..NBINS]` and
     // `bins[NBINS..]`, as one indexed loop.
     let (mut count, mut large) = (0usize, 0usize);
@@ -1245,7 +1255,7 @@ fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result
             shared.wf(),
     {
         if let Some(a) = stats::arena_at(shared, i) {
-            let s = stats::collect_arena(shared, a);
+            let s = stats::collect_arena(shared, a, Tracked(&mut axiom_entry()));
             writeln!(sink, "Arena {}:", a.index())?;
             writeln!(
                 sink,
@@ -1256,7 +1266,7 @@ fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result
         }
     }
     let tracked mut rd: Ghost<(Seq<stats::ArenaStats>, Seq<int>)> = Ghost(arbitrary());
-    let all = stats::collect_all(shared, Tracked(&mut rd));
+    let all = stats::collect_all(shared, Tracked(&mut rd), Tracked(&mut axiom_entry()));
     writeln!(sink, "Total (incl. mmap):")?;
     writeln!(sink, "system bytes     = {:>10}", all.resident)?;
     writeln!(sink, "in use bytes     = {:>10}", stats_allocated(&all))?;
@@ -1906,7 +1916,7 @@ mod tests {
             assert!(!p.is_null());
             free(p);
         }
-        let _ = crate::stats::collect(crate::api::shared());
+        let _ = crate::stats::collect(crate::api::shared(), Tracked::assume_new());
         unsafe extern "C" fn discard(_: *mut c_void, _: *const c_char) {}
         malloc_stats_print(Some(discard), core::ptr::null_mut(), core::ptr::null());
     }
@@ -2152,10 +2162,17 @@ mod tests {
                         assert!(!t.contains(leak), "{file}: may leak a lock guard: {t}");
                     }
                     // The accessors of a lock's bare `RawLock`, as the
-                    // fork handlers call them.
-                    let raw_acquire = ["RawLock::lock", "raw().lock()", "raw_lock().lock()"]
-                        .iter()
-                        .any(|a| t.contains(a))
+                    // fork handlers call them (`lock_held` and
+                    // `lock_held_gated` since the lock order tokens).
+                    let raw_acquire = [
+                        "RawLock::lock",
+                        "raw().lock()",
+                        "raw_lock().lock()",
+                        ".lock_held(",
+                        ".lock_held_gated",
+                    ]
+                    .iter()
+                    .any(|a| t.contains(a))
                         || (t.contains("tcaches_lock(") && t.contains(".lock()"));
                     if raw_acquire {
                         assert!(

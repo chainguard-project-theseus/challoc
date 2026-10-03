@@ -76,7 +76,9 @@ use crate::bitmap::{
 use crate::layout::{CLASSES, Class, MAX_SLAB_WORDS, Regions};
 #[cfg(verus_only)]
 use crate::layout::{NCLASSES, bit_slots_in, class_table, process_regions, slots_in};
-use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
+use crate::lock::{Lock, LockOrder, PAD_ALIGN, Padded, RawLock};
+#[cfg(verus_only)]
+use crate::lock::{rank_class, rank_sets, rank_table};
 use crate::meta::Meta;
 use crate::purge::{self, Decayer};
 use crate::slab::{SlabDesc, State};
@@ -970,15 +972,17 @@ impl Inner {
     /// is about to receive (`take_group`, under the commit lock). Only the
     /// stores change.
     #[inline(always)]
-    fn ensure_sets(&mut self, meta: &Meta, page: usize, slab: usize) -> (r: Result<(), Errno>)
+    fn ensure_sets(&mut self, meta: &Meta, page: usize, slab: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_sets(0)),
         ensures
             final(self).same_sets(*old(self)),
+            *final(ord) == *old(ord),
     {
-        self.partial.ensure(meta, page, slab)?;
-        self.empty.ensure(meta, page, slab)?;
-        self.purged.ensure(meta, page, slab)
+        self.partial.ensure(meta, page, slab, Tracked(ord))?;
+        self.empty.ensure(meta, page, slab, Tracked(ord))?;
+        self.purged.ensure(meta, page, slab, Tracked(ord))
     }
 
     /// `old` and `new` agree on everything but the sets and counts.
@@ -1228,6 +1232,7 @@ impl ClassState {
         &&& lock_init(self.inner.0).nbits() == table_at(self.table).spec_nslabs()
         &&& lock_init(self.inner.0).arena@ == self.arena
         &&& lock_init(self.inner.0).table@ == table_at(self.table)
+        &&& self.inner.0.rank() == rank_class(self.arena as int, self.class as int)
     }
 
     /// The class's shared table.
@@ -1593,7 +1598,11 @@ impl ClassState {
     pub fn raw_lock(&self) -> (r: &RawLock)
         ensures
             *r == self.spec_raw_lock(),
+            r.rank() == rank_class(self.spec_arena() as int, self.spec_class() as int),
     {
+        proof {
+            use_type_invariant(self);
+        }
         self.inner.raw()
     }
 
@@ -1797,7 +1806,7 @@ impl ClassState {
     /// `tok`. The `live` update is separate so a batch can do one per slab.
     /// The double-free abort cannot fire: the tokens say every bit is set
     /// (`AtomicBitmap::release`).
-    fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen, Tracked(tok): Tracked<GhostSubset<int>>)
+    fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen, Tracked(tok): Tracked<GhostSubset<int>>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -1809,9 +1818,11 @@ impl ClassState {
             tok@ == word_addrs(self.spec_table(), slab as int, word as int, mask),
             old(reopen).len <= MAX_PICKS,
             old(reopen).below(self.spec_nslabs()),
+            old(ord).allows(rank_class(0, 0)),
         ensures
             final(reopen).len <= MAX_PICKS,
             final(reopen).below(self.spec_nslabs()),
+            *final(ord) == *old(ord),
     {
         let ghost sb = class_table()[self.spec_class() as int].slab_bits as usize;
         proof {
@@ -1844,7 +1855,7 @@ impl ClassState {
             double_free(self.slot_ptr(slab, slot) as usize, self.class as usize, slab, slot);
         }
         if was_full && !reopen.push(slab) {
-            self.reopen(reopen);
+            self.reopen(reopen, Tracked(ord));
             reopen.push(slab);
         }
     }
@@ -1857,14 +1868,16 @@ impl ClassState {
     /// lock) and `Reopen` (the state and owner test per slab).
     // Verus needs the explicit reborrow.
     #[allow(clippy::explicit_auto_deref)]
-    fn reopen(&self, reopen: &mut Reopen)
+    fn reopen(&self, reopen: &mut Reopen, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(reopen).len <= MAX_PICKS,
             old(reopen).below(self.spec_nslabs()),
+            old(ord).allows(rank_class(0, 0)),
         ensures
             final(reopen).len == 0,
+            *final(ord) == *old(ord),
     {
         broadcast use {axiom_class_lock, axiom_class_lock_inv};
         proof {
@@ -1873,7 +1886,7 @@ impl ClassState {
         if reopen.len == 0 {
             return;
         }
-        let mut g = self.inner.lock();
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         for &s in it: &reopen.slabs[..reopen.len]
             invariant
                 crate::sys::may_abort(),
@@ -1902,11 +1915,14 @@ impl ClassState {
         reopen.len = 0;
     }
 
-    fn dec_live(&self, slab: usize, n: usize)
+    fn dec_live(&self, slab: usize, n: usize, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
     {
         if purge::check_zero() {
             self.check_shadow(slab, "release");
@@ -1915,7 +1931,7 @@ impl ClassState {
             }
         }
         if self.desc(slab).sub_live(n) == n {
-            self.on_live_zero(slab);
+            self.on_live_zero(slab, Tracked(ord));
         }
     }
 
@@ -1975,31 +1991,36 @@ impl ClassState {
     }
 
     /// Lowest slab in the partial set, if any (for tests and stats).
-    pub fn lowest_partial(&self) -> (r: Option<usize>)
+    pub fn lowest_partial(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
         ensures
             r matches Some(s) ==> s < self.spec_nslabs(),
+            *final(ord) == *old(ord),
     {
         broadcast use {axiom_class_lock, axiom_class_lock_inv};
         proof {
             use_type_invariant(self);
         }
-        self.inner.lock().partial.map.lowest_set()
+        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).partial.map.lowest_set()
     }
 
     /// Whether `slab` is in the partial set (tests and the bins table,
     /// `api::print`).
-    pub fn is_partial(&self, slab: usize) -> bool
+    pub fn is_partial(&self, slab: usize, Tracked(ord): Tracked<&mut LockOrder>) -> bool
         requires
             crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
     {
         broadcast use {axiom_class_lock, axiom_class_lock_inv};
         proof {
             use_type_invariant(self);
         }
-        self.inner.lock().partial.map.is_set(slab)
+        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).partial.map.is_set(slab)
     }
 
     /// `live` reached zero: make the slab `Empty` unless a refill has
@@ -2008,11 +2029,14 @@ impl ClassState {
     /// owner test and the transition).
     // Verus needs the explicit reborrow.
     #[allow(clippy::explicit_auto_deref)]
-    fn on_live_zero(&self, slab: usize)
+    fn on_live_zero(&self, slab: usize, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
     {
         broadcast use {axiom_class_lock, axiom_class_lock_inv};
         proof {
@@ -2020,7 +2044,7 @@ impl ClassState {
         }
         let mut first = false;
         {
-            let mut g = self.inner.lock();
+            let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
             if purge::check_zero() {
                 self.check_shadow(slab, "on_live_zero");
             }
@@ -2074,8 +2098,11 @@ impl ClassState {
     /// every slot is reserved here leaves the partial set at once: nothing
     /// in it can be released before this claim hands slots out, so no
     /// release can race the clear.
-    // The last three arguments are tracked state.
+    // The last four arguments are tracked state.
     #[allow(clippy::too_many_arguments)]
+    // Not isolated: the loops return while the guard borrows `ord`, whose
+    // value `Lock::lock` states before them.
+    #[verifier::loop_isolation(false)]
     fn plan(
         &self,
         meta: &Meta,
@@ -2084,11 +2111,14 @@ impl ClassState {
         Tracked(ptoks): Tracked<&mut Map<int, GhostSubset<int>>>,
         Tracked(pz): Tracked<&mut Map<int, Zeroed>>,
         Tracked(pm): Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (np: usize)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
         ensures
+            *final(ord) == *old(ord),
             picks_zero(self.spec_table(), final(picks)@, 0, np as int, *final(pz)),
             picks_marks(self.spec_table(), final(picks)@, 0, np as int, *final(pm)),
             picks_owned(self.spec_class() as int, self.spec_arena(), final(picks)@, 0, np as int),
@@ -2102,13 +2132,15 @@ impl ClassState {
         proof {
             use_type_invariant(self);
         }
-        let mut g = self.inner.lock();
+        let tracked mut under = LockOrder::spare();
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
         let mut np = 0;
         let mut remaining = want;
         let mut next = g.partial.map.lowest_set();
         while let Some(s) = next
             invariant
                 crate::sys::may_abort(),
+                under.allows(rank_table(0)),
                 g@.inv(),
                 g@.nbits() == self.spec_nslabs(),
                 g@.arena@ == self.arena,
@@ -2164,6 +2196,7 @@ impl ClassState {
             invariant
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
+                under.allows(rank_table(0)),
                 g@.inv(),
                 g@.nbits() == self.spec_nslabs(),
                 g@.arena@ == self.arena,
@@ -2178,7 +2211,7 @@ impl ClassState {
                 picks_owned(self.spec_class() as int, self.arena, picks@, 0, np as int),
             decreases MAX_PICKS - np,
         {
-            let s = match self.next_slab(&mut g, meta) {
+            let s = match self.next_slab(&mut g, meta, Tracked(&mut under)) {
                 Some(s) => s,
                 None => break,
             };
@@ -2393,7 +2426,7 @@ impl ClassState {
             r.empty + r.purged <= r.committed,
             (r.committed as int) * (class_table()[self.spec_class() as int].nslots as int) <= usize::MAX,
     {
-        self.bin_stats().0
+        self.bin_stats(Tracked::assume_new()).0
     }
 
     /// The slab counts and `curregs` (slots out of this arena's bitmaps:
@@ -2407,14 +2440,16 @@ impl ClassState {
     /// which keeps `active >= allocated` exact for `stats.rs`. Every clamp
     /// is counted (`clamped`); the count cannot tell the legitimate
     /// transient from a bookkeeping bug, the reader of the bins table can.
-    pub fn bin_stats(&self) -> (r: (ClassStats, usize))
+    pub fn bin_stats(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (ClassStats, usize))
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
         ensures
             r.0.empty + r.0.purged <= r.0.committed <= self.spec_nslabs(),
             (r.0.committed as int) * (class_table()[self.spec_class() as int].nslots as int) <= usize::MAX,
             // The clamp: no more slots out than the live-capable slabs hold.
             (r.1 as int) <= ((r.0.committed - r.0.empty - r.0.purged) as int) * (class_table()[self.spec_class() as int].nslots as int),
+            *final(ord) == *old(ord),
     {
         broadcast use {axiom_class_lock, axiom_class_lock_inv, lemma_inv_counts};
         proof {
@@ -2422,11 +2457,11 @@ impl ClassState {
             lemma_slots_fit(table_at(self.table));
         }
         let released = self.released.load(Ordering::Relaxed);
-        let g = self.inner.lock();
+        let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let mut s = g.stats;
         let claimed = self.claimed.load(Ordering::Relaxed);
         drop(g);
-        s.guards = self.table().guards();
+        s.guards = self.table().guards(Tracked(ord));
         proof {
             let k = class_table()[self.spec_class() as int].nslots as int;
             assert((s.committed as int) * k <= (self.spec_nslabs() as int) * k) by (nonlinear_arith)
@@ -2448,17 +2483,19 @@ impl ClassState {
     /// Slots out of this arena's bitmaps (see [`ClassState::bin_stats`]).
     #[cfg(test)]
     pub fn curregs(&self) -> usize {
-        self.bin_stats().1
+        self.bin_stats(Tracked::assume_new()).1
     }
 
     /// `(holes, capacity)`: the free slots of the slabs that can hold live
     /// slots (neither `Empty` nor `Purged`), i.e. slots that are in no
     /// cache and no program, and those slabs' total slot count. The
     /// compaction gate in `heap/` reads this; one lock hold.
-    pub fn holes(&self) -> (r: (usize, usize))
+    pub fn holes(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (usize, usize))
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
         ensures
+            *final(ord) == *old(ord),
             r.0 <= r.1,
             (r.1 as int) <= (self.spec_nslabs() as int) * (class_table()[self.spec_class() as int].nslots as int),
             r.1 <= usize::MAX / 32,
@@ -2467,7 +2504,7 @@ impl ClassState {
             use_type_invariant(self);
             lemma_slots_fit(table_at(self.table));
         }
-        let (s, curregs) = self.bin_stats();
+        let (s, curregs) = self.bin_stats(Tracked(ord));
         proof {
             let k = class_table()[self.spec_class() as int].nslots as int;
             assert(((s.committed - s.empty - s.purged) as int) * k <= (s.committed as int) * k) by (nonlinear_arith)
@@ -2494,6 +2531,7 @@ impl ClassState {
         count: usize,
         reopen: &mut Reopen,
         Tracked(toks): Tracked<GhostSubset<int>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     )
         requires
             crate::sys::may_abort(),
@@ -2509,11 +2547,13 @@ impl ClassState {
                 slab * self.spec_table().spec_slots().sb, old(local)@, lo as int, hi as int)),
             old(reopen).len <= MAX_PICKS,
             old(reopen).below(self.spec_nslabs()),
+            old(ord).allows(rank_class(0, 0)),
         ensures
             final(reopen).len <= MAX_PICKS,
             final(reopen).below(self.spec_nslabs()),
             forall|v: int| lo <= v <= hi ==> #[trigger] final(local)@[v] == 0,
             forall|v: int| 0 <= v < old(local)@.len() && !(lo <= v <= hi) ==> #[trigger] final(local)@[v] == old(local)@[v],
+            *final(ord) == *old(ord),
     {
         let ghost s = self.spec_table().spec_slots();
         let ghost f = slab * s.sb;
@@ -2526,6 +2566,8 @@ impl ClassState {
             invariant
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
                 slab < self.spec_nslabs(),
                 hi < old(local)@.len(),
                 hi < words_of(class_table()[self.spec_class() as int].slab_bits as usize),
@@ -2556,10 +2598,10 @@ impl ClassState {
             let tracked tok = toks.split(word_addrs(self.spec_table(), slab as int, w as int, mask));
             if mask != 0 {
                 local[w] = 0;
-                self.release_word(slab, w, mask, reopen, Tracked(tok));
+                self.release_word(slab, w, mask, reopen, Tracked(tok), Tracked(ord));
             }
         }
-        self.dec_live(slab, count);
+        self.dec_live(slab, count, Tracked(ord));
     }
 }
 
@@ -2635,7 +2677,7 @@ impl ClassState {
             arena,
             table: table_ptr(table),
             gate: Decayer::new(),
-            inner: Padded(Lock::new(inner)),
+            inner: Padded(Lock::new(inner, Ghost(rank_class(arena as int, table.class as int)))),
             claimed: AtomicU64::new(0),
             refilled: AtomicU64::new(0),
             released: AtomicU64::new(0),
@@ -2661,17 +2703,19 @@ impl ClassState {
     ///
     /// [`plan`]: ClassState::plan
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn claim(&self, meta: &Meta, out: &mut [*mut u8]) -> (r: Claim)
+    pub fn claim(&self, meta: &Meta, out: &mut [*mut u8], Tracked(ord): Tracked<&mut LockOrder>) -> (r: Claim)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
         ensures
+            *final(ord) == *old(ord),
             r.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
             slots_in(final(out)@, self.spec_class() as int, 0, r.n as int),
     {
         let tracked mut toks = SlotToks::empty();
-        self.claim_with(meta, out, None, Tracked(&mut toks)).0
+        self.claim_with(meta, out, None, Tracked(&mut toks), Tracked(ord)).0
     }
 
     /// [`claim`], with the claimed slots' tokens: `toks` gets the token of
@@ -2680,11 +2724,13 @@ impl ClassState {
     /// claim is zeroed ([`claim_zero_ok`]).
     ///
     /// [`claim`]: ClassState::claim
-    pub fn claim_tokens(&self, meta: &Meta, out: &mut [*mut u8], Tracked(toks): Tracked<&mut SlotToks>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+    pub fn claim_tokens(&self, meta: &Meta, out: &mut [*mut u8], Tracked(toks): Tracked<&mut SlotToks>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
         ensures
+            *final(ord) == *old(ord),
             r.0.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
             slots_in(final(out)@, self.spec_class() as int, 0, r.0.n as int),
@@ -2692,7 +2738,7 @@ impl ClassState {
             final(toks).frame(*old(toks), 0, r.0.n as int),
             claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
     {
-        self.claim_with(meta, out, None, Tracked(toks))
+        self.claim_with(meta, out, None, Tracked(toks), Tracked(ord))
     }
 
     /// [`claim`] for `slot_randomize` (design section 4): the same slabs
@@ -2710,17 +2756,19 @@ impl ClassState {
     /// [`claim`]: ClassState::claim
     /// [`claim_random_zero`]: ClassState::claim_random_zero
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn claim_random(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64) -> (r: Claim)
+    pub fn claim_random(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Claim)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
         ensures
+            *final(ord) == *old(ord),
             r.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
             slots_in(final(out)@, self.spec_class() as int, 0, r.n as int),
     {
         let tracked mut toks = SlotToks::empty();
-        self.claim_random_zero(meta, out, rng, Tracked(&mut toks)).0
+        self.claim_random_zero(meta, out, rng, Tracked(&mut toks), Tracked(ord)).0
     }
 
     /// [`claim_random`] with the zero tokens of the slots it wrote
@@ -2730,11 +2778,13 @@ impl ClassState {
     /// [`claim_random`]: ClassState::claim_random
     /// [`claim_tokens`]: ClassState::claim_tokens
     #[verifier::spinoff_prover]
-    pub fn claim_random_zero(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64, Tracked(toks): Tracked<&mut SlotToks>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+    pub fn claim_random_zero(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64, Tracked(toks): Tracked<&mut SlotToks>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
         ensures
+            *final(ord) == *old(ord),
             r.0.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
             slots_in(final(out)@, self.spec_class() as int, 0, r.0.n as int),
@@ -2742,7 +2792,7 @@ impl ClassState {
             final(toks).frame(*old(toks), 0, r.0.n as int),
             claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
     {
-        let (c, Tracked(z)) = self.claim_with(meta, out, Some(rng), Tracked(toks));
+        let (c, Tracked(z)) = self.claim_with(meta, out, Some(rng), Tracked(toks), Tracked(ord));
         let tracked mut z = z;
         let ghost mid = out@;
         let ghost size = class_table()[self.spec_class() as int].size as int;
@@ -2817,11 +2867,13 @@ impl ClassState {
     /// [`claim_random`]: ClassState::claim_random
     #[verifier::spinoff_prover]
     #[verifier::exec_allows_no_decreases_clause]
-    fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>, Tracked(toks): Tracked<&mut SlotToks>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+    fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>, Tracked(toks): Tracked<&mut SlotToks>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
         ensures
+            *final(ord) == *old(ord),
             r.0.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
             slots_in(final(out)@, self.spec_class() as int, 0, r.0.n as int),
@@ -2857,11 +2909,13 @@ impl ClassState {
                 toks.holds(t, out@, 0, 0, got as int),
                 toks.frame(*old(toks), 0, got as int),
                 zeroed ==> zero_keys(z, out@, 0, 0, got as int, s.size),
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
         {
             let tracked mut ptoks: Map<int, GhostSubset<int>> = Map::tracked_empty();
             let tracked mut pz: Map<int, Zeroed> = Map::tracked_empty();
             let tracked mut pm: Map<int, GhostPersistentSubset<int>> = Map::tracked_empty();
-            let np = self.plan(meta, out.len() - got, &mut picks, Tracked(&mut ptoks), Tracked(&mut pz), Tracked(&mut pm));
+            let np = self.plan(meta, out.len() - got, &mut picks, Tracked(&mut ptoks), Tracked(&mut pz), Tracked(&mut pm), Tracked(ord));
             if np == 0 {
                 break;
             }
@@ -3114,6 +3168,7 @@ impl ClassState {
                 } by {
                     assert(pm0.contains_key(j));
                 }
+                assert(picks_zero(*_t0, picks@, i, picks@.len() as int, pz));
                 assert(picks_marks(*_t0, picks@, i, picks@.len() as int, pm));
                 assert(cm.id() == s.mloc);
                 assert(slab_marked(*_t0, picks@[pi].slab as int, cm@));
@@ -4633,21 +4688,23 @@ impl ClassState {
     /// bitmap words.
     ///
     /// [`release_owned`]: ClassState::release_owned
-    pub fn release_with(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<GhostSubset<int>>)
+    pub fn release_with(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<GhostSubset<int>>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             bag.id() == slot_loc(self.spec_class() as int),
             aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= bag@,
             distinct(ptr_addrs(ptrs@), 0, ptrs@.len() as int),
+            old(ord).allows(rank_class(0, 0)),
         ensures
+            *final(ord) == *old(ord),
             // Arena isolation: it returns only if every slot's slab is
             // this arena's; otherwise `wrong_arena` aborts.
             forall|i: int| 0 <= i < ptrs@.len() ==> #[trigger] slot_owner(self.spec_class() as int, ptrs@[i]@.addr) == self.spec_arena(),
     {
         broadcast use lemma_aset;
         let tracked mut bag = bag;
-        let n = self.release_owned(ptrs, Tracked(&mut bag));
+        let n = self.release_owned(ptrs, Tracked(&mut bag), Tracked(ord));
         if n != ptrs.len() {
             let p = ptrs[n];
             let (slab, _) = self.locate(p);
@@ -4688,14 +4745,16 @@ impl ClassState {
     /// [`release_with`]: ClassState::release_with
     // The counter carries a Verus invariant.
     #[allow(clippy::explicit_counter_loop)]
-    pub fn release_owned(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<&mut GhostSubset<int>>) -> (r: usize)
+    pub fn release_owned(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<&mut GhostSubset<int>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(bag).id() == slot_loc(self.spec_class() as int),
             aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= old(bag)@,
             distinct(ptr_addrs(ptrs@), 0, ptrs@.len() as int),
+            old(ord).allows(rank_class(0, 0)),
         ensures
+            *final(ord) == *old(ord),
             r <= ptrs@.len(),
             final(bag).id() == old(bag).id(),
             final(bag)@ == old(bag)@ - aset(ptr_addrs(ptrs@), 0, r as int),
@@ -4746,6 +4805,8 @@ impl ClassState {
                 end == ptrs@.len(),
             invariant
                 crate::sys::may_abort(),
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
                 end == ptrs@.len() || end == i,
                 i <= ptrs@.len(),
                 end <= ptrs@.len(),
@@ -4795,7 +4856,7 @@ impl ClassState {
             if slab != cur_slab {
                 if count != 0 {
                     let ghost pre = local@;
-                    self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(ltoks.take()));
+                    self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(ltoks.take()), Tracked(ord));
                     proof {
                         assert forall|v: int| 0 <= v < MAX_SLAB_WORDS implies subset(#[trigger] local@[v], slab_mask_of(sb)) by {
                             let m = slab_mask_of(sb);
@@ -4926,9 +4987,9 @@ impl ClassState {
             i += 1;
         }
         if count != 0 {
-            self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(ltoks.take()));
+            self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(ltoks.take()), Tracked(ord));
         }
-        self.reopen(&mut reopen);
+        self.reopen(&mut reopen, Tracked(ord));
         if end != 0 {
             self.released.fetch_add(end as u64, Ordering::Relaxed);
         }
@@ -4943,7 +5004,7 @@ impl ClassState {
     /// Tests: [`ClassState::release_with`] without the slot tokens.
     #[cfg(test)]
     pub(crate) fn release(&self, ptrs: &[*mut u8]) {
-        self.release_with(ptrs, Tracked::assume_new())
+        self.release_with(ptrs, Tracked::assume_new(), Tracked::assume_new())
     }
 }
 
@@ -4952,7 +5013,7 @@ impl ClassState {
     /// sets.
     #[cfg(test)]
     pub(crate) fn set_membership(&self, slab: usize) -> (bool, bool, bool) {
-        let g = self.inner.lock();
+        let g = self.inner.lock_t();
         (
             g.partial.map.is_set(slab),
             g.empty.map.is_set(slab),

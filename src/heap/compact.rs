@@ -23,6 +23,9 @@ use core::ptr;
 use crate::layout::CLASSES;
 #[cfg(verus_only)]
 use crate::layout::NCLASSES;
+use crate::lock::LockOrder;
+#[cfg(verus_only)]
+use crate::lock::{axiom_entry, rank_class};
 use crate::sys::pac;
 use crate::vspec::addr::addr_to_ptr;
 
@@ -216,18 +219,21 @@ impl Heap {
                     // balanced churn on a dense class takes no other slow
                     // path, and without it no GC or decay would ever run on
                     // a thread without a background thread.
-                    self.tick(shared);
+                    // Premise (lock order): the scheduled pops run from the fast
+                    // path, which holds no lock.
+                    let tracked mut ord = axiom_entry();
+                    self.tick(shared, Tracked(&mut ord));
                     proof {
                         Heap::lemma_keeps_poppable(*old(self), *self, class as int, cache);
                     }
                     let mut len = self.hdr_ref(cache).len;
                     if len == 0 {
                         // The GC emptied the cache.
-                        let Some(a) = shared.arena(self.hdr_ref(cache).arena) else {
+                        let Some(a) = shared.arena(self.hdr_ref(cache).arena, Tracked(&mut ord)) else {
                             return (ptr::null_mut(), false);
                         };
                         let ghost s = *self;
-                        len = self.refill(shared, a, cache, class);
+                        len = self.refill(shared, a, cache, class, Tracked(&mut ord));
                         proof {
                             Heap::lemma_keeps_poppable(s, *self, class as int, cache);
                         }
@@ -236,7 +242,7 @@ impl Heap {
                         }
                     }
                     let (refilled, verdict) =
-                        Self::probe_verdict(shared, self.hdr_ref(cache).arena, class, self.hdr_ref(cache).probe_refilled);
+                        Self::probe_verdict(shared, self.hdr_ref(cache).arena, class, self.hdr_ref(cache).probe_refilled, Tracked(&mut ord));
                     let ghost h0 = *self;
                     let h = self.hdr_mut(cache);
                     h.probe_refilled = refilled;
@@ -332,10 +338,12 @@ impl Heap {
                         // the claim came back empty). Refill as the probe
                         // branch does; popping here would wrap `len - 1`.
                         let shared: &Shared = shared_of(self.shared);
-                        let Some(a) = shared.arena(self.hdr_ref(cache).arena) else {
+                        // Premise (lock order): as in `pop_compact`.
+                        let tracked mut ord = axiom_entry();
+                        let Some(a) = shared.arena(self.hdr_ref(cache).arena, Tracked(&mut ord)) else {
                             return (ptr::null_mut(), false);
                         };
-                        len = self.refill(shared, a, cache, class);
+                        len = self.refill(shared, a, cache, class, Tracked(&mut ord));
                         if len == 0 {
                             return (ptr::null_mut(), false);
                         }
@@ -461,14 +469,17 @@ impl Heap {
 
 
     /// Whether `class` in `arena` is worth compacting (design 6.4).
-    pub(super) fn fragmented(shared: &Shared, arena: u16, class: usize) -> bool
+    pub(super) fn fragmented(shared: &Shared, arena: u16, class: usize, Tracked(ord): Tracked<&mut LockOrder>) -> bool
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
     {
         let cs = shared.owner(arena).class(class);
-        let (holes, capacity) = cs.holes();
+        let (holes, capacity) = cs.holes(Tracked(ord));
         holes >= COMPACT_MIN_SLABS * CLASSES.table()[class].compact_slots()
             && holes * COMPACT_MIN_RATIO >= capacity
     }
@@ -483,21 +494,25 @@ impl Heap {
         arena: u16,
         class: usize,
         prev_refilled: u32,
+        Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (u32, Verdict)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
     {
         let cs = shared.owner(arena).class(class);
         let refilled = cs.refilled() as u32;
         let delta = refilled.wrapping_sub(prev_refilled) as usize;
         let verdict = if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES.table()[class].compact_slots() {
-            if Self::fragmented(shared, arena, class) {
+            if Self::fragmented(shared, arena, class, Tracked(ord)) {
                 cs.note_gate_refill();
             }
             Verdict::Refilling
-        } else if !Self::fragmented(shared, arena, class) {
+        } else if !Self::fragmented(shared, arena, class, Tracked(ord)) {
             Verdict::Dense
         } else {
             cs.note_compact_mode(true);
@@ -541,13 +556,15 @@ impl Heap {
         // `shared_of`'s unbounded lifetime lets `self` be borrowed mutably
         // below.
         let shared: &Shared = shared_of(self.shared);
-        self.tick(shared);
+        // Premise (lock order): as in `pop_compact`.
+        let tracked mut ord = axiom_entry();
+        self.tick(shared, Tracked(&mut ord));
         let ghost h0 = *self;
         // SAFETY: guaranteed by the caller; `len <= cap` entries exist and
         // `cap - len` slots of storage follow them.
         unsafe {
             let arena = self.hdr_ref(cache).arena;
-            if !Self::fragmented(shared, arena, class) {
+            if !Self::fragmented(shared, arena, class, Tracked(&mut ord)) {
                 shared.owner(arena).class(class).note_compact_mode(false);
                 let h = self.hdr_mut(cache);
                 h.set_mode(MODE_PROBE);
@@ -562,7 +579,7 @@ impl Heap {
             let block = (cap / 4).max(1);
             let len = self.hdr_ref(cache).len as usize;
             if len + block > cap && len > half {
-                self.flush(shared, arena, cache, class, len - half);
+                self.flush(shared, arena, cache, class, len - half, Tracked(&mut ord));
             }
             let ghost h1 = *self;
             proof {
@@ -588,7 +605,7 @@ impl Heap {
             let ghost s1 = sl;
             let out = stack_mut(slots, len, want, Tracked(&mut sl));
             let tracked mut toks = crate::class::SlotToks::empty();
-            let (claim, Tracked(mut ztok)) = self.claim(shared, shared.owner(arena).class(class), out, Tracked(&mut toks));
+            let (claim, Tracked(mut ztok)) = self.claim(shared, shared.owner(arena).class(class), out, Tracked(&mut toks), Tracked(&mut ord));
             let ghost claimed = out@;
             let n = claim.n;
             if n == 0 {

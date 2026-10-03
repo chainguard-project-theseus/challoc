@@ -6,6 +6,9 @@ use core::alloc::Layout;
 use core::ptr;
 
 use crate::layout::NCLASSES;
+use crate::lock::LockOrder;
+#[cfg(verus_only)]
+use crate::lock::rank_meta;
 use crate::sys::pac;
 use crate::vspec::addr::addr_to_ptr;
 
@@ -822,14 +825,17 @@ impl Heap {
         shared: &Shared,
         arena: u16,
         class: usize,
+        Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: *mut CacheHeader)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
             shared.wf(),
+            old(ord).allows(rank_meta()),
             old(self).wf(),
         ensures
+            *final(ord) == *old(ord),
             final(self).keeps(*old(self)),
             r@.addr != 0 ==> final(self).owns(r) && final(self).hdr(r).cap != 0 && final(self).hdr_class(r) == class,
             r@.addr != 0 ==> final(self).routes(arena, class as int, r),
@@ -871,14 +877,14 @@ impl Heap {
         } else {
             shared.owner(arena).class(class).refilled() as u32
         };
-        let cache = self.cache_slot(shared, arena, class);
+        let cache = self.cache_slot(shared, arena, class, Tracked(ord));
         if cache.is_null() {
             return ptr::null_mut();
         }
         if self.hdr_ref(cache).cap != 0 {
             return cache;
         }
-        let slots = shared.meta.alloc(CacheHeader::slots_layout(cap));
+        let slots = shared.meta.alloc(CacheHeader::slots_layout(cap), Tracked(ord));
         if slots.is_null() {
             return ptr::null_mut();
         }
