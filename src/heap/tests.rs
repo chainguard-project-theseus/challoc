@@ -2703,7 +2703,8 @@ fn set_arena_swaps_cache_arrays() {
 }
 
 /// The home stacks of at most `PACK_MAX` bytes sit in the heap's own
-/// block, back to back in class order (#60); larger ones and other
+/// block, back to back in class order from the page after the heap
+/// (#60); larger ones and other
 /// arenas' are metadata objects. A packed stack that `thread.arena`
 /// swapped into an `others` node stays claimed until it comes back, and
 /// `destroy` releases every packed stack (its debug assertion).
@@ -2713,7 +2714,8 @@ fn small_home_stacks_are_packed_in_the_heap_block() {
     let a1 = s.arenas.create(s).unwrap();
     let t = TestHeap::new(s);
     let h = t.heap();
-    let base = h as *const Heap as usize + core::mem::size_of::<Heap>();
+    assert_eq!(h as *const Heap as usize % HEAP_PAGE, 0);
+    let base = h as *const Heap as usize + PACK_START;
     let pack = base..base + Heap::pack_bytes(&s.config);
     let slots = |c: &CacheHeader| c.slots as usize;
     // Back to back, every packed class, nothing else.

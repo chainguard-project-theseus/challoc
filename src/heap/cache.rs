@@ -504,9 +504,9 @@ impl Heap {
         };
         debug_assert!(off + 8 * cap as usize <= self.pack_bytes as usize);
         self.pack_used |= 1 << class;
-        // SAFETY: the heap's block has `pack_bytes` bytes after the `Heap`
-        // and `[off, off + 8 * cap)` is inside them, claimed by `class`
+        // SAFETY: the heap's block has `pack_bytes` bytes from
+        // `PACK_START` and `[off, off + 8 * cap)` is inside them, claimed by `class`
         // alone.
-        unsafe { (self as *mut Heap as *mut u8).add(core::mem::size_of::<Heap>() + off) }
+        unsafe { (self as *mut Heap as *mut u8).add(super::PACK_START + off) }
     }
 }

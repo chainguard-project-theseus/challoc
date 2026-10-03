@@ -92,8 +92,8 @@ pub const MAX_CAP: u32 = 1024;
 pub const MIN_CAP: u32 = 8;
 /// Slow-path entries between two periodic-work checks (design 6.4).
 pub const PERIODIC_EVERY: u32 = 64;
-/// Largest home stack packed into the heap's own metadata block, right
-/// after the `Heap` ([`Heap::pack_offset`]): at the default ladder the
+/// Largest home stack packed into the heap's own metadata block, from
+/// the page after the `Heap` ([`Heap::pack_offset`]): at the default ladder the
 /// classes above 256 bytes (2 KiB stacks and down, 16 KiB together). As
 /// separate metadata objects those stacks land on pages shared with other
 /// threads' heaps and stacks, so a thread cycling through them touches
@@ -101,6 +101,15 @@ pub const PERIODIC_EVERY: u32 = 64;
 /// separate objects: packing every stack lines up the stack tops of the
 /// small classes in the same L1D sets (design 6.2).
 pub const PACK_MAX: usize = 2048;
+/// A heap with packed stacks starts on a boundary of this many bytes
+/// inside its block, and its packed stacks start on the next one: the
+/// header lines share one 4 KiB page and no packed stack straddles a
+/// page (at the default ladder the 16 KiB of stacks fill exactly four).
+/// The block has `HEAP_PAGE - CACHE_LINE` bytes of slack for the shift
+/// (a 20 KiB span in the 24 KiB metadata bin), never touched.
+pub const HEAP_PAGE: usize = 4096;
+/// Offset of the packed stacks from the heap.
+pub const PACK_START: usize = core::mem::size_of::<Heap>().next_multiple_of(HEAP_PAGE);
 
 /// Default cache capacity for a class: [`MAX_CAP`] (1024) slots for classes
 /// up to 128 bytes, halved for every doubling of the class size, never
@@ -186,12 +195,15 @@ pub struct Heap {
     /// randomised claim seeds it from `getrandom`, so the
     /// default configuration makes no syscall per heap creation.
     rng: u64,
-    /// Bytes of packed home stacks after the `Heap` in its metadata block
+    /// Bytes of packed home stacks from [`PACK_START`] in the heap's block
     /// ([`Heap::pack_offset`]); the block is [`Heap::block_layout`].
     pack_bytes: u32,
     /// Classes whose packed stack is in use: by the home array, or by an
     /// `others` node after a `thread.arena` change swapped the arrays.
     pack_used: u64,
+    /// Bytes between the start of the heap's metadata block and the heap
+    /// (the shift to a [`HEAP_PAGE`] boundary).
+    block_pad: u16,
     /// Caches of the home arena, one line per class; last, so the small
     /// fields above share two lines and `caches[c]` is `heap + 128 + 64 * c`.
     caches: [CacheHeader; NCLASSES],
@@ -199,6 +211,7 @@ pub struct Heap {
 
 const _: () = assert!(core::mem::offset_of!(Heap, caches) == 128);
 const _: () = assert!(NCLASSES <= u64::BITS as usize);
+const _: () = assert!(core::mem::size_of::<Heap>() <= HEAP_PAGE);
 
 impl Heap {
     /// Create a heap in the metadata region for the calling thread, homed
@@ -221,10 +234,18 @@ impl Heap {
     /// before it is registered). Null if the region is exhausted.
     pub fn create_detached(shared: &Shared, arena: u16) -> *mut Heap {
         let pack = Self::pack_bytes(&shared.config);
-        let h = shared.meta.alloc(Self::block_layout(pack)) as *mut Heap;
-        if h.is_null() {
-            return h;
+        let block = shared.meta.alloc(Self::block_layout(pack));
+        if block.is_null() {
+            return ptr::null_mut();
         }
+        let pad = if pack == 0 {
+            0
+        } else {
+            (block as usize).wrapping_neg() & (HEAP_PAGE - 1)
+        };
+        // SAFETY: the block has `HEAP_PAGE - CACHE_LINE` bytes of slack
+        // and is line aligned, so `pad` is inside it.
+        let h = unsafe { block.add(pad) } as *mut Heap;
         // SAFETY: `h` is a fresh, exclusively owned metadata block of the
         // right size and alignment. Field by field: a whole `Heap`
         // temporary (3.4 KiB with the headers inline) would deepen the
@@ -245,6 +266,7 @@ impl Heap {
             ptr::write(&raw mut (*h).rng, 0);
             ptr::write(&raw mut (*h).pack_bytes, pack as u32);
             ptr::write(&raw mut (*h).pack_used, 0);
+            ptr::write(&raw mut (*h).block_pad, pad as u16);
             let caches = (&raw mut (*h).caches).cast::<CacheHeader>();
             for c in 0..NCLASSES {
                 ptr::write(caches.add(c), CacheHeader::EMPTY);
@@ -296,8 +318,10 @@ impl Heap {
             }
         }
         debug_assert_eq!(heap.pack_used, 0, "heap: a packed stack outlives its heap");
-        let block = Self::block_layout(heap.pack_bytes as usize);
-        shared.meta.free(h as *mut u8, block);
+        let layout = Self::block_layout(heap.pack_bytes as usize);
+        // SAFETY: the heap sits `block_pad` bytes into its block.
+        let block = unsafe { (h as *mut u8).sub(heap.block_pad as usize) };
+        shared.meta.free(block, layout);
     }
 
     /// Bytes of packed home stacks under `config`: every class whose home
@@ -311,7 +335,7 @@ impl Heap {
             .sum()
     }
 
-    /// Offset of `class`'s packed home stack from the end of the `Heap`,
+    /// Offset of `class`'s packed home stack from [`PACK_START`],
     /// or `None` when its stack is not packed (uncached, or above
     /// [`PACK_MAX`]). The home capacity does not depend on which arena is
     /// home (`Config::cap_for`), so neither does the offset.
@@ -324,12 +348,16 @@ impl Heap {
         Some((0..class).map(stack).filter(|&b| b <= PACK_MAX).sum())
     }
 
-    /// The metadata block of a heap with `pack` bytes of packed stacks.
+    /// The metadata block of a heap with `pack` bytes of packed stacks:
+    /// room for the heap at a [`HEAP_PAGE`] boundary and its stacks from
+    /// [`PACK_START`] whatever line the block starts on.
     pub(super) fn block_layout(pack: usize) -> Layout {
-        match Layout::from_size_align(
-            core::mem::size_of::<Heap>() + pack,
-            core::mem::align_of::<Heap>(),
-        ) {
+        let size = if pack == 0 {
+            core::mem::size_of::<Heap>()
+        } else {
+            PACK_START + pack + HEAP_PAGE - crate::meta::CACHE_LINE
+        };
+        match Layout::from_size_align(size, core::mem::align_of::<Heap>()) {
             Ok(l) => l,
             Err(_) => unreachable!(),
         }
@@ -337,7 +365,7 @@ impl Heap {
 
     /// The addresses of this heap's packed stacks.
     fn pack_range(&self) -> core::ops::Range<usize> {
-        let start = self as *const Heap as usize + core::mem::size_of::<Heap>();
+        let start = self as *const Heap as usize + PACK_START;
         start..start + self.pack_bytes as usize
     }
 
