@@ -30,6 +30,8 @@ count_held	allocator invariant	RefinedRust
 src/purge/background.rs:state	UnsafeCell/volatile/transmute	RefinedRust
 src/api/print.rs:word	core library	Kani
 src/api/print.rs:set_errno	FFI/syscall	none (assumption)
+axiom_unlocked	C-program contract	none (assumption)
+Unlocked	C-program contract	none (assumption)
 file_target	function pointer	Kani
 stderr_target	function pointer	Kani
 Arena::axiom_array_layout	core library	Kani

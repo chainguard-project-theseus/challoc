@@ -1389,6 +1389,158 @@ it).
   the model names the thread, and a token never crosses threads because
   the slot is thread-local.
 
+## 8. No allocator lock across external calls
+
+Read at this section's commit (the `file:line`s are the `fn`/`axiom`
+line there).
+
+**Statement.** Every call the reports make out of the allocator happens
+while the calling thread holds no allocator lock. The reports are
+`malloc_stats_print` and `je_malloc_stats_print` (`api/print.rs:1048`,
+through `stats_print`, `:1032`), `malloc_info` (`:1154`) and
+`malloc_stats` (`:1169`). Their calls out are the caller's `write_cb`,
+the `malloc_message` hook through `malloc_write`
+(`api/jemalloc.rs:116`; with no hook, `write(2)` to stderr), `fwrite`
+on the caller's stream, and `write(2)` to stderr. A callback, a hook or
+`fwrite` may allocate (glibc allocates a stream's buffer on its first
+write), so a lock held across one deadlocks the allocation.
+
+All the calls out are in one trusted function, and it requires a ghost
+permit:
+
+```rust
+#[verifier::external_body]
+tracked struct Unlocked { _no_copy: () }                      // api/print.rs:71
+
+axiom fn axiom_unlocked() -> (tracked u: Unlocked);           // api/print.rs:81
+
+fn emit(target: &Target, buf: &mut [u8; 1024], len: usize,    // api/print.rs:91
+    Tracked(u): Tracked<&Unlocked>)
+```
+
+An `Unlocked` stands for "the calling thread holds no allocator lock".
+The type is private to `api/print.rs` and opaque, so verified code
+cannot build one, and `axiom_unlocked` is its only source in verified
+code. Each of the three entry points calls it once, after
+`super::shared()` and right before it makes the report's `Sink`
+(`:1035`, `:1160`, `:1171`). The `Sink` keeps the permit from creation
+to drop (its ghost field `permit`, `:121`). `Sink::flush` (`:139`) is
+verified and is the only caller of `emit`, and passes the sink's
+permit. So Verus checks:
+- No verified code makes a report's calls out without a permit: `emit`
+  is the only function that makes them, and every call to it must
+  supply an `Unlocked`.
+- A permit exists only inside a report. It comes from an entry point's
+  `axiom_unlocked` and lives in that report's `Sink`, so only a function
+  handed the sink (as a `W: Write`) or a `fmt::Formatter` that writes to
+  it can reach `emit`. No function that takes a lock is handed either.
+
+The unverified code of `api/print.rs` (`impl Write for Sink`, the
+`malloc_stats_print` wrapper, the exports) could still call `emit` with
+a forged permit; it does not, and the source test below rejects
+`assume_new` there.
+
+**Why the permit's claim holds.** Verus does not check that the holder
+of a permit holds no lock: an acquisition takes no token, so no ghost
+state follows it (see "Where the statement is weaker" below). The claim
+holds whenever the sink's code runs, for three reasons:
+1. **Entry.** The entry point's C caller holds no allocator lock, and
+   `shared()` releases every lock it takes before it returns.
+   `axiom_unlocked` assumes this. It is a C-program contract in
+   `SEAMS.md`; see "Where the statement is weaker" for the callers that
+   break it.
+2. **The report code takes no lock.** No function of `api/print.rs`
+   outside its tests acquires one: it calls no `lock()`, `raw()`,
+   `raw_lock`, `get_unlocked` or `fork_lock`. The formatting impls the
+   reports run take none either. They are `core`'s `Display` for
+   integers, `str` and `bool` and `Debug` for `[usize; 9]` (`hist_line`,
+   `:751`), and `sys::cgroup::Cgroup`'s `Display` (`sys/cgroup.rs:1082`,
+   outside `verus!`, with its nested `Bytes` and `Limit`), which reads
+   fields and atomics.
+3. **Every callee releases the locks it takes before it returns.** The
+   callees that lock are `stats::collect`, `collect_arena` and
+   `collect_all` (through `Huge::stats`, `Meta::stats`,
+   `ClassState::bin_stats` per class, and the `Shared.stats` lock), the
+   slab histogram's `ClassState::is_partial`, and `policy::empty_bytes`
+   (through `ClassState::empty_bytes` and `Huge::empty_bytes`). The
+   others (`Arenas::get_existing`, `Tcaches::len`, `Cgroup::sample`, the
+   `thp`, `purge` and `policy` readers, the slab descriptors and
+   bitmaps) only load atomics or read files. Each callee that locks
+   takes a `Lock` whose `LockGuard` is a local or a temporary, dropped
+   at the end of its scope, and the guard's `Drop` releases the lock
+   (`lock.rs:383`). A guard cannot outlive the call that took it:
+   `LockGuard` appears in no signature, field or type outside `lock.rs`,
+   and nothing is forgotten or leaked (`mem::forget`, `ManuallyDrop`,
+   `Box::leak`). The only acquisitions of a bare `RawLock` are the fork
+   handlers' (`fork_prepare`, `api/mod.rs:462`; `background::fork_lock`,
+   `purge/background.rs:452`), and no report reaches them.
+
+The test `report_lock_premises_hold_in_the_source`
+(`api/print.rs:1950`) checks the source side of items 1 to 3 on every
+`cargo test`, outside comments and `#[cfg(test)]` items: no
+acquisitions and no `assume_new` in `print.rs`, `LockGuard` only in
+`lock.rs`, no forget or leak, bare `RawLock` acquisitions only in the
+two fork handlers, and `axiom_unlocked` called by the three entry
+points only. The test is textual: a `RawLock` reached through a local
+binding (`let r = x.raw_lock(); r.lock()`) would get past it. Rust's
+types do the rest of item 3: a guard borrows its lock, and none of
+these callees returns a type that could hold one.
+
+**Run-time check.** `a_report_callback_may_reenter_the_allocator`
+(`:1879`) and `a_malloc_info_stream_may_reenter_the_allocator`
+(`:1902`) re-enter the allocator from every call out of a text report,
+a JSON report and `malloc_info` (through an unbuffered `fopencookie`
+stream). Each call allocates and frees in every tier, collects the live
+statistics and prints a nested report, which together take every lock
+a report takes. A lock a report takes, held across a call, deadlocks
+the call, and the test aborts after 60 s. A mutation that holds the
+`Shared.stats` guard across `stats_print`'s final flush fails it. Locks
+no report takes (the arena registry, the slab sets and tables, the
+explicit-cache table, the background state) are not exercised.
+
+**Scope.**
+- The four report entry points. `malloc_write`'s only caller outside
+  tests is `emit`. The allocator's other calls out (`pthread_*`, the
+  C++ `new_handler`, the abort path's raw `write`) are outside the
+  theorem.
+- The `malloc_message` hook is called from the same `emit` as the
+  callback, under the same permit. It has no run-time test of its own:
+  the hook is process-wide, and a test that sets it races the other
+  hook tests.
+
+**Premises beyond the common ones.**
+- `axiom_unlocked` (item 1).
+- `emit` (`external_body`): a plain match over the target, claiming
+  nothing.
+- `Cgroup`'s `Display` (item 2), outside `verus!`.
+- Items 2 and 3 as the source test and Rust's types check them. They
+  are not Verus facts.
+
+**Where the statement is weaker than the code.**
+- **Verus does not check the permit's meaning.** Verus has no
+  thread-local ghost state, so "this thread holds lock L" can only be a
+  token the thread carries, and every acquisition would have to take it
+  and give it back. That means a `Tracked` ledger on `Lock::lock` and on
+  every function on a path from an entry point to a lock: about 60
+  acquisition sites, the `malloc` and `free` slow paths among them.
+  Invariant masks cannot stand in for it. They are lexical and per
+  function, while a guard is held from `lock()` to the end of its
+  holder's scope. Narrowing a mask also fails on every vstd function
+  that keeps the default `any` (`?`, the `core` atomics, `write_fmt`).
+  So the theorem proves where the calls are and that each carries the
+  permit. That no lock is held while the permit is in use rests on
+  items 1 to 3.
+- **The entry premise is the C caller's.** A `pthread_atfork` handler
+  (prepare, parent or child) registered before challoc's runs while
+  challoc's fork handlers hold every lock, so one that printed a report
+  would deadlock at its first collection. So would a signal handler
+  that printed a report while the thread it interrupted held a lock.
+  None of the reports is async-signal-safe.
+- **Deadlock freedom is not proved.** The statement concerns the locks a
+  report holds when it calls out. Whether the callee's allocation then
+  finishes depends on the slow paths, whose lock waits are
+  partial-correctness premises (common premises).
+
 ## Interface contract
 
 The seven theorems above checked against challoc's exported C ABI: one

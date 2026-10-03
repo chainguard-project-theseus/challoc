@@ -32,9 +32,9 @@ use crate::purge;
 use crate::stats::{self, ArenaStats, Snapshot, fig_add, fig_mul};
 use crate::sys::bytes_is;
 use crate::vspec::print::{base_slab_sizes, stats_allocated, thp_name};
-use vstd::prelude::verus;
 #[cfg(verus_only)]
 use vstd::prelude::*;
+use vstd::prelude::{Tracked, verus};
 #[cfg(verus_only)]
 use vstd::string::StringSliceAdditionalSpecFns;
 
@@ -59,16 +59,70 @@ verus! {
 #[allow(dead_code)]
 struct ExTarget(Target);
 
+/// Ghost permit: the calling thread holds no allocator lock. The
+/// report's external calls ([`emit`]) require it: theorem "No allocator
+/// lock across external calls" in `verus/THEOREMS.md`, which lists the
+/// premises the permit's meaning rests on. Private and opaque (verified
+/// code cannot build one), and made only by [`axiom_unlocked`]; the
+/// report's [`Sink`] holds it from creation to drop, so only the report
+/// functions and the formatting code that writes to the sink can reach
+/// it.
+#[verifier::external_body]
+tracked struct Unlocked {
+    _no_copy: (),
+}
+
+/// Trusted: the calling thread holds no allocator lock. Called only by
+/// the report entry points ([`stats_print`], [`malloc_info`],
+/// [`malloc_stats`]), once each, after [`super::shared`] and right before
+/// the report's [`Sink`] is made: their C caller holds no allocator lock
+/// (a premise of the theorem), and `shared` releases every lock it takes
+/// before it returns.
+axiom fn axiom_unlocked() -> (tracked u: Unlocked);
+
+/// Hand `buf[..len]` to `target`: the report's only calls out of the
+/// allocator. Trusted: calls the caller's callback (a function pointer),
+/// the `malloc_message` path ([`malloc_write`]: the hook, or `write(2)` to
+/// stderr), `fwrite` or `write(2)`; claims nothing. The permit `u` says
+/// that the calling thread holds no allocator lock, so a callee that
+/// allocates cannot deadlock on one.
+#[verifier::external_body]
+#[inline(always)]
+fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&Unlocked>) {
+    match *target {
+        Target::Callback(Some(cb), opaque) => {
+            buf[len] = 0;
+            // SAFETY: the caller's `void (*)(void *, const char *)`; the
+            // chunk is NUL-terminated within the buffer.
+            unsafe { cb(opaque, buf.as_ptr() as *const c_char) };
+        }
+        Target::Callback(None, _) => malloc_write(&buf[..len]),
+        Target::File(f) => {
+            // SAFETY: `f` is the caller's open stream; `len` bytes are
+            // readable. `fwrite` may itself call `malloc` (glibc allocates
+            // a stream's buffer on its first write), which re-enters this
+            // allocator from inside `malloc_info`: that is safe because no
+            // allocator lock is held here (the permit) and the report's
+            // own state is the sink's stack buffer.
+            unsafe { libc::fwrite(buf.as_ptr() as *const c_void, 1, len, f) };
+        }
+        Target::Stderr => crate::sys::write_all(crate::sys::STDERR_FILENO, &buf[..len]),
+    }
+}
+
 /// A `fmt::Write` that buffers up to 1023 bytes and forwards them,
 /// NUL-terminated where the target wants a C string.
 struct Sink {
     target: Target,
     buf: [u8; 1024],
     len: usize,
+    /// Ghost: the report's permit, for [`emit`] (read only in ghost code).
+    #[allow(dead_code)]
+    permit: Tracked<Unlocked>,
 }
 
 impl Sink {
-    fn new(target: Target) -> (r: Sink)
+    fn new(target: Target, permit: Tracked<Unlocked>) -> (r: Sink)
         ensures
             r.len == 0,
     {
@@ -76,41 +130,17 @@ impl Sink {
             target,
             buf: [0; 1024],
             len: 0,
+            permit,
         }
     }
 
-    /// Hand the buffered bytes to the target and empty the buffer.
-    /// Trusted: calls the caller's callback (a function pointer), the
-    /// `malloc_message` path, `fwrite` or `write(2)`; claims nothing.
-    #[verifier::external_body]
+    /// Hand the buffered bytes to the target ([`emit`], under the
+    /// report's permit) and empty the buffer.
     fn flush(&mut self) {
         if self.len == 0 {
             return;
         }
-        match self.target {
-            Target::Callback(Some(cb), opaque) => {
-                self.buf[self.len] = 0;
-                // SAFETY: the caller's `void (*)(void *, const char *)`; the
-                // chunk is NUL-terminated within the buffer.
-                unsafe { cb(opaque, self.buf.as_ptr() as *const c_char) };
-            }
-            Target::Callback(None, _) => malloc_write(&self.buf[..self.len]),
-            Target::File(f) => {
-                // SAFETY: `f` is the caller's open stream; `len` bytes are
-                // readable. `fwrite` may itself call `malloc` (glibc
-                // allocates a stream's buffer on its first write), which
-                // re-enters this allocator from inside `malloc_info`: that
-                // is safe because no allocator lock is held while the sink
-                // flushes (`stats::collect_arena` returns its figures before
-                // they are formatted, and `Arenas::iter` is a lock-free scan
-                // of the table) and the report's own state is this stack
-                // buffer.
-                unsafe { libc::fwrite(self.buf.as_ptr() as *const c_void, 1, self.len, f) };
-            }
-            Target::Stderr => {
-                crate::sys::write_all(crate::sys::STDERR_FILENO, &self.buf[..self.len])
-            }
-        }
+        emit(&self.target, &mut self.buf, self.len, Tracked(self.permit.borrow()));
         self.len = 0;
     }
 }
@@ -1002,7 +1032,8 @@ fn nbins() -> (r: usize)
 fn stats_print(target: Target, opts: *const c_char) {
     let shared = super::shared();
     let o = Opts::parse(opts);
-    let mut sink = Sink::new(target);
+    let tracked u = axiom_unlocked();
+    let mut sink = Sink::new(target, Tracked(u));
     let _ = if o.json {
         json_report(&mut sink, shared, &o)
     } else {
@@ -1126,7 +1157,8 @@ pub fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
         return -1;
     }
     let shared = super::shared();
-    let mut sink = Sink::new(file_target(stream));
+    let tracked u = axiom_unlocked();
+    let mut sink = Sink::new(file_target(stream), Tracked(u));
     let _ = xml_report(&mut sink, shared);
     sink.flush();
     0
@@ -1136,7 +1168,8 @@ pub fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
 /// challoc's meaning of each figure (see `glibc.rs` for the mapping).
 pub fn malloc_stats() {
     let shared = super::shared();
-    let mut sink = Sink::new(stderr_target());
+    let tracked u = axiom_unlocked();
+    let mut sink = Sink::new(stderr_target(), Tracked(u));
     let _ = glibc_stats(&mut sink, shared);
     sink.flush();
 }
@@ -1262,7 +1295,10 @@ mod tests {
     fn sink_splits_a_character_at_the_buffer_end() {
         let _serial = REPORT.lock().unwrap_or_else(|e| e.into_inner());
         CAPTURE.lock().unwrap().clear();
-        let mut sink = Sink::new(Target::Callback(Some(capture), 0xC0FFEE as *mut c_void));
+        let mut sink = Sink::new(
+            Target::Callback(Some(capture), 0xC0FFEE as *mut c_void),
+            Tracked::assume_new(),
+        );
         let head = "x".repeat(1022);
         sink.write_str(&head).unwrap();
         sink.write_str("\u{e9} tail").unwrap();
@@ -1775,5 +1811,290 @@ mod tests {
         }
         // glibc's malloc_stats just has to run and stay on stderr.
         malloc_stats();
+    }
+
+    /// How long a report that re-enters the allocator may take; one that
+    /// has not finished by then is deadlocked.
+    const REENTRY_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// What a report's external call does in the re-entry tests: allocate
+    /// and free in every tier (a bin, a slab-allocated large class, a page
+    /// run, a huge run), collect the live statistics (the locks a report's
+    /// collection takes; `epoch` would also take them, but it moves the
+    /// process-wide epoch other tests read), and print a nested report,
+    /// which takes every lock the outer one takes. The nested report's
+    /// callback discards its text and does not re-enter.
+    fn reenter() {
+        let live: Vec<*mut u8> = [16usize, 3000, 64 << 10, 4 << 20]
+            .iter()
+            .map(|&n| malloc(n))
+            .collect();
+        for p in live {
+            assert!(!p.is_null());
+            free(p);
+        }
+        let _ = crate::stats::collect(crate::api::shared());
+        unsafe extern "C" fn discard(_: *mut c_void, _: *const c_char) {}
+        malloc_stats_print(Some(discard), core::ptr::null_mut(), core::ptr::null());
+    }
+
+    /// A `write_cb` that counts its calls in the `AtomicUsize` behind
+    /// `opaque` and re-enters the allocator.
+    unsafe extern "C" fn reentering_cb(opaque: *mut c_void, _s: *const c_char) {
+        let calls = unsafe { &*(opaque as *const core::sync::atomic::AtomicUsize) };
+        calls.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        reenter();
+    }
+
+    /// Run `report` on its own thread and fail unless it finishes within
+    /// [`REENTRY_BOUND`]. A deadlocked report keeps the lock it waits
+    /// behind, so every later test that needs that lock would hang too:
+    /// on a timeout the process aborts after saying why.
+    fn finishes(what: &str, report: impl FnOnce() + Send + 'static) {
+        use std::sync::mpsc::RecvTimeoutError;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            report();
+            let _ = tx.send(());
+        });
+        match rx.recv_timeout(REENTRY_BOUND) {
+            Ok(()) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                std::eprintln!(
+                    "{what} did not finish within {REENTRY_BOUND:?}: \
+                     an allocator lock held across its external call?"
+                );
+                std::process::abort();
+            }
+            Err(RecvTimeoutError::Disconnected) => panic!("{what} panicked"),
+        }
+    }
+
+    /// Theorem "No allocator lock across external calls"
+    /// (`verus/THEOREMS.md`) at run time, for `write_cb`: every call of a
+    /// text and a JSON report re-enters the allocator ([`reenter`]). A
+    /// lock a report takes, held across a call, would deadlock the call's
+    /// collection or nested report.
+    #[test]
+    fn a_report_callback_may_reenter_the_allocator() {
+        for opts in ["", "J"] {
+            finishes(&std::format!("malloc_stats_print({opts:?})"), move || {
+                let calls = core::sync::atomic::AtomicUsize::new(0);
+                let c = std::ffi::CString::new(opts).unwrap();
+                malloc_stats_print(
+                    Some(reentering_cb),
+                    &calls as *const _ as *mut c_void,
+                    c.as_ptr(),
+                );
+                assert!(
+                    calls.load(core::sync::atomic::Ordering::Relaxed) > 1,
+                    "the report fits one chunk: nothing was called mid-report"
+                );
+            });
+        }
+    }
+
+    /// As [`a_report_callback_may_reenter_the_allocator`], for
+    /// `malloc_info`'s `fwrite`: an unbuffered `fopencookie` stream whose
+    /// write function re-enters the allocator, so every `fwrite` the sink
+    /// makes calls it before returning.
+    #[test]
+    fn a_malloc_info_stream_may_reenter_the_allocator() {
+        /// glibc's `cookie_io_functions_t`.
+        #[repr(C)]
+        struct CookieIo {
+            read: Option<unsafe extern "C" fn(*mut c_void, *mut c_char, usize) -> isize>,
+            write: Option<unsafe extern "C" fn(*mut c_void, *const c_char, usize) -> isize>,
+            seek: Option<unsafe extern "C" fn(*mut c_void, *mut i64, c_int) -> c_int>,
+            close: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
+        }
+        unsafe extern "C" {
+            fn fopencookie(
+                cookie: *mut c_void,
+                mode: *const c_char,
+                io: CookieIo,
+            ) -> *mut libc::FILE;
+        }
+        unsafe extern "C" fn write(cookie: *mut c_void, _buf: *const c_char, n: usize) -> isize {
+            unsafe { reentering_cb(cookie, core::ptr::null()) };
+            n as isize
+        }
+        finishes("malloc_info", || {
+            let calls = core::sync::atomic::AtomicUsize::new(0);
+            let io = CookieIo {
+                read: None,
+                write: Some(write),
+                seek: None,
+                close: None,
+            };
+            let f = unsafe { fopencookie(&calls as *const _ as *mut c_void, c"w".as_ptr(), io) };
+            assert!(!f.is_null());
+            assert_eq!(
+                unsafe { libc::setvbuf(f, core::ptr::null_mut(), libc::_IONBF, 0) },
+                0
+            );
+            assert_eq!(malloc_info(0, f), 0);
+            let during = calls.load(core::sync::atomic::Ordering::Relaxed);
+            unsafe { libc::fclose(f) };
+            assert!(during >= 1, "no write during malloc_info");
+        });
+    }
+
+    /// The premises of theorem "No allocator lock across external calls"
+    /// that the source states (`verus/THEOREMS.md` lists them all): the
+    /// report code in this file takes no lock; no lock guard leaves the
+    /// function that took it (`LockGuard` is named only in `lock.rs`, and
+    /// nothing is forgotten or leaked); only the fork handlers take a bare
+    /// `RawLock`; and only the three report entry points make the permit.
+    #[test]
+    fn report_lock_premises_hold_in_the_source() {
+        /// The non-test code of every compiled source file under `dir`,
+        /// as (path from `src/`, code lines).
+        fn sources(dir: &std::path::Path, rel: &str, out: &mut Vec<(String, Vec<String>)>) {
+            let mut entries: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
+            entries.sort();
+            for p in entries {
+                let name = String::from(p.file_name().unwrap().to_str().unwrap());
+                let path = if rel.is_empty() {
+                    name.clone()
+                } else {
+                    std::format!("{rel}/{name}")
+                };
+                if p.is_dir() {
+                    if !["loom_tests", "model"].contains(&path.as_str()) {
+                        sources(&p, &path, out);
+                    }
+                    continue;
+                }
+                let test_only = ["tests.rs", "linux_tests.rs", "testutil.rs", "c_programs.rs"];
+                if !name.ends_with(".rs") || test_only.contains(&name.as_str()) {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&p).unwrap();
+                // Drop comment lines and every `#[cfg(test)]` item (a
+                // test module, helper or field): its lines up to the first
+                // `{` (then braces counted to its end), `;` or `,`.
+                let mut code = Vec::new();
+                let (mut gated, mut depth) = (false, 0usize);
+                for l in text.lines() {
+                    let t = l.trim();
+                    if t.starts_with("//") {
+                        continue;
+                    }
+                    if depth > 0 {
+                        depth =
+                            (depth + t.matches('{').count()).saturating_sub(t.matches('}').count());
+                        continue;
+                    }
+                    if t == "#[cfg(test)]" {
+                        gated = true;
+                        continue;
+                    }
+                    if gated {
+                        if t.contains('{') {
+                            gated = false;
+                            depth = t
+                                .matches('{')
+                                .count()
+                                .saturating_sub(t.matches('}').count());
+                        } else if t.ends_with(';') || t.ends_with(',') {
+                            gated = false;
+                        }
+                        continue;
+                    }
+                    code.push(String::from(l));
+                }
+                out.push((path, code));
+            }
+        }
+        let mut files = Vec::new();
+        sources(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            "",
+            &mut files,
+        );
+        assert!(files.iter().any(|(f, _)| f == "api/print.rs"));
+        let mut entries = Vec::new();
+        for (file, code) in &files {
+            let mut func = "";
+            for line in code {
+                let t = line.trim();
+                if let Some(i) = t.find("fn ") {
+                    if t[..i].split_whitespace().all(|w| {
+                        [
+                            "pub",
+                            "pub(crate)",
+                            "pub(super)",
+                            "const",
+                            "unsafe",
+                            "extern",
+                            "\"C\"",
+                            "proof",
+                            "spec",
+                            "open",
+                            "closed",
+                            "axiom",
+                            "broadcast",
+                            "exec",
+                        ]
+                        .contains(&w)
+                    }) {
+                        func = t[i + 3..].split(['(', '<']).next().unwrap();
+                    }
+                }
+                if file == "api/print.rs" {
+                    for acquire in [
+                        "lock()",
+                        "raw()",
+                        "raw_lock",
+                        "get_unlocked",
+                        "fork_lock",
+                        "RawLock",
+                    ] {
+                        assert!(
+                            !t.contains(acquire),
+                            "api/print.rs: report code takes a lock ({acquire}): {t}"
+                        );
+                    }
+                    if t.contains("axiom_unlocked()") && !t.contains("axiom fn") {
+                        entries.push(std::string::ToString::to_string(func));
+                    }
+                    // Unverified code here could forge a permit.
+                    assert!(
+                        !t.contains("assume_new"),
+                        "api/print.rs: forges a ghost value: {t}"
+                    );
+                } else {
+                    assert!(
+                        !t.contains("axiom_unlocked"),
+                        "{file}: makes the report's permit: {t}"
+                    );
+                }
+                if file != "lock.rs" {
+                    assert!(!t.contains("LockGuard"), "{file}: names a lock guard: {t}");
+                    for leak in ["forget(", "ManuallyDrop", "Box::leak"] {
+                        assert!(!t.contains(leak), "{file}: may leak a lock guard: {t}");
+                    }
+                    // The accessors of a lock's bare `RawLock`, as the
+                    // fork handlers call them.
+                    let raw_acquire = ["RawLock::lock", "raw().lock()", "raw_lock().lock()"]
+                        .iter()
+                        .any(|a| t.contains(a))
+                        || (t.contains("tcaches_lock(") && t.contains(".lock()"));
+                    if raw_acquire {
+                        assert!(
+                            (file == "api/mod.rs" && func == "fork_prepare")
+                                || (file == "purge/background.rs" && func == "fork_lock"),
+                            "{file}: {func} takes a bare RawLock outside the fork handlers: {t}"
+                        );
+                    }
+                }
+            }
+        }
+        entries.sort();
+        assert_eq!(entries, ["malloc_info", "malloc_stats", "stats_print"]);
     }
 }
