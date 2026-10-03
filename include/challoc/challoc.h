@@ -35,8 +35,11 @@ const char *challoc_features(void);
  * instead of a second lookup. Semantics are otherwise malloc/calloc/realloc/
  * free's: errno = ENOMEM and a null return on failure (then *usable is 0),
  * the same alignment, the same tiers, the same aborts on a pointer that is
- * not a live allocation. `usable` may be NULL for the three allocating
- * functions, which then are plain malloc/calloc/realloc.
+ * not a live allocation (a foreign or interior pointer, or a freed one
+ * whose slot is back in its slab's bitmap; a freed slot still in a cache is
+ * not caught at the call, docs/hardening.md section 1). `usable` may be
+ * NULL for the three allocating functions, which then are plain
+ * malloc/calloc/realloc.
  *
  * Valkey's zmalloc calls malloc_usable_size after every allocation and
  * before every unsized zfree for its used_memory accounting; that query was
@@ -56,7 +59,8 @@ void *challoc_calloc_usable(size_t n, size_t size, size_t *usable);
 void *challoc_realloc_usable(void *ptr, size_t size, size_t *usable);
 
 /* free(ptr); returns the usable size ptr had, 0 for NULL. The exact check of
- * free (a stale, interior or foreign pointer aborts at the call). */
+ * free (an interior or foreign pointer aborts at the call, and so does a
+ * stale one whose slot is back in its slab's bitmap). */
 size_t challoc_free_usable(void *ptr);
 
 #ifdef __cplusplus

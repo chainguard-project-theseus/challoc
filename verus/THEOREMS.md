@@ -1,11 +1,17 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the twenty-one whole-allocator theorems as the code
+Reference for the twenty-three whole-allocator theorems as the code
 states them: the Verus statement, the entry points it covers, and every
 trusted premise it rests on, with `file:line`. Read at `b2cad68`
-(branch `verus`); line numbers are the `fn`/`axiom` line at that commit.
-`verus/TODO.md` ("Whole-allocator theorems") carries the history and the
-open work; this file says what the code proves today.
+(branch `verus`); line numbers are the `fn`/`axiom` line at that commit,
+except where a section names its own commit.
+`verus/TODO.md` ("Theorem candidates") carries the history and the
+open work; this file says what the code proves today. Each title and
+first paragraph claims only what is proved: where a theorem holds only
+at a lock invariant, rests on a source test or on the C-boundary
+assumption (`axiom_c_claim`), the title or the first paragraph says so.
+The sections are numbered 1 to 23 in order; "Bad input" (the B column)
+and the interface contract are not numbered.
 
 Marked **unconfirmed**: facts read from comments, not checked against
 the proof.
@@ -79,7 +85,7 @@ slot or huge page start that is not a live block, gives C a token it
 does not hold, which makes the proof context inconsistent at that call:
 it voids theorem 3 for that free and every theorem for later calls. A
 pointer that is neither a slot start nor a huge page start gets no token
-and aborts at run time (theorem 3 is not voided for it).
+and the call does not return (theorem 3, which is not voided for it).
 
 **Every heap a verified path is handed is `Heap::wf`.**
 - `Heap::wf` (`heap/mod.rs:2479`): `CachePerms::wf`, `tracks`,
@@ -314,7 +320,17 @@ is `p % align == 0`. Lemmas: `lemma_slot_fits` (`heap/mod.rs:413`),
   (`vspec::usable::usable_is` and `usable_of`, the U column of the
   interface contract below).
 
-## 3. Invalid free
+## 3. Invalid free (pointer shape)
+
+What is proved is the pointer's shape, not its liveness: a free or a
+query that returns normally was given NULL (where allowed), a slot start
+or a huge page start. Rejection of a slot or huge page start that is not
+a live block (a stale or double free) is not proved: the C-boundary
+assumption `axiom_c_claim` (the `free` contract, common premises)
+excludes such a call. And "aborts" below means the proof shows the call
+cannot return normally, not that it reaches `SIGABRT` rather than
+hanging: the paths before an abort may wait on a lock, whose
+termination is not proved (common premises, "Termination not proved").
 
 **Statement** (`heap/mod.rs:373`, `:406`):
 
@@ -330,9 +346,10 @@ pub open spec fn free_target(p: *mut u8) -> bool {
 ```
 
 Each entry point ensures `p@.addr != 0 ==> free_target(p)`: it returns
-only for a slot start or a huge page start; anything else aborts. Since
-theorem 7, `is_slot` excludes guard slabs, so a pointer into one aborts
-too (`theorem_guard_free`).
+only for a slot start or a huge page start; for anything else the call
+does not return (the code aborts). Since theorem 7, `is_slot` excludes
+guard slabs, so a call with a pointer into one does not return either
+(`theorem_guard_free`).
 
 **Entry points.**
 
@@ -373,18 +390,36 @@ class, `Shared::free_huge` (`:1312`) a page index from
   (`p@.addr != 0 ==> blk.block(p)`: `libc::free_block`,
   `free_sized_block`, `free_usable_block`, `realloc_block`,
   `jemalloc::dallocx_block`, `sdallocx_block`, `rallocx_zeroed`,
-  `heap::free`, `Heap::free`). A slot start whose bit is clear still
-  aborts by the run-time tests (`SlabTable::is_set_unchecked`,
-  `class/table.rs:1288`, trusted), the sized fast path pushes untested
-  and the flush catches it, and a non-live huge page start aborts in
-  `Huge::free_run`; but for such a pointer C has no token, and the
-  boundary's `axiom_c_claim` (the `free` contract, common premises)
-  makes the context inconsistent instead of proving the abort.
+  `heap::free`, `Heap::free`). For a slot or huge page start that is not
+  live, C has no token, and the boundary's `axiom_c_claim` (the `free`
+  contract, common premises) makes the context inconsistent instead of
+  proving the abort.
+- The run-time guarantee for non-live block starts, read from the code
+  and not proved: an unsized free, `realloc`, `malloc_usable_size`,
+  `sallocx` or `challoc_free_usable` of a slot whose bitmap bit is clear
+  at the load (`SlabTable::is_set_unchecked`, `class/table.rs:1288`)
+  aborts; a sized free pushes untested, and the cache flush catches it
+  unless a `malloc` pops the slot first (a pop tests no bit); a non-live
+  huge page start aborts in `Huge::free_run`. The residue: a free of a
+  slot whose first copy is still in a cache, a thread's or an explicit
+  tcache (its bit is still set; caught, if at all, by a later flush, or
+  at the call by `double_free_scan` when it is among the top four
+  entries of the thread cache it is pushed to), and a free of a block
+  that was freed and handed out again (ABA), which no allocator can tell
+  from a live one. "Bad input" below lists them by
+  entry point.
 - A thread's first `free` may create its heap before the abort.
 
-## 4. Metadata integrity
+## 4. User blocks are disjoint from allocator metadata
 
-**Statement** (`heap/mod.rs:234`):
+A spatial statement (named "metadata integrity" in `TODO.md` and the
+code's comments): no byte of a non-null block an allocation returns
+lies in the metadata listed below, the `Shared` static included. It does
+not prove that every allocator write stays inside the object it is meant
+for, nor that a returned byte is mapped with the right permissions.
+
+**Statement** (`heap/mod.rs:317`, read at the base of the theorem
+restatements, `7d4e997`):
 
 ```rust
 pub(crate) proof fn theorem_metadata_integrity(shared: &Shared, p: *mut u8,
@@ -401,6 +436,10 @@ pub(crate) proof fn theorem_metadata_integrity(shared: &Shared, p: *mut u8,
             &&& forall|a: int, len: int|
                 len >= 0 && #[trigger] shared.meta.holds(a, len)
                 ==> disjoint(b, n, a, len)
+            &&& forall|x: int| #[trigger] shared.meta.is_link(x)
+                ==> disjoint(b, n, x, 8)
+            &&& disjoint(b, n, crate::layout::shared_static_addr(),
+                         crate::layout::shared_static_len())
             &&& forall|c: int, slab: int|
                 0 <= c < NCLASSES && 0 <= slab < shared.tables[c].spec_nslabs()
                 ==> disjoint(b, n, #[trigger] shared.tables[c].desc_addr(slab),
@@ -438,7 +477,14 @@ pub(crate) proof fn theorem_metadata_integrity(shared: &Shared, p: *mut u8,
 
 (Line breaks added.) `disjoint` is `layout/regions.rs:55`. Each
 conjunct is "lies in the metadata region" (`Regions::in_meta`,
-`layout/regions.rs:912`) plus `lemma_user_block_apart` (`:921`).
+`layout/regions.rs:912`) plus `lemma_user_block_apart` (`:921`), except
+two. `Meta`'s free-list link words (`Meta::is_link`: the link word of
+every free object in every value the metadata lock admits, the one word
+`Meta` writes outside what it hands out) lie in what it holds
+(`Meta::lemma_link_held`, from `meta::Inner::lemma_links_in_region`).
+The `Shared` static lies outside all three reservations
+(`Regions::outside`, a conjunct of `Regions::separated`;
+`lemma_user_block_outside`).
 
 **Entry points.** Those of theorem 1, through `fits`. The heap and huge
 conjuncts quantify over every well-formed `Heap` and `huge::Inner`
@@ -480,6 +526,10 @@ the assumed `Heap::wf` and the huge lock axiom.
   (`heap/mod.rs:2553`) needs `cell_in_meta`, which `ensure_cache`
   (`heap/cache.rs:758`) proves for each stack.
 - Huge lock axioms (`vspec/huge.rs:44`, `:52`) for `huge::Inner`.
+- The `Shared` static: `Reserved::is_apart_from_static`
+  (`layout/regions.rs`, trusted, the kernel's `mmap` contract): each of
+  the three reservations is apart from the loaded object's data, which
+  `from_parts` turns into `Regions::outside`.
 - `huge::table::axiom_zero_entry` (`huge/table.rs:174`): all-zero bytes
   are an empty descriptor table entry (`Table::storage`).
 - User-block writes: `vspec::addr::axiom_fresh_block`,
@@ -489,8 +539,11 @@ the assumed `Heap::wf` and the huge lock axiom.
   it stays inside it.
 
 **Not covered.**
-- The `Shared` static and TLS: outside the metadata region, not in the
-  statement.
+- Thread-local storage: not apart from every block, so not in the
+  statement. A thread whose stack the program allocated
+  (`pthread_attr_setstack` over a `malloc`ed buffer) has its static TLS
+  block, and so challoc's heap pointer slot, inside that buffer. (The
+  `Shared` static and `Meta`'s link words are conjuncts now.)
 - Writes through `&` atomics (descriptors, owner words, `AtomicBitmap`
   words) are located, not tied to permissions. Bitmap words now have
   `WordPerm`s inside `bitmap::WordPred` (`bitmap.rs:687`), but the
@@ -501,8 +554,10 @@ the assumed `Heap::wf` and the huge lock axiom.
   is excluded (`spec_nbits() % 64 == 0`).
 - `Shared::zero_huge` (`heap/shared.rs:1295`) clears `usable` bytes that
   no huge invariant bounds by the run (`axiom_huge_writable`).
-- `Meta`'s own link words and reused-object fill are a fact of its lock
-  value (`meta::Inner::lemma_links_in_region`), not a conjunct.
+- Spatial only: the theorem places metadata and blocks; it does not
+  prove that each allocator write stays inside the object it is meant
+  for (the writes through permissions do, the atomics above are only
+  located), nor that the block's bytes are mapped writable.
 
 ## 5. Uniqueness
 
@@ -637,17 +692,35 @@ block; the free cores take the token C holds (common premises, "The
 - The theorems are lemmas; no global invariant across heaps calls them,
   and `theorem_apart` relates two tokens held at the same time.
 
-## 6. Zeroed memory
+## 6. Zeroed memory (zero-token coverage at return)
+
+What is proved is zero-token coverage at return: the zeroing entry
+points return a ghost `Zeroed` token that covers the bytes the API
+promises zero. `vspec::zero::theorem_zeroed_memory` (`vspec/zero.rs:242`)
+concludes `z.has(a)` for every byte `a` from `from` to the usable end,
+and `Zeroed::has` is interval membership. That a load of such a byte
+reads zero is the token's meaning, not a proved fact: it rests on the
+trusted token sources (`write_zero` and the kernel axioms below) and on
+the unproved discipline that nothing writes a token's bytes between its
+creation and the return (premises below). There is no byte-state model
+whose writes would invalidate a token. Plain `calloc(n, m)` promises,
+and its token covers, only its `n * m` requested bytes; bytes past them
+up to the usable size are unspecified (#54). `challoc_calloc_usable`,
+`mallocx(.., MALLOCX_ZERO)` and `rallocx`'s new tail cover the whole
+usable size. (The `vspec/zero.rs` lines in this section are at
+`7d4e997`; the table's are at `b2cad68`.)
 
 **Statement.** The `Zeroed` token (`vspec/zero.rs`): `covers(p, n)` is
-`addr() == p@.addr && n <= len()`. Postconditions:
+`addr() == p@.addr && n <= len()`; `covers_usable(z, p, from, size)`
+(`vspec/zero.rs:109`) is a token from `p + from` to the block's usable
+end (the class size, or `huge_usable(size)`). Postconditions:
 
 | Function (`file:line`) | Token on a non-null result |
 |---|---|
-| `calloc_zeroed` (`api/libc.rs:319`) | `covers(r.0, n * m)` |
+| `calloc_zeroed` (`api/libc.rs:319`) | `covers(r.0, n * m)` only |
 | `calloc_usable_zeroed` (`api/libc.rs:853`) | `n * m`, and `covers_usable(.., 0, n * m)` |
-| `mallocx_zeroed` (`api/jemalloc.rs:220`) | `size`, with `MALLOCX_ZERO` |
-| `rallocx_zeroed` (`api/jemalloc.rs:251`) | `size - k` bytes from `r + k` |
+| `mallocx_zeroed` (`api/jemalloc.rs:220`) | with `MALLOCX_ZERO`: `size`, and `covers_usable(.., 0, size)` |
+| `rallocx_zeroed` (`api/jemalloc.rs:251`) | `size - k` bytes from `r + k`, and `covers_usable(.., k, size)` |
 
 `rallocx_zeroed`'s clause, for a moved or new block with
 `MALLOCX_ZERO`:
@@ -703,12 +776,10 @@ symbols carry no token.
   it to other writers. Stated in `vspec/zero.rs`, not proved.
 
 **Where the statement is weaker than the code.**
-- `mallocx_zeroed` states `size` bytes; `alloc_with`
-  (`api/jemalloc.rs:158`) zeroes `usable` bytes (the class size or the
-  run's usable size, `api/jemalloc.rs:199`) when the block is not
-  known zero, and that token covers them; on the known-zero path the
-  token comes from `mallocx::alloc` with no length stated as `usable`.
-  Its ensures says `size`.
+- Coverage, not contents: the theorem is about the token's interval at
+  the moment of return (above). A program's own later writes are its
+  business; the gap is challoc's writers between the token's creation
+  and the return, which are bounded by inspection only.
 - `rallocx_zeroed`'s `k` is `min(old, size)` for some `old` with
   `usable_of(p, old)` (revised by gap 6: `old_size_or_keep` ensures
   `usable_of(p, old)` of the `old` it returns, and the code copies
@@ -722,6 +793,11 @@ symbols carry no token.
   contract only.
 
 ## 7. Guard pages
+
+For slabs, per result: every `fits` and every `free_target` excludes the
+guard slabs. For huge runs, only at the huge lock invariant: every value
+the huge lock admits keeps live runs' usable pages off every run's
+guard page, but nothing is exported per call ("Huge runs" below).
 
 Read at this section's commit (the `file:line`s are the `fn`/`axiom`
 line there).
@@ -826,10 +902,11 @@ and `AtomicBitmap::init` (`bitmap.rs:1233`) now requires a slab that is
 not a guard slab (`lemma_guards_move`, `:922`); `take_group` calls it
 only past the `is_guard_slab` test.
 
-**Huge runs.** Each run's guard follows its usable pages inside its
-extent, and live extents are pairwise apart (`huge::Inner::wf`).
-`Inner::theorem_run_guards` (`huge/mod.rs:941`) states the consequence
-for every value the huge lock admits: the usable pages of a live run
+**Huge runs (at the huge lock invariant).** Each run's guard follows
+its usable pages inside its extent, and live extents are pairwise apart
+(`huge::Inner::wf`). `Inner::theorem_run_guards` (`huge/mod.rs:941`)
+states the consequence for every value the huge lock admits, and for
+nothing per call: the usable pages of a live run
 share no page with the guard pages of any live run, its own included.
 
 **Premises beyond the common ones.**
@@ -956,9 +1033,9 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   appears only as a `requires` or loop invariant clause, apart from its
   definition, the grant and `Stderr`'s invariant.
 - The later theorems' code follows the same discipline (merged after
-  this section's commit). Fork safety (theorem 13): `RawLock::lock_held`
-  and `unlock_held`, `purge::background::fork_lock` and `fork_unlock`,
-  and `fork_release` require `may_syscall()`; `fork_prepare`,
+  this section's commit). Fork-handler lock handoff (theorem 13):
+  `RawLock::lock_held` and `unlock_held`, `purge::background::fork_lock`
+  and `fork_unlock`, and `fork_release` require `may_syscall()`; `fork_prepare`,
   `fork_parent` and `fork_child` are `extern "C"` and grant it.
   Re-entrant heap registration (theorem 15): `heap_for_thread_in`,
   `ThreadKey::set` and its `pthread_setspecific` wrapper require it,
@@ -1017,10 +1094,17 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   It leaves them only by a jump to `malloc_slow` or `free_slow`. That is
   a reading of the disassembly, not a proof.
 - Termination. The theorem says which instructions run, not that the
-  fast path finishes: that is theorem 9 ("The fast path never hangs"),
-  whose invariant masks cover the same functions.
+  fast path finishes: that is theorem 9 ("Fast paths take no lock and
+  terminate"), whose invariant masks cover the same functions.
 
-## 9. The fast path never hangs
+## 9. Fast paths take no lock and terminate
+
+The masked fast-path functions listed below (the fast branches of
+`malloc`, `free`, `free_sized` and `sdallocx` with no flags, and
+`challoc_free_usable`) call no lock acquisition, and each terminates.
+The entry points themselves are not masked, the slow paths are outside
+the theorem, and a bound on the step count is read off the code, not
+proved ("Scope: which paths", "What stays exempt").
 
 Read at the lane commit `b14b729` (the `file:line`s are the `fn` line
 there), except the fast-path signatures below, which are at its merge
@@ -1211,7 +1295,19 @@ library's machine code is identical to the previous commit's on x86_64.
 - **Weak memory.** A load may return a stale value, but every branch on
   one still ends, so the bound holds.
 
-## 10. No leak on thread exit
+## 10. No leak on thread exit (when the destructor runs)
+
+Two claims, of which only the first is proved. (a) When a heap's
+thread-exit destructor runs, the flush it runs first returns every slot
+the heap's caches held to the release path: proved, below. (b) Every
+heap gets a destructor: not proved, and not true in every run. A heap is
+registered for one by `ThreadKey::set` (`heap/shared.rs:296`), which
+returns at once, registering nothing, when the key is invalid
+(`pthread_key_create` failed at init); the heap is still created and
+published in TLS, so its cached slots are stranded when its thread
+exits, and there is no heapless fallback for that case. A
+`pthread_setspecific` failure aborts instead. Theorem 15 covers
+registration's re-entrancy, not its success.
 
 Read at the lane commit `2801c34`, before its merge onto the live-block
 model (the `file:line`s are the `fn` line there).
@@ -1256,8 +1352,8 @@ headers cached at entry: no cached slot is lost. Those headers are the
 cache memory `destroy` frees next (`free_caches` over the home array and
 each node), so the thread-exit destructor (`heap_destructor`,
 `heap/thread.rs:39`, through `Heap::destroy`, `heap/mod.rs:4707`)
-strands no cached block. `tcache.flush` (`Tcaches::flush`,
-`heap/tcaches.rs:163`), `malloc_trim` (`api/libc.rs:1609`), the mallctl
+strands no cached block when it runs (claim (a); whether it runs is
+(b)). `tcache.flush` (`Tcaches::flush`, `heap/tcaches.rs:163`), `malloc_trim` (`api/libc.rs:1609`), the mallctl
 purge's `flush_caller` (`api/mallctl.rs:1371`) and
 `thread.tcache.enabled` off (`Heap::set_tcache_enabled`,
 `heap/mod.rs:4203`) run the same function.
@@ -1309,6 +1405,10 @@ the same tokens. The chain that makes an entry of the log a release:
   which is what makes a log entry stand for one token.
 
 **Where the statement is weaker than the code.**
+- Claim (b), above: that the destructor runs at all (a valid thread
+  key, or a fallback that holds no cache when there is none) is not
+  stated; with an invalid key a heap is created anyway and its caches
+  are stranded at thread exit.
 - The accounting is over the slots under each header's first `len`
   entries (`CachePerms::tokened`). That `toks` holds no token beyond
   them is not an invariant (every verified writer moves tokens with
@@ -1552,7 +1652,20 @@ theorem does not follow a token through the cache (see below).
   run token the freeing path holds (`Heap::free_huge`'s `tok`, the
   token `heap::free_direct` takes with `take_run`) would prove it.
 
-## 13. Fork safety
+## 13. Fork-handler lock handoff
+
+Formerly titled "Fork safety", as the code's comments still call it.
+What is proved: under the mutex and handoff premises below,
+`fork_prepare` returns holding every lock of the fork lock list
+(`listed`, over the arenas it found) and the background state lock,
+and the parent and child handlers release each of them once. Not proved: that
+`listed` names every lock in the crate (a source test checks it,
+`fork_lock_list_matches_the_source_tree`), that the prepare handler
+terminates (a `lock` that never returns satisfies everything), the
+acquisition order, and compatibility with other `pthread_atfork`
+handlers (the handoff premise assumes those registered before
+challoc's take no allocator lock). Reclaiming the caches of threads the
+child no longer has is out of scope (design 9 leaves them marked).
 
 Read at this section's commit (the `file:line`s are the `fn`/`axiom`
 line there).
@@ -1695,7 +1808,18 @@ axioms below are the other source.
 - The signal mask's save and restore (`save_sigmask`, `saved_sigmask`,
   `external_body`) are not part of the statement.
 
-## 14. Arena isolation
+## 14. Arena isolation (slab ownership and release routing)
+
+What is proved: a slab slot's owning arena is fixed once its group is
+handed out, a claim reserves only in slabs its arena owns, and every
+release of a slab slot reaches the arena that owns it (or the free
+aborts). Not proved, and not true: that `mallocx(size,
+MALLOCX_ARENA(a))` returns a slot of arena `a`. The claim side stops at
+the picks, and a cache may hold other arenas' slots: the sized frees
+push a slot onto the home cache without testing its owner and leave the
+routing to the flush (design 6.3), so a pop from that cache can return
+a foreign slot. Isolation is a property of reservation and release, not
+of the blocks an allocation returns.
 
 Read at this section's commit (the `file:line`s are the `fn`/`axiom`
 line there).
@@ -1996,13 +2120,20 @@ it).
   the model names the thread, and a token never crosses threads because
   the slot is thread-local.
 
-## 16. No allocator lock across external calls
+## 16. No allocator lock across external calls (partly premised)
 
 Read at this section's commit (the `file:line`s are the `fn`/`axiom`
 line there).
 
-**Statement.** Every call the reports make out of the allocator happens
-while the calling thread holds no allocator lock. The reports are
+**Statement.** What Verus checks: every call the reports make out of
+the allocator is made by `emit`, which requires an `Unlocked` permit,
+and a permit exists only inside a report. Verus checks possession of
+the permit, not its meaning: the permit tracks no acquisition, so that
+the calling thread holds no allocator lock while it holds one rests on
+the premises below (the C caller's, a source test's and Rust's types'),
+not on Verus. The intended property, which those premises give: every
+call the reports make out of the allocator happens while the calling
+thread holds no allocator lock. The reports are
 `malloc_stats_print` and `je_malloc_stats_print` (`api/print.rs:1048`,
 through `stats_print`, `:1032`), `malloc_info` (`:1154`) and
 `malloc_stats` (`:1169`). Their calls out are the caller's `write_cb`,
@@ -2153,14 +2284,25 @@ explicit-cache table, the background state) are not exercised.
 The B column of the interface contract below; not numbered. The
 `file:line`s are the `fn` line at this section's commit.
 
-**Statement.** For every exported entry point, a bad argument either
-aborts (the call does not return) or gets the documented error result;
-no returning call acts on it. The exceptions are a huge run's size on a
-sized free, which the code does not check, and a free of a block that
-was freed and reallocated, which no allocator can tell from a live one
-(table below). Stated as `ensures` on the Rust functions
-the exports call (an abort satisfies every postcondition, so each one
-says what holds of a call that returns):
+**Statement.** Returning calls satisfy the pointer-shape checks and the
+selected argument checks below. Pointer shape needs no C contract for
+the call itself; like every theorem it holds in a run that has made no
+earlier non-live free, which the live-pointer contract (`axiom_c_claim`)
+excludes. For the pointer shape (no block start, misaligned, interior),
+the size hints of a live slot or a non-block pointer, cache ids of
+`MAX_TCACHES` or more and the alignments, a bad argument either makes
+the call not return or gets the documented error result. "Does not return" is what is proved; the code
+aborts, but that the call reaches `SIGABRT` rather than hanging is not
+proved (partial correctness). A stale or double free of a slot or huge
+page start, and a size hint on such a pointer, are not proved to be
+rejected: the C-boundary assumption excludes them (*(C)* below), and
+the run-time checks that catch some of them are code, not theorem (the
+rows marked *(C)*). Not checked by the code either: a huge run's size on
+a sized free, and a free of a block that was freed and reallocated,
+which no allocator can tell from a live one (table below). Stated as
+`ensures` on the Rust functions the exports call (an abort satisfies
+every postcondition, so each one says what holds of a call that
+returns):
 
 ```rust
 // heap/mod.rs:498, :512 (theorem 3's target; the size hint's class)
@@ -2205,14 +2347,16 @@ pub proof fn theorem_interior(&self, p: *mut u8, k: int)   // Live
 
 (Abridged: the `ensures` lists hold the other theorems' conjuncts too.)
 Per kind of bad input, with what is proved and what rests on the C
-contract:
+contract. "Result" is what the code does; for an "abort" row, "yes" in
+"Proved" means that the call does not return normally with that input,
+and for an error-result row, that a returning call returns that result:
 
-| Bad input | Entry points | Result | Proved |
+| Bad input | Entry points | Result (the code) | Proved |
 |---|---|---|---|
 | Pointer outside every class region and the huge region, in a gap, in the metadata, in a guard slab | every free, the `realloc` family, `malloc_usable_size`, `sallocx`, `xallocx` | abort | yes: `free_target` (theorem 3, theorem 7's `theorem_guard_free`) |
 | Misaligned pointer (not a multiple of the quantum) | as above | abort | yes: `free_target` and `theorem_free_target_aligned` |
 | Interior pointer of a slot, or of a huge run off a page boundary | as above | abort | yes: `free_target` and `Live::theorem_interior` (`lemma_slot_interior`, `lemma_run_interior`) |
-| Interior page start of a huge run | frees, `realloc` family | abort (`Huge::free_run`: `not_a_run`) | under the C contract only (*(C)* below) |
+| Interior page start of a huge run | frees, `realloc` family | abort (`Huge::free_run`: `not_a_run`) | no: excluded by the C contract, *(C)* below |
 | The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`Huge::usable_size`: `not_a_run`) | no: the queries take no token, and nothing states it |
 | Slot freed with the size of another class, or a huge size | `free_sized`, `free_aligned_sized`, `sdallocx`, sized `delete`s | abort (`hint_mismatch`) | yes for a live slot: `hint_ok`; for a non-live one, *(C)* |
 | Non-power-of-two alignment to `free_aligned_sized` or the sized aligned `delete` | as above | abort on a slot | as above: `hint_ok(p, None)`, so no slot start returns |
@@ -2224,11 +2368,12 @@ contract:
 | `MALLOCX_TCACHE(t)`, `t >= MAX_TCACHES` (1024; the field reaches 4093) | `mallocx`, `dallocx`, `sdallocx` | abort (`invalid_tcache`, or first `hint_mismatch` on `sdallocx`), except a huge `mallocx` with an explicit arena, which never looks the cache up | yes: `tcache_checked`, `!bad_tcache` (the frees' for a live block or a non-block pointer; *(C)* otherwise) |
 | `MALLOCX_TCACHE(t)` of a cache never created | as above | abort, with the same exception | no: existence is a run-time table load, not modelled |
 | `MALLOCX_ARENA(a)` of an arena that does not exist | `mallocx`, `rallocx` | NULL | no: as above |
-| Double free of a slot back in its bitmap (stale), or a free of a never-allocated slot of a handed-out slab | plain frees | abort (`check_live`, `check_located`: `invalid_free`) | under the C contract only |
+| Double free of a slot back in its bitmap (stale), or a free of a never-allocated slot of a handed-out slab | plain frees | abort (`check_live`, `check_located`: `invalid_free`) | no: excluded by the C contract, *(C)* |
 | The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`check_live`) | no: the queries take no token, and nothing states it |
-| The same, through a sized free | sized frees | abort at the cache flush (`double_free`, `straddling_double_free`) | under the C contract only |
-| Double free while the first copy is still in a thread cache | every free | with `double_free_scan` enabled (off by default), abort if among the top four entries (`cached_twice`); else abort at the flush, or the slot is handed out twice first, as under jemalloc | under the C contract only |
-| Double free of a huge run | every free | abort (`Huge::free_run`: `already_free`, or `not_a_run` once the freed run has been merged or left the table) | under the C contract only |
+| The same, through a sized free | sized frees | abort at the cache flush (`double_free`, `straddling_double_free`) | no: excluded by the C contract, *(C)* |
+| Double free while the first copy is still in a thread cache | every free | with `double_free_scan` enabled (off by default), abort if among the top four entries (`cached_twice`); else abort at the flush, or the slot is handed out twice first, as under jemalloc | no: excluded by the C contract, *(C)* |
+| The same, through `realloc` and the queries | `realloc` family, `malloc_usable_size`, `sallocx`, `xallocx` | no abort at the call: the slot bit is still set, so `check_live` passes. `realloc(p, 1000)` after `p = malloc(16); free(p)` copies from `p` and frees it again, which pushes a second copy (aborts at that push only with `double_free_scan`); a kept block is returned as is | no: excluded by the C contract, *(C)*; the queries take no token |
+| Double free of a huge run | every free | abort (`Huge::free_run`: `already_free`, or `not_a_run` once the freed run has been merged or left the table) | no: excluded by the C contract, *(C)* |
 | Free of a block that was freed and reallocated (ABA) | every free | frees the new block | undetectable by any allocator |
 
 *(C)*: a pointer that is a slot start or a huge page start but not a live
@@ -2248,8 +2393,8 @@ B cells stay `p`.
 
 The pointer-shape rows hold without *(C)*: `axiom_c_claim`'s token for
 a pointer that is no slot start and no huge page start claims nothing,
-so the context stays consistent and the abort is proved. `hint_ok` and
-`!bad_tcache` on the frees are about the program's own arguments (a
+so the context stays consistent and the call is proved not to return.
+`hint_ok` and `!bad_tcache` on the frees are about the program's own arguments (a
 size, an alignment, a flags word) against `p`'s class, a function of
 `p`; they are proved for every live block, where the axiom's token is
 the one C holds, and for every non-block pointer, but for a slot or
@@ -2312,9 +2457,21 @@ through `slab_slot`'s completeness; *(C)* is the `free` contract.
   sallocx(p)` is not checked for huge runs).
 
 **Where the statement is weaker than the code.**
-- The *(C)* rows: the run-time checks abort, but the proof excludes
-  those inputs by the C contract instead of proving the abort. The
-  queries' stale-slot and interior-page aborts are not stated.
+- The *(C)* rows: the run-time checks abort where they fire, but the
+  proof excludes those inputs by the C contract instead of proving the
+  abort. What the code guarantees for them: an unsized free, `realloc`
+  or query of a slot whose bitmap bit is clear at the load aborts (a
+  sized free defers that to the cache flush, which a `malloc` pop of the
+  slot can precede); a freed slot still in a cache (a thread's or an
+  explicit tcache; bit set) passes the call and is caught, if at all, by
+  a later flush or, among the top four entries of the thread cache, by
+  `double_free_scan`; an ABA free is undetectable. The queries'
+  stale-slot and interior-page aborts are not stated.
+- Every "abort" is proved as "does not return normally". The abort
+  helpers verify and end in `sys::abort_fmt`, but a call may wait on a
+  lock before it reaches one, and lock waits are not proved to
+  terminate (common premises, "Termination not proved"), so a hang is
+  not ruled out.
 - `MALLOCX_TCACHE(t)` with `t < MAX_TCACHES` that names no cache, and
   `MALLOCX_ARENA(a)` that names no arena, abort and return NULL
   respectively by run-time lookups the proofs do not model.
@@ -2326,7 +2483,10 @@ through `slab_slot`'s completeness; *(C)* is the `free` contract.
   `malloc`'s and a block can come back; without one, NULL or
   `bad_alloc`. C++ makes the call undefined; the doc comment says so.
 
-## 17. Huge coalescing
+## 17. Huge coalescing (at the huge lock invariant)
+
+A fact of every value the huge lock admits (`Inner::wf`); nothing is
+exported per call, and no entry point's `ensures` mentions it.
 
 Read at this section's commit (the `file:line`s are the `fn`/`spec`
 line there).
@@ -2412,113 +2572,16 @@ extent touching the mark, returning it or `None`. Merges of `Empty` and
   page belongs to a free extent (the converse of `free_marked`), which
   `audit` also checks.
 - It is stated at the lock invariant only. No entry point exports it.
-- That `find` returns the lowest fit is the next section's theorem
+- That `find` returns the lowest fit is theorem 23
   ("Lowest-address huge placement"), built on this one.
 
-## 23. Lowest-address huge placement
+## 18. Pressure never lengthens decay (at a fixed limit)
 
-Read at this section's commit (the `file:line`s are the `fn`/`spec`
-line there). Numbered at merge.
-
-**Statement** (`huge/mod.rs:4028`, `:3236`, `:970`):
-
-```rust
-spec fn page_free(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, next_page: int, p: int) -> bool {
-    p >= next_page || exists|x: *mut HugeDesc| in_free(descs, x, p)
-}
-
-spec fn fits(&self, g: &Inner, q: int, need: int, align: usize) -> bool {
-    &&& 0 <= q
-    &&& q + need <= self.npages
-    &&& self.aligned_at(q, align)
-    &&& forall|p: int| q <= p < q + need ==> page_free(g.descs@, g.next_page as int, p)
-}
-
-fn find(&self, g: &Inner, need: usize, align: usize) -> (r: Option<(usize, *mut HugeDesc)>)
-    requires
-        g.wf(),
-        1 <= need <= self.npages,
-        align > 0,
-        align & sub(align, 1) == 0,
-        align <= self.npages * pow2(self.lg_page as nat),
-        // ... (page-aligned base, ghost page count and shift)
-    ensures
-        // ... (the extent it comes from, as before)
-        r matches Some((s, _)) ==> self.fits(g, s as int, need as int, align),
-        r matches Some((s, _)) ==> forall|q: int| 0 <= q < s ==> !self.fits(g, q, need as int, align),
-        r is None ==> forall|q: int| !self.fits(g, q, need as int, align),
-```
-
-(Line breaks and triggers dropped.) `in_free(descs, x, p)` (`:962`):
-`x` is a free (`Empty` or `Purged`) descriptor with page `p`.
-`aligned_at(q, align)` (`:3229`): `align` is at most a page, or page
-`q`'s address is a multiple of `align`. `need` counts the guard page.
-
-In every value of the huge lock, the start `find` returns for `need`
-pages at `align` is the lowest page with the run's pages aligned,
-inside the region, and each free: in a free extent or at or past the
-high-water mark. `None` means no page fits at all. "Free" is page by
-page: a fit may span pages of several free extents and the untouched
-suffix; maximal coalescing (`Inner::wf`, "Huge coalescing") is what
-reduces that to the one extent `find` looks at.
-
-**How it is proved.**
-- `align_page` (`:3269`) now also ensures that no page in
-  `[page, r)` is aligned: those pages start in `[a, align_up(a))`,
-  below the first multiple of `align` (`lemma_below_align_up`, `:982`).
-- `find`'s loop holds two more facts at `from`: every free extent
-  starting below `from` ends by it (`ends_by`, `:975`), and no fit
-  starts below `from`. Each round, `lemma_below` (`:3247`) extends "no
-  fit" to below `s`: no page in `[from, a)` is free
-  (`Inner::lemma_none_free`, `:1244`: an extent holding one would start
-  below `from` and so end by it, or start at a free bit `lowest_set_from`
-  would have returned), and none in `[a, s)` is aligned.
-- The pass to the next extent: a fit at `q` in `[s, e_end)` starts in
-  `e` (extents are apart), so by `Inner::lemma_fit_extent` (`:1266`) it
-  ends in `e` or `e` ends at the mark. The page after a free extent
-  that ends below the mark is free only if a free extent starts there
-  (apart again), which `coalesced` forbids. `e` does not touch the mark
-  on this path, and `s` is `e`'s lowest aligned page with
-  `s + need > e_end`, so no `q >= s` fits.
-- At the returns: `s` fits by `e`'s pages (and the pages past the mark
-  when `e` touches it). After the scan, no free bit is left at or past
-  `from`, so `lemma_below` with `a = next_page` covers everything below
-  `align_page(next_page)`, where all pages are fresh. The `None`s are
-  the same bound plus `s + need > npages` for every `q >= s`.
-
-**Findings.** None. The early return when the extent `e` reaches the
-mark (`e_end == next_page`) is correct even when the alignment carries
-`s` past `e_end`: `e` and the untouched suffix are one free stretch, no
-free extent lies past the mark, every earlier extent was ruled out, and
-the pages between extents are not free; so `s` is the lowest aligned
-page of that stretch and nothing lower fits. When `s + need` overruns
-the region it returns `None`, and no higher page fits either. Tests:
-`huge::tests::alignment_past_a_trailing_extent_takes_fresh_pages`
-exercises that return; `placement_is_the_lowest_fit` checks each
-placement (or NULL) over 2,000 random steps (allocations, frees and
-purges) against a brute-force lowest fit over the live runs.
-
-**Premises beyond the common ones.**
-- `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs:35`): the lock
-  protects `Inner::wf`, with `coalesced` and `free_marked`.
-- `TwoLevelBitmap::lowest_set_from` (`bitmap.rs:3285`) is verified: the
-  lowest set bit at or past `from`, or none.
-
-**Where the statement is weaker than the code.**
-- It is `find`'s contract under the lock; no entry point exports it.
-  `alloc_aligned` (`:4633`) returns NULL before `find` when the size
-  overflows or the run or the alignment exceeds the region, and after
-  it when a descriptor, the table or bitmap growth, or the kernel
-  commit fails, so "huge `malloc` returns NULL only when nothing fits"
-  is not claimed.
-- A free bit that starts no free extent aborts in `extent_at`
-  (`:2829`); the converse of `free_marked` is not in `wf`, so the proof
-  does not show that abort unreachable. An abort is not a return, so
-  the statement holds.
-- Scope, not a gap: the order is by address only. `Purged` (zero)
-  and `Empty` (dirty) pages count alike, as `find` treats them.
-
-## 18. Pressure never lengthens decay
+A theorem about two pure functions, `band` and `effective_decay_ns`, at
+one fixed limit and one configured period. It is not about the stored
+policy the purge reads (`Policy`'s atomics, whose round trip is not
+proved and is not exact at the 70% edge, below), nor about the purge
+being timely: what the decay walks do with the period is out of scope.
 
 Read at this section's commit (the `file:line`s are the `fn` line
 there).
@@ -2588,10 +2651,21 @@ either.
   (`frac16`, `immediate`, `limited`; `Policy::apply`) and
   `Policy::band` (`:703`) rebuilds it: that round trip is not proved
   (`position` is `external_body` because Verus has no view of an
-  `AtomicU32`'s value), and it maps `Scaled(0)` back to `Low`, which
-  gives the same period. Concurrent `evaluate` calls or a reader between
-  `apply`'s stores (a torn `limited`/`frac16`/`immediate` triple) are
-  not covered, nor is what the decay walks do with the period.
+  `AtomicU32`'s value), and it is not exact: usage at the 70% edge
+  (700,000 to 700,003 ppm of the limit) gives `Scaled(0)`, which
+  `Policy::band` reads back as `Low`. The period is the same, but the
+  advice is not: `advice` is lazy only with headroom, the `Low` band, so
+  by the design table usage at 70% is eager, while the stored policy's
+  `headroom()` reads `Low` there and the purge gets the lazy advice
+  (fixed upstream after this base; the code here still maps it).
+  Concurrent `evaluate` calls or a reader between `apply`'s stores (a
+  torn `limited`/`frac16`/`immediate` triple) are not covered, nor is
+  what the decay walks do with the period.
+- A 0 limit. `spec_band(0, c)` is `Unlimited` for every usage, as for
+  `UNLIMITED` (no limit known), while `thp::forced_by_limit` treats a 0
+  limit as a limit below `THP_MIN_LIMIT` (it forces `never` under
+  `thp:always`). The theorem holds for `band` as written; the two
+  readings of 0 are not reconciled.
 - Monotone in the usage sample, not in time: two samples taken in the
   other order (usage falling) lengthen the period again, by design.
 - `NEVER` (`dirty_decay_ms:-1`) stays `NEVER` in every band; the
@@ -2600,7 +2674,13 @@ either.
   samples the period half of the theorem at runtime, including limits
   past `2^43`.
 
-## 19. Purge never discards live data
+## 19. Purge never discards live data (huge runs; slabs at the class lock)
+
+For huge runs, against the live-block tokens: no discarded byte is in a
+live run. For slabs, only against the class lock's ghost idle state
+(`class::decay::idle_byte`): a class purge discards only slabs that
+state records as idle, and nothing ties idleness to the slot tokens
+(the I5 slab row is `p`).
 
 The `file:line`s are the `fn` line at this section's commit.
 
@@ -3025,8 +3105,7 @@ theorem: the capacity read is trusted and the return code has no
 
 ## 22. Exact stats
 
-The coordinator assigns this theorem its number at merge. The
-`file:line`s are the `fn` line at this section's commit.
+The `file:line`s are the `fn` line at this section's commit.
 
 **Statement.** At a quiescent state, `stats.allocated` (read live by
 `collect`, `collect_all`, `mallinfo2` and `malloc_stats`; at the last
@@ -3212,10 +3291,116 @@ and subtract from the `large` word are the token's
   be unchanged while the run is live (not proved; the run token carries
   no arena).
 
+## 23. Lowest-address huge placement
+
+`Huge::find`'s contract, under the huge lock invariant: no entry point
+exports it ("Where the statement is weaker" below). Built on theorem 17.
+
+Read at this section's commit (the `file:line`s are the `fn`/`spec`
+line there). Numbered at merge, and placed last to keep the numbers in
+order.
+
+**Statement** (`huge/mod.rs:4028`, `:3236`, `:970`):
+
+```rust
+spec fn page_free(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, next_page: int, p: int) -> bool {
+    p >= next_page || exists|x: *mut HugeDesc| in_free(descs, x, p)
+}
+
+spec fn fits(&self, g: &Inner, q: int, need: int, align: usize) -> bool {
+    &&& 0 <= q
+    &&& q + need <= self.npages
+    &&& self.aligned_at(q, align)
+    &&& forall|p: int| q <= p < q + need ==> page_free(g.descs@, g.next_page as int, p)
+}
+
+fn find(&self, g: &Inner, need: usize, align: usize) -> (r: Option<(usize, *mut HugeDesc)>)
+    requires
+        g.wf(),
+        1 <= need <= self.npages,
+        align > 0,
+        align & sub(align, 1) == 0,
+        align <= self.npages * pow2(self.lg_page as nat),
+        // ... (page-aligned base, ghost page count and shift)
+    ensures
+        // ... (the extent it comes from, as before)
+        r matches Some((s, _)) ==> self.fits(g, s as int, need as int, align),
+        r matches Some((s, _)) ==> forall|q: int| 0 <= q < s ==> !self.fits(g, q, need as int, align),
+        r is None ==> forall|q: int| !self.fits(g, q, need as int, align),
+```
+
+(Line breaks and triggers dropped.) `in_free(descs, x, p)` (`:962`):
+`x` is a free (`Empty` or `Purged`) descriptor with page `p`.
+`aligned_at(q, align)` (`:3229`): `align` is at most a page, or page
+`q`'s address is a multiple of `align`. `need` counts the guard page.
+
+In every value of the huge lock, the start `find` returns for `need`
+pages at `align` is the lowest page with the run's pages aligned,
+inside the region, and each free: in a free extent or at or past the
+high-water mark. `None` means no page fits at all. "Free" is page by
+page: a fit may span pages of several free extents and the untouched
+suffix; maximal coalescing (`Inner::wf`, "Huge coalescing") is what
+reduces that to the one extent `find` looks at.
+
+**How it is proved.**
+- `align_page` (`:3269`) now also ensures that no page in
+  `[page, r)` is aligned: those pages start in `[a, align_up(a))`,
+  below the first multiple of `align` (`lemma_below_align_up`, `:982`).
+- `find`'s loop holds two more facts at `from`: every free extent
+  starting below `from` ends by it (`ends_by`, `:975`), and no fit
+  starts below `from`. Each round, `lemma_below` (`:3247`) extends "no
+  fit" to below `s`: no page in `[from, a)` is free
+  (`Inner::lemma_none_free`, `:1244`: an extent holding one would start
+  below `from` and so end by it, or start at a free bit `lowest_set_from`
+  would have returned), and none in `[a, s)` is aligned.
+- The pass to the next extent: a fit at `q` in `[s, e_end)` starts in
+  `e` (extents are apart), so by `Inner::lemma_fit_extent` (`:1266`) it
+  ends in `e` or `e` ends at the mark. The page after a free extent
+  that ends below the mark is free only if a free extent starts there
+  (apart again), which `coalesced` forbids. `e` does not touch the mark
+  on this path, and `s` is `e`'s lowest aligned page with
+  `s + need > e_end`, so no `q >= s` fits.
+- At the returns: `s` fits by `e`'s pages (and the pages past the mark
+  when `e` touches it). After the scan, no free bit is left at or past
+  `from`, so `lemma_below` with `a = next_page` covers everything below
+  `align_page(next_page)`, where all pages are fresh. The `None`s are
+  the same bound plus `s + need > npages` for every `q >= s`.
+
+**Findings.** None. The early return when the extent `e` reaches the
+mark (`e_end == next_page`) is correct even when the alignment carries
+`s` past `e_end`: `e` and the untouched suffix are one free stretch, no
+free extent lies past the mark, every earlier extent was ruled out, and
+the pages between extents are not free; so `s` is the lowest aligned
+page of that stretch and nothing lower fits. When `s + need` overruns
+the region it returns `None`, and no higher page fits either. Tests:
+`huge::tests::alignment_past_a_trailing_extent_takes_fresh_pages`
+exercises that return; `placement_is_the_lowest_fit` checks each
+placement (or NULL) over 2,000 random steps (allocations, frees and
+purges) against a brute-force lowest fit over the live runs.
+
+**Premises beyond the common ones.**
+- `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs:35`): the lock
+  protects `Inner::wf`, with `coalesced` and `free_marked`.
+- `TwoLevelBitmap::lowest_set_from` (`bitmap.rs:3285`) is verified: the
+  lowest set bit at or past `from`, or none.
+
+**Where the statement is weaker than the code.**
+- It is `find`'s contract under the lock; no entry point exports it.
+  `alloc_aligned` (`:4633`) returns NULL before `find` when the size
+  overflows or the run or the alignment exceeds the region, and after
+  it when a descriptor, the table or bitmap growth, or the kernel
+  commit fails, so "huge `malloc` returns NULL only when nothing fits"
+  is not claimed.
+- A free bit that starts no free extent aborts in `extent_at`
+  (`:2829`); the converse of `free_marked` is not in `wf`, so the proof
+  does not show that abort unreachable. An abort is not a return, so
+  the statement holds.
+- Scope, not a gap: the order is by address only. `Purged` (zero)
+  and `Empty` (dirty) pages count alike, as `find` treats them.
+
 ## 24. No block at address 0
 
-The coordinator assigns this theorem its number at merge. The
-`file:line`s are the `fn` line at this section's commit.
+The `file:line`s are the `fn` line at this section's commit.
 
 **Statement.** No slot, no huge run and no block an allocation may
 return is at address 0. So a null pointer is never a block: an
@@ -3346,13 +3531,14 @@ premises (`axiom_class_table_wf`).
 
 ## Interface contract
 
-Theorems 1-7 above checked against challoc's exported C ABI (theorems
-19, 8 and 10 are the I5, I6 and I7 rows below): one row per exported
-symbol (`je_` twins and C++ array forms share their row), one column
-per interface property. Read
-from the `ensures` of each entry point's Rust function at `ccbf1dd`;
-the `file:line`s in this section are the `fn` line at that commit (the sections above are
-at `b2cad68`). The U column, row 13's Z and row 22's F were revised
+The per-call theorems above (1-3, 5-7 and the "Bad input" section)
+checked against challoc's exported C ABI; the whole-allocator ones are
+the internal rows below (I1-I7: theorems 1, 4, 5, 7, 19, 8 and 10). One
+row per exported symbol (`je_` twins and C++ array forms share their
+row), one column per interface property. Read from the `ensures` of
+each entry point's Rust function at `ccbf1dd`; the `file:line`s in this
+section are the `fn` line at that commit (the sections above are at
+`b2cad68`, or their own commit). The U column, row 13's Z and row 22's F were revised
 later, by the usable-size work (gap 3 below), the R cells of rows 3,
 4, 14 and 17 by the huge `kept` bound (gap 6), and the F column by the
 `errno` work (gap 2); items they added are cited by name. All the
@@ -3361,8 +3547,13 @@ wrapper is in `verus!` with no contract of its own and only casts (and,
 for an entry point that may write `errno`, lends it the calling thread's
 `errno` token, *(errno)* below; the ghost `grant_syscalls` of theorem 8
 runs nothing), except `malloc_stats_print`. So the Rust function's
-`ensures` is the symbol's contract, and a verified body cannot panic or
-overflow. Where that function is `.0` of a `_zeroed` twin (`calloc`,
+`ensures` is the symbol's contract, and the verified parts of its body
+(code inside `verus!` without `external_body`) cannot panic or
+overflow. That is not all of every body: the `mallctl` rows (34) reach
+the caller's memory only through `external_body` helpers, the report
+rows (32, 33) write through the trusted `emit` and sinks, row 33 is
+outside `verus!`, and every row rests on the trusted functions and
+axioms of the common premises. Where that function is `.0` of a `_zeroed` twin (`calloc`,
 `challoc_calloc_usable`, `mallocx`), the Z cell rests on the twin's
 `ensures`: the zero token is ghost, so the exported function returns
 the same block. Likewise the U cells of rows 12 and 14 rest on the
@@ -3389,23 +3580,36 @@ Properties:
 - **D**: the result is disjoint from every other live block: the core
   returns the token of the block (`Live::gives`), and two live tokens
   are disjoint (`Live::theorem_apart`, theorem 5).
-- **Z**: the result is zeroed where the API promises it.
+- **Z**: the zeroing entry points return a `Zeroed` token covering the
+  bytes the API promises zero (theorem 6: token coverage at return, not
+  proved contents); plain `calloc` covers only its `n * m` bytes.
 - **C**: contents are preserved (realloc family).
 - **F**: failure semantics: NULL, `errno`, return code, the old block
   intact after a failed realloc, overflow in `calloc`/`reallocarray`.
-- **B**: bad input (invalid or double free, bad alignment) aborts or is
-  a documented no-op. It never corrupts silently. Since theorem 7 a
-  free target is never in a guard slab, so a free into one aborts. The
+- **B**: bad input. A call that returns satisfies the pointer-shape
+  checks (`free_target`) and the selected argument checks (size hints,
+  cache ids of `MAX_TCACHES` or more, alignments); for other input the
+  call does not return normally (the code aborts; reaching `SIGABRT`
+  rather than hanging is not proved), or it gets the documented error
+  result or no-op. Pointer shape needs no C contract for the call
+  itself (a non-block pointer's token claims nothing); it, like every
+  theorem, holds only in a run that has made no earlier non-live free,
+  which `axiom_c_claim` excludes. Since theorem 7 a free target is
+  never in a guard slab, so a free into one does not return. The
   *(live)* cells (a stale or double free) stay `p`: the free cores
   require the token of a live block and ensure that what they freed was
   live, but C holds that token only by `axiom_c_claim` (the `free`
   contract), so a non-live free is excluded by that C-boundary
   assumption rather than proved to abort. The "Bad input" section above
-  lists every kind of bad input by entry point, with what is proved to
-  abort (pointer shape, size hints, alignments, cache ids) and what
-  rests on the C contract.
-- **U**: size consistency: `nallocx` equals `mallocx`'s usable size;
-  `sallocx` and `malloc_usable_size` give the block's real usable size.
+  lists every kind of bad input by entry point, with what is proved not
+  to return (pointer shape, size hints, alignments, cache ids of
+  `MAX_TCACHES` or more) and what rests on the C contract.
+- **U**: size consistency: when `mallocx(size, flags)` succeeds,
+  `nallocx(size, flags)` equals its usable size (not unconditionally:
+  `nallocx(1, MALLOCX_LG_ALIGN(63))` returns one page, 4096 with 4 KiB
+  pages, while `mallocx` returns NULL, where jemalloc's `nallocx`
+  returns 0); `sallocx` and `malloc_usable_size` give the block's real
+  usable size.
 
 Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
 
@@ -3507,8 +3711,8 @@ Notes that recur below:
   aborts), and `background::start` saves and restores it around its
   calls (`errno_read`, `errno_write`, trusted, outside the model).
 - *(live)*: `free_target` (`heap/mod.rs:432`, theorem 3) is proved. A
-  pointer that is not a slot start or a huge page start aborts. A free
-  core takes the caller's token for `p` (`Live::claims`) and ensures
+  call with a pointer that is not a slot start or a huge page start does
+  not return. A free core takes the caller's token for `p` (`Live::claims`) and ensures
   `p@.addr != 0 ==> blk.block(p)`: what it freed was a live block, whose
   token it gave back to the cache or the bitmap word (slots) or the run
   authorities (runs). A non-live pointer that is a slot or huge page
@@ -3738,7 +3942,13 @@ alone):
     and `mallocx_zeroed` (through `alloc_with`) ensure
     `r != 0 ==> usable_is(r, size, nalloc_usable(size, flags & 0x3f))`,
     so `nallocx(size, flags)` is the usable size `mallocx(size, flags)`
-    gives. The two calls agree because `class_for` ensures
+    gives when `mallocx` succeeds. The converse fails: `nalloc_usable`
+    ignores the alignment for a huge request, so `nallocx(1,
+    MALLOCX_LG_ALIGN(63))` returns one page (4096 with 4 KiB pages) while
+    `mallocx` returns NULL (no alignment past the huge region can be
+    served; jemalloc's `nallocx` returns 0 there). A non-zero `nallocx`
+    therefore does not promise that `mallocx` succeeds. The two calls
+    agree because `class_for` ensures
     `r == spec_class_for(size, align)` for a power-of-two `align`, the
     smallest class that serves the request (`least_class`, from
     `class_of`'s and `class_index`'s new minimality: no smaller class
@@ -3817,14 +4027,14 @@ alone):
 | Property                                 | Code | Where                  |
 |------------------------------------------|------|------------------------|
 | I1 region separation                     | P    | th. 1, heap/mod.rs:182 |
-| I2 metadata integrity                    | P    | th. 4, heap/mod.rs:253 |
+| I2 user blocks apart from metadata       | P    | th. 4, heap/mod.rs:317 |
 | I3 uniqueness (no slot handed out twice) | P    | theorem 5              |
 | I4 guard pages never handed out (slabs)  | P    | th. 7 (section 7)      |
-| I4 guard pages never handed out (huge)   | p    | th. 7 (section 7)      |
+| I4 guard pages, huge (lock invariant)    | p    | th. 7 (section 7)      |
 | I5 purge never discards live data (huge) | P    | th. 19 (section 19)    |
 | I5 purge never discards live data (slab) | p    | th. 19 (section 19)    |
 | I6 no syscall on the cache fast paths    | P    | th. 8 (section 8)      |
-| I7 no cached slot lost at thread exit    | p    | th. 10 (section 10)    |
+| I7 destructor loses no cached slot       | p    | th. 10 (section 10)    |
 
 - I1, I2: for every result an entry point states `fits` for, with the
   premises and the "not covered" lists of sections 1 and 4.
@@ -3858,8 +4068,9 @@ alone):
 - I7: theorem 10 (`Heap::flush_all`, lines as in section 10): the flush
   `destroy` runs first empties every home and node header and appends
   exactly what they held to the released log, each slot's token handed
-  to `release_routed` with it. `destroy` itself is trusted, and section
-  10's "weaker" list applies, hence `p`.
+  to `release_routed` with it. `destroy` itself is trusted, section
+  10's "weaker" list applies, and that every heap gets a destructor is
+  not proved (with an invalid thread key none does), hence `p`.
 
 ### Gaps, by cells turned to `P`
 

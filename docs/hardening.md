@@ -10,7 +10,7 @@ exact windows the defaults leave open. The design view is
 | Metadata separate from user memory       | No           | Yes             |
 | Free-list pointers in freed blocks       | Yes          | None            |
 | Invalid free detected                    | No           | Yes, aborts (1) |
-| Double free detected                     | Debug only   | Yes, aborts (1) |
+| Double free detected                     | Debug only   | Aborts once the slot is back in its slab's bitmap (bit clear; for sized frees, at the next cache flush unless a `malloc` takes the slot first), or with `double_free_scan` when it is among the top four thread-cache entries; a second free of a slot still in a cache can go undetected (1) |
 | Size classes in isolated address ranges  | No           | Yes, randomised |
 | Guard regions                            | No           | Yes (kernel 6.13+ for guard slabs) |
 | Sealed reservation gaps (`mseal`)        | No           | Yes where the kernel (6.10+) and seccomp allow it |
@@ -23,8 +23,8 @@ exact windows the defaults leave open. The design view is
 ## (1) Invalid and double frees
 
 Through `free`: an invalid pointer aborts at the call, and so does a
-second free of a slot that has already left the thread cache (its slot bit
-is clear). A second free while the slot is still cached is caught when a
+second free of a slot that is already back in its slab's bitmap (its
+slot bit is clear). A second free while the slot is still cached is caught when a
 flush releases the copies to the slab: the flush groups the released half
 by slab, so the copies land in one slab's batch, the release aborts on the
 duplicate, and the one case where the split would release one copy and
@@ -35,6 +35,16 @@ unless the `double_free_scan` tunable is set: then every free (plain and
 sized) compares the slot against the four most recently cached entries
 and aborts on a match at the call. It is off by default because it costs
 about 3..4% on larson and up to 14% on the Valkey model on x86_64.
+
+`realloc`, `malloc_usable_size`, `sallocx` and `challoc_free_usable`
+test the same slot bit, so on a freed pointer they abort only once the
+slot is back in its slab's bitmap. While it is still in a cache (the
+thread's, or an explicit tcache) its bit is set and the call goes
+ahead: after `p = malloc(16); free(p);`,
+`realloc(p, 1000)` passes the check, copies from `p` and frees `p`
+again, which puts a second copy in the cache (caught at the call only
+with `double_free_scan`, else as above); `malloc_usable_size(p)`
+returns the class size.
 
 Through the sized path, `sdallocx(p, size, flags)`, C23 `free_sized` and
 `free_aligned_sized` (what Valkey frees with): the size is checked against
@@ -101,7 +111,8 @@ MTE half waits for a host that exposes MTE (AmpereOne, #51).
 Two things are stricter than jemalloc: the size passed to `sdallocx`,
 `free_sized`, `free_aligned_sized` or a sized `operator delete` must name
 the class the pointer was allocated from, and `malloc_usable_size`,
-`realloc` and `sallocx` on a freed or foreign pointer abort where
-jemalloc's behaviour is undefined. A program that leaned on that leniency
-dies with `SIGABRT` and a `challoc:` message instead of corrupting the
-heap.
+`realloc` and `sallocx` on a foreign pointer, or on a freed one whose
+slot is back in its slab's bitmap, abort where jemalloc's behaviour is
+undefined (a freed slot still in a cache passes, section 1). A program
+that leaned on that leniency dies with `SIGABRT` and a `challoc:`
+message instead of corrupting the heap.
