@@ -15,11 +15,19 @@ use super::CachePerms;
 #[cfg(verus_only)]
 use super::{CacheHeader, plain};
 #[cfg(verus_only)]
-use crate::layout::class_table;
+use super::{PUSH_ZERO, Shared};
+#[cfg(verus_only)]
+use crate::class::slot_loc;
+#[cfg(verus_only)]
+use crate::layout::{class_table, process_regions};
 use crate::vspec::zero::Zeroed;
+#[cfg(verus_only)]
+use crate::vspec::zero::block_usable;
 #[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, int, verus};
+#[cfg(verus_only)]
+use vstd::resource::set::GhostSingleton;
 
 verus! {
 
@@ -458,6 +466,67 @@ impl super::Heap {
         }
         Tracked(z)
     }
+}
+
+/// `zero_on_free` is configured: [`Shared::zero_on_free`]'s result, the
+/// [`PUSH_ZERO`] bit of the push flags `init` wrote.
+pub open spec fn zero_on_free(s: &Shared) -> bool {
+    s.flags() & PUSH_ZERO != 0
+}
+
+/// Zero-on-free (theorem 12 of `verus/THEOREMS.md`), for
+/// slots. With `zero_on_free` set, a free path gives up the slot `p` of
+/// class `c` it is freeing, onto a thread cache (`Heap::push_cache`) or
+/// back to its bitmap word (`Shared::free_direct`), only while it holds
+/// `tok`, the slot's uniqueness token that the cache or the word takes,
+/// and `z`, the token `zero_slot` returned for its bytes: every byte of
+/// the slot's usable size (its class's size, [`block_usable`]) reads as
+/// zero then. Nothing hands the slot out again without `tok` (theorem 5),
+/// so its bytes are zero before it can be handed out again.
+///
+/// The proof is the class's uniqueness (`block_usable` is `c`'s size);
+/// the substance is the precondition, which `Heap::free_slow_in` and
+/// `heap::free_direct` discharge just before each release when
+/// [`zero_on_free`] holds, from `zero_slot`'s token. Those are the free
+/// paths every slot free takes under it, since the fast pushes decline on
+/// [`PUSH_ZERO`] (`Heap::push_cache_flags`) and every push is given
+/// `Shared::push_flags`; that no other release exists is the call graph's,
+/// not a fact stated here.
+pub proof fn theorem_zero_on_free(tracked z: &Zeroed, tracked tok: &GhostSingleton<int>, p: *mut u8, c: int)
+    requires
+        super::regions_ok(),
+        process_regions().is_slot(c, p@.addr),
+        tok.id() == slot_loc(c),
+        tok@ == p@.addr as int,
+        z.covers(p, class_table()[c].size as int),
+    ensures
+        block_usable(p@.addr, 0) == class_table()[c].size,
+        forall|a: int| p@.addr <= a < p@.addr + block_usable(p@.addr, 0) ==> #[trigger] z.has(a),
+{
+    let c2 = choose|c2: int| #[trigger] process_regions().is_slot(c2, p@.addr);
+    crate::vspec::zero::lemma_slot_unique(c, c2, p@.addr);
+}
+
+/// Zero-on-free for huge runs: with `zero_on_free` set, a free path
+/// releases the live run starting at `page` (`Shared::free_huge`) only
+/// holding `z`, the token `Shared::zero_huge` returned: whole pages from
+/// the run's start, at least one, a block of the huge region, read as
+/// zero then. That they are all of the run's usable pages is
+/// `Huge::usable_size`'s code (it returns the descriptor's `usable`), not
+/// its specification (`Huge::spec_run_usable`
+/// bounds the size only). `Heap::free_huge` and `heap::free_direct`, the
+/// two callers of `Shared::free_huge` on the free paths, call this before
+/// it.
+pub(crate) proof fn theorem_zero_on_free_huge(tracked z: &Zeroed, s: &Shared, page: usize)
+    requires
+        s.wf(),
+        s.huge_run_zero(*z, page),
+    ensures
+        process_regions().is_huge_block(z.addr() as usize, z.len()),
+        forall|a: int| z.addr() <= a < z.addr() + z.len() ==> #[trigger] z.has(a),
+{
+    s.lemma_wf();
+    s.lemma_run_zero_block(*z, page);
 }
 
 } // verus!

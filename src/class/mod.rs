@@ -326,7 +326,8 @@ proof fn lemma_swap_permutes(s: Seq<*mut u8>, i: int, j: int)
     assert(m.insert(s[j]).remove(s[i]).insert(s[i]).remove(s[j]) =~= m);
 }
 
-/// Shuffle is a permutation: a batch related by [`permutes`] (what
+/// Shuffle is a permutation (theorem 11 of `verus/THEOREMS.md`): a
+/// batch related by [`permutes`] (what
 /// [`shuffle`] and [`shuffle_zero`] ensure, whatever `rng` holds) has
 /// the batch's length, holds every pointer as many times as the batch
 /// did, and so has no duplicates exactly when the batch had none: the

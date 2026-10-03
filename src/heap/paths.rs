@@ -10,6 +10,8 @@ use crate::vspec::addr::addr_to_ptr;
 use crate::vspec::zero::Zeroed;
 
 #[cfg(verus_only)]
+use super::zero::zero_on_free;
+#[cfg(verus_only)]
 use super::{
     CachePerms, PUSH_ZERO, cell_ok, free_target, hand_out, hint_ok, lemma_handed_ok, lemma_hint_ok,
     pac_mode, regions_ok, slot_token,
@@ -324,8 +326,18 @@ impl Heap {
         ensures
             final(self).keeps(*old(self)),
     {
+        // `zero_on_free`'s token for the cleared run (`theorem_zero_on_free_huge`).
+        let tracked mut z = Zeroed::empty(0);
         if shared.zero_on_free() {
-            shared.zero_huge(page);
+            let Tracked(t) = shared.zero_huge(page);
+            proof {
+                z = t;
+            }
+        }
+        proof {
+            if zero_on_free(shared) {
+                super::zero::theorem_zero_on_free_huge(&z, shared, page);
+            }
         }
         let n = shared.free_huge(page, Tracked(tok));
         self.count_uncached_free(n);
@@ -519,9 +531,18 @@ impl Heap {
         ensures
             final(self).keeps(*old(self)),
     {
+        // `zero_on_free`'s token for the cleared slot, held until the slot
+        // is given up (`theorem_zero_on_free`).
+        let tracked mut z = Zeroed::empty(0);
         if shared.zero_on_free() {
             // SAFETY: `p` is a slot start of `class` (the caller's check).
-            unsafe { zero_slot(class, p) };
+            let Tracked(t) = unsafe { zero_slot(class, p) };
+            proof {
+                z = t;
+            }
+        }
+        proof {
+            old(self).lemma_wf_regions();
         }
         // `arena` is the home arena, or `FOREIGN` for another arena's
         // slot (`free_other`); a real arena is materialised first, since
@@ -533,6 +554,11 @@ impl Heap {
             self.tick(shared);
             // No cache for this class here: straight to the slab, through
             // the arena its slab belongs to.
+            proof {
+                if zero_on_free(shared) {
+                    super::zero::theorem_zero_on_free(&z, &tok, p, class as int);
+                }
+            }
             shared.free_direct(shared.arena_of_slot(class, p), class, p, Tracked(tok));
             self.count_direct_free(class);
             return;
@@ -562,6 +588,9 @@ impl Heap {
             // The scan ran above; a flush only removes entries.
             let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
             proof {
+                if zero_on_free(shared) {
+                    super::zero::theorem_zero_on_free(&z, &tok, p, class as int);
+                }
                 tk.tracked_insert(0, tok);
             }
             if !Self::push_cache(cache, p, false, shared.pac(), Tracked(self.perms.borrow_mut()), Tracked(&mut tk)) {
@@ -832,14 +861,24 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
             proof {
                 blk.lemma_claimed_block(p);
             }
+            // `zero_on_free`'s token, as in `Heap::free_slow_in`.
+            let tracked mut z = Zeroed::empty(0);
             if shared.zero_on_free() {
                 // SAFETY: `classify_free` verified `p` as an allocated slot
                 // of `class`.
-                unsafe { zero_slot(class, p) };
+                let Tracked(t) = unsafe { zero_slot(class, p) };
+                proof {
+                    z = t;
+                }
             }
             // The freed slot's token, from the block's.
             let tracked mut blk = blk;
             let tracked tok = blk.claim_slot(p, class as int);
+            proof {
+                if zero_on_free(shared) {
+                    super::zero::theorem_zero_on_free(&z, &tok, p, class as int);
+                }
+            }
             shared.free_direct(arena, class, p, Tracked(tok));
             if let Some(h) = existing_heap(shared_ptr(shared)) {
                 h.count_direct_free(class);
@@ -849,8 +888,17 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
             proof {
                 blk.lemma_claimed_block(p);
             }
+            let tracked mut z = Zeroed::empty(0);
             if shared.zero_on_free() {
-                shared.zero_huge(page);
+                let Tracked(t) = shared.zero_huge(page);
+                proof {
+                    z = t;
+                }
+            }
+            proof {
+                if zero_on_free(shared) {
+                    super::zero::theorem_zero_on_free_huge(&z, shared, page);
+                }
             }
             let tracked t = blk.take_run(p, page);
             let n = shared.free_huge(page, Tracked(t));
@@ -877,23 +925,27 @@ pub(super) fn invalid_free(p: usize) -> ! {
 /// slow paths only (`Heap::free_slow_in`, `free_direct`), so the default
 /// `free` carries nothing of it but the flag test; a `memset` of the class
 /// size, so a 1 KiB value costs a 1 KiB store (and the slow-path call) per
-/// free, which is why the key is off by default.
+/// free, which is why the key is off by default. Returns the token for
+/// the cleared bytes, which the caller holds until it gives the slot up
+/// ([`theorem_zero_on_free`](super::zero::theorem_zero_on_free)).
 ///
 /// # Safety
 /// `p` is a slot start of `class` in a committed slab.
 #[cold]
 #[inline(never)]
-pub(super) unsafe fn zero_slot(class: usize, p: *mut u8)
+pub(super) unsafe fn zero_slot(class: usize, p: *mut u8) -> (z: Tracked<Zeroed>)
     requires
         class < NCLASSES,
         process_regions().is_slot(class as int, p@.addr),
+    ensures
+        z@.covers(p, class_table()[class as int].size as int),
 {
     proof {
         broadcast use vstd::layout::align_of_u8;
         crate::vspec::addr::axiom_slot_writable(class, p);
     }
     // SAFETY: guaranteed by the caller; the slot is `size` writable bytes.
-    unsafe { ptr::write_bytes(p, 0, CLASSES.table()[class].size()) };
+    unsafe { crate::vspec::zero::write_zero(p, CLASSES.table()[class].size()) }
 }
 
 /// `double_free_scan`: the slot being pushed is one of the top four cache

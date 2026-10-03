@@ -1693,7 +1693,7 @@ fn page_group_is_idle(&self, Ghost(g): Ghost<Inner>, slab: usize, spp: usize) ->
 
 ### S65. `axiom_class_lock_inv`
 
-src/class/mod.rs:1364. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:1365. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Assumption (`lock.rs`): the class lock's value keeps the set/count seam's invariant, ghost link included, while the lock is free.
@@ -1707,7 +1707,7 @@ broadcast axiom fn axiom_class_lock_inv(v: Inner)
 
 ### S66. `axiom_class_lock`
 
-src/class/mod.rs:1372. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:1373. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Assumption (`lock.rs`): the sets behind a class lock stay over the slab count they were created with.
@@ -1721,7 +1721,7 @@ broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
 
 ### S67. `PartialEqSpecImpl for State`
 
-src/class/mod.rs:1381. Kind: spec_impl. Category: core library.
+src/class/mod.rs:1382. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1738,7 +1738,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for State {
 
 ### S68. `ClassState::owner_locked`
 
-src/class/mod.rs:1414. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1415. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Bridge (trusted): under this arena's class lock, a slab's group's owner word names this arena exactly when the slab is one of its owned slabs; the word's value is [`slab_owner`] (the read in its body, `SlabTable::owner`, ensures it).
@@ -1755,7 +1755,7 @@ fn owner_locked(&self, g: &Inner, slab: usize) -> (r: u16)
 
 ### S69. `ClassState::state_locked`
 
-src/class/mod.rs:1445. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1446. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Bridge (trusted): under an arena's class lock, the descriptor of a slab the arena owns holds the state its ghost records.
@@ -1771,7 +1771,7 @@ fn state_locked(&self, g: &Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>) -> (r
 
 ### S70. `ClassState::set_state_locked`
 
-src/class/mod.rs:1466. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1467. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Bridge (trusted): `SlabDesc::set_state` on an owned slab's descriptor, with the ghost state updated to match (the write side of [`state_locked`]'s assumption).
@@ -1800,7 +1800,7 @@ fn set_state_locked(&self, g: &mut Inner, d: &SlabDesc, Ghost(slab): Ghost<usize
 
 ### S71. `ClassState::dirty_locked`
 
-src/class/mod.rs:1502. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1503. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Bridge (trusted): under an arena's class lock, the descriptor of a slab the arena owns holds the `dirty_at` stamp its ghost records.
@@ -1816,7 +1816,7 @@ fn dirty_locked(&self, g: &Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>) -> (r
 
 ### S72. `ClassState::set_dirty_locked`
 
-src/class/mod.rs:1520. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1521. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Bridge (trusted): `SlabDesc::set_dirty_at` on an owned slab's descriptor, with the ghost stamp updated to match (the write side of [`dirty_locked`]'s assumption).
@@ -1844,7 +1844,7 @@ fn set_dirty_locked(&self, g: &mut Inner, d: &SlabDesc, Ghost(slab): Ghost<usize
 
 ### S73. `ClassState::table`
 
-src/class/mod.rs:1551. Kind: external_body. Category: raw pointer (internal).
+src/class/mod.rs:1552. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The class's shared table.
@@ -1859,7 +1859,7 @@ pub fn table(&self) -> (r: &SlabTable)
 
 ### S74. `ClassState::take_checks`
 
-src/class/mod.rs:2359. Kind: external_body. Category: panic/abort.
+src/class/mod.rs:2360. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > `take`'s debug checks: the slab's owner word and its descriptor's arena name this arena.
@@ -1875,7 +1875,7 @@ fn take_checks(&self, g: &Inner, desc: &SlabDesc, slab: usize, live: usize)
 
 ### S75. `table_ptr`
 
-src/class/mod.rs:2552. Kind: external_body. Category: raw pointer (internal).
+src/class/mod.rs:2553. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `table` as the pointer a [`ClassState`] keeps, which [`table_at`] maps back to the table.
@@ -1888,7 +1888,7 @@ fn table_ptr(table: &SlabTable) -> (p: *const SlabTable)
 
 ### S76. `ClassState::claim_with`
 
-src/class/mod.rs:2794. Kind: no_decreases. Category: termination.
+src/class/mod.rs:2795. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > The loop of [`claim`] and [`claim_random`].
@@ -1908,7 +1908,7 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
 
 ### S77. `axiom_fresh_slots_zero`
 
-src/class/mod.rs:3699. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:3700. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `vspec::sys::axiom_fresh_anon_zero` (`mmap(2)`: a private anonymous mapping reads as zero until it is first written) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -1937,7 +1937,7 @@ axiom fn axiom_fresh_slots_zero(
 
 ### S78. `axiom_discarded_slots_zero`
 
-src/class/mod.rs:3737. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:3738. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `vspec::sys::axiom_discarded_zero` (`madvise(2)`: after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -2759,7 +2759,7 @@ pub(super) unsafe fn node_caches(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int
 
 ### S133. `debug_scheduled`
 
-src/heap/paths.rs:920. Kind: external_body. Category: panic/abort.
+src/heap/paths.rs:972. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`Heap::alloc_slow`]'s `debug_assert!` that a non-empty home cache reached it through a scheduled pop the fast pop declined (design 6.4): `allocs`, the pop's count, has no bit of `mask` set.
@@ -2770,7 +2770,7 @@ fn debug_scheduled(allocs: u64, mask: u32)
 
 ### S134. `shared_of`
 
-src/heap/paths.rs:930. Kind: external_body. Category: raw pointer (internal).
+src/heap/paths.rs:982. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The `Shared` a heap was created on, with a lifetime free of the heap's borrow (so the heap can be borrowed mutably while it is used).

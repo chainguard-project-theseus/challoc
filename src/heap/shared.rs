@@ -1654,6 +1654,56 @@ impl Shared {
     {
     }
 
+    /// `z` starts at the address of page `page` and covers a usable size
+    /// [`Huge::spec_run_usable`] admits for a run there: whole pages, at
+    /// least one, with the guard after them inside the region. What
+    /// [`Shared::zero_huge`] clears ([`Huge::usable_size`]'s result).
+    pub closed spec fn huge_run_zero(&self, z: Zeroed, page: usize) -> bool {
+        &&& page < self.huge_pages()
+        &&& z.addr() == self.regions.huge_base + (page << self.regions.lg_page)
+        &&& 0 <= z.len() <= usize::MAX
+        &&& self.huge.spec_run_usable(page, z.len() as usize)
+    }
+
+    /// The bytes [`Shared::huge_run_zero`] names are a block of the huge
+    /// region: a page start with the run's usable bytes inside the region.
+    pub(crate) proof fn lemma_run_zero_block(&self, z: Zeroed, page: usize)
+        requires
+            self.wf(),
+            self.huge_run_zero(z, page),
+        ensures
+            self.regions.is_huge_block(z.addr() as usize, z.len()),
+    {
+        self.lemma_wf();
+        let (len, lg32) = (self.regions.huge_len, self.regions.lg_page);
+        let lg = lg32 as usize;
+        let np = len >> lg32;
+        let pg = 1usize << lg32;
+        vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+        vstd::bits::lemma_usize_shl_is_mul(1, lg);
+        assert(np == len >> lg && pg == 1usize << lg) by (bit_vector)
+            requires
+                np == len >> lg32,
+                pg == 1usize << lg32,
+                lg == lg32 as usize,
+        ;
+        vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(np, lg, len);
+        assert(np * pg <= len);
+        assert(page * pg <= np * pg) by (nonlinear_arith)
+            requires
+                page < np,
+                pg > 0,
+        ;
+        vstd::bits::lemma_usize_shl_is_mul(page, lg);
+        assert(page << lg32 == page << lg) by (bit_vector)
+            requires
+                lg == lg32 as usize,
+        ;
+        assert((page << lg32) == page * pg);
+        vstd::arithmetic::div_mod::lemma_mod_multiples_basic(page as int, pg as int);
+        assert(page * self.huge.spec_page() + z.len() <= np * pg);
+    }
+
     /// A huge run for `size` can be described: `size` rounded up to a page
     /// does not overflow.
     pub closed spec fn huge_ok(&self, size: usize) -> bool {
@@ -2152,14 +2202,17 @@ impl Shared {
     /// `zero_on_free` for a huge run: clear the usable bytes of the live
     /// run starting at `page` (aborts unless it is one) before its release.
     /// Out of line: it takes the huge lock for the size and then writes
-    /// the whole run.
+    /// the whole run. Returns the token for the cleared bytes
+    /// ([`theorem_zero_on_free_huge`](super::zero::theorem_zero_on_free_huge)).
     #[cold]
     #[inline(never)]
-    pub fn zero_huge(&self, page: usize)
+    pub fn zero_huge(&self, page: usize) -> (z: Tracked<Zeroed>)
         requires
             crate::sys::may_syscall(),
             self.wf(),
             page <= self.huge_pages(),
+        ensures
+            self.huge_run_zero(z@, page),
     {
         let tracked none = Option::<crate::huge::RunToken>::None;
         let n = self.huge.usable_size(page, Tracked(&none));
@@ -2169,7 +2222,7 @@ impl Shared {
         }
         // SAFETY: a live run's usable bytes are committed, writable memory
         // this allocator handed out and the caller is freeing.
-        unsafe { ptr::write_bytes(crate::vspec::addr::addr_to_ptr(self.regions.huge_addr(page)), 0, n) };
+        unsafe { crate::vspec::zero::write_zero(crate::vspec::addr::addr_to_ptr(self.regions.huge_addr(page)), n) }
     }
 
     /// Free the huge run starting at `page`. Aborts unless it is a live

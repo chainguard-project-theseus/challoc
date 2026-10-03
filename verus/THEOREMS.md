@@ -1,10 +1,9 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the whole-allocator theorems (sections 1-10) and the
-cgroup policy's theorem as the code states them: the Verus statement,
-the entry points it covers, and every trusted premise it rests on, with
-`file:line`. Read at `b2cad68` (branch `verus`); line numbers are the
-`fn`/`axiom` line at that commit.
+Reference for the eighteen whole-allocator theorems as the code
+states them: the Verus statement, the entry points it covers, and every
+trusted premise it rests on, with `file:line`. Read at `b2cad68`
+(branch `verus`); line numbers are the `fn`/`axiom` line at that commit.
 `verus/TODO.md` ("Whole-allocator theorems") carries the history and the
 open work; this file says what the code proves today.
 
@@ -109,7 +108,7 @@ and aborts at run time (theorem 3 is not voided for it).
   through a raw pointer is `pac_mode()`.
 - TLS asm: `sys::tls::get` (`sys/tls.rs:125`), `get_tp` (aarch64,
   `:180`), `set` (`:205`); a read returns the `TlsSlot` token's value
-  and `set` makes the written value the token's (theorem 8), nothing
+  and `set` makes the written value the token's (theorem 15), nothing
   more.
 
 **Class table.**
@@ -864,8 +863,8 @@ share no page with the guard pages of any live run, its own included.
 
 ## 8. No syscall on the fast path
 
-Read at this section's commit (the `file:line`s are the `fn` line
-there).
+Read at the lane commit `32171ab`, before its merge onto the live-block
+model (the `file:line`s are the `fn` line there).
 
 **Statement** (`sys/mod.rs:103`, `:113`; `api/libc.rs:441`):
 
@@ -1023,7 +1022,9 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
 
 ## 9. The fast path never hangs
 
-Read at this section's commit (the `file:line`s are the `fn` line there).
+Read at the lane commit `b14b729` (the `file:line`s are the `fn` line
+there), except the fast-path signatures below, which are at its merge
+`831ed97`.
 
 **Statement.** No theorem function: the statement is the invariant mask
 each fast-path function declares, which Verus checks at every call. A
@@ -1212,8 +1213,8 @@ library's machine code is identical to the previous commit's on x86_64.
 
 ## 10. No leak on thread exit
 
-Read at this section's commit (the `file:line`s are the `fn` line
-there).
+Read at the lane commit `2801c34`, before its merge onto the live-block
+model (the `file:line`s are the `fn` line there).
 
 **Statement** (`heap/mod.rs:3891`, `Heap::flush_all`, which
 `Heap::destroy` runs first):
@@ -1326,10 +1327,9 @@ the same tokens. The chain that makes an entry of the log a release:
 - The arena-unbind and exit purge that `destroy` runs after the flush
   are not covered: they return no cached slot.
 
-## Shuffle is a permutation
+## 11. Shuffle is a permutation
 
-The coordinator assigns this theorem its number at merge. The
-`file:line`s are the `fn` line at this section's commit.
+The `file:line`s are the `fn` line at the commit that proved it.
 
 **Statement** (`class/mod.rs:308`, `:334`, and the `ensures` of
 `shuffle_zero`, `:198`):
@@ -1411,9 +1411,151 @@ vstd's multiset lemmas.
   different reordering, assumed to be a permutation (common premises),
   not covered here.
 
-## Fork safety
+## 12. Zero-on-free
 
-Numbered by the coordinator at merge (lanes are adding 8, 9 and 10).
+Read at this section's commit (the `file:line`s are the `fn` line
+there, or the release's line where a release is named).
+
+**Statement** (`heap/zero.rs:473`, `:495`, `:520`):
+
+```rust
+pub open spec fn zero_on_free(s: &Shared) -> bool {
+    s.flags() & PUSH_ZERO != 0
+}
+
+pub proof fn theorem_zero_on_free(tracked z: &Zeroed, tracked tok: &GhostSingleton<int>, p: *mut u8, c: int)
+    requires
+        super::regions_ok(),
+        process_regions().is_slot(c, p@.addr),
+        tok.id() == slot_loc(c),
+        tok@ == p@.addr as int,
+        z.covers(p, class_table()[c].size as int),
+    ensures
+        block_usable(p@.addr, 0) == class_table()[c].size,
+        forall|a: int| p@.addr <= a < p@.addr + block_usable(p@.addr, 0) ==> #[trigger] z.has(a),
+
+pub(crate) proof fn theorem_zero_on_free_huge(tracked z: &Zeroed, s: &Shared, page: usize)
+    requires
+        s.wf(),
+        s.huge_run_zero(*z, page),
+    ensures
+        process_regions().is_huge_block(z.addr() as usize, z.len()),
+        forall|a: int| z.addr() <= a < z.addr() + z.len() ==> #[trigger] z.has(a),
+```
+
+With `zero_on_free` configured, a free path gives up a freed block only
+while it holds a `Zeroed` token (theorem 6's contents model) for all of
+the block's usable bytes:
+
+- a slot `p` of class `c`: every byte of its class's size (its usable
+  size, `vspec::zero::block_usable`, one class per slot), at the moment
+  its uniqueness token `tok` goes onto a thread cache (`Heap::push_cache`)
+  or back to its bitmap word (`Shared::free_direct`);
+- a huge run starting at `page`: whole pages from the run's start, at
+  least one, a block of the huge region (`Shared::huge_run_zero`: the
+  size `Huge::usable_size` returns, which `Huge::spec_run_usable`
+  bounds), at the moment `Shared::free_huge` releases it.
+
+The two theorems are the obligations the verifier discharges just
+before each release when `zero_on_free(shared)` holds: their `requires`
+is checked at the call, their `ensures` says what the token means byte
+by byte. Their proofs are small (the slot's class is unique; the run's
+bytes lie in the huge region); the substance is the precondition, met
+from the tokens `zero_slot` and `zero_huge` return.
+Since nothing hands a slot out without its uniqueness token (theorem 5),
+a freed slot's bytes are zero before it can be handed out again, on the
+premise below that nothing writes them in between.
+
+**Paths that honour it, and why every slot free is one of them.**
+- `Heap::free_slow_in` (`heap/paths.rs:522`): `zero_slot` first, then
+  either `Shared::free_direct` (no cache for the class, `:562`) or
+  `push_cache` (`:596`). It is reached from `Heap::free_slow` (the
+  home-arena push of `Heap::free`) and `Heap::free_other` (another
+  arena's slot).
+- `heap::free_direct` (`heap/paths.rs:844`), for a thread with no heap
+  and `MALLOCX_TCACHE_NONE`: `zero_slot` before `Shared::free_direct`
+  (`:880`), `zero_huge` before `free_huge` (`:902`).
+- `Heap::free_huge` (`heap/paths.rs:318`): `zero_huge` before
+  `free_huge` (`:342`).
+- `Shared::free_direct` and `Shared::free_huge` have no other callers
+  outside tests, and `push_cache` is called only by `push_cache_flags`
+  and `free_slow_in`.
+- Every other free of a slot is a cache push, and every push declines
+  under `PUSH_ZERO`: `Heap::push_cache_flags` (`heap/cache.rs:593`) and
+  `push_fast` (`:553`) ensure `flags & PUSH_ZERO != 0 ==> !r`, so
+  `free_fast`, `free_fast_class` and `free_sized_fast` ensure the same
+  and fall back to the exact `heap::free`; every push is handed
+  `Shared::push_flags()` (`api/libc.rs` `free`, `free_sized_hint`,
+  `challoc_free_usable`; `api/jemalloc.rs` `sdallocx`; `Heap::push`;
+  `Heap::free_other`), whose result is `flags()`, and
+  `Shared::zero_on_free` ensures `r == (flags() & PUSH_ZERO != 0)`. A
+  declined push keeps the slot's token for the slow path (`!r ==>
+  *final(tk) == *old(tk)`), which is `free_slow_in`.
+- `realloc`, `rallocx`, `dallocx`, explicit tcaches and the sized paths'
+  slow halves all free through `heap::free`, `Heap::free` or (for
+  `MALLOCX_TCACHE_NONE`) `heap::free_direct`, so through the paths
+  above. A free before init aborts (`free_before_init`).
+
+**Paths that move freed slots without clearing them.** Flushes, GC,
+cache rebuilds, `tcache.flush`/`destroy` and thread exit release slots
+already in a cache: under `zero_on_free` each was cleared when it was
+pushed (above), or came from a refill and was never handed out. The
+theorem does not follow a token through the cache (see below).
+
+**Premises beyond the common ones.**
+- `vspec::zero::write_zero` (`external_body`, theorem 6's token source):
+  `write_bytes(p, 0, n)` makes `n` zero bytes. `zero_slot` and
+  `zero_huge` clear through it, with the same machine code as a direct
+  `write_bytes`.
+- `vspec::addr::axiom_slot_writable` and `axiom_huge_writable`, as
+  before, for the writes' validity.
+- `tok` is the slot token the freeing path takes from the block's `Live`
+  token (`Live::claim_slot`, theorem 5's live-block model); at the C
+  boundary that token comes from `heap::live::axiom_c_claim` (the `free`
+  contract).
+- As for theorem 6, a token is not a permission: that nothing writes a
+  freed block's bytes between the clear and the next hand-out (no
+  allocator writer touches slot bytes, the cache keeps its entries in a
+  separate stack; the program's use after free is outside the contract)
+  is stated, not proved.
+- Huge runs: `zero_huge` and `free_huge` take the huge lock separately;
+  the run the token covers is the one `free_huge` releases unless another
+  thread frees the same run in between (a double free).
+- `zero_on_free` is fixed for the process: `push_flags` is a plain field
+  `init` writes once and every free path reads through `&Shared`
+  (`api::shared_ref`'s premise that nothing writes `Shared` after
+  `READY`); `zero_on_free` is a startup configuration key with no
+  mallctl writer. Within one call `zero_on_free(shared)` is one value,
+  so the guard on each obligation is the branch that cleared the block.
+
+**Where the statement is weaker than the code.**
+- It is a release-time statement: a token is held when the slot is given
+  up, and it is not carried with the slot. The cache and the bitmap words
+  keep no `Zeroed` token for a freed slot, so no pop or claim states
+  that a slot freed under `zero_on_free` is zero when it is handed out
+  (the code does not rely on it: `calloc` still clears anything outside
+  a cache's zero prefix). Carrying it would need a token per cached
+  entry above the zero prefix and per clear bitmap bit.
+- That the listed releases are the only ones is argued from the call
+  graph above, not stated as one Verus fact: the fast pushes' decline is
+  proved, the slow paths' coverage is by inspection. A new release path
+  that skipped the obligation would still verify. Making it mechanical
+  means a ghost `Tracked<&Zeroed>` argument with the obligation as a
+  `requires` on `Shared::free_direct`, `Shared::free_huge` and
+  `push_cache` (no machine-code cost, but a signature change on paths
+  other work is changing).
+- The huge token's size is stated only as `Huge::spec_run_usable`
+  admits it (whole pages, at least one, inside the region):
+  `zero_huge` reads the size with no run token
+  (`Huge::usable_size(page, None)`), and only with the run's token does
+  `usable_size` name the descriptor's usable pages. So that the token
+  covers all of the run's usable pages, `huge_usable(size)` of the
+  original request, is its code's, not proved; handing `zero_huge` the
+  run token the freeing path holds (`Heap::free_huge`'s `tok`, the
+  token `heap::free_direct` takes with `take_run`) would prove it.
+
+## 13. Fork safety
+
 Read at this section's commit (the `file:line`s are the `fn`/`axiom`
 line there).
 
@@ -1555,10 +1697,10 @@ axioms below are the other source.
 - The signal mask's save and restore (`save_sigmask`, `saved_sigmask`,
   `external_body`) are not part of the statement.
 
-## N. Arena isolation
+## 14. Arena isolation
 
-Number assigned at merge (other lanes add 8, 9 and 10). Read at this
-section's commit (the `file:line`s are the `fn`/`axiom` line there).
+Read at this section's commit (the `file:line`s are the `fn`/`axiom`
+line there).
 
 **Statement.** A slab slot belongs to one arena for the life of the
 process: the arena `take_group` handed its slab's group to,
@@ -1690,7 +1832,7 @@ an owned slab, and ensures its pick's owner; `plan` collects
 - `checked_slot`'s owner test on the `free` fast path reads through
   `owner_unchecked` (trusted, unchanged); it only picks the cache.
 
-## 8. Re-entrant heap registration
+## 15. Re-entrant heap registration
 
 Read at this section's commit (the `file:line`s are the `fn` line there).
 
@@ -1856,7 +1998,7 @@ it).
   the model names the thread, and a token never crosses threads because
   the slot is thread-local.
 
-## 8. No allocator lock across external calls
+## 16. No allocator lock across external calls
 
 Read at this section's commit (the `file:line`s are the `fn`/`axiom`
 line there).
@@ -2010,7 +2152,7 @@ explicit-cache table, the background state) are not exercised.
 
 ## Bad input
 
-The coordinator assigns this theorem its number at merge. The
+The B column of the interface contract below; not numbered. The
 `file:line`s are the `fn` line at this section's commit.
 
 **Statement.** For every exported entry point, a bad argument either
@@ -2186,10 +2328,10 @@ through `slab_slot`'s completeness; *(C)* is the `free` contract.
   `malloc`'s and a block can come back; without one, NULL or
   `bad_alloc`. C++ makes the call undefined; the doc comment says so.
 
-## Huge coalescing
+## 17. Huge coalescing
 
 Read at this section's commit (the `file:line`s are the `fn`/`spec`
-line there). Numbered at merge.
+line there).
 
 **Statement** (`huge/mod.rs:1172`, `:918`):
 
@@ -2276,7 +2418,7 @@ extent touching the mark, returning it or `None`. Merges of `Empty` and
   lowest fit) is not proved; only that fresh pages mean no free extent
   touches the mark.
 
-## 8. Pressure never lengthens decay
+## 18. Pressure never lengthens decay
 
 Read at this section's commit (the `file:line`s are the `fn` line
 there).
@@ -2382,8 +2524,10 @@ the same block. Likewise the U cells of rows 12 and 14 rest on the
 `_stored` twins' `ensures` (`malloc_usable_stored`,
 `realloc_usable_stored`) and row 13's on `calloc_usable_zeroed`'s third
 result: `malloc_usable` and `realloc_usable` themselves state nothing
-about `*usable`. The D cells, the *(live)* B cells, row 15's U and row
-17's Z rest on a
+about `*usable`. The D cells, the *(live)* B cells, row 15's U, row
+17's Z and the F cells of rows 3, 4 and 14 (the old block's token
+given back on a failed move; row 4 reaches `realloc_block` through
+`realloc`) rest on a
 `_block` core (`malloc_block`, `free_block`, ...; for rows 12 to 14 the
 `_stored` twins and `calloc_usable_zeroed`, which take the token too)
 that the Rust entry point calls with a fresh `Live` token (allocations:
@@ -2846,7 +2990,7 @@ alone):
   1, 10, 11 (`free_sized`), 15, 21 (no flags), 23, 24, 26 and 27, and
   row 2's pop, make no system call; everything else they do is behind a
   call that requires `may_syscall()`. Other rows may enter the kernel.
-- I7: theorem 10 (`Heap::flush_all`, `heap/mod.rs:3891`): the flush
+- I7: theorem 10 (`Heap::flush_all`, lines as in section 10): the flush
   `destroy` runs first empties every home and node header and appends
   exactly what they held to the released log, each slot's token handed
   to `release_routed` with it. `destroy` itself is trusted, and section
