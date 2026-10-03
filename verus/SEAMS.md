@@ -3152,12 +3152,12 @@ fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: 
 
 ### S163. `not_a_run_page`
 
-src/huge/mod.rs:6735. Kind: abort_standin. Category: panic/abort.
+src/huge/mod.rs:6858. Kind: abort_standin. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`Huge::free_run`]'s abort for a page that is not in the descriptor table, where the build calls [`not_a_run`] with the page's address.
 
-Stands in at: src/huge/mod.rs:6363 (`Huge::free_run`).
+Stands in at: src/huge/mod.rs:6460 (`Huge::free_run`).
 
 ```rust
 fn not_a_run_page(page: usize) -> !

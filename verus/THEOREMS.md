@@ -4371,6 +4371,167 @@ the values seen. The walk closure's `ensures` are not used.
   functions only (theorem 18's own scope, including the `Policy` atomics
   round trip).
 
+## 31. Huge retain cap (at the free's lock release)
+
+Stated at the huge lock's release inside `Huge::free_run`, over the cap
+value the free read: no `ensures` exports it (below). The `file:line`s
+are the `fn`/`spec` line at this section's commit.
+
+**Statement** (`huge/mod.rs:6197`, `:6227`; proved by
+`lemma_retain_cap`, `:6241`, called in `free_run`, `:6297`, at `:6678`):
+
+```rust
+spec fn retain_cap(v0: Inner, v1: Inner, page: int, n: int, usable: int, cap: int,
+    pof: bool, now: u64, discarded: bool) -> bool {
+    &&& discarded == (usable > cap || pof)
+    &&& exists|x: *mut HugeDesc| v1.descs@.contains_key(x) && {
+        let e = v1.descs@[x].value();
+        &&& e.start <= page && page + n <= e.start + e.pages
+        &&& if usable > cap || pof {
+            (e.state == Purged && e.dirty_at == 0)
+                || (e.state == Empty && empty_nbr_at(v0, page, n, e.dirty_at))
+        } else {
+            e.state == Empty && (e.dirty_at == now || empty_nbr_at(v0, page, n, e.dirty_at))
+        }
+    }
+}
+
+// An `Empty` extent of `v0` aged `t` touches the run.
+spec fn empty_nbr_at(v0: Inner, page: int, n: int, t: u64) -> bool {
+    exists|y| v0.descs@.contains_key(y) && v0.descs@[y].value().state == Empty
+        && v0.descs@[y].value().dirty_at == t
+        && (v0.descs@[y].value().start + v0.descs@[y].value().pages == page
+            || v0.descs@[y].value().start == page + n)
+}
+
+// In `free_run`, after the merged extent is entered, before `drop(g)`:
+lemma_retain_cap(g0, g@, survivor, survivor != d, page as int, n as int,
+    usable as int, cap as int, pof, now, discarded);
+// whose `ensures` is `retain_cap(g0, g@, ...)` with the same arguments.
+```
+
+(Line breaks and triggers dropped; `Purged`/`Empty` stand for
+`RunState::Purged as u8`/`RunState::Empty as u8`.) `g0` is the huge lock
+value `free_run` takes, `g@` the one it releases, and `[page, page + n)`
+the freed run's pages (guard included). `cap` is the `retain_max()` the
+free read, bound to a local (`:6376`). `pof` stands for the
+`purge_on_free()` it read: the condition `usable > cap ||
+self.purge_on_free()` reads the flag only at or below the cap, and
+Verus has no name for a value read inside it, so `free_run` defines
+`pof` from the branch taken (`st == Purged && usable <= cap`, `:6404`),
+which is the flag's value whenever it was read and `false` otherwise.
+`now` is its clock reading (`now_ns().max(1)`), and `discarded` a ghost
+flag set in the branch that pushes the run's whole range,
+`[addr, addr + n * page_size)`, into a fresh `purge::Batch` and flushes
+it.
+
+In words: a huge run freed with more usable bytes than
+`huge_retain_max`, or under `huge_dirty_decay_ms:0` (`purge_on_free`;
+this half by the condition's code, below), goes to `discard`
+(`MADV_DONTNEED`, or `MADV_FREE` under the lazy advice), pages and
+guard, before the free releases the huge lock, so before `free`
+returns; its pages then lie in a free extent that is
+`Purged` with no age (`dirty_at == 0`), unless an `Empty` neighbour
+merged in (below). A run at or below the cap is not discarded, and its
+pages lie in an `Empty` extent aged `now`, unless it merged into an
+`Empty` neighbour, whose age the merged extent keeps. This is the
+large-buffer return guarantee `docs/tuning.md` sells for
+`huge_retain_max` ("purged the moment they are freed instead of waiting
+for decay; smaller ones are retained for reuse and decay", section 2's
+table) and for `huge_dirty_decay_ms:0` ("purges a huge run the moment
+it is freed, whatever its size"), and design 7's "Runs whose usable
+size is above `huge_retain_max` ... are purged at once"; the default
+cap is `DEFAULT_RETAIN_MAX`, 64 MiB (`huge/mod.rs:86`).
+
+What is proved and what is read from code: the extent's state, age and
+place (the second conjunct) are proved from `free_run`'s merge
+(`Merge`, theorem 17), per branch, against the cap read. Since `pof`
+is defined from the branch, `usable > cap || pof` is `discarded` by
+construction: the first conjunct reduces to the `if` condition, and
+that `pof` is the `purge_on_free()` value (so that the
+`huge_dirty_decay_ms:0` half of the statement is about the flag) is
+read from the condition, not proved. That the discarding branch hands
+the run's bytes to `madvise` is `Batch::push` then `Batch::flush` on a
+fresh batch, whose bodies (verified, but not their contracts) put the
+range in the batch and pass every held range to `discard` (premise
+below). Theorem 19 proves those bytes are no live block's.
+
+**Covers.** Every free of a huge run: `free`, `free_sized`,
+`sdallocx`, `dallocx`, the frees of `realloc`/`rallocx` moving a huge
+run, and `MALLOCX_TCACHE_NONE` frees all reach `Shared::free_huge`
+(`heap/shared.rs`, from `Heap::free_huge` and `free_direct` in
+`heap/paths.rs`), the one non-test caller of `free_run`. Builds on
+theorems 17 and 19: the survivor and its merged pages are `free_run`'s
+`Merge` (theorem 17's coalescing), and the batch's `free` predicate is
+theorem 19's (the run's pages left the run-page authority with its
+token).
+
+**Premises beyond the common ones.**
+- The cap and flag are the configured ones: `retain_max` and
+  `purge_on_free` (`huge/mod.rs:3200`, `:3210`) are `Relaxed` loads of
+  std atomics, whose values vstd leaves unconstrained, so the theorem
+  is over the values read. By inspection, `set_retain_max` and
+  `set_purge_on_free` are called only in `Shared::init`
+  (`heap/shared.rs:1382`, `:1385`), on the `Huge` before `put_huge`
+  publishes it, and by tests (no mallctl or other path calls them;
+  `opt.huge_retain_max` reads the config), so every free reads
+  `huge_retain_max` and `huge_dirty_decay_ms == Some(0)` as configured.
+  `purge_on_free` is set only for an explicit `huge_dirty_decay_ms:0`;
+  with it unset and `dirty_decay_ms:0`, the flag is false and a run at
+  or below the cap waits for the (zero-period) decay walk.
+- The discard step, read from `purge.rs`: `push` adds its range to the
+  batch (merged into the last range or appended; a full batch is
+  flushed first, and a fresh batch is never full), and `flush` calls
+  `discard(&self.ranges[..self.n], ...)` once, then empties the batch.
+  A ghost record of the discarded bytes was tried (a closed
+  `Batch::holds`/`holds_range` with a `push` `ensures`, and a `sent`
+  field set by `flush` with an `ensures`). It verified in `purge` and
+  `huge`, but every form of the new contracts tried made
+  `class::decay`'s `Purger::visit` fail its `purge_group` precondition
+  (the page group's slabs, `slab & !((spp - 1) as usize)`), under
+  `quantum8` even with only the `push` `ensures` added; that proof is
+  sensitive to any change in the `Batch` contracts its module sees.
+  Hardening it comes first.
+- `madvise` does what it is asked (the kernel contract, a common
+  premise); a failed `madvise` aborts in `discard`.
+- The huge lock axioms (`vspec/huge.rs`), as for theorems 17 and 19.
+
+**Scope and where the statement is weaker than the code.**
+- Not "ends `Purged`" outright. A run above the cap that coalesces with
+  an `Empty` neighbour is discarded, but the merged extent is `Empty`
+  with the neighbour's age (`free_run` keeps the oldest `Empty`
+  neighbour as the survivor), so its discarded pages count as
+  `empty_pages` (arena 0's `huge_dirty` in the stats) and the decay
+  walk discards them again. A run at or below the cap that coalesces
+  with an `Empty` neighbour takes that neighbour's age, not `now` (the
+  code never compares the two), so it is usually purged earlier than
+  its own age would have it. Both are by design, and conservative for
+  RSS; the tests `retain_cap_decides_purged_or_empty_at_free` and
+  `a_freed_run_takes_an_empty_neighbours_state_and_age`
+  (`huge/tests.rs`) pin both outcomes, the discarded byte counts and
+  the ages (the second waits for the clock to pass the neighbour's age
+  first).
+- At the lock release, not at `free`'s return: after `drop(g)` another
+  thread may take the extent again, so no `ensures` can state the
+  extent's state at return. The discard does happen before the free
+  returns (it is inside the lock). `free_run`'s signature is unchanged;
+  exporting the statement needs a ghost result, which the callers
+  (`free_huge` and the tests) would have to take.
+- Over the values read. A concurrent `set_retain_max` (tests only) or a
+  run-time change of the configured values is outside the premise
+  above. The `usable` compared is the descriptor's usable bytes (whole
+  pages, guard excluded), not the size the caller asked for: a run of
+  `cap + 1` requested bytes has `usable > cap` and is discarded; one
+  whose request rounds up to exactly `cap` is retained.
+- `now` is the coarse clock as read; nothing orders it against the
+  neighbours' ages, and the survivor between two `Empty` neighbours is
+  chosen by the code's `<` on their stored stamps, not by a clock fact.
+- Exec change: `free_run` binds `retain_max()` to a local `cap` before
+  the condition (`let cap = self.retain_max(); if usable > cap ||
+  self.purge_on_free()`), the same loads in the same order with the
+  same short circuit; the release library is identical to the base
+  commit's (440 of 440 functions, x86_64).
+
 ## Interface contract
 
 The per-call theorems above (1-3, 5-7 and the "Bad input" section)

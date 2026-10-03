@@ -394,6 +394,91 @@ fn purged_and_empty_merge_to_empty() {
     assert_eq!(h.stats().next_page, 9);
 }
 
+/// Theorem "Huge retain cap": a run with more usable bytes than the cap
+/// is discarded and ends `Purged` with no age, one at the cap ends
+/// `Empty` aged at its free; with `purge_on_free` a run below the cap
+/// ends `Purged`.
+#[test]
+fn retain_cap_decides_purged_or_empty_at_free() {
+    let env = Env::new();
+    let h = env.huge();
+    h.set_retain_max(2 * page_size());
+    // Live runs between the freed ones keep them from merging.
+    let (at_cap, _) = env.alloc(&h, 2 * page_size(), 1);
+    let (_x, _) = env.alloc(&h, page_size(), 1);
+    let (above, _) = env.alloc(&h, 2 * page_size() + 1, 1);
+    let (_y, _) = env.alloc(&h, page_size(), 1);
+    let (small, _) = env.alloc(&h, page_size(), 1);
+    let (_z, _) = env.alloc(&h, page_size(), 1);
+    let t0 = now_ns().max(1);
+    env.free(&h, at_cap);
+    let t1 = now_ns().max(1);
+    let e = h.lookup(env.page_of(at_cap)).unwrap();
+    assert_eq!(e.state, RunState::Empty, "at the cap: retained");
+    assert!(t0 <= e.dirty_at && e.dirty_at <= t1, "aged at its free");
+    let d0 = discarded_total();
+    env.free(&h, above);
+    // Three usable pages and the guard. Other tests' purges only add to
+    // the counters, so this is a lower bound; the state below is the
+    // evidence.
+    assert!(discarded_total() - d0 >= 4 * page_size() as u64);
+    let e = h.lookup(env.page_of(above)).unwrap();
+    assert_eq!(
+        (e.state, e.dirty_at),
+        (RunState::Purged, 0),
+        "above the cap: purged"
+    );
+    h.set_purge_on_free(true);
+    env.free(&h, small);
+    let e = h.lookup(env.page_of(small)).unwrap();
+    assert_eq!(
+        (e.state, e.dirty_at),
+        (RunState::Purged, 0),
+        "purge_on_free: purged"
+    );
+}
+
+/// Where the theorem is weaker than "ends `Purged`": a run above the cap
+/// is discarded, but merging with an `Empty` neighbour leaves the merged
+/// extent `Empty`, with the neighbour's age; a run at or below the cap
+/// merged into an older `Empty` neighbour takes its age, not the time of
+/// its free.
+#[test]
+fn a_freed_run_takes_an_empty_neighbours_state_and_age() {
+    let env = Env::new();
+    let h = env.huge();
+    h.set_retain_max(2 * page_size());
+    let (a, _) = env.alloc(&h, page_size(), 1);
+    let (b, _) = env.alloc(&h, 3 * page_size(), 1);
+    let (c, _) = env.alloc(&h, 2 * page_size(), 1);
+    let (_d, _) = env.alloc(&h, page_size(), 1);
+    env.free(&h, a);
+    let ta = h.lookup(0).unwrap().dirty_at;
+    wait_past(ta);
+    let d0 = discarded_total();
+    env.free(&h, b);
+    assert!(discarded_total() - d0 >= 4 * page_size() as u64);
+    let m = h.lookup(0).unwrap();
+    assert_eq!((m.pages, m.state, m.dirty_at), (6, RunState::Empty, ta));
+    assert_eq!(h.stats().purged, 0);
+    env.free(&h, c);
+    let m = h.lookup(0).unwrap();
+    assert_eq!((m.pages, m.state, m.dirty_at), (9, RunState::Empty, ta));
+}
+
+/// Bytes discarded so far, lazy and eager.
+fn discarded_total() -> u64 {
+    let (lazy, eager) = purge::discarded_bytes();
+    lazy + eager
+}
+
+/// Wait until the coarse clock is past `t`.
+fn wait_past(t: u64) {
+    while now_ns() <= t {
+        std::thread::sleep(core::time::Duration::from_millis(1));
+    }
+}
+
 /// Design 11: under the policy's keep ratio the walk purges the oldest
 /// extents whole until within `total * keep16`, an extent larger than
 /// the excess included (free neighbours coalesce, so a program's
