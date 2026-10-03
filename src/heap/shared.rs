@@ -304,21 +304,12 @@ impl Shared {
             ptr::write(&raw mut (*this).free_flags, AtomicU8::new(push_flags));
             let regions = &*(&raw const (*this).regions);
             let tables = &raw mut (*this).tables;
-            let mut bits = [const { None }; NCLASSES];
-            for (c, b) in bits.iter_mut().enumerate() {
-                match SlabTable::reserve_bits(meta, regions, c) {
-                    Some(l) => *b = Some(l),
-                    None => return false,
-                }
-            }
-            for (c, b) in bits.into_iter().enumerate() {
-                let Some(b) = b else { return false };
-                match SlabTable::with_bits(
+            for c in 0..NCLASSES {
+                match SlabTable::new(
                     meta,
                     regions,
                     c,
                     guard_interval_for(c, regions.page_size(), guard_interval),
-                    b,
                 ) {
                     Some(t) => ptr::write(&raw mut (*tables)[c], t),
                     None => return false,
@@ -665,10 +656,10 @@ impl Shared {
     /// arena load is skipped while only arena 0 exists), `None` for
     /// anything else. It never aborts; [`classify_free`] on the slow path
     /// repeats the checks and does. Every table read is bounds-free: the
-    /// class index comes from `slab_slot`, the bitmap word from a slot
-    /// already known to be below `nslots` in a slab of the region. The
-    /// hand-out watermark is not read: the bitmap reads as zero past it
-    /// (`SlabTable::is_set_unchecked`). The fast path itself
+    /// class index comes from `slab_slot_unbounded`, the bitmap word from a
+    /// slot already known to be below `nslots` in a slab below the
+    /// watermark, whose compare is the region bound too (no separate
+    /// `region_len` test). The fast path itself
     /// (`heap::free_fast_class`) makes the same two tests from
     /// [`set_slot`] and [`home_owns`], the arena test selected by the
     /// `free_flags` byte it loads anyway; this form serves the tests.
@@ -690,9 +681,9 @@ impl Shared {
     /// load, whereas the per-class table line is one of 52 and reached
     /// through a multiply. With the geometry on the table line the chain
     /// class -> `madd` -> table load -> slab -> bitmap word would be the
-    /// whole of `free`'s critical path; here the table's `bits_base` and
-    /// `slab_bits` loads run alongside the slot arithmetic and are needed
-    /// only for the word address.
+    /// whole of `free`'s critical path; here the table's `bits_base`,
+    /// `slab_bits` and `committed_slabs` loads run alongside the slot
+    /// arithmetic and are needed only for the word address.
     ///
     /// [`classify_free`]: Shared::classify_free
     /// [`Regions::slab_slot`]: crate::layout::Regions::slab_slot
@@ -722,8 +713,7 @@ impl Shared {
         // read stays here.
         // SAFETY: `h` is a live heap and `arena` a plain field.
         let home = unsafe { ptr::read_volatile(&raw const h.arena) };
-        // SAFETY: the slot's bit is set, so its slab was handed out (bits
-        // are set only by claims from handed-out slabs).
+        // SAFETY: the caller found `slab` below the watermark.
         unsafe { table.owner_unchecked(slab) == home }
     }
 
@@ -745,13 +735,17 @@ impl Shared {
     /// [`checked_slot`]: Shared::checked_slot
     #[inline(always)]
     pub(super) fn set_slot(&self, p: *mut u8) -> Option<(usize, &SlabTable, usize)> {
-        let (class, slab, slot) = self.regions.slab_slot(p as usize)?;
-        // SAFETY: `slab_slot` only returns `class < NCLASSES`.
+        let (class, slab, slot) = self.regions.slab_slot_unbounded(p as usize)?;
+        // SAFETY: `slab_slot_unbounded` only returns `class < NCLASSES`.
         let table = unsafe { self.tables.get_unchecked(class) };
-        // No watermark compare: a slab never handed out reads a clear bit
-        // (`is_set_unchecked`), and the slow path aborts on it by name.
-        // SAFETY: `slab_slot` validated `slab < nslabs` (the slot lies in
-        // the region) and `slot < nslots`.
+        // The watermark compare is the region bound as well: a pointer
+        // outside the class region has a slab number of at least `nslabs`
+        // (`slab_slot_unbounded`), past any watermark.
+        if !table.is_handed_out(slab) {
+            return None;
+        }
+        // SAFETY: `slab` is below the watermark and `slab_slot_unbounded`
+        // validated `slot < nslots`.
         if !unsafe { table.is_set_unchecked(slab, slot) } {
             return None;
         }

@@ -38,17 +38,6 @@ impl Lazy {
         })
     }
 
-    /// [`reserve`](Lazy::reserve) through [`Meta::reserve_table_readable`]:
-    /// the uncommitted pages read as zero.
-    pub(crate) fn reserve_readable(meta: &Meta, len: usize, align: usize) -> Option<Lazy> {
-        let base = meta.reserve_table_readable(len, align.max(crate::thp::meta_folio_size()))?;
-        Some(Lazy {
-            base,
-            len,
-            committed: 0,
-        })
-    }
-
     /// Make the first `upto` bytes committed.
     pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, upto: usize) -> Result<(), Errno> {
         // With metadata THP on (`thp.rs`) the commit is rounded to the
