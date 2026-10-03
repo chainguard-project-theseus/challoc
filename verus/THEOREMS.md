@@ -942,6 +942,150 @@ vstd's multiset lemmas.
   different reordering, assumed to be a permutation (common premises),
   not covered here.
 
+## Fork safety
+
+Numbered by the coordinator at merge (lanes are adding 8, 9 and 10).
+Read at this section's commit (the `file:line`s are the `fn`/`axiom`
+line there).
+
+**Statement** (`api/mod.rs:517`, `:609`, `:618`, `:627`; asserted at
+`:818` and `:960`):
+
+```rust
+pub open spec fn listed(k: ForkLock, a: Set<int>) -> bool {
+    ||| k == ForkLock::Tcaches
+    ||| k == ForkLock::Arenas
+    ||| arena_part(k, a)      // Class(i, c), c < NCLASSES, and Sets(i), i in a
+    ||| table_part(k)         // Table(c), c < NCLASSES
+    ||| k == ForkLock::Huge
+    ||| k == ForkLock::Meta
+    ||| k == ForkLock::Stats
+    ||| stats_part(k, a)      // ArenaStats(i), i in a
+}
+
+pub(crate) open spec fn wf(self, s: Shared) -> bool {      // ForkHeld
+    &&& forall|i: int| self.arenas().contains_key(i) ==> 0 <= i < self.n()
+    &&& forall|k: ForkLock| self.keys().contains(k)
+            ==> self.lock(k) == lock_at(s, self.arenas(), k)
+}
+
+pub open spec fn all(self) -> bool {                       // ForkHeld
+    forall|k: ForkLock| self.keys().contains(k) <==> listed(k, self.arenas().dom())
+}
+
+pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: LockHeld) -> bool {
+    &&& held.wf(s)
+    &&& held.all()
+    &&& state.held() == purge::background::state_lock()
+}
+
+// end of fork_prepare (api/mod.rs:818):
+assert(fork_holds(*s, held, state));
+// end of fork_release (api/mod.rs:960), after every unlock:
+assert(held.keys() =~= Set::empty());
+```
+
+(Triggers dropped.) When `fork_prepare` returns, the calling thread
+holds one `LockHeld` token per lock of the fork lock list and nothing
+else. The list is the explicit-cache table lock, the arena creation
+lock, every class lock and the slab-set lock of every arena
+`fork_prepare` found (indices below the count it read where
+`get_existing` returned an arena), every slab table lock, the huge,
+metadata and process statistics locks, every such arena's statistics
+lock, and the background thread's state lock. Each token holds the lock
+its key names in `s` (`lock_at`, `:530`): the value the accessor path
+through `Shared` reaches, with `arenas[i]` standing for the arena that
+`get_existing(i)` returned.
+
+`fork_release` is the body of `fork_parent` and `fork_child`. It starts
+from that hold and hands every token back through
+`RawLock::unlock_held` (`lock.rs:126`), which requires the token of the
+lock it unlocks and consumes it. A token is not `Copy`, and the map is
+empty at the end, so each listed lock is released once, by its holder.
+`fork_child` first rewrites the background state through
+`Lock::get_unlocked`, which requires the state lock's token
+(`lock.rs:382`); `purge::background::fork_child`
+(`purge/background.rs:502`) proves the state's lock invariant on the
+value it leaves (`:520`). After either handler no listed lock is held.
+In the child, no lock is owned by a thread that no longer exists: at
+the fork the forking thread held every listed lock (the mutex premise
+below excludes a second holder), and the child's one thread is that
+thread's copy, which releases them.
+
+The tokens: `RawLock::lock_held` (`lock.rs:116`) is `lock` plus a
+`LockHeld` whose `held()` is the lock. The field is private to
+`lock.rs`, so outside it only `lock_held` builds a token; the handoff
+axioms below are the other source.
+
+**Premises beyond the common ones.**
+- *The mutex.* `lock` returns only once this thread holds the lock, and
+  no other thread holds it until `unlock`. This is `RawLock`'s futex
+  contract; Verus does not check it (atomics return any value). The
+  token records the calls; the mutex turns them into exclusive holds.
+- *The handoff* (`axiom_fork_resumed_state`, `api/mod.rs:647`, and
+  `axiom_fork_resumed`, `:656`; axioms). Ghost state does not cross the
+  C calls, so the hold `fork_prepare` ends with is restated where the
+  release begins: `axiom_fork_resumed` ensures `fork_holds` at the
+  `&Shared` the release reads (`shared` returns the same static). The
+  premise includes that the bundle's `n` and `arenas` are what
+  `fork_prepare` read, which the ensures does not name. glibc runs the
+  parent and child handlers on the forking thread (in the child, its
+  copy) after `_Fork`, and nothing releases a lock in between: signals
+  are blocked from the prepare handler's first step to the release's
+  last, and the atfork handlers registered before ours (whose prepare
+  runs after ours and whose parent and child handlers run before ours)
+  take no allocator lock. Each handler calls each axiom once; nothing
+  enforces that.
+- *A frozen arena table* (`arena_held`, `api/mod.rs:671`, and
+  `count_held`, `:687`; `external_body`). While this thread holds the
+  arena creation lock, `Arenas::count` and `get_existing(i)` return what
+  `fork_prepare`'s first reads returned. `Arenas::create` and `build`
+  write the count and the table only under that lock, and a published
+  arena is never freed or moved. That the release, and `fork_prepare`'s
+  second arena scan, cover the same arenas as its first scan rests on
+  these two and the handoff. They take a bundle (`ForkHeld`) and trust
+  its `n` and `arenas`; its fields are private to `api`, and by
+  convention only `fork_prepare` and `axiom_fork_resumed` build one
+  (`api`'s submodules could too).
+- `purge::background::state` (`purge/background.rs:462`,
+  `external_body`): the static `STATE`'s raw lock is `state_lock()`
+  (Verus does not read statics in specifications).
+- The background state's invariant in the child also rests on
+  `axiom_state_lock_inv` (`purge/background.rs:52`) and on
+  `get_unlocked`'s trusted ensures (the value a holder left).
+- *Completeness of the list.* That `listed` names every `Lock` in the
+  crate is not proved. The test `fork_lock_list_matches_the_source_tree`
+  checks the `Lock` fields and statics in the source tree against the
+  test's `FORK_LOCKS` (`api/mod.rs:1165`); that `FORK_LOCKS`, `ForkLock`
+  and the handlers' bodies name the same locks is by inspection.
+
+**Where the statement is weaker than the code.**
+- Lock identity is by value along the accessor path (Verus has no
+  addresses of references). The proof checks that every lock and unlock
+  goes through the accessor path its key names (two locks' values cannot
+  be proved equal, so a swapped token fails), not that the paths reach
+  distinct addresses.
+- The arenas are those `fork_prepare` found, not proved to be every
+  arena that exists: `get_existing` has no specification.
+- "Released once" holds given one handoff per handler: a second call of
+  either axiom would hand out a second token for a held lock and still
+  verify (it does not prove false, since no lemma says two tokens of one
+  lock are apart).
+- The order is not proved: the statement says which locks are held, not
+  that `fork_prepare` takes them in the nesting order (design 9) that
+  rules out a deadlock with a thread mid-operation. The release order
+  is unstated too.
+- Partial correctness: a `lock` that never returns (a deadlock in
+  prepare) satisfies everything. A prepare handler registered before
+  challoc's (one that runs after ours) that allocates on a slow path
+  would deadlock on its own thread; the handoff premise excludes it.
+- Consistency in the child covers the one value the handlers write (the
+  background state). The handlers do not touch the other locked values,
+  which keep the invariant their last holder left, as the lock axioms
+  assume for every acquire.
+- The signal mask's save and restore (`save_sigmask`, `saved_sigmask`,
+  `external_body`) are not part of the statement.
+
 ## Interface contract
 
 The seven theorems above checked against challoc's exported C ABI: one

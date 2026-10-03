@@ -2389,8 +2389,16 @@ impl Meta {
 
     /// The lock, for the fork handlers.
     #[inline]
-    pub fn raw_lock(&self) -> &RawLock {
+    pub fn raw_lock(&self) -> (r: &RawLock)
+        ensures
+            *r == self.spec_raw_lock(),
+    {
         self.inner.raw()
+    }
+
+    /// The lock [`Self::raw_lock`] returns.
+    pub closed spec fn spec_raw_lock(&self) -> RawLock {
+        self.inner.spec_raw()
     }
 
     /// Allocate an object. Contents are unspecified: fresh memory is zero,

@@ -6,14 +6,16 @@ use crate::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::ffi::c_void;
 
 use crate::heap::{Shared, TLS_CREATING, TLS_EXITED};
-use crate::lock::Lock;
+#[cfg(verus_only)]
+use crate::lock::RawLock;
+use crate::lock::{Lock, LockHeld};
 use crate::sys::{self, Timespec};
 use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_only)]
 use crate::vspec::lock::lock_inv;
-use vstd::prelude::verus;
 #[cfg(verus_only)]
 use vstd::prelude::*;
+use vstd::prelude::{Tracked, verus};
 
 verus! {
 
@@ -448,14 +450,38 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
     }
 }
 
-/// Take the state lock (fork prepare, after the metadata lock).
-pub fn fork_lock() {
-    STATE.raw().lock();
+/// The state lock, as [`fork_lock`] takes it: [`STATE`]'s raw lock.
+/// Uninterpreted (Verus does not read statics in specifications);
+/// [`state`] pins it.
+pub uninterp spec fn state_lock() -> RawLock;
+
+/// `&STATE`. Trusted: names its raw lock [`state_lock`], which holds
+/// because `STATE` is one static.
+#[verifier::external_body]
+#[inline(always)]
+fn state() -> (r: &'static Lock<State>)
+    ensures
+        r.spec_raw() == state_lock(),
+{
+    &STATE
 }
 
-/// Release the state lock (fork parent and child, before the others).
-pub fn fork_unlock() {
-    STATE.raw().unlock();
+/// Take the state lock (fork prepare, after the metadata lock); the
+/// token is the hold.
+pub fn fork_lock() -> (t: Tracked<LockHeld>)
+    ensures
+        t@.held() == state_lock(),
+{
+    state().raw().lock_held()
+}
+
+/// Release the state lock (fork parent and child, before the others),
+/// handing back the token of the hold.
+pub fn fork_unlock(Tracked(t): Tracked<LockHeld>)
+    requires
+        t.held() == state_lock(),
+{
+    state().raw().unlock_held(Tracked(t))
 }
 
 } // verus!
@@ -470,11 +496,17 @@ verus! {
 
 /// The child has no background thread and, per design 8.1, does not
 /// get one until it asks again. Called with the state lock held by
-/// this thread (`fork_prepare` took it).
-pub fn fork_child() {
+/// this thread (`fork_prepare` took it; `held` is the hold). Leaves the
+/// state's lock invariant true, so the value the child's next locker
+/// reads is consistent.
+pub fn fork_child(Tracked(held): Tracked<&LockHeld>)
+    requires
+        held.held() == state_lock(),
+{
     // SAFETY: the forking thread holds the lock; the child is single
     // threaded.
-    let st = unsafe { STATE.get_unlocked() };
+    let st = unsafe { state().get_unlocked(Tracked(held)) };
+    let ghost before = *st;
     st.present = false;
     st.creating = false;
     // The parent's thread does not exist here and its `pthread_t`
@@ -482,6 +514,11 @@ pub fn fork_child() {
     // kernel never clears in this process); the stack is kept and is
     // free to reuse, nothing runs on the child's copy of it.
     st.thread = None;
+    proof {
+        axiom_state_lock_inv(before);
+        axiom_state_lock_inv(*st);
+        assert(lock_inv(*st));
+    }
     PRESENT.store(false, Ordering::Relaxed);
     REQUESTED.store(false, Ordering::Relaxed);
 }

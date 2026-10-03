@@ -1571,8 +1571,16 @@ impl ClassState {
 
     /// The class lock, for fork handlers.
     #[inline]
-    pub fn raw_lock(&self) -> &RawLock {
+    pub fn raw_lock(&self) -> (r: &RawLock)
+        ensures
+            *r == self.spec_raw_lock(),
+    {
         self.inner.raw()
+    }
+
+    /// The lock [`Self::raw_lock`] returns.
+    pub closed spec fn spec_raw_lock(&self) -> RawLock {
+        self.inner.0.spec_raw()
     }
 
     /// [`SlabTable::is_guard_slab`].

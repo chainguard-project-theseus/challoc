@@ -128,8 +128,16 @@ impl Tcaches {
     /// allocator lock: `create` and `destroy` hold it across
     /// `Heap::create_detached` / `Heap::destroy`, which take the arena
     /// creation, class and metadata locks.
-    pub fn raw_lock(&self) -> &crate::lock::RawLock {
+    pub fn raw_lock(&self) -> (r: &crate::lock::RawLock)
+        ensures
+            *r == self.spec_raw_lock(),
+    {
         self.lock.raw()
+    }
+
+    /// The lock [`Self::raw_lock`] returns.
+    pub closed spec fn spec_raw_lock(&self) -> crate::lock::RawLock {
+        self.lock.spec_raw()
     }
 
     /// The explicit cache `id`, if it exists. Not thread safe: two threads

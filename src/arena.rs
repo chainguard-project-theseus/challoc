@@ -859,12 +859,20 @@ impl Arena {
 
     /// The arena's slab set table (fork handlers, tests).
     #[inline]
-    pub fn sets(&self) -> &SetTable {
+    pub fn sets(&self) -> (r: &SetTable)
+        ensures
+            *r == self.spec_sets(),
+    {
         proof {
             use_type_invariant(self);
         }
         // Written by `init` to a live, never-freed metadata object.
         ptr_ref(self.sets, Tracked(self.sets_perm.borrow()))
+    }
+
+    /// The slab set table [`Arena::sets`] returns.
+    pub closed spec fn spec_sets(&self) -> SetTable {
+        self.sets_perm@.value()
     }
 }
 
@@ -998,8 +1006,16 @@ impl Arena {
 
     /// The statistics lock, for the fork handlers (a leaf: never held
     /// while another lock is taken).
-    pub fn stats_raw_lock(&self) -> &crate::lock::RawLock {
+    pub fn stats_raw_lock(&self) -> (r: &crate::lock::RawLock)
+        ensures
+            *r == self.spec_stats_lock(),
+    {
         self.stats.raw()
+    }
+
+    /// The lock [`Self::stats_raw_lock`] returns.
+    pub closed spec fn spec_stats_lock(&self) -> crate::lock::RawLock {
+        self.stats.spec_raw()
     }
 
     pub fn index(&self) -> u16 {
@@ -1014,6 +1030,7 @@ impl Arena {
             class < NCLASSES,
         ensures
             r.spec_class() == class,
+            *r == self.spec_class_state(class as int),
     {
         proof {
             use_type_invariant(self);
@@ -1021,6 +1038,11 @@ impl Arena {
         debug_assert!(class < NCLASSES);
         // SAFETY: `class_of` only yields indices below `NCLASSES`.
         unsafe { self.classes.get_unchecked(class) }
+    }
+
+    /// The class state [`Arena::class`] returns.
+    pub closed spec fn spec_class_state(&self, class: int) -> ClassState {
+        self.classes[class]
     }
 
     /// The decay period in nanoseconds (`purge::NEVER` when purging is off).
@@ -1405,8 +1427,16 @@ impl Arenas {
     }
 
     /// The creation lock, for fork handlers (taken before every class lock).
-    pub fn raw_lock(&self) -> &crate::lock::RawLock {
+    pub fn raw_lock(&self) -> (r: &crate::lock::RawLock)
+        ensures
+            *r == self.spec_raw_lock(),
+    {
         self.lock.raw()
+    }
+
+    /// The lock [`Self::raw_lock`] returns.
+    pub closed spec fn spec_raw_lock(&self) -> crate::lock::RawLock {
+        self.lock.spec_raw()
     }
 }
 

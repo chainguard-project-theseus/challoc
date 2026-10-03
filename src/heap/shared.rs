@@ -19,6 +19,7 @@ use crate::huge::Huge;
 use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
 use crate::lock::Lock;
+use crate::lock::RawLock;
 use crate::meta::Meta;
 use crate::policy::Policy;
 use crate::stats::Snapshot;
@@ -1639,8 +1640,72 @@ impl Shared {
     pub fn tables(&self) -> (r: &[SlabTable; NCLASSES])
         ensures
             self.wf() ==> forall|c: int| 0 <= c < NCLASSES ==> #[trigger] r[c].spec_class() == c,
+            *r == self.spec_tables(),
     {
         &self.tables
+    }
+
+    /// The slab tables [`Shared::tables`] returns.
+    pub closed spec fn spec_tables(&self) -> [SlabTable; NCLASSES] {
+        self.tables
+    }
+
+    /// The fork handlers' locks that live in `Shared` itself, by value
+    /// (`api::lock_at`): the explicit-cache table lock, the arena
+    /// creation lock, the huge, metadata and process statistics locks.
+    pub closed spec fn spec_fork_locks(&self) -> (RawLock, RawLock, RawLock, RawLock, RawLock) {
+        (
+            self.tcaches.spec_raw_lock(),
+            self.arenas.spec_raw_lock(),
+            self.huge.spec_raw_lock(),
+            self.meta.spec_raw_lock(),
+            self.stats.spec_raw(),
+        )
+    }
+
+    /// The explicit-cache table lock, for the fork handlers.
+    #[inline(always)]
+    pub fn tcaches_lock(&self) -> (r: &RawLock)
+        ensures
+            *r == self.spec_fork_locks().0,
+    {
+        self.tcaches.raw_lock()
+    }
+
+    /// The arena creation lock, for the fork handlers.
+    #[inline(always)]
+    pub fn arenas_lock(&self) -> (r: &RawLock)
+        ensures
+            *r == self.spec_fork_locks().1,
+    {
+        self.arenas.raw_lock()
+    }
+
+    /// The huge lock, for the fork handlers.
+    #[inline(always)]
+    pub fn huge_lock(&self) -> (r: &RawLock)
+        ensures
+            *r == self.spec_fork_locks().2,
+    {
+        self.huge.raw_lock()
+    }
+
+    /// The metadata lock, for the fork handlers.
+    #[inline(always)]
+    pub fn meta_lock(&self) -> (r: &RawLock)
+        ensures
+            *r == self.spec_fork_locks().3,
+    {
+        self.meta.raw_lock()
+    }
+
+    /// The process statistics lock, for the fork handlers.
+    #[inline(always)]
+    pub fn stats_lock(&self) -> (r: &RawLock)
+        ensures
+            *r == self.spec_fork_locks().4,
+    {
+        self.stats.raw()
     }
 
     /// Slab table for `class`, without the bounds check the fast paths do

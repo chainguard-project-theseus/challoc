@@ -109,11 +109,60 @@ impl RawLock {
         }
     }
 
+    /// [`RawLock::lock`], returning the hold as a [`LockHeld`] token, for
+    /// code that holds several raw locks with no guard (the fork
+    /// handlers).
+    #[inline(always)]
+    pub fn lock_held(&self) -> (t: Tracked<LockHeld>)
+        ensures
+            t@.held() == *self,
+    {
+        self.lock();
+        Tracked(LockHeld { lock: *self })
+    }
+
+    /// [`RawLock::unlock`] by the holder, which hands its token back.
+    #[inline(always)]
+    pub fn unlock_held(&self, Tracked(t): Tracked<LockHeld>)
+        requires
+            t.held() == *self,
+    {
+        self.unlock();
+    }
+
     /// Whether some thread currently holds the lock. Diagnostic only.
     #[inline]
     #[cfg(test)]
     pub fn is_locked(&self) -> bool {
         self.state.load(Ordering::Relaxed) != UNLOCKED
+    }
+}
+
+/// Ghost: its owner holds the raw lock [`LockHeld::held`].
+/// [`RawLock::lock_held`] makes one after its `lock` returns, and
+/// [`RawLock::unlock_held`] takes it back as it unlocks. The field is
+/// private to this module, so outside it only `lock_held` builds one;
+/// the other source is the fork handlers' handoff axioms
+/// (`api::axiom_fork_resumed_state`, `api::axiom_fork_resumed`), which
+/// restate across the C calls the tokens `fork_prepare` ended with. The
+/// token is not `Copy`, so each token is handed back at most once. A
+/// token names its lock by value (Verus has no addresses of
+/// references): a proof matches it to the accessor path it was taken
+/// through, not to an address. That `lock` returns only once this thread
+/// holds the lock, and that no other thread does until `unlock`, is the
+/// futex mutex's contract, which Verus does not check (the atomics
+/// return any value): the token records the calls; the mutex makes them
+/// a hold.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct LockHeld {
+    ghost lock: RawLock,
+}
+
+impl LockHeld {
+    /// The lock this token holds.
+    pub closed spec fn held(self) -> RawLock {
+        self.lock
     }
 }
 
@@ -301,8 +350,16 @@ impl<T> Lock<T> {
     /// The underlying word, for code that must hold several locks across a
     /// region with no guard to keep (the fork handlers).
     #[inline]
-    pub fn raw(&self) -> &RawLock {
+    pub fn raw(&self) -> (r: &RawLock)
+        ensures
+            *r == self.spec_raw(),
+    {
         &self.raw
+    }
+
+    /// The raw lock [`Lock::raw`] returns.
+    pub closed spec fn spec_raw(&self) -> RawLock {
+        self.raw
     }
 
     /// Access the value without locking.
@@ -318,10 +375,13 @@ impl<T> Lock<T> {
     /// contract the value is one a holder left, so it satisfies
     /// [`lock_inv`] and keeps [`lock_frame`]. The caller is a holder like
     /// any other and must leave the invariant true; a verified caller ends
-    /// with an explicit `assert(lock_inv(*r))`.
+    /// with an explicit `assert(lock_inv(*r))`. The caller shows its hold
+    /// with the raw lock's [`LockHeld`] token (ghost).
     #[inline]
     #[verifier::external_body]
-    pub unsafe fn get_unlocked(&self) -> (r: &mut T)
+    pub unsafe fn get_unlocked(&self, Tracked(held): Tracked<&LockHeld>) -> (r: &mut T)
+        requires
+            held.held() == self.spec_raw(),
         ensures
             lock_inv(*r),
             lock_frame(lock_init(*self), *r),

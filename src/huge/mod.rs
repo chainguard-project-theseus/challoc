@@ -2674,8 +2674,16 @@ impl Huge {
 
     /// The huge lock, for fork handlers.
     #[inline]
-    pub fn raw_lock(&self) -> &RawLock {
+    pub fn raw_lock(&self) -> (r: &RawLock)
+        ensures
+            *r == self.spec_raw_lock(),
+    {
         self.inner.raw()
+    }
+
+    /// The lock [`Self::raw_lock`] returns.
+    pub closed spec fn spec_raw_lock(&self) -> RawLock {
+        self.inner.spec_raw()
     }
 
     /// The page, `2^lg_page`, and at least one page fits the region.
