@@ -179,7 +179,7 @@ pub fn free(p: *mut u8) {
     if let Some((t, tp)) = heap::tls_heap_slot() {
         // SAFETY: this thread's heap exists, so this thread observed
         // `READY` when it created the heap.
-        let shared = crate::sys::opaque(unsafe { super::shared_unchecked() });
+        let shared = unsafe { &*super::shared_base() };
         // SAFETY: the slot value of this thread.
         if unsafe { heap::free_fast_slot(shared, t, tp, p) }.is_some() {
             return;
@@ -204,9 +204,10 @@ pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>) {
     if p.is_null() {
         return;
     }
-    if let Some(h) = heap::existing_heap(super::shared_ptr()) {
+    let sp = super::shared_base();
+    if let Some(h) = heap::existing_heap(sp) {
         // SAFETY: as in `free`.
-        let shared = unsafe { super::shared_unchecked() };
+        let shared = unsafe { &*sp };
         if heap::free_sized_fast(shared, h, p, Some(c), shared.push_flags()) {
             return;
         }
@@ -612,7 +613,7 @@ pub fn free_usable(p: *mut u8) -> usize {
     }
     if let Some((t, tp)) = heap::tls_heap_slot() {
         // SAFETY: as in `free`.
-        let shared = unsafe { super::shared_unchecked() };
+        let shared = unsafe { &*super::shared_base() };
         // SAFETY: as in `free`.
         if let Some(class) = unsafe { heap::free_fast_slot(shared, t, tp, p) } {
             return class_size(class);
