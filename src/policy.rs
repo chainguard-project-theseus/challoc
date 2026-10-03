@@ -2,9 +2,10 @@
 //! the figures `sys::cgroup` samples.
 //!
 //! The pure part ([`band`], [`effective_decay_ns`], [`retention_cap`],
-//! [`keep_ratio`]) maps the effective limit (`min(memory.high,
-//! memory.max)` up the hierarchy) and the last `memory.current` sample to
-//! the table's rows:
+//! [`keep_ratio`]) maps a limit (`min(memory.high, memory.max)`) and the
+//! last `memory.current` sample to the table's rows; [`cgroup_band`]
+//! takes the most severe row over the levels of the hierarchy that have
+//! a limit, each against its own usage:
 //!
 //! | usage                | decay period            | retention          | cache GC          |
 //! |----------------------|-------------------------|--------------------|-------------------|
@@ -59,7 +60,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::heap::Shared;
 use crate::purge::NEVER;
-use crate::sys::cgroup::UNLIMITED;
+use crate::sys::cgroup::{Cgroup, UNLIMITED};
 
 /// Fixed-point one for the band position and the keep ratio.
 pub const FRAC_ONE: u32 = 1 << 16;
@@ -77,8 +78,9 @@ pub const RETENTION_DIVISOR: u64 = 20;
 /// (`thp::forced_by_limit`).
 pub const THP_MIN_LIMIT: u64 = 1 << 30;
 
-/// The row of the table usage falls in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The row of the table usage falls in, ordered from the least severe to
+/// the most.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Band {
     /// No effective limit (or nothing tracked): everything as configured.
     Unlimited,
@@ -126,7 +128,7 @@ pub fn usage_ppm(limit: u64, current: u64) -> u64 {
     c * 1_000_000 / l
 }
 
-/// The row for `limit` (the effective `min(high, max)`) and `current`.
+/// The row for `limit` (a `min(high, max)`) and `current`.
 pub fn band(limit: u64, current: u64) -> Band {
     if limit == UNLIMITED || limit == 0 {
         return Band::Unlimited;
@@ -142,6 +144,18 @@ pub fn band(limit: u64, current: u64) -> Band {
             IMMEDIATE_FROM_PPM - SCALED_FROM_PPM,
         ))
     }
+}
+
+/// The most severe row over the hierarchy (design 11): the effective
+/// limit against the leaf's usage, which also stands in for any limited
+/// level beyond `sys::cgroup::LEVELS`; and each ancestor with a limit of
+/// its own against its own usage, since the kernel holds an ancestor to
+/// its limit by the usage of all its children.
+pub fn cgroup_band(cg: &Cgroup) -> Band {
+    cg.ancestors().fold(
+        band(cg.limit().min(cg.high()), cg.current()),
+        |b, (l, c)| b.max(band(l, c)),
+    )
 }
 
 /// The advice a purge batch is issued with (design 8).
@@ -442,7 +456,7 @@ pub fn evaluate(shared: &Shared) {
     let cg = &shared.cgroup;
     let p = &shared.policy;
     let limit = cg.limit().min(cg.high());
-    let b = band(limit, cg.current());
+    let b = cgroup_band(cg);
     if b == Band::Unlimited {
         // A limit that went away (`docker update`) resets the outcome once;
         // otherwise nothing to do and nothing to read.
