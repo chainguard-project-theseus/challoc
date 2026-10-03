@@ -149,48 +149,53 @@ fn purged_memory_is_zero_by_default() {
 
 /// The advice's process-wide wiring: the
 /// policy's headroom mirror, the `lazy_band` key and an explicit purge
-/// in flight, read without any batch being flushed. Serialised with
-/// [`ADVICE_TEST`] against the batch tests, which flush.
+/// in flight, read without any batch being flushed. In a fork child: in
+/// this process any test's policy sample resets the mirror
+/// (`policy::evaluate` without a limit) between the write and the read,
+/// and a concurrent flush under the flipped mirror would issue a lazy
+/// batch and make [`purged_is_zero`] false for the class and huge tests
+/// (#69).
 #[test]
 fn advice_follows_headroom_band_key_and_explicit_purges() {
-    let _serial = serial();
-    assert_eq!(advice(), Advice::Eager);
-    set_headroom(true, false);
-    assert_eq!(advice(), Advice::Lazy);
-    assert_eq!(advice_reason(), "under 70% of the limit");
-    // The diagnostics name the flag the next flush would issue.
-    assert_eq!(advice_name(), "MADV_FREE");
-    {
-        let _e = Explicit::enter();
+    crate::testutil::in_fork_child("purge advice", 30_000, || {
         assert_eq!(advice(), Advice::Eager);
-        assert_eq!(advice_reason(), "explicit purge");
+        set_headroom(true, false);
+        assert_eq!(advice(), Advice::Lazy);
+        assert_eq!(advice_reason(), "under 70% of the limit");
+        // The diagnostics name the flag the next flush would issue.
+        assert_eq!(advice_name(), "MADV_FREE");
         {
-            let _e2 = Explicit::enter();
+            let _e = Explicit::enter();
+            assert_eq!(advice(), Advice::Eager);
+            assert_eq!(advice_reason(), "explicit purge");
+            {
+                let _e2 = Explicit::enter();
+                assert_eq!(advice(), Advice::Eager);
+            }
             assert_eq!(advice(), Advice::Eager);
         }
+        assert_eq!(advice(), Advice::Lazy);
+        configure_advice(false);
         assert_eq!(advice(), Advice::Eager);
-    }
-    assert_eq!(advice(), Advice::Lazy);
-    configure_advice(false);
-    assert_eq!(advice(), Advice::Eager);
-    assert_eq!(advice_reason(), "lazy_band:false");
-    configure_advice(true);
-    assert_eq!(advice(), Advice::Lazy);
-    set_headroom(false, true);
-    assert_eq!(advice(), Advice::Eager);
-    assert_eq!(advice_reason(), "returning the excess over the cap");
-    set_headroom(false, false);
-    assert_eq!(advice(), Advice::Eager);
-    assert_eq!(advice_reason(), "no headroom known");
-    // Nothing was flushed: the sticky flag is untouched, so the eager
-    // advice reads plain (no "some lazy batches issued").
-    assert!(purged_is_zero());
-    assert_eq!(advice_name(), "MADV_DONTNEED");
-    assert_eq!(batches(), (0, EAGER_BATCHES.load(Ordering::Relaxed)));
+        assert_eq!(advice_reason(), "lazy_band:false");
+        configure_advice(true);
+        assert_eq!(advice(), Advice::Lazy);
+        set_headroom(false, true);
+        assert_eq!(advice(), Advice::Eager);
+        assert_eq!(advice_reason(), "returning the excess over the cap");
+        set_headroom(false, false);
+        assert_eq!(advice(), Advice::Eager);
+        assert_eq!(advice_reason(), "no headroom known");
+        // Nothing was flushed: the sticky flag is untouched, so the eager
+        // advice reads plain (no "some lazy batches issued").
+        assert!(purged_is_zero());
+        assert_eq!(advice_name(), "MADV_DONTNEED");
+        assert_eq!(batches(), (0, EAGER_BATCHES.load(Ordering::Relaxed)));
+    });
 }
 
-/// The batch tests flush (for real); the advice test flips
-/// the headroom mirror; one at a time.
+/// The batch tests flush (for real), one at a time; the advice test,
+/// which flips the headroom mirror, runs in a fork child instead.
 pub(super) static ADVICE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Take [`ADVICE_TEST`]; a panic in one holder must not fail the rest.
