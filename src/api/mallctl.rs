@@ -1329,6 +1329,8 @@ mod tests {
 
     #[test]
     fn names_resolve_to_positional_mibs_and_back() {
+        // Reads `stats.cgroup.decay_ms` against arena 0's decay.
+        let _serial = crate::testutil::global_state();
         assert_eq!(mib_of("version"), [0]);
         assert_eq!(mib_of("epoch"), [1]);
         // Numeric components are stored as the number, at the position
@@ -1500,6 +1502,8 @@ mod tests {
 
     #[test]
     fn read_write_rules_match_jemalloc() {
+        // Advances the stats epoch.
+        let _serial = crate::testutil::global_state();
         // Reading with the wrong size copies the prefix and fails EINVAL.
         let mut short: u32 = 0;
         let c = CString::new("arenas.page").unwrap();
@@ -1539,6 +1543,8 @@ mod tests {
 
     #[test]
     fn static_and_opt_keys_report_the_build_and_configuration() {
+        // Asserts arena 0's decay, writes `background_thread`.
+        let _serial = crate::testutil::global_state();
         let v: *const c_char = get("version");
         assert_eq!(cstring_at(v), VERSION_STR);
         assert!(cstring_at(v).starts_with("5.3.0-0-g"));
@@ -1654,6 +1660,8 @@ mod tests {
 
     #[test]
     fn stats_are_frozen_between_epochs_and_arenas_all_sums() {
+        // Asserts that only its own `epoch` moves the epoch.
+        let _serial = crate::testutil::global_state();
         let s = shared();
         // Other tests of this binary allocate and free concurrently, and
         // since `tcache_max` a freed 40 KiB block leaves `allocated` at
@@ -1795,6 +1803,8 @@ mod tests {
 
     #[test]
     fn arena_keys_create_lookup_purge_decay_and_destroy() {
+        // Writes every arena's decay through `arena.4096`.
+        let _serial = crate::testutil::global_state();
         let s = shared();
         let a: c_uint = get("arenas.create");
         assert!(a >= 1);

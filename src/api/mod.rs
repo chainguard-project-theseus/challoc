@@ -445,10 +445,6 @@ mod tests {
         }
     }
 
-    /// The two handler tests drive the process-wide locks directly and the
-    /// harness runs tests in parallel, so they take turns.
-    static FORK_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// Every `Lock<..>` (or bare `RawLock`) field and static in `src/`, as
     /// `file:Owner.field` (`file:static.NAME` for statics), read from the
     /// source tree so the fork handlers cannot miss a lock added later.
@@ -671,23 +667,34 @@ mod tests {
         );
     }
 
+    /// The handlers take every lock and release every lock, on both fork
+    /// sides. The checks run in a fork child: in this process another test
+    /// can take a heap lock (a huge allocation, a refill) the moment the
+    /// handlers release it, so "every lock free" is only exact where no
+    /// other thread runs (#69). The real `fork` runs the handlers through
+    /// `pthread_atfork`, so the child starts from `fork_child`'s release.
     #[test]
     fn fork_handlers_take_and_release_every_lock() {
-        let _serial = FORK_TEST.lock().unwrap();
+        let _serial = crate::testutil::global_state();
         let s = shared();
         // A second arena so the handlers have more than arena 0 to cover.
         let extra = s.arenas.create(s).unwrap();
         let arenas = [0, extra];
-        fork_prepare();
-        assert_locks(s, &arenas, true);
-        fork_parent();
-        assert_locks(s, &arenas, false);
-        fork_prepare();
-        assert_locks(s, &arenas, true);
-        fork_child();
-        assert_locks(s, &arenas, false);
-        assert!(!purge::background::present());
-        assert!(!purge::background::requested());
+        crate::testutil::in_fork_child("fork handlers", 60_000, || {
+            assert_locks(s, &arenas, false);
+            assert!(!purge::background::present());
+            assert!(!purge::background::requested());
+            fork_prepare();
+            assert_locks(s, &arenas, true);
+            fork_parent();
+            assert_locks(s, &arenas, false);
+            fork_prepare();
+            assert_locks(s, &arenas, true);
+            fork_child();
+            assert_locks(s, &arenas, false);
+            assert!(!purge::background::present());
+            assert!(!purge::background::requested());
+        });
     }
 
     /// The background thread starts on request, is visible under
@@ -710,7 +717,7 @@ mod tests {
             }
             names
         }
-        let _serial = FORK_TEST.lock().unwrap();
+        let _serial = crate::testutil::global_state();
         let s = shared();
         assert!(!tasks().iter().any(|n| n == "challoc-bg"));
         purge::background::request(true);
@@ -839,9 +846,9 @@ mod tests {
     fn background_thread_purges_an_empty_from_its_startup() {
         use core::sync::atomic::{AtomicU8, Ordering};
         use std::sync::Arc;
-        let _serial = FORK_TEST.lock().unwrap();
+        let _serial = crate::testutil::global_state();
         // A private allocator: the process-wide one is shared with the
-        // tests that do not take `FORK_TEST`, whose huge frees could
+        // tests that do not take `global_state`, whose huge frees could
         // leave a run `Empty` before the hook's.
         let s = crate::testutil::shared();
         assert!(!purge::background::present());
@@ -940,7 +947,7 @@ mod tests {
             }
             panic!("background thread did not stop");
         }
-        let _serial = FORK_TEST.lock().unwrap();
+        let _serial = crate::testutil::global_state();
         let s = shared();
         assert!(!purge::background::present());
         purge::background::request(true);
@@ -984,7 +991,7 @@ mod tests {
             const KILL_STOP: u64 = (1 << (::libc::SIGKILL - 1)) | (1 << (::libc::SIGSTOP - 1));
             mask & !KILL_STOP
         }
-        let _serial = FORK_TEST.lock().unwrap();
+        let _serial = crate::testutil::global_state();
         let all = blockable(!0);
         // Start from a distinctive mask so "restored" is not "left blocked".
         let mut want: ::libc::sigset_t = unsafe { core::mem::zeroed() };
