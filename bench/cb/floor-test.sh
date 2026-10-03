@@ -20,8 +20,8 @@
 #
 # CHALLOC_TEST_ALLOW_SKIP=1 as in `make test`: a kernel- or privilege-gated
 # test prints `SKIP <test> <reason>` and passes. The last lines summarise
-# the run: `floor: <step> ok|FAIL`, the test result lines, every SKIP,
-# OUTCOME and fuzz line (uncapped) with their counts, the failing tests and
+# the run: `floor: <step> ok|FAIL`, every test result, SKIP, OUTCOME and
+# fuzz line (uncapped, tagged with its step), the failing tests and
 # `floor: result pass|fail`. The exit status is 0 when every step passed.
 set -u
 unset LD_PRELOAD MALLOC_CONF CHALLOC_CONF
@@ -42,6 +42,7 @@ rc=0
 step() {
   name=$1; shift
   t=$(date +%s)
+  echo "floor-step: $name" >> "$LOG"
   if "$@" >> "$LOG" 2>&1; then
     echo "floor: $name ok ($(( $(date +%s) - t )) s)"
   else
@@ -112,7 +113,8 @@ step fuzz env LD_PRELOAD="$CARGO_TARGET_DIR/release/libchalloc.so" "$CARGO_TARGE
 # skipped test passes, so the SKIP lines are what a pass covers). Panics
 # are a separate, capped block: the should_panic tests print ~70 of them on
 # a passing run, and they must not push the SKIP lines out of a capped list.
-grep -E '^test result:|^SKIP |^OUTCOME |^fuzz' "$LOG" | sort | uniq -c | sort -rn
+# Each line is tagged with its step, in log order.
+awk '/^floor-step: / { st = $2; next } /^test result:|^SKIP |^OUTCOME |^fuzz/ { print "[" st "] " $0 }' "$LOG" | uniq -c
 echo "floor: $(grep -c '^SKIP ' "$LOG") SKIP lines, $(grep -c '^OUTCOME ' "$LOG") OUTCOME lines"
 grep -E '^failures:|^    [a-z_:]+$|^---- .* stdout ----' "$LOG" | head -40
 [ $rc = 0 ] || grep -E 'panicked at' "$LOG" | sort | uniq -c | sort -rn | head -40
