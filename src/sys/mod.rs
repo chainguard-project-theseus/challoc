@@ -83,7 +83,6 @@ pub const fn yn(b: bool) -> &'static str {
     if b { "yes" } else { "no" }
 }
 
-
 /// The leading decimal digits of `bytes` as a `u64`, whatever follows
 /// them: `42 x` and `2097152\n` read 42 and 2097152 (a `memory.events`
 /// value, a sysfs number with its newline). `None` without a digit or on
