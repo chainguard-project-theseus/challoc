@@ -244,8 +244,13 @@ allocation slow paths (every 64 slow-path entries of a heap), from the
 background thread, from a `stats.cgroup.current` read and from
 `malloc_stats_print`. The fast paths never see any of this.
 
-The policy. Usage is the last `memory.current` sample against the
-effective limit `min(memory.high, memory.max)`:
+The policy. Usage is the last `memory.current` sample against
+`min(memory.high, memory.max)` at every level that has a limit, each
+level's own usage against its own limit, and the most severe row wins:
+a parent limited to 1000 MiB that holds 950 MiB puts the process at 95%
+even when its own cgroup holds 100 MiB, because the kernel reclaims and
+OOM-kills against the parent's usage. Each such ancestor costs one more
+read per sample.
 
 | usage | decay period | retention | cache GC | purge advice |
 |---|---|---|---|---|
@@ -414,7 +419,7 @@ The lines an operator reads first, in the order they appear:
 | `Huge: N runs (P pages), N empty extents (P pages), N purged extents (P pages), high-water page H` | the huge tier: `empty` is retained freed runs (`huge_retain_max`) |
 | `Metadata: reserved N, committed N, writable N, allocated N, bumped N, tables N, small tables N` | descriptor tables, bitmaps and heaps; `writable` is the one mapping the small tables share, `small tables` how many of `tables` live in it (design 2) |
 | `cgroup: <dir> (mount <m>, path <p>) limit L high H current C events high N (+r) max N (+r)` or `cgroup: not tracked (<reason>)` | `limit`/`high` are the effective values up the hierarchy (`max` when unlimited) |
-| `cgroup policy: defaults (no limit)` / `under 70% (defaults, retention capped)` / `70..90% (decay scaled, N% into the band)` / `over 90% (purge at once, cache GC every tick)` `decay_ms N retention_cap N keep N% empty_bytes N full_purges N thp as configured` | the band as last evaluated and what it gave arena 0; `empty_bytes` is the retention the cap acts on |
+| `cgroup policy: defaults (no limit)` / `under 70% (defaults, retention capped)` / `70..90% (decay scaled, N% into the band)` / `over 90% (purge at once, cache GC every tick)` `decay_ms N retention_cap N keep N% empty_bytes N full_purges N thp as configured` | the band as last evaluated and what it gave arena 0; `empty_bytes` is the retention the cap acts on. The band is the most severe of the leaf and each limited ancestor against its own limit, so it can exceed what the `cgroup:` line's `current` and `limit` imply |
 | `purge advice: lazy MADV_FREE (under 70% of the limit)` / `eager MADV_DONTNEED (no headroom known)` `lazy_purges N (B bytes) eager_purges N (B bytes) purged_is_zero true\|false` | which advice the next purge issues and why (the reasons are `explicit purge`, `lazy_band:false`, `under 70% of the limit`, `returning the excess over the cap`, `no headroom known`); `purged_is_zero false` means a lazy batch has happened and `calloc` now clears reused purged memory |
 | `thp: <key> -> off\|folios\|chunks (<reason>) [nohuge N (classes, metadata; huge follows host)] [slab_min S pmd P meta M huge on\|off] class_ranges N (B bytes, C chunks) huge_ranges N meta_ranges N failures N; host <mode>` | section 5; the reason text says why `auto` or `always` is inert |
 | `arenas[N]:` blocks | `dirty_decay_ms` per arena (`arena.<i>.dirty_decay_ms`), `pactive/pdirty`, the `allocated active dirty retained` totals, the bins table (`size nregs curslabs curregs`, the compaction counters `refilled`, `compacted`) and the slab occupancy histogram (non-empty slabs per eighth of `nslots`), which shows where the live data sits after a delete phase |
