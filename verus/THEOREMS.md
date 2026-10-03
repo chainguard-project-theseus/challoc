@@ -1719,6 +1719,96 @@ through `slab_slot`'s completeness; *(C)* is the `free` contract.
   `malloc`'s and a block can come back; without one, NULL or
   `bad_alloc`. C++ makes the call undefined; the doc comment says so.
 
+## Huge coalescing
+
+Read at this section's commit (the `file:line`s are the `fn`/`spec`
+line there). Numbered at merge.
+
+**Statement** (`huge/mod.rs:1172`, `:918`):
+
+```rust
+spec fn coalesced(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> bool {
+    forall|d1: *mut HugeDesc, d2: *mut HugeDesc|
+        descs.contains_key(d1) && descs.contains_key(d2)
+            && descs[d1].value().state != RunState::Active as u8
+            && descs[d2].value().state != RunState::Active as u8
+            ==> descs[d1].value().start + descs[d1].value().pages
+                != descs[d2].value().start
+}
+
+proof fn theorem_coalesced(&self, d1: *mut HugeDesc, d2: *mut HugeDesc)
+    requires
+        self.wf(),
+        self.descs@.contains_key(d1),
+        self.descs@.contains_key(d2),
+        self.descs@[d1].value().state != RunState::Active as u8,
+        self.descs@[d2].value().state != RunState::Active as u8,
+    ensures
+        self.descs@[d1].value().start + self.descs@[d1].value().pages
+            != self.descs@[d2].value().start,
+```
+
+(Line breaks and triggers dropped.) Huge free extents are maximally
+coalesced: in every value the huge lock admits, no free extent
+(`Empty` or `Purged`) ends where another starts. Together with the
+existing `wf` conjuncts (live extents pairwise apart, inside
+`next_page`), every maximal stretch of pages covered by free extents is
+exactly one descriptor. This is the "adjacent free extents" check of
+`Huge::audit` (`huge/mod.rs:4576`, the assert in its loop), now a
+conjunct of `Inner::wf` (`:1129`), the huge lock's invariant.
+
+**How it is kept.** `wf` gains two conjuncts: `coalesced`, and
+`free_marked` (`:932`), which puts every page of every free extent in
+the free-page bitmap's view.
+- `Huge::find` (`:3869`) now ensures that it returns fresh pages (no
+  extent) only when no free extent ends at the mark (`none_ends_at`). Its
+  loop holds that every free extent touching the mark starts at or past
+  `from`; `free_marked` puts that start in the bitmap, so
+  `lowest_set_from` cannot skip it, and when the scan runs out of set
+  bits there is none. `take_ok` (`:1802`) carries the fact into `take`.
+- `Huge::take` (`:3979`): `Take::touch_ok` (`:2038`) records where each
+  free piece lies: the head ends where the run starts, a tail runs from
+  the run's end to the end of the extent it was cut from, and a hole
+  runs from the mark, which no free extent touches, to the run.
+  `lemma_took_coalesced` (`:2500`) does the case analysis; `took_free`
+  states the bitmap after the take: what was set outside the run, plus
+  `[mark, run start)`.
+- `Huge::free_run` (`:5642`): `free_before` and `free_after` (`:1447`,
+  `:1475`) now also ensure completeness: any free extent the table keys
+  that ends (starts) at the given page is the result, so the neighbour
+  search misses none. `lemma_free_keyed` (`:5519`) shows every free
+  extent is still under its keys once the run has left the table, so
+  `Merge::nbrs_ok` (`:4795`) holds: without `pred` no free extent ends
+  at the run's start, and without `succ` none starts at its end.
+  `lemma_freed_coalesced` (`:5040`) concludes for the merged extent.
+- `purge_extent` (`:3492`) turns an `Empty` extent `Purged`: still free,
+  in the same place.
+- `Huge::new` starts with no descriptors.
+
+**Findings.** None. `take`'s alignment holes were the suspected case:
+the hole is a fresh `Purged` extent at the old mark, and it could touch
+a free extent ending there. It cannot, because `find` returns no extent
+only after its scan ran out of free pages, and the scan stops at a free
+extent touching the mark, returning it or `None`. Merges of `Empty` and
+`Purged` neighbours are coalesced: `free_run` merges both states.
+
+**Premises beyond the common ones.**
+- `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs:35`): the lock
+  protects `Inner::wf`, now including the two new conjuncts.
+- `class::Set::ensure` (`class/sets.rs:464`, `external_body`) leaves the
+  bitmap view unchanged; `alloc_aligned` calls it between `find` and
+  `take`. The view's `set_range`, `clear_range` and `lowest_set_from`
+  are verified (`bitmap.rs`).
+
+**Where the statement is weaker than the code.**
+- It speaks of descriptors, not pages: it does not state that a free
+  page belongs to a free extent (the converse of `free_marked`), which
+  `audit` also checks.
+- It is stated at the lock invariant only. No entry point exports it.
+- The `Lowest-address huge placement` candidate (`find` returns the
+  lowest fit) is not proved; only that fresh pages mean no free extent
+  touches the mark.
+
 ## Interface contract
 
 The seven theorems above checked against challoc's exported C ABI: one
