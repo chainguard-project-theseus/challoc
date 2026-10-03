@@ -174,11 +174,12 @@ pub fn free(p: *mut u8) {
     }
     // As in `malloc`: the check-and-push has no calls, and every other
     // outcome, including the aborts, is reached through one tail call.
-    if let Some(h) = heap::existing_heap(super::shared_ptr()) {
+    if let Some((t, tp)) = heap::tls_heap_slot() {
         // SAFETY: this thread's heap exists, so this thread observed
         // `READY` when it created the heap.
         let shared = unsafe { super::shared_unchecked() };
-        if heap::free_fast(shared, h, p, shared.push_flags()) {
+        // SAFETY: the slot value of this thread.
+        if unsafe { heap::free_fast_slot(shared, t, tp, p) }.is_some() {
             return;
         }
     }
@@ -604,10 +605,11 @@ pub fn free_usable(p: *mut u8) -> usize {
     if p.is_null() {
         return 0;
     }
-    if let Some(h) = heap::existing_heap(super::shared_ptr()) {
+    if let Some((t, tp)) = heap::tls_heap_slot() {
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_unchecked() };
-        if let Some(class) = heap::free_fast_class(shared, h, p, shared.push_flags()) {
+        // SAFETY: as in `free`.
+        if let Some(class) = unsafe { heap::free_fast_slot(shared, t, tp, p) } {
             return class_size(class);
         }
     }

@@ -192,7 +192,9 @@ impl SlabTable {
         let group = cls.slabs_per_line().max(slabs_per_page);
         assert!(group.is_power_of_two() && group % slabs_per_page == 0);
         let descs = Lazy::reserve(meta, stagger + nslabs * desc_stride(class), align)?;
-        let bits = Lazy::reserve(
+        // Readable past the committed part: the `free` fast path tests a
+        // bit without checking the watermark first (`is_set_unchecked`).
+        let bits = Lazy::reserve_readable(
             meta,
             stagger + (nslabs * cls.slab_bits()).div_ceil(8),
             align,
@@ -415,19 +417,22 @@ impl SlabTable {
 
     /// The `free` check's bit (design section 4): whether `slot` of `slab`
     /// is marked allocated (or cached). One relaxed load of the bitmap
-    /// word, no bounds checks.
+    /// word, no bounds checks and no watermark: the whole bitmap
+    /// reservation is readable (`Meta::reserve_table_readable`), and the
+    /// words of a slab never handed out are zero, since bits are set only
+    /// by claims from handed-out slabs (`take_group` initialises a group's
+    /// words before the watermark moves). So a clear bit is what a slab
+    /// past the watermark reads, and the caller's slow path names it.
     ///
     /// # Safety
-    /// `slab` must have been handed out ([`is_handed_out`]) and `slot` must
-    /// be below the class's `nslots`.
-    ///
-    /// [`is_handed_out`]: SlabTable::is_handed_out
+    /// `slab` must be below `nslabs` and `slot` below the class's `nslots`
+    /// (what `Regions::slab_slot` returns).
     #[inline(always)]
     pub unsafe fn is_set_unchecked(&self, slab: usize, slot: usize) -> bool {
         let bit = slab * self.slab_bits as usize + slot;
         let word = (self.bits_base + (bit / 64) * 8) as *const AtomicU64;
-        // SAFETY: the caller guarantees the word is inside the handed-out
-        // part of the bitmap.
+        // SAFETY: the caller guarantees the word is inside the bitmap
+        // reservation, which is readable throughout.
         (unsafe { (*word).load(Ordering::Relaxed) } >> (bit % 64)) & 1 == 1
     }
 

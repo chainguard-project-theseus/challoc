@@ -5,7 +5,7 @@
 
 use core::ffi::c_void;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::arena::{Arena, Arenas};
 use crate::class::SlabTable;
@@ -17,7 +17,7 @@ use crate::meta::Meta;
 
 use super::heap_destructor;
 use super::tcaches::Tcaches;
-use super::{Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
+use super::{FREE_ROUTE, Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
 
 /// The cache GC period (design 6.4): 10 s.
 pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
@@ -28,26 +28,32 @@ pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
 /// key. Built in place by [`Shared::init`] because the class states borrow
 /// `meta`, `regions` and `tables`.
 ///
-/// `repr(C)` fixes the order: `multi_arena` and `regions`, read by every
+/// `repr(C)` fixes the order: `free_flags` and `regions`, read by every
 /// `malloc` and `free`, come first, then the line-aligned tables (read by
 /// every `free`) and arena 0's class states, so the locks inside `meta` and
 /// `huge` (taken on heap creation and huge allocations) never share a cache
 /// line with them.
 #[repr(C)]
 pub struct Shared {
-    /// Set once a second arena exists. Until then every slab and every
-    /// heap is arena 0 and the `free` fast path skips the descriptor's
-    /// arena load. Relaxed: a slot of arena `a > 0` can only be freed after
-    /// it was allocated, which happened after `a` was built and this flag
-    /// stored, and the program itself orders that allocation before the
-    /// free; so any thread freeing such a slot already sees the flag.
+    /// The one byte the `free` fast path loads for its dispatch:
+    /// [`push_flags`](Shared::push_flags) plus [`FREE_ROUTE`], set once a
+    /// second arena exists. Until then every slab and every heap is arena
+    /// 0 and the `free` fast path skips the owner-word load; with
+    /// `FREE_ROUTE` in the byte, the default configuration's test against
+    /// zero sends `free` to the arena test, so a single-arena `free` pays
+    /// no separate load and branch for it. Relaxed: a slot of arena `a > 0`
+    /// can only be freed after it was allocated, which happened after `a`
+    /// was built and this bit stored, and the program itself orders that
+    /// allocation before the free; so any thread freeing such a slot
+    /// already sees the bit. The sized path and `malloc` read
+    /// `push_flags`, which never changes after init.
     ///
     /// First, so it shares a cache line with the `Regions` fields that
     /// `slab_slot` reads on every `free` (`superblock`, `lg_stride`, the
     /// low `class_base` entries): after `Regions` it would sit on its own
     /// line, and larson's working set turns every extra line into an L2
     /// hit.
-    pub(super) multi_arena: AtomicBool,
+    pub(super) free_flags: AtomicU8,
     /// The opt-in hardening a push applies, as [`PUSH_SCAN`]
     /// (`double_free_scan`, design 6.3 step 3: every push compares the
     /// slot against the top four cache entries and aborts on a match) and
@@ -128,12 +134,12 @@ impl GuardTest {
 }
 
 const _: () = assert!(
-    core::mem::offset_of!(Shared, multi_arena) / 128
+    core::mem::offset_of!(Shared, free_flags) / 128
         == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, superblock))
             / 128
 );
 const _: () = assert!(
-    core::mem::offset_of!(Shared, multi_arena) / 128
+    core::mem::offset_of!(Shared, free_flags) / 128
         == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, lg_stride))
             / 128
 );
@@ -283,21 +289,19 @@ impl Shared {
                 Meta::new(regions.meta_base, regions.meta_len, regions.page_size()),
             );
             ptr::write(&raw mut (*this).regions, regions);
-            ptr::write(&raw mut (*this).multi_arena, AtomicBool::new(false));
             let meta = &*meta;
-            ptr::write(
-                &raw mut (*this).push_flags,
-                (if config.double_free_scan {
-                    PUSH_SCAN
+            let push_flags = (if config.double_free_scan {
+                PUSH_SCAN
+            } else {
+                0
+            }) | (if config.zero_on_free { PUSH_ZERO } else { 0 })
+                | (if pac && config.pac_pointers {
+                    PUSH_PAC
                 } else {
                     0
-                }) | (if config.zero_on_free { PUSH_ZERO } else { 0 })
-                    | (if pac && config.pac_pointers {
-                        PUSH_PAC
-                    } else {
-                        0
-                    }),
-            );
+                });
+            ptr::write(&raw mut (*this).push_flags, push_flags);
+            ptr::write(&raw mut (*this).free_flags, AtomicU8::new(push_flags));
             let regions = &*(&raw const (*this).regions);
             let tables = &raw mut (*this).tables;
             for c in 0..NCLASSES {
@@ -413,9 +417,16 @@ impl Shared {
     }
 
     /// Whether more than one arena exists (see the field).
-    #[inline(always)]
+    #[cfg(test)]
     pub fn multi_arena(&self) -> bool {
-        self.multi_arena.load(Ordering::Relaxed)
+        self.free_flags() & FREE_ROUTE != 0
+    }
+
+    /// The `free` fast path's dispatch byte (see the field): `push_flags`,
+    /// plus [`FREE_ROUTE`] once a second arena exists.
+    #[inline(always)]
+    pub fn free_flags(&self) -> u8 {
+        self.free_flags.load(Ordering::Relaxed)
     }
 
     /// The flag byte both fast paths load: [`PUSH_SCAN`], [`PUSH_ZERO`]
@@ -447,7 +458,7 @@ impl Shared {
 
     /// A second arena is being built (`Arenas::build`).
     pub fn set_multi_arena(&self) {
-        self.multi_arena.store(true, Ordering::Relaxed);
+        self.free_flags.fetch_or(FREE_ROUTE, Ordering::Relaxed);
     }
 
     /// The cache GC period the periodic tick uses: `gc_interval_ns`,
@@ -646,7 +657,12 @@ impl Shared {
     /// anything else. It never aborts; [`classify_free`] on the slow path
     /// repeats the checks and does. Every table read is bounds-free: the
     /// class index comes from `slab_slot`, the bitmap word from a slot
-    /// already known to be below `nslots` in a slab below the watermark.
+    /// already known to be below `nslots` in a slab of the region. The
+    /// hand-out watermark is not read: the bitmap reads as zero past it
+    /// (`SlabTable::is_set_unchecked`). The fast path itself
+    /// (`heap::free_fast_class`) makes the same two tests from
+    /// [`set_slot`] and [`home_owns`], the arena test selected by the
+    /// `free_flags` byte it loads anyway; this form serves the tests.
     ///
     /// The two loads that depend on the pointer are from dense structures
     /// (design section 4): the class bitmap word (one bit per slot, so a
@@ -665,29 +681,41 @@ impl Shared {
     /// load, whereas the per-class table line is one of 52 and reached
     /// through a multiply. With the geometry on the table line the chain
     /// class -> `madd` -> table load -> slab -> bitmap word would be the
-    /// whole of `free`'s critical path; here the table's `bits_base`,
-    /// `slab_bits` and `committed_slabs` loads run alongside the slot
-    /// arithmetic and are needed only for the word address.
+    /// whole of `free`'s critical path; here the table's `bits_base` and
+    /// `slab_bits` loads run alongside the slot arithmetic and are needed
+    /// only for the word address.
     ///
     /// [`classify_free`]: Shared::classify_free
     /// [`Regions::slab_slot`]: crate::layout::Regions::slab_slot
-    #[inline(always)]
+    /// [`set_slot`]: Shared::set_slot
+    /// [`home_owns`]: Shared::home_owns
+    #[cfg(test)]
     pub(super) fn checked_slot(&self, p: *mut u8, h: &Heap) -> Option<usize> {
         let (class, table, slab) = self.set_slot(p)?;
-        if self.multi_arena() {
-            // The home arena is read on this branch only. A plain load is
-            // hoisted above the flag test (the heap is known valid) and
-            // then every single-arena `free` touches the heap's header
-            // line, which nothing else on the fast paths reads; a volatile
-            // read stays here.
-            // SAFETY: `h` is a live heap and `arena` a plain field.
-            let home = unsafe { ptr::read_volatile(&raw const h.arena) };
-            // SAFETY: `slab` is below the watermark.
-            if unsafe { table.owner_unchecked(slab) } != home {
-                return None;
-            }
+        if self.multi_arena() && !Self::home_owns(table, slab, h) {
+            return None;
         }
         Some(class)
+    }
+
+    /// The arena half of [`checked_slot`]: whether the group owner word of
+    /// `slab`, a slab holding a slot whose bit [`set_slot`] found set, names
+    /// `h`'s home arena. Read only with several arenas ([`FREE_ROUTE`]).
+    ///
+    /// [`checked_slot`]: Shared::checked_slot
+    /// [`set_slot`]: Shared::set_slot
+    #[inline(always)]
+    pub(super) fn home_owns(table: &SlabTable, slab: usize, h: &Heap) -> bool {
+        // The home arena is read on the multi-arena branch only. A plain
+        // load is hoisted above the flag test (the heap is known valid)
+        // and then every single-arena `free` touches the heap's header
+        // line, which nothing else on the fast paths reads; a volatile
+        // read stays here.
+        // SAFETY: `h` is a live heap and `arena` a plain field.
+        let home = unsafe { ptr::read_volatile(&raw const h.arena) };
+        // SAFETY: the slot's bit is set, so its slab was handed out (bits
+        // are set only by claims from handed-out slabs).
+        unsafe { table.owner_unchecked(slab) == home }
     }
 
     /// [`checked_slot`] without the arena test: the bit test alone, so a
@@ -707,15 +735,14 @@ impl Shared {
     ///
     /// [`checked_slot`]: Shared::checked_slot
     #[inline(always)]
-    fn set_slot(&self, p: *mut u8) -> Option<(usize, &SlabTable, usize)> {
+    pub(super) fn set_slot(&self, p: *mut u8) -> Option<(usize, &SlabTable, usize)> {
         let (class, slab, slot) = self.regions.slab_slot(p as usize)?;
         // SAFETY: `slab_slot` only returns `class < NCLASSES`.
         let table = unsafe { self.tables.get_unchecked(class) };
-        if !table.is_handed_out(slab) {
-            return None;
-        }
-        // SAFETY: `slab` is below the watermark, `slab_slot` validated
-        // `slot < nslots`.
+        // No watermark compare: a slab never handed out reads a clear bit
+        // (`is_set_unchecked`), and the slow path aborts on it by name.
+        // SAFETY: `slab_slot` validated `slab < nslabs` (the slot lies in
+        // the region) and `slot < nslots`.
         if !unsafe { table.is_set_unchecked(slab, slot) } {
             return None;
         }
