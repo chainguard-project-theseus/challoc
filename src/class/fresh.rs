@@ -9,7 +9,7 @@ use vstd::prelude::*;
 #[cfg(verus_only)]
 use super::table::{
     guard_marked, lemma_guard_marked_mono, lemma_slab_marked_mono, lemma_spec_class,
-    lemma_spec_nslabs, slab_marked,
+    lemma_spec_nslabs, slab_marked, slab_owner,
 };
 #[cfg(verus_only)]
 use super::{SlabTable, lemma_same_sets_inv};
@@ -276,7 +276,8 @@ proof fn lemma_shr_in(x: usize, g: usize, lg: u8)
 /// The ghost side of a fresh group: `g1` is `g0` (every current-group
 /// slab used up) with the slabs `start..end`, which `g0` does not own,
 /// owned and `Fresh`, and with `start..end` as its current group; the
-/// owned slabs keep their states and stamps.
+/// owned slabs keep their states and stamps. `take_group` stored the
+/// arena in the group's owner word, so their owner is `g0`'s arena.
 proof fn lemma_fresh_group(g0: Inner, g1: Inner, start: usize, end: usize)
     requires
         g0.inv(),
@@ -295,6 +296,8 @@ proof fn lemma_fresh_group(g0: Inner, g1: Inner, start: usize, end: usize)
         g1.stats == g0.stats,
         g1.committed == g0.committed,
         g1.table == g0.table,
+        g1.arena == g0.arena,
+        forall|x: int| start <= x < end ==> #[trigger] slab_owner(g0.table@.spec_class() as int, x) == g0.arena@,
         g1.inited@.id() == g0.inited@.id(),
         g0.inited@@.subset_of(g1.inited@@),
         forall|x: int| start <= x < end && !g0.table@.spec_is_guard(x as usize)
@@ -325,6 +328,13 @@ proof fn lemma_fresh_group(g0: Inner, g1: Inner, start: usize, end: usize)
         if !(start <= x < end) {
             assert(g0.owns(x));
             lemma_guard_marked_mono(g0.table@, x as int, g0.inited@@, g1.inited@@);
+        }
+    }
+    assert forall|x: nat| #[trigger] g1.states@.contains_key(x)
+        implies slab_owner(g1.table@.spec_class() as int, x as int) == g1.arena@ by {
+        assert(g1.owns(x));
+        if !(start <= x < end) {
+            assert(g0.owns(x));
         }
     }
     assert(g1.owns((end - 1) as nat));

@@ -161,7 +161,7 @@ handler (`lib.rs`) aborts. An abort satisfies every postcondition.
 
 **Termination not proved** (`exec_allows_no_decreases_clause`):
 `lock.rs:80` `lock_slow`, `class/mod.rs:2672` `claim_with`,
-`heap/shared.rs:1400` `release_routed`, `api/mod.rs:319` `init_slow`,
+`api/mod.rs:319` `init_slow`,
 `api/cxx.rs:172` `oom`, `purge/background.rs:379` `main`,
 `sys/mod.rs:533`, `:697`, `:760`, `sys/cgroup.rs:798`. The theorems are
 partial correctness: they say what holds if the call returns.
@@ -1085,6 +1085,141 @@ axioms below are the other source.
   assume for every acquire.
 - The signal mask's save and restore (`save_sigmask`, `saved_sigmask`,
   `external_body`) are not part of the statement.
+
+## N. Arena isolation
+
+Number assigned at merge (other lanes add 8, 9 and 10). Read at this
+section's commit (the `file:line`s are the `fn`/`axiom` line there).
+
+**Statement.** A slab slot belongs to one arena for the life of the
+process: the arena `take_group` handed its slab's group to,
+`slab_owner(c, slab)` (`class/table.rs:174`), and for an address
+`slot_owner(c, p) = slab_owner(c, slab_index(c, p))` (`:179`). The
+allocation side and the release side are both stated against it: a
+slot is released only into the arena that owns its slab, the arena whose
+`plan` reserved in that slab, or the free aborts:
+
+```rust
+// class/mod.rs:1991, ClassState::plan (the claim's lock hold): every
+// slab a refill or claim reserves slots in is this arena's.
+ensures picks_owned(self.spec_class() as int, self.spec_arena(), final(picks)@, 0, np as int),
+
+// class/mod.rs:3899
+spec fn picks_owned(c: int, a: u16, p: Seq<Pick>, lo: int, hi: int) -> bool {
+    forall|j: int| lo <= j < hi ==> slab_owner(c, (#[trigger] p[j]).slab as int) == a
+}
+
+// class/mod.rs:4581, ClassState::release_owned (the one function that
+// releases slots into an arena's class state).
+ensures
+    forall|i: int| 0 <= i < r ==> #[trigger] slot_owner(self.spec_class() as int, ptrs@[i]@.addr) == self.spec_arena(),
+    r < ptrs@.len() ==> slot_owner(self.spec_class() as int, ptrs@[r as int]@.addr) != self.spec_arena(),
+
+// class/mod.rs:4528, ClassState::release_with: all or abort (`wrong_arena`).
+ensures
+    forall|i: int| 0 <= i < ptrs@.len() ==> #[trigger] slot_owner(self.spec_class() as int, ptrs@[i]@.addr) == self.spec_arena(),
+```
+
+`spec_arena` (`class/mod.rs:1190`) is the class state's `arena` field;
+`Arena::inv` (`arena.rs:893`) now states that `classes[c]` has arena
+`index`, so `Arena::class` (`:1029`) ensures `r.spec_arena() ==
+self.spec_index()`, and the lookups by index ensure the arena they
+return has that index: `Shared::owner` and `Shared::arena`
+(`heap/shared.rs:1677`, `:1658`), `Arenas::get`, `materialise`, `build`
+and `get_existing` (`arena.rs`). `Shared::wf` gains `arena0.spec_index()
+== 0`, proved by `Shared::init` from `Arena::init`'s new postcondition.
+
+**Per free path.** Every slab free reaches an arena's class state only
+through `release_owned`, from one of two places:
+
+| Path | What is proved |
+|---|---|
+| `Shared::free_direct(arena, class, p)` (`heap/shared.rs:1738`), from `heap::free_direct` (`heap/paths.rs:689`: `MALLOCX_TCACHE_NONE`, a thread without a heap) and `Heap::free_slow_in` (`:451`, no cache for the class) | ensures `self.wf() ==> slot_owner(class, p) == arena`: it releases through `owner(arena).class(class)`, of arena `arena`, and `release_with` aborts (`wrong_arena`) otherwise. Both callers pass the owner: `heap::free_direct` the arena of `classify_free`, which now ensures it is `slot_owner(c, p)` (`heap/shared.rs:1766`, from `check_located`, `class/table.rs:2205`), and `free_slow_in` that of `arena_of_slot` (`heap/shared.rs:1988`); so by their contracts `wrong_arena` cannot fire from them (Verus does not state it at the abort site). |
+| `Shared::release_routed(arena, class, ptrs)` (`heap/shared.rs:2061`), from `Heap::flush` (`heap/flush.rs:509`): every cache, home or `FOREIGN` | each run goes through `owner(a).class(class)` (arena `a`), whose `release_owned` releases only `a`'s slots and stops at the first slot of another arena; the next run starts at `arena_of_slot` of that slot, which ensures `slot_owner` (`:1988`). Termination is now proved (`decreases 2 * left + [next slot not a's]`), which removes `release_routed`'s `exec_allows_no_decreases_clause`: with owners fixed, the `changed arena during a flush` abort is unreachable, which its branch now asserts (`assert(false)` in a proof block). |
+
+Upstream of those, `Heap::free` (`heap/paths.rs:198`) pushes a slot onto
+the home cache when `classify_free`'s arena, now `slot_owner(c, p)`, is
+the heap's, and onto the `FOREIGN` cache otherwise; the sized paths push
+untested onto the home cache and leave the routing to the flush (design
+6.3). A cache therefore may hold slots of any arena; isolation is a
+property of the release, not of the caches.
+
+**Entry points.** Every free entry point of theorem 3's table (`free`,
+`free_sized`, `free_aligned_sized`, `realloc`, `reallocarray`,
+`realloc_usable`, `free_usable`, `dallocx`, `sdallocx`, `rallocx`,
+`cxx::delete*`), and the heap destructor and `tcache.flush`/`destroy`,
+release slab slots only by the two paths above: outside tests,
+`Shared::free_direct` is the only caller of `release_with`, `Heap::flush`
+the only caller of `release_routed`, and these two the only callers of
+`release_owned`. No entry point's `ensures` changes: the per-path
+contracts are the statement, as `fits` is theorem 2's.
+
+**Huge runs.** The huge allocator is one per process; an arena only
+counts its runs. `Shared::free_huge` (`heap/shared.rs:1956`) credits
+`owner(run.arena)`, which now provably has index `run.arena`, the arena
+`Huge::free_run` read from the run's descriptor, which `alloc_run`
+wrote from its `arena` argument.
+
+**How the claim side is proved.** `Inner::base` (`class/mod.rs:784`), part
+of the class lock invariant, gains `owns(s) ==> slab_owner(c, s) ==
+arena`. Slabs join an arena's ghost only in `next_fresh_slab`, as the
+group `take_group` just returned, and `take_group` (`class/table.rs:2446`)
+now ensures that every slab of that group has `slab_owner` the taking
+arena, from its owner-word store (`lemma_fresh_group`,
+`class/fresh.rs:281`). `take` (`class/mod.rs:2128`) requires `ready`, so
+an owned slab, and ensures its pick's owner; `plan` collects
+`picks_owned`.
+
+**Premises beyond the common ones.**
+- `class::table::store_owner` and `load_owner` (`class/table.rs:217`,
+  `:196`, `external_body`): `take_group`'s `Relaxed` store of the owner
+  word fixes `slab_owner` for the group's slabs, and a `Relaxed` load
+  of a handed-out group's word returns it. Together: each group's word
+  is written once, under the commit lock, before the watermark passes
+  the group, and never again (the only other writer is the test-only
+  `corrupt_owner_word`). `owner_at`, `owner`, `check_located` and
+  `arena_of_slot` are verified on top of `load_owner`. These replace the
+  informal assumption `release_routed`'s termination exemption rested
+  on.
+- `ClassState::owner_locked` (trusted bridge) now also ensures its
+  result is `slab_owner`, as its body's `owner` call does. Its direction
+  "an owned slab's word names the arena" is now proved (`Inner::base`);
+  the converse remains assumed.
+- `arena::arena_at` (`arena.rs:1195`, `external_body`) now ensures the
+  arena behind registry entry `index` has index `index`: `build` stores
+  arena `index` there and `Arenas::init` stores `arena0` at 0.
+- `arena::axiom_arena_assemble` now requires every class state's arena
+  to be the parts' index (`Arena::init` proves it from
+  `ClassState::new`'s new postcondition); `heap::shared::
+  axiom_shared_built` now states `arena0` as written, as it states the
+  tables.
+- `slab_owner` is keyed by class, which rests on one table per class per
+  process: the premise of `table::axiom_slot_loc` (theorem 5), not a new
+  kind.
+- The "written once" and "handed out before read" conditions of the two
+  wrappers are not checked by Verus: `store_owner` is private with one
+  call site, past `take_group`'s fallible steps; `owner_at` requires
+  only `slab < nslabs`, and its callers (`owner`, `check_located`,
+  `owner_unchecked`) test the watermark first.
+- Sequential consistency for the owner words, as for every atomic.
+  `check_located` reaches the owner load after a `Relaxed` watermark
+  load (`check_live`), the one owner path without `Acquire`.
+
+**Where the statement is weaker than the code.**
+- The claim side stops at the picks: `plan` states that every slab it
+  reserved in is the arena's, but `finish` does not restate it for the
+  pointers it writes (they are slots of the picks' slabs, which its
+  `SlotToks` entries record by bit, not by owner). So no `claim` or
+  `malloc` postcondition names the arena of a returned block.
+- No ghost "release log": the statement is per call of
+  `release_owned`/`release_with`/`Shared::free_direct`, not one formula
+  over a program's history. Entry points state nothing new.
+- The huge side is code reading over `free_run`'s result: the run
+  descriptor's arena is not tied to `alloc_run`'s argument by a
+  postcondition (the huge lock's ghost descriptors carry it, but no
+  token survives between the calls).
+- `checked_slot`'s owner test on the `free` fast path reads through
+  `owner_unchecked` (trusted, unchanged); it only picks the cache.
 
 ## Interface contract
 

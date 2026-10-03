@@ -618,6 +618,7 @@ axiom fn axiom_arena_assemble(tracked parts: ArenaParts, tracked classes: Map<in
         parts.stats.is_init(),
         parts.last_exit_purge.is_init(),
         forall|c: int| 0 <= c < NCLASSES ==> (#[trigger] classes[c]).value().spec_class() == c,
+        forall|c: int| 0 <= c < NCLASSES ==> (#[trigger] classes[c]).value().spec_arena() == parts.index.value(),
         parts.sets_perm.value()@.ptr() == parts.sets.value(),
         parts.sets_perm.value()@.is_init(),
     ensures
@@ -644,6 +645,7 @@ impl Arena {
         ensures
             final(parts).at(this),
             final(parts).index.is_init(),
+            final(parts).index.value() == index,
             final(parts).decay_ns.is_init(),
             final(parts).sets == old(parts).sets,
             final(parts).sets_perm == old(parts).sets_perm,
@@ -800,7 +802,7 @@ impl Arena {
             *regions == process_regions(),
             forall|c: int| 0 <= c < NCLASSES ==> #[trigger] tables[c].spec_class() == c,
         ensures
-            r ==> (final(slot).perm matches Some(p) && p.ptr() == this && p.is_init()),
+            r ==> (final(slot).perm matches Some(p) && p.ptr() == this && p.is_init() && p.value().spec_index() == index),
     {
         let tracked (mut parts, mut classes) = Arena::split(slot.perm.tracked_take());
         // SAFETY: the caller guarantees `this` is writable and unaliased;
@@ -824,6 +826,8 @@ impl Arena {
                     classes_at(classes, this),
                     elems_init(classes, 0, c as int),
                     forall|d: int| 0 <= d < c ==> (#[trigger] classes[d]).value().spec_class() == d,
+                    forall|d: int| 0 <= d < c ==> (#[trigger] classes[d]).value().spec_arena() == index,
+                    parts.index.is_init() && parts.index.value() == index,
             {
                 match ClassState::new(meta, regions, &tables[c], index, sets) {
                     Some(cs) => {
@@ -839,7 +843,7 @@ impl Arena {
                                 assert(before.contains_key(d));
                             }
                             assert forall|d: int| 0 <= d < c + 1 implies (#[trigger] classes[d]).is_init()
-                                && classes[d].value().spec_class() == d by {
+                                && classes[d].value().spec_class() == d && classes[d].value().spec_arena() == index by {
                                 if d < c {
                                     assert(before[d] == classes[d]);
                                 }
@@ -881,9 +885,12 @@ impl Arena {
 verus! {
 
 impl Arena {
-    /// `classes[c]` is the state of class `c`. `init` builds the value in
+    /// `classes[c]` is the state of class `c` in this arena (its
+    /// `spec_arena` is `index`: the class states are the arena's, which
+    /// arena isolation needs). `init` builds the value in
     /// place, so no struct expression checks this: `init` proves that it
-    /// writes every `classes[c]` with a state of class `c` (from
+    /// writes every `classes[c]` with a state of class `c` and arena
+    /// `index` (from
     /// `ClassState::new`'s postcondition over `tables[c]`, whose class is
     /// `c` by `init`'s precondition) before it returns `true`; its callers,
     /// `Shared::init` and `Arenas::build`, meet those preconditions.
@@ -893,6 +900,7 @@ impl Arena {
     #[verifier::type_invariant]
     spec fn inv(self) -> bool {
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.classes[c].spec_class() == c
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.classes[c].spec_arena() == self.index
         &&& self.sets_perm@.ptr() == self.sets
         &&& self.sets_perm@.is_init()
     }
@@ -1018,7 +1026,16 @@ impl Arena {
         self.stats.spec_raw()
     }
 
-    pub fn index(&self) -> u16 {
+    pub fn index(&self) -> (r: u16)
+        ensures
+            r == self.spec_index(),
+    {
+        self.index
+    }
+
+    /// The arena's index: the registry slot it is published in, and the
+    /// arena of each of its class states.
+    pub closed spec fn spec_index(&self) -> u16 {
         self.index
     }
 
@@ -1031,6 +1048,7 @@ impl Arena {
         ensures
             r.spec_class() == class,
             *r == self.spec_class_state(class as int),
+            r.spec_arena() == self.spec_index(),
     {
         proof {
             use_type_invariant(self);
@@ -1186,13 +1204,20 @@ verus! {
 
 /// The arena a non-null registry entry points at. Trusted: Verus has no
 /// raw-pointer dereference. Entries are published by `build` with a
-/// release store after `Arena::init`, and arenas are never freed.
+/// release store after `Arena::init`, and arenas are never freed. The
+/// arena at entry `index` is arena `index` (`spec_index`): `build`
+/// stores the arena `Arena::init` built as `index` into entry `index`,
+/// `Arenas::init` stores `Shared::arena0`, built as 0, into entry 0, and
+/// nothing else writes an entry.
 ///
 /// # Safety
-/// `p` is a non-null entry loaded from `Arenas::table`.
+/// `p` is a non-null entry loaded from `Arenas::table[index]`.
 #[verifier::external_body]
 #[inline(always)]
-unsafe fn arena_at<'a>(p: *mut Arena) -> &'a Arena {
+unsafe fn arena_at<'a>(p: *mut Arena, Ghost(index): Ghost<u16>) -> (r: &'a Arena)
+    ensures
+        r.spec_index() == index,
+{
     // SAFETY: guaranteed by the caller.
     unsafe { &*p }
 }
@@ -1221,9 +1246,11 @@ impl Arenas {
     /// been built yet is built here (cold); an explicit index that
     /// `create` has not handed out, or one beyond the table, is `None`.
     #[inline]
-    pub fn get<'a>(&'a self, shared: &'a Shared, index: u16) -> Option<&'a Arena>
+    pub fn get<'a>(&'a self, shared: &'a Shared, index: u16) -> (r: Option<&'a Arena>)
         requires
             shared.wf(),
+        ensures
+            r matches Some(a) ==> a.spec_index() == index,
     {
         let i = index as usize;
         if i >= MAX_ARENAS {
@@ -1233,17 +1260,19 @@ impl Arenas {
         if !p.is_null() {
             // SAFETY: arenas are never freed; the pointer was published
             // after `Arena::init` with a release store.
-            return Some(unsafe { arena_at(p) });
+            return Some(unsafe { arena_at(p, Ghost(index)) });
         }
         self.materialise(shared, index)
     }
 
     #[cold]
     #[inline(never)]
-    fn materialise<'a>(&'a self, shared: &'a Shared, index: u16) -> Option<&'a Arena>
+    fn materialise<'a>(&'a self, shared: &'a Shared, index: u16) -> (r: Option<&'a Arena>)
         requires
             (index as usize) < MAX_ARENAS,
             shared.wf(),
+        ensures
+            r matches Some(a) ==> a.spec_index() == index,
     {
         if index as u32 >= self.auto {
             return None;
@@ -1252,7 +1281,7 @@ impl Arenas {
         let p = self.table[index as usize].load(Ordering::Acquire);
         if !p.is_null() {
             // SAFETY: as in `get`.
-            return Some(unsafe { arena_at(p) });
+            return Some(unsafe { arena_at(p, Ghost(index)) });
         }
         self.build(shared, index)
     }
@@ -1262,10 +1291,12 @@ impl Arenas {
     /// `shared` is the published `Shared`, whose `wf` gives
     /// `Arena::init`'s preconditions (the process's well-formed regions and
     /// the tables in class order).
-    fn build<'a>(&'a self, shared: &'a Shared, index: u16) -> Option<&'a Arena>
+    fn build<'a>(&'a self, shared: &'a Shared, index: u16) -> (r: Option<&'a Arena>)
         requires
             (index as usize) < MAX_ARENAS,
             shared.wf(),
+        ensures
+            r matches Some(a) ==> a.spec_index() == index,
     {
         let layout = core::alloc::Layout::new::<Arena>();
         proof {
@@ -1320,7 +1351,7 @@ impl Arenas {
         shared.set_multi_arena();
         self.table[index as usize].store(p, Ordering::Release);
         // SAFETY: just built and published.
-        Some(unsafe { arena_at(p) })
+        Some(unsafe { arena_at(p, Ghost(index)) })
     }
 
     /// `arenas.create`: a new explicit arena. `None` when the table or the
@@ -1341,14 +1372,17 @@ impl Arenas {
     }
 
     /// Arena `index` if it has been built, without building it.
-    pub fn get_existing(&self, index: u16) -> Option<&Arena> {
+    pub fn get_existing(&self, index: u16) -> (r: Option<&Arena>)
+        ensures
+            r matches Some(a) ==> a.spec_index() == index,
+    {
         let i = index as usize;
         if i >= MAX_ARENAS {
             return None;
         }
         let p = self.table[i].load(Ordering::Acquire);
         // SAFETY: a non-null entry of the table.
-        if p.is_null() { None } else { Some(unsafe { arena_at(p) }) }
+        if p.is_null() { None } else { Some(unsafe { arena_at(p, Ghost(index)) }) }
     }
 
     /// Automatic arenas, as `init` clamped them.

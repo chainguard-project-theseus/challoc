@@ -682,6 +682,7 @@ axiom fn axiom_shared_built(
         shared_at(p).meta == parts.meta.value(),
         shared_at(p).huge == parts.huge.value(),
         shared_at(p).config == parts.config.value(),
+        parts.arena0.perm matches Some(a) && shared_at(p).arena0 == a.value(),
 ;
 
 /// The regions of the `Shared` at `p` are what the permission to its
@@ -1429,6 +1430,7 @@ impl Shared {
         &&& self.meta.spec_base() == self.regions.meta_base
         &&& self.meta.spec_len() == self.regions.meta_len
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok()
+        &&& self.arena0.spec_index() == 0
     }
 
     /// `meta` is the process's metadata allocator ([`Shared::wf`]).
@@ -1786,9 +1788,11 @@ impl Shared {
     }
     /// touch; see `Arenas::get`).
     #[inline]
-    pub fn arena(&self, index: u16) -> Option<&Arena>
+    pub fn arena(&self, index: u16) -> (r: Option<&Arena>)
         requires
             self.wf(),
+        ensures
+            r matches Some(a) ==> a.spec_index() == index,
     {
         if index == 0 {
             return Some(&self.arena0);
@@ -1803,7 +1807,10 @@ impl Shared {
     /// instead of quietly materialising an automatic arena to release the
     /// slot through.
     #[inline]
-    pub(super) fn owner(&self, index: u16) -> &Arena {
+    pub(super) fn owner(&self, index: u16) -> (r: &Arena)
+        ensures
+            self.wf() ==> r.spec_index() == index,
+    {
         if index == 0 {
             return &self.arena0;
         }
@@ -1878,6 +1885,10 @@ impl Shared {
             crate::layout::process_regions().is_slot(class as int, p@.addr),
             tok.id() == slot_loc(class as int),
             tok@ == p@.addr as int,
+        ensures
+            // Arena isolation: it returns only if `arena` owns the slot's
+            // slab, the arena it released the slot into.
+            self.wf() ==> crate::class::slot_owner(class as int, p@.addr) == arena,
     {
         broadcast use crate::class::lemma_aset;
         let tracked bag = tok.subset();
@@ -1901,6 +1912,8 @@ impl Shared {
             self.wf(),
         ensures
             r matches Ok((c, _)) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
+            // The arena it names owns the slot's slab.
+            r matches Ok((c, a)) ==> a == crate::class::slot_owner(c as int, p@.addr),
             r matches Err(page) ==> page <= self.huge_pages(),
             // Exact: a page start of the huge region, `page` its index.
             r matches Err(page) ==> crate::layout::process_regions().is_huge_block(p@.addr, 1)
@@ -1913,6 +1926,8 @@ impl Shared {
                 proof {
                     // `check_located` returned: not a guard slab.
                     self.regions.lemma_is_slot(class as int, slab as int, slot as int, p as usize);
+                    // Its slab is the one `slot_owner` names.
+                    self.regions.lemma_slab_index(class as int, slab as int, slot as int, p as usize);
                 }
                 Ok((class, arena))
             }
@@ -2121,12 +2136,19 @@ impl Shared {
 
     /// Owning arena of the handed-out slab holding the slot `p` of `class`.
     /// Aborts for anything that is not a slot start in such a slab.
-    pub(super) fn arena_of_slot(&self, class: usize, p: *mut u8) -> u16
+    pub(super) fn arena_of_slot(&self, class: usize, p: *mut u8) -> (r: u16)
         requires
             class < NCLASSES,
+        ensures
+            self.wf() ==> r == crate::class::slot_owner(class as int, p@.addr),
     {
         let t = self.table(class);
-        let (slab, _) = t.locate(p);
+        let (slab, _slot) = t.locate(p);
+        proof {
+            if self.wf() {
+                self.regions.lemma_slab_index(class as int, slab as int, _slot as int, p as usize);
+            }
+        }
         t.owner(slab)
     }
 
@@ -2173,16 +2195,23 @@ impl Shared {
     /// `bag` holds the batch's slot tokens (distinct addresses), which
     /// belong back with the bitmap words each run releases.
     ///
+    /// Arena isolation: each run goes to the class state of arena `a`
+    /// (`Shared::owner(a)`, whose index is `a`), and [`release_owned`]
+    /// releases only slots whose slab `a` owns ([`slot_owner`]), stopping
+    /// at the first it does not; the next pass moves to the arena that
+    /// slot's owner word names.
+    ///
     /// The loop ends because each pass releases at least one pointer or
     /// moves to the arena the next pointer's owner word names, which
-    /// `release_owned` then owns; that rests on the owner words of slabs
-    /// with allocated slots not changing, which Verus does not see
-    /// (`exec_allows_no_decreases_clause`).
+    /// `release_owned` then owns: owners are fixed once a slab is handed
+    /// out ([`slot_owner`]), so the measure (twice the pointers left, plus
+    /// one while the next pointer is not `a`'s) drops every pass.
     ///
     /// [`release_owned`]: crate::class::ClassState::release_owned
-    #[verifier::exec_allows_no_decreases_clause]
+    /// [`slot_owner`]: crate::class::slot_owner
     pub fn release_routed(&self, arena: u16, class: usize, ptrs: &[*mut u8], Tracked(bag): Tracked<GhostSubset<int>>)
         requires
+            self.wf(),
             class < NCLASSES,
             bag.id() == slot_loc(class as int),
             aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= bag@,
@@ -2195,12 +2224,16 @@ impl Shared {
         let mut a = arena;
         loop
             invariant
+                self.wf(),
                 class < NCLASSES,
                 done <= ptrs@.len(),
                 pa == ptr_addrs(ptrs@),
                 bag.id() == slot_loc(class as int),
                 aset(pa, done as int, ptrs@.len() as int) <= bag@,
                 distinct(pa, 0, ptrs@.len() as int),
+            decreases
+                2 * (ptrs@.len() - done) + if done < ptrs@.len()
+                    && crate::class::slot_owner(class as int, ptrs@[done as int]@.addr) != a { 1int } else { 0int },
         {
             let ghost d0 = done as int;
             let ghost b0 = bag@;
@@ -2221,14 +2254,23 @@ impl Shared {
                 crate::class::lemma_aset_split(pa, 0, d0, ptrs@.len() as int);
                 crate::class::lemma_aset_shift(pa, ra, d0, 0, r);
                 assert(aset(pa, done as int, ptrs@.len() as int) <= bag@);
+                if done < ptrs@.len() {
+                    // The first pointer left is not `a`'s.
+                    assert(rest[r] == ptrs@[done as int]);
+                }
             }
             if done == ptrs.len() {
                 return;
             }
             let next = self.arena_of_slot(class, ptrs[done]);
             if next == a {
-                // `release_owned` stopped at a slab it says is not ours while
-                // the descriptor says it is: the descriptor changed under us.
+                // `release_owned` stopped at a slab whose owner word did not
+                // name `a`, and a second read names it: the word changed
+                // under us. Unreachable while owner words are fixed once
+                // handed out (`slot_owner`), as the proof checks.
+                proof {
+                    assert(false);
+                }
                 crate::sys::abort_fmt(format_args!("heap: slab of class {class} changed arena {a} during a flush"));
             }
             a = next;

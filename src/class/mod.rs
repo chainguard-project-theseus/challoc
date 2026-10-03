@@ -122,7 +122,7 @@ pub(crate) use sets::Set;
 pub use sets::SetTable;
 pub use table::SlabTable;
 #[cfg(verus_only)]
-pub use table::{lemma_tz_shl, slot_loc};
+pub use table::{lemma_tz_shl, slab_owner, slot_loc, slot_owner};
 use verify::{fresh_with_live, release_into_fresh};
 
 verus! {
@@ -836,7 +836,8 @@ impl Inner {
     /// end is the current group's end; the slab before the current
     /// group's end is owned, and each owned slab's markers are held
     /// (fresh ones from `init`, a guard slab's init markers), which puts
-    /// both below the watermark (`SlabTable::next_slab_locked`).
+    /// both below the watermark (`SlabTable::next_slab_locked`); and every
+    /// owned slab's owner ([`slab_owner`]) is this arena.
     spec fn base(&self) -> bool {
         &&& set_wf(self.partial, self.nbits())
         &&& set_wf(self.empty, self.nbits())
@@ -857,6 +858,8 @@ impl Inner {
         &&& forall|s: nat| #[trigger] self.states@.contains_key(s) && self.table@.spec_is_guard(s as usize)
             ==> guard_marked(self.table@, s as int, self.inited@@)
         &&& self.group_end > 0 ==> self.owns((self.group_end - 1) as nat)
+        &&& forall|s: nat| #[trigger] self.states@.contains_key(s)
+            ==> slab_owner(self.table@.spec_class() as int, s as int) == self.arena@
     }
 
     /// The ghost link at slab `s`, apart from the current group: a
@@ -1239,6 +1242,12 @@ impl ClassState {
         self.class as usize
     }
 
+    /// The arena this state belongs to: the one it claims from and
+    /// releases into (arena isolation, `verus/THEOREMS.md`).
+    pub closed spec fn spec_arena(&self) -> u16 {
+        self.arena
+    }
+
     /// The class table's slot tokens are of the class's authority
     /// (`table::slot_loc`). No code: a proof step for callers that hold
     /// the state by reference.
@@ -1385,7 +1394,11 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for State {
 impl ClassState {
     /// Bridge (trusted): under this arena's class lock, a slab's group's
     /// owner word names this arena exactly when the slab is one of its
-    /// owned slabs. Assumes the owner words move only with the ghost
+    /// owned slabs; the word's value is [`slab_owner`] (the read in its
+    /// body, `SlabTable::owner`, ensures it). One direction is proved:
+    /// an owned slab's owner is this arena (`Inner::base`, kept from
+    /// `take_group`'s store through `next_fresh_slab`). The other is
+    /// assumed: the owner words move only with the ghost
     /// ownership, a whole group at a time: `take_group` writes a new
     /// group's word, once, under the taking arena's lock and the commit
     /// lock, where no arena's ghost holds the group (ownership exists only
@@ -1402,6 +1415,7 @@ impl ClassState {
             g.table@ == self.spec_table(),
         ensures
             (r == self.arena) == g.owns(slab as nat),
+            r == slab_owner(self.spec_class() as int, slab as int),
     {
         self.table().owner(slab)
     }
@@ -2051,6 +2065,7 @@ impl ClassState {
         ensures
             picks_zero(self.spec_table(), final(picks)@, 0, np as int, *final(pz)),
             picks_marks(self.spec_table(), final(picks)@, 0, np as int, *final(pm)),
+            picks_owned(self.spec_class() as int, self.spec_arena(), final(picks)@, 0, np as int),
             picks_toks(self.spec_table(), final(picks)@, 0, np as int, *final(ptoks)),
             np <= MAX_PICKS,
             picks_ok(final(picks)@, np as int, self.spec_nslabs(), class_table()[self.spec_class() as int].nslots as nat),
@@ -2078,6 +2093,7 @@ impl ClassState {
                 picks_toks(self.spec_table(), picks@, 0, np as int, *ptoks),
                 picks_zero(self.spec_table(), picks@, 0, np as int, *pz),
                 picks_marks(self.spec_table(), picks@, 0, np as int, *pm),
+                picks_owned(self.spec_class() as int, self.arena, picks@, 0, np as int),
                 next matches Some(x) ==> x < self.spec_nslabs() && g@.partial.map@.contains(x as nat),
             decreases
                 match next {
@@ -2108,6 +2124,11 @@ impl ClassState {
                     lemma_picks_sum(before, picks@, k as int);
                     lemma_picks_toks_step(self.spec_table(), before, picks@, k as int, t0, *ptoks);
                     lemma_picks_marks_step(self.spec_table(), before, picks@, k as int, m0, *pm);
+                    assert forall|j: int| 0 <= j < k + 1 implies slab_owner(self.spec_class() as int, (#[trigger] picks@[j]).slab as int) == self.arena by {
+                        if j < k {
+                            assert(picks@[j] == before[j]);
+                        }
+                    }
                 }
             }
             next = g.partial.map.lowest_set_from(s + 1);
@@ -2125,6 +2146,7 @@ impl ClassState {
                 picks_toks(self.spec_table(), picks@, 0, np as int, *ptoks),
                 picks_zero(self.spec_table(), picks@, 0, np as int, *pz),
                 picks_marks(self.spec_table(), picks@, 0, np as int, *pm),
+                picks_owned(self.spec_class() as int, self.arena, picks@, 0, np as int),
             decreases MAX_PICKS - np,
         {
             let s = match self.next_slab(&mut g, meta) {
@@ -2142,6 +2164,11 @@ impl ClassState {
                 lemma_picks_sum(before, picks@, k as int);
                 lemma_picks_toks_step(self.spec_table(), before, picks@, k as int, t0, *ptoks);
                 lemma_picks_marks_step(self.spec_table(), before, picks@, k as int, m0, *pm);
+                assert forall|j: int| 0 <= j < k + 1 implies slab_owner(self.spec_class() as int, (#[trigger] picks@[j]).slab as int) == self.arena by {
+                    if j < k {
+                        assert(picks@[j] == before[j]);
+                    }
+                }
             }
         }
         proof {
@@ -2205,6 +2232,7 @@ impl ClassState {
             final(pm)[*old(np) as int].id() == self.spec_table().spec_slots().mloc,
             slab_marked(self.spec_table(), final(picks)[*old(np) as int].slab as int, final(pm)[*old(np) as int]@),
             !self.spec_table().spec_is_guard(final(picks)[*old(np) as int].slab as usize),
+            slab_owner(self.spec_class() as int, final(picks)[*old(np) as int].slab as int) == self.arena,
     {
         proof {
             use_type_invariant(self);
@@ -2521,7 +2549,8 @@ impl ClassState {
         requires
             sets.over(process_regions()),
         ensures
-            r matches Some(s) ==> s.spec_class() == table.spec_class() && s.spec_table() == *table,
+            r matches Some(s) ==> s.spec_class() == table.spec_class() && s.spec_table() == *table
+                && s.spec_arena() == arena,
     {
         broadcast use axiom_class_lock_inv;
         proof {
@@ -2745,6 +2774,8 @@ impl ClassState {
             final(toks).frame(*old(toks), 0, r.0.n as int),
             claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
     {
+        // The claim does not use the picks' owners (`plan` states them).
+        hide(picks_owned);
         let ghost t = self.spec_table();
         let ghost s = t.spec_slots();
         proof {
@@ -2786,6 +2817,9 @@ impl ClassState {
                 assert(picks@.subrange(0, np as int).len() == np);
                 assert forall|i: int| 0 <= i < np implies picks@.subrange(0, np as int)[i] == #[trigger] picks@[i] by {}
                 lemma_picks_sum(picks@.subrange(0, np as int), picks@, np as int);
+                assert(picks_zero(t, picks@.subrange(0, np as int), 0, np as int, pz));
+                assert(picks_toks(t, picks@.subrange(0, np as int), 0, np as int, ptoks));
+                assert(picks_marks(t, picks@.subrange(0, np as int), 0, np as int, pm));
             }
             got += self.finish(&picks[..np], &mut out[got..], &mut zeroed, rng.as_deref_mut(), Tracked(ptoks), Tracked(pz), Tracked(pm), Tracked(&mut *toks), Tracked(&mut z), Ghost(got as int));
             proof {
@@ -3910,6 +3944,14 @@ proof fn lemma_picks_toks_step(
     }
 }
 
+/// Arena isolation at the claim: picks `lo..hi` are of slabs arena `a`
+/// owns ([`slab_owner`]) in class `c`'s table. `take` picks only slabs the
+/// class lock's ghost holds for the arena (`ready`), whose owner is the
+/// arena (`Inner::base`).
+spec fn picks_owned(c: int, a: u16, p: Seq<Pick>, lo: int, hi: int) -> bool {
+    forall|j: int| lo <= j < hi ==> slab_owner(c, (#[trigger] p[j]).slab as int) == a
+}
+
 /// `pm` holds, by pick index, the fresh markers of the slab of each of
 /// picks `lo..hi`: `init` ran on it (`AtomicBitmap::inited_by`), so it is
 /// not a guard slab.
@@ -4522,6 +4564,10 @@ impl ClassState {
             bag.id() == slot_loc(self.spec_class() as int),
             aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= bag@,
             distinct(ptr_addrs(ptrs@), 0, ptrs@.len() as int),
+        ensures
+            // Arena isolation: it returns only if every slot's slab is
+            // this arena's; otherwise `wrong_arena` aborts.
+            forall|i: int| 0 <= i < ptrs@.len() ==> #[trigger] slot_owner(self.spec_class() as int, ptrs@[i]@.addr) == self.spec_arena(),
     {
         broadcast use lemma_aset;
         let tracked mut bag = bag;
@@ -4575,6 +4621,10 @@ impl ClassState {
             r <= ptrs@.len(),
             final(bag).id() == old(bag).id(),
             final(bag)@ == old(bag)@ - aset(ptr_addrs(ptrs@), 0, r as int),
+            // Arena isolation: every released slot's slab is this arena's,
+            // and the first one left is another arena's.
+            forall|i: int| 0 <= i < r ==> #[trigger] slot_owner(self.spec_class() as int, ptrs@[i]@.addr) == self.spec_arena(),
+            r < ptrs@.len() ==> slot_owner(self.spec_class() as int, ptrs@[r as int]@.addr) != self.spec_arena(),
     {
         broadcast use lemma_aset;
         let ghost bag0 = *bag;
@@ -4647,11 +4697,21 @@ impl ClassState {
                 distinct(pa, 0, ptrs@.len() as int),
                 bag@ == bag0@ - aset(pa, 0, i as int),
                 count != 0 ==> ltoks@ == addrs(s, scratch_bits(s, cur_slab * s.sb, local@, lo_w as int, hi_w as int)),
+                cur_slab != usize::MAX ==> slab_owner(self.spec_class() as int, cur_slab as int) == self.arena,
+                forall|j: int| 0 <= j < i ==> #[trigger] slot_owner(self.spec_class() as int, ptrs@[j]@.addr) == self.arena,
+                end < ptrs@.len() ==> slot_owner(self.spec_class() as int, ptrs@[end as int]@.addr) != self.arena,
             ensures
                 bag@ == bag0@ - aset(pa, 0, end as int),
                 end <= ptrs@.len(),
+                forall|j: int| 0 <= j < end ==> #[trigger] slot_owner(self.spec_class() as int, ptrs@[j]@.addr) == self.arena,
+                end < ptrs@.len() ==> slot_owner(self.spec_class() as int, ptrs@[end as int]@.addr) != self.arena,
         {
             let (slab, slot) = self.locate(p);
+            proof {
+                // The slab `locate` found is the one `slot_owner` names.
+                assert(p == ptrs@[i as int]);
+                process_regions().lemma_slab_index(self.spec_class() as int, slab as int, slot as int, p as usize);
+            }
             if slab != cur_slab {
                 if count != 0 {
                     let ghost pre = local@;

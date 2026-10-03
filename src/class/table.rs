@@ -160,6 +160,70 @@ pub(super) closed spec fn owner_word_at(t: SlabTable, group: usize) -> AtomicU16
     t.owner_perms@[group as int].value()
 }
 
+/// The arena that owns slab `slab` of class `c`'s region: the index
+/// [`SlabTable::take_group`] stores in the owner word of the slab's
+/// hand-out group as it hands the group out, under the commit lock and
+/// before the watermark passes the group. Fixed for the life of the
+/// process from then on (arena isolation, `verus/THEOREMS.md`): the word
+/// is written once, by that store ([`store_owner`]), and every load of a
+/// handed-out group's word returns it ([`load_owner`]). Uninterpreted:
+/// those two trusted wrappers are all that state it. Keyed by the class
+/// alone, which rests on there being one table per class per process
+/// (the premise [`axiom_slot_loc`] names; tests that build several
+/// tables, or corrupt an owner word, are outside it).
+pub uninterp spec fn slab_owner(c: int, slab: int) -> u16;
+
+/// The arena that owns the slab of class `c`'s region holding address
+/// `p` ([`slab_owner`] of [`Regions::slab_index`]): for a slot, the arena
+/// it was claimed from and the only one it is released into.
+pub open spec fn slot_owner(c: int, p: usize) -> u16 {
+    slab_owner(c, process_regions().slab_index(c, p))
+}
+
+/// `w.load(Relaxed)` of the owner word of handed-out slab `slab`'s group:
+/// the arena that owns the slab. Trusted, the read half of the
+/// [`slab_owner`] premise: the caller has seen the watermark past `slab`
+/// (the safety condition of [`SlabTable::owner_at`], its one caller), so
+/// the group was handed out, its word was stored once before the
+/// watermark moved ([`store_owner`]) and nothing writes it afterwards.
+/// Verus does not check that condition (`owner_at` requires only `slab <
+/// nslabs`): its callers, `owner` (after the watermark test),
+/// `check_located` (after `check_live`) and `owner_unchecked` (after
+/// `is_handed_out`), are what meet it. Sequential consistency, as for
+/// every atomic here (`verus/WEAKMEM.md`).
+#[verifier::external_body]
+#[inline(always)]
+fn load_owner(w: &AtomicU16, Ghost(t): Ghost<SlabTable>, Ghost(slab): Ghost<usize>) -> (r: u16)
+    requires
+        slab < t.spec_nslabs(),
+        *w == owner_word_at(t, slab >> t.lg_group),
+    ensures
+        r == slab_owner(t.spec_class() as int, slab as int),
+{
+    w.load(Ordering::Relaxed)
+}
+
+/// `w.store(arena, Relaxed)` of the owner word of hand-out group `group`:
+/// from here on [`slab_owner`] of every slab of the group is `arena`.
+/// Trusted, the write half of the [`slab_owner`] premise: called only by
+/// [`SlabTable::take_group`], under the commit lock, for the group at the
+/// watermark, past every fallible step, after which it moves the
+/// watermark past the group; so each group's word is stored once, before
+/// any slab of it is handed out. Verus does not check the "once" (a
+/// second call with another arena would contradict the first): the
+/// wrapper is private and has that one call site.
+#[verifier::external_body]
+#[inline(always)]
+fn store_owner(w: &AtomicU16, arena: u16, Ghost(t): Ghost<SlabTable>, Ghost(group): Ghost<usize>)
+    requires
+        *w == owner_word_at(t, group),
+    ensures
+        forall|x: int| t.spec_group_range(group).0 <= x < t.spec_group_range(group).1
+            ==> #[trigger] slab_owner(t.spec_class() as int, x) == arena,
+{
+    w.store(arena, Ordering::Relaxed)
+}
+
 /// `p` is an initialised permission to the `T` at `addr`, through a
 /// pointer of the provenance an address cast picks up
 /// ([`addr_to_ptr`](crate::vspec::addr::addr_to_ptr)).
@@ -1914,9 +1978,11 @@ impl SlabTable {
     /// of a handed-out group was committed and written before the
     /// watermark moved (the premise of `sets::axiom_table_bytes`).
     #[inline(always)]
-    unsafe fn owner_at(&self, slab: usize) -> u16
+    unsafe fn owner_at(&self, slab: usize) -> (r: u16)
         requires
             slab < self.spec_nslabs(),
+        ensures
+            r == slab_owner(self.spec_class() as int, slab as int),
     {
         proof {
             use_type_invariant(self);
@@ -1927,7 +1993,7 @@ impl SlabTable {
             assert(self.owner_perms@.contains_key(group as int));
         }
         let word = addr_to_ptr(self.owners_base + group * 2) as *const AtomicU16;
-        ptr_ref(word, Tracked(self.owner_perms.borrow().tracked_borrow(group as int))).load(Ordering::Relaxed)
+        load_owner(ptr_ref(word, Tracked(self.owner_perms.borrow().tracked_borrow(group as int))), Ghost(*self), Ghost(slab))
     }
 
     /// Slab `slab`'s `slab_bits` bits from `slab * slab_bits` lie in the
@@ -1980,10 +2046,14 @@ impl SlabTable {
         assert(g + (n - 1) == n + g - 1);
     }
 
-    /// The arena that owns `slab`. Aborts for a slab that was never handed
-    /// out.
+    /// The arena that owns `slab` ([`slab_owner`]). Aborts for a slab that
+    /// was never handed out.
     #[inline]
-    pub fn owner(&self, slab: usize) -> u16 {
+    pub fn owner(&self, slab: usize) -> (r: u16)
+        ensures
+            slab < self.spec_nslabs(),
+            r == slab_owner(self.spec_class() as int, slab as int),
+    {
         if slab >= self.committed_slabs() {
             never_committed(self.class as usize, slab);
         }
@@ -2140,10 +2210,11 @@ impl SlabTable {
     /// aborts unless `slab` has been handed out and `slot`'s bit is set,
     /// with the pointer and its location; returns the owning arena.
     #[inline]
-    pub fn check_located(&self, slab: usize, slot: usize, p: usize) -> u16
+    pub fn check_located(&self, slab: usize, slot: usize, p: usize) -> (r: u16)
         requires
             slot < class_table()[self.spec_class() as int].nslots,
         ensures
+            r == slab_owner(self.spec_class() as int, slab as int),
             slab < self.spec_nslabs(),
             !crate::layout::guard_slab(self.spec_class() as int, slab as int),
     {
@@ -2402,6 +2473,7 @@ impl SlabTable {
                 && self.spec_group_range(s >> self.lg_group) == (s, e)
                 && (forall|x: nat| #[trigger] old(sets).owns(x) ==> x < s)
                 && old(sets).group_end <= s
+                && (forall|x: int| s <= x < e ==> #[trigger] slab_owner(self.spec_class() as int, x) == arena)
                 && (forall|x: int| s <= x < e && !self.spec_is_guard(x as usize) ==> #[trigger] slab_marked(*self, x, final(inited)@))
                 && (forall|x: int| s <= x < e && self.spec_is_guard(x as usize) ==> #[trigger] guard_marked(*self, x, final(inited)@)),
     {
@@ -2618,7 +2690,7 @@ impl SlabTable {
                 }
             }
         }
-        owner_word.store(arena, Ordering::Relaxed);
+        store_owner(owner_word, arena, Ghost(*self), Ghost(s >> self.lg_group));
         gi.next_slab = end;
         proof {
             let gr = gi.group@;

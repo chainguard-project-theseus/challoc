@@ -68,6 +68,8 @@ axiom_init_descs	raw pointer (internal)	RefinedRust
 axiom_init_owners	raw pointer (internal)	RefinedRust
 axiom_init_words	raw pointer (internal)	RefinedRust
 SlabTable::owner_unchecked	raw pointer (internal)	RefinedRust
+load_owner	allocator invariant	RefinedRust
+store_owner	allocator invariant	RefinedRust
 desc_ptr_addr	raw pointer (internal)	Kani
 Config::set_listed	function pointer	Kani
 Config::get	function pointer	Kani
