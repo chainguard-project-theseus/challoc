@@ -123,6 +123,8 @@ pub(super) fn class_index(n: usize) -> (r: Option<usize>)
         r matches Some(c) ==> c < NCLASSES,
         r matches Some(c) ==> forall|j: int| c <= j < NCLASSES ==> n <= #[trigger] class_table()[j].size,
         r matches Some(c) ==> forall|j: int| 0 <= j < c ==> #[trigger] class_table()[j].size < n,
+        // The class `class_for(n, 1)` names: what a sized free's hint is.
+        r == spec_class_for(n, 1),
 {
     let r = class_of(n);
     proof {
@@ -138,6 +140,15 @@ pub(super) fn class_index(n: usize) -> (r: Option<usize>)
                 crate::vspec::class::axiom_class_table_wf(j);
                 assert(crate::layout::spec_class_size(j) < n);
             }
+            assert forall|j: int| 0 <= j < c implies !#[trigger] class_serves(j, n as int, 1) by {
+                assert(class_table()[j].size < n);
+            }
+            lemma_class_for_some(n, 1, c as int);
+        } else {
+            assert forall|j: int| 0 <= j < NCLASSES implies !#[trigger] class_serves(j, n as int, 1) by {
+                crate::vspec::class::axiom_class_table_wf(j);
+            }
+            lemma_class_for_none(n, 1);
         }
     }
     r
@@ -477,14 +488,16 @@ pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>)
 /// size. On the fast path the hint replaces the slab descriptor's bit test
 /// (design 6.3): a slot whose class matches is pushed at once, so an
 /// invalid or double free through this path is caught when the cache
-/// flushes it, not at the call; a hint that does not match aborts. C
-/// holds the token of the block it frees ([`heap::live::axiom_c_claim`]).
+/// flushes it, not at the call; a hint that does not match aborts
+/// ([`heap::hint_ok`] of every non-null `p` it returns for). C holds the
+/// token of the block it frees ([`heap::live::axiom_c_claim`]).
 #[inline(always)]
 pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>)
     requires
         hint matches Some(c) ==> c < NCLASSES,
     ensures
         p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> heap::hint_ok(p, hint),
 {
     let tracked blk = heap::live::axiom_c_claim(p);
     free_sized_block(p, size, hint, Tracked(blk))
@@ -499,6 +512,7 @@ pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(bl
         blk.claims(p),
     ensures
         p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> heap::hint_ok(p, hint),
         p@.addr != 0 ==> blk.block(p),
 {
     let tracked mut blk = blk;
@@ -529,6 +543,7 @@ fn free_sized_unhinted(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>)
         blk.claims(p),
     ensures
         p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> heap::hint_ok(p, None),
         p@.addr != 0 ==> blk.block(p),
 {
     if !p.is_null() {
@@ -546,6 +561,7 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): T
         blk.claims(p),
     ensures
         heap::free_target(p),
+        heap::hint_ok(p, hint),
         blk.block(p),
 {
     match super::shared_if_ready() {
@@ -558,11 +574,13 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): T
 }
 
 /// C23 `free_sized(p, size)`: `size` must be the size requested from
-/// `malloc`/`calloc`/`realloc` (or any size in the same class).
+/// `malloc`/`calloc`/`realloc` (or any size in the same class). A slot
+/// freed with the size of another class, or with a huge size, aborts.
 #[inline(always)]
 pub fn free_sized(p: *mut u8, size: usize)
     ensures
         p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> heap::hint_ok(p, spec_class_for(size, 1)),
 {
     free_sized_hint(p, size, class_index(size))
 }
@@ -573,6 +591,7 @@ pub fn free_sized(p: *mut u8, size: usize)
 pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize)
     ensures
         p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> heap::hint_ok(p, if is_pow2(align) { spec_class_for(size, align) } else { None }),
 {
     let hint = if align.is_power_of_two() { class_for(size, align) } else { None };
     free_sized_hint(p, size, hint)

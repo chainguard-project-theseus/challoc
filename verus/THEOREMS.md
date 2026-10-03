@@ -1541,6 +1541,184 @@ explicit-cache table, the background state) are not exercised.
   finishes depends on the slow paths, whose lock waits are
   partial-correctness premises (common premises).
 
+## Bad input
+
+The coordinator assigns this theorem its number at merge. The
+`file:line`s are the `fn` line at this section's commit.
+
+**Statement.** For every exported entry point, a bad argument either
+aborts (the call does not return) or gets the documented error result;
+no returning call acts on it. The exceptions are a huge run's size on a
+sized free, which the code does not check, and a free of a block that
+was freed and reallocated, which no allocator can tell from a live one
+(table below). Stated as `ensures` on the Rust functions
+the exports call (an abort satisfies every postcondition, so each one
+says what holds of a call that returns):
+
+```rust
+// heap/mod.rs:498, :512 (theorem 3's target; the size hint's class)
+pub open spec fn free_target(p: *mut u8) -> bool {
+    ||| slot_start(p)
+    ||| process_regions().is_huge_block(p@.addr, 1)
+}
+pub open spec fn hint_ok(p: *mut u8, hint: Option<usize>) -> bool {
+    forall|c: int| #[trigger] process_regions().is_slot(c, p@.addr) ==> hint == Some(c as usize)
+}
+
+// api/libc.rs:580, :591; api/cxx.rs:302, :314; api/jemalloc.rs:481
+fn free_sized(p, size)              ensures p@.addr != 0 ==> hint_ok(p, spec_class_for(size, 1)),
+fn free_aligned_sized(p, align, size)
+    ensures p@.addr != 0 ==> hint_ok(p, if is_pow2(align) { spec_class_for(size, align) } else { None }),
+fn sdallocx(p, size, flags)
+    ensures p@.addr != 0 ==> hint_ok(p, spec_class_for(size, 1usize << ((flags as u32) & 0x3f))),
+            p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
+
+// heap/mallocx.rs:95; api/jemalloc.rs:184, :275, :440
+pub open spec fn bad_tcache(t: Tcache) -> bool {
+    t matches Tcache::Explicit(i) && i as usize >= MAX_TCACHES
+}
+pub open spec fn tcache_checked(size: usize, flags: c_int) -> bool {
+    let f = mallocx::decode_spec(flags as u32);
+    mallocx::bad_tcache(f.tcache) ==> f.arena is Some && spec_class_for(size, 1usize << f.lg_align) is None
+}
+fn mallocx(size, flags)  ensures tcache_checked(size, flags), /* and theorem 2's fits */
+fn dallocx(p, flags)     ensures p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
+
+// api/cxx.rs:260
+fn new_aligned(size, align, nothrow)  ensures align != 0 && !is_pow2(align) ==> r@.addr == 0,
+
+// heap/mod.rs:534; heap/live.rs:474
+pub proof fn theorem_free_target_aligned(p: *mut u8)
+    requires regions_ok(), free_target(p),
+    ensures (p@.addr as int) % (QUANTUM as int) == 0,
+pub proof fn theorem_interior(&self, p: *mut u8, k: int)   // Live
+    requires regions_ok(), self.wf(), 0 < k < self.len(), p@.addr == self.addr() + k,
+    ensures free_target(p) ==> self.run_of() && k % page_size() == 0,
+```
+
+(Abridged: the `ensures` lists hold the other theorems' conjuncts too.)
+Per kind of bad input, with what is proved and what rests on the C
+contract:
+
+| Bad input | Entry points | Result | Proved |
+|---|---|---|---|
+| Pointer outside every class region and the huge region, in a gap, in the metadata, in a guard slab | every free, the `realloc` family, `malloc_usable_size`, `sallocx`, `xallocx` | abort | yes: `free_target` (theorem 3, theorem 7's `theorem_guard_free`) |
+| Misaligned pointer (not a multiple of the quantum) | as above | abort | yes: `free_target` and `theorem_free_target_aligned` |
+| Interior pointer of a slot, or of a huge run off a page boundary | as above | abort | yes: `free_target` and `Live::theorem_interior` (`lemma_slot_interior`, `lemma_run_interior`) |
+| Interior page start of a huge run | frees, `realloc` family | abort (`Huge::free_run`: `not_a_run`) | under the C contract only (*(C)* below) |
+| The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`Huge::usable_size`: `not_a_run`) | no: the queries take no token, and nothing states it |
+| Slot freed with the size of another class, or a huge size | `free_sized`, `free_aligned_sized`, `sdallocx`, sized `delete`s | abort (`hint_mismatch`) | yes for a live slot: `hint_ok`; for a non-live one, *(C)* |
+| Non-power-of-two alignment to `free_aligned_sized` or the sized aligned `delete` | as above | abort on a slot | as above: `hint_ok(p, None)`, so no slot start returns |
+| Huge run freed with a size that names another usable size | sized frees | freed; the size is ignored (as jemalloc does) | no: not checked |
+| Non-power-of-two or zero alignment | `aligned_alloc`, `memalign` | NULL (`EINVAL`) | NULL yes (row 5); `errno` no |
+| Alignment not a power of two, or not a multiple of `sizeof(void *)` | `posix_memalign` | `EINVAL` | yes (row 6) |
+| Non-zero alignment that is not a power of two | `new`, `new[]` (`align_val_t`) | NULL (`nothrow_t`) or `bad_alloc`, after the handler loop | yes: `new_aligned` |
+| Any `MALLOCX_LG_ALIGN` (0 to 63) | `mallocx`, `rallocx` | a block aligned to it, or NULL | yes: `fits(r, size, 1 << lg_align)` (theorem 2): no misaligned block |
+| `MALLOCX_TCACHE(t)`, `t >= MAX_TCACHES` (1024; the field reaches 4093) | `mallocx`, `dallocx`, `sdallocx` | abort (`invalid_tcache`, or first `hint_mismatch` on `sdallocx`), except a huge `mallocx` with an explicit arena, which never looks the cache up | yes: `tcache_checked`, `!bad_tcache` (the frees' for a live block or a non-block pointer; *(C)* otherwise) |
+| `MALLOCX_TCACHE(t)` of a cache never created | as above | abort, with the same exception | no: existence is a run-time table load, not modelled |
+| `MALLOCX_ARENA(a)` of an arena that does not exist | `mallocx`, `rallocx` | NULL | no: as above |
+| Double free of a slot back in its bitmap (stale), or a free of a never-allocated slot of a handed-out slab | plain frees | abort (`check_live`, `check_located`: `invalid_free`) | under the C contract only |
+| The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`check_live`) | no: the queries take no token, and nothing states it |
+| The same, through a sized free | sized frees | abort at the cache flush (`double_free`, `straddling_double_free`) | under the C contract only |
+| Double free while the first copy is still in a thread cache | every free | with `double_free_scan` enabled (off by default), abort if among the top four entries (`cached_twice`); else abort at the flush, or the slot is handed out twice first, as under jemalloc | under the C contract only |
+| Double free of a huge run | every free | abort (`Huge::free_run`: `already_free`, or `not_a_run` once the freed run has been merged or left the table) | under the C contract only |
+| Free of a block that was freed and reallocated (ABA) | every free | frees the new block | undetectable by any allocator |
+
+*(C)*: a pointer that is a slot start or a huge page start but not a live
+block is excluded by `heap::live::axiom_c_claim` (`heap/live.rs:576`,
+the `free` contract in the common premises): the free cores take C's
+`Live` token for the pointer and give it back to the allocator, and for
+such a pointer C holds no token, so the axiom's token makes the proof
+context inconsistent and nothing is proved for that call. The run-time
+checks behind those rows are verified code (each abort helper ends in
+`sys::abort_fmt` and returns `!`), but no theorem says they fire for
+every non-live block: the bitmap word invariant (`bitmap::WordPred`)
+holds the slot tokens of exactly the clear bits, so a clear bit means
+the slot is back in its bitmap, but that fact holds only inside the
+atomic invariant at the instant of the load, and the free cores'
+`ensures` (`blk.block(p)`) come from the token, not from the test. Those
+B cells stay `p`.
+
+The pointer-shape rows hold without *(C)*: `axiom_c_claim`'s token for
+a pointer that is no slot start and no huge page start claims nothing,
+so the context stays consistent and the abort is proved. `hint_ok` and
+`!bad_tcache` on the frees are about the program's own arguments (a
+size, an alignment, a flags word) against `p`'s class, a function of
+`p`; they are proved for every live block, where the axiom's token is
+the one C holds, and for every non-block pointer, but for a slot or
+huge page start that is not live they rest on *(C)* like the rows
+above. `tcache_checked` on `mallocx` and `new_aligned`'s NULL take no
+C token and hold unconditionally.
+
+**Proof.**
+- Shape: theorem 3. `theorem_free_target_aligned` uses
+  `lemma_slot_fits_quantum` (class sizes are multiples of the quantum,
+  class bases `MAX_SLAB`-aligned) and `lemma_huge_fits` (a huge page
+  start is page-aligned). `lemma_slot_interior`: two slot starts of one
+  class are a class size apart (`lemma_slots_apart`), slots of two
+  classes lie in two strides (`lemma_classes_apart`), and a slot lies
+  outside the huge region (`lemma_slot_run_apart`).
+  `lemma_run_interior`: page starts of the huge region are a whole
+  number of pages apart.
+- Size hint: `check_size_hint` (`heap/shared.rs:2043`) aborts when
+  `Regions::classify` says `Slab { class }` and `hint != Some(class)`.
+  `classify` and `slab_slot` (`layout/regions.rs:761`, `:621`) also
+  ensure that with separated regions they find every slot start in its
+  class, guard slabs included (`lemma_slot_addr_found`, `:989`: the
+  stride shift gives the class, the offset is inside the region, and
+  the slot test of `Class::slot_of_offset` accepts it), so `hint_ok`
+  holds whenever `check_size_hint` returns. The fast path
+  (`free_sized_fast`, `heap/paths.rs:647`) pushes only when
+  `Shared::sized_slot` found `p` a slot of the hinted class, and a slot
+  has one class (`lemma_hint_ok`, from `vspec::zero::lemma_slot_unique`).
+  `class_index` ensures `r == spec_class_for(n, 1)`, so the hints
+  `free_sized` and `sdallocx` (flags 0) pass are `spec_class_for`'s.
+- Flags: `Tcaches::get` (`heap/tcaches.rs:143`) ensures `None` for an
+  id of `MAX_TCACHES` or more; `mallocx::alloc`, `alloc_huge` (without
+  an explicit arena) and `free` (`heap/mallocx.rs:151`, `:241`, `:280`)
+  then reach `invalid_tcache`.
+- `new_aligned`: `aligned_alloc_block` returns NULL for a
+  non-power-of-two alignment, so `oom` (`api/cxx.rs:174`) never returns
+  a block for it: its `nothrow` exit returns NULL, and the throwing exit
+  is `-> !`.
+
+**Premises beyond the common ones.** None new. The size-hint rows rest
+on the class table premises (`class_entry`, `axiom_class_table_wf`)
+through `slab_slot`'s completeness; *(C)* is the `free` contract.
+
+**Scope.**
+- NULL: `free`, `free_sized`, `dallocx`, `sdallocx` and the `delete`s
+  return at once for NULL (not stated: there is no model of the
+  allocator state a no-op leaves alone); `malloc_usable_size(NULL)` is 0
+  (proved); `sallocx` and `xallocx` abort for NULL by an explicit test
+  (their `free_target(p)` does not say it, as `Regions::wf` does not
+  rule out a slot at address 0).
+- Before the first allocation, every free or query of a non-NULL
+  pointer aborts (`free_before_init`); a thread's first `free` may
+  create its heap before the abort (theorem 3).
+- `errno` is not modelled (*(errno)* in the interface contract).
+
+- Not checked, by the code either: a huge run freed through a sized
+  free with a size that names another usable size. `hint_ok` constrains
+  slot starts only, and `check_size_hint` passes every other pointer to
+  the exact free, which ignores the size (jemalloc's `nallocx(size) ==
+  sallocx(p)` is not checked for huge runs).
+
+**Where the statement is weaker than the code.**
+- The *(C)* rows: the run-time checks abort, but the proof excludes
+  those inputs by the C contract instead of proving the abort. The
+  queries' stale-slot and interior-page aborts are not stated.
+- `MALLOCX_TCACHE(t)` with `t < MAX_TCACHES` that names no cache, and
+  `MALLOCX_ARENA(a)` that names no arena, abort and return NULL
+  respectively by run-time lookups the proofs do not model.
+- `rallocx` keeps a block in place without looking at the flags' cache,
+  so its `ensures` says nothing of `bad_tcache`; a move allocates and
+  frees through `alloc_with` and `mallocx::free`, which check it.
+- `new_aligned` with alignment 0: `oom` reads 0 as the unaligned
+  operators' marker, so with a `new_handler` installed the retry is
+  `malloc`'s and a block can come back; without one, NULL or
+  `bad_alloc`. C++ makes the call undefined; the doc comment says so.
+
 ## Interface contract
 
 The seven theorems above checked against challoc's exported C ABI: one
@@ -1591,7 +1769,10 @@ Properties:
   require the token of a live block and ensure that what they freed was
   live, but C holds that token only by `axiom_c_claim` (the `free`
   contract), so a non-live free is excluded by that C-boundary
-  assumption rather than proved to abort.
+  assumption rather than proved to abort. The "Bad input" section above
+  lists every kind of bad input by entry point, with what is proved to
+  abort (pointer shape, size hints, alignments, cache ids) and what
+  rests on the C contract.
 - **U**: size consistency: `nallocx` equals `mallocx`'s usable size;
   `sallocx` and `malloc_usable_size` give the block's real usable size.
 
@@ -1614,7 +1795,7 @@ Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
 | 13 | `challoc_calloc_usable`                     | P | P | P | . | p | . | P |
 | 14 | `challoc_realloc_usable`                    | P | P | . | - | p | p | P |
 | 15 | `challoc_free_usable`                       | . | . | . | . | P | p | P |
-| 16 | `mallocx`                                   | P | P | P | . | p | - | . |
+| 16 | `mallocx`                                   | P | P | P | . | p | p | . |
 | 17 | `rallocx`                                   | P | P | P | - | p | p | . |
 | 18 | `xallocx`                                   | . | . | . | . | . | p | p |
 | 19 | `sallocx`                                   | . | . | . | . | . | p | p |
@@ -1623,7 +1804,7 @@ Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
 | 22 | `nallocx`                                   | . | . | . | . | P | . | P |
 | 23 | `operator new`, `new[]`                     | P | P | . | . | p | . | . |
 | 24 | `new`, `new[]` (`nothrow_t`)                | P | P | . | . | p | . | . |
-| 25 | `new`, `new[]` (`align_val_t`, 4 forms)     | P | P | . | . | p | - | . |
+| 25 | `new`, `new[]` (`align_val_t`, 4 forms)     | P | P | . | . | p | p | . |
 | 26 | `delete`, `delete[]` (unsized, 8 forms)     | . | . | . | . | . | p | . |
 | 27 | `delete`, `delete[]` (sized)                | . | . | . | . | . | p | . |
 | 28 | `delete`, `delete[]` (sized, aligned)       | . | . | . | . | . | p | . |
@@ -1756,14 +1937,16 @@ alone):
     NULL is a no-op (early return; not in the `ensures`). F: `errno`
     preservation (the module doc's promise) is *(errno)*. A thread's
     first `free` may create its heap before the abort (theorem 3).
-11. `free_sized`, `free_aligned_sized` (`api/libc.rs:471`, `:481`). B:
-    `free_target(p)`, *(live)*. The size hint is checked against the slot's
-    class only on the slow path (`Shared::check_size_hint`,
-    `heap/shared.rs:1363`, verified, no `ensures`). On the fast path
-    (`free_sized_fast`, `heap/paths.rs:583`) a matching-class slot is
-    pushed untested; its liveness is checked when the cache flushes. A
-    non-power-of-two alignment gives no hint and aborts on a slab pointer.
-    F: as `free`.
+11. `free_sized`, `free_aligned_sized` (`api/libc.rs:580`, `:591`). B:
+    `free_target(p)`, *(live)*. The size hint is proved against the
+    slot's class: `free_sized` ensures `p != 0 ==> hint_ok(p,
+    spec_class_for(size, 1))` and `free_aligned_sized` the same for
+    `spec_class_for(size, align)`, or `None` for a non-power-of-two
+    alignment, so a slot freed with another class's size, or with a bad
+    alignment, aborts ("Bad input"). The slow path checks it
+    (`Shared::check_size_hint`, which ensures `hint_ok`); the fast
+    path (`free_sized_fast`) pushes only a slot of the hinted class, and
+    its liveness is checked when the cache flushes. F: as `free`.
 12. `challoc_malloc_usable` (`api/libc.rs:798`, `.0` of
     `malloc_usable_stored`). R, D, F: as `malloc`. U: the `Stored` token
     of the last store through `usable` has `ptr() == usable` and, for a
@@ -1810,8 +1993,13 @@ alone):
     result, `usable_is(r, size, nalloc_usable(size, flags & 0x3f))` (row
     22). F: NULL on failure
     with `errno` untouched (`alloc_with`'s doc) is not stated beyond
-    `fits` allowing NULL. B: an arena or explicit cache that does not
-    exist returns NULL (doc of `alloc_with`, `:160`); not stated.
+    `fits` allowing NULL. B: `tcache_checked(size, flags)`: an explicit
+    cache id of `MAX_TCACHES` or more aborts, except for a huge request
+    with an explicit arena, which never looks the cache up; every
+    `MALLOCX_LG_ALIGN` gets an aligned block or NULL (R). An arena that
+    does not exist returns NULL and a cache id below `MAX_TCACHES` that
+    names no cache aborts, with the same huge exception (`alloc_with`'s
+    doc); neither is stated, as existence is a run-time table load.
 17. `rallocx` (`api/jemalloc.rs:260`, `rallocx_zeroed`, `:278`). R:
     `fits(r, size, 1 << (flags & 0x3f))`, a kept block included, as
     `realloc` (gap 6). Z: for a new or moved block with `MALLOCX_ZERO`,
@@ -1837,14 +2025,18 @@ alone):
     U: `usable_of(p, r)`, *(U)*. For a slot `mallocx(size, flags)`
     returned, `theorem_usable_consistent` gives `r == nallocx(size,
     flags)`, jemalloc's contract.
-20. `dallocx` (`api/jemalloc.rs:353`). B: `p != 0 ==> free_target(p)`,
+20. `dallocx` (`api/jemalloc.rs:440`). B: `p != 0 ==> free_target(p)`,
     *(live)*. With `MALLOCX_TCACHE_NONE` the release tests the bit
-    immediately (**unconfirmed**, from the doc comment).
-21. `sdallocx` (`api/jemalloc.rs:378`). B: `p != 0 ==> free_target(p)`,
+    immediately (**unconfirmed**, from the doc comment). An explicit
+    cache id of `MAX_TCACHES` or more aborts (`!bad_tcache`, "Bad
+    input").
+21. `sdallocx` (`api/jemalloc.rs:481`). B: `p != 0 ==> free_target(p)`,
     *(live)*. jemalloc's `nallocx(size, flags) == sallocx(p)` contract
-    is checked as in row 11: `flags == 0` is `free_sized`, and
-    `sdallocx_flags`/`sdallocx_routed` (`:391`, `:409`) hint
-    `class_for(size, align)`.
+    is checked as in row 11, for slots: `p != 0 ==> hint_ok(p,
+    spec_class_for(size, 1 << (flags & 0x3f)))` (`flags == 0` is
+    `free_sized`, and `sdallocx_flags`/`sdallocx_routed` hint
+    `class_for(size, align)`); a huge run's size is not checked. An
+    explicit cache id of `MAX_TCACHES` or more aborts (`!bad_tcache`).
 22. `nallocx` (`api/jemalloc.rs:432`). F, U: `r == 0 || size <= r` and
     `r == nalloc_usable(size, flags & 0x3f)` (`api/jemalloc.rs`), the
     size of `spec_class_for(size, 1 << (flags & 0x3f))`, or
@@ -1870,17 +2062,21 @@ alone):
     handler).
 24. `new` `nothrow_t` (`api/cxx.rs:226`). R: as row 23. F: NULL after
     the handler loop; not stated beyond `fits`.
-25. `new` `align_val_t` (`api/cxx.rs:237`). R: `is_pow2(align) ==>
+25. `new` `align_val_t` (`api/cxx.rs:260`). R: `is_pow2(align) ==>
     fits(r, size, align)`. F: as rows 23 and 24 by `nothrow`. B: a
     non-power-of-two alignment (undefined in C++) makes `aligned_alloc`
-    return NULL, so the handler loop runs; nothing is stated.
+    return NULL, so the handler loop runs; `new_aligned` ensures
+    `align != 0 && !is_pow2(align) ==> r@.addr == 0` (NULL for the
+    `nothrow_t` forms, `bad_alloc` for the others). `p`: alignment 0 is
+    `oom`'s marker for the unaligned operators, so with a `new_handler`
+    installed the retry is `malloc`'s and a block can come back.
 26. Unsized `delete` forms, with or without `align_val_t` or `nothrow_t`
     (`cxx::delete`, `api/cxx.rs:256`). B: as `free`; the alignment is
     ignored.
-27. Sized `delete` (`cxx::delete_sized`, `api/cxx.rs:267`). B: as
-    `free_sized`.
+27. Sized `delete` (`cxx::delete_sized`, `api/cxx.rs:302`). B: as
+    `free_sized`, `hint_ok` included.
 28. Sized aligned `delete` (`cxx::delete_sized_aligned`,
-    `api/cxx.rs:278`). B: as `free_aligned_sized`.
+    `api/cxx.rs:314`). B: as `free_aligned_sized`, `hint_ok` included.
 29. `malloc_trim` (`api/libc.rs:1350`). F: `r == 0 || r == 1`. Not stated:
     whether anything was purged.
 30. `mallopt` (`api/glibc.rs:72`). F: `r == 1` (accepted and ignored).
@@ -2009,3 +2205,12 @@ alone):
    for huge runs, `Huge::alloc_run`'s result now comes with its run
    token (gap 1); state `theorem_run_guards` per result over that token
    (I4, huge row).
+8. **Bad input**: done as far as the C contract allows ("Bad input"
+   above). Rows 16 and 25 go from `-` to `p` (cache ids of
+   `MAX_TCACHES` or more abort; a non-zero non-power-of-two `align_val_t`
+   gets no block), and rows 11, 21, 27 and 28 gain `hint_ok`: a slot
+   freed with another class's size aborts. The *(live)* cells stay `p`:
+   a stale or double free of a slot or huge page start is excluded by
+   `axiom_c_claim`, not proved to abort. Left: model arena and cache
+   existence (rows 16, 17, 20, 21) and tie a huge run's size to the
+   sized frees' hint, which the code does not check either.

@@ -177,10 +177,21 @@ fn usable_for(shared: &Shared, size: usize, f: &Flags) -> (r: Option<usize>)
     }
 }
 
+/// A `mallocx(size, flags)` that returns with an explicit cache id no
+/// `tcache.create` hands out ([`mallocx::bad_tcache`]) was a huge request
+/// with an explicit arena, the one path that never looks the cache up;
+/// every other aborts (`invalid_tcache`).
+pub open spec fn tcache_checked(size: usize, flags: c_int) -> bool {
+    let f = mallocx::decode_spec(flags as u32);
+    mallocx::bad_tcache(f.tcache) ==> f.arena is Some && spec_class_for(size, 1usize << f.lg_align) is None
+}
+
 /// `mallocx`'s core: allocate `size` bytes per `f`, zeroing the whole
 /// usable size when `MALLOCX_ZERO` is set and the memory is not already
-/// known to be zero. Null on exhaustion or for an arena or explicit cache
-/// that does not exist (`errno` untouched). With `MALLOCX_ZERO`, a
+/// known to be zero. Null on exhaustion or for an arena that does not
+/// exist (`errno` untouched); an explicit cache that does not exist
+/// aborts (`invalid_tcache`), except on the huge path with an explicit
+/// arena, which never looks the cache up. With `MALLOCX_ZERO`, a
 /// non-null result comes with a [`Zeroed`] token for its whole usable
 /// size ([`covers_usable`]), which is at least `size`. `blk` gets the
 /// block's token.
@@ -194,6 +205,7 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags, Tracked(blk): Tracked<&mu
         r.0@.addr != 0 && f.zero ==> covers_usable(r.1@, r.0, 0, size as int),
         r.0@.addr != 0 ==> usable_is(r.0, size as int, nalloc_usable(size, f.lg_align)),
         final(blk).gives(r.0, size as int),
+        mallocx::bad_tcache(f.tcache) ==> f.arena is Some && spec_class_for(size, 1usize << f.lg_align) is None,
 {
     let align = f.align();
     proof {
@@ -264,6 +276,7 @@ pub fn mallocx(size: usize, flags: c_int) -> (r: *mut u8)
     ensures
         crate::heap::fits(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
         r@.addr != 0 ==> usable_is(r, size as int, nalloc_usable(size, (flags as u32) & 0x3f)),
+        tcache_checked(size, flags),
 {
     let tracked mut blk = Live::empty();
     mallocx_zeroed(size, flags, Tracked(&mut blk)).0
@@ -281,6 +294,7 @@ pub fn mallocx_zeroed(size: usize, flags: c_int, Tracked(blk): Tracked<&mut Live
         r.0@.addr != 0 && (flags as u32) & MALLOCX_ZERO != 0 ==> covers_usable(r.1@, r.0, 0, size as int),
         r.0@.addr != 0 ==> usable_is(r.0, size as int, nalloc_usable(size, (flags as u32) & 0x3f)),
         final(blk).gives(r.0, size as int),
+        tcache_checked(size, flags),
 {
     let f = Flags::decode(flags as u32);
     alloc_with(super::shared(), size, &f, Tracked(blk))
@@ -426,6 +440,7 @@ pub fn sallocx(p: *mut u8, _flags: c_int) -> (r: usize)
 pub fn dallocx(p: *mut u8, flags: c_int)
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
+        p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
 {
     let tracked blk = crate::heap::live::axiom_c_claim(p);
     dallocx_block(p, flags, Tracked(blk))
@@ -438,6 +453,7 @@ pub fn dallocx_block(p: *mut u8, flags: c_int, Tracked(blk): Tracked<Live>)
         blk.claims(p),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
+        p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
         p@.addr != 0 ==> blk.block(p),
 {
     if p.is_null() {
@@ -465,6 +481,8 @@ pub fn dallocx_block(p: *mut u8, flags: c_int, Tracked(blk): Tracked<Live>)
 pub fn sdallocx(p: *mut u8, size: usize, flags: c_int)
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
+        p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
+        p@.addr != 0 ==> crate::heap::hint_ok(p, spec_class_for(size, 1usize << ((flags as u32) & 0x3f))),
 {
     let tracked blk = crate::heap::live::axiom_c_claim(p);
     sdallocx_block(p, size, flags, Tracked(blk))
@@ -478,8 +496,22 @@ pub fn sdallocx_block(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Track
         blk.claims(p),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
+        p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
+        p@.addr != 0 ==> crate::heap::hint_ok(p, spec_class_for(size, 1usize << ((flags as u32) & 0x3f))),
         p@.addr != 0 ==> blk.block(p),
 {
+    proof {
+        // `flags == 0` names no alignment, so the hint is `class_index`'s,
+        // and the default cache.
+        if flags == 0 {
+            let fl = flags as u32;
+            assert(fl == 0);
+            assert(1usize << (fl & 0x3f) == 1 && (fl >> 8u32) & 0xfff == 0) by (bit_vector)
+                requires
+                    fl == 0,
+            ;
+        }
+    }
     if flags == 0 {
         return super::libc::free_sized_block(p, size, super::libc::class_index(size), Tracked(blk));
     }
@@ -494,9 +526,14 @@ fn sdallocx_flags(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<L
         blk.claims(p),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
+        p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
+        p@.addr != 0 ==> crate::heap::hint_ok(p, spec_class_for(size, 1usize << ((flags as u32) & 0x3f))),
         p@.addr != 0 ==> blk.block(p),
 {
     let f = Flags::decode(flags as u32);
+    proof {
+        crate::meta::lemma_is_pow2_shl(f.lg_align as usize);
+    }
     match f.tcache {
         Tcache::Default => super::libc::free_sized_block(p, size, class_for(size, f.align()), Tracked(blk)),
         // The raw flags, not `f`: a `Flags` argument goes by pointer to a
@@ -515,6 +552,8 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<
         blk.claims(p),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
+        p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
+        p@.addr != 0 ==> crate::heap::hint_ok(p, spec_class_for(size, 1usize << ((flags as u32) & 0x3f))),
         p@.addr != 0 ==> blk.block(p),
 {
     let tracked mut blk = blk;
@@ -522,6 +561,9 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<
         return;
     }
     let f = Flags::decode(flags as u32);
+    proof {
+        crate::meta::lemma_is_pow2_shl(f.lg_align as usize);
+    }
     let Some(shared) = super::shared_if_ready() else { not_an_allocation("sdallocx", p) };
     let hint = class_for(size, f.align());
     if let Tcache::Explicit(t) = f.tcache {

@@ -2162,9 +2162,12 @@ impl Shared {
     pub fn check_size_hint(&self, p: *mut u8, size: usize, hint: Option<usize>)
         requires
             self.wf(),
+        ensures
+            crate::heap::hint_ok(p, hint),
     {
         proof {
             self.lemma_wf();
+            self.lemma_regions_ok();
         }
         if let Kind::Slab { class, .. } = self.regions.classify(p as usize) {
             if hint != Some(class as usize) {

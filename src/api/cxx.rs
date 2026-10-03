@@ -175,6 +175,9 @@ fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live
     ensures
         align == 0 ==> crate::heap::fits(r, size as int, crate::QUANTUM as int),
         align != 0 && libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
+        // A non-zero alignment that is not a power of two never gets a
+        // block: `aligned_alloc` refuses it on every attempt.
+        align != 0 && !libc::is_pow2(align) ==> r@.addr == 0,
         final(blk).gives(r, size as int),
 {
     loop {
@@ -248,10 +251,16 @@ pub fn new_block(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -
     }
 }
 
-/// The `align_val_t` forms. The block's token goes to C++ with it.
+/// The `align_val_t` forms. The block's token goes to C++ with it. An
+/// alignment that is not a power of two (undefined in C++) never gets a
+/// block: the `nothrow_t` forms return null and the others throw, after
+/// the handler loop. Zero is the exception: [`oom`] reads it as the
+/// unaligned operators' marker, so after a `new_handler` call the retry is
+/// `malloc`'s.
 pub fn new_aligned(size: usize, align: usize, nothrow: bool) -> (r: *mut u8)
     ensures
         libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
+        align != 0 && !libc::is_pow2(align) ==> r@.addr == 0,
 {
     let tracked mut blk = Live::empty();
     new_aligned_block(size, align, nothrow, Tracked(&mut blk))
@@ -261,6 +270,7 @@ pub fn new_aligned(size: usize, align: usize, nothrow: bool) -> (r: *mut u8)
 pub fn new_aligned_block(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
     ensures
         libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
+        align != 0 && !libc::is_pow2(align) ==> r@.addr == 0,
         final(blk).gives(r, size as int),
 {
     proof {
@@ -292,6 +302,7 @@ pub fn delete(p: *mut u8)
 pub fn delete_sized(p: *mut u8, size: usize)
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
+        p@.addr != 0 ==> crate::heap::hint_ok(p, libc::spec_class_for(size, 1)),
 {
     libc::free_sized(p, size)
 }
@@ -303,6 +314,7 @@ pub fn delete_sized(p: *mut u8, size: usize)
 pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize)
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
+        p@.addr != 0 ==> crate::heap::hint_ok(p, if libc::is_pow2(align) { libc::spec_class_for(size, align) } else { None }),
 {
     libc::free_aligned_sized(p, align, size)
 }

@@ -634,7 +634,20 @@ impl Regions {
                 &&& p as int == self.slot_at(c as int, slab as int, slot as int)
                 &&& (slab as int) < self.spec_nslabs(c as int)
             },
+            // Exact with separated regions: every slot start is found, in
+            // its class.
+            self.separated() ==> forall|c: int| #[trigger] self.is_slot_addr(c, p) ==> (r matches Some((c2, _, _)) && c2 as int == c),
     {
+        proof {
+            if self.separated() {
+                assert forall|c: int| #[trigger] self.is_slot_addr(c, p) implies {
+                    &&& (p.wrapping_sub(self.superblock) >> self.lg_stride) as int == c
+                    &&& p.wrapping_sub(self.class_base[c]) < (1usize << self.lg_region)
+                } by {
+                    self.lemma_slot_addr_found(c, p);
+                }
+            }
+        }
         let c = p.wrapping_sub(self.superblock) >> self.lg_stride;
         if c >= NCLASSES {
             return None;
@@ -661,6 +674,11 @@ impl Regions {
             assert(self.class_base@[c as int] == self.class_base[c as int]);
         }
         let (slot, valid) = cls.slot_of_offset(offset);
+        proof {
+            if self.separated() && self.is_slot_addr(c as int, p) {
+                self.lemma_slot_addr_found(c as int, p);
+            }
+        }
         if !valid {
             return None;
         }
@@ -749,6 +767,9 @@ impl Regions {
             r matches Kind::Huge { page } ==> page <= self.huge_len >> self.lg_page,
             // Exact: a page start of the huge region, `page` its index.
             r matches Kind::Huge { page } ==> self.is_huge_block(p, 1) && page == ((p - self.huge_base) as usize) >> self.lg_page,
+            // Exact with separated regions: a slot start is `Slab`, of its
+            // class ([`Regions::slab_slot`]).
+            self.separated() ==> forall|c: int| #[trigger] self.is_slot_addr(c, p) ==> (r matches Kind::Slab { class, .. } && class as int == c),
     {
         if let Some((class, slab, slot)) = self.slab_slot(p) {
             proof {
@@ -956,6 +977,139 @@ impl Regions {
                 lgu == lg as usize,
         ;
         assert(p as int == self.slot_at(c, slab as int, slot as int));
+    }
+
+    /// The converse of [`Regions::lemma_slot_of`]: a slot start of class
+    /// `c`, guard slabs included, passes every test of
+    /// [`Regions::slab_slot`]. Its stride of the superblock is `c`'s (the
+    /// class regions lie in their strides), its offset from the class base
+    /// is inside the region, and its part inside the slab is a whole
+    /// number of slots below `nslots`. So `slab_slot` finds every slot
+    /// start, and its class.
+    pub proof fn lemma_slot_addr_found(self, c: int, p: usize)
+        requires
+            self.wf(),
+            self.separated(),
+            self.is_slot_addr(c, p),
+        ensures
+            (p.wrapping_sub(self.superblock) >> self.lg_stride) as int == c,
+            p.wrapping_sub(self.class_base[c]) < (1usize << self.lg_region),
+            ({
+                let cls = class_table()[c];
+                let off = p.wrapping_sub(self.class_base[c]) & (cls.slab_mask as usize);
+                &&& off % (cls.size as usize) == 0
+                &&& off / (cls.size as usize) < cls.nslots
+            }),
+    {
+        let (slab, slot) = choose|slab: int, slot: int|
+            0 <= slab < self.spec_nslabs(c) && 0 <= slot < class_table()[c].nslots
+                && p as int == #[trigger] self.slot_at(c, slab, slot);
+        crate::vspec::class::axiom_class_table_wf(c);
+        let cls = class_table()[c];
+        let lg = cls.lg_slab;
+        let lgu = lg as usize;
+        let lr = self.lg_region;
+        let rl = 1usize << lr;
+        let nu = rl >> lg;
+        assert(nu == rl >> lgu) by (bit_vector)
+            requires
+                nu == rl >> lg,
+                lgu == lg as usize,
+        ;
+        vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+        vstd::bits::lemma_usize_shl_is_mul(1, lgu);
+        let su = 1usize << lg;
+        assert(su == (1usize << lgu) && su > 0) by (bit_vector)
+            requires
+                lgu == lg as usize,
+                lg <= 22,
+                su == 1usize << lg,
+        ;
+        let s = su as int;
+        vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(nu, lgu, rl);
+        let z = cls.size as int;
+        assert(slot * z + z <= s) by (nonlinear_arith)
+            requires
+                0 <= slot < cls.nslots,
+                (cls.nslots as int) * z <= s,
+                z >= 0,
+        ;
+        assert(slab * s + s <= nu * s) by (nonlinear_arith)
+            requires
+                0 <= slab < nu,
+                s >= 0,
+        ;
+        assert(0 <= slot * z) by (nonlinear_arith)
+            requires
+                0 <= slot,
+                z >= 0,
+        ;
+        assert(0 <= slab * s) by (nonlinear_arith)
+            requires
+                0 <= slab,
+                s >= 0,
+        ;
+        // Inside the region, so inside stride `c`.
+        let b = self.class_base[c];
+        let rel = p.wrapping_sub(b);
+        assert(b <= p && rel as int == slab * s + slot * z);
+        assert(rel < rl);
+        let lst = self.lg_stride;
+        let ls = lst as usize;
+        let stu = 1usize << lst;
+        assert(stu == (1usize << ls)) by (bit_vector)
+            requires
+                ls == lst as usize,
+                stu == 1usize << lst,
+        ;
+        let stride = stu as int;
+        let sb = self.superblock;
+        assert(sb + c * stride <= b);
+        assert(b + rl <= sb + (c + 1) * stride);
+        let d = p.wrapping_sub(sb);
+        assert(d as int == p - sb);
+        assert(c * stride <= d && d < c * stride + stride) by (nonlinear_arith)
+            requires
+                sb + c * stride <= b,
+                b <= p,
+                p < b + rl,
+                b + rl <= sb + (c + 1) * stride,
+                d as int == p - sb,
+        ;
+        vstd::bits::lemma_usize_pow2_no_overflow(ls as nat);
+        vstd::bits::lemma_usize_shl_is_mul(1, ls);
+        vstd::bits::lemma_usize_shr_is_div(d, ls);
+        assert(d >> lst == d >> ls) by (bit_vector)
+            requires
+                ls == lst as usize,
+        ;
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(d as int, stride, c, d - c * stride);
+        // The part inside the slab: `rel % s`, the mask's low bits.
+        let m = cls.slab_mask as usize;
+        assert(m == ((1usize << lg) - 1) as usize);
+        let q = rel >> lg;
+        assert(rel == ((rel >> lg) << lg) + (rel & m) && (rel & m) < (1usize << lg) && q <= usize::MAX >> lg) by (bit_vector)
+            requires
+                lg <= 22,
+                m == ((1usize << lg) - 1) as usize,
+                q == rel >> lg,
+        ;
+        vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(q, lgu, usize::MAX);
+        assert(q <= usize::MAX >> lgu) by (bit_vector)
+            requires
+                q <= usize::MAX >> lg,
+                lgu == lg as usize,
+        ;
+        vstd::bits::lemma_usize_shl_is_mul(q, lgu);
+        assert((q << lg) == (q << lgu)) by (bit_vector)
+            requires
+                lgu == lg as usize,
+        ;
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(rel as int, s, q as int, (rel & m) as int);
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(rel as int, s, slab, slot * z);
+        // A whole number of slots.
+        assert(z > 0);
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(slot * z, z, slot, 0);
     }
 
     /// A slot of class `c` lies, whole, in class `c`'s region.

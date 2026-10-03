@@ -88,6 +88,14 @@ pub open spec fn decode_spec(flags: u32) -> Flags {
     }
 }
 
+/// `MALLOCX_TCACHE(t)` names an explicit cache id no `tcache.create` hands
+/// out (`MAX_TCACHES` or more; the 12-bit field reaches 4093): every path
+/// that looks the cache up finds none and aborts by name
+/// (`invalid_tcache`).
+pub open spec fn bad_tcache(t: Tcache) -> bool {
+    t matches Tcache::Explicit(i) && i as usize >= super::tcaches::MAX_TCACHES
+}
+
 impl Flags {
     /// Decode jemalloc's layout: bits 0-5 `lg_align`, bit 6 `ZERO`, bits
     /// 8-19 tcache (0 default, 1 none, `t + 2` explicit `t`), bits 20-31
@@ -148,6 +156,7 @@ pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache, 
         r.0@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r.0@.addr),
         r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, crate::layout::class_table()[class as int].size as int),
         r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+        !bad_tcache(tcache),
 {
     match tcache {
         Tcache::Default => match crate::heap::heap_for_thread(shared) {
@@ -246,6 +255,7 @@ pub fn alloc_huge(
         r.0@.addr != 0 ==> shared.huge_ok(size),
         r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
         r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == shared.huge_usable(size),
+        arena is None ==> !bad_tcache(tcache),
 {
     let a = match (arena, tcache) {
         (Some(a), _) => a,
@@ -274,6 +284,7 @@ pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<s
     ensures
         crate::heap::free_target(p),
         blk.block(p),
+        !bad_tcache(tcache),
 {
     match tcache {
         Tcache::Default => crate::heap::free(shared, p, Tracked(blk)),

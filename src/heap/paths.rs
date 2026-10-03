@@ -11,8 +11,8 @@ use crate::vspec::zero::Zeroed;
 
 #[cfg(verus_only)]
 use super::{
-    CachePerms, PUSH_ZERO, cell_ok, free_target, hand_out, lemma_handed_ok, pac_mode, regions_ok,
-    slot_token,
+    CachePerms, PUSH_ZERO, cell_ok, free_target, hand_out, hint_ok, lemma_handed_ok, lemma_hint_ok,
+    pac_mode, regions_ok, slot_token,
 };
 use super::{FOREIGN, Heap, Live, PUSH_PAC, Shared, existing_heap, heap_for_thread};
 #[cfg(verus_only)]
@@ -656,6 +656,7 @@ pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<u
         final(h).keeps(*old(h)),
         flags & PUSH_ZERO != 0 ==> !r,
         r ==> free_target(p),
+        r ==> hint_ok(p, hint),
         !r ==> *final(blk) == *old(blk),
         r ==> old(blk).block(p),
 {
@@ -665,6 +666,7 @@ pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<u
             let ghost orig = *blk;
             proof {
                 shared.lemma_regions_ok();
+                lemma_hint_ok(p, class as int);
                 lend_slot(blk, &mut tk, class as int, p);
             }
             let r = h.push_fast(class, p, flags, Tracked(&mut tk));

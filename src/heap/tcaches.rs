@@ -151,6 +151,8 @@ impl Tcaches {
     pub fn get(&self, id: u16) -> (r: Option<&mut Heap>)
         ensures
             r matches Some(h) ==> h.wf(),
+            // An id no `tcache.create` hands out names no cache.
+            id as usize >= MAX_TCACHES ==> r is None,
     {
         let i = id as usize;
         if i >= MAX_TCACHES {

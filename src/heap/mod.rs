@@ -500,6 +500,55 @@ pub open spec fn free_target(p: *mut u8) -> bool {
     ||| process_regions().is_huge_block(p@.addr, 1)
 }
 
+/// A sized free's size hint names `p`'s class (`verus/THEOREMS.md`, "Bad
+/// input"): if `p` is a slot start of class `c`, `hint` is `Some(c)`.
+/// `hint` is the class the size (and alignment) the program passed name,
+/// `None` for a size no class holds or an alignment that is not a power
+/// of two, so a slot freed with the size of another class, or with a huge
+/// size, fails it. The sized frees test it of a slot before they push or
+/// release it (`Shared::sized_slot` on the fast path, else
+/// `Shared::check_size_hint`, which aborts); a pointer that is no slot
+/// start passes it, and the exact free behind it judges the pointer.
+pub open spec fn hint_ok(p: *mut u8, hint: Option<usize>) -> bool {
+    forall|c: int| #[trigger] process_regions().is_slot(c, p@.addr) ==> hint == Some(c as usize)
+}
+
+/// A slot start of class `c` has no other class, so the hint `Some(c)`
+/// names its class.
+pub proof fn lemma_hint_ok(p: *mut u8, c: int)
+    requires
+        regions_ok(),
+        process_regions().is_slot(c, p@.addr),
+        0 <= c,
+    ensures
+        hint_ok(p, Some(c as usize)),
+{
+    assert forall|d: int| #[trigger] process_regions().is_slot(d, p@.addr) implies Some(c as usize) == Some(d as usize) by {
+        crate::vspec::zero::lemma_slot_unique(c, d, p@.addr);
+    }
+}
+
+/// A misaligned pointer is no free target (`verus/THEOREMS.md`, "Bad
+/// input"): every slot start and every huge page start is a multiple of
+/// the quantum, so a free of a pointer that is not aborts (theorem 3).
+pub proof fn theorem_free_target_aligned(p: *mut u8)
+    requires
+        regions_ok(),
+        free_target(p),
+    ensures
+        (p@.addr as int) % (crate::QUANTUM as int) == 0,
+{
+    if slot_start(p) {
+        let c = choose|c: int| #[trigger] process_regions().is_slot(c, p@.addr);
+        crate::vspec::class::axiom_class_table_wf(c);
+        lemma_slot_fits_quantum(p, c, 0);
+    } else {
+        lemma_quantum_pow2();
+        crate::meta::lemma_is_pow2_one();
+        lemma_huge_fits(p, 0, 1, crate::QUANTUM);
+    }
+}
+
 /// A slot of class `c` serves `size` bytes at `align` when the class is at
 /// least `size` bytes and its size a multiple of `align`.
 pub proof fn lemma_slot_fits(p: *mut u8, c: int, size: int, align: usize)

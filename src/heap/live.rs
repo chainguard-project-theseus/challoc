@@ -463,6 +463,93 @@ impl Live {
             }
         }
     }
+
+    /// An interior pointer of a live block is no free target
+    /// (`verus/THEOREMS.md`, "Bad input"): a pointer `k` bytes into the
+    /// block, `0 < k < len()`, is no slot start and no huge page start, so
+    /// a free of it aborts (theorem 3), unless the block is a huge run and
+    /// `k` a whole number of pages. That page start is caught at run time
+    /// (`Huge::free_run` finds no run starting there), but the proof
+    /// excludes it only by the C contract ([`axiom_c_claim`]).
+    pub proof fn theorem_interior(&self, p: *mut u8, k: int)
+        requires
+            crate::heap::regions_ok(),
+            self.wf(),
+            0 < k < self.len(),
+            p@.addr == self.addr() + k,
+        ensures
+            crate::heap::free_target(p) ==> self.run_of() && k % page_size() == 0,
+    {
+        if self.run is None {
+            lemma_slot_interior(self.class, self.addr, p@.addr);
+        } else {
+            lemma_run_interior(self.addr, self.len(), p@.addr);
+        }
+    }
+}
+
+/// A pointer strictly inside slot `a` of class `c` is no slot start and no
+/// huge page start.
+pub proof fn lemma_slot_interior(c: int, a: usize, b: usize)
+    requires
+        crate::heap::regions_ok(),
+        process_regions().is_slot(c, a),
+        a < b < a + class_table()[c].size,
+    ensures
+        forall|d: int| !#[trigger] process_regions().is_slot(d, b),
+        !process_regions().is_huge_block(b, 1),
+{
+    let r = process_regions();
+    crate::vspec::class::axiom_class_table_wf(c);
+    assert forall|d: int| !#[trigger] r.is_slot(d, b) by {
+        if r.is_slot(d, b) {
+            crate::vspec::class::axiom_class_table_wf(d);
+            if d == c {
+                lemma_slots_apart(c, a, b);
+            } else {
+                lemma_classes_apart(c, a, d, b);
+            }
+        }
+    }
+    if r.is_huge_block(b, 1) {
+        lemma_slot_run_apart(c, a, b, 1);
+    }
+}
+
+/// A pointer inside the `len` bytes of the huge region at page start `a`
+/// that is not a whole number of pages past `a` is no slot start and no
+/// huge page start.
+pub proof fn lemma_run_interior(a: usize, len: int, b: usize)
+    requires
+        crate::heap::regions_ok(),
+        process_regions().is_huge_block(a, len),
+        a < b < a + len,
+    ensures
+        forall|d: int| !#[trigger] process_regions().is_slot(d, b),
+        process_regions().is_huge_block(b, 1) ==> (b - a) % page_size() == 0,
+{
+    let r = process_regions();
+    assert forall|d: int| !#[trigger] r.is_slot(d, b) by {
+        if r.is_slot(d, b) {
+            crate::vspec::class::axiom_class_table_wf(d);
+            lemma_slot_run_apart(d, b, a, len);
+        }
+    }
+    if r.is_huge_block(b, 1) {
+        let lgp = r.lg_page;
+        assert((1usize << lgp) > 0) by (bit_vector)
+            requires
+                lgp < 64,
+        ;
+        let pg = page_size();
+        let x = b - r.huge_base;
+        let y = a - r.huge_base;
+        assert(x % pg == 0 && y % pg == 0);
+        vstd::arithmetic::div_mod::lemma_sub_mod_noop(x, y, pg);
+        vstd::arithmetic::div_mod::lemma_small_mod(0, pg as nat);
+        assert((x - y) % pg == 0);
+        assert(b - a == x - y);
+    }
 }
 
 /// The C contract of `free`, `realloc` and the sized frees: only a
