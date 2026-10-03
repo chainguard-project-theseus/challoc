@@ -71,7 +71,7 @@ use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
 use crate::meta::Meta;
 use crate::purge::{self, Decayer};
 use crate::slab::{SlabDesc, State};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 mod abort;
 mod decay;
@@ -81,6 +81,7 @@ mod table;
 #[cfg(test)]
 mod tests;
 mod verify;
+mod xfer;
 
 use abort::{
     double_free, guard_free, owner_mismatch, release_into_fresh_slab, reservation_unmet,
@@ -92,6 +93,9 @@ pub(crate) use sets::Set;
 pub use sets::SetTable;
 pub use table::SlabTable;
 use verify::{fresh_with_live, release_into_fresh};
+pub use xfer::XFER_MAX;
+#[cfg(xfer_diag)]
+pub use xfer::diag;
 
 /// Counters kept under the class lock. Slab counts only; `curregs` and
 /// the byte totals are derived from them in `stats.rs`.
@@ -380,6 +384,12 @@ pub struct ClassState {
     /// from none to one, recomputed by every purge walk) and read without
     /// it by the decay driver, and the next walk's deadline.
     gate: Decayer,
+    /// The transfer stack (`xfer.rs`), created on its first push; its
+    /// fields are guarded by the class lock.
+    xfer: AtomicPtr<xfer::Xfer>,
+    /// Full batches on the transfer stack, written under the class lock
+    /// and read without it as the refill's and the decay pass's gate.
+    xfer_n: AtomicU32,
     inner: Padded<Lock<Inner>>,
     /// Slots ever reserved by `take` for this arena (written only under
     /// the class lock). With `released` below it gives `curregs`, the
@@ -419,6 +429,7 @@ pub struct ClassState {
 const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
 const _: () =
     assert!(core::mem::offset_of!(ClassState, gate) + core::mem::size_of::<Decayer>() <= PAD_ALIGN);
+const _: () = assert!(core::mem::offset_of!(ClassState, xfer_n) + 4 <= PAD_ALIGN);
 const _: () = assert!(core::mem::offset_of!(ClassState, claimed) % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % 512 != 0);
@@ -535,6 +546,8 @@ impl ClassState {
             arena,
             table,
             gate: Decayer::new(),
+            xfer: AtomicPtr::new(core::ptr::null_mut()),
+            xfer_n: AtomicU32::new(0),
             inner: Padded(Lock::new(Inner {
                 partial,
                 empty,

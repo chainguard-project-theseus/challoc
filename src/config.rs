@@ -164,6 +164,8 @@ pub struct Config {
     pub cgroup: bool,
     /// Check every known-zero slot or page handed out (slow paths only).
     pub check_zero: bool,
+    /// Transfer batches held per `(arena, class)`; 0 is off (`class/xfer.rs`).
+    pub xfer_batches: u32,
 }
 
 impl Config {
@@ -191,6 +193,7 @@ impl Config {
         abort_conf: false,
         cgroup: true,
         check_zero: false,
+        xfer_batches: 0,
     };
 
     /// Apply one `key:value,key:value` string on top of `self`. Each problem
@@ -548,6 +551,15 @@ pub const TABLE: &[Key] = &[
     bool_key!("abort_conf", abort_conf),
     bool_key!("cgroup", cgroup),
     bool_key!("check_zero", check_zero),
+    Key {
+        name: "xfer_batches",
+        parse: |c, k, v| {
+            num(c, k, v, 0, crate::class::XFER_MAX as i64, |c, v| {
+                c.xfer_batches = v as u32
+            })
+        },
+        read: |c| Value::Uint(c.xfer_batches as u64),
+    },
 ];
 
 /// The names of [`TABLE`], in its order.

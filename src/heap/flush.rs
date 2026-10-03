@@ -77,9 +77,30 @@ impl Heap {
         unsafe {
             assert_eq!((*cache).len, 0, "heap: refill of a cache that is not empty");
             let want = ((*cache).cap / 2).max(1) as usize;
+            let cs = arena.class(class);
+            // A transfer batch first (`class/xfer.rs`): already checked,
+            // highest address first, not a claim (the compaction gate's
+            // refill count is the bitmaps' traffic) and not a run.
+            if shared.config.xfer_batches != 0 && cs.xfer_pending() {
+                let all = core::slice::from_raw_parts_mut((*cache).slots(), (*cache).cap as usize);
+                let n = cs.xfer_pop(all);
+                if n != 0 {
+                    #[cfg(xfer_diag)]
+                    crate::class::diag::bump(5);
+                    if shared.pac() {
+                        CacheHeader::sign_all((*cache).slots(), &mut all[..n]);
+                    }
+                    (*cache).len = n as u32;
+                    (*cache).moved = (*cache).moved.wrapping_add(n as u64);
+                    (*cache).low_water = n as u32;
+                    (*cache).run_end = 0;
+                    (*cache).zeroed = 0;
+                    return n as u32;
+                }
+            }
             let out = core::slice::from_raw_parts_mut((*cache).slots(), want);
-            let claim = self.claim(shared, arena.class(class), out);
-            arena.class(class).note_refill(claim.n);
+            let claim = self.claim(shared, cs, out);
+            cs.note_refill(claim.n);
             out[..claim.n].reverse();
             if shared.pac() {
                 CacheHeader::sign_all((*cache).slots(), &mut out[..claim.n]);
@@ -253,6 +274,70 @@ impl Heap {
             (*cache).zeroed = 0;
             (*cache).run_end = 0;
             (*cache).low_water = (*cache).low_water.min(rest_len as u32);
+        }
+    }
+}
+
+impl Heap {
+    /// A full `FOREIGN` cache handed whole to its arena's transfer stack
+    /// (`xfer_batches`, `class/xfer.rs`) instead of released: only a stack
+    /// in strictly ascending address order (no duplicate, grouped by slab)
+    /// whose slabs all belong to one arena, every bit checked set. The
+    /// cache gets an empty buffer of the same capacity in exchange. `false`
+    /// leaves the cache as it was for the ordinary flush.
+    ///
+    /// # Safety
+    /// `cache` is this heap's `FOREIGN` cache for `class` and is full.
+    pub(super) unsafe fn xfer_foreign(
+        &mut self,
+        shared: &Shared,
+        cache: *mut CacheHeader,
+        class: usize,
+    ) -> bool {
+        let limit = shared.config.xfer_batches as usize;
+        if limit == 0 || shared.pac() {
+            return false;
+        }
+        // SAFETY: a full real cache.
+        unsafe {
+            #[cfg(xfer_diag)]
+            crate::class::diag::bump(0);
+            let all = (*cache).entries();
+            let n = all.len();
+            if n == 0 || !all.windows(2).all(|w| w[0] < w[1]) {
+                #[cfg(xfer_diag)]
+                crate::class::diag::bump(1);
+                return false;
+            }
+            let a = shared.arena_of_slot(class, all[0]);
+            let cs = shared.owner(a).class(class);
+            if !cs.xfer_check(all) {
+                #[cfg(xfer_diag)]
+                crate::class::diag::bump(2);
+                return false;
+            }
+            let repl = cs.xfer_push(
+                &shared.meta,
+                (*cache).slots(),
+                n,
+                (*cache).cap,
+                limit,
+                crate::sys::now_coarse_ns(),
+            );
+            if repl.is_null() {
+                #[cfg(xfer_diag)]
+                crate::class::diag::bump(3);
+                return false;
+            }
+            #[cfg(xfer_diag)]
+            crate::class::diag::bump(4);
+            (*cache).slots = repl;
+            (*cache).len = 0;
+            (*cache).moved = (*cache).moved.wrapping_sub(n as u64);
+            (*cache).zeroed = 0;
+            (*cache).run_end = 0;
+            (*cache).low_water = 0;
+            true
         }
     }
 }

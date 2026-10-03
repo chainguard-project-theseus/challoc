@@ -231,6 +231,22 @@ impl Arena {
         next
     }
 
+    /// Release the transfer batches (`class/xfer.rs`) pushed at or before
+    /// `cutoff` in every class, and return the oldest push time left (0
+    /// when none). Lock-free for a class with no batch.
+    pub fn xfer_drain(&self, meta: &crate::meta::Meta, cutoff: u64) -> u64 {
+        let mut oldest = 0u64;
+        for cs in self.classes.iter() {
+            if cs.xfer_pending() {
+                let t = cs.xfer_drain(meta, cutoff);
+                if t != 0 && (oldest == 0 || t < oldest) {
+                    oldest = t;
+                }
+            }
+        }
+        oldest
+    }
+
     /// `Empty` bytes over every class (one lock hold per class that has
     /// any), for the cgroup policy's retention figure.
     pub fn empty_bytes(&self) -> usize {

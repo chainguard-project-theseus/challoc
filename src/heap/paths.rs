@@ -295,7 +295,9 @@ impl Heap {
                 } else {
                     ((*cache).cap / 2).max(1)
                 };
-                self.flush(shared, arena, cache, class, n as usize);
+                if !(arena == FOREIGN && self.xfer_foreign(shared, cache, class)) {
+                    self.flush(shared, arena, cache, class, n as usize);
+                }
             }
             // The scan ran above; a flush only removes entries.
             if !Self::push_cache(cache, p, false, shared.pac()) {

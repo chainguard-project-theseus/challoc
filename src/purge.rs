@@ -387,9 +387,24 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
             next = Some(next.map_or(d, |n| n.min(d)));
         }
     };
+    let xfer = shared.config.xfer_batches != 0;
+    #[cfg(xfer_diag)]
+    if xfer {
+        crate::class::diag::maybe_print(now);
+    }
     for arena in shared.arenas.iter() {
         // Each arena's own period, scaled by the policy's band.
-        fold(arena.decay_with(now, policy.effective_decay_ns(arena.decay_ns()), keep16));
+        let decay_ns = policy.effective_decay_ns(arena.decay_ns());
+        // Transfer batches older than one step of the curve go back to
+        // the bitmaps (`class/xfer.rs`).
+        if xfer && decay_ns != NEVER {
+            let step = Curve::new(decay_ns).step_ns();
+            let left = arena.xfer_drain(&shared.meta, now.saturating_sub(step));
+            if left != 0 {
+                fold(Some(left.saturating_add(step)));
+            }
+        }
+        fold(arena.decay_with(now, decay_ns, keep16));
     }
     // The huge allocator is shared by every arena: its own period when
     // `huge_dirty_decay_ms` is set, else arena 0's (design 7).
@@ -407,6 +422,7 @@ pub fn purge_all(shared: &Shared) -> usize {
     let _explicit = Explicit::enter();
     let mut n = 0;
     for arena in shared.arenas.iter() {
+        arena.xfer_drain(&shared.meta, u64::MAX);
         n += arena.purge_all();
     }
     n + shared.huge.purge_empty(u64::MAX)
@@ -418,6 +434,7 @@ pub fn purge_all(shared: &Shared) -> usize {
 pub fn purge_arena(shared: &Shared, index: u16) -> Option<usize> {
     let _explicit = Explicit::enter();
     let arena = shared.arenas.get_existing(index)?;
+    arena.xfer_drain(&shared.meta, u64::MAX);
     let mut n = arena.purge_all();
     if index == 0 {
         n += shared.huge.purge_empty(u64::MAX);
