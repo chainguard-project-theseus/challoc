@@ -44,13 +44,19 @@ not a power of two (rounded up to N)`, `conf key k is accepted but has no
 effect (not implemented)`) and the offending pair is skipped (clamped or
 rounded for the numeric cases); parsing continues.
 
+Each source is read up to 4096 bytes (for an environment variable, its
+value). A longer source is cut there and reported as `conf text longer
+than 4096 bytes (ignored after the last complete pair)`: the pairs before
+the cut apply, and the pair the cut splits is dropped rather than applied
+with a shortened value.
+
 `abort_conf:true` turns the report into an abort. It is evaluated after
 every source has been read, so it covers keys that came before it, and it
-refuses unknown keys, bad values, out-of-range and rounded numbers, and
-inert keys. It does not refuse a documented runtime fallback for a valid
-key (`thp:auto` on a host with no sub-PMD folio size, `thp:always` under
-a cgroup limit below 1 GiB); the `malloc_stats_print` report says which
-applies (section 6). Use it in package tests:
+refuses unknown keys, bad values, out-of-range and rounded numbers,
+inert keys, and sources longer than 4096 bytes. It does not refuse a
+documented runtime fallback for a valid key (`thp:auto` on a host with
+no sub-PMD folio size, `thp:always` under a cgroup limit below 1 GiB);
+the `malloc_stats_print` report says which applies (section 6). Use it in package tests:
 `MALLOC_CONF=abort_conf:true,no_such_key:1 ruby -e 1` aborts with
 challoc's message.
 

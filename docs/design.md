@@ -978,8 +978,9 @@ set (so `abort_conf` refuses a configuration that relies on it and
 exit, #62); `junk`, `zero`, `retain`, `oversize_threshold`,
 `metadata_thp` and `confirm_conf` are jemalloc keys accepted with any
 value and ignored (`metadata_thp` because the metadata follows `thp`).
-Unknown keys, bad values, out-of-range numbers (clamped) and inert keys
-are reported on stderr and otherwise ignored unless `abort_conf` is set,
+Unknown keys, bad values, out-of-range numbers (clamped), inert keys and
+sources longer than 4096 bytes (the pair at the cut is dropped) are
+reported on stderr and otherwise ignored unless `abort_conf` is set,
 which is evaluated after every source has been read. `opt.<key>` is
 readable through `mallctl` for every key of the table; the inert and
 ignored keys return `ENOENT`.
