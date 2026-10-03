@@ -41,7 +41,7 @@ fn slab_state_index(s: slab::State) -> usize {
     }
 }
 
-/// S65 `PartialEqSpecImpl for State` (`slab::State`, class/mod.rs).
+/// S66 `PartialEqSpecImpl for State` (`slab::State`, class/mod.rs).
 #[kani::proof]
 fn eq_slab_state() {
     let v = [
@@ -64,7 +64,7 @@ fn thp_index(t: Thp) -> usize {
     }
 }
 
-/// S305 `PartialEqSpecImpl for config::Thp`.
+/// S307 `PartialEqSpecImpl for config::Thp`.
 #[kani::proof]
 fn eq_config_thp() {
     let v = [Thp::Never, Thp::Auto, Thp::Always];
@@ -83,7 +83,7 @@ fn thp_setting_index(t: ThpSetting) -> usize {
     }
 }
 
-/// S306 `PartialEqSpecImpl for sys::thp_host::ThpSetting`.
+/// S308 `PartialEqSpecImpl for sys::thp_host::ThpSetting`.
 #[kani::proof]
 fn eq_thp_setting() {
     let v = [
@@ -106,7 +106,7 @@ fn run_state_index(s: RunState) -> usize {
     }
 }
 
-/// S307 `PartialEqSpecImpl for huge::RunState`.
+/// S309 `PartialEqSpecImpl for huge::RunState`.
 #[kani::proof]
 fn eq_run_state() {
     let v = [RunState::Active, RunState::Empty, RunState::Purged];
@@ -124,7 +124,7 @@ fn percpu_arena_index(p: PercpuArena) -> usize {
     }
 }
 
-/// S318 `PartialEqSpecImpl for config::PercpuArena`.
+/// S320 `PartialEqSpecImpl for config::PercpuArena`.
 #[kani::proof]
 fn eq_percpu_arena() {
     let v = [
@@ -148,7 +148,7 @@ fn cgroup_state_index(s: cgroup::State) -> usize {
     }
 }
 
-/// S355 `PartialEqSpecImpl for sys::cgroup::State`.
+/// S357 `PartialEqSpecImpl for sys::cgroup::State`.
 #[kani::proof]
 fn eq_cgroup_state() {
     let v = [
@@ -164,7 +164,7 @@ fn eq_cgroup_state() {
     check_variants(&v);
 }
 
-/// S356 `PartialEqSpecImpl for sys::Errno`: the derived `==` of the one
+/// S358 `PartialEqSpecImpl for sys::Errno`: the derived `==` of the one
 /// field, for every pair of `i32`s.
 #[kani::proof]
 fn eq_errno() {

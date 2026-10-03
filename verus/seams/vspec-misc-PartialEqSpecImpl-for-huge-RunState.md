@@ -1,6 +1,6 @@
 # `PartialEqSpecImpl for huge::RunState`
 
-Seam S307 of `verus/SEAMS.md`: src/vspec/misc.rs:35. Kind: spec_impl. Category: core library.
+Seam S309 of `verus/SEAMS.md`: src/vspec/misc.rs:35. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract

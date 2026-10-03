@@ -10,13 +10,19 @@ verus! {
 
 #[cold]
 #[inline(never)]
-pub(super) fn never_committed(class: usize, slab: usize) -> ! {
+pub(super) fn never_committed(class: usize, slab: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!("invalid free: class {class} slab {slab} was never allocated"))
 }
 
 #[cold]
 #[inline(never)]
-pub(super) fn owner_mismatch(class: usize, group: usize, slab: usize, word: u16, desc: u16) -> ! {
+pub(super) fn owner_mismatch(class: usize, group: usize, slab: usize, word: u16, desc: u16) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!(
         "heap inconsistency: class {class} group {group}: owner word says arena {word}, slab {slab}'s descriptor says arena {desc}"
     ))
@@ -27,7 +33,10 @@ pub(super) fn owner_mismatch(class: usize, group: usize, slab: usize, word: u16,
 /// bounds the set bits, so the bitmap or the descriptor is corrupt.
 #[cold]
 #[inline(never)]
-pub(super) fn zero_slab_had_bits_set(class: usize, slab: usize, arena: u16, state: State, live: usize, word: usize, got: u64, expect: u64) -> ! {
+pub(super) fn zero_slab_had_bits_set(class: usize, slab: usize, arena: u16, state: State, live: usize, word: usize, got: u64, expect: u64) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!(
         "class {class} slab {slab} (arena {arena}) is {state:?} with live {live} but word {word} of its bitmap had bits set before the refill's claim: claimed {got:#x}, expected {expect:#x}"
     ))
@@ -37,7 +46,10 @@ pub(super) fn zero_slab_had_bits_set(class: usize, slab: usize, arena: u16, stat
 /// from, so any free of it is invalid.
 #[cold]
 #[inline(never)]
-pub(super) fn guard_free(p: usize, class: usize, slab: usize) -> ! {
+pub(super) fn guard_free(p: usize, class: usize, slab: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!("invalid free of {p:#x} (class {class} slab {slab}): guard slab"))
 }
 
@@ -46,7 +58,10 @@ pub(super) fn guard_free(p: usize, class: usize, slab: usize) -> ! {
 /// claimed. No slot of it was ever handed out.
 #[cold]
 #[inline(never)]
-pub(super) fn release_into_fresh_slab(p: usize, class: usize, slab: usize) -> ! {
+pub(super) fn release_into_fresh_slab(p: usize, class: usize, slab: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!(
         "invalid free of {p:#x} (class {class} slab {slab}): the slab has never been allocated from"
     ))
@@ -56,7 +71,10 @@ pub(super) fn release_into_fresh_slab(p: usize, class: usize, slab: usize) -> ! 
 /// which is an invalid free or a stale double free.
 #[cold]
 #[inline(never)]
-pub(super) fn invalid_free(p: usize, class: usize, slab: usize, slot: usize) -> ! {
+pub(super) fn invalid_free(p: usize, class: usize, slab: usize, slot: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!(
         "invalid or double free of {p:#x} (class {class} slab {slab} slot {slot}): slot is not allocated"
     ))
@@ -64,7 +82,10 @@ pub(super) fn invalid_free(p: usize, class: usize, slab: usize, slot: usize) -> 
 
 #[cold]
 #[inline(never)]
-pub(super) fn wrong_arena(p: usize, class: usize, owner: u16, arena: u16) -> ! {
+pub(super) fn wrong_arena(p: usize, class: usize, owner: u16, arena: u16) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!(
         "slot {p:#x} (class {class}) belongs to arena {owner} but was released through arena {arena}"
     ))
@@ -72,7 +93,10 @@ pub(super) fn wrong_arena(p: usize, class: usize, owner: u16, arena: u16) -> ! {
 
 #[cold]
 #[inline(never)]
-pub(super) fn reservation_unmet(class: usize, slab: usize, want: usize, got: usize, live: usize, set: usize, nslots: usize) -> ! {
+pub(super) fn reservation_unmet(class: usize, slab: usize, want: usize, got: usize, live: usize, set: usize, nslots: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!(
         "class {class}: slab {slab} yielded {got} of a reservation of {want} slots after {MAX_EMPTY_PASSES} full scans (live {live}, allocated {set}, nslots {nslots}): live count is corrupt"
     ))
@@ -80,13 +104,19 @@ pub(super) fn reservation_unmet(class: usize, slab: usize, want: usize, got: usi
 
 #[cold]
 #[inline(never)]
-pub(super) fn invalid_pointer(p: usize, class: usize, why: &str) -> ! {
+pub(super) fn invalid_pointer(p: usize, class: usize, why: &str) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!("invalid free of {p:#x} (class {class}): {why}"))
 }
 
 #[cold]
 #[inline(never)]
-pub(super) fn double_free(p: usize, class: usize, slab: usize, slot: usize) -> ! {
+pub(super) fn double_free(p: usize, class: usize, slab: usize, slot: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!("double free of {p:#x} (class {class} slab {slab} slot {slot})"))
 }
 
@@ -94,7 +124,10 @@ pub(super) fn double_free(p: usize, class: usize, slab: usize, slot: usize) -> !
 /// disagree, which is a heap inconsistency.
 #[cold]
 #[inline(never)]
-pub(super) fn slab_count_underflow(which: &str) -> ! {
+pub(super) fn slab_count_underflow(which: &str) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!("class: {which} slab count underflow"))
 }
 
@@ -102,7 +135,10 @@ pub(super) fn slab_count_underflow(which: &str) -> ! {
 /// reserve a wrapped count. Unlike the others inlined: the abort stands
 /// for the `assert!` `take` made in place.
 #[inline(always)]
-pub(super) fn live_above_slots() -> ! {
+pub(super) fn live_above_slots() -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!("class: slab live count above its slot count"))
 }
 

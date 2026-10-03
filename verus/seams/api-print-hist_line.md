@@ -1,6 +1,6 @@
 # `hist_line`
 
-Seam S43 of `verus/SEAMS.md`: src/api/print.rs:772. Kind: external_body. Category: function pointer.
+Seam S44 of `verus/SEAMS.md`: src/api/print.rs:779. Kind: external_body. Category: function pointer.
 Discharged by Kani.
 
 ## Contract

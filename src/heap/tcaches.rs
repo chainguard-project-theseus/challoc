@@ -175,6 +175,7 @@ impl Tcaches {
     /// ([`Heap::flush_all`]; theorem "cache flush completeness").
     pub fn flush(&self, shared: &Shared, id: u16) -> (r: bool)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
         ensures
@@ -196,6 +197,7 @@ impl Tcaches {
     /// cache.
     pub fn destroy(&self, shared: &Shared, id: u16) -> bool
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
     {
         let _g = self.lock.lock();

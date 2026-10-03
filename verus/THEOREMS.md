@@ -1,6 +1,6 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the twenty-three whole-allocator theorems as the code
+Reference for the thirty-two whole-allocator theorems as the code
 states them: the Verus statement, the entry points it covers, and every
 trusted premise it rests on, with `file:line`. Read at `b2cad68`
 (branch `verus`); line numbers are the `fn`/`axiom` line at that commit,
@@ -4532,6 +4532,250 @@ token).
   same short circuit; the release library is identical to the base
   commit's (440 of 440 functions, x86_64).
 
+## 32. Read-only APIs never abort
+
+The `file:line`s are the `fn` line at this section's commit.
+
+**Statement** (`sys/mod.rs:130`, `:138`, `:151`, `:158`;
+`api/mod.rs:344`, `api/mallctl.rs:2511`):
+
+```rust
+#[verifier::opaque]
+pub open spec fn may_abort() -> bool { true }
+
+pub proof fn grant_aborts()
+    ensures
+        may_abort(),
+
+#[verifier::opaque]
+pub open spec fn integrity_aborts() -> bool { true }
+
+pub open spec fn may_abort_corrupt() -> bool {
+    may_abort() || integrity_aborts()
+}
+
+#[cfg(verus_only)]
+fn theorem_read_only_never_aborts(shared: &Shared, size: usize, flags: c_int, p: *const u8,
+    verbose: bool, io: &mallctl::Io, name: *const c_char, mibp: *const usize, miblen: usize,
+    mib: &[usize])
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::integrity_aborts(),
+        shared.wf(),
+
+#[cfg(verus_only)]
+pub(super) fn theorem_mallctl_reads_never_abort(shared: &Shared, name: *const c_char,
+    mibp: *const usize, miblen: usize, io: &Io, m: &[usize])
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::integrity_aborts(),
+        shared.wf(),
+```
+
+(Bodies elided.) `may_abort()` is a capability, as theorem 8's
+`may_syscall()`: every function that can reach an abort requires it,
+and `grant_aborts` gives it only in the bodies of `extern "C"`
+functions. The integrity checks, the aborts that test allocator state no
+verified invariant constrains, accept the narrower `may_abort_corrupt()`
+instead: `vspec::check` (`requires may_abort_corrupt() || c`),
+`sys::abort_integrity` (`sys/abort.rs:175`) and the trusted
+`policy::empty_bytes`. The witnesses hold only `integrity_aborts()`,
+which nothing grants, besides `may_syscall()` (the read-only paths take
+locks) and a well-formed `Shared`: they make the calls below and
+verify. So these calls abort at most at an integrity check, whatever
+their arguments:
+
+- `get_defrag_hint(p)` (`api/jemalloc.rs:667`), whole, for every `p`
+  and before init. It requires no abort capability at all (only
+  `may_syscall()`): it never aborts.
+- `malloc_usable_size(NULL)` (`api/libc.rs:813`, `requires may_abort()
+  || p@.addr == 0`): returns 0 and never aborts.
+- `nallocx` (`api/jemalloc.rs:630`) after its `shared()`:
+  `Flags::decode` and `usable_for` (`:163`); never aborts.
+- `mallinfo2` and `mallinfo` (`api/glibc.rs:91`, `:135`) after
+  `shared()`: their bodies call `stats::collect_all`, `page_size`,
+  `fig_add`, `fig_mul` and `saturating_sub`, and `mallinfo` clamps; the
+  witness makes the calls. Only the integrity checks below.
+- `challoc_features` (`api/mod.rs:321`) after `shared()`: the static
+  feature line; never aborts.
+- `mallctl` and `mallctlbymib` after their `super::shared()`: `cstr`,
+  `name_to_mib`, `mib_in`, `mib_to_node` and `ctl` (`api/mallctl.rs:2162`)
+  for every node where `ctl_never_aborts` (`:224`) holds: an interior
+  node, a read under `opt`, `arenas` or `stats` (`reader_never_aborts`,
+  `:218`: root entries 4, 5 and 7), or `experimental.utilization.query`
+  and `batch_query` (`utilization`, `:1781`, `batch_query`, `:1933`).
+  `ctl` requires `may_abort() || ctl_never_aborts(*node, mib@)` and
+  `may_abort_corrupt()`. Every reader under those subtrees is a named
+  verified function (`opt_value`, `:2002`; the 43 readers from `:330`,
+  formerly closures outside `verus!`), each called by the witness; `call`
+  (`:197`), which runs the reader of the node the MIB resolves to,
+  requires `may_abort()` or `reader_never_aborts(mib@)` with that link.
+  Of the reads, only `stats.arenas.<i>.*` with `i` =
+  `MALLCTL_ARENAS_ALL` (`stats::arena_stats_all`) and
+  `stats.cgroup.empty_bytes` (`policy::empty_bytes`) reach an integrity
+  check; every other read and both utilization queries never abort.
+- `mallctlnametomib` (`:2411`) requires no abort capability: it never
+  aborts, before init too (it never runs it).
+
+A corollary needs no new witness: theorem 8's
+`theorem_no_syscall_on_fast_paths` (`api/libc.rs:531`) requires nothing,
+so the cache fast paths of `malloc`, `free`, `free_sized` and
+`challoc_free_usable` it calls never abort either; their checks that
+fail leave the fast path for the slow one, which requires `may_abort()`.
+
+The integrity checks the covered calls reach (`api::tests::
+abort_grants_only_at_roots`, `api/mod.rs:1868`, lists the callers of
+`check` and `abort_integrity` and the trusted bodies that require
+`may_abort_corrupt()` alone):
+- `stats::huge_usable_pages` (`stats.rs:512`, abort in
+  `huge_pages_short`, `:533`): an arena's `large` word holding fewer
+  pages than its runs' guards. The word is a plain `AtomicU64` that
+  `note_huge_alloc`/`note_huge_free` update together, so it fails only
+  on a corrupt counter. Reached by `mallinfo`/`mallinfo2`
+  (`collect_all`), not by any mallctl read (the `stats.*` totals read the
+  stored snapshot).
+- `stats::arena_at` (`:870`, `check(i < MAX_ARENAS)`): an index below
+  `arenas.count()` at or above `MAX_ARENAS`; `count` is a plain atomic,
+  stored only by `Arenas::init` (clamped to `MAX_ARENAS`) and
+  `Arenas::create` (below it). Reached by `collect_all` and
+  `arena_stats_all`.
+- `policy::empty_bytes` (`policy.rs:848`, trusted): `Arenas::iter`
+  indexes the arena registry below `arenas.count()`, a bounds-checked
+  index that panics on the same corrupt count. It required nothing
+  before (not even `may_syscall()`, though it takes the class and huge
+  locks: a gap in theorem 8's list of trusted bodies, closed here; its
+  caller `print::policy_line` gained `may_syscall()` with it). Reached by
+  `stats.cgroup.empty_bytes`.
+The other integrity checks (`arena::alloc_sets`, `SlabTable::new` and
+`AtomicBitmap::allocated`'s `check`s) are on no covered path.
+
+**Why the capability can be trusted.**
+- Every abort goes through `abort_fmt` (`sys/abort.rs:146`): `abort`
+  (`:136`), every `-> !` helper, and the `#[panic_handler]`
+  (`lib.rs:116`) that a `panic!` in a trusted body reaches. `abort_fmt`
+  and `abort` require `may_abort()`; `abort_integrity` (trusted, a call
+  of `abort_fmt`) and `check` (trusted, an `assert!`) require
+  `may_abort_corrupt()`, or `c` for `check`. `die`, `exit_group` and
+  `trap` (the process's end) require `may_abort()` too.
+- 356 `requires` and loop-invariant clauses name `may_abort()` and 36
+  name `may_abort_corrupt()`. Abort-site specs that the caller can
+  discharge say so: `RunState::from_u8` and `HugeDesc::state`
+  (`huge/mod.rs:105`, `:236`) require `may_abort() || v <= 2`
+  (`|| spec_state() <= 2`), which the huge lock invariant (`desc_ok`)
+  gives `Huge::lookup` (`:3692`); `assert_flushed` and
+  `assert_refill_empty` (`heap/mod.rs`) require `may_abort() || *len ==
+  0`; `huge_usable_pages` and `arena_at` require `may_abort_corrupt()`
+  or their condition.
+- Every trusted body that can abort requires the capability: those that
+  call an abort or a function that requires it (`register_fork_handlers`,
+  `Heap::destroy`, `heap_set_arena`, `background::spawn`,
+  `call_throw_bad_alloc`, `owner_locked`, `state_locked`,
+  `page_group_is_idle`, `Huge::check_zero`, the `verus_only` stand-in
+  `not_a_run_page`) and those that `assert!` or `panic!` (`check`,
+  `SlabDesc::sub_live`, `assert_flushed`, `assert_refill_empty`;
+  `assert_not_home`'s `assert_ne!` is its `requires`). The test flags a
+  trusted body that does not return, or holds an abort, `assert!`,
+  `panic!`, `unreachable!` or `unwrap`, without the capability; one that
+  aborts only through a verified function it calls is read off the code.
+- `may_abort` and `integrity_aborts` are opaque, so a verified function
+  can prove `may_abort()` only from its own `requires` (or a loop
+  invariant that carries it), or from `grant_aborts`, and
+  `may_abort_corrupt()` only from those or `integrity_aborts()`, which
+  only the witnesses require.
+- `grant_aborts` is called only in `extern "C"` bodies (the
+  `verified_export_pair!` macro, `api/mod.rs:68`, and every hand-written
+  export: 44 grants); never in a `-> !` function, unlike
+  `grant_syscalls`. `api::tests::abort_grants_only_at_roots` checks the
+  source: the grants, `may_abort*` only as `requires`/invariant clauses,
+  `integrity_aborts` only in the witnesses' `requires`, the integrity
+  checks only in the functions listed above, and the trusted bodies.
+  Outside tests no Rust code calls an `extern "C"` function of the
+  crate.
+- `mallctl`'s readers are called through a function pointer, by the
+  trusted `call`: that a key under `opt`, `arenas` or `stats` has one of
+  the named readers is read off the static tree, and
+  `mallctl::tests::read_only_subtrees_are_roots_4_5_and_7` (`api/mallctl.rs:2695`)
+  checks it at run time (root entries 4, 5 and 7 are those names, and
+  every reader under them is, by address, one of the 44 named
+  functions). The `version`, `config.*` and `thread.*` readers stay
+  closures outside `verus!` (`thread.*` may create the thread's heap), so
+  `call` needs `may_abort()` for them.
+
+**Premises beyond the common ones.**
+- Init is complete. `shared()` (`api/mod.rs:234`) runs init the first
+  time, and init aborts (`init_slow`, `:404`: re-entrant init; `init`,
+  `:504`, and below: a metadata region too small, a failed reservation,
+  `getrandom` or page-size probe, ...), so `shared()` requires
+  `may_abort()`. The witness takes `shared: &Shared` with `shared.wf()`
+  and calls what `nallocx`, `mallinfo`, `mallinfo2`, `challoc_features`,
+  `mallctl` and `mallctlbymib` call after `shared()`. A well-formed
+  `Shared` is not a proof that init returned (it is well formed inside
+  `init`, before `READY` is published); the entry points reach that code
+  only after `shared()` returned. Inside the readers the local
+  `mallctl::shared` (`api/mallctl.rs:237`) is now trusted: it claims
+  `super::shared()` returns without aborting, true because readers run
+  only inside `mallctl`/`mallctlbymib`, after their own `super::shared()`
+  returned.
+- The trusted bodies these calls reach do not panic (read from their
+  bodies at this commit): the futex wait and wake (`sys/mod.rs`; their
+  results are discarded, so `EAGAIN` or `EINTR` loops) under
+  `RawLock::lock`/`unlock`, `LockGuard::drop` and `deref`, `Global::get`
+  and `shared_ref`, `ClassTable::table`, `class_entry`,
+  `SlabTable::watermark`, the registry reader `arena_at`
+  (`arena.rs:1264`), `Config::get` and `KEYS`, the caller-memory helpers
+  of `mallctl` (`name_byte`, `name_bytes`, `old_len`, `copy_prefix`,
+  `store`, `load`, `query_ptr`, `store_triple`, `mib_in`: raw accesses
+  that fault on a bad pointer rather than panic), `sys::read` (whose
+  trusted `n <= buf.len()` keeps the cgroup reader's slice in bounds),
+  `fig_add`, `fig_mul` and `policy::empty_bytes`'s sums, and the `core`
+  functions vstd and `vspec` specify.
+- The shipped release profile: overflow checks and debug assertions
+  off. With them on (the dev profile the tests use), `fig_add`'s `+`,
+  `empty_bytes`' `+=` and the `debug_assert!`s on these paths can panic.
+- The integrity checks above hold: a failed one means corrupt allocator
+  state, not a bad argument.
+
+**What it does not cover (paths that can abort).**
+- `malloc_trim` (`api/libc.rs:2424`) requires `may_abort()`, by two
+  paths. `Heap::flush_all` returns the thread's cached slots, and the
+  release aborts on a double free that sat in the cache
+  (`straddling_double_free`, `heap/flush.rs:1422`; the class release's
+  `double_free`/`invalid_free`), the program's earlier invalid free
+  detected late. `purge::purge_all` (`purge.rs:701`) discards through
+  `discard` (`:853`), which aborts when `madvise` fails.
+- The first call of `nallocx`, `mallinfo`, `mallinfo2` or
+  `challoc_features`, and of `mallctl` or `mallctlbymib` with a name or
+  MIB that resolves (both resolve before `super::shared()`), runs init,
+  which may abort (above). `get_defrag_hint`, `malloc_trim`,
+  `malloc_usable_size` and `mallctlnametomib` never run init.
+- `malloc_usable_size` of a non-NULL pointer aborts on a pointer that
+  is not an allocation (by design; row 9), and before init
+  (`free_before_init`).
+- mallctl's writes and operations (`epoch`, `arena.<i>.*`,
+  `thread.*`, `tcache.*`, `arenas.create`/`lookup`, ...), and the
+  `version` and `config.*` reads (closures), require `may_abort()`.
+
+**Where the statement is weaker than the code.**
+- The witnesses replicate the post-`shared()` calls of `nallocx`,
+  `mallinfo`, `mallinfo2`, `challoc_features`, `mallctl` and
+  `mallctlbymib`, not those functions (whose `shared()` call needs the
+  capability): that their bodies make no other call is read off the
+  code, as in theorem 8.
+- "Never aborts" is about the verified source: the witnesses also hold
+  `may_syscall()`, and a fault (a bad caller pointer for `mallctl`'s
+  `oldp`/`newp`, or a `PROT_NONE` page) is outside it, as is reaching
+  `SIGABRT` rather than hanging, or termination (the lock waits).
+- Corrupt state is not excluded: the integrity checks may fire for
+  `stats.arenas.4096.*`, `stats.cgroup.empty_bytes` and `mallinfo`; the
+  theorem names them rather than proving them unreachable (the `large`
+  and `count` words would need atomic invariants).
+
+Machine code: the hot set is unchanged (x86_64 disassembly identical to
+the base commit outside the readers). The 43 `stats.*` and `arenas.*`
+reader closures became named functions with the same normalized
+disassembly (one `FnOnce::call_once` body each before, a named symbol
+now); nothing else changed.
+
 ## Interface contract
 
 The per-call theorems above (1-3, 5-7 and the "Bad input" section)
@@ -4549,7 +4793,8 @@ trusted premises listed above apply to every cell. Every `extern "C"`
 wrapper is in `verus!` with no contract of its own and only casts (and,
 for an entry point that may write `errno`, lends it the calling thread's
 `errno` token, *(errno)* below; the ghost `grant_syscalls` of theorem 8
-runs nothing), except `malloc_stats_print`. So the Rust function's
+and `grant_aborts` of theorem 32 run nothing), except
+`malloc_stats_print`. So the Rust function's
 `ensures` is the symbol's contract, and the verified parts of its body
 (code inside `verus!` without `external_body`) cannot panic or
 overflow. That is not all of every body: the `mallctl` rows (34) reach
@@ -4610,7 +4855,10 @@ Properties:
   assumption rather than proved to abort. The "Bad input" section above
   lists every kind of bad input by entry point, with what is proved not
   to return (pointer shape, size hints, alignments, cache ids of
-  `MAX_TCACHES` or more) and what rests on the C contract.
+  `MAX_TCACHES` or more) and what rests on the C contract. For the
+  read-only entry points B is the converse, theorem 32 ("Read-only APIs
+  never abort"): no argument makes the call abort (row 35; the covered
+  reads of row 34).
 - **U**: size consistency: when `mallocx(size, flags)` succeeds,
   `nallocx(size, flags)` equals its usable size (not unconditionally:
   `nallocx(1, MALLOCX_LG_ALIGN(63))` returns one page, 4096 with 4 KiB
@@ -4655,8 +4903,8 @@ Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
 | 31 | `mallinfo`, `mallinfo2`                     | . | . | . | . | . | . | . |
 | 32 | `malloc_stats`, `malloc_info`               | . | . | . | . | P | . | . |
 | 33 | `malloc_stats_print`                        | . | . | . | . | . | - | . |
-| 34 | `mallctl`, `mallctlnametomib`, `..bymib`    | . | . | . | . | - | - | . |
-| 35 | `get_defrag_hint`                           | . | . | . | . | P | - | . |
+| 34 | `mallctl`, `mallctlnametomib`, `..bymib`    | . | . | . | . | - | p | . |
+| 35 | `get_defrag_hint`                           | . | . | . | . | P | P | . |
 | 36 | `challoc_version`, `challoc_features`       | . | . | . | . | . | . | . |
 | 37 | `malloc_conf`, `malloc_message`, `je_..`    | . | . | . | . | . | . | . |
 
@@ -5016,8 +5264,13 @@ alone):
     `name_byte`, `name_bytes`, `old_len`, `copy_prefix`, `store`, `load`,
     `query_ptr`, `store_triple`, `mib_cap`, `mib_out`, `mib_in` (`:803`
     to `:1676`). So B (a bad `oldlenp` or `newlen`, an unknown name) is
-    not stated; the batch-query length check (bug #1) is verified inside
-    the body. Theorem 21 (MIB round-trip) states that a name and its MIB
+    not stated as an error result; the batch-query length check (bug #1)
+    is verified inside the body. B is `p` by theorem 32: once init has
+    run, no name, MIB or buffer length makes a read under `opt`,
+    `arenas` or `stats`, or a utilization query, abort (but at the
+    integrity checks of `stats.arenas.4096.*` and
+    `stats.cgroup.empty_bytes`); writes, operations and
+    the other reads may. Theorem 21 (MIB round-trip) states that a name and its MIB
     reach the same node with the same indices (on the cores, not the
     exports). The cache flush keys (theorem "cache flush completeness"):
     `thread.tcache.flush`, `arena.<i>.purge` and `arena.<i>.destroy`
@@ -5031,8 +5284,10 @@ alone):
     heap reference, as theorem 20; no cell changes (the key's effect is
     not one of the columns).
 35. `get_defrag_hint` (`api/jemalloc.rs:465`). F: `r == 0 || r == 1`. B:
-    "never aborts" for a foreign pointer cannot be stated, because an
-    abort satisfies every postcondition. The body is verified.
+    never aborts, for every pointer and before init (theorem 32): it
+    requires no `may_abort()`, which an abort would need, and the
+    theorem's witness calls it without (`api/jemalloc.rs:667` at that
+    section's commit). The body is verified.
 36. `challoc_version` (`api/mod.rs:123`), `challoc_features` (`:296`):
     verified, no contract.
 37. Data symbols `malloc_conf`, `malloc_message`, `je_malloc_message`

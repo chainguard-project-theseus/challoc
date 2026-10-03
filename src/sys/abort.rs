@@ -133,14 +133,20 @@ impl fmt::Write for Stderr {
 /// Write `challoc: <msg>` to stderr and terminate with `SIGABRT`.
 #[cold]
 #[inline(never)]
-pub fn abort(msg: &str) -> ! {
+pub fn abort(msg: &str) -> !
+    requires
+        crate::sys::may_abort(),
+{
     abort_fmt(format_args!("{msg}"))
 }
 
 /// Formatting variant of [`abort`]. Use through the `abort!` macro.
 #[cold]
 #[inline(never)]
-pub fn abort_fmt(args: fmt::Arguments<'_>) -> ! {
+pub fn abort_fmt(args: fmt::Arguments<'_>) -> !
+    requires
+        crate::sys::may_abort(),
+{
     proof {
         // A root of theorem 8: the abort's write and `SIGABRT`, after which
         // nothing returns.
@@ -158,6 +164,21 @@ pub fn abort_fmt(args: fmt::Arguments<'_>) -> ! {
     die()
 }
 
+/// [`abort_fmt`] at an integrity check: a test of allocator state that no
+/// verified invariant constrains failed ([`super::integrity_aborts`]).
+/// Trusted: the call, which needs [`super::may_abort`], under the narrower
+/// [`super::may_abort_corrupt`]. `api::tests::abort_grants_only_at_roots`
+/// lists its callers; THEOREMS.md ("Read-only APIs never abort") says
+/// what each one tests.
+#[verifier::external_body]
+#[inline(always)]
+pub fn abort_integrity(args: fmt::Arguments<'_>) -> !
+    requires
+        crate::sys::may_abort_corrupt(),
+{
+    abort_fmt(args)
+}
+
 /// Raise `SIGABRT` on the calling thread, mirroring glibc's `abort`:
 /// unblock the signal, deliver it, and if a handler swallowed it reset the
 /// disposition to default and deliver again. `exit_group` is the last
@@ -165,6 +186,7 @@ pub fn abort_fmt(args: fmt::Arguments<'_>) -> ! {
 #[cold]
 fn die() -> !
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     let set: u64 = 1 << (SIGABRT - 1);

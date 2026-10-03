@@ -55,14 +55,19 @@ impl ClassState {
     /// backend and the offending word.
     #[cold]
     #[inline(never)]
-    pub(super) fn check_zero(&self, slots: &[*mut u8], pick: &Pick) {
+    pub(super) fn check_zero(&self, slots: &[*mut u8], pick: &Pick)
+        requires
+            crate::sys::may_abort(),
+    {
         let size = self.class().size();
         for &p in slots
             invariant
+                crate::sys::may_abort(),
                 size >= 8,
         {
             for &off in &[0, size - 8]
                 invariant
+                    crate::sys::may_abort(),
                     size >= 8,
             {
                 // SAFETY: `p` is a slot this claim just reserved in a
@@ -82,12 +87,14 @@ impl ClassState {
     #[inline(never)]
     pub(super) fn check_fresh_slab_is_zero(&self, slab: usize)
         requires
+            crate::sys::may_abort(),
             slab < self.spec_nslabs(),
     {
         let cls = self.class();
         let bm = self.table().bits(slab);
         for slot in 0..cls.nslots()
             invariant
+                crate::sys::may_abort(),
                 slab < self.spec_nslabs(),
                 *cls == class_table()[self.spec_class() as int],
                 cls.wf(),
@@ -106,7 +113,10 @@ impl ClassState {
     /// shadow, i.e. something outside `SlabDesc` wrote the descriptor.
     #[cold]
     #[inline(never)]
-    pub(super) fn check_shadow(&self, slab: usize, at: &str) {
+    pub(super) fn check_shadow(&self, slab: usize, at: &str)
+        requires
+            crate::sys::may_abort(),
+    {
         let d = self.desc(slab);
         let (state, shadow) = d.state_bytes();
         if shadow != state.wrapping_add(1) {
@@ -117,7 +127,10 @@ impl ClassState {
     /// [`check_zero`](ClassState::check_zero)'s abort, inlined into it:
     /// gathers the slab's state for [`dirty_zero_slot`].
     #[inline(always)]
-    fn dirty_word(&self, pick: &Pick, size: usize, p: *mut u8, off: usize, word: u64) -> ! {
+    fn dirty_word(&self, pick: &Pick, size: usize, p: *mut u8, off: usize, word: u64) -> !
+        requires
+            crate::sys::may_abort(),
+    {
         let d = self.desc(pick.slab as usize);
         let bm = self.table().bits(pick.slab as usize);
         let now = (d.state(), d.live(), d.arena(), bm.allocated(self.class().nslots()), self.class().nslots(), desc_ptr_addr(d));
@@ -129,6 +142,7 @@ impl ClassState {
     #[inline(always)]
     fn fresh_slab_dirty(&self, slab: usize, slot: usize, p: *mut u8, word: u64, bm: &crate::bitmap::AtomicBitmap<'_>) -> !
         requires
+            crate::sys::may_abort(),
             bits_shape(*bm, class_table()[self.spec_class() as int].slab_bits as usize),
     {
         proof {
@@ -151,7 +165,10 @@ impl ClassState {
 
     /// [`check_shadow`](ClassState::check_shadow)'s abort, inlined into it.
     #[inline(always)]
-    fn shadow_written(&self, slab: usize, at: &str, d: &SlabDesc, state: u8, shadow: u8) -> ! {
+    fn shadow_written(&self, slab: usize, at: &str, d: &SlabDesc, state: u8, shadow: u8) -> !
+        requires
+            crate::sys::may_abort(),
+    {
         crate::sys::abort_fmt(format_args!(
             "check_zero: class {} slab {slab} (arena {}) descriptor at {:#x} was written outside the API, seen at {at}: state byte {state:#x}, shadow {shadow:#x} (says {:?}), live {}, arena field {}, dirty_at {}",
             self.class,
@@ -212,7 +229,10 @@ unsafe fn read_word(p: *mut u8, off: usize) -> u64 {
 /// `check_zero` invariant: a slab with live slots was `Fresh` at selection.
 #[cold]
 #[inline(never)]
-pub(super) fn fresh_with_live(class: usize, slab: usize, arena: u16, desc: &SlabDesc, set: usize) -> ! {
+pub(super) fn fresh_with_live(class: usize, slab: usize, arena: u16, desc: &SlabDesc, set: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
     crate::sys::abort_fmt(format_args!(
         "check_zero: class {class} slab {slab} (arena {arena}) is Fresh with live {} ({set} bits set, owner {}, dirty_at {}), descriptor at {:#x}",
         desc.live(),
@@ -225,7 +245,10 @@ pub(super) fn fresh_with_live(class: usize, slab: usize, arena: u16, desc: &Slab
 /// `check_zero` invariant: a release reached a slab that reads `Fresh`.
 #[cold]
 #[inline(never)]
-pub(super) fn release_into_fresh(class: usize, slab: usize, arena: u16, desc: &SlabDesc, n: usize) -> ! {
+pub(super) fn release_into_fresh(class: usize, slab: usize, arena: u16, desc: &SlabDesc, n: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
     crate::sys::abort_fmt(format_args!(
         "check_zero: release of {n} slot(s) into class {class} slab {slab} (arena {arena}) whose descriptor reads Fresh (live {}, owner {}, dirty_at {}), descriptor at {:#x}",
         desc.live(),
@@ -248,7 +271,10 @@ fn dirty_zero_slot(
     off: usize,
     word: u64,
     now: (State, usize, u16, usize, usize, usize),
-) -> ! {
+) -> !
+    requires
+        crate::sys::may_abort(),
+{
     let advice = purge::advice_name();
     let (state, live, owner, set, nslots, _) = now;
     crate::sys::abort_fmt(format_args!(
@@ -267,7 +293,7 @@ mod kani_verify {
     use crate::kani_proofs::fmt::formats_debug_flat;
     use crate::slab::{SlabDesc, State};
 
-    /// S93 `DebugSpecImpl for Says` (`fmt_req` true): `None` and every
+    /// S94 `DebugSpecImpl for Says` (`fmt_req` true): `None` and every
     /// state, each formatted in turn (`{:?}` only: Kani does not finish
     /// `{:#?}` of an `Option`, whose `PadAdapter` path the record names
     /// as a gap; challoc formats `Says` with `{:?}`).
@@ -286,7 +312,7 @@ mod kani_verify {
         }
     }
 
-    /// S94 `desc_ptr_addr`, no `ensures`: it returns (the address of the
+    /// S95 `desc_ptr_addr`, no `ensures`: it returns (the address of the
     /// descriptor); the body reads no field, so one descriptor stands
     /// for all.
     #[kani::proof]

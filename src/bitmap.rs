@@ -1893,6 +1893,7 @@ impl<'a> AtomicBitmap<'a> {
     /// other threads change the words, so the count is a snapshot.
     pub fn allocated(&self, nslots: usize) -> usize
         requires
+            crate::sys::may_abort(),
             nslots <= self.spec_nbits(),
     {
         proof {

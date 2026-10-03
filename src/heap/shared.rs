@@ -297,6 +297,7 @@ impl ThreadKey {
     /// call leaves it as it was.
     pub fn set(&self, heap: *mut Heap, Tracked(tls): Tracked<&mut TlsSlot>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             reentry_benign(old(tls).value()),
         ensures
@@ -1216,6 +1217,7 @@ impl Shared {
         pac: bool,
     ) -> (r: bool)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             this == shared_storage(),
             regions.wf(),
@@ -1301,6 +1303,7 @@ impl Shared {
             }
             for c in 0..NCLASSES
                 invariant
+                    crate::sys::may_abort(),
                     tables_at(table_perms, this),
                     elems_init(table_perms, 0, c as int),
                     elems_uninit(table_perms, c as int, NCLASSES as int),
@@ -1894,6 +1897,7 @@ impl Shared {
     #[inline]
     pub fn arena(&self, index: u16) -> (r: Option<&Arena>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             self.wf(),
         ensures
@@ -1913,6 +1917,8 @@ impl Shared {
     /// slot through.
     #[inline]
     pub(super) fn owner(&self, index: u16) -> (r: &Arena)
+        requires
+            crate::sys::may_abort(),
         ensures
             self.wf() ==> r.spec_index() == index,
     {
@@ -1955,6 +1961,7 @@ impl Shared {
     /// says the memory is known zero; `blk` gets the slot's token.
     pub fn alloc_direct(&self, arena: &Arena, class: usize, Tracked(blk): Tracked<&mut super::Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
         ensures
@@ -1994,6 +2001,7 @@ impl Shared {
     /// `tok` is the slot's token; it goes back to the slot's bitmap word.
     pub fn free_direct(&self, arena: u16, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
             crate::layout::process_regions().is_slot(class as int, p@.addr),
@@ -2023,6 +2031,7 @@ impl Shared {
     #[inline(always)]
     pub fn classify_free(&self, p: *mut u8) -> (r: Result<(usize, u16), usize>)
         requires
+            crate::sys::may_abort(),
             self.wf(),
         ensures
             r matches Ok((c, _)) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
@@ -2163,6 +2172,7 @@ impl Shared {
     /// on exhaustion; the flag says the memory is known zero.
     pub fn alloc_huge(&self, size: usize, align: usize, arena: u16, Tracked(blk): Tracked<&mut super::Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             self.wf(),
             crate::meta::is_pow2(align),
@@ -2206,6 +2216,7 @@ impl Shared {
     #[inline(never)]
     pub fn zero_huge(&self, page: usize) -> (z: Tracked<Zeroed>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             self.wf(),
             page <= self.huge_pages(),
@@ -2227,6 +2238,7 @@ impl Shared {
     /// run start. Returns the usable bytes released.
     pub fn free_huge(&self, page: usize, Tracked(tok): Tracked<crate::huge::RunToken>) -> usize
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             self.wf(),
             page <= self.huge_pages(),
@@ -2251,6 +2263,7 @@ impl Shared {
     #[inline(never)]
     pub fn check_size_hint(&self, p: *mut u8, size: usize, hint: Option<usize>)
         requires
+            crate::sys::may_abort(),
             self.wf(),
         ensures
             crate::heap::hint_ok(p, hint),
@@ -2270,6 +2283,7 @@ impl Shared {
     /// Aborts for anything that is not a slot start in such a slab.
     pub(super) fn arena_of_slot(&self, class: usize, p: *mut u8) -> (r: u16)
         requires
+            crate::sys::may_abort(),
             class < NCLASSES,
         ensures
             self.wf() ==> r == crate::class::slot_owner(class as int, p@.addr),
@@ -2347,6 +2361,7 @@ impl Shared {
     /// [`slot_owner`]: crate::class::slot_owner
     pub fn release_routed(&self, arena: u16, class: usize, ptrs: &[*mut u8], Tracked(bag): Tracked<&mut GhostSubset<int>>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             self.wf(),
             class < NCLASSES,
@@ -2367,6 +2382,7 @@ impl Shared {
         }
         loop
             invariant
+                crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 self.wf(),
                 class < NCLASSES,
@@ -2477,7 +2493,10 @@ verus! {
 
 #[cold]
 #[inline(never)]
-fn no_such_arena(index: u16) -> ! {
+fn no_such_arena(index: u16) -> !
+    requires
+        crate::sys::may_abort(),
+{
     crate::sys::abort_fmt(format_args!("arena {index} does not exist"))
 }
 
@@ -2487,6 +2506,7 @@ fn no_such_arena(index: u16) -> ! {
 #[inline(never)]
 fn hint_mismatch(p: *mut u8, size: usize, class: u32) -> !
     requires
+        crate::sys::may_abort(),
         (class as usize) < NCLASSES,
 {
     crate::sys::abort_fmt(format_args!(
@@ -2516,7 +2536,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S136..S151, S152: each `S_*` is its field's `offset_of!`, and the
+    /// S137..S152, S153: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {
@@ -2563,7 +2583,7 @@ mod kani_layout {
         assert!(size_of::<Shared>() <= isize::MAX as usize);
     }
 
-    /// S46 `arena::axiom_array_layout` at the two arrays of `Shared`.
+    /// S47 `arena::axiom_array_layout` at the two arrays of `Shared`.
     #[kani::proof]
     fn shared_array_layout() {
         array_layout::<GuardTest, NCLASSES>();

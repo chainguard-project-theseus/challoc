@@ -74,6 +74,7 @@ macro_rules! verified_export_pair {
             pub extern "C" fn $name($($arg: $ty),*) $(-> $ret)? {
                 proof {
                     crate::sys::grant_syscalls();
+                    crate::sys::grant_aborts();
                 }
                 $body
             }
@@ -82,6 +83,7 @@ macro_rules! verified_export_pair {
             pub extern "C" fn $je($($arg: $ty),*) $(-> $ret)? {
                 proof {
                     crate::sys::grant_syscalls();
+                    crate::sys::grant_aborts();
                 }
                 $body
             }
@@ -231,6 +233,7 @@ unsafe fn shared_ref() -> (r: &'static Shared)
 #[inline(always)]
 pub fn shared() -> (r: &'static Shared)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         r.wf(),
@@ -300,6 +303,7 @@ verus! {
 /// the allocator if needed.
 pub fn feature_line() -> &'static str
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     let _ = shared();
@@ -317,10 +321,67 @@ pub fn feature_line() -> &'static str
 pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
     proof {
         crate::sys::grant_syscalls();
+        crate::sys::grant_aborts();
     }
     let _ = shared();
     // SAFETY: `shared()` returned, so `READY` has been observed.
     unsafe { FEATURE_LINE.get() }.as_ptr()
+}
+
+/// Theorem "Read-only APIs never abort" (`verus/THEOREMS.md`): the
+/// read-only entry points make these calls, in a context where only
+/// [`sys::integrity_aborts`] holds, not [`sys::may_abort`]. Each call
+/// verifies, so none of these functions requires `may_abort`, and every
+/// abort but an integrity check does: they abort at most at an integrity
+/// check, for no argument. `get_defrag_hint`, `malloc_usable_size(NULL)`
+/// and the utilization queries are called whole; `nallocx`, `mallinfo`,
+/// `mallinfo2`, `challoc_features` and `mallctl` through the calls their
+/// bodies make after `shared()`, whose init may abort (it returns at once
+/// once init has completed, which `shared` stands for here).
+///
+/// Verification only (`cfg(verus_only)`): the build has no such function.
+#[cfg(verus_only)]
+fn theorem_read_only_never_aborts(
+    shared: &Shared,
+    size: usize,
+    flags: core::ffi::c_int,
+    p: *const u8,
+    verbose: bool,
+    io: &mallctl::Io,
+    name: *const core::ffi::c_char,
+    mibp: *const usize,
+    miblen: usize,
+    mib: &[usize],
+)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::integrity_aborts(),
+        shared.wf(),
+{
+    proof {
+        shared.lemma_wf();
+    }
+    // `get_defrag_hint`, whole.
+    let _ = jemalloc::get_defrag_hint(p);
+    // `malloc_usable_size(NULL)`, whole.
+    let _ = libc::malloc_usable_size(core::ptr::null_mut());
+    // `nallocx` after its `shared()`.
+    let f = crate::heap::mallocx::Flags::decode(flags as u32);
+    let _ = jemalloc::usable_for(shared, size, &f).unwrap_or(0);
+    // `mallinfo2` (and `mallinfo`, which adds clamps) after its
+    // `shared()`: the calls its body makes.
+    let tracked mut sd = Ghost((Seq::<crate::stats::ArenaStats>::empty(), Seq::<int>::empty()));
+    let all = crate::stats::collect_all(shared, Tracked(&mut sd));
+    let _ = shared.regions.page_size();
+    let _ = crate::stats::fig_add(all.small_allocated, all.large_allocated);
+    let _ = crate::stats::fig_mul(all.pdirty, all.large_runs);
+    // `challoc_features` after its `shared()`.
+    // SAFETY: `shared` exists, so `READY` has been observed.
+    let _ = unsafe { FEATURE_LINE.get() }.as_ptr();
+    // `experimental.utilization.query` and `batch_query`, whole, and the
+    // rest of `mallctl`.
+    let _ = mallctl::utilization(shared, p as *const core::ffi::c_void, verbose);
+    mallctl::theorem_mallctl_reads_never_abort(shared, name, mibp, miblen, io, mib);
 }
 
 } // verus!
@@ -342,6 +403,7 @@ verus! {
 #[verifier::exec_allows_no_decreases_clause]
 fn init_slow() -> (r: &'static Shared)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         r.wf(),
@@ -376,6 +438,7 @@ exec static SEALED: AtomicU32 = AtomicU32::new(0);
 /// tests). Initialises the allocator if needed.
 pub fn sealed_ranges() -> u32
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     let _ = shared();
@@ -417,6 +480,7 @@ unsafe fn publish_features(features: Features) {
 #[inline(always)]
 fn register_fork_handlers()
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     // SAFETY: the three handlers are plain `extern "C"` functions that only
@@ -439,6 +503,7 @@ fn register_fork_handlers()
 /// publishes `READY`.
 fn init()
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     let features = Features::probe();
@@ -742,6 +807,7 @@ fn count_held(s: &Shared, Tracked(held): Tracked<&ForkHeld>) -> (r: u32)
 extern "C" fn fork_prepare() {
     proof {
         crate::sys::grant_syscalls();
+        crate::sys::grant_aborts();
     }
     let mask = sys::block_all_signals();
     let s = shared();
@@ -894,6 +960,7 @@ unsafe fn saved_sigmask() -> u64 {
 /// `RawLock::unlock_held`; it ends holding none (asserted at the end).
 fn fork_release(Tracked(state): Tracked<LockHeld>)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         state.held() == purge::background::state_lock(),
 {
@@ -1010,6 +1077,7 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
 extern "C" fn fork_parent() {
     proof {
         crate::sys::grant_syscalls();
+        crate::sys::grant_aborts();
     }
     let tracked state = axiom_fork_resumed_state();
     fork_release(Tracked(state));
@@ -1021,6 +1089,7 @@ extern "C" fn fork_parent() {
 extern "C" fn fork_child() {
     proof {
         crate::sys::grant_syscalls();
+        crate::sys::grant_aborts();
     }
     let tracked state = axiom_fork_resumed_state();
     purge::background::fork_child(Tracked(&state));
@@ -1661,6 +1730,47 @@ mod tests {
         unsafe { ::libc::pthread_sigmask(::libc::SIG_SETMASK, &before, core::ptr::null_mut()) };
     }
 
+    /// The `.rs` files under `dir`, in path order.
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    /// Whether `t` starts a `fn` item: qualifiers, then `fn `.
+    fn fn_item(t: &str) -> bool {
+        let mut t = t;
+        loop {
+            let rest = [
+                "pub ",
+                "const ",
+                "unsafe ",
+                "extern \"C\" ",
+                "proof ",
+                "open ",
+                "closed ",
+            ]
+            .iter()
+            .find_map(|q| t.strip_prefix(q))
+            .or_else(|| {
+                t.strip_prefix("pub(")
+                    .and_then(|r| r.split_once(") ").map(|(_, r)| r))
+            });
+            match rest {
+                Some(r) => t = r,
+                None => return t.starts_with("fn "),
+            }
+        }
+    }
+
     /// Theorem 8's premises on its capability (`sys::may_syscall`), read
     /// from the source: `grant_syscalls` is called only in the body of an
     /// `extern "C"` function or of one that never returns (a call belongs
@@ -1669,45 +1779,6 @@ mod tests {
     /// its definition, the grant and `Stderr`'s type invariant.
     #[test]
     fn syscall_grants_only_at_roots() {
-        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            let mut entries: Vec<_> = std::fs::read_dir(dir)
-                .unwrap()
-                .map(|e| e.unwrap().path())
-                .collect();
-            entries.sort();
-            for path in entries {
-                if path.is_dir() {
-                    walk(&path, out);
-                } else if path.extension().is_some_and(|e| e == "rs") {
-                    out.push(path);
-                }
-            }
-        }
-        /// Whether `t` starts a `fn` item: qualifiers, then `fn `.
-        fn fn_item(t: &str) -> bool {
-            let mut t = t;
-            loop {
-                let rest = [
-                    "pub ",
-                    "const ",
-                    "unsafe ",
-                    "extern \"C\" ",
-                    "proof ",
-                    "open ",
-                    "closed ",
-                ]
-                .iter()
-                .find_map(|q| t.strip_prefix(q))
-                .or_else(|| {
-                    t.strip_prefix("pub(")
-                        .and_then(|r| r.split_once(") ").map(|(_, r)| r))
-                });
-                match rest {
-                    Some(r) => t = r,
-                    None => return t.starts_with("fn "),
-                }
-            }
-        }
         // Spelled in parts, so that this test's own lines match nothing.
         let grant = std::format!("{}{}", "grant_", "syscalls");
         let cap = std::format!("{}{}", "may_", "syscall");
@@ -1774,5 +1845,215 @@ mod tests {
             }
         }
         assert!(grants > 0);
+    }
+
+    /// The premises of theorem "Read-only APIs never abort" on its
+    /// capabilities, read from the source as for theorem 8:
+    /// `grant_aborts` is called only in the body of an `extern "C"`
+    /// function (never in one that does not return: aborting is what the
+    /// capability allows); `may_abort` and `may_abort_corrupt` appear only
+    /// as `requires` or loop invariant clauses that start with them;
+    /// `integrity_aborts` only in its definition and in the `requires` of
+    /// the theorem's witnesses; the integrity checks, the calls of
+    /// `abort_integrity` and of `vspec::check::check` (which need only
+    /// `may_abort_corrupt`), only in the functions THEOREMS.md lists. And
+    /// every `external_body` function that does not return, or whose body
+    /// can panic or abort in a release build (`assert!`, `panic!`, an
+    /// `unwrap`, a call of an abort), requires one of the two
+    /// capabilities; `may_abort_corrupt` alone only the integrity checks'
+    /// trusted bodies THEOREMS.md lists. A trusted body that aborts only
+    /// through a verified function it calls is not caught by the last
+    /// check (the list in THEOREMS.md is read from the code).
+    #[test]
+    fn abort_grants_only_at_roots() {
+        // Spelled in parts, so that this test's own lines match nothing.
+        let grant = std::format!("{}{}", "grant_", "aborts");
+        let cap = std::format!("{}{}", "may_", "abort");
+        let integrity = std::format!("{}{}", "integrity_", "aborts");
+        let sink = std::format!("{}{}(", "abort_", "integrity");
+        let checks = std::format!("{}{}(", "chec", "k");
+        let allowed = [
+            std::format!("pub open spec fn {cap}() -> bool {{"),
+            std::format!("pub proof fn {grant}()"),
+            std::format!("{cap}(),"),
+            std::format!("reveal({cap});"),
+            std::format!("pub open spec fn {integrity}() -> bool {{"),
+            std::format!("pub open spec fn {cap}_corrupt() -> bool {{"),
+            std::format!("{cap}() || {integrity}()"),
+        ];
+        // The integrity checks: (file, function) of each call.
+        let sites = [
+            ("stats.rs", "fn huge_pages_short("),
+            ("stats.rs", "fn arena_at("),
+            ("arena.rs", "fn alloc_sets("),
+            ("class/table.rs", "pub fn new("),
+            ("bitmap.rs", "pub fn allocated("),
+        ];
+        // The trusted bodies that require only `may_abort_corrupt`.
+        let corrupt_only = [
+            ("sys/abort.rs", "pub fn abort_integrity("),
+            ("vspec/check.rs", "pub fn check("),
+            ("policy.rs", "pub fn empty_bytes("),
+        ];
+        // Trusted bodies whose panic is their `requires`, so cannot fail.
+        let unfailing = [("heap/others.rs", "fn assert_not_home(")];
+        let aborts = [
+            "abort(",
+            "abort_fmt(",
+            "assert!(",
+            "assert_eq!(",
+            "assert_ne!(",
+            "panic!(",
+            "unreachable!(",
+            ".unwrap()",
+            ".expect(",
+            "asm!(\"ud2\"",
+        ];
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&src, &mut files);
+        let (mut grants, mut integrity_checks, mut trusted) = (0, 0, 0);
+        for path in &files {
+            let rel = path.strip_prefix(&src).unwrap().to_str().unwrap();
+            // The Kani harnesses (`kani/` and the `#[cfg(kani)]` modules)
+            // are not built here or by Verus: skipped.
+            if rel.contains("tests")
+                || rel.starts_with("model/")
+                || rel.starts_with("kani/")
+                || rel == "testutil.rs"
+            {
+                continue;
+            }
+            let text = std::fs::read_to_string(path).unwrap();
+            let lines: Vec<&str> = text.lines().map(str::trim).collect();
+            let lines = match lines.iter().position(|t| *t == "mod tests {") {
+                Some(end) => &lines[..end],
+                None => &lines[..],
+            };
+            let (mut sig, mut kw) = ("", "");
+            // Brace depth inside a `#[cfg(kani)]` item (one ends at its
+            // closing brace, or at `;` if it has no body), and whether its
+            // body has opened.
+            let (mut kani, mut kani_open) = (None::<i32>, false);
+            for (i, &t) in lines.iter().enumerate() {
+                if t == "#[cfg(kani)]" {
+                    (kani, kani_open) = (Some(0), false);
+                    continue;
+                }
+                if let Some(d) = kani {
+                    let d = d + t.matches('{').count() as i32 - t.matches('}').count() as i32;
+                    kani_open |= t.contains('{');
+                    let done = if kani_open { d <= 0 } else { t.ends_with(';') };
+                    kani = if done { None } else { Some(d) };
+                    continue;
+                }
+                if t.starts_with("//") {
+                    continue;
+                }
+                if fn_item(t) {
+                    (sig, kw) = (t, "");
+                }
+                if t == "{" || t.ends_with(" {") {
+                    kw = "";
+                }
+                if let Some(k) = [
+                    "requires",
+                    "ensures",
+                    "invariant",
+                    "invariant_except_break",
+                    "decreases",
+                ]
+                .iter()
+                .find(|k| t == **k)
+                {
+                    kw = k;
+                }
+                let at = || std::format!("{rel}:{}: `{t}`", i + 1);
+                let clause = kw == "requires" || kw.starts_with("invariant");
+                if rel == "sys/mod.rs" && allowed.iter().any(|a| t == a.as_str()) {
+                    continue;
+                }
+                if t.contains(grant.as_str()) {
+                    grants += 1;
+                    assert!(
+                        sig.contains("extern \"C\" fn "),
+                        "{}: an abort grant in `{sig}`",
+                        at()
+                    );
+                } else if t.contains(integrity.as_str()) {
+                    assert!(
+                        t.ends_with(&std::format!("::{integrity}(),"))
+                            && kw == "requires"
+                            && sig.contains("fn theorem_"),
+                        "{}: `{integrity}` outside a witness's requires",
+                        at()
+                    );
+                } else if t.contains(cap.as_str()) {
+                    assert!(
+                        t.starts_with(&std::format!("crate::sys::{cap}"))
+                            && t.ends_with(',')
+                            && !t.contains("|| true")
+                            && clause,
+                        "{}: `{cap}` used other than as a requires or invariant clause",
+                        at()
+                    );
+                }
+                let call = t.contains(sink.as_str())
+                    || t.match_indices(checks.as_str()).any(|(j, _)| {
+                        // `check(` as a whole name, not `x.check(` or
+                        // `check_zero(`.
+                        j == 0 || matches!(t.as_bytes()[j - 1], b' ' | b':' | b'(' | b'!')
+                    });
+                if call && !t.starts_with("pub fn ") {
+                    integrity_checks += 1;
+                    assert!(
+                        sites.iter().any(|(f, s)| *f == rel && sig.contains(s)),
+                        "{}: an integrity check in `{sig}`, not listed",
+                        at()
+                    );
+                }
+                // A trusted function: its header (to the body's `{`) and
+                // body (to the matching `}`).
+                if t != "#[verifier::external_body]" {
+                    continue;
+                }
+                let Some(f) = (i..lines.len().min(i + 8)).find(|&j| fn_item(lines[j])) else {
+                    continue;
+                };
+                let Some(b) =
+                    (f..lines.len()).find(|&j| lines[j] == "{" || lines[j].ends_with('{'))
+                else {
+                    continue;
+                };
+                let mut depth = 0i32;
+                let mut end = b;
+                for (j, l) in lines.iter().enumerate().skip(b) {
+                    depth += l.matches('{').count() as i32 - l.matches('}').count() as i32;
+                    end = j;
+                    if depth <= 0 {
+                        break;
+                    }
+                }
+                let header = lines[f..b].join(" ");
+                let body = lines[b..=end].join(" ").replace("debug_assert", "");
+                let ends = header.contains(") -> !") || body.contains(") -> !");
+                if !ends && !aborts.iter().any(|a| body.contains(a)) {
+                    continue;
+                }
+                trusted += 1;
+                let full = std::format!("crate::sys::{cap}()");
+                let at = std::format!("{rel}:{}: `{}`", f + 1, lines[f]);
+                let listed =
+                    |l: &[(&str, &str)]| l.iter().any(|(p, s)| *p == rel && lines[f].contains(s));
+                assert!(
+                    header.contains(full.as_str())
+                        || (header.contains(&std::format!("crate::sys::{cap}_corrupt()"))
+                            && listed(&corrupt_only))
+                        || listed(&unfailing),
+                    "{at}: a trusted body that can abort, without `{cap}`"
+                );
+            }
+        }
+        assert!(grants > 0 && integrity_checks > 0 && trusted > 0);
     }
 }

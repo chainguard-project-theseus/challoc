@@ -171,6 +171,7 @@ unsafe fn errno_write(errno: *mut i32, v: i32) {
 /// `pthread_create` / `pthread_join` may set it on their way.
 pub fn start(shared: &Shared) -> bool
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
@@ -247,6 +248,7 @@ fn create(
     previous: Option<::libc::pthread_t>,
 ) -> (r: (usize, Option<::libc::pthread_t>))
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
         stack + STACK_SIZE <= usize::MAX,
@@ -335,6 +337,7 @@ fn create(
 #[verifier::external_body]
 fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t>
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     // SAFETY: plain pthread attribute calls on a local; the stack is
@@ -429,12 +432,14 @@ const THREAD_NAME: [u8; 11] = [b'c', b'h', b'a', b'l', b'l', b'o', b'c', b'-', b
 extern "C" fn main(arg: *mut c_void) -> *mut c_void {
     proof {
         crate::sys::grant_syscalls();
+        crate::sys::grant_aborts();
     }
     let shared = shared_arg(arg);
     // SAFETY: the name is NUL-terminated.
     let _ = unsafe { sys::prctl(PR_SET_NAME, THREAD_NAME.as_ptr() as usize, 0, 0, 0) };
     loop
         invariant
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
     {

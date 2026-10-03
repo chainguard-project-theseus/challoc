@@ -134,7 +134,10 @@ verus! {
 /// entry point.
 #[cold]
 #[inline(never)]
-fn not_an_allocation(what: &str, p: *mut u8) -> ! {
+fn not_an_allocation(what: &str, p: *mut u8) -> !
+    requires
+        crate::sys::may_abort(),
+{
     crate::sys::abort_fmt(format_args!("{what} of {:#x}: not an allocation", p as usize))
 }
 
@@ -157,7 +160,7 @@ pub open spec fn nalloc_usable(size: usize, lg_align: u32) -> int {
 /// The usable size `mallocx(size, flags)` gives: the class size at the
 /// flags' alignment, or the huge run's page-rounded size. `None` when the
 /// size cannot be represented (`nallocx` returns 0).
-fn usable_for(shared: &Shared, size: usize, f: &Flags) -> (r: Option<usize>)
+pub(super) fn usable_for(shared: &Shared, size: usize, f: &Flags) -> (r: Option<usize>)
     requires
         f.lg_align < 64,
         shared.wf(),
@@ -197,6 +200,7 @@ pub open spec fn tcache_checked(size: usize, flags: c_int) -> bool {
 /// block's token.
 fn alloc_with(shared: &Shared, size: usize, f: &Flags, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, Tracked<Zeroed>))
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         f.lg_align < 64,
         shared.wf(),
@@ -276,6 +280,7 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags, Tracked(blk): Tracked<&mu
 /// `malloc(0)` does. The block's token goes to C with it.
 pub fn mallocx(size: usize, flags: c_int) -> (r: *mut u8)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
@@ -293,6 +298,7 @@ pub fn mallocx(size: usize, flags: c_int) -> (r: *mut u8)
 /// `size`; and `blk` gets the block's token.
 pub fn mallocx_zeroed(size: usize, flags: c_int, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, Tracked<Zeroed>))
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r.0, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
@@ -318,6 +324,7 @@ pub fn mallocx_zeroed(size: usize, flags: c_int, Tracked(blk): Tracked<&mut Live
 /// and gets the result's.
 pub fn rallocx(p: *mut u8, size: usize, flags: c_int) -> (r: *mut u8)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
@@ -344,6 +351,7 @@ pub fn rallocx(p: *mut u8, size: usize, flags: c_int) -> (r: *mut u8)
 /// then still the caller's).
 pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<Live>, Tracked(out): Tracked<&mut Live>) -> (r: (*mut u8, Ghost<int>, Tracked<Zeroed>))
     requires
+        crate::sys::may_abort(),
         blk.claims(p),
         crate::sys::may_syscall(),
     ensures
@@ -428,6 +436,7 @@ pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Track
 /// current usable size; a caller that needs more must `rallocx`.
 pub fn xallocx(p: *mut u8, _size: usize, _extra: usize, _flags: c_int) -> (r: usize)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         crate::heap::free_target(p),
@@ -442,6 +451,7 @@ pub fn xallocx(p: *mut u8, _size: usize, _extra: usize, _flags: c_int) -> (r: us
 /// `sallocx(p, flags)`: usable size of the live allocation `p`.
 pub fn sallocx(p: *mut u8, _flags: c_int) -> (r: usize)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         crate::heap::free_target(p),
@@ -463,6 +473,7 @@ pub fn sallocx(p: *mut u8, _flags: c_int) -> (r: usize)
 /// ([`crate::heap::live::axiom_c_claim`]).
 pub fn dallocx(p: *mut u8, flags: c_int)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
@@ -476,6 +487,7 @@ pub fn dallocx(p: *mut u8, flags: c_int)
 /// the free takes back: the token of the live block `p`.
 pub fn dallocx_block(p: *mut u8, flags: c_int, Tracked(blk): Tracked<Live>)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         blk.claims(p),
     ensures
@@ -507,6 +519,7 @@ pub fn dallocx_block(p: *mut u8, flags: c_int, Tracked(blk): Tracked<Live>)
 #[inline(always)]
 pub fn sdallocx(p: *mut u8, size: usize, flags: c_int)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
@@ -522,6 +535,7 @@ pub fn sdallocx(p: *mut u8, size: usize, flags: c_int)
 #[inline(always)]
 pub fn sdallocx_block(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<Live>)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         blk.claims(p),
     ensures
@@ -553,6 +567,7 @@ pub fn sdallocx_block(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Track
 #[inline(never)]
 fn sdallocx_flags(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<Live>)
     requires
+        crate::sys::may_abort(),
         blk.claims(p),
         crate::sys::may_syscall(),
     ensures
@@ -580,6 +595,7 @@ fn sdallocx_flags(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<L
 #[inline(never)]
 fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<Live>)
     requires
+        crate::sys::may_abort(),
         blk.claims(p),
         crate::sys::may_syscall(),
     ensures
@@ -613,6 +629,7 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<
 /// the request cannot be represented.
 pub fn nallocx(size: usize, flags: c_int) -> (r: usize)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         r == 0 || size <= r,

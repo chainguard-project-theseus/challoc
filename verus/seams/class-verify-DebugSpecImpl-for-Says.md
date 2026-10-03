@@ -1,6 +1,6 @@
 # `DebugSpecImpl for Says`
 
-Seam S93 of `verus/SEAMS.md`: src/class/verify.rs:176. Kind: spec_impl. Category: core library.
+Seam S94 of `verus/SEAMS.md`: src/class/verify.rs:193. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract

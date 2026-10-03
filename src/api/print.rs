@@ -337,6 +337,7 @@ fn decay_ms(ns: u64) -> (r: i64)
 #[allow(clippy::needless_range_loop)]
 fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt::Result
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
@@ -517,6 +518,8 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
 /// what it gives arena 0.
 fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
     requires
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_syscall(),
         shared.wf(),
 {
     use crate::policy::{Band, FRAC_ONE};
@@ -596,6 +599,7 @@ fn advice_line<W: Write>(out: &mut W) -> fmt::Result {
 
 fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) -> fmt::Result
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     writeln!(out, "arenas[{}]:", arena.index())?;
@@ -689,6 +693,7 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 #[allow(clippy::while_let_loop)]
 fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::Result
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     let mut header = false;
@@ -698,6 +703,7 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
     let mut classes = 0..NCLASSES;
     loop
         invariant
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             classes.start <= classes.end == NCLASSES,
         decreases classes.end - classes.start,
@@ -718,6 +724,7 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
         let mut committed = 0..cs.committed_slabs();
         loop
             invariant
+                crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 committed.start <= committed.end <= cs.spec_nslabs(),
                 slabs <= committed.start,
@@ -787,6 +794,7 @@ fn hist_line<W: Write>(
 
 fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
@@ -802,6 +810,7 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
         let n = shared.arenas.count() as usize;
         for i in 0..n
             invariant
+                crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 shared.wf(),
         {
@@ -831,6 +840,7 @@ fn json_general<W: Write>(
     arenas_follow: bool,
 ) -> fmt::Result
     requires
+        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
@@ -1002,6 +1012,7 @@ fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 /// [`json_arena`]s, each under its option letter as in [`text_report`].
 fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
@@ -1020,6 +1031,7 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
         let n = shared.arenas.count() as usize;
         for i in 0..n
             invariant
+                crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 shared.wf(),
         {
@@ -1057,6 +1069,7 @@ fn nbins() -> (r: usize)
 #[inline(always)]
 fn stats_print(target: Target, opts: *const c_char)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     let shared = super::shared();
@@ -1124,6 +1137,7 @@ fn xml_heap<W: Write>(out: &mut W, nr: usize, s: &ArenaStats) -> fmt::Result {
 
 fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
@@ -1132,6 +1146,7 @@ fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
     let n = shared.arenas.count() as usize;
     for i in 0..n
         invariant
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
     {
@@ -1176,6 +1191,7 @@ fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
 /// 0 and `stream` non-null, else `-1` with `errno = EINVAL`, as in glibc.
 pub fn malloc_info(options: c_int, stream: *mut libc::FILE, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: c_int)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         r == 0 || r == -1,
@@ -1198,6 +1214,7 @@ pub fn malloc_info(options: c_int, stream: *mut libc::FILE, Tracked(errno): Trac
 /// challoc's meaning of each figure (see `glibc.rs` for the mapping).
 pub fn malloc_stats()
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     let shared = super::shared();
@@ -1211,12 +1228,14 @@ pub fn malloc_stats()
 /// function (Verus does not model its mutable captures).
 fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
     let n = shared.arenas.count() as usize;
     for i in 0..n
         invariant
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
     {
@@ -1278,6 +1297,7 @@ mod exports {
     pub extern "C" fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         super::malloc_info(options, stream, Tracked(&mut errno))
@@ -1287,6 +1307,7 @@ mod exports {
     pub extern "C" fn malloc_stats() {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         super::malloc_stats()
     }
@@ -2152,7 +2173,7 @@ mod tests {
 mod kani_print {
     use super::{Target, file_target, hist_line, stderr_target, word};
 
-    /// S42 `word`, no `requires`, no `ensures`: it returns for every C
+    /// S43 `word`, no `requires`, no `ensures`: it returns for every C
     /// string up to 3 bytes before its NUL, UTF-8 or not (built at run
     /// time: Kani 0.68 has no C string literals).
     #[kani::proof]
@@ -2166,7 +2187,7 @@ mod kani_print {
         assert!(w == "?" || w.as_bytes() == &a[..n]);
     }
 
-    /// S43 `hist_line`, no `ensures`: it returns, for every argument and
+    /// S44 `hist_line`, no `ensures`: it returns, for every argument and
     /// whatever the writer returns (`W` is a writer that may fail any
     /// write; Kani fails the harness on any panic).
     #[kani::proof]
@@ -2184,7 +2205,7 @@ mod kani_print {
         );
     }
 
-    /// S44 `file_target`, no `ensures`: it returns, `Target::File` of the
+    /// S45 `file_target`, no `ensures`: it returns, `Target::File` of the
     /// stream, for any pointer (it is not dereferenced).
     #[kani::proof]
     fn file_target_returns() {
@@ -2192,7 +2213,7 @@ mod kani_print {
         assert!(matches!(file_target(p), Target::File(q) if q == p));
     }
 
-    /// S45 `stderr_target`, no `ensures`: it returns, `Target::Stderr`.
+    /// S46 `stderr_target`, no `ensures`: it returns, `Target::Stderr`.
     #[kani::proof]
     fn stderr_target_returns() {
         assert!(matches!(stderr_target(), Target::Stderr));

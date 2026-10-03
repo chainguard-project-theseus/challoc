@@ -1414,6 +1414,7 @@ impl ClassState {
     #[verifier::external_body]
     fn owner_locked(&self, g: &Inner, slab: usize) -> (r: u16)
         requires
+            crate::sys::may_abort(),
             g.arena@ == self.arena,
             g.table@ == self.spec_table(),
         ensures
@@ -1445,6 +1446,7 @@ impl ClassState {
     #[verifier::external_body]
     fn state_locked(&self, g: &Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>) -> (r: State)
         requires
+            crate::sys::may_abort(),
             g.table@ == self.spec_table(),
             *d == desc_at(self.spec_table(), slab),
         ensures
@@ -1618,6 +1620,8 @@ impl ClassState {
     /// [`SlabTable::desc`].
     #[inline]
     pub fn desc(&self, slab: usize) -> (r: &SlabDesc)
+        requires
+            crate::sys::may_abort(),
         ensures
             *r == desc_at(self.spec_table(), slab),
     {
@@ -1656,6 +1660,8 @@ impl ClassState {
     /// [`SlabTable::locate`].
     #[inline]
     pub fn locate(&self, p: *mut u8) -> (r: (usize, usize))
+        requires
+            crate::sys::may_abort(),
         ensures
             r.0 < self.spec_nslabs(),
             r.1 < class_table()[self.spec_class() as int].nslots,
@@ -1688,6 +1694,7 @@ impl ClassState {
         Tracked(inited): Tracked<&GhostPersistentSubset<int>>,
     )
         requires
+            crate::sys::may_abort(),
             n <= class_table()[self.spec_class() as int].nslots,
             slab < self.spec_nslabs(),
             old(toks).id() == self.spec_table().spec_slots().loc,
@@ -1715,6 +1722,7 @@ impl ClassState {
         let mut w = 0;
         while k < n
             invariant
+                crate::sys::may_abort(),
                 bits_shape(bm, sb),
                 bits_ghost(bm, self.spec_table(), slab),
                 bm.inited_by(*inited),
@@ -1791,6 +1799,7 @@ impl ClassState {
     /// (`AtomicBitmap::release`).
     fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen, Tracked(tok): Tracked<GhostSubset<int>>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
             word < words_of(class_table()[self.spec_class() as int].slab_bits as usize),
@@ -1850,6 +1859,7 @@ impl ClassState {
     #[allow(clippy::explicit_auto_deref)]
     fn reopen(&self, reopen: &mut Reopen)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(reopen).len <= MAX_PICKS,
             old(reopen).below(self.spec_nslabs()),
@@ -1866,6 +1876,7 @@ impl ClassState {
         let mut g = self.inner.lock();
         for &s in it: &reopen.slabs[..reopen.len]
             invariant
+                crate::sys::may_abort(),
                 g@.inv(),
                 g@.nbits() == self.spec_nslabs(),
                 g@.arena@ == self.arena,
@@ -1893,6 +1904,7 @@ impl ClassState {
 
     fn dec_live(&self, slab: usize, n: usize)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
     {
@@ -1998,6 +2010,7 @@ impl ClassState {
     #[allow(clippy::explicit_auto_deref)]
     fn on_live_zero(&self, slab: usize)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
     {
@@ -2073,6 +2086,7 @@ impl ClassState {
         Tracked(pm): Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
     ) -> (np: usize)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
         ensures
             picks_zero(self.spec_table(), final(picks)@, 0, np as int, *final(pz)),
@@ -2094,6 +2108,7 @@ impl ClassState {
         let mut next = g.partial.map.lowest_set();
         while let Some(s) = next
             invariant
+                crate::sys::may_abort(),
                 g@.inv(),
                 g@.nbits() == self.spec_nslabs(),
                 g@.arena@ == self.arena,
@@ -2147,6 +2162,7 @@ impl ClassState {
         }
         while remaining > 0 && np < MAX_PICKS
             invariant
+                crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 g@.inv(),
                 g@.nbits() == self.spec_nslabs(),
@@ -2215,6 +2231,7 @@ impl ClassState {
         Tracked(pm): Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
     )
         requires
+            crate::sys::may_abort(),
             old(g).ready(slab as nat),
             old(g).nbits() == self.spec_nslabs(),
             old(g).arena@ == self.arena,
@@ -2479,6 +2496,7 @@ impl ClassState {
         Tracked(toks): Tracked<GhostSubset<int>>,
     )
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
             lo <= hi,
@@ -2506,6 +2524,7 @@ impl ClassState {
         }
         for w in it: lo..=hi
             invariant
+                crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 slab < self.spec_nslabs(),
                 hi < old(local)@.len(),
@@ -2644,6 +2663,7 @@ impl ClassState {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn claim(&self, meta: &Meta, out: &mut [*mut u8]) -> (r: Claim)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
         ensures
             r.n <= old(out)@.len(),
@@ -2662,6 +2682,7 @@ impl ClassState {
     /// [`claim`]: ClassState::claim
     pub fn claim_tokens(&self, meta: &Meta, out: &mut [*mut u8], Tracked(toks): Tracked<&mut SlotToks>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
         ensures
             r.0.n <= old(out)@.len(),
@@ -2691,6 +2712,7 @@ impl ClassState {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn claim_random(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64) -> (r: Claim)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
         ensures
             r.n <= old(out)@.len(),
@@ -2710,6 +2732,7 @@ impl ClassState {
     #[verifier::spinoff_prover]
     pub fn claim_random_zero(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64, Tracked(toks): Tracked<&mut SlotToks>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
         ensures
             r.0.n <= old(out)@.len(),
@@ -2796,6 +2819,7 @@ impl ClassState {
     #[verifier::exec_allows_no_decreases_clause]
     fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>, Tracked(toks): Tracked<&mut SlotToks>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
         ensures
             r.0.n <= old(out)@.len(),
@@ -2820,6 +2844,7 @@ impl ClassState {
         let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
         while got < out.len()
             invariant
+                crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 t == self.spec_table(),
                 s == t.spec_slots(),
@@ -2963,6 +2988,7 @@ impl ClassState {
         Ghost(base): Ghost<int>,
     ) -> (r: usize)
         requires
+            crate::sys::may_abort(),
             picks_ok(picks@, picks@.len() as int, self.spec_nslabs(), class_table()[self.spec_class() as int].nslots as nat),
             picks_sum(picks@, picks@.len() as int) <= old(out)@.len(),
             picks_zero(self.spec_table(), picks@, 0, picks@.len() as int, pz),
@@ -3003,6 +3029,7 @@ impl ClassState {
         let ghost mut i: int = 0;
         loop
             invariant
+                crate::sys::may_abort(),
                 0 <= i <= picks@.len(),
                 iter.remaining() == picks@.skip(i).as_ref(),
                 picks_ok(picks@, picks@.len() as int, self.spec_nslabs(), nslots as nat),
@@ -3215,6 +3242,7 @@ impl ClassState {
             }
             while k < want
                 invariant
+                    crate::sys::may_abort(),
                     k <= want,
                     word < words,
                     words == bm.spec_words(),
@@ -4607,6 +4635,7 @@ impl ClassState {
     /// [`release_owned`]: ClassState::release_owned
     pub fn release_with(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<GhostSubset<int>>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             bag.id() == slot_loc(self.spec_class() as int),
             aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= bag@,
@@ -4661,6 +4690,7 @@ impl ClassState {
     #[allow(clippy::explicit_counter_loop)]
     pub fn release_owned(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<&mut GhostSubset<int>>) -> (r: usize)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(bag).id() == slot_loc(self.spec_class() as int),
             aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= old(bag)@,
@@ -4715,6 +4745,7 @@ impl ClassState {
                 i == it.index(),
                 end == ptrs@.len(),
             invariant
+                crate::sys::may_abort(),
                 end == ptrs@.len() || end == i,
                 i <= ptrs@.len(),
                 end <= ptrs@.len(),

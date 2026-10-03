@@ -1,15 +1,18 @@
 # `assert_refill_empty`
 
-Seam S117 of `verus/SEAMS.md`: src/heap/mod.rs:1753. Kind: external_body. Category: panic/abort.
+Seam S118 of `verus/SEAMS.md`: src/heap/mod.rs:1755. Kind: external_body. Category: panic/abort.
 Discharged by Kani.
 
 ## Contract
 
 At commit 7d4e997 (checked again there; the record was written at
-ae82d5b):
+ae82d5b), plus the `requires` theorem 31 ("Read-only APIs never abort")
+added after it:
 
 ```rust
 fn assert_refill_empty(len: &u32)
+    requires
+        crate::sys::may_abort() || *len == 0,
     ensures
         *len == 0,
 ```
@@ -25,7 +28,7 @@ Reproduce: `sh verus/kani/run.sh --harness heap::kani_aborts::assert_refill_empt
 
 ## Translation
 
-- No `requires`.
+- `requires` is a ghost capability (`may_abort*`, opaque, no exec meaning). The harness covers every input, so a stronger `requires` keeps the `ensures` discharged.
 - `ensures *len == 0`: every return has `len == 0`, by the
   `should_panic` harness.
 
@@ -72,6 +75,10 @@ Reconciled onto commit 7d4e997, 2026-10-03: the contract above
 compared with the ledger's entry there, and the harness re-run under
 both quanta with the same Kani (it passes). A fresh-context subagent
 reviewed the reconciliation.
+
+Theorem 31, 2026-10-03: the ledger's contract gained the `requires`
+above; the contract block and the translation were updated to it, and
+the harness was not re-run (it covers every input).
 
 ## Tests
 

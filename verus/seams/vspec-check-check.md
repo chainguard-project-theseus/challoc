@@ -1,15 +1,18 @@
 # `check`
 
-Seam S262 of `verus/SEAMS.md`: src/vspec/check.rs:13. Kind: external_body. Category: panic/abort.
+Seam S264 of `verus/SEAMS.md`: src/vspec/check.rs:16. Kind: external_body. Category: panic/abort.
 Discharged by Kani.
 
 ## Contract
 
 At commit 7d4e997 (checked again there; the record was written at
-ae82d5b):
+ae82d5b), plus the `requires` theorem 31 ("Read-only APIs never abort")
+added after it:
 
 ```rust
 pub fn check(c: bool, msg: &'static str)
+    requires
+        crate::sys::may_abort_corrupt() || c,
     ensures
         c,
 ```
@@ -26,7 +29,7 @@ Reproduce: `sh verus/kani/run.sh --harness kani_proofs::abort::check_returns_onl
 
 ## Translation
 
-- No `requires`.
+- `requires` is a ghost capability (`may_abort*`, opaque, no exec meaning). The harness covers every input, so a stronger `requires` keeps the `ensures` discharged.
 - `ensures c`: every return has `c`, by the `should_panic` harness.
 
 A panic in challoc aborts (`panic = "abort"`, and the panic handler
@@ -72,6 +75,10 @@ Reconciled onto commit 7d4e997, 2026-10-03: the contract above
 compared with the ledger's entry there, and the harness re-run under
 both quanta with the same Kani (it passes). A fresh-context subagent
 reviewed the reconciliation.
+
+Theorem 31, 2026-10-03: the ledger's contract gained the `requires`
+above; the contract block and the translation were updated to it, and
+the harness was not re-run (it covers every input).
 
 ## Tests
 

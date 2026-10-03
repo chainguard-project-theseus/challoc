@@ -1,6 +1,6 @@
 # `desc_ptr_addr`
 
-Seam S94 of `verus/SEAMS.md`: src/class/verify.rs:196. Kind: external_body. Category: raw pointer (internal).
+Seam S95 of `verus/SEAMS.md`: src/class/verify.rs:213. Kind: external_body. Category: raw pointer (internal).
 Discharged by Kani.
 
 ## Contract

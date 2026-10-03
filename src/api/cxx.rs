@@ -120,6 +120,7 @@ verus! {
 #[inline(always)]
 fn call_throw_bad_alloc(t: *const c_void) -> !
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         t@.addr != 0,
 {
@@ -133,6 +134,7 @@ fn call_throw_bad_alloc(t: *const c_void) -> !
 #[inline(never)]
 fn throw_bad_alloc() -> !
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     let t = throw_bad_alloc_addr();
@@ -180,6 +182,7 @@ fn call_handler(handler: Handler)
 #[verifier::exec_allows_no_decreases_clause] // ends only when the program's handler frees memory, is removed or throws
 fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         align == 0 ==> crate::heap::fits(r, size as int, crate::QUANTUM as int),
@@ -192,6 +195,7 @@ fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live
 {
     loop
         invariant
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
     {
         let Some(handler) = installed_handler() else {
@@ -217,6 +221,7 @@ fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live
 #[inline(never)]
 fn new_slow(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
@@ -237,6 +242,7 @@ fn new_slow(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>, Tracke
 #[inline(always)]
 pub fn new(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
@@ -251,6 +257,7 @@ pub fn new(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u
 #[inline(always)]
 pub fn new_nothrow(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
@@ -264,6 +271,7 @@ pub fn new_nothrow(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r
 #[inline(always)]
 pub fn new_block(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
@@ -284,6 +292,7 @@ pub fn new_block(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>, T
 /// `malloc`'s.
 pub fn new_aligned(size: usize, align: usize, nothrow: bool, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
@@ -297,6 +306,7 @@ pub fn new_aligned(size: usize, align: usize, nothrow: bool, Tracked(errno): Tra
 /// [`new_aligned`] with the block's token, as `libc::malloc_block`.
 pub fn new_aligned_block(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
@@ -321,6 +331,7 @@ pub fn new_aligned_block(size: usize, align: usize, nothrow: bool, Tracked(blk):
 #[inline(always)]
 pub fn delete(p: *mut u8)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
@@ -334,6 +345,7 @@ pub fn delete(p: *mut u8)
 #[inline(always)]
 pub fn delete_sized(p: *mut u8, size: usize)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
@@ -348,6 +360,7 @@ pub fn delete_sized(p: *mut u8, size: usize)
 #[inline(always)]
 pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
@@ -375,6 +388,7 @@ mod exports {
     pub extern "C" fn new(size: usize) -> *mut c_void {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         super::new(size, Tracked(&mut errno)) as *mut c_void
@@ -385,6 +399,7 @@ mod exports {
     pub extern "C" fn new_array(size: usize) -> *mut c_void {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         super::new(size, Tracked(&mut errno)) as *mut c_void
@@ -395,6 +410,7 @@ mod exports {
     pub extern "C" fn new_nothrow(size: usize, _tag: *const c_void) -> *mut c_void {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         super::new_nothrow(size, Tracked(&mut errno)) as *mut c_void
@@ -405,6 +421,7 @@ mod exports {
     pub extern "C" fn new_array_nothrow(size: usize, _tag: *const c_void) -> *mut c_void {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         super::new_nothrow(size, Tracked(&mut errno)) as *mut c_void
@@ -415,6 +432,7 @@ mod exports {
     pub extern "C" fn new_aligned(size: usize, align: usize) -> *mut c_void {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         super::new_aligned(size, align, false, Tracked(&mut errno)) as *mut c_void
@@ -425,6 +443,7 @@ mod exports {
     pub extern "C" fn new_array_aligned(size: usize, align: usize) -> *mut c_void {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         super::new_aligned(size, align, false, Tracked(&mut errno)) as *mut c_void
@@ -439,6 +458,7 @@ mod exports {
     ) -> *mut c_void {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         super::new_aligned(size, align, true, Tracked(&mut errno)) as *mut c_void
@@ -453,6 +473,7 @@ mod exports {
     ) -> *mut c_void {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         super::new_aligned(size, align, true, Tracked(&mut errno)) as *mut c_void
@@ -463,6 +484,7 @@ mod exports {
     pub extern "C" fn delete(p: *mut c_void) {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         super::delete(p as *mut u8)
     }
@@ -472,6 +494,7 @@ mod exports {
     pub extern "C" fn delete_array(p: *mut c_void) {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         super::delete(p as *mut u8)
     }
@@ -481,6 +504,7 @@ mod exports {
     pub extern "C" fn delete_nothrow(p: *mut c_void, _tag: *const c_void) {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         super::delete(p as *mut u8)
     }
@@ -490,6 +514,7 @@ mod exports {
     pub extern "C" fn delete_array_nothrow(p: *mut c_void, _tag: *const c_void) {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         super::delete(p as *mut u8)
     }
@@ -499,6 +524,7 @@ mod exports {
     pub extern "C" fn delete_sized(p: *mut c_void, size: usize) {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         super::delete_sized(p as *mut u8, size)
     }
@@ -508,6 +534,7 @@ mod exports {
     pub extern "C" fn delete_array_sized(p: *mut c_void, size: usize) {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         super::delete_sized(p as *mut u8, size)
     }
@@ -517,6 +544,7 @@ mod exports {
     pub extern "C" fn delete_aligned(p: *mut c_void, _align: usize) {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         super::delete(p as *mut u8)
     }
@@ -526,6 +554,7 @@ mod exports {
     pub extern "C" fn delete_array_aligned(p: *mut c_void, _align: usize) {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         super::delete(p as *mut u8)
     }
@@ -535,6 +564,7 @@ mod exports {
     pub extern "C" fn delete_aligned_nothrow(p: *mut c_void, _align: usize, _tag: *const c_void) {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         super::delete(p as *mut u8)
     }
@@ -548,6 +578,7 @@ mod exports {
     ) {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         super::delete(p as *mut u8)
     }
@@ -557,6 +588,7 @@ mod exports {
     pub extern "C" fn delete_sized_aligned(p: *mut c_void, size: usize, align: usize) {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         super::delete_sized_aligned(p as *mut u8, size, align)
     }
@@ -566,6 +598,7 @@ mod exports {
     pub extern "C" fn delete_array_sized_aligned(p: *mut c_void, size: usize, align: usize) {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         super::delete_sized_aligned(p as *mut u8, size, align)
     }

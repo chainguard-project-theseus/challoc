@@ -510,17 +510,19 @@ pub(crate) fn fig_add64(a: u64, b: u64) -> (r: u64)
 /// word); `wrapping_mul` is the shipped build's `*`.
 #[inline(always)]
 fn huge_usable_pages(index: u16, runs: usize, pages: usize) -> (r: usize)
+    requires
+        crate::sys::may_abort_corrupt() || runs * GUARD_PAGES <= pages,
     ensures
         runs * GUARD_PAGES <= usize::MAX ==> runs * GUARD_PAGES <= pages && r == pages - runs * GUARD_PAGES,
 {
     let guards = runs.wrapping_mul(GUARD_PAGES);
-    if pages < guards {
-        huge_pages_short(index, runs, pages);
-    }
     proof {
         if runs * GUARD_PAGES <= usize::MAX {
             vstd::arithmetic::div_mod::lemma_small_mod((runs * GUARD_PAGES) as nat, 0x1_0000_0000_0000_0000nat);
         }
+    }
+    if pages < guards {
+        huge_pages_short(index, runs, pages);
     }
     pages - guards
 }
@@ -528,8 +530,11 @@ fn huge_usable_pages(index: u16, runs: usize, pages: usize) -> (r: usize)
 /// The abort of [`huge_usable_pages`].
 #[cold]
 #[inline(never)]
-fn huge_pages_short(index: u16, runs: usize, pages: usize) -> ! {
-    crate::sys::abort_fmt(format_args!("stats: arena {}: {runs} huge runs in {pages} pages", index))
+fn huge_pages_short(index: u16, runs: usize, pages: usize) -> !
+    requires
+        crate::sys::may_abort_corrupt(),
+{
+    crate::sys::abort_integrity(format_args!("stats: arena {}: {runs} huge runs in {pages} pages", index))
 }
 
 /// What an [`epoch`] stores in `Shared`: the totals plus the raw huge and
@@ -863,6 +868,8 @@ pub fn collect_bin(cs: &ClassState) -> (r: BinStats)
 ///
 /// [`Arenas::iter`]: crate::arena::Arenas::iter
 pub(crate) fn arena_at(shared: &Shared, i: usize) -> (r: Option<&Arena>)
+    requires
+        crate::sys::may_abort_corrupt() || i < MAX_ARENAS,
     ensures
         i < MAX_ARENAS,
         r matches Some(a) ==> a.spec_index() as int == i,
@@ -888,6 +895,7 @@ fn collect_arena_with(
     Tracked(pg): Tracked<&mut Ghost<int>>,
 ) -> (r: ArenaStats)
     requires
+        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
         shared.wf(),
         huge.empty_pages + huge.purged_pages <= u32::MAX,
@@ -1042,6 +1050,7 @@ fn collect_arena_with(
 /// The current figures of `arena`, not stored.
 pub fn collect_arena(shared: &Shared, arena: &Arena) -> (r: ArenaStats)
     requires
+        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
         shared.wf(),
     ensures
@@ -1099,6 +1108,7 @@ pub proof fn lemma_totals_add(t: Totals, a: ArenaStats)
 /// is the one returned.
 fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>) -> (r: Snapshot)
     requires
+        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
         shared.wf(),
     ensures
@@ -1124,6 +1134,7 @@ fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(S
     }
     for i in 0..n as usize
         invariant
+            crate::sys::may_abort_corrupt(),
             crate::sys::may_syscall(),
             shared.wf(),
             huge.empty_pages + huge.purged_pages <= u32::MAX,
@@ -1193,6 +1204,7 @@ fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(S
 /// [`Snapshot`]. Returns the new epoch number.
 pub fn epoch(shared: &Shared) -> u64
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
@@ -1204,6 +1216,7 @@ pub fn epoch(shared: &Shared) -> u64
 /// exact as [`collect_into`]'s.
 pub fn collect(shared: &Shared) -> (r: Snapshot)
     requires
+        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
         shared.wf(),
     ensures
@@ -1241,6 +1254,7 @@ pub fn arena_stats(shared: &Shared, index: u16) -> (r: Option<ArenaStats>)
 /// stored figures summed. Its `index` is 4096.
 pub fn arena_stats_all(shared: &Shared) -> (r: ArenaStats)
     requires
+        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
     ensures
         r.index == crate::arena::ARENAS_ALL as u16,
@@ -1249,6 +1263,7 @@ pub fn arena_stats_all(shared: &Shared) -> (r: ArenaStats)
     let n = shared.arenas.count();
     for i in 0..n as usize
         invariant
+            crate::sys::may_abort_corrupt(),
             crate::sys::may_syscall(),
             all.index == crate::arena::ARENAS_ALL as u16,
     {
@@ -1268,6 +1283,7 @@ pub fn arena_stats_all(shared: &Shared) -> (r: ArenaStats)
 /// arenas' `mapped` sum fits, which it does for up to 256 arenas.
 pub fn collect_all(shared: &Shared, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>) -> (r: ArenaStats)
     requires
+        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
         shared.wf(),
     ensures
@@ -1289,6 +1305,7 @@ pub fn collect_all(shared: &Shared, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaSt
     }
     for i in 0..n as usize
         invariant
+            crate::sys::may_abort_corrupt(),
             crate::sys::may_syscall(),
             shared.wf(),
             huge.empty_pages + huge.purged_pages <= u32::MAX,

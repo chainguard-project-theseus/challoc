@@ -440,6 +440,7 @@ impl SlabTable {
     #[verifier::spinoff_prover]
     pub fn new(meta: &Meta, regions: &Regions, class: usize, guard_interval: u32) -> (r: Option<SlabTable>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             regions.wf(),
             regions.separated(),
@@ -1729,6 +1730,8 @@ impl SlabTable {
     /// handed out rather than faulting on its `PROT_NONE` descriptor page.
     #[inline]
     pub fn desc(&self, slab: usize) -> (r: &SlabDesc)
+        requires
+            crate::sys::may_abort(),
         ensures
             *r == desc_at(*self, slab),
     {
@@ -1811,6 +1814,8 @@ impl SlabTable {
     /// slab that was never handed out.
     #[inline]
     pub fn bits(&self, slab: usize) -> (r: AtomicBitmap<'_>)
+        requires
+            crate::sys::may_abort(),
         ensures
             bits_shape(r, class_table()[self.spec_class() as int].slab_bits as usize),
             bits_ghost(r, *self, slab),
@@ -2068,6 +2073,8 @@ impl SlabTable {
     /// was never handed out.
     #[inline]
     pub fn owner(&self, slab: usize) -> (r: u16)
+        requires
+            crate::sys::may_abort(),
         ensures
             slab < self.spec_nslabs(),
             r == slab_owner(self.spec_class() as int, slab as int),
@@ -2171,6 +2178,8 @@ impl SlabTable {
     /// region. Aborts otherwise.
     #[inline]
     pub fn locate(&self, p: *mut u8) -> (r: (usize, usize))
+        requires
+            crate::sys::may_abort(),
         ensures
             r.0 < self.spec_nslabs(),
             r.1 < class_table()[self.spec_class() as int].nslots,
@@ -2230,6 +2239,7 @@ impl SlabTable {
     #[inline]
     pub fn check_located(&self, slab: usize, slot: usize, p: usize) -> (r: u16)
         requires
+            crate::sys::may_abort(),
             slot < class_table()[self.spec_class() as int].nslots,
         ensures
             r == slab_owner(self.spec_class() as int, slab as int),
@@ -2265,6 +2275,7 @@ impl SlabTable {
     #[inline(always)]
     pub fn check_live(&self, slab: usize, slot: usize, p: usize)
         requires
+            crate::sys::may_abort(),
             slot < class_table()[self.spec_class() as int].nslots,
         ensures
             slab < self.spec_nslabs(),
@@ -2287,7 +2298,10 @@ impl SlabTable {
     /// [`check_live`]: SlabTable::check_live
     #[cold]
     #[inline(never)]
-    fn not_live(&self, slab: usize, slot: usize, p: usize) -> ! {
+    fn not_live(&self, slab: usize, slot: usize, p: usize) -> !
+        requires
+            crate::sys::may_abort(),
+    {
         if self.is_guard_slab(slab) {
             guard_free(p, self.class as usize, slab);
         }
@@ -2328,6 +2342,7 @@ impl SlabTable {
     /// slab stays uncommitted and may be retried).
     pub(super) fn commit_slab(&self, s: usize) -> (r: Option<bool>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             s < self.spec_nslabs(),
         ensures
@@ -2424,6 +2439,7 @@ impl SlabTable {
     /// can be neither guarded nor re-protected aborts.
     fn install_guard(&self, s: usize, addr: usize, page: usize, len: usize)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
     {
         if guard(addr, page).is_ok() {
@@ -2440,7 +2456,10 @@ impl SlabTable {
 /// could be neither guarded nor re-protected. Inlined, so the caller
 /// keeps the abort it had in place.
 #[inline(always)]
-fn guard_unprotectable(class: &u16, s: &usize) -> ! {
+fn guard_unprotectable(class: &u16, s: &usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
     crate::sys::abort_fmt(format_args!("class {}: cannot re-protect guard slab {}", *class, *s))
 }
 
@@ -2483,6 +2502,7 @@ impl SlabTable {
         Tracked(inited): Tracked<&mut GhostPersistentSubset<int>>,
     ) -> (r: Option<(usize, usize)>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(sets).table@ == *self,
             old(sets).arena@ == arena,
@@ -2562,6 +2582,7 @@ impl SlabTable {
         let mut slabs = s..end;
         loop
             invariant
+                crate::sys::may_abort(),
                 slabs.start <= slabs.end == end,
                 end <= self.spec_nslabs(),
                 self.lg_group < 64,
@@ -2593,6 +2614,7 @@ impl SlabTable {
         let mut slabs = s..end;
         loop
             invariant
+                crate::sys::may_abort(),
                 slabs.start <= slabs.end == end,
                 s <= slabs.start,
                 end <= self.spec_nslabs(),

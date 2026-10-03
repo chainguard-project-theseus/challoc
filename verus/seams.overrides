@@ -154,6 +154,7 @@ axiom_auth_sign	platform/kernel fact	none (assumption)
 axiom_slot_writable	allocator invariant	RefinedRust
 axiom_huge_writable	allocator invariant	RefinedRust
 check	panic/abort	Kani	discharged (verus/seams/vspec-check-check.md)
+abort_integrity	panic/abort	Kani
 axiom_class_table_wf	allocator invariant	RefinedRust
 thp_name	core library	Kani
 stats_allocated	core library	Kani	discharged (verus/seams/vspec-print-stats_allocated.md)
@@ -241,3 +242,4 @@ core::slice::from_ref	core library	Kani	discharged (verus/seams/vspec-slice-slic
 <core::array::IntoIter<T, N> as core::iter::Iterator>::next	core library	Kani	discharged (verus/seams/vspec-slice-array-IntoIter-Iterator-next.md)
 <[T]>::as_mut_ptr	core library	Kani	discharged (verus/seams/vspec-sys-slice-as_mut_ptr.md)
 <[T]>::as_ptr	core library	Kani	discharged (verus/seams/vspec-sys-slice-as_ptr.md)
+src/api/mallctl.rs:shared	allocator invariant	RefinedRust

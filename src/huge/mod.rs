@@ -103,6 +103,8 @@ impl RunState {
     /// zero memory.
     #[inline]
     fn from_u8(v: u8) -> (r: RunState)
+        requires
+            crate::sys::may_abort() || v <= 2,
         ensures
             v <= 2 && r == state_of(v),
     {
@@ -232,6 +234,8 @@ impl HugeDesc {
     /// Aborts unless the state byte is valid.
     #[inline]
     pub fn state(&self) -> (r: RunState)
+        requires
+            crate::sys::may_abort() || self.spec_state() <= 2,
         ensures
             self.spec_state() <= 2 && r == state_of(self.spec_state()),
     {
@@ -354,6 +358,8 @@ impl HugeStats {
 
     /// Uncount one extent of `pages` in `state`.
     fn sub(&mut self, state: RunState, pages: usize)
+        requires
+            crate::sys::may_abort(),
         ensures
             *final(self) == match state {
                 RunState::Active => HugeStats {
@@ -402,13 +408,19 @@ impl HugeStats {
 
 #[cold]
 #[inline(never)]
-pub(crate) fn bad_run_state_byte(v: u8) -> ! {
+pub(crate) fn bad_run_state_byte(v: u8) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!("huge: run state byte {v:#x} is not a run state"))
 }
 
 #[cold]
 #[inline(never)]
-pub(crate) fn huge_count_underflow(state: RunState) -> ! {
+pub(crate) fn huge_count_underflow(state: RunState) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!("huge: {state:?} extent count underflow"))
 }
 
@@ -1541,6 +1553,7 @@ impl Inner {
     /// neighbours. The free bitmap and the `Empty` list are the caller's.
     fn add_extent(&mut self, d: *mut HugeDesc)
         requires
+            crate::sys::may_abort(),
             old(self).table.wf(),
             perms_ok(old(self).descs@),
             old(self).descs@.contains_key(d),
@@ -1586,6 +1599,7 @@ impl Inner {
     /// pointer comparisons need.
     fn drop_extent(&mut self, d: *mut HugeDesc, Ghost(others): Ghost<Seq<*mut HugeDesc>>)
         requires
+            crate::sys::may_abort(),
             old(self).table.wf(),
             perms_ok(old(self).descs@),
             old(self).descs@.contains_key(d),
@@ -1632,6 +1646,7 @@ impl Inner {
     /// extent of a page or more keyed in the table that ends there is it.
     fn free_before(&self, page: usize) -> (r: *mut HugeDesc)
         requires
+            crate::sys::may_abort(),
             self.lookups_live(),
         ensures
             r@.addr != 0 ==> {
@@ -1660,6 +1675,7 @@ impl Inner {
     /// extent keyed in the table that starts there is it.
     fn free_after(&self, page: usize) -> (r: *mut HugeDesc)
         requires
+            crate::sys::may_abort(),
             self.lookups_live(),
         ensures
             r@.addr != 0 ==> {
@@ -2877,6 +2893,7 @@ impl Inner {
     /// descriptor still reads `Active` here and is in no list).
     fn retire(&mut self, meta: &Meta, d: *mut HugeDesc)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             perms_ok(old(self).descs@),
             elist_ok(old(self).empty_head, old(self).empty_tail, old(self).elist@, old(self).descs@),
@@ -2965,6 +2982,7 @@ impl Inner {
     /// bit's page is in a free extent (`free_exact`), which starts at it.
     fn extent_at(&self, page: usize) -> (r: *mut HugeDesc)
         requires
+            crate::sys::may_abort(),
             self.wf(),
             self.free.map.view().contains(page as nat),
             ends_by(self.descs@, page as int),
@@ -3613,6 +3631,7 @@ impl Huge {
     /// the usable pages of the run token `tok` holds, if it is this run's.
     pub fn usable_size(&self, page: usize, Tracked(tok): Tracked<&Option<RunToken>>) -> (r: usize)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             page <= self.spec_npages(),
         ensures
@@ -3714,6 +3733,7 @@ impl Huge {
     /// number purged, at most the region's pages.
     pub fn purge_empty(&self, cutoff: u64) -> (r: usize)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
         ensures
             r <= u32::MAX,
@@ -3739,6 +3759,7 @@ impl Huge {
         let mut batch = Batch::new(Ghost(|b: int| self.purgeable(held, b)));
         loop
             invariant
+                crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 g@.wf(),
                 g@.spec_np() == self.npages,
@@ -3819,6 +3840,7 @@ impl Huge {
     #[verifier::rlimit(40)]
     fn purge_extent(&self, g: &mut Inner, d: *mut HugeDesc, batch: &mut Batch) -> (r: usize)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(g).wf(),
             old(g).spec_np() == self.npages,
@@ -4028,6 +4050,7 @@ impl Huge {
     /// before. Returns the number of extents purged.
     fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
     {
         broadcast use axiom_huge_lock_inv, axiom_huge_lock_frame;
@@ -4131,6 +4154,7 @@ impl Huge {
             }
             while !d.is_null() && excess > 0
                 invariant
+                    crate::sys::may_abort(),
                     crate::sys::may_syscall(),
                     g@.wf(),
                     g@.spec_np() == self.npages,
@@ -4215,6 +4239,7 @@ impl Huge {
     /// `Empty`. Lock-free unless a walk is due.
     pub fn decay(&self, now: u64, decay_ns: u64) -> Option<u64>
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
     {
         self.decay_with(now, decay_ns, crate::policy::KEEP_ALL)
@@ -4224,6 +4249,7 @@ impl Huge {
     /// 11), as `ClassState::decay_with`.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> (r: Option<u64>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
         ensures
             r matches Some(t) ==> t >= now,
@@ -4256,6 +4282,7 @@ impl Huge {
     /// free.
     fn find(&self, g: &Inner, need: usize, align: usize) -> (r: Option<(usize, *mut HugeDesc)>)
         requires
+            crate::sys::may_abort(),
             (self.base as int) % (pow2(self.lg_page as nat) as int) == 0,
             g.wf(),
             g.spec_np() == self.npages,
@@ -4287,6 +4314,7 @@ impl Huge {
         let mut from = 0;
         while let Some(a) = g.free.map.lowest_set_from(from)
             invariant
+                crate::sys::may_abort(),
                 g.wf(),
                 (self.base as int) % (pow2(self.lg_page as nat) as int) == 0,
                 g.spec_np() == self.npages,
@@ -4457,6 +4485,7 @@ impl Huge {
         Tracked(tok): Tracked<&mut Map<int, RunToken>>,
     ) -> (r: (bool, Tracked<Zeroed>))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(g).wf(),
             old(g).spec_np() == self.npages,
@@ -4857,6 +4886,7 @@ impl Huge {
     #[inline]
     pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>) -> (r: (Placed, Tracked<Zeroed>))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             crate::meta::is_pow2(align),
             self.spec_base_aligned(),
@@ -4879,6 +4909,7 @@ impl Huge {
     #[inline(always)]
     fn alloc_aligned(&self, meta: &Meta, size: usize, align: usize, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>) -> (r: (Placed, Tracked<Zeroed>))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             crate::meta::is_pow2(align),
             self.spec_base_aligned(),
@@ -4973,6 +5004,7 @@ impl Huge {
     #[cold]
     fn prior_state(&self, s: usize, ext: *mut HugeDesc, Tracked(descs): Tracked<&Map<*mut HugeDesc, PointsTo<HugeDesc>>>) -> &'static str
         requires
+            crate::sys::may_abort(),
             ext@.addr != 0 ==> {
                 &&& descs.contains_key(ext)
                 &&& descs[ext].ptr() == ext
@@ -5006,7 +5038,10 @@ impl Huge {
     #[cold]
     #[inline(never)]
     #[verifier::external_body]
-    fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: u16) {
+    fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: u16)
+        requires
+            crate::sys::may_abort(),
+    {
         let page = self.page_size();
         let base = self.addr(s);
         for i in 0..usable_pages {
@@ -6433,6 +6468,7 @@ impl Huge {
     #[verifier::loop_isolation(false)]
     pub fn free_run(&self, meta: &Meta, page: usize, Tracked(tok): Tracked<RunToken>) -> (r: RunInfo)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             meta.is_process(),
             tok.wf(),
@@ -6837,13 +6873,19 @@ impl Huge {
 
 #[cold]
 #[inline(never)]
-pub(crate) fn not_a_run(p: usize) -> ! {
+pub(crate) fn not_a_run(p: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!("invalid free of {p:#x}: not the start of a huge allocation"))
 }
 
 #[cold]
 #[inline(never)]
-pub(crate) fn already_free(p: usize) -> ! {
+pub(crate) fn already_free(p: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!("double free of {p:#x}: huge allocation already freed"))
 }
 
@@ -6857,7 +6899,10 @@ pub(crate) fn already_free(p: usize) -> ! {
 /// never returns.
 #[cfg(verus_only)]
 #[verifier::external_body]
-fn not_a_run_page(page: usize) -> ! {
+fn not_a_run_page(page: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
     panic!("invalid free of huge page {page}: not the start of a huge allocation")
 }
 
@@ -6872,7 +6917,10 @@ fn dirty_zero_run(
     arena: u16,
     at: usize,
     word: u64,
-) -> ! {
+) -> !
+    requires
+        crate::sys::may_abort(),
+{
     let advice = purge::advice_name();
     sys::abort_fmt(format_args!(
         "check_zero: huge run {run:#x} ({pages} pages from page {page}, arena {arena}) was handed out as zero from {prior} pages but the word at {at:#x} reads {word:#x} (purge advice {advice})"

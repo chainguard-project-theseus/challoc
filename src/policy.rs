@@ -839,9 +839,17 @@ impl Policy {
 /// lock-free `oldest_empty` says which), one for the huge allocator.
 ///
 /// Trusted: the iterator over the arenas and the unchecked sums stay as
-/// written; callers rely on nothing but the type.
+/// written; callers rely on nothing but the type. The locks may wait in
+/// the kernel, and `Arenas::iter` indexes the registry below
+/// `arenas.count()`, which panics only if that count is past
+/// `MAX_ARENAS`: an integrity check (theorem "Read-only APIs never
+/// abort").
 #[verifier::external_body]
-pub fn empty_bytes(shared: &Shared) -> u64 {
+pub fn empty_bytes(shared: &Shared) -> u64
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::may_abort_corrupt(),
+{
     let mut total = 0u64;
     for arena in shared.arenas.iter() {
         total += arena.empty_bytes() as u64;
@@ -855,6 +863,7 @@ pub fn empty_bytes(shared: &Shared) -> u64 {
 /// when the band changed or a full purge is owed.
 pub fn evaluate(shared: &Shared)
     requires
+        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     let cg = &shared.cgroup;

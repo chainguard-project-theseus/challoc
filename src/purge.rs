@@ -365,6 +365,7 @@ impl Batch {
     /// the batch is full.
     pub fn push(&mut self, addr: usize, len: usize)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(self).wf(),
             addr + len <= usize::MAX,
@@ -420,6 +421,7 @@ impl Batch {
     /// invariant), which is what makes the discard sound.
     pub fn flush(&mut self)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(self).wf(),
         ensures
@@ -698,6 +700,7 @@ fn arena_count(shared: &Shared) -> (n: usize)
 /// purge: the memory is wanted back now). Returns how many were purged.
 pub fn purge_all(shared: &Shared) -> usize
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     let _explicit = Explicit::enter();
@@ -705,6 +708,7 @@ pub fn purge_all(shared: &Shared) -> usize
     let count = arena_count(shared);
     for i in 0..count
         invariant
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             count <= crate::arena::MAX_ARENAS,
             n <= i * 0x8_0000_0000_0000,
@@ -744,6 +748,7 @@ pub fn note_decay_changed()
 /// due.
 pub fn decay(shared: &Shared, now: u64) -> Option<u64>
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     // Design 11: a `memory.events` `high` rise owes one full purge, run
@@ -757,6 +762,7 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64>
     let count = arena_count(shared);
     for i in 0..count
         invariant
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             count <= crate::arena::MAX_ARENAS,
     {
@@ -789,6 +795,7 @@ fn earliest(next: Option<u64>, d: Option<u64>) -> Option<u64> {
 /// arena's sets), eagerly. `None` if the arena does not exist.
 pub fn purge_arena(shared: &Shared, index: u16) -> Option<usize>
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     let _explicit = Explicit::enter();
@@ -805,6 +812,7 @@ pub fn purge_arena(shared: &Shared, index: u16) -> Option<usize>
 /// thread is doing it.
 pub fn on_tick(shared: &Shared, now: u64)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
@@ -824,6 +832,7 @@ pub fn on_tick(shared: &Shared, now: u64)
 /// not passed. Slow paths only (the periodic tick, the background thread).
 fn sample(shared: &Shared, now: u64)
     requires
+        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     if shared.cgroup.sample(now) {
@@ -843,6 +852,7 @@ verus! {
 #[verifier::loop_isolation(false)]
 fn discard(ranges: &[(usize, usize)], advice: Advice, Ghost(free): Ghost<spec_fn(int) -> bool>)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         ranges.len() <= MAX_BATCH,
         forall|i: int| #![auto] 0 <= i < ranges.len() ==> frees(free, ranges[i].0 as int, ranges[i].1 as int),
@@ -880,7 +890,7 @@ mod kani_total {
     /// The most ranges checked.
     const MAX: usize = 4;
 
-    /// S187 `total_bytes`, `requires lens(ranges, len) <= u64::MAX`, no
+    /// S188 `total_bytes`, `requires lens(ranges, len) <= u64::MAX`, no
     /// `ensures`: under it the call returns (the sum, which cannot
     /// overflow), for every list of up to `MAX` ranges.
     #[kani::proof]

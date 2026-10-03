@@ -1657,7 +1657,10 @@ mod linux {
     /// cannot be reserved.
     #[cold]
     #[inline(never)]
-    fn cannot_reserve(what: &str, lg: u32, e: Errno) -> ! {
+    fn cannot_reserve(what: &str, lg: u32, e: Errno) -> !
+        requires
+            crate::sys::may_abort(),
+    {
         broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
 
         sys::abort_fmt(format_args!("cannot reserve {what} region of 2^{lg} bytes: {e}"))
@@ -1667,6 +1670,7 @@ mod linux {
     /// failure. Returns the mapping and the `lg` that fit.
     fn reserve_shrinking(what: &str, mut lg: u32, lg_min: u32, extra: usize) -> (r: (Mapping, u32, Tracked<Reserved>))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             lg_min <= lg <= 40,
             extra <= 0x8000_0000,
@@ -1678,6 +1682,7 @@ mod linux {
         let ghost lg0 = lg;
         loop
             invariant
+                crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 lg_min <= lg <= lg0 <= 40,
                 extra <= 0x8000_0000,
@@ -1703,7 +1708,10 @@ mod linux {
     /// cannot be reserved.
     #[cold]
     #[inline(never)]
-    fn cannot_reserve_superblock(lg_stride: u32, e: Errno) -> ! {
+    fn cannot_reserve_superblock(lg_stride: u32, e: Errno) -> !
+        requires
+            crate::sys::may_abort(),
+    {
         broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
 
         sys::abort_fmt(format_args!(
@@ -1717,6 +1725,7 @@ mod linux {
     /// (gap 1x, below the design's 1.25x preference but still a full gap).
     fn reserve_superblock() -> (r: (Mapping, u32, u32, Tracked<Reserved>))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
         ensures
             LG_REGION_MIN <= r.1 <= LG_REGION_PREFERRED,
@@ -1728,6 +1737,7 @@ mod linux {
         let mut lg_stride = lg_region + 2;
         loop
             invariant
+                crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 LG_REGION_MIN <= lg_region <= LG_REGION_PREFERRED,
                 lg_region < lg_stride <= lg_region + 2,
@@ -1837,7 +1847,10 @@ mod linux {
     /// The abort of [`Regions::reserve_owning`] when `getrandom` fails.
     #[cold]
     #[inline(never)]
-    fn getrandom_failed(e: Errno) -> ! {
+    fn getrandom_failed(e: Errno) -> !
+        requires
+            crate::sys::may_abort(),
+    {
         broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
 
         sys::abort_fmt(format_args!("getrandom failed: {e}"))
@@ -1863,7 +1876,10 @@ mod linux {
     /// `assert!` it replaced.
     #[cold]
     #[inline(never)]
-    fn bad_page_size() -> ! {
+    fn bad_page_size() -> !
+        requires
+            crate::sys::may_abort(),
+    {
         sys::abort_fmt(format_args!(
             "assertion failed: page_size.is_power_of_two() && (0x1000..=MAX_SLAB).contains(&page_size)"
         ))
@@ -1924,6 +1940,7 @@ mod linux {
         #[allow(clippy::needless_range_loop)]
         pub fn reserve_owning(page_size: usize, anon_name: bool) -> (res: (Regions, Tracked<Unbacked>))
             requires
+                crate::sys::may_abort(),
                 crate::sys::may_syscall(),
             ensures
                 res.0.wf(),
@@ -1975,6 +1992,7 @@ mod linux {
             let mut i = 0;
             while i < 3
                 invariant
+                    crate::sys::may_abort(),
                     crate::sys::may_syscall(),
                     0 <= i <= 3,
                     slide == 0x4000_0000,
@@ -2192,7 +2210,7 @@ mod linux {
     mod kani_word {
         use super::{NCLASSES, word};
 
-        /// S174 `word`, `requires i < NCLASSES + 3`, no `ensures`: under
+        /// S175 `word`, `requires i < NCLASSES + 3`, no `ensures`: under
         /// it the call returns, for every byte string and index (and the
         /// word is bytes `8 * i..8 * i + 8` in native order).
         #[kani::proof]

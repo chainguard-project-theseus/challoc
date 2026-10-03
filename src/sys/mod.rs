@@ -117,6 +117,48 @@ pub proof fn grant_syscalls()
     reveal(may_syscall);
 }
 
+/// The caller may abort the process: reach `abort_fmt`, which every abort
+/// goes through (`abort`, `vspec::check`, the trusted bodies that can
+/// panic, and the panic handler). Every function that can reach an abort
+/// requires this, so a verified function that neither requires it, nor
+/// carries it in a loop invariant, nor calls [`grant_aborts`] never
+/// aborts: the read-only entry points (theorem "Read-only APIs never
+/// abort" in `verus/THEOREMS.md`).
+///
+/// Opaque, with no meaning: a capability, not a claim about the world.
+#[verifier::opaque]
+pub open spec fn may_abort() -> bool {
+    true
+}
+
+/// Grant [`may_abort`]. Called only at the roots of the allocator's call
+/// graph, the bodies of `extern "C"` functions (unlike [`grant_syscalls`],
+/// never in a function that does not return);
+/// `api::tests::abort_grants_only_at_roots` checks the source for that.
+pub proof fn grant_aborts()
+    ensures
+        may_abort(),
+{
+    reveal(may_abort);
+}
+
+/// The capability of the integrity checks alone: an abort only where a
+/// test of allocator state that no verified invariant constrains (a word
+/// other threads update with plain atomics, a counter only unverified
+/// code keeps) fails, so only if that state is corrupt. Nothing grants
+/// it: the theorem's witnesses require it in place of [`may_abort`].
+#[verifier::opaque]
+pub open spec fn integrity_aborts() -> bool {
+    true
+}
+
+/// The caller may abort at an integrity check ([`integrity_aborts`]):
+/// what `vspec::check` and [`abort_integrity`] require. Every holder of
+/// [`may_abort`] has it.
+pub open spec fn may_abort_corrupt() -> bool {
+    may_abort() || integrity_aborts()
+}
+
 } // verus!
 
 // ---- pure helpers shared by the probes and the cgroup parsers ----------
@@ -959,6 +1001,7 @@ mod linux {
     /// kernel silently leaves `SIGKILL` and `SIGSTOP` unblocked.
     pub fn block_all_signals() -> u64
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
     {
         let all: u64 = !0;
@@ -983,6 +1026,7 @@ mod linux {
     /// [`block_all_signals`] on the calling thread.
     pub fn set_signal_mask(mask: u64)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
     {
         // SAFETY: `mask` is a live 8-byte sigset; the old-set pointer is null.
@@ -1003,7 +1047,10 @@ mod linux {
     /// Abort on a failed `rt_sigprocmask(how)`.
     #[cold]
     #[inline(never)]
-    fn sigprocmask_failed(how: &str, e: Errno) -> ! {
+    fn sigprocmask_failed(how: &str, e: Errno) -> !
+        requires
+            crate::sys::may_abort(),
+    {
         broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
 
         abort_fmt(format_args!("rt_sigprocmask({how}) failed: {e}"))
@@ -1012,6 +1059,7 @@ mod linux {
     /// `exit_group(2)`: terminate every thread in the process.
     pub fn exit_group(status: i32) -> !
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
     {
         // SAFETY: no pointers; does not return.
@@ -1026,7 +1074,10 @@ mod linux {
     /// kernel returns from a terminating syscall.
     #[verifier::external_body]
     #[inline(always)]
-    pub fn trap() -> ! {
+    pub fn trap() -> !
+        requires
+            crate::sys::may_abort(),
+    {
         // SAFETY: both instructions raise a fatal signal and nothing else.
         unsafe {
             #[cfg(target_arch = "x86_64")]

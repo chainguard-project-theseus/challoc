@@ -36,6 +36,7 @@ impl Heap {
     #[inline(always)]
     pub fn alloc(&mut self, shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
             shared.wf(),
@@ -163,6 +164,7 @@ impl Heap {
     #[inline(always)]
     pub fn alloc_zeroed(&mut self, shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
             shared.wf(),
@@ -197,6 +199,7 @@ impl Heap {
     /// from the home cache or the `others` node keyed `arena`.
     pub fn alloc_in(&mut self, shared: &Shared, arena: u16, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
             class < NCLASSES,
@@ -237,6 +240,7 @@ impl Heap {
     #[inline(always)]
     pub fn free(&mut self, shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
@@ -280,6 +284,7 @@ impl Heap {
     #[inline(never)]
     pub fn alloc_huge(&mut self, shared: &Shared, size: usize, align: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(self).wf(),
             shared.wf(),
@@ -299,6 +304,7 @@ impl Heap {
     /// Huge allocation on this thread in `arena` (which must exist).
     pub fn alloc_huge_in(&mut self, shared: &Shared, size: usize, align: usize, arena: u16, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(self).wf(),
             shared.wf(),
@@ -324,6 +330,7 @@ impl Heap {
     #[inline(never)]
     pub(super) fn free_huge(&mut self, shared: &Shared, page: usize, Tracked(tok): Tracked<crate::huge::RunToken>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(self).wf(),
             shared.wf(),
@@ -413,6 +420,7 @@ impl Heap {
     #[inline(never)]
     pub(super) fn alloc_slow(&mut self, shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
             class < NCLASSES,
@@ -473,6 +481,7 @@ impl Heap {
     /// [`Heap::ensure_cache`] routes `arena` to).
     pub(super) fn alloc_slow_in(&mut self, shared: &Shared, arena: u16, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
             shared.wf(),
@@ -522,6 +531,7 @@ impl Heap {
     #[inline(never)]
     pub(super) fn free_slow(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
             tok.id() == slot_loc(class as int),
@@ -545,6 +555,7 @@ impl Heap {
     /// is cached, exactly as it would be handed out; design 6.3).
     pub(super) fn free_slow_in(&mut self, shared: &Shared, arena: u16, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
             tok.id() == slot_loc(class as int),
@@ -785,6 +796,7 @@ proof fn lend_slot(tracked blk: &mut Live, tracked tk: &mut Map<int, GhostSingle
 #[inline(always)]
 pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         class < NCLASSES,
         shared.wf(),
@@ -810,6 +822,7 @@ pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) ->
 #[inline(always)]
 pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
         class < NCLASSES,
@@ -828,6 +841,7 @@ pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut 
 #[inline(always)]
 pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         class < NCLASSES,
         shared.wf(),
@@ -856,6 +870,7 @@ pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Li
 #[inline(always)]
 pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
         blk.claims(p),
@@ -875,6 +890,7 @@ pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
 /// as for [`free`].
 pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
         blk.claims(p),
@@ -957,7 +973,10 @@ pub(crate) fn shared_ptr(shared: &Shared) -> *const Shared {
 
 #[cold]
 #[inline(never)]
-pub(super) fn invalid_free(p: usize) -> ! {
+pub(super) fn invalid_free(p: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
     crate::sys::abort_fmt(format_args!("invalid free of {p:#x}: not an allocation"))
 }
 
@@ -995,7 +1014,10 @@ pub(super) unsafe fn zero_slot(class: usize, p: *mut u8) -> (z: Tracked<Zeroed>)
 /// frame for this call.
 #[cold]
 #[inline(never)]
-pub(super) fn cached_twice(p: *mut u8) -> ! {
+pub(super) fn cached_twice(p: *mut u8) -> !
+    requires
+        crate::sys::may_abort(),
+{
     crate::sys::abort_fmt(format_args!("double free of {:#x}: the slot is already in the thread cache", p as usize))
 }
 
@@ -1048,7 +1070,7 @@ mod kani_aborts {
     use super::debug_scheduled;
     use crate::kani_proofs::must_not_return;
 
-    /// S131 `debug_scheduled`, no `requires`, no `ensures`: with debug
+    /// S132 `debug_scheduled`, no `requires`, no `ensures`: with debug
     /// assertions on (Kani's build, and the tests'), it returns exactly
     /// when `allocs as u32` has no bit of `mask`, and otherwise never
     /// returns.

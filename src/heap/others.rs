@@ -289,6 +289,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut super::Live>,
     ) -> (r: (*mut u8, bool))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
             class < NCLASSES,
@@ -336,6 +337,7 @@ impl Heap {
     #[inline(never)]
     pub(super) fn free_other(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
             tok.id() == slot_loc(class as int),
@@ -685,7 +687,7 @@ impl Heap {
 mod kani_aborts {
     use super::assert_not_home;
 
-    /// S127 `assert_not_home`, `requires *arena != *home`: under it the
+    /// S128 `assert_not_home`, `requires *arena != *home`: under it the
     /// call returns, for every pair.
     #[kani::proof]
     fn assert_not_home_returns() {

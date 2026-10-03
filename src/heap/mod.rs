@@ -1737,6 +1737,8 @@ spec fn swap_owner(
 #[verifier::external_body]
 #[inline(always)]
 fn assert_flushed(len: &u32)
+    requires
+        crate::sys::may_abort() || *len == 0,
     ensures
         *len == 0,
 {
@@ -1751,6 +1753,8 @@ fn assert_flushed(len: &u32)
 #[verifier::external_body]
 #[inline(always)]
 fn assert_refill_empty(len: &u32)
+    requires
+        crate::sys::may_abort() || *len == 0,
     ensures
         *len == 0,
 {
@@ -3818,10 +3822,12 @@ impl Heap {
     /// form that keeps them.
     fn free_caches(shared: &Shared, caches: &mut [CacheHeader; NCLASSES])
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
     {
         for cache in caches.iter_mut()
             invariant
+                crate::sys::may_abort(),
                 crate::sys::may_syscall(),
         {
             if cache.cap != 0 {
@@ -4196,6 +4202,7 @@ impl Heap {
     /// permissions ([`Heap::free_caches_in`]).
     fn drop_home_caches(&mut self, shared: &Shared)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
@@ -4313,6 +4320,7 @@ impl Heap {
     /// (whole-allocator theorem 10).
     fn flush_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
@@ -4335,6 +4343,7 @@ impl Heap {
         }
         for class in 0..NCLASSES
             invariant
+                crate::sys::may_abort(),
                 self.tcache_on() == old(self).tcache_on(),
                 crate::sys::may_syscall(),
                 self.keeps(*old(self)),
@@ -4434,6 +4443,7 @@ impl Heap {
     /// they reach their bitmap words is read from the verified bodies).
     pub fn flush_all(&mut self, shared: &Shared)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
@@ -4469,6 +4479,7 @@ impl Heap {
         }
         while !o.is_null()
             invariant
+                crate::sys::may_abort(),
                 self.tcache_on() == old(self).tcache_on(),
                 crate::sys::may_syscall(),
                 shared.wf(),
@@ -4646,6 +4657,7 @@ impl Heap {
     /// disjunction; [`Heap::gc_arena`] states the exact case per array).
     pub fn gc(&mut self, shared: &Shared)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
@@ -4675,6 +4687,7 @@ impl Heap {
         }
         while !o.is_null()
             invariant
+                crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 shared.wf(),
                 self.keeps(*old(self)),
@@ -4791,6 +4804,7 @@ impl Heap {
     #[allow(clippy::while_let_loop, reason = "the desugared `for`, which Verus needs for `continue`")]
     fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
@@ -4813,6 +4827,7 @@ impl Heap {
         let mut iter = 0..NCLASSES;
         loop
             invariant
+                crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 iter.end == NCLASSES,
                 iter.start <= NCLASSES,
@@ -5010,6 +5025,7 @@ impl Heap {
     /// by exactly what they held, as [`Heap::flush_all`] states.
     pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
@@ -5158,6 +5174,7 @@ impl Heap {
     /// through their permissions ([`Heap::swap_hdrs`]).
     pub fn set_arena(&mut self, shared: &Shared, arena: u16)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
@@ -5235,6 +5252,7 @@ impl Heap {
     /// `epoch` (`stats.rs`), not here.
     fn tick(&mut self, shared: &Shared)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(self).wf(),
             shared.wf(),
@@ -5495,6 +5513,7 @@ impl Heap {
     /// slot token (`TlsSlot::creates`), which it otherwise leaves alone.
     fn create(shared: &Shared, Tracked(tls): Tracked<&mut crate::sys::tls::TlsSlot>) -> (r: (*mut Heap, Tracked<CachePerms>))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
         ensures
@@ -5648,6 +5667,7 @@ impl Heap {
     #[verifier::external_body]
     pub unsafe fn destroy(h: *mut Heap, shared: &Shared)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
     {
         // SAFETY: the caller gives us exclusive ownership of the heap.
@@ -5741,7 +5761,7 @@ mod kani_aborts {
     use super::{assert_flushed, assert_refill_empty};
     use crate::kani_proofs::must_not_return;
 
-    /// S116 `assert_flushed`, `ensures *len == 0`: on any other `len` the
+    /// S117 `assert_flushed`, `ensures *len == 0`: on any other `len` the
     /// call never returns.
     #[kani::proof]
     #[kani::should_panic]
@@ -5753,7 +5773,7 @@ mod kani_aborts {
         }
     }
 
-    /// S117 `assert_refill_empty`, `ensures *len == 0`: as
+    /// S118 `assert_refill_empty`, `ensures *len == 0`: as
     /// `assert_flushed`.
     #[kani::proof]
     #[kani::should_panic]

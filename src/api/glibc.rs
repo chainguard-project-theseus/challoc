@@ -90,6 +90,7 @@ pub fn mallopt(_param: c_int, _value: c_int) -> (r: c_int)
 /// runs, whose number is `hblks`.
 pub fn mallinfo2(Tracked(rd): Tracked<&mut Ghost<(Seq<stats::ArenaStats>, Seq<int>, stats::ArenaStats)>>) -> (r: MallInfo2)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         r.fordblks <= r.arena,
@@ -133,6 +134,7 @@ pub fn mallinfo2(Tracked(rd): Tracked<&mut Ghost<(Seq<stats::ArenaStats>, Seq<in
 /// `mallinfo()`: [`mallinfo2`] saturated into `int`s.
 pub fn mallinfo() -> MallInfo
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     let tracked mut rd: Ghost<(Seq<stats::ArenaStats>, Seq<int>, stats::ArenaStats)> = Ghost(arbitrary());
@@ -174,6 +176,7 @@ mod exports {
     pub extern "C" fn mallinfo() -> super::MallInfo {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         super::mallinfo()
     }
@@ -182,6 +185,7 @@ mod exports {
     pub extern "C" fn mallinfo2() -> super::MallInfo2 {
         proof {
             crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
         }
         let tracked mut rd: Ghost<(Seq<crate::stats::ArenaStats>, Seq<int>, crate::stats::ArenaStats)> = Ghost(arbitrary());
         super::mallinfo2(Tracked(&mut rd))

@@ -308,6 +308,8 @@ impl fmt::Write for FeatureLine {
 /// The system page size, `getauxval(AT_PAGESZ)`. Without it, abort:
 /// guessing a page size would corrupt every mapping we make.
 pub fn page_size() -> (r: usize)
+    requires
+        crate::sys::may_abort(),
     ensures
         r != 0,
         crate::meta::is_pow2(r),
@@ -333,6 +335,7 @@ fn scratch(page: usize, prot: i32) -> Option<usize>
 /// mapped it, so it is unmapped only if something is very wrong.
 fn release(addr: usize, page: usize)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
@@ -347,6 +350,7 @@ fn release(addr: usize, page: usize)
 /// it cannot remove would break slab reuse.
 pub fn probe_guard_install(page: usize) -> bool
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     let Some(addr) = scratch(page, PROT_READ | PROT_WRITE) else {
@@ -366,6 +370,7 @@ pub fn probe_guard_install(page: usize) -> bool
 /// On failure the page is released.
 pub fn probe_mseal(page: usize) -> bool
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     let Some(addr) = scratch(page, PROT_NONE) else {
@@ -390,6 +395,7 @@ const PROBE_NAME: [u8; 14] = [
 /// `PR_SET_VMA_ANON_NAME` on a scratch page.
 pub fn probe_anon_name(page: usize) -> bool
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     let Some(addr) = scratch(page, PROT_NONE) else {
@@ -408,6 +414,7 @@ impl Features {
     /// stores the result. Pure apart from that page.
     pub fn probe() -> (r: Features)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
         ensures
             r.page_size != 0,
@@ -877,14 +884,14 @@ mod kani_fmt {
     use super::{LgSize, SizeSet};
     use crate::kani_proofs::fmt::formats;
 
-    /// S210 `DisplaySpecImpl for SizeSet` (`fmt_req` true): every set.
+    /// S212 `DisplaySpecImpl for SizeSet` (`fmt_req` true): every set.
     #[kani::proof]
     #[kani::unwind(66)]
     fn display_size_set() {
         formats(&SizeSet(kani::any()));
     }
 
-    /// S211 `DisplaySpecImpl for LgSize` (`fmt_req` is `self.0 < 64`):
+    /// S213 `DisplaySpecImpl for LgSize` (`fmt_req` is `self.0 < 64`):
     /// every such size.
     #[kani::proof]
     #[kani::unwind(22)]

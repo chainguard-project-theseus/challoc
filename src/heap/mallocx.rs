@@ -141,7 +141,10 @@ verus! {
 
 #[cold]
 #[inline(never)]
-fn invalid_tcache(id: u16) -> ! {
+fn invalid_tcache(id: u16) -> !
+    requires
+        crate::sys::may_abort(),
+{
     crate::sys::abort_fmt(format_args!("MALLOCX_TCACHE({id}): no such explicit cache"))
 }
 
@@ -154,6 +157,7 @@ fn invalid_tcache(id: u16) -> ! {
 /// (`Heap::alloc_in`).
 pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache, Tracked(blk): Tracked<&mut super::Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         class < crate::layout::NCLASSES,
         shared.wf(),
@@ -234,6 +238,7 @@ pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache, 
 /// One slot of `class` straight from `arena`'s slab bitmaps.
 fn alloc_direct(shared: &Shared, class: usize, arena: u16, Tracked(blk): Tracked<&mut super::Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
         class < crate::layout::NCLASSES,
@@ -259,6 +264,7 @@ pub fn alloc_huge(
     Tracked(blk): Tracked<&mut super::Live>,
 ) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
         crate::meta::is_pow2(align),
@@ -292,6 +298,7 @@ pub fn alloc_huge(
 /// token for `p` ([`Live::claims`](super::Live::claims)).
 pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<super::Live>)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
         blk.claims(p),

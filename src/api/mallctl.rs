@@ -186,18 +186,54 @@ verus! {
 struct ExReader(Reader);
 
 /// `read(mib)`. Trusted: a call through a function pointer; nothing is
-/// claimed about the reading.
+/// claimed about the reading. `read` is the reader of the node `mib`
+/// resolves to, and under `opt`, `arenas` and `stats` every reader is a
+/// verified function that does not require `may_abort`
+/// ([`reader_never_aborts`]); the others (`version`, `config.*` and
+/// `thread.*`) are closures, so a call to one of those needs the
+/// capability.
 #[verifier::external_body]
 #[inline(always)]
 fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_abort() || (reader_never_aborts(mib@) && reads(mib@, read)),
 {
     (read.0)(mib)
 }
 
-/// The allocator state, initialised (the readers run inside `mallctl`,
-/// after its own [`super::shared`]).
+/// `read` is the reader of the node `mib` resolves to.
+spec fn reads(mib: Seq<usize>, read: Reader) -> bool {
+    match resolve(root_nodes(), mib) {
+        Some(n) => n.entry == Entry::Read(read),
+        None => false,
+    }
+}
+
+/// `mib` names a key under `opt`, `arenas` or `stats`, entries 4, 5 and 7
+/// of [`ROOT`] (`tests::read_only_subtrees_are_roots_4_5_and_7` checks
+/// the indices): its reader is `opt_value` or one of the named readers
+/// above the name tree, none of which requires `may_abort`.
+spec fn reader_never_aborts(mib: Seq<usize>) -> bool {
+    mib.len() > 0 && (mib[0] == 4 || mib[0] == 5 || mib[0] == 7)
+}
+
+/// What [`ctl`] does at `n` never aborts: an interior node, a read
+/// under `opt`, `arenas` or `stats`, or a utilization query.
+spec fn ctl_never_aborts(n: Node, mib: Seq<usize>) -> bool {
+    match n.entry {
+        Entry::Dir(_) => true,
+        Entry::Read(_) => reader_never_aborts(mib),
+        Entry::Op(op) => op == Op::UtilQuery || op == Op::UtilBatchQuery,
+    }
+}
+
+/// The allocator state, initialised. Trusted: [`super::shared`], which
+/// aborts only from init (`init_slow`). The readers run inside `mallctl`
+/// and `mallctlbymib`, after their own `super::shared()` returned, so
+/// init is complete and this call returns at its first test.
+#[verifier::external_body]
 fn shared() -> (r: &'static Shared)
     requires
         crate::sys::may_syscall(),
@@ -283,20 +319,361 @@ const fn opt_nodes() -> [Node; KEYS.len()] {
 }
 
 static OPT: [Node; KEYS.len()] = opt_nodes();
+
+verus! {
+
+// The readers of `arenas.*` and `stats.*`, named so that Verus checks
+// them: none requires `may_abort` (theorem "Read-only APIs never abort").
+// `opt.*` reads through `opt_value`; the `thread.*` readers, `version`
+// and `config.*` stay closures below.
+
+fn bin_size(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(bin_class(m)?.size()))
+}
+
+fn bin_nregs(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(U32(bin_class(m)?.nslots() as u32))
+}
+
+fn bin_slab_size(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(bin_class(m)?.slab_size()))
+}
+
+fn arenas_narenas(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Unsigned(shared().arenas.count() as c_uint))
+}
+
+fn arenas_nbins(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Unsigned(NBINS as c_uint))
+}
+
+fn arenas_nlextents(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Unsigned(0))
+}
+
+fn arenas_page(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    let s = shared();
+    proof {
+        s.lemma_wf();
+    }
+    Ok(Size(s.regions.page_size()))
+}
+
+fn arenas_quantum(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(QUANTUM))
+}
+
+fn bin_curregs(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_syscall(),
+{
+    Ok(Size(bin_stats(m)?.curregs))
+}
+
+fn bin_curslabs(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_syscall(),
+{
+    Ok(Size(bin_stats(m)?.curslabs))
+}
+
+fn bin_nonfull_slabs(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_syscall(),
+{
+    Ok(Size(bin_stats(m)?.nonfull_slabs))
+}
+
+fn small_allocated(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_syscall(),
+{
+    Ok(Size(arena_stats(shared(), at(m, 2))?.small_allocated))
+}
+
+fn small_resident(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_syscall(),
+{
+    let a = arena_stats(shared(), at(m, 2))?;
+    // `+` as the build computes it ([`stats::fig_add`]).
+    Ok(Size(stats::fig_add(a.small_active, a.small_dirty)))
+}
+
+fn large_allocated(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_syscall(),
+{
+    Ok(Size(arena_stats(shared(), at(m, 2))?.large_allocated))
+}
+
+fn arena_pactive(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_syscall(),
+{
+    Ok(Size(arena_stats(shared(), at(m, 2))?.pactive))
+}
+
+fn arena_pdirty(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_syscall(),
+{
+    Ok(Size(arena_stats(shared(), at(m, 2))?.pdirty))
+}
+
+fn arena_pmuzzy(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_syscall(),
+{
+    Ok(Size(arena_stats(shared(), at(m, 2))?.pmuzzy))
+}
+
+fn arena_resident(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_syscall(),
+{
+    Ok(Size(arena_stats(shared(), at(m, 2))?.resident))
+}
+
+fn arena_mapped(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_syscall(),
+{
+    Ok(Size(arena_stats(shared(), at(m, 2))?.mapped))
+}
+
+fn arena_retained(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_syscall(),
+{
+    Ok(Size(arena_stats(shared(), at(m, 2))?.retained))
+}
+
+fn cgroup_limit(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(tracked()?.limit() as usize))
+}
+
+fn cgroup_high(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(tracked()?.high() as usize))
+}
+
+fn cgroup_current(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    // Rate limited to once per 10 ms, so a polling reader costs at
+    // most that many file reads.
+    let cg = tracked()?;
+    cg.sample(sys::now_coarse_ns());
+    Ok(Size(cg.current() as usize))
+}
+
+fn cgroup_decay_ms(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    tracked()?;
+    Ok(Size(
+        match shared().policy.effective_decay_ns(shared().decay_ns()) {
+            purge::NEVER => usize::MAX,
+            ns => (ns / 1_000_000) as usize,
+        },
+    ))
+}
+
+fn cgroup_retention_cap(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    tracked()?;
+    Ok(Size(shared().policy.cap() as usize))
+}
+
+fn cgroup_empty_bytes(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_syscall(),
+{
+    tracked()?;
+    Ok(Size(crate::policy::empty_bytes(shared()) as usize))
+}
+
+fn cgroup_full_purges(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    tracked()?;
+    Ok(Size(shared().policy.full_purges() as usize))
+}
+
+fn cgroup_purge_advice(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size((purge::advice() == purge::Advice::Lazy) as usize))
+}
+
+fn cgroup_lazy_purges(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(purge::batches().0 as usize))
+}
+
+fn cgroup_eager_purges(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(purge::batches().1 as usize))
+}
+
+fn thp_mode(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(crate::thp::decision().mode as usize))
+}
+
+fn thp_class_ranges(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(crate::thp::stats().class_ranges as usize))
+}
+
+fn thp_class_bytes(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(crate::thp::stats().class_bytes as usize))
+}
+
+fn thp_huge_ranges(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(crate::thp::stats().huge_ranges as usize))
+}
+
+fn thp_meta_ranges(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(crate::thp::stats().meta_ranges as usize))
+}
+
+fn thp_failures(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(crate::thp::stats().failures as usize))
+}
+
+fn thp_nohuge_ranges(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(crate::thp::stats().nohuge_ranges as usize))
+}
+
+fn stats_allocated(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(stats::snapshot(shared()).totals.allocated))
+}
+
+fn stats_active(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(stats::snapshot(shared()).totals.active))
+}
+
+fn stats_metadata(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(stats::snapshot(shared()).totals.metadata))
+}
+
+fn stats_resident(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(stats::snapshot(shared()).totals.resident))
+}
+
+fn stats_mapped(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(stats::snapshot(shared()).totals.mapped))
+}
+
+fn stats_retained(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
+    Ok(Size(stats::snapshot(shared()).totals.retained))
+}
+
+} // verus!
+
 static BIN_GEOMETRY: [Node; 3] = [
-    stat("size", |m| Ok(Size(bin_class(m)?.size()))),
-    stat("nregs", |m| Ok(U32(bin_class(m)?.nslots() as u32))),
-    stat("slab_size", |m| Ok(Size(bin_class(m)?.slab_size()))),
+    stat("size", bin_size),
+    stat("nregs", bin_nregs),
+    stat("slab_size", bin_slab_size),
 ];
 static ARENAS_BIN: [Node; 1] = [num(&BIN_GEOMETRY)];
 static ARENAS: [Node; 8] = [
-    stat("narenas", |_| {
-        Ok(Unsigned(shared().arenas.count() as c_uint))
-    }),
-    stat("nbins", |_| Ok(Unsigned(NBINS as c_uint))),
-    stat("nlextents", |_| Ok(Unsigned(0))),
-    stat("page", |_| Ok(Size(shared().regions.page_size()))),
-    stat("quantum", |_| Ok(Size(QUANTUM))),
+    stat("narenas", arenas_narenas),
+    stat("nbins", arenas_nbins),
+    stat("nlextents", arenas_nlextents),
+    stat("page", arenas_page),
+    stat("quantum", arenas_quantum),
     dir("bin", &ARENAS_BIN),
     op("create", ArenasCreate),
     op("lookup", ArenasLookup),
@@ -309,44 +686,25 @@ static ARENA_I: [Node; 4] = [
 ];
 static ARENA: [Node; 1] = [num(&ARENA_I)];
 static STATS_BIN_FIELDS: [Node; 3] = [
-    stat("curregs", |m| Ok(Size(bin_stats(m)?.curregs))),
-    stat("curslabs", |m| Ok(Size(bin_stats(m)?.curslabs))),
-    stat("nonfull_slabs", |m| Ok(Size(bin_stats(m)?.nonfull_slabs))),
+    stat("curregs", bin_curregs),
+    stat("curslabs", bin_curslabs),
+    stat("nonfull_slabs", bin_nonfull_slabs),
 ];
 static STATS_BINS: [Node; 1] = [num(&STATS_BIN_FIELDS)];
 static STATS_SMALL: [Node; 2] = [
-    stat("allocated", |m| {
-        Ok(Size(arena_stats(shared(), at(m, 2))?.small_allocated))
-    }),
-    stat("resident", |m| {
-        let a = arena_stats(shared(), at(m, 2))?;
-        Ok(Size(a.small_active + a.small_dirty))
-    }),
+    stat("allocated", small_allocated),
+    stat("resident", small_resident),
 ];
-static STATS_LARGE: [Node; 1] = [stat("allocated", |m| {
-    Ok(Size(arena_stats(shared(), at(m, 2))?.large_allocated))
-})];
+static STATS_LARGE: [Node; 1] = [stat("allocated", large_allocated)];
 static STATS_ARENA_I: [Node; 9] = [
-    stat("pactive", |m| {
-        Ok(Size(arena_stats(shared(), at(m, 2))?.pactive))
-    }),
-    stat("pdirty", |m| {
-        Ok(Size(arena_stats(shared(), at(m, 2))?.pdirty))
-    }),
-    stat("pmuzzy", |m| {
-        Ok(Size(arena_stats(shared(), at(m, 2))?.pmuzzy))
-    }),
+    stat("pactive", arena_pactive),
+    stat("pdirty", arena_pdirty),
+    stat("pmuzzy", arena_pmuzzy),
     dir("small", &STATS_SMALL),
     dir("large", &STATS_LARGE),
-    stat("resident", |m| {
-        Ok(Size(arena_stats(shared(), at(m, 2))?.resident))
-    }),
-    stat("mapped", |m| {
-        Ok(Size(arena_stats(shared(), at(m, 2))?.mapped))
-    }),
-    stat("retained", |m| {
-        Ok(Size(arena_stats(shared(), at(m, 2))?.retained))
-    }),
+    stat("resident", arena_resident),
+    stat("mapped", arena_mapped),
+    stat("retained", arena_retained),
     dir("bins", &STATS_BINS),
 ];
 static STATS_ARENAS: [Node; 1] = [num(&STATS_ARENA_I)];
@@ -361,86 +719,37 @@ static STATS_ARENAS: [Node; 1] = [num(&STATS_ARENA_I)];
 // with each so far; they read with or without a cgroup: the advice exists
 // (eager without one) whether or not one is read.
 static STATS_CGROUP: [Node; 10] = [
-    stat("limit", |_| Ok(Size(tracked()?.limit() as usize))),
-    stat("high", |_| Ok(Size(tracked()?.high() as usize))),
-    stat("current", |_| {
-        // Rate limited to once per 10 ms, so a polling reader costs at
-        // most that many file reads.
-        let cg = tracked()?;
-        cg.sample(sys::now_coarse_ns());
-        Ok(Size(cg.current() as usize))
-    }),
-    stat("decay_ms", |_| {
-        tracked()?;
-        Ok(Size(
-            match shared().policy.effective_decay_ns(shared().decay_ns()) {
-                purge::NEVER => usize::MAX,
-                ns => (ns / 1_000_000) as usize,
-            },
-        ))
-    }),
-    stat("retention_cap", |_| {
-        tracked()?;
-        Ok(Size(shared().policy.cap() as usize))
-    }),
-    stat("empty_bytes", |_| {
-        tracked()?;
-        Ok(Size(crate::policy::empty_bytes(shared()) as usize))
-    }),
-    stat("full_purges", |_| {
-        tracked()?;
-        Ok(Size(shared().policy.full_purges() as usize))
-    }),
-    stat("purge_advice", |_| {
-        Ok(Size((purge::advice() == purge::Advice::Lazy) as usize))
-    }),
-    stat("lazy_purges", |_| Ok(Size(purge::batches().0 as usize))),
-    stat("eager_purges", |_| Ok(Size(purge::batches().1 as usize))),
+    stat("limit", cgroup_limit),
+    stat("high", cgroup_high),
+    stat("current", cgroup_current),
+    stat("decay_ms", cgroup_decay_ms),
+    stat("retention_cap", cgroup_retention_cap),
+    stat("empty_bytes", cgroup_empty_bytes),
+    stat("full_purges", cgroup_full_purges),
+    stat("purge_advice", cgroup_purge_advice),
+    stat("lazy_purges", cgroup_lazy_purges),
+    stat("eager_purges", cgroup_eager_purges),
 ];
 // `stats.thp.*` (design 7 and 17, `thp.rs`): the mode in force (0 off,
 // 1 folios, 2 PMD chunks), the ranges advised per region kind, and the
 // reservations `never` `MADV_NOHUGEPAGE`d (the class superblock and the
 // metadata region; 0 under `auto` and `always`).
 static STATS_THP: [Node; 7] = [
-    stat("mode", |_| Ok(Size(crate::thp::decision().mode as usize))),
-    stat("class_ranges", |_| {
-        Ok(Size(crate::thp::stats().class_ranges as usize))
-    }),
-    stat("class_bytes", |_| {
-        Ok(Size(crate::thp::stats().class_bytes as usize))
-    }),
-    stat("huge_ranges", |_| {
-        Ok(Size(crate::thp::stats().huge_ranges as usize))
-    }),
-    stat("meta_ranges", |_| {
-        Ok(Size(crate::thp::stats().meta_ranges as usize))
-    }),
-    stat("failures", |_| {
-        Ok(Size(crate::thp::stats().failures as usize))
-    }),
-    stat("nohuge_ranges", |_| {
-        Ok(Size(crate::thp::stats().nohuge_ranges as usize))
-    }),
+    stat("mode", thp_mode),
+    stat("class_ranges", thp_class_ranges),
+    stat("class_bytes", thp_class_bytes),
+    stat("huge_ranges", thp_huge_ranges),
+    stat("meta_ranges", thp_meta_ranges),
+    stat("failures", thp_failures),
+    stat("nohuge_ranges", thp_nohuge_ranges),
 ];
 static STATS: [Node; 9] = [
-    stat("allocated", |_| {
-        Ok(Size(stats::snapshot(shared()).totals.allocated))
-    }),
-    stat("active", |_| {
-        Ok(Size(stats::snapshot(shared()).totals.active))
-    }),
-    stat("metadata", |_| {
-        Ok(Size(stats::snapshot(shared()).totals.metadata))
-    }),
-    stat("resident", |_| {
-        Ok(Size(stats::snapshot(shared()).totals.resident))
-    }),
-    stat("mapped", |_| {
-        Ok(Size(stats::snapshot(shared()).totals.mapped))
-    }),
-    stat("retained", |_| {
-        Ok(Size(stats::snapshot(shared()).totals.retained))
-    }),
+    stat("allocated", stats_allocated),
+    stat("active", stats_active),
+    stat("metadata", stats_metadata),
+    stat("resident", stats_resident),
+    stat("mapped", stats_mapped),
+    stat("retained", stats_retained),
     dir("arenas", &STATS_ARENAS),
     dir("cgroup", &STATS_CGROUP),
     dir("thp", &STATS_THP),
@@ -1461,6 +1770,7 @@ impl Utilization {
 #[inline(always)]
 fn heap_set_arena(h: &mut Heap, shared: &Shared, arena: u16)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     h.set_arena(shared, arena)
@@ -1541,6 +1851,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
 /// aborting on anything else.
 pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16>
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
@@ -1711,6 +2022,7 @@ fn opt_value(mib: &[usize]) -> Result<Reading, c_int>
 fn bin_class(mib: &[usize]) -> (r: Result<crate::layout::Class, c_int>)
     ensures
         r matches Err(e) ==> e == ENOENT,
+        r matches Ok(c) ==> c.wf(),
 {
     let j = at(mib, 2);
     if j < NBINS && j < NCLASSES {
@@ -1725,6 +2037,7 @@ fn bin_class(mib: &[usize]) -> (r: Result<crate::layout::Class, c_int>)
 #[allow(clippy::redundant_comparisons)]
 fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int>
     requires
+        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     let a = arena_stats(shared(), at(mib, 2))?;
@@ -1780,6 +2093,7 @@ fn ms_of(ns: u64) -> (r: isize)
 /// range check, which they fail).
 fn arena_stats(shared: &Shared, i: usize) -> (r: Result<ArenaStats, c_int>)
     requires
+        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
     ensures
         r matches Err(e) ==> e == ENOENT,
@@ -1797,6 +2111,7 @@ fn arena_stats(shared: &Shared, i: usize) -> (r: Result<ArenaStats, c_int>)
 /// can reach the slabs they pin (`malloc_trim` does the same).
 fn flush_caller(shared: &Shared)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
@@ -1814,6 +2129,7 @@ fn flush_caller(shared: &Shared)
 /// has torn down its heap.
 fn thread_heap<'a>(shared: &'a Shared) -> (r: Result<&'a mut Heap, c_int>)
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
     ensures
@@ -1845,6 +2161,8 @@ fn read_out(io: &Io, r: Reading) -> (res: Result<(), c_int>)
 /// an interior node.
 fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int>
     requires
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_abort() || ctl_never_aborts(*node, mib@),
         crate::sys::may_syscall(),
         shared.wf(),
         // Both entry points pass the node the MIB resolves to.
@@ -2033,6 +2351,7 @@ pub fn mallctl(
     newlen: usize,
 ) -> c_int
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     let Some(name) = cstr(name) else {
@@ -2137,6 +2456,7 @@ pub fn mallctlbymib(
     newlen: usize,
 ) -> c_int
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     if mib.is_null() || miblen == 0 || miblen > MAX_MIB {
@@ -2161,6 +2481,111 @@ pub fn mallctlbymib(
             newlen,
         },
     ))
+}
+
+/// [`ctl_never_aborts`], computed: for the witness below.
+#[cfg(verus_only)]
+fn never_aborts(node: &Node, mib: &[usize]) -> (r: bool)
+    ensures
+        r == ctl_never_aborts(*node, mib@),
+{
+    match node.entry {
+        Entry::Dir(_) => true,
+        Entry::Read(_) => mib.len() > 0 && (mib[0] == 4 || mib[0] == 5 || mib[0] == 7),
+        Entry::Op(op) => match op {
+            UtilQuery | UtilBatchQuery => true,
+            _ => false,
+        },
+    }
+}
+
+/// Theorem "Read-only APIs never abort", for `mallctl`: the calls
+/// [`mallctl`] and [`mallctlbymib`] make after their `super::shared()`,
+/// for a key under `opt`, `arenas` or `stats` or a utilization query, and
+/// every named reader of those keys, made where only
+/// [`crate::sys::integrity_aborts`] holds, not [`crate::sys::may_abort`].
+/// Each call verifies, so none of them aborts but at an integrity check.
+///
+/// Verification only (`cfg(verus_only)`): the build has no such function.
+#[cfg(verus_only)]
+pub(super) fn theorem_mallctl_reads_never_abort(
+    shared: &Shared,
+    name: *const c_char,
+    mibp: *const usize,
+    miblen: usize,
+    io: &Io,
+    m: &[usize],
+)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::integrity_aborts(),
+        shared.wf(),
+{
+    // `mallctl` after its `super::shared()`, for a covered key.
+    if let Some(name) = cstr(name) {
+        let mut mib = [0usize; MAX_MIB];
+        if let Ok((len, node)) = name_to_mib(name, &mut mib) {
+            if never_aborts(node, &mib[..len]) {
+                let _ = result(ctl(shared, node, &mib[..len], io));
+            }
+        }
+    }
+    // `mallctlbymib` after its `super::shared()`, likewise.
+    if !mibp.is_null() && miblen != 0 && miblen <= MAX_MIB {
+        let mut local = [0usize; MAX_MIB];
+        // SAFETY: as in `mallctlbymib`.
+        unsafe { mib_in(mibp, &mut local, miblen) };
+        if let Ok(node) = mib_to_node(&local[..miblen]) {
+            if never_aborts(node, &local[..miblen]) {
+                let _ = result(ctl(shared, node, &local[..miblen], io));
+            }
+        }
+    }
+    // The readers `call` reaches under `opt`, `arenas` and `stats`.
+    let _ = opt_value(m);
+    let _ = bin_size(m);
+    let _ = bin_nregs(m);
+    let _ = bin_slab_size(m);
+    let _ = arenas_narenas(m);
+    let _ = arenas_nbins(m);
+    let _ = arenas_nlextents(m);
+    let _ = arenas_page(m);
+    let _ = arenas_quantum(m);
+    let _ = bin_curregs(m);
+    let _ = bin_curslabs(m);
+    let _ = bin_nonfull_slabs(m);
+    let _ = small_allocated(m);
+    let _ = small_resident(m);
+    let _ = large_allocated(m);
+    let _ = arena_pactive(m);
+    let _ = arena_pdirty(m);
+    let _ = arena_pmuzzy(m);
+    let _ = arena_resident(m);
+    let _ = arena_mapped(m);
+    let _ = arena_retained(m);
+    let _ = cgroup_limit(m);
+    let _ = cgroup_high(m);
+    let _ = cgroup_current(m);
+    let _ = cgroup_decay_ms(m);
+    let _ = cgroup_retention_cap(m);
+    let _ = cgroup_empty_bytes(m);
+    let _ = cgroup_full_purges(m);
+    let _ = cgroup_purge_advice(m);
+    let _ = cgroup_lazy_purges(m);
+    let _ = cgroup_eager_purges(m);
+    let _ = thp_mode(m);
+    let _ = thp_class_ranges(m);
+    let _ = thp_class_bytes(m);
+    let _ = thp_huge_ranges(m);
+    let _ = thp_meta_ranges(m);
+    let _ = thp_failures(m);
+    let _ = thp_nohuge_ranges(m);
+    let _ = stats_allocated(m);
+    let _ = stats_active(m);
+    let _ = stats_metadata(m);
+    let _ = stats_resident(m);
+    let _ = stats_mapped(m);
+    let _ = stats_retained(m);
 }
 
 } // verus!
@@ -2261,6 +2686,87 @@ mod tests {
         let rc = mallctlnametomib(cname.as_ptr(), mib.as_mut_ptr(), &mut len);
         assert_eq!(rc, 0, "mallctlnametomib({name}) = {rc}");
         mib[..len].to_vec()
+    }
+
+    /// [`reader_never_aborts`]'s premises: `opt`, `arenas` and `stats` are
+    /// entries 4, 5 and 7 of the root, and every reader under them is one
+    /// of the named, verified readers, none of them a closure.
+    #[test]
+    fn read_only_subtrees_are_roots_4_5_and_7() {
+        type Read = fn(&[usize]) -> Result<Reading, c_int>;
+        assert_eq!(
+            (ROOT[4].name, ROOT[5].name, ROOT[7].name),
+            ("opt", "arenas", "stats")
+        );
+        let named: [Read; 44] = [
+            opt_value,
+            bin_size,
+            bin_nregs,
+            bin_slab_size,
+            arenas_narenas,
+            arenas_nbins,
+            arenas_nlextents,
+            arenas_page,
+            arenas_quantum,
+            bin_curregs,
+            bin_curslabs,
+            bin_nonfull_slabs,
+            small_allocated,
+            small_resident,
+            large_allocated,
+            arena_pactive,
+            arena_pdirty,
+            arena_pmuzzy,
+            arena_resident,
+            arena_mapped,
+            arena_retained,
+            cgroup_limit,
+            cgroup_high,
+            cgroup_current,
+            cgroup_decay_ms,
+            cgroup_retention_cap,
+            cgroup_empty_bytes,
+            cgroup_full_purges,
+            cgroup_purge_advice,
+            cgroup_lazy_purges,
+            cgroup_eager_purges,
+            thp_mode,
+            thp_class_ranges,
+            thp_class_bytes,
+            thp_huge_ranges,
+            thp_meta_ranges,
+            thp_failures,
+            thp_nohuge_ranges,
+            stats_allocated,
+            stats_active,
+            stats_metadata,
+            stats_resident,
+            stats_mapped,
+            stats_retained,
+        ];
+        fn readers(n: &Node, named: &[Read], count: &mut usize) {
+            match n.entry {
+                Entry::Dir(children) => {
+                    for c in children {
+                        readers(c, named, count);
+                    }
+                }
+                Entry::Read(r) => {
+                    assert!(
+                        named.iter().any(|f| *f as usize == r.0 as usize),
+                        "`{}` is not a named reader",
+                        n.name
+                    );
+                    *count += 1;
+                }
+                Entry::Op(_) => {}
+            }
+        }
+        let mut count = 0;
+        for i in [4, 5, 7] {
+            readers(&ROOT[i], &named, &mut count);
+        }
+        assert_eq!(count, KEYS.len() + named.len() - 1);
     }
 
     /// A pointer count whose triples overflow `usize` must not pass the
@@ -3212,7 +3718,7 @@ mod tests {
 mod kani_root {
     use super::{ROOT, root};
 
-    /// S11 `root`, `ensures r@ == root_nodes()`: every call returns
+    /// S12 `root`, `ensures r@ == root_nodes()`: every call returns
     /// `ROOT` itself, an immutable static, so the same nodes each time
     /// (`root_nodes` is uninterpreted: ROOT's contents interpret it).
     #[kani::proof]

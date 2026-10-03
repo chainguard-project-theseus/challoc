@@ -188,6 +188,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut Live>,
     ) -> (r: (*mut u8, bool))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
             old(self).wf(),
@@ -287,6 +288,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut Live>,
     ) -> (r: (*mut u8, bool))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
             old(self).wf(),
@@ -461,6 +463,7 @@ impl Heap {
     /// Whether `class` in `arena` is worth compacting (design 6.4).
     pub(super) fn fragmented(shared: &Shared, arena: u16, class: usize) -> bool
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
     {
@@ -482,6 +485,7 @@ impl Heap {
         prev_refilled: u32,
     ) -> (u32, Verdict)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
     {
@@ -525,6 +529,7 @@ impl Heap {
     #[verifier::rlimit(50)]
     pub(super) unsafe fn rebuild_run(&mut self, cache: *mut CacheHeader, class: usize)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
             old(self).wf(),

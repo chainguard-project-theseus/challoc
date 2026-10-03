@@ -1,6 +1,6 @@
 # `axiom_arena_layout`
 
-Seam S56 of `verus/SEAMS.md`: src/arena.rs:447. Kind: axiom. Category: core library.
+Seam S57 of `verus/SEAMS.md`: src/arena.rs:447. Kind: axiom. Category: core library.
 Discharged by Kani.
 
 ## Contract

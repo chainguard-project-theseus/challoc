@@ -669,6 +669,7 @@ impl Arena {
     #[inline(always)]
     fn alloc_sets(meta: &Meta) -> (r: (*mut SetTable, Tracked<Option<PointsTo<SetTable>>>))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
         ensures
             r.0@.addr != 0 ==> r.1@ is Some && r.1@->0.ptr() == r.0 && r.1@->0.is_uninit(),
@@ -798,6 +799,7 @@ impl Arena {
         Tracked(slot): Tracked<&mut Held<Arena>>,
     ) -> (r: bool)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(slot).perm matches Some(p) && p.ptr() == this && p.is_uninit(),
             this@.addr + size_of::<Arena>() <= usize::MAX,
@@ -938,6 +940,7 @@ impl Arena {
     /// how many were purged.
     pub fn purge_all(&self) -> (r: usize)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
         ensures
             r <= NCLASSES * 0x2000_0000_0000,
@@ -946,6 +949,7 @@ impl Arena {
         let mut c = 0;
         while c < NCLASSES
             invariant
+                crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 c <= NCLASSES,
                 sum <= c * 0x2000_0000_0000,
@@ -1113,6 +1117,7 @@ impl Arena {
     /// next deadline, `None` when nothing is `Empty` or decay is off.
     pub fn decay(&self, now: u64) -> Option<u64>
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
     {
         self.decay_with(now, self.decay_ns(), crate::policy::KEEP_ALL)
@@ -1123,6 +1128,7 @@ impl Arena {
     /// `NEVER` does nothing.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64>
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
     {
         if decay_ns == crate::purge::NEVER {
@@ -1131,6 +1137,7 @@ impl Arena {
         let mut next: Option<u64> = None;
         for cs in self.classes.iter()
             invariant
+                crate::sys::may_abort(),
                 crate::sys::may_syscall(),
         {
             if let Some(d) = cs.decay_with(now, decay_ns, keep16) {
@@ -1266,7 +1273,10 @@ unsafe fn arena_at<'a>(p: *mut Arena, Ghost(index): Ghost<u16>) -> (r: &'a Arena
 /// never bound.
 #[cold]
 #[inline(never)]
-fn unbind_unbound(index: u16) -> ! {
+fn unbind_unbound(index: u16) -> !
+    requires
+        crate::sys::may_abort(),
+{
     crate::sys::abort_fmt(format_args!("arena {index}: unbinding a heap that was never bound"))
 }
 
@@ -1274,6 +1284,7 @@ impl Arenas {
     /// A thread heap homed on `index` is destroyed or moves away.
     pub fn unbind(&self, index: u16)
         requires
+            crate::sys::may_abort(),
             (index as usize) < MAX_ARENAS,
     {
         let prev = self.bound[index as usize].fetch_sub(1, Ordering::Relaxed);
@@ -1288,6 +1299,7 @@ impl Arenas {
     #[inline]
     pub fn get<'a>(&'a self, shared: &'a Shared, index: u16) -> (r: Option<&'a Arena>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
         ensures
@@ -1310,6 +1322,7 @@ impl Arenas {
     #[inline(never)]
     fn materialise<'a>(&'a self, shared: &'a Shared, index: u16) -> (r: Option<&'a Arena>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             (index as usize) < MAX_ARENAS,
             shared.wf(),
@@ -1335,6 +1348,7 @@ impl Arenas {
     /// the tables in class order).
     fn build<'a>(&'a self, shared: &'a Shared, index: u16) -> (r: Option<&'a Arena>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             (index as usize) < MAX_ARENAS,
             shared.wf(),
@@ -1401,6 +1415,7 @@ impl Arenas {
     /// metadata region is full.
     pub fn create(&self, shared: &Shared) -> Option<u16>
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
     {
@@ -1536,7 +1551,7 @@ pub(crate) mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S48..S55, S56: each `A_*` is its field's `offset_of!`, and the
+    /// S49..S56, S57: each `A_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_arena_layout` says.
     #[kani::proof]
     fn arena_layout() {
@@ -1580,7 +1595,7 @@ pub(crate) mod kani_layout {
         assert_eq!(align_of::<[T; N]>(), align_of::<T>());
     }
 
-    /// S46 `Arena::axiom_array_layout` at every instantiation the proofs
+    /// S47 `Arena::axiom_array_layout` at every instantiation the proofs
     /// use (`[ClassState; NCLASSES]` here, the two arrays of `Shared` in
     /// `heap/shared.rs`), and at primitive, zero-sized and padded element
     /// types and lengths 0, 1 and 7.

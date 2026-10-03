@@ -52,6 +52,7 @@ impl Heap {
         Tracked(toks): Tracked<&mut crate::class::SlotToks>,
     ) -> (r: (crate::class::Claim, Tracked<Map<int, Zeroed>>))
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
         ensures
             final(self).perms == old(self).perms,
@@ -124,6 +125,7 @@ impl Heap {
     /// the abort on a heap inconsistency, not the contract.
     pub(super) unsafe fn refill(&mut self, shared: &Shared, arena: &Arena, cache: *mut CacheHeader, class: usize) -> (r: u32)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
             old(self).wf(),
@@ -313,6 +315,7 @@ impl Heap {
     #[verifier::rlimit(300)]
     pub(super) unsafe fn flush(&mut self, shared: &Shared, arena: u16, cache: *mut CacheHeader, class: usize, n: usize)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
             shared.wf(),
@@ -1416,7 +1419,10 @@ verus! {
 /// the other.
 #[cold]
 #[inline(never)]
-pub(super) fn straddling_double_free(p: *mut u8, class: usize) -> ! {
+pub(super) fn straddling_double_free(p: *mut u8, class: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
     crate::sys::abort_fmt(format_args!("double free of {:#x} (class {class}): both copies cached, one at the flush boundary", p as usize))
 }
 

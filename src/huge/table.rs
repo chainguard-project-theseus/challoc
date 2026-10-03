@@ -758,6 +758,7 @@ impl Table {
     #[allow(clippy::nonminimal_bool)]
     pub(super) fn insert(&mut self, key: usize, desc: *mut HugeDesc)
         requires
+            crate::sys::may_abort(),
             old(self).wf(),
             old(self).lookup(key) is None,
             desc@.addr != 0,
@@ -1070,6 +1071,7 @@ impl Table {
     /// failure the table is unchanged and still works, only fuller.
     pub(super) fn ensure(&mut self, meta: &Meta, page: usize, extra: usize) -> (r: Result<(), ()>)
         requires
+            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(self).wf(),
             meta.is_process(),
@@ -1122,6 +1124,7 @@ impl Table {
         }
         for i in 0..old.cap()
             invariant
+                crate::sys::may_abort(),
                 old.wf(),
                 ov == old.view(),
                 ov == view_in,

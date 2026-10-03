@@ -32,7 +32,10 @@ pub const DESC_ALIGN: usize = 64;
 
 #[cold]
 #[inline(never)]
-fn bad_state_byte(v: u8) -> ! {
+fn bad_state_byte(v: u8) -> !
+    requires
+        crate::sys::may_abort(),
+{
     crate::sys::abort_fmt(format_args!("slab: state byte {v:#x} is not a slab state"))
 }
 
@@ -57,7 +60,10 @@ impl State {
     /// corrupted byte must not read as `Purged`, which `take` treats as
     /// zero memory for `calloc`.
     #[inline]
-    pub fn from_u8(v: u8) -> State {
+    pub fn from_u8(v: u8) -> State
+        requires
+            crate::sys::may_abort(),
+    {
         match State::try_from_u8(v) {
             Some(s) => s,
             None => bad_state_byte(v),
@@ -200,7 +206,10 @@ impl SlabDesc {
     }
 
     #[inline]
-    pub fn state(&self) -> State {
+    pub fn state(&self) -> State
+        requires
+            crate::sys::may_abort(),
+    {
         State::from_u8(self.state.load(Ordering::Relaxed))
     }
 
@@ -252,7 +261,10 @@ impl SlabDesc {
     /// that would go negative: more slots released than were ever claimed.
     #[inline]
     #[verifier::external_body]
-    pub fn sub_live(&self, n: usize) -> usize {
+    pub fn sub_live(&self, n: usize) -> usize
+        requires
+            crate::sys::may_abort(),
+    {
         let prev = self.live.fetch_sub(n as u32, Ordering::AcqRel) as usize;
         assert!(prev >= n, "slab: live count underflow ({prev} - {n})");
         prev
