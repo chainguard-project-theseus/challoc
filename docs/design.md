@@ -423,7 +423,14 @@ The headers are dense inside the heap: `malloc` reaches `len` at `heap +
 page. Each class's stack is its own metadata object, allocated on the
 class's first slow path (`Heap::ensure_cache`), so a thread pays only for
 the classes it touches; one contiguous slot block per heap cost a freeing
-thread three to four times the L1D fills. The per-thread byte counters
+thread three to four times the L1D fills. The exception is the home stacks of at
+most 2 KiB (`heap::PACK_MAX`; the classes above 256 bytes at the default
+ladder, 16 KiB together): they sit back to back in class order in the
+heap's own block, right after the `Heap`, so a thread cycling through
+those classes touches its own few pages instead of stacks scattered over
+pages shared with other threads' metadata (#60). The 4 and 8 KiB stacks
+of the small classes stay separate objects: packing them too lines their
+tops up in the same L1D sets (x86_64 -2% on larson). The per-thread byte counters
 are not kept per operation: `allocs` is bumped on the line a pop writes
 anyway and the free count follows from the stack arithmetic. Heaps and
 stacks come from the metadata region's object side (section 2); heaps are

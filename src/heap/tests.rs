@@ -329,11 +329,16 @@ fn heap_starts_with_the_sentinel_and_allocates_caches_lazily() {
     assert!(t.heap().cache(c + 1).is_none());
     assert_eq!(t.heap().stats().allocated, 64);
     assert_eq!(t.heap().slow_ticks(), 1);
-    // Only the heap and one stack came from the metadata region (both
-    // rounded up to a metadata bin).
+    // Only the heap's block (the heap and its packed stacks) and one
+    // stack came from the metadata region (both rounded up to a metadata
+    // bin).
+    let block = Heap::block_layout(Heap::pack_bytes(&s.config)).size();
     let meta_used = s.meta.stats().allocated - before;
-    assert!(meta_used >= core::mem::size_of::<Heap>() + 8 * CAP);
-    assert!(meta_used <= 4096 + 8 * CAP, "{meta_used}");
+    assert!(meta_used >= block + 8 * CAP);
+    assert!(
+        meta_used <= block.next_power_of_two() + 8 * CAP,
+        "{meta_used}"
+    );
     t.free(p);
     t.destroy();
     assert_eq!(s.meta.stats().allocated, before);
@@ -2697,6 +2702,71 @@ fn set_arena_swaps_cache_arrays() {
     assert_eq!(s.arena(a1).unwrap().classes[c].stats().empty, per_refill);
 }
 
+/// The home stacks of at most `PACK_MAX` bytes sit in the heap's own
+/// block, back to back in class order (#60); larger ones and other
+/// arenas' are metadata objects. A packed stack that `thread.arena`
+/// swapped into an `others` node stays claimed until it comes back, and
+/// `destroy` releases every packed stack (its debug assertion).
+#[test]
+fn small_home_stacks_are_packed_in_the_heap_block() {
+    let s = shared();
+    let a1 = s.arenas.create(s).unwrap();
+    let t = TestHeap::new(s);
+    let h = t.heap();
+    let base = h as *const Heap as usize + core::mem::size_of::<Heap>();
+    let pack = base..base + Heap::pack_bytes(&s.config);
+    let slots = |c: &CacheHeader| c.slots as usize;
+    // Back to back, every packed class, nothing else.
+    let mut end = 0;
+    for c in 0..NCLASSES {
+        let stack = 8 * s.config.cap_for(0, 0, c) as usize;
+        match Heap::pack_offset(&s.config, c) {
+            Some(off) => {
+                assert_eq!(off, end, "class {c}");
+                assert!(stack != 0 && stack <= PACK_MAX);
+                end += stack;
+            }
+            None => assert!(stack == 0 || stack > PACK_MAX, "class {c}"),
+        }
+    }
+    assert_eq!(end, pack.len());
+    assert_eq!(end, 16 * 1024, "the default ladder packs 16 KiB");
+    let small = class_with(64);
+    let big = class_with(512);
+    let other = class_with(1024);
+    assert_eq!(8 * s.config.cap_for(0, 0, big) as usize, PACK_MAX);
+    let p = t.alloc(small);
+    let q = t.alloc(big);
+    assert!(!pack.contains(&slots(h.cache(small).unwrap())));
+    assert_eq!(
+        slots(h.cache(big).unwrap()),
+        base + Heap::pack_offset(&s.config, big).unwrap()
+    );
+    // Another arena's cache of a packed class is a metadata object.
+    let (r, _) = h.alloc_in(s, a1, big);
+    assert!(!pack.contains(&slots(h.cache_in(a1, big).unwrap())));
+    h.set_arena(s, a1);
+    assert!(!pack.contains(&slots(h.cache(big).unwrap())));
+    assert!(pack.contains(&slots(h.cache_in(0, big).unwrap())));
+    // A packed class the heap never used gets its packed stack under the
+    // new home; one whose packed stack is in the node does not.
+    let u = t.alloc(other);
+    assert_eq!(
+        slots(h.cache(other).unwrap()),
+        base + Heap::pack_offset(&s.config, other).unwrap()
+    );
+    h.set_arena(s, 0);
+    assert_eq!(
+        slots(h.cache(big).unwrap()),
+        base + Heap::pack_offset(&s.config, big).unwrap()
+    );
+    assert!(pack.contains(&slots(h.cache_in(a1, other).unwrap())));
+    for x in [p, q, r, u] {
+        h.free(s, x);
+    }
+    t.destroy();
+}
+
 /// Explicit caches are heaps owned by no thread with their own ids.
 #[test]
 fn explicit_caches_create_flush_destroy() {
@@ -3105,7 +3175,8 @@ fn freeing_caches_that_were_not_flushed_aborts() {
     let _p = t.alloc(c);
     let h = t.heap();
     assert!(h.cache(c).unwrap().len() > 0);
-    Heap::free_caches(s, &mut h.caches);
+    let pack = h.pack_range();
+    Heap::free_caches(s, &pack, &mut h.pack_used, &mut h.caches);
 }
 
 #[test]

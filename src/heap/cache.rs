@@ -451,9 +451,12 @@ impl Heap {
         if unsafe { (*cache).cap } != 0 {
             return cache;
         }
-        let slots = shared.meta.alloc(CacheHeader::slots_layout(cap));
+        let mut slots = self.packed_stack(shared, arena, class, cap);
         if slots.is_null() {
-            return ptr::null_mut();
+            slots = shared.meta.alloc(CacheHeader::slots_layout(cap));
+            if slots.is_null() {
+                return ptr::null_mut();
+            }
         }
         // SAFETY: `cache` is this heap's own header (still `EMPTY`) and
         // `slots` has room for `cap` pointers, exclusively ours.
@@ -485,5 +488,25 @@ impl Heap {
             (*cache).set_mode(mode);
         }
         cache
+    }
+
+    /// A home stack of `cap` slots for `class` packed in the heap's own
+    /// block ([`PACK_MAX`](super::PACK_MAX)), claimed; null when `(arena, class)` is not a
+    /// packed home cache or its stack is still held by an `others` node
+    /// (a `thread.arena` change swapped the arrays), and the caller takes
+    /// a metadata object instead.
+    fn packed_stack(&mut self, shared: &Shared, arena: u16, class: usize, cap: u32) -> *mut u8 {
+        if arena != self.arena || self.pack_used & (1 << class) != 0 {
+            return ptr::null_mut();
+        }
+        let Some(off) = Self::pack_offset(&shared.config, class) else {
+            return ptr::null_mut();
+        };
+        debug_assert!(off + 8 * cap as usize <= self.pack_bytes as usize);
+        self.pack_used |= 1 << class;
+        // SAFETY: the heap's block has `pack_bytes` bytes after the `Heap`
+        // and `[off, off + 8 * cap)` is inside them, claimed by `class`
+        // alone.
+        unsafe { (self as *mut Heap as *mut u8).add(core::mem::size_of::<Heap>() + off) }
     }
 }

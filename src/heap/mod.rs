@@ -92,6 +92,15 @@ pub const MAX_CAP: u32 = 1024;
 pub const MIN_CAP: u32 = 8;
 /// Slow-path entries between two periodic-work checks (design 6.4).
 pub const PERIODIC_EVERY: u32 = 64;
+/// Largest home stack packed into the heap's own metadata block, right
+/// after the `Heap` ([`Heap::pack_offset`]): at the default ladder the
+/// classes above 256 bytes (2 KiB stacks and down, 16 KiB together). As
+/// separate metadata objects those stacks land on pages shared with other
+/// threads' heaps and stacks, so a thread cycling through them touches
+/// more distinct pages per operation (#60). The 4 and 8 KiB stacks stay
+/// separate objects: packing every stack lines up the stack tops of the
+/// small classes in the same L1D sets (design 6.2).
+pub const PACK_MAX: usize = 2048;
 
 /// Default cache capacity for a class: [`MAX_CAP`] (1024) slots for classes
 /// up to 128 bytes, halved for every doubling of the class size, never
@@ -177,12 +186,19 @@ pub struct Heap {
     /// randomised claim seeds it from `getrandom`, so the
     /// default configuration makes no syscall per heap creation.
     rng: u64,
+    /// Bytes of packed home stacks after the `Heap` in its metadata block
+    /// ([`Heap::pack_offset`]); the block is [`Heap::block_layout`].
+    pack_bytes: u32,
+    /// Classes whose packed stack is in use: by the home array, or by an
+    /// `others` node after a `thread.arena` change swapped the arrays.
+    pack_used: u64,
     /// Caches of the home arena, one line per class; last, so the small
     /// fields above share two lines and `caches[c]` is `heap + 128 + 64 * c`.
     caches: [CacheHeader; NCLASSES],
 }
 
 const _: () = assert!(core::mem::offset_of!(Heap, caches) == 128);
+const _: () = assert!(NCLASSES <= u64::BITS as usize);
 
 impl Heap {
     /// Create a heap in the metadata region for the calling thread, homed
@@ -204,7 +220,8 @@ impl Heap {
     /// Create a heap homed on `arena` (an explicit cache, or a thread heap
     /// before it is registered). Null if the region is exhausted.
     pub fn create_detached(shared: &Shared, arena: u16) -> *mut Heap {
-        let h = shared.meta.alloc(Layout::new::<Heap>()) as *mut Heap;
+        let pack = Self::pack_bytes(&shared.config);
+        let h = shared.meta.alloc(Self::block_layout(pack)) as *mut Heap;
         if h.is_null() {
             return h;
         }
@@ -226,6 +243,8 @@ impl Heap {
             ptr::write(&raw mut (*h).tcache_enabled, true);
             ptr::write(&raw mut (*h).bound, false);
             ptr::write(&raw mut (*h).rng, 0);
+            ptr::write(&raw mut (*h).pack_bytes, pack as u32);
+            ptr::write(&raw mut (*h).pack_used, 0);
             let caches = (&raw mut (*h).caches).cast::<CacheHeader>();
             for c in 0..NCLASSES {
                 ptr::write(caches.add(c), CacheHeader::EMPTY);
@@ -244,13 +263,14 @@ impl Heap {
         // SAFETY: the caller gives us exclusive ownership of the heap.
         let heap = unsafe { &mut *h };
         heap.flush_all(shared);
-        Self::free_caches(shared, &mut heap.caches);
+        let pack = heap.pack_range();
+        Self::free_caches(shared, &pack, &mut heap.pack_used, &mut heap.caches);
         for o in Self::nodes(heap.others) {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap; the iterator has read `next` already, so the
             // block can go.
             unsafe {
-                Self::free_caches(shared, &mut (*o).caches);
+                Self::free_caches(shared, &pack, &mut heap.pack_used, &mut (*o).caches);
                 let block = (o as *mut u8).sub(64 * (*o).pad as usize);
                 shared.meta.free(block, node_block_layout());
             }
@@ -275,18 +295,72 @@ impl Heap {
                 }
             }
         }
-        shared.meta.free(h as *mut u8, Layout::new::<Heap>());
+        debug_assert_eq!(heap.pack_used, 0, "heap: a packed stack outlives its heap");
+        let block = Self::block_layout(heap.pack_bytes as usize);
+        shared.meta.free(h as *mut u8, block);
+    }
+
+    /// Bytes of packed home stacks under `config`: every class whose home
+    /// stack is at most [`PACK_MAX`] bytes, in class order (the ladder never
+    /// grows with the class, so the larger stacks come first and every
+    /// stack starts 64-byte aligned).
+    fn pack_bytes(config: &crate::config::Config) -> usize {
+        (0..NCLASSES)
+            .map(|c| 8 * config.cap_for(0, 0, c) as usize)
+            .filter(|&b| b <= PACK_MAX)
+            .sum()
+    }
+
+    /// Offset of `class`'s packed home stack from the end of the `Heap`,
+    /// or `None` when its stack is not packed (uncached, or above
+    /// [`PACK_MAX`]). The home capacity does not depend on which arena is
+    /// home (`Config::cap_for`), so neither does the offset.
+    pub(super) fn pack_offset(config: &crate::config::Config, class: usize) -> Option<usize> {
+        let stack = |c: usize| 8 * config.cap_for(0, 0, c) as usize;
+        let own = stack(class);
+        if own == 0 || own > PACK_MAX {
+            return None;
+        }
+        Some((0..class).map(stack).filter(|&b| b <= PACK_MAX).sum())
+    }
+
+    /// The metadata block of a heap with `pack` bytes of packed stacks.
+    pub(super) fn block_layout(pack: usize) -> Layout {
+        match Layout::from_size_align(
+            core::mem::size_of::<Heap>() + pack,
+            core::mem::align_of::<Heap>(),
+        ) {
+            Ok(l) => l,
+            Err(_) => unreachable!(),
+        }
+    }
+
+    /// The addresses of this heap's packed stacks.
+    fn pack_range(&self) -> core::ops::Range<usize> {
+        let start = self as *const Heap as usize + core::mem::size_of::<Heap>();
+        start..start + self.pack_bytes as usize
     }
 
     /// Reset every (flushed) header of one array to [`CacheHeader::EMPTY`]
-    /// and free its stack.
-    fn free_caches(shared: &Shared, caches: &mut [CacheHeader; NCLASSES]) {
-        for cache in caches.iter_mut() {
+    /// and free its stack: back to the metadata allocator, or, for a stack
+    /// packed in the heap's block (`pack`), back to the heap (`used`).
+    fn free_caches(
+        shared: &Shared,
+        pack: &core::ops::Range<usize>,
+        used: &mut u64,
+        caches: &mut [CacheHeader; NCLASSES],
+    ) {
+        for (class, cache) in caches.iter_mut().enumerate() {
             if cache.cap != 0 {
                 assert_eq!(cache.len, 0, "heap: freeing a cache that was not flushed");
-                shared
-                    .meta
-                    .free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap));
+                if pack.contains(&(cache.slots as usize)) {
+                    debug_assert!(*used & (1 << class) != 0);
+                    *used &= !(1 << class);
+                } else {
+                    shared
+                        .meta
+                        .free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap));
+                }
             }
             *cache = CacheHeader::EMPTY;
         }
@@ -346,7 +420,8 @@ impl Heap {
         let home = self.arena;
         self.flush_arena(shared, home, ptr::null_mut());
         Self::fold_counters(&mut self.uncached, &self.caches);
-        Self::free_caches(shared, &mut self.caches);
+        let pack = self.pack_range();
+        Self::free_caches(shared, &pack, &mut self.pack_used, &mut self.caches);
     }
 
     /// Add the byte counters a cache array stands for (`allocs` pops and
@@ -405,13 +480,14 @@ impl Heap {
         }
         self.flush_all(shared);
         Self::fold_counters(&mut self.uncached, &self.caches);
-        Self::free_caches(shared, &mut self.caches);
+        let pack = self.pack_range();
+        Self::free_caches(shared, &pack, &mut self.pack_used, &mut self.caches);
         for o in Self::nodes(self.others) {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
             unsafe {
                 Self::fold_counters(&mut self.uncached, &(*o).caches);
-                Self::free_caches(shared, &mut (*o).caches);
+                Self::free_caches(shared, &pack, &mut self.pack_used, &mut (*o).caches);
             }
         }
     }
