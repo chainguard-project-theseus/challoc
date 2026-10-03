@@ -153,9 +153,18 @@ Measured by cb runs on 2026-10-03 (`r3-cgos-enable-*`), all through
   performance monitoring unit"), and metal needs it anyway: the full PMU is
   there. 96 CPUs, `armv8_pmuv3_0`, `arm_cmn_0` (mesh uncore), 16
   `smmuv3_pmcg_*`, and **`arm_spe_0`** once `arm_spe_pmu` is loaded (prep
-  `modprobe:arm_spe_pmu`). The VM was created in 146 s and ran its first
-  row about 10 minutes later. Delete it within the hour (`max_run =
-  "60m"`).
+  `modprobe:arm_spe_pmu`); `perf record -e arm_spe_0/.../u` works from the
+  privileged bench container (`bench/probes/spe-probe.sh`, #60). The
+  startup script runs as on the VM images. The VM was created in 146 s
+  and its first row ran about 8 minutes later; `cb launch exp-churn`
+  (#94) took 36 minutes end to end and cb deleted the VM. Delete it
+  within the hour (`max_run = "60m"`); check with `gcloud compute
+  instances list` afterwards.
+- **The 7.2 ladder** (`cgos72-amd64`, Xeon 8581C VM, `r3-cgos-enable-
+  ladder72` plus `-look2`, challoc acccc44 vs jemalloc): challoc ahead
+  on larson1, xmalloc(N), mstress, glibc-simple, valkey1(-free) and
+  churn1024, level on larson10/larsonN, behind on alloc-test1/N and
+  cfrac. Numbers are on #95.
 
 ---
 
