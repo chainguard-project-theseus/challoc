@@ -1,6 +1,6 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the twenty whole-allocator theorems as the code
+Reference for the twenty-one whole-allocator theorems as the code
 states them: the Verus statement, the entry points it covers, and every
 trusted premise it rests on, with `file:line`. Read at `b2cad68`
 (branch `verus`); line numbers are the `fn`/`axiom` line at that commit.
@@ -1187,10 +1187,10 @@ library's machine code is identical to the previous commit's on x86_64.
 - **Declined fast-path operations.** The scheduled pop (`compact_mask`),
   the full-cache push, the `zero_on_free` push and a scan hit decline to
   the slow path, so they are outside the fast path by construction.
-- **The ten `exec_allows_no_decreases_clause` functions** (common
+- **The nine `exec_allows_no_decreases_clause` functions** (common
   premises) are all off these paths: lock waits, `claim_with`'s retry,
-  `release_routed`, `init_slow`, the OOM handler loop, the purge thread,
-  and the kernel retry loops in `sys/`. They need a liveness model.
+  `init_slow`, the OOM handler loop, the purge thread, and the kernel
+  retry loops in `sys/`. They need a liveness model.
 
 **Where the statement is weaker than the code.**
 - **Composition.** Verus checks the masked functions, not the entry
@@ -1322,8 +1322,6 @@ the same tokens. The chain that makes an entry of the log a release:
 - No `no_duplicates` on the log's new entries: two headers of one class
   cannot hold one slot (theorem 5), but the statement is the set, not
   the count.
-- Partial correctness, as every theorem: `release_routed`'s loop has no
-  termination proof (`exec_allows_no_decreases_clause`).
 - The arena-unbind and exit purge that `destroy` runs after the flush
   are not covered: they return no cached slot.
 
@@ -2219,7 +2217,7 @@ contract:
 | Slot freed with the size of another class, or a huge size | `free_sized`, `free_aligned_sized`, `sdallocx`, sized `delete`s | abort (`hint_mismatch`) | yes for a live slot: `hint_ok`; for a non-live one, *(C)* |
 | Non-power-of-two alignment to `free_aligned_sized` or the sized aligned `delete` | as above | abort on a slot | as above: `hint_ok(p, None)`, so no slot start returns |
 | Huge run freed with a size that names another usable size | sized frees | freed; the size is ignored (as jemalloc does) | no: not checked |
-| Non-power-of-two or zero alignment | `aligned_alloc`, `memalign` | NULL (`EINVAL`) | NULL yes (row 5); `errno` no |
+| Non-power-of-two or zero alignment | `aligned_alloc`, `memalign` | NULL (`EINVAL`) | yes (row 5; `EINVAL` by *(errno)*) |
 | Alignment not a power of two, or not a multiple of `sizeof(void *)` | `posix_memalign` | `EINVAL` | yes (row 6) |
 | Non-zero alignment that is not a power of two | `new`, `new[]` (`align_val_t`) | NULL (`nothrow_t`) or `bad_alloc`, after the handler loop | yes: `new_aligned` |
 | Any `MALLOCX_LG_ALIGN` (0 to 63) | `mallocx`, `rallocx` | a block aligned to it, or NULL | yes: `fits(r, size, 1 << lg_align)` (theorem 2): no misaligned block |
@@ -2299,13 +2297,12 @@ through `slab_slot`'s completeness; *(C)* is the `free` contract.
 - NULL: `free`, `free_sized`, `dallocx`, `sdallocx` and the `delete`s
   return at once for NULL (not stated: there is no model of the
   allocator state a no-op leaves alone); `malloc_usable_size(NULL)` is 0
-  (proved); `sallocx` and `xallocx` abort for NULL by an explicit test
-  (their `free_target(p)` does not say it, as `Regions::wf` does not
-  rule out a slot at address 0).
+  (proved); `sallocx` and `xallocx` abort for NULL by an explicit test.
 - Before the first allocation, every free or query of a non-NULL
   pointer aborts (`free_before_init`); a thread's first `free` may
   create its heap before the abort (theorem 3).
-- `errno` is not modelled (*(errno)* in the interface contract).
+- `errno` is the F column (*(errno)* in the interface contract), not
+  this section's.
 
 - Not checked, by the code either: a huge run freed through a sized
   free with a size that names another usable size. `hint_ok` constrains
@@ -2774,11 +2771,161 @@ pop count unchanged.
 - Another thread using the same explicit cache concurrently is outside
   it; with `MALLOCX_TCACHE_NONE` this thread does not touch it.
 
+## 21. MIB round-trip
+
+Read at this section's commit (the `file:line`s are the `fn` line
+there, all in `api/mallctl.rs`).
+
+**Model.** The name tree is the static `ROOT` and the `Node`s it
+reaches. `root_nodes()` (`:658`, uninterpreted) is its top level, and
+`root` (`:665`) returns it; `spec_children` (`:673`) is what
+`Node::children` (`:228`) returns: a directory's children, else none.
+One shared recursive spec, `resolve` (`:695`), says what node a MIB
+names: each entry picks a child with `step` (`:682`), the lone numeric
+child of its parent for any entry, else the child at that index, and
+the next entry looks among the picked child's children. `walk` (`:732`)
+is the same descent driven by a name's components: `names` (`:715`)
+matches a component under a lone numeric child when it is a nonempty
+string of digits whose `decimal` value is the entry, else when the
+child at the entry's index is named by it. `split` (`:767`) says
+`comps` are the dotted components of a name: at least one, none holding
+a dot, joined with dots back into the name. `level` (`:777`) is the
+sibling list the `j`-th entry picks from, and `entry_named` (`:808`)
+says which entry a component names there.
+
+**Statement** (`:808`, `:994`, `:1071`, `:1155`, `:1832`):
+
+```rust
+spec fn entry_named(nodes: Seq<Node>, comps: Seq<Seq<u8>>, mib: Seq<usize>, j: int) -> bool {
+    let l = level(nodes, mib, j);
+    &&& l.len() == 1 && numeric(l[0])
+        ==> comps[j].len() > 0 && all_digits(comps[j]) && mib[j] == decimal(comps[j])
+    &&& !(l.len() == 1 && numeric(l[0]))
+        ==> mib[j] < l.len() && l[mib[j] as int].name.spec_bytes() == comps[j]
+}
+
+proof fn theorem_mib_round_trip(name: Seq<u8>, comps: Seq<Seq<u8>>, mib: Seq<usize>, n: Node)
+    requires
+        split(name, comps),
+        walk(root_nodes(), comps, mib) == Some(n),
+    ensures
+        resolve(root_nodes(), mib) == Some(n),
+        forall|other: Seq<Seq<u8>>| #[trigger] split(name, other) ==> other == comps,
+        mib.len() == comps.len(),
+        forall|j: int| 0 <= j < mib.len() ==> #[trigger] entry_named(root_nodes(), comps, mib, j),
+
+fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> (r: Result<(usize, &'static Node), c_int>)
+    ensures
+        r matches Ok((len, _)) ==> 1 <= len <= MAX_MIB
+            && forall|j: int| len <= j < MAX_MIB ==> #[trigger] final(mib)[j] == old(mib)[j],
+        r matches Ok((len, n)) ==> exists|comps: Seq<Seq<u8>>| #[trigger] split(name@, comps)
+            && walk(root_nodes(), comps, final(mib)@.subrange(0, len as int)) == Some(*n),
+        r matches Ok((len, n)) ==> resolve(root_nodes(), final(mib)@.subrange(0, len as int)) == Some(*n),
+        r matches Err(e) ==> e == ENOENT,
+
+fn mib_to_node(mib: &[usize]) -> (r: Result<&'static Node, c_int>)
+    ensures
+        r matches Ok(n) ==> resolve(root_nodes(), mib@) == Some(*n),
+        r is Err <==> resolve(root_nodes(), mib@) is None,
+        r matches Err(e) ==> e == ENOENT,
+        mib@.len() == 0 ==> r is Err,
+
+fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int>
+    requires
+        shared.wf(),
+        resolve(root_nodes(), mib@) == Some(*node),
+```
+
+(Line breaks added.) If `name_to_mib(name)` succeeds with `(len, n)`,
+`name` splits one way only into components, the MIB `mib[..len]` has one
+entry per component, each entry is the one that component names among
+the children of the node the entries before it reached, and the MIB
+resolves to `n`. `mib_to_node` succeeds exactly on MIBs that resolve,
+and returns the node they resolve to; so given that MIB it returns `n`
+(the same node value). Every entry at a numeric level (the `<i>` of
+`arena.<i>.*` and `stats.arenas.<i>.*`, the `<j>` of `arenas.bin.<j>.*`
+and `stats.arenas.<i>.bins.<j>.*`) is the decimal value of its
+component. `ctl`'s `requires` is discharged at both of its callers:
+`mallctl` (`:2008`) passes `name_to_mib`'s node with `&mib[..len]`, the
+MIB it built; `mallctlbymib` (`:2108`) passes `mib_to_node`'s node with
+the MIB it resolved, whatever the caller supplied (through the trusted
+`mib_in`). So a key is always performed on a node its MIB names, with
+that MIB's entries unchanged. That the fixed positions `ctl` and the
+readers read with `at` (1 for the `<i>` of `arena.<i>`, 2 for the `<j>`
+of `arenas.bin.<j>` and the `<i>` of `stats.arenas.<i>`, 4 for the
+`<j>` of `stats.arenas.<i>.bins.<j>`) are those numeric levels is
+checked by inspection, not stated.
+
+**Proof.** The traversals' loops keep the descent as invariants:
+`name_to_mib` keeps the ghost components matched so far, the node the
+last one named (`walk` of the prefix), the current sibling list as that
+node's children, and `name == join(comps) + "." + rest`;
+`lemma_walk_push` (`:833`) and `lemma_join_push` (`:868`) extend them by
+one component. `mib_to_node` keeps `resolve` of the prefix `mib[..k]`;
+`lemma_resolve_split` (`:970`) continues a resolution among the last
+node's children, which also shows that a bad entry leaves the whole MIB
+unresolved. `child` (`:1020`) and `child_by_index` (`:1052`) now ensure
+`names` and `step` exactly (the former `child` contract was a
+disjunction). `lemma_walk_resolves` (`:792`) turns a walk into a
+resolution, `lemma_walk_entries` (`:817`) reads off each entry, and
+`lemma_split_unique` (`:892`) shows the components are unique: the
+first ends at the first dot.
+
+**Premises beyond the common ones.**
+- `root` (`external_body`): every call returns the same nodes,
+  `root_nodes()`. It is `&ROOT`, a static, so this holds; nothing about
+  the tree's content is assumed (the theorem holds for any tree).
+- The caller's name is read by `cstr` through `name_byte`/`name_bytes`
+  (`external_body`, bounds only); the theorem is about the bytes they
+  return.
+
+**Scope.**
+- Function pointers are not modelled: what a `Read` node's reader
+  returns (`call`, `external_body`) and what an `Op` arm does are
+  outside the statement. The statement fixes which node and which
+  indices they get, not what they do with them.
+- `Node` equality is value equality (name and entry): `mib_to_node`'s
+  node is the same node value as `name_to_mib`'s, not necessarily the
+  same address. No two siblings in the tree are equal, but the theorem
+  does not use that.
+
+**Where the statement is weaker than the code.**
+- `child` returns the first child of that name; `names` accepts any
+  child of that name. With duplicate sibling names (there are none) the
+  theorem would still hold but not say which index is chosen.
+- Completeness of `name_to_mib` is not stated: nothing says it succeeds
+  for every name that does split into matching components (it fails on
+  more than `MAX_MIB` components, and on a non-final component naming a
+  key, which `walk` would reject one step later anyway). The test
+  `every_name_round_trips_through_its_mib` (`:2320`) checks every name
+  in the tree (numeric components spelled `0`);
+  `names_resolve_to_positional_mibs_and_back` (`:2339`) checks the
+  expected MIBs of selected names.
+- `mallctlnametomib`, `mallctl` and `mallctlbymib` still have no
+  `ensures` on their return codes (interface row 34); the round trip is
+  stated on the cores and on `ctl`'s argument, not on the C entry points.
+
+**Compatibility difference (documented, not changed).**
+`mallctlnametomib(name, mibp, miblenp)` (`:2069`) resolves the whole
+name first and then compares its length with the caller's capacity
+`*miblenp` (`mib_cap`, `:2043`): when the capacity is smaller it returns
+`EINVAL` and writes neither `mibp` nor `*miblenp` (`mib_out`, `:2056`, is
+not called). jemalloc 5.3.0's `ctl_lookup` (`src/ctl.c`) loops
+`for (i = 0; i < *depthp; i++)` instead: when the capacity runs out
+before the name does, it returns 0 with the first `*miblenp` entries
+written, leaves `*miblenp` unchanged, and ignores the rest of the name
+without checking it. With a capacity of 2, `stats.arenas.0.pactive`
+gives `[stats, arenas]` and 0 in jemalloc, `EINVAL` here; a caller that
+passes room for the full MIB gets the same MIB from both. Not in the
+theorem: the capacity read is trusted and the return code has no
+`ensures`.
+
 ## Interface contract
 
-Theorems 1-7 above checked against challoc's exported C ABI (theorems 8
-and 10 are the I6 and I7 rows below): one row per exported symbol (`je_` twins and C++
-array forms share their row), one column per interface property. Read
+Theorems 1-7 above checked against challoc's exported C ABI (theorems
+19, 8 and 10 are the I5, I6 and I7 rows below): one row per exported
+symbol (`je_` twins and C++ array forms share their row), one column
+per interface property. Read
 from the `ensures` of each entry point's Rust function at `ccbf1dd`;
 the `file:line`s in this section are the `fn` line at that commit (the sections above are
 at `b2cad68`). The U column, row 13's Z and row 22's F were revised
@@ -3214,7 +3361,9 @@ alone):
     `query_ptr`, `store_triple`, `mib_cap`, `mib_out`, `mib_in` (`:803`
     to `:1676`). So B (a bad `oldlenp` or `newlen`, an unknown name) is
     not stated; the batch-query length check (bug #1) is verified inside
-    the body.
+    the body. Theorem 21 (MIB round-trip) states that a name and its MIB
+    reach the same node with the same indices (on the cores, not the
+    exports).
 35. `get_defrag_hint` (`api/jemalloc.rs:465`). F: `r == 0 || r == 1`. B:
     "never aborts" for a foreign pointer cannot be stated, because an
     abort satisfies every postcondition. The body is verified.
@@ -3336,11 +3485,11 @@ alone):
    blk.len()` and `rallocx_zeroed` ensures `k == min(blk.len(), size)`,
    so Z is `P` under the `free` contract (merge of gaps 1 and 6).
 7. **Purge and guards**: the purge half is done for huge runs and
-   stopped at the class lock for slabs (theorem 19):
-   every `purge::Batch` carries a ghost predicate its flushes
-   discard within; huge batches admit only pages outside the run-page
-   authority, so no run token's pages (I5 huge `P`); class batches admit
-   only slabs idle in the class lock's ghost state, and the link from
+   stopped at the class lock for slabs (theorem 19): every
+   `purge::Batch` carries a ghost predicate its flushes discard within;
+   huge batches admit only pages outside the run-page authority, so no
+   run token's pages (I5 huge `P`); class batches admit only slabs idle
+   in the class lock's ghost state, and the link from
    idleness to the slot tokens needs the descriptor's `live` counter as
    ghost-tracked state (I5 slab `p`). Theorem 6's purge premise is not
    discharged. The guard half is done for slabs (`!guard_slab` is in
