@@ -67,6 +67,8 @@ impl Heap {
             final(self).arena == old(self).arena,
             final(self).home_hdrs == old(self).home_hdrs,
             final(self).others == old(self).others,
+            final(self).bound == old(self).bound,
+            final(self).homed == old(self).homed,
             r.0.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
             slots_in(final(out)@, cs.spec_class() as int, 0, r.0.n as int),

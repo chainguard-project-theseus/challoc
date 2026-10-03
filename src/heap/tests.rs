@@ -2165,7 +2165,7 @@ fn arena_registry_creates_and_looks_up() {
     assert!(s.arena(4095, Tracked::assume_new()).is_none());
     assert!(s.arenas.get_existing(1).is_none());
     for _ in 0..8 {
-        assert_eq!(s.arenas.assign(Tracked::assume_new()), 0);
+        assert_eq!(s.arenas.assign(Tracked::assume_new()).0, 0);
     }
     let a1 = s.arenas.create(s, Tracked::assume_new()).unwrap();
     let a2 = s.arenas.create(s, Tracked::assume_new()).unwrap();
@@ -2182,7 +2182,7 @@ fn arena_registry_creates_and_looks_up() {
     let seen: Vec<u16> = s.arenas.iter().map(|a| a.index()).collect();
     assert_eq!(seen, [0, 1, 2]);
     // Still assigning 0: created arenas are explicit, not automatic.
-    assert_eq!(s.arenas.assign(Tracked::assume_new()), 0);
+    assert_eq!(s.arenas.assign(Tracked::assume_new()).0, 0);
     a.set_decay_ms(-1);
     assert_eq!(a.decay_ns(), crate::purge::NEVER);
     assert_ne!(s.decay_ns(), crate::purge::NEVER);

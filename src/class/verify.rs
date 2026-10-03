@@ -382,7 +382,7 @@ mod kani_verify {
     use crate::kani_proofs::fmt::formats_debug_flat;
     use crate::slab::{SlabDesc, State};
 
-    /// S94 `DebugSpecImpl for Says` (`fmt_req` true): `None` and every
+    /// S95 `DebugSpecImpl for Says` (`fmt_req` true): `None` and every
     /// state, each formatted in turn (`{:?}` only: Kani does not finish
     /// `{:#?}` of an `Option`, whose `PadAdapter` path the record names
     /// as a gap; challoc formats `Says` with `{:?}`).
@@ -401,7 +401,7 @@ mod kani_verify {
         }
     }
 
-    /// S95 `desc_ptr_addr`, no `ensures`: it returns (the address of the
+    /// S96 `desc_ptr_addr`, no `ensures`: it returns (the address of the
     /// descriptor); the body reads no field, so one descriptor stands
     /// for all.
     #[kani::proof]

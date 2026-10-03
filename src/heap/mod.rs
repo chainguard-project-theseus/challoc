@@ -73,6 +73,9 @@ pub use thread::{existing_heap, heap_destructor, heap_for_thread};
 use core::alloc::Layout;
 use core::ptr;
 
+use crate::arena::Homed;
+#[cfg(verus_only)]
+use crate::arena::homed_on;
 use crate::layout::{CLASSES, NCLASSES};
 use crate::lock::LockOrder;
 #[cfg(verus_only)]
@@ -2878,6 +2881,10 @@ pub struct Heap {
     /// ([`Heap::home_ok`]).
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     home_hdrs: Ghost<vstd::seq::Seq<*mut CacheHeader>>,
+    /// Ghost (no bytes): the heap's ticket for its home arena while it is
+    /// counted there ([`Heap::homed_ok`]).
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    homed: Tracked<Option<Homed>>,
 }
 
 } // verus!
@@ -2917,7 +2924,8 @@ impl Heap {
     /// also the plain field `caches`, whose value Verus models apart from
     /// the permissions to the same bytes: verified code only reads the
     /// field (`fold_counters`, `stats`), and only `destroy`'s
-    /// [`Heap::free_caches`] writes through it.
+    /// [`Heap::free_caches`] writes through it. A heap counted in its
+    /// home arena's bound count holds its ticket ([`Heap::homed_ok`]).
     pub closed spec fn wf(&self) -> bool {
         &&& self.perms@.wf()
         &&& self.perms@.tracks()
@@ -2926,12 +2934,25 @@ impl Heap {
         &&& regions_ok()
         &&& self.list_ok()
         &&& self.home_ok()
+        &&& self.homed_ok()
+    }
+
+    /// The heap's ticket ([`Homed`]; `verus/THEOREMS.md`, "Balanced arena
+    /// assignment"): a heap counted in `Arenas::bound` (`bound`: a thread
+    /// heap, from `create` to `destroy`) holds the ticket for its home
+    /// arena, and a heap that is not counted holds none. `create` installs
+    /// it, `set_arena` exchanges it with the binding, and `destroy`
+    /// (trusted) gives it back with the binding.
+    pub closed spec fn homed_ok(&self) -> bool {
+        &&& self.bound == self.homed@ is Some
+        &&& self.homed@ matches Some(t) ==> homed_on(t, self.arena as int)
     }
 
     /// `self` is well formed, owns every header `old` owned, and every
     /// header that had a stack still has the same one; its `others` list
     /// is `old`'s with nodes added at the head, if any (their keys with
-    /// them), and its home headers and home arena are `old`'s.
+    /// them), and its home headers and home arena are `old`'s, with its
+    /// ticket ([`Heap::homed_ok`]).
     pub closed spec fn keeps(&self, old: Heap) -> bool {
         &&& self.perms@.keeps(old.perms@)
         &&& self.perms@.follows(old.perms@)
@@ -2944,6 +2965,9 @@ impl Heap {
         &&& list_grows(self.list@, old.list@)
         &&& list_grows(self.keys@, old.keys@)
         &&& self.arena == old.arena
+        &&& self.bound == old.bound
+        &&& self.homed == old.homed
+        &&& self.homed_ok()
     }
 
     /// The home headers ([`Heap::home_hdrs`]): one per class, owned, caching
@@ -3021,7 +3045,8 @@ impl Heap {
     /// A heap whose cache permissions are those creation returns
     /// ([`CachePerms::fresh`]), whose `others` list is empty and whose home
     /// headers are where creation wrote them at `h` is well formed, once
-    /// the process's `Shared` is ([`regions_ok`]).
+    /// the process's `Shared` is ([`regions_ok`]); a thread heap, counted
+    /// and holding its ticket ([`Heap::homed_ok`]).
     proof fn lemma_fresh_wf(&self, h: *mut Heap)
         requires
             self.perms@.fresh(h),
@@ -3030,6 +3055,8 @@ impl Heap {
             self.others@.addr == 0,
             self.home_hdrs@ == Seq::new(NCLASSES as nat, |c: int| home_hdr(h, c)),
             regions_ok(),
+            self.bound,
+            self.homed@ matches Some(t) && homed_on(t, self.arena as int),
         ensures
             self.wf(),
     {
@@ -3529,6 +3556,8 @@ impl Heap {
         &&& self.keys@ == old.keys@
         &&& self.home_hdrs@ == old.home_hdrs@
         &&& self.arena == old.arena
+        &&& self.bound == old.bound
+        &&& self.homed == old.homed
     }
 
     /// What [`Heap::caches_same`] means outside this module: every header
@@ -3749,6 +3778,8 @@ impl Heap {
             new.arena == old.arena,
             new.others == old.others,
             new.home_hdrs == old.home_hdrs,
+            new.bound == old.bound,
+            new.homed == old.homed,
             new.perms@.keeps(old.perms@),
             new.perms@.follows(old.perms@),
             new.perms@.zero_ok(),
@@ -3801,6 +3832,8 @@ impl Heap {
             b.list == a.list,
             b.keys == a.keys,
             b.arena == a.arena,
+            b.bound == a.bound,
+            b.homed == a.homed,
             b.others == a.others,
             b.home_hdrs == a.home_hdrs,
         ensures
@@ -3958,6 +3991,8 @@ impl Heap {
             new.list == old.list,
             new.keys == old.keys,
             new.arena == old.arena,
+            new.bound == old.bound,
+            new.homed == old.homed,
             new.others == old.others,
             new.home_hdrs == old.home_hdrs,
             forall|p2: *mut CacheHeader, j: int|
@@ -4002,6 +4037,8 @@ impl Heap {
         &&& self.list == old.list
         &&& self.keys == old.keys
         &&& self.arena == old.arena
+        &&& self.bound == old.bound
+        &&& self.homed == old.homed
         &&& self.others == old.others
         &&& self.home_hdrs == old.home_hdrs
     }
@@ -4088,6 +4125,8 @@ impl Heap {
             new.list == old.list,
             new.keys == old.keys,
             new.arena == old.arena,
+            new.bound == old.bound,
+            new.homed == old.homed,
             new.others == old.others,
             new.home_hdrs == old.home_hdrs,
             v.len == 0 && v.cap == 0 && v.low_water == 0 && v.zeroed == 0 && v.run_end == 0,
@@ -4968,6 +5007,32 @@ impl Heap {
             old.owns(p) && !old.in_array(node, k, p) ==> #[trigger] self.hdr(p) == old.hdr(p) && self.held(p) == old.held(p)
     }
 
+    /// [`Heap::kept_outside`] at one header.
+    proof fn lemma_kept_at(h: Heap, old: Heap, node: *mut ArenaCaches, k: int, p: *mut CacheHeader)
+        requires
+            h.kept_outside(old, node, k),
+            old.owns(p),
+            !old.in_array(node, k, p),
+        ensures
+            h.hdr(p) == old.hdr(p),
+            h.held(p) == old.held(p),
+    {
+        assert(h.hdr(p) == old.hdr(p) && h.held(p) == old.held(p));
+    }
+
+    /// [`Heap::frame`] at one header.
+    proof fn lemma_frame_at(a: Heap, b: Heap, cache: *mut CacheHeader, p: *mut CacheHeader)
+        requires
+            Heap::frame(a, b, cache),
+            a.owns(p),
+            p != cache,
+        ensures
+            b.hdr(p) == a.hdr(p),
+            b.held(p) == a.held(p),
+    {
+        assert(b.hdr(p) == a.hdr(p) && b.held(p) == a.held(p));
+    }
+
     /// From `a` to `b` no owned header but `cache` changed its value or
     /// what it holds.
     closed spec fn frame(a: Heap, b: Heap, cache: *mut CacheHeader) -> bool {
@@ -5021,7 +5086,7 @@ impl Heap {
         assert(old.owns(hc));
         assert(old.hdr_class(hc) == class);
         assert(!old.in_array(node, class, hc));
-        assert(h0.hdr(hc) == old.hdr(hc) && h0.held(hc) == old.held(hc));
+        Heap::lemma_kept_at(h0, old, node, class, hc);
         assert forall|c: int| #![trigger old.array_hdr(node, c)] 0 <= c < next implies h.gc_left(old, old.array_hdr(node, c), foreign) by {
             let p = old.array_hdr(node, c);
             if c < class {
@@ -5029,7 +5094,7 @@ impl Heap {
                 assert(h0.gc_left(old, p, foreign));
                 assert(p != hc);
                 assert(h0.owns(p));
-                assert(h.hdr(p) == h0.hdr(p) && h.held(p) == h0.held(p));
+                Heap::lemma_frame_at(h0, h, hc, p);
             } else if skipped {
                 // An unused header: nothing cached, a low-water mark of 0.
                 assert(h0.hdr(hc).len == 0);
@@ -5040,13 +5105,9 @@ impl Heap {
             old.owns(p) && !old.in_array(node, next, p) implies #[trigger] h.hdr(p) == old.hdr(p) && h.held(p) == old.held(p) by {
             assert(p != hc);
             assert(!old.in_array(node, class, p));
-            assert(old.owns(p));
-            assert(h0.kept_outside(old, node, class));
-            assert(h0.hdr(p) == old.hdr(p));
-            assert(h0.held(p) == old.held(p));
+            Heap::lemma_kept_at(h0, old, node, class, p);
             assert(h0.owns(p));
-            assert(h.hdr(p) == h0.hdr(p));
-            assert(h.held(p) == h0.held(p));
+            Heap::lemma_frame_at(h0, h, hc, p);
         }
         assert(h.kept_outside(old, node, next));
     }
@@ -5287,8 +5348,21 @@ impl Heap {
         }
         self.arena = arena;
         if self.bound {
-            shared.arenas.unbind(old);
-            shared.arenas.bind(arena);
+            proof {
+                shared.lemma_wf();
+            }
+            // The ticket for the old home goes back and one for the new
+            // home takes its place (`homed_ok`).
+            let tracked t = self.homed.borrow_mut().tracked_take();
+            proof {
+                shared.arenas.lemma_homed(t, old as int);
+            }
+            shared.arenas.unbind(old, Tracked(t));
+            let Tracked(t) = shared.arenas.bind(arena);
+            proof {
+                shared.arenas.lemma_homed(t, arena as int);
+                self.homed = Tracked(Some(t));
+            }
         }
     }
 
@@ -5384,6 +5458,8 @@ impl Heap {
         &&& self.list == old.list
         &&& self.keys == old.keys
         &&& self.arena == old.arena
+        &&& self.bound == old.bound
+        &&& self.homed == old.homed
         &&& self.others == old.others
         &&& self.home_hdrs == old.home_hdrs
     }
@@ -5420,8 +5496,9 @@ verus! {
 
 /// `head` is the permission to the 128 bytes of the heap at `h` before
 /// its home headers (its plain fields): what [`Heap::create_detached`]
-/// splits off the heap's block for [`init_fields`], and returns with the
-/// heap; `h` is not null and aligned for a `Heap` (64 bytes).
+/// splits off the heap's block for [`init_fields`], which keeps it in the
+/// [`FreshHeap`] returned with the heap; `h` is not null and aligned for a
+/// `Heap` (64 bytes).
 pub(super) open spec fn heap_head(h: *mut Heap, head: vstd::raw_ptr::PointsToRaw) -> bool {
     &&& head.is_range(h@.addr as int, 128)
     &&& head.provenance() == h@.provenance
@@ -5491,22 +5568,62 @@ global layout Heap is size == 3456, align == 64;
 #[cfg(feature = "quantum8")]
 global layout Heap is size == 3712, align == 64;
 
+/// The plain fields of the fresh heap at [`FreshHeap::heap`]: the
+/// permission to them ([`FreshHeap::head`], the 128 bytes before
+/// `caches`, [`heap_head`]), which [`init_fields`] takes and keeps here,
+/// and what the trusted writers stored in them, for `tcaches::heap_new`
+/// to read back: the home arena ([`init_fields`]) and whether the heap is
+/// counted ([`mark_bound`]). Linear and not `Copy`: the one holder of the
+/// heap-head permission, made by [`init_fields`] once per heap and used up
+/// by `heap_new`, which gives the permission to the reference. It is valid
+/// while its heap is live: `destroy` (trusted) does not take it, so one
+/// kept past `destroy` would be stale for a later heap in the same block.
+/// `create_heap_for_thread` uses it right after `create`, and
+/// `Tcaches::create` drops it.
+#[verifier::external_body]
+pub(super) tracked struct FreshHeap {
+    _no_copy: (),
+}
+
+impl FreshHeap {
+    /// The heap the fields were stored in.
+    pub(super) uninterp spec fn heap(&self) -> *mut Heap;
+
+    /// The permission to the heap's plain fields the token holds.
+    pub(super) uninterp spec fn head(&self) -> vstd::raw_ptr::PointsToRaw;
+
+    /// The home arena [`init_fields`] stored.
+    pub(super) uninterp spec fn arena(&self) -> int;
+
+    /// [`mark_bound`] set `bound`.
+    pub(super) uninterp spec fn bound(&self) -> bool;
+}
+
 /// The fields of a fresh heap before its home headers, stored field by
 /// field ([`Heap::create_detached`]). Trusted: `&raw mut` projections of
 /// the raw heap pointer, which Verus does not support. `head` is the
 /// permission to the 128 bytes before `caches` ([`heap_head`]); the
-/// stores leave it as it was.
+/// stores leave it as it was, and it goes into the [`FreshHeap`] returned,
+/// which claims only that and what was stored in `arena` and `bound`.
 ///
 /// # Safety
 /// `h` is a fresh metadata block for a `Heap`, exclusively owned.
 #[inline(always)]
 #[verifier::external_body]
-unsafe fn init_fields(h: *mut Heap, shared: &Shared, arena: u16, Tracked(head): Tracked<&mut vstd::raw_ptr::PointsToRaw>)
+unsafe fn init_fields(
+    h: *mut Heap,
+    shared: &Shared,
+    arena: u16,
+    Tracked(head): Tracked<vstd::raw_ptr::PointsToRaw>,
+) -> (r: Tracked<FreshHeap>)
     requires
         crate::sys::may_syscall(),
-        heap_head(h, *old(head)),
+        heap_head(h, head),
     ensures
-        *final(head) == *old(head),
+        r@.heap() == h,
+        r@.head() == head,
+        r@.arena() == arena as int,
+        !r@.bound(),
 {
     // SAFETY: guaranteed by the caller.
     unsafe {
@@ -5522,38 +5639,51 @@ unsafe fn init_fields(h: *mut Heap, shared: &Shared, arena: u16, Tracked(head): 
         ptr::write(&raw mut (*h).bound, false);
         ptr::write(&raw mut (*h).rng, 0);
     }
+    Tracked::assume_new()
 }
 
 /// [`Arenas::assign`](crate::arena::Arenas::assign) on the process's
-/// arenas. Trusted: `assign` requires the automatic arena count, which
-/// `Arenas::init` clamps to `MAX_ARENAS`, and `Shared::wf` does not state.
+/// arenas, with the new heap's ticket for the arena it picked.
 #[inline(always)]
-#[verifier::external_body]
-fn assign_home(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: u16)
+fn assign_home(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (u16, Tracked<Homed>))
     requires
         crate::sys::may_syscall(),
+        shared.wf(),
         old(ord).allows(rank_arenas()),
     ensures
-        (r as usize) < crate::arena::MAX_ARENAS,
+        homed_on(r.1@, r.0 as int),
         *final(ord) == *old(ord),
 {
-    shared.arenas.assign(Tracked(ord))
+    proof {
+        shared.lemma_wf();
+    }
+    let (arena, t, _) = shared.arenas.assign(Tracked(ord));
+    proof {
+        shared.arenas.lemma_wf();
+        shared.arenas.lemma_homed(t@, arena as int);
+    }
+    (arena, t)
 }
 
 /// `(*h).bound = true` for a heap [`Heap::create`] has just made.
 /// Trusted: a field store through the raw heap pointer, to a field
-/// [`init_fields`] wrote, inside the 128 bytes `head` owns
-/// ([`heap_head`]); nothing is claimed.
+/// [`init_fields`] wrote, inside the 128 bytes `s` holds the permission
+/// to ([`FreshHeap::head`], [`heap_head`]); claims only that it was
+/// stored, in `s`, and leaves the permission as it was.
 ///
 /// # Safety
 /// `h` is a fresh heap, exclusively owned.
 #[inline(always)]
 #[verifier::external_body]
-unsafe fn mark_bound(h: *mut Heap, Tracked(head): Tracked<&mut vstd::raw_ptr::PointsToRaw>)
+unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
     requires
-        heap_head(h, *old(head)),
+        old(s).heap() == h,
+        heap_head(h, old(s).head()),
     ensures
-        *final(head) == *old(head),
+        final(s).heap() == h,
+        final(s).head() == old(s).head(),
+        final(s).arena() == old(s).arena(),
+        final(s).bound(),
 {
     // SAFETY: guaranteed by the caller.
     unsafe { (*h).bound = true };
@@ -5581,42 +5711,70 @@ impl Heap {
     /// no call that can allocate. With the heap, the permissions to its
     /// caches ([`CachePerms::fresh`]). The call is counted on the thread's
     /// slot token (`TlsSlot::creates`), which it otherwise leaves alone.
-    fn create(shared: &Shared, Tracked(tls): Tracked<&mut crate::sys::tls::TlsSlot>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut Heap, Tracked<CachePerms>, Tracked<vstd::raw_ptr::PointsToRaw>))
+    /// And the heap's ticket for its home arena ([`Homed`]), which the
+    /// caller installs with the permissions, with the permission to the
+    /// heap's plain fields and what was stored in its `arena` and `bound`
+    /// ([`FreshHeap`], for `tcaches::heap_new`); on null, the ticket is
+    /// given back (`unbind`).
+    fn create(
+        shared: &Shared,
+        Tracked(tls): Tracked<&mut crate::sys::tls::TlsSlot>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: (*mut Heap, Tracked<CachePerms>, Tracked<Option<(Homed, FreshHeap)>>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
             old(ord).allows(rank_arenas()),
         ensures
-            r.0@.addr != 0 ==> r.1@.fresh(r.0) && heap_head(r.0, r.2@),
+            r.0@.addr != 0 ==> r.1@.fresh(r.0),
+            r.0@.addr != 0 ==> (r.2@ matches Some((t, s)) && homed_on(t, t.arena) && s.heap() == r.0 && s.arena() == t.arena
+                && s.bound() && heap_head(r.0, s.head())),
             final(tls).value() == old(tls).value(),
             final(tls).creates() == old(tls).creates() + 1,
             *final(ord) == *old(ord),
     {
         proof {
             tls.note_create();
+            shared.lemma_wf();
         }
-        let arena = assign_home(shared, Tracked(ord));
-        let (h, perms, Tracked(mut head)) = Self::create_detached(shared, arena, Tracked(ord));
+        let (arena, Tracked(t)) = assign_home(shared, Tracked(ord));
+        let (h, perms, Tracked(stored)) = Self::create_detached(shared, arena, Tracked(ord));
+        let tracked mut fresh = None;
         if h.is_null() {
-            shared.arenas.unbind(arena);
+            proof {
+                shared.arenas.lemma_homed(t, arena as int);
+            }
+            shared.arenas.unbind(arena, Tracked(t));
         } else {
+            let tracked mut s = stored.tracked_unwrap();
             // SAFETY: fresh, exclusively owned.
-            unsafe { mark_bound(h, Tracked(&mut head)) };
+            unsafe { mark_bound(h, Tracked(&mut s)) };
+            proof {
+                fresh = Some((t, s));
+            }
         }
-        (h, perms, Tracked(head))
+        (h, perms, Tracked(fresh))
     }
 
     /// Create a heap homed on `arena` (an explicit cache, or a thread heap
     /// before it is registered). Null if the region is exhausted. With the
-    /// heap, the permissions to its caches ([`CachePerms::fresh`]).
-    fn create_detached(shared: &Shared, arena: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut Heap, Tracked<CachePerms>, Tracked<vstd::raw_ptr::PointsToRaw>))
+    /// heap, the permissions to its caches ([`CachePerms::fresh`]) and the
+    /// token holding the permission to its plain fields, with what was
+    /// stored in them ([`FreshHeap`]).
+    fn create_detached(
+        shared: &Shared,
+        arena: u16,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: (*mut Heap, Tracked<CachePerms>, Tracked<Option<FreshHeap>>))
         requires
             crate::sys::may_syscall(),
             shared.wf(),
             old(ord).allows(rank_meta()),
         ensures
-            r.0@.addr != 0 ==> r.1@.fresh(r.0) && heap_head(r.0, r.2@),
+            r.0@.addr != 0 ==> r.1@.fresh(r.0),
+            r.0@.addr != 0 ==> (r.2@ matches Some(st) && st.heap() == r.0 && st.arena() == arena as int && !st.bound()
+                && heap_head(r.0, st.head())),
             *final(ord) == *old(ord),
     {
         proof {
@@ -5629,8 +5787,7 @@ impl Heap {
         let h = block as *mut Heap;
         if h.is_null() {
             let tracked none = CachePerms::tracked_empty();
-            let tracked no_head = vstd::raw_ptr::PointsToRaw::empty(h@.provenance);
-            return (h, Tracked(none), Tracked(no_head));
+            return (h, Tracked(none), Tracked(None));
         }
         let ghost size = vstd::layout::size_of::<Heap>() as int;
         let ghost base = h@.addr as int;
@@ -5639,14 +5796,14 @@ impl Heap {
             crate::vspec::ptr::axiom_raw_valid(&raw, block, size);
             crate::vspec::ptr::axiom_ptr_add_addr(block, 128);
         }
-        let tracked (mut head, mut rest) = raw.split(Set::range(base, base + 128));
+        let tracked (head, mut rest) = raw.split(Set::range(base, base + 128));
         // SAFETY: `h` is a fresh, exclusively owned metadata block of the
         // right size and alignment. Field by field: a whole `Heap`
         // temporary (3.4 KiB with the headers inline) would deepen the
         // stack of every thread's first allocation by one page, which
         // larson's thread churn turns into +1.7 MiB of RSS per 437
         // threads (thread stacks stay mapped; measured on arm64).
-        unsafe { init_fields(h, shared, arena, Tracked(&mut head)) };
+        let Tracked(stored) = unsafe { init_fields(h, shared, arena, Tracked(head)) };
         // SAFETY: as above; `caches` is 128 bytes in (the `const`
         // assertion after `Heap`).
         let caches = unsafe { block.add(128) } as *mut CacheHeader;
@@ -5730,11 +5887,14 @@ impl Heap {
                 assert(forall|k: int| 0 <= k < c + 1 ==> perms.hdrs.contains_key(#[trigger] home_hdr(h, k)) && perms.cls.contains_key(home_hdr(h, k)) && perms.cls[home_hdr(h, k)] == k);
             }
         }
-        (h, Tracked(perms), Tracked(head))
+        (h, Tracked(perms), Tracked(Some(stored)))
     }
 
     /// Flush every cache, free them and the heap itself back to the
-    /// metadata allocator. `h` is dangling afterwards.
+    /// metadata allocator. `h` is dangling afterwards. A counted heap
+    /// (`bound`) is unbound from its home arena with its ticket
+    /// ([`Heap::homed_ok`]; the trusted body passes `Tracked::assume_new()`
+    /// for it).
     ///
     /// # Safety
     /// `h` must come from [`Heap::create`] on `shared` and no longer be in
@@ -5771,7 +5931,9 @@ impl Heap {
         heap.others = ptr::null_mut();
         if heap.bound {
             let arena = heap.arena;
-            shared.arenas.unbind(arena);
+            // The heap's ticket (`homed`, which `Heap::homed_ok` says it
+            // holds while `bound`) goes back with the binding.
+            shared.arenas.unbind(arena, Tracked::assume_new());
             // jemalloc's rule (`tcache_destroy`): the last thread homed on
             // an arena leaves, so nothing will refill its `Empty` slabs
             // soon; purge them now instead of letting them sit for the
@@ -5845,7 +6007,7 @@ mod kani_aborts {
     use super::{assert_flushed, assert_refill_empty};
     use crate::kani_proofs::must_not_return;
 
-    /// S117 `assert_flushed`, `ensures *len == 0`: on any other `len` the
+    /// S118 `assert_flushed`, `ensures *len == 0`: on any other `len` the
     /// call never returns.
     #[kani::proof]
     #[kani::should_panic]
@@ -5857,7 +6019,7 @@ mod kani_aborts {
         }
     }
 
-    /// S118 `assert_refill_empty`, `ensures *len == 0`: as
+    /// S119 `assert_refill_empty`, `ensures *len == 0`: as
     /// `assert_flushed`.
     #[kani::proof]
     #[kani::should_panic]

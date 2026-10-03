@@ -912,7 +912,7 @@ mod kani_total {
     /// The most ranges checked.
     const MAX: usize = 4;
 
-    /// S190 `total_bytes`, `requires lens(ranges, len) <= u64::MAX`, no
+    /// S191 `total_bytes`, `requires lens(ranges, len) <= u64::MAX`, no
     /// `ensures`: under it the call returns (the sum, which cannot
     /// overflow), for every list of up to `MAX` ranges.
     #[kani::proof]

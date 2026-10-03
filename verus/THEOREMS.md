@@ -1,6 +1,6 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the thirty-three whole-allocator theorems as the code
+Reference for the thirty-four whole-allocator theorems as the code
 states them: the Verus statement, the entry points it covers, and every
 trusted premise it rests on, with `file:line`. Read at `b2cad68`
 (branch `verus`); line numbers are the `fn`/`axiom` line at that commit,
@@ -10,7 +10,7 @@ open work; this file says what the code proves today. Each title and
 first paragraph claims only what is proved: where a theorem holds only
 at a lock invariant, rests on a source test or on the C-boundary
 assumption (`axiom_c_claim`), the title or the first paragraph says so.
-The sections are numbered 1 to 33 in order; "Bad input" (the B column)
+The sections are numbered 1 to 34 in order; "Bad input" (the B column)
 and the interface contract are not numbered.
 
 Marked **unconfirmed**: facts read from comments, not checked against
@@ -1004,8 +1004,8 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   `linux::try_reserve` (`layout/regions.rs:1443`), `ThreadKey::create`
   (`heap/shared.rs:255`), `register_fork_handlers` (`api/mod.rs:412`),
   `background::spawn` and `pthread_join` (`purge/background.rs:333`,
-  `:229`), `init_fields`, `assign_home`, `Heap::destroy`
-  (`heap/mod.rs:5158`, `:5185`, `:5382`), `Meta::commit`, `Meta::free`
+  `:229`), `init_fields`, `Heap::destroy`
+  (`heap/mod.rs:5158`, `:5382`), `Meta::commit`, `Meta::free`
   (`meta.rs:2745`, `:2796`), mallctl's reader call `call` and
   `heap_set_arena` (`api/mallctl.rs:192`, `:1462`), `print::emit`
   (the report's only call-out, theorem 16), the C++ `call_handler`,
@@ -2855,8 +2855,11 @@ pub closed spec fn caches_same(&self, old: Heap) -> bool {
     &&& self.caches == old.caches
     &&& self.others == old.others
     &&& self.list@ == old.list@
+    &&& self.keys@ == old.keys@
     &&& self.home_hdrs@ == old.home_hdrs@
     &&& self.arena == old.arena
+    &&& self.bound == old.bound
+    &&& self.homed == old.homed
 }
 
 pub proof fn lemma_caches_same(&self, old: Heap, p: *mut CacheHeader, i: int)
@@ -3816,7 +3819,8 @@ bitmap side: every release goes back to the slot's own arena).
 - The home arena of a heap is not constrained, so `poppable` admits the
   home header whatever the home arena is. It is never `FOREIGN` in
   practice, but by run-time checks and inspection, not by Verus: a
-  thread heap's comes from `assign_home` (below `MAX_ARENAS`);
+  thread heap's comes from `assign_home` (below `MAX_ARENAS`, which
+  `Heap::homed_ok` now states for every counted heap);
   `set_arena` requires one below `MAX_ARENAS`, but its only caller is
   the trusted `api::mallctl::heap_set_arena` wrapper, whose caller
   checks `thread.arena`'s value at run time; and `Tcaches::create` takes
@@ -4912,9 +4916,11 @@ the gate premise below.
   by inspection.
 - *Trusted bodies with honest specs*: `Set::ensure` (requires the
   slab-set rank for a shared store), `policy::empty_bytes`,
-  `Heap::destroy`, `assign_home`, `Meta::commit`, `Meta::free`, and the
+  `Heap::destroy`, `Meta::commit`, `Meta::free`, and the
   `mallctl` wrapper `heap_set_arena`: each states the lowest rank its
-  body takes; `purge::background::state` names `STATE`'s rank.
+  body takes (`assign_home`, trusted at this theorem's merge, is
+  verified since theorem 34); `purge::background::state` names
+  `STATE`'s rank.
 - *Ranks set in unverified constructors*: `Arenas::init` and
   `Tcaches::init` create their locks with the ranks their type
   invariants state, as they create the rest of the value.
@@ -4932,6 +4938,230 @@ the gate premise below.
   above, not checked: chiefly `Heap::destroy` (class, metadata, huge).
 - `fork_release` takes no lock and is not part of the statement; the
   release order is unstated.
+## 34. Balanced arena assignment (bound counts at their invariants)
+
+The `file:line`s are the `fn`/`spec` line at the commit that merged
+this section onto the integration tip `64d801a`. Upstream issue #43
+(arena spread) is about which arena a new thread lands on; this states
+both halves of that choice: the count it reads, and the pick it makes
+from the counts.
+
+**Statement.** `Arenas::assign` returns an automatic arena whose
+`(bound, unbuilt)` key is the least of the keys it read under the
+creation lock, the first one with that key (ties go to a built arena,
+then to the lowest index), together with a fresh ticket for that arena.
+Every bound count is, at every instant, the number of tickets out for its
+arena, as a `u32` wraps it (an atomic invariant); `assign` and `bind` add
+one ticket and one count, `unbind` takes the heap's ticket back with one
+count, and a thread heap holds exactly the ticket for its home arena
+while it is counted there (`Heap::bound`), none otherwise.
+
+```rust
+// arena.rs:1834
+pub fn assign(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (u16, Tracked<Homed>, Ghost<Seq<(u32, bool)>>))
+    requires
+        crate::sys::may_syscall(),
+        self.wf(),
+        old(ord).allows(rank_arenas()),
+    ensures
+        (r.0 as int) < self.spec_auto(),
+        self.ticket_of(r.1@, r.0 as int),
+        self.spec_auto() == 1 ==> r.0 == 0,
+        self.spec_auto() > 1 ==> picks_least(r.2@, self.spec_auto(), r.0 as int),
+        *final(ord) == *old(ord),
+
+// arena.rs:1362, :1368, :1394
+pub open spec fn key_lt(a: (u32, bool), b: (u32, bool)) -> bool {
+    a.0 < b.0 || (a.0 == b.0 && !a.1 && b.1)
+}
+pub open spec fn least_of(snap: Seq<(u32, bool)>, r: int) -> bool {
+    &&& 0 <= r < snap.len()
+    &&& forall|j: int| 0 <= j < snap.len() ==> !key_lt(snap[j], snap[r])
+    &&& forall|j: int| 0 <= j < r ==> key_lt(snap[r], snap[j])
+}
+pub open spec fn picks_least(snap: Seq<(u32, bool)>, auto: int, r: int) -> bool {
+    &&& least_of(snap, r)
+    &&& snap.len() <= auto
+    &&& snap.len() < auto ==> snap[r] == (0u32, false)
+}
+
+// arena.rs:1341: the invariant of bound count i (one per index, Arenas::wf)
+impl InvariantPredicate<BoundKey, BoundVal> for BoundPred {
+    open spec fn inv(k: BoundKey, v: BoundVal) -> bool {
+        &&& v.0.id() == k.id                            // the counter's permission
+        &&& v.1.id() == k.loc                           // the arena's ticket set
+        &&& forall|t: int| v.1@.contains(t) ==> t < v.2@
+        &&& v.0.value() == wrap32(v.1@.len() as int)    // count == #tickets mod 2^32
+    }
+}
+
+// arena.rs:1597, :1960
+pub fn unbind(&self, index: u16, Tracked(t): Tracked<Homed>)
+    requires crate::sys::may_abort(), (index as usize) < MAX_ARENAS, self.wf(), self.ticket_of(t, index as int),
+    // body: assert(held >= 1 && prev == wrap32(held));
+    //       assert(prev == 0 ==> held % 0x1_0000_0000 == 0);   (held: the tickets out)
+pub fn bind(&self, index: u16) -> (r: Tracked<Homed>)
+    requires index < MAX_ARENAS, self.wf(),
+    ensures self.ticket_of(r@, index as int),
+
+// heap/mod.rs:2946, a conjunct of Heap::wf (and of Heap::keeps)
+pub closed spec fn homed_ok(&self) -> bool {
+    &&& self.bound == self.homed@ is Some
+    &&& self.homed@ matches Some(t) ==> homed_on(t, self.arena as int)
+}
+```
+
+`snap` is the ghost sequence of keys `assign` read, `snap[i]` arena `i`'s
+`(bound[i], table[i] is null)`. A `Homed` ticket (`arena.rs:1319`) is a
+`GhostSingleton<int>` of its arena's ticket set and the ghost index of the
+arena; `homed_on(t, i)` (`:1326`) says it is arena `i`'s in the process's
+registry (`bound_loc`, `:1356`: the ticket-set locations of
+`Shared::built_at(Shared::storage()).arenas`). `Shared::wf`
+(`heap/shared.rs:1509`) now carries `arenas.wf()` (`arena.rs:1445`:
+between 1 and `MAX_ARENAS` automatic arenas, every invariant present over
+its counter in namespace `bound_ns`, ticket sets at distinct locations)
+and `arenas.is_process()` (`:1465`: its invariants are the process
+registry's, so there is one authority per ticket-set location).
+
+In words:
+
+- **The pick.** With one automatic arena `assign` returns 0 without the
+  lock. Otherwise it takes the creation lock and reads each automatic
+  arena's key in index order; the arena it returns has no key read below
+  its own, every arena before it has a key above it, and when it stopped
+  before the last automatic arena it is because its key was `(0, false)`,
+  an idle built arena, below which there is nothing. So among the
+  arenas whose count it read, it took the least loaded, preferring a
+  built one at equal load, then the lowest index (jemalloc's
+  `arena_choose_hard` order).
+- **The counts.** Every write of a bound count after init is `count_in`
+  (`:1914`: `assign` and `bind`, with a fresh ticket) or `unbind` (with
+  the caller's ticket for that arena, which the ticket set contains, so
+  the count it decrements counted it), each inside the invariant, so at
+  every instant each count is its arena's ticket count mod `2^32`. The
+  counts `assign` reads go through the invariant too (`load_bound`,
+  `:1894`, which asserts the value read is the ticket count there), as
+  does `bound` (`:1973`); that is proved at the read and not exported,
+  since no `ensures` can name the instant of a read.
+- **Who holds the tickets.** `Heap::create` (`heap/mod.rs:5719`) gets the
+  ticket with the arena from `assign_home` (`:5648`, now verified) and
+  either gives it back (`unbind`, when the metadata region is exhausted)
+  or returns it with the heap; `create_heap_for_thread`
+  (`heap/thread.rs:165`) installs it in the heap's ghost `homed` field
+  with the permissions, which `Heap::lemma_fresh_wf` (`heap/mod.rs:3050`)
+  turns into `homed_ok`. `set_arena` (`:5281`, `thread.arena`) hands the
+  old home's ticket to `unbind` and stores `bind`'s ticket for the new
+  home. `destroy` (`:5907`, trusted) unbinds a counted heap's home arena.
+  No other code makes or spends a ticket, so the tickets out for arena
+  `i` are the counted heaps homed on `i`, plus a `create` in flight
+  between `assign` and `create_heap_for_thread`.
+
+With theorems 32 and 33: `assign` takes the creation lock with a
+`LockOrder` token that allows `rank_arenas()`, which `assign_home` and
+`Heap::create` take from `create_heap_for_thread`'s `axiom_entry` root
+and pass down; the counter operations take no lock. `unbind`'s abort
+(`unbind_unbound`) requires `may_abort()`, which `create` and
+`set_arena` already carried.
+
+Machine code is unchanged (x86_64 disassembly identical to the lane's
+base commit, and after the merge identical to `64d801a`): the counter
+wrappers are `#[inline(always)]` around the same `core` calls, the
+tickets, the tokens and the snapshot are zero-sized, and the tuple
+comparison stays `core`'s (`key_less`, trusted, below).
+
+**How it is proved.** The loop of `assign` carries `least_of(snap,
+best)` and `best_key == snap[best]` once a key is read, with `snap.len()`
+the loop index except at the `break` (`invariant_except_break`), and its
+`ensures` gives the `(0, false)` case at the `break`. `count_in` and
+`unbind` open the arena's invariant around the counter operation:
+`new_ticket` (`arena.rs:1565`) inserts the bound `v.2` as a fresh ticket
+and raises it, `delete_singleton` removes the caller's (which `agree`
+places in the set, so the set shrinks by one), and `lemma_wrap_step`
+(`:1581`) moves the wrapped count by the same one. `Shared::init` gets
+`arenas.wf()` from `Arenas::init` and `is_process()` from
+`Arenas::lemma_is_process` (`:1470`; `init` builds the process's
+`Shared`).
+
+**Findings.** None: the code matches the statement. The tests
+`automatic_arenas_are_assigned_least_loaded_and_built_lazily` and
+`heap_churn_reuses_the_vacated_arena` (`heap/tests.rs`) exercise the
+order and the counts.
+
+**Premises beyond the common ones.**
+- `vspec::count` (`vspec/count.rs`, the `vspec::word` pattern): a
+  `CountPerm` is the counter with its `id` (`count_id`), and `fetch_add`,
+  `fetch_sub` (wrapping) and `load` are one atomic operation on it,
+  sequentially consistent in the model (the orderings, all `Relaxed`, are
+  ignored, as for the bitmap words).
+- `Arenas::init` (`arena.rs:1419`, `external_body`) ensures `wf` of the
+  registry it writes: its ghost `invs` hold, per index, the invariant a
+  fresh counter permission of value 0 and a fresh, empty ticket set
+  would make, at locations of their own. Nothing writes a bound count
+  outside the wrappers afterwards (by inspection).
+- `key_less` (`arena.rs:1382`, `external_body`): `core`'s `<` on `(u32,
+  bool)` is lexicographic with `false < true`. vstd specifies no order on
+  `bool`; a verified spelling of the comparison changed
+  `create_heap_for_thread`'s machine code.
+- The fresh heap's fields, read back: one linear ghost token,
+  `FreshHeap` (`heap/mod.rs:5584`, `external_body`, not `Copy`), holds
+  the permission to the heap's 128 bytes of plain fields (`head()`,
+  `heap_head`) and records what the trusted writers stored in `arena`
+  and `bound`. `init_fields` (`:5613`) takes the head permission that
+  `create_detached` splits off the heap's block and returns the token
+  holding it (the only way to make one); `mark_bound` (`:5678`) needs
+  and keeps the permission and records `bound`; `tcaches::heap_new`
+  (`heap/tcaches.rs:124`, trusted, already the source of the fresh
+  heap's `others`) uses the token up, giving the permission to the
+  reference, and claims the heap's `arena` and `bound` are what it
+  records. `create_detached` and `create` pass it on. The memory-requires
+  audit (`bdce79a`) had these bodies take and return the bare
+  `PointsToRaw`; the token now carries it, so one linear object, not
+  two, stands for the fresh heap.
+  A token is valid while its heap is live: `destroy` does not take it,
+  so one kept past `destroy` would be stale for a later heap in the same
+  block; no code keeps one (`create_heap_for_thread` uses it right after
+  `create`, `Tcaches::create` drops it).
+- `Heap::destroy` (trusted) unbinds a counted heap's home arena with that
+  heap's ticket (its body passes `Tracked::assume_new()`), and frees the
+  heap, ticket and all.
+- Every heap a verified path is handed is `Heap::wf`, now with
+  `homed_ok` (common premises: `heap_from_slot`, `heap_at`): a thread
+  heap's ticket is the one `create_heap_for_thread` installed, kept by
+  every verified writer (`keeps`, `same_shape`, `caches_same` and
+  `updates` now keep `bound` and `homed`); an explicit cache is not
+  counted and holds none. One reference at a time (their safety
+  contracts) is what keeps a ticket from being spent twice.
+- `axiom_shared_built` (`heap/shared.rs:740`) now also says the built
+  `Shared`'s `arenas` is the value its permission holds.
+
+**Scope.** Thread heap creation (`heap_for_thread`), `thread.arena`
+(`set_arena`) and thread exit (`destroy`, through `heap_destructor`).
+Explicit caches (`tcache.create`, `Heap::create_detached`) and explicit
+arenas (`arenas.create`) take no part, as in the code: they are never
+counted.
+
+**Where the statement is weaker than the code.**
+- The keys are read one at a time, not as one snapshot: `bind` and
+  `unbind` take no lock, so a count can change between two reads (and
+  the `table` loads are plain `core` loads, so "unbuilt" is as read).
+  "Least" is over the values read, each the arena's ticket count at its
+  own read, which `assign`'s `ensures` does not restate.
+- Counts are exact only modulo `2^32`. `unbind` asserts that its abort
+  (`unbind_unbound`, a count of zero) happens only when the tickets out
+  for the arena, at least one, are a multiple of `2^32`; that fewer than
+  `2^32` heaps are ever homed on one arena is not proved (each heap is a
+  metadata block, so the metadata region bounds it in fact), so the
+  abort is not proved unreachable outright.
+- The ticket count includes a heap between `assign` and its
+  installation, and `destroy` is trusted to give back exactly the heap's
+  ticket; "number of heaps homed on `i`" is the number of tickets, tied
+  to heaps through `homed_ok`, which, like the rest of `Heap::wf`, is
+  assumed of every heap handed to verified code rather than carried
+  across calls.
+- With one automatic arena (`spec_auto() == 1`) nothing is read; the
+  statement is `r.0 == 0`.
+- `Arenas::bound` and `get_existing` (the exit purge's "last heap left"
+  test in `destroy`) are outside: `destroy` is trusted.
 
 ## Interface contract
 

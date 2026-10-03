@@ -47,14 +47,20 @@ use crate::stats::ArenaStats;
 use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_only)]
 use crate::vspec::arena::axiom_arena_stats_lock_inv;
+use crate::vspec::count::CountPerm;
+#[cfg(verus_only)]
+use crate::vspec::count::{count_id, wrap32};
 #[cfg(verus_only)]
 use crate::vspec::ptr::{axiom_ptr_add_addr, axiom_raw_valid, in_alloc, ptr_add};
+use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 #[cfg(verus_only)]
 use vstd::layout::{align_of, size_of};
 use vstd::prelude::*;
 #[cfg(verus_only)]
 use vstd::raw_ptr::PointsToRaw;
 use vstd::raw_ptr::{PointsTo, ptr_mut_write, ptr_ref};
+use vstd::resource::Loc;
+use vstd::resource::set::{GhostSetAuth, GhostSingleton};
 
 verus! {
 
@@ -913,6 +919,7 @@ impl Arena {
                                     assert(before[d] == classes[d]);
                                 }
                             }
+                            assert(classes_at(classes, this));
                         }
                     },
                     None => return false,
@@ -1283,6 +1290,111 @@ pub struct Arenas {
     /// `unbind` subtracts); explicit caches are not counted.
     bound: [AtomicU32; MAX_ARENAS],
     table: [AtomicPtr<Arena>; MAX_ARENAS],
+    /// Ghost (no bytes): the invariant of each bound count
+    /// ([`BoundPred`]), one per index ([`Arenas::wf`]).
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    invs: Tracked<Map<int, BoundInv>>,
+}
+
+/// Namespace of the bound-count invariants.
+pub open spec fn bound_ns() -> int {
+    0x626e_6463
+}
+
+/// What one bound count is about: the counter ([`count_id`]) and the
+/// ghost set of the tickets of the heaps homed on its arena.
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub ghost struct BoundKey {
+    pub id: int,
+    pub loc: Loc,
+}
+
+/// A thread heap's ticket for arena `arena`: `tok` is one element of the
+/// arena's ticket set ([`BoundPred`]). Handed out by [`Arenas::assign`]
+/// and [`Arenas::bind`] and used up by [`Arenas::unbind`]; a thread heap
+/// holds the one for its home arena while it is counted there
+/// (`Heap::homed_ok`).
+#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+pub tracked struct Homed {
+    pub tracked tok: GhostSingleton<int>,
+    pub ghost arena: int,
+}
+
+/// `t` is a ticket for arena `i` of the process's registry
+/// ([`bound_loc`]).
+pub(crate) open spec fn homed_on(t: Homed, i: int) -> bool {
+    &&& t.arena == i
+    &&& 0 <= i < MAX_ARENAS
+    &&& t.tok.id() == bound_loc(i)
+}
+
+/// What a bound count's invariant holds: the counter's permission, the
+/// authority over the arena's tickets, and a bound above every ticket
+/// (where the next fresh one comes from).
+pub type BoundVal = (CountPerm, GhostSetAuth<int>, Ghost<int>);
+
+/// A bound count's invariant: the counter is the number of tickets out
+/// for its arena, as a `u32` wraps it ([`wrap32`]).
+pub struct BoundPred;
+
+impl InvariantPredicate<BoundKey, BoundVal> for BoundPred {
+    open spec fn inv(k: BoundKey, v: BoundVal) -> bool {
+        &&& v.0.id() == k.id
+        &&& v.1.id() == k.loc
+        &&& forall|t: int| #[trigger] v.1@.contains(t) ==> t < v.2@
+        &&& v.0.value() == wrap32(v.1@.len() as int)
+    }
+}
+
+/// The invariant of one bound count.
+pub type BoundInv = AtomicInvariant<BoundKey, BoundVal, BoundPred>;
+
+/// The ticket set of arena `i` of the process's registry: a heap holding
+/// a [`Homed`] of this location is counted in `bound[i]` of the published
+/// `Shared` (`Shared::wf` states that its registry's locations are these).
+pub(crate) open spec fn bound_loc(i: int) -> Loc {
+    Shared::built_at(Shared::storage()).arenas.spec_loc(i)
+}
+
+/// The order [`Arenas::assign`] picks by: fewer bound heaps first, then
+/// built (`false`) before unbuilt; `(u32, bool)`'s lexicographic `<`.
+pub open spec fn key_lt(a: (u32, bool), b: (u32, bool)) -> bool {
+    a.0 < b.0 || (a.0 == b.0 && !a.1 && b.1)
+}
+
+/// `r` indexes the first least key of `snap` ([`key_lt`]): no key is below
+/// it, and every key before it is above it.
+pub open spec fn least_of(snap: Seq<(u32, bool)>, r: int) -> bool {
+    &&& 0 <= r < snap.len()
+    &&& forall|j: int| 0 <= j < snap.len() ==> !key_lt(#[trigger] snap[j], snap[r])
+    &&& forall|j: int| 0 <= j < r ==> key_lt(snap[r], #[trigger] snap[j])
+}
+
+/// `a < b` on `(u32, bool)`: [`key_lt`]. Trusted: `core`'s tuple
+/// `PartialOrd` is lexicographic and `false < true`, as `core` documents;
+/// vstd specifies neither `bool`'s order nor, so, this tuple's. The body
+/// is the bare comparison (a verified spelling of it,
+/// `if a.0 != b.0 { a.0 < b.0 } else { ... }`, changed
+/// `create_heap_for_thread`'s machine code on x86_64).
+#[inline(always)]
+#[verifier::external_body]
+fn key_less(a: (u32, bool), b: (u32, bool)) -> (r: bool)
+    ensures
+        r == key_lt(a, b),
+{
+    a < b
+}
+
+/// What [`Arenas::assign`] returns over `snap`, the `(bound, unbuilt)`
+/// keys it read for indices `0..snap.len()`, in order, under the creation
+/// lock: the first least of them ([`least_of`]: ties go to the lowest
+/// index). Indices from `snap.len()` to `auto` were not read only because
+/// `r`'s key is `(0, false)`, the least key there is.
+pub open spec fn picks_least(snap: Seq<(u32, bool)>, auto: int, r: int) -> bool {
+    &&& least_of(snap, r)
+    &&& snap.len() <= auto
+    &&& snap.len() < auto ==> snap[r] == (0u32, false)
 }
 
 } // verus!
@@ -1292,8 +1404,13 @@ verus! {
 impl Arenas {
     /// Initialise `this` in place with `arena0` at index 0 and `narenas`
     /// automatic indices (clamped to `1..=MAX_ARENAS`), through the
-    /// permission to its storage in `slot`, handed back initialised.
-    /// Trusted: field-by-field writes through `&raw mut` projections.
+    /// permission to its storage in `slot`, handed back initialised and
+    /// well formed ([`Arenas::wf`]). Trusted: field-by-field writes
+    /// through `&raw mut` projections, and the ghost `invs`, which no
+    /// write sets: every bound count is written 0, and its invariant
+    /// ([`BoundPred`]) is the one a fresh counter permission of value 0
+    /// and a fresh, empty ticket set would make (`GhostSetAuth::new`), each
+    /// set at a location of its own; no ticket exists yet.
     ///
     /// # Safety
     /// `this` must point to writable storage that nothing else reads until
@@ -1303,7 +1420,7 @@ impl Arenas {
         requires
             old(slot).perm matches Some(p) && p.ptr() == this && p.is_uninit(),
         ensures
-            final(slot).perm matches Some(p) && p.ptr() == this && p.is_init(),
+            final(slot).perm matches Some(p) && p.ptr() == this && p.is_init() && p.value().wf(),
     {
         let auto = narenas.clamp(1, MAX_ARENAS as u32);
         // SAFETY: the caller guarantees `this` is writable and unaliased.
@@ -1319,6 +1436,69 @@ impl Arenas {
             }
             (*table)[0].store(arena0, Ordering::Release);
         }
+    }
+
+    /// The registry as `init` leaves it: between 1 and `MAX_ARENAS`
+    /// automatic arenas, and for every index the invariant of its bound
+    /// count ([`BoundPred`]) over that counter, in the namespace
+    /// [`bound_ns`], with a ticket set at a location no other index uses.
+    pub closed spec fn wf(&self) -> bool {
+        &&& 1 <= self.auto <= MAX_ARENAS
+        &&& forall|i: int| 0 <= i < MAX_ARENAS ==> {
+            &&& #[trigger] self.invs@.contains_key(i)
+            &&& self.invs@[i].constant().id == count_id(&self.bound[i])
+            &&& self.invs@[i].namespace() == bound_ns()
+        }
+        &&& forall|i: int, j: int| 0 <= i < MAX_ARENAS && 0 <= j < MAX_ARENAS && i != j
+            ==> #[trigger] self.spec_loc(i) != #[trigger] self.spec_loc(j)
+    }
+
+    /// The location of arena `i`'s ticket set ([`BoundPred`]).
+    pub closed spec fn spec_loc(&self, i: int) -> Loc {
+        self.invs@[i].constant().loc
+    }
+
+    /// The bound-count invariants are the process registry's (those of
+    /// `Shared::built_at(Shared::storage())`, `Shared::wf`), so their ticket
+    /// sets are at [`bound_loc`] and a heap's ticket names its arena in
+    /// this registry: one set of invariants, one authority per location.
+    pub(crate) closed spec fn is_process(&self) -> bool {
+        self.invs == Shared::built_at(Shared::storage()).arenas.invs
+    }
+
+    /// The process registry is [`Arenas::is_process`].
+    pub(crate) proof fn lemma_is_process(&self)
+        requires
+            *self == Shared::built_at(Shared::storage()).arenas,
+        ensures
+            self.is_process(),
+    {
+    }
+
+    /// In the process registry, a ticket for arena `i` of the process
+    /// ([`homed_on`]) is one of this registry ([`Arenas::ticket_of`]).
+    pub(crate) proof fn lemma_homed(&self, t: Homed, i: int)
+        requires
+            self.is_process(),
+            0 <= i < MAX_ARENAS,
+        ensures
+            homed_on(t, i) <==> self.ticket_of(t, i),
+    {
+    }
+
+    /// `t` is a ticket for arena `i` of this registry.
+    pub open spec fn ticket_of(&self, t: Homed, i: int) -> bool {
+        &&& t.arena == i
+        &&& t.tok.id() == self.spec_loc(i)
+    }
+
+    /// [`Arenas::wf`]'s automatic arena count.
+    pub proof fn lemma_wf(&self)
+        requires
+            self.wf(),
+        ensures
+            1 <= self.spec_auto() <= MAX_ARENAS,
+    {
     }
 }
 
@@ -1380,14 +1560,78 @@ fn unbind_unbound(index: u16) -> !
     crate::sys::abort_fmt(format_args!("arena {index}: unbinding a heap that was never bound"))
 }
 
+/// A fresh ticket for `auth`, all of whose tickets are below `next`:
+/// `next` itself, added to the set.
+proof fn new_ticket(tracked auth: &mut GhostSetAuth<int>, next: int) -> (tracked t: GhostSingleton<int>)
+    requires
+        forall|x: int| #[trigger] old(auth)@.contains(x) ==> x < next,
+    ensures
+        final(auth).id() == old(auth).id(),
+        final(auth)@.len() == old(auth)@.len() + 1,
+        forall|x: int| #[trigger] final(auth)@.contains(x) ==> x < next + 1,
+        t.id() == old(auth).id(),
+{
+    broadcast use vstd::set::lemma_set_insert_len;
+
+    auth.insert(next)
+}
+
+/// A count changed by `d`, on its `u32` wrap, is the wrap of the changed
+/// count.
+proof fn lemma_wrap_step(n: int, d: int)
+    ensures
+        wrap32(wrap32(n) + d) == wrap32(n + d),
+{
+    let m = 0x1_0000_0000int;
+    vstd::arithmetic::div_mod::lemma_add_mod_noop_right(d, n, m);
+    assert(wrap32(n) as int == n % m);
+}
+
 impl Arenas {
-    /// A thread heap homed on `index` is destroyed or moves away.
-    pub fn unbind(&self, index: u16)
+    /// A thread heap homed on `index` is destroyed or moves away: its
+    /// ticket `t` leaves the arena's ticket set and the count goes down
+    /// with it ([`BoundPred`]). The count read was the number of tickets
+    /// out, `t`'s among them, as a `u32` wraps it; the proof asserts that
+    /// the abort (a count of zero) is reached only when that number, at
+    /// least 1, is a multiple of `2^32`.
+    pub fn unbind(&self, index: u16, Tracked(t): Tracked<Homed>)
         requires
             crate::sys::may_abort(),
             (index as usize) < MAX_ARENAS,
+            self.wf(),
+            self.ticket_of(t, index as int),
     {
-        let prev = self.bound[index as usize].fetch_sub(1, Ordering::Relaxed);
+        proof {
+            assert(self.invs@.contains_key(index as int));
+        }
+        let tracked inv = self.invs.borrow().tracked_borrow(index as int);
+        let prev;
+        // The tickets out for the arena at the decrement.
+        let ghost mut held: int = 0;
+        vstd::open_atomic_invariant!(inv => v => {
+            let tracked (mut perm, mut auth, next) = v;
+            proof {
+                t.tok.agree(&auth);
+                held = auth@.len() as int;
+                vstd::set::lemma_set_contains_len(auth@, t.tok@);
+            }
+            prev = crate::vspec::count::fetch_sub(&self.bound[index as usize], 1, Ordering::Relaxed, Tracked(&mut perm));
+            proof {
+                let n = auth@.len() as int;
+                let ghost s0 = auth@;
+                let ghost x = t.tok@;
+                auth.delete_singleton(t.tok);
+                vstd::set::lemma_set_remove_len(s0, x);
+                assert(auth@.len() == n - 1);
+                lemma_wrap_step(n, -1);
+                v = (perm, auth, next);
+            }
+        });
+        proof {
+            assert(held >= 1);
+            assert(prev == wrap32(held));
+            assert(prev == 0 ==> held % 0x1_0000_0000 == 0);
+        }
         if prev == 0 {
             unbind_unbound(index);
         }
@@ -1579,18 +1823,29 @@ impl Arenas {
     /// nothing else ever bound) never builds a second arena and never
     /// pays the `multi_arena` routing on `free`. The caller undoes the
     /// binding with [`Arenas::unbind`] when the heap is destroyed.
-    pub fn assign(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: u16)
+    ///
+    /// With the arena, the heap's ticket for it ([`Homed`]) and, as a
+    /// ghost, the `(bound, unbuilt)` keys read under the lock: the arena
+    /// returned has the least key read, the first one with it
+    /// ([`picks_least`]). Each count is read inside its invariant
+    /// ([`Arenas::load_bound`]), where it is the number of tickets out
+    /// for its arena, as a `u32` wraps it; no `ensures` can name that
+    /// instant, so the snapshot's counts are not restated here.
+    pub fn assign(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (u16, Tracked<Homed>, Ghost<Seq<(u32, bool)>>))
         requires
             crate::sys::may_syscall(),
-            self.spec_auto() <= MAX_ARENAS,
+            self.wf(),
             old(ord).allows(rank_arenas()),
         ensures
-            r < MAX_ARENAS,
+            (r.0 as int) < self.spec_auto(),
+            self.ticket_of(r.1@, r.0 as int),
+            self.spec_auto() == 1 ==> r.0 == 0,
+            self.spec_auto() > 1 ==> picks_least(r.2@, self.spec_auto(), r.0 as int),
             *final(ord) == *old(ord),
     {
         if self.auto == 1 {
-            self.bound[0].fetch_add(1, Ordering::Relaxed);
-            return 0;
+            let t = self.count_in(0);
+            return (0, t, Ghost(Seq::empty()));
         }
         proof {
             use_type_invariant(self);
@@ -1599,13 +1854,28 @@ impl Arenas {
         let mut best = 0usize;
         // (bound heaps, not yet built): the smallest wins.
         let mut best_key = (u32::MAX, true);
+        let ghost mut snap: Seq<(u32, bool)> = Seq::empty();
         for i in 0..self.auto as usize
+            invariant_except_break
+                snap.len() == i,
             invariant
-                self.auto <= MAX_ARENAS,
+                self.wf(),
+                2 <= self.auto <= MAX_ARENAS,
                 best < MAX_ARENAS,
+                snap.len() <= self.auto,
+                snap.len() == 0 ==> best == 0 && best_key == (u32::MAX, true),
+                snap.len() > 0 ==> least_of(snap, best as int) && best_key == snap[best as int],
+            ensures
+                snap.len() > 0,
+                least_of(snap, best as int),
+                best_key == snap[best as int],
+                snap.len() < self.auto ==> best_key == (0u32, false),
         {
-            let key = (self.bound[i].load(Ordering::Relaxed), self.table[i].load(Ordering::Relaxed).is_null());
-            if key < best_key {
+            let key = (self.load_bound(i), self.table[i].load(Ordering::Relaxed).is_null());
+            proof {
+                snap = snap.push(key);
+            }
+            if key_less(key, best_key) {
                 best = i;
                 best_key = key;
                 if key == (0, false) {
@@ -1613,8 +1883,54 @@ impl Arenas {
                 }
             }
         }
-        self.bound[best].fetch_add(1, Ordering::Relaxed);
-        best as u16
+        let t = self.count_in(best);
+        (best as u16, t, Ghost(snap))
+    }
+
+    /// `bound[i]`, read inside its invariant: the number of tickets out for
+    /// arena `i` at the read, as a `u32` wraps it ([`BoundPred`]), which the
+    /// proof asserts there (no `ensures` can name that instant).
+    #[inline(always)]
+    fn load_bound(&self, i: usize) -> u32
+        requires
+            self.wf(),
+            i < MAX_ARENAS,
+    {
+        let tracked inv = self.invs.borrow().tracked_borrow(i as int);
+        let n;
+        vstd::open_atomic_invariant!(inv => v => {
+            let tracked (perm, auth, next) = v;
+            n = crate::vspec::count::load(&self.bound[i], Ordering::Relaxed, Tracked(&perm));
+            proof {
+                assert(n == wrap32(auth@.len() as int));
+                v = (perm, auth, next);
+            }
+        });
+        n
+    }
+
+    /// `bound[i] += 1`, with a fresh ticket for arena `i` ([`BoundPred`]).
+    #[inline(always)]
+    fn count_in(&self, i: usize) -> (r: Tracked<Homed>)
+        requires
+            self.wf(),
+            i < MAX_ARENAS,
+        ensures
+            self.ticket_of(r@, i as int),
+    {
+        let tracked inv = self.invs.borrow().tracked_borrow(i as int);
+        let tracked t;
+        vstd::open_atomic_invariant!(inv => v => {
+            let tracked (mut perm, mut auth, next) = v;
+            crate::vspec::count::fetch_add(&self.bound[i], 1, Ordering::Relaxed, Tracked(&mut perm));
+            proof {
+                let n = auth@.len() as int;
+                t = Homed { tok: new_ticket(&mut auth, next@), arena: i as int };
+                lemma_wrap_step(n, 1);
+                v = (perm, auth, Ghost(next@ + 1));
+            }
+        });
+        Tracked(t)
     }
 
     /// Number of arena indices in use (`arenas.narenas`). Trusted: at most
@@ -1639,20 +1955,27 @@ impl Arenas {
     }
 
     /// Count a thread heap as homed on `index` (`thread.arena` moving a
-    /// heap to an arena `assign` did not pick).
-    pub fn bind(&self, index: u16)
+    /// heap to an arena `assign` did not pick): a fresh ticket for the
+    /// arena, which the heap keeps while it is counted there.
+    pub fn bind(&self, index: u16) -> (r: Tracked<Homed>)
         requires
             index < MAX_ARENAS,
+            self.wf(),
+        ensures
+            self.ticket_of(r@, index as int),
     {
-        self.bound[index as usize].fetch_add(1, Ordering::Relaxed);
+        self.count_in(index as usize)
     }
 
-    /// Thread heaps currently homed on `index`.
+    /// Thread heaps currently homed on `index`: the tickets out for it
+    /// at the read, as a `u32` wraps their number ([`Arenas::load_bound`];
+    /// not restated by an `ensures`).
     pub fn bound(&self, index: u16) -> u32
         requires
             index < MAX_ARENAS,
+            self.wf(),
     {
-        self.bound[index as usize].load(Ordering::Relaxed)
+        self.load_bound(index as usize)
     }
 
     /// The creation lock, for fork handlers (taken before every class lock).

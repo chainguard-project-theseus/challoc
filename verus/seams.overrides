@@ -78,12 +78,13 @@ byte_at	raw pointer from C caller	Miri (evidence only)
 bytes_at	raw pointer from C caller	Miri (evidence only)
 env_var	raw pointer from C caller	Miri (evidence only)
 group_by_slab	core library	Kani
+key_less	core library	Kani
 addr_mix	raw pointer (internal)	Kani
 axiom_fresh_stack	allocator invariant	none (assumption)
 assert_flushed	panic/abort	Kani	discharged (verus/seams/heap-assert_flushed.md)
 assert_refill_empty	panic/abort	Kani	discharged (verus/seams/heap-assert_refill_empty.md)
-assign_home	allocator invariant	none (assumption)
-mark_bound	raw pointer (internal)	RefinedRust
+mark_bound	raw pointer (internal)	none (assumption)
+FreshHeap	raw pointer (internal)	none (assumption)
 node_caches_detached	raw pointer (internal)	RefinedRust
 node_set_arena	raw pointer (internal)	RefinedRust
 assert_not_home	panic/abort	Kani	discharged (verus/seams/heap-others-assert_not_home.md)
@@ -162,6 +163,7 @@ axiom_fresh_anon_zero	platform/kernel fact	none (assumption)
 axiom_discarded_zero	platform/kernel fact	none (assumption)
 Unbacked::commit	platform/kernel fact	none (assumption)
 WordPerm	atomics primitive	loom/GenMC
+CountPerm	atomics primitive	loom/GenMC
 core::sync::atomic::compiler_fence	core library	Kani
 crate::layout::adopt_page_geometry	UnsafeCell/volatile/transmute	Verus
 core::fmt::Formatter::<'a>::write_str	core library	Kani	discharged (verus/seams/vspec-fmt-Formatter-write_str.md)
@@ -266,7 +268,7 @@ Policy::position	allocator invariant	RefinedRust
 load_lg_slab_min	allocator invariant	RefinedRust
 load_lg_pmd	allocator invariant	RefinedRust
 load_lg_meta	allocator invariant	RefinedRust
-Arenas::init	raw pointer (internal)	RefinedRust
+Arenas::init	raw pointer (internal)	none (assumption)
 core::sync::atomic::Atomic::<*mut T>::load	core library	Kani
 core::sync::atomic::Atomic::<*mut T>::store	core library	Kani
 core::sync::atomic::Atomic::<*mut T>::new	core library	Kani

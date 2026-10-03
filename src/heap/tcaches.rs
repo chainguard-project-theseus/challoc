@@ -13,7 +13,7 @@ use crate::lock::{Lock, LockOrder};
 #[cfg(verus_only)]
 use crate::lock::{rank_class, rank_tcaches};
 
-use super::{Heap, Shared};
+use super::{FreshHeap, Heap, Shared};
 #[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, verus};
@@ -75,13 +75,18 @@ verus! {
 /// ([`CachePerms::fresh`](super::CachePerms::fresh); `Tcaches::create`
 /// takes no reference to its heap, so it drops them), every
 /// writer of its caches proves it keeps `wf`, and no ghost state carries
-/// that from one call to the next. No memory precondition is stated:
-/// neither caller can show one. `Tcaches::get` has a pointer loaded
-/// from its table and `thread::heap_destructor` the one the C library
-/// hands it (non-null by POSIX, unchecked), and the permissions creation
-/// returned are dropped (`Tcaches::create`) or installed in the heap's
-/// own ghost state (`create_heap_for_thread`); carrying them from one
-/// call to the next needs a ghost registry of live heaps.
+/// that from one call to the next. That includes the heap's arena
+/// ticket ([`Heap::homed_ok`]): an explicit cache is not counted and
+/// holds none; a thread heap holds the one `create_heap_for_thread`
+/// installed and `set_arena` exchanged. The safety contract (one
+/// reference at a time) is what keeps a ticket from being used twice.
+/// No memory precondition is stated: neither caller can show one.
+/// `Tcaches::get` has a pointer loaded from its table and
+/// `thread::heap_destructor` the one the C library hands it (non-null
+/// by POSIX, unchecked), and the permissions creation returned are
+/// dropped (`Tcaches::create`) or installed in the heap's own ghost
+/// state (`create_heap_for_thread`); carrying them from one call to the
+/// next needs a ghost registry of live heaps.
 ///
 /// # Safety
 /// `p` is such a heap, and nothing else uses it while the reference
@@ -98,11 +103,15 @@ pub(super) unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
 
 /// The heap [`Heap::create`] has just returned, as a reference, before
 /// its ghost state is installed: its `others` field is null, as
-/// `init_fields` stored it. Trusted: Verus has no raw-pointer
-/// dereference. Nothing is claimed about its ghost fields: the caller
-/// installs the permissions creation returned (`create_heap_for_thread`).
-/// Those permissions own the whole heap: `head` its plain fields
-/// ([`heap_head`](super::heap_head)), given up here to the reference,
+/// `init_fields` stored it, and its `arena` and `bound` are what `s`
+/// records (`init_fields` and `mark_bound` stored them). Trusted: Verus
+/// has no raw-pointer dereference. `s` comes only from those trusted
+/// writers, once per heap made, and is used up here. Nothing is claimed
+/// about the heap's ghost fields: the caller installs the permissions and
+/// the ticket creation returned (`create_heap_for_thread`). Those
+/// permissions own the whole heap: `s` holds the permission to its plain
+/// fields ([`FreshHeap::head`](super::FreshHeap::head),
+/// [`heap_head`](super::heap_head)), given up here to the reference,
 /// and `perms` its home headers
 /// ([`CachePerms::fresh`](super::CachePerms::fresh)), which the caller
 /// installs as the heap's ghost state.
@@ -114,14 +123,17 @@ pub(super) unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
 #[inline(always)]
 pub(super) unsafe fn heap_new<'a>(
     p: *mut Heap,
-    Tracked(head): Tracked<vstd::raw_ptr::PointsToRaw>,
+    Tracked(s): Tracked<FreshHeap>,
     Tracked(perms): Tracked<&super::CachePerms>,
 ) -> (r: &'a mut Heap)
     requires
-        super::heap_head(p, head),
+        s.heap() == p,
+        super::heap_head(p, s.head()),
         perms.fresh(p),
     ensures
         r.others@.addr == 0,
+        r.arena as int == s.arena(),
+        r.bound == s.bound(),
 {
     // SAFETY: guaranteed by the caller.
     unsafe { &mut *p }

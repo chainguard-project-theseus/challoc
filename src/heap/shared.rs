@@ -759,6 +759,7 @@ axiom fn axiom_shared_built(
         shared_at(p).config == parts.config.value(),
         parts.arena0.perm matches Some(a) && shared_at(p).arena0 == a.value(),
         shared_at(p).stats == parts.stats.value(),
+        parts.arenas.perm matches Some(a) && shared_at(p).arenas == a.value(),
 ;
 
 /// The regions of the `Shared` at `p` are what the permission to its
@@ -1104,7 +1105,7 @@ impl Shared {
         ensures
             final(pg).ptr() == old(pg).ptr(),
             final(pg).is_init(),
-            final(pa).perm matches Some(a) && a.ptr() == field_ptr::<Shared, Arenas>(this, S_ARENAS) && a.is_init(),
+            final(pa).perm matches Some(a) && a.ptr() == field_ptr::<Shared, Arenas>(this, S_ARENAS) && a.is_init() && a.value().wf(),
             final(pt).ptr() == old(pt).ptr(),
             final(pt).is_init(),
     {
@@ -1469,6 +1470,7 @@ impl Shared {
             proof {
                 axiom_shared_built(parts, guard_tests, tables_perm, this);
                 let s = shared_at(this);
+                s.arenas.lemma_is_process();
                 assert(s.regions == regions0);
                 assert(s.huge_pages() == s.regions.huge_len >> s.regions.lg_page);
             }
@@ -1494,7 +1496,9 @@ impl Shared {
     /// may execute the PAC instructions (`sys::pac::pac_available`, from the
     /// probe `init` was given); `meta` allocates from
     /// the metadata region, which holds every class table's descriptors,
-    /// bitmap and owner words.
+    /// bitmap and owner words; `arenas` is the registry `Arenas::init`
+    /// built (`Arenas::wf`: its bound counts at their invariants), the
+    /// process's (`Arenas::is_process`).
     ///
     /// Assumed by every verified function that takes a `&Shared`: the
     /// accessor that hands the published `Shared` out (`api::shared_ref`)
@@ -1519,6 +1523,8 @@ impl Shared {
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok()
         &&& self.arena0.spec_index() == 0
         &&& self.stats.rank() == rank_stats()
+        &&& self.arenas.wf()
+        &&& self.arenas.is_process()
     }
 
     /// `meta` is the process's metadata allocator ([`Shared::wf`]).
@@ -1771,6 +1777,8 @@ impl Shared {
             self.config.wf(),
             self.huge_pages() == self.regions.huge_len >> self.regions.lg_page,
             self.meta.is_process(),
+            self.arenas.wf(),
+            self.arenas.is_process(),
             forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok(),
     {
     }
@@ -2627,7 +2635,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S136..S151, S152: each `S_*` is its field's `offset_of!`, and the
+    /// S137..S152, S153: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {

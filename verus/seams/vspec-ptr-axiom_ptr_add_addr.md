@@ -1,6 +1,6 @@
 # `axiom_ptr_add_addr`
 
-Seam S324 of `verus/SEAMS.md`: src/vspec/ptr.rs:61. Kind: external_body proof. Category: core library.
+Seam S329 of `verus/SEAMS.md`: src/vspec/ptr.rs:61. Kind: external_body proof. Category: core library.
 Discharged by Kani.
 
 ## Contract
