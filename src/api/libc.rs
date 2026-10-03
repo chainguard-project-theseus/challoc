@@ -174,10 +174,11 @@ pub fn free(p: *mut u8) {
     }
     // As in `malloc`: the check-and-push has no calls, and every other
     // outcome, including the aborts, is reached through one tail call.
-    if let Some(h) = heap::existing_heap(super::shared_ptr()) {
+    let sp = super::shared_base();
+    if let Some(h) = heap::existing_heap(sp) {
         // SAFETY: this thread's heap exists, so this thread observed
         // `READY` when it created the heap.
-        let shared = unsafe { super::shared_unchecked() };
+        let shared = unsafe { &*sp };
         if heap::free_fast(shared, h, p, shared.push_flags()) {
             return;
         }
@@ -201,9 +202,10 @@ pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>) {
     if p.is_null() {
         return;
     }
-    if let Some(h) = heap::existing_heap(super::shared_ptr()) {
+    let sp = super::shared_base();
+    if let Some(h) = heap::existing_heap(sp) {
         // SAFETY: as in `free`.
-        let shared = unsafe { super::shared_unchecked() };
+        let shared = unsafe { &*sp };
         if heap::free_sized_fast(shared, h, p, Some(c), shared.push_flags()) {
             return;
         }
@@ -604,9 +606,10 @@ pub fn free_usable(p: *mut u8) -> usize {
     if p.is_null() {
         return 0;
     }
-    if let Some(h) = heap::existing_heap(super::shared_ptr()) {
+    let sp = super::shared_base();
+    if let Some(h) = heap::existing_heap(sp) {
         // SAFETY: as in `free`.
-        let shared = unsafe { super::shared_unchecked() };
+        let shared = unsafe { &*sp };
         if let Some(class) = heap::free_fast_class(shared, h, p, shared.push_flags()) {
             return class_size(class);
         }

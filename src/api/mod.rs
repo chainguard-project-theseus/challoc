@@ -179,16 +179,25 @@ pub fn shared_ptr() -> *const Shared {
     (&raw const SHARED.0).cast::<Shared>()
 }
 
-/// The allocator state without the readiness check.
-///
-/// # Safety
-/// The calling thread must itself have observed `READY` earlier (through
-/// [`shared`] or [`shared_if_ready`]). The fast paths use the thread's heap
-/// pointer as that witness: a heap is only created under `shared()`.
+/// [`shared_ptr`] for the free paths. On aarch64 the address goes through
+/// an empty `asm!`, so LLVM keeps it in one register and every field the
+/// free path reads (the push flags, the region geometry, the class
+/// tables, the arena flag) is one `ldr` at an immediate offset from it.
+/// Without that each field is its own `adrp` (and `add`) of `SHARED +
+/// offset`: LLVM folds the offset into the relocation, so the page
+/// addresses of two fields never CSE, and `free` paid five of them.
+/// x86_64 addresses statics `rip`-relative at no cost, so there the
+/// address stays a constant. Like [`shared_ptr`], no reference is formed.
 #[inline(always)]
-pub unsafe fn shared_unchecked() -> &'static Shared {
-    // SAFETY: guaranteed by the caller.
-    unsafe { SHARED.get() }
+pub fn shared_base() -> *const Shared {
+    #[allow(unused_mut)]
+    let mut p = shared_ptr();
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: an empty template; the pointer is unchanged.
+    unsafe {
+        core::arch::asm!("/* {0} */", inout(reg) p, options(pure, nomem, nostack, preserves_flags));
+    }
+    p
 }
 
 /// The probed kernel features. Initialises the allocator if needed.
