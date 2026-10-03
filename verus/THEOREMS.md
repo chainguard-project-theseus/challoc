@@ -3531,7 +3531,9 @@ premises (`axiom_class_table_wf`).
 
 ## 25. Realloc keeps whenever it can
 
-The coordinator assigns this theorem its number at merge. The
+## 26. Cache routing
+
+The
 `file:line`s are the `fn`/`spec` line at this section's commit.
 
 **Statement** (`api/libc.rs:896`, `:1072`, `:1137`, `:1242`, `:1308`,
@@ -3663,6 +3665,168 @@ the rule to 0 too.
   function, with the same token for both, as `axiom_c_claim` would give
   it at each call; nothing ties two separate C calls (another thread
   could free `p` between them, which the C contract forbids).
+
+**Model.** A heap's caches are its home headers (`Heap::home_hdrs`, one
+per class) and the headers of the nodes on its `others` list
+(`Heap::list`, ghost, head first). The ghost `Heap::keys`
+(`heap/mod.rs:2844`) gives each node its key, `keys[i]` the `arena`
+field of `list[i]`: the arena whose cache the node is (an explicit
+`MALLOCX_ARENA` arena, or a home arena `thread.arena` moved away from),
+or `FOREIGN` (`u16::MAX`, `heap/mod.rs:133`) for the one flush-only node
+that plain frees of other arenas' slots go onto (design 6.3 step 4).
+`Heap::list_ok` (`heap/mod.rs:2963`, part of `Heap::wf` and
+`Heap::keeps`) now states that the keys are pairwise distinct and none
+is the home arena (before, it said only that the node pointers are
+distinct); `Heap::keeps` (`:2904`) adds that the keys keep their places
+counted from the end, as the nodes do, and that the home arena is
+unchanged. A pop is a call of `Heap::pop_top` (`heap/cache.rs:429`), the
+one function that takes an entry off a cache stack to hand it out; its
+callers are `Heap::pop_fast`, `Heap::pop`, `Heap::pop_compact` and
+`Heap::pop_compact_run`. An explicit tcache (`MALLOCX_TCACHE`) is a
+heap of its own (`Tcaches::get`), popped through the same functions.
+
+**Statement** (`heap/mod.rs:3045`, `:3059`, `:3156`):
+
+```rust
+// `cache` is the header for `class` of `arena`'s cache in this heap.
+pub closed spec fn routes(&self, arena: u16, class: int, cache: *mut CacheHeader) -> bool {
+    if arena == self.arena { cache == self.home_ptr(class) }
+    else { exists|i| 0 <= i < self.list@.len() && self.keys@[i] == arena
+                     && cache == node_hdr(self.list@[i], class) }
+}
+
+// A header a pop may take from.
+pub open spec fn poppable(&self, class: int, cache: *mut CacheHeader) -> bool {
+    exists|a: u16| (a != FOREIGN || a == self.home()) && self.routes(a, class, cache)
+}
+
+pub proof fn theorem_cache_routing(&self, class: int, cache: *mut CacheHeader, a: u16, b: u16)
+    requires self.wf(), 0 <= class < NCLASSES,
+    ensures
+        forall|r, s| 1 <= r < s <= self.list_len() ==> self.node_key(r) != self.node_key(s),
+        forall|r| 1 <= r <= self.list_len() ==> self.node_key(r) != self.home(),
+        self.routes(a, class, cache) && self.routes(b, class, cache) ==> a == b,
+        self.poppable(class, cache) ==> forall|r, k|
+            1 <= r <= self.list_len() && self.node_key(r) == FOREIGN && 0 <= k < NCLASSES
+                ==> cache != node_hdr(self.node_from_end(r), k),
+
+// Heap::pop (heap/cache.rs:365), Heap::pop_compact (heap/compact.rs:183),
+// Heap::pop_compact_run (:282):
+    requires old(self).poppable(class as int, cache),
+
+// Heap::other_caches (heap/others.rs:417):
+    ensures
+        r@.addr != 0 ==> final(self).keyed(r, arena),
+        r@.addr == 0 ==> !final(self).has_key(arena),
+// Heap::cache_slot (heap/others.rs:618), Heap::ensure_cache (heap/cache.rs:817):
+    ensures r@.addr != 0 ==> final(self).routes(arena, class as int, r),
+
+// Heap::alloc_in (heap/paths.rs:198), Heap::alloc_other (heap/others.rs:284):
+    requires arena != FOREIGN,
+// Heap::alloc_slow_in (heap/paths.rs:474):
+    requires arena != FOREIGN || arena == old(self).home(),
+```
+
+(Line breaks and triggers dropped.) In words: every pop takes its slot
+from the home cache, from the `others` node keyed by the requested
+arena, or (an explicit tcache being a heap) from one of those of the
+explicit cache; the `FOREIGN` node is never popped; and a heap's
+`others` keys are pairwise distinct and never its home arena, so the
+header a pop site routes to is the requested arena's cache and no
+other's. The pop sites:
+- `Heap::alloc_in` (`MALLOCX_ARENA` on the thread's heap or an explicit
+  cache): the home header when `arena` is the home arena
+  (`Heap::lemma_routes_home`), else `alloc_other`.
+- `Heap::alloc_other`: the class's header in the node `other_caches`
+  found for `arena` (`Heap::lemma_keyed_routes`: a node keyed `arena`
+  routes it, and `arena` is then not the home arena).
+- `Heap::alloc_slow_in`: the header `ensure_cache` routes `arena` to,
+  after a refill (`Heap::lemma_keeps_routes`); its callers pass the home
+  arena, arena 0 (a shared class) or `alloc_in`'s/`alloc_other`'s
+  `arena`.
+- `Heap::alloc_slow`: the home header (the scheduled compacting pop).
+- `Heap::pop_fast` (`heap/paths.rs:101`, the `malloc`/`calloc` fast
+  path): `cache_ptr(class)`, the home header (`cache_ptr`'s `ensures`,
+  `heap/cache.rs:329`). This one is read off its body: `pop_top` takes
+  the header's permissions, not the heap, so it carries no requires.
+- `pop`, `pop_compact` and `pop_compact_run` pop the `cache` they were
+  handed, also after a `tick` or refill (`Heap::lemma_keeps_poppable`,
+  `lemma_poppable_same`).
+
+**How the keys are kept.**
+- `other_caches` walks the list reading each key (`node_arena`) and
+  returns the first node keyed `arena`; the loop carries that the
+  visited keys are not `arena`, so a creation adds at the head a key no
+  node has. `assert_not_home`, discharged by `other_caches`' requires
+  `create ==> arena != home`, makes the new key not the home arena.
+- `Heap::set_arena` (`heap/mod.rs:4626`): `other_caches(arena, true)`
+  returns the node keyed `arena`, the only one; after the header
+  exchange (`swap_hdrs`, which keeps `same_shape`, now with the keys and
+  the home arena) the node's key becomes the old home, which no node
+  had, and the home becomes `arena`, which no other node has. When no
+  node could be had, `other_caches` ensures no node is keyed `arena`,
+  and `drop_home_caches` now ensures `same_shape`.
+- Creation starts with no keys (`thread::create_heap_for_thread`,
+  `Heap::lemma_fresh_wf`).
+- `Flags::decode` (`heap/mallocx.rs:103`) now ensures an explicit arena
+  is below `0xfff`, so `mallocx::alloc` (`:155`, `requires arena matches
+  Some(a) ==> a != FOREIGN`) and `api::jemalloc::alloc_with`
+  (`api/jemalloc.rs:198`) discharge `alloc_in`'s requires.
+
+**`FOREIGN` is released whole.** Proof assertions, not a contract: in
+`Heap::free_slow_in` (`heap/paths.rs:546`) a full `FOREIGN` cache is
+flushed by its capacity, after which `cached_len(cache) == 0` (from
+`flush`'s `ensures`, `len` decreasing by `n`), before the push; in
+`Heap::gc_arena` (`heap/mod.rs:4498`) a `FOREIGN` node's caches are
+flushed by their length, likewise to 0.
+
+**Explicit non-claim: arena purity.** Routing does not give "every slot
+`malloc` returns belongs to the heap's home arena" (nor the explicit
+arena's, for `MALLOCX_ARENA`). A sized free (`free_sized`, `sdallocx`,
+`free_aligned_sized`: `heap::free_sized_fast`, `heap/paths.rs:724`)
+pushes onto the home cache without loading the owner word (design 6.3,
+the sized path, step 2), so the home cache can hold another arena's
+slots, and its pops hand them out. The plain `free` routes another
+arena's slot to the `FOREIGN` node (theorem "Arena isolation" covers the
+bitmap side: every release goes back to the slot's own arena).
+
+**Premises beyond the common ones.**
+- `Heap::node_arena` (`heap/others.rs:244`, `external_body`) now
+  ensures the value it reads is the node's ghost key. Its writers record
+  what they store: `node_link` (`:102`) in `other_caches` (the new node,
+  at the head of the list and the keys) and `node_set_arena` (`:152`) in
+  `set_arena`; `destroy` frees the nodes with the heap.
+- Every heap a verified path is handed is `Heap::wf` (common premises),
+  now including the keys.
+
+**Where the statement is weaker than the code.**
+- The arena a pop serves is linked to the requested one at the pop
+  sites (`routes` from `other_caches`/`ensure_cache`, and the home
+  header), not by a requires of `pop`: `pop` takes no arena, and a ghost
+  argument would change its signature. `poppable` itself admits any
+  arena's cache except `FOREIGN`'s.
+- `pop_fast` is covered by reading its body (one `cache_ptr` call), not
+  by a requires.
+- The release of the whole `FOREIGN` cache is a proof assertion in two
+  bodies, not an `ensures`.
+- Per heap reference: as in "`MALLOCX_TCACHE_NONE` bypasses thread
+  caches", Verus does not relate two references to the same heap, and
+  an explicit cache's heap is assumed `wf` afresh at each
+  `Tcaches::get`.
+- The home arena of a heap is not constrained, so `poppable` admits the
+  home header whatever the home arena is. It is never `FOREIGN` in
+  practice, but by run-time checks and inspection, not by Verus: a
+  thread heap's comes from `assign_home` (below `MAX_ARENAS`);
+  `set_arena` requires one below `MAX_ARENAS`, but its only caller is
+  the trusted `api::mallctl::heap_set_arena` wrapper, whose caller
+  checks `thread.arena`'s value at run time; and `Tcaches::create` takes
+  any `arena` (its callers pass the thread's home arena or 0).
+- Routing names the header a pop takes from, not the arena a refill
+  inside the pop draws from: `pop_compact` and `pop_compact_run` refill
+  an emptied cache through `shared.arena(self.hdr_ref(cache).arena)`,
+  the header's own `arena` field, which `ensure_cache` sets and
+  `swap_hdrs` moves with the header, but which no spec ties to the
+  routed key.
 
 ## Interface contract
 

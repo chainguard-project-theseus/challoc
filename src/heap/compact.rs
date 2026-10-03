@@ -193,6 +193,7 @@ impl Heap {
             old(self).wf(),
             old(self).owns(cache),
             old(self).hdr_class(cache) == class,
+            old(self).poppable(class as int, cache),
             len == old(self).hdr(cache).len,
             len > 0,
         ensures
@@ -215,13 +216,20 @@ impl Heap {
                     // path, and without it no GC or decay would ever run on
                     // a thread without a background thread.
                     self.tick(shared);
+                    proof {
+                        Heap::lemma_keeps_poppable(*old(self), *self, class as int, cache);
+                    }
                     let mut len = self.hdr_ref(cache).len;
                     if len == 0 {
                         // The GC emptied the cache.
                         let Some(a) = shared.arena(self.hdr_ref(cache).arena) else {
                             return (ptr::null_mut(), false);
                         };
+                        let ghost s = *self;
                         len = self.refill(shared, a, cache, class);
+                        proof {
+                            Heap::lemma_keeps_poppable(s, *self, class as int, cache);
+                        }
                         if len == 0 {
                             return (ptr::null_mut(), false);
                         }
@@ -233,6 +241,7 @@ impl Heap {
                     h.probe_refilled = refilled;
                     proof {
                         Heap::lemma_set(h0, *self, cache, *h);
+                        Heap::lemma_poppable_same(h0, *self, class as int, cache);
                     }
                     match verdict {
                         Verdict::Refilling | Verdict::Dense => {
@@ -249,6 +258,7 @@ impl Heap {
                     h.set_mode(MODE_COMPACT);
                     proof {
                         Heap::lemma_set(h1, *self, cache, *h);
+                        Heap::lemma_poppable_same(h1, *self, class as int, cache);
                     }
                     return self.pop_compact_run(cache, class, len, Tracked(blk));
                 }
@@ -282,6 +292,7 @@ impl Heap {
             old(self).wf(),
             old(self).owns(cache),
             old(self).hdr_class(cache) == class,
+            old(self).poppable(class as int, cache),
             len == old(self).hdr(cache).len,
             len > 0,
         ensures

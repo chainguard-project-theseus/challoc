@@ -355,7 +355,9 @@ impl Heap {
     /// pops go to [`Heap::pop_compact`] instead.
     ///
     /// # Safety
-    /// `cache` is this heap's real cache for `class` and `len` is its
+    /// `cache` is this heap's real cache for `class`, one a pop may take
+    /// from ([`Heap::poppable`]: the home arena's or an arena's node's,
+    /// never the [`FOREIGN`] node's), and `len` is its
     /// current non-zero length. `len` is only a copy: the scheduled pop
     /// runs `tick`, whose GC may flush this cache, and reloads it. `pac`
     /// is `Shared::pac()`: whether the entry is stored signed.
@@ -367,6 +369,7 @@ impl Heap {
             old(self).wf(),
             old(self).owns(cache),
             old(self).hdr_class(cache) == class,
+            old(self).poppable(class as int, cache),
             len == old(self).hdr(cache).len,
             len > 0,
             pac ==> pac::pac_available(),
@@ -391,6 +394,7 @@ impl Heap {
                 CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
                 CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
                 CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+                Heap::lemma_poppable_same(*old(self), *self, class as int, cache);
             }
             // SAFETY: guaranteed by the caller.
             return unsafe { self.pop_compact(cache, class, len, Tracked(blk)) };
@@ -824,6 +828,7 @@ impl Heap {
         ensures
             final(self).keeps(*old(self)),
             r@.addr != 0 ==> final(self).owns(r) && final(self).hdr(r).cap != 0 && final(self).hdr_class(r) == class,
+            r@.addr != 0 ==> final(self).routes(arena, class as int, r),
     {
         proof {
             shared.lemma_wf();
@@ -927,6 +932,8 @@ impl Heap {
             Heap::lemma_set(h1, *self, cache, *h);
             Heap::lemma_keeps_trans(*old(self), h0, h1);
             Heap::lemma_keeps_trans(*old(self), h1, *self);
+            Heap::lemma_keeps_trans(h0, h1, *self);
+            Heap::lemma_keeps_routes(h0, *self, arena, class as int, cache);
         }
         cache
     }

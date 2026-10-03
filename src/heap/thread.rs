@@ -182,6 +182,7 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(tls): Tra
         shared.lemma_wf();
         heap.perms = Tracked(perms);
         heap.list = Ghost(Seq::empty());
+        heap.keys = Ghost(Seq::empty());
         heap.home_hdrs = Ghost(Seq::new(crate::layout::NCLASSES as nat, |c: int| super::home_hdr(h, c)));
         heap.lemma_fresh_wf(h);
     }

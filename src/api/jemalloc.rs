@@ -200,6 +200,7 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags, Tracked(blk): Tracked<&mu
         crate::sys::may_syscall(),
         f.lg_align < 64,
         shared.wf(),
+        f.arena matches Some(a) ==> a != crate::heap::FOREIGN,
     ensures
         crate::heap::fits(r.0, size as int, (1usize << f.lg_align) as int),
         r.0@.addr != 0 && f.zero ==> r.1@.covers(r.0, size as int),

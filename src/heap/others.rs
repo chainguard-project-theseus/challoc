@@ -91,7 +91,9 @@ pub(super) fn node_block_layout() -> (r: Layout)
 ///
 /// Trusted: the stores go through `&raw mut` projections of the raw node
 /// pointer, which Verus does not support. `head` is the permission to
-/// the line they write, and is used up.
+/// the line they write, and is used up. The caller records `arena` as
+/// the new node's key in [`Heap::keys`]; [`Heap::node_arena`]'s claim
+/// rests on it.
 ///
 /// # Safety
 /// `node` is the start of a fresh node in a block this heap holds.
@@ -140,7 +142,8 @@ pub(super) unsafe fn node_caches_mut<'a>(o: *mut ArenaCaches, Ghost(h): Ghost<He
 ///
 /// Trusted: a store through the raw node pointer, to the node's first
 /// line, which no header permission covers ([`node_link`] used it up);
-/// nothing is claimed.
+/// nothing is claimed. The caller records `arena` as the node's key in
+/// [`Heap::keys`]; [`Heap::node_arena`]'s claim rests on it.
 ///
 /// # Safety
 /// `node` is a live node owned by `h` (the requires).
@@ -225,18 +228,26 @@ impl Heap {
     }
 
     /// `(*o).arena` for node `o`, the `r`-th from the end of the `others`
-    /// list. Trusted: a read through the raw node pointer; nothing is
-    /// claimed about the value.
+    /// list: its key ([`Heap::node_key`]).
+    ///
+    /// Trusted: a read through the raw node pointer. The claim is that the
+    /// nodes' `arena` fields are the keys [`Heap::keys`] records: the two
+    /// writers record what they store, [`node_link`] in `other_caches`
+    /// (the new node's key, at the head) and [`node_set_arena`] in
+    /// `set_arena` (the exchanged node's new key). `destroy` writes no key:
+    /// it frees the nodes with the heap.
     ///
     /// # Safety
     /// As for [`Heap::node_next`].
     #[inline(always)]
     #[verifier::external_body]
-    pub(super) unsafe fn node_arena(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int>) -> u16
+    pub(super) unsafe fn node_arena(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int>) -> (a: u16)
         requires
             self.wf(),
             1 <= r <= self.list_len(),
             o == self.node_from_end(r),
+        ensures
+            a == self.node_key(r),
     {
         // SAFETY: guaranteed by the caller.
         unsafe { (*o).arena }
@@ -266,6 +277,8 @@ impl Heap {
     /// entries, else the slow path, whose `ensure_cache` creates the node
     /// and the cache only for a class this heap caches there
     /// (`Config::cap_for`) and serves the rest from the bitmaps.
+    /// `arena` is not [`FOREIGN`], so the node popped is the one keyed
+    /// `arena` ([`Heap::other_caches`]), never the flush-only one.
     #[cold]
     #[inline(never)]
     pub(super) fn alloc_other(
@@ -279,6 +292,7 @@ impl Heap {
             crate::sys::may_syscall(),
             shared.wf(),
             class < NCLASSES,
+            arena != FOREIGN,
             old(self).wf(),
         ensures
             final(self).keeps(*old(self)),
@@ -297,6 +311,8 @@ impl Heap {
             proof {
                 assert(self.owns(node_hdr(node, class as int)));
                 assert(self.hdr_class(node_hdr(node, class as int)) == class);
+                self.lemma_keyed_routes(node, arena, class as int);
+                self.lemma_poppable(arena, class as int, cache);
             }
             // Unused (`len == 0`) or this heap's cache.
             let len = self.hdr_ref(cache).len;
@@ -413,6 +429,8 @@ impl Heap {
             final(self).keeps(*old(self)),
             r@.addr != 0 ==> final(self).owns_node(r),
             r@.addr != 0 ==> final(self).in_list(r),
+            r@.addr != 0 ==> final(self).keyed(r, arena),
+            r@.addr == 0 ==> !final(self).has_key(arena),
     {
         proof {
             self.lemma_list(0);
@@ -432,6 +450,8 @@ impl Heap {
                 r > 0 ==> o == self.node_from_end(r),
                 r == 0 ==> o@.addr == 0,
                 n == self.list_len() - r,
+                forall|i: int| 0 <= i < self.list_len() - r ==> #[trigger] self.keys@[i] != arena,
+                self.keys@.len() == self.list_len(),
             decreases r,
         {
             proof {
@@ -442,6 +462,9 @@ impl Heap {
             // this heap.
             unsafe {
                 if self.node_arena(o, Ghost(r)) == arena {
+                    proof {
+                        assert(self.keys@[self.list_len() - r] == arena);
+                    }
                     return o;
                 }
                 o = self.node_next(o, Ghost(r));
@@ -502,6 +525,8 @@ impl Heap {
                 self.keeps(h0),
                 h0 == *old(self),
                 self.list == h0.list,
+                self.keys == h0.keys,
+                self.arena == h0.arena,
                 self.others == others0,
                 others0 == old(self).others,
                 rest.provenance() == node@.provenance,
@@ -554,6 +579,7 @@ impl Heap {
         self.others = node;
         proof {
             self.list = Ghost(seq![node] + h0.list@);
+            self.keys = Ghost(seq![arena] + h0.keys@);
             assert forall|i: int| 0 <= i < h0.list@.len() implies h0.list@[i] != node by {
                 h0.lemma_list(h0.list@.len() - i);
                 assert(h0.list@[i] == h0.node_from_end(h0.list@.len() - i));
@@ -561,6 +587,12 @@ impl Heap {
             }
             assert(self.list@[0] == node);
             assert(self.list@.contains(node));
+            assert(h0.keys@.len() == h0.list@.len());
+            assert forall|i: int| 0 <= i < h0.keys@.len() implies #[trigger] h0.keys@[i] != arena by {
+                assert(h0.keys@[i] == old(self).keys@[i]);
+            }
+            assert(self.keys@[0] == arena);
+            assert forall|i: int| 1 <= i < self.keys@.len() implies self.keys@[i] == h0.keys@[i - 1] by {}
             assert forall|i: int| 1 <= i < self.list@.len() implies self.list@[i] == h0.list@[i - 1] by {}
             assert forall|i: int| 0 <= i < h0.list@.len() implies self.owns_node(#[trigger] h0.list@[i]) by {
                 h0.lemma_list(h0.list@.len() - i);
@@ -597,16 +629,21 @@ impl Heap {
         ensures
             final(self).keeps(*old(self)),
             r@.addr != 0 ==> final(self).owns(r) && final(self).hdr_class(r) == class,
+            r@.addr != 0 ==> final(self).routes(arena, class as int, r),
     {
         if arena == self.arena {
             proof {
                 Heap::lemma_keeps_refl(*self);
+                self.lemma_routes_home(class as int);
             }
             return self.cache_ptr(class);
         }
         let node = self.other_caches(shared, arena, true);
         if node.is_null() {
             return ptr::null_mut();
+        }
+        proof {
+            self.lemma_keyed_routes(node, arena, class as int);
         }
         // SAFETY: `node` is a live block owned by this heap.
         unsafe { Self::node_cache_ptr(node, class) }

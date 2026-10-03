@@ -2408,7 +2408,7 @@ fn home_ptr_at(&mut self, class: usize) -> (r: *mut CacheHeader)
 
 ### S111. `Heap::cached_recently`
 
-src/heap/cache.rs:660. Kind: external_body. Category: raw pointer (internal).
+src/heap/cache.rs:664. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `double_free_scan`'s compare (design 6.3 step 3): whether `e`, the entry as it would be stored (signed under `pac`), is one of the top four of the `len` entries in `slots`.
@@ -2425,7 +2425,7 @@ pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8, 
 
 ### S112. `group_by_slab`
 
-src/heap/flush.rs:703. Kind: external_body. Category: core library.
+src/heap/flush.rs:705. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > Group a flush's released batch by slab, in place, and return its lowest address.
@@ -2442,7 +2442,7 @@ pub(super) fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8])
 
 ### S113. `addr_mix`
 
-src/heap/flush.rs:1436. Kind: external_body. Category: raw pointer (internal).
+src/heap/flush.rs:1438. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted.
 
 > `rng`'s mix of the heap's address into its seed: the address of `h`, rotated left by 17 bits.
@@ -2453,7 +2453,7 @@ fn addr_mix(h: &Heap) -> u64
 
 ### S114. `seed`
 
-src/heap/flush.rs:1443. Kind: assume_spec. Category: FFI/syscall.
+src/heap/flush.rs:1445. Kind: assume_spec. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `seed` reads `getrandom(2)` (or the clock).
@@ -2578,7 +2578,7 @@ fn assert_refill_empty(len: &u32)
 
 ### S120. `Heap::axiom_list_bound`
 
-src/heap/mod.rs:3408. Kind: external_body proof. Category: allocator invariant.
+src/heap/mod.rs:3610. Kind: external_body proof. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > The `others` list of a well-formed heap has fewer than `usize::MAX` nodes.
@@ -2593,7 +2593,7 @@ proof fn axiom_list_bound(&self)
 
 ### S121. `arena_volatile`
 
-src/heap/mod.rs:3822. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/heap/mod.rs:4034. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::checked_slot`]): a plain load is hoisted above the multi-arena flag test and touches the heap's header line on every single-arena `free`.
@@ -2604,7 +2604,7 @@ pub(super) fn arena_volatile(&self) -> u16 opens_invariants none
 
 ### S122. `init_fields`
 
-src/heap/mod.rs:4674. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:4916. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The fields of a fresh heap before its home headers, stored field by field ([`Heap::create_detached`]).
@@ -2619,7 +2619,7 @@ unsafe fn init_fields(h: *mut Heap, shared: &Shared, arena: u16, Tracked(head): 
 
 ### S123. `assign_home`
 
-src/heap/mod.rs:4701. Kind: external_body. Category: allocator invariant.
+src/heap/mod.rs:4943. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > [`Arenas::assign`](crate::arena::Arenas::assign) on the process's arenas.
@@ -2634,7 +2634,7 @@ fn assign_home(shared: &Shared) -> (r: u16)
 
 ### S124. `mark_bound`
 
-src/heap/mod.rs:4718. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:4960. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `(*h).bound = true` for a heap [`Heap::create`] has just made.
@@ -2645,7 +2645,7 @@ unsafe fn mark_bound(h: *mut Heap)
 
 ### S125. `Heap::destroy`
 
-src/heap/mod.rs:4898. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:5140. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > Flush every cache, free them and the heap itself back to the metadata allocator.
@@ -2658,7 +2658,7 @@ pub unsafe fn destroy(h: *mut Heap, shared: &Shared)
 
 ### S126. `node_link`
 
-src/heap/others.rs:100. Kind: external_body. Category: raw pointer (internal).
+src/heap/others.rs:102. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The first line of a fresh `others` node: its `arena`, `pad` and `next` ([`Heap::other_caches`]), stored field by field, `next` read after the first two stores.
@@ -2673,7 +2673,7 @@ unsafe fn node_link(node: *mut ArenaCaches, arena: u16, pad: u8, next: &*mut Are
 
 ### S127. `node_caches_mut`
 
-src/heap/others.rs:126. Kind: external_body. Category: raw pointer (internal).
+src/heap/others.rs:128. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `&mut (*o).caches` for node `o`, the `r`-th from the end of heap `h`'s `others` list, as plain headers, for the walk that folds them while it holds `h` mutably (`Heap::set_tcache_enabled`): the reference is not tied to a borrow of `h`.
@@ -2688,7 +2688,7 @@ pub(super) unsafe fn node_caches_mut<'a>(o: *mut ArenaCaches, Ghost(h): Ghost<He
 
 ### S128. `node_set_arena`
 
-src/heap/others.rs:149. Kind: external_body. Category: raw pointer (internal).
+src/heap/others.rs:152. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `(*node).arena = arena`: the last step of `Heap::set_arena`'s exchange, once node `node`'s headers and the home headers have traded places (`Heap::swap_hdrs`), makes the node the cache of `arena`, the home arena being left.
@@ -2701,7 +2701,7 @@ pub(super) unsafe fn node_set_arena(node: *mut ArenaCaches, arena: u16, Ghost(h)
 
 ### S129. `assert_not_home`
 
-src/heap/others.rs:164. Kind: external_body. Category: panic/abort.
+src/heap/others.rs:167. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`Heap::other_caches`]'s abort on a node for the home arena, which its callers rule out (the requires).
@@ -2714,7 +2714,7 @@ fn assert_not_home(arena: &u16, home: &u16)
 
 ### S130. `Heap::node_next`
 
-src/heap/others.rs:214. Kind: external_body. Category: raw pointer (internal).
+src/heap/others.rs:217. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `(*o).next` for node `o`, the `r`-th from the end of the `others` list: the node after it, null after the last.
@@ -2732,22 +2732,24 @@ pub(super) unsafe fn node_next(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int>)
 
 ### S131. `Heap::node_arena`
 
-src/heap/others.rs:235. Kind: external_body. Category: raw pointer (internal).
+src/heap/others.rs:244. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
-> `(*o).arena` for node `o`, the `r`-th from the end of the `others` list.
+> `(*o).arena` for node `o`, the `r`-th from the end of the `others` list: its key ([`Heap::node_key`]).
 
 ```rust
-pub(super) unsafe fn node_arena(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int>) -> u16
+pub(super) unsafe fn node_arena(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int>) -> (a: u16)
     requires
         self.wf(),
         1 <= r <= self.list_len(),
         o == self.node_from_end(r),
+    ensures
+        a == self.node_key(r),
 ```
 
 ### S132. `Heap::node_caches`
 
-src/heap/others.rs:254. Kind: external_body. Category: raw pointer (internal).
+src/heap/others.rs:265. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `&(*o).caches` for node `o`, the `r`-th from the end of the `others` list, as plain headers (for [`Heap::stats`]).
@@ -2762,7 +2764,7 @@ pub(super) unsafe fn node_caches(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int
 
 ### S133. `debug_scheduled`
 
-src/heap/paths.rs:988. Kind: external_body. Category: panic/abort.
+src/heap/paths.rs:1012. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`Heap::alloc_slow`]'s `debug_assert!` that a non-empty home cache reached it through a scheduled pop the fast pop declined (design 6.4): `allocs`, the pop's count, has no bit of `mask` set.
@@ -2773,7 +2775,7 @@ fn debug_scheduled(allocs: u64, mask: u32)
 
 ### S134. `shared_of`
 
-src/heap/paths.rs:998. Kind: external_body. Category: raw pointer (internal).
+src/heap/paths.rs:1022. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The `Shared` a heap was created on, with a lifetime free of the heap's borrow (so the heap can be borrowed mutably while it is used).
@@ -3131,7 +3133,7 @@ pub(super) unsafe fn heap_new<'a>(p: *mut Heap) -> (r: &'a mut Heap)
 
 ### S162. `fast_flags`
 
-src/heap/thread.rs:266. Kind: external_body. Category: raw pointer (internal).
+src/heap/thread.rs:267. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `Shared::push_flags` through a raw pointer (`api::shared_ptr`).
@@ -3146,7 +3148,7 @@ pub unsafe fn fast_flags(shared: *const Shared) -> (r: u8)
 
 ### S163. `heap_from_slot`
 
-src/heap/thread.rs:289. Kind: external_body. Category: raw pointer (internal).
+src/heap/thread.rs:290. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The heap a TLS slot value names: authenticated against the thread pointer when `pac` ([`PUSH_PAC`]), the value itself otherwise.

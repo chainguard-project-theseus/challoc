@@ -104,6 +104,7 @@ impl Flags {
         ensures
             r == decode_spec(flags),
             r.lg_align < 64,
+            r.arena matches Some(a) ==> a < 0xfff,
     {
         let t = (flags >> TCACHE_SHIFT) & TCACHE_MASK;
         let a = (flags >> ARENA_SHIFT) & ARENA_MASK;
@@ -147,12 +148,16 @@ fn invalid_tcache(id: u16) -> ! {
 /// Routing of a `MALLOCX` allocation of a non-huge class on the calling
 /// thread. `None` from the arena lookup (an index `arenas.create` never
 /// handed out) gives null. The flag says the memory is known zero; `blk`
-/// gets the block's token.
+/// gets the block's token. `arena` is never [`FOREIGN`](super::FOREIGN)
+/// (`Flags::decode` gives at most 4094): an explicit arena is popped
+/// from through the home cache or its own `others` node
+/// (`Heap::alloc_in`).
 pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache, Tracked(blk): Tracked<&mut super::Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
         crate::sys::may_syscall(),
         class < crate::layout::NCLASSES,
         shared.wf(),
+        arena matches Some(a) ==> a != super::FOREIGN,
     ensures
         r.0@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r.0@.addr),
         r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, crate::layout::class_table()[class as int].size as int),

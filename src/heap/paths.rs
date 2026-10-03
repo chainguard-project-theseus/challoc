@@ -192,13 +192,16 @@ impl Heap {
     /// Allocation of `class` from `arena` through this heap's cache for
     /// that arena (`MALLOCX_ARENA`, or the home arena of an explicit
     /// cache). Null when `arena` does not exist or is exhausted. `blk`
-    /// gets the block's token.
+    /// gets the block's token. `arena` is never [`FOREIGN`] (cache
+    /// routing: `MALLOCX_ARENA` names arenas below 4095), so the pop is
+    /// from the home cache or the `others` node keyed `arena`.
     pub fn alloc_in(&mut self, shared: &Shared, arena: u16, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_syscall(),
             shared.wf(),
             class < NCLASSES,
             old(self).wf(),
+            arena != FOREIGN,
         ensures
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
@@ -213,6 +216,9 @@ impl Heap {
             return self.alloc_other(shared, arena, class, Tracked(blk));
         }
         let cache = self.cache_ptr(class);
+        proof {
+            self.lemma_routes_home(class as int);
+        }
         // As in `alloc`.
         let len = self.hdr_ref(cache).len;
         if len != 0 {
@@ -428,6 +434,9 @@ impl Heap {
         // pop (design 6.4) rather than found the cache empty: count the
         // pop it declined and serve it here, out of the fast path's body.
         let cache = self.cache_ptr(class);
+        proof {
+            self.lemma_routes_home(class as int);
+        }
         let ghost old_perms = self.perms@;
         proof {
             assert(cell_ok(cache, old_perms.hdrs[cache], old_perms.slots));
@@ -444,6 +453,7 @@ impl Heap {
                 CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
                 CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
                 CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
+                Heap::lemma_poppable_same(*old(self), *self, class as int, cache);
             }
             // SAFETY: `cache` is this heap's home cache for `class`, with
             // `len` entries.
@@ -458,13 +468,16 @@ impl Heap {
         self.alloc_slow_in(shared, self.arena, class, Tracked(blk))
     }
 
-    /// The slow allocation path for any arena.
+    /// The slow allocation path for any arena: the home arena or an arena
+    /// that is not [`FOREIGN`] (cache routing; the cache it pops is the one
+    /// [`Heap::ensure_cache`] routes `arena` to).
     pub(super) fn alloc_slow_in(&mut self, shared: &Shared, arena: u16, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_syscall(),
             class < NCLASSES,
             shared.wf(),
             old(self).wf(),
+            arena != FOREIGN || arena == old(self).home(),
         ensures
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
@@ -478,6 +491,7 @@ impl Heap {
         self.tick(shared);
         let Some(a) = shared.arena(arena) else { return (ptr::null_mut(), false) };
         let cache = self.ensure_cache(shared, arena, class);
+        let ghost s1 = *self;
         if cache.is_null() {
             let (p, zero, t) = shared.alloc_direct(a, class, Tracked(blk));
             if !p.is_null() {
@@ -490,6 +504,10 @@ impl Heap {
         // SAFETY: `cache` is this heap's real cache for `(arena, class)`.
         unsafe {
             let len = self.refill(shared, a, cache, class);
+            proof {
+                Heap::lemma_keeps_routes(s1, *self, arena, class as int, cache);
+                self.lemma_poppable(arena, class as int, cache);
+            }
             if len == 0 {
                 return (ptr::null_mut(), false);
             }
@@ -590,6 +608,12 @@ impl Heap {
                 // FOREIGN cache, popped by nothing, releases everything.
                 let n = if arena == FOREIGN { self.hdr_ref(cache).cap } else { (self.hdr_ref(cache).cap / 2).max(1) };
                 self.flush(shared, arena, cache, class, n as usize);
+                proof {
+                    // Cache routing: a full `FOREIGN` cache is released whole.
+                    if arena == FOREIGN {
+                        assert(self.cached_len(cache) == 0);
+                    }
+                }
             }
             // The scan ran above; a flush only removes entries.
             let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();

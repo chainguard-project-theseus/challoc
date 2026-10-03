@@ -56,6 +56,8 @@ impl Heap {
         ensures
             final(self).perms == old(self).perms,
             final(self).list == old(self).list,
+            final(self).keys == old(self).keys,
+            final(self).arena == old(self).arena,
             final(self).home_hdrs == old(self).home_hdrs,
             final(self).others == old(self).others,
             r.0.n <= old(out)@.len(),

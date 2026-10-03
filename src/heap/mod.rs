@@ -752,7 +752,7 @@ pub open spec fn node_placed(node: *mut ArenaCaches) -> bool {
 
 /// The `others` list `new` is `old` with nodes added at the head: each
 /// node keeps its place counted from the end.
-pub open spec fn list_grows(new: Seq<*mut ArenaCaches>, old: Seq<*mut ArenaCaches>) -> bool {
+pub open spec fn list_grows<T>(new: Seq<T>, old: Seq<T>) -> bool {
     &&& old.len() <= new.len()
     &&& forall|r: int| 1 <= r <= old.len() ==> new[new.len() - r] == #[trigger] old[old.len() - r]
 }
@@ -2861,6 +2861,11 @@ pub struct Heap {
     /// `next` fields chain it ([`Heap::list_ok`]).
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     list: Ghost<vstd::seq::Seq<*mut ArenaCaches>>,
+    /// Ghost (no bytes): the `others` nodes' keys, `keys[i]` the `arena`
+    /// field of `list[i]` ([`Heap::node_arena`]), pairwise distinct and
+    /// never the home arena ([`Heap::list_ok`]).
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    keys: Ghost<vstd::seq::Seq<u16>>,
     /// Ghost (no bytes): the home headers, one per class, where creation
     /// wrote them ([`home_hdr`]), as `create_heap_for_thread` records them
     /// ([`Heap::home_ok`]).
@@ -2918,8 +2923,8 @@ impl Heap {
 
     /// `self` is well formed, owns every header `old` owned, and every
     /// header that had a stack still has the same one; its `others` list
-    /// is `old`'s with nodes added at the head, if any, and its home
-    /// headers are `old`'s.
+    /// is `old`'s with nodes added at the head, if any (their keys with
+    /// them), and its home headers and home arena are `old`'s.
     pub closed spec fn keeps(&self, old: Heap) -> bool {
         &&& self.perms@.keeps(old.perms@)
         &&& self.perms@.follows(old.perms@)
@@ -2930,6 +2935,8 @@ impl Heap {
         &&& self.home_ok()
         &&& self.home_hdrs == old.home_hdrs
         &&& list_grows(self.list@, old.list@)
+        &&& list_grows(self.keys@, old.keys@)
+        &&& self.arena == old.arena
     }
 
     /// The home headers ([`Heap::home_hdrs`]): one per class, owned, caching
@@ -2956,6 +2963,8 @@ impl Heap {
             old.home_ok(),
             new.home_hdrs == old.home_hdrs,
             new.list == old.list,
+            new.keys == old.keys,
+            new.arena == old.arena,
             forall|p: *mut CacheHeader| #[trigger] old.owns(p) ==> new.owns(p) && new.hdr_class(p) == old.hdr_class(p),
         ensures
             new.home_ok(),
@@ -2968,13 +2977,23 @@ impl Heap {
     /// The `others` list as [`Heap::list`] has it: `others` heads it (null
     /// when it is empty), and its nodes are distinct, non-null and owned
     /// ([`Heap::owns_node`]). That each node's `next` is the one after it
-    /// (null after the last) is what [`Heap::node_next`] assumes.
+    /// (null after the last) is what [`Heap::node_next`] assumes. The
+    /// nodes' keys ([`Heap::keys`]: the arena a node caches, or
+    /// [`FOREIGN`]) are pairwise distinct and none is the home arena
+    /// (`verus/THEOREMS.md`, "Cache routing"): `other_caches` creates a
+    /// node only for a key its walk did not find and never for the home
+    /// arena, and `set_arena`'s exchange gives the new home's node the
+    /// old home as its key.
     pub closed spec fn list_ok(&self) -> bool {
         let l = self.list@;
+        let k = self.keys@;
         &&& l.len() == 0 ==> self.others@.addr == 0
         &&& l.len() > 0 ==> self.others == l[0]
         &&& forall|i: int| 0 <= i < l.len() ==> (#[trigger] l[i])@.addr != 0 && self.owns_node(l[i])
         &&& forall|i: int, j: int| 0 <= i < j < l.len() ==> l[i] != l[j]
+        &&& k.len() == l.len()
+        &&& forall|i: int, j: int| 0 <= i < j < k.len() ==> k[i] != k[j]
+        &&& forall|i: int| 0 <= i < k.len() ==> #[trigger] k[i] != self.arena
     }
 
     /// `n` is a node of the `others` list ([`Heap::list`]).
@@ -3000,6 +3019,7 @@ impl Heap {
         requires
             self.perms@.fresh(h),
             self.list@.len() == 0,
+            self.keys@.len() == 0,
             self.others@.addr == 0,
             self.home_hdrs@ == Seq::new(NCLASSES as nat, |c: int| home_hdr(h, c)),
             regions_ok(),
@@ -3025,6 +3045,187 @@ impl Heap {
     /// from 1), which nodes added at the head do not move.
     pub closed spec fn node_from_end(&self, r: int) -> *mut ArenaCaches {
         self.list@[self.list@.len() - r]
+    }
+
+    /// The key of the node `r` places from the end of the `others` list
+    /// ([`Heap::keys`]): the arena it caches, or [`FOREIGN`].
+    pub closed spec fn node_key(&self, r: int) -> u16 {
+        self.keys@[self.keys@.len() - r]
+    }
+
+    /// `node` is on the `others` list, with key `arena`.
+    pub closed spec fn keyed(&self, node: *mut ArenaCaches, arena: u16) -> bool {
+        exists|i: int| 0 <= i < self.list@.len() && self.list@[i] == node && #[trigger] self.keys@[i] == arena
+    }
+
+    /// Some node of the `others` list has key `arena`.
+    pub closed spec fn has_key(&self, arena: u16) -> bool {
+        exists|i: int| 0 <= i < self.keys@.len() && #[trigger] self.keys@[i] == arena
+    }
+
+    /// Cache routing: `cache` is the header for `class` of `arena`'s cache
+    /// in this heap, the home header for the home arena, else the node
+    /// keyed `arena`'s.
+    pub closed spec fn routes(&self, arena: u16, class: int, cache: *mut CacheHeader) -> bool {
+        if arena == self.arena {
+            cache == self.home_ptr(class)
+        } else {
+            exists|i: int| 0 <= i < self.list@.len() && #[trigger] self.keys@[i] == arena && cache == node_hdr(self.list@[i], class)
+        }
+    }
+
+    /// A header a pop may take from (`verus/THEOREMS.md`, "Cache
+    /// routing"): the header for `class` of the home arena or of a node
+    /// whose key is an arena, never [`FOREIGN`]. [`Heap::pop`],
+    /// [`Heap::pop_compact`] and [`Heap::pop_compact_run`] require it; the
+    /// fourth caller of [`Heap::pop_top`], [`Heap::pop_fast`], pops the
+    /// home header.
+    pub open spec fn poppable(&self, class: int, cache: *mut CacheHeader) -> bool {
+        exists|a: u16| (a != FOREIGN || a == self.home()) && #[trigger] self.routes(a, class, cache)
+    }
+
+    /// A header routed for an arena that is not [`FOREIGN`], or for the
+    /// home arena, may be popped.
+    pub proof fn lemma_poppable(&self, arena: u16, class: int, cache: *mut CacheHeader)
+        requires
+            self.routes(arena, class, cache),
+            arena != FOREIGN || arena == self.home(),
+        ensures
+            self.poppable(class, cache),
+    {
+    }
+
+    /// The home header for `class` routes the home arena.
+    pub proof fn lemma_routes_home(&self, class: int)
+        ensures
+            self.routes(self.home(), class, self.home_ptr(class)),
+            self.poppable(class, self.home_ptr(class)),
+    {
+        self.lemma_poppable(self.home(), class, self.home_ptr(class));
+    }
+
+    /// A node on the `others` list with key `arena` holds the header
+    /// `arena` routes to; its key is not the home arena.
+    proof fn lemma_keyed_routes(&self, node: *mut ArenaCaches, arena: u16, class: int)
+        requires
+            self.wf(),
+            self.keyed(node, arena),
+        ensures
+            arena != self.home(),
+            self.routes(arena, class, node_hdr(node, class)),
+    {
+        let i = choose|i: int| 0 <= i < self.list@.len() && self.list@[i] == node && #[trigger] self.keys@[i] == arena;
+        assert(self.keys@[i] != self.arena);
+    }
+
+    /// [`Heap::keeps`] keeps routing: the home arena and headers, and
+    /// every node and key in its place counted from the end.
+    proof fn lemma_keeps_routes(a: Heap, b: Heap, arena: u16, class: int, cache: *mut CacheHeader)
+        requires
+            a.list_ok(),
+            b.keeps(a),
+            a.routes(arena, class, cache),
+        ensures
+            b.routes(arena, class, cache),
+    {
+        if arena != a.arena {
+            let i = choose|i: int| 0 <= i < a.list@.len() && #[trigger] a.keys@[i] == arena && cache == node_hdr(a.list@[i], class);
+            let r = a.list@.len() - i;
+            let j = b.list@.len() - r;
+            assert(b.list@[b.list@.len() - r] == a.list@[a.list@.len() - r]);
+            assert(b.keys@[b.keys@.len() - r] == a.keys@[a.keys@.len() - r]);
+            assert(b.keys@[j] == arena && cache == node_hdr(b.list@[j], class));
+        }
+    }
+
+    /// [`Heap::poppable`] depends only on the home arena and headers and
+    /// the `others` list and keys, not on what the caches hold.
+    proof fn lemma_poppable_same(a: Heap, b: Heap, class: int, cache: *mut CacheHeader)
+        requires
+            a.poppable(class, cache),
+            b.arena == a.arena,
+            b.home_hdrs == a.home_hdrs,
+            b.list == a.list,
+            b.keys == a.keys,
+        ensures
+            b.poppable(class, cache),
+    {
+        let x = choose|x: u16| (x != FOREIGN || x == a.home()) && #[trigger] a.routes(x, class, cache);
+        b.lemma_poppable(x, class, cache);
+    }
+
+    /// [`Heap::keeps`] keeps [`Heap::poppable`].
+    proof fn lemma_keeps_poppable(a: Heap, b: Heap, class: int, cache: *mut CacheHeader)
+        requires
+            a.list_ok(),
+            b.keeps(a),
+            a.poppable(class, cache),
+        ensures
+            b.poppable(class, cache),
+    {
+        let x = choose|x: u16| (x != FOREIGN || x == a.home()) && #[trigger] a.routes(x, class, cache);
+        Heap::lemma_keeps_routes(a, b, x, class, cache);
+        b.lemma_poppable(x, class, cache);
+    }
+
+    /// Cache routing (`verus/THEOREMS.md`, "Cache routing"), on a
+    /// well-formed heap: the `others` keys are pairwise distinct and none
+    /// is the home arena; a header is routed for at most one arena, so the
+    /// pop sites' [`Heap::routes`] names the requested arena's cache and no
+    /// other; and no header [`Heap::poppable`] admits is one of the
+    /// [`FOREIGN`] node's, which therefore is never popped. Every pop
+    /// requires [`Heap::poppable`] ([`Heap::pop`], [`Heap::pop_compact`],
+    /// [`Heap::pop_compact_run`]; [`Heap::pop_fast`] pops the home
+    /// header).
+    pub proof fn theorem_cache_routing(&self, class: int, cache: *mut CacheHeader, a: u16, b: u16)
+        requires
+            self.wf(),
+            0 <= class < NCLASSES,
+        ensures
+            forall|r: int, s: int| 1 <= r < s <= self.list_len() ==> self.node_key(r) != self.node_key(s),
+            forall|r: int| 1 <= r <= self.list_len() ==> self.node_key(r) != self.home(),
+            self.routes(a, class, cache) && self.routes(b, class, cache) ==> a == b,
+            self.poppable(class, cache) ==> forall|r: int, k: int|
+                1 <= r <= self.list_len() && self.node_key(r) == FOREIGN && 0 <= k < NCLASSES
+                    ==> cache != node_hdr(self.node_from_end(r), k),
+    {
+        let n = self.list@.len();
+        assert forall|r: int, s: int| 1 <= r < s <= self.list_len() implies self.node_key(r) != self.node_key(s) by {
+            assert(self.keys@[n - s] != self.keys@[n - r]);
+        }
+        assert forall|r: int| 1 <= r <= self.list_len() implies self.node_key(r) != self.home() by {
+            assert(self.keys@[n - r] != self.arena);
+        }
+        if self.routes(a, class, cache) && self.routes(b, class, cache) && a != b {
+            if a == self.arena {
+                let j = choose|j: int| 0 <= j < n && #[trigger] self.keys@[j] == b && cache == node_hdr(self.list@[j], class);
+                self.lemma_home_apart(class, j, class);
+            } else if b == self.arena {
+                let i = choose|i: int| 0 <= i < n && #[trigger] self.keys@[i] == a && cache == node_hdr(self.list@[i], class);
+                self.lemma_home_apart(class, i, class);
+            } else {
+                let i = choose|i: int| 0 <= i < n && #[trigger] self.keys@[i] == a && cache == node_hdr(self.list@[i], class);
+                let j = choose|j: int| 0 <= j < n && #[trigger] self.keys@[j] == b && cache == node_hdr(self.list@[j], class);
+                self.lemma_nodes_apart(i, j, class, class);
+            }
+        }
+        if self.poppable(class, cache) {
+            let x = choose|x: u16| (x != FOREIGN || x == self.home()) && #[trigger] self.routes(x, class, cache);
+            assert forall|r: int, k: int|
+                1 <= r <= self.list_len() && self.node_key(r) == FOREIGN && 0 <= k < NCLASSES
+                    implies cache != node_hdr(self.node_from_end(r), k) by {
+                let j = n - r;
+                if x == self.arena {
+                    self.lemma_home_apart(class, j, k);
+                } else {
+                    let i = choose|i: int| 0 <= i < n && #[trigger] self.keys@[i] == x && cache == node_hdr(self.list@[i], class);
+                    if cache == node_hdr(self.node_from_end(r), k) {
+                        assert(i != j);
+                        self.lemma_nodes_apart(i, j, class, k);
+                    }
+                }
+            }
+        }
     }
 
     /// What a well-formed heap tells its callers outside this module: the
@@ -3203,8 +3404,8 @@ impl Heap {
     /// `self` caches exactly what `old` cached (`verus/THEOREMS.md`,
     /// "`MALLOCX_TCACHE_NONE` bypasses thread caches"): the same cache
     /// permissions (headers, stacks, entries, and the slot tokens and zero
-    /// tokens under them), the same `caches` field, `others` list, home
-    /// headers and home arena. The other fields (`shared`, `tid`,
+    /// tokens under them), the same `caches` field, `others` list and
+    /// keys, home headers and home arena. The other fields (`shared`, `tid`,
     /// `slow_ticks`, `last_gc`, `uncached`, `snapshot`, `tcache_enabled`,
     /// `bound`, `rng`) are unconstrained.
     pub closed spec fn caches_same(&self, old: Heap) -> bool {
@@ -3212,6 +3413,7 @@ impl Heap {
         &&& self.caches == old.caches
         &&& self.others == old.others
         &&& self.list@ == old.list@
+        &&& self.keys@ == old.keys@
         &&& self.home_hdrs@ == old.home_hdrs@
         &&& self.arena == old.arena
     }
@@ -3434,6 +3636,8 @@ impl Heap {
         requires
             old.wf(),
             new.list == old.list,
+            new.keys == old.keys,
+            new.arena == old.arena,
             new.others == old.others,
             new.home_hdrs == old.home_hdrs,
             new.perms@.keeps(old.perms@),
@@ -3486,6 +3690,8 @@ impl Heap {
             b.perms@.toks == a.perms@.toks,
             b.perms@.zero == a.perms@.zero,
             b.list == a.list,
+            b.keys == a.keys,
+            b.arena == a.arena,
             b.others == a.others,
             b.home_hdrs == a.home_hdrs,
         ensures
@@ -3586,6 +3792,8 @@ impl Heap {
             new.perms@.hdrs == old.perms@.hdrs.insert(cache, new.perms@.hdrs[cache]),
             new.perms@.cls == old.perms@.cls,
             new.list == old.list,
+            new.keys == old.keys,
+            new.arena == old.arena,
             new.others == old.others,
             new.home_hdrs == old.home_hdrs,
             forall|p2: *mut CacheHeader, j: int|
@@ -3621,12 +3829,14 @@ impl Heap {
     }
 
     /// `self` is `old` with at most its headers' values changed: the same
-    /// headers, caching the same classes, the same `others` list and home
-    /// headers.
+    /// headers, caching the same classes, the same `others` list and
+    /// keys, home headers and home arena.
     pub closed spec fn same_shape(&self, old: Heap) -> bool {
         &&& self.perms@.hdrs.dom() == old.perms@.hdrs.dom()
         &&& self.perms@.cls == old.perms@.cls
         &&& self.list == old.list
+        &&& self.keys == old.keys
+        &&& self.arena == old.arena
         &&& self.others == old.others
         &&& self.home_hdrs == old.home_hdrs
     }
@@ -3711,6 +3921,8 @@ impl Heap {
             new.perms@.owner == old.perms@.owner,
             new.perms@.cls == old.perms@.cls,
             new.list == old.list,
+            new.keys == old.keys,
+            new.arena == old.arena,
             new.others == old.others,
             new.home_hdrs == old.home_hdrs,
             v.len == 0 && v.cap == 0 && v.low_water == 0 && v.zeroed == 0 && v.run_end == 0,
@@ -3838,6 +4050,7 @@ impl Heap {
             old(self).wf(),
         ensures
             final(self).wf(),
+            final(self).same_shape(*old(self)),
     {
         let home = self.arena;
         self.flush_arena(shared, home, ptr::null_mut());
@@ -4353,6 +4566,10 @@ impl Heap {
                     let len = self.hdr_ref(cache).len as usize;
                     if len > 0 {
                         self.flush(shared, arena, cache, class, len);
+                        proof {
+                            // Cache routing: the `FOREIGN` cache is released whole.
+                            assert(self.cached_len(cache) == 0);
+                        }
                     }
                 } else if lw > 0 {
                     self.flush(shared, arena, cache, class, lw - lw / 4);
@@ -4445,6 +4662,7 @@ impl Heap {
         }
         let old = self.arena;
         let node = self.other_caches(shared, arena, true);
+        let ghost h1 = *self;
         if node.is_null() {
             // No metadata for a new node: the caches of the new home start
             // empty and the old home's must go back first.
@@ -4458,6 +4676,9 @@ impl Heap {
                     self.wf(),
                     self.owns_node(node),
                     self.in_list(node),
+                    self.list == h1.list,
+                    self.keys == h1.keys,
+                    self.arena == h1.arena,
             {
                 let a = self.cache_ptr(c);
                 // SAFETY: `node` is a live block owned by this heap.
@@ -4471,6 +4692,25 @@ impl Heap {
             let ghost h = *self;
             // SAFETY: as above.
             unsafe { node_set_arena(node, old, Ghost(h)) };
+            proof {
+                // The node keyed `arena` (the only one, keys being
+                // distinct) is now keyed `old`, which no node was.
+                let i = choose|i: int| 0 <= i < h1.list@.len() && h1.list@[i] == node && #[trigger] h1.keys@[i] == arena;
+                self.keys = Ghost(h1.keys@.update(i, old));
+                assert forall|j: int| 0 <= j < self.keys@.len() implies #[trigger] self.keys@[j] != arena by {
+                    if j != i {
+                        if j < i {
+                            assert(h1.keys@[j] != h1.keys@[i]);
+                        } else {
+                            assert(h1.keys@[i] != h1.keys@[j]);
+                        }
+                    }
+                }
+                assert forall|j: int, k: int| 0 <= j < k < self.keys@.len() implies self.keys@[j] != self.keys@[k] by {
+                    assert(h1.keys@[j] != old && h1.keys@[k] != old);
+                    assert(h1.keys@[j] != h1.keys@[k]);
+                }
+            }
         }
         self.arena = arena;
         if self.bound {
@@ -4566,6 +4806,8 @@ impl Heap {
         &&& self.perms@.hdrs[cache].is_init()
         &&& self.perms@.hdrs[cache].value() == v
         &&& self.list == old.list
+        &&& self.keys == old.keys
+        &&& self.arena == old.arena
         &&& self.others == old.others
         &&& self.home_hdrs == old.home_hdrs
     }
