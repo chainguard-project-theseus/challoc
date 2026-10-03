@@ -7,7 +7,8 @@ use core::ptr;
 use crate::layout::{CLASSES, NCLASSES};
 use crate::sys::pac;
 
-use super::{FOREIGN, Heap, PUSH_PAC, Shared, existing_heap, heap_for_thread};
+use super::thread::heap_from_slot;
+use super::{FOREIGN, FREE_ROUTE, Heap, PUSH_PAC, Shared, existing_heap, heap_for_thread};
 
 impl Heap {
     /// `malloc` of a non-huge class in the home arena: the cache pop, then
@@ -311,12 +312,14 @@ impl Heap {
 /// goes through a cold [`free`], which repeats the checks and aborts when
 /// they fail. Contains no call, so the entry point that inlines it needs no
 /// frame.
-#[inline(always)]
+///
+/// `flags` is `Shared::free_flags`: zero (the default configuration with
+/// one arena) is the bit test and the plain push; [`FREE_ROUTE`] adds the
+/// owner-word test, and the opt-in hardening bits select the push as for
+/// the other paths.
+#[cfg(test)]
 pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
-    match shared.checked_slot(p, h) {
-        Some(class) => h.push_fast(class, p, flags),
-        None => false,
-    }
+    free_fast_class(shared, h, p, flags).is_some()
 }
 
 /// [`free_fast`] that also names the class it pushed, for
@@ -324,14 +327,56 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
 /// verified as a slot of `class` and pushed, `None` for anything off the
 /// fast path (the caller then takes its cold exact path). The same loads
 /// as `free_fast`, no call.
-#[inline(always)]
+#[cfg(test)]
 pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> Option<usize> {
-    let class = shared.checked_slot(p, h)?;
-    if h.push_fast(class, p, flags) {
-        Some(class)
-    } else {
-        None
-    }
+    free_fast_with(shared, p, || (h, flags))
+}
+
+/// The entry points' form of [`free_fast_class`]: the heap comes as the
+/// thread's TLS slot value (`tls_heap_slot`, which proved the heap exists
+/// and so that this thread observed `READY`), and both it and the
+/// `free_flags` byte are produced only after the bit test. Nothing in the
+/// slot check needs them, and on x86_64 a byte loaded up front stays live
+/// across the bit arithmetic and costs `free` a callee-saved register
+/// (`push`/`pop` of `rbx`).
+///
+/// # Safety
+/// `(t, tp)` from [`tls_heap_slot`](super::thread::tls_heap_slot) on this
+/// thread.
+#[inline(always)]
+pub unsafe fn free_fast_slot(shared: &Shared, t: usize, tp: usize, p: *mut u8) -> Option<usize> {
+    free_fast_with(shared, p, || {
+        let flags = shared.free_flags();
+        // SAFETY: guaranteed by the caller; `flags` carries the
+        // process's `PUSH_PAC`.
+        let h = unsafe { heap_from_slot(t, tp, flags & PUSH_PAC != 0) };
+        (h, flags)
+    })
+}
+
+/// The body of the `free` fast paths: the bit test ([`Shared::set_slot`]),
+/// then the heap and the `free_flags` byte from `heap`, the owner-word
+/// test with [`FREE_ROUTE`], the push.
+#[inline(always)]
+fn free_fast_with<'h>(
+    shared: &Shared,
+    p: *mut u8,
+    heap: impl FnOnce() -> (&'h mut Heap, u8),
+) -> Option<usize> {
+    let (class, table, slab) = shared.set_slot(p)?;
+    let (h, flags) = heap();
+    // The two default configurations (one arena, several arenas) each get
+    // one compare and the plain push; the opt-in hardening takes the
+    // general dispatch.
+    let pushed = match flags {
+        0 => h.push_fast(class, p, 0),
+        FREE_ROUTE => Shared::home_owns(table, slab, h) && h.push_fast(class, p, 0),
+        _ => {
+            (flags & FREE_ROUTE == 0 || Shared::home_owns(table, slab, h))
+                && h.push_fast(class, p, flags & !FREE_ROUTE)
+        }
+    };
+    if pushed { Some(class) } else { None }
 }
 
 /// The sized free's fast path on an existing heap (`sdallocx`,

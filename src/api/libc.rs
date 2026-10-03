@@ -169,16 +169,19 @@ pub fn calloc(n: usize, m: usize) -> *mut u8 {
 /// `free`. Null is a no-op; anything that is not a live allocation aborts.
 #[inline(always)]
 pub fn free(p: *mut u8) {
-    if p.is_null() {
-        return;
-    }
     // As in `malloc`: the check-and-push has no calls, and every other
     // outcome, including the aborts, is reached through one tail call.
-    if let Some(h) = heap::existing_heap(super::shared_ptr()) {
+    // Null is one of those outcomes: it is in no class region (the
+    // superblock is mapped far above address 0, so `slab_slot_unbounded`'s class
+    // index of null is out of range) and `free_slow` returns for it, so
+    // the common case pays no test of its own (jemalloc's `free` fast
+    // path leaves null to its slow path the same way).
+    if let Some((t, tp)) = heap::tls_heap_slot() {
         // SAFETY: this thread's heap exists, so this thread observed
         // `READY` when it created the heap.
-        let shared = unsafe { super::shared_unchecked() };
-        if heap::free_fast(shared, h, p, shared.push_flags()) {
+        let shared = crate::sys::opaque(unsafe { super::shared_unchecked() });
+        // SAFETY: the slot value of this thread.
+        if unsafe { heap::free_fast_slot(shared, t, tp, p) }.is_some() {
             return;
         }
     }
@@ -262,6 +265,9 @@ pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize) {
 #[cold]
 #[inline(never)]
 fn free_slow(p: *mut u8) {
+    if p.is_null() {
+        return;
+    }
     match super::shared_if_ready() {
         Some(shared) => heap::free(shared, p),
         None => free_before_init(p),
@@ -604,10 +610,11 @@ pub fn free_usable(p: *mut u8) -> usize {
     if p.is_null() {
         return 0;
     }
-    if let Some(h) = heap::existing_heap(super::shared_ptr()) {
+    if let Some((t, tp)) = heap::tls_heap_slot() {
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_unchecked() };
-        if let Some(class) = heap::free_fast_class(shared, h, p, shared.push_flags()) {
+        // SAFETY: as in `free`.
+        if let Some(class) = unsafe { heap::free_fast_slot(shared, t, tp, p) } {
             return class_size(class);
         }
     }
