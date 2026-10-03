@@ -27,7 +27,7 @@
 //! [`LIMIT_INTERVAL_NS`] so a `docker update --memory` is seen.
 
 use core::fmt;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::parse_decimal;
 
@@ -331,6 +331,8 @@ pub struct Cgroup {
     /// has a limit; unused at level 0, whose usage is `current`).
     level_limit: [AtomicU64; LEVELS],
     level_current: [AtomicU64; LEVELS],
+    /// The last `memory.current` read failed: `current` is older.
+    current_stale: AtomicBool,
     /// Coarse-clock time of the last sample and of the last limit walk.
     sampled_at: AtomicU64,
     limits_at: AtomicU64,
@@ -363,6 +365,7 @@ impl Cgroup {
             current: AtomicU64::new(0),
             level_limit: [const { AtomicU64::new(UNLIMITED) }; LEVELS],
             level_current: [const { AtomicU64::new(0) }; LEVELS],
+            current_stale: AtomicBool::new(false),
             sampled_at: AtomicU64::new(0),
             limits_at: AtomicU64::new(0),
             events_low: AtomicU64::new(0),
@@ -546,13 +549,18 @@ impl fmt::Display for Cgroup {
         let (hr, mr) = self.rises();
         write!(
             f,
-            "cgroup: {} (mount {}, path {}) limit {} high {} current {} events high {} (+{}) max {} (+{})",
+            "cgroup: {} (mount {}, path {}) limit {} high {} current {}{} events high {} (+{}) max {} (+{})",
             Bytes(self.dir()),
             Bytes(self.mount()),
             Bytes(self.path()),
             Limit(self.limit()),
             Limit(self.high()),
             self.current(),
+            if self.current_stale.load(Ordering::Relaxed) {
+                " (stale)"
+            } else {
+                ""
+            },
             self.events().high,
             hr,
             self.events().max,
@@ -695,6 +703,8 @@ mod linux {
         /// and `memory.current` of every ancestor in [`LEVELS`] with a
         /// limit of its own; re-walk the limits if [`LIMIT_INTERVAL_NS`]
         /// has passed. `read` as in [`Cgroup::walk_limits_with`].
+        /// A failed `memory.current` read keeps the last figure and marks it
+        /// stale until a read succeeds.
         pub(super) fn sample_now_with<R: FnMut(&[u8], &[u8], &mut [u8]) -> Option<usize>>(
             &self,
             now: u64,
@@ -702,13 +712,15 @@ mod linux {
         ) {
             // The walk first, so an ancestor that just gained a limit has
             // its usage read in this same sample.
-            if now.wrapping_sub(self.limits_at.load(Ordering::Relaxed)) >= LIMIT_INTERVAL_NS {
+            if now.saturating_sub(self.limits_at.load(Ordering::Relaxed)) >= LIMIT_INTERVAL_NS {
                 self.walk_limits_with(now, read);
             }
             if self.has_current {
-                if let Some(v) = read_limit(read, self.dir(), b"memory.current") {
+                let v = read_limit(read, self.dir(), b"memory.current");
+                if let Some(v) = v {
                     self.current.store(v, Ordering::Relaxed);
                 }
+                self.current_stale.store(v.is_none(), Ordering::Relaxed);
             }
             walk_levels(self.dir(), self.mount_len as usize, |level, d| {
                 if level == 0 || level >= LEVELS {
@@ -731,13 +743,15 @@ mod linux {
 
         /// Sample if at least [`SAMPLE_INTERVAL_NS`] of the coarse clock
         /// has passed since the last sample; one thread wins the interval.
-        /// `true` when this call read the files. Slow paths only.
+        /// A `now` older than the last sample (read before another thread
+        /// sampled) is not due, so the window only moves forward. `true`
+        /// when this call read the files. Slow paths only.
         pub fn sample(&self, now: u64) -> bool {
             if !self.tracked() {
                 return false;
             }
             let last = self.sampled_at.load(Ordering::Relaxed);
-            if now.wrapping_sub(last) < SAMPLE_INTERVAL_NS {
+            if now.saturating_sub(last) < SAMPLE_INTERVAL_NS {
                 return false;
             }
             if self
@@ -1480,6 +1494,49 @@ mod linux_tests {
             (None, _) => assert_eq!(cg.state(), State::NoUnifiedPath, "{line}"),
             (Some(_), None) => assert_eq!(cg.state(), State::NoMount, "{line}"),
         }
+    }
+
+    /// The window only moves forward. A caller can hold a `now` read
+    /// before another thread sampled (`Heap::tick` reads the clock before
+    /// its cache GC): that `now` is not due, and the timestamp stays.
+    #[test]
+    fn an_older_now_never_moves_the_window_back() {
+        let cg = Cgroup::untracked(State::Tracked);
+        let t = 5 * LIMIT_INTERVAL_NS;
+        assert!(cg.sample(t));
+        assert!(!cg.sample(t - SAMPLE_INTERVAL_NS), "an older now sampled");
+        assert!(!cg.sample(t - 1), "an older now sampled");
+        assert_eq!(cg.sampled_at(), t);
+        assert!(!cg.sample(t + SAMPLE_INTERVAL_NS - 1));
+        assert!(cg.sample(t + SAMPLE_INTERVAL_NS));
+        assert_eq!(cg.sampled_at(), t + SAMPLE_INTERVAL_NS);
+    }
+
+    /// A failed `memory.current` read keeps the last figure, and the
+    /// report marks it stale until a read succeeds. The sample still
+    /// counts, so the policy still sees `memory.events` and the retention.
+    #[test]
+    fn a_failed_current_read_marks_the_figure_stale() {
+        let base = std::env::temp_dir().join(format!("challoc-cgroup-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let base_s = base.to_str().unwrap();
+        let mut cg = Cgroup::untracked(State::Tracked);
+        cg.dir[..base_s.len()].copy_from_slice(base_s.as_bytes());
+        cg.dir_len = base_s.len() as u16;
+        cg.mount_len = base_s.len() as u16;
+        cg.has_current = true;
+        cg.current.store(123, Ordering::Relaxed);
+        let t = 5 * LIMIT_INTERVAL_NS;
+        assert!(cg.sample(t));
+        assert_eq!(cg.current(), 123);
+        let line = format!("{cg}");
+        assert!(line.contains(" current 123 (stale) "), "{line}");
+        std::fs::write(base.join("memory.current"), "4096\n").unwrap();
+        assert!(cg.sample(t + SAMPLE_INTERVAL_NS));
+        let line = format!("{cg}");
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(cg.current(), 4096);
+        assert!(line.contains(" current 4096 events "), "{line}");
     }
 
     #[test]
