@@ -1,6 +1,6 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the nineteen whole-allocator theorems as the code
+Reference for the twenty whole-allocator theorems as the code
 states them: the Verus statement, the entry points it covers, and every
 trusted premise it rests on, with `file:line`. Read at `b2cad68`
 (branch `verus`); line numbers are the `fn`/`axiom` line at that commit.
@@ -2644,6 +2644,135 @@ batch's `free`. The makers:
   batches that used `MADV_FREE`.
 - `MADV_FREE` and `MADV_DONTNEED` are treated alike: the theorem is
   about which bytes are discarded, not what they read afterwards.
+
+## 20. `MALLOCX_TCACHE_NONE` bypasses thread caches
+
+Read at this section's commit (the `file:line`s are the `fn` line
+there).
+
+**Model.** A heap's caches are its ghost cache permissions
+(`Heap::perms`, a `CachePerms`): the headers it owns, their stacks and
+entries, and the slot token under every cached entry
+(`CachePerms::tokened`; "Uniqueness: slot tokens" in `verus/TODO.md`).
+`perms` is a private field of `Heap`, so only `heap` code can change a
+cache, and only through a `&mut Heap`. A verified function obtains a
+heap only from the trusted `thread::heap_from_slot` (through
+`heap_for_thread_in` and `existing_heap_in`), `tcaches::heap_at`
+(through `Tcaches::get`, and `heap_destructor`) or `tcaches::heap_new`
+(heap creation; `mallctl::thread_heap` goes through `heap_for_thread`),
+and each reference is assumed `Heap::wf` afresh: no ghost state links two
+references to the same heap. The theorem is therefore stated per
+reference: every heap the direct paths obtain, they leave caching
+exactly what it cached.
+
+**Statement** (`heap/mod.rs:2964`, `:2978`; `heap/paths.rs:282`,
+`:306`, `:329`, `:342`, `:355`, `:368`):
+
+```rust
+// The heap caches exactly what `old` cached.
+pub closed spec fn caches_same(&self, old: Heap) -> bool {
+    &&& self.perms@ == old.perms@
+    &&& self.caches == old.caches
+    &&& self.others == old.others
+    &&& self.list@ == old.list@
+    &&& self.home_hdrs@ == old.home_hdrs@
+    &&& self.arena == old.arena
+}
+
+pub proof fn lemma_caches_same(&self, old: Heap, p: *mut CacheHeader, i: int)
+    requires self.caches_same(old),
+    ensures
+        self.owns(p) == old.owns(p),
+        self.hdr(p) == old.hdr(p),
+        self.hdr_class(p) == old.hdr_class(p),
+        self.cached_len(p) == old.cached_len(p),
+        self.cached(p, i) == old.cached(p, i),
+        self.tokened() == old.tokened(),
+        self.home() == old.home(),
+        old.wf() ==> self.wf(),
+
+// Heap::count_direct_alloc, count_direct_free, count_uncached_alloc,
+// count_uncached_free, alloc_huge_in, free_huge (the last two serve the
+// thread's huge runs; of them only alloc_huge_in is on a
+// MALLOCX_TCACHE_NONE path, a huge one):
+    ensures final(self).keeps(*old(self)), final(self).caches_same(*old(self)),
+```
+
+The direct paths are:
+- **allocation**: `mallocx::alloc` (`heap/mallocx.rs:143`) on
+  `Tcache::None` calls `existing_heap` (`heap/thread.rs:200`) at most
+  twice: once for the home arena when the flags name none
+  (`Heap::arena`, `&self`), and once after a successful claim for
+  `count_direct_alloc`, where a ghost `assert(h.caches_same(before))`
+  restates the contract at the call. The slot comes from
+  `alloc_direct` (`:220`) and `Shared::alloc_direct`
+  (`heap/shared.rs:1890`), which take no heap: `ClassState::claim_tokens`
+  takes it out of the class's bitmap words, with its token, and the
+  token goes into the caller's `Live` (`Live::from_slot`).
+- **deallocation**: `mallocx::free` (`heap/mallocx.rs:275`) on
+  `Tcache::None` calls `heap::free_direct` (`heap/paths.rs:798`):
+  `Shared::classify_free` (`heap/shared.rs:1949`), `zero_slot` under
+  `zero_on_free`, then `Shared::free_direct` (`:1921`), which hands the
+  slot's token (from the caller's `Live`, `claim_slot`) to
+  `ClassState::release_with` and so back to the bitmap word; then
+  `count_direct_free` on the `existing_heap` result, with the same
+  ghost assert. A huge pointer takes `Shared::free_huge` and
+  `count_uncached_free`, likewise.
+- Neither path calls `Tcaches::get`, so no explicit cache is reached;
+  `heap_for_thread` is not called, so no heap is created.
+
+These are the paths of `mallocx`, `rallocx`, `dallocx` and `sdallocx`
+(`sdallocx_routed`) with `MALLOCX_TCACHE_NONE` for a slab size:
+`jemalloc::alloc_with` calls `mallocx::alloc` for every size with a
+class, and `rallocx_zeroed`, `dallocx_block` and `sdallocx_routed` free
+through `mallocx::free`. So a valid slab `mallocx`/`rallocx` allocation
+or `dallocx`/`sdallocx`/`rallocx` free with the flag leaves every cache
+of every heap it reaches holding the same slots, in the same entries,
+with the same tokens: no cache gains or loses a slot. Machine code is
+unchanged (the additions are ghost).
+
+The test `api::jemalloc::tests::tcache_none_leaves_every_cache_alone`
+checks the same at run time against the real allocator: with entries
+in the thread's home caches, another arena's, the foreign cache and an
+explicit cache, direct `mallocx`, `rallocx`, `dallocx` and `sdallocx`
+calls (arena, zero and alignment flags) leave every cache's entries and
+pop count unchanged.
+
+**Premises beyond the common ones.**
+- Every heap a verified path is handed is `Heap::wf` (common premises);
+  `caches_same` itself needs no premise.
+- The direct paths obtain no heap other than the `existing_heap`
+  results (checked by inspection, not by Verus): outside `heap/` and
+  `api/` the crate uses no `heap` item that yields a `Heap` (only
+  `Shared`, constants such as `MIN_CAP` and `TLS_EXITED`, and spec items
+  such as `fits`, `regions_ok`); `Shared`'s methods in `heap/shared.rs` call
+  none of the heap sources above (`tcaches` appears there only in
+  `Shared::wf`, its initialisation and the fork lock list); and the
+  remaining callees (`zero_slot`, the `Live` methods,
+  `libc::old_size_or_keep` on `rallocx`'s path, `check_size_hint` on
+  `sdallocx`'s) take no heap.
+
+**Where the statement is weaker than the code.**
+- Per reference: Verus does not relate the heap the first
+  `existing_heap` call returns to the second's (no ghost state survives
+  between calls), so the composed claim, the thread's heap unchanged
+  across the whole call, rests on each reference's frame plus the
+  inspection premise above.
+- It is not an `ensures` of `mallocx::alloc` or `mallocx::free`: those
+  take no heap, and adding one would restructure their signatures.
+- That the allocated slot came from the class's bitmap words and the
+  freed one went back to them is what the verified bodies of
+  `Shared::alloc_direct` and `Shared::free_direct` do with the slot
+  token; their `ensures` do not name the class state.
+- Only cached slots are covered. The counters (`uncached`) do change,
+  as the flag's statistics require.
+- Huge sizes: `mallocx::alloc_huge` with the flag calls
+  `heap_for_thread`, which may create the thread's heap (with empty
+  caches, proved inside creation, `CachePerms::fresh`, but not in
+  `heap_for_thread`'s `ensures`), and `alloc_huge_in`, which ensures
+  `caches_same`; the theorem does not otherwise cover them.
+- Another thread using the same explicit cache concurrently is outside
+  it; with `MALLOCX_TCACHE_NONE` this thread does not touch it.
 
 ## Interface contract
 

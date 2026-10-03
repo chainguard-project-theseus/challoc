@@ -3176,6 +3176,42 @@ impl Heap {
         &&& perms.tokened()
     }
 
+    /// `self` caches exactly what `old` cached (`verus/THEOREMS.md`,
+    /// "`MALLOCX_TCACHE_NONE` bypasses thread caches"): the same cache
+    /// permissions (headers, stacks, entries, and the slot tokens and zero
+    /// tokens under them), the same `caches` field, `others` list, home
+    /// headers and home arena. The other fields (`shared`, `tid`,
+    /// `slow_ticks`, `last_gc`, `uncached`, `snapshot`, `tcache_enabled`,
+    /// `bound`, `rng`) are unconstrained.
+    pub closed spec fn caches_same(&self, old: Heap) -> bool {
+        &&& self.perms@ == old.perms@
+        &&& self.caches == old.caches
+        &&& self.others == old.others
+        &&& self.list@ == old.list@
+        &&& self.home_hdrs@ == old.home_hdrs@
+        &&& self.arena == old.arena
+    }
+
+    /// What [`Heap::caches_same`] means outside this module: every header
+    /// `old` owns is still owned, no other is, and each holds the same
+    /// value, so the same length and the same entries standing for the
+    /// same slots; no cache gained or lost a slot. Well-formedness and the
+    /// home arena carry over.
+    pub proof fn lemma_caches_same(&self, old: Heap, p: *mut CacheHeader, i: int)
+        requires
+            self.caches_same(old),
+        ensures
+            self.owns(p) == old.owns(p),
+            self.hdr(p) == old.hdr(p),
+            self.hdr_class(p) == old.hdr_class(p),
+            self.cached_len(p) == old.cached_len(p),
+            self.cached(p, i) == old.cached(p, i),
+            self.tokened() == old.tokened(),
+            self.home() == old.home(),
+            old.wf() ==> self.wf(),
+    {
+    }
+
     /// Whole-allocator theorem 5, uniqueness (`verus/TODO.md`,
     /// "Uniqueness: slot tokens"), for one cached entry of a well-formed
     /// heap: it stands for a slot of its header's class, and that slot is

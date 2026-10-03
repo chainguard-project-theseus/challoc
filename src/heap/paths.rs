@@ -299,6 +299,7 @@ impl Heap {
             crate::meta::is_pow2(align),
         ensures
             final(self).keeps(*old(self)),
+            final(self).caches_same(*old(self)),
             r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
             r.0@.addr != 0 ==> size <= shared.huge_usable(size),
             r.0@.addr != 0 ==> shared.huge_ok(size),
@@ -325,6 +326,7 @@ impl Heap {
             tok.start() == page,
         ensures
             final(self).keeps(*old(self)),
+            final(self).caches_same(*old(self)),
     {
         // `zero_on_free`'s token for the cleared run (`theorem_zero_on_free_huge`).
         let tracked mut z = Zeroed::empty(0);
@@ -353,6 +355,7 @@ impl Heap {
             old(self).wf(),
         ensures
             final(self).keeps(*old(self)),
+            final(self).caches_same(*old(self)),
     {
         self.uncached.allocated = self.uncached.allocated.wrapping_add(bytes as u64);
     }
@@ -365,6 +368,7 @@ impl Heap {
             old(self).wf(),
         ensures
             final(self).keeps(*old(self)),
+            final(self).caches_same(*old(self)),
     {
         self.uncached.deallocated = self.uncached.deallocated.wrapping_add(bytes as u64);
     }
@@ -378,6 +382,7 @@ impl Heap {
             old(self).wf(),
         ensures
             final(self).keeps(*old(self)),
+            final(self).caches_same(*old(self)),
     {
         self.count_uncached_alloc(class_size(class));
     }
@@ -390,6 +395,7 @@ impl Heap {
             old(self).wf(),
         ensures
             final(self).keeps(*old(self)),
+            final(self).caches_same(*old(self)),
     {
         self.count_uncached_free(class_size(class));
     }
@@ -881,7 +887,12 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
             }
             shared.free_direct(arena, class, p, Tracked(tok));
             if let Some(h) = existing_heap(shared_ptr(shared)) {
+                let ghost before = *h;
                 h.count_direct_free(class);
+                proof {
+                    // No cache gained or lost a slot (`Heap::caches_same`).
+                    assert(h.caches_same(before));
+                }
             }
         }
         Err(page) => {
@@ -903,7 +914,12 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
             let tracked t = blk.take_run(p, page);
             let n = shared.free_huge(page, Tracked(t));
             if let Some(h) = existing_heap(shared_ptr(shared)) {
+                let ghost before = *h;
                 h.count_uncached_free(n);
+                proof {
+                    // No cache gained or lost a slot (`Heap::caches_same`).
+                    assert(h.caches_same(before));
+                }
             }
         }
     }

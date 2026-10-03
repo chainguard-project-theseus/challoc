@@ -213,7 +213,12 @@ pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache, 
             let (p, zero, z) = alloc_direct(shared, class, a, Tracked(blk));
             if !p.is_null() {
                 if let Some(h) = crate::heap::existing_heap(crate::heap::shared_ptr(shared)) {
+                    let ghost before = *h;
                     h.count_direct_alloc(class);
+                    proof {
+                        // No cache gained or lost a slot (`Heap::caches_same`).
+                        assert(h.caches_same(before));
+                    }
                 }
             }
             (p, zero, z)

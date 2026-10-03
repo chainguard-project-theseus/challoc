@@ -2575,7 +2575,7 @@ fn assert_refill_empty(len: &u32)
 
 ### S120. `Heap::axiom_list_bound`
 
-src/heap/mod.rs:3348. Kind: external_body proof. Category: allocator invariant.
+src/heap/mod.rs:3384. Kind: external_body proof. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > The `others` list of a well-formed heap has fewer than `usize::MAX` nodes.
@@ -2590,7 +2590,7 @@ proof fn axiom_list_bound(&self)
 
 ### S121. `arena_volatile`
 
-src/heap/mod.rs:3762. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/heap/mod.rs:3798. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::checked_slot`]): a plain load is hoisted above the multi-arena flag test and touches the heap's header line on every single-arena `free`.
@@ -2601,7 +2601,7 @@ pub(super) fn arena_volatile(&self) -> u16 opens_invariants none
 
 ### S122. `init_fields`
 
-src/heap/mod.rs:4614. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:4650. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The fields of a fresh heap before its home headers, stored field by field ([`Heap::create_detached`]).
@@ -2616,7 +2616,7 @@ unsafe fn init_fields(h: *mut Heap, shared: &Shared, arena: u16, Tracked(head): 
 
 ### S123. `assign_home`
 
-src/heap/mod.rs:4641. Kind: external_body. Category: allocator invariant.
+src/heap/mod.rs:4677. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > [`Arenas::assign`](crate::arena::Arenas::assign) on the process's arenas.
@@ -2631,7 +2631,7 @@ fn assign_home(shared: &Shared) -> (r: u16)
 
 ### S124. `mark_bound`
 
-src/heap/mod.rs:4658. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:4694. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `(*h).bound = true` for a heap [`Heap::create`] has just made.
@@ -2642,7 +2642,7 @@ unsafe fn mark_bound(h: *mut Heap)
 
 ### S125. `Heap::destroy`
 
-src/heap/mod.rs:4838. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:4874. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > Flush every cache, free them and the heap itself back to the metadata allocator.
@@ -2759,7 +2759,7 @@ pub(super) unsafe fn node_caches(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int
 
 ### S133. `debug_scheduled`
 
-src/heap/paths.rs:972. Kind: external_body. Category: panic/abort.
+src/heap/paths.rs:988. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`Heap::alloc_slow`]'s `debug_assert!` that a non-empty home cache reached it through a scheduled pop the fast pop declined (design 6.4): `allocs`, the pop's count, has no bit of `mask` set.
@@ -2770,7 +2770,7 @@ fn debug_scheduled(allocs: u64, mask: u32)
 
 ### S134. `shared_of`
 
-src/heap/paths.rs:982. Kind: external_body. Category: raw pointer (internal).
+src/heap/paths.rs:998. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The `Shared` a heap was created on, with a lifetime free of the heap's borrow (so the heap can be borrowed mutably while it is used).
