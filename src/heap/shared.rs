@@ -17,7 +17,9 @@ use crate::meta::Meta;
 
 use super::heap_destructor;
 use super::tcaches::Tcaches;
-use super::{FREE_ROUTE, Heap, PARK_SLOTS, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
+use super::{
+    FREE_ROUTE, Heap, PARK_SLOTS, PARK_TTL_NS, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free,
+};
 
 /// The cache GC period (design 6.4): 10 s.
 pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
@@ -474,6 +476,51 @@ impl Shared {
             }
             _ => ptr::null_mut(),
         }
+    }
+
+    /// Whether parked heap `h` has waited [`PARK_TTL_NS`] at `now` (its
+    /// `last_gc` is the park time, `Heap::park`).
+    ///
+    /// # Safety
+    /// `h` was taken out of its slot by the caller.
+    pub(super) unsafe fn parked_too_long(h: *mut Heap, now: u64) -> bool {
+        // SAFETY: the caller owns `h`.
+        now.saturating_sub(unsafe { (*h).last_gc }) >= PARK_TTL_NS
+    }
+
+    /// Destroy the parked heaps that have waited [`PARK_TTL_NS`] (design
+    /// 6.5: the decay pass, on the background thread or a periodic tick),
+    /// purging an arena no thread is homed on as a thread exit would
+    /// (`Heap::exit_purge`). Returns when the next of the others is due,
+    /// `None` when none waits. Each occupied slot is taken while it is
+    /// looked at and put back when it is not due: a thread homed there in
+    /// that window just starts a fresh heap.
+    pub fn expire_parked(&self, now: u64) -> Option<u64> {
+        let n = (self.arenas.auto() as usize).min(PARK_SLOTS);
+        let mut next: Option<u64> = None;
+        for (i, slot) in self.parked[..n].iter().enumerate() {
+            if slot.load(Ordering::Relaxed).is_null() {
+                continue;
+            }
+            let h = slot.swap(ptr::null_mut(), Ordering::Acquire);
+            if h.is_null() {
+                continue;
+            }
+            // SAFETY: the swap took `h` out of its slot, so this call owns
+            // it until it is parked again or destroyed.
+            unsafe {
+                if !Self::parked_too_long(h, now) {
+                    let due = (*h).last_gc.saturating_add(PARK_TTL_NS);
+                    if self.park(i as u16, h) {
+                        next = Some(next.map_or(due, |d| d.min(due)));
+                        continue;
+                    }
+                }
+                Heap::destroy(h, self);
+                Heap::exit_purge(self, i as u16);
+            }
+        }
+        next
     }
 
     /// Destroy every parked heap, returning its cached slots to their slabs

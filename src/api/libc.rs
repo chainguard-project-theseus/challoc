@@ -452,7 +452,7 @@ pub fn malloc_usable(size: usize, usable: *mut usize) -> *mut u8 {
     };
     let shared = super::shared_ptr();
     let Some(h) = heap::existing_heap(shared) else {
-        return malloc_usable_class(c, usable);
+        return malloc_usable_first(c, usable);
     };
     // SAFETY: as in `malloc`.
     let flags = unsafe { heap::fast_flags(shared) };
@@ -465,14 +465,27 @@ pub fn malloc_usable(size: usize, usable: *mut usize) -> *mut u8 {
     }
 }
 
-/// `malloc_usable` off its fast path for a slab class: the refill, the
-/// scheduled pop and heap creation (`heap::alloc_declined`, then
-/// `Heap::alloc_slow`, dispatch all three),
+/// `malloc_usable` of a slab class on a thread with no heap yet: the heap
+/// it gets may be a parked one with full caches (design 6.5), so the pop
+/// comes first (`heap::alloc`), as for `malloc`'s `malloc_slow`.
+#[cold]
+#[inline(never)]
+fn malloc_usable_first(class: usize, usable: *mut usize) -> *mut u8 {
+    store_class_usable(heap::alloc(super::shared(), class), class, usable)
+}
+
+/// `malloc_usable` of a slab class whose fast pop declined: the refill or
+/// the scheduled pop (`heap::alloc_declined`, then `Heap::alloc_slow`),
 /// null with `errno = ENOMEM` on failure.
 #[cold]
 #[inline(never)]
 fn malloc_usable_class(class: usize, usable: *mut usize) -> *mut u8 {
-    let p = heap::alloc_declined(super::shared(), class);
+    store_class_usable(heap::alloc_declined(super::shared(), class), class, usable)
+}
+
+/// The tail of the two above: `p`, its class's usable size stored, or
+/// null with `errno = ENOMEM` and 0 stored.
+fn store_class_usable(p: *mut u8, class: usize, usable: *mut usize) -> *mut u8 {
     if p.is_null() {
         store_usable(usable, 0);
         return enomem();

@@ -53,6 +53,13 @@
  *                                 with double_free_scan
  *   negative free_usable_huge_twice free of a 1 MiB run, then
  *                                 challoc_free_usable of it
+ *   negative double_free_after_exit malloc and free(p) on a thread that then
+ *                                 exits with p cached, and free(p) on main
+ *                                 after 300 ms with the background thread
+ *                                 on: the exited heap is parked with its
+ *                                 caches for at most PARK_TTL_NS (100 ms,
+ *                                 design 6.5), then returned to the slabs,
+ *                                 so the slot bit is clear again
  */
 #include "common.h"
 #include <stdbool.h>
@@ -125,6 +132,17 @@ static unsigned small_cache_cap(void)
     ssize_t lg_mul = ctl_ssize("opt.lg_tcache_nslots_mul");
     unsigned cap = lg_mul >= 1 ? max : max >> (1 - lg_mul);
     return cap < 8 ? 8 : cap;
+}
+
+/* double_free_after_exit: allocate the victim on a thread (so it is in the
+ * thread's home caches, not a foreign one) and free it there, then exit. */
+static void *free_and_exit(void *arg)
+{
+    void *p = malloc(64);
+    REQUIRE(p != NULL, "malloc(64) failed");
+    *(uintptr_t *)arg = (uintptr_t)p;
+    free(p);
+    return NULL;
 }
 
 static int cmp_ptr(const void *a, const void *b)
@@ -348,6 +366,20 @@ int main(int argc, char **argv)
         free(bad);
         size_t u = challoc_free_usable(bad); /* must abort: the run is no longer live */
         printf("free_usable of the freed huge run %p returned %zu\n", bad, u);
+    } else if (strcmp(mode, "double_free_after_exit") == 0) {
+        bool on = true;
+        REQUIRE(mallctl != NULL, "mallctl not exported");
+        REQUIRE(mallctl("background_thread", NULL, NULL, &on, sizeof on) == 0,
+                "background_thread");
+        pthread_t t;
+        uintptr_t p = 0;
+        REQUIRE(pthread_create(&t, NULL, free_and_exit, &p) == 0, "pthread_create");
+        REQUIRE(pthread_join(t, NULL) == 0, "pthread_join");
+        bad = (void *)p;
+        struct timespec ts = {0, 300 * 1000 * 1000};
+        while (nanosleep(&ts, &ts) != 0)
+            ;
+        free(bad); /* must abort: the parked heap expired, the slot bit is clear */
     } else {
         REQUIRE(0, "unknown mode %s", mode);
     }

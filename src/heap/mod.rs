@@ -123,6 +123,12 @@ pub const PUSH_PAC: u8 = 4;
 /// Automatic arenas whose exited thread heaps are parked for the next
 /// thread homed there (`Heap::park`): the default `narenas` is at most 64.
 pub const PARK_SLOTS: usize = 64;
+/// How long a parked heap waits for the next thread on its arena before
+/// it is destroyed (`Shared::expire_parked`): 100 ms. Its cached slots
+/// keep their slot bits set while it waits, so a stale `free` of one is
+/// not caught by the bit test until then (design 6.5); a program that
+/// replaces threads faster than this keeps the takeover.
+pub const PARK_TTL_NS: u64 = 100_000_000;
 /// `Shared::free_flags` bit, never in `push_flags`: more than one arena
 /// exists, so plain `free` compares the slot's owner word with the heap's
 /// home arena before pushing.
@@ -200,8 +206,13 @@ impl Heap {
         if !parked.is_null() {
             // SAFETY: a parked heap belongs to no thread; `take_parked`
             // handed it to this one alone.
-            unsafe { (*parked).adopt() };
-            return parked;
+            unsafe {
+                if !Shared::parked_too_long(parked, now_ns()) {
+                    (*parked).adopt();
+                    return parked;
+                }
+                Heap::destroy(parked, shared);
+            }
         }
         let h = Self::create_detached(shared, arena);
         if h.is_null() {
@@ -258,7 +269,7 @@ impl Heap {
         heap.flush_all(shared);
         Self::free_caches(shared, &mut heap.caches);
         heap.drop_others(shared);
-        heap.release_binding(shared);
+        heap.release_binding(shared, true);
         shared.meta.free(h as *mut u8, Layout::new::<Heap>());
     }
 
@@ -270,8 +281,13 @@ impl Heap {
     /// the arena binding is released here, as [`Heap::destroy`] does. One
     /// heap per arena waits (`Shared::park`); `false` when the arena's
     /// slot is taken or the heap is not a bound thread heap with caches,
-    /// and the caller destroys it. `malloc_trim` and the full purge
-    /// destroy the heaps that wait (`Shared::drain_parked`).
+    /// and the caller destroys it. A heap that has waited
+    /// [`PARK_TTL_NS`] is destroyed instead of taken over, by the next
+    /// decay pass or the next thread on its arena
+    /// (`Shared::expire_parked`), so what an exited thread left cached is
+    /// back in its slabs (its slot bits clear, its slabs free to go
+    /// `Empty` and decay) within that time; `malloc_trim` and the full
+    /// purge destroy the heaps that wait at once (`Shared::drain_parked`).
     ///
     /// # Safety
     /// As for [`Heap::destroy`]; on `true` the heap is owned by the slot.
@@ -283,8 +299,16 @@ impl Heap {
         }
         heap.flush_others(shared);
         heap.drop_others(shared);
-        heap.release_binding(shared);
-        shared.park(heap.arena, h)
+        heap.release_binding(shared, false);
+        // The park time; the next owner restarts its GC interval anyway.
+        heap.last_gc = now_ns();
+        if !shared.park(heap.arena, h) {
+            return false;
+        }
+        // A background thread asleep without a deadline must learn the
+        // parked heap's (`Shared::expire_parked`).
+        crate::purge::note_empty();
+        true
     }
 
     /// Take over a parked heap for the calling thread: its binding was
@@ -301,6 +325,11 @@ impl Heap {
         };
         self.snapshot = ThreadStats::default();
         self.tid = tid();
+        self.last_gc = now_ns();
+        // Reseed `slot_randomize` from `getrandom` at the next randomised
+        // claim, as a fresh heap does: a parked heap is copied into every
+        // forked child, which would otherwise all lay out alike.
+        self.rng = 0;
         self.bound = true;
     }
 
@@ -331,25 +360,33 @@ impl Heap {
 
     /// Release a thread heap's arena binding (nothing for an explicit cache
     /// or a heap already released), purging the arena's `Empty` slabs when
-    /// it was the last heap homed there.
-    fn release_binding(&mut self, shared: &Shared) {
+    /// it was the last heap homed there and `purge` is set (not for a heap
+    /// being parked: it keeps its home caches, so its slabs are not
+    /// `Empty`; [`Shared::expire_parked`] purges when it destroys it).
+    fn release_binding(&mut self, shared: &Shared, purge: bool) {
         if self.bound {
             self.bound = false;
             let arena = self.arena;
             shared.arenas.unbind(arena);
-            // jemalloc's rule (`tcache_destroy`): the last thread homed on
-            // an arena leaves, so nothing will refill its `Empty` slabs
-            // soon; purge them now instead of letting them sit for the
-            // decay window. The caches the heap flushed are most of
-            // them (a parked heap keeps its home caches). Not with a background thread, which decays on its own
-            // schedule (as jemalloc), and at most once per decay period
-            // per arena (`Arena::take_exit_purge`: thread churn would
-            // purge and refault the same slabs at every exit). Design 13.3.
-            if shared.arenas.bound(arena) == 0 && !crate::purge::background::present() {
-                if let Some(a) = shared.arenas.get_existing(arena) {
-                    if a.take_exit_purge(now_ns()) {
-                        crate::purge::purge_arena(shared, arena);
-                    }
+            if purge {
+                Self::exit_purge(shared, arena);
+            }
+        }
+    }
+
+    /// jemalloc's rule (`tcache_destroy`): the last thread homed on an
+    /// arena has left, so nothing will refill its `Empty` slabs soon;
+    /// purge them now instead of letting them sit for the decay window.
+    /// The caches just flushed are most of them. Not with a background
+    /// thread, which decays on its own schedule (as jemalloc), and at most
+    /// once per decay period per arena (`Arena::take_exit_purge`: thread
+    /// churn would purge and refault the same slabs at every exit).
+    /// Design 13.3.
+    fn exit_purge(shared: &Shared, arena: u16) {
+        if shared.arenas.bound(arena) == 0 && !crate::purge::background::present() {
+            if let Some(a) = shared.arenas.get_existing(arena) {
+                if a.take_exit_purge(now_ns()) {
+                    crate::purge::purge_arena(shared, arena);
                 }
             }
         }

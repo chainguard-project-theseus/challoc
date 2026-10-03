@@ -1,8 +1,10 @@
 /*
- * Threads that exit with full caches. The thread-exit destructor must hand
- * every cached slot back to its slab, so across many short-lived threads
- * the set of distinct addresses stays bounded: if the caches leaked, each
- * thread would consume fresh slots and the count would grow linearly.
+ * Threads that exit with full caches. The thread-exit destructor parks the
+ * heap with its caches for the next thread on its arena, or hands every
+ * cached slot back to its slab (design 6.5), so across many short-lived
+ * threads the set of distinct addresses stays bounded: if the caches
+ * leaked, each thread would consume fresh slots and the count would grow
+ * linearly.
  * Also: blocks that outlive their allocating thread stay intact and can be
  * freed by main; a pthread key destructor that allocates after challoc's
  * own destructor has run is served through the direct path; a thread that

@@ -2390,6 +2390,79 @@ fn an_exited_heap_is_parked_and_taken_over_on_its_arena() {
     assert!((0..4).all(|i| s.arenas.bound(i) == 0));
 }
 
+/// Live slots of class `c` in arena `index`.
+fn live_in(s: &Shared, index: u16, c: usize) -> usize {
+    let cs = &s.arenas.get_existing(index).unwrap().classes[c];
+    (0..cs.committed_slabs())
+        .filter(|&i| !cs.is_guard_slab(i))
+        .map(|i| cs.desc(i).live())
+        .sum()
+}
+
+/// A parked heap is bounded in time (design 6.5): the decay pass destroys
+/// it once it has waited `PARK_TTL_NS`, which returns its cached slots to
+/// their slabs (slot bits clear, so a stale `free` of one is caught again)
+/// and reports the deadline until then; the next heap on an arena whose
+/// parked heap is too old is fresh; a taken-over heap reseeds
+/// `slot_randomize` rather than continue the exited thread's sequence.
+#[test]
+fn a_parked_heap_expires_after_the_park_ttl() {
+    let s = TestShared::with(Config {
+        narenas: 4,
+        ..Config::DEFAULT
+    })
+    .build();
+    let main = TestHeap::new(s);
+    let c = class_with(64);
+    let fill = |w: &TestHeap| {
+        assert_eq!(w.heap().arena(), 1);
+        let ps: Vec<*mut u8> = (0..10).map(|_| w.alloc(c)).collect();
+        for &p in &ps {
+            w.free(p);
+        }
+        w.heap().rng = 0x1234_5678;
+    };
+    let w = TestHeap::new(s);
+    fill(&w);
+    let cached = w.len(c);
+    assert!(cached >= 10);
+    assert_eq!(live_in(s, 1, c), cached, "cached slots keep their bits");
+    // SAFETY: `w` is not used again; the slot owns the heap.
+    assert!(unsafe { Heap::park(w.h, s) });
+    // SAFETY: parked, untouched by any thread here.
+    let at = unsafe { (*w.h).last_gc };
+    assert_eq!(
+        s.expire_parked(at + PARK_TTL_NS - 1),
+        Some(at + PARK_TTL_NS)
+    );
+    assert_eq!(live_in(s, 1, c), cached, "not due: still parked");
+    let n = TestHeap::new(s);
+    assert_eq!(n.h, w.h, "taken over within the TTL");
+    assert_eq!(n.heap().rng, 0, "reseeded at takeover");
+    // SAFETY: as above.
+    assert!(unsafe { Heap::park(n.h, s) });
+    let at = unsafe { (*n.h).last_gc };
+    let _ = crate::purge::decay(s, at + PARK_TTL_NS);
+    assert_eq!(live_in(s, 1, c), 0, "expired: the cache went back");
+    assert_eq!(s.drain_parked(), 0);
+    let f = TestHeap::new(s);
+    assert_eq!(f.heap().arena(), 1);
+    assert!(f.heap().cache(c).is_none(), "fresh after expiry");
+    // Too old at takeover: the next heap destroys it and starts fresh.
+    fill(&f);
+    let fh = f.h;
+    // SAFETY: as above.
+    assert!(unsafe { Heap::park(fh, s) });
+    unsafe { (*fh).last_gc -= PARK_TTL_NS };
+    let g = TestHeap::new(s);
+    assert_eq!(g.heap().arena(), 1);
+    assert!(g.heap().cache(c).is_none(), "an expired heap is not taken");
+    assert_eq!(live_in(s, 1, c), 0);
+    g.destroy();
+    main.destroy();
+    assert!((0..4).all(|i| s.arenas.bound(i) == 0));
+}
+
 /// `narenas:0` (the default) is resolved at init from the CPU count
 /// and stored, so `opt.narenas` and `arenas.auto` agree on it.
 #[test]
