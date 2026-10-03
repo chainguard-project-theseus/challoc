@@ -52,6 +52,15 @@ pub struct Regions {
     pub superblock: usize,
     pub lg_region: u32,
     pub lg_stride: u32,
+    /// `1 << lg_region`, stored on x86_64 so that the sized free's region
+    /// bound (`Shared::sized_slot`, through `sized_bound`) is one compare with a memory operand:
+    /// against the shift LLVM emits a load of the shift count, a copy, a
+    /// shift and a test. On the line `superblock` sits on. Not on aarch64,
+    /// whose `lsr` by a loaded count and `cbnz` are no longer than a load
+    /// and a compare, and whose layout is kept as it was (#90 and #93:
+    /// moving it measured as a placement effect there).
+    #[cfg(target_arch = "x86_64")]
+    region_len: usize,
     /// Start of each class region, `MAX_SLAB`-aligned, inside its stride.
     pub class_base: [usize; NCLASSES],
     pub huge_base: usize,
@@ -93,6 +102,8 @@ impl Regions {
             superblock,
             lg_region,
             lg_stride,
+            #[cfg(target_arch = "x86_64")]
+            region_len: 1 << lg_region,
             class_base,
             huge_base: huge.0,
             huge_len: huge.1,
@@ -108,6 +119,18 @@ impl Regions {
     #[inline]
     pub const fn region_len(&self) -> usize {
         1 << self.lg_region
+    }
+
+    /// [`region_len`](Regions::region_len) for the sized free's region
+    /// bound (`Shared::sized_slot`): the stored copy on x86_64, the shift
+    /// elsewhere. The other users keep the shift, so only the sized fast
+    /// path's code changes.
+    #[inline(always)]
+    pub const fn sized_bound(&self) -> usize {
+        #[cfg(target_arch = "x86_64")]
+        return self.region_len;
+        #[cfg(not(target_arch = "x86_64"))]
+        return 1 << self.lg_region;
     }
 
     #[cfg(test)]

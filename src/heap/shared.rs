@@ -762,7 +762,7 @@ impl Shared {
         // SAFETY: `class_of`/`class_for` only produce `class < NCLASSES`.
         let line = unsafe { self.lines.get_unchecked(class) };
         let rel = (p as usize).wrapping_sub(line.class_base);
-        if rel >= self.regions.region_len() || !line.sized_ok(rel) {
+        if rel >= self.regions.sized_bound() || !line.sized_ok(rel) {
             return None;
         }
         Some(class)
