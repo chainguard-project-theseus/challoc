@@ -166,12 +166,47 @@ impl SlabTable {
     /// scales by a power of two), so that the sized fast path's test is a
     /// mask; callers must pass 0 when `MADV_GUARD_INSTALL` is unavailable,
     /// since a `PROT_NONE` slab would split the region into one VMA per
-    /// guard (design section 5).
+    /// guard (design section 5). The tests' constructor; `Shared::init`
+    /// reserves the bitmaps first ([`reserve_bits`]).
+    ///
+    /// [`reserve_bits`]: SlabTable::reserve_bits
+    #[cfg(test)]
     pub fn new(
         meta: &Meta,
         regions: &Regions,
         class: usize,
         guard_interval: u32,
+    ) -> Option<SlabTable> {
+        let bits = Self::reserve_bits(meta, regions, class)?;
+        Self::with_bits(meta, regions, class, guard_interval, bits)
+    }
+
+    /// Reserve the class bitmap of `class`, readable past its committed
+    /// part: the `free` fast path tests a bit without checking the
+    /// watermark first ([`is_set_unchecked`]). `Shared::init` reserves all
+    /// the bitmaps first, back to back, so the `PROT_READ` reservations of
+    /// classes not yet used form one mapping, as the `PROT_NONE` tables
+    /// around them do, rather than one per class.
+    ///
+    /// [`is_set_unchecked`]: SlabTable::is_set_unchecked
+    pub(crate) fn reserve_bits(meta: &Meta, regions: &Regions, class: usize) -> Option<Lazy> {
+        assert!(class < CLASSES.len(), "class: index out of range");
+        let align = DESC_ALIGN.max(regions.page_size());
+        Lazy::reserve_readable(
+            meta,
+            desc_stagger(class) + (regions.nslabs(class) * CLASSES[class].slab_bits()).div_ceil(8),
+            align,
+        )
+    }
+
+    /// [`new`](SlabTable::new) over a bitmap from
+    /// [`reserve_bits`](SlabTable::reserve_bits).
+    pub(crate) fn with_bits(
+        meta: &Meta,
+        regions: &Regions,
+        class: usize,
+        guard_interval: u32,
+        bits: Lazy,
     ) -> Option<SlabTable> {
         assert!(class < CLASSES.len(), "class: index out of range");
         assert!(
@@ -192,13 +227,6 @@ impl SlabTable {
         let group = cls.slabs_per_line().max(slabs_per_page);
         assert!(group.is_power_of_two() && group % slabs_per_page == 0);
         let descs = Lazy::reserve(meta, stagger + nslabs * desc_stride(class), align)?;
-        // Readable past the committed part: the `free` fast path tests a
-        // bit without checking the watermark first (`is_set_unchecked`).
-        let bits = Lazy::reserve_readable(
-            meta,
-            stagger + (nslabs * cls.slab_bits()).div_ceil(8),
-            align,
-        )?;
         let owners = Lazy::reserve(meta, stagger + nslabs.div_ceil(group) * 2, align)?;
         Some(SlabTable {
             bits_base: bits.base + stagger,
