@@ -10,15 +10,18 @@
 #                                       cgroup (the privileged profile), as
 #                                       a child cgroup per run with the
 #                                       Makefile's limits (memory.max, swap
-#                                       0) instead of a container per run;
-#                                       elsewhere one SKIP line
+#                                       0 where cgroup_run sets it)
+#                                       instead of a container per run;
+#                                       elsewhere one SKIP line (a FAIL
+#                                       under the privileged profile)
 #   fuzz                                `make fuzz`: fuzz/fuzz.c under
 #                                       LD_PRELOAD, FUZZ_OPS (10M) on
 #                                       FUZZ_THREADS (4), seed FUZZ_SEED
 #
 # CHALLOC_TEST_ALLOW_SKIP=1 as in `make test`: a kernel- or privilege-gated
 # test prints `SKIP <test> <reason>` and passes. The last lines summarise
-# the run: `floor: <step> ok|FAIL`, the test result lines, every SKIP and
+# the run: `floor: <step> ok|FAIL`, the test result lines, every SKIP,
+# OUTCOME and fuzz line (uncapped) with their counts, the failing tests and
 # `floor: result pass|fail`. The exit status is 0 when every step passed.
 set -u
 unset LD_PRELOAD MALLOC_CONF CHALLOC_CONF
@@ -62,29 +65,41 @@ CGB=$CGM$CGP
 cg_ready=
 if [ -n "$CGM" ] && [ -w "$CGB/cgroup.subtree_control" ] && grep -qw memory "$CGB/cgroup.controllers" 2>/dev/null \
    && mkdir -p "$CGB/cb-floor-init" 2>/dev/null; then
-  for p in $(cat "$CGB/cgroup.procs"); do echo "$p" > "$CGB/cb-floor-init/cgroup.procs" 2>/dev/null; done
-  echo +memory > "$CGB/cgroup.subtree_control" 2>/dev/null && cg_ready=1
+  # A process forked between the move and the write keeps the parent busy
+  # (EBUSY): move again and retry.
+  for try in 1 2 3 4 5; do
+    for p in $(cat "$CGB/cgroup.procs"); do echo "$p" > "$CGB/cb-floor-init/cgroup.procs" 2>/dev/null; done
+    echo +memory > "$CGB/cgroup.subtree_control" 2>/dev/null && { cg_ready=1; break; }
+    sleep 1
+  done
 fi
 cgn=0
-# cg_step NAME LIMIT CMD...: CMD in a fresh child cgroup of LIMIT bytes
-# (memory.swap.max 0, the Makefile's --memory-swap equal to --memory).
+# cg_step NAME LIMIT SWAP CMD...: CMD in a fresh child cgroup of LIMIT
+# bytes. SWAP is the memory.swap.max: 0 for the Makefile's cgroup_run
+# (--memory-swap equal to --memory), max for test-cgroup-limit (--memory
+# only).
 cg_step() {
-  name=$1 lim=$2; shift 2
+  name=$1 lim=$2 swap=$3; shift 3
   cgn=$((cgn + 1)); d=$CGB/cb-floor-$cgn
   mkdir -p "$d" && echo "$lim" > "$d/memory.max" || { echo "floor: $name FAIL (cannot create $d)"; rc=1; return; }
-  [ -f "$d/memory.swap.max" ] && echo 0 > "$d/memory.swap.max"
+  [ -f "$d/memory.swap.max" ] && echo "$swap" > "$d/memory.swap.max"
   step "$name" sh -c 'echo $$ > "$0/cgroup.procs" && exec "$@"' "$d" "$@"
   rmdir "$d" 2>/dev/null
 }
 M512=536870912 M256=268435456
 if [ -n "$cg_ready" ]; then
-  cg_step cgroup-limit $M512 env CHALLOC_EXPECT_CGROUP_LIMIT=$M512 cargo test cgroup -- --nocapture --test-threads=1
-  cg_step cgroup-churn-512-purge $M512 sh scripts/cgroup-tests.sh churn challoc purge 400 100
-  cg_step cgroup-churn-512-keep $M512 sh scripts/cgroup-tests.sh churn challoc-off keep 400 100
-  cg_step cgroup-churn-256-purge $M256 sh scripts/cgroup-tests.sh churn challoc purge 200 50
-  cg_step cgroup-churn-256-keep $M256 sh scripts/cgroup-tests.sh churn challoc-off keep 200 50
-  cg_step cgroup-lazy-lazy $M512 sh scripts/cgroup-tests.sh lazy challoc lazy 200
-  cg_step cgroup-lazy-eager $M512 sh scripts/cgroup-tests.sh lazy challoc-eager eager 200
+  cg_step cgroup-limit $M512 max env CHALLOC_EXPECT_CGROUP_LIMIT=$M512 cargo test cgroup -- --nocapture --test-threads=1
+  cg_step cgroup-churn-512-purge $M512 0 sh scripts/cgroup-tests.sh churn challoc purge 400 100
+  cg_step cgroup-churn-512-keep $M512 0 sh scripts/cgroup-tests.sh churn challoc-off keep 400 100
+  cg_step cgroup-churn-256-purge $M256 0 sh scripts/cgroup-tests.sh churn challoc purge 200 50
+  cg_step cgroup-churn-256-keep $M256 0 sh scripts/cgroup-tests.sh churn challoc-off keep 200 50
+  cg_step cgroup-lazy-lazy $M512 0 sh scripts/cgroup-tests.sh lazy challoc lazy 200
+  cg_step cgroup-lazy-eager $M512 0 sh scripts/cgroup-tests.sh lazy challoc-eager eager 200
+elif [ "${CB_CONTAINER:-}" = privileged ]; then
+  # The privileged profile can always write its cgroup: failing to set it
+  # up is a failure, not a skip.
+  echo "floor: cgroup-setup FAIL (privileged, cannot enable +memory under ${CGB:-no cgroup2 mount})"
+  rc=1
 else
   echo "SKIP floor-cgroup the container cannot write its cgroup (${CGB:-no cgroup2 mount}); run the privileged profile"
 fi
@@ -93,8 +108,14 @@ fi
 FUZZ_OPS=${FUZZ_OPS:-10000000} FUZZ_THREADS=${FUZZ_THREADS:-4} FUZZ_SEED=${FUZZ_SEED:-0xC4A110C} FUZZ_TABLE=${FUZZ_TABLE:-2048}
 step fuzz-build sh scripts/ctest-cc.sh fuzz/fuzz.c -o "$CARGO_TARGET_DIR/fuzz"
 step fuzz env LD_PRELOAD="$CARGO_TARGET_DIR/release/libchalloc.so" "$CARGO_TARGET_DIR/fuzz" "$FUZZ_OPS" "$FUZZ_THREADS" "$FUZZ_SEED" "$FUZZ_TABLE"
-grep -E '^test result:|^failures:|^    [a-z_:]+$|panicked at|^SKIP |^OUTCOME |^fuzz' "$LOG" | sort | uniq -c | sort -rn | head -80
-grep -E '^---- .* stdout ----' "$LOG" | head -20
+# The summary in full: every test result, SKIP, OUTCOME and fuzz line (a
+# skipped test passes, so the SKIP lines are what a pass covers). Panics
+# are a separate, capped block: the should_panic tests print ~70 of them on
+# a passing run, and they must not push the SKIP lines out of a capped list.
+grep -E '^test result:|^SKIP |^OUTCOME |^fuzz' "$LOG" | sort | uniq -c | sort -rn
+echo "floor: $(grep -c '^SKIP ' "$LOG") SKIP lines, $(grep -c '^OUTCOME ' "$LOG") OUTCOME lines"
+grep -E '^failures:|^    [a-z_:]+$|^---- .* stdout ----' "$LOG" | head -40
+[ $rc = 0 ] || grep -E 'panicked at' "$LOG" | sort | uniq -c | sort -rn | head -40
 [ $rc = 0 ] || tail -60 "$LOG"
 echo "floor: result $([ $rc = 0 ] && echo pass || echo fail)"
 exit $rc
