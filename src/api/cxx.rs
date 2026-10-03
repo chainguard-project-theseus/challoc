@@ -215,14 +215,37 @@ pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize) {
 mod exports {
     use core::ffi::c_void;
 
+    // On x86_64 the plain and sized `new` and `delete` pairs sit in
+    // 64-byte-aligned sections of their own, as `malloc` and `free` do
+    // (`libc::exports`): C++ programs reach the allocator through these,
+    // and their entry offset mod 64 otherwise moves with every change to
+    // the code linked ahead of them (alloc-test1 +1.7% on Emerald Rapids
+    // when `operator delete` moved from 16 to 48 mod 64, the same
+    // instructions). The array forms are the same functions (LLVM merges
+    // them into aliases) and share the section.
+    #[cfg(target_arch = "x86_64")]
+    core::arch::global_asm!(
+        ".pushsection .text.challoc.new,\"ax\",@progbits",
+        ".p2align 6",
+        ".popsection",
+        ".pushsection .text.challoc.delete,\"ax\",@progbits",
+        ".p2align 6",
+        ".popsection",
+        ".pushsection .text.challoc.delete_sized,\"ax\",@progbits",
+        ".p2align 6",
+        ".popsection",
+    );
+
     /// `operator new(size_t)`
     #[unsafe(export_name = "_Znwm")]
+    #[cfg_attr(target_arch = "x86_64", unsafe(link_section = ".text.challoc.new"))]
     pub extern "C" fn new(size: usize) -> *mut c_void {
         super::new(size) as *mut c_void
     }
 
     /// `operator new[](size_t)`
     #[unsafe(export_name = "_Znam")]
+    #[cfg_attr(target_arch = "x86_64", unsafe(link_section = ".text.challoc.new"))]
     pub extern "C" fn new_array(size: usize) -> *mut c_void {
         super::new(size) as *mut c_void
     }
@@ -273,12 +296,14 @@ mod exports {
 
     /// `operator delete(void*)`
     #[unsafe(export_name = "_ZdlPv")]
+    #[cfg_attr(target_arch = "x86_64", unsafe(link_section = ".text.challoc.delete"))]
     pub extern "C" fn delete(p: *mut c_void) {
         super::delete(p as *mut u8)
     }
 
     /// `operator delete[](void*)`
     #[unsafe(export_name = "_ZdaPv")]
+    #[cfg_attr(target_arch = "x86_64", unsafe(link_section = ".text.challoc.delete"))]
     pub extern "C" fn delete_array(p: *mut c_void) {
         super::delete(p as *mut u8)
     }
@@ -297,12 +322,20 @@ mod exports {
 
     /// `operator delete(void*, size_t)`
     #[unsafe(export_name = "_ZdlPvm")]
+    #[cfg_attr(
+        target_arch = "x86_64",
+        unsafe(link_section = ".text.challoc.delete_sized")
+    )]
     pub extern "C" fn delete_sized(p: *mut c_void, size: usize) {
         super::delete_sized(p as *mut u8, size)
     }
 
     /// `operator delete[](void*, size_t)`
     #[unsafe(export_name = "_ZdaPvm")]
+    #[cfg_attr(
+        target_arch = "x86_64",
+        unsafe(link_section = ".text.challoc.delete_sized")
+    )]
     pub extern "C" fn delete_array_sized(p: *mut c_void, size: usize) {
         super::delete_sized(p as *mut u8, size)
     }

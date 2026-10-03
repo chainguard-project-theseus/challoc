@@ -1373,7 +1373,11 @@ mod tests {
             .expect("nm");
         assert!(out.status.success(), "nm -D {so} failed");
         let syms = String::from_utf8(out.stdout).unwrap();
-        for name in ["malloc", "free"] {
+        // `malloc` and `free` (`exports` here), and the C++ entries
+        // pinned the same way (`cxx::exports`).
+        for name in [
+            "malloc", "free", "_Znwm", "_Znam", "_ZdlPv", "_ZdaPv", "_ZdlPvm", "_ZdaPvm",
+        ] {
             let addr = syms
                 .lines()
                 .find_map(|l| {
@@ -1390,7 +1394,7 @@ mod tests {
                     addr % 64,
                     0,
                     "{name} at {addr:#x} is not at 0 mod 64 in {so}: the x86_64 entry pin \
-                     (src/api/libc.rs `exports`) no longer holds"
+                     (src/api/libc.rs and src/api/cxx.rs `exports`) no longer holds"
                 );
             }
         }
