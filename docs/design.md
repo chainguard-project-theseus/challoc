@@ -81,9 +81,7 @@ stacks, huge descriptors) grow from a bump pointer at the base, committed
 in 64 KiB chunks, and the never-freed tables (a class's descriptor array,
 slot bitmap and owner array, an arena's set tables, the huge free-page
 bitmap, the background thread's stack) are reserved downward from the top
-and committed page by page as slab numbers grow (the class bitmaps are
-`PROT_READ` rather than `PROT_NONE` until then, for the `free` check of
-6.3). Each committed table
+and committed page by page as slab numbers grow. Each committed table
 prefix is its own VMA, so to keep the mapping count (and the cost of
 `fork`) down a table of at most `meta::EAGER_MAX` (8 MiB) is carved from
 the object side instead, writable from the start (`Meta::reserve_table`;
@@ -483,13 +481,17 @@ entry points in `api/` are built from them.
    (no test of its own on the fast path, as in jemalloc's `free`).
 2. Compute slab and slot; verify the offset is a slot start (section 3:
    multiply, rotate, compare against `nslots`); load the class bitmap
-   word; verify the bit is set. Otherwise abort. The hand-out watermark
-   is not compared first: the bitmap reservation reads as zero past its
-   committed pages (`Meta::reserve_table_readable`, `PROT_READ`: no
-   commit charge, no RSS) and a slab never handed out has no bit set, so
-   the bit test alone sends it to the slow path, which names it
-   (`was never allocated`). The 52 bitmaps are reserved back to back so
-   their unused tails are one mapping.
+   word; verify the bit is set. Otherwise abort. The slab is compared
+   with the class's hand-out watermark before the bitmap load, and that
+   compare is the region bound too (`Regions::slab_slot_unbounded`): an
+   address past the region, or below its base where the offset wraps,
+   has a slab number of at least `nslabs`, which no watermark reaches.
+   (Dropping the watermark instead, by reserving the bitmaps `PROT_READ`
+   so a never-handed slab reads a clear bit, was measured and rejected:
+   `mlockall` populates the 8 GiB of read-only tails with zero-page
+   entries, 16 MiB of locked page tables per process, and
+   `MADV_HUGEPAGE` does not help, since a huge zero page mapping still
+   deposits its page table.)
 3. The opt-in hardening: one byte (`Shared::free_flags`, `push_flags`
    plus the `FREE_ROUTE` bit of step 4, on a line step 2 already
    loaded), zero by default on every host with one arena (`pac_pointers`

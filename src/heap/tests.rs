@@ -1944,30 +1944,46 @@ fn free_into_an_uncommitted_slab_aborts() {
     t.free(s.regions.slab_addr(c, 5) as *mut u8);
 }
 
-/// The `free` fast path reads no watermark: the class bitmap is readable
-/// past its committed pages (`Meta::reserve_table_readable`) and zero
-/// there, so a slot start in a slab never handed out, up to the region's
-/// last slab, reads a clear bit and leaves for the slow path, in every
-/// class.
+/// The `free` fast path's one bound is the watermark compare
+/// (`Regions::slab_slot_unbounded`): a slot start in a slab never handed
+/// out, up to the region's last slab, and the slot-aligned addresses just
+/// past the region and below its base (in the gap of the stride) all
+/// leave for the slow path, in every class.
 #[test]
-fn the_bit_test_alone_rejects_slabs_never_handed_out() {
+fn the_watermark_compare_alone_bounds_the_region() {
     let s = shared();
     let t = TestHeap::new(s);
     let h = t.heap();
     for c in 0..NCLASSES {
         let committed = s.arena0.class(c).committed_slabs();
         let last = s.regions.nslabs(c) - 1;
+        let base = s.regions.slab_addr(c, 0);
+        let len = s.regions.region_len();
+        let mut ps = std::vec::Vec::new();
         for slab in [committed, committed + 1, last / 2, last] {
-            let p = s.regions.slab_addr(c, slab) as *mut u8;
-            assert_eq!(s.checked_slot_any(p), None, "class {c} slab {slab}");
-            assert!(!free_fast(s, h, p, s.free_flags()), "class {c} slab {slab}");
+            ps.push(s.regions.slab_addr(c, slab));
+        }
+        // The gap after the region, and the stride's start when the
+        // region's slide leaves a gap before it (the offset wraps).
+        let stride_start = s.regions.superblock + c * s.regions.stride();
+        assert!(base + len <= stride_start + s.regions.stride());
+        if base + len < stride_start + s.regions.stride() {
+            ps.push(base + len);
+        }
+        if stride_start < base {
+            ps.push(stride_start);
+        }
+        for p in ps {
+            let p = p as *mut u8;
+            assert_eq!(s.checked_slot_any(p), None, "class {c} {p:?}");
+            assert!(!free_fast(s, h, p, s.free_flags()), "class {c} {p:?}");
         }
     }
     t.destroy();
 }
 
-/// The bit test's clear bit in a slab whose bitmap page was never
-/// committed still aborts by name, from the slow path.
+/// A slab past the watermark, the region's last, aborts by name from the
+/// slow path.
 #[test]
 #[should_panic(expected = "was never allocated")]
 fn free_into_the_last_slab_of_a_region_aborts() {

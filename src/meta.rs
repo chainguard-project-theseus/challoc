@@ -19,10 +19,7 @@
 //!
 //! Committing is `mprotect(PROT_READ | PROT_WRITE)` on the `PROT_NONE`
 //! reservation, so committed but untouched metadata costs address space and
-//! overcommit charge, never RSS. Nothing is ever uncommitted. A table
-//! reserved with [`Meta::reserve_table_readable`] (the class bitmaps) is
-//! `PROT_READ` until committed: it reads as zero, still without a commit
-//! charge or RSS.
+//! overcommit charge, never RSS. Nothing is ever uncommitted.
 //!
 //! A table of at most [`EAGER_MAX`] bytes is carved from the object side
 //! instead, page aligned and writable from the start, so it merges with the
@@ -563,36 +560,6 @@ impl Meta {
         g.reserve(len, align)
     }
 
-    /// [`reserve_table`](Meta::reserve_table) whose uncommitted pages read
-    /// as zero instead of faulting: a table on the reservation side is made
-    /// `PROT_READ` (one `mprotect`, no commit charge and no RSS: a read maps
-    /// the kernel's zero page), an eagerly carved one is writable and zero
-    /// already. For the class bitmaps, so the `free` fast path's bit test
-    /// alone rejects a slab whose bits were never committed (design 4).
-    /// [`commit`](Meta::commit) makes pages writable as for any table.
-    /// `None` on either failure, leaving nothing reserved.
-    pub fn reserve_table_readable(&self, len: usize, align: usize) -> Option<usize> {
-        let mut g = self.inner.lock();
-        if g.eager_ok(len) {
-            if let Some(p) = g.reserve_eager(len, align) {
-                return Some(p);
-            }
-        }
-        let old_top = g.top;
-        let old_reserved = g.stats.reserved;
-        let start = g.reserve(len, align)?;
-        let rounded = align_up(len.max(1), g.page);
-        // SAFETY: `[start, start + rounded)` is a fresh part of our own
-        // `PROT_NONE` reservation (below the old top); granting read
-        // access to memory nothing uses cannot invalidate anything.
-        if unsafe { crate::sys::mprotect(start, rounded, crate::sys::PROT_READ) }.is_err() {
-            g.top = old_top;
-            g.stats.reserved = old_reserved;
-            return None;
-        }
-        Some(start)
-    }
-
     /// Make `[addr, addr + len)`, page aligned and inside a reservation or
     /// an eagerly carved table, readable and writable (accounting only for
     /// the latter). Each page should be committed once; the
@@ -1010,55 +977,6 @@ mod tests {
         let e = m.reserve_table(page_size(), page_size()).unwrap();
         assert_eq!(e, b.base, "eager on again: from the base");
         assert_eq!(m.stats().eager, page_size());
-    }
-
-    /// The `/proc/self/maps` entries overlapping `[base, base + len)`,
-    /// clipped to it, with their permission strings.
-    fn mappings_in(base: usize, len: usize) -> Vec<(usize, usize, std::string::String)> {
-        let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
-        let mut out = Vec::new();
-        for line in maps.lines() {
-            let mut it = line.split_whitespace();
-            let (lo, hi) = it.next().unwrap().split_once('-').unwrap();
-            let lo = usize::from_str_radix(lo, 16).unwrap();
-            let hi = usize::from_str_radix(hi, 16).unwrap();
-            if hi > base && lo < base + len {
-                out.push((lo.max(base), hi.min(base + len), it.next().unwrap().into()));
-            }
-        }
-        out
-    }
-
-    /// `reserve_table_readable` on the reservation side: the table reads
-    /// as zero before any commit (no fault, nothing counted), two tables
-    /// reserved back to back are one `r--p` mapping, and `commit` makes
-    /// pages writable as for any table. An eager table is writable and
-    /// zero from the start.
-    #[test]
-    fn readable_tables_read_zero_and_share_a_mapping() {
-        let b = Backing::new(16 << 20);
-        let m = b.meta();
-        let page = page_size();
-        m.set_eager_for_test(false);
-        let t1 = m.reserve_table_readable(3 * page, page).unwrap();
-        let t2 = m.reserve_table_readable(5 * page, page).unwrap();
-        assert_eq!(t2 + 5 * page, t1, "back to back from the top");
-        for a in [t1, t1 + 2 * page + 8, t2, t2 + 5 * page - 8] {
-            assert_eq!(unsafe { ptr::read_volatile(a as *const u64) }, 0);
-        }
-        assert_eq!((m.stats().committed, m.stats().writable), (0, 0));
-        let maps = mappings_in(t2, 8 * page);
-        assert_eq!(maps.len(), 1, "{maps:?}");
-        assert!(maps[0].2.starts_with("r--"), "{maps:?}");
-        m.commit(t1, page).unwrap();
-        unsafe { ptr::write_volatile(t1 as *mut u64, 7) };
-        assert_eq!(unsafe { ptr::read_volatile(t1 as *const u64) }, 7);
-        assert_eq!(unsafe { ptr::read_volatile((t1 + page) as *const u64) }, 0);
-        m.set_eager_for_test(true);
-        let e = m.reserve_table_readable(page, page).unwrap();
-        assert_eq!(e, b.base, "eager: from the object side");
-        unsafe { ptr::write_volatile(e as *mut u64, 9) };
-        assert_eq!(unsafe { ptr::read_volatile(e as *const u64) }, 9);
     }
 
     /// Eager tables, objects and more tables interleave on the object side

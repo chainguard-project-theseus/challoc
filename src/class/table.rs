@@ -166,47 +166,12 @@ impl SlabTable {
     /// scales by a power of two), so that the sized fast path's test is a
     /// mask; callers must pass 0 when `MADV_GUARD_INSTALL` is unavailable,
     /// since a `PROT_NONE` slab would split the region into one VMA per
-    /// guard (design section 5). The tests' constructor; `Shared::init`
-    /// reserves the bitmaps first ([`reserve_bits`]).
-    ///
-    /// [`reserve_bits`]: SlabTable::reserve_bits
-    #[cfg(test)]
+    /// guard (design section 5).
     pub fn new(
         meta: &Meta,
         regions: &Regions,
         class: usize,
         guard_interval: u32,
-    ) -> Option<SlabTable> {
-        let bits = Self::reserve_bits(meta, regions, class)?;
-        Self::with_bits(meta, regions, class, guard_interval, bits)
-    }
-
-    /// Reserve the class bitmap of `class`, readable past its committed
-    /// part: the `free` fast path tests a bit without checking the
-    /// watermark first ([`is_set_unchecked`]). `Shared::init` reserves all
-    /// the bitmaps first, back to back, so the `PROT_READ` reservations of
-    /// classes not yet used form one mapping, as the `PROT_NONE` tables
-    /// around them do, rather than one per class.
-    ///
-    /// [`is_set_unchecked`]: SlabTable::is_set_unchecked
-    pub(crate) fn reserve_bits(meta: &Meta, regions: &Regions, class: usize) -> Option<Lazy> {
-        assert!(class < CLASSES.len(), "class: index out of range");
-        let align = DESC_ALIGN.max(regions.page_size());
-        Lazy::reserve_readable(
-            meta,
-            desc_stagger(class) + (regions.nslabs(class) * CLASSES[class].slab_bits()).div_ceil(8),
-            align,
-        )
-    }
-
-    /// [`new`](SlabTable::new) over a bitmap from
-    /// [`reserve_bits`](SlabTable::reserve_bits).
-    pub(crate) fn with_bits(
-        meta: &Meta,
-        regions: &Regions,
-        class: usize,
-        guard_interval: u32,
-        bits: Lazy,
     ) -> Option<SlabTable> {
         assert!(class < CLASSES.len(), "class: index out of range");
         assert!(
@@ -227,6 +192,11 @@ impl SlabTable {
         let group = cls.slabs_per_line().max(slabs_per_page);
         assert!(group.is_power_of_two() && group % slabs_per_page == 0);
         let descs = Lazy::reserve(meta, stagger + nslabs * desc_stride(class), align)?;
+        let bits = Lazy::reserve(
+            meta,
+            stagger + (nslabs * cls.slab_bits()).div_ceil(8),
+            align,
+        )?;
         let owners = Lazy::reserve(meta, stagger + nslabs.div_ceil(group) * 2, align)?;
         Some(SlabTable {
             bits_base: bits.base + stagger,
@@ -445,22 +415,19 @@ impl SlabTable {
 
     /// The `free` check's bit (design section 4): whether `slot` of `slab`
     /// is marked allocated (or cached). One relaxed load of the bitmap
-    /// word, no bounds checks and no watermark: the whole bitmap
-    /// reservation is readable (`Meta::reserve_table_readable`), and the
-    /// words of a slab never handed out are zero, since bits are set only
-    /// by claims from handed-out slabs (`take_group` initialises a group's
-    /// words before the watermark moves). So a clear bit is what a slab
-    /// past the watermark reads, and the caller's slow path names it.
+    /// word, no bounds checks.
     ///
     /// # Safety
-    /// `slab` must be below `nslabs` and `slot` below the class's `nslots`
-    /// (what `Regions::slab_slot` returns).
+    /// `slab` must have been handed out ([`is_handed_out`]) and `slot` must
+    /// be below the class's `nslots`.
+    ///
+    /// [`is_handed_out`]: SlabTable::is_handed_out
     #[inline(always)]
     pub unsafe fn is_set_unchecked(&self, slab: usize, slot: usize) -> bool {
         let bit = slab * self.slab_bits as usize + slot;
         let word = (self.bits_base + (bit / 64) * 8) as *const AtomicU64;
-        // SAFETY: the caller guarantees the word is inside the bitmap
-        // reservation, which is readable throughout.
+        // SAFETY: the caller guarantees the word is inside the handed-out
+        // part of the bitmap.
         (unsafe { (*word).load(Ordering::Relaxed) } >> (bit % 64)) & 1 == 1
     }
 

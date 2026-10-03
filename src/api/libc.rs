@@ -172,7 +172,7 @@ pub fn free(p: *mut u8) {
     // As in `malloc`: the check-and-push has no calls, and every other
     // outcome, including the aborts, is reached through one tail call.
     // Null is one of those outcomes: it is in no class region (the
-    // superblock is mapped far above address 0, so `slab_slot`'s class
+    // superblock is mapped far above address 0, so `slab_slot_unbounded`'s class
     // index of null is out of range) and `free_slow` returns for it, so
     // the common case pays no test of its own (jemalloc's `free` fast
     // path leaves null to its slow path the same way).
