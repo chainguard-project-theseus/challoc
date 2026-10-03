@@ -11,6 +11,7 @@
 //! only applies to the cdylib, never the staticlib.
 
 fn main() {
+    println!("cargo::rustc-check-cfg=cfg(xfer_diag)");
     println!("cargo:rerun-if-changed=build.rs");
     let soname = if std::env::var_os("CARGO_FEATURE_JEMALLOC_SONAME").is_some() {
         "libjemalloc.so.2"
