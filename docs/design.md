@@ -835,9 +835,10 @@ Discovery, once at init (section 10 step 7):
   scanned through 2 KiB stack buffers.
 - Effective limits: walk from the leaf up to the mount, inclusive,
   reading `memory.max` and `memory.high` at each level and keeping the
-  minimum per file; `max` and an absent file mean unlimited. The walk is
-  repeated at most once per second (`LIMIT_INTERVAL_NS`), so a `docker
-  update --memory` is seen.
+  minimum per file; `max` and an absent file mean unlimited. The walk
+  also keeps each level's own `min(high, max)` for the 16 levels nearest
+  the leaf (`LEVELS`). It is repeated at most once per second
+  (`LIMIT_INTERVAL_NS`), so a `docker update --memory` is seen.
 - CPU limits (`cpu.max`, `cpuset.cpus.effective`) are not read. Sizing
   the arena count from the CPU quota was prototyped and removed: neither
   `narenas` = quota nor 4 x quota held throughput (#21, #26, tag
@@ -849,7 +850,10 @@ stdio, and nothing allocates.
 Sampling: `memory.current` and `memory.events` (`high` and `max`, with a
 count of the samples that saw each rise) are read at most every 10 ms
 (`SAMPLE_INTERVAL_NS`, `CLOCK_MONOTONIC_COARSE`; one compare-exchange on
-the timestamp elects the reader) from the periodic tick of the slow path
+the timestamp elects the reader), with `memory.current` of each ancestor
+within `LEVELS` that has a limit of its own (one more read per such
+ancestor; usually none inside a cgroup namespace, where the process
+mostly sits at the mount), from the periodic tick of the slow path
 (`purge::on_tick`), the background thread's loop, a
 `stats.cgroup.current` read and `malloc_stats_print`; the fast paths
 never see it. A PSI trigger on `memory.pressure` was prototyped and
@@ -860,9 +864,14 @@ Policy. It is evaluated where a sample was taken, so at most once per
 10 ms process-wide; the outcome is a few atomics on `Shared` (the band, a
 keep ratio, a pending full purge) that the decay driver and the periodic
 tick read. Usage is the last `memory.current` sample against the
-effective limit `min(high, max)`:
+effective limit `min(high, max)`, and each ancestor's own usage against
+its own limit; the most severe row wins. The kernel holds an ancestor to
+its limit by the usage of all its children, so a parent limited to
+1000 MiB that holds 950 MiB puts this process at 95% even when the leaf
+holds 100 MiB of it. The leaf's row also stands in for limited levels
+beyond `LEVELS`:
 
-| Usage vs effective limit          | Behaviour                                                  | Purge advice (section 8) |
+| Usage vs limit (worst level)      | Behaviour                                                  | Purge advice (section 8) |
 |-----------------------------------|------------------------------------------------------------|---------------------------|
 | No limit                          | Defaults; nothing beyond the sample is done                | `MADV_DONTNEED`           |
 | < 70% of `min(high, max)`         | Defaults, retention capped at 5% of the limit              | `MADV_FREE` (`lazy_band`) |

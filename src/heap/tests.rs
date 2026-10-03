@@ -2013,12 +2013,12 @@ fn huge_runs_go_through_the_heap_without_caches() {
 /// policy is driven through `apply` here.
 #[test]
 fn cgroup_policy_drives_gc_interval_and_decay_period() {
-    use crate::policy::{Band, KEEP_ALL, band, effective_decay_ns};
+    use crate::policy::{Band, KEEP_ALL, band, cgroup_band, effective_decay_ns};
     let s = shared();
     // At init the outcome is the discovery sample's: no limit on the
     // host and under Docker's default profile, a band under
     // `--memory=512m`.
-    let at_init = band(s.cgroup.limit().min(s.cgroup.high()), s.cgroup.current());
+    let at_init = cgroup_band(&s.cgroup);
     assert_eq!(s.policy.band(), at_init);
     assert_eq!(
         s.gc_interval(),
