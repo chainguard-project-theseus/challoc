@@ -23,6 +23,8 @@ use crate::lock::RawLock;
 use crate::meta::Meta;
 use crate::policy::Policy;
 use crate::stats::Snapshot;
+#[cfg(verus_only)]
+use crate::stats::axiom_snapshot_lock_inv;
 use crate::sys::cgroup::Cgroup;
 #[cfg(verus_only)]
 use crate::vspec::ptr::{axiom_ptr_add_addr, axiom_raw_valid, in_alloc, ptr_add};
@@ -755,12 +757,6 @@ axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Sh
         shared_at(p).regions == pr.value(),
 ;
 
-/// The statistics an `epoch` stores (`stats.rs`): any value will do.
-axiom fn axiom_snapshot_lock_inv()
-    ensures
-        forall|v: Snapshot| #[trigger] crate::lock::lock_inv(v),
-;
-
 impl Shared {
     /// The permission to `init`'s storage, uninitialised. Trusted:
     /// `init`'s caller hands over writable storage for a `Shared` that
@@ -1170,7 +1166,7 @@ impl Shared {
     {
         proof {
             axiom_shared_layout();
-            axiom_snapshot_lock_inv();
+            axiom_snapshot_lock_inv(Snapshot::EMPTY);
         }
         // SAFETY: as in `put_head`.
         unsafe {

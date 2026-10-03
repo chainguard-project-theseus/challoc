@@ -2329,6 +2329,7 @@ impl Inner {
             self.wf(),
         ensures
             r.identities(),
+            r.len <= va_limit(),
     {
         proof {
             lemma_free_bytes_nonneg(self.lists@, NBINS as nat);
@@ -2603,6 +2604,7 @@ impl Meta {
             crate::sys::may_syscall(),
         ensures
             r.identities(),
+            r.len <= va_limit(),
     {
         broadcast use axiom_meta_lock_inv;
 

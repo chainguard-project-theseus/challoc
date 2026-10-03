@@ -3828,6 +3828,150 @@ bitmap side: every release goes back to the slot's own arena).
   `swap_hdrs` moves with the header, but which no spec ties to the
   routed key.
 
+## 27. Stats identities and epoch coherence
+
+The
+`file:line`s are the `fn` line at this section's commit.
+
+**Statement.** Two parts; the first is proved, the second is **false**
+today and is stated as what holds instead.
+
+1. **Identities** (proved). Every `ArenaStats` an arena stores, and
+   every one `collect_arena`, `collect_into` and `collect_all` compute,
+   satisfies `ArenaStats::identities` (`stats.rs:364`):
+
+   ```rust
+   small_allocated <= small_active && large_allocated <= large_active
+   resident == small_active + large_active + small_dirty + large_dirty
+               + huge_dirty + metadata
+   retained == small_retained + large_retained + huge_retained
+   mapped == resident + retained
+   ```
+
+   so `resident >= active + metadata`, `active >= allocated` and
+   `mapped == resident + retained` per arena. Every `Snapshot` stored in
+   `shared.stats` satisfies `Snapshot::inv` (`:581`): with up to 256
+   arenas, `Totals::identities` (`:413`), the same three relations for
+   the totals. `collect_into` (`:1100`) and `collect_all` (`:1269`) also
+   ensure the identities, and `mapped` equal to the arenas' `mapped`
+   summed, whenever that sum fits a `usize` (`sum_mapped`, `:1056`),
+   for any number of arenas. The contracts:
+
+   ```rust
+   // Arena::stats (arena.rs:1021), stats::arena_stats (stats.rs:1231)
+   ensures r.identities()                 // r matches Some(a) ==> a.identities()
+   // Arena::store_stats (arena.rs:1033)
+   requires s.identities()
+   // stats::snapshot (:1217), stats::collect (:1205)
+   ensures r.inv()                        // narenas <= 256 ==> totals.identities()
+   // collect_arena_with (:883)
+   ensures r.identities(), r.mapped <= arena_mapped_max(r.index), r.index == arena.spec_index()
+   // collect_into (:1100); collect_all (:1269) likewise for its sum
+   ensures r.narenas == rd.0.len(), forall j: rd.0[j].identities(),
+       sum_mapped(rd.0) <= usize::MAX ==> r.totals.mapped == sum_mapped(rd.0) && r.totals.identities(),
+       r.inv()
+   ```
+
+2. **Coherence** (false; what holds). The intended claim: after an
+   `epoch`, the stored per-arena figures sum to the stored totals (they
+   come from one collection), and `mallctl("epoch")` returns the number
+   its own refresh stored. Both fail with concurrent epoch writers:
+   - `collect_into` calls `arena.store_stats(&a)` for each arena inside
+     its scan and takes `shared.stats.lock()` only afterwards, for the
+     totals. Writers A and B scan concurrently; B stores arena 0, A
+     stores arena 0, A stores its totals, B stores its totals: arena 0
+     holds A's figures, the totals B's. A concurrency test
+     (16 arenas, one thread allocating and freeing, two
+     epoch writers per round) fails within 20 rounds on every run (5 of
+     5 here), e.g. arenas summing to `resident` 1130496 against stored
+     totals of 819200. A reader between one epoch's arena stores and its
+     snapshot store sees the same mix even with a single writer.
+   - The `Epoch` arm of `mallctl::ctl` (`api/mallctl.rs:1878`) calls
+     `stats::epoch` and discards the number it returns, then reads
+     `stats::snapshot(shared).epoch`, which another writer may have
+     bumped in between. A concurrency test
+     (four threads, 2000 epoch writes each) reads
+     the same number back twice on every run (7988 to 7999 distinct of
+     8000). jemalloc holds `ctl_mtx` across the refresh and the read.
+
+   The tests go with the upstream fix rather than here; the fix is
+   exec code (store the arenas' figures and the snapshot under one lock,
+   or serialise `epoch`; return `stats::epoch`'s value), which this
+   theorem does not change. What each call does by construction (read
+   from the body, not stated as an `ensures`): `collect_into` sums into
+   the totals exactly the figures it stores for each arena (the same
+   local `a`, read once), and stores and returns one `Snapshot` under
+   one hold of the snapshot lock, so `stats::epoch` returns the epoch
+   number its own call stored. Its `ensures` ties only the totals'
+   `allocated` (`totals_exact`) and `mapped` to `rd`, not to what was
+   stored.
+
+**Covers.** `mallctl` `stats.{allocated,active,metadata,resident,
+retained,mapped}` and `stats.arenas.<i>.*` (from `snapshot` and
+`arena_stats`), `malloc_stats_print` (`collect`, `collect_arena`),
+`mallinfo2` and `malloc_stats` (`collect_all`). Not covered:
+`stats.arenas.4096.*` (`arena_stats_all`, `:1242`) sums stored figures
+that each satisfy the identities, but carries no bound on how many it
+sums or ghost record of them, so its result has no identity contract.
+
+**Why no figure wraps.** The figures are added with `fig_add`/`fig_mul`,
+exact only when the result fits (theorem 22). Each sum is bounded:
+- per bin, `collect_bin` (`:790`) ensures `BinStats::fits` (`:209`):
+  `curregs * size <= curslabs * slab_size`, from the clamp
+  (`ClassState::bin_stats`, `class/mod.rs:2393`, now ensures
+  `curregs <= curslabs * nslots`) and `nslots * size <= slab_size`
+  (`Class::wf`); and `(curslabs + empty + purged) * slab_size <= 2^38`,
+  the slabs being among the class region's
+  (`ClassState::nslabs_are_the_region_s`, `lg_region <= 38`);
+- over at most 64 classes, the slab bytes are at most `2^44`;
+- a huge run count and page count come from the halves of the `large`
+  word, below `2^32` (`Arena::large`, `arena.rs:1004`, now ensures it),
+  and a page is at most `2^22` (`lg_page <= 22`,
+  `Regions::separated`), so an arena's
+  huge bytes are below `2^54`;
+- arena 0 adds the free extents' pages, at most `u32::MAX`
+  (`Huge::stats`, `huge/mod.rs:3459`, now ensures it from the huge lock
+  invariant), and the committed metadata, at most the region's length,
+  below `meta::va_limit() = 2^57` (`Meta::stats`, `meta.rs:2602`, now
+  ensures it).
+So arena 0's `mapped` is below `2^58` and any other's below `2^55`
+(`arena_mapped_max`, `:379`); every per-arena sum fits. The scan visits
+arena `i` at index `i` (`arena_at`, `:865`, now ensures it), so arena 0
+is counted once and `k` arenas sum below `2^58 + k * 2^55`, which fits
+for `k <= 256`.
+
+**Premises beyond the common ones.**
+- The two `lock_inv` axioms (`axiom_arena_stats_lock_inv`,
+  `vspec/arena.rs:43`, and `axiom_snapshot_lock_inv`, `stats.rs:590`)
+  now say the stored value satisfies `ArenaStats::identities` and
+  `Snapshot::inv` (they said "any value" before). Their writers:
+  `Arena` initialisation (`ArenaStats::empty`, which ensures the
+  identities) and `Arena::store_stats` (which requires them);
+  `Shared::init` (`Snapshot::EMPTY`, `heap/shared.rs:1169`) and
+  `collect_into` (which asserts it before releasing the guard). The
+  fork handlers take the raw locks only and write nothing. As for every
+  lock, that each holder leaves the invariant true is checked at the
+  holder's last write, not at the guard's drop (`lock.rs`, `lock_inv`).
+- `process_regions()` is the `Shared`'s regions (`Shared::wf`), so
+  `collect_bin`'s new `requires process_regions().wf()` holds for every
+  caller in `stats.rs` (the unit tests call it unverified).
+
+**Scope and where the statement is weaker than the code.**
+- Beyond 256 arenas the totals' identities hold when the arenas'
+  `mapped` sum fits; it always does for the memory it describes, but
+  the bound is per arena, not global (two arenas' `large` words could
+  in the model each claim `2^54` bytes).
+- The figures hold whatever the counters' values: the identities are
+  about how the figures are formed, not about whether `curregs` or the
+  `large` word are the live blocks (theorem 22 does that at a quiescent
+  state). A clamped `curregs` (`bin_stats`) keeps the identities but is
+  not exact.
+- `pactive` and `pdirty` (`active / page`, `dirty / page`) and the bins'
+  counters are outside the identities.
+- Coherence across concurrent epochs, and between an epoch's arena
+  stores and its snapshot store for a concurrent reader, is false
+  (part 2).
+
 ## Interface contract
 
 The per-call theorems above (1-3, 5-7 and the "Bad input" section)

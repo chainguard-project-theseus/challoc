@@ -29,7 +29,7 @@
 //! Guard slabs and guard pages hold no memory and are counted nowhere. The
 //! huge allocator's free extents (`Empty`, `Purged`) and the metadata region
 //! belong to no arena and are attributed to arena 0, as `arena.0.purge` is;
-//! so the arena figures sum to the totals.
+//! so the arena figures of one collection sum to its totals.
 //!
 //! The identities `resident >= active >= allocated` and
 //! `mapped == resident + retained` hold for every snapshot by construction:
@@ -37,7 +37,12 @@
 //! hold live slots (`ClassState::bin_stats`, which counts every clamp in
 //! the bins table's `clamped` column), a huge run's allocated and active
 //! bytes are the same number, and the totals are sums of the same
-//! per-arena values.
+//! per-arena values. Verus proves them for every stored `ArenaStats` and,
+//! with up to 256 arenas, every stored `Snapshot` (`verus/THEOREMS.md`,
+//! "Stats identities and epoch coherence"). Coherence is weaker: an
+//! `epoch` stores the arenas' figures before it takes the snapshot lock,
+//! so two concurrent epochs can leave one's arena figures beside the
+//! other's totals (`concurrent_epochs_leave_arenas_summing_to_the_totals`).
 
 use crate::arena::{Arena, MAX_ARENAS};
 use crate::class::ClassState;
@@ -196,6 +201,45 @@ impl BinStats {
             clamped: (self.clamped + o.clamped) as u64,
         }
     }
+
+    /// The bin's figures fit its slabs ([`collect_bin`]): its slots out
+    /// fill at most its live-capable slabs (`ClassState::bin_stats`'s
+    /// clamp), and all its slabs lie in its class region, at most `2^38`
+    /// bytes (`layout::regions::LG_REGION_PREFERRED`).
+    pub open spec fn fits(self) -> bool {
+        &&& self.curregs * self.size <= self.curslabs * self.slab_size
+        &&& (self.curslabs + self.empty_slabs + self.purged_slabs) * self.slab_size <= 0x40_0000_0000
+    }
+}
+
+/// The byte figures of a bin that [`BinStats::fits`]: `allocated` within
+/// `active`, and `active`, dirty and retained together within the region.
+pub proof fn lemma_bin_fits(b: BinStats)
+    requires
+        b.fits(),
+    ensures
+        0 <= b.curregs * b.size <= b.curslabs * b.slab_size,
+        0 <= b.empty_slabs * b.slab_size,
+        0 <= b.purged_slabs * b.slab_size,
+        b.curslabs * b.slab_size + b.empty_slabs * b.slab_size + b.purged_slabs * b.slab_size <= 0x40_0000_0000,
+{
+    let (x, z, u, e, p, s) = (
+        b.curregs as int,
+        b.size as int,
+        b.curslabs as int,
+        b.empty_slabs as int,
+        b.purged_slabs as int,
+        b.slab_size as int,
+    );
+    assert(0 <= x * z && 0 <= e * s && 0 <= p * s && u * s + e * s + p * s == (u + e + p) * s) by (nonlinear_arith)
+        requires
+            x >= 0,
+            z >= 0,
+            u >= 0,
+            e >= 0,
+            p >= 0,
+            s >= 0,
+    ;
 }
 
 /// One arena (`stats.arenas.<i>.*`).
@@ -254,6 +298,11 @@ impl ArenaStats {
             r.small_allocated == 0,
             r.large_allocated == 0,
             r.large_runs == 0,
+            r.small_active == 0 && r.small_dirty == 0 && r.small_retained == 0,
+            r.large_active == 0 && r.large_dirty == 0 && r.large_retained == 0,
+            r.huge_dirty == 0 && r.huge_retained == 0 && r.metadata == 0,
+            r.resident == 0 && r.retained == 0 && r.mapped == 0,
+            r.identities(),
             forall|c: int| 0 <= c < NCLASSES ==> #[trigger] r.bins[c] == BinStats::EMPTY,
     {
         ArenaStats {
@@ -303,6 +352,36 @@ impl ArenaStats {
     {
         self.small_active + self.large_active
     }
+
+    /// The accounting identities of one arena's figures (module doc), as
+    /// [`collect_arena_with`] forms them: small and large `allocated`
+    /// within their `active`, `resident` and `retained` the sums of their
+    /// parts and `mapped` theirs. Every part is a natural, so they give
+    /// `resident >= active + metadata`, `active >= allocated` and
+    /// `mapped == resident + retained`. Every stored `ArenaStats`
+    /// satisfies them (the stats lock's invariant,
+    /// `vspec::arena::axiom_arena_stats_lock_inv`).
+    pub open spec fn identities(self) -> bool {
+        &&& self.small_allocated <= self.small_active
+        &&& self.large_allocated <= self.large_active
+        &&& self.resident == self.small_active + self.large_active + self.small_dirty + self.large_dirty
+            + self.huge_dirty + self.metadata
+        &&& self.retained == self.small_retained + self.large_retained + self.huge_retained
+        &&& self.mapped == self.resident + self.retained
+    }
+}
+
+/// The most an arena's `mapped` can be: `2^58` for arena 0, which also
+/// holds the huge free extents (`u32::MAX` pages at most) and the
+/// metadata (below `meta::va_limit`, `2^57`), and `2^55` for any other
+/// (its class regions, at most `2^38` bytes each, and the huge runs of
+/// its `large` word, below `2^32` pages of at most `MAX_SLAB` bytes).
+pub open spec fn arena_mapped_max(index: u16) -> int {
+    if index == 0 {
+        0x400_0000_0000_0000
+    } else {
+        0x80_0000_0000_0000
+    }
 }
 
 /// Process-wide totals (`stats.allocated` and friends).
@@ -325,6 +404,17 @@ impl Totals {
         retained: 0,
         mapped: 0,
     };
+
+    /// The accounting identities of the totals (module doc):
+    /// `resident >= active + metadata`, `active >= allocated` and
+    /// `mapped == resident + retained`. They hold for the sum of any
+    /// figures that satisfy [`ArenaStats::identities`] when that sum
+    /// fits ([`collect_into`]).
+    pub open spec fn identities(self) -> bool {
+        &&& self.allocated <= self.active
+        &&& self.active + self.metadata <= self.resident
+        &&& self.mapped == self.resident + self.retained
+    }
 
     /// The accounting identities every snapshot satisfies:
     /// `resident >= active >= allocated` and `mapped == resident + retained`.
@@ -480,7 +570,27 @@ impl Snapshot {
             eager: 0,
         },
     };
+
+    /// What every stored snapshot satisfies (the `shared.stats` lock's
+    /// invariant, [`axiom_snapshot_lock_inv`]): with up to
+    /// 256 arenas the totals' identities hold. Each arena's `mapped` is
+    /// at most [`arena_mapped_max`], so 256 of them sum below `2^64` and
+    /// no figure of the totals wraps; past that the identities hold when
+    /// the true sums fit (always, for the address space they describe,
+    /// but not proved).
+    pub open spec fn inv(self) -> bool {
+        self.narenas <= 256 ==> self.totals.identities()
+    }
 }
+
+/// The snapshot an `epoch` stores satisfies [`Snapshot::inv`]. Trusted as
+/// every `lock_inv` axiom is: the `shared.stats` lock's writers are
+/// `Shared::init` (`Snapshot::EMPTY`, all zero) and [`collect_into`],
+/// which asserts it; the fork handlers take only the raw lock.
+pub broadcast axiom fn axiom_snapshot_lock_inv(v: Snapshot)
+    ensures
+        #[trigger] crate::lock::lock_inv(v) == v.inv(),
+;
 
 } // verus!
 
@@ -495,6 +605,8 @@ impl ArenaStats {
         ensures
             final(self).index == old(self).index,
             old(self).can_add(*o) ==> old(self).is_merge(*o, *final(self)),
+            // The byte figures, whether or not the counts fit.
+            old(self).bytes_fit(*o) ==> old(self).bytes_merged(*o, *final(self)),
             // Each sum the exact `allocated` needs, whether or not the
             // others fit.
             old(self).small_allocated + o.small_allocated <= usize::MAX ==> final(self).small_allocated
@@ -529,6 +641,7 @@ impl ArenaStats {
             invariant
                 self.index == old(self).index,
                 old(self).can_add(*o) ==> old(self).scalars_merged(*o, *self),
+                old(self).bytes_fit(*o) ==> old(self).bytes_merged(*o, *self),
                 old(self).can_add(*o) ==> forall|j: int| 0 <= j < c ==> #[trigger] self.bins[j] == old(self).bins[j].merged(o.bins[j]),
                 forall|j: int| c <= j < NCLASSES ==> #[trigger] self.bins[j] == old(self).bins[j],
                 old(self).small_allocated + o.small_allocated <= usize::MAX ==> self.small_allocated
@@ -564,6 +677,56 @@ impl ArenaStats {
                 }
             }
         }
+    }
+
+    /// Every byte figure's sum [`ArenaStats::add`] forms fits a `usize`.
+    pub open spec fn bytes_fit(self, o: ArenaStats) -> bool {
+        &&& self.small_allocated + o.small_allocated <= usize::MAX
+        &&& self.small_active + o.small_active <= usize::MAX
+        &&& self.small_dirty + o.small_dirty <= usize::MAX
+        &&& self.small_retained + o.small_retained <= usize::MAX
+        &&& self.large_allocated + o.large_allocated <= usize::MAX
+        &&& self.large_active + o.large_active <= usize::MAX
+        &&& self.large_dirty + o.large_dirty <= usize::MAX
+        &&& self.large_retained + o.large_retained <= usize::MAX
+        &&& self.huge_dirty + o.huge_dirty <= usize::MAX
+        &&& self.huge_retained + o.huge_retained <= usize::MAX
+        &&& self.metadata + o.metadata <= usize::MAX
+        &&& self.resident + o.resident <= usize::MAX
+        &&& self.retained + o.retained <= usize::MAX
+        &&& self.mapped + o.mapped <= usize::MAX
+    }
+
+    /// `r` has every byte figure of `self` and `o` summed.
+    pub open spec fn bytes_merged(self, o: ArenaStats, r: ArenaStats) -> bool {
+        &&& r.small_allocated == self.small_allocated + o.small_allocated
+        &&& r.small_active == self.small_active + o.small_active
+        &&& r.small_dirty == self.small_dirty + o.small_dirty
+        &&& r.small_retained == self.small_retained + o.small_retained
+        &&& r.large_allocated == self.large_allocated + o.large_allocated
+        &&& r.large_active == self.large_active + o.large_active
+        &&& r.large_dirty == self.large_dirty + o.large_dirty
+        &&& r.large_retained == self.large_retained + o.large_retained
+        &&& r.huge_dirty == self.huge_dirty + o.huge_dirty
+        &&& r.huge_retained == self.huge_retained + o.huge_retained
+        &&& r.metadata == self.metadata + o.metadata
+        &&& r.resident == self.resident + o.resident
+        &&& r.retained == self.retained + o.retained
+        &&& r.mapped == self.mapped + o.mapped
+    }
+
+    /// Merging figures that satisfy their identities, when the `mapped`
+    /// sum fits: every byte figure's sum fits, and the merge satisfies
+    /// the identities too.
+    pub proof fn lemma_merge_identities(self, o: ArenaStats, r: ArenaStats)
+        requires
+            self.identities(),
+            o.identities(),
+            self.mapped + o.mapped <= usize::MAX,
+        ensures
+            self.bytes_fit(o),
+            self.bytes_merged(o, r) ==> r.identities(),
+    {
     }
 
     /// Every sum [`ArenaStats::add`] forms fits its type.
@@ -627,13 +790,53 @@ verus! {
 pub fn collect_bin(cs: &ClassState) -> (r: BinStats)
     requires
         crate::sys::may_syscall(),
+        crate::layout::process_regions().wf(),
     ensures
         r.size == class_table()[cs.spec_class() as int].size,
         r.nregs == class_table()[cs.spec_class() as int].nslots,
         r.empty_slabs + r.purged_slabs + r.curslabs <= cs.spec_nslabs(),
+        r.fits(),
 {
     let (s, curregs) = cs.bin_stats();
     let cls = cs.class();
+    cs.nslabs_are_the_region_s();
+    proof {
+        // The slabs, in bytes, within the class region.
+        let (lr, ls) = (crate::layout::process_regions().lg_region, cls.lg_slab);
+        let (lru, lsu) = (lr as usize, ls as usize);
+        assert(crate::layout::LG_REGION_PREFERRED == 38 && crate::layout::LG_MAX_SLAB == 22);
+        assert(lsu <= lru <= 38);
+        assert((1usize << lsu) == (1usize << ls)) by (bit_vector)
+            requires
+                lsu == ls as usize,
+        ;
+        assert((1usize << lru) == (1usize << lr)) by (bit_vector)
+            requires
+                lru == lr as usize,
+        ;
+        assert(((1usize << lru) >> lsu) * (1usize << lsu) == (1usize << lru) && (1usize << lru) <= 0x40_0000_0000usize)
+            by (bit_vector)
+            requires
+                lsu <= lru <= 38,
+        ;
+        let n = cs.spec_nslabs() as int;
+        let m = s.committed as int;
+        let sl = (1usize << lsu) as int;
+        assert(m * sl <= n * sl) by (nonlinear_arith)
+            requires
+                0 <= m <= n,
+                sl >= 0,
+        ;
+        // The clamp: `curregs * size <= curslabs * nslots * size`.
+        let (x, u, k, z) = (curregs as int, (s.committed - s.empty - s.purged) as int, cls.nslots as int, cls.size as int);
+        assert(x * z <= u * sl) by (nonlinear_arith)
+            requires
+                0 <= x <= u * k,
+                k * z <= sl,
+                u >= 0,
+                z >= 0,
+        ;
+    }
     let (compacted, compact_on, compact_off, gate_refill) = cs.compaction_stats();
     BinStats {
         size: cls.size(),
@@ -659,7 +862,11 @@ pub fn collect_bin(cs: &ClassState) -> (r: BinStats)
 /// and this aborts as that would.
 ///
 /// [`Arenas::iter`]: crate::arena::Arenas::iter
-pub(crate) fn arena_at(shared: &Shared, i: usize) -> Option<&Arena> {
+pub(crate) fn arena_at(shared: &Shared, i: usize) -> (r: Option<&Arena>)
+    ensures
+        i < MAX_ARENAS,
+        r matches Some(a) ==> a.spec_index() as int == i,
+{
     check(i < MAX_ARENAS, "stats: arena index past MAX_ARENAS");
     shared.arenas.get_existing(i as u16)
 }
@@ -669,7 +876,10 @@ pub(crate) fn arena_at(shared: &Shared, i: usize) -> Option<&Arena> {
 ///
 /// `allocated` is exact ([`arena_exact`]): the bins' `curregs * size` plus
 /// the usable bytes of the huge runs in the pages its load of the `large`
-/// word returned, which `pg` gets, whenever that true sum fits.
+/// word returned, which `pg` gets, whenever that true sum fits. The
+/// figures satisfy the accounting identities ([`ArenaStats::identities`])
+/// and `mapped` is at most [`arena_mapped_max`]: every sum and product
+/// fits, so none wraps.
 fn collect_arena_with(
     shared: &Shared,
     arena: &Arena,
@@ -680,13 +890,28 @@ fn collect_arena_with(
     requires
         crate::sys::may_syscall(),
         shared.wf(),
+        huge.empty_pages + huge.purged_pages <= u32::MAX,
+        meta.identities(),
+        meta.len <= crate::meta::va_limit(),
     ensures
         r.pmuzzy == 0,
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] r.bins[c].size == class_table()[c].size,
         arena_exact(r, final(pg)@),
+        r.index == arena.spec_index(),
+        r.identities(),
+        r.mapped <= arena_mapped_max(r.index),
 {
     proof { shared.lemma_wf(); }
     let page = shared.regions.page_size();
+    proof {
+        let lg = shared.regions.lg_page;
+        assert(page <= 0x40_0000usize) by (bit_vector)
+            requires
+                page == 1usize << lg,
+                lg <= 22,
+        ;
+        assert(NCLASSES <= 64);
+    }
     let mut a = ArenaStats::empty(arena.index());
     // The true small and large (bins only) sums so far.
     let ghost mut st: int = 0;
@@ -698,12 +923,22 @@ fn collect_arena_with(
         invariant
             crate::sys::may_syscall(),
             shared.wf(),
+            crate::layout::process_regions().wf(),
             page as int == crate::heap::live::page_size(),
+            1 <= page <= 0x40_0000,
             forall|j: int| 0 <= j < c ==> #[trigger] a.bins[j].size == class_table()[j].size,
             st >= 0,
             lt >= 0,
             st + lt == class_bytes(curregs_of(a), 0, c as int),
             class_bytes(curregs_of(a), 0, c as int) <= usize::MAX ==> a.small_allocated == st && a.large_allocated == lt,
+            // Every figure so far is exact: allocated within active, and
+            // the slab bytes within one class region per class.
+            a.index == arena.spec_index(),
+            a.huge_dirty == 0 && a.huge_retained == 0 && a.metadata == 0,
+            a.small_allocated <= a.small_active,
+            a.large_allocated <= a.large_active,
+            a.small_active + a.small_dirty + a.small_retained + a.large_active + a.large_dirty + a.large_retained
+                <= c * 0x40_0000_0000,
     {
         let ghost a0 = a;
         a.bins[c] = collect_bin(arena.class(c));
@@ -717,6 +952,7 @@ fn collect_arena_with(
                     z >= 0,
             ;
             assert(class_bytes(curregs_of(a), 0, c + 1) == class_bytes(curregs_of(a), 0, c as int) + t);
+            lemma_bin_fits(a.bins[c as int]);
         }
         let bin = &a.bins[c];
         if c < NBINS {
@@ -751,7 +987,16 @@ fn collect_arena_with(
         }
     }
     let (runs, pages) = arena.large();
-    let huge_usable = fig_mul(huge_usable_pages(arena.index(), runs, pages), page);
+    let usable_pages = huge_usable_pages(arena.index(), runs, pages);
+    proof {
+        let (u, p) = (usable_pages as int, page as int);
+        assert(u * p <= 0x40_0000_0000_0000) by (nonlinear_arith)
+            requires
+                0 <= u < 0x1_0000_0000,
+                1 <= p <= 0x40_0000,
+        ;
+    }
+    let huge_usable = fig_mul(usable_pages, page);
     a.large_runs = runs;
     a.large_allocated = fig_add(a.large_allocated, huge_usable);
     a.large_active = fig_add(a.large_active, huge_usable);
@@ -764,6 +1009,16 @@ fn collect_arena_with(
     }
     let ghost a1 = a;
     if arena.index() == 0 {
+        proof {
+            let (e, q, p) = (huge.empty_pages as int, huge.purged_pages as int, page as int);
+            assert(0 <= e * p && 0 <= q * p && e * p + q * p <= 0x40_0000_0000_0000) by (nonlinear_arith)
+                requires
+                    e >= 0,
+                    q >= 0,
+                    e + q <= u32::MAX,
+                    1 <= p <= 0x40_0000,
+            ;
+        }
         a.huge_dirty = fig_mul(huge.empty_pages, page);
         a.huge_retained = fig_mul(huge.purged_pages, page);
         a.metadata = meta.committed;
@@ -791,9 +1046,46 @@ pub fn collect_arena(shared: &Shared, arena: &Arena) -> (r: ArenaStats)
         shared.wf(),
     ensures
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] r.bins[c].size == class_table()[c].size,
+        r.identities(),
 {
     let tracked mut pg = Ghost(0int);
     collect_arena_with(shared, arena, &shared.huge.stats(), &shared.meta.stats(), Tracked(&mut pg))
+}
+
+/// The arenas' figures `reads`' `mapped` summed.
+pub open spec fn sum_mapped(reads: Seq<ArenaStats>) -> int
+    decreases reads.len(),
+{
+    if reads.len() == 0 {
+        0
+    } else {
+        sum_mapped(reads.drop_last()) + reads.last().mapped
+    }
+}
+
+/// Adding arena figures `a` that satisfy their identities to totals `t`
+/// that satisfy theirs, when the `mapped` sum fits: every sum
+/// [`Totals::add_arena`] forms fits, and the result satisfies the
+/// identities too.
+pub proof fn lemma_totals_add(t: Totals, a: ArenaStats)
+    requires
+        t.identities(),
+        a.identities(),
+        t.mapped + a.mapped <= usize::MAX,
+    ensures
+        t.can_add_arena(a),
+        ({
+            let u = Totals {
+                allocated: (t.allocated + a.small_allocated + a.large_allocated) as usize,
+                active: (t.active + a.small_active + a.large_active) as usize,
+                metadata: (t.metadata + a.metadata) as usize,
+                resident: (t.resident + a.resident) as usize,
+                retained: (t.retained + a.retained) as usize,
+                mapped: (t.mapped + a.mapped) as usize,
+            };
+            u.identities()
+        }),
+{
 }
 
 /// Read every counter once; store the result per arena and in `Shared`
@@ -801,14 +1093,24 @@ pub fn collect_arena(shared: &Shared, arena: &Arena) -> (r: ArenaStats)
 /// when stored, the current one otherwise). `rd` gets the figures of each
 /// arena it found, in index order, and the pages each one's `large` word
 /// load returned; `totals.allocated` is their true sum when that fits
-/// ([`totals_exact`]).
+/// ([`totals_exact`]). Each arena's figures satisfy their identities, and
+/// the totals theirs whenever the arenas' `mapped` sum fits, which it
+/// does for up to 256 arenas ([`Snapshot::inv`]); the snapshot stored
+/// is the one returned.
 fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>) -> (r: Snapshot)
     requires
         crate::sys::may_syscall(),
         shared.wf(),
     ensures
         totals_exact(final(rd)@.0, final(rd)@.1, r.totals),
+        r.narenas == final(rd)@.0.len(),
+        forall|j: int| 0 <= j < final(rd)@.0.len() ==> #[trigger] final(rd)@.0[j].identities(),
+        sum_mapped(final(rd)@.0) <= usize::MAX ==> r.totals.mapped == sum_mapped(final(rd)@.0)
+            && r.totals.identities(),
+        r.inv(),
 {
+    broadcast use axiom_snapshot_lock_inv;
+
     let huge = shared.huge.stats();
     let meta = shared.meta.stats();
     let mut totals = Totals::EMPTY;
@@ -818,13 +1120,22 @@ fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(S
     let ghost mut pages = Seq::<int>::empty();
     proof {
         lemma_reads_empty();
+        assert(sum_mapped(reads) == 0);
     }
     for i in 0..n as usize
         invariant
             crate::sys::may_syscall(),
             shared.wf(),
+            huge.empty_pages + huge.purged_pages <= u32::MAX,
+            meta.identities(),
+            meta.len <= crate::meta::va_limit(),
             narenas <= i <= n,
             totals_exact(reads, pages, totals),
+            narenas == reads.len(),
+            forall|j: int| 0 <= j < reads.len() ==> #[trigger] reads[j].identities(),
+            // Arena 0, the only one above `2^55`, comes first.
+            sum_mapped(reads) <= 0x400_0000_0000_0000 + reads.len() * 0x80_0000_0000_0000,
+            sum_mapped(reads) <= usize::MAX ==> totals.mapped == sum_mapped(reads) && totals.identities(),
     {
         if let Some(arena) = arena_at(shared, i) {
             let tracked mut pg = Ghost(0int);
@@ -832,6 +1143,10 @@ fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(S
             let ghost p = pg@;
             proof {
                 lemma_reads_step(reads, pages, a, p);
+                assert(reads.push(a).drop_last() =~= reads);
+                if sum_mapped(reads.push(a)) <= usize::MAX {
+                    lemma_totals_add(totals, a);
+                }
             }
             totals.add_arena(&a);
             proof {
@@ -848,6 +1163,9 @@ fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(S
     proof {
         assert(totals_exact(reads, pages, totals));
         *rd = Ghost((reads, pages));
+        if narenas <= 256 {
+            assert(sum_mapped(reads) <= usize::MAX);
+        }
     }
     if store {
         g.epoch = fig_add64(g.epoch, 1);
@@ -857,6 +1175,7 @@ fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(S
         g.meta = meta;
         proof {
             assert(totals_exact(reads, pages, g@.totals));
+            assert(crate::lock::lock_inv(g@));
         }
         *g
     } else {
@@ -883,29 +1202,37 @@ pub fn epoch(shared: &Shared) -> u64
 
 /// The current totals without storing them (for `malloc_stats_print`);
 /// exact as [`collect_into`]'s.
-pub fn collect(shared: &Shared) -> Snapshot
+pub fn collect(shared: &Shared) -> (r: Snapshot)
     requires
         crate::sys::may_syscall(),
         shared.wf(),
+    ensures
+        r.inv(),
 {
     let tracked mut rd = Ghost((Seq::<ArenaStats>::empty(), Seq::<int>::empty()));
     collect_into(shared, false, Tracked(&mut rd))
 }
 
 /// The snapshot stored by the last [`epoch`] (all zero before the first).
-pub fn snapshot(shared: &Shared) -> Snapshot
+pub fn snapshot(shared: &Shared) -> (r: Snapshot)
     requires
         crate::sys::may_syscall(),
+    ensures
+        r.inv(),
 {
+    broadcast use axiom_snapshot_lock_inv;
+
     *shared.stats.lock()
 }
 
 /// The [`ArenaStats`] stored by the last [`epoch`] for arena `index`, or
 /// `None` if the arena does not exist. An arena created since the last
 /// epoch reports zeros.
-pub fn arena_stats(shared: &Shared, index: u16) -> Option<ArenaStats>
+pub fn arena_stats(shared: &Shared, index: u16) -> (r: Option<ArenaStats>)
     requires
         crate::sys::may_syscall(),
+    ensures
+        r matches Some(a) ==> a.identities(),
 {
     Some(shared.arenas.get_existing(index)?.stats())
 }
@@ -936,7 +1263,9 @@ pub fn arena_stats_all(shared: &Shared) -> (r: ArenaStats)
 /// `mallinfo` and `malloc_stats`, which glibc defines as live). Its
 /// `allocated`, `curregs` and `large_runs` are the true sums of the
 /// figures it read of each arena it found, which `rd` gets in index order
-/// with the pages of each `large` word load ([`summed`]).
+/// with the pages of each `large` word load ([`summed`]). Each arena's
+/// figures satisfy their identities, and the sum does whenever the
+/// arenas' `mapped` sum fits, which it does for up to 256 arenas.
 pub fn collect_all(shared: &Shared, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>) -> (r: ArenaStats)
     requires
         crate::sys::may_syscall(),
@@ -944,6 +1273,9 @@ pub fn collect_all(shared: &Shared, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaSt
     ensures
         r.index == crate::arena::ARENAS_ALL as u16,
         summed(final(rd)@.0, final(rd)@.1, r),
+        forall|j: int| 0 <= j < final(rd)@.0.len() ==> #[trigger] final(rd)@.0[j].identities(),
+        sum_mapped(final(rd)@.0) <= usize::MAX ==> r.mapped == sum_mapped(final(rd)@.0) && r.identities(),
+        final(rd)@.0.len() <= 256 ==> r.identities(),
 {
     let huge = shared.huge.stats();
     let meta = shared.meta.stats();
@@ -953,13 +1285,22 @@ pub fn collect_all(shared: &Shared, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaSt
     let ghost mut pages = Seq::<int>::empty();
     proof {
         lemma_reads_empty();
+        assert(sum_mapped(reads) == 0);
     }
     for i in 0..n as usize
         invariant
             crate::sys::may_syscall(),
             shared.wf(),
+            huge.empty_pages + huge.purged_pages <= u32::MAX,
+            meta.identities(),
+            meta.len <= crate::meta::va_limit(),
             all.index == crate::arena::ARENAS_ALL as u16,
             summed(reads, pages, all),
+            reads.len() <= i,
+            forall|j: int| 0 <= j < reads.len() ==> #[trigger] reads[j].identities(),
+            // Arena 0, the only one above `2^55`, comes first.
+            sum_mapped(reads) <= 0x400_0000_0000_0000 + reads.len() * 0x80_0000_0000_0000,
+            sum_mapped(reads) <= usize::MAX ==> all.mapped == sum_mapped(reads) && all.identities(),
     {
         if let Some(arena) = arena_at(shared, i) {
             let tracked mut pg = Ghost(0int);
@@ -968,9 +1309,13 @@ pub fn collect_all(shared: &Shared, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaSt
             let ghost all0 = all;
             proof {
                 lemma_reads_step(reads, pages, a, p);
+                assert(reads.push(a).drop_last() =~= reads);
             }
             all.add(&a);
             proof {
+                if sum_mapped(reads.push(a)) <= usize::MAX {
+                    all0.lemma_merge_identities(a, all);
+                }
                 let (r1, p1) = (reads.push(a), pages.push(p));
                 if reads_allocated(r1, p1) <= usize::MAX {
                     assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] all.bins[c].curregs == sum_curregs(r1, c) by {

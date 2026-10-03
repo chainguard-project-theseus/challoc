@@ -1001,19 +1001,31 @@ impl Arena {
 
     /// Live huge runs of this arena and their pages, guards included, as
     /// one snapshot (see the field).
-    pub fn large(&self) -> (usize, usize) {
+    pub fn large(&self) -> (r: (usize, usize))
+        ensures
+            r.0 < 0x1_0000_0000,
+            r.1 < 0x1_0000_0000,
+    {
         proof {
             assert(Self::LARGE_RUN == 0x1_0000_0000) by (compute_only);
         }
         let w = self.large.load(Ordering::Relaxed);
+        proof {
+            assert((w >> 32u64) < 0x1_0000_0000u64 && (w & 0xffff_ffffu64) < 0x1_0000_0000u64) by (bit_vector);
+        }
         ((w >> 32) as usize, (w & (Self::LARGE_RUN - 1)) as usize)
     }
 
-    /// The statistics stored by the last `epoch`.
-    pub fn stats(&self) -> ArenaStats
+    /// The statistics stored by the last `epoch`: they satisfy the
+    /// accounting identities (the lock's invariant).
+    pub fn stats(&self) -> (r: ArenaStats)
         requires
             crate::sys::may_syscall(),
+        ensures
+            r.identities(),
     {
+        broadcast use axiom_arena_stats_lock_inv;
+
         *self.stats.lock()
     }
 
@@ -1021,6 +1033,7 @@ impl Arena {
     pub fn store_stats(&self, s: &ArenaStats)
         requires
             crate::sys::may_syscall(),
+            s.identities(),
     {
         broadcast use axiom_arena_stats_lock_inv;
 

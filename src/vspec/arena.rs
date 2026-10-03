@@ -36,10 +36,13 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::swap ](
     order: core::sync::atomic::Ordering,
 ) -> *mut T;
 
-/// The statistics an `epoch` stores: any value will do.
+/// The statistics an `epoch` stores satisfy the accounting identities
+/// (`ArenaStats::identities`). Trusted as every `lock_inv` axiom is: the
+/// lock's writers are `Arena`'s initialisation (`ArenaStats::empty`, all
+/// zero) and `Arena::store_stats`, which requires them.
 pub broadcast axiom fn axiom_arena_stats_lock_inv(v: crate::stats::ArenaStats)
     ensures
-        #[trigger] lock_inv(v),
+        #[trigger] lock_inv(v) == v.identities(),
 ;
 
 } // verus!

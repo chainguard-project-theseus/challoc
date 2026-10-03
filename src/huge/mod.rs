@@ -3605,9 +3605,13 @@ impl Huge {
         })
     }
 
-    pub fn stats(&self) -> HugeStats
+    /// The extent counters, from one lock hold. The free extents' pages
+    /// are among the region's, at most `u32::MAX`.
+    pub fn stats(&self) -> (r: HugeStats)
         requires
             crate::sys::may_syscall(),
+        ensures
+            r.empty_pages + r.purged_pages <= u32::MAX,
     {
         broadcast use axiom_huge_lock_inv;
 

@@ -2396,6 +2396,8 @@ impl ClassState {
         ensures
             r.0.empty + r.0.purged <= r.0.committed <= self.spec_nslabs(),
             (r.0.committed as int) * (class_table()[self.spec_class() as int].nslots as int) <= usize::MAX,
+            // The clamp: no more slots out than the live-capable slabs hold.
+            (r.1 as int) <= ((r.0.committed - r.0.empty - r.0.purged) as int) * (class_table()[self.spec_class() as int].nslots as int),
     {
         broadcast use {axiom_class_lock, axiom_class_lock_inv, lemma_inv_counts};
         proof {
