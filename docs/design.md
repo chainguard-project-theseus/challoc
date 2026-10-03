@@ -1024,12 +1024,17 @@ null; an `align_val_t` that is not a power of two fails at once, without
 the handler, as in libstdc++). Both libstdc++ entry points are weak
 references loaded from the GOT, so a C process that never maps libstdc++
 still loads under `BIND_NOW`, and a program whose static libstdc++ hides
-them gets an abort with a message instead of the throw. The sized
-`delete` forms are `free_sized` and `free_aligned_sized`: the size and
-alignment name a class through the same `class_for(size, align)` the
-matching `new` used, and a mismatch aborts (jemalloc's sized `delete` is
-`sdallocx` with the same contract). The unsized aligned forms take the plain
-`free` path.
+them gets an abort with a message instead of the throw. The `nothrow_t`
+forms also return null when the handler throws: they call it through
+`challoc_call_new_handler` (`api/cxx_handler.cpp`, compiled by build.rs),
+a C++ `catch (...)` whose runtime references (`__cxa_begin_catch`,
+`__cxa_end_catch`, `__gxx_personality_v0`) are weak too. The throwing
+forms call the handler directly, so its exception reaches the caller
+unchanged. The sized `delete` forms are `free_sized` and
+`free_aligned_sized`: the size and alignment name a class through the
+same `class_for(size, align)` the matching `new` used, and a mismatch
+aborts (jemalloc's sized `delete` is `sdallocx` with the same contract).
+The unsized aligned forms take the plain `free` path.
 
 ### 13.2 jemalloc
 

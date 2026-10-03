@@ -18,6 +18,13 @@
 //! `.eh_frame` entries and no landing pads, exactly like C code compiled
 //! with unwind tables; `tests/c/cxx_new.cpp` catches it under the preload.
 //!
+//! The `nothrow_t` forms must return null even when the handler throws,
+//! and Rust cannot catch a C++ exception, so they call the handler through
+//! `challoc_call_new_handler` in `cxx_handler.cpp` (compiled by build.rs),
+//! which catches anything the handler throws and reports it as 0. The
+//! throwing forms call the handler directly, so its exception reaches the
+//! caller unchanged.
+//!
 //! The sized `delete` forms are `free_sized` and `free_aligned_sized`
 //! (design 13.1): the size (and `align_val_t`) name a class through the
 //! same `class_for(size, align)` the matching `new` used, so a correct
@@ -38,6 +45,12 @@ use super::libc;
 
 /// `std::new_handler`: `void (*)()`, null when none is installed.
 type NewHandler = Option<unsafe extern "C" fn()>;
+
+unsafe extern "C" {
+    /// `src/api/cxx_handler.cpp`: calls `handler` and returns 1, or 0 when
+    /// it threw (the exception is caught and destroyed there).
+    fn challoc_call_new_handler(handler: unsafe extern "C" fn()) -> core::ffi::c_int;
+}
 
 /// Address of libstdc++'s `std::get_new_handler()`, or null when no
 /// libstdc++ is loaded in the process.
@@ -119,8 +132,8 @@ fn throw_bad_alloc() -> ! {
 
 /// The `operator new` failure protocol: call the `new_handler` and retry
 /// until an attempt succeeds or no handler is installed, then throw
-/// `std::bad_alloc` (or return null for the `nothrow_t` forms). `align` is
-/// 0 for the unaligned operators.
+/// `std::bad_alloc` (or return null for the `nothrow_t` forms, also when
+/// the handler throws). `align` is 0 for the unaligned operators.
 #[cold]
 #[inline(never)]
 fn oom(size: usize, align: usize, nothrow: bool) -> *mut u8 {
@@ -131,9 +144,17 @@ fn oom(size: usize, align: usize, nothrow: bool) -> *mut u8 {
             }
             throw_bad_alloc()
         };
-        // SAFETY: a `void (*)()` installed by the program through
-        // `std::set_new_handler`; it may throw, which unwinds through here.
-        unsafe { handler() };
+        if nothrow {
+            // SAFETY: a `void (*)()` installed by the program through
+            // `std::set_new_handler`; the shim catches whatever it throws.
+            if unsafe { challoc_call_new_handler(handler) } == 0 {
+                return ptr::null_mut();
+            }
+        } else {
+            // SAFETY: as above; an exception it throws unwinds through
+            // here to the caller of `operator new`.
+            unsafe { handler() };
+        }
         let p = if align == 0 {
             libc::malloc(size)
         } else {
