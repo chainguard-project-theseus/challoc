@@ -10,7 +10,8 @@
  *   - an impossible request throws std::bad_alloc through challoc's frames
  *     and the nothrow form returns nullptr;
  *   - an installed std::new_handler is called until it gives up, then
- *     bad_alloc is thrown (or nullptr returned).
+ *     bad_alloc is thrown (or nullptr returned);
+ *   - a non-power-of-two align_val_t fails at once, without the handler.
  *
  * Compiled by src/api/c_programs.rs with the container's C++ compiler.
  */
@@ -322,6 +323,46 @@ static void test_new_handler()
     std::set_new_handler(nullptr);
 }
 
+/* An align_val_t that is not a power of two (0 included) can never be
+ * satisfied, so every aligned form fails at once, as in libstdc++: bad_alloc
+ * or nullptr, without asking the new_handler to free memory that would not
+ * help. */
+static void test_bad_alignment()
+{
+    static const size_t bad[] = {0, 3, 48};
+    for (size_t a : bad) {
+        const std::align_val_t av = static_cast<std::align_val_t>(*static_cast<const volatile size_t *>(&a));
+        for (int form = 0; form < 4; form++) {
+            handler_calls = 0;
+            std::set_new_handler(counting_handler);
+            bool caught = false;
+            sink = nullptr;
+            switch (form) {
+            case 0:
+                try {
+                    sink = operator new(1, av);
+                } catch (const std::bad_alloc &) {
+                    caught = true;
+                }
+                break;
+            case 1:
+                try {
+                    sink = operator new[](1, av);
+                } catch (const std::bad_alloc &) {
+                    caught = true;
+                }
+                break;
+            case 2: sink = operator new(1, av, std::nothrow); break;
+            default: sink = operator new[](1, av, std::nothrow); break;
+            }
+            CHECK(sink == nullptr, "align %zu form %d: returned %p", a, form, sink);
+            CHECK(form >= 2 || caught, "align %zu form %d: did not throw std::bad_alloc", a, form);
+            CHECK(handler_calls == 0, "align %zu form %d: handler called %d times, expected 0", a, form, handler_calls.load());
+            std::set_new_handler(nullptr);
+        }
+    }
+}
+
 int main()
 {
     require_challoc();
@@ -330,6 +371,7 @@ int main()
     test_threads();
     test_bad_alloc();
     test_new_handler();
+    test_bad_alignment();
     if (failures) {
         fprintf(stderr, "cxx_new: %d failures\n", failures.load());
         return 1;

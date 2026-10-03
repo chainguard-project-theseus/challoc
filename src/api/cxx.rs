@@ -25,8 +25,10 @@
 //! descriptor's bit test (design 6.3) and a mismatched size aborts as
 //! `free_sized` does. The unsized aligned forms have no size to check and
 //! take the plain `free` path with the alignment ignored. Aligned `new`
-//! goes through `aligned_alloc`, so a non-power-of-two `align_val_t` fails
-//! like exhaustion does.
+//! goes through `aligned_alloc`. An `align_val_t` that is not a power of
+//! two (0 included) can never be satisfied, so it fails at once without
+//! calling the `new_handler`, as libstdc++ does: the throwing forms throw
+//! `std::bad_alloc` and the `nothrow_t` forms return null.
 
 use core::arch::asm;
 use core::ffi::c_void;
@@ -174,8 +176,15 @@ pub fn new_nothrow(size: usize) -> *mut u8 {
     }
 }
 
-/// The `align_val_t` forms.
+/// The `align_val_t` forms. A non-power-of-two `align` fails here and
+/// skips the handler loop: no amount of freed memory makes it valid.
 pub fn new_aligned(size: usize, align: usize, nothrow: bool) -> *mut u8 {
+    if !align.is_power_of_two() {
+        if nothrow {
+            return ptr::null_mut();
+        }
+        throw_bad_alloc()
+    }
     let p = libc::aligned_alloc(align, size);
     if p.is_null() {
         oom(size, align, nothrow)
