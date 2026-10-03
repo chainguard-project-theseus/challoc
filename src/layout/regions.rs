@@ -235,8 +235,11 @@ impl Regions {
     /// subtraction, stride shift, bound check and class compare. `class`
     /// must be below `NCLASSES` (what `class_of`/`class_for` return).
     ///
+    /// The fast path (`heap::Shared::sized_slot`) makes the same test from
+    /// its class line; this form is the reference the tests hold it to.
+    ///
     /// [`slab_slot`]: Regions::slab_slot
-    #[inline(always)]
+    #[cfg(test)]
     pub fn slot_in_class(&self, class: usize, p: usize) -> Option<(usize, usize)> {
         debug_assert!(class < NCLASSES);
         // SAFETY: the caller's `class` is an index `class_of` produced.

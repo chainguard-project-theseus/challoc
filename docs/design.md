@@ -542,9 +542,10 @@ remain for explicit `MALLOCX_ARENA` allocations and `thread.arena`.
    paths behind a test of the hint, and a huge size leaves for the slow
    path before the heap lookup. The hint names the region: `rel = p - class_base[c_hint]`; if
    `rel` is past the region or not a slot start, slow path. A guard slab
-   goes to the slow path too, tested with one 8-byte load from a dense
-   per-class pair (`Shared::guard_test[c]`, `GuardTest`: `(slab +
-   slabs_per_page) & mask == 0`). The class table line is not touched.
+   goes to the slow path too (`GuardTest`: `(slab + slabs_per_page) &
+   mask == 0`). The region base, the slot geometry and the guard pair are
+   read from the class's line (`Shared::lines[c]`, the one plain `free`
+   reads); the class table line is not touched.
 2. `heap = tls()`; `cache = heap.caches[c]`; if `len == cap`, slow path.
    `slots[len++] = p`. Neither the bitmap word nor the owner word is
    loaded.
