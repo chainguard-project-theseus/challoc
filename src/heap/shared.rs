@@ -1,11 +1,12 @@
 //! [`Shared`], the process-wide allocator state every heap works against,
 //! and the checks it performs for the fast and slow paths; the thread-exit
-//! key and the thread id, clock and seed a heap reads, and the sized fast
-//! path's [`GuardTest`].
+//! key and the thread id, clock and seed a heap reads, and the per-class
+//! [`ClassLine`] the `free` fast paths read, with the sized path's
+//! [`GuardTest`].
 
 use core::ffi::c_void;
 use core::ptr;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
 use crate::arena::{Arena, Arenas};
 use crate::class::SlabTable;
@@ -28,13 +29,19 @@ pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
 /// key. Built in place by [`Shared::init`] because the class states borrow
 /// `meta`, `regions` and `tables`.
 ///
-/// `repr(C)` fixes the order: `free_flags` and `regions`, read by every
-/// `malloc` and `free`, come first, then the line-aligned tables (read by
-/// every `free`) and arena 0's class states, so the locks inside `meta` and
-/// `huge` (taken on heap creation and huge allocations) never share a cache
-/// line with them.
+/// `repr(C)` fixes the order: the per-class lines (read by every `free`),
+/// then `free_flags` and `regions`, read by every `malloc` and `free`,
+/// then the line-aligned tables and arena 0's class states, so the locks
+/// inside `meta` and `huge` (taken on heap creation and huge allocations)
+/// never share a cache line with them.
 #[repr(C)]
 pub struct Shared {
+    /// What the `free` and sized `free` fast paths read per class, one
+    /// line each ([`ClassLine`]). At offset 0: the fast paths hold a
+    /// class's line as a reference, and LLVM builds its address as
+    /// `Shared + class * 64` plus the array's offset, one more `add`
+    /// whenever that offset is not zero.
+    pub(super) lines: [ClassLine; NCLASSES],
     /// The one byte the `free` fast path loads for its dispatch:
     /// [`push_flags`](Shared::push_flags) plus [`FREE_ROUTE`], set once a
     /// second arena exists. Until then every slab and every heap is arena
@@ -48,9 +55,9 @@ pub struct Shared {
     /// already sees the bit. The sized path and `malloc` read
     /// `push_flags`, which never changes after init.
     ///
-    /// First, so it shares a cache line with the `Regions` fields that
-    /// `slab_slot` reads on every `free` (`superblock`, `lg_stride`, the
-    /// low `class_base` entries): after `Regions` it would sit on its own
+    /// Right before `regions`, so it shares a cache line with the
+    /// `Regions` fields that `set_slot` reads on every `free`
+    /// (`superblock`, `lg_stride`): after `Regions` it would sit on its own
     /// line, and larson's working set turns every extra line into an L2
     /// hit.
     pub(super) free_flags: AtomicU8,
@@ -67,11 +74,6 @@ pub struct Shared {
     /// one predicted branch.
     pub(super) push_flags: u8,
     pub regions: Regions,
-    /// The sized fast path's guard test per class: a dense array (8 bytes
-    /// per class, seven lines for all 52) so `sized_slot` never touches
-    /// the 384-byte class table line (it reads neither the watermark nor
-    /// the descriptor; both checks are the flush's).
-    pub(super) guard_test: [GuardTest; NCLASSES],
     tables: [SlabTable; NCLASSES],
     pub arena0: Arena,
     pub meta: Meta,
@@ -100,6 +102,170 @@ pub struct Shared {
     pub cgroup: crate::sys::cgroup::Cgroup,
 }
 
+/// Everything the `free` fast path reads for one class, in one 64-byte
+/// line: the slot geometry (`Regions::class_base[c]` and `CLASSES[c]`'s
+/// slot-start test), the bitmap and owner array of [`SlabTable`] and a
+/// copy of its hand-out watermark. `[ClassLine; NCLASSES]` has a
+/// power-of-two stride equal to the heap's cache headers', so the class
+/// index scaled once addresses both, and every field is one load at an
+/// immediate offset from it; before, `free` indexed three arrays of
+/// different strides (`class_base`, the 32-byte `CLASSES`, the 384-byte
+/// tables, one `lea`/`shl` or `madd` each) and read three lines. The 52
+/// lines are consecutive, so they fill distinct L1 sets.
+///
+/// The copy of the watermark is stored after the table's own, under its
+/// commit lock ([`SlabTable::mirror_watermark`]), so it is never ahead of
+/// it: a slab below the copy has its bitmap words and owner word, and the
+/// relaxed load is enough for the reason [`SlabTable::desc_if_committed`]
+/// gives. A copy that lags the table only sends a `free` into a slab
+/// just handed out to the slow path, which repeats the check against the
+/// table itself.
+#[repr(C, align(64))]
+pub struct ClassLine {
+    class_base: usize,
+    bits_base: usize,
+    committed: AtomicUsize,
+    owners_base: usize,
+    slab_mask: u32,
+    inv_odd: u32,
+    nslots: u32,
+    slab_bits: u16,
+    tz: u8,
+    lg_slab: u8,
+    lg_group: u8,
+    /// The sized fast path's guard test for this class.
+    pub(super) guard: GuardTest,
+}
+
+const _: () = assert!(core::mem::size_of::<ClassLine>() == 64);
+const _: () = assert!(core::mem::offset_of!(Shared, lines) == 0);
+
+impl ClassLine {
+    fn of(regions: &Regions, table: &SlabTable, class: usize) -> ClassLine {
+        let cls = &CLASSES[class];
+        ClassLine {
+            class_base: regions.class_base[class],
+            bits_base: table.bits_base(),
+            committed: AtomicUsize::new(0),
+            owners_base: table.owners_base(),
+            slab_mask: cls.slab_mask,
+            inv_odd: cls.inv_odd,
+            nslots: cls.nslots,
+            slab_bits: cls.slab_bits,
+            tz: cls.tz,
+            lg_slab: cls.lg_slab,
+            lg_group: table.lg_group(),
+            guard: GuardTest::of(table),
+        }
+    }
+
+    /// Tests: the line's fields as `(class_base, bits_base, watermark copy,
+    /// owners_base, lg_group)`.
+    #[cfg(test)]
+    pub(super) fn parts(&self) -> (usize, usize, usize, usize, u8) {
+        (
+            self.class_base,
+            self.bits_base,
+            self.committed.load(Ordering::Relaxed),
+            self.owners_base,
+            self.lg_group,
+        )
+    }
+
+    /// The slot-start test ([`Class::slot_of_offset`]) on `rel`, the
+    /// offset from the region base: the slot number, or `None` for an
+    /// address that is not a slot start of its slab.
+    ///
+    /// [`Class::slot_of_offset`]: crate::layout::Class::slot_of_offset
+    #[inline(always)]
+    fn slot_start(&self, rel: usize) -> Option<u32> {
+        let slot = ((rel as u32) & self.slab_mask)
+            .wrapping_mul(self.inv_odd)
+            .rotate_right(self.tz as u32);
+        if slot < self.nslots { Some(slot) } else { None }
+    }
+
+    /// The sized free's check on this class's line: whether `p`, at `rel`
+    /// from the region base and already known inside the region, is a
+    /// slot start in a slab that is not a guard slab.
+    #[inline(always)]
+    fn sized_ok(&self, rel: usize) -> bool {
+        self.slot_start(rel).is_some() && !self.guard.is_guard(rel >> self.lg_slab)
+    }
+
+    /// The `free` check on this class's line: `Some(slab)` when `p` is a
+    /// slot start in a slab below the watermark whose bit is set, `None`
+    /// otherwise. The slot-start test is [`Class::slot_of_offset`]; the
+    /// watermark compare is also the region bound (an address past the
+    /// region, in the gap after it or below its base yields a slab number
+    /// of at least `nslabs`, which no watermark reaches).
+    ///
+    /// [`Class::slot_of_offset`]: crate::layout::Class::slot_of_offset
+    #[inline(always)]
+    fn set_slab(&self, p: usize) -> Option<usize> {
+        // On aarch64 every field is read up front, before the first
+        // branch: read after it, LLVM rebuilt the line's address (one more
+        // `add`), and up front the two compares fold into a `ccmp`. On
+        // x86_64 that order costs callee-saved registers (`push` and `pop`
+        // of `rbx`, and `r14`), so there each is read just before its use.
+        #[cfg(target_arch = "aarch64")]
+        let (lg_slab, slab_bits, bits_base, committed) = self.bit_fields();
+        let rel = p.wrapping_sub(self.class_base);
+        let slot = self.slot_start(rel)?;
+        #[cfg(not(target_arch = "aarch64"))]
+        let lg_slab = self.lg_slab;
+        let slab = rel >> lg_slab;
+        #[cfg(not(target_arch = "aarch64"))]
+        let committed = self.committed.load(Ordering::Relaxed);
+        if slab >= committed {
+            return None;
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        let (slab_bits, bits_base) = (self.slab_bits, self.bits_base);
+        let bit = slab * slab_bits as usize + slot as usize;
+        #[allow(unused_mut)]
+        let mut index = bit / 64;
+        // As in `SlabTable::is_set_unchecked`: on aarch64 `bit >> 6` and a
+        // scaled `ldr`, not LLVM's `(bit >> 3) & !7`.
+        #[cfg(target_arch = "aarch64")]
+        // SAFETY: an empty template; `index` comes out unchanged.
+        unsafe {
+            core::arch::asm!("/* {0} */", inout(reg) index, options(pure, nomem, nostack, preserves_flags))
+        };
+        let word = (bits_base + index * 8) as *const AtomicU64;
+        // SAFETY: `slab` is below a value the watermark held and `slot`
+        // below `nslots`, so the word is in the committed bitmap.
+        if (unsafe { (*word).load(Ordering::Relaxed) } >> (bit % 64)) & 1 == 0 {
+            return None;
+        }
+        Some(slab)
+    }
+
+    /// What [`set_slab`](ClassLine::set_slab) reads past the slot-start
+    /// test: `lg_slab`, `slab_bits`, `bits_base` and the watermark copy.
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    fn bit_fields(&self) -> (u8, u16, usize, usize) {
+        (
+            self.lg_slab,
+            self.slab_bits,
+            self.bits_base,
+            self.committed.load(Ordering::Relaxed),
+        )
+    }
+
+    /// The arena that owns `slab`'s group.
+    ///
+    /// # Safety
+    /// `slab` is one [`set_slab`](ClassLine::set_slab) returned.
+    #[inline(always)]
+    unsafe fn owner(&self, slab: usize) -> u16 {
+        let word = (self.owners_base + (slab >> self.lg_group) * 2) as *const AtomicU16;
+        // SAFETY: as `SlabTable::owner_unchecked`.
+        unsafe { (*word).load(Ordering::Relaxed) }
+    }
+}
+
 /// [`SlabTable::is_guard_slab`] folded into one add and one mask on the
 /// slab number, for the sized fast path: `(slab + add) & mask == 0` with
 /// `add = slabs_per_page` and `mask = (interval - 1) << lg_slabs_per_page`
@@ -107,7 +273,7 @@ pub struct Shared {
 /// test, since `slab + spp` is `((slab >> lg_spp) + 1) << lg_spp` plus the
 /// low bits the shifted mask ignores. With guards off the mask is
 /// `u32::MAX << lg_spp` and `slab + spp` is never below `spp`, so nothing
-/// matches. `Shared::init` fills one per class from its table;
+/// matches. `Shared::init` fills one into each class's [`ClassLine`];
 /// `guard_test_agrees_with_the_tables` checks the two forms against each
 /// other over every class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -315,9 +481,14 @@ impl Shared {
                     None => return false,
                 }
             }
-            let guard_test = &raw mut (*this).guard_test;
+            let lines = &raw mut (*this).lines;
             for c in 0..NCLASSES {
-                ptr::write(&raw mut (*guard_test)[c], GuardTest::of(&(*tables)[c]));
+                ptr::write(
+                    &raw mut (*lines)[c],
+                    ClassLine::of(regions, &(*tables)[c], c),
+                );
+                // The `Shared` never moves (this function's contract).
+                (*tables)[c].mirror_watermark(&raw const (*lines)[c].committed);
             }
             let arena0 = &raw mut (*this).arena0;
             if !Arena::init(arena0, meta, regions, &*tables, 0, decay_ns) {
@@ -562,11 +733,11 @@ impl Shared {
     /// The sized free's check (`sdallocx`, `free_sized`; design 6.3): `p`
     /// must be a slot start in a non-guard slab of the class the size hint
     /// names, `hint` (`class_for(size, align)`, `None` for a huge size).
-    /// Arithmetic on the pointer and two dense lines: the hint names the
-    /// region, so [`Regions::slot_in_class`] checks the pointer against
-    /// that region alone (no superblock classification and no class
-    /// compare), and the guard test is one
-    /// 8-byte load from [`GuardTest`]'s dense array. Neither the slab
+    /// Arithmetic on the pointer and the class's [`ClassLine`]: the hint
+    /// names the region, so the pointer is checked against that region
+    /// alone (no superblock classification and no class compare; the
+    /// reference form is [`Regions::slot_in_class`]), and the guard test
+    /// is the line's [`GuardTest`]. Neither the slab
     /// descriptor nor the class table line is touched: the bit test that
     /// makes plain `free` exact is left to the flush, and so is the
     /// watermark. A slot start in a slab no arena has been handed, or in
@@ -587,10 +758,11 @@ impl Shared {
     #[inline(always)]
     pub(super) fn sized_slot(&self, p: *mut u8, hint: Option<usize>) -> Option<usize> {
         let class = hint?;
-        let (slab, _slot) = self.regions.slot_in_class(class, p as usize)?;
-        // SAFETY: `class_of`/`class_for` only produce `class < NCLASSES`
-        // (`slot_in_class` relies on the same).
-        if unsafe { self.guard_test.get_unchecked(class) }.is_guard(slab) {
+        debug_assert!(class < NCLASSES);
+        // SAFETY: `class_of`/`class_for` only produce `class < NCLASSES`.
+        let line = unsafe { self.lines.get_unchecked(class) };
+        let rel = (p as usize).wrapping_sub(line.class_base);
+        if rel >= self.regions.region_len() || !line.sized_ok(rel) {
             return None;
         }
         Some(class)
@@ -655,8 +827,9 @@ impl Shared {
     /// in a handed-out slab whose bit is set and whose arena is `home` (the
     /// arena load is skipped while only arena 0 exists), `None` for
     /// anything else. It never aborts; [`classify_free`] on the slow path
-    /// repeats the checks and does. Every table read is bounds-free: the
-    /// class index comes from `slab_slot_unbounded`, the bitmap word from a
+    /// repeats the checks and does. Every read is bounds-free: the
+    /// class index is checked against `NCLASSES` and every per-class field
+    /// comes from its [`ClassLine`], the bitmap word from a
     /// slot already known to be below `nslots` in a slab below the
     /// watermark, whose compare is the region bound too (no separate
     /// `region_len` test). The fast path itself
@@ -691,8 +864,8 @@ impl Shared {
     /// [`home_owns`]: Shared::home_owns
     #[cfg(test)]
     pub(super) fn checked_slot(&self, p: *mut u8, h: &Heap) -> Option<usize> {
-        let (class, table, slab) = self.set_slot(p)?;
-        if self.multi_arena() && !Self::home_owns(table, slab, h) {
+        let (class, slab) = self.set_slot(p)?;
+        if self.multi_arena() && !self.home_owns(class, slab, h) {
             return None;
         }
         Some(class)
@@ -705,7 +878,7 @@ impl Shared {
     /// [`checked_slot`]: Shared::checked_slot
     /// [`set_slot`]: Shared::set_slot
     #[inline(always)]
-    pub(super) fn home_owns(table: &SlabTable, slab: usize, h: &Heap) -> bool {
+    pub(super) fn home_owns(&self, class: usize, slab: usize, h: &Heap) -> bool {
         // The home arena is read on the multi-arena branch only. A plain
         // load is hoisted above the flag test (the heap is known valid)
         // and then every single-arena `free` touches the heap's header
@@ -713,8 +886,8 @@ impl Shared {
         // read stays here.
         // SAFETY: `h` is a live heap and `arena` a plain field.
         let home = unsafe { ptr::read_volatile(&raw const h.arena) };
-        // SAFETY: the caller found `slab` below the watermark.
-        unsafe { table.owner_unchecked(slab) == home }
+        // SAFETY: the caller's `class` and `slab` came from `set_slot`.
+        unsafe { self.lines.get_unchecked(class).owner(slab) == home }
     }
 
     /// [`checked_slot`] without the arena test: the bit test alone, so a
@@ -723,33 +896,29 @@ impl Shared {
     /// [`checked_slot`]: Shared::checked_slot
     #[cfg(test)]
     pub(super) fn checked_slot_any(&self, p: *mut u8) -> Option<usize> {
-        self.set_slot(p).map(|(class, _, _)| class)
+        self.set_slot(p).map(|(class, _)| class)
     }
 
     /// The bit test the two `free` fast-path checks share: `Some((class,
-    /// table, slab))` when `p` is a slot start in a handed-out slab of
-    /// `class` whose bit is set (the table and slab are what
-    /// [`checked_slot`]'s arena test then reads), `None` for anything
-    /// else; never aborts.
+    /// slab))` when `p` is a slot start in a handed-out slab of `class`
+    /// whose bit is set (what [`checked_slot`]'s arena test then reads),
+    /// `None` for anything else; never aborts. The class index, not a
+    /// reference to its [`ClassLine`]: a reference made LLVM materialise
+    /// the line's address (one more `add`) ahead of loads that address it
+    /// from the base and the scaled index anyway.
     ///
     /// [`checked_slot`]: Shared::checked_slot
     #[inline(always)]
-    pub(super) fn set_slot(&self, p: *mut u8) -> Option<(usize, &SlabTable, usize)> {
-        let (class, slab, slot) = self.regions.slab_slot_unbounded(p as usize)?;
-        // SAFETY: `slab_slot_unbounded` only returns `class < NCLASSES`.
-        let table = unsafe { self.tables.get_unchecked(class) };
-        // The watermark compare is the region bound as well: a pointer
-        // outside the class region has a slab number of at least `nslabs`
-        // (`slab_slot_unbounded`), past any watermark.
-        if !table.is_handed_out(slab) {
+    pub(super) fn set_slot(&self, p: *mut u8) -> Option<(usize, usize)> {
+        let p = p as usize;
+        let class = p.wrapping_sub(self.regions.superblock) >> self.regions.lg_stride;
+        if class >= NCLASSES {
             return None;
         }
-        // SAFETY: `slab` is below the watermark and `slab_slot_unbounded`
-        // validated `slot < nslots`.
-        if !unsafe { table.is_set_unchecked(slab, slot) } {
-            return None;
-        }
-        Some((class, table, slab))
+        // SAFETY: `class < NCLASSES` was just checked.
+        let line = unsafe { self.lines.get_unchecked(class) };
+        let slab = line.set_slab(p)?;
+        Some((class, slab))
     }
 
     /// Allocate a huge run of `size` bytes aligned to `align` in `arena`:

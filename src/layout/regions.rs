@@ -225,33 +225,6 @@ impl Regions {
         Some((c, slab, slot))
     }
 
-    /// [`slab_slot`] without the region bound, for a caller that compares
-    /// the slab with the class's hand-out watermark next (the `free` fast
-    /// path, `Shared::set_slot`): an address past the region, in the gap
-    /// that follows it or below its base (the offset wraps) yields a slab
-    /// number of at least `nslabs`, which no watermark reaches, so that
-    /// one compare is also the region bound. `Some((class, slab, slot))`
-    /// when `p` is in the class superblock at a slot start of its slab
-    /// geometry; the slab is meaningful only below the watermark.
-    ///
-    /// [`slab_slot`]: Regions::slab_slot
-    #[inline(always)]
-    pub fn slab_slot_unbounded(&self, p: usize) -> Option<(usize, usize, usize)> {
-        let c = p.wrapping_sub(self.superblock) >> self.lg_stride;
-        if c >= NCLASSES {
-            return None;
-        }
-        // SAFETY: `c < NCLASSES` was just checked; both arrays have
-        // `NCLASSES` entries.
-        let cls = unsafe { class_entry(c) };
-        let rel = p.wrapping_sub(unsafe { *self.class_base.get_unchecked(c) });
-        let (slot, valid) = cls.slot_of_offset(rel & cls.slab_mask());
-        if !valid {
-            return None;
-        }
-        Some((c, rel >> cls.lg_slab, slot))
-    }
-
     /// The sized free's classification (design 6.3): the size hint names
     /// `class`, so the region is known and the
     /// pointer is only checked against it, `Some((slab, slot))` when `p` is
@@ -262,8 +235,11 @@ impl Regions {
     /// subtraction, stride shift, bound check and class compare. `class`
     /// must be below `NCLASSES` (what `class_of`/`class_for` return).
     ///
+    /// The fast path (`heap::Shared::sized_slot`) makes the same test from
+    /// its class line; this form is the reference the tests hold it to.
+    ///
     /// [`slab_slot`]: Regions::slab_slot
-    #[inline(always)]
+    #[cfg(test)]
     pub fn slot_in_class(&self, class: usize, p: usize) -> Option<(usize, usize)> {
         debug_assert!(class < NCLASSES);
         // SAFETY: the caller's `class` is an index `class_of` produced.
