@@ -533,19 +533,24 @@ remain for explicit `MALLOCX_ARENA` allocations and `thread.arena`.
 
 `sdallocx(p, n, flags)`, `free_sized(p, n)`, `free_aligned_sized(p, a, n)`
 (the sized path):
-1. If `p` is null return. `c_hint = class_for(n, align)` (huge: slow
-   path). `sdallocx` with `flags == 0` (what Valkey passes on every free)
-   tests that first and takes `free_sized`'s path, `c_hint = class_of(n)`,
-   without decoding the flags (alignment shift, tcache bits), as
-   jemalloc's `sdallocx` does; any other flags take a call
-   (`sdallocx_flags`), so the compiler cannot merge the two inlined sized
-   paths behind a test of the hint, and a huge size leaves for the slow
-   path before the heap lookup. The hint names the region: `rel = p - class_base[c_hint]`; if
-   `rel` is past the region or not a slot start, slow path. A guard slab
-   goes to the slow path too (`GuardTest`: `(slab + slabs_per_page) &
-   mask == 0`). The region base, the slot geometry and the guard pair are
-   read from the class's line (`Shared::lines[c]`, the one plain `free`
-   reads); the class table line is not touched.
+1. On aarch64, if `p` is null return; on x86_64 null has no test of its
+   own: it is below every class region, so its `rel` (below) wraps past
+   the region bound, and the slow path returns for it. `c_hint =
+   class_for(n, align)` (huge: slow path). `sdallocx` with `flags == 0`
+   (what Valkey passes on every free) tests that first and takes
+   `free_sized`'s path, `c_hint = class_of(n)`, without decoding the flags
+   (alignment shift, tcache bits), as jemalloc's `sdallocx` does; any
+   other flags take a call (`sdallocx_flags`), so the compiler cannot
+   merge the two inlined sized paths behind a test of the hint, and a huge
+   size leaves for the slow path before the heap lookup. The hint names
+   the region: `rel = p - class_base[c_hint]`; if `rel` is past the region
+   (on x86_64 against a stored copy of the region length,
+   `Regions::sized_bound`, one compare with a memory operand) or not a
+   slot start, slow path. A guard slab goes to the slow path too
+   (`GuardTest`: `(slab + slabs_per_page) & mask == 0`). The region base,
+   the slot geometry and the guard pair are read from the class's line
+   (`Shared::lines[c]`, the one plain `free` reads); the class table line
+   is not touched.
 2. `heap = tls()`; `cache = heap.caches[c]`; if `len == cap`, slow path.
    `slots[len++] = p`. Neither the bitmap word nor the owner word is
    loaded.
