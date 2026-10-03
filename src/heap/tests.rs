@@ -1,5 +1,5 @@
 use super::compact::Verdict;
-use super::flush::{flag_sort, group_by_slab};
+use super::flush::{CountingSplit, flag_sort, group_by_slab, scratch_layout};
 use super::*;
 use crate::arena::Arena;
 use crate::class::ClassStats;
@@ -973,6 +973,104 @@ fn group_by_slab_single_slab_and_wide_span() {
     expect.sort_unstable();
     assert_eq!(group_by_slab(s, c, &mut wide), at(0, 2));
     assert_eq!(wide, expect, "wider than GROUP_BUCKETS slabs: sorted");
+}
+
+/// The flush's counting split: fake slot addresses (never dereferenced)
+/// from a few slabs, scrambled, with duplicates-free content. For every
+/// split point the top holds exactly the highest addresses, grouped by
+/// slab in ascending order, the bottom the rest, as a permutation of the
+/// input.
+#[test]
+fn counting_split_releases_the_highest_grouped_by_slab() {
+    let s = shared();
+    let c = class_with(64);
+    let cls = &CLASSES[c];
+    let base = s.regions.class_base[c];
+    let mut st = 0x0bad_cafe_1234_5678u64;
+    for (slabs, len) in [
+        (&[7usize][..], 40usize),
+        (&[3, 4, 9][..], 300),
+        (&[0, 100, 255][..], 1024),
+    ] {
+        let mut set = std::collections::BTreeSet::new();
+        while set.len() < len {
+            let sl = slabs[(xorshift(&mut st) % slabs.len() as u64) as usize];
+            let k = (xorshift(&mut st) % cls.nslots() as u64) as usize;
+            set.insert(s.regions.slab_addr(c, sl) + k * cls.size());
+        }
+        let mut v: Vec<*mut u8> = set.iter().map(|&a| a as *mut u8).collect();
+        let expect = v.clone();
+        for rest in [1, len / 3, len / 2, len - 1] {
+            for i in (1..len).rev() {
+                let j = (xorshift(&mut st) % (i as u64 + 1)) as usize;
+                v.swap(i, j);
+            }
+            let r = split_with(&mut v, rest, base, cls.lg_slab as u32);
+            assert_eq!(r, core::ptr::null_mut(), "no duplicate");
+            let mut low: Vec<*mut u8> = v[..rest].to_vec();
+            low.sort_unstable();
+            assert_eq!(low, expect[..rest].to_vec(), "rest {rest}: the lowest stay");
+            let slab_of = |p: *mut u8| (p as usize - base) >> cls.lg_slab;
+            assert!(
+                v[rest..].windows(2).all(|w| slab_of(w[0]) <= slab_of(w[1])),
+                "rest {rest}: released grouped by slab, ascending"
+            );
+            let mut high: Vec<*mut u8> = v[rest..].to_vec();
+            high.sort_unstable();
+            assert_eq!(high, expect[rest..].to_vec(), "rest {rest}: the highest go");
+        }
+    }
+}
+
+/// A duplicate on both sides of the split is reported, in a slice that
+/// takes the counting passes and in one short enough to be sorted; a pair
+/// kept together, or released together, is not.
+#[test]
+fn counting_split_reports_a_straddling_pair() {
+    let s = shared();
+    let c = class_with(64);
+    let cls = &CLASSES[c];
+    let base = s.regions.class_base[c];
+    let at = |sl: usize, k: usize| (s.regions.slab_addr(c, sl) + k * cls.size()) as *mut u8;
+    let lg = cls.lg_slab as u32;
+    for n in [12usize, 200] {
+        let mut v: Vec<*mut u8> = (0..n).map(|k| at(2 + k % 3, (k * 7) % 1000)).collect();
+        v.sort_unstable();
+        v.dedup();
+        let len = v.len();
+        let p = v[len / 2];
+        v.push(p);
+        v.reverse();
+        // The pair is ranks len/2 and len/2 + 1 of len + 1: a split
+        // after len/2 + 1 kept entries separates them.
+        let mut w = v.clone();
+        assert_eq!(split_with(&mut w, len / 2 + 1, base, lg), p, "n {n}");
+        for keep in [len / 2 + 2, len / 2, 0] {
+            let mut w = v.clone();
+            assert_eq!(
+                split_with(&mut w, keep, base, lg),
+                core::ptr::null_mut(),
+                "n {n} keep {keep}: both copies on one side"
+            );
+        }
+    }
+}
+
+/// Run a [`CountingSplit`] over `v` with a scratch buffer of its own.
+fn split_with(v: &mut [*mut u8], keep: usize, base: usize, lg: u32) -> *mut u8 {
+    let l = scratch_layout(v.len() as u32);
+    let mut buf = std::vec![0u128; l.size().div_ceil(16)];
+    let mut s = unsafe {
+        CountingSplit::new(
+            buf.as_mut_ptr() as *mut u8,
+            v.len(),
+            base,
+            lg,
+            false,
+            usize::MAX,
+        )
+    };
+    s.split(v, keep)
 }
 
 /// The in-place counting sort behind the bucket pass: 1000 entries

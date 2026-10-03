@@ -172,6 +172,11 @@ pub struct Heap {
     /// randomised claim seeds it from `getrandom`, so the
     /// default configuration makes no syscall per heap creation.
     rng: u64,
+    /// The flush's counting-sort buffer (`flush::scratch_layout` for
+    /// `scratch_cap` entries), allocated by the first unsorted flush that
+    /// keeps part of its cache; null until then.
+    scratch: *mut u8,
+    scratch_cap: u32,
     /// Caches of the home arena, one line per class; last, so the small
     /// fields above share two lines and `caches[c]` is `heap + 128 + 64 * c`.
     caches: [CacheHeader; NCLASSES],
@@ -221,6 +226,8 @@ impl Heap {
             ptr::write(&raw mut (*h).tcache_enabled, true);
             ptr::write(&raw mut (*h).bound, false);
             ptr::write(&raw mut (*h).rng, 0);
+            ptr::write(&raw mut (*h).scratch, ptr::null_mut());
+            ptr::write(&raw mut (*h).scratch_cap, 0);
             let caches = (&raw mut (*h).caches).cast::<CacheHeader>();
             for c in 0..NCLASSES {
                 ptr::write(caches.add(c), CacheHeader::EMPTY);
@@ -239,6 +246,7 @@ impl Heap {
         // SAFETY: the caller gives us exclusive ownership of the heap.
         let heap = unsafe { &mut *h };
         heap.flush_all(shared);
+        heap.free_scratch(shared);
         Self::free_caches(shared, &mut heap.caches);
         for o in Self::nodes(heap.others) {
             // SAFETY: `others` is a list of live metadata blocks owned by
