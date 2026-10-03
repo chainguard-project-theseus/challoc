@@ -145,7 +145,8 @@ pub struct SetTable {
     /// Position of each class within its group.
     pos: [u8; NCLASSES],
     /// Commit watermarks; taken by the fork handlers after the arena's
-    /// class locks, which is the order `take_group` uses.
+    /// class locks and the slab table locks, which is the order
+    /// `take_group` uses.
     tables: Lock<[Lazy; SET_GROUPS]>,
     page: usize,
 }

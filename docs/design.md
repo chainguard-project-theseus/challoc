@@ -795,18 +795,19 @@ across heap creation and destruction), the arena creation lock, the
 process statistics lock (held across every statistics scan, which
 takes the class, slab table, huge, metadata and per-arena statistics
 locks, so one `epoch` collection is published at a time), every arena's
-class locks and slab-set lock, the slab table locks, the huge lock, the
-metadata lock, the per-arena statistics locks (leaves), and the
-background thread's state lock last. The parent and child handlers
-release them in reverse and restore the signal mask. The test
-`fork_handlers_take_and_release_every_lock` derives the list of `Lock`
-fields from the source tree, so a lock added later fails it until the
-handler takes it. The signal blocking is needed because glibc restores
-the caller's mask before the parent handlers run, so a signal handler
-that forks there (glibc's `tst-mallocfork`) would re-enter prepare with
-the locks held. Other threads' heaps are left alone in the child; their
-cached slots stay marked and are reclaimed when the child exits, as with
-every other allocator.
+class locks, the slab table locks, every arena's slab-set lock (taken
+under a class lock and its slab table lock when a group is handed
+out), the huge lock, the metadata lock, the per-arena statistics locks
+(leaves), and the background thread's state lock last. The parent and
+child handlers release them in reverse and restore the signal mask. The
+test `fork_handlers_take_and_release_every_lock` derives the list of
+`Lock` fields from the source tree, so a lock added later fails it
+until the handler takes it. The signal blocking is needed because
+glibc restores the caller's mask before the parent handlers run, so
+a signal handler that forks there (glibc's `tst-mallocfork`) would
+re-enter prepare with the locks held. Other threads' heaps are left
+alone in the child; their cached slots stay marked and are reclaimed
+when the child exits, as with every other allocator.
 
 ## 10. Initialisation and kernel feature detection
 
