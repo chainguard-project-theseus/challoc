@@ -869,3 +869,28 @@ mod linux_tests {
         assert!(f.thp.lg_pmd as usize > f.page_shift as usize, "{line}");
     }
 }
+
+/// Kani checks of the `Display` impls of `SizeSet` and `LgSize` (records
+/// under `verus/seams/`).
+#[cfg(kani)]
+mod kani_fmt {
+    use super::{LgSize, SizeSet};
+    use crate::kani_proofs::fmt::formats;
+
+    /// S210 `DisplaySpecImpl for SizeSet` (`fmt_req` true): every set.
+    #[kani::proof]
+    #[kani::unwind(66)]
+    fn display_size_set() {
+        formats(&SizeSet(kani::any()));
+    }
+
+    /// S211 `DisplaySpecImpl for LgSize` (`fmt_req` is `self.0 < 64`):
+    /// every such size.
+    #[kani::proof]
+    #[kani::unwind(22)]
+    fn display_lg_size() {
+        let lg: u8 = kani::any();
+        kani::assume(lg < 64);
+        formats(&LgSize(lg));
+    }
+}

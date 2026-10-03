@@ -242,6 +242,7 @@ impl Config {
     /// Returns the number of problems reported.
     pub fn parse(&mut self, text: &[u8], mut report: impl FnMut(Issue<'_>)) -> (issues: usize)
         requires
+            old(self).wf(),
             forall|i: Issue| call_requires(report, (i,)),
         ensures
             issues <= text.len(),
@@ -256,7 +257,7 @@ impl Config {
                 pairs.0@.len() <= text.len(),
                 issues <= text.len() - pairs.0@.len(),
                 forall|i: Issue| call_requires(report, (i,)),
-                old(self).wf() ==> self.wf(),
+                self.wf(),
             decreases pairs.0@.len(),
         {
             if let Err(issue) = self.apply_pair(pair) {
@@ -270,6 +271,8 @@ impl Config {
     /// Split one pair and set the key. Empty pairs (from `a,,b` or a
     /// trailing comma) are ignored, as jemalloc ignores them.
     fn apply_pair<'a>(&mut self, pair: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
         ensures
             pair@.len() == 0 ==> r is Ok && *final(self) == *old(self),
             pair@.len() > 0 && (forall|j: int| 0 <= j < pair@.len() ==> pair@[j] != b':')
@@ -301,6 +304,8 @@ impl Config {
     /// [`Issue::UnknownKey`]. An out-of-range number is clamped *and*
     /// returned as [`Issue::OutOfRange`].
     pub fn set<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
         ensures
             !listed(key@) ==> *final(self) == *old(self),
             old(self).wf() ==> final(self).wf(),
@@ -330,10 +335,14 @@ impl Config {
     /// through `num` with the `wf` range as its bounds; the guard slab
     /// interval's then lifts 1 to 2 and rounds a value that is not a power
     /// of two up to the next, which stays within the bound (itself a power
-    /// of two).
+    /// of two). The config must be well formed: on a value that does not
+    /// parse the interval keeps its old value, which that rounding would
+    /// overflow past `2^31` (Kani found it; `kani_config` below).
     #[verifier::external_body]
     #[inline(always)]
     fn set_listed<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Option<Result<(), Issue<'a>>>)
+        requires
+            old(self).wf(),
         ensures
             r is None <==> !listed(key@),
             r is None ==> *final(self) == *old(self),
@@ -1350,6 +1359,8 @@ mod linux {
     #[verifier::external_body]
     #[inline(always)]
     fn parse_from(cfg: &mut Config, text: &[u8], source: &str, out: &mut sys::Stderr) -> (issues: usize)
+        requires
+            old(cfg).wf(),
         ensures
             issues <= text.len(),
             old(cfg).wf() ==> final(cfg).wf(),
@@ -2659,5 +2670,215 @@ mod linux_tests {
             let got = load();
             assert_eq!(got, Config::DEFAULT);
         }
+    }
+}
+
+/// Kani checks of the `TABLE` accessors, `KEYS` and the `Issue` and
+/// `Bytes` impls of `Display` (records under `verus/seams/`).
+///
+/// `listed` is uninterpreted; the three contracts that name it hold
+/// together when it is read as "some `TABLE` entry has this name", which
+/// [`listed`] below spells independently of `Key::find`.
+#[cfg(kani)]
+mod kani_config {
+    use super::*;
+    use crate::kani_proofs::fmt::formats;
+
+    /// `listed(key)`: some entry of `TABLE` is named `key`.
+    fn listed(key: &[u8]) -> bool {
+        let mut i = 0;
+        while i < TABLE.len() {
+            if TABLE[i].name.as_bytes() == key {
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
+    /// `Config::wf`, `is_pow2` read as `is_power_of_two` (checked against
+    /// the spec in `kani_proofs::core_int::usize_is_power_of_two`).
+    fn wf(c: &Config) -> bool {
+        MIN_CAP <= c.tcache_nslots_small_max
+            && c.tcache_nslots_small_max <= MAX_NSLOTS
+            && LG_NSLOTS_MUL_MIN <= c.lg_tcache_nslots_mul
+            && c.lg_tcache_nslots_mul <= LG_NSLOTS_MUL_MAX
+            && (c.guard_slab_interval == 0
+                || (2 <= c.guard_slab_interval
+                    && c.guard_slab_interval <= MAX_GUARD_SLAB_INTERVAL
+                    && (c.guard_slab_interval as usize).is_power_of_two()))
+    }
+
+    /// A `Config` with every field arbitrary.
+    fn any_config() -> Config {
+        Config {
+            background_thread: kani::any(),
+            dirty_decay_ms: kani::any(),
+            muzzy_decay_ms: kani::any(),
+            narenas: kani::any(),
+            percpu_arena: match kani::any::<u8>() % 3 {
+                0 => PercpuArena::Disabled,
+                1 => PercpuArena::Percpu,
+                _ => PercpuArena::Phycpu,
+            },
+            tcache: kani::any(),
+            tcache_max: kani::any(),
+            tcache_nslots_small_max: kani::any(),
+            lg_tcache_nslots_mul: kani::any(),
+            thp: match kani::any::<u8>() % 3 {
+                0 => Thp::Never,
+                1 => Thp::Auto,
+                _ => Thp::Always,
+            },
+            lazy_band: kani::any(),
+            guards: kani::any(),
+            guard_slab_interval: kani::any(),
+            huge_retain_max: kani::any(),
+            huge_dirty_decay_ms: if kani::any() { Some(kani::any()) } else { None },
+            zero_on_free: kani::any(),
+            pac_pointers: kani::any(),
+            slot_randomize: kani::any(),
+            double_free_scan: kani::any(),
+            abort_conf: kani::any(),
+            cgroup: kani::any(),
+            check_zero: kani::any(),
+        }
+    }
+
+    /// The longest value checked: 8 bytes reach past every bound a
+    /// `Config::wf` field is clamped to (`0x` and six hex digits is
+    /// 16 Mi, above `MAX_GUARD_SLAB_INTERVAL`).
+    const VALUE_MAX: usize = 8;
+    /// The longest arbitrary key checked.
+    const KEY_MAX: usize = 4;
+
+    /// The name of an arbitrary `TABLE` entry, or arbitrary bytes up to
+    /// `KEY_MAX` long (mostly unlisted; `thp` is one of them).
+    fn any_key<'a>(buf: &'a [u8; KEY_MAX]) -> &'a [u8] {
+        if kani::any() {
+            let i: usize = kani::any();
+            kani::assume(i < TABLE.len());
+            TABLE[i].name.as_bytes()
+        } else {
+            let n: usize = kani::any();
+            kani::assume(n <= KEY_MAX);
+            &buf[..n]
+        }
+    }
+
+    /// S96 `Config::set_listed`: under `requires old(self).wf()`,
+    /// `r is None <==> !listed(key)`, an unchanged config on `None`, and
+    /// `wf` kept, for every well-formed config, every entry's name and
+    /// every key up to `KEY_MAX` bytes, and every value up to `VALUE_MAX`
+    /// bytes.
+    #[kani::proof]
+    #[kani::unwind(25)]
+    #[kani::solver(kissat)]
+    fn set_listed_contract() {
+        let kbuf: [u8; KEY_MAX] = kani::any();
+        let key = any_key(&kbuf);
+        let vbuf: [u8; VALUE_MAX] = kani::any();
+        let n: usize = kani::any();
+        kani::assume(n <= VALUE_MAX);
+        let value = &vbuf[..n];
+        let old = any_config();
+        kani::assume(wf(&old));
+        let mut c = old;
+        let r = c.set_listed(key, value);
+        assert_eq!(r.is_none(), !listed(key));
+        if r.is_none() {
+            assert!(c == old);
+        }
+        assert!(wf(&c));
+    }
+
+    /// `Thp::name`, the same bytes through `CStr::from_bytes_with_nul`
+    /// (Kani 0.68 has no C string literals; the original is a `match` of
+    /// three of them).
+    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
+    fn stub_thp_name(t: Thp) -> &'static CStr {
+        let b: &'static [u8] = match t {
+            Thp::Never => b"never\0",
+            Thp::Auto => b"auto\0",
+            Thp::Always => b"always\0",
+        };
+        CStr::from_bytes_with_nul(b).unwrap()
+    }
+
+    /// `PercpuArena::name`, as [`stub_thp_name`].
+    #[allow(dead_code)] // As `stub_thp_name`.
+    fn stub_percpu_arena_name(p: PercpuArena) -> &'static CStr {
+        let b: &'static [u8] = match p {
+            PercpuArena::Disabled => b"disabled\0",
+            PercpuArena::Percpu => b"percpu\0",
+            PercpuArena::Phycpu => b"phycpu\0",
+        };
+        CStr::from_bytes_with_nul(b).unwrap()
+    }
+
+    /// S97 `Config::get`: `r is Some <==> listed(key)`, for every config
+    /// and every key `any_key` gives. The two `name` methods the `thp` and
+    /// `percpu_arena` readers call are stubbed (above).
+    #[kani::proof]
+    #[kani::unwind(25)]
+    #[kani::stub(Thp::name, stub_thp_name)]
+    #[kani::stub(PercpuArena::name, stub_percpu_arena_name)]
+    fn get_contract() {
+        let kbuf: [u8; KEY_MAX] = kani::any();
+        let key = any_key(&kbuf);
+        let c = any_config();
+        assert_eq!(c.get(key).is_some(), listed(key));
+    }
+    /// S98 `KEYS`: every name in it is `listed`.
+    #[kani::proof]
+    #[kani::unwind(25)]
+    fn keys_are_listed() {
+        let mut i = 0;
+        while i < KEYS.len() {
+            assert!(listed(KEYS[i].as_bytes()));
+            i += 1;
+        }
+    }
+
+    /// An arbitrary `Issue` over byte strings of up to 3 bytes.
+    fn any_issue<'a>(k: &'a [u8], v: &'a [u8]) -> Issue<'a> {
+        match kani::any::<u8>() % 6 {
+            0 => Issue::Malformed(v),
+            1 => Issue::UnknownKey(k),
+            2 => Issue::BadValue { key: k, value: v },
+            3 => Issue::OutOfRange { key: k, value: v },
+            4 => Issue::Rounded {
+                key: k,
+                value: v,
+                to: kani::any(),
+            },
+            _ => Issue::Inert(k),
+        }
+    }
+
+    /// S99 `DisplaySpecImpl for Issue` (`fmt_req` true): every variant,
+    /// over arbitrary byte strings up to 3 bytes and every `to`.
+    #[kani::proof]
+    #[kani::unwind(22)]
+    fn display_issue() {
+        let a: [u8; 3] = kani::any();
+        let b: [u8; 3] = kani::any();
+        let (i, j): (usize, usize) = (kani::any(), kani::any());
+        kani::assume(i <= 3 && j <= 3);
+        formats(&any_issue(&a[..i], &b[..j]));
+    }
+
+    /// S100 `DisplaySpecImpl for Bytes` (`fmt_req` true): every byte string
+    /// up to 4 bytes, and one of 65 arbitrary bytes (past the 64 it shows,
+    /// so the `...` branch runs).
+    #[kani::proof]
+    #[kani::unwind(67)]
+    fn display_bytes() {
+        let a: [u8; 4] = kani::any();
+        let n: usize = kani::any();
+        kani::assume(n <= 4);
+        formats(&Bytes(&a[..n]));
+        let long: [u8; 65] = kani::any();
+        formats(&Bytes(&long));
     }
 }

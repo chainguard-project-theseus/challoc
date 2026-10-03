@@ -13,6 +13,9 @@
 // The `cfg(loom)` build is cut down to the modules its tests check
 // (`loom_tests`), which leaves the rest of their API unused.
 #![cfg_attr(loom, allow(dead_code))]
+// Kani's nightly checks the exported `malloc` family against the libc
+// signatures `std` links to; challoc defines them, as it must.
+#![cfg_attr(kani, allow(suspicious_runtime_symbol_definitions))]
 
 #[cfg(test)]
 extern crate std;
@@ -96,14 +99,19 @@ mod testutil;
 pub(crate) mod thp;
 #[allow(dead_code)]
 mod vspec;
+// Kani harnesses (`verus/kani/run.sh`); never part of a build.
+#[cfg(kani)]
+#[path = "kani/mod.rs"]
+mod kani_proofs;
 
 /// Panic handler for the `no_std` library. The crate is built with
 /// `panic = "abort"`, so this is only reached by an explicit `panic!` or a
 /// failed debug assertion. It reports through `sys::abort_fmt`, which writes
 /// to stderr with `write(2)` and raises `SIGABRT`, never unwinding. The
 /// line reads `challoc: <message> [<file>:<line>]`: the message first, since
-/// it is what a user sees when their program frees a pointer twice.
-#[cfg(not(test))]
+/// it is what a user sees when their program frees a pointer twice. Not
+/// under Kani, whose harnesses link `std` and its handler.
+#[cfg(not(any(test, kani)))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     match info.location() {

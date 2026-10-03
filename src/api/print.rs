@@ -2145,3 +2145,56 @@ mod tests {
         assert_eq!(entries, ["malloc_info", "malloc_stats", "stats_print"]);
     }
 }
+
+/// Kani checks of `word`, `hist_line` and the two `Target` builders
+/// (records under `verus/seams/`).
+#[cfg(kani)]
+mod kani_print {
+    use super::{Target, file_target, hist_line, stderr_target, word};
+
+    /// S42 `word`, no `requires`, no `ensures`: it returns for every C
+    /// string up to 3 bytes before its NUL, UTF-8 or not (built at run
+    /// time: Kani 0.68 has no C string literals).
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn word_returns() {
+        let a: [u8; 4] = kani::any();
+        let n: usize = kani::any();
+        kani::assume(n < 4 && a[n] == 0 && a[..n].iter().all(|&b| b != 0));
+        let s = core::ffi::CStr::from_bytes_with_nul(&a[..=n]).unwrap();
+        let w = word(s);
+        assert!(w == "?" || w.as_bytes() == &a[..n]);
+    }
+
+    /// S43 `hist_line`, no `ensures`: it returns, for every argument and
+    /// whatever the writer returns (`W` is a writer that may fail any
+    /// write; Kani fails the harness on any panic).
+    #[kani::proof]
+    #[kani::unwind(24)]
+    fn hist_line_returns() {
+        let hist: [usize; 9] = kani::any();
+        let _ = hist_line(
+            &mut crate::kani_proofs::fmt::Sink,
+            kani::any(),
+            kani::any(),
+            kani::any(),
+            hist,
+            kani::any(),
+            kani::any(),
+        );
+    }
+
+    /// S44 `file_target`, no `ensures`: it returns, `Target::File` of the
+    /// stream, for any pointer (it is not dereferenced).
+    #[kani::proof]
+    fn file_target_returns() {
+        let p = kani::any::<usize>() as *mut libc::FILE;
+        assert!(matches!(file_target(p), Target::File(q) if q == p));
+    }
+
+    /// S45 `stderr_target`, no `ensures`: it returns, `Target::Stderr`.
+    #[kani::proof]
+    fn stderr_target_returns() {
+        assert!(matches!(stderr_target(), Target::Stderr));
+    }
+}

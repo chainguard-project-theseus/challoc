@@ -2499,3 +2499,74 @@ fn hint_mismatch(p: *mut u8, size: usize, class: u32) -> !
 }
 
 } // verus!
+
+/// Kani checks of `axiom_shared_layout`, the offsets it names and
+/// `arena::axiom_array_layout` at the two arrays `Shared` splits
+/// (records under `verus/seams/`).
+#[cfg(kani)]
+mod kani_layout {
+    use super::*;
+    use crate::arena::kani_layout::array_layout;
+    use core::mem::{align_of, offset_of, size_of};
+
+    /// `field_fits::<S, T>(off, next)` with its `int` sum in `u128`.
+    fn field_fits<S, T>(off: usize, next: usize) -> bool {
+        off % align_of::<T>() == 0
+            && align_of::<S>() % align_of::<T>() == 0
+            && off as u128 + size_of::<T>() as u128 <= next as u128
+    }
+
+    /// S136..S151, S152: each `S_*` is its field's `offset_of!`, and the
+    /// fields fit as `axiom_shared_layout` says.
+    #[kani::proof]
+    fn shared_layout() {
+        assert_eq!(S_MULTI_ARENA, offset_of!(Shared, multi_arena));
+        assert_eq!(S_PUSH_FLAGS, offset_of!(Shared, push_flags));
+        assert_eq!(S_REGIONS, offset_of!(Shared, regions));
+        assert_eq!(S_GUARD_TEST, offset_of!(Shared, guard_test));
+        assert_eq!(S_TABLES, offset_of!(Shared, tables));
+        assert_eq!(S_ARENA0, offset_of!(Shared, arena0));
+        assert_eq!(S_META, offset_of!(Shared, meta));
+        assert_eq!(S_HUGE, offset_of!(Shared, huge));
+        assert_eq!(S_GC_INTERVAL_NS, offset_of!(Shared, gc_interval_ns));
+        assert_eq!(S_POLICY, offset_of!(Shared, policy));
+        assert_eq!(S_CONFIG, offset_of!(Shared, config));
+        assert_eq!(S_KEY, offset_of!(Shared, key));
+        assert_eq!(S_ARENAS, offset_of!(Shared, arenas));
+        assert_eq!(S_TCACHES, offset_of!(Shared, tcaches));
+        assert_eq!(S_STATS, offset_of!(Shared, stats));
+        assert_eq!(S_CGROUP, offset_of!(Shared, cgroup));
+        assert!(field_fits::<Shared, AtomicBool>(
+            S_MULTI_ARENA,
+            S_PUSH_FLAGS
+        ));
+        assert!(field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGIONS));
+        assert!(field_fits::<Shared, Regions>(S_REGIONS, S_GUARD_TEST));
+        assert!(field_fits::<Shared, [GuardTest; NCLASSES]>(
+            S_GUARD_TEST,
+            S_TABLES
+        ));
+        assert!(field_fits::<Shared, [SlabTable; NCLASSES]>(
+            S_TABLES, S_ARENA0
+        ));
+        assert!(field_fits::<Shared, Arena>(S_ARENA0, S_META));
+        assert!(field_fits::<Shared, Meta>(S_META, S_HUGE));
+        assert!(field_fits::<Shared, Huge>(S_HUGE, S_GC_INTERVAL_NS));
+        assert!(field_fits::<Shared, u64>(S_GC_INTERVAL_NS, S_POLICY));
+        assert!(field_fits::<Shared, Policy>(S_POLICY, S_CONFIG));
+        assert!(field_fits::<Shared, Config>(S_CONFIG, S_KEY));
+        assert!(field_fits::<Shared, ThreadKey>(S_KEY, S_ARENAS));
+        assert!(field_fits::<Shared, Arenas>(S_ARENAS, S_TCACHES));
+        assert!(field_fits::<Shared, Tcaches>(S_TCACHES, S_STATS));
+        assert!(field_fits::<Shared, Lock<Snapshot>>(S_STATS, S_CGROUP));
+        assert!(field_fits::<Shared, Cgroup>(S_CGROUP, size_of::<Shared>()));
+        assert!(size_of::<Shared>() <= isize::MAX as usize);
+    }
+
+    /// S46 `arena::axiom_array_layout` at the two arrays of `Shared`.
+    #[kani::proof]
+    fn shared_array_layout() {
+        array_layout::<GuardTest, NCLASSES>();
+        array_layout::<SlabTable, NCLASSES>();
+    }
+}

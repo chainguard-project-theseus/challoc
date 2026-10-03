@@ -1041,3 +1041,34 @@ pub(super) fn class_size(class: usize) -> usize
 }
 
 } // verus!
+
+/// Kani checks of `debug_scheduled` (record under `verus/seams/`).
+#[cfg(kani)]
+mod kani_aborts {
+    use super::debug_scheduled;
+    use crate::kani_proofs::must_not_return;
+
+    /// S131 `debug_scheduled`, no `requires`, no `ensures`: with debug
+    /// assertions on (Kani's build, and the tests'), it returns exactly
+    /// when `allocs as u32` has no bit of `mask`, and otherwise never
+    /// returns.
+    #[kani::proof]
+    #[kani::should_panic]
+    fn debug_scheduled_returns_only_if_clear() {
+        let allocs: u64 = kani::any();
+        let mask: u32 = kani::any();
+        debug_scheduled(allocs, mask);
+        if (allocs as u32) & mask != 0 {
+            must_not_return();
+        }
+    }
+
+    /// The other half: it returns whenever no bit of `mask` is set.
+    #[kani::proof]
+    fn debug_scheduled_returns_if_clear() {
+        let allocs: u64 = kani::any();
+        let mask: u32 = kani::any();
+        kani::assume((allocs as u32) & mask == 0);
+        debug_scheduled(allocs, mask);
+    }
+}

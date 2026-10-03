@@ -27,10 +27,15 @@ pub(crate) fn thp_name(k: crate::config::Thp) -> &'static core::ffi::CStr {
 /// report compares a page-raised range with. Trusted: the iterator chain
 /// with function-pointer reducers of the report's code, and
 /// `BASE_CLASSES` is an `exec const` whose entries the verifier cannot
-/// see.
+/// see. `hi` must index the table: `BASE_CLASSES[c]` panics past it (the
+/// one caller passes `page_sized_classes`, which ensures
+/// `lo <= hi < NCLASSES`).
 #[verifier::external_body]
 #[inline(always)]
-pub(crate) fn base_slab_sizes(lo: usize, hi: usize) -> (usize, usize) {
+pub(crate) fn base_slab_sizes(lo: usize, hi: usize) -> (usize, usize)
+    requires
+        hi < crate::layout::NCLASSES,
+{
     let base = |f: fn(usize, usize) -> usize| {
         (lo..=hi)
             .map(|c| crate::layout::BASE_CLASSES[c].slab_size())

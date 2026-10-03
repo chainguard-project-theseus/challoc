@@ -3206,3 +3206,20 @@ mod tests {
         }
     }
 }
+
+/// Kani check of `root` (record under `verus/seams/`).
+#[cfg(kani)]
+mod kani_root {
+    use super::{ROOT, root};
+
+    /// S11 `root`, `ensures r@ == root_nodes()`: every call returns
+    /// `ROOT` itself, an immutable static, so the same nodes each time
+    /// (`root_nodes` is uninterpreted: ROOT's contents interpret it).
+    #[kani::proof]
+    fn root_returns() {
+        let r = root();
+        assert!(core::ptr::eq(r, &ROOT[..]));
+        let r2 = root();
+        assert!(core::ptr::eq(r2, r));
+    }
+}

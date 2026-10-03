@@ -58,5 +58,7 @@ verify = true
 
 [lints.rust]
 # `cfg(verus_only)` guards imports of ghost items, which ordinary builds
-# erase; Verus sets it during verification.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_only)', 'cfg(verus_keep_ghost)', 'cfg(loom)'] }
+# erase; Verus sets it during verification. `cfg(loom)` builds the loom
+# model checks (`src/loom_tests/`) and `cfg(kani)` the Kani harnesses
+# (`verus/kani/run.sh`).
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_only)', 'cfg(verus_keep_ghost)', 'cfg(loom)', 'cfg(kani)'] }

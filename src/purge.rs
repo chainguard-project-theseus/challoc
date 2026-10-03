@@ -747,3 +747,29 @@ impl Batch {
 
 /// The background thread (design 8.1).
 pub mod background;
+
+/// Kani check of `total_bytes` (record under `verus/seams/`).
+#[cfg(kani)]
+mod kani_total {
+    use super::total_bytes;
+
+    /// The most ranges checked.
+    const MAX: usize = 4;
+
+    /// S187 `total_bytes`, `requires lens(ranges, len) <= u64::MAX`, no
+    /// `ensures`: under it the call returns (the sum, which cannot
+    /// overflow), for every list of up to `MAX` ranges.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn total_bytes_returns() {
+        let r: [(usize, usize); MAX] = kani::any();
+        let n: usize = kani::any();
+        kani::assume(n <= MAX);
+        let mut lens: u128 = 0;
+        for &(_, len) in &r[..n] {
+            lens += len as u128;
+        }
+        kani::assume(lens <= u64::MAX as u128);
+        assert_eq!(total_bytes(&r[..n]) as u128, lens);
+    }
+}

@@ -5733,3 +5733,42 @@ impl Heap {
         if c.cap == 0 { None } else { Some(c) }
     }
 }
+
+/// Kani checks of the two `assert_eq!` aborts (records under
+/// `verus/seams/`).
+#[cfg(kani)]
+mod kani_aborts {
+    use super::{assert_flushed, assert_refill_empty};
+    use crate::kani_proofs::must_not_return;
+
+    /// S116 `assert_flushed`, `ensures *len == 0`: on any other `len` the
+    /// call never returns.
+    #[kani::proof]
+    #[kani::should_panic]
+    fn assert_flushed_returns_only_on_zero() {
+        let len: u32 = kani::any();
+        assert_flushed(&len);
+        if len != 0 {
+            must_not_return();
+        }
+    }
+
+    /// S117 `assert_refill_empty`, `ensures *len == 0`: as
+    /// `assert_flushed`.
+    #[kani::proof]
+    #[kani::should_panic]
+    fn assert_refill_empty_returns_only_on_zero() {
+        let len: u32 = kani::any();
+        assert_refill_empty(&len);
+        if len != 0 {
+            must_not_return();
+        }
+    }
+
+    /// Both return on 0 (no spurious abort; not part of the contracts).
+    #[kani::proof]
+    fn asserts_return_on_zero() {
+        assert_flushed(&0);
+        assert_refill_empty(&0);
+    }
+}

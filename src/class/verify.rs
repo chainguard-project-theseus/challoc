@@ -258,3 +258,42 @@ fn dirty_zero_slot(
 }
 
 } // verus!
+
+/// Kani checks of `Says`'s `Debug` and `desc_ptr_addr` (records under
+/// `verus/seams/`).
+#[cfg(kani)]
+mod kani_verify {
+    use super::{Says, desc_ptr_addr};
+    use crate::kani_proofs::fmt::formats_debug_flat;
+    use crate::slab::{SlabDesc, State};
+
+    /// S93 `DebugSpecImpl for Says` (`fmt_req` true): `None` and every
+    /// state, each formatted in turn (`{:?}` only: Kani does not finish
+    /// `{:#?}` of an `Option`, whose `PadAdapter` path the record names
+    /// as a gap; challoc formats `Says` with `{:?}`).
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn debug_says() {
+        let v = [
+            None,
+            Some(State::Fresh),
+            Some(State::Active),
+            Some(State::Empty),
+            Some(State::Purged),
+        ];
+        for s in v {
+            formats_debug_flat(&Says(s));
+        }
+    }
+
+    /// S94 `desc_ptr_addr`, no `ensures`: it returns (the address of the
+    /// descriptor); the body reads no field, so one descriptor stands
+    /// for all.
+    #[kani::proof]
+    fn desc_ptr_addr_returns() {
+        // SAFETY: `SlabDesc` is five atomic integers, for which all-zero
+        // is a valid value.
+        let d: SlabDesc = unsafe { core::mem::zeroed() };
+        assert_eq!(desc_ptr_addr(&d), &d as *const SlabDesc as usize);
+    }
+}

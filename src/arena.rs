@@ -1520,3 +1520,80 @@ impl Arenas {
 }
 
 } // verus!
+
+/// Kani checks of `axiom_arena_layout`, the offsets it names and
+/// `axiom_array_layout` at the array `Arena` splits (records under
+/// `verus/seams/`).
+#[cfg(kani)]
+pub(crate) mod kani_layout {
+    use super::*;
+    use core::mem::{align_of, offset_of, size_of};
+
+    /// `field_fits::<S, T>(off, next)` with its `int` sum in `u128`.
+    fn field_fits<S, T>(off: usize, next: usize) -> bool {
+        off % align_of::<T>() == 0
+            && align_of::<S>() % align_of::<T>() == 0
+            && off as u128 + size_of::<T>() as u128 <= next as u128
+    }
+
+    /// S48..S55, S56: each `A_*` is its field's `offset_of!`, and the
+    /// fields fit as `axiom_arena_layout` says.
+    #[kani::proof]
+    fn arena_layout() {
+        assert_eq!(A_INDEX, offset_of!(Arena, index));
+        assert_eq!(A_DECAY_NS, offset_of!(Arena, decay_ns));
+        assert_eq!(A_SETS, offset_of!(Arena, sets));
+        assert_eq!(A_SETS_PERM, offset_of!(Arena, sets_perm));
+        assert_eq!(A_CLASSES, offset_of!(Arena, classes));
+        assert_eq!(A_LARGE, offset_of!(Arena, large));
+        assert_eq!(A_STATS, offset_of!(Arena, stats));
+        assert_eq!(A_LAST_EXIT_PURGE, offset_of!(Arena, last_exit_purge));
+        assert!(field_fits::<Arena, u16>(A_INDEX, A_DECAY_NS));
+        assert!(field_fits::<Arena, AtomicU64>(A_DECAY_NS, A_SETS));
+        assert!(field_fits::<Arena, *const SetTable>(A_SETS, A_SETS_PERM));
+        assert!(field_fits::<Arena, Tracked<PointsTo<SetTable>>>(
+            A_SETS_PERM,
+            A_CLASSES
+        ));
+        assert!(field_fits::<Arena, [ClassState; NCLASSES]>(
+            A_CLASSES, A_LARGE
+        ));
+        assert!(field_fits::<Arena, AtomicU64>(A_LARGE, A_STATS));
+        assert!(field_fits::<Arena, Lock<ArenaStats>>(
+            A_STATS,
+            A_LAST_EXIT_PURGE
+        ));
+        assert!(field_fits::<Arena, AtomicU64>(
+            A_LAST_EXIT_PURGE,
+            size_of::<Arena>()
+        ));
+        assert!(size_of::<Arena>() <= isize::MAX as usize);
+    }
+
+    /// `axiom_array_layout::<T, N>`'s two equalities, the product in
+    /// `u128`.
+    pub(crate) fn array_layout<T, const N: usize>() {
+        assert_eq!(
+            size_of::<[T; N]>() as u128,
+            N as u128 * size_of::<T>() as u128
+        );
+        assert_eq!(align_of::<[T; N]>(), align_of::<T>());
+    }
+
+    /// S46 `Arena::axiom_array_layout` at every instantiation the proofs
+    /// use (`[ClassState; NCLASSES]` here, the two arrays of `Shared` in
+    /// `heap/shared.rs`), and at primitive, zero-sized and padded element
+    /// types and lengths 0, 1 and 7.
+    #[kani::proof]
+    fn array_layout_instances() {
+        array_layout::<ClassState, NCLASSES>();
+        array_layout::<u8, 0>();
+        array_layout::<u8, 7>();
+        array_layout::<u64, 1>();
+        array_layout::<u64, 7>();
+        array_layout::<(u64, u8), 7>();
+        array_layout::<(), 7>();
+        array_layout::<[u16; 3], 7>();
+        array_layout::<AtomicU64, 7>();
+    }
+}

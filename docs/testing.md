@@ -28,6 +28,7 @@ exceed what the x86_64 emulator can track in one process.
 | Fuzz, long soaks, comparisons (opt-in) | `make fuzz` (10M ops), `make test-cgroup-oscillate` (5 min), `make check-needed` (`tests/as-needed.sh`), `make test-cgroup-compare` (other allocators, no criterion) | minutes | Long random workloads; the `-Wl,--as-needed` truth for consumers; the RSS curves of jemalloc, mimalloc and tcmalloc under the same limits | | `make bench-build` for mimalloc |
 | Consumer suites | `make valkey`, `make ruby` (`tests/consumers/`) | tens of minutes | Valkey's and Ruby's own test suites built on challoc (Valkey with `contrib/valkey/*.patch`, Ruby `--with-jemalloc` against the jemalloc-compat stage) | | The `consumers` image stage |
 | loom model checks (opt-in) | `RUSTFLAGS="--cfg loom" cargo test --release loom_` | ~2 min with the build | The weak-memory orderings of the lock, the slab bitmap's claim and release, and (a copy of) the background thread's wake-up, under every interleaving loom explores (`src/loom_tests/`, `verus/WEAKMEM.md`) | The rest of the crate, which this build leaves out; C11 behaviours loom does not model (`SeqCst` accesses, load buffering) | The dev container |
+| Kani harnesses (opt-in) | `sh verus/kani/run.sh` (`verus/kani/setup.sh` once) | ~1 h per quantum | The seams `verus/SEAMS.md` marks discharged by Kani: each harness checks a trusted item's body against its Verus contract, exhaustively or within the bounds its record under `verus/seams/` names (section "Kani" below) | Everything outside the harnessed items; behaviour past a record's bounds | Kani 0.68.0 and its nightly; up to 20 GB per formatting harness |
 | Benchmarks and hardware counters | `make quick`, `make ab` (`docs/benchmarking.md`, `bench/README.md`) | 2 min to hours | Performance | Correctness | The reference machines; never a dev-container number |
 
 `make test` runs, in order: `cargo build --release`,
@@ -179,6 +180,31 @@ draws a seed from `getrandom`, and the seed in use is always printed
 first, so a failure replays with `FUZZ_SEED=<seed>` and the same thread
 count. `make test` runs 400k-operation slices of the same driver, once
 under the defaults and once under each hardening key (`c_fuzz_short*`).
+
+## Kani
+
+`verus/SEAMS.md` lists what the Verus proofs take on trust; the seams it
+gives to Kani have bounded model-checking harnesses, `#[cfg(kani)]` only,
+so no build, test or Verus run sees them: `src/kani/` for `core` and
+crate-visible items, `kani_*` modules next to private ones. Each
+discharged seam's record under `verus/seams/` names its harness, its
+bounds and the gaps of the translation.
+
+```sh
+sh verus/kani/setup.sh          # once: Kani 0.68.0 and its toolchain
+sh verus/kani/run.sh            # every harness, under both quanta
+sh verus/kani/run.sh --harness slice_swap
+```
+
+Kani needs its own nightly (the setup installs it) and is not part of
+`make test`. The run takes about an hour per quantum, one harness at a
+time: the formatting harnesses need up to 20 GB each, so `KANI_JOBS=n`
+runs `n` at once only on a machine with that much memory per job. Run
+it when a change touches a harnessed item, its contract in
+`verus/SEAMS.md` or `src/vspec/`, or a type whose layout an axiom
+states. A failing harness names the check that failed; a changed
+contract fails the script's first step (each record must still quote
+its seam's contract) until the record and its harness follow.
 
 ## Vendored suites
 
