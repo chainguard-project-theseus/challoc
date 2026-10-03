@@ -1282,7 +1282,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
     q
 }
 
-/// Realloc keeps whenever it can (`verus/THEOREMS.md`), composed as C
+/// Realloc follows the class/page keep rule (`verus/THEOREMS.md`), composed as C
 /// calls it: `n = malloc_usable_size(p)` ([`usable_size`], the live block's
 /// usable size with its token `blk`), then `realloc(p, n)`
 /// ([`realloc_block`] with the same token, as `axiom_c_claim` gives it)

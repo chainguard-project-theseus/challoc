@@ -1508,7 +1508,7 @@ vstd's multiset lemmas.
   different reordering, assumed to be a permutation (common premises),
   not covered here.
 
-## 12. Zero-on-free
+## 12. Zero-on-free (at release)
 
 Read at this section's commit (the `file:line`s are the `fn` line
 there, or the release's line where a release is named).
@@ -3102,7 +3102,7 @@ passes room for the full MIB gets the same MIB from both. Not in the
 theorem: the capacity read is trusted and the return code has no
 `ensures`.
 
-## 22. Exact stats
+## 22. Exact stats (ledger model, at quiescence)
 
 The `file:line`s are the `fn` line at this section's commit.
 
@@ -3528,12 +3528,9 @@ premises (`axiom_class_table_wf`).
   documented no-op; that NULL is no free target says only that they
   cannot have acted on a block there.
 
-## 25. Realloc keeps whenever it can
+## 25. Realloc follows the class/page keep rule
 
-## 26. Cache routing
-
-The
-`file:line`s are the `fn`/`spec` line at this section's commit.
+The `file:line`s are the `fn`/`spec` line at this section's commit.
 
 **Statement** (`api/libc.rs:896`, `:1072`, `:1137`, `:1242`, `:1308`,
 `:1716`, `:1785`; `api/jemalloc.rs:344`):
@@ -3664,6 +3661,8 @@ the rule to 0 too.
   function, with the same token for both, as `axiom_c_claim` would give
   it at each call; nothing ties two separate C calls (another thread
   could free `p` between them, which the C contract forbids).
+
+## 26. Cache routing
 
 **Model.** A heap's caches are its home headers (`Heap::home_hdrs`, one
 per class) and the headers of the nodes on its `others` list
@@ -3827,7 +3826,7 @@ bitmap side: every release goes back to the slot's own arena).
   `swap_hdrs` moves with the header, but which no spec ties to the
   routed key.
 
-## 27. Stats identities and epoch coherence
+## 27. Stats identities
 
 The
 `file:line`s are the `fn` line at this section's commit.
@@ -4200,6 +4199,10 @@ Properties:
 - **C**: contents are preserved (realloc family).
 - **F**: failure semantics: NULL, `errno`, return code, the old block
   intact after a failed realloc, overflow in `calloc`/`reallocarray`.
+  P means NULL comes exactly from the failure paths, with `errno` set;
+  exhaustion has no model, so it does not mean "NULL only when memory
+  is exhausted". "Old block intact" means its `Live` token comes back
+  (ownership and liveness), not that its bytes are unchanged.
 - **B**: bad input. A call that returns satisfies the pointer-shape
   checks (`free_target`) and the selected argument checks (size hints,
   cache ids of `MAX_TCACHES` or more, alignments); for other input the
