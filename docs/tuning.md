@@ -30,12 +30,14 @@ The two environment variables are skipped when the process is
 `secure_getenv` rule. The two globals and the file are always read.
 
 Format: jemalloc's `key:value,key:value`. A value may be wrapped in
-double quotes (and may then contain commas). Empty pairs (`a,,b`, a
-trailing comma) are ignored. Booleans are `true` and `false` only.
-Integers are decimal, `0x` hexadecimal or leading-zero octal, with an
-optional sign. An out-of-range integer is clamped to the key's range and
-reported. `guard_slab_interval` must be a power of two: anything else is
-rounded up and reported.
+double quotes (and may then contain commas). A value that opens a quote
+and does not end with one is reported as malformed; a value with an
+unclosed quote ends at the next comma. Empty pairs (`a,,b`, a trailing
+comma) are ignored. Booleans are `true` and `false` only. Integers are
+decimal, `0x` hexadecimal or leading-zero octal, with an optional sign.
+An out-of-range integer is clamped to the key's range and reported.
+`guard_slab_interval` must be a power of two: anything else is rounded
+up and reported.
 
 Reporting: every problem is printed on stderr as `challoc: <source>:
 <issue>` (`unknown conf key "x"`, `invalid conf value "x" for k`,
