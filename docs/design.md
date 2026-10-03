@@ -483,9 +483,13 @@ entry points in `api/` are built from them.
    multiply, rotate, compare against `nslots`); load the class bitmap
    word; verify the bit is set. Otherwise abort. The slab is compared
    with the class's hand-out watermark before the bitmap load, and that
-   compare is the region bound too (`Regions::slab_slot_unbounded`): an
+   compare is the region bound too (`ClassLine::set_slab`): an
    address past the region, or below its base where the offset wraps,
    has a slab number of at least `nslabs`, which no watermark reaches.
+   Every per-class value this step reads (region base, slot geometry,
+   bitmap base, a copy of the watermark stored after the table's own) sits
+   in one 64-byte line per class, `Shared::lines`, whose stride is the
+   cache headers', so one scaled class index addresses both.
    (Dropping the watermark instead, by reserving the bitmaps `PROT_READ`
    so a never-handed slab reads a clear bit, was measured and rejected:
    `mlockall` populates the 8 GiB of read-only tails with zero-page

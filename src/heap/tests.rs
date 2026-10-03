@@ -1994,7 +1994,7 @@ fn free_into_an_uncommitted_slab_aborts() {
 }
 
 /// The `free` fast path's one bound is the watermark compare
-/// (`Regions::slab_slot_unbounded`): a slot start in a slab never handed
+/// (`ClassLine::set_slab`): a slot start in a slab never handed
 /// out, up to the region's last slab, and the slot-aligned addresses just
 /// past the region and below its base (in the gap of the stride) all
 /// leave for the slow path, in every class.
