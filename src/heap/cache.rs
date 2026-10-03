@@ -68,7 +68,7 @@ pub struct CacheHeader {
 /// Size of a [`CacheHeader`]: one line, so a class's header never shares
 /// a line with another class's.
 pub const CACHE_HEADER: usize = core::mem::size_of::<CacheHeader>();
-const _: () = assert!(CACHE_HEADER == 64);
+const _: () = assert!(CACHE_HEADER == 64 && CACHE_HEADER == crate::layout::CLASS_STRIDE);
 const _: () = assert!(core::mem::offset_of!(CacheHeader, slots) < 64 - 8);
 
 impl CacheHeader {
