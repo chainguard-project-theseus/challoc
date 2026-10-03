@@ -978,6 +978,13 @@ spec fn free_marked(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, f: vstd::set:
     )
 }
 
+/// Every page in the free-page set `f` is a page of a free extent: the
+/// converse of [`free_marked`], so the set is exactly the free extents'
+/// pages (what [`Inner::extent_at`] needs to find an extent at a free bit).
+spec fn free_exact(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, f: vstd::set::Set<nat>) -> bool {
+    forall|q: nat| #[trigger] f.contains(q) ==> exists|x: *mut HugeDesc| #[trigger] in_free(descs, x, q as int)
+}
+
 /// A page of a marked extent is in the set.
 proof fn lemma_marked(f: vstd::set::Set<nat>, v: HugeDesc, q: int)
     requires
@@ -1222,8 +1229,8 @@ impl Inner {
     /// each under its keys in the table and nowhere else, and the counters
     /// are their tallies, whose pages sum to `next_page`; the run
     /// authorities ([`RunToken`]) hold the `Active` extents and their pages;
-    /// no two free extents touch, and every page of a free extent is in
-    /// `free`.
+    /// no two free extents touch, and `free` holds exactly the pages of
+    /// the free extents.
     pub(crate) closed spec fn wf(&self) -> bool {
         &&& self.table.wf()
         &&& perms_ok(self.descs@)
@@ -1260,6 +1267,40 @@ impl Inner {
         &&& self.pgs@@ == active_pages(self.descs@)
         &&& coalesced(self.descs@)
         &&& free_marked(self.descs@, self.free.map.view())
+        &&& free_exact(self.descs@, self.free.map.view())
+    }
+
+    /// The huge free bitmap is exact (`verus/THEOREMS.md`): in every value
+    /// the huge lock admits, page `q`'s free bit is set iff `q` is a page
+    /// of a free (`Empty` or `Purged`) extent, and no bit at or past the
+    /// high-water mark is set. `Huge::audit` checks the same at run time.
+    proof fn theorem_free_exact(&self, q: int)
+        requires
+            self.wf(),
+            0 <= q,
+        ensures
+            self.free.map.view().contains(q as nat) <==> exists|x: *mut HugeDesc| #[trigger] in_free(self.descs@, x, q),
+            q >= self.next_page ==> !self.free.map.view().contains(q as nat),
+    {
+        if exists|x: *mut HugeDesc| #[trigger] in_free(self.descs@, x, q) {
+            let x = choose|x: *mut HugeDesc| #[trigger] in_free(self.descs@, x, q);
+            lemma_marked(self.free.map.view(), self.descs@[x].value(), q);
+        }
+        self.lemma_free_below();
+    }
+
+    /// Every free bit lies below the mark: its page is in a free extent,
+    /// which ends by the mark.
+    proof fn lemma_free_below(&self)
+        requires
+            self.wf(),
+        ensures
+            forall|q: nat| #[trigger] self.free.map.view().contains(q) ==> q < self.next_page,
+    {
+        assert forall|q: nat| #[trigger] self.free.map.view().contains(q) implies q < self.next_page by {
+            let x = choose|x: *mut HugeDesc| #[trigger] in_free(self.descs@, x, q as int);
+            assert(desc_ok(self.descs@[x].value(), self.next_page));
+        }
     }
 
     /// Huge free extents are maximally coalesced (`verus/THEOREMS.md`): in
@@ -2198,12 +2239,19 @@ impl Take {
     /// Where the free pieces lie, for coalescing: the head ends where the
     /// run starts; a tail runs from the run's end to the end of `ext`; a
     /// hole runs from the mark, which no free extent touched, to the run.
+    /// And they cover what they must, for the exact free-page set: `ext`
+    /// keeps a head when it starts below the run and leaves a tail when it
+    /// ends past the run, and a hole is left whenever the run starts past
+    /// the mark.
     spec fn touch_ok(self, g0: Inner) -> bool {
         &&& self.head ==> self.vh.start + self.vh.pages == self.vr.start
         &&& self.has_ext && self.used ==> self.vs.start == self.vr.start + self.vr.pages && self.vs.start + self.vs.pages
             == self.ve.start + self.ve.pages
         &&& !self.has_ext && self.used ==> self.vs.start == self.mark && self.vs.start + self.vs.pages == self.vr.start
         &&& !self.has_ext ==> none_ends_at(g0.descs@, self.mark as int)
+        &&& self.has_ext && !self.head ==> self.vr.start <= self.ve.start
+        &&& self.has_ext && !self.used ==> self.ve.start + self.ve.pages <= self.vr.start + self.vr.pages
+        &&& !self.has_ext && !self.used ==> self.vr.start <= self.mark
     }
 }
 
@@ -2648,18 +2696,20 @@ proof fn lemma_took_active(g0: Inner, g1: Inner, t: Take)
     assert(active_pages(d1) =~= active_pages(d0).union(range));
 }
 
-/// The free-page set after a take, against `f0` before: what was free
-/// outside the run `[lo, hi)` still is, and so is the stretch `[mark, s)`
-/// alignment skipped at the mark (empty unless the run starts past it).
+/// The free-page set after a take, against `f0` before: exactly what was
+/// free outside the run `[lo, hi)`, and the stretch `[mark, lo)` alignment
+/// skipped at the mark (empty unless the run starts past it).
 spec fn took_free(f0: vstd::set::Set<nat>, f1: vstd::set::Set<nat>, lo: int, hi: int, mark: int) -> bool {
-    forall|q: nat| (f0.contains(q) && !(lo <= q < hi)) || (mark <= q < lo) ==> #[trigger] f1.contains(q)
+    forall|q: nat| #[trigger] f1.contains(q) <==> (f0.contains(q) && !(lo <= q < hi)) || (mark <= q < lo)
 }
 
 /// A take keeps the free extents coalesced and marked free: the head
 /// ends at the run, a tail starts at its end and ends where `ext` did,
 /// a hole starts at the mark, which no free extent touched, and ends at
 /// the run; their pages, and the old free extents' (apart from the run),
-/// are in the free-page set.
+/// are in the free-page set, and nothing else is: an old free page outside
+/// the run is in an old free extent other than `ext`, or in `ext`'s head
+/// or tail, and a page skipped at the mark is in the hole or the head.
 proof fn lemma_took_coalesced(g0: Inner, g1: Inner, t: Take)
     requires
         g0.wf(),
@@ -2669,6 +2719,7 @@ proof fn lemma_took_coalesced(g0: Inner, g1: Inner, t: Take)
     ensures
         coalesced(g1.descs@),
         free_marked(g1.descs@, g1.free.map.view()),
+        free_exact(g1.descs@, g1.free.map.view()),
 {
     let d0 = g0.descs@;
     let d1 = g1.descs@;
@@ -2743,6 +2794,29 @@ proof fn lemma_took_coalesced(g0: Inner, g1: Inner, t: Take)
                     assert(f0.contains(q as nat));
                 }
             }
+        }
+    }
+    assert forall|q: nat| #[trigger] f1.contains(q) implies exists|x: *mut HugeDesc| #[trigger] in_free(d1, x, q as int) by {
+        if f0.contains(q) && !(vr.start <= q < vr.start + vr.pages) {
+            let x = choose|x: *mut HugeDesc| #[trigger] in_free(d0, x, q as int);
+            if t.has_ext && x == t.ext {
+                if q < vr.start {
+                    assert(in_free(d1, t.ext, q as int));
+                } else {
+                    assert(in_free(d1, t.spare, q as int));
+                }
+            } else {
+                assert(x != t.run && !(t.used && x == t.spare));
+                assert(t.model(d0, x) == Some(d0[x].value()));
+                assert(d1.contains_key(x));
+                assert(same_but_links(d0[x].value(), d1[x].value()));
+                assert(in_free(d1, x, q as int));
+            }
+        } else if t.has_ext {
+            assert(desc_ok(ve, g0.next_page));
+            assert(in_free(d1, t.ext, q as int));
+        } else {
+            assert(in_free(d1, t.spare, q as int));
         }
     }
 }
@@ -2885,19 +2959,32 @@ impl Inner {
         free_desc(meta, d, Tracked(perm));
     }
 
-    /// The free extent starting at `page`, which must be a set free bit.
-    /// Aborts unless the table has a free extent starting there.
+    /// The free extent starting at `page`, which must be a set free bit
+    /// that no free extent starting below it covers. The check that the
+    /// table has a free extent starting there is proved never to fail: the
+    /// bit's page is in a free extent (`free_exact`), which starts at it.
     fn extent_at(&self, page: usize) -> (r: *mut HugeDesc)
         requires
             self.wf(),
+            self.free.map.view().contains(page as nat),
+            ends_by(self.descs@, page as int),
         ensures
             self.descs@.contains_key(r),
             self.descs@[r].value().start == page,
             self.descs@[r].value().state != RunState::Active as u8,
     {
+        let ghost x = choose|x: *mut HugeDesc| #[trigger] in_free(self.descs@, x, page as int);
+        proof {
+            // `x` holds `page` and starts at or below it; one starting
+            // below would end by it.
+            assert(keyed(self.table, self.descs@[x].value(), x));
+        }
         let d = self.table.get(page);
         // Table entries are live descriptors.
         if d.is_null() || self.desc(d).start() != page || !self.desc(d).state().is_free() {
+            proof {
+                assert(false);
+            }
             sys::abort_fmt(format_args!("huge: free page {page} has no extent"));
         }
         d
@@ -3886,6 +3973,15 @@ impl Huge {
                 assert(same_but_links(d0[x].value(), d1[x].value()));
                 assert(d0.contains_key(x));
             }
+            assert forall|q: nat| #[trigger] g.free.map.view().contains(q) implies exists|x: *mut HugeDesc| #[trigger] in_free(
+                d2,
+                x,
+                q as int,
+            ) by {
+                let x = choose|x: *mut HugeDesc| #[trigger] in_free(d0, x, q as int);
+                assert(same_but_links(d0[x].value(), d1[x].value()));
+                assert(in_free(d2, x, q as int));
+            }
             assert forall|x: *mut HugeDesc| #[trigger] d2.contains_key(x) && d2[x].value().state == RunState::Empty as u8
                 implies l1.contains(x) by {
                 assert(same_but_links(d0[x].value(), d1[x].value()));
@@ -4212,11 +4308,24 @@ impl Huge {
                 forall|q: int| 0 <= q < from ==> !#[trigger] self.fits(g, q, need as int, align),
             decreases g.next_page - from,
         {
+            proof {
+                // No free extent starts in `[from, a)`: its first page
+                // would be a free bit there.
+                assert forall|x: *mut HugeDesc|
+                    #[trigger] g.descs@.contains_key(x) && g.descs@[x].value().state != RunState::Active as u8
+                        && g.descs@[x].value().start < a implies g.descs@[x].value().start + g.descs@[x].value().pages <= a by {
+                    let v = g.descs@[x].value();
+                    if v.start >= from {
+                        assert(desc_ok(v, g.next_page));
+                        lemma_marked(g.free.map.view(), v, v.start as int);
+                    }
+                }
+            }
             let e = g.extent_at(a);
             proof {
                 assert(desc_ok(g.descs@[e].value(), g.next_page));
             }
-            // `extent_at` checked `e` is live.
+            // `extent_at` ensures `e` is a live free extent at `a`.
             let e_end = g.desc(e).end();
             let s = self.align_page(a, align);
             proof {
@@ -4410,6 +4519,9 @@ impl Huge {
             if has_ext {
                 assert(desc_ok(ve, old_mark));
             }
+            // Every free bit is below the mark, so the run's pages past
+            // `ext` (or past the mark) have none.
+            old(g).lemma_free_below();
         }
         if ext.is_null() {
             if s > old_mark {
@@ -5384,17 +5496,19 @@ proof fn lemma_freed_active(g0: Inner, g1: Inner, m: Merge)
     assert(active_pages(d1) =~= active_pages(d0).difference(range));
 }
 
-/// The free-page set after a free, against `f0` before: what was free
-/// still is, and so is every page of the freed run `v`.
+/// The free-page set after a free, against `f0` before: exactly what was
+/// free, and every page of the freed run `v`.
 spec fn freed_free(f0: vstd::set::Set<nat>, f1: vstd::set::Set<nat>, v: HugeDesc) -> bool {
-    forall|q: nat| f0.contains(q) || (v.start <= q < v.start + v.pages) ==> #[trigger] f1.contains(q)
+    forall|q: nat| #[trigger] f1.contains(q) <==> f0.contains(q) || (v.start <= q < v.start + v.pages)
 }
 
 /// A free keeps the free extents coalesced and marked free: the merged
 /// extent starts at `pred`'s start, which no other free extent touched,
 /// or at the run's, which none did when `free_before` found none, and
 /// ends likewise; its pages are `pred`'s, `succ`'s (free before) and the
-/// run's (added to the set).
+/// run's (added to the set). The set holds nothing else: a page free
+/// before is in `pred`, `succ` (both now the merged extent) or an
+/// untouched free extent.
 proof fn lemma_freed_coalesced(g0: Inner, g1: Inner, m: Merge)
     requires
         g0.wf(),
@@ -5404,6 +5518,7 @@ proof fn lemma_freed_coalesced(g0: Inner, g1: Inner, m: Merge)
     ensures
         coalesced(g1.descs@),
         free_marked(g1.descs@, g1.free.map.view()),
+        free_exact(g1.descs@, g1.free.map.view()),
 {
     let d0 = g0.descs@;
     let d1 = g1.descs@;
@@ -5464,6 +5579,22 @@ proof fn lemma_freed_coalesced(g0: Inner, g1: Inner, m: Merge)
                     assert(f0.contains(q as nat));
                 }
             }
+        }
+    }
+    assert forall|q: nat| #[trigger] f1.contains(q) implies exists|x: *mut HugeDesc| #[trigger] in_free(d1, x, q as int) by {
+        if f0.contains(q) {
+            let x = choose|x: *mut HugeDesc| #[trigger] in_free(d0, x, q as int);
+            if m.part(x) {
+                assert(x != m.d);
+                assert(in_free(d1, m.surv, q as int));
+            } else {
+                assert(m.model(d0, x) == Some(d0[x].value()));
+                assert(d1.contains_key(x));
+                assert(same_but_links(d0[x].value(), d1[x].value()));
+                assert(in_free(d1, x, q as int));
+            }
+        } else {
+            assert(in_free(d1, m.surv, q as int));
         }
     }
 }

@@ -3141,7 +3141,7 @@ axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc)
 
 ### S162. `Huge::check_zero`
 
-src/huge/mod.rs:4893. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/huge/mod.rs:5005. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The `check_zero` debug mode: the first and last word of every usable page of a run reported zero must read zero.
@@ -3152,12 +3152,12 @@ fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: 
 
 ### S163. `not_a_run_page`
 
-src/huge/mod.rs:6600. Kind: abort_standin. Category: panic/abort.
+src/huge/mod.rs:6731. Kind: abort_standin. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`Huge::free_run`]'s abort for a page that is not in the descriptor table, where the build calls [`not_a_run`] with the page's address.
 
-Stands in at: src/huge/mod.rs:6228 (`Huge::free_run`).
+Stands in at: src/huge/mod.rs:6359 (`Huge::free_run`).
 
 ```rust
 fn not_a_run_page(page: usize) -> !

@@ -428,7 +428,7 @@ impl Set {
             page <= 0x8000_0000_0000_0000,
             nslabs <= 0x1_0000_0000,
         ensures
-            r matches Some(s) ==> s.map.wf() && s.map.spec_nbits() == nslabs,
+            r matches Some(s) ==> s.map.wf() && s.map.spec_nbits() == nslabs && s.map@ == vstd::set::Set::<nat>::empty(),
             r matches Some(s) ==> (meta.is_process() ==> s.map.in_meta()),
     {
         proof {

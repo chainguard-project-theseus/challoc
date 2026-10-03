@@ -2560,16 +2560,17 @@ extent touching the mark, returning it or `None`. Merges of `Empty` and
 
 **Premises beyond the common ones.**
 - `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs:35`): the lock
-  protects `Inner::wf`, now including the two new conjuncts.
+  protects `Inner::wf`, now including the two new conjuncts (and,
+  since, `free_exact`: theorem 29).
 - `class::Set::ensure` (`class/sets.rs:464`, `external_body`) leaves the
   bitmap view unchanged; `alloc_aligned` calls it between `find` and
   `take`. The view's `set_range`, `clear_range` and `lowest_set_from`
   are verified (`bitmap.rs`).
 
 **Where the statement is weaker than the code.**
-- It speaks of descriptors, not pages: it does not state that a free
-  page belongs to a free extent (the converse of `free_marked`), which
-  `audit` also checks.
+- It speaks of descriptors, not pages. The converse of `free_marked`
+  (a free bit belongs to a free extent), which `audit` also checks, is
+  now proved separately (theorem 29).
 - It is stated at the lock invariant only. No entry point exports it.
 - That `find` returns the lowest fit is theorem 23
   ("Lowest-address huge placement"), built on this one.
@@ -3379,7 +3380,8 @@ purges) against a brute-force lowest fit over the live runs.
 
 **Premises beyond the common ones.**
 - `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs:35`): the lock
-  protects `Inner::wf`, with `coalesced` and `free_marked`.
+  protects `Inner::wf`, with `coalesced`, `free_marked` and (for
+  `extent_at`'s abort) `free_exact`.
 - `TwoLevelBitmap::lowest_set_from` (`bitmap.rs:3285`) is verified: the
   lowest set bit at or past `from`, or none.
 
@@ -3390,10 +3392,10 @@ purges) against a brute-force lowest fit over the live runs.
   it when a descriptor, the table or bitmap growth, or the kernel
   commit fails, so "huge `malloc` returns NULL only when nothing fits"
   is not claimed.
-- A free bit that starts no free extent aborts in `extent_at`
-  (`:2829`); the converse of `free_marked` is not in `wf`, so the proof
-  does not show that abort unreachable. An abort is not a return, so
-  the statement holds.
+- A free bit that starts no free extent would abort in `extent_at`;
+  with the converse of `free_marked` now in `wf` ("Huge free bitmap is
+  exact"), that abort is proved unreachable: under the lock invariant
+  `find` never reaches it.
 - Scope, not a gap: the order is by address only. `Purged` (zero)
   and `Empty` (dirty) pages count alike, as `find` treats them.
 
@@ -4141,6 +4143,98 @@ its heap `wf`), which makes both keys' contracts the callees'.
   (trusted, theorem 10's premise); `thread.tcache.enabled` and
   `tcache.flush` on another thread's cache concurrently are outside it
   (the caller's bug, as in jemalloc).
+
+## 29. Huge free bitmap is exact (at the huge lock invariant)
+
+A fact of every value the huge lock admits (`Inner::wf`), like theorem
+17; no entry point's `ensures` mentions it. Built on theorems 17 and 23.
+
+Read at this section's commit (the `file:line`s are the `fn`/`spec`
+line there). Numbered at merge.
+
+**Statement** (`huge/mod.rs:1277`, `:984`):
+
+```rust
+spec fn free_exact(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, f: vstd::set::Set<nat>) -> bool {
+    forall|q: nat| f.contains(q) ==> exists|x: *mut HugeDesc| in_free(descs, x, q as int)
+}
+
+proof fn theorem_free_exact(&self, q: int)
+    requires
+        self.wf(),
+        0 <= q,
+    ensures
+        self.free.map.view().contains(q as nat) <==> exists|x: *mut HugeDesc| in_free(self.descs@, x, q),
+        q >= self.next_page ==> !self.free.map.view().contains(q as nat),
+```
+
+(Line breaks and triggers dropped.) `in_free(descs, x, q)` (theorem 23):
+`x` is a live free (`Empty` or `Purged`) descriptor holding page `q`.
+In every value the huge lock admits, page `q`'s bit in the free-page
+bitmap is set exactly when `q` is a page of a free extent: no `Active`
+page and no page at or past the high-water mark `next_page` has its
+bit set. `free_marked` (theorem 17) was the
+`<==` half; `free_exact` (`:984`), the `==>` half, is a new conjunct of
+`Inner::wf` (`:1234`). `Huge::audit` checks the same at run time ("page
+of run marked free", "page of free extent not marked free", and
+`lowest_set_from(next_page)` is `None`); as extents cover every page
+below the mark (the page tallies sum to it), the three checks are this
+statement.
+
+**Consequence: `extent_at`'s abort is unreachable.** `Inner::extent_at`
+(`:2966`), which `find` calls at every free bit its scan stops at, now
+requires the bit set and every free extent starting below the page
+ending by it (`ends_by`), and proves its "huge: free page {page} has no
+extent" abort branch unreachable (`assert(false)` there, ghost): the
+bit's page is in a free extent, which cannot start below the page, so
+starts at it, and the table keys every extent's start (`keyed`).
+`find` (`:4253`) establishes `ends_by(a)` at the lowest set bit `a` at or
+past `from` from its loop's `ends_by(from)`: a free extent starting in
+`[from, a)` would put its first page's bit there. This closes theorem
+23's gap: under the lock invariant `find` never reaches that abort.
+
+**How it is kept.**
+- `Huge::new` (`:3026`): `class::Set::new` (`class/sets.rs:424`) now
+  ensures the fresh bitmap's view is empty (from `lemma_fresh`, already
+  called), and there are no descriptors.
+- `Huge::take` (`:4443`): `took_free` (`:2702`) is now an equivalence:
+  after a take the set is exactly the old set outside the run plus the
+  alignment hole `[mark, run start)`. Its new direction needs no old bit
+  in the run's pages outside the cleared range `[max(s, a), min(end,
+  e_end))`: those pages are past `ext`, which then touches the mark
+  (`take_ok`), or, with no `ext`, at or past the mark; and every old bit
+  is below the mark (`lemma_free_below`,
+  `:1294`, from `free_exact`). `Take::touch_ok` (`:2246`) gains three
+  coverage facts (a head is kept when `ext` starts below the run, a tail
+  when it ends past it, a hole whenever the run starts past the mark), and
+  `lemma_took_coalesced` (`:2713`) concludes `free_exact`: an old bit
+  outside the run is in an untouched free extent or in `ext`'s head or
+  tail, and a hole bit in the hole or in the head that absorbed it.
+- `Huge::free_run` (`:6331`): `freed_free` (`:5501`) is now an
+  equivalence (the set gains exactly the run's pages, `set_range`), and
+  `lemma_freed_coalesced` (`:5512`) concludes `free_exact`: an old bit's
+  extent is `pred`, `succ` (both now the merged survivor) or untouched.
+- `purge_extent` (`:3820`) only turns an `Empty` extent `Purged`, which
+  stays free in the same place.
+
+**Findings.** None: the code already keeps the bitmap exact. The
+invariant used to admit an extra free bit on an `Active` page or past
+the mark, under which `find` could reach `extent_at`'s abort without
+breaking its contract; no path sets such a bit.
+
+**Premises beyond the common ones.**
+- `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs`): the lock
+  protects `Inner::wf`, now including `free_exact`.
+- `class::Set::ensure` (`external_body`) leaves the bitmap view
+  unchanged, as in theorem 17. The view's `set_range`, `clear_range`,
+  `lowest_set_from` and `lemma_fresh` are verified (`bitmap.rs`).
+
+**Where the statement is weaker than the code.**
+- It is stated at the lock invariant only; no entry point exports it,
+  and nothing per call beyond `find`'s abort-freedom uses it.
+- It speaks of the bitmap's view (`TwoLevelBitmap::view`), whose tie to
+  the words in memory is the bitmap module's verified model; the second
+  level's summary bits are part of that model, not of this statement.
 
 ## Interface contract
 
