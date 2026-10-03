@@ -632,14 +632,15 @@ fn a_cached_pair_kept_by_the_split_is_caught_when_released() {
     );
 }
 
-/// A flush of the whole cache (`n == len`, `rest_len == 0`): the sorted
-/// split is not taken even when the stack is in address order (there
-/// is no kept half to keep sorted), the kept-half sort has nothing to
-/// do, the straddling compare has no kept maximum to match, and the
-/// header comes out empty with its run, zero prefix and low water
-/// reset. `flush_all` is such a flush of every class.
+/// A flush of the whole cache (`n == len`, `rest_len == 0`): a stack in
+/// address order takes the sorted branch (no grouping pass; the
+/// `FOREIGN` cache's flush in xmalloc-test), a scrambled one the
+/// unsorted branch; the kept-half sort has nothing to do, the straddling
+/// compare has no kept maximum to match, and the header comes out empty
+/// with its run, zero prefix and low water reset. `flush_all` is such a
+/// flush of every class.
 #[test]
-fn a_whole_cache_flush_keeps_nothing_and_takes_the_unsorted_branch() {
+fn a_whole_cache_flush_keeps_nothing_and_skips_grouping_when_sorted() {
     let s = shared();
     let t = TestHeap::new(s);
     let c = class_with(64);
@@ -661,8 +662,8 @@ fn a_whole_cache_flush_keeps_nothing_and_takes_the_unsorted_branch() {
         (0, 0, 0, 0)
     );
     assert_eq!(
-        k.unsorted_flushes, 1,
-        "a whole-cache flush never takes the sorted split"
+        k.unsorted_flushes, 0,
+        "a sorted whole-cache flush takes the sorted branch"
     );
     assert_eq!(live(s, c), HALF - 10);
     // The same with a scrambled stack: evens first, then odds.
@@ -684,9 +685,57 @@ fn a_whole_cache_flush_keeps_nothing_and_takes_the_unsorted_branch() {
         (k.len(), k.run().len(), k.zeroed(), k.low_water()),
         (0, 0, 0, 0)
     );
-    assert_eq!(k.unsorted_flushes, 2);
+    assert_eq!(k.unsorted_flushes, 1);
     assert_eq!(live(s, c), 0);
     t.destroy();
+}
+
+/// A sorted whole-cache flush over many slabs (a class with few slots
+/// per slab) is released slab by slab without the grouping pass, and a
+/// duplicate in it (adjacent once sorted) still aborts at the release,
+/// on the scratch bit, as it does on the unsorted branch.
+#[test]
+fn a_sorted_whole_cache_flush_spans_slabs_and_catches_a_duplicate() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(1024);
+    let cap = default_cap(c) as usize;
+    let mut ps: Vec<*mut u8> = (0..4 * cap).map(|_| t.alloc(c)).collect();
+    t.flush_all();
+    ps.sort_unstable();
+    let slabs = |v: &[*mut u8]| {
+        let mut n: Vec<usize> = v.iter().map(|&p| s.arena0.classes[c].locate(p).0).collect();
+        n.dedup();
+        n.len()
+    };
+    let batch = &ps[..cap - 1];
+    assert!(slabs(batch) > 1, "the batch spans several slabs");
+    for &p in batch {
+        t.free(p);
+    }
+    assert!(t.cached_plain(c).is_sorted());
+    let before = live(s, c);
+    t.flush_all();
+    assert_eq!(t.cache(c).unsorted_flushes, 0);
+    assert_eq!(live(s, c), before - (cap - 1));
+    // A duplicate: the stack stays sorted (the copies are adjacent).
+    let dup = ps[cap + 1];
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        t.free(ps[cap]);
+        t.free(dup);
+        t.free(dup);
+        t.free(ps[cap + 2]);
+        assert!(t.cached_plain(c).is_sorted());
+        t.flush_all();
+    }));
+    let msg = panic_message(r.expect_err("a sorted whole flush let a duplicate through"));
+    assert!(
+        msg.contains(&std::format!(
+            "double free of {:#x} (class {c}",
+            dup as usize
+        )),
+        "{msg}"
+    );
 }
 
 /// The dense [`GuardTest`] the sized fast path reads agrees with
