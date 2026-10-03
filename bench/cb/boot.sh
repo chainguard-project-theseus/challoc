@@ -335,7 +335,7 @@ $RT run --rm --name cb "${NET[@]}" "${PROFILE[@]}" "${PERF_MOUNT[@]}" \
   -v "$W/src:/src" -v "$OUT:/out" -v "$W/sources:/cb/sources:ro" \
   -e CB_HOST="$NAME" -e CB_MACHINE="$MACHINE" -e CB_ZONE="$ZONE" \
   -e CB_SPOT="$([ "$PROVISIONING" = SPOT ] && echo 1 || echo 0)" -e CB_IMAGE="${DIGEST:0:19}" \
-  -e CB_RUNTIME="$RUNTIME" \
+  -e CB_RUNTIME="$RUNTIME" -e CB_CONTAINER="$CONTAINER" \
   -w /src "$IMG_ID" \
   python3 bench/cb run --launch /out/launch.json --vm "$NAME" --sources /cb/sources --out /out/res --bin /opt/cb/bench-bin \
   > "$OUT/cb.log" 2>&1
