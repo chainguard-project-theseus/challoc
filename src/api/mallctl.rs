@@ -869,8 +869,8 @@ fn flush_caller(shared: &Shared) {
     }
 }
 
-/// The calling thread's heap; `EAGAIN` while the thread is creating or
-/// has torn down its heap.
+/// The calling thread's heap; `EAGAIN` when it has none to give (see
+/// `heap_for_thread`: being created, torn down, or not to be had).
 fn thread_heap<'a>(shared: &'a Shared) -> Result<&'a mut Heap, c_int> {
     heap::heap_for_thread(shared).ok_or(EAGAIN)
 }
