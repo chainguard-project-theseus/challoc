@@ -296,10 +296,10 @@ fn default_caps_follow_the_design_table() {
         assert_eq!(l.align(), 16);
     }
     // One line per header, headers dense in the heap, the small fields
-    // on the two lines before them.
+    // on the two lines after them.
     assert_eq!(core::mem::size_of::<CacheHeader>(), 64);
     assert_eq!(core::mem::align_of::<CacheHeader>(), 64);
-    assert_eq!(core::mem::offset_of!(Heap, caches), 128);
+    assert_eq!(core::mem::offset_of!(Heap, caches), 0);
     assert_eq!(
         core::mem::size_of::<Heap>(),
         128 + 64 * NCLASSES,

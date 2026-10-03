@@ -52,6 +52,11 @@ pub struct Regions {
     pub superblock: usize,
     pub lg_region: u32,
     pub lg_stride: u32,
+    /// `1 << lg_region`, stored so that the sized free's region bound
+    /// (`Shared::sized_slot`) is one compare with a memory operand:
+    /// against the shift LLVM emits a load of the shift count, a copy, a
+    /// shift and a test. On the line `superblock` sits on.
+    region_len: usize,
     /// Start of each class region, `MAX_SLAB`-aligned, inside its stride.
     pub class_base: [usize; NCLASSES],
     pub huge_base: usize,
@@ -93,6 +98,7 @@ impl Regions {
             superblock,
             lg_region,
             lg_stride,
+            region_len: 1 << lg_region,
             class_base,
             huge_base: huge.0,
             huge_len: huge.1,
@@ -107,7 +113,7 @@ impl Regions {
 
     #[inline]
     pub const fn region_len(&self) -> usize {
-        1 << self.lg_region
+        self.region_len
     }
 
     #[cfg(test)]

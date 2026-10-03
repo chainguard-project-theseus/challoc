@@ -419,7 +419,7 @@ struct CacheHeader {                         // one per (arena, class), 64 bytes
 ```
 
 The headers are dense inside the heap: `malloc` reaches `len` at `heap +
-128 + 64 * c` with no pointer load, and a thread's headers share one
+64 * c` with no pointer load, and a thread's headers share one
 page. Each class's stack is its own metadata object, allocated on the
 class's first slow path (`Heap::ensure_cache`), so a thread pays only for
 the classes it touches; one contiguous slot block per heap cost a freeing
