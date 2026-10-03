@@ -1674,7 +1674,7 @@ pub const unsafe fn from_raw_chunked(nbits: usize, ptr: *mut u64, stride: usize)
 
 ### S64. `ClassState::page_group_is_idle`
 
-src/class/decay.rs:208. Kind: external_body. Category: allocator invariant.
+src/class/decay.rs:242. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Whether the page group of `slab` (`spp` slabs, `spp > 1`) can be discarded: every slab in it is committed, owned by this arena, and `Fresh`, `Empty` or `Purged`.
@@ -1688,7 +1688,7 @@ fn page_group_is_idle(&self, Ghost(g): Ghost<Inner>, slab: usize, spp: usize) ->
         g.table@ == self.spec_table(),
     ensures
         r ==> forall|s: nat| (slab & !((spp - 1) as usize)) <= s < (slab & !((spp - 1) as usize)) + spp
-            ==> #[trigger] g.owns(s),
+            ==> #[trigger] g.owns(s) && g.st(s) != State::Active,
 ```
 
 ### S65. `axiom_class_lock_inv`
@@ -2464,7 +2464,7 @@ pub assume_specification[ seed ]() -> u64
 
 ### S115. `axiom_c_claim`
 
-src/heap/live.rs:576. Kind: axiom. Category: C-program contract.
+src/heap/live.rs:667. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The C contract of `free`, `realloc` and the sized frees: only a block's holder frees or reallocates it, and the holder of the block at `p` holds its token, which the allocation that made it handed to C with the block.
@@ -3174,7 +3174,7 @@ axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc)
 
 ### S165. `Huge::check_zero`
 
-src/huge/mod.rs:4582. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/huge/mod.rs:4663. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The `check_zero` debug mode: the first and last word of every usable page of a run reported zero must read zero.
@@ -3185,12 +3185,12 @@ fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: 
 
 ### S166. `not_a_run_page`
 
-src/huge/mod.rs:6074. Kind: abort_standin. Category: panic/abort.
+src/huge/mod.rs:6168. Kind: abort_standin. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`Huge::free_run`]'s abort for a page that is not in the descriptor table, where the build calls [`not_a_run`] with the page's address.
 
-Stands in at: src/huge/mod.rs:5716 (`Huge::free_run`).
+Stands in at: src/huge/mod.rs:5797 (`Huge::free_run`).
 
 ```rust
 fn not_a_run_page(page: usize) -> !
@@ -3510,7 +3510,7 @@ fn drop(&mut self)
 
 ### S190. `total_bytes`
 
-src/purge.rs:394. Kind: external_body. Category: core library.
+src/purge.rs:460. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > The sum of the lengths of `ranges`.

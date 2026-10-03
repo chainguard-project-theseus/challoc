@@ -31,7 +31,7 @@ fn batch_discards_every_range() {
         unsafe { *((addr + p * page) as *mut u8) = 0xA5 };
     }
     assert_eq!(resident(addr, len, page), 8);
-    let mut b = Batch::new();
+    let mut b = Batch::new_t();
     // Two ranges with a hole between them; the hole stays resident.
     b.push(addr, 3 * page);
     b.push(addr + 4 * page, 4 * page);

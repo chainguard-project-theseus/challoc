@@ -1,6 +1,5 @@
 //! Purge and the decay walk over the `empty` set (design section 8).
 
-#[cfg(verus_only)]
 use super::SlabTable;
 use super::abort::slab_count_underflow;
 use super::{ClassState, Inner};
@@ -146,6 +145,38 @@ spec fn slab_bytes(cs: &ClassState) -> int {
     (1usize << class_table()[cs.spec_class() as int].lg_slab) as int
 }
 
+/// Byte `b` lies in a slab of table `t` that `states`, the ghost states
+/// of an arena's class lock value, records as owned by the arena and not
+/// `Active`: `Fresh`, `Empty` or `Purged`. What a class purge's [`Batch`]
+/// may discard (whole-allocator theorem "Purge never discards live
+/// data", `verus/THEOREMS.md`, where tying such a slab to its slots'
+/// tokens is open).
+pub closed spec fn idle_byte(t: SlabTable, states: Map<nat, State>, b: int) -> bool {
+    let sz = (1usize << class_table()[t.spec_class() as int].lg_slab) as int;
+    let s = (b - t.base) / sz;
+    &&& t.base <= b
+    &&& s < t.spec_nslabs()
+    &&& states.contains_key(s as nat)
+    &&& states[s as nat] != State::Active
+}
+
+/// Two lock values that agree on which slabs the arena owns and which of
+/// them are `Active` agree on [`idle_byte`].
+proof fn lemma_idle_same(t: SlabTable, s1: Map<nat, State>, s2: Map<nat, State>, b: int)
+    requires
+        forall|s: nat| #[trigger] s1.contains_key(s) == s2.contains_key(s),
+        forall|s: nat| #[trigger] s1.contains_key(s) ==> (s1[s] == State::Active) == (s2[s] == State::Active),
+    ensures
+        idle_byte(t, s1, b) == idle_byte(t, s2, b),
+{
+    let sz = (1usize << class_table()[t.spec_class() as int].lg_slab) as int;
+    let s = ((b - t.base) / sz) as nat;
+    assert(s1.contains_key(s) == s2.contains_key(s));
+    if s1.contains_key(s) {
+        assert((s1[s] == State::Active) == (s2[s] == State::Active));
+    }
+}
+
 /// What [`ClassState::walk_empty`] and its visitors keep of the lock value
 /// `g` they walk: the invariant, over this state's table, arena and slabs.
 pub(super) open spec fn walk_ok(cs: &ClassState, g: Inner) -> bool {
@@ -202,8 +233,11 @@ impl ClassState {
     /// arena in one hold of both class locks.
     ///
     /// Trusted: that agreement is what the `ensures` rests on (the ghost
-    /// `g` is the class lock's value, whose owner words say which slabs
-    /// this arena owns); the iterator and closure stay as written.
+    /// `g` is the value of the class lock the caller holds, whose owner
+    /// words say which slabs this arena owns), and, for the states, the
+    /// agreement of an owned slab's descriptor with `g` while the lock is
+    /// held that [`ClassState::state_locked`] assumes; the iterator and
+    /// closure stay as written.
     #[verifier::external_body]
     fn page_group_is_idle(&self, Ghost(g): Ghost<Inner>, slab: usize, spp: usize) -> (r: bool)
         requires
@@ -213,7 +247,7 @@ impl ClassState {
             g.table@ == self.spec_table(),
         ensures
             r ==> forall|s: nat| (slab & !((spp - 1) as usize)) <= s < (slab & !((spp - 1) as usize)) + spp
-                ==> #[trigger] g.owns(s),
+                ==> #[trigger] g.owns(s) && g.st(s) != State::Active,
     {
         let first = slab & !(spp - 1);
         let committed = self.table().committed_slabs();
@@ -310,6 +344,11 @@ impl ClassState {
 /// group, so each page group pushed starts at or past the end of the
 /// last one (`end`) and the batch holds at most the bytes of the slabs
 /// below `end`, which is inside the class region, below `2^57`.
+///
+/// The batch may discard the bytes of the slabs idle in `states`, the
+/// ghost states of the lock value the walk started from ([`idle_byte`]);
+/// a purge only moves `Empty` slabs to `Purged`, so those are the slabs
+/// idle in the lock value at every flush.
 struct Purger {
     spp: usize,
     n: usize,
@@ -319,12 +358,16 @@ struct Purger {
     end: Ghost<usize>,
     /// Ghost: the last slab visited (-1 before the first).
     last: Ghost<int>,
+    /// Ghost: the slab states of the lock value the walk started from.
+    #[allow(dead_code)]
+    states: Ghost<Map<nat, State>>,
 }
 
 impl Purger {
-    /// Nothing purged yet over page groups of `spp` slabs.
+    /// Nothing purged yet over page groups of `spp` slabs of table `t`,
+    /// whose arena's lock value records `states`.
     #[inline(always)]
-    fn new(spp: usize) -> (p: Purger)
+    fn new(spp: usize, Ghost(t): Ghost<SlabTable>, Ghost(states): Ghost<Map<nat, State>>) -> (p: Purger)
         ensures
             p.spp == spp,
             p.n == 0,
@@ -333,8 +376,18 @@ impl Purger {
             p.oldest == 0,
             p.end@ == 0,
             p.last@ == -1,
+            p.states@ == states,
+            forall|b: int| (p.batch.free())(b) == idle_byte(t, states, b),
     {
-        Purger { spp, n: 0, batch: Batch::new(), oldest: 0, end: Ghost(0), last: Ghost(-1) }
+        Purger {
+            spp,
+            n: 0,
+            batch: Batch::new(Ghost(|b: int| idle_byte(t, states, b))),
+            oldest: 0,
+            end: Ghost(0),
+            last: Ghost(-1),
+            states: Ghost(states),
+        }
     }
 
     /// `spp` is `cs`'s page group size; see the type for the rest.
@@ -350,6 +403,10 @@ impl Purger {
         &&& self.batch.total() <= self.end@ as int * slab_bytes(cs)
         &&& -1 <= self.last@ < cs.spec_nslabs()
         &&& forall|x: nat| #[trigger] g.empty.map@.contains(x) && x > self.last@ ==> x >= self.end@
+        &&& forall|b: int| #[trigger] (self.batch.free())(b) == idle_byte(cs.spec_table(), self.states@, b)
+        &&& forall|s: nat| #[trigger] g.states@.contains_key(s) == self.states@.contains_key(s)
+        &&& forall|s: nat| #[trigger] g.states@.contains_key(s)
+            ==> (g.st(s) == State::Active) == (self.states@[s] == State::Active)
     }
 
     /// Visit `slab` (stamped `dirty_at`): purge its page group when
@@ -387,6 +444,23 @@ impl Purger {
                 use_type_invariant(cs);
                 lemma_run_fits(cs.spec_table(), 0, self.end@);
                 assert(self.end@ as int * slab_bytes(cs) <= 0x200_0000_0000_0000);
+                assert forall|b: int| idle_byte(cs.spec_table(), g.states@, b)
+                    implies #[trigger] (self.batch.free())(b) by {
+                    lemma_idle_same(cs.spec_table(), g.states@, self.states@, b);
+                }
+                // Every slab of the group is idle: the one slab of a page
+                // is in the empty set, and `page_group_is_idle` says so of
+                // a group of several.
+                assert forall|s: nat| first <= s < first + spp
+                    implies #[trigger] g.owns(s) && g.st(s) != State::Active by {
+                    if spp == 1 {
+                        assert(first == slab && s == slab && g.slab_ok(slab as nat));
+                    } else {
+                        assert(first == slab & !((spp - 1) as usize));
+                        assert(g.owns(s));
+                        assert(g.st(s) != State::Active);
+                    }
+                }
             }
             let k = cs.purge_group(g, slab, spp, &mut self.batch);
             proof {
@@ -400,6 +474,10 @@ impl Purger {
             proof {
                 assert forall|x: nat| #[trigger] g.empty.map@.contains(x) && x > slab implies x >= self.end@ by {
                     assert(g0.empty.map@.contains(x));
+                }
+                assert forall|s: nat| #[trigger] g.states@.contains_key(s)
+                    implies (g.st(s) == State::Active) == (self.states@[s] == State::Active) by {
+                    assert(g0.states@.contains_key(s));
                 }
             }
         } else {
@@ -455,7 +533,7 @@ impl ClassState {
         }
         let spp = self.table().slabs_per_page();
         let mut g = self.inner.lock();
-        let mut v = PurgeOlder { cutoff, p: Purger::new(spp) };
+        let mut v = PurgeOlder { cutoff, p: Purger::new(spp, Ghost(self.spec_table()), Ghost(g@.states@)) };
         proof {
             assert(0usize & sub(spp, 1) == 0) by (bit_vector);
             assert(v.p.inv(self, g@));
@@ -499,6 +577,25 @@ proof fn lemma_run_fits(t: SlabTable, first: usize, k: usize)
         requires first + k <= n, p >= 0;
 }
 
+/// A slab of a well-formed table has at least one byte.
+proof fn lemma_slab_bytes_pos(t: SlabTable)
+    requires
+        t.inv(),
+    ensures
+        (1usize << class_table()[t.spec_class() as int].lg_slab) as int > 0,
+{
+    broadcast use {super::table::lemma_spec_class, crate::vspec::class::axiom_class_table_wf};
+    let c = class_table()[t.spec_class() as int];
+    let l8 = c.lg_slab;
+    let lg = l8 as usize;
+    assert(c.wf());
+    vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+    vstd::bits::lemma_usize_shl_is_mul(1, lg);
+    vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
+    assert((1usize << l8) == (1usize << lg)) by (bit_vector)
+        requires lg == l8 as usize;
+}
+
 impl ClassState {
     /// Discard the whole page group of `slab` (one slab when the slab is
     /// at least a page) and make every `Empty` slab in it `Purged`, a
@@ -521,9 +618,11 @@ impl ClassState {
             old(g).nbits() == self.spec_nslabs(),
             spp >= 1,
             (slab & !((spp - 1) as usize)) + spp <= self.spec_nslabs(),
-            forall|s: nat| (slab & !((spp - 1) as usize)) <= s < (slab & !((spp - 1) as usize)) + spp ==> #[trigger] old(g).owns(s),
+            forall|s: nat| (slab & !((spp - 1) as usize)) <= s < (slab & !((spp - 1) as usize)) + spp
+                ==> #[trigger] old(g).owns(s) && old(g).st(s) != State::Active,
             old(batch).wf(),
             old(batch).total() <= 0x200_0000_0000_0000,
+            forall|b: int| idle_byte(self.spec_table(), old(g).states@, b) ==> #[trigger] (old(batch).free())(b),
         ensures
             final(g).inv(),
             final(g).nbits() == old(g).nbits(),
@@ -534,6 +633,10 @@ impl ClassState {
                 ==> !(#[trigger] final(g).empty.map@.contains(x)),
             final(batch).wf(),
             final(batch).total() <= old(batch).total() + spp as int * slab_bytes(self),
+            final(batch).free() == old(batch).free(),
+            forall|s: nat| #[trigger] final(g).states@.contains_key(s) == old(g).states@.contains_key(s),
+            forall|s: nat| #[trigger] old(g).states@.contains_key(s)
+                ==> (final(g).st(s) == State::Active) == (old(g).st(s) == State::Active),
             n <= spp,
     {
         proof {
@@ -548,6 +651,16 @@ impl ClassState {
                 requires sz >= 0;
             assert(sz * spp == spp as int * sz) by (nonlinear_arith);
             assert(self.spec_table().base as int + first as int * sz + spp as int * sz <= 0x200_0000_0000_0000);
+            // Every byte of the group is in one of its slabs, each idle.
+            lemma_slab_bytes_pos(self.spec_table());
+            let t = self.spec_table();
+            assert forall|b: int| t.base + first as int * sz <= b < t.base + first as int * sz + spp as int * sz
+                implies #[trigger] (batch.free())(b) by {
+                crate::purge::lemma_unit_of(t.base as int, sz, first as int, spp as int, b);
+                let s = (b - t.base) / sz;
+                assert(old(g).owns(s as nat) && old(g).st(s as nat) != State::Active);
+                assert(idle_byte(t, old(g).states@, b));
+            }
         }
         batch.push(self.slab_addr(first), self.class().slab_size() * spp);
         proof {
@@ -573,6 +686,9 @@ impl ClassState {
                 forall|s: nat| first <= s < first + spp ==> #[trigger] g.owns(s),
                 forall|x: nat| #[trigger] g.empty.map@.contains(x) ==> g1.empty.map@.contains(x),
                 forall|x: nat| first <= x < slabs.start ==> !(#[trigger] g.empty.map@.contains(x)),
+                forall|x: nat| #[trigger] g.states@.contains_key(x) == g1.states@.contains_key(x),
+                forall|x: nat| #[trigger] g1.states@.contains_key(x)
+                    ==> (g.st(x) == State::Active) == (g1.st(x) == State::Active),
             ensures
                 slabs.start >= slabs.end,
             decreases slabs.end - slabs.start,
@@ -624,6 +740,10 @@ impl ClassState {
                     if x != s {
                         assert(!g0.empty.map@.contains(x));
                     }
+                }
+                assert forall|x: nat| #[trigger] g1.states@.contains_key(x)
+                    implies (g.st(x) == State::Active) == (g1.st(x) == State::Active) by {
+                    assert(g0.states@.contains_key(x));
                 }
             }
         }
@@ -763,7 +883,13 @@ impl ClassState {
         let need = h.total - allow;
         let (cut, keep) = cut_step(&h.counts, need);
         // Second pass: purge.
-        let mut v = PurgeCurve { now, curve, cut, keep, p: Purger::new(spp) };
+        let mut v = PurgeCurve {
+            now,
+            curve,
+            cut,
+            keep,
+            p: Purger::new(spp, Ghost(self.spec_table()), Ghost(g@.states@)),
+        };
         proof {
             assert(0usize & sub(spp, 1) == 0) by (bit_vector);
             assert(v.p.inv(self, g@));

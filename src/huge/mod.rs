@@ -703,6 +703,48 @@ impl RunToken {
             assert(self.pages@.contains(lo) && other.pages@.contains(lo));
         }
     }
+
+    /// Purge never discards live data, for huge runs (whole-allocator
+    /// theorem "Purge never discards live data", `verus/THEOREMS.md`): a
+    /// byte [`free_page_byte`] admits for the set of the page authority
+    /// `auth` is in no page, guard included, of the run whose token this
+    /// is, whoever holds it. Every huge purge's [`Batch`] (`Huge::purge_empty`,
+    /// `purge_curve`, `free_run`) may discard only such bytes, for the set
+    /// of the authority the huge lock's value holds from the batch's making
+    /// to its flush (`Inner::wf`).
+    pub proof fn theorem_purge_apart(
+        tracked &self,
+        tracked auth: &GhostSetAuth<int>,
+        base: int,
+        pg: int,
+        np: int,
+        b: int,
+    )
+        requires
+            self.wf(),
+            auth.id() == page_loc(),
+            pg > 0,
+            free_page_byte(base, pg, np, auth@, b),
+        ensures
+            !(base + self.start() * pg <= b < base + (self.start() + self.npages()) * pg),
+    {
+        self.pages.agree(auth);
+        if base + self.start() * pg <= b < base + (self.start() + self.npages()) * pg {
+            crate::purge::lemma_unit_of(base, pg, self.start(), self.npages(), b);
+            assert(self.pages@.contains((b - base) / pg));
+        }
+    }
+}
+
+/// Byte `b` lies in one of the `np` pages of `pg` bytes of the region at
+/// `base`, and that page is not in `held`, the pages the run authority
+/// holds ([`page_loc`]): a page of no live run. What a huge purge's
+/// [`Batch`] may discard (whole-allocator theorem "Purge never discards
+/// live data", `verus/THEOREMS.md`; [`RunToken::theorem_purge_apart`]).
+pub open spec fn free_page_byte(base: int, pg: int, np: int, held: vstd::set::Set<int>, b: int) -> bool {
+    &&& base <= b
+    &&& (b - base) / pg < np
+    &&& !held.contains((b - base) / pg)
 }
 
 /// Two live descriptors are at different addresses: their permissions
@@ -3030,6 +3072,12 @@ impl Huge {
         pow2(self.lg_page as nat) as int
     }
 
+    /// Byte `b` is one a huge purge may discard while the run-page
+    /// authority holds `held`: [`free_page_byte`] over this region.
+    spec fn purgeable(&self, held: vstd::set::Set<int>, b: int) -> bool {
+        free_page_byte(self.base as int, self.spec_page(), self.npages as int, held, b)
+    }
+
     #[inline]
     pub fn page_size(&self) -> (r: usize)
         ensures
@@ -3443,13 +3491,18 @@ impl Huge {
             ;
         }
         let mut n = 0;
-        let mut batch = Batch::new();
+        // The batch may discard pages of no live run: the run authority
+        // does not change while the lock is held here.
+        let ghost held = g@.pgs@@;
+        let mut batch = Batch::new(Ghost(|b: int| self.purgeable(held, b)));
         loop
             invariant
                 crate::sys::may_syscall(),
                 g@.wf(),
                 g@.spec_np() == self.npages,
                 g@.spec_lg() == self.lg_page,
+                g@.pgs@@ == held,
+                forall|b: int| #[trigger] (batch.free())(b) == self.purgeable(held, b),
                 batch.wf(),
                 batch.total() + epages(g@.elist@, g@.descs@) * self.spec_page() <= self.npages * self.spec_page(),
                 n as int + g@.elist@.len() <= g@.next_page,
@@ -3531,12 +3584,15 @@ impl Huge {
             old(g).elist@.contains(d),
             old(batch).wf(),
             old(batch).total() + old(g).descs@[d].value().pages * self.spec_page() <= self.npages * self.spec_page(),
+            forall|b: int| self.purgeable(old(g).pgs@@, b) ==> #[trigger] (old(batch).free())(b),
         ensures
             final(g).wf(),
             final(g).spec_np() == old(g).spec_np(),
             final(g).spec_lg() == old(g).spec_lg(),
             final(g).next_page == old(g).next_page,
+            final(g).pgs == old(g).pgs,
             final(batch).wf(),
+            final(batch).free() == old(batch).free(),
             r == old(g).descs@[d].value().pages,
             final(batch).total() <= old(batch).total() + r * self.spec_page(),
             final(g).elist@ == old(g).elist@.remove(old(g).elist@.index_of(d)),
@@ -3559,6 +3615,27 @@ impl Huge {
         }
         // List members are live `Empty` extents.
         let (start, pages) = (g.desc(d).start(), g.desc(d).pages());
+        // The extent's pages are no live run's: the page authority holds
+        // the `Active` extents' pages, and those are apart from `d`.
+        proof {
+            let v = d0[d].value();
+            let p = self.spec_page();
+            let base = self.base as int;
+            lemma_run_auths(*g);
+            assert(desc_ok(v, g.next_page));
+            lemma_active(d0);
+            assert forall|b: int| base + v.start * p <= b < base + v.start * p + v.pages * p
+                implies #[trigger] (batch.free())(b) by {
+                crate::purge::lemma_unit_of(base, p, v.start as int, v.pages as int, b);
+                let k = (b - base) / p;
+                if g.pgs@@.contains(k) {
+                    let x = choose|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && run_page(d0[x].value(), k);
+                    assert(x != d);
+                    assert(apart(v, d0[x].value()));
+                }
+                assert(self.purgeable(g.pgs@@, b));
+            }
+        }
         batch.push(self.addr(start), pages * self.page_size());
         g.unlink(d);
         let ghost d1 = g.descs@;
@@ -3785,7 +3862,9 @@ impl Huge {
         let capped = keep16 < crate::policy::KEEP_ALL;
         let mut n = 0;
         if excess > 0 {
-            let mut batch = Batch::new();
+            // As in `purge_empty`: pages of no live run.
+            let ghost held = g@.pgs@@;
+            let mut batch = Batch::new(Ghost(|b: int| self.purgeable(held, b)));
             let mut d = g.empty_head;
             let ghost mut k: int = 0;
             proof {
@@ -3805,6 +3884,8 @@ impl Huge {
                     g@.wf(),
                     g@.spec_np() == self.npages,
                     g@.spec_lg() == self.lg_page,
+                    g@.pgs@@ == held,
+                    forall|b: int| #[trigger] (batch.free())(b) == self.purgeable(held, b),
                     batch.wf(),
                     0 <= k <= g@.elist@.len(),
                     d == (if k < g@.elist@.len() { g@.elist@[k] } else { ptr::null_mut::<HugeDesc>() }),
@@ -5735,6 +5816,7 @@ impl Huge {
         }
         // The run's token: its extent is this run's (one `Active` extent
         // starts at `page`), and it leaves the run authorities.
+        let ghost tpages = tok.pages@;
         let _gm: &mut Inner = &mut g;
         proof {
             lemma_run_auths(g0);
@@ -5763,7 +5845,19 @@ impl Huge {
         // Purged at once: above `huge_retain_max`, or under a zero huge
         // decay period (`huge_dirty_decay_ms:0`).
         let st = if usable > self.retain_max() || self.purge_on_free() {
-            let mut batch = Batch::new();
+            // The run's pages left the run authority with its token above:
+            // they are no live run's.
+            let ghost held = g@.pgs@@;
+            let mut batch = Batch::new(Ghost(|b: int| self.purgeable(held, b)));
+            proof {
+                let p = self.spec_page();
+                let base = self.base as int;
+                assert(page + n <= g0.next_page <= g0.np@ == self.npages);
+                assert forall|b: int| addr <= b < addr + n * page_size implies #[trigger] (batch.free())(b) by {
+                    crate::purge::lemma_unit_of(base, p, page as int, n as int, b);
+                    assert(tpages.contains((b - base) / p));
+                }
+            }
             batch.push(addr, n * page_size);
             batch.flush();
             RunState::Purged

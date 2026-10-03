@@ -215,9 +215,26 @@ pub fn purged_is_zero() -> bool {
 /// `purge_curve`, `Huge::free_run`, `purge_empty` and `purge_curve`) push
 /// under the class or huge lock that keeps the ranges free and flush
 /// before releasing it; the batch never outlives that hold.
+///
+/// The verified half of that invariant: the maker of a batch fixes `free`,
+/// the bytes it may discard ([`Batch::new`]), and [`Batch::push`]
+/// takes only ranges of such bytes, so every byte a flush hands to
+/// `madvise` is one ([`discard`]). Each maker proves what its `free`
+/// means (whole-allocator theorem "Purge never discards live data",
+/// `verus/THEOREMS.md`): for the huge allocator, pages no live run's
+/// token holds (`RunToken::theorem_purge_apart`); for a class, the slabs
+/// the arena's class lock records as idle (`class::decay::idle_byte`).
 pub struct Batch {
     ranges: [(usize, usize); MAX_BATCH],
     n: usize,
+    /// Ghost: the bytes the batch may discard.
+    #[allow(dead_code)]
+    free: Ghost<spec_fn(int) -> bool>,
+}
+
+/// Every byte of `[addr, addr + len)` is one `free` admits.
+pub open spec fn frees(free: spec_fn(int) -> bool, addr: int, len: int) -> bool {
+    forall|b: int| addr <= b < addr + len ==> #[trigger] free(b)
 }
 
 /// Total length of the first `k` of `ranges`.
@@ -245,13 +262,56 @@ proof fn lemma_lens(a: Seq<(usize, usize)>, b: Seq<(usize, usize)>, k: int)
     }
 }
 
+/// Every byte of units (slabs, pages) `first..first + k` of a range at
+/// `base` of units of `sz` bytes lies in one of them: its index
+/// `(b - base) / sz`.
+pub proof fn lemma_unit_of(base: int, sz: int, first: int, k: int, b: int)
+    requires
+        sz > 0,
+        0 <= first,
+        base + first * sz <= b < base + (first + k) * sz,
+    ensures
+        first <= (b - base) / sz < first + k,
+{
+    let d = b - base;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(d, sz);
+    let q = d / sz;
+    let r = d % sz;
+    assert(0 <= r < sz) by {
+        vstd::arithmetic::div_mod::lemma_mod_bound(d, sz);
+    }
+    assert(first <= q) by {
+        if q < first {
+            assert(q * sz + sz <= first * sz) by (nonlinear_arith)
+                requires q + 1 <= first, sz > 0;
+            assert(sz * q == q * sz) by (nonlinear_arith);
+        }
+    }
+    assert(q < first + k) by {
+        if q >= first + k {
+            assert((first + k) * sz <= q * sz) by (nonlinear_arith)
+                requires first + k <= q, sz > 0;
+            assert(sz * q == q * sz) by (nonlinear_arith);
+        }
+    }
+}
+
 impl Batch {
     /// At most [`MAX_BATCH`] ranges, none of which ends past the address
-    /// space, whose lengths sum to at most `usize::MAX`.
+    /// space, whose lengths sum to at most `usize::MAX`, each of bytes
+    /// `free` admits.
     pub closed spec fn wf(&self) -> bool {
         &&& self.n <= MAX_BATCH
         &&& forall|i: int| #![auto] 0 <= i < self.n ==> self.ranges[i].0 + self.ranges[i].1 <= usize::MAX
         &&& self.total() <= usize::MAX
+        &&& forall|i: int| #![auto] 0 <= i < self.n
+            ==> frees(self.free@, self.ranges[i].0 as int, self.ranges[i].1 as int)
+    }
+
+    /// The bytes the batch may discard, fixed by its maker
+    /// ([`Batch::new`]).
+    pub closed spec fn free(&self) -> spec_fn(int) -> bool {
+        self.free@
     }
 
     /// Total length of the ranges held.
@@ -264,12 +324,15 @@ impl Batch {
         self.n as nat
     }
 
-    pub const fn new() -> (b: Batch)
+    /// An empty batch that may discard the bytes `free` admits.
+    pub const fn new(Ghost(free): Ghost<spec_fn(int) -> bool>) -> (b: Batch)
         ensures
             b.wf(),
             b.total() == 0,
+            b.count() == 0,
+            b.free() == free,
     {
-        Batch { ranges: [(0, 0); MAX_BATCH], n: 0 }
+        Batch { ranges: [(0, 0); MAX_BATCH], n: 0, free: Ghost(free) }
     }
 
     #[inline]
@@ -298,17 +361,19 @@ impl Batch {
         self.n == MAX_BATCH
     }
 
-    /// Add `[addr, addr + len)` (free, per the type's invariant), flushing
-    /// first if the batch is full.
+    /// Add `[addr, addr + len)`, bytes `free` admits, flushing first if
+    /// the batch is full.
     pub fn push(&mut self, addr: usize, len: usize)
         requires
             crate::sys::may_syscall(),
             old(self).wf(),
             addr + len <= usize::MAX,
             old(self).total() + len <= usize::MAX,
+            frees(old(self).free(), addr as int, len as int),
         ensures
             final(self).wf(),
             final(self).total() <= old(self).total() + len,
+            final(self).free() == old(self).free(),
     {
         proof {
             lemma_lens(self.ranges@, self.ranges@, self.n as int);
@@ -361,6 +426,7 @@ impl Batch {
             final(self).wf(),
             final(self).count() == 0,
             final(self).total() == 0,
+            final(self).free() == old(self).free(),
     {
         if self.n != 0 {
             let advice = advice();
@@ -380,7 +446,7 @@ impl Batch {
                     EAGER_BYTES.fetch_add(bytes, Ordering::Relaxed);
                 }
             }
-            discard(&self.ranges[..self.n], advice);
+            discard(&self.ranges[..self.n], advice, Ghost(self.free@));
             self.n = 0;
         }
     }
@@ -647,13 +713,15 @@ verus! {
 
 /// Issue `advice` on `ranges`, which are free (the [`Batch`]
 /// invariant; this is the one place the batch's ranges reach the
-/// kernel). A failed range aborts. Needs at most [`MAX_BATCH`] ranges.
+/// kernel): every byte of each is one the batch's `free` admits. A
+/// failed range aborts. Needs at most [`MAX_BATCH`] ranges.
 // Not isolated: the loop body sees the `broadcast use` of the function.
 #[verifier::loop_isolation(false)]
-fn discard(ranges: &[(usize, usize)], advice: Advice)
+fn discard(ranges: &[(usize, usize)], advice: Advice, Ghost(free): Ghost<spec_fn(int) -> bool>)
     requires
         crate::sys::may_syscall(),
         ranges.len() <= MAX_BATCH,
+        forall|i: int| #![auto] 0 <= i < ranges.len() ==> frees(free, ranges[i].0 as int, ranges[i].1 as int),
 {
     broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
 
@@ -668,6 +736,14 @@ fn discard(ranges: &[(usize, usize)], advice: Advice)
 }
 
 } // verus!
+
+/// Tests: a batch with no ghost predicate (the tests hold no ghost state).
+#[cfg(test)]
+impl Batch {
+    pub fn new_t() -> Batch {
+        Batch::new(Ghost::assume_new())
+    }
+}
 
 /// The background thread (design 8.1).
 pub mod background;

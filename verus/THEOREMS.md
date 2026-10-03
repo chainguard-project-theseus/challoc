@@ -1,6 +1,6 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the eighteen whole-allocator theorems as the code
+Reference for the nineteen whole-allocator theorems as the code
 states them: the Verus statement, the entry points it covers, and every
 trusted premise it rests on, with `file:line`. Read at `b2cad68`
 (branch `verus`); line numbers are the `fn`/`axiom` line at that commit.
@@ -2500,6 +2500,151 @@ either.
   samples the period half of the theorem at runtime, including limits
   past `2^43`.
 
+## 19. Purge never discards live data
+
+The `file:line`s are the `fn` line at this section's commit.
+
+**Statement.** Three parts: what every discard is handed, and what the
+huge and class purges hand it.
+
+```rust
+// purge.rs:697: the one place a batch's ranges reach `madvise`.
+fn discard(ranges: &[(usize, usize)], advice: Advice, Ghost(free): Ghost<spec_fn(int) -> bool>)
+    requires
+        ranges.len() <= MAX_BATCH,
+        forall|i: int| 0 <= i < ranges.len() ==> frees(free, ranges[i].0 as int, ranges[i].1 as int),
+
+// huge/mod.rs:744
+pub open spec fn free_page_byte(base: int, pg: int, np: int, held: Set<int>, b: int) -> bool {
+    &&& base <= b
+    &&& (b - base) / pg < np
+    &&& !held.contains((b - base) / pg)
+}
+
+// heap/live.rs:477, in `impl Live`
+pub proof fn theorem_purge_huge(tracked &self, tracked auth: &GhostSetAuth<int>, b: int)
+    requires
+        crate::heap::regions_ok(),
+        self.wf(),
+        auth.id() == crate::huge::page_loc(),
+        free_page_byte(process_regions().huge_base as int, page_size(),
+            (process_regions().huge_len >> process_regions().lg_page) as int, auth@, b),
+    ensures
+        !(self.addr() <= b < self.addr() + self.len()),
+
+// class/decay.rs:154 (closed; unfolded)
+pub closed spec fn idle_byte(t: SlabTable, states: Map<nat, State>, b: int) -> bool {
+    let sz = (1usize << class_table()[t.spec_class() as int].lg_slab) as int;
+    let s = (b - t.base) / sz;
+    &&& t.base <= b
+    &&& s < t.spec_nslabs()
+    &&& states.contains_key(s as nat)
+    &&& states[s as nat] != State::Active
+}
+```
+
+(Line breaks added.) A `purge::Batch` (`purge.rs:227`) carries a ghost
+predicate `free` that its maker fixes (`Batch::new`, `:328`); `push`
+(`:366`) takes only ranges of bytes `free` admits (`frees`, `:236`),
+`Batch::wf` (`:303`) keeps that of every range held, merged ranges
+included, and `flush` (`:420`) hands `discard` the ranges with `free`.
+So every byte any flush discards, `MADV_DONTNEED` or `MADV_FREE`,
+including the flush inside a `push` to a full batch, satisfies the
+batch's `free`. The makers:
+
+- **Huge purges** (`Huge::purge_empty`, `purge_curve`, `free_run`,
+  `huge/mod.rs:3247`, `:3533`, `:5327`): `free` is
+  `free_page_byte(base, page, npages, S, _)`, where `S` is the set of
+  the run-page authority the huge lock's value holds when the batch is
+  made (`Inner::wf`: the `Active` descriptors' pages, `active_pages`).
+  The walks keep the lock value's authority equal to `S` until the
+  flush (`purge_extent`, `:3349`, ensures it unchanged), and
+  `purge_extent` proves an `Empty` extent's pages are not in it: they
+  are apart from every `Active` extent. `free_run` makes its batch after
+  the freed run's token left the authority (`GhostSetAuth::delete`), so
+  `S` no longer holds the run's pages. `RunToken::theorem_purge_apart`
+  (`huge/mod.rs:715`): a byte `free_page_byte` admits for the
+  authority's set is in no page, guard included, of a run whose token is
+  held anywhere (a token's pages are a subset of the authority's set,
+  `GhostSubset::agree`). `Live::theorem_purge_huge` lifts that to every
+  live block: a run's usable bytes are inside its pages, and a slot lies
+  in the class superblock, which `Regions::separated` keeps apart from
+  the huge region. The huge allocator's base, page and page count are
+  the process regions' under `Shared::wf` (`heap/shared.rs`), so the
+  batches' predicate is the theorem's.
+- **Class purges** (`ClassState::purge_empty`, `purge_curve`,
+  `class/decay.rs:518`, `:839`, through `Purger`, `:347`, and
+  `purge_group`, `:605`): `free` is `idle_byte(t, states, _)`, the bytes
+  of slabs of the class table that the arena's class lock value, when
+  the walk starts, records as owned and not `Active` (`Fresh`, `Empty`
+  or `Purged`). `Purger::inv` (`:389`) keeps the lock value agreeing with
+  `states` on ownership and `Active`-ness through the walk (a purge only
+  moves `Empty` to `Purged`), so at every flush the discarded bytes are
+  those of slabs idle in the current lock value. `purge_group` pushes a
+  page group whose every slab is idle: with one slab per page, the slab
+  is in the empty set (`Inner::slab_core`: `Empty`); with more,
+  `page_group_is_idle` (`:241`) says so.
+
+**Premises beyond the common ones.**
+- Huge: none beyond the huge lock axioms (`vspec/huge.rs`) and
+  `huge::axiom_run_locs` (one huge allocator per process), which
+  theorem 5's run tokens already use.
+- Class: `page_group_is_idle` (`class/decay.rs:241`, `external_body`)
+  now also ensures every slab of the group is not `Active` in the lock
+  value; its body reads each descriptor's state and arena, and the
+  ensures rests on the owner-word agreement it already assumed and on
+  the descriptor-state agreement `ClassState::state_locked`
+  (`class/mod.rs:1429`) assumes.
+- Class, the slot-token link (not proved; see below).
+
+**Where the statement is weaker than the code.**
+- **Slabs are not tied to slot tokens.** "Idle in the lock value" is the
+  class lock's ghost state, not the slot tokens: nothing proves that no
+  slot of an idle slab is live, cached or claimed, so the class half
+  stops at the lock state, plus the run-time check in
+  `ClassState::walk_empty` (`class/decay.rs:299`, the abort at `:325`)
+  that an empty-set slab's descriptor reads `Empty` with `live() == 0`.
+  The missing link is the descriptor's `live` counter, which is not
+  modelled. **Unconfirmed** (read from the code and its comments, not
+  checked by a proof): `live` counts set bits plus in-flight
+  reservations, a claimer reserves under the class lock
+  (`ClassState::take`) before it sets bits, and a releaser clears bits
+  before it subtracts without the lock
+  (`ClassState::dec_live`, `class/mod.rs:1867`; `SlabDesc::sub_live`,
+  `slab.rs:255`, `external_body`), so `live == 0` read under the lock
+  means every bit of the slab is clear and every slot token is in its
+  bitmap word's invariant. Proving it needs `live` as a ghost-tracked
+  atomic: a permission for the counter in an atomic invariant whose
+  value counts reservation credits (minted by `take`, spent by the
+  claim's `fetch_or` into the word invariant of each bit it sets) and
+  release credits (taken by `fetch_and` with each cleared bit, spent by
+  `sub_live`), plus a lock-held "frozen" flag for idle slabs. That
+  threads tracked arguments through `take`, `finish`,
+  `AtomicBitmap::claim_word`, `claim_from`, `release`,
+  `ClassState::release_word` and `dec_live`, the allocation and free
+  paths, and changes `bitmap::WordPred`; it is not done here.
+- No lemma places the class half's bytes: `idle_byte` bytes lie in the
+  class region, apart from the huge region and the other classes'
+  slots, but nothing states it, so `Live`-level disjointness is proved
+  for huge purges only.
+- The huge half is stated for the run-page authority, not per batch
+  range: each flush site proves the batch's `free` from the lock value
+  it holds; no lemma states "the bytes of this flush" as a set.
+- Only `purge::Batch` discards are covered. `MADV_GUARD_INSTALL`
+  (`class/table.rs`, `huge/mod.rs`) also drops page contents, of guard
+  pages only (theorem 7), outside any batch.
+- Theorem 6's purge premise is not discharged: `axiom_discarded_zero`
+  and `class::axiom_discarded_slots_zero` still take any range, and a
+  `Purged` state's history (discarded with `MADV_DONTNEED` in the hold
+  that set it, untouched since) stays a premise. Discharging it would
+  need `Batch::flush` to mint `Zeroed` tokens from an eager discard,
+  the class and huge lock values to hold them per `Purged` slab or
+  extent (split and joined as extents are carved and coalesced), and a
+  ghost link from `purge::LAZY_EVER`, a plain `Relaxed` atomic, to the
+  batches that used `MADV_FREE`.
+- `MADV_FREE` and `MADV_DONTNEED` are treated alike: the theorem is
+  about which bytes are discarded, not what they read afterwards.
+
 ## Interface contract
 
 Theorems 1-7 above checked against challoc's exported C ABI (theorems 8
@@ -2959,7 +3104,8 @@ alone):
 | I3 uniqueness (no slot handed out twice) | P    | theorem 5              |
 | I4 guard pages never handed out (slabs)  | P    | th. 7 (section 7)      |
 | I4 guard pages never handed out (huge)   | p    | th. 7 (section 7)      |
-| I5 purge never discards live data        | -    | below                  |
+| I5 purge never discards live data (huge) | P    | th. 19 (section 19)    |
+| I5 purge never discards live data (slab) | p    | th. 19 (section 19)    |
 | I6 no syscall on the cache fast paths    | P    | th. 8 (section 8)      |
 | I7 no cached slot lost at thread exit    | p    | th. 10 (section 10)    |
 
@@ -2978,14 +3124,16 @@ alone):
   `huge/mod.rs:941`): `alloc_run` returns the run's token (gap 1), but
   no lemma states the guard exclusion per result over it, and
   fallback-mode stale `PROT_NONE` guards are not modelled.
-- I5: class purges run only on slabs in the `empty` set, and
-  `walk_empty` (`class/decay.rs:265`) checks at run time that the
-  descriptor says `Empty` with `live() == 0`, aborting otherwise
-  (`not_empty`, `:315`). `page_group_is_idle` (`:207`) is trusted. No
-  invariant ties `live() == 0` to "no slot of the slab is allocated or
-  cached". `purge::Batch`'s "ranges are free" (`purge.rs:218`) is a doc
-  comment; `Batch::wf` states only bounds. Theorem 6's
-  `axiom_discarded_zero` premises lean on the same unproved fact.
+- I5: theorem 19 (lines as in section 19). Every flush discards
+  only bytes its batch's ghost `free` admits (`purge::discard`). Huge
+  purges admit pages of no live run, proved against the run tokens
+  (`RunToken::theorem_purge_apart`, `Live::theorem_purge_huge`). Class
+  purges admit slabs the arena's class lock value records as idle
+  (`class::decay::idle_byte`), plus the run-time `Empty`, `live() == 0`
+  check in `walk_empty`; nothing ties idleness to the slot tokens (the
+  descriptor's `live` counter is not modelled), so that row stays `p`.
+  Theorem 6's `axiom_discarded_zero` premises still lean on that link
+  and on the `Purged` state's history.
 - I6: theorem 8 (lines as in section 8). The cache fast paths of rows
   1, 10, 11 (`free_sized`), 15, 21 (no flags), 23, 24, 26 and 27, and
   row 2's pop, make no system call; everything else they do is behind a
@@ -3058,12 +3206,18 @@ alone):
    value, but with gap 1 `old_size_or_keep` also ensures `old ==
    blk.len()` and `rallocx_zeroed` ensures `k == min(blk.len(), size)`,
    so Z is `P` under the `free` contract (merge of gaps 1 and 6).
-7. **Purge and guards**: tie the empty set and `purge::Batch` ranges to
-   slot and extent tokens (I5, and theorem 6's purge premise). The guard
-   half is done for slabs (`!guard_slab` is in `is_slot`, theorem 7);
-   for huge runs, `Huge::alloc_run`'s result now comes with its run
-   token (gap 1); state `theorem_run_guards` per result over that token
-   (I4, huge row).
+7. **Purge and guards**: the purge half is done for huge runs and
+   stopped at the class lock for slabs (theorem 19):
+   every `purge::Batch` carries a ghost predicate its flushes
+   discard within; huge batches admit only pages outside the run-page
+   authority, so no run token's pages (I5 huge `P`); class batches admit
+   only slabs idle in the class lock's ghost state, and the link from
+   idleness to the slot tokens needs the descriptor's `live` counter as
+   ghost-tracked state (I5 slab `p`). Theorem 6's purge premise is not
+   discharged. The guard half is done for slabs (`!guard_slab` is in
+   `is_slot`, theorem 7); for huge runs, `Huge::alloc_run`'s result now
+   comes with its run token (gap 1); state `theorem_run_guards` per
+   result over that token (I4, huge row).
 8. **Bad input**: done as far as the C contract allows ("Bad input"
    above). Rows 16 and 25 go from `-` to `p` (cache ids of
    `MAX_TCACHES` or more abort; a non-zero non-power-of-two `align_val_t`

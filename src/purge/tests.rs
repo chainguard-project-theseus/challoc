@@ -92,7 +92,7 @@ fn batch_merges_adjacent_ranges() {
     let _serial = serial();
     let page = page_size();
     let base = scratch(8, page);
-    let mut b = Batch::new();
+    let mut b = Batch::new_t();
     b.push(base, page);
     b.push(base + page, page);
     b.push(base + 2 * page, 2 * page);
@@ -113,7 +113,7 @@ fn batch_fills_and_flushes() {
     let (_, eager0) = batches();
     let page = page_size();
     let base = scratch(2 * MAX_BATCH + 4, page);
-    let mut b = Batch::new();
+    let mut b = Batch::new_t();
     assert!(b.is_empty());
     // Every other page, so nothing merges.
     for i in 0..MAX_BATCH {

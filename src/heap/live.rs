@@ -23,6 +23,8 @@ use crate::class::slot_loc;
 use crate::huge::GUARD_PAGES;
 use crate::huge::RunToken;
 #[cfg(verus_only)]
+use crate::huge::free_page_byte;
+#[cfg(verus_only)]
 use crate::layout::{NCLASSES, class_table, disjoint, process_regions};
 #[cfg(verus_only)]
 use vstd::prelude::*;
@@ -461,6 +463,95 @@ impl Live {
             if crate::heap::slot_start(p) {
                 assert(o.slot_of(o.class));
             }
+        }
+    }
+
+    /// Purge never discards live data, for huge purges (whole-allocator
+    /// theorem "Purge never discards live data", `verus/THEOREMS.md`): a
+    /// byte a huge purge may discard, one of a page of the huge region the
+    /// page authority `auth` does not hold ([`free_page_byte`], in the
+    /// process's terms, which are the huge allocator's under `Shared::wf`),
+    /// is no usable byte of any live block, wherever its token is held. A
+    /// run's pages are in the authority ([`RunToken::theorem_purge_apart`]);
+    /// a slot lies in the class superblock, apart from the huge region.
+    pub proof fn theorem_purge_huge(tracked &self, tracked auth: &vstd::resource::set::GhostSetAuth<int>, b: int)
+        requires
+            crate::heap::regions_ok(),
+            self.wf(),
+            auth.id() == crate::huge::page_loc(),
+            free_page_byte(
+                process_regions().huge_base as int,
+                page_size(),
+                (process_regions().huge_len >> process_regions().lg_page) as int,
+                auth@,
+                b,
+            ),
+        ensures
+            !(self.addr() <= b < self.addr() + self.len()),
+    {
+        let r = process_regions();
+        let base = r.huge_base as int;
+        let pg = page_size();
+        let l8 = r.lg_page;
+        let lg = l8 as usize;
+        vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+        vstd::bits::lemma_usize_shl_is_mul(1, lg);
+        vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
+        assert((1usize << l8) == (1usize << lg)) by (bit_vector)
+            requires
+                lg == l8 as usize,
+        ;
+        assert(pg > 0);
+        if self.run is Some {
+            let tracked t = self.run.tracked_borrow();
+            t.lemma_wf();
+            t.theorem_purge_apart(auth, base, pg, (r.huge_len >> r.lg_page) as int, b);
+            let (s, n) = (t.start(), t.npages());
+            assert(s * pg + (n - GUARD_PAGES) * pg <= (s + n) * pg) by (nonlinear_arith)
+                requires
+                    GUARD_PAGES == 1,
+                    pg > 0,
+            ;
+        } else {
+            // The slot lies in its class's stride of the superblock; `b`
+            // in the huge region, which `separated` keeps apart.
+            let c = self.class;
+            let stride = (1usize << r.lg_stride) as int;
+            r.lemma_slot_in_region(c, self.addr);
+            crate::vspec::class::axiom_class_table_wf(c);
+            assert(r.superblock + c * stride <= r.class_base[c]);
+            assert(r.class_base[c] + (1usize << r.lg_region) <= r.superblock + (c + 1) * stride);
+            assert((c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)
+                requires
+                    c < NCLASSES,
+                    stride >= 0,
+            ;
+            assert(0 <= c * stride) by (nonlinear_arith)
+                requires
+                    c >= 0,
+                    stride >= 0,
+            ;
+            // `b` is in one of the region's pages, below its end.
+            let np = (r.huge_len >> r.lg_page) as int;
+            let k = (b - base) / pg;
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(b - base, pg);
+            vstd::arithmetic::div_mod::lemma_mod_bound(b - base, pg);
+            let len = r.huge_len;
+            let l32 = r.lg_page;
+            vstd::bits::lemma_usize_shr_is_div(len, lg);
+            assert(len >> l32 == len >> lg) by (bit_vector)
+                requires
+                    lg == l32 as usize,
+            ;
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(len as int, pg);
+            vstd::arithmetic::div_mod::lemma_mod_bound(len as int, pg);
+            assert(k * pg + pg <= np * pg) by (nonlinear_arith)
+                requires
+                    k + 1 <= np,
+                    pg > 0,
+            ;
+            assert(pg * k == k * pg && pg * np == np * pg) by (nonlinear_arith);
+            assert(b < base + len);
         }
     }
 
