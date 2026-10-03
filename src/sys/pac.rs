@@ -190,6 +190,7 @@ pub fn sign(p: usize, modifier: usize) -> (r: usize)
         pac_available(),
     ensures
         r == spec_sign(p, modifier),
+    opens_invariants none
 {
     #[cfg(target_arch = "aarch64")]
     {
@@ -227,6 +228,7 @@ pub fn auth(p: usize, modifier: usize) -> (r: usize)
         pac_available(),
     ensures
         r == spec_auth(p, modifier),
+    opens_invariants none
 {
     #[cfg(target_arch = "aarch64")]
     {

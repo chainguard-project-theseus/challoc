@@ -125,6 +125,7 @@ impl TlsSlot {
 pub fn get(Tracked(slot): Tracked<&TlsSlot>) -> (r: *mut c_void)
     ensures
         r as usize == slot.value(),
+    opens_invariants none
 {
     let out: *mut c_void;
     // SAFETY: reads the calling thread's own `.tbss` slot through the thread
@@ -164,6 +165,7 @@ pub fn get(Tracked(slot): Tracked<&TlsSlot>) -> (r: *mut c_void)
 pub fn get_tp(Tracked(slot): Tracked<&TlsSlot>) -> (r: (*mut c_void, usize))
     ensures
         r.0 as usize == slot.value(),
+    opens_invariants none
 {
     (get(Tracked(slot)), 0)
 }
@@ -180,6 +182,7 @@ pub fn get_tp(Tracked(slot): Tracked<&TlsSlot>) -> (r: (*mut c_void, usize))
 pub fn get_tp(Tracked(slot): Tracked<&TlsSlot>) -> (r: (*mut c_void, usize))
     ensures
         r.0 as usize == slot.value(),
+    opens_invariants none
 {
     let out: *mut c_void;
     let tp: usize;

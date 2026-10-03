@@ -167,7 +167,9 @@ handler (`lib.rs`) aborts. An abort satisfies every postcondition.
 `api/mod.rs:319` `init_slow`,
 `api/cxx.rs:172` `oom`, `purge/background.rs:379` `main`,
 `sys/mod.rs:533`, `:697`, `:760`, `sys/cgroup.rs:798`. The theorems are
-partial correctness: they say what holds if the call returns.
+partial correctness: they say what holds if the call returns. None of
+these is on the thread-cache fast paths, which terminate and take no
+lock (theorem 9).
 
 ## 1. Region separation
 
@@ -859,6 +861,195 @@ share no page with the guard pages of any live run, its own included.
   watermark, `invalid_free` for a mid-slot address).
 - The kernel's guard semantics (a fault on access) are not modelled: the
   theorem is about where blocks lie, not about what the guard does.
+
+## 9. The fast path never hangs
+
+Read at this section's commit (the `file:line`s are the `fn` line there).
+
+**Statement.** No theorem function: the statement is the invariant mask
+each fast-path function declares, which Verus checks at every call. A
+function may call only functions whose mask is a subset of its own
+(`opens_invariants`). An unannotated exec function has Verus's default
+mask, `any`, and so do most `core` functions vstd specifies, among them
+`Option`'s `?`, `Option::map`, the array-to-slice coercion and the
+`core` atomics. The two lock acquisitions declare `any`:
+
+```rust
+pub fn lock(&self)                                  // RawLock, lock.rs:81
+    opens_invariants any
+
+pub fn lock(&self) -> (g: LockGuard<'_, T>)         // Lock<T>, lock.rs:276
+    ensures lock_inv(g@), lock_frame(lock_init(*self), g@),
+    opens_invariants any
+```
+
+and so, by default, do the other acquiring functions (`try_acquire`,
+`lock_slow`, both `try_lock`s, `lock.rs:63`, `:93`, `:72`, `:293`). The
+fast paths declare `none`, or only the bitmap words' namespace for the
+unsized free (`bitmap::word_ns()`, the one `AtomicInvariant`
+`is_set_unchecked` opens for its bit test):
+
+```rust
+pub(super) fn malloc_fast(size: usize, blk) -> (r: Option<*mut u8>)   // api/libc.rs:315
+    opens_invariants none
+pub fn alloc_fast(&mut self, class: usize, flags: u8, blk) -> ...    // heap/paths.rs:59
+    opens_invariants none
+pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, blk) -> (r: bool)   // heap/paths.rs:573
+    opens_invariants [crate::bitmap::word_ns()]
+pub fn free_fast_class(...) -> (r: Option<usize>)                    // heap/paths.rs:614
+    opens_invariants [crate::bitmap::word_ns()]
+pub fn free_sized_fast(...) -> (r: bool)                             // heap/paths.rs:654
+    opens_invariants none
+pub fn existing_heap(shared: *const Shared) -> ...                   // heap/thread.rs:148
+    opens_invariants none
+pub unsafe fn shared_unchecked() -> (r: &'static Shared)            // api/mod.rs:262
+    opens_invariants none
+```
+
+(Signatures shortened.) `any` is no subset of either mask, so no call
+chain from a masked function reaches a lock acquisition: **no function
+the `malloc` and `free` fast branches call can acquire a lock**. The
+fast branches call nothing else (read off the entry points, below). The
+masks also rule out every other unannotated function, so each function
+the masked ones can reach declares a mask itself; the closure is the
+list below, and Verus checks every call in it.
+
+**Bounded.** Every verified function in the closure has no
+`exec_allows_no_decreases_clause`, so Verus proves it terminates, and
+none contains a loop or a recursive call. The trusted ones contain no
+loop except `cached_recently` (`heap/cache.rs:650`, the
+`double_free_scan` compare): `1..=len` with `len < 4`, at most three
+compares. Each fast path is straight-line code with branches, so it runs
+a bounded number of instructions whatever the heap holds. "Bounded" is
+read off the code; Verus proves termination, not a step count.
+
+**Scope: which paths.** The entry points' fast branches. The entry
+points are not masked: their other branch is a tail call into the slow
+path. Each C entry point mints or claims its block's token (theorem 5's
+`Live`) and calls its `_block` core (`malloc_block`, `free_block`,
+`free_sized_block`, `free_usable_block`), which holds the fast branch;
+the cores are unmasked for the same reason. Their fast branches call
+only the functions named here:
+- `malloc` (`malloc_block`, `api/libc.rs`): `class_index`, `api::shared_ptr`,
+  `existing_heap`, `fast_flags`, `Heap::alloc_fast`. `malloc_fast` is
+  the same branch as one masked function; it is also the C++
+  `operator new` family's fast path. A declined pop tail-calls
+  `malloc_slow_class`.
+- `free` (`free_block`, `api/libc.rs`): `existing_heap`, `shared_unchecked`,
+  `Shared::push_flags`, `free_fast`; then `free_slow`.
+- `free_sized` and `sdallocx` with `flags == 0`: `class_index`, then
+  `free_sized_block`'s `existing_heap`, `shared_unchecked`, `push_flags`,
+  `free_sized_fast`; then `free_sized_slow`.
+- `challoc_free_usable` (`free_usable_block`): its `free_fast_class` call on the same heap
+  lookup. The class size it then returns comes from the unmasked
+  `class_size`, outside the theorem.
+
+**The closure.** These are the functions with a declared mask on these
+paths, verified unless marked trusted:
+- **Size and process state:** `class_index`, `layout::class_of`;
+  `api::shared_ptr` (trusted), `shared_unchecked`, `shared_ref`
+  (trusted).
+- **Heap lookup:** `existing_heap` (on a ghost `TlsSlot::entry()`),
+  `existing_heap_in`, `tls_heap_slot`, `sys::tls::get` and
+  the aarch64 `get_tp` (trusted asm), the x86_64 `get_tp`, `fast_flags`,
+  `heap_from_slot` (trusted).
+- **Pop:** `Heap::alloc_fast`, `pop_fast`, `cache_ptr`, `home_ptr_at`
+  (trusted), `pop_top`, `CacheHeader::slots`.
+- **Push:** `free_fast`, `free_fast_class`, `free_sized_fast`,
+  `Heap::push_fast`, `push_cache_flags`, `push_cache`, `cached_recently`
+  (trusted).
+- **Free checks:** `Shared::push_flags`, `multi_arena`, `checked_slot`,
+  `set_slot`, `sized_slot`, `GuardTest::is_guard`,
+  `Heap::arena_volatile` (trusted); `SlabTable::watermark` (trusted),
+  `is_handed_out`, `is_set_unchecked`, `owner_unchecked` (trusted),
+  `owner_at`, `load_owner` (trusted).
+- **Layout:** `Regions::slab_slot`, `slot_in_class`, `region_len`, the
+  free function `layout::regions::class_entry` (trusted);
+  `Class::slab_size`, `slab_mask`, `slot_of_offset`.
+- **Primitives:** `sys::pac::sign` and `auth` (trusted asm),
+  `vspec::addr::addr_to_ptr` (trusted), and the `vspec` items under
+  "Premises".
+
+**Code changes.** A masked function cannot use what vstd specifies with
+the default mask. So the eight `?`s on these paths are now
+`let Some(..) = .. else { return None }`, and `alloc_fast`'s `map` is a
+`match`. The four array reads (`class_base` twice, `tables`,
+`guard_test`) and the `multi_arena` load in `checked_slot`'s path go
+through the wrappers below; `owner_at`'s load is arena isolation's
+trusted `load_owner` (theorem 14), which declares the mask. The release
+library's machine code is identical to the previous commit's on x86_64.
+
+**Premises beyond the common ones.**
+- **Trusted masks.** Each trusted function's mask is a declaration that
+  Verus takes on trust. Their bodies were read, and none takes a lock or
+  waits:
+  - `shared_ptr`, `shared_ref` and the `Global::get` it calls
+    (`api/mod.rs:153`, `assume_init_ref`).
+  - `tls::get` and `get_tp` (asm), `fast_flags` (a field read),
+    `heap_from_slot` (calls `pac::auth`), `home_ptr_at`.
+  - `cached_recently` (the loop above), `arena_volatile`,
+    `owner_unchecked` (calls `owner_at`), `watermark`, `class_entry`.
+  - `pac::sign` and `auth` (asm; under `cfg(test)` a counter
+    increment), `addr_to_ptr`.
+- **New wrappers.** `vspec::atomic::load_bool`: the `core`
+  atomic load, declared `opens_invariants none`; `load_owner`
+  (`class/table.rs`, a `Relaxed` load) declares the same mask.
+  `vspec::slice::array_get_unchecked` stands for `get_unchecked` on an
+  array.
+- **Masks on existing specifications.**
+  - Added here: `opens_invariants none` on the `vspec` specifications the
+    paths use: `usize::leading_zeros` and `u32::rotate_right`
+    (`vspec/core_int.rs`), and `<*mut T>::add` (`vspec/ptr.rs`).
+  - Already declared: `vspec::word::load` (`vspec/word.rs:96`, the bit
+    test's load), `<*mut T>::is_null` (`vspec/addr.rs:64`), and vstd's
+    `ptr_ref`, `ptr_mut_ref`, `ptr_mut_write` and `wrapping_*`.
+- **Destructors.** Verus requires every `Drop` impl to declare
+  `opens_invariants none`, so the masks cannot exclude a lock taken in a
+  destructor. No value on these paths has a `Drop` type (the only guard
+  type, `LockGuard`, comes only from `Lock::lock`).
+- **Ghost calls.** The live-block steps (`heap::live::axiom_c_claim` at
+  the C entry, `Live::claim_slot` and `put_slot` through `lend_slot` on
+  the free paths, `hand_out` on the pop) are proof functions and run
+  nothing.
+
+**What stays exempt, and why.**
+- **The entry points themselves**, as above. The slow path they
+  tail-call creates heaps, refills and flushes caches, and takes the
+  class, commit, huge and metadata locks. Slow paths are outside the
+  theorem.
+- **`calloc` and `realloc`.** `calloc` reads `api::shared()`, which can
+  run `init_slow` (a wait on another thread's init), and
+  `heap::alloc_zeroed` goes through `heap_for_thread`, which can create
+  the heap. Their pop is `pop_fast`, which is in the closure.
+- **`free_aligned_sized` and `sdallocx` with flags.** Their hint comes
+  from `class_for`, which is unmasked (it uses `?` and has a loop bounded
+  by `NCLASSES`).
+- **Declined fast-path operations.** The scheduled pop (`compact_mask`),
+  the full-cache push, the `zero_on_free` push and a scan hit decline to
+  the slow path, so they are outside the fast path by construction.
+- **The ten `exec_allows_no_decreases_clause` functions** (common
+  premises) are all off these paths: lock waits, `claim_with`'s retry,
+  `release_routed`, `init_slow`, the OOM handler loop, the purge thread,
+  and the kernel retry loops in `sys/`. They need a liveness model.
+
+**Where the statement is weaker than the code.**
+- **Composition.** Verus checks the masked functions, not the entry
+  points. That `malloc`, `free`, `free_sized` and `sdallocx` call only
+  masked functions on their fast branch is read off their bodies.
+  `malloc`'s branch is an inlined copy of `malloc_fast`'s calls, not a
+  call to it.
+- **Step count.** Termination is proved; the step bound is not, because
+  Verus has no cost model. The bound rests on the closure having no loop
+  but `cached_recently`'s.
+- **Other waits.** The masks prove that no lock acquisition is called,
+  not that nothing waits. The fast paths contain no other wait either (no
+  atomic read-modify-write, no spin), but that, too, is read off the
+  code.
+- **What Verus sees.** The theorem covers the code Verus sees, and the
+  build compiles the same code: no `#[cfg(verus_only)]` swap is on these
+  paths.
+- **Weak memory.** A load may return a stale value, but every branch on
+  one still ends, so the bound holds.
 
 ## Shuffle is a permutation
 

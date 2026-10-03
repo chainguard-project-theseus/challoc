@@ -3532,7 +3532,7 @@ impl Heap {
     /// field.
     #[inline(always)]
     #[verifier::external_body]
-    pub(super) fn arena_volatile(&self) -> u16 {
+    pub(super) fn arena_volatile(&self) -> u16 opens_invariants none {
         // SAFETY: `self` is a live heap and `arena` a plain field.
         unsafe { ptr::read_volatile(&raw const self.arena) }
     }

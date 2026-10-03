@@ -211,6 +211,7 @@ verus! {
 unsafe fn shared_ref() -> (r: &'static Shared)
     ensures
         r.wf(),
+    opens_invariants none
 {
     // SAFETY: guaranteed by the caller.
     unsafe { SHARED.get() }
@@ -251,7 +252,7 @@ pub fn shared_if_ready() -> (r: Option<&'static Shared>)
 /// init complete. Trusted: a raw-pointer projection of a static.
 #[verifier::external_body]
 #[inline(always)]
-pub fn shared_ptr() -> *const Shared {
+pub fn shared_ptr() -> *const Shared opens_invariants none {
     (&raw const SHARED.0).cast::<Shared>()
 }
 
@@ -265,6 +266,7 @@ pub fn shared_ptr() -> *const Shared {
 pub unsafe fn shared_unchecked() -> (r: &'static Shared)
     ensures
         r.wf(),
+    opens_invariants none
 {
     // SAFETY: guaranteed by the caller.
     unsafe { shared_ref() }

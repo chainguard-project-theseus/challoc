@@ -3,6 +3,9 @@
 //! `core`, stated from its documentation; together with the
 //! `#[verifier::external_body]` functions they are the trusted base of the
 //! verified code. One file per area; each file holds a `verus!` block.
+//! `atomic` (and `slice::array_get_unchecked`) wrap `core` functions vstd
+//! does cover, to declare the invariant mask its specifications leave at
+//! the default (theorem 9 of `verus/THEOREMS.md`).
 
 // The expansion of `global` in ordinary builds is a braced block.
 #![allow(unused_braces)]
@@ -11,6 +14,7 @@ use vstd::prelude::*;
 
 pub(crate) mod addr;
 pub(crate) mod arena;
+pub(crate) mod atomic;
 pub(crate) mod check;
 pub(crate) mod class;
 mod config;

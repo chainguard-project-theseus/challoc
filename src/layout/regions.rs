@@ -519,6 +519,7 @@ impl Regions {
     pub const fn region_len(&self) -> (r: usize)
         requires self.wf(),
         ensures r == 1usize << self.lg_region,
+        opens_invariants none
     {
         1 << self.lg_region
     }
@@ -637,6 +638,7 @@ impl Regions {
             // Exact with separated regions: every slot start is found, in
             // its class.
             self.separated() ==> forall|c: int| #[trigger] self.is_slot_addr(c, p) ==> (r matches Some((c2, _, _)) && c2 as int == c),
+        opens_invariants none
     {
         proof {
             if self.separated() {
@@ -658,7 +660,7 @@ impl Regions {
         proof {
             assert(cls.wf());
         }
-        let rel = p.wrapping_sub(unsafe { *self.class_base.get_unchecked(c) });
+        let rel = p.wrapping_sub(unsafe { *crate::vspec::slice::array_get_unchecked(&self.class_base, c) });
         if rel >= self.region_len() {
             return None;
         }
@@ -714,6 +716,7 @@ impl Regions {
                 &&& p as int == self.slot_at(class as int, slab as int, slot as int)
                 &&& (slab as int) < self.spec_nslabs(class as int)
             },
+        opens_invariants none
     {
         debug_assert!(class < NCLASSES);
         // SAFETY: the caller's `class` is an index `class_of` produced.
@@ -721,7 +724,7 @@ impl Regions {
         proof {
             assert(cls.wf());
         }
-        let rel = p.wrapping_sub(unsafe { *self.class_base.get_unchecked(class) });
+        let rel = p.wrapping_sub(unsafe { *crate::vspec::slice::array_get_unchecked(&self.class_base, class) });
         if rel >= self.region_len() {
             return None;
         }
@@ -2163,6 +2166,7 @@ unsafe fn class_entry(c: usize) -> (r: &'static super::Class)
         *r == class_table()[c as int],
         r.wf(),
         r.size == super::spec_class_size(c as int),
+    opens_invariants none
 {
     // SAFETY: `c < NCLASSES` (the caller's contract).
     let p = unsafe { CLASSES.as_ptr().add(c) };

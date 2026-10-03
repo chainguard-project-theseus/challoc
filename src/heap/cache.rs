@@ -171,6 +171,7 @@ impl CacheHeader {
         ensures
             r == old(self).slots,
             *final(self) == *old(self),
+        opens_invariants none
     {
         self.slots
     }
@@ -315,6 +316,7 @@ impl Heap {
         ensures
             *final(self) == *old(self),
             r == old(self).home_ptr(class as int),
+        opens_invariants none
     {
         debug_assert!(class < NCLASSES);
         // SAFETY: `class_of` only yields indices below `NCLASSES`.
@@ -333,6 +335,7 @@ impl Heap {
             old(self).owns(r),
             old(self).hdr_class(r) == class,
             forall|n: *mut ArenaCaches, k: int| old(self).in_list(n) && 0 <= k < NCLASSES ==> r != #[trigger] node_hdr(n, k),
+        opens_invariants none
     {
         let r = self.home_ptr_at(class);
         proof {
@@ -439,6 +442,7 @@ impl Heap {
             r.1 && pac == pac_mode() ==> CachePerms::handed_ok(final(perms).handed, r.0, old(perms).cls[cache]),
             pac == pac_mode() ==> process_regions().is_slot(old(perms).cls[cache], r.0@.addr),
             old(perms).tokened() ==> popped(*old(perms), *final(perms), *final(out), cache, pac == pac_mode(), r.0),
+        opens_invariants none
     {
         broadcast use vstd::layout::layout_of_references_and_pointers_for_sized_types;
 
@@ -555,6 +559,7 @@ impl Heap {
             flags & PUSH_ZERO != 0 ==> !r,
             final(self).keeps(*old(self)),
             !r ==> *final(tk) == *old(tk),
+        opens_invariants none
     {
         let cache = self.cache_ptr(class);
         // SAFETY: this thread's own header, unused (`len == cap == 0`, so
@@ -607,6 +612,7 @@ impl Heap {
             !r ==> *final(tk) == *old(tk),
             old(perms).tokened() && old(tk).contains_key(0) ==> final(perms).tokened(),
             final(perms).zero_ok(),
+        opens_invariants none
     {
         proof {
             assert((flags == 0 || flags == 4) ==> flags & 2 == 0) by (bit_vector);
@@ -654,6 +660,7 @@ impl Heap {
                 let q = #[trigger] slot_ptr(slots, i);
                 perms.contains_key(q) && perms[q].ptr() == q && perms[q].is_init()
             },
+        opens_invariants none
     {
         if len == 0 {
             return false;
@@ -717,6 +724,7 @@ impl Heap {
             old(perms).tokened() && old(tk).contains_key(0) ==> final(perms).tokened(),
             !r ==> *final(tk) == *old(tk),
             final(perms).zero_ok(),
+        opens_invariants none
     {
         broadcast use vstd::layout::layout_of_references_and_pointers_for_sized_types;
 

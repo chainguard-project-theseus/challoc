@@ -125,6 +125,7 @@ pub(super) fn class_index(n: usize) -> (r: Option<usize>)
         r matches Some(c) ==> forall|j: int| 0 <= j < c ==> #[trigger] class_table()[j].size < n,
         // The class `class_for(n, 1)` names: what a sized free's hint is.
         r == spec_class_for(n, 1),
+    opens_invariants none
 {
     let r = class_of(n);
     proof {
@@ -326,10 +327,11 @@ pub(super) fn malloc_fast(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: 
     ensures
         r matches Some(p) ==> heap::fits(p, size as int, QUANTUM as int),
         r matches Some(p) ==> final(blk).gives(p, size as int),
+    opens_invariants none
 {
-    let c = class_index(size)?;
+    let Some(c) = class_index(size) else { return None };
     let shared = super::shared_ptr();
-    let h = heap::existing_heap(shared)?;
+    let Some(h) = heap::existing_heap(shared) else { return None };
     // SAFETY: this thread's heap exists, so this thread observed `READY`
     // (the byte was read once inside `existing_heap`; this is the same
     // load, merged by the compiler).

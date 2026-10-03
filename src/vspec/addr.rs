@@ -28,6 +28,7 @@ pub fn addr_to_ptr(addr: usize) -> (p: *mut u8)
         p as usize == addr,
         p == addr_ptr(addr),
         p@.provenance == cast_provenance(),
+    opens_invariants none
 {
     addr as *mut u8
 }

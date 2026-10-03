@@ -199,6 +199,7 @@ fn load_owner(w: &AtomicU16, Ghost(t): Ghost<SlabTable>, Ghost(slab): Ghost<usiz
         *w == owner_word_at(t, slab >> t.lg_group),
     ensures
         r == slab_owner(t.spec_class() as int, slab as int),
+    opens_invariants none
 {
     w.load(Ordering::Relaxed)
 }
@@ -1691,6 +1692,7 @@ impl SlabTable {
     fn watermark(&self, order: Ordering) -> (r: usize)
         ensures
             r <= self.spec_nslabs(),
+        opens_invariants none
     {
         self.committed_slabs.load(order)
     }
@@ -1761,6 +1763,7 @@ impl SlabTable {
     pub fn is_handed_out(&self, slab: usize) -> (r: bool)
         ensures
             r ==> slab < self.spec_nslabs(),
+        opens_invariants none
     {
         slab < self.watermark(Ordering::Relaxed)
     }
@@ -1902,6 +1905,7 @@ impl SlabTable {
         ensures
             // A guard slab's bits are never set (`bitmap::guards_ok`).
             r ==> !self.spec_is_guard(slab) && !crate::layout::guard_slab(self.spec_class() as int, slab as int),
+        opens_invariants [crate::bitmap::word_ns()]
     {
         proof {
             use_type_invariant(self);
@@ -1965,7 +1969,7 @@ impl SlabTable {
     /// [`is_handed_out`]: SlabTable::is_handed_out
     #[verifier::external_body]
     #[inline(always)]
-    pub unsafe fn owner_unchecked(&self, slab: usize) -> u16 {
+    pub unsafe fn owner_unchecked(&self, slab: usize) -> u16 opens_invariants none {
         // SAFETY: the caller's.
         unsafe { self.owner_at(slab) }
     }
@@ -1983,6 +1987,7 @@ impl SlabTable {
             slab < self.spec_nslabs(),
         ensures
             r == slab_owner(self.spec_class() as int, slab as int),
+        opens_invariants none
     {
         proof {
             use_type_invariant(self);

@@ -73,9 +73,14 @@ impl RawLock {
         self.try_acquire()
     }
 
-    /// Acquire, blocking as needed.
+    /// Acquire, blocking as needed. Opens any invariant (stated, though it
+    /// is Verus's default): a function that declares a narrower mask, as
+    /// the `malloc` and `free` fast paths do, cannot call it (theorem 9 of
+    /// `verus/THEOREMS.md`).
     #[inline]
-    pub fn lock(&self) {
+    pub fn lock(&self)
+        opens_invariants any
+    {
         if !self.try_acquire() {
             self.lock_slow();
         }
@@ -314,12 +319,14 @@ impl<T> Lock<T> {
         Lock { raw: RawLock::new(), value: UnsafeCell::new(value), init: Ghost(value) }
     }
 
-    /// Acquire and return a guard that releases on drop.
+    /// Acquire and return a guard that releases on drop. Opens any
+    /// invariant, as [`RawLock::lock`] does.
     #[inline]
     pub fn lock(&self) -> (g: LockGuard<'_, T>)
         ensures
             lock_inv(g@),
             lock_frame(lock_init(*self), g@),
+        opens_invariants any
     {
         self.raw.lock();
         let g = LockGuard { lock: self };

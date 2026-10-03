@@ -180,3 +180,4 @@ src/sys/raw.rs:syscall1#2	inline asm	Islaris/Isla	discharged (verus/seams/sys-ra
 src/sys/raw.rs:syscall3#2	inline asm	Islaris/Isla	discharged (verus/seams/sys-raw-aarch64-syscall3.md)
 src/sys/raw.rs:syscall6#2	inline asm	Islaris/Isla	discharged (verus/seams/sys-raw-aarch64-syscall6.md)
 src/sys/tls.rs:get_tp	inline asm	Islaris/Isla	discharged (verus/seams/sys-tls-get_tp.md)
+array_get_unchecked	core library	Kani

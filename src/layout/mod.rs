@@ -250,6 +250,7 @@ impl Class {
     pub const fn slab_size(&self) -> (r: usize)
         requires self.wf(),
         ensures r == 1usize << self.lg_slab, r >= 0x1000,
+        opens_invariants none
     {
         proof {
             let lg = self.lg_slab;
@@ -375,6 +376,7 @@ impl Class {
         ensures
             r.1 ==> r.0 < self.nslots && r.0 * self.size == offset,
             offset % (self.size as usize) == 0 && offset / (self.size as usize) < self.nslots ==> r.1,
+        opens_invariants none
     {
         debug_assert!(
             offset < self.slab_size(),
@@ -393,6 +395,7 @@ impl Class {
     #[inline]
     pub const fn slab_mask(&self) -> (r: usize)
         ensures r == self.slab_mask,
+        opens_invariants none
     {
         self.slab_mask as usize
     }
@@ -1433,6 +1436,7 @@ pub fn class_of(n: usize) -> (r: Option<usize>)
         r is Some <==> n <= MEDIUM_MAX,
         r matches Some(c) ==> c < NCLASSES && n <= spec_class_size(c as int),
         r matches Some(c) ==> classes_below(c as int, n as int),
+    opens_invariants none
 {
     proof {
         reveal(classes_below);

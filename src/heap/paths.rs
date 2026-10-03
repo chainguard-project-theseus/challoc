@@ -65,9 +65,13 @@ impl Heap {
             final(self).keeps(*old(self)),
             r matches Some(p) ==> ((flags & PUSH_PAC != 0) == pac_mode() ==> process_regions().is_slot(class as int, p@.addr)),
             r matches Some(p) ==> ((flags & PUSH_PAC != 0) == pac_mode() ==> final(blk).slot_block(p, class as int)),
+        opens_invariants none
     {
         let tracked mut out = Map::<int, GhostSingleton<int>>::tracked_empty();
-        let r = self.pop_fast(class, flags, Tracked(&mut out)).map(|r: (*mut u8, bool)| -> (p: *mut u8) ensures p == r.0 { r.0 });
+        let r = match self.pop_fast(class, flags, Tracked(&mut out)) {
+            Some((p, _)) => Some(p),
+            None => None,
+        };
         proof {
             if let Some(p) = r {
                 if (flags & PUSH_PAC != 0) == pac_mode() {
@@ -102,6 +106,7 @@ impl Heap {
             old(self).tokened() ==> final(self).tokened(),
             old(self).tokened() ==> (r matches Some((p, _)) ==> slot_token(*final(out), class as int, (flags & PUSH_PAC != 0) == pac_mode(), p)),
             r matches Some((p, true)) ==> ((flags & PUSH_PAC != 0) == pac_mode() ==> final(self).handed_ok(p, class as int)),
+        opens_invariants none
     {
         broadcast use lemma_handed_ok;
         let cache = self.cache_ptr(class);
@@ -578,6 +583,7 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, Tracked(b
         r ==> free_target(p),
         !r ==> *final(blk) == *old(blk),
         r ==> old(blk).block(p),
+    opens_invariants [crate::bitmap::word_ns()]
 {
     match shared.checked_slot(p, h) {
         Some(class) => {
@@ -619,8 +625,9 @@ pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, Tra
         r is Some ==> free_target(p),
         r is None ==> *final(blk) == *old(blk),
         r matches Some(c) ==> old(blk).slot_block(p, c as int),
+    opens_invariants [crate::bitmap::word_ns()]
 {
-    let class = shared.checked_slot(p, h)?;
+    let Some(class) = shared.checked_slot(p, h) else { return None };
     let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
     let ghost orig = *blk;
     proof {
@@ -659,6 +666,7 @@ pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<u
         r ==> hint_ok(p, hint),
         !r ==> *final(blk) == *old(blk),
         r ==> old(blk).block(p),
+    opens_invariants none
 {
     match shared.sized_slot(p, hint) {
         Some(class) => {

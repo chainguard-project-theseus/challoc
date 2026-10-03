@@ -200,6 +200,7 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(tls): Tra
 pub fn existing_heap(shared: *const Shared) -> (r: Option<&'static mut Heap>)
     ensures
         r matches Some(h) ==> h.wf(),
+    opens_invariants none
 {
     let tracked tls = TlsSlot::entry();
     existing_heap_in(shared, Tracked(&tls))
@@ -213,8 +214,9 @@ pub fn existing_heap_in(shared: *const Shared, Tracked(tls): Tracked<&TlsSlot>) 
     ensures
         r matches Some(h) ==> h.wf(),
         r is None <==> tls.value() <= TLS_EXITED,
+    opens_invariants none
 {
-    let (t, tp) = tls_heap_slot(Tracked(tls))?;
+    let Some((t, tp)) = tls_heap_slot(Tracked(tls)) else { return None };
     // SAFETY: a real slot value proves this thread observed `READY`, so
     // `push_flags` was written before.
     let flags = unsafe { fast_flags(shared) };
@@ -233,6 +235,7 @@ pub fn tls_heap_slot(Tracked(tls): Tracked<&TlsSlot>) -> (r: Option<(usize, usiz
     ensures
         r is None <==> tls.value() <= TLS_EXITED,
         r matches Some((t, _)) ==> t == tls.value() && t > TLS_EXITED,
+    opens_invariants none
 {
     let (t, tp) = crate::sys::tls::get_tp(Tracked(tls));
     let t = t as usize;
@@ -258,6 +261,7 @@ pub unsafe fn fast_flags(shared: *const Shared) -> (r: u8)
     ensures
         (r & PUSH_PAC != 0) == super::pac_mode(),
         (r & PUSH_PAC != 0) ==> crate::sys::pac::pac_available(),
+    opens_invariants none
 {
     // SAFETY: guaranteed by the caller.
     unsafe { ptr::read(&raw const (*shared).push_flags) }
@@ -281,6 +285,7 @@ pub unsafe fn heap_from_slot(t: usize, tp: usize, pac: bool) -> (r: &'static mut
         pac ==> crate::sys::pac::pac_available(),
     ensures
         r.wf(),
+    opens_invariants none
 {
     let h = if pac { pac::auth(t, tp) } else { t };
     // SAFETY: guaranteed by the caller; the hint spares the null test the

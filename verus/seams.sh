@@ -264,7 +264,7 @@ newfile {
     } else if (attrs ~ /verifier::external_body/ && t ~ /(^|[ \t])(struct|enum) /) {
         kind = "external_body type"; name = t; sub(/^.*(struct|enum) /, "", name); sub(/[^A-Za-z0-9_].*$/, "", name)
         name = qual(name)
-    } else if (attrs ~ /verifier::external_body/ && t ~ /(^|[ \t])(const|static) [A-Z_][A-Z0-9_]*[:<]/) {
+    } else if (!isfn && attrs ~ /verifier::external_body/ && t ~ /(^|[ \t])(const|static) [A-Z_][A-Z0-9_]*[:<]/) {
         match(t, /(const|static) [A-Z_][A-Z0-9_]*/); name = substr(t, RSTART, RLENGTH)
         kind = "external_body const"; sub(/^[a-z]+ /, "", name)
         name = qual(name)

@@ -79,6 +79,7 @@ pub assume_specification<T>[ <*mut T>::add ](p: *mut T, count: usize) -> (r: *mu
         count as int * vstd::layout::size_of::<T>() == 0 || in_alloc(p, count as int * vstd::layout::size_of::<T>()),
     ensures
         r == ptr_add(p, count),
+    opens_invariants none
 ;
 
 } // verus!

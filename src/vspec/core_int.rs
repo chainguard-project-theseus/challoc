@@ -16,6 +16,7 @@ pub assume_specification[ usize::trailing_zeros ](x: usize) -> (r: u32)
 
 pub assume_specification[ usize::leading_zeros ](x: usize) -> (r: u32)
     ensures r as int == u64_leading_zeros(x as u64),
+    opens_invariants none
 ;
 
 /// Number of set bits.
@@ -72,6 +73,7 @@ pub open spec fn rotr32(x: u32, n: u32) -> u32 {
 pub assume_specification[ u32::rotate_right ](x: u32, n: u32) -> (r: u32)
     ensures
         r == rotr32(x, n),
+    opens_invariants none
 ;
 
 } // verus!

@@ -166,6 +166,7 @@ impl GuardTest {
     pub(super) fn is_guard(self, slab: usize) -> (r: bool)
         ensures
             r == self.spec_is_guard(slab),
+        opens_invariants none
     {
         (slab as u32).wrapping_add(self.add) & self.mask == 0
     }
@@ -1765,8 +1766,8 @@ impl Shared {
 
     /// Whether more than one arena exists (see the field).
     #[inline(always)]
-    pub fn multi_arena(&self) -> bool {
-        self.multi_arena.load(Ordering::Relaxed)
+    pub fn multi_arena(&self) -> bool opens_invariants none {
+        crate::vspec::atomic::load_bool(&self.multi_arena, Ordering::Relaxed)
     }
 
     /// The flag byte both fast paths load: [`PUSH_SCAN`], [`PUSH_ZERO`]
@@ -1778,6 +1779,7 @@ impl Shared {
             r == self.flags(),
             self.wf() ==> ((r & PUSH_PAC != 0) == super::pac_mode()),
             self.wf() && (r & PUSH_PAC != 0) ==> crate::sys::pac::pac_available(),
+        opens_invariants none
     {
         self.push_flags
     }
@@ -2007,12 +2009,13 @@ impl Shared {
             hint matches Some(c) ==> c < NCLASSES,
         ensures
             r matches Some(c) ==> hint == Some(c) && crate::layout::process_regions().is_slot(c as int, p@.addr),
+        opens_invariants none
     {
-        let class = hint?;
-        let (slab, _slot) = self.regions.slot_in_class(class, p as usize)?;
+        let Some(class) = hint else { return None };
+        let Some((slab, _slot)) = self.regions.slot_in_class(class, p as usize) else { return None };
         // SAFETY: `class_of`/`class_for` only produce `class < NCLASSES`
         // (`slot_in_class` relies on the same).
-        if unsafe { self.guard_test.get_unchecked(class) }.is_guard(slab) {
+        if unsafe { crate::vspec::slice::array_get_unchecked(&self.guard_test, class) }.is_guard(slab) {
             return None;
         }
         proof {
@@ -2063,8 +2066,9 @@ impl Shared {
             self.wf(),
         ensures
             r matches Some(c) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
+        opens_invariants [crate::bitmap::word_ns()]
     {
-        let (class, table, slab) = self.set_slot(p)?;
+        let Some((class, table, slab)) = self.set_slot(p) else { return None };
         if self.multi_arena() {
             // The home arena is read on this branch only. A plain load is
             // hoisted above the flag test (the heap is known valid) and
@@ -2207,10 +2211,11 @@ impl Shared {
             self.wf(),
         ensures
             r matches Some((c, _, _)) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
+        opens_invariants [crate::bitmap::word_ns()]
     {
-        let (class, slab, slot) = self.regions.slab_slot(p as usize)?;
+        let Some((class, slab, slot)) = self.regions.slab_slot(p as usize) else { return None };
         // SAFETY: `slab_slot` only returns `class < NCLASSES`.
-        let table = unsafe { self.tables.get_unchecked(class) };
+        let table = unsafe { crate::vspec::slice::array_get_unchecked(&self.tables, class) };
         if !table.is_handed_out(slab) {
             return None;
         }
