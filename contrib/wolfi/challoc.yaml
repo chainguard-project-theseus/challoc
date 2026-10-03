@@ -65,6 +65,8 @@ options:
 environment:
   contents:
     packages:
+      # build-base brings gcc, whose g++ build.rs uses to compile
+      # src/api/cxx_handler.cpp.
       - build-base
       - busybox
       - ca-certificates-bundle
