@@ -537,7 +537,9 @@ remain for explicit `MALLOCX_ARENA` allocations and `thread.arena`.
 
 `sdallocx(p, n, flags)`, `free_sized(p, n)`, `free_aligned_sized(p, a, n)`
 (the sized path):
-1. If `p` is null return. `c_hint = class_for(n, align)` (huge: slow
+1. On aarch64, if `p` is null return; on x86_64 null has no test of its
+   own: it is below every class region, so its `rel` (below) wraps past
+   the region, and the slow path returns for it. `c_hint = class_for(n, align)` (huge: slow
    path). `sdallocx` with `flags == 0` (what Valkey passes on every free)
    tests that first and takes `free_sized`'s path, `c_hint = class_of(n)`,
    without decoding the flags (alignment shift, tcache bits), as
