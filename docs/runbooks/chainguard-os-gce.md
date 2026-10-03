@@ -147,7 +147,13 @@ Measured by cb runs on 2026-10-03 (`r3-cgos-enable-*`), all through
   `cb launch exp-floor --cells <cgos cell> --container privileged --head
   <rev>` (the privileged profile lets it run `make test`'s cgroup steps in
   child cgroups). Green on cgos72-amd64 (7.2.3), cgos-prod-amd64 and
-  cgos-prod-arm64 (6.18.54) at c31387d.
+  cgos-prod-arm64 (6.18.54) at c31387d; `r3-cgos-enable-floor4` lists
+  the five SKIP lines of a privileged run, all in the `api` step and all
+  container or host facts: `cgroup_policy/bands` twice (no limit there;
+  the `cgroup-limit` step runs it), `cgroup_policy/high` (the container's
+  cgroup has processes, EBUSY), `thp/auto` twice (no mTHP size below the
+  PMD). The `cgroup-limit` step (26 tests) and the six churn and lazy
+  OUTCOME lines show no SKIP.
 - **Metal arm64 (Neoverse N3, part 0xd8e).** GCE refuses
   `--performance-monitoring-unit` on a metal machine type ("Invalid
   performance monitoring unit"), and metal needs it anyway: the full PMU is
