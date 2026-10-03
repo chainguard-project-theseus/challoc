@@ -560,6 +560,36 @@ impl Meta {
         g.reserve(len, align)
     }
 
+    /// [`reserve_table`](Meta::reserve_table) whose uncommitted pages read
+    /// as zero instead of faulting: a table on the reservation side is made
+    /// `PROT_READ` (one `mprotect`, no commit charge and no RSS: a read maps
+    /// the kernel's zero page), an eagerly carved one is writable and zero
+    /// already. For the class bitmaps, so the `free` fast path's bit test
+    /// alone rejects a slab whose bits were never committed (design 4).
+    /// [`commit`](Meta::commit) makes pages writable as for any table.
+    /// `None` on either failure, leaving nothing reserved.
+    pub fn reserve_table_readable(&self, len: usize, align: usize) -> Option<usize> {
+        let mut g = self.inner.lock();
+        if g.eager_ok(len) {
+            if let Some(p) = g.reserve_eager(len, align) {
+                return Some(p);
+            }
+        }
+        let old_top = g.top;
+        let old_reserved = g.stats.reserved;
+        let start = g.reserve(len, align)?;
+        let rounded = align_up(len.max(1), g.page);
+        // SAFETY: `[start, start + rounded)` is a fresh part of our own
+        // `PROT_NONE` reservation (below the old top); granting read
+        // access to memory nothing uses cannot invalidate anything.
+        if unsafe { crate::sys::mprotect(start, rounded, crate::sys::PROT_READ) }.is_err() {
+            g.top = old_top;
+            g.stats.reserved = old_reserved;
+            return None;
+        }
+        Some(start)
+    }
+
     /// Make `[addr, addr + len)`, page aligned and inside a reservation or
     /// an eagerly carved table, readable and writable (accounting only for
     /// the latter). Each page should be committed once; the

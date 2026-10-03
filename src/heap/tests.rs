@@ -1944,6 +1944,54 @@ fn free_into_an_uncommitted_slab_aborts() {
     t.free(s.regions.slab_addr(c, 5) as *mut u8);
 }
 
+/// The `free` fast path reads no watermark: the class bitmap is readable
+/// past its committed pages (`Meta::reserve_table_readable`) and zero
+/// there, so a slot start in a slab never handed out, up to the region's
+/// last slab, reads a clear bit and leaves for the slow path, in every
+/// class.
+#[test]
+fn the_bit_test_alone_rejects_slabs_never_handed_out() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let h = t.heap();
+    for c in 0..NCLASSES {
+        let committed = s.arena0.class(c).committed_slabs();
+        let last = s.regions.nslabs(c) - 1;
+        for slab in [committed, committed + 1, last / 2, last] {
+            let p = s.regions.slab_addr(c, slab) as *mut u8;
+            assert_eq!(s.checked_slot_any(p), None, "class {c} slab {slab}");
+            assert!(!free_fast(s, h, p, s.free_flags()), "class {c} slab {slab}");
+        }
+    }
+    t.destroy();
+}
+
+/// The bit test's clear bit in a slab whose bitmap page was never
+/// committed still aborts by name, from the slow path.
+#[test]
+#[should_panic(expected = "was never allocated")]
+fn free_into_the_last_slab_of_a_region_aborts() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(64);
+    let _ = t.alloc(c);
+    t.free(s.regions.slab_addr(c, s.regions.nslabs(c) - 1) as *mut u8);
+}
+
+/// `free_flags` is `push_flags` until a second arena exists, then
+/// `push_flags | FREE_ROUTE`; `push_flags`, which the sized path and
+/// `malloc` read, never carries the routing bit.
+#[test]
+fn free_flags_gain_the_route_bit_with_a_second_arena() {
+    let s = shared();
+    assert_eq!(s.free_flags(), s.push_flags());
+    assert!(!s.multi_arena());
+    let _ = s.arenas.create(s).unwrap();
+    assert!(s.multi_arena());
+    assert_eq!(s.free_flags(), s.push_flags() | FREE_ROUTE);
+    assert_eq!(s.push_flags() & FREE_ROUTE, 0);
+}
+
 #[test]
 #[should_panic(expected = "invalid or double free")]
 fn stale_double_free_aborts_at_the_check() {
@@ -2272,9 +2320,9 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     // The fast path takes only the home arena's slots; the others go onto
     // the one FOREIGN cache, whatever their arena, never onto the arena's
     // own node.
-    assert!(free_fast(s, h, p0, s.push_flags()));
-    assert!(!free_fast(s, h, p1, s.push_flags()));
-    assert!(!free_fast(s, h, p2, s.push_flags()));
+    assert!(free_fast(s, h, p0, s.free_flags()));
+    assert!(!free_fast(s, h, p1, s.free_flags()));
+    assert!(!free_fast(s, h, p2, s.free_flags()));
     assert_eq!(h.cache(c).unwrap().len(), HALF);
     assert!(h.cache_in(FOREIGN, c).is_none());
     h.free(s, p1);
@@ -2485,8 +2533,8 @@ fn set_arena_swaps_cache_arrays() {
     // onto arena 0's node.
     let q = t.alloc(c);
     assert_eq!(s.classify_free(q), Ok((c, a1)));
-    assert!(free_fast(s, h, p1, s.push_flags()));
-    assert!(!free_fast(s, h, p0, s.push_flags()));
+    assert!(free_fast(s, h, p1, s.free_flags()));
+    assert!(!free_fast(s, h, p0, s.free_flags()));
     h.free(s, p0);
     h.free(s, q);
     assert_eq!(h.cache(c).unwrap().len(), HALF);
@@ -2565,7 +2613,7 @@ fn push_flags_encode_zero_on_free_and_double_free_scan() {
     assert!(s.zero_on_free() && s.double_free_scan());
     assert_eq!(
         core::mem::offset_of!(Shared, push_flags) / 128,
-        core::mem::offset_of!(Shared, multi_arena) / 128
+        core::mem::offset_of!(Shared, free_flags) / 128
     );
 }
 

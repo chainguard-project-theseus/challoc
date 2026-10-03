@@ -57,15 +57,16 @@ use compact::{
 };
 pub use compact::{MODE_OFF, MODE_PROBE};
 pub use others::ArenaCaches;
+#[cfg(test)]
+pub use paths::free_fast;
 pub use paths::{
-    alloc, alloc_declined, alloc_zeroed, free, free_direct, free_fast, free_fast_class,
-    free_sized_fast,
+    alloc, alloc_declined, alloc_zeroed, free, free_direct, free_fast_slot, free_sized_fast,
 };
 pub use shared::Shared;
 #[cfg(test)]
 use shared::{GuardTest, guard_interval_for};
 pub use thread::{TLS_CREATING, TLS_EXITED, fast_flags};
-pub use thread::{existing_heap, heap_destructor, heap_for_thread};
+pub use thread::{existing_heap, heap_destructor, heap_for_thread, tls_heap_slot};
 
 use core::alloc::Layout;
 use core::ptr;
@@ -119,6 +120,10 @@ pub const PUSH_ZERO: u8 = 2;
 /// when the kernel exposes `HWCAP_PACA`/`PACG` and `pac_pointers` is not
 /// `false`; never set on x86_64.
 pub const PUSH_PAC: u8 = 4;
+/// `Shared::free_flags` bit, never in `push_flags`: more than one arena
+/// exists, so plain `free` compares the slot's owner word with the heap's
+/// home arena before pushing.
+pub const FREE_ROUTE: u8 = 8;
 
 /// Per-thread byte counters (`thread.allocated`, `thread.deallocated`).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
