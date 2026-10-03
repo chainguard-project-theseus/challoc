@@ -423,7 +423,15 @@ pub fn collect_arena(shared: &Shared, arena: &Arena) -> ArenaStats {
 /// Read every counter once; store the result per arena and in `Shared`
 /// when `store` is set. Returns the snapshot (with the new epoch number
 /// when stored, the current one otherwise).
+///
+/// The process statistics lock is held across the whole collection, so
+/// one collection is published at a time: concurrent `epoch`s never leave
+/// arenas and totals from different collections, and a reader of the
+/// snapshot never sees the arenas of a collection whose totals are not
+/// stored yet. It nests outside the class, slab table, huge, metadata and
+/// per-arena statistics locks the collection takes (design section 9).
 fn collect_into(shared: &Shared, store: bool) -> Snapshot {
+    let mut g = shared.stats.lock();
     let huge = shared.huge.stats();
     let meta = shared.meta.stats();
     let mut totals = Totals::EMPTY;
@@ -436,7 +444,6 @@ fn collect_into(shared: &Shared, store: bool) -> Snapshot {
             arena.store_stats(&a);
         }
     }
-    let mut g = shared.stats.lock();
     if store {
         g.epoch += 1;
         g.narenas = narenas;
@@ -479,8 +486,10 @@ pub fn arena_stats(shared: &Shared, index: u16) -> Option<ArenaStats> {
 }
 
 /// `stats.arenas.4096.*` (`MALLCTL_ARENAS_ALL`): every existing arena's
-/// stored figures summed. Its `index` is 4096.
+/// stored figures summed, all from one `epoch` (the process statistics
+/// lock keeps one from storing midway). Its `index` is 4096.
 pub fn arena_stats_all(shared: &Shared) -> ArenaStats {
+    let _published = shared.stats.lock();
     let mut all = ArenaStats::empty(crate::arena::ARENAS_ALL as u16);
     for arena in shared.arenas.iter() {
         all.add(&arena.stats());
@@ -816,6 +825,70 @@ mod tests {
         assert_eq!(tot.resident, s0.resident + s1.resident);
         assert!(tot.identities_hold(), "{tot:?}");
         t.destroy();
+    }
+
+    /// Two `epoch`s at once each publish one whole collection: the stored
+    /// arenas sum to the stored totals after every round, whichever writer
+    /// stored last. Arena 0's bins and huge runs move between collections,
+    /// so two collections differ and a mix of them shows.
+    #[test]
+    fn concurrent_epochs_leave_arenas_summing_to_the_totals() {
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let s = shared();
+        // More arenas widen the window between the first arena's store
+        // and the totals' store.
+        for _ in 0..15 {
+            s.arenas.create(s).expect("arena");
+        }
+        let stop = AtomicBool::new(false);
+        // Stops the traffic thread even if a round panics, so a failure
+        // fails the test instead of hanging it.
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        let mut bad = None;
+        std::thread::scope(|sc| {
+            let _stop = Stop(&stop);
+            sc.spawn(|| {
+                let t = TestHeap::new(s);
+                let c = class_with(64);
+                while !stop.load(Ordering::Relaxed) {
+                    let (h, _) = t.alloc_huge(300 * 1024, 16);
+                    let ps: Vec<*mut u8> = (0..64).map(|_| t.alloc(c)).collect();
+                    for p in ps {
+                        t.free(p);
+                    }
+                    t.free(h);
+                    t.flush_all();
+                }
+                t.destroy();
+            });
+            for round in 0..2000 {
+                let go = Barrier::new(2);
+                std::thread::scope(|w| {
+                    for _ in 0..2 {
+                        w.spawn(|| {
+                            go.wait();
+                            epoch(s);
+                        });
+                    }
+                });
+                let snap = snapshot(s);
+                let mut sum = Totals::EMPTY;
+                for a in s.arenas.iter() {
+                    sum.add_arena(&a.stats());
+                }
+                if sum != snap.totals {
+                    bad = Some((round, sum, snap.totals));
+                    break;
+                }
+            }
+        });
+        assert_eq!(bad, None, "(round, arenas summed, stored totals)");
     }
 
     /// `BinStats` and `Totals` helpers.
