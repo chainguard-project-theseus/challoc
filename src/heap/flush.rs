@@ -324,7 +324,9 @@ impl Heap {
             final(self).keeps(*old(self)),
             final(self).hdr(cache).len == old(self).hdr(cache).len - n,
             final(self).same_shape(*old(self)),
+            final(self).tcache_on() == old(self).tcache_on(),
             forall|p: *mut CacheHeader| old(self).owns(p) && p != cache ==> #[trigger] final(self).held(p) == old(self).held(p),
+            forall|p: *mut CacheHeader| old(self).owns(p) && p != cache ==> #[trigger] final(self).hdr(p) == old(self).hdr(p),
             // Theorem 10's accounting: the slots `cache` no longer holds are
             // the ones appended to the released log, and it holds no new one.
             final(self).held(cache).to_set() <= old(self).held(cache).to_set(),

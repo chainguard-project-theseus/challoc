@@ -20,8 +20,6 @@ store_out	raw pointer from C caller	Miri (evidence only)
 root	function pointer	Kani
 old_len	raw pointer from C caller	Miri (evidence only)
 heap_set_arena	allocator invariant	RefinedRust
-heap_set_tcache_enabled	allocator invariant	RefinedRust
-tcaches_flush	allocator invariant	RefinedRust
 mib_cap	raw pointer from C caller	Miri (evidence only)
 shared_ptr	UnsafeCell/volatile/transmute	RefinedRust
 axiom_fork_resumed_state	C-program contract	none (assumption)

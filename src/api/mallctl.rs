@@ -1452,9 +1452,8 @@ impl Utilization {
     };
 }
 
-// Trusted wrappers, each claiming nothing, for three heap calls the keys
-// make: `Heap::set_arena`, `Heap::set_tcache_enabled` and
-// `Tcaches::flush`. Their callees are in `verus!` now; delete each wrapper
+// A trusted wrapper, claiming nothing, for a heap call a key makes:
+// `Heap::set_arena`. Its callee is in `verus!` now; delete the wrapper
 // once its call site is checked against the callee's preconditions.
 
 /// `h.set_arena(shared, arena)`. Nothing is claimed.
@@ -1465,27 +1464,6 @@ fn heap_set_arena(h: &mut Heap, shared: &Shared, arena: u16)
         crate::sys::may_syscall(),
 {
     h.set_arena(shared, arena)
-}
-
-/// `h.set_tcache_enabled(shared, on)`. Nothing is claimed.
-#[verifier::external_body]
-#[inline(always)]
-fn heap_set_tcache_enabled(h: &mut Heap, shared: &Shared, on: bool)
-    requires
-        crate::sys::may_syscall(),
-{
-    h.set_tcache_enabled(shared, on)
-}
-
-/// `shared.tcaches.flush(shared, t)`: whether `t` was a live cache.
-/// Nothing is claimed.
-#[verifier::external_body]
-#[inline(always)]
-fn tcaches_flush(shared: &Shared, t: u16) -> bool
-    requires
-        crate::sys::may_syscall(),
-{
-    shared.tcaches.flush(shared, t)
 }
 
 /// The utilisation figures of `p` (see the module docs). `verbose` adds
@@ -1824,6 +1802,11 @@ fn flush_caller(shared: &Shared)
 {
     if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
         h.flush_all(shared);
+        // Every home and `others`-node cache of the thread's heap is
+        // empty (theorem "cache flush completeness").
+        proof {
+            assert(h.drained());
+        }
     }
 }
 
@@ -1835,6 +1818,7 @@ fn thread_heap<'a>(shared: &'a Shared) -> (r: Result<&'a mut Heap, c_int>)
         shared.wf(),
     ensures
         r matches Err(e) ==> e == EAGAIN,
+        r matches Ok(h) ==> h.wf(),
 {
     heap::heap_for_thread(shared).ok_or(EAGAIN)
 }
@@ -1975,7 +1959,12 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
         ThreadTcacheEnabled => {
             let h = thread_heap(shared)?;
             if let Some(on) = io.write_bool()? {
-                heap_set_tcache_enabled(h, shared, on);
+                h.set_tcache_enabled(shared, on);
+                // Off: every cache of the thread's heap is freed, so empty
+                // (theorem "cache flush completeness").
+                proof {
+                    assert(!on ==> h.cleared() && h.drained());
+                }
             }
             io.read(h.tcache_enabled())
         },
@@ -2007,7 +1996,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 return Err(EFAULT);
             }
             let ok = match op {
-                TcacheFlush => tcaches_flush(shared, t as u16),
+                TcacheFlush => shared.tcaches.flush(shared, t as u16),
                 _ => shared.tcaches.destroy(shared, t as u16),
             };
             if ok {

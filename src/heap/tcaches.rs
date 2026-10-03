@@ -170,15 +170,22 @@ impl Tcaches {
     }
 
     /// `tcache.flush`: return every cached slot of `id` to its slabs.
-    /// `false` if there is no such cache.
-    pub fn flush(&self, shared: &Shared, id: u16) -> bool
+    /// `false` if there is no such cache. Afterwards every home and
+    /// `others`-node cache of the explicit cache's heap is empty
+    /// ([`Heap::flush_all`]; theorem "cache flush completeness").
+    pub fn flush(&self, shared: &Shared, id: u16) -> (r: bool)
         requires
             crate::sys::may_syscall(),
             shared.wf(),
+        ensures
+            id as usize >= MAX_TCACHES ==> !r,
     {
         match self.get(id) {
             Some(h) => {
                 h.flush_all(shared);
+                proof {
+                    assert(h.drained());
+                }
                 true
             }
             None => false,

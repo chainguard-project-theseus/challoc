@@ -813,7 +813,8 @@ impl Heap {
 
     /// The usable cache for `(arena, class)`, giving the header its
     /// capacity and stack on first use. Null if the metadata region is
-    /// exhausted or caches are off (`tcache:false`).
+    /// exhausted or caches are off (`tcache:false`, or
+    /// `thread.tcache.enabled` false).
     pub(super) fn ensure_cache(
         &mut self,
         shared: &Shared,
@@ -829,6 +830,9 @@ impl Heap {
             final(self).keeps(*old(self)),
             r@.addr != 0 ==> final(self).owns(r) && final(self).hdr(r).cap != 0 && final(self).hdr_class(r) == class,
             r@.addr != 0 ==> final(self).routes(arena, class as int, r),
+            // Caches off (`tcache:false`, or `thread.tcache.enabled` false):
+            // no cache, and the heap is left as it was.
+            !shared.config.tcache || !old(self).tcache_on() ==> r@.addr == 0 && *final(self) == *old(self),
     {
         proof {
             shared.lemma_wf();

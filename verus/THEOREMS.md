@@ -1005,10 +1005,9 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   (`heap/shared.rs:255`), `register_fork_handlers` (`api/mod.rs:412`),
   `background::spawn` and `pthread_join` (`purge/background.rs:333`,
   `:229`), `init_fields`, `assign_home`, `Heap::destroy`
-  (`heap/mod.rs:4060`, `:4087`, `:4277`), `Meta::commit`, `Meta::free`
+  (`heap/mod.rs:5158`, `:5185`, `:5382`), `Meta::commit`, `Meta::free`
   (`meta.rs:2745`, `:2796`), mallctl's reader call `call` and
-  `heap_set_arena`, `heap_set_tcache_enabled`, `tcaches_flush`
-  (`api/mallctl.rs:192`, `:1042`, `:1052`, `:1063`), `print::emit`
+  `heap_set_arena` (`api/mallctl.rs:192`, `:1462`), `print::emit`
   (the report's only call-out, theorem 16), the C++ `call_handler`,
   `call_throw_bad_alloc` (`api/cxx.rs:163`, `:119`), the
   `pthread_setspecific` wrapper (which may allocate; `heap/shared.rs`,
@@ -3972,6 +3971,178 @@ for `k <= 256`.
   stores and its snapshot store for a concurrent reader, is false
   (part 2).
 
+## 28. Cache flush completeness
+
+The
+`file:line`s are the `fn` line at this section's commit.
+
+**Statement.** Every flush of a whole heap empties every cache the heap
+holds: after `Heap::flush_all` each header of the home array and of
+every node on the heap's `others` list has `len == 0`, so the mallctl
+flush operations strand no cached slot in a live heap. Turning
+`thread.tcache.enabled` off also frees every one of those caches (no
+stack left), and a cache GC step leaves each cache one of two stated
+lengths (`gc_arena` states the exact one per array).
+
+```rust
+// heap/mod.rs:4198 (theorem 10's contract, unchanged; `tcache_on` added)
+pub fn flush_all(&mut self, shared: &Shared)
+    ensures
+        final(self).keeps(*old(self)),
+        final(self).same_shape(*old(self)),
+        final(self).tcache_on() == old(self).tcache_on(),
+        final(self).drained(),
+        log_adds(final(self).released(), old(self).released(), old(self).held_all()),
+
+// heap/mod.rs:4772
+pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool)
+    ensures
+        final(self).wf(),
+        final(self).tcache_on() == on,
+        on ==> final(self).caches_same(*old(self)),
+        !on ==> final(self).same_shape(*old(self)),
+        !on ==> final(self).cleared(),
+        !on ==> final(self).drained(),
+        !on ==> log_adds(final(self).released(), old(self).released(), old(self).held_all()),
+
+// heap/mod.rs:4410, :4555
+pub fn gc(&mut self, shared: &Shared)
+    ensures
+        final(self).keeps(*old(self)),
+        final(self).same_shape(*old(self)),
+        final(self).gc_all(*old(self)),
+fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches)
+    ensures
+        final(self).keeps(*old(self)),
+        final(self).same_shape(*old(self)),
+        forall|c: int| 0 <= c < NCLASSES ==>
+            final(self).gc_left(*old(self), old(self).array_hdr(node, c), arena == FOREIGN),
+        // every other header: same value, same slots
+        ...
+
+// heap/cache.rs:814
+pub(super) fn ensure_cache(&mut self, shared: &Shared, arena: u16, class: usize) -> (r: *mut CacheHeader)
+    ensures
+        ...,
+        !shared.config.tcache || !old(self).tcache_on() ==> r@.addr == 0 && *final(self) == *old(self),
+```
+
+with (`heap/mod.rs:3155`-`:3264`; abridged)
+
+```rust
+// drained: every home header and every header of a node on the
+// `others` list has len == 0 (theorem 10).
+// cleared: every one of those headers has cap == 0 (no stack).
+pub proof fn lemma_cleared_drained(&self) requires self.wf(), self.cleared() ensures self.drained()
+
+// What a GC step leaves in header p, which held old.hdr(p) before:
+pub closed spec fn gc_left(&self, old: Heap, p: *mut CacheHeader, foreign: bool) -> bool {
+    let lw = old.hdr(p).low_water as int;
+    &&& self.cached_len(p) == if foreign { 0 } else { old.cached_len(p) - (lw - lw / 4) }
+    &&& self.held(p).to_set() <= old.held(p).to_set()
+    &&& self.hdr(p).low_water == self.hdr(p).len
+}
+// gc_all(old): gc_left(old, p, old.home() == FOREIGN) for every home
+// header p, and gc_left(old, p, false) || gc_left(old, p, true) for every
+// header p of a node on old's `others` list.
+```
+
+In words:
+
+- **Flush.** `flush_all` leaves every home header and every header of a
+  node on the `others` list caching nothing, and (theorem 10) appends
+  exactly the slots they held to the released log, each handed with its
+  token to `Shared::release_routed`. Its callers: `thread.tcache.flush`
+  (`ThreadTcacheFlush`, `api/mallctl.rs:1954`, through `flush_caller`,
+  `:1798`, which also serves `arena.<i>.purge` and `arena.<i>.destroy`,
+  `:1895`, `:1924`), `tcache.flush` (`TcacheFlush`, `:1992`, through
+  `Tcaches::flush`, `heap/tcaches.rs:176`), `malloc_trim`
+  (`api/libc.rs:2086`), and `Heap::destroy` (theorem 10). `flush_caller`
+  and `Tcaches::flush` restate `drained()` after the call as a ghost
+  `assert`; `Tcaches::flush` also ensures `false` for an id of
+  `MAX_TCACHES` or more.
+- **Caches off.** `set_tcache_enabled(false)` (`thread.tcache.enabled`
+  written false, `ThreadTcacheEnabled`, `:1959`) runs `flush_all`, then
+  `free_caches_in` (`heap/mod.rs:3616`) over the home array and every
+  node, which now requires the array flushed (so its `assert_flushed`
+  abort is proved unreachable there) and ensures each of the array's
+  headers has no stack and no other header changed. So afterwards every
+  cache is freed (`cleared`), hence empty (`drained`), the released log
+  holds what they held, and `tcache_on()` is false. Writing it true
+  changes no cache (`caches_same`).
+- **Caches never come back while off.** `ensure_cache`, the only place a
+  header gets a stack (`axiom_fresh_stack`, `heap/cache.rs`, by
+  inspection), returns null and leaves the heap unchanged when
+  `tcache:false` (`!shared.config.tcache`) or the heap's caches are off
+  (`!tcache_on()`). So with `tcache:false` no header of any heap ever
+  gets a stack and every cache stays empty; after
+  `thread.tcache.enabled=false`, until it is written true again, the
+  heap's caches stay freed.
+- **GC.** One GC step (`gc`, run from `Heap::tick` every
+  `PERIODIC_EVERY` slow paths once the GC interval has elapsed) leaves,
+  per `gc_arena`, the `FOREIGN` cache empty and every other cache with
+  `len - (lw - lw / 4)` entries, `lw` its low-water mark before the
+  step: of the `lw` entries unused since the last GC it releases `lw -
+  lw / 4` (three quarters, rounded up) and keeps `lw / 4`. What stays is
+  a subset of the slots it held, and the low-water mark restarts at the
+  new length; an unused header (no stack) stays empty. `gc` itself
+  states, per header, one of the two (see the gaps). Each `flush` it
+  makes extends the released log as theorem 10 states per flush.
+
+Machine code is unchanged (x86_64 disassembly identical to the base
+commit; the additions are ghost, and the two trusted mallctl wrappers
+below were `#[inline(always)]` calls).
+
+**Premises beyond the common ones.**
+- Every heap a verified path is handed is `Heap::wf` (common premises:
+  `heap_from_slot`, `heap_at`), and the statements are per reference, as
+  in theorem 20: `flush_caller`, `Tcaches::flush` and the
+  `ThreadTcacheEnabled` arm each state the result for the reference they
+  hold; that the next call's reference is the same heap in the same
+  state is not modelled.
+- The `others` list is `Heap::list` (`list_ok`, `node_next`'s trusted
+  claim), as in theorem 10.
+- That `ensure_cache` is the only writer that gives a header a stack is
+  read from the code (one `axiom_fresh_stack` call); `set_arena` only
+  exchanges headers between the home array and a node
+  (`Heap::swap_hdrs`).
+
+**Scope.** The mallctl keys `thread.tcache.flush`, `tcache.flush`,
+`thread.tcache.enabled`, `arena.<i>.purge`, `arena.<i>.destroy`, and
+`malloc_trim`, on the calling thread's heap or the named explicit
+cache; the configuration option `tcache:false`; the periodic GC. The
+mallctl call sites of `Heap::set_tcache_enabled` and `Tcaches::flush`
+were trusted wrappers claiming nothing (`heap_set_tcache_enabled`,
+`tcaches_flush`, `api/mallctl.rs`); they are gone, so the calls are
+checked against the callees' preconditions (`thread_heap` now ensures
+its heap `wf`), which makes both keys' contracts the callees'.
+
+**Where the statement is weaker than the code.**
+- The emptiness is over the home headers and the headers of the nodes
+  on the `others` list (`drained`); a header the permissions own that is
+  neither is not ruled out (theorem 10's first gap), and the `caches`
+  field, which `destroy`'s `free_caches` reads, is modelled apart from
+  the permissions.
+- "Strands nothing" is the released log of theorem 10, with its gaps:
+  that each token leaving `release_routed`'s bag reaches a bitmap word
+  rests on the verified bodies, not on an `ensures`.
+- `gc_all` gives a node's headers as emptied or trimmed: a node's arena
+  (`node_arena`, trusted) is not modelled, so whether it is the
+  `FOREIGN` node is not known to the proof (`gc_arena` states the exact
+  case for the arena it is given). That a home arena is never `FOREIGN`
+  is not stated either; `gc_all` covers both cases.
+- `gc` and `gc_arena` state lengths and subsets, not the released log:
+  each `flush` they call appends what it released (theorem 10's per
+  flush `log_adds`), but their `ensures` do not compose those entries.
+- "Caches stay off" is per call: no invariant of `Heap::wf` ties
+  `tcache_on()` or `config.tcache` to the headers' capacities; it
+  follows from `ensure_cache`'s contract and the inspection premise
+  above, not from one theorem over a run.
+- `tcache.destroy` frees the explicit cache through `Heap::destroy`
+  (trusted, theorem 10's premise); `thread.tcache.enabled` and
+  `tcache.flush` on another thread's cache concurrently are outside it
+  (the caller's bug, as in jemalloc).
+
 ## Interface contract
 
 The per-call theorems above (1-3, 5-7 and the "Bad input" section)
@@ -4455,7 +4626,17 @@ alone):
     not stated; the batch-query length check (bug #1) is verified inside
     the body. Theorem 21 (MIB round-trip) states that a name and its MIB
     reach the same node with the same indices (on the cores, not the
-    exports).
+    exports). The cache flush keys (theorem "cache flush completeness"):
+    `thread.tcache.flush`, `arena.<i>.purge` and `arena.<i>.destroy`
+    (`flush_caller`) and `tcache.flush` (`Tcaches::flush`) leave every home
+    and `others`-node cache of the heap they flush empty (`drained`), each
+    cached slot appended to the released log with its token (theorem 10);
+    `thread.tcache.enabled` written false leaves them freed (`cleared`),
+    and `tcache:false` or a disabled heap gets no cache (`ensure_cache`).
+    Those call sites are verified against their callees; the trusted
+    wrappers `heap_set_tcache_enabled` and `tcaches_flush` are gone. Per
+    heap reference, as theorem 20; no cell changes (the key's effect is
+    not one of the columns).
 35. `get_defrag_hint` (`api/jemalloc.rs:465`). F: `r == 0 || r == 1`. B:
     "never aborts" for a foreign pointer cannot be stated, because an
     abort satisfies every postcondition. The body is verified.

@@ -639,6 +639,7 @@ impl Heap {
                 }
                 assert(perms.hdrs =~= p1.hdrs.insert(cache, perms.hdrs[cache]));
                 assert(crate::class::claim_zero_ok(claim, claimed, ztok, class as int));
+                assert(class_table()[p1.cls[cache]].size == class_table()[class as int].size);
                 if claim.zeroed {
                     assert forall|k: int| 0 <= k < nn implies #[trigger] ztok.contains_key(k) && ztok[k].covers(claimed[k], class_table()[p1.cls[cache]].size as int) by {}
                 }
