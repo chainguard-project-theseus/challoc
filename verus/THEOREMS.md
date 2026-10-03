@@ -2411,9 +2411,111 @@ extent touching the mark, returning it or `None`. Merges of `Empty` and
   page belongs to a free extent (the converse of `free_marked`), which
   `audit` also checks.
 - It is stated at the lock invariant only. No entry point exports it.
-- The `Lowest-address huge placement` candidate (`find` returns the
-  lowest fit) is not proved; only that fresh pages mean no free extent
-  touches the mark.
+- That `find` returns the lowest fit is the next section's theorem
+  ("Lowest-address huge placement"), built on this one.
+
+## 23. Lowest-address huge placement
+
+Read at this section's commit (the `file:line`s are the `fn`/`spec`
+line there). Numbered at merge.
+
+**Statement** (`huge/mod.rs:4028`, `:3236`, `:970`):
+
+```rust
+spec fn page_free(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, next_page: int, p: int) -> bool {
+    p >= next_page || exists|x: *mut HugeDesc| in_free(descs, x, p)
+}
+
+spec fn fits(&self, g: &Inner, q: int, need: int, align: usize) -> bool {
+    &&& 0 <= q
+    &&& q + need <= self.npages
+    &&& self.aligned_at(q, align)
+    &&& forall|p: int| q <= p < q + need ==> page_free(g.descs@, g.next_page as int, p)
+}
+
+fn find(&self, g: &Inner, need: usize, align: usize) -> (r: Option<(usize, *mut HugeDesc)>)
+    requires
+        g.wf(),
+        1 <= need <= self.npages,
+        align > 0,
+        align & sub(align, 1) == 0,
+        align <= self.npages * pow2(self.lg_page as nat),
+        // ... (page-aligned base, ghost page count and shift)
+    ensures
+        // ... (the extent it comes from, as before)
+        r matches Some((s, _)) ==> self.fits(g, s as int, need as int, align),
+        r matches Some((s, _)) ==> forall|q: int| 0 <= q < s ==> !self.fits(g, q, need as int, align),
+        r is None ==> forall|q: int| !self.fits(g, q, need as int, align),
+```
+
+(Line breaks and triggers dropped.) `in_free(descs, x, p)` (`:962`):
+`x` is a free (`Empty` or `Purged`) descriptor with page `p`.
+`aligned_at(q, align)` (`:3229`): `align` is at most a page, or page
+`q`'s address is a multiple of `align`. `need` counts the guard page.
+
+In every value of the huge lock, the start `find` returns for `need`
+pages at `align` is the lowest page with the run's pages aligned,
+inside the region, and each free: in a free extent or at or past the
+high-water mark. `None` means no page fits at all. "Free" is page by
+page: a fit may span pages of several free extents and the untouched
+suffix; maximal coalescing (`Inner::wf`, "Huge coalescing") is what
+reduces that to the one extent `find` looks at.
+
+**How it is proved.**
+- `align_page` (`:3269`) now also ensures that no page in
+  `[page, r)` is aligned: those pages start in `[a, align_up(a))`,
+  below the first multiple of `align` (`lemma_below_align_up`, `:982`).
+- `find`'s loop holds two more facts at `from`: every free extent
+  starting below `from` ends by it (`ends_by`, `:975`), and no fit
+  starts below `from`. Each round, `lemma_below` (`:3247`) extends "no
+  fit" to below `s`: no page in `[from, a)` is free
+  (`Inner::lemma_none_free`, `:1244`: an extent holding one would start
+  below `from` and so end by it, or start at a free bit `lowest_set_from`
+  would have returned), and none in `[a, s)` is aligned.
+- The pass to the next extent: a fit at `q` in `[s, e_end)` starts in
+  `e` (extents are apart), so by `Inner::lemma_fit_extent` (`:1266`) it
+  ends in `e` or `e` ends at the mark. The page after a free extent
+  that ends below the mark is free only if a free extent starts there
+  (apart again), which `coalesced` forbids. `e` does not touch the mark
+  on this path, and `s` is `e`'s lowest aligned page with
+  `s + need > e_end`, so no `q >= s` fits.
+- At the returns: `s` fits by `e`'s pages (and the pages past the mark
+  when `e` touches it). After the scan, no free bit is left at or past
+  `from`, so `lemma_below` with `a = next_page` covers everything below
+  `align_page(next_page)`, where all pages are fresh. The `None`s are
+  the same bound plus `s + need > npages` for every `q >= s`.
+
+**Findings.** None. The early return when the extent `e` reaches the
+mark (`e_end == next_page`) is correct even when the alignment carries
+`s` past `e_end`: `e` and the untouched suffix are one free stretch, no
+free extent lies past the mark, every earlier extent was ruled out, and
+the pages between extents are not free; so `s` is the lowest aligned
+page of that stretch and nothing lower fits. When `s + need` overruns
+the region it returns `None`, and no higher page fits either. Tests:
+`huge::tests::alignment_past_a_trailing_extent_takes_fresh_pages`
+exercises that return; `placement_is_the_lowest_fit` checks each
+placement (or NULL) over 2,000 random steps (allocations, frees and
+purges) against a brute-force lowest fit over the live runs.
+
+**Premises beyond the common ones.**
+- `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs:35`): the lock
+  protects `Inner::wf`, with `coalesced` and `free_marked`.
+- `TwoLevelBitmap::lowest_set_from` (`bitmap.rs:3285`) is verified: the
+  lowest set bit at or past `from`, or none.
+
+**Where the statement is weaker than the code.**
+- It is `find`'s contract under the lock; no entry point exports it.
+  `alloc_aligned` (`:4633`) returns NULL before `find` when the size
+  overflows or the run or the alignment exceeds the region, and after
+  it when a descriptor, the table or bitmap growth, or the kernel
+  commit fails, so "huge `malloc` returns NULL only when nothing fits"
+  is not claimed.
+- A free bit that starts no free extent aborts in `extent_at`
+  (`:2829`); the converse of `free_marked` is not in `wf`, so the proof
+  does not show that abort unreachable. An abort is not a return, so
+  the statement holds.
+- Scope, not a gap: the order is by address only. `Purged` (zero)
+  and `Empty` (dirty) pages count alike, as `find` treats them.
 
 ## 18. Pressure never lengthens decay
 

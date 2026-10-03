@@ -792,6 +792,120 @@ fn randomised_model_check() {
     assert_eq!(h.stats().purged_pages, st.next_page);
 }
 
+/// The lowest page `find` may return for `n` usable pages at `align`:
+/// aligned, inside the region, and every page (guard included) at or past
+/// the mark or in no live run. `live` holds (start, usable pages).
+fn lowest_fit(
+    env: &Env,
+    live: &[(usize, usize)],
+    mark: usize,
+    n: usize,
+    align: usize,
+) -> Option<usize> {
+    let need = n + GUARD_PAGES;
+    let mut free = vec![true; huge_pages()];
+    for &(q, m) in live {
+        free[q..q + m + GUARD_PAGES].fill(false);
+    }
+    debug_assert!(free[mark..].iter().all(|&f| f));
+    // run[p]: the free pages from `p` on, in a row.
+    let mut run = vec![0usize; huge_pages() + 1];
+    for p in (0..huge_pages()).rev() {
+        run[p] = if free[p] { run[p + 1] + 1 } else { 0 };
+    }
+    (0..huge_pages()).find(|&q| {
+        q + need <= huge_pages()
+            && (env.regions.huge_base + q * page_size()) % align == 0
+            && run[q] >= need
+    })
+}
+
+/// `find` skips no lower fit when a free extent touches the mark and the
+/// alignment carries the start past that extent's end: the run starts
+/// past the mark, and the extent stays free.
+#[test]
+fn alignment_past_a_trailing_extent_takes_fresh_pages() {
+    let env = Env::new();
+    let h = env.huge();
+    let runs: Vec<_> = (0..4).map(|_| env.alloc(&h, page_size(), 1).0).collect();
+    // Runs at 0, 2, 4, 6; free extents [2, 4) and [6, 8), the mark at 8.
+    env.free(&h, runs[1]);
+    env.free(&h, runs[3]);
+    let (p, _) = env.alloc(&h, page_size(), 8 * page_size());
+    assert_eq!(env.page_of(p), 8);
+    let tail = h.lookup(6).unwrap();
+    assert_eq!(
+        (tail.start, tail.pages, tail.state),
+        (6, 2, RunState::Empty)
+    );
+    // Two pages and the guard fit in neither extent, and [6, 8) no
+    // longer touches the mark, so they go to the new mark at 10.
+    let (q, _) = env.alloc(&h, 2 * page_size(), 1);
+    assert_eq!(env.page_of(q), 10);
+    let (r, _) = env.alloc(&h, page_size(), 1);
+    assert_eq!(env.page_of(r), 2);
+    let (s, _) = env.alloc(&h, page_size(), 1);
+    assert_eq!(env.page_of(s), 6);
+    for x in [runs[0], runs[2], p, q, r, s] {
+        env.free(&h, x);
+    }
+}
+
+/// Random allocations, frees and purges, each placement (or NULL)
+/// checked against a brute-force lowest fit over the live runs
+/// (`Huge::find`'s lowest-address theorem, `verus/THEOREMS.md`). Large
+/// requests now and then fill the region, so some find nothing.
+#[test]
+fn placement_is_the_lowest_fit() {
+    let env = Env::new();
+    let h = env.huge();
+    let mut rng = 0x0DDC_0FFE_E0DD_F00Du64;
+    let mut live: Vec<(usize, usize)> = Vec::new();
+    let mut ptrs: Vec<*mut u8> = Vec::new();
+    let mut nulls = 0;
+    for step in 0..2000 {
+        let r = xorshift(&mut rng) % 20;
+        if r < 12 || live.is_empty() {
+            let n = if r == 0 {
+                (xorshift(&mut rng) as usize % (huge_pages() / 4)) + 1
+            } else {
+                (xorshift(&mut rng) as usize % 12) + 1
+            };
+            let align = match xorshift(&mut rng) % 3 {
+                0 => 1,
+                _ => page_size() << (xorshift(&mut rng) % 6),
+            };
+            let want = lowest_fit(&env, &live, h.stats().next_page, n, align);
+            let (p, _) = env.alloc(&h, n * page_size(), align);
+            let got = if p.is_null() {
+                None
+            } else {
+                Some(env.page_of(p))
+            };
+            assert_eq!(got, want, "step {step}: {n} pages at {align}");
+            match got {
+                Some(page) => {
+                    live.push((page, n));
+                    ptrs.push(p);
+                }
+                None => nulls += 1,
+            }
+        } else if r == 19 {
+            h.purge_empty(u64::MAX);
+            h.audit();
+        } else {
+            let i = xorshift(&mut rng) as usize % live.len();
+            live.swap_remove(i);
+            env.free(&h, ptrs.swap_remove(i));
+        }
+    }
+    assert!(nulls > 0, "no request found the region full");
+    for p in ptrs {
+        env.free(&h, p);
+    }
+    assert_eq!(h.stats().runs, 0);
+}
+
 /// A run is keyed by its start page only, a free extent by its first
 /// and last page (`Inner::add_extent`), which is what `free_before` and
 /// `free_after` rely on; `drop_extent` takes the same keys out again and

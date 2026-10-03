@@ -1000,6 +1000,62 @@ spec fn none_starts_at(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, page: int)
         ==> descs[x].value().start != page
 }
 
+/// Page `p` lies in `x`, a free extent of `descs`.
+spec fn in_free(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, x: *mut HugeDesc, p: int) -> bool {
+    &&& descs.contains_key(x)
+    &&& descs[x].value().state != RunState::Active as u8
+    &&& descs[x].value().start <= p < descs[x].value().start + descs[x].value().pages
+}
+
+/// Page `p` can hold part of a new run: it is at or past the mark
+/// `next_page` (never handed out) or a page of a free extent.
+spec fn page_free(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, next_page: int, p: int) -> bool {
+    p >= next_page || exists|x: *mut HugeDesc| #[trigger] in_free(descs, x, p)
+}
+
+/// Every free extent starting below `from` ends at or before it.
+spec fn ends_by(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, from: int) -> bool {
+    forall|x: *mut HugeDesc| #[trigger] descs.contains_key(x) && descs[x].value().state != RunState::Active as u8
+        && descs[x].value().start < from ==> descs[x].value().start + descs[x].value().pages <= from
+}
+
+/// `y` in `[x, up)`, with `up` the multiple of `al` that rounds `x` up, is
+/// no multiple of `al`.
+proof fn lemma_below_align_up(x: int, y: int, up: int, al: int)
+    requires
+        al > 0,
+        x <= y < up,
+        up - x < al,
+        up % al == 0,
+    ensures
+        y % al != 0,
+{
+    if y % al == 0 {
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(y, al);
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(up, al);
+        let k = up / al - y / al;
+        assert(up - y == al * k) by (nonlinear_arith)
+            requires
+                y == al * (y / al),
+                up == al * (up / al),
+                k == up / al - y / al,
+        ;
+        if k <= 0 {
+            assert(al * k <= 0) by (nonlinear_arith)
+                requires
+                    al > 0,
+                    k <= 0,
+            ;
+        } else {
+            assert(al * k >= al) by (nonlinear_arith)
+                requires
+                    al > 0,
+                    k >= 1,
+            ;
+        }
+    }
+}
+
 /// What an extent adds to tally `k`: its count (`k` 0 to 2) or its pages
 /// (3 to 5) when its state is `k % 3`, and its table keys (6).
 spec fn weight(v: HugeDesc, k: int) -> int {
@@ -1221,6 +1277,53 @@ impl Inner {
         ensures
             self.descs@[d1].value().start + self.descs@[d1].value().pages != self.descs@[d2].value().start,
     {
+    }
+
+    /// No page in `[from, lim)` below the mark is free when every free
+    /// extent starting below `from` ends by it and no free page in the
+    /// bitmap lies in `[from, lim)`: an extent holding the page would start
+    /// below `from` and end by it, or start in `[from, lim)` at a free page.
+    proof fn lemma_none_free(&self, from: int, lim: int, q: int)
+        requires
+            self.wf(),
+            ends_by(self.descs@, from),
+            forall|b: nat| #[trigger] self.free.map.view().contains(b) && from <= b ==> lim <= b,
+            0 <= from <= q < lim,
+            q < self.next_page,
+        ensures
+            !page_free(self.descs@, self.next_page as int, q),
+    {
+        if page_free(self.descs@, self.next_page as int, q) {
+            let x = choose|x: *mut HugeDesc| #[trigger] in_free(self.descs@, x, q);
+            let v = self.descs@[x].value();
+            assert(marked(self.free.map.view(), v));
+            lemma_marked(self.free.map.view(), v, v.start as int);
+        }
+    }
+
+    /// A placement of `need` free pages at `q`, below the mark and in the
+    /// free extent `x`, fits in `x` or runs on past the mark from `x`'s
+    /// end: the page after `x` is free and below the mark only if a free
+    /// extent starts there, which coalescing rules out.
+    proof fn lemma_fit_extent(&self, x: *mut HugeDesc, q: int, need: int)
+        requires
+            self.wf(),
+            in_free(self.descs@, x, q),
+            forall|p: int| q <= p < q + need ==> #[trigger] page_free(self.descs@, self.next_page as int, p),
+        ensures
+            q + need <= self.descs@[x].value().start + self.descs@[x].value().pages
+                || self.descs@[x].value().start + self.descs@[x].value().pages == self.next_page,
+    {
+        let v = self.descs@[x].value();
+        let p = v.start + v.pages;
+        assert(desc_ok(v, self.next_page));
+        if p < q + need && p != self.next_page {
+            assert(page_free(self.descs@, self.next_page as int, p));
+            let y = choose|y: *mut HugeDesc| #[trigger] in_free(self.descs@, y, p);
+            let w = self.descs@[y].value();
+            assert(apart(v, w));
+            self.theorem_coalesced(x, y);
+        }
     }
 
     /// Guard pages are never handed out, for huge runs (whole-allocator
@@ -3189,6 +3292,45 @@ impl Huge {
         Some(n? << self.lg_page)
     }
 
+    /// Page `q` starts at a multiple of `align` (every page does when
+    /// `align` is at most a page: the base is a page start).
+    spec fn aligned_at(&self, q: int, align: usize) -> bool {
+        align <= pow2(self.lg_page as nat) || (self.base + q * pow2(self.lg_page as nat)) % (align as int) == 0
+    }
+
+    /// `need` pages at `q` are a placement [`Huge::find`] could return for
+    /// `align` under the huge lock's value `g`: aligned, inside the region,
+    /// and every page free (a free extent's, or at or past the mark).
+    spec fn fits(&self, g: &Inner, q: int, need: int, align: usize) -> bool {
+        &&& 0 <= q
+        &&& q + need <= self.npages
+        &&& self.aligned_at(q, align)
+        &&& forall|p: int| q <= p < q + need ==> #[trigger] page_free(g.descs@, g.next_page as int, p)
+    }
+
+    /// No placement starts below `s` when none starts below `from`, every
+    /// free extent starting below `from` ends by it, no free page lies in
+    /// `[from, a)`, and no page in `[a, s)` is aligned: a placement in
+    /// `[from, a)` would hold a page that is not free.
+    proof fn lemma_below(&self, g: &Inner, from: int, a: int, s: int, need: int, align: usize)
+        requires
+            g.wf(),
+            need >= 1,
+            0 <= from <= a <= g.next_page,
+            ends_by(g.descs@, from),
+            forall|q: int| 0 <= q < from ==> !#[trigger] self.fits(g, q, need, align),
+            forall|b: nat| #[trigger] g.free.map.view().contains(b) && from <= b ==> a <= b,
+            forall|q: int| a <= q < s ==> !#[trigger] self.aligned_at(q, align),
+        ensures
+            forall|q: int| 0 <= q < s ==> !#[trigger] self.fits(g, q, need, align),
+    {
+        assert forall|q: int| 0 <= q < s implies !#[trigger] self.fits(g, q, need, align) by {
+            if from <= q < a {
+                g.lemma_none_free(from, a, q);
+            }
+        }
+    }
+
     /// First page at or after `page` whose address is a multiple of
     /// `align` (a power of two).
     #[inline]
@@ -3202,6 +3344,8 @@ impl Huge {
         ensures
             page <= r <= 2 * self.npages,
             align > pow2(self.lg_page as nat) ==> (self.base + r * pow2(self.lg_page as nat)) % (align as int) == 0,
+            // The first such page: none in `[page, r)` is aligned.
+            forall|q: int| page <= q < r ==> !#[trigger] self.aligned_at(q, align),
     {
         proof {
             use_type_invariant(self);
@@ -3257,6 +3401,13 @@ impl Huge {
                 vstd::arithmetic::div_mod::lemma_fundamental_div_mod(d as int, p);
                 assert((d as int / p) * p == d) by (nonlinear_arith)
                     requires d == p * (d as int / p) + (d as int) % p, (d as int) % p == 0;
+            }
+            // A page in `[page, r)` starts in `[a, aligned)`, below the
+            // first multiple of `align` at or past `a`.
+            assert forall|q: int| page <= q < d as int / p implies !#[trigger] self.aligned_at(q, align) by {
+                assert(page * p <= q * p < (d as int / p) * p) by (nonlinear_arith)
+                    requires page <= q < d as int / p, p > 0;
+                lemma_below_align_up(a as int, self.base + q * p, aligned as int, align as int);
             }
         }
         (aligned - self.base) >> self.lg_page
@@ -3991,6 +4142,14 @@ impl Huge {
     /// start page and the free extent it comes from (`None` for fresh pages
     /// at the high-water mark). The extent may end below `s + need` only if
     /// it touches the mark.
+    ///
+    /// Proved lowest (`verus/THEOREMS.md`, "Lowest-address huge
+    /// placement"): the start fits ([`Huge::fits`]: aligned, inside the
+    /// region, every page free) and no lower page does; `None` only when no
+    /// page fits. Each free extent the scan passes over holds no aligned
+    /// fit and ends below the mark, so with coalescing no fit can start in
+    /// it ([`Inner::lemma_fit_extent`]); the pages between extents are not
+    /// free.
     fn find(&self, g: &Inner, need: usize, align: usize) -> (r: Option<(usize, *mut HugeDesc)>)
         requires
             (self.base as int) % (pow2(self.lg_page as nat) as int) == 0,
@@ -4015,6 +4174,11 @@ impl Huge {
             // Fresh pages only when no free extent touches the mark, so a
             // hole the alignment leaves there touches no free extent.
             r matches Some((s, e)) ==> (e@.addr == 0 ==> none_ends_at(g.descs@, g.next_page as int)),
+            // Lowest-address placement: `s` fits and no lower page does.
+            r matches Some((s, _)) ==> self.fits(g, s as int, need as int, align),
+            r matches Some((s, _)) ==> forall|q: int| 0 <= q < s ==> !#[trigger] self.fits(g, q, need as int, align),
+            // Nothing fits when there is no placement.
+            r is None ==> forall|q: int| !#[trigger] self.fits(g, q, need as int, align),
     {
         let mut from = 0;
         while let Some(a) = g.free.map.lowest_set_from(from)
@@ -4032,9 +4196,16 @@ impl Huge {
                 forall|x: *mut HugeDesc|
                     #[trigger] g.descs@.contains_key(x) && g.descs@[x].value().state != RunState::Active as u8
                         && g.descs@[x].value().start + g.descs@[x].value().pages == g.next_page ==> from <= g.descs@[x].value().start,
+                // The scan has passed whole extents only, and no placement
+                // starts behind it.
+                ends_by(g.descs@, from as int),
+                forall|q: int| 0 <= q < from ==> !#[trigger] self.fits(g, q, need as int, align),
             ensures
                 // Out of free pages at or past `from`.
                 forall|x: nat| #[trigger] g.free.map.view().contains(x) ==> x < from,
+                from <= g.next_page,
+                ends_by(g.descs@, from as int),
+                forall|q: int| 0 <= q < from ==> !#[trigger] self.fits(g, q, need as int, align),
             decreases g.next_page - from,
         {
             let e = g.extent_at(a);
@@ -4044,10 +4215,28 @@ impl Huge {
             // `extent_at` checked `e` is live.
             let e_end = g.desc(e).end();
             let s = self.align_page(a, align);
+            proof {
+                // No placement below `s`: none behind `from`, no free page
+                // in `[from, a)`, and no aligned page in `[a, s)`.
+                self.lemma_below(g, from as int, a as int, s as int, need as int, align);
+            }
             if s + need <= e_end {
+                proof {
+                    assert forall|p: int| s <= p < s + need implies #[trigger] page_free(g.descs@, g.next_page as int, p) by {
+                        assert(in_free(g.descs@, e, p));
+                    }
+                }
                 return Some((s, e));
             }
             if e_end == g.next_page {
+                proof {
+                    // `e` and the untouched suffix after it are free.
+                    assert forall|p: int| s <= p < s + need implies #[trigger] page_free(g.descs@, g.next_page as int, p) by {
+                        if p < g.next_page {
+                            assert(in_free(g.descs@, e, p));
+                        }
+                    }
+                }
                 return if s + need <= self.npages { Some((s, e)) } else { None };
             }
             proof {
@@ -4062,6 +4251,37 @@ impl Huge {
                     lemma_marked(g.free.map.view(), v, v.start as int);
                     if x != e {
                         assert(apart(v, g.descs@[e].value()));
+                    }
+                }
+                // A free extent starting below `e_end` starts below `from`
+                // (so ends by it) or is `e`: one starting in `[from, a)`
+                // would put a free page there.
+                assert forall|x: *mut HugeDesc|
+                    #[trigger] g.descs@.contains_key(x) && g.descs@[x].value().state != RunState::Active as u8
+                        && g.descs@[x].value().start < e_end implies g.descs@[x].value().start + g.descs@[x].value().pages <= e_end by {
+                    let v = g.descs@[x].value();
+                    if v.start >= from {
+                        assert(desc_ok(v, g.next_page));
+                        assert(marked(g.free.map.view(), v));
+                        lemma_marked(g.free.map.view(), v, v.start as int);
+                        if x != e {
+                            assert(apart(v, g.descs@[e].value()));
+                        }
+                    }
+                }
+                // A placement at `q` in `[s, e_end)` starts in `e`, which
+                // ends below the mark, so it must end in `e`; but `s` is
+                // the lowest aligned page there and `s + need` overruns
+                // `e`.
+                assert forall|q: int| 0 <= q < e_end implies !#[trigger] self.fits(g, q, need as int, align) by {
+                    if s <= q && self.fits(g, q, need as int, align) {
+                        assert(page_free(g.descs@, g.next_page as int, q));
+                        let x = choose|x: *mut HugeDesc| #[trigger] in_free(g.descs@, x, q);
+                        assert(in_free(g.descs@, e, q));
+                        if x != e {
+                            assert(apart(g.descs@[x].value(), g.descs@[e].value()));
+                        }
+                        g.lemma_fit_extent(e, q, need as int);
                     }
                 }
             }
@@ -4080,6 +4300,12 @@ impl Huge {
             }
         }
         let s = self.align_page(g.next_page, align);
+        proof {
+            // No placement below `s`: no free page is left at or past
+            // `from`, and none of `[next_page, s)` is aligned. From `s` on
+            // every page is fresh.
+            self.lemma_below(g, from as int, g.next_page as int, s as int, need as int, align);
+        }
         if s + need <= self.npages { Some((s, ptr::null_mut())) } else { None }
     }
 
