@@ -765,6 +765,12 @@ shape (`purge.rs`, `purge/curve.rs`, `class/decay.rs`):
   exactly like jemalloc; Valkey enables the thread through
   `mallctl("background_thread")`.
 - `arena.<i>.purge` and `malloc_trim(0)` purge everything immediately.
+- `arena.<i>.decay` runs the walks of arena `i` that are due (arena 0's
+  include the huge extents) on the periods and keep ratio the driver
+  gives them (`purge::decay_arena`): the huge tier's period (section 7)
+  and the cgroup policy's scaling (section 11).
+  `arena.<MALLCTL_ARENAS_ALL>.decay` runs the driver itself, the owed
+  `high`-rise full purge included.
 
 ### 8.1 Background thread
 
