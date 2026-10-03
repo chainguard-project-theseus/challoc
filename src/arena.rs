@@ -190,8 +190,9 @@ impl Arena {
         *self.stats.lock() = *s;
     }
 
-    /// The statistics lock, for the fork handlers (a leaf: never held
-    /// while another lock is taken).
+    /// The statistics lock, for the fork handlers (a leaf: no lock is
+    /// taken while it is held; `epoch` takes it under the process
+    /// statistics lock).
     pub fn stats_raw_lock(&self) -> &crate::lock::RawLock {
         self.stats.raw()
     }

@@ -18,16 +18,18 @@
 //!
 //! The fork prepare handler takes every allocator lock in nesting order
 //! (design section 9; the list is [`fork_prepare`]'s body): the explicit-cache
-//! table lock, the arena creation lock, every arena's class locks and
-//! slab-set lock, the slab table locks, the huge lock, the metadata lock,
-//! the process and per-arena statistics locks, then the background
-//! thread's state lock. That order matches the allocator's own nesting (the
-//! explicit-cache table lock is held across heap creation and destruction,
-//! which take the arena creation lock, class locks and the metadata lock;
-//! class, slab table and huge code take the metadata lock while holding
-//! their own; nothing takes a class or huge lock while holding metadata;
-//! the statistics locks and the background state lock are leaves, only
-//! ever held alone), so a thread that is mid-operation when another thread
+//! table lock, the arena creation lock, the process statistics lock, every
+//! arena's class locks and slab-set lock, the slab table locks, the huge
+//! lock, the metadata lock, the per-arena statistics locks, then the
+//! background thread's state lock. That order matches the allocator's own
+//! nesting (the explicit-cache table lock is held across heap creation and
+//! destruction, which take the arena creation lock, class locks and the
+//! metadata lock; `epoch` holds the process statistics lock across its
+//! scan, which takes the class, slab table, huge, metadata and per-arena
+//! statistics locks; class, slab table and huge code take the metadata lock while
+//! holding their own; nothing takes a class or huge lock while holding
+//! metadata; the per-arena statistics locks and the background state lock
+//! are leaves), so a thread that is mid-operation when another thread
 //! forks can always finish and release. Parent and child release in
 //! reverse. The child also marks the background thread absent. Other
 //! threads' heaps are left alone in the child, as in every other allocator.
@@ -332,9 +334,11 @@ fn init() {
 ///
 /// The order is the nesting order (design section 9): the explicit-cache
 /// table lock is held across heap creation and destruction, which take the
-/// arena creation lock, class locks and the metadata lock; the statistics
-/// locks are leaves (`stats.rs` takes each with nothing else held) and
-/// the background thread's state lock comes last. The test
+/// arena creation lock, class locks and the metadata lock; the process
+/// statistics lock is held across `epoch`'s scan, which takes the class,
+/// slab table, huge, metadata and per-arena statistics locks
+/// (`stats.rs`); the per-arena statistics locks are leaves and the
+/// background thread's state lock comes last. The test
 /// `fork_handlers_take_and_release_every_lock` derives the list of locks
 /// from the source tree, so a new `Lock` fails it until it is added here.
 extern "C" fn fork_prepare() {
@@ -342,6 +346,7 @@ extern "C" fn fork_prepare() {
     let s = shared();
     s.tcaches.raw_lock().lock();
     s.arenas.raw_lock().lock();
+    s.stats.raw().lock();
     for a in s.arenas.iter() {
         for c in 0..NCLASSES {
             a.classes[c].raw_lock().lock();
@@ -353,7 +358,6 @@ extern "C" fn fork_prepare() {
     }
     s.huge.raw_lock().lock();
     s.meta.raw_lock().lock();
-    s.stats.raw().lock();
     for a in s.arenas.iter() {
         a.stats_raw_lock().lock();
     }
@@ -379,7 +383,6 @@ fn fork_release() {
             a.stats_raw_lock().unlock();
         }
     }
-    s.stats.raw().unlock();
     s.meta.raw_lock().unlock();
     s.huge.raw_lock().unlock();
     for c in (0..NCLASSES).rev() {
@@ -393,6 +396,7 @@ fn fork_release() {
             }
         }
     }
+    s.stats.raw().unlock();
     s.arenas.raw_lock().unlock();
     s.tcaches.raw_lock().unlock();
     sys::set_signal_mask(mask);
