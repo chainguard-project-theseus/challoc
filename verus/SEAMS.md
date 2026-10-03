@@ -2399,7 +2399,7 @@ fn home_ptr_at(&mut self, class: usize) -> (r: *mut CacheHeader)
 
 ### S113. `Heap::cached_recently`
 
-src/heap/cache.rs:657. Kind: external_body. Category: raw pointer (internal).
+src/heap/cache.rs:658. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `double_free_scan`'s compare (design 6.3 step 3): whether `e`, the entry as it would be stored (signed under `pac`), is one of the top four of the `len` entries in `slots`.
@@ -2416,7 +2416,7 @@ pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8, 
 
 ### S114. `group_by_slab`
 
-src/heap/flush.rs:619. Kind: external_body. Category: core library.
+src/heap/flush.rs:697. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > Group a flush's released batch by slab, in place, and return its lowest address.
@@ -2433,7 +2433,7 @@ pub(super) fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8])
 
 ### S115. `addr_mix`
 
-src/heap/flush.rs:1352. Kind: external_body. Category: raw pointer (internal).
+src/heap/flush.rs:1430. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted.
 
 > `rng`'s mix of the heap's address into its seed: the address of `h`, rotated left by 17 bits.
@@ -2444,7 +2444,7 @@ fn addr_mix(h: &Heap) -> u64
 
 ### S116. `seed`
 
-src/heap/flush.rs:1359. Kind: assume_spec. Category: FFI/syscall.
+src/heap/flush.rs:1437. Kind: assume_spec. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `seed` reads `getrandom(2)` (or the clock).
@@ -2469,7 +2469,7 @@ pub axiom fn axiom_c_claim(p: *mut u8) -> (tracked r: Live)
 
 ### S118. `stack_mut`
 
-src/heap/mod.rs:1466. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:1582. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `slots[start..start + len]` as a slice, for the slice operations of the refill, the flush and the run rebuild (claims, selections, sorts, reversals).
@@ -2503,7 +2503,7 @@ unsafe fn stack_mut<'a>(
 
 ### S119. `axiom_fresh_stack`
 
-src/heap/mod.rs:1519. Kind: external_body proof. Category: allocator invariant.
+src/heap/mod.rs:1635. Kind: external_body proof. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > The `cap` entries of the fresh stack `slots` join `perms`, unwritten, as entries `0..cap` of header `hdr` (`CachePerms::owner`).
@@ -2540,7 +2540,7 @@ proof fn axiom_fresh_stack(tracked perms: &mut CachePerms, hdr: *mut CacheHeader
 
 ### S120. `assert_flushed`
 
-src/heap/mod.rs:1599. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:1715. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > `assert_eq!(*len, 0, ..)`, the abort of [`Heap::free_caches`] and [`Heap::free_caches_in`] on a cache that still holds slots: `*len == 0` after it returns.
@@ -2553,7 +2553,7 @@ fn assert_flushed(len: &u32)
 
 ### S121. `assert_refill_empty`
 
-src/heap/mod.rs:1613. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:1729. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap inconsistency: `*len == 0` after it returns, as for `vspec::check`.
@@ -2566,7 +2566,7 @@ fn assert_refill_empty(len: &u32)
 
 ### S122. `Heap::axiom_list_bound`
 
-src/heap/mod.rs:3175. Kind: external_body proof. Category: allocator invariant.
+src/heap/mod.rs:3348. Kind: external_body proof. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > The `others` list of a well-formed heap has fewer than `usize::MAX` nodes.
@@ -2581,7 +2581,7 @@ proof fn axiom_list_bound(&self)
 
 ### S123. `arena_volatile`
 
-src/heap/mod.rs:3535. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/heap/mod.rs:3754. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::checked_slot`]): a plain load is hoisted above the multi-arena flag test and touches the heap's header line on every single-arena `free`.
@@ -2592,7 +2592,7 @@ pub(super) fn arena_volatile(&self) -> u16 opens_invariants none
 
 ### S124. `init_fields`
 
-src/heap/mod.rs:4137. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:4593. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The fields of a fresh heap before its home headers, stored field by field ([`Heap::create_detached`]).
@@ -2606,7 +2606,7 @@ unsafe fn init_fields(h: *mut Heap, shared: &Shared, arena: u16, Tracked(head): 
 
 ### S125. `assign_home`
 
-src/heap/mod.rs:4163. Kind: external_body. Category: allocator invariant.
+src/heap/mod.rs:4619. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > [`Arenas::assign`](crate::arena::Arenas::assign) on the process's arenas.
@@ -2619,7 +2619,7 @@ fn assign_home(shared: &Shared) -> (r: u16)
 
 ### S126. `mark_bound`
 
-src/heap/mod.rs:4178. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:4634. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `(*h).bound = true` for a heap [`Heap::create`] has just made.
@@ -2630,7 +2630,7 @@ unsafe fn mark_bound(h: *mut Heap)
 
 ### S127. `Heap::destroy`
 
-src/heap/mod.rs:4356. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:4812. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > Flush every cache, free them and the heap itself back to the metadata allocator.

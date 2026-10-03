@@ -20,13 +20,13 @@ use super::{CacheHeader, FOREIGN, Heap, Shared, assert_refill_empty, stack_mut};
 #[cfg(verus_only)]
 use super::{
     cell_ok, from_all, gather_all_ents, in_entries, lemma_from_refl, lemma_from_slots,
-    lemma_from_sub, lemma_from_trans, lemma_plain_stored, lemma_stack_fill, move_reversed,
-    pac_mode, plain, scatter_ents, slot_ptr, toks_kept,
+    lemma_from_sub, lemma_from_trans, lemma_log_same, lemma_plain_stored, lemma_stack_fill,
+    log_adds, move_reversed, pac_mode, plain, scatter_ents, slot_ptr, split_ok, tagged, toks_kept,
 };
 #[cfg(verus_only)]
 use crate::class::slot_loc;
 #[cfg(verus_only)]
-use crate::class::{aset, ptr_addrs};
+use crate::class::{aset, distinct, ptr_addrs};
 use vstd::map::Map;
 #[cfg(verus_only)]
 use vstd::modes::tracked_swap;
@@ -315,6 +315,12 @@ impl Heap {
         ensures
             final(self).keeps(*old(self)),
             final(self).hdr(cache).len == old(self).hdr(cache).len - n,
+            final(self).same_shape(*old(self)),
+            forall|p: *mut CacheHeader| old(self).owns(p) && p != cache ==> #[trigger] final(self).held(p) == old(self).held(p),
+            // Theorem 10's accounting: the slots `cache` no longer holds are
+            // the ones appended to the released log, and it holds no new one.
+            final(self).held(cache).to_set() <= old(self).held(cache).to_set(),
+            log_adds(final(self).released(), old(self).released(), old(self).held(cache).to_set() - final(self).held(cache).to_set()),
     {
         // The flush writes the permissions alone; `lemma_keeps_perms`
         // carries the `others` list across, so its conjuncts stay hidden.
@@ -323,6 +329,8 @@ impl Heap {
         if n == 0 {
             proof {
                 Heap::lemma_keeps_refl(*self);
+                lemma_log_same(self.released());
+                assert(self.held(cache).to_set() - self.held(cache).to_set() =~= Set::empty());
             }
             return;
         }
@@ -331,6 +339,11 @@ impl Heap {
         proof {
             assert(cell_ok(cache, old_perms.hdrs[cache], old_perms.slots));
         }
+        // Theorem 10's accounting, out of the block below: the cached
+        // addresses, the kept ones and the released ones.
+        let ghost mut g_old = Seq::<int>::empty();
+        let ghost mut g_kept = Seq::<int>::empty();
+        let ghost mut g_rel = Seq::<int>::empty();
         // SAFETY: `n <= len <= cap` entries exist.
         unsafe {
             let pac = shared.pac();
@@ -462,6 +475,7 @@ impl Heap {
                     assert(old_perms.slots[slot_ptr(slots, k)].is_init());
                     assert(aold[k] == v);
                 }
+                assert(aset(akept, 0, rest_len as int) <= aset(aold, 0, len));
                 assert forall|i: int| 0 <= i < len implies slot_ptr(slots, i) == old_perms.ent(cache, i) by {}
                 scatter_ents(&mut bag, &mut perms.toks, slots, akept, 0, rest_len as int);
             }
@@ -497,6 +511,7 @@ impl Heap {
                         assert(f(a2[m]) != f(a2[i]));
                     }
                 }
+                assert(aset(ptr_addrs(h1), 0, h1.len() as int) <= aset(aold, 0, len) - aset(akept, 0, rest_len as int));
                 crate::class::lemma_perm_addrs(h1, high@);
             }
             let kept_max_plain = if pac && rest_len > 0 { addr_to_ptr(pac::auth(kept_max as usize, slots as usize)) } else { kept_max };
@@ -506,7 +521,16 @@ impl Heap {
             // The `FOREIGN` cache's batch starts wherever its first slab
             // belongs; `release_routed` follows the owner words from there.
             let owner = if arena == FOREIGN { shared.arena_of_slot(class, *high.get_unchecked(0)) } else { arena };
-            shared.release_routed(owner, class, high, Tracked(bag));
+            shared.release_routed(owner, class, high, Tracked(&mut bag));
+            proof {
+                // Theorem 10: every cached slot is kept or released.
+                let hr = ptr_addrs(high@);
+                lemma_flush_split(aold, akept, ptr_addrs(h1), hr);
+                g_old = aold;
+                g_kept = akept;
+                g_rel = hr;
+                perms.released = perms.released + tagged(class as int, hr);
+            }
             let h = ptr_mut_ref(cache, Tracked(perms.hdrs.tracked_borrow_mut(cache)));
             h.len = rest_len as u32;
             h.moved = h.moved.wrapping_sub(n as u64);
@@ -565,11 +589,65 @@ impl Heap {
                     assert(all@[i] == a2[i]);
                 }
                 CachePerms::lemma_tok_update(old_perms, *perms, cache);
+                // The kept entries stand for the kept addresses.
+                assert forall|i: int| 0 <= i < rest_len implies plain(perms.slots[#[trigger] perms.ent(cache, i)].value(), perms.hdr(cache).slots) as int == akept[i] by {
+                    assert(perms.ent(cache, i) == slot_ptr(slots, i));
+                    assert(all@[i] == a2[i]);
+                }
             }
         }
         proof {
             Heap::lemma_keeps_perms(*old(self), *self);
+            Heap::lemma_flush_accounting(*old(self), *self, cache, g_old, g_kept, g_rel);
         }
+    }
+}
+
+/// Theorem 10's split of one flush: the addresses the cache held (`aold`)
+/// are the ones it keeps (`akept`) and the ones released (`hr`), and none
+/// is both. By counting: the kept ones are cached ones, the released
+/// ones are among `h1a`'s (the batch before `group_by_slab` reordered it),
+/// which are cached and not kept, all three are distinct, and the two parts
+/// add up to the whole.
+proof fn lemma_flush_split(aold: Seq<int>, akept: Seq<int>, h1a: Seq<int>, hr: Seq<int>)
+    requires
+        distinct(aold, 0, aold.len() as int),
+        distinct(akept, 0, akept.len() as int),
+        distinct(hr, 0, hr.len() as int),
+        aold.len() == akept.len() + hr.len(),
+        aset(akept, 0, akept.len() as int) <= aset(aold, 0, aold.len() as int),
+        aset(h1a, 0, h1a.len() as int) <= aset(aold, 0, aold.len() as int) - aset(akept, 0, akept.len() as int),
+        aset(hr, 0, hr.len() as int) <= aset(h1a, 0, h1a.len() as int),
+    ensures
+        split_ok(aold, akept, hr),
+{
+    let o = aset(aold, 0, aold.len() as int);
+    let k = aset(akept, 0, akept.len() as int);
+    let r = aset(hr, 0, hr.len() as int);
+    lemma_aset_len(aold, aold.len() as int);
+    lemma_aset_len(akept, akept.len() as int);
+    lemma_aset_len(hr, hr.len() as int);
+    assert(k.disjoint(r));
+    assert(k + r <= o);
+    vstd::set_lib::lemma_set_disjoint_lens(k, r);
+    vstd::set_lib::lemma_subset_equality(k + r, o);
+    reveal(split_ok);
+}
+
+/// `aset(a, 0, i)` of distinct addresses has `i` of them.
+proof fn lemma_aset_len(a: Seq<int>, i: int)
+    requires
+        0 <= i <= a.len(),
+        distinct(a, 0, a.len() as int),
+    ensures
+        aset(a, 0, i).len() == i,
+    decreases i,
+{
+    if i == 0 {
+        crate::class::lemma_aset_empty(a, 0, 0);
+    } else {
+        lemma_aset_len(a, i - 1);
+        crate::class::lemma_aset_step(a, 0, i - 1, a.len() as int);
     }
 }
 

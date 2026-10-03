@@ -733,6 +733,115 @@ pub open spec fn list_grows(new: Seq<*mut ArenaCaches>, old: Seq<*mut ArenaCache
     &&& forall|r: int| 1 <= r <= old.len() ==> new[new.len() - r] == #[trigger] old[old.len() - r]
 }
 
+/// The slots at addresses `a` of class `c`, as `(class, address)` pairs:
+/// what [`CachePerms::released`] records and [`Heap::held`] states.
+pub open spec fn tagged(c: int, a: Seq<int>) -> Seq<(int, int)> {
+    Seq::new(a.len(), |i: int| (c, a[i]))
+}
+
+/// The released log `new` is `old` with entries appended, and the entries
+/// appended are the set `s` (whole-allocator theorem 10).
+pub open spec fn log_adds(new: Seq<(int, int)>, old: Seq<(int, int)>, s: Set<(int, int)>) -> bool {
+    &&& old.len() <= new.len()
+    &&& new.subrange(0, old.len() as int) == old
+    &&& new.subrange(old.len() as int, new.len() as int).to_set() == s
+}
+
+/// An unchanged log has nothing appended.
+proof fn lemma_log_same(a: Seq<(int, int)>)
+    ensures
+        log_adds(a, a, Set::empty()),
+{
+    assert(a.subrange(0, a.len() as int) =~= a);
+    assert(a.subrange(a.len() as int, a.len() as int).to_set() =~= Set::empty());
+}
+
+/// Appending `t` adds its entries.
+proof fn lemma_log_append(a: Seq<(int, int)>, t: Seq<(int, int)>)
+    ensures
+        log_adds(a + t, a, t.to_set()),
+{
+    assert((a + t).subrange(0, a.len() as int) =~= a);
+    assert((a + t).subrange(a.len() as int, (a + t).len() as int) =~= t);
+}
+
+/// Two appends add the union of what each added.
+proof fn lemma_log_trans(a: Seq<(int, int)>, b: Seq<(int, int)>, c: Seq<(int, int)>, s1: Set<(int, int)>, s2: Set<(int, int)>)
+    requires
+        log_adds(b, a, s1),
+        log_adds(c, b, s2),
+    ensures
+        log_adds(c, a, s1 + s2),
+{
+    let x = b.subrange(a.len() as int, b.len() as int);
+    let y = c.subrange(b.len() as int, c.len() as int);
+    assert forall|i: int| 0 <= i < b.len() implies c[i] == b[i] by {
+        assert(c.subrange(0, b.len() as int)[i] == c[i]);
+    }
+    assert(c.subrange(0, a.len() as int) =~= a) by {
+        assert forall|i: int| 0 <= i < a.len() implies c.subrange(0, a.len() as int)[i] == a[i] by {
+            assert(b.subrange(0, a.len() as int)[i] == b[i]);
+        }
+    }
+    assert(c.subrange(a.len() as int, c.len() as int) =~= x + y);
+    vstd::seq_lib::seq_to_set_distributes_over_add(x, y);
+}
+
+/// One flush's split (whole-allocator theorem 10): the addresses a cache
+/// held (`a`) are those it keeps (`k`) and those it released (`r`), and
+/// none is both. Opaque, so the flush's large proof context carries one
+/// fact rather than two set identities.
+#[verifier::opaque]
+spec fn split_ok(a: Seq<int>, k: Seq<int>, r: Seq<int>) -> bool {
+    &&& aset(a, 0, a.len() as int) == aset(k, 0, k.len() as int) + aset(r, 0, r.len() as int)
+    &&& aset(k, 0, k.len() as int).disjoint(aset(r, 0, r.len() as int))
+}
+
+/// A flush's sets of addresses lifted to `(class, address)` pairs: the
+/// slots cached before (`a`) are those kept (`k`) and those released
+/// (`r`), and none is both, so the released pairs are the cached ones the
+/// cache no longer holds.
+proof fn lemma_tagged_split(c: int, a: Seq<int>, k: Seq<int>, r: Seq<int>)
+    requires
+        split_ok(a, k, r),
+    ensures
+        tagged(c, k).to_set() <= tagged(c, a).to_set(),
+        tagged(c, a).to_set() - tagged(c, k).to_set() == tagged(c, r).to_set(),
+{
+    broadcast use crate::class::lemma_aset;
+    reveal(split_ok);
+    assert forall|e: (int, int)| #[trigger] tagged(c, k).to_set().contains(e) implies tagged(c, a).to_set().contains(e) by {
+        let m = choose|m: int| 0 <= m < k.len() && tagged(c, k)[m] == e;
+        assert(aset(k, 0, k.len() as int).contains(k[m]));
+        assert(aset(a, 0, a.len() as int).contains(k[m]));
+        let i = choose|i: int| 0 <= i < a.len() && a[i] == k[m];
+        assert(tagged(c, a)[i] == e);
+    }
+    assert forall|e: (int, int)| #[trigger] tagged(c, r).to_set().contains(e) implies tagged(c, a).to_set().contains(e) && !tagged(c, k).to_set().contains(e) by {
+        let j = choose|j: int| 0 <= j < r.len() && tagged(c, r)[j] == e;
+        assert(aset(r, 0, r.len() as int).contains(r[j]));
+        assert(aset(a, 0, a.len() as int).contains(r[j]));
+        let i = choose|i: int| 0 <= i < a.len() && a[i] == r[j];
+        assert(tagged(c, a)[i] == e);
+        if tagged(c, k).to_set().contains(e) {
+            let m = choose|m: int| 0 <= m < k.len() && tagged(c, k)[m] == e;
+            assert(aset(k, 0, k.len() as int).contains(k[m]));
+        }
+    }
+    assert forall|e: (int, int)| #[trigger] tagged(c, a).to_set().contains(e) && !tagged(c, k).to_set().contains(e) implies tagged(c, r).to_set().contains(e) by {
+        let i = choose|i: int| 0 <= i < a.len() && tagged(c, a)[i] == e;
+        assert(aset(a, 0, a.len() as int).contains(a[i]));
+        if aset(k, 0, k.len() as int).contains(a[i]) {
+            let m = choose|m: int| 0 <= m < k.len() && k[m] == a[i];
+            assert(tagged(c, k)[m] == e);
+        } else {
+            let j = choose|j: int| 0 <= j < r.len() && r[j] == a[i];
+            assert(tagged(c, r)[j] == e);
+        }
+    }
+    assert(tagged(c, a).to_set() - tagged(c, k).to_set() =~= tagged(c, r).to_set());
+}
+
 /// Entry `i` of the stack at `base` (`base.add(i)`).
 spec fn slot_ptr(base: *mut *mut u8, i: int) -> *mut *mut u8 {
     crate::vspec::ptr::ptr_add(base, i as usize)
@@ -769,6 +878,13 @@ pub tracked struct CachePerms {
     /// it alone, so it can be stale: only a pop that reports zero proves it
     /// current ([`Heap::handed_ok`]), and only then is it taken.
     pub tracked handed: Option<Zeroed>,
+    /// The slots this heap's flushes have handed back, in order, as
+    /// `(class, address)` pairs: each went to `Shared::release_routed`
+    /// with its token, which `release_routed` proves it took out of the
+    /// bag it was handed (whole-allocator theorem 10, [`Heap::flush_all`]).
+    /// Only [`Heap::flush`] appends to it (by inspection: no spec keeps it
+    /// fixed elsewhere).
+    pub ghost released: vstd::seq::Seq<(vstd::prelude::int, vstd::prelude::int)>,
 }
 
 /// The stack of header `h` is owned entry by entry: `cap` entries from
@@ -2984,6 +3100,63 @@ impl Heap {
         self.perms@.hdr(p).len as int
     }
 
+    /// What owned header `p` caches, as `(class, address)` pairs: the
+    /// slots of its first `len` entries ([`Heap::cached`]), whose tokens
+    /// the heap holds ([`Heap::tokened`]).
+    pub closed spec fn held(&self, p: *mut CacheHeader) -> Seq<(int, int)> {
+        tagged(self.hdr_class(p), Seq::new(self.cached_len(p) as nat, |i: int| self.cached(p, i) as int))
+    }
+
+    /// The slots this heap's flushes have released so far
+    /// ([`CachePerms::released`]).
+    pub closed spec fn released(&self) -> Seq<(int, int)> {
+        self.perms@.released
+    }
+
+    /// The header for `class` of the cache array `node` names: the home
+    /// header ([`Heap::home_ptr`]) when `node` is null, else the node's.
+    pub closed spec fn array_hdr(&self, node: *mut ArenaCaches, class: int) -> *mut CacheHeader {
+        if node@.addr == 0 { self.home_ptr(class) } else { node_hdr(node, class) }
+    }
+
+    /// The slots the headers for classes below `k` of the array `node`
+    /// hold ([`Heap::held`], [`Heap::array_hdr`]).
+    pub closed spec fn array_held(&self, node: *mut ArenaCaches, k: int) -> Set<(int, int)>
+        decreases k,
+    {
+        if k <= 0 {
+            Set::empty()
+        } else {
+            self.array_held(node, k - 1) + self.held(self.array_hdr(node, k - 1)).to_set()
+        }
+    }
+
+    /// The slots the home array and the first `k` nodes of the `others`
+    /// list hold.
+    pub closed spec fn held_upto(&self, k: int) -> Set<(int, int)>
+        decreases k,
+    {
+        if k <= 0 {
+            self.array_held(ptr::null_mut(), NCLASSES as int)
+        } else {
+            self.held_upto(k - 1) + self.array_held(self.list@[k - 1], NCLASSES as int)
+        }
+    }
+
+    /// Every slot the heap's caches hold (whole-allocator theorem 10): those
+    /// of its home headers and of the headers of every node on its
+    /// `others` list, the cache memory `destroy` frees.
+    pub closed spec fn held_all(&self) -> Set<(int, int)> {
+        self.held_upto(self.list@.len() as int)
+    }
+
+    /// Every header of the home array and of every node on the `others`
+    /// list caches nothing.
+    pub closed spec fn drained(&self) -> bool {
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.cached_len(self.home_ptr(c)) == 0
+        &&& forall|i: int, c: int| 0 <= i < self.list@.len() && 0 <= c < NCLASSES ==> #[trigger] self.cached_len(node_hdr(self.list@[i], c)) == 0
+    }
+
     /// `perms` are this heap's cache permissions, lent to a proof
     /// (`heap.perms.borrow_mut()`).
     pub closed spec fn perms_are(&self, perms: CachePerms) -> bool {
@@ -3333,6 +3506,52 @@ impl Heap {
         }
     }
 
+    /// Theorem 10's accounting for one [`Heap::flush`] of `cache`, from
+    /// what its proof establishes: `a` are the addresses `cache` held, `k`
+    /// those it keeps (its new entries), `r` those it released, and the
+    /// released log gained `r`. The slots `cache` no longer holds are then
+    /// exactly the log's new entries, and no other header's holdings change.
+    proof fn lemma_flush_accounting(old: Heap, new: Heap, cache: *mut CacheHeader, a: Seq<int>, k: Seq<int>, r: Seq<int>)
+        requires
+            old.wf(),
+            old.owns(cache),
+            new.perms@.hdrs == old.perms@.hdrs.insert(cache, new.perms@.hdrs[cache]),
+            new.perms@.cls == old.perms@.cls,
+            new.list == old.list,
+            new.others == old.others,
+            new.home_hdrs == old.home_hdrs,
+            forall|p2: *mut CacheHeader, j: int|
+                old.perms@.hdrs.contains_key(p2) && p2 != cache && 0 <= j < old.perms@.hdr(p2).cap
+                    ==> new.perms@.slots[#[trigger] old.perms@.ent(p2, j)] == old.perms@.slots[old.perms@.ent(p2, j)],
+            a.len() == old.perms@.hdr(cache).len,
+            forall|i: int| 0 <= i < a.len() ==> a[i] == plain(old.perms@.slots[slot_ptr(old.perms@.hdr(cache).slots, i)].value(), old.perms@.hdr(cache).slots) as int,
+            k.len() == new.perms@.hdr(cache).len,
+            forall|i: int| 0 <= i < k.len() ==> k[i] == plain(new.perms@.slots[#[trigger] new.perms@.ent(cache, i)].value(), new.perms@.hdr(cache).slots) as int,
+            split_ok(a, k, r),
+            new.perms@.released == old.perms@.released + tagged(old.perms@.cls[cache], r),
+        ensures
+            new.same_shape(old),
+            forall|p: *mut CacheHeader| old.owns(p) && p != cache ==> #[trigger] new.held(p) == old.held(p),
+            new.held(cache).to_set() <= old.held(cache).to_set(),
+            log_adds(new.released(), old.released(), old.held(cache).to_set() - new.held(cache).to_set()),
+    {
+        let c = old.hdr_class(cache);
+        assert(new.perms@.hdrs.dom() =~= old.perms@.hdrs.dom());
+        assert(old.held(cache) =~= tagged(c, a));
+        assert(new.held(cache) =~= tagged(c, k));
+        lemma_tagged_split(c, a, k, r);
+        lemma_log_append(old.released(), tagged(c, r));
+        assert forall|p: *mut CacheHeader| old.owns(p) && p != cache implies #[trigger] new.held(p) == old.held(p) by {
+            assert(cell_ok(p, old.perms@.hdrs[p], old.perms@.slots));
+            assert(new.perms@.hdr(p) == old.perms@.hdr(p));
+            assert forall|i: int| 0 <= i < old.cached_len(p) implies new.cached(p, i) == old.cached(p, i) by {
+                assert(new.perms@.ent(p, i) == old.perms@.ent(p, i));
+                assert(new.perms@.slots[old.perms@.ent(p, i)] == old.perms@.slots[old.perms@.ent(p, i)]);
+            }
+            assert(new.held(p) =~= old.held(p));
+        }
+    }
+
     /// `self` is `old` with at most its headers' values changed: the same
     /// headers, caching the same classes, the same `others` list and home
     /// headers.
@@ -3646,7 +3865,10 @@ impl Heap {
     }
 
     /// Flush every cache of one array (the home array when `node` is null,
-    /// else the node's, whose arena is `arena`) completely.
+    /// else the node's, whose arena is `arena`) completely: afterwards
+    /// none of its headers caches anything, the released log has gained
+    /// the slots they held, and no other header has changed what it holds
+    /// (whole-allocator theorem 10).
     fn flush_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches)
         requires
             shared.wf(),
@@ -3654,20 +3876,45 @@ impl Heap {
             node@.addr == 0 || old(self).owns_node(node),
         ensures
             final(self).keeps(*old(self)),
+            final(self).same_shape(*old(self)),
+            forall|c: int| 0 <= c < NCLASSES ==> #[trigger] final(self).cached_len(old(self).array_hdr(node, c)) == 0,
+            forall|p: *mut CacheHeader|
+                old(self).owns(p) && (forall|c: int| 0 <= c < NCLASSES ==> p != #[trigger] old(self).array_hdr(node, c))
+                    ==> #[trigger] final(self).held(p) == old(self).held(p),
+            log_adds(final(self).released(), old(self).released(), old(self).array_held(node, NCLASSES as int)),
     {
         proof {
             Heap::lemma_keeps_refl(*self);
+            lemma_log_same(self.released());
+            assert(old(self).array_held(node, 0) =~= Set::empty());
+            old(self).lemma_array_hdr(node);
         }
         for class in 0..NCLASSES
             invariant
                 self.keeps(*old(self)),
+                self.same_shape(*old(self)),
                 node@.addr == 0 || old(self).owns_node(node),
                 shared.wf(),
+                forall|c: int| 0 <= c < NCLASSES ==> old(self).owns(#[trigger] old(self).array_hdr(node, c)) && old(self).hdr_class(old(self).array_hdr(node, c)) == c,
+                forall|c: int| 0 <= c < class ==> #[trigger] self.cached_len(old(self).array_hdr(node, c)) == 0,
+                forall|p: *mut CacheHeader|
+                    old(self).owns(p) && (forall|c: int| 0 <= c < class ==> p != #[trigger] old(self).array_hdr(node, c))
+                        ==> #[trigger] self.held(p) == old(self).held(p),
+                log_adds(self.released(), old(self).released(), old(self).array_held(node, class as int)),
         {
             proof {
                 if node@.addr != 0 {
                     Heap::lemma_keeps_node(*old(self), *self, node);
                 }
+            }
+            let ghost h0 = *self;
+            let ghost hc = old(self).array_hdr(node, class as int);
+            proof {
+                // The headers before this one cache other classes.
+                assert forall|c: int| 0 <= c < class implies hc != #[trigger] old(self).array_hdr(node, c) by {
+                    assert(old(self).hdr_class(old(self).array_hdr(node, c)) == c);
+                }
+                assert(h0.held(hc) == old(self).held(hc));
             }
             // SAFETY: `node` is null or a live node owned by this heap; an
             // unused header has `len == 0` and is skipped.
@@ -3676,19 +3923,78 @@ impl Heap {
                 let len = self.hdr_ref(cache).len as usize;
                 if len != 0 {
                     self.flush(shared, arena, cache, class, len);
+                    proof {
+                        assert(self.held(hc).len() == self.cached_len(hc));
+                        assert(self.held(hc).to_set() =~= Set::empty());
+                        assert(h0.held(hc).to_set() - self.held(hc).to_set() =~= old(self).held(hc).to_set());
+                        lemma_log_trans(old(self).released(), h0.released(), self.released(), old(self).array_held(node, class as int), old(self).held(hc).to_set());
+                    }
+                } else {
+                    proof {
+                        assert(old(self).held(hc).len() == old(self).cached_len(hc));
+                        assert(old(self).held(hc).to_set() =~= Set::empty());
+                        assert(old(self).array_held(node, class as int) + old(self).held(hc).to_set() =~= old(self).array_held(node, class as int));
+                    }
                 }
+            }
+            proof {
+                assert(old(self).array_held(node, class + 1) == old(self).array_held(node, class as int) + old(self).held(hc).to_set());
+                assert forall|p: *mut CacheHeader|
+                    old(self).owns(p) && (forall|c: int| 0 <= c < class + 1 ==> p != #[trigger] old(self).array_hdr(node, c))
+                        implies #[trigger] self.held(p) == old(self).held(p) by {
+                    assert(p != old(self).array_hdr(node, class as int));
+                    assert(h0.held(p) == old(self).held(p));
+                }
+                assert forall|c: int| 0 <= c < class + 1 implies #[trigger] self.cached_len(old(self).array_hdr(node, c)) == 0 by {
+                    if c < class {
+                        let p = old(self).array_hdr(node, c);
+                        assert(p != hc);
+                        assert(h0.held(p) == self.held(p));
+                        assert(self.held(p).len() == self.cached_len(p));
+                        assert(h0.held(p).len() == h0.cached_len(p));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The headers of the array `node` names ([`Heap::array_hdr`]) are
+    /// owned, the one for class `c` caching `c`.
+    proof fn lemma_array_hdr(&self, node: *mut ArenaCaches)
+        requires
+            self.wf(),
+            node@.addr == 0 || self.owns_node(node),
+        ensures
+            forall|c: int| 0 <= c < NCLASSES ==> self.owns(#[trigger] self.array_hdr(node, c)) && self.hdr_class(self.array_hdr(node, c)) == c,
+    {
+        assert forall|c: int| 0 <= c < NCLASSES implies self.owns(#[trigger] self.array_hdr(node, c)) && self.hdr_class(self.array_hdr(node, c)) == c by {
+            if node@.addr == 0 {
+                assert(self.owns(self.home_hdrs@[c]) && self.hdr_class(self.home_hdrs@[c]) == c);
+            } else {
+                assert(self.owns(node_hdr(node, c)) && self.hdr_class(node_hdr(node, c)) == c);
             }
         }
     }
 
     /// Return every cached slot of this heap to its slab. Caches stay
     /// allocated.
+    ///
+    /// Whole-allocator theorem 10 (no leak on thread exit, as `destroy`
+    /// runs this first): afterwards no header of the home array or of a
+    /// node on the `others` list caches anything ([`Heap::drained`]), and
+    /// the released log ([`Heap::released`]) has gained exactly the slots
+    /// they held ([`Heap::held_all`]), each handed with its token to
+    /// `Shared::release_routed`, which proves it used up their tokens (that
+    /// they reach their bitmap words is read from the verified bodies).
     pub fn flush_all(&mut self, shared: &Shared)
         requires
             shared.wf(),
             old(self).wf(),
         ensures
             final(self).keeps(*old(self)),
+            final(self).same_shape(*old(self)),
+            final(self).drained(),
+            log_adds(final(self).released(), old(self).released(), old(self).held_all()),
     {
         let home = self.arena;
         self.flush_arena(shared, home, ptr::null_mut());
@@ -3697,21 +4003,63 @@ impl Heap {
         // its turn. `r` counts the nodes left, this one included.
         let mut o = self.others;
         let ghost mut r = self.list_len();
+        let ghost l = old(self).list@;
         proof {
             self.lemma_list(r);
+            assert(old(self).held_upto(0) == old(self).array_held(ptr::null_mut(), NCLASSES as int));
+            assert forall|p: *mut CacheHeader|
+                old(self).owns(p) && (forall|c: int| 0 <= c < NCLASSES ==> p != #[trigger] old(self).home_ptr(c))
+                    && (forall|i: int, c: int| 0 <= i < l.len() - r && 0 <= c < NCLASSES ==> p != #[trigger] node_hdr(l[i], c))
+                    implies #[trigger] self.held(p) == old(self).held(p) by {
+                assert forall|c: int| 0 <= c < NCLASSES implies p != #[trigger] old(self).array_hdr(ptr::null_mut(), c) by {
+                    assert(p != old(self).home_ptr(c));
+                }
+            }
+            assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] self.cached_len(old(self).home_ptr(c)) == 0 by {
+                assert(self.cached_len(old(self).array_hdr(ptr::null_mut(), c)) == 0);
+            }
         }
         while !o.is_null()
             invariant
                 shared.wf(),
                 self.keeps(*old(self)),
+                self.same_shape(*old(self)),
+                l == old(self).list@,
+                old(self).wf(),
                 0 <= r <= self.list_len(),
                 r > 0 ==> o == self.node_from_end(r),
                 r == 0 ==> o@.addr == 0,
+                forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.cached_len(old(self).home_ptr(c)) == 0,
+                forall|i: int, c: int| 0 <= i < l.len() - r && 0 <= c < NCLASSES ==> #[trigger] self.cached_len(node_hdr(l[i], c)) == 0,
+                forall|p: *mut CacheHeader|
+                    old(self).owns(p) && (forall|c: int| 0 <= c < NCLASSES ==> p != #[trigger] old(self).home_ptr(c))
+                        && (forall|i: int, c: int| 0 <= i < l.len() - r && 0 <= c < NCLASSES ==> p != #[trigger] node_hdr(l[i], c))
+                        ==> #[trigger] self.held(p) == old(self).held(p),
+                log_adds(self.released(), old(self).released(), old(self).held_upto(l.len() - r)),
             decreases r,
         {
             let ghost h0 = *self;
+            let ghost d = l.len() - r;
             proof {
                 self.lemma_list(r);
+                old(self).lemma_list(r);
+                assert(old(self).node_from_end(r) == l[d]);
+                assert(o == l[d]);
+                // `o`'s headers are neither home headers nor those of a node
+                // already flushed, so they still hold what they held.
+                old(self).lemma_array_hdr(o);
+                assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] h0.held(h0.array_hdr(o, c)) == old(self).held(old(self).array_hdr(o, c)) by {
+                    let p = node_hdr(o, c);
+                    assert(old(self).array_hdr(o, c) == p);
+                    assert(h0.array_hdr(o, c) == p);
+                    assert forall|k: int| 0 <= k < NCLASSES implies p != #[trigger] old(self).home_ptr(k) by {
+                        old(self).lemma_home_apart(k, d, c);
+                    }
+                    assert forall|i: int, k: int| 0 <= i < l.len() - r && 0 <= k < NCLASSES implies p != #[trigger] node_hdr(l[i], k) by {
+                        old(self).lemma_nodes_apart(d, i, c, k);
+                    }
+                }
+                Heap::lemma_array_held_same(h0, *old(self), o, NCLASSES as int);
             }
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
@@ -3723,9 +4071,116 @@ impl Heap {
                 if r > 1 {
                     Heap::lemma_keeps_list(h0, *self, r - 1);
                 }
+                lemma_log_trans(old(self).released(), h0.released(), self.released(), old(self).held_upto(d), old(self).array_held(o, NCLASSES as int));
+                assert(old(self).held_upto(d + 1) == old(self).held_upto(d) + old(self).array_held(l[d], NCLASSES as int));
+                // Nothing outside `o` changed.
+                assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] self.cached_len(old(self).home_ptr(c)) == 0 by {
+                    let p = old(self).home_ptr(c);
+                    assert forall|k: int| 0 <= k < NCLASSES implies p != #[trigger] h0.array_hdr(o, k) by {
+                        old(self).lemma_home_apart(c, d, k);
+                    }
+                    assert(self.held(p) == h0.held(p));
+                    assert(self.held(p).len() == self.cached_len(p));
+                    assert(h0.held(p).len() == h0.cached_len(p));
+                }
+                assert forall|i: int, c: int| 0 <= i < d + 1 && 0 <= c < NCLASSES implies #[trigger] self.cached_len(node_hdr(l[i], c)) == 0 by {
+                    if i < d {
+                        let p = node_hdr(l[i], c);
+                        assert forall|k: int| 0 <= k < NCLASSES implies p != #[trigger] h0.array_hdr(o, k) by {
+                            old(self).lemma_nodes_apart(i, d, c, k);
+                        }
+                        assert(self.held(p) == h0.held(p));
+                        assert(self.held(p).len() == self.cached_len(p));
+                        assert(h0.held(p).len() == h0.cached_len(p));
+                    } else {
+                        assert(self.cached_len(h0.array_hdr(o, c)) == 0);
+                    }
+                }
+                assert forall|p: *mut CacheHeader|
+                    old(self).owns(p) && (forall|c: int| 0 <= c < NCLASSES ==> p != #[trigger] old(self).home_ptr(c))
+                        && (forall|i: int, c: int| 0 <= i < d + 1 && 0 <= c < NCLASSES ==> p != #[trigger] node_hdr(l[i], c))
+                        implies #[trigger] self.held(p) == old(self).held(p) by {
+                    assert forall|k: int| 0 <= k < NCLASSES implies p != #[trigger] h0.array_hdr(o, k) by {
+                        assert(p != node_hdr(l[d], k));
+                    }
+                    assert(h0.owns(p));
+                    assert(self.held(p) == h0.held(p));
+                }
                 r = r - 1;
             }
             o = next;
+        }
+        proof {
+            self.lemma_list(r);
+            if r > 0 {
+                assert(o@.addr != 0);
+            }
+            assert(l.len() - r == l.len());
+            assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] self.cached_len(self.home_ptr(c)) == 0 by {
+                assert(self.home_ptr(c) == old(self).home_ptr(c));
+            }
+            assert forall|i: int, c: int| 0 <= i < self.list@.len() && 0 <= c < NCLASSES implies #[trigger] self.cached_len(node_hdr(self.list@[i], c)) == 0 by {
+                assert(self.list@[i] == l[i]);
+            }
+        }
+    }
+
+    /// A home header is no header of a node on the `others` list.
+    proof fn lemma_home_apart(&self, c: int, i: int, k: int)
+        requires
+            self.wf(),
+            0 <= c < NCLASSES,
+            0 <= i < self.list@.len(),
+            0 <= k < NCLASSES,
+        ensures
+            self.home_ptr(c) != node_hdr(self.list@[i], k),
+    {
+        assert(self.home_hdrs@[c] != node_hdr(self.list@[i], k));
+    }
+
+    /// The headers of two different nodes on the `others` list are
+    /// different headers.
+    proof fn lemma_nodes_apart(&self, i: int, j: int, c: int, k: int)
+        requires
+            self.wf(),
+            0 <= i < self.list@.len(),
+            0 <= j < self.list@.len(),
+            i != j,
+            0 <= c < NCLASSES,
+            0 <= k < NCLASSES,
+        ensures
+            node_hdr(self.list@[i], c) != node_hdr(self.list@[j], k),
+    {
+        let a = self.list@[i];
+        let b = self.list@[j];
+        assert(self.owns_node(a));
+        assert(self.owns_node(b));
+        if node_hdr(a, c) == node_hdr(b, k) {
+            assert(self.hdr_class(node_hdr(a, c)) == c);
+            assert(self.hdr_class(node_hdr(b, k)) == k);
+            assert(node_hdr(a, c)@.addr == node_hdr(b, k)@.addr);
+            assert(a@.addr == b@.addr);
+            assert(a@.provenance == b@.provenance);
+            assert(a@ == b@);
+            assert(a == b);
+            if i < j {
+                assert(self.list@[i] != self.list@[j]);
+            } else {
+                assert(self.list@[j] != self.list@[i]);
+            }
+        }
+    }
+
+    /// [`Heap::array_held`] depends only on what the array's headers hold.
+    proof fn lemma_array_held_same(a: Heap, b: Heap, node: *mut ArenaCaches, k: int)
+        requires
+            forall|c: int| 0 <= c < k ==> #[trigger] a.held(a.array_hdr(node, c)) == b.held(b.array_hdr(node, c)),
+        ensures
+            a.array_held(node, k) == b.array_held(node, k),
+        decreases k,
+    {
+        if k > 0 {
+            Heap::lemma_array_held_same(a, b, node, k - 1);
         }
     }
 
@@ -4112,6 +4567,7 @@ impl CachePerms {
             toks: Map::tracked_empty(),
             zero: Map::tracked_empty(),
             handed: None,
+            released: Seq::empty(),
         };
         r.lemma_zero_intro();
         r

@@ -1,10 +1,10 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the seven whole-allocator theorems (sections 1-7) and the
-cgroup policy's theorem (section 8) as the code states them:
-the Verus statement, the entry points it covers, and every trusted
-premise it rests on, with `file:line`. Read at `b2cad68` (branch
-`verus`); line numbers are the `fn`/`axiom` line at that commit.
+Reference for the whole-allocator theorems (sections 1-7 and 10) and the
+cgroup policy's theorem as the code states them: the Verus statement,
+the entry points it covers, and every trusted premise it rests on, with
+`file:line`. Read at `b2cad68` (branch `verus`); line numbers are the
+`fn`/`axiom` line at that commit.
 `verus/TODO.md` ("Whole-allocator theorems") carries the history and the
 open work; this file says what the code proves today.
 
@@ -1051,6 +1051,122 @@ library's machine code is identical to the previous commit's on x86_64.
 - **Weak memory.** A load may return a stale value, but every branch on
   one still ends, so the bound holds.
 
+## 10. No leak on thread exit
+
+Read at this section's commit (the `file:line`s are the `fn` line
+there).
+
+**Statement** (`heap/mod.rs:3891`, `Heap::flush_all`, which
+`Heap::destroy` runs first):
+
+```rust
+pub fn flush_all(&mut self, shared: &Shared)
+    requires
+        shared.wf(),
+        old(self).wf(),
+    ensures
+        final(self).keeps(*old(self)),
+        final(self).same_shape(*old(self)),
+        final(self).drained(),
+        log_adds(final(self).released(), old(self).released(), old(self).held_all()),
+```
+
+with (`heap/mod.rs:672`-`:703`, `:3037`-`:3085`; abridged)
+
+```rust
+pub open spec fn log_adds(new: Seq<(int, int)>, old: Seq<(int, int)>, s: Set<(int, int)>) -> bool {
+    &&& old.len() <= new.len()
+    &&& new.subrange(0, old.len() as int) == old
+    &&& new.subrange(old.len() as int, new.len() as int).to_set() == s
+}
+
+// What owned header p caches: (class, slot address) per entry below len.
+pub closed spec fn held(&self, p: *mut CacheHeader) -> Seq<(int, int)> {
+    tagged(self.hdr_class(p), Seq::new(self.cached_len(p) as nat, |i: int| self.cached(p, i) as int))
+}
+// held_all: the union of held(p) over the home headers and the headers
+// of every node on the `others` list (held_upto, array_held).
+// drained: every one of those headers has len == 0.
+```
+
+When a heap's flush of everything returns, no home header and no
+header of a node on its `others` list caches a slot, and the heap's
+released log has gained exactly the `(class, address)` pairs those
+headers cached at entry: no cached slot is lost. Those headers are the
+cache memory `destroy` frees next (`free_caches` over the home array and
+each node), so the thread-exit destructor (`heap_destructor`,
+`heap/thread.rs:39`, through `Heap::destroy`, `heap/mod.rs:4707`)
+strands no cached block. `tcache.flush` (`Tcaches::flush`,
+`heap/tcaches.rs:163`), `malloc_trim` (`api/libc.rs:1609`), the mallctl
+purge's `flush_caller` (`api/mallctl.rs:1371`) and
+`thread.tcache.enabled` off (`Heap::set_tcache_enabled`,
+`heap/mod.rs:4203`) run the same function.
+
+The released log (`CachePerms::released`, `heap/mod.rs:821`, ghost) is
+appended to by `Heap::flush` alone (by inspection: no spec keeps it
+fixed elsewhere; the theorem's `ensures` are relative, so this does not
+weaken them), with the batch it hands to `Shared::release_routed` and
+the same tokens. The chain that makes an entry of the log a release:
+
+- `Heap::flush` (`heap/flush.rs:307`) also ensures, for any `n`:
+  every other owned header holds what it held, the cache holds a subset
+  of what it held, and `log_adds(final.released(), old.released(),
+  old.held(cache).to_set() - final.held(cache).to_set())`: the slots
+  that left the cache are the log's new entries. `lemma_flush_split`
+  (`heap/flush.rs:612`) proves the split by counting (the cached,
+  kept and released addresses are distinct, the kept are cached, the
+  released are cached and not kept, and their numbers add up), and
+  `Heap::lemma_flush_accounting` (`heap/mod.rs:3416`) lifts it to the
+  pairs.
+- `Shared::release_routed` (`heap/shared.rs:2036`) takes the bag of the
+  batch's tokens by `&mut` and ensures `final(bag)@ == old(bag)@ -
+  aset(ptr_addrs(ptrs@), 0, ptrs@.len())`: the bag lost exactly the
+  batch's tokens. That each went to a `ClassState::release_owned` call
+  (`class/mod.rs:4535`), which passes it, slab by slab, through
+  `release_slab` to `AtomicBitmap::release` (`bitmap.rs:1762`), whose
+  word invariant (`bitmap::WordPred`, `bitmap.rs:706`) must take the
+  token of every bit it clears, is read from the verified bodies, not
+  stated by an `ensures`. The `FOREIGN` cache's and a home cache's
+  other-arena slots are released the same way through the owner arena's
+  class (`release_routed`'s routing); there is no other "remote" path.
+- `Heap::flush_arena` (`heap/mod.rs:3774`) flushes one array whole and
+  ensures its headers empty, the log gained what they held, and every
+  other header unchanged; `flush_all` composes the home array and every
+  node, using `lemma_home_apart` and `lemma_nodes_apart`
+  (`heap/mod.rs:4031`, `:4045`) for the headers' distinctness.
+
+**Premises beyond the common ones.**
+- `Heap::destroy` is `external_body` (its verification shifts LTO
+  inlining of `Meta::free`, `TODO.md`): that it calls `flush_all` first,
+  on a heap that is `Heap::wf` and no longer in use, is read from its
+  body. The heap `heap_destructor` hands it is the TLS slot's heap, whose
+  `wf` `heap_at` assumes (common premise). After the flush its
+  `free_caches` aborts on a non-empty header (`assert_flushed`); the
+  theorem says that abort is not reached through the permissions, but
+  `free_caches` reads the plain `caches` field, which Verus models apart
+  from them.
+- Slot uniqueness (theorem 5): each cached slot's token is held once,
+  which is what makes a log entry stand for one token.
+
+**Where the statement is weaker than the code.**
+- The accounting is over the slots under each header's first `len`
+  entries (`CachePerms::tokened`). That `toks` holds no token beyond
+  them is not an invariant (every verified writer moves tokens with
+  their entries, by inspection), and a header the permissions own that
+  is neither a home header nor on the `others` list is not ruled out
+  (only `create`, `create_detached` and `other_caches` add headers, all
+  of those kinds); the statement names the home and node headers.
+- Tracked tokens are affine: no `ensures` states that a token leaving
+  `release_routed`'s bag reaches a bitmap word; that rests on the
+  bodies of `release_routed`, `release_owned` and `release_slab` (above).
+- No `no_duplicates` on the log's new entries: two headers of one class
+  cannot hold one slot (theorem 5), but the statement is the set, not
+  the count.
+- Partial correctness, as every theorem: `release_routed`'s loop has no
+  termination proof (`exec_allows_no_decreases_clause`).
+- The arena-unbind and exit purge that `destroy` runs after the flush
+  are not covered: they return no cached slot.
+
 ## Shuffle is a permutation
 
 The coordinator assigns this theorem its number at merge. The
@@ -2085,11 +2201,11 @@ either.
 
 ## Interface contract
 
-Theorems 1-7 above checked against challoc's exported C ABI: one
-row per exported symbol (`je_` twins and C++ array forms share their
-row), one column per interface property. Read from the `ensures` of
-each entry point's Rust function at `ccbf1dd`; the `file:line`s in
-this section are the `fn` line at that commit (the sections above are
+Theorems 1-7 above checked against challoc's exported C ABI (theorem 10
+is the I6 row below): one row per exported symbol (`je_` twins and C++
+array forms share their row), one column per interface property. Read
+from the `ensures` of each entry point's Rust function at `ccbf1dd`;
+the `file:line`s in this section are the `fn` line at that commit (the sections above are
 at `b2cad68`). The U column, row 13's Z and row 22's F were revised
 later, by the usable-size work (gap 3 below), and the R cells of rows 3,
 4, 14 and 17 by the huge `kept` bound (gap 6); items they added are
@@ -2483,6 +2599,7 @@ alone):
 | I4 guard pages never handed out (slabs)  | P    | th. 7 (section 7)      |
 | I4 guard pages never handed out (huge)   | p    | th. 7 (section 7)      |
 | I5 purge never discards live data        | -    | below                  |
+| I6 no cached slot lost at thread exit    | p    | th. 10 (section 10)    |
 
 - I1, I2: for every result an entry point states `fits` for, with the
   premises and the "not covered" lists of sections 1 and 4.
@@ -2507,6 +2624,11 @@ alone):
   cached". `purge::Batch`'s "ranges are free" (`purge.rs:218`) is a doc
   comment; `Batch::wf` states only bounds. Theorem 6's
   `axiom_discarded_zero` premises lean on the same unproved fact.
+- I6: theorem 10 (`Heap::flush_all`, `heap/mod.rs:3891`): the flush
+  `destroy` runs first empties every home and node header and appends
+  exactly what they held to the released log, each slot's token handed
+  to `release_routed` with it. `destroy` itself is trusted, and section
+  10's "weaker" list applies, hence `p`.
 
 ### Gaps, by cells turned to `P`
 

@@ -335,6 +335,7 @@ impl Heap {
             old(self).owns(r),
             old(self).hdr_class(r) == class,
             forall|n: *mut ArenaCaches, k: int| old(self).in_list(n) && 0 <= k < NCLASSES ==> r != #[trigger] node_hdr(n, k),
+            r == old(self).home_ptr(class as int),
         opens_invariants none
     {
         let r = self.home_ptr_at(class);

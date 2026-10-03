@@ -626,6 +626,7 @@ impl Heap {
             *final(self) == *old(self),
             old(self).owns(r),
             old(self).hdr_class(r) == class,
+            r == old(self).array_hdr(node, class as int),
     {
         // SAFETY: guaranteed by the caller.
         if node.is_null() {

@@ -2240,7 +2240,10 @@ impl Shared {
     /// switch, a word `release_owned` reads anyway).
     ///
     /// `bag` holds the batch's slot tokens (distinct addresses), which
-    /// belong back with the bitmap words each run releases.
+    /// belong back with the bitmap words each run releases. Every one of
+    /// them goes to a [`release_owned`] call, which takes it out of `bag`:
+    /// when this returns, `bag` has lost exactly the batch's tokens
+    /// (whole-allocator theorem 10).
     ///
     /// Arena isolation: each run goes to the class state of arena `a`
     /// (`Shared::owner(a)`, whose index is `a`), and [`release_owned`]
@@ -2256,19 +2259,25 @@ impl Shared {
     ///
     /// [`release_owned`]: crate::class::ClassState::release_owned
     /// [`slot_owner`]: crate::class::slot_owner
-    pub fn release_routed(&self, arena: u16, class: usize, ptrs: &[*mut u8], Tracked(bag): Tracked<GhostSubset<int>>)
+    pub fn release_routed(&self, arena: u16, class: usize, ptrs: &[*mut u8], Tracked(bag): Tracked<&mut GhostSubset<int>>)
         requires
             self.wf(),
             class < NCLASSES,
-            bag.id() == slot_loc(class as int),
-            aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= bag@,
+            old(bag).id() == slot_loc(class as int),
+            aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= old(bag)@,
             distinct(ptr_addrs(ptrs@), 0, ptrs@.len() as int),
+        ensures
+            final(bag).id() == old(bag).id(),
+            final(bag)@ == old(bag)@ - aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int),
     {
         broadcast use crate::class::lemma_aset;
-        let tracked mut bag = bag;
         let ghost pa = ptr_addrs(ptrs@);
         let mut done = 0;
         let mut a = arena;
+        proof {
+            assert(aset(pa, 0, 0) =~= Set::empty());
+            assert(bag@ =~= old(bag)@ - aset(pa, 0, 0));
+        }
         loop
             invariant
                 self.wf(),
@@ -2276,6 +2285,8 @@ impl Shared {
                 done <= ptrs@.len(),
                 pa == ptr_addrs(ptrs@),
                 bag.id() == slot_loc(class as int),
+                bag.id() == old(bag).id(),
+                bag@ == old(bag)@ - aset(pa, 0, done as int),
                 aset(pa, done as int, ptrs@.len() as int) <= bag@,
                 distinct(pa, 0, ptrs@.len() as int),
             decreases
@@ -2294,17 +2305,19 @@ impl Shared {
                 crate::class::lemma_aset_shift(pa, ra, d0, 0, rest.len() as int);
                 crate::class::lemma_aset_split(pa, 0, d0, ptrs@.len() as int);
             }
-            done += self.owner(a).class(class).release_owned(&ptrs[done..], Tracked(&mut bag));
+            done += self.owner(a).class(class).release_owned(&ptrs[done..], Tracked(&mut *bag));
             proof {
                 let r = done - d0;
                 crate::class::lemma_aset_split(pa, d0, done as int, ptrs@.len() as int);
                 crate::class::lemma_aset_split(pa, 0, d0, ptrs@.len() as int);
+                crate::class::lemma_aset_split(pa, 0, d0, done as int);
                 crate::class::lemma_aset_shift(pa, ra, d0, 0, r);
                 assert(aset(pa, done as int, ptrs@.len() as int) <= bag@);
                 if done < ptrs@.len() {
                     // The first pointer left is not `a`'s.
                     assert(rest[r] == ptrs@[done as int]);
                 }
+                assert(bag@ =~= old(bag)@ - aset(pa, 0, done as int));
             }
             if done == ptrs.len() {
                 return;
