@@ -25,6 +25,11 @@ struct TableInner {
     next_slab: usize,
     /// Guard slabs committed (never handed out).
     guards: usize,
+    /// A copy of the watermark the `free` fast path reads from its
+    /// per-class line (`heap::ClassLine`), stored right after the
+    /// watermark itself, so it is never ahead of it; null until
+    /// [`SlabTable::mirror_watermark`].
+    mirror: *const AtomicUsize,
 }
 
 /// Offset of class `class`'s descriptor array, bitmap and owner array
@@ -221,6 +226,7 @@ impl SlabTable {
                 owners,
                 next_slab: 0,
                 guards: 0,
+                mirror: core::ptr::null(),
             })),
             _tail: [0; TABLE_TAIL],
         })
@@ -279,6 +285,39 @@ impl SlabTable {
     #[inline]
     pub fn guard_mask(&self) -> u32 {
         self.guard_mask
+    }
+
+    /// Keep `*mirror` equal to the hand-out watermark from now on: it is
+    /// set to the current value here and stored after the watermark at
+    /// every hand-out, under the commit lock, so a reader of the copy never
+    /// sees a value the watermark has not held (`heap::ClassLine`).
+    ///
+    /// # Safety
+    /// `mirror` must stay valid for as long as this table is used.
+    pub unsafe fn mirror_watermark(&self, mirror: *const AtomicUsize) {
+        let mut g = self.inner.lock();
+        let wm = self.committed_slabs.load(Ordering::Relaxed);
+        // SAFETY: guaranteed by the caller.
+        unsafe { (*mirror).store(wm, Ordering::Release) };
+        g.mirror = mirror;
+    }
+
+    /// Start of the class bitmap (for `heap::ClassLine`).
+    #[inline]
+    pub fn bits_base(&self) -> usize {
+        self.bits_base
+    }
+
+    /// Start of the group owner array (for `heap::ClassLine`).
+    #[inline]
+    pub fn owners_base(&self) -> usize {
+        self.owners_base
+    }
+
+    /// `log2` of the hand-out group (for `heap::ClassLine`).
+    #[inline]
+    pub fn lg_group(&self) -> u8 {
+        self.lg_group
     }
 
     /// Slabs per page group; 1 unless the page is larger than the slab.
@@ -654,6 +693,11 @@ impl SlabTable {
         owner_word.store(arena, Ordering::Relaxed);
         g.next_slab = end;
         self.committed_slabs.store(end, Ordering::Release);
+        if !g.mirror.is_null() {
+            // SAFETY: `mirror_watermark`'s caller keeps the copy alive as
+            // long as the table.
+            unsafe { (*g.mirror).store(end, Ordering::Release) };
+        }
         // `thp:auto` (design 7, 17; `thp.rs`): the group's range, still
         // reserved `PROT_NONE`, is advised once here, so the slabs the
         // arena commits from it fault in as folios of the enabled size.

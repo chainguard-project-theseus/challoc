@@ -329,7 +329,7 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
 /// as `free_fast`, no call.
 #[cfg(test)]
 pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> Option<usize> {
-    free_fast_with(shared, p, || (h, flags))
+    free_fast_with(shared, p, flags, |_| h)
 }
 
 /// The entry points' form of [`free_fast_class`]: the heap comes as the
@@ -345,34 +345,54 @@ pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> 
 /// thread.
 #[inline(always)]
 pub unsafe fn free_fast_slot(shared: &Shared, t: usize, tp: usize, p: *mut u8) -> Option<usize> {
-    free_fast_with(shared, p, || {
-        let flags = shared.free_flags();
-        // SAFETY: guaranteed by the caller; `flags` carries the
-        // process's `PUSH_PAC`.
-        let h = unsafe { heap_from_slot(t, tp, flags & PUSH_PAC != 0) };
-        (h, flags)
+    let (class, slab) = shared.set_slot(p)?;
+    let flags = shared.free_flags();
+    // SAFETY (all three): guaranteed by the caller; `flags` carries the
+    // process's `PUSH_PAC`, and the two default configurations have it
+    // clear, so their slot value is the heap itself and they skip the
+    // `PUSH_PAC` test of `heap_from_slot`.
+    free_fast_tail(shared, class, slab, p, flags, |pac| unsafe {
+        heap_from_slot(t, tp, pac)
     })
 }
 
 /// The body of the `free` fast paths: the bit test ([`Shared::set_slot`]),
-/// then the heap and the `free_flags` byte from `heap`, the owner-word
-/// test with [`FREE_ROUTE`], the push.
+/// then the dispatch on the `free_flags` byte.
+#[cfg(test)]
 #[inline(always)]
 fn free_fast_with<'h>(
     shared: &Shared,
     p: *mut u8,
-    heap: impl FnOnce() -> (&'h mut Heap, u8),
+    flags: u8,
+    heap: impl FnOnce(bool) -> &'h mut Heap,
 ) -> Option<usize> {
-    let (class, table, slab) = shared.set_slot(p)?;
-    let (h, flags) = heap();
+    let (class, slab) = shared.set_slot(p)?;
+    free_fast_tail(shared, class, slab, p, flags, heap)
+}
+
+/// After the bit test: the heap from `heap` (given whether the slot value
+/// is signed), the owner-word test with [`FREE_ROUTE`], the push.
+#[inline(always)]
+fn free_fast_tail<'h>(
+    shared: &Shared,
+    class: usize,
+    slab: usize,
+    p: *mut u8,
+    flags: u8,
+    heap: impl FnOnce(bool) -> &'h mut Heap,
+) -> Option<usize> {
     // The two default configurations (one arena, several arenas) each get
     // one compare and the plain push; the opt-in hardening takes the
     // general dispatch.
     let pushed = match flags {
-        0 => h.push_fast(class, p, 0),
-        FREE_ROUTE => Shared::home_owns(table, slab, h) && h.push_fast(class, p, 0),
+        0 => heap(false).push_fast(class, p, 0),
+        FREE_ROUTE => {
+            let h = heap(false);
+            shared.home_owns(class, slab, h) && h.push_fast(class, p, 0)
+        }
         _ => {
-            (flags & FREE_ROUTE == 0 || Shared::home_owns(table, slab, h))
+            let h = heap(flags & PUSH_PAC != 0);
+            (flags & FREE_ROUTE == 0 || shared.home_owns(class, slab, h))
                 && h.push_fast(class, p, flags & !FREE_ROUTE)
         }
     };

@@ -738,7 +738,37 @@ fn a_sorted_whole_cache_flush_spans_slabs_and_catches_a_duplicate() {
     );
 }
 
-/// The dense [`GuardTest`] the sized fast path reads agrees with
+/// Every class's [`ClassLine`](super::shared::ClassLine) holds what the
+/// regions and the slab table say (region base, bitmap and owner bases,
+/// group size), and its watermark copy follows the table's through
+/// hand-outs.
+#[test]
+fn class_lines_agree_with_the_tables() {
+    let s = shared();
+    for c in 0..NCLASSES {
+        let t = s.table(c);
+        let (base, bits, wm, owners, lg_group) = s.lines[c].parts();
+        assert_eq!(base, s.regions.class_base[c], "class {c}");
+        assert_eq!(bits, t.bits_base(), "class {c}");
+        assert_eq!(owners, t.owners_base(), "class {c}");
+        assert_eq!(lg_group, t.lg_group(), "class {c}");
+        assert_eq!(wm, t.committed_slabs(), "class {c}");
+    }
+    let th = TestHeap::new(s);
+    let c = class_with(64);
+    let before = s.table(c).committed_slabs();
+    let mut ps = std::vec::Vec::new();
+    while s.table(c).committed_slabs() == before {
+        ps.push(th.alloc(c));
+    }
+    assert_eq!(s.lines[c].parts().2, s.table(c).committed_slabs());
+    for p in ps {
+        th.free(p);
+    }
+    th.destroy();
+}
+
+/// The [`GuardTest`] the sized fast path reads agrees with
 /// [`SlabTable::is_guard_slab`] for every class over the first slabs of
 /// the region and around its end, with guards on and off.
 #[test]
@@ -746,7 +776,7 @@ fn guard_test_agrees_with_the_tables() {
     for s in [TestShared::new().guards().build(), shared()] {
         for c in 0..NCLASSES {
             let t = s.table(c);
-            let g = s.guard_test[c];
+            let g = s.lines[c].guard;
             assert_eq!(g, GuardTest::of(t));
             let n = t.nslabs();
             for slab in (0..1024.min(n)).chain(n.saturating_sub(64)..n) {
@@ -1994,7 +2024,7 @@ fn free_into_an_uncommitted_slab_aborts() {
 }
 
 /// The `free` fast path's one bound is the watermark compare
-/// (`Regions::slab_slot_unbounded`): a slot start in a slab never handed
+/// (`ClassLine::set_slab`): a slot start in a slab never handed
 /// out, up to the region's last slab, and the slot-aligned addresses just
 /// past the region and below its base (in the gap of the stride) all
 /// leave for the slow path, in every class.
