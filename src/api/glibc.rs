@@ -14,16 +14,22 @@
 //!
 //! | field      | challoc                                                    |
 //! |------------|------------------------------------------------------------|
-//! | `arena`    | resident bytes minus huge runs (slabs, dirty slabs, metadata) |
+//! | `arena`    | resident bytes minus `large.allocated` (slabs, dirty slabs, metadata) |
 //! | `ordblks`  | free slots in slabs that are neither `Empty` nor `Purged`  |
 //! | `smblks`   | 0                                                          |
 //! | `hblks`    | live huge runs                                             |
-//! | `hblkhd`   | usable bytes of live huge runs                             |
+//! | `hblkhd`   | `large.allocated`: bytes in allocated slots of the classes above `layout::BIN_MAX` plus usable bytes of live huge runs |
 //! | `usmblks`  | 0                                                          |
 //! | `fsmblks`  | 0                                                          |
-//! | `uordblks` | bytes in allocated slots (thread caches count, as in `stats.allocated`) |
+//! | `uordblks` | `small.allocated`: bytes in allocated slots of the classes up to `BIN_MAX` (thread caches count, as in `stats.allocated`) |
 //! | `fordblks` | `arena - uordblks`                                         |
 //! | `keepcost` | dirty bytes a purge would release                          |
+//!
+//! So `uordblks + hblkhd` is `stats.allocated`, read live
+//! ([`mallinfo2`]'s contract, `verus/THEOREMS.md`, "Exact stats"), and
+//! `hblkhd` can be non-zero with `hblks` zero: the classes above `BIN_MAX`
+//! are slab slots, counted with the huge runs as jemalloc counts them
+//! (`large.*`), not as mapped blocks.
 //!
 //! `mallinfo` is the same in `int`, saturating at `INT_MAX`, which is why
 //! glibc deprecated it.
@@ -75,22 +81,33 @@ pub fn mallopt(_param: c_int, _value: c_int) -> (r: c_int)
 {
     1
 }
-
 /// `mallinfo2()`. The figures are summed and multiplied as the build
 /// computes them (`stats::fig_add`, `fig_mul`): no verified invariant
-/// bounds the counters.
-pub fn mallinfo2() -> (r: MallInfo2)
+/// bounds the counters. `rd` gets what [`stats::collect_all`] read and
+/// summed: `uordblks + hblkhd` is that sum's `allocated`, the true sum of
+/// the arenas' figures when it fits ([`stats::summed`]); `uordblks` is the
+/// bins up to `BIN_MAX`, `hblkhd` the slab classes above it and the huge
+/// runs, whose number is `hblks`.
+pub fn mallinfo2(Tracked(rd): Tracked<&mut Ghost<(Seq<stats::ArenaStats>, Seq<int>, stats::ArenaStats)>>) -> (r: MallInfo2)
     requires
         crate::sys::may_syscall(),
     ensures
         r.fordblks <= r.arena,
         r.smblks == 0 && r.usmblks == 0 && r.fsmblks == 0,
+        stats::summed(final(rd)@.0, final(rd)@.1, final(rd)@.2),
+        r.uordblks == final(rd)@.2.small_allocated,
+        r.hblkhd == final(rd)@.2.large_allocated,
+        r.hblks == final(rd)@.2.large_runs,
 {
     let shared = super::shared();
     proof {
         shared.lemma_wf();
     }
-    let all = stats::collect_all(shared);
+    let tracked mut sd = Ghost((Seq::<stats::ArenaStats>::empty(), Seq::<int>::empty()));
+    let all = stats::collect_all(shared, Tracked(&mut sd));
+    proof {
+        *rd = Ghost((sd@.0, sd@.1, all));
+    }
     let page = shared.regions.page_size();
     let arena = all.resident.saturating_sub(all.large_allocated);
     let uordblks = all.small_allocated;
@@ -118,7 +135,8 @@ pub fn mallinfo() -> MallInfo
     requires
         crate::sys::may_syscall(),
 {
-    let m = mallinfo2();
+    let tracked mut rd: Ghost<(Seq<stats::ArenaStats>, Seq<int>, stats::ArenaStats)> = Ghost(arbitrary());
+    let m = mallinfo2(Tracked(&mut rd));
     let clamp = |v: usize| v.min(c_int::MAX as usize) as c_int;
     MallInfo {
         arena: clamp(m.arena),
@@ -143,7 +161,7 @@ pub fn mallinfo() -> MallInfo
 #[cfg(not(test))]
 mod exports {
     use core::ffi::c_int;
-    use vstd::prelude::verus;
+    use vstd::prelude::*;
 
     verus! {
 
@@ -165,7 +183,8 @@ mod exports {
         proof {
             crate::sys::grant_syscalls();
         }
-        super::mallinfo2()
+        let tracked mut rd: Ghost<(Seq<crate::stats::ArenaStats>, Seq<int>, crate::stats::ArenaStats)> = Ghost(arbitrary());
+        super::mallinfo2(Tracked(&mut rd))
     }
 
     } // verus!
@@ -201,7 +220,7 @@ mod tests {
         // give bounds; the identities must hold for any single collection.
         let small: Vec<*mut u8> = (0..200).map(|_| malloc(900)).collect();
         let huge: Vec<*mut u8> = (0..3).map(|_| malloc(MEDIUM_MAX + 1)).collect();
-        let m = mallinfo2();
+        let m = mallinfo2(Tracked::assume_new());
         let size = crate::layout::class_size_of(900).unwrap();
         assert!(m.uordblks >= 200 * size, "{m:?}");
         assert!(m.hblks >= 3, "{m:?}");

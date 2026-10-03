@@ -2188,6 +2188,8 @@ impl Shared {
                 self.lemma_run_is_block(r.ptr@.addr, size, align);
                 let tracked t = tok.tracked_remove(0);
                 self.lemma_run_token(t, r.ptr);
+                // Exact stats: the pages `note_huge_alloc` adds are the token's.
+                assert(t.npages() == r.pages);
                 blk.set(super::Live::from_run(t, r.ptr));
             }
         }
@@ -2235,7 +2237,12 @@ impl Shared {
             tok.wf(),
             tok.start() == page,
     {
+        let ghost np = tok.npages();
         let run = self.huge.free_run(&self.meta, page, Tracked(tok));
+        // Exact stats: the pages `note_huge_free` subtracts are the token's.
+        proof {
+            assert(run.pages == np);
+        }
         self.owner(run.arena).note_huge_free(run.pages);
         run.usable
     }

@@ -1413,7 +1413,7 @@ fn hist_line<W: Write>(
 
 ### S46. `file_target`
 
-src/api/print.rs:1245. Kind: external_body. Category: function pointer.
+src/api/print.rs:1247. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > `Target::File(stream)`.
@@ -1424,7 +1424,7 @@ fn file_target(stream: *mut libc::FILE) -> Target
 
 ### S47. `stderr_target`
 
-src/api/print.rs:1252. Kind: external_body. Category: function pointer.
+src/api/print.rs:1254. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > `Target::Stderr`.
@@ -3187,12 +3187,12 @@ fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: 
 
 ### S166. `not_a_run_page`
 
-src/huge/mod.rs:6168. Kind: abort_standin. Category: panic/abort.
+src/huge/mod.rs:6370. Kind: abort_standin. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`Huge::free_run`]'s abort for a page that is not in the descriptor table, where the build calls [`not_a_run`] with the page's address.
 
-Stands in at: src/huge/mod.rs:5797 (`Huge::free_run`).
+Stands in at: src/huge/mod.rs:5998 (`Huge::free_run`).
 
 ```rust
 fn not_a_run_page(page: usize) -> !
@@ -3701,7 +3701,7 @@ pub fn sub_live(&self, n: usize) -> usize
 
 ### S206. `fig_add`
 
-src/stats.rs:378. Kind: external_body. Category: core library.
+src/stats.rs:387. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `a + b` for a statistics figure, as the build computes it: a panic on overflow where overflow checks are on (the tests), wrapping where they are off (the shipped library).
@@ -3714,7 +3714,7 @@ pub(crate) fn fig_add(a: usize, b: usize) -> (r: usize)
 
 ### S207. `fig_mul`
 
-src/stats.rs:388. Kind: external_body. Category: core library.
+src/stats.rs:397. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `a * b` for a statistics figure; see [`fig_add`].
@@ -3727,7 +3727,7 @@ pub(crate) fn fig_mul(a: usize, b: usize) -> (r: usize)
 
 ### S208. `fig_add64`
 
-src/stats.rs:398. Kind: external_body. Category: core library.
+src/stats.rs:407. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `a + b` for a statistics counter; see [`fig_add`].
@@ -5284,7 +5284,9 @@ Tool: Kani. Status: trusted.
 > `s.allocated()`, small plus large, as the build computes it (a panic on overflow where overflow checks are on, wrapping where they are off).
 
 ```rust
-pub(crate) fn stats_allocated(s: &crate::stats::ArenaStats) -> usize
+pub(crate) fn stats_allocated(s: &crate::stats::ArenaStats) -> (r: usize)
+    ensures
+        s.small_allocated + s.large_allocated <= usize::MAX ==> r == s.small_allocated + s.large_allocated,
 ```
 
 ### S322. `axiom_ptr_add_addr`

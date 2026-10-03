@@ -1140,7 +1140,8 @@ fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
             xml_heap(out, a.index() as usize, &s)?;
         }
     }
-    let all = stats::collect_all(shared);
+    let tracked mut rd: Ghost<(Seq<stats::ArenaStats>, Seq<int>)> = Ghost(arbitrary());
+    let all = stats::collect_all(shared, Tracked(&mut rd));
     // The two `iter().map(..).sum()`s over `bins[..NBINS]` and
     // `bins[NBINS..]`, as one indexed loop.
     let (mut count, mut large) = (0usize, 0usize);
@@ -1230,7 +1231,8 @@ fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result
             writeln!(sink, "in use bytes     = {:>10}", s.small_allocated)?;
         }
     }
-    let all = stats::collect_all(shared);
+    let tracked mut rd: Ghost<(Seq<stats::ArenaStats>, Seq<int>)> = Ghost(arbitrary());
+    let all = stats::collect_all(shared, Tracked(&mut rd));
     writeln!(sink, "Total (incl. mmap):")?;
     writeln!(sink, "system bytes     = {:>10}", all.resident)?;
     writeln!(sink, "in use bytes     = {:>10}", stats_allocated(&all))?;

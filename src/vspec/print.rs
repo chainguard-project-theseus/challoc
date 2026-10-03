@@ -71,11 +71,14 @@ verus! {
 /// `s.allocated()`, small plus large, as the build computes it (a panic
 /// on overflow where overflow checks are on, wrapping where they are
 /// off). Trusted: `ArenaStats::allocated` requires the sum to fit, which
-/// no invariant bounds for the process-wide figures; nothing is claimed
-/// about the result.
+/// no invariant bounds for the process-wide figures; the result is the
+/// sum when it fits, as for `stats::fig_add`.
 #[verifier::external_body]
 #[inline(always)]
-pub(crate) fn stats_allocated(s: &crate::stats::ArenaStats) -> usize {
+pub(crate) fn stats_allocated(s: &crate::stats::ArenaStats) -> (r: usize)
+    ensures
+        s.small_allocated + s.large_allocated <= usize::MAX ==> r == s.small_allocated + s.large_allocated,
+{
     s.allocated()
 }
 

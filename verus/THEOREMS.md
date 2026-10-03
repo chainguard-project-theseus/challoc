@@ -2920,6 +2920,195 @@ passes room for the full MIB gets the same MIB from both. Not in the
 theorem: the capacity read is trusted and the return code has no
 `ensures`.
 
+## 22. Exact stats
+
+The coordinator assigns this theorem its number at merge. The
+`file:line`s are the `fn` line at this section's commit.
+
+**Statement.** At a quiescent state, `stats.allocated` (read live by
+`collect`, `collect_all`, `mallinfo2` and `malloc_stats`; at the last
+`epoch` by `mallctl`) is the usable bytes of the live blocks plus the
+class size of every slot in a thread cache. Three layers:
+
+1. **The figures are true sums of what was read** (code, `stats.rs`).
+   `collect_arena_with` (`:671`) hands out, through a ghost `pg`, the
+   pages its load of the arena's `large` word returned, and ensures
+   `arena_exact(r, pg)` (`:1012`): `small_allocated + large_allocated` is
+   `Σ_c curregs[c] * size(c)` plus `(pg - large_runs * GUARD_PAGES) *
+   page` whenever that true sum fits a `usize`. `collect_into` (`:800`)
+   and `collect_all` (`:922`) hand out, through a ghost `rd`, the figures
+   of each arena they found (in index order) and those pages, and ensure
+   `totals_exact` (`:1087`) and `summed` (`:1075`): `totals.allocated`,
+   and `allocated`, every bin's `curregs` and `large_runs` of the sum, are
+   the true sums of those reads (`reads_allocated`, `:1058`) when they
+   fit. `mallinfo2` (`api/glibc.rs:91`) hands out what `collect_all` read
+   and summed and ensures `uordblks + hblkhd` is the sum's `allocated` and
+   `hblks` its `large_runs`. Inside each function the ghost outputs are
+   the values its loads returned (the body sets them from the loaded
+   locals); to a caller they are only values for which the ensures hold
+   (see "Scope").
+   The figures are added with `fig_add`/`fig_mul`, whose spec is `+`/`*`
+   when the result fits; `ArenaStats::add` (`:494`) and
+   `Totals::add_arena` (`:356`) now state each needed sum alone, so an
+   unrelated figure's overflow does not hide it. `collect` and `epoch`
+   call `collect_into`; `collect_arena` and `malloc_stats` add no
+   contract of their own.
+
+2. **The counters track the blocks** (ghost model, `stats/ledger.rs`).
+   `Books` (`:46`) has one step per counter update and per slot move:
+   `reserve` (`ClassState::take`, `class/mod.rs:2247`: `claimed += n`
+   under the class lock), `claim` (one bit won by `finish`, or by
+   `claim_prefix` in the same lock hold as the reservation; the slot's
+   token leaves its word, so no arena has it out), `move_slot` between
+   flight, a cache and a live block (refill push, hand-out, free push,
+   flush or direct-free take), `release` (`release_word`: the token back
+   in its word, through the arena whose slab it is), `count`
+   (`release_owned`'s `released.fetch_add(end)`, `class/mod.rs:4785`),
+   `take_run` (`Huge::take`: the run token's pages come from the page
+   authority), `note` (`Shared::alloc_huge`'s `note_huge_alloc(r.pages)`),
+   `free_run` (`Huge::free_run`) and `unnote` (`Shared::free_huge`'s
+   `note_huge_free(run.pages)`), plus `new_arena`. `Books::inv` (`:201`)
+   holds at `Books::start` (`:221`, `lemma_start`, `:1014`) and after
+   every step (`lemma_step_*`, `:636`-`:993`), in any interleaving:
+   `claimed - released` of each `(arena, class)` is its out slots plus
+   the reservations not yet claimed plus the releases not yet counted;
+   the out slots of a class are each in exactly one of flight, a cache
+   and a live block, and out through one arena; each `large` word is its
+   arena's live runs and their pages, less those not yet added, plus
+   those retired and not yet subtracted; live runs share no page.
+   `note` and `unnote` take any page count within the pending total, not
+   the run's own: only the totals matter, and quiescence zeroes them.
+   `Books::theorem_quiescent` (`:1111`): when no update is in progress
+   (`quiescent`, `:212`), `Σ_arenas (claimed - released)` of a class is
+   its cached plus live slots, each arena's `claimed - released` is its
+   out slots, each arena's word is its live runs and pages, and the words
+   summed are all live runs and pages.
+
+3. **Over the live tokens** (`stats/ledger.rs:1475`):
+
+```rust
+pub proof fn theorem_exact_stats(b: Books, tracked live: Map<int, Live>, n: int,
+    reads: Seq<ArenaStats>, pages: Seq<int>)
+    requires
+        b.inv(), b.quiescent(), reads_ok(reads, pages), reads.len() == b.k,
+        // the scan read the ledger's counters, arena i at index i
+        forall|i, c| ... reads[i].bins[c].curregs == (b.net)(i, c),
+        forall|i| ... reads[i].large_runs == (b.wruns)(i),
+        forall|i| ... pages[i] == (b.wpages)(i),
+        // live[0..n] are the program's live blocks, held at once
+        n >= 0, forall|i| 0 <= i < n ==> live.contains_key(i) && live[i].wf(),
+        forall|c| ... (b.live)(c) == key_slots(live_keys(live, n), c),
+        b.runs_upto(b.k) == key_runs(live_keys(live, n)),
+    ensures
+        reads_allocated(reads, pages)
+            == live_bytes(live, n) + class_bytes(cached_counts(b), 0, NCLASSES),
+```
+
+(Abridged.) `live_bytes` is `Σ live[i].len()`, each block's usable bytes
+(`Live::len`: its class size, or its run's pages before the guard). The
+tokens count once each: `heap::live::lemma_all_apart` (`heap/live.rs:786`)
+shows two tokens held at once stand for different slots, or for runs
+whose pages are apart (`lemma_keys_apart`, `:762`, from the slot tokens'
+and run tokens' authorities), so the per-class slot sets and the run
+extent and page sets have exactly the tokens' counts (`lemma_key_bytes`).
+With layer 1, the `rd` a `collect_all`, `collect_into` or `mallinfo2`
+call hands out is, by its body, the theorem's `reads` and `pages`; so
+whenever the true sum fits, the reported `allocated` (and `uordblks +
+hblkhd`) is the live blocks' usable bytes plus the cached slots'.
+
+Per arena, `theorem_quiescent` gives `claimed - released == |out(a, c)|`
+and the word equal to the arena's live runs, in the model; the theorem
+over tokens is stated for the sum over arenas only.
+
+**Huge counters, at the code level** (`huge/mod.rs:5277`,
+`theorem_huge_stats`, private to `huge`): in every value the huge lock
+admits, `stats.runs` is the number of extents the run authority holds and
+`stats.run_pages` the number of pages the page authority holds: one
+extent per live `RunToken`, and its pages (`theorem_run_counted`,
+`:5323`: a token's extent and pages are among them). These are the
+`huge:` counters of `malloc_stats_print`; no quiescence premise is
+needed, since they change under the huge lock with the authorities.
+`free_run` (`:5446`) now ensures `r.pages == tok.npages()`, and
+`Shared::alloc_huge` and `free_huge` assert that the pages they add to
+and subtract from the `large` word are the token's
+(`heap/shared.rs:1991`, `:2038`).
+
+**What the figures count.**
+- `allocated` (`curregs * size`): slots out of the bitmaps, which at a
+  quiescent state are the live slots and the cached ones (thread caches
+  count, as in jemalloc), at their class size, not the requested size;
+  huge runs at their usable bytes (pages before the guard).
+- `active`, `resident`, `retained`, `mapped`, `pactive`, `pdirty`: slab
+  and extent states, not blocks; layer 1 covers `allocated` only.
+- `mallinfo2`: `uordblks` is `small.allocated` (classes up to `BIN_MAX`),
+  `hblkhd` is `large.allocated` (the slab classes above `BIN_MAX` and the
+  huge runs), `hblks` the huge runs only; so `hblkhd` can be non-zero with
+  `hblks` zero (four live 32 KiB blocks add 131072 to `hblkhd`, 0 to
+  `hblks` and 0 to `uordblks`). The module doc's table said `hblkhd` was
+  huge runs only and `uordblks` all slots; it now says what the code
+  counts.
+- `malloc_stats`: per arena `in use bytes` is `small.allocated`; the total
+  is `allocated`; `max mmap bytes` is `large.allocated`.
+
+**Premises beyond the common ones.**
+- Quiescence: no allocation, free, flush or `epoch` runs during the scan
+  or between the last counter update and it; then each `Relaxed` load in
+  `bin_stats` and `Arena::large` reads the last store, and the scan's
+  reads are the ledger's counters. Verus's atomics return any value
+  (common premises), so this link is a premise, stated as
+  `theorem_exact_stats`'s `reads` requirements.
+- Arena indices: the scan finds an arena at every index below
+  `arenas.count()`, so `reads[i]` is arena `i` (`collect_*` skip an index
+  `get_existing` returns `None` for).
+- No wrap and no clamp: `claimed - released` is below `2^64` (it is a
+  count of slots), and `bin_stats` does not clamp it, which holds at a
+  quiescent state because a slab with a slot out has `live > 0`, so it is
+  neither `Empty` nor `Purged` and counts in `curslabs` (argued from
+  `on_live_zero`, not proved).
+- The ledger abstracts the code: each step's counter update is the line
+  named above (Verus does not see the atomics' values, so "`take` adds
+  its reservation to `claimed`" is read from the code); the reservations
+  `take` makes are what is claimed (`finish` ensures `r == picks_sum`, so
+  a claim of `n` slots reserved exactly `n`), and `release_owned`'s `end`
+  is the number of tokens it returned (its `ensures`: the bag loses the
+  distinct addresses of `ptrs[..end]`).
+- Arena attribution: a slot is claimed only from a slab its arena owns
+  (`take` requires `ready`, which includes `owns(slab)`), released only
+  through the arena that owns its slab (`release_owned`'s owner and
+  descriptor checks, plain loads Verus does not see), and slab ownership
+  never changes once assigned (`take_group`); a huge run's descriptor
+  keeps the arena it was allocated through until it is freed. The
+  `release` step's precondition (`x` is out through `a`) and `free_run`'s
+  (the run is in `a`) rest on these.
+- The `free` contract (`axiom_c_claim`), through the tokens.
+
+**Scope and where the statement is weaker than the code.**
+- Quiescent states only; a racy read can be off by the updates in
+  progress (the ledger's `resv`, `unc`, `ta_*`, `tf_*`), or clamped.
+- `mallctl`'s `stats.*` return the snapshot of the last `epoch`; they are
+  exact if the state was quiescent at that `epoch` (`collect_into` stores
+  what it returns, under the `stats` lock, whose value Verus does not
+  constrain afterwards).
+- The ghost outputs of layer 1 are set from the loaded values by each
+  function's body, but its `ensures` does not say so: to a caller, `rd`
+  and `pg` are values the callee picked, and a pick whose true sum does
+  not fit a `usize` (a huge page count, say) satisfies `arena_exact`,
+  `summed` and `totals_exact` for any result. So the chain from the
+  figures `mallinfo2` returns to `theorem_exact_stats`'s `reads` rests on
+  reading the body (each output is the local the code loaded), not on
+  the contract. Closing it needs the page count of the `large` word in
+  the result (`ArenaStats` holds runs, not pages), an exec struct change.
+- The ledger is a model: nothing threads a `Books` through the code, and
+  `theorem_exact_stats` relates its sets to the tokens by premise. A
+  code-level ledger would need the class counters' updates inside the
+  bitmap words' invariants (each `claim_word` and `release` updating a
+  per-class count with the bit), which changes `bitmap.rs`'s protocol.
+- Overflow: the figures are exact only when the true sums fit a `usize`
+  (always, for the address space they describe, but not proved).
+- Per-arena exactness of the `large` word needs the descriptor's arena to
+  be unchanged while the run is live (not proved; the run token carries
+  no arena).
+
 ## Interface contract
 
 Theorems 1-7 above checked against challoc's exported C ABI (theorems
