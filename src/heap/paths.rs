@@ -246,6 +246,9 @@ impl Heap {
     /// trusts it, so a stale pointer of the right shape is cleared as it
     /// is cached, exactly as it would be handed out; design 6.3).
     pub(super) fn free_slow_in(&mut self, shared: &Shared, arena: u16, class: usize, p: *mut u8) {
+        if arena == FOREIGN && self.rehome && self.rehome_on_free(shared, class, p) {
+            return;
+        }
         if shared.zero_on_free() {
             // SAFETY: `p` is a slot start of `class` (the caller's check).
             unsafe { zero_slot(class, p) };

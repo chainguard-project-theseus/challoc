@@ -92,6 +92,16 @@ pub const MAX_CAP: u32 = 1024;
 pub const MIN_CAP: u32 = 8;
 /// Slow-path entries between two periodic-work checks (design 6.4).
 pub const PERIODIC_EVERY: u32 = 64;
+/// Slow-path entries ([`Heap::slow_ticks`]) before which a new thread heap
+/// may still move its home onto the arena of a slot it frees
+/// (`Heap::try_rehome`, design 6.5). A thread that takes over a dead
+/// thread's data (larson's successors) frees it from its first operation
+/// on, and moved within 2..3 slow-path entries on average (C4A); a thread
+/// that frees other threads' data only after building its own (mstress:
+/// about 140 entries at the first such free) never qualifies, so it keeps
+/// its own data at home. Below the limit a heap has refilled at most a
+/// few caches, so the move's flush is small and abandons nothing.
+pub const REHOME_TICKS: u32 = 8;
 
 /// Default cache capacity for a class: [`MAX_CAP`] (1024) slots for classes
 /// up to 128 bytes, halved for every doubling of the class size, never
@@ -177,6 +187,14 @@ pub struct Heap {
     /// randomised claim seeds it from `getrandom`, so the
     /// default configuration makes no syscall per heap creation.
     rng: u64,
+    /// This heap may still move its home onto the arena of a slot it
+    /// frees ([`Heap::try_rehome`]): set for a new thread heap; cleared
+    /// for an explicit cache, by a `thread.arena` write, by the one move,
+    /// and once [`REHOME_TICKS`] slow-path entries have passed.
+    rehome: bool,
+    /// The arena of the last cross-arena free [`Heap::try_rehome`] looked
+    /// at: the move needs two in a row into the same arena.
+    rehome_from: u16,
     /// Caches of the home arena, one line per class; last, so the small
     /// fields above share two lines and `caches[c]` is `heap + 128 + 64 * c`.
     caches: [CacheHeader; NCLASSES],
@@ -196,7 +214,10 @@ impl Heap {
             shared.arenas.unbind(arena);
         } else {
             // SAFETY: fresh, exclusively owned.
-            unsafe { (*h).bound = true };
+            unsafe {
+                (*h).bound = true;
+                (*h).rehome = true;
+            }
         }
         h
     }
@@ -226,6 +247,8 @@ impl Heap {
             ptr::write(&raw mut (*h).tcache_enabled, true);
             ptr::write(&raw mut (*h).bound, false);
             ptr::write(&raw mut (*h).rng, 0);
+            ptr::write(&raw mut (*h).rehome, false);
+            ptr::write(&raw mut (*h).rehome_from, FOREIGN);
             let caches = (&raw mut (*h).caches).cast::<CacheHeader>();
             for c in 0..NCLASSES {
                 ptr::write(caches.add(c), CacheHeader::EMPTY);
@@ -243,6 +266,13 @@ impl Heap {
     pub unsafe fn destroy(h: *mut Heap, shared: &Shared) {
         // SAFETY: the caller gives us exclusive ownership of the heap.
         let heap = unsafe { &mut *h };
+        // Unbound before the flush: the arena is idle from here on, so a
+        // thread this one just started (larson's successor, which frees
+        // what this one allocated) can be homed on it, or move there
+        // ([`Heap::try_rehome`]), while the flush below runs.
+        if heap.bound {
+            shared.arenas.unbind(heap.arena);
+        }
         heap.flush_all(shared);
         Self::free_caches(shared, &mut heap.caches);
         for o in Self::nodes(heap.others) {
@@ -258,7 +288,6 @@ impl Heap {
         heap.others = ptr::null_mut();
         if heap.bound {
             let arena = heap.arena;
-            shared.arenas.unbind(arena);
             // jemalloc's rule (`tcache_destroy`): the last thread homed on
             // an arena leaves, so nothing will refill its `Empty` slabs
             // soon; purge them now instead of letting them sit for the
@@ -266,7 +295,9 @@ impl Heap {
             // them. Not with a background thread, which decays on its own
             // schedule (as jemalloc), and at most once per decay period
             // per arena (`Arena::take_exit_purge`: thread churn would
-            // purge and refault the same slabs at every exit). Design 13.3.
+            // purge and refault the same slabs at every exit); and not
+            // when another heap has been homed there since the unbind
+            // above. Design 13.3.
             if shared.arenas.bound(arena) == 0 && !crate::purge::background::present() {
                 if let Some(a) = shared.arenas.get_existing(arena) {
                     if a.take_exit_purge(now_ns()) {
@@ -315,6 +346,9 @@ impl Heap {
     /// move to the `others` list and the new home's, if any, take their
     /// place, so nothing is flushed. `arena` must exist.
     pub fn set_arena(&mut self, shared: &Shared, arena: u16) {
+        // An explicit home is kept, even one equal to the current home:
+        // no late move away from it ([`Heap::try_rehome`]).
+        self.rehome = false;
         if arena == self.arena {
             return;
         }
@@ -336,6 +370,98 @@ impl Heap {
             shared.arenas.unbind(old);
             shared.arenas.bind(arena);
         }
+    }
+
+    /// The `FOREIGN` slow path of a young heap's cross-arena `free`
+    /// ([`Heap::rehome`] set): the first free of each class, while the
+    /// class has no `FOREIGN` cache yet, and the flush of a full one. The
+    /// heap moves onto the slot's arena when [`Heap::try_rehome`] allows
+    /// it, and the slot then takes the home push; otherwise (false) the
+    /// caller goes on to the ordinary `FOREIGN` path. Here rather than in
+    /// [`Heap::free_other`] so that the cross-arena fast push (every free
+    /// of xmalloc-test's consumers) carries no test for it.
+    #[cold]
+    #[inline(never)]
+    fn rehome_on_free(&mut self, shared: &Shared, class: usize, p: *mut u8) -> bool {
+        let to = shared.arena_of_slot(class, p);
+        if !self.try_rehome(shared, to) {
+            return false;
+        }
+        self.push(shared, class, p);
+        true
+    }
+
+    /// Move the home of a young thread heap onto `to`, the arena owning a
+    /// slot it is freeing, if no heap is homed there (design 6.5). Called
+    /// from the cross-arena `free` ([`Heap::rehome_on_free`]) while
+    /// [`Heap::rehome`] is set, which this clears once the heap has made
+    /// [`REHOME_TICKS`] slow-path entries; true when the heap moved.
+    ///
+    /// Why: a thread that takes over a dead thread's data was homed when
+    /// it started, while that thread still held its arena, so it was put
+    /// on another one, and every `free` of the inherited data took the
+    /// foreign cache while its own allocations came from fresh refills of
+    /// its own arena (larson: each successor alternated between two
+    /// arenas, `narenas:1` was 31% faster at 10 rounds per thread on the
+    /// C4A). Most successors now create their heap after the exiting
+    /// thread's unbind ([`Heap::destroy`] unbinds before its flush) and
+    /// are homed on its arena directly; one started earlier moves there
+    /// here once that arena is idle, and the inherited slots feed its
+    /// home caches again.
+    ///
+    /// The move flushes the home caches and the `FOREIGN` caches through
+    /// the ordinary flush (every cached slot goes back to its slab, its bit
+    /// cleared, so a stale free of one aborts as before; nothing stays
+    /// cached across the move), keeps the stacks and re-keys the home
+    /// headers to `to`. Only an automatic arena, only one with no heap
+    /// homed on it (`Arenas::try_bind_idle`, one compare-and-swap, so two
+    /// heaps never both take it), never one this heap already keeps an
+    /// `others` node for, and at most once per heap.
+    ///
+    /// Only while the heap is young by its slow-path count: a thread that
+    /// has built data of its own at home and then frees other threads'
+    /// data (mstress's workers take transfer slots from every arena) would
+    /// strand its own data on the arena it leaves and send every later
+    /// free of it to the `FOREIGN` cache. Moving on the first free from
+    /// any idle arena cost mstress 6% (700 of its 775 workers moved, after
+    /// about 140 slow-path entries each); under the limit 46 still moved
+    /// (+2.3%). Hence the second condition: two cross-arena frees in a
+    /// row seen here went to the same arena (an inherited data set comes
+    /// from one arena; mstress's transfer slots from all of them).
+    fn try_rehome(&mut self, shared: &Shared, to: u16) -> bool {
+        debug_assert!(self.bound);
+        if self.slow_ticks >= REHOME_TICKS {
+            self.rehome = false;
+            return false;
+        }
+        if to != self.rehome_from {
+            self.rehome_from = to;
+            return false;
+        }
+        if to as u32 >= shared.arenas.auto()
+            || to == self.arena
+            || shared.arenas.bound(to) != 0
+            || !self.other_caches(shared, to, false).is_null()
+            || !shared.arenas.try_bind_idle(to)
+        {
+            return false;
+        }
+        let old = self.arena;
+        self.flush_arena(shared, old, ptr::null_mut());
+        let foreign = self.other_caches(shared, FOREIGN, false);
+        if !foreign.is_null() {
+            self.flush_arena(shared, FOREIGN, foreign);
+        }
+        let a = shared.owner(to);
+        for (class, c) in self.caches.iter_mut().enumerate() {
+            if c.cap != 0 {
+                c.rekey(to, a.class(class).refilled() as u32);
+            }
+        }
+        self.arena = to;
+        self.rehome = false;
+        shared.arenas.unbind(old);
+        true
     }
 
     /// Flush the home caches, fold their byte counters into `uncached` and
