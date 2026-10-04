@@ -18,7 +18,9 @@
 //!   in atomics, so the visit takes no lock unless a walk is due.
 //!   [`on_tick`] is the slow path's hook (design 6.4).
 //! - The background thread ([`background`], `purge/background.rs`): created
-//!   on the first periodic tick after it was requested, never from init, on
+//!   on the first periodic tick after it was requested, or by default on
+//!   the first one that finds enough dirty memory waiting (the lazy start,
+//!   [`background::auto_tick`]), never from init, on
 //!   a stack from the metadata region with a guard page below it and every
 //!   signal blocked. It loops over `decay` and sleeps on a futex until the
 //!   next deadline; a class whose first slab goes `Empty` wakes it. While it
@@ -456,7 +458,7 @@ pub fn purge_arena(shared: &Shared, index: u16) -> Option<usize> {
 
 /// Periodic-work hook (design 6.4): start the background thread if one was
 /// requested and does not exist, otherwise run decay here unless the
-/// thread is doing it.
+/// thread is doing it, and let the lazy start look at what decay left.
 pub fn on_tick(shared: &Shared, now: u64) {
     sample(shared, now);
     if background::present() {
@@ -465,7 +467,10 @@ pub fn on_tick(shared: &Shared, now: u64) {
     if background::requested() && background::start(shared) {
         return;
     }
-    let _ = decay(shared, now);
+    if decay(shared, now).is_some() {
+        // Dirty memory is still waiting: the lazy start's look.
+        background::auto_tick(shared, now);
+    }
 }
 
 /// Design 11: `memory.current` and `memory.events`, at most once per 10 ms

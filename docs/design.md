@@ -866,16 +866,31 @@ shape (`purge.rs`, `purge/curve.rs`, `class/decay.rs`):
 
 ### 8.1 Background thread
 
-Created only when `background_thread:true` is set via `malloc_conf` or
-written through `mallctl` (`purge/background.rs`): through
-`pthread_create` on the first periodic tick (6.4) after the request, never
-from init, or synchronously by `mallctl("background_thread", true)`. It
+Created through `pthread_create` (`purge/background.rs`), never from
+init: on the first periodic tick (6.4) after `background_thread:true` in
+`malloc_conf`, synchronously by `mallctl("background_thread", true)`, or,
+with the key unset (the default), lazily. The lazy start looks at most
+every 100 ms, from a periodic tick whose foreground decay pass left dirty
+memory waiting: it sums the `Empty` bytes (every class and the huge tier)
+and starts the thread at 64 MiB, or at 4 MiB held at every look for a
+second. A process that never holds that much never starts a thread: it
+stays single-threaded (`unshare(CLONE_NEWUSER)` keeps working) and its
+startup is unchanged (the key is read with the others; nothing else
+happens at init). `background_thread:false` (or any write through
+`mallctl`) disarms it. A lazy start that fails (a seccomp filter that
+fails `clone` with an errno, `RLIMIT_NPROC`) disarms it for good and the
+process purges in the foreground as before; a filter that kills on
+`clone` kills the process, so a sandbox that does that needs
+`background_thread:false`. It
 sleeps on a futex until the next decay deadline, is woken when a class's
 first slab goes `Empty`, and samples the cgroup (section 11) before each
 decay pass. Its stack is one metadata reservation, made by the first
 start and never freed: a stopped thread exits at its next wake-up, and
 the next start joins it before reusing the stack. After `fork` the child
-forgets the parent's thread and does not recreate it until asked.
+forgets the parent's thread and does not recreate it until asked or,
+under the lazy start, until it holds enough dirty memory of its own: the
+low-water mark of its dirty bytes since the fork is subtracted, so what
+it inherited does not count.
 Creating the thread from a `free` slow path saves and restores `errno`.
 
 ## 9. Fork
@@ -1115,7 +1130,7 @@ Format is jemalloc's `key:value,key:value`. The keys, in `TABLE` order:
 
 | Key                       | Default | Notes                                   |
 |---------------------------|---------|-----------------------------------------|
-| `background_thread`       | false   | 8.1                                     |
+| `background_thread`       | unset   | unset starts lazily, reads `false`; 8.1 |
 | `dirty_decay_ms`          | 10000   | `-1`..`1000000000000`; 8                |
 | `muzzy_decay_ms`          | 0       | stored and readable; nothing acts on it |
 | `narenas`                 | 0       | 0 = `min(4 * ncpus, 64)`; 13.3          |

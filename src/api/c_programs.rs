@@ -660,6 +660,21 @@ ctests! {
     c_decay_background_thread => [
         CTest { prog: "decay", args: &["background"], conf: Some("abort_conf:true,background_thread:true,dirty_decay_ms:200"), ..BASE },
     ];
+    /// `tests/c/lazy_bg.c`: the lazy background thread under the default
+    /// configuration (design 8.1). A small workload stays single-threaded
+    /// and can unshare a user namespace; a burst starts the thread and it
+    /// purges the idle process; a fork child and an exec stay
+    /// single-threaded; dirty memory over the floor starts it after the
+    /// hold; `background_thread:false` and a filter that refuses `clone`
+    /// start nothing.
+    c_lazy_bg => [
+        CTest { prog: "lazy_bg", args: &["small"], conf: Some("abort_conf:true"), ..BASE },
+        CTest { prog: "lazy_bg", args: &["burst"], conf: Some("abort_conf:true,dirty_decay_ms:500"),
+            stdout_has: &["burst: exec small"], ..BASE },
+        CTest { prog: "lazy_bg", args: &["hold"], conf: Some("abort_conf:true,dirty_decay_ms:5000"), ..BASE },
+        CTest { prog: "lazy_bg", args: &["optout"], conf: Some("abort_conf:true,background_thread:false,dirty_decay_ms:500"), ..BASE },
+        CTest { prog: "lazy_bg", args: &["seccomp"], conf: Some("abort_conf:true,dirty_decay_ms:500"), ..BASE },
+    ];
     c_align => [ CTest { prog: "align", ..BASE } ];
     c_realloc_tiers => [ CTest { prog: "realloc_tiers", ..BASE } ];
     c_calloc_zero => [ CTest { prog: "calloc_zero", ..BASE } ];
