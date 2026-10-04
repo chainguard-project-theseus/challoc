@@ -2476,6 +2476,229 @@ fn heap_churn_reuses_the_vacated_arena() {
     assert!((0..8).all(|i| s.arenas.bound(i) == 0));
 }
 
+/// A successor thread (larson's shape): started while the thread whose
+/// data it takes over still holds its arena, so homed elsewhere; once
+/// that arena is idle, the second free of the inherited data that takes
+/// the `FOREIGN` slow path (the first of another class) moves its home
+/// there (`Heap::try_rehome`): the home and `FOREIGN` caches are flushed
+/// through the ordinary flush, the headers keep their stacks, the binding
+/// moves, and the freed slot takes the home push. A free that takes the
+/// `FOREIGN` fast push is not looked at. At most once per heap.
+#[test]
+fn a_young_heap_moves_onto_the_idle_arena_it_frees_into() {
+    let s = TestShared::with(Config {
+        narenas: 8,
+        ..Config::DEFAULT
+    })
+    .build();
+    let main = TestHeap::new(s);
+    let c = class_with(64);
+    let w1 = TestHeap::new(s);
+    assert_eq!(w1.heap().arena(), 1);
+    let inherited: Vec<*mut u8> = (0..8).map(|_| w1.alloc(c)).collect();
+    let c2 = class_with(128);
+    let x = w1.alloc(c2);
+    // Started before w1 exits: arena 1 is held, so w2 lands on 2.
+    let w2 = TestHeap::new(s);
+    assert_eq!(w2.heap().arena(), 2);
+    let own = w2.alloc(c);
+    assert_eq!(s.classify_free(own), Ok((c, 2)));
+    // A foreign free while arena 1 is held: onto FOREIGN, no move.
+    w2.free(inherited[0]);
+    assert_eq!(w2.heap().arena(), 2);
+    assert_eq!(w2.heap().cache_in(FOREIGN, c).unwrap().len(), 1);
+    assert!(w2.heap().rehome);
+    w1.destroy();
+    assert_eq!(s.arenas.bound(1), 0);
+    let home_len = w2.cache(c).len();
+    assert!(home_len > 0);
+    // Arena 1 is idle now, but a FOREIGN fast push is not looked at.
+    w2.free(inherited[1]);
+    assert_eq!(w2.heap().arena(), 2);
+    assert_eq!(w2.heap().cache_in(FOREIGN, c).unwrap().len(), 2);
+    // The first free of another class takes the slow path: w2 moves.
+    w2.free(x);
+    assert_eq!(w2.heap().arena(), 1);
+    assert_eq!((s.arenas.bound(1), s.arenas.bound(2)), (1, 0));
+    assert!(!w2.heap().rehome);
+    // Both caches were flushed (arena 2's refill went back to its slab);
+    // the slot that triggered the move is the one home entry.
+    assert_eq!(w2.heap().cache_in(FOREIGN, c).unwrap().len(), 0);
+    assert_eq!(w2.cached_plain(c2), [x]);
+    assert_eq!(w2.cache(c).len(), 0);
+    assert_eq!(s.arena(2).unwrap().classes[c].curregs(), 1, "only `own`");
+    // The rest of the inherited data takes the fast path now.
+    for &p in &inherited[2..] {
+        assert!(free_fast(s, w2.heap(), p, s.free_flags()));
+    }
+    assert_eq!(w2.cache(c).len(), inherited.len() - 2);
+    // A pop serves an inherited slot.
+    assert_eq!(s.classify_free(w2.alloc(c)), Ok((c, 1)));
+    // One move per heap: arena 2 is idle, but `own` goes onto FOREIGN.
+    w2.free(own);
+    assert_eq!(w2.heap().arena(), 1);
+    assert_eq!(w2.heap().cache_in(FOREIGN, c).unwrap().len(), 1);
+    // Byte counters survived the move.
+    let st = w2.stats();
+    assert_eq!(st.allocated, 2 * 64);
+    assert_eq!(st.deallocated, 9 * 64 + 128);
+    w2.destroy();
+    main.destroy();
+    assert!((0..8).all(|i| s.arenas.bound(i) == 0));
+}
+
+/// The move never stacks a second heap on an arena, never leaves a home
+/// `thread.arena` chose, and never targets an explicit arena.
+#[test]
+fn rehoming_only_takes_an_idle_automatic_arena() {
+    let s = TestShared::with(Config {
+        narenas: 4,
+        ..Config::DEFAULT
+    })
+    .build();
+    let main = TestHeap::new(s);
+    let c = class_with(64);
+    // Held arena: no move, the window counts down.
+    let w1 = TestHeap::new(s);
+    let p = w1.alloc(c);
+    let w2 = TestHeap::new(s);
+    w2.free(p);
+    assert_eq!(w2.heap().arena(), 2);
+    // Two candidates for one idle arena: the first wins, the second
+    // finds it bound again (each free is the first of its class, so each
+    // takes the FOREIGN slow path and is looked at).
+    let c2 = class_with(128);
+    let q1 = w1.alloc(c2);
+    let q2 = w1.alloc(c);
+    let q3 = w1.alloc(c2);
+    let w3 = TestHeap::new(s);
+    assert_eq!(w3.heap().arena(), 3);
+    w3.free(q2);
+    w1.destroy();
+    w2.free(q1);
+    w3.free(q3);
+    assert_eq!((w2.heap().arena(), w3.heap().arena()), (1, 3));
+    assert_eq!(s.arenas.bound(1), 1);
+    assert!(w3.heap().rehome);
+    // `thread.arena` pins the home.
+    w3.heap().set_arena(s, 0);
+    assert!(!w3.heap().rehome);
+    let r = w2.alloc(c);
+    w2.destroy();
+    assert_eq!(s.arenas.bound(1), 0);
+    w3.free(r);
+    assert_eq!(w3.heap().arena(), 0);
+    assert_eq!(s.arenas.bound(1), 0);
+    // An explicit arena is never a target.
+    let x = s.arenas.create(s).unwrap();
+    assert!(x as u32 >= s.arenas.auto());
+    let w4 = TestHeap::new(s);
+    let (e1, _) = w4.heap().alloc_in(s, x, c);
+    let (e2, _) = w4.heap().alloc_in(s, x, c2);
+    assert!(!e1.is_null() && !e2.is_null());
+    let w5 = TestHeap::new(s);
+    let home = w5.heap().arena();
+    w5.free(e1);
+    w5.free(e2);
+    assert_eq!(w5.heap().arena(), home);
+    assert_eq!(s.arenas.bound(x), 0);
+    w5.destroy();
+    w4.destroy();
+    w3.destroy();
+    main.destroy();
+}
+
+/// The move needs two cross-arena frees in a row into the same arena: a
+/// young heap freeing slots of several idle arenas in turn (mstress's
+/// transfer slots) stays where it is until two in a row come from one.
+#[test]
+fn rehoming_needs_two_frees_in_a_row_into_one_arena() {
+    let s = TestShared::with(Config {
+        narenas: 8,
+        ..Config::DEFAULT
+    })
+    .build();
+    let main = TestHeap::new(s);
+    let w1 = TestHeap::new(s);
+    let w2 = TestHeap::new(s);
+    // One class per free, so each takes the FOREIGN slow path.
+    let a: Vec<*mut u8> = [16, 48].iter().map(|&n| w1.alloc(class_with(n))).collect();
+    let b: Vec<*mut u8> = [32, 64, 80]
+        .iter()
+        .map(|&n| w2.alloc(class_with(n)))
+        .collect();
+    let w3 = TestHeap::new(s);
+    assert_eq!(w3.heap().arena(), 3);
+    w1.destroy();
+    w2.destroy();
+    for (&x, &y) in a.iter().zip(&b[..2]) {
+        w3.free(x);
+        w3.free(y);
+    }
+    assert_eq!(w3.heap().arena(), 3);
+    assert!(w3.heap().rehome);
+    w3.free(b[2]);
+    assert_eq!(w3.heap().arena(), 2);
+    assert_eq!((s.arenas.bound(2), s.arenas.bound(3)), (1, 0));
+    w3.destroy();
+    main.destroy();
+}
+
+/// A heap that has made [`REHOME_TICKS`] slow-path entries has data of
+/// its own at home: it stays there even when the arena it frees into is
+/// idle (mstress's workers), and the first such free closes the window.
+#[test]
+fn a_heap_past_the_young_limit_never_moves() {
+    let s = TestShared::with(Config {
+        narenas: 4,
+        ..Config::DEFAULT
+    })
+    .build();
+    let main = TestHeap::new(s);
+    let w1 = TestHeap::new(s);
+    let p = w1.alloc(class_with(64));
+    let w2 = TestHeap::new(s);
+    // One refill per class: one slow-path entry each.
+    let own: Vec<*mut u8> = (0..REHOME_TICKS as usize)
+        .map(|i| w2.alloc(class_with(16 * (i + 1))))
+        .collect();
+    assert!(w2.heap().slow_ticks() >= REHOME_TICKS);
+    w1.destroy();
+    assert_eq!(s.arenas.bound(1), 0);
+    w2.free(p);
+    assert_eq!(w2.heap().arena(), 2);
+    assert_eq!(s.arenas.bound(1), 0);
+    assert!(!w2.heap().rehome);
+    for q in own {
+        w2.free(q);
+    }
+    w2.destroy();
+    main.destroy();
+}
+
+/// A slot that went onto `FOREIGN` before the move is back in its bitmap
+/// after it, so freeing it again aborts as any stale double free does:
+/// nothing stays cached across the move.
+#[test]
+#[should_panic(expected = "invalid or double free")]
+fn a_double_free_across_the_move_aborts() {
+    let s = TestShared::with(Config {
+        narenas: 4,
+        ..Config::DEFAULT
+    })
+    .build();
+    let _main = TestHeap::new(s);
+    let c = class_with(64);
+    let w1 = TestHeap::new(s);
+    let (p, q) = (w1.alloc(c), w1.alloc(class_with(128)));
+    let w2 = TestHeap::new(s);
+    w2.free(p);
+    w1.destroy();
+    w2.free(q);
+    assert_eq!(w2.heap().arena(), 1);
+    w2.free(p);
+}
+
 /// `narenas:0` (the default) is resolved at init from the CPU count
 /// and stored, so `opt.narenas` and `arenas.auto` agree on it.
 #[test]
