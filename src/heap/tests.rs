@@ -1075,6 +1075,74 @@ fn flag_sort_permutes_into_ascending_buckets() {
     assert_eq!(v, expect);
 }
 
+/// `flag_sort` takes a batch as long as the largest cache
+/// (`MAX_NSLOTS`, 65536 entries): a whole flush of a full cache that
+/// spans 2 to 256 slabs. The bucket counts sum to the batch length, so
+/// the cursors must hold 65536 itself.
+#[test]
+fn flag_sort_groups_a_batch_as_long_as_the_largest_cache() {
+    let len = crate::config::MAX_NSLOTS as usize;
+    let mut st = 0x0123_4567_89ab_cdefu64;
+    for nb in [2usize, 3, 256] {
+        let mut v: Vec<*mut u8> = (0..len)
+            .map(|_| (xorshift(&mut st) % (1 << 40)) as *mut u8)
+            .collect();
+        let mut expect = v.clone();
+        let key = |p: *mut u8| (p as usize) % nb;
+        flag_sort(&mut v, nb, key);
+        assert!(
+            v.windows(2).all(|w| key(w[0]) <= key(w[1])),
+            "nb {nb}: buckets ascend"
+        );
+        v.sort_unstable();
+        expect.sort_unstable();
+        assert_eq!(v, expect, "nb {nb}: a permutation of the input");
+    }
+}
+
+/// A flush of a whole 65536-slot cache (`tcache_nslots_small_max` at
+/// its bound, `Heap::flush_all` here, which `thread.tcache.flush`,
+/// `tcache.flush` and thread exit take) hands `group_by_slab` all 65536
+/// entries; scrambled and spread over a few 4096-slot slabs, they go
+/// through `flag_sort` and every one is released.
+#[test]
+fn a_whole_flush_of_a_65536_slot_cache_releases_every_slot() {
+    let cap = crate::config::MAX_NSLOTS as usize;
+    let s = TestShared::with(Config {
+        narenas: 1,
+        lg_tcache_nslots_mul: 16,
+        tcache_nslots_small_max: cap as u32,
+        ..Config::DEFAULT
+    })
+    .build();
+    let c = class_with(16);
+    assert_eq!(s.config.cap_for(0, 0, c) as usize, cap);
+    let t = TestHeap::new(s);
+    let mut ps: Vec<*mut u8> = (0..2 * cap).map(|_| t.alloc(c)).collect();
+    let mut st = 0xfeed_face_0bad_f00du64;
+    for i in (1..ps.len()).rev() {
+        let j = (xorshift(&mut st) % (i as u64 + 1)) as usize;
+        ps.swap(i, j);
+    }
+    let (cached, kept) = ps.split_at(cap - t.len(c));
+    for &p in cached {
+        t.free(p);
+    }
+    assert_eq!(t.len(c), cap);
+    assert!(!t.cached_plain(c).is_sorted());
+    let flushes = t.cache(c).unsorted_flushes;
+    t.flush_all();
+    assert_eq!(t.cache(c).unsorted_flushes, flushes + 1);
+    assert_eq!(t.len(c), 0);
+    assert_eq!(live(s, c), kept.len());
+    for &p in kept {
+        t.free(p);
+    }
+    t.flush_all();
+    assert_eq!(live(s, c), 0);
+    t.destroy();
+}
+
 #[test]
 fn zeroed_prefix_tracks_fresh_memory() {
     let s = shared();

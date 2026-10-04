@@ -311,15 +311,18 @@ pub(super) fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8])
 /// `key` (below `nb`, at most [`GROUP_BUCKETS`]) are contiguous, buckets
 /// in ascending key order. One counting sweep, a prefix sum, and one
 /// cycle-following sweep that moves every entry once: O(len + nb), no
-/// scratch beyond the bucket cursors.
+/// scratch beyond the bucket cursors. The cursors are `u32`: a whole
+/// flush of the largest cache passes
+/// [`MAX_NSLOTS`](crate::config::MAX_NSLOTS) (65536) entries, one more
+/// than `u16` can count.
 pub(super) fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> usize) {
-    debug_assert!(nb <= GROUP_BUCKETS && v.len() <= u16::MAX as usize);
-    let mut next = [0u16; GROUP_BUCKETS];
-    let mut end = [0u16; GROUP_BUCKETS];
+    debug_assert!(nb <= GROUP_BUCKETS && v.len() <= crate::config::MAX_NSLOTS as usize);
+    let mut next = [0u32; GROUP_BUCKETS];
+    let mut end = [0u32; GROUP_BUCKETS];
     for &p in v.iter() {
         end[key(p)] += 1;
     }
-    let mut acc = 0u16;
+    let mut acc = 0u32;
     for b in 0..nb {
         next[b] = acc;
         acc += end[b];
