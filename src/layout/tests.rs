@@ -15,8 +15,9 @@ fn synthetic(lg_region: u32, lg_stride: u32) -> Regions {
     let mut s = 0x9E37_79B9_7F4A_7C15u64;
     let gap = (1usize << lg_stride) - (1usize << lg_region);
     let mut offsets = [0usize; NCLASSES];
-    for o in offsets.iter_mut() {
+    for (c, o) in offsets.iter_mut().enumerate() {
         *o = (xorshift(&mut s) as usize % (gap >> LG_MAX_SLAB)) << LG_MAX_SLAB;
+        *o += regions::colour(c, CLASSES[c].lg_slab as u32, 12);
     }
     let superblock = 0x1000_0000_0000usize;
     let sb_len = NCLASSES << lg_stride;
@@ -524,7 +525,11 @@ fn from_parts_layout_invariants() {
     assert_eq!(r.gap(), (1 << 34) - (1 << 32));
     for c in 0..NCLASSES {
         let base = r.class_base[c];
-        assert_eq!(base & (MAX_SLAB - 1), 0);
+        assert_eq!(
+            base & (MAX_SLAB - 1),
+            regions::colour(c, CLASSES[c].lg_slab as u32, 12)
+        );
+        assert_eq!(base & (CLASSES[c].slab_size() - 1), 0);
         let start = r.superblock + c * r.stride();
         assert!(base >= start && base + r.region_len() <= start + r.stride());
         assert_eq!(r.nslabs(c), r.region_len() / CLASSES[c].slab_size());
@@ -731,5 +736,40 @@ fn minimal_stride_layout_still_classifies() {
             }
         }
         assert_eq!(r.classify(r.class_base[c] + r.region_len()), Kind::Invalid);
+    }
+}
+
+/// The colours keep every class region aligned to its slab and the page,
+/// stay below `MAX_SLAB` (inside the random offset's 4 MiB step), and put
+/// the first slabs of any 16 consecutive 64 KiB-slab classes in distinct
+/// 64 KiB units modulo 1 MiB, so their first pages share no second-level
+/// TLB set at 256 sets of 4 KiB.
+#[test]
+fn colours_are_aligned_and_spread_the_classes_over_a_mebibyte() {
+    for lg_page in [12u32, 14, 16] {
+        for c in 0..NCLASSES {
+            let lg_slab = BASE_CLASSES[c].lg_slab as u32;
+            let k = regions::colour(c, lg_slab, lg_page);
+            assert!(k < MAX_SLAB, "class {c}");
+            assert_eq!(k & ((1usize << lg_slab) - 1), 0, "class {c}");
+            assert_eq!(k & ((1usize << lg_page) - 1), 0, "class {c}");
+            assert_eq!(k & ((1usize << regions::LG_COLOUR_UNIT) - 1), 0);
+        }
+    }
+    let small: Vec<usize> = (0..NCLASSES)
+        .filter(|&c| BASE_CLASSES[c].lg_slab as u32 <= regions::LG_COLOUR_UNIT)
+        .collect();
+    assert!(small.len() >= 16 && small.windows(2).all(|p| p[1] == p[0] + 1));
+    for w in small.windows(16) {
+        let mut units: Vec<usize> = w
+            .iter()
+            .map(|&c| {
+                let k = regions::colour(c, BASE_CLASSES[c].lg_slab as u32, 12);
+                (k & ((1 << 20) - 1)) >> regions::LG_COLOUR_UNIT
+            })
+            .collect();
+        units.sort_unstable();
+        units.dedup();
+        assert_eq!(units.len(), 16, "classes {w:?}");
     }
 }

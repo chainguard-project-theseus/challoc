@@ -38,6 +38,80 @@ pub struct Mapping {
 /// class, two per side mapping.
 pub const MAX_SEALED: usize = NCLASSES + 1 + 4;
 
+/// Unit of the class regions' colouring ([`colour`]): 64 KiB, the small
+/// classes' slab.
+pub const LG_COLOUR_UNIT: u32 = 16;
+/// Units between the colours of neighbouring classes ([`colour`]): odd, so
+/// any 16 consecutive classes take distinct colours modulo 1 MiB (and any 8
+/// modulo 512 KiB), 5 units (320 KiB) apart modulo 1 MiB.
+const COLOUR_STEP: usize = 21;
+
+/// Colour of class `class`'s region: its distance above the `MAX_SLAB`
+/// boundary its random offset picks, a multiple of the class's slab (and of
+/// the page and [`LG_COLOUR_UNIT`]) below [`MAX_SLAB`].
+///
+/// Every class allocates its lowest slabs first, so without a colour the
+/// hot first pages of every class would sit at the same address modulo
+/// 4 MiB. A set-associative second-level TLB indexes on the low bits of the
+/// page number (256 sets of 4 KiB pages cover 1 MiB on Neoverse N1, N2,
+/// N3 and V2), so a program using twenty classes would crowd their first
+/// pages into the same few sets and walk the page tables on conflict
+/// misses while most sets stay empty. The colour spreads the first slabs
+/// of neighbouring classes 320 KiB apart over each 1 MiB, the way
+/// jemalloc's back-to-back extents spread its slabs.
+pub const fn colour(class: usize, lg_slab: u32, lg_page: u32) -> (r: usize)
+    requires
+        class < NCLASSES,
+        lg_slab <= LG_MAX_SLAB,
+        lg_page <= LG_MAX_SLAB,
+    ensures
+        r < MAX_SLAB,
+        offset_ok(r, lg_slab, lg_page),
+{
+    let mut lg = LG_COLOUR_UNIT;
+    if lg_slab > lg {
+        lg = lg_slab;
+    }
+    if lg_page > lg {
+        lg = lg_page;
+    }
+    proof {
+        assert(1usize << lg >= 1) by (bit_vector)
+            requires lg <= 22;
+        let x = (class * COLOUR_STEP) as usize;
+        let r = ((x << 16u32) & 0x3f_ffff) & !(((1usize << lg) - 1) as usize);
+        let (ls, lp) = (lg_slab, lg_page);
+        assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+        assert(r < 0x40_0000 && r & 0xffff == 0 && r & sub(1usize << ls, 1) == 0 && r & sub(1usize << lp, 1) == 0)
+            by (bit_vector)
+            requires
+                r == ((x << 16u32) & 0x3f_ffff) & !sub(1usize << lg, 1),
+                16 <= lg <= 22,
+                ls <= lg,
+                lp <= lg;
+    }
+    ((class * COLOUR_STEP) << LG_COLOUR_UNIT) & (MAX_SLAB - 1) & !((1usize << lg) - 1)
+}
+
+/// What a class region's offset in its stride is aligned to
+/// ([`Regions::from_parts`]): the colour unit, the class's slab
+/// (`2^lg_slab`) and the page (`2^lg_page`), as low bits that are clear.
+/// A random `MAX_SLAB` multiple plus a [`colour`] is.
+pub open spec fn offset_ok(o: usize, lg_slab: u32, lg_page: u32) -> bool {
+    &&& o & 0xffff == 0
+    &&& o & (((1usize << lg_slab) - 1) as usize) == 0
+    &&& o & (((1usize << lg_page) - 1) as usize) == 0
+}
+
+/// What every class base is aligned to (`Regions::separated`): the
+/// class's slab, the page and the colour unit, as remainders. A
+/// `MAX_SLAB` boundary plus an offset [`offset_ok`] says is.
+pub open spec fn base_aligned(b: int, c: int, lg_page: u32) -> bool {
+    &&& b % ((1usize << class_table()[c].lg_slab) as int) == 0
+    &&& b % ((1usize << lg_page) as int) == 0
+    &&& b % 0x1_0000 == 0
+}
+
 /// What a pointer is, according to the regions alone. Slab-tier results
 /// still need the slab bitmap consulted to tell live from free.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,7 +223,8 @@ pub struct Regions {
     pub superblock: usize,
     pub lg_region: u32,
     pub lg_stride: u32,
-    /// Start of each class region, `MAX_SLAB`-aligned, inside its stride.
+    /// Start of each class region inside its stride: a `MAX_SLAB` boundary
+    /// plus the class's [`colour`], so aligned to the class's slab.
     pub class_base: [usize; NCLASSES],
     pub huge_base: usize,
     pub huge_len: usize,
@@ -182,8 +257,9 @@ impl Regions {
     }
 
     /// The layout facts region separation rests on, on top of
-    /// [`wf`](Regions::wf): every class base is `MAX_SLAB`-aligned and
-    /// class `c`'s region lies inside stride `c` of the superblock (so the
+    /// [`wf`](Regions::wf): every class base is aligned to its class's
+    /// slab, the page and the colour unit ([`base_aligned`]) and class
+    /// `c`'s region lies inside stride `c` of the superblock (so the
     /// class regions are pairwise disjoint and each is followed by its
     /// gap), the strides starting above address 0 and ending below `2^48`;
     /// every class base and the huge base are above address 0, so no slot
@@ -204,7 +280,7 @@ impl Regions {
         &&& self.superblock + NCLASSES * stride <= 0x1_0000_0000_0000
         &&& self.superblock + NCLASSES * stride <= crate::sys::pac::user_va_limit()
         &&& forall|c: int| 0 <= c < NCLASSES ==> {
-            &&& (#[trigger] self.class_base[c] as int) % (MAX_SLAB as int) == 0
+            &&& base_aligned(#[trigger] self.class_base[c] as int, c, self.lg_page)
             &&& 0 < self.class_base[c]
             &&& self.superblock + c * stride <= self.class_base[c]
             &&& self.class_base[c] + region <= self.superblock + (c + 1) * stride
@@ -487,8 +563,9 @@ impl Regions {
 
     /// Assemble regions from already chosen bases. `offsets[c]` is the
     /// distance of class `c`'s region from the start of its stride; every
-    /// offset must be `MAX_SLAB`-aligned and below the gap, and `superblock`
-    /// must be `MAX_SLAB`-aligned.
+    /// offset must be aligned to class `c`'s slab and to [`LG_COLOUR_UNIT`]
+    /// (a random multiple of `MAX_SLAB` plus a [`colour`]) and below the
+    /// gap, and `superblock` must be `MAX_SLAB`-aligned.
     pub const fn from_parts(
         superblock: usize,
         lg_region: u32,
@@ -504,7 +581,7 @@ impl Regions {
             lg_stride <= 57,
             superblock & ((MAX_SLAB - 1) as usize) == 0,
             forall|c: int| 0 <= c < NCLASSES ==>
-                (#[trigger] offsets[c]) & ((MAX_SLAB - 1) as usize) == 0
+                offset_ok(#[trigger] offsets[c], class_table()[c].lg_slab as u32, lg_page)
                 && offsets[c] < (1usize << lg_stride) - (1usize << lg_region),
             superblock + (NCLASSES << lg_stride) <= usize::MAX,
             lg_region <= LG_REGION_PREFERRED,
@@ -513,8 +590,8 @@ impl Regions {
             meta.0 + meta.1 <= usize::MAX,
             forall|i: int| 0 <= i < 3 ==> #[trigger] maps[i].addr + maps[i].len <= usize::MAX,
             // What `reserve` proves for `separated`: each region lies inside
-            // its own mapping, the huge base is aligned like the class
-            // bases, and the page is between 4 KiB (`reserve`'s caller
+            // its own mapping, the huge base is `MAX_SLAB`-aligned like the
+            // superblock, and the page is between 4 KiB (`reserve`'s caller
             // passes the kernel's page) and `MAX_SLAB` (`reserve` asserts
             // the bound). The mappings are three `mmap`s without
             // `MAP_FIXED`, which the kernel places apart from each other
@@ -562,20 +639,24 @@ impl Regions {
         let gap = (1usize << lg_stride) - (1usize << lg_region);
         let mut class_base = [0usize; NCLASSES];
         let mut c = 0;
+        proof {
+            assert((1usize << LG_COLOUR_UNIT) == 0x1_0000) by (bit_vector);
+        }
         while c < NCLASSES
             invariant
                 0 <= c <= NCLASSES,
+                (1usize << LG_COLOUR_UNIT) == 0x1_0000,
                 gap == (1usize << lg_stride) - (1usize << lg_region),
                 lg_region < lg_stride <= 57,
                 MAX_SLAB == 0x40_0000,
                 superblock + (NCLASSES << lg_stride) <= usize::MAX,
                 forall|j: int| 0 <= j < NCLASSES ==>
-                    (#[trigger] offsets[j]) & ((MAX_SLAB - 1) as usize) == 0 && offsets[j] < gap,
+                    offset_ok(#[trigger] offsets[j], class_table()[j].lg_slab as u32, lg_page) && offsets[j] < gap,
                 forall|j: int| 0 <= j < c ==>
                     #[trigger] class_base[j] == superblock + ((j as usize) << lg_stride) + offsets[j],
             decreases NCLASSES - c,
         {
-            assert!(offsets[c] & (MAX_SLAB - 1) == 0 && offsets[c] < gap);
+            assert!(offsets[c] & ((1usize << LG_COLOUR_UNIT) - 1) == 0 && offsets[c] < gap);
             proof {
                 let n = NCLASSES;
                 assert((c << lg_stride) + gap <= (n << lg_stride)) by (bit_vector)
@@ -600,7 +681,7 @@ impl Regions {
             lemma_mask_mod(huge.0);
             lemma_pow2_multiple(lg_stride);
             assert forall|j: int| 0 <= j < NCLASSES implies {
-                &&& (#[trigger] class_base[j] as int) % m == 0
+                &&& base_aligned(#[trigger] class_base[j] as int, j, lg_page)
                 &&& 0 < class_base[j]
                 &&& superblock + j * stride <= class_base[j]
                 &&& class_base[j] + region <= superblock + (j + 1) * stride
@@ -608,8 +689,15 @@ impl Regions {
                 let jj = j as usize;
                 vstd::arithmetic::mul::lemma_mul_nonnegative(j, stride);
                 lemma_shl_mul(jj, lg_stride);
-                lemma_mask_mod(offsets[j]);
-                lemma_mod_lin3(superblock as int, j, stride, 1, offsets[j] as int, m);
+                crate::vspec::class::axiom_class_table_wf(j);
+                let o = offsets[j];
+                let ls = class_table()[j].lg_slab as u32;
+                assert(o & sub(1usize << 16u32, 1) == 0) by (bit_vector)
+                    requires o & 0xffff == 0;
+                lemma_base_mod(superblock, j, stride, o, ls);
+                lemma_base_mod(superblock, j, stride, o, lg_page);
+                lemma_base_mod(superblock, j, stride, o, 16);
+                assert((1usize << 16u32) == 0x1_0000) by (bit_vector);
                 assert((j + 1) * stride == j * stride + stride) by (nonlinear_arith);
             }
             // Each region lies inside its mapping, which the static is not in.
@@ -1001,6 +1089,41 @@ proof fn lemma_pow2_multiple(s: u32)
     vstd::arithmetic::power2::lemma_pow2_adds(22, (s - 22) as nat);
     assert(pow2(22) * pow2((s - 22) as nat) == pow2((s - 22) as nat) * pow2(22)) by (nonlinear_arith);
     vstd::arithmetic::div_mod::lemma_mod_multiples_basic(pow2((s - 22) as nat) as int, pow2(22) as int);
+}
+
+/// A class base, `superblock + j * stride + o`, is a multiple of
+/// `2^l <= MAX_SLAB` when the superblock and the stride are multiples of
+/// `MAX_SLAB` and the offset's low `l` bits are clear.
+proof fn lemma_base_mod(superblock: usize, j: int, stride: int, o: usize, l: u32)
+    requires
+        l <= LG_MAX_SLAB,
+        (superblock as int) % (MAX_SLAB as int) == 0,
+        stride % (MAX_SLAB as int) == 0,
+        o & (((1usize << l) - 1) as usize) == 0,
+    ensures
+        (superblock + j * stride + o) % ((1usize << l) as int) == 0,
+{
+    let p = 1usize << l;
+    lemma_shl_mul(1, l);
+    vstd::arithmetic::power2::lemma2_to64();
+    vstd::arithmetic::power2::lemma_pow2_pos(l as nat);
+    if l < 22 {
+        vstd::arithmetic::power2::lemma_pow2_strictly_increases(l as nat, 22);
+    }
+    crate::meta::lemma_is_pow2_shl(l as usize);
+    crate::meta::lemma_pow2_bits(p);
+    vstd::arithmetic::div_mod::lemma_mod_self_0(p as int);
+    lemma_pow2_divides_pow2(p, p as int, 22);
+    assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+    assert(o & sub(p, 1) == 0 ==> o % p == 0) by (bit_vector)
+        requires
+            p > 0,
+            p & sub(p, 1) == 0,
+    ;
+    let m = p as int;
+    lemma_aligned_down(superblock as int, MAX_SLAB as int, m);
+    lemma_aligned_down(stride, MAX_SLAB as int, m);
+    lemma_mod_lin3(superblock as int, j, stride, 1, o as int, m);
 }
 
 /// A sum of multiples of `m` is one.
@@ -1572,8 +1695,8 @@ impl Regions {
 
     /// Alignment of a slot: a slot start of a class whose size is a
     /// multiple of the power of two `align` is itself a multiple of it
-    /// (class bases are `MAX_SLAB`-aligned and slabs are powers of two no
-    /// smaller than their slots).
+    /// (class bases are aligned to their class's slab, a power of two no
+    /// smaller than its slots).
     pub proof fn lemma_slot_aligned(self, c: int, p: usize, align: usize)
         requires
             self.separated(),
@@ -1591,7 +1714,7 @@ impl Regions {
     /// (which a class's table keeps, `SlabTable::inv`).
     pub proof fn lemma_slot_aligned_in(self, c: int, p: usize, align: usize)
         requires
-            (self.class_base[c] as int) % (MAX_SLAB as int) == 0,
+            (self.class_base[c] as int) % ((1usize << class_table()[c].lg_slab) as int) == 0,
             self.is_slot_addr(c, p),
             crate::meta::is_pow2(align),
             (class_table()[c].size as int) % (align as int) == 0,
@@ -1614,19 +1737,15 @@ impl Regions {
                 cls.size >= 0,
         ;
         lemma_pow2_divides_pow2(align, cls.size as int, lg as nat);
-        vstd::arithmetic::power2::lemma2_to64();
-        assert(MAX_SLAB == 0x40_0000) by (bit_vector);
         vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
-        vstd::arithmetic::power2::lemma_pow2_strictly_increases(lg as nat, 23);
-        lemma_pow2_divides_pow2(align, cls.size as int, 22);
         let m = align as int;
         assert(m > 0) by {
             let k = choose|k: nat| k < 64 && align as nat == #[trigger] pow2(k);
             vstd::arithmetic::power2::lemma_pow2_pos(k);
         }
-        // The base is a multiple of `MAX_SLAB`, which is one of `align`.
+        // The base is a multiple of the slab, which is one of `align`.
         let b = self.class_base[c] as int;
-        lemma_aligned_down(b, MAX_SLAB as int, m);
+        lemma_aligned_down(b, s, m);
         lemma_mod_lin3(b, slab, s, slot, cls.size as int, m);
     }
 }
@@ -1822,10 +1941,13 @@ impl Regions {
 mod linux {
     use super::{
         LG_HUGE_MIN, LG_HUGE_PREFERRED, LG_MAX_SLAB, LG_META_MIN, LG_META_PREFERRED, LG_REGION_MIN,
-        LG_REGION_PREFERRED, LG_SLIDE, MAX_SLAB, Mapping, NCLASSES, Regions,
+        LG_REGION_PREFERRED, LG_SLIDE, MAX_SLAB, Mapping, NCLASSES, Regions, colour,
     };
     #[cfg(verus_only)]
-    use super::{MAX_SEALED, disjoint, shared_static_addr, shared_static_len};
+    use super::{MAX_SEALED, disjoint, offset_ok, shared_static_addr, shared_static_len};
+    use crate::layout::CLASSES;
+    #[cfg(verus_only)]
+    use crate::layout::class_table;
     #[cfg(verus_only)]
     use crate::sys::pac::user_va_limit;
     use crate::sys::{self, Errno, MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
@@ -2360,6 +2482,9 @@ mod linux {
                     requires gap == (1usize << ls) - (1usize << lr), 32 <= lr < ls <= 40;
             }
             let mut offsets = [0usize; NCLASSES];
+            // `thp:always` commits PMD-sized chunks measured from the
+            // region base, so its regions stay `MAX_SLAB`-aligned.
+            let coloured = crate::thp::decision().mode != crate::thp::Mode::Chunks;
             for c in 0..NCLASSES
                 invariant
                     gap >> 22 > 0,
@@ -2367,13 +2492,51 @@ mod linux {
                     gap <= 0x100_0000_0000,
                     (gap >> 22) <= 0x4_0000,
                     gap == (1usize << lg_stride) - (1usize << lg_region),
-                    forall|j: int| 0 <= j < c ==> (#[trigger] offsets[j]) & 0x3f_ffff == 0 && offsets[j] < gap,
+                    12 <= lg_page <= 22,
+                    MAX_SLAB == 0x40_0000,
+                    forall|j: int| 0 <= j < c ==>
+                        offset_ok(#[trigger] offsets[j], class_table()[j].lg_slab as u32, lg_page) && offsets[j] < gap,
             {
                 offsets[c] = slab_multiple(word(&rnd, c) as usize, gap >> LG_MAX_SLAB);
+                let ghost a = offsets[c as int];
                 proof {
-                    let (o, g) = (offsets[c as int], gap);
-                    assert(o < g) by (bit_vector)
-                        requires o + 0x40_0000 <= (g >> 22) << 22, g & 0x3f_ffff == 0;
+                    let g = gap;
+                    assert(a < g) by (bit_vector)
+                        requires a + 0x40_0000 <= (g >> 22) << 22, g & 0x3f_ffff == 0;
+                }
+                if coloured {
+                    let lg_slab = CLASSES.table()[c].lg_slab as u32;
+                    proof {
+                        crate::vspec::class::axiom_class_table_wf(c as int);
+                    }
+                    offsets[c] += colour(c, lg_slab, lg_page);
+                    proof {
+                        // The colour sits in the low 22 bits the random
+                        // multiple of `MAX_SLAB` leaves clear.
+                        let (o, k, g, ls, lp) = (offsets[c as int], (offsets[c as int] - a) as usize, gap, lg_slab, lg_page);
+                        assert(o < g && o & 0xffff == 0 && o & sub(1usize << ls, 1) == 0
+                            && o & sub(1usize << lp, 1) == 0) by (bit_vector)
+                            requires
+                                o == add(a, k),
+                                a & 0x3f_ffff == 0,
+                                a + 0x40_0000 <= (g >> 22) << 22,
+                                a < g,
+                                g <= 0x100_0000_0000,
+                                k < 0x40_0000,
+                                k & 0xffff == 0,
+                                k & sub(1usize << ls, 1) == 0,
+                                k & sub(1usize << lp, 1) == 0,
+                                ls <= 22,
+                                lp <= 22;
+                    }
+                    assert!(offsets[c] & ((1usize << lg_slab) - 1) == 0);
+                } else {
+                    proof {
+                        crate::vspec::class::axiom_class_table_wf(c as int);
+                        let (ls, lp) = (class_table()[c as int].lg_slab as u32, lg_page);
+                        assert(a & 0xffff == 0 && a & sub(1usize << ls, 1) == 0 && a & sub(1usize << lp, 1) == 0) by (bit_vector)
+                            requires a & 0x3f_ffff == 0, ls <= 22, lp <= 22;
+                    }
                 }
             }
             let huge_align = align_base(huge_map.addr);

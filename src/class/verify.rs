@@ -7,7 +7,7 @@ use super::abort::wrong_arena;
 use super::table::bits_shape;
 use super::{ClassState, Pick, SlabTable};
 #[cfg(verus_only)]
-use crate::layout::{MAX_SLAB, NCLASSES, class_table, process_regions, slots_in};
+use crate::layout::{NCLASSES, class_table, process_regions, slots_in};
 use crate::purge;
 use crate::slab::{SlabDesc, State};
 #[cfg(verus_only)]
@@ -77,7 +77,7 @@ impl ClassState {
                 size == class_table()[self.spec_class() as int].size,
                 size as int % 8 == 0,
                 self.spec_class() < NCLASSES,
-                process_regions().class_base[self.spec_class() as int] as int % (MAX_SLAB as int) == 0,
+                crate::layout::base_aligned(process_regions().class_base[self.spec_class() as int] as int, self.spec_class() as int, process_regions().lg_page),
                 it.seq().len() == slots@.len(),
                 forall|i: int| 0 <= i < slots@.len() ==> *#[trigger] it.seq()[i] == slots@[i],
                 slots_in(slots@, self.spec_class() as int, 0, slots@.len() as int),
@@ -141,7 +141,7 @@ impl ClassState {
                 bits_shape(bm, class_table()[self.spec_class() as int].slab_bits as usize),
                 self.spec_class() < NCLASSES,
                 !crate::layout::guard_slab(self.spec_class() as int, slab as int),
-                process_regions().class_base[self.spec_class() as int] as int % (MAX_SLAB as int) == 0,
+                crate::layout::base_aligned(process_regions().class_base[self.spec_class() as int] as int, self.spec_class() as int, process_regions().lg_page),
                 self.spec_nslabs() as int == process_regions().spec_nslabs(self.spec_class() as int),
                 class_table()[self.spec_class() as int].size >= 8,
         {
@@ -269,11 +269,11 @@ pub(super) fn desc_ptr_addr(d: &SlabDesc) -> usize {
 }
 
 /// Slot `p` of class `c`, guard slabs included, is word aligned when the
-/// class's base is `MAX_SLAB`-aligned (`SlabTable::inv`).
+/// class's base is aligned to its slab (`SlabTable::inv`).
 proof fn lemma_slot_word(c: int, p: *mut u8)
     requires
         process_regions().is_slot_addr(c, p@.addr),
-        process_regions().class_base[c] as int % (MAX_SLAB as int) == 0,
+        crate::layout::base_aligned(process_regions().class_base[c] as int, c, process_regions().lg_page),
     ensures
         p@.addr as int % 8 == 0,
 {

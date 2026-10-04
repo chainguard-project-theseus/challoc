@@ -2171,7 +2171,7 @@ fn store_owner(w: &AtomicU16, arena: u16, Ghost(t): Ghost<SlabTable>, Ghost(grou
 
 ### S85. `axiom_slot_loc`
 
-src/class/table.rs:1386. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:1385. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: `SlabTable::new` runs once per class in a process (`Shared::init`, its one caller, builds the class tables of the one `Shared`, as `layout::process_regions` assumes), so the authority it makes is the class's, and so is its marker authority (`mloc`, [`mark_loc`]).
@@ -2188,7 +2188,7 @@ axiom fn axiom_slot_loc(c: int, loc: Loc, mloc: Loc, glg: u8, gmask: u32, tracke
 
 ### S86. `axiom_fresh_words`
 
-src/class/table.rs:1409. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:1408. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the permissions of the `n` words of the table at `base` that `Meta::reserve_table` has just returned, each holding zero: the table has never been written (`meta.rs`: carved once and never freed), and nothing but the bitmap views reaches it.
@@ -2204,7 +2204,7 @@ axiom fn axiom_fresh_words(base: usize, n: nat, c: int, tracked once: Once) -> (
 
 ### S87. `axiom_init_descs`
 
-src/class/table.rs:1491. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1490. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the descriptors at the permissions `perms` carved for keys `0..n` hold values.
@@ -2221,7 +2221,7 @@ axiom fn axiom_init_descs(tracked perms: Map<int, PointsTo<SlabDesc>>, n: int) -
 
 ### S88. `axiom_init_owners`
 
-src/class/table.rs:1517. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1516. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the owner words at the permissions `perms` carved for keys `0..n` hold values, as [`axiom_init_descs`] (an `AtomicU16` is valid for every bit pattern).
@@ -2236,7 +2236,7 @@ axiom fn axiom_init_owners(tracked perms: Map<int, PointsTo<AtomicU16>>, n: int)
 
 ### S89. `axiom_init_words`
 
-src/class/table.rs:1529. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1528. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the class bitmap words at the permissions `perms` carved for keys `0..n` hold values, as [`axiom_init_descs`], and each is the word at its permission's address, the identity [`word_addr`] names (the identity the word permissions of [`axiom_fresh_words`] are for).
@@ -2252,7 +2252,7 @@ axiom fn axiom_init_words(tracked perms: Map<int, PointsTo<AtomicU64>>, n: int) 
 
 ### S90. `word_index`
 
-src/class/table.rs:1685. Kind: external_body. Category: inline asm.
+src/class/table.rs:1684. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: evidence (verus/seams/class-table-word_index.md).
 
 > `index` itself, through an empty `asm!` on aarch64, for [`SlabTable::is_set_unchecked`]'s word index: LLVM then cannot fold the index's shift into the word address, and the load scales it.
@@ -3364,7 +3364,7 @@ proof fn axiom_zero_entry(tracked perm: PointsTo<Entry>, tracked z: Zeroed) -> (
 
 ### S167. `ClassTable`
 
-src/layout/mod.rs:1349. Kind: external_body type. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1351. Kind: external_body type. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The size-class table in use, indexed by class number: [`BASE_CLASSES`] with the slab geometry of the classes below the kernel page raised to the page by [`adopt_page_geometry`] once at init.
@@ -3375,7 +3375,7 @@ pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 
 ### S168. `ClassTable::new`
 
-src/layout/mod.rs:1356. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1358. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 ```rust
@@ -3384,7 +3384,7 @@ const fn new(table: [Class; NCLASSES]) -> ClassTable
 
 ### S169. `ClassTable::table`
 
-src/layout/mod.rs:1372. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1374. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The table, for verified code.
@@ -3399,7 +3399,7 @@ pub fn table(&self) -> (r: &[Class; NCLASSES])
 
 ### S170. `ClassTable::classes_ptr`
 
-src/layout/mod.rs:1423. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1425. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The storage of [`CLASSES`]' table, as a raw pointer.
@@ -3413,7 +3413,7 @@ fn classes_ptr() -> (p: *mut [Class; NCLASSES])
 
 ### S171. `axiom_process_page_at_most_64k`
 
-src/layout/regions.rs:118. Kind: axiom. Category: platform/kernel fact.
+src/layout/regions.rs:192. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > The process's page is at most 64 KiB: Linux on x86_64 uses 4 KiB pages and on aarch64 4, 16 or 64 KiB.
@@ -3426,7 +3426,7 @@ pub axiom fn axiom_process_page_at_most_64k()
 
 ### S172. `Reserved`
 
-src/layout/regions.rs:1846. Kind: external_body type. Category: platform/kernel fact.
+src/layout/regions.rs:1968. Kind: external_body type. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Ghost ownership of one live reservation, `len()` bytes from `addr()`, that [`try_reserve`] obtained from the kernel.
@@ -3437,7 +3437,7 @@ pub tracked struct Reserved
 
 ### S173. `Reserved::is_apart_from_static`
 
-src/layout/regions.rs:1863. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:1985. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): a live reservation does not overlap the process's `Shared` static ([`shared_static_addr`]).
@@ -3452,7 +3452,7 @@ pub proof fn is_apart_from_static(tracked &self)
 
 ### S174. `Reserved::is_disjoint`
 
-src/layout/regions.rs:1880. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:2002. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): two live mappings do not overlap.
@@ -3469,7 +3469,7 @@ pub proof fn is_disjoint(tracked &mut self, tracked other: &Self)
 
 ### S175. `Reserved::into_unbacked`
 
-src/layout/regions.rs:1899. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:2021. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > The reservation as uncommitted address space this process owns, for the one owner that commits it piece by piece (`Meta`, for the metadata region).
@@ -3483,12 +3483,12 @@ pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
 
 ### S176. `try_reserve`
 
-src/layout/regions.rs:1919. Kind: external_body. Category: FFI/syscall.
+src/layout/regions.rs:2041. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Reserve address space with `PROT_NONE`, `MAP_NORESERVE`: on success, the address and the token for the `len` bytes there.
 
-Body mints Tracked at line 1927.
+Body mints Tracked at line 2049.
 
 ```rust
 fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
@@ -3500,7 +3500,7 @@ fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
 
 ### S177. `word`
 
-src/layout/regions.rs:2123. Kind: external_body. Category: core library.
+src/layout/regions.rs:2245. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/layout-regions-word.md).
 
 > Word `i` of the random bytes (`8 * i` on, the target's byte order).
@@ -3513,7 +3513,7 @@ fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
 
 ### S178. `class_entry`
 
-src/layout/regions.rs:2550. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/regions.rs:2713. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Islaris/Isla. Status: trusted.
 
 > `&CLASSES[c]` for the fast paths' classification, `c < NCLASSES`.

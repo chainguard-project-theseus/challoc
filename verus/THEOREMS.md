@@ -428,8 +428,11 @@ is `p % align == 0`. Lemmas: `lemma_slot_fits` (`heap/mod.rs:413`),
 **Entry points.** Those of theorem 1, with the alignment column above.
 
 **Premises beyond the common ones.**
-- Slot alignment: class bases `MAX_SLAB`-aligned (`Regions::separated`,
-  `layout/regions.rs:148`, proved by `reserve_owning`); class sizes are
+- Slot alignment: each class base a multiple of its class's slab, of the
+  page and of the 64 KiB colour unit (`base_aligned` in
+  `Regions::separated`, proved by `from_parts` from `reserve_owning`'s
+  offsets: a random multiple of `MAX_SLAB` plus the class's colour, or
+  no colour under `thp:always` chunks); class sizes are
   multiples of the quantum and slabs powers of two (`Class::wf`, through
   `axiom_class_table_wf`).
 - Huge alignment: `Huge::alloc_run`'s placement, under the huge lock
@@ -2839,7 +2842,7 @@ C token and hold unconditionally.
 **Proof.**
 - Shape: theorem 3. `theorem_free_target_aligned` uses
   `lemma_slot_fits_quantum` (class sizes are multiples of the quantum,
-  class bases `MAX_SLAB`-aligned) and `lemma_huge_fits` (a huge page
+  class bases aligned to their slab) and `lemma_huge_fits` (a huge page
   start is page-aligned). `lemma_slot_interior`: two slot starts of one
   class are a class size apart (`lemma_slots_apart`), slots of two
   classes lie in two strides (`lemma_classes_apart`), and a slot lies
@@ -7027,9 +7030,10 @@ stops the sweep.
 **Scope and where the statement is weaker than the code.**
 - Nothing states the ranges page-aligned, which `mseal` needs to
   succeed: the mapping addresses `try_reserve` returns are not stated
-  page multiples (they are, from the kernel), and the class bases, the
-  region lengths and the huge and metadata bases are `MAX_SLAB` or page
-  multiples. A misaligned range would fail with `EINVAL` and stop the
+  page multiples (they are, from the kernel), and the class bases (page
+  multiples, `base_aligned`), the region lengths and the huge and
+  metadata bases are `MAX_SLAB` or page multiples. A misaligned range
+  would fail with `EINVAL` and stop the
   sweep, not seal anything else.
 - "Never committed" itself is not proved: the statement is that the
   ranges avoid the class, huge and metadata regions, which is where the

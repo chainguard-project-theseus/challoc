@@ -85,7 +85,15 @@ fn reserve_lays_out_regions_and_commits_a_slab() {
     // Classes are where the arithmetic says, and nowhere else.
     for c in 0..NCLASSES {
         let base = r.class_base[c];
-        assert_eq!(base & (MAX_SLAB - 1), 0);
+        // A `MAX_SLAB` boundary plus the class's colour (none under
+        // `thp:always` chunks, which another test may have configured).
+        let lg_slab = CLASSES[c].lg_slab as u32;
+        let colour = regions::colour(c, lg_slab, r.lg_page);
+        assert!(
+            base & (MAX_SLAB - 1) == colour || base & (MAX_SLAB - 1) == 0,
+            "class {c}: base {base:#x}, colour {colour:#x}"
+        );
+        assert_eq!(base & ((1usize << lg_slab) - 1), 0);
         let start = r.superblock + (c << r.lg_stride);
         assert!(base >= start && base + r.region_len() <= start + r.stride());
         assert_eq!(
@@ -160,8 +168,11 @@ fn reserve_randomises_class_offsets_and_order() {
         "only {differing} class offsets differ"
     );
     assert_ne!(a_slides, b_slides, "huge/meta slides repeated");
-    for off in a_offsets.iter().chain(b_offsets.iter()) {
-        assert_eq!(off & (MAX_SLAB - 1), 0);
+    for offsets in [a_offsets, b_offsets] {
+        for (c, off) in offsets.iter().enumerate() {
+            let colour = regions::colour(c, CLASSES[c].lg_slab as u32, a.lg_page);
+            assert!(off & (MAX_SLAB - 1) == colour || off & (MAX_SLAB - 1) == 0);
+        }
     }
 }
 

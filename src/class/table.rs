@@ -653,7 +653,7 @@ impl SlabTable {
                 requires
                     c < NCLASSES,
                     stride >= 0;
-            assert(regions.class_base[c] as int % (crate::layout::MAX_SLAB as int) == 0);
+            assert(crate::layout::base_aligned(regions.class_base[c] as int, c, regions.lg_page));
             assert((1usize << 57usize) == 0x200_0000_0000_0000usize) by (bit_vector);
             assert(regions.class_base[class as int] + (1usize << regions.lg_region) <= 1usize << 57);
             assert(regions.lg_page <= regions.lg_region);
@@ -1062,13 +1062,13 @@ proof fn lemma_new_geometry(lp: u32, ls: u32, lr: u32, page: usize, ss: usize, n
 }
 
 /// [`groups_paged`] of a table [`SlabTable::new`] builds: a
-/// `MAX_SLAB`-aligned base, a page of at most `MAX_SLAB`, and page groups
+/// page-aligned base, a page of at most `MAX_SLAB`, and page groups
 /// whose bytes are a page multiple ([`lemma_new_geometry`]).
 proof fn lemma_groups_paged(base: usize, spp: usize, ls: u8, lp: u32, page: usize)
     requires
         page == 1usize << lp,
         12 <= lp <= crate::layout::LG_MAX_SLAB,
-        (base as int) % (crate::layout::MAX_SLAB as int) == 0,
+        (base as int) % (page as int) == 0,
         spp <= 0x400_0000,
         (spp as int * (1usize << ls) as int) % (page as int) == 0,
     ensures
@@ -1085,7 +1085,6 @@ proof fn lemma_groups_paged(base: usize, spp: usize, ls: u8, lp: u32, page: usiz
     crate::meta::lemma_is_pow2_shl(lp as usize);
     vstd::arithmetic::div_mod::lemma_mod_self_0(page as int);
     crate::layout::lemma_pow2_divides_pow2(page, page as int, 22);
-    crate::layout::lemma_aligned_down(base as int, crate::layout::MAX_SLAB as int, page as int);
     assert((spp as u32) as int == spp as int);
 }
 
@@ -1745,7 +1744,7 @@ impl SlabTable {
         &&& lock_init(self.inner.0).dbase@ == self.desc_base as int
         &&& lock_init(self.inner.0).dstride@ == self.desc_stride as int
         &&& self.base == process_regions().class_base[self.class as int]
-        &&& (self.base as int) % (crate::layout::MAX_SLAB as int) == 0
+        &&& crate::layout::base_aligned(self.base as int, self.class as int, process_regions().lg_page)
         &&& self.nslabs as int == process_regions().spec_nslabs(self.class as int)
         &&& words_wf(self.word_invs@, self.spec_slots(), self.bits_base, self.spec_nwords())
         &&& self.spec_slots().loc == slot_loc(self.class as int)
@@ -2082,14 +2081,14 @@ impl SlabTable {
     }
 
     /// The table covers its class's region of the process's regions,
-    /// whose base is `MAX_SLAB`-aligned
+    /// whose base is aligned to its slab and the page (`base_aligned`)
     /// ([`Regions::separated`](crate::layout::Regions::separated), which
     /// [`SlabTable::new`] requires).
     pub(super) proof fn lemma_region(&self)
         requires
             self.inv(),
         ensures
-            process_regions().class_base[self.spec_class() as int] as int % (crate::layout::MAX_SLAB as int) == 0,
+            crate::layout::base_aligned(process_regions().class_base[self.spec_class() as int] as int, self.spec_class() as int, process_regions().lg_page),
             self.spec_nslabs() as int == process_regions().spec_nslabs(self.spec_class() as int),
     {
     }
