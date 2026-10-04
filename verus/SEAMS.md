@@ -2718,7 +2718,7 @@ pub(super) fn arena_volatile(&self) -> (r: u16)
 
 ### S121. `FreshHeap`
 
-src/heap/mod.rs:5597. Kind: external_body type. Category: raw pointer (internal).
+src/heap/mod.rs:5628. Kind: external_body type. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The plain fields of the fresh heap at [`FreshHeap::heap`]: the permission to them ([`FreshHeap::head`], the 128 bytes before `caches`, [`heap_head`]), which [`init_fields`] takes and keeps here, and what the trusted writers stored in them, for `tcaches::heap_new` to read back: the home arena ([`init_fields`]) and whether the heap is counted ([`mark_bound`]).
@@ -2729,12 +2729,12 @@ pub(super) tracked struct FreshHeap
 
 ### S122. `init_fields`
 
-src/heap/mod.rs:5626. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:5657. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The fields of a fresh heap before its home headers, stored field by field ([`Heap::create_detached`]).
 
-Body mints Tracked at line 5655.
+Body mints Tracked at line 5686.
 
 ```rust
 unsafe fn init_fields(
@@ -2755,7 +2755,7 @@ unsafe fn init_fields(
 
 ### S123. `mark_bound`
 
-src/heap/mod.rs:5691. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:5722. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > `(*h).bound = true` for a heap [`Heap::create`] has just made.
@@ -2774,12 +2774,12 @@ unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 
 ### S124. `Heap::destroy`
 
-src/heap/mod.rs:5920. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:5951. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Flush every cache, free them and the heap itself back to the metadata allocator.
 
-Body mints Tracked at line 5949.
+Body mints Tracked at line 5980.
 
 ```rust
 pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)

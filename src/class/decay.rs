@@ -462,8 +462,8 @@ impl Purger {
                 // Every slab of the group is idle: the one slab of a page
                 // is in the empty set, and `page_group_is_idle` says so of
                 // a group of several.
-                assert forall|s: nat| first <= s < first + spp
-                    implies #[trigger] g.owns(s) && g.st(s) != State::Active by {
+                assert forall|s: nat| #![trigger g.owns(s)] #![trigger g.st(s)] first <= s < first + spp
+                    implies g.owns(s) && g.st(s) != State::Active by {
                     if spp == 1 {
                         assert(first == slab && s == slab && g.slab_ok(slab as nat));
                     } else {
@@ -473,12 +473,9 @@ impl Purger {
                     }
                 }
                 assert(first == slab & !((spp - 1) as usize));
-                // Restate in the callee's terms: the solver does not
-                // always rewrite `first` under the quantifier.
-                assert forall|s: nat| (slab & !((spp - 1) as usize)) <= s < (slab & !((spp - 1) as usize)) + spp
-                    implies #[trigger] g.owns(s) && g.st(s) != State::Active by {
-                    assert(first <= s < first + spp);
-                }
+                // In the callee's terms, by a lemma whose query carries
+                // none of this walk's context.
+                lemma_group_idle(*g, slab, spp, first);
             }
             let k = cs.purge_group(g, slab, spp, &mut self.batch);
             proof {
@@ -617,6 +614,32 @@ proof fn lemma_slab_bytes_pos(t: SlabTable)
         requires lg == l8 as usize;
 }
 
+/// Every slab of the page group of `slab` (`spp` slabs) is this arena's
+/// and not active: [`ClassState::purge_group`]'s precondition. Opaque, so
+/// the walk that establishes it ([`Purger::visit`]) hands it over as one
+/// fact, not as a quantifier the solver must match under that walk's
+/// context.
+// Each conjunct is a trigger: a query that needs only the `st` conjunct
+// may have no `owns` term to match.
+#[verifier::opaque]
+spec fn group_idle(g: Inner, slab: usize, spp: usize) -> bool {
+    forall|s: nat| #![trigger g.owns(s)] #![trigger g.st(s)]
+        (slab & !((spp - 1) as usize)) <= s < (slab & !((spp - 1) as usize)) + spp
+        ==> g.owns(s) && g.st(s) != State::Active
+}
+
+/// [`group_idle`] from the same fact stated over the group's first slab.
+proof fn lemma_group_idle(g: Inner, slab: usize, spp: usize, first: usize)
+    requires
+        first == slab & !((spp - 1) as usize),
+        forall|s: nat| #![trigger g.owns(s)] #![trigger g.st(s)]
+            first <= s < first + spp ==> g.owns(s) && g.st(s) != State::Active,
+    ensures
+        group_idle(g, slab, spp),
+{
+    reveal(group_idle);
+}
+
 impl ClassState {
     /// Discard the whole page group of `slab` (one slab when the slab is
     /// at least a page) and make every `Empty` slab in it `Purged`, a
@@ -640,8 +663,7 @@ impl ClassState {
             old(g).nbits() == self.spec_nslabs(),
             spp >= 1,
             (slab & !((spp - 1) as usize)) + spp <= self.spec_nslabs(),
-            forall|s: nat| (slab & !((spp - 1) as usize)) <= s < (slab & !((spp - 1) as usize)) + spp
-                ==> #[trigger] old(g).owns(s) && old(g).st(s) != State::Active,
+            group_idle(*old(g), slab, spp),
             old(batch).wf(),
             old(batch).total() <= 0x200_0000_0000_0000,
             forall|b: int| idle_byte(self.spec_table(), old(g).states@, b) ==> #[trigger] (old(batch).free())(b),
@@ -663,6 +685,7 @@ impl ClassState {
     {
         proof {
             use_type_invariant(self);
+            reveal(group_idle);
         }
         let first = slab & !(spp - 1);
         let ghost sz = (1usize << class_table()[self.spec_class() as int].lg_slab) as int;

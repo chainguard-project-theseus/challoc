@@ -4758,12 +4758,13 @@ impl Heap {
             assert forall|c: int| #![trigger old(self).home_ptr(c)] 0 <= c < NCLASSES implies self.gc_left(*old(self), old(self).home_ptr(c), old(self).home() == FOREIGN) by {
                 assert(old(self).array_hdr(ptr::null_mut(), c) == old(self).home_ptr(c));
             }
-            assert forall|p: *mut CacheHeader|
+            assert forall|p: *mut CacheHeader| #![trigger self.hdr(p)] #![trigger self.held(p)]
                 old(self).owns(p) && (forall|c: int| 0 <= c < NCLASSES ==> p != #[trigger] old(self).home_ptr(c))
-                    implies #[trigger] self.hdr(p) == old(self).hdr(p) && self.held(p) == old(self).held(p) by {
+                    implies self.hdr(p) == old(self).hdr(p) && self.held(p) == old(self).held(p) by {
                 assert forall|c: int| 0 <= c < NCLASSES implies p != #[trigger] old(self).array_hdr(ptr::null_mut(), c) by {
                     assert(p != old(self).home_ptr(c));
                 }
+                Heap::lemma_kept_apart(*old(self), *self, ptr::null_mut(), p);
             }
         }
         while !o.is_null()
@@ -4784,10 +4785,10 @@ impl Heap {
                 forall|i: int, c: int|
                     0 <= i < l.len() - r && 0 <= c < NCLASSES
                         ==> #[trigger] self.gc_left(*old(self), node_hdr(l[i], c), false) || self.gc_left(*old(self), node_hdr(l[i], c), true),
-                forall|p: *mut CacheHeader|
+                forall|p: *mut CacheHeader| #![trigger self.hdr(p)] #![trigger self.held(p)]
                     old(self).owns(p) && (forall|c: int| 0 <= c < NCLASSES ==> p != #[trigger] old(self).home_ptr(c))
                         && (forall|i: int, c: int| 0 <= i < l.len() - r && 0 <= c < NCLASSES ==> p != #[trigger] node_hdr(l[i], c))
-                        ==> #[trigger] self.hdr(p) == old(self).hdr(p) && self.held(p) == old(self).held(p),
+                        ==> self.hdr(p) == old(self).hdr(p) && self.held(p) == old(self).held(p),
             decreases r,
         {
             let ghost h0 = *self;
@@ -4800,7 +4801,8 @@ impl Heap {
                 // `o`'s headers are neither home headers nor those of a node
                 // already collected, so they still hold what they held.
                 old(self).lemma_array_hdr(o);
-                assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] h0.hdr(node_hdr(o, c)) == old(self).hdr(node_hdr(o, c))
+                assert forall|c: int| #![trigger h0.hdr(node_hdr(o, c))] #![trigger h0.held(node_hdr(o, c))]
+                    0 <= c < NCLASSES implies h0.hdr(node_hdr(o, c)) == old(self).hdr(node_hdr(o, c))
                     && h0.held(node_hdr(o, c)) == old(self).held(node_hdr(o, c)) by {
                     let p = node_hdr(o, c);
                     assert(old(self).array_hdr(o, c) == p);
@@ -4838,6 +4840,7 @@ impl Heap {
                         old(self).lemma_home_apart(c, d, k);
                     }
                     assert(h0.owns(p));
+                    Heap::lemma_kept_apart(h0, *self, o, p);
                     assert(self.hdr(p) == h0.hdr(p));
                     assert(self.held(p) == h0.held(p));
                     assert(h0.gc_left(*old(self), p, old(self).home() == FOREIGN));
@@ -4851,6 +4854,7 @@ impl Heap {
                         }
                         assert(old(self).owns_node(l[i]));
                         assert(h0.owns(p));
+                        Heap::lemma_kept_apart(h0, *self, o, p);
                         assert(self.hdr(p) == h0.hdr(p));
                         assert(self.held(p) == h0.held(p));
                         assert(h0.gc_left(*old(self), p, false) || h0.gc_left(*old(self), p, true));
@@ -4858,14 +4862,15 @@ impl Heap {
                         assert(self.gc_left(*old(self), node_hdr(l[d], c), arena == FOREIGN));
                     }
                 }
-                assert forall|p: *mut CacheHeader|
+                assert forall|p: *mut CacheHeader| #![trigger self.hdr(p)] #![trigger self.held(p)]
                     old(self).owns(p) && (forall|c: int| 0 <= c < NCLASSES ==> p != #[trigger] old(self).home_ptr(c))
                         && (forall|i: int, c: int| 0 <= i < d + 1 && 0 <= c < NCLASSES ==> p != #[trigger] node_hdr(l[i], c))
-                        implies #[trigger] self.hdr(p) == old(self).hdr(p) && self.held(p) == old(self).held(p) by {
+                        implies self.hdr(p) == old(self).hdr(p) && self.held(p) == old(self).held(p) by {
                     assert forall|k: int| 0 <= k < NCLASSES implies p != #[trigger] h0.array_hdr(o, k) by {
                         assert(p != node_hdr(l[d], k));
                     }
                     assert(h0.owns(p));
+                    Heap::lemma_kept_apart(h0, *self, o, p);
                 }
                 r = r - 1;
             }
@@ -4898,9 +4903,7 @@ impl Heap {
             final(self).keeps(*old(self)),
             final(self).same_shape(*old(self)),
             forall|c: int| #![trigger old(self).array_hdr(node, c)] 0 <= c < NCLASSES ==> final(self).gc_left(*old(self), old(self).array_hdr(node, c), arena == FOREIGN),
-            forall|p: *mut CacheHeader|
-                old(self).owns(p) && (forall|c: int| 0 <= c < NCLASSES ==> p != #[trigger] old(self).array_hdr(node, c))
-                    ==> #[trigger] final(self).hdr(p) == old(self).hdr(p) && final(self).held(p) == old(self).held(p),
+            final(self).kept_apart(*old(self), node),
     {
         proof {
             Heap::lemma_keeps_refl(*self);
@@ -4995,14 +4998,42 @@ impl Heap {
             }
         }
         proof {
-            assert forall|p: *mut CacheHeader|
+            reveal(Heap::kept_apart);
+            assert forall|p: *mut CacheHeader| #![trigger self.hdr(p)] #![trigger self.held(p)]
                 old(self).owns(p) && (forall|c: int| 0 <= c < NCLASSES ==> p != #[trigger] old(self).array_hdr(node, c))
-                    implies #[trigger] self.hdr(p) == old(self).hdr(p) && self.held(p) == old(self).held(p) by {
+                    implies self.hdr(p) == old(self).hdr(p) && self.held(p) == old(self).held(p) by {
                 if old(self).in_array(node, NCLASSES as int, p) {
                     assert(p != old(self).array_hdr(node, old(self).hdr_class(p)));
                 }
             }
         }
+    }
+
+    /// Every header `old` owns outside the array `node` names keeps its
+    /// value and what it holds: what [`Heap::gc_arena`] leaves. Opaque, so
+    /// its callers use it through [`Heap::lemma_kept_apart`], one header
+    /// at a time, instead of matching a nested quantifier under their own
+    /// context.
+    // Each conjunct is a trigger: a query that needs only the `held`
+    // conjunct may have no `hdr` term to match.
+    #[verifier::opaque]
+    closed spec fn kept_apart(&self, old: Heap, node: *mut ArenaCaches) -> bool {
+        forall|p: *mut CacheHeader| #![trigger self.hdr(p)] #![trigger self.held(p)]
+            old.owns(p) && (forall|c: int| 0 <= c < NCLASSES ==> p != #[trigger] old.array_hdr(node, c))
+                ==> self.hdr(p) == old.hdr(p) && self.held(p) == old.held(p)
+    }
+
+    /// [`Heap::kept_apart`] at header `p`.
+    proof fn lemma_kept_apart(old: Heap, new: Heap, node: *mut ArenaCaches, p: *mut CacheHeader)
+        requires
+            new.kept_apart(old, node),
+            old.owns(p),
+            forall|c: int| 0 <= c < NCLASSES ==> p != #[trigger] old.array_hdr(node, c),
+        ensures
+            new.hdr(p) == old.hdr(p),
+            new.held(p) == old.held(p),
+    {
+        reveal(Heap::kept_apart);
     }
 
     /// Owned header `p` is the header of the array `node` names for one of
