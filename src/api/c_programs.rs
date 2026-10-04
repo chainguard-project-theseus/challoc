@@ -674,6 +674,9 @@ ctests! {
         CTest { prog: "lazy_bg", args: &["hold"], conf: Some("abort_conf:true,dirty_decay_ms:5000"), ..BASE },
         CTest { prog: "lazy_bg", args: &["optout"], conf: Some("abort_conf:true,background_thread:false,dirty_decay_ms:500"), ..BASE },
         CTest { prog: "lazy_bg", args: &["seccomp"], conf: Some("abort_conf:true,dirty_decay_ms:500"), ..BASE },
+        CTest { prog: "lazy_bg", args: &["nproc"], conf: Some("abort_conf:true,dirty_decay_ms:500"), ..BASE },
+        CTest { prog: "lazy_bg", args: &["join"], conf: Some("abort_conf:true"), ..BASE },
+        CTest { prog: "lazy_bg", args: &["forkburst"], conf: Some("abort_conf:true"), ..BASE },
     ];
     c_align => [ CTest { prog: "align", ..BASE } ];
     c_realloc_tiers => [ CTest { prog: "realloc_tiers", ..BASE } ];

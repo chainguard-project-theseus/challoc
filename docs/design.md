@@ -844,7 +844,16 @@ happens at init). `background_thread:false` (or any write through
 fails `clone` with an errno, `RLIMIT_NPROC`) disarms it for good and the
 process purges in the foreground as before; a filter that kills on
 `clone` kills the process, so a sandbox that does that needs
-`background_thread:false`. It
+`background_thread:false`. Once the thread exists glibc's
+`__libc_single_threaded` stays 0, so libstdc++ reference counts turn
+atomic and stdio locks, as in any process that ever started a thread.
+Only an allocation's tick creates (or joins) the thread, under any
+setting: glibc calls `free` with its stack cache lock held
+(`pthread_join` frees the TLS of a thread on a user stack, and trimming
+the stack cache frees the cached ones), and `pthread_create` takes that
+lock again, so a start from that `free` would deadlock. A `free`'s tick
+that finds the start due only records the request; the next
+allocation's tick acts on it. It
 sleeps on a futex until the next decay deadline, is woken when a class's
 first slab goes `Empty`, and samples the cgroup (section 11) before each
 decay pass. Its stack is one metadata reservation, made by the first
@@ -852,9 +861,11 @@ start and never freed: a stopped thread exits at its next wake-up, and
 the next start joins it before reusing the stack. After `fork` the child
 forgets the parent's thread and does not recreate it until asked or,
 under the lazy start, until it holds enough dirty memory of its own: the
-low-water mark of its dirty bytes since the fork is subtracted, so what
-it inherited does not count.
-Creating the thread from a `free` slow path saves and restores `errno`.
+dirty bytes at the fork are its baseline, lowered as the inherited set
+decays (a low-water mark), so what it inherited does not count and what
+it frees itself does.
+Creating the thread from an allocation's slow path saves and restores
+`errno`.
 
 ## 9. Fork
 
