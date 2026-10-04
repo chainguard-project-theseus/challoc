@@ -473,6 +473,12 @@ impl Purger {
                     }
                 }
                 assert(first == slab & !((spp - 1) as usize));
+                // Restate in the callee's terms: the solver does not
+                // always rewrite `first` under the quantifier.
+                assert forall|s: nat| (slab & !((spp - 1) as usize)) <= s < (slab & !((spp - 1) as usize)) + spp
+                    implies #[trigger] g.owns(s) && g.st(s) != State::Active by {
+                    assert(first <= s < first + spp);
+                }
             }
             let k = cs.purge_group(g, slab, spp, &mut self.batch);
             proof {
