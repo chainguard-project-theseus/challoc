@@ -19,13 +19,13 @@ store_usable	raw pointer from C caller	Miri (evidence only)
 store_out	raw pointer from C caller	Miri (evidence only)
 root	function pointer	Kani	discharged (verus/seams/api-mallctl-root.md)
 old_len	raw pointer from C caller	Miri (evidence only)
-heap_set_arena	allocator invariant	RefinedRust
+heap_set_arena	allocator invariant	none (assumption)
 mib_cap	raw pointer from C caller	Miri (evidence only)
 shared_ptr	UnsafeCell/volatile/transmute	RefinedRust
 axiom_fork_resumed_state	C-program contract	none (assumption)
 axiom_fork_resumed	C-program contract	none (assumption)
-arena_held	allocator invariant	RefinedRust
-count_held	allocator invariant	RefinedRust
+arena_held	allocator invariant	none (assumption)
+count_held	allocator invariant	none (assumption)
 src/purge/background.rs:state	UnsafeCell/volatile/transmute	RefinedRust
 src/api/print.rs:word	core library	Kani	discharged (verus/seams/api-print-word.md)
 axiom_unlocked	C-program contract	none (assumption)
@@ -33,7 +33,7 @@ Unlocked	C-program contract	none (assumption)
 file_target	function pointer	Kani	discharged (verus/seams/api-print-file_target.md)
 stderr_target	function pointer	Kani	discharged (verus/seams/api-print-stderr_target.md)
 Arena::axiom_array_layout	core library	Kani	discharged (verus/seams/arena-Arena-axiom_array_layout.md)
-Arena::axiom_array_join	raw pointer (internal)	RefinedRust
+Arena::axiom_array_join	raw pointer (internal)	none (assumption)
 A_INDEX	core library	Kani	discharged (verus/seams/arena-A_INDEX.md)
 A_DECAY_NS	core library	Kani	discharged (verus/seams/arena-A_DECAY_NS.md)
 A_SETS	core library	Kani	discharged (verus/seams/arena-A_SETS.md)
@@ -43,32 +43,32 @@ A_LARGE	core library	Kani	discharged (verus/seams/arena-A_LARGE.md)
 A_STATS	core library	Kani	discharged (verus/seams/arena-A_STATS.md)
 A_LAST_EXIT_PURGE	core library	Kani	discharged (verus/seams/arena-A_LAST_EXIT_PURGE.md)
 axiom_arena_layout	core library	Kani	discharged (verus/seams/arena-axiom_arena_layout.md)
-axiom_arena_assemble	raw pointer (internal)	RefinedRust
-arena_at	raw pointer (internal)	RefinedRust
-from_raw	raw pointer (internal)	RefinedRust
-from_raw_chunked	raw pointer (internal)	RefinedRust
-ClassState::page_group_is_idle	allocator invariant	RefinedRust
-ClassState::owner_locked	allocator invariant	RefinedRust
-ClassState::state_locked	allocator invariant	RefinedRust
-ClassState::set_state_locked	allocator invariant	RefinedRust
-ClassState::dirty_locked	allocator invariant	RefinedRust
-ClassState::set_dirty_locked	allocator invariant	RefinedRust
+axiom_arena_assemble	raw pointer (internal)	none (assumption)
+arena_at	raw pointer (internal)	none (assumption)
+from_raw	raw pointer (internal)	none (assumption)
+from_raw_chunked	raw pointer (internal)	none (assumption)
+ClassState::page_group_is_idle	allocator invariant	none (assumption)
+ClassState::owner_locked	allocator invariant	none (assumption)
+ClassState::state_locked	allocator invariant	none (assumption)
+ClassState::set_state_locked	allocator invariant	none (assumption)
+ClassState::dirty_locked	allocator invariant	none (assumption)
+ClassState::set_dirty_locked	allocator invariant	none (assumption)
 ClassState::table	raw pointer (internal)	RefinedRust
 ClassState::take_checks	panic/abort	Kani
 table_ptr	raw pointer (internal)	RefinedRust
-axiom_fresh_slots_zero	allocator invariant	RefinedRust
-axiom_discarded_slots_zero	allocator invariant	RefinedRust
+axiom_fresh_slots_zero	allocator invariant	none (assumption)
+axiom_discarded_slots_zero	allocator invariant	none (assumption)
 axiom_c_claim	C-program contract	none (assumption)
 SetTable::set_table_ptr	raw pointer (internal)	Kani
-axiom_table_bytes	allocator invariant	RefinedRust
-Set::ensure	raw pointer (internal)	RefinedRust
-axiom_slot_loc	allocator invariant	RefinedRust
-axiom_fresh_words	allocator invariant	RefinedRust
-axiom_init_descs	raw pointer (internal)	RefinedRust
-axiom_init_owners	raw pointer (internal)	RefinedRust
-axiom_init_words	raw pointer (internal)	RefinedRust
-load_owner	allocator invariant	RefinedRust
-store_owner	allocator invariant	RefinedRust
+axiom_table_bytes	allocator invariant	none (assumption)
+Set::ensure	raw pointer (internal)	none (assumption)
+axiom_slot_loc	allocator invariant	none (assumption)
+axiom_fresh_words	allocator invariant	none (assumption)
+axiom_init_descs	raw pointer (internal)	none (assumption)
+axiom_init_owners	raw pointer (internal)	none (assumption)
+axiom_init_words	raw pointer (internal)	none (assumption)
+load_owner	allocator invariant	loom/GenMC
+store_owner	allocator invariant	loom/GenMC
 desc_ptr_addr	raw pointer (internal)	Kani	discharged (verus/seams/class-verify-desc_ptr_addr.md)
 Config::set_listed	function pointer	Kani	discharged (verus/seams/config-Config-set_listed.md)
 Config::get	function pointer	Kani	discharged (verus/seams/config-Config-get.md)
@@ -79,10 +79,10 @@ bytes_at	raw pointer from C caller	Miri (evidence only)
 env_var	raw pointer from C caller	Miri (evidence only)
 group_by_slab	core library	Kani
 addr_mix	raw pointer (internal)	Kani
-axiom_fresh_stack	allocator invariant	RefinedRust
+axiom_fresh_stack	allocator invariant	none (assumption)
 assert_flushed	panic/abort	Kani	discharged (verus/seams/heap-assert_flushed.md)
 assert_refill_empty	panic/abort	Kani	discharged (verus/seams/heap-assert_refill_empty.md)
-assign_home	allocator invariant	RefinedRust
+assign_home	allocator invariant	none (assumption)
 mark_bound	raw pointer (internal)	RefinedRust
 node_caches_detached	raw pointer (internal)	RefinedRust
 node_set_arena	raw pointer (internal)	RefinedRust
@@ -92,7 +92,7 @@ Heap::node_arena	raw pointer (internal)	RefinedRust
 Heap::node_caches	raw pointer (internal)	RefinedRust
 debug_scheduled	panic/abort	Kani	discharged (verus/seams/heap-paths-debug_scheduled.md)
 shared_of	raw pointer (internal)	RefinedRust
-axiom_process_shared	allocator invariant	RefinedRust
+axiom_process_shared	allocator invariant	none (assumption)
 ThreadKey::create	function pointer	Kani
 S_MULTI_ARENA	core library	Kani	discharged (verus/seams/heap-shared-S_MULTI_ARENA.md)
 S_PUSH_FLAGS	core library	Kani	discharged (verus/seams/heap-shared-S_PUSH_FLAGS.md)
@@ -111,26 +111,26 @@ S_TCACHES	core library	Kani	discharged (verus/seams/heap-shared-S_TCACHES.md)
 S_STATS	core library	Kani	discharged (verus/seams/heap-shared-S_STATS.md)
 S_CGROUP	core library	Kani	discharged (verus/seams/heap-shared-S_CGROUP.md)
 axiom_shared_layout	core library	Kani	discharged (verus/seams/heap-shared-axiom_shared_layout.md)
-axiom_shared_built	raw pointer (internal)	RefinedRust
-axiom_shared_regions	raw pointer (internal)	RefinedRust
-Shared::begin	allocator invariant	RefinedRust
+axiom_shared_built	raw pointer (internal)	none (assumption)
+axiom_shared_regions	raw pointer (internal)	none (assumption)
+Shared::begin	allocator invariant	none (assumption)
 init_tcaches	allocator invariant	RefinedRust
 heap_at	raw pointer (internal)	RefinedRust
 heap_new	raw pointer (internal)	RefinedRust
-axiom_run_locs	allocator invariant	RefinedRust
-axiom_zero_entry	raw pointer (internal)	RefinedRust
-ClassTable	UnsafeCell/volatile/transmute	RefinedRust
+axiom_run_locs	allocator invariant	none (assumption)
+axiom_zero_entry	raw pointer (internal)	Kani
+ClassTable	UnsafeCell/volatile/transmute	none (assumption)
 axiom_process_page_at_most_64k	platform/kernel fact	none (assumption)
 Reserved	platform/kernel fact	none (assumption)
 Reserved::is_disjoint	platform/kernel fact	none (assumption)
 Reserved::is_apart_from_static	platform/kernel fact	none (assumption)
 Reserved::into_unbacked	platform/kernel fact	none (assumption)
 src/layout/regions.rs:word	core library	Kani	discharged (verus/seams/layout-regions-word.md)
-class_entry	UnsafeCell/volatile/transmute	RefinedRust
-axiom_acquired	allocator invariant	RefinedRust
+class_entry	UnsafeCell/volatile/transmute	Islaris/Isla
+axiom_acquired	allocator invariant	none (assumption)
 LockGuard::drop	atomics primitive	loom/GenMC	discharged (verus/seams/lock-LockGuard-drop.md)
-Meta::commit	allocator invariant	RefinedRust
-Meta::free	allocator invariant	RefinedRust
+Meta::commit	allocator invariant	none (assumption)
+Meta::free	allocator invariant	none (assumption)
 empty_bytes	panic/abort	Kani
 total_bytes	core library	Kani	discharged (verus/seams/purge-total_bytes.md)
 errno_location	FFI/syscall	none (assumption)
@@ -149,21 +149,21 @@ read_full	termination	none (assumption)
 write_all	termination	none (assumption)
 axiom_user_va_limit	platform/kernel fact	none (assumption)
 axiom_auth_sign	platform/kernel fact	Islaris/Isla	discharged (verus/seams/sys-pac-axiom_auth_sign.md)
-axiom_slot_writable	allocator invariant	RefinedRust
-axiom_huge_writable	allocator invariant	RefinedRust
+axiom_slot_writable	allocator invariant	Verus
+axiom_huge_writable	allocator invariant	Verus
 check	panic/abort	Kani	discharged (verus/seams/vspec-check-check.md)
 abort_integrity	panic/abort	Kani
-axiom_class_table_wf	allocator invariant	RefinedRust
+axiom_class_table_wf	allocator invariant	Kani
 thp_name	core library	Kani
 stats_allocated	core library	Kani	discharged (verus/seams/vspec-print-stats_allocated.md)
 axiom_ptr_add_addr	core library	Kani	discharged (verus/seams/vspec-ptr-axiom_ptr_add_addr.md)
-axiom_raw_valid	raw pointer (internal)	RefinedRust
+axiom_raw_valid	raw pointer (internal)	none (assumption)
 axiom_fresh_anon_zero	platform/kernel fact	none (assumption)
 axiom_discarded_zero	platform/kernel fact	none (assumption)
 Unbacked::commit	platform/kernel fact	none (assumption)
 WordPerm	atomics primitive	loom/GenMC
 core::sync::atomic::compiler_fence	core library	Kani
-crate::layout::adopt_page_geometry	UnsafeCell/volatile/transmute	RefinedRust
+crate::layout::adopt_page_geometry	UnsafeCell/volatile/transmute	Verus
 core::fmt::Formatter::<'a>::write_str	core library	Kani	discharged (verus/seams/vspec-fmt-Formatter-write_str.md)
 core::fmt::Formatter::<'a>::write_fmt	function pointer	Kani
 pthread_setspecific	FFI/syscall	none (assumption)
@@ -250,7 +250,7 @@ core::slice::from_ref	core library	Kani	discharged (verus/seams/vspec-slice-slic
 <core::array::IntoIter<T, N> as core::iter::Iterator>::next	core library	Kani	discharged (verus/seams/vspec-slice-array-IntoIter-Iterator-next.md)
 <[T]>::as_mut_ptr	core library	Kani	discharged (verus/seams/vspec-sys-slice-as_mut_ptr.md)
 <[T]>::as_ptr	core library	Kani	discharged (verus/seams/vspec-sys-slice-as_ptr.md)
-src/api/mallctl.rs:shared	allocator invariant	RefinedRust
+src/api/mallctl.rs:shared	allocator invariant	none (assumption)
 # The loom/GenMC triage (verus/WEAKMEM.md, "Seams"): records for what
 # the loom models establish, and the items that need no weak-memory
 # model, reassigned.
@@ -275,3 +275,52 @@ core::sync::atomic::Atomic::<u32>::as_ptr	core library	Kani
 load_bool	atomics primitive	Kani
 Explicit::drop	atomics primitive	Kani
 ClassState::claim_with	termination	RefinedRust
+# RefinedRust cannot take these (no atomics, UnsafeCell, integer-to-pointer
+# or inline asm support, and no view of Verus ghost state; .lane pilot §4):
+# the tool its category's default would give is replaced here.
+src/api/mod.rs:Global::get	UnsafeCell/volatile/transmute	none (assumption)
+src/api/mod.rs:publish_features	UnsafeCell/volatile/transmute	none (assumption)
+src/api/mod.rs:save_sigmask	UnsafeCell/volatile/transmute	none (assumption)
+src/api/mod.rs:saved_sigmask	UnsafeCell/volatile/transmute	none (assumption)
+src/api/mod.rs:shared_ref	UnsafeCell/volatile/transmute	none (assumption)
+src/api/mod.rs:shared_storage_ptr	UnsafeCell/volatile/transmute	none (assumption)
+src/class/mod.rs:axiom_class_lock	allocator invariant	none (assumption)
+src/class/mod.rs:axiom_class_lock_inv	allocator invariant	none (assumption)
+src/class/sets.rs:axiom_set_tables_lock_inv	allocator invariant	none (assumption)
+src/class/table.rs:axiom_table_lock_frame	allocator invariant	none (assumption)
+src/class/table.rs:axiom_table_lock_inv	allocator invariant	none (assumption)
+src/class/table.rs:words_ref	raw pointer (internal)	loom/GenMC
+src/class/verify.rs:read_word	UnsafeCell/volatile/transmute	none (assumption)
+src/heap/mod.rs:Heap::destroy	raw pointer (internal)	none (assumption)
+src/heap/mod.rs:init_fields	raw pointer (internal)	none (assumption)
+src/heap/thread.rs:fast_flags	raw pointer (internal)	none (assumption)
+src/heap/thread.rs:heap_from_slot	raw pointer (internal)	none (assumption)
+src/huge/mod.rs:Huge::check_zero	UnsafeCell/volatile/transmute	none (assumption)
+src/layout/mod.rs:ClassTable::new	UnsafeCell/volatile/transmute	none (assumption)
+src/layout/mod.rs:ClassTable::table	UnsafeCell/volatile/transmute	none (assumption)
+src/lock.rs:Lock::get_unlocked	UnsafeCell/volatile/transmute	loom/GenMC
+src/lock.rs:LockGuard::deref	UnsafeCell/volatile/transmute	loom/GenMC
+src/lock.rs:LockGuard::deref_mut	UnsafeCell/volatile/transmute	loom/GenMC
+src/purge/background.rs:axiom_state_lock_inv	allocator invariant	none (assumption)
+src/purge/background.rs:shared_arg	raw pointer (internal)	none (assumption)
+src/slab.rs:SlabDesc::at	raw pointer (internal)	none (assumption)
+src/stats.rs:axiom_snapshot_lock_inv	allocator invariant	none (assumption)
+src/vspec/addr.rs:<*const T>::is_null	raw pointer (internal)	Kani
+src/vspec/addr.rs:<*mut T>::is_null	raw pointer (internal)	Kani
+src/vspec/addr.rs:addr_to_ptr	raw pointer (internal)	Kani
+src/vspec/addr.rs:axiom_fresh_block	allocator invariant	Verus
+src/vspec/addr.rs:axiom_moved_block	allocator invariant	Verus
+src/vspec/addr.rs:core::ptr::copy_nonoverlapping::<T>	raw pointer (internal)	Kani
+src/vspec/addr.rs:core::ptr::write_bytes::<T>	raw pointer (internal)	Kani
+src/vspec/arena.rs:axiom_arena_stats_lock_inv	allocator invariant	none (assumption)
+src/vspec/config.rs:<*const T>::cast::<U>	raw pointer (internal)	Kani
+src/vspec/huge.rs:axiom_huge_lock_frame	allocator invariant	none (assumption)
+src/vspec/huge.rs:axiom_huge_lock_inv	allocator invariant	none (assumption)
+src/vspec/lock.rs:core::cell::UnsafeCell::<T>::new	UnsafeCell/volatile/transmute	Kani
+src/vspec/lock.rs:core::cell::UnsafeCell<T>	UnsafeCell/volatile/transmute	Kani
+src/vspec/meta.rs:axiom_meta_lock_frame	allocator invariant	none (assumption)
+src/vspec/meta.rs:axiom_meta_lock_inv	allocator invariant	none (assumption)
+src/vspec/ptr.rs:<*mut T>::add	raw pointer (internal)	Kani
+src/vspec/sys.rs:core::ptr::from_mut	raw pointer (internal)	Kani
+src/vspec/sys.rs:core::ptr::from_ref	raw pointer (internal)	Kani
+src/vspec/zero.rs:write_zero	raw pointer (internal)	Kani

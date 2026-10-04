@@ -390,7 +390,7 @@ function md(s) { gsub(/\|/, "\\|", s); return s }
 END {
     if (bad) exit 2
     ncat = split("inline asm|FFI/syscall|function pointer|UnsafeCell/volatile/transmute|raw pointer (internal)|raw pointer from C caller|panic/abort|atomics primitive|platform/kernel fact|C-program contract|termination|core library|allocator invariant", cats, "|")
-    ntool = split("Islaris/Isla|RefinedRust|Kani|loom/GenMC|Miri (evidence only)|none (assumption)", tools, "|")
+    ntool = split("Islaris/Isla|RefinedRust|Kani|loom/GenMC|Verus|Miri (evidence only)|none (assumption)", tools, "|")
     nkind = split("external_body|external_body proof|external_body type|external_body const|axiom|assume_spec|ext_type_spec|ext_trait_spec|spec_impl|abort_standin|no_decreases|assume_new|ghost_assume_new", kinds, "|")
     for (i = 1; i <= ncat; i++) catok[cats[i]] = 1
     for (i = 1; i <= ntool; i++) toolok[tools[i]] = 1
@@ -413,7 +413,7 @@ END {
     for (i = 1; i <= nover; i++) if (!oseen[okey[i]]) { print "seams: verus/seams.overrides: " okey[i] " matches no seam" > "/dev/stderr"; bad = 1 }
 
     split("asm|ffi|fnptr|cell|ptr|c-ptr|abort|atomic|platform|c-contract|termination|core|invariant", scat, "|")
-    split("Isla|RR|Kani|GenMC|Miri|none", stool, "|")
+    split("Isla|RR|Kani|GenMC|Verus|Miri|none", stool, "|")
     split("body|proof|type|const|axiom|spec|ext-type|ext-trait|spec-impl|abort|no-dec|assume|assume-ghost", skind, "|")
     for (i = 1; i <= ncat; i++) cshort[cats[i]] = scat[i]
     for (j = 1; j <= ntool; j++) tshort[tools[j]] = stool[j]
@@ -523,7 +523,9 @@ contract and termination, plus two this ledger adds: core library (a
 specification of a `core` function or type, checkable against `core`
 itself) and allocator invariant (a ghost fact about challoc's own
 protocol whose producer is unverified code). The tools are Islaris/Isla,
-RefinedRust, Kani, loom/GenMC, Miri (evidence only) and none
+RefinedRust, Kani, loom/GenMC, Verus (the fact is provable in Verus
+itself, once its producer states it or a lemma derives it), Miri
+(evidence only) and none
 (assumption). `seams.sh` picks a category from the kind, the path and the
 body; `verus/seams.overrides` corrects it and sets the tool where the
 category's default does not fit.
