@@ -225,7 +225,8 @@ pub fn features() -> &'static Features {
 /// `thp:never`, which nothing but the line's `mthp` key reads, so they
 /// are read here instead, and a process that never asks for the line
 /// never reads them (#29). Initialises the allocator if needed. Does not
-/// allocate.
+/// allocate. Like `malloc`, not async-signal-safe: a signal handler that
+/// asks for the line while its own thread is building it waits forever.
 fn feature_line_ready() {
     let _ = shared();
     if LINE_STATE.load(Ordering::Acquire) == LINE_READY {
@@ -397,7 +398,11 @@ extern "C" fn fork_prepare() {
     // a process that forks (a PostgreSQL postmaster, a server's workers)
     // reads the files once and its children inherit the record, where
     // each child would otherwise read them again on its own first tick.
-    let _ = shared().cgroup_now();
+    // It does not wait for a discovery another thread has under way (nor
+    // for one this thread's own interrupted code is running, when `fork`
+    // is called from a signal handler): the child then starts that one
+    // over (`fork_child`), and the parent's finishes as usual.
+    shared().discover_cgroup_for_fork();
     let mask = sys::block_all_signals();
     let s = shared();
     s.tcaches.raw_lock().lock();
@@ -474,7 +479,23 @@ extern "C" fn fork_parent() {
 extern "C" fn fork_child() {
     purge::background::fork_child();
     shared().cgroup_fork_child();
+    feature_line_fork_child();
     fork_release();
+}
+
+/// The child of a `fork` has only the forking thread: a feature line
+/// another thread was building is not coming, so the child's first
+/// request builds it again rather than waiting forever. (If the forking
+/// thread itself was building it, from a signal handler that forked, it
+/// finishes when the handler returns; a second build in between writes
+/// the same bytes.)
+fn feature_line_fork_child() {
+    let _ = LINE_STATE.compare_exchange(
+        LINE_BUILDING,
+        LINE_UNBUILT,
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
 }
 
 #[cfg(test)]
@@ -500,14 +521,19 @@ mod tests {
         assert_eq!(f.page_size, shared().regions.page_size());
     }
 
-    /// `challoc_features()` is the `Display` of the probe, NUL-terminated,
-    /// static, and the same bytes on every call.
+    /// `challoc_features()` is the `Display` of a full probe,
+    /// NUL-terminated, static, and the same bytes on every call: under
+    /// `thp:never` (the default, so the tests' configuration), where init
+    /// skips the per-size THP files, the line built at the first request
+    /// still lists every enabled mTHP size, as a fresh full probe does.
     #[test]
     fn challoc_features_is_the_probe_line() {
         let p = challoc_features();
         assert!(!p.is_null());
         assert_eq!(p, challoc_features());
         let s = unsafe { core::ffi::CStr::from_ptr(p) }.to_str().unwrap();
+        let full = crate::sys::features::Features::probe(true);
+        assert_eq!(s, std::format!("{full}"), "the line is the full probe's");
         assert_eq!(s, std::format!("{}", features()));
         assert_eq!(s, feature_line());
         assert!(s.starts_with("page_size="), "{s}");
@@ -519,6 +545,66 @@ mod tests {
                 .unwrap_or_else(|| panic!("`{kv}` in {s}"));
             assert!(!k.is_empty() && !v.is_empty(), "`{kv}` in {s}");
         }
+    }
+
+    /// A `fork` discovers a deferred cgroup in its prepare handler, so the
+    /// child inherits the record (it reads no files of its own) and the
+    /// parent has it too.
+    #[test]
+    fn a_forked_child_inherits_the_discovered_cgroup() {
+        // Init registers the fork handlers.
+        let _ = shared();
+        let pid = unsafe { ::libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let code = if shared().cgroup().is_some() { 0 } else { 1 };
+            unsafe { ::libc::_exit(code) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { ::libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(::libc::WIFEXITED(status), "child status {status:#x}");
+        assert_eq!(::libc::WEXITSTATUS(status), 0, "the child has no record");
+        assert!(shared().cgroup().is_some(), "nor the parent");
+    }
+
+    /// A feature line another thread was building when the process forked
+    /// is built again by the child, not waited for: the child (one thread
+    /// here, so the state can be set without racing other tests) marks the
+    /// line as being built, forks, and its own child must get the line
+    /// within the alarm.
+    #[test]
+    fn a_forked_child_does_not_wait_for_a_line_being_built() {
+        let expect = feature_line().len();
+        let pid = unsafe { ::libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            LINE_STATE.store(LINE_BUILDING, Ordering::Release);
+            let gc = unsafe { ::libc::fork() };
+            if gc == 0 {
+                unsafe { ::libc::alarm(10) };
+                let p = challoc_features();
+                let n = unsafe { core::ffi::CStr::from_ptr(p) }.to_bytes().len();
+                unsafe { ::libc::_exit(if n == expect { 0 } else { 2 }) };
+            }
+            let mut status = 0;
+            let code = if gc > 0
+                && unsafe { ::libc::waitpid(gc, &mut status, 0) } == gc
+                && ::libc::WIFEXITED(status)
+            {
+                ::libc::WEXITSTATUS(status)
+            } else {
+                3
+            };
+            unsafe { ::libc::_exit(code) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { ::libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(::libc::WIFEXITED(status), "child status {status:#x}");
+        assert_eq!(
+            ::libc::WEXITSTATUS(status),
+            0,
+            "the grandchild spun on the line (3: killed by the alarm) or got another one (2)"
+        );
     }
 
     /// Every `Lock<..>` (or bare `RawLock`) field and static in `src/`, as

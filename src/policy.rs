@@ -827,4 +827,25 @@ mod tests {
             assert!(!forced_by_limit(key, 0), "{key:?} is never forced");
         }
     }
+
+    /// A cgroup discovered after init (`Shared::discover_cgroup`): the
+    /// count found is the baseline, so the first sample's `apply` with
+    /// that count owes no full purge, and a later rise still does.
+    #[test]
+    fn a_late_discovery_rebases_the_high_count() {
+        const L: u64 = 512 << 20;
+        let p = Policy::new(0, false);
+        p.rebase_high_rises(7);
+        p.apply(Band::Low, L, 0, 7);
+        assert!(
+            !p.full_purge_pending(),
+            "events before discovery are not a rise"
+        );
+        assert!(p.apply(Band::Low, L, 0, 8));
+        assert!(p.full_purge_pending());
+        // Without the rebase the first sample would have owed one.
+        let q = Policy::new(0, false);
+        q.apply(Band::Low, L, 0, 7);
+        assert!(q.full_purge_pending());
+    }
 }

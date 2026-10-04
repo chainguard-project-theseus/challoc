@@ -942,10 +942,14 @@ which needs the limit for the 1 GiB rule below; otherwise it is deferred
 the children of a forking server inherit the record rather than each
 reading the files again), whichever comes first, so a process that lives
 less than that never reads the files (about 90 us of system time per
-exec). Until then the record is untracked (`not tracked (not read yet)`):
-no limit known, the policy at its defaults, the eager purge advice. The
-`memory.events` `high` count found at discovery is the policy's baseline,
-as it is at init.
+exec). Until then the policy sees no record: no limit known, the policy
+at its defaults, the eager purge advice; a reader of the figures (the
+report, `stats.cgroup.*`) discovers first, so it never shows a pending
+record. The `memory.events` `high` count found at discovery is the
+policy's baseline, as it is at init, set before the record is published
+so no other thread's sample sees the record without it. A `fork` does not
+wait for a discovery another thread has under way; the child starts that
+one over.
 
 - The cgroup path is the `0::` line of `/proc/self/cgroup` (`/` inside a
   cgroup namespace); the cgroup2 mount is the first `cgroup2` line of

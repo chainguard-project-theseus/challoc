@@ -606,10 +606,16 @@ impl Meta {
     pub fn reserve_committed(&self, len: usize, align: usize) -> Option<usize> {
         let mut g = self.inner.lock();
         if g.eager_ok(len) {
+            let (bump, frontier, stats) = (g.bump, g.frontier, g.stats);
             if let Some(p) = g.reserve_eager(len, align) {
-                g.flush().ok()?;
-                g.stats.committed += align_up(len.max(1), g.page);
-                return Some(p);
+                if g.flush().is_ok() {
+                    g.stats.committed += align_up(len.max(1), g.page);
+                    return Some(p);
+                }
+                // The kernel refused the commit: undo the carve (nothing
+                // has seen it) and try the reservation side, as when the
+                // object side cannot hold the table.
+                (g.bump, g.frontier, g.stats) = (bump, frontier, stats);
             }
         }
         let old_top = g.top;

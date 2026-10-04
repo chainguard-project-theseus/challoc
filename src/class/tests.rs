@@ -1080,64 +1080,6 @@ fn guard_slabs_are_skipped() {
     );
 }
 
-/// The read-write range of `/proc/self/maps` that holds `addr`.
-fn rw_range_at(addr: usize) -> Option<(usize, usize)> {
-    let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
-    maps.lines().find_map(|l| {
-        let mut it = l.split_whitespace();
-        let (a, b) = it.next().unwrap().split_once('-').unwrap();
-        let perms = it.next().unwrap();
-        let a = usize::from_str_radix(a, 16).unwrap();
-        let b = usize::from_str_radix(b, 16).unwrap();
-        (a <= addr && addr < b && perms.starts_with("rw")).then_some((a, b))
-    })
-}
-
-/// A fresh group's slabs up to its first guard slab are committed in one
-/// call when the group is handed out (`SlabTable::commit_group`), so the
-/// first slab of a class leaves the next ones read-write and the guard
-/// slab untouched; the walk past the guard then commits and guards it as
-/// before, and the slab counts are the slab-by-slab ones.
-#[test]
-fn a_fresh_group_is_committed_up_to_its_guard_in_one_call() {
-    let env = Env::new();
-    let c = min_slab_class();
-    let cs = env.class(c, 8);
-    assert!(cs.table().group() > 8, "the group spans a guard slab");
-    assert_eq!(cs.table().slabs_per_page(), 1);
-    let (p, _) = env.claim(&cs, 1);
-    assert_eq!(cs.locate(p[0]).0, 0);
-    let lo = env.regions.slab_addr(c, 0);
-    let guard = env.regions.slab_addr(c, 7);
-    assert_eq!(
-        rw_range_at(lo),
-        Some((lo, guard)),
-        "slabs 0..7 read-write, the guard slab not yet"
-    );
-    assert_eq!(rw_range_at(guard), None);
-    assert_eq!((cs.stats().committed, cs.stats().guards), (1, 0));
-    // Slabs 1..6 need no commit of their own; the next claim walks past
-    // the guard slab, which is committed and guarded on the way.
-    let n = cs.class().nslots();
-    let (q, _) = env.claim(&cs, 7 * n);
-    let slabs: HashSet<usize> = q.iter().map(|&x| cs.locate(x).0).collect();
-    assert_eq!(slabs, [0, 1, 2, 3, 4, 5, 6, 8].into_iter().collect());
-    assert_eq!((cs.stats().committed, cs.stats().guards), (8, 1));
-    // The guard slab: read-write with a guard region (`MADV_GUARD_INSTALL`,
-    // so one range through slab 8), or `PROT_NONE` without it.
-    let after = env.regions.slab_addr(c, 9);
-    if crate::sys::features::Features::probe(true).guard_install {
-        assert_eq!(rw_range_at(lo), Some((lo, after)));
-    } else {
-        assert_eq!(rw_range_at(lo), Some((lo, guard)));
-        let slab8 = env.regions.slab_addr(c, 8);
-        assert_eq!(rw_range_at(slab8), Some((slab8, after)));
-    }
-    for s in [1, 6, 8] {
-        unsafe { core::ptr::write_volatile(env.regions.slab_addr(c, s) as *mut u8, 1) };
-    }
-}
-
 #[test]
 fn works_for_every_class() {
     let env = Env::new();

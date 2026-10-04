@@ -642,11 +642,9 @@ impl Shared {
 
     /// The memory cgroup record, discovering it first if that has not
     /// happened: what a reader of the figures (`stats.cgroup.*`, the
-    /// report, `fork`) uses.
+    /// report) uses.
     pub fn cgroup_now(&self) -> &crate::sys::cgroup::Cgroup {
-        if self.cgroup.discover(true) {
-            self.cgroup_discovered();
-        }
+        self.discover_cgroup(true);
         self.cgroup
             .get()
             .unwrap_or_else(|| crate::sys::abort("cgroup: discovery did not publish"))
@@ -656,22 +654,31 @@ impl Shared {
     /// periodic tick, the background thread): `true` when this call did,
     /// and the policy has been evaluated on the first figures.
     pub fn discover_cgroup_if_due(&self, now: u64) -> bool {
-        if self.cgroup.due(now) && self.cgroup.discover(false) {
-            self.cgroup_discovered();
-            return true;
-        }
-        false
+        self.cgroup.due(now) && self.discover_cgroup(false)
     }
 
-    /// The policy after a late discovery: the `memory.events` `high`
-    /// count found is the baseline (as at init: a container that already
-    /// had `high` events does not start with a full purge), then the band
-    /// from the first sample.
-    fn cgroup_discovered(&self) {
-        if let Some(cg) = self.cgroup.get() {
+    /// Discover the cgroup in `fork`'s prepare handler, so the child
+    /// inherits the record; without waiting for a discovery another
+    /// thread (or this one, under a signal handler) has under way, which
+    /// the child then starts over (`Deferred::fork_child`).
+    pub fn discover_cgroup_for_fork(&self) {
+        self.discover_cgroup(false);
+    }
+
+    /// Run the deferred discovery (`Deferred::discover`): `true` when this
+    /// call ran it. The `memory.events` `high` count found is the policy's
+    /// baseline, set before the record is published (as at init: a
+    /// container that already had `high` events does not start with a
+    /// full purge, whichever thread samples first); then the band from
+    /// the first sample.
+    fn discover_cgroup(&self, wait: bool) -> bool {
+        let ran = self.cgroup.discover(wait, |cg| {
             self.policy.rebase_high_rises(cg.rises().0);
+        });
+        if ran {
+            crate::policy::evaluate(self);
         }
-        crate::policy::evaluate(self);
+        ran
     }
 
     /// The child of a `fork`: see `sys::cgroup::Deferred::fork_child`.

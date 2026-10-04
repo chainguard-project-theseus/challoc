@@ -650,10 +650,13 @@ impl Deferred {
     }
 
     /// Run discovery if it has not run: `true` when this call ran it, so
-    /// the caller sets the policy up from the first figures. A call that
-    /// finds another thread discovering waits for it when `wait`, and
-    /// otherwise returns at once with the record still pending.
-    pub fn discover(&self, wait: bool) -> bool {
+    /// the caller sets the policy up from the first figures. `found` sees
+    /// the record before it is published, so what it sets up (the policy's
+    /// `high` baseline) is in place before any other thread's sample can
+    /// act on the record. A call that finds another thread discovering
+    /// waits for it when `wait`, and otherwise returns at once with the
+    /// record still pending.
+    pub fn discover(&self, wait: bool, found: impl FnOnce(&Cgroup)) -> bool {
         match self.phase.compare_exchange(
             PHASE_PENDING,
             PHASE_RUNNING,
@@ -664,7 +667,8 @@ impl Deferred {
                 let cg = Cgroup::discover(true);
                 // SAFETY: this thread won the exchange; no reader looks at
                 // the cell before `DONE`.
-                unsafe { (*self.cell.get()).write(cg) };
+                let cg = unsafe { (*self.cell.get()).write(cg) };
+                found(cg);
                 self.phase.store(PHASE_DONE, Ordering::Release);
                 true
             }
@@ -1506,11 +1510,18 @@ mod linux_tests {
         assert!(!d.due(born));
         assert!(!d.due(born + DEFER_NS - 1));
         assert!(d.due(born + DEFER_NS));
-        assert!(d.discover(false), "the first call discovers");
+        let mut seen = None;
+        assert!(
+            d.discover(false, |cg| seen = Some((cg.state(), d.get().is_none()))),
+            "the first call discovers"
+        );
+        let (state, unpublished) = seen.expect("`found` ran");
+        assert!(unpublished, "`found` runs before the record is published");
         assert!(d.get().is_some());
-        assert!(!d.discover(true), "and only the first");
+        assert!(!d.discover(true, |_| ()), "and only the first");
         assert!(!d.due(u64::MAX));
         let now = Cgroup::discover(true);
+        assert_eq!(state, now.state());
         assert_eq!(d.get().unwrap().state(), now.state());
         assert_eq!(d.get().unwrap().dir(), now.dir());
         assert_eq!(d.get().unwrap().limit(), now.limit());
@@ -1522,15 +1533,18 @@ mod linux_tests {
         );
         let e = Deferred::later(born);
         e.phase.store(PHASE_RUNNING, Ordering::Relaxed);
-        assert!(!e.discover(false), "another thread's discovery under way");
+        assert!(
+            !e.discover(false, |_| ()),
+            "another thread's discovery under way"
+        );
         assert!(e.get().is_none());
         e.fork_child();
         assert!(e.due(born + DEFER_NS), "the child starts it over");
-        assert!(e.discover(false));
+        assert!(e.discover(false, |_| ()));
         assert_eq!(e.get().unwrap().state(), now.state());
         let off = Deferred::now(Cgroup::discover(false));
         assert_eq!(off.get().unwrap().state(), State::Disabled);
-        assert!(!off.due(u64::MAX) && !off.discover(true));
+        assert!(!off.due(u64::MAX) && !off.discover(true, |_| ()));
     }
 
     fn read_opt(p: &str) -> Option<String> {
