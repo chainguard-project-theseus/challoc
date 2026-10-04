@@ -11,11 +11,11 @@ use vstd::prelude::*;
 
 #[cfg(verus_only)]
 use super::table::{
-    desc_handed, guard_marked, lemma_guard_marked_mono, lemma_slab_marked_mono, lemma_spec_class,
-    lemma_spec_nslabs, slab_marked, slab_owner,
+    desc_handed, guard_marked, lemma_guard_marked_mono, lemma_lg_group, lemma_run_covers,
+    lemma_slab_marked_mono, lemma_spec_class, lemma_spec_nslabs, slab_marked, slab_owner,
 };
 #[cfg(verus_only)]
-use super::{SlabTable, desc_ok, descs_ok, lemma_same_sets_inv, lemma_whole_group, whole_groups};
+use super::{desc_ok, descs_ok, lemma_same_sets_inv, lemma_whole_group, whole_groups};
 #[cfg(verus_only)]
 use crate::slab::{DescPerm, State};
 
@@ -99,11 +99,13 @@ impl ClassState {
 
     /// The fresh half of [`next_slab`], for an arena whose sets are empty:
     /// the next slab of this arena's current group, committed, else the next
-    /// fresh group of the class region, committed. Guard slabs are
-    /// committed as guards and skipped. `None` when the region, the
-    /// metadata region or a commit is exhausted. Out of line: it runs once
-    /// per slab, not once per refill, and inlined it would double the size
-    /// of `claim_with`.
+    /// fresh group of the class region, committed. Slabs are committed a
+    /// run at a time, up to the next guard slab ([`SlabTable::commit_run`]):
+    /// a slab that starts no run was committed with the one that started
+    /// it. Guard slabs are committed as guards and skipped. `None` when the
+    /// region, the metadata region or a commit is exhausted. Out of line:
+    /// it runs once per slab, not once per refill, and inlined it would
+    /// double the size of `claim_with`.
     ///
     /// A fresh group's slabs join this arena's ghost `Fresh` with stamp 0,
     /// as `SlabDesc::init` writes them, and as its current group: no arena's
@@ -236,7 +238,26 @@ impl ClassState {
                 }
             }
             let s = g.group_next;
-            let usable = table.commit_slab(s, Tracked(ord))?;
+            let usable = if table.starts_run(s) {
+                table.commit_run(s, g.group_end, Tracked(ord))?
+            } else {
+                proof {
+                    // `s` starts no run, so it lies in the run of an
+                    // earlier slab of its group, which the cursor passed.
+                    let t = self.spec_table();
+                    let lg = t.lg_group;
+                    let st = (s >> lg) << lg;
+                    assert(g.slab_ok(s as nat));
+                    lemma_group_shift(s, lg);
+                    assert(((s >> lg) << lg) & sub(1usize << lg, 1) == 0) by (bit_vector)
+                        requires lg < 32;
+                    assert(g.group_end == t.spec_group_range(s >> lg).1);
+                    lemma_run_covers(t, st, g.group_end, s);
+                    assert(exists|y: usize| st <= y < s && #[trigger] t.spec_run_start(y)
+                        && s < t.spec_run_end(y, g.group_end));
+                }
+                true
+            };
             let ghost g1 = *g;
             g.group_next = s + 1;
             proof {
@@ -270,21 +291,6 @@ impl ClassState {
             }
         }
     }
-}
-
-/// The hand-out group's shift is below 32 (`group`, `1 << lg_group`, is
-/// a `u32`) and the region has at most `2^26` slabs.
-proof fn lemma_lg_group(t: SlabTable)
-    requires
-        t.inv(),
-    ensures
-        t.lg_group < 32,
-        t.spec_nslabs() <= 0x400_0000,
-        t.group as usize == 1usize << t.lg_group,
-{
-    broadcast use lemma_spec_nslabs;
-    let (gr, lg) = (t.group, t.lg_group);
-    assert(gr as usize == 1usize << lg && lg < 64 ==> lg < 32) by (bit_vector);
 }
 
 /// The first slab of `s`'s hand-out group is at most `s`, and `s` is

@@ -60,6 +60,16 @@ each syscall is a compiler barrier.
   `fetch_and` and `fetch_or` at `:1345`, `:1371`) under the commit
   lock, published by `committed_slabs.store(Release)`
   (`class/table.rs:1933`); owner words likewise (`class/table.rs:1925`).
+- Fresh slab commit: since upstream #114 `SlabTable::commit_run` makes
+  a run of the arena's own group read-write (one `mprotect`, and
+  `install_guard` for a guard slab) without the commit lock, which it
+  takes only for the guard count. Nothing is published through memory:
+  the syscalls touch no atomic or lock value, the run is at or past the
+  arena's cursor in a group no other arena owns, the caller holds the
+  arena's class lock (which `fork_prepare` also takes), and a slab's
+  memory reaches another thread only through the claim edges above. The
+  kernel orders the protection changes (`mmap_lock`); that is outside
+  the memory model, so no loom model is added.
 - What to check: no slot is held by two threads; slot data is
   race-free across a release and the next claim; a claimer that
   reserved a slot (`live`) finds a clear bit. A stale `Relaxed` hint

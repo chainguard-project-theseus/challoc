@@ -69,7 +69,7 @@ code makes.
 | S76 | `axiom_discarded_slots_zero` (class/mod.rs) | fixed | as S75; the `purged_is_zero` premise is still the call site's exec test |
 | S77 | `axiom_table_bytes` (class/sets.rs) | fixed | at `base == 0` proved `false` (`into_typed` then `is_nonnull`); now requires `0 < base` (`Meta::reserve_table` ensures it); still a premise that `(base, len)` is a fresh `reserve_table` result: a second call, or a range over another permission's bytes, proves `false` (`is_disjoint`); closed after the audit ("One-shot premises") |
 | S80 | `axiom_set_tables_lock_inv` (class/sets.rs) | sound | `lock_inv` is `true` for its type; the only axiom for it |
-| S81 | `axiom_table_lock_inv` (class/table.rs) | sound | initial value verified; `take_group` asserts `inv`; `commit_slab`'s `guards` bound is the documented premise |
+| S81 | `axiom_table_lock_inv` (class/table.rs) | sound | initial value verified; `take_group` asserts `inv`; `commit_run`'s and `commit_slab`'s `guards` bound is the documented premise |
 | S82 | `axiom_table_lock_frame` (class/table.rs) | sound | nothing writes the geometry or `mloc` |
 | S83 | `load_owner` (class/table.rs) | sound (premise) | every caller gates on the watermark before the read |
 | S84 | `store_owner` (class/table.rs) | sound (premise) | one call, in `take_group`; `slab_owner` has no time, so two stores of one group prove `false`; closed after the audit ("One-shot premises") |

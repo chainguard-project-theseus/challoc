@@ -107,6 +107,22 @@ width everywhere, since the LAM kernel series cuts the user tag to 4 bits
 and MTE has 4. AMD UAI has no Linux enable path and is not a target. The
 MTE half waits for a host that exposes MTE (AmpereOne, #51).
 
+## Guard slabs and the run ahead of the cursor
+
+With `MADV_GUARD_INSTALL` (kernel 6.13+) a class region has one guard
+slab per `guard_slab_interval` x 64 KiB of slabs (8, so 512 KiB, by
+default): a guard page at its start, never handed out. An arena commits
+its fresh slabs a run at a time, up to the next guard slab and at most
+512 KiB (design section 5), so the slabs between its newest slab and the
+end of the run are read-write before they are handed out: less than
+512 KiB (up to 7 of the 64 KiB slabs) with guards on, up to 512 KiB with
+guards off (every kernel below 6.13). A linear overflow off the newest
+slab therefore runs into that committed, unused memory and faults only
+at the run's end (the guard slab, or the uncommitted slab after the
+run), where with one commit per slab it faulted at the next slab. Those
+slabs are not guards and were never promised as such; the guard slabs
+themselves are unchanged.
+
 ## Stricter than jemalloc
 
 Two things are stricter than jemalloc: the size passed to `sdallocx`,

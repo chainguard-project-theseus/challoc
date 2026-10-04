@@ -1062,12 +1062,42 @@ pub proof fn theorem_guard_free(p: *mut u8, c: int, slab: int)
 lies in a guard slab of any class region, and a free that returns acted
 on no address in one. A guard slab is what `SlabTable::is_guard_slab`
 (`class/table.rs:1529`) names: every `guard_interval`-th page group,
-counted from 1. `commit_slab` (`class/table.rs:2232`) puts the guard on
+counted from 1. `commit_slab` (`class/table.rs:2232`; since upstream #114
+`commit_run` too, below) puts the guard on
 it: `MADV_GUARD_INSTALL` on the page group's first page, or the whole
 slab or page group left `PROT_NONE` when the advice fails, or (under
 `thp:always` with PMD chunks) no marker, the slab left unused. Either
 way the guard page is inside the guard slabs, so the theorem covers it.
 With guards off the mask is all ones and no slab is a guard slab.
+
+Since upstream #114 an arena commits its group a run at a time
+(`SlabTable::commit_run`, without the commit lock, which it takes only
+to count the guard): a guard slab always starts a run
+(`SlabTable::starts_run` ensures `!r ==> !spec_is_guard(s)`), and
+`commit_run` guards it with `install_guard` after the run's one
+`mprotect`, as `commit_slab` did; page groups above a slab and
+`thp:always` chunks keep `commit_slab`. The statement is unchanged:
+it is about where blocks lie, and `next_fresh_slab` still hands out
+only a slab that is not a guard slab. Two facts about the runs are
+proved of the run arithmetic (`class/table.rs`: `spec_run_start` and
+`spec_run_end`, which `starts_run` and `run_end` compute, by their
+`ensures`), where upstream tests it (`runs_tile_every_group`):
+`lemma_run_next`, a run holds no guard slab past its first slab and
+ends where the next run starts or at the group's end; and
+`lemma_run_covers`, every slab of a group lies in the run of a
+run-starting slab at or below it, which `next_fresh_slab` asserts for
+each slab it hands out without a commit. That `commit_run`'s one
+`mprotect` spans exactly `s..run_end(s, limit)` is read from its body
+(no contract states it, as `commit` has no ghost model); with it, no
+guard slab is made read-write before the cursor reaches it. That a
+slab handed out without a commit is read-write also rests on the
+earlier run's `mprotect` having succeeded (the cursor passes a run
+start only then) and on the `thp` mode, which `SlabTable::runs` reads,
+being fixed after init: premises, as the kernel's protections are not
+modelled. The slabs a run
+commits ahead of the cursor are read-write before they are handed out
+(`docs/hardening.md`); they are not guard slabs, so nothing here
+covered them.
 
 `guard_of` (`layout/regions.rs:96`) is `is_guard_slab`'s formula;
 `guard_geom(c)` (`:105`) is the process's class `c` table's
@@ -5541,7 +5571,7 @@ arena `arena`), `SlabTable`, `SetTable` (a slab-set rank), `Huge`, `Meta`,
 
 | Path | Nesting checked |
 |---|---|
-| slow allocation: `alloc_slow_in` (`heap/paths.rs:488`) → `tick`, `Shared::arena`, `ensure_cache`, `alloc_direct`, `refill` → `Heap::claim` → `claim_with` → `plan` (class) → `next_slab` → `next_fresh_slab` → `take_group` (table) → `ensure_sets` → `Set::ensure` → `SetTable::ensure` (sets) → `Lazy::ensure` → `Meta::commit` (meta); `commit_slab` (table) | Class(i,c) < Table(c) < Sets(i) < Meta; Arenas < Meta (`materialise` → `build` → `Arena::init`); the GC and decay of `tick` |
+| slow allocation: `alloc_slow_in` (`heap/paths.rs:488`) → `tick`, `Shared::arena`, `ensure_cache`, `alloc_direct`, `refill` → `Heap::claim` → `claim_with` → `plan` (class) → `next_slab` → `next_fresh_slab` → `take_group` (table) → `ensure_sets` → `Set::ensure` → `SetTable::ensure` (sets) → `Lazy::ensure` → `Meta::commit` (meta); `commit_run` (since upstream #114: the run's `mprotect` and `install_guard` with no lock beyond the class lock, then the table for the guard count) → `commit_slab` (table; page groups above a slab, `thp:always` chunks) | Class(i,c) < Table(c) < Sets(i) < Meta; Arenas < Meta (`materialise` → `build` → `Arena::init`); the GC and decay of `tick` |
 | slow free: `free_slow_in` (`:565`) → (since #103, `rehome_on_free` → `try_rehome` → `flush_arena` →) `flush` → `release_routed` → `release_owned` → `release_slab` → `dec_live` → `on_live_zero` (class), `reopen` (class); `Shared::free_direct` | class locks one at a time |
 | huge: `Shared::alloc_huge` → `alloc_run` → `alloc_aligned` (huge; the lowest-fit `find` runs under it) → `alloc_desc`, `free_desc`, `Table::ensure`, `Set::ensure` (own store), `take` → `retire` (meta); `free_run` (huge) → `Table::ensure`, `retire` (meta) | Huge < Meta |
 | cache flushes and routing: `Heap::flush_all` (`tcache.flush` through `Tcaches::flush`, `thread.tcache.flush` and `arena.<i>.purge` through `flush_caller`, `thread.tcache.enabled` through `set_tcache_enabled`) → `flush_arena` → `flush` → `release_routed` (class) and `free_caches_in` → `Meta::free` (meta); `gc` → `gc_arena` → `flush`; `set_arena` → `other_caches` (meta, when it creates a node) | class locks one at a time, then Meta |

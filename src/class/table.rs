@@ -1,7 +1,7 @@
 //! The per-class [`SlabTable`]: the class region's descriptor array,
 //! class bitmap and group owner array, the hand-out watermark and the
 //! commit lock; groups go to arenas here (`take_group`) and slabs are
-//! committed here (`commit_slab`).
+//! committed here (`commit_run`, `commit_slab`).
 
 use super::Inner;
 use super::abort::{guard_free, invalid_free, invalid_pointer, never_committed, owner_mismatch};
@@ -207,10 +207,13 @@ impl TableInner {
 /// moves `next_slab` to the end of the group it hands out, which is a
 /// group boundary or the region's end, at most `nslabs`, below
 /// `usize::MAX >> 12` (`lemma_nslabs_bound`), and commits the tables
-/// through `Lazy::ensure`, which keeps [`lazy_ok`]; `commit_slab` adds
-/// one guard per guard slab it commits, which keeps the count at most
-/// `next_slab` only because every slab below `next_slab` is committed
-/// once, by the arena its group went to (`next_fresh_slab`): assumed,
+/// through `Lazy::ensure`, which keeps [`lazy_ok`]; `commit_run` and
+/// `commit_slab` add one guard per guard slab they commit (`commit_run`
+/// after the run's `mprotect` succeeded, so a failed run that the cursor
+/// retries counts it once), which keeps the count at most
+/// `next_slab` only because every slab below `next_slab` is reached
+/// once by the cursor of the arena its group went to (`next_fresh_slab`;
+/// a guard slab always starts a run, `SlabTable::starts_run`): assumed,
 /// not proved. The init and owner-store markers it holds cover the slabs
 /// from `next_slab` on: `take_group` takes the markers of the group it
 /// hands out, below the `next_slab` it publishes (the init ones for
@@ -567,6 +570,11 @@ unsafe impl Send for TableInner {}
 
 verus! {
 
+/// Bytes a run holds at most ([`SlabTable::commit_run`]): the default
+/// guard interval of 64 KiB slabs, so a run is as long with guards on or
+/// off, and a class of large slabs commits one at a time.
+pub(super) const RUN_BYTES: usize = 512 << 10;
+
 // SAFETY (all three): `addr..addr + len` is inside a class region this
 // allocator reserved (the callers pass slab or page-group ranges below
 // the region's end), so changing its protection or installing a guard
@@ -911,6 +919,7 @@ impl SlabTable {
             assert(ts == slots);
             assert(words_wf(word_invs, ts, bits_base, (nslabs * sb + 63) / 64));
             assert(crate::layout::guard_geom(class as int) == (lgs, guard_interval.wrapping_sub(1)));
+            lemma_mask_shape(guard_interval);
             // Page groups on page boundaries, for the purge ranges.
             lemma_groups_paged(base, slabs_per_page, t.lg_slab, regions.lg_page, page);
         }
@@ -1353,6 +1362,223 @@ proof fn lemma_slab_fits(s: usize, n: usize, m: usize, lg: usize)
         requires s < n, n <= m >> lg, lg < 64;
 }
 
+/// A guard mask is `2^k - 1` for some `k` (all ones with guards off):
+/// its set bits are the lowest ones.
+pub open spec fn mask_shape(m: u32) -> bool {
+    m & (m >> 1u32) == m >> 1u32
+}
+
+/// `guard_interval - 1` of a guard interval [`SlabTable::new`] accepts
+/// (0 or a power of two below `2^32`) has [`mask_shape`].
+proof fn lemma_mask_shape(gi: u32)
+    requires
+        gi == 0 || exists|k: nat| k < 32 && gi as nat == #[trigger] pow2(k),
+    ensures
+        mask_shape(gi.wrapping_sub(1)),
+{
+    if gi == 0 {
+        assert(gi.wrapping_sub(1) == 0xFFFF_FFFFu32);
+        assert(mask_shape(0xFFFF_FFFFu32)) by (compute);
+    } else {
+        let k = choose|k: nat| k < 32 && gi as nat == #[trigger] pow2(k);
+        let ku = k as u32;
+        vstd::bits::lemma_u32_shl_is_mul(1, ku);
+        vstd::bits::lemma_u32_pow2_no_overflow(k);
+        assert(gi == 1u32 << ku);
+        let m = gi.wrapping_sub(1);
+        assert(m == sub(gi, 1));
+        assert(gi == 1u32 << ku && ku < 32 && m == sub(gi, 1) ==> m & (m >> 1u32) == m >> 1u32) by (bit_vector);
+    }
+}
+
+/// The guard test with one slab per page group ([`SlabTable::is_guard_slab`]),
+/// for a slab number of a region: with guards off no slab is a guard
+/// slab; otherwise slab `x` is one iff its low bits under the mask are
+/// all set, so the guard slabs are every `guard_mask + 1`-th slab.
+pub(super) proof fn lemma_guard_test(t: SlabTable, x: usize)
+    requires
+        t.inv(),
+        t.spec_slabs_per_page() == 1,
+        x <= 0x400_0000,
+    ensures
+        t.guard_mask == u32::MAX ==> !t.spec_is_guard(x),
+        t.guard_mask != u32::MAX ==> (t.spec_is_guard(x) == (x & (t.guard_mask as usize) == t.guard_mask as usize)),
+        mask_shape(t.guard_mask),
+{
+    broadcast use lemma_spec_slabs_per_page;
+    reveal(crate::layout::guard_of);
+    reveal(SlabTable::page_groups_ok);
+    let (spp, lg) = (t.slabs_per_page as usize, t.lg_slabs_per_page);
+    assert(spp == 1usize << lg && lg <= 26 && spp == 1 ==> lg == 0) by (bit_vector);
+    let m = t.guard_mask;
+    let mu = m as usize;
+    let pg = (x >> lg) as u32;
+    assert(pg as usize == x && pg < 0x400_0001u32) by (bit_vector)
+        requires pg == (x >> lg) as u32, lg == 0, x <= 0x400_0000;
+    if m != 0xFFFF_FFFFu32 {
+        assert((add(pg, 1u32) & m == 0) == (pg & m == m)) by (bit_vector)
+            requires m & (m >> 1u32) == m >> 1u32, pg < 0x400_0001u32, m != 0xFFFF_FFFFu32;
+    }
+    assert(add(pg, 1u32) & 0xFFFF_FFFFu32 != 0) by (bit_vector)
+        requires pg < 0x400_0001u32;
+    assert((pg & m == m) == (x & mu == mu)) by (bit_vector)
+        requires pg as usize == x, mu == m as usize;
+    assert(pg != u32::MAX);
+}
+
+/// [`SlabTable::run_slabs`] is a power of two from 1 to 128.
+pub(super) proof fn lemma_run_slabs(t: SlabTable)
+    requires
+        t.inv(),
+    ensures
+        1 <= t.spec_run_slabs() <= 0x80,
+        t.spec_run_slabs() & sub(t.spec_run_slabs(), 1) == 0,
+{
+    let lg = class_table()[t.class as int].lg_slab;
+    assert(class_table()[t.class as int].wf());
+    assert((512usize << 10usize) == 0x8_0000usize) by (bit_vector);
+    assert(12 <= lg <= 22 ==> (0x8_0000usize >> lg) <= 0x80
+        && ((0x8_0000usize >> lg) == 0 || (0x8_0000usize >> lg) & sub(0x8_0000usize >> lg, 1) == 0)) by (bit_vector);
+    assert(1usize & sub(1usize, 1) == 0) by (bit_vector);
+}
+
+/// One run ([`SlabTable::run_end`]) of a class that commits runs, from
+/// slab `s` below `limit`: it ends past `s` and at most at `limit`, holds
+/// no guard slab past `s` (so a run never commits a guard slab ahead of
+/// the cursor), and when it ends before `limit` the slab it ends at
+/// starts the next run ([`SlabTable::spec_run_start`]).
+pub(super) proof fn lemma_run_next(t: SlabTable, s: usize, limit: usize)
+    requires
+        t.inv(),
+        t.spec_slabs_per_page() == 1,
+        s < limit <= t.spec_nslabs(),
+    ensures
+        s < t.spec_run_end(s, limit) <= limit,
+        t.spec_run_end(s, limit) < limit ==> t.spec_run_start(t.spec_run_end(s, limit)),
+        forall|z: usize| s < z < t.spec_run_end(s, limit) ==> !#[trigger] t.spec_is_guard(z),
+{
+    broadcast use lemma_spec_nslabs;
+    lemma_lg_group(t);
+    lemma_run_slabs(t);
+    lemma_guard_test(t, s);
+    let rs = t.spec_run_slabs();
+    let m = t.guard_mask;
+    let mu = m as usize;
+    let e = t.spec_run_end(s, limit);
+    let r1 = sub(rs, 1);
+    let sr = s | r1;
+    let s1 = add(s, 1usize);
+    assert(mu & (mu >> 1usize) == mu >> 1usize) by (bit_vector)
+        requires m & (m >> 1u32) == m >> 1u32, mu == m as usize;
+    assert(s < sr + 1 <= s + 0x80) by (bit_vector)
+        requires s <= 0x400_0000, r1 < 0x80, sr == s | r1;
+    let next = add(sr, 1usize);
+    assert(next == ((s | r1) + 1) as usize);
+    assert(next & r1 == 0 && add(next, rs) & r1 == 0) by (bit_vector)
+        requires rs & r1 == 0, r1 == sub(rs, 1), rs >= 1, rs <= 0x80, s <= 0x400_0000, next == add(s | r1, 1usize);
+    assert(s1 == s + 1);
+    assert(s < s1 | mu && s <= s | mu && (s1 | mu) & mu == mu && (s | mu) & mu == mu) by (bit_vector)
+        requires s < 0x400_0000, mu <= 0xFFFF_FFFF, s1 == add(s, 1usize);
+    assert(s & mu != mu ==> s < s | mu) by (bit_vector);
+    assert(s < e <= limit);
+    if e < limit {
+        lemma_guard_test(t, e);
+        lemma_guard_test(t, (e - 1) as usize);
+        let cap = if t.spec_is_guard(s) { s1 | mu } else { s | mu };
+        if m != u32::MAX && e == cap {
+            assert(e & mu == mu);
+            assert(t.spec_is_guard(e));
+        } else {
+            // `e` is the multiple of `rs` the run stops at.
+            assert(e & r1 == 0);
+            if m != u32::MAX && t.spec_is_guard((e - 1) as usize) {
+                let z = (e - 1) as usize;
+                assert(z & mu == mu);
+                if t.spec_is_guard(s) {
+                    if z == s {
+                        assert(false);
+                    } else {
+                        lemma_first_guard(s1, z, mu);
+                    }
+                } else {
+                    lemma_first_guard(s, z, mu);
+                }
+            }
+            assert(!t.spec_is_guard(sub(e, 1)));
+        }
+    }
+    assert forall|z: usize| s < z < e implies !#[trigger] t.spec_is_guard(z) by {
+        lemma_guard_test(t, z);
+        if t.spec_is_guard(z) {
+            if t.spec_is_guard(s) {
+                lemma_first_guard(s1, z, mu);
+            } else {
+                lemma_first_guard(s, z, mu);
+            }
+        }
+    }
+}
+
+/// The runs of a hand-out group tile it: every slab `x` of the group that
+/// starts at `st` (a group boundary) lies in the run of a slab `y` at or
+/// below it that starts one ([`SlabTable::spec_run_start`]), up to the
+/// group's end `limit`. So a slab that starts no run was committed by the
+/// run of a slab the arena's cursor passed before it, as long as the
+/// class committed runs then too (the `thp` mode is fixed after init).
+pub(super) proof fn lemma_run_covers(t: SlabTable, st: usize, limit: usize, x: usize)
+    requires
+        t.inv(),
+        t.spec_slabs_per_page() == 1,
+        st & sub(1usize << t.lg_group, 1) == 0,
+        st <= x < limit <= t.spec_nslabs(),
+    ensures
+        exists|y: usize| st <= y <= x && #[trigger] t.spec_run_start(y) && x < t.spec_run_end(y, limit),
+    decreases x - st,
+{
+    if x == st {
+        lemma_run_next(t, st, limit);
+        assert(t.spec_run_start(st));
+    } else {
+        lemma_run_covers(t, st, limit, (x - 1) as usize);
+        let y = choose|y: usize| st <= y <= (x - 1) as usize && #[trigger] t.spec_run_start(y)
+            && ((x - 1) as usize) < t.spec_run_end(y, limit);
+        lemma_run_next(t, y, limit);
+        lemma_run_next(t, x, limit);
+        if !t.spec_run_start(x) {
+            assert(x < t.spec_run_end(y, limit));
+        }
+    }
+}
+
+/// The hand-out group's shift is below 32 (`group`, `1 << lg_group`, is
+/// a `u32`) and the region has at most `2^26` slabs.
+pub(super) proof fn lemma_lg_group(t: SlabTable)
+    requires
+        t.inv(),
+    ensures
+        t.lg_group < 32,
+        t.spec_nslabs() <= 0x400_0000,
+        t.group as usize == 1usize << t.lg_group,
+{
+    broadcast use lemma_spec_nslabs;
+    let (gr, lg) = (t.group, t.lg_group);
+    assert(gr as usize == 1usize << lg && lg < 64 ==> lg < 32) by (bit_vector);
+}
+
+/// With a mask of [`mask_shape`], the first slab at or above `y` whose
+/// bits under the mask are all set is `y | mu`.
+proof fn lemma_first_guard(y: usize, z: usize, mu: usize)
+    requires
+        y <= z,
+        z & mu == mu,
+        mu & (mu >> 1usize) == mu >> 1usize,
+    ensures
+        z >= y | mu,
+{
+    assert(z >= y | mu) by (bit_vector)
+        requires y <= z, z & mu == mu, mu & (mu >> 1usize) == mu >> 1usize;
+}
+
 /// The view `SlabTable::bits` gives of a slab of a class with `slab_bits`
 /// bits per slab: whole words, or one run of bits inside a word.
 pub open spec fn bits_shape<'a>(bm: AtomicBitmap<'a>, slab_bits: usize) -> bool {
@@ -1714,7 +1940,8 @@ impl SlabTable {
     /// It also holds the permissions `new` carved for the three arrays
     /// ([`SlabTable::perms_ok`]), and its guard geometry is the class's
     /// ([`guard_geom`](crate::layout::guard_geom), `axiom_slot_loc`), with
-    /// page groups of at most `2^26` slabs. The watermark's invariant
+    /// page groups of at most `2^26` slabs and a guard mask of the shape
+    /// `2^k - 1` ([`mask_shape`]). The watermark's invariant
     /// ([`CommittedPred`]) is the one over its atomic and the slab count, in
     /// [`committed_ns`].
     ///
@@ -1750,6 +1977,7 @@ impl SlabTable {
         &&& self.spec_slots().loc == slot_loc(self.class as int)
         &&& self.mark_auth@.id() == mark_loc(self.class as int)
         &&& crate::layout::guard_geom(self.class as int) == (self.lg_slabs_per_page, self.guard_mask)
+        &&& mask_shape(self.guard_mask)
         &&& self.perms_ok()
         &&& self.inner.0.rank() == rank_table(self.class as int)
         &&& self.lg_page == process_regions().lg_page
@@ -3036,6 +3264,211 @@ impl SlabTable {
         (start, (start + self.group as usize).min(self.nslabs))
     }
 
+    /// Whether an arena whose cursor reaches slab `s` of its group commits
+    /// a run there ([`commit_run`]): at the group's first slab, at a guard
+    /// slab, and every [`run_slabs`] slabs except right after a guard slab
+    /// (whose run goes on); every slab, where slabs are committed one by
+    /// one. Any other slab was committed with the run before it
+    /// ([`lemma_run_covers`]).
+    ///
+    /// [`commit_run`]: SlabTable::commit_run
+    /// [`run_slabs`]: SlabTable::run_slabs
+    #[inline]
+    pub(super) fn starts_run(&self, s: usize) -> (r: bool)
+        requires
+            s < self.spec_nslabs(),
+        ensures
+            self.spec_run_start(s) ==> r,
+            !r ==> self.spec_slabs_per_page() == 1 && !self.spec_run_start(s) && !self.spec_is_guard(s),
+    {
+        proof {
+            use_type_invariant(self);
+            let lg = self.lg_group;
+            assert((1usize << lg) >= 1) by (bit_vector)
+                requires lg < 64;
+            assert(s & sub(1usize << lg, 1) != 0 ==> s > 0) by (bit_vector);
+            lemma_run_slabs(*self);
+        }
+        !self.runs()
+            || s & ((1 << self.lg_group) - 1) == 0
+            || self.is_guard_slab(s)
+            || (s & (self.run_slabs() - 1) == 0 && !self.is_guard_slab(s - 1))
+    }
+
+    /// [`starts_run`] past the `thp` and page group test: the group's
+    /// first slab, a guard slab, or a multiple of [`run_slabs`] whose
+    /// predecessor is no guard slab.
+    ///
+    /// [`starts_run`]: SlabTable::starts_run
+    /// [`run_slabs`]: SlabTable::run_slabs
+    pub(super) open spec fn spec_run_start(&self, s: usize) -> bool {
+        ||| s & sub(1usize << self.lg_group, 1) == 0
+        ||| self.spec_is_guard(s)
+        ||| s & sub(self.spec_run_slabs(), 1) == 0 && s > 0 && !self.spec_is_guard(sub(s, 1))
+    }
+
+    /// The most slabs a run holds: [`RUN_BYTES`] of them, at least one (a
+    /// power of two, as both are).
+    #[inline]
+    fn run_slabs(&self) -> (r: usize)
+        ensures
+            r == self.spec_run_slabs(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        (RUN_BYTES >> self.class().lg_slab).max(1)
+    }
+
+    /// [`run_slabs`]'s value.
+    ///
+    /// [`run_slabs`]: SlabTable::run_slabs
+    pub(super) open spec fn spec_run_slabs(&self) -> usize {
+        let r = RUN_BYTES >> class_table()[self.class as int].lg_slab;
+        if r < 1 { 1 } else { r }
+    }
+
+    /// Whether this class commits runs: one slab per page group (a page
+    /// above the slab is only the tests' faked pages) and not the PMD
+    /// chunks of `thp:always`, which [`commit_slab`] commits slab by slab.
+    /// The `thp` mode is fixed before the first allocation (`thp::configure`
+    /// and `thp::force_never` run only during init); a mode that changed
+    /// in the middle of a group would make [`starts_run`] skip slabs no run
+    /// committed.
+    ///
+    /// [`commit_slab`]: SlabTable::commit_slab
+    /// [`starts_run`]: SlabTable::starts_run
+    #[inline]
+    pub(super) fn runs(&self) -> (r: bool)
+        ensures
+            r ==> self.spec_slabs_per_page() == 1,
+    {
+        self.slabs_per_page == 1
+            && crate::thp::class_mode(self.class().slab_size()) != crate::thp::Mode::Chunks
+    }
+
+    /// Commit the run that starts at slab `s` ([`starts_run`]) of a group
+    /// handed to the caller's arena: slabs `s` up to the next guard slab or
+    /// the next multiple of [`run_slabs`], at most to `limit` (the group's
+    /// end), with one `mprotect`, `s` itself guarded (`install_guard`) when
+    /// it is a guard slab. `Some(true)` when `s` is a slab to allocate
+    /// from, `Some(false)` for a guard slab, `None` when the run cannot be
+    /// committed. On `None` part of the run may be read-write (Linux
+    /// `mprotect` can change a prefix of the range before it fails); the
+    /// cursor does not move, so the retry commits the whole run again.
+    ///
+    /// The guard slab that ends a run stays uncommitted until the cursor
+    /// reaches it, as one commit per slab leaves it: a write running off
+    /// the run faults at its end, and a process that never fills the run
+    /// pays for no guard. Each `mprotect` that grows the class region's
+    /// read-write mapping takes the process's `mmap_lock` for writing and
+    /// stalls every thread's page faults behind it (design section 5). The
+    /// run is the caller's (its arena's group, past its cursor, under its
+    /// class lock), so the syscalls run without the commit lock, which
+    /// only counts the guard.
+    ///
+    /// [`starts_run`]: SlabTable::starts_run
+    /// [`run_slabs`]: SlabTable::run_slabs
+    pub(super) fn commit_run(&self, s: usize, limit: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<bool>)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            s < limit <= self.spec_nslabs(),
+            old(ord).allows(rank_table(0)),
+        ensures
+            r matches Some(usable) ==> usable == !self.spec_is_guard(s),
+            *final(ord) == *old(ord),
+    {
+        broadcast use axiom_table_lock_inv;
+        if !self.runs() {
+            return self.commit_slab(s, Tracked(ord));
+        }
+        proof {
+            use_type_invariant(self);
+        }
+        let cls = self.class();
+        let guard = self.is_guard_slab(s);
+        let end = self.run_end(s, limit);
+        proof {
+            let (d, n, lg, b) = ((end - s) as usize, self.nslabs, cls.lg_slab as usize, self.base);
+            assert(d <= n && n <= ((1usize << 57) - b) as usize >> lg && lg <= 22 && b < (1usize << 57)
+                ==> d << lg <= 0x200_0000_0000_0000usize) by (bit_vector);
+        }
+        commit(self.slab_addr(s), (end - s) << cls.lg_slab).ok()?;
+        if guard {
+            let page = 1usize << self.lg_page;
+            self.install_guard(s, self.slab_addr(s), page, cls.slab_size());
+            proof {
+                assert(usize::MAX >> 12 == 0xF_FFFF_FFFF_FFFFusize) by (bit_vector);
+            }
+            self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).guards += 1;
+            return Some(false);
+        }
+        Some(true)
+    }
+
+    /// The end of the run that starts at slab `s` ([`starts_run`]), for a
+    /// class that [`runs`]: the next slab that starts a run, the group's
+    /// end `limit` standing for the next group's first slab.
+    ///
+    /// [`starts_run`]: SlabTable::starts_run
+    /// [`runs`]: SlabTable::runs
+    #[inline]
+    pub(super) fn run_end(&self, s: usize, limit: usize) -> (r: usize)
+        requires
+            s < limit <= self.spec_nslabs(),
+            self.spec_slabs_per_page() == 1,
+        ensures
+            r == self.spec_run_end(s, limit),
+            s < r <= limit,
+    {
+        proof {
+            use_type_invariant(self);
+            lemma_run_slabs(*self);
+            lemma_guard_test(*self, s);
+            let m = (self.spec_run_slabs() - 1) as usize;
+            assert(s <= 0x400_0000 && m < 0x80 ==> s < (s | m) + 1 <= s + 0x80) by (bit_vector);
+            let gm = self.guard_mask as usize;
+            assert(s < 0x400_0000 && gm <= 0xFFFF_FFFF ==> s < add(s, 1usize) | gm && add(s, 1usize) | gm <= 0x1_0400_0000) by (bit_vector);
+            assert(s & gm != gm ==> s < s | gm) by (bit_vector);
+        }
+        debug_assert!(s < limit && limit <= self.nslabs);
+        // With one slab per page group a guard slab is every
+        // `guard_mask + 1`-th slab and `x | guard_mask` the first one at or
+        // above `x`.
+        let guard = self.is_guard_slab(s);
+        let mut every = (s | (self.run_slabs() - 1)) + 1;
+        if guard && every == s + 1 {
+            every += self.run_slabs();
+        }
+        let mut end = every.min(limit);
+        if self.guard_mask != u32::MAX {
+            end = end.min(if guard {
+                (s + 1) | self.guard_mask as usize
+            } else {
+                s | self.guard_mask as usize
+            });
+        }
+        end
+    }
+
+    /// [`run_end`]'s value.
+    ///
+    /// [`run_end`]: SlabTable::run_end
+    pub(super) open spec fn spec_run_end(&self, s: usize, limit: usize) -> usize {
+        let rs = self.spec_run_slabs();
+        let guard = self.spec_is_guard(s);
+        let next = ((s | sub(rs, 1)) + 1) as usize;
+        let every = if guard && next == s + 1 { (next + rs) as usize } else { next };
+        let end = if every <= limit { every } else { limit };
+        if self.guard_mask != u32::MAX {
+            let cap = if guard { ((s + 1) as usize) | (self.guard_mask as usize) } else { s | (self.guard_mask as usize) };
+            if end <= cap { end } else { cap }
+        } else {
+            end
+        }
+    }
+
     /// Commit slab `s` of a group handed to the caller's arena: make its
     /// memory (or its whole page group, when the page is larger than the
     /// slab and `s` starts one) read-write, or install the guard when `s`
@@ -3182,7 +3615,8 @@ impl SlabTable {
     /// anything changes ([`Inner::ensure_sets`]); if that
     /// fails nothing has happened. Returns the group's slab range, `None`
     /// when the region or the metadata region is exhausted. The slabs
-    /// themselves are committed one by one by [`commit_slab`].
+    /// themselves are committed by the arena as its cursor reaches them, a
+    /// run at a time ([`commit_run`]).
     ///
     /// The group is above every slab `sets` owns and its current group's
     /// end ([`next_slab_locked`]), which is how
@@ -3196,7 +3630,7 @@ impl SlabTable {
     /// `dout`: each written by `init` (`Fresh`, `arena`'s), or as it is for
     /// a guard slab (zero).
     ///
-    /// [`commit_slab`]: SlabTable::commit_slab
+    /// [`commit_run`]: SlabTable::commit_run
     /// [`next_slab_locked`]: SlabTable::next_slab_locked
     // Verus needs the explicit reborrow and a loop with an invariant.
     #[allow(clippy::explicit_auto_deref, clippy::while_let_loop)]

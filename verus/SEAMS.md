@@ -1966,7 +1966,7 @@ unsafe fn arena_at<'a>(p: *mut Arena, Ghost(index): Ghost<u16>) -> (r: &'a Arena
 
 ### S74. `axiom_class_lock_inv`
 
-src/class/mod.rs:1504. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:1506. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the class lock's value keeps the set/count seam's invariant, ghost link included, while the lock is free.
@@ -1980,7 +1980,7 @@ broadcast axiom fn axiom_class_lock_inv(v: Inner)
 
 ### S75. `axiom_class_lock`
 
-src/class/mod.rs:1512. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:1514. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the sets behind a class lock stay over the slab count they were created with.
@@ -1994,7 +1994,7 @@ broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
 
 ### S76. `PartialEqSpecImpl for State`
 
-src/class/mod.rs:1521. Kind: spec_impl. Category: core library.
+src/class/mod.rs:1523. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/class-PartialEqSpecImpl-for-State.md).
 
 ```rust
@@ -2011,7 +2011,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for State {
 
 ### S77. `ClassState::owner_locked`
 
-src/class/mod.rs:1562. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1564. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Bridge (trusted): under this arena's class lock, a slab whose group's owner word names this arena is one of its owned slabs; the word's value is [`slab_owner`] (the read in its body, `SlabTable::owner`, ensures it).
@@ -2029,7 +2029,7 @@ fn owner_locked(&self, g: &Inner, slab: usize) -> (r: u16)
 
 ### S78. `ClassState::claim_with`
 
-src/class/mod.rs:3315. Kind: no_decreases. Category: termination.
+src/class/mod.rs:3317. Kind: no_decreases. Category: termination.
 Tool: RefinedRust. Status: trusted.
 
 > The loop of [`claim`] and [`claim_random`].
@@ -2055,7 +2055,7 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
 
 ### S79. `axiom_fresh_slots_zero`
 
-src/class/mod.rs:4273. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:4275. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `vspec::sys::axiom_fresh_anon_zero` (`mmap(2)`: a private anonymous mapping reads as zero until it is first written) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -2084,7 +2084,7 @@ axiom fn axiom_fresh_slots_zero(
 
 ### S80. `axiom_discarded_slots_zero`
 
-src/class/mod.rs:4311. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:4313. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `vspec::sys::axiom_discarded_zero` (`madvise(2)`: after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -2127,7 +2127,7 @@ pub broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
 
 ### S82. `axiom_table_lock_inv`
 
-src/class/table.rs:223. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:226. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the commit lock's value keeps [`TableInner::inv`] while the lock is free.
@@ -2141,7 +2141,7 @@ pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
 
 ### S83. `axiom_table_lock_frame`
 
-src/class/table.rs:231. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:234. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The commit lock's ghost geometry, marker authority and descriptor array never change: nothing writes them.
@@ -2156,7 +2156,7 @@ pub(super) broadcast axiom fn axiom_table_lock_frame(init: TableInner, v: TableI
 
 ### S84. `load_owner`
 
-src/class/table.rs:319. Kind: external_body. Category: allocator invariant.
+src/class/table.rs:322. Kind: external_body. Category: allocator invariant.
 Tool: loom/GenMC. Status: evidence (verus/seams/class-table-load_owner.md).
 
 > `w.load(Relaxed)` of the owner word of handed-out slab `slab`'s group: the arena that owns the slab.
@@ -2173,7 +2173,7 @@ fn load_owner(w: &AtomicU16, Ghost(t): Ghost<SlabTable>, Ghost(slab): Ghost<usiz
 
 ### S85. `store_owner`
 
-src/class/table.rs:351. Kind: external_body. Category: allocator invariant.
+src/class/table.rs:354. Kind: external_body. Category: allocator invariant.
 Tool: loom/GenMC. Status: discharged (verus/seams/class-table-store_owner.md).
 
 > `w.store(arena, Relaxed)` of the owner word of hand-out group `group`: from here on [`slab_owner`] of every slab of the group is `arena`.
@@ -2191,7 +2191,7 @@ fn store_owner(w: &AtomicU16, arena: u16, Ghost(t): Ghost<SlabTable>, Ghost(grou
 
 ### S86. `axiom_slot_loc`
 
-src/class/table.rs:1385. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:1611. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: `SlabTable::new` runs once per class in a process (`Shared::init`, its one caller, builds the class tables of the one `Shared`, as `layout::process_regions` assumes), so the authority it makes is the class's, and so is its marker authority (`mloc`, [`mark_loc`]).
@@ -2208,7 +2208,7 @@ axiom fn axiom_slot_loc(c: int, loc: Loc, mloc: Loc, glg: u8, gmask: u32, tracke
 
 ### S87. `axiom_fresh_words`
 
-src/class/table.rs:1408. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:1634. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the permissions of the `n` words of the table at `base` that `Meta::reserve_table` has just returned, each holding zero: the table has never been written (`meta.rs`: carved once and never freed), and nothing but the bitmap views reaches it.
@@ -2224,7 +2224,7 @@ axiom fn axiom_fresh_words(base: usize, n: nat, c: int, tracked once: Once) -> (
 
 ### S88. `axiom_init_descs`
 
-src/class/table.rs:1490. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1716. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the descriptors at the permissions `perms` carved for keys `0..n` hold values.
@@ -2241,7 +2241,7 @@ axiom fn axiom_init_descs(tracked perms: Map<int, PointsTo<SlabDesc>>, n: int) -
 
 ### S89. `axiom_init_owners`
 
-src/class/table.rs:1516. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1742. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the owner words at the permissions `perms` carved for keys `0..n` hold values, as [`axiom_init_descs`] (an `AtomicU16` is valid for every bit pattern).
@@ -2256,7 +2256,7 @@ axiom fn axiom_init_owners(tracked perms: Map<int, PointsTo<AtomicU16>>, n: int)
 
 ### S90. `axiom_init_words`
 
-src/class/table.rs:1528. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1754. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the class bitmap words at the permissions `perms` carved for keys `0..n` hold values, as [`axiom_init_descs`], and each is the word at its permission's address, the identity [`word_addr`] names (the identity the word permissions of [`axiom_fresh_words`] are for).
@@ -2272,7 +2272,7 @@ axiom fn axiom_init_words(tracked perms: Map<int, PointsTo<AtomicU64>>, n: int) 
 
 ### S91. `word_index`
 
-src/class/table.rs:1684. Kind: external_body. Category: inline asm.
+src/class/table.rs:1910. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: evidence (verus/seams/class-table-word_index.md).
 
 > `index` itself, through an empty `asm!` on aarch64, for [`SlabTable::is_set_unchecked`]'s word index: LLVM then cannot fold the index's shift into the word address, and the load scales it.
