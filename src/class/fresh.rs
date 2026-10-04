@@ -42,9 +42,11 @@ impl ClassState {
 
     /// The fresh half of [`next_slab`], for an arena whose sets are empty:
     /// the next slab of this arena's current group, committed, else the next
-    /// fresh group of the class region, committed. Guard slabs are
-    /// committed as guards and skipped. `None` when the region, the
-    /// metadata region or a commit is exhausted. Out of line: it runs once
+    /// fresh group of the class region, committed. Slabs are committed a
+    /// run at a time, up to the next guard slab ([`SlabTable::commit_run`]):
+    /// a slab that starts no run was committed with the one that started
+    /// it. Guard slabs are committed as guards and skipped. `None` when the
+    /// region, the metadata region or a commit is exhausted. Out of line: it runs once
     /// per slab, not once per refill, and inlined it would double the size
     /// of `claim_with`.
     ///
@@ -64,7 +66,11 @@ impl ClassState {
                 g.group_end = end;
             }
             let s = g.group_next;
-            let usable = table.commit_slab(s)?;
+            let usable = if table.starts_run(s) {
+                table.commit_run(s, g.group_end)?
+            } else {
+                true
+            };
             g.group_next = s + 1;
             if usable {
                 g.stats.committed += 1;
