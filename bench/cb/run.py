@@ -48,8 +48,19 @@ TOOLS = {
 }
 
 
+# Where boot.sh mounts the perf bundle (bench/cb/perf-build.sh) on a cell
+# VM; on PATH for every row and probe when it is there.
+PERF_DIR = "/opt/perf"
+
+
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def perf_on_path() -> None:
+    b = os.path.join(PERF_DIR, "bin")
+    if os.path.isfile(os.path.join(b, "perf")) and b not in os.environ.get("PATH", "").split(":"):
+        os.environ["PATH"] = b + ":" + os.environ.get("PATH", "/usr/bin:/bin")
 
 
 def compile_tools(root: str, tools_dir: str) -> None:
@@ -242,6 +253,7 @@ def default_run_id(suite: str, head: str) -> str:
 
 def execute(args) -> int:
     root = ROOT_DIR
+    perf_on_path()
     rows = load_rows(args.rows_file)
     # A cell VM of `cb launch` runs its own entry of the launch file
     # (bench/cb/gce.py): the rows of its shard, the launch's variants
