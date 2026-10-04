@@ -18,7 +18,9 @@
 //!   in atomics, so the visit takes no lock unless a walk is due.
 //!   [`on_tick`] is the slow path's hook (design 6.4).
 //! - The background thread ([`background`], `purge/background.rs`): created
-//!   on the first periodic tick after it was requested, never from init, on
+//!   on the first periodic tick after it was requested, or by default on
+//!   the first one that finds enough dirty memory waiting (the lazy start,
+//!   [`background::auto_tick`]), never from init, on
 //!   a stack from the metadata region with a guard page below it and every
 //!   signal blocked. It loops over `decay` and sleeps on a futex until the
 //!   next deadline; a class whose first slab goes `Empty` wakes it. While it
@@ -1314,8 +1316,13 @@ pub fn purge_arena(
 
 /// Periodic-work hook (design 6.4): start the background thread if one was
 /// requested and does not exist, otherwise run decay here unless the
-/// thread is doing it.
-pub fn on_tick(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>)
+/// thread is doing it, and let the lazy start look at what decay left.
+/// `alloc` is whether the tick is an allocation's: a `free`'s tick never
+/// creates (or joins) a thread, because glibc frees with its stack cache
+/// lock held (`pthread_join`'s TLS teardown, the stack cache trim) and
+/// `pthread_create` takes that lock again. Such a tick purges in the
+/// foreground and leaves the start to the next allocation's tick.
+pub fn on_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -1328,10 +1335,13 @@ pub fn on_tick(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>)
     if background::present() {
         return;
     }
-    if background::requested() && background::start(shared, Tracked(ord)) {
+    if alloc && background::requested() && background::start_requested(shared, Tracked(ord)) {
         return;
     }
-    let _ = decay(shared, now, Tracked(ord));
+    if decay(shared, now, Tracked(ord)).is_some() {
+        // Dirty memory is still waiting: the lazy start's look.
+        background::auto_tick(shared, now, alloc, Tracked(ord));
+    }
 }
 
 /// Design 11: `memory.current` and `memory.events`, at most once per 10 ms

@@ -18,7 +18,9 @@
 //! `K` are done is a reported deadlock, since the main thread joins it).
 //!
 //! Left out: the state lock `B` takes to clear `present` on its way out
-//! (after the decision, so it does not bear on it), and `request(true)`
+//! (after the decision, so it does not bear on it), the state lock `W`
+//! stores `REQUESTED` under since upstream #111 (`B` takes it only after
+//! its decision, so it orders nothing the decision reads), and `request(true)`
 //! after the withdrawal (the property is about a withdrawal that is the
 //! last request).
 

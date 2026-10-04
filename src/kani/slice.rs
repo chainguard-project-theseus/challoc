@@ -42,7 +42,7 @@ fn same(a: &[u64], b: &[u64]) -> bool {
     true
 }
 
-/// S369 `<[T]>::swap`: under `a, b < len`, `old.update(a, old[b])
+/// S370 `<[T]>::swap`: under `a, b < len`, `old.update(a, old[b])
 /// .update(b, old[a])`.
 #[kani::proof]
 #[kani::unwind(8)]
@@ -59,7 +59,7 @@ fn slice_swap() {
     assert!(same(&a, &want));
 }
 
-/// S370 `<[T]>::reverse`: `old.reverse()`, element `k` is `old[n - 1 - k]`.
+/// S371 `<[T]>::reverse`: `old.reverse()`, element `k` is `old[n - 1 - k]`.
 #[kani::proof]
 #[kani::unwind(8)]
 fn slice_reverse() {
@@ -72,7 +72,7 @@ fn slice_reverse() {
     assert!(same(&a[n..], &old[n..]));
 }
 
-/// S378 `<[T]>::swap_with_slice`: under equal lengths, the contents trade
+/// S379 `<[T]>::swap_with_slice`: under equal lengths, the contents trade
 /// places.
 #[kani::proof]
 #[kani::unwind(8)]
@@ -94,7 +94,7 @@ fn any_long_words() -> ([u64; SORTED_MAX], usize) {
     (a, n)
 }
 
-/// S371 `<[T]>::is_sorted`: no `requires`, no `ensures`; it returns
+/// S372 `<[T]>::is_sorted`: no `requires`, no `ensures`; it returns
 /// without a panic or undefined behaviour (and, here, says whether each
 /// element is at most the next), for every slice up to `SORTED_MAX`.
 #[kani::proof]
@@ -105,7 +105,7 @@ fn slice_is_sorted() {
     assert_eq!(r, (1..n).all(|k| a[k - 1] <= a[k]));
 }
 
-/// S372 `<[T]>::is_sorted_by_key::<'a, F, K>`: as `is_sorted`, for a key `x ^ c`
+/// S373 `<[T]>::is_sorted_by_key::<'a, F, K>`: as `is_sorted`, for a key `x ^ c`
 /// with an arbitrary `c`.
 #[kani::proof]
 #[kani::unwind(8)]
@@ -117,7 +117,7 @@ fn slice_is_sorted_by_key() {
     assert_eq!(r, (1..n).all(|k| key(&a[k - 1]) <= key(&a[k])));
 }
 
-/// S299 `<[T]>::get_unchecked::<I>`: under the `index` precondition (in
+/// S300 `<[T]>::get_unchecked::<I>`: under the `index` precondition (in
 /// bounds), the element or subslice `index` gives, at the instantiations
 /// the proofs use: `usize` (`heap/flush.rs`, `arena.rs`, `api/libc.rs`),
 /// `RangeTo` and `RangeFrom`. Kani's undefined-behaviour checks cover the
@@ -142,7 +142,7 @@ fn slice_get_unchecked() {
     assert!(core::ptr::eq(hi, &s[k..]));
 }
 
-/// S377 `<[T]>::get_unchecked_mut::<I>`: as `get_unchecked`, and a write
+/// S378 `<[T]>::get_unchecked_mut::<I>`: as `get_unchecked`, and a write
 /// through the result is the write `index_mut` would make.
 #[kani::proof]
 #[kani::unwind(8)]
@@ -171,7 +171,7 @@ fn slice_get_unchecked_mut() {
     assert!(core::ptr::eq(unsafe { s.get_unchecked_mut(k..) }, want_hi));
 }
 
-/// S366 `core::slice::from_ref`: the one-element sequence of `*s`.
+/// S367 `core::slice::from_ref`: the one-element sequence of `*s`.
 #[kani::proof]
 fn slice_from_ref() {
     let x: u64 = kani::any();
@@ -180,7 +180,7 @@ fn slice_from_ref() {
     assert_eq!(r[0], x);
 }
 
-/// S368 `<&'a mut [T] as core::iter::IntoIterator>::into_iter`: the iterator hands out
+/// S369 `<&'a mut [T] as core::iter::IntoIterator>::into_iter`: the iterator hands out
 /// each element once, in order, holding its old value, and what is
 /// written through each reference is the slice's final value there
 /// (`remaining` is the sequence of references; the prophetic laws are
@@ -211,7 +211,7 @@ fn slice_iter_mut() {
     assert!(same(&a[n..], &old[n..]));
 }
 
-/// S381 `<[T; N] as core::iter::IntoIterator>::into_iter` and S363 its `next`: the
+/// S382 `<[T; N] as core::iter::IntoIterator>::into_iter` and S363 its `next`: the
 /// iterator starts with every element in order, `next` hands out the
 /// front one, and returns `None` (and stays empty) once all are out.
 #[kani::proof]
@@ -232,7 +232,7 @@ fn array_into_iter() {
     assert_eq!(it.next(), None);
 }
 
-/// S390 `<[T]>::as_mut_ptr` and S391 `<[T]>::as_ptr`: no `requires`, no
+/// S391 `<[T]>::as_mut_ptr` and S392 `<[T]>::as_ptr`: no `requires`, no
 /// `ensures`; they return without a panic (the address is the first
 /// element's when there is one).
 #[kani::proof]
@@ -309,7 +309,7 @@ fn quint(k: usize) -> [u64; 5] {
     [k, k + 1, k + 2, k + 3, k + 4]
 }
 
-/// S379 `<[T]>::rotate_left`: under `mid <= len`, `final(s)@ ==
+/// S380 `<[T]>::rotate_left`: under `mid <= len`, `final(s)@ ==
 /// old(s)@.subrange(mid, len) + old(s)@.subrange(0, mid)`. `core` picks
 /// one of three algorithms from `min(mid, len - mid)`, `len` and `T`'s
 /// size (`core/src/slice/rotate.rs`): through a 256-byte stack buffer
@@ -324,7 +324,7 @@ fn slice_rotate_left() {
     rotate_on::<u64, 8>(word, false);
 }
 
-/// S377 on 8-byte elements at `len` 70, `mid` 31 to 39: the buffer for a
+/// S378 on 8-byte elements at `len` 70, `mid` 31 to 39: the buffer for a
 /// shorter side of 31, 32 (`mid` 31, 32, 38, 39), block swaps past it
 /// (`mid` 33 to 37). All `mid`s of this length took CBMC over 90 minutes.
 #[kani::proof]
@@ -333,7 +333,7 @@ fn slice_rotate_left_long() {
     rotate_mids::<u64, 70>(word, true, 31, 39);
 }
 
-/// S377, the cycle algorithm, which 8-byte elements never reach: on
+/// S378, the cycle algorithm, which 8-byte elements never reach: on
 /// 40-byte elements (over `[usize; 4]`, a buffer of 6) at `len` 16.
 #[kani::proof]
 #[kani::unwind(42)]

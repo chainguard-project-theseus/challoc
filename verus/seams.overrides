@@ -372,6 +372,7 @@ src/layout/mod.rs:ClassTable::table	UnsafeCell/volatile/transmute	none (assumpti
 src/layout/mod.rs:ClassTable::classes_ptr	UnsafeCell/volatile/transmute	none (assumption)
 src/purge/background.rs:axiom_state_lock_inv	allocator invariant	none (assumption)
 src/purge/background.rs:shared_arg	raw pointer (internal)	none (assumption)
+src/purge/background.rs:detach_from_starter	FFI/syscall	none (assumption)
 src/stats.rs:axiom_snapshot_lock_inv	allocator invariant	none (assumption)
 src/vspec/addr.rs:<*const T>::is_null	raw pointer (internal)	Kani	discharged (verus/seams/vspec-addr-const-ptr-is_null.md)
 src/vspec/addr.rs:<*mut T>::is_null	raw pointer (internal)	Kani	discharged (verus/seams/vspec-addr-mut-ptr-is_null.md)

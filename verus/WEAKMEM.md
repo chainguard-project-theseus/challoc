@@ -33,7 +33,7 @@ each syscall is a compiler barrier.
 | `class/mod.rs` | 15 | class counters |
 | `class/table.rs` | 11 | watermark; bitmap and owner words (since upstream #87 also the watermark copy's two stores, through `vspec::atom::store_usize_at`, not in the count) |
 | `api/mod.rs` | 9 | `STATE`, `INIT_TID`, `SEALED` |
-| `purge/background.rs` | 9 | `PRESENT`, `REQUESTED`, `SEQ` |
+| `purge/background.rs` | 9 | `PRESENT`, `REQUESTED`, `SEQ`; since upstream #111 also (not in the count) the lazy start's `AUTO`, `AUTO_FAILS`, `AUTO_NEXT`, `AUTO_SINCE`, `AUTO_BASE`, all `Relaxed` (their decisions are rate limits and heuristics; the request they set or withdraw is written under the state lock, as `request`'s) |
 | `bitmap.rs` | 8 | `&[AtomicU64]` words |
 | `heap/tcaches.rs` | 5 | `[AtomicPtr<u8>; 1024]` |
 | `lock.rs` | 5 | the lock word |

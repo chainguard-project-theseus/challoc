@@ -6058,8 +6058,12 @@ impl Heap {
     /// [`PERIODIC_EVERY`] of them: cache GC when the interval has elapsed,
     /// then decay (or starting the background thread that will do it,
     /// `purge::on_tick`). Nothing else: thread statistics are merged by
-    /// `epoch` (`stats.rs`), not here.
-    fn tick(&mut self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
+    /// `epoch` (`stats.rs`), not here. `ALLOC` is whether the caller is
+    /// an allocation: only an allocation's tick may create the thread
+    /// (design 8.1), because glibc calls `free` with locks held that
+    /// `pthread_create` and `pthread_join` take again (the stack cache
+    /// lock, from `pthread_join`'s TLS teardown).
+    fn tick<const ALLOC: bool>(&mut self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -6077,7 +6081,7 @@ impl Heap {
                 self.last_gc = now;
                 self.gc(shared, Tracked(ord));
             }
-            crate::purge::on_tick(shared, now, Tracked(ord));
+            crate::purge::on_tick(shared, now, ALLOC, Tracked(ord));
         }
     }
 

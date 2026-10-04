@@ -2790,7 +2790,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
                 proof {
                     *fx = Ghost(Change::Set { read_first: cc.written() });
                 }
-                purge::background::request(on);
+                purge::background::request(on, Tracked(&mut ord));
                 if on && !purge::background::present() && !purge::background::start(shared, Tracked(&mut ord)) {
                     return Err(EAGAIN);
                 }

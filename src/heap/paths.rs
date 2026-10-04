@@ -516,7 +516,7 @@ impl Heap {
         // Premise (lock order): the slow allocation path is entered from a
         // fast path or an entry point, none of which holds a lock.
         let tracked mut ord = axiom_entry();
-        self.tick(shared, Tracked(&mut ord));
+        self.tick::<true>(shared, Tracked(&mut ord));
         let Some(a) = shared.arena(arena, Tracked(&mut ord)) else { return (ptr::null_mut(), false) };
         let cache = self.ensure_cache(shared, arena, class, Tracked(&mut ord));
         let ghost s1 = *self;
@@ -653,7 +653,7 @@ impl Heap {
         // have built it).
         let cache = if arena == FOREIGN || shared.arena(arena, Tracked(&mut ord)).is_some() { self.ensure_cache(shared, arena, class, Tracked(&mut ord)) } else { ptr::null_mut() };
         if cache.is_null() {
-            self.tick(shared, Tracked(&mut ord));
+            self.tick::<false>(shared, Tracked(&mut ord));
             // No cache for this class here: straight to the slab, through
             // the arena its slab belongs to.
             proof {
@@ -676,7 +676,7 @@ impl Heap {
             if shared.double_free_scan() {
                 self.scan_or_abort(shared, cache, p);
             }
-            self.tick(shared, Tracked(&mut ord));
+            self.tick::<false>(shared, Tracked(&mut ord));
             if self.hdr_ref(cache).len == self.hdr_ref(cache).cap {
                 // A home cache keeps its lowest half (design 6.4); the
                 // FOREIGN cache, popped by nothing, releases everything.

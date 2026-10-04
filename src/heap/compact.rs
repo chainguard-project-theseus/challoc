@@ -222,7 +222,7 @@ impl Heap {
                     // Premise (lock order): the scheduled pops run from the fast
                     // path, which holds no lock.
                     let tracked mut ord = axiom_entry();
-                    self.tick(shared, Tracked(&mut ord));
+                    self.tick::<true>(shared, Tracked(&mut ord));
                     proof {
                         Heap::lemma_keeps_poppable(*old(self), *self, class as int, cache);
                     }
@@ -561,7 +561,7 @@ impl Heap {
         let shared: &Shared = shared_of(self.shared);
         // Premise (lock order): as in `pop_compact`.
         let tracked mut ord = axiom_entry();
-        self.tick(shared, Tracked(&mut ord));
+        self.tick::<true>(shared, Tracked(&mut ord));
         let ghost h0 = *self;
         // SAFETY: guaranteed by the caller; `len <= cap` entries exist and
         // `cap - len` slots of storage follow them.

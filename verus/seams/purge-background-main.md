@@ -1,7 +1,7 @@
 # `main` (`purge/background.rs`)
 
-Seam S197 of `verus/SEAMS.md`: src/purge/background.rs:457. Kind: no_decreases. Category: termination.
-Discharged by loom (termination after a final `request(false)`, given that each pass and the exit's lock return; part 3).
+Seam S197 of `verus/SEAMS.md`: src/purge/background.rs:673. Kind: no_decreases. Category: termination.
+Discharged by loom (termination after a final `request(false)`, given that `detach_from_starter`, each pass and the exit's lock return; part 3).
 
 ## Contract
 
@@ -41,7 +41,9 @@ Models: `loom_exit_after_withdrawal`, `loom_exit_after_withdrawal_with_waker`, `
 
 - **The claim.** If a `request(false)` is the last write to `REQUESTED`
   in its modification order (no `request(true)` after it), the loop
-  reaches its exit decision and returns, given that each pass returns:
+  reaches its exit decision and returns, given that `detach_from_starter`
+  (since upstream #111, once before the loop: libc scheduling calls,
+  trusted, S200) returns and that each pass returns:
   `prctl`, `now_coarse_ns`, `sample` and `decay` (verified; their
   callees' termination, such as the cgroup sampler's, are their own
   seams) and a `futex_wait`, which returns at its deadline, on a wake,
@@ -74,6 +76,9 @@ Models: `loom_exit_after_withdrawal`, `loom_exit_after_withdrawal_with_waker`, `
   keeps running) is outside the claim. The state lock `B` takes to
   clear `present` on its way out comes after the decision; the models
   stop at the decision, and the lock's return is the condition above.
+  Since upstream #111 `request(false)` makes its store under the state
+  lock too; the models leave that hold out: `B` takes the lock only after
+  its decision, so the hold orders nothing the decision reads.
   The copied lines are pinned (`verus/loom/pins.txt`).
 - **P3 (WEAKMEM.md).** The lost wake-up of the decay pass (fixed by upstream #124; `B`
   asleep with no deadline while a class has `Empty` slabs) is about the

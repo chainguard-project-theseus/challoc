@@ -1002,7 +1002,18 @@ fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tra
     crate::thp::configure(config.thp, &features);
     purge::configure_advice(config.lazy_band);
     purge::set_check_zero(config.check_zero);
-    purge::background::request(config.background_thread);
+    // The unit-test process shares this allocator between tests that
+    // assert on the thread's presence; the lazy start is tested on its own
+    // (`purge::tests`, the C programs). `config.background_thread.or(Some(false))`
+    // is spelled as a `match`: vstd does not specify `Option::or`.
+    purge::background::configure(if cfg!(test) {
+        match config.background_thread {
+            Some(b) => Some(b),
+            None => Some(false),
+        }
+    } else {
+        config.background_thread
+    });
     let (regions, space) = Regions::reserve_owning(features.page_size, features.anon_name);
     if features.mseal {
         SEALED.store(regions.seal(), Ordering::Relaxed);
@@ -1877,6 +1888,16 @@ extern "C" fn fork_child() {
     shared().cgroup_fork_child();
     feature_line_fork_child();
     fork_release(Tracked(state));
+    // The dirty bytes this child inherited, the lazy start's baseline: read
+    // after the release (the sum takes the class and huge locks), while
+    // the child is still single-threaded, so nothing has moved them. Only
+    // under the lazy start: nothing else reads it.
+    if purge::background::auto() {
+        // Premise (lock order): the release above handed back every lock
+        // this thread held.
+        let tracked mut ord = axiom_entry();
+        purge::background::set_fork_base(crate::policy::empty_bytes(shared(), Tracked(&mut ord)));
+    }
 }
 
 /// The child of a `fork` has only the forking thread: a feature line
@@ -2386,7 +2407,7 @@ mod tests {
         let _serial = crate::testutil::global_state();
         let s = shared();
         assert!(!tasks().iter().any(|n| n == "challoc-bg"));
-        purge::background::request(true);
+        purge::background::request(true, Tracked::assume_new());
         assert!(
             purge::background::start(s, Tracked::assume_new()),
             "background thread did not start"
@@ -2483,7 +2504,7 @@ mod tests {
         // Withdraw the request: the kick wakes the thread and it exits
         // there; the exit is asynchronous, so wait for it, bounded, and
         // join it.
-        purge::background::request(false);
+        purge::background::request(false, Tracked::assume_new());
         let mut stopped = false;
         for _ in 0..400 {
             if !purge::background::present() {
@@ -2513,6 +2534,121 @@ mod tests {
             "background thread still running after the join: {:?}",
             tasks()
         );
+    }
+
+    /// The lazy start's rule (design 8.1): the burst threshold starts at
+    /// the first look; the floor only once every look for the hold has
+    /// seen it; a look under the floor ends the stretch.
+    #[test]
+    fn lazy_start_rule() {
+        use core::sync::atomic::AtomicU64;
+        use purge::background::{AUTO_BURST, AUTO_FLOOR, AUTO_HOLD_NS, auto_due};
+        let since = AtomicU64::new(0);
+        let t = 5_000_000_000u64;
+        assert!(auto_due(AUTO_BURST, t, &since), "burst at the first look");
+        assert!(!auto_due(AUTO_FLOOR - 1, t, &since));
+        assert!(
+            !auto_due(AUTO_FLOOR - 1, t + 10 * AUTO_HOLD_NS, &since),
+            "under the floor never"
+        );
+        assert!(
+            !auto_due(AUTO_FLOOR, t, &since),
+            "the floor starts a stretch"
+        );
+        assert!(!auto_due(AUTO_BURST - 1, t + AUTO_HOLD_NS / 2, &since));
+        assert!(
+            auto_due(AUTO_FLOOR, t + AUTO_HOLD_NS, &since),
+            "held for the hold"
+        );
+        // A dip under the floor restarts the stretch.
+        since.store(0, core::sync::atomic::Ordering::Relaxed);
+        assert!(!auto_due(AUTO_FLOOR, t, &since));
+        assert!(!auto_due(AUTO_FLOOR / 2, t + AUTO_HOLD_NS / 2, &since));
+        assert!(!auto_due(AUTO_FLOOR, t + AUTO_HOLD_NS, &since));
+        assert!(!auto_due(
+            AUTO_FLOOR,
+            t + AUTO_HOLD_NS + AUTO_HOLD_NS / 2,
+            &since
+        ));
+        assert!(auto_due(AUTO_FLOOR, t + 2 * AUTO_HOLD_NS, &since));
+    }
+
+    /// The lazy start end to end on one allocator, on injected tick
+    /// times: nothing dirty starts nothing; 8 MiB dirty (over the floor,
+    /// under the burst threshold) starts nothing at the first look or
+    /// half a hold later; once the hold has passed a free's tick only
+    /// requests the thread and the next allocation's tick starts it;
+    /// the start leaves the lazy start armed; an explicit `request`
+    /// disarms it.
+    #[test]
+    fn lazy_start_waits_for_dirty_memory() {
+        use purge::background::{AUTO_BURST, AUTO_FLOOR, AUTO_HOLD_NS};
+        let _serial = crate::testutil::global_state();
+        let s = crate::testutil::shared();
+        assert!(!purge::background::present());
+        // A window long enough that nothing decays between the looks.
+        let old_ns = s.decay_ns();
+        s.set_decay_ms(1_000_000);
+        assert!((8u64 << 20) >= AUTO_FLOOR && (8u64 << 20) < AUTO_BURST);
+        purge::background::set_auto(Some(s));
+        let t0 = crate::sys::now_coarse_ns();
+        purge::on_tick(s, t0, true, Tracked::assume_new());
+        purge::on_tick(s, t0 + 2 * AUTO_HOLD_NS, true, Tracked::assume_new());
+        let clean = purge::background::present();
+        let (p, _, _) = s.alloc_huge(
+            8 << 20,
+            4096,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
+        assert!(!p.is_null());
+        unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
+        s.free_huge(
+            (p as usize - s.regions.huge_base) >> s.regions.lg_page,
+            vstd::prelude::Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
+        let t1 = t0 + 3 * AUTO_HOLD_NS;
+        purge::on_tick(s, t1, true, Tracked::assume_new());
+        let first = purge::background::present();
+        purge::on_tick(s, t1 + AUTO_HOLD_NS / 2, true, Tracked::assume_new());
+        let half = purge::background::present();
+        // A free's tick past the hold requests the thread but never
+        // creates it (glibc frees under locks `pthread_create` takes);
+        // the next allocation's tick does.
+        purge::on_tick(s, t1 + AUTO_HOLD_NS + 1, false, Tracked::assume_new());
+        let freed = purge::background::present();
+        let pending = purge::background::requested();
+        purge::on_tick(s, t1 + AUTO_HOLD_NS + 2, true, Tracked::assume_new());
+        let held = purge::background::present();
+        let armed = purge::background::auto();
+        purge::background::request(false, Tracked::assume_new());
+        let disarmed = !purge::background::auto();
+        for _ in 0..400 {
+            if !purge::background::present() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let stopped = !purge::background::present();
+        if stopped {
+            purge::background::join_exited();
+        }
+        purge::background::set_auto(None);
+        s.huge
+            .purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new());
+        s.set_decay_ms((old_ns / 1_000_000) as i64);
+
+        assert!(!clean, "nothing dirty started the thread");
+        assert!(!first, "8 MiB started the thread at the first look");
+        assert!(!half, "8 MiB started the thread before the hold");
+        assert!(!freed, "a free's tick created the thread");
+        assert!(pending, "a free's tick past the hold did not request it");
+        assert!(held, "8 MiB held past the hold did not start the thread");
+        assert!(armed, "a successful start disarmed the lazy start");
+        assert!(disarmed, "request(false) left the lazy start armed");
+        assert!(stopped, "background thread did not stop");
     }
 
     /// A first `Empty` that lands while `start` is publishing the thread
@@ -2577,7 +2713,7 @@ mod tests {
                 let first = none_before && s.huge.oldest_empty() != 0;
                 hook_seen.store(if first { 3 } else { 2 }, Ordering::SeqCst);
             }));
-        purge::background::request(true);
+        purge::background::request(true, Tracked::assume_new());
         let started = purge::background::start(s, Tracked::assume_new());
         let mut purged = false;
         if started && hook_state.load(Ordering::SeqCst) == 3 {
@@ -2600,7 +2736,7 @@ mod tests {
             );
         }
         s.set_decay_ms((old_ns / 1_000_000) as i64);
-        purge::background::request(false);
+        purge::background::request(false, Tracked::assume_new());
         for _ in 0..400 {
             if !purge::background::present() {
                 break;
@@ -2644,7 +2780,7 @@ mod tests {
         let _serial = crate::testutil::global_state();
         let s = shared();
         assert!(!purge::background::present());
-        purge::background::request(true);
+        purge::background::request(true, Tracked::assume_new());
         assert!(
             purge::background::start(s, Tracked::assume_new()),
             "background thread did not start"
@@ -2652,9 +2788,9 @@ mod tests {
         let stack = purge::background::stack();
         assert_ne!(stack, 0);
         for cycle in 0..8 {
-            purge::background::request(false);
+            purge::background::request(false, Tracked::assume_new());
             wait_absent();
-            purge::background::request(true);
+            purge::background::request(true, Tracked::assume_new());
             assert!(
                 purge::background::start(s, Tracked::assume_new()),
                 "restart {cycle} failed"
@@ -2666,7 +2802,7 @@ mod tests {
                 "restart {cycle} took a new stack"
             );
         }
-        purge::background::request(false);
+        purge::background::request(false, Tracked::assume_new());
         wait_absent();
         assert!(purge::background::join_exited());
         assert!(purge::background::thread().is_none());

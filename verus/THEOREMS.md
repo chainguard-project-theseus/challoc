@@ -1318,7 +1318,8 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   `linux::try_reserve` (`layout/regions.rs:1443`), `ThreadKey::create`
   (`heap/shared.rs:255`), `atfork_handlers` (`api/mod.rs:502`),
   `background::spawn` and `pthread_join` (`purge/background.rs:333`,
-  `:229`), `init_fields`, `Heap::destroy`
+  `:229`; since upstream #111 also `background::detach_from_starter`,
+  the new thread's own scheduling calls), `init_fields`, `Heap::destroy`
   (`heap/mod.rs:5158`, `:5382`), `Meta::commit`
   (`meta.rs:2745`), `print::emit` and
   `jemalloc::call_hook` (the report's call-outs, theorem 16), the
@@ -1421,7 +1422,11 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   (`discover_cgroup_for_fork`); the metadata object side's deferred
   commit at the next object or table commit (`meta::Inner::flush`);
   and the per-size THP probe at the feature line's first request
-  (`api::line_ready`). None is reached from a fast path.
+  (`api::line_ready`). Since upstream #111 the periodic tick also runs
+  the lazy start's look (`purge::on_tick` → `background::auto_tick`:
+  `policy::empty_bytes`, the state lock and, from an allocation's tick
+  only, `start_requested` → `start`), behind `Heap::tick`, which
+  requires `may_syscall()`. None is reached from a fast path.
 - Faults. The first touch of a fresh slot or cache stack page can fault,
   and so can `PROT_NONE` guards and swapped-out pages. A page fault is a
   trap the kernel takes, not a system call, and no proof here models it.
@@ -2195,7 +2200,11 @@ value it leaves (`:520`). After either handler no listed lock is held.
 In the child, no lock is owned by a thread that no longer exists: at
 the fork the forking thread held every listed lock (the mutex premise
 below excludes a second holder), and the child's one thread is that
-thread's copy, which releases them.
+thread's copy, which releases them. Since upstream #111 the child
+handler, under the lazy start, then sums the dirty bytes it inherited
+(`policy::empty_bytes`, the lazy start's baseline): after the release,
+from a lock-order root of its own (theorem 33), so outside this
+statement.
 
 The tokens: `RawLock::lock_held` (`lock.rs:116`) is `lock` plus a
 `LockHeld` whose `held()` is the lock. The field is private to
@@ -4930,7 +4939,9 @@ huge tier's own period); before, it passed the unscaled periods, and
 arena 0's period rather than the huge tier's to the huge walk. `Arena::decay_with`
 and `purge::decay` (`purge.rs:745`, through `earliest`) take the minimum
 of the per-gate deadlines; the background thread (`purge/background.rs:429`)
-sleeps until `purge::decay`'s result, and `on_tick` discards it. No C
+sleeps until `purge::decay`'s result, and `on_tick` keeps only whether it
+is `Some` (since upstream #111: dirty memory still waiting, which runs
+the lazy start's look, `background::auto_tick`). No C
 symbol's `ensures` changes.
 
 **Premises beyond the common ones.** None: no axiom, `external_body` or
@@ -5576,10 +5587,11 @@ arena `arena`), `SlabTable`, `SetTable` (a slab-set rank), `Huge`, `Meta`,
 | huge: `Shared::alloc_huge` → `alloc_run` → `alloc_aligned` (huge; the lowest-fit `find` runs under it) → `alloc_desc`, `free_desc`, `Table::ensure`, `Set::ensure` (own store), `take` → `retire` (meta); `free_run` (huge) → `Table::ensure`, `retire` (meta) | Huge < Meta |
 | cache flushes and routing: `Heap::flush_all` (`tcache.flush` through `Tcaches::flush`, `thread.tcache.flush` and `arena.<i>.purge` through `flush_caller`, `thread.tcache.enabled` through `set_tcache_enabled`) → `flush_arena` → `flush` → `release_routed` (class) and `free_caches_in` → `Meta::free` (meta); `gc` → `gc_arena` → `flush`; `set_arena` → `other_caches` (meta, when it creates a node) | class locks one at a time, then Meta |
 | arena creation `Arenas::create`, heap creation `Heap::create` → `assign_home` (arenas) and `create_detached` (meta), explicit caches `Tcaches::create`/`destroy` (tcaches → meta / class, meta, huge) | Tcaches < Arenas, Meta, Class, Huge |
-| purge `purge_all`, `purge_arena`, `decay` and `decay_arena` (through `decay_one`, `decay_huge`) → `Arena::decay_with`, `ClassState::decay_with`, `Huge::decay_with`, `on_tick`, `sample` → `policy::evaluate`; background `start` (state, then meta) and `main` | class, huge, state locks one at a time |
+| purge `purge_all`, `purge_arena`, `decay` and `decay_arena` (through `decay_one`, `decay_huge`) → `Arena::decay_with`, `ClassState::decay_with`, `Huge::decay_with`, `on_tick`, `sample` → `policy::evaluate`; background `start` (state, then meta) and `main`; since upstream #111 the lazy start: `on_tick` → `auto_tick` (`policy::empty_bytes`: class and huge locks, then state, then, on an allocation's tick, `start_requested`), `start_requested` (`start`, then state), `request` (state; from `ctl`'s `background_thread` write) | class, huge, state locks one at a time |
 | statistics `epoch`, `collect` (`collect_into`, with its exact-stats ghost outputs) and `arena_stats_all`, under the process statistics lock held across the scan (upstream #91) | Stats < Class(i, c) < Table(c), and Stats < Huge, Meta, ArenaStats(i), each released before the next is taken; `arena_stats_all`: Stats < ArenaStats(i) |
 | statistics `collect_all`, `mallinfo2`, `snapshot`, `arena_stats` (class → table, huge, meta, arena and process statistics), `mallctl` `ctl` and its named readers (`stats.*`, `stats.cgroup.empty_bytes`), `utilization`, `owner_of`, `get_defrag_hint`, `malloc_trim` | each lock with nothing above it held |
 | `fork_prepare` (`api/mod.rs:819`) | Tcaches < Arenas < Stats < Class(i, c) (arenas ascending, classes ascending) < Table(c) < Sets(i) (arenas ascending) < Huge < Meta < ArenaStats(i) < State, through one root token; before them (since upstream #110) the deferred cgroup discovery's `policy::evaluate` from the same root token, each class lock with nothing above it held, all released on return (`*final(ord) == *old(ord)`) |
+| `fork_child` after `fork_release` (since upstream #111, under the lazy start: `policy::empty_bytes`, the inherited dirty bytes) | class and huge locks one at a time, from a root token of its own |
 
 `fork_prepare` proves it with loop invariants `ord.top() <
 rank_class(i, 0)`, `< rank_class(i, c)`, `< rank_table(c)`, `<
@@ -5624,7 +5636,8 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
   `theorem_read_only_never_aborts` (`api/mod.rs`);
   `Shared::init` (no lock exists yet); `create_heap_for_thread` and
   `heap_destructor` (`heap/thread.rs`); the background thread's `main`;
-  `fork_prepare`. The fast paths take no lock (theorem 9), and no
+  `fork_prepare`; and, since upstream #111, `fork_child` once
+  `fork_release` has handed back every token of the fork hold. The fast paths take no lock (theorem 9), and no
   allocator entry point is re-entered while a lock is held: allocator
   code calls nothing that may allocate with a lock held (theorem 16 for
   the reports' calls out, by inspection elsewhere), and a signal
@@ -5838,7 +5851,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   `CountPerm` is the counter with its `id` (`count_id`), and `fetch_add`,
   `fetch_sub` (wrapping), `load` and, since the port of upstream #103,
   `compare_exchange` (the strong form: it fails only on a different
-  value, by C++20's semantics; S308, discharged with loom and those,
+  value, by C++20's semantics; S307, discharged with loom and those,
   `verus/seams/vspec-count-compare_exchange.md`) are one atomic operation
   on it, sequentially consistent in the model (the orderings, all
   `Relaxed`, are ignored, as for the bitmap words).
@@ -5896,7 +5909,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   is off by that ticket inside the trusted body only (the flush's proof
   uses no arena invariant).
 - `homed_ok`'s `rehome ==> bound` (since #103): a new thread heap is
-  counted, so it holds whatever `mark_rehome` (S126, RefinedRust:
+  counted, so it holds whatever `mark_rehome` (S125, RefinedRust:
   `true`, `verus/seams/heap-mark_rehome.md`) stored;
   an explicit cache, assumed `wf` (`heap_at`), rests on `init_fields`
   storing `false` (trusted) and on `create` being the one writer that
@@ -7300,7 +7313,9 @@ cannot fail. `mallctl` and `mallctlbymib` (`:2954`, `:3132`) pass
 
 **Scope.**
 - "Allocator state" here is the settings and objects the keys write:
-  `background_thread`'s request, `arena.<i>.dirty_decay_ms` (one arena
+  `background_thread`'s request (since upstream #111 the write also
+  disarms the lazy start, `background::AUTO`, in the same state lock
+  hold as the request), `arena.<i>.dirty_decay_ms` (one arena
   or, for `arena.4096`, every arena's default), `thread.tcache.enabled`,
   `thread.arena`, and the arena and tcache sets. Not in it, as in
   jemalloc: the calling thread's heap, which `thread.tcache.enabled` and
