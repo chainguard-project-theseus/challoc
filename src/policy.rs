@@ -311,6 +311,12 @@ impl Policy {
         }
     }
 
+    /// A cgroup discovered after init: `high_rises` (its count at
+    /// discovery) is the baseline, as [`Policy::new`]'s is at init.
+    pub fn rebase_high_rises(&self, high_rises: u64) {
+        self.high_rises_seen.store(high_rises, Ordering::Relaxed);
+    }
+
     /// The band as last evaluated (`Unlimited` when no limit was seen).
     pub fn band(&self) -> Band {
         if self.immediate.load(Ordering::Relaxed) {
@@ -453,7 +459,9 @@ pub fn empty_bytes(shared: &Shared) -> u64 {
 /// publishes the outcome on `shared.policy`, waking a background thread
 /// when the band changed or a full purge is owed.
 pub fn evaluate(shared: &Shared) {
-    let cg = &shared.cgroup;
+    let Some(cg) = shared.cgroup() else {
+        return;
+    };
     let p = &shared.policy;
     let limit = cg.limit().min(cg.high());
     let b = cgroup_band(cg);
@@ -818,5 +826,26 @@ mod tests {
             assert!(!forced_by_limit(key, L), "{key:?} is never forced");
             assert!(!forced_by_limit(key, 0), "{key:?} is never forced");
         }
+    }
+
+    /// A cgroup discovered after init (`Shared::discover_cgroup`): the
+    /// count found is the baseline, so the first sample's `apply` with
+    /// that count owes no full purge, and a later rise still does.
+    #[test]
+    fn a_late_discovery_rebases_the_high_count() {
+        const L: u64 = 512 << 20;
+        let p = Policy::new(0, false);
+        p.rebase_high_rises(7);
+        p.apply(Band::Low, L, 0, 7);
+        assert!(
+            !p.full_purge_pending(),
+            "events before discovery are not a rise"
+        );
+        assert!(p.apply(Band::Low, L, 0, 8));
+        assert!(p.full_purge_pending());
+        // Without the rebase the first sample would have owed one.
+        let q = Policy::new(0, false);
+        q.apply(Band::Low, L, 0, 7);
+        assert!(q.full_purge_pending());
     }
 }

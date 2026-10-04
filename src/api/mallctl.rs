@@ -824,11 +824,8 @@ fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int> {
 /// build option, the name resolves and the read says the facility is off.
 fn tracked() -> Result<&'static crate::sys::cgroup::Cgroup, c_int> {
     let s = shared();
-    if s.cgroup.tracked() {
-        Ok(&s.cgroup)
-    } else {
-        Err(ENOENT)
-    }
+    let cg = s.cgroup_now();
+    if cg.tracked() { Ok(cg) } else { Err(ENOENT) }
 }
 
 /// `arena.<i>.purge` and `arena.<i>.decay` address every arena when `i` is
@@ -1511,7 +1508,7 @@ mod tests {
         assert_eq!(lazy, 0);
         let _eager: usize = get("stats.cgroup.eager_purges");
         assert_eq!(set("stats.cgroup.purge_advice", 1usize), EPERM);
-        let tracked = shared().cgroup.tracked();
+        let tracked = shared().cgroup_now().tracked();
         for key in [
             "stats.cgroup.limit",
             "stats.cgroup.high",
@@ -1537,8 +1534,8 @@ mod tests {
             let high: usize = get("stats.cgroup.high");
             let current: usize = get("stats.cgroup.current");
             std::eprintln!("stats.cgroup: limit {limit} high {high} current {current}");
-            assert_eq!(limit, shared().cgroup.limit() as usize);
-            assert_eq!(high, shared().cgroup.high() as usize);
+            assert_eq!(limit, shared().cgroup_now().limit() as usize);
+            assert_eq!(high, shared().cgroup_now().high() as usize);
             assert!(limit == usize::MAX || limit > 0);
             // The policy's keys: the defaults without a limit (the period
             // as configured, no cap), the cap arithmetic with one.

@@ -124,6 +124,10 @@ pub struct Features {
     /// The transparent-huge-page configuration: what the `thp` key can
     /// turn on.
     pub thp: Thp,
+    /// `thp` includes the per-size `hugepages-<n>kB` files; without them
+    /// (`Features::probe(false)`) it has the top-level setting and the PMD
+    /// size only, what `thp:never` needs.
+    pub thp_sizes: bool,
     /// glibc's rseq registration as `rseq::probe` read it at init: the
     /// `rseq` and `rseq_size` keys (`rseq::Probe::words`).
     pub rseq: crate::rseq::Probe,
@@ -281,10 +285,11 @@ pub fn probe_anon_name(page: usize) -> bool {
 }
 
 impl Features {
-    /// Probe everything. Called once from init (design.md section 10);
-    /// calling it again is harmless but leaks a sealed page, so init
-    /// stores the result. Pure apart from that page.
-    pub fn probe() -> Features {
+    /// Probe everything; the per-size THP files only with `thp_sizes`.
+    /// Called once from init (design.md section 10); calling it again is
+    /// harmless but leaks a sealed page, so init stores the result. Pure
+    /// apart from that page.
+    pub fn probe(thp_sizes: bool) -> Features {
         let page_size = page_size();
         Features {
             page_size,
@@ -292,7 +297,12 @@ impl Features {
             guard_install: probe_guard_install(page_size),
             mseal: probe_mseal(page_size),
             anon_name: probe_anon_name(page_size),
-            thp: crate::sys::thp_host::probe(page_size),
+            thp: if thp_sizes {
+                crate::sys::thp_host::probe(page_size)
+            } else {
+                crate::sys::thp_host::probe_top(page_size)
+            },
+            thp_sizes,
             rseq: crate::rseq::probe(),
             pac: crate::sys::pac::available(),
         }
@@ -333,6 +343,7 @@ mod tests {
                 always: 0,
                 madvise: (1 << 16) | (1 << 21),
             },
+            thp_sizes: true,
             rseq: rseq_probe(33, 192),
             pac: true,
         };
@@ -384,6 +395,7 @@ mod tests {
             mseal: true,
             anon_name: true,
             thp: Thp::NONE,
+            thp_sizes: true,
             rseq: Probe::NONE,
             pac: true,
         };
@@ -416,6 +428,7 @@ mod tests {
                 madvise: 0,
             },
             // The longest words.
+            thp_sizes: true,
             rseq: Probe {
                 present: true,
                 size: u32::MAX,
@@ -462,6 +475,7 @@ mod tests {
                 mseal: false,
                 anon_name: true,
                 thp: Thp::NONE,
+                thp_sizes: true,
                 rseq: rseq_probe(33, 192),
                 pac,
             };
@@ -527,7 +541,7 @@ mod linux_tests {
     /// afresh (harmless: one more sealed page).
     fn probed() -> ((u32, u32), Features, String) {
         let kv = kernel_version();
-        let f = Features::probe();
+        let f = Features::probe(true);
         let line = format!("{f}");
         eprintln!("kernel {}.{}: {line}", kv.0, kv.1);
         (kv, f, line)
@@ -544,6 +558,22 @@ mod linux_tests {
         let (_, f, _) = probed();
         assert_eq!(f.page_shift, f.page_size.trailing_zeros());
         assert_eq!(1usize << f.page_shift, f.page_size);
+    }
+
+    /// Without the per-size files the THP table keeps the top-level
+    /// setting and the PMD size the full probe reads, which is all
+    /// `thp:never` uses at init.
+    #[test]
+    fn probe_without_thp_sizes_keeps_the_top_level() {
+        let full = Features::probe(true);
+        let top = Features::probe(false);
+        assert!(full.thp_sizes && !top.thp_sizes);
+        assert_eq!(top.thp.enabled, full.thp.enabled);
+        assert_eq!(top.thp.lg_pmd, full.thp.lg_pmd);
+        assert_eq!(top.page_size, full.page_size);
+        if full.thp.enabled.is_some() {
+            assert_eq!(top.thp.listed, 1 << top.thp.lg_pmd, "the PMD size alone");
+        }
     }
 
     #[test]

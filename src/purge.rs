@@ -473,7 +473,10 @@ pub fn on_tick(shared: &Shared, now: u64) {
 /// taken; nothing at all when the cgroup is untracked or the window has
 /// not passed. Slow paths only (the periodic tick, the background thread).
 fn sample(shared: &Shared, now: u64) {
-    if shared.cgroup.sample(now) {
+    if shared.discover_cgroup_if_due(now) {
+        return;
+    }
+    if shared.cgroup().is_some_and(|cg| cg.sample(now)) {
         crate::policy::evaluate(shared);
     }
 }
