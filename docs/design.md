@@ -674,7 +674,47 @@ When the last thread heap homed on an arena is destroyed, the arena's
 `Empty` slabs are purged at once (jemalloc's `tcache_destroy` rule),
 except with the background thread running and at most once per decay
 period per arena (`Arena::take_exit_purge`), so a pool that recycles
-threads does not purge and refault the same slabs at every exit.
+threads does not purge and refault the same slabs at every exit. The
+count is checked after the exit flush: no purge when another heap was
+homed there meanwhile.
+
+Successor threads. A thread that hands its data to a thread it starts
+and then exits (larson's workers) would otherwise put the successor on
+another arena, since the arena is still held when the successor creates
+its heap: every `free` of the inherited data took the `FOREIGN` cache
+while the successor's allocations came from fresh refills of its own
+arena, and successive threads alternated between two arenas. Two rules
+keep a successor on the data's arena (#94):
+
+- The exiting heap is unbound before its exit flush, not after, so a
+  successor that creates its heap while the flush runs is homed on the
+  idle arena directly (`Arenas::assign`).
+- A successor that was homed earlier moves its home onto the arena of
+  the data it frees (`Heap::try_rehome`). It is looked at on the
+  `FOREIGN` slow path only (the first cross-arena free of each class,
+  whose `FOREIGN` cache does not exist yet, and the flush of a full
+  one), so the cross-arena fast push carries no test for it, and moves
+  while all of these hold: the heap is young, fewer than `REHOME_TICKS`
+  (8) slow-path entries, so it has refilled at most a few caches and has
+  little data of its own to strand; the last two frees looked at went
+  to that arena (an inherited data set comes from one arena, the
+  transfer slots of mstress's workers from all of them); the arena is
+  automatic and no heap is homed there (one compare-and-swap of its
+  bound count from 0 to 1, so two candidates never both take it); and
+  the heap keeps no `others` node for it. The move flushes the home and
+  `FOREIGN` caches through the ordinary flush, so nothing stays cached
+  across it and a stale free of a slot cached before it aborts as
+  before, and re-keys the home headers to the new arena. The free that
+  triggers the move can itself be a double free of a slot on the
+  `FOREIGN` cache (a full cache sends the second free to the slow path,
+  as does a `double_free_scan` hit), and the move's flush releases the
+  first copy; so with `double_free_scan` the compare runs against the
+  `FOREIGN` cache before the move, and after it the exact bit test runs
+  again on the slot before the home push, which aborts as `invalid or
+  double free` instead of caching a slot a refill could hand out too. At
+  most once per heap; a `thread.arena` write and an explicit cache never
+  move. A young thread's `thread.arena` therefore reads back a different
+  arena after a move it did not ask for.
 
 ## 7. Huge allocations
 
