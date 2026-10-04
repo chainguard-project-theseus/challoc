@@ -44,6 +44,15 @@
 #                          /sys/kernel/debug/rseq/{debug,slice_ext_nsec},
 #                          /sys/kernel/debug/sched/llc_balancing
 # perf_event_paranoid is 2 on all three (boot.sh sets 1).
+#
+# perf: none of these hosts has it (and the 7.2 dev image's repositories
+# carry no perf package, #95); every cb VM gets the perf bundle of the
+# image lock (bench/cb/perf-build.sh) at /var/cb/perf on the host and
+# /opt/perf in the container.
+#
+# make test and make fuzz on these hosts (the floor-test row; the cgroup
+# steps need the privileged profile):
+#   cb launch exp-floor --cells tag:cgos --container privileged --head <rev>
 
 [lint]
 markers = ["wolfi-vm", "kirkland-", "chainguard-server-"]
@@ -77,6 +86,7 @@ runtime = "sudo-podman"
 bootstrap = "startup-script"
 prep = ["grow-var"]
 boot_disk_gb = 50
+expect = { kernel = '^6\.18\.' }
 tags = ["product", "cgos"]
 
 [cell.cgos-prod-arm64]
@@ -86,6 +96,7 @@ runtime = "sudo-podman"
 bootstrap = "startup-script"
 prep = ["grow-var"]
 boot_disk_gb = 50
+expect = { kernel = '^6\.18\.' }
 tags = ["product", "cgos"]
 
 # ---- 7.2: the minimal server image (VM, x86_64) ---------------------------
@@ -126,16 +137,22 @@ expect = { kernel = '^7\.2\.' }
 tags = ["product", "ceiling", "cgos"]
 
 # 7.2 on arm64 metal (Neoverse N3, full PMU): weekly profile only; on
-# demand, us-central1-a, 60-minute cap; about $10/h.
+# demand, us-central1-a, 60-minute cap; about $10/h. Privileged, with the
+# SPE module loaded, so perf (the cb perf bundle) can record SPE and read
+# debugfs: `cb launch exp-churn --cells cgos72-metal-arm64`.
+# No `pmu` in the shape: metal exposes the whole PMU and GCE refuses
+# --performance-monitoring-unit on a metal machine type ("Invalid
+# performance monitoring unit").
 [cell.cgos72-metal-arm64]
-shape = { arch = "arm64", machine = "c4a-highmem-96-metal", pmu = "standard" }
+shape = { arch = "arm64", machine = "c4a-highmem-96-metal" }
 host = { family = "kirkland-server-7dot2-metal-arm64", project = "wolfi-vm" }
 zones = ["us-central1-a"]
 spot = "never"
 max_run = "60m"
 runtime = "sudo-podman"
 bootstrap = "startup-script"
-prep = ["grow-var"]
+container = "privileged"
+prep = ["grow-var", "modprobe:arm_spe_pmu"]
 boot_disk_gb = 200
 expect = { kernel = '^7\.2\.' }
 tags = ["weekly", "ceiling", "profile"]

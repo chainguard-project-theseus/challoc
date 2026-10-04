@@ -1,0 +1,22 @@
+# exp-churn (#94): larson's thread churn on a cell with a full PMU.
+# challoc (the `head` rev) against jemalloc on larson1/larsonN at the
+# default 100 rounds per thread and at 10 and 1000 (bench/rows.toml,
+# "thread churn"); the samples carry instructions and cycles per run (rt),
+# so instructions and cycles per op come from samples.jsonl (pmc / ops),
+# and the cost of one thread switch from the 10 vs 1000 rows. spe-probe
+# adds the event sources and, where the CPU has SPE, an SPE recording
+# (#60). One VM per cell (shard_seconds above the suite's length): meant
+# for the bare-metal cells, which take ~11 minutes to boot.
+#
+#   cb launch exp-churn --cells <metal cell> --head <rev>
+description = "#94 thread churn: larson1/N at 10/100/1000 rounds per thread, challoc vs jemalloc, PMU counts"
+cells = "tag:profile"
+variants = ["jemalloc", "challoc=head"]
+controls = []
+rows = ["larson1", "larsonN", "larson1-r10", "larson1-r1000", "larsonN-r10", "larsonN-r1000", "spe-probe"]
+replicas = 1
+blocks = 3
+warmup_blocks = 1
+shard_seconds = 3600
+looks = 1
+budget_usd = 15

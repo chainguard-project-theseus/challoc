@@ -431,10 +431,12 @@ metrics = [
 est_s = 360
 
 # ---- the kernel floor (bench/cb/floor-test.sh) ----------------------------
-# The in-container part of `make test` on the variant's source tree: the
-# release build, the jemalloc-compat stage, the unit and api:: tests, with
-# CHALLOC_TEST_ALLOW_SKIP=1. Pass/fail (and the SKIP lines in the log), not
-# a timing: run it in a smoke suite (bench/suites/exp-floor.toml).
+# `make test` and `make fuzz` on the variant's source tree: the release
+# build, the jemalloc-compat stage, the unit and api:: tests with
+# CHALLOC_TEST_ALLOW_SKIP=1, the cgroup steps where the container may write
+# its cgroup (privileged), and the 10M-operation fuzz. Pass/fail (and the
+# SKIP and OUTCOME lines in the log), not a timing: run it in a smoke suite
+# (bench/suites/exp-floor.toml).
 [row.floor-test]
 cmd = ["sh", "{root}/bench/cb/floor-test.sh"]
 parser = "wall"
@@ -443,7 +445,69 @@ better = "lower"
 threads = 0
 class = "st"
 requires = ["challoc"]
-est_s = 600
+est_s = 780
+
+# ---- thread churn (#94; bench/suites/exp-churn.toml) ----------------------
+# larson with 10 and 1000 rounds per worker thread instead of 100: a thread
+# lives for rounds x 5000 malloc/free pairs, then exits and a new one takes
+# its slot, so instructions per op at the two settings give the steady-state
+# cost and the cost of one thread switch (exit flush + refill):
+# switch = (I10 - I1000) / (1/50000 - 1/5000000) instructions.
+[row.larson1-r10]
+cmd = ["{bin}/larson", "5", "8", "1000", "5000", "10", "4141", "1"]
+parser = "larson"
+unit = "M ops/s"
+better = "higher"
+threads = 1
+class = "st"
+secs = 5
+est_s = 7.5
+
+[row.larson1-r1000]
+cmd = ["{bin}/larson", "5", "8", "1000", "5000", "1000", "4141", "1"]
+parser = "larson"
+unit = "M ops/s"
+better = "higher"
+threads = 1
+class = "st"
+secs = 5
+est_s = 7.5
+
+[row.larsonN-r10]
+cmd = ["{bin}/larson", "5", "8", "1000", "5000", "10", "4141", "{nproc}"]
+parser = "larson"
+unit = "M ops/s"
+better = "higher"
+threads = 0
+class = "mt"
+secs = 5
+est_s = 7
+
+[row.larsonN-r1000]
+cmd = ["{bin}/larson", "5", "8", "1000", "5000", "1000", "4141", "{nproc}"]
+parser = "larson"
+unit = "M ops/s"
+better = "higher"
+threads = 0
+class = "mt"
+secs = 5
+est_s = 7
+
+# The perf event sources and, where the CPU has the Statistical Profiling
+# Extension (arm_spe_0), an SPE recording of a short larson1 under the
+# variant: samples per synthesized event (tlb-miss, l1d-miss, ...), the
+# symbols and the distinct data pages of the tlb-miss samples
+# (bench/probes/spe-probe.sh; needs the perf bundle and, for SPE, the
+# modprobe:arm_spe_pmu prep and a privileged container). Output in the
+# row's log; scored by wall time, no verdict.
+[row.spe-probe]
+cmd = ["sh", "{root}/bench/probes/spe-probe.sh", "{bin}/larson", "2", "8", "1000", "5000", "100", "4141", "1"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+est_s = 20
 
 # ---- the rest of mimalloc-bench (bench/build.sh; bench.sh's arguments) ---
 
