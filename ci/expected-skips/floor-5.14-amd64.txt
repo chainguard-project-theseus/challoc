@@ -4,7 +4,7 @@
 # below 6.10 no mseal, THP advice-gated; the
 # unit-test group has no memory limit for the bands. ci/skip-summary.sh.
 # 5.14 only: RLIMIT_NPROC (by then counted in ucounts) does not refuse a
-# thread after root drops to nobody, so lazy_bg nproc skips; 5.10 runs it.
+# thread after root drops to nobody, so lazy_bg/nproc skips; 5.10 runs it.
 c_cgroup_policy_bands
 c_guard_slab_fault
 c_lazy_bg
@@ -13,5 +13,5 @@ c_negative_guard_free
 c_negative_sized_guard
 c_thp_auto
 cgroup_policy/bands
-lazy_bg
+lazy_bg/nproc
 thp/auto

@@ -878,8 +878,10 @@ stays single-threaded (`unshare(CLONE_NEWUSER)` keeps working) and its
 startup is unchanged (the key is read with the others; nothing else
 happens at init). `background_thread:false` (or any write through
 `mallctl`) disarms it. A lazy start that fails (a seccomp filter that
-fails `clone` with an errno, `RLIMIT_NPROC`) disarms it for good and the
-process purges in the foreground as before; a filter that kills on
+fails `clone` with an errno, `RLIMIT_NPROC`, `pids.max`) leaves the
+process purging in the foreground as before and is retried no sooner
+than a second later, in case a thread limit has freed up; the third
+failure disarms it for good. A filter that kills on
 `clone` kills the process, so a sandbox that does that needs
 `background_thread:false`. Once the thread exists glibc's
 `__libc_single_threaded` stays 0, so libstdc++ reference counts turn
@@ -902,7 +904,12 @@ dirty bytes at the fork are its baseline, lowered as the inherited set
 decays (a low-water mark), so what it inherited does not count and what
 it frees itself does.
 Creating the thread from an allocation's slow path saves and restores
-`errno`.
+`errno`. The new thread does not keep the scheduling of the thread that
+happened to create it (under the lazy start, any allocating thread):
+it moves itself to `SCHED_OTHER` with the main thread's CPU affinity
+and nice value, as far as the kernel allows (lowering a nice value needs
+`CAP_SYS_NICE` or `RLIMIT_NICE`; without either it keeps the nice value
+it inherited).
 
 ## 9. Fork
 

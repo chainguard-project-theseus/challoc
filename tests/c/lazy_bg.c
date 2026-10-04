@@ -25,7 +25,9 @@
  *                                      purges in the foreground
  *   nproc    dirty_decay_ms:500        the same with RLIMIT_NPROC at 1 (as
  *                                      nobody when run as root): clone
- *                                      fails with EAGAIN
+ *                                      fails with EAGAIN; once the limit is
+ *                                      raised again, a later burst starts
+ *                                      the thread (the lazy start retries)
  *   join     (defaults)                512 threads exit, 96 MiB is freed,
  *                                      then they are joined, on default and
  *                                      on user stacks: glibc frees their TLS
@@ -37,9 +39,22 @@
  *   forkburst (defaults)               a fork child of a clean parent frees
  *                                      96 MiB of its own: that starts the
  *                                      thread in the child
+ *   forkdirty (defaults)               a parent forks with 96 MiB freed and
+ *                                      not yet looked at: the child, with a
+ *                                      small workload of its own, stays
+ *                                      single-threaded; the parent starts
+ *                                      the thread
+ *   sched    (defaults)                a worker thread pinned to one CPU
+ *                                      under SCHED_BATCH at nice 10 starts
+ *                                      the thread: it runs SCHED_OTHER with
+ *                                      the main thread's CPU affinity (and
+ *                                      nice value, where lowering it is
+ *                                      allowed)
  *
  * Threads are counted in /proc/self/task; the thread names itself
- * challoc-bg.
+ * challoc-bg. Each skip has a claim name of its own (lazy_bg/unshare,
+ * lazy_bg/userns, lazy_bg/nproc, lazy_bg/sched), so an expected skip of
+ * one claim does not hide a new skip of another (ci/skip-summary.sh).
  */
 #include "common.h"
 
@@ -153,9 +168,9 @@ static void check_unshare(const char *who)
         /* Single-threaded and still EINVAL: a kernel without user
          * namespaces (CONFIG_USER_NS off, the floor kernels). The task
          * count above is the claim that remains. */
-        skip_note("lazy_bg", "%s: unshare(CLONE_NEWUSER) EINVAL with one task: no user namespaces in this kernel", who);
+        skip_note("lazy_bg/userns", "%s: unshare(CLONE_NEWUSER) EINVAL with one task: no user namespaces in this kernel", who);
     } else {
-        skip_note("lazy_bg", "%s: unshare(CLONE_NEWUSER) refused here: %s", who, strerror(rc));
+        skip_note("lazy_bg/unshare", "%s: unshare(CLONE_NEWUSER) refused here: %s", who, strerror(rc));
     }
 }
 
@@ -324,9 +339,17 @@ static void refused(const char *who)
     }
     printf("%s: rss %zu -> %zu MiB with ticks\n", who, full / MIB, late / MIB);
     CHECK(drop(full, late) >= 80 * MIB, "%s: foreground decay released only %zu MiB", who, drop(full, late) / MIB);
-    /* A second burst: still nothing, still working. */
-    churn(64 * MIB, 32 * MIB);
-    CHECK(wait_thread(500) < 0, "%s: a thread started on the second burst", who);
+}
+
+/* Bursts a retry apart: clone still fails, so none starts a thread, and
+ * after the third failure the lazy start stops trying. */
+static void refused_again(const char *who)
+{
+    for (int i = 0; i < 3; i++) {
+        sleep_ms(1100);
+        churn(64 * MIB, 32 * MIB);
+        CHECK(wait_thread(500) < 0, "%s: a thread started on burst %d", who, i + 2);
+    }
 }
 
 static void mode_seccomp(void)
@@ -335,6 +358,7 @@ static void mode_seccomp(void)
     pthread_t th;
     CHECK(pthread_create(&th, NULL, noop, NULL) != 0, "the filter let pthread_create through");
     refused("seccomp");
+    refused_again("seccomp");
 }
 
 static void mode_nproc(void)
@@ -343,22 +367,33 @@ static void mode_nproc(void)
         /* RLIMIT_NPROC does not bind root: become nobody (and stay
          * dumpable, so /proc/self stays readable). */
         if (setgid(65534) != 0 || setuid(65534) != 0) {
-            skip_note("lazy_bg", "nproc: cannot drop to nobody: %s", strerror(errno));
+            skip_note("lazy_bg/nproc", "nproc: cannot drop to nobody: %s", strerror(errno));
             return;
         }
         REQUIRE(prctl(PR_SET_DUMPABLE, 1, 0, 0, 0) == 0, "PR_SET_DUMPABLE: %s", strerror(errno));
     }
-    struct rlimit one = { 1, 1 };
+    struct rlimit old;
+    REQUIRE(getrlimit(RLIMIT_NPROC, &old) == 0, "getrlimit(RLIMIT_NPROC): %s", strerror(errno));
+    struct rlimit one = { 1, old.rlim_max };
     REQUIRE(setrlimit(RLIMIT_NPROC, &one) == 0, "setrlimit(RLIMIT_NPROC): %s", strerror(errno));
     pthread_t th;
     int rc = pthread_create(&th, NULL, noop, NULL);
     if (rc == 0) {
         pthread_join(th, NULL);
-        skip_note("lazy_bg", "nproc: RLIMIT_NPROC 1 did not refuse a thread here");
+        skip_note("lazy_bg/nproc", "nproc: RLIMIT_NPROC 1 did not refuse a thread here");
         return;
     }
     printf("nproc: pthread_create: %s\n", strerror(rc));
     refused("nproc");
+    /* The limit frees up (the soft limit back to the hard one): the lazy
+     * start, which has failed at most twice by now, retries a second
+     * after its last failure and the next burst starts the thread. */
+    REQUIRE(setrlimit(RLIMIT_NPROC, &old) == 0, "setrlimit(RLIMIT_NPROC) back: %s", strerror(errno));
+    sleep_ms(1100);
+    churn(64 * MIB, 32 * MIB);
+    long t = wait_thread(2500);
+    printf("nproc: thread %ld ms after the limit was raised\n", t);
+    CHECK(t >= 0, "nproc: the lazy start did not retry once the limit freed up");
 }
 
 /* The join hazard: `user` threads on stacks of their own (glibc frees
@@ -466,9 +501,123 @@ static void mode_forkburst(void)
     CHECK(tasks() == 1, "the parent started a thread: %d tasks", tasks());
 }
 
+/* A parent that forks with 96 MiB freed and not looked at yet (huge frees
+ * do not tick): the child inherits it as dirty memory that is not its own
+ * and stays single-threaded through a small workload. */
+static int child_dirty(void *arg)
+{
+    (void)arg;
+    if (tasks() != 1)
+        return 2;
+    int most = small_workload(1500);
+    printf("forkdirty: child at most %d tasks\n", most);
+    return most == 1 ? 0 : 3;
+}
+
+static void mode_forkdirty(void)
+{
+    CHECK(tasks() == 1, "%d tasks at start", tasks());
+    churn(0, 96 * MIB);
+    CHECK(tasks() == 1, "huge frees started a thread: %d tasks", tasks());
+    int rc = fork_and_watch(child_dirty, NULL, 30000);
+    CHECK(rc == 0, "fork child of a dirty parent: %d (2: threads at start, 3: the inherited memory started one)", rc);
+    /* The control: the same memory is the parent's own. */
+    long t = wait_thread(2000);
+    printf("forkdirty: parent thread after %ld ms\n", t);
+    CHECK(t >= 0, "the parent's own 96 MiB started nothing");
+}
+
+/* The challoc-bg thread's id, or 0. */
+static pid_t bg_tid(void)
+{
+    DIR *d = opendir("/proc/self/task");
+    REQUIRE(d != NULL, "opendir /proc/self/task: %s", strerror(errno));
+    pid_t tid = 0;
+    struct dirent *e;
+    while (tid == 0 && (e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.')
+            continue;
+        char path[sizeof "/proc/self/task/" + NAME_MAX + sizeof "/comm"], comm[32] = "";
+        snprintf(path, sizeof path, "/proc/self/task/%s/comm", e->d_name);
+        FILE *f = fopen(path, "r");
+        if (f) {
+            if (fgets(comm, sizeof comm, f) && strncmp(comm, "challoc-bg", 10) == 0)
+                tid = (pid_t)atoi(e->d_name);
+            fclose(f);
+        }
+    }
+    closedir(d);
+    return tid;
+}
+
+static long sched_worker_ms;
+
+static void *sched_worker(void *arg)
+{
+    int cpu = (int)(intptr_t)arg;
+    cpu_set_t one;
+    CPU_ZERO(&one);
+    CPU_SET(cpu, &one);
+    REQUIRE(sched_setaffinity(0, sizeof one, &one) == 0, "pin the worker: %s", strerror(errno));
+    struct sched_param p = { 0 };
+    REQUIRE(sched_setscheduler(0, SCHED_BATCH, &p) == 0, "SCHED_BATCH: %s", strerror(errno));
+    REQUIRE(setpriority(PRIO_PROCESS, 0, 10) == 0, "nice 10: %s", strerror(errno));
+    churn(64 * MIB, 32 * MIB);
+    /* wait_thread counts on two tasks; here the main thread waits too. */
+    long t0 = now_ms();
+    sched_worker_ms = -1;
+    while (now_ms() - t0 < 2000) {
+        tick();
+        if (bg_tid() != 0) {
+            sched_worker_ms = now_ms() - t0;
+            break;
+        }
+        sleep_ms(10);
+    }
+    return NULL;
+}
+
+static void mode_sched(void)
+{
+    cpu_set_t main_set;
+    REQUIRE(sched_getaffinity(0, sizeof main_set, &main_set) == 0, "sched_getaffinity: %s", strerror(errno));
+    if (CPU_COUNT(&main_set) < 2) {
+        skip_note("lazy_bg/sched", "sched: one CPU allowed, a pinned worker shows nothing");
+        return;
+    }
+    int cpu = -1;
+    for (int i = CPU_SETSIZE - 1; i >= 0 && cpu < 0; i--)
+        if (CPU_ISSET(i, &main_set))
+            cpu = i;
+    errno = 0;
+    int main_nice = getpriority(PRIO_PROCESS, 0);
+    REQUIRE(errno == 0, "getpriority: %s", strerror(errno));
+    pthread_t th;
+    REQUIRE(pthread_create(&th, NULL, sched_worker, (void *)(intptr_t)cpu) == 0, "pthread_create");
+    pthread_join(th, NULL);
+    CHECK(sched_worker_ms >= 0, "sched: the worker's burst started no thread");
+    pid_t tid = bg_tid();
+    if (tid == 0)
+        return;
+    cpu_set_t bg_set;
+    REQUIRE(sched_getaffinity(tid, sizeof bg_set, &bg_set) == 0, "sched_getaffinity(bg): %s", strerror(errno));
+    CHECK(CPU_EQUAL(&bg_set, &main_set), "sched: challoc-bg has %d CPUs, the main thread %d (it kept the worker's pin)",
+          CPU_COUNT(&bg_set), CPU_COUNT(&main_set));
+    int policy = sched_getscheduler(tid);
+    CHECK(policy == SCHED_OTHER, "sched: challoc-bg runs policy %d, not SCHED_OTHER", policy);
+    errno = 0;
+    int nice = getpriority(PRIO_PROCESS, (id_t)tid);
+    REQUIRE(errno == 0, "getpriority(bg): %s", strerror(errno));
+    /* Back to the main thread's nice value where lowering it is allowed
+     * (CAP_SYS_NICE or RLIMIT_NICE), else the worker's. */
+    CHECK(nice == main_nice || nice == 10, "sched: challoc-bg at nice %d (main %d, worker 10)", nice, main_nice);
+    printf("sched: challoc-bg on %d CPUs, SCHED_OTHER, nice %d (main %d, worker 10)\n", CPU_COUNT(&bg_set), nice,
+           main_nice);
+}
+
 int main(int argc, char **argv)
 {
-    REQUIRE(argc == 2, "usage: lazy_bg <small|burst|hold|optout|seccomp|nproc|join|forkburst>");
+    REQUIRE(argc == 2, "usage: lazy_bg <small|burst|hold|optout|seccomp|nproc|join|forkburst|forkdirty|sched>");
     self_path = argv[0];
     printf("lazy_bg: start %s\n", argv[1]);
     fflush(stdout);
@@ -491,6 +640,10 @@ int main(int argc, char **argv)
         mode_join();
     else if (strcmp(argv[1], "forkburst") == 0)
         mode_forkburst();
+    else if (strcmp(argv[1], "forkdirty") == 0)
+        mode_forkdirty();
+    else if (strcmp(argv[1], "sched") == 0)
+        mode_sched();
     else
         REQUIRE(0, "unknown mode %s", argv[1]);
     return finish("lazy_bg");

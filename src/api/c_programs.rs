@@ -666,7 +666,9 @@ ctests! {
     /// purges the idle process; a fork child and an exec stay
     /// single-threaded; dirty memory over the floor starts it after the
     /// hold; `background_thread:false` and a filter that refuses `clone`
-    /// start nothing.
+    /// start nothing, a thread limit that frees up is retried; a fork
+    /// child of a dirty parent stays single-threaded; the thread does not
+    /// keep the CPU pin and policy of the worker that started it.
     c_lazy_bg => [
         CTest { prog: "lazy_bg", args: &["small"], conf: Some("abort_conf:true"), ..BASE },
         CTest { prog: "lazy_bg", args: &["burst"], conf: Some("abort_conf:true,dirty_decay_ms:500"),
@@ -677,6 +679,8 @@ ctests! {
         CTest { prog: "lazy_bg", args: &["nproc"], conf: Some("abort_conf:true,dirty_decay_ms:500"), ..BASE },
         CTest { prog: "lazy_bg", args: &["join"], conf: Some("abort_conf:true"), ..BASE },
         CTest { prog: "lazy_bg", args: &["forkburst"], conf: Some("abort_conf:true"), ..BASE },
+        CTest { prog: "lazy_bg", args: &["forkdirty"], conf: Some("abort_conf:true"), ..BASE },
+        CTest { prog: "lazy_bg", args: &["sched"], conf: Some("abort_conf:true"), ..BASE },
     ];
     c_align => [ CTest { prog: "align", ..BASE } ];
     c_realloc_tiers => [ CTest { prog: "realloc_tiers", ..BASE } ];

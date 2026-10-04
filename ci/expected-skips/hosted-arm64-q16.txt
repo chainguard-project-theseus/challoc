@@ -1,7 +1,7 @@
 # Expected skips of the unprivileged `make test` on a GitHub-hosted runner
 # (6.17-azure; the same list on x86_64 and aarch64, quantum 16 and 8):
 # Docker's seccomp hides mseal and
-# unshare(CLONE_NEWUSER) (lazy_bg), the container's cgroup namespace refuses
+# unshare(CLONE_NEWUSER) (lazy_bg/unshare), the container's cgroup namespace refuses
 # child cgroups and `test` has no limit for the bands, and
 # THP is inert or advice-gated. Keys: ci/skip-summary.sh.
 c_cgroup_policy_bands
@@ -10,5 +10,5 @@ c_lazy_bg
 c_mseal
 c_thp_auto
 cgroup_policy/bands
-lazy_bg
+lazy_bg/unshare
 thp/auto
