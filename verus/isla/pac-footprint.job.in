@@ -5,11 +5,14 @@
 # one VA size, SCTLR (EnDA among it) symbolic. run.sh prepends the insn
 # line and substitutes @D@ (the destination register). ComputePAC, the
 # PAC algorithm, is uninterpreted: what follows holds for any function of
-# its arguments.
+# its arguments. The insn kind `fallthrough` makes every path continue at
+# the next instruction (PC + 4): no trap, no fault, no branch. In the
+# Armv9.4-A configurations run.sh adds `pc-step` (the model's PC update),
+# and `autda` is of kind `stop`: a path may instead end at the FPAC fault
+# (`AArch64_PACFailException` with syndrome 0b10, data key A) having
+# written no register and no memory.
 abstract ComputePAC
 writes @D@
 no-mem-write
 mem-reads 0
 flags-preserved
-# Every path falls through: no trap, no fault, no branch.
-assert (= final._PC (bvadd init._PC #x0000000000000004))

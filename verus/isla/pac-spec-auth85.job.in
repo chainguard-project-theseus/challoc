@@ -1,0 +1,13 @@
+# What `autda x0, x1` (pac::auth's canonical form) computes with EnDA set
+# in an Armv8.5-A configuration (pac-footprint.job.in), VA width @B@, for
+# a user pointer (bit 55 clear): with O the pointer with its PAC field
+# (bits 54:@B@) cleared to copies of bit 55 and P = ComputePAC(O,
+# modifier, key A high, key A low), the result is O when bits 54:@B@ of
+# the pointer equal P's, and otherwise O with bits 54:53 set to the error
+# code 0b01 (key A): it never faults. Compare pac-spec-auth94.job.in
+# (FEAT_FPAC). run.sh substitutes @SCTLR@, @B@, @B1@ and @N@ (55 - @B@).
+abstract ComputePAC
+writes R0
+assume (= ((_ extract 27 27) init.@SCTLR@) #b1)
+assume (= ((_ extract 55 55) init.R0) #b0)
+assert (= final.R0 (ite (= ((_ extract 54 @B@) (abstract_ComputePAC (concat ((_ extract 63 55) init.R0) ((_ repeat @N@) ((_ extract 55 55) init.R0)) ((_ extract @B1@ 0) init.R0)) init.R1 init.APDAKeyHi_EL1 init.APDAKeyLo_EL1)) ((_ extract 54 @B@) init.R0)) (concat ((_ extract 63 55) init.R0) ((_ repeat @N@) ((_ extract 55 55) init.R0)) ((_ extract @B1@ 0) init.R0)) (concat ((_ extract 63 55) init.R0) #b01 ((_ extract 52 0) (concat ((_ extract 63 55) init.R0) ((_ repeat @N@) ((_ extract 55 55) init.R0)) ((_ extract @B1@ 0) init.R0))))))

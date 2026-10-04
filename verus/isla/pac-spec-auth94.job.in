@@ -1,0 +1,18 @@
+# What `autda x0, x1` (pac::auth's canonical form) does with EnDA set in
+# an Armv9.4-A configuration with FEAT_PAuth2 and FEAT_FPAC
+# (pac-footprint.job.in), VA width @B@, for a user pointer (bit 55 clear):
+# with O the pointer with its PAC field (bits 54:@B@) cleared to copies of
+# bit 55, P = ComputePAC(O, modifier, key A high, key A low, false) and X
+# the pointer's bits 54:@B@ XOR P's, it faults (ends at the FPAC call,
+# `stop.1`; its syndrome is the `stop` line's) exactly when X is not all
+# copies of bit 55, and otherwise returns O. A pointer `pacda` signed with
+# the same modifier and key has X = its own cleared field, so it
+# authenticates (pac-rt.job.in). Compare pac-spec-auth85.job.in (no
+# fault: an error code). run.sh prepends the insn (kind `stop`), pc-step
+# and stop lines and substitutes @SCTLR@, @B@, @B1@ and @N@ (55 - @B@).
+abstract ComputePAC
+writes R0
+assume (= ((_ extract 27 27) init.@SCTLR@) #b1)
+assume (= ((_ extract 55 55) init.R0) #b0)
+assert (= stop.1 (not (= (bvxor ((_ extract 54 @B@) init.R0) ((_ extract 54 @B@) (abstract_ComputePAC (concat ((_ extract 63 55) init.R0) ((_ repeat @N@) ((_ extract 55 55) init.R0)) ((_ extract @B1@ 0) init.R0)) init.R1 init.APDAKeyHi_EL1 init.APDAKeyLo_EL1 false))) ((_ repeat @N@) ((_ extract 55 55) init.R0)))))
+assert (=> (not stop.1) (= final.R0 (concat ((_ extract 63 55) init.R0) ((_ repeat @N@) ((_ extract 55 55) init.R0)) ((_ extract @B1@ 0) init.R0))))

@@ -1,7 +1,9 @@
 #!/bin/sh
 # Check the inline-assembly seams discharged with Isla (verus/ISLA.md)
-# against the Sail Armv8.5-A model, on the aarch64 code built from this
-# tree, and the aarch64 evidence for the mixed seams that stay trusted.
+# against the Sail Armv8.5-A model (and the PAC ones also against the
+# Armv9.4-A model, for FEAT_PAuth2 and FEAT_FPAC), on the aarch64 code
+# built from this tree, and the aarch64 evidence for the mixed seams that
+# stay trusted.
 #
 #   verus/isla/run.sh [-a LIBCHALLOC.a] [OUT]
 #
@@ -11,14 +13,16 @@
 # isla-footprint on each distinct instruction (the PAC ones in parallel,
 # one per CPU) and checks each job with isla-check (verus/isla/check.rs).
 # OUT (default: a fresh temporary directory) keeps the traces and the
-# jobs. Exit status 0 when every check holds. About four minutes after the
+# jobs. Exit status 0 when every check holds. About ten minutes after the
 # build on 16 CPUs.
 #
 # Tools, from the environment (ISLA.md "Setup"):
 #   ISLA            an Isla checkout built with `cargo build --release`
-#                   (isla-footprint, configs/armv8p5.toml)
-#   ISLA_SNAPSHOTS  an isla-snapshots checkout (armv8p5.ir)
+#                   (isla-footprint, configs/armv8p5.toml, armv9p4.toml)
+#   ISLA_SNAPSHOTS  an isla-snapshots checkout (armv8p5.ir, and armv9p4.ir
+#                   or the armv9p4.ir.gz the checkout carries)
 #   ISLA_FOOTPRINT  overrides $ISLA/target/release/isla-footprint
+#   ISLA_PREPROCESS overrides $ISLA/target/release/isla-preprocess
 #   Z3              the z3 binary isla-check calls (default: z3 on PATH);
 #                   isla-footprint itself needs libz3.so on LD_LIBRARY_PATH
 #   RUSTUP_TOOLCHAIN the toolchain for the build (default 1.95.0); its
@@ -45,12 +49,18 @@ out=$(cd "$out" && pwd)
 : "${ISLA:?set ISLA to an Isla checkout (verus/ISLA.md)}"
 : "${ISLA_SNAPSHOTS:?set ISLA_SNAPSHOTS to an isla-snapshots checkout}"
 footprint=${ISLA_FOOTPRINT:-$ISLA/target/release/isla-footprint}
+preprocess=${ISLA_PREPROCESS:-$ISLA/target/release/isla-preprocess}
 ir=$ISLA_SNAPSHOTS/armv8p5.ir
 toolchain=${RUSTUP_TOOLCHAIN:-1.95.0}
 sysroot=$(rustc +"$toolchain" --print sysroot)
 host=$(rustc +"$toolchain" -vV | sed -n 's/^host: //p')
 llvm=$sysroot/lib/rustlib/$host/bin
-for t in "$footprint" "$ir" "$llvm/llvm-objdump" "$llvm/llvm-ar"; do
+ir9=$ISLA_SNAPSHOTS/armv9p4.ir
+if [ ! -e "$ir9" ] && [ -e "$ir9.gz" ]; then
+	gunzip -c "$ir9.gz" >"$out/armv9p4.ir.part" && mv "$out/armv9p4.ir.part" "$out/armv9p4.ir"
+	ir9=$out/armv9p4.ir
+fi
+for t in "$footprint" "$preprocess" "$ir" "$ir9" "$ISLA/configs/armv9p4.toml" "$llvm/llvm-objdump" "$llvm/llvm-ar"; do
 	[ -e "$t" ] || { echo "isla: missing $t" >&2; exit 2; }
 done
 fails=0
@@ -253,14 +263,33 @@ done <"$out/tls-loads.txt"
 # 6. Pointer authentication (pac::sign, auth, strip and the round trip
 # axiom_auth_sign; verus/seams/sys-pac-*.md). Every PAC-family instruction
 # in the code is `pacda Xd, Xn` or `autda Xd, Xn` (d and n distinct, neither
-# 31) or `xpacd Xd` (d not 31). The model runs with FEAT_PAuth (and the
-# v8.2-v8.5 features an Armv8.5-A CPU has) on, at Non-secure EL0 with the
+# 31) or `xpacd Xd` (d not 31). Two models, each at Non-secure EL0 with the
 # PAC traps off: SCR_EL3.{API,APK} set, as firmware sets them, and either
-# a kernel at EL1 with HCR_EL2 = HCR_HOST_NVHE_FLAGS (RW, API, APK) or a
+# a kernel at EL1 with HCR_EL2 = HCR_HOST_NVHE_FLAGS (RW, API, APK, ATA) or a
 # VHE kernel (E2H, TGE, RW). TCR is Linux's for each user VA size it supports:
-# 36 (16K pages), 39 (4K), 42 (64K), 47 (16K), 48 (4K) and 52 bits (64K;
-# TBI0 on), SCTLR (EnDA) symbolic, and ComputePAC
+# 36 (16K pages), 39 (4K), 42 (64K), 47 (16K), 48 (4K) and 52 bits (64K),
+# each with TBI0 on, SCTLR (EnDA) symbolic, and ComputePAC
 # abstract: Isla leaves the PAC algorithm an uninterpreted function.
+# - Armv8.5-A (armv8p5.ir; configurations el1-36 to vhe-52): FEAT_PAuth
+#   and the v8.2-v8.5 features on. `pacda` puts the PAC in the pointer's
+#   PAC field; a failed `autda` returns the pointer with an error code.
+# - Armv9.4-A (armv9p4.ir; p2-el1-36 to p2-vhe-52, and p2c-el1-36 to
+#   p2c-vhe-52 with FEAT_CONSTPACFIELD), run as an Armv9.0-A CPU (v8.2-v8.5
+#   and v9.0 on, and every feature flag from Armv8.6 on off) with
+#   FEAT_PAuth, FEAT_PAuth2, FEAT_FPAC and FEAT_FPACCOMBINE on and
+#   FEAT_EPAC off, as on Neoverse V2 (C4A): `pacda` XORs the PAC into the
+#   field (PAuth2) and a failed `autda` takes the FPAC exception. The
+#   model's footprint function decodes and executes only, from the model's
+#   register initialisers, the configuration's defaults and its
+#   `[registers.reset]` values (the checker's `pc-step` adds the PC
+#   update, and each instruction names the register it writes when it
+#   completes, since the function swallows an UNDEFINED abort without a
+#   trace event), with the EDSCR in Non-debug state (no external debugger
+#   has halted the core). `autda` runs with `--stop-at
+#   AArch64_PACFailException`: a failed authentication ends at that call
+#   (the `stop` kind), and the exception entry it makes is checked once per
+#   configuration on the canonical `autda x0, x1` run through
+#   (`pac-fault.job.in`).
 awk -F"$tab" '/^ +[0-9a-f]+: [0-9a-f]+ +\t/ && $2 ~ /^(pac|aut|xpac)|^(reta|bra|blra|ldra|ereta)[ab]/ {
 	split($1, a, " "); print $2, a[2] }' "$out/dis.txt" | sort | uniq -c >"$out/pac-sites.txt"
 cat "$out/pac-sites.txt"
@@ -281,6 +310,61 @@ while read -r _count mn w; do
 done <"$out/pac-sites.txt"
 pac_config=$out/armv8p5-pac.toml
 sed 's/^"__v8\([2345]\)_implemented" = false/"__v8\1_implemented" = true/' "$config" >"$pac_config"
+# The Armv9.4-A configuration files: FEAT_CONSTPACFIELD and FEAT_PACQARMA3
+# (the PAC algorithm QARMA3 in place of QARMA5, for the purity spot checks)
+# as given, the PAC features as Neoverse V2 has them, and every feature
+# from Armv8.6 on that the model's register initialisers would turn on
+# (the configuration file leaves most to them) pinned off, so the CPU is
+# an Armv9.0-A one with PAuth2, FPAC and FPACCOMBINE. The settings go at
+# the end of `[registers.defaults]`, after any line for the same flag is
+# removed, and each must then appear exactly once, so a changed Isla
+# configuration fails here rather than running another CPU.
+pac9_later="AMUv1p1 BF16 AA32BF16 DGH ECV FGT HPMN0 I8MM AA32I8MM F32MM F64MM MPAMv0p1
+MPAMv1p1 MTPMU TWED AFP EBF16 HCX LPA2 LS64 LS64_ACCDATA LS64_V MTE3 PAN3 PMUv3p7 RPRES
+WFxT XS CMOW Debugv8p8 GICv3_NMI HBC MOPS NMI PMUv3_EXT64 PMUv3_TH PMUv3p8 SCTLR2 TCR2
+TIDCP1 ADERR AIE ANERR CLRBHB CSSC Debugv8p9 DoubleFault2 ECBHB FGT2 HAFT LRCPC3 MTE4
+MTE_ASYM_FAULT MTE_ASYNC MTE_CANONICAL_TAGS MTE_NO_ADDRESS_TAGS MTE_PERM MTE_STORE_ONLY
+MTE_TAGGED_FAR PCSRv8p9 PFAR PMUv3_EDGE PMUv3_ICNTR PMUv3_SS PMUv3p9 PRFMSLC RASSAv2 RASv2
+RPRFM S1PIE S1POE S2PIE S2POE SPECRES2 SPE_CRR SPE_FDS SPMU THE ETEv1p1 ETEv1p2 ETEv1p3
+SME_F64F64 SME_FA64 SME_I16I64 MEC SME2 SME2p1 SME_F16F16 ABLE CHK D128 EBEP GCS ITE
+LSE128 LVA3 SEBEP SVE2p1 SVE_B16B16 SYSINSTR128 SYSREG128 TRBE_EXT TRBE_MPAM"
+pac9_config() { # FILE CONSTPACFIELD QARMA3
+	q5=true
+	[ "$3" = false ] || q5=false
+	set -- "$1" "FEAT_CONSTPACFIELD:$2 FEAT_PACQARMA3:$3 FEAT_PACQARMA5:$q5 FEAT_PACIMP:false
+FEAT_PAuth:true FEAT_PAuth2:true FEAT_FPAC:true FEAT_FPACCOMBINE:true FEAT_EPAC:false"
+	for f in $pac9_later; do
+		set -- "$1" "$2 FEAT_$f:false"
+	done
+	[ "$(grep -cx '\[registers.reset\]' "$ISLA/configs/armv9p4.toml")" = 1 ] ||
+		fail "armv9p4.toml: not one [registers.reset] section (the Isla configuration changed?)"
+	sed -e 's/^\(assembler\|objdump\|nm\|linker\) = .*/\1 = "true"/' \
+		-e 's/^"\(v8Ap[2-5]\|v9Ap0\)_IMPLEMENTED" = false$/"\1_IMPLEMENTED" = true/' \
+		"$ISLA/configs/armv9p4.toml" |
+		awk -v set="$2" '
+			BEGIN { n = split(set, s, /[ \n]+/); for (i = 1; i <= n; i++) if (s[i] != "") { split(s[i], kv, ":"); val[kv[1]] = kv[2] } }
+			/^"FEAT_[A-Za-z0-9_]*_IMPLEMENTED" = / { f = $1; gsub(/"/, "", f); sub(/_IMPLEMENTED$/, "", f); if (f in val) next }
+			/^\[registers\.reset\]$/ { for (f in val) printf "\"%s_IMPLEMENTED\" = %s\n", f, val[f]; print ""; }
+			{ print }' >"$1"
+	for l in v8Ap2:true v8Ap3:true v8Ap4:true v8Ap5:true v8Ap6:false v8Ap7:false v8Ap8:false \
+		v8Ap9:false v9Ap0:true v9Ap1:false v9Ap2:false v9Ap3:false v9Ap4:false $2; do
+		[ "$(grep -c "^\"${l%%:*}_IMPLEMENTED\" = " "$1")" = 1 ] &&
+			grep -qx "\"${l%%:*}_IMPLEMENTED\" = ${l#*:}" "$1" ||
+			fail "$1: ${l%%:*}_IMPLEMENTED is not set once to ${l#*:} (the Isla configuration changed?)"
+	done
+}
+pac9_config "$out/armv9p4-pac.toml" false false
+pac9_config "$out/armv9p4-pac-constpacfield.toml" true false
+pac9_config "$out/armv9p4-pac-qarma3.toml" false true
+# The Armv9.4-A model parsed once into Isla's serialized form (`.irx`),
+# which loads in half the time of the text; the configuration and the
+# `--abstract` and `--stop-at` options still apply when a trace loads it.
+# Four traces are also made from the text, below, and must be the same.
+"$preprocess" -A "$ir9" -C "$out/armv9p4-pac.toml" -o "$out/armv9p4" >"$out/armv9p4.irx.err" 2>&1 || {
+	echo "isla: isla-preprocess failed: $(grep -v 'No primop' "$out/armv9p4.irx.err" | head -3)" >&2
+	exit 2
+}
+ir9x=$out/armv9p4.irx
 pac_tcr() { # VA: Linux's TCR_EL1 for that user VA size (T0SZ, T1SZ, granules, TBI0)
 	case $1 in
 	36) echo 0x00000035755CB51C ;;
@@ -302,44 +386,93 @@ pac_name() { # MNEMONIC WORD: the trace name of the instruction
 # compares against.
 pac_words="pacda:$((0xdac10820)) autda:$((0xdac11820)) xpacd:$((0xdac147e0)) $pac_words"
 par=$(nproc 2>/dev/null || echo 4)
-pac_configs="el1-36 el1-39 el1-42 el1-47 el1-48 el1-52 vhe-36 vhe-39 vhe-42 vhe-47 vhe-48 vhe-52"
+pac_configs=
+for v in "" p2- p2c-; do
+	for c in el1-36 el1-39 el1-42 el1-47 el1-48 el1-52 vhe-36 vhe-39 vhe-42 vhe-47 vhe-48 vhe-52; do
+		pac_configs="$pac_configs $v$c"
+	done
+done
 pac_uniq=
 for mw in $pac_words; do
 	case " $pac_uniq " in *" $mw "*) ;; *) pac_uniq="$pac_uniq $mw" ;; esac
 done
 pac_words=$pac_uniq
+# Each model's own arguments; the v9.4 registers are structs (`.bits`).
+pac85_args="-R PSTATE.EL=0b00 -R PSTATE.nRW=0b0 -R SCR_EL3=0x0000000000030401 -R VBAR_EL1=undefined:%bv64 -R VBAR_EL2=undefined:%bv64"
+pac94_args="-f isla_footprint_no_init -R PSTATE.EL=0b00 -R PSTATE.nRW=0b0 -R SCR_EL3.bits=0x0000000000030401 -R VBAR_EL1=undefined:%bv64 -R VBAR_EL2=undefined:%bv64 -R _EDSCR.bits=0x00000002"
+pac_model() { # CONFIG: sets m (85 or 94), mir, mcf, margs, step, regs, sctlr, el, va
+	case $1 in
+	p2c-*) m=94 b=.bits mir=$ir9x mcf=$out/armv9p4-pac-constpacfield.toml margs=$pac94_args step=pc-step ;;
+	p2-*) m=94 b=.bits mir=$ir9x mcf=$out/armv9p4-pac.toml margs=$pac94_args step=pc-step ;;
+	*) m=85 b= mir=$ir mcf=$pac_config margs=$pac85_args step= ;;
+	esac
+	case $1 in
+	*el1-*) el=EL1 hcr=0x0100030080000000 ;;
+	*) el=EL2 hcr=0x0000000488000000 ;;
+	esac
+	va=${1##*-}
+	regs="-R HCR_EL2$b=$hcr -R SCTLR_$el$b=undefined:%bv64 -R TCR_$el$b=$(pac_tcr $va)"
+	sctlr=SCTLR_$el$b
+}
 # Each trace is written whole or not at all (a killed isla-footprint
 # leaves only the .part file), and every run makes its own.
-pac_footprint() { # NAME ISLA-ARGS...: run in the background by the caller
-	t=$1
-	shift
-	rm -f "$out/$t.trace" "$out/$t.failed"
-	if "$footprint" -A "$ir" -C "$pac_config" -R PSTATE.EL=0b00 -R PSTATE.nRW=0b0 \
-		-R SCR_EL3=0x0000000000030401 -R VBAR_EL1=undefined:%bv64 -R VBAR_EL2=undefined:%bv64 \
-		-s "$@" >"$out/$t.trace.part" 2>"$out/$t.err"; then
+pac_footprint() { # NAME IR CONFIG ISLA-ARGS...: run in the background by the caller
+	t=$1 tir=$2 tcf=$3
+	shift 3
+	rm -f "${out:?}/${t:?}.trace" "${out:?}/${t:?}.failed"
+	if "$footprint" -A "$tir" -C "$tcf" -s "$@" >"$out/$t.trace.part" 2>"$out/$t.err"; then
 		mv "$out/$t.trace.part" "$out/$t.trace"
 	else
 		echo "isla-footprint $t: $(grep -v 'No primop' "$out/$t.err" | head -3)" >"$out/$t.failed"
 	fi
 }
-i=0
+# At most `par` background tasks at once: a task takes a token from the
+# pipe on fd 3 before it starts and puts it back when it ends.
+mkfifo "$out/tokens.fifo"
+exec 3<>"$out/tokens.fifo"
+rm -f "${out:?}/tokens.fifo"
+for _ in $(seq "$par"); do echo >&3; done
+pac_bg() { # NAME IR CONFIG ISLA-ARGS...: pac_footprint in the background
+	read -r _ <&3
+	(
+		pac_footprint "$@"
+		echo >&3
+	) &
+}
 for c in $pac_configs; do
-	case $c in
-	el1-*) regs="-R HCR_EL2=0x0000030080000000 -R SCTLR_EL1=undefined:%bv64 -R TCR_EL1=$(pac_tcr ${c#*-})" ;;
-	vhe-*) regs="-R HCR_EL2=0x0000000488000000 -R SCTLR_EL2=undefined:%bv64 -R TCR_EL2=$(pac_tcr ${c#*-})" ;;
-	esac
+	pac_model $c
 	for mw in $pac_words; do
-		pac_footprint "pac-$c-$(pac_name ${mw%%:*} ${mw#*:})" --abstract ComputePAC \
-			-R _PC=undefined:%bv64 $regs -x -i "$(le ${mw#*:})" &
-		i=$((i + 1))
-		[ $((i % par)) -ne 0 ] || wait
+		stop=
+		[ $m = 85 ] || [ ${mw%%:*} != autda ] || stop="--stop-at AArch64_PACFailException"
+		pac_bg "pac-$c-$(pac_name ${mw%%:*} ${mw#*:})" "$mir" "$mcf" $margs --abstract ComputePAC $stop \
+			-R _PC=undefined:%bv64 $regs -x -i "$(le ${mw#*:})"
 	done
+	# The FPAC exception entry, on `autda x0, x1` run through.
+	[ $m = 85 ] || pac_bg "pac-$c-autda-fault" "$mir" "$mcf" $margs --abstract ComputePAC \
+		-R _PC=undefined:%bv64 $regs -x -i "$(le $((0xdac11820)))"
 done
+# Traces from the model's text, for the comparison with the serialized
+# model below: one for each configuration file (`autda x0, x1` stopping at
+# the FPAC call; `pacda x0, x1` with FEAT_CONSTPACFIELD; the first QARMA3
+# purity spot check, in the loop below) and the FPAC exception entry under
+# VHE. And `udf #0` (word 0), which the model's footprint function aborts
+# without a trace event, for a negative control.
+pac_model p2-el1-48
+pac_bg pac-p2-el1-48-autda-x0-x1-text "$ir9" "$mcf" $margs --abstract ComputePAC \
+	--stop-at AArch64_PACFailException -R _PC=undefined:%bv64 $regs -x -i "$(le $((0xdac11820)))"
+pac_bg pac-p2-el1-48-udf "$mir" "$mcf" $margs -R _PC=undefined:%bv64 $regs -x -i "$(le 0)"
+pac_model p2c-el1-48
+pac_bg pac-p2c-el1-48-pacda-x0-x1-text "$ir9" "$mcf" $margs --abstract ComputePAC \
+	-R _PC=undefined:%bv64 $regs -x -i "$(le $((0xdac10820)))"
+pac_model p2-vhe-48
+pac_bg pac-p2-vhe-48-autda-fault-text "$ir9" "$mcf" $margs --abstract ComputePAC \
+	-R _PC=undefined:%bv64 $regs -x -i "$(le $((0xdac11820)))"
 # The premise of `abstract ComputePAC`, that the model's PAC algorithm is a
-# function of its four arguments, spot-checked: `pacda x0, x1` with
-# ComputePAC unfolded on concrete operands, key and PC (kernel at EL1,
-# 48-bit VA, EnDA set), for eight inputs. `pac-pure.job.in` runs two copies
-# of each trace, each with its own undefined values and initial RC.
+# function of its arguments, spot-checked: `pacda x0, x1` with ComputePAC
+# unfolded on concrete operands, key and PC (kernel at EL1, 48-bit VA,
+# EnDA set), for eight inputs, in the v8.5 model and in the v9.4 one with
+# QARMA5 and with QARMA3. `pac-pure.job.in` runs two copies of each trace,
+# each with its own undefined values and initial RC.
 pac_inputs="0000123456789abc:0000000000001000:84be85ce9804e94b:ec2802d4e0a488e9
 00007fffffffeff0:0000ffff00001111:0123456789abcdef:fedcba9876543210
 0000000000000008:0000000000000000:0000000000000000:0000000000000000
@@ -348,33 +481,59 @@ pac_inputs="0000123456789abc:0000000000001000:84be85ce9804e94b:ec2802d4e0a488e9
 0000400000000000:deadbeefcafef00d:243f6a8885a308d3:082efa98ec4e6c89
 00001b2c3d4e5f60:0000000000002000:452821e638d01377:be5466cf34e90c6c
 0000ffffffffffff:ffffffffffffffff:c0ac29b7c97c50dd:3f84d5b5b5470917"
+pac_pures="85 94q5 94q3"
 k=0
 for in4 in $pac_inputs; do
 	k=$((k + 1))
 	p=${in4%%:*} r=${in4#*:}
-	m=${r%%:*} r=${r#*:}
+	mod=${r%%:*} r=${r#*:}
 	hi=${r%%:*} lo=${r#*:}
-	pac_footprint "pac-pure-$k" -R _PC=0x0000000000400000 -R HCR_EL2=0x0000030080000000 \
-		-R SCTLR_EL1=0x0000000008000000 -R TCR_EL1="$(pac_tcr 48)" -R R0=0x$p -R R1=0x$m \
-		-R APDAKeyHi_EL1=0x$hi -R APDAKeyLo_EL1=0x$lo -x -i "$(le $((0xdac10820)))" &
-	i=$((i + 1))
-	[ $((i % par)) -ne 0 ] || wait
+	set -- -R R0=0x$p -R R1=0x$mod -R APDAKeyHi_EL1=0x$hi -R APDAKeyLo_EL1=0x$lo -x -i "$(le $((0xdac10820)))"
+	pac_bg "pac-pure85-$k" "$ir" "$pac_config" $pac85_args -R _PC=0x0000000000400000 \
+		-R HCR_EL2=0x0100030080000000 -R SCTLR_EL1=0x0000000008000000 -R TCR_EL1="$(pac_tcr 48)" "$@"
+	for q in q5:armv9p4-pac q3:armv9p4-pac-qarma3; do
+		pac_bg "pac-pure94${q%%:*}-$k" "$ir9x" "$out/${q#*:}.toml" $pac94_args -R _PC=0x0000000000400000 \
+			-R HCR_EL2.bits=0x0100030080000000 -R SCTLR_EL1.bits=0x0000000008000000 \
+			-R TCR_EL1.bits="$(pac_tcr 48)" "$@"
+	done
+	[ $k -ne 1 ] || pac_bg "pac-pure94q3-1-text" "$ir9" "$out/armv9p4-pac-qarma3.toml" $pac94_args \
+		-R _PC=0x0000000000400000 -R HCR_EL2.bits=0x0100030080000000 -R SCTLR_EL1.bits=0x0000000008000000 \
+		-R TCR_EL1.bits="$(pac_tcr 48)" "$@"
 done
 wait
 for f in "$out"/pac-*.failed; do
 	[ -e "$f" ] && fail "$(cat "$f")"
 done
+# The serialized model gives the traces the text gives, up to the order of
+# the paths (Isla collects them in parallel), of a struct's fields, and the
+# type arguments in a serialized model's union constructor names
+# (`isla-check --same`).
+for t in p2-el1-48-autda-x0-x1 p2c-el1-48-pacda-x0-x1 p2-vhe-48-autda-fault pure94q3-1; do
+	if "$out/isla-check" --same "$out/pac-$t.trace" "$out/pac-$t-text.trace" >"$out/pac-$t-text.log" 2>&1; then
+		echo "armv9p4.irx: the trace pac-$t is the text model's"
+	else
+		fail "armv9p4.irx: the trace pac-$t differs from the text model's"
+	fi
+done
 pac_jobs=
 for c in $pac_configs; do
-	va=${c#*-}
-	case $c in el1-*) sctlr=SCTLR_EL1 ;; *) sctlr=SCTLR_EL2 ;; esac
+	pac_model $c
 	for mw in $pac_words; do
 		mn=${mw%%:*} w=${mw#*:}
 		t=pac-$c-$(pac_name $mn $w)
 		d=R$((w & 31)) n=R$((w >> 5 & 31))
+		# In the v9.4 model an `autda` may end at the FPAC call instead.
+		# Each insn line names the register the instruction writes when it
+		# completes (checked under `pc-step`).
+		kind=fallthrough stopl=
+		if [ $m = 94 ] && [ $mn = autda ]; then
+			kind=stop stopl="stop AArch64_PACFailException #b10"
+		fi
 		job=$out/$t.job
 		{
-			echo "insn $t.trace fallthrough"
+			echo "insn $t.trace $kind $d"
+			echo "$step"
+			echo "$stopl"
 			sed "s/@D@/$d/g" "$here/pac-footprint.job.in"
 		} >"$job"
 		pac_jobs="$pac_jobs $job"
@@ -382,48 +541,98 @@ for c in $pac_configs; do
 		if [ "$mn" = xpacd ]; then
 			{
 				echo "copy a"
-				echo "insn pac-$c-xpacd-x0.trace fallthrough"
+				echo "insn pac-$c-xpacd-x0.trace fallthrough R0"
 				echo "copy b"
-				echo "insn $t.trace fallthrough"
+				echo "insn $t.trace fallthrough $d"
+				echo "$step"
 				sed "s/@D@/$d/g" "$here/pac-strip-det.job.in"
 			} >"$job"
 		else
 			{
 				echo "copy a"
-				echo "insn pac-$c-$mn-x0-x1.trace fallthrough"
+				echo "insn pac-$c-$mn-x0-x1.trace $kind R0"
 				echo "copy b"
-				echo "insn $t.trace fallthrough"
+				echo "insn $t.trace $kind $d"
+				echo "$step"
+				echo "$stopl"
+				# Both fault or neither: whether it faults is a function of
+				# the same inputs as the result.
+				[ $kind = fallthrough ] || echo "assert (= a.stop.1 b.stop.1)"
 				sed -e "s/@OP@/$mn/g" -e "s/@D@/$d/g" -e "s/@N@/$n/g" -e "s/@SCTLR@/$sctlr/g" "$here/pac-det.job.in"
 			} >"$job"
 		fi
 		pac_jobs="$pac_jobs $job"
 	done
+	# The round trip, `autda` as `fallthrough`: in the v9.4 model the FPAC
+	# fault is among the paths the job must show infeasible.
 	job=$out/pac-$c-rt.job
 	{
-		echo "insn pac-$c-pacda-x0-x1.trace fallthrough"
-		echo "insn pac-$c-autda-x0-x1.trace fallthrough"
+		echo "insn pac-$c-pacda-x0-x1.trace fallthrough R0"
+		echo "insn pac-$c-autda-x0-x1.trace fallthrough R0"
+		echo "$step"
 		sed -e "s/@VA@/$va/g" -e "s/@ZEROS@/#b$(printf "%0$((64 - va))d" 0)/" "$here/pac-rt.job.in"
 	} >"$job"
 	pac_jobs="$pac_jobs $job"
+	# What `pacda x0, x1` and `autda x0, x1` compute in each model, in terms
+	# of the abstract ComputePAC, with EnDA set (pac-spec-*.job.in) and
+	# clear (pac-enda-off.job.in).
+	for s in sign:pacda auth:autda; do
+		tr=pac-$c-${s#*:}-x0-x1
+		kind=fallthrough stopl=
+		if [ $m = 94 ] && [ $s = auth:autda ]; then
+			kind=stop stopl="stop AArch64_PACFailException #b10"
+		fi
+		job=$out/$tr-spec.job
+		{
+			echo "insn $tr.trace $kind R0"
+			echo "$step"
+			echo "$stopl"
+			sed -e "s/@SCTLR@/$sctlr/g" -e "s/@B@/$va/g" -e "s/@B1@/$((va - 1))/g" \
+				-e "s/@N@/$((55 - va))/g" -e "s/@N1@/$((56 - va))/g" "$here/pac-spec-${s%%:*}$m.job.in"
+		} >"$job"
+		pac_jobs="$pac_jobs $job"
+		job=$out/$tr-off.job
+		{
+			echo "insn $tr.trace fallthrough R0"
+			echo "$step"
+			sed "s/@SCTLR@/$sctlr/g" "$here/pac-enda-off.job.in"
+		} >"$job"
+		pac_jobs="$pac_jobs $job"
+	done
+	if [ $m = 94 ]; then
+		case $el in EL1) lvl='#b01' ;; *) lvl='#b10' ;; esac
+		job=$out/pac-$c-fault.job
+		{
+			echo "insn pac-$c-autda-fault.trace fault R0"
+			sed -e "s/@EL@/$el/g" -e "s/@LEVEL@/$lvl/g" "$here/pac-fault.job.in"
+		} >"$job"
+		pac_jobs="$pac_jobs $job"
+	fi
 done
-k=0
-for in4 in $pac_inputs; do
-	k=$((k + 1))
-	job=$out/pac-pure-$k.job
-	{
-		echo "copy a"
-		echo "insn pac-pure-$k.trace fallthrough"
-		echo "copy b"
-		echo "insn pac-pure-$k.trace fallthrough"
-		sed "s/@P@/#x${in4%%:*}/g" "$here/pac-pure.job.in"
-	} >"$job"
-	pac_jobs="$pac_jobs $job"
+for pm in $pac_pures; do
+	k=0
+	for in4 in $pac_inputs; do
+		k=$((k + 1))
+		job=$out/pac-pure$pm-$k.job
+		{
+			echo "copy a"
+			echo "insn pac-pure$pm-$k.trace fallthrough R0"
+			echo "copy b"
+			echo "insn pac-pure$pm-$k.trace fallthrough R0"
+			[ $pm = 85 ] || echo "pc-step"
+			sed "s/@P@/#x${in4%%:*}/g" "$here/pac-pure.job.in"
+		} >"$job"
+		pac_jobs="$pac_jobs $job"
+	done
 done
-i=0
 for job in $pac_jobs; do
-	("$out/isla-check" "$job" >"$job.log" 2>&1; echo $? >"$job.rc") &
-	i=$((i + 1))
-	[ $((i % par)) -ne 0 ] || wait
+	read -r _ <&3
+	(
+		rc=0
+		"$out/isla-check" "$job" >"$job.log" 2>&1 || rc=$?
+		echo $rc >"$job.rc"
+		echo >&3
+	) &
 done
 wait
 npac=0
@@ -431,7 +640,7 @@ for job in $pac_jobs; do
 	npac=$((npac + 1))
 	[ "$(cat "$job.rc")" = 0 ] || fail "isla-check $job: $(grep -m 1 FAIL "$job.log" || tail -n 1 "$job.log")"
 done
-echo "PAC: $npac jobs: $(echo $pac_words | wc -w) instructions in each of $(echo $pac_configs | wc -w) configurations, and $k purity spot checks"
+echo "PAC: $npac jobs: $(echo $pac_words | wc -w) instructions in each of $(echo $pac_configs | wc -w) configurations (12 Armv8.5-A, 24 Armv9.4-A), and $((k * 3)) purity spot checks"
 
 # 7. Evidence for the aarch64 halves of the mixed seams (verus/ISLA.md,
 # "Mixed seams"): the ledger keeps them trusted until their x86_64 halves
@@ -558,8 +767,13 @@ done <"$out/tls-stores.txt"
 # `fallthrough` instruction continuing at PC + 8.
 refute() { # NAME JOB-TEXT
 	printf '%s\n' "$2" >"$out/neg-$1.job"
+	# Rejected means the checker judged a combination and failed it (a
+	# `FAIL` line), not that it could not run the job (a missing trace or
+	# an empty job from a `sed` on a file that is not there).
 	if "$out/isla-check" "$out/neg-$1.job" >"$out/neg-$1.log" 2>&1; then
 		fail "negative control $1 passed"
+	elif ! grep -q '^FAIL' "$out/neg-$1.log"; then
+		fail "negative control $1 did not run: $(tail -n 1 "$out/neg-$1.log")"
 	else
 		echo "negative control $1: rejected, as it should be"
 	fi
@@ -595,7 +809,52 @@ refute pac-det-keylo "$(grep -v '^assume (= a.init.APDAKeyLo_EL1 ' "$pac-pacda-x
 refute pac-det-keyhi "$(grep -v '^assume (= a.init.APDAKeyHi_EL1 ' "$pac-pacda-x0-x1-det.job")"
 refute pac-det-enda "$(sed 's/extract 27 27/extract 26 26/g' "$pac-autda-x0-x1-det.job")"
 refute pac-abstract "$(grep -v '^abstract ' "$pac-pacda-x0-x1.job")"
-refute pac-pure-id "$(sed 's/^assert (not (= a.final.R0 \(.*\)))$/assert (= a.final.R0 \1)/' "$out/pac-pure-1.job")"
+refute pac-pure-id "$(sed 's/^assert (not (= a.final.R0 \(.*\)))$/assert (= a.final.R0 \1)/' "$out/pac-pure85-1.job")"
+# The v8.5 model's PAC replacement claimed without its bit-54 inversion
+# for a non-canonical pointer, and its failed `autda` claimed to return
+# another error code.
+refute pac-spec-flip "$(sed 's/(bvnot ((_ extract 54 54)/(bvneg ((_ extract 54 54)/' "$pac-pacda-x0-x1-spec.job")"
+refute pac-spec-ec "$(sed 's/ #b01 / #b00 /' "$pac-autda-x0-x1-spec.job")"
+# The same on an Armv9.4-A configuration, and what is new there:
+# determinism of `autda` without the modifier, the PAuth2 XOR claimed to
+# be an OR, `autda` claimed never to fault (its footprint as
+# `fallthrough`, or with `not stop.1`), the fault's syndrome claimed to be
+# 0b11 (key B), the FPAC exception entry with another syndrome, return
+# address or EL, and a v9.4 job without the model's PC update (`pc-step`).
+pac=$out/pac-p2-el1-48
+refute pac9-rt-va "$(grep -v '^assume (= ((_ extract 63 ' "$pac-rt.job")"
+refute pac9-det-mod "$(grep -v '^assume (= a.init.R1 ' "$pac-pacda-x0-x1-det.job")"
+refute pac9-det-keylo "$(grep -v '^assume (= a.init.APDAKeyLo_EL1 ' "$pac-pacda-x0-x1-det.job")"
+refute pac9-det-keyhi "$(grep -v '^assume (= a.init.APDAKeyHi_EL1 ' "$pac-pacda-x0-x1-det.job")"
+refute pac9-det-enda "$(sed 's/extract 27 27/extract 26 26/g' "$pac-autda-x0-x1-det.job")"
+refute pac9-det-mod-auth "$(grep -v '^assume (= a.init.R1 ' "$pac-autda-x0-x1-det.job")"
+refute pac9-spec-xor "$(sed 's/(bvxor /(bvor /' "$pac-pacda-x0-x1-spec.job")"
+refute pac9-nofault "$(sed -e '1s/ stop R0$/ fallthrough R0/' -e '/^stop /d' "$pac-autda-x0-x1.job")"
+refute pac9-nostop "$(printf '%s\nassert (not stop.1)' "$(cat "$pac-autda-x0-x1.job")")"
+refute pac9-stop-key "$(sed 's/^stop AArch64_PACFailException #b10$/stop AArch64_PACFailException #b11/' "$pac-autda-x0-x1.job")"
+refute pac9-fault-esr "$(sed 's/#x0000000072000002/#x0000000072000003/' "$pac-fault.job")"
+refute pac9-fault-elr "$(sed 's/^assert-exc (= final.ELR_EL1 init._PC)$/assert-exc (= final.ELR_EL1 (bvadd init._PC #x0000000000000004))/' "$pac-fault.job")"
+refute pac9-fault-el "$(sed 's/^assert-exc (= final.PSTATE.EL #b01)$/assert-exc (= final.PSTATE.EL #b10)/' "$pac-fault.job")"
+refute pac9-no-step "$(grep -v '^pc-step$' "$pac-pacda-x0-x1.job")"
+# `udf #0`, which the model aborts as UNDEFINED and its footprint function
+# swallows, claimed to complete: its trace writes nothing, so under
+# `pc-step` it must fail by not writing the register it names.
+refute pac9-udf "$(printf 'insn pac-p2-el1-48-udf.trace fallthrough R0\npc-step\nwrites R0')"
+# On synthetic traces: a write before a `stop` call, a `stop` call that
+# is not the last event, a user register written on a `fault` exception
+# path, an exception path with no `assert-exc`, and under `pc-step` a PC
+# write without `__BranchTaken`.
+refute stop-write "$(printf 'insn %s stop\nstop Fault #b10\nwrites R3' "$ctl/stop-write.trace")"
+refute stop-mid "$(printf 'insn %s stop\nstop Fault #b10' "$ctl/stop-mid.trace")"
+refute exc-user "$(printf 'insn %s fault R0\npc-step\nwrites R0\nassert-exc true' "$ctl/exc-user.trace")"
+refute exc-unchecked "$(printf 'insn %s fault R0\npc-step' "$ctl/exc.trace")"
+refute pc-nobranch "$(printf 'insn %s fallthrough R0\npc-step' "$ctl/pc-nobranch.trace")"
+# `isla-check --same` on two different traces (`pacda` and `autda`).
+if "$out/isla-check" --same "$pac-pacda-x0-x1.trace" "$pac-autda-x0-x1.trace" >"$out/neg-same.log" 2>&1; then
+	fail "negative control same passed"
+else
+	echo "negative control same: rejected, as it should be"
+fi
 # Section 7: the GOT function's load one entry off and its `ret` claimed
 # to fall through, rseq::symbols storing the first value twice, the TLS
 # store storing the offset, `brk` with the wrong syndrome or claimed to

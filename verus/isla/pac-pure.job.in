@@ -1,13 +1,15 @@
 # The premise of `abstract ComputePAC` in every other PAC job, that the
-# model's PAC algorithm is a function of its four arguments, spot-checked
-# (verus/seams/sys-pac-sign.md, part 3): `pacda x0, x1` with ComputePAC
-# unfolded, on concrete operands, key and PC (run.sh section 6, eight
-# inputs), so the only symbols left in the trace are the model's
+# model's PAC algorithm is a function of its arguments (four; in the
+# Armv9.4-A model five, the last `isgeneric`, false for `pacda`),
+# spot-checked (verus/seams/sys-pac-sign.md, part 3): `pacda x0, x1` with
+# ComputePAC unfolded, on concrete operands, key and PC (run.sh section 6,
+# eight inputs in the Armv8.5-A model and in the Armv9.4-A one with QARMA5
+# and with QARMA3), so the only symbols left in the trace are the model's
 # undefined values and the initial contents of RC, ComputePAC's
 # round-constant array. Copies `a` and `b` run the same trace, each with
 # its own such symbols, and get the same result, which differs from the
 # pointer (the PAC is applied). run.sh prepends the copy and insn lines
-# and substitutes @P@ (the pointer).
+# (and `pc-step` for Armv9.4-A) and substitutes @P@ (the pointer).
 writes R0 RC
 no-mem-write
 mem-reads 0

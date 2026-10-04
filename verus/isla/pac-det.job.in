@@ -4,7 +4,9 @@
 # (pac-footprint.job.in). Given the same pointer, modifier, data key A and
 # SCTLR.EnDA, they give the same result: the instruction computes one
 # function of those four, whatever the registers. ComputePAC is
-# uninterpreted and shared by the copies.
+# uninterpreted and shared by the copies. In the Armv9.4-A configurations
+# run.sh adds `pc-step` and, for `autda`, the `stop` line and the assertion
+# that both copies fault (end at the FPAC call) or neither does.
 abstract ComputePAC
 writes R0 @D@
 no-mem-write

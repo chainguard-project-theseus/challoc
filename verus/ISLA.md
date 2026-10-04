@@ -6,8 +6,9 @@ pointer, GOT loads of weak symbols, pointer authentication and the trap
 instruction. Verus sees only their signatures.
 [Isla](https://github.com/rems-project/isla) symbolically executes machine
 code against a Sail ISA model (here the Armv8.5-A model translated from
-Arm's ASL) and prints, per instruction, every path as a trace of register
-and memory events with SMT definitions;
+Arm's ASL, and for pointer authentication also the Armv9.4-A one) and
+prints, per instruction, every path as a trace of register and memory
+events with SMT definitions;
 [Islaris](https://github.com/rems-project/islaris) proves properties of
 such traces in Coq/Iris. This file is the setup, the triage of the 26
 seams (and of `axiom_auth_sign`, a platform fact the same runs check),
@@ -18,12 +19,12 @@ from 8635213.
 ## Setup
 
 What the Isla lanes installed, in a Linux VM without a package manager,
-on 2026-10-02 and 2026-10-03:
+on 2026-10-02, 2026-10-03 and 2026-10-04:
 
 | tool | version | how |
 |---|---|---|
 | Isla | rems-project/isla e9b5d94 | `cargo build --release` (a minute) |
-| Sail models | isla-snapshots d8b3101 | git clone (`armv8p5.ir`) |
+| Sail models | isla-snapshots d8b3101 | git clone (`armv8p5.ir`; `armv9p4.ir.gz`, last changed in 9591cbb, from sail-arm `wip-rebase-v9.4` 111345b) |
 | libz3 for Isla | Z3 4.13.4 x64-glibc-2.35 | GitHub release zip |
 | z3 for isla-check | Z3 4.16.0 | the one Verus ships |
 | llvm-objdump, llvm-ar | LLVM of rustc 1.95.0 | rustup `llvm-tools` |
@@ -64,8 +65,24 @@ the opcode's bytes in memory order (`d4000001`, `svc #0`, is
 `-x -i 010000d4`); the configuration's default toolchain must name tools
 on `PATH` even when only opcodes are given (`run.sh` points them at
 `true`); the harness uses `armv8p5.ir`, whose footprints are the
-instruction alone with its PC update (the v9.4 snapshot's start with the
-model's reset sequence and end without one). For the PAC instructions:
+instruction alone with its PC update, and for the PAC instructions also
+`armv9p4.ir`, whose default footprint function starts with the model's
+reset sequence and whose footprints end before the PC update: `run.sh`
+uses its `isla_footprint_no_init` function (no reset), the checker
+applies the PC update (`pc-step`), its registers are structs (`-R
+SCR_EL3.bits=...`, but `VBAR_EL1` plain), its feature flags take effect
+only from the configuration file (the model copies them into
+`FeatureImpl` before `-R` values apply, and its initialisers turn on
+many Armv8.6-and-later features unless the file pins them), and EDSCR
+must be pinned to Non-debug state or every exception path forks into
+halting-debug ones. Parsing the 156 MB text model is most of a trace's
+time: `run.sh` runs `isla-preprocess` once into the serialized `.irx`
+form, which loads in half the time; `run.sh` compares four of its
+traces (one per configuration file, and an exception entry) with the
+text model's. A further trap: that footprint function swallows an
+UNDEFINED abort without a trace event, so under `pc-step` each
+instruction names the register it writes when it completes. For the
+PAC instructions:
 the model's QARMA computation, unfolded symbolically, did not finish in
 ten minutes, while `--abstract ComputePAC` makes it an `abstract-call`
 event and each trace takes two seconds; a symbolic TCR is rejected
@@ -96,8 +113,8 @@ each `git` command a minute or two.
 3. runs `isla-footprint` on each distinct instruction at Non-secure EL0
    in AArch64 state, with the PC and vector bases symbolic and the
    immediates the linker fills as symbolic opcode fields (`--partial`);
-   the PAC instructions run in a second configuration (below), in
-   parallel, one process per CPU;
+   the PAC instructions run in their own configurations of two models
+   (below), in parallel, one process per CPU;
 4. runs `isla-check` (`check.rs`, std-only Rust built with `rustc`) on
    each job. It links the instructions' traces in order: a register read
    (each field of a struct register, such as PSTATE, separately) equals
@@ -124,8 +141,32 @@ each `git` command a minute or two.
    job may name an **abstract** function (`abstract ComputePAC`), whose
    `abstract-call` events become applications of one uninterpreted SMT
    function shared by all copies, so equal arguments give equal results
-   and nothing else is known; any other abstract call fails the job;
-5. runs negative controls that must fail (27). On the real traces: a
+   and nothing else is known; any other abstract call fails the job.
+   Four for the Armv9.4-A model: **`pc-step`** applies the model's PC
+   update after each instruction (PC + 4 unless the trace set
+   `__BranchTaken`, which every PC write must come with), as the model's
+   `__InstructionExecute` does and its footprint function does not; as
+   that function also swallows an UNDEFINED abort without a trace event,
+   each instruction then names the register it writes when it completes
+   (`insn FILE KIND REG`), and a falling-through trace that does not
+   write it fails; an instruction of kind **`stop`** may end at a call
+   of a function the job names (`stop AArch64_PACFailException #b10`,
+   Isla's `--stop-at`), a path that must write nothing but the model's
+   bookkeeping and no memory, call the function with the given
+   arguments, and be the last of its copy (`stop.1` in SMT says whether
+   it stopped; a job with a `stop` line needs a feasible path that
+   stops); an instruction of kind **`fault`** falls through or takes an
+   exception, whose path may write no user register, not even one the
+   job lists, and no system register but the entry's own (ESR, ELR,
+   SPSR, FAR, PFAR, HPFAR, PSTATE), and must satisfy the job's
+   **`assert-exc`** lines (a job needs one exactly when such a path is
+   feasible); and the model's `sail_take_exception` announcement (a
+   primop with no effect on registers or memory) is accepted. `isla-check
+   --same A B` compares two trace files up to the order of their paths,
+   struct field order and the type arguments of constructor names;
+5. runs negative controls that must fail (50), each of which must fail
+   by a judgement of the checker (a `FAIL` line), not by not running. On
+   the real traces: a
    wrong SVC syndrome, a wrong target EL, a memory read where there is
    none, `svc` expected to fall through, the GOT load one entry off, the
    TLS load without the `ldr` relocation's constraint or without the
@@ -133,28 +174,59 @@ each `git` command a minute or two.
    round trip without the VA bound, determinism without the modifier or
    either half of the key or with SCTLR bit 26 equated in place of EnDA,
    a PAC job not naming the abstract function, a purity spot check
-   claiming the PAC left the pointer unchanged; the GOT function's load
+   claiming the PAC left the pointer unchanged, the v8.5 `pacda` formula
+   without its bit-54 inversion and its failed `autda` with another error
+   code; in an Armv9.4-A configuration the round trip without the VA
+   bound, determinism without the modifier (of `pacda` and of `autda`) or
+   either half of the key or with SCTLR bit 26 for EnDA, the PAuth2 XOR
+   claimed an OR, `autda` claimed never to fault (as `fallthrough`, or
+   with `not stop.1`), its fault claimed with key B's syndrome, the FPAC
+   exception with another syndrome, return address or EL, a job without
+   `pc-step`, and `udf #0` (which the model aborts) claimed to complete;
+   the GOT function's load
    one entry off and its `ret` claimed to fall through, `rseq::symbols`
    storing the first value twice, the TLS store storing the offset or
    claimed to write nothing, `brk` with the wrong syndrome or claimed to
    fall through, `mrs` claimed to write nothing. On synthetic traces
    (`controls/`): a read after an inexpressible write, a write through a
    field accessor, a PSTATE.N write under `flags-preserved`, a
-   `fallthrough` instruction continuing at PC + 8.
+   `fallthrough` instruction continuing at PC + 8, a register written
+   before a `stop` call, a `stop` call that is not the last event, a user
+   register written on a `fault` exception path, an exception path with
+   no `assert-exc`, and under `pc-step` a PC write without
+   `__BranchTaken`; and `isla-check --same` on two different traces.
 
-The PAC configuration: the model's v8.2-v8.5 features on (FEAT_PAuth
-is v8.3), SCR_EL3 = 0x30401 (NS, RW, API, APK), and twelve variants:
-a kernel at EL1 with HCR_EL2 = `HCR_HOST_NVHE_FLAGS` (RW, API, APK) or a
-VHE kernel (E2H, TGE, RW), times Linux's TCR for a user VA of 36 (16K
-pages), 39 (4K), 42 (64K), 47 (16K), 48 (4K) or 52 bits (64K), TBI0 on.
-SCTLR (EnDA), the keys, pointers and modifiers are symbolic. The traces
-are made in every run and written whole or not at all.
+The PAC configurations: SCR_EL3 = 0x30401 (NS, RW, API, APK), and
+twelve variants: a kernel at EL1 with HCR_EL2 = `HCR_HOST_NVHE_FLAGS`
+(RW, API, APK, ATA) or a VHE kernel (E2H, TGE, RW), times Linux's TCR for
+a user VA of 36 (16K pages), 39 (4K), 42 (64K), 47 (16K), 48 (4K) or 52
+bits (64K), TBI0 on; SCTLR (EnDA), the keys, pointers and modifiers
+symbolic. Each in three CPU settings, 36 configurations:
 
-At 8635213 it passes in about four minutes after the build on 16 CPUs:
-two `svc` jobs, twelve TLS load jobs (70 sites), 884 PAC jobs (36
-instructions, the 33 site forms and the three canonical ones, with a
-footprint and a determinism job in each of the 12 configurations, the
-round trip in each, and eight ComputePAC purity spot checks), the
+- `el1-48` and the like: `armv8p5.ir` with its v8.2-v8.5 features on
+  (FEAT_PAuth is v8.3; no FEAT_EPAC, FEAT_PAuth2 or FEAT_FPAC);
+- `p2-el1-48` and the like: `armv9p4.ir` as an Armv9.0-A CPU (v8.2-v8.5
+  and v9.0 on), with FEAT_PAuth, FEAT_PAuth2, FEAT_FPAC and
+  FEAT_FPACCOMBINE on, FEAT_EPAC and FEAT_CONSTPACFIELD off, QARMA5, the
+  103 feature flags of Armv8.6 and later that the model's initialisers
+  would turn on pinned off (`pac9_later`), the earlier ones as the
+  initialisers and Isla's `armv9p4.toml` leave them, EDSCR in Non-debug
+  state, and `autda` traced with `--stop-at AArch64_PACFailException`:
+  Neoverse V2's (C4A's) pointer authentication;
+- `p2c-el1-48` and the like: the same with FEAT_CONSTPACFIELD on.
+
+`run.sh` checks that each v9.4 configuration file sets each of these
+features exactly once. The traces are made in every run and written
+whole or not at all.
+
+At 5467199 with this change it passes in about ten minutes after the
+build on 16 CPUs: two `svc` jobs, twelve TLS load jobs (70 sites), 2820
+PAC jobs (36 instructions, the 33 site forms and the three canonical
+ones, with a footprint and a determinism job in each of the 36
+configurations; in each, the round trip and the `pacda` and `autda`
+formula jobs with EnDA set and clear; in each v9.4 one, the FPAC
+exception job; and 24 ComputePAC purity spot checks), the check that
+the serialized v9.4 model gives four of the text model's traces, the
 GOT-function job, the `rseq::symbols` job, four `mrs` jobs (76 sites),
 two `brk` jobs, two TLS store jobs (5 sites), and every negative control
 rejected.
@@ -264,41 +336,68 @@ status in `verus/seams.overrides`:
   [strip](seams/sys-pac-strip.md)): the templates, every PAC-family
   instruction in one of the three shapes (45 `pacda` sites in 15
   register assignments, 75 `autda` in 17, one `xpacd`), and in each of
-  the 12 configurations, for every assignment: it falls through, writes
-  only its destination, no memory, no flags (`pac-footprint.job.in`);
-  and against the canonical `pacda x0, x1` (`autda x0, x1`, `xpacd x0`)
-  run from an independent state, the same pointer, modifier, data key A
-  and SCTLR.EnDA give the same result (`pac-det.job.in`,
+  the 36 configurations (12 of the Armv8.5-A model, 24 of the Armv9.4-A
+  one with FEAT_PAuth2 and FEAT_FPAC), for every assignment: it falls
+  through, writes only its destination, no memory, no flags
+  (`pac-footprint.job.in`), except that with FEAT_FPAC an `autda` may
+  instead end at the FPAC fault (`AArch64_PACFailException(0b10)`)
+  having written nothing; and against the canonical `pacda x0, x1`
+  (`autda x0, x1`, `xpacd x0`) run from an independent state, the same
+  pointer, modifier, data key A and SCTLR.EnDA give the same result, and
+  for `autda` with FEAT_FPAC the same fault or none (`pac-det.job.in`,
   `pac-strip-det.job.in`). So `spec_sign` and `spec_auth` are each one
   function of `(p, modifier)` once the key, EnDA and the configuration
   are fixed for the process, the residual their docs already name (with
-  the trap settings: firmware's SCR_EL3.API, Linux's HCR_EL2). The
-  x86_64 bodies are unreachable: no x86_64 process satisfies
-  `pac_available()`.
+  the trap settings: firmware's SCR_EL3.API, Linux's HCR_EL2); where
+  `autda` faults it does not return, and the FPAC exception it takes is
+  checked on `autda x0, x1` in each v9.4 configuration
+  (`pac-fault.job.in`: EC 0x1C, the `autda` as return address, the
+  kernel's vector, no user register, other system register or memory
+  written). What each model computes, in terms of the abstract
+  ComputePAC, is stated and checked for user pointers
+  (`pac-spec-*.job.in`): v8.5 `pacda` replaces the PAC field and a
+  failed `autda` returns an error code; with FEAT_PAuth2 `pacda` XORs
+  the PAC into the field, and with FEAT_FPAC `autda` faults exactly when
+  the field XOR the PAC is not all copies of bit 55. The x86_64 bodies
+  are unreachable: no x86_64 process satisfies `pac_available()`.
 - S223, `axiom_auth_sign` ([record](seams/sys-pac-axiom_auth_sign.md)):
   `pacda x0, x1; autda x0, x1` gives back any `p < 2^VA_BITS` in each
-  configuration, with EnDA set or clear (`pac-rt.job.in`), and
-  `user_va_limit()` is at most the VA width the kernel configures (its
-  definition, and `axiom_user_va_limit`, S222, for a 52-bit build on a
-  48-bit CPU). ComputePAC stays uninterpreted, so the
-  result holds for QARMA and for any implementation-defined algorithm.
-  The x86_64 half needs no tool: `spec_sign` and `spec_auth` are
-  unconstrained there, and the identity satisfies the axiom. Its ledger
-  tool moved from "none" to Isla.
+  of the 36 configurations, with EnDA set or clear, and never takes the
+  FPAC fault (`pac-rt.job.in`), and `user_va_limit()` is at most the VA
+  width the kernel configures (its definition, and
+  `axiom_user_va_limit`, S222, for a 52-bit build on a 48-bit CPU).
+  ComputePAC stays uninterpreted, so the result holds for QARMA5, QARMA3
+  and any implementation-defined algorithm. The x86_64 half needs no
+  tool: `spec_sign` and `spec_auth` are unconstrained there, and the
+  identity satisfies the axiom. Its ledger tool moved from "none" to
+  Isla.
 
 The PAC results rest on two residuals beyond the process's fixed key and
-configuration. First, `ComputePAC` is a function of its four arguments:
-read from the model's source (it and its callees read no architectural
+configuration. First, `ComputePAC` is a function of its arguments: read
+from each model's source (it and its callees read no architectural
 register; its only global, the round-constant array `RC`, it writes with
 constants before reading; locals are filled before use), and checked on
-eight concrete inputs, where two copies with their own undefined values
-and `RC` contents agree (`pac-pure.job.in`); only the two substitution
-functions branch on the data, so for every other callee that covers all
-inputs. Second, FEAT_PAuth2, FEAT_FPAC and FEAT_CONSTPACFIELD (Armv8.6
-and later, in no snapshot `run.sh` uses) are not modelled, and the
-reference aarch64 machine (C4A, Neoverse V2) has FEAT_FPAC: there the
-results hold by the architecture's definition, not by a check (plan,
-item 2). Not covered at all: 52-bit VA with 4K or 16K pages (FEAT_LPA2).
+eight concrete inputs in the v8.5 model and in the v9.4 one with QARMA5
+and with QARMA3, where two copies with their own undefined values and
+`RC` contents agree (`pac-pure.job.in`); only the substitution functions
+branch on the data, so for every other callee that covers all inputs.
+Second, the CPU's pointer authentication is one of the two kinds
+checked: Armv8.3-v8.5 FEAT_PAuth, or FEAT_PAuth2 with FEAT_FPAC (either
+FEAT_CONSTPACFIELD setting; FEAT_FPACCOMBINE changes only the combined
+instructions, which challoc does not emit), which is what the reference
+aarch64 machine (C4A, Neoverse V2) has. The residual of the earlier
+run, that on C4A the PAC results held by the architecture's text, is
+closed for the pointer-authentication features: they are checked on the
+v9.4 model. What remains for C4A is narrower: the model's CPU is an
+Armv9.0-A one with every later feature off, while Neoverse V2 has a few
+Armv8.6 data-processing features (FEAT_BF16, FEAT_I8MM), which the PAC
+instructions and the FPAC exception entry do not consult (read, not
+checked); and C4A's kernel is a guest at EL1, under the hypervisor's
+HCR_EL2, for which the EL1 configurations stand (only HCR_EL2's API,
+APK, TGE and E2H bear on trapping and routing, read from the model's
+source). Not checked: FEAT_EPAC without FEAT_PAuth2, FEAT_PAuth2 without
+FEAT_FPAC (plan, item 2), and 52-bit VA with 4K or 16K pages
+(FEAT_LPA2).
 
 The aarch64 `syscall` items share file and name with the x86_64 ones, so
 the ledger takes `file:name#N` for the Nth seam of a name in a file
@@ -316,10 +415,16 @@ installed.
    four days, with a risk: Isla's x86 support is older than its Arm
    support and may need work. With it, the eight mixed seams' notes
    become records: their aarch64 halves are already checked.
-2. **FEAT_PAuth2 and FEAT_FPAC.** The v9.4 snapshot (`armv9p4.ir.gz`)
-   has both; its footprints start with the model's reset sequence, so
-   `run.sh` needs its own configuration for it (the PAC jobs carry over
-   with `--abstract ComputePAC`). Half a day to a day.
+2. **The other pointer-authentication CPUs.** Done for the reference
+   machine: FEAT_PAuth2 with FEAT_FPAC runs on the v9.4 snapshot
+   (Discharged). Left: FEAT_EPAC without FEAT_PAuth2 and FEAT_PAuth2
+   without FEAT_FPAC, each one more `pac9_config` setting and twelve
+   configurations in `run.sh` (a few minutes of run time each; the
+   feature flags cannot be left symbolic, as Isla's `-I` takes only
+   concrete values and `-R` applies after the model copies them), and
+   52-bit VA with 4K or 16K pages, FEAT_LPA2, which the v9.4 model has
+   (TCR.DS set; Linux's TCR values for it to be taken from the kernel).
+   Half a day.
 3. **Read the linked code.** `run.sh` reads the aarch64 static library
    before the final link. The shipped `cdylib` is a separate fat-LTO run
    and may choose other registers: reading the linked `.so` (concrete
@@ -333,5 +438,5 @@ installed.
    three days, most of it the first install. The relational PAC jobs
    need Islaris's product construction or a hand proof.
 5. **CI**: a job that builds Isla (a minute or ten, network willing),
-   fetches the snapshot and runs `run.sh` (about four minutes after the
+   fetches the snapshot and runs `run.sh` (about ten minutes after the
    build on 16 CPUs; the PAC footprints dominate and scale with CPUs).

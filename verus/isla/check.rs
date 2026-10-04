@@ -3,15 +3,31 @@
 //! (verus/ISLA.md). Std only; built by verus/isla/run.sh with `rustc -O`.
 //!
 //!   isla-check JOB
+//!   isla-check --same TRACE-FILE TRACE-FILE
+//!
+//! The second form succeeds when the two files hold the same traces, up to
+//! their order (Isla collects paths in parallel), the order of struct
+//! fields and the type arguments of union constructor names (run.sh
+//! compares traces of the serialized Armv9.4-A model with the text model's).
 //!
 //! The job is a line-oriented file (`#` comments):
 //!
-//!   insn FILE KIND             next instruction: the `isla-footprint -s`
+//!   insn FILE KIND [REG]       next instruction: the `isla-footprint -s`
 //!                              output in FILE, and what a normal trace of
 //!                              it does: `fallthrough` (no exception, and
 //!                              the PC provably ends at PC+4), `ret` (no
 //!                              exception; the PC as the asserts say), `svc`
-//!                              or `brk` (takes an exception to EL1 or EL2)
+//!                              or `brk` (takes an exception to EL1 or EL2),
+//!                              `fault` (falls through as `fallthrough`, or
+//!                              takes an exception and then writes no user
+//!                              register, not even one `writes` lists), or
+//!                              `stop` (falls through, or ends at a call of
+//!                              a `stop` function having written nothing but
+//!                              the model's bookkeeping and no memory); a
+//!                              `fault` or `stop` instruction is the last of
+//!                              its copy. REG (required under `pc-step` for
+//!                              those three kinds): a register every trace
+//!                              that falls through must write
 //!   copy NAME                  start a copy of the machine: the `insn`
 //!                              lines after it run from their own initial
 //!                              state, named `NAME.init.R` and so on (a
@@ -23,11 +39,28 @@
 //!                              shared by every copy (the record argues FN
 //!                              is a function); any other abstract call is
 //!                              an error
+//!   stop FN ARG...             Isla's `--stop-at FN`: a `stop` instruction's
+//!                              trace may end at a call of FN (its last
+//!                              event an `abstract-call` of FN with no
+//!                              result), whose arguments are proved equal to
+//!                              the ARGs (SMT atoms); a job with a `stop`
+//!                              line needs a feasible combination that stops
 //!   writes REG...              the registers (or REG.FIELD) the sequence may
 //!                              write besides the PC and PSTATE's non-flag
 //!                              fields (anything else written is an error;
-//!                              system registers an exception entry writes
-//!                              are allowed only for `svc` and `brk`)
+//!                              the system registers an exception entry
+//!                              writes are allowed only on the exception
+//!                              paths of `svc`, `brk` and `fault`)
+//!   pc-step                    the traces end before the model's PC update
+//!                              (the Armv9.4-A model's footprint function
+//!                              decodes and executes only), so after each
+//!                              instruction the checker applies it as the
+//!                              model's `__InstructionExecute` does: unless
+//!                              the trace set `__BranchTaken` (which every
+//!                              write of `_PC` must come with), `_PC`
+//!                              becomes `_PC + 4`. That footprint function
+//!                              also swallows an UNDEFINED abort without a
+//!                              trace event, hence the `insn` line's REG
 //!   no-mem-write               no trace writes memory
 //!   flags-preserved            no trace writes PSTATE.{N,Z,C,V}
 //!   mem-reads N                every normal combination reads memory N
@@ -38,6 +71,11 @@
 //!                              (not a name the checker generates)
 //!   assume SMT                 a residual assumption (named in the record)
 //!   assert SMT                 a property of every normal combination
+//!   assert-exc SMT             a property of every normal combination in
+//!                              which a `fault` instruction took its
+//!                              exception (a job with such a feasible
+//!                              combination needs an `assert-exc`, and a
+//!                              job with an `assert-exc` needs one)
 //!
 //! In SMT text, `init.R` and `final.R` are register R before and after the
 //! sequence (`init.R.F`, `final.R.F` for field F of a struct register such
@@ -45,9 +83,10 @@
 //! instruction K (from 1, `isla-footprint --partial`), `mem.J.addr`,
 //! `mem.J.val` are the J-th memory read of the sequence (from 1; address as
 //! Isla's model issues it, value as read) and `wmem.J.addr`, `wmem.J.val`
-//! the J-th memory write (address, value written). In a copy named C each
-//! of these is `C.init.R`, `C.seg.K.NAME`, `C.mem.J.addr` and so on, with K
-//! counted within the copy.
+//! the J-th memory write (address, value written), and `stop.K` (Bool) is
+//! true when `stop` instruction K ended at its `stop` call. In a copy named
+//! C each of these is `C.init.R`, `C.seg.K.NAME`, `C.mem.J.addr` and so on,
+//! with K counted within the copy.
 //!
 //! For every choice of one trace per instruction (of every copy) the
 //! checker links the traces (each register read equals the value the
@@ -58,8 +97,8 @@
 //! every trace's path condition (dropping conjuncts it cannot express,
 //! which only weakens it) and the job's assumptions, and asks Z3 whether
 //! the combination is feasible. A feasible combination with an abnormal
-//! trace (an exception where none is expected, or no PC write) is an
-//! error. For a feasible normal one, each `assert` must follow (its
+//! trace (an exception or a stop where none is expected, or no PC write) is
+//! an error. For a feasible normal one, each `assert` must follow (its
 //! negation unsat), the footprint lines must hold, and every event must be
 //! one the checker knows. A job with no feasible combination fails. Exit
 //! status 0 when everything holds, 1 when something fails, 2 on a usage
@@ -273,6 +312,8 @@ struct Insn {
     /// Symbolic opcode fields: Isla variable -> (field name, width).
     segs: BTreeMap<String, (String, u32)>,
     traces: Vec<Vec<Sx>>,
+    /// The register a trace that falls through must write (`pc-step`).
+    completes: Option<String>,
 }
 
 fn load_insn(file: &str, kind: &str) -> Insn {
@@ -305,6 +346,7 @@ fn load_insn(file: &str, kind: &str) -> Insn {
         kind: kind.to_string(),
         segs,
         traces,
+        completes: None,
     }
 }
 
@@ -325,14 +367,18 @@ struct Copy {
 struct Job {
     copies: Vec<Copy>,
     abstracts: BTreeSet<String>,
+    /// `stop` functions -> the arguments their call must have.
+    stops: BTreeMap<String, Vec<String>>,
     writes: BTreeSet<String>,
     no_mem_write: bool,
     flags_preserved: bool,
+    pc_step: bool,
     mem_reads: Option<usize>,
     mem_writes: Option<usize>,
     decls: Vec<(String, u32)>,
     assumes: Vec<String>,
     asserts: Vec<String>,
+    assert_excs: Vec<String>,
 }
 
 impl Job {
@@ -360,7 +406,7 @@ fn load_job(path: &str) -> Job {
                 let mut w = rest.split_whitespace();
                 let f = w.next().unwrap_or_else(|| die("insn: no file"));
                 let kind = w.next().unwrap_or("fallthrough");
-                if !["fallthrough", "ret", "svc", "brk"].contains(&kind) {
+                if !["fallthrough", "ret", "svc", "brk", "fault", "stop"].contains(&kind) {
                     die(&format!("insn: unknown kind {kind}"));
                 }
                 let f = dir.join(f);
@@ -371,7 +417,11 @@ fn load_job(path: &str) -> Job {
                         insns: Vec::new(),
                     });
                 }
-                let insn = load_insn(&f.to_string_lossy(), kind);
+                let mut insn = load_insn(&f.to_string_lossy(), kind);
+                insn.completes = w.next().map(String::from);
+                if w.next().is_some() {
+                    die("insn FILE KIND [REG]: too many words");
+                }
                 job.copies.last_mut().unwrap().insns.push(insn);
             }
             "copy" => {
@@ -397,9 +447,16 @@ fn load_job(path: &str) -> Job {
             "abstract" => {
                 job.abstracts.insert(rest.to_string());
             }
+            "stop" => {
+                let mut w = rest.split_whitespace();
+                let f = w.next().unwrap_or_else(|| die("stop FN ARG..."));
+                job.stops
+                    .insert(f.to_string(), w.map(String::from).collect());
+            }
             "writes" => job.writes.extend(rest.split_whitespace().map(String::from)),
             "no-mem-write" => job.no_mem_write = true,
             "flags-preserved" => job.flags_preserved = true,
+            "pc-step" => job.pc_step = true,
             "mem-reads" => {
                 job.mem_reads = Some(rest.parse().unwrap_or_else(|_| die("mem-reads N")))
             }
@@ -420,6 +477,7 @@ fn load_job(path: &str) -> Job {
             }
             "assume" => job.assumes.push(rest.to_string()),
             "assert" => job.asserts.push(rest.to_string()),
+            "assert-exc" => job.assert_excs.push(rest.to_string()),
             _ => die(&format!("{path}: unknown line {line}")),
         }
     }
@@ -439,8 +497,32 @@ fn load_job(path: &str) -> Job {
             .strip_prefix('t')
             .and_then(|r| r.split_once('_'))
             .is_some_and(|(k, _)| !k.is_empty() && k.bytes().all(|c| c.is_ascii_digit()));
-        if trace_const || s.starts_with("abstract_") {
+        if trace_const || s.starts_with("abstract_") || base.starts_with("stop_") {
             die(&format!("decl {n}: a name the checker generates"));
+        }
+    }
+    // A `stop` instruction ends its copy's sequence when it stops, and a
+    // `fault` one when it takes its exception: nothing may follow either.
+    for c in &job.copies {
+        if c.insns
+            .iter()
+            .rev()
+            .skip(1)
+            .any(|i| i.kind == "stop" || i.kind == "fault")
+        {
+            die("a `stop` or `fault` instruction that is not the last of its copy");
+        }
+        // Under `pc-step` a trace that ends without writing anything also
+        // looks like a fall-through: the model's footprint function
+        // swallows an UNDEFINED or similar exception without a trace event.
+        // So each such instruction names a register it writes when it
+        // completes.
+        if job.pc_step
+            && c.insns.iter().any(|i| {
+                ["fallthrough", "fault", "stop"].contains(&i.kind.as_str()) && i.completes.is_none()
+            })
+        {
+            die("pc-step: an insn line without the register its completion writes");
         }
     }
     job
@@ -454,6 +536,22 @@ const EXC_REGS: [&str; 9] = [
     "ESR_EL1", "ELR_EL1", "SPSR_EL1", "FAR_EL1", "ESR_EL2", "ELR_EL2", "SPSR_EL2", "FAR_EL2",
     "ESR_EL3",
 ];
+/// The other registers an exception entry may write (besides the PC,
+/// PSTATE and the model's bookkeeping): the fault address registers, the
+/// EL3 return state, and the model's record of the branch type. Any other
+/// write on an exception path is an error.
+const EXC_ENTRY_REGS: [&str; 10] = [
+    "FAR_EL1",
+    "FAR_EL2",
+    "FAR_EL3",
+    "PFAR_EL1",
+    "PFAR_EL2",
+    "PFAR_EL3",
+    "HPFAR_EL2",
+    "ELR_EL3",
+    "SPSR_EL3",
+    "Branchtypetaken",
+];
 
 /// Registers user code holds values in: a write to one the job does not
 /// list is an error even inside an exception entry.
@@ -465,7 +563,11 @@ fn is_user_reg(r: &str) -> bool {
         || r.starts_with("_P")
         || r == "FPSR"
         || r == "FPCR"
+        || r == "_FFR"
         || r == "TPIDR_EL0"
+        || r == "TPIDRRO_EL0"
+        || r == "TPIDR2_EL0"
+        || r == "GCSPR_EL0"
 }
 
 /// The Sail model's own bookkeeping, not architectural state: `SEE` (the
@@ -499,8 +601,8 @@ fn job_smt(s: &str) -> String {
 }
 
 /// The job's own names in SMT text from `job_smt`: `init_`, `final_`,
-/// `seg_`, `mem_` and `wmem_` names (after a copy's prefix) and `decl`
-/// constants.
+/// `seg_`, `mem_`, `wmem_` and `stop_` names (after a copy's prefix) and
+/// `decl` constants.
 fn job_names<'a>(job: &Job, text: &'a str) -> Vec<&'a str> {
     text.split(|c: char| c.is_whitespace() || c == '(' || c == ')')
         .filter(|t| {
@@ -510,7 +612,7 @@ fn job_names<'a>(job: &Job, text: &'a str) -> Vec<&'a str> {
                 .filter(|c| !c.prefix.is_empty())
                 .find_map(|c| t.strip_prefix(c.prefix.as_str()))
                 .unwrap_or(t);
-            ["init_", "final_", "seg_", "mem_", "wmem_"]
+            ["init_", "final_", "seg_", "mem_", "wmem_", "stop_"]
                 .iter()
                 .any(|p| base.starts_with(p))
                 || job.decls.iter().any(|(n, _)| n.replace('.', "_") == *t)
@@ -525,9 +627,14 @@ struct Built {
     /// Memory reads and writes, per copy.
     mem_reads: Vec<usize>,
     mem_writes: Vec<usize>,
-    /// Per `fallthrough` instruction: a label and the SMT formula that it
-    /// continues at PC + 4.
+    /// What each instruction's trace must show beyond the asserts, as a
+    /// label and an SMT formula: that a falling-through instruction
+    /// continues at PC + 4, and that a `stop` call has the job's arguments.
     falls: Vec<(String, String)>,
+    /// A `fault` instruction took its exception.
+    exc_taken: bool,
+    /// A `stop` instruction ended at its `stop` call.
+    stopped: bool,
 }
 
 /// The SMT script for one combination (trace `pick[k]` of instruction k,
@@ -555,6 +662,8 @@ fn build(job: &Job, pick: &[usize]) -> Built {
     let mut mem_reads = Vec::new();
     let mut mem_writes = Vec::new();
     let mut falls = Vec::new();
+    let mut exc_taken = false;
+    let mut any_stopped = false;
     let mut picks = pick.iter();
     let full = pick.len() == job.insns().count();
     for copy in &job.copies {
@@ -589,7 +698,23 @@ fn build(job: &Job, pick: &[usize]) -> Built {
             // writes it (None inside: not expressible).
             let mut pc_in: Option<Option<String>> = None;
             let mut pc_out: Option<Option<String>> = None;
-            for ev in &insn.traces[t] {
+            // A trace Isla ended at a `--stop-at` call: its last event.
+            let trace = &insn.traces[t];
+            let stop_at = trace
+                .len()
+                .checked_sub(1)
+                .filter(|&i| is_stop_call(&trace[i]));
+            let stopped = stop_at.is_some();
+            // Writes that only an exception path may make, and the user
+            // registers the job lets the instruction write, which its
+            // exception path may not: judged once the whole trace is seen.
+            let mut sys_writes: Vec<String> = Vec::new();
+            let mut user_writes: Vec<String> = Vec::new();
+            // The last value the trace wrote to `__BranchTaken` (`pc-step`).
+            let mut branch_taken: Option<bool> = None;
+            // The registers the trace writes (`pc-step`'s completion check).
+            let mut wrote_regs: BTreeSet<String> = BTreeSet::new();
+            for (i, ev) in trace.iter().enumerate() {
                 let Sx::List(l) = ev else { continue };
                 let head = l.first().and_then(atom).unwrap_or("");
                 let ren = |a: &str| -> Option<(String, Ty)> {
@@ -622,6 +747,40 @@ fn build(job: &Job, pick: &[usize]) -> Built {
                         // a property proved without it still holds.
                         if let Some((e, _)) = emit(&l[1], &ren) {
                             writeln!(smt, "(assert {e})").unwrap();
+                        }
+                    }
+                    "abstract-call" if stop_at == Some(i) => {
+                        // `(abstract-call |F| (_ poison) ARG...)`, the call
+                        // `--stop-at F` ended the trace at.
+                        let f = reg_name(&l[1]);
+                        let Some(want) = job.stops.get(&f) else {
+                            violations.push(format!(
+                                "{label}insn {k1} stops at {f}, which the job does not name"
+                            ));
+                            continue;
+                        };
+                        if l.len() - 3 != want.len() {
+                            violations.push(format!(
+                                "{label}insn {k1}: {f} called with {} arguments, the job names {}",
+                                l.len() - 3,
+                                want.len()
+                            ));
+                            continue;
+                        }
+                        for (j, (a, w)) in l[3..].iter().zip(want).enumerate() {
+                            match emit(a, &ren) {
+                                Some((a, _)) => falls.push((
+                                    format!(
+                                        "{label}insn {k1} calls {f} with argument {} = {w}",
+                                        j + 1
+                                    ),
+                                    format!("(= {a} {})", job_smt(w)),
+                                )),
+                                None => violations.push(format!(
+                                    "{label}insn {k1}: argument {} of {f} not expressible",
+                                    j + 1
+                                )),
+                            }
                         }
                     }
                     "abstract-call" => {
@@ -732,15 +891,33 @@ fn build(job: &Job, pick: &[usize]) -> Built {
                             Some(f) => format!("{r}.{f}"),
                             None => r.clone(),
                         };
-                        let exc = insn.kind == "svc" || insn.kind == "brk";
-                        if r == "_PC" {
+                        wrote_regs.insert(r.clone());
+                        if r == "__BranchTaken" {
+                            branch_taken = match atom(&l[3]) {
+                                Some("true") => Some(true),
+                                Some("false") => Some(false),
+                                _ => {
+                                    violations.push(format!(
+                                        "{label}insn {k1}: __BranchTaken written with a symbolic value"
+                                    ));
+                                    None
+                                }
+                            };
+                        }
+                        let exc = ["svc", "brk", "fault"].contains(&insn.kind.as_str());
+                        if stopped && !is_model_internal(&r) {
+                            violations.push(format!(
+                                "{label}insn {k1} writes {written} before its stop call"
+                            ));
+                        } else if r == "_PC" {
                             wrote_pc = true;
                         } else if EXC_REGS.contains(&r.as_str()) {
                             wrote_exc = true;
-                        } else if is_model_internal(&r)
-                            || job.writes.contains(&r)
-                            || job.writes.contains(&written)
-                        {
+                        } else if is_model_internal(&r) {
+                        } else if job.writes.contains(&r) || job.writes.contains(&written) {
+                            if is_user_reg(&r) {
+                                user_writes.push(written);
+                            }
                         } else if r == "PSTATE" {
                             // PSTATE's other fields are bookkeeping (BTYPE) or,
                             // in an exception entry, the new EL and masks.
@@ -748,10 +925,12 @@ fn build(job: &Job, pick: &[usize]) -> Built {
                             if job.flags_preserved && (FLAGS.contains(&f) || f == "?") {
                                 violations.push(format!("{label}insn {k1} writes PSTATE.{f}"));
                             }
-                        } else if is_user_reg(&r) || !exc {
-                            // An exception entry writes system state; user
-                            // registers never.
+                        } else if is_user_reg(&r) || !exc || !EXC_ENTRY_REGS.contains(&r.as_str()) {
+                            // An exception entry writes its own system registers;
+                            // user registers and any other register never.
                             violations.push(format!("{label}insn {k1} writes {written}"));
+                        } else {
+                            sys_writes.push(written);
                         }
                         for (loc, val, _) in locs {
                             // An inexpressible value poisons the location: a
@@ -785,6 +964,11 @@ fn build(job: &Job, pick: &[usize]) -> Built {
                     "write-mem" => {
                         // `(write-mem vS KIND ADDR DATA BYTES)`.
                         wmem += 1;
+                        if stopped {
+                            violations.push(format!(
+                                "{label}insn {k1} writes memory before its stop call"
+                            ));
+                        }
                         if job.no_mem_write {
                             violations.push(format!("{label}insn {k1} writes memory"));
                         }
@@ -819,23 +1003,107 @@ fn build(job: &Job, pick: &[usize]) -> Built {
                     // configuration fixed, and tracing.
                     "assume-reg" | "assume" | "branch" | "branch-address" | "cycle" | "call"
                     | "return" | "define-enum" | "instr" | "mark-reg" => {}
+                    // The Armv9.4-A model announces an exception entry (for
+                    // Isla's memory-model tools) with the primop
+                    // `sail_take_exception`, which changes no register or
+                    // memory: the entry's writes are their own events.
+                    "abstract-primop"
+                        if l.get(1).map(reg_name).as_deref() == Some("sail_take_exception") => {}
                     // Anything else (a tag access, an announced write, an
                     // abstract primop, an event a newer Isla adds) fails
                     // closed.
                     other => violations.push(format!("{label}insn {k1}: unknown event {other}")),
                 }
             }
+            // The model's PC update after the instruction (`pc-step`): a
+            // stopped trace has no "after".
+            if job.pc_step && !stopped {
+                if branch_taken == Some(true) {
+                    if !wrote_pc {
+                        violations.push(format!(
+                            "{label}insn {k1} sets __BranchTaken and writes no PC"
+                        ));
+                    }
+                } else if wrote_pc {
+                    violations.push(format!(
+                        "{label}insn {k1} writes the PC without setting __BranchTaken"
+                    ));
+                } else {
+                    // The PC: as last written or linked, else the literal the
+                    // configuration fixed it to, else a fresh initial value.
+                    let cur = match (state.get("_PC"), &pc_in) {
+                        (Some(Some((c, _))), _) => Some(c.clone()),
+                        (Some(None), _) => None,
+                        (None, Some(lit)) => lit.clone(),
+                        (None, None) => {
+                            let i = format!("{p}init__PC");
+                            decl(&mut smt, &i, Ty::Bv(64));
+                            state.insert("_PC".to_string(), Some((i.clone(), Ty::Bv(64))));
+                            Some(i)
+                        }
+                    };
+                    match cur {
+                        Some(c) => {
+                            let n = format!("(bvadd {c} #x0000000000000004)");
+                            state.insert("_PC".to_string(), Some((n.clone(), Ty::Bv(64))));
+                            wrote_pc = true;
+                            pc_in.get_or_insert(Some(c));
+                            pc_out = Some(Some(n));
+                        }
+                        None => violations.push(format!(
+                            "{label}insn {k1}: the PC an earlier write left inexpressible"
+                        )),
+                    }
+                }
+            }
             let normal = match insn.kind.as_str() {
-                "svc" | "brk" => wrote_exc && wrote_pc,
-                _ => !wrote_exc && wrote_pc,
+                "svc" | "brk" => !stopped && wrote_exc && wrote_pc,
+                "fault" => !stopped && wrote_pc,
+                "stop" if stopped => !wrote_exc && !wrote_pc,
+                _ => !stopped && !wrote_exc && wrote_pc,
             };
             if !normal {
                 abnormal.push(format!("{label}insn {k1} ({}) trace {}", insn.file, t + 1));
             }
-            // A `fallthrough` instruction must continue at its own PC + 4
-            // (checked like an assert), so a job's later instructions are
-            // the ones that run.
-            if insn.kind == "fallthrough" {
+            if wrote_exc {
+                // An exception path writes no user register at all.
+                for w in &user_writes {
+                    violations.push(format!(
+                        "{label}insn {k1} writes {w} and takes an exception"
+                    ));
+                }
+                exc_taken |= insn.kind == "fault";
+            } else {
+                for w in &sys_writes {
+                    violations.push(format!("{label}insn {k1} writes {w}"));
+                }
+            }
+            if insn.kind == "stop" {
+                let s = format!("{p}stop_{k1}");
+                decl(&mut smt, &s, Ty::Bool);
+                writeln!(smt, "(assert (= {s} {stopped}))").unwrap();
+                any_stopped |= stopped;
+            }
+            // A `fallthrough` instruction (and a `fault` or `stop` one that
+            // neither took its exception nor stopped) must continue at its
+            // own PC + 4 (checked like an assert), so a job's later
+            // instructions are the ones that run.
+            let falls_through = match insn.kind.as_str() {
+                "fallthrough" => true,
+                "fault" => !wrote_exc,
+                "stop" => !stopped,
+                _ => false,
+            };
+            if falls_through && job.pc_step {
+                if let Some(r) = &insn.completes {
+                    if !wrote_regs.contains(r) {
+                        violations.push(format!(
+                            "{label}insn {k1} falls through without writing {r} (an aborted instruction?)"
+                        ));
+                    }
+                }
+            }
+            if falls_through {
                 match (pc_in, pc_out) {
                     (Some(Some(i)), Some(Some(o))) => falls.push((
                         format!("{label}insn {k1} falls through"),
@@ -878,6 +1146,8 @@ fn build(job: &Job, pick: &[usize]) -> Built {
         mem_reads,
         mem_writes,
         falls,
+        exc_taken,
+        stopped: any_stopped,
     }
 }
 
@@ -902,10 +1172,69 @@ fn z3(smt: &str, extra: &str) -> String {
     s
 }
 
+/// A trace up to what does not change its meaning: the
+/// order Isla prints a struct value's fields in (a hash map's, which
+/// differs from run to run) and the type arguments it appends to union
+/// constructor names in a serialized model (`|None<b>|` for `|None|`).
+fn canonical(s: &Sx) -> Sx {
+    match s {
+        Sx::Atom(a) if a.starts_with('|') => {
+            let mut out = String::new();
+            let mut depth = 0;
+            for c in a.chars() {
+                match c {
+                    '<' => depth += 1,
+                    '>' if depth > 0 => depth -= 1,
+                    _ if depth == 0 => out.push(c),
+                    _ => {}
+                }
+            }
+            Sx::Atom(out)
+        }
+        Sx::Atom(a) => Sx::Atom(a.clone()),
+        Sx::List(l) => {
+            let mut l: Vec<Sx> = l.iter().map(canonical).collect();
+            if l.len() > 2 && atom(&l[0]) == Some("_") && atom(&l[1]) == Some("struct") {
+                l[2..].sort_by_key(|f| format!("{f:?}"));
+            }
+            Sx::List(l)
+        }
+    }
+}
+
+/// `(abstract-call |F| (_ poison) ARG...)`: the call Isla's `--stop-at F`
+/// ends a trace with (no result: the execution stops there).
+fn is_stop_call(ev: &Sx) -> bool {
+    let Sx::List(l) = ev else { return false };
+    l.first().and_then(atom) == Some("abstract-call")
+        && matches!(l.get(2), Some(Sx::List(r))
+            if r.len() == 2 && atom(&r[0]) == Some("_") && atom(&r[1]) == Some("poison"))
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
+    // `isla-check --same A B`: the two trace files hold the same traces,
+    // in any order.
+    if args.len() == 4 && args[1] == "--same" {
+        let read = |f: &str| {
+            let src = fs::read_to_string(f).unwrap_or_else(|e| die(&format!("{f}: {e}")));
+            let mut t: Vec<String> = parse_all(&src)
+                .iter()
+                .map(|s| format!("{:?}", canonical(s)))
+                .collect();
+            t.sort();
+            t
+        };
+        let (a, b) = (read(&args[2]), read(&args[3]));
+        if a.is_empty() || format!("{a:?}") != format!("{b:?}") {
+            println!("FAIL: {} and {} differ", args[2], args[3]);
+            process::exit(1);
+        }
+        println!("{} and {}: the same {} traces", args[2], args[3], a.len());
+        process::exit(0);
+    }
     if args.len() != 2 {
-        die("usage: isla-check JOB");
+        die("usage: isla-check JOB, or isla-check --same TRACE-FILE TRACE-FILE");
     }
     let job = load_job(&args[1]);
     if job.copies.is_empty() || job.copies.iter().any(|c| c.insns.is_empty()) {
@@ -919,6 +1248,7 @@ fn main() {
     let mut pick: Vec<usize> = Vec::new();
     let mut next = 0usize;
     let (mut feasible, mut checked, mut failed, mut pruned) = (0, 0, 0, 0usize);
+    let (mut feasible_exc, mut feasible_stop) = (0usize, 0usize);
     loop {
         if next == counts[pick.len()] {
             match pick.pop() {
@@ -985,13 +1315,20 @@ fn main() {
                         println!("FAIL {label}: not proved that {what}");
                     }
                 }
-                for a in &job.asserts {
+                let excs: &[String] = if b.exc_taken { &job.assert_excs } else { &[] };
+                for a in job.asserts.iter().chain(excs) {
                     checked += 1;
                     if z3(&b.smt, &format!("(assert (not {}))", job_smt(a))) != "unsat" {
                         failed += 1;
                         println!("FAIL {label}: assert {a}");
                     }
                 }
+                if b.exc_taken && job.assert_excs.is_empty() {
+                    failed += 1;
+                    println!("FAIL {label}: an exception path and no assert-exc for it");
+                }
+                feasible_exc += b.exc_taken as usize;
+                feasible_stop += b.stopped as usize;
             }
         }
         next = pick.pop().unwrap() + 1;
@@ -999,6 +1336,15 @@ fn main() {
     if feasible == 0 {
         failed += 1;
         println!("FAIL: no feasible combination (the assumptions contradict the traces)");
+    }
+    // The paths a job's `assert-exc` or `stop` lines describe must exist.
+    if !job.assert_excs.is_empty() && feasible_exc == 0 {
+        failed += 1;
+        println!("FAIL: assert-exc lines, and no feasible exception path");
+    }
+    if !job.stops.is_empty() && feasible_stop == 0 {
+        failed += 1;
+        println!("FAIL: stop lines, and no feasible combination that stops");
     }
     let verdict = if failed == 0 {
         "ok".to_string()

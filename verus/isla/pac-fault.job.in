@@ -1,0 +1,23 @@
+# The FPAC exception (verus/seams/sys-pac-auth.md) in one Armv9.4-A
+# configuration: `autda x0, x1` run through, without `--stop-at`. Every
+# path falls through (writing x0 only) or takes the exception: then it
+# writes no user register (x0 included), no memory and no system register
+# but the entry's own, the syndrome is EC 0x1C (FPAC) with IL set and ISS
+# 0b10 (a data key, key A), the return address is the `autda` itself,
+# PSTATE ends at the kernel's EL (EL1, or EL2 under VHE) on SP_ELx, and
+# the PC is that EL's vector for a synchronous exception from a lower EL
+# using AArch64, VBAR + 0x400 (bits 55:0; the model clears the top byte of
+# a lower-half vector address under TBI, and the kernel's vectors are
+# upper-half addresses). run.sh prepends the insn line (kind `fault`) and
+# substitutes @EL@ and @LEVEL@.
+pc-step
+abstract ComputePAC
+writes R0
+no-mem-write
+mem-reads 0
+flags-preserved
+assert-exc (= final.ESR_@EL@.bits #x0000000072000002)
+assert-exc (= final.ELR_@EL@ init._PC)
+assert-exc (= ((_ extract 55 0) final._PC) (concat ((_ extract 55 11) init.VBAR_@EL@) #b10000000000))
+assert-exc (= final.PSTATE.EL @LEVEL@)
+assert-exc (= final.PSTATE.SP #b1)

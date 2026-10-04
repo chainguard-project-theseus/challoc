@@ -5,12 +5,12 @@ The broadcast axiom `axiom_auth_sign` in `src/sys/pac.rs`
 checked with Isla; the x86_64 half needs no tool (part 3).
 Tool: Isla. Status: discharged, with the named residual assumptions of
 `sign` and `auth` ([sys-pac-sign.md](sys-pac-sign.md),
-[sys-pac-auth.md](sys-pac-auth.md), part 3: among them that on CPUs
-with FEAT_PAuth2, the C4A reference machine among them, the round trip
-holds by the architecture, not checked), and two of its own (part 3):
-the kernel's user VA is one of the six sizes checked, and
-`user_va_limit()` is at most the VA width the kernel configures, which
-rests on `axiom_user_va_limit` (S222, trusted).
+[sys-pac-auth.md](sys-pac-auth.md), part 3: among them that the CPU's
+pointer authentication is one of the two kinds checked, Armv8.3-v8.5
+FEAT_PAuth or FEAT_PAuth2 with FEAT_FPAC as on the C4A reference
+machine), and two of its own (part 3): the kernel's user VA is one of
+the six sizes checked, and `user_va_limit()` is at most the VA width the
+kernel configures, which rests on `axiom_user_va_limit` (S222, trusted).
 
 ## 1. Contract
 
@@ -33,14 +33,17 @@ kernel, capped by its default map window", uninterpreted.
 
 ## 2. Statement
 
-Isla (rems-project/isla e9b5d94) on the Sail Armv8.5-A model
-(`armv8p5.ir`, isla-snapshots d8b3101), traces composed and checked by
+Isla (rems-project/isla e9b5d94) on the Sail Armv8.5-A and Armv9.4-A
+models of `sign`'s record (part 2: `armv8p5.ir` and `armv9p4.ir.gz` from
+isla-snapshots d8b3101), traces composed and checked by
 `verus/isla/check.rs` with Z3 4.16.0; `verus/isla/run.sh`, section 6
-(setup in verus/ISLA.md). In each of the twelve configurations of
-`sign`'s record (part 2, fact 3: a kernel at EL1 or VHE at EL2, and
-Linux's translation control for a user VA of 36, 39, 42, 47, 48 or 52
-bits; the key, SCTLR with its EnDA bit, the pointer and the modifier
-symbolic; `ComputePAC` an uninterpreted function), the two instructions
+(setup in verus/ISLA.md). In each of the 36 configurations of `sign`'s
+record (part 2, fact 3: a kernel at EL1 or VHE at EL2, and Linux's
+translation control for a user VA of 36, 39, 42, 47, 48 or 52 bits, in
+the Armv8.5-A model and in the Armv9.4-A one with FEAT_PAuth2 and
+FEAT_FPAC, with FEAT_CONSTPACFIELD off and on; the key, SCTLR with its
+EnDA bit, the pointer and the modifier symbolic; `ComputePAC` an
+uninterpreted function), the two instructions
 
 ```
 pacda x0, x1
@@ -50,15 +53,23 @@ autda x0, x1
 run in sequence (`pac-rt.job.in`) from any state in which x0 holds a
 pointer `p` whose bits from VA_BITS up are zero (`p < 2^VA_BITS`): every
 feasible path ends with x0 = `p` and falls through both instructions.
-That holds whether EnDA is set (both instructions use the PAC) or clear
-(both are the identity). Without the bound on `p` the job fails
-(negative control `pac-rt-va`): a pointer with a bit in the PAC field
-does not come back.
+In the Armv9.4-A configurations `autda` is traced with its FPAC fault
+(`--stop-at AArch64_PACFailException`) and the job takes it as
+`fallthrough`, so every path on which it faults is shown infeasible:
+the round trip never faults. That holds whether EnDA is set (both
+instructions use the PAC) or clear (both are the identity). Without the
+bound on `p` the job fails in both models (negative controls `pac-rt-va`
+and `pac9-rt-va`): a pointer with a bit in the PAC field does not come
+back (v8.5) or makes `autda` fault (v9.4).
 
 No property of the PAC algorithm is used: both instructions apply the
 same uninterpreted `ComputePAC` to the same arguments (the pointer with
-its PAC field cleared to bit 55's copies, the modifier, the key), so
-`autda` finds the PAC `pacda` inserted.
+its PAC field cleared to bit 55's copies, the modifier, the key). In the
+Armv8.5-A model `pacda` writes the PAC into the cleared field and
+`autda` compares it there; with FEAT_PAuth2 `pacda` XORs it into the
+field and `autda` XORs it out again (`sign`'s fact 5, `auth`'s fact 4),
+and FEAT_FPAC's check that the field is then all copies of bit 55
+passes.
 
 ## 3. Translation
 
@@ -69,7 +80,9 @@ its PAC field cleared to bit 55's copies, the modifier, the key), so
   composes exactly those two functions with the same modifier and the
   same key, so it shows `spec_auth(spec_sign(p, m), m) = p` for every
   `p < 2^VA_BITS`, where `VA_BITS` is the width the job's TCR sets
-  (`64 - T0SZ`). **`requires p < user_va_limit()`**: the job's bound
+  (`64 - T0SZ`); with FEAT_FPAC, where `spec_auth` is the value of the
+  `autda` that returns, it also shows that this `autda` returns.
+  **`requires p < user_va_limit()`**: the job's bound
   needs `user_va_limit() <= 2^(64 - T0SZ)`, the residual **limit within
   the configured VA**. `user_va_limit`'s doc defines it as `2^VA_BITS`
   of the kernel capped by its default map window, and `VA_BITS` there is
@@ -82,7 +95,7 @@ its PAC field cleared to bit 55's copies, the modifier, the key), so
   only from 52 bits). The residual **user VA size**: the kernel's user
   VA is one of the six sizes, with the granule listed (Linux's arm64
   configurations except 52-bit VA with 4K or 16K pages, which needs
-  FEAT_LPA2, Armv8.7, not in the model).
+  FEAT_LPA2 and is not among the configurations).
 - **The x86_64 half.** On x86_64 `spec_sign` and `spec_auth` have no
   meaning tied to execution: `sign` and `auth` require
   `pac_available()`, which no x86_64 process meets (their records), and
@@ -92,14 +105,10 @@ its PAC field cleared to bit 55's copies, the modifier, the key), so
   needed; this is a reading of the source (`grep -rn
   'spec_sign\|spec_auth' src` at 8635213: only `pac.rs`'s definitions,
   this axiom and verified code use them).
-- **FEAT_PAuth2 and FEAT_FPAC** (a residual, as for `sign` and `auth`):
-  the model is v8.5, so on CPUs with FEAT_PAuth2 (the PAC combined with
-  the pointer by XOR) the round trip holds by the architecture, not
-  checked; with FEAT_FPAC a failed `autda` faults, but here the PAC
-  matches, so no fault arises.
 - **Gaps.** Those of `sign` and `auth`: `ComputePAC` taken to be a
   function of its arguments (read and spot-checked); one TCR value per
-  VA size; the static library's code.
+  VA size; the static library's code; the CPU kinds not checked
+  (FEAT_EPAC alone, FEAT_PAuth2 without FEAT_FPAC).
 
 ## 4. Review
 
@@ -109,15 +118,30 @@ translations that overclaim. Its findings on this record are folded in:
 the precondition's bound shown to rest on axiom_user_va_limit (S222)
 where the kernel's build option exceeds the configured VA, named in the
 status line; FEAT_PAuth2 named as a residual; and those on sign's
-record and run.sh apply here. A human review is pending.
+record and run.sh apply here.
+
+This change (the Armv9.4-A model, FEAT_PAuth2 and FEAT_FPAC) was
+reviewed on 2026-10-04 by another fresh-context reviewer, told to look
+for overclaiming translations and checker holes. Its findings are folded
+in: under `pc-step` an instruction the model aborts as UNDEFINED (which
+its footprint function swallows) looked like a fall-through, so each
+instruction now names the register it writes when it completes
+(control `pac9-udf`); an exception path could write any system register
+(now an allow-list); a `stop` path could write memory and a `fault`
+instruction need not be last (both enforced); the v9.4 CPU had features
+of Armv8.6 and later on from the model's initialisers (now pinned off);
+`HCR_HOST_NVHE_FLAGS` includes ATA, and C4A's kernel is a guest at EL1;
+the serialized model was compared on one trace (now four). A human
+review is pending.
 
 ## 5. Tests
 
 `verus/isla/run.sh` fails when the round-trip job fails in any
-configuration (and with it everything `sign`'s and `auth`'s records
-list), and when the negative control without the VA bound passes. `sh
-verus/seams.sh --check` fails when verus/SEAMS.md is stale, so a changed
-axiom changes the ledger and then fails this record's contract check.
-The unit test `sys::pac::tests::sign_auth_round_trip` checks the round
-trip on an aarch64 host with PAuth, and the identity on x86_64. No CI
-job runs `run.sh` yet (verus/ISLA.md).
+configuration of either model (and with it everything `sign`'s and
+`auth`'s records list), and when a negative control without the VA
+bound passes. `sh verus/seams.sh --check` fails when verus/SEAMS.md is
+stale, so a changed axiom changes the ledger and then fails this
+record's contract check. The unit test
+`sys::pac::tests::sign_auth_round_trip` checks the round trip on an
+aarch64 host with PAuth, and the identity on x86_64. No CI job runs
+`run.sh` yet (verus/ISLA.md).

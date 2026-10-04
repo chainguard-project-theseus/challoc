@@ -1,0 +1,5 @@
+; Negative control (run.sh): writes R3, then ends at a `--stop-at` call.
+(trace
+  (declare-const v1 (_ BitVec 64))
+  (write-reg |R3| nil v1)
+  (abstract-call |Fault| (_ poison) #b10))

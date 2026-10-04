@@ -2,7 +2,8 @@
 # verus/seams/sys-pac-strip.md): copy `a` runs the canonical `xpacd x0`,
 # copy `b` the site's `xpacd @D@`, from independent states in the same
 # configuration (pac-footprint.job.in). The same pointer gives the same
-# result. run.sh prepends the copy and insn lines.
+# result. run.sh prepends the copy and insn lines (and `pc-step` for
+# Armv9.4-A).
 writes R0 @D@
 no-mem-write
 mem-reads 0

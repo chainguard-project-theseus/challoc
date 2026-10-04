@@ -7,7 +7,9 @@
 # modifier and key, gives the pointer back, whether or not EnDA is set.
 # ComputePAC is uninterpreted: both instructions apply it to the same
 # arguments, so its definition (QARMA or an implementation's own) does
-# not matter.
+# not matter. In the Armv9.4-A configurations (FEAT_PAuth2, FEAT_FPAC)
+# run.sh adds `pc-step`, and `autda` is still `fallthrough`: its FPAC
+# fault is one of the paths this job shows infeasible.
 abstract ComputePAC
 writes R0
 no-mem-write

@@ -1,0 +1,7 @@
+; Negative control (run.sh): writes the PC (to PC + 4) without setting
+; __BranchTaken, which the model's PC update would then advance again.
+(trace
+  (declare-const v1 (_ BitVec 64))
+  (read-reg |_PC| nil v1)
+  (define-const v3 (bvadd v1 #x0000000000000004))
+  (write-reg |_PC| nil v3))
