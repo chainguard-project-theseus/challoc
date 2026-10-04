@@ -790,16 +790,46 @@ pub fn malloc_trim(_pad: usize) -> c_int {
 // C ABI. Compiled out of the test binary (see the module docs).
 // ---------------------------------------------------------------------------
 
+/// Where `malloc` and `free` start, mod 64, in the shipped library (the
+/// pin in `exports`).
+///
+/// x86_64: both at 0. Without the pin LLVM's 16-byte default let #68's
+/// push change (same instructions, fewer of them) move `free` from 32 to
+/// 16 mod 64 and `malloc` from 48 to 32, which cost glibc-simple 36% on
+/// Zen 5 (c4d). Pinning either entry alone removed it there, so it is
+/// the pair's layout, not one offset; both are pinned. The cost is 768
+/// bytes of `.text`.
+///
+/// aarch64: `malloc` at 16, `free` at 28. LLVM aligns functions to 4
+/// here, so before the pin any `.text` growth ahead of the pair moved
+/// both: #111 and #114 moved them from 16/28 to 8/20 without touching
+/// either function, and that alone cost ref-arm64 (Neoverse V2) xmalloc
+/// about 2% (#115). 16/28 is where the pair sat on ff2c450, and it
+/// measured best of seven offsets (r3b-pin-sweep1: the other six, 0/0,
+/// 8/20, 16/0, 0/28, 32/32 and 48/48, were 0.3% to 1.6% slower against
+/// main).
+///
+/// The test `malloc_and_free_entries_are_pinned` checks both against
+/// `nm -D` of the shipped library.
+#[cfg(target_arch = "x86_64")]
+const MALLOC_OFF: usize = 0;
+#[cfg(target_arch = "x86_64")]
+const FREE_OFF: usize = 0;
+#[cfg(target_arch = "aarch64")]
+const MALLOC_OFF: usize = 16;
+#[cfg(target_arch = "aarch64")]
+const FREE_OFF: usize = 28;
+
 #[cfg(not(test))]
 mod exports {
     use super::*;
     use core::ffi::c_void;
 
-    // `malloc` and `free` each sit alone in a 64-byte-aligned section on
-    // x86_64 (the `global_asm!` below); their `je_` twins stay in `.text`.
+    // `malloc` and `free` each sit alone in a 64-byte-aligned section (the
+    // `global_asm!` below); their `je_` twins stay in `.text`.
 
     #[unsafe(no_mangle)]
-    #[cfg_attr(target_arch = "x86_64", unsafe(link_section = ".text.challoc.malloc"))]
+    #[unsafe(link_section = ".text.challoc.malloc")]
     pub extern "C" fn malloc(size: usize) -> *mut c_void {
         super::malloc(size) as *mut c_void
     }
@@ -810,7 +840,7 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
-    #[cfg_attr(target_arch = "x86_64", unsafe(link_section = ".text.challoc.free"))]
+    #[unsafe(link_section = ".text.challoc.free")]
     pub extern "C" fn free(p: *mut c_void) {
         super::free(p as *mut u8)
     }
@@ -820,27 +850,27 @@ mod exports {
         super::free(p as *mut u8)
     }
 
-    // The alignment of the sections `malloc` and `free` are placed in on
-    // x86_64: a cache line. Stable Rust has no per-function alignment
-    // (`#[align]` and `-C min-function-alignment` are unstable), but a
-    // section's alignment is the largest `.p2align` in it and a function
-    // alone in its section starts at the section's start, so this pins
-    // the entry at offset 0 mod 64 whatever the code before it, and
-    // the linker puts both sections ahead of the rest of `.text`, so the
-    // pair's placement no longer moves with unrelated code. Without it
-    // LLVM's 16-byte default let #68's push change (same instructions,
-    // fewer of them) move `free` from 32 to 16 mod 64 and `malloc` from
-    // 48 to 32, which cost glibc-simple 36% on Zen 5 (c4d). Pinning
-    // either entry alone removed it there, so it is the pair's layout,
-    // not one offset; both are pinned. The cost is 768 bytes of `.text`.
-    #[cfg(target_arch = "x86_64")]
+    // The alignment of the sections `malloc` and `free` are placed in: a
+    // cache line, with `.space` padding (zeros, never executed) ahead of
+    // the entry to put it at `MALLOC_OFF` / `FREE_OFF` mod 64. Stable Rust
+    // has no per-function alignment (`#[align]` and
+    // `-C min-function-alignment` are unstable), but a section's alignment
+    // is the largest `.p2align` in it and a function alone in its section
+    // starts right after what the section already holds, so this pins
+    // each entry whatever the code before it, and the linker places both
+    // sections together, so the pair's placement no longer moves with
+    // unrelated code.
     core::arch::global_asm!(
         ".pushsection .text.challoc.malloc,\"ax\",@progbits",
         ".p2align 6",
+        ".space {m}",
         ".popsection",
         ".pushsection .text.challoc.free,\"ax\",@progbits",
         ".p2align 6",
+        ".space {f}",
         ".popsection",
+        m = const MALLOC_OFF,
+        f = const FREE_OFF,
     );
 
     export_pair! {
@@ -1403,14 +1433,16 @@ mod tests {
         }
     }
 
-    /// The x86_64 pin of `malloc` and `free` (the `global_asm!` of
-    /// `exports`) holds in the shipped library: both entries sit at 0 mod
-    /// 64 in `nm -D` (#70). The pin depends on the release profile (fat
-    /// LTO, one codegen unit) keeping each in its own section; without it
-    /// `free` moved to 16 mod 64 and cost glibc-simple 36% on Zen 5 (c4d).
-    /// Elsewhere the entries are not pinned; their offsets are printed.
+    /// The pin of `malloc` and `free` (the `global_asm!`s of `exports`)
+    /// holds in the shipped library: in `nm -D` each entry sits at
+    /// `MALLOC_OFF` / `FREE_OFF` mod 64, 0/0 on x86_64 (#70) and 16/28 on
+    /// aarch64 (#115). The pin depends on the release profile (fat LTO,
+    /// one codegen unit) keeping each in its own section; without it
+    /// `free` moved to 16 mod 64 and cost glibc-simple 36% on Zen 5
+    /// (c4d), and on Neoverse V2 a move from 16/28 to 8/20 cost xmalloc
+    /// about 2%.
     #[test]
-    fn malloc_and_free_entries_are_cache_line_aligned_on_x86_64() {
+    fn malloc_and_free_entries_are_pinned() {
         let so = crate::api::c_programs::release_so();
         let out = Command::new("nm")
             .args(["-D", "--defined-only", &so])
@@ -1418,7 +1450,7 @@ mod tests {
             .expect("nm");
         assert!(out.status.success(), "nm -D {so} failed");
         let syms = String::from_utf8(out.stdout).unwrap();
-        for name in ["malloc", "free"] {
+        for (name, want) in [("malloc", super::MALLOC_OFF), ("free", super::FREE_OFF)] {
             let addr = syms
                 .lines()
                 .find_map(|l| {
@@ -1430,14 +1462,12 @@ mod tests {
                 })
                 .unwrap_or_else(|| panic!("{name} not in nm -D of {so}:\n{syms}"));
             std::eprintln!("entry {name} at {addr:#x}: {} mod 64", addr % 64);
-            if cfg!(target_arch = "x86_64") {
-                assert_eq!(
-                    addr % 64,
-                    0,
-                    "{name} at {addr:#x} is not at 0 mod 64 in {so}: the x86_64 entry pin \
-                     (src/api/libc.rs `exports`) no longer holds"
-                );
-            }
+            assert_eq!(
+                addr % 64,
+                want,
+                "{name} at {addr:#x} is not at {want} mod 64 in {so}: the entry pin \
+                 (src/api/libc.rs `exports`) no longer holds"
+            );
         }
     }
 }
