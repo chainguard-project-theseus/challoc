@@ -667,8 +667,12 @@ impl Heap {
     /// [`PERIODIC_EVERY`] of them: cache GC when the interval has elapsed,
     /// then decay (or starting the background thread that will do it,
     /// `purge::on_tick`). Nothing else: thread statistics are merged by
-    /// `epoch` (`stats.rs`), not here.
-    fn tick(&mut self, shared: &Shared) {
+    /// `epoch` (`stats.rs`), not here. `ALLOC` is whether the caller is
+    /// an allocation: only an allocation's tick may create the thread
+    /// (design 8.1), because glibc calls `free` with locks held that
+    /// `pthread_create` and `pthread_join` take again (the stack cache
+    /// lock, from `pthread_join`'s TLS teardown).
+    fn tick<const ALLOC: bool>(&mut self, shared: &Shared) {
         self.slow_ticks = self.slow_ticks.wrapping_add(1);
         if self.slow_ticks % PERIODIC_EVERY == 0 {
             let now = now_ns();
@@ -676,7 +680,7 @@ impl Heap {
                 self.last_gc = now;
                 self.gc(shared);
             }
-            crate::purge::on_tick(shared, now);
+            crate::purge::on_tick(shared, now, ALLOC);
         }
     }
 }

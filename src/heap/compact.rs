@@ -139,7 +139,7 @@ impl Heap {
                     // balanced churn on a dense class takes no other slow
                     // path, and without it no GC or decay would ever run on
                     // a thread without a background thread.
-                    self.tick(shared);
+                    self.tick::<true>(shared);
                     let mut len = (*cache).len;
                     if len == 0 {
                         // The GC emptied the cache.
@@ -305,7 +305,7 @@ impl Heap {
         // SAFETY: a heap never outlives the `Shared` it was created on; the
         // unbounded lifetime lets `self` be borrowed mutably below.
         let shared: &Shared = unsafe { &*self.shared };
-        self.tick(shared);
+        self.tick::<true>(shared);
         // SAFETY: guaranteed by the caller; `len <= cap` entries exist and
         // `cap - len` slots of storage follow them.
         unsafe {

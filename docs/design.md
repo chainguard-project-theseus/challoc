@@ -866,17 +866,50 @@ shape (`purge.rs`, `purge/curve.rs`, `class/decay.rs`):
 
 ### 8.1 Background thread
 
-Created only when `background_thread:true` is set via `malloc_conf` or
-written through `mallctl` (`purge/background.rs`): through
-`pthread_create` on the first periodic tick (6.4) after the request, never
-from init, or synchronously by `mallctl("background_thread", true)`. It
+Created through `pthread_create` (`purge/background.rs`), never from
+init: on the first periodic tick (6.4) after `background_thread:true` in
+`malloc_conf`, synchronously by `mallctl("background_thread", true)`, or,
+with the key unset (the default), lazily. The lazy start looks at most
+every 100 ms, from a periodic tick whose foreground decay pass left dirty
+memory waiting: it sums the `Empty` bytes (every class and the huge tier)
+and starts the thread at 64 MiB, or at 4 MiB held at every look for a
+second. A process that never holds that much never starts a thread: it
+stays single-threaded (`unshare(CLONE_NEWUSER)` keeps working) and its
+startup is unchanged (the key is read with the others; nothing else
+happens at init). `background_thread:false` (or any write through
+`mallctl`) disarms it. A lazy start that fails (a seccomp filter that
+fails `clone` with an errno, `RLIMIT_NPROC`, `pids.max`) leaves the
+process purging in the foreground as before and is retried no sooner
+than a second later, in case a thread limit has freed up; the third
+failure disarms it for good. A filter that kills on
+`clone` kills the process, so a sandbox that does that needs
+`background_thread:false`. Once the thread exists glibc's
+`__libc_single_threaded` stays 0, so libstdc++ reference counts turn
+atomic and stdio locks, as in any process that ever started a thread.
+Only an allocation's tick creates (or joins) the thread, under any
+setting: glibc calls `free` with its stack cache lock held
+(`pthread_join` frees the TLS of a thread on a user stack, and trimming
+the stack cache frees the cached ones), and `pthread_create` takes that
+lock again, so a start from that `free` would deadlock. A `free`'s tick
+that finds the start due only records the request; the next
+allocation's tick acts on it. It
 sleeps on a futex until the next decay deadline, is woken when a class's
 first slab goes `Empty`, and samples the cgroup (section 11) before each
 decay pass. Its stack is one metadata reservation, made by the first
 start and never freed: a stopped thread exits at its next wake-up, and
 the next start joins it before reusing the stack. After `fork` the child
-forgets the parent's thread and does not recreate it until asked.
-Creating the thread from a `free` slow path saves and restores `errno`.
+forgets the parent's thread and does not recreate it until asked or,
+under the lazy start, until it holds enough dirty memory of its own: the
+dirty bytes at the fork are its baseline, lowered as the inherited set
+decays (a low-water mark), so what it inherited does not count and what
+it frees itself does.
+Creating the thread from an allocation's slow path saves and restores
+`errno`. The new thread does not keep the scheduling of the thread that
+happened to create it (under the lazy start, any allocating thread):
+it moves itself to `SCHED_OTHER` with the main thread's CPU affinity
+and nice value, as far as the kernel allows (lowering a nice value needs
+`CAP_SYS_NICE` or `RLIMIT_NICE`; without either it keeps the nice value
+it inherited).
 
 ## 9. Fork
 
@@ -1115,7 +1148,7 @@ Format is jemalloc's `key:value,key:value`. The keys, in `TABLE` order:
 
 | Key                       | Default | Notes                                   |
 |---------------------------|---------|-----------------------------------------|
-| `background_thread`       | false   | 8.1                                     |
+| `background_thread`       | unset   | unset starts lazily, reads `false`; 8.1 |
 | `dirty_decay_ms`          | 10000   | `-1`..`1000000000000`; 8                |
 | `muzzy_decay_ms`          | 0       | stored and readable; nothing acts on it |
 | `narenas`                 | 0       | 0 = `min(4 * ncpus, 64)`; 13.3          |

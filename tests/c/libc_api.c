@@ -153,7 +153,7 @@ static void test_errno(void)
     CHECK(posix_memalign(&q, 16, huge_n / 2) == ENOMEM, "posix_memalign ENOMEM");
 }
 
-/* ---- errno across a free that starts the background thread ------------ */
+/* ---- errno across the frees and the malloc that start the thread ------ */
 
 static int background_present(void)
 {
@@ -164,17 +164,19 @@ static int background_present(void)
 }
 
 /* Under MALLOC_CONF=background_thread:true the thread is created by the
- * first periodic tick after init, never by init itself (design 8.1), and
- * the periodic work runs every 64 slow paths of a heap (PERIODIC_EVERY).
- * A fresh thread starts at zero: 64-byte blocks are cached 1024 deep
- * (MAX_CAP) and refilled 512 at a time, so allocating 20480 of them costs
- * 40 slow paths (plus a scheduled probe per 4096 allocations), and freeing
- * them costs one slow path per 512 once the cache is full, 38 more. The
- * 64th slow path of this thread is therefore a `free` (measured: the
- * thread appears between the 7680th and the 10240th free), and that free
- * creates the background thread (`pthread_create`, which may touch errno).
- * The two `background_present` checks make the test fail loudly, rather
- * than stop covering the path, if those constants move. */
+ * first periodic tick of an allocation after init, never by init itself
+ * and never by a `free` (design 8.1: glibc frees with its stack cache
+ * lock held, which pthread_create takes), and the periodic work runs
+ * every 64 slow paths of a heap (PERIODIC_EVERY). A fresh thread starts
+ * at zero: 64-byte blocks are cached 1024 deep (MAX_CAP) and refilled 512
+ * at a time, so allocating 20480 of them costs 40 slow paths (plus a
+ * scheduled probe per 4096 allocations), and freeing them costs one slow
+ * path per 512 once the cache is full, 38 more. The 64th slow path of
+ * this thread is therefore a `free`, which must leave errno and the
+ * thread alone; the next allocations' ticks create it
+ * (`pthread_create`, which may touch errno). The `background_present`
+ * checks make the test fail loudly, rather than stop covering the path,
+ * if those constants move. */
 static void *errno_background_thread(void *arg)
 {
     (void)arg;
@@ -188,8 +190,23 @@ static void *errno_background_thread(void *arg)
     errno = 42;
     for (int i = 0; i < N; i++)
         free(blocks[i]);
-    CHECK(errno == 42, "a free that started the background thread changed errno to %d", errno);
-    CHECK(background_present(), "the frees did not start the background thread: the path is not covered");
+    CHECK(errno == 42, "the frees past the periodic tick changed errno to %d", errno);
+    CHECK(!background_present(), "a free created the background thread");
+    /* The allocations come from the refilled cache first: a slow path
+     * per 512 of them, 64 slow paths are 32768. */
+    enum { M = 8 * N };
+    static void *more[M];
+    int n = 0;
+    errno = 42;
+    for (; n < M && !background_present(); n++) {
+        more[n] = malloc(64);
+        CHECK(more[n] != NULL, "malloc(64) #%d", n);
+    }
+    CHECK(errno == 42, "the mallocs that started the background thread changed errno to %d", errno);
+    CHECK(background_present(), "%d mallocs did not start the background thread: the path is not covered", n);
+    printf("libc_api: the thread started at malloc #%d after the frees\n", n);
+    for (int i = 0; i < n; i++)
+        free(more[i]);
     return NULL;
 }
 

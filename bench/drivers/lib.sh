@@ -16,7 +16,8 @@
 # resolve_rev nothing. A driver that keeps its own n, row or a across one of
 # these calls must expect it changed.
 
-BIN=$ROOT/target/bench-bin
+# Under cb the bench programs are in CB_BIN (bench/drivers/cb.sh).
+BIN=${CB_BIN:-$ROOT/target/bench-bin}
 PROCS=$(nproc)
 ARCH=$(uname -m)
 DATE=$(date -u +%F)
@@ -37,8 +38,10 @@ commit_short() { $GIT -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unkn
 # built from. Only git's answer counts: `git diff --quiet` exits 1 for a
 # difference and 128 when it cannot answer (a .git without HEAD's commit
 # object); a git that cannot answer stops the run: the label would be a
-# guess.
+# guess. Under cb (CB_OUT set) the tree is a `git archive` with no
+# repository: the variant's commit is the label, and nothing is dirty.
 tree_dirty() {
+  [ -z "${CB_OUT:-}" ] || return 1
   td_err=$($GIT -C "$ROOT" diff --quiet HEAD -- src Cargo.toml Cargo.lock build.rs 2>&1); td_rc=$?
   case $td_rc in
     0) return 1;;
