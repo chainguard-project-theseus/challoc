@@ -140,14 +140,20 @@ static int unshare_child(void *arg)
 /* The claim of `small`: a single-threaded process can unshare a user
  * namespace. Run in this process when it is single-threaded; a sandbox
  * that refuses user namespaces (Docker's seccomp profile: EPERM) is a
- * skip, a multithreaded caller's EINVAL a failure. */
+ * skip, as is EINVAL with one task (a kernel without user namespaces);
+ * a multithreaded caller's EINVAL is a failure. */
 static void check_unshare(const char *who)
 {
     int rc = unshare(CLONE_NEWUSER) == 0 ? 0 : errno;
     if (rc == 0) {
         printf("%s: unshare(CLONE_NEWUSER) ok\n", who);
-    } else if (rc == EINVAL) {
+    } else if (rc == EINVAL && tasks() > 1) {
         CHECK(0, "%s: unshare(CLONE_NEWUSER) EINVAL: the process is multithreaded (%d tasks)", who, tasks());
+    } else if (rc == EINVAL) {
+        /* Single-threaded and still EINVAL: a kernel without user
+         * namespaces (CONFIG_USER_NS off, the floor kernels). The task
+         * count above is the claim that remains. */
+        skip_note("lazy_bg", "%s: unshare(CLONE_NEWUSER) EINVAL with one task: no user namespaces in this kernel", who);
     } else {
         skip_note("lazy_bg", "%s: unshare(CLONE_NEWUSER) refused here: %s", who, strerror(rc));
     }
@@ -206,7 +212,7 @@ static int child_small(void *arg)
     if (small_workload(1500) != 1)
         return 3;
     int rc = unshare_child(NULL);
-    if (rc == EINVAL)
+    if (rc == EINVAL && tasks() > 1)
         return 4;
     return 0;
 }
