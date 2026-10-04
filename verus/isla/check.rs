@@ -12,6 +12,9 @@
 //!
 //! The job is a line-oriented file (`#` comments):
 //!
+//!   arch aarch64|x86_64        the model the traces come from (default
+//!                              aarch64; must precede the insn and copy
+//!                              lines)
 //!   insn FILE KIND [REG]       next instruction: the `isla-footprint -s`
 //!                              output in FILE, and what a normal trace of
 //!                              it does: `fallthrough` (no exception, and
@@ -27,7 +30,10 @@
 //!                              `fault` or `stop` instruction is the last of
 //!                              its copy. REG (required under `pc-step` for
 //!                              those three kinds): a register every trace
-//!                              that falls through must write
+//!                              that falls through must write. On x86_64
+//!                              the one kind is `jump` (writes rip, no
+//!                              model fault; the job must assert
+//!                              `final.rip`, the target)
 //!   copy NAME                  start a copy of the machine: the `insn`
 //!                              lines after it run from their own initial
 //!                              state, named `NAME.init.R` and so on (a
@@ -45,12 +51,14 @@
 //!                              result), whose arguments are proved equal to
 //!                              the ARGs (SMT atoms); a job with a `stop`
 //!                              line needs a feasible combination that stops
-//!   writes REG...              the registers (or REG.FIELD) the sequence may
-//!                              write besides the PC and PSTATE's non-flag
-//!                              fields (anything else written is an error;
-//!                              the system registers an exception entry
-//!                              writes are allowed only on the exception
-//!                              paths of `svc`, `brk` and `fault`)
+//!   writes REG...              the registers (or REG.FIELD, or REG.I for
+//!                              element I of an x86 vector register) the
+//!                              sequence may write besides the PC and, on
+//!                              aarch64, PSTATE's non-flag fields (anything
+//!                              else written is an error; the system
+//!                              registers an exception entry writes are
+//!                              allowed only on the exception paths of
+//!                              `svc`, `brk` and `fault`)
 //!   pc-step                    the traces end before the model's PC update
 //!                              (the Armv9.4-A model's footprint function
 //!                              decodes and executes only), so after each
@@ -62,13 +70,18 @@
 //!                              also swallows an UNDEFINED abort without a
 //!                              trace event, hence the `insn` line's REG
 //!   no-mem-write               no trace writes memory
-//!   flags-preserved            no trace writes PSTATE.{N,Z,C,V}
+//!   flags-preserved            no trace writes PSTATE.{N,Z,C,V} (aarch64)
+//!                              or rflags (x86_64)
 //!   mem-reads N                every normal combination reads memory N
 //!                              times (in each copy)
 //!   mem-writes N               every normal combination writes memory N
 //!                              times (in each copy)
 //!   decl NAME BITS             a free bit-vector constant for assume/assert
-//!                              (not a name the checker generates)
+//!                              (not a trace's own constant or an abstract
+//!                              function; `decl init.R` or `decl mem.J.val`
+//!                              names a value some combinations leave
+//!                              undefined, so that assumptions over it hold
+//!                              in every combination)
 //!   assume SMT                 a residual assumption (named in the record)
 //!   assert SMT                 a property of every normal combination
 //!   assert-exc SMT             a property of every normal combination in
@@ -79,7 +92,8 @@
 //!
 //! In SMT text, `init.R` and `final.R` are register R before and after the
 //! sequence (`init.R.F`, `final.R.F` for field F of a struct register such
-//! as PSTATE), `seg.K.NAME` is the symbolic opcode field NAME of
+//! as PSTATE, `init.R.I` for element I of an x86 vector register such as
+//! the model's `msrs`), `seg.K.NAME` is the symbolic opcode field NAME of
 //! instruction K (from 1, `isla-footprint --partial`), `mem.J.addr`,
 //! `mem.J.val` are the J-th memory read of the sequence (from 1; address as
 //! Isla's model issues it, value as read) and `wmem.J.addr`, `wmem.J.val`
@@ -99,8 +113,19 @@
 //! the combination is feasible. A feasible combination with an abnormal
 //! trace (an exception or a stop where none is expected, or no PC write) is
 //! an error. For a feasible normal one, each `assert` must follow (its
-//! negation unsat), the footprint lines must hold, and every event must be
-//! one the checker knows. A job with no feasible combination fails. Exit
+//! negation unsat, and an assert naming a value the combination leaves
+//! undefined fails), the footprint lines must hold, and every event must be
+//! one the checker knows. A job with no feasible combination fails.
+//!
+//! On x86_64 the traces come from the Isla entry in verus/isla/x86/ (the
+//! sail-x86-from-acl2 model): its own registers (`isla_*`) are the
+//! entry's bookkeeping, never linked between instructions, and a write of
+//! `isla_fault` marks a path where the model raised a fault or a model
+//! error (abnormal). A write of a whole vector or struct register counts
+//! as a write of each element or field whose new value is not the very
+//! term the location held, so an element written back unchanged is not a
+//! write and anything the checker cannot tell apart is one. `pc-step` and
+//! `stop` are aarch64 only. Exit
 //! status 0 when everything holds, 1 when something fails, 2 on a usage
 //! error or a Z3 answer other than sat/unsat (an undeclared name included).
 
@@ -363,8 +388,16 @@ struct Copy {
     insns: Vec<Insn>,
 }
 
+#[derive(Clone, Copy, Default, PartialEq)]
+enum Arch {
+    #[default]
+    Aarch64,
+    X86_64,
+}
+
 #[derive(Default)]
 struct Job {
+    arch: Arch,
     copies: Vec<Copy>,
     abstracts: BTreeSet<String>,
     /// `stop` functions -> the arguments their call must have.
@@ -402,11 +435,25 @@ fn load_job(path: &str) -> Job {
         let (key, rest) = line.split_once(' ').unwrap_or((line, ""));
         let rest = rest.trim();
         match key {
+            "arch" => {
+                if !job.copies.is_empty() {
+                    die("arch: must precede the insn and copy lines");
+                }
+                job.arch = match rest {
+                    "aarch64" => Arch::Aarch64,
+                    "x86_64" => Arch::X86_64,
+                    _ => die(&format!("arch: unknown {rest}")),
+                }
+            }
             "insn" => {
                 let mut w = rest.split_whitespace();
                 let f = w.next().unwrap_or_else(|| die("insn: no file"));
                 let kind = w.next().unwrap_or("fallthrough");
-                if !["fallthrough", "ret", "svc", "brk", "fault", "stop"].contains(&kind) {
+                let known: &[&str] = match job.arch {
+                    Arch::Aarch64 => &["fallthrough", "ret", "svc", "brk", "fault", "stop"],
+                    Arch::X86_64 => &["jump"],
+                };
+                if !known.contains(&kind) {
                     die(&format!("insn: unknown kind {kind}"));
                 }
                 let f = dir.join(f);
@@ -524,6 +571,20 @@ fn load_job(path: &str) -> Job {
         {
             die("pc-step: an insn line without the register its completion writes");
         }
+        // An x86 `jump` is any write of rip: where the sequence goes is
+        // what the job asserts.
+        let rip = format!("{}final_rip", c.prefix);
+        if job.arch == Arch::X86_64
+            && !job
+                .asserts
+                .iter()
+                .any(|a| job_names(&job, &job_smt(a)).contains(&rip.as_str()))
+        {
+            die("x86_64: a copy whose final.rip no assert names");
+        }
+    }
+    if job.arch == Arch::X86_64 && (job.pc_step || !job.stops.is_empty()) {
+        die("x86_64: pc-step and stop are aarch64 only");
     }
     job
 }
@@ -635,6 +696,8 @@ struct Built {
     exc_taken: bool,
     /// A `stop` instruction ended at its `stop` call.
     stopped: bool,
+    /// The SMT names the script declares.
+    declared: BTreeSet<String>,
 }
 
 /// The SMT script for one combination (trace `pick[k]` of instruction k,
@@ -678,6 +741,9 @@ fn build(job: &Job, pick: &[usize]) -> Built {
         };
         // Register -> (SMT term of its current value, sort).
         let mut state: BTreeMap<String, Option<(String, Ty)>> = BTreeMap::new();
+        // A trace variable a register read bound -> the term it was linked to
+        // (x86_64 uses it to tell an element written back unchanged).
+        let mut alias: HashMap<String, String> = HashMap::new();
         let mut mem = 0usize;
         let mut wmem = 0usize;
         let mut partial = false;
@@ -694,6 +760,7 @@ fn build(job: &Job, pick: &[usize]) -> Built {
             let mut vars: HashMap<String, Ty> = HashMap::new();
             let mut wrote_pc = false;
             let mut wrote_exc = false;
+            let mut faulted = false;
             // The PC as the instruction first reads it and as it last
             // writes it (None inside: not expressible).
             let mut pc_in: Option<Option<String>> = None;
@@ -855,8 +922,77 @@ fn build(job: &Job, pick: &[usize]) -> Built {
                                     })
                                     .collect()
                             }
-                            v => vec![(r.clone(), emit(v, &ren), atom(v).is_some_and(is_var))],
+                            // A vector register (x86_64): element I is the
+                            // location `R.I`, elements listed from index 0.
+                            Sx::List(s)
+                                if job.arch == Arch::X86_64
+                                    && s.len() > 2
+                                    && atom(&s[0]) == Some("_")
+                                    && atom(&s[1]) == Some("vec") =>
+                            {
+                                s[2..]
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, e)| {
+                                        (
+                                            format!("{r}.{i}"),
+                                            emit(e, &ren),
+                                            atom(e).is_some_and(is_var),
+                                        )
+                                    })
+                                    .collect()
+                            }
+                            // A plain value: the register, or the one field a
+                            // write's accessor names (an accessor the checker
+                            // cannot read poisons the whole register, below).
+                            v => {
+                                let loc = match (head, &field) {
+                                    ("write-reg", Some(f)) => format!("{r}.{f}"),
+                                    _ => r.clone(),
+                                };
+                                vec![(loc, emit(v, &ren), atom(v).is_some_and(is_var))]
+                            }
                         };
+                        if head == "write-reg" && field.as_deref() == Some("?") {
+                            violations.push(format!(
+                                "{label}insn {k1} writes {r} through an accessor the checker cannot read"
+                            ));
+                        }
+                        if job.arch == Arch::X86_64 && r.starts_with("isla_") {
+                            // The x86 entry's bookkeeping: the opcode, the
+                            // fetch base, the fault marker. Local to one
+                            // instruction's trace, whose own definitions
+                            // relate them to rip.
+                            if head == "write-reg" && r == "isla_fault" {
+                                faulted = true;
+                            }
+                            continue;
+                        }
+                        if head == "write-reg" && job.arch == Arch::X86_64 {
+                            if r == "rip" {
+                                wrote_pc = true;
+                            }
+                            for (loc, val, _) in &locs {
+                                let unchanged = match (state.get(loc), val) {
+                                    (Some(Some((c, _))), Some((v, _))) => {
+                                        c == v || alias.get(v) == Some(c)
+                                    }
+                                    _ => false,
+                                };
+                                if r == "rip" || unchanged {
+                                    continue;
+                                }
+                                if (job.flags_preserved && r == "rflags")
+                                    || (!job.writes.contains(&r) && !job.writes.contains(loc))
+                                {
+                                    violations.push(format!("{label}insn {k1} writes {loc}"));
+                                }
+                            }
+                            for (loc, val, _) in locs {
+                                state.insert(loc, val);
+                            }
+                            continue;
+                        }
                         if r == "_PC" {
                             let v = locs.first().and_then(|l| l.1.as_ref()).map(|v| v.0.clone());
                             if head == "write-reg" {
@@ -873,12 +1009,16 @@ fn build(job: &Job, pick: &[usize]) -> Built {
                                         "{label}insn {k1} reads {loc}, which an earlier write left inexpressible"
                                     )),
                                     Some(Some((c, _))) => {
-                                        writeln!(smt, "(assert (= {val} {c}))").unwrap()
+                                        writeln!(smt, "(assert (= {val} {c}))").unwrap();
+                                        if var {
+                                            alias.insert(val, c.clone());
+                                        }
                                     }
                                     None if var => {
                                         let i = format!("{p}init_{}", loc.replace('.', "_"));
                                         decl(&mut smt, &i, ty);
                                         writeln!(smt, "(assert (= {val} {i}))").unwrap();
+                                        alias.insert(val, i.clone());
                                         state.insert(loc, Some((i, ty)));
                                     }
                                     // A literal the model's configuration fixed.
@@ -1056,14 +1196,31 @@ fn build(job: &Job, pick: &[usize]) -> Built {
                     }
                 }
             }
-            let normal = match insn.kind.as_str() {
-                "svc" | "brk" => !stopped && wrote_exc && wrote_pc,
-                "fault" => !stopped && wrote_pc,
-                "stop" if stopped => !wrote_exc && !wrote_pc,
+            let normal = match (job.arch, insn.kind.as_str()) {
+                (Arch::X86_64, _) => !faulted && wrote_pc,
+                (_, "svc" | "brk") => !stopped && wrote_exc && wrote_pc,
+                (_, "fault") => !stopped && wrote_pc,
+                (_, "stop") if stopped => !wrote_exc && !wrote_pc,
                 _ => !stopped && !wrote_exc && wrote_pc,
             };
             if !normal {
-                abnormal.push(format!("{label}insn {k1} ({}) trace {}", insn.file, t + 1));
+                // What makes it abnormal, for the report (and the controls).
+                let why = if faulted {
+                    "a model fault"
+                } else if stopped {
+                    "a stop call"
+                } else if wrote_exc {
+                    "an exception"
+                } else if !wrote_pc {
+                    "no PC write"
+                } else {
+                    "no exception"
+                };
+                abnormal.push(format!(
+                    "{label}insn {k1} ({}) trace {}: {why}",
+                    insn.file,
+                    t + 1
+                ));
             }
             if wrote_exc {
                 // An exception path writes no user register at all.
@@ -1148,6 +1305,7 @@ fn build(job: &Job, pick: &[usize]) -> Built {
         falls,
         exc_taken,
         stopped: any_stopped,
+        declared,
     }
 }
 
@@ -1318,6 +1476,22 @@ fn main() {
                 let excs: &[String] = if b.exc_taken { &job.assert_excs } else { &[] };
                 for a in job.asserts.iter().chain(excs) {
                     checked += 1;
+                    // A name this combination leaves undefined (a `final.R` of a
+                    // register no trace here writes or reads) is a failure of
+                    // the assert, not a Z3 error.
+                    let a_smt = job_smt(a);
+                    let undefined: Vec<&str> = job_names(&job, &a_smt)
+                        .into_iter()
+                        .filter(|n| !b.declared.contains(*n))
+                        .collect();
+                    if !undefined.is_empty() {
+                        failed += 1;
+                        println!(
+                            "FAIL {label}: assert {a}: {} undefined in this combination",
+                            undefined.join(", ")
+                        );
+                        continue;
+                    }
                     if z3(&b.smt, &format!("(assert (not {}))", job_smt(a))) != "unsat" {
                         failed += 1;
                         println!("FAIL {label}: assert {a}");

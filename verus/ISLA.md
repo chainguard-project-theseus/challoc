@@ -6,15 +6,17 @@ pointer, GOT loads of weak symbols, pointer authentication and the trap
 instruction. Verus sees only their signatures.
 [Isla](https://github.com/rems-project/isla) symbolically executes machine
 code against a Sail ISA model (here the Armv8.5-A model translated from
-Arm's ASL, and for pointer authentication also the Armv9.4-A one) and
-prints, per instruction, every path as a trace of register and memory
-events with SMT definitions;
+Arm's ASL, for pointer authentication also the Armv9.4-A one, and the
+x86-64 model translated from the ACL2 x86isa model) and prints, per
+instruction, every path as a trace of register and memory events with
+SMT definitions;
 [Islaris](https://github.com/rems-project/islaris) proves properties of
 such traces in Coq/Iris. This file is the setup, the triage of the 26
 seams (and of `axiom_auth_sign`, a platform fact the same runs check),
-the fifteen discharged so far, the evidence for the aarch64 halves of the
-mixed seams, and the plan for the rest. Seam numbers and line numbers are
-from 8635213.
+the nineteen discharged so far (eighteen of the 26 and `axiom_auth_sign`),
+the evidence for the aarch64 halves of
+the mixed seams, and the plan for the rest. Seam numbers and line numbers
+are from 8635213.
 
 ## Setup
 
@@ -28,24 +30,31 @@ on 2026-10-02, 2026-10-03 and 2026-10-04:
 | libz3 for Isla | Z3 4.13.4 x64-glibc-2.35 | GitHub release zip |
 | z3 for isla-check | Z3 4.16.0 | the one Verus ships |
 | llvm-objdump, llvm-ar | LLVM of rustc 1.95.0 | rustup `llvm-tools` |
+| make, m4, opam 2.6.0, gmp, zlib, pkgconf | Wolfi packages | `.apk` files unpacked into `/` |
+| OCaml | 5.2.1 | `opam switch create` |
+| Sail | rems-project/sail 5f46c04 (0.20.2) | `opam pin --kind=path` |
+| isla-sail plugin | Isla e9b5d94 `isla-sail/` | `make` |
+| x86 model | sail-x86-from-acl2 0c6c023 | `verus/isla/x86/build-ir.sh` |
+
+The x86 lane kept a prebuilt copy (the stripped `isla-footprint`,
+`libz3.so`, `armv8p5.ir`, `x86.ir`) and the scripts that rebuild
+everything from nothing outside git (`.tools/isla/`: README, `env.sh`,
+`bootstrap/setup.sh`, Wolfi-specific); a later image carries the same
+build under `/opt/isla`.
 
 Not installed:
 
 - **Islaris** (Coq 8.x, Iris, std++ and the Islaris Coq development,
-  normally through opam). The VM has no opam, OCaml, GNU make or m4, a
-  slow network and slow disk writes to the work tree; building that stack
-  from source was not attempted. The harness below does the Isla-only
-  part: it composes the per-instruction traces itself and discharges the
-  resulting conditions with Z3. That is weaker than an Islaris proof: no
-  proof certificate, and the composition is `check.rs`'s own (part of the
-  trusted base). It drops trace events it cannot express in SMT (struct
-  and enum values, `assume-reg`, unknown events), which only weakens path
-  conditions or fails the check, never passes one (see below).
-- **An x86_64 model.** isla-snapshots carries Arm, RISC-V and Morello
-  models only, and Isla's `configs/` has no x86 configuration. Building
-  one means the Sail compiler and the `isla-sail` plugin (OCaml, opam)
-  and the Sail x86 model (`sail-x86-from-acl2`). Every x86_64 half below
-  stays trusted.
+  normally through opam). The x86 work below installed opam and OCaml
+  (from Wolfi packages, about two minutes), so the stack is within reach,
+  but Coq, Iris and Islaris were not attempted. The harness below does
+  the Isla-only part: it composes the per-instruction traces itself and
+  discharges the resulting conditions with Z3. That is weaker than an
+  Islaris proof: no proof certificate, and the composition is
+  `check.rs`'s own (part of the trusted base). It drops trace events it
+  cannot express in SMT (struct and enum values, `assume-reg`, unknown
+  events), which only weakens path conditions or fails the check, never
+  passes one (see below).
 
 To reproduce:
 
@@ -57,7 +66,9 @@ git clone https://github.com/rems-project/isla-snapshots
 rustup component add llvm-tools --toolchain 1.95.0
 export ISLA=$PWD/isla ISLA_SNAPSHOTS=$PWD/isla-snapshots
 export LD_LIBRARY_PATH=$ISLA Z3=/path/to/z3
-verus/isla/run.sh [-a libchalloc.a] [OUT]
+# the x86 model ("The x86_64 model" below), then:
+export ISLA_X86_IR=$PWD/x86.ir
+verus/isla/run.sh [-a aarch64/libchalloc.a] [-x x86_64/libchalloc.a] [OUT]
 ```
 
 Things that cost time on the first install: `isla-footprint -x` takes
@@ -92,10 +103,63 @@ concrete. Building in a tmpfs copy matters: the work tree is a slow
 virtiofs mount, where `cp -r` of the Isla checkout took ten minutes and
 each `git` command a minute or two.
 
+### The x86_64 model
+
+No prebuilt x86 model exists for Isla: isla-snapshots carries Arm,
+RISC-V and Morello models, and Isla's `configs/` has no x86 file. The
+pieces do exist elsewhere: rems-project/sail-x86-from-acl2 (the ACL2
+x86isa model machine-translated to Sail; last commit 2024-11) has an
+`x86.ir` target in `model/Makefile` with patches for test generation,
+and rems-project/isla-testgen has an `x86.toml` and a command for a
+CHERI x86 variant. Building it needs the Sail compiler with Isla's
+`isla-sail` plugin, so OCaml and opam, which the VM lacked. The route
+taken, with wall clock on the 16-core VM (all of it scripted in
+`.tools/isla/bootstrap/setup.sh`):
+
+1. A downloader (`dl`, Rust, `ureq`/`tar`/`zip`; there is no curl):
+   46 s.
+2. make, m4, opam, gmp, zlib, pkgconf, patch, diffutils, wget, rsync,
+   gawk and xz from Wolfi's package index (`packages.wolfi.dev`), the
+   `.apk` files unpacked into `/` by a 40-line resolver
+   (`wolfi-get.sh`; there is no `apk`): 10 s, 17 MB.
+3. opam with `depext=false` and no sandbox (it otherwise calls `apk`
+   and `bwrap`), OCaml 5.2.1: 1 min 45 s.
+4. Sail pinned from a checkout, with its dependencies (menhir, ott,
+   lem, linksem, zarith, ...): 2 min 30 s; the switch is 1.9 GB.
+   Isla e9b5d94's plugin still uses Sail's `Value2` module, which Sail
+   removed the day after (b1721d6), so Sail is pinned at its parent
+   5f46c04, and as a path (`--kind=path`; a git pin builds the branch
+   tip instead).
+5. Isla (`cargo build --release`): 1 min 20 s; the plugin: 1 s.
+6. The model with the entry below: 15 s, `x86.ir` 10 MB.
+
+About 7 minutes once known. The first time, dead ends included, took
+70 minutes from nothing to the first checked `syscall` job.
+
+The model's instruction fetch reads memory byte by byte through its own
+`rb`, where Isla's Arm models take the opcode as an argument. The entry
+(`verus/isla/x86/`) gives it one: `isla_rb.sail` is spliced over `rb`
+and serves fetches (`":X"`) from a 128-bit `isla_opcode` relative to
+the `rip` the step started at (a fetch outside it is a model error);
+`isla_entry.sail` defines `isla_footprint(opcode)`, which records the
+opcode and the fetch base, emits Isla's cycle marker (where
+`isla-footprint -s` starts the trace; without it every register event is
+hidden as initialisation), runs `x86_fetch_decode_execute` and turns
+any Sail exception (the model's `x86_fault`, `x86_model_error`) into a
+write of `isla_fault`; `isla_regs.sail` declares the three registers.
+`x86.toml` sets the model's mode flags: the system view (`app_view`
+false: segmentation, paging and the SDM's SYSCALL rather than the
+application view's emulated system calls), not halted or faulted;
+everything else is symbolic. `isla-footprint -x` takes at most 8 bytes,
+so `run.sh` passes the 16 bytes with `--partial`, most significant
+first. It runs with `--pessimistic`: a Sail assertion that can fail is
+an error, not a path condition.
+
 ## The harness
 
-`verus/isla/run.sh` builds the aarch64 static library from the tree
-(about four minutes; `-a` takes a prebuilt one) and then:
+`verus/isla/run.sh` builds the aarch64 and x86_64 static libraries from
+the tree (a few minutes each; `-a` and `-x` take prebuilt ones) and
+then:
 
 1. checks each checked `asm!` template against `templates.txt`
    (verbatim up to whitespace), and for each record the ledger entry
@@ -194,7 +258,31 @@ each `git` command a minute or two.
    before a `stop` call, a `stop` call that is not the last event, a user
    register written on a `fault` exception path, an exception path with
    no `assert-exc`, and under `pc-step` a PC write without
-   `__BranchTaken`; and `isla-check --same` on two different traces.
+   `__BranchTaken`; and `isla-check --same` on two different traces;
+6. disassembles the x86_64 library and requires every `syscall`,
+   `sysenter` and `int` in it to be `syscall` (`0f 05`), runs
+   `isla-footprint --pessimistic` on it with the x86 model and checks
+   `x86/syscall.job` (`arch x86_64`). The checker's x86 mode (`check.rs`
+   header): `rip` is the PC, element I of a vector register (the model's
+   `msrs`, segment and `zmms` vectors) is the location `R.I`, a write of
+   a whole vector or struct counts per element whose new term is not the
+   one the location held (an element written back unchanged is not a
+   write), every write not in the job's `writes` fails, a write of
+   `isla_fault` makes the path abnormal, the entry's `isla_*` registers
+   are never linked between instructions, the one instruction kind is
+   `jump` and a job must assert where it goes (`final.rip`); `pc-step`
+   and `stop` are Arm-only;
+7. runs ten x86 negative controls on the real trace, each of which must
+   fail with a `FAIL` line naming its own reason: the return address one
+   byte off, R11 and the SS selector (a vector element) left out of
+   `writes`, a memory read where there is none, RFLAGS claimed
+   preserved, SS's attributes without B, the job without EFER.SCE (the
+   model's `#UD` path) or without the STAR bound (the model's own check
+   failing; both are caught only as `isla_fault` paths, reported as a
+   model fault), and the job without EFER.LMA or without CS.L (paths
+   outside 64-bit mode, on which the asserts name values left
+   undefined: a failure, not a Z3 error); and checks that the checker
+   refuses (a load error, not a `FAIL`) a job with no `final.rip` assert.
 
 The PAC configurations: SCR_EL3 = 0x30401 (NS, RW, API, APK), and
 twelve variants: a kernel at EL1 with HCR_EL2 = `HCR_HOST_NVHE_FLAGS`
@@ -219,16 +307,17 @@ symbolic. Each in three CPU settings, 36 configurations:
 features exactly once. The traces are made in every run and written
 whole or not at all.
 
-At 5467199 with this change it passes in about ten minutes after the
-build on 16 CPUs: two `svc` jobs, twelve TLS load jobs (70 sites), 2820
-PAC jobs (36 instructions, the 33 site forms and the three canonical
-ones, with a footprint and a determinism job in each of the 36
+At 64d801a with the Armv9.4-A and x86 work merged it passes in about
+ten minutes after the builds on 16 CPUs (9 min 40 s): two `svc` jobs,
+twelve TLS load jobs (70 sites), 2820 PAC jobs (36 instructions, the 33
+site forms and the three canonical ones, with a footprint and a determinism job in each of the 36
 configurations; in each, the round trip and the `pacda` and `autda`
 formula jobs with EnDA set and clear; in each v9.4 one, the FPAC
 exception job; and 24 ComputePAC purity spot checks), the check that
 the serialized v9.4 model gives four of the text model's traces, the
 GOT-function job, the `rseq::symbols` job, four `mrs` jobs (76 sites),
-two `brk` jobs, two TLS store jobs (5 sites), and every negative control
+two `brk` jobs, two TLS store jobs (5 sites), the `syscall` job (283
+sites; 71 traces, one feasible), and every negative control (61)
 rejected.
 
 ## Triage
@@ -250,7 +339,7 @@ x86_64 half needs both halves.
 | S224 | `pac::sign` | (no asm) | `pacda` | discharged |
 | S225 | `pac::auth` | (no asm) | `autda` | discharged |
 | S226 | `pac::strip` | (no asm) | `xpacd` | discharged |
-| S227-S233 | `raw::syscall0..6` | `syscall` | (other item) | trusted |
+| S227-S233 | `raw::syscall0..6` | `syscall` | (other item) | discharged |
 | S234-S240 | `raw::syscall0..6` | (other item) | `svc #0` | discharged |
 | S241 | `tls::get` | TLS `mov`+`mov fs:` | TLS load: evidence | trusted |
 | S242 | `tls::get_tp` | (verified) | TLS load | discharged |
@@ -287,10 +376,7 @@ against it, and the residual assumption that stays trusted.
   open.
 - **S223** `axiom_auth_sign`, **S224-S226** `pac::sign`, `auth`, `strip`:
   discharged (below).
-- **S227-S233** x86_64 `raw::syscall0..6`. `syscall` with rax, rdi, rsi,
-  rdx, r10, r8, r9 bound and rcx, r11 clobbered. Isla would show the
-  instruction writes only rcx (the return RIP), r11 (RFLAGS) and RIP
-  (IA32_LSTAR) and no memory. Residual: the Linux x86_64 syscall ABI.
+- **S227-S233** x86_64 `raw::syscall0..6`: discharged (below).
 - **S234-S240** aarch64 `raw::syscall0..6`: discharged (below).
 - **S241, S243** `tls::get`, `tls::set` (notes [get](seams/sys-tls-get.md),
   [set](seams/sys-tls-set.md)). aarch64: the TLS load (the same sites
@@ -303,9 +389,27 @@ against it, and the residual assumption that stays trusted.
 
 ## Discharged
 
-Fifteen seams, each with a five-part record under `verus/seams/` and the
-status in `verus/seams.overrides`:
+Nineteen seams (eighteen of the 26 inline-asm seams and
+`axiom_auth_sign`), each with a five-part record under `verus/seams/`
+and the status in `verus/seams.overrides`:
 
+- S227-S233, the x86_64 `syscall0` to `syscall6`
+  ([0](seams/sys-raw-x86_64-syscall0.md),
+  [1](seams/sys-raw-x86_64-syscall1.md),
+  [2](seams/sys-raw-x86_64-syscall2.md),
+  [3](seams/sys-raw-x86_64-syscall3.md),
+  [4](seams/sys-raw-x86_64-syscall4.md),
+  [5](seams/sys-raw-x86_64-syscall5.md),
+  [6](seams/sys-raw-x86_64-syscall6.md)): the template, `0f 05` at every
+  site (and no `sysenter` or `int`), and Isla's trace of `syscall` on
+  the x86 model from a symbolic state in 64-bit mode with SYSCALL
+  enabled: RCX = RIP + 2, R11 = RFLAGS, RIP = IA32_LSTAR, RFLAGS masked
+  by IA32_FMASK, CS and SS from IA32_STAR with flat 64-bit code and data
+  descriptors, no other register the model has and no memory written,
+  no model fault. Residual: Linux's user-mode state (EFER.SCE, 64-bit
+  mode, code below 2^47, canonical LSTAR) and the Linux x86_64 syscall
+  ABI for the calls challoc makes; the model lacks x87, MXCSR, AVX-512
+  mask, PKRU and CET state.
 - S234-S240, the aarch64 `syscall0` to `syscall6`
   ([0](seams/sys-raw-aarch64-syscall0.md),
   [1](seams/sys-raw-aarch64-syscall1.md),
@@ -317,7 +421,9 @@ status in `verus/seams.overrides`:
   every site, and Isla's trace of `svc #0` at EL0 for a kernel at EL1
   and at EL2 (VHE): the SVC exception with its syndrome, return address,
   vector and target EL, no user register or memory written. Their
-  `requires may_syscall()` is a capability nothing here relies on.
+  `requires may_syscall()` is the capability theorem 8 rests on (every
+  stub that enters the kernel requires it); it puts no condition on the
+  instruction.
   Residual: the Linux arm64 syscall ABI for the calls challoc makes.
 - S242, the aarch64 `get_tp` ([record](seams/sys-tls-get_tp.md)): the
   template, the shape of every site, and the four-instruction sequence
@@ -401,20 +507,52 @@ FEAT_FPAC (plan, item 2), and 52-bit VA with 4K or 16K pages
 
 The aarch64 `syscall` items share file and name with the x86_64 ones, so
 the ledger takes `file:name#N` for the Nth seam of a name in a file
-(`verus/seams.sh`, `seams.overrides`).
+(`verus/seams.sh`, `seams.overrides`): `#1` is x86_64, `#2` aarch64.
 
 ## Plan
 
 In order of cost; the estimates are for one person with the toolchain
 installed.
 
-1. **The x86_64 halves** (S227-S233 and the halves of the mixed seams
-   S1, S103, S104, S199, S200, S221, S241, S243): an x86 model in Isla's
-   IR format: the Sail compiler with the `isla-sail` plugin (OCaml,
-   opam), `sail-x86-from-acl2`, and an Isla configuration for it. Two to
-   four days, with a risk: Isla's x86 support is older than its Arm
-   support and may need work. With it, the eight mixed seams' notes
-   become records: their aarch64 halves are already checked.
+1. **The x86_64 halves of the mixed seams** (S1, S103, S104, S199,
+   S200, S221, S241, S243; S227-S233 are done). The toolchain and
+   entry exist; scouting on 2026-10-04 (wall clock, `--pessimistic`,
+   one thread each) found what blocks and what unblocks them:
+   - From a fully symbolic state the decoder explores every mode
+     (compatibility mode, CPL, alignment checking), and any instruction
+     with a data access or a fault path explodes: `mov rax, [rip+d32]`
+     (the GOT load), `mov rax, fs:[rax]`, `mov rax, fs:[0]` and `ud2`
+     each ran past 7-10 minutes without finishing, while `nop` (18
+     traces, 7 s) and `mov rax, rcx` (64 traces, 20 s) finish.
+     `syscall` finishes because it has no data access.
+   - An entry that pins Linux user mode before the cycle marker (EFER
+     LMA, LME and SCE, CS.L set and CS.D clear, CPL 3, RFLAGS.AC
+     clear) makes all of them quick: `ud2` 3 traces in 27 s (all the
+     model's `#UD` fault, none falls through), the GOT load 27 traces,
+     `mov rax, fs:[rax]` 24 and `mov rax, fs:[0]` 30 (about 30 s
+     each), in the application view. The pins then become residual
+     assumptions written into the entry rather than the job; a second
+     entry (or a configuration register selecting the pins) keeps the
+     `syscall` job's explicit assumptions as they are.
+   - Data accesses in the system view walk symbolic page tables and did
+     not finish in 10 minutes even pinned. The application view (linear
+     address = physical, the Arm jobs' MMU-off counterpart) serves the
+     loads; the `syscall` job keeps the system view.
+   - `check.rs` needs: a `trap` kind (every feasible path faults, none
+     writes `rip`) for S221; the model's byte-wise reads (one `read-mem`
+     per byte) assembled into one 8-byte value per access; memory
+     writes for S243's store; multi-instruction jobs where the second
+     instruction's `isla_fetch_base` is the first's final `rip` (the
+     checker already keeps `isla_*` local to an instruction); a `ret`
+     for the `#[inline(never)]` GOT functions (S1, S103, S104, S199),
+     whose x86 code is `mov rax, [rip+GOTPCREL]; ret` and needs the
+     stack read; the FS base as the model has it (`msrs.1` in 64-bit
+     mode) for S200, S241, S243; and `R_X86_64_GOTPCREL` /
+     `R_X86_64_GOTTPOFF` relocations as symbolic displacements, with
+     `run.sh` finding every site (73 `GOTTPOFF` sites at 8635213).
+   About two days. Residuals as for Arm (the ELF loader's GOT entries,
+   initial-exec TLS, `%fs:0` holding the TCB's self pointer, Linux's
+   `SIGILL` for `ud2`), plus the pinned user-mode state.
 2. **The other pointer-authentication CPUs.** Done for the reference
    machine: FEAT_PAuth2 with FEAT_FPAC runs on the v9.4 snapshot
    (Discharged). Left: FEAT_EPAC without FEAT_PAuth2 and FEAT_PAuth2
@@ -425,7 +563,7 @@ installed.
    52-bit VA with 4K or 16K pages, FEAT_LPA2, which the v9.4 model has
    (TCR.DS set; Linux's TCR values for it to be taken from the kernel).
    Half a day.
-3. **Read the linked code.** `run.sh` reads the aarch64 static library
+3. **Read the linked code.** `run.sh` reads the static libraries
    before the final link. The shipped `cdylib` is a separate fat-LTO run
    and may choose other registers: reading the linked `.so` (concrete
    immediates, the symbol table for the GOT address) needs the cross
@@ -437,6 +575,11 @@ installed.
    one Islaris specification per job; the traces are the same. Two or
    three days, most of it the first install. The relational PAC jobs
    need Islaris's product construction or a hand proof.
-5. **CI**: a job that builds Isla (a minute or ten, network willing),
-   fetches the snapshot and runs `run.sh` (about ten minutes after the
-   build on 16 CPUs; the PAC footprints dominate and scale with CPUs).
+5. **CI**: a job that builds Isla (a minute or ten, network willing) and
+   the x86 model (about seven minutes from a bare image with the x86
+   lane's `setup.sh`, or a cached copy), fetches the snapshots and runs
+   `run.sh` (about ten minutes after the builds on 16 CPUs; the PAC footprints
+   dominate and scale with CPUs). Without it the records go stale when a
+   contract changes, as the four Arm records did between d865271 and
+   8635213 (the `may_syscall` precondition and `get_tp`'s `TlsSlot`
+   token, brought up to date since).

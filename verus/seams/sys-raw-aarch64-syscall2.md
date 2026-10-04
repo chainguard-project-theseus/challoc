@@ -4,8 +4,8 @@ The aarch64 `syscall2` in `src/sys/raw.rs` (the second seam of that
 name in the file; `src/sys/raw.rs:syscall2#2` in
 `verus/seams.overrides`). Tool: Isla. Status: discharged, with the
 kernel's syscall ABI as a named residual assumption (part 3). The x86_64
-`syscall2` (the first) stays trusted: there is no x86_64 Sail model
-for Isla (verus/ISLA.md).
+`syscall2` (the first) has its own record
+([sys-raw-x86_64-syscall2.md](sys-raw-x86_64-syscall2.md)).
 
 ## 1. Contract
 
@@ -53,8 +53,14 @@ and checked by `verus/isla/check.rs` with Z3 4.16.0. Reproduce with
 
 ## 3. Translation
 
-The contract has no `ensures`: Verus assumes only that
-the call returns some `usize` and changes nothing it tracks. The kernel's
+The contract has one `requires` and no `ensures`: Verus assumes only
+that the call returns some `usize` and changes nothing it tracks.
+`may_syscall()` is an opaque ghost capability (`true`, "a capability,
+not a claim about the world", `src/sys/mod.rs`) that restricts which
+verified callers may reach this stub: theorem 8 (no system call on the
+fast paths, verus/THEOREMS.md) rests on every stub that enters the
+kernel requiring it, as this one does (part 2). It says nothing about
+the machine, so it maps to no precondition of the instruction. The kernel's
 effects (the mapping `mmap` creates, the bytes `read` stores) are the
 contracts of the `sys` wrappers, separate seams (FFI/syscall, tool none).
 What the stub itself must do is the asm block's interface: enter the
@@ -118,7 +124,10 @@ reviewed with the other Isla records on 2026-10-03 by a fresh-context
 reviewer (a Claude subagent with no prior context of this work), told
 to look for translations that overclaim. It found nothing specific to
 the syscall records; its checker finding (`fallthrough` did not prove
-PC + 4) does not touch the `svc` jobs. A human review is pending.
+PC + 4) does not touch the `svc` jobs. On 2026-10-04, when
+the x86 lane was merged, part 3 gained the paragraph on `may_syscall`
+(theorem 8's capability, no precondition of the instruction), which the
+merge's fresh-context review checked. A human review is pending.
 
 ## 5. Tests
 

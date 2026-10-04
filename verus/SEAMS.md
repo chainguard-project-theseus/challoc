@@ -587,13 +587,13 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S232 | `syscall0` | body | asm | Isla | trusted |
-| S233 | `syscall1` | body | asm | Isla | trusted |
-| S234 | `syscall2` | body | asm | Isla | trusted |
-| S235 | `syscall3` | body | asm | Isla | trusted |
-| S236 | `syscall4` | body | asm | Isla | trusted |
-| S237 | `syscall5` | body | asm | Isla | trusted |
-| S238 | `syscall6` | body | asm | Isla | trusted |
+| S232 | `syscall0` | body | asm | Isla | discharged |
+| S233 | `syscall1` | body | asm | Isla | discharged |
+| S234 | `syscall2` | body | asm | Isla | discharged |
+| S235 | `syscall3` | body | asm | Isla | discharged |
+| S236 | `syscall4` | body | asm | Isla | discharged |
+| S237 | `syscall5` | body | asm | Isla | discharged |
+| S238 | `syscall6` | body | asm | Isla | discharged |
 | S239 | `syscall0` | body | asm | Isla | discharged |
 | S240 | `syscall1` | body | asm | Isla | discharged |
 | S241 | `syscall2` | body | asm | Isla | discharged |
@@ -4275,7 +4275,7 @@ pub fn strip(p: usize) -> usize
 ### S232. `syscall0`
 
 src/sys/raw.rs:20. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall0.md).
 
 ```rust
 pub unsafe fn syscall0(nr: usize) -> usize
@@ -4286,7 +4286,7 @@ pub unsafe fn syscall0(nr: usize) -> usize
 ### S233. `syscall1`
 
 src/sys/raw.rs:35. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall1.md).
 
 ```rust
 pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
@@ -4297,7 +4297,7 @@ pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
 ### S234. `syscall2`
 
 src/sys/raw.rs:50. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall2.md).
 
 ```rust
 pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
@@ -4308,7 +4308,7 @@ pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
 ### S235. `syscall3`
 
 src/sys/raw.rs:65. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall3.md).
 
 ```rust
 pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize
@@ -4319,7 +4319,7 @@ pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize
 ### S236. `syscall4`
 
 src/sys/raw.rs:80. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall4.md).
 
 ```rust
 pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize
@@ -4330,7 +4330,7 @@ pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) ->
 ### S237. `syscall5`
 
 src/sys/raw.rs:96. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall5.md).
 
 ```rust
 pub unsafe fn syscall5(
@@ -4348,7 +4348,7 @@ pub unsafe fn syscall5(
 ### S238. `syscall6`
 
 src/sys/raw.rs:119. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall6.md).
 
 ```rust
 pub unsafe fn syscall6(

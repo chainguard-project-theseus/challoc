@@ -13,8 +13,15 @@ src/sys/raw.rs	syscall4	asm!("svc 0", in("x8") nr, inlateout("x0") a0 => ret, in
 src/sys/raw.rs	syscall5	asm!("svc 0", in("x8") nr, inlateout("x0") a0 => ret, in("x1") a1, in("x2") a2, in("x3") a3, in("x4") a4, options(nostack));
 src/sys/raw.rs	syscall6	asm!("svc 0", in("x8") nr, inlateout("x0") a0 => ret, in("x1") a1, in("x2") a2, in("x3") a3, in("x4") a4, in("x5") a5, options(nostack));
 src/sys/tls.rs	get_tp	asm!( "adrp {off}, :gottprel:challoc_tls", "ldr {off}, [{off}, :gottprel_lo12:challoc_tls]", "mrs {tp}, tpidr_el0", "ldr {out}, [{tp}, {off}]", off = out(reg) _, tp = out(reg) tp, out = out(reg) out, options(nostack, readonly, preserves_flags), );
+src/sys/raw.rs	syscall0	asm!("syscall", inlateout("rax") nr => ret, lateout("rcx") _, lateout("r11") _, options(nostack));
+src/sys/raw.rs	syscall1	asm!("syscall", inlateout("rax") nr => ret, in("rdi") a0, lateout("rcx") _, lateout("r11") _, options(nostack));
+src/sys/raw.rs	syscall2	asm!("syscall", inlateout("rax") nr => ret, in("rdi") a0, in("rsi") a1, lateout("rcx") _, lateout("r11") _, options(nostack));
+src/sys/raw.rs	syscall3	asm!("syscall", inlateout("rax") nr => ret, in("rdi") a0, in("rsi") a1, in("rdx") a2, lateout("rcx") _, lateout("r11") _, options(nostack));
+src/sys/raw.rs	syscall4	asm!("syscall", inlateout("rax") nr => ret, in("rdi") a0, in("rsi") a1, in("rdx") a2, in("r10") a3, lateout("rcx") _, lateout("r11") _, options(nostack));
+src/sys/raw.rs	syscall5	asm!("syscall", inlateout("rax") nr => ret, in("rdi") a0, in("rsi") a1, in("rdx") a2, in("r10") a3, in("r8") a4, lateout("rcx") _, lateout("r11") _, options(nostack));
+src/sys/raw.rs	syscall6	asm!("syscall", inlateout("rax") nr => ret, in("rdi") a0, in("rsi") a1, in("rdx") a2, in("r10") a3, in("r8") a4, in("r9") a5, lateout("rcx") _, lateout("r11") _, options(nostack));
 # Evidence only: the aarch64 halves of mixed seams whose x86_64 halves are
-# not checked (verus/ISLA.md, "Mixed seams"); their ledger status stays
+# not checked (verus/ISLA.md, "Triage"); their ledger status stays
 # trusted.
 src/api/cxx.rs	throw_bad_alloc_addr	asm!( ".weak _ZSt17__throw_bad_allocv", "adrp {out}, :got:_ZSt17__throw_bad_allocv", "ldr {out}, [{out}, :got_lo12:_ZSt17__throw_bad_allocv]", out = out(reg) out, options(nostack, readonly, preserves_flags), );
 src/config.rs	malloc_conf_addr	asm!( "adrp {out}, :got:malloc_conf", "ldr {out}, [{out}, :got_lo12:malloc_conf]", out = out(reg) out, options(nostack, readonly, preserves_flags), );

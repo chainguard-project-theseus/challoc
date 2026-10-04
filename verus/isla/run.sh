@@ -2,25 +2,27 @@
 # Check the inline-assembly seams discharged with Isla (verus/ISLA.md)
 # against the Sail Armv8.5-A model (and the PAC ones also against the
 # Armv9.4-A model, for FEAT_PAuth2 and FEAT_FPAC), on the aarch64 code
-# built from this tree, and the aarch64 evidence for the mixed seams that
-# stay trusted.
+# built from this tree, the aarch64 evidence for the mixed seams that
+# stay trusted, and against the Sail x86 model (verus/isla/x86/) on the
+# x86_64 code.
 #
-#   verus/isla/run.sh [-a LIBCHALLOC.a] [OUT]
+#   verus/isla/run.sh [-a LIBCHALLOC.a] [-x LIBCHALLOC.a] [OUT]
 #
-# Builds the aarch64 static library (or takes the one given with -a),
-# checks that the asm templates are the ones the records describe, finds
-# every instance of each checked template in the compiled code, runs
-# isla-footprint on each distinct instruction (the PAC ones in parallel,
-# one per CPU) and checks each job with isla-check (verus/isla/check.rs).
-# OUT (default: a fresh temporary directory) keeps the traces and the
-# jobs. Exit status 0 when every check holds. About ten minutes after the
-# build on 16 CPUs.
+# Builds the aarch64 and x86_64 static libraries (or takes the ones given
+# with -a and -x), checks that the asm templates are the ones the records
+# describe, finds every instance of each checked template in the
+# compiled code, runs isla-footprint on each distinct instruction (the
+# PAC ones in parallel, one per CPU) and checks each job with isla-check
+# (verus/isla/check.rs). OUT (default: a fresh temporary directory) keeps
+# the traces and the jobs. Exit status 0 when every check holds. About
+# ten minutes after the build on 16 CPUs.
 #
 # Tools, from the environment (ISLA.md "Setup"):
 #   ISLA            an Isla checkout built with `cargo build --release`
 #                   (isla-footprint, configs/armv8p5.toml, armv9p4.toml)
 #   ISLA_SNAPSHOTS  an isla-snapshots checkout (armv8p5.ir, and armv9p4.ir
 #                   or the armv9p4.ir.gz the checkout carries)
+#   ISLA_X86_IR     the x86 model, built by verus/isla/x86/build-ir.sh
 #   ISLA_FOOTPRINT  overrides $ISLA/target/release/isla-footprint
 #   ISLA_PREPROCESS overrides $ISLA/target/release/isla-preprocess
 #   Z3              the z3 binary isla-check calls (default: z3 on PATH);
@@ -29,13 +31,15 @@
 #                   llvm-tools component provides llvm-objdump and llvm-ar
 set -eu
 usage() {
-	echo "usage: $0 [-a LIBCHALLOC.a] [OUT]" >&2
+	echo "usage: $0 [-a LIBCHALLOC.a] [-x LIBCHALLOC.a] [OUT]" >&2
 	exit 2
 }
 lib=
-while getopts a: o; do
+xlib=
+while getopts a:x: o; do
 	case $o in
 	a) lib=$OPTARG ;;
+	x) xlib=$OPTARG ;;
 	*) usage ;;
 	esac
 done
@@ -48,9 +52,11 @@ mkdir -p "$out"
 out=$(cd "$out" && pwd)
 : "${ISLA:?set ISLA to an Isla checkout (verus/ISLA.md)}"
 : "${ISLA_SNAPSHOTS:?set ISLA_SNAPSHOTS to an isla-snapshots checkout}"
+: "${ISLA_X86_IR:?set ISLA_X86_IR to the x86 model (verus/isla/x86/build-ir.sh)}"
 footprint=${ISLA_FOOTPRINT:-$ISLA/target/release/isla-footprint}
 preprocess=${ISLA_PREPROCESS:-$ISLA/target/release/isla-preprocess}
 ir=$ISLA_SNAPSHOTS/armv8p5.ir
+xir=$ISLA_X86_IR
 toolchain=${RUSTUP_TOOLCHAIN:-1.95.0}
 sysroot=$(rustc +"$toolchain" --print sysroot)
 host=$(rustc +"$toolchain" -vV | sed -n 's/^host: //p')
@@ -60,7 +66,7 @@ if [ ! -e "$ir9" ] && [ -e "$ir9.gz" ]; then
 	gunzip -c "$ir9.gz" >"$out/armv9p4.ir.part" && mv "$out/armv9p4.ir.part" "$out/armv9p4.ir"
 	ir9=$out/armv9p4.ir
 fi
-for t in "$footprint" "$preprocess" "$ir" "$ir9" "$ISLA/configs/armv9p4.toml" "$llvm/llvm-objdump" "$llvm/llvm-ar"; do
+for t in "$footprint" "$preprocess" "$ir" "$ir9" "$xir" "$ISLA/configs/armv9p4.toml" "$llvm/llvm-objdump" "$llvm/llvm-ar"; do
 	[ -e "$t" ] || { echo "isla: missing $t" >&2; exit 2; }
 done
 fails=0
@@ -130,7 +136,7 @@ for rec in "$root"/verus/seams/*.md; do
 		continue
 	fi
 	loc=${entries%%"$tab"*}
-	if grep -q '@[A-Z0-9]*@' "$rec"; then
+	if grep -q '@[A-Z0-9_-]*@' "$rec"; then
 		fail "record $name: an unfilled @...@ placeholder"
 	elif [ "$(rust_blocks "$rec" | head -n 1)" != "${entries#*"$tab"}" ]; then
 		fail "record $name: its contract differs from the ledger's ($loc)"
@@ -142,12 +148,19 @@ for rec in "$root"/verus/seams/*.md; do
 	fi
 done
 
-# 2. The aarch64 code: one object with every codegen unit.
+# 2. The aarch64 code: one object with every codegen unit (the x86_64
+# library is built here too, and read from step 9).
 if [ -z "$lib" ]; then
 	echo "building the aarch64 static library (CARGO_TARGET_DIR=$out/target)"
 	(cd "$root" && CARGO_TARGET_DIR=$out/target cargo +"$toolchain" rustc -q --release --lib \
 		--target aarch64-unknown-linux-gnu --crate-type staticlib)
 	lib=$out/target/aarch64-unknown-linux-gnu/release/libchalloc.a
+fi
+if [ -z "$xlib" ]; then
+	echo "building the x86_64 static library (CARGO_TARGET_DIR=$out/target)"
+	(cd "$root" && CARGO_TARGET_DIR=$out/target cargo +"$toolchain" rustc -q --release --lib \
+		--target x86_64-unknown-linux-gnu --crate-type staticlib)
+	xlib=$out/target/x86_64-unknown-linux-gnu/release/libchalloc.a
 fi
 rm -rf "$out/obj" && mkdir -p "$out/obj"
 members=$("$llvm/llvm-ar" t "$lib" | grep '^challoc-.*\.o$')
@@ -643,7 +656,7 @@ done
 echo "PAC: $npac jobs: $(echo $pac_words | wc -w) instructions in each of $(echo $pac_configs | wc -w) configurations (12 Armv8.5-A, 24 Armv9.4-A), and $((k * 3)) purity spot checks"
 
 # 7. Evidence for the aarch64 halves of the mixed seams (verus/ISLA.md,
-# "Mixed seams"): the ledger keeps them trusted until their x86_64 halves
+# "Triage"): the ledger keeps them trusted until their x86_64 halves
 # are checked. Each compiled shape is required exactly, so a change in the
 # code fails here until its job is revisited.
 fn_body() { # NAME-PART: the words and relocations of the one function whose symbol contains NAME-PART
@@ -765,15 +778,16 @@ done <"$out/tls-stores.txt"
 # read of a register an earlier write left inexpressible, a write through
 # a field accessor, a write of PSTATE.N under `flags-preserved`, and a
 # `fallthrough` instruction continuing at PC + 8.
-refute() { # NAME JOB-TEXT
+refute() { # NAME JOB-TEXT [REASON]
 	printf '%s\n' "$2" >"$out/neg-$1.job"
 	# Rejected means the checker judged a combination and failed it (a
-	# `FAIL` line), not that it could not run the job (a missing trace or
-	# an empty job from a `sed` on a file that is not there).
+	# `FAIL` line, naming REASON when given), not that it could not run
+	# the job (a missing trace or an empty job from a `sed` on a file that
+	# is not there).
 	if "$out/isla-check" "$out/neg-$1.job" >"$out/neg-$1.log" 2>&1; then
 		fail "negative control $1 passed"
-	elif ! grep -q '^FAIL' "$out/neg-$1.log"; then
-		fail "negative control $1 did not run: $(tail -n 1 "$out/neg-$1.log")"
+	elif ! grep '^FAIL' "$out/neg-$1.log" | grep -qF -- "${3:-FAIL}"; then
+		fail "negative control $1 did not fail for its reason${3:+ ($3)}: $(tail -n 1 "$out/neg-$1.log")"
 	else
 		echo "negative control $1: rejected, as it should be"
 	fi
@@ -870,6 +884,88 @@ refute brk-esr "$(sed 's/#xf2000001/#xf2000000/' "$out/brk1.job")"
 refute brk-falls "insn brk1.trace fallthrough"
 set -- $(head -n 1 "$out/mrs-sites.txt")
 refute mrs-writes "insn mrs-x$((0x$2 & 31)).trace fallthrough"
+
+# 9. The x86_64 code, extracted as in step 2.
+rm -rf "$out/xobj" && mkdir -p "$out/xobj"
+members=$("$llvm/llvm-ar" t "$xlib" | grep '^challoc-.*\.o$')
+[ -n "$members" ] || { echo "isla: no challoc objects in $xlib" >&2; exit 2; }
+(cd "$out/xobj" && "$llvm/llvm-ar" x "$xlib" $members)
+for m in $members; do
+	"$llvm/llvm-objdump" -dr --no-print-imm-hex "$out/xobj/$m"
+done >"$out/dis-x86.txt"
+
+# Isla's view of one x86 instruction: the model (verus/isla/x86/) in its
+# system view, every register symbolic but the mode flags x86.toml fixes.
+# The entry takes the instruction as 16 bytes; le128 spells them for
+# --partial (most significant first), padded with 0x90. `--pessimistic`
+# makes a Sail assertion that can fail an error instead of a path
+# condition Isla assumes, so no model assertion is taken on trust.
+xtrace() { # NAME BYTE...
+	name=$1
+	shift
+	case " $traced " in *" $name "*) return 0 ;; esac
+	traced="$traced $name"
+	"$footprint" -A "$xir" -C "$here/x86/x86.toml" -s --pessimistic --partial -i "$(le128 "$@")" \
+		>"$out/$name.trace" 2>"$out/$name.err" || {
+		fail "isla-footprint $name: $(grep -v 'No primop' "$out/$name.err" | head -3)"
+		: >"$out/$name.trace"
+	}
+}
+le128() { # BYTE...: hex bytes in memory order
+	s= n=0
+	for b in "$@"; do
+		v=$((0x$b)) bits=
+		for _ in 1 2 3 4 5 6 7 8; do bits=$((v & 1))$bits v=$((v >> 1)); done
+		s="$bits $s" n=$((n + 1))
+	done
+	while [ $n -lt 16 ]; do s="10010000 $s" n=$((n + 1)); done
+	echo $s
+}
+
+# 10. `syscall` (sys::raw's x86_64 syscall0..syscall6): every instruction
+# in the code that enters the kernel (syscall, sysenter, int) is
+# `syscall`, encoding 0f 05, and Isla's trace of it.
+nsys=$(grep -cE "^ +[0-9a-f]+: 0f 05 +${tab}syscall$" "$out/dis-x86.txt" || true)
+nxother=$(grep -E "${tab}(syscall|sysenter|int[0-9a-z]*)(${tab}|$)" "$out/dis-x86.txt" |
+	grep -vcE ": 0f 05 +${tab}syscall$" || true)
+echo "syscall instances: $nsys; other syscall, sysenter or int: $nxother"
+[ "$nsys" -gt 0 ] || fail "no syscall in the x86_64 code"
+[ "$nxother" -eq 0 ] || fail "$nxother syscall/sysenter/int other than 0f 05 syscall"
+xtrace syscall 0f 05
+{
+	cat "$here/x86/syscall.job"
+	echo "insn syscall.trace jump"
+} >"$out/syscall.job"
+check "$out/syscall.job"
+
+# 11. x86_64 negative controls, on the real trace, each failing for its
+# own reason: the return address one byte off, R11 and the SS selector (a
+# vector register's element) left out of `writes`, a memory read where
+# there is none, rflags claimed preserved, SS's descriptor attributes
+# without B, the job without EFER.SCE (the model's #UD path) or without
+# the STAR bound (the model's own check failing), both caught as model
+# faults through `isla_fault`, and the job without EFER.LMA or CS.L
+# (paths outside 64-bit mode, some faulting, on which the asserts name
+# values the paths leave undefined). A job asserting nothing
+# about final.rip is refused outright.
+sysjob=$out/syscall.job
+refute sys-rcx "$(sed 's/^assert (= final.rcx (bvadd init.rip #x0000000000000002))$/assert (= final.rcx (bvadd init.rip #x0000000000000003))/' "$sysjob")" "assert (= final.rcx"
+refute sys-r11 "$(sed 's/^writes rcx r11 /writes rcx /' "$sysjob")" "writes r11"
+refute sys-ss "$(sed 's/^\(writes .*\) seg_visibles\.2 /\1 /' "$sysjob")" "writes seg_visibles.2"
+refute sys-mem "$(sed 's/^mem-reads 0$/mem-reads 1/' "$sysjob")" "memory reads, expected"
+refute sys-flags "$(sed 's/^no-mem-write$/no-mem-write\nflags-preserved/' "$sysjob")" "writes rflags.bits"
+refute sys-ssattr "$(sed 's/#x0c93))$/#x0893))/' "$sysjob")" "assert (= final.seg_hidden_attrs.2"
+refute sys-sce "$(grep -v '^assume (= ((_ extract 0 0) init.msrs.0) #b1)$' "$sysjob")" "a model fault"
+refute sys-star "$(grep -v '^assume (bvult ((_ extract 47 32) init.msrs.4) #x7ff8)$' "$sysjob")" "a model fault"
+refute sys-lma "$(grep -v '^assume (= ((_ extract 10 10) init.msrs.0) #b1)$' "$sysjob")" "final_rcx undefined"
+refute sys-csl "$(grep -v '^assume (= ((_ extract 9 9) init.seg_hidden_attrs.1) #b1)$' "$sysjob")" "final_rcx undefined"
+grep -v '^assert (= final.rip ' "$sysjob" >"$out/neg-sys-norip.job"
+if "$out/isla-check" "$out/neg-sys-norip.job" >"$out/neg-sys-norip.log" 2>&1 ||
+	! grep -q 'final.rip no assert names' "$out/neg-sys-norip.log"; then
+	fail "negative control sys-norip: a job without a final.rip assert was not refused"
+else
+	echo "negative control sys-norip: refused, as it should be"
+fi
 
 if [ "$fails" -ne 0 ]; then
 	echo "isla: $fails check(s) failed (traces and jobs in $out)"
