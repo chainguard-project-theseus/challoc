@@ -46,9 +46,9 @@ impl ClassState {
     /// run at a time, up to the next guard slab ([`SlabTable::commit_run`]):
     /// a slab that starts no run was committed with the one that started
     /// it. Guard slabs are committed as guards and skipped. `None` when the
-    /// region, the metadata region or a commit is exhausted. Out of line: it runs once
-    /// per slab, not once per refill, and inlined it would double the size
-    /// of `claim_with`.
+    /// region, the metadata region or a commit is exhausted. Out of line:
+    /// it runs once per slab, not once per refill, and inlined it would
+    /// double the size of `claim_with`.
     ///
     /// [`next_slab`]: ClassState::next_slab
     #[inline(never)]

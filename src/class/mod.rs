@@ -31,10 +31,10 @@
 //! up to the next guard slab at a time (`ClassState::next_fresh_slab`,
 //! `SlabTable::commit_run`), so an arena owns whole bitmap lines and
 //! whole descriptor lines: the `free` check of one arena's slot never
-//! reads a line another arena's refills and flushes write. Every slab belongs to the arena of its group
-//! (`SlabTable::owner`, a dense array of one `u16` per group, and
-//! `SlabDesc::arena`), and only that arena's state may claim from or
-//! release to it.
+//! reads a line another arena's refills and flushes write. Every slab
+//! belongs to the arena of its group (`SlabTable::owner`, a dense array
+//! of one `u16` per group, and `SlabDesc::arena`), and only that arena's
+//! state may claim from or release to it.
 //!
 //! A group stays with its arena for good: the owner word is written once,
 //! when `take_group` hands the group out, so a slab's arena never changes.
@@ -343,7 +343,9 @@ struct Inner {
     purged: Set,
     stats: ClassStats,
     /// This arena's current slab group: `group_next..group_end` are handed
-    /// to it and not yet committed (see [`ClassState::next_fresh_slab`]).
+    /// to it and not yet handed out; the rest of the run that committed
+    /// the slab before `group_next` is already read-write (see
+    /// [`ClassState::next_fresh_slab`]).
     group_next: usize,
     group_end: usize,
 }

@@ -1970,7 +1970,62 @@ fn slabs_are_committed_a_run_at_a_time() {
     assert!(is_rw(slab(0), end * size), "the second run is committed");
     assert!(!is_rw(slab(end), size), "slab {end} is committed early");
     assert_eq!(cs.table().guards(), usize::from(guards));
-    assert_eq!(cs.stats().committed, 8);
+    // Slabs 0..=8 were handed out, less the guard slab 7 with guards on.
+    assert_eq!(cs.stats().committed, if guards { 8 } else { 9 });
+}
+
+/// The runs `starts_run` and `run_end` describe tile every group exactly,
+/// for every class, page size and guard interval: the group's first slab
+/// starts a run, each run ends where the next slab that starts one is (or
+/// at the group's end), no slab inside a run, past its first, is a guard
+/// slab, and a run holds at most 512 KiB of slabs past its guard. A slab
+/// no run covered would be handed out `PROT_NONE`.
+#[test]
+fn runs_tile_every_group() {
+    let real = page_size().trailing_zeros();
+    for lg_page in [real, 14, 16] {
+        if lg_page < real {
+            continue;
+        }
+        for interval in [0u32, 2, 4, 8, 16, 32, 64, 128, 512, 2048] {
+            // One environment per table set: the tables' metadata is
+            // reserved and leaked.
+            let env = Env::with_lg_page(lg_page);
+            for c in 0..NCLASSES {
+                let t = env.table(c, interval);
+                if !t.runs() {
+                    continue;
+                }
+                let ngroups = t.nslabs().div_ceil(t.group());
+                let groups = (0..ngroups.min(64)).chain(ngroups.saturating_sub(2)..ngroups);
+                for gi in groups {
+                    let (start, end) = t.group_range(gi);
+                    let what = |s: usize| {
+                        std::format!(
+                            "page 2^{lg_page} interval {interval} class {c} group {gi} slab {s}"
+                        )
+                    };
+                    assert!(t.starts_run(start), "{}", what(start));
+                    let mut s = start;
+                    while s < end {
+                        assert!(t.starts_run(s), "{}", what(s));
+                        let e = t.run_end(s, end);
+                        assert!(s < e && e <= end, "{}: end {e}", what(s));
+                        for x in s + 1..e {
+                            assert!(!t.starts_run(x), "{}: inside the run", what(x));
+                            assert!(!t.is_guard_slab(x), "{}: a guard inside the run", what(x));
+                        }
+                        // At most `RUN_BYTES` of slabs to allocate from,
+                        // after the guard slab a run starts with.
+                        let most = (super::table::RUN_BYTES >> CLASSES[c].lg_slab).max(1)
+                            + usize::from(t.is_guard_slab(s));
+                        assert!(e - s <= most, "{}: run of {}", what(s), e - s);
+                        s = e;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A run holds at most 512 KiB (`RUN_BYTES`): a class of larger slabs
@@ -1991,7 +2046,10 @@ fn large_slabs_are_committed_one_at_a_time() {
     let (p, _) = env.claim(cs, cs.class().nslots());
     assert_eq!(cs.locate(p[0]).0, 0);
     assert!(is_rw(env.regions.slab_addr(c, 0), size));
-    assert!(!is_rw(env.regions.slab_addr(c, 1), size), "slab 1 is committed early");
+    assert!(
+        !is_rw(env.regions.slab_addr(c, 1), size),
+        "slab 1 is committed early"
+    );
 }
 
 /// Guard slabs only when the kernel has `MADV_GUARD_INSTALL`: touching

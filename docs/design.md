@@ -359,23 +359,27 @@ slab, at most 512 KiB of them (`RUN_BYTES`, the default guard interval
 of 64 KiB slabs), with one `mprotect`, and the guard slab, when the
 cursor reaches it, with the run after it. Without the cap the class of
 xmalloc's 32 KiB batches committed runs of several MiB and the row lost
-6..9% on Axion. The guard slab that ends a run stays uncommitted
-until then, so a write running off the run faults where it would have
-with one commit per slab, and a process that never fills a run pays for
-no guard. Each `mprotect` that grows a mapping takes the process's
-`mmap_lock` for writing and stalls every thread's page faults behind it:
-one per slab cost rptest's 16 threads more than 3000 commits per run and
-a quarter of their timed work off the CPU. Where a run starts follows
-from the slab number (`SlabTable::starts_run`: a group's first slab, a
-guard slab, every 512 KiB), so the arena keeps no run cursor, and the syscalls run
-without the class table's commit lock, which only counts guards.
+6..9% on Axion. The guard slab that ends a run stays uncommitted until
+then, so a write running off the end of a run faults there, and a
+process that never fills a run pays for no guard. Inside a run the slabs
+ahead of the cursor are read-write before they are handed out, so an
+overflow off the arena's newest slab faults only at the run's end, not
+at the next slab as with one commit per slab (`docs/hardening.md`).
+Each `mprotect` that grows a mapping takes the process's `mmap_lock` for
+writing and stalls every thread's page faults behind it: one per slab
+cost rptest's 16 threads more than 3000 commits per run and a quarter
+of their timed work off the CPU. Where a run starts follows from the
+slab number (`SlabTable::starts_run`: a group's first slab, a guard
+slab, every 512 KiB), so the arena keeps no run cursor, and the syscalls
+run without the class table's commit lock, which only counts guards.
 Committing whole groups at hand-out, or the class region as one prefix
-ahead of the arenas, cut the commits further, but guarded groups a
-short-lived process never fills (pg-connect20 -6%) and merged the region
-into one VMA every faulting thread shares. Page groups larger than a slab (only the tests' faked pages) and
-`thp:always` chunks are committed slab by slab (`SlabTable::commit_slab`,
-which commits a slab's page group, for slabs smaller than a page). The
-`thp` key adds two branches to the commit path, both off under the
+ahead of the arenas, cut the commits further but was not kept: it
+installs guards in groups a short-lived process never fills
+(pg-connect20 +6%, worse, on the x86_64 dev VM) and merges the region
+into one VMA every faulting thread shares. Page groups larger than a
+slab (only the tests' faked pages) and `thp:always` chunks are committed
+slab by slab (`SlabTable::commit_slab`, which commits a slab's page
+group, for slabs smaller than a page). The `thp` key adds two branches to the commit path, both off under the
 default `never` (section 17.1): `take_group` issues `MADV_HUGEPAGE` over
 the group's range when the class qualifies under `auto`, and
 `commit_slab` under `always` commits and advises the PMD-sized chunk
