@@ -38,7 +38,7 @@ use core::ptr;
 
 use crate::QUANTUM;
 use crate::heap::{self, Shared};
-use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, class_of};
+use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, SMALL_MAX, class_of, class_of_small};
 use crate::sys::Errno;
 
 // The codes as `c_int`, for `errno` and `posix_memalign`'s return; the
@@ -84,10 +84,29 @@ fn alloc_huge(shared: &Shared, size: usize, align: usize) -> (*mut u8, bool) {
 pub fn malloc(size: usize) -> *mut u8 {
     // The fast path is a cache pop with no calls in it; everything else
     // (init, heap creation, refill, huge, ENOMEM) is one tail call away so
-    // the exported `malloc` needs no stack frame.
+    // the exported `malloc` needs no stack frame. A size above the small
+    // table is one tail call too ([`malloc_medium`]): with the class taken
+    // only from the table here, its stride-scaled entry addresses the
+    // cache header as it is (`class_of_small`).
+    if size > SMALL_MAX {
+        return malloc_medium(size);
+    }
+    malloc_class(size, class_of_small(size))
+}
+
+/// `malloc` of a size above the small table: the same pop, behind the
+/// computed class.
+#[inline(never)]
+fn malloc_medium(size: usize) -> *mut u8 {
     let Some(c) = class_of(size) else {
         return malloc_slow(size);
     };
+    malloc_class(size, c)
+}
+
+/// `malloc`'s pop for a known class `c` of `size`.
+#[inline(always)]
+fn malloc_class(size: usize, c: usize) -> *mut u8 {
     let shared = super::shared_ptr();
     let Some(h) = heap::existing_heap(shared) else {
         return malloc_slow(size);
@@ -244,6 +263,20 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>) {
 /// `malloc`/`calloc`/`realloc` (or any size in the same class).
 #[inline(always)]
 pub fn free_sized(p: *mut u8, size: usize) {
+    // As in `malloc`: a size above the small table is a tail call, so the
+    // class comes only from the table here and the stride-scaled entry
+    // addresses the class line and the cache header as it is. That keeps
+    // the sized path within its registers, with no spill (on Genoa a
+    // `push` and a `pop` here cost `valkey1` 8%, #46).
+    if size > SMALL_MAX {
+        return free_sized_medium(p, size);
+    }
+    free_sized_hint(p, size, Some(class_of_small(size)))
+}
+
+/// `free_sized` of a size above the small table.
+#[inline(never)]
+fn free_sized_medium(p: *mut u8, size: usize) {
     free_sized_hint(p, size, class_of(size))
 }
 
