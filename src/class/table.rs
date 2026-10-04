@@ -663,6 +663,36 @@ impl SlabTable {
             assert(regions.class_base[class as int] == process_regions().class_base[class as int]);
             assert(nslabs as int == process_regions().spec_nslabs(class as int));
         }
+        proof {
+            // The type invariant's other conjuncts on the literal's field
+            // values, so that its check below is only a match (without
+            // them it is unstable).
+            let t = class_table()[class as int];
+            let (sb, base) = ((cls.slab_bits as usize) as u16, regions.class_base[class as int]);
+            let (lgg, lgs) = (u64_trailing_zeros(group as u64) as u8, u64_trailing_zeros(slabs_per_page as u64) as u8);
+            assert(class < NCLASSES && t.wf() && sb == t.slab_bits && (sb >= 64 ==> sb % 64 == 0));
+            assert(lgs <= 26 && lgg < 64 && regions.lg_page < 64 && slabs_per_page as u32 >= 1);
+            assert((slabs_per_page as u32) as usize == 1usize << lgs);
+            assert(nslabs & sub((slabs_per_page as u32) as usize, 1) == 0);
+            assert(nslabs <= (usize::MAX - base) as usize >> t.lg_slab);
+            assert(base < 1usize << 57 && nslabs <= ((1usize << 57) - base) as usize >> t.lg_slab);
+            assert(nslabs <= 0x400_0000 && (group as u32) as usize == 1usize << lgg);
+            let ts = Slots {
+                loc: slot_auth.id(),
+                mloc: mark_auth.id(),
+                sb: sb as int,
+                nslots: t.nslots as int,
+                nbits: nslabs * sb,
+                base: base as int,
+                slab_size: (1usize << t.lg_slab) as int,
+                size: t.size as int,
+                glg: lgs,
+                gmask: guard_interval.wrapping_sub(1),
+            };
+            assert(ts == slots);
+            assert(words_wf(word_invs, ts, bits_base, (nslabs * sb + 63) / 64));
+            assert(crate::layout::guard_geom(class as int) == (lgs, guard_interval.wrapping_sub(1)));
+        }
         Some(SlabTable {
             bits_base,
             owners_base,

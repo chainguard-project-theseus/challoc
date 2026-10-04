@@ -150,9 +150,12 @@ impl Sink {
     /// Hand the buffered bytes to the target ([`emit`], under the
     /// report's permit) and empty the buffer. `write_str` keeps `len`
     /// at most 1023, outside `verus!` (no type invariant can say it, see
-    /// there), so the bound is checked.
+    /// there), so the bound is checked: an integrity check (theorem
+    /// "Read-only APIs never abort"), which fails only on a corrupt `len`,
+    /// so `flush` needs only `may_abort_corrupt()`.
     fn flush(&mut self)
         requires
+            crate::sys::may_abort_corrupt(),
             crate::sys::may_syscall(),
     {
         if self.len == 0 {

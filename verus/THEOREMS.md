@@ -4647,7 +4647,11 @@ abort_grants_only_at_roots`, `api/mod.rs:1868`, lists the callers of
   caller `print::policy_line` gained `may_syscall()` with it). Reached by
   `stats.cgroup.empty_bytes`.
 The other integrity checks (`arena::alloc_sets`, `SlabTable::new` and
-`AtomicBitmap::allocated`'s `check`s) are on no covered path.
+`AtomicBitmap::allocated`'s `check`s) are on no covered path. Nor is
+`print::Sink::flush`'s `check(self.len < 1024)`, the report buffer's
+bound, which `Sink::write_str` (outside `verus!`) keeps: a `Sink` is
+made and flushed only inside `stats_print` (`malloc_stats_print`'s
+body), `malloc_info` and `malloc_stats`, which require `may_abort()`.
 
 **Why the capability can be trusted.**
 - Every abort goes through `abort_fmt` (`sys/abort.rs:146`): `abort`
@@ -4657,7 +4661,7 @@ The other integrity checks (`arena::alloc_sets`, `SlabTable::new` and
   of `abort_fmt`) and `check` (trusted, an `assert!`) require
   `may_abort_corrupt()`, or `c` for `check`. `die`, `exit_group` and
   `trap` (the process's end) require `may_abort()` too.
-- 356 `requires` and loop-invariant clauses name `may_abort()` and 36
+- 356 `requires` and loop-invariant clauses name `may_abort()` and 37
   name `may_abort_corrupt()`. Abort-site specs that the caller can
   discharge say so: `RunState::from_u8` and `HugeDesc::state`
   (`huge/mod.rs:105`, `:236`) require `may_abort() || v <= 2`

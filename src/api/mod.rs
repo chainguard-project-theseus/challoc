@@ -1982,6 +1982,7 @@ mod tests {
             ("arena.rs", "fn alloc_sets("),
             ("class/table.rs", "pub fn new("),
             ("bitmap.rs", "pub fn allocated("),
+            ("api/print.rs", "fn flush("),
         ];
         // The trusted bodies that require only `may_abort_corrupt`.
         let corrupt_only = [

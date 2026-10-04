@@ -1395,7 +1395,7 @@ fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&
 
 ### S42. `opt_byte`
 
-src/api/print.rs:274. Kind: external_body. Category: raw pointer from C caller.
+src/api/print.rs:277. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Byte `i` of the caller's option string.
@@ -1406,7 +1406,7 @@ unsafe fn opt_byte(opts: *const c_char, i: usize) -> u8
 
 ### S43. `word`
 
-src/api/print.rs:319. Kind: external_body. Category: core library.
+src/api/print.rs:322. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/api-print-word.md).
 
 > A configuration value's name (`config::Value::Str`, the `thp` key).
@@ -1417,7 +1417,7 @@ fn word(s: &CStr) -> &str
 
 ### S44. `hist_line`
 
-src/api/print.rs:791. Kind: external_body. Category: function pointer.
+src/api/print.rs:794. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-print-hist_line.md).
 
 > One class's line of [`slab_histogram`].
@@ -1436,7 +1436,7 @@ fn hist_line<W: Write>(
 
 ### S45. `file_target`
 
-src/api/print.rs:1281. Kind: external_body. Category: function pointer.
+src/api/print.rs:1284. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-print-file_target.md).
 
 > `Target::File(stream)`.
@@ -1447,7 +1447,7 @@ fn file_target(stream: *mut libc::FILE) -> Target
 
 ### S46. `stderr_target`
 
-src/api/print.rs:1288. Kind: external_body. Category: function pointer.
+src/api/print.rs:1291. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-print-stderr_target.md).
 
 > `Target::Stderr`.
@@ -2150,7 +2150,7 @@ fn store_owner(w: &AtomicU16, arena: u16, Ghost(t): Ghost<SlabTable>, Ghost(grou
 
 ### S87. `axiom_slot_loc`
 
-src/class/table.rs:1016. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:1046. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Trusted: `SlabTable::new` runs once per class in a process (`Shared::init`, its one caller, builds the class tables of the one `Shared`, as `layout::process_regions` assumes), so the authority it makes is the class's.
@@ -2164,7 +2164,7 @@ axiom fn axiom_slot_loc(c: int, loc: Loc, glg: u8, gmask: u32)
 
 ### S88. `axiom_fresh_words`
 
-src/class/table.rs:1032. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:1062. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > Trusted: the permissions of the `n` words of the table at `base` that `Meta::reserve_table` has just returned, each holding zero: the table has never been written (`meta.rs`: carved once and never freed), and nothing but the bitmap views reaches it.
@@ -2179,7 +2179,7 @@ axiom fn axiom_fresh_words(base: usize, n: nat) -> (tracked r: Map<int, WordPerm
 
 ### S89. `axiom_init_descs`
 
-src/class/table.rs:1106. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1136. Kind: axiom. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > Trusted: the descriptors at the permissions `perms` carved for keys `0..n` hold values.
@@ -2194,7 +2194,7 @@ axiom fn axiom_init_descs(tracked perms: Map<int, PointsTo<SlabDesc>>, n: int) -
 
 ### S90. `axiom_init_owners`
 
-src/class/table.rs:1116. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1146. Kind: axiom. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > Trusted: the owner words at the permissions `perms` carved for keys `0..n` hold values, as [`axiom_init_descs`] (an `AtomicU16` is valid for every bit pattern).
@@ -2209,7 +2209,7 @@ axiom fn axiom_init_owners(tracked perms: Map<int, PointsTo<AtomicU16>>, n: int)
 
 ### S91. `axiom_init_words`
 
-src/class/table.rs:1128. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1158. Kind: axiom. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > Trusted: the class bitmap words at the permissions `perms` carved for keys `0..n` hold values, as [`axiom_init_descs`], and each is the word at its permission's address, the identity [`word_addr`] names (the identity the word permissions of [`axiom_fresh_words`] are for).
@@ -2225,7 +2225,7 @@ axiom fn axiom_init_words(tracked perms: Map<int, PointsTo<AtomicU64>>, n: int) 
 
 ### S92. `words_ref`
 
-src/class/table.rs:1145. Kind: external_body. Category: raw pointer (internal).
+src/class/table.rs:1175. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `core::slice::from_raw_parts(p, n)` over `n` class bitmap words whose permissions `perms` holds from key `j0` on, at `p`, `p + 8`, ...
@@ -2245,7 +2245,7 @@ fn words_ref<'a>(p: *const AtomicU64, n: usize, Ghost(j0): Ghost<int>, Tracked(p
 
 ### S93. `SlabTable::watermark`
 
-src/class/table.rs:1750. Kind: external_body. Category: allocator invariant.
+src/class/table.rs:1780. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > The watermark, loaded with `order` (inlined, so the caller's load is the bare `core` one with its ordering).

@@ -144,6 +144,9 @@ generic `W: Write`, which havocs the sink. The fix: `emit` requires
 on failure, as the bounds check was; `write_str` never leaves `len` above
 1023, so it never fires). Exec change, off the hot set: `flush` gains a
 compare and a branch to the panic, and `emit`'s bounds check folds away.
+Under theorem 32 (read-only APIs never abort) the check is an integrity
+check: `flush` requires `may_abort_corrupt()`, and
+`api::tests::abort_grants_only_at_roots` lists it.
 
 ### S15, S16, S17, S22 `api::mallctl`: unstated sizes (fixed)
 
