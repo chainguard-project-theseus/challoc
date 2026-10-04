@@ -240,13 +240,6 @@ impl Heap {
         self.free_slow_in(shared, arena, class, p)
     }
 
-    /// The slow free path for any arena. With `zero_on_free` every cached
-    /// free arrives here (the fast push declines, see
-    /// [`Heap::push_cache_flags`]) and the slot is cleared first: the
-    /// class-size bytes, from the class the caller verified (the bit test
-    /// on the plain path; the size hint on the sized path, as the push
-    /// trusts it, so a stale pointer of the right shape is cleared as it
-    /// is cached, exactly as it would be handed out; design 6.3).
     /// `double_free_scan`'s slow-path compare: abort by name when `p` is
     /// among the top four entries of `cache` (signed as the push signs it).
     ///
@@ -268,6 +261,13 @@ impl Heap {
         }
     }
 
+    /// The slow free path for any arena. With `zero_on_free` every cached
+    /// free arrives here (the fast push declines, see
+    /// [`Heap::push_cache_flags`]) and the slot is cleared first: the
+    /// class-size bytes, from the class the caller verified (the bit test
+    /// on the plain path; the size hint on the sized path, as the push
+    /// trusts it, so a stale pointer of the right shape is cleared as it
+    /// is cached, exactly as it would be handed out; design 6.3).
     pub(super) fn free_slow_in(&mut self, shared: &Shared, arena: u16, class: usize, p: *mut u8) {
         if arena == FOREIGN && self.rehome && self.rehome_on_free(shared, class, p) {
             return;
