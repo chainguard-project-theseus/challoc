@@ -704,8 +704,17 @@ keep a successor on the data's arena (#94):
   the heap keeps no `others` node for it. The move flushes the home and
   `FOREIGN` caches through the ordinary flush, so nothing stays cached
   across it and a stale free of a slot cached before it aborts as
-  before, and re-keys the home headers to the new arena. At most once
-  per heap; a `thread.arena` write and an explicit cache never move.
+  before, and re-keys the home headers to the new arena. The free that
+  triggers the move can itself be a double free of a slot on the
+  `FOREIGN` cache (a full cache sends the second free to the slow path,
+  as does a `double_free_scan` hit), and the move's flush releases the
+  first copy; so with `double_free_scan` the compare runs against the
+  `FOREIGN` cache before the move, and after it the exact bit test runs
+  again on the slot before the home push, which aborts as `invalid or
+  double free` instead of caching a slot a refill could hand out too. At
+  most once per heap; a `thread.arena` write and an explicit cache never
+  move. A young thread's `thread.arena` therefore reads back a different
+  arena after a move it did not ask for.
 
 ## 7. Huge allocations
 

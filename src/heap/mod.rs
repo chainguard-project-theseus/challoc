@@ -380,12 +380,38 @@ impl Heap {
     /// caller goes on to the ordinary `FOREIGN` path. Here rather than in
     /// [`Heap::free_other`] so that the cross-arena fast push (every free
     /// of xmalloc-test's consumers) carries no test for it.
+    ///
+    /// The move flushes the `FOREIGN` caches, and with them a first copy
+    /// of `p` if this free is a double free: before the move the
+    /// `double_free_scan` compare runs against the `FOREIGN` cache (the
+    /// one `free_slow_in` would have run), and after it the exact bit test
+    /// runs again on `p`, so a slot the flush just released aborts as
+    /// `invalid or double free` instead of being pushed into a cache that
+    /// `malloc` pops (which would hand it out twice).
     #[cold]
     #[inline(never)]
     fn rehome_on_free(&mut self, shared: &Shared, class: usize, p: *mut u8) -> bool {
         let to = shared.arena_of_slot(class, p);
+        if shared.double_free_scan() {
+            let foreign = self.other_caches(shared, FOREIGN, false);
+            if !foreign.is_null() {
+                // SAFETY: `foreign` is this heap's live `FOREIGN` node; a
+                // header with `cap != 0` is a real cache.
+                unsafe {
+                    let cache = &raw mut (*foreign).caches[class];
+                    if (*cache).cap != 0 {
+                        Self::scan_or_abort(shared, cache, p);
+                    }
+                }
+            }
+        }
         if !self.try_rehome(shared, to) {
             return false;
+        }
+        // The flush released every cached slot: test `p`'s bit again.
+        match shared.classify_free(p) {
+            Ok((c, a)) => debug_assert!(c == class && a == to),
+            Err(_) => invalid_free(p as usize),
         }
         self.push(shared, class, p);
         true
