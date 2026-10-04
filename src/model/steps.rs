@@ -607,7 +607,7 @@ impl Model<'_> {
             sh.group_next[a] = start;
             sh.group_end[a] = end;
         }
-        // `let s = g.group_next; let usable = table.commit_slab(s)?; g.group_next = s + 1;`
+        // `let s = g.group_next; let usable = if table.starts_run(s) { table.commit_run(s, g.group_end)? } else { true }; g.group_next = s + 1;`
         let s = sh.group_next[a];
         sh.group_next[a] = s + 1;
         sh.slabs[s as usize].committed = true;

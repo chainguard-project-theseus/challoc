@@ -1916,6 +1916,142 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
     }
 }
 
+/// Whether `len` bytes at `addr` lie in one read-write mapping of
+/// `/proc/self/maps`.
+fn is_rw(addr: usize, len: usize) -> bool {
+    let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+    maps.lines().any(|l| {
+        let mut it = l.split_whitespace();
+        let (a, b) = it.next().unwrap().split_once('-').unwrap();
+        let a = usize::from_str_radix(a, 16).unwrap();
+        let b = usize::from_str_radix(b, 16).unwrap();
+        a <= addr && addr + len <= b && it.next().unwrap().starts_with("rw")
+    })
+}
+
+/// An arena commits its group a run at a time (`SlabTable::commit_run`):
+/// its first fresh slab commits every slab up to the next guard slab with
+/// one `mprotect`, and the guard slab stays uncommitted until the cursor
+/// reaches it, which commits and guards it with the next run. With guards
+/// off a run is eight 64 KiB slabs.
+#[test]
+fn slabs_are_committed_a_run_at_a_time() {
+    use crate::sys::features::Features;
+    let guards = Features::probe(true).guard_install;
+    let env = Env::new();
+    if env.regions.page_size() > 64 << 10 {
+        std::eprintln!("page above 64 KiB; skipping the run layout test");
+        return;
+    }
+    let c = (0..NCLASSES)
+        .find(|&c| {
+            let cls = &CLASSES[c];
+            cls.slab_size() == 64 << 10 && cls.slabs_per_line() >= 16
+        })
+        .expect("a class of 64 KiB slabs with groups of 16 slabs or more");
+    let cs = env.class(c, if guards { 8 } else { 0 });
+    assert!(cs.table().group() >= 16);
+    let size = cs.class().slab_size();
+    let slab = |s: usize| env.regions.slab_addr(c, s);
+    let run = if guards { 7 } else { 8 };
+    let n = cs.class().nslots();
+    let (p, _) = env.claim(cs, n);
+    assert_eq!(cs.locate(p[0]).0, 0);
+    assert!(is_rw(slab(0), run * size), "the first run is committed");
+    assert!(!is_rw(slab(run), size), "slab {run} is committed early");
+    assert_eq!(cs.table().guards(), 0);
+    // Use up the run: the next fresh slab is past it, slab 8.
+    for _ in 1..run {
+        env.claim(cs, n);
+    }
+    let (q, _) = env.claim(cs, n);
+    assert_eq!(cs.locate(q[0]).0, 8);
+    let end = if guards { 15 } else { 16 };
+    assert!(is_rw(slab(0), end * size), "the second run is committed");
+    assert!(!is_rw(slab(end), size), "slab {end} is committed early");
+    assert_eq!(cs.table().guards(), usize::from(guards));
+    // Slabs 0..=8 were handed out, less the guard slab 7 with guards on.
+    assert_eq!(cs.stats().committed, if guards { 8 } else { 9 });
+}
+
+/// The runs `starts_run` and `run_end` describe tile every group exactly,
+/// for every class, page size and guard interval: the group's first slab
+/// starts a run, each run ends where the next slab that starts one is (or
+/// at the group's end), no slab inside a run, past its first, is a guard
+/// slab, and a run holds at most 512 KiB of slabs past its guard. A slab
+/// no run covered would be handed out `PROT_NONE`.
+#[test]
+fn runs_tile_every_group() {
+    let real = page_size().trailing_zeros();
+    for lg_page in [real, 14, 16] {
+        if lg_page < real {
+            continue;
+        }
+        for interval in [0u32, 2, 4, 8, 16, 32, 64, 128, 512, 2048] {
+            // One environment per table set: the tables' metadata is
+            // reserved and leaked.
+            let env = Env::with_lg_page(lg_page);
+            for c in 0..NCLASSES {
+                let t = env.table(c, interval);
+                if !t.runs() {
+                    continue;
+                }
+                let ngroups = t.nslabs().div_ceil(t.group());
+                let groups = (0..ngroups.min(64)).chain(ngroups.saturating_sub(2)..ngroups);
+                for gi in groups {
+                    let (start, end) = t.group_range(gi);
+                    let what = |s: usize| {
+                        std::format!(
+                            "page 2^{lg_page} interval {interval} class {c} group {gi} slab {s}"
+                        )
+                    };
+                    assert!(t.starts_run(start), "{}", what(start));
+                    let mut s = start;
+                    while s < end {
+                        assert!(t.starts_run(s), "{}", what(s));
+                        let e = t.run_end(s, end);
+                        assert!(s < e && e <= end, "{}: end {e}", what(s));
+                        for x in s + 1..e {
+                            assert!(!t.starts_run(x), "{}: inside the run", what(x));
+                            assert!(!t.is_guard_slab(x), "{}: a guard inside the run", what(x));
+                        }
+                        // At most `RUN_BYTES` of slabs to allocate from,
+                        // after the guard slab a run starts with.
+                        let most = (super::table::RUN_BYTES >> CLASSES[c].lg_slab).max(1)
+                            + usize::from(t.is_guard_slab(s));
+                        assert!(e - s <= most, "{}: run of {}", what(s), e - s);
+                        s = e;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A run holds at most 512 KiB (`RUN_BYTES`): a class of larger slabs
+/// commits one slab at a time.
+#[test]
+fn large_slabs_are_committed_one_at_a_time() {
+    let env = Env::new();
+    let page = env.regions.page_size();
+    let Some(c) = (0..NCLASSES).find(|&c| {
+        let cls = &CLASSES[c];
+        cls.slab_size() >= (512 << 10).max(page) && cls.slabs_per_line() >= 2
+    }) else {
+        std::eprintln!("no class of 512 KiB slabs in groups; skipping");
+        return;
+    };
+    let cs = env.class(c, 0);
+    let size = cs.class().slab_size();
+    let (p, _) = env.claim(cs, cs.class().nslots());
+    assert_eq!(cs.locate(p[0]).0, 0);
+    assert!(is_rw(env.regions.slab_addr(c, 0), size));
+    assert!(
+        !is_rw(env.regions.slab_addr(c, 1), size),
+        "slab 1 is committed early"
+    );
+}
+
 /// Guard slabs only when the kernel has `MADV_GUARD_INSTALL`: touching
 /// the guard page must fault. Run in a child so the fault is observable.
 #[test]
