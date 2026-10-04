@@ -90,12 +90,12 @@ documentation (kernel, ISA, C standard) its contract follows.
 | tool | short | seams |
 |---|---|---:|
 | Islaris/Isla | Isla | 28 |
-| RefinedRust | RR | 27 |
+| RefinedRust | RR | 28 |
 | Kani | Kani | 171 |
 | loom/GenMC | GenMC | 19 |
 | Verus | Verus | 6 |
 | Miri (evidence only) | Miri | 18 |
-| none (assumption) | none | 106 |
+| none (assumption) | none | 105 |
 
 | kind | short | seams |
 |---|---|---:|
@@ -125,9 +125,9 @@ Seams by category and tool:
 | UnsafeCell/volatile/transmute | loom/GenMC | 2 |
 | UnsafeCell/volatile/transmute | Verus | 1 |
 | UnsafeCell/volatile/transmute | none (assumption) | 12 |
-| raw pointer (internal) | RefinedRust | 16 |
+| raw pointer (internal) | RefinedRust | 17 |
 | raw pointer (internal) | Kani | 14 |
-| raw pointer (internal) | none (assumption) | 22 |
+| raw pointer (internal) | none (assumption) | 21 |
 | raw pointer from C caller | Miri (evidence only) | 18 |
 | panic/abort | Kani | 9 |
 | atomics primitive | Kani | 2 |
@@ -354,17 +354,17 @@ the full name, the line and the contract.
 | S117 | `axiom_fresh_stack` | proof | invariant | none | trusted |
 | S118 | `assert_flushed` | body | abort | Kani | discharged |
 | S119 | `assert_refill_empty` | body | abort | Kani | discharged |
-| S120 | `arena_volatile` | body | cell | RR | trusted |
+| S120 | `arena_volatile` | body | cell | RR | discharged |
 | S121 | `FreshHeap` | type | ptr | none | trusted |
 | S122 | `init_fields` | body | ptr | none | trusted |
-| S123 | `mark_bound` | body | ptr | none | trusted |
+| S123 | `mark_bound` | body | ptr | RR | discharged |
 | S124 | `Heap::destroy` | body | ptr | none | trusted |
 
 ### src/heap/others.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S125 | `node_link` | body | ptr | RR | trusted |
+| S125 | `node_link` | body | ptr | RR | discharged |
 | S126 | `node_caches_detached` | body | ptr | RR | trusted |
 | S127 | `node_set_arena` | body | ptr | RR | trusted |
 | S128 | `assert_not_home` | body | abort | Kani | discharged |
@@ -2703,8 +2703,8 @@ fn assert_refill_empty(len: &u32)
 
 ### S120. `arena_volatile`
 
-src/heap/mod.rs:4256. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: RefinedRust. Status: trusted.
+src/heap/mod.rs:4262. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+Tool: RefinedRust. Status: discharged (verus/seams/heap-Heap-arena_volatile.md).
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::checked_slot`]): a plain load is hoisted above the multi-arena flag test and touches the heap's header line on every single-arena `free`.
 
@@ -2717,7 +2717,7 @@ pub(super) fn arena_volatile(&self) -> (r: u16)
 
 ### S121. `FreshHeap`
 
-src/heap/mod.rs:5628. Kind: external_body type. Category: raw pointer (internal).
+src/heap/mod.rs:5634. Kind: external_body type. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The plain fields of the fresh heap at [`FreshHeap::heap`]: the permission to them ([`FreshHeap::head`], the 128 bytes before `caches`, [`heap_head`]), which [`init_fields`] takes and keeps here, and what the trusted writers stored in them, for `tcaches::heap_new` to read back: the home arena ([`init_fields`]) and whether the heap is counted ([`mark_bound`]).
@@ -2728,12 +2728,12 @@ pub(super) tracked struct FreshHeap
 
 ### S122. `init_fields`
 
-src/heap/mod.rs:5657. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:5663. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The fields of a fresh heap before its home headers, stored field by field ([`Heap::create_detached`]).
 
-Body mints Tracked at line 5686.
+Body mints Tracked at line 5692.
 
 ```rust
 unsafe fn init_fields(
@@ -2754,8 +2754,8 @@ unsafe fn init_fields(
 
 ### S123. `mark_bound`
 
-src/heap/mod.rs:5722. Kind: external_body. Category: raw pointer (internal).
-Tool: none (assumption). Status: trusted.
+src/heap/mod.rs:5737. Kind: external_body. Category: raw pointer (internal).
+Tool: RefinedRust. Status: discharged (verus/seams/heap-mark_bound.md).
 
 > `(*h).bound = true` for a heap [`Heap::create`] has just made.
 
@@ -2773,12 +2773,12 @@ unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 
 ### S124. `Heap::destroy`
 
-src/heap/mod.rs:5951. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:5966. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Flush every cache, free them and the heap itself back to the metadata allocator.
 
-Body mints Tracked at line 5980.
+Body mints Tracked at line 5995.
 
 ```rust
 pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
@@ -2794,8 +2794,8 @@ pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(ord): Tracked<&mut 
 
 ### S125. `node_link`
 
-src/heap/others.rs:105. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/heap/others.rs:110. Kind: external_body. Category: raw pointer (internal).
+Tool: RefinedRust. Status: discharged (verus/seams/heap-others-node_link.md).
 
 > The first line of a fresh `others` node: its `arena`, `pad` and `next` ([`Heap::other_caches`]), stored field by field, `next` read after the first two stores.
 
@@ -2809,7 +2809,7 @@ unsafe fn node_link(node: *mut ArenaCaches, arena: u16, pad: u8, next: &*mut Are
 
 ### S126. `node_caches_detached`
 
-src/heap/others.rs:133. Kind: external_body. Category: raw pointer (internal).
+src/heap/others.rs:138. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `&(*o).caches` for node `o`, the `r`-th from the end of heap `h`'s `others` list, as plain headers, for the walk that folds them while it holds `h` mutably (`Heap::set_tcache_enabled`): the reference is not tied to a borrow of `h`.
@@ -2824,7 +2824,7 @@ pub(super) unsafe fn node_caches_detached<'a>(o: *mut ArenaCaches, Ghost(h): Gho
 
 ### S127. `node_set_arena`
 
-src/heap/others.rs:157. Kind: external_body. Category: raw pointer (internal).
+src/heap/others.rs:162. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `(*node).arena = arena`: the last step of `Heap::set_arena`'s exchange, once node `node`'s headers and the home headers have traded places (`Heap::swap_hdrs`), makes the node the cache of `arena`, the home arena being left.
@@ -2837,7 +2837,7 @@ pub(super) unsafe fn node_set_arena(node: *mut ArenaCaches, arena: u16, Ghost(h)
 
 ### S128. `assert_not_home`
 
-src/heap/others.rs:172. Kind: external_body. Category: panic/abort.
+src/heap/others.rs:177. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (verus/seams/heap-others-assert_not_home.md).
 
 > [`Heap::other_caches`]'s abort on a node for the home arena, which its callers rule out (the requires).
@@ -2850,7 +2850,7 @@ fn assert_not_home(arena: &u16, home: &u16)
 
 ### S129. `Heap::node_next`
 
-src/heap/others.rs:222. Kind: external_body. Category: raw pointer (internal).
+src/heap/others.rs:227. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `(*o).next` for node `o`, the `r`-th from the end of the `others` list: the node after it, null after the last.
@@ -2868,7 +2868,7 @@ pub(super) unsafe fn node_next(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int>)
 
 ### S130. `Heap::node_arena`
 
-src/heap/others.rs:249. Kind: external_body. Category: raw pointer (internal).
+src/heap/others.rs:254. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `(*o).arena` for node `o`, the `r`-th from the end of the `others` list: its key ([`Heap::node_key`]).
@@ -2885,7 +2885,7 @@ pub(super) unsafe fn node_arena(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int>
 
 ### S131. `Heap::node_caches`
 
-src/heap/others.rs:270. Kind: external_body. Category: raw pointer (internal).
+src/heap/others.rs:275. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `&(*o).caches` for node `o`, the `r`-th from the end of the `others` list, as plain headers (for [`Heap::stats`]).

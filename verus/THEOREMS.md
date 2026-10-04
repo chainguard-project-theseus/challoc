@@ -1221,7 +1221,8 @@ paths, verified unless marked trusted:
   (trusted).
 - **Free checks:** `Shared::push_flags`, `multi_arena`, `checked_slot`,
   `set_slot`, `sized_slot`, `GuardTest::is_guard`,
-  `Heap::arena_volatile` (trusted); `SlabTable::watermark` (trusted),
+  `Heap::arena_volatile` (RefinedRust,
+  `verus/seams/heap-Heap-arena_volatile.md`); `SlabTable::watermark` (trusted),
   `is_handed_out`, `is_set_unchecked`, `owner_unchecked`,
   `owner_at`, `load_owner` (trusted).
 - **Layout:** `Regions::slab_slot`, `slot_in_class`, `region_len`, the
@@ -5127,13 +5128,15 @@ order and the counts.
   `bool`; a verified spelling of the comparison changed
   `create_heap_for_thread`'s machine code.
 - The fresh heap's fields, read back: one linear ghost token,
-  `FreshHeap` (`heap/mod.rs:5584`, `external_body`, not `Copy`), holds
+  `FreshHeap` (`heap/mod.rs:5634`, `external_body`, not `Copy`), holds
   the permission to the heap's 128 bytes of plain fields (`head()`,
   `heap_head`) and records what the trusted writers stored in `arena`
-  and `bound`. `init_fields` (`:5613`) takes the head permission that
+  and `bound`. `init_fields` (`:5663`) takes the head permission that
   `create_detached` splits off the heap's block and returns the token
-  holding it (the only way to make one); `mark_bound` (`:5678`) needs
-  and keeps the permission and records `bound`; `tcaches::heap_new`
+  holding it (the only way to make one); `mark_bound` (`:5737`) needs
+  and keeps the permission and records `bound` (RefinedRust proves its
+  body stores `true` there and leaves the other head fields' bytes,
+  `verus/seams/heap-mark_bound.md`); `tcaches::heap_new`
   (`heap/tcaches.rs:124`, trusted, already the source of the fresh
   heap's `others`) uses the token up, giving the permission to the
   reference, and claims the heap's `arena` and `bound` are what it

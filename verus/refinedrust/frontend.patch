@@ -1,0 +1,48 @@
+diff --git a/rr_frontend/translation/src/types/translator.rs b/rr_frontend/translation/src/types/translator.rs
+index 30b20d0..87f7568 100644
+--- a/rr_frontend/translation/src/types/translator.rs
++++ b/rr_frontend/translation/src/types/translator.rs
+@@ -1705,6 +1705,11 @@ impl<'def, 'tcx: 'def> TX<'def, 'tcx> {
+         tcx: ty::TyCtxt<'tcx>,
+         v: ty::Const<'tcx>,
+     ) -> Result<u128, TranslationError> {
++        // An array length given by a named constant (`[T; N]` with `const N`) is an
++        // unevaluated alias here: normalize it to its value first.
++        let v = tcx
++            .try_normalize_erasing_regions(ty::TypingEnv::fully_monomorphized(), ty::Unnormalized::dummy(v))
++            .unwrap_or(v);
+         if let Some(value) = v.try_to_target_usize(tcx) {
+             return Ok(value.into());
+         }
+@@ -1774,6 +1779,15 @@ impl<'def, 'tcx: 'def> TX<'def, 'tcx> {
+             ty::TyKind::Never => Ok(specs::Type::Never),
+ 
+             ty::TyKind::Adt(adt, substs) => {
++                // Verus's `Ghost<A>` and `Tracked<A>` (crate `verus_builtin`) are zero-sized
++                // wrappers of `PhantomData<A>` outside verification: translate them as unit,
++                // without translating the ghost type `A`.
++                if self.tcx.crate_name(adt.did().krate).as_str() == "verus_builtin"
++                    && matches!(self.tcx.item_name(adt.did()).as_str(), "Ghost" | "Tracked")
++                {
++                    return Ok(specs::Type::Unit);
++                }
++
+                 // we prefer to use the registered local ADT instead of the shim, to support things like
+                 // `#raw`
+                 if self.is_registered_remote_adt(adt.did()) {
+diff --git a/rr_frontend/radium/src/specs/mod.rs b/rr_frontend/radium/src/specs/mod.rs
+index 81612ff..398b512 100644
+--- a/rr_frontend/radium/src/specs/mod.rs
++++ b/rr_frontend/radium/src/specs/mod.rs
+@@ -157,7 +157,10 @@ impl Type<'_> {
+                 coq::term::Type::Literal(su.get_rfn_type())
+             },
+ 
+-            Self::Array(ty, _) => coq::term::Type::List(Box::new(ty.get_rfn_type())),
++            // `array_t` is refined by a list of place refinements
++            Self::Array(ty, _) => coq::term::Type::List(Box::new(
++                model::Type::PlaceRfn(Box::new(ty.get_rfn_type())).into(),
++            )),
+ 
+             Self::Unit | Self::Never | Self::Uninit(_) => {
+                 // NOTE: could also choose to use an uninhabited type for Never

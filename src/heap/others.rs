@@ -92,15 +92,20 @@ pub(super) fn node_block_layout() -> (r: Layout)
 /// ([`Heap::other_caches`]), stored field by field, `next` read after the
 /// first two stores.
 ///
-/// Trusted: the stores go through `&raw mut` projections of the raw node
-/// pointer, which Verus does not support. `head` is the permission to
-/// the line they write, and is used up. The caller records `arena` as
-/// the new node's key in [`Heap::keys`]; [`Heap::node_arena`]'s claim
-/// rests on it.
+/// The stores go through `&raw mut` projections of the raw node pointer,
+/// which Verus does not support; RefinedRust proves the body against the
+/// `rr::` specification, which owns the node's first 16 bytes
+/// (`verus/refinedrust/run.sh`, record under `verus/seams/`). `head` is
+/// the permission to the line they write, and is used up. The caller
+/// records `arena` as the new node's key in [`Heap::keys`];
+/// [`Heap::node_arena`]'s claim rests on it.
 ///
 /// # Safety
 /// `node` is the start of a fresh node in a block this heap holds.
 #[inline(always)]
+#[cfg_attr(refinedrust, rr::params("l" : "loc", "a" : "Z", "p" : "Z", "nx" : "loc"))]
+#[cfg_attr(refinedrust, rr::args("l", "a", "p", "nx", "()"))]
+#[cfg_attr(refinedrust, rr::requires(#type "l" : "ArenaCachesHead_rfn" @ "ArenaCachesHead_uninit"))]
 #[verifier::external_body]
 unsafe fn node_link(node: *mut ArenaCaches, arena: u16, pad: u8, next: &*mut ArenaCaches, Tracked(head): Tracked<PointsToRaw>)
     requires

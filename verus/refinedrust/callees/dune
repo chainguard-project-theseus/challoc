@@ -1,0 +1,5 @@
+(rocq.theory
+ (name challoc.rr.callees)
+ (flags -w -notation-overridden -w -redundant-canonical-projection)
+ (theories stdpp iris iris_contrib Ltac2 Equations lrust radium lithium refinedrust Stdlib
+  rrstd.ptr.ptr.proofs))

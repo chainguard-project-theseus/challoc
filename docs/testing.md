@@ -206,6 +206,39 @@ states. A failing harness names the check that failed; a changed
 contract fails the script's first step (each record must still quote
 its seam's contract) until the record and its harness follow.
 
+## RefinedRust
+
+The plain raw-pointer bodies `verus/SEAMS.md` gives to RefinedRust are
+proved in Rocq against a RefinedRust specification on the function
+itself: `#[cfg_attr(refinedrust, rr::...)]`, which only the
+`--cfg refinedrust` translation reads (it registers the `rr` tool in
+`src/lib.rs` and changes nothing else). `verus/refinedrust/` holds the
+frontend settings, a patch to the frontend (named-constant array lengths,
+array refinements, Verus's `Ghost`/`Tracked` as unit), the typing lemmas
+the proofs add (`theories/`), the proofs (`proofs/`) and the stdlib
+proofs of their callees (`callees/`). Each discharged seam's record
+under `verus/seams/` names its proof and the gaps of the translation.
+
+```sh
+sh verus/refinedrust/run.sh     # every discharged seam, under both quanta
+```
+
+It needs the RefinedRust checkout and its opam switch (Rocq, Iris and
+RefinedRust's theories; `RR_ENV`, `RR_ROOT`, default `/opt/rr`), builds
+the patched frontend once under `target/refinedrust` (downloading its
+nightly with `rustc-dev`), translates the whole crate for each quantum
+and checks every proof with dune: about fifteen minutes cold, four
+warm. It is not part of `make test`. Run it when a change touches an
+annotated function, its contract in `verus/SEAMS.md` or a type it
+reads. A changed contract or `rr::` specification fails the first step
+(each record must still quote both); a changed body, or a change to the
+struct fields a specification owns, makes the proof fail unless it
+still holds; and the run fails unless each proof has its template's
+statement and `Print Assumptions` of every proof names only
+RefinedRust's two axioms (proof irrelevance and functional
+extensionality). A newly annotated function needs its proof under
+`proofs/`; the script points at the frontend's default.
+
 ## Vendored suites
 
 `tests/glibc/malloc/` holds five glibc malloc tests, unmodified, from tag

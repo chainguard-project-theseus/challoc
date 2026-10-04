@@ -61,4 +61,4 @@ verify = true
 # erase; Verus sets it during verification. `cfg(loom)` builds the loom
 # model checks (`src/loom_tests/`) and `cfg(kani)` the Kani harnesses
 # (`verus/kani/run.sh`).
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_only)', 'cfg(verus_keep_ghost)', 'cfg(loom)', 'cfg(kani)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_only)', 'cfg(verus_keep_ghost)', 'cfg(loom)', 'cfg(kani)', 'cfg(refinedrust)'] }

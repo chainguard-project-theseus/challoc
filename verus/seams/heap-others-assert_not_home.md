@@ -1,6 +1,6 @@
 # `assert_not_home`
 
-Seam S128 of `verus/SEAMS.md`: src/heap/others.rs:172. Kind: external_body. Category: panic/abort.
+Seam S128 of `verus/SEAMS.md`: src/heap/others.rs:177. Kind: external_body. Category: panic/abort.
 Discharged by Kani.
 
 ## Contract

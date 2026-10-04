@@ -1,0 +1,8 @@
+# RefinedRust frontend settings for `run.sh`, which also sets
+# `output_dir` (under its cache) and `lib_load_paths` (the stdlib).
+# Only the types the annotated functions use are translated: registering
+# every ADT reaches types RefinedRust cannot express (function pointers).
+register_all_adts = false
+# `proofs/assumptions.v`: `Print Assumptions` of every discharged seam;
+# `proofs/statements.v`: each proof has its template's statement.
+extra_proofs = ["assumptions", "statements"]

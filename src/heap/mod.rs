@@ -4249,9 +4249,15 @@ impl Heap {
     /// [`Heap::arena`] through a volatile load, for the `free` check's
     /// arena test ([`Shared::checked_slot`]): a plain load is hoisted
     /// above the multi-arena flag test and touches the heap's header line
-    /// on every single-arena `free`. Trusted: a volatile read of a plain
-    /// field, which reads the field's value.
+    /// on every single-arena `free`. A volatile read of a plain field,
+    /// which reads the field's value: the `rr::` specification states the
+    /// `ensures`, and RefinedRust proves the body against it
+    /// (`verus/refinedrust/run.sh`, record under `verus/seams/`).
     #[inline(always)]
+    #[cfg_attr(refinedrust, rr::params("l", "sh" : "loc", "tid" : "Z", "ar" : "Z"))]
+    #[cfg_attr(refinedrust, rr::args("l" @ "alias_ref_t"))]
+    #[cfg_attr(refinedrust, rr::requires(#iris "l ◁ₗ[π, Shared ulft_1] #(-[#sh; #tid; #ar]) @ ◁ HeapArenaHead_ty"))]
+    #[cfg_attr(refinedrust, rr::returns("ar"))]
     #[verifier::external_body]
     pub(super) fn arena_volatile(&self) -> (r: u16)
         ensures
@@ -5710,14 +5716,23 @@ fn assign_home(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (u
 }
 
 /// `(*h).bound = true` for a heap [`Heap::create`] has just made.
-/// Trusted: a field store through the raw heap pointer, to a field
-/// [`init_fields`] wrote, inside the 128 bytes `s` holds the permission
-/// to ([`FreshHeap::head`], [`heap_head`]); claims only that it was
-/// stored, in `s`, and leaves the permission as it was.
+/// A field store through the raw heap pointer, to a field [`init_fields`]
+/// wrote, inside the 128 bytes `s` holds the permission to
+/// ([`FreshHeap::head`], [`heap_head`]); it leaves the permission as it
+/// was and records the store in `s`. RefinedRust proves the body against
+/// the `rr::` specification, which owns the heap's fields up to `bound`,
+/// `bound` holding a `bool` and the others any bytes, and gives them
+/// back with `bound` holding `true` and the others' bytes unchanged
+/// (`verus/refinedrust/run.sh`, record under `verus/seams/`); that this
+/// is what `s` records rests on [`FreshHeap`]'s trusted meaning.
 ///
 /// # Safety
 /// `h` is a fresh heap, exclusively owned.
 #[inline(always)]
+#[cfg_attr(refinedrust, rr::params("l" : "loc", "sh", "tid", "ar", "st", "lg", "un", "ot", "sn", "te" : "val", "b" : "bool"))]
+#[cfg_attr(refinedrust, rr::args("l", "()"))]
+#[cfg_attr(refinedrust, rr::requires(#type "l" : "HeapHead_fresh_rfn sh tid ar st lg un ot sn te b" @ "HeapHead_fresh heap_ThreadStats_st"))]
+#[cfg_attr(refinedrust, rr::ensures(#type "l" : "HeapHead_fresh_rfn sh tid ar st lg un ot sn te true" @ "HeapHead_fresh heap_ThreadStats_st"))]
 #[verifier::external_body]
 unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
     requires

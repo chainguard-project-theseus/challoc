@@ -16,6 +16,18 @@
 // Kani's nightly checks the exported `malloc` family against the libc
 // signatures `std` links to; challoc defines them, as it must.
 #![cfg_attr(kani, allow(suspicious_runtime_symbol_definitions))]
+// RefinedRust (`verus/refinedrust/run.sh`) reads its `rr::` specifications
+// from tool attributes, which need these nightly features registered.
+#![cfg_attr(
+    refinedrust,
+    feature(register_tool, custom_inner_attributes),
+    register_tool(rr)
+)]
+#![cfg_attr(refinedrust, rr::coq_prefix("challoc"))]
+#![cfg_attr(refinedrust, rr::include("ptr"))]
+#![cfg_attr(refinedrust, rr::import("challoc.rr", "raw_shr"))]
+#![cfg_attr(refinedrust, rr::import("challoc.rr", "struct_prefix"))]
+#![cfg_attr(refinedrust, rr::import("challoc.rr", "heads"))]
 
 #[cfg(test)]
 extern crate std;
