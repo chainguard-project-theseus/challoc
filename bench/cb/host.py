@@ -175,6 +175,32 @@ def metadata_server() -> str:
         return "absent"
 
 
+def pmu_devices() -> list[str]:
+    """The kernel's perf event sources (/sys/bus/event_source/devices):
+    the core PMU (armv8_pmuv3_0, cpu, cpu_core), uncore units, and arm_spe_0
+    where the Statistical Profiling Extension is exposed and its module is
+    loaded (prep `modprobe:arm_spe_pmu`)."""
+    try:
+        return sorted(os.listdir("/sys/bus/event_source/devices"))
+    except OSError:
+        return []
+
+
+def perf_version() -> str | None:
+    """`perf version` of the perf on PATH (the bundle boot.sh mounts at
+    /opt/perf on a cb VM), None when there is none."""
+    exe = shutil.which("perf")
+    if not exe:
+        return None
+    try:
+        r = subprocess.run([exe, "version"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return f"broken: {r.stderr.strip()[:120]}"
+    return r.stdout.strip()
+
+
 def capture(cell: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     cpu = cpu_model()
     flags = cpu.pop("flags", "")
@@ -204,6 +230,8 @@ def capture(cell: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
         "thp": thp(),
         "governor": governor,
         "perf_event_paranoid": _read("/proc/sys/kernel/perf_event_paranoid"),
+        "pmu_devices": pmu_devices(),
+        "perf": perf_version(),
         "glibc": glibc_version(),
         "container": in_container(),
         "image": os.environ.get("CB_IMAGE", ""),

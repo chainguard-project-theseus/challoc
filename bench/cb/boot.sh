@@ -19,6 +19,11 @@
 # the metadata before it is used (the bucket is writable by every cb VM;
 # the instance metadata is not).
 #   cb-image              the bench image for this architecture, by digest
+#   cb-perf               the perf bundle (bench/cb/perf-build.sh),
+#                         <object>=<sha256>: unpacked to /var/cb/perf (perf
+#                         for the host itself) and mounted at /opt/perf in
+#                         the container, where cb run puts it on PATH; a
+#                         failed fetch only loses perf
 #   cb-runtime            docker | podman | sudo-podman (root podman with
 #                         --network=host: netavark needs nft, which a
 #                         Chainguard OS host lacks)
@@ -32,6 +37,10 @@
 #                           thp:<f>=<v>     THP sysfs: thp:enabled=always,
 #                                           thp:64kB=madvise (mTHP sizes)
 #                           sysctl:<k>=<v>  one sysctl
+#                           modprobe:<mod>  load a kernel module (arm_spe_pmu:
+#                                           the Statistical Profiling
+#                                           Extension's perf source); a
+#                                           failure is logged, not fatal
 #                           kernel:<pkg>    (Ubuntu) install a kernel
 #                                           flavour, make it the GRUB
 #                                           default and reboot into it once
@@ -91,6 +100,7 @@ CPUS=$(attr cb-cpus)
 MEMORY=$(attr cb-memory)
 CPUSET=$(attr cb-cpuset)
 PREP=$(attr cb-prep)
+PERF=$(attr cb-perf)
 PROVISIONING=STANDARD; [ "$(md instance/scheduling/preemptible)" = TRUE ] && PROVISIONING=SPOT
 PREFIX=runs/$RUN
 RES=$PREFIX/res/$NAME
@@ -185,6 +195,16 @@ for os in $SOURCES; do
   t=${o##*/}; t=${t%%.*}
   getv "$o" "$W/sources/$t.tar.gz" "${os#*=}" || finish infra 3 "cannot fetch source $o"
 done
+# perf: a missing bundle costs perf, not the run (rt counts without it).
+PERF_MOUNT=()
+if [ -n "$PERF" ]; then
+  if getv "${PERF%%=*}" "$W/perf.tar.gz" "${PERF#*=}" && mkdir -p "$W/perf" && tar -xzf "$W/perf.tar.gz" -C "$W/perf"; then
+    PERF_MOUNT=(-v "$W/perf:/opt/perf:ro")
+    echo "cb-boot: perf ${PERF%%=*}: host $("$W/perf/bin/perf" version 2>&1 | head -1)"
+  else
+    echo "cb-boot: perf ${PERF%%=*} not usable; continuing without perf"
+  fi
+fi
 stamp fetched
 wait $RUNTIME_PID || { cat /var/log/cb-runtime.log; finish infra 3 "container runtime $RUNTIME not usable"; }
 echo "cb-boot: $RT $(tail -1 /var/log/cb-runtime.log)"
@@ -239,19 +259,29 @@ for step in $PREP; do
       avail=$(df -BG --output=avail /var | tail -1 | tr -dc 0-9)
       if [ "${avail:-0}" -lt 20 ]; then
         echo "cb-boot: prep grow-var: $dev has ${avail} GiB free on /var"
-        if command -v resize2fs >/dev/null; then
-          resize2fs "$dev" 2>&1 | tail -1
-        else
-          # No resize2fs on the host: one from a Wolfi container that sees
-          # the mount (-v /var), so it grows the mounted filesystem online.
-          $RT run --rm --privileged "${NET[@]}" -v /dev:/dev -v /var:/mnt/var cgr.dev/chainguard/wolfi-base \
-            sh -c "apk add --no-cache e2fsprogs-extra >/dev/null 2>&1; resize2fs $dev" 2>&1 | tail -1
-        fi
+        # resize2fs from a Wolfi container that sees only the /var mount
+        # (-v /var), so it grows the mounted filesystem online. Not the
+        # host's resize2fs (the 2026-10 production images ship one): it
+        # finds the read-only /sysroot mount of the same device first and
+        # fails with "Read-only file system While checking for on-line
+        # resizing support".
+        $RT run --rm --privileged "${NET[@]}" -v /dev:/dev -v /var:/mnt/var cgr.dev/chainguard/wolfi-base \
+          sh -c "apk add --no-cache e2fsprogs-extra >/dev/null 2>&1; resize2fs $dev" 2>&1 | tail -1
         echo "cb-boot: prep grow-var: $(df -h --output=size,avail /var | tail -1)"
+        avail=$(df -BG --output=avail /var | tail -1 | tr -dc 0-9)
+        [ "${avail:-0}" -ge 20 ] || finish infra 3 "prep grow-var failed: ${avail} GiB free on /var"
       fi ;;
     thp:*=*) kv=${step#thp:}; thp_write "${kv%%=*}" "${kv#*=}" || finish infra 3 "prep $step failed" ;;
     kernel:*) ;;
     sysctl:*=*) kv=${step#sysctl:}; sysctl -w "${kv%%=*}=${kv#*=}" || finish infra 3 "prep $step failed" ;;
+    # Not fatal: whether the hardware has the unit is what the run
+    # records (host.json pmu_devices).
+    modprobe:*)
+      if modprobe "${step#modprobe:}" 2>&1; then
+        echo "cb-boot: prep modprobe ${step#modprobe:} ok"
+      else
+        echo "cb-boot: prep modprobe ${step#modprobe:} failed: $(dmesg | grep -i "${step#modprobe:}" | tail -2 | tr '\n' ' ')"
+      fi ;;
     *) finish infra 3 "unknown prep step $step" ;;
   esac
 done
@@ -301,11 +331,11 @@ esac
 [ -n "$CPUSET" ] && PROFILE+=(--cpuset-cpus "$CPUSET")
 [ -n "$MEMORY" ] && PROFILE+=(--memory "$MEMORY" --memory-swap "$MEMORY")
 DIGEST=${IMAGE##*@}
-$RT run --rm --name cb "${NET[@]}" "${PROFILE[@]}" \
+$RT run --rm --name cb "${NET[@]}" "${PROFILE[@]}" "${PERF_MOUNT[@]}" \
   -v "$W/src:/src" -v "$OUT:/out" -v "$W/sources:/cb/sources:ro" \
   -e CB_HOST="$NAME" -e CB_MACHINE="$MACHINE" -e CB_ZONE="$ZONE" \
   -e CB_SPOT="$([ "$PROVISIONING" = SPOT ] && echo 1 || echo 0)" -e CB_IMAGE="${DIGEST:0:19}" \
-  -e CB_RUNTIME="$RUNTIME" \
+  -e CB_RUNTIME="$RUNTIME" -e CB_CONTAINER="$CONTAINER" \
   -w /src "$IMG_ID" \
   python3 bench/cb run --launch /out/launch.json --vm "$NAME" --sources /cb/sources --out /out/res --bin /opt/cb/bench-bin \
   > "$OUT/cb.log" 2>&1

@@ -119,6 +119,59 @@ below:
   podman still fails), `/var` 19 GiB as shipped (the cell grows it),
   NIC `gve`, `systemd-detect-virt` = `google`.
 
+### Kernel 7.2 and the 2026-10 production images (#95)
+
+Measured by cb runs on 2026-10-03 (`r3-cgos-enable-*`), all through
+`cb launch` with `bootstrap = "startup-script"`:
+
+- **Production is 6.18.** `chainguard-server-hypervisor-{amd64,arm64}-
+  20261003-0331` boot `6.18.54-r1-gcp-6.18`; the `cgos-prod-*` cells pin
+  `expect.kernel = '^6\.18\.'`, so a 7.x production image shows up as an
+  infrastructure failure to re-pin, not as silently different numbers.
+  These images ship a host `resize2fs`, and it fails on `/var`
+  ("Read-only file system While checking for on-line resizing support"):
+  it finds the read-only `/sysroot` mount of the same partition first.
+  `grow-var` therefore always resizes from a Wolfi container that sees
+  only `-v /var`, and fails the VM when `/var` is still small.
+- **7.2 dev images.** `kirkland-server-7dot2-min-amd64-20260921-1613`
+  (VM, the `cgos72-amd64` cell) and `kirkland-server-7dot2-metal-arm64-
+  20260921` (`c4a-highmem-96-metal`, the `cgos72-metal-arm64` cell) both
+  boot `7.2.3-r0-server-7.2`, THP `madvise` (shmem `never`), `anon_name`
+  and `rseq_size=33`. No `kirkland-server-7dot2-min-arm64` family exists
+  yet (`cgos72-arm64` is PENDING).
+- **perf.** No host and no Wolfi repository has perf. cb ships a perf
+  bundle (tools/perf 7.2.9 with its libraries, `bench/cb/perf-build.sh`)
+  to every VM: `/var/cb/perf/bin/perf` on the host, `/opt/perf` (on PATH)
+  in the bench container. host.json records `perf` and `pmu_devices`.
+- **make test and make fuzz** run on these hosts as the `floor-test` row:
+  `cb launch exp-floor --cells <cgos cell> --container privileged --head
+  <rev>` (the privileged profile lets it run `make test`'s cgroup steps in
+  child cgroups). Green on cgos72-amd64 (7.2.3), cgos-prod-amd64 and
+  cgos-prod-arm64 (6.18.54) at c31387d; `r3-cgos-enable-floor4` lists
+  the five SKIP lines of a privileged run, all in the `api` step and all
+  container or host facts: `cgroup_policy/bands` twice (no limit there;
+  the `cgroup-limit` step runs it), `cgroup_policy/high` (the container's
+  cgroup has processes, EBUSY), `thp/auto` twice (no mTHP size below the
+  PMD). The `cgroup-limit` step (26 tests) and the six churn and lazy
+  OUTCOME lines show no SKIP.
+- **Metal arm64 (Neoverse N3, part 0xd8e).** GCE refuses
+  `--performance-monitoring-unit` on a metal machine type ("Invalid
+  performance monitoring unit"), and metal needs it anyway: the full PMU is
+  there. 96 CPUs, `armv8_pmuv3_0`, `arm_cmn_0` (mesh uncore), 16
+  `smmuv3_pmcg_*`, and **`arm_spe_0`** once `arm_spe_pmu` is loaded (prep
+  `modprobe:arm_spe_pmu`); `perf record -e arm_spe_0/.../u` works from the
+  privileged bench container (`bench/probes/spe-probe.sh`, #60). The
+  startup script runs as on the VM images. The VM was created in 146 s
+  and its first row ran about 8 minutes later; `cb launch exp-churn`
+  (#94) took 36 minutes end to end and cb deleted the VM. Delete it
+  within the hour (`max_run = "60m"`); check with `gcloud compute
+  instances list` afterwards.
+- **The 7.2 ladder** (`cgos72-amd64`, Xeon 8581C VM, `r3-cgos-enable-
+  ladder72` plus `-look2`, challoc acccc44 vs jemalloc): challoc ahead
+  on larson1, xmalloc(N), mstress, glibc-simple, valkey1(-free) and
+  churn1024, level on larson10/larsonN, behind on alloc-test1/N and
+  cfrac. Numbers are on #95.
+
 ---
 
 The Chainguard OS team's runbook follows, verbatim apart from formatting.
