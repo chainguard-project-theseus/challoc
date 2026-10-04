@@ -1,7 +1,7 @@
 //! The per-class [`SlabTable`]: the class region's descriptor array,
 //! class bitmap and group owner array, the hand-out watermark and the
 //! commit lock; groups go to arenas here (`take_group`) and slabs are
-//! committed here (`commit_slab`).
+//! committed here (`commit_run`, `commit_slab`).
 
 use super::abort::{guard_free, invalid_free, invalid_pointer, never_committed, owner_mismatch};
 use super::sets::Lazy;
@@ -145,6 +145,11 @@ const _: () = assert!(core::mem::size_of::<SlabTable>() % 512 != 0);
 // SAFETY: `Lazy` holds an address into the metadata region that is only
 // ever used under the lock.
 unsafe impl Send for TableInner {}
+
+/// Bytes a run holds at most ([`SlabTable::commit_run`]): the default
+/// guard interval of 64 KiB slabs, so a run is as long with guards on or
+/// off, and a class of large slabs commits one at a time.
+pub(super) const RUN_BYTES: usize = 512 << 10;
 
 // SAFETY (all three): `addr..addr + len` is inside a class region this
 // allocator reserved (the callers pass slab or page-group ranges below
@@ -606,10 +611,10 @@ impl SlabTable {
     /// before anything changes, so the arena can commit the set words the
     /// group needs; if it fails nothing has happened. Returns the group's
     /// slab range, `None` when the region or the metadata region is
-    /// exhausted. The slabs themselves are committed one by one by
-    /// [`commit_slab`].
+    /// exhausted. The slabs themselves are committed by the arena as its
+    /// cursor reaches them, a run at a time ([`commit_run`]).
     ///
-    /// [`commit_slab`]: SlabTable::commit_slab
+    /// [`commit_run`]: SlabTable::commit_run
     pub(super) fn take_group(
         &self,
         meta: &Meta,
@@ -716,6 +721,112 @@ impl SlabTable {
     pub(super) fn group_range(&self, group: usize) -> (usize, usize) {
         let start = group << self.lg_group;
         (start, (start + self.group as usize).min(self.nslabs))
+    }
+
+    /// Whether an arena whose cursor reaches slab `s` of its group commits
+    /// a run there ([`commit_run`]): at the group's first slab, at a guard
+    /// slab, and every [`run_slabs`] slabs except right after a guard slab
+    /// (whose run goes on); every slab, where slabs are committed one by
+    /// one. Any other slab was committed with the run before it.
+    ///
+    /// [`commit_run`]: SlabTable::commit_run
+    /// [`run_slabs`]: SlabTable::run_slabs
+    #[inline]
+    pub(super) fn starts_run(&self, s: usize) -> bool {
+        !self.runs()
+            || s & ((1 << self.lg_group) - 1) == 0
+            || self.is_guard_slab(s)
+            || (s & (self.run_slabs() - 1) == 0 && !self.is_guard_slab(s - 1))
+    }
+
+    /// The most slabs a run holds: [`RUN_BYTES`] of them, at least one (a
+    /// power of two, as both are).
+    #[inline]
+    fn run_slabs(&self) -> usize {
+        (RUN_BYTES >> self.class().lg_slab).max(1)
+    }
+
+    /// Whether this class commits runs: one slab per page group (a page
+    /// above the slab is only the tests' faked pages) and not the PMD
+    /// chunks of `thp:always`, which [`commit_slab`] commits slab by slab.
+    /// The `thp` mode is fixed before the first allocation (`thp::configure`
+    /// and `thp::force_never` run only during init); a mode that changed
+    /// in the middle of a group would make [`starts_run`] skip slabs no run
+    /// committed.
+    ///
+    /// [`commit_slab`]: SlabTable::commit_slab
+    /// [`starts_run`]: SlabTable::starts_run
+    #[inline]
+    pub(super) fn runs(&self) -> bool {
+        self.slabs_per_page == 1
+            && crate::thp::class_mode(self.class().slab_size()) != crate::thp::Mode::Chunks
+    }
+
+    /// Commit the run that starts at slab `s` ([`starts_run`]) of a group
+    /// handed to the caller's arena: slabs `s` up to the next guard slab or
+    /// the next multiple of [`run_slabs`], at most to `limit` (the group's
+    /// end), with one `mprotect`, `s` itself guarded (`install_guard`) when
+    /// it is a guard slab. `Some(true)` when `s` is a slab to allocate
+    /// from, `Some(false)` for a guard slab, `None` when the run cannot be
+    /// committed. On `None` part of the run may be read-write (Linux
+    /// `mprotect` can change a prefix of the range before it fails); the
+    /// cursor does not move, so the retry commits the whole run again.
+    ///
+    /// The guard slab that ends a run stays uncommitted until the cursor
+    /// reaches it, as one commit per slab leaves it: a write running off
+    /// the run faults at its end, and a process that never fills the run
+    /// pays for no guard. Each `mprotect` that grows the class region's
+    /// read-write mapping takes the process's `mmap_lock` for writing and
+    /// stalls every thread's page faults behind it (design section 5). The
+    /// run is the caller's (its arena's group, past its cursor, under its
+    /// class lock), so the syscalls run without the commit lock, which
+    /// only counts the guard.
+    ///
+    /// [`starts_run`]: SlabTable::starts_run
+    /// [`run_slabs`]: SlabTable::run_slabs
+    pub(super) fn commit_run(&self, s: usize, limit: usize) -> Option<bool> {
+        if !self.runs() {
+            return self.commit_slab(s);
+        }
+        let cls = self.class();
+        let guard = self.is_guard_slab(s);
+        let end = self.run_end(s, limit);
+        commit(self.slab_addr(s), (end - s) << cls.lg_slab).ok()?;
+        if guard {
+            let page = 1usize << self.lg_page;
+            self.install_guard(s, self.slab_addr(s), page, cls.slab_size());
+            self.inner.lock().guards += 1;
+            return Some(false);
+        }
+        Some(true)
+    }
+
+    /// The end of the run that starts at slab `s` ([`starts_run`]), for a
+    /// class that [`runs`]: the next slab that starts a run, the group's
+    /// end `limit` standing for the next group's first slab.
+    ///
+    /// [`starts_run`]: SlabTable::starts_run
+    /// [`runs`]: SlabTable::runs
+    #[inline]
+    pub(super) fn run_end(&self, s: usize, limit: usize) -> usize {
+        debug_assert!(s < limit && limit <= self.nslabs);
+        // With one slab per page group a guard slab is every
+        // `guard_mask + 1`-th slab and `x | guard_mask` the first one at or
+        // above `x`.
+        let guard = self.is_guard_slab(s);
+        let mut every = (s | (self.run_slabs() - 1)) + 1;
+        if guard && every == s + 1 {
+            every += self.run_slabs();
+        }
+        let mut end = every.min(limit);
+        if self.guard_mask != u32::MAX {
+            end = end.min(if guard {
+                (s + 1) | self.guard_mask as usize
+            } else {
+                s | self.guard_mask as usize
+            });
+        }
+        end
     }
 
     /// Commit slab `s` of a group handed to the caller's arena: make its

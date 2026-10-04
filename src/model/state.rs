@@ -33,7 +33,7 @@ pub(super) struct Slab {
     pub(super) mem: u8,
     /// `SlabDesc::arena`.
     pub(super) arena: u8,
-    /// `commit_slab` ran (the slab is below its arena's cursor).
+    /// The slab is below its arena's cursor (`commit_run` committed it).
     pub(super) committed: bool,
 }
 
