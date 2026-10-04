@@ -192,7 +192,11 @@ add.
 The size class of a request uses the same lookup shape as jemalloc and
 mimalloc: a small table for requests up to 1024 bytes and a
 leading-zero-count computation above that. `nallocx` returns the class
-size.
+size. The table holds the class times the 64-byte stride of the
+per-class lines (cache headers, class lines), and `malloc` and the
+sized free reach a size above it through a tail call, so on their fast
+paths the entry addresses the lines as it is: no copy, no shift and no
+register spent on the scaled class.
 
 ## 4. Slab descriptors and bitmaps
 
@@ -541,11 +545,20 @@ remain for explicit `MALLOCX_ARENA` allocations and `thread.arena`.
    (`sdallocx_flags`), so the compiler cannot merge the two inlined sized
    paths behind a test of the hint, and a huge size leaves for the slow
    path before the heap lookup. The hint names the region: `rel = p - class_base[c_hint]`; if
-   `rel` is past the region or not a slot start, slow path. A guard slab
-   goes to the slow path too (`GuardTest`: `(slab + slabs_per_page) &
-   mask == 0`). The region base, the slot geometry and the guard pair are
-   read from the class's line (`Shared::lines[c]`, the one plain `free`
-   reads); the class table line is not touched.
+   `rel` is past the region or not a slot start, slow path, as one
+   64-bit test: `x = rel & (slab_mask | region_hi)` keeps the in-slab
+   offset and any bit past the region, and `(x * inv64).rotate_right(tz)
+   < nslots` holds exactly for a slot start inside the region (past it,
+   `x >= 2^32 > nslots * size`). A guard slab goes to the slow path too
+   (`((rel >> lg_guard) + 1) & guard_mask == 0`, the page-group test).
+   The region base, the slot geometry and the guard word (`guard_mask`,
+   `tz`, `lg_guard`: one 8-byte load) are read from the class's line
+   (`Shared::lines[c]`, the one plain `free` reads); the class table line
+   is not touched. The sized path's cost on Zen 4 is its count of loads
+   that wait on the size or the pointer, not its instruction count: a
+   Valkey `SET` frees a value whose pointer and size come from a cache
+   miss, and `valkey1` on Genoa moved 8% between 16 and 13 such loads
+   (#46).
 2. `heap = tls()`; `cache = heap.caches[c]`; if `len == cap`, slow path.
    `slots[len++] = p`. Neither the bitmap word nor the owner word is
    loaded.
@@ -1620,7 +1633,7 @@ src/heap/paths.rs     the inlined fast paths, the cold slow paths, free_other
 src/heap/flush.rs     refill and flush; group_by_slab and the straddling double-free abort
 src/heap/compact.rs   the compacting cache: probe/compact modes, scheduled pop, rebuild (6.4)
 src/heap/others.rs    caches for other arenas (ArenaCaches) and the FOREIGN flush-only cache
-src/heap/shared.rs    Shared: process-wide state, init, the free checks and routing, GuardTest, the thread-exit key
+src/heap/shared.rs    Shared: process-wide state, init, the free checks and routing, the class lines, the thread-exit key
 src/heap/thread.rs    thread lifecycle (6.5): TLS sentinels, heap creation, the exit destructor
 src/heap/tcaches.rs   explicit caches (tcache.create)
 src/heap/mallocx.rs   MALLOCX_* flag decoding and the mallocx/dallocx routing
