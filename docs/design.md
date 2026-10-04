@@ -106,7 +106,18 @@ space the process can reserve, so the same binary works on 47-bit x86_64,
 Region bases are randomised with `getrandom` and the three mappings are
 reserved in random order. Inside the superblock the class regions sit at
 a fixed power-of-two stride in class order, each at a random offset
-inside its gap (about 17.6 bits at the preferred layout). The reservation
+inside its gap (about 17.6 bits at the preferred layout, in 4 MiB steps)
+plus a fixed *colour*: `21 * c` units of 64 KiB modulo 4 MiB, rounded
+down to the class's slab and the page (`layout::regions::colour`; none
+under `thp:always` chunks, which are measured from the region base).
+Every class allocates its lowest slabs first, so without the colour the
+first pages of every class sit at the same address modulo 4 MiB and
+crowd the same few sets of a set-associative second-level TLB (256 sets
+of 4 KiB pages span 1 MiB on Neoverse N1/N3/V2): on `larson1` at 1000
+rounds per thread on Neoverse N3 that was up to 20 live pages in one set,
+and page walks per operation fell from 0.105 to 0.064 with the colour
+(jemalloc 0.039; #94). The colours of any 16 consecutive classes are
+distinct modulo 1 MiB, 320 KiB apart. The reservation
 prefers a stride of 4 x the region, shrinks the region towards 2^32
 before giving that up, and only then drops to a stride of 2 x
 (`layout::reserve_superblock`). Classifying a pointer is therefore

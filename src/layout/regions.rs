@@ -29,6 +29,38 @@ pub struct Mapping {
 /// class, two per side mapping.
 pub const MAX_SEALED: usize = NCLASSES + 1 + 4;
 
+/// Unit of the class regions' colouring ([`colour`]): 64 KiB, the small
+/// classes' slab.
+pub const LG_COLOUR_UNIT: u32 = 16;
+/// Units between the colours of neighbouring classes ([`colour`]): odd, so
+/// any 16 consecutive classes take distinct colours modulo 1 MiB (and any 8
+/// modulo 512 KiB), 5 units (320 KiB) apart modulo 1 MiB.
+const COLOUR_STEP: usize = 21;
+
+/// Colour of class `class`'s region: its distance above the `MAX_SLAB`
+/// boundary its random offset picks, a multiple of the class's slab (and of
+/// the page and [`LG_COLOUR_UNIT`]) below [`MAX_SLAB`].
+///
+/// Every class allocates its lowest slabs first, so without a colour the
+/// hot first pages of every class would sit at the same address modulo
+/// 4 MiB. A set-associative second-level TLB indexes on the low bits of the
+/// page number (256 sets of 4 KiB pages cover 1 MiB on Neoverse N1, N2,
+/// N3 and V2), so a program using twenty classes would crowd their first
+/// pages into the same few sets and walk the page tables on conflict
+/// misses while most sets stay empty. The colour spreads the first slabs
+/// of neighbouring classes 320 KiB apart over each 1 MiB, the way
+/// jemalloc's back-to-back extents spread its slabs.
+pub const fn colour(class: usize, lg_slab: u32, lg_page: u32) -> usize {
+    let mut lg = LG_COLOUR_UNIT;
+    if lg_slab > lg {
+        lg = lg_slab;
+    }
+    if lg_page > lg {
+        lg = lg_page;
+    }
+    ((class * COLOUR_STEP) << LG_COLOUR_UNIT) & (MAX_SLAB - 1) & !((1usize << lg) - 1)
+}
+
 /// What a pointer is, according to the regions alone. Slab-tier results
 /// still need the slab bitmap consulted to tell live from free.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,7 +84,8 @@ pub struct Regions {
     pub superblock: usize,
     pub lg_region: u32,
     pub lg_stride: u32,
-    /// Start of each class region, `MAX_SLAB`-aligned, inside its stride.
+    /// Start of each class region inside its stride: a `MAX_SLAB` boundary
+    /// plus the class's [`colour`], so aligned to the class's slab.
     pub class_base: [usize; NCLASSES],
     pub huge_base: usize,
     pub huge_len: usize,
@@ -67,8 +100,9 @@ pub struct Regions {
 impl Regions {
     /// Assemble regions from already chosen bases. `offsets[c]` is the
     /// distance of class `c`'s region from the start of its stride; every
-    /// offset must be `MAX_SLAB`-aligned and below the gap, and `superblock`
-    /// must be `MAX_SLAB`-aligned.
+    /// offset must be aligned to class `c`'s slab and to [`LG_COLOUR_UNIT`]
+    /// (a random multiple of `MAX_SLAB` plus a [`colour`]) and below the
+    /// gap, and `superblock` must be `MAX_SLAB`-aligned.
     pub const fn from_parts(
         superblock: usize,
         lg_region: u32,
@@ -85,7 +119,7 @@ impl Regions {
         let mut class_base = [0usize; NCLASSES];
         let mut c = 0;
         while c < NCLASSES {
-            assert!(offsets[c] & (MAX_SLAB - 1) == 0 && offsets[c] < gap);
+            assert!(offsets[c] & ((1usize << LG_COLOUR_UNIT) - 1) == 0 && offsets[c] < gap);
             class_base[c] = superblock + (c << lg_stride) + offsets[c];
             c += 1;
         }
@@ -297,8 +331,9 @@ impl Regions {
 mod linux {
     use super::{
         LG_HUGE_MIN, LG_HUGE_PREFERRED, LG_MAX_SLAB, LG_META_MIN, LG_META_PREFERRED, LG_REGION_MIN,
-        LG_REGION_PREFERRED, LG_SLIDE, MAX_SLAB, Mapping, NCLASSES, Regions,
+        LG_REGION_PREFERRED, LG_SLIDE, MAX_SLAB, Mapping, NCLASSES, Regions, colour,
     };
+    use crate::layout::CLASSES;
     use crate::sys::{self, Errno, MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
 
     /// Reserve address space with `PROT_NONE`, `MAP_NORESERVE`.
@@ -426,8 +461,16 @@ mod linux {
             let superblock = (sb_map.addr + MAX_SLAB - 1) & !(MAX_SLAB - 1);
             let gap = (1usize << lg_stride) - (1usize << lg_region);
             let mut offsets = [0usize; NCLASSES];
+            // `thp:always` commits PMD-sized chunks measured from the
+            // region base, so its regions stay `MAX_SLAB`-aligned.
+            let coloured = crate::thp::decision().mode != crate::thp::Mode::Chunks;
             for (c, off) in offsets.iter_mut().enumerate() {
                 *off = (word(c) as usize % (gap >> LG_MAX_SLAB)) << LG_MAX_SLAB;
+                if coloured {
+                    let lg_slab = CLASSES[c].lg_slab as u32;
+                    *off += colour(c, lg_slab, lg_page);
+                    assert!(*off & ((1usize << lg_slab) - 1) == 0);
+                }
             }
             // `mmap` only promises page alignment, so each mapping carries
             // `MAX_SLAB` of slack and its base is aligned up before the slide.
