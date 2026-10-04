@@ -918,9 +918,12 @@ anything that allocates. Steps, in the order `api::init` performs them:
 Every step is a fixed cost of every exec, so what a short-lived process
 never needs waits for first use: the cgroup files, the per-size THP files,
 and the commit of the small tables carved from the metadata object side
-(section 2, one `mprotect` for all of them). A program that allocates once
-and exits makes about 150 system calls under challoc (its `exec`
-included), against about 275 before these deferrals (#29).
+(section 2, one `mprotect` for all of them). `startup-true` (`/bin/true`,
+its `exec` included) makes 234 system calls under challoc on ref-amd64,
+against 357 before these deferrals and 157 under jemalloc 5.4.0 (#29).
+Slabs are still committed one at a time as the arena reaches them
+(section 5): committing a group ahead would leave the slab after an
+arena's newest one read-write, where an overflow now faults.
 
 A pointer passed to `free` before init completes, or that does not
 classify, is invalid and aborts with a message. ld.so's minimal startup
