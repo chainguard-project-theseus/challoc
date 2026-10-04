@@ -800,14 +800,25 @@ pub fn malloc_trim(_pad: usize) -> c_int {
 /// the pair's layout, not one offset; both are pinned. The cost is 768
 /// bytes of `.text`.
 ///
-/// aarch64: `malloc` at 16, `free` at 28. LLVM aligns functions to 4
-/// here, so before the pin any `.text` growth ahead of the pair moved
-/// both: #111 and #114 moved them from 16/28 to 8/20 without touching
-/// either function, and that alone cost ref-arm64 (Neoverse V2) xmalloc
-/// about 2% (#115). 16/28 is where the pair sat on ff2c450, and it
-/// measured best of seven offsets (r3b-pin-sweep1: the other six, 0/0,
-/// 8/20, 16/0, 0/28, 32/32 and 48/48, were 0.3% to 1.6% slower against
-/// main).
+/// aarch64: `malloc` at 16, `free` at 28, in both quanta. LLVM aligns
+/// functions to 4 here, so before the pin any `.text` growth ahead of the
+/// pair moved both: #111 and #114 moved them from 16/28 to 8/20 without
+/// touching either function, and that alone cost ref-arm64 (Neoverse V2)
+/// xmalloc about 2% (#115; 8/20 was worse, Holm, in r3b-rss-xm4 and
+/// xm5). 16/28 is where the quantum16 build had them on ff2c450; in a
+/// sweep of seven offsets (r3b-pin-sweep1) no other offset measured
+/// better. The quantum8 build (the one Wolfi's Valkey links) had them at
+/// 52/52; at 16/28 its xmalloc measured 5.7% better and its Valkey-model
+/// rows the same (r3b-pin-rv1).
+///
+/// Only these two entries are pinned. On aarch64 moving them out of
+/// `.text` shifts the rest: `sdallocx`, the `challoc_*_usable` entries,
+/// `calloc`, `realloc` and the C++ operators moved by up to 24 bytes mod
+/// 64, and none of their rows moved (r3b-pin-rv1: valkey1,
+/// valkey1-usable, valkey1-write-pair and larson1 for `new[]`/`delete[]`,
+/// in both quanta). `je_malloc` and `je_free` are their own copies in
+/// `.text`, not aliases of the pinned bodies, as on x86_64: a program
+/// that calls the `je_` names gets the unpinned copies.
 ///
 /// The test `malloc_and_free_entries_are_pinned` checks both against
 /// `nm -D` of the shipped library.
