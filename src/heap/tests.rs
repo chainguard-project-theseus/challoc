@@ -2775,6 +2775,66 @@ fn a_double_free_across_the_move_aborts() {
     w2.free(p);
 }
 
+/// The double free itself can be the free that moves the heap: with
+/// `double_free_scan` the second free of a slot on the `FOREIGN` cache
+/// takes the slow path (the push declines on the hit), which is where a
+/// young heap moves, and the move's flush would release the first copy.
+/// The compare runs against the `FOREIGN` cache before the move, so it
+/// aborts by name and the heap stays where it is.
+#[test]
+#[should_panic(expected = "the slot is already in the thread cache")]
+fn a_double_free_that_would_move_the_heap_aborts_with_the_scan() {
+    let s = TestShared::with(Config {
+        narenas: 4,
+        double_free_scan: true,
+        ..Config::DEFAULT
+    })
+    .build();
+    let _main = TestHeap::new(s);
+    let c = class_with(64);
+    let w1 = TestHeap::new(s);
+    let p = w1.alloc(c);
+    let w2 = TestHeap::new(s);
+    w1.destroy();
+    assert_eq!(s.arenas.bound(1), 0);
+    w2.free(p);
+    assert_eq!(w2.heap().arena(), 2);
+    assert!(w2.heap().rehome);
+    w2.free(p);
+}
+
+/// The same in the default configuration: a full `FOREIGN` cache sends
+/// the second free of a slot it holds to the slow path, and that free
+/// moves the heap, whose flush releases the first copy. The bit test runs
+/// again after the move, so the second copy aborts instead of taking the
+/// home push (where `malloc` would pop it while a refill could hand the
+/// released slot out again).
+#[test]
+#[should_panic(expected = "invalid or double free")]
+fn a_double_free_that_moves_the_heap_aborts_at_the_bit_test() {
+    let s = TestShared::with(Config {
+        narenas: 4,
+        ..Config::DEFAULT
+    })
+    .build();
+    let _main = TestHeap::new(s);
+    let c = class_with(64);
+    let w1 = TestHeap::new(s);
+    let slots: Vec<*mut u8> = (0..4096).map(|_| w1.alloc(c)).collect();
+    let w2 = TestHeap::new(s);
+    w1.destroy();
+    let p = slots[0];
+    w2.free(p);
+    let cap = w2.heap().cache_in(FOREIGN, c).unwrap().cap();
+    assert!(cap < slots.len());
+    for &q in &slots[1..cap] {
+        w2.free(q);
+    }
+    assert_eq!(w2.heap().cache_in(FOREIGN, c).unwrap().len(), cap);
+    assert_eq!(w2.heap().arena(), 2);
+    w2.free(p);
+}
+
 /// `narenas:0` (the default) is resolved at init from the CPU count
 /// and stored, so `opt.narenas` and `arenas.auto` agree on it.
 #[test]
