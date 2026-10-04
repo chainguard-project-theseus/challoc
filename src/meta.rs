@@ -22,11 +22,16 @@
 //! overcommit charge, never RSS. Nothing is ever uncommitted.
 //!
 //! A table of at most [`EAGER_MAX`] bytes is carved from the object side
-//! instead, page aligned and writable from the start, so it merges with the
+//! instead, page aligned and writable as a whole, so it merges with the
 //! objects into the one mapping that grows from the base rather than adding
 //! VMAs of its own that every `fork`, its faults and its exit pay for
-//! (design 2). Its owner still calls [`Meta::commit`], which is then
-//! accounting only. Larger tables stay on the reservation side: making them
+//! (design 2). Its owner still calls [`Meta::commit`], which then makes the
+//! object side writable through every table carved so far, if it is not
+//! already, and otherwise only counts. A carve itself makes no system call:
+//! the object side's commit is deferred to the next object or table commit
+//! that needs it, so the dozens of tables init carves back to back cost one
+//! `mprotect` rather than one each (#29). Larger tables stay on the
+//! reservation side: making them
 //! writable whole would put never-touched address space into core dumps,
 //! `mlockall` and `RLIMIT_DATA`. Eager carving is off when the kernel
 //! charges writable bytes against its commit limit (`vm.overcommit_memory=2`)
@@ -501,10 +506,13 @@ pub struct MetaStats {
     /// not.
     pub reserved: usize,
     /// Bytes readable and writable: the object side's chunked frontier
-    /// plus the reservation side's commits.
+    /// plus the reservation side's commits (the frontier includes tables
+    /// carved but not yet used, whose commit is deferred to their first
+    /// use).
     pub writable: usize,
     /// Bytes of tables carved from the object side (`reserve_table`,
-    /// `reserve_committed` up to `EAGER_MAX`), all writable.
+    /// `reserve_committed` up to `EAGER_MAX`), writable once the object
+    /// side's deferred commit has run (`Meta::commit`, the module doc).
     pub eager: usize,
 }
 
@@ -624,7 +632,7 @@ pub(crate) struct Inner {
     len: usize,
     page: usize,
     /// Next byte for objects and eagerly carved tables. `base <= bump <=
-    /// committed <= top`.
+    /// frontier <= top` and `committed <= frontier`.
     bump: usize,
     /// Bump area is writable below here; always page aligned.
     committed: usize,
@@ -640,6 +648,11 @@ pub(crate) struct Inner {
     top_committed: usize,
     /// One of `EAGER_UNPROBED`, `EAGER_ON`, `EAGER_OFF`.
     eager: u8,
+    /// The object side's chunked frontier: everything below it counts as
+    /// committed, and it is writable below `committed`. The two differ
+    /// only while eagerly carved tables wait for their deferred commit
+    /// ([`Inner::flush`]); page aligned.
+    frontier: usize,
     /// Ghost: the blocks on each bin's free list, head first.
     #[allow(dead_code)]
     lists: Ghost<Seq<Seq<*mut FreeNode>>>,
@@ -662,17 +675,20 @@ pub(crate) struct Inner {
     #[allow(dead_code)]
     pages: Tracked<GhostMapAuth<int, bool>>,
     /// Ghost: the permission to the committed bytes above the bump
-    /// pointer, `[bump, committed)`, from which [`alloc`] hands out each
-    /// fresh object's.
+    /// pointer, `[bump, committed)` (none while the bump pointer is past
+    /// `committed`, [`Inner::fresh_end`]), from which [`alloc`] hands out
+    /// each fresh object's.
     ///
     /// [`alloc`]: Inner::alloc
     #[allow(dead_code)]
     fresh: Tracked<PointsToRaw>,
     /// Ghost: the uncommitted address space between the object side and
-    /// the reservations, `[committed, top)`, which grants no access;
-    /// [`commit_bump_to`] moves the front it commits to `fresh`, and
-    /// [`reserve`] gives up the back it reserves.
+    /// the reservations, `[fresh_end, top)` ([`Inner::fresh_end`]), which
+    /// grants no access; [`commit_bump_to`] moves the front it commits to
+    /// `fresh`, [`reserve_eager`] the front a table takes, deferred, to
+    /// `handed_lazy`, and [`reserve`] gives up the back it reserves.
     ///
+    /// [`reserve_eager`]: Inner::reserve_eager
     /// [`commit_bump_to`]: Inner::commit_bump_to
     /// [`reserve`]: Inner::reserve
     #[allow(dead_code)]
@@ -683,9 +699,10 @@ pub(crate) struct Inner {
     /// [`alloc`]: Inner::alloc
     #[allow(dead_code)]
     tails: Tracked<Map<*mut FreeNode, PointsToRaw>>,
-    /// Ghost: the permission to the table [`reserve_eager`] carved or
-    /// [`reserve_committed`] committed last, for [`Meta::reserve_committed_raw`]
-    /// to take; `wf` says nothing of it.
+    /// Ghost: the permission to the table [`reserve_committed`] committed
+    /// last, for [`Meta::reserve_committed_raw`] to take, or to the
+    /// committed bytes [`reserve_eager`] carved last, from the old bump
+    /// pointer (padding first); `wf` says nothing of it.
     ///
     /// [`reserve_eager`]: Inner::reserve_eager
     /// [`reserve_committed`]: Inner::reserve_committed
@@ -706,6 +723,14 @@ pub(crate) struct Inner {
     /// [`reserve_committed`]: Inner::reserve_committed
     #[allow(dead_code)]
     handed_zero: Tracked<Zeroed>,
+    /// Ghost: the uncommitted address space [`reserve_eager`] carved last,
+    /// from `unbacked`'s front: the part of the table (and its padding)
+    /// whose commit is deferred ([`Inner::flush`]); `wf` says nothing of
+    /// it.
+    ///
+    /// [`reserve_eager`]: Inner::reserve_eager
+    #[allow(dead_code)]
+    handed_lazy: Tracked<Unbacked>,
 }
 
 /// Bytes on the free lists of bins `0..n`.
@@ -1528,6 +1553,83 @@ proof fn raw_if(tracked raw: PointsToRaw, keep: bool) -> (tracked r: PointsToRaw
     }
 }
 
+/// The table `[p, e)` an eager carve handed out ([`Inner::reserve_eager`]),
+/// from its two parts: `raw` and `z`, the committed bytes from the old
+/// bump pointer `b0` (padding first) up to `e` or the old `fresh` end
+/// `lo0`, whichever is lower, and `lraw` and `lz`, the bytes from `lo0` to
+/// `e` when `e` is past it (else nothing), made from the deferred part.
+proof fn carved_table(
+    tracked raw: PointsToRaw,
+    tracked z: Zeroed,
+    tracked lraw: PointsToRaw,
+    tracked lz: Zeroed,
+    b0: int,
+    lo0: int,
+    p: int,
+    e: int,
+) -> (tracked r: (PointsToRaw, Zeroed))
+    requires
+        b0 <= p <= e,
+        b0 <= lo0,
+        raw.is_range(b0, (if e <= lo0 { e } else { lo0 }) - b0),
+        z.addr() == b0,
+        z.len() == (if e <= lo0 { e } else { lo0 }) - b0,
+        lraw.is_range(lo0, (if e <= lo0 { lo0 } else { e }) - lo0),
+        lz.addr() == lo0,
+        lz.len() == (if e <= lo0 { lo0 } else { e }) - lo0,
+        raw.provenance() == lraw.provenance(),
+    ensures
+        r.0.is_range(p, e - p),
+        r.0.provenance() == raw.provenance(),
+        r.1.addr() == p,
+        r.1.len() == e - p,
+{
+    let tracked (raw, z) = if e <= lo0 {
+        (raw, z)
+    } else {
+        (join_at(raw, lraw, b0, lo0, e), z.join(lz))
+    };
+    let tracked (_pad, mine) = split_at(raw, b0, p, e);
+    let tracked (_pad_z, mine_z) = z.split(p - b0);
+    (mine, mine_z)
+}
+
+/// The state the undo of an eager carve leaves (`Inner::reserve_committed`):
+/// `pre`'s, with `fresh`, `fresh_zero` and `unbacked` rebuilt from the
+/// carve's parts to the extents they had, and the unclaimed-byte map back
+/// to its value, is well formed as `pre` was.
+proof fn lemma_uncarved(pre: Inner, post: Inner)
+    requires
+        pre.wf(),
+        post == (Inner {
+            fresh: post.fresh,
+            fresh_zero: post.fresh_zero,
+            unbacked: post.unbacked,
+            handed: post.handed,
+            handed_zero: post.handed_zero,
+            handed_lazy: post.handed_lazy,
+            pages: post.pages,
+            ..pre
+        }),
+        post.pages@@ == pre.pages@@,
+        post.pages@.id() == pre.pages@.id(),
+        post.fresh@.is_range(pre.bump as int, pre.fresh_end() - pre.bump),
+        post.fresh@.provenance() == cast_provenance(),
+        post.fresh_zero@.addr() == pre.bump,
+        post.fresh_zero@.len() == pre.fresh_end() - pre.bump,
+        post.unbacked@.addr() == pre.fresh_end(),
+        post.unbacked@.len() == pre.top - pre.fresh_end(),
+    ensures
+        post.wf(),
+{
+    assert(post.region_wf());
+    assert(post.stats_wf());
+    assert(post.lists_wf());
+    assert(post.live_wf());
+    assert(post.pages_wf());
+    assert(post.raw_wf());
+}
+
 /// `[lo, mid)` and `[mid, hi)` joined.
 proof fn join_at(tracked a: PointsToRaw, tracked b: PointsToRaw, lo: int, mid: int, hi: int) -> (tracked r: PointsToRaw)
     requires
@@ -1556,9 +1658,29 @@ impl Inner {
         &&& self.len > 0
         &&& self.page <= self.len
         &&& self.base + self.len <= va_limit()
-        &&& self.base <= self.bump <= self.committed <= self.top <= self.base + self.len
+        &&& self.base <= self.bump <= self.frontier <= self.top <= self.base + self.len
+        &&& self.base <= self.committed <= self.frontier
         &&& self.committed % self.page == 0
+        &&& self.frontier % self.page == 0
         &&& self.top % self.page == 0
+        &&& self.chunked(self.frontier)
+    }
+
+    /// `x` is a chunk boundary of the object side ([`Inner::chunk_end`]):
+    /// a whole number of chunks from the base, or `top`.
+    spec fn chunked(&self, x: usize) -> bool {
+        x == self.top || (x - self.base) % (align_up_spec(COMMIT_CHUNK, self.page) as int) == 0
+    }
+
+    /// The end of `fresh` and the start of `unbacked`: `committed`, or the
+    /// bump pointer once eagerly carved tables, whose commit is deferred,
+    /// took it past `committed`.
+    spec fn fresh_end(&self) -> usize {
+        if self.bump <= self.committed {
+            self.committed
+        } else {
+            self.bump
+        }
     }
 
     /// The counters agree with the bounds, and every byte the bump pointer
@@ -1568,8 +1690,8 @@ impl Inner {
         &&& self.stats.bumped == self.bump - self.base
         &&& self.stats.reserved == self.base + self.len - self.top
         &&& self.top_committed <= self.base + self.len - self.top
-        &&& self.stats.committed <= (self.committed - self.base) + self.top_committed
-        &&& self.stats.committed + self.stats.eager >= (self.committed - self.base) + self.top_committed
+        &&& self.stats.committed <= (self.frontier - self.base) + self.top_committed
+        &&& self.stats.committed + self.stats.eager >= (self.frontier - self.base) + self.top_committed
         &&& self.stats.allocated + free_bytes(self.lists@, NBINS as nat) + self.stats.eager <= self.stats.bumped
     }
 
@@ -1610,7 +1732,7 @@ impl Inner {
             self.base <= a < self.bump
         }
         &&& self.top_committed + side_set(m, true).len() <= self.base + self.len - self.top
-        &&& self.stats.committed + side_set(m, false).len() <= (self.committed - self.base) + self.top_committed
+        &&& self.stats.committed + side_set(m, false).len() <= (self.frontier - self.base) + self.top_committed
     }
 
     /// The ghost state [`Inner`] holds for its bytes: the permission to the
@@ -1619,12 +1741,12 @@ impl Inner {
     /// uncommitted address space below the reservations, and the permission
     /// to each free block's bytes past its link word.
     spec fn raw_wf(&self) -> bool {
-        &&& self.fresh@.is_range(self.bump as int, self.committed - self.bump)
+        &&& self.fresh@.is_range(self.bump as int, self.fresh_end() - self.bump)
         &&& self.fresh@.provenance() == cast_provenance()
         &&& self.fresh_zero@.addr() == self.bump
-        &&& self.fresh_zero@.len() == self.committed - self.bump
-        &&& self.unbacked@.addr() == self.committed
-        &&& self.unbacked@.len() == self.top - self.committed
+        &&& self.fresh_zero@.len() == self.fresh_end() - self.bump
+        &&& self.unbacked@.addr() == self.fresh_end()
+        &&& self.unbacked@.len() == self.top - self.fresh_end()
         &&& forall|b: int, i: int|
             0 <= b < NBINS && 0 <= i < self.lists@[b].len() ==> #[trigger] tail_ok(self.tails@, self.lists@[b][i], b)
     }
@@ -1733,6 +1855,7 @@ impl Inner {
         let tracked handed = PointsToRaw::empty(cast_provenance());
         let tracked fresh_zero = Zeroed::empty(base as int);
         let tracked handed_zero = Zeroed::empty(0);
+        let tracked handed_lazy = Unbacked::empty(0);
         let r = Inner {
             base,
             len,
@@ -1744,6 +1867,7 @@ impl Inner {
             stats: MetaStats { len, committed: 0, allocated: 0, bumped: 0, reserved: 0, writable: 0, eager: 0 },
             top_committed: 0,
             eager: EAGER_UNPROBED,
+            frontier: base,
             lists: Ghost(Seq::new(NBINS as nat, |b: int| Seq::empty())),
             perms: Tracked(perms),
             live: Tracked(live),
@@ -1754,6 +1878,7 @@ impl Inner {
             handed: Tracked(handed),
             fresh_zero: Tracked(fresh_zero),
             handed_zero: Tracked(handed_zero),
+            handed_lazy: Tracked(handed_lazy),
         };
         proof {
             assert(free_bytes(r.lists@, NBINS as nat) == 0) by {
@@ -1769,41 +1894,30 @@ impl Inner {
             if len < page {
                 vstd::arithmetic::div_mod::lemma_small_mod(len as nat, page as nat);
             }
+            // The frontier starts at the base, a chunk boundary.
+            let step = align_up_spec(COMMIT_CHUNK, page);
+            lemma_step(page, step);
+            vstd::arithmetic::div_mod::lemma_small_mod(0, step as nat);
+            assert(r.chunked(r.frontier));
         }
         r
     }
 
-    /// Make the bump area writable through `end`, in `COMMIT_CHUNK` steps,
-    /// never past `top`. Returns the bytes newly made writable; the caller
-    /// decides how much of that counts as `committed` (an object's chunk
-    /// does whole, an eagerly carved table's own bytes do not: its owner's
-    /// `commit` calls count that table's pages as it uses them).
-    fn commit_bump_to(&mut self, end: usize) -> (r: Result<usize, Errno>)
+    /// The object side's chunked frontier for a bump end of `end`, never
+    /// past `top`. Chunks are measured from the base: the region is only
+    /// page aligned, so rounding the absolute address would make the first
+    /// chunk short and every later one misaligned against the counter.
+    fn chunk_end(&self, end: usize) -> (r: usize)
         requires
-            crate::sys::may_syscall(),
-            old(self).region_wf(),
-            old(self).raw_wf(),
-            old(self).base <= end <= old(self).top,
+            self.region_wf(),
+            self.base <= end <= self.top,
         ensures
-            final(self).region_wf(),
-            final(self).raw_wf(),
-            r is Err ==> *final(self) == *old(self),
-            r matches Ok(delta) ==> {
-                &&& final(self).committed == old(self).committed + delta
-                &&& end <= final(self).committed
-                &&& *final(self) == (Inner {
-                    committed: final(self).committed,
-                    fresh: final(self).fresh,
-                    unbacked: final(self).unbacked,
-                    fresh_zero: final(self).fresh_zero,
-                    ..*old(self)
-                })
-            },
+            end <= r <= self.top,
+            r % self.page == 0,
+            self.chunked(r),
+            self.chunked(end) ==> r == end,
     {
         debug_assert!(end <= self.top);
-        // Chunks are measured from the base: the region is only page
-        // aligned, so rounding the absolute address would make the first
-        // chunk short and every later one misaligned against the counter.
         let step = align_up(COMMIT_CHUNK, self.page);
         proof {
             let page = self.page;
@@ -1815,7 +1929,40 @@ impl Inner {
             lemma_add_mod_noop(self.base as int, r as int, page as int);
             vstd::arithmetic::div_mod::lemma_small_mod(0, page as nat);
         }
-        let want = (self.base + align_up(end - self.base, step)).min(self.top);
+        (self.base + align_up(end - self.base, step)).min(self.top)
+    }
+
+    /// Make the bump area writable through `end`, in `COMMIT_CHUNK` steps,
+    /// never past `top`, together with any deferred table carves below the
+    /// frontier, in one `mprotect`. Returns the bytes the frontier moved;
+    /// the caller decides how much of that counts as `committed` (an
+    /// object's chunk does whole). On failure nothing moves.
+    fn commit_bump_to(&mut self, end: usize) -> (r: Result<usize, Errno>)
+        requires
+            crate::sys::may_syscall(),
+            old(self).region_wf(),
+            old(self).raw_wf(),
+            old(self).base <= end <= old(self).top,
+        ensures
+            final(self).region_wf(),
+            final(self).raw_wf(),
+            r is Err ==> *final(self) == *old(self),
+            r is Ok && old(self).chunked(end) && old(self).frontier <= end ==> final(self).frontier == end,
+            r matches Ok(delta) ==> {
+                &&& final(self).frontier == old(self).frontier + delta
+                &&& final(self).committed == final(self).frontier
+                &&& end <= final(self).committed
+                &&& *final(self) == (Inner {
+                    committed: final(self).committed,
+                    frontier: final(self).frontier,
+                    fresh: final(self).fresh,
+                    unbacked: final(self).unbacked,
+                    fresh_zero: final(self).fresh_zero,
+                    ..*old(self)
+                })
+            },
+    {
+        let want = self.chunk_end(end).max(self.frontier);
         if want > self.committed {
             commit_range(self.committed, want - self.committed)?;
             // Metadata THP (`thp.rs`): the chunk is the folio's size or a
@@ -1824,15 +1971,17 @@ impl Inner {
             if crate::thp::meta_folio_size() != 0 {
                 crate::thp::advise_meta(self.committed, want - self.committed);
             }
-            let delta = want - self.committed;
             proof {
-                // The pages just committed move from `unbacked` to `fresh`,
-                // with their zero token.
-                let (lo, c0) = (self.bump as int, self.committed as int);
+                // The pages just committed past `fresh` move from
+                // `unbacked` to `fresh`, with their zero token; those below
+                // the bump pointer are the deferred tables', whose owners
+                // hold their tokens (`reserve_eager`).
+                let (lo, c0) = (self.bump as int, self.fresh_end() as int);
                 let tracked u = take_unbacked(self.unbacked.borrow_mut());
                 let tracked (a, b) = u.split(want - c0);
                 put_unbacked(self.unbacked.borrow_mut(), b);
-                // `commit_range` returned `Ok` for exactly `[c0, want)`.
+                // `commit_range` returned `Ok` for `[committed, want)`,
+                // which holds `[c0, want)`.
                 let tracked (raw, z) = a.commit();
                 let tracked f = take_raw(self.fresh.borrow_mut());
                 put_raw(self.fresh.borrow_mut(), join_at(f, raw, lo, c0, want as int));
@@ -1840,9 +1989,39 @@ impl Inner {
                 put_zero(self.fresh_zero.borrow_mut(), fz.join(z));
             }
             self.committed = want;
-            return Ok(delta);
         }
-        Ok(0)
+        let delta = want - self.frontier;
+        self.frontier = want;
+        Ok(delta)
+    }
+
+    /// Make the object side writable through the frontier: the deferred
+    /// commit of the tables carved since the last one (the module doc).
+    fn flush(&mut self) -> (r: Result<(), Errno>)
+        requires
+            crate::sys::may_syscall(),
+            old(self).region_wf(),
+            old(self).raw_wf(),
+        ensures
+            final(self).region_wf(),
+            final(self).raw_wf(),
+            r is Err ==> *final(self) == *old(self),
+            r is Ok ==> {
+                &&& final(self).frontier == old(self).frontier
+                &&& final(self).committed == final(self).frontier
+                &&& *final(self) == (Inner {
+                    committed: final(self).committed,
+                    fresh: final(self).fresh,
+                    unbacked: final(self).unbacked,
+                    fresh_zero: final(self).fresh_zero,
+                    ..*old(self)
+                })
+            },
+    {
+        if self.frontier > self.committed {
+            self.commit_bump_to(self.frontier)?;
+        }
+        Ok(())
     }
 
     /// Whether a table of `len` bytes goes on the object side (the module
@@ -1864,10 +2043,20 @@ impl Inner {
         self.eager == EAGER_ON
     }
 
-    /// Carve a fully writable, page-aligned, never freed table of `len`
-    /// bytes aligned to `align` from the object side. `None` when it would
-    /// reach the reservation side or the kernel refuses the commit (the
-    /// caller then falls back to a reservation).
+    /// Carve a page-aligned, never freed table of `len` bytes aligned to
+    /// `align` from the object side, writable as a whole once [`flush`]
+    /// has run (the owner's first [`commit`], or the next object, does
+    /// that). `None` when it would reach the reservation side (the caller
+    /// then falls back to a reservation). No system call.
+    ///
+    /// The table's bytes below [`fresh_end`] come out of `fresh`, to
+    /// `handed` with their zero token (from the old bump pointer, padding
+    /// first), and those at or above it out of `unbacked`, to
+    /// `handed_lazy` (from [`fresh_end`], padding first), uncommitted.
+    ///
+    /// [`flush`]: Inner::flush
+    /// [`commit`]: Inner::commit
+    /// [`fresh_end`]: Inner::fresh_end
     fn reserve_eager(
         &mut self,
         len: usize,
@@ -1875,7 +2064,6 @@ impl Inner {
         Tracked(claim): Tracked<&mut GhostSubmap<int, bool>>,
     ) -> (r: Option<usize>)
         requires
-            crate::sys::may_syscall(),
             old(self).wf(),
             len <= EAGER_MAX,
             is_pow2(align),
@@ -1886,28 +2074,44 @@ impl Inner {
             r is None ==> *final(self) == *old(self),
             r matches Some(s) ==> {
                 let tlen = align_up_spec(if len == 0 { 1 } else { len }, old(self).page);
+                let (b, lo, e) = (old(self).bump as int, old(self).fresh_end() as int, s + tlen);
+                let mid = if e <= lo { e } else { lo };
                 &&& final(claim).id() == final(self).pages_id()
                 &&& final(claim)@ == claim_map(s as int, s + tlen, false)
-                &&& final(self).handed@.is_range(s as int, tlen as int)
+                &&& old(self).pages@@.dom().disjoint(set_int_range(s as int, s + tlen))
+                &&& final(self).pages@@ == old(self).pages@@.union_prefer_right(final(claim)@)
+                &&& final(self).handed@.is_range(b, mid - b)
                 &&& final(self).handed@.provenance() == cast_provenance()
-                &&& final(self).handed_zero@.addr() == s && final(self).handed_zero@.len() == tlen
+                &&& final(self).handed_zero@.addr() == b && final(self).handed_zero@.len() == mid - b
+                &&& final(self).handed_lazy@.addr() == lo
+                &&& final(self).handed_lazy@.len() == (if e <= lo { lo } else { e }) - lo
                 &&& old(self).bump <= s
                 &&& s % align == 0
                 &&& s % old(self).page == 0
                 &&& len <= tlen
                 &&& s + tlen == final(self).bump
-                &&& final(self).bump <= final(self).committed
-                &&& final(self).top == old(self).top
-                &&& final(self).stats.committed + tlen <= (final(self).committed - final(self).base)
+                &&& final(self).bump <= final(self).frontier
+                &&& old(self).frontier <= final(self).frontier
+                &&& final(self).stats.committed + tlen <= (final(self).frontier - final(self).base)
                     + final(self).top_committed
                 &&& final(self).stats.eager == old(self).stats.eager + tlen
-                &&& final(self).base == old(self).base
-                &&& final(self).page == old(self).page
-                &&& final(self).len == old(self).len
-                &&& final(self).top_committed == old(self).top_committed
+                &&& *final(self) == (Inner {
+                    bump: final(self).bump,
+                    frontier: final(self).frontier,
+                    stats: final(self).stats,
+                    fresh: final(self).fresh,
+                    fresh_zero: final(self).fresh_zero,
+                    unbacked: final(self).unbacked,
+                    handed: final(self).handed,
+                    handed_zero: final(self).handed_zero,
+                    handed_lazy: final(self).handed_lazy,
+                    pages: final(self).pages,
+                    ..*old(self)
+                })
             },
     {
         let ghost align0 = align;
+        let ghost (b0, lo0) = (self.bump as int, self.fresh_end() as int);
         proof {
             lemma_pow2_bits(align);
             lemma_consts();
@@ -1925,7 +2129,9 @@ impl Inner {
         if end > self.top {
             return None;
         }
-        let delta = if end > self.committed { self.commit_bump_to(end).ok()? } else { 0 };
+        let want = self.chunk_end(end);
+        let delta = want.saturating_sub(self.frontier);
+        self.frontier = self.frontier.max(want);
         proof {
             lemma_free_bytes_nonneg(self.lists@, NBINS as nat);
             lemma_bump(self.free@, self.lists@, self.perms@, self.base, self.bump, end);
@@ -1940,17 +2146,27 @@ impl Inner {
         self.stats.committed = self.stats.committed + delta - len;
         // Fresh memory above the old bump pointer: zero, never written.
         proof {
-            // The table leaves `fresh` for `handed`, and its zero token
-            // `fresh_zero` for `handed_zero`; its alignment padding is
-            // dropped.
+            // The committed part, `[b0, mid)` with the padding, leaves
+            // `fresh` for `handed`, and its zero token `fresh_zero` for
+            // `handed_zero`; the uncommitted part, `[lo0, hi)`, leaves
+            // `unbacked` for `handed_lazy`.
+            let e = end as int;
+            let mid = if e <= lo0 { e } else { lo0 };
+            let hi = if e <= lo0 { lo0 } else { e };
             let tracked f = take_raw(self.fresh.borrow_mut());
-            let tracked (_pad, rest) = split_at(f, self.bump as int, start as int, self.committed as int);
-            let tracked (mine, rest) = split_at(rest, start as int, end as int, self.committed as int);
-            put_raw(self.fresh.borrow_mut(), rest);
+            let tracked (mine, rest) = split_at(f, b0, mid, lo0);
             put_raw(self.handed.borrow_mut(), mine);
-            let tracked (mine_z, rest_z) = cut_zero(take_zero(self.fresh_zero.borrow_mut()), start - self.bump, end - start);
-            put_zero(self.fresh_zero.borrow_mut(), rest_z);
+            put_raw(self.fresh.borrow_mut(), rest);
+            let tracked (mine_z, rest_z) = take_zero(self.fresh_zero.borrow_mut()).split(mid - b0);
             put_zero(self.handed_zero.borrow_mut(), mine_z);
+            if e <= lo0 {
+                put_zero(self.fresh_zero.borrow_mut(), rest_z);
+            } else {
+                put_zero(self.fresh_zero.borrow_mut(), Zeroed::empty(e));
+            }
+            let tracked (lazy, rest_u) = take_unbacked(self.unbacked.borrow_mut()).split(hi - lo0);
+            put_unbacked(self.handed_lazy.borrow_mut(), lazy);
+            put_unbacked(self.unbacked.borrow_mut(), rest_u);
         }
         self.bump = end;
         self.stats.bumped = end - self.base;
@@ -2255,7 +2471,7 @@ impl Inner {
                 &&& final(given).len() == old(self).top - s
                 &&& final(self).pages@@ == old(self).pages@@.union_prefer_right(final(claim)@)
                 &&& s == final(self).top
-                &&& old(self).committed <= s
+                &&& old(self).frontier <= s
                 &&& s + len <= old(self).top
                 &&& s < old(self).top
                 &&& s % align == 0
@@ -2274,7 +2490,7 @@ impl Inner {
             lemma_pow2_bits(align);
         }
         assert!(align.is_power_of_two(), "meta: reserve alignment not a power of two");
-        if len > self.top - self.committed {
+        if len > self.top - self.frontier {
             return None;
         }
         let align = align.max(self.page);
@@ -2297,7 +2513,7 @@ impl Inner {
             lemma_pow2_divides(align, align0);
             lemma_mod_trans(start as int, align as int, align0 as int);
         }
-        if start < self.committed {
+        if start < self.frontier {
             return None;
         }
         let ghost old_top = self.top;
@@ -2315,7 +2531,7 @@ impl Inner {
             assert(self.pages_wf());
             // The reserved bytes leave `unbacked` for the caller.
             let tracked u = take_unbacked(self.unbacked.borrow_mut());
-            let tracked (rest, mine) = u.split(start - self.committed);
+            let tracked (rest, mine) = u.split(start - self.fresh_end());
             put_unbacked(self.unbacked.borrow_mut(), rest);
             put_unbacked(given, mine);
         }
@@ -2371,12 +2587,14 @@ impl Inner {
         let end = addr + len;
         if addr < self.top {
             // A table carved from the object side (`reserve_eager`): inside
-            // the chunked commit and writable already, so this is the
-            // owner's accounting of the pages it uses.
+            // the chunked frontier, so this is the deferred commit if it is
+            // still pending, then the owner's accounting of the pages it
+            // uses.
             assert!(
-                addr >= self.base && end <= self.committed,
+                addr >= self.base && end <= self.frontier,
                 "meta: commit outside the reserved area"
             );
+            self.flush()?;
             self.stats.committed += len;
             proof {
                 let tracked c = claim.take();
@@ -2403,6 +2621,8 @@ impl Inner {
     }
 
     /// [`Meta::reserve_committed`] under the lock.
+    #[verifier::spinoff_prover]
+    #[verifier::rlimit(60)]
     fn reserve_committed(&mut self, len: usize, align: usize) -> (r: Option<usize>)
         requires
             crate::sys::may_syscall(),
@@ -2422,22 +2642,72 @@ impl Inner {
     {
         let tracked mut claim = GhostSubmap::<int, bool>::dummy();
         if self.eager_ok(len) {
+            let (bump, frontier, stats) = (self.bump, self.frontier, self.stats);
+            let ghost pre = *self;
             if let Some(p) = self.reserve_eager(len, align, Tracked(&mut claim)) {
                 let ghost m = self.pages@@;
                 let ghost tlen = align_up_spec(if len == 0 { 1 } else { len }, self.page);
+                let ghost (b0, lo0, e) = (pre.bump as int, pre.fresh_end() as int, p + tlen);
                 proof {
                     claim.agree(self.pages.borrow());
                     lemma_int_range(p as int, p + tlen);
                     lemma_side_consume(m, claim@, false);
                     vstd::set_lib::lemma_len_subset(claim@.dom(), side_set(m, false));
                 }
-                self.stats.committed += align_up(len.max(1), self.page);
+                if self.flush().is_ok() {
+                    self.stats.committed += align_up(len.max(1), self.page);
+                    proof {
+                        let tracked c = claim.take();
+                        self.pages.borrow_mut().delete(c);
+                        assert(self.pages_wf());
+                        // The table's committed part from `handed`, past
+                        // its padding, and its deferred part from
+                        // `handed_lazy`, which the flush just committed:
+                        // `[lo0, e)` lies in `[committed, frontier)` of
+                        // before the flush, which `commit_range` made
+                        // writable.
+                        let tracked raw = take_raw(self.handed.borrow_mut());
+                        let tracked z = take_zero(self.handed_zero.borrow_mut());
+                        let tracked (lraw, lz) = take_unbacked(self.handed_lazy.borrow_mut()).commit();
+                        let tracked (mine, mine_z) = carved_table(raw, z, lraw, lz, b0, lo0, p as int, e);
+                        put_raw(self.handed.borrow_mut(), mine);
+                        put_zero(self.handed_zero.borrow_mut(), mine_z);
+                    }
+                    return Some(p);
+                }
+                // The kernel refused the commit: undo the carve (nothing
+                // has seen it) and try the reservation side, as when the
+                // object side cannot hold the table.
+                self.bump = bump;
+                self.frontier = frontier;
+                self.stats = stats;
                 proof {
+                    // The carve's tokens go back: `handed` (and the rest of
+                    // `fresh`, when the table ended below `lo0`) to
+                    // `fresh`, `handed_lazy` to the front of `unbacked`.
                     let tracked c = claim.take();
                     self.pages.borrow_mut().delete(c);
-                    assert(self.pages_wf());
+                    lemma_int_range(p as int, e);
+                    assert forall|a: int| pre.pages@@.contains_key(a) implies !set_int_range(p as int, e).contains(a) by {
+                        assert(pre.pages@@.contains_key(a));
+                    }
+                    assert(self.pages@@ =~= pre.pages@@);
+                    let tracked raw = take_raw(self.handed.borrow_mut());
+                    let tracked z = take_zero(self.handed_zero.borrow_mut());
+                    let tracked f = take_raw(self.fresh.borrow_mut());
+                    let tracked fz = take_zero(self.fresh_zero.borrow_mut());
+                    if e <= lo0 {
+                        put_raw(self.fresh.borrow_mut(), join_at(raw, f, b0, e, lo0));
+                        put_zero(self.fresh_zero.borrow_mut(), z.join(fz));
+                    } else {
+                        put_raw(self.fresh.borrow_mut(), raw);
+                        put_zero(self.fresh_zero.borrow_mut(), z);
+                    }
+                    let tracked u = take_unbacked(self.handed_lazy.borrow_mut());
+                    let tracked rest = take_unbacked(self.unbacked.borrow_mut());
+                    put_unbacked(self.unbacked.borrow_mut(), u.join(rest));
+                    lemma_uncarved(pre, *self);
                 }
-                return Some(p);
             }
         }
         let ghost pre = *self;
@@ -2488,7 +2758,7 @@ impl Inner {
         proof {
             lemma_free_bytes_nonneg(self.lists@, NBINS as nat);
         }
-        MetaStats { writable: (self.committed - self.base) + self.top_committed, ..self.stats }
+        MetaStats { writable: (self.frontier - self.base) + self.top_committed, ..self.stats }
     }
 }
 
@@ -2814,7 +3084,9 @@ impl Meta {
     /// A never-freed table of `len` bytes aligned to `align` whose owner
     /// commits pages from its base as it uses them. Up to [`EAGER_MAX`]
     /// bytes, and where the host allows (the module doc), it is carved
-    /// from the object side and is writable from the start; otherwise, or
+    /// from the object side and is writable as a whole from its owner's
+    /// first commit (one deferred `mprotect` for every table carved since
+    /// the last, the module doc); otherwise, or
     /// when the object side cannot hold it, it is a
     /// [`reserve`](Meta::reserve). Either way the owner calls
     /// [`commit`](Meta::commit) on the pages it uses before touching them.
@@ -2823,9 +3095,13 @@ impl Meta {
     ///
     /// With the permission to those `words_up(len)` bytes, which this
     /// allocator hands out once, and the token that they read as zero
-    /// (together a [`ZeroRaw`]): an eager table's from `Inner::handed` and
-    /// `Inner::handed_zero`, where `Inner::reserve_eager` left them (fresh
-    /// memory above the bump pointer), and a reservation's from the
+    /// (together a [`ZeroRaw`]): an eager table's committed part from
+    /// `Inner::handed` and `Inner::handed_zero`, where `Inner::reserve_eager`
+    /// left them (fresh memory above the bump pointer), and its part past
+    /// `committed`, whose commit is deferred to the owner's first
+    /// [`commit`](Meta::commit), from the `Unbacked` token it left in
+    /// `Inner::handed_lazy` (as a reservation's, [`Unbacked::into_lazy`]),
+    /// and a reservation's from the
     /// `Unbacked` token `Inner::reserve` carved for it
     /// ([`Unbacked::into_lazy`], whose premise is the commit before use).
     pub fn reserve_table(&self, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Option<usize>, Tracked<ZeroRaw>))
@@ -2852,15 +3128,28 @@ impl Meta {
             let ghost g1 = g@;
             if let Some(p) = g.reserve_eager(len, align, Tracked(&mut claim)) {
                 let _gi: &mut Inner = &mut g;
-                let tracked mut raw = take_raw(_gi.handed.borrow_mut());
+                let tracked raw = take_raw(_gi.handed.borrow_mut());
                 let tracked hz = take_zero(_gi.handed_zero.borrow_mut());
+                let tracked u = take_unbacked(_gi.handed_lazy.borrow_mut());
+                let tracked mut table = PointsToRaw::empty(cast_provenance());
+                let tracked mut tz = Zeroed::empty(0);
                 proof {
                     let (page, l) = (g1.page, if len == 0 { 1usize } else { len });
+                    let tlen = align_up_spec(l, page) as int;
+                    let (b0, lo0, e) = (g1.bump as int, g1.fresh_end() as int, p + tlen);
+                    // The committed part of the table past its padding, and
+                    // the part whose commit is deferred: uncommitted until
+                    // the owner's first `commit` flushes it
+                    // ([`Unbacked::into_lazy`]'s premise, as for a
+                    // reservation).
+                    let tracked (lraw, lz) = u.into_lazy();
+                    let tracked (mine, mine_z) = carved_table(raw, hz, lraw, lz, b0, lo0, p as int, e);
                     lemma_align_bits(l, page, (l + (page - 1)) as usize);
-                    lemma_words_up_fit(page, align_up_spec(l, page) as int, len as int);
-                    raw = keep_prefix(raw, p as int, p + words_up(len as int), p + align_up_spec(l, page));
+                    lemma_words_up_fit(page, tlen, len as int);
+                    table = keep_prefix(mine, p as int, p + words_up(len as int), e);
+                    tz = mine_z;
                 }
-                let tracked z = zero_raw(raw, hz);
+                let tracked z = zero_raw(table, tz);
                 return (Some(p), Tracked(z));
             }
         }
@@ -2963,8 +3252,9 @@ impl Meta {
     }
 
     /// Make `[addr, addr + len)`, page aligned and inside a reservation or
-    /// an eagerly carved table, readable and writable (accounting only for
-    /// the latter): [`commit_claimed`] with the caller's claim to the
+    /// an eagerly carved table, readable and writable (for the latter the
+    /// deferred commit of the object side through its frontier, if still
+    /// pending, and the accounting): [`commit_claimed`] with the caller's claim to the
     /// range. Trusted: the claim is the caller contract, which no caller
     /// can show, since callers keep their tables' commit watermarks
     /// without ghost state: the range is page aligned, lies inside one
@@ -3933,6 +4223,67 @@ mod tests {
         }
         rw.sort_unstable();
         rw
+    }
+
+    /// A run of eager carves makes nothing writable (no system call) until
+    /// the first commit of one of them, which makes the object side
+    /// writable through all of them at once; an object allocated after
+    /// further carves does the same for those. The counters are the ones
+    /// an immediate commit would give.
+    #[test]
+    fn eager_carves_defer_their_commit_to_first_use() {
+        let b = Backing::new(64 << 20);
+        let m = b.meta();
+        m.set_eager_for_test(true);
+        let mut tables = Vec::new();
+        for i in 0..20usize {
+            let len = (1 + i % 5) * page_size() + 100;
+            tables.push((
+                m.reserve_table_addr(len, page_size(), Tracked::assume_new())
+                    .unwrap(),
+                len,
+            ));
+        }
+        assert_eq!(writable_ranges(b.base, b.len), vec![], "carves alone");
+        let s = m.stats(Tracked::assume_new());
+        let (last, last_len) = tables[19];
+        assert_eq!(s.writable, align_up(last + last_len - b.base, chunk()));
+        assert_eq!(s.committed, s.writable - s.eager, "the chunk slack only");
+        m.commit(tables[3].0, page_size(), Tracked::assume_new())
+            .unwrap();
+        assert_eq!(
+            writable_ranges(b.base, b.len),
+            vec![(b.base, b.base + s.writable)],
+            "one commit covers every table carved so far"
+        );
+        assert_eq!(
+            m.stats(Tracked::assume_new()).committed,
+            s.committed + page_size()
+        );
+        assert_eq!(m.stats(Tracked::assume_new()).writable, s.writable);
+        for &(t, len) in &tables {
+            unsafe { core::ptr::write_volatile((t + len - 1) as *mut u8, 1) };
+        }
+        // More carves, then an object past them: one commit again.
+        let t = m
+            .reserve_table_addr(EAGER_MAX, page_size(), Tracked::assume_new())
+            .unwrap();
+        let before = m.stats(Tracked::assume_new());
+        assert_eq!(writable_ranges(b.base, b.len).len(), 1);
+        assert!(writable_ranges(b.base, b.len)[0].1 < t + EAGER_MAX);
+        let o = m.alloc(layout(1000, 8), Tracked::assume_new());
+        assert_eq!(o as usize, t + EAGER_MAX, "the object follows the table");
+        let after = m.stats(Tracked::assume_new());
+        assert_eq!(
+            writable_ranges(b.base, b.len),
+            vec![(b.base, b.base + after.writable)]
+        );
+        assert_eq!(
+            after.committed - before.committed,
+            after.writable - before.writable,
+            "only a new chunk past the frontier counts"
+        );
+        unsafe { core::ptr::write_volatile(t as *mut u8, 1) };
     }
 
     /// On Linux the committed part of the region must show up as exactly one

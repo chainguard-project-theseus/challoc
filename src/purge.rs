@@ -1345,7 +1345,16 @@ fn sample(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>)
     ensures
         *final(ord) == *old(ord),
 {
-    if shared.cgroup.sample(now) {
+    if shared.discover_cgroup_if_due(now, Tracked(ord)) {
+        return;
+    }
+    // `shared.cgroup().is_some_and(|cg| cg.sample(now))`, spelled out:
+    // Verus does not specify `Option::is_some_and`.
+    let sampled = match shared.cgroup() {
+        Some(cg) => cg.sample(now),
+        None => false,
+    };
+    if sampled {
         crate::policy::evaluate(shared, Tracked(ord));
     }
 }
@@ -1405,7 +1414,7 @@ mod kani_total {
     /// The most ranges checked.
     const MAX: usize = 4;
 
-    /// S189 `total_bytes`, `requires lens(ranges, len) <= u64::MAX`, no
+    /// S191 `total_bytes`, `requires lens(ranges, len) <= u64::MAX`, no
     /// `ensures`: under it the call returns (the sum, which cannot
     /// overflow), for every list of up to `MAX` ranges.
     #[kani::proof]
@@ -1429,7 +1438,7 @@ mod kani_explicit {
     use super::{EXPLICIT, Explicit};
     use core::sync::atomic::Ordering::Relaxed;
 
-    /// S188 `Explicit::drop`: no `requires`, no `ensures`, `no_unwind`:
+    /// S190 `Explicit::drop`: no `requires`, no `ensures`, `no_unwind`:
     /// it returns without a panic for every count `EXPLICIT` holds (one
     /// less afterwards, wrapping at zero as an atomic subtraction does),
     /// both when a guard from `Explicit::enter` drops and when the count

@@ -253,11 +253,24 @@ enum Reader {
 
 impl Reader {
     /// The reader requires `may_abort`: the `thread.*` readers, which may
-    /// create the thread's heap. Every other reader never aborts, not even
-    /// at an integrity check.
+    /// create the thread's heap. Every other reader aborts at most at an
+    /// integrity check ([`Reader::checks`]).
     spec fn aborts(self) -> bool {
         match self {
             Reader::ThreadAllocated | Reader::ThreadAllocatedp | Reader::ThreadDeallocated | Reader::ThreadDeallocatedp => true,
+            _ => false,
+        }
+    }
+
+    /// The reader requires `may_abort_corrupt`: the seven `stats.cgroup.*`
+    /// readers behind [`tracked`], whose `Shared::cgroup_now` aborts at an
+    /// integrity check if a waited-for discovery did not publish the
+    /// record. Every other reader but [`Reader::aborts`]'s never aborts,
+    /// not even at an integrity check.
+    spec fn checks(self) -> bool {
+        match self {
+            Reader::CgroupLimit | Reader::CgroupHigh | Reader::CgroupCurrent | Reader::CgroupDecayMs
+            | Reader::CgroupRetentionCap | Reader::CgroupEmptyBytes | Reader::CgroupFullPurges => true,
             _ => false,
         }
     }
@@ -269,6 +282,7 @@ fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
         crate::sys::may_abort() || !read.aborts(),
+        crate::sys::may_abort_corrupt() || !read.checks(),
 {
     match read {
         Reader::BinSize => bin_size(mib),
@@ -335,6 +349,12 @@ spec fn ctl_never_aborts(n: Node, mib: Seq<usize>) -> bool {
         Entry::Read(r) => !r.aborts(),
         Entry::Op(op) => op == Op::UtilQuery || op == Op::UtilBatchQuery,
     }
+}
+
+/// [`ctl`] at node `n` may reach an integrity check: a read whose reader
+/// [`Reader::checks`].
+spec fn ctl_checks(n: Node) -> bool {
+    n.entry matches Entry::Read(r) && r.checks()
 }
 
 /// The allocator state, initialised. Trusted: [`super::shared`], which
@@ -596,6 +616,7 @@ fn arena_retained(m: &[usize]) -> Result<Reading, c_int>
 fn cgroup_limit(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
+        crate::sys::may_abort_corrupt(),
 {
     Ok(Size(tracked()?.limit() as usize))
 }
@@ -603,6 +624,7 @@ fn cgroup_limit(_m: &[usize]) -> Result<Reading, c_int>
 fn cgroup_high(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
+        crate::sys::may_abort_corrupt(),
 {
     Ok(Size(tracked()?.high() as usize))
 }
@@ -610,6 +632,7 @@ fn cgroup_high(_m: &[usize]) -> Result<Reading, c_int>
 fn cgroup_current(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
+        crate::sys::may_abort_corrupt(),
 {
     // Rate limited to once per 10 ms, so a polling reader costs at
     // most that many file reads.
@@ -621,6 +644,7 @@ fn cgroup_current(_m: &[usize]) -> Result<Reading, c_int>
 fn cgroup_decay_ms(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
+        crate::sys::may_abort_corrupt(),
 {
     tracked()?;
     Ok(Size(
@@ -634,6 +658,7 @@ fn cgroup_decay_ms(_m: &[usize]) -> Result<Reading, c_int>
 fn cgroup_retention_cap(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
+        crate::sys::may_abort_corrupt(),
 {
     tracked()?;
     Ok(Size(shared().policy.cap() as usize))
@@ -642,6 +667,7 @@ fn cgroup_retention_cap(_m: &[usize]) -> Result<Reading, c_int>
 fn cgroup_empty_bytes(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
+        crate::sys::may_abort_corrupt(),
 {
     tracked()?;
     // Premise (lock order): called from `mallctl`, which holds no lock.
@@ -651,6 +677,7 @@ fn cgroup_empty_bytes(_m: &[usize]) -> Result<Reading, c_int>
 fn cgroup_full_purges(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
+        crate::sys::may_abort_corrupt(),
 {
     tracked()?;
     Ok(Size(shared().policy.full_purges() as usize))
@@ -2569,15 +2596,14 @@ fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int>
 fn tracked() -> (r: Result<&'static crate::sys::cgroup::Cgroup, c_int>)
     requires
         crate::sys::may_syscall(),
+        crate::sys::may_abort_corrupt(),
     ensures
         r matches Err(e) ==> e == ENOENT,
 {
     let s = shared();
-    if s.cgroup.tracked() {
-        Ok(&s.cgroup)
-    } else {
-        Err(ENOENT)
-    }
+    // Premise (lock order): called from `mallctl`, which holds no lock.
+    let cg = s.cgroup_now(Tracked(&mut axiom_entry()));
+    if cg.tracked() { Ok(cg) } else { Err(ENOENT) }
 }
 
 /// `arena.<i>.purge` and `arena.<i>.decay` address every arena when `i` is
@@ -2717,6 +2743,7 @@ spec fn error_after_change(node: Node, r: Result<(), c_int>, c: Change) -> bool 
 fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracked<&mut CCall>, Tracked(fx): Tracked<&mut Ghost<Change>>) -> (r: Result<(), c_int>)
     requires
         crate::sys::may_abort() || ctl_never_aborts(*node, mib@),
+        crate::sys::may_abort_corrupt() || !ctl_checks(*node),
         crate::sys::may_syscall(),
         shared.wf(),
         io.handed(*old(cc)),
@@ -3197,9 +3224,27 @@ fn never_aborts(node: &Node, mib: &[usize]) -> (r: bool)
     }
 }
 
+/// [`ctl_checks`], computed: for the witnesses below.
+#[cfg(verus_only)]
+fn checks(node: &Node) -> (r: bool)
+    ensures
+        r == ctl_checks(*node),
+{
+    match node.entry {
+        Entry::Read(r) => match r {
+            Reader::CgroupLimit | Reader::CgroupHigh | Reader::CgroupCurrent | Reader::CgroupDecayMs
+            | Reader::CgroupRetentionCap | Reader::CgroupEmptyBytes | Reader::CgroupFullPurges => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Theorem "Read-only APIs never abort", for `mallctl`: the calls
 /// [`mallctl`] makes after its `super::shared()`, for a read-only key
-/// other than `thread.*`'s four (every key under `opt`, `arenas` and
+/// other than `thread.*`'s four and the seven `stats.cgroup.*` keys
+/// [`Reader::checks`] names, whose reads are
+/// [`theorem_mallctl_cgroup_reads_check`]'s (every other key under `opt`, `arenas` and
 /// `stats`, `version` and `config.*`) or a utilization query, and every
 /// reader of those keys, made where neither [`crate::sys::may_abort`] nor
 /// [`crate::sys::integrity_aborts`] holds; `mallctlbymib`'s are
@@ -3238,7 +3283,7 @@ pub(super) fn theorem_mallctl_reads_never_abort(
     if let Some(name) = cstr(name, Tracked(&cc)) {
         let mut mib = [0usize; MAX_MIB];
         if let Ok((len, node)) = name_to_mib(name, &mut mib) {
-            if never_aborts(node, &mib[..len]) {
+            if never_aborts(node, &mib[..len]) && !checks(node) {
                 let _ = result(ctl(shared, node, &mib[..len], io, Tracked(&mut cc), Tracked(&mut fx)));
             }
         }
@@ -3265,13 +3310,6 @@ pub(super) fn theorem_mallctl_reads_never_abort(
     let _ = arena_resident(m);
     let _ = arena_mapped(m);
     let _ = arena_retained(m);
-    let _ = cgroup_limit(m);
-    let _ = cgroup_high(m);
-    let _ = cgroup_current(m);
-    let _ = cgroup_decay_ms(m);
-    let _ = cgroup_retention_cap(m);
-    let _ = cgroup_empty_bytes(m);
-    let _ = cgroup_full_purges(m);
     let _ = cgroup_purge_advice(m);
     let _ = cgroup_lazy_purges(m);
     let _ = cgroup_eager_purges(m);
@@ -3292,6 +3330,57 @@ pub(super) fn theorem_mallctl_reads_never_abort(
     let _ = config_debug(m);
     let _ = config_stats(m);
     let _ = version(m);
+}
+
+/// Theorem "Read-only APIs never abort", for `mallctl`'s seven
+/// `stats.cgroup.*` keys [`Reader::checks`] names: the calls [`mallctl`]
+/// makes after its `super::shared()` for those keys, and their readers,
+/// made where [`crate::sys::integrity_aborts`] holds but not
+/// [`crate::sys::may_abort`]. Each call verifies, so they abort at most at
+/// an integrity check (`Shared::cgroup_now`'s: a waited-for discovery
+/// that did not publish the record); the arguments as in
+/// [`theorem_mallctl_reads_never_abort`].
+///
+/// Verification only (`cfg(verus_only)`): the build has no such function.
+#[cfg(verus_only)]
+pub(super) fn theorem_mallctl_cgroup_reads_check(
+    shared: &Shared,
+    name: *const c_char,
+    io: &Io,
+    m: &[usize],
+    Tracked(cc): Tracked<CCall>,
+)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::integrity_aborts(),
+        shared.wf(),
+        cc.fresh(CEntry::Mallctl {
+            name: name as *const u8,
+            oldp: io.oldp as *mut u8,
+            oldlenp: io.oldlenp as *const usize,
+            newp: io.newp as *mut u8,
+            newlen: io.newlen,
+        }),
+{
+    let tracked mut cc = cc;
+    let tracked mut fx = Ghost(Change::Unchanged);
+    // `mallctl` after its `super::shared()`, for one of the seven keys.
+    if let Some(name) = cstr(name, Tracked(&cc)) {
+        let mut mib = [0usize; MAX_MIB];
+        if let Ok((len, node)) = name_to_mib(name, &mut mib) {
+            if never_aborts(node, &mib[..len]) && checks(node) {
+                let _ = result(ctl(shared, node, &mib[..len], io, Tracked(&mut cc), Tracked(&mut fx)));
+            }
+        }
+    }
+    // The readers `call` reaches for those keys.
+    let _ = cgroup_limit(m);
+    let _ = cgroup_high(m);
+    let _ = cgroup_current(m);
+    let _ = cgroup_decay_ms(m);
+    let _ = cgroup_retention_cap(m);
+    let _ = cgroup_empty_bytes(m);
+    let _ = cgroup_full_purges(m);
 }
 
 /// Theorem "Read-only APIs never abort", for `mallctlbymib`: the calls it
@@ -3328,7 +3417,50 @@ pub(super) fn theorem_mallctlbymib_reads_never_abort(
         // SAFETY: as in `mallctlbymib`.
         unsafe { mib_in(mibp, &mut local, miblen) };
         if let Ok(node) = mib_to_node(&local[..miblen]) {
-            if never_aborts(node, &local[..miblen]) {
+            if never_aborts(node, &local[..miblen]) && !checks(node) {
+                let _ = result(ctl(shared, node, &local[..miblen], io, Tracked(&mut cb), Tracked(&mut fx)));
+            }
+        }
+    }
+}
+
+
+/// Theorem "Read-only APIs never abort", for `mallctlbymib`'s MIBs of the
+/// seven `stats.cgroup.*` keys [`Reader::checks`] names, as
+/// [`theorem_mallctl_cgroup_reads_check`] for `mallctl`, with `cb` the
+/// call's token ([`CEntry::ByMib`]).
+///
+/// Verification only (`cfg(verus_only)`): the build has no such function.
+#[cfg(verus_only)]
+pub(super) fn theorem_mallctlbymib_cgroup_reads_check(
+    shared: &Shared,
+    mibp: *const usize,
+    miblen: usize,
+    io: &Io,
+    Tracked(cb): Tracked<CCall>,
+)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::integrity_aborts(),
+        shared.wf(),
+        cb.fresh(CEntry::ByMib {
+            mib: mibp,
+            miblen,
+            oldp: io.oldp as *mut u8,
+            oldlenp: io.oldlenp as *const usize,
+            newp: io.newp as *mut u8,
+            newlen: io.newlen,
+        }),
+{
+    let tracked mut cb = cb;
+    let tracked mut fx = Ghost(Change::Unchanged);
+    // `mallctlbymib` after its `super::shared()`.
+    if !mibp.is_null() && miblen != 0 && miblen <= MAX_MIB {
+        let mut local = [0usize; MAX_MIB];
+        // SAFETY: as in `mallctlbymib`.
+        unsafe { mib_in(mibp, &mut local, miblen) };
+        if let Ok(node) = mib_to_node(&local[..miblen]) {
+            if never_aborts(node, &local[..miblen]) && checks(node) {
                 let _ = result(ctl(shared, node, &local[..miblen], io, Tracked(&mut cb), Tracked(&mut fx)));
             }
         }
@@ -3947,7 +4079,7 @@ mod tests {
         assert_eq!(lazy, 0);
         let _eager: usize = get("stats.cgroup.eager_purges");
         assert_eq!(set("stats.cgroup.purge_advice", 1usize), EPERM);
-        let tracked = shared().cgroup.tracked();
+        let tracked = shared().cgroup_now(Tracked::assume_new()).tracked();
         for key in [
             "stats.cgroup.limit",
             "stats.cgroup.high",
@@ -3973,8 +4105,14 @@ mod tests {
             let high: usize = get("stats.cgroup.high");
             let current: usize = get("stats.cgroup.current");
             std::eprintln!("stats.cgroup: limit {limit} high {high} current {current}");
-            assert_eq!(limit, shared().cgroup.limit() as usize);
-            assert_eq!(high, shared().cgroup.high() as usize);
+            assert_eq!(
+                limit,
+                shared().cgroup_now(Tracked::assume_new()).limit() as usize
+            );
+            assert_eq!(
+                high,
+                shared().cgroup_now(Tracked::assume_new()).high() as usize
+            );
             assert!(limit == usize::MAX || limit > 0);
             // The policy's keys: the defaults without a limit (the period
             // as configured, no cap), the cap arithmetic with one.

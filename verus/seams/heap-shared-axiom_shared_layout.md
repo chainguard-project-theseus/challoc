@@ -1,11 +1,13 @@
 # `axiom_shared_layout`
 
-Seam S152 of `verus/SEAMS.md`: src/heap/shared.rs:1082. Kind: axiom. Category: core library.
+Seam S154 of `verus/SEAMS.md`: src/heap/shared.rs:1086. Kind: axiom. Category: core library.
 Discharged by Kani.
 
 ## Contract
 
-As changed by the port of upstream #101 (`region_hi: usize` between
+As changed by the port of upstream #110 (the last field, `cgroup`, a
+`sys::cgroup::Deferred` in place of a `Cgroup`; Kani re-run pending),
+before that by the port of upstream #101 (`region_hi: usize` between
 `push_flags` and `regions`, at `S_REGION_HI`), before that by the port
 of upstream #87 (a first conjunct for the new
 class lines, `[ClassLine; NCLASSES]` at `S_LINES`, ahead of
@@ -46,7 +48,7 @@ axiom fn axiom_shared_layout()
             Shared,
             Lock<Snapshot>,
         >(S_STATS, S_CGROUP as int),
-        field_fits::<Shared, Cgroup>(S_CGROUP, size_of::<Shared>() as int),
+        field_fits::<Shared, Deferred>(S_CGROUP, size_of::<Shared>() as int),
         size_of::<Shared>() <= isize::MAX,
 ;
 ```

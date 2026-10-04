@@ -57,8 +57,15 @@ add.
   carries the "nothing unverified writes it" assumption. `shared` and
   `shared_if_ready` load `READY` and get the permission;
   `shared_unchecked` (the fast paths' accessor, `external_body`; since
-  upstream #77 `shared_deref`, at the address `shared_base` gives) and
-  `published_line` assume it, since their callers hold none.
+  upstream #77 `shared_deref`, at the address `shared_base` gives)
+  assumes it, since its callers hold none. `published_line` assumes
+  the feature line built: since upstream #110 the line is not written
+  by `init` but by `api::build_line` (trusted, the writer of `FEATURES`
+  and `FEATURE_LINE` after `READY`), at its first request
+  (`api::line_ready`, verified, which runs it only on winning
+  `LINE_STATE`'s exchange from `LINE_UNBUILT` and publishes
+  `LINE_READY` after it); its premise is that its caller observed
+  `LINE_READY` (the exchange and the state carry no ghost state).
 - Two more trusted sources of `Shared::wf`: `heap::paths::shared_of`
   (`heap/paths.rs:783`, a heap's `&Shared`) and
   `purge::background::shared_arg` (`purge/background.rs:363`, the
@@ -83,11 +90,14 @@ add.
   `state_claim` and `state_publish`), every step's `Once` token while
   `STATE` is `UNINIT`, and from `READY` on the permissions `init` froze
   (`api::Published`: the built `Shared`, from `axiom_shared_built`'s
-  join, the feature statics and the class table). `api::claim_init`
+  join, and the class table; since upstream #110 not the feature
+  statics, which the feature line's first request completes and
+  writes, `api::build_line`). `api::claim_init`
   (verified) is `init_slow`'s compare-exchange from `UNINIT`, and takes
   the tokens out of the invariant for its winner, which `init` passes
   on: `Step::Statics` to `api::axiom_statics` (the class table and
-  feature statics' storage), the rest to `Shared::init`.
+  feature statics' storage; `init` writes `FEATURES` through its
+  permission and leaves the line's unused), the rest to `Shared::init`.
   `Shared::begin`, `table::axiom_slot_loc`, `table::axiom_fresh_words`
   (one token per class each), `huge::axiom_run_locs` and
   `axiom_statics` each use up their step's token, so Verus checks that
@@ -233,7 +243,12 @@ trusted only in how it is reached:
   once as `Unbacked`.
 - `Unbacked::commit` (`vspec/unbacked.rs:80`, `external_body`): a
   committed range becomes a `PointsToRaw` (the `mprotect` contract); the
-  source of every metadata permission (`meta.rs:1566`, `:2173`).
+  source of every metadata permission (`meta.rs:1566`, `:2173`; since
+  upstream #110 called on the part of a committed range past the
+  deferred tables in `Inner::commit_bump_to`, and on a just-carved
+  table's deferred part after `Inner::flush` in
+  `Inner::reserve_committed`), with `Unbacked::into_lazy` for the
+  tables committed by their owners.
 - `sys::pac::axiom_user_va_limit` (`sys/pac.rs:147`): the limit is at
   most `2^48`.
 
@@ -293,7 +308,10 @@ handler (`lib.rs`) aborts. An abort satisfies every postcondition.
 
 **Termination not proved** (`exec_allows_no_decreases_clause`):
 `lock.rs:80` `lock_slow`, `class/mod.rs:2672` `claim_with`,
-`api/mod.rs:319` `init_slow`,
+`api/mod.rs:319` `init_slow`, `api::line_ready` (since upstream #110:
+the wait for another thread's build of the feature line),
+`sys::cgroup::Deferred::discover` (since #110: a waiting discovery's
+wait for another thread's),
 `api/cxx.rs:172` `oom`, `purge/background.rs:379` `main`,
 `sys/mod.rs:533`, `:697`, `:760`, `sys/cgroup.rs:798`. The theorems are
 partial correctness: they say what holds if the call returns. None of
@@ -652,9 +670,13 @@ the assumed `Heap::wf` and the huge lock axiom.
   `is_set_unchecked`, `owner_word` and `owner_at` read through
   permissions carved from the three reservations
   (`SlabTable::perms_ok`): `Meta::reserve_table` hands out the table's
-  bytes once, an eager table's from `meta::Inner::handed` and a
-  reservation's through `Unbacked::into_lazy` (`vspec/unbacked.rs`,
-  which uses up the reservation's token),
+  bytes once, an eager table's committed part from `meta::Inner::handed`
+  and, since upstream #110 (a carve makes no system call; the object
+  side's commit is deferred to the next object or table commit,
+  `Inner::flush`), its part past `committed` through
+  `Unbacked::into_lazy` of the token `reserve_eager` carved into
+  `meta::Inner::handed_lazy`, and a reservation's through
+  `Unbacked::into_lazy` (`vspec/unbacked.rs`, which uses up the token),
   `table::axiom_init_descs`, `_owners`, `_words` (`class/table.rs:1238`,
   `:1248`, `:1260`, the values are initialised), the slice primitive
   under `words_ref` (`vspec::slice::slice_from_perms`, a slice over
@@ -668,10 +690,11 @@ the assumed `Heap::wf` and the huge lock axiom.
   which `SetTable::new` carves once per slot from its groups'
   reservations) through `vspec::zero::axiom_zero_word` (eight bytes that
   read as zero are the `u64` 0). The zero facts are `Meta::reserve_table`'s:
-  an eager table's from `meta::Inner::handed_zero` (fresh memory above
-  the bump pointer, `Unbacked::commit`), a reservation's from
-  `Unbacked::into_lazy` (the same `mmap` fact, on its commit-before-read
-  premise). Premise (`ZeroRaw::axiom_new`): a permission is paired only
+  an eager table's committed part from `meta::Inner::handed_zero` (fresh
+  memory above the bump pointer, `Unbacked::commit`) and its deferred
+  part, like a reservation's, from `Unbacked::into_lazy` (the same `mmap`
+  fact, on its commit-before-read premise: the owner's first
+  `Meta::commit` runs the deferred commit). Premise (`ZeroRaw::axiom_new`): a permission is paired only
   with the zero token made with it, whose bytes nothing has written since
   (`meta::zero_raw`, the one pairing).
 - `heap::axiom_fresh_stack` (`heap/mod.rs`): a stack `Meta::alloc_raw`
@@ -1354,7 +1377,16 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   run behind a call that requires `may_syscall()`. `calloc` reaches its
   pop through `api::shared` and `heap_for_thread`, which may initialise
   or create a heap; only the pop itself is covered. `realloc` and
-  `free_aligned_sized`'s hint (`class_for`) are not covered.
+  `free_aligned_sized`'s hint (`class_for`) are not covered. Since
+  upstream #110 part of init's work runs later, on slow paths that
+  require `may_syscall()` too: the cgroup discovery at the first
+  periodic tick past `sys::cgroup::DEFER_NS` (`purge::sample` through
+  `Shared::discover_cgroup_if_due`), at the first read of its figures
+  (`Shared::cgroup_now`) or in `fork_prepare`
+  (`discover_cgroup_for_fork`); the metadata object side's deferred
+  commit at the next object or table commit (`meta::Inner::flush`);
+  and the per-size THP probe at the feature line's first request
+  (`api::line_ready`). None is reached from a fast path.
 - Faults. The first touch of a fresh slot or cache stack page can fault,
   and so can `PROT_NONE` guards and swapped-out pages. A page fault is a
   trap the kernel takes, not a system call, and no proof here models it.
@@ -2017,7 +2049,8 @@ theorem does not follow a token through the cache (see below).
 - `zero_on_free` is fixed for the process: `push_flags` is a plain field
   `init` writes once and every free path reads through `&Shared`
   (`api::Published`'s frozen permission: nothing writes `Shared` after
-  `READY`); `zero_on_free` is a startup configuration key with no
+  `READY` but its atomics and, since upstream #110, the cgroup record's
+  cell, `sys::cgroup::Deferred`, once); `zero_on_free` is a startup configuration key with no
   mallctl writer. Within one call `zero_on_free(shared)` is one value,
   so the guard on each obligation is the branch that cleared the block.
 
@@ -3089,8 +3122,11 @@ effective limit against the leaf's usage and to each limited ancestor
 within `sys::cgroup::LEVELS` against its own usage, keeping the most
 severe (`most_severe`, `Band`'s derived order spelled out over
 `severity`), and which `evaluate` (`:853`, from `purge::on_tick` and the
-background thread) and `Shared::init` (`heap/shared.rs`) call through
-`cgroup_band`; and `effective_decay_ns`, which
+background thread; since upstream #110 also from the deferred cgroup
+discovery, `Shared::discover_cgroup`, and a no-op until the record is
+discovered) and `Shared::init` (`heap/shared.rs`; since #110 only for a
+record discovered at init, `thp:always`, else the `Unlimited` band)
+call through `cgroup_band`; and `effective_decay_ns`, which
 `Policy::effective_decay_ns` (`:740`) applies to the stored band for
 the decay walks (`purge.rs`), `stats.cgroup.decay_ms`
 (`api/mallctl.rs`) and the reports (`api/print.rs`).
@@ -5114,6 +5150,25 @@ pub(super) fn theorem_mallctlbymib_reads_never_abort(shared: &Shared, mibp: *con
         crate::sys::may_syscall(),
         shared.wf(),
         cb.fresh(CEntry::ByMib { mib: mibp, miblen, oldp: io.oldp as *mut u8, .. }),
+
+// since upstream #110: the seven `stats.cgroup.*` keys of `Reader::checks`
+#[cfg(verus_only)]
+pub(super) fn theorem_mallctl_cgroup_reads_check(shared: &Shared, name: *const c_char,
+    io: &Io, m: &[usize], Tracked(cc): Tracked<CCall>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::integrity_aborts(),
+        shared.wf(),
+        cc.fresh(CEntry::Mallctl { .. }), // as above
+
+#[cfg(verus_only)]
+pub(super) fn theorem_mallctlbymib_cgroup_reads_check(shared: &Shared, mibp: *const usize,
+    miblen: usize, io: &Io, Tracked(cb): Tracked<CCall>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::integrity_aborts(),
+        shared.wf(),
+        cb.fresh(CEntry::ByMib { .. }), // as above
 ```
 
 (Bodies elided.) `may_abort()` is a capability, as theorem 8's
@@ -5123,14 +5178,15 @@ functions and of the panic handler. The integrity checks, the aborts
 that test allocator state no verified invariant constrains, accept the
 narrower `may_abort_corrupt()`
 instead: `vspec::check` (`requires may_abort_corrupt() || c`) and
-`sys::abort_integrity` (`sys/abort.rs:175`). The first witness holds only
-`integrity_aborts()`, which nothing grants, the second holds no abort
-capability at all; both hold `may_syscall()` (the read-only paths take
-locks) and a well-formed `Shared`: they make the calls below and
-verify. So these calls abort at most at an integrity check, whatever
-their arguments (for the `mallctl*` pointers, whatever arguments keep
-the C contract, as the premises below say), and only
-`mallinfo`/`mallinfo2` reach one:
+`sys::abort_integrity` (`sys/abort.rs:175`). The first witness and the
+two `stats.cgroup.*` witnesses hold only `integrity_aborts()`, which
+nothing grants, the other two hold no abort capability at all; all hold
+`may_syscall()` (the read-only paths take locks) and a well-formed
+`Shared`: they make the calls below and verify. So these calls abort at
+most at an integrity check, whatever their arguments (for the
+`mallctl*` pointers, whatever arguments keep the C contract, as the
+premises below say), and only `mallinfo`/`mallinfo2` and, since upstream
+#110, the seven `stats.cgroup.*` reads reach one:
 
 - `get_defrag_hint(p)` (`api/jemalloc.rs:667`), whole, for every `p`
   and before init. It requires no abort capability at all (only
@@ -5143,8 +5199,12 @@ the C contract, as the premises below say), and only
   `shared()`: their bodies call `stats::collect_all`, `page_size`,
   `fig_add`, `fig_mul` and `saturating_sub`, and `mallinfo` clamps; the
   witness makes the calls. Only the integrity check below.
-- `challoc_features` (`api/mod.rs:321`) after `shared()`: the static
-  feature line; never aborts.
+- `challoc_features` (`api/mod.rs:321`) after `shared()`: since
+  upstream #110 the feature line's build at the first request
+  (`api::line_ready`: the per-size THP probe and `FeatureLine::build`,
+  through the trusted `build_line`, which requires only
+  `may_syscall()`) or the wait for another thread's (termination not
+  claimed), then the static line; never aborts.
 - `mallctl` and `mallctlbymib` after their `super::shared()`: `cstr`,
   `name_to_mib`, `mib_in`, `mib_to_node` and `ctl` (`api/mallctl.rs:2162`)
   for every node where `ctl_never_aborts` (`:224`) holds: an interior
@@ -5157,11 +5217,21 @@ the C contract, as the premises below say), and only
   formerly closures outside `verus!`), each called by the witness for
   the readers that do not abort; `call`, which runs the reader of the
   node the MIB resolves to, is a verified `match` over the `Reader` enum
-  and requires `may_abort()` or `!read.aborts()`. Every such read and
-  both utilization queries never abort, `stats.arenas.<i>.*` with `i` =
-  `MALLCTL_ARENAS_ALL` (`stats::arena_stats_all`) and
-  `stats.cgroup.empty_bytes` (`policy::empty_bytes`) included: the
-  witness requires no `integrity_aborts()`.
+  and requires `may_abort()` or `!read.aborts()`, and
+  `may_abort_corrupt()` or `!read.checks()`. Every such read but the
+  seven below and both utilization queries never abort,
+  `stats.arenas.<i>.*` with `i` = `MALLCTL_ARENAS_ALL`
+  (`stats::arena_stats_all`) included: the witness requires no
+  `integrity_aborts()`. Since upstream #110 the seven `stats.cgroup.*`
+  reads behind `mallctl::tracked` (`limit`, `high`, `current`,
+  `decay_ms`, `retention_cap`, `empty_bytes`, `full_purges`;
+  `Reader::checks`) run the deferred cgroup discovery first
+  (`Shared::cgroup_now`) and abort at most at its integrity check
+  (below): their witnesses, `theorem_mallctl_cgroup_reads_check` and
+  `theorem_mallctlbymib_cgroup_reads_check`, require
+  `integrity_aborts()`, and `ctl` requires `may_abort_corrupt()` or
+  `!ctl_checks(*node)`. (Before #110 they never aborted, not even at
+  an integrity check.)
 - `mallctlnametomib` (`:2411`) requires no abort capability: it never
   aborts, before init too (it never runs it), for a `name`, `mibp` and
   `miblenp` that keep their C contract.
@@ -5172,10 +5242,19 @@ so the cache fast paths of `malloc`, `free`, `free_sized` and
 `challoc_free_usable` it calls never abort either; their checks that
 fail leave the fast path for the slow one, which requires `may_abort()`.
 
-The integrity check the covered calls reach (`api::tests::
+The integrity checks the covered calls reach (`api::tests::
 abort_grants_only_at_roots`, `api/mod.rs:1868`, lists the callers of
 `check` and `abort_integrity` and the trusted bodies that require
 `may_abort_corrupt()` alone):
+- `heap::Shared::cgroup_now` (`heap/shared.rs`, since upstream #110,
+  `abort_integrity` with "cgroup: discovery did not publish"): after a
+  discovery that waited (`Deferred::discover(true)`), the record not
+  published. The phase is an `AtomicU8` that only discovery's release
+  store sets to `DONE` and that nothing moves back from it
+  (`Deferred::fork_child` only resets `RUNNING`), so it fails only if
+  that is broken; no verified invariant states it. Reached by the
+  seven `stats.cgroup.*` reads above, and by `malloc_stats_print`'s
+  reports (`text_general`, `policy_line`, `json_general`).
 - `stats::huge_usable_pages` (`stats.rs:512`, abort in
   `huge_pages_short`, `:533`): an arena's `large` word holding fewer
   pages than its runs' guards. The word is a plain `AtomicU64` that
@@ -5256,7 +5335,9 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   can prove `may_abort()` only from its own `requires` (or a loop
   invariant that carries it), or from `grant_aborts`, and
   `may_abort_corrupt()` only from those or `integrity_aborts()`, which
-  only `theorem_read_only_never_aborts` requires.
+  only `theorem_read_only_never_aborts` and, since upstream #110, the two
+  `stats.cgroup.*` witnesses (`theorem_mallctl_cgroup_reads_check`,
+  `theorem_mallctlbymib_cgroup_reads_check`) require.
 - `grant_aborts` is called only in `extern "C"` bodies (the
   `verified_export_pair!` macro, `api/mod.rs:68`, and every hand-written
   export: 44 grants) and in the `#[panic_handler]`, which the panic
@@ -5264,7 +5345,7 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   `-> !` helper, unlike `grant_syscalls`.
   `api::tests::abort_grants_only_at_roots` checks the
   source: the grants, `may_abort*` only as `requires`/invariant clauses,
-  `integrity_aborts` only in the witness' `requires`, the integrity
+  `integrity_aborts` only in the witnesses' `requires`, the integrity
   checks only in the functions listed above, and the trusted bodies.
   Outside tests no Rust code calls an `extern "C"` function of the
   crate.
@@ -5309,7 +5390,11 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   results are discarded, so `EAGAIN` or `EINTR` loops) under
   `RawLock::lock`/`unlock`, `LockGuard::drop` and `deref`, the static
   projections and `shared_unchecked` (since upstream #77 `shared_base`
-  and `shared_deref`), `published_line`, the `STATE`
+  and `shared_deref`), `published_line`, since upstream #110
+  `build_line` (the per-size THP probe and `FeatureLine::build`, both
+  verified, and the two writes) and `Deferred::cell_ref` and
+  `cell_write` (a reference into, and a write of, the cgroup cell),
+  the `STATE`
   wrappers (`state_load`, `state_claim`, `state_publish`: one bare
   atomic operation each), `ClassTable::table`, `class_entry`,
   the watermark's load `vspec::atom::load_usize_in`, the registry reader `arena_at`
@@ -5361,7 +5446,10 @@ bound, never fails: `Sink`'s type invariant states the bound, and
 - Corrupt state is not excluded for `mallinfo` and `mallinfo2`: the
   `large` word's check may fire; the theorem names it rather than
   proving it unreachable (above: the word has no honest invariant that
-  excludes it).
+  excludes it). Since upstream #110 the same holds of the seven
+  `stats.cgroup.*` reads: `Shared::cgroup_now`'s check (the record not
+  published after a waited-for discovery) is named, not proved
+  unreachable (the discovery phase has no verified invariant).
 
 Machine code: the hot set is unchanged (x86_64 disassembly identical to
 the base commit outside the readers). The 43 `stats.*` and `arenas.*`
@@ -5452,7 +5540,7 @@ arena `arena`), `SlabTable`, `SetTable` (a slab-set rank), `Huge`, `Meta`,
 | purge `purge_all`, `purge_arena`, `decay` and `decay_arena` (through `decay_one`, `decay_huge`) → `Arena::decay_with`, `ClassState::decay_with`, `Huge::decay_with`, `on_tick`, `sample` → `policy::evaluate`; background `start` (state, then meta) and `main` | class, huge, state locks one at a time |
 | statistics `epoch`, `collect` (`collect_into`, with its exact-stats ghost outputs) and `arena_stats_all`, under the process statistics lock held across the scan (upstream #91) | Stats < Class(i, c) < Table(c), and Stats < Huge, Meta, ArenaStats(i), each released before the next is taken; `arena_stats_all`: Stats < ArenaStats(i) |
 | statistics `collect_all`, `mallinfo2`, `snapshot`, `arena_stats` (class → table, huge, meta, arena and process statistics), `mallctl` `ctl` and its named readers (`stats.*`, `stats.cgroup.empty_bytes`), `utilization`, `owner_of`, `get_defrag_hint`, `malloc_trim` | each lock with nothing above it held |
-| `fork_prepare` (`api/mod.rs:819`) | Tcaches < Arenas < Stats < Class(i, c) (arenas ascending, classes ascending) < Table(c) < Sets(i) (arenas ascending) < Huge < Meta < ArenaStats(i) < State, through one root token |
+| `fork_prepare` (`api/mod.rs:819`) | Tcaches < Arenas < Stats < Class(i, c) (arenas ascending, classes ascending) < Table(c) < Sets(i) (arenas ascending) < Huge < Meta < ArenaStats(i) < State, through one root token; before them (since upstream #110) the deferred cgroup discovery's `policy::evaluate` from the same root token, each class lock with nothing above it held, all released on return (`*final(ord) == *old(ord)`) |
 
 `fork_prepare` proves it with loop invariants `ord.top() <
 rank_class(i, 0)`, `< rank_class(i, c)`, `< rank_table(c)`, `<
@@ -5711,7 +5799,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   `CountPerm` is the counter with its `id` (`count_id`), and `fetch_add`,
   `fetch_sub` (wrapping), `load` and, since the port of upstream #103,
   `compare_exchange` (the strong form: it fails only on a different
-  value, by C++20's semantics; S303, discharged with loom and those,
+  value, by C++20's semantics; S308, discharged with loom and those,
   `verus/seams/vspec-count-compare_exchange.md`) are one atomic operation
   on it, sequentially consistent in the model (the orderings, all
   `Relaxed`, are ignored, as for the bitmap words).
@@ -5769,7 +5857,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   is off by that ticket inside the trusted body only (the flush's proof
   uses no arena invariant).
 - `homed_ok`'s `rehome ==> bound` (since #103): a new thread heap is
-  counted, so it holds whatever `mark_rehome` (S124, RefinedRust:
+  counted, so it holds whatever `mark_rehome` (S126, RefinedRust:
   `true`, `verus/seams/heap-mark_rehome.md`) stored;
   an explicit cache, assumed `wf` (`heap_at`), rests on `init_fields`
   storing `false` (trusted) and on `create` being the one writer that
@@ -6576,7 +6664,11 @@ the thread gets back the mask the slot holds, on both sides of the
 fork.
 
 **Statement.** `fork_prepare` blocks every blockable signal before its
-first acquisition and keeps them blocked through its last, and it saves
+first acquisition of a lock of the fork lock list and keeps them
+blocked through its last (since upstream #110 its deferred cgroup
+discovery, `Shared::discover_cgroup_for_fork`, runs first, with the
+mask unchanged: the policy evaluation it may run takes and releases
+class locks as any slow path does, and holds none on return), and it saves
 the mask that was in force at its entry in `FORK_SIGMASK` with every
 allocator lock held, recording it in the hold (`ForkHeld::saved`). The
 release (the body of `fork_parent` and `fork_child`) reads the slot

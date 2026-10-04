@@ -522,8 +522,10 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     )?;
     // Design 11: the figures as last sampled (a sample is taken here if the
     // 10 ms window allows), or why nothing is tracked.
-    shared.cgroup.sample(crate::sys::now_coarse_ns());
-    writeln!(out, "{}", shared.cgroup)?;
+    // Premise (lock order): the report takes no lock around this.
+    let cgroup = shared.cgroup_now(Tracked(&mut axiom_entry()));
+    cgroup.sample(crate::sys::now_coarse_ns());
+    writeln!(out, "{}", *cgroup)?;
     policy_line(out, shared)?;
     advice_line(out)?;
     thp_line(out)
@@ -586,6 +588,7 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
 fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
     requires
         crate::sys::may_syscall(),
+        crate::sys::may_abort_corrupt(),
         shared.wf(),
 {
     use crate::policy::{Band, FRAC_ONE};
@@ -593,7 +596,8 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
         crate::policy::frac_one_value();
     }
     let p = &shared.policy;
-    if !shared.cgroup.tracked() {
+    // Premise (lock order): the report takes no lock around this.
+    if !shared.cgroup_now(Tracked(&mut axiom_entry())).tracked() {
         return writeln!(out, "cgroup policy: off (not tracked)");
     }
     write!(out, "cgroup policy: ")?;
@@ -914,6 +918,7 @@ fn json_general<W: Write>(
 ) -> fmt::Result
     requires
         crate::sys::may_syscall(),
+        crate::sys::may_abort_corrupt(),
         shared.wf(),
 {
     proof {
@@ -977,7 +982,8 @@ fn json_general<W: Write>(
             None => "none",
         }
     )?;
-    let cg = &shared.cgroup;
+    // Premise (lock order): the report takes no lock around this.
+    let cg = shared.cgroup_now(Tracked(&mut axiom_entry()));
     cg.sample(crate::sys::now_coarse_ns());
     // Out of the `writeln!`, as in `policy_line`. Premise (lock order):
     // the report takes no lock around this.
@@ -2341,7 +2347,7 @@ mod tests {
 mod kani_print {
     use super::{Target, file_target, hist_line, stderr_target, word};
 
-    /// S43 `word`, no `requires`, no `ensures`: it returns for every C
+    /// S45 `word`, no `requires`, no `ensures`: it returns for every C
     /// string up to 3 bytes before its NUL, UTF-8 or not (built at run
     /// time: Kani 0.68 has no C string literals).
     #[kani::proof]
@@ -2355,7 +2361,7 @@ mod kani_print {
         assert!(w == "?" || w.as_bytes() == &a[..n]);
     }
 
-    /// S44 `hist_line`, no `ensures`: it returns, for every argument and
+    /// S46 `hist_line`, no `ensures`: it returns, for every argument and
     /// whatever the writer returns (`W` is a writer that may fail any
     /// write; Kani fails the harness on any panic).
     #[kani::proof]
@@ -2373,7 +2379,7 @@ mod kani_print {
         );
     }
 
-    /// S45 `file_target`, no `ensures`: it returns, `Target::File` of the
+    /// S47 `file_target`, no `ensures`: it returns, `Target::File` of the
     /// stream, for any pointer (it is not dereferenced).
     #[kani::proof]
     fn file_target_returns() {
@@ -2381,7 +2387,7 @@ mod kani_print {
         assert!(matches!(file_target(p), Target::File(q) if q == p));
     }
 
-    /// S46 `stderr_target`, no `ensures`: it returns, `Target::Stderr`.
+    /// S48 `stderr_target`, no `ensures`: it returns, `Target::Stderr`.
     #[kani::proof]
     fn stderr_target_returns() {
         assert!(matches!(stderr_target(), Target::Stderr));

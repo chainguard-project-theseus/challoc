@@ -73,7 +73,7 @@ impl Unbacked {
     /// The permission to the bytes, once they are committed, and the token
     /// that they read as zero. Trusted for two kernel facts, with a premise
     /// its callers keep and nothing checks: call it only after `mprotect`
-    /// made exactly this range readable and writable
+    /// made a range holding this one readable and writable
     /// (`meta::commit_range` returned `Ok`). Then `mprotect(2)`: the range
     /// is ordinary memory this process owns, addressed through
     /// integer-to-pointer casts. And `mmap(2)`: a private anonymous mapping
@@ -83,7 +83,11 @@ impl Unbacked {
     /// minted only from a fresh reservation, and no permission to them
     /// exists before this call consumes the token). Call sites:
     /// `meta::Inner::commit_bump_to` and `meta::Inner::reserve_committed`,
-    /// each right after its successful commit of the token's range.
+    /// each after its successful commit of a range holding the token's:
+    /// `commit_bump_to` commits `[committed, want)` and takes the part past
+    /// the deferred tables, and `reserve_committed`'s eager path takes the
+    /// deferred part of the table it just carved after `Inner::flush`
+    /// committed `[committed, frontier)`, which holds it.
     #[verifier::external_body]
     pub proof fn commit(tracked self) -> (tracked r: (PointsToRaw, Zeroed))
         ensures
@@ -113,7 +117,11 @@ impl Unbacked {
     /// replaced, `sets::axiom_table_bytes`, is in
     /// `verus/audit/invariants.md`): [`Meta::reserve_table`](crate::meta::Meta::reserve_table),
     /// its one caller, passes the token `Inner::reserve` just carved for
-    /// the table. Not at address 0 (`Meta::reserve_table` ensures it):
+    /// a reservation, or the deferred part `Inner::reserve_eager` just
+    /// carved of an eager table (its bytes past the object side's
+    /// `committed`), which the owner's first `Meta::commit` makes writable
+    /// with the deferred commit (`Inner::flush`) before the table is used,
+    /// the same premise. Not at address 0 (`Meta::reserve_table` ensures it):
     /// a permission there proves `false` (`PointsTo::is_nonnull`). The
     /// zero token is [`Unbacked::commit`]'s `mmap(2)` fact, on the same
     /// premise: the bytes have been `PROT_NONE` since their reservation

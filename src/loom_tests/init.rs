@@ -13,7 +13,7 @@
 //!   [`Statics::shared_if_ready`] is `api::shared_if_ready`, the `free`
 //!   path's;
 //! - `init` is [`Statics::init`]: plain writes of the published value
-//!   (`SHARED`, `FEATURES`, `FEATURE_LINE` and the page geometry are
+//!   (`SHARED`, `FEATURES` and the page geometry are
 //!   plain memory), here one loom `UnsafeCell`; `shared_ref` is a plain
 //!   read of it.
 //!

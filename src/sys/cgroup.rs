@@ -20,14 +20,18 @@
 //!
 //! Costs: discovery is one read of `/proc/self/cgroup`, one line scan of
 //! `/proc/self/mountinfo` and two small reads per level of the cgroup path,
-//! once at init. Sampling is two small reads, plus one per ancestor in
+//! once, [`DEFER_NS`] into the process's life ([`Deferred`]) rather than at
+//! init: about 90 us of system time per exec that a process living less
+//! than that never pays (#29). Sampling is two small reads, plus one per ancestor in
 //! [`LEVELS`] with a limit of its own, at most once per
 //! [`SAMPLE_INTERVAL_NS`] (10 ms on `CLOCK_MONOTONIC_COARSE`), from slow
 //! paths only; the limit walk is repeated at most once per
 //! [`LIMIT_INTERVAL_NS`] so a `docker update --memory` is seen.
 
-use crate::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use crate::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use core::cell::UnsafeCell;
 use core::fmt;
+use core::mem::MaybeUninit;
 
 #[cfg(verus_only)]
 use super::{after_line, find_byte, lemma_line_step, line_len, opt_view, parse_decimal_spec};
@@ -55,6 +59,12 @@ const SCAN_BUF: usize = 2048;
 pub const SAMPLE_INTERVAL_NS: u64 = 10_000_000;
 /// Minimum interval between two walks of `memory.max`/`memory.high`.
 pub const LIMIT_INTERVAL_NS: u64 = 1_000_000_000;
+/// How long after init discovery waits ([`Deferred`]): the first periodic
+/// tick at least this far into the process's life discovers the cgroup,
+/// as does the first read of its figures (`stats.cgroup.*`, the report).
+/// Two sampling windows: a process that ends sooner (a shell command, a
+/// short compiler step, an interpreter's start) never reads the files.
+pub const DEFER_NS: u64 = 2 * SAMPLE_INTERVAL_NS;
 
 /// `max` in a limit file: no limit at this level.
 pub const UNLIMITED: u64 = u64::MAX;
@@ -962,8 +972,9 @@ pub enum State {
 }
 
 /// The process's memory cgroup as last read (design 11). One per process,
-/// inside `heap::Shared`; written by `discover` at init and by the
-/// samplers afterwards, so every mutable field is an atomic.
+/// inside `heap::Shared` ([`Deferred`]); written by `discover` (at init or
+/// later) and by the samplers afterwards, so every mutable field is an
+/// atomic.
 pub struct Cgroup {
     /// Directory of the cgroup, `dir[..dir_len]`, without a trailing slash.
     dir: [u8; PATH_CAP],
@@ -1328,6 +1339,156 @@ impl fmt::Display for Cgroup {
 }
 
 } // verus!
+
+verus! {
+
+/// The process's [`Cgroup`], discovered late (design 11): at init only
+/// when something needs the limit then (`thp:always`, which a limit under
+/// 1 GiB forces to `never`), otherwise at the first periodic tick
+/// [`DEFER_NS`] after init ([`Deferred::due`]), at the first read of its
+/// figures or at the first `fork` (`api::fork_prepare`), whichever comes
+/// first. Until then [`Deferred::get`] is `None`: no limit known, the
+/// policy at its defaults, the eager purge advice, nothing sampled, the
+/// same as a host without cgroup2.
+///
+/// One thread discovers (a compare-exchange from `PENDING`) into the
+/// cell and publishes it with a release store of `DONE`; readers see the
+/// cell only after an acquire load of `DONE`, so the record's plain
+/// fields are never read while they are written.
+pub struct Deferred {
+    phase: AtomicU8,
+    /// Coarse-clock time of init.
+    born: u64,
+    /// Initialised once `phase` is `DONE`.
+    cell: UnsafeCell<MaybeUninit<Cgroup>>,
+}
+
+const PHASE_DONE: u8 = 0;
+const PHASE_PENDING: u8 = 1;
+const PHASE_RUNNING: u8 = 2;
+
+impl Deferred {
+    /// A record discovered now (`Cgroup::discover`).
+    pub fn now(cg: Cgroup) -> Deferred {
+        Deferred {
+            phase: AtomicU8::new(PHASE_DONE),
+            born: 0,
+            cell: UnsafeCell::new(MaybeUninit::new(cg)),
+        }
+    }
+
+    /// A record to discover later; `born` is init's coarse-clock time.
+    pub const fn later(born: u64) -> Deferred {
+        Deferred {
+            phase: AtomicU8::new(PHASE_PENDING),
+            born,
+            cell: UnsafeCell::new(MaybeUninit::uninit()),
+        }
+    }
+
+    /// The record once discovery has run, `None` before.
+    #[inline]
+    pub fn get(&self) -> Option<&Cgroup> {
+        if self.phase.load(Ordering::Acquire) == PHASE_DONE {
+            // SAFETY: `DONE` was published after the cell was written.
+            Some(unsafe { self.cell_ref() })
+        } else {
+            None
+        }
+    }
+
+    /// Whether discovery is still to come and `now` is at least
+    /// [`DEFER_NS`] after init.
+    #[inline]
+    pub fn due(&self, now: u64) -> bool {
+        self.phase.load(Ordering::Relaxed) == PHASE_PENDING && now.saturating_sub(self.born) >= DEFER_NS
+    }
+
+    /// Run discovery if it has not run: `true` when this call ran it, so
+    /// the caller sets the policy up from the first figures. `found` sees
+    /// the record before it is published, so what it sets up (the policy's
+    /// `high` baseline) is in place before any other thread's sample can
+    /// act on the record. A call that finds another thread discovering
+    /// waits for it when `wait` (termination is not claimed: the wait ends
+    /// when the other thread's discovery does), and otherwise returns at
+    /// once with the record still pending.
+    #[verifier::exec_allows_no_decreases_clause]
+    pub fn discover<F: FnOnce(&Cgroup)>(&self, wait: bool, found: F) -> bool
+        requires
+            crate::sys::may_syscall(),
+            forall|cg: &Cgroup| #[trigger] call_requires(found, (cg,)),
+    {
+        match self.phase.compare_exchange(PHASE_PENDING, PHASE_RUNNING, Ordering::Acquire, Ordering::Relaxed) {
+            Ok(_) => {
+                let cg = Cgroup::discover(true);
+                // SAFETY: this thread won the exchange; no reader looks at
+                // the cell before `DONE`.
+                let cg = unsafe { self.cell_write(cg) };
+                found(cg);
+                self.phase.store(PHASE_DONE, Ordering::Release);
+                true
+            },
+            Err(_) => {
+                while wait && self.phase.load(Ordering::Acquire) != PHASE_DONE {
+                    core::hint::spin_loop();
+                }
+                false
+            },
+        }
+    }
+
+    /// The child of a `fork` has only the forking thread: a discovery
+    /// another thread had under way is not coming, so it starts over.
+    pub fn fork_child(&self) {
+        let _ = self.phase.compare_exchange(PHASE_RUNNING, PHASE_PENDING, Ordering::Relaxed, Ordering::Relaxed);
+    }
+
+    /// The discovered record in the cell.
+    ///
+    /// # Safety
+    /// The caller observed `DONE` with an acquire load.
+    ///
+    /// Trusted: the premise, that the cell was written before `DONE` was
+    /// published (the release store in [`Deferred::discover`], after its
+    /// one write, or [`Deferred::now`]'s initial value) and is not written
+    /// again; the exchange that makes one thread its writer carries no
+    /// ghost state. `Cgroup`'s type invariant, which Verus assumes of the
+    /// result, holds: the cell only ever holds a value the verified
+    /// `Cgroup::discover` built.
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn cell_ref(&self) -> &Cgroup
+        opens_invariants none
+    {
+        // SAFETY: guaranteed by the caller.
+        unsafe { (*self.cell.get()).assume_init_ref() }
+    }
+
+    /// `cg` written into the cell, which [`Deferred::get`] reads once
+    /// `DONE` is published.
+    ///
+    /// # Safety
+    /// The caller won `phase`'s exchange from `PENDING`, so it is the
+    /// cell's only writer, and no reader looks at the cell before `DONE`.
+    ///
+    /// Trusted: the premise, as for [`Deferred::cell_ref`].
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn cell_write(&self, cg: Cgroup) -> &Cgroup
+        opens_invariants none
+    {
+        // SAFETY: guaranteed by the caller.
+        unsafe { (*self.cell.get()).write(cg) }
+    }
+}
+
+} // verus!
+
+// SAFETY: the cell is written once, by the thread that won the
+// `PENDING -> RUNNING` exchange, before the release store of `DONE`, and
+// read only after an acquire load of `DONE` (the type doc); everything
+// else in `Cgroup` is atomic.
+unsafe impl Sync for Deferred {}
 
 mod linux {
     use super::*;
@@ -2287,6 +2448,55 @@ mod linux_tests {
     use std::string::String;
     use std::{eprintln, format, vec::Vec};
 
+    /// A deferred record is the untracked placeholder until it is due
+    /// (`DEFER_NS` after its birth) or read; one call discovers, and the
+    /// record is then what an immediate `discover` finds. A discovery cut
+    /// short by a `fork` starts over in the child.
+    #[test]
+    fn deferred_discovery_waits_then_runs_once() {
+        let born = 1_000_000_000;
+        let d = Deferred::later(born);
+        assert!(d.get().is_none());
+        assert!(!d.due(born));
+        assert!(!d.due(born + DEFER_NS - 1));
+        assert!(d.due(born + DEFER_NS));
+        let mut seen = None;
+        assert!(
+            d.discover(false, |cg| seen = Some((cg.state(), d.get().is_none()))),
+            "the first call discovers"
+        );
+        let (state, unpublished) = seen.expect("`found` ran");
+        assert!(unpublished, "`found` runs before the record is published");
+        assert!(d.get().is_some());
+        assert!(!d.discover(true, |_| ()), "and only the first");
+        assert!(!d.due(u64::MAX));
+        let now = Cgroup::discover(true);
+        assert_eq!(state, now.state());
+        assert_eq!(d.get().unwrap().state(), now.state());
+        assert_eq!(d.get().unwrap().dir(), now.dir());
+        assert_eq!(d.get().unwrap().limit(), now.limit());
+        d.fork_child();
+        assert_eq!(
+            d.get().unwrap().state(),
+            now.state(),
+            "a finished discovery stays"
+        );
+        let e = Deferred::later(born);
+        e.phase.store(PHASE_RUNNING, Ordering::Relaxed);
+        assert!(
+            !e.discover(false, |_| ()),
+            "another thread's discovery under way"
+        );
+        assert!(e.get().is_none());
+        e.fork_child();
+        assert!(e.due(born + DEFER_NS), "the child starts it over");
+        assert!(e.discover(false, |_| ()));
+        assert_eq!(e.get().unwrap().state(), now.state());
+        let off = Deferred::now(Cgroup::discover(false));
+        assert_eq!(off.get().unwrap().state(), State::Disabled);
+        assert!(!off.due(u64::MAX) && !off.discover(true, |_| ()));
+    }
+
     fn read_opt(p: &str) -> Option<String> {
         std::fs::read_to_string(p).ok()
     }
@@ -2542,7 +2752,7 @@ mod kani_fmt {
     /// The longest directory checked.
     const DIR_MAX: u16 = 3;
 
-    /// S347 `DisplaySpecImpl for sys::cgroup::Cgroup` (`fmt_req` true):
+    /// S352 `DisplaySpecImpl for sys::cgroup::Cgroup` (`fmt_req` true):
     /// every state, every figure, and every directory of up to `DIR_MAX`
     /// bytes (every byte value) with every mount prefix of it, the type
     /// invariant's `mount_len <= dir_len` (what `mount()` and `path()`

@@ -31,7 +31,7 @@ use crate::policy::Policy;
 use crate::stats::Snapshot;
 #[cfg(verus_only)]
 use crate::stats::axiom_snapshot_lock_inv;
-use crate::sys::cgroup::Cgroup;
+use crate::sys::cgroup::{Cgroup, Deferred};
 #[cfg(verus_only)]
 use crate::vspec::atom::usize_id;
 use crate::vspec::atom::usize_ptr;
@@ -143,11 +143,15 @@ pub struct Shared {
     pub tcaches: Tcaches,
     /// Process-wide statistics as of the last `epoch` (`stats.rs`).
     pub stats: Lock<crate::stats::Snapshot>,
-    /// The memory cgroup as last sampled (design 11; `sys::cgroup`). Cold:
-    /// written by init and by the rate-limited sampler on slow paths, read
-    /// by `stats.cgroup.*` and the reports. Last, well away from the lines
-    /// the fast paths read.
-    pub cgroup: crate::sys::cgroup::Cgroup,
+    /// The memory cgroup as last sampled (design 11; `sys::cgroup`),
+    /// discovered after init unless init needs it (`Deferred`): read it
+    /// through [`Shared::cgroup`] or [`Shared::cgroup_now`]. Cold: written
+    /// by discovery and by the rate-limited sampler on slow paths, read by
+    /// `stats.cgroup.*` and the reports. Last, well away from the lines the
+    /// fast paths read. `pub(crate)` rather than private, as upstream has
+    /// it: a field private to this module would make `Shared` opaque to
+    /// the proofs of every other module.
+    pub(crate) cgroup: crate::sys::cgroup::Deferred,
 }
 
 /// Everything the `free` fast path reads for one class, in one 64-byte
@@ -1103,7 +1107,7 @@ axiom fn axiom_shared_layout()
             Shared,
             Lock<Snapshot>,
         >(S_STATS, S_CGROUP as int),
-        field_fits::<Shared, Cgroup>(S_CGROUP, size_of::<Shared>() as int),
+        field_fits::<Shared, Deferred>(S_CGROUP, size_of::<Shared>() as int),
         size_of::<Shared>() <= isize::MAX,
 ;
 
@@ -1129,7 +1133,7 @@ const _: () = assert!(
         && fits::<Shared, Arenas>(S_ARENAS, S_TCACHES)
         && fits::<Shared, Tcaches>(S_TCACHES, S_STATS)
         && fits::<Shared, Lock<Snapshot>>(S_STATS, S_CGROUP)
-        && fits::<Shared, Cgroup>(S_CGROUP, core::mem::size_of::<Shared>())
+        && fits::<Shared, Deferred>(S_CGROUP, core::mem::size_of::<Shared>())
         && core::mem::size_of::<Shared>() <= isize::MAX as usize
 );
 
@@ -1166,7 +1170,7 @@ tracked struct SharedParts {
     tracked arenas: Held<Arenas>,
     tracked tcaches: PointsTo<Tcaches>,
     tracked stats: PointsTo<Lock<Snapshot>>,
-    tracked cgroup: PointsTo<Cgroup>,
+    tracked cgroup: PointsTo<Deferred>,
 }
 
 /// The `Shared` at `p` is [`storage_ok`], and the arrays inside it are
@@ -1198,7 +1202,7 @@ impl SharedParts {
         &&& (self.arenas.perm matches Some(a) ==> a.ptr() == field_ptr::<Shared, Arenas>(p, S_ARENAS))
         &&& self.tcaches.ptr() == field_ptr::<Shared, Tcaches>(p, S_TCACHES)
         &&& self.stats.ptr() == field_ptr::<Shared, Lock<Snapshot>>(p, S_STATS)
-        &&& self.cgroup.ptr() == field_ptr::<Shared, Cgroup>(p, S_CGROUP)
+        &&& self.cgroup.ptr() == field_ptr::<Shared, Deferred>(p, S_CGROUP)
     }
 
     /// Every field is written.
@@ -1393,7 +1397,7 @@ impl Shared {
         let tracked (arenas, raw) = take_field::<Shared, Arenas>(raw, p, S_ARENAS, S_TCACHES as int);
         let tracked (tcaches, raw) = take_field::<Shared, Tcaches>(raw, p, S_TCACHES, S_STATS as int);
         let tracked (stats, raw) = take_field::<Shared, Lock<Snapshot>>(raw, p, S_STATS, S_CGROUP as int);
-        let tracked (cgroup, _raw) = take_field::<Shared, Cgroup>(raw, p, S_CGROUP, size_of::<Shared>() as int);
+        let tracked (cgroup, _raw) = take_field::<Shared, Deferred>(raw, p, S_CGROUP, size_of::<Shared>() as int);
         crate::arena::axiom_array_layout::<ClassLine, NCLASSES>();
         crate::arena::axiom_array_layout::<SlabTable, NCLASSES>();
         let tracked lines = split_array(lines);
@@ -1676,10 +1680,10 @@ impl Shared {
 
     /// `cgroup`; the written record.
     #[inline(always)]
-    unsafe fn put_cgroup<'a>(this: *mut Shared, cgroup: Cgroup, Tracked(pc): Tracked<&'a mut PointsTo<Cgroup>>) -> (r: &'a Cgroup)
+    unsafe fn put_cgroup<'a>(this: *mut Shared, cgroup: Deferred, Tracked(pc): Tracked<&'a mut PointsTo<Deferred>>) -> (r: &'a Deferred)
         requires
             shared_ok(this),
-            old(pc).ptr() == field_ptr::<Shared, Cgroup>(this, S_CGROUP),
+            old(pc).ptr() == field_ptr::<Shared, Deferred>(this, S_CGROUP),
         ensures
             final(pc).ptr() == old(pc).ptr(),
             final(pc).is_init(),
@@ -2064,35 +2068,52 @@ impl Shared {
                 Tracked(&mut parts.arenas),
                 Tracked(&mut parts.tcaches),
             );
+            // Design 11: discovery waits for the first tick `DEFER_NS` into
+            // the process's life (or the first read of the figures), so a
+            // short-lived process never reads the files; `thp:always` needs
+            // the limit now, and `cgroup:false` reads nothing either way.
             let cgroup = Shared::put_cgroup(
                 this,
-                crate::sys::cgroup::Cgroup::discover(config.cgroup),
+                if config.cgroup && config.thp == crate::config::Thp::Always {
+                    Deferred::now(Cgroup::discover(true))
+                } else if config.cgroup {
+                    Deferred::later(crate::sys::now_coarse_ns())
+                } else {
+                    Deferred::now(Cgroup::discover(false))
+                },
                 Tracked(&mut parts.cgroup),
             );
             // Design 11: under an effective limit below 1 GiB a configured
             // `thp:always` is forced to `never` in the stored configuration
             // (`auto` is left alone; the report says so); the policy's
-            // `high` baseline is the count at init.
-            let thp_forced =
-                crate::thp::forced_by_limit(config.thp, cgroup.limit().min(cgroup.high()));
+            // `high` baseline is the count at init. A deferred discovery
+            // leaves no limit, no rises and the `Unlimited` band for now.
+            let cgroup = cgroup.get();
+            let limit = match cgroup {
+                Some(c) => c.limit().min(c.high()),
+                None => crate::sys::cgroup::UNLIMITED,
+            };
+            let rises = match cgroup {
+                Some(c) => c.rises().0,
+                None => 0,
+            };
+            let band = match cgroup {
+                Some(c) => crate::policy::cgroup_band(c),
+                None => crate::policy::Band::Unlimited,
+            };
+            let thp_forced = crate::thp::forced_by_limit(config.thp, limit);
             if thp_forced {
                 config.thp = crate::config::Thp::Never;
             }
             let policy = Shared::put_policy(
                 this,
-                crate::policy::Policy::new(cgroup.rises().0, thp_forced),
+                crate::policy::Policy::new(rises, thp_forced),
                 Tracked(&mut parts.policy),
             );
             // Applied once on the discovery sample, so the band and the cap
             // are published before the first 10 ms window closes (nothing
             // is `Empty` yet: retention 0).
-            let limit = cgroup.limit().min(cgroup.high());
-            policy.apply(
-                crate::policy::cgroup_band(cgroup),
-                limit,
-                0,
-                cgroup.rises().0,
-            );
+            policy.apply(band, limit, 0, rises);
             Shared::put_tail(
                 this,
                 config,
@@ -2453,6 +2474,88 @@ impl Shared {
             self.arenas.is_process(),
             forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok(),
     {
+    }
+
+    /// The memory cgroup record, `None` until discovery has run
+    /// (`sys::cgroup::Deferred`). For the samplers and the policy.
+    #[inline]
+    pub fn cgroup(&self) -> Option<&Cgroup> {
+        self.cgroup.get()
+    }
+
+    /// The memory cgroup record, discovering it first if that has not
+    /// happened: what a reader of the figures (`stats.cgroup.*`, the
+    /// report) uses. After a waiting discovery the record is published,
+    /// so the abort is an integrity check (theorem "Read-only APIs never
+    /// abort": `DONE`, once loaded, is never replaced, which no verified
+    /// invariant of the phase states).
+    pub fn cgroup_now(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: &Cgroup)
+        requires
+            crate::sys::may_syscall(),
+            crate::sys::may_abort_corrupt(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
+    {
+        self.discover_cgroup(true, Tracked(ord));
+        match self.cgroup.get() {
+            Some(cg) => cg,
+            None => crate::sys::abort_integrity(format_args!("cgroup: discovery did not publish")),
+        }
+    }
+
+    /// Discover the cgroup if the deferral has run out at `now` (the
+    /// periodic tick, the background thread): `true` when this call did,
+    /// and the policy has been evaluated on the first figures.
+    pub fn discover_cgroup_if_due(&self, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -> bool
+        requires
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
+    {
+        self.cgroup.due(now) && self.discover_cgroup(false, Tracked(ord))
+    }
+
+    /// Discover the cgroup in `fork`'s prepare handler, so the child
+    /// inherits the record; without waiting for a discovery another
+    /// thread (or this one, under a signal handler) has under way, which
+    /// the child then starts over (`Deferred::fork_child`).
+    pub fn discover_cgroup_for_fork(&self, Tracked(ord): Tracked<&mut LockOrder>)
+        requires
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
+    {
+        self.discover_cgroup(false, Tracked(ord));
+    }
+
+    /// Run the deferred discovery (`Deferred::discover`): `true` when this
+    /// call ran it. The `memory.events` `high` count found is the policy's
+    /// baseline, set before the record is published (as at init: a
+    /// container that already had `high` events does not start with a
+    /// full purge, whichever thread samples first); then the band from
+    /// the first sample.
+    fn discover_cgroup(&self, wait: bool, Tracked(ord): Tracked<&mut LockOrder>) -> bool
+        requires
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
+    {
+        let ran = self.cgroup.discover(wait, |cg: &Cgroup| {
+            self.policy.rebase_high_rises(cg.rises().0);
+        });
+        if ran {
+            crate::policy::evaluate(self, Tracked(ord));
+        }
+        ran
+    }
+
+    /// The child of a `fork`: see `sys::cgroup::Deferred::fork_child`.
+    pub fn cgroup_fork_child(&self) {
+        self.cgroup.fork_child();
     }
 
     /// The per-class slab tables (shared by every arena).
@@ -3477,7 +3580,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S135..S151, S152: each `S_*` is its field's `offset_of!`, and the
+    /// S137..S153, S154: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {
@@ -3521,11 +3624,14 @@ mod kani_layout {
         assert!(field_fits::<Shared, Arenas>(S_ARENAS, S_TCACHES));
         assert!(field_fits::<Shared, Tcaches>(S_TCACHES, S_STATS));
         assert!(field_fits::<Shared, Lock<Snapshot>>(S_STATS, S_CGROUP));
-        assert!(field_fits::<Shared, Cgroup>(S_CGROUP, size_of::<Shared>()));
+        assert!(field_fits::<Shared, Deferred>(
+            S_CGROUP,
+            size_of::<Shared>()
+        ));
         assert!(size_of::<Shared>() <= isize::MAX as usize);
     }
 
-    /// S48 `Arena::axiom_array_layout` at the two arrays of `Shared`.
+    /// S50 `Arena::axiom_array_layout` at the two arrays of `Shared`.
     #[kani::proof]
     fn shared_array_layout() {
         array_layout::<ClassLine, NCLASSES>();

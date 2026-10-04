@@ -96,7 +96,7 @@ pub mod print;
 #[cfg(test)]
 mod c_programs;
 
-use crate::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use crate::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 
@@ -149,7 +149,9 @@ exec static STATE: AtomicU32 = AtomicU32::new(UNINIT);
 /// so a re-entrant call from it can be told apart from a concurrent one.
 exec static INIT_TID: AtomicU32 = AtomicU32::new(0);
 
-/// Storage for a value built in place at init and immutable afterwards.
+/// Storage for a value built in place once: at init and immutable
+/// afterwards (`SHARED`), or completed and built at the feature line's
+/// first request ([`FEATURES`], [`FEATURE_LINE`], [`build_line`]).
 /// Verus does not model the contents of the `UnsafeCell`; verified code
 /// reads and writes a static's storage through a permission to it, at
 /// the address its projection names ([`shared_storage_ptr`],
@@ -174,8 +176,14 @@ verus! {
 
 exec static SHARED: Global<Shared> = Global::new();
 exec static FEATURES: Global<Features> = Global::new();
-/// The feature line for `challoc_features()` and `malloc_stats_print`.
+/// The feature line for `challoc_features()` and `malloc_stats_print`,
+/// built at its first request ([`feature_line_ready`]), not at init.
 exec static FEATURE_LINE: Global<FeatureLine> = Global::new();
+/// [`FEATURE_LINE`]'s state: `LINE_UNBUILT`, `LINE_BUILDING`, `LINE_READY`.
+exec static LINE_STATE: AtomicU8 = AtomicU8::new(LINE_UNBUILT);
+const LINE_UNBUILT: u8 = 0;
+const LINE_BUILDING: u8 = 1;
+const LINE_READY: u8 = 2;
 
 } // verus!
 
@@ -210,8 +218,10 @@ fn fork_slot() -> &'static AtomicU64 {
 
 /// The permissions to the statics `init` writes once, frozen when it is
 /// done: the published `Shared` (the value `Shared::init` built, which
-/// is well formed), the probed features, the feature line, and the
-/// class table after [`layout::adopt_page_geometry`]. `STATE`'s
+/// is well formed) and the class table after
+/// [`layout::adopt_page_geometry`] (not the probed features, which the
+/// feature line's first request completes, nor the line, built then:
+/// [`feature_line_ready`]). `STATE`'s
 /// invariant holds them from `READY` on ([`StatePred`]), so a thread
 /// that loads `READY` gets them ([`load_state`]); being `&'static`, they
 /// are shared by every reader, and nothing writes the statics through
@@ -221,8 +231,6 @@ fn fork_slot() -> &'static AtomicU64 {
 #[allow(dead_code)]
 pub tracked struct Published {
     pub tracked shared: &'static PointsTo<Shared>,
-    pub tracked features: &'static PointsTo<Features>,
-    pub tracked line: &'static PointsTo<FeatureLine>,
     pub tracked classes: &'static PointsTo<[layout::Class; NCLASSES]>,
 }
 
@@ -235,10 +243,6 @@ impl Published {
         &&& self.shared.is_init()
         &&& self.shared.value() == Shared::built_at(Shared::storage())
         &&& self.shared.value().wf()
-        &&& self.features.ptr() == features_storage()
-        &&& self.features.is_init()
-        &&& self.line.ptr() == line_storage()
-        &&& self.line.is_init()
         &&& self.classes.ptr() == layout::classes_storage()
         &&& self.classes.is_init()
         &&& layout::table_ok(self.classes.value())
@@ -513,16 +517,22 @@ pub unsafe fn shared_deref(p: *const Shared) -> (r: &'static Shared)
     unsafe { &*p }
 }
 
-/// The published feature line, without the readiness check.
+/// The feature line, without the readiness check.
 ///
 /// # Safety
-/// The calling thread must itself have observed `READY` earlier (its
-/// `shared()` returned).
+/// The calling thread must itself have observed `LINE_READY` earlier
+/// (its [`feature_line_ready`] returned).
 ///
-/// Trusted: that the caller observed `READY`, so that the line is
-/// initialised (what the permissions frozen at `READY` stand for:
-/// [`Published::ok`]). Its callers learn it from `shared()`, whose result
-/// carries no ghost state, so the permissions do not reach here.
+/// Trusted: that the caller observed `LINE_READY`, so that the line is
+/// initialised: [`build_line`] wrote it before the release store of
+/// `LINE_READY`, and nothing writes it again (a forked child rebuilds a
+/// line only another thread was building, [`feature_line_fork_child`];
+/// if the forking thread itself was building it, from a signal handler
+/// that forked, the child's own build and the interrupted one, resumed
+/// when the handler returns, both write the same bytes, one after the
+/// other on that thread).
+/// Its callers learn it from [`feature_line_ready`], which carries no
+/// ghost state.
 #[verifier::external_body]
 #[inline(always)]
 unsafe fn published_line() -> &'static FeatureLine
@@ -532,35 +542,107 @@ unsafe fn published_line() -> &'static FeatureLine
     unsafe { &*line_ptr() }
 }
 
+/// Complete the probed features' THP size table if init skipped it and
+/// build the feature line into [`FEATURE_LINE`] (`feature_line_ready`'s
+/// build).
+///
+/// # Safety
+/// `READY` observed (so [`FEATURES`] is initialised), and the calling
+/// thread won `LINE_STATE`'s exchange from `LINE_UNBUILT`, so it is the
+/// only writer of the two statics, and readers wait for `LINE_READY`.
+///
+/// Trusted: the premise, which no verified caller can show (the
+/// exchange's result carries no ghost state, and `STATE`'s published
+/// permissions stop at the `Shared` and the class table, [`Published`]);
+/// the writes are the probe's result and [`FeatureLine::build`]'s.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn build_line()
+    requires
+        crate::sys::may_syscall(),
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        let f = (*FEATURES.0.get()).assume_init_mut();
+        if !f.thp_sizes {
+            f.thp = crate::sys::thp_host::probe(f.page_size);
+            f.thp_sizes = true;
+        }
+        (*FEATURE_LINE.0.get()).write(FeatureLine::build(f));
+    }
+}
+
 } // verus!
 
-/// The probed kernel features. Initialises the allocator if needed.
+/// The probed kernel features, the THP size table complete. Initialises
+/// the allocator if needed.
 #[cfg(test)]
 pub fn features() -> &'static Features {
-    let _ = shared();
-    // SAFETY: `shared()` returned, so `READY` has been observed.
+    feature_line_ready();
+    // SAFETY: `feature_line_ready` returned, so `READY` and `LINE_READY`
+    // have been observed.
     unsafe { &*features_ptr() }
 }
 
 verus! {
 
-/// The feature line (`Features`'s `Display`, built at init). Initialises
-/// the allocator if needed.
-pub fn feature_line() -> &'static str
+/// Build the feature line on its first request (once, whichever thread
+/// asks first; the others wait): init skips the per-size THP files under
+/// `thp:never`, which nothing but the line's `mthp` key reads, so they
+/// are read here instead, and a process that never asks for the line
+/// never reads them (#29). Initialises the allocator if needed. Does not
+/// allocate. Like `malloc`, not async-signal-safe: a signal handler that
+/// asks for the line while its own thread is building it waits forever.
+fn feature_line_ready()
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
     let _ = shared();
-    // SAFETY: `shared()` returned, so `READY` has been observed.
+    line_ready();
+}
+
+/// [`feature_line_ready`] after its `shared()`: build the line, or wait
+/// for the thread building it (termination is not claimed: the wait ends
+/// when the other thread's build does).
+#[inline(always)]
+#[verifier::exec_allows_no_decreases_clause]
+fn line_ready()
+    requires
+        crate::sys::may_syscall(),
+{
+    if LINE_STATE.load(Ordering::Acquire) == LINE_READY {
+        return;
+    }
+    if LINE_STATE.compare_exchange(LINE_UNBUILT, LINE_BUILDING, Ordering::Acquire, Ordering::Acquire).is_ok() {
+        // SAFETY: `READY` observed; this thread won the exchange, so it is
+        // the only writer, and readers wait for `LINE_READY`.
+        unsafe { build_line() };
+        LINE_STATE.store(LINE_READY, Ordering::Release);
+        return;
+    }
+    while LINE_STATE.load(Ordering::Acquire) != LINE_READY {
+        core::hint::spin_loop();
+    }
+}
+
+/// The feature line (`Features`'s `Display`, built at its first request).
+/// Initialises the allocator if needed.
+pub fn feature_line() -> &'static str
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
+    feature_line_ready();
+    // SAFETY: `LINE_READY` observed.
     unsafe { published_line() }.as_str()
 }
 
 /// `challoc_features()`: the feature report as one NUL-terminated line of
 /// `key=value` pairs (design.md sections 16 and 17): the kernel probes
 /// (`page_size`, `guard_install`, `mseal`, `anon_name`, ...) then `pac`.
-/// The string is static, built once at init without allocating, and
-/// identical to the `Kernel and CPU features:` line of
+/// The string is static, built once at its first request without
+/// allocating, and identical to the `Kernel and CPU features:` line of
 /// `malloc_stats_print`. Initialises the allocator if needed.
 #[unsafe(no_mangle)]
 pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
@@ -568,8 +650,8 @@ pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
         crate::sys::grant_syscalls();
         crate::sys::grant_aborts();
     }
-    let _ = shared();
-    // SAFETY: `shared()` returned, so `READY` has been observed.
+    feature_line_ready();
+    // SAFETY: `LINE_READY` observed.
     unsafe { published_line() }.as_ptr()
 }
 
@@ -633,8 +715,10 @@ fn theorem_read_only_never_aborts(
     let _ = shared.regions.page_size();
     let _ = crate::stats::fig_add(all.small_allocated, all.large_allocated);
     let _ = crate::stats::fig_mul(all.pdirty, all.large_runs);
-    // `challoc_features` after its `shared()`.
-    // SAFETY: `shared` exists, so `READY` has been observed.
+    // `challoc_features` after its `shared()`: the line's build on the
+    // first request, or the wait for it.
+    line_ready();
+    // SAFETY: `line_ready` returned, so `LINE_READY` has been observed.
     let _ = unsafe { published_line() }.as_ptr();
     // `experimental.utilization.query` and `batch_query`, whole, and the
     // rest of `mallctl`.
@@ -800,8 +884,11 @@ fn line_ptr() -> (p: *mut FeatureLine)
 /// ([`layout::CLASSES`]), holding its initial value,
 /// [`layout::BASE_CLASSES`] (`ClassTable::new`), whose entries are well
 /// formed and sized ([`layout::table_ok`]). Trusted: the statics'
-/// storage and initial values, which nothing but `init` writes
-/// ([`publish_features`], [`layout::adopt_page_geometry`]), and that
+/// storage and initial values, which nothing but `init`
+/// ([`publish_features`], [`layout::adopt_page_geometry`]) and, after
+/// `READY`, the feature line's build ([`build_line`], trusted itself:
+/// `FEATURES`' THP table and `FEATURE_LINE`) write (`init` leaves the
+/// `FeatureLine` permission unused), and that
 /// `BASE_CLASSES` meets `table_ok`, which is `build_classes`'s verified
 /// postcondition but which a spec cannot read off the `exec const`; the
 /// token is used up, so the permissions are handed out once.
@@ -822,27 +909,20 @@ axiom fn axiom_statics(tracked once: once::Once) -> (tracked r: (
         layout::table_ok(r.2.value()),
 ;
 
-/// The published feature report: `FEATURE_LINE` from `features`, then
-/// `FEATURES`, through the permissions to their storage.
+/// The published features: `FEATURES`, through the permission to its
+/// storage (the feature line waits for its first request,
+/// [`feature_line_ready`]).
 ///
 /// # Safety
 /// Called once, by `init`, before `READY` is published.
 #[inline(always)]
-unsafe fn publish_features(
-    features: Features,
-    Tracked(line): Tracked<&mut PointsTo<FeatureLine>>,
-    Tracked(feats): Tracked<&mut PointsTo<Features>>,
-)
+unsafe fn publish_features(features: Features, Tracked(feats): Tracked<&mut PointsTo<Features>>)
     requires
-        old(line).ptr() == line_storage(),
         old(feats).ptr() == features_storage(),
     ensures
-        final(line).ptr() == line_storage(),
-        final(line).is_init(),
         final(feats).ptr() == features_storage(),
         final(feats).is_init(),
 {
-    vstd::raw_ptr::ptr_mut_write(line_ptr(), Tracked(line), FeatureLine::build(&features));
     vstd::raw_ptr::ptr_mut_write(features_ptr(), Tracked(feats), features);
 }
 
@@ -874,8 +954,9 @@ fn register_fork_handlers()
     }
 }
 
-/// Design section 10 steps 1 to 8 (step 7, the cgroup discovery, happens
-/// inside `Shared::init`). Configuration (step 2) is read before the
+/// Design section 10 steps 1 to 8 (step 7, the cgroup discovery, is set
+/// up inside `Shared::init`: run there under `thp:always`, else deferred,
+/// `sys::cgroup::Deferred`). Configuration (step 2) is read before the
 /// regions are reserved so that nothing it may abort on has been mapped
 /// yet; it reads only the weak symbols, one file and `environ`. The
 /// `Shared` it builds satisfies [`Shared::wf`] (`Shared::init`'s
@@ -884,9 +965,11 @@ fn register_fork_handlers()
 /// `reserve_owning` hands over; `init_slow` runs it once, before it
 /// publishes `READY`, with the one-shot tokens its winning exchange got
 /// ([`claim_init`]): one for the statics it writes here, the class table
-/// and the feature statics ([`axiom_statics`]), and the rest for
-/// `Shared::init`, which uses them up. It hands back the permissions to
-/// what it wrote, frozen ([`Published`]).
+/// and the features ([`axiom_statics`]; the feature line's permission is
+/// unused, the line waits for its first request, [`feature_line_ready`]),
+/// and the rest for `Shared::init`, which uses them up. It hands back the
+/// permissions to the `Shared` and the class table, frozen
+/// ([`Published`]).
 fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tracked<&mut Seen>)
     requires
         crate::sys::may_abort(),
@@ -903,14 +986,16 @@ fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tra
             assert(once::holds(steps0, s));
         }
     }
-    let tracked (mut feats, mut line, mut classes) = axiom_statics(statics_once);
-    let features = Features::probe();
+    let tracked (mut feats, _line, mut classes) = axiom_statics(statics_once);
     // The slab geometry of the classes whose table slab is below the page
     // (design 3, page-sized slabs): written once here, before any other
     // thread can see the allocator, never again.
     // SAFETY: `init` runs once, under `INITIALISING`, before `READY`.
-    unsafe { layout::adopt_page_geometry(features.page_size.trailing_zeros(), Tracked(&mut classes)) };
+    unsafe { layout::adopt_page_geometry(crate::sys::features::page_size().trailing_zeros(), Tracked(&mut classes)) };
     let config = config::load();
+    // The per-size THP files only matter to `thp:auto` and `thp:always`;
+    // under `never` they wait for the feature line (`feature_line_ready`).
+    let features = Features::probe(config.thp != config::Thp::Never);
     proof {
         assert(0x1_0000usize <= (1usize << 33)) by (bit_vector);
     }
@@ -945,12 +1030,10 @@ fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tra
         if vstd::raw_ptr::ptr_ref(shared_storage_ptr(), Tracked(shared_perm)).policy.thp_forced() {
             crate::thp::force_never();
         }
-        publish_features(features, Tracked(&mut line), Tracked(&mut feats));
+        publish_features(features, Tracked(&mut feats));
         proof {
             let tracked p = Published {
                 shared: shared_perm,
-                features: vstd::modes::tracked_static_ref(feats),
-                line: vstd::modes::tracked_static_ref(line),
                 classes: vstd::modes::tracked_static_ref(classes),
             };
             seen.published = Some(vstd::modes::tracked_static_ref(p));
@@ -1324,15 +1407,24 @@ extern "C" fn fork_prepare() {
         crate::sys::grant_syscalls();
         crate::sys::grant_aborts();
     }
+    // Premise (lock order): the thread that calls `fork` holds no
+    // allocator lock (no allocator code forks, and the prepare handlers
+    // that run before ours have returned).
+    let tracked mut ord = axiom_entry();
+    // A deferred cgroup discovery (design 11) runs now, before the locks:
+    // a process that forks (a PostgreSQL postmaster, a server's workers)
+    // reads the files once and its children inherit the record, where
+    // each child would otherwise read them again on its own first tick.
+    // It does not wait for a discovery another thread has under way (nor
+    // for one this thread's own interrupted code is running, when `fork`
+    // is called from a signal handler): the child then starts that one
+    // over (`fork_child`), and the parent's finishes as usual.
+    shared().discover_cgroup_for_fork(Tracked(&mut ord));
     // Premise: `sig` is this thread's mask (`sys::axiom_thread_mask`).
     let tracked mut sig = sys::axiom_thread_mask();
     let ghost orig = sig.mask();
     let mask = sys::block_all_signals(Tracked(&mut sig));
     let s = shared();
-    // Premise (lock order): the thread that calls `fork` holds no
-    // allocator lock (no allocator code forks, and the prepare handlers
-    // that run before ours have returned).
-    let tracked mut ord = axiom_entry();
     let Tracked(t) = s.tcaches_lock().lock_held(Tracked(&mut ord));
     let tracked mut toks: Map<ForkLock, LockHeld> = Map::tracked_empty();
     proof {
@@ -1742,7 +1834,19 @@ extern "C" fn fork_child() {
     }
     let tracked mut state = axiom_fork_resumed_state();
     purge::background::fork_child(Tracked(&mut state));
+    shared().cgroup_fork_child();
+    feature_line_fork_child();
     fork_release(Tracked(state));
+}
+
+/// The child of a `fork` has only the forking thread: a feature line
+/// another thread was building is not coming, so the child's first
+/// request builds it again rather than waiting forever. (If the forking
+/// thread itself was building it, from a signal handler that forked, it
+/// finishes when the handler returns; a second build in between writes
+/// the same bytes.)
+fn feature_line_fork_child() {
+    let _ = LINE_STATE.compare_exchange(LINE_BUILDING, LINE_UNBUILT, Ordering::Relaxed, Ordering::Relaxed);
 }
 
 } // verus!
@@ -1839,14 +1943,19 @@ mod tests {
         assert_eq!(f.page_size, shared().regions.page_size());
     }
 
-    /// `challoc_features()` is the `Display` of the probe, NUL-terminated,
-    /// static, and the same bytes on every call.
+    /// `challoc_features()` is the `Display` of a full probe,
+    /// NUL-terminated, static, and the same bytes on every call: under
+    /// `thp:never` (the default, so the tests' configuration), where init
+    /// skips the per-size THP files, the line built at the first request
+    /// still lists every enabled mTHP size, as a fresh full probe does.
     #[test]
     fn challoc_features_is_the_probe_line() {
         let p = challoc_features();
         assert!(!p.is_null());
         assert_eq!(p, challoc_features());
         let s = unsafe { core::ffi::CStr::from_ptr(p) }.to_str().unwrap();
+        let full = crate::sys::features::Features::probe(true);
+        assert_eq!(s, std::format!("{full}"), "the line is the full probe's");
         assert_eq!(s, std::format!("{}", features()));
         assert_eq!(s, feature_line());
         assert!(s.starts_with("page_size="), "{s}");
@@ -1858,6 +1967,66 @@ mod tests {
                 .unwrap_or_else(|| panic!("`{kv}` in {s}"));
             assert!(!k.is_empty() && !v.is_empty(), "`{kv}` in {s}");
         }
+    }
+
+    /// A `fork` discovers a deferred cgroup in its prepare handler, so the
+    /// child inherits the record (it reads no files of its own) and the
+    /// parent has it too.
+    #[test]
+    fn a_forked_child_inherits_the_discovered_cgroup() {
+        // Init registers the fork handlers.
+        let _ = shared();
+        let pid = unsafe { ::libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let code = if shared().cgroup().is_some() { 0 } else { 1 };
+            unsafe { ::libc::_exit(code) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { ::libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(::libc::WIFEXITED(status), "child status {status:#x}");
+        assert_eq!(::libc::WEXITSTATUS(status), 0, "the child has no record");
+        assert!(shared().cgroup().is_some(), "nor the parent");
+    }
+
+    /// A feature line another thread was building when the process forked
+    /// is built again by the child, not waited for: the child (one thread
+    /// here, so the state can be set without racing other tests) marks the
+    /// line as being built, forks, and its own child must get the line
+    /// within the alarm.
+    #[test]
+    fn a_forked_child_does_not_wait_for_a_line_being_built() {
+        let expect = feature_line().len();
+        let pid = unsafe { ::libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            LINE_STATE.store(LINE_BUILDING, Ordering::Release);
+            let gc = unsafe { ::libc::fork() };
+            if gc == 0 {
+                unsafe { ::libc::alarm(10) };
+                let p = challoc_features();
+                let n = unsafe { core::ffi::CStr::from_ptr(p) }.to_bytes().len();
+                unsafe { ::libc::_exit(if n == expect { 0 } else { 2 }) };
+            }
+            let mut status = 0;
+            let code = if gc > 0
+                && unsafe { ::libc::waitpid(gc, &mut status, 0) } == gc
+                && ::libc::WIFEXITED(status)
+            {
+                ::libc::WEXITSTATUS(status)
+            } else {
+                3
+            };
+            unsafe { ::libc::_exit(code) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { ::libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(::libc::WIFEXITED(status), "child status {status:#x}");
+        assert_eq!(
+            ::libc::WEXITSTATUS(status),
+            0,
+            "the grandchild spun on the line (3: killed by the alarm) or got another one (2)"
+        );
     }
 
     /// Every `Lock<..>` (or bare `RawLock`) field and static in `src/`, as
@@ -2712,6 +2881,7 @@ mod tests {
             ("class/table.rs", "pub fn new("),
             ("bitmap.rs", "pub fn allocated("),
             ("api/print.rs", "fn flush("),
+            ("heap/shared.rs", "pub fn cgroup_now("),
         ];
         // The trusted bodies that require only `may_abort_corrupt`.
         let corrupt_only = [

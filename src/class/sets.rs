@@ -33,8 +33,9 @@ broadcast proof fn lemma_shl_pow2(k: u64)
 
 /// A never-freed table in the metadata region, committed page by page as
 /// the high-water mark grows (a table of at most `meta::EAGER_MAX` bytes
-/// is carved writable from the object side and the commits are accounting
-/// only; `meta.rs`, the module doc). Shared with `huge/`.
+/// is carved from the object side, writable as a whole from its first
+/// commit, and the later commits are accounting only; `meta.rs`, the
+/// module doc). Shared with `huge/`.
 pub(crate) struct Lazy {
     pub(crate) base: usize,
     len: usize,

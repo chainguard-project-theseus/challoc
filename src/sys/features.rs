@@ -164,6 +164,10 @@ pub struct Features {
     /// The transparent-huge-page configuration: what the `thp` key can
     /// turn on.
     pub thp: Thp,
+    /// `thp` includes the per-size `hugepages-<n>kB` files; without them
+    /// (`Features::probe(false)`) it has the top-level setting and the PMD
+    /// size only, what `thp:never` needs.
+    pub thp_sizes: bool,
     /// glibc's rseq registration as `rseq::probe` read it at init: the
     /// `rseq` and `rseq_size` keys (`rseq::Probe::words`).
     pub rseq: crate::rseq::Probe,
@@ -211,7 +215,8 @@ impl fmt::Display for Features {
     }
 }
 
-/// The feature line as a NUL-terminated string, built once at init for
+/// The feature line as a NUL-terminated string, built once, at its first
+/// request (`api::feature_line_ready`), for
 /// `challoc_features()` (design.md section 16) and reused by
 /// `malloc_stats_print`, so the two report the same bytes.
 pub struct FeatureLine {
@@ -396,10 +401,11 @@ pub fn probe_anon_name(page: usize) -> bool
 }
 
 impl Features {
-    /// Probe everything. Called once from init (design.md section 10);
-    /// calling it again is harmless but leaks a sealed page, so init
-    /// stores the result. Pure apart from that page.
-    pub fn probe() -> (r: Features)
+    /// Probe everything; the per-size THP files only with `thp_sizes`.
+    /// Called once from init (design.md section 10); calling it again is
+    /// harmless but leaks a sealed page, so init stores the result. Pure
+    /// apart from that page.
+    pub fn probe(thp_sizes: bool) -> (r: Features)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -409,6 +415,7 @@ impl Features {
             r.page_size <= 1usize << 33 ==> r.thp.lg_pmd < 64,
             r.page_size <= 0x1_0000,
             r.pac ==> crate::sys::pac::pac_available(),
+            r.thp_sizes == thp_sizes,
     {
         let page_size = page_size();
         Features {
@@ -417,7 +424,12 @@ impl Features {
             guard_install: probe_guard_install(page_size),
             mseal: probe_mseal(page_size),
             anon_name: probe_anon_name(page_size),
-            thp: crate::sys::thp_host::probe(page_size),
+            thp: if thp_sizes {
+                crate::sys::thp_host::probe(page_size)
+            } else {
+                crate::sys::thp_host::probe_top(page_size)
+            },
+            thp_sizes,
             rseq: crate::rseq::probe(),
             pac: crate::sys::pac::available(),
         }
@@ -460,6 +472,7 @@ mod tests {
                 always: 0,
                 madvise: (1 << 16) | (1 << 21),
             },
+            thp_sizes: true,
             rseq: rseq_probe(33, 192),
             pac: true,
         };
@@ -511,6 +524,7 @@ mod tests {
             mseal: true,
             anon_name: true,
             thp: Thp::NONE,
+            thp_sizes: true,
             rseq: Probe::NONE,
             pac: true,
         };
@@ -543,6 +557,7 @@ mod tests {
                 madvise: 0,
             },
             // The longest words.
+            thp_sizes: true,
             rseq: Probe {
                 present: true,
                 size: u32::MAX,
@@ -590,6 +605,7 @@ mod tests {
                 mseal: false,
                 anon_name: true,
                 thp: Thp::NONE,
+                thp_sizes: true,
                 rseq: rseq_probe(33, 192),
                 pac,
             };
@@ -658,7 +674,7 @@ mod linux_tests {
     /// afresh (harmless: one more sealed page).
     fn probed() -> ((u32, u32), Features, String) {
         let kv = kernel_version();
-        let f = Features::probe();
+        let f = Features::probe(true);
         let line = format!("{f}");
         eprintln!("kernel {}.{}: {line}", kv.0, kv.1);
         (kv, f, line)
@@ -675,6 +691,22 @@ mod linux_tests {
         let (_, f, _) = probed();
         assert_eq!(f.page_shift, f.page_size.trailing_zeros());
         assert_eq!(1usize << f.page_shift, f.page_size);
+    }
+
+    /// Without the per-size files the THP table keeps the top-level
+    /// setting and the PMD size the full probe reads, which is all
+    /// `thp:never` uses at init.
+    #[test]
+    fn probe_without_thp_sizes_keeps_the_top_level() {
+        let full = Features::probe(true);
+        let top = Features::probe(false);
+        assert!(full.thp_sizes && !top.thp_sizes);
+        assert_eq!(top.thp.enabled, full.thp.enabled);
+        assert_eq!(top.thp.lg_pmd, full.thp.lg_pmd);
+        assert_eq!(top.page_size, full.page_size);
+        if full.thp.enabled.is_some() {
+            assert_eq!(top.thp.listed, 1 << top.thp.lg_pmd, "the PMD size alone");
+        }
     }
 
     #[test]
@@ -875,14 +907,14 @@ mod kani_fmt {
     use super::{LgSize, SizeSet};
     use crate::kani_proofs::fmt::formats;
 
-    /// S221 `DisplaySpecImpl for SizeSet` (`fmt_req` true): every set.
+    /// S226 `DisplaySpecImpl for SizeSet` (`fmt_req` true): every set.
     #[kani::proof]
     #[kani::unwind(66)]
     fn display_size_set() {
         formats(&SizeSet(kani::any()));
     }
 
-    /// S222 `DisplaySpecImpl for LgSize` (`fmt_req` is `self.0 < 64`):
+    /// S227 `DisplaySpecImpl for LgSize` (`fmt_req` is `self.0 < 64`):
     /// every such size.
     #[kani::proof]
     #[kani::unwind(22)]
@@ -902,7 +934,7 @@ mod kani_features {
     use crate::sys::thp_host::{Thp, ThpSetting};
     use core::fmt;
 
-    /// `Value`'s `fmt` as its own harness (`display_feature_value`, S220)
+    /// `Value`'s `fmt` as its own harness (`display_feature_value`, S228)
     /// shows it: it returns, `Ok` or `Err`, without a panic, for every
     /// value. What it writes does not matter to the caller.
     #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
@@ -910,7 +942,7 @@ mod kani_features {
         if kani::any() { Ok(()) } else { Err(fmt::Error) }
     }
 
-    /// S224 `DisplaySpecImpl for Features` (`fmt_req` true), through
+    /// S229 `DisplaySpecImpl for Features` (`fmt_req` true), through
     /// `Features::fmt` (verified in Verus): every
     /// `Features` value, under the plain and a padded formatter, whatever
     /// the writer returns. Each `Value` is formatted by the stub above,
@@ -935,6 +967,7 @@ mod kani_features {
             guard_install: kani::any(),
             mseal: kani::any(),
             anon_name: kani::any(),
+            thp_sizes: kani::any(),
             thp: Thp {
                 enabled: if s < settings.len() {
                     Some(settings[s])

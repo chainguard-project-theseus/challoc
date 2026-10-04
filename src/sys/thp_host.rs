@@ -565,6 +565,56 @@ pub fn probe(page: usize) -> (r: Thp)
         })
 }
 
+/// `/sys/kernel/mm/transparent_hugepage/hugepages-`, the start of every
+/// per-size file's path ([`probe_top`]).
+const SIZE_DIR: [u8; 46] = *b"/sys/kernel/mm/transparent_hugepage/hugepages-";
+
+/// `path` starts with [`SIZE_DIR`]: `path.starts_with(&SIZE_DIR)`, which
+/// Verus does not specify.
+fn in_size_dir(path: &[u8]) -> bool {
+    if path.len() < SIZE_DIR.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < SIZE_DIR.len()
+        invariant
+            i <= 46,
+            path@.len() >= 46,
+        decreases 46 - i,
+    {
+        if path[i] != SIZE_DIR[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// The top-level `enabled` and `hpage_pmd_size` only (two reads), the
+/// table a kernel without per-size directories gives: what `thp:never`
+/// needs at init (`Features::probe`).
+pub fn probe_top(page: usize) -> (r: Thp)
+    requires
+        crate::sys::may_syscall(),
+    ensures
+        0 < page <= 1usize << 33 ==> r.lg_pmd < 64,
+{
+    Thp::from_reader(page, |path: &[u8], buf: &mut [u8]| -> (n: usize)
+        requires
+            path@.len() > 0,
+            path@.last() == 0,
+        ensures
+            n <= old(buf)@.len(),
+            final(buf)@.len() == old(buf)@.len(),
+        {
+            if in_size_dir(path) {
+                0
+            } else {
+                super::read_small_file(path, buf).unwrap_or(0)
+            }
+        })
+}
+
 } // verus!
 
 #[cfg(test)]

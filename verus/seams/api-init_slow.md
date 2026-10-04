@@ -1,6 +1,6 @@
 # `init_slow`
 
-Seam S28 of `verus/SEAMS.md`: src/api/mod.rs:706. Kind: no_decreases. Category: termination.
+Seam S30 of `verus/SEAMS.md`: src/api/mod.rs:790. Kind: no_decreases. Category: termination.
 Discharged by loom (termination given that `init` returns; part 3).
 
 ## Contract

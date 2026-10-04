@@ -50,10 +50,11 @@
 //! out-pointer may name), the TLS slot `challoc_tls` (hidden, so no
 //! contract-keeping program names it), lock values and the fork
 //! signal-mask slot in challoc's own statics (hidden too), the init-once
-//! statics `api::STATE`'s invariant freezes at `READY` (`FEATURES` and
-//! `CLASSES` hidden; `FEATURE_LINE`, whose address `challoc_features`
-//! hands out, read-only to the program, and its frozen permission shared,
-//! as the read permissions here are), and the usable bytes of the blocks
+//! statics `api::STATE`'s invariant freezes at `READY` (`CLASSES`
+//! hidden), the feature statics the line's first request completes and
+//! builds once (`FEATURES` hidden; `FEATURE_LINE`, whose address
+//! `challoc_features` hands out once it is built, read-only to the
+//! program), and the usable bytes of the blocks
 //! the call itself hands out, frees or reallocates (`vspec::user::UserMem`,
 //! in a block's `heap::live::Live` token). A buffer inside a block
 //! challoc handed out (the usual case) is in the slab or huge regions,
