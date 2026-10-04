@@ -27,11 +27,11 @@
 //! (`SlabTable::group`: the slabs whose bits fill one 64-byte line of the
 //! class bitmap, `Class::slabs_per_line`, or one page group if that is
 //! larger), lowest group first to whichever arena runs out of slabs next.
-//! A group's slabs are committed one at a time by their arena as it needs
-//! them (`ClassState::next_fresh_slab`, `SlabTable::commit_slab`), so an
-//! arena owns whole bitmap lines and whole descriptor lines: the `free`
-//! check of one arena's slot never reads a line another arena's refills
-//! and flushes write. Every slab belongs to the arena of its group
+//! A group's slabs are committed by their arena as it needs them, a run
+//! up to the next guard slab at a time (`ClassState::next_fresh_slab`,
+//! `SlabTable::commit_run`), so an arena owns whole bitmap lines and
+//! whole descriptor lines: the `free` check of one arena's slot never
+//! reads a line another arena's refills and flushes write. Every slab belongs to the arena of its group
 //! (`SlabTable::owner`, a dense array of one `u16` per group, and
 //! `SlabDesc::arena`), and only that arena's state may claim from or
 //! release to it.
@@ -182,7 +182,7 @@ pub(crate) mod protocol {
         Lock = 0,
         /// `plan` under the lock, one step: the partial walk
         /// (`clear_partial` of a full slab), `next_slab` (the empty and
-        /// purged sets, the group cursor with `commit_slab`, `take_group`),
+        /// purged sets, the group cursor with `commit_run`, `take_group`),
         /// and `take`
         /// per slab: the `live` reservation, the `Active` transition, the
         /// partial bit, `claim_prefix` for a zero pick.
