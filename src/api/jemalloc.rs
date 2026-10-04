@@ -232,6 +232,8 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags, Tracked(blk): Tracked<&mu
                     lemma_class_aligned(c, align);
                     crate::heap::lemma_slot_fits(p, c as int, size as int, align);
                     crate::vspec::usable::lemma_usable_slot(p, c as int, size as int);
+                    // `p`'s token covers the class size, the zero fill's length.
+                    blk.lemma_slot_len(p, c as int);
                     if zero {
                         lemma_covers_slot(z@, p, c as int, 0, size as int);
                     }
@@ -261,7 +263,7 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags, Tracked(blk): Tracked<&mu
     if !p.is_null() && f.zero && !zeroed {
         proof {
             broadcast use vstd::layout::align_of_u8;
-            crate::vspec::addr::axiom_fresh_block(p, usable);
+            blk.lemma_rw(p, usable as int);
         }
         // SAFETY: `p` is a fresh allocation of `usable` bytes.
         let z = unsafe { crate::vspec::zero::write_zero(p, usable) };
@@ -410,7 +412,8 @@ pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Track
         broadcast use vstd::layout::align_of_u8;
         shared.lemma_regions_ok();
         blk.theorem_apart(out);
-        crate::vspec::addr::axiom_moved_block(p, old, q, size);
+        blk.lemma_rw(p, old as int);
+        out.lemma_rw(q, size as int);
         // The new block is apart from `p`'s, so not at `p`: a move.
         blk.lemma_len_pos();
         out.lemma_len_pos();

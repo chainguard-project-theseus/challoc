@@ -80,63 +80,31 @@ pub assume_specification<T: core::marker::PointeeSized>[ <*const T>::is_null ](p
 
 verus! {
 
-// The allocator's own claims about the blocks it hands out, for the
+// The allocator's own claims about the memory of its blocks, for the
 // `write_bytes` and `copy_nonoverlapping` calls that verified code makes
-// on them. The verified allocation paths return addresses, not
-// permissions: a cache pop returns whatever word the stack held, so no
-// verified function can ensure these today. Each axiom stands for an
-// ensures its producer would carry under a model of the slab and huge
-// memory (the vstd `PointsTo` hand-out of `verus/TODO.md`, Tier 3), and
-// names that producer. The requires state what the verifier can check;
-// the rest (that the pointer is the block the doc names) is on the
-// caller, and each axiom has one kind of call site. As `rw_len` says, a
-// validity fact holds when it is established: nothing here may be used
-// on a block after it is freed.
-
-/// A non-null block that the allocation paths just returned is valid for
-/// writes of `len` bytes, where `len` is at most its usable size (the
-/// request `n * m` for `calloc`; the class size or the huge run's usable
-/// bytes for `calloc_usable` and jemalloc's `alloc_with`). The producers
-/// that would ensure it: the slab paths under `heap::alloc_zeroed` and
-/// `arena::alloc` (cache pops, refills, direct claims) and
-/// `Huge::alloc_run` under `Heap::alloc_huge`, `Shared::alloc_huge` and
-/// `arena::alloc_huge`.
-#[verifier::external_body]
-pub proof fn axiom_fresh_block(p: *mut u8, len: usize)
-    requires
-        p@.addr != 0,
-    ensures
-        crate::vspec::ptr::valid_writes(p, len as int),
-{
-}
-
-/// A `realloc` move: `p` is a live block of `old` usable bytes (the
-/// classification `old_size_or_keep` or `realloc_old` made), and `q` a
-/// non-null block the allocation paths just returned for at least `len`
-/// bytes, apart from `p`. `p` is valid for reads of `old` bytes and `q`
-/// for writes of `len`. The producers that would ensure it: the
-/// classification, for `p`; `malloc_block`, `malloc_usable_stored` and
-/// jemalloc's `alloc_with`, for `q`. That the two do not overlap is the caller's
-/// premise, from the blocks' tokens (`heap::live::Live::theorem_apart`).
-#[verifier::external_body]
-pub proof fn axiom_moved_block(p: *mut u8, old: usize, q: *mut u8, len: usize)
-    requires
-        p@.addr != 0,
-        q@.addr != 0,
-        p@.addr + old <= q@.addr || q@.addr + len <= p@.addr,
-    ensures
-        crate::vspec::ptr::valid_reads(p as *const u8, old as int),
-        crate::vspec::ptr::valid_writes(q, len as int),
-{
-}
+// on them. The slab and huge regions have no permission model (no
+// `PointsToRaw` for their bytes, unlike the metadata region's
+// `vspec::unbacked::Unbacked`): no ghost permission records which slabs
+// and runs are committed (the class lock's ghost `committed` set grants
+// nothing, and no block token reaches it). Each axiom states, for one
+// kind of block, the fact a model of the commits would prove; a live
+// block's token gives its premise ([`Live::lemma_rw`](crate::heap::live::Live::lemma_rw),
+// which the zero fills of fresh blocks and `realloc`'s copy use), and the
+// free paths' classification gives it for the block being freed. As
+// `rw_len` says, a validity fact holds when it is established: nothing
+// here may be used on a block after it is freed.
 
 /// An allocated slot of `class` is valid for writes of the class's size:
 /// its slab is committed before its first slot is claimed and decommitted
-/// only when it holds no allocated slot. `zero_slot` clears a slot being
-/// freed. The producer that would ensure it: `Shared::classify_free`,
-/// which checks the slot's bitmap bit and gives `p` to every `zero_slot`
-/// caller (`Heap::free_slow_in` and `heap::free_direct`, which pass it on
-/// without stating it). Required: `p` is a slot start of `class` (what
+/// only when it holds no allocated slot. Stated for any pointer with the
+/// slot's address, whatever its provenance (`rw_len` keys on both): the
+/// pointers that reach a slot are the one the allocation returned and
+/// the one the program passes back to a free or `realloc`, which carry no
+/// provenance verified code can check. Used for a live slot's token
+/// (`Live::lemma_rw`) and by `zero_slot`, which clears a slot being
+/// freed, whose bitmap bit `Shared::classify_free` checked (its callers
+/// `Heap::free_slow_in` and `heap::free_direct` pass `p` on without
+/// stating it). Required: `p` is a slot start of `class` (what
 /// `zero_slot` requires); without it any pointer, null included, would be
 /// writable.
 #[verifier::external_body]
@@ -150,18 +118,26 @@ pub proof fn axiom_slot_writable(class: usize, p: *mut u8)
 }
 
 /// The `len` usable bytes of the live huge run that starts at `page` are
-/// committed and valid for writes through `addr_ptr` of the page's
-/// address. The producer that would ensure it: `Huge::usable_size` for a
-/// run start that `Shared::classify_free` returned. Required: the `len`
-/// bytes end inside the huge region (`Huge::spec_run_usable` gives it).
+/// committed and valid for writes, through any pointer with the page's
+/// address (as for [`axiom_slot_writable`]: `zero_huge` writes through
+/// [`addr_ptr`] of it, `realloc` copies from the pointer C passed). Used
+/// for a live run's token (`Live::lemma_rw`, from the run's pages before
+/// its guard) and by `Shared::zero_huge`, from `Huge::usable_size` for a
+/// run start that `Shared::classify_free` returned. Required: `regions`
+/// are the process's, well formed and separated (so the huge region is
+/// not at address 0), and the `len` bytes end inside the huge region
+/// (`Huge::spec_run_usable` gives it). Not checked: that `page` starts a
+/// live run (the caller's premise above).
 #[verifier::external_body]
 pub proof fn axiom_huge_writable(regions: crate::layout::Regions, page: usize, len: usize)
     requires
-        regions.wf(),
+        regions == crate::layout::process_regions(),
+        crate::heap::regions_ok(),
         page < regions.huge_len >> regions.lg_page,
         (page << regions.lg_page) + len <= regions.huge_len,
     ensures
-        crate::vspec::ptr::valid_writes(addr_ptr((regions.huge_base + (page << regions.lg_page)) as usize), len as int),
+        forall|p: *mut u8| p@.addr == regions.huge_base + (page << regions.lg_page)
+            ==> #[trigger] crate::vspec::ptr::valid_writes(p, len as int),
 {
 }
 

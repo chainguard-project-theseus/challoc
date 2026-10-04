@@ -545,11 +545,13 @@ the assumed `Heap::wf` and the huge lock axiom.
   `from_parts` turns into `Regions::outside`.
 - `huge::table::axiom_zero_entry` (`huge/table.rs:174`): all-zero bytes
   are an empty descriptor table entry (`Table::storage`).
-- User-block writes: `vspec::addr::axiom_fresh_block`,
-  `axiom_moved_block`, `axiom_slot_writable`, `axiom_huge_writable`
-  (`vspec/addr.rs:104`, `:121`, `:140`, `:153`) grant validity for any
-  length; the theorem covers where a block is, not that every write to
-  it stays inside it.
+- User-block writes: `vspec::addr::axiom_slot_writable` and
+  `axiom_huge_writable` (`vspec/addr.rs:111`, `:132`) grant validity of
+  a slot's class size and of bytes of a huge run that end inside the
+  region; `Live::lemma_rw` (`heap/live.rs:647`) derives the zero fills'
+  and `realloc`'s copy's from them, bounded by the block's token. The
+  theorem covers where a block is, not that every write to it stays
+  inside it.
 
 **Not covered.**
 - Thread-local storage: not apart from every block, so not in the
@@ -786,8 +788,9 @@ symbols carry no token.
 - Cache path: `CachePerms::zero_ok` (`heap/zero.rs:49`), part of the
   assumed `Heap::wf`; `Heap::take_handed` (`heap/zero.rs:429`).
 - Class and huge lock axioms, for the state `take` reads.
-- `axiom_fresh_block`, `axiom_moved_block` (`vspec/addr.rs:104`, `:121`)
-  for `write_zero`'s and the copy's validity.
+- `axiom_slot_writable`, `axiom_huge_writable` (`vspec/addr.rs:111`,
+  `:132`), through `Live::lemma_rw` and the block's token, for
+  `write_zero`'s and the copy's validity.
 - The only writes verified code makes to a token's bytes are zero fills
   and `rallocx`'s copy into the new block's prefix, which it splits off
   (`api/jemalloc.rs:288`). The token is not a permission; nothing ties
@@ -5441,9 +5444,10 @@ alone):
    `size`, and unfolds to `fits`, `lemma_kept_fits`). D: *(D)*
    (`realloc_block`); a kept `p` comes back with the caller's own token.
    The move's disjointness from `p` is proved (`Live::theorem_apart` on
-   the two blocks' tokens), and `axiom_moved_block` (`vspec/addr.rs:121`)
-   grants only the two blocks' validity, with the disjointness as its
-   precondition. C: the code copies `min(old, size)` bytes, with
+   the two blocks' tokens), and the two blocks' validity follows from
+   their tokens (`Live::lemma_rw`, `heap/live.rs:647`, over
+   `axiom_slot_writable` and `axiom_huge_writable`). C: the code copies
+   `min(old, size)` bytes, with
    `usable_of(p, old)` and `old == blk.len()`, the block's usable bytes
    (`old_size_or_keep`, `:635`): the class size for a slot, a run token's
    usable pages for a huge `p`.

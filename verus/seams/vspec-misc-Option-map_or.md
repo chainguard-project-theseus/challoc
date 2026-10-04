@@ -1,6 +1,6 @@
 # `Option::<T>::map_or`
 
-Seam S317 of `verus/SEAMS.md`: src/vspec/misc.rs:47. Kind: assume_spec. Category: core library.
+Seam S315 of `verus/SEAMS.md`: src/vspec/misc.rs:47. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

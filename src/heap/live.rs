@@ -632,6 +632,90 @@ impl Live {
             lemma_run_interior(self.addr, self.len(), p@.addr);
         }
     }
+
+    /// The usable bytes of a live block are valid for reads and writes
+    /// through `p`, its pointer: a slot's class size
+    /// ([`axiom_slot_writable`](crate::vspec::addr::axiom_slot_writable)),
+    /// a run's pages before the guard
+    /// ([`axiom_huge_writable`](crate::vspec::addr::axiom_huge_writable)).
+    /// What the zero fills of a fresh block (`calloc`, `calloc_usable`,
+    /// `mallocx(MALLOCX_ZERO)`) and the copy of a `realloc` move need of
+    /// the blocks they touch, each with the block's token. As for those
+    /// axioms, use it only while the token is held: the model has no
+    /// time (`vspec::ptr::rw_len`), so nothing ends the fact when the
+    /// block is freed.
+    pub proof fn lemma_rw(&self, p: *mut u8, len: int)
+        requires
+            crate::heap::regions_ok(),
+            self.block(p),
+            0 <= len <= self.len(),
+        ensures
+            crate::vspec::ptr::valid_writes(p, len),
+            crate::vspec::ptr::valid_reads(p as *const u8, len),
+    {
+        let r = process_regions();
+        if self.run is None {
+            crate::vspec::addr::axiom_slot_writable(self.class as usize, p);
+        } else {
+            let t = self.run.unwrap();
+            let (s, n) = (t.start(), t.npages());
+            t.lemma_wf();
+            let pg = page_size();
+            let l8 = r.lg_page;
+            let lg = l8 as usize;
+            vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+            vstd::bits::lemma_usize_shl_is_mul(1, lg);
+            vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
+            assert((1usize << l8) == (1usize << lg)) by (bit_vector)
+                requires
+                    lg == l8 as usize,
+            ;
+            assert(pg > 0);
+            // The run is `s * pg` bytes into the region, and its usable
+            // bytes, at least a page, end inside it.
+            assert(s * pg == p@.addr - r.huge_base);
+            assert(pg <= (n - GUARD_PAGES) * pg) by (nonlinear_arith)
+                requires
+                    GUARD_PAGES < n,
+                    pg > 0,
+            ;
+            let hl = r.huge_len;
+            assert((s + 1) * pg <= hl) by (nonlinear_arith)
+                requires
+                    s * pg + pg <= s * pg + (n - GUARD_PAGES) * pg,
+                    s * pg + (n - GUARD_PAGES) * pg <= hl,
+            ;
+            // So `s` is below the region's page count.
+            vstd::bits::lemma_usize_shr_is_div(hl, lg);
+            assert(hl >> l8 == hl >> lg) by (bit_vector)
+                requires
+                    lg == l8 as usize,
+            ;
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(hl as int, pg);
+            vstd::arithmetic::div_mod::lemma_mod_bound(hl as int, pg);
+            let q = hl as int / pg;
+            assert(s + 1 <= q) by (nonlinear_arith)
+                requires
+                    (s + 1) * pg <= hl,
+                    hl == pg * q + hl as int % pg,
+                    hl as int % pg < pg,
+                    pg > 0,
+            ;
+            let page = s as usize;
+            assert(page * vstd::arithmetic::power2::pow2(lg as nat) <= usize::MAX) by {
+                assert(pg == vstd::arithmetic::power2::pow2(lg as nat));
+            }
+            vstd::bits::lemma_usize_shl_is_mul(page, lg);
+            assert(page << l8 == page << lg) by (bit_vector)
+                requires
+                    lg == l8 as usize,
+            ;
+            assert(self.len() == (n - GUARD_PAGES) * pg);
+            assert(r.huge_base + (page << r.lg_page) == p@.addr);
+            crate::vspec::addr::axiom_huge_writable(r, page, self.len() as usize);
+            assert(crate::vspec::ptr::valid_writes(p, self.len()));
+        }
+    }
 }
 
 /// A pointer strictly inside slot `a` of class `c` is no slot start and no

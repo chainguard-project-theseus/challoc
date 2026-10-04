@@ -26,7 +26,7 @@ fn any_result() -> Result<u64, u32> {
     }
 }
 
-/// S301 `Option::or_else`: `option` itself when it is `Some` (and `f` not
+/// S299 `Option::or_else`: `option` itself when it is `Some` (and `f` not
 /// called), else what `f()` returned.
 #[kani::proof]
 fn option_or_else() {
@@ -49,7 +49,7 @@ fn option_or_else() {
     }
 }
 
-/// S317 `Option::map_or`: `default` for `None` (and `f` not called),
+/// S315 `Option::map_or`: `default` for `None` (and `f` not called),
 /// `f(v)` for `Some(v)`.
 #[kani::proof]
 fn option_map_or() {
@@ -74,7 +74,7 @@ fn option_map_or() {
     }
 }
 
-/// S354 `Result::map_or`: `default` for `Err` (and `f` not called),
+/// S352 `Result::map_or`: `default` for `Err` (and `f` not called),
 /// `f(v)` for `Ok(v)`.
 #[kani::proof]
 fn result_map_or() {
@@ -99,7 +99,7 @@ fn result_map_or() {
     }
 }
 
-/// S355 `Option::is_some_and`: `false` for `None` (and `f` not called),
+/// S353 `Option::is_some_and`: `false` for `None` (and `f` not called),
 /// `f(v)` for `Some(v)`.
 #[kani::proof]
 fn option_is_some_and() {
@@ -123,7 +123,7 @@ fn option_is_some_and() {
     }
 }
 
-/// S356 `Result::unwrap_or`: the `Ok` value, else `default`.
+/// S354 `Result::unwrap_or`: the `Ok` value, else `default`.
 #[kani::proof]
 fn result_unwrap_or() {
     let res = any_result();
@@ -135,7 +135,7 @@ fn result_unwrap_or() {
     }
 }
 
-/// S363 `Option::<&T>::copied`: `Some(*v)` for `Some(v)`, else `None`.
+/// S361 `Option::<&T>::copied`: `Some(*v)` for `Some(v)`, else `None`.
 #[kani::proof]
 fn option_copied() {
     let x: u64 = kani::any();
@@ -147,7 +147,7 @@ fn option_copied() {
     }
 }
 
-/// S320 `Option::as_deref_mut`: no `ensures`; it returns without a panic
+/// S318 `Option::as_deref_mut`: no `ensures`; it returns without a panic
 /// (here: `None` for `None`, else a reborrow of the contents, through
 /// which a write lands in the option).
 #[kani::proof]
@@ -176,7 +176,7 @@ fn layout_ok(l: &Layout) -> bool {
     l.align().is_power_of_two() && l.size() as u128 + l.align() as u128 - 1 <= isize::MAX as u128
 }
 
-/// S308 `Layout::from_size_align`, S306 `Layout::size` and S307
+/// S306 `Layout::from_size_align`, S304 `Layout::size` and S305
 /// `Layout::align`: `Ok` exactly when `align > 0`, `align & (align - 1)
 /// == 0` and `size <= isize::MAX - (align - 1)` (in `int`), and then
 /// `size()` and `align()` give the arguments back and the layout is
@@ -206,7 +206,7 @@ fn layout_new<T>() {
     assert!(layout_ok(&l));
 }
 
-/// S309 `Layout::new::<T>`, with S306 and S307 on its result, at the
+/// S307 `Layout::new::<T>`, with S304 and S305 on its result, at the
 /// types the proofs build layouts of (`SetTable`, `Arena`, `Heap`,
 /// `HugeDesc`: `grep -rn Layout::new src`) and
 /// at a zero-sized and an over-aligned type.
@@ -225,7 +225,7 @@ fn layout_new_instances() {
     layout_new::<Page>();
 }
 
-/// S318 `str::as_ptr`: no `ensures`; it returns, the address of the first
+/// S316 `str::as_ptr`: no `ensures`; it returns, the address of the first
 /// byte.
 #[kani::proof]
 fn str_as_ptr() {
@@ -235,7 +235,7 @@ fn str_as_ptr() {
     let _ = e.as_ptr();
 }
 
-/// S273 `CStr::as_ptr`: no `ensures`; it returns, the address of the
+/// S271 `CStr::as_ptr`: no `ensures`; it returns, the address of the
 /// first byte, for every C string up to 3 bytes before its NUL (built at
 /// run time: Kani 0.68 has no C string literals).
 #[kani::proof]
@@ -248,7 +248,7 @@ fn cstr_as_ptr() {
     assert!(core::ptr::eq(s.as_ptr() as *const u8, &a[0]));
 }
 
-/// S359 `core::str::from_utf8`: no `ensures`; it returns without a panic
+/// S357 `core::str::from_utf8`: no `ensures`; it returns without a panic
 /// for every byte string up to 4 bytes (one UTF-8 sequence's longest).
 #[kani::proof]
 #[kani::unwind(6)]
@@ -261,7 +261,7 @@ fn str_from_utf8() {
     }
 }
 
-/// S360 `<fmt::Error as Default>::default`: no `ensures`; it returns.
+/// S358 `<fmt::Error as Default>::default`: no `ensures`; it returns.
 #[kani::proof]
 fn fmt_error_default() {
     let e = <core::fmt::Error as Default>::default();
@@ -277,7 +277,7 @@ impl core::fmt::Display for WriteStr<'_> {
     }
 }
 
-/// S295 `Formatter::write_str`: no `requires`, no `ensures`; it returns,
+/// S293 `Formatter::write_str`: no `requires`, no `ensures`; it returns,
 /// for every string up to 4 bytes, under the plain and a padded formatter
 /// and whatever the writer returns.
 #[kani::proof]
@@ -315,7 +315,7 @@ fn ptr_add_addr<T: Copy + PartialEq + kani::Arbitrary, const N: usize>() {
     }
 }
 
-/// S329 `axiom_ptr_add_addr`, at a byte, a word and a padded element type.
+/// S327 `axiom_ptr_add_addr`, at a byte, a word and a padded element type.
 #[kani::proof]
 fn ptr_add_addr_instances() {
     ptr_add_addr::<u8, 5>();

@@ -466,7 +466,7 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
     if !zeroed {
         proof {
             broadcast use vstd::layout::align_of_u8;
-            crate::vspec::addr::axiom_fresh_block(p, size);
+            blk.lemma_rw(p, size as int);
         }
         // SAFETY: `p` is a fresh allocation of at least `size` bytes.
         let z = unsafe { crate::vspec::zero::write_zero(p, size) };
@@ -1301,7 +1301,8 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         broadcast use vstd::layout::align_of_u8;
         shared.lemma_regions_ok();
         blk.theorem_apart(out);
-        crate::vspec::addr::axiom_moved_block(p, old, q, size);
+        blk.lemma_rw(p, old as int);
+        out.lemma_rw(q, size as int);
         // The new block is apart from `p`'s, so not at `p`: a move.
         blk.lemma_len_pos();
         assert(q@.addr != p@.addr);
@@ -1652,6 +1653,8 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(blk)
                 lemma_class_fits(p, c as int, size);
                 if p@.addr != 0 {
                     crate::vspec::usable::lemma_usable_slot(p, c as int, size as int);
+                    // `p`'s token covers the class size, the zero fill's length.
+                    blk.lemma_slot_len(p, c as int);
                     if zeroed {
                         crate::vspec::zero::lemma_covers_slot(z@, p, c as int, 0, size as int);
                     }
@@ -1690,7 +1693,7 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(blk)
     let z = if !zeroed {
         proof {
             broadcast use vstd::layout::align_of_u8;
-            crate::vspec::addr::axiom_fresh_block(p, u);
+            blk.lemma_rw(p, u as int);
         }
         // SAFETY: `p` is a fresh allocation of `u` usable bytes.
         let z = unsafe { crate::vspec::zero::write_zero(p, u) };
@@ -1788,7 +1791,8 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         broadcast use vstd::layout::align_of_u8;
         shared.lemma_regions_ok();
         blk.theorem_apart(out);
-        crate::vspec::addr::axiom_moved_block(p, old, q, size);
+        blk.lemma_rw(p, old as int);
+        out.lemma_rw(q, size as int);
         // The new block is apart from `p`'s, so not at `p`: a move.
         blk.lemma_len_pos();
         assert(q@.addr != p@.addr);

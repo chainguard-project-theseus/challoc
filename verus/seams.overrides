@@ -337,8 +337,6 @@ src/stats.rs:axiom_snapshot_lock_inv	allocator invariant	none (assumption)
 src/vspec/addr.rs:<*const T>::is_null	raw pointer (internal)	Kani
 src/vspec/addr.rs:<*mut T>::is_null	raw pointer (internal)	Kani
 src/vspec/addr.rs:addr_to_ptr	raw pointer (internal)	Kani
-src/vspec/addr.rs:axiom_fresh_block	allocator invariant	Verus
-src/vspec/addr.rs:axiom_moved_block	allocator invariant	Verus
 src/vspec/addr.rs:core::ptr::copy_nonoverlapping::<T>	raw pointer (internal)	Kani
 src/vspec/addr.rs:core::ptr::write_bytes::<T>	raw pointer (internal)	Kani
 src/vspec/arena.rs:axiom_arena_stats_lock_inv	allocator invariant	none (assumption)
