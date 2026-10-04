@@ -96,7 +96,7 @@ One row per key, in `TABLE` order. "Values" is the grammar
 
 | key | values | default | what it does | change it when | cost or risk |
 |---|---|---|---|---|---|
-| `background_thread` | `true`, `false` | `false` | Runs decay (and the cgroup sampling) on a background thread as well as from allocation slow paths. Created on the first periodic tick after the request, or synchronously by `mallctl("background_thread")`. | The process goes idle for long stretches with freed memory still dirty: without the thread an idle process never purges (as jemalloc). Valkey turns it on itself. | One thread, one futex sleep; its stack is one metadata reservation. No measurable effect on a process that keeps allocating. |
+| `background_thread` | `true`, `false` | unset (lazy; reads `false`) | Runs decay (and the cgroup sampling) on a background thread as well as from allocation slow paths. Unset, the thread starts lazily: from a periodic tick that finds 64 MiB of freed memory waiting for decay, or 4 MiB for a second. `true` creates it on the first periodic tick, or synchronously through `mallctl("background_thread")`; `false` never starts one. | Set `false` for a program that must stay single-threaded after it has freed that much memory: `unshare(CLONE_NEWUSER)` fails with `EINVAL` in a multithreaded process (bwrap, container runtimes' init), code that checks it is the only thread, and a seccomp sandbox that kills on `clone`. Set `true` to purge on time from the start (Valkey does it itself). | One thread, one futex sleep; its stack is one metadata reservation. A process that never frees that much never starts it and pays nothing; a fork child starts one only for dirty memory of its own. No measurable effect on a process that keeps allocating. |
 | `dirty_decay_ms` | `-1`..`1000000000000` | `10000` | The window of the decay curve: freed slabs and huge extents go from dirty to purged over this many milliseconds along a smootherstep (about half by mid-window, all by the end). `-1` never purges; `0` purges at the next pass. | Lower it (1000..5000) when RSS after a burst matters more than refaults; raise it or set `-1` for a process that reuses everything it frees and never idles. | Purging costs `madvise` calls and refaults on reuse; never purging keeps every peak resident. Under a cgroup limit the policy scales this value down (section 4); `-1` is left alone in every band. |
 | `muzzy_decay_ms` | `-1`..`1000000000000` | `0` | Accepted for jemalloc compatibility, stored, readable as `opt.muzzy_decay_ms`; nothing reads it. There is no muzzy state: the two-advice purge (section 4) replaces it. | Never. | None. |
 | `narenas` | `0`..`4294967295` | `0` | Automatic arenas. `0` means `min(4 * ncpus, 64)` (`ncpus` is the affinity mask's width). Each new thread heap is bound to the least-loaded automatic arena, so a program with `t` live threads touches `min(t, narenas)` arenas; each arena has its own partial slabs per class. | A many-threaded process that wants one shared slab set for all its threads, the lowest RSS floor (`narenas:1`). | Fewer arenas means more threads share each arena's class locks on the slow path (refill and flush) and interleave their slots in the same slabs (about one L1D miss per operation on 10-thread `larson` under one arena); the fast paths are unaffected. |
@@ -311,8 +311,9 @@ row).
 
 Without a background thread the policy runs from the periodic tick: a
 process that frees 400 MiB and then does nothing at all keeps it under
-every setting. Set `background_thread:true` for a process that idles
-completely after a burst.
+`background_thread:false`. By default the lazy start creates the thread
+once that much is waiting, so an idle process purges; set
+`background_thread:true` to have it from the first tick.
 
 The knobs that move the policy:
 
@@ -413,7 +414,7 @@ The lines an operator reads first, in the order they appear:
 | `Run-time option settings` / `opt.<key>` | the configuration in force after every source; `(accepted, no effect)` marks an inert key; `thp` carries the forced-never note when a small cgroup limit applied |
 | `Kernel and CPU features: page_size=4096 guard_install=yes mseal=yes anon_name=no thp=always mthp=2M rseq=yes rseq_size=28 pac=yes` | `guard_install=no` means a kernel before 6.13: no guard slabs. `anon_name=no` means `/proc/<pid>/smaps` has no `challoc:*` names (a kernel without `CONFIG_ANON_VMA_NAME`). `thp=` is the host's global mode. The keys are never renamed |
 | `Sealed ranges: N of M` | `0 of M` under Docker's default seccomp (mseal filtered) or before 6.10 |
-| `Background thread: present` / `absent` | whether decay runs while idle; Valkey shows `present` |
+| `Background thread: present` / `absent` / `absent (lazy start armed)` | whether decay runs while idle; Valkey shows `present`; `lazy start armed` is the default before the process has held enough dirty memory |
 | `Arenas: N (M automatic), explicit caches: K` | `N` is the arenas built so far (one per live thread up to the cap). This is the figure `narenas` moves |
 | `Quantum size: 8` / `16` | `8` is Valkey's private build, `16` the system library |
 | `Page size`, `Page-sized slabs:` | on a 16 or 64 KiB kernel the 512..1024-byte classes take the page as their slab |

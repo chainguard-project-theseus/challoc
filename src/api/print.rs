@@ -225,6 +225,8 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
         "Background thread: {}",
         if purge::background::present() {
             "present"
+        } else if purge::background::auto() {
+            "absent (lazy start armed)"
         } else {
             "absent"
         }

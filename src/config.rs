@@ -120,8 +120,11 @@ impl PercpuArena {
 /// values, what it does, when to change it and what that costs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
-    /// Run decay on a background thread (`purge::background`).
-    pub background_thread: bool,
+    /// Run decay on a background thread (`purge::background`): `Some(true)`
+    /// from the first periodic tick, `Some(false)` never, `None` (the
+    /// default) lazily, once the process holds enough dirty memory
+    /// (`purge::background::configure`).
+    pub background_thread: Option<bool>,
     /// The decay window of the slabs and huge extents; `-1` never purges.
     pub dirty_decay_ms: i64,
     /// jemalloc's key, stored and readable; nothing acts on it.
@@ -169,7 +172,7 @@ pub struct Config {
 impl Config {
     /// The compiled defaults (design section 12).
     pub const DEFAULT: Config = Config {
-        background_thread: false,
+        background_thread: None,
         dirty_decay_ms: 10_000,
         muzzy_decay_ms: 0,
         narenas: 0,
@@ -434,7 +437,16 @@ macro_rules! bool_key {
 /// tests check that every entry reads back, round-trips through `set`
 /// and is in no other table.
 pub const TABLE: &[Key] = &[
-    bool_key!("background_thread", background_thread),
+    Key {
+        // Unset it starts lazily (`purge::background::configure`) and
+        // reads back `false`, jemalloc's default: no thread was asked for.
+        name: "background_thread",
+        parse: |c, k, v| {
+            c.background_thread = Some(parse_bool(v).ok_or(Issue::BadValue { key: k, value: v })?);
+            Ok(())
+        },
+        read: |c| Value::Bool(c.background_thread == Some(true)),
+    },
     Key {
         name: "dirty_decay_ms",
         parse: |c, k, v| num(c, k, v, -1, MAX_INTERVAL_MS, |c, v| c.dirty_decay_ms = v),
@@ -1130,7 +1142,7 @@ mod tests {
     #[test]
     fn defaults_match_the_design_table() {
         let d = Config::DEFAULT;
-        assert!(!d.background_thread);
+        assert_eq!(d.background_thread, None, "lazy start");
         assert_eq!(d.dirty_decay_ms, 10_000);
         assert_eq!(d.narenas, 0);
         assert_eq!(d.percpu_arena, PercpuArena::Disabled, "jemalloc's default");
@@ -1660,7 +1672,7 @@ mod tests {
         let cfg = clean(
             "background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0,narenas:2,abort_conf:true",
         );
-        assert!(cfg.background_thread && cfg.abort_conf);
+        assert!(cfg.background_thread == Some(true) && cfg.abort_conf);
         assert_eq!(cfg.dirty_decay_ms, 0);
         assert_eq!(cfg.narenas, 2);
         // jemalloc's own `percpu_arena` values parse clean under `abort_conf`.
@@ -1703,6 +1715,22 @@ mod tests {
                 assert_eq!(
                     Config {
                         huge_dirty_decay_ms: None,
+                        ..parsed
+                    },
+                    cfg,
+                    "{text} changed another field"
+                );
+            } else if *key == "background_thread" {
+                // Its default is the lazy start (`None`), which reads back
+                // `false`; setting the reading pins the opt-out.
+                assert_eq!(
+                    parsed.get(key.as_bytes()),
+                    cfg.get(key.as_bytes()),
+                    "{text}"
+                );
+                assert_eq!(
+                    Config {
+                        background_thread: cfg.background_thread,
                         ..parsed
                     },
                     cfg,

@@ -291,7 +291,14 @@ fn init() {
     crate::thp::configure(config.thp, &features);
     purge::configure_advice(config.lazy_band);
     purge::set_check_zero(config.check_zero);
-    purge::background::request(config.background_thread);
+    // The unit-test process shares this allocator between tests that
+    // assert on the thread's presence; the lazy start is tested on its own
+    // (`purge::tests`, the C programs).
+    purge::background::configure(if cfg!(test) {
+        config.background_thread.or(Some(false))
+    } else {
+        config.background_thread
+    });
     let regions = Regions::reserve(features.page_size, features.anon_name);
     if features.mseal {
         SEALED.store(regions.seal(), Ordering::Relaxed);
@@ -857,6 +864,101 @@ mod tests {
             "background thread still running after the join: {:?}",
             tasks()
         );
+    }
+
+    /// The lazy start's rule (design 8.1): the burst threshold starts at
+    /// the first look; the floor only once every look for the hold has
+    /// seen it; a look under the floor ends the stretch.
+    #[test]
+    fn lazy_start_rule() {
+        use core::sync::atomic::AtomicU64;
+        use purge::background::{AUTO_BURST, AUTO_FLOOR, AUTO_HOLD_NS, auto_due};
+        let since = AtomicU64::new(0);
+        let t = 5_000_000_000u64;
+        assert!(auto_due(AUTO_BURST, t, &since), "burst at the first look");
+        assert!(!auto_due(AUTO_FLOOR - 1, t, &since));
+        assert!(
+            !auto_due(AUTO_FLOOR - 1, t + 10 * AUTO_HOLD_NS, &since),
+            "under the floor never"
+        );
+        assert!(
+            !auto_due(AUTO_FLOOR, t, &since),
+            "the floor starts a stretch"
+        );
+        assert!(!auto_due(AUTO_BURST - 1, t + AUTO_HOLD_NS / 2, &since));
+        assert!(
+            auto_due(AUTO_FLOOR, t + AUTO_HOLD_NS, &since),
+            "held for the hold"
+        );
+        // A dip under the floor restarts the stretch.
+        since.store(0, core::sync::atomic::Ordering::Relaxed);
+        assert!(!auto_due(AUTO_FLOOR, t, &since));
+        assert!(!auto_due(AUTO_FLOOR / 2, t + AUTO_HOLD_NS / 2, &since));
+        assert!(!auto_due(AUTO_FLOOR, t + AUTO_HOLD_NS, &since));
+        assert!(!auto_due(
+            AUTO_FLOOR,
+            t + AUTO_HOLD_NS + AUTO_HOLD_NS / 2,
+            &since
+        ));
+        assert!(auto_due(AUTO_FLOOR, t + 2 * AUTO_HOLD_NS, &since));
+    }
+
+    /// The lazy start end to end on one allocator, on injected tick
+    /// times: nothing dirty starts nothing; 8 MiB dirty (over the floor,
+    /// under the burst threshold) starts nothing at the first look or
+    /// half a hold later and starts the thread once the hold has passed;
+    /// the start leaves the lazy start armed; an explicit `request`
+    /// disarms it.
+    #[test]
+    fn lazy_start_waits_for_dirty_memory() {
+        use purge::background::{AUTO_BURST, AUTO_FLOOR, AUTO_HOLD_NS};
+        let _serial = crate::testutil::global_state();
+        let s = crate::testutil::shared();
+        assert!(!purge::background::present());
+        // A window long enough that nothing decays between the looks.
+        let old_ns = s.decay_ns();
+        s.set_decay_ms(1_000_000);
+        assert!((8u64 << 20) >= AUTO_FLOOR && (8u64 << 20) < AUTO_BURST);
+        purge::background::set_auto(Some(s));
+        let t0 = crate::sys::now_coarse_ns();
+        purge::on_tick(s, t0);
+        purge::on_tick(s, t0 + 2 * AUTO_HOLD_NS);
+        let clean = purge::background::present();
+        let (p, _) = s.alloc_huge(8 << 20, 4096, 0);
+        assert!(!p.is_null());
+        unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
+        s.free_huge((p as usize - s.regions.huge_base) >> s.regions.lg_page);
+        let t1 = t0 + 3 * AUTO_HOLD_NS;
+        purge::on_tick(s, t1);
+        let first = purge::background::present();
+        purge::on_tick(s, t1 + AUTO_HOLD_NS / 2);
+        let half = purge::background::present();
+        purge::on_tick(s, t1 + AUTO_HOLD_NS + 1);
+        let held = purge::background::present();
+        let armed = purge::background::auto();
+        purge::background::request(false);
+        let disarmed = !purge::background::auto();
+        for _ in 0..400 {
+            if !purge::background::present() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let stopped = !purge::background::present();
+        if stopped {
+            purge::background::join_exited();
+        }
+        purge::background::set_auto(None);
+        s.huge.purge_empty(u64::MAX);
+        s.set_decay_ms((old_ns / 1_000_000) as i64);
+
+        assert!(!clean, "nothing dirty started the thread");
+        assert!(!first, "8 MiB started the thread at the first look");
+        assert!(!half, "8 MiB started the thread before the hold");
+        assert!(held, "8 MiB held past the hold did not start the thread");
+        assert!(armed, "a successful start disarmed the lazy start");
+        assert!(disarmed, "request(false) left the lazy start armed");
+        assert!(stopped, "background thread did not stop");
     }
 
     /// A first `Empty` that lands while `start` is publishing the thread

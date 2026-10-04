@@ -1,9 +1,10 @@
 //! The background thread (design 8.1): one thread per process that runs
 //! the decay passes and the cgroup sampling on its own stack, started by
-//! configuration or `mallctl("background_thread")`.
+//! configuration, `mallctl("background_thread")` or, by default, lazily:
+//! once the process has held enough dirty memory ([`auto_tick`]).
 
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::heap::{Shared, TLS_CREATING, TLS_EXITED};
 use crate::lock::Lock;
@@ -41,6 +42,34 @@ static PRESENT: AtomicBool = AtomicBool::new(false);
 static REQUESTED: AtomicBool = AtomicBool::new(false);
 /// Futex word the thread sleeps on; bumped by [`wake`].
 static SEQ: AtomicU32 = AtomicU32::new(0);
+
+/// Lazy start (the default, `background_thread` unset): nothing is
+/// requested, but [`auto_tick`] requests and starts the thread once the
+/// process holds [`AUTO_BURST`] dirty bytes, or [`AUTO_FLOOR`] for
+/// [`AUTO_HOLD_NS`]. Cleared by an explicit [`request`] and for good by
+/// a lazy start that failed (a sandbox that refuses `clone`).
+static AUTO: AtomicBool = AtomicBool::new(false);
+/// Coarse time before which [`auto_tick`] does not look again.
+static AUTO_NEXT: AtomicU64 = AtomicU64::new(0);
+/// Coarse time of the first look of the current stretch at or above
+/// [`AUTO_FLOOR`]; 0 when the last look was below it.
+static AUTO_SINCE: AtomicU64 = AtomicU64::new(0);
+/// The low-water mark of the dirty bytes since the fork that made this
+/// process (0 in a process that never forked): what a fork child
+/// inherited is not its own, and only what it adds above the inherited
+/// set (as that set decays) counts towards a start.
+static AUTO_BASE: AtomicU64 = AtomicU64::new(0);
+
+/// Dirty bytes that start the thread at the first look.
+pub const AUTO_BURST: u64 = 64 << 20;
+/// Dirty bytes that start it when they stay at least this high (at every
+/// look) for [`AUTO_HOLD_NS`].
+pub const AUTO_FLOOR: u64 = 4 << 20;
+/// How long [`AUTO_FLOOR`] must hold.
+pub const AUTO_HOLD_NS: u64 = 1_000_000_000;
+/// At most one look per this much coarse time: a look sums the `Empty`
+/// bytes of every class that has any (one lock hold each).
+pub const AUTO_CHECK_NS: u64 = 100_000_000;
 /// Run once by the next `start` that creates a thread, after the
 /// creation and before the thread is published, for tests.
 #[cfg(test)]
@@ -60,10 +89,26 @@ pub fn requested() -> bool {
     REQUESTED.load(Ordering::Relaxed)
 }
 
+/// The `background_thread` key at init: `Some(true)` requests the thread
+/// (the first periodic tick creates it), `Some(false)` never starts one,
+/// `None` arms the lazy start. Stores only: no syscall at init.
+pub fn configure(setting: Option<bool>) {
+    AUTO.store(setting.is_none(), Ordering::Relaxed);
+    REQUESTED.store(setting == Some(true), Ordering::Relaxed);
+}
+
+/// Whether the lazy start is armed.
+#[inline]
+pub fn auto() -> bool {
+    AUTO.load(Ordering::Relaxed)
+}
+
 /// Ask for (or, with `false`, stop asking for) a background thread. The
 /// next periodic tick creates it; a running thread that finds the
-/// request withdrawn exits at its next wake-up.
+/// request withdrawn exits at its next wake-up. An explicit answer
+/// either way disarms the lazy start.
 pub fn request(on: bool) {
+    AUTO.store(false, Ordering::Relaxed);
     REQUESTED.store(on, Ordering::Relaxed);
     if !on {
         // Unconditional: a thread the bookkeeping has already forgotten
@@ -136,6 +181,86 @@ pub fn start(shared: &Shared) -> bool {
         kick();
     }
     present
+}
+
+/// The lazy start's look, from a periodic tick that ran decay in the
+/// foreground and left dirty memory waiting (`purge::on_tick`): at most
+/// once per [`AUTO_CHECK_NS`], sum the dirty bytes and, when [`auto_due`]
+/// says so, request and start the thread. A start that fails (and is not
+/// merely in progress on another thread) disarms the lazy start and
+/// withdraws the request: the process keeps purging in the foreground,
+/// as with `background_thread:false`, and never tries again.
+pub fn auto_tick(shared: &Shared, now: u64) {
+    if !auto() {
+        return;
+    }
+    #[cfg(test)]
+    if AUTO_ONLY.load(Ordering::Relaxed) != shared as *const Shared as usize {
+        return;
+    }
+    let next = AUTO_NEXT.load(Ordering::Relaxed);
+    if now < next
+        || AUTO_NEXT
+            .compare_exchange(
+                next,
+                now.saturating_add(AUTO_CHECK_NS),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_err()
+    {
+        return;
+    }
+    let dirty = crate::policy::empty_bytes(shared);
+    let base = AUTO_BASE.load(Ordering::Relaxed).min(dirty);
+    AUTO_BASE.store(base, Ordering::Relaxed);
+    if !auto_due(dirty - base, now, &AUTO_SINCE) {
+        return;
+    }
+    REQUESTED.store(true, Ordering::Relaxed);
+    if !start(shared) && !STATE.lock().creating {
+        AUTO.store(false, Ordering::Relaxed);
+        REQUESTED.store(false, Ordering::Relaxed);
+    }
+}
+
+/// Whether `own` dirty bytes at `now` start the thread: at once from
+/// [`AUTO_BURST`]; from [`AUTO_FLOOR`] once every look for
+/// [`AUTO_HOLD_NS`] has seen at least that much. Updates the stretch,
+/// `since` (the start of the current one, 0 for none).
+pub(crate) fn auto_due(own: u64, now: u64, since: &AtomicU64) -> bool {
+    if own >= AUTO_BURST {
+        return true;
+    }
+    if own < AUTO_FLOOR {
+        since.store(0, Ordering::Relaxed);
+        return false;
+    }
+    let start = since.load(Ordering::Relaxed);
+    if start == 0 {
+        since.store(now.max(1), Ordering::Relaxed);
+        return false;
+    }
+    now.saturating_sub(start) >= AUTO_HOLD_NS
+}
+
+/// The one allocator whose ticks the lazy start looks at, for tests:
+/// `AUTO` is process-wide and the unit tests tick many fixtures at once.
+#[cfg(test)]
+static AUTO_ONLY: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Arm the lazy start for `shared` alone (or, with `None`, disarm it),
+/// with a fresh stretch and no baseline, for tests.
+#[cfg(test)]
+pub fn set_auto(shared: Option<&Shared>) {
+    AUTO_ONLY.store(
+        shared.map_or(0, |s| s as *const Shared as usize),
+        Ordering::Relaxed,
+    );
+    AUTO.store(shared.is_some(), Ordering::Relaxed);
+    AUTO_NEXT.store(0, Ordering::Relaxed);
+    AUTO_SINCE.store(0, Ordering::Relaxed);
+    AUTO_BASE.store(0, Ordering::Relaxed);
 }
 
 /// Create the thread on `stack` (reserving the stack first if there is
@@ -315,8 +440,10 @@ pub fn is_locked() -> bool {
 }
 
 /// The child has no background thread and, per design 8.1, does not
-/// get one until it asks again. Called with the state lock held by
-/// this thread (`fork_prepare` took it).
+/// get one until it asks again or, under the lazy start, until it holds
+/// enough dirty memory of its own: the inherited dirty bytes become the
+/// baseline at its first look. Called with the state lock held by this
+/// thread (`fork_prepare` took it).
 pub fn fork_child() {
     // SAFETY: the forking thread holds the lock; the child is single
     // threaded.
@@ -330,4 +457,7 @@ pub fn fork_child() {
     st.thread = None;
     PRESENT.store(false, Ordering::Relaxed);
     REQUESTED.store(false, Ordering::Relaxed);
+    AUTO_NEXT.store(0, Ordering::Relaxed);
+    AUTO_SINCE.store(0, Ordering::Relaxed);
+    AUTO_BASE.store(u64::MAX, Ordering::Relaxed);
 }
