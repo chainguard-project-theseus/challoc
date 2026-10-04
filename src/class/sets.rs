@@ -76,33 +76,11 @@ impl Lazy {
         self.committed
     }
 
-    pub(crate) fn reserve(meta: &Meta, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<Lazy>)
-        requires
-            crate::sys::may_syscall(),
-            crate::meta::is_pow2(align),
-            old(ord).allows(rank_meta()),
-        ensures
-            r matches Some(l) ==> l.spec_base() + l.spec_len() <= crate::meta::va_limit() && l.spec_len() == len && l.spec_committed() == 0,
-            r matches Some(l) ==> meta.holds(l.spec_base() as int, len as int),
-            *final(ord) == *old(ord),
-    {
-        proof {
-            broadcast use lemma_shl_pow2;
-        }
-        // With metadata THP on (`thp.rs`) the table starts on a folio
-        // boundary, so the rounded commits of `ensure` cover whole aligned
-        // folios and the kernel can map them as such.
-        let base = meta.reserve_table(len, align.max(crate::thp::meta_folio_size()), Tracked(ord))?;
-        Some(Lazy {
-            base,
-            len,
-            committed: 0,
-        })
-    }
-
-    /// [`reserve`](Lazy::reserve), with the permission to the table's
-    /// bytes, its length rounded up to a whole word ([`axiom_table_bytes`]),
-    /// and the alignment `Meta::reserve_table` gives its start.
+    /// Reserve a table of `len` bytes aligned to `align` (and, with
+    /// metadata THP on, to the folio), with the permission to its bytes,
+    /// its length rounded up to a whole word, which
+    /// [`Meta::reserve_table`] hands out once.
+    #[inline(always)]
     pub(crate) fn reserve_raw(meta: &Meta, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Option<Lazy>, Tracked<PointsToRaw>))
         requires
             crate::sys::may_syscall(),
@@ -119,10 +97,13 @@ impl Lazy {
         proof {
             broadcast use lemma_shl_pow2;
         }
-        // On a folio boundary, as in `reserve`.
+        // With metadata THP on (`thp.rs`) the table starts on a folio
+        // boundary, so the rounded commits of `ensure` cover whole aligned
+        // folios and the kernel can map them as such.
         let folio = crate::thp::meta_folio_size();
-        let Some(base) = meta.reserve_table(len, align.max(folio), Tracked(ord)) else {
-            return (None, Tracked(PointsToRaw::empty(cast_provenance())));
+        let (base, raw) = meta.reserve_table(len, align.max(folio), Tracked(ord));
+        let Some(base) = base else {
+            return (None, raw);
         };
         proof {
             // The larger of two powers of two is a multiple of the smaller.
@@ -140,45 +121,9 @@ impl Lazy {
                 vstd::arithmetic::div_mod::lemma_mod_multiples_basic(q * r, a as int);
             }
         }
-        let tracked raw = axiom_table_bytes(base, (len + 7) / 8 * 8);
-        (Some(Lazy { base, len, committed: 0 }), Tracked(raw))
+        (Some(Lazy { base, len, committed: 0 }), raw)
     }
 }
-
-/// Trusted: the permission to the bytes of the table at `base` that
-/// `Meta::reserve_table` has just returned for `len` bytes, rounded up to
-/// a whole word. A table is carved once, never freed and handed to no one
-/// else, and `Meta` carves whole pages from a page-aligned start
-/// (`Inner::reserve`, `Inner::reserve_eager`), so the rounding stays
-/// inside the table's last page. Private, and [`Lazy::reserve_raw`] is
-/// its one call. `base` is not 0 (`Meta::reserve_table` ensures it): a
-/// permission at address 0 proves `false` (`PointsTo::is_nonnull`).
-///
-/// Not the only permission `Meta`'s proofs know of: an eager table's
-/// bytes go to `Inner::handed` in `Inner::reserve_eager`, and
-/// `Meta::reserve_table` leaves them there. Nothing hands that copy out
-/// (the next `Meta::reserve_committed_raw` replaces it, or drops it on
-/// failure), so the two never meet in one proof; a `Meta` method that
-/// returned the table's permission (from `handed` on the eager side, from
-/// the `Unbacked` token `reserve_table` drops on the reservation side)
-/// would replace this axiom.
-///
-/// Premise nothing checks: Verus does not model page protection. On the
-/// reservation side the bytes stay `PROT_NONE` until `Lazy::ensure`
-/// commits their page, and the holder of the permission reads only pages
-/// it has committed. `SlabTable`, the one holder, keeps that by its
-/// watermark: a slab's descriptor, bitmap words and owner word are
-/// committed before the watermark passes the slab, and every read is of a
-/// slab below a value the watermark held (the `# Safety` contracts of
-/// `desc_unchecked`, `bits_unchecked`, `is_set_unchecked`, `owner_word`
-/// and `owner_at`).
-axiom fn axiom_table_bytes(base: usize, len: int) -> (tracked r: PointsToRaw)
-    requires
-        0 < base,
-    ensures
-        r.is_range(base as int, len),
-        r.provenance() == cast_provenance(),
-;
 
 /// A slab-number (or huge-page) set: a [`TwoLevelBitmap`] over a lazily
 /// committed table, either its own ([`Set::new`], `huge/`) or one view
@@ -340,11 +285,217 @@ pub(crate) open spec fn placed(pos: [u8; NCLASSES], groups: [Group; SET_GROUPS],
 
 /// Class `c`'s group after the second pass: its stride is three sets per
 /// class and its rows ([`TwoLevelBitmap::chunked_rows`]) were reserved
-/// from `base`, below the metadata limit.
+/// from `base`, below the metadata limit, on a word boundary.
 pub(crate) open spec fn reserved(groups: [Group; SET_GROUPS], nslabs: [usize; SET_GROUPS], c: int) -> bool {
     let (grp, n) = (groups[group_spec(c)], nslabs[group_spec(c)]);
     &&& grp.stride == 3 * grp.count
     &&& grp.base + 8 * (65 * (((n + 63) / 64 + 63) / 64)) * grp.stride <= crate::meta::va_limit()
+    &&& grp.base % 8 == 0
+}
+
+/// Rows of a chunked view over `n` slab numbers
+/// ([`TwoLevelBitmap::chunked_rows`]).
+pub(crate) open spec fn rows_of(n: int) -> int {
+    65 * (((n + 63) / 64 + 63) / 64)
+}
+
+/// The bytes of slot `slot` of a group table of `rows` rows of `stride`
+/// words at `base`: the slot's word in every row.
+pub(crate) open spec fn slot_bytes(base: int, rows: int, stride: int, slot: int) -> vstd::set::Set<int> {
+    vstd::set::Set::range(base, base + 8 * (rows * stride)).filter(|a: int| ((a - base) / 8) % stride == slot)
+}
+
+/// The slot of set `kind` of class `c` in its group (`Set::in_table`).
+pub(crate) open spec fn slot_spec(pos: [u8; NCLASSES], groups: [Group; SET_GROUPS], c: int, kind: int) -> int {
+    kind * groups[group_spec(c)].count + pos[c]
+}
+
+/// The bytes of set `kind` of class `c`: its slot's words in its group's
+/// table.
+pub(crate) open spec fn set_bytes(pos: [u8; NCLASSES], groups: [Group; SET_GROUPS], nslabs: [usize; SET_GROUPS], c: int, kind: int) -> vstd::set::Set<int> {
+    let g = group_spec(c);
+    slot_bytes(groups[g].base as int, rows_of(nslabs[g] as int), groups[g].stride as int, slot_spec(pos, groups, c, kind))
+}
+
+/// A slot's bytes are the words of the chunked view at the slot's first
+/// word (`TwoLevelBitmap::from_raw_chunked`'s permission).
+proof fn lemma_slot_bytes(base: int, rows: int, stride: int, slot: int)
+    requires
+        0 <= slot < stride,
+        0 <= rows,
+    ensures
+        slot_bytes(base, rows, stride, slot) == crate::bitmap::chunked_bytes(base + 8 * slot, rows, stride),
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+    let (s, c) = (slot_bytes(base, rows, stride, slot), crate::bitmap::chunked_bytes(base + 8 * slot, rows, stride));
+    assert forall|a: int| #[trigger] s.contains(a) implies c.contains(a) by {
+        let k = (a - base) / 8;
+        let r = k / stride;
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(a - base, 8);
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(k, stride);
+        assert(0 <= k < rows * stride);
+        assert(0 <= r < rows) by (nonlinear_arith)
+            requires k == stride * r + slot, 0 <= k < rows * stride, stride >= 1, 0 <= slot < stride;
+        assert(r * stride == stride * r) by (nonlinear_arith);
+        assert(crate::bitmap::row_addr(base + 8 * slot, r, stride) <= a < crate::bitmap::row_addr(base + 8 * slot, r, stride) + 8);
+        assert(a < base + 8 * slot + 8 * (rows * stride));
+    }
+    assert forall|a: int| #[trigger] c.contains(a) implies s.contains(a) by {
+        let r = choose|r: int| 0 <= r < rows && #[trigger] crate::bitmap::row_addr(base + 8 * slot, r, stride) <= a < crate::bitmap::row_addr(base + 8 * slot, r, stride) + 8;
+        let k = r * stride + slot;
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(a - base, 8, k, a - base - 8 * k);
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(k, stride, r, slot);
+        assert((r + 1) * stride <= rows * stride) by (nonlinear_arith)
+            requires r + 1 <= rows, stride >= 0;
+        assert((r + 1) * stride == r * stride + stride) by (nonlinear_arith);
+    }
+    assert(s =~= c);
+}
+
+/// Different slots of a group (set `k1` at position `p1`, `k2` at `p2`,
+/// positions below the group's count `n`) are different words.
+proof fn lemma_slots_apart(p1: int, p2: int, k1: int, k2: int, n: int)
+    requires
+        0 <= p1 < n,
+        0 <= p2 < n,
+        0 <= k1 < SETS_PER_CLASS,
+        0 <= k2 < SETS_PER_CLASS,
+        k1 != k2 || p1 != p2,
+    ensures
+        k1 * n + p1 != k2 * n + p2,
+        0 <= k1 * n + p1 < 3 * n,
+{
+    assert(0 <= k1 * n + p1 < 3 * n) by (nonlinear_arith)
+        requires 0 <= p1 < n, 0 <= k1 < 3;
+    if k1 < k2 {
+        assert(k1 * n + p1 < k2 * n + p2) by (nonlinear_arith)
+            requires k1 < k2, 0 <= p1 < n, 0 <= p2;
+    } else if k2 < k1 {
+        assert(k2 * n + p2 < k1 * n + p1) by (nonlinear_arith)
+            requires k2 < k1, 0 <= p2 < n, 0 <= p1;
+    }
+}
+
+/// Classes' positions in one group are distinct (`SetTable::new`'s first
+/// pass hands them out in turn).
+pub(crate) open spec fn pos_apart(pos: [u8; NCLASSES], c: int) -> bool {
+    forall|d1: int, d2: int|
+        0 <= d1 < c && 0 <= d2 < c && d1 != d2 && #[trigger] group_spec(d1) == #[trigger] group_spec(d2) ==> pos[d1] != pos[d2]
+}
+
+/// The permission to the bytes of group `g`'s table, as reserved.
+spec fn group_raw(raws: Map<int, PointsToRaw>, groups: [Group; SET_GROUPS], nslabs: [usize; SET_GROUPS], g: int) -> bool {
+    &&& raws.contains_key(g)
+    &&& raws[g].is_range(groups[g].base as int, 8 * (rows_of(nslabs[g] as int) * groups[g].stride))
+    &&& raws[g].provenance() == cast_provenance()
+}
+
+/// Set `k` of class `d` can be split off `raws`, its group's remaining
+/// bytes.
+spec fn splittable(raws: Map<int, PointsToRaw>, pos: [u8; NCLASSES], groups: [Group; SET_GROUPS], nslabs: [usize; SET_GROUPS], d: int, k: int) -> bool {
+    &&& raws.contains_key(group_spec(d))
+    &&& set_bytes(pos, groups, nslabs, d, k).subset_of(raws[group_spec(d)].dom())
+    &&& raws[group_spec(d)].provenance() == cast_provenance()
+}
+
+/// The sets of classes `c..NCLASSES`, split from their groups'
+/// permissions `raws`: each class's three slots, keyed `(class, kind)`.
+/// Distinct classes of one group have distinct positions, so no two
+/// slots meet.
+proof fn split_sets(
+    tracked raws: &mut Map<int, PointsToRaw>,
+    pos: [u8; NCLASSES],
+    groups: [Group; SET_GROUPS],
+    nslabs: [usize; SET_GROUPS],
+    c: int,
+) -> (tracked r: Map<(int, int), PointsToRaw>)
+    requires
+        0 <= c <= NCLASSES,
+        pos_apart(pos, NCLASSES as int),
+        forall|d: int| 0 <= d < NCLASSES ==> 0 <= #[trigger] group_spec(d) < SET_GROUPS && (pos[d] as int) < groups[group_spec(d)].count,
+        forall|d: int, k: int| c <= d < NCLASSES && 0 <= k < SETS_PER_CLASS ==> #[trigger] splittable(*old(raws), pos, groups, nslabs, d, k),
+    ensures
+        forall|d: int, k: int| c <= d < NCLASSES && 0 <= k < SETS_PER_CLASS ==> {
+            &&& #[trigger] r.contains_key((d, k))
+            &&& r[(d, k)].dom() == set_bytes(pos, groups, nslabs, d, k)
+            &&& r[(d, k)].provenance() == cast_provenance()
+        },
+    decreases NCLASSES - c,
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+    if c >= NCLASSES {
+        return Map::tracked_empty();
+    }
+    let g = group_spec(c);
+    let n = groups[g].count as int;
+    assert(0 <= g < SET_GROUPS && (pos[c] as int) < n);
+    let (b0, b1, b2) = (set_bytes(pos, groups, nslabs, c, 0), set_bytes(pos, groups, nslabs, c, 1), set_bytes(pos, groups, nslabs, c, 2));
+    let ghost before = *raws;
+    assert(splittable(before, pos, groups, nslabs, c, 0) && splittable(before, pos, groups, nslabs, c, 1) && splittable(before, pos, groups, nslabs, c, 2));
+    let tracked mut raw = raws.tracked_remove(g);
+    let ghost raw0 = raw;
+    // Set `kind` of class `c`, split off the group's remaining bytes: the
+    // three slots are different words.
+    lemma_slots_apart(pos[c] as int, pos[c] as int, 0, 1, n);
+    lemma_slots_apart(pos[c] as int, pos[c] as int, 0, 2, n);
+    lemma_slots_apart(pos[c] as int, pos[c] as int, 1, 2, n);
+    let tracked (s0, rest) = raw.split(b0);
+    raw = rest;
+    assert(b1.subset_of(raw.dom())) by {
+        assert forall|a: int| #[trigger] b1.contains(a) implies raw.dom().contains(a) by {
+            assert(!b0.contains(a));
+        }
+    }
+    let tracked (s1, rest) = raw.split(b1);
+    raw = rest;
+    assert(b2.subset_of(raw.dom())) by {
+        assert forall|a: int| #[trigger] b2.contains(a) implies raw.dom().contains(a) by {
+            assert(!b0.contains(a) && !b1.contains(a));
+        }
+    }
+    let tracked (s2, rest) = raw.split(b2);
+    raw = rest;
+    assert(raw.dom() == raw0.dom().difference(b0).difference(b1).difference(b2));
+    raws.tracked_insert(g, raw);
+    assert forall|d: int, k: int| c + 1 <= d < NCLASSES && 0 <= k < SETS_PER_CLASS implies #[trigger] splittable(*raws, pos, groups, nslabs, d, k) by {
+        let bd = set_bytes(pos, groups, nslabs, d, k);
+        assert(splittable(before, pos, groups, nslabs, d, k));
+        if group_spec(d) == g {
+            assert(pos[d] != pos[c]);
+            assert(0 <= group_spec(d) < SET_GROUPS && (pos[d] as int) < n);
+            lemma_slots_apart(pos[d] as int, pos[c] as int, k, 0, n);
+            lemma_slots_apart(pos[d] as int, pos[c] as int, k, 1, n);
+            lemma_slots_apart(pos[d] as int, pos[c] as int, k, 2, n);
+            assert forall|a: int| #[trigger] bd.contains(a) implies raws[g].dom().contains(a) by {
+                assert(raw0.dom().contains(a));
+                assert(!b0.contains(a) && !b1.contains(a) && !b2.contains(a));
+            }
+        } else {
+            assert(raws[group_spec(d)] == before[group_spec(d)]);
+        }
+    }
+    let tracked mut r = split_sets(raws, pos, groups, nslabs, c + 1);
+    let ghost r0 = r;
+    r.tracked_insert((c, 0), s0);
+    r.tracked_insert((c, 1), s1);
+    r.tracked_insert((c, 2), s2);
+    assert forall|d: int, k: int| c <= d < NCLASSES && 0 <= k < SETS_PER_CLASS implies {
+        &&& #[trigger] r.contains_key((d, k))
+        &&& r[(d, k)].dom() == set_bytes(pos, groups, nslabs, d, k)
+        &&& r[(d, k)].provenance() == cast_provenance()
+    } by {
+        if d != c {
+            assert(r0.contains_key((d, k)));
+            assert(r[(d, k)] == r0[(d, k)]);
+        } else if k == 0 {
+            assert(r[(d, k)] == s0);
+        } else if k == 1 {
+            assert(r[(d, k)] == s1);
+        } else {
+            assert(r[(d, k)] == s2);
+        }
+    }
+    r
 }
 
 impl SetTable {
@@ -377,6 +528,14 @@ impl SetTable {
     pub(crate) open spec fn over(&self, regions: Regions) -> bool {
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.class_ok(regions, c)
     }
+
+    /// `m` holds set `kind` of class `c`: the permission to its slot's
+    /// bytes ([`set_bytes`]), which [`Set::in_table`] takes.
+    pub(crate) open spec fn holds_set(&self, m: Map<(int, int), PointsToRaw>, c: int, kind: int) -> bool {
+        &&& m.contains_key((c, kind))
+        &&& m[(c, kind)].dom() == set_bytes(self.pos, self.groups, self.nslabs, c, kind)
+        &&& m[(c, kind)].provenance() == cast_provenance()
+    }
 }
 
 /// `table` as the pointer [`Store::Shared`] keeps. Trusted: Verus has no
@@ -390,12 +549,16 @@ fn set_table_ptr(table: &SetTable) -> *const SetTable {
 impl Set {
     /// Set `kind` (0..`SETS_PER_CLASS`) of `class` in `table`, over the
     /// class's slab numbers: a well-formed empty set over the group's slab
-    /// count. `table` must outlive the set.
-    pub(crate) fn in_table(table: &SetTable, class: usize, kind: usize) -> (r: Set)
+    /// count, through `words`, the permission to its slot's bytes, which
+    /// [`SetTable::new`] handed out once ([`SetTable::holds_set`]).
+    /// `table` must outlive the set.
+    pub(crate) fn in_table(table: &SetTable, class: usize, kind: usize, Tracked(words): Tracked<PointsToRaw>) -> (r: Set)
         requires
             class < NCLASSES,
             kind < SETS_PER_CLASS,
             table.class_ok(process_regions(), class as int),
+            words.dom() == set_bytes(table.pos, table.groups, table.nslabs, class as int, kind as int),
+            words.provenance() == cast_provenance(),
         ensures
             r.map.wf(),
             r.map.spec_nbits() == table.nslabs[group_spec(class as int)],
@@ -420,13 +583,20 @@ impl Set {
             let (n, s) = (nslabs as int, group.stride as int);
             let l1 = ((n + 63) / 64 + 63) / 64;
             assert(65 * l1 * s * 8 == 8 * (65 * l1) * s) by (nonlinear_arith);
+            assert(rows_of(n) * s == 65 * l1 * s);
+            lemma_slot_bytes(group.base as int, rows_of(n), s, slot as int);
         }
         // SAFETY: the slot's words are `base + 8 * (slot + r * stride)`,
         // disjoint from every other slot's, zero, never freed; the rows a
         // slab's bit needs are committed by `ensure` before the class
         // touches it (`take_group`).
         let map = unsafe {
-            TwoLevelBitmap::from_raw_chunked(nslabs, crate::vspec::addr::addr_to_ptr(group.base + 8 * slot) as *mut u64, group.stride)
+            TwoLevelBitmap::from_raw_chunked(
+                nslabs,
+                crate::vspec::addr::addr_to_ptr(group.base + 8 * slot) as *mut u64,
+                group.stride,
+                Tracked(words),
+            )
         };
         proof {
             map.lemma_fresh(nslabs);
@@ -550,14 +720,25 @@ pub broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
 
 impl SetTable {
     /// Reserve the tables (address space only; rows are committed by
-    /// `ensure`). `None` if the metadata region cannot hold them.
-    pub(crate) fn new(meta: &Meta, regions: &Regions, Ghost(arena): Ghost<u16>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<SetTable>)
+    /// `ensure`). `None` if the metadata region cannot hold them. On
+    /// success `sets` holds the permission to every class's three slots
+    /// ([`SetTable::holds_set`]), each for its one [`Set::in_table`].
+    pub(crate) fn new(
+        meta: &Meta,
+        regions: &Regions,
+        Ghost(arena): Ghost<u16>,
+        Tracked(sets): Tracked<&mut Map<(int, int), PointsToRaw>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: Option<SetTable>)
         requires
             crate::sys::may_syscall(),
             regions.wf(),
+            // A page of at least 4 KiB: the group tables start on a word.
+            regions.separated(),
             old(ord).allows(rank_meta()),
         ensures
             r matches Some(t) ==> t.over(*regions) && t.rank() == rank_sets(arena as int),
+            r matches Some(t) ==> forall|c: int, k: int| 0 <= c < NCLASSES && 0 <= k < SETS_PER_CLASS ==> #[trigger] t.holds_set(*final(sets), c, k),
             *final(ord) == *old(ord),
     {
         broadcast use axiom_set_tables_lock_inv;
@@ -566,6 +747,7 @@ impl SetTable {
             crate::meta::lemma_is_pow2_shl(regions.lg_page as usize);
             let lg = regions.lg_page;
             assert((1usize << lg) == (1usize << (lg as usize))) by (bit_vector) requires lg < 64;
+            assert(page % 8 == 0 && page >= 8) by (bit_vector) requires page == 1usize << lg, 12 <= lg < 64;
         }
         let mut groups = [Group { base: 0, stride: 0, count: 0 }; SET_GROUPS];
         let mut nslabs = [0usize; SET_GROUPS];
@@ -577,6 +759,7 @@ impl SetTable {
                 forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] nslabs[g] <= 0x400_0000,
                 forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] groups[g].stride <= 3 * NCLASSES,
                 forall|d: int| 0 <= d < c ==> #[trigger] placed(pos, groups, nslabs, *regions, d),
+                pos_apart(pos, c as int),
         {
             let g = Self::group_of(c);
             proof {
@@ -600,6 +783,18 @@ impl SetTable {
                         }
                     }
                 }
+                // The new position is the group's count so far, above every
+                // earlier class's of the group.
+                assert forall|d1: int, d2: int|
+                    0 <= d1 < c + 1 && 0 <= d2 < c + 1 && d1 != d2 && #[trigger] group_spec(d1) == #[trigger] group_spec(d2) implies pos[d1] != pos[d2] by {
+                    if d1 < c && d2 < c {
+                        assert(pos0[d1] != pos0[d2]);
+                    } else if d1 < c {
+                        assert(placed(pos0, groups0, nslabs0, *regions, d1));
+                    } else {
+                        assert(placed(pos0, groups0, nslabs0, *regions, d2));
+                    }
+                }
             }
         }
         // `[Lazy::EMPTY; SET_GROUPS]` spelled out: Verus has no array fill of
@@ -610,6 +805,8 @@ impl SetTable {
                 assert(placed(pos, groups, nslabs, *regions, d));
             }
         }
+        // Ghost: each reserved group's permission to its table's bytes.
+        let tracked mut raws: Map<int, PointsToRaw> = Map::tracked_empty();
         let mut tables = [Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY];
         for g in 0..SET_GROUPS
             invariant
@@ -619,12 +816,16 @@ impl SetTable {
                 forall|h: int| 0 <= h < SET_GROUPS ==> #[trigger] groups[h].stride <= 3 * NCLASSES,
                 forall|d: int| 0 <= d < NCLASSES ==> #[trigger] placed(pos, groups, nslabs, *regions, d),
                 forall|d: int| 0 <= d < NCLASSES && group_spec(d) < g ==> #[trigger] reserved(groups, nslabs, d),
+                forall|h: int| 0 <= h < g && groups[h].count != 0 ==> #[trigger] group_raw(raws, groups, nslabs, h),
+                pos_apart(pos, NCLASSES as int),
                 crate::meta::is_pow2(page),
+                page % 8 == 0 && page >= 8,
                 ord.allows(rank_meta()),
                 *ord == *old(ord),
         {
             if groups[g].count != 0 {
                 let ghost groups0 = groups;
+                let ghost raws0 = raws;
                 let mut grp = groups[g];
                 grp.stride = SETS_PER_CLASS * grp.count;
                 let rows = TwoLevelBitmap::chunked_rows(nslabs[g]);
@@ -637,13 +838,19 @@ impl SetTable {
                     assert(r8 * grp.stride <= 8 * (65 * 0x4001) * (3 * NCLASSES)) by (nonlinear_arith)
                         requires r8 <= 8 * 65 * 0x4001, grp.stride <= 3 * NCLASSES, grp.stride >= 0;
                 }
-                let t = Lazy::reserve(meta, 8 * rows * grp.stride, page, Tracked(ord))?;
+                let (t, Tracked(raw)) = Lazy::reserve_raw(meta, 8 * rows * grp.stride, page, Tracked(ord));
+                let t = t?;
                 grp.base = t.base;
                 tables[g] = t;
                 groups[g] = grp;
                 proof {
                     assert(8 * rows * grp.stride == 8 * (65 * (((n + 63) / 64 + 63) / 64)) * grp.stride) by (nonlinear_arith)
                         requires rows == 65 * (((n + 63) / 64 + 63) / 64);
+                    let len = 8 * rows * grp.stride;
+                    assert((len + 7) / 8 * 8 == 8 * (rows_of(n) * grp.stride)) by (nonlinear_arith)
+                        requires len == 8 * rows * grp.stride, rows == rows_of(n);
+                    lemma_mod_8(grp.base as int, page as int);
+                    raws.tracked_insert(g as int, raw);
                     assert forall|d: int| 0 <= d < NCLASSES implies #[trigger] placed(pos, groups, nslabs, *regions, d) by {
                         assert(placed(pos, groups0, nslabs, *regions, d));
                     }
@@ -651,6 +858,11 @@ impl SetTable {
                         assert(placed(pos, groups0, nslabs, *regions, d));
                         if group_spec(d) < g {
                             assert(reserved(groups0, nslabs, d));
+                        }
+                    }
+                    assert forall|h: int| 0 <= h < g + 1 && groups[h].count != 0 implies #[trigger] group_raw(raws, groups, nslabs, h) by {
+                        if h < g {
+                            assert(group_raw(raws0, groups0, nslabs, h));
                         }
                     }
                 }
@@ -668,6 +880,18 @@ impl SetTable {
                 && reserved(groups, nslabs, c) by {
                 assert(placed(pos, groups, nslabs, *regions, c));
             }
+            broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+            // Every class's slots lie in its group's reserved bytes.
+            assert forall|d: int, k: int| 0 <= d < NCLASSES && 0 <= k < SETS_PER_CLASS implies #[trigger] splittable(raws, pos, groups, nslabs, d, k) by {
+                assert(placed(pos, groups, nslabs, *regions, d));
+                assert(group_raw(raws, groups, nslabs, group_spec(d)));
+            }
+            assert forall|d: int| 0 <= d < NCLASSES implies 0 <= #[trigger] group_spec(d) < SET_GROUPS
+                && (pos[d] as int) < groups[group_spec(d)].count by {
+                assert(placed(pos, groups, nslabs, *regions, d));
+            }
+            let tracked m = split_sets(&mut raws, pos, groups, nslabs, 0);
+            *sets = m;
         }
         proof {
             crate::meta::lemma_pow2_bits(page);
@@ -680,6 +904,23 @@ impl SetTable {
             page,
         })
     }
+}
+
+/// `b` on a boundary of `p`, a multiple of 8, is on a word boundary.
+proof fn lemma_mod_8(b: int, p: int)
+    requires
+        p > 0,
+        b % p == 0,
+        p % 8 == 0,
+    ensures
+        b % 8 == 0,
+{
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(b, p);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(p, 8);
+    let (q, m) = (b / p, p / 8);
+    assert(b == (m * q) * 8) by (nonlinear_arith)
+        requires b == p * q, p == 8 * m;
+    vstd::arithmetic::div_mod::lemma_mod_multiples_basic(m * q, 8);
 }
 
 impl SetTable {

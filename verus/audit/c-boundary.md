@@ -276,4 +276,5 @@ the Isla toolchain exists.
    and derive it. Suggested fix: add `0 <= n <= u32::MAX` to
    `ForkHeld::wf` (`fork_prepare` proves it from its `u32` read, and the
    axiom then ensures it), and let `count_held` require it. `arena_held`
-   (S33) states facts about its input too, consistent ones.
+   (S33) states facts about its input too, consistent ones. Done by the
+   invariants audit (`invariants.md`, S34).

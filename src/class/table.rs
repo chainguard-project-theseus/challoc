@@ -27,6 +27,9 @@ use crate::vspec::addr::addr_to_ptr;
 use crate::vspec::addr::cast_provenance;
 #[cfg(verus_only)]
 use crate::vspec::lock::{lock_frame, lock_init, lock_inv};
+use crate::vspec::once::Once;
+#[cfg(verus_only)]
+use crate::vspec::once::Step;
 #[cfg(verus_only)]
 use crate::vspec::word::{WordPerm, word_addr};
 #[cfg(verus_only)]
@@ -100,7 +103,8 @@ impl TableInner {
     /// The guard count stays below the slabs handed out, which stay below
     /// the largest slab count a region can have and are whole hand-out
     /// groups until the region's end; the three tables are committed in
-    /// page units.
+    /// page units. The commit lock holds the init markers of every bit
+    /// and the owner-store markers of every slab from the watermark on.
     pub(super) open spec fn inv(self) -> bool {
         &&& self.guards <= self.next_slab
         &&& self.next_slab <= usize::MAX >> 12
@@ -112,6 +116,7 @@ impl TableInner {
         &&& lazy_ok(self.owners, self.page@)
         &&& self.fresh@.id() == self.mloc@
         &&& init_marks(self.next_slab * self.sb@, self.nslabs@ * self.sb@).subset_of(self.fresh@@)
+        &&& owner_marks(self.next_slab as int, self.nslabs@ as int).subset_of(self.fresh@@)
     }
 }
 
@@ -127,10 +132,12 @@ impl TableInner {
 /// one guard per guard slab it commits, which keeps the count at most
 /// `next_slab` only because every slab below `next_slab` is committed
 /// once, by the arena its group went to (`next_fresh_slab`): assumed,
-/// not proved. The init markers it holds cover the slabs from
-/// `next_slab` on: `take_group` takes the markers of the group it hands
-/// out, below the `next_slab` it publishes (for `AtomicBitmap::init`, or
-/// for the arena to keep for a guard slab), and nothing else moves them. `guards` only reads; the test
+/// not proved. The init and owner-store markers it holds cover the slabs
+/// from `next_slab` on: `take_group` takes the markers of the group it
+/// hands out, below the `next_slab` it publishes (the init ones for
+/// `AtomicBitmap::init`, or for the arena to keep for a guard slab, the
+/// owner-store ones for `store_owner`), and nothing else moves them.
+/// `guards` only reads; the test
 /// helper `corrupt_owner_word` (unverified) only commits through
 /// `Lazy::ensure`.
 pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
@@ -175,6 +182,36 @@ pub(super) closed spec fn owner_word_at(t: SlabTable, group: usize) -> AtomicU16
 /// tables, or corrupt an owner word, are outside it).
 pub uninterp spec fn slab_owner(c: int, slab: int) -> u16;
 
+/// The marker of the owner store of slab `x` ([`store_owner`]): negative,
+/// so apart from every bit's fresh and init markers (`bitmap.rs`).
+pub open spec fn owner_mark(x: int) -> int {
+    -1 - x
+}
+
+/// The owner-store markers of slabs `lo..hi`.
+pub open spec fn owner_marks(lo: int, hi: int) -> Set<int> {
+    Set::<int>::range(-hi, -lo)
+}
+
+/// The authority of class `c`'s markers: the one its table made
+/// ([`axiom_slot_loc`]). Every slab's owner-store marker is minted once,
+/// by that table's `new`, so [`store_owner`], which uses it up, runs at
+/// most once per slab.
+pub uninterp spec fn mark_loc(c: int) -> Loc;
+
+/// Owner-store markers are not bit markers.
+proof fn lemma_owner_marks_apart(lo: int, hi: int, a: int, b: int, m: int)
+    requires
+        0 <= lo,
+        0 <= a,
+        owner_marks(lo, hi).contains(m),
+    ensures
+        !init_marks(a, b).contains(m),
+        !fresh_marks(a, b).contains(m),
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+}
+
 /// The arena that owns the slab of class `c`'s region holding address
 /// `p` ([`slab_owner`] of [`Regions::slab_index`]): for a slot, the arena
 /// it was claimed from and the only one it is released into.
@@ -212,14 +249,26 @@ fn load_owner(w: &AtomicU16, Ghost(t): Ghost<SlabTable>, Ghost(slab): Ghost<usiz
 /// [`SlabTable::take_group`], under the commit lock, for the group at the
 /// watermark, past every fallible step, after which it moves the
 /// watermark past the group; so each group's word is stored once, before
-/// any slab of it is handed out. Verus does not check the "once" (a
-/// second call with another arena would contradict the first): the
-/// wrapper is private and has that one call site.
+/// any slab of it is handed out. A second store of a slab's owner with
+/// another arena would contradict the first, so the store uses up
+/// `marks`, the owner-store markers of the group's slabs ([`owner_mark`]),
+/// which the class's table minted once each ([`mark_loc`]) and its commit
+/// lock holds for the slabs from the watermark on
+/// ([`TableInner::inv`]). That last holds under the lock's premise
+/// (`axiom_table_lock_inv`): every holder restores the invariant before
+/// it releases the lock, which `take_group` asserts and Verus does not
+/// check at the release (`LockGuard::drop`), so a holder that took the
+/// markers and released without moving the watermark would let the next
+/// one store again.
+// `marks` is read only by the requires (ghost).
+#[allow(unused_variables)]
 #[verifier::external_body]
 #[inline(always)]
-fn store_owner(w: &AtomicU16, arena: u16, Ghost(t): Ghost<SlabTable>, Ghost(group): Ghost<usize>)
+fn store_owner(w: &AtomicU16, arena: u16, Ghost(t): Ghost<SlabTable>, Ghost(group): Ghost<usize>, Tracked(marks): Tracked<GhostSubset<int>>)
     requires
         *w == owner_word_at(t, group),
+        marks.id() == mark_loc(t.spec_class() as int),
+        owner_marks(t.spec_group_range(group).0 as int, t.spec_group_range(group).1 as int).subset_of(marks@),
     ensures
         forall|x: int| t.spec_group_range(group).0 <= x < t.spec_group_range(group).1
             ==> #[trigger] slab_owner(t.spec_class() as int, x) == arena,
@@ -440,7 +489,15 @@ impl SlabTable {
     /// they are the process's ([`process_regions`](crate::layout::process_regions)),
     /// which is what the type invariant needs of `regions`.
     #[verifier::spinoff_prover]
-    pub fn new(meta: &Meta, regions: &Regions, class: usize, guard_interval: u32, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<SlabTable>)
+    pub fn new(
+        meta: &Meta,
+        regions: &Regions,
+        class: usize,
+        guard_interval: u32,
+        Tracked(slot_once): Tracked<Once>,
+        Tracked(words_once): Tracked<Once>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: Option<SlabTable>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -451,6 +508,8 @@ impl SlabTable {
             guard_interval != 1,
             guard_interval == 0 || exists|k: nat| k < 32 && guard_interval as nat == #[trigger] pow2(k),
             old(ord).allows(rank_meta()),
+            slot_once.step() == Step::SlotLoc(class as int),
+            words_once.step() == Step::FreshWords(class as int),
         ensures
             r matches Some(t) ==> {
                 &&& t.spec_class() == class
@@ -575,15 +634,16 @@ impl SlabTable {
             gmask: guard_interval.wrapping_sub(1),
         };
         let tracked (slot_auth, all) = GhostSetAuth::<int>::new(crate::bitmap::slot_set(geo));
-        proof {
-            axiom_slot_loc(class as int, slot_auth.id(), geo.glg, geo.gmask);
-        }
         let ghost nwords = (geo.nbits + 63) / 64;
         // The markers: the fresh ones of every bit for the word
-        // invariants, the init ones for the commit lock.
+        // invariants, the init ones and every slab's owner-store one for
+        // the commit lock.
         let tracked (mark_auth, mut marks) = GhostSetAuth::<int>::new(
-            fresh_marks(0, 64 * nwords).union(init_marks(0, 64 * nwords)));
-        let tracked imarks = marks.split(init_marks(0, 64 * nwords));
+            fresh_marks(0, 64 * nwords).union(init_marks(0, 64 * nwords)).union(owner_marks(0, nslabs as int)));
+        let tracked imarks = marks.split(init_marks(0, 64 * nwords).union(owner_marks(0, nslabs as int)));
+        proof {
+            axiom_slot_loc(class as int, slot_auth.id(), mark_auth.id(), geo.glg, geo.gmask, slot_once);
+        }
         let ghost slots = Slots {
             loc: slot_auth.id(),
             mloc: mark_auth.id(),
@@ -624,7 +684,7 @@ impl SlabTable {
                     0 <= stagger,
             ;
         }
-        let tracked perms = axiom_fresh_words(bits_base, nwords as nat);
+        let tracked perms = axiom_fresh_words(bits_base, nwords as nat, class as int, words_once);
         let tracked word_invs = crate::bitmap::fresh_word_invs(perms, all, marks, slots, bits_base, nwords as nat);
         // The permissions to every descriptor, bitmap word and owner word,
         // carved from the three reservations' (`SlabTable::perms_ok`).
@@ -659,6 +719,7 @@ impl SlabTable {
             assert(inner.0.rank() == rank_table(class as int));
             assert(words_wf(word_invs, slots, bits_base, nwords));
             assert(slots.loc == slot_loc(class as int));
+            assert(mark_auth.id() == mark_loc(class as int));
             assert(crate::layout::guard_geom(class as int) == (geo.glg, geo.gmask));
             assert(regions.class_base[class as int] == process_regions().class_base[class as int]);
             assert(nslabs as int == process_regions().spec_nslabs(class as int));
@@ -969,6 +1030,9 @@ proof fn carve_owners(tracked raw: PointsToRaw, base: int, n: int) -> (tracked r
     let tracked r = axiom_init_owners(carved, n);
     assert forall|g: int| 0 <= g < n implies #[trigger] r.contains_key(g) && perm_at(r[g], base + 2 * g) by {
         assert(carved.contains_key(0 + g));
+        assert(g * 2 == 2 * g && base + 2 * g <= usize::MAX) by (nonlinear_arith)
+            requires 0 <= g < n, base + n * 2 <= usize::MAX;
+        assert(carved[0 + g].ptr()@.addr == base + 2 * g);
     }
     r
 }
@@ -1033,35 +1097,46 @@ pub uninterp spec fn slot_loc(c: int) -> Loc;
 /// Trusted: `SlabTable::new` runs once per class in a process
 /// (`Shared::init`, its one caller, builds the class tables of the one
 /// `Shared`, as `layout::process_regions` assumes), so the authority it
-/// makes is the class's. It names the authority for the thread caches,
+/// makes is the class's, and so is its marker authority (`mloc`,
+/// [`mark_loc`]). It names the authority for the thread caches,
 /// whose tokens come from every arena's refills of the class. Two calls
-/// for one class with two authorities would prove `false`, so it is
-/// private to this module and `SlabTable::new` is its one call. For the
-/// same reason the table's guard geometry (`glg`, its `lg_slabs_per_page`,
-/// and `gmask`, its `guard_mask`) is the class's
+/// for one class with two authorities would prove `false`, so each uses
+/// up `once`, the process's one token of class `c`'s step
+/// (`vspec::once`), handed to `SlabTable::new`. For the same reason the
+/// table's guard geometry (`glg`, its `lg_slabs_per_page`, and `gmask`,
+/// its `guard_mask`) is the class's
 /// ([`guard_geom`](crate::layout::guard_geom)): the guard slabs that
-/// `Regions::is_slot` excludes are this table's. A second call for one
-/// class with another guard interval would prove `false` too: `init`
-/// builds each table once and aborts on failure, never retrying.
-axiom fn axiom_slot_loc(c: int, loc: Loc, glg: u8, gmask: u32)
+/// `Regions::is_slot` excludes are this table's; a second call for one
+/// class with another guard interval would prove `false` too.
+// `once` is read only by the requires (ghost).
+#[allow(unused_variables)]
+axiom fn axiom_slot_loc(c: int, loc: Loc, mloc: Loc, glg: u8, gmask: u32, tracked once: Once)
+    requires
+        once.step() == Step::SlotLoc(c),
     ensures
         slot_loc(c) == loc,
+        mark_loc(c) == mloc,
         crate::layout::guard_geom(c) == (glg, gmask);
 
 /// Trusted: the permissions of the `n` words of the table at `base` that
-/// `Meta::reserve_table` has just returned, each holding zero: the table
-/// has never been written (`meta.rs`: carved once and never freed), and
-/// nothing but the bitmap views reaches it. A second permission for one
-/// word would let a proof write the word outside its invariant, so it is
-/// private to this module and `SlabTable::new` is its one call, for its
-/// own bitmap. The `PointsTo<AtomicU64>`s of [`axiom_init_words`] are
-/// a second permission to the same words, held by `SlabTable` and only
-/// ever borrowed shared (`ptr_ref`), never written through. The words
-/// end in the address space (required): a permission's `addr` is a
-/// `usize`, so a range past `usize::MAX` would prove `false`.
-axiom fn axiom_fresh_words(base: usize, n: nat) -> (tracked r: Map<int, WordPerm>)
+/// `Meta::reserve_table` has just returned, each holding zero: the
+/// table has never been written (`meta.rs`: carved once and never freed),
+/// and nothing but the bitmap views reaches it. A second permission for
+/// one word would let a proof write the word outside its invariant, so a
+/// call uses up `once`, the process's one token of class `c`'s step
+/// (`vspec::once`), and `SlabTable::new` is its one call, for its own
+/// bitmap (premise, not checked: `base` is that bitmap's first word). The
+/// `PointsTo<AtomicU64>`s of [`axiom_init_words`] are a second
+/// permission to the same words, held by `SlabTable` and only ever
+/// borrowed shared (`ptr_ref`), never written through. The words end in
+/// the address space (required): a permission's `addr` is a `usize`, so a
+/// range past `usize::MAX` would prove `false`.
+// `once` is read only by the requires (ghost).
+#[allow(unused_variables)]
+axiom fn axiom_fresh_words(base: usize, n: nat, c: int, tracked once: Once) -> (tracked r: Map<int, WordPerm>)
     requires
         base + 8 * n <= usize::MAX,
+        once.step() == Step::FreshWords(c),
     ensures
         forall|j: int| 0 <= j < n ==> #[trigger] r.contains_key(j) && r[j].addr() == base + 8 * j && r[j].value() == 0;
 
@@ -1130,7 +1205,7 @@ proof fn carve<T>(tracked raw: PointsToRaw, base: int, stride: int, n: int) -> (
 /// Trusted: the descriptors at the permissions `perms` carved for keys
 /// `0..n` hold values. A `SlabDesc` is plain atomics, valid for every bit
 /// pattern, and the reservation's bytes are initialised (anonymous memory,
-/// zero, once committed: the premise of `sets::axiom_table_bytes` that
+/// zero, once committed: the premise of `Unbacked::into_lazy` that
 /// only committed pages are read). Private; `SlabTable::new` is its one
 /// call, on the descriptor array it reserved.
 axiom fn axiom_init_descs(tracked perms: Map<int, PointsTo<SlabDesc>>, n: int) -> (tracked r: Map<int, PointsTo<SlabDesc>>)
@@ -1344,6 +1419,7 @@ impl SlabTable {
         &&& self.nslabs as int == process_regions().spec_nslabs(self.class as int)
         &&& words_wf(self.word_invs@, self.spec_slots(), self.bits_base, self.spec_nwords())
         &&& self.spec_slots().loc == slot_loc(self.class as int)
+        &&& self.mark_auth@.id() == mark_loc(self.class as int)
         &&& crate::layout::guard_geom(self.class as int) == (self.lg_slabs_per_page, self.guard_mask)
         &&& self.perms_ok()
         &&& self.inner.0.rank() == rank_table(self.class as int)
@@ -1892,7 +1968,7 @@ impl SlabTable {
     /// `slab` must be below a value `committed_slabs` has held: descriptors
     /// up to that count are committed and initialised (or zero, for guard
     /// slabs) before the watermark moves (the premise of
-    /// `sets::axiom_table_bytes`).
+    /// `Unbacked::into_lazy`).
     #[inline(always)]
     unsafe fn desc_unchecked(&self, slab: usize) -> (r: &SlabDesc)
         requires
@@ -2100,7 +2176,7 @@ impl SlabTable {
     /// # Safety
     /// `slab` must be below a value the watermark has held: the owner word
     /// of a handed-out group was committed and written before the
-    /// watermark moved (the premise of `sets::axiom_table_bytes`).
+    /// watermark moved (the premise of `Unbacked::into_lazy`).
     #[inline(always)]
     unsafe fn owner_at(&self, slab: usize) -> (r: u16)
         requires
@@ -2736,6 +2812,7 @@ impl SlabTable {
                 sl.nbits == self.spec_nslabs() * sl.sb,
                 gi.fresh@.id() == sl.mloc,
                 init_marks(slabs.start * sl.sb, self.spec_nslabs() * sl.sb).subset_of(gi.fresh@@),
+                owner_marks(s as int, self.spec_nslabs() as int).subset_of(gi.fresh@@),
                 inited.id() == sl.mloc,
                 old(inited)@.subset_of(inited@),
                 forall|x: int| s <= x < slabs.start && !self.spec_is_guard(x as usize)
@@ -2748,6 +2825,7 @@ impl SlabTable {
                 gi.same_but_fresh(g0),
                 gi.fresh@.id() == sl.mloc,
                 init_marks(end * sl.sb, self.spec_nslabs() * sl.sb).subset_of(gi.fresh@@),
+                owner_marks(s as int, self.spec_nslabs() as int).subset_of(gi.fresh@@),
                 inited.id() == sl.mloc,
                 old(inited)@.subset_of(inited@),
                 forall|x: int| s <= x < end && !self.spec_is_guard(x as usize)
@@ -2776,6 +2854,9 @@ impl SlabTable {
                             crate::bitmap::lemma_marks_sub(f, f + sl.sb, f, self.spec_nslabs() * sl.sb);
                             crate::bitmap::lemma_marks_split(f, f + sl.sb, self.spec_nslabs() * sl.sb);
                             let tracked gm = gi.fresh.borrow_mut().split(init_marks(f, f + sl.sb));
+                            assert forall|m: int| #[trigger] owner_marks(s as int, self.spec_nslabs() as int).contains(m) implies gi.fresh@@.contains(m) by {
+                                lemma_owner_marks_apart(s as int, self.spec_nslabs() as int, f, f + sl.sb, m);
+                            }
                             let before = inited@;
                             inited.combine(gm.persist());
                             assert forall|x: int| s <= x < slabs.start && !self.spec_is_guard(x as usize)
@@ -2817,6 +2898,11 @@ impl SlabTable {
                             self.lemma_guard_slab(slab as int);
                         }
                         let tracked fs = gi.fresh.borrow_mut().split(init_marks(f, f + sl.sb));
+                        proof {
+                            assert forall|m: int| #[trigger] owner_marks(s as int, self.spec_nslabs() as int).contains(m) implies gi.fresh@@.contains(m) by {
+                                lemma_owner_marks_apart(s as int, self.spec_nslabs() as int, f, f + sl.sb, m);
+                            }
+                        }
                         let Tracked(m) = self.bits_unchecked(slab).init(cls.nslots(), Ghost(slab as int), Tracked(fs));
                         proof {
                             let before = inited@;
@@ -2844,9 +2930,19 @@ impl SlabTable {
                 }
             }
         }
-        store_owner(owner_word, arena, Ghost(*self), Ghost(s >> self.lg_group));
+        // The group's owner-store markers go to the store, which uses them
+        // up: each slab's owner is stored once.
+        proof {
+            broadcast use vstd::set_lib::range_set_properties;
+            assert(owner_marks(s as int, end as int).subset_of(gi.fresh@@));
+        }
+        let tracked om = gi.fresh.borrow_mut().split(owner_marks(s as int, end as int));
+        store_owner(owner_word, arena, Ghost(*self), Ghost(s >> self.lg_group), Tracked(om));
         gi.next_slab = end;
         proof {
+            assert(owner_marks(end as int, self.spec_nslabs() as int).subset_of(gi.fresh@@)) by {
+                broadcast use vstd::set_lib::range_set_properties;
+            }
             let gr = gi.group@;
             vstd::arithmetic::div_mod::lemma_mod_adds(s as int, gr as int, gr as int);
             vstd::arithmetic::div_mod::lemma_mod_self_0(gr as int);
@@ -2978,7 +3074,7 @@ impl SlabTable {
     /// # Safety
     /// The group must have been handed out, or be about to be under the
     /// commit lock (its owner page is committed: the premise of
-    /// `sets::axiom_table_bytes`).
+    /// `Unbacked::into_lazy`).
     #[inline]
     pub(super) unsafe fn owner_word(&self, group: usize) -> (r: &AtomicU16)
         requires

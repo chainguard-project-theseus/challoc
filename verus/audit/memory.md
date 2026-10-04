@@ -21,6 +21,12 @@ Totals: 80 sound, 10 fixed, 1 weakened, 1 removed, 1 unsound-open.
 Two derivations of `false` were machine-checked (`from_raw`,
 `Lock::get_unlocked`); one more is sketched (`axiom_arena_assemble`).
 
+After the audit, the unsound-open S61 was fixed, and the three minting
+seams of "Outside this slice" were made checkable (`Shared::begin`,
+`sets::axiom_table_bytes`, now removed) or left as a premise with the
+reason (`api::axiom_fork_resumed_state`): see `invariants.md`,
+"One-shot premises", which also machine-checks the S61 derivation.
+
 | seam | name | verdict | reason |
 |---|---|---|---|
 | S24 | `Global::get` | sound | No `ensures`; Verus assumes only `T`'s type invariants, which every stored value (`FeatureLine`'s `len < CAP` even zeroed) has. |
@@ -35,7 +41,7 @@ Two derivations of `false` were machine-checked (`from_raw`,
 | S58 | `Arenas::init` | sound | Claims only `ptr` and `is_init`; every field is written. |
 | S59 | `arena_at` | sound | The result is a fresh reference not tied to `p`, so two ghost indices cannot meet. Its `spec_index() == index` is true only for the registry entry `index` (the `# Safety` contract, a protocol invariant nothing checks). |
 | S60 | `from_raw` | fixed | Minted the view's word permissions from nothing: two calls on one pointer prove `false` (machine-checked). Now takes the words' `PointsToRaw` and requires 8-byte alignment. |
-| S61 | `from_raw_chunked` | unsound-open | The same minting as S60, with no permission available at its caller (`Set::in_table` over a shared `&SetTable`): two calls prove `false`. Fix needs a design decision. |
+| S61 | `from_raw_chunked` | unsound-open, fixed after the audit | The same minting as S60, with no permission available at its caller (`Set::in_table` over a shared `&SetTable`): two calls prove `false`. Fixed after the audit: it takes the permission to its rows' words, which `SetTable::new` carves once per slot (`invariants.md`, "One-shot premises"). |
 | S71 | `ClassState::table` | sound | The clauses follow from the type invariant and `table_ptr`; the table's lifetime rests on the safe `ClassState::new`'s doc (proposal: store `&'static SlabTable`, removing S71 and S73). |
 | S73 | `table_ptr` | sound | The pointer is otherwise unconstrained; nothing reads a table's address, so no two tables meet. |
 | S78 | `SetTable::set_table_ptr` | sound | No `ensures`. |
@@ -239,6 +245,15 @@ for the coordinator; until then `in_table`'s `requires` could at least
 document the once-per-slot duty. `from_raw_chunked` also lacks
 `from_raw`'s alignment requirement; its fix should add it.
 
+Fixed after the audit, along those lines: `SetTable::new` reserves
+each group with `reserve_raw` and splits the permission into every
+class's three slots, keyed `(class, kind)`, which `Arena::init` hands
+to `ClassState::new` and that to `Set::in_table`; `from_raw_chunked`
+takes the slot's bytes (`chunked_bytes`) and requires 8-byte
+alignment. The two-calls derivation above, run against the old
+contract, verifies `false`; against the new one it fails at the second
+call (`invariants.md`, "One-shot premises").
+
 ### S57 `axiom_arena_assemble`: padding (fixed)
 
 The axiom returned a permission to all `size_of::<Arena>()` bytes but
@@ -334,7 +349,7 @@ ensures that bound) but did not say so; it now ensures it, and
   value for a `Relaxed` load; the proofs assume SC (`vspec/word.rs`,
   `verus/WEAKMEM.md`).
 
-### Outside this slice (reported, not changed)
+### Outside this slice (reported here, changed after the audit)
 
 The S60 pattern, a trusted function or axiom that mints ownership with
 no `requires` making it once-only, recurs in three seams of other
@@ -350,6 +365,12 @@ categories, each provable to `false` by a second call:
 - `api::axiom_fork_resumed_state` (S31, C-program contract): a
   `LockHeld` from nothing; two calls give two tokens for the state lock,
   so two `get_unlocked` references (the S178 derivation).
+
+After the audit, `Shared::begin` takes a one-shot token minted once per
+process and `axiom_table_bytes` is gone (`Meta::reserve_table` returns
+the table's permission); `axiom_fork_resumed_state` stays a premise,
+because ghost state does not cross the fork handlers' C calls
+(`invariants.md`, "One-shot premises").
 
 ### Kani record
 

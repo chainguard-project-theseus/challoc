@@ -2434,7 +2434,9 @@ impl Meta {
     ///
     /// Aborts for a layout this allocator does not serve (`size >
     /// MAX_BINNED` or `align > MAX_ALIGN`): that is a bug, not a resource
-    /// failure.
+    /// failure. The allocator's own callers take the permission too
+    /// ([`alloc_raw`](Meta::alloc_raw)); the tests use this.
+    #[cfg_attr(not(test), allow(dead_code))]
     #[inline(always)]
     pub fn alloc(&self, layout: Layout, Tracked(ord): Tracked<&mut LockOrder>) -> (p: *mut u8)
         requires
@@ -2662,15 +2664,23 @@ impl Meta {
     /// [`commit`](Meta::commit) on the pages it uses before touching them.
     /// The table's range rounded up to whole words ([`words_up`]) is the
     /// allocator's too: each table is whole pages.
-    pub fn reserve_table(&self, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
+    ///
+    /// With the permission to those `words_up(len)` bytes, which this
+    /// allocator hands out once: an eager table's from `Inner::handed`,
+    /// where `Inner::reserve_eager` left it, and a reservation's from the
+    /// `Unbacked` token `Inner::reserve` carved for it
+    /// ([`Unbacked::into_lazy`], whose premise is the commit before use).
+    pub fn reserve_table(&self, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Option<usize>, Tracked<PointsToRaw>))
         requires
             crate::sys::may_syscall(),
             is_pow2(align),
             old(ord).allows(rank_meta()),
         ensures
-            r matches Some(s) ==> 0 < s && s % align == 0 && s + len <= va_limit(),
-            r matches Some(s) ==> self.holds(s as int, len as int),
-            r matches Some(s) ==> self.holds(s as int, words_up(len as int)),
+            r.0 matches Some(s) ==> 0 < s && s % align == 0 && s + len <= va_limit(),
+            r.0 matches Some(s) ==> self.holds(s as int, len as int),
+            r.0 matches Some(s) ==> self.holds(s as int, words_up(len as int)),
+            r.0 matches Some(s) ==> r.1@.is_range(s as int, words_up(len as int)),
+            r.0 matches Some(s) ==> r.1@.provenance() == cast_provenance(),
             *final(ord) == *old(ord),
     {
         broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
@@ -2683,17 +2693,21 @@ impl Meta {
         if g.eager_ok(len) {
             let ghost g1 = g@;
             if let Some(p) = g.reserve_eager(len, align, Tracked(&mut claim)) {
+                let _gi: &mut Inner = &mut g;
+                let tracked mut raw = take_raw(_gi.handed.borrow_mut());
                 proof {
                     let (page, l) = (g1.page, if len == 0 { 1usize } else { len });
                     lemma_align_bits(l, page, (l + (page - 1)) as usize);
                     lemma_words_up_fit(page, align_up_spec(l, page) as int, len as int);
+                    raw = keep_prefix(raw, p as int, p + words_up(len as int), p + align_up_spec(l, page));
                 }
-                return Some(p);
+                return (Some(p), Tracked(raw));
             }
         }
         let ghost g2 = g@;
         let tracked mut given = Unbacked::empty(0);
         let r = g.reserve(len, align, Tracked(&mut claim), Tracked(&mut given));
+        let tracked mut raw = PointsToRaw::empty(cast_provenance());
         proof {
             if let Some(s) = r {
                 assert(g2.wf());
@@ -2702,9 +2716,10 @@ impl Meta {
                 vstd::arithmetic::div_mod::lemma_small_mod(0, g2.page as nat);
                 lemma_sub_mod_noop(g2.top as int, s as int, g2.page as int);
                 lemma_words_up_fit(g2.page, g2.top - s, len as int);
+                raw = keep_prefix(given.into_lazy(), s as int, s + words_up(len as int), g2.top as int);
             }
         }
-        r
+        (r, Tracked(raw))
     }
 
     /// The ghost identity of the live-object records ([`Inner::live_id`];
@@ -2953,6 +2968,17 @@ impl Meta {
     #[cfg(test)]
     pub fn new(base: usize, len: usize, page: usize) -> Meta {
         Meta::owning(base, len, page, Tracked::assume_new())
+    }
+
+    /// Tests: [`Meta::reserve_table`] without the permission.
+    #[cfg(test)]
+    pub fn reserve_table_addr(
+        &self,
+        len: usize,
+        align: usize,
+        ord: Tracked<&mut LockOrder>,
+    ) -> Option<usize> {
+        self.reserve_table(len, align, ord).0
     }
 
     /// Tests: force tables onto the object side (`true`) or the
@@ -3316,7 +3342,7 @@ mod tests {
             None
         );
         assert_eq!(
-            m.reserve_table(page_size(), page_size(), Tracked::assume_new()),
+            m.reserve_table_addr(page_size(), page_size(), Tracked::assume_new()),
             None
         );
         // Object side writable exactly up to the reservation boundary;
@@ -3335,7 +3361,7 @@ mod tests {
         let m = b.meta();
         let end = b.base + b.len;
         let big = m
-            .reserve_table(EAGER_MAX + page_size(), page_size(), Tracked::assume_new())
+            .reserve_table_addr(EAGER_MAX + page_size(), page_size(), Tracked::assume_new())
             .unwrap();
         assert_eq!(
             big,
@@ -3352,7 +3378,7 @@ mod tests {
         assert_eq!((s.committed, s.writable), (page_size(), page_size()));
         m.set_eager_for_test(false);
         let small = m
-            .reserve_table(page_size(), page_size(), Tracked::assume_new())
+            .reserve_table_addr(page_size(), page_size(), Tracked::assume_new())
             .unwrap();
         assert_eq!(small, big - page_size(), "eager off: from the top too");
         assert_eq!(m.stats(Tracked::assume_new()).eager, 0);
@@ -3363,7 +3389,7 @@ mod tests {
         assert_eq!(m.stats(Tracked::assume_new()).committed, 4 * page_size());
         m.set_eager_for_test(true);
         let e = m
-            .reserve_table(page_size(), page_size(), Tracked::assume_new())
+            .reserve_table_addr(page_size(), page_size(), Tracked::assume_new())
             .unwrap();
         assert_eq!(e, b.base, "eager on again: from the base");
         assert_eq!(m.stats(Tracked::assume_new()).eager, page_size());
@@ -3381,7 +3407,7 @@ mod tests {
         let o1 = m.alloc(layout(200, 8), Tracked::assume_new());
         assert_eq!(o1 as usize, b.base);
         let t1 = m
-            .reserve_table(3 * page_size(), page_size(), Tracked::assume_new())
+            .reserve_table_addr(3 * page_size(), page_size(), Tracked::assume_new())
             .unwrap();
         assert_eq!(
             t1,
@@ -3389,7 +3415,7 @@ mod tests {
             "page aligned, right after the objects' page"
         );
         let t2 = m
-            .reserve_table(10, 8 * page_size(), Tracked::assume_new())
+            .reserve_table_addr(10, 8 * page_size(), Tracked::assume_new())
             .unwrap();
         assert_eq!(t2 % (8 * page_size()), 0);
         assert!(t2 >= t1 + 3 * page_size());
@@ -3400,7 +3426,7 @@ mod tests {
             "objects resume right after the table"
         );
         let t3 = m
-            .reserve_table(EAGER_MAX, page_size(), Tracked::assume_new())
+            .reserve_table_addr(EAGER_MAX, page_size(), Tracked::assume_new())
             .unwrap();
         assert!(t3 >= o2 as usize + 1024);
         let before = m.stats(Tracked::assume_new());
@@ -3449,7 +3475,7 @@ mod tests {
         // stops at the reservations (under 4 KiB pages; a 64 KiB-page
         // chunk is one page, so the frontier stops at the table's end).
         let t1 = m
-            .reserve_table(10 * page_size(), page_size(), Tracked::assume_new())
+            .reserve_table_addr(10 * page_size(), page_size(), Tracked::assume_new())
             .unwrap();
         assert_eq!(t1, b.base);
         assert_eq!(
@@ -3459,7 +3485,7 @@ mod tests {
         // 3 more do not: not eagerly (past `top`), not as a reservation
         // (the frontier is at `top`).
         assert_eq!(
-            m.reserve_table(3 * page_size(), page_size(), Tracked::assume_new()),
+            m.reserve_table_addr(3 * page_size(), page_size(), Tracked::assume_new()),
             None
         );
         assert_eq!(
@@ -3470,11 +3496,11 @@ mod tests {
         // 2 do, eagerly; then nothing, while an object in the free list
         // still does.
         let t2 = m
-            .reserve_table(2 * page_size(), page_size(), Tracked::assume_new())
+            .reserve_table_addr(2 * page_size(), page_size(), Tracked::assume_new())
             .unwrap();
         assert_eq!(t2, b.base + 10 * page_size());
         assert_eq!(
-            m.reserve_table(page_size(), page_size(), Tracked::assume_new()),
+            m.reserve_table_addr(page_size(), page_size(), Tracked::assume_new()),
             None
         );
         let l = layout(16, 8);
@@ -3751,7 +3777,7 @@ mod tests {
             "page aligned, after the ten 1 KiB objects"
         );
         let big = m
-            .reserve_table(EAGER_MAX + page_size(), page_size(), Tracked::assume_new())
+            .reserve_table_addr(EAGER_MAX + page_size(), page_size(), Tracked::assume_new())
             .unwrap();
         m.commit(big + page_size(), page_size(), Tracked::assume_new())
             .unwrap();
@@ -3833,7 +3859,7 @@ mod tests {
             );
             let len = (1 + i % 7) * page_size() + (i % 3) * 100;
             let t = m
-                .reserve_table(
+                .reserve_table_addr(
                     len,
                     if i % 4 == 0 {
                         16 * page_size()

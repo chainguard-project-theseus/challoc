@@ -94,6 +94,36 @@ impl Unbacked {
     {
         unimplemented!()
     }
+
+    /// The permission to the bytes of a lazily committed table, still
+    /// uncommitted. Trusted, with a premise nothing checks: Verus does not
+    /// model page protection. The bytes stay `PROT_NONE` until
+    /// `Lazy::ensure` commits their page, and the holder of the
+    /// permission reads only pages it has committed. `SlabTable` keeps
+    /// that by its watermark: a slab's descriptor, bitmap words and owner
+    /// word are committed before the watermark passes the slab, and every
+    /// read is of a slab below a value the watermark held (the `# Safety`
+    /// contracts of `desc_unchecked`, `bits_unchecked`,
+    /// `is_set_unchecked`, `owner_word` and `owner_at`); a slab set
+    /// commits the words a slab's bit needs before the bit is used
+    /// (`Set::ensure`, the `from_raw` and `from_raw_chunked` safety
+    /// contracts). The token is used up, so the bytes get one permission
+    /// (the derivation of `false` from two calls of the axiom this
+    /// replaced, `sets::axiom_table_bytes`, is in
+    /// `verus/audit/invariants.md`): [`Meta::reserve_table`](crate::meta::Meta::reserve_table),
+    /// its one caller, passes the token `Inner::reserve` just carved for
+    /// the table. Not at address 0 (`Meta::reserve_table` ensures it):
+    /// a permission there proves `false` (`PointsTo::is_nonnull`).
+    #[verifier::external_body]
+    pub proof fn into_lazy(tracked self) -> (tracked r: PointsToRaw)
+        requires
+            self.addr() > 0,
+        ensures
+            r.is_range(self.addr(), self.len()),
+            r.provenance() == cast_provenance(),
+    {
+        unimplemented!()
+    }
 }
 
 } // verus!

@@ -102,6 +102,7 @@ impl Env {
             &self.regions,
             guard_mode(),
             Tracked::assume_new(),
+            Tracked::assume_new(),
         )
         .expect("huge allocator")
     }
@@ -862,7 +863,13 @@ fn table_grows_and_lookups_survive_backward_shift() {
 fn metadata_exhaustion_is_reported_not_fatal() {
     // 64 KiB of metadata: the bitmap and table fit, descriptors run out.
     let env = Env::with_meta_len(192 * 1024);
-    let Some(h) = Huge::new(&env.meta, &env.regions, guard_mode(), Tracked::assume_new()) else {
+    let Some(h) = Huge::new(
+        &env.meta,
+        &env.regions,
+        guard_mode(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    ) else {
         return;
     };
     let mut held = Vec::new();
@@ -888,6 +895,7 @@ fn metadata_exhaustion_is_reported_not_fatal() {
             &tiny.meta,
             &tiny.regions,
             guard_mode(),
+            Tracked::assume_new(),
             Tracked::assume_new()
         )
         .is_none()

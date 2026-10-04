@@ -29,6 +29,7 @@ pub(crate) mod lock;
 pub(crate) mod meta;
 mod misc;
 mod misc_extra;
+pub(crate) mod once;
 mod policy;
 #[cfg(not(loom))]
 pub(crate) mod print;

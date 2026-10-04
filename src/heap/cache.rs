@@ -884,13 +884,13 @@ impl Heap {
         if self.hdr_ref(cache).cap != 0 {
             return cache;
         }
-        let slots = shared.meta.alloc(CacheHeader::slots_layout(cap), Tracked(ord));
+        let (slots, Tracked(raw)) = shared.meta.alloc_raw(CacheHeader::slots_layout(cap), Tracked(ord));
         if slots.is_null() {
             return ptr::null_mut();
         }
         let ghost h0 = *self;
         proof {
-            axiom_fresh_stack(self.perms.borrow_mut(), cache, slots as *mut *mut u8, cap);
+            axiom_fresh_stack(self.perms.borrow_mut(), cache, slots as *mut *mut u8, cap, raw);
         }
         // `cache` is this heap's own header (still `EMPTY`) and `slots`
         // has room for `cap` pointers, exclusively ours.

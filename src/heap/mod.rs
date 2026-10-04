@@ -1648,25 +1648,38 @@ broadcast proof fn lemma_handed_ok(h: Heap, p: *mut u8, c: int)
 /// The `cap` entries of the fresh stack `slots` join `perms`, unwritten,
 /// as entries `0..cap` of header `hdr` (`CachePerms::owner`).
 ///
-/// Trusted: `Meta::alloc` hands out no permissions. The block is a fresh
-/// metadata object of `8 * cap` bytes ([`CacheHeader::slots_layout`]) that
-/// this heap alone holds: an entry `perms` already owns there is a stale
-/// one of a stack this heap freed, and it keeps its address and value;
-/// none is an entry of a stack an owned header still has (`hdr`, whose
-/// capacity is 0, has none), so those keep their owners. The `cap`
-/// entries lie inside the block, so `slots.add(i)` is in bounds for each,
-/// and they are `cap` distinct words.
+/// Trusted: the entries are carved from `raw`, the permission to the
+/// block's `8 * cap` bytes ([`CacheHeader::slots_layout`]) that
+/// `Meta::alloc_raw` handed out with it, which the axiom uses up. So the
+/// block is one this heap alone holds: an entry `perms` already owns
+/// there would be a second permission to its bytes (it keeps its address
+/// and value), and none is an entry of a stack an owned header still has
+/// (`hdr`, whose capacity is 0, has none), so those keep their owners.
+/// The `cap` entries lie inside the block, so `slots.add(i)` is in
+/// bounds for each, and they are `cap` distinct words.
 ///
-/// The axiom is the freshness claim itself: called with a stack an owned
-/// header still has, its two owner clauses would contradict each other.
-/// Its one call site ([`Heap::ensure_cache`]) passes the block
-/// `Meta::alloc` has just returned, for a header whose capacity is 0.
+/// What is trusted is the carving into `CachePerms`' shape, not the
+/// freshness: a call with a stack an owned header still has (whose two
+/// owner clauses would contradict each other) or a second call for one
+/// block needs a second permission to it, which `Meta` does not hand out
+/// (`verus/audit/invariants.md`, `axiom_fresh_stack`). Its one call site
+/// ([`Heap::ensure_cache`]) passes the block and permission
+/// `Meta::alloc_raw` has just returned, for a header whose capacity is 0.
 #[verifier::external_body]
-proof fn axiom_fresh_stack(tracked perms: &mut CachePerms, hdr: *mut CacheHeader, slots: *mut *mut u8, cap: u32)
+#[allow(unused_variables)]
+proof fn axiom_fresh_stack(
+    tracked perms: &mut CachePerms,
+    hdr: *mut CacheHeader,
+    slots: *mut *mut u8,
+    cap: u32,
+    tracked raw: vstd::raw_ptr::PointsToRaw,
+)
     requires
         slots@.addr != 0,
         old(perms).hdrs.contains_key(hdr),
         old(perms).hdr(hdr).cap == 0,
+        raw.is_range(slots@.addr as int, 8 * cap),
+        raw.provenance() == slots@.provenance,
     ensures
         final(perms).hdrs == old(perms).hdrs,
         final(perms).cls == old(perms).cls,

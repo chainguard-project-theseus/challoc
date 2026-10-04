@@ -63,6 +63,9 @@ use crate::sys::{self, Errno};
 use crate::vspec::huge::{axiom_huge_lock_frame, axiom_huge_lock_inv};
 #[cfg(verus_only)]
 use crate::vspec::lock::lock_init;
+use crate::vspec::once::Once;
+#[cfg(verus_only)]
+use crate::vspec::once::Step;
 #[cfg(verus_only)]
 use crate::vspec::slice::array_iter_rest;
 use crate::vspec::zero::Zeroed;
@@ -646,8 +649,15 @@ pub uninterp spec fn page_loc() -> vstd::resource::Loc;
 /// Trusted: [`Huge::new`] runs once per process, for the process's
 /// `Shared` (`Shared::init`), so the run authorities it makes are the
 /// process's ([`run_loc`], [`page_loc`]), as `class::table::axiom_slot_loc`
-/// for the slot authorities. One call, in `Huge::new`.
-axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc)
+/// for the slot authorities. Two calls with two pairs of authorities
+/// would prove `false` (their tokens are apart), so a call uses up
+/// `once`, the process's one token of this step (`vspec::once`), handed
+/// to `Huge::new`.
+// `once` is read only by the requires (ghost).
+#[allow(unused_variables)]
+axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc, tracked once: Once)
+    requires
+        once.step() == Step::Huge,
     ensures
         run_loc() == r,
         page_loc() == p,
@@ -3053,7 +3063,13 @@ impl Huge {
     /// bitmap and descriptor table in `meta`. `guard_install` should be the
     /// probed `MADV_GUARD_INSTALL` support. `None` if the metadata region
     /// cannot hold the tables.
-    pub fn new(meta: &Meta, regions: &Regions, guard_install: bool, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<Huge>)
+    pub fn new(
+        meta: &Meta,
+        regions: &Regions,
+        guard_install: bool,
+        Tracked(once): Tracked<Once>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: Option<Huge>)
         requires
             crate::sys::may_syscall(),
             regions.wf(),
@@ -3062,6 +3078,7 @@ impl Huge {
             (1usize << regions.lg_page) >= crate::meta::MIN_ALIGN,
             meta.is_process(),
             old(ord).allows(rank_meta()),
+            once.step() == Step::Huge,
         ensures
             r matches Some(h) ==> h.spec_npages() == (regions.huge_len >> regions.lg_page) as int
                 && h.spec_page() == (1usize << regions.lg_page) as int
@@ -3091,7 +3108,7 @@ impl Huge {
         let tracked (runs, _) = GhostSetAuth::<(int, int)>::new(vstd::set::Set::empty());
         let tracked (pgs, _) = GhostSetAuth::<int>::new(vstd::set::Set::empty());
         proof {
-            axiom_run_locs(runs.id(), pgs.id());
+            axiom_run_locs(runs.id(), pgs.id(), once);
             lemma_active(descs);
             assert(active_runs(descs) =~= vstd::set::Set::empty());
             assert(active_pages(descs) =~= vstd::set::Set::empty());

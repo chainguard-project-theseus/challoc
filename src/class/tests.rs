@@ -119,7 +119,15 @@ impl Env {
     fn class(&self, c: usize, guard_interval: u32) -> &'static ClassState {
         let table = self.table(c, guard_interval);
         let cs = std::boxed::Box::leak(std::boxed::Box::new(
-            ClassState::new(&self.meta, &self.regions, table, 0, self.sets()).expect("class state"),
+            ClassState::new(
+                &self.meta,
+                &self.regions,
+                table,
+                0,
+                self.sets(),
+                Tracked::assume_new(),
+            )
+            .expect("class state"),
         ));
         cs
     }
@@ -131,6 +139,7 @@ impl Env {
                 &self.meta,
                 &self.regions,
                 Ghost::assume_new(),
+                Tracked::assume_new(),
                 Tracked::assume_new(),
             )
             .expect("set table"),
@@ -145,6 +154,8 @@ impl Env {
                 c,
                 guard_interval,
                 Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
             )
             .expect("slab table"),
         ))
@@ -155,8 +166,15 @@ impl Env {
     fn class_in_arena(&self, cs: &ClassState, arena: u16) -> &'static ClassState {
         let table = cs.table();
         let new = std::boxed::Box::leak(std::boxed::Box::new(
-            ClassState::new(&self.meta, &self.regions, table, arena, self.sets())
-                .expect("class state"),
+            ClassState::new(
+                &self.meta,
+                &self.regions,
+                table,
+                arena,
+                self.sets(),
+                Tracked::assume_new(),
+            )
+            .expect("class state"),
         ));
         new
     }
@@ -1162,7 +1180,18 @@ fn metadata_exhaustion_is_reported_not_fatal() {
         (0x2000_0000_0000, 2 * page_size()),
         page_size().trailing_zeros(),
     );
-    assert!(SlabTable::new(&meta, &regions, 0, 0, Tracked::assume_new()).is_none());
+    assert!(
+        SlabTable::new(
+            &meta,
+            &regions,
+            0,
+            0,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new()
+        )
+        .is_none()
+    );
 }
 
 /// Two arenas over one class region: slabs are handed out in address
@@ -1191,7 +1220,15 @@ fn set_table_of_many_classes_touches_one_page_per_slab_size() {
     let states: Vec<ClassState> = classes
         .iter()
         .map(|&c| {
-            ClassState::new(&env.meta, &env.regions, env.table(c, 0), 0, sets).expect("class state")
+            ClassState::new(
+                &env.meta,
+                &env.regions,
+                env.table(c, 0),
+                0,
+                sets,
+                Tracked::assume_new(),
+            )
+            .expect("class state")
         })
         .collect();
     for cs in &states {

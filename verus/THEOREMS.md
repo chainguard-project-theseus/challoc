@@ -66,6 +66,16 @@ add.
   `arena_at` (`arena.rs:515`).
 - `api::shared_storage_ptr` (`api/mod.rs:360`): the static's storage is
   `Shared::storage()`.
+- One-shot tokens (`vspec/once.rs`): `api::claim_init` (`external_body`)
+  is `init_slow`'s compare-exchange from `UNINIT`, and hands its winner
+  one `Once` token per once-per-process step, which `init` passes to
+  `Shared::init`. `Shared::begin`, `table::axiom_slot_loc`,
+  `table::axiom_fresh_words` (one token per class each) and
+  `huge::axiom_run_locs` each use up their step's token, so Verus
+  checks that each runs at most once per process (a second call does
+  not verify: `verus/audit/invariants.md`, "One-shot premises"). What
+  stays assumed is `claim_init`'s: nothing else leaves `UNINIT`, so the
+  exchange succeeds once.
 
 **The `free` contract.** `heap::live::axiom_c_claim`
 (`heap/live.rs:489`) is the one trusted step at the C ABI boundary: for
@@ -511,20 +521,23 @@ the assumed `Heap::wf` and the huge lock axiom.
 - The class table accessors `desc_unchecked`, `bits_unchecked`,
   `is_set_unchecked`, `owner_word` and `owner_at` read through
   permissions carved from the three reservations
-  (`SlabTable::perms_ok`): `sets::axiom_table_bytes`
-  (`class/sets.rs:166`, the table's bytes; an eager table's copy also
-  stays in `meta::Inner::handed`, never handed out),
+  (`SlabTable::perms_ok`): `Meta::reserve_table` hands out the table's
+  bytes once, an eager table's from `meta::Inner::handed` and a
+  reservation's through `Unbacked::into_lazy` (`vspec/unbacked.rs`,
+  which uses up the reservation's token),
   `table::axiom_init_descs`, `_owners`, `_words` (`class/table.rs:974`,
   `:984`, `:996`, the values are initialised), `words_ref` (`:1013`, a
   slice over consecutive word permissions) and `watermark` (`:1580`, at
   most the slab count). Premise: only committed pages are read (the
   accessors' `# Safety`).
-- `TwoLevelBitmap::from_raw`, `from_raw_chunked` (`bitmap.rs:2584`,
-  `:2616`): their `place` ensures.
-- `heap::axiom_fresh_stack` (`heap/mod.rs:1362`): a stack `Meta::alloc`
-  just returned is fresh; `Heap::lemma_caches_in_meta`
-  (`heap/mod.rs:2553`) needs `cell_in_meta`, which `ensure_cache`
-  (`heap/cache.rs:758`) proves for each stack.
+- `TwoLevelBitmap::from_raw`, `from_raw_chunked` (`bitmap.rs`): their
+  `place` ensures, over the words' permission each takes (a table's
+  bytes, or a `SetTable` slot's, which `SetTable::new` carves once per
+  slot from its groups' reservations).
+- `heap::axiom_fresh_stack` (`heap/mod.rs`): a stack `Meta::alloc_raw`
+  just returned is fresh (it uses up the block's permission);
+  `Heap::lemma_caches_in_meta` (`heap/mod.rs`) needs `cell_in_meta`,
+  which `ensure_cache` (`heap/cache.rs`) proves for each stack.
 - Huge lock axioms (`vspec/huge.rs:44`, `:52`) for `huge::Inner`.
 - The `Shared` static: `Reserved::is_apart_from_static`
   (`layout/regions.rs`, trusted, the kernel's `mmap` contract): each of
@@ -660,13 +673,18 @@ block; the free cores take the token C holds (common premises, "The
 - `heap::live::axiom_c_claim` (`heap/live.rs:489`): the `free`
   contract at the C ABI boundary, one call per C call. See "The `free`
   contract" under Common premises.
-- `table::axiom_slot_loc` (`class/table.rs:644`, one call `:446`):
-  `SlabTable::new` runs once per class per process.
-- `huge::axiom_run_locs` (`huge/mod.rs:636`, one call in `Huge::new`):
-  `Huge::new` runs once per process, so its run authorities are the
-  process's.
-- `table::axiom_fresh_words` (`class/table.rs:655`, one call `:478`):
-  a just-reserved table's words read zero, one permission each.
+- `table::axiom_slot_loc` (`class/table.rs`, one call in
+  `SlabTable::new`): the table `SlabTable::new` builds for a class is
+  the class's (its slot and marker authorities and guard geometry);
+  once per class per process is checked (it uses up the class's
+  `Once` token, common premises).
+- `huge::axiom_run_locs` (`huge/mod.rs`, one call in `Huge::new`): its
+  run authorities are the process's; once per process is checked (it
+  uses up the `Huge` step's token).
+- `table::axiom_fresh_words` (`class/table.rs`, one call in
+  `SlabTable::new`): a just-reserved table's words read zero, one
+  permission each; once per class is checked (its token), that `base`
+  is the class bitmap's first word is not.
 - `vspec::word::word_addr` (`vspec/word.rs:38`) is a word's identity;
   `fetch_or`, `store`, `fetch_and` (`:59`, `:76`, `:92`) are single
   atomic steps whose result is the permission's value (ordering
@@ -1928,11 +1946,17 @@ an owned slab, and ensures its pick's owner; `plan` collects
 - `slab_owner` is keyed by class, which rests on one table per class per
   process: the premise of `table::axiom_slot_loc` (theorem 5), not a new
   kind.
-- The "written once" and "handed out before read" conditions of the two
-  wrappers are not checked by Verus: `store_owner` is private with one
-  call site, past `take_group`'s fallible steps; `owner_at` requires
-  only `slab < nslabs`, and its callers (`owner`, `check_located`,
-  `owner_unchecked`) test the watermark first.
+- "Written once" is checked, up to the lock premise: `store_owner`
+  uses up the owner-store markers (`table::owner_mark`) of its group's
+  slabs, which the class's table minted once each (`table::mark_loc`,
+  fixed by `axiom_slot_loc`) and its commit lock holds from the
+  watermark on (`TableInner::inv`), so a second store of a slab's owner
+  does not verify, given that every holder of the commit lock restores
+  its invariant before releasing it (`axiom_table_lock_inv`; not
+  checked at the release, `LockGuard::drop`). "Handed out before read"
+  is not checked by Verus: `owner_at` requires only `slab < nslabs`,
+  and its callers (`owner`, `check_located`, `owner_unchecked`) test
+  the watermark first.
 - Sequential consistency for the owner words, as for every atomic.
   `check_located` reaches the owner load after a `Relaxed` watermark
   load (`check_live`), the one owner path without `Acquire`.

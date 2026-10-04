@@ -95,6 +95,7 @@ use table::{
     words_of,
 };
 use vstd::prelude::*;
+use vstd::raw_ptr::PointsToRaw;
 use vstd::resource::set::GhostPersistentSubset;
 use vstd::resource::set::GhostSingleton;
 use vstd::resource::set::GhostSubset;
@@ -120,6 +121,8 @@ use abort::{
 };
 #[cfg(test)]
 pub use sets::SET_GROUPS;
+#[cfg(verus_only)]
+pub(crate) use sets::SETS_PER_CLASS;
 pub(crate) use sets::Set;
 pub use sets::SetTable;
 pub use table::SlabTable;
@@ -2627,13 +2630,25 @@ impl ClassState {
     /// pos[class]` of the class's set group, `Set::in_table`), all empty,
     /// and nothing owned or committed. `table` and `sets` must outlive the
     /// state. `meta` and `regions` are unused: the sets live in `sets`, the
-    /// descriptors in `table`.
-    pub(crate) fn new(meta: &Meta, regions: &Regions, table: &SlabTable, arena: u16, sets: &SetTable) -> (r: Option<ClassState>)
+    /// descriptors in `table`. The three sets take their slots'
+    /// permissions out of `slots` (`SetTable::new` handed them out).
+    pub(crate) fn new(
+        meta: &Meta,
+        regions: &Regions,
+        table: &SlabTable,
+        arena: u16,
+        sets: &SetTable,
+        Tracked(slots): Tracked<&mut Map<(int, int), PointsToRaw>>,
+    ) -> (r: Option<ClassState>)
         requires
             sets.over(process_regions()),
+            forall|k: int| 0 <= k < SETS_PER_CLASS ==> #[trigger] sets.holds_set(*old(slots), table.spec_class() as int, k),
         ensures
             r matches Some(s) ==> s.spec_class() == table.spec_class() && s.spec_table() == *table
                 && s.spec_arena() == arena,
+            *final(slots) == old(slots).remove((table.spec_class() as int, 0)).remove((table.spec_class() as int, 1)).remove(
+                (table.spec_class() as int, 2),
+            ),
     {
         broadcast use axiom_class_lock_inv;
         proof {
@@ -2643,11 +2658,18 @@ impl ClassState {
         let class = table.class as usize;
         proof {
             assert(sets.class_ok(process_regions(), class as int));
+            assert(class == table.spec_class());
+            assert(sets.holds_set(*slots, class as int, 0));
+            assert(sets.holds_set(*slots, class as int, 1));
+            assert(sets.holds_set(*slots, class as int, 2));
         }
         debug_assert!(table.nslabs == sets.nslabs[SetTable::group_of(class)]);
-        let partial = Set::in_table(sets, class, 0);
-        let empty = Set::in_table(sets, class, 1);
-        let purged = Set::in_table(sets, class, 2);
+        let tracked w0 = slots.tracked_remove((class as int, 0));
+        let tracked w1 = slots.tracked_remove((class as int, 1));
+        let tracked w2 = slots.tracked_remove((class as int, 2));
+        let partial = Set::in_table(sets, class, 0, Tracked(w0));
+        let empty = Set::in_table(sets, class, 1, Tracked(w1));
+        let purged = Set::in_table(sets, class, 2, Tracked(w2));
         let tracked im = table.empty_marks();
         let inner = Inner {
             partial,

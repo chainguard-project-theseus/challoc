@@ -31,6 +31,9 @@ use crate::stats::Snapshot;
 use crate::stats::axiom_snapshot_lock_inv;
 use crate::sys::cgroup::Cgroup;
 #[cfg(verus_only)]
+use crate::vspec::once;
+use crate::vspec::once::{Once, Step};
+#[cfg(verus_only)]
 use crate::vspec::ptr::{axiom_ptr_add_addr, axiom_raw_valid, in_alloc, ptr_add};
 use crate::vspec::unbacked::Unbacked;
 use crate::vspec::zero::Zeroed;
@@ -50,7 +53,7 @@ use vstd::layout::size_of;
 use vstd::prelude::verus;
 #[cfg(verus_only)]
 use vstd::prelude::*;
-use vstd::prelude::{Ghost, Tracked, int};
+use vstd::prelude::{Ghost, Map, Tracked, int};
 use vstd::raw_ptr::{PointsTo, ptr_mut_write, ptr_ref};
 use vstd::resource::set::{GhostSingleton, GhostSubset};
 
@@ -778,12 +781,15 @@ axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Sh
 ;
 
 impl Shared {
-    /// The permission to `init`'s storage, uninitialised. Trusted:
-    /// `init`'s caller hands over writable storage for a `Shared` that
-    /// nothing else uses (its safety contract), and builds each storage
-    /// once (`api::init` the static's; the unit tests, unverified callers
-    /// outside this contract, a fresh leaked box each time): two
-    /// permissions for one storage could write a field twice.
+    /// The permission to `init`'s storage, uninitialised, for `once`, the
+    /// process's token of this step. Trusted: `init`'s caller hands over
+    /// writable storage for a `Shared` that nothing else uses (its safety
+    /// contract). The token is used up, so the permission is handed out
+    /// once (`api::init_slow`'s winning exchange holds the one token,
+    /// `api::claim_init`; the unit tests, unverified callers outside this
+    /// contract, build a fresh leaked box each time): two permissions for
+    /// one storage proved `false` (`PointsTo::is_disjoint`), and could
+    /// freeze two values of a field (`axiom_shared_regions`).
     /// The storage is a Rust object, so it does not wrap the address
     /// space. Required to be the process's storage ([`shared_storage`],
     /// as `init` requires): without it a call at a null or misaligned
@@ -791,9 +797,10 @@ impl Shared {
     #[allow(unused_variables)]
     #[verifier::external_body]
     #[inline(always)]
-    fn begin(this: *mut Shared) -> (r: Tracked<PointsTo<Shared>>)
+    fn begin(this: *mut Shared, Tracked(once): Tracked<Once>) -> (r: Tracked<PointsTo<Shared>>)
         requires
             this == shared_storage(),
+            once.step() == Step::Shared,
         ensures
             r@.ptr() == this,
             r@.is_uninit(),
@@ -1241,6 +1248,7 @@ impl Shared {
         config: Config,
         guard_install: bool,
         pac: bool,
+        Tracked(steps): Tracked<Map<Step, Once>>,
     ) -> (r: bool)
         requires
             crate::sys::may_abort(),
@@ -1253,6 +1261,7 @@ impl Shared {
             space@.len() == regions.meta_len,
             config.wf(),
             pac ==> crate::sys::pac::pac_available(),
+            once::all_steps(steps),
         ensures
             r ==> shared_at(this).wf(),
     {
@@ -1269,7 +1278,10 @@ impl Shared {
         };
         let guard_install = guard_install && config.guards;
         let decay_ns = crate::purge::decay_ns_from_ms(config.dirty_decay_ms);
-        let Tracked(perm) = Shared::begin(this);
+        let ghost steps0 = steps;
+        let tracked mut steps = steps;
+        let tracked shared_once = once::take(&mut steps, Step::Shared);
+        let Tracked(perm) = Shared::begin(this, Tracked(shared_once));
         let tracked (mut parts, mut guard_tests, mut table_perms, mut regions_perm) = Shared::split(perm);
         proof {
             assert(shared_ok(this));
@@ -1331,6 +1343,12 @@ impl Shared {
                         z == 0 || z == 4,
                 ;
             }
+            proof {
+                // Every step but `Shared`'s still has its token.
+                assert forall|s: Step| s != Step::Shared implies #[trigger] once::holds(steps, s) by {
+                    assert(once::holds(steps0, s));
+                }
+            }
             for c in 0..NCLASSES
                 invariant
                     crate::sys::may_abort(),
@@ -1340,12 +1358,19 @@ impl Shared {
                     forall|d: int| 0 <= d < c ==> (#[trigger] table_perms[d]).value().spec_class() == d,
                     forall|d: int| 0 <= d < c ==> (#[trigger] table_perms[d]).value().meta_ok(),
                     ord.allows(rank_meta()),
+                    forall|d: int| c <= d < NCLASSES ==> #[trigger] once::holds(steps, Step::SlotLoc(d)),
+                    forall|d: int| c <= d < NCLASSES ==> #[trigger] once::holds(steps, Step::FreshWords(d)),
+                    once::holds(steps, Step::Huge),
             {
+                let tracked slot_once = once::take(&mut steps, Step::SlotLoc(c as int));
+                let tracked words_once = once::take(&mut steps, Step::FreshWords(c as int));
                 match SlabTable::new(
                     meta,
                     regions,
                     c,
                     guard_interval_for(c, regions.page_size(), guard_interval),
+                    Tracked(slot_once),
+                    Tracked(words_once),
                     Tracked(&mut ord),
                 ) {
                     Some(t) => {
@@ -1412,7 +1437,8 @@ impl Shared {
             if !Arena::init(arena0, meta, regions, tables, 0, decay_ns, Tracked(&mut parts.arena0), Tracked(&mut ord)) {
                 return false;
             }
-            match Huge::new(meta, regions, guard_install, Tracked(&mut ord)) {
+            let tracked huge_once = once::take(&mut steps, Step::Huge);
+            match Huge::new(meta, regions, guard_install, Tracked(huge_once), Tracked(&mut ord)) {
                 Some(h) => {
                     h.set_retain_max(config.huge_retain_max);
                     // `huge_dirty_decay_ms:0`: a freed run is purged at
@@ -2313,6 +2339,11 @@ impl Shared {
                     page < np,
                     pg > 0,
             ;
+            assert(page * vstd::arithmetic::power2::pow2(lg as nat) <= usize::MAX) by {
+                assert(pg == vstd::arithmetic::power2::pow2(lg as nat));
+                assert(np as int == len as int / pg);
+                assert(np * pg == pg * np) by (nonlinear_arith);
+            }
             vstd::bits::lemma_usize_shl_is_mul(page, lg);
             assert(page << lg32 == page << lg) by (bit_vector)
                 requires
@@ -2684,7 +2715,7 @@ mod kani_layout {
         assert!(size_of::<Shared>() <= isize::MAX as usize);
     }
 
-    /// S47 `arena::axiom_array_layout` at the two arrays of `Shared`.
+    /// S48 `arena::axiom_array_layout` at the two arrays of `Shared`.
     #[kani::proof]
     fn shared_array_layout() {
         array_layout::<GuardTest, NCLASSES>();

@@ -1948,6 +1948,19 @@ pub open spec fn chunked_span(l1: int, stride: int) -> int {
     if l1 == 0 { 0 } else { (65 * l1 - 1) * stride + 1 }
 }
 
+/// The first byte of row `r` of a chunked view at `addr` with row stride
+/// `stride` words.
+pub open spec fn row_addr(addr: int, r: int, stride: int) -> int {
+    addr + 8 * (r * stride)
+}
+
+/// The bytes of the words of a chunked view at `addr` with `rows` rows of
+/// stride `stride` words: eight from [`row_addr`] for each row `r`
+/// ([`TwoLevelBitmap::from_raw_chunked`] takes their permission).
+pub open spec fn chunked_bytes(addr: int, rows: int, stride: int) -> Set<int> {
+    Set::range(addr, addr + 8 * (rows * stride)).filter(|a: int| exists|r: int| 0 <= r < rows && #[trigger] row_addr(addr, r, stride) <= a < row_addr(addr, r, stride) + 8)
+}
+
 /// Row of level-0 word `w` in a chunked view.
 pub open spec fn l0_row(w: int) -> int {
     65 * (w / 64) + 1 + w % 64
@@ -2696,11 +2709,24 @@ impl TwoLevelBitmap {
     /// for as long as the set is used, zeroed, and not accessed by anything
     /// else while the set exists. Words between the view's own are
     /// somebody else's.
+    ///
+    /// Trusted, as [`from_raw`](TwoLevelBitmap::from_raw): the view's word
+    /// permissions are `words`, the permission to the bytes of its rows'
+    /// words ([`chunked_bytes`]), as `u64`s that read as zero. The view
+    /// takes `words` (ghost), so no two views hold one word: with nothing
+    /// taken, two calls on one pointer proved `false`
+    /// (`verus/audit/memory.md`, `from_raw_chunked`).
+    // `words` is read only by the requires (ghost).
+    #[allow(unused_variables)]
     #[verifier::external_body]
-    pub const unsafe fn from_raw_chunked(nbits: usize, ptr: *mut u64, stride: usize) -> (r: TwoLevelBitmap)
+    pub const unsafe fn from_raw_chunked(nbits: usize, ptr: *mut u64, stride: usize, Tracked(words): Tracked<PointsToRaw>) -> (r: TwoLevelBitmap)
         requires
             stride >= 1,
             65 * ((((nbits as int) + 63) / 64 + 63) / 64) * (stride as int) * 8 <= isize::MAX,
+            words.dom() == chunked_bytes(ptr@.addr as int, 65 * ((((nbits as int) + 63) / 64 + 63) / 64), stride as int),
+            words.provenance() == ptr@.provenance,
+            // `u64`'s alignment, as `from_raw` requires.
+            ptr@.addr as int % 8 == 0,
         ensures
             r.fresh(nbits),
             r.place() == (ptr@.addr as int, 8 * chunked_span((((nbits as int) + 63) / 64 + 63) / 64, stride as int)),
@@ -4099,7 +4125,9 @@ mod tests {
         let mut views: Vec<TwoLevelBitmap> = sizes
             .iter()
             .enumerate()
-            .map(|(v, &n)| unsafe { TwoLevelBitmap::from_raw_chunked(n, base.add(v), stride) })
+            .map(|(v, &n)| unsafe {
+                TwoLevelBitmap::from_raw_chunked(n, base.add(v), stride, Tracked::assume_new())
+            })
             .collect();
         let mut models: Vec<Vec<bool>> = sizes.iter().map(|&n| vec![false; n]).collect();
         let mut dense: Vec<Owned> = sizes.iter().map(|&n| owned(n)).collect();

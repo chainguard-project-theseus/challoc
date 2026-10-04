@@ -34,6 +34,8 @@
 use crate::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use core::ptr;
 
+#[cfg(verus_only)]
+use crate::class::SETS_PER_CLASS;
 use crate::class::{ClassState, SetTable, SlabTable};
 use crate::heap::Shared;
 #[cfg(verus_only)]
@@ -869,6 +871,7 @@ impl Arena {
             old(slot).perm matches Some(p) && p.ptr() == this && p.is_uninit(),
             this@.addr + size_of::<Arena>() <= usize::MAX,
             regions.wf(),
+            regions.separated(),
             *regions == process_regions(),
             forall|c: int| 0 <= c < NCLASSES ==> #[trigger] tables[c].spec_class() == c,
         ensures
@@ -884,7 +887,10 @@ impl Arena {
             if sets_ptr.is_null() {
                 return false;
             }
-            let sets = match SetTable::new(meta, regions, Ghost(index), Tracked(ord)) {
+            // Ghost: the permissions to the class sets' slots, each taken
+            // once, by its class's `ClassState::new`.
+            let tracked mut slots: Map<(int, int), PointsToRaw> = Map::tracked_empty();
+            let sets = match SetTable::new(meta, regions, Ghost(index), Tracked(&mut slots), Tracked(ord)) {
                 Some(sets) => {
                     let tracked mut perm = perm.tracked_unwrap();
                     ptr_mut_write(sets_ptr, Tracked(&mut perm), sets);
@@ -899,8 +905,10 @@ impl Arena {
                     forall|d: int| 0 <= d < c ==> (#[trigger] classes[d]).value().spec_class() == d,
                     forall|d: int| 0 <= d < c ==> (#[trigger] classes[d]).value().spec_arena() == index,
                     parts.index.is_init() && parts.index.value() == index,
+                    forall|d: int, k: int| c <= d < NCLASSES && 0 <= k < SETS_PER_CLASS ==> #[trigger] sets.holds_set(slots, d, k),
             {
-                match ClassState::new(meta, regions, &tables[c], index, sets) {
+                let ghost slots0 = slots;
+                match ClassState::new(meta, regions, &tables[c], index, sets, Tracked(&mut slots)) {
                     Some(cs) => {
                         let ghost before = classes;
                         proof {
@@ -920,6 +928,9 @@ impl Arena {
                                 }
                             }
                             assert(classes_at(classes, this));
+                            assert forall|d: int, k: int| c + 1 <= d < NCLASSES && 0 <= k < SETS_PER_CLASS implies #[trigger] sets.holds_set(slots, d, k) by {
+                                assert(sets.holds_set(slots0, d, k));
+                            }
                         }
                     },
                     None => return false,
@@ -2021,7 +2032,7 @@ pub(crate) mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S49..S56, S57: each `A_*` is its field's `offset_of!`, and the
+    /// S50..S57, S58: each `A_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_arena_layout` says.
     #[kani::proof]
     fn arena_layout() {
@@ -2066,7 +2077,7 @@ pub(crate) mod kani_layout {
         assert_eq!(align_of::<[T; N]>(), align_of::<T>());
     }
 
-    /// S47 `Arena::axiom_array_layout` at every instantiation the proofs
+    /// S48 `Arena::axiom_array_layout` at every instantiation the proofs
     /// use (`[ClassState; NCLASSES]` here, the two arrays of `Shared` in
     /// `heap/shared.rs`), and at primitive, zero-sized and padded element
     /// types and lengths 0, 1 and 7.

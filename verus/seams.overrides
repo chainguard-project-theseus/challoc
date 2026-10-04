@@ -60,7 +60,7 @@ axiom_fresh_slots_zero	allocator invariant	none (assumption)
 axiom_discarded_slots_zero	allocator invariant	none (assumption)
 axiom_c_claim	C-program contract	none (assumption)
 SetTable::set_table_ptr	raw pointer (internal)	Kani
-axiom_table_bytes	allocator invariant	none (assumption)
+Unbacked::into_lazy	allocator invariant	none (assumption)
 Set::ensure	raw pointer (internal)	none (assumption)
 axiom_slot_loc	allocator invariant	none (assumption)
 axiom_fresh_words	allocator invariant	none (assumption)

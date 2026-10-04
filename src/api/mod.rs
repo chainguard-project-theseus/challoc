@@ -120,6 +120,7 @@ use crate::lock::{RawLock, axiom_entry, rank_arena_stats, rank_class, rank_table
 use crate::purge;
 use crate::sys;
 use crate::sys::features::{FeatureLine, Features};
+use crate::vspec::once;
 #[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Map, Tracked, int, verus};
@@ -398,6 +399,20 @@ pub fn is_ready() -> bool {
 
 verus! {
 
+/// `STATE`'s compare-exchange from `UNINIT` to `INITIALISING`, which
+/// [`init_slow`] runs: the winner gets the process's one-shot tokens
+/// ([`once::all_steps`]). Trusted: nothing stores `UNINIT` (the
+/// static's initial value) or `INITIALISING` elsewhere, so the exchange
+/// succeeds once per process and one caller gets the tokens.
+#[verifier::external_body]
+#[inline(always)]
+fn claim_init() -> (r: (Result<u32, u32>, Tracked<Map<once::Step, once::Once>>))
+    ensures
+        r.0 is Ok ==> once::all_steps(r.1@),
+{
+    (STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire), Tracked::assume_new())
+}
+
 /// The first caller runs `init` and publishes `READY`; a concurrent one
 /// waits for it (termination is not claimed: the wait ends when the other
 /// thread's `init` does); the initialising thread re-entering aborts.
@@ -411,10 +426,11 @@ fn init_slow() -> (r: &'static Shared)
     ensures
         r.wf(),
 {
-    match STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire) {
+    let (won, Tracked(steps)) = claim_init();
+    match won {
         Ok(_) => {
             INIT_TID.store(sys::gettid() as u32, Ordering::Relaxed);
-            init();
+            init(Tracked(steps));
             STATE.store(READY, Ordering::Release);
         }
         Err(READY) => {}
@@ -503,11 +519,13 @@ fn register_fork_handlers()
 /// contract, from `Regions::reserve_owning` and `config::load`), and the
 /// metadata allocator owns the metadata region's address space, which
 /// `reserve_owning` hands over; `init_slow` runs it once, before it
-/// publishes `READY`.
-fn init()
+/// publishes `READY`, with the one-shot tokens its winning exchange got
+/// ([`claim_init`]), which `Shared::init` uses up.
+fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        once::all_steps(steps),
 {
     let features = Features::probe();
     // The slab geometry of the classes whose table slab is below the page
@@ -537,6 +555,7 @@ fn init()
             config,
             features.guard_install,
             features.pac,
+            Tracked(steps),
         );
         if !ok {
             sys::abort("metadata region too small for the allocator tables");

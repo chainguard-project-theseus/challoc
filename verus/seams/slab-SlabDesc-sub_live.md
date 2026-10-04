@@ -1,6 +1,6 @@
 # `SlabDesc::sub_live`
 
-Seam S202 of `verus/SEAMS.md`: src/slab.rs:255. Kind: external_body. Category: atomics primitive.
+Seam S205 of `verus/SEAMS.md`: src/slab.rs:264. Kind: external_body. Category: atomics primitive.
 Evidence from loom (part 3).
 
 ## Contract
