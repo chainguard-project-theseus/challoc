@@ -226,9 +226,11 @@ impl ClassLine {
     /// bits). An offset inside the region leaves `x` the in-slab offset, so
     /// that is the slot-start test; an offset past it leaves `x >= 2^32`,
     /// more than `nslots * size` (a slab is at most `MAX_SLAB`), so `q` is
-    /// at least `nslots` whether or not `x` is a multiple. The guard test
-    /// is [`ClassLine::is_guard`] on the guard word. The whole check
-    /// accepts exactly what the reference form does
+    /// at least `nslots` whether or not `x` is a multiple. Null is such an
+    /// offset (it is below every class region, so `rel` wraps past the
+    /// region), which is why the x86_64 sized free has no null test of its
+    /// own. The guard test is [`ClassLine::is_guard`] on the guard word.
+    /// The whole check accepts exactly what the reference form does
     /// ([`Regions::slot_in_class`] and [`SlabTable::is_guard_slab`];
     /// `sized_slot_agrees_with_the_reference`).
     ///

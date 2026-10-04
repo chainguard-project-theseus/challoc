@@ -813,6 +813,9 @@ fn sized_slot_agrees_with_the_reference() {
                     "class {c} offset {rel:#x}"
                 );
             };
+            // Null: the x86_64 sized free leaves it to this test.
+            assert!(s.sized_slot(ptr::null_mut(), Some(c)).is_none(), "class {c} null");
+            check(0usize.wrapping_sub(base));
             let size = cls.size();
             for rel in (0..4 * size).chain(len - 4 * size..len + 4 * size) {
                 check(rel);
