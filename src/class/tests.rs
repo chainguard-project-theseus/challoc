@@ -1937,7 +1937,7 @@ fn is_rw(addr: usize, len: usize) -> bool {
 #[test]
 fn slabs_are_committed_a_run_at_a_time() {
     use crate::sys::features::Features;
-    let guards = Features::probe().guard_install;
+    let guards = Features::probe(true).guard_install;
     let env = Env::new();
     if env.regions.page_size() > 64 << 10 {
         std::eprintln!("page above 64 KiB; skipping the run layout test");
