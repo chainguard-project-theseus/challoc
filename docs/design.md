@@ -84,8 +84,10 @@ bitmap, the background thread's stack) are reserved downward from the top
 and committed page by page as slab numbers grow. Each committed table
 prefix is its own VMA, so to keep the mapping count (and the cost of
 `fork`) down a table of at most `meta::EAGER_MAX` (8 MiB) is carved from
-the object side instead, writable from the start (`Meta::reserve_table`;
-its owner's commits are then accounting only). The small classes' large
+the object side instead, writable as a whole (`Meta::reserve_table`;
+its owner's first commit makes the object side writable through every
+table carved so far, in one `mprotect`, so the dozens of tables init
+carves cost one call; later commits are accounting only). The small classes' large
 descriptor arrays and bitmaps stay on the table side: writable whole they
 would put gigabytes of untouched address space into core dumps and under
 `RLIMIT_DATA`. Eager carving is off under `vm.overcommit_memory=2` (which
@@ -883,15 +885,18 @@ Ready`; a second thread spins). ld.so may call `malloc` before
 constructors run, so nothing relies on `.init_array`. Init must not call
 anything that allocates. Steps, in the order `api::init` performs them:
 
-1. Probe (`Features::probe`): `AT_PAGESZ`; `MADV_GUARD_INSTALL`, `mseal`
-   and `PR_SET_VMA_ANON_NAME` tried on a scratch page; the THP sysfs table
-   (`sys/thp_host.rs`: `enabled`, `hpage_pmd_size` and every
-   `hugepages-<n>kB/enabled` from two pages to the PMD, `inherit` resolved
-   through the top level; before 6.8 only the PMD size exists); glibc's
-   rseq registration (`rseq::probe`); pointer authentication from
-   `AT_HWCAP` (`sys::pac`). Then adopt the page geometry (section 3).
-2. Parse configuration (`config::load`), before anything is reserved, so
-   `abort_conf` aborts with nothing mapped.
+1. Adopt the page geometry from `AT_PAGESZ` (section 3), then parse
+   configuration (`config::load`), before anything is mapped or
+   reserved, so `abort_conf` aborts with nothing mapped.
+2. Probe (`Features::probe`): `MADV_GUARD_INSTALL`, `mseal` and
+   `PR_SET_VMA_ANON_NAME` tried on a scratch page; the THP sysfs table
+   (`sys/thp_host.rs`: `enabled`, `hpage_pmd_size` and, unless `thp` is
+   `never`, every `hugepages-<n>kB/enabled` from two pages to the PMD,
+   `inherit` resolved through the top level; before 6.8 only the PMD size
+   exists); glibc's rseq registration (`rseq::probe`); pointer
+   authentication from `AT_HWCAP` (`sys::pac`). Under `thp:never` the
+   per-size files are read only when the feature line is first asked for
+   (step 8).
 3. Decide the THP mode (`thp::configure`), configure the purge advice from
    `lazy_band`, set `check_zero`, record a `background_thread` request.
 4. Reserve the three regions (`Regions::reserve`: `getrandom`, size
@@ -902,11 +907,20 @@ anything that allocates. Steps, in the order `api::init` performs them:
    the report says `Sealed ranges: N of M`.
 6. `Shared::init`: the slab tables, arena 0, the huge allocator, the
    registries and the thread-exit key.
-7. Inside `Shared::init`, cgroup discovery (section 11, `Cgroup::discover`,
-   skipped with `cgroup:false`); then `thp::force_never` if the cgroup rule
-   forced `never`.
-8. Format the feature line for `challoc_features()` and register the fork
-   handlers (section 9).
+7. Inside `Shared::init`, cgroup discovery under `thp:always` only
+   (section 11, `Cgroup::discover`, skipped with `cgroup:false`), then
+   `thp::force_never` if the cgroup rule forced `never`; under any other
+   `thp` key discovery is deferred (`sys::cgroup::Deferred`, section 11).
+8. Register the fork handlers (section 9). The feature line for
+   `challoc_features()` and `malloc_stats_print` is formatted at its first
+   request (`api::feature_line_ready`), not here.
+
+Every step is a fixed cost of every exec, so what a short-lived process
+never needs waits for first use: the cgroup files, the per-size THP files,
+and the commit of the small tables carved from the metadata object side
+(section 2, one `mprotect` for all of them). A program that allocates once
+and exits makes about 150 system calls under challoc (its `exec`
+included), against about 275 before these deferrals (#29).
 
 A pointer passed to `free` before init completes, or that does not
 classify, is invalid and aborts with a message. ld.so's minimal startup
@@ -920,7 +934,18 @@ The measurement layer is `src/sys/cgroup.rs`, the policy that acts on it
 `cgroup:false` reads nothing, applies nothing and reports `cgroup: not
 tracked (cgroup:false)`).
 
-Discovery, once at init (section 10 step 7):
+Discovery, once (section 10 step 7). Under `thp:always` it runs at init,
+which needs the limit for the 1 GiB rule below; otherwise it is deferred
+(`sys::cgroup::Deferred`) to the first periodic tick at least `DEFER_NS`
+(20 ms) after init, to the first read of the figures (`stats.cgroup.*`,
+`malloc_stats_print`) or to the first `fork` (the prepare handler, so
+the children of a forking server inherit the record rather than each
+reading the files again), whichever comes first, so a process that lives
+less than that never reads the files (about 90 us of system time per
+exec). Until then the record is untracked (`not tracked (not read yet)`):
+no limit known, the policy at its defaults, the eager purge advice. The
+`memory.events` `high` count found at discovery is the policy's baseline,
+as it is at init.
 
 - The cgroup path is the `0::` line of `/proc/self/cgroup` (`/` inside a
   cgroup namespace); the cgroup2 mount is the first `cgroup2` line of

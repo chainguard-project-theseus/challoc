@@ -311,6 +311,12 @@ impl Policy {
         }
     }
 
+    /// A cgroup discovered after init: `high_rises` (its count at
+    /// discovery) is the baseline, as [`Policy::new`]'s is at init.
+    pub fn rebase_high_rises(&self, high_rises: u64) {
+        self.high_rises_seen.store(high_rises, Ordering::Relaxed);
+    }
+
     /// The band as last evaluated (`Unlimited` when no limit was seen).
     pub fn band(&self) -> Band {
         if self.immediate.load(Ordering::Relaxed) {
@@ -453,7 +459,9 @@ pub fn empty_bytes(shared: &Shared) -> u64 {
 /// publishes the outcome on `shared.policy`, waking a background thread
 /// when the band changed or a full purge is owed.
 pub fn evaluate(shared: &Shared) {
-    let cg = &shared.cgroup;
+    let Some(cg) = shared.cgroup() else {
+        return;
+    };
     let p = &shared.policy;
     let limit = cg.limit().min(cg.high());
     let b = cgroup_band(cg);

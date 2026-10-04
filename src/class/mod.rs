@@ -343,9 +343,13 @@ struct Inner {
     purged: Set,
     stats: ClassStats,
     /// This arena's current slab group: `group_next..group_end` are handed
-    /// to it and not yet committed (see [`ClassState::next_fresh_slab`]).
+    /// to it and not yet entered (see [`ClassState::next_fresh_slab`]).
     group_next: usize,
     group_end: usize,
+    /// The group's slabs below this were committed with the group
+    /// (`SlabTable::commit_group`); from here on each is committed as the
+    /// arena reaches it.
+    group_committed: usize,
 }
 
 // SAFETY: `TwoLevelBitmap` holds a raw pointer into the metadata region,
@@ -542,6 +546,7 @@ impl ClassState {
                 stats: ClassStats::default(),
                 group_next: 0,
                 group_end: 0,
+                group_committed: 0,
             })),
             claimed: AtomicU64::new(0),
             refilled: AtomicU64::new(0),

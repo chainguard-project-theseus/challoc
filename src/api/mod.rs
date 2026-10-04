@@ -82,7 +82,7 @@ mod c_programs;
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use crate::config;
 use crate::heap::Shared;
@@ -139,8 +139,14 @@ impl<T> Global<T> {
 
 static SHARED: Global<Shared> = Global::new();
 static FEATURES: Global<Features> = Global::new();
-/// The feature line for `challoc_features()` and `malloc_stats_print`.
+/// The feature line for `challoc_features()` and `malloc_stats_print`,
+/// built at its first request ([`feature_line_ready`]), not at init.
 static FEATURE_LINE: Global<FeatureLine> = Global::new();
+/// [`FEATURE_LINE`]'s state: `LINE_UNBUILT`, `LINE_BUILDING`, `LINE_READY`.
+static LINE_STATE: AtomicU8 = AtomicU8::new(LINE_UNBUILT);
+const LINE_UNBUILT: u8 = 0;
+const LINE_BUILDING: u8 = 1;
+const LINE_READY: u8 = 2;
 /// Signal mask of the forking thread, saved by `fork_prepare` and restored by
 /// `fork_release`. One slot suffices because it is only written and read
 /// while the writer holds every allocator lock: a second thread in
@@ -204,19 +210,59 @@ pub fn shared_base() -> *const Shared {
     p
 }
 
-/// The probed kernel features. Initialises the allocator if needed.
+/// The probed kernel features, the THP size table complete. Initialises
+/// the allocator if needed.
 #[cfg(test)]
 pub fn features() -> &'static Features {
-    let _ = shared();
-    // SAFETY: `shared()` returned, so `READY` has been observed.
+    feature_line_ready();
+    // SAFETY: `feature_line_ready` returned, so `READY` and `LINE_READY`
+    // have been observed.
     unsafe { FEATURES.get() }
 }
 
-/// The feature line (`Features`'s `Display`, built at init). Initialises
-/// the allocator if needed.
-pub fn feature_line() -> &'static str {
+/// Build the feature line on its first request (once, whichever thread
+/// asks first; the others wait): init skips the per-size THP files under
+/// `thp:never`, which nothing but the line's `mthp` key reads, so they
+/// are read here instead, and a process that never asks for the line
+/// never reads them (#29). Initialises the allocator if needed. Does not
+/// allocate.
+fn feature_line_ready() {
     let _ = shared();
-    // SAFETY: `shared()` returned, so `READY` has been observed.
+    if LINE_STATE.load(Ordering::Acquire) == LINE_READY {
+        return;
+    }
+    if LINE_STATE
+        .compare_exchange(
+            LINE_UNBUILT,
+            LINE_BUILDING,
+            Ordering::Acquire,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        // SAFETY: `READY` observed; this thread won the exchange, so it is
+        // the only writer, and readers wait for `LINE_READY`.
+        unsafe {
+            let f = (*FEATURES.0.get()).assume_init_mut();
+            if !f.thp_sizes {
+                f.thp = crate::sys::thp_host::probe(f.page_size);
+                f.thp_sizes = true;
+            }
+            (*FEATURE_LINE.0.get()).write(FeatureLine::build(f));
+        }
+        LINE_STATE.store(LINE_READY, Ordering::Release);
+        return;
+    }
+    while LINE_STATE.load(Ordering::Acquire) != LINE_READY {
+        core::hint::spin_loop();
+    }
+}
+
+/// The feature line (`Features`'s `Display`, built at its first request).
+/// Initialises the allocator if needed.
+pub fn feature_line() -> &'static str {
+    feature_line_ready();
+    // SAFETY: `LINE_READY` observed.
     unsafe { FEATURE_LINE.get() }.as_str()
 }
 
@@ -228,8 +274,8 @@ pub fn feature_line() -> &'static str {
 /// `malloc_stats_print`. Initialises the allocator if needed.
 #[unsafe(no_mangle)]
 pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
-    let _ = shared();
-    // SAFETY: `shared()` returned, so `READY` has been observed.
+    feature_line_ready();
+    // SAFETY: `LINE_READY` observed.
     unsafe { FEATURE_LINE.get() }.as_ptr()
 }
 
@@ -281,13 +327,15 @@ pub fn sealed_ranges() -> u32 {
 /// regions are reserved so that nothing it may abort on has been mapped
 /// yet; it reads only the weak symbols, one file and `environ`.
 fn init() {
-    let features = Features::probe();
     // The slab geometry of the classes whose table slab is below the page
     // (design 3, page-sized slabs): written once here, before any other
     // thread can see the allocator, never again.
     // SAFETY: `init` runs once, under `INITIALISING`, before `READY`.
-    unsafe { layout::adopt_page_geometry(features.page_size.trailing_zeros()) };
+    unsafe { layout::adopt_page_geometry(crate::sys::features::page_size().trailing_zeros()) };
     let config = config::load();
+    // The per-size THP files only matter to `thp:auto` and `thp:always`;
+    // under `never` they wait for the feature line (`feature_line_ready`).
+    let features = Features::probe(config.thp != config::Thp::Never);
     crate::thp::configure(config.thp, &features);
     purge::configure_advice(config.lazy_band);
     purge::set_check_zero(config.check_zero);
@@ -318,7 +366,6 @@ fn init() {
         if (*SHARED.0.get()).assume_init_ref().policy.thp_forced() {
             crate::thp::force_never();
         }
-        (*FEATURE_LINE.0.get()).write(FeatureLine::build(&features));
         (*FEATURES.0.get()).write(features);
     }
     // SAFETY: the three handlers are plain `extern "C"` functions that only
@@ -346,6 +393,11 @@ fn init() {
 /// `fork_handlers_take_and_release_every_lock` derives the list of locks
 /// from the source tree, so a new `Lock` fails it until it is added here.
 extern "C" fn fork_prepare() {
+    // A deferred cgroup discovery (design 11) runs now, before the locks:
+    // a process that forks (a PostgreSQL postmaster, a server's workers)
+    // reads the files once and its children inherit the record, where
+    // each child would otherwise read them again on its own first tick.
+    let _ = shared().cgroup_now();
     let mask = sys::block_all_signals();
     let s = shared();
     s.tcaches.raw_lock().lock();
@@ -421,6 +473,7 @@ extern "C" fn fork_parent() {
 /// locked, the background thread is marked absent (design 8.1).
 extern "C" fn fork_child() {
     purge::background::fork_child();
+    shared().cgroup_fork_child();
     fork_release();
 }
 

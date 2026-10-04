@@ -756,6 +756,39 @@ impl SlabTable {
         Some(true)
     }
 
+    /// Commit the slabs of the group `start..end`, just handed to the
+    /// caller's arena by [`take_group`], in one `mprotect`: every slab up
+    /// to the group's first guard slab (all of them when it has none), so
+    /// the arena takes them into use with no system call per slab.
+    /// Returns the first slab not committed here: the guard slab and the
+    /// rest of the group go through [`commit_slab`] as the arena reaches
+    /// them, so a guard is installed exactly when it was before. The
+    /// group belongs to the caller's arena and is never a PMD chunk here,
+    /// so no other commit overlaps it and the commit lock is not needed.
+    /// Returns `start` when this class commits slab by slab (`thp:always`
+    /// PMD chunks, which [`commit_slab`] commits and advises chunk by
+    /// chunk, or a page larger than the slab) or the commit fails
+    /// ([`commit_slab`] then retries).
+    ///
+    /// [`take_group`]: SlabTable::take_group
+    /// [`commit_slab`]: SlabTable::commit_slab
+    pub(super) fn commit_group(&self, start: usize, end: usize) -> usize {
+        let cls = self.class();
+        if self.slabs_per_page != 1
+            || crate::thp::class_mode(cls.slab_size()) == crate::thp::Mode::Chunks
+        {
+            return start;
+        }
+        let stop = (start..end).find(|&s| self.is_guard_slab(s)).unwrap_or(end);
+        if stop == start {
+            return start;
+        }
+        if commit(self.slab_addr(start), (stop - start) << cls.lg_slab).is_err() {
+            return start;
+        }
+        stop
+    }
+
     /// Make the `len` bytes at `addr` (a slab, or the page group it
     /// starts) read-write. Under `thp:always` with the PMD size enabled
     /// (`Mode::Chunks`; design 7, 17; `thp.rs`) the PMD-sized chunk

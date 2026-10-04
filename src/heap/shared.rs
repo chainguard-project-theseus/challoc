@@ -99,11 +99,13 @@ pub struct Shared {
     pub tcaches: Tcaches,
     /// Process-wide statistics as of the last `epoch` (`stats.rs`).
     pub stats: Lock<crate::stats::Snapshot>,
-    /// The memory cgroup as last sampled (design 11; `sys::cgroup`). Cold:
-    /// written by init and by the rate-limited sampler on slow paths, read
-    /// by `stats.cgroup.*` and the reports. Last, well away from the lines
-    /// the fast paths read.
-    pub cgroup: crate::sys::cgroup::Cgroup,
+    /// The memory cgroup as last sampled (design 11; `sys::cgroup`),
+    /// discovered after init unless init needs it (`Deferred`): read it
+    /// through [`Shared::cgroup`] or [`Shared::cgroup_now`]. Cold: written
+    /// by discovery and by the rate-limited sampler on slow paths, read by
+    /// `stats.cgroup.*` and the reports. Last, well away from the lines the
+    /// fast paths read.
+    cgroup: crate::sys::cgroup::Deferred,
 }
 
 /// Everything the `free` fast path reads for one class, in one 64-byte
@@ -585,34 +587,42 @@ impl Shared {
             ptr::write(&raw mut (*this).gc_interval_ns, GC_INTERVAL_NS);
             Arenas::init(&raw mut (*this).arenas, arena0, config.narenas);
             Tcaches::init(&raw mut (*this).tcaches);
+            // Design 11: discovery waits for the first tick `DEFER_NS` into
+            // the process's life (or the first read of the figures), so a
+            // short-lived process never reads the files; `thp:always` needs
+            // the limit now, and `cgroup:false` reads nothing either way.
+            use crate::sys::cgroup::{Cgroup, Deferred};
             ptr::write(
                 &raw mut (*this).cgroup,
-                crate::sys::cgroup::Cgroup::discover(config.cgroup),
+                if config.cgroup && config.thp == crate::config::Thp::Always {
+                    Deferred::now(Cgroup::discover(true))
+                } else if config.cgroup {
+                    Deferred::later(crate::sys::now_coarse_ns())
+                } else {
+                    Deferred::now(Cgroup::discover(false))
+                },
             );
             // Design 11: under an effective limit below 1 GiB a configured
             // `thp:always` is forced to `never` in the stored configuration
             // (`auto` is left alone; the report says so); the policy's
-            // `high` baseline is the count at init.
-            let cgroup = &*(&raw const (*this).cgroup);
-            let thp_forced =
-                crate::thp::forced_by_limit(config.thp, cgroup.limit().min(cgroup.high()));
+            // `high` baseline is the count at init. A deferred discovery
+            // leaves no limit, no rises and the `Unlimited` band for now.
+            let cgroup = (*(&raw const (*this).cgroup)).get();
+            let limit = cgroup.map_or(crate::sys::cgroup::UNLIMITED, |c| c.limit().min(c.high()));
+            let rises = cgroup.map_or(0, |c| c.rises().0);
+            let band = cgroup.map_or(crate::policy::Band::Unlimited, crate::policy::cgroup_band);
+            let thp_forced = crate::thp::forced_by_limit(config.thp, limit);
             if thp_forced {
                 config.thp = crate::config::Thp::Never;
             }
             ptr::write(
                 &raw mut (*this).policy,
-                crate::policy::Policy::new(cgroup.rises().0, thp_forced),
+                crate::policy::Policy::new(rises, thp_forced),
             );
             // Applied once on the discovery sample, so the band and the cap
             // are published before the first 10 ms window closes (nothing
             // is `Empty` yet: retention 0).
-            let limit = cgroup.limit().min(cgroup.high());
-            (*this).policy.apply(
-                crate::policy::cgroup_band(cgroup),
-                limit,
-                0,
-                cgroup.rises().0,
-            );
+            (*this).policy.apply(band, limit, 0, rises);
             ptr::write(&raw mut (*this).config, config);
             ptr::write(&raw mut (*this).key, ThreadKey::create());
             ptr::write(
@@ -621,6 +631,52 @@ impl Shared {
             );
         }
         true
+    }
+
+    /// The memory cgroup record, `None` until discovery has run
+    /// (`sys::cgroup::Deferred`). For the samplers and the policy.
+    #[inline]
+    pub fn cgroup(&self) -> Option<&crate::sys::cgroup::Cgroup> {
+        self.cgroup.get()
+    }
+
+    /// The memory cgroup record, discovering it first if that has not
+    /// happened: what a reader of the figures (`stats.cgroup.*`, the
+    /// report, `fork`) uses.
+    pub fn cgroup_now(&self) -> &crate::sys::cgroup::Cgroup {
+        if self.cgroup.discover(true) {
+            self.cgroup_discovered();
+        }
+        self.cgroup
+            .get()
+            .unwrap_or_else(|| crate::sys::abort("cgroup: discovery did not publish"))
+    }
+
+    /// Discover the cgroup if the deferral has run out at `now` (the
+    /// periodic tick, the background thread): `true` when this call did,
+    /// and the policy has been evaluated on the first figures.
+    pub fn discover_cgroup_if_due(&self, now: u64) -> bool {
+        if self.cgroup.due(now) && self.cgroup.discover(false) {
+            self.cgroup_discovered();
+            return true;
+        }
+        false
+    }
+
+    /// The policy after a late discovery: the `memory.events` `high`
+    /// count found is the baseline (as at init: a container that already
+    /// had `high` events does not start with a full purge), then the band
+    /// from the first sample.
+    fn cgroup_discovered(&self) {
+        if let Some(cg) = self.cgroup.get() {
+            self.policy.rebase_high_rises(cg.rises().0);
+        }
+        crate::policy::evaluate(self);
+    }
+
+    /// The child of a `fork`: see `sys::cgroup::Deferred::fork_child`.
+    pub fn cgroup_fork_child(&self) {
+        self.cgroup.fork_child();
     }
 
     /// The per-class slab tables (shared by every arena).
