@@ -2305,7 +2305,7 @@ fn cgroup_policy_drives_gc_interval_and_decay_period() {
     // At init the outcome is the discovery sample's: no limit on the
     // host and under Docker's default profile, a band under
     // `--memory=512m`.
-    let at_init = cgroup_band(&s.cgroup);
+    let at_init = cgroup_band(s.cgroup_now());
     assert_eq!(s.policy.band(), at_init);
     assert_eq!(
         s.gc_interval(),

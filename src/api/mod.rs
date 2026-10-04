@@ -82,7 +82,7 @@ mod c_programs;
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use crate::config;
 use crate::heap::Shared;
@@ -139,8 +139,14 @@ impl<T> Global<T> {
 
 static SHARED: Global<Shared> = Global::new();
 static FEATURES: Global<Features> = Global::new();
-/// The feature line for `challoc_features()` and `malloc_stats_print`.
+/// The feature line for `challoc_features()` and `malloc_stats_print`,
+/// built at its first request ([`feature_line_ready`]), not at init.
 static FEATURE_LINE: Global<FeatureLine> = Global::new();
+/// [`FEATURE_LINE`]'s state: `LINE_UNBUILT`, `LINE_BUILDING`, `LINE_READY`.
+static LINE_STATE: AtomicU8 = AtomicU8::new(LINE_UNBUILT);
+const LINE_UNBUILT: u8 = 0;
+const LINE_BUILDING: u8 = 1;
+const LINE_READY: u8 = 2;
 /// Signal mask of the forking thread, saved by `fork_prepare` and restored by
 /// `fork_release`. One slot suffices because it is only written and read
 /// while the writer holds every allocator lock: a second thread in
@@ -204,19 +210,60 @@ pub fn shared_base() -> *const Shared {
     p
 }
 
-/// The probed kernel features. Initialises the allocator if needed.
+/// The probed kernel features, the THP size table complete. Initialises
+/// the allocator if needed.
 #[cfg(test)]
 pub fn features() -> &'static Features {
-    let _ = shared();
-    // SAFETY: `shared()` returned, so `READY` has been observed.
+    feature_line_ready();
+    // SAFETY: `feature_line_ready` returned, so `READY` and `LINE_READY`
+    // have been observed.
     unsafe { FEATURES.get() }
 }
 
-/// The feature line (`Features`'s `Display`, built at init). Initialises
-/// the allocator if needed.
-pub fn feature_line() -> &'static str {
+/// Build the feature line on its first request (once, whichever thread
+/// asks first; the others wait): init skips the per-size THP files under
+/// `thp:never`, which nothing but the line's `mthp` key reads, so they
+/// are read here instead, and a process that never asks for the line
+/// never reads them (#29). Initialises the allocator if needed. Does not
+/// allocate. Like `malloc`, not async-signal-safe: a signal handler that
+/// asks for the line while its own thread is building it waits forever.
+fn feature_line_ready() {
     let _ = shared();
-    // SAFETY: `shared()` returned, so `READY` has been observed.
+    if LINE_STATE.load(Ordering::Acquire) == LINE_READY {
+        return;
+    }
+    if LINE_STATE
+        .compare_exchange(
+            LINE_UNBUILT,
+            LINE_BUILDING,
+            Ordering::Acquire,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        // SAFETY: `READY` observed; this thread won the exchange, so it is
+        // the only writer, and readers wait for `LINE_READY`.
+        unsafe {
+            let f = (*FEATURES.0.get()).assume_init_mut();
+            if !f.thp_sizes {
+                f.thp = crate::sys::thp_host::probe(f.page_size);
+                f.thp_sizes = true;
+            }
+            (*FEATURE_LINE.0.get()).write(FeatureLine::build(f));
+        }
+        LINE_STATE.store(LINE_READY, Ordering::Release);
+        return;
+    }
+    while LINE_STATE.load(Ordering::Acquire) != LINE_READY {
+        core::hint::spin_loop();
+    }
+}
+
+/// The feature line (`Features`'s `Display`, built at its first request).
+/// Initialises the allocator if needed.
+pub fn feature_line() -> &'static str {
+    feature_line_ready();
+    // SAFETY: `LINE_READY` observed.
     unsafe { FEATURE_LINE.get() }.as_str()
 }
 
@@ -228,8 +275,8 @@ pub fn feature_line() -> &'static str {
 /// `malloc_stats_print`. Initialises the allocator if needed.
 #[unsafe(no_mangle)]
 pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
-    let _ = shared();
-    // SAFETY: `shared()` returned, so `READY` has been observed.
+    feature_line_ready();
+    // SAFETY: `LINE_READY` observed.
     unsafe { FEATURE_LINE.get() }.as_ptr()
 }
 
@@ -281,13 +328,15 @@ pub fn sealed_ranges() -> u32 {
 /// regions are reserved so that nothing it may abort on has been mapped
 /// yet; it reads only the weak symbols, one file and `environ`.
 fn init() {
-    let features = Features::probe();
     // The slab geometry of the classes whose table slab is below the page
     // (design 3, page-sized slabs): written once here, before any other
     // thread can see the allocator, never again.
     // SAFETY: `init` runs once, under `INITIALISING`, before `READY`.
-    unsafe { layout::adopt_page_geometry(features.page_size.trailing_zeros()) };
+    unsafe { layout::adopt_page_geometry(crate::sys::features::page_size().trailing_zeros()) };
     let config = config::load();
+    // The per-size THP files only matter to `thp:auto` and `thp:always`;
+    // under `never` they wait for the feature line (`feature_line_ready`).
+    let features = Features::probe(config.thp != config::Thp::Never);
     crate::thp::configure(config.thp, &features);
     purge::configure_advice(config.lazy_band);
     purge::set_check_zero(config.check_zero);
@@ -318,7 +367,6 @@ fn init() {
         if (*SHARED.0.get()).assume_init_ref().policy.thp_forced() {
             crate::thp::force_never();
         }
-        (*FEATURE_LINE.0.get()).write(FeatureLine::build(&features));
         (*FEATURES.0.get()).write(features);
     }
     // SAFETY: the three handlers are plain `extern "C"` functions that only
@@ -346,6 +394,15 @@ fn init() {
 /// `fork_handlers_take_and_release_every_lock` derives the list of locks
 /// from the source tree, so a new `Lock` fails it until it is added here.
 extern "C" fn fork_prepare() {
+    // A deferred cgroup discovery (design 11) runs now, before the locks:
+    // a process that forks (a PostgreSQL postmaster, a server's workers)
+    // reads the files once and its children inherit the record, where
+    // each child would otherwise read them again on its own first tick.
+    // It does not wait for a discovery another thread has under way (nor
+    // for one this thread's own interrupted code is running, when `fork`
+    // is called from a signal handler): the child then starts that one
+    // over (`fork_child`), and the parent's finishes as usual.
+    shared().discover_cgroup_for_fork();
     let mask = sys::block_all_signals();
     let s = shared();
     s.tcaches.raw_lock().lock();
@@ -421,7 +478,24 @@ extern "C" fn fork_parent() {
 /// locked, the background thread is marked absent (design 8.1).
 extern "C" fn fork_child() {
     purge::background::fork_child();
+    shared().cgroup_fork_child();
+    feature_line_fork_child();
     fork_release();
+}
+
+/// The child of a `fork` has only the forking thread: a feature line
+/// another thread was building is not coming, so the child's first
+/// request builds it again rather than waiting forever. (If the forking
+/// thread itself was building it, from a signal handler that forked, it
+/// finishes when the handler returns; a second build in between writes
+/// the same bytes.)
+fn feature_line_fork_child() {
+    let _ = LINE_STATE.compare_exchange(
+        LINE_BUILDING,
+        LINE_UNBUILT,
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
 }
 
 #[cfg(test)]
@@ -447,14 +521,19 @@ mod tests {
         assert_eq!(f.page_size, shared().regions.page_size());
     }
 
-    /// `challoc_features()` is the `Display` of the probe, NUL-terminated,
-    /// static, and the same bytes on every call.
+    /// `challoc_features()` is the `Display` of a full probe,
+    /// NUL-terminated, static, and the same bytes on every call: under
+    /// `thp:never` (the default, so the tests' configuration), where init
+    /// skips the per-size THP files, the line built at the first request
+    /// still lists every enabled mTHP size, as a fresh full probe does.
     #[test]
     fn challoc_features_is_the_probe_line() {
         let p = challoc_features();
         assert!(!p.is_null());
         assert_eq!(p, challoc_features());
         let s = unsafe { core::ffi::CStr::from_ptr(p) }.to_str().unwrap();
+        let full = crate::sys::features::Features::probe(true);
+        assert_eq!(s, std::format!("{full}"), "the line is the full probe's");
         assert_eq!(s, std::format!("{}", features()));
         assert_eq!(s, feature_line());
         assert!(s.starts_with("page_size="), "{s}");
@@ -466,6 +545,66 @@ mod tests {
                 .unwrap_or_else(|| panic!("`{kv}` in {s}"));
             assert!(!k.is_empty() && !v.is_empty(), "`{kv}` in {s}");
         }
+    }
+
+    /// A `fork` discovers a deferred cgroup in its prepare handler, so the
+    /// child inherits the record (it reads no files of its own) and the
+    /// parent has it too.
+    #[test]
+    fn a_forked_child_inherits_the_discovered_cgroup() {
+        // Init registers the fork handlers.
+        let _ = shared();
+        let pid = unsafe { ::libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let code = if shared().cgroup().is_some() { 0 } else { 1 };
+            unsafe { ::libc::_exit(code) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { ::libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(::libc::WIFEXITED(status), "child status {status:#x}");
+        assert_eq!(::libc::WEXITSTATUS(status), 0, "the child has no record");
+        assert!(shared().cgroup().is_some(), "nor the parent");
+    }
+
+    /// A feature line another thread was building when the process forked
+    /// is built again by the child, not waited for: the child (one thread
+    /// here, so the state can be set without racing other tests) marks the
+    /// line as being built, forks, and its own child must get the line
+    /// within the alarm.
+    #[test]
+    fn a_forked_child_does_not_wait_for_a_line_being_built() {
+        let expect = feature_line().len();
+        let pid = unsafe { ::libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            LINE_STATE.store(LINE_BUILDING, Ordering::Release);
+            let gc = unsafe { ::libc::fork() };
+            if gc == 0 {
+                unsafe { ::libc::alarm(10) };
+                let p = challoc_features();
+                let n = unsafe { core::ffi::CStr::from_ptr(p) }.to_bytes().len();
+                unsafe { ::libc::_exit(if n == expect { 0 } else { 2 }) };
+            }
+            let mut status = 0;
+            let code = if gc > 0
+                && unsafe { ::libc::waitpid(gc, &mut status, 0) } == gc
+                && ::libc::WIFEXITED(status)
+            {
+                ::libc::WEXITSTATUS(status)
+            } else {
+                3
+            };
+            unsafe { ::libc::_exit(code) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { ::libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(::libc::WIFEXITED(status), "child status {status:#x}");
+        assert_eq!(
+            ::libc::WEXITSTATUS(status),
+            0,
+            "the grandchild spun on the line (3: killed by the alarm) or got another one (2)"
+        );
     }
 
     /// Every `Lock<..>` (or bare `RawLock`) field and static in `src/`, as

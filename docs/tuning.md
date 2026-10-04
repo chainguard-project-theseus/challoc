@@ -116,7 +116,7 @@ One row per key, in `TABLE` order. "Values" is the grammar
 | `slot_randomize` | `true`, `false` | `false` | Cache refills claim from a random bitmap word and shuffle the batch, so slot order is not predictable from previous allocations. Slow paths only. | A hardening requirement. | Works against the compacting cache (design 6.4): more RSS on churn-heavy workloads. |
 | `double_free_scan` | `true`, `false` | `false` | Every free compares the slot against the four most recently cached entries and aborts on a match, catching the one double-free window the default leaves (a second free while the slot is still cached, popped before a flush). | Debugging a suspected double free. | About 3..4% on `larson1`, up to 14% on the Valkey model on x86_64. |
 | `abort_conf` | `true`, `false` | `false` | Abort after parsing if any source reported a problem (section 1). | Package tests and any deployment that must not run on a misspelled key. | None at run time. |
-| `cgroup` | `true`, `false` | `true` | Read the memory cgroup at init and sample it: effective limits, `memory.current`, `memory.events`; apply the policy of section 4. `false` reads nothing, applies nothing, reports `cgroup: not tracked (cgroup:false)`. | `false` only as the control in a measurement. | With `cgroup:false` a container that frees 400 MiB of 512 MiB keeps most of it resident for the whole decay window; with the default it is back to about 13 MiB within 50 ms. |
+| `cgroup` | `true`, `false` | `true` | Read the memory cgroup (20 ms after init, section 4) and sample it: effective limits, `memory.current`, `memory.events`; apply the policy of section 4. `false` reads nothing, applies nothing, reports `cgroup: not tracked (cgroup:false)`. | `false` only as the control in a measurement. | With `cgroup:false` a container that frees 400 MiB of 512 MiB keeps most of it resident for the whole decay window; with the default it is back to about 13 MiB within 50 ms. |
 | `check_zero` | `true`, `false` | `false` | Debug: every slot or page handed out as known zero is read at its first and last word under the class or huge lock; a non-zero word aborts with the slab's prior state. Slow paths only. | Diagnosing a `calloc` zero bug. | Extra reads on every refill from `Fresh` or `Purged` memory. |
 
 Why the close call went the way it did: `thp:never` is the default
@@ -233,7 +233,11 @@ Everything here is behind `cgroup:true` (the default). The measurement
 layer is `src/sys/cgroup.rs`, the policy `src/policy.rs`, the advice
 `src/purge.rs` (design 8 and 11).
 
-Discovery, once at init: the cgroup path is the `0::` line of
+Discovery, once, 20 ms into the process's life (at the first periodic
+tick after that, at the first `stats.cgroup.*` read or
+`malloc_stats_print`, or at the first `fork`; at init under `thp:always`),
+so a short-lived process
+never reads the files: the cgroup path is the `0::` line of
 `/proc/self/cgroup` (`/` inside a cgroup namespace); the cgroup2 mount is
 the first `cgroup2` line of `/proc/self/mountinfo` (normally
 `/sys/fs/cgroup`). Without either (a v1-only host) nothing is tracked and
@@ -268,8 +272,8 @@ The cap is applied inside the decay walks as a keep ratio, so the curve
 still decides which slabs go first. A period already at or under 1000 ms
 is left alone in the scaled band, and `dirty_decay_ms:-1` is left alone
 in every band. A limit that goes away resets the outcome to the
-defaults. The `high` baseline is the count at init, so a container that
-already had `high` events does not start with a full purge.
+defaults. The `high` baseline is the count at discovery, so a container
+that already had `high` events does not start with a full purge.
 
 The two-advice purge. A purge is `MADV_DONTNEED` (the pages leave RSS
 and the charge at once; the next touch faults in a zero page) except

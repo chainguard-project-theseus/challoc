@@ -236,6 +236,18 @@ pub fn probe(page: usize) -> Thp {
     })
 }
 
+/// The top-level `enabled` and `hpage_pmd_size` only (two reads), the
+/// table a kernel without per-size directories gives: what `thp:never`
+/// needs at init (`Features::probe`).
+pub fn probe_top(page: usize) -> Thp {
+    Thp::from_reader(page, |path, buf| {
+        if path.starts_with(b"/sys/kernel/mm/transparent_hugepage/hugepages-") {
+            return 0;
+        }
+        super::read_small_file(path, buf).unwrap_or(0)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

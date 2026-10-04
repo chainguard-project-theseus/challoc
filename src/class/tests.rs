@@ -1921,7 +1921,7 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
 #[test]
 fn guard_slab_faults_when_supported() {
     use crate::sys::features::Features;
-    let f = Features::probe();
+    let f = Features::probe(true);
     if !f.guard_install {
         std::eprintln!("guard_install=no on this kernel; skipping guard fault test");
         return;

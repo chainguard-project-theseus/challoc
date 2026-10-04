@@ -289,8 +289,9 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     )?;
     // Design 11: the figures as last sampled (a sample is taken here if the
     // 10 ms window allows), or why nothing is tracked.
-    shared.cgroup.sample(crate::sys::now_coarse_ns());
-    writeln!(out, "{}", shared.cgroup)?;
+    let cgroup = shared.cgroup_now();
+    cgroup.sample(crate::sys::now_coarse_ns());
+    writeln!(out, "{}", cgroup)?;
     policy_line(out, shared)?;
     advice_line(out)?;
     thp_line(out)
@@ -346,7 +347,7 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
 fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
     use crate::policy::{Band, FRAC_ONE};
     let p = &shared.policy;
-    if !shared.cgroup.tracked() {
+    if !shared.cgroup_now().tracked() {
         return writeln!(out, "cgroup policy: off (not tracked)");
     }
     write!(out, "cgroup policy: ")?;
@@ -631,7 +632,7 @@ fn json_general<W: Write>(
         ts.nohuge_ranges,
         crate::thp::host_mode().map_or("none", crate::sys::thp_host::ThpSetting::name)
     )?;
-    let cg = &shared.cgroup;
+    let cg = shared.cgroup_now();
     cg.sample(crate::sys::now_coarse_ns());
     writeln!(
         out,
