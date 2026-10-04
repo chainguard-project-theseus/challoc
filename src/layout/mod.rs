@@ -16,10 +16,11 @@
 //!
 //! Layout recap. One superblock holds every class region at a fixed
 //! power-of-two stride; class `c` lives at `superblock + c * stride +
-//! random_offset_c`, with the rest of the stride left as an unmapped gap.
-//! Class regions are aligned to [`MAX_SLAB`] so that `p & (slab_size - 1)` is
-//! the offset inside the slab for every class. Separate reservations hold
-//! the huge region and the metadata region.
+//! random_offset_c + colour_c`, with the rest of the stride left as an
+//! unmapped gap. The random offset is a multiple of [`MAX_SLAB`] and the
+//! colour (`regions::colour`) a multiple of the class's slab, so every slab
+//! is aligned to its size. Separate reservations hold the huge region and
+//! the metadata region.
 
 use crate::QUANTUM;
 use core::cell::UnsafeCell;
@@ -78,8 +79,9 @@ pub const LG_COMPACT_UNIT: u32 = 16;
 /// `guard_slab_interval`, whatever the class's slab size (see
 /// `heap::guard_interval_for`).
 pub const LG_GUARD_UNIT: u32 = 16;
-/// Largest slab: 16 slots of `MEDIUM_MAX`. Class regions and their random
-/// offsets are aligned to this so that in-slab offsets are a plain mask.
+/// Largest slab: 16 slots of `MEDIUM_MAX`. The random part of a class
+/// region's offset is a multiple of this; the colour added to it keeps
+/// the region aligned to its own slab, so in-slab offsets are a plain mask.
 pub const LG_MAX_SLAB: u32 = 22;
 pub const MAX_SLAB: usize = 1 << LG_MAX_SLAB;
 
