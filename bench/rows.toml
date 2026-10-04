@@ -100,6 +100,29 @@ class = "st"
 secs = 5
 est_s = 7.5
 
+# larson1 at 10 and 1000 rounds per thread (a new thread every 50k and
+# every 5M operations): the per-op difference is the thread-churn cost
+# (#94; experiments, in no suite).
+[row.larson1-r10]
+cmd = ["{bin}/larson", "5", "8", "1000", "5000", "10", "4141", "1"]
+parser = "larson"
+unit = "M ops/s"
+better = "higher"
+threads = 1
+class = "st"
+secs = 5
+est_s = 7.5
+
+[row.larson1-r1000]
+cmd = ["{bin}/larson", "5", "8", "1000", "5000", "1000", "4141", "1"]
+parser = "larson"
+unit = "M ops/s"
+better = "higher"
+threads = 1
+class = "st"
+secs = 5
+est_s = 7.5
+
 [row.larson10]
 cmd = ["{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "10"]
 parser = "larson"

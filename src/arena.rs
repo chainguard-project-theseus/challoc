@@ -388,6 +388,20 @@ impl Arenas {
         self.bound[index as usize].fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Bind a thread heap to `index` only if no heap is homed there now
+    /// (one compare-and-swap of its count from 0 to 1): the late rehoming
+    /// of a young heap onto the arena an exited thread left
+    /// (`Heap::try_rehome`). Two heaps racing for one idle arena cannot
+    /// both win, so a rehome never stacks a second heap on an arena. A
+    /// plain load first: a busy arena (xmalloc's live producers) is
+    /// refused without taking its counter's line exclusive.
+    pub fn try_bind_idle(&self, index: u16) -> bool {
+        let b = &self.bound[index as usize];
+        b.load(Ordering::Relaxed) == 0
+            && b.compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+    }
+
     /// A thread heap homed on `index` is destroyed or moves away.
     pub fn unbind(&self, index: u16) {
         let prev = self.bound[index as usize].fetch_sub(1, Ordering::Relaxed);
