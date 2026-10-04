@@ -208,7 +208,7 @@ impl Heap {
         arena: u16,
         class: usize,
     ) -> (*mut u8, bool) {
-        self.tick(shared);
+        self.tick::<true>(shared);
         let Some(a) = shared.arena(arena) else {
             return (ptr::null_mut(), false);
         };
@@ -287,7 +287,7 @@ impl Heap {
             ptr::null_mut()
         };
         if cache.is_null() {
-            self.tick(shared);
+            self.tick::<false>(shared);
             // No cache for this class here: straight to the slab, through
             // the arena its slab belongs to.
             shared.free_direct(shared.arena_of_slot(class, p), class, p);
@@ -305,7 +305,7 @@ impl Heap {
             if shared.double_free_scan() {
                 Self::scan_or_abort(shared, cache, p);
             }
-            self.tick(shared);
+            self.tick::<false>(shared);
             if (*cache).len == (*cache).cap {
                 // A home cache keeps its lowest half (design 6.4); the
                 // FOREIGN cache, popped by nothing, releases everything.

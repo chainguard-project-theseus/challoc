@@ -459,17 +459,22 @@ pub fn purge_arena(shared: &Shared, index: u16) -> Option<usize> {
 /// Periodic-work hook (design 6.4): start the background thread if one was
 /// requested and does not exist, otherwise run decay here unless the
 /// thread is doing it, and let the lazy start look at what decay left.
-pub fn on_tick(shared: &Shared, now: u64) {
+/// `alloc` is whether the tick is an allocation's: a `free`'s tick never
+/// creates (or joins) a thread, because glibc frees with its stack cache
+/// lock held (`pthread_join`'s TLS teardown, the stack cache trim) and
+/// `pthread_create` takes that lock again. Such a tick purges in the
+/// foreground and leaves the start to the next allocation's tick.
+pub fn on_tick(shared: &Shared, now: u64, alloc: bool) {
     sample(shared, now);
     if background::present() {
         return;
     }
-    if background::requested() && background::start(shared) {
+    if alloc && background::requested() && background::start_requested(shared) {
         return;
     }
     if decay(shared, now).is_some() {
         // Dirty memory is still waiting: the lazy start's look.
-        background::auto_tick(shared, now);
+        background::auto_tick(shared, now, alloc);
     }
 }
 

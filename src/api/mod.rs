@@ -488,6 +488,10 @@ extern "C" fn fork_child() {
     shared().cgroup_fork_child();
     feature_line_fork_child();
     fork_release();
+    // The dirty bytes this child inherited, the lazy start's baseline: read
+    // after the release (the sum takes the class and huge locks), while
+    // the child is still single-threaded, so nothing has moved them.
+    purge::background::set_fork_base(crate::policy::empty_bytes(shared()));
 }
 
 /// The child of a `fork` has only the forking thread: a feature line
@@ -1045,7 +1049,8 @@ mod tests {
     /// The lazy start end to end on one allocator, on injected tick
     /// times: nothing dirty starts nothing; 8 MiB dirty (over the floor,
     /// under the burst threshold) starts nothing at the first look or
-    /// half a hold later and starts the thread once the hold has passed;
+    /// half a hold later; once the hold has passed a free's tick only
+    /// requests the thread and the next allocation's tick starts it;
     /// the start leaves the lazy start armed; an explicit `request`
     /// disarms it.
     #[test]
@@ -1060,19 +1065,25 @@ mod tests {
         assert!((8u64 << 20) >= AUTO_FLOOR && (8u64 << 20) < AUTO_BURST);
         purge::background::set_auto(Some(s));
         let t0 = crate::sys::now_coarse_ns();
-        purge::on_tick(s, t0);
-        purge::on_tick(s, t0 + 2 * AUTO_HOLD_NS);
+        purge::on_tick(s, t0, true);
+        purge::on_tick(s, t0 + 2 * AUTO_HOLD_NS, true);
         let clean = purge::background::present();
         let (p, _) = s.alloc_huge(8 << 20, 4096, 0);
         assert!(!p.is_null());
         unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
         s.free_huge((p as usize - s.regions.huge_base) >> s.regions.lg_page);
         let t1 = t0 + 3 * AUTO_HOLD_NS;
-        purge::on_tick(s, t1);
+        purge::on_tick(s, t1, true);
         let first = purge::background::present();
-        purge::on_tick(s, t1 + AUTO_HOLD_NS / 2);
+        purge::on_tick(s, t1 + AUTO_HOLD_NS / 2, true);
         let half = purge::background::present();
-        purge::on_tick(s, t1 + AUTO_HOLD_NS + 1);
+        // A free's tick past the hold requests the thread but never
+        // creates it (glibc frees under locks `pthread_create` takes);
+        // the next allocation's tick does.
+        purge::on_tick(s, t1 + AUTO_HOLD_NS + 1, false);
+        let freed = purge::background::present();
+        let pending = purge::background::requested();
+        purge::on_tick(s, t1 + AUTO_HOLD_NS + 2, true);
         let held = purge::background::present();
         let armed = purge::background::auto();
         purge::background::request(false);
@@ -1094,6 +1105,8 @@ mod tests {
         assert!(!clean, "nothing dirty started the thread");
         assert!(!first, "8 MiB started the thread at the first look");
         assert!(!half, "8 MiB started the thread before the hold");
+        assert!(!freed, "a free's tick created the thread");
+        assert!(pending, "a free's tick past the hold did not request it");
         assert!(held, "8 MiB held past the hold did not start the thread");
         assert!(armed, "a successful start disarmed the lazy start");
         assert!(disarmed, "request(false) left the lazy start armed");

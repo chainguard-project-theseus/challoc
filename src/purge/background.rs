@@ -55,9 +55,10 @@ static AUTO_NEXT: AtomicU64 = AtomicU64::new(0);
 /// [`AUTO_FLOOR`]; 0 when the last look was below it.
 static AUTO_SINCE: AtomicU64 = AtomicU64::new(0);
 /// The low-water mark of the dirty bytes since the fork that made this
-/// process (0 in a process that never forked): what a fork child
-/// inherited is not its own, and only what it adds above the inherited
-/// set (as that set decays) counts towards a start.
+/// process, starting from the dirty bytes at the fork (0 in a process
+/// that never forked): what a fork child inherited is not its own, and
+/// only what it adds above the inherited set (as that set decays) counts
+/// towards a start.
 static AUTO_BASE: AtomicU64 = AtomicU64::new(0);
 
 /// Dirty bytes that start the thread at the first look.
@@ -108,8 +109,13 @@ pub fn auto() -> bool {
 /// request withdrawn exits at its next wake-up. An explicit answer
 /// either way disarms the lazy start.
 pub fn request(on: bool) {
-    AUTO.store(false, Ordering::Relaxed);
-    REQUESTED.store(on, Ordering::Relaxed);
+    {
+        // Under the state lock, so a failing lazy start (`start_requested`)
+        // cannot withdraw this request after it was made.
+        let _g = STATE.lock();
+        AUTO.store(false, Ordering::Relaxed);
+        REQUESTED.store(on, Ordering::Relaxed);
+    }
     if !on {
         // Unconditional: a thread the bookkeeping has already forgotten
         // (the parent side of a fork handler test) must still notice.
@@ -183,18 +189,35 @@ pub fn start(shared: &Shared) -> bool {
     present
 }
 
+/// [`start`] for an allocation's tick that found the thread requested.
+/// A lazy request (the lazy start still armed) whose start failed, and
+/// is not merely in progress on another thread, disarms the lazy start
+/// and withdraws itself: the process keeps purging in the foreground, as
+/// with `background_thread:false`, and never tries again. An explicit
+/// request stays, and the next tick tries again.
+pub fn start_requested(shared: &Shared) -> bool {
+    if start(shared) {
+        return true;
+    }
+    let g = STATE.lock();
+    if !g.creating && !g.present && AUTO.load(Ordering::Relaxed) {
+        AUTO.store(false, Ordering::Relaxed);
+        REQUESTED.store(false, Ordering::Relaxed);
+    }
+    false
+}
+
 /// The lazy start's look, from a periodic tick that ran decay in the
 /// foreground and left dirty memory waiting (`purge::on_tick`): at most
 /// once per [`AUTO_CHECK_NS`], sum the dirty bytes and, when [`auto_due`]
-/// says so, request and start the thread. A start that fails (and is not
-/// merely in progress on another thread) disarms the lazy start and
-/// withdraws the request: the process keeps purging in the foreground,
-/// as with `background_thread:false`, and never tries again.
+/// says so, request the thread, and start it if the tick is an
+/// allocation's (`alloc`; a `free`'s tick leaves the start to the next
+/// allocation's tick, which finds the request).
 /// Out of line: the periodic tick inlines `on_tick`, and this look is
 /// rare next to it.
 #[cold]
 #[inline(never)]
-pub fn auto_tick(shared: &Shared, now: u64) {
+pub fn auto_tick(shared: &Shared, now: u64, alloc: bool) {
     if !auto() {
         return;
     }
@@ -221,10 +244,16 @@ pub fn auto_tick(shared: &Shared, now: u64) {
     if !auto_due(dirty - base, now, &AUTO_SINCE) {
         return;
     }
-    REQUESTED.store(true, Ordering::Relaxed);
-    if !start(shared) && !STATE.lock().creating {
-        AUTO.store(false, Ordering::Relaxed);
-        REQUESTED.store(false, Ordering::Relaxed);
+    {
+        // Under the state lock: an explicit `request` in between wins.
+        let _g = STATE.lock();
+        if !AUTO.load(Ordering::Relaxed) {
+            return;
+        }
+        REQUESTED.store(true, Ordering::Relaxed);
+    }
+    if alloc {
+        start_requested(shared);
     }
 }
 
@@ -445,9 +474,9 @@ pub fn is_locked() -> bool {
 
 /// The child has no background thread and, per design 8.1, does not
 /// get one until it asks again or, under the lazy start, until it holds
-/// enough dirty memory of its own: the inherited dirty bytes become the
-/// baseline at its first look. Called with the state lock held by this
-/// thread (`fork_prepare` took it).
+/// enough dirty memory of its own: the dirty bytes at the fork are the
+/// baseline ([`set_fork_base`], after the locks are released). Called
+/// with the state lock held by this thread (`fork_prepare` took it).
 pub fn fork_child() {
     // SAFETY: the forking thread holds the lock; the child is single
     // threaded.
@@ -463,5 +492,10 @@ pub fn fork_child() {
     REQUESTED.store(false, Ordering::Relaxed);
     AUTO_NEXT.store(0, Ordering::Relaxed);
     AUTO_SINCE.store(0, Ordering::Relaxed);
-    AUTO_BASE.store(u64::MAX, Ordering::Relaxed);
+}
+
+/// The lazy start's baseline in a fork child: `inherited`, the dirty
+/// bytes at the fork, from which [`auto_tick`] keeps the low-water mark.
+pub fn set_fork_base(inherited: u64) {
+    AUTO_BASE.store(inherited, Ordering::Relaxed);
 }
