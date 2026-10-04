@@ -190,6 +190,10 @@ pub fn start(shared: &Shared) -> bool {
 /// merely in progress on another thread) disarms the lazy start and
 /// withdraws the request: the process keeps purging in the foreground,
 /// as with `background_thread:false`, and never tries again.
+/// Out of line: the periodic tick inlines `on_tick`, and this look is
+/// rare next to it.
+#[cold]
+#[inline(never)]
 pub fn auto_tick(shared: &Shared, now: u64) {
     if !auto() {
         return;
