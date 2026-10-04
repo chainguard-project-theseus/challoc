@@ -75,22 +75,22 @@ documentation (kernel, ISA, C standard) its contract follows.
 | FFI/syscall | ffi | 16 |
 | function pointer | fnptr | 20 |
 | UnsafeCell/volatile/transmute | cell | 22 |
-| raw pointer (internal) | ptr | 50 |
+| raw pointer (internal) | ptr | 51 |
 | raw pointer from C caller | c-ptr | 18 |
 | panic/abort | abort | 9 |
-| atomics primitive | atomic | 22 |
+| atomics primitive | atomic | 10 |
 | platform/kernel fact | platform | 10 |
 | C-program contract | c-contract | 7 |
 | termination | termination | 9 |
-| core library | core | 116 |
-| allocator invariant | invariant | 44 |
+| core library | core | 122 |
+| allocator invariant | invariant | 49 |
 
 | tool | short | seams |
 |---|---|---:|
 | Islaris/Isla | Isla | 26 |
-| RefinedRust | RR | 112 |
-| Kani | Kani | 148 |
-| loom/GenMC | GenMC | 26 |
+| RefinedRust | RR | 119 |
+| Kani | Kani | 156 |
+| loom/GenMC | GenMC | 11 |
 | Miri (evidence only) | Miri | 18 |
 | none (assumption) | none | 39 |
 
@@ -117,17 +117,19 @@ Seams by category and tool:
 | FFI/syscall | none (assumption) | 16 |
 | function pointer | Kani | 20 |
 | UnsafeCell/volatile/transmute | RefinedRust | 22 |
-| raw pointer (internal) | RefinedRust | 47 |
+| raw pointer (internal) | RefinedRust | 48 |
 | raw pointer (internal) | Kani | 3 |
 | raw pointer from C caller | Miri (evidence only) | 18 |
 | panic/abort | Kani | 9 |
-| atomics primitive | loom/GenMC | 22 |
+| atomics primitive | Kani | 2 |
+| atomics primitive | loom/GenMC | 8 |
 | platform/kernel fact | none (assumption) | 10 |
 | C-program contract | none (assumption) | 7 |
-| termination | loom/GenMC | 4 |
+| termination | RefinedRust | 1 |
+| termination | loom/GenMC | 3 |
 | termination | none (assumption) | 5 |
-| core library | Kani | 116 |
-| allocator invariant | RefinedRust | 43 |
+| core library | Kani | 122 |
+| allocator invariant | RefinedRust | 48 |
 | allocator invariant | none (assumption) | 1 |
 
 ## Index
@@ -182,7 +184,7 @@ the full name, the line and the contract.
 | S25 | `Global::get` | body | cell | RR | trusted |
 | S26 | `shared_ref` | body | cell | RR | trusted |
 | S27 | `shared_ptr` | body | cell | RR | trusted |
-| S28 | `init_slow` | no-dec | termination | GenMC | trusted |
+| S28 | `init_slow` | no-dec | termination | GenMC | discharged |
 | S29 | `shared_storage_ptr` | body | cell | RR | trusted |
 | S30 | `publish_features` | body | cell | RR | trusted |
 | S31 | `register_fork_handlers` | body | fnptr | Kani | trusted |
@@ -223,7 +225,7 @@ the full name, the line and the contract.
 | S56 | `A_LAST_EXIT_PURGE` | const | core | Kani | discharged |
 | S57 | `axiom_arena_layout` | axiom | core | Kani | discharged |
 | S58 | `axiom_arena_assemble` | axiom | ptr | RR | trusted |
-| S59 | `Arenas::init` | body | atomic | GenMC | trusted |
+| S59 | `Arenas::init` | body | ptr | RR | trusted |
 | S60 | `arena_at` | body | ptr | RR | trusted |
 | S61 | `Arenas::count` | body | atomic | GenMC | trusted |
 
@@ -255,7 +257,7 @@ the full name, the line and the contract.
 | S73 | `ClassState::table` | body | ptr | RR | trusted |
 | S74 | `ClassState::take_checks` | body | abort | Kani | trusted |
 | S75 | `table_ptr` | body | ptr | RR | trusted |
-| S76 | `ClassState::claim_with` | no-dec | termination | GenMC | trusted |
+| S76 | `ClassState::claim_with` | no-dec | termination | RR | trusted |
 | S77 | `axiom_fresh_slots_zero` | axiom | invariant | RR | trusted |
 | S78 | `axiom_discarded_slots_zero` | axiom | invariant | RR | trusted |
 
@@ -282,7 +284,7 @@ the full name, the line and the contract.
 | S90 | `axiom_init_owners` | axiom | ptr | RR | trusted |
 | S91 | `axiom_init_words` | axiom | ptr | RR | trusted |
 | S92 | `words_ref` | body | ptr | RR | trusted |
-| S93 | `SlabTable::watermark` | body | atomic | GenMC | trusted |
+| S93 | `SlabTable::watermark` | body | invariant | RR | trusted |
 
 ### src/class/verify.rs
 
@@ -446,14 +448,14 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S177 | `RawLock::lock_slow` | no-dec | termination | GenMC | trusted |
+| S177 | `RawLock::lock_slow` | no-dec | termination | GenMC | evidence |
 | S178 | `axiom_entry` | axiom | c-contract | none | trusted |
 | S179 | `axiom_held_below` | axiom | invariant | none | trusted |
 | S180 | `axiom_acquired` | axiom | invariant | RR | trusted |
 | S181 | `Lock::get_unlocked` | body | cell | RR | trusted |
 | S182 | `LockGuard::deref` | body | cell | RR | trusted |
 | S183 | `LockGuard::deref_mut` | body | cell | RR | trusted |
-| S184 | `LockGuard::drop` | body | atomic | GenMC | trusted |
+| S184 | `LockGuard::drop` | body | atomic | GenMC | discharged |
 
 ### src/meta.rs
 
@@ -466,14 +468,14 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S187 | `Policy::position` | body | atomic | GenMC | trusted |
+| S187 | `Policy::position` | body | invariant | RR | trusted |
 | S188 | `empty_bytes` | body | abort | Kani | trusted |
 
 ### src/purge.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S189 | `Explicit::drop` | body | atomic | GenMC | trusted |
+| S189 | `Explicit::drop` | body | atomic | Kani | trusted |
 | S190 | `total_bytes` | body | core | Kani | discharged |
 
 ### src/purge/background.rs
@@ -487,7 +489,7 @@ the full name, the line and the contract.
 | S195 | `pthread_join` | body | ffi | none | trusted |
 | S196 | `spawn` | body | ffi | none | trusted |
 | S197 | `shared_arg` | body | ptr | RR | trusted |
-| S198 | `main` | no-dec | termination | GenMC | trusted |
+| S198 | `main` | no-dec | termination | GenMC | discharged |
 | S199 | `state` | body | cell | RR | trusted |
 
 ### src/rseq.rs
@@ -504,7 +506,7 @@ the full name, the line and the contract.
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
 | S204 | `SlabDesc::at` | body | ptr | RR | trusted |
-| S205 | `SlabDesc::sub_live` | body | atomic | GenMC | trusted |
+| S205 | `SlabDesc::sub_live` | body | atomic | GenMC | evidence |
 
 ### src/stats.rs
 
@@ -597,9 +599,9 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S248 | `load_lg_slab_min` | body | atomic | GenMC | trusted |
-| S249 | `load_lg_pmd` | body | atomic | GenMC | trusted |
-| S250 | `load_lg_meta` | body | atomic | GenMC | trusted |
+| S248 | `load_lg_slab_min` | body | invariant | RR | trusted |
+| S249 | `load_lg_pmd` | body | invariant | RR | trusted |
+| S250 | `load_lg_meta` | body | invariant | RR | trusted |
 
 ### src/vspec/addr.rs
 
@@ -619,17 +621,17 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S260 | `Atomic::<*mut T>::load` | spec | atomic | GenMC | trusted |
-| S261 | `Atomic::<*mut T>::store` | spec | atomic | GenMC | trusted |
-| S262 | `Atomic::<*mut T>::new` | spec | atomic | GenMC | trusted |
-| S263 | `Atomic::<*mut T>::swap` | spec | atomic | GenMC | trusted |
+| S260 | `Atomic::<*mut T>::load` | spec | core | Kani | trusted |
+| S261 | `Atomic::<*mut T>::store` | spec | core | Kani | trusted |
+| S262 | `Atomic::<*mut T>::new` | spec | core | Kani | trusted |
+| S263 | `Atomic::<*mut T>::swap` | spec | core | Kani | trusted |
 | S264 | `axiom_arena_stats_lock_inv` | axiom | invariant | RR | trusted |
 
 ### src/vspec/atomic.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S265 | `load_bool` | body | atomic | GenMC | trusted |
+| S265 | `load_bool` | body | atomic | Kani | trusted |
 
 ### src/vspec/check.rs
 
@@ -738,14 +740,14 @@ the full name, the line and the contract.
 | S311 | `PartialEqSpec...ge::RunState` | spec-impl | core | Kani | discharged |
 | S312 | `Option::<T>::map_or` | spec | core | Kani | discharged |
 | S313 | `str::as_ptr` | spec | core | Kani | discharged |
-| S314 | `compiler_fence` | spec | atomic | GenMC | trusted |
+| S314 | `compiler_fence` | spec | core | Kani | trusted |
 | S315 | `Option::<T>::as_deref_mut` | spec | core | Kani | discharged |
 
 ### src/vspec/misc_extra.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S316 | `Atomic::<u32>::as_ptr` | spec | atomic | GenMC | trusted |
+| S316 | `Atomic::<u32>::as_ptr` | spec | core | Kani | trusted |
 
 ### src/vspec/policy.rs
 
@@ -829,10 +831,10 @@ the full name, the line and the contract.
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
 | S364 | `WordPerm` | type | atomic | GenMC | trusted |
-| S365 | `fetch_or` | body | atomic | GenMC | trusted |
-| S366 | `store` | body | atomic | GenMC | trusted |
+| S365 | `fetch_or` | body | atomic | GenMC | discharged |
+| S366 | `store` | body | atomic | GenMC | discharged |
 | S367 | `load` | body | atomic | GenMC | trusted |
-| S368 | `fetch_and` | body | atomic | GenMC | trusted |
+| S368 | `fetch_and` | body | atomic | GenMC | discharged |
 
 ### src/vspec/zero.rs
 
@@ -1206,7 +1208,7 @@ pub fn shared_ptr() -> *const Shared opens_invariants none
 ### S28. `init_slow`
 
 src/api/mod.rs:407. Kind: no_decreases. Category: termination.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/api-init_slow.md).
 
 > The first caller runs `init` and publishes `READY`; a concurrent one waits for it (termination is not claimed: the wait ends when the other thread's `init` does); the initialising thread re-entering aborts.
 
@@ -1643,8 +1645,8 @@ axiom fn axiom_arena_assemble(
 
 ### S59. `Arenas::init`
 
-src/arena.rs:1302. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/arena.rs:1302. Kind: external_body. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
 
 > Initialise `this` in place with `arena0` at index 0 and `narenas` automatic indices (clamped to `1..=MAX_ARENAS`), through the permission to its storage in `slot`, handed back initialised.
 
@@ -1944,7 +1946,7 @@ fn table_ptr(table: &SlabTable) -> (p: *const SlabTable)
 ### S76. `ClassState::claim_with`
 
 src/class/mod.rs:2871. Kind: no_decreases. Category: termination.
-Tool: loom/GenMC. Status: trusted.
+Tool: RefinedRust. Status: trusted.
 
 > The loop of [`claim`] and [`claim_random`].
 
@@ -2243,8 +2245,8 @@ fn words_ref<'a>(p: *const AtomicU64, n: usize, Ghost(j0): Ghost<int>, Tracked(p
 
 ### S93. `SlabTable::watermark`
 
-src/class/table.rs:1750. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/class/table.rs:1750. Kind: external_body. Category: allocator invariant.
+Tool: RefinedRust. Status: trusted.
 
 > The watermark, loaded with `order` (inlined, so the caller's load is the bare `core` one with its ordering).
 
@@ -3438,7 +3440,7 @@ unsafe fn class_entry(c: usize) -> (r: &'static super::Class)
 ### S177. `RawLock::lock_slow`
 
 src/lock.rs:122. Kind: no_decreases. Category: termination.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: evidence (verus/seams/lock-RawLock-lock_slow.md).
 
 > Termination is not claimed: the wait ends when another thread releases the lock.
 
@@ -3538,7 +3540,7 @@ fn deref_mut(&mut self) -> (r: &mut T)
 ### S184. `LockGuard::drop`
 
 src/lock.rs:740. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/lock-LockGuard-drop.md).
 
 ```rust
 fn drop(&mut self)
@@ -3584,8 +3586,8 @@ pub fn free(&self, p: *mut u8, layout: Layout, Tracked(ord): Tracked<&mut LockOr
 
 ### S187. `Policy::position`
 
-src/policy.rs:698. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/policy.rs:698. Kind: external_body. Category: allocator invariant.
+Tool: RefinedRust. Status: trusted.
 
 > The stored position in the scaled band.
 
@@ -3615,7 +3617,7 @@ pub fn empty_bytes(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u6
 ### S189. `Explicit::drop`
 
 src/purge.rs:162. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: Kani. Status: trusted.
 
 ```rust
 fn drop(&mut self)
@@ -3727,7 +3729,7 @@ fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
 ### S198. `main`
 
 src/purge/background.rs:442. Kind: no_decreases. Category: termination.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/purge-background-main.md).
 
 > The thread's body: decay and sample until the request is withdrawn.
 
@@ -3807,7 +3809,7 @@ pub unsafe fn at<'a>(base: usize, class: usize, slab: usize) -> &'a SlabDesc
 ### S205. `SlabDesc::sub_live`
 
 src/slab.rs:264. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: evidence (verus/seams/slab-SlabDesc-sub_live.md).
 
 > Subtract `n` from `live`, returning the previous value.
 
@@ -4402,8 +4404,8 @@ pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsSlot>)
 
 ### S248. `load_lg_slab_min`
 
-src/thp.rs:376. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/thp.rs:376. Kind: external_body. Category: allocator invariant.
+Tool: RefinedRust. Status: trusted.
 
 > `LG_SLAB_MIN`, `LG_PMD` and `LG_META` hold [`Decision::wf`] values: they start so and only [`store`] writes them, from a decision that satisfies it.
 
@@ -4415,8 +4417,8 @@ fn load_lg_slab_min() -> (lg: u8)
 
 ### S249. `load_lg_pmd`
 
-src/thp.rs:385. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/thp.rs:385. Kind: external_body. Category: allocator invariant.
+Tool: RefinedRust. Status: trusted.
 
 ```rust
 fn load_lg_pmd() -> (lg: u8)
@@ -4426,8 +4428,8 @@ fn load_lg_pmd() -> (lg: u8)
 
 ### S250. `load_lg_meta`
 
-src/thp.rs:394. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/thp.rs:394. Kind: external_body. Category: allocator invariant.
+Tool: RefinedRust. Status: trusted.
 
 ```rust
 fn load_lg_meta() -> (lg: u8)
@@ -4587,8 +4589,8 @@ pub proof fn axiom_huge_writable(regions: crate::layout::Regions, page: usize, l
 
 ### S260. `core::sync::atomic::Atomic::<*mut T>::load`
 
-src/vspec/arena.rs:13. Kind: assume_spec. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/vspec/arena.rs:13. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
 
 > `AtomicPtr::load`, which vstd does not specify: any pointer.
 
@@ -4605,8 +4607,8 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::load ](
 
 ### S261. `core::sync::atomic::Atomic::<*mut T>::store`
 
-src/vspec/arena.rs:24. Kind: assume_spec. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/vspec/arena.rs:24. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
 
 > `AtomicPtr::store`, which vstd does not specify.
 
@@ -4624,8 +4626,8 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::store ](
 
 ### S262. `core::sync::atomic::Atomic::<*mut T>::new`
 
-src/vspec/arena.rs:35. Kind: assume_spec. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/vspec/arena.rs:35. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
 
 > `AtomicPtr::new`, which vstd does not specify.
 
@@ -4635,8 +4637,8 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::new ](v: *mut
 
 ### S263. `core::sync::atomic::Atomic::<*mut T>::swap`
 
-src/vspec/arena.rs:38. Kind: assume_spec. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/vspec/arena.rs:38. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
 
 > `AtomicPtr::swap`, which vstd does not specify: any previous pointer.
 
@@ -4665,7 +4667,7 @@ pub broadcast axiom fn axiom_arena_stats_lock_inv(v: crate::stats::ArenaStats)
 ### S265. `load_bool`
 
 src/vspec/atomic.rs:25. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: Kani. Status: trusted.
 
 > `a.load(order)`, which panics for a `Release` or `AcqRel` ordering.
 
@@ -5319,8 +5321,8 @@ pub assume_specification[ str::as_ptr ](s: &str) -> *const u8;
 
 ### S314. `core::sync::atomic::compiler_fence`
 
-src/vspec/misc.rs:65. Kind: assume_spec. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/vspec/misc.rs:65. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
 
 > `core::sync::atomic::compiler_fence`: panics on `Relaxed` only, and has no effect Verus models.
 
@@ -5346,8 +5348,8 @@ pub assume_specification<T: core::ops::DerefMut>[ Option::<T>::as_deref_mut ](o:
 
 ### S316. `core::sync::atomic::Atomic::<u32>::as_ptr`
 
-src/vspec/misc_extra.rs:11. Kind: assume_spec. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/vspec/misc_extra.rs:11. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
 
 > `AtomicU32::as_ptr`: the address of the atomic's value, for a futex syscall argument.
 
@@ -6077,7 +6079,7 @@ pub tracked struct WordPerm
 ### S365. `fetch_or`
 
 src/vspec/word.rs:61. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/vspec-word-fetch_or.md).
 
 > `w.fetch_or(v, ordering)`.
 
@@ -6096,7 +6098,7 @@ pub fn fetch_or(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracke
 ### S366. `store`
 
 src/vspec/word.rs:79. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/vspec-word-store.md).
 
 > `w.store(v, ordering)`, which panics for an `Acquire` or `AcqRel` ordering.
 
@@ -6135,7 +6137,7 @@ pub fn load(w: &AtomicU64, ordering: Ordering, Tracked(perm): Tracked<&WordPerm>
 ### S368. `fetch_and`
 
 src/vspec/word.rs:117. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/vspec-word-fetch_and.md).
 
 > `w.fetch_and(v, ordering)`.
 

@@ -1,0 +1,138 @@
+loom 0.7.2 with one change to its DPOR (verus/loom/run.sh applies this to
+a copy of the crate; `git apply -p1` in its root).
+
+Stock loom races an atomic store or read-modify-write only against the
+atomic's last access (`last_access`). When that access is a load that
+happens before the store (usually the storing thread's own), an earlier
+load by another thread is never raced, so the store is never run ahead
+of it: a model whose defect needs that order passes, after as few as one
+execution (`src/loom_tests/dpor.rs`). With this change a store or rmw
+is also raced against each thread's last load of the atomic
+(`last_loads`). The change only adds backtracking points: the DPOR
+clocks (`dpor_vv`) are computed as in stock loom, so every schedule
+stock loom explores is still explored. The same defect, found
+independently, is fixed in ToyOSOrg/loom's `toyos` branch
+(ToyOSOrg/ToyOS PR #567), which also joins those loads into the
+storing thread's clock; that prunes more and is not done here.
+
+--- loom-orig/src/rt/atomic.rs
++++ loom-dpor/src/rt/atomic.rs
+@@ -118,6 +118,13 @@
+     /// Last time the atomic was accessed for a store or rmw operation.
+     last_non_load_access: Option<Access>,
+ 
++    /// Each thread's last load, by thread index.
++    /// A store or rmw depends on all of them, not only on `last_access`:
++    /// when the last access is a load that happens before the store (the
++    /// storing thread's own), an earlier load by another thread still
++    /// races with it.
++    last_loads: [Option<Access>; MAX_THREADS],
++
+     /// Currently tracked stored values. This is the `MAX_ATOMIC_HISTORY` most
+     /// recent stores to the atomic cell in loom execution order.
+     stores: [Store; MAX_ATOMIC_HISTORY],
+@@ -413,6 +420,7 @@
+             is_mutating: false,
+             last_access: None,
+             last_non_load_access: None,
++            last_loads: Default::default(),
+             stores: Default::default(),
+             cnt: 0,
+         };
+@@ -833,13 +841,32 @@
+         }
+     }
+ 
++    /// The other accesses a store or rmw depends on: each thread's last
++    /// load (`last_loads`). They only add backtracking points: the
++    /// clocks stay stock loom's.
++    pub(super) fn other_dependent_accesses(&self, action: Action) -> impl Iterator<Item = &Access> {
++        let loads: &[Option<Access>] = match action {
++            Action::Load => &[],
++            _ => &self.last_loads,
++        };
++        loads.iter().flatten()
++    }
++
+     /// Sets the last dependent access
+-    pub(super) fn set_last_access(&mut self, action: Action, path_id: usize, version: &VersionVec) {
++    pub(super) fn set_last_access(
++        &mut self,
++        action: Action,
++        path_id: usize,
++        version: &VersionVec,
++        thread: usize,
++    ) {
+         // Always set `last_access`
+         Access::set_or_create(&mut self.last_access, path_id, version);
+ 
+         match action {
+-            Action::Load => {}
++            Action::Load => {
++                Access::set_or_create(&mut self.last_loads[thread], path_id, version);
++            }
+             _ => {
+                 // Stores / RMWs
+                 Access::set_or_create(&mut self.last_non_load_access, path_id, version);
+--- loom-orig/src/rt/execution.rs
++++ loom-dpor/src/rt/execution.rs
+@@ -145,8 +145,9 @@
+                 Some(operation) => operation,
+                 None => continue,
+             };
+-
+-            if let Some(access) = self.objects.last_dependent_access(operation) {
++            let last = self.objects.last_dependent_access(operation).cloned();
++            let others = self.objects.other_dependent_accesses(operation);
++            for access in last.iter().chain(others.iter()) {
+                 if access.happens_before(&th.dpor_vv) {
+                     // The previous access happened before this access, thus
+                     // there is no race.
+@@ -236,8 +237,12 @@
+ 
+             threads.active_mut().dpor_vv[th_id] += 1;
+ 
+-            self.objects
+-                .set_last_access(operation, path_id, &threads.active().dpor_vv);
++            self.objects.set_last_access(
++                operation,
++                path_id,
++                &threads.active().dpor_vv,
++                th_id.as_usize(),
++            );
+         }
+ 
+         // Reactivate yielded threads, but only if the current active thread is
+--- loom-orig/src/rt/object.rs
++++ loom-dpor/src/rt/object.rs
+@@ -224,16 +224,29 @@
+         }
+     }
+ 
++    /// Accesses `operation` depends on besides [`last_dependent_access`]
++    /// (an atomic store's or rmw's earlier loads by other threads).
++    pub(super) fn other_dependent_accesses(&self, operation: Operation) -> Vec<Access> {
++        match &self.entries[operation.obj.index] {
++            Entry::Atomic(entry) => entry
++                .other_dependent_accesses(operation.action.into())
++                .cloned()
++                .collect(),
++            _ => Vec::new(),
++        }
++    }
++
+     pub(super) fn set_last_access(
+         &mut self,
+         operation: Operation,
+         path_id: usize,
+         dpor_vv: &VersionVec,
++        thread: usize,
+     ) {
+         match &mut self.entries[operation.obj.index] {
+             Entry::Arc(entry) => entry.set_last_access(operation.action.into(), path_id, dpor_vv),
+             Entry::Atomic(entry) => {
+-                entry.set_last_access(operation.action.into(), path_id, dpor_vv)
++                entry.set_last_access(operation.action.into(), path_id, dpor_vv, thread)
+             }
+             Entry::Mutex(entry) => entry.set_last_access(path_id, dpor_vv),
+             Entry::Condvar(entry) => entry.set_last_access(path_id, dpor_vv),

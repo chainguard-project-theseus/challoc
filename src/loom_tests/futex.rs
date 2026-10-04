@@ -29,10 +29,16 @@ fn bucket(state: &AtomicU32) -> (MutexGuard<'static, usize>, &'static Condvar) {
     (g, cv)
 }
 
-/// `FUTEX_WAIT`: sleep while `*state == val`. The compare is `Relaxed`:
-/// the callers re-check the word with their own access after a wait,
-/// so the stand-in adds no ordering they could lean on; the mutex
-/// orders it against [`wake`].
+/// `FUTEX_WAIT`: sleep while `*state == val`. The compare is `Relaxed`,
+/// as the kernel's read is no C11 access. The mutex does add an edge: a
+/// woken waiter re-takes it in `cv.wait`, so everything the waker did
+/// before its `wake` happens before the waiter's return. The callers do
+/// not rely on that (each re-checks the word with its own acquiring
+/// access after a wait), but on a path through a wake the models cannot
+/// show they do not: an ordering missing from that re-check would be
+/// supplied here. Linux's futex orders a wake before the woken thread's
+/// return in practice (the hash-bucket lock and the scheduler's wake-up
+/// barriers) but documents no memory ordering.
 pub(crate) fn wait(state: &AtomicU32, val: u32) {
     let (g, cv) = bucket(state);
     if state.load(Ordering::Relaxed) == val {

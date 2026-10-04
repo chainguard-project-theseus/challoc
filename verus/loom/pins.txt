@@ -1,0 +1,46 @@
+# verus/loom/pins.txt: the lines of the source that the loom models copy
+# (src/loom_tests/init.rs, exit.rs and the class steps of bitmap.rs),
+# which verus/loom/run.sh requires to appear, whitespace-trimmed, in this
+# order in each file. A change to a copied ordering or step fails the
+# script until the copy, this list and the records that cite it are
+# revisited.
+#
+#   file<TAB>line
+#
+# api/mod.rs: shared, shared_if_ready, init_slow (init.rs).
+src/api/mod.rs	if STATE.load(Ordering::Acquire) == READY {
+src/api/mod.rs	init_slow()
+src/api/mod.rs	if STATE.load(Ordering::Acquire) == READY {
+src/api/mod.rs	match STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire) {
+src/api/mod.rs	Ok(_) => {
+src/api/mod.rs	INIT_TID.store(sys::gettid() as u32, Ordering::Relaxed);
+src/api/mod.rs	init();
+src/api/mod.rs	STATE.store(READY, Ordering::Release);
+src/api/mod.rs	Err(READY) => {}
+src/api/mod.rs	if INIT_TID.load(Ordering::Relaxed) == sys::gettid() as u32 {
+src/api/mod.rs	sys::abort("allocation during initialisation (re-entrant init)");
+src/api/mod.rs	while STATE.load(Ordering::Acquire) != READY {
+# purge/background.rs: requested, request, kick, main (exit.rs).
+src/purge/background.rs	REQUESTED.load(Ordering::Relaxed)
+src/purge/background.rs	REQUESTED.store(on, Ordering::Relaxed);
+src/purge/background.rs	if !on {
+src/purge/background.rs	kick();
+src/purge/background.rs	SEQ.fetch_add(1, Ordering::SeqCst);
+src/purge/background.rs	let _ = unsafe { sys::futex_wake(SEQ.as_ptr(), 1) };
+src/purge/background.rs	let seq = SEQ.load(Ordering::SeqCst);
+src/purge/background.rs	if !requested() {
+src/purge/background.rs	return core::ptr::null_mut();
+src/purge/background.rs	let _ = unsafe { sys::futex_wait(SEQ.as_ptr(), seq, timeout.as_ref()) };
+# slab.rs: live, add_live, sub_live (bitmap.rs).
+src/slab.rs	self.live.load(Ordering::Acquire) as usize
+src/slab.rs	self.live.fetch_add(n as u32, Ordering::AcqRel) as usize
+src/slab.rs	let prev = self.live.fetch_sub(n as u32, Ordering::AcqRel) as usize;
+src/slab.rs	assert!(prev >= n, "slab: live count underflow ({prev} - {n})");
+# class/mod.rs: take's reservation (bitmap.rs).
+src/class/mod.rs	let live = desc.live();
+src/class/mod.rs	let avail = self.class().nslots() - live;
+src/class/mod.rs	desc.add_live(n);
+# class/table.rs: the commit count's publication (bitmap.rs).
+src/class/table.rs	self.committed_slabs.load(order)
+src/class/table.rs	self.watermark(Ordering::Acquire)
+src/class/table.rs	self.committed_slabs.store(end, Ordering::Release);

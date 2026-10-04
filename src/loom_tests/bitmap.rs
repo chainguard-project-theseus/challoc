@@ -120,6 +120,31 @@ impl Slab {
         let prev = self.live.fetch_sub(n, Ordering::AcqRel);
         assert!(prev >= n, "live underflow");
     }
+
+    /// A mutant of [`Slab::release`] for the controls: the bitmap's
+    /// `fetch_and` `Relaxed` instead of `release`'s `Release`.
+    fn release_relaxed(&self, mask: u64) {
+        let prev = self.words[0].fetch_and(!mask, Ordering::Relaxed);
+        assert_eq!(prev & mask, mask, "released a clear bit");
+        let n = mask.count_ones();
+        let prev = self.live.fetch_sub(n, Ordering::AcqRel);
+        assert!(prev >= n, "live underflow");
+    }
+
+    /// A mutant of [`Slab::claim`] of one slot for the controls: the
+    /// lowest clear bit taken by a `Relaxed` `fetch_or` instead of
+    /// `claim_word`'s `Acquire`.
+    fn claim_relaxed(&self, passes: u32) -> u64 {
+        for _ in 0..passes {
+            let free = !self.words[0].load(Ordering::Relaxed) & SLAB_MASK;
+            let bit = free & free.wrapping_neg();
+            if bit != 0 && self.words[0].fetch_or(bit, Ordering::Relaxed) & bit == 0 {
+                return bit;
+            }
+            thread::yield_now();
+        }
+        panic!("reservation unmet");
+    }
 }
 
 /// Leaked, not an `Arc`: a failed model ends the execution with threads
@@ -141,24 +166,37 @@ fn full_slab() -> &'static Slab {
     s
 }
 
+/// Which step of [`release_then_reserve`] is a mutant.
+#[derive(Clone, Copy, PartialEq)]
+enum Mutant {
+    None,
+    RelaxedRelease,
+    RelaxedClaim,
+}
+
 /// Two owners release one slot each while a third thread reserves one
-/// and claims it: whichever release the reservation's `live` load saw,
-/// that slot's cleared bit is visible to the claim's first pass, and the
-/// new owner's write is ordered after the old owner's.
-#[test]
-fn loom_bitmap_release_then_reserve() {
-    model(|| {
+/// and claims it.
+fn release_then_reserve(mutant: Mutant) {
+    model(move || {
         let s = full_slab();
         let rel: Vec<_> = (0..NSLOTS)
             .map(|i| {
                 thread::spawn(move || {
                     s.write(1 << i, 2);
-                    s.release(1 << i);
+                    if mutant == Mutant::RelaxedRelease {
+                        s.release_relaxed(1 << i);
+                    } else {
+                        s.release(1 << i);
+                    }
                 })
             })
             .collect();
         if s.reserve(1) == 1 {
-            let m = s.claim(1, 1);
+            let m = if mutant == Mutant::RelaxedClaim {
+                s.claim_relaxed(1)
+            } else {
+                s.claim(1, 1)
+            };
             s.write(m, 3);
             s.release(m);
         }
@@ -168,6 +206,34 @@ fn loom_bitmap_release_then_reserve() {
         assert_eq!(s.live.load(Ordering::Relaxed), 0);
         assert_eq!(s.words[0].load(Ordering::Relaxed) & SLAB_MASK, 0);
     });
+}
+
+/// Two owners release one slot each while a third thread reserves one
+/// and claims it: whichever release the reservation's `live` load saw,
+/// that slot's cleared bit is visible to the claim's first pass, and the
+/// new owner's write is ordered after the old owner's. The claim may
+/// take the other owner's slot, whose release `live` has not counted
+/// yet: then only the bitmap's `Release` and `Acquire` order the two
+/// owners' writes (the two controls below).
+#[test]
+fn loom_bitmap_release_then_reserve() {
+    release_then_reserve(Mutant::None);
+}
+
+/// The release's ordering is checked: with a `Relaxed` `fetch_and`, the
+/// next owner's write races the previous owner's.
+#[test]
+#[should_panic(expected = "Causality violation")]
+fn loom_bitmap_relaxed_release_is_a_race() {
+    release_then_reserve(Mutant::RelaxedRelease);
+}
+
+/// The claim's ordering is checked: with a `Relaxed` `fetch_or`, the new
+/// owner's write races the previous owner's.
+#[test]
+#[should_panic(expected = "Causality violation")]
+fn loom_bitmap_relaxed_claim_is_a_race() {
+    release_then_reserve(Mutant::RelaxedClaim);
 }
 
 /// One owner releases both slots; two claimers reserve one each and race

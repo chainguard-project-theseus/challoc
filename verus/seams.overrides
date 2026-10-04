@@ -128,7 +128,7 @@ Reserved::into_unbacked	platform/kernel fact	none (assumption)
 src/layout/regions.rs:word	core library	Kani	discharged (verus/seams/layout-regions-word.md)
 class_entry	UnsafeCell/volatile/transmute	RefinedRust
 axiom_acquired	allocator invariant	RefinedRust
-LockGuard::drop	atomics primitive	loom/GenMC
+LockGuard::drop	atomics primitive	loom/GenMC	discharged (verus/seams/lock-LockGuard-drop.md)
 Meta::commit	allocator invariant	RefinedRust
 Meta::free	allocator invariant	RefinedRust
 empty_bytes	panic/abort	Kani
@@ -162,7 +162,7 @@ axiom_fresh_anon_zero	platform/kernel fact	none (assumption)
 axiom_discarded_zero	platform/kernel fact	none (assumption)
 Unbacked::commit	platform/kernel fact	none (assumption)
 WordPerm	atomics primitive	loom/GenMC
-core::sync::atomic::compiler_fence	atomics primitive	loom/GenMC
+core::sync::atomic::compiler_fence	core library	Kani
 crate::layout::adopt_page_geometry	UnsafeCell/volatile/transmute	RefinedRust
 core::fmt::Formatter::<'a>::write_str	core library	Kani	discharged (verus/seams/vspec-fmt-Formatter-write_str.md)
 core::fmt::Formatter::<'a>::write_fmt	function pointer	Kani
@@ -243,3 +243,27 @@ core::slice::from_ref	core library	Kani	discharged (verus/seams/vspec-slice-slic
 <[T]>::as_mut_ptr	core library	Kani	discharged (verus/seams/vspec-sys-slice-as_mut_ptr.md)
 <[T]>::as_ptr	core library	Kani	discharged (verus/seams/vspec-sys-slice-as_ptr.md)
 src/api/mallctl.rs:shared	allocator invariant	RefinedRust
+# The loom/GenMC triage (verus/WEAKMEM.md, "Seams"): records for what
+# the loom models establish, and the items that need no weak-memory
+# model, reassigned.
+init_slow	termination	loom/GenMC	discharged (verus/seams/api-init_slow.md)
+src/purge/background.rs:main	termination	loom/GenMC	discharged (verus/seams/purge-background-main.md)
+RawLock::lock_slow	termination	loom/GenMC	evidence (verus/seams/lock-RawLock-lock_slow.md)
+SlabDesc::sub_live	atomics primitive	loom/GenMC	evidence (verus/seams/slab-SlabDesc-sub_live.md)
+fetch_or	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-fetch_or.md)
+fetch_and	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-fetch_and.md)
+src/vspec/word.rs:store	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-store.md)
+SlabTable::watermark	allocator invariant	RefinedRust
+Policy::position	allocator invariant	RefinedRust
+load_lg_slab_min	allocator invariant	RefinedRust
+load_lg_pmd	allocator invariant	RefinedRust
+load_lg_meta	allocator invariant	RefinedRust
+Arenas::init	raw pointer (internal)	RefinedRust
+core::sync::atomic::Atomic::<*mut T>::load	core library	Kani
+core::sync::atomic::Atomic::<*mut T>::store	core library	Kani
+core::sync::atomic::Atomic::<*mut T>::new	core library	Kani
+core::sync::atomic::Atomic::<*mut T>::swap	core library	Kani
+core::sync::atomic::Atomic::<u32>::as_ptr	core library	Kani
+load_bool	atomics primitive	Kani
+Explicit::drop	atomics primitive	Kani
+ClassState::claim_with	termination	RefinedRust

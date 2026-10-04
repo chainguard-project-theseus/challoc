@@ -4,18 +4,26 @@
 //! atomics and the crate is cut down to the modules whose real code is
 //! checked here (`lib.rs`): `lock` (P2, the futex replaced by the
 //! stand-in in `futex`) and `bitmap` (P1, with `vspec::word`). The
-//! background wake-up (P3) lives in statics built in `const` context,
-//! which loom cannot construct, so `background.rs` checks a copy that
-//! cites the lines it mirrors.
+//! background wake-up (P3), the background thread's exit and the
+//! publication of `Shared` (P4) live in statics built in `const` context,
+//! which loom cannot construct, so `background.rs`, `exit.rs` and
+//! `init.rs` check copies that cite the code they mirror.
 //!
 //! ```sh
-//! RUSTFLAGS="--cfg loom" cargo test --release loom_
+//! sh verus/loom/run.sh
 //! ```
 //!
-//! Every model is exhaustive but `lock::loom_lock_three_threads`, bounded
-//! at 5 preemptions (6 s; 6 takes 26 s, 7 takes 87 s, and no bound
-//! did not finish in 25 minutes). `LOOM_MAX_PREEMPTIONS` sets a bound for
-//! all of them.
+//! The script runs these under loom 0.7.2 with
+//! `verus/loom/loom-0.7.2-dpor.patch`: stock loom's DPOR never runs an
+//! atomic store ahead of another thread's earlier load when the storing
+//! thread loaded the atomic last, and misses executions the models need
+//! (`dpor.rs`, which fails without the patch).
+//!
+//! Every model is exhaustive but `lock::loom_lock_three_threads` and its
+//! control `lock::loom_lock_dropped_mark_loses_a_wake_up`, bounded at 5
+//! preemptions (no bound did not finish in 25 minutes).
+//! `LOOM_MAX_PREEMPTIONS` sets a bound for all of them (`run.sh` unsets
+//! it).
 
 // `cfg(test)` again on each module: `verus-count` (`verus/TODO.md`)
 // skips a module only by the attribute on its own declaration.
@@ -25,7 +33,13 @@ mod background;
 #[cfg(test)]
 mod bitmap;
 #[cfg(test)]
+mod dpor;
+#[cfg(test)]
+mod exit;
+#[cfg(test)]
 pub(crate) mod futex;
+#[cfg(test)]
+mod init;
 #[cfg(test)]
 mod lock;
 

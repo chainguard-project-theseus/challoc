@@ -228,12 +228,36 @@ lock or futex internals, no publication and nothing of the background
 thread. Its invariants are the properties P1's loom and GenMC checks
 should assert.
 
-## loom results (plan steps 0-3)
+## loom results (plan steps 0-4)
 
-Run with loom 0.7.2: `RUSTFLAGS="--cfg loom" cargo test --release
-loom_` (about 50 s of model checking after the build). The tests are in
+Run with loom 0.7.2 and the DPOR fix below: `sh verus/loom/run.sh`
+(about 2 minutes of model checking after the build). The tests are in
 `src/loom_tests/`; the module comment there says how the build is
 cut down.
+
+- loom's DPOR is incomplete, and the script patches it
+  (`verus/loom/loom-0.7.2-dpor.patch`). Stock loom 0.7.2 races an
+  atomic store or read-modify-write only against the atomic's last
+  access; when that is the storing thread's own load, an earlier load
+  by another thread is never raced, so the store never runs ahead of
+  it. Found here when the `READY` publication model with a `Relaxed`
+  publish (a planted race) passed after one execution; the same defect
+  is fixed in ToyOSOrg/loom's `toyos` branch (ToyOSOrg/ToyOS PR #567).
+  With the patch a store or rmw is also raced against each thread's
+  last load of the atomic; nothing else changes, so it only adds
+  backtracking points. `src/loom_tests/dpor.rs` holds two controls
+  that fail without it. Every model and control other than those two
+  and the `Relaxed`-publish control of P4 (which passed under stock
+  loom) passes or fails as it did under stock loom; the executions
+  explored grew where the defect pruned them (the initialisation
+  models from 1, 522 and 1472 to 10, 29839 and 213383, the two-claimer
+  bitmap model from 1501 to 2461) and stayed the same for the other
+  models counted (all but the three-thread lock model and the controls).
+- The futex stand-in's mutex orders a waker's earlier accesses before
+  the woken thread's return. The code re-checks the word after every
+  wait with its own acquiring access and does not need that edge, but
+  on a path through a wake the models cannot show it. Linux's futex
+  has such an edge in practice and documents no memory ordering.
 
 - Shim: `src/sync.rs` re-exports `core::sync::atomic` and
   `core::hint::spin_loop`, or loom's under `cfg(loom)`; the 16 imports
@@ -250,8 +274,8 @@ cut down.
   waiter (`notify_one`, as `FUTEX_WAKE` with `n == 1`; waking all
   would hide a lost wake-up). `SPINS` is 2 under loom.
 - Bounds: every model is exhaustive (no preemption bound) except the
-  three-thread lock, bounded at 5 preemptions (6 s; 7 takes 87 s;
-  unbounded did not finish in 25 minutes).
+  three-thread lock model and its control (the dropped mark), bounded
+  at 5 preemptions (unbounded did not finish in 25 minutes).
 - P2 (`RawLock`, real code): two and three lockers bump a loom
   `UnsafeCell` counter. No race (mutual exclusion and the
   acquire/release edge), the count is exact, and no deadlock (no lost
@@ -316,6 +340,20 @@ cut down.
     startup race needs neither.
   PR #72 put the kick in `purge/background.rs`; the two fences are not
   there, and are not part of this change.
+- P4 (copy of `api/mod.rs`'s `init_slow`, `shared`, `shared_if_ready`;
+  `loom_tests/init.rs`): two callers and a free, and a re-entrant
+  `init`. `init` runs once, every caller and the free read the value
+  `init` wrote with no race, no waiter is left spinning, re-entry
+  aborts and no other thread takes that abort. Controls: a `Relaxed`
+  `READY` store races; a waiter on an unpublished `INITIALISING`
+  fails. loom cannot explore two waiters spinning at once (they yield
+  to each other with no bound), so the models have one.
+- The background thread's exit (copy of `background::main`'s loop and
+  `request(false)`; `loom_tests/exit.rs`): the thread returns after a
+  withdrawal, also with another kick in between. Controls: a withdrawal
+  without its kick, or a `Relaxed` `SEQ` load in the thread, leaves it
+  asleep. The exit does not depend on P3: `request(false)` kicks
+  unconditionally.
 
 ## Plan
 
@@ -325,9 +363,9 @@ cut down.
 | 1 | loom: `RawLock` with a futex stand-in (P2) | 1-2 | done |
 | 2 | loom: bitmap claim/release, `live`, slot data cells (P1) | 2-3 | done |
 | 3 | loom: background wake-up copy; try the P3 race | 1 | done |
-| 4 | loom: `READY` publication copy, free hand-off (P4, P5) | 1-2 | open |
+| 4 | loom: `READY` publication copy (P4); free hand-off (P5) | 1-2 | P4 done, P5 open |
 | 5 | GenMC: C models of P1-P3 under RC11 | 3-4 | open |
-| 6 | CI: `RUSTFLAGS="--cfg loom" cargo test --release loom_` | 0.5 | open |
+| 6 | CI: `sh verus/loom/run.sh` | 0.5 | open |
 
 About 9-13 days. Steps 1-3 carry most of the value: P1 is the one
 protocol whose orderings guard user data, P2 guards every lock value,
@@ -344,3 +382,39 @@ What stays assumed after the plan: the Verus proofs are still SC
 proofs. The checks above show that the shipped orderings give the
 happens-before edges the SC proofs rely on, for small configurations;
 they do not lift the proofs to weak memory.
+
+## Seams
+
+The 25 seams `verus/SEAMS.md` gave to loom/GenMC, triaged (records
+under `verus/seams/`, models re-run by `sh verus/loom/run.sh`, which
+first checks each record against the ledger). No model found an outcome
+a contract excludes; P3 stays the one open weak-memory bug, and no seam
+below depends on it. GenMC is not installed in the environment this was
+done in (no C toolchain to build it), so every result is loom's.
+
+| Seam | Result | Why |
+|---|---|---|
+| `init_slow` (S27) | discharged | P4 models; terminates given `init` returns, a fair scheduler and visible stores |
+| `background::main` (S195) | discharged | exit models; returns after a final `request(false)`, given each pass returns and the exit takes the state lock (`lock_slow`, evidence only) |
+| `LockGuard::drop` (S181) | discharged | P2 models run the real `unlock` |
+| `fetch_or`, `fetch_and`, `store` (`vspec/word.rs`; S361, S364, S362) | discharged | C11 per-location coherence gives the contract; P1 models check the cross-location edges the SC proof needs |
+| `RawLock::lock_slow` (S176) | evidence | P2 models show deadlock freedom; termination does not hold (the mutex is not starvation-free) |
+| `SlabDesc::sub_live` (S202) | evidence | P1 models; that the abort is unreachable is an allocator invariant |
+| `load` (`vspec/word.rs`, S363) | trusted | its caller, the `free` bit test, is P5, which no model reaches yet |
+| `WordPerm` (S360) | trusted | the type is the SC abstraction itself; its content is the wrappers' contracts and that every write goes through them |
+| `ClassState::claim_with` (S74) | trusted, retooled to RefinedRust | termination rests on `live` not rising between `plan`'s and `take`'s reads under the class lock (read-read coherence); a Verus `decreases` with that fact as an allocator-invariant axiom fits better than a bounded checker |
+| `SlabTable::watermark`, `Policy::position`, `load_lg_slab_min`, `load_lg_pmd`, `load_lg_meta` (S91, S184, S244-S246) | reassigned: allocator invariant, RefinedRust | every store writes a value in range, and a load of any ordering returns a value some store wrote: no memory-model question |
+| `Arenas::init` (S58) | reassigned: raw pointer (internal), RefinedRust | single-threaded in-place construction; its `Release` store is published again by `READY` |
+| `AtomicPtr::{load, store, new, swap}`, `AtomicU32::as_ptr`, `compiler_fence` (S256-S259, S312, S310) | reassigned: core library, Kani | specifications of `core` functions with no value claims: whether they return without a panic |
+| `load_bool`, `Explicit::drop` (S261, S186) | reassigned: Kani | a one-operation body that must return; no ordering is relied on |
+
+Contracts the reassignment exposed: `AtomicPtr::load`'s specification
+and `load_bool` have no `requires` on the ordering, but `core`'s `load`
+panics for `Release` and `AcqRel` (the `store` specification has the
+matching `requires`). Neither is `no_unwind`, so Verus already allows
+the call to unwind and no proof is unsound; but under the Kani records'
+policy (a trusted body returns under its `requires` without a panic) a
+harness over every ordering would fail until the `requires` is added.
+Every caller passes `Relaxed` or `Acquire`. vstd's own `load`
+specifications have the same gap. The `compiler_fence` specification
+has no caller in `src/`.
