@@ -539,13 +539,13 @@ const fn class_of_slow(n: usize) -> Option<usize> {
 
 const SMALL_LOOKUP_LEN: usize = SMALL_MAX / QUANTUM + 1;
 
-const fn build_small_lookup() -> [u8; SMALL_LOOKUP_LEN] {
-    let mut out = [0u8; SMALL_LOOKUP_LEN];
+const fn build_small_lookup() -> [u16; SMALL_LOOKUP_LEN] {
+    let mut out = [0u16; SMALL_LOOKUP_LEN];
     let mut i = 0;
     while i < SMALL_LOOKUP_LEN {
         // Entry `i` serves every request that rounds up to `i` quanta.
         out[i] = match class_of_slow(i * QUANTUM) {
-            Some(c) => c as u8,
+            Some(c) => (c * CLASS_STRIDE) as u16,
             None => panic!("small lookup out of range"),
         };
         i += 1;
@@ -553,16 +553,46 @@ const fn build_small_lookup() -> [u8; SMALL_LOOKUP_LEN] {
     out
 }
 
-/// Request size rounded up to quanta, then class number (design section 3:
-/// "a small table for requests up to 1024").
-static SMALL_LOOKUP: [u8; SMALL_LOOKUP_LEN] = build_small_lookup();
+/// The stride of the per-class lines the fast paths index: the heap's
+/// cache headers and the shared class lines are both one 64-byte line
+/// per class (`heap/` asserts both).
+pub const CLASS_STRIDE: usize = 64;
+
+/// Request size rounded up to quanta, then class number times
+/// [`CLASS_STRIDE`] (design section 3: "a small table for requests up to
+/// 1024"). The fast paths scale the class by the stride to reach its
+/// lines; with the scaled entry in the table, [`class_of_small`]'s
+/// division and their multiplication cancel, which saves them a copy, a
+/// shift and the register they took.
+static SMALL_LOOKUP: [u16; SMALL_LOOKUP_LEN] = build_small_lookup();
+const _: () = assert!(NCLASSES * CLASS_STRIDE <= u16::MAX as usize);
+
+/// The table entry for `n`: [`class_of`] for a small request, the class
+/// number with the compiler told that the entry is a multiple of the
+/// stride (so that `class * CLASS_STRIDE` folds back into the entry).
+#[inline(always)]
+fn small_class(n: usize) -> usize {
+    let off = SMALL_LOOKUP[(n + QUANTUM - 1) / QUANTUM] as usize;
+    // SAFETY: every entry is a class number times the stride
+    // (`build_small_lookup`).
+    unsafe { core::hint::assert_unchecked(off % CLASS_STRIDE == 0) };
+    off / CLASS_STRIDE
+}
+
+/// Class number for a request of at most [`SMALL_MAX`] bytes; `n` must
+/// be in range (the table index is bounds-checked regardless).
+#[inline(always)]
+pub fn class_of_small(n: usize) -> usize {
+    debug_assert!(n <= SMALL_MAX);
+    small_class(n)
+}
 
 /// Class number for a request of `n` bytes, or `None` when `n` is huge.
 /// A zero-byte request maps to class 0 so `malloc(0)` yields a real slot.
 #[inline]
 pub fn class_of(n: usize) -> Option<usize> {
     if n <= SMALL_MAX {
-        Some(SMALL_LOOKUP[(n + QUANTUM - 1) / QUANTUM] as usize)
+        Some(small_class(n))
     } else if n <= MEDIUM_MAX {
         // Classes in (2^lg, 2^(lg+1)] are 2^lg + k * 2^(lg-2) for k = 1..4.
         let m = n - 1;

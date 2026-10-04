@@ -2,7 +2,7 @@
 //! and the checks it performs for the fast and slow paths; the thread-exit
 //! key and the thread id, clock and seed a heap reads, and the per-class
 //! [`ClassLine`] the `free` fast paths read, with the sized path's
-//! [`GuardTest`].
+//! check.
 
 use core::ffi::c_void;
 use core::ptr;
@@ -73,6 +73,10 @@ pub struct Shared {
     /// options default to off), so the fast path tests one byte and takes
     /// one predicted branch.
     pub(super) push_flags: u8,
+    /// `!(regions.region_len() - 1)`: the bits of an offset from a class
+    /// base that put it past the class region, read by the sized check
+    /// ([`ClassLine::sized_ok`]) on the line `push_flags` is on.
+    pub(super) region_hi: usize,
     pub regions: Regions,
     tables: [SlabTable; NCLASSES],
     pub arena0: Arena,
@@ -126,18 +130,35 @@ pub struct ClassLine {
     bits_base: usize,
     committed: AtomicUsize,
     owners_base: usize,
+    /// The inverse modulo `2^64` of the odd part of the class size, the
+    /// multiplier of the sized check ([`ClassLine::sized_ok`]); its low
+    /// half is [`Class::inv_odd`], the multiplier of the `free` path's
+    /// 32-bit slot-start test.
+    ///
+    /// [`Class::inv_odd`]: crate::layout::Class::inv_odd
+    inv: u64,
+    /// Slots per slab, as a `u64` so that the sized check compares its
+    /// 64-bit quotient against the field in memory; the `free` path reads
+    /// the low half.
+    nslots: u64,
     slab_mask: u32,
-    inv_odd: u32,
-    nslots: u32,
     slab_bits: u16,
-    tz: u8,
     lg_slab: u8,
     lg_group: u8,
-    /// The sized fast path's guard test for this class.
-    pub(super) guard: GuardTest,
+    /// The last eight bytes are the sized check's guard word
+    /// ([`ClassLine::guard_word`]), one load: `guard_mask` is
+    /// [`SlabTable::guard_mask`] over page groups of `2^lg_guard` bytes,
+    /// `tz` the slot-start test's rotate.
+    guard_mask: u32,
+    tz: u8,
+    /// `log2` of a page group in bytes: `lg_slab` plus
+    /// `log2(slabs_per_page)`.
+    lg_guard: u8,
+    /// Zero: initialised, so that the guard word's load reads no padding.
+    _pad: [u8; 2],
 }
 
-const _: () = assert!(core::mem::size_of::<ClassLine>() == 64);
+const _: () = assert!(core::mem::size_of::<ClassLine>() == crate::layout::CLASS_STRIDE);
 const _: () = assert!(core::mem::offset_of!(Shared, lines) == 0);
 
 impl ClassLine {
@@ -148,14 +169,16 @@ impl ClassLine {
             bits_base: table.bits_base(),
             committed: AtomicUsize::new(0),
             owners_base: table.owners_base(),
+            inv: inverse_of_odd_part_u64(cls.size()),
+            nslots: cls.nslots as u64,
             slab_mask: cls.slab_mask,
-            inv_odd: cls.inv_odd,
-            nslots: cls.nslots,
+            guard_mask: table.guard_mask(),
             slab_bits: cls.slab_bits,
             tz: cls.tz,
             lg_slab: cls.lg_slab,
             lg_group: table.lg_group(),
-            guard: GuardTest::of(table),
+            lg_guard: cls.lg_slab + table.slabs_per_page().trailing_zeros() as u8,
+            _pad: [0; 2],
         }
     }
 
@@ -180,17 +203,102 @@ impl ClassLine {
     #[inline(always)]
     fn slot_start(&self, rel: usize) -> Option<u32> {
         let slot = ((rel as u32) & self.slab_mask)
-            .wrapping_mul(self.inv_odd)
+            .wrapping_mul(self.inv as u32)
             .rotate_right(self.tz as u32);
-        if slot < self.nslots { Some(slot) } else { None }
+        if slot < self.nslots as u32 {
+            Some(slot)
+        } else {
+            None
+        }
     }
 
     /// The sized free's check on this class's line: whether `p`, at `rel`
-    /// from the region base and already known inside the region, is a
-    /// slot start in a slab that is not a guard slab.
+    /// from the region base, is inside the region and a slot start in a
+    /// slab that is not a guard slab. `region_hi` is
+    /// [`Shared::region_hi`], the offset bits at and above the region
+    /// length.
+    ///
+    /// The region bound and the slot-start test are one 64-bit test: `x`
+    /// keeps the in-slab offset `rel & slab_mask` plus the bits of `rel`
+    /// past the region, and `q = (x * inv).rotate_right(tz)` is below
+    /// `nslots` exactly when `x` is a multiple of the size and `x / size <
+    /// nslots` (the exact-division test of [`Class::slot_of_offset`], on 64
+    /// bits). An offset inside the region leaves `x` the in-slab offset, so
+    /// that is the slot-start test; an offset past it leaves `x >= 2^32`,
+    /// more than `nslots * size` (a slab is at most `MAX_SLAB`), so `q` is
+    /// at least `nslots` whether or not `x` is a multiple. The guard test
+    /// is [`ClassLine::is_guard`] on the guard word. The whole check
+    /// accepts exactly what the reference form does
+    /// ([`Regions::slot_in_class`] and [`SlabTable::is_guard_slab`];
+    /// `sized_slot_agrees_with_the_reference`).
+    ///
+    /// The shape is about loads. Each one waits on the size (the class
+    /// indexes the line) or the pointer, and in a program whose frees take
+    /// both from a cache miss (a Valkey `SET` reads the old value's pointer
+    /// and size from the key's entry) they all wait in the load queue and
+    /// the scheduler until the miss returns. On Zen 4 (Genoa) that
+    /// capacity, more than the instruction count, sets how far the core
+    /// runs ahead to the next miss: `valkey1` is 8% faster with 13 such
+    /// loads in `sdallocx` than with 16 (#46). So the bound has no load of
+    /// its own, and the guard mask and both shift counts are one load.
+    ///
+    /// [`Class::slot_of_offset`]: crate::layout::Class::slot_of_offset
     #[inline(always)]
-    fn sized_ok(&self, rel: usize) -> bool {
-        self.slot_start(rel).is_some() && !self.guard.is_guard(rel >> self.lg_slab)
+    fn sized_ok(&self, rel: usize, region_hi: usize) -> bool {
+        let gw = self.guard_word();
+        let x = (rel & (self.slab_mask as usize | region_hi)) as u64;
+        // `rotate_right` takes its count modulo 64: `tz`, the low byte.
+        let q = x.wrapping_mul(self.inv).rotate_right((gw >> 32) as u32);
+        q < self.nslots && !Self::is_guard(rel, gw)
+    }
+
+    /// `guard_mask | tz << 32 | lg_guard << 40` (the padding above is
+    /// zero), from one 8-byte load.
+    #[inline(always)]
+    fn guard_word(&self) -> u64 {
+        // SAFETY: the eight initialised bytes from `guard_mask` to the end
+        // of `self`, 8-aligned (asserted below).
+        #[allow(unused_mut)]
+        let mut gw = unsafe {
+            ptr::read(
+                (self as *const ClassLine as *const u8)
+                    .add(core::mem::offset_of!(ClassLine, guard_mask))
+                    as *const u64,
+            )
+        };
+        // SAFETY: an empty template; `gw` comes out unchanged. Without it
+        // LLVM splits the load back into a byte load per shift count.
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::asm!("/* {0} */", inout(reg) gw, options(pure, nomem, nostack, preserves_flags))
+        };
+        gw
+    }
+
+    /// [`SlabTable::is_guard_slab`] on the offset `rel` from the region
+    /// base, from a guard word: `rel >> lg_guard` is the page group
+    /// (`slab >> lg_slabs_per_page`), a guard when `(group + 1) &
+    /// guard_mask == 0`. With guards off the mask is all ones and only
+    /// group `u32::MAX` would match, which is past every region; an offset
+    /// past the region is rejected by the bound in [`ClassLine::sized_ok`]
+    /// whatever this says. `guard_test_agrees_with_the_tables` checks it
+    /// against the table for every class.
+    #[inline(always)]
+    fn is_guard(rel: usize, gw: u64) -> bool {
+        // `wrapping_shr` takes its count modulo 64: `lg_guard`.
+        (rel.wrapping_shr((gw >> 40) as u32) as u32).wrapping_add(1) & (gw as u32) == 0
+    }
+
+    /// Tests: the sized check's 64-bit multiplier.
+    #[cfg(test)]
+    pub(super) fn inv(&self) -> u64 {
+        self.inv
+    }
+
+    /// Tests: [`ClassLine::is_guard`] on this line.
+    #[cfg(test)]
+    pub(super) fn is_guard_at(&self, rel: usize) -> bool {
+        Self::is_guard(rel, self.guard_word())
     }
 
     /// The `free` check on this class's line: `Some(slab)` when `p` is a
@@ -263,39 +371,6 @@ impl ClassLine {
         let word = (self.owners_base + (slab >> self.lg_group) * 2) as *const AtomicU16;
         // SAFETY: as `SlabTable::owner_unchecked`.
         unsafe { (*word).load(Ordering::Relaxed) }
-    }
-}
-
-/// [`SlabTable::is_guard_slab`] folded into one add and one mask on the
-/// slab number, for the sized fast path: `(slab + add) & mask == 0` with
-/// `add = slabs_per_page` and `mask = (interval - 1) << lg_slabs_per_page`
-/// says `((slab >> lg_spp) + 1) & (interval - 1) == 0`, the page-group
-/// test, since `slab + spp` is `((slab >> lg_spp) + 1) << lg_spp` plus the
-/// low bits the shifted mask ignores. With guards off the mask is
-/// `u32::MAX << lg_spp` and `slab + spp` is never below `spp`, so nothing
-/// matches. `Shared::init` fills one into each class's [`ClassLine`];
-/// `guard_test_agrees_with_the_tables` checks the two forms against each
-/// other over every class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(C)]
-pub struct GuardTest {
-    add: u32,
-    mask: u32,
-}
-
-impl GuardTest {
-    pub(super) fn of(table: &SlabTable) -> GuardTest {
-        let lg_spp = table.slabs_per_page().trailing_zeros();
-        GuardTest {
-            add: table.slabs_per_page() as u32,
-            mask: table.guard_mask().wrapping_shl(lg_spp),
-        }
-    }
-
-    /// Whether `slab` is a guard slab of the class this pair describes.
-    #[inline(always)]
-    pub(super) fn is_guard(self, slab: usize) -> bool {
-        (slab as u32).wrapping_add(self.add) & self.mask == 0
     }
 }
 
@@ -467,6 +542,7 @@ impl Shared {
                     0
                 });
             ptr::write(&raw mut (*this).push_flags, push_flags);
+            ptr::write(&raw mut (*this).region_hi, !(regions.region_len() - 1));
             ptr::write(&raw mut (*this).free_flags, AtomicU8::new(push_flags));
             let regions = &*(&raw const (*this).regions);
             let tables = &raw mut (*this).tables;
@@ -736,8 +812,9 @@ impl Shared {
     /// Arithmetic on the pointer and the class's [`ClassLine`]: the hint
     /// names the region, so the pointer is checked against that region
     /// alone (no superblock classification and no class compare; the
-    /// reference form is [`Regions::slot_in_class`]), and the guard test
-    /// is the line's [`GuardTest`]. Neither the slab
+    /// reference form is [`Regions::slot_in_class`]), as one
+    /// [`ClassLine::sized_ok`]: the region bound folded into the
+    /// slot-start test, and the guard test. Neither the slab
     /// descriptor nor the class table line is touched: the bit test that
     /// makes plain `free` exact is left to the flush, and so is the
     /// watermark. A slot start in a slab no arena has been handed, or in
@@ -762,7 +839,7 @@ impl Shared {
         // SAFETY: `class_of`/`class_for` only produce `class < NCLASSES`.
         let line = unsafe { self.lines.get_unchecked(class) };
         let rel = (p as usize).wrapping_sub(line.class_base);
-        if rel >= self.regions.region_len() || !line.sized_ok(rel) {
+        if !line.sized_ok(rel, self.region_hi) {
             return None;
         }
         Some(class)
@@ -965,3 +1042,27 @@ impl Shared {
 fn no_such_arena(index: u16) -> ! {
     panic!("arena {index} does not exist")
 }
+
+/// The inverse modulo `2^64` of the odd part of `size` ([`ClassLine`]'s
+/// `inv`): Newton's iteration `x = x * (2 - d * x)` doubles the correct
+/// low bits from the 3 that `x = d` has for odd `d`, so five steps give
+/// 96.
+const fn inverse_of_odd_part_u64(size: usize) -> u64 {
+    let d = (size as u64) >> size.trailing_zeros();
+    let mut x = d;
+    let mut i = 0;
+    while i < 5 {
+        x = x.wrapping_mul(2u64.wrapping_sub(d.wrapping_mul(x)));
+        i += 1;
+    }
+    x
+}
+
+// The guard word: `guard_mask`, `tz`, `lg_guard` and the zero padding are
+// the line's last eight bytes, 8-aligned.
+const _: () = assert!(
+    core::mem::offset_of!(ClassLine, guard_mask) == 56
+        && core::mem::offset_of!(ClassLine, tz) == 60
+        && core::mem::offset_of!(ClassLine, lg_guard) == 61
+        && core::mem::offset_of!(ClassLine, _pad) == 62
+);
