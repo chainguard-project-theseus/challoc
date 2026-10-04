@@ -8,7 +8,9 @@ use crate::layout::{CLASSES, NCLASSES};
 use crate::sys::pac;
 
 use super::thread::heap_from_slot;
-use super::{FOREIGN, FREE_ROUTE, Heap, PUSH_PAC, Shared, existing_heap, heap_for_thread};
+use super::{
+    CacheHeader, FOREIGN, FREE_ROUTE, Heap, PUSH_PAC, Shared, existing_heap, heap_for_thread,
+};
 
 impl Heap {
     /// `malloc` of a non-huge class in the home arena: the cache pop, then
@@ -238,6 +240,27 @@ impl Heap {
         self.free_slow_in(shared, arena, class, p)
     }
 
+    /// `double_free_scan`'s slow-path compare: abort by name when `p` is
+    /// among the top four entries of `cache` (signed as the push signs it).
+    ///
+    /// # Safety
+    /// `cache` is one of this heap's real caches.
+    #[inline(always)]
+    pub(super) unsafe fn scan_or_abort(shared: &Shared, cache: *mut CacheHeader, p: *mut u8) {
+        // SAFETY: guaranteed by the caller.
+        unsafe {
+            let slots = (*cache).slots();
+            let e = if shared.pac() {
+                pac::sign(p as usize, slots as usize) as *mut u8
+            } else {
+                p
+            };
+            if Self::cached_recently(slots, (*cache).len, e) {
+                cached_twice(p);
+            }
+        }
+    }
+
     /// The slow free path for any arena. With `zero_on_free` every cached
     /// free arrives here (the fast push declines, see
     /// [`Heap::push_cache_flags`]) and the slot is cleared first: the
@@ -246,6 +269,9 @@ impl Heap {
     /// trusts it, so a stale pointer of the right shape is cleared as it
     /// is cached, exactly as it would be handed out; design 6.3).
     pub(super) fn free_slow_in(&mut self, shared: &Shared, arena: u16, class: usize, p: *mut u8) {
+        if arena == FOREIGN && self.rehome && self.rehome_on_free(shared, class, p) {
+            return;
+        }
         if shared.zero_on_free() {
             // SAFETY: `p` is a slot start of `class` (the caller's check).
             unsafe { zero_slot(class, p) };
@@ -277,15 +303,7 @@ impl Heap {
             // addresses, the first copy possibly among them) and abort by
             // name, as the push did when the call was inline.
             if shared.double_free_scan() {
-                let slots = (*cache).slots();
-                let e = if shared.pac() {
-                    pac::sign(p as usize, slots as usize) as *mut u8
-                } else {
-                    p
-                };
-                if Self::cached_recently(slots, (*cache).len, e) {
-                    cached_twice(p);
-                }
+                Self::scan_or_abort(shared, cache, p);
             }
             self.tick(shared);
             if (*cache).len == (*cache).cap {

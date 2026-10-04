@@ -189,6 +189,20 @@ impl CacheHeader {
         }
     }
 
+    /// Re-key a flushed (empty) header with a stack to `arena` for
+    /// [`Heap::try_rehome`]: the probe restarts from the new arena's
+    /// refill counter, and the stack, `cap` and the counters stay.
+    pub(super) fn rekey(&mut self, arena: u16, refilled: u32) {
+        assert_eq!(self.len, 0, "heap: re-keying a cache that was not flushed");
+        self.low_water = 0;
+        self.zeroed = 0;
+        self.run_end = 0;
+        self.unsorted_flushes = 0;
+        self.probe_refilled = refilled;
+        self.arena = arena;
+        self.set_mode(MODE_PROBE);
+    }
+
     /// Cached pointers, bottom of the stack first (the top is popped next).
     /// Only for a cache with a stack (`cap != 0`).
     #[inline]
