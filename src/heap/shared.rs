@@ -130,6 +130,12 @@ pub struct ClassLine {
     bits_base: usize,
     committed: AtomicUsize,
     owners_base: usize,
+    slab_bits: u16,
+    lg_slab: u8,
+    lg_group: u8,
+    /// Right before `inv`, so that `free` loads it and `inv`'s low half
+    /// with one `ldp` on aarch64.
+    slab_mask: u32,
     /// The inverse modulo `2^64` of the odd part of the class size, the
     /// multiplier of the sized check ([`ClassLine::sized_ok`]); its low
     /// half is [`Class::inv_odd`], the multiplier of the `free` path's
@@ -141,10 +147,6 @@ pub struct ClassLine {
     /// 64-bit quotient against the field in memory; the `free` path reads
     /// the low half.
     nslots: u64,
-    slab_mask: u32,
-    slab_bits: u16,
-    lg_slab: u8,
-    lg_group: u8,
     /// The last eight bytes are the sized check's guard word
     /// ([`ClassLine::guard_word`]), one load: `guard_mask` is
     /// [`SlabTable::guard_mask`] over page groups of `2^lg_guard` bytes,
