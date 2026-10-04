@@ -795,11 +795,11 @@ mod exports {
     use super::*;
     use core::ffi::c_void;
 
-    // `malloc` and `free` each sit alone in a 64-byte-aligned section on
-    // x86_64 (the `global_asm!` below); their `je_` twins stay in `.text`.
+    // `malloc` and `free` each sit alone in a 64-byte-aligned section (the
+    // `global_asm!` below); their `je_` twins stay in `.text`.
 
     #[unsafe(no_mangle)]
-    #[cfg_attr(target_arch = "x86_64", unsafe(link_section = ".text.challoc.malloc"))]
+    #[unsafe(link_section = ".text.challoc.malloc")]
     pub extern "C" fn malloc(size: usize) -> *mut c_void {
         super::malloc(size) as *mut c_void
     }
@@ -810,7 +810,7 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
-    #[cfg_attr(target_arch = "x86_64", unsafe(link_section = ".text.challoc.free"))]
+    #[unsafe(link_section = ".text.challoc.free")]
     pub extern "C" fn free(p: *mut c_void) {
         super::free(p as *mut u8)
     }
@@ -842,6 +842,26 @@ mod exports {
         ".p2align 6",
         ".popsection",
     );
+
+    // aarch64: the same sections, each padded so its entry sits at
+    // MALLOC_OFF / FREE_OFF mod 64.
+    #[cfg(target_arch = "aarch64")]
+    core::arch::global_asm!(
+        ".pushsection .text.challoc.malloc,\"ax\",@progbits",
+        ".p2align 6",
+        ".space {m}",
+        ".popsection",
+        ".pushsection .text.challoc.free,\"ax\",@progbits",
+        ".p2align 6",
+        ".space {f}",
+        ".popsection",
+        m = const MALLOC_OFF,
+        f = const FREE_OFF,
+    );
+    #[cfg(target_arch = "aarch64")]
+    const MALLOC_OFF: usize = 0;
+    #[cfg(target_arch = "aarch64")]
+    const FREE_OFF: usize = 0;
 
     export_pair! {
         fn calloc / je_calloc(n: usize, m: usize) -> *mut c_void {
