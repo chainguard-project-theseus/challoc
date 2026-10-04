@@ -634,6 +634,15 @@ const _: () = assert!(
         && core::mem::size_of::<Shared>() <= isize::MAX as usize
 );
 
+// `arena::Arena::axiom_array_layout` at `split`'s two instances, checked.
+const _: () = assert!(
+    core::mem::size_of::<[GuardTest; NCLASSES]>() == NCLASSES * core::mem::size_of::<GuardTest>()
+        && core::mem::align_of::<[GuardTest; NCLASSES]>() == core::mem::align_of::<GuardTest>()
+        && core::mem::size_of::<[SlabTable; NCLASSES]>()
+            == NCLASSES * core::mem::size_of::<SlabTable>()
+        && core::mem::align_of::<[SlabTable; NCLASSES]>() == core::mem::align_of::<SlabTable>()
+);
+
 verus! {
 
 /// The permissions to the fields of a `Shared` under construction but
@@ -771,14 +780,19 @@ impl Shared {
     /// The permission to `init`'s storage, uninitialised. Trusted:
     /// `init`'s caller hands over writable storage for a `Shared` that
     /// nothing else uses (its safety contract), and builds each storage
-    /// once (`api::init` the static's; the tests a fresh leaked box each
-    /// time): two permissions for one storage could write a field twice.
+    /// once (`api::init` the static's; the unit tests, unverified callers
+    /// outside this contract, a fresh leaked box each time): two
+    /// permissions for one storage could write a field twice.
     /// The storage is a Rust object, so it does not wrap the address
-    /// space.
+    /// space. Required to be the process's storage ([`shared_storage`],
+    /// as `init` requires): without it a call at a null or misaligned
+    /// pointer proves `false` (`PointsTo::is_nonnull`, `is_aligned`).
     #[allow(unused_variables)]
     #[verifier::external_body]
     #[inline(always)]
     fn begin(this: *mut Shared) -> (r: Tracked<PointsTo<Shared>>)
+        requires
+            this == shared_storage(),
         ensures
             r@.ptr() == this,
             r@.is_uninit(),
@@ -1218,6 +1232,7 @@ impl Shared {
     // The second loop writes `guard_test[c]` of the storage from `tables[c]`.
     #[allow(clippy::needless_range_loop)]
     #[verifier::loop_isolation(false)]
+    #[verifier::rlimit(20)]
     pub unsafe fn init(
         this: *mut Shared,
         regions: Regions,
@@ -2266,6 +2281,35 @@ impl Shared {
         let n = self.huge.usable_size(page, Tracked(&none));
         proof {
             broadcast use vstd::layout::align_of_u8;
+            // The run's usable bytes end inside the huge region.
+            self.lemma_regions_ok();
+            let (len, lg32) = (self.regions.huge_len, self.regions.lg_page);
+            let lg = lg32 as usize;
+            let (np, one) = (len >> lg32, 1usize << lg32);
+            assert(np == len >> lg && one == 1usize << lg) by (bit_vector)
+                requires
+                    np == len >> lg32,
+                    one == 1usize << lg32,
+                    lg == lg32 as usize,
+                    lg32 < 64,
+            ;
+            vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+            vstd::bits::lemma_usize_shl_is_mul(1, lg);
+            vstd::bits::lemma_usize_shr_is_div(len, lg);
+            let pg = one as int;
+            vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(len as int, pg);
+            vstd::arithmetic::div_mod::lemma_mod_bound(len as int, pg);
+            assert(page * pg <= np * pg) by (nonlinear_arith)
+                requires
+                    page < np,
+                    pg > 0,
+            ;
+            vstd::bits::lemma_usize_shl_is_mul(page, lg);
+            assert(page << lg32 == page << lg) by (bit_vector)
+                requires
+                    lg == lg32 as usize,
+            ;
             crate::vspec::addr::axiom_huge_writable(self.regions, page, n);
         }
         // SAFETY: a live run's usable bytes are committed, writable memory
@@ -2583,7 +2627,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S137..S152, S153: each `S_*` is its field's `offset_of!`, and the
+    /// S136..S151, S152: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {

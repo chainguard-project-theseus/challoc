@@ -1400,12 +1400,13 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for State {
 /// over this state's table (its ghost `table`, required) that the caller
 /// holds. `owner_locked` also requires this arena's (its ghost `arena`).
 impl ClassState {
-    /// Bridge (trusted): under this arena's class lock, a slab's group's
-    /// owner word names this arena exactly when the slab is one of its
-    /// owned slabs; the word's value is [`slab_owner`] (the read in its
-    /// body, `SlabTable::owner`, ensures it). One direction is proved:
-    /// an owned slab's owner is this arena (`Inner::base`, kept from
-    /// `take_group`'s store through `next_fresh_slab`). The other is
+    /// Bridge (trusted): under this arena's class lock, a slab whose
+    /// group's owner word names this arena is one of its owned slabs; the
+    /// word's value is [`slab_owner`] (the read in its body,
+    /// `SlabTable::owner`, ensures it). The converse, that an owned slab's
+    /// owner is this arena, is proved (`Inner::base`, kept from
+    /// `take_group`'s store through `next_fresh_slab`) and not claimed
+    /// here: no caller needs it. The direction claimed is
     /// assumed: the owner words move only with the ghost
     /// ownership, a whole group at a time: `take_group` writes a new
     /// group's word, once, under the taking arena's lock and the commit
@@ -1423,7 +1424,7 @@ impl ClassState {
             g.arena@ == self.arena,
             g.table@ == self.spec_table(),
         ensures
-            (r == self.arena) == g.owns(slab as nat),
+            r == self.arena ==> g.owns(slab as nat),
             r == slab_owner(self.spec_class() as int, slab as int),
     {
         self.table().owner(slab)
@@ -3772,7 +3773,8 @@ impl SlotToks {
 /// ghost state of its arena's class lock value `g` (which the descriptor
 /// matches while the lock is held: `ClassState::state_locked`), and the
 /// caller holds the slots' uniqueness tokens (`held`), so none of them is
-/// allocated, cached or in another claim at the call.
+/// allocated, cached or in another claim at the call; the `n` slots are
+/// the slab's own (`n <= nslots`), so the range ends inside the slab.
 ///
 /// Premise, the caller's and trusted: a slab whose ghost state is `Fresh`
 /// was never written since its class region was mapped. That rests on
@@ -3794,7 +3796,7 @@ axiom fn axiom_fresh_slots_zero(
         g.owns(slab as nat),
         g.st(slab as nat) == State::Fresh,
         0 <= slab,
-        0 <= n,
+        0 <= n <= t.spec_slots().nslots,
         held.id() == t.spec_slots().loc,
         prefix_addrs(t, slab, n).subset_of(held@),
     ensures
@@ -3832,7 +3834,7 @@ axiom fn axiom_discarded_slots_zero(
         g.owns(slab as nat),
         g.st(slab as nat) == State::Purged,
         0 <= slab,
-        0 <= n,
+        0 <= n <= t.spec_slots().nslots,
         held.id() == t.spec_slots().loc,
         prefix_addrs(t, slab, n).subset_of(held@),
     ensures

@@ -1585,6 +1585,8 @@ mod linux {
         /// live one.
         #[verifier::external_body]
         pub proof fn is_apart_from_static(tracked &self)
+            requires
+                self.len() > 0,
             ensures
                 disjoint(self.addr() as int, self.len() as int, shared_static_addr(), shared_static_len()),
         {
@@ -1593,9 +1595,16 @@ mod linux {
 
         /// Trusted (the kernel's `mmap` contract): two live mappings do not
         /// overlap. `mmap` without `MAP_FIXED` never places a mapping over
-        /// a live one, and nothing unmaps a reservation.
+        /// a live one, and nothing unmaps a reservation. Both are
+        /// non-empty: [`disjoint`] of an empty range inside another is
+        /// false (`mmap` of 0 bytes fails, but [`try_reserve`]'s contract
+        /// does not say so), and likewise for
+        /// [`Reserved::is_apart_from_static`].
         #[verifier::external_body]
         pub proof fn is_disjoint(tracked &mut self, tracked other: &Self)
+            requires
+                old(self).len() > 0,
+                other.len() > 0,
             ensures
                 *final(self) == *old(self),
                 disjoint(old(self).addr() as int, old(self).len() as int, other.addr() as int, other.len() as int),
@@ -2210,7 +2219,7 @@ mod linux {
     mod kani_word {
         use super::{NCLASSES, word};
 
-        /// S176 `word`, `requires i < NCLASSES + 3`, no `ensures`: under
+        /// S175 `word`, `requires i < NCLASSES + 3`, no `ensures`: under
         /// it the call returns, for every byte string and index (and the
         /// word is bytes `8 * i..8 * i + 8` in native order).
         #[kani::proof]

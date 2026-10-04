@@ -104,10 +104,11 @@ and the call does not return (theorem 3, which is not voided for it).
   (`heap/mod.rs:1309`, the slice over the stack's `PointsTo`s),
   `Heap::cache_ptr` (`heap/cache.rs:302`, on the `malloc` and `free`
   fast paths: the home header for `class` is owned and caches `class`),
-  `cached_recently` (`heap/cache.rs:608`), the `others` list readers
-  `node_link`, `node_next`, `node_arena`, `node_caches`
-  (`heap/others.rs:100`, `:217`, `:238`, `:257`), and
-  `Heap::axiom_list_bound` (`heap/mod.rs:2652`).
+  `cached_recently` (`heap/cache.rs:608`), and the `others` list
+  readers `node_link`, `node_next`, `node_arena`, `node_caches`
+  (`heap/others.rs:100`, `:217`, `:238`, `:257`). The list's length
+  bound is proved (`Heap::lemma_list_bound`: its keys are distinct
+  `u16`s).
 - `flush::group_by_slab` (`heap/flush.rs:618`, `external_body`): its
   result is a permutation of the batch (the flush's tokens follow it).
 - `thread::fast_flags` (`heap/thread.rs:170`): the `PUSH_PAC` bit read

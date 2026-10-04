@@ -376,6 +376,36 @@ impl Heap {
     }
 }
 
+/// Pairwise distinct `u16`s are at most 2^16 (the bound on the `others`
+/// list, whose nodes' keys are: `Heap::lemma_list_bound`).
+pub(super) proof fn lemma_distinct_u16s(k: Seq<u16>)
+    requires
+        forall|i: int, j: int| 0 <= i < j < k.len() ==> k[i] != k[j],
+    ensures
+        k.len() <= 0x1_0000,
+{
+    let ki = k.map_values(|x: u16| x as int);
+    assert(ki.no_duplicates()) by {
+        assert forall|i: int, j: int| 0 <= i < ki.len() && 0 <= j < ki.len() && i != j implies ki[i] != ki[j] by {
+            if i < j {
+                assert(k[i] != k[j]);
+            } else {
+                assert(k[j] != k[i]);
+            }
+        }
+    }
+    ki.unique_seq_to_set();
+    let r = vstd::set_lib::set_int_range(0, 0x1_0000);
+    assert(ki.to_set().subset_of(r)) by {
+        assert forall|x: int| ki.to_set().contains(x) implies r.contains(x) by {
+            let i = choose|i: int| 0 <= i < ki.len() && ki[i] == x;
+            assert(ki[i] == k[i] as int);
+        }
+    }
+    vstd::set_lib::lemma_int_range(0, 0x1_0000);
+    vstd::set_lib::lemma_len_subset(ki.to_set(), r);
+}
+
 } // verus!
 
 // `node_hdr` and `Heap::node_cache_ptr`: the headers start at the node's
@@ -444,7 +474,7 @@ impl Heap {
     {
         proof {
             self.lemma_list(0);
-            self.axiom_list_bound();
+            self.lemma_list_bound();
             Heap::lemma_keeps_refl(*self);
         }
         let mut o = self.others;
@@ -698,7 +728,7 @@ impl Heap {
 mod kani_aborts {
     use super::assert_not_home;
 
-    /// S128 `assert_not_home`, `requires *arena != *home`: under it the
+    /// S127 `assert_not_home`, `requires *arena != *home`: under it the
     /// call returns, for every pair.
     #[kani::proof]
     fn assert_not_home_returns() {

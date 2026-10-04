@@ -2668,7 +2668,7 @@ impl Meta {
             is_pow2(align),
             old(ord).allows(rank_meta()),
         ensures
-            r matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
+            r matches Some(s) ==> 0 < s && s % align == 0 && s + len <= va_limit(),
             r matches Some(s) ==> self.holds(s as int, len as int),
             r matches Some(s) ==> self.holds(s as int, words_up(len as int)),
             *final(ord) == *old(ord),

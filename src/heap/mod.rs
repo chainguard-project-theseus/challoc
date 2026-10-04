@@ -3713,19 +3713,15 @@ impl Heap {
     }
 
     /// The `others` list of a well-formed heap has fewer than `usize::MAX`
-    /// nodes.
-    ///
-    /// Trusted: its nodes are distinct metadata blocks of more than 4 KiB
-    /// each (`node_block_layout`), whose headers the heap holds disjoint
-    /// permissions to ([`Heap::owns_node`]), so there are fewer than 2^52
-    /// of them.
-    #[verifier::external_body]
-    proof fn axiom_list_bound(&self)
+    /// nodes: its nodes' keys ([`Heap::list_ok`]) are pairwise distinct
+    /// `u16`s, so there are at most 2^16 of them.
+    proof fn lemma_list_bound(&self)
         requires
             self.wf(),
         ensures
-            self.list_len() < usize::MAX,
+            self.list_len() <= 0x1_0000,
     {
+        others::lemma_distinct_u16s(self.keys@);
     }
 
     /// [`Heap::keeps`] keeps every node of the `others` list in its place

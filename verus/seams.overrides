@@ -82,7 +82,6 @@ addr_mix	raw pointer (internal)	Kani
 axiom_fresh_stack	allocator invariant	RefinedRust
 assert_flushed	panic/abort	Kani	discharged (verus/seams/heap-assert_flushed.md)
 assert_refill_empty	panic/abort	Kani	discharged (verus/seams/heap-assert_refill_empty.md)
-Heap::axiom_list_bound	allocator invariant	RefinedRust
 assign_home	allocator invariant	RefinedRust
 mark_bound	raw pointer (internal)	RefinedRust
 node_caches_detached	raw pointer (internal)	RefinedRust

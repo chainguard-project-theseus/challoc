@@ -498,6 +498,13 @@ const _: () = assert!(
         && core::mem::size_of::<Arena>() <= isize::MAX as usize
 );
 
+// `Arena::axiom_array_layout` at `split`'s instance, checked (`Shared`
+// checks its own two).
+const _: () = assert!(
+    core::mem::size_of::<[ClassState; NCLASSES]>() == NCLASSES * core::mem::size_of::<ClassState>()
+        && core::mem::align_of::<[ClassState; NCLASSES]>() == core::mem::align_of::<ClassState>()
+);
+
 verus! {
 
 /// The slab set table's permission of a block of `raw` at `p`, when there

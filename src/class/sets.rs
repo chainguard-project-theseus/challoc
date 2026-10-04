@@ -151,7 +151,8 @@ impl Lazy {
 /// else, and `Meta` carves whole pages from a page-aligned start
 /// (`Inner::reserve`, `Inner::reserve_eager`), so the rounding stays
 /// inside the table's last page. Private, and [`Lazy::reserve_raw`] is
-/// its one call.
+/// its one call. `base` is not 0 (`Meta::reserve_table` ensures it): a
+/// permission at address 0 proves `false` (`PointsTo::is_nonnull`).
 ///
 /// Not the only permission `Meta`'s proofs know of: an eager table's
 /// bytes go to `Inner::handed` in `Inner::reserve_eager`, and
@@ -172,6 +173,8 @@ impl Lazy {
 /// `desc_unchecked`, `bits_unchecked`, `is_set_unchecked`, `owner_word`
 /// and `owner_at`).
 axiom fn axiom_table_bytes(base: usize, len: int) -> (tracked r: PointsToRaw)
+    requires
+        0 < base,
     ensures
         r.is_range(base as int, len),
         r.provenance() == cast_provenance(),

@@ -136,11 +136,14 @@ pub proof fn axiom_moved_block(p: *mut u8, old: usize, q: *mut u8, len: usize)
 /// freed. The producer that would ensure it: `Shared::classify_free`,
 /// which checks the slot's bitmap bit and gives `p` to every `zero_slot`
 /// caller (`Heap::free_slow_in` and `heap::free_direct`, which pass it on
-/// without stating it).
+/// without stating it). Required: `p` is a slot start of `class` (what
+/// `zero_slot` requires); without it any pointer, null included, would be
+/// writable.
 #[verifier::external_body]
 pub proof fn axiom_slot_writable(class: usize, p: *mut u8)
     requires
         class < crate::layout::NCLASSES,
+        crate::layout::process_regions().is_slot(class as int, p@.addr),
     ensures
         crate::vspec::ptr::valid_writes(p, crate::layout::class_table()[class as int].size as int),
 {
@@ -149,12 +152,14 @@ pub proof fn axiom_slot_writable(class: usize, p: *mut u8)
 /// The `len` usable bytes of the live huge run that starts at `page` are
 /// committed and valid for writes through `addr_ptr` of the page's
 /// address. The producer that would ensure it: `Huge::usable_size` for a
-/// run start that `Shared::classify_free` returned.
+/// run start that `Shared::classify_free` returned. Required: the `len`
+/// bytes end inside the huge region (`Huge::spec_run_usable` gives it).
 #[verifier::external_body]
 pub proof fn axiom_huge_writable(regions: crate::layout::Regions, page: usize, len: usize)
     requires
         regions.wf(),
         page < regions.huge_len >> regions.lg_page,
+        (page << regions.lg_page) + len <= regions.huge_len,
     ensures
         crate::vspec::ptr::valid_writes(addr_ptr((regions.huge_base + (page << regions.lg_page)) as usize), len as int),
 {

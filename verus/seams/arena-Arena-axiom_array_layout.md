@@ -53,10 +53,13 @@ Reproduce: `sh verus/kani/run.sh --harness arena::kani_layout::array_layout_inst
   `layout_for_type_is_valid` at `[u64; usize::MAX]`. The three callers'
   instances get the bound from `axiom_arena_layout` and
   `axiom_shared_layout`.
-- Gap: the instances are checked for x86_64 only (no build-time
-  assertion checks array layout); aarch64 lays arrays out by the same
-  rule. `verus/kani/run.sh` runs the harnesses under both quanta,
-  since `NCLASSES` is the length of the three arrays.
+- The instances are checked by Kani for x86_64 only; the three
+  `split_array` instances are also checked on every target and
+  quantum by build-time assertions (in `arena.rs` for `ClassState` and
+  in `heap/shared.rs` for `GuardTest` and `SlabTable`, added by the seam
+  audit `verus/audit/invariants.md`). `verus/kani/run.sh` runs the
+  harnesses under both quanta, since `NCLASSES` is the length of the
+  three arrays.
 
 Common to every Kani record: Kani checks the MIR of a debug build
 (overflow checks and debug assertions on) for x86_64, with CBMC's
@@ -95,4 +98,5 @@ is still the ledger's entry for this seam: a body that breaks the
 contract fails the harness, and a changed contract fails that
 check until this record and its harness are revisited. The script
 is run by hand (it needs Kani's own toolchain,
-`verus/kani/setup.sh`); no CI job runs it yet.
+`verus/kani/setup.sh`); no CI job runs it yet. Every build checks the
+three `split_array` instances (the assertions above).

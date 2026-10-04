@@ -233,8 +233,9 @@ impl ClassState {
     /// reads the owner word: they agree because a page group never
     /// straddles a hand-out group (`SlabTable::new` asserts `group %
     /// slabs_per_page == 0`), so every slab here is under one owner word,
-    /// and `transfer_group` rewrites that word and every descriptor's
-    /// arena in one hold of both class locks.
+    /// and `take_group` writes that word and every descriptor's arena
+    /// once, as it hands the group out, and nothing rewrites either
+    /// (`table::slab_owner`).
     ///
     /// Trusted: that agreement is what the `ensures` rests on (the ghost
     /// `g` is the value of the class lock the caller holds, whose owner

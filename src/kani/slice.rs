@@ -41,7 +41,7 @@ fn same(a: &[u64], b: &[u64]) -> bool {
     true
 }
 
-/// S330 `<[T]>::swap`: under `a, b < len`, `old.update(a, old[b])
+/// S329 `<[T]>::swap`: under `a, b < len`, `old.update(a, old[b])
 /// .update(b, old[a])`.
 #[kani::proof]
 #[kani::unwind(8)]
@@ -58,7 +58,7 @@ fn slice_swap() {
     assert!(same(&a, &want));
 }
 
-/// S331 `<[T]>::reverse`: `old.reverse()`, element `k` is `old[n - 1 - k]`.
+/// S330 `<[T]>::reverse`: `old.reverse()`, element `k` is `old[n - 1 - k]`.
 #[kani::proof]
 #[kani::unwind(8)]
 fn slice_reverse() {
@@ -71,7 +71,7 @@ fn slice_reverse() {
     assert!(same(&a[n..], &old[n..]));
 }
 
-/// S339 `<[T]>::swap_with_slice`: under equal lengths, the contents trade
+/// S338 `<[T]>::swap_with_slice`: under equal lengths, the contents trade
 /// places.
 #[kani::proof]
 #[kani::unwind(8)]
@@ -93,7 +93,7 @@ fn any_long_words() -> ([u64; SORTED_MAX], usize) {
     (a, n)
 }
 
-/// S332 `<[T]>::is_sorted`: no `requires`, no `ensures`; it returns
+/// S331 `<[T]>::is_sorted`: no `requires`, no `ensures`; it returns
 /// without a panic or undefined behaviour (and, here, says whether each
 /// element is at most the next), for every slice up to `SORTED_MAX`.
 #[kani::proof]
@@ -104,7 +104,7 @@ fn slice_is_sorted() {
     assert_eq!(r, (1..n).all(|k| a[k - 1] <= a[k]));
 }
 
-/// S333 `<[T]>::is_sorted_by_key`: as `is_sorted`, for a key `x ^ c`
+/// S332 `<[T]>::is_sorted_by_key`: as `is_sorted`, for a key `x ^ c`
 /// with an arbitrary `c`.
 #[kani::proof]
 #[kani::unwind(8)]
@@ -116,7 +116,7 @@ fn slice_is_sorted_by_key() {
     assert_eq!(r, (1..n).all(|k| key(&a[k - 1]) <= key(&a[k])));
 }
 
-/// S286 `<[T]>::get_unchecked`: under the `index` precondition (in
+/// S285 `<[T]>::get_unchecked`: under the `index` precondition (in
 /// bounds), the element or subslice `index` gives, at the instantiations
 /// the proofs use: `usize` (`heap/flush.rs`, `arena.rs`, `api/libc.rs`),
 /// `RangeTo` and `RangeFrom`. Kani's undefined-behaviour checks cover the
@@ -141,7 +141,7 @@ fn slice_get_unchecked() {
     assert!(core::ptr::eq(hi, &s[k..]));
 }
 
-/// S338 `<[T]>::get_unchecked_mut`: as `get_unchecked`, and a write
+/// S337 `<[T]>::get_unchecked_mut`: as `get_unchecked`, and a write
 /// through the result is the write `index_mut` would make.
 #[kani::proof]
 #[kani::unwind(8)]
@@ -170,7 +170,7 @@ fn slice_get_unchecked_mut() {
     assert!(core::ptr::eq(unsafe { s.get_unchecked_mut(k..) }, want_hi));
 }
 
-/// S328 `core::slice::from_ref`: the one-element sequence of `*s`.
+/// S327 `core::slice::from_ref`: the one-element sequence of `*s`.
 #[kani::proof]
 fn slice_from_ref() {
     let x: u64 = kani::any();
@@ -179,7 +179,7 @@ fn slice_from_ref() {
     assert_eq!(r[0], x);
 }
 
-/// S329 `<&mut [T] as IntoIterator>::into_iter`: the iterator hands out
+/// S328 `<&mut [T] as IntoIterator>::into_iter`: the iterator hands out
 /// each element once, in order, holding its old value, and what is
 /// written through each reference is the slice's final value there
 /// (`remaining` is the sequence of references; the prophetic laws are
@@ -210,7 +210,7 @@ fn slice_iter_mut() {
     assert!(same(&a[n..], &old[n..]));
 }
 
-/// S342 `<[T; N] as IntoIterator>::into_iter` and S343 its `next`: the
+/// S341 `<[T; N] as IntoIterator>::into_iter` and S342 its `next`: the
 /// iterator starts with every element in order, `next` hands out the
 /// front one, and returns `None` (and stays empty) once all are out.
 #[kani::proof]
@@ -231,7 +231,7 @@ fn array_into_iter() {
     assert_eq!(it.next(), None);
 }
 
-/// S348 `<[T]>::as_mut_ptr` and S349 `<[T]>::as_ptr`: no `requires`, no
+/// S347 `<[T]>::as_mut_ptr` and S348 `<[T]>::as_ptr`: no `requires`, no
 /// `ensures`; they return without a panic (the address is the first
 /// element's when there is one).
 #[kani::proof]

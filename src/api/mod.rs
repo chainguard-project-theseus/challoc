@@ -703,9 +703,11 @@ impl ForkHeld {
         self.toks.tracked_remove(k)
     }
 
-    /// Each token is the hold of the lock its key names in `s`, and the
-    /// arenas are indices below `n`.
+    /// `n` is a count `fork_prepare` read (a `u32`), each token is the hold
+    /// of the lock its key names in `s`, and the arenas are indices below
+    /// `n`.
     pub(crate) open spec fn wf(self, s: Shared) -> bool {
+        &&& 0 <= self.n() <= u32::MAX
         &&& forall|i: int| #[trigger] self.arenas().contains_key(i) ==> 0 <= i < self.n()
         &&& forall|k: ForkLock|
             #![trigger self.keys().contains(k)]
@@ -787,11 +789,13 @@ fn arena_held<'a>(s: &'a Shared, i: usize, Tracked(held): Tracked<&ForkHeld>) ->
 }
 
 /// `s.arenas.count()` while `held` holds the creation lock: the count
-/// `fork_prepare` read. Trusted, as [`arena_held`].
+/// `fork_prepare` read. Trusted, as [`arena_held`]. The bundle's `n` is
+/// a `u32` (required, and part of [`ForkHeld::wf`]): the result is one.
 #[verifier::external_body]
 #[inline(always)]
 fn count_held(s: &Shared, Tracked(held): Tracked<&ForkHeld>) -> (r: u32)
     requires
+        0 <= held.n() <= u32::MAX,
         held.keys().contains(ForkLock::Arenas),
         held.lock(ForkLock::Arenas) == s.spec_fork_locks().1,
     ensures

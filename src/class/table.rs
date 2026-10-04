@@ -610,6 +610,20 @@ impl SlabTable {
             assert(nslabs * cls.slab_bits <= 64 * nwords);
             crate::bitmap::lemma_marks_sub(0, nslabs * cls.slab_bits, 0, 64 * nwords);
         }
+        proof {
+            // The words end inside the bitmap's reservation, below `2^57`.
+            let (lb, ln, nb) = (bits.spec_base() as int, bits.spec_len() as int, geo.nbits);
+            assert(bits_base + 8 * nwords <= usize::MAX) by (nonlinear_arith)
+                requires
+                    bits_base as int == lb + stagger,
+                    lb + ln <= 0x200_0000_0000_0000,
+                    ln >= stagger + nb / 8,
+                    nwords == (nb + 63) / 64,
+                    0 <= nb,
+                    0 <= lb,
+                    0 <= stagger,
+            ;
+        }
         let tracked perms = axiom_fresh_words(bits_base, nwords as nat);
         let tracked word_invs = crate::bitmap::fresh_word_invs(perms, all, marks, slots, bits_base, nwords as nat);
         // The permissions to every descriptor, bitmap word and owner word,
@@ -1012,8 +1026,12 @@ axiom fn axiom_slot_loc(c: int, loc: Loc, glg: u8, gmask: u32)
 /// private to this module and `SlabTable::new` is its one call, for its
 /// own bitmap. The `PointsTo<AtomicU64>`s of [`axiom_init_words`] are
 /// a second permission to the same words, held by `SlabTable` and only
-/// ever borrowed shared (`ptr_ref`), never written through.
+/// ever borrowed shared (`ptr_ref`), never written through. The words
+/// end in the address space (required): a permission's `addr` is a
+/// `usize`, so a range past `usize::MAX` would prove `false`.
 axiom fn axiom_fresh_words(base: usize, n: nat) -> (tracked r: Map<int, WordPerm>)
+    requires
+        base + 8 * n <= usize::MAX,
     ensures
         forall|j: int| 0 <= j < n ==> #[trigger] r.contains_key(j) && r[j].addr() == base + 8 * j && r[j].value() == 0;
 
