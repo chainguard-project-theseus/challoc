@@ -799,7 +799,7 @@ mod exports {
     // x86_64 (the `global_asm!` below); their `je_` twins stay in `.text`.
 
     #[unsafe(no_mangle)]
-    #[cfg_attr(target_arch = "x86_64", unsafe(link_section = ".text.challoc.malloc"))]
+    #[unsafe(link_section = ".text.challoc.malloc")]
     pub extern "C" fn malloc(size: usize) -> *mut c_void {
         super::malloc(size) as *mut c_void
     }
@@ -810,7 +810,7 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
-    #[cfg_attr(target_arch = "x86_64", unsafe(link_section = ".text.challoc.free"))]
+    #[unsafe(link_section = ".text.challoc.free")]
     pub extern "C" fn free(p: *mut c_void) {
         super::free(p as *mut u8)
     }
@@ -840,6 +840,20 @@ mod exports {
         ".popsection",
         ".pushsection .text.challoc.free,\"ax\",@progbits",
         ".p2align 6",
+        ".popsection",
+    );
+
+    // Placement control (not for merge): on aarch64 `malloc` sits at
+    // 8 mod 64 and `free` at 20 mod 64, each alone in its section.
+    #[cfg(target_arch = "aarch64")]
+    core::arch::global_asm!(
+        ".pushsection .text.challoc.malloc,\"ax\",@progbits",
+        ".p2align 6",
+        ".space 8",
+        ".popsection",
+        ".pushsection .text.challoc.free,\"ax\",@progbits",
+        ".p2align 6",
+        ".space 20",
         ".popsection",
     );
 
