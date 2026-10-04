@@ -431,8 +431,11 @@ extern "C" fn fork_child() {
     fork_release();
     // The dirty bytes this child inherited, the lazy start's baseline: read
     // after the release (the sum takes the class and huge locks), while
-    // the child is still single-threaded, so nothing has moved them.
-    purge::background::set_fork_base(crate::policy::empty_bytes(shared()));
+    // the child is still single-threaded, so nothing has moved them. Only
+    // under the lazy start: nothing else reads it.
+    if purge::background::auto() {
+        purge::background::set_fork_base(crate::policy::empty_bytes(shared()));
+    }
 }
 
 #[cfg(test)]

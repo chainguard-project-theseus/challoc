@@ -7,7 +7,7 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::heap::{Shared, TLS_CREATING, TLS_EXITED};
-use crate::lock::Lock;
+use crate::lock::{Lock, Padded};
 use crate::sys::{self, Timespec};
 
 /// Stack size including the guard page below it.
@@ -40,15 +40,21 @@ static STATE: Lock<State> = Lock::new(State {
 static PRESENT: AtomicBool = AtomicBool::new(false);
 /// `background_thread:true` (or, later, `mallctl("background_thread")`).
 static REQUESTED: AtomicBool = AtomicBool::new(false);
-/// Futex word the thread sleeps on; bumped by [`wake`].
-static SEQ: AtomicU32 = AtomicU32::new(0);
+/// Futex word the thread sleeps on; bumped by [`wake`]. On a line of its
+/// own: [`wake`]'s `fetch_add` runs while the thread is present, and the
+/// statics placed next to it (`api::STATE`) are read by every `malloc`
+/// and `free`.
+static SEQ: Padded<AtomicU32> = Padded(AtomicU32::new(0));
 
 /// Lazy start (the default, `background_thread` unset): nothing is
 /// requested, but [`auto_tick`] requests and starts the thread once the
 /// process holds [`AUTO_BURST`] dirty bytes, or [`AUTO_FLOOR`] for
 /// [`AUTO_HOLD_NS`]. Cleared by an explicit [`request`] and for good by
-/// a lazy start that failed (a sandbox that refuses `clone`).
+/// [`AUTO_TRIES`] lazy starts that failed (a sandbox that refuses
+/// `clone`, a thread limit the process sits at).
 static AUTO: AtomicBool = AtomicBool::new(false);
+/// Lazy starts that failed so far.
+static AUTO_FAILS: AtomicU32 = AtomicU32::new(0);
 /// Coarse time before which [`auto_tick`] does not look again.
 static AUTO_NEXT: AtomicU64 = AtomicU64::new(0);
 /// Coarse time of the first look of the current stretch at or above
@@ -71,6 +77,12 @@ pub const AUTO_HOLD_NS: u64 = 1_000_000_000;
 /// At most one look per this much coarse time: a look sums the `Empty`
 /// bytes of every class that has any (one lock hold each).
 pub const AUTO_CHECK_NS: u64 = 100_000_000;
+/// Failed lazy starts after which the lazy start is off for good. The
+/// ones before it are retried no sooner than [`AUTO_RETRY_NS`] later: an
+/// `EAGAIN` from a pids or thread limit the process sits at may pass.
+pub const AUTO_TRIES: u32 = 3;
+/// The least time between a failed lazy start and the next look.
+pub const AUTO_RETRY_NS: u64 = 1_000_000_000;
 /// Run once by the next `start` that creates a thread, after the
 /// creation and before the thread is published, for tests.
 #[cfg(test)]
@@ -191,18 +203,29 @@ pub fn start(shared: &Shared) -> bool {
 
 /// [`start`] for an allocation's tick that found the thread requested.
 /// A lazy request (the lazy start still armed) whose start failed, and
-/// is not merely in progress on another thread, disarms the lazy start
-/// and withdraws itself: the process keeps purging in the foreground, as
-/// with `background_thread:false`, and never tries again. An explicit
-/// request stays, and the next tick tries again.
+/// is not merely in progress on another thread, withdraws itself: the
+/// process keeps purging in the foreground, as with
+/// `background_thread:false`, and the lazy start looks again no sooner
+/// than [`AUTO_RETRY_NS`] later, up to [`AUTO_TRIES`] failures in all,
+/// after which it is off for good. An explicit request stays, and the
+/// next tick tries again.
 pub fn start_requested(shared: &Shared) -> bool {
     if start(shared) {
         return true;
     }
     let g = STATE.lock();
     if !g.creating && !g.present && AUTO.load(Ordering::Relaxed) {
-        AUTO.store(false, Ordering::Relaxed);
         REQUESTED.store(false, Ordering::Relaxed);
+        let fails = AUTO_FAILS.load(Ordering::Relaxed) + 1;
+        AUTO_FAILS.store(fails, Ordering::Relaxed);
+        if fails >= AUTO_TRIES {
+            AUTO.store(false, Ordering::Relaxed);
+        } else {
+            AUTO_NEXT.store(
+                sys::now_coarse_ns().saturating_add(AUTO_RETRY_NS),
+                Ordering::Relaxed,
+            );
+        }
     }
     false
 }
@@ -294,6 +317,7 @@ pub fn set_auto(shared: Option<&Shared>) {
     AUTO_NEXT.store(0, Ordering::Relaxed);
     AUTO_SINCE.store(0, Ordering::Relaxed);
     AUTO_BASE.store(0, Ordering::Relaxed);
+    AUTO_FAILS.store(0, Ordering::Relaxed);
 }
 
 /// Create the thread on `stack` (reserving the stack first if there is
@@ -425,6 +449,7 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
     // is NUL-terminated.
     let shared = unsafe { &*(arg as *const Shared) };
     let _ = unsafe { sys::prctl(PR_SET_NAME, b"challoc-bg\0".as_ptr() as usize, 0, 0, 0) };
+    detach_from_starter();
     loop {
         // Read the sequence before scanning, so a bump that lands
         // between the scan and the wait makes the wait return at once.
@@ -453,6 +478,36 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
         // the call. Every outcome (wake, EAGAIN, ETIMEDOUT, EINTR) just
         // means "look again".
         let _ = unsafe { sys::futex_wait(SEQ.as_ptr(), seq, timeout.as_ref()) };
+    }
+}
+
+/// The thread inherits the scheduling of whichever thread created it, and
+/// under the lazy start that is any allocating thread: a worker pinned to
+/// one CPU, niced or real-time. Run on the new thread, this puts it on
+/// `SCHED_OTHER` with the CPU affinity and nice value of the process's
+/// main thread (the thread whose id is the pid) instead. Best effort:
+/// what the kernel refuses (raising priority past `RLIMIT_NICE`, leaving
+/// `SCHED_IDLE`, a main thread that has exited) stays as inherited.
+fn detach_from_starter() {
+    // SAFETY: scheduling calls on this thread (id 0) and reads of the
+    // main thread's settings, all into locals.
+    unsafe {
+        let param = ::libc::sched_param { sched_priority: 0 };
+        let _ = ::libc::sched_setscheduler(0, ::libc::SCHED_OTHER, &param);
+        let pid = ::libc::getpid();
+        let mut set: ::libc::cpu_set_t = core::mem::zeroed();
+        let size = core::mem::size_of::<::libc::cpu_set_t>();
+        if ::libc::sched_getaffinity(pid, size, &mut set) == 0 {
+            let _ = ::libc::sched_setaffinity(0, size, &set);
+        }
+        // getpriority returns the nice value, -1 included, so errno tells
+        // a failure apart.
+        let errno = ::libc::__errno_location();
+        *errno = 0;
+        let nice = ::libc::getpriority(::libc::PRIO_PROCESS, pid as ::libc::id_t);
+        if *errno == 0 {
+            let _ = ::libc::setpriority(::libc::PRIO_PROCESS, 0, nice);
+        }
     }
 }
 
