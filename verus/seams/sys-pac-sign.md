@@ -261,7 +261,7 @@ Six facts:
 - **Gaps.** One TCR value per VA size stands for the kernel's (the
   other TCR fields are Linux's defaults; 52-bit VA with 4K or 16K pages,
   FEAT_LPA2, is not among the configurations). The code read is the
-  static library's (verus/ISLA.md, plan item 3): the shipped shared
+  static library's (verus/ISLA.md, plan item 2): the shipped shared
   library may use register assignments not in the 15, which no job then
   covers. Fact 5 describes user pointers only (bit 55 clear); for the
   others (bit 55 set, the TBI1 half, which Linux leaves without

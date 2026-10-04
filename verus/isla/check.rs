@@ -31,9 +31,15 @@
 //!                              its copy. REG (required under `pc-step` for
 //!                              those three kinds): a register every trace
 //!                              that falls through must write. On x86_64
-//!                              the one kind is `jump` (writes rip, no
-//!                              model fault; the job must assert
-//!                              `final.rip`, the target)
+//!                              the kinds are `fallthrough LEN` (no model
+//!                              fault, and rip provably ends at rip + LEN,
+//!                              the instruction's length in bytes), `jump`
+//!                              (writes rip, no model fault; the last of its
+//!                              copy, and the job must assert `final.rip`,
+//!                              the target) and `trap FN` (a model fault,
+//!                              with no rip write, whose trace calls FN,
+//!                              traced with `--trace-function FN`; the last
+//!                              of its copy)
 //!   copy NAME                  start a copy of the machine: the `insn`
 //!                              lines after it run from their own initial
 //!                              state, named `NAME.init.R` and so on (a
@@ -45,6 +51,12 @@
 //!                              shared by every copy (the record argues FN
 //!                              is a function); any other abstract call is
 //!                              an error
+//!   fun FN VALUE               Isla's `--fun-assumption FN(..) => VALUE`:
+//!                              the traces may make it (at the model's
+//!                              `reset_registers`) and use it in place of
+//!                              a call of FN; any other function
+//!                              assumption is an error (the record names
+//!                              it as a residual assumption)
 //!   stop FN ARG...             Isla's `--stop-at FN`: a `stop` instruction's
 //!                              trace may end at a call of FN (its last
 //!                              event an `abstract-call` of FN with no
@@ -128,10 +140,17 @@
 //! `stop` are aarch64 only. Exit
 //! status 0 when everything holds, 1 when something fails, 2 on a usage
 //! error or a Z3 answer other than sat/unsat (an undeclared name included).
+//!
+//! The children of a satisfiable prefix are judged in parallel, on up to
+//! ISLA_CHECK_JOBS threads (default: the CPUs), each its own Z3 run; the
+//! properties of a feasible combination are one Z3 run, each in its own
+//! `(push)`/`(pop)` scope. The results and the report are in the order of
+//! the combinations.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{env, fs, process};
 
 #[derive(Clone, Debug)]
@@ -339,6 +358,10 @@ struct Insn {
     traces: Vec<Vec<Sx>>,
     /// The register a trace that falls through must write (`pc-step`).
     completes: Option<String>,
+    /// x86_64: a `fallthrough` instruction's length in bytes.
+    len: Option<u64>,
+    /// x86_64: the function a `trap` instruction's fault goes through.
+    trap_fn: Option<String>,
 }
 
 fn load_insn(file: &str, kind: &str) -> Insn {
@@ -372,6 +395,8 @@ fn load_insn(file: &str, kind: &str) -> Insn {
         segs,
         traces,
         completes: None,
+        len: None,
+        trap_fn: None,
     }
 }
 
@@ -400,6 +425,9 @@ struct Job {
     arch: Arch,
     copies: Vec<Copy>,
     abstracts: BTreeSet<String>,
+    /// `fun` lines: Isla function assumptions (function, result) the
+    /// traces may use.
+    funs: BTreeSet<(String, String)>,
     /// `stop` functions -> the arguments their call must have.
     stops: BTreeMap<String, Vec<String>>,
     writes: BTreeSet<String>,
@@ -451,7 +479,7 @@ fn load_job(path: &str) -> Job {
                 let kind = w.next().unwrap_or("fallthrough");
                 let known: &[&str] = match job.arch {
                     Arch::Aarch64 => &["fallthrough", "ret", "svc", "brk", "fault", "stop"],
-                    Arch::X86_64 => &["jump"],
+                    Arch::X86_64 => &["jump", "fallthrough", "trap"],
                 };
                 if !known.contains(&kind) {
                     die(&format!("insn: unknown kind {kind}"));
@@ -465,7 +493,23 @@ fn load_job(path: &str) -> Job {
                     });
                 }
                 let mut insn = load_insn(&f.to_string_lossy(), kind);
-                insn.completes = w.next().map(String::from);
+                let third = w.next().map(String::from);
+                match (job.arch, kind) {
+                    (Arch::Aarch64, _) => insn.completes = third,
+                    (Arch::X86_64, "fallthrough") => {
+                        insn.len = Some(
+                            third
+                                .and_then(|n| n.parse().ok())
+                                .unwrap_or_else(|| die("insn FILE fallthrough LEN: no length")),
+                        )
+                    }
+                    (Arch::X86_64, "trap") => {
+                        insn.trap_fn =
+                            Some(third.unwrap_or_else(|| die("insn FILE trap FN: no function")))
+                    }
+                    _ if third.is_some() => die("insn FILE jump: too many words"),
+                    _ => {}
+                }
                 if w.next().is_some() {
                     die("insn FILE KIND [REG]: too many words");
                 }
@@ -490,6 +534,13 @@ fn load_job(path: &str) -> Job {
                     prefix: format!("{rest}_"),
                     insns: Vec::new(),
                 });
+            }
+            "fun" => {
+                let mut w = rest.split_whitespace();
+                let (Some(f), Some(v), None) = (w.next(), w.next(), w.next()) else {
+                    die("fun FN VALUE")
+                };
+                job.funs.insert((f.to_string(), v.to_string()));
             }
             "abstract" => {
                 job.abstracts.insert(rest.to_string());
@@ -555,9 +606,9 @@ fn load_job(path: &str) -> Job {
             .iter()
             .rev()
             .skip(1)
-            .any(|i| i.kind == "stop" || i.kind == "fault")
+            .any(|i| ["stop", "fault", "trap"].contains(&i.kind.as_str()))
         {
-            die("a `stop` or `fault` instruction that is not the last of its copy");
+            die("a `stop`, `fault` or `trap` instruction that is not the last of its copy");
         }
         // Under `pc-step` a trace that ends without writing anything also
         // looks like a fall-through: the model's footprint function
@@ -571,10 +622,14 @@ fn load_job(path: &str) -> Job {
         {
             die("pc-step: an insn line without the register its completion writes");
         }
-        // An x86 `jump` is any write of rip: where the sequence goes is
-        // what the job asserts.
+        // An x86 `jump` is any write of rip, so it ends its copy, and where
+        // the sequence goes is what the job asserts.
+        if job.arch == Arch::X86_64 && c.insns.iter().rev().skip(1).any(|i| i.kind == "jump") {
+            die("x86_64: a `jump` instruction that is not the last of its copy");
+        }
         let rip = format!("{}final_rip", c.prefix);
         if job.arch == Arch::X86_64
+            && c.insns.last().is_some_and(|i| i.kind == "jump")
             && !job
                 .asserts
                 .iter()
@@ -729,6 +784,11 @@ fn build(job: &Job, pick: &[usize]) -> Built {
     let mut any_stopped = false;
     let mut picks = pick.iter();
     let full = pick.len() == job.insns().count();
+    let pc_reg = if job.arch == Arch::X86_64 {
+        "rip"
+    } else {
+        "_PC"
+    };
     for copy in &job.copies {
         if picks.len() == 0 {
             break;
@@ -761,6 +821,8 @@ fn build(job: &Job, pick: &[usize]) -> Built {
             let mut wrote_pc = false;
             let mut wrote_exc = false;
             let mut faulted = false;
+            // A call of the `trap` instruction's function (x86_64).
+            let mut called = false;
             // The PC as the instruction first reads it and as it last
             // writes it (None inside: not expressible).
             let mut pc_in: Option<Option<String>> = None;
@@ -968,6 +1030,15 @@ fn build(job: &Job, pick: &[usize]) -> Built {
                             }
                             continue;
                         }
+                        // The PC as the instruction first reads and last writes it.
+                        if r == pc_reg {
+                            let v = locs.first().and_then(|l| l.1.as_ref()).map(|v| v.0.clone());
+                            if head == "write-reg" {
+                                pc_out = Some(v);
+                            } else if pc_in.is_none() {
+                                pc_in = Some(v);
+                            }
+                        }
                         if head == "write-reg" && job.arch == Arch::X86_64 {
                             if r == "rip" {
                                 wrote_pc = true;
@@ -992,14 +1063,6 @@ fn build(job: &Job, pick: &[usize]) -> Built {
                                 state.insert(loc, val);
                             }
                             continue;
-                        }
-                        if r == "_PC" {
-                            let v = locs.first().and_then(|l| l.1.as_ref()).map(|v| v.0.clone());
-                            if head == "write-reg" {
-                                pc_out = Some(v);
-                            } else if pc_in.is_none() {
-                                pc_in = Some(v);
-                            }
                         }
                         if head == "read-reg" {
                             for (loc, val, var) in locs {
@@ -1141,6 +1204,21 @@ fn build(job: &Job, pick: &[usize]) -> Built {
                     // Events with no effect on registers or memory: path
                     // bookkeeping, model-level assumptions about registers the
                     // configuration fixed, and tracing.
+                    "call" if insn.trap_fn.as_deref() == l.get(1).map(reg_name).as_deref() => {
+                        called = true;
+                    }
+                    // An Isla function assumption (`--fun-assumption F(..) => V`):
+                    // made at the model's reset, then used in place of a call of
+                    // F. Only the job's, which its record names as residuals.
+                    "function-assumption" | "use-function-assumption" => {
+                        let f = l.get(1).map(reg_name).unwrap_or_default();
+                        let v = l.get(2).and_then(atom).unwrap_or("").to_string();
+                        if !job.funs.contains(&(f.clone(), v.clone())) {
+                            violations.push(format!(
+                                "{label}insn {k1}: function assumption {f} => {v}, which the job does not name"
+                            ));
+                        }
+                    }
                     "assume-reg" | "assume" | "branch" | "branch-address" | "cycle" | "call"
                     | "return" | "define-enum" | "instr" | "mark-reg" => {}
                     // The Armv9.4-A model announces an exception entry (for
@@ -1197,6 +1275,7 @@ fn build(job: &Job, pick: &[usize]) -> Built {
                 }
             }
             let normal = match (job.arch, insn.kind.as_str()) {
+                (Arch::X86_64, "trap") => faulted && called && !wrote_pc,
                 (Arch::X86_64, _) => !faulted && wrote_pc,
                 (_, "svc" | "brk") => !stopped && wrote_exc && wrote_pc,
                 (_, "fault") => !stopped && wrote_pc,
@@ -1205,16 +1284,24 @@ fn build(job: &Job, pick: &[usize]) -> Built {
             };
             if !normal {
                 // What makes it abnormal, for the report (and the controls).
-                let why = if faulted {
-                    "a model fault"
+                let why = if insn.kind == "trap" {
+                    match &insn.trap_fn {
+                        Some(f) if faulted && !called => {
+                            format!("a model fault with no call of {f}")
+                        }
+                        _ if faulted => "a model fault after a rip write".to_string(),
+                        _ => "no model fault".to_string(),
+                    }
+                } else if faulted {
+                    "a model fault".to_string()
                 } else if stopped {
-                    "a stop call"
+                    "a stop call".to_string()
                 } else if wrote_exc {
-                    "an exception"
+                    "an exception".to_string()
                 } else if !wrote_pc {
-                    "no PC write"
+                    "no PC write".to_string()
                 } else {
-                    "no exception"
+                    "no exception".to_string()
                 };
                 abnormal.push(format!(
                     "{label}insn {k1} ({}) trace {}: {why}",
@@ -1264,7 +1351,7 @@ fn build(job: &Job, pick: &[usize]) -> Built {
                 match (pc_in, pc_out) {
                     (Some(Some(i)), Some(Some(o))) => falls.push((
                         format!("{label}insn {k1} falls through"),
-                        format!("(= {o} (bvadd {i} #x0000000000000004))"),
+                        format!("(= {o} (bvadd {i} (_ bv{} 64)))", insn.len.unwrap_or(4)),
                     )),
                     _ => violations.push(format!(
                         "{label}insn {k1}: PC read or write not expressible"
@@ -1309,25 +1396,75 @@ fn build(job: &Job, pick: &[usize]) -> Built {
     }
 }
 
-/// Z3's answer to `smt`, then `extra`, then `(check-sat)`.
-fn z3(smt: &str, extra: &str) -> String {
+/// Z3's answers to `smt` followed by each of `extras` in turn, each in its
+/// own `(push)`/`(pop)` scope with a `(check-sat)`: one run of Z3 for all
+/// of them (`smt` is a combination's whole script, large for long jobs).
+fn z3_each(smt: &str, extras: &[String]) -> Vec<String> {
+    static RUN: AtomicUsize = AtomicUsize::new(0);
     let z3 = env::var("Z3").unwrap_or_else(|_| "z3".into());
-    let path = env::temp_dir().join(format!("isla-check-{}.smt2", process::id()));
-    fs::write(&path, format!("{smt}{extra}\n(check-sat)\n"))
-        .unwrap_or_else(|e| die(&format!("{e}")));
+    let n = RUN.fetch_add(1, Ordering::Relaxed);
+    let path = env::temp_dir().join(format!("isla-check-{}-{n}.smt2", process::id()));
+    let mut script = smt.to_string();
+    for e in extras {
+        writeln!(script, "(push)\n{e}\n(check-sat)\n(pop)").unwrap();
+    }
+    fs::write(&path, script).unwrap_or_else(|e| die(&format!("{e}")));
     let out = Command::new(&z3)
         .arg("-smt2")
         .arg(&path)
         .output()
         .unwrap_or_else(|e| die(&format!("{z3}: {e}")));
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s != "sat" && s != "unsat" {
-        let keep = env::temp_dir().join("isla-check-failed.smt2");
+    let s = String::from_utf8_lossy(&out.stdout).to_string();
+    let answers: Vec<String> = s
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect();
+    if answers.len() != extras.len() || answers.iter().any(|a| a != "sat" && a != "unsat") {
+        let keep = env::temp_dir().join(format!("isla-check-failed-{}.smt2", process::id()));
         let _ = fs::copy(&path, &keep);
-        die(&format!("z3 said: {s} (query kept in {})", keep.display()));
+        die(&format!(
+            "z3 said: {} (query kept in {})",
+            s.trim(),
+            keep.display()
+        ));
     }
     let _ = fs::remove_file(&path);
-    s
+    answers
+}
+
+/// Z3's answer to `smt`, then `extra`, then `(check-sat)`.
+fn z3(smt: &str, extra: &str) -> String {
+    z3_each(smt, &[extra.to_string()]).remove(0)
+}
+
+/// `f` applied to `0..n` on up to ISLA_CHECK_JOBS threads (default: the
+/// CPUs), the results in order.
+fn par_map<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    let jobs = env::var("ISLA_CHECK_JOBS")
+        .ok()
+        .and_then(|j| j.parse().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |p| p.get()))
+        .clamp(1, n.max(1));
+    let mut out: Vec<Option<T>> = (0..n).map(|_| None).collect();
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..jobs)
+            .map(|j| {
+                let f = &f;
+                s.spawn(move || (j..n).step_by(jobs).map(|i| (i, f(i))).collect::<Vec<_>>())
+            })
+            .collect();
+        for h in handles {
+            for (i, r) in h
+                .join()
+                .unwrap_or_else(|_| die("a checker thread panicked"))
+            {
+                out[i] = Some(r);
+            }
+        }
+    });
+    out.into_iter().map(|r| r.unwrap()).collect()
 }
 
 /// A trace up to what does not change its meaning: the
@@ -1369,6 +1506,145 @@ fn is_stop_call(ev: &Sx) -> bool {
             if r.len() == 2 && atom(&r[0]) == Some("_") && atom(&r[1]) == Some("poison"))
 }
 
+/// The search over combinations and its tallies.
+struct Search<'a> {
+    job: &'a Job,
+    /// Traces per instruction, through the copies in order.
+    counts: Vec<usize>,
+    feasible: usize,
+    checked: usize,
+    failed: usize,
+    pruned: usize,
+    feasible_exc: usize,
+    feasible_stop: usize,
+}
+
+impl Search<'_> {
+    /// Extend the satisfiable prefix `pick` by each trace of the next
+    /// instruction: a satisfiable prefix is extended in turn, a full
+    /// combination is judged.
+    fn visit(&mut self, pick: &mut Vec<usize>) {
+        let job = self.job;
+        let level = pick.len();
+        let sat: Vec<bool> = par_map(self.counts[level], |t| {
+            let mut p = pick.clone();
+            p.push(t);
+            z3(&build(job, &p).smt, "") == "sat"
+        });
+        for (t, sat) in sat.into_iter().enumerate() {
+            pick.push(t);
+            if level + 1 < self.counts.len() {
+                if sat {
+                    self.visit(pick);
+                } else {
+                    self.pruned += self.counts[level + 1..].iter().product::<usize>();
+                }
+            } else {
+                self.judge(pick, sat);
+            }
+            pick.pop();
+        }
+    }
+
+    /// A full combination, `sat` when its script is satisfiable.
+    fn judge(&mut self, pick: &[usize], sat: bool) {
+        let job = self.job;
+        let b = build(job, pick);
+        if env::var_os("ISLA_CHECK_DUMP").is_some() {
+            println!("; combination {pick:?}\n{}", b.smt);
+        }
+        if !sat {
+            return;
+        }
+        self.feasible += 1;
+        let label = format!(
+            "combination {:?}",
+            pick.iter().map(|p| p + 1).collect::<Vec<_>>()
+        );
+        if !b.abnormal.is_empty() {
+            self.failed += 1;
+            println!(
+                "FAIL {label}: feasible abnormal path: {}",
+                b.abnormal.join(", ")
+            );
+            return;
+        }
+        for v in &b.violations {
+            self.failed += 1;
+            println!("FAIL {label}: {v}");
+        }
+        if job
+            .mem_reads
+            .is_some_and(|n| b.mem_reads.iter().any(|m| *m != n))
+        {
+            self.failed += 1;
+            println!(
+                "FAIL {label}: {:?} memory reads, expected {:?}",
+                b.mem_reads, job.mem_reads
+            );
+        }
+        if job
+            .mem_writes
+            .is_some_and(|n| b.mem_writes.iter().any(|m| *m != n))
+        {
+            self.failed += 1;
+            println!(
+                "FAIL {label}: {:?} memory writes, expected {:?}",
+                b.mem_writes, job.mem_writes
+            );
+        }
+        // Each property must follow: its negation unsatisfiable. One Z3
+        // run for all of them; the reports in the order they are listed.
+        let excs: &[String] = if b.exc_taken { &job.assert_excs } else { &[] };
+        let mut what: Vec<String> = Vec::new();
+        let mut negs: Vec<String> = Vec::new();
+        for (w, f) in &b.falls {
+            what.push(format!("not proved that {w}"));
+            negs.push(format!("(assert (not {f}))"));
+        }
+        for a in job.asserts.iter().chain(excs) {
+            self.checked += 1;
+            // A name this combination leaves undefined (a `final.R` of a
+            // register no trace here writes or reads) is a failure of the
+            // assert, not a Z3 error.
+            let a_smt = job_smt(a);
+            let undefined: Vec<&str> = job_names(job, &a_smt)
+                .into_iter()
+                .filter(|n| !b.declared.contains(*n))
+                .collect();
+            if undefined.is_empty() {
+                what.push(format!("assert {a}"));
+                negs.push(format!("(assert (not {a_smt}))"));
+            } else {
+                what.push(format!(
+                    "assert {a}: {} undefined in this combination",
+                    undefined.join(", ")
+                ));
+                negs.push(String::new());
+            }
+        }
+        let asked: Vec<String> = negs.iter().filter(|n| !n.is_empty()).cloned().collect();
+        let mut answers = if asked.is_empty() {
+            Vec::new().into_iter()
+        } else {
+            z3_each(&b.smt, &asked).into_iter()
+        };
+        for (w, n) in what.iter().zip(&negs) {
+            let proved = !n.is_empty() && answers.next().as_deref() == Some("unsat");
+            if !proved {
+                self.failed += 1;
+                println!("FAIL {label}: {w}");
+            }
+        }
+        if b.exc_taken && job.assert_excs.is_empty() {
+            self.failed += 1;
+            println!("FAIL {label}: an exception path and no assert-exc for it");
+        }
+        self.feasible_exc += b.exc_taken as usize;
+        self.feasible_stop += b.stopped as usize;
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     // `isla-check --same A B`: the two trace files hold the same traces,
@@ -1400,113 +1676,29 @@ fn main() {
     }
     let counts: Vec<usize> = job.insns().map(|i| i.traces.len()).collect();
     let total: usize = counts.iter().product();
-    // Depth first over the choices of one trace per instruction: `pick` is
-    // the current prefix and `next` the trace to try after it. A prefix
-    // whose script is unsatisfiable is not extended (build's doc).
-    let mut pick: Vec<usize> = Vec::new();
-    let mut next = 0usize;
-    let (mut feasible, mut checked, mut failed, mut pruned) = (0, 0, 0, 0usize);
-    let (mut feasible_exc, mut feasible_stop) = (0usize, 0usize);
-    loop {
-        if next == counts[pick.len()] {
-            match pick.pop() {
-                Some(t) => {
-                    next = t + 1;
-                    continue;
-                }
-                None => break,
-            }
-        }
-        pick.push(next);
-        next = 0;
-        if pick.len() < counts.len() {
-            if z3(&build(&job, &pick).smt, "") == "unsat" {
-                pruned += counts[pick.len()..].iter().product::<usize>();
-                next = pick.pop().unwrap() + 1;
-            }
-            continue;
-        }
-        let b = build(&job, &pick);
-        if env::var_os("ISLA_CHECK_DUMP").is_some() {
-            println!("; combination {pick:?}\n{}", b.smt);
-        }
-        if z3(&b.smt, "") == "sat" {
-            feasible += 1;
-            let label = format!(
-                "combination {:?}",
-                pick.iter().map(|p| p + 1).collect::<Vec<_>>()
-            );
-            if !b.abnormal.is_empty() {
-                failed += 1;
-                println!(
-                    "FAIL {label}: feasible abnormal path: {}",
-                    b.abnormal.join(", ")
-                );
-            } else {
-                for v in &b.violations {
-                    failed += 1;
-                    println!("FAIL {label}: {v}");
-                }
-                if job
-                    .mem_reads
-                    .is_some_and(|n| b.mem_reads.iter().any(|m| *m != n))
-                {
-                    failed += 1;
-                    println!(
-                        "FAIL {label}: {:?} memory reads, expected {:?}",
-                        b.mem_reads, job.mem_reads
-                    );
-                }
-                if job
-                    .mem_writes
-                    .is_some_and(|n| b.mem_writes.iter().any(|m| *m != n))
-                {
-                    failed += 1;
-                    println!(
-                        "FAIL {label}: {:?} memory writes, expected {:?}",
-                        b.mem_writes, job.mem_writes
-                    );
-                }
-                for (what, f) in &b.falls {
-                    if z3(&b.smt, &format!("(assert (not {f}))")) != "unsat" {
-                        failed += 1;
-                        println!("FAIL {label}: not proved that {what}");
-                    }
-                }
-                let excs: &[String] = if b.exc_taken { &job.assert_excs } else { &[] };
-                for a in job.asserts.iter().chain(excs) {
-                    checked += 1;
-                    // A name this combination leaves undefined (a `final.R` of a
-                    // register no trace here writes or reads) is a failure of
-                    // the assert, not a Z3 error.
-                    let a_smt = job_smt(a);
-                    let undefined: Vec<&str> = job_names(&job, &a_smt)
-                        .into_iter()
-                        .filter(|n| !b.declared.contains(*n))
-                        .collect();
-                    if !undefined.is_empty() {
-                        failed += 1;
-                        println!(
-                            "FAIL {label}: assert {a}: {} undefined in this combination",
-                            undefined.join(", ")
-                        );
-                        continue;
-                    }
-                    if z3(&b.smt, &format!("(assert (not {}))", job_smt(a))) != "unsat" {
-                        failed += 1;
-                        println!("FAIL {label}: assert {a}");
-                    }
-                }
-                if b.exc_taken && job.assert_excs.is_empty() {
-                    failed += 1;
-                    println!("FAIL {label}: an exception path and no assert-exc for it");
-                }
-                feasible_exc += b.exc_taken as usize;
-                feasible_stop += b.stopped as usize;
-            }
-        }
-        next = pick.pop().unwrap() + 1;
-    }
+    // Depth first over the choices of one trace per instruction. A prefix
+    // whose script is unsatisfiable is not extended (build's doc); the
+    // children of a prefix are judged in parallel, in order.
+    let mut s = Search {
+        job: &job,
+        counts,
+        feasible: 0,
+        checked: 0,
+        failed: 0,
+        pruned: 0,
+        feasible_exc: 0,
+        feasible_stop: 0,
+    };
+    s.visit(&mut Vec::new());
+    let Search {
+        feasible,
+        checked,
+        mut failed,
+        pruned,
+        feasible_exc,
+        feasible_stop,
+        ..
+    } = s;
     if feasible == 0 {
         failed += 1;
         println!("FAIL: no feasible combination (the assumptions contradict the traces)");

@@ -13,10 +13,9 @@ SMT definitions;
 [Islaris](https://github.com/rems-project/islaris) proves properties of
 such traces in Coq/Iris. This file is the setup, the triage of the 26
 seams (and of `axiom_auth_sign`, a platform fact the same runs check),
-the nineteen discharged so far (eighteen of the 26 and `axiom_auth_sign`),
-the evidence for the aarch64 halves of
-the mixed seams, and the plan for the rest. Seam numbers and line numbers
-are from 8635213.
+all twenty-seven discharged (the 26 and `axiom_auth_sign`), and the plan
+for what is left: other CPUs, the linked code, Islaris and CI. Seam
+numbers and line numbers are from 8635213.
 
 ## Setup
 
@@ -162,11 +161,16 @@ the tree (a few minutes each; `-a` and `-x` take prebuilt ones) and
 then:
 
 1. checks each checked `asm!` template against `templates.txt`
-   (verbatim up to whitespace), and for each record the ledger entry
+   (verbatim up to whitespace), and for each record (every one
+   `seams.overrides` marks discharged with tool Islaris/Isla; a record
+   must state "Tool: Isla. Status: discharged" and carry no `@...@`
+   placeholder) the ledger entry
    whose status names it: same contract, and the item under the
    `#[cfg(target_arch = ...)]` of the architecture in the record's title
    (or under none, for a title with no architecture: `sys::pac`'s items
-   are one item for both);
+   and the mixed seams are one item for both; the `cfg` is the one on
+   the top-level item, on the `mod` an indented item sits in, or on the
+   indented item itself; any other `cfg` naming `target_arch` fails);
 2. disassembles the library (`llvm-objdump -dr`) and finds every site of
    the checked templates: every `svc`/`hvc`/`smc` must be `svc #0`,
    every relocation against `challoc_tls` must sit in the TLS load or
@@ -269,9 +273,10 @@ then:
    one the location held (an element written back unchanged is not a
    write), every write not in the job's `writes` fails, a write of
    `isla_fault` makes the path abnormal, the entry's `isla_*` registers
-   are never linked between instructions, the one instruction kind is
-   `jump` and a job must assert where it goes (`final.rip`); `pc-step`
-   and `stop` are Arm-only;
+   are never linked between instructions, `syscall` is a `jump` (the
+   last of its copy, and a job must assert where it goes, `final.rip`;
+   step 8 adds `fallthrough LEN` and `trap FN`), and `pc-step` and
+   `stop` are Arm-only;
 7. runs ten x86 negative controls on the real trace, each of which must
    fail with a `FAIL` line naming its own reason: the return address one
    byte off, R11 and the SS selector (a vector element) left out of
@@ -282,7 +287,20 @@ then:
    model fault), and the job without EFER.LMA or without CS.L (paths
    outside 64-bit mode, on which the asserts name values left
    undefined: a failure, not a Z3 error); and checks that the checker
-   refuses (a load error, not a `FAIL`) a job with no `final.rip` assert.
+   refuses (a load error, not a `FAIL`) a job with no `final.rip` assert;
+8. runs the x86_64 halves of the mixed seams (section 12; "The x86_64
+   mixed seams" below): the exact shape of the three GOT functions and
+   `rseq::symbols`, every `R_X86_64_GOTTPOFF` site in the TLS load or
+   store shape (one job per register assignment, one encoding each),
+   every load of `%fs:0`, every `ud2` as `0f 0b`, and their jobs;
+9. runs ten negative controls on those jobs, each failing for its own
+   reason: the GOT function's load one entry off and its `ret` claimed
+   to fall through, `rseq::symbols` storing the first value twice, a
+   TLS load without its relocation's definition, a TLS store storing the
+   offset, the thread pointer read at the GS base, `ud2` claimed to fall
+   through, to fault through the model-error path or to write rip
+   before its fault (a synthetic variant of the real trace), and a job
+   that does not name the 64-bit mode assumption its traces use.
 
 The PAC configurations: SCR_EL3 = 0x30401 (NS, RW, API, APK), and
 twelve variants: a kernel at EL1 with HCR_EL2 = `HCR_HOST_NVHE_FLAGS`
@@ -307,18 +325,81 @@ symbolic. Each in three CPU settings, 36 configurations:
 features exactly once. The traces are made in every run and written
 whole or not at all.
 
-At 64d801a with the Armv9.4-A and x86 work merged it passes in about
-ten minutes after the builds on 16 CPUs (9 min 40 s): two `svc` jobs,
-twelve TLS load jobs (70 sites), 2820 PAC jobs (36 instructions, the 33
-site forms and the three canonical ones, with a footprint and a determinism job in each of the 36
-configurations; in each, the round trip and the `pacda` and `autda`
-formula jobs with EnDA set and clear; in each v9.4 one, the FPAC
-exception job; and 24 ComputePAC purity spot checks), the check that
-the serialized v9.4 model gives four of the text model's traces, the
-GOT-function job, the `rseq::symbols` job, four `mrs` jobs (76 sites),
-two `brk` jobs, two TLS store jobs (5 sites), the `syscall` job (283
-sites; 71 traces, one feasible), and every negative control (61)
-rejected.
+At 64d801a with the Armv9.4-A work, the x86 `syscall` work and the
+x86_64 halves of the mixed seams it passes in about fourteen minutes
+after the builds on 16 CPUs (14 min 18 s): two `svc` jobs, twelve TLS
+load jobs (70 sites), 2820 PAC jobs (36 instructions, the 33 site forms
+and the three canonical ones, with a footprint and a determinism job in
+each of the 36 configurations; in each, the round trip and the `pacda`
+and `autda` formula jobs with EnDA set and clear; in each v9.4 one, the
+FPAC exception job; and 24 ComputePAC purity spot checks), the check
+that the serialized v9.4 model gives four of the text model's traces,
+the GOT-function job, the `rseq::symbols` job, four `mrs` jobs (76
+sites), two `brk` jobs, two TLS store jobs (5 sites), the `syscall` job
+(283 sites; 71 traces, one feasible) and its 64-bit-mode cross-check,
+the 17 x86 jobs of step 12 (the GOT functions, `rseq::symbols`, ten TLS
+load and three TLS store assignments, `fs:[0]`, `ud2`), and every
+negative control (71) rejected. The PAC footprints and the x86
+`rseq::symbols` job (two to three minutes) dominate.
+
+### The x86_64 mixed seams
+
+Run on the x86 model as in step 6, the GOT loads, the TLS accesses,
+`mov fs:[0]` and `ud2` did not finish in ten minutes (the x86 lane's
+scouting, 2026-10-04): from a fully symbolic state the model explores
+compatibility mode and the other modes for every data access and fault
+path, and in its system view it walks symbolic page tables. Section 12
+of `run.sh` changes three things for these jobs, and each is named in
+the records:
+
+- **The entry calls `reset_registers`.** Isla applies function
+  assumptions and reset constraints at the model's call of its
+  `reset_registers` builtin, which Isla's Arm models make at reset and
+  the x86 entry (`x86/isla_entry.sail`) does not. `run.sh` patches the
+  IR it is given: one declaration and one call in `isla_footprint`,
+  just after the cycle marker (so its events are in the trace), with
+  the function's later jump targets (instruction indices in the IR)
+  moved past the two new instructions; it fails if the entry is not the
+  shape it patches. With no assumption to apply the call does nothing:
+  the patched model's `syscall` traces are the unpatched model's
+  (`isla-check --same`). The patch stands in for rebuilding the IR from
+  an edited entry, which needs the Sail toolchain.
+- **64-bit mode by function assumption.** `--fun-assumption
+  'n64_bit_modep((_ unit)) => true'`: the model's test for 64-bit mode
+  (IA32_EFER.LMA and CS.L, a pure read of the two) answers true without
+  running. Linux runs 64-bit tasks in 64-bit mode; the `syscall` job
+  assumes the same two bits, and `syscall` traced with the assumption,
+  in the system view, still meets that job. The trace records the
+  assumption and each use, and a job must name it (`fun n64_bit_modep
+  true`): the checker fails any other.
+- **The application view** (`app_view` true in a copy of `x86.toml`):
+  linear addresses are the memory's, with no page walk. Linux maps the
+  GOT, the stack and the TLS block for user code; a page fault would be
+  the kernel's, and the instruction restarts.
+
+Two checker features serve these jobs: an x86 instruction may be
+`fallthrough LEN` (rip provably ends LEN bytes on, so a later
+instruction is the next one in memory) or `trap FN` (every normal path
+is a model fault, with no rip write, whose trace calls FN, traced with
+Isla's `--trace-function`; for `ud2`, `x86_fault`, the model's
+architectural faults, as opposed to `x86_model_error`). The model reads
+and writes memory a byte at a time, so the jobs name each byte
+(`mem.1.addr` to `mem.8.addr` for an 8-byte load) and assemble values
+little-endian. A job `decl`s the initial registers and memory values
+its assumptions name that a fault path leaves undefined (`init.rsp`,
+`mem.9.val`), so the assumptions apply in every combination. The
+residual facts the jobs assume are the platform's: user addresses below
+`2^47`, the GOT entries and the TLS slot 8-byte aligned, the
+relocations as the psABI defines them, the return address on the stack
+a user address. The `2^47` bound leaves out the 5-level-paging
+mappings above it that Linux makes only when asked (`mmap` with a hint
+above `2^47`), which challoc never does and the model, with 48-bit
+addresses, cannot express.
+
+The longest job, `rseq::symbols`'s seven instructions (5.1e10
+combinations, all but a few hundred prefixes cut), is why `isla-check`
+judges the children of a prefix in parallel (ISLA_CHECK_JOBS threads)
+and asks Z3 all of a combination's properties in one run.
 
 ## Triage
 
@@ -329,70 +410,97 @@ x86_64 half needs both halves.
 
 | # | item | x86_64 | aarch64 | status |
 |---|---|---|---|---|
-| S1 | `throw_bad_alloc_addr` | GOT `mov` | GOT `adrp`+`ldr`: evidence | trusted |
-| S103 | `malloc_conf_addr` | GOT `mov` | GOT `adrp`+`ldr`: evidence | trusted |
-| S104 | `je_malloc_conf_addr` | GOT `mov` | GOT `adrp`+`ldr`: evidence | trusted |
-| S199 | `rseq::symbols` | 3 GOT `mov` | 3 GOT pairs: evidence | trusted |
-| S200 | `rseq::thread_pointer` | `mov fs:[0]` | `mrs tpidr_el0`: evidence | trusted |
-| S221 | `sys::linux::trap` | `ud2` | `brk #1`: evidence | trusted |
+| S1 | `throw_bad_alloc_addr` | GOT `mov` | GOT `adrp`+`ldr` | discharged |
+| S103 | `malloc_conf_addr` | GOT `mov` | GOT `adrp`+`ldr` | discharged |
+| S104 | `je_malloc_conf_addr` | GOT `mov` | GOT `adrp`+`ldr` | discharged |
+| S199 | `rseq::symbols` | 3 GOT `mov` | 3 GOT pairs | discharged |
+| S200 | `rseq::thread_pointer` | `mov fs:[0]` | `mrs tpidr_el0` | discharged |
+| S221 | `sys::linux::trap` | `ud2` | `brk #1` | discharged |
 | S223 | `axiom_auth_sign` | (no asm) | `pacda`+`autda` | discharged |
 | S224 | `pac::sign` | (no asm) | `pacda` | discharged |
 | S225 | `pac::auth` | (no asm) | `autda` | discharged |
 | S226 | `pac::strip` | (no asm) | `xpacd` | discharged |
 | S227-S233 | `raw::syscall0..6` | `syscall` | (other item) | discharged |
 | S234-S240 | `raw::syscall0..6` | (other item) | `svc #0` | discharged |
-| S241 | `tls::get` | TLS `mov`+`mov fs:` | TLS load: evidence | trusted |
+| S241 | `tls::get` | TLS `mov`+`mov fs:` | TLS load | discharged |
 | S242 | `tls::get_tp` | (verified) | TLS load | discharged |
-| S243 | `tls::set` | TLS `mov`+`mov fs:` | TLS store: evidence | trusted |
+| S243 | `tls::set` | TLS `mov`+`mov fs:` | TLS store | discharged |
 
 Per seam: the contract (from SEAMS.md), what an Isla run establishes
-against it, and the residual assumption that stays trusted.
+against it, and the residual assumption that stays trusted. Every one is
+discharged; the details are in "Discharged" below and in the records.
 
 - **S1, S103, S104** (`api/cxx.rs`, `config.rs`; `#[inline(never)]`).
   Contract: `fn ..._addr() -> *const c_void`, no `ensures`. aarch64
-  (`got-fn.job.in`; notes [S1](seams/api-cxx-throw_bad_alloc_addr.md),
-  [S103](seams/config-linux-malloc_conf_addr.md),
-  [S104](seams/config-linux-je_malloc_conf_addr.md)): each function is
-  exactly `adrp x0, :got:sym; ldr x0, [x0, :got_lo12:sym]; ret`, and
-  under the relocation pair's definitions it reads exactly the GOT
-  entry, returns it in x0, writes nothing else and returns to x30.
-  Residual: the ELF loader fills the slot with the symbol's address (the
-  program's definition interposing), or 0 for an unresolved weak symbol.
-  x86_64: `mov rax, [rip+slot]; ret`, open.
-- **S199** `rseq::symbols` (`#[inline(never)]`; [note](seams/rseq-symbols.md)).
-  aarch64: the three GOT pairs, then `stp x8, x9, [x0]; str x10,
-  [x0, #16]; ret`: the three entries read in order, their values stored
-  to the return area's three words at x0, nothing else written.
-  Residual: as S1, plus the Rust ABI's return area in x0.
-- **S200** `rseq::thread_pointer` (`#[inline(always)]`;
-  [note](seams/rseq-thread_pointer.md)). aarch64: every `mrs xN,
-  tpidr_el0` in the code (76 sites, 4 registers) writes only xN, with
-  TPIDR_EL0. Residual: TPIDR_EL0 holds the C library's thread pointer.
-  x86_64 `mov reg, fs:[0]`, open.
-- **S221** `sys::linux::trap` ([note](seams/sys-linux-trap.md)). aarch64:
-  every `brk` is `brk #1`; it takes the breakpoint exception (EC 0x3C) to
-  EL1, or to EL2 under VHE, with the `brk` itself as the return address,
-  and never falls through. Residual: Linux sends `SIGTRAP`. x86_64 `ud2`,
-  open.
+  (`got-fn.job.in`): each function is exactly `adrp x0, :got:sym; ldr
+  x0, [x0, :got_lo12:sym]; ret`; x86_64 (`x86/got-fn.job`): exactly `mov
+  rax, [rip + sym@GOTPCREL]; ret`. Under the relocations' definitions
+  each reads exactly the GOT entry, returns it in the result register,
+  writes nothing else and returns to the caller. Residual: the ELF
+  loader fills the slot with the symbol's address (the program's
+  definition interposing), or 0 for an unresolved weak symbol.
+- **S199** `rseq::symbols` (`#[inline(never)]`). The three GOT loads,
+  then the compiler's stores of the tuple through the return-area
+  pointer (x0; rdi) and the return: the three entries read in order,
+  their values stored to the return area's three words, nothing else
+  written. Residual: as S1, plus the Rust ABI's return area.
+- **S200** `rseq::thread_pointer` (`#[inline(always)]`). aarch64: every
+  `mrs xN, tpidr_el0` in the code (76 sites, 4 registers) writes only
+  xN, with TPIDR_EL0; x86_64: every `mov R, fs:[0]` (one site) reads the
+  8 bytes at the FS base into R and writes nothing else. Residual: the
+  C library's thread pointer (TPIDR_EL0; the TCB's self pointer at
+  `%fs:0`).
+- **S221** `sys::linux::trap`. aarch64: every `brk` is `brk #1`; it
+  takes the breakpoint exception (EC 0x3C) to EL1, or to EL2 under VHE,
+  with the `brk` itself as the return address, and never falls through.
+  x86_64: every `ud2` is `0f 0b`; it raises the model's architectural
+  fault (`x86_fault`, #UD), writes nothing (rip included) and never
+  completes. Residual: Linux sends `SIGTRAP` or `SIGILL`.
 - **S223** `axiom_auth_sign`, **S224-S226** `pac::sign`, `auth`, `strip`:
   discharged (below).
 - **S227-S233** x86_64 `raw::syscall0..6`: discharged (below).
 - **S234-S240** aarch64 `raw::syscall0..6`: discharged (below).
-- **S241, S243** `tls::get`, `tls::set` (notes [get](seams/sys-tls-get.md),
-  [set](seams/sys-tls-set.md)). aarch64: the TLS load (the same sites
-  and jobs as `get_tp`) and the TLS store (5 sites, 2 register
-  assignments): it reads the GOT entry and writes the value, 8 bytes, to
-  the thread pointer plus the offset, and nothing else. x86_64:
-  `mov off, [rip+challoc_tls@GOTTPOFF]; mov out, fs:[off]` (or the
-  store), open.
+- **S241, S243** `tls::get`, `tls::set`. aarch64: the TLS load (the same
+  sites and jobs as `get_tp`) and the TLS store (5 sites, 2 register
+  assignments); x86_64: `mov R, [rip + challoc_tls@GOTTPOFF]` then `mov
+  R, fs:[R]` (68 sites, 10 registers) or `mov fs:[R], V` (5 sites, 3
+  assignments). Each reads the GOT entry and then reads, or writes the
+  value to, the 8 bytes at the thread pointer plus the offset, and
+  nothing else. Residual: as S242, with the TLS slot model's premise.
 - **S242** `tls::get_tp`: discharged (below).
 
 ## Discharged
 
-Nineteen seams (eighteen of the 26 inline-asm seams and
-`axiom_auth_sign`), each with a five-part record under `verus/seams/`
-and the status in `verus/seams.overrides`:
+Twenty-seven seams (all 26 inline-asm seams and `axiom_auth_sign`), each
+with a five-part record under `verus/seams/` and the status in
+`verus/seams.overrides`:
 
+- S1, S103, S104, S199, S200, S221, S241, S243, the mixed seams, one
+  record each for both halves
+  ([S1](seams/api-cxx-throw_bad_alloc_addr.md),
+  [S103](seams/config-linux-malloc_conf_addr.md),
+  [S104](seams/config-linux-je_malloc_conf_addr.md),
+  [S199](seams/rseq-symbols.md),
+  [S200](seams/rseq-thread_pointer.md),
+  [S221](seams/sys-linux-trap.md), [S241](seams/sys-tls-get.md),
+  [S243](seams/sys-tls-set.md)): the templates, the exact compiled shape
+  of every site or function on both architectures, and the jobs of
+  run.sh's sections 5 and 7 (aarch64, as in "Triage") and 12 (x86_64,
+  "The x86_64 mixed seams"). On x86_64: the GOT functions read exactly
+  their GOT entries' 8 bytes, return them in rax and return to the
+  caller (`x86/got-fn.job`, `x86/rseq-symbols.job`, the latter storing
+  the three values to the return area at rdi); the TLS load and store
+  read the GOT entry and then read or write the 8 bytes at the FS base
+  plus the offset it holds, and nothing else (`x86/tls-load.job.in`,
+  `x86/tls-store.job.in`, one job per register assignment); the
+  thread-pointer load reads the 8 bytes at the FS base
+  (`x86/fs0.job.in`); `ud2` faults through the model's `x86_fault`,
+  writes nothing and never completes (`x86/ud2.job`). Residuals: the
+  ELF loader's GOT entries and initial-exec TLS, the thread pointer,
+  the Rust ABI's return area, Linux's `SIGTRAP`/`SIGILL`, the TLS slot
+  model's premise for `get` and `set` (theorem 15), and on x86_64 the
+  processor in 64-bit mode by function assumption and the application
+  view.
 - S227-S233, the x86_64 `syscall0` to `syscall6`
   ([0](seams/sys-raw-x86_64-syscall0.md),
   [1](seams/sys-raw-x86_64-syscall1.md),
@@ -432,11 +540,12 @@ and the status in `verus/seams.overrides`:
   thread pointer plus that offset, writes only its three outputs, no
   memory and no flags, and falls through. Its `ensures r.0 ==
   slot.value()` is the ghost slot model's premise (theorem 15) together
-  with `set`'s trusted contract (S243): Isla shows which memory is read,
+  with `set`'s contract (S243, discharged with the same premise): Isla
+  shows which memory is read,
   not that the token equals it. The other
   residuals: the ELF TLS initial-exec model and the loader, user
   addresses below `2^48`, the slot's alignment. Not covered: the
-  local-exec code a static link produces (plan, item 3).
+  local-exec code a static link produces (plan, item 2).
 - S224-S226, `pac::sign`, `auth`, `strip`
   ([sign](seams/sys-pac-sign.md), [auth](seams/sys-pac-auth.md),
   [strip](seams/sys-pac-strip.md)): the templates, every PAC-family
@@ -502,7 +611,7 @@ checked); and C4A's kernel is a guest at EL1, under the hypervisor's
 HCR_EL2, for which the EL1 configurations stand (only HCR_EL2's API,
 APK, TGE and E2H bear on trapping and routing, read from the model's
 source). Not checked: FEAT_EPAC without FEAT_PAuth2, FEAT_PAuth2 without
-FEAT_FPAC (plan, item 2), and 52-bit VA with 4K or 16K pages
+FEAT_FPAC (plan, item 1), and 52-bit VA with 4K or 16K pages
 (FEAT_LPA2).
 
 The aarch64 `syscall` items share file and name with the x86_64 ones, so
@@ -514,46 +623,7 @@ the ledger takes `file:name#N` for the Nth seam of a name in a file
 In order of cost; the estimates are for one person with the toolchain
 installed.
 
-1. **The x86_64 halves of the mixed seams** (S1, S103, S104, S199,
-   S200, S221, S241, S243; S227-S233 are done). The toolchain and
-   entry exist; scouting on 2026-10-04 (wall clock, `--pessimistic`,
-   one thread each) found what blocks and what unblocks them:
-   - From a fully symbolic state the decoder explores every mode
-     (compatibility mode, CPL, alignment checking), and any instruction
-     with a data access or a fault path explodes: `mov rax, [rip+d32]`
-     (the GOT load), `mov rax, fs:[rax]`, `mov rax, fs:[0]` and `ud2`
-     each ran past 7-10 minutes without finishing, while `nop` (18
-     traces, 7 s) and `mov rax, rcx` (64 traces, 20 s) finish.
-     `syscall` finishes because it has no data access.
-   - An entry that pins Linux user mode before the cycle marker (EFER
-     LMA, LME and SCE, CS.L set and CS.D clear, CPL 3, RFLAGS.AC
-     clear) makes all of them quick: `ud2` 3 traces in 27 s (all the
-     model's `#UD` fault, none falls through), the GOT load 27 traces,
-     `mov rax, fs:[rax]` 24 and `mov rax, fs:[0]` 30 (about 30 s
-     each), in the application view. The pins then become residual
-     assumptions written into the entry rather than the job; a second
-     entry (or a configuration register selecting the pins) keeps the
-     `syscall` job's explicit assumptions as they are.
-   - Data accesses in the system view walk symbolic page tables and did
-     not finish in 10 minutes even pinned. The application view (linear
-     address = physical, the Arm jobs' MMU-off counterpart) serves the
-     loads; the `syscall` job keeps the system view.
-   - `check.rs` needs: a `trap` kind (every feasible path faults, none
-     writes `rip`) for S221; the model's byte-wise reads (one `read-mem`
-     per byte) assembled into one 8-byte value per access; memory
-     writes for S243's store; multi-instruction jobs where the second
-     instruction's `isla_fetch_base` is the first's final `rip` (the
-     checker already keeps `isla_*` local to an instruction); a `ret`
-     for the `#[inline(never)]` GOT functions (S1, S103, S104, S199),
-     whose x86 code is `mov rax, [rip+GOTPCREL]; ret` and needs the
-     stack read; the FS base as the model has it (`msrs.1` in 64-bit
-     mode) for S200, S241, S243; and `R_X86_64_GOTPCREL` /
-     `R_X86_64_GOTTPOFF` relocations as symbolic displacements, with
-     `run.sh` finding every site (73 `GOTTPOFF` sites at 8635213).
-   About two days. Residuals as for Arm (the ELF loader's GOT entries,
-   initial-exec TLS, `%fs:0` holding the TCB's self pointer, Linux's
-   `SIGILL` for `ud2`), plus the pinned user-mode state.
-2. **The other pointer-authentication CPUs.** Done for the reference
+1. **The other pointer-authentication CPUs.** Done for the reference
    machine: FEAT_PAuth2 with FEAT_FPAC runs on the v9.4 snapshot
    (Discharged). Left: FEAT_EPAC without FEAT_PAuth2 and FEAT_PAuth2
    without FEAT_FPAC, each one more `pac9_config` setting and twelve
@@ -563,22 +633,24 @@ installed.
    52-bit VA with 4K or 16K pages, FEAT_LPA2, which the v9.4 model has
    (TCR.DS set; Linux's TCR values for it to be taken from the kernel).
    Half a day.
-3. **Read the linked code.** `run.sh` reads the static libraries
+2. **Read the linked code.** `run.sh` reads the static libraries
    before the final link. The shipped `cdylib` is a separate fat-LTO run
    and may choose other registers: reading the linked `.so` (concrete
-   immediates, the symbol table for the GOT address) needs the cross
-   linker the coordinator has. A static link of `libchalloc.a` into an
-   executable relaxes the TLS sequence to local-exec (`movz`/`movk` with
-   `R_AARCH64_TLSLE_MOVW_TPREL_G1`/`G0_NC`), which needs its own job and
+   immediates, the symbol table for the GOT address) needs the aarch64
+   cross linker the coordinator has (the x86_64 `.so` links natively).
+   A static link of `libchalloc.a` into an
+   executable relaxes the TLS sequences to local-exec (aarch64 `movz`/
+   `movk` with `R_AARCH64_TLSLE_MOVW_TPREL_G1`/`G0_NC`; x86_64 a `mov R,
+   imm32` with `R_X86_64_TPOFF32`), which needs its own jobs and
    an executable to read. A day for both.
-4. **Islaris** in place of `check.rs`: opam, Coq, Iris and Islaris, then
+3. **Islaris** in place of `check.rs`: opam, Coq, Iris and Islaris, then
    one Islaris specification per job; the traces are the same. Two or
    three days, most of it the first install. The relational PAC jobs
    need Islaris's product construction or a hand proof.
-5. **CI**: a job that builds Isla (a minute or ten, network willing) and
+4. **CI**: a job that builds Isla (a minute or ten, network willing) and
    the x86 model (about seven minutes from a bare image with the x86
    lane's `setup.sh`, or a cached copy), fetches the snapshots and runs
-   `run.sh` (about ten minutes after the builds on 16 CPUs; the PAC footprints
+   `run.sh` (about fourteen minutes after the builds on 16 CPUs; the PAC footprints
    dominate and scale with CPUs). Without it the records go stale when a
    contract changes, as the four Arm records did between d865271 and
    8635213 (the `may_syscall` precondition and `get_tp`'s `TlsSlot`

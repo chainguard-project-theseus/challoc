@@ -156,7 +156,7 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S1 | `throw_bad_alloc_addr` | body | asm | Isla | trusted |
+| S1 | `throw_bad_alloc_addr` | body | asm | Isla | discharged |
 | S2 | `call_throw_bad_alloc` | body | fnptr | Kani | trusted |
 | S3 | `Handler` | type | fnptr | Kani | trusted |
 | S4 | `installed_handler` | body | fnptr | Kani | trusted |
@@ -320,8 +320,8 @@ the full name, the line and the contract.
 | S102 | `DisplaySpecIm...or Bytes<'_>` | spec-impl | core | Kani | discharged |
 | S103 | `parse_from` | body | fnptr | Kani | trusted |
 | S104 | `read_slot` | body | c-ptr | Miri | trusted |
-| S105 | `malloc_conf_addr` | body | asm | Isla | trusted |
-| S106 | `je_malloc_conf_addr` | body | asm | Isla | trusted |
+| S105 | `malloc_conf_addr` | body | asm | Isla | discharged |
+| S106 | `je_malloc_conf_addr` | body | asm | Isla | discharged |
 | S107 | `byte_at` | body | c-ptr | Miri | trusted |
 | S108 | `bytes_at` | body | c-ptr | Miri | trusted |
 | S109 | `env_var` | body | c-ptr | Miri | trusted |
@@ -513,8 +513,8 @@ the full name, the line and the contract.
 |---|---|---|---|---|---|
 | S201 | `read_global` | body | ptr | RR | trusted |
 | S202 | `read_cpu_id` | body | cell | RR | trusted |
-| S203 | `symbols` | body | asm | Isla | trusted |
-| S204 | `thread_pointer` | body | asm | Isla | trusted |
+| S203 | `symbols` | body | asm | Isla | discharged |
+| S204 | `thread_pointer` | body | asm | Isla | discharged |
 
 ### src/slab.rs
 
@@ -571,7 +571,7 @@ the full name, the line and the contract.
 | S223 | `read_full` | no-dec | termination | none | trusted |
 | S224 | `write` | body | ffi | none | trusted |
 | S225 | `write_all` | no-dec | termination | none | trusted |
-| S226 | `trap` | body | asm | Isla | trusted |
+| S226 | `trap` | body | asm | Isla | discharged |
 
 ### src/sys/pac.rs
 
@@ -606,9 +606,9 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S246 | `get` | body | asm | Isla | trusted |
+| S246 | `get` | body | asm | Isla | discharged |
 | S247 | `get_tp` | body | asm | Isla | discharged |
-| S248 | `set` | body | asm | Isla | trusted |
+| S248 | `set` | body | asm | Isla | discharged |
 
 ### src/thp.rs
 
@@ -872,7 +872,7 @@ the full name, the line and the contract.
 ### S1. `throw_bad_alloc_addr`
 
 src/api/cxx.rs:77. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/api-cxx-throw_bad_alloc_addr.md).
 
 > Address of libstdc++'s `std::__throw_bad_alloc()`, or null.
 
@@ -2447,7 +2447,7 @@ unsafe fn read_slot(slot: *const *const c_char) -> *const c_char
 ### S105. `malloc_conf_addr`
 
 src/config.rs:1473. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/config-linux-malloc_conf_addr.md).
 
 > Address of the `malloc_conf` global the loader resolved: the program's own definition when it has one, else the library's null slot (`api::jemalloc::malloc_conf`).
 
@@ -2458,7 +2458,7 @@ fn malloc_conf_addr() -> *const c_void
 ### S106. `je_malloc_conf_addr`
 
 src/config.rs:1498. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/config-linux-je_malloc_conf_addr.md).
 
 > Address of the weak `je_malloc_conf` global (Redis and Valkey define this one), or null.
 
@@ -3872,7 +3872,7 @@ unsafe fn read_cpu_id(area: *mut u8, Ghost(size): Ghost<u32>) -> u32
 ### S203. `symbols`
 
 src/rseq.rs:177. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/rseq-symbols.md).
 
 > Addresses of the weak `__rseq_offset`, `__rseq_size` and `__rseq_flags` (null when they do not resolve).
 
@@ -3883,7 +3883,7 @@ fn symbols() -> (*const isize, *const u32, *const u32)
 ### S204. `thread_pointer`
 
 src/rseq.rs:220. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/rseq-thread_pointer.md).
 
 > The calling thread's thread pointer: `%fs:0` (the TCB's self pointer) on x86_64, `tpidr_el0` on aarch64.
 
@@ -4187,7 +4187,7 @@ pub fn write_all(fd: i32, buf: &[u8])
 ### S226. `trap`
 
 src/sys/mod.rs:1077. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-linux-trap.md).
 
 > Architecture trap instruction, for the impossible case where the kernel returns from a terminating syscall.
 
@@ -4459,7 +4459,7 @@ pub unsafe fn syscall6(
 ### S246. `get`
 
 src/sys/tls.rs:125. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-tls-get.md).
 
 > Read the calling thread's slot.
 
@@ -4487,7 +4487,7 @@ pub fn get_tp(Tracked(slot): Tracked<&TlsSlot>) -> (r: (*mut c_void, usize))
 ### S248. `set`
 
 src/sys/tls.rs:208. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/sys-tls-set.md).
 
 > Write the calling thread's slot.
 

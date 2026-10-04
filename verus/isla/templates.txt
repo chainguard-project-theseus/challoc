@@ -20,9 +20,6 @@ src/sys/raw.rs	syscall3	asm!("syscall", inlateout("rax") nr => ret, in("rdi") a0
 src/sys/raw.rs	syscall4	asm!("syscall", inlateout("rax") nr => ret, in("rdi") a0, in("rsi") a1, in("rdx") a2, in("r10") a3, lateout("rcx") _, lateout("r11") _, options(nostack));
 src/sys/raw.rs	syscall5	asm!("syscall", inlateout("rax") nr => ret, in("rdi") a0, in("rsi") a1, in("rdx") a2, in("r10") a3, in("r8") a4, lateout("rcx") _, lateout("r11") _, options(nostack));
 src/sys/raw.rs	syscall6	asm!("syscall", inlateout("rax") nr => ret, in("rdi") a0, in("rsi") a1, in("rdx") a2, in("r10") a3, in("r8") a4, in("r9") a5, lateout("rcx") _, lateout("r11") _, options(nostack));
-# Evidence only: the aarch64 halves of mixed seams whose x86_64 halves are
-# not checked (verus/ISLA.md, "Triage"); their ledger status stays
-# trusted.
 src/api/cxx.rs	throw_bad_alloc_addr	asm!( ".weak _ZSt17__throw_bad_allocv", "adrp {out}, :got:_ZSt17__throw_bad_allocv", "ldr {out}, [{out}, :got_lo12:_ZSt17__throw_bad_allocv]", out = out(reg) out, options(nostack, readonly, preserves_flags), );
 src/config.rs	malloc_conf_addr	asm!( "adrp {out}, :got:malloc_conf", "ldr {out}, [{out}, :got_lo12:malloc_conf]", out = out(reg) out, options(nostack, readonly, preserves_flags), );
 src/config.rs	je_malloc_conf_addr	asm!( ".weak je_malloc_conf", "adrp {out}, :got:je_malloc_conf", "ldr {out}, [{out}, :got_lo12:je_malloc_conf]", out = out(reg) out, options(nostack, readonly, preserves_flags), );
@@ -31,3 +28,11 @@ src/rseq.rs	thread_pointer	asm!("mrs {tp}, tpidr_el0", tp = out(reg) tp, options
 src/sys/mod.rs	trap	asm!("brk #0x1", options(noreturn, nostack));
 src/sys/tls.rs	get	asm!( "adrp {off}, :gottprel:challoc_tls", "ldr {off}, [{off}, :gottprel_lo12:challoc_tls]", "mrs {tp}, tpidr_el0", "ldr {out}, [{tp}, {off}]", off = out(reg) _, tp = out(reg) _, out = out(reg) out, options(nostack, readonly, preserves_flags), );
 src/sys/tls.rs	set	asm!( "adrp {off}, :gottprel:challoc_tls", "ldr {off}, [{off}, :gottprel_lo12:challoc_tls]", "mrs {tp}, tpidr_el0", "str {val}, [{tp}, {off}]", off = out(reg) _, tp = out(reg) _, val = in(reg) value, options(nostack, preserves_flags), );
+src/api/cxx.rs	throw_bad_alloc_addr	asm!( ".weak _ZSt17__throw_bad_allocv", "mov {out}, qword ptr [rip + _ZSt17__throw_bad_allocv@GOTPCREL]", out = out(reg) out, options(nostack, readonly, preserves_flags), );
+src/config.rs	malloc_conf_addr	asm!( "mov {out}, qword ptr [rip + malloc_conf@GOTPCREL]", out = out(reg) out, options(nostack, readonly, preserves_flags), );
+src/config.rs	je_malloc_conf_addr	asm!( ".weak je_malloc_conf", "mov {out}, qword ptr [rip + je_malloc_conf@GOTPCREL]", out = out(reg) out, options(nostack, readonly, preserves_flags), );
+src/rseq.rs	symbols	asm!( ".weak __rseq_offset", ".weak __rseq_size", ".weak __rseq_flags", "mov {so}, qword ptr [rip + __rseq_offset@GOTPCREL]", "mov {ss}, qword ptr [rip + __rseq_size@GOTPCREL]", "mov {sf}, qword ptr [rip + __rseq_flags@GOTPCREL]", so = out(reg) so, ss = out(reg) ss, sf = out(reg) sf, options(nostack, readonly, preserves_flags), );
+src/rseq.rs	thread_pointer	asm!("mov {tp}, qword ptr fs:[0]", tp = out(reg) tp, options(nostack, readonly, preserves_flags));
+src/sys/mod.rs	trap	asm!("ud2", options(noreturn, nostack));
+src/sys/tls.rs	get	asm!( "mov {out}, qword ptr [rip + challoc_tls@GOTTPOFF]", "mov {out}, qword ptr fs:[{out}]", out = out(reg) out, options(nostack, readonly, preserves_flags), );
+src/sys/tls.rs	set	asm!( "mov {off}, qword ptr [rip + challoc_tls@GOTTPOFF]", "mov qword ptr fs:[{off}], {val}", off = out(reg) _, val = in(reg) value, options(nostack, preserves_flags), );

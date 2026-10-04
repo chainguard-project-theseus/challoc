@@ -1,4 +1,4 @@
-# rseq::symbols on aarch64 (verus/seams/rseq-symbols.md; evidence only):
+# rseq::symbols on aarch64 (verus/seams/rseq-symbols.md):
 # three GOT loads (as got-fn.job.in), then the compiler's stores of the
 # tuple through the return-area pointer the caller passes in x0, then ret:
 #   adrp x8, :got:__rseq_offset;  ldr x8, [x8, :got_lo12:__rseq_offset]

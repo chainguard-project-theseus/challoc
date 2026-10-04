@@ -1,5 +1,5 @@
 # `brk #0x1` (sys::trap's aarch64 asm, and LLVM's trap; verus/seams/
-# sys-linux-trap.md; evidence only) at Non-secure EL0 in AArch64 state,
+# sys-linux-trap.md) at Non-secure EL0 in AArch64 state,
 # HCR_EL2 and MDCR_EL2 clear: every trace takes the software breakpoint
 # exception to EL1, with EC 0x3C (BRK from AArch64), IL set and the
 # comment 1 in the syndrome, the breakpoint itself as the return address

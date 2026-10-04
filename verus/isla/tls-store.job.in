@@ -1,5 +1,4 @@
-# The TLS slot store (tls::set's aarch64 asm; verus/seams/sys-tls-set.md;
-# evidence only):
+# The TLS slot store (tls::set's aarch64 asm; verus/seams/sys-tls-set.md):
 #   adrp @A@, :gottprel:challoc_tls      (R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21)
 #   ldr  @A@, [@A@, :gottprel_lo12:...]  (R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC)
 #   mrs  @B@, tpidr_el0

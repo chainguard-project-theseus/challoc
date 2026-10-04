@@ -1,6 +1,6 @@
 # `mrs @R@, tpidr_el0` (rseq::thread_pointer's aarch64 asm, and the third
-# instruction of every TLS sequence; verus/seams/rseq-thread_pointer.md;
-# evidence only): it writes only its destination, with TPIDR_EL0, reads
+# instruction of every TLS sequence; verus/seams/rseq-thread_pointer.md):
+# it writes only its destination, with TPIDR_EL0, reads
 # and writes no memory, leaves the flags and falls through. run.sh
 # prepends the insn line.
 writes @R@

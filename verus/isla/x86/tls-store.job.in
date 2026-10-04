@@ -1,0 +1,53 @@
+# The TLS slot store, x86_64 (tls::set's asm; verus/seams/sys-tls-set.md),
+# as tls-load.job.in:
+#   mov @A@, qword ptr [rip + challoc_tls@GOTTPOFF]   (R_X86_64_GOTTPOFF)
+#   mov qword ptr fs:[@A@], @V@
+# run.sh appends the two insn lines (the second's length is @N@).
+arch x86_64
+fun n64_bit_modep true
+writes @A@
+flags-preserved
+mem-reads 8
+mem-writes 8
+decl got 64
+assume (= seg.1.disp ((_ extract 31 0) (bvsub got (bvadd init.rip #x0000000000000007))))
+assume (= ((_ sign_extend 32) seg.1.disp) (bvsub got (bvadd init.rip #x0000000000000007)))
+assume (= ((_ extract 2 0) got) #b000)
+assume (bvult got #x00007ffffffff000)
+assume (bvult init.rip #x00007ffffffff000)
+decl init.msrs.1 64
+decl mem.1.val 8
+decl mem.2.val 8
+decl mem.3.val 8
+decl mem.4.val 8
+decl mem.5.val 8
+decl mem.6.val 8
+decl mem.7.val 8
+decl mem.8.val 8
+decl off 64
+decl slot 64
+assume (= off (concat mem.8.val mem.7.val mem.6.val mem.5.val mem.4.val mem.3.val mem.2.val mem.1.val))
+assume (= slot (bvadd init.msrs.1 off))
+assume (bvult slot #x00007ffffffff000)
+assume (= ((_ extract 2 0) slot) #b000)
+# The load reads exactly the GOT entry's 8 bytes; the store writes @V@'s
+# 8 bytes to the slot and nothing else; @A@ ends as the offset; the pair
+# falls through.
+assert (= mem.1.addr (bvadd got #x0000000000000000))
+assert (= mem.2.addr (bvadd got #x0000000000000001))
+assert (= mem.3.addr (bvadd got #x0000000000000002))
+assert (= mem.4.addr (bvadd got #x0000000000000003))
+assert (= mem.5.addr (bvadd got #x0000000000000004))
+assert (= mem.6.addr (bvadd got #x0000000000000005))
+assert (= mem.7.addr (bvadd got #x0000000000000006))
+assert (= mem.8.addr (bvadd got #x0000000000000007))
+assert (= wmem.1.addr (bvadd slot #x0000000000000000))
+assert (= wmem.2.addr (bvadd slot #x0000000000000001))
+assert (= wmem.3.addr (bvadd slot #x0000000000000002))
+assert (= wmem.4.addr (bvadd slot #x0000000000000003))
+assert (= wmem.5.addr (bvadd slot #x0000000000000004))
+assert (= wmem.6.addr (bvadd slot #x0000000000000005))
+assert (= wmem.7.addr (bvadd slot #x0000000000000006))
+assert (= wmem.8.addr (bvadd slot #x0000000000000007))
+assert (= (concat wmem.8.val wmem.7.val wmem.6.val wmem.5.val wmem.4.val wmem.3.val wmem.2.val wmem.1.val) init.@V@)
+assert (= final.@A@ off)

@@ -1,0 +1,13 @@
+# `ud2` (sys::trap's x86_64 asm, and LLVM's trap; verus/seams/
+# sys-linux-trap.md) on the x86 model in its application view with the
+# processor in 64-bit mode (run.sh, section 12): every feasible trace
+# ends in the model's architectural fault (`x86_fault`, here the UD2
+# dispatch's X86-ILLEGAL-INSTRUCTION, #UD) and writes no register (rip
+# included) and no memory; none falls through. Residual (Linux): the code
+# is a user address (the model faults on a fetch from a non-canonical one).
+arch x86_64
+fun n64_bit_modep true
+insn x86-ud2.trace trap x86_fault<u>
+no-mem-write
+mem-reads 0
+assume (bvult init.rip #x00007ffffffff000)

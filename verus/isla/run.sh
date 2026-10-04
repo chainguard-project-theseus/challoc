@@ -2,9 +2,8 @@
 # Check the inline-assembly seams discharged with Isla (verus/ISLA.md)
 # against the Sail Armv8.5-A model (and the PAC ones also against the
 # Armv9.4-A model, for FEAT_PAuth2 and FEAT_FPAC), on the aarch64 code
-# built from this tree, the aarch64 evidence for the mixed seams that
-# stay trusted, and against the Sail x86 model (verus/isla/x86/) on the
-# x86_64 code.
+# built from this tree, and against the Sail x86 model (verus/isla/x86/)
+# on the x86_64 code.
 #
 #   verus/isla/run.sh [-a LIBCHALLOC.a] [-x LIBCHALLOC.a] [OUT]
 #
@@ -15,7 +14,7 @@
 # PAC ones in parallel, one per CPU) and checks each job with isla-check
 # (verus/isla/check.rs). OUT (default: a fresh temporary directory) keeps
 # the traces and the jobs. Exit status 0 when every check holds. About
-# ten minutes after the build on 16 CPUs.
+# fifteen minutes after the builds on 16 CPUs.
 #
 # Tools, from the environment (ISLA.md "Setup"):
 #   ISLA            an Isla checkout built with `cargo build --release`
@@ -27,6 +26,9 @@
 #   ISLA_PREPROCESS overrides $ISLA/target/release/isla-preprocess
 #   Z3              the z3 binary isla-check calls (default: z3 on PATH);
 #                   isla-footprint itself needs libz3.so on LD_LIBRARY_PATH
+#   ISLA_CHECK_JOBS the threads each isla-check judges prefixes on (default
+#                   1, as run.sh runs one isla-check per CPU; 4 for the x86
+#                   jobs of step 12, the longest)
 #   RUSTUP_TOOLCHAIN the toolchain for the build (default 1.95.0); its
 #                   llvm-tools component provides llvm-objdump and llvm-ar
 set -eu
@@ -69,6 +71,7 @@ fi
 for t in "$footprint" "$preprocess" "$ir" "$ir9" "$xir" "$ISLA/configs/armv9p4.toml" "$llvm/llvm-objdump" "$llvm/llvm-ar"; do
 	[ -e "$t" ] || { echo "isla: missing $t" >&2; exit 2; }
 done
+export ISLA_CHECK_JOBS=${ISLA_CHECK_JOBS:-1}
 fails=0
 fail() {
 	echo "FAIL $*"
@@ -121,14 +124,35 @@ entry_of() { # RECORD-PATH: "FILE:LINE<TAB>CONTRACT" of the entry naming it
 		inb && nb == 1 { blk = blk (blk == "" ? "" : "\001") $0 }
 		END { flush() }' "$root/verus/SEAMS.md"
 }
-arch_at() { # FILE LINE: the target_arch of the last column-0 cfg above LINE
-	awk -v n="$2" 'NR >= n { exit }
-		/^#\[cfg\(target_arch = "[a-z0-9_]+"\)\]/ { a = $0; sub(/^[^"]*"/, "", a); sub(/".*/, "", a) }
-		END { print a }' "$root/$1"
+arch_at() { # FILE LINE: the target_arch cfg on the item at LINE, "?" when unclear
+	# A column-0 attribute applies to the next column-0 item, which is
+	# LINE's own when LINE starts at column 0 and else the one LINE sits in
+	# (an fn in `#[cfg(target_arch = ...)] mod imp`); an indented one to
+	# the indented item it precedes. A cfg naming target_arch in any other
+	# form, or a LINE that is no item, gives "?", which matches no record.
+	awk -v n="$2" '
+		function arch(s) {
+			if (s ~ /^[ \t]*#\[cfg\(target_arch = "[a-z0-9_]+"\)\]/) { sub(/^[^"]*"/, "", s); sub(/".*/, "", s); return s }
+			return s ~ /target_arch/ ? "?" : ""
+		}
+		NR == n && /^[ \t]*(#|\/\/|}|$)/ { print "?"; exit }
+		/^(#\[|\/\/)/ { a = arch($0); if (a != "") b = a; next }
+		/^[ \t]+(#\[|\/\/)/ { a = arch($0); if (a != "") ib = a; next }
+		/^}/ { b = ""; next }
+		/^[^ \t]/ { cur = b; b = ""; ib = ""; if (NR == n) { print cur; exit } next }
+		NR == n { print (ib != "" ? ib : cur); exit }
+		{ ib = "" }' "$root/$1"
 }
-for rec in "$root"/verus/seams/*.md; do
-	grep -q 'Tool: Isla\. Status: discharged' "$rec" || continue
-	name=verus/seams/$(basename "$rec")
+# The records are the ones verus/seams.overrides marks discharged with
+# tool Islaris/Isla, so none escapes the check.
+irecs=$(awk -F"$tab" '$3 == "Islaris/Isla" && $4 ~ /^discharged \(verus\/seams\/.*\.md\)$/ { r = $4; sub(/^discharged \(/, "", r); sub(/\)$/, "", r); print r }' "$root/verus/seams.overrides")
+[ -n "$irecs" ] || fail "no Isla record in verus/seams.overrides"
+for name in $irecs; do
+	rec=$root/$name
+	if [ ! -f "$rec" ] || ! grep -q 'Tool: Isla\. Status: discharged' "$rec"; then
+		fail "record $name: missing, or not stating \"Tool: Isla. Status: discharged\" on one line"
+		continue
+	fi
 	arch=$(sed -n '1s/.*(\(aarch64\|x86_64\))$/\1/p' "$rec")
 	entries=$(entry_of "$name")
 	if [ "$(printf '%s\n' "$entries" | grep -c .)" -ne 1 ]; then
@@ -655,10 +679,9 @@ for job in $pac_jobs; do
 done
 echo "PAC: $npac jobs: $(echo $pac_words | wc -w) instructions in each of $(echo $pac_configs | wc -w) configurations (12 Armv8.5-A, 24 Armv9.4-A), and $((k * 3)) purity spot checks"
 
-# 7. Evidence for the aarch64 halves of the mixed seams (verus/ISLA.md,
-# "Triage"): the ledger keeps them trusted until their x86_64 halves
-# are checked. Each compiled shape is required exactly, so a change in the
-# code fails here until its job is revisited.
+# 7. The aarch64 halves of the mixed seams (verus/ISLA.md, "Triage");
+# their x86_64 halves are step 12. Each compiled shape is required
+# exactly, so a change in the code fails here until its job is revisited.
 fn_body() { # NAME-PART: the words and relocations of the one function whose symbol contains NAME-PART
 	awk -v fn="$1" '
 		/^[0-9a-f]+ <[^>]*>:$/ { infn = index($0, fn) > 0; if (infn) nfn++; next }
@@ -911,9 +934,13 @@ xtrace() { # NAME BYTE...
 		: >"$out/$name.trace"
 	}
 }
-le128() { # BYTE...: hex bytes in memory order
+le128() { # BYTE...: hex bytes in memory order; D32 is 4 bytes of the symbolic field `disp`
 	s= n=0
 	for b in "$@"; do
+		if [ "$b" = D32 ]; then
+			s="disp:32 $s" n=$((n + 4))
+			continue
+		fi
 		v=$((0x$b)) bits=
 		for _ in 1 2 3 4 5 6 7 8; do bits=$((v & 1))$bits v=$((v >> 1)); done
 		s="$bits $s" n=$((n + 1))
@@ -966,6 +993,300 @@ if "$out/isla-check" "$out/neg-sys-norip.job" >"$out/neg-sys-norip.log" 2>&1 ||
 else
 	echo "negative control sys-norip: refused, as it should be"
 fi
+
+# 12. The x86_64 halves of the mixed seams (verus/ISLA.md, "The x86_64
+# mixed seams"): the GOT functions, rseq::symbols, the TLS slot load and
+# store, the thread pointer load and `ud2`. Their data accesses need the
+# processor's mode settled: from a fully symbolic state the model
+# explores compatibility mode and the rest, and the runs do not finish.
+# Three changes to the runs of steps 9-10 do it, all named in the records:
+# - the entry calls Isla's `reset_registers` builtin after its cycle
+#   marker, the hook through which Isla applies `--fun-assumption`
+#   (Isla's Arm models call it at reset). The x86 entry
+#   (x86/isla_entry.sail) has no such call, so the IR is patched here:
+#   one declaration and one call in `isla_footprint`, its later jump
+#   targets moved past the two new instructions. The patched model must
+#   give `syscall` the very traces of the unpatched one (`isla-check
+#   --same`), so the call changes nothing by itself;
+# - `--fun-assumption 'n64_bit_modep((_ unit)) => true'`: the model's
+#   64-bit mode test (IA32_EFER.LMA and CS.L, a pure read) answers true
+#   without running, and the jobs name it (`fun n64_bit_modep true`).
+#   Linux runs 64-bit user code in 64-bit mode, which the `syscall` job
+#   assumes too (as EFER.LMA and CS.L), and it must still pass with the
+#   assumption;
+# - the model's application view (`app_view` true): linear addresses are
+#   physical, no page walk, as Linux user code sees mapped memory (the
+#   GOT, the stack, the TLS block; a page fault is the kernel's and the
+#   instruction restarts). The system view's walks of symbolic page
+#   tables did not finish.
+xjobs=
+xpir=$out/x86-reset.ir
+awk '
+	/^val zisla_cycle_count = "cycle_count" : \(%unit\) ->  %unit$/ { print; print ""; print "val zisla_reset_registers = \"reset_registers\" : (%unit) ->  %unit"; decl++; next }
+	/^fn zisla_footprint\(zopcode\) \{$/ { inf = 1; n = 0 }
+	inf && /^}$/ { inf = 0 }
+	inf && /^  / {
+		# Jump targets count the body instructions from 0.
+		if (match($0, /goto [0-9]+/)) {
+			t = substr($0, RSTART + 5, RLENGTH - 5) + 0
+			if (t > cyc) $0 = substr($0, 1, RSTART + 4) (t + 2) substr($0, RSTART + RLENGTH)
+		}
+		print
+		if ($0 ~ /^  zz[0-9]+ = zisla_cycle_count\(\(\)\)/) { cyc = n; ncyc++; print "  zz4reset : %unit;"; print "  zz4reset = zisla_reset_registers(());" }
+		n++
+		next
+	}
+	{ print }
+	END { if (decl != 1 || ncyc != 1) exit 1 }' "$xir" >"$xpir" ||
+	fail "x86 entry: not the shape run.sh patches (one cycle marker in isla_footprint)"
+# A jump before the marker would be shifted wrongly by the awk above
+# (its `cyc` is not yet set); the entry has none, and this checks it.
+awk '/^fn zisla_footprint\(zopcode\) \{$/ { inf = 1; n = 0; next } inf && /^}$/ { exit }
+	inf && /^  / { if (/zisla_cycle_count/) exit; if (/goto /) bad = 1; n++ }
+	END { exit bad }' "$xir" || fail "x86 entry: a jump before the cycle marker"
+xconf=$out/x86-app.toml
+sed 's/^app_view = false$/app_view = true/' "$here/x86/x86.toml" >"$xconf"
+[ "$(grep -c '^app_view = true$' "$xconf")" -eq 1 ] && [ "$(grep -c '^app_view' "$xconf")" -eq 1 ] ||
+	fail "x86-app.toml: app_view not set exactly once"
+"$footprint" -A "$xpir" -C "$here/x86/x86.toml" -s --pessimistic --partial -i "$(le128 0f 05)" \
+	>"$out/syscall-reset.trace" 2>"$out/syscall-reset.err" || fail "isla-footprint syscall (patched entry)"
+"$out/isla-check" --same "$out/syscall.trace" "$out/syscall-reset.trace" ||
+	fail "the patched x86 entry changes the syscall traces"
+# And the function assumption agrees with the bits it stands for: with
+# it, in the system view, `syscall` still meets its job, which assumes
+# EFER.LMA and CS.L outright.
+"$footprint" -A "$xpir" -C "$here/x86/x86.toml" -s --pessimistic --partial \
+	--fun-assumption 'n64_bit_modep((_ unit)) => true' -i "$(le128 0f 05)" \
+	>"$out/syscall-pinned.trace" 2>"$out/syscall-pinned.err" || fail "isla-footprint syscall (64-bit mode assumed)"
+{
+	cat "$here/x86/syscall.job"
+	echo "fun n64_bit_modep true"
+	# The assumed bits are no longer read on every path: declare them, so
+	# that the job's assumptions over them hold in every combination.
+	printf 'decl init.msrs.0 64\ndecl init.msrs.4 64\ndecl init.msrs.5 64\ndecl init.seg_hidden_attrs.1 16\n'
+	echo "insn syscall-pinned.trace jump"
+} >"$out/syscall-pinned.job"
+check "$out/syscall-pinned.job"
+# Isla's view of one x86 instruction for these jobs: the patched entry,
+# the application view, 64-bit mode. The arguments are bytes in memory
+# order, `D32` a 4-byte displacement the linker fills (the symbolic
+# opcode field `disp`); a `trap` job traces the model's x86_fault.
+xptrace() { # NAME BYTE...: the trace x86-NAME.trace (apart from the Arm steps' names)
+	name=x86-$1
+	shift
+	case " $traced " in *" $name "*) return 0 ;; esac
+	traced="$traced $name"
+	set -- --partial -i "$(le128 "$@")"
+	case $name in x86-ud2) set -- --trace-function 'x86_fault<u>' "$@" ;; esac
+	"$footprint" -A "$xpir" -C "$xconf" -s --pessimistic \
+		--fun-assumption 'n64_bit_modep((_ unit)) => true' "$@" \
+		>"$out/$name.trace" 2>"$out/$name.err" || {
+		fail "isla-footprint $name: $(grep -v 'No primop' "$out/$name.err" | head -3)"
+		: >"$out/$name.trace"
+	}
+}
+xfn_body() { # NAME-PART: the bytes (one word per instruction) and relocations of the one function whose symbol contains NAME-PART
+	awk -v fn="$1" '
+		/^[0-9a-f]+ <[^>]*>:$/ { infn = index($0, fn) > 0; if (infn) nfn++; next }
+		/^$/ { infn = 0 }
+		infn && /^ +[0-9a-f]+: / {
+			s = $0; sub(/^ +[0-9a-f]+: /, "", s); sub(/\t.*/, "", s); gsub(/ /, "", s)
+			print s; next
+		}
+		infn && /R_X86_64_/ { print $2, $3 }
+		END { if (nfn != 1) print "functions:", nfn + 0 }' "$out/dis-x86.txt" | tr '\n' ' '
+}
+# throw_bad_alloc_addr, malloc_conf_addr, je_malloc_conf_addr: `mov rax,
+# [rip + SYM@GOTPCREL]; ret`, one job for the three.
+for f in 20throw_bad_alloc_addr:_ZSt17__throw_bad_allocv 16malloc_conf_addr:malloc_conf \
+	19je_malloc_conf_addr:je_malloc_conf; do
+	want="488b0500000000 R_X86_64_GOTPCREL ${f#*:}-0x4 c3 "
+	body=$(xfn_body "${f%%:*}")
+	if [ "$body" = "$want" ]; then
+		echo "x86 GOT function ${f%%:*}: the job's shape"
+	else
+		fail "x86 GOT function ${f%%:*}: not the job's shape: $body"
+	fi
+done
+xptrace got-rax 48 8b 05 D32
+xptrace ret c3
+cp "$here/x86/got-fn.job" "$out/got-fn-x86.job"
+xjobs="$xjobs $out/got-fn-x86.job"
+# rseq::symbols: three GOT loads, the tuple's stores through rdi, ret.
+want="488b0500000000 R_X86_64_GOTPCREL __rseq_offset-0x4 488b0d00000000 R_X86_64_GOTPCREL __rseq_size-0x4 "
+want="${want}488b1500000000 R_X86_64_GOTPCREL __rseq_flags-0x4 488907 48894f08 48895710 c3 "
+body=$(xfn_body 4rseq7symbols)
+if [ "$body" = "$want" ]; then
+	echo "x86 rseq::symbols: the job's shape"
+else
+	fail "x86 rseq::symbols: not the job's shape: $body"
+fi
+xptrace got-rcx 48 8b 0d D32
+xptrace got-rdx 48 8b 15 D32
+xptrace st-rax-rdi 48 89 07
+xptrace st-rcx-rdi8 48 89 4f 08
+xptrace st-rdx-rdi16 48 89 57 10
+cp "$here/x86/rseq-symbols.job" "$out/rseq-symbols-x86.job"
+xjobs="$xjobs $out/rseq-symbols-x86.job"
+# The TLS slot (tls::get and tls::set): every R_X86_64_GOTTPOFF
+# relocation, which must be against challoc_tls, sits in a `mov R, [rip
+# + challoc_tls@GOTTPOFF]` whose next instruction is the load `mov R,
+# fs:[R]` or the store `mov fs:[R], V`; one job per register assignment.
+awk '
+	/^ +[0-9a-f]+: / {
+		n++; s = $0; sub(/^ +[0-9a-f]+: /, "", s); txt[n] = s
+		b = s; sub(/\t.*/, "", b); sub(/ +$/, "", b); bytes[n] = b
+		next
+	}
+	/R_X86_64_GOTTPOFF/ { if ($3 == "challoc_tls-0x4") rel[n] = 1; else other++; next }
+	/challoc_tls/ { other++ }
+	END {
+		for (i = 1; i <= n; i++) if (rel[i]) {
+			if (txt[i] !~ ("\tmovq\t\\(%rip\\), %[a-z0-9]+( |$)")) { other++; continue }
+			r = txt[i]; sub(/.*\(%rip\), %/, "", r); sub(/ .*/, "", r)
+			if (txt[i + 1] ~ ("\tmovq\t%fs:\\(%" r "\\), %" r "$")) kind = "load " r " -"
+			else if (txt[i + 1] ~ ("\tmovq\t%[a-z0-9]+, %fs:\\(%" r "\\)$")) {
+				v = txt[i + 1]; sub(/.*\tmovq\t%/, "", v); sub(/,.*/, "", v)
+				kind = "store " r " " v
+			} else { other++; continue }
+			gsub(/ /, "-", bytes[i]); gsub(/ /, "-", bytes[i + 1])
+			print kind, bytes[i], bytes[i + 1]
+		}
+		if (other) print "other", other
+	}' "$out/dis-x86.txt" | sort | uniq -c >"$out/xtls-sites.txt"
+cat "$out/xtls-sites.txt"
+grep -q ' load ' "$out/xtls-sites.txt" || fail "no TLS slot load in the x86_64 code"
+grep -q ' store ' "$out/xtls-sites.txt" || fail "no TLS slot store in the x86_64 code"
+! grep -q ' other ' "$out/xtls-sites.txt" || fail "a challoc_tls access in the x86_64 code matches neither the load nor the store template"
+ngottpoff=$(grep -c 'R_X86_64_GOTTPOFF' "$out/dis-x86.txt" || true)
+[ "$ngottpoff" -eq "$(awk '$2 != "other" { s += $1 } END { print s + 0 }' "$out/xtls-sites.txt")" ] ||
+	fail "a GOTTPOFF relocation outside the TLS shapes"
+# One encoding per register (the traces and jobs are named by register).
+dup=$(awk '$2 != "other" { print $2, $3 }' "$out/xtls-sites.txt" | sort | uniq -d)
+[ -z "$dup" ] || fail "x86 TLS: two encodings for $dup"
+while read -r _count kind r v b1 b2; do
+	[ "$kind" = other ] && continue
+	# The first instruction's bytes up to its displacement, the second's
+	# whole (a base of rbp or r13 takes a zero disp8).
+	p1=$(echo "$b1" | tr '-' ' ' | awk '{ print $1, $2, $3 }')
+	[ "$(echo "$b1" | tr '-' ' ' | awk '{ print $4 $5 $6 $7, NF }')" = "00000000 7" ] ||
+		{ fail "TLS $kind $r: first instruction $b1"; continue; }
+	n2=$(echo "$b2" | tr '-' ' ' | wc -w)
+	xptrace "got-$r" $p1 D32
+	if [ "$kind" = load ]; then
+		xptrace "tls-ld-$r" $(echo "$b2" | tr '-' ' ')
+		{
+			sed -e "s/@R@/$r/g" -e "s/@N@/$n2/g" "$here/x86/tls-load.job.in"
+			echo "insn x86-got-$r.trace fallthrough 7"
+			echo "insn x86-tls-ld-$r.trace fallthrough $n2"
+		} >"$out/tls-load-$r.job"
+		xjobs="$xjobs $out/tls-load-$r.job"
+	else
+		xptrace "tls-st-$r-$v" $(echo "$b2" | tr '-' ' ')
+		{
+			sed -e "s/@A@/$r/g" -e "s/@V@/$v/g" -e "s/@N@/$n2/g" "$here/x86/tls-store.job.in"
+			echo "insn x86-got-$r.trace fallthrough 7"
+			echo "insn x86-tls-st-$r-$v.trace fallthrough $n2"
+		} >"$out/tls-store-$r-$v.job"
+		xjobs="$xjobs $out/tls-store-$r-$v.job"
+	fi
+done <"$out/xtls-sites.txt"
+# rseq::thread_pointer: every load from %fs:0 (`mov R, qword ptr fs:[0]`,
+# 64 REX 8b /r with a SIB absolute 0), one job per register. Every other
+# %fs access is a TLS site above.
+grep -E "${tab}movq${tab}%fs:0, %[a-z0-9]+$" "$out/dis-x86.txt" |
+	awk '{ s = $0; sub(/^ +[0-9a-f]+: /, "", s); r = s; sub(/.*%fs:0, %/, "", r); sub(/\t.*/, "", s); sub(/ +$/, "", s); gsub(/ /, "-", s); print r, s }' |
+	sort | uniq -c >"$out/fs0-sites.txt"
+cat "$out/fs0-sites.txt"
+[ -s "$out/fs0-sites.txt" ] || fail "no load of %fs:0 in the x86_64 code"
+nfs=$(grep -cE "%fs:" "$out/dis-x86.txt" || true)
+[ "$nfs" -eq $(($(awk '{ s += $1 } END { print s + 0 }' "$out/fs0-sites.txt") + ngottpoff)) ] ||
+	fail "an %fs access that is neither a TLS site nor a load of %fs:0"
+dup=$(awk '{ print $2 }' "$out/fs0-sites.txt" | sort | uniq -d)
+[ -z "$dup" ] || fail "x86 %fs:0 load: two encodings for $dup"
+while read -r _count r b; do
+	n=$(echo "$b" | tr '-' ' ' | wc -w)
+	xptrace "fs0-$r" $(echo "$b" | tr '-' ' ')
+	{
+		sed "s/@R@/$r/g" "$here/x86/fs0.job.in"
+		echo "insn x86-fs0-$r.trace fallthrough $n"
+	} >"$out/fs0-$r.job"
+	xjobs="$xjobs $out/fs0-$r.job"
+done <"$out/fs0-sites.txt"
+# sys::trap: every ud2 in the code is `0f 0b` (LLVM's own traps are the
+# same instruction), and it faults.
+nud2=$(grep -cE "^ +[0-9a-f]+: 0f 0b +${tab}ud2$" "$out/dis-x86.txt" || true)
+noud=$(grep -E "${tab}ud[0-9a-z]*(${tab}|$)" "$out/dis-x86.txt" | grep -vcE ": 0f 0b +${tab}ud2$" || true)
+echo "ud2 instances: $nud2; other ud: $noud"
+[ "$nud2" -gt 0 ] || fail "no ud2 in the x86_64 code"
+[ "$noud" -eq 0 ] || fail "$noud ud0/ud1 or other ud2 encodings"
+xptrace ud2 0f 0b
+cp "$here/x86/ud2.job" "$out/ud2.job"
+xjobs="$xjobs $out/ud2.job"
+# The x86 jobs, with the controls of step 13, run in parallel on the token
+# pool of step 6 (the seven-instruction rseq::symbols job takes minutes).
+xrun() { # JOB...: isla-check each in the background; JOB.rc, JOB.log
+	for job in "$@"; do
+		read -r _ <&3
+		(
+			rc=0
+			ISLA_CHECK_JOBS=4 "$out/isla-check" "$job" >"$job.log" 2>&1 || rc=$?
+			echo $rc >"$job.rc"
+			echo >&3
+		) &
+	done
+	wait
+}
+
+# 13. Negative controls for step 12, each failing for its own reason: the
+# GOT function's load one entry off and its `ret` claimed to fall
+# through, rseq::symbols storing the first value twice, the TLS load
+# without the relocation's definition and the store storing the offset,
+# the thread pointer read from the GS base, `ud2` claimed to fall
+# through, to fault through the model-error path or to write rip before
+# its fault, and a job that does not name the 64-bit mode assumption its
+# traces use.
+xnegs=
+xrefute() { # NAME JOB-TEXT REASON: as refute, run with xrun below
+	printf '%s\n' "$2" >"$out/neg-$1.job"
+	printf '%s\n' "$3" >"$out/neg-$1.reason"
+	xnegs="$xnegs $1"
+}
+xrefute x86-got-off "$(sed 's/^assert (= mem.1.addr (bvadd got #x0000000000000000))$/assert (= mem.1.addr (bvadd got #x0000000000000008))/' "$out/got-fn-x86.job")" "assert (= mem.1.addr"
+xrefute x86-got-ret "$(sed 's/^insn x86-ret.trace jump$/insn x86-ret.trace fallthrough 1/' "$out/got-fn-x86.job")" "not proved that insn 2 falls through"
+xrefute x86-rseq-store "$(sed 's/^assert (= (concat wmem.16.val \(.*\)) (concat mem.16.val .*$/assert (= (concat wmem.16.val \1) (concat mem.8.val mem.7.val mem.6.val mem.5.val mem.4.val mem.3.val mem.2.val mem.1.val))/' "$out/rseq-symbols-x86.job")" "assert (= (concat wmem.16.val"
+set -- $(grep ' load ' "$out/xtls-sites.txt" | head -n 1)
+xrefute x86-tls-nodisp "$(grep -v 'seg.1.disp' "$out/tls-load-$3.job")" "assert (= mem.1.addr"
+set -- $(grep ' store ' "$out/xtls-sites.txt" | head -n 1)
+xrefute x86-tls-store-val "$(sed "s/^assert (= \(.*\) init.$4)$/assert (= \1 off)/" "$out/tls-store-$3-$4.job")" "assert (= (concat wmem.8.val"
+set -- $(head -n 1 "$out/fs0-sites.txt")
+xrefute x86-fs0-gs "$(sed 's/^assert (= mem.1.addr (bvadd init.msrs.1 /assert (= mem.1.addr (bvadd init.msrs.2 /' "$out/fs0-$2.job")" "assert (= mem.1.addr"
+xrefute x86-ud2-falls "$(sed 's/^insn x86-ud2.trace trap x86_fault<u>$/insn x86-ud2.trace fallthrough 2/' "$out/ud2.job")" "a model fault"
+xrefute x86-ud2-error "$(sed 's/^insn x86-ud2.trace trap x86_fault<u>$/insn x86-ud2.trace trap x86_model_error<u>/' "$out/ud2.job")" "a model fault with no call of x86_model_error<u>"
+# A synthetic variant of the real ud2 trace that writes rip before the
+# fault: a trap must leave rip alone.
+awk '/\(call \|x86_fault<u>\|\)/ && !d { print "  (write-reg |rip| nil #x0000000000000000)"; d = 1 } { print }' \
+	"$out/x86-ud2.trace" >"$out/x86-ud2-rip.trace"
+xrefute x86-ud2-rip "$(sed 's/^insn x86-ud2.trace /insn x86-ud2-rip.trace /' "$out/ud2.job")" "a model fault after a rip write"
+xrefute x86-fun "$(grep -v '^fun n64_bit_modep true$' "$out/got-fn-x86.job")" "function assumption n64_bit_modep => true, which the job does not name"
+xrun $xjobs $(for n in $xnegs; do echo "$out/neg-$n.job"; done)
+for job in $xjobs; do
+	if [ "$(cat "$job.rc")" = 0 ]; then
+		tail -n 1 "$job.log"
+	else
+		fail "isla-check $job: $(grep -m 1 FAIL "$job.log" || tail -n 1 "$job.log")"
+	fi
+done
+for n in $xnegs; do
+	log=$out/neg-$n.job.log
+	if [ "$(cat "$out/neg-$n.job.rc")" = 0 ]; then
+		fail "negative control $n passed"
+	elif ! grep '^FAIL' "$log" | grep -qF -- "$(cat "$out/neg-$n.reason")"; then
+		fail "negative control $n did not fail for its reason ($(cat "$out/neg-$n.reason")): $(tail -n 1 "$log")"
+	else
+		echo "negative control $n: rejected, as it should be"
+	fi
+done
 
 if [ "$fails" -ne 0 ]; then
 	echo "isla: $fails check(s) failed (traces and jobs in $out)"
