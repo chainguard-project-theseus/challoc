@@ -478,7 +478,7 @@ impl Heap {
             class < NCLASSES,
             old(self).wf(),
         ensures
-            final(self).keeps(*old(self)),
+            final(self).wf(),
     {
         // As in `Heap::push`.
         let tracked mut blk = blk;
@@ -609,6 +609,7 @@ impl Heap {
         ensures
             *final(ord) == *old(ord),
             final(self).keeps(*old(self)),
+            !create ==> *final(self) == *old(self),
             r@.addr != 0 ==> final(self).owns_node(r),
             r@.addr != 0 ==> final(self).in_list(r),
             r@.addr != 0 ==> final(self).keyed(r, arena),
@@ -896,7 +897,7 @@ impl Heap {
 mod kani_aborts {
     use super::assert_not_home;
 
-    /// S125 `assert_not_home`, `requires *arena != *home`: under it the
+    /// S127 `assert_not_home`, `requires *arena != *home`: under it the
     /// call returns, for every pair.
     #[kani::proof]
     fn assert_not_home_returns() {

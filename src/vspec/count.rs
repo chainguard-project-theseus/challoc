@@ -14,8 +14,8 @@
 //!
 //! Trusted, all of it:
 //! - each wrapped `core` operation is one atomic operation on the counter
-//!   (a load, a store, a swap or a wrapping read-modify-write), as `core`
-//!   documents;
+//!   (a load, a store, a swap, a strong compare-and-swap or a wrapping
+//!   read-modify-write), as `core` documents;
 //! - the proof model is sequentially consistent: the specifications ignore
 //!   `ordering`, so nothing here proves that `Relaxed` is strong enough
 //!   (`verus/TODO.md`, Tier 4);
@@ -35,8 +35,9 @@
 //!   the atomic it makes (`verus/loom/run.sh` checks it by name; `new`
 //!   itself is verified);
 //! - a permission's value is its counter's: every access to a bound count
-//!   goes through these wrappers (`Arenas::assign`, `bind`, `unbind`,
-//!   `bound`), each inside the counter's invariant (`arena::BoundPred`),
+//!   goes through these wrappers (`Arenas::assign`, `bind`,
+//!   `try_bind_idle`, `unbind`, `bound`), each inside the counter's
+//!   invariant (`arena::BoundPred`),
 //!   and so does every access to the arena count (`Arenas::count`,
 //!   `Arenas::create`) inside its invariant (`arena::NarenasPred`), and to
 //!   the position (`Policy::position`, `Policy::apply`) inside its
@@ -184,6 +185,36 @@ pub fn swap(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&m
     no_unwind
 {
     c.swap(v, ordering)
+}
+
+/// `c.compare_exchange(current, new, success, failure)`: `Ok` with the
+/// previous value, `current`, when the counter held it and now holds
+/// `new`; otherwise `Err` with the value it holds, unchanged (the strong
+/// form never fails spuriously). It panics for a `Release` or `AcqRel`
+/// failure ordering.
+#[inline(always)]
+#[verifier::external_body]
+#[verifier::atomic]
+pub fn compare_exchange(
+    c: &AtomicU32,
+    current: u32,
+    new: u32,
+    success: Ordering,
+    failure: Ordering,
+    Tracked(perm): Tracked<&mut CountPerm>,
+) -> (r: Result<u32, u32>)
+    requires
+        old(perm).id() == count_id(c),
+        !(failure is Release),
+        !(failure is AcqRel),
+    ensures
+        final(perm).id() == old(perm).id(),
+        r matches Ok(prev) ==> prev == current && old(perm).value() == current && final(perm).value() == new,
+        r matches Err(prev) ==> prev == old(perm).value() && prev != current && final(perm).value() == prev,
+    opens_invariants none
+    no_unwind
+{
+    c.compare_exchange(current, new, success, failure)
 }
 
 } // verus!

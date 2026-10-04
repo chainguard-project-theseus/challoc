@@ -1630,6 +1630,11 @@ mod tests {
         assert_ne!(other, home);
         assert_ne!(other, lua);
         let h = heap::existing_heap(s).unwrap();
+        // Pin the home (a `thread.arena` write): this thread's heap is
+        // young and the other thread's arena is idle now, so its first
+        // free of a slot there would otherwise move it onto that arena
+        // (`Heap::try_rehome`, covered in heap/tests.rs).
+        h.set_arena(s, home, Tracked::assume_new());
         h.flush_all(s, Tracked::assume_new());
         for (i, &p) in ptrs.iter().enumerate() {
             let p = p as *mut u8;

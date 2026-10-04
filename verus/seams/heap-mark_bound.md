@@ -1,6 +1,6 @@
 # `mark_bound`
 
-Seam S122 of `verus/SEAMS.md`: src/heap/mod.rs:6111. Kind: external_body. Category: raw pointer (internal).
+Seam S123 of `verus/SEAMS.md`: src/heap/mod.rs:6391. Kind: external_body. Category: raw pointer (internal).
 Discharged by RefinedRust.
 
 ## Contract
@@ -79,11 +79,15 @@ head, `ar` as the bytes of `s.arena()` and `b` as `s.bound()`.
 
 It also uses a premise the token's documentation does not state:
 that the fields still hold what was stored when `mark_bound` runs,
-because nothing else writes the head between `init_fields` and
-`heap_new`. By inspection: the token is the only holder of the head's
-permission, `create_detached` writes the rest of the block through the
-other permission (`rest`), and `create` calls `mark_bound` right after
-`create_detached` returns.
+because nothing else writes the head's first ten fields between
+`init_fields` and `heap_new`. By inspection: the token is the only
+holder of the head's permission, `create_detached` writes the rest of
+the block through the other permission (`rest`), and `create` calls
+`mark_bound` right after `create_detached` returns. Since the port of
+upstream #103, `create` then calls `mark_rehome` (S126, trusted), which
+stores `true` into `rehome` alone: a field after `rng`, at byte 88
+under rustc's layout, outside `HeapHead` (whose fields end at byte 74,
+below), so it leaves the bytes this proof is about as they were.
 
 - `requires old(s).heap() == h`: `h = l`.
 - `requires heap_head(h, old(s).head())`: Verus's permission for the

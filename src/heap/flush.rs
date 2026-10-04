@@ -69,6 +69,7 @@ impl Heap {
             final(self).others == old(self).others,
             final(self).bound == old(self).bound,
             final(self).homed == old(self).homed,
+            final(self).rehome == old(self).rehome,
             final(self).heads == old(self).heads,
             r.0.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),

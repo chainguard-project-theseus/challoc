@@ -135,6 +135,16 @@ pub const MAX_CAP: u32 = 1024;
 pub const MIN_CAP: u32 = 8;
 /// Slow-path entries between two periodic-work checks (design 6.4).
 pub const PERIODIC_EVERY: u32 = 64;
+/// Slow-path entries ([`Heap::slow_ticks`]) before which a new thread heap
+/// may still move its home onto the arena of a slot it frees
+/// (`Heap::try_rehome`, design 6.5). A thread that takes over a dead
+/// thread's data (larson's successors) frees it from its first operation
+/// on, and moved within 2..3 slow-path entries on average (C4A); a thread
+/// that frees other threads' data only after building its own (mstress:
+/// about 140 entries at the first such free) never qualifies, so it keeps
+/// its own data at home. Below the limit a heap has refilled at most a
+/// few caches, so the move's flush is small and abandons nothing.
+pub const REHOME_TICKS: u32 = 8;
 
 /// The `others` key of the one flush-only cache per class that plain
 /// frees of another arena's slots go onto ([`ArenaCaches`]); never an
@@ -1891,6 +1901,20 @@ fn assert_refill_empty(len: &u32)
     assert_eq!(*len, 0, "heap: refill of a cache that is not empty");
 }
 
+/// `assert_eq!(*len, 0, ..)`, [`CacheHeader::rekey`]'s abort on a cache
+/// that still holds slots: `*len == 0` after it returns. Trusted: as
+/// [`assert_refill_empty`].
+#[verifier::external_body]
+#[inline(always)]
+fn assert_rekey_flushed(len: &u32)
+    requires
+        crate::sys::may_abort() || *len == 0,
+    ensures
+        *len == 0,
+{
+    assert_eq!(*len, 0, "heap: re-keying a cache that was not flushed");
+}
+
 impl CachePerms {
     /// Every owned header is [`cell_ok`].
     spec fn wf(&self) -> bool {
@@ -3129,6 +3153,14 @@ pub struct Heap {
     /// randomised claim seeds it from `getrandom`, so the
     /// default configuration makes no syscall per heap creation.
     rng: u64,
+    /// This heap may still move its home onto the arena of a slot it
+    /// frees ([`Heap::try_rehome`]): set for a new thread heap; cleared
+    /// for an explicit cache, by a `thread.arena` write, by the one move,
+    /// and once [`REHOME_TICKS`] slow-path entries have passed.
+    rehome: bool,
+    /// The arena of the last cross-arena free [`Heap::try_rehome`] looked
+    /// at: the move needs two in a row into the same arena.
+    rehome_from: u16,
     /// Caches of the home arena, one line per class; last, so the small
     /// fields above share two lines and `caches[c]` is `heap + 128 + 64 * c`.
     caches: [CacheHeader; NCLASSES],
@@ -3216,11 +3248,13 @@ impl Heap {
     /// assignment"): a heap counted in `Arenas::bound` (`bound`: a thread
     /// heap, from `create` to `destroy`) holds the ticket for its home
     /// arena, and a heap that is not counted holds none. `create` installs
-    /// it, `set_arena` exchanges it with the binding, and `destroy`
-    /// (trusted) gives it back with the binding.
+    /// it, `set_arena` and `try_rehome` exchange it with the binding, and
+    /// `destroy` (trusted) gives it back with the binding. A heap that may
+    /// still move its home (`rehome`, set only by `create`) is counted.
     pub closed spec fn homed_ok(&self) -> bool {
         &&& self.bound == self.homed@ is Some
         &&& self.homed@ matches Some(t) ==> homed_on(t, self.arena as int)
+        &&& self.rehome ==> self.bound
     }
 
     /// `self` is well formed, owns every header `old` owned, and every
@@ -3345,6 +3379,12 @@ impl Heap {
         assert forall|c: int| 0 <= c < NCLASSES implies self.owns(#[trigger] self.home_hdrs@[c]) && self.hdr_class(self.home_hdrs@[c]) == c by {
             assert(self.home_hdrs@[c] == home_hdr(h, c));
         }
+    }
+
+    /// The heap may still move its home ([`Heap::rehome`]); the measure
+    /// of the free paths' recursion through [`Heap::rehome_on_free`].
+    pub closed spec fn spec_rehome(&self) -> bool {
+        self.rehome
     }
 
     /// The home arena ([`Heap::arena`]).
@@ -3827,9 +3867,10 @@ impl Heap {
     /// "`MALLOCX_TCACHE_NONE` bypasses thread caches"): the same cache
     /// permissions (headers, stacks, entries, and the slot tokens and zero
     /// tokens under them), the same `caches` field, `others` list and
-    /// keys, home headers and home arena. The other fields (`shared`, `tid`,
-    /// `slow_ticks`, `last_gc`, `uncached`, `snapshot`, `tcache_enabled`,
-    /// `bound`, `rng`) are unconstrained.
+    /// keys, home headers, home arena, binding, ticket and `rehome`. The
+    /// other fields (`shared`, `tid`, `slow_ticks`, `last_gc`, `uncached`,
+    /// `snapshot`, `tcache_enabled`, `rng`, `rehome_from`) are
+    /// unconstrained.
     pub closed spec fn caches_same(&self, old: Heap) -> bool {
         &&& self.perms@ == old.perms@
         &&& self.caches == old.caches
@@ -3840,6 +3881,7 @@ impl Heap {
         &&& self.heads == old.heads
         &&& self.arena == old.arena
         &&& self.bound == old.bound
+        &&& self.rehome == old.rehome
         &&& self.homed == old.homed
     }
 
@@ -4064,6 +4106,7 @@ impl Heap {
             new.heads == old.heads,
             new.bound == old.bound,
             new.homed == old.homed,
+            new.rehome == old.rehome,
             new.perms@.keeps(old.perms@),
             new.perms@.follows(old.perms@),
             new.perms@.zero_ok(),
@@ -4120,6 +4163,7 @@ impl Heap {
             b.arena == a.arena,
             b.bound == a.bound,
             b.homed == a.homed,
+            b.rehome == a.rehome,
             b.others == a.others,
             b.home_hdrs == a.home_hdrs,
             b.heads == a.heads,
@@ -4326,6 +4370,7 @@ impl Heap {
             new.arena == old.arena,
             new.bound == old.bound,
             new.homed == old.homed,
+            new.rehome == old.rehome,
             new.others == old.others,
             new.home_hdrs == old.home_hdrs,
             new.heads == old.heads,
@@ -4373,6 +4418,7 @@ impl Heap {
         &&& self.keys == old.keys
         &&& self.arena == old.arena
         &&& self.bound == old.bound
+        &&& self.rehome == old.rehome
         &&& self.homed == old.homed
         &&& self.others == old.others
         &&& self.home_hdrs == old.home_hdrs
@@ -4463,6 +4509,7 @@ impl Heap {
             new.arena == old.arena,
             new.bound == old.bound,
             new.homed == old.homed,
+            new.rehome == old.rehome,
             new.others == old.others,
             new.home_hdrs == old.home_hdrs,
             new.heads == old.heads,
@@ -5685,6 +5732,9 @@ impl Heap {
             *final(ord) == *old(ord),
             final(self).wf(),
     {
+        // An explicit home is kept, even one equal to the current home:
+        // no late move away from it ([`Heap::try_rehome`]).
+        self.rehome = false;
         if arena == self.arena {
             return;
         }
@@ -5775,6 +5825,233 @@ impl Heap {
                 self.homed = Tracked(Some(t));
             }
         }
+    }
+
+    /// The `FOREIGN` slow path of a young heap's cross-arena `free`
+    /// ([`Heap::rehome`] set): the first free of each class, while the
+    /// class has no `FOREIGN` cache yet, and the flush of a full one. The
+    /// heap moves onto the slot's arena when [`Heap::try_rehome`] allows
+    /// it, and the slot then takes the home push; otherwise (false) the
+    /// caller goes on to the ordinary `FOREIGN` path. Here rather than in
+    /// [`Heap::free_other`] so that the cross-arena fast push (every free
+    /// of xmalloc-test's consumers) carries no test for it.
+    ///
+    /// The move flushes the `FOREIGN` caches, and with them a first copy
+    /// of `p` if this free is a double free: before the move the
+    /// `double_free_scan` compare runs against the `FOREIGN` cache (the
+    /// one `free_slow_in` would have run), and after it the exact bit test
+    /// runs again on `p`, so a slot the flush just released aborts as
+    /// `invalid or double free` instead of being pushed into a cache that
+    /// `malloc` pops (which would hand it out twice).
+    ///
+    /// `blk` is the caller's token for `p`: the push takes it when the
+    /// heap moved, and a false leaves it as it was and the heap as `keeps`
+    /// allows (`rehome`, `rehome_from` may change). The `debug_assert!` is
+    /// proved: the bit test names `p`'s class, which is `class` (a slot
+    /// start has one class), and its slab's owner, which `arena_of_slot`
+    /// read.
+    #[cold]
+    #[inline(never)]
+    fn rehome_on_free(
+        &mut self,
+        shared: &Shared,
+        class: usize,
+        p: *mut u8,
+        Tracked(blk): Tracked<&mut Live>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: bool)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            process_regions().is_slot(class as int, p@.addr),
+            old(blk).slot_block(p, class as int),
+            class < NCLASSES,
+            shared.wf(),
+            old(self).wf(),
+            old(self).rehome,
+        ensures
+            *final(ord) == *old(ord),
+            final(self).wf(),
+            !r ==> final(self).keeps(*old(self)),
+            !r ==> *final(blk) == *old(blk),
+        decreases 1int, 0int,
+    {
+        let to = shared.arena_of_slot(class, p);
+        if shared.double_free_scan() {
+            let foreign = self.other_caches(shared, FOREIGN, false, Tracked(&mut LockOrder::spare()));
+            if !foreign.is_null() {
+                proof {
+                    assert(self.owns(node_hdr(foreign, class as int)));
+                }
+                // SAFETY: `foreign` is this heap's live `FOREIGN` node; a
+                // header with `cap != 0` is a real cache.
+                unsafe {
+                    let cache = Self::node_cache_ptr(foreign, class);
+                    if self.hdr_ref(cache).cap != 0 {
+                        self.scan_or_abort(shared, cache, p);
+                    }
+                }
+            }
+        }
+        if !self.try_rehome(shared, to, Tracked(ord)) {
+            return false;
+        }
+        // The flush released every cached slot: test `p`'s bit again.
+        match shared.classify_free(p) {
+            Ok((c, a)) => {
+                proof {
+                    shared.lemma_regions_ok();
+                    crate::vspec::zero::lemma_slot_unique(c as int, class as int, p as usize);
+                }
+                debug_assert!(c == class && a == to)
+            },
+            Err(_) => invalid_free(p as usize),
+        }
+        let tracked mut own = Live::empty();
+        proof {
+            tracked_swap(blk, &mut own);
+        }
+        self.push(shared, class, p, Tracked(own));
+        true
+    }
+
+    /// Move the home of a young thread heap onto `to`, the arena owning a
+    /// slot it is freeing, if no heap is homed there (design 6.5). Called
+    /// from the cross-arena `free` ([`Heap::rehome_on_free`]) while
+    /// [`Heap::rehome`] is set, which this clears once the heap has made
+    /// [`REHOME_TICKS`] slow-path entries; true when the heap moved.
+    ///
+    /// Why: a thread that takes over a dead thread's data was homed when
+    /// it started, while that thread still held its arena, so it was put
+    /// on another one, and every `free` of the inherited data took the
+    /// foreign cache while its own allocations came from fresh refills of
+    /// its own arena (larson: each successor alternated between two
+    /// arenas, `narenas:1` was 31% faster at 10 rounds per thread on the
+    /// C4A). Most successors now create their heap after the exiting
+    /// thread's unbind ([`Heap::destroy`] unbinds before its flush) and
+    /// are homed on its arena directly; one started earlier moves there
+    /// here once that arena is idle, and the inherited slots feed its
+    /// home caches again.
+    ///
+    /// The move flushes the home caches and the `FOREIGN` caches through
+    /// the ordinary flush (every cached slot goes back to its slab, its bit
+    /// cleared, so a stale free of one aborts as before; nothing stays
+    /// cached across the move), keeps the stacks and re-keys the home
+    /// headers to `to`. Only an automatic arena, only one with no heap
+    /// homed on it (`Arenas::try_bind_idle`, one compare-and-swap, so two
+    /// heaps never both take it), never one this heap already keeps an
+    /// `others` node for, and at most once per heap.
+    ///
+    /// Only while the heap is young by its slow-path count: a thread that
+    /// has built data of its own at home and then frees other threads'
+    /// data (mstress's workers take transfer slots from every arena) would
+    /// strand its own data on the arena it leaves and send every later
+    /// free of it to the `FOREIGN` cache. Moving on the first free from
+    /// any idle arena cost mstress 6% (700 of its 775 workers moved, after
+    /// about 140 slow-path entries each); under the limit 46 still moved
+    /// (+2.3%). Hence the second condition: two cross-arena frees in a
+    /// row seen here went to the same arena (an inherited data set comes
+    /// from one arena; mstress's transfer slots from all of them).
+    ///
+    /// The heap stays well formed: the home headers are re-keyed through
+    /// their permissions ([`Heap::hdr_mut`], [`Heap::lemma_set`]), the new
+    /// home is no `others` node's key (the lookup above found none), and
+    /// the binding moves with the tickets (`homed_ok`): `try_bind_idle`'s
+    /// for `to` replaces the old home's, which `unbind` takes back. A
+    /// false leaves the heap as `keeps` allows (only `rehome` and
+    /// `rehome_from` may change).
+    fn try_rehome(&mut self, shared: &Shared, to: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: bool)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            shared.wf(),
+            old(self).wf(),
+            old(self).rehome,
+        ensures
+            *final(ord) == *old(ord),
+            final(self).wf(),
+            !r ==> final(self).keeps(*old(self)),
+            r ==> final(self).home() == to,
+            r ==> !final(self).spec_rehome(),
+    {
+        debug_assert!(self.bound);
+        proof {
+            Heap::lemma_keeps_refl(*self);
+        }
+        if self.slow_ticks >= REHOME_TICKS {
+            self.rehome = false;
+            return false;
+        }
+        if to != self.rehome_from {
+            self.rehome_from = to;
+            return false;
+        }
+        proof {
+            shared.lemma_wf();
+            shared.arenas.lemma_wf();
+        }
+        if to as u32 >= shared.arenas.auto()
+            || to == self.arena
+            || shared.arenas.bound(to) != 0
+            || !self.other_caches(shared, to, false, Tracked(&mut LockOrder::spare())).is_null()
+        {
+            return false;
+        }
+        let (won, Tracked(t)) = shared.arenas.try_bind_idle(to);
+        if !won {
+            return false;
+        }
+        let ghost h0 = *self;
+        let old = self.arena;
+        self.flush_arena(shared, old, ptr::null_mut(), Tracked(ord));
+        let ghost h1 = *self;
+        let foreign = self.other_caches(shared, FOREIGN, false, Tracked(&mut LockOrder::spare()));
+        if !foreign.is_null() {
+            self.flush_arena(shared, FOREIGN, foreign, Tracked(ord));
+        }
+        let ghost h2 = *self;
+        proof {
+            Heap::lemma_same_trans(h0, h1, h2);
+        }
+        let a = shared.owner(to);
+        for class in 0..NCLASSES
+            invariant
+                self.wf(),
+                self.same_shape(h0),
+                shared.wf(),
+                a.spec_index() == to,
+                crate::sys::may_abort(),
+        {
+            let c = self.cache_ptr(class);
+            if self.hdr_ref(c).cap != 0 {
+                let refilled = a.class(class).refilled() as u32;
+                let ghost hb = *self;
+                let h = self.hdr_mut(c);
+                h.rekey(to, refilled);
+                proof {
+                    Heap::lemma_set(hb, *self, c, *h);
+                    assert(self.perms@.hdrs.dom() =~= hb.perms@.hdrs.dom());
+                    Heap::lemma_same_trans(h0, hb, *self);
+                }
+            }
+        }
+        self.arena = to;
+        self.rehome = false;
+        proof {
+            shared.lemma_wf();
+        }
+        // The ticket for the old home goes back and the one for `to` takes
+        // its place (`homed_ok`).
+        let tracked t_old = self.homed.borrow_mut().tracked_take();
+        proof {
+            shared.arenas.lemma_homed(t_old, old as int);
+            shared.arenas.lemma_homed(t, to as int);
+            self.homed = Tracked(Some(t));
+        }
+        shared.arenas.unbind(old, Tracked(t_old));
+        true
     }
 
     /// Count a slow-path entry and run periodic work every
@@ -5871,6 +6148,7 @@ impl Heap {
         &&& self.keys == old.keys
         &&& self.arena == old.arena
         &&& self.bound == old.bound
+        &&& self.rehome == old.rehome
         &&& self.homed == old.homed
         &&& self.others == old.others
         &&& self.home_hdrs == old.home_hdrs
@@ -6062,6 +6340,8 @@ unsafe fn init_fields(
         ptr::write(&raw mut (*h).tcache_enabled, true);
         ptr::write(&raw mut (*h).bound, false);
         ptr::write(&raw mut (*h).rng, 0);
+        ptr::write(&raw mut (*h).rehome, false);
+        ptr::write(&raw mut (*h).rehome_from, FOREIGN);
     }
     Tracked::assume_new()
 }
@@ -6120,6 +6400,33 @@ unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 {
     // SAFETY: guaranteed by the caller.
     unsafe { (*h).bound = true };
+}
+
+/// `(*h).rehome = true` for a thread heap [`Heap::create`] has just made
+/// and marked bound ([`mark_bound`]): it may still move its home
+/// ([`Heap::try_rehome`]). A field store through the raw heap pointer, to
+/// a field [`init_fields`] wrote (`false`), inside the 128 bytes `s` holds
+/// the permission to ([`FreshHeap::head`], [`heap_head`]) but after the
+/// fields the token records (`rehome` follows `rng`): it leaves the
+/// permission and the token as they were. Trusted: `&raw mut`
+/// projections of the raw heap pointer, which Verus does not support.
+/// That a heap with `rehome` set is bound (a conjunct of
+/// [`Heap::homed_ok`]) holds here because `create` calls it right after
+/// [`mark_bound`] and nothing writes the head before `heap_new` reads it.
+///
+/// # Safety
+/// `h` is a fresh heap, exclusively owned.
+#[inline(always)]
+#[verifier::external_body]
+unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
+    requires
+        old(s).heap() == h,
+        heap_head(h, old(s).head()),
+    ensures
+        *final(s) == *old(s),
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe { (*h).rehome = true };
 }
 
 /// Heap creation and teardown. Creation is verified up to the field
@@ -6183,6 +6490,8 @@ impl Heap {
             let tracked mut s = stored.tracked_unwrap();
             // SAFETY: fresh, exclusively owned.
             unsafe { mark_bound(h, Tracked(&mut s)) };
+            // SAFETY: as above.
+            unsafe { mark_rehome(h, Tracked(&mut s)) };
             proof {
                 fresh = Some((t, s));
             }
@@ -6326,9 +6635,10 @@ impl Heap {
 
     /// Flush every cache, free them and the heap itself back to the
     /// metadata allocator. `h` is dangling afterwards. A counted heap
-    /// (`bound`) is unbound from its home arena with its ticket
-    /// ([`Heap::homed_ok`]; the trusted body passes `Tracked::assume_new()`
-    /// for it, and for the exit purge's ghost record).
+    /// (`bound`) is unbound from its home arena with its ticket before
+    /// the flush ([`Heap::homed_ok`]; the trusted body passes
+    /// `Tracked::assume_new()` for it, and for the exit purge's ghost
+    /// record).
     ///
     /// # Safety
     /// `h` must come from [`Heap::create`] on `shared` and no longer be in
@@ -6350,6 +6660,15 @@ impl Heap {
     {
         // SAFETY: the caller gives us exclusive ownership of the heap.
         let heap = unsafe { &mut *h };
+        // Unbound before the flush: the arena is idle from here on, so a
+        // thread this one just started (larson's successor, which frees
+        // what this one allocated) can be homed on it, or move there
+        // ([`Heap::try_rehome`]), while the flush below runs. The heap's
+        // ticket (`homed`, which `Heap::homed_ok` says it holds while
+        // `bound`) goes back with the binding.
+        if heap.bound {
+            shared.arenas.unbind(heap.arena, Tracked::assume_new());
+        }
         heap.flush_all(shared, Tracked(&mut *ord));
         Self::free_caches(shared, &mut heap.caches, Tracked::assume_new(), Tracked(&mut *ord));
         for o in Self::nodes(heap.others) {
@@ -6365,9 +6684,6 @@ impl Heap {
         heap.others = ptr::null_mut();
         if heap.bound {
             let arena = heap.arena;
-            // The heap's ticket (`homed`, which `Heap::homed_ok` says it
-            // holds while `bound`) goes back with the binding.
-            shared.arenas.unbind(arena, Tracked::assume_new());
             // jemalloc's rule (`tcache_destroy`): the last thread homed on
             // an arena leaves, so nothing will refill its `Empty` slabs
             // soon; purge them now instead of letting them sit for the
@@ -6375,7 +6691,9 @@ impl Heap {
             // them. Not with a background thread, which decays on its own
             // schedule (as jemalloc), and at most once per decay period
             // per arena (`Arena::take_exit_purge`: thread churn would
-            // purge and refault the same slabs at every exit). Design 13.3.
+            // purge and refault the same slabs at every exit); and not
+            // when another heap has been homed there since the unbind
+            // above. Design 13.3.
             if shared.arenas.bound(arena) == 0 && !crate::purge::background::present() {
                 if let Some(a) = shared.arenas.get_existing(arena) {
                     if a.take_exit_purge(now_ns()) {
@@ -6434,11 +6752,11 @@ impl Heap {
     }
 }
 
-/// Kani checks of the two `assert_eq!` aborts (records under
+/// Kani checks of the three `assert_eq!` aborts (records under
 /// `verus/seams/`).
 #[cfg(kani)]
 mod kani_aborts {
-    use super::{assert_flushed, assert_refill_empty};
+    use super::{assert_flushed, assert_refill_empty, assert_rekey_flushed};
     use crate::kani_proofs::must_not_return;
 
     /// S117 `assert_flushed`, `ensures *len == 0`: on any other `len` the
@@ -6465,10 +6783,24 @@ mod kani_aborts {
         }
     }
 
-    /// Both return on 0 (no spurious abort; not part of the contracts).
+    /// S119 `assert_rekey_flushed`, `ensures *len == 0`: as
+    /// `assert_flushed`.
+    #[kani::proof]
+    #[kani::should_panic]
+    fn assert_rekey_flushed_returns_only_on_zero() {
+        let len: u32 = kani::any();
+        assert_rekey_flushed(&len);
+        if len != 0 {
+            must_not_return();
+        }
+    }
+
+    /// All three return on 0 (no spurious abort; not part of the
+    /// contracts).
     #[kani::proof]
     fn asserts_return_on_zero() {
         assert_flushed(&0);
         assert_refill_empty(&0);
+        assert_rekey_flushed(&0);
     }
 }

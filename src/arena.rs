@@ -2543,6 +2543,15 @@ proof fn new_ticket(tracked auth: &mut GhostSetAuth<int>, next: int) -> (tracked
     auth.insert(next)
 }
 
+/// A placeholder ticket: the element of a fresh set of its own, which no
+/// contract claims is any arena's. What [`Arenas::try_bind_idle`]
+/// returns when it did not bind (its `ensures` says nothing of it then),
+/// so that its result has the type `bind`'s has.
+proof fn no_ticket(index: u16) -> (tracked t: Homed) {
+    let tracked (mut auth, _) = GhostSetAuth::<int>::new(Set::empty());
+    Homed { tok: auth.insert(0), arena: index as int }
+}
+
 /// A count changed by `d`, on its `u32` wrap, is the wrap of the changed
 /// count.
 proof fn lemma_wrap_step(n: int, d: int)
@@ -2973,7 +2982,10 @@ impl Arenas {
 
     /// Number of automatic arenas (`opt.narenas` as applied).
     #[inline]
-    pub fn auto(&self) -> u32 {
+    pub fn auto(&self) -> (r: u32)
+        ensures
+            r == self.spec_auto(),
+    {
         self.auto
     }
 
@@ -2988,6 +3000,69 @@ impl Arenas {
             self.ticket_of(r@, index as int),
     {
         self.count_in(index as usize)
+    }
+
+    /// Bind a thread heap to `index` only if no heap is homed there now
+    /// (one compare-and-swap of its count from 0 to 1): the late rehoming
+    /// of a young heap onto the arena an exited thread left
+    /// (`Heap::try_rehome`). Two heaps racing for one idle arena cannot
+    /// both win, so a rehome never stacks a second heap on an arena. A
+    /// plain load first: a busy arena (xmalloc's live producers) is
+    /// refused without taking its counter's line exclusive.
+    ///
+    /// On success, a fresh ticket for the arena ([`Homed`]), as `bind`
+    /// gives; the swap is made inside the count's invariant
+    /// ([`BoundPred`]), where it moved the count from 0 to 1, so the arena
+    /// had no ticket out (as a `u32` wraps their number) and now has the
+    /// one returned. On failure the ticket is a placeholder
+    /// ([`no_ticket`]) that the caller drops.
+    pub fn try_bind_idle(&self, index: u16) -> (r: (bool, Tracked<Homed>))
+        requires
+            index < MAX_ARENAS,
+            self.wf(),
+        ensures
+            r.0 ==> self.ticket_of(r.1@, index as int),
+    {
+        let i = index as usize;
+        if self.load_bound(i) != 0 {
+            return (false, Tracked(no_ticket(index)));
+        }
+        self.bind_if_idle(i)
+    }
+
+    /// `bound[i]`'s compare-and-swap from 0 to 1, inside its invariant
+    /// ([`BoundPred`]): on success a fresh ticket for arena `i`, as
+    /// [`Arenas::count_in`] adds one.
+    #[inline(always)]
+    fn bind_if_idle(&self, i: usize) -> (r: (bool, Tracked<Homed>))
+        requires
+            self.wf(),
+            i < MAX_ARENAS,
+        ensures
+            r.0 ==> self.ticket_of(r.1@, i as int),
+    {
+        proof {
+            assert(self.invs@.contains_key(i as int));
+            assert(self.invs@[i as int].constant().id == count_id(&self.bound[i as int]));
+        }
+        let tracked inv = self.invs.borrow().tracked_borrow(i as int);
+        let tracked mut t = no_ticket(i as u16);
+        let r;
+        vstd::open_atomic_invariant!(inv => v => {
+            let tracked (mut perm, mut auth, next) = v;
+            r = crate::vspec::count::compare_exchange(&self.bound[i], 0, 1, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm));
+            proof {
+                if r is Ok {
+                    let n = auth@.len() as int;
+                    t = Homed { tok: new_ticket(&mut auth, next@), arena: i as int };
+                    lemma_wrap_step(n, 1);
+                    v = (perm, auth, Ghost(next@ + 1));
+                } else {
+                    v = (perm, auth, next);
+                }
+            }
+        });
+        (r.is_ok(), Tracked(t))
     }
 
     /// Thread heaps currently homed on `index`: the tickets out for it

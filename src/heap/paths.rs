@@ -14,12 +14,14 @@ use crate::vspec::zero::Zeroed;
 use super::thread::heap_from_slot;
 #[cfg(verus_only)]
 use super::zero::zero_on_free;
+use super::{
+    CacheHeader, FOREIGN, FREE_ROUTE, Heap, Live, PUSH_PAC, Shared, existing_heap, heap_for_thread,
+};
 #[cfg(verus_only)]
 use super::{
     CachePerms, PUSH_ZERO, cell_ok, free_target, hand_out, hint_ok, lemma_handed_ok, lemma_hint_ok,
     pac_mode, regions_ok, slot_start, slot_token,
 };
-use super::{FOREIGN, FREE_ROUTE, Heap, Live, PUSH_PAC, Shared, existing_heap, heap_for_thread};
 #[cfg(verus_only)]
 use crate::class::slot_loc;
 #[cfg(verus_only)]
@@ -252,7 +254,7 @@ impl Heap {
             old(self).wf(),
             blk.claims(p),
         ensures
-            final(self).keeps(*old(self)),
+            final(self).wf(),
             free_target(p),
             blk.block(p),
     {
@@ -557,9 +559,40 @@ impl Heap {
             old(self).wf(),
         ensures
             final(self).keeps(*old(self)),
+        decreases (if old(self).spec_rehome() { 1int } else { 0int }), 2int,
     {
+        proof {
+            // A heap that may move is counted, so homed on an arena below
+            // `MAX_ARENAS`, never `FOREIGN` (`homed_ok`): the home push's
+            // slow path keeps the home.
+            if self.rehome {
+                assert(self.homed@ is Some);
+                assert(self.arena != FOREIGN);
+            }
+        }
         let arena = self.arena;
         self.free_slow_in(shared, arena, class, p, Tracked(blk))
+    }
+
+    /// `double_free_scan`'s slow-path compare: abort by name when `p` is
+    /// among the top four entries of `cache` (signed as the push signs it).
+    ///
+    /// # Safety
+    /// `cache` is one of this heap's real caches.
+    #[inline(always)]
+    pub(super) unsafe fn scan_or_abort(&self, shared: &Shared, cache: *mut CacheHeader, p: *mut u8)
+        requires
+            crate::sys::may_abort(),
+            shared.wf(),
+            self.wf(),
+            self.owns(cache),
+    {
+        let slots = self.hdr_ref(cache).slots;
+        let e = if shared.pac() { addr_to_ptr(pac::sign(p as usize, slots as usize)) } else { p };
+        // SAFETY: guaranteed by the caller.
+        if unsafe { Self::cached_recently(slots, self.hdr_ref(cache).len, e, Tracked(&self.perms.borrow().slots)) } {
+            cached_twice(p);
+        }
     }
 
     /// The slow free path for any arena. With `zero_on_free` every cached
@@ -579,11 +612,22 @@ impl Heap {
             shared.wf(),
             old(self).wf(),
         ensures
-            final(self).keeps(*old(self)),
+            final(self).wf(),
+            // Only a young heap's cross-arena free can move the home
+            // (`rehome_on_free`).
+            arena != FOREIGN || !old(self).spec_rehome() ==> final(self).keeps(*old(self)),
+        decreases (if old(self).spec_rehome() { 1int } else { 0int }), 1int,
     {
+        let tracked mut blk = blk;
+        // Premise (lock order): the slow free path is entered from a fast
+        // path or an entry point, none of which holds a lock.
+        let tracked mut ord = axiom_entry();
+        if arena == FOREIGN && self.rehome && self.rehome_on_free(shared, class, p, Tracked(&mut blk), Tracked(&mut ord)) {
+            return;
+        }
+        let ghost h0 = *self;
         // `zero_on_free`'s token for the cleared slot, held until the slot
         // is given up (`theorem_zero_on_free`).
-        let tracked mut blk = blk;
         let tracked mut z = Zeroed::empty(0);
         if shared.zero_on_free() {
             // SAFETY: `p` is a slot start of `class` (the caller's check),
@@ -602,9 +646,6 @@ impl Heap {
         proof {
             old(self).lemma_wf_regions();
         }
-        // Premise (lock order): the slow free path is entered from a fast
-        // path or an entry point, none of which holds a lock.
-        let tracked mut ord = axiom_entry();
         // `arena` is the home arena, or `FOREIGN` for another arena's
         // slot (`free_other`); a real arena is materialised first, since
         // `ensure_cache` reads its class state for the header (a heap
@@ -633,11 +674,7 @@ impl Heap {
             // addresses, the first copy possibly among them) and abort by
             // name, as the push did when the call was inline.
             if shared.double_free_scan() {
-                let slots = self.hdr_ref(cache).slots;
-                let e = if shared.pac() { addr_to_ptr(pac::sign(p as usize, slots as usize)) } else { p };
-                if Self::cached_recently(slots, self.hdr_ref(cache).len, e, Tracked(&self.perms.borrow().slots)) {
-                    cached_twice(p);
-                }
+                self.scan_or_abort(shared, cache, p);
             }
             self.tick(shared, Tracked(&mut ord));
             if self.hdr_ref(cache).len == self.hdr_ref(cache).cap {
@@ -1168,7 +1205,7 @@ mod kani_aborts {
     use super::debug_scheduled;
     use crate::kani_proofs::must_not_return;
 
-    /// S127 `debug_scheduled`, no `requires`, no `ensures`: with debug
+    /// S129 `debug_scheduled`, no `requires`, no `ensures`: with debug
     /// assertions on (Kani's build, and the tests'), it returns exactly
     /// when `allocs as u32` has no bit of `mask`, and otherwise never
     /// returns.

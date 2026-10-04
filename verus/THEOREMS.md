@@ -1680,7 +1680,8 @@ Read at the lane commit `2801c34`, before its merge onto the live-block
 model (the `file:line`s are the `fn` line there).
 
 **Statement** (`heap/mod.rs:3891`, `Heap::flush_all`, which
-`Heap::destroy` runs first):
+`Heap::destroy` runs first, after only the arena unbind since the port
+of upstream #103):
 
 ```rust
 pub fn flush_all(&mut self, shared: &Shared)
@@ -1760,9 +1761,12 @@ the same tokens. The chain that makes an entry of the log a release:
 
 **Premises beyond the common ones.**
 - `Heap::destroy` is `external_body` (its verification shifts LTO
-  inlining of `Meta::free`, `TODO.md`): that it calls `flush_all` first,
-  on a heap that is `Heap::wf` and no longer in use, is read from its
-  body. The heap `heap_destructor` hands it is the TLS slot's heap, whose
+  inlining of `Meta::free`, `TODO.md`): that it calls `flush_all` first
+  (after giving a counted heap's arena binding back, which touches no
+  cache: since upstream #103, so that a successor thread can be homed
+  on the arena while the flush runs), on a heap that is `Heap::wf` and
+  no longer in use, is read from its body. The heap `heap_destructor`
+  hands it is the TLS slot's heap, whose
   `wf` `heap_at` assumes (common premise). After the flush its
   `free_caches` aborts on a non-empty header (`assert_flushed`); the
   theorem says that abort is not reached through the permissions, but
@@ -1789,8 +1793,8 @@ the same tokens. The chain that makes an entry of the log a release:
 - No `no_duplicates` on the log's new entries: two headers of one class
   cannot hold one slot (theorem 5), but the statement is the set, not
   the count.
-- The arena-unbind and exit purge that `destroy` runs after the flush
-  are not covered: they return no cached slot.
+- The arena-unbind that `destroy` runs before the flush and the exit
+  purge it runs after it are not covered: they return no cached slot.
 
 ## 11. Shuffle is a permutation
 
@@ -1932,7 +1936,10 @@ a freed slot's bytes are zero before it can be handed out again, on the
 premise below that nothing writes them in between.
 
 **Paths that honour it, and why every slot free is one of them.**
-- `Heap::free_slow_in` (`heap/paths.rs:522`): `zero_slot` first, then
+- `Heap::free_slow_in` (`heap/paths.rs:522`): `zero_slot` first (after
+  the rehome test only: since #103 a young heap's `FOREIGN` free may
+  first go to `rehome_on_free`, whose push declines under `PUSH_ZERO`
+  and reaches `free_slow_in` for the home arena, which zeroes it), then
   either `Shared::free_direct` (no cache for the class, `:562`) or
   `push_cache` (`:596`). It is reached from `Heap::free_slow` (the
   home-arena push of `Heap::free`) and `Heap::free_other` (another
@@ -2455,7 +2462,8 @@ That rests on a premise checked by inspection, not by Verus: nothing
 `create_detached`, which calls `Meta::alloc_raw` (verified; the
 metadata lock, and `mprotect` as a raw syscall on its commit path) and
 `init_fields` (`tid()` and `now_ns()`: `gettid` and `clock_gettime` as
-raw syscalls), `mark_bound`, and `Arenas::unbind` on the null path. The
+raw syscalls), `mark_bound` and `mark_rehome` (field stores), and
+`Arenas::unbind` on the null path. The
 abort paths (`sys::abort_fmt`, which writes with a raw `write` and
 raises `SIGABRT`, and the panic handler, which aborts) do not return.
 None calls libc. If one allocated, the precise outcome would be:
@@ -4200,6 +4208,7 @@ pub proof fn theorem_cache_routing(&self, class: int, cache: *mut CacheHeader, a
 
 // Heap::other_caches (heap/others.rs:417):
     ensures
+        !create ==> *final(self) == *old(self),
         r@.addr != 0 ==> final(self).keyed(r, arena),
         r@.addr == 0 ==> !final(self).has_key(arena),
 // Heap::cache_slot (heap/others.rs:618), Heap::ensure_cache (heap/cache.rs:817):
@@ -4250,6 +4259,20 @@ other's. The pop sites:
   had, and the home becomes `arena`, which no other node has. When no
   node could be had, `other_caches` ensures no node is keyed `arena`,
   and `drop_home_caches` now ensures `same_shape`.
+- `Heap::try_rehome` (`heap/mod.rs`, since the port of upstream #103:
+  a young thread heap moves its home onto the arena of a slot it frees
+  on the `FOREIGN` slow path): it moves only when `other_caches(to,
+  false)` returned null, so no node is keyed `to` (`other_caches` now
+  also ensures `!create ==> *final(self) == *old(self)`: a lookup
+  changes nothing). The flushes that follow keep the keys
+  (`flush_arena` ensures `same_shape`), the home headers are re-keyed
+  through their permissions (`hdr_mut`, `lemma_set`, `same_shape`), and
+  the home becomes `to`, which no node has; the old home was no node's
+  key either. The move is the one change of the home arena besides
+  `set_arena`, so `try_rehome` and its callers (`rehome_on_free`,
+  `free_slow_in` with `FOREIGN`, `free_other`, `Heap::free`) ensure
+  `Heap::wf` rather than `Heap::keeps`; `free_slow_in` still ensures
+  `keeps` for the home arena (`free_slow`, the home push's slow path).
 - Creation starts with no keys (`thread::create_heap_for_thread`,
   `Heap::lemma_fresh_wf`).
 - `Flags::decode` (`heap/mallocx.rs:103`) now ensures an explicit arena
@@ -4303,13 +4326,16 @@ bitmap side: every release goes back to the slot's own arena).
   thread heap's comes from `assign_home` (below `MAX_ARENAS`, which
   `Heap::homed_ok` now states for every counted heap);
   `set_arena` requires the new one below `MAX_ARENAS`, which its only
-  caller, `mallctl`'s `thread.arena`, checks at run time; and
+  caller, `mallctl`'s `thread.arena`, checks at run time;
+  `try_rehome` moves it only to an automatic arena (`to < auto`, checked
+  at run time, so below `MAX_ARENAS`, and `homed_ok` holds after); and
   `Tcaches::create` takes
   any `arena` (its callers pass the thread's home arena or 0).
 - Routing names the header a pop takes from, not the arena a refill
   inside the pop draws from: `pop_compact` and `pop_compact_run` refill
   an emptied cache through `shared.arena(self.hdr_ref(cache).arena)`,
-  the header's own `arena` field, which `ensure_cache` sets and
+  the header's own `arena` field, which `ensure_cache` and (since #103)
+  `CacheHeader::rekey` set and
   `swap_hdrs` moves with the header, but which no spec ties to the
   routed key.
 
@@ -5416,7 +5442,7 @@ arena `arena`), `SlabTable`, `SetTable` (a slab-set rank), `Huge`, `Meta`,
 | Path | Nesting checked |
 |---|---|
 | slow allocation: `alloc_slow_in` (`heap/paths.rs:488`) → `tick`, `Shared::arena`, `ensure_cache`, `alloc_direct`, `refill` → `Heap::claim` → `claim_with` → `plan` (class) → `next_slab` → `next_fresh_slab` → `take_group` (table) → `ensure_sets` → `Set::ensure` → `SetTable::ensure` (sets) → `Lazy::ensure` → `Meta::commit` (meta); `commit_slab` (table) | Class(i,c) < Table(c) < Sets(i) < Meta; Arenas < Meta (`materialise` → `build` → `Arena::init`); the GC and decay of `tick` |
-| slow free: `free_slow_in` (`:565`) → `flush` → `release_routed` → `release_owned` → `release_slab` → `dec_live` → `on_live_zero` (class), `reopen` (class); `Shared::free_direct` | class locks one at a time |
+| slow free: `free_slow_in` (`:565`) → (since #103, `rehome_on_free` → `try_rehome` → `flush_arena` →) `flush` → `release_routed` → `release_owned` → `release_slab` → `dec_live` → `on_live_zero` (class), `reopen` (class); `Shared::free_direct` | class locks one at a time |
 | huge: `Shared::alloc_huge` → `alloc_run` → `alloc_aligned` (huge; the lowest-fit `find` runs under it) → `alloc_desc`, `free_desc`, `Table::ensure`, `Set::ensure` (own store), `take` → `retire` (meta); `free_run` (huge) → `Table::ensure`, `retire` (meta) | Huge < Meta |
 | cache flushes and routing: `Heap::flush_all` (`tcache.flush` through `Tcaches::flush`, `thread.tcache.flush` and `arena.<i>.purge` through `flush_caller`, `thread.tcache.enabled` through `set_tcache_enabled`) → `flush_arena` → `flush` → `release_routed` (class) and `free_caches_in` → `Meta::free` (meta); `gc` → `gc_arena` → `flush`; `set_arena` → `other_caches` (meta, when it creates a node) | class locks one at a time, then Meta |
 | arena creation `Arenas::create`, heap creation `Heap::create` → `assign_home` (arenas) and `create_detached` (meta), explicit caches `Tcaches::create`/`destroy` (tcaches → meta / class, meta, huge) | Tcaches < Arenas, Meta, Class, Huge |
@@ -5520,9 +5546,11 @@ creation lock, the first one with that key (ties go to a built arena,
 then to the lowest index), together with a fresh ticket for that arena.
 Every bound count is, at every instant, the number of tickets out for its
 arena, as a `u32` wraps it (an atomic invariant); `assign` and `bind` add
-one ticket and one count, `unbind` takes the heap's ticket back with one
-count, and a thread heap holds exactly the ticket for its home arena
-while it is counted there (`Heap::bound`), none otherwise.
+one ticket and one count, `try_bind_idle` does so only when its
+compare-and-swap moves the count from 0 to 1, `unbind` takes the heap's
+ticket back with one count, and a thread heap holds exactly the ticket
+for its home arena while it is counted there (`Heap::bound`), none
+otherwise.
 
 ```rust
 // arena.rs:1834
@@ -5571,11 +5599,19 @@ pub fn unbind(&self, index: u16, Tracked(t): Tracked<Homed>)
 pub fn bind(&self, index: u16) -> (r: Tracked<Homed>)
     requires index < MAX_ARENAS, self.wf(),
     ensures self.ticket_of(r@, index as int),
+// arena.rs, since the port of upstream #103 (Heap::try_rehome's bind)
+pub fn try_bind_idle(&self, index: u16) -> (r: (bool, Tracked<Homed>))
+    requires index < MAX_ARENAS, self.wf(),
+    ensures r.0 ==> self.ticket_of(r.1@, index as int),
+    // body: load_bound, then bind_if_idle: compare_exchange(0, 1) inside
+    //       the invariant, a fresh ticket only on Ok (a placeholder,
+    //       no_ticket, of a fresh set otherwise)
 
 // heap/mod.rs:2946, a conjunct of Heap::wf (and of Heap::keeps)
 pub closed spec fn homed_ok(&self) -> bool {
     &&& self.bound == self.homed@ is Some
     &&& self.homed@ matches Some(t) ==> homed_on(t, self.arena as int)
+    &&& self.rehome ==> self.bound      // since the port of upstream #103
 }
 ```
 
@@ -5603,14 +5639,17 @@ In words:
   built one at equal load, then the lowest index (jemalloc's
   `arena_choose_hard` order).
 - **The counts.** Every write of a bound count after init is `count_in`
-  (`:1914`: `assign` and `bind`, with a fresh ticket) or `unbind` (with
+  (`:1914`: `assign` and `bind`, with a fresh ticket), `bind_if_idle`
+  (`try_bind_idle`'s compare-and-swap from 0 to 1, with a fresh ticket
+  when it succeeds and no change when it fails) or `unbind` (with
   the caller's ticket for that arena, which the ticket set contains, so
   the count it decrements counted it), each inside the invariant, so at
   every instant each count is its arena's ticket count mod `2^32`. The
   counts `assign` reads go through the invariant too (`load_bound`,
   `:1894`, which asserts the value read is the ticket count there), as
-  does `bound` (`:1973`); that is proved at the read and not exported,
-  since no `ensures` can name the instant of a read.
+  do `bound` (`:1973`) and `try_bind_idle`'s first load; that is proved
+  at the read and not exported, since no `ensures` can name the instant
+  of a read.
 - **Who holds the tickets.** `Heap::create` (`heap/mod.rs:5719`) gets the
   ticket with the arena from `assign_home` (`:5648`, now verified) and
   either gives it back (`unbind`, when the metadata region is exhausted)
@@ -5621,10 +5660,15 @@ In words:
   (theorem 15's heapless path) it drops the ticket and hands the heap to
   `destroy`, which unbinds it. `set_arena` (`:5281`, `thread.arena`) hands the
   old home's ticket to `unbind` and stores `bind`'s ticket for the new
-  home. `destroy` (`:5907`, trusted) unbinds a counted heap's home arena.
-  No other code makes or spends a ticket, so the tickets out for arena
-  `i` are the counted heaps homed on `i`, plus a `create` in flight
-  between `assign` and `create_heap_for_thread`.
+  home. `Heap::try_rehome` (since the port of upstream #103, the late
+  move of a young heap, `rehome` set, onto an idle automatic arena)
+  does the same with `try_bind_idle`'s ticket for the new home, only
+  when it won the compare-and-swap; a lost one hands back a placeholder
+  that is dropped, and the heap stays where it is. `destroy` (`:5907`,
+  trusted) unbinds a counted heap's home arena, before its flush since
+  #103. No other code makes or spends a ticket, so the tickets out for
+  arena `i` are the counted heaps homed on `i`, plus a `create` in
+  flight between `assign` and `create_heap_for_thread`.
 
 With theorems 32 and 33: `assign` takes the creation lock with a
 `LockOrder` token that allows `rank_arenas()`, which `assign_home` and
@@ -5655,14 +5699,18 @@ places in the set, so the set shrinks by one), and `lemma_wrap_step`
 **Findings.** None: the code matches the statement. The tests
 `automatic_arenas_are_assigned_least_loaded_and_built_lazily` and
 `heap_churn_reuses_the_vacated_arena` (`heap/tests.rs`) exercise the
-order and the counts.
+order and the counts; since #103, `rehoming_only_takes_an_idle_automatic_arena`
+and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
+`try_bind_idle` and the moved binding.
 
 **Premises beyond the common ones.**
 - `vspec::count` (`vspec/count.rs`, the `vspec::word` pattern): a
   `CountPerm` is the counter with its `id` (`count_id`), and `fetch_add`,
-  `fetch_sub` (wrapping) and `load` are one atomic operation on it,
-  sequentially consistent in the model (the orderings, all `Relaxed`, are
-  ignored, as for the bitmap words).
+  `fetch_sub` (wrapping), `load` and, since the port of upstream #103,
+  `compare_exchange` (the strong form: it fails only on a different
+  value, S305, trusted, not yet run under loom) are one atomic operation
+  on it, sequentially consistent in the model (the orderings, all
+  `Relaxed`, are ignored, as for the bitmap words).
 - `Arenas::init` (verified after this theorem's merge) ensures `wf` of the
   registry it writes: each bound count is written with a permission of
   value 0 from `vspec::count::new` (verified, its identity a ghost one;
@@ -5709,8 +5757,20 @@ order and the counts.
   block; no code keeps one (`create_heap_for_thread` uses it right after
   `create`, `Tcaches::create` drops it).
 - `Heap::destroy` (trusted) unbinds a counted heap's home arena with that
-  heap's ticket (its body passes `Tracked::assume_new()`), and frees the
-  heap, ticket and all.
+  heap's ticket (its body passes `Tracked::assume_new()`), first, and
+  frees the heap, ticket and all. Since the unbind now comes before the
+  flush, for the rest of `destroy` the dying heap still holds its ghost
+  ticket while another heap may be homed on (and win, through
+  `try_bind_idle`) the same arena: "the tickets out are the counted heaps"
+  is off by that ticket inside the trusted body only (the flush's proof
+  uses no arena invariant).
+- `homed_ok`'s `rehome ==> bound` (since #103): a new thread heap is
+  counted, so it holds whatever `mark_rehome` (trusted, S126) stored;
+  an explicit cache, assumed `wf` (`heap_at`), rests on `init_fields`
+  storing `false` (trusted) and on `create` being the one writer that
+  sets `rehome` (by inspection; `set_arena` and `try_rehome` clear
+  it). `same_shape`, `caches_same`, `updates` and the field lists
+  of `claim` and the accounting lemmas now keep `rehome` too.
 - Every heap a verified path is handed is `Heap::wf`, now with
   `homed_ok` (common premises: `heap_from_slot`, `heap_at`): a thread
   heap's ticket is the one `create_heap_for_thread` installed, kept by
@@ -5722,7 +5782,9 @@ order and the counts.
   `Shared`'s `arenas` is the value its permission holds.
 
 **Scope.** Thread heap creation (`heap_for_thread`), `thread.arena`
-(`set_arena`) and thread exit (`destroy`, through `heap_destructor`).
+(`set_arena`), the late move of a young heap (`try_rehome`, on the
+`FOREIGN` slow path of `free`) and thread exit (`destroy`, through
+`heap_destructor`).
 Explicit caches (`tcache.create`, `Heap::create_detached`) and explicit
 arenas (`arenas.create`) take no part, as in the code: they are never
 counted.

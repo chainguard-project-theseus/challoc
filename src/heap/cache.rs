@@ -19,7 +19,7 @@ use super::{
     slot_ptr, slot_start, slot_token, stack_ok,
 };
 use super::{CachePerms, FOREIGN, Heap, Live, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
-use super::{MODE_OFF, MODE_PROBE};
+use super::{MODE_OFF, MODE_PROBE, assert_rekey_flushed};
 #[cfg(verus_only)]
 use crate::class::slot_loc;
 #[cfg(verus_only)]
@@ -226,6 +226,30 @@ impl CacheHeader {
         {
             *e = addr_to_ptr(pac::auth(*e as usize, m));
         }
+    }
+
+    /// Re-key a flushed (empty) header with a stack to `arena` for
+    /// [`Heap::try_rehome`]: the probe restarts from the new arena's
+    /// refill counter, and the stack, `cap` and the counters stay.
+    pub(super) fn rekey(&mut self, arena: u16, refilled: u32)
+        requires
+            crate::sys::may_abort() || old(self).len == 0,
+            old(self).inv(),
+        ensures
+            final(self).inv(),
+            final(self).len == 0,
+            final(self).cap == old(self).cap,
+            final(self).slots == old(self).slots,
+            final(self).zeroed == 0,
+    {
+        assert_rekey_flushed(&self.len);
+        self.low_water = 0;
+        self.zeroed = 0;
+        self.run_end = 0;
+        self.unsorted_flushes = 0;
+        self.probe_refilled = refilled;
+        self.arena = arena;
+        self.set_mode(MODE_PROBE);
     }
 }
 
@@ -543,6 +567,9 @@ impl Heap {
             old(self).wf(),
         ensures
             final(self).keeps(*old(self)),
+        // With `free_slow`, `free_slow_in` and `Heap::rehome_on_free`, whose
+        // push follows a move of the home, which clears `rehome`.
+        decreases (if old(self).spec_rehome() { 1int } else { 0int }), 3int,
     {
         // The slot's token goes onto the cache; the permission to its bytes
         // is dropped with it (`Live::take_slot`), and a fresh one comes
@@ -585,6 +612,7 @@ impl Heap {
         ensures
             flags & PUSH_ZERO != 0 ==> !r,
             final(self).keeps(*old(self)),
+            final(self).spec_rehome() == old(self).spec_rehome(),
             !r ==> *final(tk) == *old(tk),
         opens_invariants none
     {
