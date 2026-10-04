@@ -859,7 +859,7 @@ mod exports {
         f = const FREE_OFF,
     );
     #[cfg(target_arch = "aarch64")]
-    const MALLOC_OFF: usize = 0;
+    const MALLOC_OFF: usize = 16;
     #[cfg(target_arch = "aarch64")]
     const FREE_OFF: usize = 0;
 
