@@ -73,6 +73,19 @@ class VmTable(unittest.TestCase):
         L._failed(third[0], "test")
         self.assertFalse(any(n.endswith("-a3") for n in L.vms))
 
+    def test_perf_bundle_metadata(self):
+        # The lock's perf-<arch> line reaches every VM of that arch as cb-perf.
+        L = gce.Launch(self.args())
+        L.plan()
+        L.launch_obj = {"object": "runs/t/launch.x.json", "sha256": "11"}
+        L.harness_obj = {"object": "src/h.tar.gz", "sha256": "22"}
+        L.sources, L.image = {}, {}
+        L.perf = {"arm64": "tools/perf-a.tar.gz=33"}
+        md = dict(kv.split("=", 1) for kv in L.metadata("ref-arm64")[3:].split("|"))
+        self.assertEqual(md["cb-perf"], "tools/perf-a.tar.gz=33")
+        md = dict(kv.split("=", 1) for kv in L.metadata("ref-amd64")[3:].split("|"))
+        self.assertEqual(md["cb-perf"], "")
+
     def test_tree_variant_is_refused(self):
         L = gce.Launch(self.args(variants="base,x=tree"))
         with self.assertRaises(spec.SpecError):
@@ -84,8 +97,8 @@ class ImageLock(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             p = os.path.join(td, "image.lock")
             with open(p, "w") as f:
-                f.write('# c\nrepo = "r/x"\narm64 = "r/x@sha256:ab"  # rev date\n')
-            self.assertEqual(gce.read_image_lock(p), {"repo": "r/x", "arm64": "r/x@sha256:ab"})
+                f.write('# c\nrepo = "r/x"\narm64 = "r/x@sha256:ab"  # rev date\nperf-arm64 = "tools/p.tar.gz=cd"  # perf\n')
+            self.assertEqual(gce.read_image_lock(p), {"repo": "r/x", "arm64": "r/x@sha256:ab", "perf-arm64": "tools/p.tar.gz=cd"})
 
 
 if __name__ == "__main__":

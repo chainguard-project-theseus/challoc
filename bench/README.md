@@ -24,7 +24,8 @@ Suites (`python3 bench/cb suites`):
     aa          base vs an identical base: calibration and the false-positive rate
     smoke       every quick row once, parse only (CI's bench-smoke); `--rows` smokes any row
     exp-ladder  the CPU ladder: challoc vs jemalloc per CPU family
-    exp-floor   the kernel floor: the in-container `make test` per public kernel image
+    exp-floor   the kernel floor: `make test` and `make fuzz` per public kernel image
+    exp-churn   #94: larson thread churn at 10/100/1000 rounds per thread with PMU counts (metal cells)
     exp-narenas, exp-slice   experiments (below)
 
 Everything builds and runs inside the Wolfi bench image on the native
@@ -126,7 +127,8 @@ polls. The quick suite on the two gate cells is 5 shards x 3 replicates x
   `docker.io` where the runtime is docker and it is missing while it
   fetches the sources, pulls the bench image by digest
   (`bench/internal-image.lock`; it builds `Dockerfile.dev`'s test stage and
-  `bench/Dockerfile.cb` itself when the pull fails), runs `cb run --launch
+  `bench/Dockerfile.cb` itself when the pull fails), fetches the perf
+  bundle (below) to `/var/cb/perf`, runs `cb run --launch
   launch.json --vm <name>` in it (container profile `perfmon`:
   `CAP_PERFMON`, so the per-run counters work, and the cells request the
   PMU), PUTs the result files to `runs/<run>/res/<vm>/` whenever a block
@@ -166,6 +168,19 @@ polls. The quick suite on the two gate cells is 5 shards x 3 replicates x
   results under `runs/` are still writable by every cb VM (per-object
   signed URLs or a write-restricted account would close that). The bucket
   deletes objects after 30 days.
+- **perf.** Neither the bench image (Wolfi has no perf package) nor a
+  Chainguard OS host has perf, so cb ships its own: `bench/cb/perf-build.sh`
+  builds tools/perf from a pinned kernel.org release in a Wolfi container
+  (libelf/libdw, libtraceevent, zstd, the jevents tables; its shared
+  libraries beside it under a `$ORIGIN` rpath), `bench/cb/perf-upload.sh`
+  puts it in the bucket under its hash and pins `perf-<arch> =
+  "<object>=<sha256>"` in `bench/internal-image.lock`, and every VM gets it
+  as the `cb-perf` metadata. boot.sh checks the hash, unpacks it to
+  `/var/cb/perf` (perf for the host itself, glibc 2.44 on Chainguard OS)
+  and mounts it at `/opt/perf` in the container, where `cb run` puts it on
+  PATH; `host.json` records `perf` (its version) and `pmu_devices` (the
+  perf event sources, e.g. `arm_spe_0`). A failed fetch costs perf, not
+  the run (the per-run counters come from rt, not perf).
 - **The image.** `bench/Dockerfile.cb` is Dockerfile.dev's `test` stage
   plus Wolfi's jemalloc (pinned to 5.3.1-r3) and tcmalloc-minimal, the
   prebuilt `bench/build.sh` programs (`/opt/cb/bench-bin`: mimalloc-bench,
@@ -212,9 +227,11 @@ how the bench container runs there:
 - `prep`: host steps boot.sh runs before the container starts: `grow-var`
   (grow /var's filesystem online, for images that ship it small),
   `thp:<file>=<value>` (`thp:enabled=always`, `thp:64kB=madvise`),
-  `sysctl:<key>=<value>`, `kernel:<package>` (Ubuntu: install a kernel
-  flavour with its initramfs, make it the GRUB default and reboot into it
-  once). A suite's `prep` is added to every cell's.
+  `sysctl:<key>=<value>`, `modprobe:<module>` (`modprobe:arm_spe_pmu`, the
+  SPE perf source; a failure is logged, not fatal), `kernel:<package>`
+  (Ubuntu: install a kernel flavour with its initramfs, make it the GRUB
+  default and reboot into it once). A suite's `prep` is added to every
+  cell's.
 - `expect`: facts the booted host must show, checked in the VM before any
   run: `kernel` (a regex on `uname -r`), `page_size`. A mismatch fails the
   VM as infrastructure, never as a measurement.
@@ -361,7 +378,9 @@ and command. The families:
 | runtimes | python1(-malloc), python-dict-list/-regex/-object-graph(-malloc), ruby-binary-trees, ruby-hash-aref-str, ruby-array-sample, ruby-sort-block, ruby-gc-churn, node-json-churn, node-server, pg-select100, pg-tpcb100, pg-select500, pg-connect20, jvm-server | the interpreters and servers challoc ships under |
 | soaks | valkey-soak, ruby-soak, jvm-soak | 10..20-minute consumer soaks, one variant per VM |
 | Fleetbench (`Dockerfile.cb` stage) | fleetbench-proto | the protobuf arena benchmark, geometric mean of real time (the TCMalloc empirical driver needs TCMalloc's MallocExtension) |
-| floor | floor-test | the in-container `make test` (pass/fail, smoke suites only) |
+| floor | floor-test | `make test` (the cgroup steps in child cgroups, privileged containers only) and `make fuzz` (pass/fail, smoke suites only) |
+| thread churn (#94) | larson1-r10, larson1-r1000, larsonN-r10, larsonN-r1000 | larson with 10 and 1000 rounds per thread: steady state vs the cost of one thread switch |
+| probe | spe-probe | the perf event sources and, with SPE, a recording of larson1: samples per event, tlb-miss symbols and pages |
 
 Every timed run records the run's peak RSS (`maxrss_mib`); a row whose
 `metrics` names it gets an RSS verdict of its own (`mleak100.maxrss_mib`).
@@ -462,12 +481,13 @@ workload it is meant to help (CONTRIBUTING.md, "Performance rules"):
 - `rows.toml`, `suites/*.toml`, `cells/*.toml`: what to run, how, where.
 - `cb/`: the runner (`run.py` the executor, `gce.py` the launcher,
   `boot.sh` a VM's startup script, `stats.py` and `report.py` the
-  verdicts, `image.sh` the image, `tests/` its unit tests).
+  verdicts, `image.sh` the image, `perf-build.sh` and `perf-upload.sh` the
+  perf bundle, `tests/` its unit tests).
 - `build.sh`: every benchmark program, pinned (its header lists them);
   `Dockerfile.cb`: the bench image (Dockerfile.dev's `test` stage, the
   stock allocators, `build.sh`'s output, Fleetbench from its own stage,
   the runtimes); `internal-image.lock`: the image per architecture by
-  digest.
+  digest, and the perf bundle per architecture by object and sha256.
 - `drivers/`: the driver rows; `cb.sh` is what the short drivers share,
   `lib.sh` what the soak drivers share (they also run by hand: `make run
   CMD='sh bench/drivers/valkey-soak.sh'` with the variables in each

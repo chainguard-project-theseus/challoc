@@ -547,6 +547,9 @@ class Launch:
         self.image = {k: v for k, v in lockd.items() if k in ("arm64", "amd64")}
         if self.args.no_image:
             self.image = {}
+        # The perf bundle per architecture (bench/cb/perf-build.sh), as
+        # `<object>=<sha256>` in the lock's perf-<arch> lines.
+        self.perf = {a: lockd[f"perf-{a}"] for a in ("arm64", "amd64") if lockd.get(f"perf-{a}")}
         try:
             cb_commit = git(ROOT_DIR, "rev-parse", "HEAD")
         except BuildError:
@@ -573,6 +576,7 @@ class Launch:
             "seed": self.seed,
             "alpha": self.suite.alpha,
             "image": self.image,
+            "perf": self.perf,
             "cells": self.cell_info,
             "pending_cells": self.pending_cells,
             "vms": self.vms,
@@ -612,6 +616,9 @@ class Launch:
             # <object>=<sha256> pairs, space-separated.
             "cb-sources": " ".join(f"{x['object']}={x['sha256']}" for x in self.sources.values()),
             "cb-image": self.image.get(ci["arch"], ""),
+            # The perf bundle, <object>=<sha256>: mounted at /opt/perf in
+            # the container and unpacked to /var/cb/perf on the host.
+            "cb-perf": self.perf.get(ci["arch"], ""),
             "cb-runtime": ci["runtime"],
             "cb-container": c["profile"],
             "cb-cpus": c.get("cpus", ""),
