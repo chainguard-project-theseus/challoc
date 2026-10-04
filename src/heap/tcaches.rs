@@ -75,7 +75,13 @@ verus! {
 /// ([`CachePerms::fresh`](super::CachePerms::fresh); `Tcaches::create`
 /// takes no reference to its heap, so it drops them), every
 /// writer of its caches proves it keeps `wf`, and no ghost state carries
-/// that from one call to the next.
+/// that from one call to the next. No memory precondition is stated:
+/// neither caller can show one. `Tcaches::get` has a pointer loaded
+/// from its table and `thread::heap_destructor` the one the C library
+/// hands it (non-null by POSIX, unchecked), and the permissions creation
+/// returned are dropped (`Tcaches::create`) or installed in the heap's
+/// own ghost state (`create_heap_for_thread`); carrying them from one
+/// call to the next needs a ghost registry of live heaps.
 ///
 /// # Safety
 /// `p` is such a heap, and nothing else uses it while the reference
@@ -95,13 +101,25 @@ pub(super) unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
 /// `init_fields` stored it. Trusted: Verus has no raw-pointer
 /// dereference. Nothing is claimed about its ghost fields: the caller
 /// installs the permissions creation returned (`create_heap_for_thread`).
+/// Those permissions own the whole heap: `head` its plain fields
+/// ([`heap_head`](super::heap_head)), given up here to the reference,
+/// and `perms` its home headers
+/// ([`CachePerms::fresh`](super::CachePerms::fresh)), which the caller
+/// installs as the heap's ghost state.
 ///
 /// # Safety
 /// `p` is a heap `Heap::create` has just returned, and nothing else uses
 /// it while the reference lives.
 #[verifier::external_body]
 #[inline(always)]
-pub(super) unsafe fn heap_new<'a>(p: *mut Heap) -> (r: &'a mut Heap)
+pub(super) unsafe fn heap_new<'a>(
+    p: *mut Heap,
+    Tracked(head): Tracked<vstd::raw_ptr::PointsToRaw>,
+    Tracked(perms): Tracked<&super::CachePerms>,
+) -> (r: &'a mut Heap)
+    requires
+        super::heap_head(p, head),
+        perms.fresh(p),
     ensures
         r.others@.addr == 0,
 {
@@ -139,7 +157,7 @@ impl Tcaches {
                 return None;
             }
         }
-        let (h, _) = Heap::create_detached(shared, arena, Tracked(&mut under));
+        let (h, _, _) = Heap::create_detached(shared, arena, Tracked(&mut under));
         if h.is_null() {
             return None;
         }

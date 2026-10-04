@@ -1340,6 +1340,7 @@ impl SlabTable {
         &&& lock_init(self.inner.0).sb@ == self.slab_bits as usize
         &&& lock_init(self.inner.0).mloc@ == self.mark_auth@.id()
         &&& self.base == process_regions().class_base[self.class as int]
+        &&& (self.base as int) % (crate::layout::MAX_SLAB as int) == 0
         &&& self.nslabs as int == process_regions().spec_nslabs(self.class as int)
         &&& words_wf(self.word_invs@, self.spec_slots(), self.bits_base, self.spec_nwords())
         &&& self.spec_slots().loc == slot_loc(self.class as int)
@@ -1619,6 +1620,19 @@ impl SlabTable {
         ensures
             self.spec_is_guard(slab as usize) == crate::layout::guard_slab(self.spec_class() as int, slab),
             self.spec_is_guard(slab as usize) == self.spec_slots().guard(slab),
+    {
+    }
+
+    /// The table covers its class's region of the process's regions,
+    /// whose base is `MAX_SLAB`-aligned
+    /// ([`Regions::separated`](crate::layout::Regions::separated), which
+    /// [`SlabTable::new`] requires).
+    pub(super) proof fn lemma_region(&self)
+        requires
+            self.inv(),
+        ensures
+            process_regions().class_base[self.spec_class() as int] as int % (crate::layout::MAX_SLAB as int) == 0,
+            self.spec_nslabs() as int == process_regions().spec_nslabs(self.spec_class() as int),
     {
     }
 

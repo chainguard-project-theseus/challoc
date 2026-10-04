@@ -472,6 +472,7 @@ impl Purger {
                         assert(g.st(s) != State::Active);
                     }
                 }
+                assert(first == slab & !((spp - 1) as usize));
             }
             let k = cs.purge_group(g, slab, spp, &mut self.batch);
             proof {

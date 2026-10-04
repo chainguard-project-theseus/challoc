@@ -1661,20 +1661,22 @@ pub unsafe fn init(this: *mut Arenas, arena0: *mut Arena, narenas: u32, Tracked(
 
 ### S60. `arena_at`
 
-src/arena.rs:1358. Kind: external_body. Category: raw pointer (internal).
+src/arena.rs:1362. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The arena a non-null registry entry points at.
 
 ```rust
 unsafe fn arena_at<'a>(p: *mut Arena, Ghost(index): Ghost<u16>) -> (r: &'a Arena)
+    requires
+        p@.addr != 0,
     ensures
         r.spec_index() == index,
 ```
 
 ### S61. `Arenas::count`
 
-src/arena.rs:1619. Kind: external_body. Category: atomics primitive.
+src/arena.rs:1628. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Number of arena indices in use (`arenas.narenas`).
@@ -1969,7 +1971,7 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
 
 ### S77. `axiom_fresh_slots_zero`
 
-src/class/mod.rs:3787. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:3800. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `vspec::sys::axiom_fresh_anon_zero` (`mmap(2)`: a private anonymous mapping reads as zero until it is first written) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -1998,7 +2000,7 @@ axiom fn axiom_fresh_slots_zero(
 
 ### S78. `axiom_discarded_slots_zero`
 
-src/class/mod.rs:3825. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:3838. Kind: axiom. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > `vspec::sys::axiom_discarded_zero` (`madvise(2)`: after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -2246,7 +2248,7 @@ fn words_ref<'a>(p: *const AtomicU64, n: usize, Ghost(j0): Ghost<int>, Tracked(p
 
 ### S93. `SlabTable::watermark`
 
-src/class/table.rs:1780. Kind: external_body. Category: allocator invariant.
+src/class/table.rs:1794. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > The watermark, loaded with `order` (inlined, so the caller's load is the bare `core` one with its ordering).
@@ -2264,7 +2266,7 @@ fn watermark(&self, order: Ordering) -> (r: usize)
 
 ### S94. `DebugSpecImpl for Says`
 
-src/class/verify.rs:193. Kind: spec_impl. Category: core library.
+src/class/verify.rs:242. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/class-verify-DebugSpecImpl-for-Says.md).
 
 ```rust
@@ -2277,7 +2279,7 @@ impl vstd::std_specs::fmt::DebugSpecImpl for Says {
 
 ### S95. `desc_ptr_addr`
 
-src/class/verify.rs:213. Kind: external_body. Category: raw pointer (internal).
+src/class/verify.rs:262. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/class-verify-desc_ptr_addr.md).
 
 > The address of `d`, for an abort message.
@@ -2288,13 +2290,17 @@ pub(super) fn desc_ptr_addr(d: &SlabDesc) -> usize
 
 ### S96. `read_word`
 
-src/class/verify.rs:224. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/class/verify.rs:308. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
-> The word at `p + off`, read once (trusted: nothing is claimed about the value).
+> The word at `p + off` of a slot `p` of class `c`, read once (trusted: nothing is claimed about the value).
 
 ```rust
-unsafe fn read_word(p: *mut u8, off: usize) -> u64
+unsafe fn read_word(p: *mut u8, off: usize, Ghost(c): Ghost<int>) -> u64
+    requires
+        process_regions().is_slot(c, p@.addr),
+        off as int + 8 <= class_table()[c].size,
+        (p@.addr as int + off as int) % 8 == 0,
 ```
 
 ### S97. `Config::set_listed`
@@ -2645,33 +2651,37 @@ fn assert_refill_empty(len: &u32)
 
 ### S119. `arena_volatile`
 
-src/heap/mod.rs:4199. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/heap/mod.rs:4204. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::checked_slot`]): a plain load is hoisted above the multi-arena flag test and touches the heap's header line on every single-arena `free`.
 
 ```rust
-pub(super) fn arena_volatile(&self) -> u16 opens_invariants none
+pub(super) fn arena_volatile(&self) -> (r: u16)
+    ensures
+        r == self.spec_arena(),
+    opens_invariants none
 ```
 
 ### S120. `init_fields`
 
-src/heap/mod.rs:5482. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:5504. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The fields of a fresh heap before its home headers, stored field by field ([`Heap::create_detached`]).
 
 ```rust
-unsafe fn init_fields(h: *mut Heap, shared: &Shared, arena: u16, Tracked(head): Tracked<vstd::raw_ptr::PointsToRaw>)
+unsafe fn init_fields(h: *mut Heap, shared: &Shared, arena: u16, Tracked(head): Tracked<&mut vstd::raw_ptr::PointsToRaw>)
     requires
         crate::sys::may_syscall(),
-        head.is_range(h@.addr as int, 128),
-        head.provenance() == h@.provenance,
+        heap_head(h, *old(head)),
+    ensures
+        *final(head) == *old(head),
 ```
 
 ### S121. `assign_home`
 
-src/heap/mod.rs:5509. Kind: external_body. Category: allocator invariant.
+src/heap/mod.rs:5532. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > [`Arenas::assign`](crate::arena::Arenas::assign) on the process's arenas.
@@ -2688,18 +2698,22 @@ fn assign_home(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: u1
 
 ### S122. `mark_bound`
 
-src/heap/mod.rs:5528. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:5552. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `(*h).bound = true` for a heap [`Heap::create`] has just made.
 
 ```rust
-unsafe fn mark_bound(h: *mut Heap)
+unsafe fn mark_bound(h: *mut Heap, Tracked(head): Tracked<&mut vstd::raw_ptr::PointsToRaw>)
+    requires
+        heap_head(h, *old(head)),
+    ensures
+        *final(head) == *old(head),
 ```
 
 ### S123. `Heap::destroy`
 
-src/heap/mod.rs:5717. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:5747. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > Flush every cache, free them and the heap itself back to the metadata allocator.
@@ -3167,7 +3181,7 @@ ptr::write(&raw mut (*this).lock, Lock::new((), Ghost::assume_new()));
 
 ### S158. `heap_at`
 
-src/heap/tcaches.rs:85. Kind: external_body. Category: raw pointer (internal).
+src/heap/tcaches.rs:91. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > A heap [`Heap::create`] or [`Heap::create_detached`] returned and nothing has destroyed: an explicit cache's non-null table entry, or the calling thread's heap at exit.
@@ -3180,13 +3194,20 @@ pub(super) unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
 
 ### S159. `heap_new`
 
-src/heap/tcaches.rs:104. Kind: external_body. Category: raw pointer (internal).
+src/heap/tcaches.rs:115. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The heap [`Heap::create`] has just returned, as a reference, before its ghost state is installed: its `others` field is null, as `init_fields` stored it.
 
 ```rust
-pub(super) unsafe fn heap_new<'a>(p: *mut Heap) -> (r: &'a mut Heap)
+pub(super) unsafe fn heap_new<'a>(
+    p: *mut Heap,
+    Tracked(head): Tracked<vstd::raw_ptr::PointsToRaw>,
+    Tracked(perms): Tracked<&super::CachePerms>,
+) -> (r: &'a mut Heap)
+    requires
+        super::heap_head(p, head),
+        perms.fresh(p),
     ensures
         r.others@.addr == 0,
 ```
@@ -3335,7 +3356,7 @@ pub axiom fn axiom_process_page_at_most_64k()
 
 ### S170. `Reserved`
 
-src/layout/regions.rs:1570. Kind: external_body type. Category: platform/kernel fact.
+src/layout/regions.rs:1585. Kind: external_body type. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Ghost ownership of one live reservation, `len()` bytes from `addr()`, that [`try_reserve`] obtained from the kernel.
@@ -3346,7 +3367,7 @@ pub tracked struct Reserved
 
 ### S171. `Reserved::is_apart_from_static`
 
-src/layout/regions.rs:1587. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:1602. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): a live reservation does not overlap the process's `Shared` static ([`shared_static_addr`]).
@@ -3361,7 +3382,7 @@ pub proof fn is_apart_from_static(tracked &self)
 
 ### S172. `Reserved::is_disjoint`
 
-src/layout/regions.rs:1604. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:1619. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): two live mappings do not overlap.
@@ -3378,7 +3399,7 @@ pub proof fn is_disjoint(tracked &mut self, tracked other: &Self)
 
 ### S173. `Reserved::into_unbacked`
 
-src/layout/regions.rs:1623. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:1638. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > The reservation as uncommitted address space this process owns, for the one owner that commits it piece by piece (`Meta`, for the metadata region).
@@ -3392,12 +3413,12 @@ pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
 
 ### S174. `try_reserve`
 
-src/layout/regions.rs:1643. Kind: external_body. Category: FFI/syscall.
+src/layout/regions.rs:1658. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Reserve address space with `PROT_NONE`, `MAP_NORESERVE`: on success, the address and the token for the `len` bytes there.
 
-Body mints Tracked at line 1651.
+Body mints Tracked at line 1666.
 
 ```rust
 fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
@@ -3409,7 +3430,7 @@ fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
 
 ### S175. `word`
 
-src/layout/regions.rs:1847. Kind: external_body. Category: core library.
+src/layout/regions.rs:1862. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/layout-regions-word.md).
 
 > Word `i` of the random bytes (`8 * i` on, the target's byte order).
@@ -3422,7 +3443,7 @@ fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
 
 ### S176. `class_entry`
 
-src/layout/regions.rs:2259. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/regions.rs:2274. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > `&CLASSES[c]` for the fast paths' classification, `c < NCLASSES`.
@@ -3754,29 +3775,33 @@ fn state() -> (r: &'static Lock<State>)
 
 ### S200. `read_global`
 
-src/rseq.rs:139. Kind: external_body. Category: raw pointer (internal).
+src/rseq.rs:141. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > One read of a loader global [`symbols`] found.
 
 ```rust
 unsafe fn read_global<T: Copy>(p: *const T) -> T
+    requires
+        p@.addr != 0,
 ```
 
 ### S201. `read_cpu_id`
 
-src/rseq.rs:151. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/rseq.rs:163. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > A volatile read of the `cpu_id` field of the rseq area at `area`.
 
 ```rust
-unsafe fn read_cpu_id(area: *mut u8) -> u32
+unsafe fn read_cpu_id(area: *mut u8, Ghost(size): Ghost<u32>) -> u32
+    requires
+        size as int >= CPU_ID_OFFSET + 4,
 ```
 
 ### S202. `symbols`
 
-src/rseq.rs:162. Kind: external_body. Category: inline asm.
+src/rseq.rs:177. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Addresses of the weak `__rseq_offset`, `__rseq_size` and `__rseq_flags` (null when they do not resolve).
@@ -3787,7 +3812,7 @@ fn symbols() -> (*const isize, *const u32, *const u32)
 
 ### S203. `thread_pointer`
 
-src/rseq.rs:205. Kind: external_body. Category: inline asm.
+src/rseq.rs:220. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > The calling thread's thread pointer: `%fs:0` (the TCB's self pointer) on x86_64, `tpidr_el0` on aarch64.

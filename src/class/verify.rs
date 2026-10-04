@@ -7,9 +7,11 @@ use super::abort::wrong_arena;
 use super::table::bits_shape;
 use super::{ClassState, Pick, SlabTable};
 #[cfg(verus_only)]
-use crate::layout::class_table;
+use crate::layout::{MAX_SLAB, NCLASSES, class_table, process_regions, slots_in};
 use crate::purge;
 use crate::slab::{SlabDesc, State};
+#[cfg(verus_only)]
+use vstd::arithmetic::power2::pow2;
 use vstd::prelude::*;
 
 impl SlabTable {
@@ -58,21 +60,52 @@ impl ClassState {
     pub(super) fn check_zero(&self, slots: &[*mut u8], pick: &Pick)
         requires
             crate::sys::may_abort(),
+            slots_in(slots@, self.spec_class() as int, 0, slots@.len() as int),
     {
+        proof {
+            use_type_invariant(self);
+            self.spec_table().lemma_region();
+        }
         let size = self.class().size();
-        for &p in slots
+        proof {
+            lemma_slot_size(self.spec_class() as int);
+        }
+        for &p in it: slots
             invariant
                 crate::sys::may_abort(),
                 size >= 8,
+                size == class_table()[self.spec_class() as int].size,
+                size as int % 8 == 0,
+                self.spec_class() < NCLASSES,
+                process_regions().class_base[self.spec_class() as int] as int % (MAX_SLAB as int) == 0,
+                it.seq().len() == slots@.len(),
+                forall|i: int| 0 <= i < slots@.len() ==> *#[trigger] it.seq()[i] == slots@[i],
+                slots_in(slots@, self.spec_class() as int, 0, slots@.len() as int),
         {
-            for &off in &[0, size - 8]
+            proof {
+                let c = self.spec_class() as int;
+                assert(p == *it.seq()[it.index() as int]);
+                assert(process_regions().is_slot(c, p@.addr));
+                lemma_slot_word(c, p);
+            }
+            for &off in o: &[0, size - 8]
                 invariant
                     crate::sys::may_abort(),
                     size >= 8,
+                    size == class_table()[self.spec_class() as int].size,
+                    size as int % 8 == 0,
+                    p@.addr as int % 8 == 0,
+                    process_regions().is_slot(self.spec_class() as int, p@.addr),
+                    o.seq().len() == 2,
+                    *o.seq()[0] == 0,
+                    *o.seq()[1] == size - 8,
             {
+                proof {
+                    assert(off == *o.seq()[o.index() as int]);
+                }
                 // SAFETY: `p` is a slot this claim just reserved in a
                 // committed slab; slots are at least 16 bytes and 8-aligned.
-                let word = unsafe { read_word(p, off) };
+                let word = unsafe { read_word(p, off, Ghost(self.spec_class() as int)) };
                 if word != 0 {
                     self.dirty_word(pick, size, p, off, word);
                 }
@@ -89,7 +122,14 @@ impl ClassState {
         requires
             crate::sys::may_abort(),
             slab < self.spec_nslabs(),
+            !self.spec_table().spec_is_guard(slab),
     {
+        proof {
+            use_type_invariant(self);
+            self.spec_table().lemma_region();
+            self.spec_table().lemma_guard_slab(slab as int);
+            lemma_slot_size(self.spec_class() as int);
+        }
         let cls = self.class();
         let bm = self.table().bits(slab);
         for slot in 0..cls.nslots()
@@ -99,10 +139,19 @@ impl ClassState {
                 *cls == class_table()[self.spec_class() as int],
                 cls.wf(),
                 bits_shape(bm, class_table()[self.spec_class() as int].slab_bits as usize),
+                self.spec_class() < NCLASSES,
+                !crate::layout::guard_slab(self.spec_class() as int, slab as int),
+                process_regions().class_base[self.spec_class() as int] as int % (MAX_SLAB as int) == 0,
+                self.spec_nslabs() as int == process_regions().spec_nslabs(self.spec_class() as int),
+                class_table()[self.spec_class() as int].size >= 8,
         {
             let p = self.slot_ptr(slab, slot);
+            proof {
+                process_regions().lemma_is_slot(self.spec_class() as int, slab as int, slot as int, p@.addr);
+                lemma_slot_word(self.spec_class() as int, p);
+            }
             // SAFETY: a slot of a committed slab; the class lock is held.
-            let word = unsafe { read_word(p, 0) };
+            let word = unsafe { read_word(p, 0, Ghost(self.spec_class() as int)) };
             if word != 0 {
                 self.fresh_slab_dirty(slab, slot, p, word, &bm);
             }
@@ -214,14 +263,54 @@ pub(super) fn desc_ptr_addr(d: &SlabDesc) -> usize {
     d as *const SlabDesc as usize
 }
 
-/// The word at `p + off`, read once (trusted: nothing is claimed about the
-/// value).
+/// Slot `p` of class `c`, guard slabs included, is word aligned when the
+/// class's base is `MAX_SLAB`-aligned (`SlabTable::inv`).
+proof fn lemma_slot_word(c: int, p: *mut u8)
+    requires
+        process_regions().is_slot_addr(c, p@.addr),
+        process_regions().class_base[c] as int % (MAX_SLAB as int) == 0,
+    ensures
+        p@.addr as int % 8 == 0,
+{
+    lemma_slot_size(c);
+    vstd::arithmetic::power2::lemma2_to64();
+    assert(crate::meta::is_pow2(8)) by {
+        assert(8 == pow2(3));
+    }
+    process_regions().lemma_slot_aligned_in(c, p@.addr, 8);
+}
+
+/// Class `c`'s size is a whole number of words, at least one.
+proof fn lemma_slot_size(c: int)
+    requires
+        0 <= c < NCLASSES,
+    ensures
+        class_table()[c].size as int % 8 == 0,
+        class_table()[c].size >= 8,
+{
+    crate::vspec::class::axiom_class_table_wf(c);
+    crate::layout::lemma_class_size_quantum(c);
+    assert(crate::QUANTUM as int % 8 == 0);
+    crate::layout::lemma_aligned_down(class_table()[c].size as int, crate::QUANTUM as int, 8);
+}
+
+/// The word at `p + off` of a slot `p` of class `c`, read once (trusted:
+/// nothing is claimed about the value). The contract places the word
+/// inside the slot, aligned, and the slot outside the guard slabs; that
+/// its slab is committed (the caller has just claimed a slot of it, or
+/// holds its class lock while it is `Fresh`) stays the caller's, as no
+/// ghost state records commitment.
 ///
 /// # Safety
 /// `p + off` is an aligned word of committed slot memory.
 #[inline(always)]
 #[verifier::external_body]
-unsafe fn read_word(p: *mut u8, off: usize) -> u64 {
+unsafe fn read_word(p: *mut u8, off: usize, Ghost(c): Ghost<int>) -> u64
+    requires
+        process_regions().is_slot(c, p@.addr),
+        off as int + 8 <= class_table()[c].size,
+        (p@.addr as int + off as int) % 8 == 0,
+{
     // SAFETY: guaranteed by the caller.
     unsafe { core::ptr::read_volatile(p.add(off) as *const u64) }
 }

@@ -250,7 +250,7 @@ pub(crate) struct TestHeap {
 
 impl TestHeap {
     pub(crate) fn new(s: &'static Shared) -> TestHeap {
-        let (h, _) = Heap::create(
+        let (h, _, _) = Heap::create(
             s,
             vstd::prelude::Tracked::assume_new(),
             Tracked::assume_new(),
@@ -3301,7 +3301,7 @@ fn a_huge_first_allocation_builds_the_home_arena() {
         ..Config::DEFAULT
     })
     .build();
-    let (hp, _) = Heap::create_detached(s, 2, Tracked::assume_new());
+    let (hp, _, _) = Heap::create_detached(s, 2, Tracked::assume_new());
     assert!(!hp.is_null());
     let h = unsafe { &mut *hp };
     assert!(s.arenas.get_existing(2).is_none());

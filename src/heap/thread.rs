@@ -179,7 +179,7 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(tls): Tra
     }
     // Premise (lock order): reached from the first allocation of a thread,
     // on its slow path, with no lock held.
-    let (h, Tracked(perms)) = Heap::create(shared, Tracked(tls), Tracked(&mut axiom_entry()));
+    let (h, Tracked(perms), Tracked(head)) = Heap::create(shared, Tracked(tls), Tracked(&mut axiom_entry()));
     if h.is_null() {
         return None;
     }
@@ -187,7 +187,7 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(tls): Tra
     shared.key.set(h, Tracked(tls));
     crate::sys::tls::set(tls_value_for(shared, h, Tracked(&*tls)), Tracked(tls));
     // SAFETY: freshly created and owned by this thread.
-    let heap = unsafe { heap_new(h) };
+    let heap = unsafe { heap_new(h, Tracked(head), Tracked(&perms)) };
     proof {
         shared.lemma_wf();
         heap.perms = Tracked(perms);

@@ -25,9 +25,9 @@
 use core::arch::asm;
 
 use crate::sys::features::Value;
-use vstd::prelude::verus;
 #[cfg(verus_only)]
 use vstd::prelude::*;
+use vstd::prelude::{Ghost, verus};
 
 verus! {
 
@@ -118,7 +118,7 @@ pub fn probe() -> (r: Probe)
     let registered = size >= (CPU_ID_OFFSET as u32 + 4) && {
         // SAFETY: the area is `size` bytes at the thread pointer plus
         // the offset for every thread, and `cpu_id` is inside it.
-        unsafe { read_cpu_id(area(offset)) != CPU_ID_UNINITIALIZED }
+        unsafe { read_cpu_id(area(offset), Ghost(size)) != CPU_ID_UNINITIALIZED }
     };
     Probe {
         present: true,
@@ -130,25 +130,40 @@ pub fn probe() -> (r: Probe)
 }
 
 /// One read of a loader global [`symbols`] found. Trusted: a raw read;
-/// nothing is claimed about the value.
+/// nothing is claimed about the value. The contract states the one
+/// address fact the caller can show, that `p` is not null; that a
+/// non-null weak symbol's address is a live, aligned `T` is the loader's.
 ///
 /// # Safety
 /// `p` is the non-null address of a live, aligned `T`.
 #[verifier::external_body]
 #[inline(always)]
-unsafe fn read_global<T: Copy>(p: *const T) -> T {
+unsafe fn read_global<T: Copy>(p: *const T) -> T
+    requires
+        p@.addr != 0,
+{
     // SAFETY: guaranteed by the caller.
     unsafe { p.read() }
 }
 
 /// A volatile read of the `cpu_id` field of the rseq area at `area`.
-/// Trusted: a raw read; nothing is claimed about the value.
+/// Trusted: a raw read; nothing is claimed about the value. The contract
+/// states the bounds check the caller makes: `size`, the value it read
+/// from `__rseq_size`, covers the field. The rest is the caller's
+/// unproved obligation, from the loader and the rseq ABI: that `size`
+/// is this area's registered size (nothing ghost ties the two), that
+/// `area` (the thread pointer plus `__rseq_offset`) is this thread's
+/// registered area, and that the field is 4-byte aligned (the area is
+/// 32-byte aligned).
 ///
 /// # Safety
 /// `area` is this thread's rseq area, at least `CPU_ID_OFFSET + 4` bytes.
 #[verifier::external_body]
 #[inline(always)]
-unsafe fn read_cpu_id(area: *mut u8) -> u32 {
+unsafe fn read_cpu_id(area: *mut u8, Ghost(size): Ghost<u32>) -> u32
+    requires
+        size as int >= CPU_ID_OFFSET + 4,
+{
     // SAFETY: guaranteed by the caller.
     unsafe { area.add(CPU_ID_OFFSET).cast::<u32>().read_volatile() }
 }

@@ -1450,6 +1450,21 @@ impl Regions {
         ensures
             (p as int) % (align as int) == 0,
     {
+        self.lemma_slot_aligned_in(c, p, align);
+    }
+
+    /// [`Regions::lemma_slot_aligned`] for any slot start of class `c`,
+    /// guard slabs included, from the alignment of the class's base alone
+    /// (which a class's table keeps, `SlabTable::inv`).
+    pub proof fn lemma_slot_aligned_in(self, c: int, p: usize, align: usize)
+        requires
+            (self.class_base[c] as int) % (MAX_SLAB as int) == 0,
+            self.is_slot_addr(c, p),
+            crate::meta::is_pow2(align),
+            (class_table()[c].size as int) % (align as int) == 0,
+        ensures
+            (p as int) % (align as int) == 0,
+    {
         let (slab, slot) = choose|slab: int, slot: int|
             0 <= slab < self.spec_nslabs(c) && 0 <= slot < class_table()[c].nslots
                 && p as int == #[trigger] self.slot_at(c, slab, slot);

@@ -1349,13 +1349,19 @@ verus! {
 /// arena at entry `index` is arena `index` (`spec_index`): `build`
 /// stores the arena `Arena::init` built as `index` into entry `index`,
 /// `Arenas::init` stores `Shared::arena0`, built as 0, into entry 0, and
-/// nothing else writes an entry.
+/// nothing else writes an entry. The contract states the address fact
+/// every caller shows, that `p` is not null; that a non-null entry is a
+/// live, initialised arena is the registry's protocol above, which no
+/// ghost state carries (`build` holds the arena's permission only until
+/// it publishes it).
 ///
 /// # Safety
 /// `p` is a non-null entry loaded from `Arenas::table[index]`.
 #[verifier::external_body]
 #[inline(always)]
 unsafe fn arena_at<'a>(p: *mut Arena, Ghost(index): Ghost<u16>) -> (r: &'a Arena)
+    requires
+        p@.addr != 0,
     ensures
         r.spec_index() == index,
 {
@@ -1509,6 +1515,9 @@ impl Arenas {
             // The reservation is lost; the metadata region is exhausted
             // anyway.
             return None;
+        }
+        proof {
+            slot.perm.tracked_borrow().is_nonnull();
         }
         shared.set_multi_arena();
         self.table[index as usize].store(p, Ordering::Release);

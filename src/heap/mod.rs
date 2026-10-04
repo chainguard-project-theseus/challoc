@@ -4189,14 +4189,23 @@ impl Heap {
         self.arena
     }
 
+    /// The home arena, [`Heap::arena`]'s field.
+    pub closed spec fn spec_arena(&self) -> u16 {
+        self.arena
+    }
+
     /// [`Heap::arena`] through a volatile load, for the `free` check's
     /// arena test ([`Shared::checked_slot`]): a plain load is hoisted
     /// above the multi-arena flag test and touches the heap's header line
     /// on every single-arena `free`. Trusted: a volatile read of a plain
-    /// field.
+    /// field, which reads the field's value.
     #[inline(always)]
     #[verifier::external_body]
-    pub(super) fn arena_volatile(&self) -> u16 opens_invariants none {
+    pub(super) fn arena_volatile(&self) -> (r: u16)
+        ensures
+            r == self.spec_arena(),
+        opens_invariants none
+    {
         // SAFETY: `self` is a live heap and `arena` a plain field.
         unsafe { ptr::read_volatile(&raw const self.arena) }
     }
@@ -5031,6 +5040,7 @@ impl Heap {
             old.owns(p) && !old.in_array(node, next, p) implies #[trigger] h.hdr(p) == old.hdr(p) && h.held(p) == old.held(p) by {
             assert(p != hc);
             assert(!old.in_array(node, class, p));
+            assert(old.owns(p));
             assert(h0.kept_outside(old, node, class));
             assert(h0.hdr(p) == old.hdr(p));
             assert(h0.held(p) == old.held(p));
@@ -5408,6 +5418,17 @@ impl Heap {
 
 verus! {
 
+/// `head` is the permission to the 128 bytes of the heap at `h` before
+/// its home headers (its plain fields): what [`Heap::create_detached`]
+/// splits off the heap's block for [`init_fields`], and returns with the
+/// heap; `h` is not null and aligned for a `Heap` (64 bytes).
+pub(super) open spec fn heap_head(h: *mut Heap, head: vstd::raw_ptr::PointsToRaw) -> bool {
+    &&& head.is_range(h@.addr as int, 128)
+    &&& head.provenance() == h@.provenance
+    &&& h@.addr != 0
+    &&& h@.addr as int % 64 == 0
+}
+
 /// The home header for `class` of the heap at `h`: `h + 128 + 64 *
 /// class`, where [`Heap::create_detached`] writes it and
 /// `Heap::home_ptr_at` (under [`Heap::cache_ptr`]) computes it.
@@ -5472,18 +5493,20 @@ global layout Heap is size == 3712, align == 64;
 
 /// The fields of a fresh heap before its home headers, stored field by
 /// field ([`Heap::create_detached`]). Trusted: `&raw mut` projections of
-/// the raw heap pointer, which Verus does not support. `head`, the
-/// permission to the 128 bytes before `caches`, is used up.
+/// the raw heap pointer, which Verus does not support. `head` is the
+/// permission to the 128 bytes before `caches` ([`heap_head`]); the
+/// stores leave it as it was.
 ///
 /// # Safety
 /// `h` is a fresh metadata block for a `Heap`, exclusively owned.
 #[inline(always)]
 #[verifier::external_body]
-unsafe fn init_fields(h: *mut Heap, shared: &Shared, arena: u16, Tracked(head): Tracked<vstd::raw_ptr::PointsToRaw>)
+unsafe fn init_fields(h: *mut Heap, shared: &Shared, arena: u16, Tracked(head): Tracked<&mut vstd::raw_ptr::PointsToRaw>)
     requires
         crate::sys::may_syscall(),
-        head.is_range(h@.addr as int, 128),
-        head.provenance() == h@.provenance,
+        heap_head(h, *old(head)),
+    ensures
+        *final(head) == *old(head),
 {
     // SAFETY: guaranteed by the caller.
     unsafe {
@@ -5519,13 +5542,19 @@ fn assign_home(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: u1
 
 /// `(*h).bound = true` for a heap [`Heap::create`] has just made.
 /// Trusted: a field store through the raw heap pointer, to a field
-/// [`init_fields`] wrote; nothing is claimed.
+/// [`init_fields`] wrote, inside the 128 bytes `head` owns
+/// ([`heap_head`]); nothing is claimed.
 ///
 /// # Safety
 /// `h` is a fresh heap, exclusively owned.
 #[inline(always)]
 #[verifier::external_body]
-unsafe fn mark_bound(h: *mut Heap) {
+unsafe fn mark_bound(h: *mut Heap, Tracked(head): Tracked<&mut vstd::raw_ptr::PointsToRaw>)
+    requires
+        heap_head(h, *old(head)),
+    ensures
+        *final(head) == *old(head),
+{
     // SAFETY: guaranteed by the caller.
     unsafe { (*h).bound = true };
 }
@@ -5552,14 +5581,14 @@ impl Heap {
     /// no call that can allocate. With the heap, the permissions to its
     /// caches ([`CachePerms::fresh`]). The call is counted on the thread's
     /// slot token (`TlsSlot::creates`), which it otherwise leaves alone.
-    fn create(shared: &Shared, Tracked(tls): Tracked<&mut crate::sys::tls::TlsSlot>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut Heap, Tracked<CachePerms>))
+    fn create(shared: &Shared, Tracked(tls): Tracked<&mut crate::sys::tls::TlsSlot>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut Heap, Tracked<CachePerms>, Tracked<vstd::raw_ptr::PointsToRaw>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
             old(ord).allows(rank_arenas()),
         ensures
-            r.0@.addr != 0 ==> r.1@.fresh(r.0),
+            r.0@.addr != 0 ==> r.1@.fresh(r.0) && heap_head(r.0, r.2@),
             final(tls).value() == old(tls).value(),
             final(tls).creates() == old(tls).creates() + 1,
             *final(ord) == *old(ord),
@@ -5568,26 +5597,26 @@ impl Heap {
             tls.note_create();
         }
         let arena = assign_home(shared, Tracked(ord));
-        let (h, perms) = Self::create_detached(shared, arena, Tracked(ord));
+        let (h, perms, Tracked(mut head)) = Self::create_detached(shared, arena, Tracked(ord));
         if h.is_null() {
             shared.arenas.unbind(arena);
         } else {
             // SAFETY: fresh, exclusively owned.
-            unsafe { mark_bound(h) };
+            unsafe { mark_bound(h, Tracked(&mut head)) };
         }
-        (h, perms)
+        (h, perms, Tracked(head))
     }
 
     /// Create a heap homed on `arena` (an explicit cache, or a thread heap
     /// before it is registered). Null if the region is exhausted. With the
     /// heap, the permissions to its caches ([`CachePerms::fresh`]).
-    fn create_detached(shared: &Shared, arena: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut Heap, Tracked<CachePerms>))
+    fn create_detached(shared: &Shared, arena: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut Heap, Tracked<CachePerms>, Tracked<vstd::raw_ptr::PointsToRaw>))
         requires
             crate::sys::may_syscall(),
             shared.wf(),
             old(ord).allows(rank_meta()),
         ensures
-            r.0@.addr != 0 ==> r.1@.fresh(r.0),
+            r.0@.addr != 0 ==> r.1@.fresh(r.0) && heap_head(r.0, r.2@),
             *final(ord) == *old(ord),
     {
         proof {
@@ -5600,7 +5629,8 @@ impl Heap {
         let h = block as *mut Heap;
         if h.is_null() {
             let tracked none = CachePerms::tracked_empty();
-            return (h, Tracked(none));
+            let tracked no_head = vstd::raw_ptr::PointsToRaw::empty(h@.provenance);
+            return (h, Tracked(none), Tracked(no_head));
         }
         let ghost size = vstd::layout::size_of::<Heap>() as int;
         let ghost base = h@.addr as int;
@@ -5609,14 +5639,14 @@ impl Heap {
             crate::vspec::ptr::axiom_raw_valid(&raw, block, size);
             crate::vspec::ptr::axiom_ptr_add_addr(block, 128);
         }
-        let tracked (head, mut rest) = raw.split(Set::range(base, base + 128));
+        let tracked (mut head, mut rest) = raw.split(Set::range(base, base + 128));
         // SAFETY: `h` is a fresh, exclusively owned metadata block of the
         // right size and alignment. Field by field: a whole `Heap`
         // temporary (3.4 KiB with the headers inline) would deepen the
         // stack of every thread's first allocation by one page, which
         // larson's thread churn turns into +1.7 MiB of RSS per 437
         // threads (thread stacks stay mapped; measured on arm64).
-        unsafe { init_fields(h, shared, arena, Tracked(head)) };
+        unsafe { init_fields(h, shared, arena, Tracked(&mut head)) };
         // SAFETY: as above; `caches` is 128 bytes in (the `const`
         // assertion after `Heap`).
         let caches = unsafe { block.add(128) } as *mut CacheHeader;
@@ -5700,7 +5730,7 @@ impl Heap {
                 assert(forall|k: int| 0 <= k < c + 1 ==> perms.hdrs.contains_key(#[trigger] home_hdr(h, k)) && perms.cls.contains_key(home_hdr(h, k)) && perms.cls[home_hdr(h, k)] == k);
             }
         }
-        (h, Tracked(perms))
+        (h, Tracked(perms), Tracked(head))
     }
 
     /// Flush every cache, free them and the heap itself back to the

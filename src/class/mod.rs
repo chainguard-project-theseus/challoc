@@ -3223,6 +3223,7 @@ impl ClassState {
                         cur@ == addrs(s, VSet::<int>::range(f + k, f + want)),
                         otoks.holds(*_t0, out@, base, 0, (got + k) as int),
                         otoks.frame(*old(otoks), base, base + got + k),
+                        slots_in(out@, self.spec_class() as int, got as int, (got + k) as int),
                 {
                     let ghost o1 = out@;
                     out[got + k] = self.slot_ptr(slab, k);
@@ -3269,6 +3270,18 @@ impl ClassState {
                             &&& old(zt).contains_key(kk) ==> zt[kk] == old(zt)[kk]
                         } by {
                             assert(z1.contains_key(kk) == old(zt).contains_key(kk));
+                        }
+                    }
+                    proof {
+                        // Slot `k` of a pick's slab, not a guard, is a
+                        // slot start (`check_zero` reads it).
+                        _t0.lemma_region();
+                        _t0.lemma_guard_slab(slab as int);
+                        process_regions().lemma_is_slot(self.spec_class() as int, slab as int, k as int, out@[got + k]@.addr);
+                        assert forall|j: int| got <= j < got + k + 1 implies process_regions().is_slot(self.spec_class() as int, (#[trigger] out@[j])@.addr) by {
+                            if j < got + k {
+                                assert(out@[j] == o1[j]);
+                            }
                         }
                     }
                 }
