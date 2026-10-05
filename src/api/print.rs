@@ -2306,14 +2306,13 @@ mod tests {
                         assert!(!t.contains(leak), "{file}: may leak a lock guard: {t}");
                     }
                     // The accessors of a lock's bare `RawLock`, as the
-                    // fork handlers call them (`lock_held` and
-                    // `lock_held_gated` since the lock order tokens).
+                    // fork handlers call them (`lock_held` since the lock
+                    // order tokens).
                     let raw_acquire = [
                         "RawLock::lock",
                         "raw().lock()",
                         "raw_lock().lock()",
                         ".lock_held(",
-                        ".lock_held_gated",
                     ]
                     .iter()
                     .any(|a| t.contains(a))

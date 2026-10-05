@@ -1920,8 +1920,8 @@ axioms below are the other source.
   lock are apart).
 - The acquisition order is theorem 33, "Lock order is acyclic": every
   acquisition of `fork_prepare` ranks above the locks it already
-  holds, except the slab-set locks, which are gated by the arena's
-  class locks. The release order is unstated.
+  holds (with no exception since upstream #96, which takes the slab-set
+  locks after the slab table locks). The release order is unstated.
 - Partial correctness: a `lock` that never returns (a deadlock in
   prepare) satisfies everything. A prepare handler registered before
   challoc's (one that runs after ours) that allocates on a slow path
@@ -5041,9 +5041,9 @@ line there).
 **Statement.** Every allocator lock has a fixed rank, and a blocking
 acquisition ranks above every allocator lock its thread holds, so no
 set of threads can each wait for a lock the next one holds (around such a
-cycle the ranks would climb back to where they started). The one
-exception, the slab-set locks in `fork_prepare`, is a gated acquisition
-that cannot block or be waited on (below).
+cycle the ranks would climb back to where they started). There is no
+exception: `fork_prepare` took the slab-set locks before the slab table
+locks, against the run-time order, until upstream #96 (below).
 
 ```rust
 // lock.rs: the ranks, lowest first (spec fns, lock.rs:263-308).
@@ -5052,7 +5052,7 @@ rank_arenas()                  0x200_0000              arena creation lock
 rank_stats()                   0x280_0000              process statistics lock
 rank_class(i, c)               0x300_0000 + 0x100 i + c   class c of arena i
 rank_table(c)                  0x400_0000 + c          slab table of class c
-rank_sets(i)                   0x500_0000 + i          slab sets of arena i (gated)
+rank_sets(i)                   0x500_0000 + i          slab sets of arena i
 rank_huge(), rank_meta()       0x600_0000, 0x700_0000
 rank_arena_stats(i)            0x900_0000 + i
 rank_state()                   0xA00_0000              background thread state
@@ -5090,7 +5090,7 @@ The ranks are ghost fields of `RawLock` (`#[cfg(verus_only)]`: a `Ghost`
 field breaks `repr(transparent)`, which ordinary builds keep), set by
 `RawLock::new(Ghost(rank))` / `Lock::new(v, Ghost(rank))`, and tied to
 each lock by its owner's type invariant: `ClassState` (class `c` of
-arena `arena`), `SlabTable`, `SetTable` (`gated`), `Huge`, `Meta`,
+arena `arena`), `SlabTable`, `SetTable` (a slab-set rank), `Huge`, `Meta`,
 `Arena` (sets and statistics), `Arenas`, `Tcaches`, and `Shared::wf`
 (the process statistics lock). The fork accessors (`raw_lock`,
 `stats_raw_lock`, `Arena::sets`, `Shared::*_lock`) state the rank.
@@ -5107,28 +5107,29 @@ arena `arena`), `SlabTable`, `SetTable` (`gated`), `Huge`, `Meta`,
 | purge `purge_all`, `purge_arena`, `decay` and `decay_arena` (through `decay_one`, `decay_huge`) → `Arena::decay_with`, `ClassState::decay_with`, `Huge::decay_with`, `on_tick`, `sample` → `policy::evaluate`; background `start` (state, then meta) and `main` | class, huge, state locks one at a time |
 | statistics `epoch`, `collect` (`collect_into`, with its exact-stats ghost outputs) and `arena_stats_all`, under the process statistics lock held across the scan (upstream #91) | Stats < Class(i, c) < Table(c), and Stats < Huge, Meta, ArenaStats(i), each released before the next is taken; `arena_stats_all`: Stats < ArenaStats(i) |
 | statistics `collect_all`, `mallinfo2`, `snapshot`, `arena_stats` (class → table, huge, meta, arena and process statistics), `mallctl` `ctl` and its named readers (`stats.*`, `stats.cgroup.empty_bytes`), `utilization`, `owner_of`, `get_defrag_hint`, `malloc_trim` | each lock with nothing above it held |
-| `fork_prepare` (`api/mod.rs:819`) | Tcaches < Arenas < Stats < Class(i, c) (arenas ascending, classes ascending) < Table(c) < Huge < Meta < ArenaStats(i) < State, through one root token; Sets(i) gated |
+| `fork_prepare` (`api/mod.rs:819`) | Tcaches < Arenas < Stats < Class(i, c) (arenas ascending, classes ascending) < Table(c) < Sets(i) (arenas ascending) < Huge < Meta < ArenaStats(i) < State, through one root token |
 
 `fork_prepare` proves it with loop invariants `ord.top() <
 rank_class(i, 0)`, `< rank_class(i, c)`, `< rank_table(c)`, `<
-rank_arena_stats(i)`; the arena indices it visits are below
-`MAX_ARENAS` (`Arenas::count`, trusted for that bound then, verified
-under its invariant `NarenasPred` since), so the `u16` arena indices of
-the arenas it finds increase with `i`.
+rank_sets(i)`, `< rank_arena_stats(i)`; the arena indices it visits are
+below `MAX_ARENAS` (`Arenas::count`, trusted for that bound then,
+verified under its invariant `NarenasPred` since), so the `u16` arena
+indices of the arenas it finds increase with `i`.
 
-**The gated locks** (`lock.rs:327`, `RawLock::lock_held_gated`,
-`lock.rs:188`). The code does not follow `fork_prepare`'s documented
-nesting order (design 9): at run time `take_group` holds Class(i,c) and
-Table(c) and takes Sets(i) (`SetTable::ensure` through `ensure_sets`),
-while `fork_prepare` takes Sets(i) before every Table lock. No total
-order fits both, so the ranks follow the run-time paths (Table < Sets)
-and `fork_prepare` takes Sets(i) as a gated lock: it holds the tokens
-of every class lock of arena `i` (`lock_held_gated` requires them, with
-their ranks), and every other thread that takes a slab-set lock holds
-one of that arena's class locks while it holds or waits for it, so no
-other thread holds Sets(i) or waits for it. The gated acquisition does
-not raise the token. This is not a deadlock: verified as above, plus
-the gate premise below.
+**The slab-set locks** (upstream #96). At run time `take_group` holds
+Class(i,c) and Table(c) and takes Sets(i) (`SetTable::ensure` through
+`ensure_sets`), so the ranks put Table below Sets. Until #96
+`fork_prepare` took each arena's Sets(i) right after its class locks,
+before every Table lock, which no total order fits; it was checked as
+a *gated* acquisition (`RawLock::lock_held_gated`, which required the
+tokens of all of arena `i`'s class locks and did not raise the token),
+premised on every other holder of Sets(i) holding one of that arena's
+class locks. Since #96 `fork_prepare` takes the Sets locks after all
+the Table locks, in arena order, through `lock_held` like every other
+lock: `lock_held_gated`, `lock::gated`, `lock::gate_rank` and the gate
+premise are gone, and `SetTable`'s type invariant states its rank's
+range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
+`gated`.
 
 **Premises beyond the common ones.**
 - *Entry points hold no allocator lock* (`axiom_entry`, `lock.rs:400`;
@@ -5161,12 +5162,6 @@ the gate premise below.
   functions take the caller's token and require it below the lock the
   closure takes, so the premise restates a checked precondition for code
   that runs during the call.
-- *The gate*: the only acquisition of a slab-set lock other than
-  `fork_prepare`'s, `SetTable::ensure`, runs under `take_group`, which
-  `plan` calls with the class's lock held, on that class's sets (the
-  lock value), whose shared store is that arena's table
-  (`Set::ensure`). A token does not say which locks are held, so this is
-  by inspection.
 - *Trusted bodies with honest specs*: `policy::empty_bytes`,
   `Heap::destroy` and `Meta::commit`: each states the
   lowest rank its body takes (`assign_home`, trusted at this theorem's
@@ -5187,8 +5182,8 @@ the gate premise below.
   wait among allocator locks, not a lock held forever (a holder that
   never returns), and it says nothing about the futex itself.
 - The ranks of a held set are bounded by `top()`, not tracked exactly;
-  a token does not know which locks its owner holds, so the gate
-  premise is by inspection.
+  a token does not know which locks its owner holds (which is why the
+  pre-#96 gate premise was by inspection).
 - Code outside `verus!` and trusted bodies are covered by the premises
   above, not checked: chiefly `Heap::destroy` (class, metadata, huge).
 - `fork_release` takes no lock and is not part of the statement; the

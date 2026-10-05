@@ -8,7 +8,7 @@ use crate::layout::{CLASSES, LG_MAX_SLAB, LG_MIN_SLAB, NCLASSES, Regions};
 use crate::layout::{class_table, process_regions};
 use crate::lock::{Lock, LockOrder, RawLock};
 #[cfg(verus_only)]
-use crate::lock::{gated, rank_meta, rank_sets};
+use crate::lock::{rank_meta, rank_sets};
 use crate::meta::Meta;
 use crate::sys::Errno;
 #[cfg(verus_only)]
@@ -191,7 +191,8 @@ pub struct SetTable {
     /// Position of each class within its group.
     pub(crate) pos: [u8; NCLASSES],
     /// Commit watermarks; taken by the fork handlers after the arena's
-    /// class locks, which is the order `take_group` uses.
+    /// class locks and the slab table locks, which is the order
+    /// `take_group` uses.
     pub(crate) tables: Lock<[Lazy; SET_GROUPS]>,
     pub(crate) page: usize,
 }
@@ -580,18 +581,19 @@ proof fn split_sets(
 impl SetTable {
     /// The commit geometry [`SetTable::ensure`] relies on: a page that
     /// [`Lazy::ensure`] takes, groups of at most three sets per class and
-    /// at most `2^26` slabs. `new` proves it, and nothing writes the
+    /// at most `2^26` slabs, and a commit lock ranked as a slab-set lock.
+    /// `new` proves it, and nothing writes the
     /// fields afterwards.
     #[verifier::type_invariant]
     spec fn inv(self) -> bool {
         &&& 1 <= self.page <= 0x8000_0000_0000_0000
         &&& forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] self.groups[g].stride <= 3 * NCLASSES
         &&& forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] self.nslabs[g] <= 0x400_0000
-        &&& gated(self.tables.rank())
+        &&& rank_sets(0) <= self.tables.rank() < rank_sets(0x1_0000)
     }
 
     /// The commit lock's rank: arena `i`'s slab-set lock,
-    /// `rank_sets(i)` (a gated lock).
+    /// `rank_sets(i)`.
     pub closed spec fn rank(&self) -> int {
         self.tables.rank()
     }
@@ -1037,8 +1039,8 @@ impl SetTable {
     /// Commit the rows of group `g` up to the level-0 word of `slab` (and
     /// so its chunk's level-1 word and every row before).
     ///
-    /// Lock order: takes this table's commit lock (a gated lock, so the
-    /// caller also holds a gate: [`gated`]), then the metadata lock.
+    /// Lock order: takes this table's commit lock, then the metadata
+    /// lock.
     fn ensure(&self, meta: &Meta, g: usize, slab: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),

@@ -1,6 +1,6 @@
 # `LockGuard::drop`
 
-Seam S178 of `verus/SEAMS.md`: src/lock.rs:839. Kind: external_body. Category: atomics primitive.
+Seam S178 of `verus/SEAMS.md`: src/lock.rs:795. Kind: external_body. Category: atomics primitive.
 Discharged by loom.
 
 ## Contract

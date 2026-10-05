@@ -16,8 +16,6 @@
 //!
 //! Nothing on the `malloc`/`free` fast path takes a lock.
 
-#[cfg(verus_only)]
-use crate::layout::NCLASSES;
 use crate::sync::atomic::{AtomicU32, Ordering};
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
@@ -183,27 +181,6 @@ impl RawLock {
         Tracked(LockHeld { lock: *self })
     }
 
-    /// [`RawLock::lock_held`] for a gated lock ([`gated`]) while this
-    /// thread holds all of its gates: `gates` holds, under key `key(c)`,
-    /// the token of the gate of rank `gate_rank(self.rank(), c)` for each
-    /// class `c`. No order is checked and no token raised: every other
-    /// thread holds one of the gates while it holds or waits for a gated
-    /// lock (the premise in [`gated`]), so while this thread holds them
-    /// all, no other thread holds the lock or waits for it.
-    #[inline(always)]
-    pub fn lock_held_gated<K>(&self, Tracked(gates): Tracked<&Map<K, LockHeld>>, Ghost(key): Ghost<spec_fn(int) -> K>) -> (t: Tracked<LockHeld>)
-        requires
-            crate::sys::may_syscall(),
-            gated(self.rank()),
-            forall|c: int| #![trigger gates.contains_key(key(c))] #![trigger gates[key(c)]] 0 <= c < NCLASSES ==> gates.contains_key(key(c))
-                && gates[key(c)].held().rank() == gate_rank(self.rank(), c),
-        ensures
-            t@.held() == *self,
-    {
-        self.lock();
-        Tracked(LockHeld { lock: *self })
-    }
-
     /// [`RawLock::release`] by the holder, which hands its token back.
     #[inline(always)]
     pub fn unlock_held(&self, Tracked(t): Tracked<LockHeld>)
@@ -322,26 +299,6 @@ pub open spec fn rank_spare() -> int {
     0xB00_0000
 }
 
-/// The gated locks: the slab-set locks (arena `i`'s is `rank_sets(i)`,
-/// `i < 2^16`), whose gates are the same arena's class locks
-/// ([`gate_rank`]). Premise: a thread that takes a gated lock other than
-/// through [`RawLock::lock_held_gated`] holds one of its gates while it
-/// holds or waits for it. The one such acquisition, `SetTable::ensure`,
-/// runs only under `SlabTable::take_group`, which a class's `plan` calls
-/// with that class's lock held, on the class's sets (the lock's value);
-/// their shared store is that arena's slab-set table (`Set::ensure`).
-/// A [`LockOrder`] does not say which locks are held, so this is checked
-/// by inspection.
-pub open spec fn gated(r: int) -> bool {
-    0x500_0000 <= r < 0x500_0000 + 0x1_0000
-}
-
-/// The rank of gate `c` (the lock of class `c` of the same arena) of
-/// the gated lock of rank `r`.
-pub open spec fn gate_rank(r: int, c: int) -> int {
-    rank_class(r - 0x500_0000, c)
-}
-
 /// Ghost: a bound on the ranks of the allocator locks its owner holds
 /// ([`LockOrder::top`]). A blocking acquisition requires one whose top is
 /// below the lock's rank. [`Lock::lock`] borrows it for the guard's
@@ -370,8 +327,7 @@ pub tracked struct LockOrder<'a> {
 
 impl<'a> LockOrder<'a> {
     /// Every allocator lock this token's owner holds ranks at most this
-    /// (0: none), gated locks taken through [`RawLock::lock_held_gated`]
-    /// aside.
+    /// (0: none).
     pub closed spec fn top(self) -> int {
         self.top
     }
