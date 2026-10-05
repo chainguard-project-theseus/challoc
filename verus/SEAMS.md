@@ -2271,7 +2271,7 @@ const PERCPU_ARENA_NAMES: [&'static CStr; 3] = [c"disabled", c"percpu", c"phycpu
 
 ### S92. `Config::set_listed`
 
-src/config.rs:350. Kind: external_body. Category: function pointer.
+src/config.rs:390. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/config-Config-set_listed.md).
 
 > The [`TABLE`] entry's parser for `key`, `None` when no entry is named `key`.
@@ -2288,7 +2288,7 @@ fn set_listed<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Option<Resul
 
 ### S93. `Config::get`
 
-src/config.rs:366. Kind: external_body. Category: function pointer.
+src/config.rs:406. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/config-Config-get.md).
 
 > The value of a key by name, for `mallctl("opt.<key>")`: the [`TABLE`] entry's reader.
@@ -2301,7 +2301,7 @@ pub fn get(&self, key: &[u8]) -> (r: Option<Value>)
 
 ### S94. `Parse`
 
-src/config.rs:503. Kind: ext_type_spec. Category: function pointer.
+src/config.rs:543. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2310,7 +2310,7 @@ struct ExParse(Parse);
 
 ### S95. `Read`
 
-src/config.rs:509. Kind: ext_type_spec. Category: function pointer.
+src/config.rs:549. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -2319,7 +2319,7 @@ struct ExRead(Read);
 
 ### S96. `TABLE`
 
-src/config.rs:782. Kind: external_body const. Category: function pointer.
+src/config.rs:822. Kind: external_body const. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > [`ENTRIES`], the tunables.
@@ -2330,7 +2330,7 @@ pub exec const TABLE: &'static [Key] = ENTRIES;
 
 ### S97. `KEYS`
 
-src/config.rs:817. Kind: external_body const. Category: function pointer.
+src/config.rs:857. Kind: external_body const. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/config-KEYS.md).
 
 > Every key readable through [`Config::get`], in table order, for the `opt.` namespace (`mallctl` builds its `opt.` nodes from this slice at compile time, by position) and the tests: the names of [`TABLE`].
@@ -2343,7 +2343,7 @@ pub exec const KEYS: &'static [&'static str]
 
 ### S98. `DisplaySpecImpl for Issue<'_>`
 
-src/config.rs:945. Kind: spec_impl. Category: core library.
+src/config.rs:988. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/config-DisplaySpecImpl-for-Issue.md).
 
 ```rust
@@ -2356,7 +2356,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for Issue<'_> {
 
 ### S99. `DisplaySpecImpl for Bytes<'_>`
 
-src/config.rs:997. Kind: spec_impl. Category: core library.
+src/config.rs:1045. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/config-DisplaySpecImpl-for-Bytes.md).
 
 ```rust
@@ -2369,23 +2369,25 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for Bytes<'_> {
 
 ### S100. `parse_from`
 
-src/config.rs:1423. Kind: external_body. Category: function pointer.
+src/config.rs:1517. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
-> [`Config::parse`] of `text` from `source`, printing each problem as `challoc: <source>: <issue>` to `out`.
+> [`Config::parse_source`] of `text` from `source`, cut or not, printing each problem as `challoc: <source>: <issue>` to `out`.
 
 ```rust
-fn parse_from(cfg: &mut Config, text: &[u8], source: &str, out: &mut sys::Stderr) -> (issues: usize)
+fn parse_from(cfg: &mut Config, text: &[u8], cut: bool, source: &str, out: &mut sys::Stderr) -> (issues: usize)
     requires
         old(cfg).wf(),
+        text@.len() <= MAX_TEXT,
     ensures
-        issues <= text.len(),
+        issues <= text.len() + 1,
+        cut ==> issues > 0,
         old(cfg).wf() ==> final(cfg).wf(),
 ```
 
 ### S101. `read_slot`
 
-src/config.rs:1522. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1619. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The `const char *` the symbol at `slot` holds.
@@ -2396,7 +2398,7 @@ unsafe fn read_slot(slot: *const *const c_char) -> *const c_char
 
 ### S102. `malloc_conf_addr`
 
-src/config.rs:1535. Kind: external_body. Category: inline asm.
+src/config.rs:1632. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/config-linux-malloc_conf_addr.md).
 
 > Address of the `malloc_conf` global the loader resolved: the program's own definition when it has one, else the library's null slot (`api::jemalloc::malloc_conf`).
@@ -2407,7 +2409,7 @@ fn malloc_conf_addr() -> *const c_void
 
 ### S103. `je_malloc_conf_addr`
 
-src/config.rs:1560. Kind: external_body. Category: inline asm.
+src/config.rs:1657. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/config-linux-je_malloc_conf_addr.md).
 
 > Address of the weak `je_malloc_conf` global (Redis and Valkey define this one), or null.
@@ -2418,7 +2420,7 @@ fn je_malloc_conf_addr() -> *const c_void
 
 ### S104. `byte_at`
 
-src/config.rs:1617. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1718. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The byte at `p + n`.
@@ -2429,7 +2431,7 @@ unsafe fn byte_at(p: *const u8, n: usize) -> u8
 
 ### S105. `bytes_at`
 
-src/config.rs:1629. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1730. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The `n` bytes at `p` as a slice.
@@ -2442,15 +2444,15 @@ unsafe fn bytes_at(p: *const u8, n: usize) -> (r: &'static [u8])
 
 ### S106. `env_var`
 
-src/config.rs:1644. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1746. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
-> The value of environment variable `name` (no `=` in it), read from `environ` without `getenv`.
+> The value of environment variable `name` (no `=` in it), read from `environ` without `getenv`, and whether it was cut, as [`cstr`] returns it for the value alone.
 
 ```rust
-pub fn env_var(name: &[u8]) -> (r: Option<&'static [u8]>)
+pub fn env_var(name: &[u8]) -> (r: Option<(&'static [u8], bool)>)
     ensures
-        r matches Some(s) ==> s@.len() <= MAX_TEXT,
+        r matches Some((s, cut)) ==> s@.len() <= MAX_TEXT,
 ```
 
 ### S107. `Heap::home_ptr_at`

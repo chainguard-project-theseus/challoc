@@ -255,6 +255,20 @@ impl Config {
             issues <= text.len(),
             old(self).wf() ==> final(self).wf(),
     {
+        self.parse_with(text, &mut report)
+    }
+
+    /// [`parse`](Self::parse) through a borrowed `report`, which the
+    /// caller can go on using.
+    fn parse_with<F: FnMut(Issue<'_>)>(&mut self, text: &[u8], report: &mut F) -> (issues: usize)
+        requires
+            old(self).wf(),
+            forall|i: Issue| call_requires(*old(report), (i,)),
+        ensures
+            issues <= text.len(),
+            old(self).wf() ==> final(self).wf(),
+            *final(report) == *old(report),
+    {
         let mut issues = 0;
         let mut pairs = Pairs(text);
         // `for pair in Pairs(text)`, spelled out: Verus has no
@@ -263,7 +277,8 @@ impl Config {
             invariant
                 pairs.0@.len() <= text.len(),
                 issues <= text.len() - pairs.0@.len(),
-                forall|i: Issue| call_requires(report, (i,)),
+                *report == *old(report),
+                forall|i: Issue| call_requires(*report, (i,)),
                 self.wf(),
             decreases pairs.0@.len(),
         {
@@ -273,6 +288,31 @@ impl Config {
             }
         }
         issues
+    }
+
+    /// [`parse`](Self::parse) the text a source reader returned, `cut` when
+    /// the reader stopped at [`MAX_TEXT`](linux::MAX_TEXT) bytes before the
+    /// end of the source. A cut source is reported as [`Issue::Cut`], and
+    /// the pair that runs to the cut is dropped rather than applied with a
+    /// shortened value. Returns the number of problems reported, at least
+    /// one for a cut source.
+    pub fn parse_source(&mut self, text: &[u8], cut: bool, mut report: impl FnMut(Issue<'_>)) -> (issues: usize)
+        requires
+            old(self).wf(),
+            text@.len() < usize::MAX,
+            forall|i: Issue| call_requires(report, (i,)),
+        ensures
+            issues <= text.len() + 1,
+            cut ==> issues > 0,
+            old(self).wf() ==> final(self).wf(),
+    {
+        if !cut {
+            return self.parse(text, report);
+        }
+        let keep = before_last_pair(text);
+        let issues = self.parse_with(&text[..keep], &mut report);
+        report(Issue::Cut);
+        issues + 1
     }
 
     /// Split one pair and set the key. Empty pairs (from `a,,b` or a
@@ -938,6 +978,9 @@ pub enum Issue<'a> {
     /// One of [`INERT_KEYS`]: parsed, but no field stores it and nothing
     /// reads it.
     Inert(&'a [u8]),
+    /// A source longer than [`MAX_TEXT`](linux::MAX_TEXT) bytes: everything
+    /// after the last pair that ends before the cut was ignored.
+    Cut,
 }
 
 // Every issue formats (ghost only: ordinary builds have no `std_specs`).
@@ -985,6 +1028,11 @@ impl fmt::Display for Issue<'_> {
                     Bytes(key)
                 )
             }
+            Issue::Cut => write!(
+                f,
+                "conf text longer than {} bytes (ignored after the last complete pair)",
+                linux::MAX_TEXT
+            ),
         }
     }
 }
@@ -1033,6 +1081,7 @@ impl<'a> Pairs<'a> {
                 } else {
                     Seq::empty()
                 }
+                &&& pair@.len() < old(self).0@.len() ==> old(self).0@[pair@.len() as int] == b','
             },
     {
         if self.0.is_empty() {
@@ -1046,6 +1095,9 @@ impl<'a> Pairs<'a> {
             invariant
                 i <= self.0@.len(),
                 self.0 == old(self).0,
+            ensures
+                i <= self.0@.len(),
+                i < self.0@.len() ==> self.0@[i as int] == b',',
             decreases self.0@.len() - i,
         {
             let b = self.0[i];
@@ -1068,6 +1120,47 @@ impl<'a> Pairs<'a> {
         };
         Some(pair)
     }
+}
+
+/// The length of `text` without the pair that runs to its end: all of
+/// it when `text` is empty or its last pair ends at a comma
+/// (`Pairs(text).last()` and a test that it ends where `text` does,
+/// spelled out: Verus has no specification for a hand-written
+/// `Iterator`). What is kept is whole pairs: it is all of `text`, empty,
+/// or ends at a comma.
+fn before_last_pair(text: &[u8]) -> (keep: usize)
+    ensures
+        keep <= text@.len(),
+        keep < text@.len() ==> keep == 0 || text@[keep - 1] == b',',
+{
+    let mut keep = text.len();
+    let mut pairs = Pairs(text);
+    loop
+        invariant
+            pairs.0@.len() <= text@.len(),
+            keep <= text@.len(),
+            keep < text@.len() ==> keep == 0 || text@[keep - 1] == b',',
+            pairs.0@.len() > 0 ==> {
+                &&& pairs.0@ == text@.skip(text@.len() - pairs.0@.len())
+                &&& pairs.0@.len() == text@.len() || text@[text@.len() - pairs.0@.len() - 1] == b','
+            },
+        decreases pairs.0@.len(),
+    {
+        let rest = pairs.0.len();
+        let Some(pair) = pairs.next_pair() else {
+            break;
+        };
+        if pair.len() == rest {
+            keep = text.len() - pair.len();
+        }
+        proof {
+            if pairs.0@.len() > 0 {
+                assert(pair@.len() < rest);
+                assert(pairs.0@ =~= text@.skip(text@.len() - pairs.0@.len()));
+            }
+        }
+    }
+    keep
 }
 
 /// `value` without one pair of surrounding double quotes.
@@ -1383,7 +1476,7 @@ fn clamped<'a>(
 
 pub use linux::load;
 #[cfg(test)]
-use linux::{MAX_TEXT, env_var, first_line_of, malloc_conf_symbol};
+use linux::{MAX_TEXT, cstr, env_var, first_line_of, malloc_conf_symbol};
 
 mod linux {
     use core::ffi::{c_char, c_void};
@@ -1399,7 +1492,8 @@ mod linux {
     verus! {
 
     /// Longest conf text read from any one source. Longer inputs are cut
-    /// here; no real configuration comes close.
+    /// here and the cut is reported ([`Config::parse_source`]); no real
+    /// configuration comes close.
     pub const MAX_TEXT: usize = 4096;
 
     } // verus!
@@ -1414,20 +1508,22 @@ mod linux {
 
     verus! {
 
-    /// [`Config::parse`] of `text` from `source`, printing each problem as
-    /// `challoc: <source>: <issue>` to `out`. Trusted: the report is a
-    /// closure that formats into `out`, a mutable capture Verus does not
-    /// model; the contract is `parse`'s.
+    /// [`Config::parse_source`] of `text` from `source`, cut or not,
+    /// printing each problem as `challoc: <source>: <issue>` to `out`.
+    /// Trusted: the report is a closure that formats into `out`, a mutable
+    /// capture Verus does not model; the contract is `parse_source`'s.
     #[verifier::external_body]
     #[inline(always)]
-    fn parse_from(cfg: &mut Config, text: &[u8], source: &str, out: &mut sys::Stderr) -> (issues: usize)
+    fn parse_from(cfg: &mut Config, text: &[u8], cut: bool, source: &str, out: &mut sys::Stderr) -> (issues: usize)
         requires
             old(cfg).wf(),
+            text@.len() <= MAX_TEXT,
         ensures
-            issues <= text.len(),
+            issues <= text.len() + 1,
+            cut ==> issues > 0,
             old(cfg).wf() ==> final(cfg).wf(),
     {
-        cfg.parse(text, |i: Issue<'_>| {
+        cfg.parse_source(text, cut, |i: Issue<'_>| {
             let _ = writeln!(out, "challoc: {source}: {i}");
         })
     }
@@ -1441,10 +1537,11 @@ mod linux {
     /// Read every source in priority order into a `Config`, printing each
     /// problem as `challoc: <source>: <issue>` on stderr. Aborts when
     /// `abort_conf` is set by the time all sources are read and anything was
-    /// reported, an inert key included. Never allocates: the file goes
-    /// through a stack buffer and the environment is walked in place. The
-    /// result is well formed: the defaults are (`Config::lemma_default_wf`)
-    /// and every source goes through `Config::parse`, which keeps it.
+    /// reported, an inert key or a cut source included. Never allocates: the
+    /// file goes through a stack buffer and the environment is walked in
+    /// place. The result is well formed: the defaults are
+    /// (`Config::lemma_default_wf`) and every source goes through
+    /// `Config::parse_source`, which keeps it.
     pub fn load() -> (r: Config)
         requires
             crate::sys::may_abort(),
@@ -1462,22 +1559,22 @@ mod linux {
         // variables, spelled out: Verus does not specify an array's
         // `IntoIter`. Both symbols are read before either is parsed.
         let (sym, je_sym) = (malloc_conf_symbol(0), malloc_conf_symbol(1));
-        if let Some(text) = sym {
-            issues += parse_from(&mut cfg, text, "malloc_conf", &mut out);
+        if let Some((text, cut)) = sym {
+            issues += parse_from(&mut cfg, text, cut, "malloc_conf", &mut out);
         }
-        if let Some(text) = je_sym {
-            issues += parse_from(&mut cfg, text, "je_malloc_conf", &mut out);
+        if let Some((text, cut)) = je_sym {
+            issues += parse_from(&mut cfg, text, cut, "je_malloc_conf", &mut out);
         }
-        let mut buf = [0u8; MAX_TEXT];
-        if let Some(line) = first_line_of(&CHALLOC_CONF, &mut buf) {
-            issues += parse_from(&mut cfg, line, "/etc/challoc.conf", &mut out);
+        let mut buf = [0u8; MAX_TEXT + 1];
+        if let Some((line, cut)) = first_line_of(&CHALLOC_CONF, &mut buf) {
+            issues += parse_from(&mut cfg, line, cut, "/etc/challoc.conf", &mut out);
         }
         if getauxval(AT_SECURE) == 0 {
-            if let Some(text) = env_var(b"MALLOC_CONF") {
-                issues += parse_from(&mut cfg, text, "MALLOC_CONF", &mut out);
+            if let Some((text, cut)) = env_var(b"MALLOC_CONF") {
+                issues += parse_from(&mut cfg, text, cut, "MALLOC_CONF", &mut out);
             }
-            if let Some(text) = env_var(b"CHALLOC_CONF") {
-                issues += parse_from(&mut cfg, text, "CHALLOC_CONF", &mut out);
+            if let Some((text, cut)) = env_var(b"CHALLOC_CONF") {
+                issues += parse_from(&mut cfg, text, cut, "CHALLOC_CONF", &mut out);
             }
         }
         out.flush();
@@ -1491,13 +1588,13 @@ mod linux {
 
     /// The string the `malloc_conf` (`which == 0`, defined by the library,
     /// interposed by a program's definition) or weak `je_malloc_conf`
-    /// (`which == 1`) global points at, `None` when the process defines
-    /// neither the symbol nor a string. The symbol's pointer comes through
-    /// the GOT and the string through `cstr`, which stops at [`MAX_TEXT`]
-    /// bytes.
-    pub fn malloc_conf_symbol(which: u32) -> (r: Option<&'static [u8]>)
+    /// (`which == 1`) global points at, and whether it was cut, as
+    /// [`cstr`] returns it. `None` when the process defines neither the
+    /// symbol nor a string. The symbol's pointer comes through the GOT and
+    /// the string through `cstr`, which stops at [`MAX_TEXT`] bytes.
+    pub fn malloc_conf_symbol(which: u32) -> (r: Option<(&'static [u8], bool)>)
         ensures
-            r matches Some(s) ==> s@.len() <= MAX_TEXT,
+            r matches Some((s, cut)) ==> s@.len() <= MAX_TEXT,
     {
         let slot: *const *const c_char = match which {
             0 => malloc_conf_addr(),
@@ -1580,11 +1677,12 @@ mod linux {
         out
     }
 
-    /// A NUL-terminated string as a slice of at most [`MAX_TEXT`] bytes;
-    /// `None` for null or empty.
-    fn cstr(p: *const c_char) -> (r: Option<&'static [u8]>)
+    /// A NUL-terminated string as a slice of at most [`MAX_TEXT`] bytes,
+    /// and whether the string was cut there (longer than [`MAX_TEXT`]
+    /// bytes); `None` for null or empty.
+    pub fn cstr(p: *const c_char) -> (r: Option<(&'static [u8], bool)>)
         ensures
-            r matches Some(s) ==> s@.len() <= MAX_TEXT,
+            r matches Some((s, cut)) ==> 0 < s@.len() <= MAX_TEXT && (cut ==> s@.len() == MAX_TEXT),
     {
         if p.is_null() {
             return None;
@@ -1603,8 +1701,11 @@ mod linux {
         if n == 0 {
             return None;
         }
-        // SAFETY: `n` bytes before the terminator were just read.
-        Some(unsafe { bytes_at(p, n) })
+        // SAFETY: at the cap no terminator has been seen yet, so the byte at
+        // `n` is still part of the string.
+        let cut = n == MAX_TEXT && unsafe { byte_at(p, n) } != 0;
+        // SAFETY: `n` bytes before the terminator (or the cap) were just read.
+        Some((unsafe { bytes_at(p, n) }, cut))
     }
 
     /// The byte at `p + n`. Trusted: a raw read; nothing is claimed about
@@ -1635,15 +1736,16 @@ mod linux {
     }
 
     /// The value of environment variable `name` (no `=` in it), read from
-    /// `environ` without `getenv`. `None` when unset or empty.
+    /// `environ` without `getenv`, and whether it was cut, as [`cstr`]
+    /// returns it for the value alone. `None` when unset or empty.
     ///
     /// Trusted: walks `environ` through raw pointers; each entry is read
-    /// through `cstr`, which stops at [`MAX_TEXT`] bytes, and the value is
-    /// a suffix of the entry (`env_match`).
+    /// through `cstr`, and when it sets `name` (`env_sets`) its value is
+    /// read through `cstr` again, which stops at [`MAX_TEXT`] bytes.
     #[verifier::external_body]
-    pub fn env_var(name: &[u8]) -> (r: Option<&'static [u8]>)
+    pub fn env_var(name: &[u8]) -> (r: Option<(&'static [u8], bool)>)
         ensures
-            r matches Some(s) ==> s@.len() <= MAX_TEXT,
+            r matches Some((s, cut)) ==> s@.len() <= MAX_TEXT,
     {
         // SAFETY: `environ` is glibc's NULL-terminated array of NUL-terminated
         // strings; it is null before libc has set it up.
@@ -1657,9 +1759,11 @@ mod linux {
             if entry.is_null() {
                 return None;
             }
-            if let Some(text) = cstr(entry) {
-                if let Some(value) = env_match(text, name) {
-                    return if value.is_empty() { None } else { Some(value) };
+            if let Some((text, _)) = cstr(entry) {
+                if env_sets(text, name) {
+                    // SAFETY: the value starts after `name=`, inside the
+                    // entry just read.
+                    return cstr(unsafe { entry.add(name.len() + 1) });
                 }
             }
             // SAFETY: not yet at the terminating null.
@@ -1667,56 +1771,61 @@ mod linux {
         }
     }
 
-    /// The value in the environment entry `text` (`NAME=value`) when it
-    /// sets `name`, possibly empty; `None` for another variable.
+    /// Whether the environment entry `text` (`NAME=value`) sets `name`.
     #[inline(always)]
-    fn env_match<'a>(text: &'a [u8], name: &[u8]) -> (r: Option<&'a [u8]>)
+    fn env_sets(text: &[u8], name: &[u8]) -> (r: bool)
         ensures
-            r is Some <==> text@.len() > name@.len() && text@.take(name@.len() as int) == name@
+            r <==> text@.len() > name@.len() && text@.take(name@.len() as int) == name@
                 && text@[name@.len() as int] == b'=',
-            r matches Some(value) ==> value@ == text@.skip(name@.len() + 1int),
     {
-        if text.len() > name.len()
-            && bytes_is(&text[..name.len()], name)
-            && text[name.len()] == b'='
-        {
-            Some(&text[name.len() + 1..])
-        } else {
-            None
-        }
+        text.len() > name.len() && bytes_is(&text[..name.len()], name) && text[name.len()] == b'='
     }
 
     /// The first line of the file at NUL-terminated `path`, without its
-    /// newline, read with raw syscalls into `buf`. `None` if the file is
-    /// missing, unreadable or its first line is empty.
-    pub fn first_line_of<'b>(path: &[u8], buf: &'b mut [u8]) -> (r: Option<&'b [u8]>)
+    /// newline, read with raw syscalls into `buf`, and whether it was cut
+    /// (longer than `buf.len() - 1` bytes, so the line is at most
+    /// `buf.len() - 1` bytes long). `None` if the file is missing,
+    /// unreadable or its first line is empty.
+    pub fn first_line_of<'b>(path: &[u8], buf: &'b mut [u8]) -> (r: Option<(&'b [u8], bool)>)
         requires
             crate::sys::may_syscall(),
             path@.len() > 0,
             path@.last() == 0,
+            old(buf)@.len() > 0,
         ensures
-            r matches Some(line) ==> line@.len() <= old(buf)@.len(),
+            r matches Some((line, cut)) ==> line@.len() < old(buf)@.len(),
     {
         let fd = sys::open(path, sys::O_RDONLY).ok()?;
         let n = sys::read_full(fd, buf);
         let _ = sys::close(fd);
         let n = n.ok()?;
-        first_line(&buf[..n])
+        first_line(&buf[..n], n == buf.len())
     }
 
-    /// The first line of `text` without its `\n` and one `\r` before it;
-    /// `None` when that line is empty.
+    /// The first line of `text` without its `\n` and one `\r` before it,
+    /// and whether it was cut: `full` (the read filled its buffer) and no
+    /// newline in `text`, when the line also loses the last byte, so that a
+    /// cut line is shorter than the buffer. `None` when that line is empty.
     #[inline(always)]
-    fn first_line(text: &[u8]) -> (r: Option<&[u8]>)
+    fn first_line(text: &[u8], full: bool) -> (r: Option<(&[u8], bool)>)
+        requires
+            full ==> text@.len() > 0,
         ensures
-            r matches Some(line) ==> {
+            r matches Some((line, cut)) ==> {
                 &&& 0 < line@.len() <= text@.len()
+                &&& full ==> line@.len() < text@.len()
                 &&& line@ == text@.take(line@.len() as int)
                 &&& forall|j: int| 0 <= j < line@.len() ==> line@[j] != b'\n'
+                &&& cut <==> full && forall|j: int| 0 <= j < text@.len() ==> text@[j] != b'\n'
             },
     {
-        let end = position_of(text, b'\n').unwrap_or(text.len());
-        let line = &text[..end];
+        let newline = position_of(text, b'\n');
+        let cut = newline.is_none() && full;
+        let line = match newline {
+            Some(end) => &text[..end],
+            None if cut => &text[..text.len() - 1],
+            None => text,
+        };
         // `line.strip_suffix(b"\r").unwrap_or(line)`, spelled out: vstd
         // does not specify `strip_suffix`.
         let line = if !line.is_empty() && line[line.len() - 1] == b'\r' {
@@ -1724,7 +1833,7 @@ mod linux {
         } else {
             line
         };
-        if line.is_empty() { None } else { Some(line) }
+        if line.is_empty() { None } else { Some((line, cut)) }
     }
 
     } // verus!
@@ -2633,6 +2742,34 @@ mod tests {
         assert!(cfg.abort_conf && cfg.guard_slab_interval == 8 && issues.len() == 1);
     }
 
+    /// What `parse_source` keeps of a cut source: every pair before the
+    /// one that runs to the cut, a quoted value's commas included.
+    #[test]
+    fn parse_source_drops_only_the_pair_at_the_cut() {
+        let cases: &[(&str, bool, u32, usize)] = &[
+            // (text, cut, narenas, issues)
+            ("narenas:7", false, 7, 0),
+            ("narenas:7", true, Config::DEFAULT.narenas, 1),
+            ("narenas:7,tcache:fal", true, 7, 1),
+            // The cut fell right after a comma: no pair is split.
+            ("tcache:false,narenas:7,", true, 7, 1),
+            // An open quote runs to the cut: the whole pair is dropped.
+            ("narenas:7,junk:\"a,b", true, 7, 1),
+            ("narenas:7,no_such_key:1,narenas:8", true, 7, 2),
+        ];
+        for &(text, cut, narenas, count) in cases {
+            let mut cfg = Config::DEFAULT;
+            let mut issues = Vec::new();
+            let n = cfg.parse_source(text.as_bytes(), cut, |i| issues.push(std::format!("{i}")));
+            assert_eq!(n, issues.len(), "{text}");
+            assert_eq!(cfg.narenas, narenas, "{text}: {issues:?}");
+            assert_eq!(issues.len(), count, "{text}: {issues:?}");
+            if cut {
+                assert!(issues.last().unwrap().contains("longer than"), "{text}");
+            }
+        }
+    }
+
     #[test]
     fn issue_display_is_printable_and_bounded() {
         let long: Vec<u8> = (0..200u8).collect();
@@ -2650,6 +2787,7 @@ mod tests {
 #[cfg(test)]
 mod linux_tests {
     use super::*;
+    use std::vec::Vec;
 
     #[test]
     fn no_malloc_conf_symbol_in_the_test_binary() {
@@ -2669,13 +2807,27 @@ mod linux_tests {
         }
         assert_eq!(
             env_var(b"CHALLOC_CONF_TEST"),
-            Some(&b"narenas:3,tcache:false"[..])
+            Some((&b"narenas:3,tcache:false"[..], false))
         );
         assert_eq!(env_var(b"CHALLOC_CONF_TEST_EMPTY"), None);
+        // The cap applies to the value, not to the `NAME=value` entry.
+        unsafe {
+            std::env::set_var("CHALLOC_CONF_TEST_LONG", "a".repeat(MAX_TEXT));
+        }
+        let (value, cut) = env_var(b"CHALLOC_CONF_TEST_LONG").unwrap();
+        assert_eq!((value.len(), cut), (MAX_TEXT, false));
+        unsafe {
+            std::env::set_var("CHALLOC_CONF_TEST_LONG", "a".repeat(MAX_TEXT + 1));
+        }
+        let (value, cut) = env_var(b"CHALLOC_CONF_TEST_LONG").unwrap();
+        assert_eq!((value.len(), cut), (MAX_TEXT, true));
         assert_eq!(env_var(b"CHALLOC_CONF_TES"), None, "prefix must not match");
         assert_eq!(env_var(b"CHALLOC_CONF_TEST_MISSING"), None);
         let mut cfg = Config::DEFAULT;
-        assert_eq!(cfg.parse(env_var(b"CHALLOC_CONF_TEST").unwrap(), |_| {}), 0);
+        assert_eq!(
+            cfg.parse(env_var(b"CHALLOC_CONF_TEST").unwrap().0, |_| {}),
+            0
+        );
         assert_eq!(cfg.narenas, 3);
         assert!(!cfg.tcache);
     }
@@ -2684,32 +2836,84 @@ mod linux_tests {
     fn first_line_of_a_file() {
         let dir = std::env::temp_dir();
         let path = dir.join(std::format!("challoc-conf-{}", std::process::id()));
-        let mut buf = [0u8; MAX_TEXT];
+        let mut buf = [0u8; MAX_TEXT + 1];
         let mut cpath = path.to_str().unwrap().as_bytes().to_vec();
         cpath.push(0);
 
         std::fs::write(&path, "tcache:false,narenas:2\r\nsecond line is ignored\n").unwrap();
         assert_eq!(
             first_line_of(&cpath, &mut buf),
-            Some(&b"tcache:false,narenas:2"[..])
+            Some((&b"tcache:false,narenas:2"[..], false))
         );
         std::fs::write(&path, "no newline at all").unwrap();
         assert_eq!(
             first_line_of(&cpath, &mut buf),
-            Some(&b"no newline at all"[..])
+            Some((&b"no newline at all"[..], false))
         );
         std::fs::write(&path, "\nsecond").unwrap();
         assert_eq!(first_line_of(&cpath, &mut buf), None, "empty first line");
         std::fs::write(&path, "").unwrap();
         assert_eq!(first_line_of(&cpath, &mut buf), None);
-        // Longer than the buffer: cut at MAX_TEXT, still parseable up to the cut.
+        // Longer than the buffer: cut at MAX_TEXT and flagged as cut.
         let long = std::format!("{}narenas:9", "tcache:true,".repeat(MAX_TEXT / 6));
         std::fs::write(&path, &long).unwrap();
-        let line = first_line_of(&cpath, &mut buf).unwrap();
+        let (line, cut) = first_line_of(&cpath, &mut buf).unwrap();
         assert_eq!(line.len(), MAX_TEXT);
+        assert!(cut);
+        // Exactly MAX_TEXT bytes, with or without a newline, is not cut.
+        let exact = "a".repeat(MAX_TEXT);
+        for text in [exact.clone(), std::format!("{exact}\nnext")] {
+            std::fs::write(&path, &text).unwrap();
+            assert_eq!(
+                first_line_of(&cpath, &mut buf),
+                Some((exact.as_bytes(), false))
+            );
+        }
+        // A long file whose first line ends inside the buffer is not cut.
+        std::fs::write(&path, std::format!("narenas:9\n{long}")).unwrap();
+        assert_eq!(
+            first_line_of(&cpath, &mut buf),
+            Some((&b"narenas:9"[..], false))
+        );
         std::fs::remove_file(&path).unwrap();
         assert_eq!(first_line_of(&cpath, &mut buf), None, "missing file");
         assert_eq!(first_line_of(b"/etc\0", &mut buf), None, "a directory");
+    }
+
+    /// A source longer than `MAX_TEXT` is cut in the middle of a pair; the
+    /// cut pair must not be applied with its shortened value, and the cut
+    /// counts as an issue, which `load` aborts on under `abort_conf`.
+    #[test]
+    fn a_cut_source_drops_the_cut_pair_and_reports_it() {
+        let mut text: Vec<u8> = Vec::new();
+        text.extend_from_slice(b"abort_conf:true,junk:");
+        text.extend(std::iter::repeat_n(b'x', MAX_TEXT - 31));
+        text.extend_from_slice(b",narenas:12345\0");
+        let (s, cut) = cstr(text.as_ptr().cast()).expect("non-empty");
+        assert_eq!(s.len(), MAX_TEXT);
+        assert!(s.ends_with(b",narenas:1"), "the cut splits narenas");
+        assert!(cut);
+        let mut cfg = Config::DEFAULT;
+        let mut issues = Vec::new();
+        let n = cfg.parse_source(s, cut, |i| issues.push(std::format!("{i}")));
+        assert_eq!(n, issues.len());
+        assert_eq!(cfg.narenas, Config::DEFAULT.narenas, "{issues:?}");
+        assert!(cfg.abort_conf, "the pairs before the cut still apply");
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].contains("longer than 4096 bytes"), "{issues:?}");
+    }
+
+    #[test]
+    fn cstr_flags_only_strings_longer_than_max_text() {
+        for (len, want_cut) in [(1, false), (MAX_TEXT, false), (MAX_TEXT + 1, true)] {
+            let mut text = std::vec![b'a'; len];
+            text.push(0);
+            let (s, cut) = cstr(text.as_ptr().cast()).expect("non-empty");
+            assert_eq!(s.len(), len.min(MAX_TEXT), "len {len}");
+            assert_eq!(cut, want_cut, "len {len}");
+        }
+        assert_eq!(cstr(c"".as_ptr()), None);
+        assert_eq!(cstr(core::ptr::null()), None);
     }
 
     #[test]
@@ -2726,7 +2930,7 @@ mod linux_tests {
             None,
             "CHALLOC_CONF is set; the test assumes a clean environment"
         );
-        let mut buf = [0u8; MAX_TEXT];
+        let mut buf = [0u8; MAX_TEXT + 1];
         if first_line_of(b"/etc/challoc.conf\0", &mut buf).is_none() {
             // The constants whatever the CPU: the L2-derived ladder of
             // design 6.2 ("Cache geometry") was priced and dropped.
@@ -2905,7 +3109,7 @@ mod kani_config {
 
     /// An arbitrary `Issue` over byte strings of up to 3 bytes.
     fn any_issue<'a>(k: &'a [u8], v: &'a [u8]) -> Issue<'a> {
-        match kani::any::<u8>() % 6 {
+        match kani::any::<u8>() % 7 {
             0 => Issue::Malformed(v),
             1 => Issue::UnknownKey(k),
             2 => Issue::BadValue { key: k, value: v },
@@ -2915,7 +3119,8 @@ mod kani_config {
                 value: v,
                 to: kani::any(),
             },
-            _ => Issue::Inert(k),
+            5 => Issue::Inert(k),
+            _ => Issue::Cut,
         }
     }
 
