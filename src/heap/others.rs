@@ -11,7 +11,7 @@ use crate::lock::LockOrder;
 #[cfg(verus_only)]
 use crate::lock::rank_meta;
 
-use super::{CacheHeader, FOREIGN, Heap, Shared};
+use super::{CacheHeader, FOREIGN, Heap, Live, Shared};
 #[cfg(verus_only)]
 use super::{CachePerms, cell_ok, lemma_handed_ok, node_hdr, node_placed};
 use crate::arena::field_at;
@@ -29,6 +29,7 @@ use vstd::map::Map;
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, int, verus};
 use vstd::raw_ptr::{PointsTo, PointsToRaw, ptr_mut_write, ptr_ref};
+#[cfg(verus_only)]
 use vstd::resource::set::GhostSingleton;
 
 verus! {
@@ -467,23 +468,28 @@ impl Heap {
     /// its flush routes every slot to its slab's arena.
     #[cold]
     #[inline(never)]
-    pub(super) fn free_other(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
+    pub(super) fn free_other(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(blk): Tracked<Live>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
-            tok.id() == slot_loc(class as int),
-            tok@ == p@.addr as int,
+            blk.slot_block(p, class as int),
             shared.wf(),
             class < NCLASSES,
             old(self).wf(),
         ensures
             final(self).keeps(*old(self)),
     {
+        // As in `Heap::push`.
+        let tracked mut blk = blk;
+        let ghost orig = blk;
         let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
         proof {
-            tk.tracked_insert(0, tok);
             shared.lemma_wf();
+            shared.lemma_regions_ok();
+            blk.lemma_mem();
+            let tracked tok = blk.take_slot(class as int);
+            tk.tracked_insert(0, tok);
         }
         let node = self.other_caches(shared, FOREIGN, false, Tracked(&mut LockOrder::spare()));
         if !node.is_null() {
@@ -498,8 +504,10 @@ impl Heap {
                 return;
             }
         }
-        let tracked t = tk.tracked_remove(0);
-        self.free_slow_in(shared, FOREIGN, class, p, Tracked(t))
+        proof {
+            blk.put_slot(tk.tracked_remove(0), orig, p, class as int);
+        }
+        self.free_slow_in(shared, FOREIGN, class, p, Tracked(blk))
     }
 }
 
@@ -886,7 +894,7 @@ impl Heap {
 mod kani_aborts {
     use super::assert_not_home;
 
-    /// S133 `assert_not_home`, `requires *arena != *home`: under it the
+    /// S134 `assert_not_home`, `requires *arena != *home`: under it the
     /// call returns, for every pair.
     #[kani::proof]
     fn assert_not_home_returns() {

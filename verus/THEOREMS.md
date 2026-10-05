@@ -547,13 +547,19 @@ the assumed `Heap::wf` and the huge lock axiom.
   `from_parts` turns into `Regions::outside`.
 - `huge::table::axiom_zero_entry` (`huge/table.rs:174`): all-zero bytes
   are an empty descriptor table entry (`Table::storage`).
-- User-block writes: `vspec::addr::axiom_slot_writable` and
-  `axiom_huge_writable` (`vspec/addr.rs:111`, `:132`) grant validity of
-  a slot's class size and of bytes of a huge run that end inside the
-  region; `Live::lemma_rw` (`heap/live.rs:647`) derives the zero fills'
-  and `realloc`'s copy's from them, bounded by the block's token. The
-  theorem covers where a block is, not that every write to it stays
-  inside it.
+- User-block writes: every write verified code makes to a block's bytes
+  (`calloc`'s and the zeroing paths' fills, `zero_slot`, `zero_huge`,
+  `realloc`'s copy) takes the block's permission (`vspec::user::UserMem`,
+  held by its `Live` token), so it stays inside the block's usable bytes,
+  given the permission model's trusted mint: the permission is minted at
+  hand-out by `heap::live::axiom_hand_out`, at most once per block while
+  held (the `Live` API keeps it with the slot or run token), and at the
+  C boundary by `axiom_c_claim`.
+  That no other write reaches user memory is discipline, not proof: the raw
+  primitives `write_zero` and `copy_nonoverlapping` stay callable on
+  any `valid_writes` fact, which has no time (`vspec::ptr::rw_len`), so
+  this holds because only `vspec::user` calls them on user memory
+  (`verus/TODO.md`, "User memory permissions", item 4).
 
 **Not covered.**
 - Thread-local storage: not apart from every block, so not in the
@@ -569,8 +575,6 @@ the assumed `Heap::wf` and the huge lock axiom.
   `class/sets.rs`): no placement stated.
 - A class bitmap whose bit count is not a multiple of 64: the last word
   is excluded (`spec_nbits() % 64 == 0`).
-- `Shared::zero_huge` (`heap/shared.rs:1295`) clears `usable` bytes that
-  no huge invariant bounds by the run (`axiom_huge_writable`).
 - Spatial only: the theorem places metadata and blocks; it does not
   prove that each allocator write stays inside the object it is meant
   for (the writes through permissions do, the atomics above are only
@@ -642,7 +646,7 @@ writer keeps:
   allocation paths move the popped, refilled, compacted or directly
   claimed slot's token into it (`heap::hand_out`, `heap/mod.rs:549`;
   `Heap::pop_compact_run`; `Shared::alloc_direct`), and the free paths
-  take it back out (`Live::claim_slot`, `take_slot`) for the cache push
+  take it back out (`Live::take_slot`) for the cache push
   or the release. Huge runs have the same shape: a `huge::RunToken`
   (`huge/mod.rs:652`) holds the run's extent, a singleton of the
   extents' authority, and its pages, a subset of the pages' authority;
@@ -724,8 +728,9 @@ and `Zeroed::has` is interval membership. That a load of such a byte
 reads zero is the token's meaning, not a proved fact: it rests on the
 trusted token sources (`write_zero` and the kernel axioms below) and on
 the unproved discipline that nothing writes a token's bytes between its
-creation and the return (premises below). There is no byte-state model
-whose writes would invalidate a token. Plain `calloc(n, m)` promises,
+creation and the return (premises below). The block's permission now
+carries a byte state that also says the bytes are zero ("Byte state"
+below). Plain `calloc(n, m)` promises,
 and its token covers, only its `n * m` requested bytes; bytes past them
 up to the usable size are unspecified (#54). `challoc_calloc_usable`,
 `mallocx(.., MALLOCX_ZERO)` and `rallocx`'s new tail cover the whole
@@ -762,6 +767,26 @@ null `p`, and `k == min(o, size)` for an `o` with `usable_of(p, o)`.)
 `calloc` and `mallocx` are `.0` of the `_zeroed` forms; the exported
 symbols carry no token.
 
+**Byte state (loads read zero).** The block's `Live` token now holds the
+permission to its usable bytes (`vspec::user::UserMem`: a `PointsToRaw`
+and a ghost byte state, what a load of each byte reads). The same entry
+points also state the zero bytes in that byte state
+(`Live::reads_zero`): `calloc_zeroed` for its `n * m` bytes,
+`calloc_usable_zeroed` and `jemalloc::alloc_with` (so `mallocx` with
+`MALLOCX_ZERO`) for the whole usable size, and `rallocx_zeroed` for the
+moved block's bytes past the copy, `[k, len)`. When the code clears the
+block, `vspec::user::zero_user` writes through the permission and
+updates the byte state. So any verified write between the clear and the
+return would have to take the permission and change the state. That
+makes "no writer between the clear and the return" mechanical for
+verified code. When the allocator reports the block known zero, its
+`Zeroed` token becomes the byte state through the trusted bridge
+`vspec::user::axiom_zeroed_bytes`. That rests on the token sources
+below, as the coverage statement does, and on the token being fresh: a
+stale `Zeroed` passed to the bridge would set a false byte state. So for
+the known-zero hand-outs the byte state is as strong as the token's
+meaning, and no stronger.
+
 **Token sources.**
 - `vspec::zero::write_zero` (`vspec/zero.rs:90`, `external_body`):
   `write_bytes(p, 0, n)` makes `n` zero bytes.
@@ -790,9 +815,9 @@ symbols carry no token.
 - Cache path: `CachePerms::zero_ok` (`heap/zero.rs:49`), part of the
   assumed `Heap::wf`; `Heap::take_handed` (`heap/zero.rs:429`).
 - Class and huge lock axioms, for the state `take` reads.
-- `axiom_slot_writable`, `axiom_huge_writable` (`vspec/addr.rs:111`,
-  `:132`), through `Live::lemma_rw` and the block's token, for
-  `write_zero`'s and the copy's validity.
+- The fills and the copy are valid because they take the block's
+  permission (`vspec::user`, from `heap::live::axiom_hand_out` or
+  `axiom_c_claim`); `axiom_fresh_block` and `axiom_moved_block` are gone.
 - The only writes verified code makes to a token's bytes are zero fills
   and `rallocx`'s copy into the new block's prefix, which it splits off
   (`api/jemalloc.rs:288`). The token is not a permission; nothing ties
@@ -1276,7 +1301,7 @@ library's machine code is identical to the previous commit's on x86_64.
   destructor. No value on these paths has a `Drop` type (the only guard
   type, `LockGuard`, comes only from `Lock::lock`).
 - **Ghost calls.** The live-block steps (`heap::live::axiom_c_claim` at
-  the C entry, `Live::claim_slot` and `put_slot` through `lend_slot` on
+  the C entry, `Live::take_slot` and `put_slot` through `lend_slot` on
   the free paths, `hand_out` on the pop) are proof functions and run
   nothing.
 
@@ -1629,10 +1654,17 @@ theorem does not follow a token through the cache (see below).
   `write_bytes(p, 0, n)` makes `n` zero bytes. `zero_slot` and
   `zero_huge` clear through it, with the same machine code as a direct
   `write_bytes`.
-- `vspec::addr::axiom_slot_writable` and `axiom_huge_writable`, as
-  before, for the writes' validity.
+- The writes take the freed block's permission (`vspec::user::UserMem`),
+  which the free path holds in its `Live` token together with the
+  slot or run token: `zero_slot` and `zero_huge` borrow it
+  (`Live::take_mem`, `put_mem`), and `take_slot` or `into_run` then drop
+  it with the token.
+  `zero_huge` gets the run's token and clears exactly that token's usable
+  pages, through the cast of the page's address
+  (`vspec::user::axiom_cast`, the exposed-provenance premise).
+  `axiom_slot_writable` and `axiom_huge_writable` are gone.
 - `tok` is the slot token the freeing path takes from the block's `Live`
-  token (`Live::claim_slot`, theorem 5's live-block model); at the C
+  token (`Live::take_slot`, theorem 5's live-block model); at the C
   boundary that token comes from `heap::live::axiom_c_claim` (the `free`
   contract).
 - As for theorem 6, a token is not a permission: that nothing writes a
@@ -1674,7 +1706,7 @@ theorem does not follow a token through the cache (see below).
   covers all of the run's usable pages, `huge_usable(size)` of the
   original request, is its code's, not proved; handing `zero_huge` the
   run token the freeing path holds (`Heap::free_huge`'s `tok`, the
-  token `heap::free_direct` takes with `take_run`) would prove it.
+  token `heap::free_direct` takes with `into_run`) would prove it.
 
 ## 13. Fork-handler lock handoff
 
@@ -2928,7 +2960,7 @@ The direct paths are:
   `Tcache::None` calls `heap::free_direct` (`heap/paths.rs:798`):
   `Shared::classify_free` (`heap/shared.rs:1949`), `zero_slot` under
   `zero_on_free`, then `Shared::free_direct` (`:1921`), which hands the
-  slot's token (from the caller's `Live`, `claim_slot`) to
+  slot's token (from the caller's `Live`, `take_slot`) to
   `ClassState::release_with` and so back to the bitmap word; then
   `count_direct_free` on the `existing_heap` result, with the same
   ghost assert. A huge pointer takes `Shared::free_huge` and
@@ -6064,15 +6096,17 @@ alone):
    `size`, and unfolds to `fits`, `lemma_kept_fits`). D: *(D)*
    (`realloc_block`); a kept `p` comes back with the caller's own token.
    The move's disjointness from `p` is proved (`Live::theorem_apart` on
-   the two blocks' tokens), and the two blocks' validity follows from
-   their tokens (`Live::lemma_rw`, `heap/live.rs:647`, over
-   `axiom_slot_writable` and `axiom_huge_writable`). C: the code copies
-   `min(old, size)` bytes, with
+   the two blocks' tokens). The copy takes both blocks' permissions
+   (`libc::copy_moved`, `vspec::user::copy_user`), which also makes the
+   ranges disjoint. C: the code copies `min(old, size)` bytes, with
    `usable_of(p, old)` and `old == blk.len()`, the block's usable bytes
    (`old_size_or_keep`, `:635`): the class size for a slot, a run token's
-   usable pages for a huge `p`.
-   `ptr::copy_nonoverlapping` has no byte-level spec, so contents are not
-   modelled. F: `p != 0 && size == 0 ==> r@.addr == 0` with `errno`
+   usable pages for a huge `p`. Contents are modelled:
+   `realloc_block` (likewise `realloc_usable_stored` and `rallocx_zeroed`)
+   ensures that a moved block's first `min(blk.len(), size)` bytes read
+   as `p`'s did when the copy was made (`Live::copied_from`, over the
+   byte states). The copy's effect is the trusted contract of
+   `copy_user`. F: `p != 0 && size == 0 ==> r@.addr == 0` with `errno`
    unchanged (the frame across `free`, *(errno)*), every other NULL with
    `ENOMEM`, and the core (`realloc_block`) gives the caller back its own
    token for `p` on a NULL from the move (`p` is still live; the code

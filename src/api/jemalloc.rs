@@ -213,6 +213,7 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags, Tracked(blk): Tracked<&mu
         r.0@.addr != 0 && f.zero ==> covers_usable(r.1@, r.0, 0, size as int),
         r.0@.addr != 0 ==> usable_is(r.0, size as int, nalloc_usable(size, f.lg_align)),
         final(blk).gives(r.0, size as int),
+        r.0@.addr != 0 && f.zero ==> final(blk).reads_zero(0, final(blk).len()),
         mallocx::bad_tcache(f.tcache) ==> f.arena is Some && spec_class_for(size, 1usize << f.lg_align) is None,
 {
     let align = f.align();
@@ -239,6 +240,9 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags, Tracked(blk): Tracked<&mu
                     }
                 }
                 super::libc::lemma_class_gives(*blk, p, c as int, size);
+                if p@.addr != 0 {
+                    blk.lemma_slot_len(p, c as int);
+                }
             }
             (p, CLASSES.table()[c].size(), zero, z)
         }
@@ -261,13 +265,16 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags, Tracked(blk): Tracked<&mu
         }
     };
     if !p.is_null() && f.zero && !zeroed {
+        let ghost orig = *blk;
         proof {
-            broadcast use vstd::layout::align_of_u8;
-            blk.lemma_rw(p, usable as int);
+            blk.lemma_mem();
         }
-        // SAFETY: `p` is a fresh allocation of `usable` bytes.
-        let z = unsafe { crate::vspec::zero::write_zero(p, usable) };
+        let tracked mut m = blk.take_mem();
+        // SAFETY: `m` is the permission to the fresh block's `usable`
+        // bytes.
+        let z = unsafe { crate::vspec::user::zero_user(p, usable, Tracked(&mut m)) };
         proof {
+            blk.put_mem(m, orig);
             // `usable` is the block's usable size.
             if cls >= 0 {
                 lemma_covers_slot(z@, p, cls, 0, size as int);
@@ -277,7 +284,30 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags, Tracked(blk): Tracked<&mu
         }
         return (p, z);
     }
-    (p, z)
+    // Known zero (or no zeroing asked for): with the flag, the allocator's
+    // token for the block's usable bytes, which its permission then reads
+    // as zero.
+    let Tracked(za) = z;
+    let tracked z0;
+    proof {
+        if p@.addr != 0 && f.zero {
+            let tracked (zs, _) = za.split(usable as int);
+            blk.lemma_mem();
+            let ghost orig = *blk;
+            let tracked mut m = blk.take_mem();
+            crate::vspec::user::axiom_zeroed_bytes(&zs, &mut m);
+            blk.put_mem(m, orig);
+            if cls >= 0 {
+                lemma_covers_slot(zs, p, cls, 0, size as int);
+            } else {
+                lemma_covers_huge(zs, p, 0, size as int);
+            }
+            z0 = zs;
+        } else {
+            z0 = za;
+        }
+    }
+    (p, Tracked(z0))
 }
 
 /// `mallocx(size, flags)`. `size == 0` gets the smallest class, as
@@ -376,6 +406,8 @@ pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Track
                 ==> r.1@ == (if class_table()[c].size < size { class_table()[c].size as int } else { size as int })
         },
         final(out).gives(r.0, size as int),
+        r.0@.addr != 0 && r.0 != p && (flags as u32) & MALLOCX_ZERO != 0 ==> final(out).reads_zero(r.1@, final(out).len() - r.1@),
+        p@.addr != 0 && r.0@.addr != 0 && r.0 != p ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int }),
         p@.addr != 0 ==> blk.block(p),
         p@.addr != 0 && r.0@.addr == 0 ==> *final(out) == blk,
         p@.addr != 0 ==> (r.0@.addr == p@.addr <==> keeps(p, size, (1usize << ((flags as u32) & 0x3f)), blk.len())),
@@ -412,8 +444,6 @@ pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Track
         broadcast use vstd::layout::align_of_u8;
         shared.lemma_regions_ok();
         blk.theorem_apart(out);
-        blk.lemma_rw(p, old as int);
-        out.lemma_rw(q, size as int);
         // The new block is apart from `p`'s, so not at `p`: a move.
         blk.lemma_len_pos();
         out.lemma_len_pos();
@@ -427,11 +457,11 @@ pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Track
     // The copy writes the first `k` bytes of `q`; the rest of the token
     // is what stays zero.
     let tracked tail = if f.zero { z.split(k).1 } else { Zeroed::empty(0) };
-    // SAFETY: `p` has `old` readable bytes, `q` at least `size` writable
-    // ones, and they are distinct allocations. `alloc_with` already zeroed
-    // `q` when `MALLOCX_ZERO` asked for it, so the tail past the copy is
-    // zero.
-    unsafe { ptr::copy_nonoverlapping(p, q, old.min(size)) };
+    // SAFETY: `blk` holds the permission to `p`'s `old` usable bytes and
+    // `out` to `q`'s `size` or more; the two share no byte. `alloc_with`
+    // already zeroed `q` when `MALLOCX_ZERO` asked for it, so the tail
+    // past the copy is zero.
+    unsafe { super::libc::copy_moved(p, q, old.min(size), Tracked(&mut blk), Tracked(out)) };
     mallocx::free(shared, p, f.tcache, Tracked(blk));
     (q, Ghost(k), Tracked(tail))
 }

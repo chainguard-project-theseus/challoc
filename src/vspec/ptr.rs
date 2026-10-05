@@ -114,7 +114,7 @@ verus! {
 
 /// Two permissions own no byte in common: a byte in both would give two
 /// `PointsTo<u8>` for one address, which `PointsTo::is_disjoint` rules
-/// out. Takes and returns both, unchanged in domain and provenance.
+/// out. Takes and returns both, unchanged.
 pub proof fn lemma_raw_disjoint(
     tracked a: vstd::raw_ptr::PointsToRaw,
     tracked b: vstd::raw_ptr::PointsToRaw,
@@ -123,6 +123,7 @@ pub proof fn lemma_raw_disjoint(
         forall|x: int| #[trigger] a.dom().contains(x) ==> 0 <= x <= usize::MAX,
     ensures
         a.dom().disjoint(b.dom()),
+        r == (a, b),
         r.0.dom() == a.dom(),
         r.0.provenance() == a.provenance(),
         r.1.dom() == b.dom(),

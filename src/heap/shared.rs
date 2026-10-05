@@ -1252,6 +1252,9 @@ impl Shared {
     #[allow(clippy::needless_range_loop)]
     #[verifier::loop_isolation(false)]
     #[verifier::rlimit(20)]
+    // Own prover: the proof went past its rlimit in the module's shared
+    // Z3 context once unrelated functions of this module changed.
+    #[verifier::spinoff_prover]
     pub unsafe fn init(
         this: *mut Shared,
         regions: Regions,
@@ -2058,6 +2061,7 @@ impl Shared {
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             class < NCLASSES,
+            self.wf(),
         ensures
             *final(ord) == *old(ord),
             r.0@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r.0@.addr),
@@ -2085,6 +2089,7 @@ impl Shared {
                 assert(toks.toks.contains_key(0));
                 assert(out@.subrange(0, c.n as int)[0] == out@[0]);
                 let tracked s = toks.toks.tracked_remove(0);
+                self.lemma_regions_ok();
                 blk.set(super::Live::from_slot(s, class as int, out[0]));
             }
             (out[0], c.zeroed, Tracked(t))
@@ -2295,6 +2300,7 @@ impl Shared {
                 self.lemma_run_token(t, r.ptr);
                 // Exact stats: the pages `note_huge_alloc` adds are the token's.
                 assert(t.npages() == r.pages);
+                self.lemma_regions_ok();
                 blk.set(super::Live::from_run(t, r.ptr));
             }
         }
@@ -2309,21 +2315,25 @@ impl Shared {
     /// `zero_on_free` for a huge run: clear the usable bytes of the live
     /// run starting at `page` (aborts unless it is one) before its release.
     /// Out of line: it takes the huge lock for the size and then writes
-    /// the whole run. Returns the token for the cleared bytes
+    /// the whole run. `blk` is the run's token, whose permission to the
+    /// run's usable bytes the clear takes (through the cast of the page's
+    /// address, `vspec::user::axiom_cast`). Returns the token for the
+    /// cleared bytes
     /// ([`theorem_zero_on_free_huge`](super::zero::theorem_zero_on_free_huge)).
     #[cold]
     #[inline(never)]
-    pub fn zero_huge(&self, page: usize) -> (z: Tracked<Zeroed>)
+    pub fn zero_huge(&self, page: usize, Tracked(blk): Tracked<&mut super::Live>) -> (z: Tracked<Zeroed>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             self.wf(),
             page <= self.huge_pages(),
+            old(blk).run_block(page as int),
         ensures
             self.huge_run_zero(z@, page),
+            final(blk).run_block(page as int),
     {
-        let tracked none = Option::<crate::huge::RunToken>::None;
-        let n = self.huge.usable_size(page, Tracked(&none));
+        let n = self.huge.usable_size(page, Tracked(blk.run_ref()));
         proof {
             broadcast use vstd::layout::align_of_u8;
             // The run's usable bytes end inside the huge region.
@@ -2360,11 +2370,25 @@ impl Shared {
                 requires
                     lg == lg32 as usize,
             ;
-            crate::vspec::addr::axiom_huge_writable(self.regions, page, n);
+            // The run's usable bytes are the permission's: they start at
+            // the page's address and are the token's usable pages.
+            self.lemma_wf();
+            assert(self.regions.huge_base + (page << lg32) == super::live::page_addr(page as int));
+            assert(n == super::live::run_usable(blk.run_opt().unwrap().npages()));
+            blk.lemma_mem();
         }
-        // SAFETY: a live run's usable bytes are committed, writable memory
-        // this allocator handed out and the caller is freeing.
-        unsafe { crate::vspec::zero::write_zero(crate::vspec::addr::addr_to_ptr(self.regions.huge_addr(page)), n) }
+        // The permission, through the cast of the page's address.
+        let ghost orig = *blk;
+        let tracked mut m = blk.take_mem();
+        proof {
+            crate::vspec::user::axiom_cast(&mut m);
+        }
+        // SAFETY: `m` makes the run's `n` usable bytes writable.
+        let z = unsafe { crate::vspec::user::zero_user(crate::vspec::addr::addr_to_ptr(self.regions.huge_addr(page)), n, Tracked(&mut m)) };
+        proof {
+            blk.put_mem(m, orig);
+        }
+        z
     }
 
     /// Free the huge run starting at `page`. Aborts unless it is a live
@@ -2677,7 +2701,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S140..S155, S156: each `S_*` is its field's `offset_of!`, and the
+    /// S141..S156, S157: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {

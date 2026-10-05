@@ -691,6 +691,7 @@ pub open spec fn slot_token(out: Map<int, GhostSingleton<int>>, c: int, ok: bool
 /// "Interface contract", gap 1).
 pub proof fn hand_out(tracked out: &mut Map<int, GhostSingleton<int>>, tracked blk: &mut Live, c: int, p: *mut u8)
     requires
+        regions_ok(),
         slot_token(*old(out), c, true, p),
         process_regions().is_slot(c, p@.addr),
     ensures
@@ -6101,7 +6102,7 @@ mod kani_aborts {
     use super::{assert_flushed, assert_refill_empty};
     use crate::kani_proofs::must_not_return;
 
-    /// S125 `assert_flushed`, `ensures *len == 0`: on any other `len` the
+    /// S126 `assert_flushed`, `ensures *len == 0`: on any other `len` the
     /// call never returns.
     #[kani::proof]
     #[kani::should_panic]
@@ -6113,7 +6114,7 @@ mod kani_aborts {
         }
     }
 
-    /// S126 `assert_refill_empty`, `ensures *len == 0`: as
+    /// S127 `assert_refill_empty`, `ensures *len == 0`: as
     /// `assert_flushed`.
     #[kani::proof]
     #[kani::should_panic]

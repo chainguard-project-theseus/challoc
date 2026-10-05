@@ -526,26 +526,35 @@ impl Heap {
 
     /// Push a checked slot of `class` (home arena) onto its cache.
     #[inline(always)]
-    pub(super) fn push(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
+    pub(super) fn push(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(blk): Tracked<Live>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
-            tok.id() == slot_loc(class as int),
-            tok@ == p@.addr as int,
+            blk.slot_block(p, class as int),
             shared.wf(),
             class < NCLASSES,
             old(self).wf(),
         ensures
             final(self).keeps(*old(self)),
     {
+        // The slot's token goes onto the cache; the permission to its bytes
+        // is dropped with it (`Live::take_slot`), and a fresh one comes
+        // back with the token when the push declines.
+        let tracked mut blk = blk;
+        let ghost orig = blk;
         let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
         proof {
+            shared.lemma_regions_ok();
+            blk.lemma_mem();
+            let tracked tok = blk.take_slot(class as int);
             tk.tracked_insert(0, tok);
         }
         if !self.push_fast(class, p, shared.push_flags(), Tracked(&mut tk)) {
-            let tracked t = tk.tracked_remove(0);
-            self.free_slow(shared, class, p, Tracked(t));
+            proof {
+                blk.put_slot(tk.tracked_remove(0), orig, p, class as int);
+            }
+            self.free_slow(shared, class, p, Tracked(blk));
         }
     }
 

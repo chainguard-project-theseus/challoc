@@ -1,6 +1,6 @@
 # `write_zero`
 
-Seam S378 of `verus/SEAMS.md`: src/vspec/zero.rs:300. Kind: external_body. Category: raw pointer (internal).
+Seam S380 of `verus/SEAMS.md`: src/vspec/zero.rs:300. Kind: external_body. Category: raw pointer (internal).
 Discharged by Kani.
 
 ## Contract

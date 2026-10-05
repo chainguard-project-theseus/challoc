@@ -1,6 +1,6 @@
 # `char::to_digit`
 
-Seam S274 of `verus/SEAMS.md`: src/vspec/config.rs:32. Kind: assume_spec. Category: core library.
+Seam S273 of `verus/SEAMS.md`: src/vspec/config.rs:32. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

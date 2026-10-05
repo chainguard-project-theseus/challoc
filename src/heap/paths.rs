@@ -260,22 +260,20 @@ impl Heap {
             Ok((class, arena)) => {
                 proof {
                     blk.lemma_claimed_block(p);
+                    blk.lemma_claimed_slot(p, class as int);
                 }
-                // The freed slot's token, from the block's.
-                let tracked mut blk = blk;
-                let tracked tok = blk.claim_slot(p, class as int);
+                // The freed slot's token, with the permission to its bytes.
                 if arena == self.arena {
-                    self.push(shared, class, p, Tracked(tok))
+                    self.push(shared, class, p, Tracked(blk))
                 } else {
-                    self.free_other(shared, class, p, Tracked(tok))
+                    self.free_other(shared, class, p, Tracked(blk))
                 }
             }
             Err(page) => {
                 proof {
-                    blk.lemma_claimed_block(p);
+                    blk.lemma_run_block(p, page);
                 }
-                let tracked t = blk.take_run(p, page);
-                self.free_huge(shared, page, Tracked(t))
+                self.free_huge(shared, page, Tracked(blk))
             },
         }
     }
@@ -332,27 +330,29 @@ impl Heap {
     /// Free of a huge run on this thread.
     #[cold]
     #[inline(never)]
-    pub(super) fn free_huge(&mut self, shared: &Shared, page: usize, Tracked(tok): Tracked<crate::huge::RunToken>)
+    pub(super) fn free_huge(&mut self, shared: &Shared, page: usize, Tracked(blk): Tracked<Live>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(self).wf(),
             shared.wf(),
             page <= shared.huge_pages(),
-            tok.wf(),
-            tok.start() == page,
+            blk.run_block(page as int),
         ensures
             final(self).keeps(*old(self)),
             final(self).caches_same(*old(self)),
     {
         // `zero_on_free`'s token for the cleared run (`theorem_zero_on_free_huge`).
+        let tracked mut blk = blk;
         let tracked mut z = Zeroed::empty(0);
         if shared.zero_on_free() {
-            let Tracked(t) = shared.zero_huge(page);
+            let Tracked(t) = shared.zero_huge(page, Tracked(&mut blk));
             proof {
                 z = t;
             }
         }
+        // The run's token; the permission to its bytes is dropped with it.
+        let tracked tok = blk.into_run(page as int);
         proof {
             if zero_on_free(shared) {
                 super::zero::theorem_zero_on_free_huge(&z, shared, page);
@@ -538,13 +538,12 @@ impl Heap {
     /// Releases directly to the slab when there is no cache to be had.
     #[cold]
     #[inline(never)]
-    pub(super) fn free_slow(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
+    pub(super) fn free_slow(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(blk): Tracked<Live>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
-            tok.id() == slot_loc(class as int),
-            tok@ == p@.addr as int,
+            blk.slot_block(p, class as int),
             shared.wf(),
             class < NCLASSES,
             old(self).wf(),
@@ -552,7 +551,7 @@ impl Heap {
             final(self).keeps(*old(self)),
     {
         let arena = self.arena;
-        self.free_slow_in(shared, arena, class, p, Tracked(tok))
+        self.free_slow_in(shared, arena, class, p, Tracked(blk))
     }
 
     /// The slow free path for any arena. With `zero_on_free` every cached
@@ -562,13 +561,12 @@ impl Heap {
     /// on the plain path; the size hint on the sized path, as the push
     /// trusts it, so a stale pointer of the right shape is cleared as it
     /// is cached, exactly as it would be handed out; design 6.3).
-    pub(super) fn free_slow_in(&mut self, shared: &Shared, arena: u16, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
+    pub(super) fn free_slow_in(&mut self, shared: &Shared, arena: u16, class: usize, p: *mut u8, Tracked(blk): Tracked<Live>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
-            tok.id() == slot_loc(class as int),
-            tok@ == p@.addr as int,
+            blk.slot_block(p, class as int),
             class < NCLASSES,
             shared.wf(),
             old(self).wf(),
@@ -577,14 +575,22 @@ impl Heap {
     {
         // `zero_on_free`'s token for the cleared slot, held until the slot
         // is given up (`theorem_zero_on_free`).
+        let tracked mut blk = blk;
         let tracked mut z = Zeroed::empty(0);
         if shared.zero_on_free() {
-            // SAFETY: `p` is a slot start of `class` (the caller's check).
-            let Tracked(t) = unsafe { zero_slot(class, p) };
+            // SAFETY: `p` is a slot start of `class` (the caller's check),
+            // and `blk` holds the permission to its bytes.
+            let Tracked(t) = unsafe { zero_slot(class, p, Tracked(&mut blk)) };
             proof {
                 z = t;
             }
         }
+        // The slot's token, for the cache or the bitmap; the permission
+        // to its bytes is dropped with it.
+        proof {
+            blk.lemma_mem();
+        }
+        let tracked tok = blk.take_slot(class as int);
         proof {
             old(self).lemma_wf_regions();
         }
@@ -674,7 +680,8 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, Tracked(b
         final(h).keeps(*old(h)),
         flags & PUSH_ZERO != 0 ==> !r,
         r ==> free_target(p),
-        !r ==> *final(blk) == *old(blk),
+        !r ==> final(blk).claims(p) && final(blk).len() == old(blk).len(),
+        !r ==> *final(blk) == *old(blk) || old(blk).block(p),
         r ==> old(blk).block(p),
     opens_invariants [crate::bitmap::word_ns()]
 {
@@ -689,7 +696,7 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, Tracked(b
             let r = h.push_fast(class, p, flags, Tracked(&mut tk));
             proof {
                 if !r {
-                    blk.put_slot(tk.tracked_remove(0), orig);
+                    blk.put_slot(tk.tracked_remove(0), orig, p, class as int);
                 }
             }
             r
@@ -716,7 +723,8 @@ pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, Tra
         r matches Some(c) ==> c < NCLASSES && process_regions().is_slot(c as int, p@.addr),
         flags & PUSH_ZERO != 0 ==> r is None,
         r is Some ==> free_target(p),
-        r is None ==> *final(blk) == *old(blk),
+        r is None ==> final(blk).claims(p) && final(blk).len() == old(blk).len(),
+        r is None ==> *final(blk) == *old(blk) || old(blk).block(p),
         r matches Some(c) ==> old(blk).slot_block(p, c as int),
     opens_invariants [crate::bitmap::word_ns()]
 {
@@ -730,7 +738,7 @@ pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, Tra
     let r = h.push_fast(class, p, flags, Tracked(&mut tk));
     proof {
         if !r {
-            blk.put_slot(tk.tracked_remove(0), orig);
+            blk.put_slot(tk.tracked_remove(0), orig, p, class as int);
         }
     }
     if r { Some(class) } else { None }
@@ -757,7 +765,8 @@ pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<u
         flags & PUSH_ZERO != 0 ==> !r,
         r ==> free_target(p),
         r ==> hint_ok(p, hint),
-        !r ==> *final(blk) == *old(blk),
+        !r ==> final(blk).claims(p) && final(blk).len() == old(blk).len(),
+        !r ==> *final(blk) == *old(blk) || old(blk).block(p),
         r ==> old(blk).block(p),
     opens_invariants none
 {
@@ -773,7 +782,7 @@ pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<u
             let r = h.push_fast(class, p, flags, Tracked(&mut tk));
             proof {
                 if !r {
-                    blk.put_slot(tk.tracked_remove(0), orig);
+                    blk.put_slot(tk.tracked_remove(0), orig, p, class as int);
                 }
             }
             r
@@ -783,7 +792,9 @@ pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<u
 }
 
 /// The freed slot `p` of class `c`'s token, from the caller's token for
-/// `p`, into `tk[0]` for a cache push ([`slot_token`]).
+/// `p`, into `tk[0]` for a cache push ([`slot_token`]); the permission to
+/// the slot's bytes is dropped with it ([`Live::take_slot`]), and a push
+/// that declines puts the token back with a fresh one ([`Live::put_slot`]).
 proof fn lend_slot(tracked blk: &mut Live, tracked tk: &mut Map<int, GhostSingleton<int>>, c: int, p: *mut u8)
     requires
         regions_ok(),
@@ -799,6 +810,7 @@ proof fn lend_slot(tracked blk: &mut Live, tracked tk: &mut Map<int, GhostSingle
 {
     old(blk).lemma_claims_slot(p, c);
     old(blk).lemma_claimed_block(p);
+    blk.lemma_mem();
     let tracked t = blk.take_slot(c);
     tk.tracked_insert(0, t);
 }
@@ -927,20 +939,25 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
         Ok((class, arena)) => {
             proof {
                 blk.lemma_claimed_block(p);
+                blk.lemma_claimed_slot(p, class as int);
             }
+            let tracked mut blk = blk;
             // `zero_on_free`'s token, as in `Heap::free_slow_in`.
             let tracked mut z = Zeroed::empty(0);
             if shared.zero_on_free() {
                 // SAFETY: `classify_free` verified `p` as an allocated slot
-                // of `class`.
-                let Tracked(t) = unsafe { zero_slot(class, p) };
+                // of `class`, and `blk` holds the permission to its bytes.
+                let Tracked(t) = unsafe { zero_slot(class, p, Tracked(&mut blk)) };
                 proof {
                     z = t;
                 }
             }
-            // The freed slot's token, from the block's.
-            let tracked mut blk = blk;
-            let tracked tok = blk.claim_slot(p, class as int);
+            // The freed slot's token, from the block's; the permission to
+            // its bytes is dropped with it.
+            proof {
+                blk.lemma_mem();
+            }
+            let tracked tok = blk.take_slot(class as int);
             proof {
                 if zero_on_free(shared) {
                     super::zero::theorem_zero_on_free(&z, &tok, p, class as int);
@@ -958,11 +975,12 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
         }
         Err(page) => {
             proof {
-                blk.lemma_claimed_block(p);
+                blk.lemma_run_block(p, page);
             }
+            let tracked mut blk = blk;
             let tracked mut z = Zeroed::empty(0);
             if shared.zero_on_free() {
-                let Tracked(t) = shared.zero_huge(page);
+                let Tracked(t) = shared.zero_huge(page, Tracked(&mut blk));
                 proof {
                     z = t;
                 }
@@ -972,7 +990,9 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
                     super::zero::theorem_zero_on_free_huge(&z, shared, page);
                 }
             }
-            let tracked t = blk.take_run(p, page);
+            // The run's token; the permission to its bytes is dropped with
+            // it.
+            let tracked t = blk.into_run(page as int);
             let n = shared.free_huge(page, Tracked(t), Tracked(&mut ord));
             if let Some(h) = existing_heap(shared_ptr(shared)) {
                 let ghost before = *h;
@@ -1010,22 +1030,32 @@ pub(super) fn invalid_free(p: usize) -> !
 /// ([`theorem_zero_on_free`](super::zero::theorem_zero_on_free)).
 ///
 /// # Safety
-/// `p` is a slot start of `class` in a committed slab.
+/// `p` is a slot start of `class` in a committed slab, and `blk` holds the
+/// permission to its bytes.
 #[cold]
 #[inline(never)]
-pub(super) unsafe fn zero_slot(class: usize, p: *mut u8) -> (z: Tracked<Zeroed>)
+pub(super) unsafe fn zero_slot(class: usize, p: *mut u8, Tracked(blk): Tracked<&mut Live>) -> (z: Tracked<Zeroed>)
     requires
         class < NCLASSES,
         process_regions().is_slot(class as int, p@.addr),
+        old(blk).slot_block(p, class as int),
     ensures
         z@.covers(p, class_table()[class as int].size as int),
+        final(blk).slot_block(p, class as int),
 {
+    let ghost orig = *blk;
     proof {
-        broadcast use vstd::layout::align_of_u8;
-        crate::vspec::addr::axiom_slot_writable(class, p);
+        blk.lemma_mem();
+        blk.lemma_slot_len(p, class as int);
     }
-    // SAFETY: guaranteed by the caller; the slot is `size` writable bytes.
-    unsafe { crate::vspec::zero::write_zero(p, CLASSES.table()[class].size()) }
+    let tracked mut mem = blk.take_mem();
+    // SAFETY: guaranteed by the caller; `mem` makes the slot's `size`
+    // bytes writable.
+    let z = unsafe { crate::vspec::user::zero_user(p, CLASSES.table()[class].size(), Tracked(&mut mem)) };
+    proof {
+        blk.put_mem(mem, orig);
+    }
+    z
 }
 
 /// `double_free_scan`: the slot being pushed is one of the top four cache
@@ -1091,7 +1121,7 @@ mod kani_aborts {
     use super::debug_scheduled;
     use crate::kani_proofs::must_not_return;
 
-    /// S135 `debug_scheduled`, no `requires`, no `ensures`: with debug
+    /// S136 `debug_scheduled`, no `requires`, no `ensures`: with debug
     /// assertions on (Kani's build, and the tests'), it returns exactly
     /// when `allocs as u32` has no bit of `mask`, and otherwise never
     /// returns.

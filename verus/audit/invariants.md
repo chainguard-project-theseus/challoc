@@ -421,9 +421,17 @@ Still premises, and why:
   `process_regions().user_block(p, len)`. calloc's caller meets it from
   `fits`. The usable-size callers (`calloc_usable`, jemalloc's
   `alloc_with`) would need the huge run's end, which `usable_is` does
-  not carry. Closed after the audit: S252 and S253 are removed, proved
-  from the block's `Live` token (`Live::lemma_rw`) over S254 and S255,
-  which now requires the process's regions.
+  not carry. Closed after the audit: S252 to S255 are removed. Each live
+  block's `Live` token holds the permission to its usable bytes
+  (`vspec::user::UserMem`), which the fills and `realloc`'s copy take.
+  New trusted items with it: `heap::live::axiom_hand_out` (the private
+  hand-out mint, used up with a bare slot or run token),
+  `vspec::user::axiom_zeroed_bytes` (a `Zeroed` token's bytes read zero;
+  a stale token gives a false byte state, not `false`), `axiom_cast`
+  (a permission's provenance, in place) and `copy_user`
+  (`copy_nonoverlapping` with its byte effect). S113 `axiom_c_claim`'s
+  `claims` now also carries the block's permission and provenance; two
+  claims of one pointer still prove `false`, as before.
 - S182 and S183 (`Meta::commit`, `Meta::free`): their bodies pass
   `assume_new` claims to verified functions whose `requires` (alignment,
   `len > 0`, `p != 0`, `layout_size <= MAX_BINNED`) the outer

@@ -26,19 +26,25 @@ use crate::huge::RunToken;
 use crate::huge::free_page_byte;
 #[cfg(verus_only)]
 use crate::layout::{NCLASSES, class_table, disjoint, process_regions};
+use crate::vspec::user::UserMem;
 #[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{int, verus};
+#[cfg(verus_only)]
+use vstd::raw_ptr::Provenance;
 use vstd::resource::set::GhostSingleton;
 
 verus! {
 
 /// Ghost token of a live block: the block at `addr`, a slot of class
 /// `class` holding its slot token (`slot`), or a huge run holding its
-/// [`RunToken`] (`run`). Made by the allocation paths ([`Live::from_slot`],
+/// [`RunToken`] (`run`), with the permission to its usable bytes (`mem`,
+/// [`UserMem`]). Made by the allocation paths ([`Live::from_slot`],
 /// [`Live::from_run`]) and, for a pointer C passes to a free, by
 /// [`axiom_c_claim`]; taken apart by the free paths
-/// ([`Live::take_slot`], [`Live::take_run`]).
+/// ([`Live::take_slot`], [`Live::into_run`]), which drop the permission
+/// as they give the slot or run token out; [`Live::take_mem`] and
+/// [`Live::put_mem`] lend the permission to a fill or a copy.
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[allow(dead_code)]
 pub tracked struct Live {
@@ -46,6 +52,7 @@ pub tracked struct Live {
     ghost class: int,
     tracked slot: Option<GhostSingleton<int>>,
     tracked run: Option<RunToken>,
+    tracked mem: Option<UserMem>,
 }
 
 /// The process's page, in bytes.
@@ -98,26 +105,94 @@ impl Live {
         &&& self.run.unwrap().npages() == npages
     }
 
-    /// A live block, as the allocation paths hand it out: a slot of class
-    /// `class` at `addr` with its slot token, or a run at `addr` with its
-    /// run token and its usable bytes in the huge region.
-    pub closed spec fn wf(self) -> bool {
-        ||| {
-            &&& self.slot_of(self.class)
-            &&& self.run is None
-            &&& process_regions().is_slot(self.class, self.addr)
-        }
-        ||| {
-            &&& self.slot is None
-            &&& self.run_of()
-            &&& process_regions().is_huge_block(self.addr, self.len())
-        }
+    /// The token holds the permission to exactly the block's usable bytes.
+    pub closed spec fn mem_ok(self) -> bool {
+        &&& self.mem matches Some(m) && m.covers(self.addr as int, self.len())
     }
 
-    /// The token of the live block at `p`.
+    /// The permission the token holds (meaningful under [`Live::mem_ok`]).
+    pub closed spec fn mem(self) -> UserMem {
+        self.mem.unwrap()
+    }
+
+    /// The permission, if any.
+    pub closed spec fn mem_opt(self) -> Option<UserMem> {
+        self.mem
+    }
+
+    /// The provenance of the pointers the block's permission is valid
+    /// through: the block's pointer's, as the allocation returned it or C
+    /// passed it back.
+    pub open spec fn prov(self) -> Provenance {
+        self.mem().provenance()
+    }
+
+    /// What a load of each usable byte of the block reads (the byte state
+    /// of its permission, [`UserMem::bytes`]).
+    pub open spec fn bytes(self) -> Map<int, u8> {
+        self.mem().bytes()
+    }
+
+    /// A live block's token holds the permission to its usable bytes.
+    pub proof fn lemma_mem(&self)
+        requires
+            self.wf(),
+        ensures
+            self.mem_ok(),
+            self.mem().covers(self.addr() as int, self.len()),
+    {
+    }
+
+    /// Borrow the permission, for a read of the block's bytes (the source
+    /// of a copy).
+    pub proof fn mem_ref(tracked &self) -> (tracked r: &UserMem)
+        requires
+            self.mem_ok(),
+        ensures
+            *r == self.mem(),
+    {
+        self.mem.tracked_borrow()
+    }
+
+    /// The block's first `n` usable bytes read as `src`'s first `n`
+    /// (`realloc`'s copy into a new block).
+    pub open spec fn copied_from(self, src: Live, n: int) -> bool {
+        self.mem().reads_as(self.addr() as int, src.mem(), src.addr() as int, n)
+    }
+
+    /// The block's `n` usable bytes from offset `from` read as zero: a load
+    /// of each, through the block's pointer, reads 0 (whole-allocator
+    /// theorem 6 as a byte state, `verus/THEOREMS.md`).
+    pub open spec fn reads_zero(self, from: int, n: int) -> bool {
+        self.mem().reads_zero(self.addr() + from, n)
+    }
+
+    /// A live block, as the allocation paths hand it out: a slot of class
+    /// `class` at `addr` with its slot token, or a run at `addr` with its
+    /// run token and its usable bytes in the huge region; with the
+    /// permission to its usable bytes.
+    pub closed spec fn wf(self) -> bool {
+        &&& {
+            ||| {
+                &&& self.slot_of(self.class)
+                &&& self.run is None
+                &&& process_regions().is_slot(self.class, self.addr)
+            }
+            ||| {
+                &&& self.slot is None
+                &&& self.run_of()
+                &&& process_regions().is_huge_block(self.addr, self.len())
+            }
+        }
+        &&& self.mem_ok()
+    }
+
+    /// The token of the live block at `p`, whose permission is valid
+    /// through `p`.
     pub open spec fn block(self, p: *mut u8) -> bool {
         &&& self.wf()
         &&& self.addr() == p@.addr
+        &&& self.prov() == p@.provenance
     }
 
     /// The token of the live slot `p` of class `c`.
@@ -163,17 +238,21 @@ impl Live {
             &&& process_regions().is_slot(self.class, p@.addr)
             &&& self.slot_of(self.class)
             &&& self.run is None
+            &&& self.mem_ok()
+            &&& self.prov() == p@.provenance
         }
         &&& !crate::heap::slot_start(p) && process_regions().is_huge_block(p@.addr, 1) ==> {
             &&& self.run_of()
             &&& self.slot is None
             &&& process_regions().is_huge_block(p@.addr, self.len())
+            &&& self.mem_ok()
+            &&& self.prov() == p@.provenance
         }
     }
 
     /// The token of nothing: what a null result comes with.
     pub proof fn empty() -> (tracked r: Live) {
-        Live { addr: 0, class: 0, slot: None, run: None }
+        Live { addr: 0, class: 0, slot: None, run: None, mem: None }
     }
 
     /// Replace the token with `v` (an out-parameter's result).
@@ -184,9 +263,11 @@ impl Live {
         *self = v;
     }
 
-    /// The token of slot `t@` of class `c`, from its slot token.
+    /// The token of slot `t@` of class `c`, from its slot token, with the
+    /// permission to the slot's bytes ([`axiom_hand_out`]).
     pub proof fn from_slot(tracked t: GhostSingleton<int>, c: int, p: *mut u8) -> (tracked r: Live)
         requires
+            crate::heap::regions_ok(),
             t.id() == slot_loc(c),
             t@ == p@.addr as int,
             process_regions().is_slot(c, p@.addr),
@@ -195,13 +276,17 @@ impl Live {
             r.slot_of(c),
             r.len() == class_table()[c].size,
     {
-        Live { addr: p@.addr, class: c, slot: Some(t), run: None }
+        let len = class_table()[c].size as int;
+        lemma_slot_end(c, p@.addr);
+        let tracked m = axiom_hand_out(p, len);
+        Live { addr: p@.addr, class: c, slot: Some(t), run: None, mem: Some(m) }
     }
 
     /// The token of the run `t` at `p`, whose usable bytes are in the huge
-    /// region.
+    /// region, with the permission to them ([`axiom_hand_out`]).
     pub proof fn from_run(tracked t: RunToken, p: *mut u8) -> (tracked r: Live)
         requires
+            crate::heap::regions_ok(),
             t.wf(),
             page_addr(t.start()) == p@.addr as int,
             process_regions().is_huge_block(p@.addr, run_usable(t.npages())),
@@ -210,7 +295,10 @@ impl Live {
             r.run_at(t.start(), t.npages()),
             r.len() == run_usable(t.npages()),
     {
-        Live { addr: p@.addr, class: 0, slot: None, run: Some(t) }
+        let len = run_usable(t.npages());
+        lemma_huge_end(p@.addr, len);
+        let tracked m = axiom_hand_out(p, len);
+        Live { addr: p@.addr, class: 0, slot: None, run: Some(t), mem: Some(m) }
     }
 
     /// The token holds a slot token.
@@ -218,14 +306,10 @@ impl Live {
         self.slot is Some
     }
 
-    /// `self` without its slot token.
+    /// `self` without its slot token and the permission, which leave
+    /// together.
     pub closed spec fn without_slot(self) -> Live {
-        Live { slot: None, ..self }
-    }
-
-    /// `self` with slot token `t`.
-    pub closed spec fn with_slot(self, t: GhostSingleton<int>) -> Live {
-        Live { slot: Some(t), ..self }
+        Live { slot: None, mem: None, ..self }
     }
 
     /// The slot token `self` holds.
@@ -233,65 +317,166 @@ impl Live {
         self.slot.unwrap()
     }
 
-    /// Take the slot token out, for a free of the slot.
+    /// Take the slot token out, for a free of the slot. The permission to
+    /// the slot's bytes is used up with it (dropped): a slot token is
+    /// never apart from a permission that is still held, so
+    /// [`axiom_hand_out`] never mints a second one ([`Live::from_slot`]
+    /// and [`Live::put_slot`] take a bare token). Writes the free makes
+    /// to the slot come first, through [`Live::take_mem`].
     pub proof fn take_slot(tracked &mut self, c: int) -> (tracked t: GhostSingleton<int>)
         requires
             old(self).slot_of(c),
+            old(self).mem_ok(),
         ensures
             t == old(self).slot_tok(),
             t.id() == slot_loc(c),
             t@ == old(self).addr() as int,
             *final(self) == old(self).without_slot(),
     {
+        let tracked mut m = None;
+        vstd::modes::tracked_swap(&mut self.mem, &mut m);
         self.slot.tracked_take()
     }
 
-    /// [`Live::take_slot`] for a token that claims `p`, a slot start of
-    /// class `c`.
-    pub proof fn claim_slot(tracked &mut self, p: *mut u8, c: int) -> (tracked t: GhostSingleton<int>)
+    /// A token that claims `p`, a slot start of class `c`, is the live
+    /// slot's.
+    pub proof fn lemma_claimed_slot(&self, p: *mut u8, c: int)
         requires
             crate::heap::regions_ok(),
-            old(self).claims(p),
+            self.claims(p),
             process_regions().is_slot(c, p@.addr),
         ensures
-            t.id() == slot_loc(c),
-            t@ == p@.addr as int,
+            self.slot_block(p, c),
+            self.has_slot(),
     {
-        old(self).lemma_claims_slot(p, c);
-        self.take_slot(c)
+        self.lemma_claims_slot(p, c);
     }
 
-    /// Put back the slot token [`Live::take_slot`] took: a free that
-    /// declined (a full cache) leaves the token as it was.
-    pub proof fn put_slot(tracked &mut self, tracked t: GhostSingleton<int>, orig: Live)
+    /// Put back a slot token [`Live::take_slot`] took, with a fresh
+    /// permission to the slot's bytes ([`axiom_hand_out`]; the one
+    /// `take_slot` dropped is gone, and the token was bare), their values
+    /// unknown: a free that declined (a full cache) leaves the token as
+    /// it was but for its byte state.
+    pub proof fn put_slot(tracked &mut self, tracked t: GhostSingleton<int>, orig: Live, p: *mut u8, c: int)
         requires
+            crate::heap::regions_ok(),
             *old(self) == orig.without_slot(),
             t == orig.slot_tok(),
-            orig.has_slot(),
+            orig.slot_block(p, c),
         ensures
-            *final(self) == orig,
+            final(self).slot_block(p, c),
+            final(self).addr() == orig.addr(),
+            final(self).len() == orig.len(),
+            forall|q: *mut u8| #[trigger] orig.claims(q) ==> final(self).claims(q),
     {
+        let len = class_table()[c].size as int;
+        lemma_slot_end(c, p@.addr);
+        let tracked m = axiom_hand_out(p, len);
         self.slot = Some(t);
+        self.mem = Some(m);
+        assert forall|q: *mut u8| #[trigger] orig.claims(q) implies self.claims(q) by {
+            if crate::heap::slot_start(q) {
+                assert(orig.slot_of(orig.class));
+            }
+        }
     }
 
-    /// Take the run token out, for a free of the run that starts at page
-    /// `page` of the huge region, at `p`.
-    pub proof fn take_run(tracked self, p: *mut u8, page: usize) -> (tracked t: RunToken)
+    /// Take the permission out, for a fill or a copy that takes it
+    /// ([`Live::put_mem`] puts it back). The token keeps its slot or run
+    /// token, which [`Live::take_slot`] and [`Live::into_run`] give out
+    /// only with the permission back in place.
+    pub proof fn take_mem(tracked &mut self) -> (tracked m: UserMem)
+        requires
+            old(self).mem_ok(),
+        ensures
+            m == old(self).mem(),
+            *final(self) == old(self).without_mem(),
+    {
+        self.mem.tracked_take()
+    }
+
+    /// `self` without the permission.
+    pub closed spec fn without_mem(self) -> Live {
+        Live { mem: None, ..self }
+    }
+
+    /// Put back a permission [`Live::take_mem`] took, its bytes as they
+    /// were (only their values, and for `zero_huge`'s cast the
+    /// provenance, may differ): the token is as it was but for its byte
+    /// state.
+    pub proof fn put_mem(tracked &mut self, tracked m: UserMem, orig: Live)
+        requires
+            *old(self) == orig.without_mem(),
+            orig.mem_ok(),
+            m.dom() == orig.mem().dom(),
+            m.wf() == orig.mem().wf(),
+        ensures
+            final(self).mem() == m,
+            final(self).mem_ok(),
+            final(self).addr() == orig.addr(),
+            final(self).len() == orig.len(),
+            final(self).wf() == orig.wf(),
+            final(self).run_opt() == orig.run_opt(),
+            forall|c: int| #[trigger] orig.slot_of(c) ==> final(self).slot_of(c),
+            m.provenance() == orig.mem().provenance() ==> final(self).same_but_bytes(orig),
+    {
+        self.mem = Some(m);
+    }
+
+    /// `self` is `orig` but for the values of its usable bytes: the same
+    /// block, tokens, permission bytes and provenance.
+    pub open spec fn same_but_bytes(self, orig: Live) -> bool {
+        &&& self.addr() == orig.addr()
+        &&& self.len() == orig.len()
+        &&& self.wf() == orig.wf()
+        &&& self.prov() == orig.prov()
+        &&& self.mem().dom() == orig.mem().dom()
+        &&& forall|p: *mut u8| #[trigger] orig.claims(p) ==> self.claims(p)
+        &&& forall|p: *mut u8| #[trigger] orig.block(p) ==> self.block(p)
+    }
+
+    /// The live run that starts at page `page` of the huge region: its
+    /// token, at the page's address, with the permission to its usable
+    /// bytes.
+    pub open spec fn run_block(self, page: int) -> bool {
+        &&& self.wf()
+        &&& self.run_opt() is Some
+        &&& self.run_opt().unwrap().wf()
+        &&& self.run_opt().unwrap().start() == page
+        &&& self.addr() == page_addr(page)
+        &&& self.len() == run_usable(self.run_opt().unwrap().npages())
+    }
+
+    /// A token that claims `p`, a page start of the huge region with page
+    /// index `page`, is the live run's at `page`.
+    pub proof fn lemma_run_block(&self, p: *mut u8, page: usize)
         requires
             crate::heap::regions_ok(),
             self.claims(p),
             process_regions().is_huge_block(p@.addr, 1),
             page == ((p@.addr - process_regions().huge_base) as usize) >> process_regions().lg_page,
         ensures
+            self.run_block(page as int),
+            self.block(p),
+    {
+        self.lemma_run_page(p, page);
+        self.lemma_claimed_block(p);
+    }
+
+    /// Take the run token out, for a free of the run at page `page`. The
+    /// permission to the run's bytes is used up with it, as in
+    /// [`Live::take_slot`]; the free's clear comes first, through
+    /// [`Live::take_mem`].
+    pub proof fn into_run(tracked self, page: int) -> (tracked t: RunToken)
+        requires
+            self.run_block(page),
+        ensures
             t.wf(),
             t.start() == page,
-            page_addr(t.start()) == p@.addr as int,
-            self.run_at(t.start(), t.npages()),
+            Some(t) == self.run_opt(),
     {
-        lemma_not_slot(p);
-        let tracked t = self.run.tracked_unwrap();
-        lemma_page_of(t, p, page);
-        t
+        let tracked Live { addr, class, slot, run, mem } = self;
+        run.tracked_unwrap()
     }
 
     /// The run token the token holds, if any.
@@ -412,6 +597,7 @@ impl Live {
             final(self).slot_of(c),
             final(self).addr() == old(self).addr(),
             final(self).len() == old(self).len(),
+            final(self).mem() == old(self).mem(),
             final(self).wf() == old(self).wf(),
             forall|p: *mut u8| #[trigger] old(self).claims(p) ==> final(self).claims(p),
     {
@@ -443,6 +629,7 @@ impl Live {
             final(self).wf(),
             final(self).addr() == old(self).addr(),
             final(self).len() == old(self).len(),
+            final(self).mem() == old(self).mem(),
             forall|p: *mut u8| #[trigger] old(self).claims(p) ==> final(self).claims(p),
             disjoint(final(self).addr() as int, final(self).len(), other.addr() as int, other.len()),
     {
@@ -512,6 +699,7 @@ impl Live {
             final(self).wf(),
             final(self).addr() == old(self).addr(),
             final(self).len() == old(self).len(),
+            final(self).mem() == old(self).mem(),
             forall|p: *mut u8| #[trigger] old(self).claims(p) ==> final(self).claims(p),
             final(self).addr() != 0,
             final(self).addr() != other.addr(),
@@ -632,90 +820,6 @@ impl Live {
             lemma_run_interior(self.addr, self.len(), p@.addr);
         }
     }
-
-    /// The usable bytes of a live block are valid for reads and writes
-    /// through `p`, its pointer: a slot's class size
-    /// ([`axiom_slot_writable`](crate::vspec::addr::axiom_slot_writable)),
-    /// a run's pages before the guard
-    /// ([`axiom_huge_writable`](crate::vspec::addr::axiom_huge_writable)).
-    /// What the zero fills of a fresh block (`calloc`, `calloc_usable`,
-    /// `mallocx(MALLOCX_ZERO)`) and the copy of a `realloc` move need of
-    /// the blocks they touch, each with the block's token. As for those
-    /// axioms, use it only while the token is held: the model has no
-    /// time (`vspec::ptr::rw_len`), so nothing ends the fact when the
-    /// block is freed.
-    pub proof fn lemma_rw(&self, p: *mut u8, len: int)
-        requires
-            crate::heap::regions_ok(),
-            self.block(p),
-            0 <= len <= self.len(),
-        ensures
-            crate::vspec::ptr::valid_writes(p, len),
-            crate::vspec::ptr::valid_reads(p as *const u8, len),
-    {
-        let r = process_regions();
-        if self.run is None {
-            crate::vspec::addr::axiom_slot_writable(self.class as usize, p);
-        } else {
-            let t = self.run.unwrap();
-            let (s, n) = (t.start(), t.npages());
-            t.lemma_wf();
-            let pg = page_size();
-            let l8 = r.lg_page;
-            let lg = l8 as usize;
-            vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
-            vstd::bits::lemma_usize_shl_is_mul(1, lg);
-            vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
-            assert((1usize << l8) == (1usize << lg)) by (bit_vector)
-                requires
-                    lg == l8 as usize,
-            ;
-            assert(pg > 0);
-            // The run is `s * pg` bytes into the region, and its usable
-            // bytes, at least a page, end inside it.
-            assert(s * pg == p@.addr - r.huge_base);
-            assert(pg <= (n - GUARD_PAGES) * pg) by (nonlinear_arith)
-                requires
-                    GUARD_PAGES < n,
-                    pg > 0,
-            ;
-            let hl = r.huge_len;
-            assert((s + 1) * pg <= hl) by (nonlinear_arith)
-                requires
-                    s * pg + pg <= s * pg + (n - GUARD_PAGES) * pg,
-                    s * pg + (n - GUARD_PAGES) * pg <= hl,
-            ;
-            // So `s` is below the region's page count.
-            vstd::bits::lemma_usize_shr_is_div(hl, lg);
-            assert(hl >> l8 == hl >> lg) by (bit_vector)
-                requires
-                    lg == l8 as usize,
-            ;
-            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(hl as int, pg);
-            vstd::arithmetic::div_mod::lemma_mod_bound(hl as int, pg);
-            let q = hl as int / pg;
-            assert(s + 1 <= q) by (nonlinear_arith)
-                requires
-                    (s + 1) * pg <= hl,
-                    hl == pg * q + hl as int % pg,
-                    hl as int % pg < pg,
-                    pg > 0,
-            ;
-            let page = s as usize;
-            assert(page * vstd::arithmetic::power2::pow2(lg as nat) <= usize::MAX) by {
-                assert(pg == vstd::arithmetic::power2::pow2(lg as nat));
-            }
-            vstd::bits::lemma_usize_shl_is_mul(page, lg);
-            assert(page << l8 == page << lg) by (bit_vector)
-                requires
-                    lg == l8 as usize,
-            ;
-            assert(self.len() == (n - GUARD_PAGES) * pg);
-            assert(r.huge_base + (page << r.lg_page) == p@.addr);
-            crate::vspec::addr::axiom_huge_writable(r, page, self.len() as usize);
-            assert(crate::vspec::ptr::valid_writes(p, self.len()));
-        }
-    }
 }
 
 /// A pointer strictly inside slot `a` of class `c` is no slot start and no
@@ -788,7 +892,9 @@ pub proof fn lemma_run_interior(a: usize, len: int, b: usize)
 /// with the block. So for a pointer C passes to a free, C holds a token
 /// that claims it ([`Live::claims`]): the slot token if `p` is a slot
 /// start, the token of the run that starts at `p` if `p` is a huge page
-/// start, nothing otherwise (whole-allocator theorem 3 then aborts).
+/// start, each with the permission to the block's usable bytes, valid
+/// through `p`, their values whatever the program left in them; nothing
+/// otherwise (whole-allocator theorem 3 then aborts).
 ///
 /// Trusted, at the C ABI boundary only: the Rust entry point that the
 /// export of each free or realloc symbol calls (`libc::free`,
@@ -809,6 +915,111 @@ pub axiom fn axiom_c_claim(p: *mut u8) -> (tracked r: Live)
     ensures
         r.claims(p),
 ;
+
+/// The permission to the `len` usable bytes of the block at `p` that the
+/// allocator is handing out, valid through `p`, the bytes' values unknown.
+/// Trusted, for what the allocation paths do not track: the block's bytes
+/// are committed (a slot's slab is committed before its first slot is
+/// claimed and decommitted only when it holds no allocated slot; a run's
+/// pages are committed by `Huge::take` and released only by its free),
+/// and nothing else holds a permission to them (no `PointsToRaw` is ever
+/// made for the class or huge regions but here and in [`axiom_c_claim`],
+/// and the metadata region's permissions lie apart from them).
+///
+/// Once-only, by the discipline of the module's API, which Verus checks
+/// at every caller (the axiom is private, so its callers are this
+/// module's [`Live::from_slot`], [`Live::from_run`] and
+/// [`Live::put_slot`], each of which uses up a bare slot or run token
+/// into the token it makes with the permission). A permission exists only
+/// inside the [`Live`] that holds its block's slot or run token, or taken
+/// out of it by [`Live::take_mem`]; the token comes out bare only through
+/// [`Live::take_slot`] and [`Live::into_run`], which require the
+/// permission back in place and drop it. So while a permission to a
+/// block's bytes is held, its slot or run token is not bare, and there is
+/// one token per block (the class's and the huge allocator's authorities),
+/// so no second permission can be minted for bytes whose first is still
+/// held.
+axiom fn axiom_hand_out(p: *mut u8, len: int) -> (tracked m: UserMem)
+    requires
+        0 < p@.addr,
+        0 < len,
+        p@.addr + len <= usize::MAX,
+    ensures
+        m.covers(p@.addr as int, len),
+        m.provenance() == p@.provenance,
+;
+
+/// A slot lies inside the address space, above 0.
+proof fn lemma_slot_end(c: int, a: usize)
+    requires
+        crate::heap::regions_ok(),
+        process_regions().is_slot(c, a),
+    ensures
+        0 < a,
+        0 < class_table()[c].size,
+        a + class_table()[c].size <= usize::MAX,
+{
+    let r = process_regions();
+    r.lemma_block_nonzero(c, a, 0, 0);
+    r.lemma_slot_in_region(c, a);
+    crate::vspec::class::axiom_class_table_wf(c);
+    assert(r.class_base[c] + (1usize << r.lg_region) <= usize::MAX);
+}
+
+/// `len` bytes of the huge region from a page start lie inside the address
+/// space, above 0.
+proof fn lemma_huge_end(a: usize, len: int)
+    requires
+        crate::heap::regions_ok(),
+        process_regions().is_huge_block(a, len),
+    ensures
+        0 < a,
+        a + len <= usize::MAX,
+{
+    process_regions().lemma_block_nonzero(0, a, len, 0);
+}
+
+impl Live {
+    /// A live block's usable bytes lie inside the address space, above 0,
+    /// and so does every byte of its permission.
+    pub proof fn lemma_end(&self)
+        requires
+            crate::heap::regions_ok(),
+            self.wf(),
+        ensures
+            0 < self.addr(),
+            0 < self.len(),
+            self.addr() + self.len() <= usize::MAX,
+            forall|x: int| #[trigger] self.mem().dom().contains(x) ==> 0 <= x <= usize::MAX,
+    {
+        if self.run is None {
+            lemma_slot_end(self.class, self.addr);
+        } else {
+            lemma_huge_end(self.addr, self.len());
+        }
+    }
+
+    /// The permissions of two live blocks share no byte (they are two
+    /// `PointsToRaw`s held at once: [`UserMem::lemma_apart`]); both tokens
+    /// are unchanged.
+    pub proof fn lemma_mem_apart(tracked &mut self, tracked other: &mut Live)
+        requires
+            crate::heap::regions_ok(),
+            old(self).wf(),
+            old(other).mem_ok(),
+        ensures
+            *final(self) == *old(self),
+            *final(other) == *old(other),
+            final(self).mem().dom().disjoint(final(other).mem().dom()),
+    {
+        self.lemma_end();
+        let tracked mut ma = self.mem.tracked_take();
+        let tracked mut mb = other.mem.tracked_take();
+        ma.lemma_apart(&mut mb);
+        self.mem = Some(ma);
+        other.mem = Some(mb);
+    }
+}
 
 /// A page start of the huge region is no slot start: the class regions
 /// are apart from the huge region (`zero::lemma_slot_not_huge`).
@@ -1087,6 +1298,7 @@ pub proof fn lemma_keys_apart(tracked a: &mut Live, tracked b: &Live)
         final(a).key() == old(a).key(),
         final(a).addr() == old(a).addr(),
         final(a).len() == old(a).len(),
+        final(a).mem() == old(a).mem(),
         keys_apart(final(a).key(), b.key()),
 {
     if a.run is None && b.run is None && a.class == b.class {

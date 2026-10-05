@@ -424,7 +424,11 @@ pub fn calloc(n: usize, m: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> 
 /// result comes with a [`Zeroed`] token for its `n * m` bytes (the
 /// "Zeroed memory" theorem of `verus/TODO.md`), from the `memset` or from
 /// the allocator's report that the slot or run is known zero; and `blk`
-/// gets the block's token.
+/// gets the block's token, whose permission's byte state reads those
+/// bytes as zero ([`Live::reads_zero`]): the `memset` wrote them through
+/// the permission (`vspec::user::zero_user`), or the allocator's token
+/// for them was turned into the byte state
+/// (`vspec::user::axiom_zeroed_bytes`).
 #[inline(always)]
 pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: (*mut u8, Tracked<Zeroed>))
     requires
@@ -435,6 +439,7 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
         heap::fits(r.0, n * m, QUANTUM as int),
         r.0@.addr != 0 ==> r.1@.covers(r.0, n * m),
         final(blk).gives(r.0, n * m),
+        r.0@.addr != 0 ==> final(blk).reads_zero(0, n * m),
         r.0@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let Some(size) = n.checked_mul(m) else { return (enomem(Tracked(errno)), Tracked(Zeroed::empty(0))) };
@@ -464,15 +469,33 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
         return (enomem(Tracked(errno)), Tracked(Zeroed::empty(0)));
     }
     if !zeroed {
+        let ghost orig = *blk;
         proof {
-            broadcast use vstd::layout::align_of_u8;
-            blk.lemma_rw(p, size as int);
+            blk.lemma_mem();
         }
-        // SAFETY: `p` is a fresh allocation of at least `size` bytes.
-        let z = unsafe { crate::vspec::zero::write_zero(p, size) };
+        let tracked mut mem = blk.take_mem();
+        // SAFETY: `mem` is the permission to the fresh block's usable bytes,
+        // at least `size` of them.
+        let z = unsafe { crate::vspec::user::zero_user(p, size, Tracked(&mut mem)) };
+        proof {
+            blk.put_mem(mem, orig);
+        }
         return (p, z);
     }
-    (p, z)
+    // Known zero: the allocator's token for the first `size` bytes, which
+    // the block's permission then reads as zero.
+    let Tracked(za) = z;
+    let tracked z0;
+    proof {
+        let tracked (zs, _) = za.split(size as int);
+        blk.lemma_mem();
+        let ghost orig = *blk;
+        let tracked mut mem = blk.take_mem();
+        crate::vspec::user::axiom_zeroed_bytes(&zs, &mut mem);
+        blk.put_mem(mem, orig);
+        z0 = zs;
+    }
+    (p, Tracked(z0))
 }
 
 /// `free`. Null is a no-op; anything that is not a live allocation aborts.
@@ -1249,6 +1272,40 @@ pub fn realloc(p: *mut u8, size: usize, Tracked(errno): Tracked<&mut ThreadErrno
     realloc_block(p, size, Tracked(blk), Tracked(&mut out), Tracked(errno))
 }
 
+/// `realloc`'s copy: the first `n` bytes of the live block `p` into the
+/// new live block `q`, with both blocks' permissions (`blk`'s to read,
+/// `out`'s to write; two permissions held at once share no byte, so the
+/// ranges do not overlap). Afterwards `out`'s byte state reads its first
+/// `n` bytes as `blk`'s ([`Live::copied_from`]); `blk` is unchanged.
+#[inline(always)]
+pub(super) unsafe fn copy_moved(p: *mut u8, q: *mut u8, n: usize, Tracked(blk): Tracked<&mut Live>, Tracked(out): Tracked<&mut Live>)
+    requires
+        heap::regions_ok(),
+        old(blk).block(p),
+        old(out).block(q),
+        n <= old(blk).len(),
+        n <= old(out).len(),
+    ensures
+        *final(blk) == *old(blk),
+        final(out).same_but_bytes(*old(out)),
+        final(out).copied_from(*old(blk), n as int),
+        final(out).mem().frame(old(out).mem(), q@.addr as int, n as int),
+{
+    proof {
+        blk.lemma_mem();
+        out.lemma_mem();
+        blk.lemma_mem_apart(out);
+    }
+    let ghost orig = *out;
+    let tracked mut d = out.take_mem();
+    // SAFETY: the permissions make `p` readable and `q` writable for `n`
+    // bytes, and the two share no byte.
+    unsafe { crate::vspec::user::copy_user(p, q, n, Tracked(blk.mem_ref()), Tracked(&mut d)) };
+    proof {
+        out.put_mem(d, orig);
+    }
+}
+
 /// [`realloc`] with the tokens: `blk` is the caller's for `p`
 /// ([`Live::claims`]), and `out` gets the result's: a new block's, or
 /// `blk` itself when `p` is kept or the move fails (`p` is then still the
@@ -1267,6 +1324,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         final(out).gives(r, size as int),
         p@.addr != 0 ==> blk.block(p),
         p@.addr != 0 && size != 0 && r@.addr == 0 ==> *final(out) == blk,
+        p@.addr != 0 && size != 0 && r@.addr != 0 && r@.addr != p@.addr ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int }),
         p@.addr != 0 && size != 0 ==> (r@.addr == p@.addr <==> keeps(p, size, 1, blk.len())),
         r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
         p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
@@ -1301,15 +1359,13 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         broadcast use vstd::layout::align_of_u8;
         shared.lemma_regions_ok();
         blk.theorem_apart(out);
-        blk.lemma_rw(p, old as int);
-        out.lemma_rw(q, size as int);
         // The new block is apart from `p`'s, so not at `p`: a move.
         blk.lemma_len_pos();
         assert(q@.addr != p@.addr);
     }
-    // SAFETY: `p` has `old` readable bytes, `q` at least `size` writable
-    // ones, and they are distinct allocations.
-    unsafe { ptr::copy_nonoverlapping(p, q, old.min(size)) };
+    // SAFETY: `blk` holds the permission to `p`'s `old` usable bytes and
+    // `out` to `q`'s `size` or more; the two share no byte.
+    unsafe { copy_moved(p, q, old.min(size), Tracked(&mut blk), Tracked(out)) };
     heap::free(shared, p, Tracked(blk));
     q
 }
@@ -1632,6 +1688,7 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(blk)
         r.0@.addr == 0 ==> r.2@.val() == 0,
         r.0@.addr != 0 ==> usable_is(r.0, n * m, r.2@.val() as int),
         final(blk).gives(r.0, n * m),
+        r.0@.addr != 0 ==> final(blk).reads_zero(0, final(blk).len()),
         r.0@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let Some(size) = n.checked_mul(m) else {
@@ -1660,6 +1717,9 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(blk)
                     }
                 }
                 lemma_class_gives(*blk, p, c as int, size);
+                if p@.addr != 0 {
+                    blk.lemma_slot_len(p, c as int);
+                }
             }
             (p, zeroed, class_size(c), z)
         }
@@ -1691,13 +1751,16 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(blk)
         return (enomem(Tracked(errno)), Tracked(Zeroed::empty(0)), s);
     }
     let z = if !zeroed {
+        let ghost orig = *blk;
         proof {
-            broadcast use vstd::layout::align_of_u8;
-            blk.lemma_rw(p, u as int);
+            blk.lemma_mem();
         }
-        // SAFETY: `p` is a fresh allocation of `u` usable bytes.
-        let z = unsafe { crate::vspec::zero::write_zero(p, u) };
+        let tracked mut mem = blk.take_mem();
+        // SAFETY: `mem` is the permission to the fresh block's `u` usable
+        // bytes.
+        let z = unsafe { crate::vspec::user::zero_user(p, u, Tracked(&mut mem)) };
         proof {
+            blk.put_mem(mem, orig);
             // `u` is the block's usable size.
             if cls >= 0 {
                 crate::vspec::zero::lemma_covers_slot(z@, p, cls, 0, size as int);
@@ -1707,7 +1770,25 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(blk)
         }
         z
     } else {
-        z
+        // Known zero: the allocator's token for the block's `u` usable
+        // bytes, which its permission then reads as zero.
+        let Tracked(za) = z;
+        let tracked z0;
+        proof {
+            let tracked (zs, _) = za.split(u as int);
+            blk.lemma_mem();
+            let ghost orig = *blk;
+            let tracked mut mem = blk.take_mem();
+            crate::vspec::user::axiom_zeroed_bytes(&zs, &mut mem);
+            blk.put_mem(mem, orig);
+            if cls >= 0 {
+                crate::vspec::zero::lemma_covers_slot(zs, p, cls, 0, size as int);
+            } else {
+                crate::vspec::zero::lemma_covers_huge(zs, p, 0, size as int);
+            }
+            z0 = zs;
+        }
+        Tracked(z0)
     };
     let s = store_usable(usable, u);
     (p, z, s)
@@ -1756,6 +1837,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         final(out).gives(r.0, size as int),
         p@.addr != 0 ==> blk.block(p),
         p@.addr != 0 && size != 0 && r.0@.addr == 0 ==> *final(out) == blk,
+        p@.addr != 0 && size != 0 && r.0@.addr != 0 && r.0@.addr != p@.addr ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int }),
         p@.addr != 0 && size != 0 ==> (r.0@.addr == p@.addr <==> keeps(p, size, 1, blk.len())),
         r.0@.addr == 0 ==> r.1@.val() == 0,
         r.0@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
@@ -1791,15 +1873,13 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         broadcast use vstd::layout::align_of_u8;
         shared.lemma_regions_ok();
         blk.theorem_apart(out);
-        blk.lemma_rw(p, old as int);
-        out.lemma_rw(q, size as int);
         // The new block is apart from `p`'s, so not at `p`: a move.
         blk.lemma_len_pos();
         assert(q@.addr != p@.addr);
     }
-    // SAFETY: `p` has `old` readable bytes, `q` at least `size` writable
-    // ones, and they are distinct allocations.
-    unsafe { ptr::copy_nonoverlapping(p, q, old.min(size)) };
+    // SAFETY: `blk` holds the permission to `p`'s `old` usable bytes and
+    // `out` to `q`'s `size` or more; the two share no byte.
+    unsafe { copy_moved(p, q, old.min(size), Tracked(&mut blk), Tracked(out)) };
     heap::free(shared, p, Tracked(blk));
     (q, s)
 }

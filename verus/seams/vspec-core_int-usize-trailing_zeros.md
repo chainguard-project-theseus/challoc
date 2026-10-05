@@ -1,6 +1,6 @@
 # `usize::trailing_zeros`
 
-Seam S277 of `verus/SEAMS.md`: src/vspec/core_int.rs:13. Kind: assume_spec. Category: core library.
+Seam S276 of `verus/SEAMS.md`: src/vspec/core_int.rs:13. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

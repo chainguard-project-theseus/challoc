@@ -148,8 +148,6 @@ read_full	termination	none (assumption)
 write_all	termination	none (assumption)
 axiom_user_va_limit	platform/kernel fact	none (assumption)
 axiom_auth_sign	platform/kernel fact	Islaris/Isla	discharged (verus/seams/sys-pac-axiom_auth_sign.md)
-axiom_slot_writable	allocator invariant	Verus
-axiom_huge_writable	allocator invariant	Verus
 check	panic/abort	Kani	discharged (verus/seams/vspec-check-check.md)
 abort_integrity	panic/abort	Kani
 axiom_class_table_wf	allocator invariant	Kani
@@ -157,6 +155,10 @@ thp_name	core library	Kani
 stats_allocated	core library	Kani	discharged (verus/seams/vspec-print-stats_allocated.md)
 axiom_ptr_add_addr	core library	Kani	discharged (verus/seams/vspec-ptr-axiom_ptr_add_addr.md)
 axiom_raw_valid	raw pointer (internal)	none (assumption)
+axiom_hand_out	allocator invariant	none (assumption)
+axiom_zeroed_bytes	allocator invariant	none (assumption)
+axiom_cast	raw pointer (internal)	none (assumption)
+copy_user	raw pointer (internal)	Kani
 axiom_fresh_anon_zero	platform/kernel fact	none (assumption)
 axiom_discarded_zero	platform/kernel fact	none (assumption)
 Unbacked::commit	platform/kernel fact	none (assumption)
