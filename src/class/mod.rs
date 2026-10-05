@@ -107,6 +107,7 @@ use vstd::std_specs::bits::{axiom_u64_trailing_zeros, u64_trailing_zeros};
 use vstd::std_specs::iter::IteratorSpec;
 
 mod abort;
+mod complete;
 mod decay;
 mod fresh;
 mod sets;
@@ -869,14 +870,16 @@ impl Inner {
             ==> slab_owner(self.table@.spec_class() as int, s as int) == self.arena@
     }
 
-    /// The ghost link at slab `s`, apart from the current group: a
-    /// committed slab is owned and an owned one that left `Fresh` is
-    /// committed; a partial slab is `Active`; the `empty` and `purged`
+    /// The ghost link at slab `s`, apart from the current group: the
+    /// committed slabs are exactly the owned ones that left `Fresh` (a
+    /// slab `next_fresh_slab` commits is made `Active` by `take` in the
+    /// same lock hold); a partial slab is `Active`; the `empty` and `purged`
     /// sets are exactly the owned slabs in those states; an `Empty`
     /// slab's `dirty_at` stamp is not 0; and a guard slab is uncommitted
     /// and, when owned, `Fresh` (its descriptor stays zero).
     spec fn slab_core(&self, s: nat) -> bool {
         &&& self.committed@.contains(s) ==> self.owns(s)
+        &&& self.committed@.contains(s) ==> self.st(s) != State::Fresh
         &&& self.owns(s) && self.st(s) != State::Fresh ==> self.committed@.contains(s)
         &&& self.partial.map@.contains(s) ==> self.owns(s) && self.st(s) == State::Active
         &&& self.empty.map@.contains(s) == (self.owns(s) && self.st(s) == State::Empty)
@@ -2143,6 +2146,49 @@ impl ClassState {
         }
     }
 
+    /// What a refill's lock hold that reserved nothing saw (claim
+    /// completeness, `verus/THEOREMS.md`): the lock value `g` it left,
+    /// with the invariant, both idle sets empty, and each partial slab's
+    /// `live` load, kept in `seen`, at `nslots` or more. With the link,
+    /// every committed slab of the arena is `Active`
+    /// ([`ClassState::lemma_exhausted`]).
+    spec fn exhausted(&self, g: Inner, seen: Map<nat, usize>) -> bool {
+        &&& g.inv()
+        &&& g.nbits() == self.spec_nslabs()
+        &&& g.arena@ == self.arena
+        &&& g.table@ == self.spec_table()
+        &&& g.empty.map@ == VSet::<nat>::empty()
+        &&& g.purged.map@ == VSet::<nat>::empty()
+        &&& forall|x: nat| #[trigger] g.partial.map@.contains(x) ==> seen.contains_key(x)
+        &&& forall|x: nat| #[trigger] g.partial.map@.contains(x) ==> seen[x] >= class_table()[self.spec_class() as int].nslots
+    }
+
+    /// `plan`'s scan so far: every partial slab below `lim` has its `live`
+    /// load in `seen`, at `nslots` or more.
+    spec fn seen_below(&self, g: Inner, seen: Map<nat, usize>, lim: int) -> bool {
+        &&& forall|x: nat| #[trigger] g.partial.map@.contains(x) && x < lim ==> seen.contains_key(x)
+        &&& forall|x: nat| #[trigger] g.partial.map@.contains(x) && x < lim ==> seen[x] >= class_table()[self.spec_class() as int].nslots
+    }
+
+    /// In a lock value [`ClassState::exhausted`] describes, every committed
+    /// slab is owned, `Active` and not a guard, and a partial one read
+    /// `live >= nslots`.
+    proof fn lemma_exhausted(&self, g: Inner, seen: Map<nat, usize>, s: nat)
+        requires
+            self.exhausted(g, seen),
+            g.committed@.contains(s),
+        ensures
+            s < self.spec_nslabs(),
+            g.owns(s),
+            g.st(s) == State::Active,
+            !self.spec_table().spec_is_guard(s as usize),
+            g.partial.map@.contains(s) ==> seen.contains_key(s) && seen[s] >= class_table()[self.spec_class() as int].nslots,
+    {
+        assert(g.slab_ok(s));
+        assert(!g.empty.map@.contains(s));
+        assert(!g.purged.map@.contains(s));
+    }
+
     /// One lock hold of a refill: reserve up to `want` slots across up to
     /// [`MAX_PICKS`] slabs, lowest address first, and return the number of
     /// picks written. Zero picks means nothing more can be committed.
@@ -2158,7 +2204,11 @@ impl ClassState {
     /// every slot is reserved here leaves the partial set at once: nothing
     /// in it can be released before this claim hands slots out, so no
     /// release can race the clear.
-    // The last four arguments are tracked state.
+    ///
+    /// No picks for a non-zero `want` means the hold ran dry: `ex` is the
+    /// lock value it left and the `live` loads of its partial slabs, which
+    /// [`ClassState::exhausted`] describes (claim completeness).
+    // The last five arguments are tracked state.
     #[allow(clippy::too_many_arguments)]
     // Not isolated: the loops return while the guard borrows `ord`, whose
     // value `Lock::lock` states before them.
@@ -2171,6 +2221,7 @@ impl ClassState {
         Tracked(ptoks): Tracked<&mut Map<int, GhostSubset<int>>>,
         Tracked(pz): Tracked<&mut Map<int, Zeroed>>,
         Tracked(pm): Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
+        Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (np: usize)
         requires
@@ -2179,6 +2230,7 @@ impl ClassState {
             old(ord).allows(rank_class(0, 0)),
         ensures
             *final(ord) == *old(ord),
+            np == 0 && want > 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
             picks_zero(self.spec_table(), final(picks)@, 0, np as int, *final(pz)),
             picks_marks(self.spec_table(), final(picks)@, 0, np as int, *final(pm)),
             picks_owned(self.spec_class() as int, self.spec_arena(), final(picks)@, 0, np as int),
@@ -2197,10 +2249,15 @@ impl ClassState {
         let mut np = 0;
         let mut remaining = want;
         let mut next = g.partial.map.lowest_set();
+        let ghost mut seen: Map<nat, usize> = Map::empty();
         while let Some(s) = next
             invariant
                 crate::sys::may_abort(),
                 under.allows(rank_table(0)),
+                np == 0 ==> self.seen_below(g@, seen, match next {
+                    Some(x) => x as int,
+                    None => self.spec_nslabs() as int,
+                }),
                 g@.inv(),
                 g@.nbits() == self.spec_nslabs(),
                 g@.arena@ == self.arena,
@@ -2221,12 +2278,23 @@ impl ClassState {
                 },
         {
             if remaining == 0 || np == MAX_PICKS {
+                proof {
+                    *ex = Ghost((g@, seen));
+                }
                 return np;
             }
             let desc = self.desc(s);
-            if desc.live() >= cls.nslots() {
+            let live = desc.live();
+            if live >= cls.nslots() {
+                let ghost g0 = g@;
+                proof {
+                    seen = seen.insert(s as nat, live);
+                }
                 if desc.state() == State::Active && self.table().bits(s).is_full() {
                     g.clear_partial(s);
+                }
+                proof {
+                    assert(g@.partial.map@.subset_of(g0.partial.map@));
                 }
             } else {
                 let ghost before = picks@;
@@ -2252,6 +2320,7 @@ impl ClassState {
             }
             next = g.partial.map.lowest_set_from(s + 1);
         }
+        let ghost mut dry = false;
         while remaining > 0 && np < MAX_PICKS
             invariant
                 crate::sys::may_abort(),
@@ -2269,11 +2338,17 @@ impl ClassState {
                 picks_zero(self.spec_table(), picks@, 0, np as int, *pz),
                 picks_marks(self.spec_table(), picks@, 0, np as int, *pm),
                 picks_owned(self.spec_class() as int, self.arena, picks@, 0, np as int),
+                np == 0 ==> self.seen_below(g@, seen, self.spec_nslabs() as int),
             decreases MAX_PICKS - np,
         {
             let s = match self.next_slab(&mut g, meta, Tracked(&mut under)) {
                 Some(s) => s,
-                None => break,
+                None => {
+                    proof {
+                        dry = true;
+                    }
+                    break;
+                },
             };
             let ghost before = picks@;
             let ghost k = np;
@@ -2295,6 +2370,12 @@ impl ClassState {
         }
         proof {
             lemma_picks_sum(picks@, picks@, np as int);
+            // Dry: the scan saw every partial slab and `next_slab` found
+            // both idle sets empty.
+            if np == 0 && want > 0 {
+                assert(dry);
+            }
+            *ex = Ghost((g@, seen));
         }
         np
     }
@@ -2783,7 +2864,8 @@ impl ClassState {
             slots_in(final(out)@, self.spec_class() as int, 0, r.n as int),
     {
         let tracked mut toks = SlotToks::empty();
-        self.claim_with(meta, out, None, Tracked(&mut toks), Tracked(ord)).0
+        let tracked mut ex: Ghost<(Inner, Map<nat, usize>)> = Ghost(arbitrary());
+        self.claim_with(meta, out, None, Tracked(&mut toks), Tracked(&mut ex), Tracked(ord)).0
     }
 
     /// [`claim`], with the claimed slots' tokens: `toks` gets the token of
@@ -2806,7 +2888,8 @@ impl ClassState {
             final(toks).frame(*old(toks), 0, r.0.n as int),
             claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
     {
-        self.claim_with(meta, out, None, Tracked(toks), Tracked(ord))
+        let tracked mut ex: Ghost<(Inner, Map<nat, usize>)> = Ghost(arbitrary());
+        self.claim_with(meta, out, None, Tracked(toks), Tracked(&mut ex), Tracked(ord))
     }
 
     /// [`claim`] for `slot_randomize` (design section 4): the same slabs
@@ -2860,7 +2943,8 @@ impl ClassState {
             final(toks).frame(*old(toks), 0, r.0.n as int),
             claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
     {
-        let (c, Tracked(z)) = self.claim_with(meta, out, Some(rng), Tracked(toks), Tracked(ord));
+        let tracked mut ex: Ghost<(Inner, Map<nat, usize>)> = Ghost(arbitrary());
+        let (c, Tracked(z)) = self.claim_with(meta, out, Some(rng), Tracked(toks), Tracked(&mut ex), Tracked(ord));
         let tracked mut z = z;
         let ghost mid = out@;
         let ghost size = class_table()[self.spec_class() as int].size as int;
@@ -2935,7 +3019,7 @@ impl ClassState {
     /// [`claim_random`]: ClassState::claim_random
     #[verifier::spinoff_prover]
     #[verifier::exec_allows_no_decreases_clause]
-    fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>, Tracked(toks): Tracked<&mut SlotToks>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+    fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>, Tracked(toks): Tracked<&mut SlotToks>, Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -2948,6 +3032,9 @@ impl ClassState {
             final(toks).owns(self.spec_table(), final(out)@, 0, 0, r.0.n as int),
             final(toks).frame(*old(toks), 0, r.0.n as int),
             claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
+            // Claim completeness: a non-empty claim returns nothing only after a
+            // lock hold that ran dry ([`ClassState::exhausted`]).
+            r.0.n == 0 && old(out)@.len() > 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
     {
         // The claim does not use the picks' owners (`plan` states them).
         hide(picks_owned);
@@ -2962,7 +3049,10 @@ impl ClassState {
         let mut got = 0;
         let mut zeroed = true;
         let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
+        let ghost mut dry = false;
         while got < out.len()
+            invariant_except_break
+                !dry,
             invariant
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
@@ -2977,14 +3067,20 @@ impl ClassState {
                 toks.holds(t, out@, 0, 0, got as int),
                 toks.frame(*old(toks), 0, got as int),
                 zeroed ==> zero_keys(z, out@, 0, 0, got as int, s.size),
+                dry ==> (got == 0 && out@.len() > 0 ==> self.exhausted(ex@.0, ex@.1)),
                 ord.allows(rank_class(0, 0)),
                 *ord == *old(ord),
+            ensures
+                dry || got >= out@.len(),
         {
             let tracked mut ptoks: Map<int, GhostSubset<int>> = Map::tracked_empty();
             let tracked mut pz: Map<int, Zeroed> = Map::tracked_empty();
             let tracked mut pm: Map<int, GhostPersistentSubset<int>> = Map::tracked_empty();
-            let np = self.plan(meta, out.len() - got, &mut picks, Tracked(&mut ptoks), Tracked(&mut pz), Tracked(&mut pm), Tracked(ord));
+            let np = self.plan(meta, out.len() - got, &mut picks, Tracked(&mut ptoks), Tracked(&mut pz), Tracked(&mut pm), Tracked(&mut *ex), Tracked(ord));
             if np == 0 {
+                proof {
+                    dry = true;
+                }
                 break;
             }
             let ghost g0 = got as int;

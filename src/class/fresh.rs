@@ -48,6 +48,11 @@ impl ClassState {
             final(g).table == old(g).table,
             r is None ==> final(g).inv(),
             r matches Some(s) ==> s < self.spec_nslabs() && final(g).ready(s as nat),
+            // `None` only once both idle sets are empty, with the partial
+            // set as it was (claim completeness).
+            r is None ==> final(g).empty.map@ == vstd::set::Set::<nat>::empty()
+                && final(g).purged.map@ == vstd::set::Set::<nat>::empty()
+                && final(g).partial.map@ == old(g).partial.map@,
     {
         // Spelled out, not `empty_take` and `purged_take`: this runs
         // inlined in `claim_with` (through `plan`), whose machine
@@ -89,13 +94,7 @@ impl ClassState {
             }
             return Some(s);
         }
-        let r = self.next_fresh_slab(g, meta, Tracked(ord));
-        proof {
-            if let Some(s) = r {
-                assert(g.slab_ok(s as nat));
-            }
-        }
-        r
+        self.next_fresh_slab(g, meta, Tracked(ord))
     }
 
     /// The fresh half of [`next_slab`], for an arena whose sets are empty:
@@ -128,11 +127,18 @@ impl ClassState {
             old(ord).allows(rank_table(0)),
         ensures
             *final(ord) == *old(ord),
-            final(g).inv(),
+            r is None ==> final(g).inv(),
+            // The slab handed out is committed and still `Fresh`, which the
+            // link admits only until `take` makes it `Active`.
+            r matches Some(s) ==> final(g).inv_but(s as int),
             final(g).nbits() == old(g).nbits(),
+            final(g).partial.map@ == old(g).partial.map@,
+            final(g).empty.map@ == old(g).empty.map@,
+            final(g).purged.map@ == old(g).purged.map@,
             r matches Some(s) ==> s < self.spec_nslabs()
                 && final(g).owns(s as nat) && final(g).st(s as nat) == State::Fresh
                 && final(g).committed@.contains(s as nat)
+                && !self.spec_table().spec_is_guard(s)
                 && !(final(g).group_next <= s < final(g).group_end),
             forall|s: nat| #[trigger] old(g).owns(s) ==> final(g).owns(s) && final(g).st(s) == old(g).st(s)
                 && final(g).dirty@[s] == old(g).dirty@[s],
@@ -167,6 +173,9 @@ impl ClassState {
                 forall|s: nat| #[trigger] old(g).owns(s) ==> g.owns(s) && g.st(s) == old(g).st(s)
                     && g.dirty@[s] == old(g).dirty@[s],
                 forall|s: nat| #[trigger] old(g).committed@.contains(s) ==> g.committed@.contains(s),
+                g.partial.map@ == old(g).partial.map@,
+                g.empty.map@ == old(g).empty.map@,
+                g.purged.map@ == old(g).purged.map@,
             decreases self.spec_nslabs() - g.group_end, g.group_end - g.group_next,
         {
             broadcast use lemma_same_sets_inv;
@@ -234,7 +243,7 @@ impl ClassState {
                 g.stats.committed += 1;
                 proof {
                     g.committed@ = g.committed@.insert(s as nat);
-                    assert forall|x: nat| #[trigger] g.slab_ok(x) by {
+                    assert forall|x: nat| x != s implies #[trigger] g.slab_ok(x) by {
                         assert(g2.slab_ok(x));
                     }
                 }

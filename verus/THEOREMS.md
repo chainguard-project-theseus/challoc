@@ -5594,6 +5594,216 @@ below `MAX_ARENAS`.
 - `arena_stats_all` (`stats.arenas.4096.*`) and the report scans in
   `api/print.rs` have no keyed contract; they key their output by
   `a.index()` too.
+## 37. Slab claim never misses free capacity (at quiescence)
+
+Numbered at merge. The `file:line`s are the `fn`/`spec` line at this
+section's commit.
+
+**Statement.** A non-empty claim of an arena's state of a class returns
+no slot only after a lock hold that ran dry, in whose lock value every
+committed slab of the arena is owned, `Active` and not a guard (proved
+of the code). If the arena was quiescent at that hold, no committed slab
+had a free slot: in the ghost protocol model linked to that hold by
+premise, every one has every slot's bit set and `live == nslots`, so
+none had an unreserved free slot either. Two layers.
+
+1. **The code's half: what a dry hold saw** (`class/mod.rs`, verified).
+
+```rust
+// class/mod.rs:2977
+fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>,
+    Tracked(toks): Tracked<&mut SlotToks>, Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>,
+    Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+    ensures
+        ...
+        r.0.n == 0 && old(out)@.len() > 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
+
+// class/mod.rs:2160
+fn plan(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS], ...,
+    Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>, Tracked(ord): Tracked<&mut LockOrder>) -> (np: usize)
+    ensures
+        np == 0 && want > 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
+        ...
+
+// class/mod.rs:2099
+spec fn exhausted(&self, g: Inner, seen: Map<nat, usize>) -> bool {
+    &&& g.inv()
+    &&& g.nbits() == self.spec_nslabs()
+    &&& g.arena@ == self.arena
+    &&& g.table@ == self.spec_table()
+    &&& g.empty.map@ == VSet::<nat>::empty()
+    &&& g.purged.map@ == VSet::<nat>::empty()
+    &&& forall|x: nat| #[trigger] g.partial.map@.contains(x) ==> seen.contains_key(x)
+    &&& forall|x: nat| #[trigger] g.partial.map@.contains(x) ==> seen[x] >= class_table()[self.spec_class() as int].nslots
+}
+```
+
+   `g` is the class lock's value as the dry hold released it (the
+   invariant `Inner::inv` with the ghost link), `seen` the `live` loads of
+   that hold's partial-set scan, by slab. `claim_with` returns `n == 0`
+   for a non-empty `out` only by breaking out of its loop on a plan of no
+   picks with `want == out.len()`, and `plan` returns no picks for a
+   non-zero `want` only when its scan of the partial set took no slab
+   (every partial slab's `live` load was `nslots` or more; the slabs it
+   cleared as full left the set) and `next_slab` then returned `None`,
+   which now ensures both idle sets empty and the partial set unchanged
+   (`class/fresh.rs:35`). `lemma_exhausted` (`class/mod.rs:2120`) draws
+   the consequence in the lock value: every committed slab is owned, not a
+   guard and `Active` (neither idle set holds it, and a committed slab is
+   never `Fresh`, the new conjunct of `Inner::slab_core`,
+   `class/mod.rs:879`), and a partial one was read with `live >= nslots`.
+
+2. **The lock-free half: a ghost protocol model** (`class/complete.rs`,
+   verified). `Proto` (`:130`) is one arena's state of one class: the
+   lock's half as in `Inner` (states, committed set, the three sets) and
+   what Verus does not see in the code, per slab its set bits, `live`,
+   the released bits not yet subtracted (`pend`) and the unflushed
+   `Reopen` entries naming it (`reopen`), and per refill its unclaimed
+   reservations (`resv`) and its claimed slots not yet handed out
+   (`flight`). One step per atomic update or lock hold of the protocol:
+   `begin` (a claim starts), `own` (`take_group` hands the arena a slab
+   `Fresh`), `take` (`ClassState::take`: reserve `n <= nslots - live`,
+   `Active`, out of the partial set exactly when `live == 0` and every
+   slot is reserved), `clear` (`plan`'s clear of a full partial slab),
+   `claim` (one bit won by `finish` or `claim_prefix`), `hand_out`
+   (`claim_with` returns, every reservation met), `release`
+   (`release_word`'s `fetch_and` of one out slot, with a `Reopen` entry
+   when its word was full), `dec` (`dec_live`), `live_zero`
+   (`on_live_zero`), `reopen_step` (one entry of `reopen`) and `purge`
+   (`purge_group`). `Proto::inv` (`:216`) holds at `Proto::start`
+   (`lemma_start`, `:485`) and after every step (`lemma_step_*`,
+   `:498`-`:738`), in any interleaving. Its core (`slab_inv`, `:190`): `live`
+   is the set bits plus the unclaimed reservations plus the unsubtracted
+   releases, at most `nslots`; and a *closed* slab (`Active`, out of the
+   partial set, no `Reopen` entry pending) has every slot set or
+   reserved, and while a reservation is out it is all its closer's (the
+   refill whose `take` closed it), whose flight holds every set bit. So a
+   release of a closed slab's slot finds nothing reserved (the slot is in
+   no flight), the slab and so the slot's word full, and records an
+   entry: the slab is no longer closed. `theorem_quiescent` (`:754`): with
+   nothing in flight, `live` is the set bits and a closed slab is full.
+   `theorem_dry` (`:778`): at a quiescent state with both idle sets empty
+   and every partial slab's `live` at `nslots` or more, every committed
+   slab is `Active` with every bit set and `live == nslots`.
+   `lemma_example` (`:807`) runs one slot through `own`, `take`, `claim`,
+   `hand_out`, `release`, `reopen_step`, `dec`, `live_zero` and to
+   `purge`'s precondition, chaining the step lemmas into a state that
+   meets `theorem_dry`'s premises with a committed slab;
+   `lemma_example_clear` (`:853`) reaches `clear`'s. So the steps'
+   preconditions and the theorem's premises are not vacuous.
+
+The two layers meet in:
+
+```rust
+// class/complete.rs:898
+pub(super) proof fn theorem_claim_complete(&self, b: Proto, g: Inner, seen: Map<nat, usize>, s: nat)
+    requires
+        self.exhausted(g, seen),
+        b.inv(),
+        b.quiescent(),
+        b.nslots == class_table()[self.spec_class() as int].nslots as int,
+        b.st == g.states@,
+        b.committed == g.committed@,
+        b.partial == g.partial.map@,
+        b.empty == g.empty.map@,
+        b.purged == g.purged.map@,
+        forall|x: nat| #[trigger] seen.contains_key(x) ==> seen[x] as int == (b.live)(x),
+        g.committed@.contains(s),
+    ensures
+        s < self.spec_nslabs(),
+        g.owns(s),
+        g.st(s) == State::Active,
+        !self.spec_table().spec_is_guard(s as usize),
+        forall|x: int| 0 <= x < b.nslots ==> #[trigger] (b.bits)(s).contains(x),
+        (b.live)(s) == b.nslots,
+```
+
+So, contrapositively: if an owned, committed, non-guard slab of the
+arena has a free slot (a clear bit) or an unreserved one (`live <
+nslots`) at a quiescent hold, the claim does not return zero.
+
+**Covers.** Verified, in the code layer: `ClassState::claim_with`
+(`class/mod.rs:2977`), `plan` (`:2160`), `take` (`:2340`), `next_slab`
+and `next_fresh_slab` (`class/fresh.rs:35`, `:119`). Modelled, as
+steps of `Proto` (the code's `protocol::Refill`, `Release` and `Purge`
+steps, `class/mod.rs`), and related to the code by premise: `finish`,
+`claim_prefix`, `release_word` (`class/mod.rs:1816`), `reopen`
+(`:1878`), `dec_live`, `on_live_zero` (`:2039`), `purge_group`
+(`class/decay.rs:657`) and `take_group`. `claim` and `claim_tokens`
+(`:2832`) call `claim_with` and `claim_random` calls `claim_random_zero`,
+which calls it; each returns its claim count unchanged, passes it a local
+`ex` and does not export the ensures (their signatures are the heap's
+interface). Machine code is unchanged on x86_64 (identical to a build of
+`0c9cd77`); aarch64 was not linked here. The one exec edit binds
+`plan`'s `desc.live()` load to a local the ghost `seen` records.
+
+**Premises beyond the common ones.**
+- Quiescence at the dry hold: no claim between its `take` and its
+  return, no release between its `fetch_and` and its `dec_live` and
+  `reopen` flush, of this arena and class (`Proto::quiescent`). The
+  requesting claim itself has nothing out: a dry hold has no picks, and
+  any earlier plan of a claim that ends with no slot reserved only
+  `n == 0` picks (`take` does not promise `n > 0`), so nothing it
+  reserved or claimed is outstanding.
+- The link: the model's lock half is the lock value `g`, and each `live`
+  load of the hold read the model's count (at a quiescent state nothing
+  writes it). Verus does not see the atomics' values (common premises),
+  so the model is related to the code by premise, as theorem 22's ledger
+  is: each step's update is read from the code named above, and its
+  precondition is what the code knows there (the slot's token is out of
+  its word and in no refill's batch for `release`; `finish` claims every
+  reservation before `claim_with` returns, `r == picks_sum`, for
+  `hand_out`; `take` reads `live` under the lock, and a concurrent
+  `sub_live` only lowers it, so `n <= nslots - live` holds at the add).
+- Abstractions, each a superset of the code's behaviours: a multi-bit
+  `fetch_or` or `fetch_and` is a run of one-bit steps; the zero pick's
+  prefix claims are `claim` steps after the `take` rather than inside
+  its hold; a release batch's `Reopen` list is a per-slab count of its
+  entries (the list is thread-local, so pushing at the `fetch_and` is
+  unobservable), with `dedup` allowed only when an entry is pending, as
+  `Reopen::push` drops a slab only when the list already ends with it;
+  `plan`'s clear asks only "full or an entry pending" at the clear: its
+  `live` and `is_full` loads are not a snapshot, but a word read full
+  and released since then was found full by the first such release,
+  whose entry waits for the lock the clear holds.
+- Arena isolation (theorem 14): the slots released to this state are of
+  slabs it owns (`release_owned`'s owner checks), and `reopen` and
+  `on_live_zero` act only on its own slabs.
+
+**Scope and where the statement is weaker than the code.**
+- Partial correctness: `claim_with`'s retry loop's termination stays
+  assumed (`exec_allows_no_decreases_clause`), so the statement is of a
+  claim that returns.
+- The requesting arena only, and quiescent states only: a concurrent
+  release between clearing a bit and its `Reopen` flush can hide a free
+  slot from a refill (the slab is out of the partial set until the
+  flush), and an unclaimed reservation or a release not yet subtracted
+  can make `live` overstate or understate the set bits. Another arena's
+  slabs are not available to it, and the uncommitted rest of its current
+  group is excluded (a dry `next_fresh_slab` found no commit possible).
+- The ghost outputs are set from the loads by `plan`'s body; to a caller
+  of `claim_with`, `ex` is a value for which `exhausted` holds, and the
+  tie of `seen` to the loads (and of the model to the code) is the link
+  premise above.
+- The model is not threaded through the code: nothing carries a `Proto`
+  from step to step, and `theorem_claim_complete` relates it to the lock
+  value by premise. A code-level version would need the descriptor's
+  `live` and the `Reopen` lists as ghost state inside the bitmap words'
+  invariants (TODO, theorem 19's still-open item). Unlike `src/model`,
+  whose steps mirror the code's `protocol` enums by construction, the
+  steps here are tied to the code by reading it; a run-time cross-check
+  (in `src/model`'s `check`: at a quiescent state, a refill that comes up
+  short leaves no free slot) is not written.
+- The public claims do not export the fact (their contracts are
+  unchanged); it is stated at `claim_with`, which `claim_tokens` and
+  `claim_random_zero` call and return directly.
+
+**Findings.** None: the protocol keeps the sets complete. The new
+`Inner::slab_core` conjunct (a committed slab is not `Fresh`) needed
+`next_fresh_slab` to hand its committed slab out under `inv_but`, which
+`take` already required; `next_slab` and `next_fresh_slab` now state that
+they leave the partial set alone and that `None` means both idle sets
+are empty.
 
 ## Interface contract
 

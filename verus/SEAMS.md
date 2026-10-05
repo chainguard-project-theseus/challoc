@@ -1777,7 +1777,7 @@ fn page_group_is_idle(&self, Ghost(g): Ghost<Inner>, slab: usize, spp: usize) ->
 
 ### S65. `axiom_class_lock_inv`
 
-src/class/mod.rs:1369. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:1372. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the class lock's value keeps the set/count seam's invariant, ghost link included, while the lock is free.
@@ -1791,7 +1791,7 @@ broadcast axiom fn axiom_class_lock_inv(v: Inner)
 
 ### S66. `axiom_class_lock`
 
-src/class/mod.rs:1377. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:1380. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the sets behind a class lock stay over the slab count they were created with.
@@ -1805,7 +1805,7 @@ broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
 
 ### S67. `PartialEqSpecImpl for State`
 
-src/class/mod.rs:1386. Kind: spec_impl. Category: core library.
+src/class/mod.rs:1389. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/class-PartialEqSpecImpl-for-State.md).
 
 ```rust
@@ -1822,7 +1822,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for State {
 
 ### S68. `ClassState::owner_locked`
 
-src/class/mod.rs:1420. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1423. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Bridge (trusted): under this arena's class lock, a slab whose group's owner word names this arena is one of its owned slabs; the word's value is [`slab_owner`] (the read in its body, `SlabTable::owner`, ensures it).
@@ -1840,7 +1840,7 @@ fn owner_locked(&self, g: &Inner, slab: usize) -> (r: u16)
 
 ### S69. `ClassState::state_locked`
 
-src/class/mod.rs:1452. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1455. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Bridge (trusted): under an arena's class lock, the descriptor of a slab the arena owns holds the state its ghost records.
@@ -1857,7 +1857,7 @@ fn state_locked(&self, g: &Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>) -> (r
 
 ### S70. `ClassState::set_state_locked`
 
-src/class/mod.rs:1474. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1477. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Bridge (trusted): `SlabDesc::set_state` on an owned slab's descriptor, with the ghost state updated to match (the write side of [`state_locked`]'s assumption).
@@ -1886,7 +1886,7 @@ fn set_state_locked(&self, g: &mut Inner, d: &SlabDesc, Ghost(slab): Ghost<usize
 
 ### S71. `ClassState::dirty_locked`
 
-src/class/mod.rs:1510. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1513. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Bridge (trusted): under an arena's class lock, the descriptor of a slab the arena owns holds the `dirty_at` stamp its ghost records.
@@ -1902,7 +1902,7 @@ fn dirty_locked(&self, g: &Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>) -> (r
 
 ### S72. `ClassState::set_dirty_locked`
 
-src/class/mod.rs:1528. Kind: external_body. Category: allocator invariant.
+src/class/mod.rs:1531. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Bridge (trusted): `SlabDesc::set_dirty_at` on an owned slab's descriptor, with the ghost stamp updated to match (the write side of [`dirty_locked`]'s assumption).
@@ -1930,7 +1930,7 @@ fn set_dirty_locked(&self, g: &mut Inner, d: &SlabDesc, Ghost(slab): Ghost<usize
 
 ### S73. `TablePtr::get`
 
-src/class/mod.rs:1595. Kind: external_body. Category: raw pointer (internal).
+src/class/mod.rs:1598. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The table.
@@ -1943,7 +1943,7 @@ pub(super) fn get(&self) -> (r: &SlabTable)
 
 ### S74. `ClassState::take_checks`
 
-src/class/mod.rs:2470. Kind: external_body. Category: panic/abort.
+src/class/mod.rs:2551. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > `take`'s debug checks: the slab's owner word and its descriptor's arena name this arena.
@@ -1959,13 +1959,13 @@ fn take_checks(&self, g: &Inner, desc: &SlabDesc, slab: usize, live: usize)
 
 ### S75. `ClassState::claim_with`
 
-src/class/mod.rs:2938. Kind: no_decreases. Category: termination.
+src/class/mod.rs:3022. Kind: no_decreases. Category: termination.
 Tool: RefinedRust. Status: trusted.
 
 > The loop of [`claim`] and [`claim_random`].
 
 ```rust
-fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>, Tracked(toks): Tracked<&mut SlotToks>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>, Tracked(toks): Tracked<&mut SlotToks>, Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -1978,11 +1978,14 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
         final(toks).owns(self.spec_table(), final(out)@, 0, 0, r.0.n as int),
         final(toks).frame(*old(toks), 0, r.0.n as int),
         claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
+        // Claim completeness: a non-empty claim returns nothing only after a
+        // lock hold that ran dry ([`ClassState::exhausted`]).
+        r.0.n == 0 && old(out)@.len() > 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
 ```
 
 ### S76. `axiom_fresh_slots_zero`
 
-src/class/mod.rs:3867. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:3963. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `vspec::sys::axiom_fresh_anon_zero` (`mmap(2)`: a private anonymous mapping reads as zero until it is first written) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -2011,7 +2014,7 @@ axiom fn axiom_fresh_slots_zero(
 
 ### S77. `axiom_discarded_slots_zero`
 
-src/class/mod.rs:3905. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:4001. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `vspec::sys::axiom_discarded_zero` (`madvise(2)`: after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.

@@ -1911,6 +1911,7 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
+            Tracked::assume_new(),
         );
         assert_eq!(np, 1);
         assert_eq!((picks[0].slab, picks[0].n, picks[0].state), (0, 1, prior));
@@ -2088,6 +2089,7 @@ fn a_plan_over_a_slab_with_live_above_nslots_aborts() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
 }
 
@@ -2107,6 +2109,7 @@ fn a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts() {
         &env.meta,
         1,
         &mut picks,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -2298,6 +2301,7 @@ fn a_plan_that_takes_a_purged_slab_the_counts_do_not_know_aborts() {
         &env.meta,
         1,
         &mut picks,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
