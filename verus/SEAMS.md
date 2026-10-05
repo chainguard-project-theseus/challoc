@@ -157,7 +157,7 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S1 | `get_new_handler_addr` | body | asm | Isla | trusted |
+| S1 | `get_new_handler_addr` | body | asm | Isla | discharged |
 | S2 | `throw_bad_alloc_addr` | body | asm | Isla | discharged |
 | S3 | `call_throw_bad_alloc` | body | fnptr | Kani | trusted |
 | S4 | `Handler` | type | fnptr | Kani | trusted |
@@ -917,7 +917,7 @@ the full name, the line and the contract.
 ### S1. `get_new_handler_addr`
 
 src/api/cxx.rs:67. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (verus/seams/api-cxx-get_new_handler_addr.md).
 
 > Address of libstdc++'s `std::get_new_handler()`, or null when no libstdc++ is loaded in the process.
 

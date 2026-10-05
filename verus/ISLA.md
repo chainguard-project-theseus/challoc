@@ -1,6 +1,6 @@
 # Isla: the inline-assembly seams
 
-Twenty-six seams in [SEAMS.md](SEAMS.md) are inline assembly (category
+Twenty-seven seams in [SEAMS.md](SEAMS.md) are inline assembly (category
 "inline asm", tool Islaris/Isla): raw syscalls, the TLS slot and thread
 pointer, GOT loads of weak symbols, pointer authentication and the trap
 instruction. Verus sees only their signatures.
@@ -11,9 +11,9 @@ x86-64 model translated from the ACL2 x86isa model) and prints, per
 instruction, every path as a trace of register and memory events with
 SMT definitions;
 [Islaris](https://github.com/rems-project/islaris) proves properties of
-such traces in Coq/Iris. This file is the setup, the triage of the 26
+such traces in Coq/Iris. This file is the setup, the triage of the 27
 seams (and of `axiom_auth_sign`, a platform fact the same runs check),
-all twenty-seven discharged (the 26 and `axiom_auth_sign`), and the plan
+all twenty-eight discharged (the 27 and `axiom_auth_sign`), and the plan
 for what is left: other CPUs, the linked code, Islaris and CI. Seam
 numbers and line numbers are from 8635213.
 
@@ -289,7 +289,7 @@ then:
    undefined: a failure, not a Z3 error); and checks that the checker
    refuses (a load error, not a `FAIL`) a job with no `final.rip` assert;
 8. runs the x86_64 halves of the mixed seams (section 12; "The x86_64
-   mixed seams" below): the exact shape of the three GOT functions and
+   mixed seams" below): the exact shape of the four GOT functions and
    `rseq::symbols`, every `R_X86_64_GOTTPOFF` site in the TLS load or
    store shape (one job per register assignment, one encoding each),
    every load of `%fs:0`, every `ud2` as `0f 0b`, and their jobs;
@@ -403,13 +403,14 @@ and asks Z3 all of a combination's properties in one run.
 
 ## Triage
 
-The 26 inline-asm seams and `axiom_auth_sign`, by place. "GOT" is a load
+The 27 inline-asm seams and `axiom_auth_sign`, by place. "GOT" is a load
 of a weak symbol's GOT slot, "TLS" the `challoc_tls` slot through its
 initial-exec GOT entry. The status is the ledger's; a seam with an
 x86_64 half needs both halves.
 
 | # | item | x86_64 | aarch64 | status |
 |---|---|---|---|---|
+| S1 | `get_new_handler_addr` | GOT `mov` | GOT `adrp`+`ldr` | discharged |
 | S2 | `throw_bad_alloc_addr` | GOT `mov` | GOT `adrp`+`ldr` | discharged |
 | S98 | `malloc_conf_addr` | GOT `mov` | GOT `adrp`+`ldr` | discharged |
 | S99 | `je_malloc_conf_addr` | GOT `mov` | GOT `adrp`+`ldr` | discharged |
@@ -430,7 +431,7 @@ Per seam: the contract (from SEAMS.md), what an Isla run establishes
 against it, and the residual assumption that stays trusted. Every one is
 discharged; the details are in "Discharged" below and in the records.
 
-- **S2, S98, S99** (`api/cxx.rs`, `config.rs`; `#[inline(never)]`).
+- **S1, S2, S98, S99** (`api/cxx.rs`, `config.rs`; `#[inline(never)]`).
   Contract: `fn ..._addr() -> *const c_void`, no `ensures`. aarch64
   (`got-fn.job.in`): each function is exactly `adrp x0, :got:sym; ldr
   x0, [x0, :got_lo12:sym]; ret`; x86_64 (`x86/got-fn.job`): exactly `mov
@@ -471,13 +472,14 @@ discharged; the details are in "Discharged" below and in the records.
 
 ## Discharged
 
-Twenty-seven seams (all 26 inline-asm seams and `axiom_auth_sign`), each
+Twenty-eight seams (all 27 inline-asm seams and `axiom_auth_sign`), each
 with a five-part record under `verus/seams/` and the status in
 `verus/seams.overrides`:
 
-- S2, S98, S99, S191, S192, S222, S242, S244, the mixed seams, one
+- S1, S2, S98, S99, S191, S192, S222, S242, S244, the mixed seams, one
   record each for both halves
-  ([S2](seams/api-cxx-throw_bad_alloc_addr.md),
+  ([S1](seams/api-cxx-get_new_handler_addr.md),
+  [S2](seams/api-cxx-throw_bad_alloc_addr.md),
   [S98](seams/config-linux-malloc_conf_addr.md),
   [S99](seams/config-linux-je_malloc_conf_addr.md),
   [S191](seams/rseq-symbols.md),

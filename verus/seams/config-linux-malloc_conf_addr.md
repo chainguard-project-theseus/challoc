@@ -50,7 +50,7 @@ Isla (rems-project/isla e9b5d94), traces composed and checked by
    `R_AARCH64_LD64_GOT_LO12_NC malloc_conf`, and `ret`.
 3. **Isla, aarch64.** On the Sail Armv8.5-A model (`armv8p5.ir`,
    isla-snapshots d8b3101), the three instructions in sequence
-   (`got-fn.job.in`, one job for this function and the two others of
+   (`got-fn.job.in`, one job for this function and the three others of
    the same shape), at Non-secure EL0 with the PC symbolic and the two
    relocated immediates symbolic opcode fields, under the relocations'
    definitions (ADRP's immediate `Page(got) - Page(P) >> 12` within 21
@@ -66,7 +66,7 @@ Isla (rems-project/isla e9b5d94), traces composed and checked by
    0c6c023 with challoc's entry, `verus/isla/x86/`) in its application
    view, the processor in 64-bit mode (the function assumption of
    run.sh's section 12), the two instructions in sequence
-   (`x86/got-fn.job`, one job for the three functions) from a symbolic
+   (`x86/got-fn.job`, one job for the four functions) from a symbolic
    state with the displacement a symbolic opcode field, under the
    relocation's definition (the displacement is `got` minus the next
    instruction's address, within 32 signed bits) and the residual facts

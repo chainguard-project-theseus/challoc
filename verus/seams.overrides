@@ -183,6 +183,7 @@ src/sys/raw.rs:syscall4#2	inline asm	Islaris/Isla	discharged (verus/seams/sys-ra
 src/sys/raw.rs:syscall5#2	inline asm	Islaris/Isla	discharged (verus/seams/sys-raw-aarch64-syscall5.md)
 src/sys/raw.rs:syscall6#2	inline asm	Islaris/Isla	discharged (verus/seams/sys-raw-aarch64-syscall6.md)
 src/sys/tls.rs:get_tp	inline asm	Islaris/Isla	discharged (verus/seams/sys-tls-get_tp.md)
+src/api/cxx.rs:get_new_handler_addr	inline asm	Islaris/Isla	discharged (verus/seams/api-cxx-get_new_handler_addr.md)
 src/api/cxx.rs:throw_bad_alloc_addr	inline asm	Islaris/Isla	discharged (verus/seams/api-cxx-throw_bad_alloc_addr.md)
 src/config.rs:malloc_conf_addr	inline asm	Islaris/Isla	discharged (verus/seams/config-linux-malloc_conf_addr.md)
 src/config.rs:je_malloc_conf_addr	inline asm	Islaris/Isla	discharged (verus/seams/config-linux-je_malloc_conf_addr.md)

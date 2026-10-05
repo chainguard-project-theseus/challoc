@@ -690,10 +690,11 @@ fn_body() { # NAME-PART: the words and relocations of the one function whose sym
 		infn && /R_AARCH64_/ { print $2, $3 }
 		END { if (nfn != 1) print "functions:", nfn + 0 }' "$out/dis.txt" | tr '\n' ' '
 }
-# throw_bad_alloc_addr, malloc_conf_addr, je_malloc_conf_addr: `adrp x0,
-# :got:SYM; ldr x0, [x0, :got_lo12:SYM]; ret`, one job for the three
-# (the relocated immediates are symbolic).
-for f in 20throw_bad_alloc_addr:_ZSt17__throw_bad_allocv 16malloc_conf_addr:malloc_conf \
+# get_new_handler_addr, throw_bad_alloc_addr, malloc_conf_addr,
+# je_malloc_conf_addr: `adrp x0, :got:SYM; ldr x0, [x0, :got_lo12:SYM];
+# ret`, one job for the four (the relocated immediates are symbolic).
+for f in 20get_new_handler_addr:_ZSt15get_new_handlerv \
+	20throw_bad_alloc_addr:_ZSt17__throw_bad_allocv 16malloc_conf_addr:malloc_conf \
 	19je_malloc_conf_addr:je_malloc_conf; do
 	s=${f#*:}
 	want="90000000 R_AARCH64_ADR_GOT_PAGE $s f9400000 R_AARCH64_LD64_GOT_LO12_NC $s d65f03c0 "
@@ -1096,9 +1097,11 @@ xfn_body() { # NAME-PART: the bytes (one word per instruction) and relocations o
 		infn && /R_X86_64_/ { print $2, $3 }
 		END { if (nfn != 1) print "functions:", nfn + 0 }' "$out/dis-x86.txt" | tr '\n' ' '
 }
-# throw_bad_alloc_addr, malloc_conf_addr, je_malloc_conf_addr: `mov rax,
-# [rip + SYM@GOTPCREL]; ret`, one job for the three.
-for f in 20throw_bad_alloc_addr:_ZSt17__throw_bad_allocv 16malloc_conf_addr:malloc_conf \
+# get_new_handler_addr, throw_bad_alloc_addr, malloc_conf_addr,
+# je_malloc_conf_addr: `mov rax, [rip + SYM@GOTPCREL]; ret`, one job for
+# the four.
+for f in 20get_new_handler_addr:_ZSt15get_new_handlerv \
+	20throw_bad_alloc_addr:_ZSt17__throw_bad_allocv 16malloc_conf_addr:malloc_conf \
 	19je_malloc_conf_addr:je_malloc_conf; do
 	want="488b0500000000 R_X86_64_GOTPCREL ${f#*:}-0x4 c3 "
 	body=$(xfn_body "${f%%:*}")

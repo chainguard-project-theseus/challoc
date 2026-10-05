@@ -1,7 +1,7 @@
-# A function returning a symbol's GOT entry, x86_64 (throw_bad_alloc_addr,
-# malloc_conf_addr, je_malloc_conf_addr; verus/seams/api-cxx-*.md,
-# config-linux-*.md), on the x86 model in its application view with the
-# processor in 64-bit mode (run.sh, section 12):
+# A function returning a symbol's GOT entry, x86_64 (get_new_handler_addr,
+# throw_bad_alloc_addr, malloc_conf_addr, je_malloc_conf_addr;
+# verus/seams/api-cxx-*.md, config-linux-*.md), on the x86 model in its
+# application view with the processor in 64-bit mode (run.sh, section 12):
 #   mov rax, qword ptr [rip + SYM@GOTPCREL]   (48 8b 05, R_X86_64_GOTPCREL)
 #   ret                                        (c3)
 arch x86_64
