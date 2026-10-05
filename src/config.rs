@@ -316,7 +316,8 @@ impl Config {
     }
 
     /// Split one pair and set the key. Empty pairs (from `a,,b` or a
-    /// trailing comma) are ignored, as jemalloc ignores them.
+    /// trailing comma) are ignored, as jemalloc ignores them. A value with
+    /// an unterminated quote is malformed whatever the key.
     fn apply_pair<'a>(&mut self, pair: &'a [u8]) -> (r: Result<(), Issue<'a>>)
         requires
             old(self).wf(),
@@ -338,7 +339,9 @@ impl Config {
             assert(colon + 1 <= pair.len());
         }
         let (key, value) = (&pair[..colon], &pair[colon + 1..]);
-        let value = unquote(value);
+        let Some(value) = unquote(value) else {
+            return Err(Issue::Malformed(pair));
+        };
         if key.is_empty() || value.is_empty() {
             return Err(Issue::Malformed(pair));
         }
@@ -960,7 +963,8 @@ pub enum Value {
 /// One problem found while parsing; the offending bytes borrow the input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Issue<'a> {
-    /// No `key:value` shape (missing colon, empty key or empty value).
+    /// No `key:value` shape (missing colon, empty key, empty value or an
+    /// unterminated quote).
     Malformed(&'a [u8]),
     /// A key from no table.
     UnknownKey(&'a [u8]),
@@ -1088,13 +1092,17 @@ impl<'a> Pairs<'a> {
             return None;
         }
         // A quoted value may contain commas: skip to the closing quote when
-        // the value starts with one.
+        // the value (after the first colon) starts with one. A quote that
+        // never closes does not extend the pair; it ends at the next comma
+        // like any other.
         let mut i = 0;
+        let mut colon: Option<usize> = None;
         let mut quoted = false;
         while i < self.0.len()
             invariant
                 i <= self.0@.len(),
                 self.0 == old(self).0,
+                colon matches Some(c) ==> c < i,
             ensures
                 i <= self.0@.len(),
                 i < self.0@.len() ==> self.0@[i as int] == b',',
@@ -1107,10 +1115,17 @@ impl<'a> Pairs<'a> {
                 }
             } else if b == b',' {
                 break;
-            } else if b == b'"' && i > 0 && self.0[i - 1] == b':' {
+            } else if b == b':' && colon.is_none() {
+                colon = Some(i);
+            } else if b == b'"' && matches!(colon, Some(c) if c + 1 == i) {
                 quoted = true;
             }
             i += 1;
+        }
+        if quoted {
+            // `self.0.iter().position(|&b| b == b',').unwrap_or(i)`, spelled
+            // out: Verus does not specify `Iterator::position`.
+            i = position_of(self.0, b',').unwrap_or(i);
         }
         let pair = &self.0[..i];
         self.0 = if i < self.0.len() {
@@ -1163,24 +1178,50 @@ fn before_last_pair(text: &[u8]) -> (keep: usize)
     keep
 }
 
-/// `value` without one pair of surrounding double quotes.
-pub open spec fn unquote_spec(value: Seq<u8>) -> Seq<u8> {
-    if value.len() >= 2 && value[0] == b'"' && value[value.len() - 1] == b'"' {
-        value.subrange(1, value.len() - 1)
+/// `value` without one pair of surrounding double quotes; `None` when it
+/// opens a quote it does not close at its end (a quote inside the value
+/// included).
+pub open spec fn unquote_spec(value: Seq<u8>) -> Option<Seq<u8>> {
+    if value.len() >= 2 && value[0] == b'"' && value[value.len() - 1] == b'"'
+        && !value.subrange(1, value.len() - 1).contains(b'"') {
+        Some(value.subrange(1, value.len() - 1))
+    } else if value.len() >= 1 && value[0] == b'"' {
+        None
     } else {
-        value
+        Some(value)
     }
 }
 
-/// Strip one pair of surrounding double quotes.
-fn unquote(value: &[u8]) -> (r: &[u8])
+/// Strip one pair of surrounding double quotes; `None` when the value opens
+/// a quote it does not close at its end. (`match value { [b'"', inner @
+/// .., b'"'] if !inner.contains(&b'"') => Some(inner), [b'"', ..] => None,
+/// _ => Some(value) }`, spelled out: Verus has no slice patterns.)
+fn unquote(value: &[u8]) -> (r: Option<&[u8]>)
     ensures
-        r@ == unquote_spec(value@),
+        r matches Some(v) ==> unquote_spec(value@) == Some(v@),
+        r is None ==> unquote_spec(value@) is None,
 {
     if value.len() >= 2 && value[0] == b'"' && value[value.len() - 1] == b'"' {
-        &value[1..value.len() - 1]
+        let inner = &value[1..value.len() - 1];
+        if position_of(inner, b'"').is_none() {
+            proof {
+                assert(!inner@.contains(b'"'));
+            }
+            return Some(inner);
+        }
+        proof {
+            let j = choose|j: int| 0 <= j < inner@.len() && inner@[j] == b'"';
+            assert(inner@ == value@.subrange(1, value@.len() - 1));
+            assert(value@.subrange(1, value@.len() - 1).contains(b'"')) by {
+                assert(value@.subrange(1, value@.len() - 1)[j] == b'"');
+            }
+        }
+        return None;
+    }
+    if !value.is_empty() && value[0] == b'"' {
+        None
     } else {
-        value
+        Some(value)
     }
 }
 
@@ -2355,17 +2396,51 @@ mod tests {
     fn quoted_values_and_the_last_pair_win() {
         assert_eq!(clean("narenas:\"7\"").narenas, 7);
         assert_eq!(clean("thp:\"always\"").thp, Thp::Always);
-        // A quoted value may contain a comma; an unbalanced quote is a value.
+        // A quoted value may contain a comma.
         let (cfg, issues) = parse("thp:\"al,ways\",narenas:2");
         assert_eq!(cfg.narenas, 2);
         assert_eq!(issues.len(), 1);
         assert!(issues[0].contains("\"al,ways\""), "{}", issues[0]);
+        // An unterminated quote is malformed.
         let (_, issues) = parse("narenas:\"3");
         assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("malformed conf pair"), "{}", issues[0]);
         // Later pairs override earlier ones; a trailing comma is fine.
         let cfg = clean("narenas:2,narenas:5,tcache:false,tcache:true,");
         assert_eq!(cfg.narenas, 5);
         assert!(cfg.tcache);
+    }
+
+    /// An unterminated quote ends its pair at the next comma and is reported
+    /// as malformed, even for a key whose value is never validated, so the
+    /// pairs after it still apply and `abort_conf` sees the problem. A quote
+    /// opens only at the start of the value, never after a later colon.
+    #[test]
+    fn an_unterminated_quote_is_reported_and_ends_at_the_next_comma() {
+        let (cfg, issues) = parse("junk:\"x,narenas:1,abort_conf:true");
+        assert_eq!(cfg.narenas, 1);
+        assert!(cfg.abort_conf);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(
+            issues[0].contains("malformed conf pair \"junk:\"x\""),
+            "{}",
+            issues[0]
+        );
+        // A value opened with a quote must end with one.
+        let (_, issues) = parse("junk:\"x\"y,zero:\"");
+        assert_eq!(issues.len(), 2, "{issues:?}");
+        assert!(issues.iter().all(|i| i.contains("malformed")), "{issues:?}");
+        // Only the value is quoted: a quote after a later colon does not
+        // swallow the pairs after it.
+        let cfg = clean("junk:a:\"x,narenas:1,tcache:\"false\"");
+        assert_eq!(cfg.narenas, 1);
+        assert!(!cfg.tcache);
+        // A later quoted value cannot close an earlier unterminated quote
+        // unnoticed: the swallowed pair holds an inner quote, which a
+        // quoted value never contains, so it is reported.
+        let (_, issues) = parse("junk:\"x,narenas:1,abort_conf:true,thp:\"always\"");
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].contains("malformed"), "{}", issues[0]);
     }
 
     #[test]
@@ -2753,8 +2828,9 @@ mod tests {
             ("narenas:7,tcache:fal", true, 7, 1),
             // The cut fell right after a comma: no pair is split.
             ("tcache:false,narenas:7,", true, 7, 1),
-            // An open quote runs to the cut: the whole pair is dropped.
-            ("narenas:7,junk:\"a,b", true, 7, 1),
+            // An open quote ends its pair at the next comma: that pair is
+            // reported as malformed, and the cut drops the pair after it.
+            ("narenas:7,junk:\"a,b", true, 7, 2),
             ("narenas:7,no_such_key:1,narenas:8", true, 7, 2),
         ];
         for &(text, cut, narenas, count) in cases {
