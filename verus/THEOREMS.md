@@ -1,6 +1,6 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the thirty-five whole-allocator theorems as the code
+Reference for the thirty-nine whole-allocator theorems as the code
 states them: the Verus statement, the entry points it covers, and every
 trusted premise it rests on, with `file:line`. Read at `b2cad68`
 (branch `verus`); line numbers are the `fn`/`axiom` line at that commit,
@@ -1861,9 +1861,8 @@ axioms below are the other source.
   background state). The handlers do not touch the other locked values,
   which keep the invariant their last holder left, as the lock axioms
   assume for every acquire.
-- The signal mask's save and restore (`save_sigmask`, `saved_sigmask`,
-  verified, but Verus does not model `FORK_SIGMASK`'s contents) are not
-  part of the statement.
+- The signal mask's save and restore are not part of this statement;
+  they are theorem 39, "Fork handlers restore the signal mask".
 
 ## 14. Arena isolation (slab ownership and release routing)
 
@@ -6027,6 +6026,194 @@ How it is proved:
   One unrelated proof step needed a hint under the new context:
   `api/libc.rs`'s huge-usable lemma now proves `n != 0` by
   `nonlinear_arith` (proof only).
+
+## 39. Fork handlers restore the signal mask
+
+The `file:line`s are the `fn`/`axiom`/`spec` line at this section's
+commit (on top of the integration tip `dbf2461`). The handlers block signals
+so that a signal handler on the forking thread cannot re-enter the
+allocator, or fork again, while it holds every allocator lock (module
+doc of `api`, design section 9); this states that they do, and that
+the thread gets back the mask the slot holds, on both sides of the
+fork.
+
+**Statement.** `fork_prepare` blocks every blockable signal before its
+first acquisition and keeps them blocked through its last, and it saves
+the mask that was in force at its entry in `FORK_SIGMASK` with every
+allocator lock held, recording it in the hold (`ForkHeld::saved`). The
+release (the body of `fork_parent` and `fork_child`) reads the slot
+with every lock still held, keeps every blockable signal blocked through
+its last unlock, and then leaves the thread with exactly the mask the
+slot held. That this is the mask the preparing thread had at its
+prepare's entry (in the parent, and in the child, the forking thread's
+copy) is the handoff premise below: each half is proved on its own
+side of the C calls. The ghost token `sys::SigMask` is the calling
+thread's mask; only `block_all_signals` and `set_signal_mask` change it
+(through `&mut`, by their trusted raw calls), so each loop invariant
+`sig.mask() == all_blocked()` in the handlers is the mask at that
+acquisition or release.
+
+```rust
+// sys/mod.rs:179, :184, :222
+pub open spec fn effective(m: u64) -> u64 { m & !unblockable() }   // less SIGKILL, SIGSTOP
+pub open spec fn all_blocked() -> u64 { effective(!0u64) }
+pub open spec fn wf(self) -> bool { effective(self.mask()) == self.mask() }   // SigMask
+
+// sys/mod.rs:1103, :1129
+pub fn block_all_signals(Tracked(sig): Tracked<&mut SigMask>) -> (r: u64)
+    requires ..., old(sig).wf(),
+    ensures r == old(sig).mask(), final(sig).mask() == all_blocked(), final(sig).wf(),
+pub fn set_signal_mask(mask: u64, Tracked(sig): Tracked<&mut SigMask>)
+    ensures final(sig).mask() == effective(mask), final(sig).wf(),
+
+// api/mod.rs:887
+pub(crate) open spec fn fork_sig_holds(sig: SigMask, held: ForkHeld, orig: u64) -> bool {
+    &&& sig.wf()
+    &&& sig.mask() == all_blocked()
+    &&& held.saved() == Some(orig)
+    &&& effective(orig) == orig
+}
+
+// fork_prepare (api/mod.rs:974): `orig` is the entry token's mask,
+// read before `block_all_signals`; every lock loop has the invariant
+// `sig.mask() == all_blocked()`; at the end (:1140):
+assert(fork_holds(*s, held, state));
+assert(fork_sig_holds(sig, held, orig));
+
+// api/mod.rs:1151, :1178 (both verified): the slot is written and read
+// only under every allocator lock; the store, under the prepare's hold
+// (no permission to the slot, `no_slot`, :756), is recorded in the
+// hold, and the release's hold carries the slot's permission
+// (`has_slot`, :749: a `vspec::word::WordPerm` for `fork_slot_addr()`
+// whose value is `saved`), through which the load reads
+fn save_sigmask(mask, Ghost(s), Tracked(held): Tracked<&mut ForkHeld>, Tracked(state))
+    requires fork_holds(s, *old(held), *state), old(held).no_slot(),
+    ensures *final(held) == old(held).with_saved(mask),
+{ fork_slot().store(mask, Ordering::Relaxed); proof { held.saved = Some(mask); } }
+fn saved_sigmask(Ghost(s), Tracked(held): Tracked<&ForkHeld>, Tracked(state)) -> (r: u64)
+    requires fork_holds(s, *held, *state), held.has_slot(),
+    ensures held.saved() == Some(r),
+{ word::load(fork_slot(), Ordering::Relaxed, Tracked(held.slot.tracked_borrow())) }
+
+// fork_release (api/mod.rs:1205): from the handoff, `saved` is the
+// hold's slot content (:1214) and `fork_sig_holds(sig, held, saved)`
+// (:1217); every release loop has `sig.mask() == all_blocked()`; after
+// the last unlock and `set_signal_mask` (:1332):
+assert(sig.mask() == saved);
+```
+
+**Covers / stated in.** `fork_prepare`, `fork_release` (the body of
+`fork_parent` and `fork_child`), `save_sigmask`, `saved_sigmask`, `fork_slot`
+(`api/mod.rs`); `block_all_signals` and `set_signal_mask`
+(`sys/mod.rs`), whose new `ensures` rest on the kernel's
+`rt_sigprocmask` semantics. `purge::background::spawn` (trusted) passes
+a token too; it is not part of the statement.
+
+**Proof.** `block_all_signals` returns the entry token's mask (`orig`)
+and leaves `all_blocked()`; nothing else touches `sig` until the
+release's last unlock, which the loop invariants restate at each
+acquisition and release. `save_sigmask` is called after the last
+acquisition, so its requirement (`fork_holds`, every listed lock and the
+state lock) holds; it stores `orig` and records it in the hold, and
+`ForkHeld::lemma_with_saved` (`api/mod.rs:766`) keeps `fork_holds`
+across the store. `saved_sigmask` is called before the release's first
+unlock (`fork_unlock(state)` consumes the state token, so a later call
+could not meet the requirement); it loads through the hold's slot
+permission, so `word::load`'s `r == perm.value()` and `has_slot` give
+`held.saved() == Some(r)`. Restoring with `set_signal_mask` leaves
+`effective(saved)`, which is `saved` because the slot holds a mask the
+kernel held (`lemma_effective_idempotent`, `sys/mod.rs:236`, a
+bit-vector fact).
+
+Two threads forking at once with different masks (`FORK_SIGMASK` is one
+process-wide slot): the slot's content is recorded in the hold of every
+allocator lock (`ForkHeld`), and its permission exists only in the
+release's hold; each write (`save_sigmask`) and each read
+(`saved_sigmask`) requires that hold, so, with theorem 13's mutex
+premise, a second thread's write happens only after the first thread's
+release has read the slot and unlocked: each release reads its own
+prepare's mask. glibc serialises the handlers with its atfork lock
+anyway; the unit tests do not, and
+`concurrent_fork_handlers_restore_each_threads_mask` (`api/mod.rs:2042`)
+runs two threads with different masks through the prepare and parent
+handlers 200 times each and checks each gets its own mask back;
+`fork_handlers_block_signals_while_locked` (`:1990`) checks both sides
+for one thread.
+
+**Findings.** None: the code matches the statement.
+
+**Premises beyond the common ones** (and theorem 13's mutex and
+handoff premises).
+- *The calling thread's mask* (`sys::axiom_thread_mask`,
+  `sys/mod.rs:253`; axiom). The token minted at `fork_prepare`'s entry
+  stands for the calling thread's mask (its value unnamed, a mask the
+  kernel can hold), and nothing on the thread changes the mask while the
+  token is held except through it: challoc calls `rt_sigprocmask` only
+  in `block_all_signals` and `set_signal_mask`, and no other code runs
+  on the thread inside the handler. One call per handler entry; nothing
+  enforces it. `SigMask`'s field is private to a module of its own
+  (`sys::sigmask`), so no code builds a token.
+- *The kernel's `rt_sigprocmask`* (`sigprocmask_block`, `:1159`, and
+  `sigprocmask_setmask`, `:1192`, in `sys::linux`, private;
+  `external_body`, each the one `raw::syscall4` call its caller made
+  before). A successful `SIG_BLOCK` of the full set wrote the mask in
+  force before it to the old-set buffer and left every blockable signal
+  blocked; a successful `SIG_SETMASK` leaves the requested mask less
+  `SIGKILL` and `SIGSTOP` (signals 9 and 19, in the 64-bit kernel
+  sigset on both architectures). Success is the word `decode` takes for
+  success; on failure nothing is said (the callers abort). The value
+  comes from the call, so no caller can choose it.
+- *The handoff, its signal half* (`api::axiom_fork_resumed_sig`,
+  `api/mod.rs:904`, and `axiom_fork_resumed`'s new conjuncts, `:872`;
+  axioms). The parent and child handlers run on the thread whose
+  prepare returned holding `fork_sig_holds` (in the child, its copy,
+  which inherits the mask), with the mask still `all_blocked()`:
+  glibc's `_Fork` restores the mask it found, and the atfork handlers
+  registered before challoc's (prepare after ours, parent and child
+  before ours) leave the mask as they found it. The resumed hold's
+  `saved` is what that prepare stored, a mask the kernel held; the
+  `ensures` cannot name the prepare's `orig`, so that the two are the
+  same value is the premise. The resumed hold also carries the slot's
+  permission at that value (`has_slot`): the one trusted claim that
+  `FORK_SIGMASK` holds the recorded mask (the store is a plain relaxed
+  store, under every lock, through `fork_slot`, and `save_sigmask`
+  requires a hold without the permission, `no_slot`; only a holder of
+  every lock writes the slot, and the permission exists only in the
+  release's hold, so its value is the slot's while it exists). One call
+  per handler; nothing enforces it.
+- *The slot's identity and its loads* (`api::fork_slot`,
+  `api/mod.rs:222`, `external_body`: `&FORK_SIGMASK` with
+  `word_addr(r) == fork_slot_addr()`, because Verus cannot name a static
+  in a specification; nothing about the content), and `vspec::word::load`
+  (the existing permission-atomic wrapper: one atomic load, whose result
+  is the permission's value).
+
+**Scope.** The fork handlers, for every completing pair (a prepare
+that returns, then the parent or the child handler on the same thread).
+Not covered: the background thread's spawn (it blocks signals around
+`pthread_create` so the new thread starts with every signal blocked;
+trusted body), and a prepare whose `fork` is never followed by a
+handler (glibc always runs one).
+
+**Where the statement is weaker than the code.**
+- "The preparing thread's original mask" in the release is the slot's
+  value as the resumed hold records it; that it is the `orig` of the
+  prepare on this thread is the handoff premise. The prepare side
+  proves that it saves `orig`, and the release side that it restores
+  what it read; neither proof sees the other.
+- "Throughout the hold" is the token's value at each loop iteration
+  and each straight-line step between acquisitions; it rests on the
+  thread-mask premise (nothing else changes the mask). That a blocked
+  signal is not delivered is the kernel's, not stated.
+- Signal masks are the kernel's 64-bit sigset. glibc's `sigset_t` is
+  wider, but the kernel reads and writes 8 bytes (`SIGSET_WORDS_BYTES`),
+  so nothing is lost on Linux.
+- A second call of `axiom_thread_mask` or `axiom_fork_resumed_sig`
+  would mint a second token for the same mask, and a second call of
+  `axiom_fork_resumed` a second permission to the slot. No lemma
+  relates two tokens or two permissions, so this proves no `false`
+  (as for theorem 13's handoff axioms), but a stale one could state a
+  wrong mask: the one-call-per-handler premise is what excludes it.
 
 ## Interface contract
 

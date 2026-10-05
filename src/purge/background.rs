@@ -338,7 +338,8 @@ fn create(
 
 /// `pthread_create` on the committed `[base, base + len)`, joinable so
 /// a restart can wait for its exit. Signals are blocked so the new
-/// thread inherits an empty mask and never runs an application handler.
+/// thread inherits a mask with every signal blocked and never runs an
+/// application handler.
 ///
 /// Trusted: raw pthread calls, and the thread's entry is a function
 /// pointer. `shared` is well formed: the thread's [`shared_arg`] ensures
@@ -359,7 +360,8 @@ fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t>
         }
         let mut thread = None;
         if ::libc::pthread_attr_setstack(&mut attr, base as *mut c_void, len) == 0 {
-            let mask = sys::block_all_signals();
+            let tracked mut sig = sys::axiom_thread_mask();
+            let mask = sys::block_all_signals(Tracked(&mut sig));
             let mut tid: ::libc::pthread_t = 0;
             let rc = ::libc::pthread_create(
                 &mut tid,
@@ -367,7 +369,7 @@ fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t>
                 main,
                 shared as *const Shared as *mut c_void,
             );
-            sys::set_signal_mask(mask);
+            sys::set_signal_mask(mask, Tracked(&mut sig));
             if rc == 0 {
                 thread = Some(tid);
             }

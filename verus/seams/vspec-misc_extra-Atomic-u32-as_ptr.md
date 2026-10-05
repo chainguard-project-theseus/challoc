@@ -1,6 +1,6 @@
 # `core::sync::atomic::Atomic::<u32>::as_ptr`
 
-Seam S321 of `verus/SEAMS.md`: src/vspec/misc_extra.rs:11. Kind: assume_spec. Category: core library.
+Seam S326 of `verus/SEAMS.md`: src/vspec/misc_extra.rs:11. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

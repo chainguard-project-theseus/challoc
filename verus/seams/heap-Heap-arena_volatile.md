@@ -1,6 +1,6 @@
 # `Heap::arena_volatile`
 
-Seam S128 of `verus/SEAMS.md`: src/heap/mod.rs:4280. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+Seam S130 of `verus/SEAMS.md`: src/heap/mod.rs:4280. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Discharged by RefinedRust.
 
 ## Contract

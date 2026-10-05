@@ -120,7 +120,12 @@ use crate::lock::{RawLock, axiom_entry, rank_arena_stats, rank_class, rank_table
 use crate::purge;
 use crate::sys;
 use crate::sys::features::{FeatureLine, Features};
+#[cfg(verus_only)]
+use crate::sys::{SigMask, all_blocked, effective};
 use crate::vspec::once;
+use crate::vspec::word::WordPerm;
+#[cfg(verus_only)]
+use crate::vspec::word::word_addr;
 #[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Map, Tracked, int, verus};
@@ -200,7 +205,26 @@ verus! {
 /// cannot nest a fork inside the window because signals are blocked for its
 /// duration. An atomic so that verified code can read and write it: the
 /// accesses are relaxed (a plain load and store), ordered by the locks.
+/// The release reads it through the permission its hold carries
+/// ([`ForkHeld::has_slot`]), so the value read is the mask the hold
+/// records.
 exec static FORK_SIGMASK: AtomicU64 = AtomicU64::new(0);
+
+/// The identity of [`FORK_SIGMASK`] for its permission
+/// ([`ForkHeld::has_slot`]); [`fork_slot`] names the static.
+pub uninterp spec fn fork_slot_addr() -> usize;
+
+/// [`FORK_SIGMASK`] as a reference. Trusted: Verus cannot name a static
+/// in a specification, so its identity ([`fork_slot_addr`]) is stated
+/// here. Nothing is claimed of its content.
+#[verifier::external_body]
+#[inline(always)]
+fn fork_slot() -> (r: &'static AtomicU64)
+    ensures
+        word_addr(r) == fork_slot_addr(),
+{
+    &FORK_SIGMASK
+}
 
 /// `SHARED` as a reference, the one read of the static every accessor
 /// below makes.
@@ -672,7 +696,9 @@ pub open spec fn lock_at(s: Shared, arenas: Map<int, Arena>, k: ForkLock) -> Raw
 
 /// The hold of the fork lock list (theorem "fork safety", THEOREMS.md):
 /// the arenas `fork_prepare` found, `n` the arena count it read, and one
-/// [`LockHeld`] per listed lock, each the hold of the lock its key names.
+/// [`LockHeld`] per listed lock, each the hold of the lock its key names,
+/// and the content of [`FORK_SIGMASK`] its holder stored (`saved`),
+/// with, in the release's hold, the slot's permission (`slot`).
 /// Built, by convention, only by `fork_prepare` as it takes the locks
 /// and by [`axiom_fork_resumed`] for the release: the fields are private
 /// to `api` (its submodules can see them too), and [`arena_held`] and
@@ -684,6 +710,8 @@ pub tracked struct ForkHeld {
     ghost n: int,
     ghost arenas: Map<int, Arena>,
     tracked toks: Map<ForkLock, LockHeld>,
+    ghost saved: Option<u64>,
+    tracked slot: Option<WordPerm>,
 }
 
 impl ForkHeld {
@@ -707,6 +735,47 @@ impl ForkHeld {
         self.toks[k].held()
     }
 
+    /// The content of [`FORK_SIGMASK`] as this hold's holder last wrote
+    /// it ([`save_sigmask`]), `None` before. Part of the hold because the
+    /// slot is written and read only under every allocator lock.
+    pub closed spec fn saved(self) -> Option<u64> {
+        self.saved
+    }
+
+    /// The hold has the permission to [`FORK_SIGMASK`], and its value is
+    /// the content the hold records: the release's hold, as
+    /// [`axiom_fork_resumed`] hands it over (`fork_prepare` stores without
+    /// one, under every lock).
+    pub closed spec fn has_slot(self) -> bool {
+        self.slot matches Some(p) && p.addr() == fork_slot_addr() && self.saved == Some(p.value())
+    }
+
+    /// The hold has no permission to [`FORK_SIGMASK`]: the prepare's hold,
+    /// the only one [`save_sigmask`] writes under, so the slot is never
+    /// written while its permission exists.
+    pub closed spec fn no_slot(self) -> bool {
+        self.slot is None
+    }
+
+    /// This hold after [`save_sigmask`] stored `m` in the slot.
+    pub closed spec fn with_saved(self, m: u64) -> ForkHeld {
+        ForkHeld { saved: Some(m), ..self }
+    }
+
+    /// Storing in the slot changes neither the locks held nor the arenas.
+    proof fn lemma_with_saved(self, s: Shared, m: u64)
+        ensures
+            self.wf(s) ==> self.with_saved(m).wf(s),
+            self.all() ==> self.with_saved(m).all(),
+            self.with_saved(m).saved() == Some(m),
+    {
+        let t = self.with_saved(m);
+        assert(t.keys() == self.keys());
+        assert(t.arenas() == self.arenas());
+        assert(t.n() == self.n());
+        assert forall|k: ForkLock| #[trigger] t.lock(k) == self.lock(k) by {}
+    }
+
     /// Add the hold `t` under key `k`.
     proof fn put(tracked &mut self, k: ForkLock, tracked t: LockHeld)
         ensures
@@ -715,6 +784,8 @@ impl ForkHeld {
             forall|j: ForkLock| j != k ==> #[trigger] final(self).lock(j) == old(self).lock(j),
             final(self).n() == old(self).n(),
             final(self).arenas() == old(self).arenas(),
+            final(self).saved() == old(self).saved(),
+            final(self).no_slot() == old(self).no_slot(),
     {
         self.toks.tracked_insert(k, t);
     }
@@ -729,6 +800,8 @@ impl ForkHeld {
             forall|j: ForkLock| j != k ==> #[trigger] final(self).lock(j) == old(self).lock(j),
             final(self).n() == old(self).n(),
             final(self).arenas() == old(self).arenas(),
+            final(self).saved() == old(self).saved(),
+            final(self).no_slot() == old(self).no_slot(),
     {
         self.toks.tracked_remove(k)
     }
@@ -784,8 +857,15 @@ axiom fn axiom_fork_resumed_state() -> (tracked state: LockHeld)
 
 /// Premise: see [`axiom_fork_resumed_state`]; the rest of the hold, at
 /// the `Shared` the release reads, with the arena count and the arenas
-/// `fork_prepare` read (`n` and `arenas` are those reads, which the
-/// ensures does not name: the premise is that they are). `state` must be
+/// `fork_prepare` read and the mask it saved in [`FORK_SIGMASK`] (`n`,
+/// `arenas` and `saved` are those reads and that store, which the
+/// ensures does not name: the premise is that they are; the slot's
+/// content is a mask the kernel held, and only a holder of every lock
+/// writes it, see [`save_sigmask`]), and the permission to the slot
+/// whose value is that content ([`ForkHeld::has_slot`]): the one
+/// trusted link between the slot and the hold, through which
+/// [`saved_sigmask`] reads (no other permission to the slot exists).
+/// `state` must be
 /// the state lock's token: a fact about a token the caller already has is
 /// a requirement, never a conclusion (ensured, it let a token of any other
 /// lock prove `false`).
@@ -794,6 +874,36 @@ axiom fn axiom_fork_resumed(s: &Shared, tracked state: &LockHeld) -> (tracked he
         state.held() == purge::background::state_lock(),
     ensures
         fork_holds(*s, held, *state),
+        held.has_slot(),
+        held.saved() matches Some(m) && effective(m) == m,
+;
+
+/// The signal half of the fork hold: `sig` (the calling thread's mask)
+/// has every blockable signal blocked, and the slot holds `orig`
+/// (`held.saved()`), a mask the kernel can hold. `fork_prepare` ends with
+/// it, `orig` being the mask in force at its entry, and the release
+/// starts from it (theorem "Fork handlers restore the signal mask",
+/// `verus/THEOREMS.md`).
+pub(crate) open spec fn fork_sig_holds(sig: SigMask, held: ForkHeld, orig: u64) -> bool {
+    &&& sig.wf()
+    &&& sig.mask() == all_blocked()
+    &&& held.saved() == Some(orig)
+    &&& effective(orig) == orig
+}
+
+/// Premise (the fork handler handoff, its signal half; see
+/// [`axiom_fork_resumed_state`]): the parent and child handlers run on
+/// the thread whose prepare handler returned holding [`fork_sig_holds`]
+/// (in the child, its copy, which inherits the mask), whose mask has
+/// stayed as that handler left it, every blockable signal blocked:
+/// glibc's `_Fork` restores the mask it found, and the atfork handlers
+/// registered before ours (whose prepare runs after ours and whose parent
+/// and child handlers run before ours) leave the mask as they found it.
+/// The slot's content is [`axiom_fork_resumed`]'s. Each handler calls
+/// this once, which nothing enforces.
+axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
+    ensures
+        sig.mask() == all_blocked(),
 ;
 
 /// `s.arenas.get_existing(i as u16)` while `held` holds the creation
@@ -847,7 +957,11 @@ fn count_held(s: &Shared, Tracked(held): Tracked<&ForkHeld>) -> (r: u32)
 /// from the source tree, so a new `Lock` fails it until it is added here.
 ///
 /// Fork safety, first half: it returns holding [`fork_holds`], one token
-/// per lock of the fork lock list (asserted at the end).
+/// per lock of the fork lock list (asserted at the end). It also ends
+/// with [`fork_sig_holds`]: every blockable signal blocked since before
+/// its first acquisition (each loop's invariant), and the mask in force
+/// at its entry saved in the slot (theorem "Fork handlers restore the
+/// signal mask").
 ///
 /// Lock order (theorem "Lock order is acyclic", `verus/THEOREMS.md`):
 /// every acquisition ranks above every lock taken before it
@@ -862,7 +976,10 @@ extern "C" fn fork_prepare() {
         crate::sys::grant_syscalls();
         crate::sys::grant_aborts();
     }
-    let mask = sys::block_all_signals();
+    // Premise: `sig` is this thread's mask (`sys::axiom_thread_mask`).
+    let tracked mut sig = sys::axiom_thread_mask();
+    let ghost orig = sig.mask();
+    let mask = sys::block_all_signals(Tracked(&mut sig));
     let s = shared();
     // Premise (lock order): the thread that calls `fork` holds no
     // allocator lock (no allocator code forks, and the prepare handlers
@@ -886,6 +1003,8 @@ extern "C" fn fork_prepare() {
     for i in 0..n
         invariant
             crate::sys::may_syscall(),
+            sig.wf(),
+            sig.mask() == all_blocked(),
             n <= crate::arena::MAX_ARENAS,
             forall|j: int| #[trigger] arenas.contains_key(j) ==> 0 <= j < i,
             forall|j: int| #[trigger] arenas.contains_key(j) ==> arenas[j].spec_index() as int == j,
@@ -904,6 +1023,8 @@ extern "C" fn fork_prepare() {
             for c in 0..NCLASSES
                 invariant
                     crate::sys::may_syscall(),
+                    sig.wf(),
+                    sig.mask() == all_blocked(),
                     arenas == before.insert(i as int, *a),
                     a.spec_index() as int == i,
                     i < crate::arena::MAX_ARENAS,
@@ -946,11 +1067,14 @@ extern "C" fn fork_prepare() {
             }
         }
     }
-    let tracked mut held = ForkHeld { n: n as int, arenas, toks };
+    let tracked mut held = ForkHeld { n: n as int, arenas, toks, saved: None, slot: None };
     for c in 0..NCLASSES
         invariant
             crate::sys::may_syscall(),
+            sig.wf(),
+            sig.mask() == all_blocked(),
             held.wf(*s),
+            held.no_slot(),
             held.n() <= crate::arena::MAX_ARENAS,
             forall|j: int| #[trigger] held.arenas().contains_key(j) ==> held.arenas()[j].spec_index() as int == j,
             forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
@@ -982,8 +1106,11 @@ extern "C" fn fork_prepare() {
     for i in 0..n
         invariant
             crate::sys::may_syscall(),
+            sig.wf(),
+            sig.mask() == all_blocked(),
             n == held.n(),
             held.wf(*s),
+            held.no_slot(),
             n <= crate::arena::MAX_ARENAS,
             forall|j: int| #[trigger] held.arenas().contains_key(j) ==> held.arenas()[j].spec_index() as int == j,
             forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
@@ -1003,28 +1130,64 @@ extern "C" fn fork_prepare() {
         }
     }
     let Tracked(state) = purge::background::fork_lock(Tracked(&mut ord));
-    proof {
-        assert(fork_holds(*s, held, state));
-    }
     // Every allocator lock is held, so no other forking thread can touch
     // the slot until `fork_release` has read it (see `FORK_SIGMASK`).
-    save_sigmask(mask);
+    let ghost before = held;
+    save_sigmask(mask, Ghost(*s), Tracked(&mut held), Tracked(&state));
+    proof {
+        before.lemma_with_saved(*s, mask);
+        assert(fork_holds(*s, held, state));
+        assert(fork_sig_holds(sig, held, orig));
+    }
 }
 
-/// Save the signal mask for `fork_release`. The caller holds every
-/// allocator lock (see [`FORK_SIGMASK`]).
+/// Save the signal mask for `fork_release`, recorded in the hold
+/// (`held.saved()`). Its requirement is the [`FORK_SIGMASK`] protocol:
+/// the caller holds every allocator lock (ghost), so the hold that
+/// records the content is the one exclusive hold of the slot; and the
+/// hold has no permission to the slot ([`ForkHeld::no_slot`]), so no
+/// permission goes stale.
 #[inline(always)]
-fn save_sigmask(mask: u64) {
-    FORK_SIGMASK.store(mask, Ordering::Relaxed);
+fn save_sigmask(
+    mask: u64,
+    Ghost(s): Ghost<Shared>,
+    Tracked(held): Tracked<&mut ForkHeld>,
+    Tracked(state): Tracked<&LockHeld>,
+)
+    requires
+        fork_holds(s, *old(held), *state),
+        old(held).no_slot(),
+    ensures
+        *final(held) == old(held).with_saved(mask),
+{
+    fork_slot().store(mask, Ordering::Relaxed);
+    proof {
+        held.saved = Some(mask);
+    }
 }
 
-/// The signal mask `fork_prepare` saved: written by the `fork_prepare`
-/// that paired with this release, and still the caller's because every
-/// lock is held. Nothing is claimed of the value (Verus does not model
-/// the atomic's contents).
+/// The signal mask `fork_prepare` saved, the content the hold records:
+/// read through the hold's permission to [`FORK_SIGMASK`]
+/// ([`ForkHeld::has_slot`]), which only a holder of every allocator lock
+/// has (required, ghost). The value is still the one this thread's
+/// prepare handler saved: [`save_sigmask`] requires that hold too, so a
+/// second thread's `fork_prepare` (glibc serialises the handlers, the
+/// unit tests do not) stores only after it has taken every lock, so
+/// after this release's unlocks.
 #[inline(always)]
-fn saved_sigmask() -> u64 {
-    FORK_SIGMASK.load(Ordering::Relaxed)
+fn saved_sigmask(
+    Ghost(s): Ghost<Shared>,
+    Tracked(held): Tracked<&ForkHeld>,
+    Tracked(state): Tracked<&LockHeld>,
+) -> (r: u64)
+    requires
+        fork_holds(s, *held, *state),
+        held.has_slot(),
+    ensures
+        held.saved() == Some(r),
+{
+    let tracked slot = held.slot.tracked_borrow();
+    crate::vspec::word::load(fork_slot(), Ordering::Relaxed, Tracked(slot))
 }
 
 /// Release the locks taken by `fork_prepare`, in reverse order, then let
@@ -1034,6 +1197,11 @@ fn saved_sigmask() -> u64 {
 /// ended with ([`fork_holds`]; `state` is the state lock's token) and
 /// releases each listed lock once, by handing its token back to
 /// `RawLock::unlock_held`; it ends holding none (asserted at the end).
+///
+/// The signal mask (theorem "Fork handlers restore the signal mask"): it
+/// starts from [`fork_sig_holds`], reads the slot under every lock, keeps
+/// every blockable signal blocked through its last unlock, and ends with
+/// the thread's mask the slot's content (asserted at the end).
 fn fork_release(Tracked(state): Tracked<LockHeld>)
     requires
         crate::sys::may_abort(),
@@ -1042,9 +1210,15 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
 {
     let s = shared();
     let tracked mut held = axiom_fork_resumed(s, &state);
+    let tracked mut sig = axiom_fork_resumed_sig();
+    let ghost saved = held.saved()->Some_0;
+    proof {
+        crate::sys::lemma_effective_idempotent(!0u64);
+        assert(fork_sig_holds(sig, held, saved));
+    }
     // Written by the `fork_prepare` that paired with this release, and
     // still ours because every lock is held until the unlocks below.
-    let mask = saved_sigmask();
+    let mask = saved_sigmask(Ghost(*s), Tracked(&held), Tracked(&state));
     purge::background::fork_unlock(Tracked(state));
     // Arenas cannot appear while the creation lock is held, so this is the
     // same set `fork_prepare` locked (the premise `arena_held` and
@@ -1058,6 +1232,8 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
     while i > 0
         invariant
             crate::sys::may_syscall(),
+            sig.wf(),
+            sig.mask() == all_blocked(),
             i <= n == held.n(),
             held.wf(*s),
             forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
@@ -1084,6 +1260,8 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
     while c > 0
         invariant
             crate::sys::may_syscall(),
+            sig.wf(),
+            sig.mask() == all_blocked(),
             c <= NCLASSES,
             n == held.n(),
             held.wf(*s),
@@ -1101,6 +1279,8 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
     while i > 0
         invariant
             crate::sys::may_syscall(),
+            sig.wf(),
+            sig.mask() == all_blocked(),
             i <= n == held.n(),
             held.wf(*s),
             forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
@@ -1119,6 +1299,8 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
             while c > 0
                 invariant
                     crate::sys::may_syscall(),
+                    sig.wf(),
+                    sig.mask() == all_blocked(),
                     c <= NCLASSES,
                     i < n == held.n(),
                     held.arenas().contains_key(i as int),
@@ -1145,7 +1327,10 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
     proof {
         assert(held.keys() =~= Set::empty());
     }
-    sys::set_signal_mask(mask);
+    sys::set_signal_mask(mask, Tracked(&mut sig));
+    proof {
+        assert(sig.mask() == saved);
+    }
 }
 
 /// The parent keeps its threads; the forking thread releases what its
@@ -1218,7 +1403,7 @@ mod tests {
         }
     }
 
-    /// The two handler tests drive the process-wide locks directly and the
+    /// The handler tests drive the process-wide locks directly and the
     /// harness runs tests in parallel, so they take turns.
     static FORK_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1785,22 +1970,25 @@ mod tests {
         assert!(purge::background::thread().is_none());
     }
 
+    /// The calling thread's kernel signal mask.
+    fn current_mask() -> u64 {
+        let mut set: ::libc::sigset_t = unsafe { core::mem::zeroed() };
+        let rc = unsafe { ::libc::pthread_sigmask(::libc::SIG_BLOCK, core::ptr::null(), &mut set) };
+        assert_eq!(rc, 0);
+        // The kernel mask is the first 8 bytes of glibc's 128-byte set.
+        unsafe { core::ptr::read_unaligned(&set as *const _ as *const u64) }
+    }
+
+    /// `mask` without `SIGKILL` and `SIGSTOP`, which the kernel never blocks.
+    fn blockable(mask: u64) -> u64 {
+        const KILL_STOP: u64 = (1 << (::libc::SIGKILL - 1)) | (1 << (::libc::SIGSTOP - 1));
+        mask & !KILL_STOP
+    }
+
     /// The handlers block every signal while the locks are held and restore
     /// the caller's mask (whatever it was) afterwards, on both fork sides.
     #[test]
     fn fork_handlers_block_signals_while_locked() {
-        fn current_mask() -> u64 {
-            let mut set: ::libc::sigset_t = unsafe { core::mem::zeroed() };
-            let rc =
-                unsafe { ::libc::pthread_sigmask(::libc::SIG_BLOCK, core::ptr::null(), &mut set) };
-            assert_eq!(rc, 0);
-            // The kernel mask is the first 8 bytes of glibc's 128-byte set.
-            unsafe { core::ptr::read_unaligned(&set as *const _ as *const u64) }
-        }
-        fn blockable(mask: u64) -> u64 {
-            const KILL_STOP: u64 = (1 << (::libc::SIGKILL - 1)) | (1 << (::libc::SIGSTOP - 1));
-            mask & !KILL_STOP
-        }
         let _serial = FORK_TEST.lock().unwrap();
         let all = blockable(!0);
         // Start from a distinctive mask so "restored" is not "left blocked".
@@ -1821,13 +2009,12 @@ mod tests {
             (1 << (::libc::SIGUSR2 - 1)) | (1 << (::libc::SIGWINCH - 1))
         );
 
+        // Each mask is read under the locks and asserted after the release:
+        // a panic with every lock held would hang the other tests.
         fork_prepare();
-        assert_eq!(
-            blockable(current_mask()),
-            all,
-            "prepare did not block every signal"
-        );
+        let during = blockable(current_mask());
         fork_parent();
+        assert_eq!(during, all, "prepare did not block every signal");
         assert_eq!(
             current_mask(),
             start,
@@ -1835,8 +2022,9 @@ mod tests {
         );
 
         fork_prepare();
-        assert_eq!(blockable(current_mask()), all);
+        let during = blockable(current_mask());
         fork_child();
+        assert_eq!(during, all);
         assert_eq!(
             current_mask(),
             start,
@@ -1844,6 +2032,57 @@ mod tests {
         );
 
         unsafe { ::libc::pthread_sigmask(::libc::SIG_SETMASK, &before, core::ptr::null_mut()) };
+    }
+
+    /// Two threads with different masks run the prepare and parent
+    /// handlers concurrently (glibc serialises them; the shared
+    /// `FORK_SIGMASK` slot must not need it): each gets its own mask back,
+    /// because a prepare saves only once it holds every lock, and the
+    /// release reads before its first unlock.
+    #[test]
+    fn concurrent_fork_handlers_restore_each_threads_mask() {
+        let _serial = FORK_TEST.lock().unwrap();
+        let all = blockable(!0);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = [::libc::SIGUSR1, ::libc::SIGUSR2]
+            .into_iter()
+            .map(|signo| {
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    let mut want: ::libc::sigset_t = unsafe { core::mem::zeroed() };
+                    let rc = unsafe {
+                        ::libc::sigemptyset(&mut want);
+                        ::libc::sigaddset(&mut want, signo);
+                        ::libc::pthread_sigmask(::libc::SIG_SETMASK, &want, core::ptr::null_mut())
+                    };
+                    let start = current_mask();
+                    // Past the barrier before any assert, so a failure here
+                    // cannot leave the other thread waiting.
+                    barrier.wait();
+                    assert_eq!(rc, 0);
+                    assert_eq!(start, 1 << (signo - 1));
+                    for round in 0..200 {
+                        fork_prepare();
+                        // Asserted after the release: a panic with every
+                        // lock held would hang the other thread.
+                        let during = blockable(current_mask());
+                        fork_parent();
+                        assert_eq!(
+                            during, all,
+                            "round {round}: prepare left a signal unblocked"
+                        );
+                        assert_eq!(
+                            current_mask(),
+                            start,
+                            "round {round}: another thread's mask came back"
+                        );
+                    }
+                })
+            })
+            .collect();
+        for w in workers {
+            w.join().unwrap();
+        }
     }
 
     /// The `.rs` files under `dir`, in path order.

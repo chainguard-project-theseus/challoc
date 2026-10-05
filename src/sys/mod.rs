@@ -163,6 +163,100 @@ pub open spec fn may_abort_corrupt() -> bool {
 
 } // verus!
 
+// ---- the calling thread's signal mask (theorem "Fork handlers restore
+// the signal mask" in `verus/THEOREMS.md`) --------------------------------
+
+verus! {
+
+/// The signals the kernel never blocks: `SIGKILL` (9) and `SIGSTOP` (19),
+/// bits 8 and 18 of the 64-bit kernel sigset.
+pub open spec fn unblockable() -> u64 {
+    0x4_0100
+}
+
+/// The mask `rt_sigprocmask` leaves in force when asked for `m`: the
+/// kernel silently drops `SIGKILL` and `SIGSTOP`.
+pub open spec fn effective(m: u64) -> u64 {
+    m & !unblockable()
+}
+
+/// Every blockable signal blocked: what [`block_all_signals`] leaves.
+pub open spec fn all_blocked() -> u64 {
+    effective(!0u64)
+}
+
+} // verus!
+
+/// The calling thread's signal-mask token, in a module of its own: its
+/// field is private here, so no code in `sys` (or anywhere) builds one;
+/// only the trusted items below hand them out.
+mod sigmask {
+    #[cfg(verus_only)]
+    use super::effective;
+    use vstd::prelude::*;
+
+    verus! {
+
+    /// The calling thread's signal mask (the kernel's 64-bit sigset), as
+    /// [`block_all_signals`](super::block_all_signals) and
+    /// [`set_signal_mask`](super::set_signal_mask) change it. Ghost: no
+    /// code. Minted by [`axiom_thread_mask`](super::axiom_thread_mask) at a
+    /// handler's entry, and by the fork handlers' handoff
+    /// (`api::axiom_fork_resumed_sig`); changed only through `&mut` by
+    /// those two functions' trusted raw calls, so a holder knows the mask
+    /// stays as they left it while they hold the token (premise: nothing
+    /// else on the thread changes the mask, see `axiom_thread_mask`).
+    // Ghost: built and read only by proof code.
+    #[allow(dead_code)]
+    pub tracked struct SigMask {
+        ghost mask: u64,
+    }
+
+    impl SigMask {
+        /// The mask in force on the calling thread.
+        pub closed spec fn mask(self) -> u64 {
+            self.mask
+        }
+
+        /// A mask the kernel can hold: without `SIGKILL` and `SIGSTOP`.
+        pub open spec fn wf(self) -> bool {
+            effective(self.mask()) == self.mask()
+        }
+    }
+
+    } // verus!
+}
+
+pub use sigmask::SigMask;
+
+verus! {
+
+/// `effective` is idempotent: restoring a mask the kernel held leaves
+/// exactly that mask.
+pub proof fn lemma_effective_idempotent(m: u64)
+    ensures
+        effective(effective(m)) == effective(m),
+{
+    assert((m & !0x4_0100u64) & !0x4_0100u64 == m & !0x4_0100u64) by (bit_vector);
+}
+
+/// Premise (the calling thread's mask): the token stands for the signal
+/// mask of the thread that calls this, whose value it does not name.
+/// Called once at a handler's entry (`api::fork_prepare`), and in
+/// `purge::background::spawn` (trusted; `pthread_create` leaves the
+/// caller's mask as it was); nothing on the thread changes the mask
+/// while the token is held except through it (challoc calls
+/// `rt_sigprocmask` only in [`block_all_signals`] and
+/// [`set_signal_mask`], and the C caller's code does not run until the
+/// handler returns). A second call would hand out a second token for the
+/// same mask; no lemma relates two tokens.
+pub axiom fn axiom_thread_mask() -> (tracked sig: SigMask)
+    ensures
+        sig.wf(),
+;
+
+} // verus!
+
 // ---- pure helpers shared by the probes and the cgroup parsers ----------
 
 verus! {
@@ -429,12 +523,16 @@ pub open spec fn opt_view(r: Option<&[u8]>) -> Option<Seq<u8>> {
 } // verus!
 
 mod linux {
+    #[cfg(verus_only)]
+    use super::errno::MAX_ERRNO;
     use super::errno::{Errno, decode};
     use super::{
         AT_FDCWD, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, FUTEX_PRIVATE_FLAG, FUTEX_WAIT,
         FUTEX_WAKE, O_CLOEXEC, PR_SET_VMA, PR_SET_VMA_ANON_NAME, SIG_BLOCK, SIG_SETMASK,
-        SIGSET_WORDS_BYTES, abort_fmt,
+        SIGSET_WORDS_BYTES, SigMask, abort_fmt,
     };
+    #[cfg(verus_only)]
+    use super::{all_blocked, effective, lemma_effective_idempotent};
     use super::{nr, raw};
     #[cfg(verus_only)]
     use crate::vspec::core_int::popcount;
@@ -1000,49 +1098,112 @@ mod linux {
 
     /// `rt_sigprocmask(SIG_BLOCK, all)`: block every blockable signal on the
     /// calling thread and return the mask that was in force before. The
-    /// kernel silently leaves `SIGKILL` and `SIGSTOP` unblocked.
-    pub fn block_all_signals() -> u64
+    /// kernel silently leaves `SIGKILL` and `SIGSTOP` unblocked. `sig` is
+    /// the calling thread's mask ([`SigMask`]).
+    pub fn block_all_signals(Tracked(sig): Tracked<&mut SigMask>) -> (r: u64)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(sig).wf(),
+        ensures
+            r == old(sig).mask(),
+            final(sig).mask() == all_blocked(),
+            final(sig).wf(),
     {
         let all: u64 = !0;
         let mut old: u64 = 0;
         // SAFETY: both pointers are live 8-byte sigsets for the whole call.
-        let r = unsafe {
-            raw::syscall4(
-                nr::RT_SIGPROCMASK,
-                SIG_BLOCK as usize,
-                core::ptr::from_ref(&all) as usize,
-                core::ptr::from_mut(&mut old) as usize,
-                SIGSET_WORDS_BYTES,
-            )
-        };
+        let r = unsafe { sigprocmask_block(&all, &mut old, Tracked(sig)) };
         if let Err(e) = decode(r) {
             sigprocmask_failed("SIG_BLOCK", e);
+        }
+        proof {
+            lemma_effective_idempotent(!0u64);
         }
         old
     }
 
     /// `rt_sigprocmask(SIG_SETMASK, mask)`: restore a mask saved by
-    /// [`block_all_signals`] on the calling thread.
-    pub fn set_signal_mask(mask: u64)
+    /// [`block_all_signals`] on the calling thread. `sig` is the calling
+    /// thread's mask ([`SigMask`]).
+    pub fn set_signal_mask(mask: u64, Tracked(sig): Tracked<&mut SigMask>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+        ensures
+            final(sig).mask() == effective(mask),
+            final(sig).wf(),
     {
         // SAFETY: `mask` is a live 8-byte sigset; the old-set pointer is null.
-        let r = unsafe {
+        let r = unsafe { sigprocmask_setmask(&mask, Tracked(sig)) };
+        if let Err(e) = decode(r) {
+            sigprocmask_failed("SIG_SETMASK", e);
+        }
+        proof {
+            lemma_effective_idempotent(mask);
+        }
+    }
+
+    /// The raw `rt_sigprocmask(SIG_BLOCK, all, before)`, returning the
+    /// syscall's word. Trusted (the kernel's semantics): a successful call
+    /// (a word `decode` takes for success) wrote the mask in force before
+    /// it to `*before` and left every blockable signal blocked (`*all` is
+    /// every bit; the kernel drops `SIGKILL` and `SIGSTOP`). Verus does
+    /// not see the kernel's write through the address. On failure nothing
+    /// is said: the caller aborts.
+    ///
+    /// # Safety
+    /// As `raw::syscall4`; both pointers are live 8-byte sigsets.
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn sigprocmask_block(
+        all: &u64,
+        before: &mut u64,
+        Tracked(sig): Tracked<&mut SigMask>,
+    ) -> (r: usize)
+        requires
+            crate::sys::may_syscall(),
+            *all == !0u64,
+        ensures
+            r <= usize::MAX - MAX_ERRNO ==> (*final(before) == old(sig).mask() && final(sig).mask()
+                == all_blocked()),
+    {
+        // SAFETY: guaranteed by the caller.
+        unsafe {
+            raw::syscall4(
+                nr::RT_SIGPROCMASK,
+                SIG_BLOCK as usize,
+                core::ptr::from_ref(all) as usize,
+                core::ptr::from_mut(before) as usize,
+                SIGSET_WORDS_BYTES,
+            )
+        }
+    }
+
+    /// The raw `rt_sigprocmask(SIG_SETMASK, mask, NULL)`, returning the
+    /// syscall's word. Trusted (the kernel's semantics): a successful call
+    /// leaves `*mask` in force, less `SIGKILL` and `SIGSTOP`. On failure
+    /// nothing is said: the caller aborts.
+    ///
+    /// # Safety
+    /// As `raw::syscall4`; `mask` is a live 8-byte sigset.
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn sigprocmask_setmask(mask: &u64, Tracked(sig): Tracked<&mut SigMask>) -> (r: usize)
+        requires
+            crate::sys::may_syscall(),
+        ensures
+            r <= usize::MAX - MAX_ERRNO ==> final(sig).mask() == effective(*mask),
+    {
+        // SAFETY: guaranteed by the caller.
+        unsafe {
             raw::syscall4(
                 nr::RT_SIGPROCMASK,
                 SIG_SETMASK as usize,
-                core::ptr::from_ref(&mask) as usize,
+                core::ptr::from_ref(mask) as usize,
                 0,
                 SIGSET_WORDS_BYTES,
             )
-        };
-        if let Err(e) = decode(r) {
-            sigprocmask_failed("SIG_SETMASK", e);
         }
     }
 

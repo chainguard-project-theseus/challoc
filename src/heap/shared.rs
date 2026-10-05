@@ -2701,7 +2701,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S141..S156, S157: each `S_*` is its field's `offset_of!`, and the
+    /// S143..S158, S159: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {
@@ -2750,7 +2750,7 @@ mod kani_layout {
         assert!(size_of::<Shared>() <= isize::MAX as usize);
     }
 
-    /// S47 `arena::axiom_array_layout` at the two arrays of `Shared`.
+    /// S49 `arena::axiom_array_layout` at the two arrays of `Shared`.
     #[kani::proof]
     fn shared_array_layout() {
         array_layout::<GuardTest, NCLASSES>();

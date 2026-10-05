@@ -25,11 +25,16 @@
 //! - [`word_addr`] is the word's address, and a permission is for the word
 //!   at its [`WordPerm::addr`] (vstd's `PAtomicU64::id` is the same kind of
 //!   uninterpreted identity). The permissions are minted once per class
-//!   bitmap, by `SlabTable::new` (`table::axiom_fresh_words`).
+//!   bitmap, by `SlabTable::new` (`table::axiom_fresh_words`), and for the
+//!   fork signal-mask slot (`api::FORK_SIGMASK`) by each fork release's
+//!   handoff (`api::axiom_fork_resumed`), at the slot's content.
 //!
 //! A permission's value is its word's: every write of a class bitmap word
 //! goes through these wrappers (`AtomicBitmap::init`, `claim_word` and
-//! `release`), each inside the word's invariant (`bitmap::WordPred`).
+//! `release`), each inside the word's invariant (`bitmap::WordPred`); the
+//! fork slot is written (a plain store, under every allocator lock, by a
+//! hold without its permission: `api::save_sigmask` requires `no_slot`),
+//! and its permission lives only in the release's hold of every lock.
 
 use crate::sync::atomic::{AtomicU64, Ordering};
 use vstd::prelude::*;
