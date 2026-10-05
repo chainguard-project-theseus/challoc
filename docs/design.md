@@ -1004,14 +1004,16 @@ Itanium ABI names, which saves a C++ program under `LD_PRELOAD` a second
 PLT hop through libstdc++ on every allocation. `operator new` follows the
 standard failure protocol (call `std::get_new_handler()` while one is
 installed, then `std::__throw_bad_alloc()`; the `nothrow_t` forms return
-null). Both libstdc++ entry points are weak references loaded from the
-GOT, so a C process that never maps libstdc++ still loads under
-`BIND_NOW`, and a program whose static libstdc++ hides them gets an abort
-with a message instead of the throw. The sized `delete` forms are
-`free_sized` and `free_aligned_sized`: the size and alignment name a class
-through the same `class_for(size, align)` the matching `new` used, and a
-mismatch aborts (jemalloc's sized `delete` is `sdallocx` with the same
-contract). The unsized aligned forms take the plain `free` path.
+null; an `align_val_t` that is not a power of two fails at once, without
+the handler, as in libstdc++). Both libstdc++ entry points are weak
+references loaded from the GOT, so a C process that never maps libstdc++
+still loads under `BIND_NOW`, and a program whose static libstdc++ hides
+them gets an abort with a message instead of the throw. The sized
+`delete` forms are `free_sized` and `free_aligned_sized`: the size and
+alignment name a class through the same `class_for(size, align)` the
+matching `new` used, and a mismatch aborts (jemalloc's sized `delete` is
+`sdallocx` with the same contract). The unsized aligned forms take the plain
+`free` path.
 
 ### 13.2 jemalloc
 

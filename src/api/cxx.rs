@@ -25,8 +25,10 @@
 //! descriptor's bit test (design 6.3) and a mismatched size aborts as
 //! `free_sized` does. The unsized aligned forms have no size to check and
 //! take the plain `free` path with the alignment ignored. Aligned `new`
-//! goes through `aligned_alloc`, so a non-power-of-two `align_val_t` fails
-//! like exhaustion does.
+//! goes through `aligned_alloc`. An `align_val_t` that is not a power of
+//! two (0 included) can never be satisfied, so it fails at once without
+//! calling the `new_handler`, as libstdc++ does: the throwing forms throw
+//! `std::bad_alloc` and the `nothrow_t` forms return null.
 
 use core::arch::asm;
 use core::ffi::c_void;
@@ -294,18 +296,17 @@ pub fn new_block(size: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live>, T
 }
 
 /// The `align_val_t` forms. The block's token goes to C++ with it. An
-/// alignment that is not a power of two (undefined in C++) never gets a
-/// block: the `nothrow_t` forms return null and the others throw, after
-/// the handler loop. Zero is the exception: [`oom`] reads it as the
-/// unaligned operators' marker, so after a `new_handler` call the retry is
-/// `malloc`'s.
+/// alignment that is not a power of two (0 included; undefined in C++)
+/// never gets a block: it fails here and skips the handler loop, since no
+/// amount of freed memory makes it valid. The `nothrow_t` forms return
+/// null and the others throw.
 pub fn new_aligned(size: usize, align: usize, nothrow: bool, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
-        align != 0 && !libc::is_pow2(align) ==> r@.addr == 0,
+        !libc::is_pow2(align) ==> r@.addr == 0,
         !nothrow ==> r@.addr != 0,
 {
     let tracked mut blk = Live::empty();
@@ -319,14 +320,18 @@ pub fn new_aligned_block(size: usize, align: usize, nothrow: bool, Tracked(blk):
         crate::sys::may_syscall(),
     ensures
         libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
-        align != 0 && !libc::is_pow2(align) ==> r@.addr == 0,
+        !libc::is_pow2(align) ==> r@.addr == 0,
         final(blk).gives(r, size as int),
         !nothrow ==> r@.addr != 0,
 {
-    proof {
-        if libc::is_pow2(align) {
-            libc::lemma_pow2_pos(align);
+    if !align.is_power_of_two() {
+        if nothrow {
+            return ptr::null_mut();
         }
+        throw_bad_alloc()
+    }
+    proof {
+        libc::lemma_pow2_pos(align);
     }
     let p = libc::aligned_alloc_block(align, size, Tracked(blk), Tracked(errno));
     if p.is_null() {

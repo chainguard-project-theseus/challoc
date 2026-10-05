@@ -2463,7 +2463,7 @@ fn mallocx(size, flags)  ensures tcache_checked(size, flags), /* and theorem 2's
 fn dallocx(p, flags)     ensures p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
 
 // api/cxx.rs:260
-fn new_aligned(size, align, nothrow)  ensures align != 0 && !is_pow2(align) ==> r@.addr == 0,
+fn new_aligned(size, align, nothrow)  ensures !is_pow2(align) ==> r@.addr == 0,
 
 // heap/mod.rs:534; heap/live.rs:474
 pub proof fn theorem_free_target_aligned(p: *mut u8)
@@ -2492,7 +2492,7 @@ and for an error-result row, that a returning call returns that result:
 | Huge run freed with a size that names another usable size | sized frees | freed; the size is ignored (as jemalloc does) | no: not checked |
 | Non-power-of-two or zero alignment | `aligned_alloc`, `memalign` | NULL (`EINVAL`) | yes (row 5; `EINVAL` by *(errno)*) |
 | Alignment not a power of two, or not a multiple of `sizeof(void *)` | `posix_memalign` | `EINVAL` | yes (row 6) |
-| Non-zero alignment that is not a power of two | `new`, `new[]` (`align_val_t`) | NULL (`nothrow_t`) or `bad_alloc`, after the handler loop | yes: `new_aligned` |
+| Alignment that is not a power of two, 0 included | `new`, `new[]` (`align_val_t`) | NULL (`nothrow_t`) or `bad_alloc`, at once (no handler call, by inspection) | yes: `new_aligned` (the NULL or the throw) |
 | Any `MALLOCX_LG_ALIGN` (0 to 63) | `mallocx`, `rallocx` | a block aligned to it, or NULL | yes: `fits(r, size, 1 << lg_align)` (theorem 2): no misaligned block |
 | `MALLOCX_TCACHE(t)`, `t >= MAX_TCACHES` (1024; the field reaches 4093) | `mallocx`, `dallocx`, `sdallocx` | abort (`invalid_tcache`, or first `hint_mismatch` on `sdallocx`), except a huge `mallocx` with an explicit arena, which never looks the cache up | yes: `tcache_checked`, `!bad_tcache` (the frees' for a live block or a non-block pointer; *(C)* otherwise) |
 | `MALLOCX_TCACHE(t)` of a cache never created | as above | abort, with the same exception | no: existence is a run-time table load, not modelled |
@@ -2558,10 +2558,11 @@ C token and hold unconditionally.
   id of `MAX_TCACHES` or more; `mallocx::alloc`, `alloc_huge` (without
   an explicit arena) and `free` (`heap/mallocx.rs:151`, `:241`, `:280`)
   then reach `invalid_tcache`.
-- `new_aligned`: `aligned_alloc_block` returns NULL for a
-  non-power-of-two alignment, so `oom` (`api/cxx.rs:174`) never returns
-  a block for it: its `nothrow` exit returns NULL, and the throwing exit
-  is `-> !`.
+- `new_aligned`: `new_aligned_block` tests `align.is_power_of_two()`
+  (whose specification is `is_pow2`) before any allocation or handler
+  call: a non-power-of-two alignment, 0 included, returns NULL for the
+  `nothrow` forms and leaves through `throw_bad_alloc` (`-> !`) for the
+  others; `oom` (`api/cxx.rs:174`) is reached only with a power of two.
 
 **Premises beyond the common ones.** None new. The size-hint rows rest
 on the class table premises (`class_entry`, `axiom_class_table_wf`)
@@ -2607,10 +2608,6 @@ through `slab_slot`'s completeness; *(C)* is the `free` contract.
 - `rallocx` keeps a block in place without looking at the flags' cache,
   so its `ensures` says nothing of `bad_tcache`; a move allocates and
   frees through `alloc_with` and `mallocx::free`, which check it.
-- `new_aligned` with alignment 0: `oom` reads 0 as the unaligned
-  operators' marker, so with a `new_handler` installed the retry is
-  `malloc`'s and a block can come back; without one, NULL or
-  `bad_alloc`. C++ makes the call undefined; the doc comment says so.
 
 ## 17. Huge coalescing (at the huge lock invariant)
 
@@ -3657,9 +3654,10 @@ premises (`axiom_class_table_wf`).
 - `sallocx`, `xallocx`: NULL aborts (proved; formerly an explicit test
   read off the code, "Bad input").
 - Throwing `operator new` (unaligned and `align_val_t`): never NULL.
-  With a non-power-of-two `align_val_t` and no `nothrow`, the two
+  With a non-power-of-two `align_val_t` (0 included) and no `nothrow`, the two
   `ensures` (`r@.addr == 0` and `r@.addr != 0`) together say the call
-  does not return: it throws `bad_alloc` or loops in the handler.
+  does not return (the code throws `bad_alloc`, or aborts without
+  libstdc++, before any handler call).
 
 **Where the statement is weaker than the code.**
 - `malloc(0)` being non-NULL is not stated: like every allocation it
@@ -6720,7 +6718,7 @@ Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
 | 22 | `nallocx`                                   | . | . | . | . | P | . | P |
 | 23 | `operator new`, `new[]`                     | P | P | . | . | P | . | . |
 | 24 | `new`, `new[]` (`nothrow_t`)                | P | P | . | . | p | . | . |
-| 25 | `new`, `new[]` (`align_val_t`, 4 forms)     | P | P | . | . | p | p | . |
+| 25 | `new`, `new[]` (`align_val_t`, 4 forms)     | P | P | . | . | p | P | . |
 | 26 | `delete`, `delete[]` (unsized, 8 forms)     | . | . | . | . | . | p | . |
 | 27 | `delete`, `delete[]` (sized)                | . | . | . | . | . | p | . |
 | 28 | `delete`, `delete[]` (sized, aligned)       | . | . | . | . | . | p | . |
@@ -7058,12 +7056,10 @@ alone):
     fits(r, size, align)`. F: the throwing forms as row 23
     (`new_aligned` ensures `!nothrow ==> r@.addr != 0`); `p` because
     the `nothrow_t` forms' NULL is not stated beyond `fits` (row 24). B: a
-    non-power-of-two alignment (undefined in C++) makes `aligned_alloc`
-    return NULL, so the handler loop runs; `new_aligned` ensures
-    `align != 0 && !is_pow2(align) ==> r@.addr == 0` (NULL for the
-    `nothrow_t` forms, `bad_alloc` for the others). `p`: alignment 0 is
-    `oom`'s marker for the unaligned operators, so with a `new_handler`
-    installed the retry is `malloc`'s and a block can come back.
+    non-power-of-two alignment (undefined in C++), 0 included, fails at
+    once, without the handler loop; `new_aligned` ensures
+    `!is_pow2(align) ==> r@.addr == 0` (NULL for the `nothrow_t` forms,
+    `bad_alloc` for the others).
 26. Unsized `delete` forms, with or without `align_val_t` or `nothrow_t`
     (`cxx::delete`, `api/cxx.rs:256`). B: as `free`; the alignment is
     ignored.
@@ -7264,8 +7260,8 @@ alone):
    comes with its run token (gap 1); state `theorem_run_guards` per
    result over that token (I4, huge row).
 8. **Bad input**: done as far as the C contract allows ("Bad input"
-   above). Rows 16 and 25 go from `-` to `p` (cache ids of
-   `MAX_TCACHES` or more abort; a non-zero non-power-of-two `align_val_t`
+   above). Row 16 goes from `-` to `p` and row 25 to `P` (cache ids of
+   `MAX_TCACHES` or more abort; a non-power-of-two `align_val_t`, 0 included,
    gets no block), and rows 11, 21, 27 and 28 gain `hint_ok`: a slot
    freed with another class's size aborts. The *(live)* cells stay `p`:
    a stale or double free of a slot or huge page start is excluded by

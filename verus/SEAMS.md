@@ -905,7 +905,7 @@ the full name, the line and the contract.
 
 ### S1. `get_new_handler_addr`
 
-src/api/cxx.rs:52. Kind: external_body. Category: inline asm.
+src/api/cxx.rs:54. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Address of libstdc++'s `std::get_new_handler()`, or null when no libstdc++ is loaded in the process.
@@ -916,7 +916,7 @@ fn get_new_handler_addr() -> *const c_void
 
 ### S2. `throw_bad_alloc_addr`
 
-src/api/cxx.rs:79. Kind: external_body. Category: inline asm.
+src/api/cxx.rs:81. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/api-cxx-throw_bad_alloc_addr.md).
 
 > Address of libstdc++'s `std::__throw_bad_alloc()`, or null.
@@ -927,7 +927,7 @@ fn throw_bad_alloc_addr() -> *const c_void
 
 ### S3. `call_throw_bad_alloc`
 
-src/api/cxx.rs:107. Kind: external_body. Category: function pointer.
+src/api/cxx.rs:109. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > Call `std::__throw_bad_alloc` at `t`, its non-null address.
@@ -942,7 +942,7 @@ fn call_throw_bad_alloc(t: *const c_void) -> !
 
 ### S4. `Handler`
 
-src/api/cxx.rs:138. Kind: external_body type. Category: function pointer.
+src/api/cxx.rs:140. Kind: external_body type. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > The installed `new_handler`, opaque to Verus (which has no function pointer types).
@@ -953,7 +953,7 @@ struct Handler(unsafe extern "C" fn());
 
 ### S5. `call_get_new_handler`
 
-src/api/cxx.rs:147. Kind: external_body. Category: function pointer.
+src/api/cxx.rs:149. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > Call `std::get_new_handler` at `get`, its non-null address: the installed `new_handler`, if one is set.
@@ -967,7 +967,7 @@ fn call_get_new_handler(get: *const c_void) -> Option<Handler>
 
 ### S6. `call_handler`
 
-src/api/cxx.rs:176. Kind: external_body. Category: function pointer.
+src/api/cxx.rs:178. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > Call the program's `new_handler`.
@@ -980,7 +980,7 @@ fn call_handler(handler: Handler)
 
 ### S7. `oom`
 
-src/api/cxx.rs:192. Kind: no_decreases. Category: termination.
+src/api/cxx.rs:194. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > The `operator new` failure protocol: call the `new_handler` and retry until an attempt succeeds or no handler is installed, then throw `std::bad_alloc` (or return null for the `nothrow_t` forms).
