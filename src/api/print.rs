@@ -44,23 +44,29 @@ use vstd::string::StringSliceAdditionalSpecFns;
 /// `void (*write_cb)(void *cbopaque, const char *s)`.
 pub type WriteCb = Option<unsafe extern "C" fn(*mut c_void, *const c_char)>;
 
+/// The caller's [`WriteCb`], wrapped so that [`Target`] and
+/// [`malloc_stats_print`] can be inside `verus!` (Verus rejects function
+/// pointer types; it sees this type as opaque).
+pub struct WriteCallback(pub WriteCb);
+
+verus! {
+
+/// Opaque: `WriteCallback` holds a function pointer type, which Verus
+/// rejects.
+#[verifier::external_type_specification]
+#[verifier::external_body]
+#[allow(dead_code)]
+pub struct ExWriteCallback(WriteCallback);
+
 /// Where a report goes.
 enum Target {
     /// The caller's callback, or with `None` the `malloc_message` path.
-    Callback(WriteCb, *mut c_void),
+    Callback(WriteCallback, *mut c_void),
     /// glibc's `malloc_info` stream.
     File(*mut libc::FILE),
     /// `write(2)` to stderr, bypassing any hook (glibc's `malloc_stats`).
     Stderr,
 }
-
-verus! {
-
-/// Opaque: `Target` holds a function pointer type, which Verus rejects.
-#[verifier::external_type_specification]
-#[verifier::external_body]
-#[allow(dead_code)]
-struct ExTarget(Target);
 
 /// Ghost permit: the calling thread holds no allocator lock. The
 /// report's external calls ([`emit`]) require it: theorem "No allocator
@@ -98,13 +104,13 @@ fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&
         len < 1024,
 {
     match *target {
-        Target::Callback(Some(cb), opaque) => {
+        Target::Callback(WriteCallback(Some(cb)), opaque) => {
             buf[len] = 0;
             // SAFETY: the caller's `void (*)(void *, const char *)`; the
             // chunk is NUL-terminated within the buffer.
             unsafe { cb(opaque, buf.as_ptr() as *const c_char) };
         }
-        Target::Callback(None, _) => malloc_write(&buf[..len]),
+        Target::Callback(WriteCallback(None), _) => malloc_write(&buf[..len]),
         Target::File(f) => {
             // SAFETY: `f` is the caller's open stream; `len` bytes are
             // readable. `fwrite` may itself call `malloc` (glibc allocates
@@ -1081,9 +1087,7 @@ fn nbins() -> (r: usize)
     if n < NCLASSES { n } else { NCLASSES }
 }
 
-/// [`malloc_stats_print`] into `target`. Verified apart from the target:
-/// `WriteCb` is a function pointer type, which Verus rejects, so the
-/// entry point outside `verus!` only builds the `Target`.
+/// [`malloc_stats_print`] into `target`.
 #[inline(always)]
 fn stats_print(target: Target, opts: *const c_char)
     requires
@@ -1102,14 +1106,16 @@ fn stats_print(target: Target, opts: *const c_char)
     sink.flush();
 }
 
-} // verus!
-
-/// `malloc_stats_print(write_cb, cbopaque, opts)`.
-pub fn malloc_stats_print(write_cb: WriteCb, cbopaque: *mut c_void, opts: *const c_char) {
+/// `malloc_stats_print(write_cb, cbopaque, opts)`. The C entry points
+/// (outside `verus!`: their `write_cb` is a function pointer) wrap
+/// `write_cb` in a [`WriteCallback`].
+pub fn malloc_stats_print(write_cb: WriteCallback, cbopaque: *mut c_void, opts: *const c_char)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     stats_print(Target::Callback(write_cb, cbopaque), opts)
 }
-
-verus! {
 
 // ---------------------------------------------------------------------------
 // glibc.
@@ -1279,8 +1285,10 @@ fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result
     writeln!(sink, "max mmap bytes   = {:>10}", all.large_allocated)
 }
 
-/// `Target::File(stream)`. Trusted: builds a variant of a type Verus
-/// sees as opaque (it holds a function pointer).
+/// `Target::File(stream)`. Trusted, and discharged by Kani (its record in
+/// `verus/seams/`): written when `Target` was opaque to Verus. Since the
+/// callback moved into [`WriteCallback`] the body would verify as it
+/// stands; it stays a seam until its record is retired.
 #[verifier::external_body]
 #[inline(always)]
 fn file_target(stream: *mut libc::FILE) -> Target {
@@ -1307,7 +1315,7 @@ mod exports {
 
     export_pair! {
         fn malloc_stats_print / je_malloc_stats_print(write_cb: super::WriteCb, cbopaque: *mut c_void, opts: *const c_char) {
-            super::malloc_stats_print(write_cb, cbopaque, opts)
+            super::malloc_stats_print(super::WriteCallback(write_cb), cbopaque, opts)
         }
     }
 
@@ -1362,7 +1370,7 @@ mod tests {
         CAPTURE.lock().unwrap().clear();
         let c = std::ffi::CString::new(opts).unwrap();
         malloc_stats_print(
-            Some(capture),
+            WriteCallback(Some(capture)),
             0xC0FFEE as *mut c_void,
             if opts.is_empty() {
                 core::ptr::null()
@@ -1381,7 +1389,7 @@ mod tests {
         let _serial = REPORT.lock().unwrap_or_else(|e| e.into_inner());
         CAPTURE.lock().unwrap().clear();
         let mut sink = Sink::new(
-            Target::Callback(Some(capture), 0xC0FFEE as *mut c_void),
+            Target::Callback(WriteCallback(Some(capture)), 0xC0FFEE as *mut c_void),
             Tracked::assume_new(),
         );
         let head = "x".repeat(1022);
@@ -1828,9 +1836,17 @@ mod tests {
         };
         let before = counters();
         let _serial = REPORT.lock().unwrap_or_else(|e| e.into_inner());
-        malloc_stats_print(Some(sink), core::ptr::null_mut(), core::ptr::null());
+        malloc_stats_print(
+            WriteCallback(Some(sink)),
+            core::ptr::null_mut(),
+            core::ptr::null(),
+        );
         let json = std::ffi::CString::new("J").unwrap();
-        malloc_stats_print(Some(sink), core::ptr::null_mut(), json.as_ptr());
+        malloc_stats_print(
+            WriteCallback(Some(sink)),
+            core::ptr::null_mut(),
+            json.as_ptr(),
+        );
         assert_eq!(
             counters(),
             before,
@@ -1850,7 +1866,11 @@ mod tests {
                 .extend_from_slice(unsafe { core::ffi::CStr::from_ptr(s) }.to_bytes());
         }
         set_message_hook_for_tests(Some(hook));
-        malloc_stats_print(None, core::ptr::null_mut(), core::ptr::null());
+        malloc_stats_print(
+            WriteCallback(None),
+            core::ptr::null_mut(),
+            core::ptr::null(),
+        );
         set_message_hook_for_tests(None);
         let got = String::from_utf8(HOOKED.lock().unwrap().clone()).unwrap();
         assert!(
@@ -1923,7 +1943,11 @@ mod tests {
         }
         let _ = crate::stats::collect(crate::api::shared(), Tracked::assume_new());
         unsafe extern "C" fn discard(_: *mut c_void, _: *const c_char) {}
-        malloc_stats_print(Some(discard), core::ptr::null_mut(), core::ptr::null());
+        malloc_stats_print(
+            WriteCallback(Some(discard)),
+            core::ptr::null_mut(),
+            core::ptr::null(),
+        );
     }
 
     /// A `write_cb` that counts its calls in the `AtomicUsize` behind
@@ -1970,7 +1994,7 @@ mod tests {
                 let calls = core::sync::atomic::AtomicUsize::new(0);
                 let c = std::ffi::CString::new(opts).unwrap();
                 malloc_stats_print(
-                    Some(reentering_cb),
+                    WriteCallback(Some(reentering_cb)),
                     &calls as *const _ as *mut c_void,
                     c.as_ptr(),
                 );

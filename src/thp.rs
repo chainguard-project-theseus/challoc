@@ -159,7 +159,7 @@ pub struct Decision {
     pub huge: bool,
 }
 
-/// "No size": `1 << NO_SIZE` overflows every comparison into "never".
+/// "No size": no threshold; the readers test for it before shifting.
 pub const NO_SIZE: u8 = u8::MAX;
 /// The largest folio metadata commits are rounded to: the bump area's
 /// commit chunk (`meta::COMMIT_CHUNK`, 64 KiB), which a larger folio could
@@ -367,41 +367,27 @@ exec static RESERVATIONS: [(AtomicUsize, AtomicUsize); MAX_RESERVATIONS] = [
     (AtomicUsize::new(0), AtomicUsize::new(0)),
 ];
 
-/// `LG_SLAB_MIN`, `LG_PMD` and `LG_META` hold [`Decision::wf`] values:
-/// they start so and only [`store`] writes them, from a decision that
-/// satisfies it. Verus cannot see an invariant of a `core` atomic, so these
-/// three loads state it without proof.
-#[verifier::external_body]
+/// The three thresholds as stored. They hold [`Decision::wf`] values
+/// (they start so and only [`store`] writes them, from [`configure`]'s
+/// decisions and `off` ones), but no proof relies on it: vstd gives a
+/// `core` atomic's load any value, and the readers shift by them with
+/// `wrapping_shl`, which is what `<<` compiles to in the shipped build.
 #[inline(always)]
-fn load_lg_slab_min() -> (lg: u8)
-    ensures
-        lg_ok(lg),
-{
+fn load_lg_slab_min() -> u8 {
     LG_SLAB_MIN.load(Ordering::Relaxed)
 }
 
-#[verifier::external_body]
 #[inline(always)]
-fn load_lg_pmd() -> (lg: u8)
-    ensures
-        lg < 64,
-{
+fn load_lg_pmd() -> u8 {
     LG_PMD.load(Ordering::Relaxed)
 }
 
-#[verifier::external_body]
 #[inline(always)]
-fn load_lg_meta() -> (lg: u8)
-    ensures
-        lg_ok(lg),
-{
+fn load_lg_meta() -> u8 {
     LG_META.load(Ordering::Relaxed)
 }
 
-fn store(d: &Decision)
-    requires
-        d.wf(),
-{
+fn store(d: &Decision) {
     LG_SLAB_MIN.store(d.lg_slab_min, Ordering::Relaxed);
     LG_PMD.store(d.lg_pmd, Ordering::Relaxed);
     LG_META.store(d.lg_meta, Ordering::Relaxed);
@@ -610,7 +596,9 @@ pub fn class_mode(slab_size: usize) -> Mode {
         return Mode::Off;
     }
     let lg_min = load_lg_slab_min();
-    if lg_min != NO_SIZE && slab_size >= 1usize << lg_min {
+    // `1usize << lg_min`, as `wrapping_shl`: what `<<` compiles to in the
+    // shipped build ([`load_lg_slab_min`]).
+    if lg_min != NO_SIZE && slab_size >= 1usize.wrapping_shl(lg_min as u32) {
         mode
     } else {
         Mode::Off
@@ -626,10 +614,11 @@ pub fn pmd_size() -> (pmd: usize)
 {
     let lg = load_lg_pmd();
     proof {
-        let l = lg as usize;
+        let l = (lg as u32 % 64) as usize;
         assert(l < 64 ==> (1usize << l) > 0 && (1usize << l) & sub(1usize << l, 1) == 0) by (bit_vector);
     }
-    1usize << lg
+    // `1usize << lg`, as in `class_mode`.
+    1usize.wrapping_shl(lg as u32)
 }
 
 /// The folio metadata commits are rounded to and advised with; 0 when
@@ -641,7 +630,14 @@ pub fn meta_folio_size() -> (r: usize)
 {
     match load_lg_meta() {
         NO_SIZE => 0,
-        lg if MODE.load(Ordering::Acquire) != Mode::Off as u8 => 1usize << lg,
+        // `1usize << lg`, as in `class_mode`.
+        lg if MODE.load(Ordering::Acquire) != Mode::Off as u8 => {
+            let r = 1usize.wrapping_shl(lg as u32);
+            proof {
+                assert(r == 1usize << ((lg as u32 % 64) as u64));
+            }
+            r
+        },
         _ => 0,
     }
 }

@@ -2163,9 +2163,9 @@ the premises below (the C caller's, a source test's and Rust's types'),
 not on Verus. The intended property, which those premises give: every
 call the reports make out of the allocator happens while the calling
 thread holds no allocator lock. The reports are
-`malloc_stats_print` and `je_malloc_stats_print` (`api/print.rs:1048`,
-through `stats_print`, `:1032`), `malloc_info` (`:1154`) and
-`malloc_stats` (`:1169`). Their calls out are the caller's `write_cb`,
+`malloc_stats_print` and `je_malloc_stats_print` (`api/print.rs:1112`,
+through `stats_print`, `:1092`), `malloc_info` (`:1216`) and
+`malloc_stats` (`:1239`). Their calls out are the caller's `write_cb`,
 the `malloc_message` hook through `malloc_write`
 (`api/jemalloc.rs:116`; with no hook, `write(2)` to stderr), `fwrite`
 on the caller's stream, and `write(2)` to stderr. A callback, a hook or
@@ -2202,8 +2202,8 @@ permit. So Verus checks:
   handed the sink (as a `W: Write`) or a `fmt::Formatter` that writes to
   it can reach `emit`. No function that takes a lock is handed either.
 
-The unverified code of `api/print.rs` (`impl Write for Sink`, the
-`malloc_stats_print` wrapper, the exports) could still call `emit` with
+The unverified code of `api/print.rs` (`impl Write for Sink` and the
+`export_pair!` exports) could still call `emit` with
 a forged permit; it does not, and the source test below rejects
 `assume_new` there.
 
@@ -5477,7 +5477,7 @@ and `grant_aborts` of theorem 32 run nothing), except
 (code inside `verus!` without `external_body`) cannot panic or
 overflow. That is not all of every body: the `mallctl` rows (34) reach
 the caller's memory only through `external_body` helpers, the report
-rows (32, 33) write through the trusted `emit` and sinks, row 33 is
+rows (32, 33) write through the trusted `emit` and sinks, row 33's C wrappers are
 outside `verus!`, and every row rests on the trusted functions and
 axioms of the common premises. Where that function is `.0` of a `_zeroed` twin (`calloc`,
 `challoc_calloc_usable`, `mallocx`), the Z cell rests on the twin's
@@ -5925,17 +5925,19 @@ alone):
 31. `mallinfo2` (`api/glibc.rs:82`) ensures `fordblks <= arena` and the
     three zero fields; `mallinfo` (`:115`) is verified with no contract.
     The figures are unbounded counters (`fig_add`, `fig_mul`).
-32. `malloc_stats`, `malloc_info` (`api/print.rs:1067`, `:1053`):
+32. `malloc_stats`, `malloc_info` (`api/print.rs:1239`, `:1216`):
     verified bodies. F (`malloc_info`; `malloc_stats` returns nothing
     and states nothing): `malloc_info` ensures `r == 0 || r == -1`,
     `r == -1 <==> options != 0 || stream` is null, and `r == -1 ==>
     final(errno).val() == EINVAL` (*(errno)*); a `0` may leave `errno`
     changed by the sink's `fwrite`, as glibc's may. The sinks
-    (`file_target`, `stderr_target`, `:1108`, `:1115`) are
+    (`file_target`, `stderr_target`, `:1292`, `:1299`) are
     `external_body`.
-33. `malloc_stats_print` (`api/print.rs:947`): outside `verus!`, with its
-    `export_pair!` wrapper (`:1131`); unverified. B: the program's
-    `opts` string and callback are read through trusted code.
+33. `malloc_stats_print` (`api/print.rs:1112`): verified body, no
+    `ensures`. Its `export_pair!` wrapper (`:1315`) is outside `verus!`
+    (its `write_cb` is a function pointer) and only wraps the callback
+    in the opaque `WriteCallback`. B: the program's `opts` string and
+    callback are read through trusted code (`opt_byte`, `emit`).
 34. `mallctl`, `mallctlnametomib`, `mallctlbymib` (`api/mallctl.rs:1585`,
     `:1646`, `:1685`): verified bodies, no `ensures` on the return code
     (`result`, `:1573`, maps `Err(e)` to `e`). Every access to the

@@ -174,7 +174,7 @@ pthread_setspecific	FFI/syscall	none (assumption)
 seed	FFI/syscall	none (assumption)
 src/sys/auxv.rs:getauxval	FFI/syscall	none (assumption)
 Reader	function pointer	Kani
-Target	function pointer	Kani
+WriteCallback	function pointer	Kani
 libc::FILE	FFI/syscall	none (assumption)
 # Discharged with Isla (verus/ISLA.md); `#1` is the x86_64 `mod imp`, `#2`
 # the aarch64 one.
@@ -291,9 +291,6 @@ claim_init	atomics primitive	loom/GenMC	discharged (verus/seams/api-claim_init.m
 # bound counts are (vspec/count.rs), once a permission wraps it.
 SlabTable::watermark	allocator invariant	RefinedRust
 Policy::position	allocator invariant	RefinedRust
-load_lg_slab_min	allocator invariant	RefinedRust
-load_lg_pmd	allocator invariant	RefinedRust
-load_lg_meta	allocator invariant	RefinedRust
 Arenas::init	raw pointer (internal)	none (assumption)
 core::sync::atomic::Atomic::<*mut T>::load	core library	Kani
 core::sync::atomic::Atomic::<*mut T>::store	core library	Kani
