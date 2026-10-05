@@ -1,6 +1,6 @@
 # `axiom_shared_layout`
 
-Seam S151 of `verus/SEAMS.md`: src/heap/shared.rs:588. Kind: axiom. Category: core library.
+Seam S146 of `verus/SEAMS.md`: src/heap/shared.rs:596. Kind: axiom. Category: core library.
 Discharged by Kani.
 
 ## Contract

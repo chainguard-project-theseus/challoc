@@ -115,8 +115,10 @@ and the call does not return (theorem 3, which is not voided for it).
   `Heap::cache_ptr` (`heap/cache.rs:302`, on the `malloc` and `free`
   fast paths: the home header for `class` is owned and caches `class`),
   `cached_recently` (`heap/cache.rs:608`), and the `others` list
-  readers `node_link`, `node_next`, `node_arena`, `node_caches`
-  (`heap/others.rs:100`, `:217`, `:238`, `:257`). The list's length
+  reader `node_caches` (`heap/others.rs`). The nodes' `arena` and
+  `next` fields go through permissions the heap holds (`Heap::heads`,
+  `others::heads_ok`, part of `list_ok`): `node_link`, `node_next`,
+  `node_arena` and `node_set_arena` are verified. The list's length
   bound is proved (`Heap::lemma_list_bound`: its keys are distinct
   `u16`s).
 - `flush::group_by_slab` (`heap/flush.rs:618`, `external_body`): its
@@ -161,8 +163,8 @@ pointer of `ClassState::table` is to the ghost table kept with it),
 `external_body`.
 
 **`core` and `vstd`.** The `assume_specification`s in `src/vspec/`
-(76, mostly `vspec/sys.rs`, `slice.rs` and `core_int.rs`), the one in
-`heap/flush.rs:1361` (`seed`), and vstd's specifications of `core`.
+(76, mostly `vspec/sys.rs`, `slice.rs` and `core_int.rs`), and vstd's
+specifications of `core`.
 
 **Memory model.** Sequential consistency. Atomic loads return any
 value (vstd); the three bitmap word writers (`vspec/word.rs:59`, `:76`,
@@ -1035,9 +1037,9 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   `pthread_setspecific` wrapper (which may allocate; `heap/shared.rs`,
   from theorem 15, in place of an `assume_specification`), `Set::ensure`
   (`class/sets.rs`, which commits set words through `Meta`; its
-  capability and `Inner::ensure_sets`' were added at the merge), and
-  the `assume_specification` of `flush::seed` (`getrandom`,
-  `heap/flush.rs:1365`).
+  capability and `Inner::ensure_sets`' were added at the merge).
+  (`shared::seed`, which reads `getrandom`, is verified: its syscalls
+  are in `getrandom_exact` and `now_coarse_ns`.)
 - `may_syscall` is opaque, so a verified function can prove it only from
   its own `requires` (or a loop invariant that carries it in from
   there), from `grant_syscalls`, or from the type invariant of a
@@ -1512,8 +1514,8 @@ vstd's multiset lemmas.
 **Scope.**
 - Randomness is out of scope: nothing is claimed about the distribution
   of the permutation, the quality of `xorshift`, or the seed from
-  `Heap::rng` (`heap/flush.rs:89`; `seed` is a trusted `getrandom`
-  read, or a clock read when that fails). The theorem holds for every `rng` value, including a stuck or
+  `Heap::rng` (`heap/flush.rs:89`; `seed` is a `getrandom` read, or a
+  clock read when that fails, and claims nothing about the value). The theorem holds for every `rng` value, including a stuck or
   adversarial one.
 - The random start word of each pick that scans the bitmap in `finish`
   (not a `Fresh` or `Purged` prefix; `(xorshift(r) as usize) % words`)
@@ -3824,11 +3826,11 @@ arena's slot to the `FOREIGN` node (theorem "Arena isolation" covers the
 bitmap side: every release goes back to the slot's own arena).
 
 **Premises beyond the common ones.**
-- `Heap::node_arena` (`heap/others.rs:244`, `external_body`) now
-  ensures the value it reads is the node's ghost key. Its writers record
-  what they store: `node_link` (`:102`) in `other_caches` (the new node,
-  at the head of the list and the keys) and `node_set_arena` (`:152`) in
-  `set_arena`; `destroy` frees the nodes with the heap.
+- None for the keys: `Heap::node_arena` reads the node's `arena` through
+  the permission the heap holds (`Heap::heads`, `others::heads_ok`),
+  whose value is proved to be the node's ghost key; its writers,
+  `node_link` in `other_caches` and `node_set_arena` in `set_arena`,
+  are verified, and `destroy` frees the nodes with the heap.
 - Every heap a verified path is handed is `Heap::wf` (common premises),
   now including the keys.
 
@@ -4135,8 +4137,8 @@ below were `#[inline(always)]` calls).
   `ThreadTcacheEnabled` arm each state the result for the reference they
   hold; that the next call's reference is the same heap in the same
   state is not modelled.
-- The `others` list is `Heap::list` (`list_ok`, `node_next`'s trusted
-  claim), as in theorem 10.
+- The `others` list is `Heap::list` (`list_ok`, with the nodes' `next`
+  fields read through `Heap::heads`), as in theorem 10.
 - That `ensure_cache` is the only writer that gives a header a stack is
   read from the code (one `axiom_fresh_stack` call); `set_arena` only
   exchanges headers between the home array and a node
@@ -4162,7 +4164,7 @@ its heap `wf`), which makes both keys' contracts the callees'.
   that each token leaving `release_routed`'s bag reaches a bitmap word
   rests on the verified bodies, not on an `ensures`.
 - `gc_all` gives a node's headers as emptied or trimmed: a node's arena
-  (`node_arena`, trusted) is not modelled, so whether it is the
+  (`node_arena`) is not used by the statement, so whether it is the
   `FOREIGN` node is not known to the proof (`gc_arena` states the exact
   case for the arena it is given). That a home arena is never `FOREIGN`
   is not stated either; `gc_all` covers both cases.

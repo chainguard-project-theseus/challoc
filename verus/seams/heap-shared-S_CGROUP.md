@@ -1,6 +1,6 @@
 # `S_CGROUP`
 
-Seam S150 of `verus/SEAMS.md`: src/heap/shared.rs:582. Kind: external_body const. Category: core library.
+Seam S145 of `verus/SEAMS.md`: src/heap/shared.rs:590. Kind: external_body const. Category: core library.
 Discharged by Kani.
 
 ## Contract

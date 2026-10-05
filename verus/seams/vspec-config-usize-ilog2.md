@@ -1,6 +1,6 @@
 # `usize::ilog2`
 
-Seam S271 of `verus/SEAMS.md`: src/vspec/config.rs:45. Kind: assume_spec. Category: core library.
+Seam S266 of `verus/SEAMS.md`: src/vspec/config.rs:45. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

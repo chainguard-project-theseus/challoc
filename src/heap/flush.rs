@@ -69,6 +69,7 @@ impl Heap {
             final(self).others == old(self).others,
             final(self).bound == old(self).bound,
             final(self).homed == old(self).homed,
+            final(self).heads == old(self).heads,
             r.0.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
             slots_in(final(out)@, cs.spec_class() as int, 0, r.0.n as int),
@@ -95,8 +96,8 @@ impl Heap {
     /// from `getrandom` (mixed with the heap's address and thread id so two
     /// heaps seeded in the same instant differ even if the kernel returned
     /// the same bytes, and never zero, which xorshift cannot leave).
-    /// Only `rng` changes; the address mix ([`addr_mix`]) and `seed` (a
-    /// syscall) are trusted and may return anything.
+    /// Only `rng` changes; the address mix ([`addr_mix`], trusted) and
+    /// `seed` (verified, a syscall) may return anything.
     #[cold]
     #[inline(never)]
     pub(super) fn rng(&mut self) -> (r: &mut u64)
@@ -1458,13 +1459,5 @@ fn slot_randomize(shared: &Shared) -> bool {
 fn addr_mix(h: &Heap) -> u64 {
     (h as *const Heap as u64).rotate_left(17)
 }
-
-/// `seed` reads `getrandom(2)` (or the clock).
-///
-/// Trusted: `seed` is outside `verus!`; claims nothing about the value.
-pub assume_specification[ seed ]() -> u64
-    requires
-        crate::sys::may_syscall(),
-;
 
 } // verus!

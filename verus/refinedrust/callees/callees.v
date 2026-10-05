@@ -5,5 +5,5 @@ From rrstd.ptr.ptr.proofs Require Import proof_read proof_read_volatile proof_wr
 (* [Heap::arena_volatile]: [ptr::read_volatile], which calls [ptr::read]. *)
 Print Assumptions read_proof.
 Print Assumptions read_volatile_proof.
-(* [node_link]: [ptr::write]. *)
+(* [ptr::write], kept for the remaining seams' callees. *)
 Print Assumptions write_proof.

@@ -1,6 +1,6 @@
 # `DisplaySpecImpl for sys::Errno`
 
-Seam S293 of `verus/SEAMS.md`: src/vspec/fmt.rs:38. Kind: spec_impl. Category: core library.
+Seam S288 of `verus/SEAMS.md`: src/vspec/fmt.rs:38. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract

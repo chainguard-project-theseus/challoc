@@ -86,12 +86,8 @@ assert_refill_empty	panic/abort	Kani	discharged (verus/seams/heap-assert_refill_
 FreshHeap	raw pointer (internal)	none (assumption)
 arena_volatile	UnsafeCell/volatile/transmute	RefinedRust	discharged (verus/seams/heap-Heap-arena_volatile.md)
 mark_bound	raw pointer (internal)	RefinedRust	discharged (verus/seams/heap-mark_bound.md)
-node_link	raw pointer (internal)	RefinedRust	discharged (verus/seams/heap-others-node_link.md)
 node_caches_detached	raw pointer (internal)	RefinedRust
-node_set_arena	raw pointer (internal)	RefinedRust
 assert_not_home	panic/abort	Kani	discharged (verus/seams/heap-others-assert_not_home.md)
-Heap::node_next	raw pointer (internal)	RefinedRust
-Heap::node_arena	raw pointer (internal)	RefinedRust
 Heap::node_caches	raw pointer (internal)	RefinedRust
 debug_scheduled	panic/abort	Kani	discharged (verus/seams/heap-paths-debug_scheduled.md)
 shared_of	raw pointer (internal)	RefinedRust
@@ -171,7 +167,6 @@ crate::layout::adopt_page_geometry	UnsafeCell/volatile/transmute	Verus
 core::fmt::Formatter::<'a>::write_str	core library	Kani	discharged (verus/seams/vspec-fmt-Formatter-write_str.md)
 core::fmt::Formatter::<'a>::write_fmt	function pointer	Kani
 pthread_setspecific	FFI/syscall	none (assumption)
-seed	FFI/syscall	none (assumption)
 src/sys/auxv.rs:getauxval	FFI/syscall	none (assumption)
 Reader	function pointer	Kani
 WriteCallback	function pointer	Kani

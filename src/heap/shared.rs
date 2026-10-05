@@ -372,20 +372,28 @@ pub(super) fn ncpus() -> u32
     crate::sys::ncpus()
 }
 
-} // verus!
-
 /// Eight random bytes from `getrandom(2)` for `slot_randomize`; on a
 /// kernel that refuses (not seen on any supported one) the clock, so
-/// the heap is still seeded with something that varies.
-pub(super) fn seed() -> u64 {
+/// the heap is still seeded with something that varies. Claims nothing
+/// about the value.
+pub(super) fn seed() -> u64
+    requires
+        crate::sys::may_syscall(),
+{
     let mut b = [0u8; 8];
     match crate::sys::getrandom_exact(&mut b) {
-        Ok(()) => u64::from_ne_bytes(b),
+        // The bytes as a little-endian word, which is
+        // `u64::from_ne_bytes(b)` on x86_64 and aarch64 (any word would
+        // do), spelled out: Verus cannot state `from_ne_bytes`'s
+        // signature (its array length is `size_of::<Self>()`). The
+        // compiler folds this into the same 8-byte load.
+        Ok(()) => {
+            b[0] as u64 | (b[1] as u64) << 8 | (b[2] as u64) << 16 | (b[3] as u64) << 24 | (b[4] as u64) << 32
+                | (b[5] as u64) << 40 | (b[6] as u64) << 48 | (b[7] as u64) << 56
+        },
         Err(_) => crate::sys::now_coarse_ns(),
     }
 }
-
-verus! {
 
 /// A guard slab interval [`SlabTable::new`] accepts: 0, or a power of two
 /// from 2 (1 leaves no slabs to allocate).
@@ -2666,7 +2674,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S135..S150, S151: each `S_*` is its field's `offset_of!`, and the
+    /// S130..S145, S146: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {

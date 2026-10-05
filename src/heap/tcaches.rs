@@ -80,6 +80,9 @@ verus! {
 /// holds none; a thread heap holds the one `create_heap_for_thread`
 /// installed and `set_arena` exchanged. The safety contract (one
 /// reference at a time) is what keeps a ticket from being used twice.
+/// It also includes the permissions to the `others` nodes' `arena` and
+/// `next` fields (`Heap::heads`), which `other_caches` and `set_arena`
+/// keep.
 /// No memory precondition is stated: neither caller can show one.
 /// `Tcaches::get` has a pointer loaded from its table and
 /// `thread::heap_destructor` the one the C library hands it (non-null

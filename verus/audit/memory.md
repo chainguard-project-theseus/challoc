@@ -17,7 +17,7 @@ corrected here), **weakened** (over-strong, made weaker here),
 **removed** (now verified), **unsound-open** (unsound, the fix needs a
 design decision; see the details).
 
-Totals: 80 sound, 10 fixed, 1 weakened, 1 removed, 1 unsound-open.
+Totals: 76 sound, 10 fixed, 1 weakened, 5 removed, 1 unsound-open.
 Two derivations of `false` were machine-checked (`from_raw`,
 `Lock::get_unlocked`); one more is sketched (`axiom_arena_assemble`).
 
@@ -62,11 +62,11 @@ reason (`api::axiom_fork_resumed_state`): see `invariants.md`,
 | S120 | `init_fields` | sound | Consumes the 128-byte head permission; every field it writes is in it (both quanta). |
 | S122 | `mark_bound` | sound | No contract; runs before any reference to the heap exists. Removable by passing `bound` to `init_fields` (exec change; proposed). |
 | S123 | `Heap::destroy` | fixed | The body calls `flush_all`, which requires `shared.wf()`; the contract did not. Now required (and by `Tcaches::destroy`). |
-| S124 | `node_link` | sound | Consumes the node's first-line permission. |
+| S124 | `node_link` | removed | Now verified: stores through permissions split from the node's first-line permission, and returns the `arena` and `next` ones (`others::NodeHead`), which the heap keeps (`Heap::heads`). |
 | S125 | `node_caches_mut` | weakened | Handed out `&'a mut` headers whose permissions `h` holds, so a write through it left them stale. Its one use reads; now `node_caches_detached`, a shared reference. |
-| S126 | `node_set_arena` | sound | No claim. |
-| S128 | `Heap::node_next` | sound | Matches `list_ok`; the writers of `next` are as documented. |
-| S129 | `Heap::node_arena` | sound | The ghost `keys` are written exactly where the stores are. |
+| S126 | `node_set_arena` | removed | Now verified: stores through the permission to the node's `arena` (`Heap::heads`). |
+| S128 | `Heap::node_next` | removed | Now verified: reads through the permission to `next` that `list_ok` (`others::heads_ok`) ties to the list. |
+| S129 | `Heap::node_arena` | removed | Now verified: reads through the permission to `arena`, whose value `others::heads_ok` makes the ghost key. |
 | S130 | `Heap::node_caches` | sound | No claim; lifetime tied to `&self`. |
 | S132 | `shared_of` | sound | `wf` for the `Shared` a heap was created on; the tests' extra `Shared`s break only `wf`'s process-global conjuncts (documented). |
 | S153 | `axiom_shared_built` | sound | Consumes its permissions and returns none, so padding does not matter; a second call needs a second set of field permissions, which only `Shared::begin` (S155, allocator invariant, not this slice) could mint (see "Outside this slice"). |

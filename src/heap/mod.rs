@@ -2898,6 +2898,11 @@ pub struct Heap {
     /// counted there ([`Heap::homed_ok`]).
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     homed: Tracked<Option<Homed>>,
+    /// Ghost (no bytes): the permissions to the `arena` and `next` fields
+    /// of each `others` node, which `other_caches` writes when it links
+    /// the node in ([`others::NodeHead`], [`others::heads_ok`]).
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    heads: Tracked<Map<*mut ArenaCaches, others::NodeHead>>,
 }
 
 } // verus!
@@ -3020,8 +3025,11 @@ impl Heap {
 
     /// The `others` list as [`Heap::list`] has it: `others` heads it (null
     /// when it is empty), and its nodes are distinct, non-null and owned
-    /// ([`Heap::owns_node`]). That each node's `next` is the one after it
-    /// (null after the last) is what [`Heap::node_next`] assumes. The
+    /// ([`Heap::owns_node`]). Each node's `next` is the one after it
+    /// (null after the last) and its `arena` is its key, through the
+    /// permissions to those fields the heap holds ([`Heap::heads`],
+    /// [`others::heads_ok`]), which [`Heap::node_next`] and
+    /// [`Heap::node_arena`] read through. The
     /// nodes' keys ([`Heap::keys`]: the arena a node caches, or
     /// [`FOREIGN`]) are pairwise distinct and none is the home arena
     /// (`verus/THEOREMS.md`, "Cache routing"): `other_caches` creates a
@@ -3038,6 +3046,7 @@ impl Heap {
         &&& k.len() == l.len()
         &&& forall|i: int, j: int| 0 <= i < j < k.len() ==> k[i] != k[j]
         &&& forall|i: int| 0 <= i < k.len() ==> #[trigger] k[i] != self.arena
+        &&& others::heads_ok(self.heads@, l, k)
     }
 
     /// `n` is a node of the `others` list ([`Heap::list`]).
@@ -3073,6 +3082,7 @@ impl Heap {
         ensures
             self.wf(),
     {
+        reveal(others::heads_ok);
         assert forall|c: int| 0 <= c < NCLASSES implies self.owns(#[trigger] self.home_hdrs@[c]) && self.hdr_class(self.home_hdrs@[c]) == c by {
             assert(self.home_hdrs@[c] == home_hdr(h, c));
         }
@@ -3568,6 +3578,7 @@ impl Heap {
         &&& self.list@ == old.list@
         &&& self.keys@ == old.keys@
         &&& self.home_hdrs@ == old.home_hdrs@
+        &&& self.heads == old.heads
         &&& self.arena == old.arena
         &&& self.bound == old.bound
         &&& self.homed == old.homed
@@ -3791,6 +3802,7 @@ impl Heap {
             new.arena == old.arena,
             new.others == old.others,
             new.home_hdrs == old.home_hdrs,
+            new.heads == old.heads,
             new.bound == old.bound,
             new.homed == old.homed,
             new.perms@.keeps(old.perms@),
@@ -3849,6 +3861,7 @@ impl Heap {
             b.homed == a.homed,
             b.others == a.others,
             b.home_hdrs == a.home_hdrs,
+            b.heads == a.heads,
         ensures
             b.keeps(a),
     {
@@ -4008,6 +4021,7 @@ impl Heap {
             new.homed == old.homed,
             new.others == old.others,
             new.home_hdrs == old.home_hdrs,
+            new.heads == old.heads,
             forall|p2: *mut CacheHeader, j: int|
                 old.perms@.hdrs.contains_key(p2) && p2 != cache && 0 <= j < old.perms@.hdr(p2).cap
                     ==> new.perms@.slots[#[trigger] old.perms@.ent(p2, j)] == old.perms@.slots[old.perms@.ent(p2, j)],
@@ -4043,7 +4057,8 @@ impl Heap {
 
     /// `self` is `old` with at most its headers' values changed: the same
     /// headers, caching the same classes, the same `others` list and
-    /// keys, home headers and home arena.
+    /// keys (and the permissions to its nodes' `arena` and `next`), home
+    /// headers and home arena.
     pub closed spec fn same_shape(&self, old: Heap) -> bool {
         &&& self.perms@.hdrs.dom() == old.perms@.hdrs.dom()
         &&& self.perms@.cls == old.perms@.cls
@@ -4054,6 +4069,7 @@ impl Heap {
         &&& self.homed == old.homed
         &&& self.others == old.others
         &&& self.home_hdrs == old.home_hdrs
+        &&& self.heads == old.heads
     }
 
     /// [`Heap::same_shape`] is transitive.
@@ -4142,6 +4158,7 @@ impl Heap {
             new.homed == old.homed,
             new.others == old.others,
             new.home_hdrs == old.home_hdrs,
+            new.heads == old.heads,
             v.len == 0 && v.cap == 0 && v.low_water == 0 && v.zeroed == 0 && v.run_end == 0,
         ensures
             new.wf(),
@@ -5363,6 +5380,7 @@ impl Heap {
                     self.list == h1.list,
                     self.keys == h1.keys,
                     self.arena == h1.arena,
+                    self.heads == h1.heads,
             {
                 let a = self.cache_ptr(c);
                 // SAFETY: `node` is a live block owned by this heap.
@@ -5373,14 +5391,30 @@ impl Heap {
                     Heap::lemma_same_node(h0, *self, node);
                 }
             }
-            let ghost h = *self;
-            // SAFETY: as above.
-            unsafe { node_set_arena(node, old, Ghost(h)) };
+            let ghost i = choose|i: int| 0 <= i < h1.list@.len() && h1.list@[i] == node && #[trigger] h1.keys@[i] == arena;
             proof {
+                h1.lemma_heads();
+                reveal(others::heads_ok);
+                assert(others::head_ok(h1.heads@, h1.list@, h1.keys@, i));
+            }
+            let tracked mut hd = self.heads.borrow_mut().tracked_remove(node);
+            // SAFETY: as above.
+            unsafe { node_set_arena(node, old, Tracked(&mut hd.arena)) };
+            proof {
+                self.heads.borrow_mut().tracked_insert(node, hd);
                 // The node keyed `arena` (the only one, keys being
-                // distinct) is now keyed `old`, which no node was.
-                let i = choose|i: int| 0 <= i < h1.list@.len() && h1.list@[i] == node && #[trigger] h1.keys@[i] == arena;
+                // distinct) is now keyed `old`, which no node was; the
+                // other nodes' first lines are as they were.
                 self.keys = Ghost(h1.keys@.update(i, old));
+                reveal(others::heads_ok);
+                assert forall|j: int| 0 <= j < self.list@.len() implies #[trigger] others::head_ok(self.heads@, self.list@, self.keys@, j) by {
+                    assert(others::head_ok(h1.heads@, h1.list@, h1.keys@, j));
+                    if j < i {
+                        assert(h1.list@[j] != h1.list@[i]);
+                    } else if j > i {
+                        assert(h1.list@[i] != h1.list@[j]);
+                    }
+                }
                 assert forall|j: int| 0 <= j < self.keys@.len() implies #[trigger] self.keys@[j] != arena by {
                     if j != i {
                         if j < i {
@@ -5512,6 +5546,7 @@ impl Heap {
         &&& self.homed == old.homed
         &&& self.others == old.others
         &&& self.home_hdrs == old.home_hdrs
+        &&& self.heads == old.heads
     }
 
     /// Stores into a header that keep [`CacheHeader::inv`], its stack and
@@ -6066,7 +6101,7 @@ mod kani_aborts {
     use super::{assert_flushed, assert_refill_empty};
     use crate::kani_proofs::must_not_return;
 
-    /// S116 `assert_flushed`, `ensures *len == 0`: on any other `len` the
+    /// S115 `assert_flushed`, `ensures *len == 0`: on any other `len` the
     /// call never returns.
     #[kani::proof]
     #[kani::should_panic]
@@ -6078,7 +6113,7 @@ mod kani_aborts {
         }
     }
 
-    /// S117 `assert_refill_empty`, `ensures *len == 0`: as
+    /// S116 `assert_refill_empty`, `ensures *len == 0`: as
     /// `assert_flushed`.
     #[kani::proof]
     #[kani::should_panic]

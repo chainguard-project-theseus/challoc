@@ -11,7 +11,7 @@ The four of them discharged with Isla are audited with their records.
 Verdicts: **sound** (no defect found; a premise the seam names is not a
 defect), **fixed** (a false or unsound contract, corrected here, callers
 re-proved), **weakened**, **removed**, **unsound-open** (a defect left
-for a decision). Totals: 69 sound, 7 fixed, 0 weakened, 0 removed,
+for a decision). Totals: 68 sound, 7 fixed, 0 weakened, 1 removed,
 0 unsound-open; the 4 Isla records were stale and are revised.
 
 ## Verdicts
@@ -44,7 +44,7 @@ for a decision). Totals: 69 sound, 7 fixed, 0 weakened, 0 removed,
 | S105 | `byte_at` | sound | claims nothing |
 | S106 | `bytes_at` | sound | as S13 |
 | S107 | `env_var` | sound | the value is a suffix of an entry `cstr` cut at `MAX_TEXT` |
-| S112 | `seed` | sound | `requires` only; outside `verus!`, claims nothing |
+| S112 | `seed` | removed | Now verified (`heap/shared.rs`): claims nothing about the value |
 | S113 | `axiom_c_claim` | sound | the C contract of `free`, once per entry point (and per branch of the verification-only fast-path theorem); a double free makes the proof vacuous, as documented |
 | S134 | `pthread_setspecific` | sound | the re-entry premise is named; `requires reentry_benign` is checked |
 | S168 | `axiom_process_page_at_most_64k` | sound | Linux pages are at most 64 KiB; the code itself accepts up to 4 MiB (decision 2) |
