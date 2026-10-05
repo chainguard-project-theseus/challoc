@@ -20,7 +20,13 @@
 use crate::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 use crate::layout::{Class, NCLASSES, build_classes, classes_for_page};
+use crate::vspec::addr::addr_to_ptr;
+#[cfg(verus_only)]
+use crate::vspec::addr::cast_provenance;
 use vstd::prelude::*;
+use vstd::raw_ptr::{PointsTo, ptr_ref};
+#[cfg(verus_only)]
+use vstd::raw_ptr::{PtrData, ptr_mut_from_data};
 
 verus! {
 
@@ -60,9 +66,11 @@ impl State {
     /// corrupted byte must not read as `Purged`, which `take` treats as
     /// zero memory for `calloc`.
     #[inline]
-    pub fn from_u8(v: u8) -> State
+    pub fn from_u8(v: u8) -> (r: State)
         requires
             crate::sys::may_abort(),
+        ensures
+            state_byte(r) == v,
     {
         match State::try_from_u8(v) {
             Some(s) => s,
@@ -72,7 +80,10 @@ impl State {
 
     /// [`from_u8`](State::from_u8) without the abort.
     #[inline]
-    pub const fn try_from_u8(v: u8) -> Option<State> {
+    pub const fn try_from_u8(v: u8) -> (r: Option<State>)
+        ensures
+            r matches Some(s) ==> state_byte(s) == v,
+    {
         match v {
             0 => Some(State::Fresh),
             1 => Some(State::Active),
@@ -92,6 +103,16 @@ impl State {
     }
 }
 
+/// The byte a descriptor's `state` field holds for `s` (`s as u8`).
+pub open spec fn state_byte(s: State) -> u8 {
+    match s {
+        State::Fresh => 0,
+        State::Active => 1,
+        State::Empty => 2,
+        State::Purged => 3,
+    }
+}
+
 /// Descriptor header.
 #[repr(C, align(16))]
 pub struct SlabDesc {
@@ -103,6 +124,73 @@ pub struct SlabDesc {
     arena: AtomicU16,
     live: AtomicU32,
     dirty_at: AtomicU64,
+}
+
+/// The address of a descriptor: the identity a [`DescPerm`] is for (as
+/// `vspec::word::word_addr` is a bitmap word's). `class::table`'s
+/// `axiom_init_descs` ties it to the descriptor's address when it mints
+/// the permissions.
+pub uninterp spec fn desc_id(d: &SlabDesc) -> usize;
+
+/// Ghost permission to the lock-protected fields of the descriptor at
+/// [`id`](DescPerm::id): the `state`, `dirty_at` and `arena` values it
+/// holds. Not `Copy`, and nothing builds one but the trusted
+/// `class::table::axiom_init_descs` (the fields are private to this
+/// module, which has no constructor), once per descriptor of a class
+/// table. The class table's commit lock holds the permissions of the
+/// slabs not yet handed out, and `take_group` moves a group's to the
+/// taking arena's class lock value (`class::Inner`), which keeps them
+/// for good: so the holder of an arena's class lock holds the
+/// permissions of the slabs the arena owns, and the accessors below that
+/// take one see the value the last write through one stored.
+///
+/// The type is plain ghost data; what is trusted is the accessors that
+/// take one, each the one `core` atomic access its body makes (two
+/// stores for `set_state`, five for `init`), as `core` documents, and
+/// that every write of those three fields goes through them (`SlabDesc`
+/// keeps the fields private; the one writer without a permission,
+/// `set_arena`, is test-only). The proof model is sequentially
+/// consistent; the `Relaxed` orderings are right because every access
+/// through a permission is made under the lock that holds it.
+///
+/// Its fields are private, so only this module could build one: no code
+/// here may, as `table::axiom_init_descs` is the only source of
+/// permissions and a second one for a descriptor would let two holders
+/// write it.
+// Ghost: read only by the specifications.
+#[allow(dead_code)]
+pub tracked struct DescPerm {
+    ghost id: usize,
+    ghost state: u8,
+    ghost dirty: u64,
+    ghost arena: u16,
+}
+
+impl DescPerm {
+    /// The descriptor this permission is for ([`desc_id`]).
+    pub closed spec fn id(&self) -> usize {
+        self.id
+    }
+
+    /// The descriptor's `state` byte.
+    pub closed spec fn state(&self) -> u8 {
+        self.state
+    }
+
+    /// The descriptor's `dirty_at` stamp.
+    pub closed spec fn dirty(&self) -> u64 {
+        self.dirty
+    }
+
+    /// The descriptor's arena.
+    pub closed spec fn arena(&self) -> u16 {
+        self.arena
+    }
+}
+
+/// `m` holds a permission for `d` under key `k`.
+pub open spec fn perm_for(m: Map<nat, DescPerm>, k: nat, d: &SlabDesc) -> bool {
+    m.contains_key(k) && m[k].id() == desc_id(d)
 }
 
 const fn strides_of(classes: &[Class; NCLASSES]) -> (out: [u32; NCLASSES])
@@ -165,25 +253,39 @@ const fn strides_match_every_page() -> bool {
 /// handed out singly, 32 for pairs, 16 (the header) from groups of four.
 pub exec static DESC_STRIDE: [u32; NCLASSES] = build_strides();
 
-/// Descriptor stride for `class` in bytes.
+/// The stride [`desc_stride`] reads for class `c`.
+pub uninterp spec fn stride_of(c: int) -> usize;
+
+/// Descriptor stride for `class` in bytes. Trusted: `DESC_STRIDE` is an
+/// immutable static, so every read of an entry returns the same value,
+/// which [`stride_of`] names (Verus does not read `exec static`s).
 #[inline]
+#[verifier::external_body]
 pub fn desc_stride(class: usize) -> (r: usize)
     requires class < NCLASSES,
-    ensures r <= u32::MAX,
+    ensures r <= u32::MAX, r == stride_of(class as int),
 {
     DESC_STRIDE[class] as usize
 }
 
 impl SlabDesc {
     /// Descriptor of slab `slab` in the array for `class` starting at
-    /// `base`.
+    /// `base`, through its permission `perm`.
     ///
     /// # Safety
     /// `base` must be the start of a descriptor array for `class` with at
     /// least `slab + 1` committed entries.
     #[inline]
-    #[verifier::external_body]
-    pub unsafe fn at<'a>(base: usize, class: usize, slab: usize) -> &'a SlabDesc {
+    pub unsafe fn at<'a>(base: usize, class: usize, slab: usize, Tracked(perm): Tracked<&'a PointsTo<SlabDesc>>) -> (r: &'a SlabDesc)
+        requires
+            class < NCLASSES,
+            base % DESC_ALIGN == 0,
+            base + slab * stride_of(class as int) <= usize::MAX,
+            perm.ptr() == ptr_mut_from_data::<SlabDesc>(PtrData { addr: (base + slab * stride_of(class as int)) as usize, provenance: cast_provenance(), metadata: () }),
+            perm.is_init(),
+        ensures
+            *r == perm.value(),
+    {
         debug_assert!(base % DESC_ALIGN == 0);
         // SAFETY: the caller guarantees the entry is inside a committed array;
         // descriptors are plain atomics valid for any bit pattern. Valid to
@@ -192,12 +294,21 @@ impl SlabDesc {
         // `from_u8`, and garbage in 1..=3 reads as a plausible state, which
         // is why `take_group` cross-checks the arena against the owner word
         // and `check_zero` exists.
-        unsafe { &*((base + slab * desc_stride(class)) as *const SlabDesc) }
+        ptr_ref(addr_to_ptr(base + slab * desc_stride(class)) as *const SlabDesc, Tracked(perm))
     }
 
     /// Initialise the descriptor of a slab handed to `arena`: `Fresh`, no
-    /// live slots.
-    pub fn init(&self, arena: u16) {
+    /// live slots. Trusted ([`DescPerm`]).
+    #[verifier::external_body]
+    pub fn init(&self, arena: u16, Tracked(p): Tracked<&mut DescPerm>)
+        requires
+            old(p).id() == desc_id(self),
+        ensures
+            final(p).id() == old(p).id(),
+            final(p).state() == state_byte(State::Fresh),
+            final(p).dirty() == 0,
+            final(p).arena() == arena,
+    {
         self.state.store(State::Fresh as u8, Ordering::Relaxed);
         self.shadow.store(State::Fresh as u8 + 1, Ordering::Relaxed);
         self.arena.store(arena, Ordering::Relaxed);
@@ -213,9 +324,65 @@ impl SlabDesc {
         State::from_u8(self.state.load(Ordering::Relaxed))
     }
 
-    /// Only ever called with the class lock held.
+    /// [`state`](SlabDesc::state) read by a holder of `m`, the permissions
+    /// a class lock value holds: the state the permission under `k`
+    /// records when that is this descriptor's.
+    #[inline(always)]
+    pub fn state_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: State)
+        requires
+            crate::sys::may_abort(),
+        ensures
+            perm_for(*m, k, self) ==> state_byte(r) == m[k].state(),
+    {
+        State::from_u8(self.state_byte_held(Ghost(k), Tracked(m)))
+    }
+
+    /// The `state` byte, as [`state_held`](SlabDesc::state_held).
+    /// Trusted ([`DescPerm`]).
+    #[inline(always)]
+    #[verifier::external_body]
+    fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u8)
+        ensures
+            perm_for(*m, k, self) ==> r == m[k].state(),
+    {
+        self.state.load(Ordering::Relaxed)
+    }
+
+    /// [`dirty_at`](SlabDesc::dirty_at), as
+    /// [`state_held`](SlabDesc::state_held). Trusted ([`DescPerm`]).
+    #[inline(always)]
+    #[verifier::external_body]
+    pub fn dirty_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u64)
+        ensures
+            perm_for(*m, k, self) ==> r == m[k].dirty(),
+    {
+        self.dirty_at.load(Ordering::Relaxed)
+    }
+
+    /// [`arena`](SlabDesc::arena), as [`state_held`](SlabDesc::state_held).
+    /// Trusted ([`DescPerm`]).
+    #[inline(always)]
+    #[verifier::external_body]
+    pub fn arena_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u16)
+        ensures
+            perm_for(*m, k, self) ==> r == m[k].arena(),
+    {
+        self.arena.load(Ordering::Relaxed)
+    }
+
+    /// Only ever called with the class lock held, which holds `p`.
+    /// Trusted ([`DescPerm`]).
     #[inline]
-    pub fn set_state(&self, s: State) {
+    #[verifier::external_body]
+    pub fn set_state(&self, s: State, Tracked(p): Tracked<&mut DescPerm>)
+        requires
+            old(p).id() == desc_id(self),
+        ensures
+            final(p).id() == old(p).id(),
+            final(p).state() == state_byte(s),
+            final(p).dirty() == old(p).dirty(),
+            final(p).arena() == old(p).arena(),
+    {
         self.state.store(s as u8, Ordering::Relaxed);
         self.shadow.store(s as u8 + 1, Ordering::Relaxed);
     }
@@ -275,8 +442,19 @@ impl SlabDesc {
         self.dirty_at.load(Ordering::Relaxed)
     }
 
+    /// Only ever called with the class lock held, which holds `p`.
+    /// Trusted ([`DescPerm`]).
     #[inline]
-    pub fn set_dirty_at(&self, ns: u64) {
+    #[verifier::external_body]
+    pub fn set_dirty_at(&self, ns: u64, Tracked(p): Tracked<&mut DescPerm>)
+        requires
+            old(p).id() == desc_id(self),
+        ensures
+            final(p).id() == old(p).id(),
+            final(p).state() == old(p).state(),
+            final(p).dirty() == ns,
+            final(p).arena() == old(p).arena(),
+    {
         self.dirty_at.store(ns, Ordering::Relaxed);
     }
 
@@ -328,7 +506,7 @@ mod tests {
 
         fn at(&self, slab: usize) -> &SlabDesc {
             assert!((slab + 1) * desc_stride(self.class) <= self.buf.len() - DESC_ALIGN);
-            unsafe { SlabDesc::at(self.base, self.class, slab) }
+            unsafe { SlabDesc::at(self.base, self.class, slab, Tracked::assume_new()) }
         }
     }
 
@@ -404,10 +582,10 @@ mod tests {
             let d = Descs::new(c, 3);
             for slab in 0..3 {
                 let desc = d.at(slab);
-                desc.set_state(State::Active);
+                desc.set_state(State::Active, Tracked::assume_new());
                 desc.add_live(3);
-                desc.set_dirty_at(9);
-                desc.init(7);
+                desc.set_dirty_at(9, Tracked::assume_new());
+                desc.init(7, Tracked::assume_new());
                 assert_eq!(desc.state(), State::Fresh);
                 assert_eq!(desc.arena(), 7);
                 assert_eq!(desc.live(), 0);
@@ -422,11 +600,12 @@ mod tests {
         for c in [0usize, 12, 15, 19] {
             let d = Descs::new(c, 4);
             for slab in 0..4 {
-                d.at(slab).init(slab as u16);
+                d.at(slab).init(slab as u16, Tracked::assume_new());
             }
             d.at(1).add_live(5);
-            d.at(1).set_state(State::Active);
-            d.at(1).set_dirty_at(0x1111_2222_3333_4444);
+            d.at(1).set_state(State::Active, Tracked::assume_new());
+            d.at(1)
+                .set_dirty_at(0x1111_2222_3333_4444, Tracked::assume_new());
             for other in [0usize, 2, 3] {
                 let desc = d.at(other);
                 assert_eq!(desc.arena(), other as u16, "class {c}");
@@ -442,15 +621,15 @@ mod tests {
         let cls = &CLASSES[3];
         let d = Descs::new(3, 1);
         let desc = d.at(0);
-        desc.init(0);
+        desc.init(0, Tracked::assume_new());
         assert_eq!(desc.add_live(5), 0);
         assert_eq!(desc.add_live(2), 5);
         assert_eq!(desc.live(), 7);
         assert_eq!(desc.nfree(cls), cls.nslots() - 7);
         assert_eq!(desc.sub_live(7), 7);
         assert_eq!(desc.live(), 0);
-        desc.set_state(State::Empty);
-        desc.set_dirty_at(42);
+        desc.set_state(State::Empty, Tracked::assume_new());
+        desc.set_dirty_at(42, Tracked::assume_new());
         assert_eq!(desc.state(), State::Empty);
         assert_eq!(desc.dirty_at(), 42);
     }
@@ -460,7 +639,7 @@ mod tests {
     fn live_underflow_aborts() {
         let d = Descs::new(3, 1);
         let desc = d.at(0);
-        desc.init(0);
+        desc.init(0, Tracked::assume_new());
         desc.add_live(1);
         desc.sub_live(2);
     }

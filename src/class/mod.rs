@@ -81,7 +81,9 @@ use crate::lock::{Lock, LockOrder, PAD_ALIGN, Padded, RawLock};
 use crate::lock::{rank_class, rank_sets, rank_table};
 use crate::meta::Meta;
 use crate::purge::{self, Decayer};
-use crate::slab::{SlabDesc, State};
+use crate::slab::{DescPerm, SlabDesc, State};
+#[cfg(verus_only)]
+use crate::slab::{desc_id, state_byte};
 use crate::sync::atomic::{AtomicU64, Ordering};
 use crate::sys::Errno;
 #[cfg(verus_only)]
@@ -652,10 +654,9 @@ struct Inner {
     group_end: usize,
     /// Ghost: the slabs this arena owns (their group's owner word names
     /// this arena, guard slabs included), each with the state its
-    /// descriptor holds while this lock is held. The bridges
-    /// [`ClassState::owner_locked`], [`ClassState::state_locked`] and
-    /// [`ClassState::set_state_locked`] tie it to the owner words and the
-    /// descriptors.
+    /// descriptor holds while this lock is held. The trusted bridge
+    /// [`ClassState::owner_locked`] ties it to the owner words, and the
+    /// descriptor permissions ([`Inner::descs`]) to the descriptors.
     #[allow(dead_code)]
     states: Ghost<Map<nat, State>>,
     /// Ghost: this arena's committed slabs (guards excluded), the slabs
@@ -680,6 +681,14 @@ struct Inner {
     /// slabs, which `take_group` took as they were (`guard_marked`).
     #[allow(dead_code)]
     inited: Tracked<GhostPersistentSubset<int>>,
+    /// Ghost: the permissions ([`DescPerm`]) of the descriptors of the
+    /// slabs this arena owns, which `take_group` handed over with the
+    /// slabs; each records the state and stamp `states` and `dirty` hold,
+    /// and, but for a guard slab, this arena ([`descs_ok`]). What
+    /// [`ClassState::state_locked`] and the other descriptor accessors
+    /// read and write through.
+    #[allow(dead_code)]
+    dperms: Tracked<Map<nat, DescPerm>>,
 }
 
 } // verus!
@@ -783,6 +792,62 @@ spec fn set_wf(s: Set, n: nat) -> bool {
     &&& forall|b: nat| #[trigger] s.map@.contains(b) ==> b < n
 }
 
+/// Owned slab `s`'s descriptor permission in `dperms` is to its
+/// descriptor in `t`, and records the ghost state `st` and stamp `dirty`
+/// and, unless `s` is a guard slab (whose descriptor stays zero), the
+/// arena `arena`.
+spec fn desc_ok(dperms: Map<nat, DescPerm>, t: SlabTable, arena: u16, s: nat, st: State, dirty: u64) -> bool {
+    &&& dperms.contains_key(s)
+    &&& dperms[s].id() == desc_id(&desc_at(t, s as usize))
+    &&& dperms[s].state() == state_byte(st)
+    &&& dperms[s].dirty() == dirty
+    &&& !t.spec_is_guard(s as usize) ==> dperms[s].arena() == arena
+}
+
+/// [`desc_ok`] at every slab `states` owns: the class lock value holds
+/// the permission of every owned slab's descriptor, which agrees with
+/// its ghost. Opaque ([`Inner::lemma_desc`] reads it at one slab); a
+/// function of the fields it reads, so that a write of any other field
+/// keeps it.
+#[verifier::opaque]
+spec fn descs_ok(states: Map<nat, State>, dirty: Map<nat, u64>, dperms: Map<nat, DescPerm>, t: SlabTable, arena: u16) -> bool {
+    forall|s: nat| #[trigger] states.contains_key(s) ==> desc_ok(dperms, t, arena, s, states[s], dirty[s])
+}
+
+/// [`state_byte`] is one to one.
+proof fn lemma_state_byte_inj(a: State, b: State)
+    ensures
+        state_byte(a) == state_byte(b) ==> a == b,
+{
+}
+
+/// [`Inner::descs`] after a write of owned slab `k`'s descriptor: `g1`
+/// is `g0` with `k`'s state, stamp and permission replaced in agreement.
+proof fn lemma_descs_update(g0: Inner, g1: Inner, k: nat)
+    requires
+        g0.descs(),
+        g0.owns(k),
+        g1.states@.dom() == g0.states@.dom(),
+        forall|s: nat| s != k ==> #[trigger] g1.states@[s] == g0.states@[s],
+        forall|s: nat| s != k ==> #[trigger] g1.dirty@[s] == g0.dirty@[s],
+        forall|s: nat| s != k ==> #[trigger] g1.dperms@[s] == g0.dperms@[s],
+        forall|s: nat| s != k && #[trigger] g0.dperms@.contains_key(s) ==> g1.dperms@.contains_key(s),
+        g1.table == g0.table,
+        g1.arena == g0.arena,
+        desc_ok(g1.dperms@, g1.table@, g1.arena@, k, g1.st(k), g1.dirty@[k]),
+    ensures
+        g1.descs(),
+{
+    reveal(descs_ok);
+    assert forall|s: nat| #[trigger] g1.states@.contains_key(s)
+        implies desc_ok(g1.dperms@, g1.table@, g1.arena@, s, g1.states@[s], g1.dirty@[s]) by {
+        if s != k {
+            assert(g0.states@.contains_key(s));
+            assert(g0.dperms@.contains_key(s));
+        }
+    }
+}
+
 /// A set of the class state holds at most `n` slabs.
 proof fn lemma_set_len_le(s: Set, n: nat)
     requires
@@ -836,6 +901,23 @@ impl Inner {
         self.states@[s]
     }
 
+    /// The value holds the agreeing permission of every owned slab's
+    /// descriptor ([`descs_ok`]).
+    spec fn descs(&self) -> bool {
+        descs_ok(self.states@, self.dirty@, self.dperms@, self.table@, self.arena@)
+    }
+
+    /// [`descs`](Inner::descs) at owned slab `s`.
+    proof fn lemma_desc(&self, s: nat)
+        requires
+            self.descs(),
+            self.owns(s),
+        ensures
+            desc_ok(self.dperms@, self.table@, self.arena@, s, self.st(s), self.dirty@[s]),
+    {
+        reveal(descs_ok);
+    }
+
     /// The seam's counts and shapes: three well-formed sets over the
     /// class's slabs, each count the population of its set, the committed
     /// count the size of the committed set, the owned and committed slabs
@@ -845,7 +927,9 @@ impl Inner {
     /// group's end is owned, and each owned slab's markers are held
     /// (fresh ones from `init`, a guard slab's init markers), which puts
     /// both below the watermark (`SlabTable::next_slab_locked`); and every
-    /// owned slab's owner ([`slab_owner`]) is this arena.
+    /// owned slab's owner ([`slab_owner`]) is this arena; and the value
+    /// holds every owned slab's descriptor permission, which agrees with
+    /// the ghost ([`Inner::descs`]).
     spec fn base(&self) -> bool {
         &&& set_wf(self.partial, self.nbits())
         &&& set_wf(self.empty, self.nbits())
@@ -868,6 +952,7 @@ impl Inner {
         &&& self.group_end > 0 ==> self.owns((self.group_end - 1) as nat)
         &&& forall|s: nat| #[trigger] self.states@.contains_key(s)
             ==> slab_owner(self.table@.spec_class() as int, s as int) == self.arena@
+        &&& self.descs()
     }
 
     /// The ghost link at slab `s`, apart from the current group: the
@@ -949,6 +1034,7 @@ impl Inner {
         &&& self.arena == o.arena
         &&& self.table == o.table
         &&& self.inited == o.inited
+        &&& self.dperms == o.dperms
     }
 
     /// Values that differ only in the sets' stores agree on the invariant.
@@ -1005,6 +1091,7 @@ impl Inner {
         &&& self.arena == o.arena
         &&& self.table == o.table
         &&& self.inited == o.inited
+        &&& self.dperms == o.dperms
     }
 
     /// The exempt slab back in the link closes the invariant.
@@ -1397,8 +1484,11 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for State {
 }
 
 /// The bridges between the ghost link (`Inner::states`) and the owner
-/// words and descriptors it stands for. Each is trusted and compiles to
-/// the one call in its body. `g` must be the value behind a class lock
+/// words and descriptors it stands for. `owner_locked` is trusted and
+/// compiles to the one call in its body; the descriptor ones read and
+/// write through the permissions the lock value holds (`Inner::descs`),
+/// each compiling to the one access in its body. `g` must be the value
+/// behind a class lock
 /// over this state's table (its ghost `table`, required) that the caller
 /// holds. `owner_locked` also requires this arena's (its ghost `arena`).
 impl ClassState {
@@ -1432,55 +1522,62 @@ impl ClassState {
         self.table().owner(slab)
     }
 
-    /// Bridge (trusted): under an arena's class lock, the descriptor of a
-    /// slab the arena owns holds the state its ghost records. Assumes every
-    /// write of a slab's state byte is made under its owner's class lock
-    /// together with the ghost update to the same state: through
-    /// [`set_state_locked`] in verified code (`on_live_zero`, `take`,
-    /// `purge_group`), and `SlabDesc::init` in
-    /// `take_group`, under the commit lock and the taking arena's class
-    /// lock, which makes a never-handed-out slab `Fresh` (a guard slab's
-    /// descriptor stays zero, which reads `Fresh`) before `next_fresh_slab`
-    /// adds it `Fresh` to the ghost (verified). `set_state` is documented
-    /// "only ever called with the class lock held". The `check_zero` debug
-    /// mode compares the state byte with its shadow where a lock holder
-    /// reads it (`check_shadow` in `take`, `on_live_zero`, the release
-    /// path), which catches a write that bypassed
-    /// `SlabDesc`, though not a `set_state` made under the wrong lock.
+    /// The descriptor `d` of slab `slab` read under an arena's class lock
+    /// (`g`): for a slab the arena owns, the state its ghost records,
+    /// through the permission `g` holds ([`Inner::descs`]): every write of
+    /// an owned slab's state byte goes through that permission, so with
+    /// the ghost update to the same state ([`set_state_locked`]), and
+    /// `take_group` initialised the descriptor through it, `Fresh`, before
+    /// `next_fresh_slab` added the slab `Fresh` to the ghost (a guard
+    /// slab's descriptor stays zero, which reads `Fresh`). The `check_zero`
+    /// debug mode compares the state byte with its shadow where a lock
+    /// holder reads it (`check_shadow` in `take`, `on_live_zero`, the
+    /// release path), which catches a write that bypassed `SlabDesc`.
     ///
     /// [`set_state_locked`]: ClassState::set_state_locked
     #[allow(unused_variables)]
     #[inline(always)]
-    #[verifier::external_body]
     fn state_locked(&self, g: &Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>) -> (r: State)
         requires
             crate::sys::may_abort(),
+            g.descs(),
             g.table@ == self.spec_table(),
             *d == desc_at(self.spec_table(), slab),
         ensures
             g.owns(slab as nat) ==> r == g.st(slab as nat),
     {
-        d.state()
+        proof {
+            if g.owns(slab as nat) {
+                g.lemma_desc(slab as nat);
+            }
+        }
+        let r = d.state_held(Ghost(slab as nat), Tracked(g.dperms.borrow()));
+        proof {
+            if g.owns(slab as nat) {
+                lemma_state_byte_inj(r, g.st(slab as nat));
+            }
+        }
+        r
     }
 
-    /// Bridge (trusted): `SlabDesc::set_state` on an owned slab's
-    /// descriptor, with the ghost state updated to match (the write side
-    /// of [`state_locked`]'s assumption). Nothing else changes. Never to
-    /// `Fresh`: an owned slab that left `Fresh` does not return to it,
-    /// which the zero claim of a `Fresh` slab rests on
-    /// (`axiom_fresh_slots_zero`).
+    /// `SlabDesc::set_state` on an owned slab's descriptor through its
+    /// permission, with the ghost state updated to match (the write side
+    /// of [`state_locked`]). Nothing else changes. Never to `Fresh`: an
+    /// owned slab that left `Fresh` does not return to it, which the zero
+    /// claim of a `Fresh` slab rests on (`axiom_fresh_slots_zero`).
     ///
     /// [`state_locked`]: ClassState::state_locked
     #[allow(unused_variables)]
     #[inline(always)]
-    #[verifier::external_body]
     fn set_state_locked(&self, g: &mut Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>, s: State)
         requires
+            old(g).descs(),
             old(g).table@ == self.spec_table(),
             *d == desc_at(self.spec_table(), slab),
             old(g).owns(slab as nat),
             s != State::Fresh,
         ensures
+            final(g).descs(),
             final(g).states@ == old(g).states@.insert(slab as nat, s),
             final(g).partial == old(g).partial,
             final(g).empty == old(g).empty,
@@ -1494,46 +1591,64 @@ impl ClassState {
             final(g).table == old(g).table,
             final(g).inited == old(g).inited,
     {
-        d.set_state(s)
+        let ghost g0 = *g;
+        let ghost k = slab as nat;
+        proof {
+            g.lemma_desc(k);
+        }
+        let tracked mut p = g.dperms.borrow_mut().tracked_remove(k);
+        d.set_state(s, Tracked(&mut p));
+        proof {
+            g.dperms.borrow_mut().tracked_insert(k, p);
+            g.states@ = g.states@.insert(k, s);
+            assert(g.states@.dom() =~= g0.states@.dom());
+            lemma_descs_update(g0, *g, k);
+        }
     }
 
-    /// Bridge (trusted): under an arena's class lock, the descriptor of a
-    /// slab the arena owns holds the `dirty_at` stamp its ghost records.
-    /// Assumes, as [`state_locked`] does for the state, that every write of
-    /// a stamp is made under the owner's class lock with the ghost update:
-    /// through [`set_dirty_locked`] in verified code, and in
-    /// `SlabDesc::init` (0; a guard slab's descriptor stays zero) for a
-    /// slab `next_fresh_slab` then adds with the ghost stamp 0 (verified).
+    /// The descriptor `d` of slab `slab` read under an arena's class lock
+    /// (`g`): for a slab the arena owns, the `dirty_at` stamp its ghost
+    /// records, as [`state_locked`] reads the state: every write of a
+    /// stamp goes through the permission with the ghost update
+    /// ([`set_dirty_locked`]), and `take_group`'s `init` wrote 0 for a
+    /// slab `next_fresh_slab` then adds with the ghost stamp 0 (a guard
+    /// slab's descriptor stays zero).
     ///
     /// [`state_locked`]: ClassState::state_locked
     /// [`set_dirty_locked`]: ClassState::set_dirty_locked
     #[allow(unused_variables)]
     #[inline(always)]
-    #[verifier::external_body]
     fn dirty_locked(&self, g: &Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>) -> (r: u64)
         requires
+            g.descs(),
             g.table@ == self.spec_table(),
             *d == desc_at(self.spec_table(), slab),
         ensures
             g.owns(slab as nat) ==> r == g.dirty@[slab as nat],
     {
-        d.dirty_at()
+        proof {
+            if g.owns(slab as nat) {
+                g.lemma_desc(slab as nat);
+            }
+        }
+        d.dirty_held(Ghost(slab as nat), Tracked(g.dperms.borrow()))
     }
 
-    /// Bridge (trusted): `SlabDesc::set_dirty_at` on an owned slab's
-    /// descriptor, with the ghost stamp updated to match (the write side
-    /// of [`dirty_locked`]'s assumption). Nothing else changes.
+    /// `SlabDesc::set_dirty_at` on an owned slab's descriptor through its
+    /// permission, with the ghost stamp updated to match (the write side
+    /// of [`dirty_locked`]). Nothing else changes.
     ///
     /// [`dirty_locked`]: ClassState::dirty_locked
     #[allow(unused_variables)]
     #[inline(always)]
-    #[verifier::external_body]
     fn set_dirty_locked(&self, g: &mut Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>, ns: u64)
         requires
+            old(g).descs(),
             old(g).table@ == self.spec_table(),
             *d == desc_at(self.spec_table(), slab),
             old(g).owns(slab as nat),
         ensures
+            final(g).descs(),
             final(g).dirty@ == old(g).dirty@.insert(slab as nat, ns),
             final(g).states == old(g).states,
             final(g).partial == old(g).partial,
@@ -1547,7 +1662,18 @@ impl ClassState {
             final(g).table == old(g).table,
             final(g).inited == old(g).inited,
     {
-        d.set_dirty_at(ns)
+        let ghost g0 = *g;
+        let ghost k = slab as nat;
+        proof {
+            g.lemma_desc(k);
+        }
+        let tracked mut p = g.dperms.borrow_mut().tracked_remove(k);
+        d.set_dirty_at(ns, Tracked(&mut p));
+        proof {
+            g.dperms.borrow_mut().tracked_insert(k, p);
+            g.dirty@ = g.dirty@.insert(k, ns);
+            lemma_descs_update(g0, *g, k);
+        }
     }
 }
 
@@ -2538,25 +2664,32 @@ impl ClassState {
 
     /// `take`'s debug checks: the slab's owner word and its descriptor's
     /// arena name this arena. Inlined and `track_caller`, as
-    /// `table::watermark_aligned`. Trusted: Verus does not support
-    /// `debug_assert_eq!`. The first holds by [`owner_locked`]'s
-    /// assumption (the slab is owned, `ready`); the second because the
-    /// descriptor's arena is written with the owner word (`take_group`).
-    ///
-    /// [`owner_locked`]: ClassState::owner_locked
+    /// `table::watermark_aligned`. Neither fails: an owned slab's owner
+    /// is this arena (`Inner::base`), and the descriptor of an owned slab
+    /// that is not a guard slab records it ([`Inner::descs`]: `take_group`
+    /// wrote it with the owner word).
     #[allow(unused_variables)]
     #[inline(always)]
     #[track_caller]
-    #[verifier::external_body]
     fn take_checks(&self, g: &Inner, desc: &SlabDesc, slab: usize, live: usize)
         requires
+            crate::sys::may_abort(),
+            g.base(),
             g.owns(slab as nat),
+            !self.spec_table().spec_is_guard(slab),
             g.arena@ == self.arena,
             g.table@ == self.spec_table(),
             *desc == desc_at(self.spec_table(), slab),
     {
-        debug_assert_eq!(self.table().owner(slab), self.arena, "take: slab {slab} state {:?} live {live}", desc.state());
-        debug_assert_eq!(desc.arena(), self.arena, "take: slab {slab} descriptor arena");
+        proof {
+            g.lemma_desc(slab as nat);
+        }
+        if cfg!(debug_assertions) {
+            let owner = self.table().owner(slab);
+            let arena = desc.arena_held(Ghost(slab as nat), Tracked(g.dperms.borrow()));
+            debug_assert!(owner == self.arena, "take: slab {slab} state {:?} live {live}: owner {owner}, not arena {}", desc.state(), self.arena);
+            debug_assert!(arena == self.arena, "take: slab {slab} descriptor arena {arena}, not arena {}", self.arena);
+        }
     }
 
     /// This arena's slab counts; `guards` is the class-wide count from the
@@ -2797,6 +2930,7 @@ impl ClassState {
         let empty = Set::in_table(sets, class, 1, Tracked(w1));
         let purged = Set::in_table(sets, class, 2, Tracked(w2));
         let tracked im = table.empty_marks();
+        let tracked dm = Map::<nat, DescPerm>::tracked_empty();
         let inner = Inner {
             partial,
             empty,
@@ -2811,6 +2945,7 @@ impl ClassState {
             arena: Ghost(arena),
             table: Ghost(*table),
             inited: Tracked(im),
+            dperms: Tracked(dm),
         };
         proof {
             let n = inner.nbits();
@@ -2818,6 +2953,9 @@ impl ClassState {
             assert(inner.partial.map@.len() == 0 && inner.committed@.len() == 0);
             assert(usize::MAX >> 12 == 0xF_FFFF_FFFF_FFFFusize) by (bit_vector);
             assert(n <= usize::MAX >> 12);
+            assert(inner.descs()) by {
+                reveal(descs_ok);
+            }
             assert(inner.base());
             assert forall|s: nat| #[trigger] inner.slab_ok(s) by {}
         }
@@ -3818,6 +3956,20 @@ impl SlotToks {
         }
     }
 
+    /// [`SlotToks::owns`] at one index `i` of `lo..hi`.
+    proof fn lemma_owns_at(self, t: SlabTable, out: Seq<*mut u8>, base: int, lo: int, hi: int, i: int)
+        requires
+            self.owns(t, out, base, lo, hi),
+            lo <= i < hi,
+        ensures
+            self.toks.contains_key(base + i),
+            self.toks[base + i].id() == t.spec_slots().loc,
+            self.toks[base + i]@ == out[i]@.addr as int,
+    {
+        reveal(SlotToks::owns);
+        assert(self.toks[base + i]@ == out[i]@.addr as int);
+    }
+
     /// [`SlotToks::owns`] of `out[..n]` from key 0 is [`keyed`] of their
     /// addresses.
     pub proof fn lemma_owns_keyed(self, t: SlabTable, out: Seq<*mut u8>, n: int)
@@ -3828,28 +3980,31 @@ impl SlotToks {
     {
         reveal(SlotToks::owns);
         let a = ptr_addrs(out.subrange(0, n));
+        let loc = t.spec_slots().loc;
         assert forall|i: int| 0 <= i < n implies a[i] == (#[trigger] out[i])@.addr as int by {
             assert(out.subrange(0, n)[i] == out[i]);
         }
         if self.owns(t, out, 0, 0, n) {
             assert forall|i: int| 0 <= i < n implies {
                 &&& #[trigger] self.toks.contains_key(i)
-                &&& self.toks[i].id() == t.spec_slots().loc
+                &&& self.toks[i].id() == loc
                 &&& self.toks[i]@ == a[i]
             } by {
                 assert(a[i] == out[i]@.addr as int);
-                assert(self.toks.contains_key(0 + i));
+                self.lemma_owns_at(t, out, 0, 0, n, i);
             }
+            assert(keyed(self.toks, a, loc, 0, n));
         }
-        if keyed(self.toks, a, t.spec_slots().loc, 0, n) {
+        if keyed(self.toks, a, loc, 0, n) {
             assert forall|i: int| 0 <= i < n implies {
                 &&& self.toks.contains_key(0 + i)
-                &&& self.toks[0 + i].id() == t.spec_slots().loc
+                &&& self.toks[0 + i].id() == loc
                 &&& self.toks[0 + i]@ == (#[trigger] out[i])@.addr as int
             } by {
-                assert(self.toks.contains_key(i));
+                lemma_keyed_at(self.toks, a, loc, 0, n, i);
                 assert(a[i] == out[i]@.addr as int);
             }
+            assert(self.owns(t, out, 0, 0, n));
         }
     }
 
@@ -3955,11 +4110,11 @@ impl SlotToks {
 /// Premise, the caller's and trusted: a slab whose ghost state is `Fresh`
 /// was never written since its class region was mapped. That rests on
 /// `take_group` initialising each group's descriptors once, to `Fresh`,
-/// through the trusted `SlabDesc::init` (the assumption of
-/// `ClassState::state_locked`), on a slab leaving `Fresh` only through
-/// `ClassState::set_state_locked`, which never sets `Fresh` (verified
-/// callers), and on `take` moving a slab to `Active` before it claims a
-/// slot. Call site: `ClassState::take`.
+/// through `SlabDesc::init` on its permission (`Inner::descs`; the
+/// trusted accessor and `table::axiom_init_descs`), on a slab leaving
+/// `Fresh` only through `ClassState::set_state_locked`, which never sets
+/// `Fresh` (verified callers), and on `take` moving a slab to `Active`
+/// before it claims a slot. Call site: `ClassState::take`.
 axiom fn axiom_fresh_slots_zero(
     g: Inner,
     t: SlabTable,
@@ -4052,8 +4207,11 @@ proof fn lemma_picks_zero_step(t: SlabTable, p0: Seq<Pick>, p1: Seq<Pick>, k: in
         if j < k {
             assert(z0.contains_key(j));
             assert(p1[j] == p0[j]);
+            assert(pick_zero(t, p0[j], z0[j]));
+            assert(z1[j] == z0[j]);
         }
     }
+    assert(picks_zero(t, p1, 0, k + 1, z1));
 }
 
 /// `z` holds, under key `base + i`, a zero token covering `size` bytes of
@@ -4547,6 +4705,19 @@ pub open spec fn keyed(m: Map<int, GhostSingleton<int>>, a: Seq<int>, loc: vstd:
         &&& m[i].id() == loc
         &&& m[i]@ == a[i]
     }
+}
+
+/// [`keyed`] at one key `i` of `lo..hi`.
+proof fn lemma_keyed_at(m: Map<int, GhostSingleton<int>>, a: Seq<int>, loc: vstd::resource::Loc, lo: int, hi: int, i: int)
+    requires
+        keyed(m, a, loc, lo, hi),
+        lo <= i < hi,
+    ensures
+        m.contains_key(i),
+        m[i].id() == loc,
+        m[i]@ == a[i],
+{
+    assert(m.contains_key(i));
 }
 
 /// Every key of `new` outside `lo..hi` is as in `old`.

@@ -699,13 +699,14 @@ block; the free cores take the token C holds (common premises, "The
   ignored).
 - `SlabTable::bits_unchecked` is verified: the view's words are the
   class bitmap's through the permissions of `table::axiom_init_words`
-  (`class/table.rs:996`), whose `word_addr` ties them to the word
+  (`class/table.rs:1373`), whose `word_addr` ties them to the word
   invariants.
-- Class and commit lock axioms (`class/mod.rs:1288`, `:1296`,
-  `class/table.rs:127`, `:134`), the class lock bridges
-  `owner_locked`, `state_locked`, `set_state_locked`, `dirty_locked`,
-  `set_dirty_locked` (`class/mod.rs:1332`-`:1433`), `next_slab_locked`
-  (`class/table.rs:1968`) and `take_checks` (`class/mod.rs:2240`).
+- Class and commit lock axioms (`class/mod.rs:1459`, `:1467`,
+  `class/table.rs:188`, `:196`), the class lock bridge `owner_locked`
+  (`class/mod.rs`), the descriptor permissions (`slab::DescPerm`: the
+  accessors in `slab.rs`, `slab::desc_stride` and
+  `table::axiom_init_descs`) and `next_slab_locked`
+  (`class/table.rs:3217`).
 - Heap creation and the unfollowed cache writers (common premise): a new
   heap's caches are taken to be empty and `tokened`.
 
@@ -2836,8 +2837,8 @@ batch's `free`. The makers:
   now also ensures every slab of the group is not `Active` in the lock
   value; its body reads each descriptor's state and arena, and the
   ensures rests on the owner-word agreement it already assumed and on
-  the descriptor-state agreement `ClassState::state_locked`
-  (`class/mod.rs:1429`) assumes.
+  the descriptors' agreement with the lock value, which it reads
+  without the permissions (`slab::DescPerm`) that prove it.
 - Class, the slot-token link (not proved; see below).
 
 **Where the statement is weaker than the code.**
@@ -4775,7 +4776,7 @@ body), `malloc_info` and `malloc_stats`, which require `may_abort()`.
 - Every trusted body that can abort requires the capability: those that
   call an abort or a function that requires it (`Heap::destroy`,
   `heap_set_arena`, `background::spawn`,
-  `call_throw_bad_alloc`, `owner_locked`, `state_locked`,
+  `call_throw_bad_alloc`, `owner_locked`,
   `page_group_is_idle`, `Huge::check_zero`, the `verus_only` stand-in
   `not_a_run_page`) and those that `assert!` or `panic!` (`check`,
   `SlabDesc::sub_live`, `assert_flushed`, `assert_refill_empty`;

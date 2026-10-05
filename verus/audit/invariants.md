@@ -61,10 +61,10 @@ code makes.
 | S63 | `axiom_class_lock_inv` (class/mod.rs) | sound | one `lock_inv` axiom for class `Inner`; every verified holder restores `inv` |
 | S64 | `axiom_class_lock` (class/mod.rs) | sound | one `lock_frame` axiom; nothing writes `nbits`, `arena`, `table` |
 | S66 | `ClassState::owner_locked` (class/mod.rs) | weakened | claimed `(r == arena) == owns(slab)`; callers use only `r == arena ==> owns`; the converse is provable and no longer trusted |
-| S67 | `ClassState::state_locked` (class/mod.rs) | sound (premise) | every state write goes through `set_state_locked` or `SlabDesc::init` under the lock |
-| S68 | `ClassState::set_state_locked` (class/mod.rs) | sound (premise) | frame lists every `Inner` field but the one it changes |
-| S69 | `ClassState::dirty_locked` (class/mod.rs) | sound (premise) | as S67 |
-| S70 | `ClassState::set_dirty_locked` (class/mod.rs) | sound (premise) | as S68 |
+| S67 | `ClassState::state_locked` (class/mod.rs) | sound (premise) | every state write goes through `set_state_locked` or `SlabDesc::init` under the lock; since verified through the descriptor permissions (`slab::DescPerm`), no longer a seam |
+| S68 | `ClassState::set_state_locked` (class/mod.rs) | sound (premise) | frame lists every `Inner` field but the one it changes; since verified through the descriptor permissions (`slab::DescPerm`), no longer a seam |
+| S69 | `ClassState::dirty_locked` (class/mod.rs) | sound (premise) | as S67; since verified through the descriptor permissions (`slab::DescPerm`), no longer a seam |
+| S70 | `ClassState::set_dirty_locked` (class/mod.rs) | sound (premise) | as S68; since verified through the descriptor permissions (`slab::DescPerm`), no longer a seam |
 | S75 | `axiom_fresh_slots_zero` (class/mod.rs) | fixed | `n` was unbounded: a range past the slab; now `n <= nslots` |
 | S76 | `axiom_discarded_slots_zero` (class/mod.rs) | fixed | as S75; the `purged_is_zero` premise is still the call site's exec test |
 | S77 | `axiom_table_bytes` (class/sets.rs) | fixed | at `base == 0` proved `false` (`into_typed` then `is_nonnull`); now requires `0 < base` (`Meta::reserve_table` ensures it); still a premise that `(base, len)` is a fresh `reserve_table` result: a second call, or a range over another permission's bytes, proves `false` (`is_disjoint`); closed after the audit ("One-shot premises") |

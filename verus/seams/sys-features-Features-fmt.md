@@ -1,6 +1,6 @@
 # `Features::fmt`
 
-Seam S227 of `verus/SEAMS.md`: src/sys/features.rs:222. Kind: external_body. Category: function pointer.
+Seam S228 of `verus/SEAMS.md`: src/sys/features.rs:222. Kind: external_body. Category: function pointer.
 Discharged by Kani.
 
 ## Contract

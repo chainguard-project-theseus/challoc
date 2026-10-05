@@ -11,13 +11,13 @@ use vstd::prelude::*;
 
 #[cfg(verus_only)]
 use super::table::{
-    guard_marked, lemma_guard_marked_mono, lemma_slab_marked_mono, lemma_spec_class,
+    desc_handed, guard_marked, lemma_guard_marked_mono, lemma_slab_marked_mono, lemma_spec_class,
     lemma_spec_nslabs, slab_marked, slab_owner,
 };
 #[cfg(verus_only)]
-use super::{SlabTable, lemma_same_sets_inv};
+use super::{SlabTable, desc_ok, descs_ok, lemma_same_sets_inv};
 #[cfg(verus_only)]
-use crate::slab::State;
+use crate::slab::{DescPerm, State};
 
 verus! {
 
@@ -184,12 +184,16 @@ impl ClassState {
                 // The fresh markers of the group's slabs join the ghost
                 // with them.
                 let tracked mut im = g.inited.borrow().duplicate();
-                let (start, end) = table.take_group(meta, self.arena, g, page, Tracked(&mut im), Tracked(ord))?;
+                // So do its descriptors' permissions.
+                let tracked mut dp = Map::<nat, DescPerm>::tracked_empty();
+                let (start, end) = table.take_group(meta, self.arena, g, page, Tracked(&mut im), Tracked(&mut dp), Tracked(ord))?;
                 let ghost g0 = *g;
+                let ghost dpv = dp;
                 proof {
                     assert(g0.same_sets(ga));
                     assert(ga.inv());
                     g.inited.borrow_mut().combine(im);
+                    g.dperms.borrow_mut().tracked_union_prefer_right(dp);
                     assert forall|x: nat| #[trigger] g0.owns(x) implies x < start by {
                         assert(ga.owns(x));
                     }
@@ -212,6 +216,21 @@ impl ClassState {
                     assert forall|x: int| start <= x < end && table.spec_is_guard(x as usize)
                         implies #[trigger] guard_marked(g0.table@, x, g.inited@@) by {
                         lemma_guard_marked_mono(g0.table@, x, im@, g.inited@@);
+                    }
+                    // The group's descriptor permissions, from `take_group`,
+                    // agree with its ghost; the others are as they were.
+                    assert(g.descs()) by {
+                        reveal(descs_ok);
+                        assert forall|x: nat| #[trigger] g.states@.contains_key(x)
+                            implies desc_ok(g.dperms@, g.table@, g.arena@, x, g.states@[x], g.dirty@[x]) by {
+                            if start <= x < end {
+                                assert(desc_handed(dpv, *table, x, self.arena));
+                            } else {
+                                assert(g0.owns(x));
+                                g0.lemma_desc(x);
+                                assert(!dpv.contains_key(x));
+                            }
+                        }
                     }
                     lemma_fresh_group(g0, *g, start, end);
                 }
@@ -322,6 +341,7 @@ proof fn lemma_fresh_group(g0: Inner, g1: Inner, start: usize, end: usize)
         g1.table == g0.table,
         g1.arena == g0.arena,
         forall|x: int| start <= x < end ==> #[trigger] slab_owner(g0.table@.spec_class() as int, x) == g0.arena@,
+        g1.descs(),
         g1.inited@.id() == g0.inited@.id(),
         g0.inited@@.subset_of(g1.inited@@),
         forall|x: int| start <= x < end && !g0.table@.spec_is_guard(x as usize)

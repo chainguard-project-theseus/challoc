@@ -40,7 +40,7 @@ and the 2 contracts the S46 fix touches, S56 and S152), 0 unsound-open,
 | S55 | `A_LAST_EXIT_PURGE` | core library | sound | `offset_of!` value, opaque; facts only through S56 (Kani and the build's `const` assertion) |
 | S56 | `axiom_arena_layout` | core library | fixed | changed with S46 (a true clause added, ghost-only): adds `NCLASSES * size_of::<ClassState>() <= isize::MAX`, which S46's new `requires` needs at `Arena::split`; checked by the build's `const` assertion and the Kani harness |
 | S65 | `PartialEqSpecImpl for State` | core library | sound | derived `PartialEq` on a fieldless enum: equality is structural |
-| S72 | `ClassState::take_checks` | panic/abort | sound | requires only, no ensures; two `debug_assert_eq!`s (an abort if they fire) |
+| S72 | `ClassState::take_checks` | panic/abort | sound | requires only, no ensures; two `debug_assert_eq!`s (an abort if they fire); since verified (`debug_assert!`s over the descriptor permission), no longer a seam |
 | S74 | `ClassState::claim_with` | termination | sound | termination only (CAS retry loop under contention); body verified |
 | S93 | `DebugSpecImpl for Says` | core library | sound | `fmt_req` true; no ensures on output |
 | S96 | `Config::set_listed` | function pointer | sound | `listed` is uninterpreted and every parser keeps `wf` under `wf` (Kani; record OK) |

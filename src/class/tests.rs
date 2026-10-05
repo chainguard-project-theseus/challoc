@@ -919,7 +919,7 @@ fn decay_purges_the_oldest_empty_slabs_along_the_curve() {
     let t0 = cs.oldest_empty();
     assert!(t0 > 0);
     for s in 0..n {
-        cs.desc(s).set_dirty_at(t0);
+        cs.desc(s).set_dirty_at(t0, Tracked::assume_new());
     }
     // Before the first step ends: no walk, the deadline is its end.
     assert_eq!(cs.decay(t0 + 999, W), Some(t0 + 1000));
@@ -965,8 +965,8 @@ fn decay_purges_the_oldest_empty_slabs_along_the_curve() {
     let (q, _) = env.claim(&cs, nslots * 2);
     cs.release(&q);
     let t = cs.oldest_empty();
-    cs.desc(0).set_dirty_at(t);
-    cs.desc(1).set_dirty_at(t + W / 2);
+    cs.desc(0).set_dirty_at(t, Tracked::assume_new());
+    cs.desc(1).set_dirty_at(t + W / 2, Tracked::assume_new());
     assert_eq!(cs.decay(t + W - 1000, W), Some(t + W));
     assert_eq!(cs.desc(0).state(), State::Purged);
     assert_eq!(cs.desc(1).state(), State::Empty);
@@ -1022,7 +1022,7 @@ fn decay_walks_at_once_after_the_period_shrinks() {
     cs.release(&p);
     let t0 = cs.oldest_empty();
     for s in 0..4 {
-        cs.desc(s).set_dirty_at(t0);
+        cs.desc(s).set_dirty_at(t0, Tracked::assume_new());
     }
     // A walk under a 20 s period leaves a deadline 100 ms out.
     let long = 20_000_000_000;
@@ -2426,7 +2426,7 @@ fn a_purge_over_an_empty_set_slab_that_is_not_empty_aborts() {
     assert_eq!(cs.stats().empty, 2);
     // Corrupt the descriptor: the set says `Empty`, the state byte says
     // `Active`.
-    cs.desc(1).set_state(State::Active);
+    cs.desc(1).set_state(State::Active, Tracked::assume_new());
     cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new());
 }
 

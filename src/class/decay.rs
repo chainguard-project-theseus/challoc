@@ -324,7 +324,9 @@ impl ClassState {
     /// `g` is the value of the class lock the caller holds, whose owner
     /// words say which slabs this arena owns), and, for the states, the
     /// agreement of an owned slab's descriptor with `g` while the lock is
-    /// held that [`ClassState::state_locked`] assumes; the iterator and
+    /// held, which [`ClassState::state_locked`] proves through the
+    /// descriptor permissions `g` holds (`Inner::descs`) and this body,
+    /// with `g` a ghost copy, reads without them; the iterator and
     /// closure stay as written.
     #[verifier::external_body]
     fn page_group_is_idle(&self, Ghost(g): Ghost<Inner>, slab: usize, spp: usize) -> (r: bool)

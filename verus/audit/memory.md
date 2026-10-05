@@ -91,7 +91,7 @@ reason (`api::axiom_fork_resumed_state`): see `invariants.md`,
 | S196 | `state` | sound | One static. |
 | S197 | `read_global` | sound | No `ensures`; instantiated at `isize` and `u32`, which have no type invariant. |
 | S198 | `read_cpu_id` | sound | No `ensures`; the caller checks the area size. |
-| S201 | `SlabDesc::at` | sound | No `ensures`. |
+| S201 | `SlabDesc::at` | sound | No `ensures`. Since verified through its `PointsTo` permission, no longer a seam. |
 | S202 | `SlabDesc::sub_live` | sound | No `ensures`. Removable (vstd specifies `fetch_sub`) if the formatted `assert!` became a `check`. |
 | S244 | `load_lg_slab_min` | sound | True: initial values (255, 21, 255) are `wf` and the one writer requires `Decision::wf`. |
 | S245 | `load_lg_pmd` | sound | As S244. |

@@ -410,27 +410,27 @@ x86_64 half needs both halves.
 
 | # | item | x86_64 | aarch64 | status |
 |---|---|---|---|---|
-| S1 | `throw_bad_alloc_addr` | GOT `mov` | GOT `adrp`+`ldr` | discharged |
-| S103 | `malloc_conf_addr` | GOT `mov` | GOT `adrp`+`ldr` | discharged |
-| S104 | `je_malloc_conf_addr` | GOT `mov` | GOT `adrp`+`ldr` | discharged |
-| S199 | `rseq::symbols` | 3 GOT `mov` | 3 GOT pairs | discharged |
-| S200 | `rseq::thread_pointer` | `mov fs:[0]` | `mrs tpidr_el0` | discharged |
-| S221 | `sys::linux::trap` | `ud2` | `brk #1` | discharged |
-| S223 | `axiom_auth_sign` | (no asm) | `pacda`+`autda` | discharged |
-| S224 | `pac::sign` | (no asm) | `pacda` | discharged |
-| S225 | `pac::auth` | (no asm) | `autda` | discharged |
-| S226 | `pac::strip` | (no asm) | `xpacd` | discharged |
-| S227-S233 | `raw::syscall0..6` | `syscall` | (other item) | discharged |
-| S234-S240 | `raw::syscall0..6` | (other item) | `svc #0` | discharged |
-| S241 | `tls::get` | TLS `mov`+`mov fs:` | TLS load | discharged |
-| S242 | `tls::get_tp` | (verified) | TLS load | discharged |
-| S243 | `tls::set` | TLS `mov`+`mov fs:` | TLS store | discharged |
+| S2 | `throw_bad_alloc_addr` | GOT `mov` | GOT `adrp`+`ldr` | discharged |
+| S98 | `malloc_conf_addr` | GOT `mov` | GOT `adrp`+`ldr` | discharged |
+| S99 | `je_malloc_conf_addr` | GOT `mov` | GOT `adrp`+`ldr` | discharged |
+| S191 | `rseq::symbols` | 3 GOT `mov` | 3 GOT pairs | discharged |
+| S192 | `rseq::thread_pointer` | `mov fs:[0]` | `mrs tpidr_el0` | discharged |
+| S222 | `sys::linux::trap` | `ud2` | `brk #1` | discharged |
+| S224 | `axiom_auth_sign` | (no asm) | `pacda`+`autda` | discharged |
+| S225 | `pac::sign` | (no asm) | `pacda` | discharged |
+| S226 | `pac::auth` | (no asm) | `autda` | discharged |
+| S227 | `pac::strip` | (no asm) | `xpacd` | discharged |
+| S228-S234 | `raw::syscall0..6` | `syscall` | (other item) | discharged |
+| S235-S241 | `raw::syscall0..6` | (other item) | `svc #0` | discharged |
+| S242 | `tls::get` | TLS `mov`+`mov fs:` | TLS load | discharged |
+| S243 | `tls::get_tp` | (verified) | TLS load | discharged |
+| S244 | `tls::set` | TLS `mov`+`mov fs:` | TLS store | discharged |
 
 Per seam: the contract (from SEAMS.md), what an Isla run establishes
 against it, and the residual assumption that stays trusted. Every one is
 discharged; the details are in "Discharged" below and in the records.
 
-- **S1, S103, S104** (`api/cxx.rs`, `config.rs`; `#[inline(never)]`).
+- **S2, S98, S99** (`api/cxx.rs`, `config.rs`; `#[inline(never)]`).
   Contract: `fn ..._addr() -> *const c_void`, no `ensures`. aarch64
   (`got-fn.job.in`): each function is exactly `adrp x0, :got:sym; ldr
   x0, [x0, :got_lo12:sym]; ret`; x86_64 (`x86/got-fn.job`): exactly `mov
@@ -439,35 +439,35 @@ discharged; the details are in "Discharged" below and in the records.
   writes nothing else and returns to the caller. Residual: the ELF
   loader fills the slot with the symbol's address (the program's
   definition interposing), or 0 for an unresolved weak symbol.
-- **S199** `rseq::symbols` (`#[inline(never)]`). The three GOT loads,
+- **S191** `rseq::symbols` (`#[inline(never)]`). The three GOT loads,
   then the compiler's stores of the tuple through the return-area
   pointer (x0; rdi) and the return: the three entries read in order,
   their values stored to the return area's three words, nothing else
-  written. Residual: as S1, plus the Rust ABI's return area.
-- **S200** `rseq::thread_pointer` (`#[inline(always)]`). aarch64: every
+  written. Residual: as S2, plus the Rust ABI's return area.
+- **S192** `rseq::thread_pointer` (`#[inline(always)]`). aarch64: every
   `mrs xN, tpidr_el0` in the code (76 sites, 4 registers) writes only
   xN, with TPIDR_EL0; x86_64: every `mov R, fs:[0]` (one site) reads the
   8 bytes at the FS base into R and writes nothing else. Residual: the
   C library's thread pointer (TPIDR_EL0; the TCB's self pointer at
   `%fs:0`).
-- **S221** `sys::linux::trap`. aarch64: every `brk` is `brk #1`; it
+- **S222** `sys::linux::trap`. aarch64: every `brk` is `brk #1`; it
   takes the breakpoint exception (EC 0x3C) to EL1, or to EL2 under VHE,
   with the `brk` itself as the return address, and never falls through.
   x86_64: every `ud2` is `0f 0b`; it raises the model's architectural
   fault (`x86_fault`, #UD), writes nothing (rip included) and never
   completes. Residual: Linux sends `SIGTRAP` or `SIGILL`.
-- **S223** `axiom_auth_sign`, **S224-S226** `pac::sign`, `auth`, `strip`:
+- **S224** `axiom_auth_sign`, **S225-S227** `pac::sign`, `auth`, `strip`:
   discharged (below).
-- **S227-S233** x86_64 `raw::syscall0..6`: discharged (below).
-- **S234-S240** aarch64 `raw::syscall0..6`: discharged (below).
-- **S241, S243** `tls::get`, `tls::set`. aarch64: the TLS load (the same
+- **S228-S234** x86_64 `raw::syscall0..6`: discharged (below).
+- **S235-S241** aarch64 `raw::syscall0..6`: discharged (below).
+- **S242, S244** `tls::get`, `tls::set`. aarch64: the TLS load (the same
   sites and jobs as `get_tp`) and the TLS store (5 sites, 2 register
   assignments); x86_64: `mov R, [rip + challoc_tls@GOTTPOFF]` then `mov
   R, fs:[R]` (68 sites, 10 registers) or `mov fs:[R], V` (5 sites, 3
   assignments). Each reads the GOT entry and then reads, or writes the
   value to, the 8 bytes at the thread pointer plus the offset, and
-  nothing else. Residual: as S242, with the TLS slot model's premise.
-- **S242** `tls::get_tp`: discharged (below).
+  nothing else. Residual: as S243, with the TLS slot model's premise.
+- **S243** `tls::get_tp`: discharged (below).
 
 ## Discharged
 
@@ -475,15 +475,15 @@ Twenty-seven seams (all 26 inline-asm seams and `axiom_auth_sign`), each
 with a five-part record under `verus/seams/` and the status in
 `verus/seams.overrides`:
 
-- S1, S103, S104, S199, S200, S221, S241, S243, the mixed seams, one
+- S2, S98, S99, S191, S192, S222, S242, S244, the mixed seams, one
   record each for both halves
-  ([S1](seams/api-cxx-throw_bad_alloc_addr.md),
-  [S103](seams/config-linux-malloc_conf_addr.md),
-  [S104](seams/config-linux-je_malloc_conf_addr.md),
-  [S199](seams/rseq-symbols.md),
-  [S200](seams/rseq-thread_pointer.md),
-  [S221](seams/sys-linux-trap.md), [S241](seams/sys-tls-get.md),
-  [S243](seams/sys-tls-set.md)): the templates, the exact compiled shape
+  ([S2](seams/api-cxx-throw_bad_alloc_addr.md),
+  [S98](seams/config-linux-malloc_conf_addr.md),
+  [S99](seams/config-linux-je_malloc_conf_addr.md),
+  [S191](seams/rseq-symbols.md),
+  [S192](seams/rseq-thread_pointer.md),
+  [S222](seams/sys-linux-trap.md), [S242](seams/sys-tls-get.md),
+  [S244](seams/sys-tls-set.md)): the templates, the exact compiled shape
   of every site or function on both architectures, and the jobs of
   run.sh's sections 5 and 7 (aarch64, as in "Triage") and 12 (x86_64,
   "The x86_64 mixed seams"). On x86_64: the GOT functions read exactly
@@ -501,7 +501,7 @@ with a five-part record under `verus/seams/` and the status in
   model's premise for `get` and `set` (theorem 15), and on x86_64 the
   processor in 64-bit mode by function assumption and the application
   view.
-- S227-S233, the x86_64 `syscall0` to `syscall6`
+- S228-S234, the x86_64 `syscall0` to `syscall6`
   ([0](seams/sys-raw-x86_64-syscall0.md),
   [1](seams/sys-raw-x86_64-syscall1.md),
   [2](seams/sys-raw-x86_64-syscall2.md),
@@ -518,7 +518,7 @@ with a five-part record under `verus/seams/` and the status in
   mode, code below 2^47, canonical LSTAR) and the Linux x86_64 syscall
   ABI for the calls challoc makes; the model lacks x87, MXCSR, AVX-512
   mask, PKRU and CET state.
-- S234-S240, the aarch64 `syscall0` to `syscall6`
+- S235-S241, the aarch64 `syscall0` to `syscall6`
   ([0](seams/sys-raw-aarch64-syscall0.md),
   [1](seams/sys-raw-aarch64-syscall1.md),
   [2](seams/sys-raw-aarch64-syscall2.md),
@@ -533,20 +533,20 @@ with a five-part record under `verus/seams/` and the status in
   stub that enters the kernel requires it); it puts no condition on the
   instruction.
   Residual: the Linux arm64 syscall ABI for the calls challoc makes.
-- S242, the aarch64 `get_tp` ([record](seams/sys-tls-get_tp.md)): the
+- S243, the aarch64 `get_tp` ([record](seams/sys-tls-get_tp.md)): the
   template, the shape of every site, and the four-instruction sequence
   for each of the 12 register assignments, with the relocations
   symbolic: it reads exactly the GOT entry and then the slot at the
   thread pointer plus that offset, writes only its three outputs, no
   memory and no flags, and falls through. Its `ensures r.0 ==
   slot.value()` is the ghost slot model's premise (theorem 15) together
-  with `set`'s contract (S243, discharged with the same premise): Isla
+  with `set`'s contract (S244, discharged with the same premise): Isla
   shows which memory is read,
   not that the token equals it. The other
   residuals: the ELF TLS initial-exec model and the loader, user
   addresses below `2^48`, the slot's alignment. Not covered: the
   local-exec code a static link produces (plan, item 2).
-- S224-S226, `pac::sign`, `auth`, `strip`
+- S225-S227, `pac::sign`, `auth`, `strip`
   ([sign](seams/sys-pac-sign.md), [auth](seams/sys-pac-auth.md),
   [strip](seams/sys-pac-strip.md)): the templates, every PAC-family
   instruction in one of the three shapes (45 `pacda` sites in 15
@@ -575,12 +575,12 @@ with a five-part record under `verus/seams/` and the status in
   the PAC into the field, and with FEAT_FPAC `autda` faults exactly when
   the field XOR the PAC is not all copies of bit 55. The x86_64 bodies
   are unreachable: no x86_64 process satisfies `pac_available()`.
-- S223, `axiom_auth_sign` ([record](seams/sys-pac-axiom_auth_sign.md)):
+- S224, `axiom_auth_sign` ([record](seams/sys-pac-axiom_auth_sign.md)):
   `pacda x0, x1; autda x0, x1` gives back any `p < 2^VA_BITS` in each
   of the 36 configurations, with EnDA set or clear, and never takes the
   FPAC fault (`pac-rt.job.in`), and `user_va_limit()` is at most the VA
   width the kernel configures (its definition, and
-  `axiom_user_va_limit`, S222, for a 52-bit build on a 48-bit CPU).
+  `axiom_user_va_limit`, S223, for a 52-bit build on a 48-bit CPU).
   ComputePAC stays uninterpreted, so the result holds for QARMA5, QARMA3
   and any implementation-defined algorithm. The x86_64 half needs no
   tool: `spec_sign` and `spec_auth` are unconstrained there, and the
