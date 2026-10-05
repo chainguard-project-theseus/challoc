@@ -227,6 +227,11 @@ pub fn purged_is_zero() -> bool {
 /// `verus/THEOREMS.md`): for the huge allocator, pages no live run's
 /// token holds (`RunToken::theorem_purge_apart`); for a class, the slabs
 /// the arena's class lock records as idle (`class::decay::idle_byte`).
+/// Every range pushed is also [`well_formed`] (whole-allocator theorem
+/// "Purge batches are well formed"): non-empty, page-aligned, and in the
+/// huge region or a class region outside its guard slabs, which
+/// [`Batch::wf`] keeps of the ranges held and of those handed to
+/// [`discard`] ([`Batch::discarded`]).
 pub struct Batch {
     ranges: [(usize, usize); MAX_BATCH],
     n: usize,
@@ -237,6 +242,195 @@ pub struct Batch {
     /// ranges summed.
     #[allow(dead_code)]
     sent: Ghost<int>,
+    /// Ghost: the ranges handed to [`discard`] so far, in flush order.
+    #[allow(dead_code)]
+    gone: Ghost<Seq<(usize, usize)>>,
+}
+
+/// The process's page size (`Regions::lg_page`).
+pub open spec fn page_bytes() -> int {
+    (1usize << crate::layout::process_regions().lg_page) as int
+}
+
+/// Byte `b` lies in the process's huge region.
+pub open spec fn huge_byte(b: int) -> bool {
+    let r = crate::layout::process_regions();
+    r.huge_base <= b < r.huge_base + r.huge_len
+}
+
+/// Byte `b` lies in one of the slabs of class `c`'s region of the
+/// process, and that slab is not a guard slab
+/// ([`guard_slab`](crate::layout::guard_slab)).
+pub open spec fn class_byte(c: int, b: int) -> bool {
+    let r = crate::layout::process_regions();
+    let sz = (1usize << crate::layout::class_table()[c].lg_slab) as int;
+    &&& r.class_base[c] <= b < r.class_base[c] + r.spec_nslabs(c) * sz
+    &&& !crate::layout::guard_slab(c, (b - r.class_base[c]) / sz)
+}
+
+/// Byte `b` is one a purge may hand to `madvise`: in the huge region, or
+/// in a slab of a class region that is not a guard slab. Never metadata
+/// ([`theorem_purge_well_formed`]).
+pub open spec fn discardable(b: int) -> bool {
+    ||| huge_byte(b)
+    ||| exists|c: int| 0 <= c < crate::layout::NCLASSES && #[trigger] class_byte(c, b)
+}
+
+/// `[addr, addr + len)` is a range a purge may discard: non-empty, both
+/// ends on a page boundary, and every byte [`discardable`]. Opaque, so a
+/// batch's invariant carries it per range as one fact
+/// ([`lemma_well_formed`] unfolds it).
+#[verifier::opaque]
+pub open spec fn well_formed(addr: int, len: int) -> bool {
+    &&& page_bytes() > 0
+    &&& len > 0
+    &&& addr % page_bytes() == 0
+    &&& len % page_bytes() == 0
+    &&& forall|b: int| addr <= b < addr + len ==> #[trigger] discardable(b)
+}
+
+/// [`well_formed`] unfolded.
+pub proof fn lemma_well_formed(addr: int, len: int)
+    ensures
+        well_formed(addr, len) == {
+            &&& page_bytes() > 0
+            &&& len > 0
+            &&& addr % page_bytes() == 0
+            &&& len % page_bytes() == 0
+            &&& forall|b: int| addr <= b < addr + len ==> #[trigger] discardable(b)
+        },
+{
+    reveal(well_formed);
+}
+
+/// Two adjacent well-formed ranges make one ([`Batch::push`]'s merge).
+proof fn lemma_well_formed_join(a: int, l1: int, l2: int)
+    requires
+        well_formed(a, l1),
+        well_formed(a + l1, l2),
+    ensures
+        well_formed(a, l1 + l2),
+{
+    reveal(well_formed);
+    let p = page_bytes();
+    vstd::arithmetic::div_mod::lemma_add_mod_noop(l1, l2, p);
+    vstd::arithmetic::div_mod::lemma_small_mod(0, p as nat);
+    assert forall|b: int| a <= b < a + (l1 + l2) implies #[trigger] discardable(b) by {
+        if b < a + l1 {
+            assert(a <= b < a + l1);
+        } else {
+            assert(a + l1 <= b < a + l1 + l2);
+        }
+    }
+}
+
+/// Slab `s` of class `c`'s region lies inside stride `c` of the class
+/// superblock, which lies inside the superblock.
+proof fn lemma_slab_in_stride(c: int, s: int)
+    requires
+        crate::heap::regions_ok(),
+        0 <= c < crate::layout::NCLASSES,
+        0 <= s < crate::layout::process_regions().spec_nslabs(c),
+    ensures
+        ({
+            let r = crate::layout::process_regions();
+            let stride = (1usize << r.lg_stride) as int;
+            let (lo, sz) = r.slab_span(c, s);
+            &&& sz > 0
+            &&& r.superblock + c * stride <= lo
+            &&& lo + sz <= r.superblock + (c + 1) * stride
+            &&& 0 <= c * stride
+            &&& (c + 1) * stride <= crate::layout::NCLASSES * stride
+        }),
+{
+    let r = crate::layout::process_regions();
+    let stride = (1usize << r.lg_stride) as int;
+    let (lo, sz) = r.slab_span(c, s);
+    crate::vspec::class::axiom_class_table_wf(c);
+    let lg = crate::layout::class_table()[c].lg_slab;
+    vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+    vstd::bits::lemma_usize_shl_is_mul(1, lg as usize);
+    vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
+    let lr = r.lg_region;
+    let ru = 1usize << lr;
+    let nslabs = ru >> lg;
+    let lgu = lg as usize;
+    assert(nslabs == ru >> lgu) by (bit_vector)
+        requires nslabs == ru >> lg, lgu == lg as usize;
+    vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(nslabs, lgu, ru);
+    assert(s * sz + sz <= nslabs * sz && 0 <= s * sz) by (nonlinear_arith)
+        requires 0 <= s < nslabs, sz >= 0;
+    assert(0 <= c * stride && (c + 1) * stride <= crate::layout::NCLASSES * stride) by (nonlinear_arith)
+        requires 0 <= c < crate::layout::NCLASSES, stride >= 0;
+}
+
+/// Whole-allocator theorem "Purge batches are well formed"
+/// (`verus/THEOREMS.md`): a range [`discard`] is handed ([`well_formed`],
+/// which [`Batch::wf`] keeps of every range a batch holds or handed over)
+/// is non-empty and starts and ends on a page boundary, and each of its
+/// bytes `b` lies in the huge region or in a class region ([`discardable`]),
+/// never in the metadata region, and in no guard slab `s` of any class
+/// `c`.
+pub proof fn theorem_purge_well_formed(addr: int, len: int, b: int, c: int, s: int)
+    requires
+        crate::heap::regions_ok(),
+        well_formed(addr, len),
+        addr <= b < addr + len,
+    ensures
+        len > 0,
+        page_bytes() > 0,
+        addr % page_bytes() == 0,
+        (addr + len) % page_bytes() == 0,
+        discardable(b),
+        !crate::layout::process_regions().in_meta(b, 1),
+        0 <= c < crate::layout::NCLASSES && 0 <= s < crate::layout::process_regions().spec_nslabs(c)
+            && crate::layout::guard_slab(c, s) ==> !(crate::layout::process_regions().slab_span(c, s).0 <= b
+            < crate::layout::process_regions().slab_span(c, s).0 + crate::layout::process_regions().slab_span(c, s).1),
+{
+    reveal(well_formed);
+    let r = crate::layout::process_regions();
+    let p = page_bytes();
+    vstd::arithmetic::div_mod::lemma_add_mod_noop(addr, len, p);
+    vstd::arithmetic::div_mod::lemma_small_mod(0, p as nat);
+    assert(discardable(b));
+    let stride = (1usize << r.lg_stride) as int;
+    let guard = 0 <= c < crate::layout::NCLASSES && 0 <= s < r.spec_nslabs(c) && crate::layout::guard_slab(c, s);
+    if guard {
+        lemma_slab_in_stride(c, s);
+    }
+    if !huge_byte(b) {
+        let c2 = choose|c2: int| 0 <= c2 < crate::layout::NCLASSES && #[trigger] class_byte(c2, b);
+        let sz = (1usize << crate::layout::class_table()[c2].lg_slab) as int;
+        let base = r.class_base[c2] as int;
+        crate::vspec::class::axiom_class_table_wf(c2);
+        let lg = crate::layout::class_table()[c2].lg_slab;
+        vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+        vstd::bits::lemma_usize_shl_is_mul(1, lg as usize);
+        vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
+        let s2 = (b - base) / sz;
+        assert(0 <= s2 < r.spec_nslabs(c2)) by {
+            lemma_unit_of(base, sz, 0, r.spec_nslabs(c2), b);
+        }
+        lemma_slab_in_stride(c2, s2);
+        assert(base + s2 * sz <= b < base + s2 * sz + sz) by {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(b - base, sz);
+            vstd::arithmetic::div_mod::lemma_mod_bound(b - base, sz);
+            assert(sz * s2 == s2 * sz) by (nonlinear_arith);
+        }
+        if guard {
+            let (lo, ssz) = r.slab_span(c, s);
+            if c2 == c && lo <= b < lo + ssz {
+                assert((s + 1) * sz == s * sz + sz) by (nonlinear_arith);
+                lemma_unit_of(base, sz, s, 1, b);
+            } else if c2 < c {
+                assert((c2 + 1) * stride <= c * stride) by (nonlinear_arith)
+                    requires c2 + 1 <= c, stride >= 0;
+            } else if c < c2 {
+                assert((c + 1) * stride <= c2 * stride) by (nonlinear_arith)
+                    requires c + 1 <= c2, stride >= 0;
+            }
+        }
+    }
 }
 
 /// Every byte of `[addr, addr + len)` is one `free` admits.
@@ -313,6 +507,8 @@ impl Batch {
         &&& self.total() <= usize::MAX
         &&& forall|i: int| #![auto] 0 <= i < self.n
             ==> frees(self.free@, self.ranges[i].0 as int, self.ranges[i].1 as int)
+        &&& forall|i: int| #![auto] 0 <= i < self.n ==> well_formed(self.ranges[i].0 as int, self.ranges[i].1 as int)
+        &&& forall|i: int| #![auto] 0 <= i < self.gone@.len() ==> well_formed(self.gone@[i].0 as int, self.gone@[i].1 as int)
     }
 
     /// The bytes the batch may discard, fixed by its maker
@@ -333,6 +529,29 @@ impl Batch {
         self.sent@
     }
 
+    /// The ranges held, in order.
+    pub closed spec fn held(&self) -> Seq<(usize, usize)> {
+        self.ranges@.subrange(0, self.n as int)
+    }
+
+    /// The ranges handed to [`discard`] since [`Batch::new`], in flush
+    /// order: each flush appends the ranges it held. Every one is
+    /// [`well_formed`] ([`Batch::lemma_discarded`]).
+    pub closed spec fn discarded(&self) -> Seq<(usize, usize)> {
+        self.gone@
+    }
+
+    /// Every range a well-formed batch handed to [`discard`] is
+    /// [`well_formed`].
+    pub proof fn lemma_discarded(&self)
+        requires
+            self.wf(),
+        ensures
+            forall|i: int| 0 <= i < self.discarded().len()
+                ==> #[trigger] well_formed(self.discarded()[i].0 as int, self.discarded()[i].1 as int),
+    {
+    }
+
     /// Ranges held.
     pub closed spec fn count(&self) -> nat {
         self.n as nat
@@ -346,8 +565,9 @@ impl Batch {
             b.count() == 0,
             b.free() == free,
             b.sent() == 0,
+            b.discarded() == Seq::<(usize, usize)>::empty(),
     {
-        Batch { ranges: [(0, 0); MAX_BATCH], n: 0, free: Ghost(free), sent: Ghost(0) }
+        Batch { ranges: [(0, 0); MAX_BATCH], n: 0, free: Ghost(free), sent: Ghost(0), gone: Ghost(Seq::empty()) }
     }
 
     #[inline]
@@ -386,11 +606,14 @@ impl Batch {
             addr + len <= usize::MAX,
             old(self).total() + len <= usize::MAX,
             frees(old(self).free(), addr as int, len as int),
+            well_formed(addr as int, len as int),
         ensures
             final(self).wf(),
             final(self).total() <= old(self).total() + len,
             final(self).free() == old(self).free(),
             final(self).sent() + final(self).total() == old(self).sent() + old(self).total() + len,
+            final(self).discarded() == old(self).discarded() || final(self).discarded() == old(self).discarded()
+                + old(self).held(),
     {
         proof {
             lemma_lens(self.ranges@, self.ranges@, self.n as int);
@@ -404,6 +627,7 @@ impl Batch {
                 proof {
                     lemma_lens(before, before, self.n as int);
                     lemma_lens(before, before, self.n - 1);
+                    lemma_well_formed_join(last as int, last_len as int, len as int);
                 }
                 self.ranges[self.n - 1].1 = last_len + len;
                 proof {
@@ -446,7 +670,11 @@ impl Batch {
             final(self).total() == 0,
             final(self).free() == old(self).free(),
             final(self).sent() == old(self).sent() + old(self).total(),
+            final(self).discarded() == old(self).discarded() + old(self).held(),
     {
+        proof {
+            assert(self.gone@ + self.ranges@.subrange(0, 0) =~= self.gone@);
+        }
         if self.n != 0 {
             let advice = advice();
             let ranges = &self.ranges[..self.n];
@@ -467,6 +695,7 @@ impl Batch {
             }
             discard(&self.ranges[..self.n], advice, Ghost(self.free@));
             self.sent = Ghost(self.sent@ + lens(self.ranges@, self.n as int));
+            self.gone = Ghost(self.gone@ + self.ranges@.subrange(0, self.n as int));
             self.n = 0;
         }
     }
@@ -834,6 +1063,7 @@ pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>, Trac
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        shared.wf(),
         old(ord).allows(rank_class(0, 0)),
     ensures
         *final(ord) == *old(ord),
@@ -854,6 +1084,7 @@ pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>, Trac
         invariant
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            shared.wf(),
             ord.allows(rank_class(0, 0)),
             *ord == *old(ord),
             count <= crate::arena::MAX_ARENAS,
@@ -881,6 +1112,9 @@ pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>, Trac
         }
     }
     let tracked mut lh = Ghost(Left::none());
+    proof {
+        shared.lemma_huge_process();
+    }
     let h = shared.huge.purge_empty(u64::MAX, Tracked(&mut lh), Tracked(ord));
     proof {
         let l0 = left@;
@@ -921,6 +1155,7 @@ pub fn decay(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        shared.wf(),
         old(ord).allows(rank_class(0, 0)),
     ensures
         *final(ord) == *old(ord),
@@ -939,6 +1174,7 @@ pub fn decay(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -
         invariant
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            shared.wf(),
             ord.allows(rank_class(0, 0)),
             *ord == *old(ord),
             count <= crate::arena::MAX_ARENAS,
@@ -952,6 +1188,9 @@ pub fn decay(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -
     // `huge_dirty_decay_ms` is set, else arena 0's (design 7).
     let decay_ns = policy.effective_decay_ns(shared.huge_decay_ns());
     if decay_ns != NEVER {
+        proof {
+            shared.lemma_huge_process();
+        }
         next = earliest(next, shared.huge.decay_with(now, decay_ns, keep16, Tracked(ord)));
     }
     next
@@ -982,6 +1221,7 @@ pub fn purge_arena(
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        shared.wf(),
         old(ord).allows(rank_class(0, 0)),
     ensures
         *final(ord) == *old(ord),
@@ -1001,6 +1241,9 @@ pub fn purge_arena(
     let mut n = arena.purge_all(Tracked(&mut *left), Tracked(ord));
     if index == 0 {
         let tracked mut lh = Ghost(Left::none());
+        proof {
+            shared.lemma_huge_process();
+        }
         n += shared.huge.purge_empty(u64::MAX, Tracked(&mut lh), Tracked(ord));
         proof {
             let l0 = left@;
@@ -1056,8 +1299,12 @@ verus! {
 
 /// Issue `advice` on `ranges`, which are free (the [`Batch`]
 /// invariant; this is the one place the batch's ranges reach the
-/// kernel): every byte of each is one the batch's `free` admits. A
-/// failed range aborts. Needs at most [`MAX_BATCH`] ranges.
+/// kernel): every byte of each is one the batch's `free` admits. Each
+/// is also [`well_formed`] (whole-allocator theorem "Purge batches are
+/// well formed", `verus/THEOREMS.md`): non-empty, page-aligned, and in
+/// the huge region or a class region outside its guard slabs, so never
+/// metadata ([`theorem_purge_well_formed`]). A failed range aborts.
+/// Needs at most [`MAX_BATCH`] ranges.
 // Not isolated: the loop body sees the `broadcast use` of the function.
 #[verifier::loop_isolation(false)]
 fn discard(ranges: &[(usize, usize)], advice: Advice, Ghost(free): Ghost<spec_fn(int) -> bool>)
@@ -1066,6 +1313,7 @@ fn discard(ranges: &[(usize, usize)], advice: Advice, Ghost(free): Ghost<spec_fn
         crate::sys::may_syscall(),
         ranges.len() <= MAX_BATCH,
         forall|i: int| #![auto] 0 <= i < ranges.len() ==> frees(free, ranges[i].0 as int, ranges[i].1 as int),
+        forall|i: int| #![auto] 0 <= i < ranges.len() ==> well_formed(ranges[i].0 as int, ranges[i].1 as int),
 {
     broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
 

@@ -3321,6 +3321,84 @@ impl Huge {
         free_page_byte(self.base as int, self.spec_page(), self.npages as int, held, b)
     }
 
+    /// This is the process's huge allocator: its pages are the process's
+    /// huge region's (base, page and page count), its base a page start,
+    /// and the process's regions are well formed and separated
+    /// (`Shared::wf`, `Shared::lemma_huge_process`). Closed:
+    /// [`Huge::lemma_is_process`] establishes it and
+    /// [`Huge::lemma_purge_range`] uses it.
+    pub closed spec fn is_process(&self) -> bool {
+        let r = crate::layout::process_regions();
+        &&& crate::heap::regions_ok()
+        &&& self.spec_base() == r.huge_base
+        &&& self.spec_page() == (1usize << r.lg_page) as int
+        &&& self.spec_npages() == (r.huge_len >> r.lg_page) as int
+        &&& self.spec_base_aligned()
+    }
+
+    /// [`Huge::is_process`] from its parts.
+    pub proof fn lemma_is_process(&self)
+        requires
+            crate::heap::regions_ok(),
+            self.spec_base() == crate::layout::process_regions().huge_base,
+            self.spec_page() == (1usize << crate::layout::process_regions().lg_page) as int,
+            self.spec_npages() == (crate::layout::process_regions().huge_len >> crate::layout::process_regions().lg_page) as int,
+            self.spec_base_aligned(),
+        ensures
+            self.is_process(),
+    {
+    }
+
+    /// Pages `start..start + pages` of the process's huge allocator, at
+    /// least one, make a range a purge may discard
+    /// ([`well_formed`](crate::purge::well_formed), whole-allocator theorem
+    /// "Purge batches are well formed"): page-aligned at both ends and
+    /// inside the huge region.
+    proof fn lemma_purge_range(&self, start: int, pages: int)
+        requires
+            self.is_process(),
+            0 <= start,
+            pages >= 1,
+            start + pages <= self.spec_npages(),
+        ensures
+            crate::purge::well_formed(self.spec_base() + start * self.spec_page(), pages * self.spec_page()),
+    {
+        reveal(crate::purge::well_formed);
+        let r = crate::layout::process_regions();
+        let lg = r.lg_page;
+        let p = self.spec_page();
+        let base = self.spec_base() as int;
+        assert(12 <= lg <= crate::layout::LG_MAX_SLAB);
+        vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+        vstd::bits::lemma_usize_shl_is_mul(1, lg as usize);
+        vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
+        vstd::bits::lemma_usize_shr_is_div(r.huge_len, lg as usize);
+        assert(p == crate::purge::page_bytes() && p > 0);
+        // The ends are page multiples.
+        vstd::arithmetic::div_mod::lemma_mod_multiples_basic(start, p);
+        vstd::arithmetic::div_mod::lemma_mod_multiples_basic(pages, p);
+        vstd::arithmetic::div_mod::lemma_add_mod_noop(base, start * p, p);
+        vstd::arithmetic::div_mod::lemma_small_mod(0, p as nat);
+        assert(pages * p > 0) by (nonlinear_arith)
+            requires pages >= 1, p > 0;
+        // The pages lie in the region: `npages * p <= huge_len`.
+        let np = self.spec_npages();
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(r.huge_len as int, p);
+        vstd::arithmetic::div_mod::lemma_mod_bound(r.huge_len as int, p);
+        assert(np * p <= r.huge_len) by (nonlinear_arith)
+            requires
+                np == r.huge_len as int / p,
+                r.huge_len as int == p * (r.huge_len as int / p) + r.huge_len as int % p,
+                r.huge_len as int % p >= 0,
+        ;
+        assert(0 <= start * p && start * p + pages * p <= np * p) by (nonlinear_arith)
+            requires 0 <= start, start + pages <= np, p > 0;
+        assert forall|b: int| base + start * p <= b < base + start * p + pages * p
+            implies #[trigger] crate::purge::discardable(b) by {
+            assert(crate::purge::huge_byte(b));
+        }
+    }
+
     #[inline]
     pub fn page_size(&self) -> (r: usize)
         ensures
@@ -3796,6 +3874,7 @@ impl Huge {
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            self.is_process(),
             old(ord).allows(rank_huge()),
         ensures
             *final(ord) == *old(ord),
@@ -3834,6 +3913,7 @@ impl Huge {
             invariant
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
+                self.is_process(),
                 g@.wf(),
                 g@.spec_np() == self.npages,
                 g@.spec_lg() == self.lg_page,
@@ -3960,6 +4040,7 @@ impl Huge {
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            self.is_process(),
             old(g).wf(),
             old(g).spec_np() == self.npages,
             old(g).spec_lg() == self.lg_page,
@@ -4018,6 +4099,8 @@ impl Huge {
                 }
                 assert(self.purgeable(g.pgs@@, b));
             }
+            // Page-aligned extent pages inside the huge region.
+            self.lemma_purge_range(v.start as int, v.pages as int);
         }
         batch.push(self.addr(start), pages * self.page_size());
         g.unlink(d);
@@ -4171,6 +4254,7 @@ impl Huge {
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            self.is_process(),
             old(ord).allows(rank_huge()),
         ensures
             *final(ord) == *old(ord),
@@ -4281,6 +4365,7 @@ impl Huge {
                 invariant
                     crate::sys::may_abort(),
                     crate::sys::may_syscall(),
+                    self.is_process(),
                     g@.wf(),
                     g@.spec_np() == self.npages,
                     g@.spec_lg() == self.lg_page,
@@ -4366,6 +4451,7 @@ impl Huge {
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            self.is_process(),
             old(ord).allows(rank_huge()),
         ensures
             *final(ord) == *old(ord),
@@ -4379,6 +4465,7 @@ impl Huge {
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            self.is_process(),
             old(ord).allows(rank_huge()),
         ensures
             *final(ord) == *old(ord),
@@ -6622,6 +6709,7 @@ impl Huge {
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            self.is_process(),
             meta.is_process(),
             tok.wf(),
             tok.start() == page,
@@ -6717,6 +6805,8 @@ impl Huge {
                     crate::purge::lemma_unit_of(base, p, page as int, n as int, b);
                     assert(tpages.contains((b - base) / p));
                 }
+                // Page-aligned run pages inside the huge region.
+                self.lemma_purge_range(page as int, n as int);
             }
             batch.push(addr, n * page_size);
             batch.flush();

@@ -834,6 +834,80 @@ proof fn lemma_group_idle(g: Inner, slab: usize, spp: usize, first: usize)
     reveal(group_idle);
 }
 
+/// The page group of `slab` (`spp` slabs from `first`) in table `t`,
+/// where `slab` is not a guard slab, is a range a purge may discard
+/// ([`well_formed`](crate::purge::well_formed)): the region's base and a
+/// page group's bytes are page multiples (`groups_paged`), so the group
+/// starts and ends on a page boundary, and its slabs lie in the class
+/// region and share `slab`'s page group, so none is a guard slab
+/// (whole-allocator theorem "Purge batches are well formed").
+proof fn lemma_group_well_formed(t: SlabTable, slab: usize, spp: usize, first: usize)
+    requires
+        t.inv(),
+        spp == t.spec_slabs_per_page(),
+        first == slab & !((spp - 1) as usize),
+        first + spp <= t.spec_nslabs(),
+        !t.spec_is_guard(slab),
+    ensures
+        crate::purge::well_formed(
+            t.base as int + first as int * ((1usize << class_table()[t.spec_class() as int].lg_slab) as int),
+            spp as int * ((1usize << class_table()[t.spec_class() as int].lg_slab) as int),
+        ),
+{
+    broadcast use {super::table::lemma_spec_nslabs, super::table::lemma_spec_class, super::table::lemma_spec_slabs_per_page};
+    reveal(super::table::groups_paged);
+    reveal(SlabTable::page_groups_ok);
+    reveal(crate::layout::guard_of);
+    reveal(crate::purge::well_formed);
+    let c = t.class as int;
+    let r = crate::layout::process_regions();
+    let sz = (1usize << class_table()[c].lg_slab) as int;
+    let page = crate::purge::page_bytes();
+    let base = t.base as int;
+    lemma_slab_bytes_pos(t);
+    let lgs = t.lg_slabs_per_page;
+    assert(spp == 1usize << lgs);
+    // `first` is a multiple of `spp`, so its byte offset is a multiple of
+    // the group's bytes, a page multiple.
+    let m = sub(spp, 1);
+    assert(first % spp == 0) by (bit_vector)
+        requires spp == 1usize << lgs, lgs <= 26, m == sub(spp, 1), first == slab & !m;
+    let q = first as int / spp as int;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(first as int, spp as int);
+    let g = spp as int * sz;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(g, page);
+    let k = g / page;
+    assert(first as int * sz == (q * k) * page) by (nonlinear_arith)
+        requires
+            first as int == spp as int * q,
+            g == spp as int * sz,
+            g == page * k,
+    ;
+    vstd::arithmetic::div_mod::lemma_mod_multiples_basic(q * k, page);
+    vstd::arithmetic::div_mod::lemma_add_mod_noop(base, first as int * sz, page);
+    vstd::arithmetic::div_mod::lemma_small_mod(0, page as nat);
+    assert(g > 0) by (nonlinear_arith)
+        requires spp >= 1, sz > 0, g == spp as int * sz;
+    // Every byte lies in a slab of the group, in the region and not a
+    // guard slab.
+    assert(first as int * sz + g == (first + spp) as int * sz) by (nonlinear_arith)
+        requires g == spp as int * sz;
+    assert((first + spp) as int * sz <= t.nslabs as int * sz) by (nonlinear_arith)
+        requires first + spp <= t.nslabs, sz > 0;
+    assert forall|b: int| base + first as int * sz <= b < base + first as int * sz + g
+        implies #[trigger] crate::purge::discardable(b) by {
+        crate::purge::lemma_unit_of(base, sz, first as int, spp as int, b);
+        let s = (b - base) / sz;
+        let x = s as usize;
+        assert(x >> lgs == slab >> lgs) by (bit_vector)
+            requires spp == 1usize << lgs, lgs <= 26, m == sub(spp, 1), first == slab & !m, first <= x,
+                x < first + spp;
+        t.lemma_guard_slab(slab as int);
+        assert(!crate::layout::guard_slab(c, s));
+        assert(crate::purge::class_byte(c, b));
+    }
+}
+
 impl ClassState {
     /// Discard the whole page group of `slab` (one slab when the slab is
     /// at least a page) and make every `Empty` slab in it `Purged`, a
@@ -844,8 +918,10 @@ impl ClassState {
     /// The preconditions are the walks' (`Purger::visit`): the page group
     /// is this arena's (with one slab per page, `slab` is in this arena's
     /// empty set; with more, `page_group_is_idle` read every slab's owner
-    /// word), and the batch holds at most the bytes of the class region
-    /// below the group, which ends below `2^57`.
+    /// word; either way `slab` is in the empty set, so not a guard slab, and
+    /// neither is any slab of its group, which is a well-formed purge range,
+    /// `lemma_group_well_formed`), and the batch holds at most the bytes of
+    /// the class region below the group, which ends below `2^57`.
     // The loop carries a Verus invariant.
     #[allow(clippy::while_let_loop)]
     fn purge_group(&self, g: &mut Inner, slab: usize, spp: usize, batch: &mut Batch) -> (n: usize)
@@ -858,6 +934,8 @@ impl ClassState {
             spp >= 1,
             (slab & !((spp - 1) as usize)) + spp <= self.spec_nslabs(),
             group_idle(*old(g), slab, spp),
+            old(g).empty.map@.contains(slab as nat),
+            spp == self.spec_table().spec_slabs_per_page(),
             old(batch).wf(),
             old(batch).total() <= 0x200_0000_0000_0000,
             forall|b: int| idle_byte(self.spec_table(), old(g).states@, b) ==> #[trigger] (old(batch).free())(b),
@@ -904,6 +982,10 @@ impl ClassState {
                 assert(old(g).owns(s as nat) && old(g).st(s as nat) != State::Active);
                 assert(idle_byte(t, old(g).states@, b));
             }
+            // The group is a well-formed purge range: `slab`, in the
+            // empty set, is no guard slab (`Inner::slab_core`).
+            assert(old(g).slab_ok(slab as nat));
+            lemma_group_well_formed(t, slab, spp, first);
         }
         batch.push(self.slab_addr(first), self.class().slab_size() * spp);
         proof {

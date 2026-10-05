@@ -1646,6 +1646,19 @@ impl Shared {
         crate::layout::lemma_aligned_down(self.regions.huge_base as int, crate::layout::MAX_SLAB as int, page as int);
     }
 
+    /// The huge allocator is the process's ([`Huge::is_process`]): what
+    /// its purges need to place their ranges in the huge region
+    /// (whole-allocator theorem "Purge batches are well formed").
+    pub(crate) proof fn lemma_huge_process(&self)
+        requires
+            self.wf(),
+        ensures
+            self.huge.is_process(),
+    {
+        self.lemma_huge_aligned();
+        self.huge.lemma_is_process();
+    }
+
     /// A run [`Huge::alloc_run`] placed for `size` bytes at `align` is a
     /// [`huge_block`](crate::layout::huge_block).
     proof fn lemma_run_is_block(&self, a: usize, size: usize, align: usize)
@@ -2429,6 +2442,9 @@ impl Shared {
             *final(ord) == *old(ord),
     {
         let ghost np = tok.npages();
+        proof {
+            self.lemma_huge_process();
+        }
         let run = self.huge.free_run(&self.meta, page, Tracked(tok), Tracked(ord));
         // Exact stats: the pages `note_huge_free` subtracts are the token's.
         proof {

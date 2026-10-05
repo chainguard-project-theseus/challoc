@@ -1,6 +1,6 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the thirty-nine whole-allocator theorems as the code
+Reference for the forty whole-allocator theorems as the code
 states them: the Verus statement, the entry points it covers, and every
 trusted premise it rests on, with `file:line`. Read at `b2cad68`
 (branch `verus`); line numbers are the `fn`/`axiom` line at that commit,
@@ -6257,6 +6257,166 @@ handler (glibc always runs one).
   relates two tokens or two permissions, so this proves no `false`
   (as for theorem 13's handoff axioms), but a stale one could state a
   wrong mask: the one-call-per-handler premise is what excludes it.
+
+## 40. Purge batches are well formed
+
+Every range a purge hands to `madvise` (`purge::discard`, the one place
+a batch's ranges reach the kernel) is non-empty, starts and ends on a
+page boundary of the process's page, and lies, byte by byte, in the
+huge region or in a class region outside that class's guard slabs; so
+no byte of it is in the metadata region. For every batch: the huge purges
+(`Huge::purge_empty`, `purge_curve`, `free_run`) and the class purges
+(`ClassState::purge_empty`, `purge_curve`, through `purge_group`), each
+flush, including the one inside a `push` to a full batch.
+The `file:line`s are the `fn`/`spec` line at this section's commit.
+
+**Statement.**
+
+```rust
+// purge.rs:284 (opaque; `lemma_well_formed`, :293, unfolds it)
+pub open spec fn well_formed(addr: int, len: int) -> bool {
+    &&& page_bytes() > 0                      // `1 << process_regions().lg_page`
+    &&& len > 0
+    &&& addr % page_bytes() == 0
+    &&& len % page_bytes() == 0
+    &&& forall|b: int| addr <= b < addr + len ==> #[trigger] discardable(b)
+}
+
+// purge.rs:274, :256, :264
+pub open spec fn discardable(b: int) -> bool {
+    ||| huge_byte(b)                          // huge_base <= b < huge_base + huge_len
+    ||| exists|c: int| 0 <= c < NCLASSES && #[trigger] class_byte(c, b)
+}
+pub open spec fn class_byte(c: int, b: int) -> bool {
+    let r = process_regions();
+    let sz = (1usize << class_table()[c].lg_slab) as int;
+    &&& r.class_base[c] <= b < r.class_base[c] + r.spec_nslabs(c) * sz
+    &&& !guard_slab(c, (b - r.class_base[c]) / sz)
+}
+
+// purge.rs:1310: what every call hands `madvise`.
+fn discard(ranges: &[(usize, usize)], advice: Advice, Ghost(free): Ghost<spec_fn(int) -> bool>)
+    requires
+        ranges.len() <= MAX_BATCH,
+        forall|i: int| 0 <= i < ranges.len() ==> frees(free, ranges[i].0 as int, ranges[i].1 as int),
+        forall|i: int| 0 <= i < ranges.len() ==> well_formed(ranges[i].0 as int, ranges[i].1 as int),
+
+// purge.rs:374
+pub proof fn theorem_purge_well_formed(addr: int, len: int, b: int, c: int, s: int)
+    requires
+        crate::heap::regions_ok(),
+        well_formed(addr, len),
+        addr <= b < addr + len,
+    ensures
+        len > 0,
+        page_bytes() > 0,
+        addr % page_bytes() == 0,
+        (addr + len) % page_bytes() == 0,
+        discardable(b),
+        !process_regions().in_meta(b, 1),
+        0 <= c < NCLASSES && 0 <= s < process_regions().spec_nslabs(c) && guard_slab(c, s)
+            ==> !(process_regions().slab_span(c, s).0 <= b
+                  < process_regions().slab_span(c, s).0 + process_regions().slab_span(c, s).1),
+```
+
+(Abridged: `crate::` paths, `#![auto]` triggers and `discard`'s
+capability clauses dropped; line breaks added.) In words: `discard`'s
+precondition is the statement, checked at its one call
+(`Batch::flush`, `purge.rs:662`); `theorem_purge_well_formed` reads it
+out: the range is non-empty and page-aligned at both ends, and each
+byte is in the huge region or a class region, outside the metadata
+region (`Regions::in_meta`), and in no guard slab `s` of any class `c`
+(for every `c` and `s`, as its arguments). A `Batch` (`purge.rs:235`)
+also records the ranges it handed over, in flush order (a ghost `gone`,
+`Batch::discarded`, `:540`): `flush` appends the ranges it held, `push`
+leaves the record as it was or extended by its own flush, and
+`Batch::lemma_discarded` (`:546`) states each one `well_formed`.
+
+How it is proved:
+- **The batch.** `Batch::wf` (`:504`, closed) keeps `well_formed` of
+  every range it holds and every range in `discarded()`; `push` (`:601`)
+  requires it of the pushed range, and its merge with the last range
+  (adjacent ranges go out as one) keeps it (`lemma_well_formed_join`,
+  `:307`: two adjacent page-aligned ranges of discardable bytes are
+  one). `well_formed` is opaque, so the batch's invariant carries one
+  fact per range.
+- **Class purges.** `purge_group` (`class/decay.rs:927`) pushes the page
+  group of `slab` (`spp` slabs from `first = slab & !(spp - 1)`) and now
+  requires `slab` in the empty set and `spp` the table's slabs per page,
+  which `Purger::visit` has. `lemma_group_well_formed`
+  (`class/decay.rs:844`): the table's base and a page group's bytes are
+  page multiples (`SlabTable::inv` gains `lg_page ==
+  process_regions().lg_page` and the opaque `groups_paged`,
+  `class/table.rs:100`, which `SlabTable::new` proves through
+  `lemma_new_geometry`, now ensuring `spp * slab % page == 0`, and
+  `lemma_groups_paged`, `:995`), so `first * slab` is a multiple of the
+  group's bytes; the group's slabs lie below the table's `nslabs`, the
+  process's (`SlabTable::inv`), and share `slab`'s page group
+  (`x >> lg_spp == slab >> lg_spp`), so none is a guard slab
+  (`guard_of` reads only the page group) because `slab`, `Empty`, is
+  not one (`Inner::slab_core`: an owned guard slab is `Fresh`).
+- **Huge purges.** `Huge::is_process` (`huge/mod.rs:3330`, closed): the
+  allocator's base, page and page count are the process's huge
+  region's, its base a page start, and the regions well formed and
+  separated. `Shared::lemma_huge_process` (`heap/shared.rs:1626`) proves
+  it from `Shared::wf`; `purge_empty`, `purge_extent`, `purge_curve`,
+  `decay`, `decay_with` and `free_run` require it, and `purge::purge_all`,
+  `purge_arena` and `decay` now require `shared.wf()` (every caller has
+  it). `Huge::lemma_purge_range` (`huge/mod.rs:3357`): pages `start..start
+  + pages` (at least one) of the region are a well-formed range, since
+  `npages * page <= huge_len`. `purge_extent` pushes an `Empty` extent
+  (at least a page, `desc_ok`) and `free_run` the freed run, guard page
+  included.
+- **Never metadata, never a guard slab.** `theorem_purge_well_formed`:
+  a huge byte is outside the superblock and the metadata region
+  (`Regions::separated`); a class byte lies in a slab below the class's
+  `nslabs`, inside stride `c` of the superblock (`lemma_slab_in_stride`),
+  apart from the metadata region and from every other class's stride; in
+  its own class its slab index is the byte's, which `class_byte` says is
+  not a guard slab.
+
+**Covers.** Every discard: `malloc_trim`, `mallctl` `arena.<i>.purge`,
+`arena.<i>.decay` and `arena.<i>.destroy`, the decay walks
+(`purge::decay`, the background thread, the slow path's tick), the
+`high`-rise full purge, every free of a huge run that purges at once
+(above `huge_retain_max` or under `huge_dirty_decay_ms:0`, `Huge::free_run`),
+and the exit purge in `Heap::destroy` (trusted,
+so through `purge_arena`'s contract).
+
+**Premises beyond the common ones.**
+- The process's regions: the class half rests on `SlabTable::inv`
+  (`base`, `nslabs` and `lg_page` the process regions'), which
+  `SlabTable::new` proves from its caller's `regions == process_regions()`,
+  well formed and separated (`Shared::init`); the huge half and the
+  metadata clause on `Shared::wf` (`regions_ok()`, the huge allocator
+  over the huge region), which `api::shared_ref` claims of the published
+  `Shared` (as every verified function taking a `&Shared`).
+- The guard geometry: a table's guard slabs are the process's
+  (`guard_geom`, `class::table::axiom_slot_loc`), as for theorem 7.
+- The class lock axioms (`axiom_class_lock_inv`): the value `purge_group`
+  holds satisfies the lock invariant, which is what makes an empty-set
+  slab `Empty`, so not a guard slab.
+
+**Scope and where the statement is weaker than the code.**
+- "Page" is the process regions' `lg_page`, the page `Regions` was built
+  with (the kernel's `AT_PAGESZ` at init), not re-read from the kernel.
+- The huge half allows every page of the huge region, and a freed run's
+  guard page is discarded with the run (its `MADV_GUARD_INSTALL` guard
+  was removed first): by design, a freed run's pages all become free.
+  "Never a guard slab" is about the class regions' guard slabs.
+- A class range may cover uncommitted slabs (`Fresh` slabs of the page
+  group when a page holds several slabs): `madvise` of reserved, never
+  touched pages is harmless, and they are inside the class region.
+- Nothing states the ranges of one batch disjoint, nor that each is
+  discarded once; the record `discarded()` is not exported above the
+  batch (`purge::Left`, theorem 38, carries the byte count only).
+- Only `purge::Batch` discards are covered; `MADV_GUARD_INSTALL`
+  (`class/table.rs`, `huge/mod.rs`) and `MADV_GUARD_REMOVE` drop or keep
+  contents of guard pages outside any batch (theorem 7).
+- The unit tests build batches over an unconstrained ghost predicate
+  (`Batch::new_t`) and push arbitrary ranges; they are not verified code.
+- Ghost only: the release library is identical to the base commit's
+  (440 of 440 functions, x86_64); aarch64 not compared in this lane.
 
 ## Interface contract
 

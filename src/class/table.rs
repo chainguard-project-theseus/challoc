@@ -90,6 +90,20 @@ pub(crate) struct TableInner {
     pub(super) dstride: Ghost<int>,
 }
 
+/// A page group of a class table starts and ends on a page boundary: the
+/// region's `base` and the group's bytes (`spp` slabs of `2^lg_slab`) are
+/// multiples of the page `2^lg_page`. What a class purge's ranges need
+/// (whole-allocator theorem "Purge batches are well formed",
+/// `verus/THEOREMS.md`). Opaque, so the type invariant carries it as one
+/// fact.
+#[verifier::opaque]
+pub(super) open spec fn groups_paged(base: usize, spp: u32, lg_slab: u8, lg_page: u32) -> bool {
+    let page = (1usize << lg_page) as int;
+    &&& page > 0
+    &&& (base as int) % page == 0
+    &&& (spp as int * (1usize << lg_slab) as int) % page == 0
+}
+
 /// The facts [`Lazy::ensure`] needs of a table committed in `page` units,
 /// which it keeps.
 pub(super) open spec fn lazy_ok(l: Lazy, page: usize) -> bool {
@@ -829,6 +843,8 @@ impl SlabTable {
             assert(ts == slots);
             assert(words_wf(word_invs, ts, bits_base, (nslabs * sb + 63) / 64));
             assert(crate::layout::guard_geom(class as int) == (lgs, guard_interval.wrapping_sub(1)));
+            // Page groups on page boundaries, for the purge ranges.
+            lemma_groups_paged(base, slabs_per_page, t.lg_slab, regions.lg_page, page);
         }
         Some(SlabTable {
             bits_base,
@@ -926,9 +942,23 @@ proof fn lemma_new_geometry(lp: u32, ls: u32, lr: u32, page: usize, ss: usize, n
         crate::meta::is_pow2(spp),
         nslabs % spp == 0,
         1 <= spp <= nslabs <= 0x400_0000,
+        page > 0,
+        (spp as int * ss as int) % (page as int) == 0,
 {
     assert(nslabs == 1usize << sub(lr, ls) && nslabs <= 0x400_0000) by (bit_vector)
         requires nslabs == (1usize << lr) >> ls, 12 <= ls <= lr, lr <= 38;
+    let (lpu, lsu) = (lp as usize, ls as usize);
+    assert(page == 1usize << lpu && ss == 1usize << lsu) by (bit_vector)
+        requires page == 1usize << lp, ss == 1usize << ls, lpu == lp as usize, lsu == ls as usize;
+    vstd::arithmetic::power2::lemma2_to64();
+    vstd::arithmetic::power2::lemma_pow2_strictly_increases(38, 64);
+    if lp < 38 {
+        vstd::arithmetic::power2::lemma_pow2_strictly_increases(lp as nat, 38);
+    }
+    vstd::arithmetic::power2::lemma_pow2_strictly_increases(ls as nat, 38);
+    vstd::bits::lemma_usize_shl_is_mul(1, lpu);
+    vstd::bits::lemma_usize_shl_is_mul(1, lsu);
+    vstd::arithmetic::power2::lemma_pow2_pos(lp as nat);
     if lp >= ls {
         let k: u32 = sub(lp, ls);
         let m: u32 = sub(lr, ls);
@@ -938,12 +968,53 @@ proof fn lemma_new_geometry(lp: u32, ls: u32, lr: u32, page: usize, ss: usize, n
             requires k <= m, m <= 38;
         crate::meta::lemma_is_pow2_shl(k as usize);
         assert((1usize << k) == (1usize << (k as usize))) by (bit_vector);
+        // `spp == 2^k` and `2^k * 2^ls == 2^lp`.
+        assert(spp == 1usize << k);
+        if k < 38 {
+            vstd::arithmetic::power2::lemma_pow2_strictly_increases(k as nat, 38);
+        }
+        vstd::bits::lemma_usize_shl_is_mul(1, k as usize);
+        vstd::arithmetic::power2::lemma_pow2_adds(k as nat, ls as nat);
+        assert(spp as int * ss as int == page as int);
+        vstd::arithmetic::div_mod::lemma_mod_self_0(page as int);
     } else {
         assert(page / ss == 0) by (bit_vector)
             requires page == 1usize << lp, ss == 1usize << ls, lp < ls, ls <= 22;
         crate::meta::lemma_is_pow2_one();
         assert((1usize << sub(lr, ls)) >= 1) by (bit_vector) requires sub(lr, ls) <= 38;
+        // `ss == 2^(ls - lp) * page`.
+        let d: u32 = sub(ls, lp);
+        vstd::arithmetic::power2::lemma_pow2_adds(d as nat, lp as nat);
+        vstd::arithmetic::div_mod::lemma_mod_multiples_basic(pow2(d as nat) as int, pow2(lp as nat) as int);
     }
+}
+
+/// [`groups_paged`] of a table [`SlabTable::new`] builds: a
+/// `MAX_SLAB`-aligned base, a page of at most `MAX_SLAB`, and page groups
+/// whose bytes are a page multiple ([`lemma_new_geometry`]).
+proof fn lemma_groups_paged(base: usize, spp: usize, ls: u8, lp: u32, page: usize)
+    requires
+        page == 1usize << lp,
+        12 <= lp <= crate::layout::LG_MAX_SLAB,
+        (base as int) % (crate::layout::MAX_SLAB as int) == 0,
+        spp <= 0x400_0000,
+        (spp as int * (1usize << ls) as int) % (page as int) == 0,
+    ensures
+        groups_paged(base, spp as u32, ls, lp),
+{
+    reveal(groups_paged);
+    vstd::bits::lemma_usize_pow2_no_overflow(lp as nat);
+    vstd::bits::lemma_usize_shl_is_mul(1, lp as usize);
+    vstd::arithmetic::power2::lemma2_to64();
+    if lp < 22 {
+        vstd::arithmetic::power2::lemma_pow2_strictly_increases(lp as nat, 22);
+    }
+    assert(crate::layout::MAX_SLAB == 0x40_0000) by (bit_vector);
+    crate::meta::lemma_is_pow2_shl(lp as usize);
+    vstd::arithmetic::div_mod::lemma_mod_self_0(page as int);
+    crate::layout::lemma_pow2_divides_pow2(page, page as int, 22);
+    crate::layout::lemma_aligned_down(base as int, crate::layout::MAX_SLAB as int, page as int);
+    assert((spp as u32) as int == spp as int);
 }
 
 } // verus!
@@ -1510,6 +1581,13 @@ pub(super) broadcast proof fn lemma_spec_class(t: SlabTable)
 {
 }
 
+/// `spec_slabs_per_page` is the field, for the rest of `class/`.
+pub(super) broadcast proof fn lemma_spec_slabs_per_page(t: SlabTable)
+    ensures
+        #[trigger] t.spec_slabs_per_page() == t.slabs_per_page as usize,
+{
+}
+
 /// A region of `n <= m >> lg` slabs of at least 4 KiB has at most
 /// `usize::MAX >> 12` of them.
 proof fn lemma_nslabs_bound(n: usize, m: usize, lg: usize)
@@ -1575,6 +1653,8 @@ impl SlabTable {
         &&& crate::layout::guard_geom(self.class as int) == (self.lg_slabs_per_page, self.guard_mask)
         &&& self.perms_ok()
         &&& self.inner.0.rank() == rank_table(self.class as int)
+        &&& self.lg_page == process_regions().lg_page
+        &&& groups_paged(self.base, self.slabs_per_page, class_table()[self.class as int].lg_slab, self.lg_page)
     }
 
     /// Hand-out groups of the region (owner words).

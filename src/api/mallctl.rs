@@ -2590,6 +2590,9 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 if i == 0 {
                     let d = shared.decay_ns();
                     if d != purge::NEVER {
+                        proof {
+                            shared.lemma_huge_process();
+                        }
                         shared.huge.decay(now, d, Tracked(&mut ord));
                     }
                 }

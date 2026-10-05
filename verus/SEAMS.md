@@ -1211,7 +1211,7 @@ unsafe fn store_triple(
 
 ### S24. `mib_cap`
 
-src/api/mallctl.rs:2743. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:2746. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > `*miblenp`.
@@ -1222,7 +1222,7 @@ unsafe fn mib_cap(miblenp: *mut usize) -> usize
 
 ### S25. `mib_out`
 
-src/api/mallctl.rs:2757. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:2760. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Copy `mib[..len]` out to `mibp` and store `len` at `miblenp`.
@@ -1236,7 +1236,7 @@ unsafe fn mib_out(mib: &[usize; MAX_MIB], mibp: *mut usize, miblenp: *mut usize,
 
 ### S26. `mib_in`
 
-src/api/mallctl.rs:2802. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:2805. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Copy the caller's `miblen` MIB entries into `local`.
@@ -2263,7 +2263,7 @@ pub broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
 
 ### S93. `axiom_table_lock_inv`
 
-src/class/table.rs:188. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:202. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the commit lock's value keeps [`TableInner::inv`] while the lock is free.
@@ -2277,7 +2277,7 @@ pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
 
 ### S94. `axiom_table_lock_frame`
 
-src/class/table.rs:196. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:210. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The commit lock's ghost geometry, marker authority and descriptor array never change: nothing writes them.
@@ -2292,7 +2292,7 @@ pub(super) broadcast axiom fn axiom_table_lock_frame(init: TableInner, v: TableI
 
 ### S95. `load_owner`
 
-src/class/table.rs:281. Kind: external_body. Category: allocator invariant.
+src/class/table.rs:295. Kind: external_body. Category: allocator invariant.
 Tool: loom/GenMC. Status: evidence (verus/seams/class-table-load_owner.md).
 
 > `w.load(Relaxed)` of the owner word of handed-out slab `slab`'s group: the arena that owns the slab.
@@ -2309,7 +2309,7 @@ fn load_owner(w: &AtomicU16, Ghost(t): Ghost<SlabTable>, Ghost(slab): Ghost<usiz
 
 ### S96. `store_owner`
 
-src/class/table.rs:313. Kind: external_body. Category: allocator invariant.
+src/class/table.rs:327. Kind: external_body. Category: allocator invariant.
 Tool: loom/GenMC. Status: discharged (verus/seams/class-table-store_owner.md).
 
 > `w.store(arena, Relaxed)` of the owner word of hand-out group `group`: from here on [`slab_owner`] of every slab of the group is `arena`.
@@ -2327,7 +2327,7 @@ fn store_owner(w: &AtomicU16, arena: u16, Ghost(t): Ghost<SlabTable>, Ghost(grou
 
 ### S97. `axiom_slot_loc`
 
-src/class/table.rs:1243. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:1314. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: `SlabTable::new` runs once per class in a process (`Shared::init`, its one caller, builds the class tables of the one `Shared`, as `layout::process_regions` assumes), so the authority it makes is the class's, and so is its marker authority (`mloc`, [`mark_loc`]).
@@ -2344,7 +2344,7 @@ axiom fn axiom_slot_loc(c: int, loc: Loc, mloc: Loc, glg: u8, gmask: u32, tracke
 
 ### S98. `axiom_fresh_words`
 
-src/class/table.rs:1266. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:1337. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the permissions of the `n` words of the table at `base` that `Meta::reserve_table` has just returned, each holding zero: the table has never been written (`meta.rs`: carved once and never freed), and nothing but the bitmap views reaches it.
@@ -2360,7 +2360,7 @@ axiom fn axiom_fresh_words(base: usize, n: nat, c: int, tracked once: Once) -> (
 
 ### S99. `axiom_init_descs`
 
-src/class/table.rs:1348. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1419. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the descriptors at the permissions `perms` carved for keys `0..n` hold values.
@@ -2377,7 +2377,7 @@ axiom fn axiom_init_descs(tracked perms: Map<int, PointsTo<SlabDesc>>, n: int) -
 
 ### S100. `axiom_init_owners`
 
-src/class/table.rs:1374. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1445. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the owner words at the permissions `perms` carved for keys `0..n` hold values, as [`axiom_init_descs`] (an `AtomicU16` is valid for every bit pattern).
@@ -2392,7 +2392,7 @@ axiom fn axiom_init_owners(tracked perms: Map<int, PointsTo<AtomicU16>>, n: int)
 
 ### S101. `axiom_init_words`
 
-src/class/table.rs:1386. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1457. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the class bitmap words at the permissions `perms` carved for keys `0..n` hold values, as [`axiom_init_descs`], and each is the word at its permission's address, the identity [`word_addr`] names (the identity the word permissions of [`axiom_fresh_words`] are for).
@@ -2408,7 +2408,7 @@ axiom fn axiom_init_words(tracked perms: Map<int, PointsTo<AtomicU64>>, n: int) 
 
 ### S102. `SlabTable::watermark`
 
-src/class/table.rs:2054. Kind: external_body. Category: allocator invariant.
+src/class/table.rs:2134. Kind: external_body. Category: allocator invariant.
 Tool: RefinedRust. Status: trusted.
 
 > The watermark, loaded with `order` (inlined, so the caller's load is the bare `core` one with its ordering).
@@ -3388,7 +3388,7 @@ axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc, tracked 
 
 ### S170. `Huge::check_zero`
 
-src/huge/mod.rs:5190. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/huge/mod.rs:5277. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The `check_zero` debug mode: the first and last word of every usable page of a run reported zero must read zero.
@@ -3401,12 +3401,12 @@ fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: 
 
 ### S171. `not_a_run_page`
 
-src/huge/mod.rs:7058. Kind: abort_standin. Category: panic/abort.
+src/huge/mod.rs:7148. Kind: abort_standin. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`Huge::free_run`]'s abort for a page that is not in the descriptor table, where the build calls [`not_a_run`] with the page's address.
 
-Stands in at: src/huge/mod.rs:6653 (`Huge::free_run`).
+Stands in at: src/huge/mod.rs:6741 (`Huge::free_run`).
 
 ```rust
 fn not_a_run_page(page: usize) -> !
@@ -3807,7 +3807,7 @@ fn drop(&mut self)
 
 ### S198. `total_bytes`
 
-src/purge.rs:480. Kind: external_body. Category: core library.
+src/purge.rs:709. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/purge-total_bytes.md).
 
 > The sum of the lengths of `ranges`.
