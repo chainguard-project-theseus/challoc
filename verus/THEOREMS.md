@@ -3154,7 +3154,9 @@ class size of every slot in a thread cache. Three layers:
    `Σ_c curregs[c] * size(c)` plus `(pg - large_runs * GUARD_PAGES) *
    page` whenever that true sum fits a `usize`. `collect_into` (`:800`)
    and `collect_all` (`:922`) hand out, through a ghost `rd`, the figures
-   of each arena they found (in index order) and those pages, and ensure
+   of each arena they found (in index order, each keyed by its registry
+   ID, `ArenaStats::index`, with the IDs ascending: `ids_ascending`, see
+   theorem 36) and those pages, and ensure
    `totals_exact` (`:1087`) and `summed` (`:1075`): `totals.allocated`,
    and `allocated`, every bin's `curregs` and `large_runs` of the sum, are
    the true sums of those reads (`reads_allocated`, `:1058`) when they
@@ -3184,9 +3186,14 @@ class size of every slot in a thread cache. Three layers:
    `take_run` (`Huge::take`: the run token's pages come from the page
    authority), `note` (`Shared::alloc_huge`'s `note_huge_alloc(r.pages)`),
    `free_run` (`Huge::free_run`) and `unnote` (`Shared::free_huge`'s
-   `note_huge_free(run.pages)`), plus `new_arena`. `Books::inv` (`:201`)
-   holds at `Books::start` (`:221`, `lemma_start`, `:1014`) and after
-   every step (`lemma_step_*`, `:636`-`:993`), in any interleaving:
+   `note_huge_free(run.pages)`), plus `new_arena` (`Arenas::create`) and
+   `materialise` (`Arenas::build` of an automatic index); every counter
+   step names a built arena, and an unbuilt index keeps zero counters
+   (`unbuilt_fresh`; these, `start(auto)` and the new lines are in
+   theorem 36; the line numbers here predate
+   them). `Books::inv` (`:201`) holds at `Books::start` (`:221`,
+   `lemma_start`, `:1014`) and after every step (`lemma_step_*`,
+   `:636`-`:993`), in any interleaving:
    `claimed - released` of each `(arena, class)` is its out slots plus
    the reservations not yet claimed plus the releases not yet counted;
    the out slots of a class are each in exactly one of flight, a cache
@@ -3207,11 +3214,10 @@ class size of every slot in a thread cache. Three layers:
 pub proof fn theorem_exact_stats(b: Books, tracked live: Map<int, Live>, n: int,
     reads: Seq<ArenaStats>, pages: Seq<int>)
     requires
-        b.inv(), b.quiescent(), reads_ok(reads, pages), reads.len() == b.k,
-        // the scan read the ledger's counters, arena i at index i
-        forall|i, c| ... reads[i].bins[c].curregs == (b.net)(i, c),
-        forall|i| ... reads[i].large_runs == (b.wruns)(i),
-        forall|i| ... pages[i] == (b.wpages)(i),
+        b.inv(), b.quiescent(), reads_ok(reads, pages),
+        // the scan read the ledger's counters of the arenas it names by
+        // registry ID, every built one, in ascending ID order
+        reads_keyed(b, reads, pages),
         // live[0..n] are the program's live blocks, held at once
         n >= 0, forall|i| 0 <= i < n ==> live.contains_key(i) && live[i].wf(),
         forall|c| ... (b.live)(c) == key_slots(live_keys(live, n), c),
@@ -3274,9 +3280,13 @@ and subtract from the `large` word are the token's
   reads are the ledger's counters. Verus's atomics return any value
   (common premises), so this link is a premise, stated as
   `theorem_exact_stats`'s `reads` requirements.
-- Arena indices: the scan finds an arena at every index below
-  `arenas.count()`, so `reads[i]` is arena `i` (`collect_*` skip an index
-  `get_existing` returns `None` for).
+- Arena IDs (a stable registry): the ledger's `k` is the `arenas.count()`
+  the scan loaded, and the scan's `get_existing` finds every built
+  arena, so its reads name every built arena (`reads_keyed`). Unbuilt
+  indices may be skipped: `reads[j]` is the arena whose registry ID is
+  `reads[j].index`, not arena `j` (formerly a premise that the scan
+  found an arena at every index below the count, false while an
+  automatic arena is unbuilt; theorem 36).
 - No wrap and no clamp: `claimed - released` is below `2^64` (it is a
   count of slots), and `bin_stats` does not clamp it, which holds at a
   quiescent state because a slab with a slot out has `live > 0`, so it is
@@ -5455,6 +5465,135 @@ for every pointer. `owner_of` (`arenas.lookup`) is not covered.
   the descriptor named when read; that it is the slab's owner at that
   instant is theorem 14's (slab ownership never changes once assigned),
   not restated.
+## 36. Arena IDs survive enumeration holes (with a stable registry)
+
+The `file:line`s are the `fn`/`spec` line on top of the integration tip
+`0c9cd77`. The registry's indices can have holes: an automatic arena is
+built only when something first asks for it (`Arenas::get`, through
+`Arenas::materialise`: a refill of a heap homed there, `mallctl`'s
+`arena.<i>.*`, an explicit-arena allocation), and `arenas.create` hands
+out the next index after every automatic one, built or not. With
+`narenas:2`, only arena 0 built and one explicit arena, the registry
+holds IDs 0 and 2 and nothing at 1.
+
+**Statement.** Two layers.
+
+1. **The scan keys each arena by its registry ID** (code, `stats.rs`).
+   In `collect_into` (`:1122`) and `collect_all` (`:1325`) each read is
+   built with `index` the ID of the arena it was read from
+   (`collect_arena_with`, `:896`, ensures `r.index ==
+   arena.spec_index()`; `arena_at`, `:876`, ensures `a.spec_index() ==
+   i` for the table index `i` it was asked for, from
+   `Arenas::get_existing`, `arena.rs:1811`, and the trusted
+   `arena::arena_at`, `arena.rs:1553`), and the loop invariant keeps
+   every earlier read's ID below `i`. The `ensures` (and `mallinfo2`'s,
+   `api/glibc.rs:94`, from `collect_all`'s) export what a caller can
+   name: the IDs of the reads handed out through the ghost `rd` ascend,
+   so no arena is read twice (`ids_ascending`, `:1498`), and each is
+   below `MAX_ARENAS`:
+
+   ```rust
+   // stats.rs:1498
+   pub open spec fn ids_ascending(reads: Seq<ArenaStats>) -> bool {
+       forall|i: int, j: int| 0 <= i < j < reads.len()
+           ==> #[trigger] reads[i].index < #[trigger] reads[j].index
+   }
+   // collect_into and collect_all, added ensures
+   ids_ascending(final(rd)@.0),
+   forall|j: int| 0 <= j < final(rd)@.0.len()
+       ==> ((#[trigger] final(rd)@.0[j]).index as usize) < MAX_ARENAS,
+   ```
+
+   `collect_into` stores each arena's figures in that arena
+   (`arena.store_stats(&a)`, with `a.index == arena.spec_index()`), so
+   `stats.arenas.<i>.*` reads arena `i`'s own figures.
+
+2. **Exact stats over a sparse registry** (ghost model,
+   `stats/ledger.rs`). The ledger `Books` (`:51`) now has `built`, the
+   indices whose entry is published, beside `k`, the registry's count.
+   `Books::start(auto)` (`lemma_start`, `:1104`) has `k = auto` and only
+   arena 0 built; `new_arena` (`Arenas::create`, `:262`) builds index
+   `k` and adds one to `k`; `materialise(a)` (`Arenas::build` of an
+   automatic index, `:268`, `lemma_step_materialise`, `:1079`) builds
+   `a`. Every counter step (`reserve`, `claim`, `release`, `count`,
+   `take_run`, `note`, `free_run`, `unnote`) requires its arena built,
+   and `Books::inv` now includes `unbuilt_fresh` (`:208`): every unbuilt
+   index below `k` has zero counters and no slots or runs (`fresh`,
+   `:273`, now one quantifier per conjunct), and bounds `k` by
+   `MAX_ARENAS` (`new_arena` requires `k < MAX_ARENAS`, as `create`
+   checks; `start` requires `1 <= auto <= MAX_ARENAS`, as `init`
+   clamps), so a ledger never has a built index a `u16` ID cannot name
+   and `reads_keyed` can always be met. `theorem_exact_stats`
+   (`:1638`) takes the reads keyed by ID:
+
+   ```rust
+   // stats/ledger.rs:1504
+   pub open spec fn reads_keyed(b: Books, reads: Seq<ArenaStats>, pages: Seq<int>) -> bool {
+       &&& reads.len() == pages.len()
+       &&& ids_ascending(reads)
+       &&& forall|j| 0 <= j < reads.len() ==> (#[trigger] reads[j]).index < b.k
+       &&& forall|a| 0 <= a < b.k && #[trigger] b.built.contains(a)
+           ==> exists|j| 0 <= j < reads.len() && (#[trigger] reads[j]).index == a
+       &&& forall|j, c| ... reads[j].bins[c].curregs == (b.net)(reads[j].index as int, c)
+       &&& forall|j| ... reads[j].large_runs == (b.wruns)(reads[j].index as int)
+       &&& forall|j| ... pages[j] == (b.wpages)(reads[j].index as int)
+   }
+   ```
+
+   `lemma_reads_keyed` (`:1524`) shows such reads sum to the ledger's
+   counters over all of `0..k`: by induction over the arenas, the reads
+   of IDs below `a` are a prefix (the IDs ascend), and an index no read
+   names is not built (every built one is named), so its counters are
+   zero. Theorem 22's conclusion (the reported `allocated` is the live
+   blocks' usable bytes plus the cached slots') therefore holds with
+   holes; it used to require `reads.len() == b.k` and `reads[i]` to be
+   arena `i`, which the scan of the registry above (IDs 0 and 2, two
+   reads, `k = 3`) does not satisfy.
+
+The test `stats::tests::collection_keys_arenas_by_registry_id_across_a_hole`
+(`stats.rs:2044`) runs the example: `narenas:2`, `create` returns 2,
+arena 1 stays unbuilt through `collect` and `epoch`, both scans count 2
+arenas, `arena_stats(1)` is `None`, arenas 0 and 2 report index 0 and 2
+with their own `curregs` (1 and 2), and the totals are their sum.
+No runtime bug: the code always keyed by ID; the gap was in theorem 22's
+premise.
+
+**Covers / stated in.** `collect_into` (so `epoch`, `collect`,
+`malloc_stats_print`'s totals and the `stats.*` snapshot), `collect_all`
+(`mallinfo`, `mallinfo2`, `malloc_stats`), and `theorem_exact_stats`.
+`Arenas::create` (`arena.rs:1785`) now also ensures the ID it returns is
+below `MAX_ARENAS`.
+
+**Premises beyond theorem 22's.**
+- A stable registry during the scan: the `arenas.count()` the scan
+  loads is the ledger's `k`, and each entry load in `get_existing` sees
+  the entry as published (non-null exactly for the built indices).
+  Verus gives `core` atomic loads any value (common premises), so "every
+  built arena is read" is `reads_keyed`'s fourth conjunct, a premise,
+  like the quiescence link of the counters. Nothing frees or unpublishes
+  an arena, so an entry, once non-null, stays the same arena (the trusted
+  `arena::arena_at`'s contract, `spec_index() == index`, rests on it).
+- The ledger's `materialise` and `new_arena` steps abstract
+  `Arenas::build`'s release store of the entry and `Arenas::create`'s
+  `count` store (read from the code, as theorem 22's other steps).
+
+**Scope and where the statement is weaker than the code.**
+- "Visits every published arena once" is: once is proved (`ids_ascending`);
+  every is the stable-registry premise above. The ensures says the
+  IDs are below `MAX_ARENAS`, not below the count the scan loaded (a
+  local the `ensures` cannot name); `reads_keyed` requires `< k`.
+- `Arenas::init` (trusted) and the registry's table entries carry no
+  ghost state: that `create`'s index is at or above `auto`, and that
+  `build` publishes each index at most once, are read from the code (the
+  creation lock's `u32` has no per-registry invariant).
+- `Snapshot::narenas` is the number of arenas the scan found, so it is
+  below `arenas.narenas` while an automatic arena is unbuilt
+  (`malloc_stats_print`'s "Arenas: 2 (2 automatic)" with IDs 0 and 2,
+  where `arenas.narenas` reads 3); its doc comment said
+  "`arenas.narenas` at the time" and now says what it counts.
+- `arena_stats_all` (`stats.arenas.4096.*`) and the report scans in
+  `api/print.rs` have no keyed contract; they key their output by
+  `a.index()` too.
 
 ## Interface contract
 

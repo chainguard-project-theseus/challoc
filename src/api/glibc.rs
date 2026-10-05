@@ -89,7 +89,8 @@ pub fn mallopt(_param: c_int, _value: c_int) -> (r: c_int)
 /// summed: `uordblks + hblkhd` is that sum's `allocated`, the true sum of
 /// the arenas' figures when it fits ([`stats::summed`]); `uordblks` is the
 /// bins up to `BIN_MAX`, `hblkhd` the slab classes above it and the huge
-/// runs, whose number is `hblks`.
+/// runs, whose number is `hblks`. The reads come from arenas of
+/// ascending registry IDs ([`stats::ids_ascending`]).
 pub fn mallinfo2(Tracked(rd): Tracked<&mut Ghost<(Seq<stats::ArenaStats>, Seq<int>, stats::ArenaStats)>>) -> (r: MallInfo2)
     requires
         crate::sys::may_abort(),
@@ -98,6 +99,8 @@ pub fn mallinfo2(Tracked(rd): Tracked<&mut Ghost<(Seq<stats::ArenaStats>, Seq<in
         r.fordblks <= r.arena,
         r.smblks == 0 && r.usmblks == 0 && r.fsmblks == 0,
         stats::summed(final(rd)@.0, final(rd)@.1, final(rd)@.2),
+        stats::ids_ascending(final(rd)@.0),
+        forall|j: int| 0 <= j < final(rd)@.0.len() ==> ((#[trigger] final(rd)@.0[j]).index as usize) < crate::arena::MAX_ARENAS,
         r.uordblks == final(rd)@.2.small_allocated,
         r.hblkhd == final(rd)@.2.large_allocated,
         r.hblks == final(rd)@.2.large_runs,

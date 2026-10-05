@@ -547,7 +547,8 @@ fn huge_pages_short(index: u16, runs: usize, pages: usize) -> !
 pub struct Snapshot {
     /// Number of epochs so far; 0 before the first.
     pub epoch: u64,
-    /// Arenas that existed at the epoch (`arenas.narenas` at the time).
+    /// Arenas the scan found built at the epoch, each counted once: below
+    /// `arenas.narenas` while an automatic arena is not built yet.
     pub narenas: u32,
     pub totals: Totals,
     pub huge: HugeStats,
@@ -1125,6 +1126,8 @@ fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(S
     ensures
         totals_exact(final(rd)@.0, final(rd)@.1, r.totals),
         r.narenas == final(rd)@.0.len(),
+        ids_ascending(final(rd)@.0),
+        forall|j: int| 0 <= j < final(rd)@.0.len() ==> ((#[trigger] final(rd)@.0[j]).index as usize) < MAX_ARENAS,
         forall|j: int| 0 <= j < final(rd)@.0.len() ==> #[trigger] final(rd)@.0[j].identities(),
         sum_mapped(final(rd)@.0) <= usize::MAX ==> r.totals.mapped == sum_mapped(final(rd)@.0)
             && r.totals.identities(),
@@ -1156,6 +1159,8 @@ fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(S
             narenas <= i <= n,
             totals_exact(reads, pages, totals),
             narenas == reads.len(),
+            ids_ascending(reads),
+            forall|j: int| 0 <= j < reads.len() ==> ((#[trigger] reads[j]).index as usize) < i,
             forall|j: int| 0 <= j < reads.len() ==> #[trigger] reads[j].identities(),
             // Arena 0, the only one above `2^55`, comes first.
             sum_mapped(reads) <= 0x400_0000_0000_0000 + reads.len() * 0x80_0000_0000_0000,
@@ -1324,6 +1329,8 @@ pub fn collect_all(shared: &Shared, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaSt
     ensures
         r.index == crate::arena::ARENAS_ALL as u16,
         summed(final(rd)@.0, final(rd)@.1, r),
+        ids_ascending(final(rd)@.0),
+        forall|j: int| 0 <= j < final(rd)@.0.len() ==> ((#[trigger] final(rd)@.0[j]).index as usize) < MAX_ARENAS,
         forall|j: int| 0 <= j < final(rd)@.0.len() ==> #[trigger] final(rd)@.0[j].identities(),
         sum_mapped(final(rd)@.0) <= usize::MAX ==> r.mapped == sum_mapped(final(rd)@.0) && r.identities(),
         final(rd)@.0.len() <= 256 ==> r.identities(),
@@ -1351,6 +1358,8 @@ pub fn collect_all(shared: &Shared, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaSt
             all.index == crate::arena::ARENAS_ALL as u16,
             summed(reads, pages, all),
             reads.len() <= i,
+            ids_ascending(reads),
+            forall|j: int| 0 <= j < reads.len() ==> ((#[trigger] reads[j]).index as usize) < i,
             forall|j: int| 0 <= j < reads.len() ==> #[trigger] reads[j].identities(),
             // Arena 0, the only one above `2^55`, comes first.
             sum_mapped(reads) <= 0x400_0000_0000_0000 + reads.len() * 0x80_0000_0000_0000,
@@ -1478,6 +1487,15 @@ pub open spec fn sum_ints(xs: Seq<int>) -> int
 /// hold `pages[i]` pages.
 pub open spec fn reads_allocated(reads: Seq<ArenaStats>, pages: Seq<int>) -> int {
     true_allocated(all_curregs(reads), sum_runs(reads), sum_ints(pages))
+}
+
+/// The figures `reads` come from arenas of ascending registry IDs
+/// (`ArenaStats::index`): a scan in index order reads each arena once,
+/// and keys it by its own ID, not by its position in the scan (with
+/// automatic arenas not built yet, IDs skip: `0, 2` for two automatic
+/// arenas, only arena 0 built, and explicit arena 2).
+pub open spec fn ids_ascending(reads: Seq<ArenaStats>) -> bool {
+    forall|i: int, j: int| 0 <= i < j < reads.len() ==> #[trigger] reads[i].index < #[trigger] reads[j].index
 }
 
 /// `reads` (with huge pages `pages`) are per-arena figures as a scan over
@@ -2014,6 +2032,52 @@ mod tests {
         let tot = collect(s, Tracked::assume_new()).totals;
         assert_eq!(tot.allocated, 0);
         assert!(tot.identities_hold(), "{tot:?}");
+    }
+
+    /// Arena IDs survive enumeration holes (`verus/THEOREMS.md`): with two
+    /// automatic arenas of which only arena 0 is built, `create` hands
+    /// out arena 2, and the scan finds arenas 0 and 2, each keyed by its
+    /// registry ID; the hole at 1 is skipped, and the totals are the two
+    /// arenas' figures.
+    #[test]
+    fn collection_keys_arenas_by_registry_id_across_a_hole() {
+        let s = crate::testutil::TestShared::with(crate::config::Config {
+            narenas: 2,
+            ..crate::config::Config::DEFAULT
+        })
+        .build();
+        assert_eq!(s.arenas.count(), 2);
+        assert!(s.arenas.get_existing(1).is_none());
+        assert_eq!(s.arenas.create(s, Tracked::assume_new()), Some(2));
+        assert_eq!(s.arenas.count(), 3);
+        assert!(s.arenas.get_existing(1).is_none());
+        let c32 = class_with(32);
+        let a2 = s.arenas.get_existing(2).expect("arena 2");
+        let (p0, _, _) = s.alloc_direct(
+            s.arenas.get_existing(0).unwrap(),
+            c32,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
+        let (p2, _, _) = s.alloc_direct(a2, c32, Tracked::assume_new(), Tracked::assume_new());
+        let (q2, _, _) = s.alloc_direct(a2, c32, Tracked::assume_new(), Tracked::assume_new());
+        assert!(!p0.is_null() && !p2.is_null() && !q2.is_null());
+
+        let live = collect(s, Tracked::assume_new());
+        epoch(s, Tracked::assume_new());
+        let snap = snapshot(s, Tracked::assume_new());
+        assert_eq!((live.narenas, snap.narenas), (2, 2));
+        assert!(arena_stats(s, 1, Tracked::assume_new()).is_none());
+        let s0 = arena_stats(s, 0, Tracked::assume_new()).unwrap();
+        let s2 = arena_stats(s, 2, Tracked::assume_new()).unwrap();
+        assert_eq!((s0.index, s2.index), (0, 2));
+        assert_eq!((s0.bins[c32].curregs, s2.bins[c32].curregs), (1, 2));
+        let size = CLASSES[c32].size();
+        assert_eq!(s2.allocated(), 2 * size);
+        assert_eq!(snap.totals.allocated, 3 * size);
+        assert_eq!(live.totals.allocated, 3 * size);
+        // The scan never builds the hole.
+        assert!(s.arenas.get_existing(1).is_none());
     }
 
     /// With a second arena the per-arena figures split by owner: slabs and

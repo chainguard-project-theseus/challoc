@@ -3844,7 +3844,7 @@ pub(crate) fn fig_add64(a: u64, b: u64) -> (r: u64)
 
 ### S203. `axiom_snapshot_lock_inv`
 
-src/stats.rs:599. Kind: axiom. Category: allocator invariant.
+src/stats.rs:600. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The snapshot an `epoch` stores satisfies [`Snapshot::inv`].

@@ -1821,13 +1821,14 @@ impl Arenas {
 
     /// `arenas.create`: a new explicit arena. `None` when the table or the
     /// metadata region is full.
-    pub fn create(&self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u16>
+    pub fn create(&self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u16>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
             old(ord).allows(rank_arenas()),
         ensures
+            r matches Some(i) ==> (i as usize) < MAX_ARENAS,
             *final(ord) == *old(ord),
     {
         proof {

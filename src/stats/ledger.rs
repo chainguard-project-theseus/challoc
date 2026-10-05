@@ -39,12 +39,18 @@ pub open spec fn ext_pages(e: (int, int)) -> Set<int> {
     set_int_range(e.0, e.0 + e.1)
 }
 
-/// The ledger. Arenas `0..k` exist; the maps are total, and zero or empty
-/// for arenas not built yet.
+/// The ledger. Arenas `0..k` are the registry's indices (`Arenas::count`,
+/// at most `MAX_ARENAS`) and `built` those whose entry is published; the
+/// maps are total, and zero or empty for arenas not built yet
+/// ([`Books::unbuilt_fresh`]). An automatic index stays unbuilt until
+/// something first asks for its arena (`Arenas::get`, through
+/// `Arenas::materialise`), so the built indices can have holes: an
+/// explicit arena's ID is above every automatic one.
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[allow(dead_code)]
 pub ghost struct Books {
     pub k: int,
+    pub built: Set<int>,
     /// `claimed - released` of arena `a`'s state of class `c`, unbounded
     /// (the two `u64` counters hold it modulo `2^64`).
     pub net: spec_fn(int, int) -> int,
@@ -197,9 +203,16 @@ impl Books {
             self.runs)(b).contains(e2) && (a != b || e1 != e2) ==> ext_pages(e1).disjoint(ext_pages(e2))
     }
 
+    /// Every index the registry has not built has zero counters: no step
+    /// names an arena that is not built.
+    pub open spec fn unbuilt_fresh(self) -> bool {
+        forall|a: int| 0 <= a < self.k && !self.built.contains(a) ==> #[trigger] self.fresh(a)
+    }
+
     /// The ledger's invariant.
     pub open spec fn inv(self) -> bool {
-        &&& self.k >= 0
+        &&& 0 <= self.k <= MAX_ARENAS
+        &&& self.unbuilt_fresh()
         &&& forall|a: int, c: int| 0 <= a < self.k && 0 <= c < NCLASSES ==> #[trigger] self.slots_ok(a, c)
         &&& self.outs_apart()
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.holders_ok(c)
@@ -217,10 +230,13 @@ impl Books {
         self.tf_runs)(a) == 0 && (self.tf_pages)(a) == 0
     }
 
-    /// The process's start: one arena, nothing claimed, nothing live.
-    pub open spec fn start() -> Books {
+    /// The process's start: `auto` automatic indices (`Arenas::init`), of
+    /// which only arena 0 (`Shared::arena0`) is built; nothing claimed,
+    /// nothing live.
+    pub open spec fn start(auto: int) -> Books {
         Books {
-            k: 1,
+            k: auto,
+            built: Set::<int>::empty().insert(0),
             net: |a: int, c: int| 0int,
             resv: |a: int, c: int| 0int,
             unc: |a: int, c: int| 0int,
@@ -244,13 +260,21 @@ impl Books {
 
     /// `Arenas::create` built arena `k`, whose counters start at zero.
     pub open spec fn new_arena(self) -> Books {
-        Books { k: self.k + 1, ..self }
+        Books { k: self.k + 1, built: self.built.insert(self.k), ..self }
+    }
+
+    /// `Arenas::build` published automatic arena `a` (from
+    /// `Arenas::materialise`), whose counters start at zero.
+    pub open spec fn materialise(self, a: int) -> Books {
+        Books { built: self.built.insert(a), ..self }
     }
 
     /// Arena `a`'s maps are zero and empty.
     pub open spec fn fresh(self, a: int) -> bool {
-        &&& forall|c: int| #[trigger] (self.net)(a, c) == 0 && (self.resv)(a, c) == 0 && (self.unc)(a, c) == 0 && (
-        self.out)(a, c) == Set::<int>::empty()
+        &&& forall|c: int| #[trigger] (self.net)(a, c) == 0
+        &&& forall|c: int| #[trigger] (self.resv)(a, c) == 0
+        &&& forall|c: int| #[trigger] (self.unc)(a, c) == 0
+        &&& forall|c: int| #[trigger] (self.out)(a, c) == Set::<int>::empty()
         &&& (self.wruns)(a) == 0 && (self.wpages)(a) == 0
         &&& (self.runs)(a) == Set::<(int, int)>::empty() && (self.pages)(a) == Set::<int>::empty()
         &&& (self.ta_runs)(a) == 0 && (self.ta_pages)(a) == 0 && (self.tf_runs)(a) == 0 && (self.tf_pages)(a) == 0
@@ -280,6 +304,7 @@ impl Books {
 
     pub open spec fn claim_pre(self, a: int, c: int, x: int) -> bool {
         &&& 0 <= a < self.k
+        &&& self.built.contains(a)
         &&& 0 <= c < NCLASSES
         &&& (self.resv)(a, c) >= 1
         &&& !self.out_upto(c, self.k).contains(x)
@@ -333,6 +358,7 @@ impl Books {
 
     pub open spec fn release_pre(self, a: int, c: int, x: int) -> bool {
         &&& 0 <= a < self.k
+        &&& self.built.contains(a)
         &&& 0 <= c < NCLASSES
         &&& (self.flight)(c).contains(x)
         &&& (self.out)(a, c).contains(x)
@@ -350,6 +376,7 @@ impl Books {
 
     pub open spec fn count_pre(self, a: int, c: int, n: int) -> bool {
         &&& 0 <= a < self.k
+        &&& self.built.contains(a)
         &&& 0 <= c < NCLASSES
         &&& 0 <= n <= (self.unc)(a, c)
     }
@@ -369,6 +396,7 @@ impl Books {
 
     pub open spec fn take_run_pre(self, a: int, e: (int, int)) -> bool {
         &&& 0 <= a < self.k
+        &&& self.built.contains(a)
         &&& e.0 >= 0
         &&& e.1 > GUARD_PAGES
         &&& forall|b: int| 0 <= b < self.k ==> #[trigger] (self.pages)(b).disjoint(ext_pages(e))
@@ -388,6 +416,7 @@ impl Books {
 
     pub open spec fn note_pre(self, a: int, n: int) -> bool {
         &&& 0 <= a < self.k
+        &&& self.built.contains(a)
         &&& (self.ta_runs)(a) >= 1
         &&& 0 <= n <= (self.ta_pages)(a)
     }
@@ -407,6 +436,7 @@ impl Books {
 
     pub open spec fn free_run_pre(self, a: int, e: (int, int)) -> bool {
         &&& 0 <= a < self.k
+        &&& self.built.contains(a)
         &&& (self.runs)(a).contains(e)
     }
 
@@ -424,6 +454,7 @@ impl Books {
 
     pub open spec fn unnote_pre(self, a: int, n: int) -> bool {
         &&& 0 <= a < self.k
+        &&& self.built.contains(a)
         &&& (self.tf_runs)(a) >= 1
         &&& 0 <= n <= (self.tf_pages)(a)
     }
@@ -637,10 +668,15 @@ impl Books {
         requires
             self.inv(),
             self.fresh(self.k),
+            self.k < MAX_ARENAS,
         ensures
             self.new_arena().inv(),
     {
         let o = self.new_arena();
+        assert forall|a2: int| 0 <= a2 < o.k && !o.built.contains(a2) implies #[trigger] o.fresh(a2) by {
+            assert(a2 != self.k);
+            assert(self.fresh(a2));
+        }
         self.lemma_upto_frame(o, self.k);
         assert forall|a: int, c: int| 0 <= a < o.k && 0 <= c < NCLASSES implies #[trigger] o.slots_ok(a, c) by {
             if a < self.k {
@@ -686,12 +722,16 @@ impl Books {
         requires
             self.inv(),
             0 <= a < self.k,
+            self.built.contains(a),
             0 <= c < NCLASSES,
             n >= 0,
         ensures
             self.reserve(a, c, n).inv(),
     {
         let o = self.reserve(a, c, n);
+        assert forall|a2: int| 0 <= a2 < o.k && !o.built.contains(a2) implies #[trigger] o.fresh(a2) by {
+            assert(self.fresh(a2));
+        }
         self.lemma_upto_frame(o, self.k);
         assert forall|a2: int, c2: int| 0 <= a2 < o.k && 0 <= c2 < NCLASSES implies #[trigger] o.slots_ok(a2, c2) by {
             assert(self.slots_ok(a2, c2));
@@ -714,6 +754,9 @@ impl Books {
             self.claim(a, c, x).inv(),
     {
         let o = self.claim(a, c, x);
+        assert forall|a2: int| 0 <= a2 < o.k && !o.built.contains(a2) implies #[trigger] o.fresh(a2) by {
+            assert(self.fresh(a2));
+        }
         self.lemma_out_upto(c, self.k);
         assert(!(self.out)(a, c).contains(x));
         assert forall|a2: int, c2: int| 0 <= a2 < o.k && 0 <= c2 < NCLASSES implies #[trigger] o.slots_ok(a2, c2) by {
@@ -754,6 +797,9 @@ impl Books {
             self.move_slot(c, x, from, to).inv(),
     {
         let o = self.move_slot(c, x, from, to);
+        assert forall|a2: int| 0 <= a2 < o.k && !o.built.contains(a2) implies #[trigger] o.fresh(a2) by {
+            assert(self.fresh(a2));
+        }
         self.lemma_upto_frame(o, self.k);
         assert forall|a2: int, c2: int| 0 <= a2 < o.k && 0 <= c2 < NCLASSES implies #[trigger] o.slots_ok(a2, c2) by {
             assert(self.slots_ok(a2, c2));
@@ -784,6 +830,9 @@ impl Books {
             self.release(a, c, x).inv(),
     {
         let o = self.release(a, c, x);
+        assert forall|a2: int| 0 <= a2 < o.k && !o.built.contains(a2) implies #[trigger] o.fresh(a2) by {
+            assert(self.fresh(a2));
+        }
         assert forall|b: int| 0 <= b < self.k && b != a implies !(#[trigger] (self.out)(b, c)).contains(x) by {
             assert((self.out)(a, c).disjoint((self.out)(b, c)));
         }
@@ -819,6 +868,9 @@ impl Books {
             self.count(a, c, n).inv(),
     {
         let o = self.count(a, c, n);
+        assert forall|a2: int| 0 <= a2 < o.k && !o.built.contains(a2) implies #[trigger] o.fresh(a2) by {
+            assert(self.fresh(a2));
+        }
         self.lemma_upto_frame(o, self.k);
         assert forall|a2: int, c2: int| 0 <= a2 < o.k && 0 <= c2 < NCLASSES implies #[trigger] o.slots_ok(a2, c2) by {
             assert(self.slots_ok(a2, c2));
@@ -841,6 +893,9 @@ impl Books {
             self.take_run(a, e).inv(),
     {
         let o = self.take_run(a, e);
+        assert forall|a2: int| 0 <= a2 < o.k && !o.built.contains(a2) implies #[trigger] o.fresh(a2) by {
+            assert(self.fresh(a2));
+        }
         let r = ext_pages(e);
         vstd::set_lib::lemma_int_range(e.0, e.0 + e.1);
         assert(r.contains(e.0));
@@ -929,6 +984,9 @@ impl Books {
             self.note(a, n).inv(),
     {
         let o = self.note(a, n);
+        assert forall|a2: int| 0 <= a2 < o.k && !o.built.contains(a2) implies #[trigger] o.fresh(a2) by {
+            assert(self.fresh(a2));
+        }
         self.lemma_upto_frame(o, self.k);
         assert forall|a2: int, c2: int| 0 <= a2 < o.k && 0 <= c2 < NCLASSES implies #[trigger] o.slots_ok(a2, c2) by {
             assert(self.slots_ok(a2, c2));
@@ -950,6 +1008,9 @@ impl Books {
             self.free_run(a, e).inv(),
     {
         let o = self.free_run(a, e);
+        assert forall|a2: int| 0 <= a2 < o.k && !o.built.contains(a2) implies #[trigger] o.fresh(a2) by {
+            assert(self.fresh(a2));
+        }
         let r = ext_pages(e);
         assert(self.huge_ok(a));
         vstd::set_lib::lemma_int_range(e.0, e.0 + e.1);
@@ -998,6 +1059,9 @@ impl Books {
             self.unnote(a, n).inv(),
     {
         let o = self.unnote(a, n);
+        assert forall|a2: int| 0 <= a2 < o.k && !o.built.contains(a2) implies #[trigger] o.fresh(a2) by {
+            assert(self.fresh(a2));
+        }
         self.lemma_upto_frame(o, self.k);
         assert forall|a2: int, c2: int| 0 <= a2 < o.k && 0 <= c2 < NCLASSES implies #[trigger] o.slots_ok(a2, c2) by {
             assert(self.slots_ok(a2, c2));
@@ -1010,16 +1074,44 @@ impl Books {
         }
     }
 
-    /// The process starts in the invariant.
-    pub proof fn lemma_start()
+    /// Building automatic arena `a` keeps the invariant: one index fewer
+    /// is unbuilt, and nothing else changes.
+    pub proof fn lemma_step_materialise(self, a: int)
+        requires
+            self.inv(),
+            0 <= a < self.k,
         ensures
-            Books::start().inv(),
-            Books::start().quiescent(),
+            self.materialise(a).inv(),
     {
-        let b = Books::start();
+        let o = self.materialise(a);
+        assert forall|a2: int| 0 <= a2 < o.k && !o.built.contains(a2) implies #[trigger] o.fresh(a2) by {
+            assert(self.fresh(a2));
+        }
+        self.lemma_upto_frame(o, self.k);
+        assert forall|a2: int, c2: int| 0 <= a2 < o.k && 0 <= c2 < NCLASSES implies #[trigger] o.slots_ok(a2, c2) by {
+            assert(self.slots_ok(a2, c2));
+        }
+        assert forall|c2: int| 0 <= c2 < NCLASSES implies #[trigger] o.holders_ok(c2) by {
+            assert(self.holders_ok(c2));
+        }
+        assert forall|a2: int| 0 <= a2 < o.k implies #[trigger] o.huge_ok(a2) by {
+            assert(self.huge_ok(a2));
+            self.lemma_huge_frame(o, a2);
+        }
+    }
+
+    /// The process starts in the invariant, with `auto` automatic arenas.
+    pub proof fn lemma_start(auto: int)
+        requires
+            1 <= auto <= MAX_ARENAS,
+        ensures
+            Books::start(auto).inv(),
+            Books::start(auto).quiescent(),
+    {
+        let b = Books::start(auto);
         assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] b.holders_ok(c) by {
-            assert(b.out_upto(c, 0) == Set::<int>::empty());
-            assert(b.out_upto(c, 1) =~= Set::<int>::empty());
+            b.lemma_out_upto(c, auto);
+            assert(b.out_upto(c, auto) =~= Set::<int>::empty());
             assert(Set::<int>::empty().union(Set::<int>::empty()).union(Set::<int>::empty()) =~= Set::<int>::empty());
         }
     }
@@ -1401,33 +1493,102 @@ pub proof fn lemma_key_bytes(ks: Seq<BlockKey>)
     }
 }
 
-/// The arenas' figures `reads` (with huge pages `pages`) read the ledger's
-/// counters of arenas `0..a`: their sums are the ledger's.
-pub proof fn lemma_reads_books(b: Books, reads: Seq<ArenaStats>, pages: Seq<int>, a: int)
+/// The figures `reads` (with huge pages `pages`) are the ledger's counters
+/// of the arenas they were read from, keyed by registry ID
+/// (`ArenaStats::index`, which `collect_arena_with` sets to the arena's
+/// `spec_index`), not by their position in the scan: their IDs ascend
+/// (each arena read once, [`ids_ascending`]) and are registry indices,
+/// and every built arena is read. Indices the registry has not built
+/// (holes, such as automatic arenas no heap has used yet) may be
+/// skipped.
+pub open spec fn reads_keyed(b: Books, reads: Seq<ArenaStats>, pages: Seq<int>) -> bool {
+    &&& reads.len() == pages.len()
+    &&& ids_ascending(reads)
+    &&& forall|j: int| 0 <= j < reads.len() ==> (#[trigger] reads[j]).index < b.k
+    &&& forall|a: int|
+        0 <= a < b.k && #[trigger] b.built.contains(a) ==> exists|j: int|
+            0 <= j < reads.len() && (#[trigger] reads[j]).index == a
+    &&& forall|j: int, c: int|
+        0 <= j < reads.len() && 0 <= c < NCLASSES ==> #[trigger] reads[j].bins[c].curregs == (b.net)(
+            reads[j].index as int,
+            c,
+        )
+    &&& forall|j: int| 0 <= j < reads.len() ==> #[trigger] reads[j].large_runs == (b.wruns)(reads[j].index as int)
+    &&& forall|j: int| 0 <= j < reads.len() ==> #[trigger] pages[j] == (b.wpages)(reads[j].index as int)
+}
+
+/// Keyed reads ([`reads_keyed`]) sum to the ledger's counters: the reads
+/// `reads[0..m]`, those of IDs below `a`, sum to the counters of arenas
+/// `0..a`, since every arena below `a` that no read names is unbuilt, so
+/// its counters are zero ([`Books::unbuilt_fresh`]).
+pub proof fn lemma_reads_keyed(b: Books, reads: Seq<ArenaStats>, pages: Seq<int>, a: int, m: int)
     requires
-        0 <= a <= reads.len(),
-        reads.len() == pages.len(),
-        forall|i: int, c: int| 0 <= i < reads.len() && 0 <= c < NCLASSES ==> #[trigger] reads[i].bins[c].curregs == (b.net)(i, c),
-        forall|i: int| 0 <= i < reads.len() ==> #[trigger] reads[i].large_runs == (b.wruns)(i),
-        forall|i: int| 0 <= i < reads.len() ==> #[trigger] pages[i] == (b.wpages)(i),
+        b.inv(),
+        reads_keyed(b, reads, pages),
+        0 <= a <= b.k,
+        0 <= m <= reads.len(),
+        forall|j: int| 0 <= j < m ==> (#[trigger] reads[j]).index < a,
+        forall|j: int| m <= j < reads.len() ==> (#[trigger] reads[j]).index >= a,
     ensures
-        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] sum_curregs(reads.subrange(0, a), c) == b.net_upto(c, a),
-        sum_runs(reads.subrange(0, a)) == b.wruns_upto(a),
-        sum_ints(pages.subrange(0, a)) == b.wpages_upto(a),
+        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] sum_curregs(reads.subrange(0, m), c) == b.net_upto(c, a),
+        sum_runs(reads.subrange(0, m)) == b.wruns_upto(a),
+        sum_ints(pages.subrange(0, m)) == b.wpages_upto(a),
     decreases a,
 {
     if a > 0 {
-        lemma_reads_books(b, reads, pages, a - 1);
-        assert(reads.subrange(0, a).drop_last() =~= reads.subrange(0, a - 1));
-        assert(pages.subrange(0, a).drop_last() =~= pages.subrange(0, a - 1));
-        assert(reads.subrange(0, a).last() == reads[a - 1]);
-        assert(pages.subrange(0, a).last() == pages[a - 1]);
-        assert(reads[a - 1].large_runs == (b.wruns)(a - 1));
-        assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] sum_curregs(reads.subrange(0, a), c) == b.net_upto(c, a) by {
-            assert(reads[a - 1].bins[c].curregs == (b.net)(a - 1, c));
-            assert(sum_curregs(reads.subrange(0, a), c) == sum_curregs(reads.subrange(0, a).drop_last(), c) + reads.subrange(0, a).last().bins[c].curregs);
+        let hit = m > 0 && reads[m - 1].index == a - 1;
+        let m2 = if hit { m - 1 } else { m };
+        assert forall|j: int| 0 <= j < m2 implies (#[trigger] reads[j]).index < a - 1 by {
+            if j < m - 1 {
+                assert(reads[j].index < reads[m - 1].index);
+                assert(reads[m - 1].index < a);
+            }
+        }
+        assert forall|j: int| m2 <= j < reads.len() implies (#[trigger] reads[j]).index >= a - 1 by {
+            if j >= m {
+                assert(reads[j].index >= a);
+            }
+        }
+        lemma_reads_keyed(b, reads, pages, a - 1, m2);
+        if hit {
+            let rs = reads.subrange(0, m);
+            let ps = pages.subrange(0, m);
+            assert(rs.drop_last() =~= reads.subrange(0, m - 1));
+            assert(ps.drop_last() =~= pages.subrange(0, m - 1));
+            assert(rs.last() == reads[m - 1]);
+            assert(ps.last() == pages[m - 1]);
+            assert(reads[m - 1].large_runs == (b.wruns)(a - 1));
+            assert(pages[m - 1] == (b.wpages)(a - 1));
+            assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] sum_curregs(rs, c) == b.net_upto(c, a) by {
+                assert(reads[m - 1].bins[c].curregs == (b.net)(a - 1, c));
+                assert(sum_curregs(rs, c) == sum_curregs(rs.drop_last(), c) + rs.last().bins[c].curregs);
+            }
+        } else {
+            // No read names arena `a - 1`, so it is unbuilt, so its counters
+            // are zero.
+            assert(!b.built.contains(a - 1)) by {
+                if b.built.contains(a - 1) {
+                    let j = choose|j: int| 0 <= j < reads.len() && (#[trigger] reads[j]).index == a - 1;
+                    if j < m {
+                        assert(reads[j].index < a - 1);
+                    } else {
+                        assert(reads[j].index >= a);
+                    }
+                }
+            }
+            assert(b.fresh(a - 1));
+            assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] sum_curregs(reads.subrange(0, m), c) == b.net_upto(
+                c,
+                a,
+            ) by {
+                assert((b.net)(a - 1, c) == 0);
+                assert(sum_curregs(reads.subrange(0, m2), c) == b.net_upto(c, a - 1));
+            }
         }
     } else {
+        if m > 0 {
+            assert(reads[0].index < a);
+        }
         lemma_reads_empty();
         assert(reads.subrange(0, 0) =~= Seq::<ArenaStats>::empty());
         assert(pages.subrange(0, 0) =~= Seq::<int>::empty());
@@ -1463,15 +1624,17 @@ pub proof fn lemma_live_bytes(live: Map<int, Live>, n: int)
 /// Let `live[0..n]` be the tokens of the program's live blocks, held at
 /// once, and `b` the ledger, quiescent: no counter update in progress.
 /// Suppose the figures `reads` a scan of the arenas read, with the pages
-/// `pages[i]` of arena `i`'s `large` word (what `collect_into`,
-/// `collect_all` and `mallinfo2` hand out through their ghost `rd`), are
-/// the ledger's counters of arenas `0..k` in order (every arena below
-/// `arenas.count()` exists; at a quiescent state every load reads the last
-/// store, and `claimed - released` is below `2^64` and below the clamp),
-/// and the ledger's live blocks are the tokens' blocks. Then their true
-/// `allocated` ([`reads_allocated`], what those functions report when it
-/// fits a `usize`: `totals_exact`, `summed`) is the usable bytes of the
-/// live blocks plus the cached slots' bytes.
+/// `pages[j]` of the `large` word of the arena `reads[j]` was read from
+/// (what `collect_into`, `collect_all` and `mallinfo2` hand out through
+/// their ghost `rd`), are the ledger's counters of the arenas they name by
+/// registry ID ([`reads_keyed`]: the IDs ascend, and with a stable
+/// registry the scan found every built arena below `arenas.count()`,
+/// skipping only unbuilt indices; at a quiescent state every load reads
+/// the last store, and `claimed - released` is below `2^64` and below the
+/// clamp), and the ledger's live blocks are the tokens' blocks. Then
+/// their true `allocated` ([`reads_allocated`], what those functions
+/// report when it fits a `usize`: `totals_exact`, `summed`) is the usable
+/// bytes of the live blocks plus the cached slots' bytes.
 pub proof fn theorem_exact_stats(
     b: Books,
     tracked live: Map<int, Live>,
@@ -1483,10 +1646,7 @@ pub proof fn theorem_exact_stats(
         b.inv(),
         b.quiescent(),
         reads_ok(reads, pages),
-        reads.len() == b.k,
-        forall|i: int, c: int| 0 <= i < reads.len() && 0 <= c < NCLASSES ==> #[trigger] reads[i].bins[c].curregs == (b.net)(i, c),
-        forall|i: int| 0 <= i < reads.len() ==> #[trigger] reads[i].large_runs == (b.wruns)(i),
-        forall|i: int| 0 <= i < reads.len() ==> #[trigger] pages[i] == (b.wpages)(i),
+        reads_keyed(b, reads, pages),
         forall|i: int| 0 <= i < n ==> #[trigger] live.contains_key(i) && live[i].wf(),
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] (b.live)(c) == key_slots(live_keys(live, n), c),
         n >= 0,
@@ -1525,9 +1685,9 @@ pub proof fn theorem_exact_stats(
     lemma_live_bytes(l0, n);
     lemma_keys_contain(ks);
     b.theorem_quiescent();
-    lemma_reads_books(b, reads, pages, b.k);
-    assert(reads.subrange(0, b.k) =~= reads);
-    assert(pages.subrange(0, b.k) =~= pages);
+    lemma_reads_keyed(b, reads, pages, b.k, reads.len() as int);
+    assert(reads.subrange(0, reads.len() as int) =~= reads);
+    assert(pages.subrange(0, pages.len() as int) =~= pages);
     // The ledger's live pages are the runs' pages.
     b.lemma_huge_upto(b.k);
     assert(b.pages_upto(b.k) =~= key_pages(ks)) by {
