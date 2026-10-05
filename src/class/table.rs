@@ -1244,12 +1244,12 @@ proof fn carve_owners(tracked raw: PointsToRaw, base: int, n: int) -> (tracked r
         raw.contains_range(base, n * 2),
         raw.provenance() == cast_provenance(),
     ensures
-        forall|g: int| 0 <= g < n ==> #[trigger] r.contains_key(g) && perm_at(r[g], base + 2 * g),
+        forall|g: int| #![trigger r.contains_key(g)] #![trigger r[g]] 0 <= g < n ==> r.contains_key(g) && perm_at(r[g], base + 2 * g),
 {
     lemma_layouts();
     let tracked carved = carve::<AtomicU16>(raw, base, 2, n);
     let tracked r = axiom_init_owners(carved, n);
-    assert forall|g: int| 0 <= g < n implies #[trigger] r.contains_key(g) && perm_at(r[g], base + 2 * g) by {
+    assert forall|g: int| #![trigger r.contains_key(g)] #![trigger r[g]] 0 <= g < n implies r.contains_key(g) && perm_at(r[g], base + 2 * g) by {
         assert(carved.contains_key(0 + g));
         assert(g * 2 == 2 * g && base + 2 * g <= usize::MAX) by (nonlinear_arith)
             requires 0 <= g < n, base + n * 2 <= usize::MAX;
@@ -1372,13 +1372,13 @@ axiom fn axiom_fresh_words(base: usize, n: nat, c: int, tracked once: Once) -> (
         base + 8 * n <= usize::MAX,
         once.step() == Step::FreshWords(c),
     ensures
-        forall|j: int| 0 <= j < n ==> #[trigger] r.contains_key(j) && r[j].addr() == base + 8 * j && r[j].value() == 0;
+        forall|j: int| #![trigger r.contains_key(j)] #![trigger r[j]] 0 <= j < n ==> r.contains_key(j) && r[j].addr() == base + 8 * j && r[j].value() == 0;
 
 /// `n` permissions of `perms` from key `j0` on are to the uninitialised
 /// `T`s at `base`, `base + stride`, ..., of `perms`' provenance `prov`.
 spec fn carved<T>(perms: Map<int, PointsTo<T>>, j0: int, base: int, stride: int, n: int, prov: vstd::raw_ptr::Provenance) -> bool {
-    forall|i: int| 0 <= i < n ==> {
-        &&& #[trigger] perms.contains_key(j0 + i)
+    forall|i: int| #![trigger perms.contains_key(j0 + i)] #![trigger perms[j0 + i]] 0 <= i < n ==> {
+        &&& perms.contains_key(j0 + i)
         &&& perms[j0 + i].ptr() == ptr_mut_from_data::<T>(PtrData { addr: (base + i * stride) as usize, provenance: prov, metadata: () })
         &&& perms[j0 + i].is_uninit()
     }
@@ -1423,8 +1423,8 @@ proof fn carve<T>(tracked raw: PointsToRaw, base: int, stride: int, n: int) -> (
         assert(last.dom() =~= Set::range(a, a + sz));
         let tracked p = last.into_typed::<T>(a as usize);
         r.tracked_insert(m, p);
-        assert forall|i: int| 0 <= i < n implies {
-            &&& #[trigger] r.contains_key(0 + i)
+        assert forall|i: int| #![trigger r.contains_key(0 + i)] #![trigger r[0 + i]] 0 <= i < n implies {
+            &&& r.contains_key(0 + i)
             &&& r[0 + i].ptr() == ptr_mut_from_data::<T>(PtrData { addr: (base + i * stride) as usize, provenance: raw.provenance(), metadata: () })
             &&& r[0 + i].is_uninit()
         } by {
@@ -1503,7 +1503,7 @@ fn words_ref<'a>(p: *const AtomicU64, n: usize, Ghost(j0): Ghost<int>, Tracked(p
     requires
         0 < n,
         n * 8 <= isize::MAX,
-        forall|i: int| 0 <= i < n ==> #[trigger] perms.contains_key(j0 + i) && perms[j0 + i].is_init()
+        forall|i: int| #![trigger perms.contains_key(j0 + i)] #![trigger perms[j0 + i]] 0 <= i < n ==> perms.contains_key(j0 + i) && perms[j0 + i].is_init()
             && perms[j0 + i].ptr() == ptr_mut_from_data::<AtomicU64>(
                 PtrData { addr: (p@.addr + 8 * i) as usize, provenance: p@.provenance, metadata: () }),
     ensures
@@ -1712,12 +1712,12 @@ impl SlabTable {
             ==> desc_id(&(#[trigger] self.desc_perms@[s]).value()) == self.desc_base + s * (self.desc_stride as int)
         &&& self.bits_base + 8 * self.spec_nwords() <= usize::MAX
         &&& self.owners_base + 2 * self.spec_ngroups() <= usize::MAX
-        &&& forall|s: int| 0 <= s < self.nslabs ==> #[trigger] self.desc_perms@.contains_key(s)
+        &&& forall|s: int| #![trigger self.desc_perms@.contains_key(s)] #![trigger self.desc_perms@[s]] 0 <= s < self.nslabs ==> self.desc_perms@.contains_key(s)
             && perm_at(self.desc_perms@[s], self.desc_base + s * (self.desc_stride as int))
-        &&& forall|j: int| 0 <= j < self.spec_nwords() ==> #[trigger] self.word_perms@.contains_key(j)
+        &&& forall|j: int| #![trigger self.word_perms@.contains_key(j)] #![trigger self.word_perms@[j]] 0 <= j < self.spec_nwords() ==> self.word_perms@.contains_key(j)
             && perm_at(self.word_perms@[j], self.bits_base + 8 * j)
             && word_addr(&self.word_perms@[j].value()) == self.bits_base + 8 * j
-        &&& forall|g: int| 0 <= g < self.spec_ngroups() ==> #[trigger] self.owner_perms@.contains_key(g)
+        &&& forall|g: int| #![trigger self.owner_perms@.contains_key(g)] #![trigger self.owner_perms@[g]] 0 <= g < self.spec_ngroups() ==> self.owner_perms@.contains_key(g)
             && perm_at(self.owner_perms@[g], self.owners_base + 2 * g)
     }
 
@@ -2345,7 +2345,7 @@ impl SlabTable {
                     assert(first + sb <= n * sb) by (nonlinear_arith)
                         requires slab < n, first == slab * sb, sb >= 0;
                 }
-                assert forall|i: int| 0 <= i < k implies #[trigger] self.word_perms@.contains_key(j0 + i)
+                assert forall|i: int| #![trigger self.word_perms@.contains_key(j0 + i)] #![trigger self.word_perms@[j0 + i]] 0 <= i < k implies self.word_perms@.contains_key(j0 + i)
                     && self.word_perms@[j0 + i].is_init()
                     && self.word_perms@[j0 + i].ptr() == ptr_mut_from_data::<AtomicU64>(
                         PtrData { addr: (word@.addr + 8 * i) as usize, provenance: word@.provenance, metadata: () }) by {

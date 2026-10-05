@@ -2651,7 +2651,7 @@ proof fn lemma_took_elist(g0: Inner, g1: Inner, t: Take)
     assert(stat(g1.stats, 1) == stat(g0.stats, 1) + t.delta(1));
     assert(stat(g1.stats, 4) == stat(g0.stats, 4) + t.delta(4));
     // The old list's members other than `ext` keep their pages.
-    assert forall|i: int| 0 <= i < l0.len() implies #[trigger] d0.contains_key(l0[i]) && d0[l0[i]].value().state == RunState::Empty as u8 by {
+    assert forall|i: int| #![trigger d0.contains_key(l0[i])] #![trigger d0[l0[i]]] 0 <= i < l0.len() implies d0.contains_key(l0[i]) && d0[l0[i]].value().state == RunState::Empty as u8 by {
         assert(enode(l0, d0, i));
     }
     assert forall|i: int| 0 <= i < l0.len() && l0[i] != t.ext implies #[trigger] d1[l0[i]].value().pages == d0[l0[i]].value().pages by {

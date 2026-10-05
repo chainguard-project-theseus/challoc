@@ -266,8 +266,8 @@ impl CachePerms {
             forall|i: int| 0 <= i < k ==> #[trigger] old(src).contains_key(n - 1 - i),
             forall|i: int| 0 <= i < n ==> owner.contains_key(#[trigger] super::slot_ptr(base, i)) && owner[super::slot_ptr(base, i)] == (p, i),
         ensures
-            forall|i: int|
-                0 <= i < k ==> #[trigger] final(dst).contains_key(super::slot_ptr(base, i))
+            forall|i: int| #![trigger final(dst).contains_key(super::slot_ptr(base, i))] #![trigger final(dst)[super::slot_ptr(base, i)]]
+                0 <= i < k ==> final(dst).contains_key(super::slot_ptr(base, i))
                     && final(dst)[super::slot_ptr(base, i)] == old(src)[n - 1 - i],
             forall|q: *mut *mut u8|
                 #[trigger] old(dst).contains_key(q) && !(owner.contains_key(q) && owner[q].0 == p)
@@ -323,7 +323,7 @@ impl CachePerms {
                 pre.hdrs.contains_key(p2) && p2 != p && 0 <= j < pre.hdr(p2).cap
                     ==> #[trigger] old(perms).slots[pre.ent(p2, j)] == pre.slots[pre.ent(p2, j)],
             forall|i: int| 0 <= i < n ==> #[trigger] plain(old(perms).slots[old(perms).ent(p, i)].value(), old(perms).hdr(p).slots) == claimed[n - 1 - i]@.addr,
-            zeroed ==> forall|k: int| 0 <= k < n ==> #[trigger] z.contains_key(k) && z[k].covers(claimed[k], class_table()[pre.cls[p]].size as int),
+            zeroed ==> forall|k: int| #![trigger z.contains_key(k)] #![trigger z[k]] 0 <= k < n ==> z.contains_key(k) && z[k].covers(claimed[k], class_table()[pre.cls[p]].size as int),
         ensures
             final(perms).zero_ok(),
             final(perms).hdrs == old(perms).hdrs,

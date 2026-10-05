@@ -337,8 +337,8 @@ impl ClassState {
             g.arena@ == self.arena,
             g.table@ == self.spec_table(),
         ensures
-            r ==> forall|s: nat| (slab & !((spp - 1) as usize)) <= s < (slab & !((spp - 1) as usize)) + spp
-                ==> #[trigger] g.owns(s) && g.st(s) != State::Active,
+            r ==> forall|s: nat| #![trigger g.owns(s)] #![trigger g.st(s)] (slab & !((spp - 1) as usize)) <= s < (slab & !((spp - 1) as usize)) + spp
+                ==> g.owns(s) && g.st(s) != State::Active,
     {
         let first = slab & !(spp - 1);
         let committed = self.table().committed_slabs();

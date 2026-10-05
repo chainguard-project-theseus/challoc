@@ -195,7 +195,7 @@ impl RawLock {
         requires
             crate::sys::may_syscall(),
             gated(self.rank()),
-            forall|c: int| 0 <= c < NCLASSES ==> #[trigger] gates.contains_key(key(c))
+            forall|c: int| #![trigger gates.contains_key(key(c))] #![trigger gates[key(c)]] 0 <= c < NCLASSES ==> gates.contains_key(key(c))
                 && gates[key(c)].held().rank() == gate_rank(self.rank(), c),
         ensures
             t@.held() == *self,

@@ -494,8 +494,8 @@ proof fn split_sets(
         forall|d: int| 0 <= d < NCLASSES ==> 0 <= #[trigger] group_spec(d) < SET_GROUPS && (pos[d] as int) < groups[group_spec(d)].count,
         forall|d: int, k: int| c <= d < NCLASSES && 0 <= k < SETS_PER_CLASS ==> #[trigger] splittable(*old(raws), pos, groups, nslabs, d, k),
     ensures
-        forall|d: int, k: int| c <= d < NCLASSES && 0 <= k < SETS_PER_CLASS ==> {
-            &&& #[trigger] r.contains_key((d, k))
+        forall|d: int, k: int| #![trigger r.contains_key((d, k))] #![trigger r[(d, k)]] c <= d < NCLASSES && 0 <= k < SETS_PER_CLASS ==> {
+            &&& r.contains_key((d, k))
             &&& r[(d, k)].dom() == set_bytes(pos, groups, nslabs, d, k)
             &&& r[(d, k)].provenance() == cast_provenance()
         },
@@ -558,8 +558,8 @@ proof fn split_sets(
     r.tracked_insert((c, 0), s0);
     r.tracked_insert((c, 1), s1);
     r.tracked_insert((c, 2), s2);
-    assert forall|d: int, k: int| c <= d < NCLASSES && 0 <= k < SETS_PER_CLASS implies {
-        &&& #[trigger] r.contains_key((d, k))
+    assert forall|d: int, k: int| #![trigger r.contains_key((d, k))] #![trigger r[(d, k)]] c <= d < NCLASSES && 0 <= k < SETS_PER_CLASS implies {
+        &&& r.contains_key((d, k))
         &&& r[(d, k)].dom() == set_bytes(pos, groups, nslabs, d, k)
         &&& r[(d, k)].provenance() == cast_provenance()
     } by {
@@ -977,7 +977,7 @@ impl SetTable {
             }
         }
         proof {
-            assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] placed(pos, groups, nslabs, *regions, c)
+            assert forall|c: int| #![trigger placed(pos, groups, nslabs, *regions, c)] #![trigger reserved(groups, nslabs, c)] 0 <= c < NCLASSES implies placed(pos, groups, nslabs, *regions, c)
                 && reserved(groups, nslabs, c) by {
                 assert(placed(pos, groups, nslabs, *regions, c));
             }

@@ -1381,7 +1381,7 @@ extern "C" fn fork_prepare() {
             // class lock (`lock::gated`).
             let ghost key = |c: int| ForkLock::Class(i as int, c);
             proof {
-                assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] toks.contains_key(key(c))
+                assert forall|c: int| #![trigger toks.contains_key(key(c))] #![trigger toks[key(c)]] 0 <= c < NCLASSES implies toks.contains_key(key(c))
                     && toks[key(c)].held().rank() == rank_class(i as int, c) by {
                     assert(toks.contains_key(key(c)));
                 }

@@ -1322,12 +1322,12 @@ pub proof fn lemma_keys_apart(tracked a: &mut Live, tracked b: &Live)
 /// blocks; the tokens keep their keys.
 pub proof fn lemma_all_apart(tracked m: &mut Map<int, Live>, n: int)
     requires
-        forall|i: int| 0 <= i < n ==> #[trigger] old(m).contains_key(i) && old(m)[i].wf(),
+        forall|i: int| #![trigger old(m).contains_key(i)] #![trigger old(m)[i]] 0 <= i < n ==> old(m).contains_key(i) && old(m)[i].wf(),
     ensures
-        forall|i: int| 0 <= i < n ==> #[trigger] final(m).contains_key(i) && final(m)[i].wf() && final(m)[i].key()
+        forall|i: int| #![trigger final(m).contains_key(i)] #![trigger final(m)[i]] 0 <= i < n ==> final(m).contains_key(i) && final(m)[i].wf() && final(m)[i].key()
             == old(m)[i].key() && final(m)[i].len() == old(m)[i].len(),
         forall|i: int, j: int| 0 <= i < n && 0 <= j < n && i != j ==> keys_apart(#[trigger] final(m)[i].key(), #[trigger] final(m)[j].key()),
-        forall|i: int| !(0 <= i < n) ==> #[trigger] final(m).contains_key(i) == old(m).contains_key(i) && (old(
+        forall|i: int| #![trigger final(m).contains_key(i)] #![trigger old(m).contains_key(i)] !(0 <= i < n) ==> final(m).contains_key(i) == old(m).contains_key(i) && (old(
             m,
         ).contains_key(i) ==> final(m)[i] == old(m)[i]),
     decreases n,
@@ -1343,7 +1343,7 @@ pub proof fn lemma_all_apart(tracked m: &mut Map<int, Live>, n: int)
         let ghost m3 = *m;
         let ghost l = last;
         m.tracked_insert(n - 1, last);
-        assert forall|i: int| 0 <= i < n - 1 implies #[trigger] m[i] == m3[i] && m3[i].key() == m1[i].key() by {
+        assert forall|i: int| #![trigger m[i]] #![trigger m3[i]] 0 <= i < n - 1 implies m[i] == m3[i] && m3[i].key() == m1[i].key() by {
             assert(m3.contains_key(i));
             assert(m2[i] == m1[i]);
         }
@@ -1359,13 +1359,13 @@ pub proof fn lemma_all_apart(tracked m: &mut Map<int, Live>, n: int)
                 assert(keys_apart(m3[i].key(), l.key()));
             }
         }
-        assert forall|i: int| 0 <= i < n implies #[trigger] m.contains_key(i) && m[i].wf() && m[i].key() == m0[i].key() && m[i].len() == m0[i].len() by {
+        assert forall|i: int| #![trigger m.contains_key(i)] #![trigger m[i]] 0 <= i < n implies m.contains_key(i) && m[i].wf() && m[i].key() == m0[i].key() && m[i].len() == m0[i].len() by {
             if i < n - 1 {
                 assert(m3.contains_key(i));
                 assert(m2[i] == m1[i]);
             }
         }
-        assert forall|i: int| !(0 <= i < n) implies #[trigger] m.contains_key(i) == m0.contains_key(i) && (m0.contains_key(i) ==> m[i] == m0[i]) by {
+        assert forall|i: int| #![trigger m.contains_key(i)] #![trigger m0.contains_key(i)] !(0 <= i < n) implies m.contains_key(i) == m0.contains_key(i) && (m0.contains_key(i) ==> m[i] == m0[i]) by {
             assert(m1.contains_key(i) == m0.contains_key(i));
             assert(m2.contains_key(i) == m1.contains_key(i));
             assert(m3.contains_key(i) == m2.contains_key(i));
@@ -1377,10 +1377,10 @@ pub proof fn lemma_all_apart(tracked m: &mut Map<int, Live>, n: int)
 /// ways round; every token keeps its key.
 proof fn lemma_one_apart(tracked m: &mut Map<int, Live>, tracked t: &mut Live, n: int)
     requires
-        forall|i: int| 0 <= i < n ==> #[trigger] old(m).contains_key(i) && old(m)[i].wf(),
+        forall|i: int| #![trigger old(m).contains_key(i)] #![trigger old(m)[i]] 0 <= i < n ==> old(m).contains_key(i) && old(m)[i].wf(),
         old(t).wf(),
     ensures
-        forall|i: int| 0 <= i < n ==> #[trigger] final(m).contains_key(i) && final(m)[i].wf() && final(m)[i].key()
+        forall|i: int| #![trigger final(m).contains_key(i)] #![trigger final(m)[i]] 0 <= i < n ==> final(m).contains_key(i) && final(m)[i].wf() && final(m)[i].key()
             == old(m)[i].key() && final(m)[i].len() == old(m)[i].len(),
         forall|i: int| 0 <= i < n ==> #[trigger] final(m).contains_key(i) == old(m).contains_key(i),
         forall|i: int| #![trigger final(m)[i]] 0 <= i < n ==> keys_apart(final(m)[i].key(), final(t).key()) && keys_apart(
@@ -1391,7 +1391,7 @@ proof fn lemma_one_apart(tracked m: &mut Map<int, Live>, tracked t: &mut Live, n
         final(t).key() == old(t).key(),
         final(t).addr() == old(t).addr(),
         final(t).len() == old(t).len(),
-        forall|i: int| !(0 <= i < n) ==> #[trigger] final(m).contains_key(i) == old(m).contains_key(i) && (old(
+        forall|i: int| #![trigger final(m).contains_key(i)] #![trigger old(m).contains_key(i)] !(0 <= i < n) ==> final(m).contains_key(i) == old(m).contains_key(i) && (old(
             m,
         ).contains_key(i) ==> final(m)[i] == old(m)[i]),
     decreases n,
@@ -1407,7 +1407,7 @@ proof fn lemma_one_apart(tracked m: &mut Map<int, Live>, tracked t: &mut Live, n
         lemma_keys_apart(&mut x, t);
         lemma_keys_apart(t, &x);
         m.tracked_insert(n - 1, x);
-        assert forall|i: int| !(0 <= i < n) implies #[trigger] m.contains_key(i) == m1.contains_key(i) && (m1.contains_key(i) ==> m[i] == m1[i]) by {}
+        assert forall|i: int| #![trigger m.contains_key(i)] #![trigger m1.contains_key(i)] !(0 <= i < n) implies m.contains_key(i) == m1.contains_key(i) && (m1.contains_key(i) ==> m[i] == m1[i]) by {}
     }
 }
 

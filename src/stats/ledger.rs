@@ -223,10 +223,10 @@ impl Books {
     /// No counter update is in progress: no reservation is unclaimed, no
     /// release uncounted, no slot in flight, no run's word update pending.
     pub open spec fn quiescent(self) -> bool {
-        &&& forall|a: int, c: int| 0 <= a < self.k && 0 <= c < NCLASSES ==> #[trigger] (self.resv)(a, c) == 0 && (
+        &&& forall|a: int, c: int| #![trigger (self.resv)(a, c)] #![trigger (self.unc)(a, c)] 0 <= a < self.k && 0 <= c < NCLASSES ==> (self.resv)(a, c) == 0 && (
         self.unc)(a, c) == 0
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] (self.flight)(c) == Set::<int>::empty()
-        &&& forall|a: int| 0 <= a < self.k ==> #[trigger] (self.ta_runs)(a) == 0 && (self.ta_pages)(a) == 0 && (
+        &&& forall|a: int| #![trigger (self.ta_runs)(a)] #![trigger (self.ta_pages)(a)] #![trigger (self.tf_runs)(a)] #![trigger (self.tf_pages)(a)] 0 <= a < self.k ==> (self.ta_runs)(a) == 0 && (self.ta_pages)(a) == 0 && (
         self.tf_runs)(a) == 0 && (self.tf_pages)(a) == 0
     }
 
@@ -1208,7 +1208,7 @@ impl Books {
             forall|c: int|
                 0 <= c < NCLASSES ==> #[trigger] self.net_upto(c, self.k) == (self.cached)(c).len() + (self.live)(c).len(),
             forall|a: int, c: int| 0 <= a < self.k && 0 <= c < NCLASSES ==> #[trigger] (self.net)(a, c) == (self.out)(a, c).len(),
-            forall|a: int| 0 <= a < self.k ==> #[trigger] (self.wruns)(a) == (self.runs)(a).len() && (self.wpages)(a) == (
+            forall|a: int| #![trigger (self.wruns)(a)] #![trigger (self.wpages)(a)] 0 <= a < self.k ==> (self.wruns)(a) == (self.runs)(a).len() && (self.wpages)(a) == (
             self.pages)(a).len(),
             self.wruns_upto(self.k) == self.runs_upto(self.k).len(),
             self.wpages_upto(self.k) == self.pages_upto(self.k).len(),
@@ -1225,7 +1225,7 @@ impl Books {
         self.out)(a, c).len() by {
             assert(self.slots_ok(a, c));
         }
-        assert forall|a: int| 0 <= a < self.k implies #[trigger] (self.wruns)(a) == (self.runs)(a).len() && (self.wpages)(
+        assert forall|a: int| #![trigger (self.wruns)(a)] #![trigger (self.wpages)(a)] 0 <= a < self.k implies (self.wruns)(a) == (self.runs)(a).len() && (self.wpages)(
             a,
         ) == (self.pages)(a).len() by {
             assert(self.huge_ok(a));
@@ -1606,7 +1606,7 @@ pub proof fn lemma_live_bytes(live: Map<int, Live>, n: int)
     decreases n,
 {
     if n > 0 {
-        assert forall|i: int| 0 <= i < n - 1 implies #[trigger] live.contains_key(i) && live[i].wf() by {
+        assert forall|i: int| #![trigger live.contains_key(i)] #![trigger live[i]] 0 <= i < n - 1 implies live.contains_key(i) && live[i].wf() by {
             assert(live.contains_key(i));
         }
         lemma_live_bytes(live, n - 1);
@@ -1647,7 +1647,7 @@ pub proof fn theorem_exact_stats(
         b.quiescent(),
         reads_ok(reads, pages),
         reads_keyed(b, reads, pages),
-        forall|i: int| 0 <= i < n ==> #[trigger] live.contains_key(i) && live[i].wf(),
+        forall|i: int| #![trigger live.contains_key(i)] #![trigger live[i]] 0 <= i < n ==> live.contains_key(i) && live[i].wf(),
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] (b.live)(c) == key_slots(live_keys(live, n), c),
         n >= 0,
         b.runs_upto(b.k) == key_runs(live_keys(live, n)),
@@ -1659,7 +1659,7 @@ pub proof fn theorem_exact_stats(
     lemma_all_apart(&mut m, n);
     let ks = live_keys(l0, n);
     assert(ks.len() == n);
-    assert forall|i: int| 0 <= i < n implies #[trigger] ks[i] == m[i].key() && l0.contains_key(i) && l0[i].wf() by {
+    assert forall|i: int| #![trigger ks[i]] #![trigger l0.contains_key(i)] #![trigger l0[i]] 0 <= i < n implies ks[i] == m[i].key() && l0.contains_key(i) && l0[i].wf() by {
         assert(l0.contains_key(i));
         assert(m.contains_key(i));
     }

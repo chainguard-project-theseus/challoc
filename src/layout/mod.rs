@@ -1298,8 +1298,8 @@ spec fn keeps_size(a: Class, b: Class) -> bool {
 pub(crate) fn apply_page_geometry(table: &mut [Class; NCLASSES], lg_page: u32) -> (changed: usize)
     ensures
         changed <= NCLASSES,
-        forall|i: int| 0 <= i < NCLASSES ==> {
-            &&& #[trigger] final(table)[i].size == old(table)[i].size
+        forall|i: int| #![trigger final(table)[i]] 0 <= i < NCLASSES ==> {
+            &&& final(table)[i].size == old(table)[i].size
             &&& final(table)[i].inv_odd == old(table)[i].inv_odd
             &&& final(table)[i].tz == old(table)[i].tz
         },
@@ -1329,8 +1329,8 @@ pub(crate) fn apply_page_geometry(table: &mut [Class; NCLASSES], lg_page: u32) -
         }
     }
     proof {
-        assert forall|i: int| 0 <= i < NCLASSES implies {
-            &&& #[trigger] table[i].size == old(table)[i].size
+        assert forall|i: int| #![trigger table[i]] 0 <= i < NCLASSES implies {
+            &&& table[i].size == old(table)[i].size
             &&& table[i].inv_odd == old(table)[i].inv_odd
             &&& table[i].tz == old(table)[i].tz
         } by {

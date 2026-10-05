@@ -342,7 +342,7 @@ pub(crate) axiom fn axiom_array_layout<T, const N: usize>()
 /// `m` holds a permission for each element `lo..hi` of the array of `T`s
 /// from `base`, at its address.
 pub open spec fn elems_at<T>(m: Map<int, PointsTo<T>>, base: *mut T, lo: int, hi: int) -> bool {
-    forall|i: int| lo <= i < hi ==> #[trigger] m.contains_key(i) && m[i].ptr() == ptr_add(base, i as usize)
+    forall|i: int| #![trigger m.contains_key(i)] #![trigger m[i]] lo <= i < hi ==> m.contains_key(i) && m[i].ptr() == ptr_add(base, i as usize)
 }
 
 /// Every one of them is initialised.
@@ -395,7 +395,7 @@ proof fn split_elems<T>(tracked raw: PointsToRaw, base: *mut T, i: nat, n: nat) 
         let tracked mut m = split_elems(rest, base, i + 1, n);
         let ghost m0 = m;
         m.tracked_insert(i as int, e);
-        assert forall|j: int| i <= j < n implies #[trigger] m.contains_key(j) && m[j].ptr() == ptr_add(base, j as usize)
+        assert forall|j: int| #![trigger m.contains_key(j)] #![trigger m[j]] i <= j < n implies m.contains_key(j) && m[j].ptr() == ptr_add(base, j as usize)
             && m[j].is_uninit() by {
             if j != i {
                 assert(m0.contains_key(j));
@@ -920,7 +920,7 @@ impl Arena {
                         let tracked slot_c = classes.tracked_borrow_mut(c as int);
                         Arena::put_class(this, c, cs, Tracked(slot_c));
                         proof {
-                            assert forall|d: int| 0 <= d < NCLASSES implies #[trigger] classes.contains_key(d)
+                            assert forall|d: int| #![trigger classes.contains_key(d)] #![trigger classes[d]] 0 <= d < NCLASSES implies classes.contains_key(d)
                                 && classes[d].ptr() == ptr_add(field_ptr::<Arena, ClassState>(this, A_CLASSES), d as usize) by {
                                 assert(before.contains_key(d));
                             }

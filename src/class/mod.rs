@@ -196,7 +196,7 @@ pub(crate) fn shuffle(out: &mut [*mut u8], rng: &mut u64)
 
 /// `z[i]` is a zero token covering `size` bytes of `s[i]`, for every entry.
 pub open spec fn tokens_cover(z: Map<int, Zeroed>, s: Seq<*mut u8>, size: int) -> bool {
-    forall|i: int| 0 <= i < s.len() ==> #[trigger] z.contains_key(i) && z[i].covers(s[i], size)
+    forall|i: int| #![trigger z.contains_key(i)] #![trigger z[i]] 0 <= i < s.len() ==> z.contains_key(i) && z[i].covers(s[i], size)
 }
 
 /// [`shuffle`], moving the zero token of each entry (`z[i]` for `out[i]`,
@@ -260,8 +260,8 @@ pub(crate) fn shuffle_zero(
                 t.tracked_insert(i as int, b);
                 t.tracked_insert(j as int, a);
             }
-            assert forall|k: int| !(0 <= k < old(out)@.len()) implies {
-                &&& #[trigger] t.contains_key(k) == old(t).contains_key(k)
+            assert forall|k: int| #![trigger t.contains_key(k)] #![trigger old(t).contains_key(k)] !(0 <= k < old(out)@.len()) implies {
+                &&& t.contains_key(k) == old(t).contains_key(k)
                 &&& old(t).contains_key(k) ==> t[k] == old(t)[k]
             } by {
                 assert(t0.contains_key(k) == old(t).contains_key(k));
@@ -271,8 +271,8 @@ pub(crate) fn shuffle_zero(
             }
             if loc is Some {
                 let l = loc.unwrap();
-                assert forall|k: int| 0 <= k < out@.len() implies {
-                    &&& #[trigger] t.contains_key(k)
+                assert forall|k: int| #![trigger t.contains_key(k)] #![trigger t[k]] 0 <= k < out@.len() implies {
+                    &&& t.contains_key(k)
                     &&& t[k].id() == l
                     &&& t[k]@ == ptr_addrs(out@)[k]
                 } by {
@@ -295,7 +295,7 @@ pub(crate) fn shuffle_zero(
                 assert(keyed(*t, ptr_addrs(out@), loc.unwrap(), 0, out@.len() as int));
             }
             if zeroed {
-                assert forall|k: int| 0 <= k < out@.len() implies #[trigger] z.contains_key(k) && z[k].covers(out@[k], size) by {
+                assert forall|k: int| #![trigger z.contains_key(k)] #![trigger z[k]] 0 <= k < out@.len() implies z.contains_key(k) && z[k].covers(out@[k], size) by {
                     assert(z0.contains_key(k) && z0.contains_key(i as int) && z0.contains_key(j as int));
                     if k == i as int {
                         assert(out@[k] == cur[j as int]);
@@ -398,8 +398,8 @@ pub struct Claim {
 /// The zero tokens `z` of claim `c` of `class`, whose slots are `out[..n]`:
 /// when the claim is zeroed, one per slot, covering the slot's class size.
 pub open spec fn claim_zero_ok(c: Claim, out: Seq<*mut u8>, z: Map<int, Zeroed>, class: int) -> bool {
-    c.zeroed ==> forall|i: int|
-        0 <= i < c.n ==> #[trigger] z.contains_key(i) && z[i].covers(out[i], class_table()[class].size as int)
+    c.zeroed ==> forall|i: int| #![trigger z.contains_key(i)] #![trigger z[i]]
+        0 <= i < c.n ==> z.contains_key(i) && z[i].covers(out[i], class_table()[class].size as int)
 }
 
 /// Slabs one lock hold of a refill may reserve from (see
@@ -562,7 +562,7 @@ spec fn picks_sum(p: Seq<Pick>, k: int) -> int
 /// slab's `nslots` each.
 spec fn picks_ok(p: Seq<Pick>, np: int, nslabs: usize, nslots: nat) -> bool {
     &&& 0 <= np <= p.len()
-    &&& forall|i: int| 0 <= i < np ==> (#[trigger] p[i].slab as usize) < nslabs && p[i].n <= nslots
+    &&& forall|i: int| #![trigger p[i]] 0 <= i < np ==> (p[i].slab as usize) < nslabs && p[i].n <= nslots
 }
 
 /// `picks_sum` of a prefix depends only on that prefix, and is not negative.
@@ -3204,7 +3204,7 @@ impl ClassState {
         let ghost size = class_table()[self.spec_class() as int].size as int;
         proof {
             if c.zeroed {
-                assert forall|i: int| 0 <= i < c.n implies #[trigger] z.contains_key(i) && z[i].covers(mid.subrange(0, c.n as int)[i], size) by {
+                assert forall|i: int| #![trigger z.contains_key(i)] #![trigger z[i]] 0 <= i < c.n implies z.contains_key(i) && z[i].covers(mid.subrange(0, c.n as int)[i], size) by {
                     assert(mid.subrange(0, c.n as int)[i] == mid[i]);
                     assert(claim_zero_ok(c, mid, z, self.spec_class() as int));
                 }
@@ -3237,7 +3237,7 @@ impl ClassState {
                 assert(mid[w] == mid.subrange(0, c.n as int)[w]);
             }
             if c.zeroed {
-                assert forall|i: int| 0 <= i < c.n implies #[trigger] z.contains_key(i) && z[i].covers(out@[i], size) by {
+                assert forall|i: int| #![trigger z.contains_key(i)] #![trigger z[i]] 0 <= i < c.n implies z.contains_key(i) && z[i].covers(out@[i], size) by {
                     assert(out@.subrange(0, c.n as int)[i] == out@[i]);
                 }
             }
@@ -3361,7 +3361,7 @@ impl ClassState {
                     }
                 }
                 if zeroed {
-                    assert forall|i: int| 0 <= i < got implies #[trigger] z.contains_key(i) && z[i].covers(out@[i], s.size) by {
+                    assert forall|i: int| #![trigger z.contains_key(i)] #![trigger z[i]] 0 <= i < got implies z.contains_key(i) && z[i].covers(out@[i], s.size) by {
                         if i < g0 {
                             assert(zeroed0);
                             lemma_zero_keys_at(z0, o0, 0, 0, g0, s.size, i);
@@ -3379,7 +3379,7 @@ impl ClassState {
         proof {
             lemma_holds_real(t, *toks, out@, 0, got as int);
             if got > 0 && zeroed {
-                assert forall|i: int| 0 <= i < got implies #[trigger] z.contains_key(i) && z[i].covers(out@[i], class_table()[self.spec_class() as int].size as int) by {
+                assert forall|i: int| #![trigger z.contains_key(i)] #![trigger z[i]] 0 <= i < got implies z.contains_key(i) && z[i].covers(out@[i], class_table()[self.spec_class() as int].size as int) by {
                     lemma_zero_keys_at(z, out@, 0, 0, got as int, s.size, i);
                 }
             }
@@ -3578,8 +3578,8 @@ impl ClassState {
             }
             let tracked cm = pm.tracked_remove(pi);
             proof {
-                assert forall|j: int| i <= j < picks@.len() implies {
-                    &&& #[trigger] pm.contains_key(j)
+                assert forall|j: int| #![trigger pm.contains_key(j)] #![trigger pm[j]] #![trigger picks@[j]] i <= j < picks@.len() implies {
+                    &&& pm.contains_key(j)
                     &&& pm[j].id() == s.mloc
                     &&& slab_marked(*_t0, picks@[j].slab as int, pm[j]@)
                     &&& !_t0.spec_is_guard(picks@[j].slab as usize)
@@ -3591,7 +3591,7 @@ impl ClassState {
                 assert(cm.id() == s.mloc);
                 assert(slab_marked(*_t0, picks@[pi].slab as int, cm@));
                 lemma_picks_toks_rest(*_t0, picks@, pi, picks@.len() as int, pt0, ptoks);
-                assert forall|j: int| i <= j < picks@.len() implies #[trigger] pz.contains_key(j) && pick_zero(*_t0, picks@[j], pz[j]) by {
+                assert forall|j: int| #![trigger pz.contains_key(j)] #![trigger pz[j]] i <= j < picks@.len() implies pz.contains_key(j) && pick_zero(*_t0, picks@[j], pz[j]) by {
                     assert(pz0.contains_key(j));
                 }
                 assert(pick_zero(*_t0, picks@[pi], zc));
@@ -3682,8 +3682,8 @@ impl ClassState {
                             assert(out@ =~= o1.update(got + k, out@[got + k]));
                             lemma_zero_keys_push(z1, *zt, o1, out@, base, (got + k) as int, s.size);
                         }
-                        assert forall|kk: int| !(base <= kk < base + got + k + 1) implies {
-                            &&& #[trigger] zt.contains_key(kk) == old(zt).contains_key(kk)
+                        assert forall|kk: int| #![trigger zt.contains_key(kk)] #![trigger old(zt).contains_key(kk)] !(base <= kk < base + got + k + 1) implies {
+                            &&& zt.contains_key(kk) == old(zt).contains_key(kk)
                             &&& old(zt).contains_key(kk) ==> zt[kk] == old(zt)[kk]
                         } by {
                             assert(z1.contains_key(kk) == old(zt).contains_key(kk));
@@ -4065,10 +4065,10 @@ impl SlotToks {
     /// Opaque, so the callers that do not move tokens do not pay for it.
     #[verifier::opaque]
     pub open spec fn owns(self, t: SlabTable, out: Seq<*mut u8>, base: int, lo: int, hi: int) -> bool {
-        forall|i: int| lo <= i < hi ==> {
+        forall|i: int| #![trigger out[i]] #![trigger self.toks.contains_key(base + i)] #![trigger self.toks[base + i]] lo <= i < hi ==> {
             &&& self.toks.contains_key(base + i)
             &&& self.toks[base + i].id() == t.spec_slots().loc
-            &&& self.toks[base + i]@ == (#[trigger] out[i])@.addr as int
+            &&& self.toks[base + i]@ == (out[i])@.addr as int
         }
     }
 
@@ -4101,8 +4101,8 @@ impl SlotToks {
             assert(out.subrange(0, n)[i] == out[i]);
         }
         if self.owns(t, out, 0, 0, n) {
-            assert forall|i: int| 0 <= i < n implies {
-                &&& #[trigger] self.toks.contains_key(i)
+            assert forall|i: int| #![trigger self.toks.contains_key(i)] #![trigger self.toks[i]] 0 <= i < n implies {
+                &&& self.toks.contains_key(i)
                 &&& self.toks[i].id() == loc
                 &&& self.toks[i]@ == a[i]
             } by {
@@ -4112,10 +4112,10 @@ impl SlotToks {
             assert(keyed(self.toks, a, loc, 0, n));
         }
         if keyed(self.toks, a, loc, 0, n) {
-            assert forall|i: int| 0 <= i < n implies {
+            assert forall|i: int| #![trigger out[i]] #![trigger self.toks.contains_key(0 + i)] #![trigger self.toks[0 + i]] 0 <= i < n implies {
                 &&& self.toks.contains_key(0 + i)
                 &&& self.toks[0 + i].id() == loc
-                &&& self.toks[0 + i]@ == (#[trigger] out[i])@.addr as int
+                &&& self.toks[0 + i]@ == (out[i])@.addr as int
             } by {
                 lemma_keyed_at(self.toks, a, loc, 0, n, i);
                 assert(a[i] == out[i]@.addr as int);
@@ -4305,7 +4305,7 @@ spec fn pick_zero(t: SlabTable, p: Pick, z: Zeroed) -> bool {
 
 /// `z` holds the zero tokens of picks `lo..hi`, by pick index.
 spec fn picks_zero(t: SlabTable, p: Seq<Pick>, lo: int, hi: int, z: Map<int, Zeroed>) -> bool {
-    forall|j: int| lo <= j < hi ==> #[trigger] z.contains_key(j) && pick_zero(t, p[j], z[j])
+    forall|j: int| #![trigger z.contains_key(j)] #![trigger z[j]] lo <= j < hi ==> z.contains_key(j) && pick_zero(t, p[j], z[j])
 }
 
 /// [`picks_zero`] of one more pick, recorded under key `k`.
@@ -4319,7 +4319,7 @@ proof fn lemma_picks_zero_step(t: SlabTable, p0: Seq<Pick>, p1: Seq<Pick>, k: in
     ensures
         picks_zero(t, p1, 0, k + 1, z1),
 {
-    assert forall|j: int| 0 <= j < k + 1 implies #[trigger] z1.contains_key(j) && pick_zero(t, p1[j], z1[j]) by {
+    assert forall|j: int| #![trigger z1.contains_key(j)] #![trigger z1[j]] 0 <= j < k + 1 implies z1.contains_key(j) && pick_zero(t, p1[j], z1[j]) by {
         if j < k {
             assert(z0.contains_key(j));
             assert(p1[j] == p0[j]);
@@ -4333,7 +4333,7 @@ proof fn lemma_picks_zero_step(t: SlabTable, p0: Seq<Pick>, p1: Seq<Pick>, k: in
 /// `z` holds, under key `base + i`, a zero token covering `size` bytes of
 /// `out[i]`, for every `lo <= i < hi`.
 pub open spec fn zero_keys(z: Map<int, Zeroed>, out: Seq<*mut u8>, base: int, lo: int, hi: int, size: int) -> bool {
-    forall|i: int| lo <= i < hi ==> #[trigger] z.contains_key(base + i) && z[base + i].covers(out[i], size)
+    forall|i: int| #![trigger z.contains_key(base + i)] #![trigger z[base + i]] lo <= i < hi ==> z.contains_key(base + i) && z[base + i].covers(out[i], size)
 }
 
 /// [`zero_frame`] over `lo..hi` holds over any wider `lo..hi2`.
@@ -4364,7 +4364,7 @@ proof fn lemma_zero_keys_push(z0: Map<int, Zeroed>, z1: Map<int, Zeroed>, o1: Se
     ensures
         zero_keys(z1, out, base, 0, n + 1, size),
 {
-    assert forall|j: int| 0 <= j < n + 1 implies #[trigger] z1.contains_key(base + j) && z1[base + j].covers(out[j], size) by {
+    assert forall|j: int| #![trigger z1.contains_key(base + j)] #![trigger z1[base + j]] 0 <= j < n + 1 implies z1.contains_key(base + j) && z1[base + j].covers(out[j], size) by {
         if j < n {
             assert(out[j] == o1[j]);
             assert(z0.contains_key(base + j));
@@ -4389,11 +4389,11 @@ proof fn lemma_zero_keys_at(z: Map<int, Zeroed>, out: Seq<*mut u8>, base: int, l
 /// trigger, `0 + i`, need not match a caller's `i`).
 proof fn lemma_zero_keys_from0(z: Map<int, Zeroed>, out: Seq<*mut u8>, hi: int, size: int)
     requires
-        forall|i: int| 0 <= i < hi ==> #[trigger] z.contains_key(i) && z[i].covers(out[i], size),
+        forall|i: int| #![trigger z.contains_key(i)] #![trigger z[i]] 0 <= i < hi ==> z.contains_key(i) && z[i].covers(out[i], size),
     ensures
         zero_keys(z, out, 0, 0, hi, size),
 {
-    assert forall|i: int| 0 <= i < hi implies #[trigger] z.contains_key(0 + i) && z[0 + i].covers(out[i], size) by {
+    assert forall|i: int| #![trigger z.contains_key(0 + i)] #![trigger z[0 + i]] 0 <= i < hi implies z.contains_key(0 + i) && z[0 + i].covers(out[i], size) by {
         assert(0 + i == i);
         assert(z.contains_key(i));
         assert(z[i].covers(out[i], size));
@@ -4486,8 +4486,8 @@ proof fn lemma_picks_toks_rest(
     ensures
         picks_toks(t, p, lo + 1, hi, t1),
 {
-    assert forall|j: int| lo + 1 <= j < hi implies {
-        &&& #[trigger] t1.contains_key(j)
+    assert forall|j: int| #![trigger t1.contains_key(j)] #![trigger t1[j]] lo + 1 <= j < hi implies {
+        &&& t1.contains_key(j)
         &&& t1[j].id() == t.spec_slots().loc
         &&& t1[j]@ == pick_addrs(t, p[j])
     } by {
@@ -4515,8 +4515,8 @@ proof fn lemma_picks_toks_step(
     ensures
         picks_toks(t, p1, 0, k + 1, t1),
 {
-    assert forall|j: int| 0 <= j < k + 1 implies {
-        &&& #[trigger] t1.contains_key(j)
+    assert forall|j: int| #![trigger t1.contains_key(j)] #![trigger t1[j]] 0 <= j < k + 1 implies {
+        &&& t1.contains_key(j)
         &&& t1[j].id() == t.spec_slots().loc
         &&& t1[j]@ == pick_addrs(t, p1[j])
     } by {
@@ -4539,8 +4539,8 @@ spec fn picks_owned(c: int, a: u16, p: Seq<Pick>, lo: int, hi: int) -> bool {
 /// picks `lo..hi`: `init` ran on it (`AtomicBitmap::inited_by`), so it is
 /// not a guard slab.
 spec fn picks_marks(t: SlabTable, p: Seq<Pick>, lo: int, hi: int, pm: Map<int, GhostPersistentSubset<int>>) -> bool {
-    forall|j: int| lo <= j < hi ==> {
-        &&& #[trigger] pm.contains_key(j)
+    forall|j: int| #![trigger pm.contains_key(j)] #![trigger pm[j]] #![trigger p[j]] lo <= j < hi ==> {
+        &&& pm.contains_key(j)
         &&& pm[j].id() == t.spec_slots().mloc
         &&& slab_marked(t, p[j].slab as int, pm[j]@)
         &&& !t.spec_is_guard(p[j].slab as usize)
@@ -4568,8 +4568,8 @@ proof fn lemma_picks_marks_step(
     ensures
         picks_marks(t, p1, 0, k + 1, m1),
 {
-    assert forall|j: int| 0 <= j < k + 1 implies {
-        &&& #[trigger] m1.contains_key(j)
+    assert forall|j: int| #![trigger m1.contains_key(j)] #![trigger m1[j]] #![trigger p1[j]] 0 <= j < k + 1 implies {
+        &&& m1.contains_key(j)
         &&& m1[j].id() == t.spec_slots().mloc
         &&& slab_marked(t, p1[j].slab as int, m1[j]@)
         &&& !t.spec_is_guard(p1[j].slab as usize)
@@ -4583,8 +4583,8 @@ proof fn lemma_picks_marks_step(
 
 /// `toks` holds the tokens of picks `lo..hi`, by pick index.
 spec fn picks_toks(t: SlabTable, p: Seq<Pick>, lo: int, hi: int, toks: Map<int, GhostSubset<int>>) -> bool {
-    forall|j: int| lo <= j < hi ==> {
-        &&& #[trigger] toks.contains_key(j)
+    forall|j: int| #![trigger toks.contains_key(j)] #![trigger toks[j]] lo <= j < hi ==> {
+        &&& toks.contains_key(j)
         &&& toks[j].id() == t.spec_slots().loc
         &&& toks[j]@ == pick_addrs(t, p[j])
     }
@@ -4818,8 +4818,8 @@ pub proof fn lemma_aset_empty(a: Seq<int>, lo: int, hi: int)
 /// `m` holds the token of `a[i]` under key `i`, of authority `loc`, for
 /// every `lo <= i < hi`.
 pub open spec fn keyed(m: Map<int, GhostSingleton<int>>, a: Seq<int>, loc: vstd::resource::Loc, lo: int, hi: int) -> bool {
-    forall|i: int| lo <= i < hi ==> {
-        &&& #[trigger] m.contains_key(i)
+    forall|i: int| #![trigger m.contains_key(i)] #![trigger m[i]] lo <= i < hi ==> {
+        &&& m.contains_key(i)
         &&& m[i].id() == loc
         &&& m[i]@ == a[i]
     }
@@ -4840,8 +4840,8 @@ proof fn lemma_keyed_at(m: Map<int, GhostSingleton<int>>, a: Seq<int>, loc: vstd
 
 /// Every key of `new` outside `lo..hi` is as in `old`.
 pub open spec fn keyed_frame(new: Map<int, GhostSingleton<int>>, old: Map<int, GhostSingleton<int>>, lo: int, hi: int) -> bool {
-    forall|k: int| !(lo <= k < hi) ==> {
-        &&& #[trigger] new.contains_key(k) == old.contains_key(k)
+    forall|k: int| #![trigger new.contains_key(k)] #![trigger old.contains_key(k)] !(lo <= k < hi) ==> {
+        &&& new.contains_key(k) == old.contains_key(k)
         &&& old.contains_key(k) ==> new[k] == old[k]
     }
 }
@@ -4869,8 +4869,8 @@ pub proof fn gather(tracked bag: &mut GhostSubset<int>, tracked m: &mut Map<int,
         let tracked t = m.tracked_remove(lo);
         bag.combine_singleton(t);
         let ghost b1 = bag@;
-        assert forall|i: int| lo + 1 <= i < hi implies {
-            &&& #[trigger] m.contains_key(i)
+        assert forall|i: int| #![trigger m.contains_key(i)] #![trigger m[i]] lo + 1 <= i < hi implies {
+            &&& m.contains_key(i)
             &&& m[i].id() == bag.id()
             &&& m[i]@ == a[i]
         } by {
@@ -4885,8 +4885,8 @@ pub proof fn gather(tracked bag: &mut GhostSubset<int>, tracked m: &mut Map<int,
                 assert(b1.contains(a[lo]));
             }
         }
-        assert forall|k: int| !(lo <= k < hi) implies {
-            &&& #[trigger] m.contains_key(k) == m0.contains_key(k)
+        assert forall|k: int| #![trigger m.contains_key(k)] #![trigger m0.contains_key(k)] !(lo <= k < hi) implies {
+            &&& m.contains_key(k) == m0.contains_key(k)
             &&& m0.contains_key(k) ==> m[k] == m0[k]
         } by {
         }
@@ -4924,8 +4924,8 @@ pub proof fn scatter(tracked bag: &mut GhostSubset<int>, tracked m: &mut Map<int
         scatter(bag, m, a, lo + 1, hi);
         lemma_aset_front(a, lo, hi);
         assert(bag@ =~= b0 - aset(a, lo, hi));
-        assert forall|i: int| lo <= i < hi implies {
-            &&& #[trigger] m.contains_key(i)
+        assert forall|i: int| #![trigger m.contains_key(i)] #![trigger m[i]] lo <= i < hi implies {
+            &&& m.contains_key(i)
             &&& m[i].id() == id
             &&& m[i]@ == a[i]
         } by {
@@ -5073,7 +5073,7 @@ pub proof fn gather_all(tracked m: &mut Map<int, GhostSingleton<int>>, a: Seq<in
     assert(bag.id() == loc);
     assert(keyed(m1, a, loc, 1, hi)) by {
         reveal_with_fuel(keyed, 1);
-        assert forall|i: int| 1 <= i < hi implies m1.contains_key(i) && m1[i].id() == loc && m1[i]@ == a[i] by {
+        assert forall|i: int| #![trigger m1.contains_key(i)] #![trigger m1[i]] 1 <= i < hi implies m1.contains_key(i) && m1[i].id() == loc && m1[i]@ == a[i] by {
             assert(m0.contains_key(i));
             assert(m0[i] == m1[i]);
         }
@@ -5087,8 +5087,8 @@ pub proof fn gather_all(tracked m: &mut Map<int, GhostSingleton<int>>, a: Seq<in
             assert(b1.contains(a[0]));
         }
     }
-    assert forall|k: int| !(0 <= k < hi) implies {
-        &&& #[trigger] m.contains_key(k) == m0.contains_key(k)
+    assert forall|k: int| #![trigger m.contains_key(k)] #![trigger m0.contains_key(k)] !(0 <= k < hi) implies {
+        &&& m.contains_key(k) == m0.contains_key(k)
         &&& m0.contains_key(k) ==> m[k] == m0[k]
     } by {
         assert(m.contains_key(k) == m1.contains_key(k));

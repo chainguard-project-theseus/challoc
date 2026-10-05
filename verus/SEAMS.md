@@ -1909,8 +1909,8 @@ fn page_group_is_idle(&self, Ghost(g): Ghost<Inner>, slab: usize, spp: usize) ->
         g.arena@ == self.arena,
         g.table@ == self.spec_table(),
     ensures
-        r ==> forall|s: nat| (slab & !((spp - 1) as usize)) <= s < (slab & !((spp - 1) as usize)) + spp
-            ==> #[trigger] g.owns(s) && g.st(s) != State::Active,
+        r ==> forall|s: nat| #![trigger g.owns(s)] #![trigger g.st(s)] (slab & !((spp - 1) as usize)) <= s < (slab & !((spp - 1) as usize)) + spp
+            ==> g.owns(s) && g.st(s) != State::Active,
 ```
 
 ### S71. `axiom_class_lock_inv`
@@ -2168,7 +2168,7 @@ axiom fn axiom_fresh_words(base: usize, n: nat, c: int, tracked once: Once) -> (
         base + 8 * n <= usize::MAX,
         once.step() == Step::FreshWords(c),
     ensures
-        forall|j: int| 0 <= j < n ==> #[trigger] r.contains_key(j) && r[j].addr() == base + 8 * j && r[j].value() == 0;
+        forall|j: int| #![trigger r.contains_key(j)] #![trigger r[j]] 0 <= j < n ==> r.contains_key(j) && r[j].addr() == base + 8 * j && r[j].value() == 0;
 ```
 
 ### S85. `axiom_init_descs`
@@ -2582,10 +2582,10 @@ proof fn axiom_fresh_stack(
             let q = #[trigger] slot_ptr(slots, i);
             &&& final(perms).slots.contains_key(q)
             &&& final(perms).slots[q].ptr() == q
-            &&& slot_in(slots, i)
             &&& final(perms).owner.contains_key(q)
             &&& final(perms).owner[q] == (hdr, i)
         },
+        forall|i: int| 0 <= i < cap ==> #[trigger] slot_in(slots, i),
         forall|p: *mut CacheHeader, j: int|
             old(perms).hdrs.contains_key(p) && 0 <= j < old(perms).hdr(p).cap && old(perms).owner.contains_key(old(perms).ent(p, j)) ==> {
                 let q = #[trigger] old(perms).ent(p, j);

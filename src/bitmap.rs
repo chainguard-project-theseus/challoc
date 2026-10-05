@@ -742,8 +742,8 @@ pub type WordInv = AtomicInvariant<WordKey, WordVal, WordPred>;
 /// `invs` holds the invariant of each of the `nwords` words of the class
 /// bitmap `s` at `base`.
 pub open spec fn words_wf(invs: Map<int, WordInv>, s: Slots, base: usize, nwords: int) -> bool {
-    forall|j: int| 0 <= j < nwords ==> {
-        &&& #[trigger] invs.contains_key(j)
+    forall|j: int| #![trigger invs.contains_key(j)] #![trigger invs[j]] 0 <= j < nwords ==> {
+        &&& invs.contains_key(j)
         &&& invs[j].constant() == (WordKey { slots: s, j, addr: (base + 8 * j) as usize })
         &&& invs[j].namespace() == word_ns()
     }
@@ -767,7 +767,7 @@ pub proof fn fresh_word_invs(
     n: nat,
 ) -> (tracked r: Map<int, WordInv>)
     requires
-        forall|j: int| 0 <= j < n ==> #[trigger] perms.contains_key(j) && perms[j].addr() == base + 8 * j && perms[j].value() == 0,
+        forall|j: int| #![trigger perms.contains_key(j)] #![trigger perms[j]] 0 <= j < n ==> perms.contains_key(j) && perms[j].addr() == base + 8 * j && perms[j].value() == 0,
         s.wf(),
         toks.id() == s.loc,
         forall|b: int| 0 <= b < 64 * n && s.real(b) ==> toks@.contains(#[trigger] s.addr(b)),
@@ -893,7 +893,7 @@ proof fn lemma_marks_move(s: Slots, j: int, x0: u64, x1: u64, u0: Set<int>, d0: 
         free_bits(s, j, x1) == free_bits(s, j, x0),
 {
     broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, lemma_marks};
-    assert forall|c: int| a <= c < b implies u0.contains(fresh_mark(c)) && !has_bit(x0, (c - 64 * j) as u64) by {
+    assert forall|c: int| #![trigger u0.contains(fresh_mark(c))] #![trigger has_bit(x0, (c - 64 * j) as u64)] a <= c < b implies u0.contains(fresh_mark(c)) && !has_bit(x0, (c - 64 * j) as u64) by {
         assert(init_marks(a, b).contains(init_mark(c)));
         assert(!d0.contains(init_mark(c)));
     }
@@ -902,8 +902,8 @@ proof fn lemma_marks_move(s: Slots, j: int, x0: u64, x1: u64, u0: Set<int>, d0: 
     }
     let u1 = u0.difference(fresh_marks(a, b));
     let d1 = d0.union(init_marks(a, b));
-    assert forall|c: int| 64 * j <= c < 64 * j + 64 implies {
-        &&& (#[trigger] u1.contains(fresh_mark(c))) ==> !has_bit(x1, (c - 64 * j) as u64)
+    assert forall|c: int| #![trigger u1.contains(fresh_mark(c))] #![trigger d1.contains(init_mark(c))] 64 * j <= c < 64 * j + 64 implies {
+        &&& u1.contains(fresh_mark(c)) ==> !has_bit(x1, (c - 64 * j) as u64)
         &&& d1.contains(init_mark(c)) && !s.real(c) ==> has_bit(x1, (c - 64 * j) as u64)
         &&& u1.contains(fresh_mark(c)) || d1.contains(init_mark(c))
     } by {
@@ -1633,8 +1633,8 @@ impl<'a> AtomicBitmap<'a> {
                     assert((64 * j + k - 64 * j) as u64 == k);
                 }
                 assert(marks_ok(slots, j, prev | want, u@, d@)) by {
-                    assert forall|b: int| 64 * j <= b < 64 * j + 64 implies {
-                        &&& (#[trigger] u@.contains(fresh_mark(b))) ==> !has_bit(prev | want, (b - 64 * j) as u64)
+                    assert forall|b: int| #![trigger u@.contains(fresh_mark(b))] #![trigger d@.contains(init_mark(b))] 64 * j <= b < 64 * j + 64 implies {
+                        &&& u@.contains(fresh_mark(b)) ==> !has_bit(prev | want, (b - 64 * j) as u64)
                         &&& d@.contains(init_mark(b)) && !slots.real(b) ==> has_bit(prev | want, (b - 64 * j) as u64)
                         &&& u@.contains(fresh_mark(b)) || d@.contains(init_mark(b))
                     } by {
@@ -1830,8 +1830,8 @@ impl<'a> AtomicBitmap<'a> {
                 lemma_addrs_union(slots, before, rel);
                 // It clears slot bits only, so the padding bits stay set.
                 assert(marks_ok(slots, j, prev & !m, u@, d@)) by {
-                    assert forall|b: int| 64 * j <= b < 64 * j + 64 implies {
-                        &&& (#[trigger] u@.contains(fresh_mark(b))) ==> !has_bit(prev & !m, (b - 64 * j) as u64)
+                    assert forall|b: int| #![trigger u@.contains(fresh_mark(b))] #![trigger d@.contains(init_mark(b))] 64 * j <= b < 64 * j + 64 implies {
+                        &&& u@.contains(fresh_mark(b)) ==> !has_bit(prev & !m, (b - 64 * j) as u64)
                         &&& d@.contains(init_mark(b)) && !slots.real(b) ==> has_bit(prev & !m, (b - 64 * j) as u64)
                         &&& u@.contains(fresh_mark(b)) || d@.contains(init_mark(b))
                     } by {

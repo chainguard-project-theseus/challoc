@@ -1328,7 +1328,7 @@ pub(super) fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> u
             v0.len() <= u16::MAX,
             count_below(key, v0, nb as int) <= v0.len(),
             acc == count_below(key, v0, b as int),
-            forall|c: int| 0 <= c < b ==> next@[c] == count_below(key, v0, c) && end@[c] == count_below(key, v0, c + 1),
+            forall|c: int| #![trigger next@[c]] #![trigger end@[c]] 0 <= c < b ==> next@[c] == count_below(key, v0, c) && end@[c] == count_below(key, v0, c + 1),
             forall|c: int| b <= c < GROUP_BUCKETS ==> #[trigger] end@[c] == count(key, v0, c),
             forall|j: int| 0 <= j < v0.len() ==> 0 <= #[trigger] kf(key, v0[j]) < nb,
     {

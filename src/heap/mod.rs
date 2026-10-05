@@ -929,14 +929,14 @@ pub tracked struct CachePerms {
 /// The stack of header `h` is owned entry by entry: `cap` entries from
 /// `slots`, the first `len` of them written.
 spec fn stack_ok(h: CacheHeader, slots: Map<*mut *mut u8, PointsTo<*mut u8>>) -> bool {
-    forall|i: int|
+    &&& forall|i: int|
         0 <= i < h.cap ==> {
             let q = #[trigger] slot_ptr(h.slots, i);
             &&& slots.contains_key(q)
             &&& slots[q].ptr() == q
             &&& (i < h.len ==> slots[q].is_init())
-            &&& slot_in(h.slots, i)
         }
+    &&& forall|i: int| 0 <= i < h.cap ==> #[trigger] slot_in(h.slots, i)
 }
 
 /// The stack of header `h` comes with its
@@ -1002,12 +1002,12 @@ proof fn lemma_stack_shrink(old_h: CacheHeader, new_h: CacheHeader, slots: Map<*
     ensures
         stack_ok(new_h, slots),
 {
+    assert forall|i: int| 0 <= i < new_h.cap implies #[trigger] slot_in(new_h.slots, i) by {}
     assert forall|i: int| 0 <= i < new_h.cap implies {
         let q = #[trigger] slot_ptr(new_h.slots, i);
         &&& slots.contains_key(q)
         &&& slots[q].ptr() == q
         &&& (i < new_h.len ==> slots[q].is_init())
-        &&& slot_in(new_h.slots, i)
     } by {
         assert(slot_ptr(old_h.slots, i) == slot_ptr(new_h.slots, i));
     }
@@ -1021,12 +1021,12 @@ proof fn lemma_stack_grow(h: CacheHeader, old_s: Map<*mut *mut u8, PointsTo<*mut
     ensures
         stack_ok(h, new_s),
 {
+    assert forall|i: int| 0 <= i < h.cap implies #[trigger] slot_in(h.slots, i) by {}
     assert forall|i: int| 0 <= i < h.cap implies {
         let q = #[trigger] slot_ptr(h.slots, i);
         &&& new_s.contains_key(q)
         &&& new_s[q].ptr() == q
         &&& (i < h.len ==> new_s[q].is_init())
-        &&& slot_in(h.slots, i)
     } by {
         assert(old_s.contains_key(slot_ptr(h.slots, i)));
     }
@@ -1049,12 +1049,12 @@ proof fn lemma_stack_push(
     ensures
         stack_ok(new_h, new_s),
 {
+    assert forall|i: int| 0 <= i < new_h.cap implies #[trigger] slot_in(new_h.slots, i) by {}
     assert forall|i: int| 0 <= i < new_h.cap implies {
         let q = #[trigger] slot_ptr(new_h.slots, i);
         &&& new_s.contains_key(q)
         &&& new_s[q].ptr() == q
         &&& (i < new_h.len ==> new_s[q].is_init())
-        &&& slot_in(new_h.slots, i)
     } by {
         assert(old_s.contains_key(slot_ptr(old_h.slots, i)));
     }
@@ -1082,12 +1082,12 @@ proof fn lemma_stack_fill(
     ensures
         stack_ok(new_h, new_s),
 {
+    assert forall|i: int| 0 <= i < new_h.cap implies #[trigger] slot_in(new_h.slots, i) by {}
     assert forall|i: int| 0 <= i < new_h.cap implies {
         let q = #[trigger] slot_ptr(new_h.slots, i);
         &&& new_s.contains_key(q)
         &&& new_s[q].ptr() == q
         &&& (i < new_h.len ==> new_s[q].is_init())
-        &&& slot_in(new_h.slots, i)
     } by {
         assert(old_s.contains_key(slot_ptr(old_h.slots, i)));
         if i < start {
@@ -1338,8 +1338,8 @@ spec fn in_entries(slots: *mut *mut u8, q: *mut *mut u8, k: int, n: int) -> bool
 /// Every stack entry but entries `0..n` of the stack at `slots` keeps its
 /// token.
 spec fn toks_kept(new: Map<*mut *mut u8, GhostSingleton<int>>, old: Map<*mut *mut u8, GhostSingleton<int>>, slots: *mut *mut u8, n: int) -> bool {
-    forall|q: *mut *mut u8| !in_entries(slots, q, 0, n) ==> {
-        &&& #[trigger] new.contains_key(q) == old.contains_key(q)
+    forall|q: *mut *mut u8| #![trigger new.contains_key(q)] #![trigger old.contains_key(q)] !in_entries(slots, q, 0, n) ==> {
+        &&& new.contains_key(q) == old.contains_key(q)
         &&& old.contains_key(q) ==> new[q] == old[q]
     }
 }
@@ -1363,8 +1363,8 @@ proof fn move_reversed(
             &&& final(to).contains_key(#[trigger] slot_ptr(slots, i))
             &&& final(to)[slot_ptr(slots, i)] == old(from)[n - 1 - i]
         },
-        forall|q: *mut *mut u8| !in_entries(slots, q, k, n) ==> {
-            &&& #[trigger] final(to).contains_key(q) == old(to).contains_key(q)
+        forall|q: *mut *mut u8| #![trigger final(to).contains_key(q)] #![trigger old(to).contains_key(q)] !in_entries(slots, q, k, n) ==> {
+            &&& final(to).contains_key(q) == old(to).contains_key(q)
             &&& old(to).contains_key(q) ==> final(to)[q] == old(to)[q]
         },
     decreases n - k,
@@ -1385,8 +1385,8 @@ proof fn move_reversed(
             }
         }
         assert(to.contains_key(slot_ptr(slots, k)) == to1.contains_key(slot_ptr(slots, k)));
-        assert forall|q: *mut *mut u8| !in_entries(slots, q, k, n) implies {
-            &&& #[trigger] to.contains_key(q) == to0.contains_key(q)
+        assert forall|q: *mut *mut u8| #![trigger to.contains_key(q)] #![trigger to0.contains_key(q)] !in_entries(slots, q, k, n) implies {
+            &&& to.contains_key(q) == to0.contains_key(q)
             &&& to0.contains_key(q) ==> to[q] == to0[q]
         } by {
             assert(q != slot_ptr(slots, k));
@@ -1417,8 +1417,8 @@ spec fn ents_distinct(slots: *mut *mut u8, lo: int, hi: int) -> bool {
 /// Every key of `new` but entries `lo..hi` of the stack at `slots` is as
 /// in `old`.
 spec fn ents_frame(new: Map<*mut *mut u8, GhostSingleton<int>>, old: Map<*mut *mut u8, GhostSingleton<int>>, slots: *mut *mut u8, lo: int, hi: int) -> bool {
-    forall|q: *mut *mut u8| !in_entries(slots, q, lo, hi) ==> {
-        &&& #[trigger] new.contains_key(q) == old.contains_key(q)
+    forall|q: *mut *mut u8| #![trigger new.contains_key(q)] #![trigger old.contains_key(q)] !in_entries(slots, q, lo, hi) ==> {
+        &&& new.contains_key(q) == old.contains_key(q)
         &&& old.contains_key(q) ==> new[q] == old[q]
     }
 }
@@ -1486,8 +1486,8 @@ proof fn gather_ents(tracked bag: &mut GhostSubset<int>, tracked m: &mut Map<*mu
             }
         }
         lemma_not_in_entries(slots, lo, lo, hi);
-        assert forall|q: *mut *mut u8| !in_entries(slots, q, lo, hi) implies {
-            &&& #[trigger] m.contains_key(q) == m0.contains_key(q)
+        assert forall|q: *mut *mut u8| #![trigger m.contains_key(q)] #![trigger m0.contains_key(q)] !in_entries(slots, q, lo, hi) implies {
+            &&& m.contains_key(q) == m0.contains_key(q)
             &&& m0.contains_key(q) ==> m[q] == m0[q]
         } by {
             assert(q != q0);
@@ -1543,8 +1543,8 @@ proof fn gather_all_ents(tracked m: &mut Map<*mut *mut u8, GhostSingleton<int>>,
         }
     }
     lemma_not_in_entries(slots, 0, 0, hi);
-    assert forall|q: *mut *mut u8| !in_entries(slots, q, 0, hi) implies {
-        &&& #[trigger] m.contains_key(q) == m0.contains_key(q)
+    assert forall|q: *mut *mut u8| #![trigger m.contains_key(q)] #![trigger m0.contains_key(q)] !in_entries(slots, q, 0, hi) implies {
+        &&& m.contains_key(q) == m0.contains_key(q)
         &&& m0.contains_key(q) ==> m[q] == m0[q]
     } by {
         assert(q != q0);
@@ -1604,8 +1604,8 @@ proof fn scatter_ents(tracked bag: &mut GhostSubset<int>, tracked m: &mut Map<*m
             &&& m[q]@ == a[i]
         } by {
         }
-        assert forall|q: *mut *mut u8| !in_entries(slots, q, lo, hi) implies {
-            &&& #[trigger] m.contains_key(q) == m0.contains_key(q)
+        assert forall|q: *mut *mut u8| #![trigger m.contains_key(q)] #![trigger m0.contains_key(q)] !in_entries(slots, q, lo, hi) implies {
+            &&& m.contains_key(q) == m0.contains_key(q)
             &&& m0.contains_key(q) ==> m[q] == m0[q]
         } by {
             assert(q != q0);
@@ -1725,10 +1725,10 @@ proof fn axiom_fresh_stack(
             let q = #[trigger] slot_ptr(slots, i);
             &&& final(perms).slots.contains_key(q)
             &&& final(perms).slots[q].ptr() == q
-            &&& slot_in(slots, i)
             &&& final(perms).owner.contains_key(q)
             &&& final(perms).owner[q] == (hdr, i)
         },
+        forall|i: int| 0 <= i < cap ==> #[trigger] slot_in(slots, i),
         forall|p: *mut CacheHeader, j: int|
             old(perms).hdrs.contains_key(p) && 0 <= j < old(perms).hdr(p).cap && old(perms).owner.contains_key(old(perms).ent(p, j)) ==> {
                 let q = #[trigger] old(perms).ent(p, j);
@@ -2963,12 +2963,12 @@ impl CachePerms {
                 assert(old.hdrs.contains_key(q));
                 assert(cell_ok(q, old.hdrs[q], old.slots));
                 let h = old.hdrs[q].value();
+                assert forall|i: int| 0 <= i < h.cap implies #[trigger] slot_in(h.slots, i) by {}
                 assert forall|i: int| 0 <= i < h.cap implies {
                     let s = #[trigger] slot_ptr(h.slots, i);
                     &&& new.slots.contains_key(s)
                     &&& new.slots[s].ptr() == s
                     &&& (i < h.len ==> new.slots[s].is_init())
-                    &&& slot_in(h.slots, i)
                 } by {
                     assert(old.slots.contains_key(slot_ptr(h.slots, i)));
                 }
@@ -4466,12 +4466,12 @@ impl Heap {
         assert forall|p: *mut CacheHeader| #[trigger] n.hdrs.contains_key(p) implies cell_ok(p, n.hdrs[p], n.slots) by {
             if p != cache {
                 assert(cell_ok(p, o.hdrs[p], o.slots));
+                assert forall|i: int| 0 <= i < n.hdr(p).cap implies #[trigger] slot_in(n.hdr(p).slots, i) by {}
                 assert forall|i: int| 0 <= i < n.hdr(p).cap implies {
                     let q = #[trigger] slot_ptr(n.hdr(p).slots, i);
                     &&& n.slots.contains_key(q)
                     &&& n.slots[q].ptr() == q
                     &&& (i < n.hdr(p).len ==> n.slots[q].is_init())
-                    &&& slot_in(n.hdr(p).slots, i)
                 } by {
                     assert(slot_ptr(n.hdr(p).slots, i) == o.ent(p, i));
                 }
@@ -5471,8 +5471,8 @@ impl Heap {
                 assert(h.held(hc) =~= old.held(hc));
             }
         }
-        assert forall|p: *mut CacheHeader|
-            old.owns(p) && !old.in_array(node, next, p) implies #[trigger] h.hdr(p) == old.hdr(p) && h.held(p) == old.held(p) by {
+        assert forall|p: *mut CacheHeader| #![trigger h.hdr(p)] #![trigger h.held(p)]
+            old.owns(p) && !old.in_array(node, next, p) implies h.hdr(p) == old.hdr(p) && h.held(p) == old.held(p) by {
             assert(p != hc);
             assert(!old.in_array(node, class, p));
             Heap::lemma_kept_at(h0, old, node, class, p);
@@ -5921,7 +5921,7 @@ impl CachePerms {
         &&& self.slots.is_empty()
         &&& self.toks.is_empty()
         &&& forall|p: *mut CacheHeader| #[trigger] self.hdrs.contains_key(p) ==> self.hdr(p).len == 0 && self.hdr(p).cap == 0
-        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.hdrs.contains_key(home_hdr(h, c)) && self.cls.contains_key(home_hdr(h, c)) && self.cls[home_hdr(h, c)] == c
+        &&& forall|c: int| #![trigger self.hdrs.contains_key(home_hdr(h, c))] #![trigger self.cls.contains_key(home_hdr(h, c))] #![trigger self.cls[home_hdr(h, c)]] 0 <= c < NCLASSES ==> self.hdrs.contains_key(home_hdr(h, c)) && self.cls.contains_key(home_hdr(h, c)) && self.cls[home_hdr(h, c)] == c
     }
 
     /// Permissions that own nothing.

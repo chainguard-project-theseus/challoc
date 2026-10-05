@@ -1419,7 +1419,7 @@ impl Shared {
                         let tracked pt = table_perms.tracked_borrow_mut(c as int);
                         Shared::put_table(this, c, t, Tracked(pt));
                         proof {
-                            assert forall|d: int| 0 <= d < NCLASSES implies #[trigger] table_perms.contains_key(d)
+                            assert forall|d: int| #![trigger table_perms.contains_key(d)] #![trigger table_perms[d]] 0 <= d < NCLASSES implies table_perms.contains_key(d)
                                 && table_perms[d].ptr() == ptr_add(field_ptr::<Shared, SlabTable>(this, S_TABLES), d as usize) by {
                                 assert(before.contains_key(d));
                             }
@@ -1467,7 +1467,7 @@ impl Shared {
                 let table = ptr_ref(elem_at(tables, c, NCLASSES), Tracked(table_perms.tracked_borrow(c as int)));
                 Shared::put_guard_test(this, c, GuardTest::of(table), Tracked(pg));
                 proof {
-                    assert forall|d: int| 0 <= d < NCLASSES implies #[trigger] guard_tests.contains_key(d)
+                    assert forall|d: int| #![trigger guard_tests.contains_key(d)] #![trigger guard_tests[d]] 0 <= d < NCLASSES implies guard_tests.contains_key(d)
                         && guard_tests[d].ptr() == ptr_add(field_ptr::<Shared, GuardTest>(this, S_GUARD_TEST), d as usize) by {
                         assert(before.contains_key(d));
                     }
