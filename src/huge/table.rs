@@ -60,9 +60,28 @@ pub(super) struct Table {
     /// Storage came from `Meta::alloc` (and can be freed) rather than a
     /// reservation.
     binned: bool,
-    /// Permission for each slot of the storage (ghost).
+    /// The storage's permissions and claim (ghost).
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
-    slots: Tracked<Map<int, PointsTo<Entry>>>,
+    own: Tracked<Own>,
+}
+
+/// What a [`Table`] holds of its storage (ghost), as one type, in place
+/// of the slot permissions' map: every erased `Tracked(..)` expression
+/// is a call to `Tracked::<T>::assume_new_fallback`, and rustc's MIR
+/// inliner gives up on a function from which more than 16 instances of
+/// it, by `T`, are reachable (`mir_callgraph_cyclic`), which
+/// `Huge::free_run` is at. A separate tracked claim field was one `T`
+/// more, and changed the machine code of `Shared::free_huge`.
+#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+pub(super) struct Own {
+    /// Permission for each slot of the storage.
+    slots: Map<int, PointsTo<Entry>>,
+    /// The storage's claim when it is binned, which `release` gives back
+    /// with it ([`Table::storage_ok`]).
+    claim: Option<crate::meta::MetaClaim>,
+    /// The live-object records' identity of the `Meta` the storage comes
+    /// from (the one `new` was given, which `ensure` keeps).
+    mid: Ghost<vstd::resource::Loc>,
 }
 
 /// The slot holds a descriptor.
@@ -167,6 +186,52 @@ spec fn slot_at(p: *mut Entry, slots: Map<int, PointsTo<Entry>>, i: int) -> bool
     &&& slots[i].ptr() == crate::vspec::ptr::ptr_add(p, i as usize)
     &&& crate::vspec::ptr::in_alloc(p, i * vstd::layout::size_of::<Entry>())
     &&& slots[i].is_init()
+}
+
+/// `slots` holds the permission to entry `i` of the storage at `p`,
+/// which lies inside the storage's allocation ([`join_slots`]).
+spec fn slot_given(slots: Map<int, PointsTo<Entry>>, p: *mut Entry, i: int) -> bool {
+    &&& slots.contains_key(i)
+    &&& slots[i].ptr() == crate::vspec::ptr::ptr_add(p, i as usize)
+    &&& crate::vspec::ptr::in_alloc(p, i * size_of::<Entry>())
+}
+
+/// The permission to the first `n` entries of the storage at `p` (`16 *
+/// n` bytes), joined from the entries' permissions in `slots` with their
+/// contents dropped: what [`Table::release`] gives `Meta::free`.
+proof fn join_slots(tracked slots: Map<int, PointsTo<Entry>>, p: *mut Entry, n: int) -> (tracked r: PointsToRaw)
+    requires
+        0 <= n,
+        p@.addr + 16 * n <= usize::MAX,
+        forall|i: int| 0 <= i < n ==> #[trigger] slot_given(slots, p, i),
+    ensures
+        r.is_range(p@.addr as int, 16 * n),
+        r.provenance() == p@.provenance,
+    decreases n,
+{
+    if n == 0 {
+        let tracked r = PointsToRaw::empty(p@.provenance);
+        assert(r.dom() =~= Set::range(p@.addr as int, p@.addr as int));
+        r
+    } else {
+        let ghost s0 = slots;
+        assert(slot_given(s0, p, n - 1));
+        let tracked mut rest = slots;
+        let tracked mut e = rest.tracked_remove(n - 1);
+        assert forall|i: int| 0 <= i < n - 1 implies #[trigger] slot_given(rest, p, i) by {
+            assert(slot_given(s0, p, i));
+        }
+        assert(size_of::<Entry>() == 16);
+        assert(p@.addr + (n - 1) * 16 <= usize::MAX);
+        assert(((n - 1) as usize) as int == n - 1);
+        crate::vspec::ptr::axiom_ptr_add_addr(p, (n - 1) as usize);
+        let tracked r0 = join_slots(rest, p, n - 1);
+        e.leak_contents();
+        let tracked er = e.into_raw();
+        let tracked r = r0.join(er);
+        assert(r.dom() =~= Set::range(p@.addr as int, p@.addr + 16 * n));
+        r
+    }
 }
 
 /// An all-zero entry is empty, given the permission to its uninitialised
@@ -420,6 +485,13 @@ proof fn lemma_next(i: usize, lg: u32)
     })) by (bit_vector);
 }
 
+impl Own {
+    /// An empty `Own`, to swap a table's out with.
+    proof fn tracked_empty() -> (tracked r: Own) {
+        Own { slots: Map::tracked_empty(), claim: None, mid: Ghost(arbitrary()) }
+    }
+}
+
 impl Table {
     /// Storage layout of a table of `1 << lg_cap` entries: the one source
     /// for `storage` and `release`.
@@ -442,15 +514,15 @@ impl Table {
         }
     }
 
-    /// Zeroed storage for `1 << lg_cap` entries, all empty, with the
-    /// permission for each: the block's permission from `Meta`
-    /// (`alloc_zeroed` or `reserve_committed_raw`), cut into entries,
-    /// each read as empty from the block's zero token ([`entry_slots`]).
-    /// The storage is `meta`'s (`Meta::holds` for the layout's size, `16
-    /// << lg_cap`); so metadata when `meta` is the process's.
-    // The tracked permission map is part of the result.
-    #[allow(clippy::type_complexity)]
-    fn storage(meta: &Meta, page: usize, lg_cap: u32, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<(*mut Entry, bool, Tracked<Map<int, PointsTo<Entry>>>)>)
+    /// Zeroed storage for `1 << lg_cap` entries, all empty, with what the
+    /// table holds of it ([`Own`]): the permission for each entry, the
+    /// block's permission from `Meta` (`alloc_zeroed` or
+    /// `reserve_committed_raw`) cut into entries, each read as empty from
+    /// the block's zero token ([`entry_slots`]); the block's claim when it
+    /// is binned; and `meta`'s identity. The storage is `meta`'s
+    /// (`Meta::holds` for the layout's size, `16 << lg_cap`); so metadata
+    /// when `meta` is the process's.
+    fn storage(meta: &Meta, page: usize, lg_cap: u32, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<(*mut Entry, bool, Tracked<Own>)>)
         requires
             crate::sys::may_syscall(),
             old(ord).allows(rank_meta()),
@@ -459,9 +531,12 @@ impl Table {
             16 <= page,
         ensures
             *final(ord) == *old(ord),
-            r matches Some((p, _, slots)) ==> covers(p, lg_cap, slots@) && forall|i: int|
-                0 <= i < cap_of(lg_cap) ==> !occupied(#[trigger] slots@[i].value()),
+            r matches Some((p, _, own)) ==> covers(p, lg_cap, own@.slots) && forall|i: int|
+                0 <= i < cap_of(lg_cap) ==> !occupied(#[trigger] own@.slots[i].value()),
             r matches Some((p, _, _)) ==> meta.holds(p@.addr as int, cap_of(lg_cap) * 16),
+            r matches Some((p, b, own)) ==> (b ==> (own@.claim matches Some(cl) && cl.held(meta.live_id(), p as *mut u8, 16 * cap_of(lg_cap), 16))),
+            r matches Some((_, _, own)) ==> own@.mid@ == meta.live_id(),
+            r matches Some((p, _, _)) ==> p@.addr + 16 * cap_of(lg_cap) <= usize::MAX,
             r matches Some((p, _, _)) ==> (meta.is_process() ==> entries_in_meta(p, lg_cap)),
     {
         proof {
@@ -472,7 +547,8 @@ impl Table {
         }
         let layout = Table::layout(lg_cap);
         if layout.size() <= meta::MAX_BINNED {
-            let (p, Tracked(raw), Tracked(z)) = meta.alloc_zeroed(layout, Tracked(ord));
+            let (p, Tracked(blk), Tracked(z)) = meta.alloc_zeroed(layout, Tracked(ord));
+            let tracked (raw, claim) = blk;
             if p.is_null() {
                 None
             } else {
@@ -481,7 +557,10 @@ impl Table {
                 proof {
                     lemma_empty_covers(e, lg_cap, slots);
                 }
-                Some((e, true, Tracked(slots)))
+                proof {
+                    assert((e as *mut u8)@ == p@);
+                }
+                Some((e, true, Tracked(Own { slots, claim: Some(claim), mid: Ghost(meta.live_id()) })))
             }
         } else {
             let (s, Tracked(raw), Tracked(z)) = meta.reserve_committed_raw(layout.size(), page, Tracked(ord));
@@ -496,25 +575,39 @@ impl Table {
             proof {
                 lemma_empty_covers(e, lg_cap, slots);
             }
-            Some((e, false, Tracked(slots)))
+            Some((e, false, Tracked(Own { slots, claim: None, mid: Ghost(meta.live_id()) })))
         }
     }
 
-    /// Give the storage back if it was binned. A reserved table cannot be
-    /// given back; it is leaked (at most the size of the final table in
-    /// total). The caller drops the table afterwards: `Meta::free`'s
-    /// trusted contract is that the block is no longer used, so the slot
-    /// permissions this value still holds are never used again.
-    fn release(&self, meta: &Meta, Tracked(ord): Tracked<&mut LockOrder>)
+    /// Give the storage back if it was binned, with `own`, the table's
+    /// permissions to its entries and its claim, which the caller
+    /// (`ensure`) takes out of it first and drops the table afterwards. A
+    /// reserved table cannot be given back; it is leaked (at most the size
+    /// of the final table in total).
+    fn release(&self, meta: &Meta, Tracked(own): Tracked<Own>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_syscall(),
             old(ord).allows(rank_meta()),
-            self.storage_ok(),
+            LG_INITIAL_TABLE <= self.lg_cap <= 58,
+            covers(self.entries, self.lg_cap, own.slots),
+            self.entries@.addr + 16 * cap_of(self.lg_cap) <= usize::MAX,
+            self.binned ==> (own.claim matches Some(c) && c.held(meta.live_id(), self.entries as *mut u8, 16 * cap_of(self.lg_cap), 16)),
         ensures
             *final(ord) == *old(ord),
     {
         if self.binned {
-            meta.free(self.entries as *mut u8, Table::layout(self.lg_cap), Tracked(ord));
+            let tracked Own { slots, claim, .. } = own;
+            proof {
+                assert forall|i: int| 0 <= i < cap_of(self.lg_cap) implies #[trigger] slot_given(slots, self.entries, i) by {
+                    assert(slot_at(self.entries, slots, i));
+                }
+            }
+            let tracked raw = join_slots(slots, self.entries, cap_of(self.lg_cap));
+            proof {
+                let l = self.lg_cap as usize;
+                assert(l <= 58 ==> (16usize << l) == 16 * (1usize << l)) by (bit_vector);
+            }
+            meta.free(self.entries as *mut u8, Table::layout(self.lg_cap), Tracked((raw, claim.tracked_unwrap())), Tracked(ord));
         }
     }
 
@@ -525,7 +618,7 @@ impl Table {
 
     /// The slots' contents.
     closed spec fn view(self) -> Seq<Entry> {
-        Seq::new(self.spec_cap() as nat, |i: int| self.slots@[i].value())
+        Seq::new(self.spec_cap() as nat, |i: int| self.own@.slots[i].value())
     }
 
     /// The number of keys.
@@ -539,17 +632,27 @@ impl Table {
     }
 
     /// The storage: `2^lg_cap` slots, each with its permission, in the
-    /// metadata region.
+    /// metadata region, below the top of the address space; binned
+    /// storage with its claim, from the `Meta` the table was made with
+    /// ([`Table::spec_mid`]).
     pub(super) closed spec fn storage_ok(self) -> bool {
         &&& LG_INITIAL_TABLE <= self.lg_cap <= 58
-        &&& covers(self.entries, self.lg_cap, self.slots@)
+        &&& covers(self.entries, self.lg_cap, self.own@.slots)
         &&& entries_in_meta(self.entries, self.lg_cap)
+        &&& self.entries@.addr + 16 * cap_of(self.lg_cap) <= usize::MAX
+        &&& self.binned ==> (self.own@.claim matches Some(c) && c.held(self.own@.mid@, self.entries as *mut u8, 16 * cap_of(self.lg_cap), 16))
+    }
+
+    /// The live-object records' identity of the `Meta` the table's storage
+    /// comes from.
+    pub(super) closed spec fn spec_mid(self) -> vstd::resource::Loc {
+        self.own@.mid@
     }
 
     /// The address of slot `i`: where the permission the table reads and
     /// writes it through ([`Table::slot`], [`Table::set_slot`]) points.
     pub(super) closed spec fn slot_addr(self, i: int) -> int {
-        self.slots@[i].ptr()@.addr as int
+        self.own@.slots[i].ptr()@.addr as int
     }
 
     /// Every slot is 16 bytes of the metadata region.
@@ -561,7 +664,7 @@ impl Table {
         ensures
             crate::layout::process_regions().in_meta(self.slot_addr(i), 16),
     {
-        assert(slot_at(self.entries, self.slots@, i));
+        assert(slot_at(self.entries, self.own@.slots, i));
         crate::vspec::ptr::axiom_ptr_add_addr(self.entries, i as usize);
     }
 
@@ -593,9 +696,10 @@ impl Table {
         ensures
             *final(ord) == *old(ord),
             r matches Some(t) ==> t.wf() && t.spec_count() == 0 && forall|k: usize| t.lookup(k) is None,
+            r matches Some(t) ==> t.spec_mid() == meta.live_id(),
     {
-        let (entries, binned, slots) = Table::storage(meta, page, LG_INITIAL_TABLE, Tracked(ord))?;
-        let t = Table { entries, lg_cap: LG_INITIAL_TABLE, count: 0, binned, slots };
+        let (entries, binned, own) = Table::storage(meta, page, LG_INITIAL_TABLE, Tracked(ord))?;
+        let t = Table { entries, lg_cap: LG_INITIAL_TABLE, count: 0, binned, own };
         proof {
             assert(cap_of(LG_INITIAL_TABLE) == 1024) by (compute_only);
             lemma_occupancy_none(t.view());
@@ -640,13 +744,13 @@ impl Table {
     {
         debug_assert!(i < self.cap());
         proof {
-            assert(slot_at(self.entries, self.slots@, i as int));
+            assert(slot_at(self.entries, self.own@.slots, i as int));
             lemma_cap_bound(self.lg_cap);
         }
         // SAFETY: `i < cap` and the storage is `cap` entries that only this
         // table (behind the huge lock) touches; the permission for slot `i`
         // stands for both.
-        ptr_ref(unsafe { self.entries.add(i) }, Tracked(self.slots.borrow().tracked_borrow(i as int)))
+        ptr_ref(unsafe { self.entries.add(i) }, Tracked(self.own.borrow().slots.tracked_borrow(i as int)))
     }
 
     /// Store `e` in slot `i`.
@@ -660,23 +764,24 @@ impl Table {
             final(self).lg_cap == old(self).lg_cap,
             final(self).count == old(self).count,
             final(self).binned == old(self).binned,
+            final(self).spec_mid() == old(self).spec_mid(),
             final(self).storage_ok(),
             final(self).view() == old(self).view().update(i as int, e),
     {
         debug_assert!(i < self.cap());
         proof {
-            assert(slot_at(self.entries, self.slots@, i as int));
+            assert(slot_at(self.entries, self.own@.slots, i as int));
             lemma_cap_bound(self.lg_cap);
         }
         // SAFETY: as in `slot`.
         let p = unsafe { self.entries.add(i) };
-        let tracked mut perm = self.slots.borrow_mut().tracked_remove(i as int);
+        let tracked mut perm = self.own.borrow_mut().slots.tracked_remove(i as int);
         ptr_mut_write(p, Tracked(&mut perm), e);
         proof {
-            self.slots.borrow_mut().tracked_insert(i as int, perm);
-            assert forall|j: int| 0 <= j < self.spec_cap() implies slot_at(self.entries, self.slots@, j) by {
-                assert(j != i ==> old(self).slots@[j] == self.slots@[j]);
-                assert(slot_at(self.entries, old(self).slots@, j));
+            self.own.borrow_mut().slots.tracked_insert(i as int, perm);
+            assert forall|j: int| 0 <= j < self.spec_cap() implies slot_at(self.entries, self.own@.slots, j) by {
+                assert(j != i ==> old(self).own@.slots[j] == self.own@.slots[j]);
+                assert(slot_at(self.entries, old(self).own@.slots, j));
             }
         }
         proof {
@@ -774,6 +879,7 @@ impl Table {
             desc@.addr != 0,
         ensures
             final(self).wf(),
+            final(self).spec_mid() == old(self).spec_mid(),
             final(self).spec_count() == old(self).spec_count() + 1,
             final(self).spec_cap() == old(self).spec_cap(),
             forall|k: usize|
@@ -965,6 +1071,7 @@ impl Table {
             old(self).lookup(key) is Some,
         ensures
             final(self).wf(),
+            final(self).spec_mid() == old(self).spec_mid(),
             final(self).spec_count() == old(self).spec_count() - 1,
             final(self).spec_cap() == old(self).spec_cap(),
             forall|k: usize|
@@ -1008,6 +1115,7 @@ impl Table {
                 shifting(self.view(), lg, i as int, j as int, v0, key),
             invariant
                 self.storage_ok(),
+                self.spec_mid() == old(self).spec_mid(),
                 self.lg_cap == lg,
                 self.count == old(self).count,
                 cap == self.spec_cap(),
@@ -1086,12 +1194,14 @@ impl Table {
             old(ord).allows(rank_meta()),
             old(self).wf(),
             meta.is_process(),
+            meta.live_id() == old(self).spec_mid(),
             meta::is_pow2(page),
             16 <= page,
             old(self).spec_count() + extra <= 0x0100_0000_0000_0000,
         ensures
             *final(ord) == *old(ord),
             final(self).wf(),
+            final(self).spec_mid() == old(self).spec_mid(),
             final(self).spec_count() == old(self).spec_count(),
             forall|k: usize| #[trigger] final(self).lookup(k) == old(self).lookup(k),
             r is Ok ==> (final(self).spec_count() + extra) * 2 <= final(self).spec_cap(),
@@ -1120,13 +1230,16 @@ impl Table {
             }
             lg += 1;
         }
-        let (entries, binned, slots) = Table::storage(meta, page, lg, Tracked(ord)).ok_or(())?;
-        let tracked mut old_slots = Map::tracked_empty();
+        let (entries, binned, own) = Table::storage(meta, page, lg, Tracked(ord)).ok_or(())?;
+        let tracked mut old_own = Own::tracked_empty();
         proof {
-            vstd::modes::tracked_swap(self.slots.borrow_mut(), &mut old_slots);
+            vstd::modes::tracked_swap(self.own.borrow_mut(), &mut old_own);
         }
-        let old = Table { entries: self.entries, lg_cap: self.lg_cap, count: self.count, binned: self.binned, slots: Tracked(old_slots) };
-        *self = Table { entries, lg_cap: lg, count: 0, binned, slots };
+        // `mut` for the ghost code below, which takes the permissions back
+        // out for `release`.
+        #[cfg_attr(not(verus_keep_ghost), allow(unused_mut))]
+        let mut old = Table { entries: self.entries, lg_cap: self.lg_cap, count: self.count, binned: self.binned, own: Tracked(old_own) };
+        *self = Table { entries, lg_cap: lg, count: 0, binned, own };
         let ghost ov = old.view();
         proof {
             assert(ov =~= view_in);
@@ -1137,6 +1250,7 @@ impl Table {
         for i in 0..old.cap()
             invariant
                 crate::sys::may_abort(),
+                self.spec_mid() == old.spec_mid(),
                 old.wf(),
                 ov == old.view(),
                 ov == view_in,
@@ -1167,7 +1281,11 @@ impl Table {
         proof {
             assert(ov.take(ov.len() as int) =~= ov);
         }
-        old.release(meta, Tracked(ord));
+        let tracked mut gone = Own::tracked_empty();
+        proof {
+            vstd::modes::tracked_swap(old.own.borrow_mut(), &mut gone);
+        }
+        old.release(meta, Tracked(gone), Tracked(ord));
         Ok(())
     }
 }

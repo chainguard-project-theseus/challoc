@@ -193,8 +193,13 @@ pub open spec fn bin_of_spec(size: int) -> int {
 
 /// [`bin_for`] as a function (of a layout it serves).
 pub open spec fn bin_for_spec(layout: Layout) -> int {
-    let b = bin_of_spec(layout_size(layout) as int);
-    if layout_align(layout) > MIN_ALIGN && b < 4 { 4 } else { b }
+    bin_for_sa(layout_size(layout) as int, layout_align(layout) as int)
+}
+
+/// [`bin_for_spec`] of a layout of `size` bytes aligned to `align`.
+pub open spec fn bin_for_sa(size: int, align: int) -> int {
+    let b = bin_of_spec(size);
+    if align > MIN_ALIGN && b < 4 { 4 } else { b }
 }
 
 /// A size has one smallest bin.
@@ -520,6 +525,89 @@ pub(crate) struct FreeNode {
 
 #[cfg_attr(not(verus_keep_ghost), allow(unused_braces))]
 global layout FreeNode is size == 8, align == 8;
+
+/// Ghost: what [`Meta::alloc_raw`] and [`Meta::alloc_zeroed`] hand out
+/// with an object besides the permission to its `layout.size()` bytes,
+/// and [`Meta::free`] takes back with that permission: the record the
+/// allocation made of the object in the live-object map
+/// ([`Inner::live_id`]), and the permission to the bin's bytes past
+/// `layout.size()`. The holder of an object keeps it with the object
+/// ([`MetaClaim::of`]); one exists per live object, so an object is
+/// freed at most once.
+#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+pub tracked struct MetaClaim {
+    tracked claim: Option<GhostPointsTo<*mut FreeNode, nat>>,
+    tracked slack: PointsToRaw,
+}
+
+impl MetaClaim {
+    /// The claim to the object of `layout` at `p` made by the `Meta`
+    /// whose live-object records are `id` ([`MetaClaim::held`] of the
+    /// layout's size and alignment).
+    pub open spec fn of(&self, id: Loc, p: *mut u8, layout: Layout) -> bool {
+        self.held(id, p, layout_size(layout) as int, layout_align(layout) as int)
+    }
+
+    /// The claim to the object of `size` bytes aligned to `align` at `p`
+    /// made by the `Meta` whose live-object records are `id`: the record
+    /// of `p` in its bin, and the permission to the bin's bytes past
+    /// `size`.
+    pub closed spec fn held(&self, id: Loc, p: *mut u8, size: int, align: int) -> bool {
+        let b = bin_for_sa(size, align);
+        &&& p@.addr != 0
+        &&& size <= MAX_BINNED
+        &&& size <= bin_size(b)
+        &&& self.claim matches Some(c) && c.id() == id && c.key() == p as *mut FreeNode && c.value() == b
+        &&& self.slack.is_range(p@.addr + size, bin_size(b) - size)
+        &&& self.slack.provenance() == p@.provenance
+    }
+
+    /// A claim that is no object's, for the paths that hand out none.
+    pub proof fn tracked_none() -> (tracked r: MetaClaim) {
+        MetaClaim { claim: None, slack: PointsToRaw::empty(cast_provenance()) }
+    }
+
+    /// The claim [`Inner::alloc`] hands out: `claim`, the record it made
+    /// of the object, without the slack, which [`split_block`] adds.
+    proof fn of_record(tracked claim: Option<GhostPointsTo<*mut FreeNode, nat>>) -> (tracked r: MetaClaim)
+        ensures
+            r.claim == claim,
+    {
+        MetaClaim { claim, slack: PointsToRaw::empty(cast_provenance()) }
+    }
+
+    /// Two claims from one `Meta` are to different objects: the records
+    /// they hold are entries of one map, each the one of its key.
+    pub proof fn lemma_apart(tracked &mut self, tracked other: &MetaClaim, id: Loc, p: *mut u8, size: int, align: int)
+        requires
+            old(self).held(id, p, size, align),
+        ensures
+            final(self).held(id, p, size, align),
+            forall|q: *mut u8, s: int, a: int| #[trigger] other.held(id, q, s, a) ==> q != p,
+    {
+        if exists|q: *mut u8, s: int, a: int| #[trigger] other.held(id, q, s, a) {
+            let tracked mut c = self.claim.tracked_take();
+            c.disjoint(other.claim.tracked_borrow());
+            self.claim = Some(c);
+        }
+    }
+}
+
+/// The identity of the live-object records of the process's `Meta`, the
+/// one in the `Shared` `api::init` builds in its storage
+/// ([`Shared::wf`](crate::heap::Shared::wf) says every well-formed
+/// `Shared`'s `meta` has it; [`lemma_process_live_id`] unfolds it): the
+/// [`MetaClaim`]s of the thread caches' stacks name it.
+pub closed spec fn process_live_id() -> Loc {
+    crate::heap::Shared::built_at(crate::heap::Shared::storage()).meta.live_id()
+}
+
+/// [`process_live_id`] unfolded.
+pub(crate) proof fn lemma_process_live_id()
+    ensures
+        process_live_id() == crate::heap::Shared::built_at(crate::heap::Shared::storage()).meta.live_id(),
+{
+}
 
 /// Whether small tables may be carved from the object side (the module
 /// doc): decided on the first table from the kernel's overcommit mode and
@@ -1353,6 +1441,40 @@ proof fn split_at(tracked r: PointsToRaw, lo: int, mid: int, hi: int) -> (tracke
     res
 }
 
+/// An object of `layout` at `p` taken from bin `bin`: the permission to
+/// its `layout.size()` bytes, cut from `raw`, the permission to the whole
+/// block, and its [`MetaClaim`]: `claim`, the record [`Inner::alloc`] made
+/// of it, and the rest of `raw`.
+proof fn split_block(
+    tracked raw: PointsToRaw,
+    tracked claim: Option<GhostPointsTo<*mut FreeNode, nat>>,
+    p: *mut u8,
+    layout: Layout,
+    bin: usize,
+    id: Loc,
+) -> (tracked r: (PointsToRaw, MetaClaim))
+    requires
+        bin as int == bin_for_spec(layout),
+        layout_size(layout) <= bin_size(bin as int),
+        layout_size(layout) <= MAX_BINNED,
+    ensures
+        r.0.provenance() == raw.provenance(),
+        raw.is_range(p@.addr as int, bin_size(bin as int)) ==> r.0.is_range(p@.addr as int, layout_size(layout) as int),
+        ({
+            &&& p@.addr != 0
+            &&& raw.is_range(p@.addr as int, bin_size(bin as int))
+            &&& raw.provenance() == p@.provenance
+            &&& claim matches Some(c) && c.id() == id && c.key() == p as *mut FreeNode && c.value() == bin as nat
+        }) ==> r.1.of(id, p, layout),
+{
+    if raw.is_range(p@.addr as int, bin_size(bin as int)) {
+        let tracked (obj, slack) = split_at(raw, p@.addr as int, p@.addr + layout_size(layout), p@.addr + bin_size(bin as int));
+        (obj, MetaClaim { claim, slack })
+    } else {
+        (raw, MetaClaim { claim, slack: PointsToRaw::empty(cast_provenance()) })
+    }
+}
+
 /// The `[lo, mid)` part of `raw` when it is `[lo, hi)` (else `raw`).
 proof fn keep_prefix(tracked raw: PointsToRaw, lo: int, mid: int, hi: int) -> (tracked r: PointsToRaw)
     ensures
@@ -1847,8 +1969,14 @@ impl Inner {
         Some(start)
     }
 
-    /// Take an object of bin `bin`, with the permission to its bytes.
-    fn alloc(&mut self, bin: usize) -> (res: (*mut u8, Tracked<PointsToRaw>))
+    /// Take an object of bin `bin`, with the permission to its bytes and
+    /// the record of it this makes in `live`, which [`free`](Inner::free)
+    /// takes back, as a [`MetaClaim`] without slack
+    /// ([`MetaClaim::of_record`]; `Meta::alloc_raw`'s type, so that the
+    /// erased `Tracked(..)` calls stay at one `T`, see `huge::free_desc`).
+    // The tracked results are part of the signature.
+    #[allow(clippy::type_complexity)]
+    fn alloc(&mut self, bin: usize) -> (res: (*mut u8, Tracked<(PointsToRaw, MetaClaim)>))
         requires
             crate::sys::may_syscall(),
             old(self).wf(),
@@ -1860,8 +1988,10 @@ impl Inner {
             final(self).len == old(self).len,
             final(self).top == old(self).top,
             res.0 as usize == 0 ==> *final(self) == *old(self),
-            res.0 as usize != 0 ==> res.1@.is_range(res.0 as usize as int, bin_size(bin as int)),
-            res.0 as usize != 0 ==> res.1@.provenance() == res.0@.provenance,
+            res.0 as usize != 0 ==> res.1@.0.is_range(res.0 as usize as int, bin_size(bin as int)),
+            res.0 as usize != 0 ==> res.1@.0.provenance() == res.0@.provenance,
+            res.0 as usize != 0 ==> (res.1@.1.claim matches Some(c) && c.id() == final(self).live_id() && c.key() == res.0 as *mut FreeNode
+                && c.value() == bin as nat),
             ({ let p = res.0; p as usize != 0 ==> {
                 &&& p as usize as int % bin_align_spec(bin as int) == 0
                 &&& final(self).base <= p as usize
@@ -1878,6 +2008,7 @@ impl Inner {
             lemma_free_bytes_nonneg(self.lists@, NBINS as nat);
             assert(list_ok(self.free@, self.lists@, self.perms@, self.base, self.bump, bin as int));
         }
+        let tracked mut claim: Option<GhostPointsTo<*mut FreeNode, nat>> = None;
         let size = BINS[bin] as usize;
         let head = self.free[bin];
         if !head.is_null() {
@@ -1909,7 +2040,7 @@ impl Inner {
                     assert(lists0[bin as int][0] == head);
                 }
                 lemma_live_insert(m0, head, bin as nat);
-                let tracked _claim = self.live.borrow_mut().insert(head, bin as nat);
+                claim = Some(self.live.borrow_mut().insert(head, bin as nat));
                 assert forall|b: int, i: int|
                     0 <= b < NBINS && 0 <= i < self.lists@[b].len() implies !self.live@@.contains_key(#[trigger] self.lists@[b][i]) by {
                     let j = if b == bin as int { i + 1 } else { i };
@@ -1936,20 +2067,20 @@ impl Inner {
                 perm.leak_contents();
             }
             let tracked blk = join_at(perm.into_raw(), tail, head as usize as int, head as usize + 8, head as usize + bin_size(bin as int));
-            return (head as *mut u8, Tracked(blk));
+            return (head as *mut u8, Tracked((blk, MetaClaim::of_record(claim))));
         }
         proof {
             assert(16usize & sub(16usize, 1) == 0 && 128usize & sub(128usize, 1) == 0) by (bit_vector);
         }
         let start = align_up(self.bump, bin_align(bin));
-        let Some(end) = start.checked_add(size) else { return (ptr::null_mut(), Tracked(PointsToRaw::empty(cast_provenance()))) };
+        let Some(end) = start.checked_add(size) else { return (ptr::null_mut(), Tracked((PointsToRaw::empty(cast_provenance()), MetaClaim::tracked_none()))) };
         if end > self.top {
-            return (ptr::null_mut(), Tracked(PointsToRaw::empty(cast_provenance())));
+            return (ptr::null_mut(), Tracked((PointsToRaw::empty(cast_provenance()), MetaClaim::tracked_none())));
         }
         if end > self.committed {
             match self.commit_bump_to(end) {
                 Ok(delta) => self.stats.committed += delta,
-                Err(_) => return (ptr::null_mut(), Tracked(PointsToRaw::empty(cast_provenance()))),
+                Err(_) => return (ptr::null_mut(), Tracked((PointsToRaw::empty(cast_provenance()), MetaClaim::tracked_none()))),
             }
         }
         proof {
@@ -1987,10 +2118,10 @@ impl Inner {
                 }
             }
             lemma_live_insert(m0, k, bin as nat);
-            let tracked _claim = self.live.borrow_mut().insert(k, bin as nat);
+            claim = Some(self.live.borrow_mut().insert(k, bin as nat));
             assert(self.live_wf());
         }
-        (p, Tracked(blk))
+        (p, Tracked((blk, MetaClaim::of_record(claim))))
     }
 
     /// Put `p`, an object of bin `bin`, on the bin's free list. `raw` is
@@ -2468,8 +2599,11 @@ impl Meta {
     }
 
     /// [`alloc`](Meta::alloc), with the permission to the object's
-    /// `layout.size()` bytes.
-    pub fn alloc_raw(&self, layout: Layout, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, Tracked<PointsToRaw>))
+    /// `layout.size()` bytes and the [`MetaClaim`] that [`free`](Meta::free)
+    /// takes back with them.
+    // The tracked results are part of the signature.
+    #[allow(clippy::type_complexity)]
+    pub fn alloc_raw(&self, layout: Layout, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, Tracked<(PointsToRaw, MetaClaim)>))
         requires
             crate::sys::may_syscall(),
             layout_align(layout) <= MAX_ALIGN,
@@ -2478,8 +2612,9 @@ impl Meta {
         ensures
             r.0 as usize != 0 ==> (r.0 as usize) % layout_align(layout) == 0,
             r.0 as usize != 0 ==> self.holds(r.0 as int, layout_size(layout) as int),
-            r.0 as usize != 0 ==> r.1@.is_range(r.0 as usize as int, layout_size(layout) as int),
-            r.0 as usize != 0 ==> r.1@.provenance() == r.0@.provenance,
+            r.0 as usize != 0 ==> r.1@.0.is_range(r.0 as usize as int, layout_size(layout) as int),
+            r.0 as usize != 0 ==> r.1@.0.provenance() == r.0@.provenance,
+            r.0 as usize != 0 ==> r.1@.1.of(self.live_id(), r.0, layout),
             *final(ord) == *old(ord),
     {
         broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
@@ -2489,22 +2624,26 @@ impl Meta {
 
         assert!(layout.align() <= MAX_ALIGN, "meta: alignment too large for an object");
         let Some(bin) = bin_for(layout) else { panic!("meta: object too large") };
-        let (p, Tracked(raw)) = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).alloc(bin);
+        let (p, Tracked(blk)) = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).alloc(bin);
+        let tracked (raw, MetaClaim { claim, .. }) = blk;
         proof {
             lemma_align_in_bin(p as usize, layout, bin);
         }
-        // The bin's slack past `layout.size()` is dropped.
-        let tracked obj = keep_prefix(raw, p as usize as int, p as usize + layout_size(layout), p as usize + bin_size(bin as int));
-        (p, Tracked(obj))
+        // The bin's slack past `layout.size()` goes with the claim.
+        let tracked (obj, mc) = split_block(raw, claim, p, layout, bin, self.live_id());
+        (p, Tracked((obj, mc)))
     }
 
     /// [`alloc`](Meta::alloc), then zero the object if it was reused; with
-    /// the permission to the object's `layout.size()` bytes and the token
+    /// the permission to the object's `layout.size()` bytes and its
+    /// [`MetaClaim`] (as [`alloc_raw`](Meta::alloc_raw)), and the token
     /// that they read as zero: a reused object is cleared here, and a fresh
     /// one lies above the old bump pointer, whose bytes carry the token
     /// `Unbacked::commit` returned when they were committed
     /// (`Inner::fresh_zero`).
-    pub fn alloc_zeroed(&self, layout: Layout, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, Tracked<PointsToRaw>, Tracked<Zeroed>))
+    // The tracked results are part of the signature.
+    #[allow(clippy::type_complexity)]
+    pub fn alloc_zeroed(&self, layout: Layout, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, Tracked<(PointsToRaw, MetaClaim)>, Tracked<Zeroed>))
         requires
             crate::sys::may_syscall(),
             layout_align(layout) <= MAX_ALIGN,
@@ -2514,10 +2653,11 @@ impl Meta {
             *final(ord) == *old(ord),
             r.0 as usize != 0 ==> (r.0 as usize) % layout_align(layout) == 0,
             r.0 as usize != 0 ==> self.holds(r.0 as int, layout_size(layout) as int),
-            r.0 as usize != 0 ==> r.1@.is_range(r.0 as usize as int, layout_size(layout) as int),
-            r.0 as usize != 0 ==> r.1@.provenance() == r.0@.provenance,
+            r.0 as usize != 0 ==> r.1@.0.is_range(r.0 as usize as int, layout_size(layout) as int),
+            r.0 as usize != 0 ==> r.1@.0.provenance() == r.0@.provenance,
             r.0 as usize != 0 ==> r.2@.addr() == r.0@.addr && r.2@.len() == layout_size(layout),
             r.0 as usize != 0 ==> r.0 as usize + layout_size(layout) <= va_limit(),
+            r.0 as usize != 0 ==> r.1@.1.of(self.live_id(), r.0, layout),
     {
         broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
 
@@ -2528,7 +2668,8 @@ impl Meta {
         }
         let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let before = g.bump;
-        let (p, Tracked(raw)) = g.alloc(bin);
+        let (p, Tracked(blk)) = g.alloc(bin);
+        let tracked (raw, MetaClaim { claim, .. }) = blk;
         let tracked mut z = Zeroed::empty(0);
         if !p.is_null() && (p as usize) < before {
             // Reused: below the old bump pointer. Fresh memory is above it
@@ -2557,10 +2698,10 @@ impl Meta {
                 z = fz;
             }
         }
-        // The bin's slack past `layout.size()` is dropped.
-        let tracked obj = keep_prefix(raw, p as usize as int, p as usize + layout_size(layout), p as usize + bin_size(bin as int));
+        // The bin's slack past `layout.size()` goes with the claim.
+        let tracked (obj, mc) = split_block(raw, claim, p, layout, bin, self.live_id());
         let tracked z = zero_prefix(z, layout_size(layout) as int);
-        (p, Tracked(obj), Tracked(z))
+        (p, Tracked((obj, mc)), Tracked(z))
     }
 
     /// Carve `len` bytes (rounded up to pages) aligned to `align` (at least a
@@ -2879,30 +3020,42 @@ impl Meta {
     }
 
     /// Return an object allocated with the same `layout`: [`free_claimed`]
-    /// with the caller's claims to it. Trusted: the claims are the caller
-    /// contract, which no caller can show, since callers keep their
-    /// objects behind raw pointers: `p` came from [`alloc`](Meta::alloc),
-    /// [`alloc_raw`](Meta::alloc_raw) or [`alloc_zeroed`](Meta::alloc_zeroed)
-    /// of this allocator with a layout of the same bin, is no longer in use
-    /// and has not been freed since, and no permission to its bytes is
-    /// held elsewhere (the claims include the permission to the whole bin).
-    /// The allocator's invariant follows from the claims; the
-    /// run-time checks of the bounds, the alignment and a double free of
-    /// the list head stay, for callers that break the contract. The
-    /// callers trusted at each call: heap destruction and
-    /// `free_caches` (heaps, node blocks and cache stacks they own) and
-    /// the huge allocator (`free_desc`, `Table::release`).
+    /// with the claims to it. `blk` is the permission to its
+    /// `layout.size()` bytes with the [`MetaClaim`]
+    /// [`alloc_raw`](Meta::alloc_raw) or
+    /// [`alloc_zeroed`](Meta::alloc_zeroed) handed out with it, which
+    /// holds the record the allocation made and the rest of the bin's
+    /// bytes; the caller gives both up with the object. The run-time
+    /// checks of the bounds, the alignment and a double free of the list
+    /// head stay, for callers outside verified code.
     ///
     /// [`free_claimed`]: Meta::free_claimed
-    #[verifier::external_body]
-    pub fn free(&self, p: *mut u8, layout: Layout, Tracked(ord): Tracked<&mut LockOrder>)
+    pub fn free(
+        &self,
+        p: *mut u8,
+        layout: Layout,
+        Tracked(blk): Tracked<(PointsToRaw, MetaClaim)>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    )
         requires
             crate::sys::may_syscall(),
+            blk.0.is_range(p@.addr as int, layout_size(layout) as int),
+            blk.0.provenance() == p@.provenance,
+            blk.1.of(self.live_id(), p, layout),
             old(ord).allows(rank_meta()),
         ensures
             *final(ord) == *old(ord),
     {
-        self.free_claimed(p, layout, Tracked::assume_new(), Tracked::assume_new(), Tracked(ord))
+        let tracked (obj, claim) = blk;
+        let tracked MetaClaim { claim: c, slack } = claim;
+        let tracked raw = join_at(
+            obj,
+            slack,
+            p@.addr as int,
+            p@.addr + layout_size(layout),
+            p@.addr + bin_size(bin_for_spec(layout)),
+        );
+        self.free_claimed(p, layout, Tracked(raw), Tracked(c.tracked_unwrap()), Tracked(ord))
     }
 
     /// [`free`](Meta::free), given `raw`, the permission to the object's
@@ -3038,6 +3191,12 @@ mod tests {
     /// follows the kernel's page, 64 KiB on some aarch64 kernels).
     fn page_size() -> usize {
         crate::sys::features::page_size()
+    }
+
+    /// `Meta::free` without the claims (tests hold none: they free what
+    /// `Meta::alloc` returned, or deliberately bad pointers).
+    fn free(m: &Meta, p: *mut u8, l: Layout) {
+        m.free(p, l, Tracked::assume_new(), Tracked::assume_new());
     }
 
     /// The object side's commit step: [`COMMIT_CHUNK`] rounded up to the
@@ -3213,23 +3372,23 @@ mod tests {
         let c = m.alloc(l, Tracked::assume_new());
         let d = m.alloc(layout(1000, 8), Tracked::assume_new());
         let bumped = m.stats(Tracked::assume_new()).bumped;
-        m.free(a, l, Tracked::assume_new());
-        m.free(c, l, Tracked::assume_new());
+        free(&m, a, l);
+        free(&m, c, l);
         assert_eq!(m.stats(Tracked::assume_new()).allocated, 1024);
         // Same bin: last freed comes back first, nothing new is bumped.
         assert_eq!(m.alloc(l, Tracked::assume_new()), c);
         assert_eq!(m.alloc(l, Tracked::assume_new()), a);
         assert_eq!(m.stats(Tracked::assume_new()).bumped, bumped);
         // Different bin: not served from that list.
-        m.free(a, l, Tracked::assume_new());
+        free(&m, a, l);
         let e = m.alloc(layout(200, 8), Tracked::assume_new());
         assert_ne!(e, a);
         assert!(m.stats(Tracked::assume_new()).bumped > bumped);
-        m.free(d, layout(1000, 8), Tracked::assume_new());
+        free(&m, d, layout(1000, 8));
         assert_eq!(m.alloc(layout(1000, 8), Tracked::assume_new()), d);
         // alloc_zeroed scrubs a reused block but leaves fresh ones alone.
         unsafe { core::slice::from_raw_parts_mut(d, 1024) }.fill(0xFF);
-        m.free(d, layout(1000, 8), Tracked::assume_new());
+        free(&m, d, layout(1000, 8));
         let z = m.alloc_zeroed(layout(1000, 8), Tracked::assume_new()).0;
         assert_eq!(z, d);
         assert!(
@@ -3290,7 +3449,7 @@ mod tests {
             "no room left for a reservation"
         );
         // Freeing one makes exactly one more available.
-        m.free(got.pop().unwrap(), l, Tracked::assume_new());
+        free(&m, got.pop().unwrap(), l);
         assert!(!m.alloc(l, Tracked::assume_new()).is_null());
         assert!(m.alloc(l, Tracked::assume_new()).is_null());
         // Distinct pointers throughout.
@@ -3588,10 +3747,10 @@ mod tests {
         let m = b.meta();
         let _ = m.alloc(layout(64, 8), Tracked::assume_new());
         let mut foreign = [0u8; 128];
-        m.free(
+        free(
+            &m,
             align_up(foreign.as_mut_ptr() as usize, 64) as *mut u8,
             layout(64, 8),
-            Tracked::assume_new(),
         );
     }
 
@@ -3601,7 +3760,7 @@ mod tests {
         let b = Backing::new(1 << 16);
         let m = b.meta();
         let p = m.alloc(layout(64, 8), Tracked::assume_new());
-        m.free(unsafe { p.add(8) }, layout(64, 8), Tracked::assume_new());
+        free(&m, unsafe { p.add(8) }, layout(64, 8));
     }
 
     #[test]
@@ -3610,7 +3769,7 @@ mod tests {
         let b = Backing::new(1 << 16);
         let m = b.meta();
         let p = m.alloc(layout(64, 8), Tracked::assume_new());
-        m.free(unsafe { p.add(64) }, layout(64, 8), Tracked::assume_new());
+        free(&m, unsafe { p.add(64) }, layout(64, 8));
     }
 
     #[test]
@@ -3681,7 +3840,7 @@ mod tests {
                 let (p, l, fill) = live.swap_remove(i);
                 let slice = unsafe { core::slice::from_raw_parts(p, l.size()) };
                 assert!(slice.iter().all(|&x| x == fill), "contents clobbered");
-                m.free(p, l, Tracked::assume_new());
+                free(&m, p, l);
                 expect_allocated -= BINS[bin_for(l).unwrap()] as usize;
             }
             let st = m.stats(Tracked::assume_new());
@@ -3692,7 +3851,7 @@ mod tests {
         // Free everything, then the same sequence of layouts reuses memory.
         let layouts: Vec<Layout> = live.iter().map(|(_, l, _)| *l).collect();
         for (p, l, _) in live.drain(..) {
-            m.free(p, l, Tracked::assume_new());
+            free(&m, p, l);
         }
         assert_eq!(m.stats(Tracked::assume_new()).allocated, 0);
         let bumped = m.stats(Tracked::assume_new()).bumped;
@@ -3731,13 +3890,13 @@ mod tests {
                             let (p, l) = live.swap_remove((xorshift(&mut s) as usize) % (i + 1));
                             let sl = unsafe { core::slice::from_raw_parts(p, l.size()) };
                             assert!(sl.iter().all(|&x| x == fill), "thread {t} block clobbered");
-                            m.free(p, l, Tracked::assume_new());
+                            free(m, p, l);
                         }
                     }
                     for (p, l) in live {
                         let sl = unsafe { core::slice::from_raw_parts(p, l.size()) };
                         assert!(sl.iter().all(|&x| x == fill));
-                        m.free(p, l, Tracked::assume_new());
+                        free(m, p, l);
                     }
                 });
             }
@@ -3846,8 +4005,8 @@ mod tests {
         let m = b.meta();
         let p = m.alloc(layout(64, 8), Tracked::assume_new());
         assert!(!p.is_null());
-        m.free(p, layout(64, 8), Tracked::assume_new());
-        m.free(p, layout(64, 8), Tracked::assume_new());
+        free(&m, p, layout(64, 8));
+        free(&m, p, layout(64, 8));
     }
 
     #[test]
@@ -3857,8 +4016,8 @@ mod tests {
         let m = b.meta();
         let p = m.alloc(layout(64, 8), Tracked::assume_new());
         let q = m.alloc(layout(64, 8), Tracked::assume_new());
-        m.free(p, layout(64, 8), Tracked::assume_new());
-        m.free(q, layout(64, 8), Tracked::assume_new());
+        free(&m, p, layout(64, 8));
+        free(&m, q, layout(64, 8));
         assert_eq!(m.alloc(layout(64, 8), Tracked::assume_new()), q);
         assert_eq!(m.alloc(layout(64, 8), Tracked::assume_new()), p);
     }

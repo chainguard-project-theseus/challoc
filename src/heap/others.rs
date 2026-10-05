@@ -664,7 +664,8 @@ impl Heap {
             shared.lemma_meta();
             assert(crate::meta::MAX_BINNED == 0x10_0000usize) by (compute_only);
         }
-        let (block, Tracked(raw)) = shared.meta.alloc_raw(node_block_layout(), Tracked(ord));
+        let (block, Tracked(blk)) = shared.meta.alloc_raw(node_block_layout(), Tracked(ord));
+        let tracked (raw, _) = blk;
         if block.is_null() {
             return ptr::null_mut();
         }
@@ -759,6 +760,7 @@ impl Heap {
                 self.perms.borrow_mut().cls = old_perms.cls.insert(cache, c as int);
                 assert(cell_ok(cache, self.perms@.hdrs[cache], self.perms@.slots));
                 CachePerms::lemma_insert_unused(old_perms, self.perms@, cache, c as int);
+                CachePerms::lemma_claimed_frame(before.perms@, self.perms@);
                 Heap::lemma_keeps_trans(h0, before, *self);
             }
         }

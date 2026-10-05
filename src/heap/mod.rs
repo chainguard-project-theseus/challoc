@@ -919,6 +919,11 @@ pub tracked struct CachePerms {
     /// Only [`Heap::flush`] appends to it (by inspection: no spec keeps it
     /// fixed elsewhere).
     pub ghost released: vstd::seq::Seq<(vstd::prelude::int, vstd::prelude::int)>,
+    /// The [`MetaClaim`](crate::meta::MetaClaim) of each stack, by its
+    /// base, as `Meta::alloc_raw` handed it out with the stack
+    /// ([`CachePerms::claimed`]), for [`Heap::free_caches_in`] to give back
+    /// with the stack.
+    pub tracked blocks: Map<*mut *mut u8, crate::meta::MetaClaim>,
 }
 
 /// The stack of header `h` is owned entry by entry: `cap` entries from
@@ -932,6 +937,26 @@ spec fn stack_ok(h: CacheHeader, slots: Map<*mut *mut u8, PointsTo<*mut u8>>) ->
             &&& (i < h.len ==> slots[q].is_init())
             &&& slot_in(h.slots, i)
         }
+}
+
+/// The stack of header `h` comes with its
+/// [`MetaClaim`](crate::meta::MetaClaim) in `blocks`, by its base: the
+/// claim to a block of `8 * cap` bytes aligned to 16
+/// ([`CacheHeader::slots_layout`]) from the process's `Meta`
+/// ([`process_live_id`](crate::meta::process_live_id)).
+spec fn stack_claimed(h: CacheHeader, blocks: Map<*mut *mut u8, crate::meta::MetaClaim>) -> bool {
+    &&& blocks.contains_key(h.slots)
+    &&& blocks[h.slots].held(crate::meta::process_live_id(), h.slots as *mut u8, 8 * h.cap, 16)
+}
+
+/// `stacks` holds, for class `c`, the permission to the bytes of `h`'s
+/// stack and its claim from the `Meta` whose live-object records are `id`
+/// ([`Heap::free_caches`]).
+spec fn stack_given(stacks: Map<int, (vstd::raw_ptr::PointsToRaw, crate::meta::MetaClaim)>, c: int, h: CacheHeader, id: vstd::resource::Loc) -> bool {
+    &&& stacks.contains_key(c)
+    &&& stacks[c].0.is_range(h.slots@.addr as int, 8 * h.cap)
+    &&& stacks[c].0.provenance() == h.slots@.provenance
+    &&& stacks[c].1.held(id, h.slots as *mut u8, 8 * h.cap, 16)
 }
 
 /// Header `p` is owned through `hp`, satisfies [`CacheHeader::inv`],
@@ -1695,6 +1720,7 @@ proof fn axiom_fresh_stack(
         final(perms).toks == old(perms).toks,
         final(perms).zero == old(perms).zero,
         final(perms).handed == old(perms).handed,
+        final(perms).blocks == old(perms).blocks,
         forall|i: int| 0 <= i < cap ==> {
             let q = #[trigger] slot_ptr(slots, i);
             &&& final(perms).slots.contains_key(q)
@@ -1732,6 +1758,60 @@ proof fn lemma_stack_set(h: CacheHeader, q: *mut *mut u8)
     if exists|i: int| 0 <= i < h.cap && slot_ptr(h.slots, i) == q {
         let i = choose|i: int| 0 <= i < h.cap && slot_ptr(h.slots, i) == q;
         assert(vstd::set_lib::set_int_range(0, h.cap as int).contains(i));
+    }
+}
+
+/// `gone` holds the permission to entry `i` of the stack at `base`, which
+/// lies inside the stack's allocation ([`join_entries`]).
+spec fn entry_given(gone: Map<*mut *mut u8, PointsTo<*mut u8>>, base: *mut *mut u8, i: int) -> bool {
+    let q = slot_ptr(base, i);
+    &&& gone.contains_key(q)
+    &&& gone[q].ptr() == q
+    &&& slot_in(base, i)
+}
+
+/// The permission to the first `n` entries of the stack at `base` (`8 *
+/// n` bytes), joined from the entries' permissions in `gone` with their
+/// contents dropped: what [`Heap::free_caches_in`] gives `Meta::free`
+/// with the stack.
+proof fn join_entries(tracked gone: Map<*mut *mut u8, PointsTo<*mut u8>>, base: *mut *mut u8, n: int) -> (tracked r: vstd::raw_ptr::PointsToRaw)
+    requires
+        0 <= n,
+        base@.addr + 8 * n <= usize::MAX,
+        forall|i: int| 0 <= i < n ==> #[trigger] entry_given(gone, base, i),
+    ensures
+        r.is_range(base@.addr as int, 8 * n),
+        r.provenance() == base@.provenance,
+    decreases n,
+{
+    broadcast use vstd::layout::layout_of_references_and_pointers_for_sized_types;
+
+    if n == 0 {
+        let tracked r = vstd::raw_ptr::PointsToRaw::empty(base@.provenance);
+        assert(r.dom() =~= Set::range(base@.addr as int, base@.addr as int));
+        r
+    } else {
+        let q = slot_ptr(base, n - 1);
+        assert(entry_given(gone, base, n - 1));
+        assert(((n - 1) as usize) as int == n - 1);
+        assert(vstd::layout::size_of::<*mut u8>() == 8);
+        assert(base@.addr + (n - 1) * 8 <= usize::MAX);
+        crate::vspec::ptr::axiom_ptr_add_addr(base, (n - 1) as usize);
+        let tracked mut rest = gone;
+        let tracked mut e = rest.tracked_remove(q);
+        assert forall|i: int| 0 <= i < n - 1 implies #[trigger] entry_given(rest, base, i) by {
+            assert(entry_given(gone, base, i));
+            assert((i as usize) as int == i);
+            assert(base@.addr + i * 8 <= usize::MAX);
+            crate::vspec::ptr::axiom_ptr_add_addr(base, i as usize);
+            assert(slot_ptr(base, i)@.addr != q@.addr);
+        }
+        let tracked r0 = join_entries(rest, base, n - 1);
+        e.leak_contents();
+        let tracked er = e.into_raw();
+        let tracked r = r0.join(er);
+        assert(r.dom() =~= Set::range(base@.addr as int, base@.addr + 8 * n));
+        r
     }
 }
 
@@ -1802,6 +1882,151 @@ impl CachePerms {
             &&& self.hdr(p).cap == old.hdr(p).cap
             &&& self.hdr(p).slots == old.hdr(p).slots
         }
+    }
+
+    /// Every owned header with a stack holds the stack's claim
+    /// ([`stack_claimed`]): `Heap::ensure_cache` stores the one
+    /// `Meta::alloc_raw` returned with the stack, the header writers keep
+    /// each header's stack or move it to another owned header
+    /// (`Heap::swap_hdrs`), and `Heap::free_caches_in` takes it out to
+    /// free the stack.
+    #[verifier::opaque]
+    spec fn claimed(&self) -> bool {
+        forall|p: *mut CacheHeader| #[trigger] self.hdrs.contains_key(p) && self.hdr(p).cap != 0 ==> stack_claimed(self.hdr(p), self.blocks)
+    }
+
+    /// Header `p` of `new` is one `old` owned, with the same stack
+    /// ([`CachePerms::lemma_claimed_frame`]).
+    spec fn same_stack(old: CachePerms, new: CachePerms, p: *mut CacheHeader) -> bool {
+        &&& old.hdrs.contains_key(p)
+        &&& old.hdr(p).cap == new.hdr(p).cap
+        &&& old.hdr(p).slots == new.hdr(p).slots
+    }
+
+    /// A change that keeps the claims, and leaves every owned header with
+    /// a stack an owned header of `old` with the same stack, keeps
+    /// [`CachePerms::claimed`].
+    proof fn lemma_claimed_frame(old: CachePerms, new: CachePerms)
+        requires
+            old.claimed(),
+            new.blocks == old.blocks,
+            forall|p: *mut CacheHeader| #[trigger] new.hdrs.contains_key(p) && new.hdr(p).cap != 0 ==> CachePerms::same_stack(old, new, p),
+        ensures
+            new.claimed(),
+    {
+        reveal(CachePerms::claimed);
+        assert forall|q: *mut CacheHeader| #[trigger] new.hdrs.contains_key(q) && new.hdr(q).cap != 0 implies stack_claimed(new.hdr(q), new.blocks) by {
+            assert(stack_claimed(old.hdr(q), old.blocks));
+        }
+    }
+
+    /// A change to header `p` alone that keeps the claims and leaves `p`
+    /// with no stack or with its old one keeps [`CachePerms::claimed`].
+    proof fn lemma_claimed_hdr(old: CachePerms, new: CachePerms, p: *mut CacheHeader)
+        requires
+            old.claimed(),
+            old.hdrs.contains_key(p),
+            new.hdrs == old.hdrs.insert(p, new.hdrs[p]),
+            new.blocks == old.blocks,
+            new.hdr(p).cap == 0 || (new.hdr(p).cap == old.hdr(p).cap && new.hdr(p).slots == old.hdr(p).slots),
+        ensures
+            new.claimed(),
+    {
+        reveal(CachePerms::claimed);
+        assert forall|q: *mut CacheHeader| #[trigger] new.hdrs.contains_key(q) && new.hdr(q).cap != 0 implies stack_claimed(new.hdr(q), new.blocks) by {
+            assert(old.hdrs.contains_key(q));
+            if q == p {
+                assert(stack_claimed(old.hdr(p), old.blocks));
+            } else {
+                assert(new.hdr(q) == old.hdr(q));
+            }
+        }
+    }
+
+    /// A change to header `p` alone, which had no stack and now has one
+    /// whose claim `blocks` holds, keeps [`CachePerms::claimed`].
+    proof fn lemma_claimed_new(old: CachePerms, new: CachePerms, p: *mut CacheHeader)
+        requires
+            old.claimed(),
+            old.hdrs.contains_key(p),
+            new.hdrs == old.hdrs.insert(p, new.hdrs[p]),
+            new.blocks == old.blocks,
+            stack_claimed(new.hdr(p), new.blocks),
+        ensures
+            new.claimed(),
+    {
+        reveal(CachePerms::claimed);
+        assert forall|q: *mut CacheHeader| #[trigger] new.hdrs.contains_key(q) && new.hdr(q).cap != 0 implies stack_claimed(new.hdr(q), new.blocks) by {
+            if q != p {
+                assert(old.hdrs.contains_key(q));
+                assert(new.hdr(q) == old.hdr(q));
+            }
+        }
+    }
+
+    /// Add `mc`, the claim of a new stack of `cap` entries at `base`,
+    /// keyed by `base`. No owned stack is at `base` already: its claim
+    /// would be a second record of the same object
+    /// ([`MetaClaim::lemma_apart`](crate::meta::MetaClaim::lemma_apart)).
+    proof fn tracked_put_claim(tracked &mut self, base: *mut *mut u8, cap: int, tracked mc: crate::meta::MetaClaim)
+        requires
+            old(self).claimed(),
+            mc.held(crate::meta::process_live_id(), base as *mut u8, 8 * cap, 16),
+        ensures
+            *final(self) == (CachePerms { blocks: final(self).blocks, ..*old(self) }),
+            final(self).claimed(),
+            final(self).blocks.contains_key(base),
+            final(self).blocks[base].held(crate::meta::process_live_id(), base as *mut u8, 8 * cap, 16),
+    {
+        reveal(CachePerms::claimed);
+        let tracked mut mc = mc;
+        let ghost id = crate::meta::process_live_id();
+        if self.blocks.contains_key(base) {
+            mc.lemma_apart(self.blocks.tracked_borrow(base), id, base as *mut u8, 8 * cap, 16);
+        }
+        let ghost before = *self;
+        self.blocks.tracked_insert(base, mc);
+        assert forall|p: *mut CacheHeader| #[trigger] self.hdrs.contains_key(p) && self.hdr(p).cap != 0 implies stack_claimed(self.hdr(p), self.blocks) by {
+            assert(stack_claimed(before.hdr(p), before.blocks));
+            let h = before.hdr(p);
+            if h.slots == base {
+                assert(before.blocks[base].held(id, h.slots as *mut u8, 8 * h.cap, 16));
+            }
+        }
+    }
+
+    /// Take out the claim of owned header `p`'s stack, to free the stack
+    /// ([`Heap::free_caches_in`]). Every other owned header with a stack
+    /// keeps its claim: its stack is at another base, since the stacks'
+    /// first entries have one owner each ([`CachePerms::tracks`]).
+    proof fn tracked_take_claim(tracked &mut self, p: *mut CacheHeader) -> (tracked r: crate::meta::MetaClaim)
+        requires
+            old(self).wf(),
+            old(self).tracks(),
+            old(self).claimed(),
+            old(self).hdrs.contains_key(p),
+            old(self).hdr(p).cap != 0,
+        ensures
+            *final(self) == (CachePerms { blocks: final(self).blocks, ..*old(self) }),
+            r.held(crate::meta::process_live_id(), old(self).hdr(p).slots as *mut u8, 8 * old(self).hdr(p).cap, 16),
+            forall|q: *mut CacheHeader|
+                #[trigger] old(self).hdrs.contains_key(q) && q != p && old(self).hdr(q).cap != 0 ==> stack_claimed(old(self).hdr(q), final(self).blocks),
+    {
+        reveal(CachePerms::claimed);
+        let ghost before = *self;
+        let base = before.hdr(p).slots;
+        assert(stack_claimed(before.hdr(p), before.blocks));
+        let tracked r = self.blocks.tracked_remove(base);
+        assert forall|q: *mut CacheHeader|
+            #[trigger] before.hdrs.contains_key(q) && q != p && before.hdr(q).cap != 0 implies stack_claimed(before.hdr(q), self.blocks) by {
+            assert(stack_claimed(before.hdr(q), before.blocks));
+            if before.hdr(q).slots == base {
+                // Entry 0 of both stacks: `owner` gives it one header.
+                assert(before.owner[before.ent(q, 0)] == (q, 0));
+                assert(before.owner[before.ent(p, 0)] == (p, 0));
+            }
+        }
+        r
     }
 
     /// The value of owned header `p`.
@@ -2956,6 +3181,7 @@ impl Heap {
         &&& self.perms@.tracks()
         &&& self.perms@.zero_ok()
         &&& self.perms@.tokened()
+        &&& self.perms@.claimed()
         &&& regions_ok()
         &&& self.list_ok()
         &&& self.home_ok()
@@ -2983,6 +3209,7 @@ impl Heap {
         &&& self.perms@.follows(old.perms@)
         &&& self.perms@.zero_ok()
         &&& self.perms@.tokened()
+        &&& self.perms@.claimed()
         &&& regions_ok()
         &&& self.list_ok()
         &&& self.home_ok()
@@ -3090,6 +3317,7 @@ impl Heap {
             self.wf(),
     {
         reveal(others::heads_ok);
+        reveal(CachePerms::claimed);
         assert forall|c: int| 0 <= c < NCLASSES implies self.owns(#[trigger] self.home_hdrs@[c]) && self.hdr_class(self.home_hdrs@[c]) == c by {
             assert(self.home_hdrs@[c] == home_hdr(h, c));
         }
@@ -3816,6 +4044,7 @@ impl Heap {
             new.perms@.follows(old.perms@),
             new.perms@.zero_ok(),
             new.perms@.tokened(),
+            new.perms@.claimed(),
         ensures
             new.keeps(old),
     {
@@ -3861,6 +4090,7 @@ impl Heap {
             b.perms@.owner == a.perms@.owner,
             b.perms@.toks == a.perms@.toks,
             b.perms@.zero == a.perms@.zero,
+            b.perms@.blocks == a.perms@.blocks,
             b.list == a.list,
             b.keys == a.keys,
             b.arena == a.arena,
@@ -3872,6 +4102,7 @@ impl Heap {
         ensures
             b.keeps(a),
     {
+        reveal(CachePerms::claimed);
         Heap::lemma_home_kept(a, b);
         CachePerms::lemma_zero_same(a.perms@, b.perms@);
         CachePerms::lemma_keeps_refl(a.perms@);
@@ -3884,27 +4115,48 @@ impl Heap {
     /// and free its stack, for `destroy`, which frees the heap next. It
     /// writes the headers through the plain field, so the permissions are
     /// stale afterwards ([`Heap::wf`]); [`Heap::free_caches_in`] is the
-    /// form that keeps them.
-    fn free_caches(shared: &Shared, caches: &mut [CacheHeader; NCLASSES], Tracked(ord): Tracked<&mut LockOrder>)
+    /// form that keeps them. `stacks` holds, by class, the permission to
+    /// each stack's bytes and its claim ([`stack_given`]), which `destroy`
+    /// (trusted) hands over for the heap's stacks.
+    fn free_caches(
+        shared: &Shared,
+        caches: &mut [CacheHeader; NCLASSES],
+        Tracked(stacks): Tracked<Map<vstd::prelude::int, (vstd::raw_ptr::PointsToRaw, crate::meta::MetaClaim)>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    )
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_meta()),
+            forall|c: int|
+                0 <= c < NCLASSES && (#[trigger] old(caches)@[c]).cap != 0 ==> stack_given(stacks, c, old(caches)@[c], shared.meta.live_id()),
         ensures
             *final(ord) == *old(ord),
     {
-        for cache in caches.iter_mut()
+        let tracked mut stacks = stacks;
+        for cache in it: caches.iter_mut()
             invariant
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 ord.allows(rank_meta()),
                 *ord == *old(ord),
+                it.seq().len() == NCLASSES,
+                forall|i: int| 0 <= i < NCLASSES ==> *(#[trigger] it.seq()[i]) == old(caches)@[i],
+                forall|c: int|
+                    it.index() <= c < NCLASSES && (#[trigger] old(caches)@[c]).cap != 0 ==> stack_given(stacks, c, old(caches)@[c], shared.meta.live_id()),
         {
             if cache.cap != 0 {
                 assert_flushed(&cache.len);
-                shared
-                    .meta
-                    .free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap), Tracked(ord));
+                let tracked blk = stacks.tracked_remove(it.index());
+                proof {
+                    assert(*cache == old(caches)@[it.index()]);
+                }
+                shared.meta.free(
+                    cache.slots as *mut u8,
+                    CacheHeader::slots_layout(cache.cap),
+                    Tracked(blk),
+                    Tracked(ord),
+                );
             }
             *cache = CacheHeader::EMPTY;
         }
@@ -3922,6 +4174,7 @@ impl Heap {
     fn free_caches_in(&mut self, shared: &Shared, node: *mut ArenaCaches, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_syscall(),
+            shared.wf(),
             old(ord).allows(rank_class(0, 0)),
             old(self).wf(),
             node@.addr == 0 || old(self).owns_node(node),
@@ -3943,6 +4196,7 @@ impl Heap {
         }
         for class in 0..NCLASSES
             invariant
+                shared.wf(),
                 self.tcache_on() == old(self).tcache_on(),
                 crate::sys::may_syscall(),
                 forall|c: int| 0 <= c < NCLASSES ==> #[trigger] old(self).cached_len(old(self).array_hdr(node, c)) == 0,
@@ -3971,21 +4225,43 @@ impl Heap {
                 assert(h0.hdr(cache) == old(self).hdr(cache));
                 assert(old(self).cached_len(old(self).array_hdr(node, class as int)) == 0);
                 Heap::lemma_stack_keys(h0, cache);
-                let tracked _gone = self.perms.borrow_mut().slots.tracked_remove_keys(stack_set(h0.hdr(cache)));
+            }
+            // The stack's claim and the permission to its bytes, joined
+            // from its entries', for `Meta::free`.
+            let tracked mut claim = crate::meta::MetaClaim::tracked_none();
+            let tracked mut stack = vstd::raw_ptr::PointsToRaw::empty(crate::vspec::addr::cast_provenance());
+            proof {
+                let hc = h0.hdr(cache);
+                if hc.cap != 0 {
+                    claim = self.perms.borrow_mut().tracked_take_claim(cache);
+                }
+                let tracked gone = self.perms.borrow_mut().slots.tracked_remove_keys(stack_set(hc));
+                if hc.cap != 0 {
+                    assert(cell_ok(cache, h0.perms@.hdrs[cache], h0.perms@.slots));
+                    assert forall|i: int| 0 <= i < hc.cap implies #[trigger] entry_given(gone, hc.slots, i) by {
+                        lemma_stack_set(hc, slot_ptr(hc.slots, i));
+                    }
+                    stack = join_entries(gone, hc.slots, hc.cap as int);
+                }
             }
             // `hdr_mut` without its `wf` premise, which the removal broke.
             let h = ptr_mut_ref(cache, Tracked(self.perms.borrow_mut().hdrs.tracked_borrow_mut(cache)));
             if h.cap != 0 {
                 proof {
                     assert(h.len == 0);
+                    shared.lemma_meta();
                 }
                 assert_flushed(&h.len);
-                shared
-                    .meta
-                    .free(h.slots as *mut u8, CacheHeader::slots_layout(h.cap), Tracked(ord));
+                shared.meta.free(
+                    h.slots as *mut u8,
+                    CacheHeader::slots_layout(h.cap),
+                    Tracked((stack, claim)),
+                    Tracked(ord),
+                );
             }
             *h = CacheHeader::EMPTY;
             proof {
+                reveal(CachePerms::claimed);
                 Heap::lemma_set_empty(h0, *self, cache, self.hdr(cache));
                 Heap::lemma_same_trans(*old(self), h0, *self);
                 if node@.addr != 0 {
@@ -4167,10 +4443,13 @@ impl Heap {
             new.home_hdrs == old.home_hdrs,
             new.heads == old.heads,
             v.len == 0 && v.cap == 0 && v.low_water == 0 && v.zeroed == 0 && v.run_end == 0,
+            forall|q: *mut CacheHeader|
+                #[trigger] old.perms@.hdrs.contains_key(q) && q != cache && old.perms@.hdr(q).cap != 0 ==> stack_claimed(old.perms@.hdr(q), new.perms@.blocks),
         ensures
             new.wf(),
             new.same_shape(old),
     {
+        reveal(CachePerms::claimed);
         let o = old.perms@;
         let n = new.perms@;
         let s = stack_set(o.hdr(cache));
@@ -4219,6 +4498,10 @@ impl Heap {
             #[trigger] o.owner.contains_key(q) && o.owner[q].0 != cache && o.slots.contains_key(q) implies n.slots[q] == o.slots[q] by {
             assert(!s.contains(q));
         }
+        assert forall|p: *mut CacheHeader| #[trigger] n.hdrs.contains_key(p) && n.hdr(p).cap != 0 implies stack_claimed(n.hdr(p), n.blocks) by {
+            assert(p != cache);
+            assert(n.hdr(p) == o.hdr(p));
+        }
         CachePerms::lemma_zero_update(o, n, cache);
         Heap::lemma_home_kept(old, new);
         Heap::lemma_same_list(old, new);
@@ -4256,6 +4539,16 @@ impl Heap {
             assert(self.perms@.hdrs.dom() =~= o.hdrs.dom());
             Heap::lemma_same_list(*old(self), *self);
             Heap::lemma_home_kept(*old(self), *self);
+            reveal(CachePerms::claimed);
+            assert forall|p: *mut CacheHeader| #[trigger] self.perms@.hdrs.contains_key(p) && self.perms@.hdr(p).cap != 0 implies stack_claimed(self.perms@.hdr(p), self.perms@.blocks) by {
+                if p == a {
+                    assert(stack_claimed(o.hdr(b), o.blocks));
+                } else if p == b {
+                    assert(stack_claimed(o.hdr(a), o.blocks));
+                } else {
+                    assert(stack_claimed(o.hdr(p), o.blocks));
+                }
+            }
         }
     }
 
@@ -5076,9 +5369,10 @@ impl Heap {
     /// Every header `old` owns outside the first `k` classes of the array
     /// `node` names ([`Heap::in_array`]) has its value and holds what it
     /// held in `old`.
+    // Each conjunct is a trigger (see kept_apart).
     closed spec fn kept_outside(&self, old: Heap, node: *mut ArenaCaches, k: int) -> bool {
-        forall|p: *mut CacheHeader|
-            old.owns(p) && !old.in_array(node, k, p) ==> #[trigger] self.hdr(p) == old.hdr(p) && self.held(p) == old.held(p)
+        forall|p: *mut CacheHeader| #![trigger self.hdr(p)] #![trigger self.held(p)]
+            old.owns(p) && !old.in_array(node, k, p) ==> self.hdr(p) == old.hdr(p) && self.held(p) == old.held(p)
     }
 
     /// [`Heap::kept_outside`] at one header.
@@ -5109,8 +5403,10 @@ impl Heap {
 
     /// From `a` to `b` no owned header but `cache` changed its value or
     /// what it holds.
+    // Each conjunct is a trigger (see kept_apart).
     closed spec fn frame(a: Heap, b: Heap, cache: *mut CacheHeader) -> bool {
-        forall|p: *mut CacheHeader| a.owns(p) && p != cache ==> #[trigger] b.hdr(p) == a.hdr(p) && b.held(p) == a.held(p)
+        forall|p: *mut CacheHeader| #![trigger b.hdr(p)] #![trigger b.held(p)]
+            a.owns(p) && p != cache ==> b.hdr(p) == a.hdr(p) && b.held(p) == a.held(p)
     }
 
     /// A header store that keeps its length and stack keeps what every
@@ -5259,6 +5555,7 @@ impl Heap {
             invariant
                 self.tcache_on() == on,
                 crate::sys::may_syscall(),
+                shared.wf(),
                 ord.allows(rank_class(0, 0)),
                 *ord == *old(ord),
                 self.wf(),
@@ -5540,6 +5837,7 @@ impl Heap {
         &&& self.perms@.hdrs == old.perms@.hdrs.insert(cache, self.perms@.hdrs[cache])
         &&& self.perms@.zero == old.perms@.zero
         &&& self.perms@.toks == old.perms@.toks
+        &&& self.perms@.blocks == old.perms@.blocks
         &&& self.perms@.owner == old.perms@.owner
         &&& self.perms@.cls == old.perms@.cls
         &&& self.perms@.hdrs[cache].ptr() == cache
@@ -5578,6 +5876,7 @@ impl Heap {
         CachePerms::lemma_tracks_hdr(old.perms@, new.perms@, cache);
         CachePerms::lemma_zero_hdr(old.perms@, new.perms@, cache);
         CachePerms::lemma_tokened_hdr(old.perms@, new.perms@, cache);
+        CachePerms::lemma_claimed_hdr(old.perms@, new.perms@, cache);
     }
 }
 
@@ -5636,7 +5935,9 @@ impl CachePerms {
             r.tracks(),
             r.zero_ok(),
             r.tokened(),
+            r.claimed(),
     {
+        reveal(CachePerms::claimed);
         let tracked r = CachePerms {
             hdrs: Map::tracked_empty(),
             slots: Map::tracked_empty(),
@@ -5646,6 +5947,7 @@ impl CachePerms {
             zero: Map::tracked_empty(),
             handed: None,
             released: Seq::empty(),
+            blocks: Map::tracked_empty(),
         };
         r.lemma_zero_intro();
         r
@@ -5692,10 +5994,17 @@ impl FreshHeap {
 
 /// The fields of a fresh heap before its home headers, stored field by
 /// field ([`Heap::create_detached`]). Trusted: `&raw mut` projections of
-/// the raw heap pointer, which Verus does not support. `head` is the
+/// the raw heap pointer, which Verus does not support. `head.0` is the
 /// permission to the 128 bytes before `caches` ([`heap_head`]); the
 /// stores leave it as it was, and it goes into the [`FreshHeap`] returned,
 /// which claims only that and what was stored in `arena` and `bound`.
+/// `head.1` is the heap block's claim, which is dropped: `destroy`'s
+/// trusted body gives `Meta::free` its own. It comes along so that the
+/// permission travels with the same type as `Meta::alloc_raw`'s: every
+/// erased `Tracked(..)` expression is a call to
+/// `Tracked::<T>::assume_new_fallback`, and rustc's MIR inliner gives up
+/// on a function from which more than 16 instances of it, by `T`, are
+/// reachable (`mir_callgraph_cyclic`), which `heap_for_thread` is at.
 ///
 /// # Safety
 /// `h` is a fresh metadata block for a `Heap`, exclusively owned.
@@ -5705,14 +6014,14 @@ unsafe fn init_fields(
     h: *mut Heap,
     shared: &Shared,
     arena: u16,
-    Tracked(head): Tracked<vstd::raw_ptr::PointsToRaw>,
+    Tracked(head): Tracked<(vstd::raw_ptr::PointsToRaw, crate::meta::MetaClaim)>,
 ) -> (r: Tracked<FreshHeap>)
     requires
         crate::sys::may_syscall(),
-        heap_head(h, head),
+        heap_head(h, head.0),
     ensures
         r@.heap() == h,
-        r@.head() == head,
+        r@.head() == head.0,
         r@.arena() == arena as int,
         !r@.bound(),
 {
@@ -5883,7 +6192,8 @@ impl Heap {
             cache::lemma_header_layout();
             assert(crate::meta::MAX_BINNED == 0x10_0000usize) by (compute_only);
         }
-        let (block, Tracked(raw)) = shared.meta.alloc_raw(Layout::new::<Heap>(), Tracked(ord));
+        let (block, Tracked(blk)) = shared.meta.alloc_raw(Layout::new::<Heap>(), Tracked(ord));
+        let tracked (raw, claim) = blk;
         let h = block as *mut Heap;
         if h.is_null() {
             let tracked none = CachePerms::tracked_empty();
@@ -5903,7 +6213,7 @@ impl Heap {
         // stack of every thread's first allocation by one page, which
         // larson's thread churn turns into +1.7 MiB of RSS per 437
         // threads (thread stacks stay mapped; measured on arm64).
-        let Tracked(stored) = unsafe { init_fields(h, shared, arena, Tracked(head)) };
+        let Tracked(stored) = unsafe { init_fields(h, shared, arena, Tracked((head, claim))) };
         // SAFETY: as above; `caches` is 128 bytes in (the `const`
         // assertion after `Heap`).
         let caches = unsafe { block.add(128) } as *mut CacheHeader;
@@ -6017,15 +6327,15 @@ impl Heap {
         // SAFETY: the caller gives us exclusive ownership of the heap.
         let heap = unsafe { &mut *h };
         heap.flush_all(shared, Tracked(&mut *ord));
-        Self::free_caches(shared, &mut heap.caches, Tracked(&mut *ord));
+        Self::free_caches(shared, &mut heap.caches, Tracked::assume_new(), Tracked(&mut *ord));
         for o in Self::nodes(heap.others) {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap; the iterator has read `next` already, so the
             // block can go.
             unsafe {
-                Self::free_caches(shared, &mut (*o).caches, Tracked(&mut *ord));
+                Self::free_caches(shared, &mut (*o).caches, Tracked::assume_new(), Tracked(&mut *ord));
                 let block = (o as *mut u8).sub(64 * (*o).pad as usize);
-                shared.meta.free(block, node_block_layout(), Tracked(&mut *ord));
+                shared.meta.free(block, node_block_layout(), Tracked::assume_new(), Tracked(&mut *ord));
             }
         }
         heap.others = ptr::null_mut();
@@ -6050,7 +6360,7 @@ impl Heap {
                 }
             }
         }
-        shared.meta.free(h as *mut u8, Layout::new::<Heap>(), Tracked(ord));
+        shared.meta.free(h as *mut u8, Layout::new::<Heap>(), Tracked::assume_new(), Tracked(ord));
     }
 }
 

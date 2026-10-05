@@ -1328,6 +1328,7 @@ impl Shared {
         proof {
             assert(crate::config::MAX_GUARD_SLAB_INTERVAL == 0x40_0000) by (compute);
             axiom_process_shared();
+            crate::meta::lemma_process_live_id();
             let lg = regions.lg_page;
             assert((1usize << lg) == (1usize << (lg as usize))) by (bit_vector)
                 requires
@@ -1571,7 +1572,10 @@ impl Shared {
     /// may execute the PAC instructions (`sys::pac::pac_available`, from the
     /// probe `init` was given); `meta` allocates from
     /// the metadata region, which holds every class table's descriptors,
-    /// bitmap and owner words; `arenas` is the registry `Arenas::init`
+    /// bitmap and owner words, and is the process's (its live-object
+    /// records are [`process_live_id`](crate::meta::process_live_id)'s),
+    /// and `huge` gives its descriptor and table blocks back to it
+    /// (`Huge::spec_mid`); `arenas` is the registry `Arenas::init`
     /// built (`Arenas::wf`: its bound counts at their invariants), the
     /// process's (`Arenas::is_process`).
     ///
@@ -1597,6 +1601,8 @@ impl Shared {
         &&& self.huge.spec_npages() == self.huge_pages()
         &&& self.meta.spec_base() == self.regions.meta_base
         &&& self.meta.spec_len() == self.regions.meta_len
+        &&& self.meta.live_id() == crate::meta::process_live_id()
+        &&& self.huge.spec_mid() == self.meta.live_id()
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok()
         &&& self.arena0.spec_index() == 0
         &&& self.stats.rank() == rank_stats()
@@ -1604,12 +1610,14 @@ impl Shared {
         &&& self.arenas.is_process()
     }
 
-    /// `meta` is the process's metadata allocator ([`Shared::wf`]).
+    /// `meta` is the process's metadata allocator ([`Shared::wf`]), whose
+    /// live-object records are the process's.
     pub(crate) proof fn lemma_meta(&self)
         requires
             self.wf(),
         ensures
             self.meta.is_process(),
+            self.meta.live_id() == crate::meta::process_live_id(),
             forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok(),
     {
     }

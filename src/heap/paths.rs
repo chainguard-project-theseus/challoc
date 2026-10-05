@@ -130,6 +130,7 @@ impl Heap {
                 CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
                 if old_perms.tokened() {
                     CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+                    CachePerms::lemma_claimed_hdr(old_perms, self.perms@, cache);
                 }
                 CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
             }
@@ -142,6 +143,7 @@ impl Heap {
                 CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
                 if old_perms.tokened() {
                     CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+                    CachePerms::lemma_claimed_hdr(old_perms, self.perms@, cache);
                 }
                 CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
             }
@@ -153,6 +155,7 @@ impl Heap {
             CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
             if old_perms.tokened() {
                 CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+                CachePerms::lemma_claimed_hdr(old_perms, self.perms@, cache);
             }
             CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
         }
@@ -466,6 +469,7 @@ impl Heap {
                 CachePerms::lemma_update(old_perms, self.perms@, cache);
                 CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
                 CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+                CachePerms::lemma_claimed_hdr(old_perms, self.perms@, cache);
                 CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
                 Heap::lemma_poppable_same(*old(self), *self, class as int, cache);
             }
@@ -477,6 +481,7 @@ impl Heap {
             CachePerms::lemma_update(old_perms, self.perms@, cache);
             CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
             CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+            CachePerms::lemma_claimed_hdr(old_perms, self.perms@, cache);
             CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
         }
         self.alloc_slow_in(shared, self.arena, class, Tracked(blk))

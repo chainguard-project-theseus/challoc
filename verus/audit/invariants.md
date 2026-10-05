@@ -96,7 +96,7 @@ code makes.
 | S172 | `Reserved::into_unbacked` (layout/regions.rs) | sound | consumes the token |
 | S177 | `axiom_acquired` (lock.rs) | sound (premise) | private, called on the guard just built; `deref_mut` havocs the guard, so a changed guard cannot meet its `requires` |
 | S182 | `Meta::commit` (meta.rs) | sound (premise) | callers trusted to pass an aligned, uncommitted range inside a reservation or eager table (see Open) |
-| S183 | `Meta::free` (meta.rs) | sound (premise) | callers trusted to pass a live block with its layout; null or an oversized layout aborts (see Open) |
+| S183 | `Meta::free` (meta.rs) | sound (premise) | callers trusted to pass a live block with its layout; null or an oversized layout aborts (see Open); closed after the audit: verified, its callers give back the `MetaClaim` the allocation handed out |
 | S188 | `axiom_state_lock_inv` (purge/background.rs) | sound | initial value meets it; `start` and `fork_child` assert it |
 | S206 | `axiom_snapshot_lock_inv` (stats.rs) | sound | `Snapshot::EMPTY` meets it; `collect_into` asserts it |
 | S222 | `axiom_user_va_limit` (sys/pac.rs) | sound | Linux's default map window is at most 2^48 on both targets |
@@ -444,7 +444,13 @@ Still premises, and why:
   than corrupting memory, but double commits or a mismatched free break
   the metadata lock's invariant silently. Lifting the checkable part
   into the `requires` needs `Lazy::inv` to carry page alignment and
-  `Layout` facts at the callers.
+  `Layout` facts at the callers. Closed after the audit for S183:
+  `Meta::free` is verified; it requires the `MetaClaim` (the live-object
+  record and the bin slack) `alloc_raw` or `alloc_zeroed` returned with
+  the block, which its callers carry (`CachePerms::claimed`, the huge
+  allocator's `dclaims` and its table's `claim`), so a double or
+  mismatched free cannot be verified; `Heap::destroy`'s trusted body
+  passes `Tracked::assume_new()` for the claims of what it frees.
 - S18 `heap_set_arena` could go once `Heap::wf` carries
   `arena < MAX_ARENAS`.
 - S121 `assign_home` could go if `Arenas::assign` looped to

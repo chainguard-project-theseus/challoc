@@ -93,8 +93,9 @@ verus! {
 /// as committed memory (`vspec::unbacked::Unbacked::commit`) and are split
 /// and joined from there, all inside one mapping (the metadata
 /// region, the only `Unbacked` token's source), so one permission's range
-/// never spans two allocations; `Meta::free`'s trusted caller contract mints
-/// the ones it is given back.
+/// never spans two allocations; `Meta::free` takes back the permissions
+/// its callers hold (with their `MetaClaim`s), except that `Heap::destroy`'s
+/// trusted body mints the ones it gives back.
 #[verifier::external_body]
 pub proof fn axiom_raw_valid(tracked raw: &vstd::raw_ptr::PointsToRaw, p: *mut u8, len: int)
     requires

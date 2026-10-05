@@ -1,6 +1,6 @@
 # `<[T]>::as_ptr`
 
-Seam S366 of `verus/SEAMS.md`: src/vspec/sys.rs:35. Kind: assume_spec. Category: core library.
+Seam S365 of `verus/SEAMS.md`: src/vspec/sys.rs:35. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

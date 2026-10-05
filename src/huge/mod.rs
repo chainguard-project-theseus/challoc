@@ -72,9 +72,7 @@ use crate::vspec::zero::Zeroed;
 #[cfg(verus_only)]
 use vstd::arithmetic::power2::pow2;
 use vstd::prelude::*;
-#[cfg(verus_only)]
-use vstd::raw_ptr::PointsToRaw;
-use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_mut_write, ptr_ref};
+use vstd::raw_ptr::{PointsTo, PointsToRaw, ptr_mut_ref, ptr_mut_write, ptr_ref};
 use vstd::resource::set::{GhostSetAuth, GhostSingleton, GhostSubset};
 
 mod table;
@@ -446,6 +444,15 @@ pub(crate) struct Inner {
     /// Ghost: the permission to every live descriptor.
     #[allow(dead_code)]
     descs: Tracked<Map<*mut HugeDesc, PointsTo<HugeDesc>>>,
+    /// Ghost: the [`MetaClaim`](crate::meta::MetaClaim) of every live
+    /// descriptor's block ([`desc_claimed`]), for [`free_desc`].
+    #[allow(dead_code)]
+    dclaims: Tracked<Map<*mut HugeDesc, crate::meta::MetaClaim>>,
+    /// Ghost: the live-object records' identity of the `Meta` the
+    /// descriptors and the table come from (`Huge::new`'s), fixed at
+    /// creation.
+    #[allow(dead_code)]
+    mid: Ghost<vstd::resource::Loc>,
     /// Ghost: the `Empty` list, head first.
     #[allow(dead_code)]
     elist: Ghost<Seq<*mut HugeDesc>>,
@@ -631,6 +638,21 @@ spec fn perms_ok(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> bool {
         &&& d@.addr != 0
         &&& desc_in_meta(d)
     }
+}
+
+/// `claims` holds the claim of the descriptor block at `d`
+/// ([`desc_claim_for`]), from the `Meta` whose live-object records are
+/// `id`.
+spec fn desc_claimed(claims: Map<*mut HugeDesc, crate::meta::MetaClaim>, d: *mut HugeDesc, id: vstd::resource::Loc) -> bool {
+    &&& claims.contains_key(d)
+    &&& desc_claim_for(claims[d], d, id)
+}
+
+/// `c` is the claim of the descriptor block at `d`, from the `Meta`
+/// whose live-object records are `id` ([`alloc_desc`]; `Meta::free` takes
+/// it back with the block, [`free_desc`]).
+spec fn desc_claim_for(c: crate::meta::MetaClaim, d: *mut HugeDesc, id: vstd::resource::Loc) -> bool {
+    c.held(id, d as *mut u8, vstd::layout::size_of::<HugeDesc>() as int, vstd::layout::align_of::<HugeDesc>() as int)
 }
 
 /// The 48 bytes of the descriptor at `d` are metadata
@@ -1258,6 +1280,8 @@ impl Inner {
     pub(crate) closed spec fn wf(&self) -> bool {
         &&& self.table.wf()
         &&& perms_ok(self.descs@)
+        &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> desc_claimed(self.dclaims@, d, self.mid@)
+        &&& self.table.spec_mid() == self.mid@
         &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> desc_ok(self.descs@[d].value(), self.next_page)
         &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> run_ok(self.descs@[d].value(), self.lg@)
         &&& forall|k: usize| #[trigger] self.table.lookup(k) matches Some(d) ==> self.descs@.contains_key(d)
@@ -1482,9 +1506,26 @@ impl Inner {
         self.np@
     }
 
+    /// The table's storage and the descriptors come from one `Meta`,
+    /// whose claims `dclaims` holds.
+    proof fn lemma_mid(&self)
+        requires
+            self.wf(),
+        ensures
+            self.table.spec_mid() == self.mid@,
+            forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> desc_claimed(self.dclaims@, d, self.mid@),
+    {
+    }
+
     /// The ghost page shift.
     pub(crate) closed spec fn spec_lg(&self) -> u32 {
         self.lg@
+    }
+
+    /// The live-object records' identity of the `Meta` the descriptors
+    /// and the table come from ([`Inner::mid`]).
+    pub(crate) closed spec fn spec_mid(&self) -> vstd::resource::Loc {
+        self.mid@
     }
 
     /// The `Empty` list's entries are live, with a page or more each,
@@ -1517,6 +1558,8 @@ impl Inner {
         &&& self.all == o.all
         &&& self.runs == o.runs
         &&& self.pgs == o.pgs
+        &&& self.dclaims == o.dclaims
+        &&& self.mid == o.mid
         &&& links_only(o.descs@, self.descs@)
     }
 
@@ -1595,6 +1638,7 @@ impl Inner {
             ),
             final(self).stats.next_page == old(self).stats.next_page,
             *final(self) == (Inner { table: final(self).table, stats: final(self).stats, ..*old(self) }),
+            final(self).table.spec_mid() == old(self).table.spec_mid(),
     {
         // `d` is a live descriptor owned by this allocator.
         let (start, pages, state) = (self.desc(d).start(), self.desc(d).pages(), self.desc(d).state());
@@ -1640,6 +1684,7 @@ impl Inner {
             ),
             final(self).stats.next_page == old(self).stats.next_page,
             *final(self) == (Inner { table: final(self).table, stats: final(self).stats, ..*old(self) }),
+            final(self).table.spec_mid() == old(self).table.spec_mid(),
             forall|i: int|
                 #![trigger others[i]]
                 0 <= i < others.len() && old(self).descs@.contains_key(others[i]) && others[i] != d ==> others[i]@.addr != d@.addr,
@@ -1978,16 +2023,20 @@ const _: () = assert!(
 verus! {
 
 /// A block for a descriptor from `meta`, with the permission to it
-/// (`Meta::alloc_raw`'s, typed); null, with none, when the metadata region
+/// (`Meta::alloc_raw`'s, typed) and its claim (`Meta::alloc_raw`'s, which
+/// [`free_desc`] gives back); null, with neither, when the metadata region
 /// is exhausted. The block is `meta`'s, so metadata when `meta` is the
 /// process's.
+// The tracked result is part of the signature.
+#[allow(clippy::type_complexity)]
 #[inline(always)]
-fn alloc_desc(meta: &Meta, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut HugeDesc, Tracked<Option<PointsTo<HugeDesc>>>))
+fn alloc_desc(meta: &Meta, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut HugeDesc, Tracked<Option<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>>))
     requires
         crate::sys::may_syscall(),
         old(ord).allows(rank_meta()),
     ensures
-        r.0@.addr != 0 ==> r.1@ is Some && r.1@->0.ptr() == r.0 && r.1@->0.is_uninit(),
+        r.0@.addr != 0 ==> r.1@ is Some && (r.1@->0).0.ptr() == r.0 && (r.1@->0).0.is_uninit(),
+        r.0@.addr != 0 ==> desc_claim_for((r.1@->0).1, r.0, meta.live_id()),
         r.0@.addr != 0 ==> meta.holds(r.0@.addr as int, vstd::layout::size_of::<HugeDesc>() as int),
         r.0@.addr != 0 && meta.is_process() ==> desc_in_meta(r.0),
         *final(ord) == *old(ord),
@@ -1995,45 +2044,77 @@ fn alloc_desc(meta: &Meta, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut H
     proof {
         crate::meta::lemma_consts();
     }
-    let (p, Tracked(raw)) = meta.alloc_raw(Layout::new::<HugeDesc>(), Tracked(ord));
+    let (p, Tracked(blk)) = meta.alloc_raw(Layout::new::<HugeDesc>(), Tracked(ord));
+    let tracked (raw, claim) = blk;
     let d = p as *mut HugeDesc;
-    let tracked perm = desc_perm(raw, d);
+    proof {
+        assert((d as *mut u8)@ == p@);
+    }
+    let tracked perm = desc_perm(raw, claim, d);
     (d, Tracked(perm))
 }
 
-/// The descriptor permission of a block of `raw` at `d`, when there is a
-/// block.
-proof fn desc_perm(tracked raw: PointsToRaw, d: *mut HugeDesc) -> (tracked r: Option<PointsTo<HugeDesc>>)
+/// The descriptor permission of a block of `raw` at `d`, with the block's
+/// claim, when there is a block.
+proof fn desc_perm(tracked raw: PointsToRaw, tracked claim: crate::meta::MetaClaim, d: *mut HugeDesc) -> (tracked r: Option<
+    (PointsTo<HugeDesc>, crate::meta::MetaClaim),
+>)
     ensures
         d@.addr != 0 && raw.is_range(d@.addr as int, vstd::layout::size_of::<HugeDesc>() as int)
             && raw.provenance() == d@.provenance && d@.addr as int % vstd::layout::align_of::<HugeDesc>() as int == 0
-            ==> r is Some && r->0.ptr() == d && r->0.is_uninit(),
+            ==> r is Some && (r->0).0.ptr() == d && (r->0).0.is_uninit() && (r->0).1 == claim,
 {
     if d@.addr != 0 && raw.is_range(d@.addr as int, vstd::layout::size_of::<HugeDesc>() as int)
         && raw.provenance() == d@.provenance && d@.addr as int % vstd::layout::align_of::<HugeDesc>() as int == 0 {
         let tracked perm = raw.into_typed::<HugeDesc>(d@.addr);
         assert(perm.ptr()@ == d@);
-        Some(perm)
+        Some((perm, claim))
     } else {
         None
     }
 }
 
-/// Give the block `d` from [`alloc_desc`] back to `meta`, with its
-/// permission, which is dropped: `Meta::free` takes the block without
-/// one, and its caller contract (the block is no longer used) is trusted
-/// there.
+/// The permission to the bytes of the descriptor block that `desc.0`
+/// is the permission to (its contents dropped), with the block's claim:
+/// what [`free_desc`] takes.
+proof fn desc_raw(tracked desc: (PointsTo<HugeDesc>, crate::meta::MetaClaim)) -> (tracked r: (
+    PointsToRaw,
+    crate::meta::MetaClaim,
+))
+    ensures
+        r.0.is_range(desc.0.ptr()@.addr as int, vstd::layout::size_of::<HugeDesc>() as int),
+        r.0.provenance() == desc.0.ptr()@.provenance,
+        r.1 == desc.1,
+{
+    let tracked (mut perm, claim) = desc;
+    perm.leak_contents();
+    (perm.into_raw(), claim)
+}
+
+/// Give the block `d` from [`alloc_desc`] back to `meta`, with `blk`,
+/// the permission to its bytes and its claim ([`desc_raw`]). `blk` goes
+/// to `Meta::free` as it is: every erased `Tracked(..)` expression is a
+/// call to `Tracked::<T>::assume_new_fallback`, and rustc's MIR inliner
+/// gives up on a function from which more than 16 instances of it, by
+/// `T`, are reachable (`mir_callgraph_cyclic`), which `Huge::free_run`
+/// is at; so the descriptor's permission travels with the same `T` as
+/// `Meta::free`'s.
 #[inline(always)]
-fn free_desc(meta: &Meta, d: *mut HugeDesc, _perm: Tracked<PointsTo<HugeDesc>>, Tracked(ord): Tracked<&mut LockOrder>)
+fn free_desc(meta: &Meta, d: *mut HugeDesc, blk: Tracked<(PointsToRaw, crate::meta::MetaClaim)>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
         d@.addr != 0,
-        _perm@.ptr() == d,
+        blk@.0.is_range(d@.addr as int, vstd::layout::size_of::<HugeDesc>() as int),
+        blk@.0.provenance() == d@.provenance,
+        desc_claim_for(blk@.1, d, meta.live_id()),
         old(ord).allows(rank_meta()),
     ensures
         *final(ord) == *old(ord),
 {
-    meta.free(d as *mut u8, Layout::new::<HugeDesc>(), Tracked(ord));
+    proof {
+        assert((d as *mut u8)@.addr == d@.addr && (d as *mut u8)@.provenance == d@.provenance);
+    }
+    meta.free(d as *mut u8, Layout::new::<HugeDesc>(), blk, Tracked(ord));
 }
 
 /// Where a run may be taken ([`Huge::find`]'s answer): fresh pages at or
@@ -2299,6 +2380,8 @@ impl Inner {
         &&& self.table.spec_count() == g0.table.spec_count() + t.delta(6)
         &&& forall|k: usize| #[trigger] self.table.lookup(k) == t.lookup(g0.table, k)
         &&& perms_ok(self.descs@)
+        &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> desc_claimed(self.dclaims@, d, self.mid@)
+        &&& self.table.spec_mid() == self.mid@
         &&& forall|x: *mut HugeDesc| #[trigger] self.descs@.contains_key(x) <==> t.model(g0.descs@, x) is Some
         &&& forall|x: *mut HugeDesc| #[trigger] self.descs@.contains_key(x) ==> same_but_links(
             t.model(g0.descs@, x).unwrap(),
@@ -2923,9 +3006,13 @@ impl Inner {
             old(self).all@.contains(d),
             old(self).descs@[d].value().state == RunState::Empty as u8 ==> old(self).elist@.contains(d),
             old(ord).allows(rank_meta()),
+            meta.live_id() == old(self).mid@,
+            forall|x: *mut HugeDesc| #[trigger] old(self).descs@.contains_key(x) ==> desc_claimed(old(self).dclaims@, x, old(self).mid@),
         ensures
             *final(ord) == *old(ord),
             final(self).descs@.dom() == old(self).descs@.dom().remove(d),
+            final(self).mid == old(self).mid,
+            forall|x: *mut HugeDesc| #[trigger] final(self).descs@.contains_key(x) ==> desc_claimed(final(self).dclaims@, x, final(self).mid@),
             perms_ok(final(self).descs@),
             forall|x: *mut HugeDesc| #[trigger] final(self).descs@.contains_key(x) ==> same_but_links(
                 old(self).descs@[x].value(),
@@ -2958,7 +3045,11 @@ impl Inner {
                 }
             }
         }
-        // `d` is live and about to be discarded.
+        // `d` is live and about to be discarded; its claim goes with it.
+        let tracked dc = self.dclaims.borrow_mut().tracked_remove(d);
+        proof {
+            assert(desc_claimed(old(self).dclaims@, d, old(self).mid@));
+        }
         if self.desc(d).state() == RunState::Empty {
             self.unlink(d);
         }
@@ -2997,7 +3088,7 @@ impl Inner {
                 }
             }
         }
-        free_desc(meta, d, Tracked(perm), Tracked(ord));
+        free_desc(meta, d, Tracked(desc_raw((perm, dc))), Tracked(ord));
     }
 
     /// The free extent starting at `page`, which must be a set free bit
@@ -3085,6 +3176,7 @@ impl Huge {
             r matches Some(h) ==> h.spec_npages() == (regions.huge_len >> regions.lg_page) as int
                 && h.spec_page() == (1usize << regions.lg_page) as int
                 && h.spec_base() == regions.huge_base,
+            r matches Some(h) ==> h.spec_mid() == meta.live_id(),
             *final(ord) == *old(ord),
     {
         broadcast use axiom_huge_lock_inv;
@@ -3153,6 +3245,8 @@ impl Huge {
                     table_cap: 0,
                 },
                 descs: Tracked(descs),
+                dclaims: Tracked(Map::tracked_empty()),
+                mid: Ghost(meta.live_id()),
                 elist: Ghost(Seq::empty()),
                 all: Ghost(Seq::empty()),
                 np: Ghost(npages),
@@ -3230,6 +3324,13 @@ impl Huge {
     /// Pages in the region.
     pub closed spec fn spec_npages(&self) -> int {
         self.npages as int
+    }
+
+    /// The live-object records' identity of the `Meta` this allocator's
+    /// descriptors and table come from ([`Inner::spec_mid`], fixed at
+    /// creation): the `meta` its callers pass.
+    pub closed spec fn spec_mid(&self) -> vstd::resource::Loc {
+        lock_init(self.inner).spec_mid()
     }
 
     /// The address of page 0.
@@ -4703,8 +4804,8 @@ impl Huge {
         run: *mut HugeDesc,
         spare: *mut HugeDesc,
         arena: u16,
-        Tracked(run_perm): Tracked<PointsTo<HugeDesc>>,
-        Tracked(spare_perm): Tracked<PointsTo<HugeDesc>>,
+        Tracked(run_desc): Tracked<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>,
+        Tracked(spare_desc): Tracked<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>,
         Tracked(tok): Tracked<&mut Map<int, RunToken>>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: (bool, Tracked<Zeroed>))
@@ -4717,8 +4818,11 @@ impl Huge {
             old(g).spec_lg() == self.lg_page,
             run@.addr != 0,
             spare@.addr != 0,
-            run_perm.ptr() == run,
-            spare_perm.ptr() == spare,
+            run_desc.0.ptr() == run,
+            desc_claim_for(run_desc.1, run, old(g).mid@),
+            spare_desc.0.ptr() == spare,
+            desc_claim_for(spare_desc.1, spare, old(g).mid@),
+            meta.live_id() == old(g).mid@,
             desc_in_meta(run),
             desc_in_meta(spare),
             GUARD_PAGES < p.pages,
@@ -4747,7 +4851,10 @@ impl Huge {
         let old_mark = g.next_page;
         let mut spare_used = false;
         let mut zeroed = true;
+        let tracked (run_perm, run_claim) = run_desc;
+        let tracked (spare_perm, spare_claim) = spare_desc;
         let tracked mut spare_slot = Some(spare_perm);
+        let tracked mut spare_claim_slot = Some(spare_claim);
         let ghost d0 = g.descs@;
         let ghost a0 = g.all@;
         let ghost l0 = g.elist@;
@@ -4794,6 +4901,8 @@ impl Huge {
                     assert(!d0.contains_key(spare));
                     vs = sp.value();
                     g.descs.borrow_mut().tracked_insert(spare, sp);
+                    let tracked sc = spare_claim_slot.tracked_take();
+                    g.dclaims.borrow_mut().tracked_insert(spare, sc);
                     g.all@ = g.all@.push(spare);
                     assert(t0.lookup(old_mark) is None);
                     assert(t0.lookup((s - 1) as usize) is None);
@@ -4874,6 +4983,8 @@ impl Huge {
                     }
                     vs = sp.value();
                     g.descs.borrow_mut().tracked_insert(spare, sp);
+                    let tracked sc = spare_claim_slot.tracked_take();
+                    g.dclaims.borrow_mut().tracked_insert(spare, sc);
                     g.all@ = g.all@.push(spare);
                     assert(forall|i: int| 0 <= i < l0.len() ==> #[trigger] enode(l0, g.descs@, i) == enode(l0, d0, i));
                     assert(t1.lookup(end) is None);
@@ -4997,6 +5108,7 @@ impl Huge {
             self.lemma_pages((need - GUARD_PAGES) as usize);
             assert(run_ok(vr, g.lg@));
             g.descs.borrow_mut().tracked_insert(run, rp);
+            g.dclaims.borrow_mut().tracked_insert(run, run_claim);
             g.all@ = g.all@.push(run);
             assert(forall|i: int| 0 <= i < g.elist@.len() ==> #[trigger] enode(g.elist@, g.descs@, i) == enode(g.elist@, dr, i));
         }
@@ -5005,7 +5117,8 @@ impl Huge {
         g.stats.next_page = g.next_page;
         if !spare_used {
             let tracked sp = spare_slot.tracked_unwrap();
-            free_desc(meta, spare, Tracked(sp), Tracked(ord));
+            let tracked sc = spare_claim_slot.tracked_unwrap();
+            free_desc(meta, spare, Tracked(desc_raw((sp, sc))), Tracked(ord));
         }
         proof {
             let t = Take {
@@ -5124,6 +5237,7 @@ impl Huge {
             crate::meta::is_pow2(align),
             self.spec_base_aligned(),
             meta.is_process(),
+            meta.live_id() == self.spec_mid(),
             old(ord).allows(rank_huge()),
         ensures
             *final(ord) == *old(ord),
@@ -5149,6 +5263,7 @@ impl Huge {
             crate::meta::is_pow2(align),
             self.spec_base_aligned(),
             meta.is_process(),
+            meta.live_id() == self.spec_mid(),
             old(ord).allows(rank_huge()),
         ensures
             *final(ord) == *old(ord),
@@ -5191,7 +5306,7 @@ impl Huge {
         let run_perm = Tracked(_run_opt.get().tracked_unwrap());
         let (spare, _spare_opt) = alloc_desc(meta, Tracked(&mut under));
         if spare.is_null() {
-            free_desc(meta, run, run_perm, Tracked(&mut under));
+            free_desc(meta, run, Tracked(desc_raw(run_perm.get())), Tracked(&mut under));
             return (Placed::NONE, Tracked(Zeroed::empty(0)));
         }
         let spare_perm = Tracked(_spare_opt.get().tracked_unwrap());
@@ -5212,8 +5327,8 @@ impl Huge {
             && (end <= g.next_page || g.free.ensure(meta, page, end - 1, Tracked(&mut under)).is_ok())
             && self.prepare(s, usable_pages, g.next_page).is_ok();
         if !ok {
-            free_desc(meta, run, run_perm, Tracked(&mut under));
-            free_desc(meta, spare, spare_perm, Tracked(&mut under));
+            free_desc(meta, run, Tracked(desc_raw(run_perm.get())), Tracked(&mut under));
+            free_desc(meta, spare, Tracked(desc_raw(spare_perm.get())), Tracked(&mut under));
             return (Placed::NONE, Tracked(Zeroed::empty(0)));
         }
 
@@ -5641,6 +5756,8 @@ impl Inner {
         &&& self.table.spec_count() == g0.table.spec_count() - m.parts(6) + weight(m.vm, 6)
         &&& forall|k: usize| #[trigger] self.table.lookup(k) == m.lookup(g0.table, k)
         &&& perms_ok(self.descs@)
+        &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> desc_claimed(self.dclaims@, d, self.mid@)
+        &&& self.table.spec_mid() == self.mid@
         &&& forall|x: *mut HugeDesc| #[trigger] self.descs@.contains_key(x) <==> m.model(g0.descs@, x) is Some
         &&& forall|x: *mut HugeDesc| #[trigger] self.descs@.contains_key(x) ==> same_but_links(
             m.model(g0.descs@, x).unwrap(),
@@ -6201,6 +6318,8 @@ proof fn lemma_free_end(g0: Inner, gr: Inner, gl: Inner, g1: Inner, m: Merge)
         gr.next_page == g0.next_page,
         gr.np == g0.np,
         gr.lg == g0.lg,
+        gr.mid == g0.mid,
+        forall|x: *mut HugeDesc| #[trigger] gr.descs@.contains_key(x) ==> desc_claimed(gr.dclaims@, x, g0.mid@),
         // `gl`: the survivor rewritten.
         gl.table == gr.table,
         gl.stats == gr.stats,
@@ -6208,6 +6327,8 @@ proof fn lemma_free_end(g0: Inner, gr: Inner, gl: Inner, g1: Inner, m: Merge)
         gl.next_page == gr.next_page,
         gl.np == gr.np,
         gl.lg == gr.lg,
+        gl.mid == gr.mid,
+        gl.dclaims == gr.dclaims,
         perms_ok(gl.descs@),
         gl.descs@.dom() == gr.descs@.dom(),
         forall|x: *mut HugeDesc| #[trigger] gl.descs@.contains_key(x) && x != m.surv ==> same_but_links(
@@ -6224,6 +6345,7 @@ proof fn lemma_free_end(g0: Inner, gr: Inner, gl: Inner, g1: Inner, m: Merge)
         // `g1`: the survivor entered.
         g1 == (Inner { table: g1.table, stats: g1.stats, free: g1.free, ..gl }),
         g1.table.wf(),
+        g1.table.spec_mid() == g0.mid@,
         g1.table.spec_count() == gl.table.spec_count() + weight(m.vm, 6),
         forall|k: usize| #[trigger] g1.table.lookup(k) == if is_key(m.vm, k as int) {
             Some(m.surv)
@@ -6801,6 +6923,7 @@ impl Huge {
             crate::sys::may_syscall(),
             self.is_process(),
             meta.is_process(),
+            meta.live_id() == self.spec_mid(),
             tok.wf(),
             tok.start() == page,
             old(ord).allows(rank_huge()),
@@ -6911,6 +7034,9 @@ impl Huge {
         // reads only at or below the cap.
         let ghost pof = st == RunState::Purged && usable <= cap;
         // Best effort: a fuller table still works, only slower.
+        proof {
+            g0.lemma_mid();
+        }
         let _ = g.table.ensure(meta, page_size, 2, Tracked(&mut under));
         g.drop_extent(d, Ghost(Seq::empty()));
         let ghost gb = g@;
@@ -6962,6 +7088,7 @@ impl Huge {
                 0 <= k <= 2,
                 array_iter_rest(iter) == seq![pred, succ].skip(k),
                 g@ == (Inner { table: g@.table, stats: g@.stats, ..gb }),
+                g@.table.spec_mid() == gb.table.spec_mid(),
                 g@.table.wf(),
                 forall|key: usize| #[trigger] g@.table.lookup(key) == if m.nb_key(k, key as int) {
                     None
@@ -7031,6 +7158,9 @@ impl Huge {
                 under.allows(rank_meta()),
                 0 <= k2 <= 3,
                 array_iter_rest(iter) == seq![d, pred, succ].skip(k2),
+                g@.mid == g0.mid,
+                meta.live_id() == g0.mid@,
+                forall|x: *mut HugeDesc| #[trigger] g@.descs@.contains_key(x) ==> desc_claimed(g@.dclaims@, x, g0.mid@),
                 perms_ok(g@.descs@),
                 elist_ok(g@.empty_head, g@.empty_tail, g@.elist@, g@.descs@),
                 forall|x: *mut HugeDesc| #[trigger] g@.descs@.contains_key(x) <==> d0.contains_key(x) && !m2.gone(k2, x),

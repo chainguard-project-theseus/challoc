@@ -3031,7 +3031,12 @@ fn freeing_caches_that_were_not_flushed_aborts() {
     let _p = t.alloc(c);
     let h = t.heap();
     assert!(h.cache(c).unwrap().len() > 0);
-    Heap::free_caches(s, &mut h.caches, Tracked::assume_new());
+    Heap::free_caches(
+        s,
+        &mut h.caches,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
 }
 
 #[test]

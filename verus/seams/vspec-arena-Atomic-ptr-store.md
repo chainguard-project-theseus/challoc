@@ -1,6 +1,6 @@
 # `core::sync::atomic::Atomic::<*mut T>::store`
 
-Seam S266 of `verus/SEAMS.md`: src/vspec/arena.rs:24. Kind: assume_spec. Category: core library.
+Seam S265 of `verus/SEAMS.md`: src/vspec/arena.rs:24. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

@@ -28,9 +28,11 @@ verus! {
 /// `alloc_zeroed`, `free_claimed`, `commit_claimed`, `reserve`,
 /// `reserve_committed_raw` (and `reserve_committed`, including its
 /// rollback), `reserve_table` and `stats` are verified to keep it.
-/// `Meta::free` and `Meta::commit` assume their callers' claims and pass
-/// them to `free_claimed` and `commit_claimed`; the claims are trusted
-/// there, not here. The only writers not verified are the test-only
+/// `Meta::free` takes its caller's claim to the object (a `MetaClaim`,
+/// which `alloc_raw` and `alloc_zeroed` hand out) and passes it to
+/// `free_claimed`; `Meta::commit` assumes its caller's claim and passes it
+/// to `commit_claimed`, so that claim is trusted there, not here. The
+/// only writers not verified are the test-only
 /// `set_eager_for_test` and `eager_allowed`, which touch only `eager`,
 /// which `wf` does not mention. The fork handlers take and
 /// release the raw lock without touching the value, and nothing calls

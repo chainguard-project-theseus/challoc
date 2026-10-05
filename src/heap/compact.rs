@@ -458,6 +458,7 @@ impl Heap {
                 let ghost before_t = *perms;
                 let tracked served = CachePerms::lemma_tokened_compact(&mut perms.toks, old_perms, before_t, cache, at as int, top as int);
                 assert(*perms == (CachePerms { toks: perms.toks, ..before_t }));
+                CachePerms::lemma_claimed_hdr(old_perms, *perms, cache);
                 CachePerms::lemma_zero_same(before_t, *perms);
                 CachePerms::lemma_same_but_tokens(mid, *perms, old_perms);
                 assert(served@ == p@.addr as int);
@@ -612,6 +613,7 @@ impl Heap {
                 proof {
                     tracked_swap(&mut self.perms.borrow_mut().slots, &mut sl);
                     CachePerms::lemma_rebuild_none(p1, self.perms@, cache, len as int, want as int);
+                    CachePerms::lemma_claimed_frame(p1, self.perms@);
                     Heap::lemma_keeps_trans(*old(self), h1, *self);
                 }
                 return;
@@ -663,8 +665,20 @@ impl Heap {
                 assert(crate::class::claim_zero_ok(claim, claimed, ztok, class as int));
                 assert(class_table()[p1.cls[cache]].size == class_table()[class as int].size);
                 if claim.zeroed {
-                    assert forall|k: int| 0 <= k < nn implies #[trigger] ztok.contains_key(k) && ztok[k].covers(claimed[k], class_table()[p1.cls[cache]].size as int) by {}
+                    // One quantifier per conjunct, each instantiating
+                    // `claim_zero_ok` through its trigger term, so neither depends
+                    // on which conjunct Z3 splits on.
+                    assert forall|k: int| 0 <= k < nn implies #[trigger] ztok.contains_key(k) by {
+                        assert(0 <= k < claim.n);
+                        assert(ztok.contains_key(k));
+                    }
+                    assert forall|k: int| 0 <= k < nn implies #[trigger] ztok[k].covers(claimed[k], class_table()[p1.cls[cache]].size as int) by {
+                        assert(0 <= k < claim.n);
+                        assert(ztok.contains_key(k));
+                        assert(ztok[k].covers(claimed[k], class_table()[class as int].size as int));
+                    }
                 }
+                assert(p1.claimed());
                 CachePerms::lemma_rebuild_some(perms, ztok, &mut toks, p1, s2, cache, len as int, want as int, nn, claim.zeroed, claimed, out@, all0, all@);
                 Heap::lemma_keeps_trans(*old(self), h1, *self);
             }
@@ -770,6 +784,7 @@ impl CachePerms {
             old(perms).owner == o.owner,
             old(perms).toks == o.toks,
             old(perms).zero == o.zero,
+            old(perms).blocks == o.blocks,
             old(perms).hdr(p).slots == o.hdr(p).slots,
             old(perms).hdr(p).cap == o.hdr(p).cap,
             old(perms).hdr(p).len == len + n,
@@ -780,7 +795,7 @@ impl CachePerms {
             claimed.len() == want,
             slots_in(claimed, o.cls[p], 0, n),
             crate::class::keyed(old(ctoks).toks, ptr_addrs(claimed.subrange(0, n)), slot_loc(o.cls[p]), 0, n),
-            zeroed ==> forall|k: int| 0 <= k < n ==> #[trigger] z.contains_key(k) && z[k].covers(claimed[k], class_table()[o.cls[p]].size as int),
+            zeroed ==> forall|k: int| #![trigger z.contains_key(k)] #![trigger z[k]] 0 <= k < n ==> z.contains_key(k) && z[k].covers(claimed[k], class_table()[o.cls[p]].size as int),
             outf.len() == want,
             forall|k: int| 0 <= k < n ==> (#[trigger] outf[k])@.addr == stored(claimed[n - 1 - k]@.addr, o.hdr(p).slots),
             // The first slice (`len..len + want`, from `o.slots` to `mid`).
@@ -806,6 +821,7 @@ impl CachePerms {
             len < n ==> forall|i: int| 0 <= i < len + n ==> #[trigger] allf[i] == if i < n { all0[len + i] } else { all0[i - n] },
         ensures
             final(perms).keeps(o),
+            o.claimed() ==> final(perms).claimed(),
             final(perms).follows(o),
             final(perms).zero_ok(),
             final(perms).tokened(),
@@ -842,6 +858,9 @@ impl CachePerms {
         assert(*perms == (CachePerms { toks: perms.toks, ..before_t }));
         CachePerms::lemma_zero_same(before_t, *perms);
         CachePerms::lemma_same_but_tokens(before_t, *perms, o);
+        if o.claimed() {
+            CachePerms::lemma_claimed_hdr(o, *perms, p);
+        }
     }
 }
 

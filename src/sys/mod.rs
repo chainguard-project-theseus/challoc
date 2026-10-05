@@ -91,7 +91,7 @@ verus! {
 /// requires this: the `raw::syscall0`..`syscall6` seams, and every
 /// trusted body or specification that can reach the kernel (`read`,
 /// `write`, `getrandom`, the pthread calls, `Meta::commit`,
-/// `Meta::free`, the report sink's flush, ...; THEOREMS.md lists them).
+/// the report sink's flush, ...; THEOREMS.md lists them).
 /// So a verified function can reach the kernel only if its own `requires`
 /// (or its loop's invariant) carries the fact, or it calls
 /// [`grant_syscalls`], or it holds a `Stderr` (whose type invariant

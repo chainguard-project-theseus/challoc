@@ -746,7 +746,8 @@ impl Arena {
             layout.size() <= crate::meta::MAX_BINNED && layout.align() <= crate::meta::MAX_ALIGN,
             "arena: slab set table larger than an object",
         );
-        let (p, Tracked(raw)) = meta.alloc_raw(layout, Tracked(ord));
+        let (p, Tracked(blk)) = meta.alloc_raw(layout, Tracked(ord));
+        let tracked (raw, _) = blk;
         let p = p as *mut SetTable;
         let tracked perm = table_perm(raw, p);
         (p, Tracked(perm))

@@ -398,6 +398,7 @@ impl Heap {
                 CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
                 CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
                 CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+                CachePerms::lemma_claimed_hdr(old_perms, self.perms@, cache);
                 Heap::lemma_poppable_same(*old(self), *self, class as int, cache);
             }
             // SAFETY: guaranteed by the caller.
@@ -408,6 +409,7 @@ impl Heap {
             CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
             CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
             CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+            CachePerms::lemma_claimed_hdr(old_perms, self.perms@, cache);
         }
         // SAFETY: guaranteed by the caller.
         let r = unsafe { Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare)) };
@@ -447,6 +449,7 @@ impl Heap {
             pac ==> pac::pac_available(),
         ensures
             final(perms).keeps(*old(perms)),
+            old(perms).claimed() ==> final(perms).claimed(),
             final(perms).follows(*old(perms)),
             final(perms).zero_ok(),
             r.1 && pac == pac_mode() ==> CachePerms::handed_ok(final(perms).handed, r.0, old(perms).cls[cache]),
@@ -518,6 +521,9 @@ impl Heap {
                 }
                 CachePerms::lemma_zero_update(old_perms, *perms, cache);
                 CachePerms::lemma_same_but_tokens(mid, *perms, old_perms);
+                if old_perms.claimed() {
+                    CachePerms::lemma_claimed_hdr(old_perms, *perms, cache);
+                }
             }
             (p, zero)
         }
@@ -629,6 +635,7 @@ impl Heap {
         ensures
             flags & PUSH_ZERO != 0 ==> !r,
             final(perms).keeps(*old(perms)),
+            old(perms).claimed() ==> final(perms).claimed(),
             final(perms).follows(*old(perms)),
             !r ==> *final(tk) == *old(tk),
             old(perms).tokened() && old(tk).contains_key(0) ==> final(perms).tokened(),
@@ -739,6 +746,7 @@ impl Heap {
             old(tk).contains_key(0) ==> slot_token(*old(tk), old(perms).cls[cache], true, p),
         ensures
             final(perms).keeps(*old(perms)),
+            old(perms).claimed() ==> final(perms).claimed(),
             final(perms).follows(*old(perms)),
             !scan && old(perms).hdr(cache).len < old(perms).hdr(cache).cap ==> r,
             r ==> final(perms).hdr(cache).len == old(perms).hdr(cache).len + 1,
@@ -764,6 +772,9 @@ impl Heap {
                     if old_perms.tokened() {
                         CachePerms::lemma_tokened_hdr(old_perms, *perms, cache);
                     }
+                    if old_perms.claimed() {
+                        CachePerms::lemma_claimed_hdr(old_perms, *perms, cache);
+                    }
                     CachePerms::lemma_zero_hdr(old_perms, *perms, cache);
                 }
                 return false;
@@ -776,6 +787,9 @@ impl Heap {
                     CachePerms::lemma_tracks_hdr(old_perms, *perms, cache);
                     if old_perms.tokened() {
                         CachePerms::lemma_tokened_hdr(old_perms, *perms, cache);
+                    }
+                    if old_perms.claimed() {
+                        CachePerms::lemma_claimed_hdr(old_perms, *perms, cache);
                     }
                     CachePerms::lemma_zero_hdr(old_perms, *perms, cache);
                 }
@@ -819,6 +833,9 @@ impl Heap {
                     perms.toks.tracked_insert(q, t);
                     CachePerms::lemma_toks_only(before, *perms, old_perms);
                     CachePerms::lemma_tokened_push(old_perms, *perms, cache, t);
+                }
+                if old_perms.claimed() {
+                    CachePerms::lemma_claimed_hdr(old_perms, *perms, cache);
                 }
             }
         }
@@ -893,14 +910,21 @@ impl Heap {
         if self.hdr_ref(cache).cap != 0 {
             return cache;
         }
-        let (slots, Tracked(raw)) = shared.meta.alloc_raw(CacheHeader::slots_layout(cap), Tracked(ord));
+        let (slots, Tracked(blk)) = shared.meta.alloc_raw(CacheHeader::slots_layout(cap), Tracked(ord));
+        let tracked (raw, mc) = blk;
         if slots.is_null() {
             return ptr::null_mut();
         }
         let ghost h0 = *self;
         proof {
             axiom_fresh_stack(self.perms.borrow_mut(), cache, slots as *mut *mut u8, cap, raw);
+            CachePerms::lemma_claimed_frame(h0.perms@, self.perms@);
+            // The stack's claim joins the heap's, by the stack's base.
+            shared.lemma_meta();
+            assert(((slots as *mut *mut u8) as *mut u8)@ == slots@);
+            self.perms.borrow_mut().tracked_put_claim(slots as *mut *mut u8, cap as int, mc);
         }
+        let ghost pc = self.perms@;
         // `cache` is this heap's own header (still `EMPTY`) and `slots`
         // has room for `cap` pointers, exclusively ours.
         ptr_mut_write(
@@ -947,6 +971,7 @@ impl Heap {
                 assert(h0.perms@.slots.contains_key(h0.perms@.ent(p2, j)));
             }
             CachePerms::lemma_tok_update(h0.perms@, self.perms@, cache);
+            CachePerms::lemma_claimed_new(pc, self.perms@, cache);
         }
         let h = self.hdr_mut(cache);
         h.set_mode(mode);

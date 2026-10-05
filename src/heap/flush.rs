@@ -259,6 +259,7 @@ impl Heap {
                 assert(before.toks == old_perms.toks);
                 assert(toks_kept(perms.toks, old_perms.toks, slots, n));
                 CachePerms::lemma_tokened_refill(old_perms, *perms, cache, n);
+                CachePerms::lemma_claimed_hdr(old_perms, *perms, cache);
             }
             claim.n as u32
         }
@@ -628,6 +629,7 @@ impl Heap {
             }
         }
         proof {
+            CachePerms::lemma_claimed_hdr(old_perms, self.perms@, cache);
             Heap::lemma_keeps_perms(*old(self), *self);
             Heap::lemma_flush_accounting(*old(self), *self, cache, g_old, g_kept, g_rel);
         }

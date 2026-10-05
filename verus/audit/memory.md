@@ -59,7 +59,7 @@ reason (`api::axiom_fork_resumed_state`): see `invariants.md`,
 | S111 | `addr_mix` | sound | No `ensures`. |
 | S114 | `stack_mut` | sound | The slice's lifetime is the permission map's mutable borrow; final values flow back into the permissions. |
 | S119 | `arena_volatile` | sound | No `ensures`. |
-| S120 | `init_fields` | sound | Consumes the 128-byte head permission; every field it writes is in it (both quanta). |
+| S120 | `init_fields` | sound | Consumes the 128-byte head permission (and drops the block's `MetaClaim`, which only weakens what the caller holds); every field it writes is in it (both quanta). |
 | S122 | `mark_bound` | sound | No contract; runs before any reference to the heap exists. Removable by passing `bound` to `init_fields` (exec change; proposed). |
 | S123 | `Heap::destroy` | fixed | The body calls `flush_all`, which requires `shared.wf()`; the contract did not. Now required (and by `Tcaches::destroy`). |
 | S124 | `node_link` | removed | Now verified: stores through permissions split from the node's first-line permission, and returns the `arena` and `next` ones (`others::NodeHead`), which the heap keeps (`Heap::heads`). |

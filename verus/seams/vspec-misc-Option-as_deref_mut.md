@@ -1,6 +1,6 @@
 # `Option::<T>::as_deref_mut`
 
-Seam S330 of `verus/SEAMS.md`: src/vspec/misc.rs:79. Kind: assume_spec. Category: core library.
+Seam S329 of `verus/SEAMS.md`: src/vspec/misc.rs:79. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

@@ -331,6 +331,7 @@ impl CachePerms {
             final(perms).owner == old(perms).owner,
             final(perms).cls == old(perms).cls,
             final(perms).toks == old(perms).toks,
+            final(perms).blocks == old(perms).blocks,
     {
         let base = old(perms).hdr(p).slots;
         let tracked mut zz = z;

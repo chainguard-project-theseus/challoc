@@ -553,10 +553,14 @@ the assumed `Heap::wf` and the huge lock axiom.
   makes its bytes valid and in one allocation.
 - `vspec::meta::axiom_meta_lock_inv`, `axiom_meta_lock_frame`
   (`vspec/meta.rs:39`, `:52`): the metadata lock protects `Inner::wf`;
-  bounds and ghost identities fixed. `Meta::free` and `Meta::commit`
-  (`meta.rs:2574`, `:2527`) are `external_body`: each
-  assumes its caller's claim (the range was committed or allocated by
-  this `Meta`).
+  bounds and ghost identities fixed. `Meta::commit` (`meta.rs:2944`) is
+  `external_body`: it assumes its caller's claim (the range was
+  reserved by this `Meta` and not committed). `Meta::free` is verified:
+  its caller gives back the `MetaClaim` the allocation handed out, which
+  the cache permissions (`CachePerms::claimed`) and the huge allocator
+  (`huge::Inner`'s `dclaims`, the descriptor table's `claim`) carry;
+  `Heap::destroy`'s trusted body passes `Tracked::assume_new()` for the
+  claims of what it frees.
 - `Shared::put_head` and `put_table` store what they are given
   (common premise); `SlabTable::new` (`class/table.rs:325`) proves
   `meta_ok` from `Lazy::reserve_raw`.
@@ -1104,8 +1108,8 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   (`heap/shared.rs:255`), `atfork_handlers` (`api/mod.rs:502`),
   `background::spawn` and `pthread_join` (`purge/background.rs:333`,
   `:229`), `init_fields`, `Heap::destroy`
-  (`heap/mod.rs:5158`, `:5382`), `Meta::commit`, `Meta::free`
-  (`meta.rs:2745`, `:2796`), `print::emit` and
+  (`heap/mod.rs:5158`, `:5382`), `Meta::commit`
+  (`meta.rs:2745`), `print::emit` and
   `jemalloc::call_hook` (the report's call-outs, theorem 16), the
   C++ `call_handler`,
   `call_get_new_handler`, `call_throw_bad_alloc` (`api/cxx.rs:176`,
@@ -5085,7 +5089,7 @@ the gate premise below.
   (`Set::ensure`). A token does not say which locks are held, so this is
   by inspection.
 - *Trusted bodies with honest specs*: `policy::empty_bytes`,
-  `Heap::destroy`, `Meta::commit` and `Meta::free`: each states the
+  `Heap::destroy` and `Meta::commit`: each states the
   lowest rank its body takes (`assign_home`, trusted at this theorem's
   merge, is verified since theorem 34, and so are `Set::ensure` and
   the call `thread.arena` makes, `Heap::set_arena`);
@@ -5285,8 +5289,9 @@ order and the counts.
   `FreshHeap` (`heap/mod.rs:5634`, `external_body`, not `Copy`), holds
   the permission to the heap's 128 bytes of plain fields (`head()`,
   `heap_head`) and records what the trusted writers stored in `arena`
-  and `bound`. `init_fields` (`:5663`) takes the head permission that
-  `create_detached` splits off the heap's block and returns the token
+  and `bound`. `init_fields` (`:6014`) takes the head permission that
+  `create_detached` splits off the heap's block (with the block's
+  `MetaClaim`, which it drops) and returns the token
   holding it (the only way to make one); `mark_bound` (`:5737`) needs
   and keeps the permission and records `bound` (RefinedRust proves its
   body stores `true` there and leaves the other head fields' bytes,
