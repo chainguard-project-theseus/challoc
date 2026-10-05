@@ -3303,7 +3303,7 @@ pub axiom fn axiom_process_page_at_most_64k()
 
 ### S164. `Reserved`
 
-src/layout/regions.rs:1585. Kind: external_body type. Category: platform/kernel fact.
+src/layout/regions.rs:1820. Kind: external_body type. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Ghost ownership of one live reservation, `len()` bytes from `addr()`, that [`try_reserve`] obtained from the kernel.
@@ -3314,7 +3314,7 @@ pub tracked struct Reserved
 
 ### S165. `Reserved::is_apart_from_static`
 
-src/layout/regions.rs:1602. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:1837. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): a live reservation does not overlap the process's `Shared` static ([`shared_static_addr`]).
@@ -3329,7 +3329,7 @@ pub proof fn is_apart_from_static(tracked &self)
 
 ### S166. `Reserved::is_disjoint`
 
-src/layout/regions.rs:1619. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:1854. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): two live mappings do not overlap.
@@ -3346,7 +3346,7 @@ pub proof fn is_disjoint(tracked &mut self, tracked other: &Self)
 
 ### S167. `Reserved::into_unbacked`
 
-src/layout/regions.rs:1638. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:1873. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > The reservation as uncommitted address space this process owns, for the one owner that commits it piece by piece (`Meta`, for the metadata region).
@@ -3360,12 +3360,12 @@ pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
 
 ### S168. `try_reserve`
 
-src/layout/regions.rs:1658. Kind: external_body. Category: FFI/syscall.
+src/layout/regions.rs:1893. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Reserve address space with `PROT_NONE`, `MAP_NORESERVE`: on success, the address and the token for the `len` bytes there.
 
-Body mints Tracked at line 1666.
+Body mints Tracked at line 1901.
 
 ```rust
 fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
@@ -3377,7 +3377,7 @@ fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
 
 ### S169. `word`
 
-src/layout/regions.rs:1862. Kind: external_body. Category: core library.
+src/layout/regions.rs:2097. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/layout-regions-word.md).
 
 > Word `i` of the random bytes (`8 * i` on, the target's byte order).
@@ -3390,7 +3390,7 @@ fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
 
 ### S170. `class_entry`
 
-src/layout/regions.rs:2274. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/regions.rs:2524. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Islaris/Isla. Status: trusted.
 
 > `&CLASSES[c]` for the fast paths' classification, `c < NCLASSES`.

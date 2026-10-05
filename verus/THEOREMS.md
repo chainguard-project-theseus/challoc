@@ -1,6 +1,6 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the forty whole-allocator theorems as the code
+Reference for the forty-one whole-allocator theorems as the code
 states them: the Verus statement, the entry points it covers, and every
 trusted premise it rests on, with `file:line`. Read at `b2cad68`
 (branch `verus`); line numbers are the `fn`/`axiom` line at that commit,
@@ -6470,6 +6470,137 @@ so through `purge_arena`'s contract).
   (`Batch::new_t`) and push arbitrary ranges; they are not verified code.
 - Ghost only: the release library is identical to the base commit's
   (440 of 440 functions, x86_64); aarch64 not compared in this lane.
+
+## 41. Seal targets stay inside challoc's reservations
+
+Every range `Regions::seal` hands `mseal` (`never_committed`'s ranges,
+the one place init seals) is non-empty, lies inside one of challoc's
+three reservations (the class superblock's, the huge region's or the
+metadata region's `mmap`), and shares no byte with any class region,
+the huge region, the metadata region or the process's `Shared` static.
+So no range `mseal` gets overlaps a region the allocator commits, purges
+or reprotects in, or lies outside the address space challoc reserved.
+The `file:line`s are the `fn`/`spec` line at this section's commit.
+
+**Statement.**
+
+```rust
+// layout/regions.rs:276 (opaque; `lemma_seal_target`, :288, unfolds it)
+pub open spec fn seal_target(self, m: Mapping) -> bool {
+    let region = (1usize << self.lg_region) as int;
+    &&& m.len > 0
+    &&& self.in_mapping(m.addr as int, m.len as int)
+    &&& forall|c: int| 0 <= c < NCLASSES ==>
+        disjoint(#[trigger] self.class_base[c] as int, region, m.addr as int, m.len as int)
+    &&& disjoint(self.huge_base as int, self.huge_len as int, m.addr as int, m.len as int)
+    &&& disjoint(self.meta_base as int, self.meta_len as int, m.addr as int, m.len as int)
+    &&& disjoint(m.addr as int, m.len as int, shared_static_addr(), shared_static_len())
+}
+
+// layout/regions.rs:262: inside `superblock_map`, `huge_map` or `meta_map`.
+pub open spec fn in_mapping(self, a: int, len: int) -> bool
+
+// layout/regions.rs:1712
+pub fn never_committed(&self) -> (r: ([Mapping; MAX_SEALED], usize))
+    requires
+        self.wf(),
+    ensures
+        r.1 <= MAX_SEALED,
+        self.separated() && self.mapped() ==> forall|i: int| 0 <= i < r.1 ==> self.seal_target(#[trigger] r.0[i]),
+
+// layout/regions.rs:2426, :2447: before each `mseal(m.addr, m.len, 0)` (:2452).
+pub fn seal(&self) -> u32
+    requires
+        crate::sys::may_syscall(),
+        self.wf(),
+        self.separated(),
+        self.mapped(),
+    ...
+        assert(self.seal_target(*m));
+```
+
+(Abridged: line breaks added.) In words: `seal` asserts `seal_target`
+of each range right before its `mseal` call; `never_committed` ensures
+it of every range it returns, for regions that are separated and inside
+their mappings. `Regions::mapped` (`:244`) is the new reservation
+arithmetic: the superblock's `NCLASSES` strides inside `superblock_map`,
+the huge region inside `huge_map`, the metadata region inside
+`meta_map`, the three mappings pairwise disjoint and none holding a byte
+of the `Shared` static. `Regions::from_parts` (`:492`) and
+`Regions::reserve_owning` (`:2202`) now ensure it, so `seal`'s one call
+(`api::init_slow`, `api/mod.rs:892`, on the regions `reserve_owning`
+returned at `:890`) has its precondition.
+
+How it is proved:
+- **The mappings.** `from_parts` already required each region inside
+  its mapping, the mappings pairwise disjoint and apart from the static
+  (`reserve_owning` proves these from `align_base`, `slab_multiple` and
+  the trusted `Reserved::is_disjoint` and `is_apart_from_static`); it
+  now ensures them as `mapped`, with `NCLASSES << lg_stride` as
+  `NCLASSES * stride` (`lemma_shl_mul`).
+- **The class gaps.** `never_committed`'s loop keeps, for separated and
+  mapped regions, `superblock_map.addr <= start <= superblock + c *
+  stride`, every class below `c` ending at or before `start`, and
+  `seal_target` of every range pushed so far (`push_range`, `:1614`,
+  now ensures exactly what it appends and that it keeps the earlier
+  entries). A gap `start..class_base[c]` lies inside the superblock's
+  mapping (`lemma_class_in_strides`, `:323`) and before every class
+  from `c` on (`lemma_class_before`, `:305`: class `j`'s region ends
+  before class `k`'s starts for `j < k`, each inside its stride);
+  `lemma_superblock_gap` (`:1633`) concludes, and covers the slack after
+  the last class (`k == NCLASSES`). The huge and metadata regions are
+  inside their own mappings, disjoint from the superblock's.
+- **The side slack.** `lemma_huge_slack` (`:1657`) and
+  `lemma_meta_slack` (`:1677`): a range in the huge (metadata) mapping
+  before or after its region is apart from it by its bounds, from the
+  other region by the mappings' disjointness, and from every class
+  region because each class region lies in the superblock's strides,
+  inside `superblock_map`.
+- **The static.** Every range is inside a mapping, which `mapped` keeps
+  apart from the static.
+
+**Covers.** The init sweep (`api::init_slow` when the probe said
+`mseal=yes`): every range it seals, including those before a refusal
+stops the sweep.
+
+**Premises beyond the common ones.**
+- The kernel's `mmap` contract as trusted for region separation
+  (`linux::try_reserve`, `Reserved::is_disjoint`,
+  `Reserved::is_apart_from_static`): the three reservations are live,
+  pairwise disjoint and apart from the loaded object's data.
+- The reservations stay mapped: nothing unmaps them (`Regions::release`
+  is test-only), so the `Mapping` values describe live mappings when
+  `seal` runs. That the `Mapping` fields are the reservations
+  `try_reserve` returned is by construction in `reserve_owning` (the
+  superblock and huge tokens are dropped there); no ensures ties the
+  fields to a live `Reserved` token.
+
+**Scope and where the statement is weaker than the code.**
+- Nothing states the ranges page-aligned, which `mseal` needs to
+  succeed: the mapping addresses `try_reserve` returns are not stated
+  page multiples (they are, from the kernel), and the class bases, the
+  region lengths and the huge and metadata bases are `MAX_SLAB` or page
+  multiples. A misaligned range would fail with `EINVAL` and stop the
+  sweep, not seal anything else.
+- "Never committed" itself is not proved: the statement is that the
+  ranges avoid the class, huge and metadata regions, which is where the
+  allocator commits, purges and reprotects (theorem 40 for purges); that
+  no code touches a reservation byte outside them is not a verified
+  fact.
+- Nothing states the ranges pairwise disjoint or in address order, nor
+  that together with the regions they cover the three mappings
+  (`layout::tests::never_committed_is_the_complement_of_the_regions`
+  tests the cover; it is not verified code).
+- `print`'s `never_committed().1` (the count `malloc_stats_print`
+  reports) holds no `mapped` fact and gets only the bound.
+- Only `Regions::seal` is covered. `sys::features::probe_mseal` seals a
+  scratch page of its own `mmap`, outside challoc's reservations by
+  design; `sys::mseal_blocks_munmap_when_supported` seals a page of its
+  own, and `layout::linux_tests::seal_child` seals a test layout through
+  `Regions::seal` in the test build (not verified; `Regions::reserve`,
+  the `cfg(test)` wrapper of `reserve_owning`, ensures its preconditions).
+- Ghost only: the release library is identical to the base commit's
+  (414 of 414 functions, x86_64); aarch64 not compared in this lane.
 
 ## Interface contract
 

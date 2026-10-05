@@ -232,6 +232,112 @@ impl Regions {
         &&& disjoint(self.meta_base as int, self.meta_len as int, a, len)
     }
 
+    /// The regions inside the three reservations they were carved from:
+    /// the superblock's strides inside `superblock_map`, the huge region
+    /// inside `huge_map`, the metadata region inside `meta_map`; the three
+    /// mappings pairwise disjoint and none holding a byte of the process's
+    /// `Shared` static. [`from_parts`] proves it from its preconditions,
+    /// which [`Regions::reserve_owning`] proves from the kernel's `mmap`
+    /// contract (`linux::Reserved`, trusted).
+    ///
+    /// [`from_parts`]: Regions::from_parts
+    pub open spec fn mapped(self) -> bool {
+        let stride = (1usize << self.lg_stride) as int;
+        let (s, h, m) = (self.superblock_map, self.huge_map, self.meta_map);
+        &&& s.addr <= self.superblock
+        &&& self.superblock + NCLASSES * stride <= s.addr + s.len
+        &&& h.addr <= self.huge_base
+        &&& self.huge_base + self.huge_len <= h.addr + h.len
+        &&& m.addr <= self.meta_base
+        &&& self.meta_base + self.meta_len <= m.addr + m.len
+        &&& disjoint(s.addr as int, s.len as int, h.addr as int, h.len as int)
+        &&& disjoint(s.addr as int, s.len as int, m.addr as int, m.len as int)
+        &&& disjoint(h.addr as int, h.len as int, m.addr as int, m.len as int)
+        &&& disjoint(s.addr as int, s.len as int, shared_static_addr(), shared_static_len())
+        &&& disjoint(h.addr as int, h.len as int, shared_static_addr(), shared_static_len())
+        &&& disjoint(m.addr as int, m.len as int, shared_static_addr(), shared_static_len())
+    }
+
+    /// `[a, a + len)` lies inside one of the three reservations.
+    pub open spec fn in_mapping(self, a: int, len: int) -> bool {
+        let (s, h, m) = (self.superblock_map, self.huge_map, self.meta_map);
+        ||| s.addr <= a && a + len <= s.addr + s.len
+        ||| h.addr <= a && a + len <= h.addr + h.len
+        ||| m.addr <= a && a + len <= m.addr + m.len
+    }
+
+    /// A range `seal` may hand `mseal`: non-empty, inside one of challoc's
+    /// reservations ([`Regions::in_mapping`]), and sharing no byte with any
+    /// class region, the huge region, the metadata region or the process's
+    /// `Shared` static. Opaque, so that the quantifier over the classes
+    /// stays out of the queries that only carry it;
+    /// [`Regions::lemma_seal_target`] unfolds it.
+    #[verifier::opaque]
+    pub open spec fn seal_target(self, m: Mapping) -> bool {
+        let region = (1usize << self.lg_region) as int;
+        &&& m.len > 0
+        &&& self.in_mapping(m.addr as int, m.len as int)
+        &&& forall|c: int| 0 <= c < NCLASSES ==>
+            disjoint(#[trigger] self.class_base[c] as int, region, m.addr as int, m.len as int)
+        &&& disjoint(self.huge_base as int, self.huge_len as int, m.addr as int, m.len as int)
+        &&& disjoint(self.meta_base as int, self.meta_len as int, m.addr as int, m.len as int)
+        &&& disjoint(m.addr as int, m.len as int, shared_static_addr(), shared_static_len())
+    }
+
+    /// [`Regions::seal_target`], unfolded.
+    pub proof fn lemma_seal_target(self, m: Mapping)
+        requires
+            self.seal_target(m),
+        ensures
+            m.len > 0,
+            self.in_mapping(m.addr as int, m.len as int),
+            forall|c: int| 0 <= c < NCLASSES ==>
+                disjoint(#[trigger] self.class_base[c] as int, (1usize << self.lg_region) as int, m.addr as int, m.len as int),
+            disjoint(self.huge_base as int, self.huge_len as int, m.addr as int, m.len as int),
+            disjoint(self.meta_base as int, self.meta_len as int, m.addr as int, m.len as int),
+            disjoint(m.addr as int, m.len as int, shared_static_addr(), shared_static_len()),
+    {
+        reveal(Regions::seal_target);
+    }
+
+    /// Class `j`'s region ends at or before class `k`'s starts, for `j <
+    /// k`: each lies inside its own stride.
+    pub proof fn lemma_class_before(self, j: int, k: int)
+        requires
+            self.separated(),
+            0 <= j < k < NCLASSES,
+        ensures
+            self.class_base[j] + (1usize << self.lg_region) <= self.class_base[k],
+    {
+        let stride = (1usize << self.lg_stride) as int;
+        assert(self.superblock + j * stride <= self.class_base[j]);
+        assert(self.superblock + k * stride <= self.class_base[k]);
+        assert((j + 1) * stride <= k * stride) by (nonlinear_arith)
+            requires
+                j + 1 <= k,
+                stride >= 0,
+        ;
+    }
+
+    /// Class `c`'s region lies inside the superblock's strides.
+    pub proof fn lemma_class_in_strides(self, c: int)
+        requires
+            self.separated(),
+            0 <= c < NCLASSES,
+        ensures
+            self.superblock <= self.class_base[c],
+            self.class_base[c] + (1usize << self.lg_region) <= self.superblock + NCLASSES * ((1usize << self.lg_stride) as int),
+    {
+        let stride = (1usize << self.lg_stride) as int;
+        assert(self.superblock + c * stride <= self.class_base[c]);
+        assert(self.class_base[c] + (1usize << self.lg_region) <= self.superblock + (c + 1) * stride);
+        assert(0 <= c * stride && (c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)
+            requires
+                0 <= c < NCLASSES,
+                stride >= 0,
+        ;
+    }
+
     /// What `Shared::init` needs of its regions beyond [`wf`] and
     /// [`separated`]: a metadata region `Meta::owning` accepts (page
     /// multiples, non-empty, at a non-zero address below the metadata
@@ -437,6 +543,7 @@ impl Regions {
         ensures
             r.wf(),
             r.separated(),
+            r.mapped(),
             r.lg_region == lg_region && r.lg_stride == lg_stride && r.superblock == superblock,
             r.huge_base == huge.0 && r.huge_len == huge.1,
             r.meta_base == meta.0 && r.meta_len == meta.1,
@@ -1508,7 +1615,9 @@ fn push_range(out: &mut [Mapping; MAX_SEALED], n: &mut usize, lo: usize, hi: usi
     requires
         *old(n) < MAX_SEALED,
     ensures
-        *final(n) <= *old(n) + 1,
+        *final(n) == if hi > lo { *old(n) + 1 } else { *old(n) as int },
+        hi > lo ==> final(out)[*old(n) as int] == (Mapping { addr: lo, len: (hi - lo) as usize }),
+        forall|i: int| 0 <= i < *old(n) ==> final(out)[i] == old(out)[i],
 {
     if hi > lo {
         out[*n] = Mapping { addr: lo, len: hi - lo };
@@ -1517,6 +1626,72 @@ fn push_range(out: &mut [Mapping; MAX_SEALED], n: &mut usize, lo: usize, hi: usi
 }
 
 impl Regions {
+    /// `lo..hi`, non-empty and inside the superblock's mapping, is a seal
+    /// target when it starts at or after the end of every class region
+    /// below `k` and ends at or before the start of class `k`'s (after
+    /// every class when `k == NCLASSES`).
+    proof fn lemma_superblock_gap(self, lo: usize, hi: usize, k: int)
+        requires
+            self.separated(),
+            self.mapped(),
+            self.superblock_map.addr <= lo < hi,
+            hi <= self.superblock_map.addr + self.superblock_map.len,
+            0 <= k <= NCLASSES,
+            k < NCLASSES ==> hi <= self.class_base[k],
+            forall|j: int| 0 <= j < k ==> #[trigger] self.class_base[j] + (1usize << self.lg_region) <= lo,
+        ensures
+            self.seal_target(Mapping { addr: lo, len: (hi - lo) as usize }),
+    {
+        reveal(Regions::seal_target);
+        let region = (1usize << self.lg_region) as int;
+        assert forall|c: int| 0 <= c < NCLASSES implies
+            disjoint(#[trigger] self.class_base[c] as int, region, lo as int, hi - lo) by {
+            if c > k {
+                self.lemma_class_before(k, c);
+            }
+        }
+    }
+
+    /// `lo..hi`, non-empty and inside the huge region's mapping but outside
+    /// the region, is a seal target.
+    proof fn lemma_huge_slack(self, lo: usize, hi: usize)
+        requires
+            self.separated(),
+            self.mapped(),
+            self.huge_map.addr <= lo < hi,
+            hi <= self.huge_map.addr + self.huge_map.len,
+            hi <= self.huge_base || self.huge_base + self.huge_len <= lo,
+        ensures
+            self.seal_target(Mapping { addr: lo, len: (hi - lo) as usize }),
+    {
+        reveal(Regions::seal_target);
+        let region = (1usize << self.lg_region) as int;
+        assert forall|c: int| 0 <= c < NCLASSES implies
+            disjoint(#[trigger] self.class_base[c] as int, region, lo as int, hi - lo) by {
+            self.lemma_class_in_strides(c);
+        }
+    }
+
+    /// `lo..hi`, non-empty and inside the metadata region's mapping but
+    /// outside the region, is a seal target.
+    proof fn lemma_meta_slack(self, lo: usize, hi: usize)
+        requires
+            self.separated(),
+            self.mapped(),
+            self.meta_map.addr <= lo < hi,
+            hi <= self.meta_map.addr + self.meta_map.len,
+            hi <= self.meta_base || self.meta_base + self.meta_len <= lo,
+        ensures
+            self.seal_target(Mapping { addr: lo, len: (hi - lo) as usize }),
+    {
+        reveal(Regions::seal_target);
+        let region = (1usize << self.lg_region) as int;
+        assert forall|c: int| 0 <= c < NCLASSES implies
+            disjoint(#[trigger] self.class_base[c] as int, region, lo as int, hi - lo) by {
+            self.lemma_class_in_strides(c);
+        }
+    }
+
     /// The parts of the three mappings that no code ever commits, purges
     /// or reprotects, in address order per mapping: the slack before class
     /// 0, the gap between each class region and the next (one contiguous
@@ -1530,13 +1705,19 @@ impl Regions {
     ///
     /// Returns the ranges and how many are filled in. At most
     /// [`MAX_SEALED`]: `NCLASSES + 1` around the classes and two per side
-    /// mapping.
+    /// mapping. Of separated regions inside their mappings
+    /// ([`Regions::separated`], [`Regions::mapped`]), every range returned
+    /// is a [`Regions::seal_target`]: non-empty, inside a reservation and
+    /// apart from every region and the `Shared` static.
     pub fn never_committed(&self) -> (r: ([Mapping; MAX_SEALED], usize))
         requires
             self.wf(),
         ensures
             r.1 <= MAX_SEALED,
+            self.separated() && self.mapped() ==> forall|i: int| 0 <= i < r.1 ==> self.seal_target(#[trigger] r.0[i]),
     {
+        let ghost ok = self.separated() && self.mapped();
+        let ghost stride = (1usize << self.lg_stride) as int;
         let mut out = [Mapping { addr: 0, len: 0 }; MAX_SEALED];
         let mut n = 0;
         let mut start = self.superblock_map.addr;
@@ -1544,14 +1725,68 @@ impl Regions {
             invariant
                 self.wf(),
                 n <= c,
+                ok == (self.separated() && self.mapped()),
+                stride == (1usize << self.lg_stride) as int,
+                ok ==> self.superblock_map.addr <= start,
+                ok ==> start <= self.superblock + c * stride,
+                ok ==> forall|j: int| 0 <= j < c ==> #[trigger] self.class_base[j] + (1usize << self.lg_region) <= start,
+                ok ==> forall|i: int| 0 <= i < n ==> self.seal_target(#[trigger] out[i]),
         {
+            proof {
+                if ok {
+                    assert(self.superblock + c * stride <= self.class_base[c as int]);
+                    if start < self.class_base[c as int] {
+                        self.lemma_class_in_strides(c as int);
+                        self.lemma_superblock_gap(start, self.class_base[c as int], c as int);
+                    }
+                }
+            }
             push_range(&mut out, &mut n, start, self.class_base[c]);
             start = self.class_base[c] + self.region_len();
+            proof {
+                if ok {
+                    let cc = c as int;
+                    assert(self.class_base[cc] + (1usize << self.lg_region) <= self.superblock + (cc + 1) * stride);
+                    assert forall|j: int| 0 <= j < cc + 1 implies #[trigger] self.class_base[j] + (1usize << self.lg_region) <= start by {
+                        if j < cc {
+                            self.lemma_class_before(j, cc);
+                        }
+                    }
+                }
+            }
+        }
+        proof {
+            if ok {
+                vstd::arithmetic::mul::lemma_mul_nonnegative(NCLASSES as int, stride);
+                if start < self.superblock_map.addr + self.superblock_map.len {
+                    self.lemma_superblock_gap(start, (self.superblock_map.addr + self.superblock_map.len) as usize, NCLASSES as int);
+                }
+            }
         }
         push_range(&mut out, &mut n, start, self.superblock_map.addr + self.superblock_map.len);
+        proof {
+            if ok && self.huge_map.addr < self.huge_base {
+                self.lemma_huge_slack(self.huge_map.addr, self.huge_base);
+            }
+        }
         push_range(&mut out, &mut n, self.huge_map.addr, self.huge_base);
+        proof {
+            if ok && self.huge_base + self.huge_len < self.huge_map.addr + self.huge_map.len {
+                self.lemma_huge_slack((self.huge_base + self.huge_len) as usize, (self.huge_map.addr + self.huge_map.len) as usize);
+            }
+        }
         push_range(&mut out, &mut n, self.huge_base + self.huge_len, self.huge_map.addr + self.huge_map.len);
+        proof {
+            if ok && self.meta_map.addr < self.meta_base {
+                self.lemma_meta_slack(self.meta_map.addr, self.meta_base);
+            }
+        }
         push_range(&mut out, &mut n, self.meta_map.addr, self.meta_base);
+        proof {
+            if ok && self.meta_base + self.meta_len < self.meta_map.addr + self.meta_map.len {
+                self.lemma_meta_slack((self.meta_base + self.meta_len) as usize, (self.meta_map.addr + self.meta_map.len) as usize);
+            }
+        }
         push_range(&mut out, &mut n, self.meta_base + self.meta_len, self.meta_map.addr + self.meta_map.len);
         (out, n)
     }
@@ -1945,6 +2180,7 @@ mod linux {
                 r.wf(),
                 r.separated(),
                 r.ready(),
+                r.mapped(),
         {
             Regions::reserve_owning(page_size, anon_name).0
         }
@@ -1952,8 +2188,9 @@ mod linux {
         /// Probe and reserve every region (design section 10 step 2). Never
         /// allocates. Aborts if even the minimum layout cannot be reserved.
         /// `anon_name` should be the probed `PR_SET_VMA_ANON_NAME` support.
-        /// The result is well formed and separated ([`Regions::wf`],
-        /// [`Regions::separated`]), from the kernel's `mmap` contract
+        /// The result is well formed, separated and inside its three
+        /// reservations ([`Regions::wf`], [`Regions::separated`],
+        /// [`Regions::mapped`]), from the kernel's `mmap` contract
         /// ([`try_reserve`]), and ready for `Shared::init` ([`Regions::ready`]),
         /// with the metadata region's uncommitted address space, for
         /// `Meta::owning`, which commits it as it hands it out.
@@ -1970,6 +2207,7 @@ mod linux {
                 res.0.wf(),
                 res.0.separated(),
                 res.0.ready(),
+                res.0.mapped(),
                 res.1@.addr() == res.0.meta_base,
                 res.1@.len() == res.0.meta_len,
         {
@@ -2175,7 +2413,11 @@ mod linux {
         /// land a mapping in the gap between two class regions or unmap
         /// part of a reservation. Only for kernels whose probe said
         /// `mseal=yes`; each call splits the enclosing VMA, so the VMA count
-        /// grows by at most `2 * MAX_SEALED`. Returns the number of ranges
+        /// grows by at most `2 * MAX_SEALED`. Every range it hands `mseal`
+        /// is a [`Regions::seal_target`] (inside a reservation, apart from
+        /// every region and the `Shared` static), from the regions being
+        /// separated and inside their mappings, which
+        /// [`Regions::reserve_owning`] ensures. Returns the number of ranges
         /// sealed. A refusal after a successful probe (`ENOMEM` at the VMA
         /// limit, for instance) stops the sweep and leaves the rest
         /// unsealed rather than aborting: sealing is a hardening extra, not
@@ -2185,6 +2427,8 @@ mod linux {
             requires
                 crate::sys::may_syscall(),
                 self.wf(),
+                self.separated(),
+                self.mapped(),
         {
             let (ranges, n) = self.never_committed();
             let mut sealed: u32 = 0;
@@ -2194,7 +2438,13 @@ mod linux {
                     sealed as int <= it.index(),
                     it.seq().len() == n,
                     n <= MAX_SEALED,
+                    forall|i: int| 0 <= i < it.seq().len() ==> self.seal_target(*#[trigger] it.seq()[i]),
             {
+                // Whole-allocator theorem "Seal targets stay inside
+                // challoc's reservations" (`verus/THEOREMS.md`): what
+                // `mseal` gets is inside a reservation and apart from
+                // every region and the `Shared` static.
+                assert(self.seal_target(*m));
                 // SAFETY: the range is inside a reservation this process
                 // owns and, by construction, is never committed, purged,
                 // reprotected or unmapped (`release` is test-only and is
