@@ -156,8 +156,8 @@ lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
 type's invariant; the theorems that use one name it. Also:
 `class::sets::axiom_set_tables_lock_inv` (`class/sets.rs:377`).
 
-**Class state accessors.** `ClassState::table` (`class/mod.rs:1464`,
-`*r == spec_table()`) and `table_ptr` (`class/mod.rs:2427`),
+**Class state accessors.** `TablePtr::get` (`class/mod.rs:1595`, the
+pointer of `ClassState::table` is to the ghost table kept with it),
 `external_body`.
 
 **`core` and `vstd`.** The `assume_specification`s in `src/vspec/`

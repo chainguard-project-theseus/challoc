@@ -884,14 +884,14 @@ mod kani_fmt {
     use super::{LgSize, SizeSet};
     use crate::kani_proofs::fmt::formats;
 
-    /// S214 `DisplaySpecImpl for SizeSet` (`fmt_req` true): every set.
+    /// S212 `DisplaySpecImpl for SizeSet` (`fmt_req` true): every set.
     #[kani::proof]
     #[kani::unwind(66)]
     fn display_size_set() {
         formats(&SizeSet(kani::any()));
     }
 
-    /// S215 `DisplaySpecImpl for LgSize` (`fmt_req` is `self.0 < 64`):
+    /// S213 `DisplaySpecImpl for LgSize` (`fmt_req` is `self.0 < 64`):
     /// every such size.
     #[kani::proof]
     #[kani::unwind(22)]

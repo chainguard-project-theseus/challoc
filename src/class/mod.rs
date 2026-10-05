@@ -711,7 +711,7 @@ pub struct ClassState {
     arena: u16,
     /// The class's shared table, which lives as long as the allocator
     /// (inside `Shared`, or leaked by the tests).
-    table: *const SlabTable,
+    table: TablePtr,
     /// The decay step gate (`purge::Decayer`): the oldest `Empty` slab's
     /// `dirty_at`, written under the lock (set when the empty set goes
     /// from none to one, recomputed by every purge walk) and read without
@@ -761,6 +761,7 @@ const _: () =
 const _: () = assert!(core::mem::offset_of!(ClassState, claimed) % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % 512 != 0);
+const _: () = assert!(core::mem::size_of::<TablePtr>() == core::mem::size_of::<*const SlabTable>());
 
 // SAFETY: the only non-`Sync`, non-`Send` field is the table pointer,
 // which targets a `SlabTable` (itself `Sync`) that outlives every
@@ -1213,9 +1214,6 @@ verus! {
 
 broadcast use {table::lemma_spec_nslabs, table::lemma_spec_class};
 
-/// The table a `ClassState`'s `table` pointer points at.
-pub uninterp spec fn table_at(p: *const SlabTable) -> SlabTable;
-
 impl ClassState {
     /// `class` is a class number, `table` points at that class's table,
     /// and the sets behind the lock are over its slabs. `new` proves it: it
@@ -1223,9 +1221,7 @@ impl ClassState {
     /// table's count for the class's slab size, which equals `table.nslabs`
     /// because both are the process's regions' count for the class
     /// (`SetTable::over`, `SlabTable::inv`). The lock value's ghost names
-    /// this arena and table. Trusted: `table_ptr`, the one
-    /// reference-to-pointer cast, whose result [`table_at`] maps back to
-    /// the table.
+    /// this arena and table.
     #[verifier::type_invariant]
 
     spec fn inv(self) -> bool {
@@ -1554,20 +1550,80 @@ impl ClassState {
 
 } // verus!
 
+/// The pointer to its table a [`ClassState`] keeps, in a module of its own
+/// so that [`table_ptr`](tptr::table_ptr) is the only maker of one.
+mod tptr {
+    use super::SlabTable;
+    use vstd::prelude::*;
+
+    verus! {
+
+    /// A pointer to a table, with that table as ghost (no bytes: the
+    /// layout is the pointer's).
+    pub(super) struct TablePtr {
+        p: *const SlabTable,
+        #[allow(dead_code)]
+        t: Ghost<SlabTable>,
+    }
+
+    /// The table `p` points at.
+    pub(super) closed spec fn table_at(p: TablePtr) -> SlabTable {
+        p.t@
+    }
+
+    /// `table` as a [`TablePtr`], which [`table_at`] maps back to the
+    /// table.
+    #[inline(always)]
+    pub(super) fn table_ptr(table: &SlabTable) -> (p: TablePtr)
+        ensures
+            table_at(p) == *table,
+    {
+        TablePtr { p: core::ptr::from_ref(table), t: Ghost(*table) }
+    }
+
+    impl TablePtr {
+        /// The table.
+        ///
+        /// Trusted: the pointer is to the ghost table kept with it.
+        /// [`table_ptr`], the only maker of a `TablePtr`, takes both from
+        /// one reference to the table (`core::ptr::from_ref`, whose result
+        /// Verus does not relate to the reference), and nothing here
+        /// writes either field afterwards. The table outlives the pointer:
+        /// `ClassState::new`'s caller keeps it for the life of the state.
+        #[inline(always)]
+        #[verifier::external_body]
+        pub(super) fn get(&self) -> (r: &SlabTable)
+            ensures
+                *r == table_at(*self),
+        {
+            // SAFETY: `p` is from a reference to a table that outlives the
+            // `ClassState` keeping it (see that field).
+            unsafe { &*self.p }
+        }
+    }
+
+    } // verus!
+}
+
+#[cfg(verus_only)]
+use tptr::table_at;
+use tptr::{TablePtr, table_ptr};
+
 verus! {
 
 impl ClassState {
     /// The class's shared table.
     #[inline(always)]
-    #[verifier::external_body]
     pub fn table(&self) -> (r: &SlabTable)
         ensures
             *r == self.spec_table(),
             r.spec_class() == self.spec_class(),
             r.spec_nslabs() == self.spec_nslabs(),
     {
-        // SAFETY: the table outlives the state (see the field).
-        unsafe { &*self.table }
+        proof {
+            use_type_invariant(self);
+        }
+        self.table.get()
     }
 
     #[inline]
@@ -2612,17 +2668,6 @@ impl ClassState {
 } // verus!
 
 verus! {
-
-/// `table` as the pointer a [`ClassState`] keeps, which [`table_at`] maps
-/// back to the table. Trusted: Verus has no reference-to-pointer cast.
-#[verifier::external_body]
-#[inline(always)]
-fn table_ptr(table: &SlabTable) -> (p: *const SlabTable)
-    ensures
-        table_at(p) == *table,
-{
-    table
-}
 
 impl ClassState {
     /// Create the state for `arena` over `table`'s class, with its three

@@ -1,6 +1,6 @@
 # `S_GUARD_TEST`
 
-Seam S139 of `verus/SEAMS.md`: src/heap/shared.rs:558. Kind: external_body const. Category: core library.
+Seam S137 of `verus/SEAMS.md`: src/heap/shared.rs:558. Kind: external_body const. Category: core library.
 Discharged by Kani.
 
 ## Contract

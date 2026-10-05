@@ -53,9 +53,8 @@ ClassState::state_locked	allocator invariant	none (assumption)
 ClassState::set_state_locked	allocator invariant	none (assumption)
 ClassState::dirty_locked	allocator invariant	none (assumption)
 ClassState::set_dirty_locked	allocator invariant	none (assumption)
-ClassState::table	raw pointer (internal)	RefinedRust
+TablePtr::get	raw pointer (internal)	RefinedRust
 ClassState::take_checks	panic/abort	Kani
-table_ptr	raw pointer (internal)	RefinedRust
 axiom_fresh_slots_zero	allocator invariant	none (assumption)
 axiom_discarded_slots_zero	allocator invariant	none (assumption)
 axiom_c_claim	C-program contract	none (assumption)
@@ -69,7 +68,6 @@ axiom_init_owners	raw pointer (internal)	none (assumption)
 axiom_init_words	raw pointer (internal)	none (assumption)
 load_owner	allocator invariant	loom/GenMC	evidence (verus/seams/class-table-load_owner.md)
 store_owner	allocator invariant	loom/GenMC	discharged (verus/seams/class-table-store_owner.md)
-desc_ptr_addr	raw pointer (internal)	Kani	discharged (verus/seams/class-verify-desc_ptr_addr.md)
 Config::set_listed	function pointer	Kani	discharged (verus/seams/config-Config-set_listed.md)
 Config::get	function pointer	Kani	discharged (verus/seams/config-Config-get.md)
 KEYS	function pointer	Kani	discharged (verus/seams/config-KEYS.md)

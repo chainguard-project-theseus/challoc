@@ -1,6 +1,6 @@
 # `fetch_add` (`vspec/count.rs`)
 
-Seam S286 of `verus/SEAMS.md`: src/vspec/count.rs:59. Kind: external_body. Category: atomics primitive.
+Seam S284 of `verus/SEAMS.md`: src/vspec/count.rs:59. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 atomicity rules (part 3).
 
 ## Contract

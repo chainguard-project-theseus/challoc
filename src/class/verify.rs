@@ -255,12 +255,10 @@ impl core::fmt::Debug for Says {
 
 verus! {
 
-/// The address of `d`, for an abort message. Trusted: Verus has no
-/// reference-to-pointer cast; nothing is claimed about the address.
+/// The address of `d`, for an abort message; nothing is claimed about it.
 #[inline(always)]
-#[verifier::external_body]
 pub(super) fn desc_ptr_addr(d: &SlabDesc) -> usize {
-    d as *const SlabDesc as usize
+    core::ptr::from_ref(d) as usize
 }
 
 /// Slot `p` of class `c`, guard slabs included, is word aligned when the
@@ -374,15 +372,14 @@ fn dirty_zero_slot(
 
 } // verus!
 
-/// Kani checks of `Says`'s `Debug` and `desc_ptr_addr` (records under
-/// `verus/seams/`).
+/// Kani check of `Says`'s `Debug` (record under `verus/seams/`).
 #[cfg(kani)]
 mod kani_verify {
-    use super::{Says, desc_ptr_addr};
+    use super::Says;
     use crate::kani_proofs::fmt::formats_debug_flat;
-    use crate::slab::{SlabDesc, State};
+    use crate::slab::State;
 
-    /// S94 `DebugSpecImpl for Says` (`fmt_req` true): `None` and every
+    /// S93 `DebugSpecImpl for Says` (`fmt_req` true): `None` and every
     /// state, each formatted in turn (`{:?}` only: Kani does not finish
     /// `{:#?}` of an `Option`, whose `PadAdapter` path the record names
     /// as a gap; challoc formats `Says` with `{:?}`).
@@ -399,16 +396,5 @@ mod kani_verify {
         for s in v {
             formats_debug_flat(&Says(s));
         }
-    }
-
-    /// S95 `desc_ptr_addr`, no `ensures`: it returns (the address of the
-    /// descriptor); the body reads no field, so one descriptor stands
-    /// for all.
-    #[kani::proof]
-    fn desc_ptr_addr_returns() {
-        // SAFETY: `SlabDesc` is five atomic integers, for which all-zero
-        // is a valid value.
-        let d: SlabDesc = unsafe { core::mem::zeroed() };
-        assert_eq!(desc_ptr_addr(&d), &d as *const SlabDesc as usize);
     }
 }

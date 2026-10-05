@@ -1,6 +1,6 @@
 # `isize::wrapping_neg`
 
-Seam S348 of `verus/SEAMS.md`: src/vspec/sys.rs:22. Kind: assume_spec. Category: core library.
+Seam S346 of `verus/SEAMS.md`: src/vspec/sys.rs:22. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract
