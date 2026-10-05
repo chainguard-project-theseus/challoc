@@ -173,10 +173,13 @@ and the call does not return (theorem 3, which is not voided for it).
 - `sys::pac::axiom_user_va_limit` (`sys/pac.rs:147`): the limit is at
   most `2^48`.
 
-**Locks.** `lock::axiom_acquired` (`lock.rs:177`): an acquired guard's
-value satisfies `lock_inv` and `lock_frame`; the other entry is
-`Lock::get_unlocked` (`lock.rs:296`). The guard's `deref`, `deref_mut`
-and `drop` (`lock.rs:325`, `:337`, `:355`) are `external_body`. Each
+**Locks.** `lock::axiom_acquired`: an acquisition takes the permission
+of the lock's cell (a vstd `PCell`) out of the free lock's invariant,
+and the value satisfies `lock_inv` and `lock_frame`; the other entry is
+`lock::axiom_held`, behind `Lock::get_unlocked`. The guard's `deref` and
+`deref_mut` are verified, over two trusted restatements of vstd's
+`PCell::borrow` and `borrow_mut` (`cell_ref`, `cell_mut`, kept for the
+machine code); `drop` is `external_body`. Each
 lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
 type's invariant; the theorems that use one name it. Also:
 `class::sets::axiom_set_tables_lock_inv` (`class/sets.rs:377`).
@@ -1087,9 +1090,10 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   `background::spawn` and `pthread_join` (`purge/background.rs:333`,
   `:229`), `init_fields`, `Heap::destroy`
   (`heap/mod.rs:5158`, `:5382`), `Meta::commit`, `Meta::free`
-  (`meta.rs:2745`, `:2796`), mallctl's reader call `call` and
-  `heap_set_arena` (`api/mallctl.rs:192`, `:1462`), `print::emit`
-  (the report's only call-out, theorem 16), the C++ `call_handler`,
+  (`meta.rs:2745`, `:2796`), mallctl's
+  `heap_set_arena` (`api/mallctl.rs:1462`), `print::emit` and
+  `jemalloc::call_hook` (the report's call-outs, theorem 16), the
+  C++ `call_handler`,
   `call_get_new_handler`, `call_throw_bad_alloc` (`api/cxx.rs:176`,
   `:147`, `:107`), the
   `pthread_setspecific` wrapper (which may allocate; `heap/shared.rs`,
@@ -1148,8 +1152,9 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   frame with the capability can make them. `LockGuard::drop`
   (`lock.rs:403`, `external_body`; a destructor cannot have a
   `requires`) may `FUTEX_WAKE`, and a guard comes only from `Lock::lock`
-  (`lock.rs:288`). `Sink`'s `fmt::Write::write_str` (outside `verus!`,
-  reached through `core::fmt`) flushes, and a sink comes only from
+  (`lock.rs:288`). `Sink`'s `fmt::Write::write_str` (verified, with
+  `may_syscall()` in `Sink`'s type invariant; reached through
+  `core::fmt`) flushes, and a sink comes only from
   `Sink::new` (`api/print.rs:74`). Both require `may_syscall()`, and no
   fast-path function takes either as an argument.
 - The test checks where the grants are, not who calls the functions
@@ -1863,7 +1868,7 @@ axioms below are the other source.
   (Verus does not read statics in specifications).
 - The background state's invariant in the child also rests on
   `axiom_state_lock_inv` (`purge/background.rs:52`) and on
-  `get_unlocked`'s trusted ensures (the value a holder left).
+  `axiom_held`, behind `get_unlocked` (the value a holder left).
 - *Completeness of the list.* That `listed` names every `Lock` in the
   crate is not proved. The test `fork_lock_list_matches_the_source_tree`
   checks the `Lock` fields and statics in the source tree against the
@@ -2238,22 +2243,28 @@ on the caller's stream, and `write(2)` to stderr. A callback, a hook or
 `fwrite` may allocate (glibc allocates a stream's buffer on its first
 write), so a lock held across one deadlocks the allocation.
 
-All the calls out are in one trusted function, and it requires a ghost
-permit:
+All the calls out are in two trusted functions, `emit` and, for the
+`malloc_message` hook, `call_hook` (`api/jemalloc.rs`, called only by
+the verified `malloc_write`, whose only caller is `emit`), and both
+require a ghost permit:
 
 ```rust
 #[verifier::external_body]
-tracked struct Unlocked { _no_copy: () }                      // api/print.rs:71
+pub(super) tracked struct Unlocked { _no_copy: () }           // api/print.rs:71
 
 axiom fn axiom_unlocked() -> (tracked u: Unlocked);           // api/print.rs:81
 
 fn emit(target: &Target, buf: &mut [u8; 1024], len: usize,    // api/print.rs:91
     Tracked(u): Tracked<&Unlocked>)
+
+fn call_hook(cb: Hook, buf: &[u8; 512],                       // api/jemalloc.rs
+    Tracked(u): Tracked<&Unlocked>)
 ```
 
 An `Unlocked` stands for "the calling thread holds no allocator lock".
-The type is private to `api/print.rs` and opaque, so verified code
-cannot build one, and `axiom_unlocked` is its only source in verified
+The type is visible only in `api` (`pub(super)`, for `malloc_write`) and
+opaque, so verified code cannot build one, and `axiom_unlocked`, private
+to `api/print.rs`, is its only source in verified
 code. Each of the three entry points calls it once, after
 `super::shared()` and right before it makes the report's `Sink`
 (`:1035`, `:1160`, `:1171`). The `Sink` keeps the permit from creation
@@ -2261,17 +2272,19 @@ to drop (its ghost field `permit`, `:121`). `Sink::flush` (`:139`) is
 verified and is the only caller of `emit`, and passes the sink's
 permit. So Verus checks:
 - No verified code makes a report's calls out without a permit: `emit`
-  is the only function that makes them, and every call to it must
-  supply an `Unlocked`.
+  and `call_hook` are the only functions that make them, and every call
+  to either must supply an `Unlocked`.
 - A permit exists only inside a report. It comes from an entry point's
   `axiom_unlocked` and lives in that report's `Sink`, so only a function
   handed the sink (as a `W: Write`) or a `fmt::Formatter` that writes to
   it can reach `emit`. No function that takes a lock is handed either.
 
-The unverified code of `api/print.rs` (`impl Write for Sink` and the
-`export_pair!` exports) could still call `emit` with
-a forged permit; it does not, and the source test below rejects
-`assume_new` there.
+The unverified code of `api/print.rs` and `api/jemalloc.rs` (their
+`export_pair!` exports, and `jemalloc.rs`'s trusted `message_hook` and
+`call_hook` bodies) could still call `emit` or `malloc_write` with a
+forged permit; it does not, and the source test below rejects
+`assume_new` in both files and any mention of `Unlocked` or a call of
+`malloc_write` elsewhere.
 
 **Why the permit's claim holds.** Verus does not check that the holder
 of a permit holds no lock: an acquisition takes no token, so no ghost
@@ -2287,8 +2300,8 @@ holds whenever the sink's code runs, for three reasons:
    `raw_lock`, `get_unlocked` or `fork_lock`. The formatting impls the
    reports run take none either. They are `core`'s `Display` for
    integers, `str` and `bool` and `Debug` for `[usize; 9]` (`hist_line`,
-   `:751`), and `sys::cgroup::Cgroup`'s `Display` (`sys/cgroup.rs:1082`,
-   outside `verus!`, with its nested `Bytes` and `Limit`), which reads
+   `:751`), and `sys::cgroup::Cgroup`'s `Display` (`sys/cgroup.rs:1170`,
+   verified, with its nested `Bytes` and `Limit`), which reads
    fields and atomics.
 3. **Every callee releases the locks it takes before it returns.** The
    callees that lock are `stats::collect`, `collect_arena` and
@@ -2343,9 +2356,8 @@ explicit-cache table, the background state) are not exercised.
 
 **Premises beyond the common ones.**
 - `axiom_unlocked` (item 1).
-- `emit` (`external_body`): a plain match over the target, claiming
-  nothing.
-- `Cgroup`'s `Display` (item 2), outside `verus!`.
+- `emit` and `call_hook` (`external_body`): a plain match over the
+  target and a one-line call of the hook, claiming nothing.
 - Items 2 and 3 as the source test and Rust's types check them. They
   are not Verus facts.
 
@@ -3162,8 +3174,8 @@ first ends at the first dot.
   return.
 
 **Scope.**
-- Function pointers are not modelled: what a `Read` node's reader
-  returns (`call`, `external_body`) and what an `Op` arm does are
+- What a `Read` node's reader returns (`call`, a verified `match` over
+  the `Reader` enum, with no `ensures`) and what an `Op` arm does are
   outside the statement. The statement fixes which node and which
   indices they get, not what they do with them.
 - `Node` equality is value equality (name and entry): `mib_to_node`'s
@@ -4714,15 +4726,16 @@ their arguments, and only `mallinfo`/`mallinfo2` reach one:
 - `mallctl` and `mallctlbymib` after their `super::shared()`: `cstr`,
   `name_to_mib`, `mib_in`, `mib_to_node` and `ctl` (`api/mallctl.rs:2162`)
   for every node where `ctl_never_aborts` (`:224`) holds: an interior
-  node, a read under `opt`, `arenas` or `stats` (`reader_never_aborts`,
-  `:218`: root entries 4, 5 and 7), or `experimental.utilization.query`
+  node, a read whose reader is not one of `thread.*`'s four
+  (`Reader::aborts`): every key under `opt`, `arenas` and `stats`,
+  `version` and `config.*`; or `experimental.utilization.query`
   and `batch_query` (`utilization`, `:1781`, `batch_query`, `:1933`).
   `ctl` requires `may_abort() || ctl_never_aborts(*node, mib@)`. Every
-  reader under those subtrees is a named verified function
-  (`opt_value`, `:2002`; the 43 readers from `:330`, formerly closures
-  outside `verus!`), each called by the witness; `call` (`:197`), which
-  runs the reader of the node the MIB resolves to, requires `may_abort()`
-  or `reader_never_aborts(mib@)` with that link. Every such read and
+  reader is a named verified function (`opt_value` and the 51 others,
+  formerly closures outside `verus!`), each called by the witness for
+  the readers that do not abort; `call`, which runs the reader of the
+  node the MIB resolves to, is a verified `match` over the `Reader` enum
+  and requires `may_abort()` or `!read.aborts()`. Every such read and
   both utilization queries never abort, `stats.arenas.<i>.*` with `i` =
   `MALLCTL_ARENAS_ALL` (`stats::arena_stats_all`) and
   `stats.cgroup.empty_bytes` (`policy::empty_bytes`) included: the
@@ -4781,11 +4794,10 @@ half and the guard test can fail. Ruling it out needs an exec change
 alone would not do) or a trusted bound on concurrent frees.
 
 The other integrity checks (`arena::alloc_sets`, `SlabTable::new` and
-`AtomicBitmap::allocated`'s `check`s) are on no covered path. Nor is
+`AtomicBitmap::allocated`'s `check`s) are on no covered path.
 `print::Sink::flush`'s `check(self.len < 1024)`, the report buffer's
-bound, which `Sink::write_str` (outside `verus!`) keeps: a `Sink` is
-made and flushed only inside `stats_print` (`malloc_stats_print`'s
-body), `malloc_info` and `malloc_stats`, which require `may_abort()`.
+bound, never fails: `Sink`'s type invariant states the bound, and
+`Sink::write_str` (verified) keeps it.
 
 **Why the capability can be trusted.**
 - Every abort goes through `abort_fmt` (`sys/abort.rs:146`): `abort`
@@ -4830,16 +4842,12 @@ body), `malloc_info` and `malloc_stats`, which require `may_abort()`.
   checks only in the functions listed above, and the trusted bodies.
   Outside tests no Rust code calls an `extern "C"` function of the
   crate.
-- `mallctl`'s readers are called through a function pointer, by the
-  trusted `call`: that a key under `opt`, `arenas` or `stats` has one of
-  the named readers is read off the static tree, and
-  `mallctl::tests::read_only_subtrees_are_roots_4_5_and_7` (`api/mallctl.rs:2695`)
-  checks it at run time (root entries 4, 5 and 7 are those names, and
-  every reader under them is, by address, one of the 44 named
-  functions). The `version`, `config.*` and `thread.*` readers are named
-  verified functions too (`thread.*` requires `may_abort()`: it may create
-  the thread's heap), but `reader_never_aborts` does not cover them, so
-  `call` needs `may_abort()` for them.
+- `mallctl`'s readers are named by the `Reader` enum and called by the
+  verified `call`, a `match`; the statement names the reads by reader,
+  not by subtree. That every key under `opt`, `arenas` and `stats` is
+  covered (no `thread.*` reader under them) is read off the static tree,
+  and `mallctl::tests::read_only_subtrees_are_roots_4_5_and_7` checks it
+  at run time.
 
 **Premises beyond the common ones.**
 - Init is complete. `shared()` (`api/mod.rs:234`) runs init the first
@@ -4895,8 +4903,8 @@ body), `malloc_info` and `malloc_stats`, which require `may_abort()`.
   (`free_before_init`).
 - mallctl's writes and operations (`epoch`, `arena.<i>.*`,
   `thread.*`, `tcache.*`, `arenas.create`/`lookup`, ...), and the
-  `version` and `config.*` reads (`call` does not tell them apart from
-  `thread.*`), require `may_abort()`.
+  `thread.*` reads (they may create the thread's heap), require
+  `may_abort()`.
 
 **Where the statement is weaker than the code.**
 - The witnesses replicate the post-`shared()` calls of `nallocx`,
@@ -6772,8 +6780,9 @@ alone):
 36. `challoc_version` (`api/mod.rs:123`), `challoc_features` (`:296`):
     verified, no contract.
 37. Data symbols `malloc_conf`, `malloc_message`, `je_malloc_message`
-    (`api/jemalloc.rs:76`-`:90`): no code. `message_hook` and
-    `malloc_write`, which read the hooks, are unverified.
+    (`api/jemalloc.rs:76`-`:90`): no code. `message_hook`, which
+    reads the hooks, is trusted; `malloc_write` is verified, over the
+    trusted one-line `call_hook`.
 
 ### Internal properties under every row
 

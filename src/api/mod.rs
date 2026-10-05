@@ -2454,7 +2454,8 @@ mod tests {
     /// `extern "C"` function or of one that never returns (a call belongs
     /// to the nearest `fn` item line above it), and `may_syscall` appears
     /// only as a `requires` or loop invariant clause of its own, apart from
-    /// its definition, the grant and `Stderr`'s type invariant.
+    /// its definition, the grant and the type invariants of `Stderr` and
+    /// the report's `Sink`.
     #[test]
     fn syscall_grants_only_at_roots() {
         // Spelled in parts, so that this test's own lines match nothing.
@@ -2472,6 +2473,10 @@ mod tests {
             (
                 "sys/abort.rs",
                 std::format!("self.len <= 512 && crate::sys::{cap}()"),
+            ),
+            (
+                "api/print.rs",
+                std::format!("self.len < 1024 && crate::sys::{cap}()"),
             ),
         ];
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

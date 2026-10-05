@@ -77,7 +77,7 @@ enum Target {
 /// functions and the formatting code that writes to the sink can reach
 /// it.
 #[verifier::external_body]
-tracked struct Unlocked {
+pub(super) tracked struct Unlocked {
     _no_copy: (),
 }
 
@@ -95,13 +95,17 @@ axiom fn axiom_unlocked() -> (tracked u: Unlocked);
 /// stderr), `fwrite` or `write(2)`; claims nothing. The permit `u` says
 /// that the calling thread holds no allocator lock, so a callee that
 /// allocates cannot deadlock on one. `len < 1024`: the body stores the
-/// NUL at `buf[len]` and hands on `len` bytes of `buf`.
+/// NUL at `buf[len]` and hands on `len` bytes of `buf`. `no_unwind`, as
+/// `Sink::flush` needs for its `&mut` of the buffer: a C callee cannot
+/// unwind into Rust, and the `panic = "abort"` profiles abort on a panic
+/// (test builds unwind).
 #[verifier::external_body]
 #[inline(always)]
 fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&Unlocked>)
     requires
         crate::sys::may_syscall(),
         len < 1024,
+    no_unwind
 {
     match *target {
         Target::Callback(WriteCallback(Some(cb)), opaque) => {
@@ -110,7 +114,7 @@ fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&
             // chunk is NUL-terminated within the buffer.
             unsafe { cb(opaque, buf.as_ptr() as *const c_char) };
         }
-        Target::Callback(WriteCallback(None), _) => malloc_write(&buf[..len]),
+        Target::Callback(WriteCallback(None), _) => malloc_write(&buf[..len], Tracked(u)),
         Target::File(f) => {
             // SAFETY: `f` is the caller's open stream; `len` bytes are
             // readable. `fwrite` may itself call `malloc` (glibc allocates
@@ -136,9 +140,16 @@ struct Sink {
 }
 
 impl Sink {
+    /// Room for the NUL after the buffered bytes, and the sink was built
+    /// where a system call may be made (its flush is one; theorem 8), as
+    /// for `sys::abort::Stderr`.
+    #[verifier::type_invariant]
+    spec fn wf(&self) -> bool {
+        self.len < 1024 && crate::sys::may_syscall()
+    }
+
     /// Requires theorem 8's capability: a write may flush to the kernel,
-    /// and `write_str` is outside `verus!`, so a sink is built only where a
-    /// system call may be made.
+    /// so a sink is built only where a system call may be made.
     fn new(target: Target, permit: Tracked<Unlocked>) -> (r: Sink)
         requires
             crate::sys::may_syscall(),
@@ -154,16 +165,15 @@ impl Sink {
     }
 
     /// Hand the buffered bytes to the target ([`emit`], under the
-    /// report's permit) and empty the buffer. `write_str` keeps `len`
-    /// at most 1023, outside `verus!` (no type invariant can say it, see
-    /// there), so the bound is checked: an integrity check (theorem
-    /// "Read-only APIs never abort"), which fails only on a corrupt `len`,
-    /// so `flush` needs only `may_abort_corrupt()`.
+    /// report's permit) and empty the buffer. The bound check holds by the
+    /// type invariant (`len < 1024`), so it never fails.
     fn flush(&mut self)
-        requires
-            crate::sys::may_abort_corrupt(),
-            crate::sys::may_syscall(),
+        ensures
+            final(self).len == 0,
     {
+        proof {
+            use_type_invariant(&*self);
+        }
         if self.len == 0 {
             return;
         }
@@ -232,16 +242,18 @@ proof fn lemma_first_char_boundary(s: &str)
     }
 }
 
-} // verus!
-
-// Outside `verus!`: `room` needs `len < 1024`, which only a type invariant
-// on `Sink` could state, and Verus rejects the `&mut` of `buf` below
-// under one (a call through a field of such a type must be `no_unwind`,
-// and `fmt::Write` fixes `write_str`'s unwind specification). The
-// character-boundary cut is [`char_cut`], verified.
+// The cut on a character boundary is [`char_cut`]; the copy is a byte
+// loop rather than `copy_from_slice`: Verus does not take a `&mut`
+// through a field of a type with an invariant in a call that may unwind.
 impl Write for Sink {
-    fn write_str(&mut self, mut s: &str) -> fmt::Result {
-        while !s.is_empty() {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let mut s = s;
+        while !s.is_empty()
+            decreases s.spec_bytes().len() * 2048 + self.len,
+        {
+            proof {
+                use_type_invariant(&*self);
+            }
             let room = self.buf.len() - 1 - self.len;
             if room == 0 {
                 self.flush();
@@ -249,20 +261,34 @@ impl Write for Sink {
             }
             // Cut on a character boundary: slicing `s` inside a multi-byte
             // character would panic in the middle of a report.
+            let b = s.as_bytes();
+            proof {
+                assert(b@.len() == b.len());
+            }
             let n = char_cut(s, room);
             if n == 0 {
                 self.flush();
                 continue;
             }
-            self.buf[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
+            let mut i = 0;
+            while i < n
+                invariant
+                    crate::sys::may_syscall(),
+                    self.len + n < 1024,
+                    n <= b@.len(),
+                    i <= n,
+                decreases n - i,
+            {
+                self.buf[self.len + i] = b[i];
+                i += 1;
+            }
             self.len += n;
-            s = &s[n..];
+            // `s = &s[n..]`, as `split_at`, whose specification Verus has.
+            s = s.split_at(n).1;
         }
         Ok(())
     }
 }
-
-verus! {
 
 /// Parsed `opts`.
 #[derive(Default)]
@@ -2184,6 +2210,20 @@ mod tests {
                         !t.contains("axiom_unlocked"),
                         "{file}: makes the report's permit: {t}"
                     );
+                    // The permit is visible in `api` for the hook's call
+                    // (`jemalloc::malloc_write`, `call_hook`): nothing
+                    // else names it, and that file forges no ghost value.
+                    if file == "api/jemalloc.rs" {
+                        assert!(
+                            !t.contains("assume_new"),
+                            "api/jemalloc.rs: forges a ghost value: {t}"
+                        );
+                    } else {
+                        assert!(
+                            !t.contains("Unlocked") && !t.contains("malloc_write("),
+                            "{file}: reaches the report's permit: {t}"
+                        );
+                    }
                 }
                 if file != "lock.rs" {
                     assert!(!t.contains("LockGuard"), "{file}: names a lock guard: {t}");
@@ -2224,7 +2264,7 @@ mod tests {
 mod kani_print {
     use super::{Target, file_target, hist_line, stderr_target, word};
 
-    /// S51 `word`, no `requires`, no `ensures`: it returns for every C
+    /// S52 `word`, no `requires`, no `ensures`: it returns for every C
     /// string up to 3 bytes before its NUL, UTF-8 or not (built at run
     /// time: Kani 0.68 has no C string literals).
     #[kani::proof]
@@ -2238,7 +2278,7 @@ mod kani_print {
         assert!(w == "?" || w.as_bytes() == &a[..n]);
     }
 
-    /// S52 `hist_line`, no `ensures`: it returns, for every argument and
+    /// S53 `hist_line`, no `ensures`: it returns, for every argument and
     /// whatever the writer returns (`W` is a writer that may fail any
     /// write; Kani fails the harness on any panic).
     #[kani::proof]
@@ -2256,7 +2296,7 @@ mod kani_print {
         );
     }
 
-    /// S53 `file_target`, no `ensures`: it returns, `Target::File` of the
+    /// S54 `file_target`, no `ensures`: it returns, `Target::File` of the
     /// stream, for any pointer (it is not dereferenced).
     #[kani::proof]
     fn file_target_returns() {
@@ -2264,7 +2304,7 @@ mod kani_print {
         assert!(matches!(file_target(p), Target::File(q) if q == p));
     }
 
-    /// S54 `stderr_target`, no `ensures`: it returns, `Target::Stderr`.
+    /// S55 `stderr_target`, no `ensures`: it returns, `Target::Stderr`.
     #[kani::proof]
     fn stderr_target_returns() {
         assert!(matches!(stderr_target(), Target::Stderr));

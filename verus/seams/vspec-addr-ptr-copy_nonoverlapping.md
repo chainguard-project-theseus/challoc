@@ -1,6 +1,6 @@
 # `core::ptr::copy_nonoverlapping::<T>`
 
-Seam S265 of `verus/SEAMS.md`: src/vspec/addr.rs:51. Kind: assume_spec. Category: raw pointer (internal).
+Seam S269 of `verus/SEAMS.md`: src/vspec/addr.rs:51. Kind: assume_spec. Category: raw pointer (internal).
 Discharged by Kani.
 
 ## Contract

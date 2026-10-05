@@ -1,6 +1,13 @@
 # `LockGuard::deref_mut`
 
-Seam S187 of `verus/SEAMS.md`: src/lock.rs:722. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+**Superseded.** The seam left the ledger when `LockGuard::deref` and
+`deref_mut` became verified over the lock's vstd `PCell` (the lock
+value's permission held by the free lock's invariant): this record's
+statement, the lock's mutual exclusion and acquire/release edge as loom
+checks them, is now what `lock::axiom_acquired` assumes when it hands
+the permission to a new holder. Kept for that; no override names it.
+
+Formerly seam S177 of `verus/SEAMS.md` (at 5f47198): src/lock.rs:722. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Discharged by the C11 data-race rules, given the lock's mutual exclusion
 and acquire/release edge, which loom checks on the real lock word (part
 3); the models do not run the body below.

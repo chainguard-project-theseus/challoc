@@ -1,6 +1,6 @@
 # `base_slab_sizes`
 
-Seam S332 of `verus/SEAMS.md`: src/vspec/print.rs:35. Kind: external_body. Category: function pointer.
+Seam S336 of `verus/SEAMS.md`: src/vspec/print.rs:35. Kind: external_body. Category: function pointer.
 Discharged by Kani.
 
 ## Contract

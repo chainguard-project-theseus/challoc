@@ -1,7 +1,8 @@
-//! `core::cell::UnsafeCell`, which `lock::Lock` keeps its value in, for
-//! the verified lock; and the lock invariant's names at the paths the
-//! per-type axioms import them from. The invariant itself ([`lock_inv`],
-//! [`lock_init`], [`lock_frame`]) is specified with `Lock` in `lock.rs`.
+//! `core::cell::UnsafeCell`, which `api::Global` keeps the init-once
+//! statics in (the lock keeps its value in a vstd `PCell`); and the lock
+//! invariant's names at the paths the per-type axioms import them from.
+//! The invariant itself ([`lock_inv`], [`lock_init`], [`lock_frame`]) is
+//! specified with `Lock` in `lock.rs`.
 
 use vstd::prelude::*;
 
@@ -11,8 +12,8 @@ pub use crate::lock::{lock_frame, lock_init, lock_inv};
 verus! {
 
 /// Opaque: Verus does not model the contents of an `UnsafeCell`, so
-/// verified code never reads the value through one (the lock's guard
-/// accessors are trusted instead).
+/// verified code never reads the value through one (`api::Global::get`
+/// is trusted instead).
 #[verifier::external_type_specification]
 #[verifier::external_body]
 #[verifier::reject_recursive_types(T)]

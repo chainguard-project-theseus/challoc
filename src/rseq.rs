@@ -67,9 +67,15 @@ impl Probe {
         registered: false,
     };
 
-    /// The pairs [`Probe::words`] yields.
+    /// The feature line's `rseq=` and `rseq_size=` words. `rseq=yes` when
+    /// glibc registered an area (`__rseq_size` covers the original struct,
+    /// [`BASE_SIZE`]) and the kernel has written this thread's `cpu_id`;
+    /// `rseq_size` is the symbol's value even when the registration did not
+    /// take (`0` without one: `GLIBC_TUNABLES=glibc.pthread.rseq=0` or a
+    /// kernel without `CONFIG_RSEQ`; 20 on a kernel that reports no feature
+    /// size).
     #[inline(always)]
-    fn word_pairs(&self) -> [(&'static str, Value); 2] {
+    pub fn words(&self) -> [(&'static str, Value); 2] {
         let registered = self.present && self.registered && self.size >= BASE_SIZE;
         [
             ("rseq", Value::YesNo(registered)),
@@ -77,24 +83,6 @@ impl Probe {
         ]
     }
 }
-
-} // verus!
-
-impl Probe {
-    /// The feature line's `rseq=` and `rseq_size=` words. `rseq=yes` when
-    /// glibc registered an area (`__rseq_size` covers the original struct,
-    /// [`BASE_SIZE`]) and the kernel has written this thread's `cpu_id`;
-    /// `rseq_size` is the symbol's value even when the registration did not
-    /// take (`0` without one: `GLIBC_TUNABLES=glibc.pthread.rseq=0` or a
-    /// kernel without `CONFIG_RSEQ`; 20 on a kernel that reports no feature
-    /// size). Outside `verus!`: an array's `IntoIter` has no
-    /// specification; [`Probe::word_pairs`] builds them.
-    pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> {
-        self.word_pairs().into_iter()
-    }
-}
-
-verus! {
 
 /// Read the three weak symbols and the calling thread's `cpu_id` field.
 pub fn probe() -> (r: Probe)
@@ -272,8 +260,11 @@ mod tests {
     #[test]
     fn rseq_words_follow_size_and_registration() {
         let line = |p: &Probe| -> std::string::String {
-            let v: std::vec::Vec<std::string::String> =
-                p.words().map(|(k, v)| std::format!("{k}={v}")).collect();
+            let v: std::vec::Vec<std::string::String> = p
+                .words()
+                .into_iter()
+                .map(|(k, v)| std::format!("{k}={v}"))
+                .collect();
             v.join(" ")
         };
         for off in [192isize, -192, -256] {

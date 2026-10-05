@@ -2737,7 +2737,7 @@ pub(crate) mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S57..S64, S65: each `A_*` is its field's `offset_of!`, and the
+    /// S58..S65, S66: each `A_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_arena_layout` says.
     #[kani::proof]
     fn arena_layout() {
@@ -2782,7 +2782,7 @@ pub(crate) mod kani_layout {
         assert_eq!(align_of::<[T; N]>(), align_of::<T>());
     }
 
-    /// S55 `Arena::axiom_array_layout` at every instantiation the proofs
+    /// S56 `Arena::axiom_array_layout` at every instantiation the proofs
     /// use (`[ClassState; NCLASSES]` here, the two arrays of `Shared` in
     /// `heap/shared.rs`), and at primitive, zero-sized and padded element
     /// types and lengths 0, 1 and 7.

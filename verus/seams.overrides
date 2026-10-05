@@ -11,6 +11,7 @@
 # "trusted" (see "Recording a non-Verus result" in verus/SEAMS.md). A
 # line that matches no seam is an error.
 Handler	function pointer	Kani
+Hook	function pointer	Kani
 atfork_handlers	function pointer	Kani
 oom	termination	none (assumption)
 set_errno	FFI/syscall	none (assumption)
@@ -70,6 +71,9 @@ Config::get	function pointer	Kani	discharged (verus/seams/config-Config-get.md)
 KEYS	function pointer	Kani	discharged (verus/seams/config-KEYS.md)
 THP_NAMES	core library	none (assumption)
 PERCPU_ARENA_NAMES	core library	none (assumption)
+Parse	function pointer	Kani
+Read	function pointer	Kani
+TABLE	function pointer	Kani
 read_slot	raw pointer from C caller	Miri (evidence only)
 byte_at	raw pointer from C caller	Miri (evidence only)
 bytes_at	raw pointer from C caller	Miri (evidence only)
@@ -125,6 +129,9 @@ Reserved::into_unbacked	platform/kernel fact	none (assumption)
 src/layout/regions.rs:word	core library	Kani	discharged (verus/seams/layout-regions-word.md)
 class_entry	UnsafeCell/volatile/transmute	Islaris/Isla
 axiom_acquired	allocator invariant	none (assumption)
+axiom_held	allocator invariant	none (assumption)
+src/lock.rs:Lock::cell_ref	UnsafeCell/volatile/transmute	Verus
+src/lock.rs:Lock::cell_mut	UnsafeCell/volatile/transmute	Verus
 LockGuard::drop	atomics primitive	loom/GenMC	discharged (verus/seams/lock-LockGuard-drop.md)
 Meta::commit	allocator invariant	none (assumption)
 Meta::free	allocator invariant	none (assumption)
@@ -140,7 +147,6 @@ fig_add	core library	Kani	discharged (verus/seams/stats-fig_add.md)
 fig_mul	core library	Kani	discharged (verus/seams/stats-fig_mul.md)
 fig_add64	core library	Kani	discharged (verus/seams/stats-fig_add64.md)
 scan_lines	termination	none (assumption)
-Features::fmt	function pointer	Kani	discharged (verus/seams/sys-features-Features-fmt.md)
 getrandom_exact	termination	none (assumption)
 read_full	termination	none (assumption)
 write_all	termination	none (assumption)
@@ -167,7 +173,6 @@ core::fmt::Formatter::<'a>::write_str	core library	Kani	discharged (verus/seams/
 core::fmt::Formatter::<'a>::write_fmt	function pointer	Kani	discharged (verus/seams/vspec-fmt-Formatter-write_fmt.md)
 pthread_setspecific	FFI/syscall	none (assumption)
 src/sys/auxv.rs:getauxval	FFI/syscall	none (assumption)
-Reader	function pointer	Kani
 WriteCallback	function pointer	Kani
 libc::FILE	FFI/syscall	none (assumption)
 # Discharged with Isla (verus/ISLA.md); `#1` is the x86_64 `mod imp`, `#2`
@@ -338,9 +343,6 @@ src/layout/mod.rs:ClassTable::table	UnsafeCell/volatile/transmute	none (assumpti
 # the one-line `unsafe impl Sync for ClassTable {}` as opening an impl
 # for the `verus!` block after it (as for `Arena::axiom_array_layout`).
 src/layout/mod.rs:ClassTable::classes_ptr	UnsafeCell/volatile/transmute	none (assumption)
-src/lock.rs:Lock::get_unlocked	UnsafeCell/volatile/transmute	none (assumption)
-src/lock.rs:LockGuard::deref	UnsafeCell/volatile/transmute	loom/GenMC	discharged (verus/seams/lock-LockGuard-deref.md)
-src/lock.rs:LockGuard::deref_mut	UnsafeCell/volatile/transmute	loom/GenMC	discharged (verus/seams/lock-LockGuard-deref_mut.md)
 src/purge/background.rs:axiom_state_lock_inv	allocator invariant	none (assumption)
 src/purge/background.rs:shared_arg	raw pointer (internal)	none (assumption)
 src/stats.rs:axiom_snapshot_lock_inv	allocator invariant	none (assumption)
@@ -361,3 +363,4 @@ src/vspec/ptr.rs:<*mut T>::add	raw pointer (internal)	Kani	discharged (verus/sea
 src/vspec/sys.rs:core::ptr::from_mut	raw pointer (internal)	Kani	discharged (verus/seams/vspec-sys-ptr-from_mut.md)
 src/vspec/sys.rs:core::ptr::from_ref	raw pointer (internal)	Kani	discharged (verus/seams/vspec-sys-ptr-from_ref.md)
 src/vspec/zero.rs:write_zero	raw pointer (internal)	Kani	discharged (verus/seams/vspec-zero-write_zero.md)
+DisplaySpecImpl for Thp	core library	Verus

@@ -1,6 +1,6 @@
 # `DebugSpecImpl for Says`
 
-Seam S102 of `verus/SEAMS.md`: src/class/verify.rs:242. Kind: spec_impl. Category: core library.
+Seam S103 of `verus/SEAMS.md`: src/class/verify.rs:242. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract
@@ -27,6 +27,9 @@ Reproduce: `sh verus/kani/run.sh --harness class::verify::kani_verify::debug_say
 
 ## Translation
 
+- Since the hand-written `match` replaced the derived `Option` impl,
+  `Says::fmt` is verified under `fmt_req` (true): Verus checks the
+  contract itself; the harness stays as a run-time check of the output.
 - `fmt_req` is `true`: no assumption; every value (`Option<State>` has
   five), each formatted in turn.
 - Gap: not the alternate form `{:#?}`. For an `Option` it indents

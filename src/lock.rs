@@ -19,10 +19,10 @@
 #[cfg(verus_only)]
 use crate::layout::NCLASSES;
 use crate::sync::atomic::{AtomicU32, Ordering};
-#[cfg(not(loom))]
-use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
+#[cfg(not(loom))]
+use vstd::cell::pcell::{PCell, PointsTo};
 use vstd::prelude::*;
 
 verus! {
@@ -467,10 +467,24 @@ impl RawLock {
 verus! {
 
 /// A [`RawLock`] guarding a value.
+///
+/// The value is a vstd [`PCell`]: reading or writing it takes the cell's
+/// [`PointsTo`] permission (ghost). The raw lock's invariant holds that
+/// permission while the lock is free: [`Lock::new`] hands it over, an
+/// acquisition takes it out ([`axiom_acquired`]) and the guard's drop,
+/// the release, puts it back; a holder of the raw lock with no guard
+/// borrows it for as long as it borrows its token ([`axiom_held`]).
+/// That a free lock's invariant owns the permission, and that the futex
+/// mutex hands it to one holder at a time, is the mutex's contract,
+/// which Verus does not check (the atomics return any value); the two
+/// axioms state it. A `PCell` is a `ManuallyDrop<UnsafeCell<T>>`: the
+/// layout and the code of the `UnsafeCell` it replaces, except that
+/// dropping a `Lock` does not drop the value (no lock is dropped outside
+/// the tests).
 #[verifier::reject_recursive_types(T)]
 pub struct Lock<T> {
     raw: RawLock,
-    value: UnsafeCell<T>,
+    value: PCell<T>,
     /// Ghost: the value the lock was created with ([`lock_init`]).
     #[allow(dead_code)]
     init: Ghost<T>,
@@ -490,8 +504,8 @@ pub struct Lock<T> {
 /// permission again. `lock_inv` is uninterpreted; the owner of each locked
 /// type states what it means for that type, and lists its unverified
 /// holders (`vspec/meta.rs`, `vspec/huge.rs`, `class/mod.rs`). The
-/// assumption enters at [`axiom_acquired`], and at [`Lock::get_unlocked`]
-/// for a holder of the raw lock.
+/// assumption enters at [`axiom_acquired`], and at [`axiom_held`] for a
+/// holder of the raw lock.
 pub uninterp spec fn lock_inv<T>(v: T) -> bool;
 
 /// The value a lock was created with.
@@ -505,20 +519,39 @@ pub closed spec fn lock_init<T>(l: Lock<T>) -> T {
 pub uninterp spec fn lock_frame<T>(init: T, v: T) -> bool;
 
 /// The lock invariant's assumption where it enters for a guard (the other
-/// entry is [`Lock::get_unlocked`], for a holder of the raw lock): the
-/// guard of a lock this thread has just acquired holds a value that
+/// entry is [`axiom_held`], for a holder of the raw lock): a thread that
+/// has just acquired the raw lock of `l` takes the permission of `l`'s
+/// cell out of the raw lock's invariant, and the value in the cell
 /// satisfies [`lock_inv`] (every earlier holder restored it) and keeps
 /// [`lock_frame`] of the value the lock was created with. Private, and
 /// used only by [`Lock::lock`] and [`Lock::try_lock`] right after the
-/// acquire, on the guard they just built: of a guard whose value has
-/// since been changed it would be false, and nothing but that discipline
-/// stops such a call.
-axiom fn axiom_acquired<T>(l: Lock<T>, g: LockGuard<'_, T>)
-    requires
-        *g.lock == l,
+/// acquire, for the guard they build, which keeps the permission in a
+/// field private to this module until its drop releases the lock: a call
+/// while an earlier permission is alive would give two permissions to
+/// one cell, and nothing but that discipline stops such a call.
+axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
     ensures
-        lock_inv(g@),
-        lock_frame(lock_init(l), g@),
+        p.id() == l.value.id(),
+        lock_inv(*p.value()),
+        lock_frame(lock_init(l), *p.value()),
+;
+
+/// The lock invariant's assumption where it enters for a holder of the
+/// raw lock ([`Lock::get_unlocked`]): the holder's [`LockHeld`] token
+/// lends the permission of `l`'s cell for as long as the token stays
+/// borrowed, and the value satisfies [`lock_inv`] and keeps
+/// [`lock_frame`], as at [`axiom_acquired`]. Private, and used only by
+/// `get_unlocked`, which hands out the value, never the permission: a
+/// permission moved out of the borrow (`tracked_swap`) would outlive it,
+/// and the next call would give a second one to the same cell.
+axiom fn axiom_held<'a, T>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (tracked p: &'a mut PointsTo<T>)
+    requires
+        old(held).held() == l.raw,
+    ensures
+        *final(held) == *old(held),
+        p.id() == l.value.id(),
+        lock_inv(*p.value()),
+        lock_frame(lock_init(l), *p.value()),
 ;
 
 } // verus!
@@ -578,7 +611,9 @@ impl<T> Lock<T> {
             lock_init(l) == value,
             l.rank() == rank,
     {
-        Lock { raw: RawLock::new(Ghost(rank)), value: UnsafeCell::new(value), init: Ghost(value) }
+        // The permission goes to the free lock's invariant.
+        let (cell, _perm) = PCell::new(value);
+        Lock { raw: RawLock::new(Ghost(rank)), value: cell, init: Ghost(value) }
     }
 
     /// The lock's rank in the lock order ([`LockOrder`]).
@@ -607,9 +642,9 @@ impl<T> Lock<T> {
         opens_invariants any
     {
         self.raw.lock();
-        let g = LockGuard { lock: self };
+        let tracked perm = axiom_acquired(*self);
+        let g = LockGuard { lock: self, perm: Tracked(perm) };
         proof {
-            axiom_acquired(*self, g);
             *under = LockOrder { top: self.rank(), root: false, life: PhantomData };
         }
         g
@@ -630,11 +665,8 @@ impl<T> Lock<T> {
             r matches Some(g) ==> lock_inv(g@) && lock_frame(lock_init(*self), g@),
     {
         if self.raw.try_lock() {
-            let g = LockGuard { lock: self };
-            proof {
-                axiom_acquired(*self, g);
-            }
-            Some(g)
+            let tracked perm = axiom_acquired(*self);
+            Some(LockGuard { lock: self, perm: Tracked(perm) })
         } else {
             None
         }
@@ -664,8 +696,9 @@ impl<T> Lock<T> {
     /// the prepare handler; a fork child alone is not enough, since the
     /// parent's holder may have been mid-update.
     ///
-    /// Trusted, as [`axiom_acquired`] is for [`Lock::lock`]: under that
-    /// contract the value is one a holder left, so it satisfies
+    /// The value is the cell's, read through the permission the hold's
+    /// token lends ([`axiom_held`]): as at [`axiom_acquired`] for
+    /// [`Lock::lock`], the value is one a holder left, so it satisfies
     /// [`lock_inv`] and keeps [`lock_frame`]. The caller is a holder like
     /// any other and must leave the invariant true; a verified caller ends
     /// with an explicit `assert(lock_inv(*r))`. The caller shows its hold
@@ -674,7 +707,6 @@ impl<T> Lock<T> {
     /// would be two values to Verus, each with the invariant's ghost state
     /// (`verus/audit/memory.md`, `Lock::get_unlocked`).
     #[inline]
-    #[verifier::external_body]
     pub unsafe fn get_unlocked<'a>(&'a self, Tracked(held): Tracked<&'a mut LockHeld>) -> (r: &'a mut T)
         requires
             old(held).held() == self.spec_raw(),
@@ -683,51 +715,113 @@ impl<T> Lock<T> {
             lock_inv(*r),
             lock_frame(lock_init(*self), *r),
     {
-        // SAFETY: exclusivity is the caller's promise.
-        unsafe { &mut *self.value.get() }
+        let tracked perm = axiom_held(*self, held);
+        self.value.borrow_mut(Tracked(perm))
     }
 }
 
-/// Exclusive access to a [`Lock`]'s value; unlocks on drop.
+/// Exclusive access to a [`Lock`]'s value; unlocks on drop. Holds the
+/// permission of the lock's cell, taken at the acquisition
+/// ([`axiom_acquired`]), until the drop releases the lock.
 #[verifier::reject_recursive_types(T)]
 pub struct LockGuard<'a, T> {
     lock: &'a Lock<T>,
+    /// Ghost: the permission of the lock's cell.
+    #[allow(dead_code)]
+    perm: Tracked<PointsTo<T>>,
+}
+
+impl<'a, T> LockGuard<'a, T> {
+    /// The permission is the cell's.
+    #[verifier::type_invariant]
+    closed spec fn wf(&self) -> bool {
+        self.perm@.id() == self.lock.value.id()
+    }
 }
 
 impl<'a, T> View for LockGuard<'a, T> {
     type V = T;
 
-    /// The guarded value.
-    uninterp spec fn view(&self) -> T;
+    /// The guarded value: the cell's, through the guard's permission.
+    closed spec fn view(&self) -> T {
+        *self.perm@.value()
+    }
 }
 
-// The value is behind the `UnsafeCell`, which Verus does not model, so
-// the two accessors are trusted to return the guarded value.
 impl<T> Deref for LockGuard<'_, T> {
     type Target = T;
     #[inline]
-    #[verifier::external_body]
     fn deref(&self) -> (r: &T)
         ensures
             *r == self@,
     {
-        // SAFETY: the guard exists only while the raw lock is held.
-        unsafe { &*self.lock.value.get() }
+        proof {
+            use_type_invariant(self);
+        }
+        cell_ref(&self.lock.value, &self.perm)
     }
 }
 
 impl<T> DerefMut for LockGuard<'_, T> {
     #[inline]
-    #[verifier::external_body]
     fn deref_mut(&mut self) -> (r: &mut T)
         ensures
             *r == old(self)@,
             *final(r) == final(self)@,
     {
-        // SAFETY: the guard exists only while the raw lock is held, and
-        // `&mut self` makes this the only reference derived from it.
-        unsafe { &mut *self.lock.value.get() }
+        proof {
+            use_type_invariant(&*self);
+        }
+        cell_mut(&self.lock.value, &mut self.perm)
     }
+}
+
+// The guard's two reads of its cell: [`PCell::borrow`] and
+// [`PCell::borrow_mut`] with the permission taken from the guard's
+// field. `c.borrow(Tracked(t.borrow()))` and
+// `c.borrow_mut(Tracked(t.borrow_mut()))` verify as they are, but every
+// `Tracked(..)` expression in exec code erases to
+// `Tracked::assume_new_fallback(|| unreachable!())`, and that closure,
+// instantiated in `deref` and `deref_mut` for every guarded type, changed
+// the machine code of `Shared::free_huge` (an extra range check of the
+// run state byte) and `ClassState::claim_with` (block order) on x86_64.
+// The same closures in `Lock::lock`'s and `get_unlocked`'s `Tracked(..)`
+// left the machine code unchanged (x86_64). These two pass
+// `Tracked::assume_new()` instead. Trusted: each contract is the vstd
+// one of the call it makes, restated for a permission held by reference
+// (`&Tracked<PointsTo<T>>`, `&mut Tracked<PointsTo<T>>`) rather than
+// passed as `Tracked<&PointsTo<T>>`.
+
+/// [`PCell::borrow`] with the permission `t`.
+#[verifier::external_body]
+#[inline(always)]
+#[allow(unused_variables)]
+fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
+    requires
+        t@.id() == c.id(),
+    ensures
+        *r == *t@.value(),
+    opens_invariants none
+    no_unwind
+{
+    c.borrow(Tracked::assume_new())
+}
+
+/// [`PCell::borrow_mut`] with the permission `t`.
+#[verifier::external_body]
+#[inline(always)]
+#[allow(unused_variables)]
+fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b mut T)
+    requires
+        old(t)@.id() == c.id(),
+    ensures
+        *r == *old(t)@.value(),
+        *final(r) == *final(t)@.value(),
+        final(t)@.id() == c.id(),
+    opens_invariants none
+    no_unwind
+{
+    c.borrow_mut(Tracked::assume_new())
 }
 
 // Trusted: Verus wants a destructor that opens no invariant and cannot
@@ -752,6 +846,42 @@ impl<T> Drop for LockGuard<'_, T> {
 mod tests {
     use super::*;
     use std::vec::Vec;
+
+    /// `axiom_acquired` and `axiom_held` mint a permission of a lock's
+    /// cell, and two alive at once would prove `false` (vstd's
+    /// `PointsTo::is_exclusive`): the first is called only where
+    /// `Lock::lock` and `Lock::try_lock` build their guard, the second
+    /// only in `Lock::get_unlocked`. Both are private to this file.
+    #[test]
+    fn permission_axioms_are_called_only_at_acquisitions() {
+        // Spelled in parts, so that this test's own lines match nothing.
+        // A call is the name then `(` or a turbofish `::`.
+        let acquired = std::format!("{}{}", "axiom_", "acquired");
+        let held = std::format!("{}{}", "axiom_", "held");
+        let calls = |t: &str, name: &str| {
+            t.contains(std::format!("{name}(").as_str())
+                || t.contains(std::format!("{name}::").as_str())
+        };
+        let (mut a, mut h) = (Vec::new(), Vec::new());
+        let mut func = "";
+        for line in include_str!("lock.rs").lines() {
+            let t = line.trim();
+            if t.starts_with("//") {
+                continue;
+            }
+            if let Some(i) = t.find("fn ") {
+                func = t[i + 3..].split(['(', '<']).next().unwrap();
+            }
+            if calls(t, &acquired) && !t.starts_with("axiom fn") {
+                a.push(func);
+            }
+            if calls(t, &held) && !t.starts_with("axiom fn") {
+                h.push(func);
+            }
+        }
+        assert_eq!(a, ["lock", "try_lock"]);
+        assert_eq!(h, ["get_unlocked"]);
+    }
 
     #[test]
     fn raw_lock_state_machine() {

@@ -355,7 +355,7 @@ impl Config {
             r is None ==> *final(self) == *old(self),
             old(self).wf() ==> final(self).wf(),
     {
-        Key::find(key).map(|k| (k.parse)(self, key, value))
+        Key::find(key).map(|k| (k.parse.0)(self, key, value))
     }
 
     /// The value of a key by name, for `mallctl("opt.<key>")`: the
@@ -367,7 +367,7 @@ impl Config {
         ensures
             r is Some <==> listed(key@),
     {
-        Key::find(key).map(|k| (k.read)(self))
+        Key::find(key).map(|k| (k.read.0)(self))
     }
 
     /// Whether `class` is a *shared* class: larger than `tcache_max`, so no
@@ -485,8 +485,28 @@ pub uninterp spec fn listed(key: Seq<u8>) -> bool;
 } // verus!
 
 /// A key's parser: `(config, key, value)`; the key is passed so the issue
-/// can name it.
-type Parse = for<'a> fn(&mut Config, &'a [u8], &'a [u8]) -> Result<(), Issue<'a>>;
+/// can name it. A newtype, opaque to the verifier, which rejects function
+/// pointer types: verified code carries it ([`Key`], [`TABLE`]) and
+/// never calls it.
+struct Parse(for<'a> fn(&mut Config, &'a [u8], &'a [u8]) -> Result<(), Issue<'a>>);
+
+/// A key's reader, the value [`Config::get`] answers with; opaque, as
+/// [`Parse`].
+struct Read(fn(&Config) -> Value);
+
+verus! {
+
+#[verifier::external_type_specification]
+#[verifier::external_body]
+// Never constructed: it only names `Parse` to the verifier.
+#[allow(dead_code)]
+struct ExParse(Parse);
+
+#[verifier::external_type_specification]
+#[verifier::external_body]
+// Never constructed: it only names `Read` to the verifier.
+#[allow(dead_code)]
+struct ExRead(Read);
 
 /// One tunable of design section 12: its name (`opt.<name>`), the parser
 /// [`Config::set`] runs on its value and the reader [`Config::get`]
@@ -494,17 +514,32 @@ type Parse = for<'a> fn(&mut Config, &'a [u8], &'a [u8]) -> Result<(), Issue<'a>
 pub struct Key {
     pub name: &'static str,
     parse: Parse,
-    read: fn(&Config) -> Value,
+    read: Read,
 }
 
 impl Key {
     /// The entry named `key`, if any.
-    fn find(key: &[u8]) -> Option<&'static Key> {
-        TABLE.iter().find(|k| k.name.as_bytes() == key)
+    fn find(key: &[u8]) -> (r: Option<&'static Key>)
+        ensures
+            r matches Some(k) ==> k.name.spec_bytes() == key@,
+    {
+        // `TABLE.iter().find(|k| k.name.as_bytes() == key)`, with an
+        // index: Verus does not specify `Iterator::find`.
+        let table = TABLE;
+        let mut i = 0;
+        while i < table.len()
+            invariant
+                i <= table@.len(),
+            decreases table@.len() - i,
+        {
+            if bytes_is(table[i].name.as_bytes(), key) {
+                return Some(&table[i]);
+            }
+            i += 1;
+        }
+        None
     }
 }
-
-verus! {
 
 /// A bool key: `true` / `false` into `slot`.
 fn bool_into<'a>(slot: &mut bool, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
@@ -580,8 +615,8 @@ macro_rules! bool_key {
     ($name:literal, $field:ident) => {
         Key {
             name: $name,
-            parse: |c, k, v| bool_into(&mut c.$field, k, v),
-            read: |c| Value::Bool(c.$field),
+            parse: Parse(|c, k, v| bool_into(&mut c.$field, k, v)),
+            read: Read(|c| Value::Bool(c.$field)),
         }
     };
 }
@@ -589,27 +624,29 @@ macro_rules! bool_key {
 /// Every tunable, in table order (the order of the `opt.` namespace, the
 /// report and `KEYS`). A new key is one entry here plus its field; the
 /// tests check that every entry reads back, round-trips through `set`
-/// and is in no other table.
-pub const TABLE: &[Key] = &[
+/// and is in no other table. Outside `verus!`, which rewrites closures
+/// (it gives each a capture, and a closure that captures is no function
+/// pointer); the verified code sees it as [`TABLE`].
+const ENTRIES: &[Key] = &[
     bool_key!("background_thread", background_thread),
     Key {
         name: "dirty_decay_ms",
-        parse: |c, k, v| num(c, k, v, -1, MAX_INTERVAL_MS, |c, v| c.dirty_decay_ms = v),
-        read: |c| Value::Int(c.dirty_decay_ms),
+        parse: Parse(|c, k, v| num(c, k, v, -1, MAX_INTERVAL_MS, |c, v| c.dirty_decay_ms = v)),
+        read: Read(|c| Value::Int(c.dirty_decay_ms)),
     },
     Key {
         name: "muzzy_decay_ms",
-        parse: |c, k, v| num(c, k, v, -1, MAX_INTERVAL_MS, |c, v| c.muzzy_decay_ms = v),
-        read: |c| Value::Int(c.muzzy_decay_ms),
+        parse: Parse(|c, k, v| num(c, k, v, -1, MAX_INTERVAL_MS, |c, v| c.muzzy_decay_ms = v)),
+        read: Read(|c| Value::Int(c.muzzy_decay_ms)),
     },
     Key {
         name: "narenas",
-        parse: |c, k, v| num(c, k, v, 0, u32::MAX as i64, |c, v| c.narenas = v as u32),
-        read: |c| Value::Uint(c.narenas as u64),
+        parse: Parse(|c, k, v| num(c, k, v, 0, u32::MAX as i64, |c, v| c.narenas = v as u32)),
+        read: Read(|c| Value::Uint(c.narenas as u64)),
     },
     Key {
         name: "percpu_arena",
-        parse: |c, k, v| {
+        parse: Parse(|c, k, v| {
             c.percpu_arena = pick(
                 &[
                     ("disabled", PercpuArena::Disabled),
@@ -620,31 +657,31 @@ pub const TABLE: &[Key] = &[
                 v,
             )?;
             Ok(())
-        },
-        read: |c| Value::Str(c.percpu_arena.name()),
+        }),
+        read: Read(|c| Value::Str(c.percpu_arena.name())),
     },
     bool_key!("tcache", tcache),
     Key {
         name: "tcache_max",
-        parse: |c, k, v| {
+        parse: Parse(|c, k, v| {
             num(c, k, v, 0, crate::layout::MEDIUM_MAX as i64, |c, v| {
                 c.tcache_max = v as usize
             })
-        },
-        read: |c| Value::Size(c.tcache_max),
+        }),
+        read: Read(|c| Value::Size(c.tcache_max)),
     },
     Key {
         name: "tcache_nslots_small_max",
-        parse: |c, k, v| {
+        parse: Parse(|c, k, v| {
             num(c, k, v, MIN_CAP as i64, MAX_NSLOTS as i64, |c, v| {
                 c.tcache_nslots_small_max = v as u32
             })
-        },
-        read: |c| Value::Uint(c.tcache_nslots_small_max as u64),
+        }),
+        read: Read(|c| Value::Uint(c.tcache_nslots_small_max as u64)),
     },
     Key {
         name: "lg_tcache_nslots_mul",
-        parse: |c, k, v| {
+        parse: Parse(|c, k, v| {
             num(
                 c,
                 k,
@@ -653,13 +690,13 @@ pub const TABLE: &[Key] = &[
                 LG_NSLOTS_MUL_MAX as i64,
                 |c, v| c.lg_tcache_nslots_mul = v as i32,
             )
-        },
-        read: |c| Value::Int(c.lg_tcache_nslots_mul as i64),
+        }),
+        read: Read(|c| Value::Int(c.lg_tcache_nslots_mul as i64)),
     },
     Key {
         // `default` is jemalloc's spelling of `never`.
         name: "thp",
-        parse: |c, k, v| {
+        parse: Parse(|c, k, v| {
             c.thp = pick(
                 &[
                     ("never", Thp::Never),
@@ -671,14 +708,14 @@ pub const TABLE: &[Key] = &[
                 v,
             )?;
             Ok(())
-        },
-        read: |c| Value::Str(c.thp.name()),
+        }),
+        read: Read(|c| Value::Str(c.thp.name())),
     },
     bool_key!("lazy_band", lazy_band),
     bool_key!("guards", guards),
     Key {
         name: "guard_slab_interval",
-        parse: |c, k, v| {
+        parse: Parse(|c, k, v| {
             // 0 is off and N >= 2 is one guard per N x 64 KiB; 1 would
             // make every slab a guard and leave nothing to allocate
             // (`SlabTable::new` refuses it), so it is out of range and
@@ -704,27 +741,27 @@ pub const TABLE: &[Key] = &[
                 });
             }
             r
-        },
-        read: |c| Value::Uint(c.guard_slab_interval as u64),
+        }),
+        read: Read(|c| Value::Uint(c.guard_slab_interval as u64)),
     },
     Key {
         name: "huge_retain_max",
-        parse: |c, k, v| {
+        parse: Parse(|c, k, v| {
             num(c, k, v, 0, MAX_HUGE_RETAIN_MAX as i64, |c, v| {
                 c.huge_retain_max = v as usize
             })
-        },
-        read: |c| Value::Size(c.huge_retain_max),
+        }),
+        read: Read(|c| Value::Size(c.huge_retain_max)),
     },
     Key {
         // Unset it follows `dirty_decay_ms`, which is what it reads back.
         name: "huge_dirty_decay_ms",
-        parse: |c, k, v| {
+        parse: Parse(|c, k, v| {
             num(c, k, v, -1, MAX_INTERVAL_MS, |c, v| {
                 c.huge_dirty_decay_ms = Some(v)
             })
-        },
-        read: |c| Value::Int(c.huge_decay_ms()),
+        }),
+        read: Read(|c| Value::Int(c.huge_decay_ms())),
     },
     bool_key!("zero_on_free", zero_on_free),
     bool_key!("pac_pointers", pac_pointers),
@@ -735,16 +772,34 @@ pub const TABLE: &[Key] = &[
     bool_key!("check_zero", check_zero),
 ];
 
-/// The names of [`TABLE`], in its order.
+verus! {
+
+/// [`ENTRIES`], the tunables. Trusted: the verifier cannot see the
+/// entries (they hold closures); nothing is claimed about them.
+// The lifetimes are spelled out, as for `KEYS`.
+#[allow(clippy::redundant_static_lifetimes)]
+#[verifier::external_body]
+pub exec const TABLE: &'static [Key] = ENTRIES;
+
+/// The names of [`TABLE`], in its order. The loop also tests `out`'s
+/// length, which is `TABLE.len()` by its type: the verifier does not
+/// evaluate the array length.
 const fn names() -> [&'static str; TABLE.len()] {
+    let table = TABLE;
     let mut out = [""; TABLE.len()];
     let mut i = 0;
-    while i < TABLE.len() {
-        out[i] = TABLE[i].name;
+    while i < table.len() && i < out.len()
+        invariant
+            i <= table@.len(),
+        decreases table@.len() - i,
+    {
+        out[i] = table[i].name;
         i += 1;
     }
     out
 }
+
+} // verus!
 
 const NAMES: [&str; TABLE.len()] = names();
 
@@ -2364,7 +2419,7 @@ mod tests {
             );
             // A value of the key's type that differs from the default.
             let d = Config::DEFAULT;
-            let other = match (key.read)(&d) {
+            let other = match (key.read.0)(&d) {
                 Value::Bool(b) => std::format!("{}", !b),
                 Value::Int(i) => std::format!("{}", if i == 0 { 1 } else { 0 }),
                 // Doubling stays in every unsigned key's range and keeps
@@ -2385,14 +2440,14 @@ mod tests {
                 key.name
             );
             assert_ne!(
-                (key.read)(&cfg),
-                (key.read)(&d),
+                (key.read.0)(&cfg),
+                (key.read.0)(&d),
                 "{}:{other} read back through its own entry",
                 key.name
             );
             assert_eq!(
                 cfg.get(key.name.as_bytes()),
-                Some((key.read)(&cfg)),
+                Some((key.read.0)(&cfg)),
                 "{}",
                 key.name
             );
@@ -2401,15 +2456,15 @@ mod tests {
                     // Unset, the huge period reads as the slab period
                     // (design 7): the one reading that moves with another key.
                     assert_eq!(
-                        (o.read)(&cfg),
-                        (key.read)(&cfg),
+                        (o.read.0)(&cfg),
+                        (key.read.0)(&cfg),
                         "huge_dirty_decay_ms follows dirty_decay_ms"
                     );
                     continue;
                 }
                 assert_eq!(
-                    (o.read)(&cfg),
-                    (o.read)(&d),
+                    (o.read.0)(&cfg),
+                    (o.read.0)(&d),
                     "{}:{other} changed {}",
                     key.name,
                     o.name
@@ -2774,7 +2829,7 @@ mod kani_config {
         }
     }
 
-    /// S106 `Config::set_listed`: under `requires old(self).wf()`,
+    /// S107 `Config::set_listed`: under `requires old(self).wf()`,
     /// `r is None <==> !listed(key)`, an unchanged config on `None`, and
     /// `wf` kept, for every well-formed config, every entry's name and
     /// every key up to `KEY_MAX` bytes, and every value up to `VALUE_MAX`
@@ -2824,7 +2879,7 @@ mod kani_config {
         CStr::from_bytes_with_nul(b).unwrap()
     }
 
-    /// S107 `Config::get`: `r is Some <==> listed(key)`, for every config
+    /// S108 `Config::get`: `r is Some <==> listed(key)`, for every config
     /// and every key `any_key` gives. The two `name` methods the `thp` and
     /// `percpu_arena` readers call are stubbed (above).
     #[kani::proof]
@@ -2837,7 +2892,7 @@ mod kani_config {
         let c = any_config();
         assert_eq!(c.get(key).is_some(), listed(key));
     }
-    /// S108 `KEYS`: every name in it is `listed`.
+    /// S112 `KEYS`: every name in it is `listed`.
     #[kani::proof]
     #[kani::unwind(25)]
     fn keys_are_listed() {
@@ -2864,7 +2919,7 @@ mod kani_config {
         }
     }
 
-    /// S109 `DisplaySpecImpl for Issue` (`fmt_req` true): every variant,
+    /// S113 `DisplaySpecImpl for Issue` (`fmt_req` true): every variant,
     /// over arbitrary byte strings up to 3 bytes and every `to`.
     #[kani::proof]
     #[kani::unwind(22)]
@@ -2876,7 +2931,7 @@ mod kani_config {
         formats(&any_issue(&a[..i], &b[..j]));
     }
 
-    /// S110 `DisplaySpecImpl for Bytes` (`fmt_req` true): every byte string
+    /// S114 `DisplaySpecImpl for Bytes` (`fmt_req` true): every byte string
     /// up to 4 bytes, and one of 65 arbitrary bytes (past the 64 it shows,
     /// so the `...` branch runs).
     #[kani::proof]

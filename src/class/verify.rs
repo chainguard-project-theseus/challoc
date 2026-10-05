@@ -236,7 +236,7 @@ impl ClassState {
 /// and has nothing for `Option`).
 struct Says(Option<State>);
 
-// The derived `Debug` of `Option<State>` writes under any formatter
+// `Says`'s `Debug` (below) writes under any formatter
 // (ghost only: ordinary builds have no `std_specs`).
 #[cfg(verus_only)]
 impl vstd::std_specs::fmt::DebugSpecImpl for Says {
@@ -245,15 +245,22 @@ impl vstd::std_specs::fmt::DebugSpecImpl for Says {
     }
 }
 
-} // verus!
-
+// The derived `Debug` of `Option<State>` under `{:?}`, the only way
+// challoc formats `Says`, as a `match`: Verus has no specification of
+// `Option`'s `Debug`. Under `{:#?}` the derived one would split the
+// `Some` over lines; nothing formats `Says` that way.
 impl core::fmt::Debug for Says {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Debug::fmt(&self.0, f)
+        match self.0 {
+            None => f.write_str("None"),
+            Some(s) => {
+                f.write_str("Some(")?;
+                core::fmt::Debug::fmt(&s, f)?;
+                f.write_str(")")
+            },
+        }
     }
 }
-
-verus! {
 
 /// The address of `d`, for an abort message; nothing is claimed about it.
 #[inline(always)]
@@ -379,7 +386,7 @@ mod kani_verify {
     use crate::kani_proofs::fmt::formats_debug_flat;
     use crate::slab::State;
 
-    /// S102 `DebugSpecImpl for Says` (`fmt_req` true): `None` and every
+    /// S103 `DebugSpecImpl for Says` (`fmt_req` true): `None` and every
     /// state, each formatted in turn (`{:?}` only: Kani does not finish
     /// `{:#?}` of an `Option`, whose `PadAdapter` path the record names
     /// as a gap; challoc formats `Says` with `{:?}`).

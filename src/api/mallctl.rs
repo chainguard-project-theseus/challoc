@@ -24,10 +24,11 @@
 //! Every node is an [`Entry`]: a directory, a read-only key that carries
 //! its answer in the tree (a [`Reader`], `stat(...)`, called by [`ctl`]
 //! after the read-only check with the numeric MIB components as its
-//! argument; adding such a key is a named reader inside `verus!` and one
-//! `stat` line), or an [`Op`], a key that does something (`epoch`, the
-//! `arena.<i>.*` operations, `arenas.create`/`lookup`, the `thread.*` and
-//! `tcache.*` writes, the utilization queries), which is an arm of `ctl`.
+//! argument; adding such a key is a named reader inside `verus!`, its
+//! `Reader` variant and `call` arm, and one `stat` line), or an [`Op`], a
+//! key that does something (`epoch`, the `arena.<i>.*` operations,
+//! `arenas.create`/`lookup`, the `thread.*` and `tcache.*` writes, the
+//! utilization queries), which is an arm of `ctl`.
 //!
 //! `stats.*` values are those stored by the last `epoch` (all zero before
 //! the first), as in jemalloc; `stats.arenas.4096.*` (`MALLCTL_ARENAS_ALL`)
@@ -172,67 +173,157 @@ enum Reading {
 
 const _: () = assert!(ARENAS_DESTROYED >= MAX_ARENAS && ARENAS_DESTROYED != ARENAS_ALL as usize);
 
-/// A read-only key's implementation: the MIB (for its numeric components)
-/// in, the answer or an error code out. The allocator state is [`shared`],
-/// not a parameter: a reader is called through a pointer, and a `&Shared`
-/// argument the optimiser cannot trace to the one static would cost every
-/// function downstream (`heap_for_thread`, `stats::snapshot`,
-/// `Config::get`) the constant it is specialised on today.
-///
-/// A newtype so the name tree can hold it inside `verus!`, which rejects
-/// function pointer types: the verified code only carries it and calls
-/// it through [`call`].
-#[derive(Copy, Clone)]
-struct Reader(fn(&[usize]) -> Result<Reading, c_int>);
-
 verus! {
 
-#[verifier::external_type_specification]
-#[verifier::external_body]
-// Never constructed: it only names `Reader` to the verifier.
-#[allow(dead_code)]
-struct ExReader(Reader);
+/// A read-only key's implementation, by name: [`call`] runs it with the
+/// MIB (for its numeric components) and returns the answer or an error
+/// code. The allocator state is [`shared`], not a parameter: a `&Shared`
+/// argument the optimiser cannot trace to the one static would cost
+/// every function downstream (`heap_for_thread`, `stats::snapshot`,
+/// `Config::get`) the constant it is specialised on today.
+///
+/// One variant per reader rather than a function pointer, which
+/// `verus!` rejects: [`call`] is a `match` of direct calls, so it
+/// verifies. `opt.*` reads through `OptValue`; the others are named after
+/// their reader functions, below the name tree.
+#[derive(Copy, Clone)]
+enum Reader {
+    BinSize,
+    BinNregs,
+    BinSlabSize,
+    ArenasNarenas,
+    ArenasNbins,
+    ArenasNlextents,
+    ArenasPage,
+    ArenasQuantum,
+    BinCurregs,
+    BinCurslabs,
+    BinNonfullSlabs,
+    SmallAllocated,
+    SmallResident,
+    LargeAllocated,
+    ArenaPactive,
+    ArenaPdirty,
+    ArenaPmuzzy,
+    ArenaResident,
+    ArenaMapped,
+    ArenaRetained,
+    CgroupLimit,
+    CgroupHigh,
+    CgroupCurrent,
+    CgroupDecayMs,
+    CgroupRetentionCap,
+    CgroupEmptyBytes,
+    CgroupFullPurges,
+    CgroupPurgeAdvice,
+    CgroupLazyPurges,
+    CgroupEagerPurges,
+    ThpMode,
+    ThpClassRanges,
+    ThpClassBytes,
+    ThpHugeRanges,
+    ThpMetaRanges,
+    ThpFailures,
+    ThpNohugeRanges,
+    StatsAllocated,
+    StatsActive,
+    StatsMetadata,
+    StatsResident,
+    StatsMapped,
+    StatsRetained,
+    ThreadAllocated,
+    ThreadAllocatedp,
+    ThreadDeallocated,
+    ThreadDeallocatedp,
+    ConfigMallocConf,
+    ConfigDebug,
+    ConfigStats,
+    Version,
+    OptValue,
+}
 
-/// `read(mib)`. Trusted: a call through a function pointer; nothing is
-/// claimed about the reading. `read` is the reader of the node `mib`
-/// resolves to, and under `opt`, `arenas` and `stats` every reader is a
-/// verified function that does not require `may_abort`
-/// ([`reader_never_aborts`]); the others (`version`, `config.*` and
-/// `thread.*`) are verified functions too, but `thread.*` requires the
-/// capability and this contract does not tell the groups apart, so a call
-/// to any of those needs it.
-#[verifier::external_body]
+impl Reader {
+    /// The reader requires `may_abort`: the `thread.*` readers, which may
+    /// create the thread's heap. Every other reader never aborts, not even
+    /// at an integrity check.
+    spec fn aborts(self) -> bool {
+        match self {
+            Reader::ThreadAllocated | Reader::ThreadAllocatedp | Reader::ThreadDeallocated | Reader::ThreadDeallocatedp => true,
+            _ => false,
+        }
+    }
+}
+
+/// `read(mib)`: the reader's function, called directly.
 #[inline(always)]
 fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
-        crate::sys::may_abort() || (reader_never_aborts(mib@) && reads(mib@, read)),
+        crate::sys::may_abort() || !read.aborts(),
 {
-    (read.0)(mib)
-}
-
-/// `read` is the reader of the node `mib` resolves to.
-spec fn reads(mib: Seq<usize>, read: Reader) -> bool {
-    match resolve(root_nodes(), mib) {
-        Some(n) => n.entry == Entry::Read(read),
-        None => false,
+    match read {
+        Reader::BinSize => bin_size(mib),
+        Reader::BinNregs => bin_nregs(mib),
+        Reader::BinSlabSize => bin_slab_size(mib),
+        Reader::ArenasNarenas => arenas_narenas(mib),
+        Reader::ArenasNbins => arenas_nbins(mib),
+        Reader::ArenasNlextents => arenas_nlextents(mib),
+        Reader::ArenasPage => arenas_page(mib),
+        Reader::ArenasQuantum => arenas_quantum(mib),
+        Reader::BinCurregs => bin_curregs(mib),
+        Reader::BinCurslabs => bin_curslabs(mib),
+        Reader::BinNonfullSlabs => bin_nonfull_slabs(mib),
+        Reader::SmallAllocated => small_allocated(mib),
+        Reader::SmallResident => small_resident(mib),
+        Reader::LargeAllocated => large_allocated(mib),
+        Reader::ArenaPactive => arena_pactive(mib),
+        Reader::ArenaPdirty => arena_pdirty(mib),
+        Reader::ArenaPmuzzy => arena_pmuzzy(mib),
+        Reader::ArenaResident => arena_resident(mib),
+        Reader::ArenaMapped => arena_mapped(mib),
+        Reader::ArenaRetained => arena_retained(mib),
+        Reader::CgroupLimit => cgroup_limit(mib),
+        Reader::CgroupHigh => cgroup_high(mib),
+        Reader::CgroupCurrent => cgroup_current(mib),
+        Reader::CgroupDecayMs => cgroup_decay_ms(mib),
+        Reader::CgroupRetentionCap => cgroup_retention_cap(mib),
+        Reader::CgroupEmptyBytes => cgroup_empty_bytes(mib),
+        Reader::CgroupFullPurges => cgroup_full_purges(mib),
+        Reader::CgroupPurgeAdvice => cgroup_purge_advice(mib),
+        Reader::CgroupLazyPurges => cgroup_lazy_purges(mib),
+        Reader::CgroupEagerPurges => cgroup_eager_purges(mib),
+        Reader::ThpMode => thp_mode(mib),
+        Reader::ThpClassRanges => thp_class_ranges(mib),
+        Reader::ThpClassBytes => thp_class_bytes(mib),
+        Reader::ThpHugeRanges => thp_huge_ranges(mib),
+        Reader::ThpMetaRanges => thp_meta_ranges(mib),
+        Reader::ThpFailures => thp_failures(mib),
+        Reader::ThpNohugeRanges => thp_nohuge_ranges(mib),
+        Reader::StatsAllocated => stats_allocated(mib),
+        Reader::StatsActive => stats_active(mib),
+        Reader::StatsMetadata => stats_metadata(mib),
+        Reader::StatsResident => stats_resident(mib),
+        Reader::StatsMapped => stats_mapped(mib),
+        Reader::StatsRetained => stats_retained(mib),
+        Reader::ThreadAllocated => thread_allocated(mib),
+        Reader::ThreadAllocatedp => thread_allocatedp(mib),
+        Reader::ThreadDeallocated => thread_deallocated(mib),
+        Reader::ThreadDeallocatedp => thread_deallocatedp(mib),
+        Reader::ConfigMallocConf => config_malloc_conf(mib),
+        Reader::ConfigDebug => config_debug(mib),
+        Reader::ConfigStats => config_stats(mib),
+        Reader::Version => version(mib),
+        Reader::OptValue => opt_value(mib),
     }
 }
 
-/// `mib` names a key under `opt`, `arenas` or `stats`, entries 4, 5 and 7
-/// of [`ROOT`] (`tests::read_only_subtrees_are_roots_4_5_and_7` checks
-/// the indices): its reader is `opt_value` or one of the named readers
-/// above the name tree, none of which requires `may_abort`.
-spec fn reader_never_aborts(mib: Seq<usize>) -> bool {
-    mib.len() > 0 && (mib[0] == 4 || mib[0] == 5 || mib[0] == 7)
-}
-
-/// What [`ctl`] does at `n` never aborts: an interior node, a read
-/// under `opt`, `arenas` or `stats`, or a utilization query.
+/// What [`ctl`] does at `n` never aborts: an interior node, a read whose
+/// reader does not abort (every key but `thread.*`'s four, so every key
+/// under `opt`, `arenas` and `stats`), or a utilization query.
 spec fn ctl_never_aborts(n: Node, mib: Seq<usize>) -> bool {
     match n.entry {
         Entry::Dir(_) => true,
-        Entry::Read(_) => reader_never_aborts(mib),
+        Entry::Read(r) => !r.aborts(),
         Entry::Op(op) => op == Op::UtilQuery || op == Op::UtilBatchQuery,
     }
 }
@@ -337,7 +428,7 @@ const fn opt_nodes(read: Reader) -> [Node; KEYS.len()] {
 
 } // verus!
 
-static OPT: [Node; KEYS.len()] = opt_nodes(Reader(opt_value));
+static OPT: [Node; KEYS.len()] = opt_nodes(Reader::OptValue);
 
 verus! {
 
@@ -725,17 +816,17 @@ fn version(_m: &[usize]) -> Result<Reading, c_int> {
 } // verus!
 
 static BIN_GEOMETRY: [Node; 3] = [
-    stat("size", Reader(bin_size)),
-    stat("nregs", Reader(bin_nregs)),
-    stat("slab_size", Reader(bin_slab_size)),
+    stat("size", Reader::BinSize),
+    stat("nregs", Reader::BinNregs),
+    stat("slab_size", Reader::BinSlabSize),
 ];
 static ARENAS_BIN: [Node; 1] = [num(&BIN_GEOMETRY)];
 static ARENAS: [Node; 8] = [
-    stat("narenas", Reader(arenas_narenas)),
-    stat("nbins", Reader(arenas_nbins)),
-    stat("nlextents", Reader(arenas_nlextents)),
-    stat("page", Reader(arenas_page)),
-    stat("quantum", Reader(arenas_quantum)),
+    stat("narenas", Reader::ArenasNarenas),
+    stat("nbins", Reader::ArenasNbins),
+    stat("nlextents", Reader::ArenasNlextents),
+    stat("page", Reader::ArenasPage),
+    stat("quantum", Reader::ArenasQuantum),
     dir("bin", &ARENAS_BIN),
     op("create", ArenasCreate),
     op("lookup", ArenasLookup),
@@ -748,25 +839,25 @@ static ARENA_I: [Node; 4] = [
 ];
 static ARENA: [Node; 1] = [num(&ARENA_I)];
 static STATS_BIN_FIELDS: [Node; 3] = [
-    stat("curregs", Reader(bin_curregs)),
-    stat("curslabs", Reader(bin_curslabs)),
-    stat("nonfull_slabs", Reader(bin_nonfull_slabs)),
+    stat("curregs", Reader::BinCurregs),
+    stat("curslabs", Reader::BinCurslabs),
+    stat("nonfull_slabs", Reader::BinNonfullSlabs),
 ];
 static STATS_BINS: [Node; 1] = [num(&STATS_BIN_FIELDS)];
 static STATS_SMALL: [Node; 2] = [
-    stat("allocated", Reader(small_allocated)),
-    stat("resident", Reader(small_resident)),
+    stat("allocated", Reader::SmallAllocated),
+    stat("resident", Reader::SmallResident),
 ];
-static STATS_LARGE: [Node; 1] = [stat("allocated", Reader(large_allocated))];
+static STATS_LARGE: [Node; 1] = [stat("allocated", Reader::LargeAllocated)];
 static STATS_ARENA_I: [Node; 9] = [
-    stat("pactive", Reader(arena_pactive)),
-    stat("pdirty", Reader(arena_pdirty)),
-    stat("pmuzzy", Reader(arena_pmuzzy)),
+    stat("pactive", Reader::ArenaPactive),
+    stat("pdirty", Reader::ArenaPdirty),
+    stat("pmuzzy", Reader::ArenaPmuzzy),
     dir("small", &STATS_SMALL),
     dir("large", &STATS_LARGE),
-    stat("resident", Reader(arena_resident)),
-    stat("mapped", Reader(arena_mapped)),
-    stat("retained", Reader(arena_retained)),
+    stat("resident", Reader::ArenaResident),
+    stat("mapped", Reader::ArenaMapped),
+    stat("retained", Reader::ArenaRetained),
     dir("bins", &STATS_BINS),
 ];
 static STATS_ARENAS: [Node; 1] = [num(&STATS_ARENA_I)];
@@ -781,37 +872,37 @@ static STATS_ARENAS: [Node; 1] = [num(&STATS_ARENA_I)];
 // with each so far; they read with or without a cgroup: the advice exists
 // (eager without one) whether or not one is read.
 static STATS_CGROUP: [Node; 10] = [
-    stat("limit", Reader(cgroup_limit)),
-    stat("high", Reader(cgroup_high)),
-    stat("current", Reader(cgroup_current)),
-    stat("decay_ms", Reader(cgroup_decay_ms)),
-    stat("retention_cap", Reader(cgroup_retention_cap)),
-    stat("empty_bytes", Reader(cgroup_empty_bytes)),
-    stat("full_purges", Reader(cgroup_full_purges)),
-    stat("purge_advice", Reader(cgroup_purge_advice)),
-    stat("lazy_purges", Reader(cgroup_lazy_purges)),
-    stat("eager_purges", Reader(cgroup_eager_purges)),
+    stat("limit", Reader::CgroupLimit),
+    stat("high", Reader::CgroupHigh),
+    stat("current", Reader::CgroupCurrent),
+    stat("decay_ms", Reader::CgroupDecayMs),
+    stat("retention_cap", Reader::CgroupRetentionCap),
+    stat("empty_bytes", Reader::CgroupEmptyBytes),
+    stat("full_purges", Reader::CgroupFullPurges),
+    stat("purge_advice", Reader::CgroupPurgeAdvice),
+    stat("lazy_purges", Reader::CgroupLazyPurges),
+    stat("eager_purges", Reader::CgroupEagerPurges),
 ];
 // `stats.thp.*` (design 7 and 17, `thp.rs`): the mode in force (0 off,
 // 1 folios, 2 PMD chunks), the ranges advised per region kind, and the
 // reservations `never` `MADV_NOHUGEPAGE`d (the class superblock and the
 // metadata region; 0 under `auto` and `always`).
 static STATS_THP: [Node; 7] = [
-    stat("mode", Reader(thp_mode)),
-    stat("class_ranges", Reader(thp_class_ranges)),
-    stat("class_bytes", Reader(thp_class_bytes)),
-    stat("huge_ranges", Reader(thp_huge_ranges)),
-    stat("meta_ranges", Reader(thp_meta_ranges)),
-    stat("failures", Reader(thp_failures)),
-    stat("nohuge_ranges", Reader(thp_nohuge_ranges)),
+    stat("mode", Reader::ThpMode),
+    stat("class_ranges", Reader::ThpClassRanges),
+    stat("class_bytes", Reader::ThpClassBytes),
+    stat("huge_ranges", Reader::ThpHugeRanges),
+    stat("meta_ranges", Reader::ThpMetaRanges),
+    stat("failures", Reader::ThpFailures),
+    stat("nohuge_ranges", Reader::ThpNohugeRanges),
 ];
 static STATS: [Node; 9] = [
-    stat("allocated", Reader(stats_allocated)),
-    stat("active", Reader(stats_active)),
-    stat("metadata", Reader(stats_metadata)),
-    stat("resident", Reader(stats_resident)),
-    stat("mapped", Reader(stats_mapped)),
-    stat("retained", Reader(stats_retained)),
+    stat("allocated", Reader::StatsAllocated),
+    stat("active", Reader::StatsActive),
+    stat("metadata", Reader::StatsMetadata),
+    stat("resident", Reader::StatsResident),
+    stat("mapped", Reader::StatsMapped),
+    stat("retained", Reader::StatsRetained),
     dir("arenas", &STATS_ARENAS),
     dir("cgroup", &STATS_CGROUP),
     dir("thp", &STATS_THP),
@@ -822,10 +913,10 @@ static THREAD_TCACHE: [Node; 2] = [
 ];
 static THREAD: [Node; 6] = [
     dir("tcache", &THREAD_TCACHE),
-    stat("allocated", Reader(thread_allocated)),
-    stat("allocatedp", Reader(thread_allocatedp)),
-    stat("deallocated", Reader(thread_deallocated)),
-    stat("deallocatedp", Reader(thread_deallocatedp)),
+    stat("allocated", Reader::ThreadAllocated),
+    stat("allocatedp", Reader::ThreadAllocatedp),
+    stat("deallocated", Reader::ThreadDeallocated),
+    stat("deallocatedp", Reader::ThreadDeallocatedp),
     op("arena", ThreadArena),
 ];
 static TCACHE: [Node; 3] = [
@@ -836,12 +927,12 @@ static TCACHE: [Node; 3] = [
 static UTILIZATION: [Node; 2] = [op("query", UtilQuery), op("batch_query", UtilBatchQuery)];
 static EXPERIMENTAL: [Node; 1] = [dir("utilization", &UTILIZATION)];
 static CONFIG: [Node; 3] = [
-    stat("malloc_conf", Reader(config_malloc_conf)),
-    stat("debug", Reader(config_debug)),
-    stat("stats", Reader(config_stats)),
+    stat("malloc_conf", Reader::ConfigMallocConf),
+    stat("debug", Reader::ConfigDebug),
+    stat("stats", Reader::ConfigStats),
 ];
 static ROOT: [Node; 12] = [
-    stat("version", Reader(version)),
+    stat("version", Reader::Version),
     op("epoch", Epoch),
     op("background_thread", BackgroundThread),
     op("max_background_threads", MaxBackgroundThreads),
@@ -2761,7 +2852,10 @@ fn never_aborts(node: &Node, mib: &[usize]) -> (r: bool)
 {
     match node.entry {
         Entry::Dir(_) => true,
-        Entry::Read(_) => mib.len() > 0 && (mib[0] == 4 || mib[0] == 5 || mib[0] == 7),
+        Entry::Read(r) => match r {
+            Reader::ThreadAllocated | Reader::ThreadAllocatedp | Reader::ThreadDeallocated | Reader::ThreadDeallocatedp => false,
+            _ => true,
+        },
         Entry::Op(op) => match op {
             UtilQuery | UtilBatchQuery => true,
             _ => false,
@@ -2771,8 +2865,9 @@ fn never_aborts(node: &Node, mib: &[usize]) -> (r: bool)
 
 /// Theorem "Read-only APIs never abort", for `mallctl`: the calls
 /// [`mallctl`] and [`mallctlbymib`] make after their `super::shared()`,
-/// for a key under `opt`, `arenas` or `stats` or a utilization query, and
-/// every named reader of those keys, made where neither
+/// for a read-only key other than `thread.*`'s four (every key under
+/// `opt`, `arenas` and `stats`, `version` and `config.*`) or a
+/// utilization query, and every reader of those keys, made where neither
 /// [`crate::sys::may_abort`] nor [`crate::sys::integrity_aborts`] holds.
 /// Each call verifies, so none of them aborts, not even at an integrity
 /// check.
@@ -2811,7 +2906,7 @@ pub(super) fn theorem_mallctl_reads_never_abort(
             }
         }
     }
-    // The readers `call` reaches under `opt`, `arenas` and `stats`.
+    // The readers `call` reaches for those keys.
     let _ = opt_value(m);
     let _ = bin_size(m);
     let _ = bin_nregs(m);
@@ -2856,6 +2951,10 @@ pub(super) fn theorem_mallctl_reads_never_abort(
     let _ = stats_resident(m);
     let _ = stats_mapped(m);
     let _ = stats_retained(m);
+    let _ = config_malloc_conf(m);
+    let _ = config_debug(m);
+    let _ = config_stats(m);
+    let _ = version(m);
 }
 
 } // verus!
@@ -2958,73 +3057,34 @@ mod tests {
         mib[..len].to_vec()
     }
 
-    /// [`reader_never_aborts`]'s premises: `opt`, `arenas` and `stats` are
-    /// entries 4, 5 and 7 of the root, and every reader under them is one
-    /// of the named, verified readers.
+    /// The read-only subtrees: `opt`, `arenas` and `stats` are entries 4,
+    /// 5 and 7 of the root, and no reader under them is one of the
+    /// `thread.*` readers, the only ones that may abort
+    /// (`Reader::aborts`): theorem "Read-only APIs never abort" covers
+    /// every read under them.
     #[test]
     fn read_only_subtrees_are_roots_4_5_and_7() {
-        type Read = fn(&[usize]) -> Result<Reading, c_int>;
         assert_eq!(
             (ROOT[4].name, ROOT[5].name, ROOT[7].name),
             ("opt", "arenas", "stats")
         );
-        let named: [Read; 44] = [
-            opt_value,
-            bin_size,
-            bin_nregs,
-            bin_slab_size,
-            arenas_narenas,
-            arenas_nbins,
-            arenas_nlextents,
-            arenas_page,
-            arenas_quantum,
-            bin_curregs,
-            bin_curslabs,
-            bin_nonfull_slabs,
-            small_allocated,
-            small_resident,
-            large_allocated,
-            arena_pactive,
-            arena_pdirty,
-            arena_pmuzzy,
-            arena_resident,
-            arena_mapped,
-            arena_retained,
-            cgroup_limit,
-            cgroup_high,
-            cgroup_current,
-            cgroup_decay_ms,
-            cgroup_retention_cap,
-            cgroup_empty_bytes,
-            cgroup_full_purges,
-            cgroup_purge_advice,
-            cgroup_lazy_purges,
-            cgroup_eager_purges,
-            thp_mode,
-            thp_class_ranges,
-            thp_class_bytes,
-            thp_huge_ranges,
-            thp_meta_ranges,
-            thp_failures,
-            thp_nohuge_ranges,
-            stats_allocated,
-            stats_active,
-            stats_metadata,
-            stats_resident,
-            stats_mapped,
-            stats_retained,
-        ];
-        fn readers(n: &Node, named: &[Read], count: &mut usize) {
+        fn readers(n: &Node, count: &mut usize) {
             match n.entry {
                 Entry::Dir(children) => {
                     for c in children {
-                        readers(c, named, count);
+                        readers(c, count);
                     }
                 }
                 Entry::Read(r) => {
                     assert!(
-                        named.iter().any(|f| *f as usize == r.0 as usize),
-                        "`{}` is not a named reader",
+                        !matches!(
+                            r,
+                            Reader::ThreadAllocated
+                                | Reader::ThreadAllocatedp
+                                | Reader::ThreadDeallocated
+                                | Reader::ThreadDeallocatedp
+                        ),
+                        "`{}` is read by a `thread.*` reader",
                         n.name
                     );
                     *count += 1;
@@ -3034,9 +3094,9 @@ mod tests {
         }
         let mut count = 0;
         for i in [4, 5, 7] {
-            readers(&ROOT[i], &named, &mut count);
+            readers(&ROOT[i], &mut count);
         }
-        assert_eq!(count, KEYS.len() + named.len() - 1);
+        assert_eq!(count, KEYS.len() + 43);
     }
 
     /// A pointer count whose triples overflow `usize` must not pass the
@@ -3991,7 +4051,7 @@ mod tests {
 mod kani_root {
     use super::{ROOT, root};
 
-    /// S13 `root`, `ensures r@ == root_nodes()`: every call returns
+    /// S14 `root`, `ensures r@ == root_nodes()`: every call returns
     /// `ROOT` itself, an immutable static, so the same nodes each time
     /// (`root_nodes` is uninterpreted: ROOT's contents interpret it).
     #[kani::proof]

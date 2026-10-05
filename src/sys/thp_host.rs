@@ -415,9 +415,9 @@ impl Thp {
 verus! {
 
 impl Thp {
-    /// The pairs [`Thp::words`] yields.
+    /// The two THP keys: `thp=<setting|none> mthp=<sizes|none>`.
     #[inline(always)]
-    fn word_pairs(&self) -> [(&'static str, Value); 2] {
+    pub fn words(&self) -> [(&'static str, Value); 2] {
         // `self.enabled.map_or("none", ThpSetting::name)`, spelled as a
         // `match`: Verus does not take a function item as a closure.
         [
@@ -431,23 +431,21 @@ impl Thp {
             ("mthp", Value::Sizes(self.enabled_sizes())),
         ]
     }
-
-    /// The two THP keys: `thp=<setting|none> mthp=<sizes|none>`, built
-    /// by [`Thp::word_pairs`].
-    pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> {
-        self.word_pairs().into_iter()
-    }
 }
 
-} // verus!
+// The THP keys format (ghost only: ordinary builds have no `std_specs`).
+#[cfg(verus_only)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for Thp {
+    open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
 
 impl fmt::Display for Thp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_words(f, self.words())
+        write_words(f, &self.words())
     }
 }
-
-verus! {
 
 /// The number of decimal digits of `v`.
 pub open spec fn decimal_digits(v: nat) -> nat

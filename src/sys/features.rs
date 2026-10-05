@@ -124,24 +124,26 @@ impl fmt::Display for Value {
     }
 }
 
-} // verus!
-
 /// `key=value` pairs separated by single spaces: the shape of the whole
 /// line and of each part that prints on its own (`Thp`).
-pub fn write_words(
-    f: &mut fmt::Formatter<'_>,
-    words: impl Iterator<Item = (&'static str, Value)>,
-) -> fmt::Result {
-    for (i, (key, value)) in words.enumerate() {
+pub fn write_words(f: &mut fmt::Formatter<'_>, words: &[(&'static str, Value)]) -> fmt::Result {
+    // `for (i, (key, value)) in words.iter().enumerate()`, with an index:
+    // Verus does not specify a slice's iterator.
+    let mut i = 0;
+    while i < words.len()
+        invariant
+            i <= words@.len(),
+        decreases words@.len() - i,
+    {
+        let (key, value) = words[i];
         if i > 0 {
             f.write_str(" ")?;
         }
         write!(f, "{key}={value}")?;
+        i += 1;
     }
     Ok(())
 }
-
-verus! {
 
 /// Result of probing the running kernel. Plain data; safe to copy into a
 /// global once init is done.
@@ -171,38 +173,27 @@ pub struct Features {
 }
 
 impl Features {
-    /// The kernel-probe pairs that open [`Features::words`] (the chain
-    /// is outside `verus!`: an array's `IntoIter` and `Chain` have no
-    /// specification).
-    #[inline(always)]
-    fn probe_pairs(&self) -> [(&'static str, Value); 4] {
-        [
-            ("page_size", Value::Num(self.page_size as u64)),
-            ("guard_install", Value::YesNo(self.guard_install)),
-            ("mseal", Value::YesNo(self.mseal)),
-            ("anon_name", Value::YesNo(self.anon_name)),
-        ]
-    }
-}
-
-} // verus!
-
-impl Features {
     /// Every key of the line in order: the kernel probes, then `pac`.
     /// Values are `yes`/`no` except `page_size`, the THP keys
     /// (`thp=never|madvise|always|none`, `mthp=64K,2M|none`), `rseq_size`
     /// (a byte count).
     /// `tests/c/features.c` lists the same keys.
-    pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> + '_ {
-        self.probe_pairs()
-            .into_iter()
-            .chain(self.thp.words())
-            .chain(self.rseq.words())
-            .chain([("pac", Value::YesNo(self.pac))])
+    pub fn words(&self) -> [(&'static str, Value); 9] {
+        let thp = self.thp.words();
+        let rseq = self.rseq.words();
+        [
+            ("page_size", Value::Num(self.page_size as u64)),
+            ("guard_install", Value::YesNo(self.guard_install)),
+            ("mseal", Value::YesNo(self.mseal)),
+            ("anon_name", Value::YesNo(self.anon_name)),
+            thp[0],
+            thp[1],
+            rseq[0],
+            rseq[1],
+            ("pac", Value::YesNo(self.pac)),
+        ]
     }
 }
-
-verus! {
 
 // Every line formats (ghost only: ordinary builds have no `std_specs`).
 #[cfg(verus_only)]
@@ -212,15 +203,11 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for Features {
     }
 }
 
-// Trusted: [`Features::words`] is an iterator chain, and `write_words`
-// takes it as an `impl Iterator`, both outside what Verus checks. Nothing
-// is claimed about what it writes or returns.
 impl fmt::Display for Features {
     /// One line, `key=value` separated by spaces, for `challoc_features()`,
     /// `malloc_stats_print` and abort messages: [`Features::words`].
-    #[verifier::external_body]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_words(f, self.words())
+        write_words(f, &self.words())
     }
 }
 
@@ -572,6 +559,7 @@ mod tests {
         // by word.
         let by_words: usize = f
             .words()
+            .into_iter()
             .map(|(k, v)| k.len() + 1 + std::format!("{v}").len() + 1)
             .sum::<usize>()
             - 1;
@@ -605,7 +593,7 @@ mod tests {
                 rseq: rseq_probe(33, 192),
                 pac,
             };
-            let keys: std::vec::Vec<&str> = f.words().map(|(k, _)| k).collect();
+            let keys: std::vec::Vec<&str> = f.words().into_iter().map(|(k, _)| k).collect();
             assert_eq!(keys, kernel);
             let mut seen = std::collections::BTreeSet::new();
             for (k, v) in f.words() {
@@ -619,8 +607,11 @@ mod tests {
                     "{k}={v}"
                 );
             }
-            let joined: std::vec::Vec<std::string::String> =
-                f.words().map(|(k, v)| std::format!("{k}={v}")).collect();
+            let joined: std::vec::Vec<std::string::String> = f
+                .words()
+                .into_iter()
+                .map(|(k, v)| std::format!("{k}={v}"))
+                .collect();
             assert_eq!(std::format!("{f}"), joined.join(" "));
             assert_eq!(std::format!("{}", f.thp), joined[4..6].join(" "));
         }
@@ -884,14 +875,14 @@ mod kani_fmt {
     use super::{LgSize, SizeSet};
     use crate::kani_proofs::fmt::formats;
 
-    /// S226 `DisplaySpecImpl for SizeSet` (`fmt_req` true): every set.
+    /// S230 `DisplaySpecImpl for SizeSet` (`fmt_req` true): every set.
     #[kani::proof]
     #[kani::unwind(66)]
     fn display_size_set() {
         formats(&SizeSet(kani::any()));
     }
 
-    /// S227 `DisplaySpecImpl for LgSize` (`fmt_req` is `self.0 < 64`):
+    /// S231 `DisplaySpecImpl for LgSize` (`fmt_req` is `self.0 < 64`):
     /// every such size.
     #[kani::proof]
     #[kani::unwind(22)]
@@ -919,13 +910,13 @@ mod kani_features {
         if kani::any() { Ok(()) } else { Err(fmt::Error) }
     }
 
-    /// S230 `Features::fmt` (no contract: it returns without a panic) and
-    /// S229 `DisplaySpecImpl for Features` (`fmt_req` true): every
+    /// S233 `DisplaySpecImpl for Features` (`fmt_req` true), through
+    /// `Features::fmt` (verified in Verus): every
     /// `Features` value, under the plain and a padded formatter, whatever
     /// the writer returns. Each `Value` is formatted by the stub above,
     /// whose behaviour (any result, no panic) is what S217's harness
     /// proves of the real `fmt` for every value; the rest (the word
-    /// pairs, the iterator chain, `write_words`, the keys) runs as built.
+    /// arrays, `write_words`, the keys) runs as built.
     #[kani::proof]
     #[kani::stub(<Value as core::fmt::Display>::fmt, value_fmt)]
     #[kani::unwind(12)]

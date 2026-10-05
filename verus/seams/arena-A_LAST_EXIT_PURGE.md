@@ -1,6 +1,6 @@
 # `A_LAST_EXIT_PURGE`
 
-Seam S64 of `verus/SEAMS.md`: src/arena.rs:468. Kind: external_body const. Category: core library.
+Seam S65 of `verus/SEAMS.md`: src/arena.rs:468. Kind: external_body const. Category: core library.
 Discharged by Kani.
 
 ## Contract
