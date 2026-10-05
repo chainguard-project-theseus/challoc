@@ -3,7 +3,7 @@
 #
 #   lint        rustfmt (required), clippy (advisory until a clippy
 #               baseline; flip vars.CLIPPY_ENFORCED), shellcheck on ci/,
-#               actionlint, zizmor
+#               actionlint, zizmor, the loom models (tests/loom)
 #   msrv-build  the shipped cdylib with the rust-version toolchain (1.94)
 #   linux       `make test` in the Wolfi dev container, {x86_64, aarch64} x
 #               quantum {16, 8}, plus the GLIBC <= 2.44 readelf assertion
@@ -51,6 +51,10 @@ jobs:
       - name: clippy (tests)
         run: cargo clippy --all-targets -- -D warnings
         continue-on-error: ${{ vars.CLIPPY_ENFORCED != 'true' }}
+      - name: loom models (tests/loom)
+        run: |
+          cargo fmt --check --manifest-path tests/loom/Cargo.toml
+          cargo test --release --locked --manifest-path tests/loom/Cargo.toml
       - name: shellcheck ci/
         run: shellcheck ci/*.sh
       - name: actionlint

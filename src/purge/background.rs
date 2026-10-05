@@ -4,7 +4,7 @@
 //! once the process has held enough dirty memory ([`auto_tick`]).
 
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 
 use crate::heap::{Shared, TLS_CREATING, TLS_EXITED};
 use crate::lock::{Lock, Padded};
@@ -138,6 +138,15 @@ pub fn request(on: bool) {
 /// Bump the futex word and wake the thread if it is waiting. Cheap
 /// enough for the rare "first `Empty` slab of a class" transition.
 pub fn wake() {
+    // Store buffering with `start`: the caller stored what the thread
+    // must see (a first `oldest_empty`, a decay period) and this loads
+    // `PRESENT`, while `start` stores `PRESENT` and the thread, after
+    // `start`'s kick, loads what the caller stored. Without a `SeqCst`
+    // fence on each side both loads may read the old value: no kick
+    // here, and the thread asleep on what it last saw (with no deadline,
+    // for a first `Empty`). `start` has the other fence; `tests/loom`
+    // checks the pair.
+    fence(Ordering::SeqCst);
     if present() {
         kick();
     }
@@ -196,6 +205,10 @@ pub fn start(shared: &Shared) -> bool {
     // did nothing while the thread was not yet present: make it look
     // again.
     if present {
+        // The other side of `wake`'s fence: the `PRESENT` store, then
+        // the kick, after which the thread loads what `wake`'s caller
+        // stored.
+        fence(Ordering::SeqCst);
         kick();
     }
     present
