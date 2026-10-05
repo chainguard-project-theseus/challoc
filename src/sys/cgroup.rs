@@ -20,7 +20,8 @@
 //!
 //! Costs: discovery is one read of `/proc/self/cgroup`, one line scan of
 //! `/proc/self/mountinfo` and two small reads per level of the cgroup path,
-//! once at init. Sampling is two small reads at most once per
+//! once at init. Sampling is two small reads, plus one per ancestor in
+//! [`LEVELS`] with a limit of its own, at most once per
 //! [`SAMPLE_INTERVAL_NS`] (10 ms on `CLOCK_MONOTONIC_COARSE`), from slow
 //! paths only; the limit walk is repeated at most once per
 //! [`LIMIT_INTERVAL_NS`] so a `docker update --memory` is seen.
@@ -57,6 +58,12 @@ pub const LIMIT_INTERVAL_NS: u64 = 1_000_000_000;
 
 /// `max` in a limit file: no limit at this level.
 pub const UNLIMITED: u64 = u64::MAX;
+/// Levels, from the leaf up, whose own limit and usage are kept: each one
+/// with a limit has its `memory.current` sampled, because the kernel
+/// enforces an ancestor's limit against the ancestor's usage, which counts
+/// its other children too. Levels above these count only toward the
+/// effective limit.
+pub const LEVELS: usize = 16;
 
 } // verus!
 
@@ -663,44 +670,110 @@ pub fn parse_events(contents: &[u8]) -> (r: Events)
 
 verus! {
 
-/// Walk from the leaf directory `dir` up to the cgroup2 mount (the first
-/// `mount_len` bytes of `dir`, inclusive) and return the minimum of what
-/// `read` yields per level; `read` gets the directory of the level and
-/// answers `None` where the file is absent. [`UNLIMITED`] when no level
-/// has a limit. Pure: the reader is a closure so the tests feed it
-/// captured contents.
-pub fn walk_min<F: FnMut(&[u8]) -> Option<u64>>(dir: &[u8], mount_len: usize, mut read: F) -> u64
-    requires
-        forall|d: &[u8]| d@.len() <= dir@.len() ==> #[trigger] call_requires(read, (d,)),
-{
-    let mut min = UNLIMITED;
-    let mut end = dir.len();
-    loop
-        invariant
-            end <= dir@.len(),
-            forall|d: &[u8]| d@.len() <= dir@.len() ==> #[trigger] call_requires(read, (d,)),
-        decreases end,
-    {
-        if let Some(v) = read(&dir[..end]) {
-            min = min.min(v);
+/// The levels of a walk from the leaf directory `dir` up to the cgroup2
+/// mount (the first `mount_len` bytes of `dir`, inclusive), in turn: each
+/// level (0 at the leaf) and its directory. A cursor rather than a
+/// visitor closure (`walk_levels(dir, mount_len, |level, d| ..)`), so
+/// that the samplers' walks, whose reader is a `&mut` the visitor would
+/// capture, verify: Verus has no closures that capture by mutable
+/// reference.
+struct Levels<'a> {
+    dir: &'a [u8],
+    mount_len: usize,
+    end: usize,
+    level: usize,
+    done: bool,
+}
+
+impl<'a> Levels<'a> {
+    /// The level's directory is within `dir`, and the level count is
+    /// bounded by the bytes walked past.
+    spec fn wf(&self) -> bool {
+        &&& self.end <= self.dir@.len()
+        &&& self.level + self.end <= self.dir@.len()
+    }
+
+    /// What is left of the walk: nothing once the mount has been visited.
+    spec fn rest(&self) -> nat {
+        if self.done {
+            0
+        } else {
+            self.end as nat + 1
         }
-        if end <= mount_len {
-            break;
+    }
+
+    /// The walk over `dir`, from its leaf.
+    fn new(dir: &'a [u8], mount_len: usize) -> (r: Levels<'a>)
+        ensures
+            r.wf(),
+            r.dir == dir,
+    {
+        Levels { dir, mount_len, end: dir.len(), level: 0, done: false }
+    }
+
+    /// The next level and its directory, `None` once the mount has been
+    /// visited.
+    fn next_level(&mut self) -> (r: Option<(usize, &'a [u8])>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            final(self).dir == old(self).dir,
+            r is None ==> old(self).rest() == 0,
+            r matches Some((_, d)) ==> d@.len() <= old(self).dir@.len() && final(self).rest() < old(self).rest(),
+    {
+        if self.done {
+            return None;
+        }
+        let d = &self.dir[..self.end];
+        let level = self.level;
+        if self.end <= self.mount_len {
+            self.done = true;
+            return Some((level, d));
         }
         // The last `/` of `dir[mount_len..end]`, which ends the parent.
-        let mut i = end;
-        while i > mount_len && dir[i - 1] != b'/'
+        let mut i = self.end;
+        while i > self.mount_len && self.dir[i - 1] != b'/'
             invariant
-                mount_len <= i <= end,
-                end <= dir@.len(),
+                self.mount_len <= i <= self.end,
+                self.end <= self.dir@.len(),
             decreases i,
         {
             i -= 1;
         }
-        if i == mount_len {
-            break;
+        if i == self.mount_len {
+            self.done = true;
+        } else {
+            self.end = i - 1;
+            self.level += 1;
         }
-        end = i - 1;
+        Some((level, d))
+    }
+}
+
+/// The minimum of what `read` yields per level of the walk ([`Levels`]);
+/// `read` gets the level and its directory and answers `None` where the
+/// file is absent. [`UNLIMITED`] when no level has a limit. Pure: the
+/// reader is a closure so the tests feed it captured contents. The
+/// samplers walk [`Levels`] in loops of their own, since their reader is a
+/// `&mut` a closure would capture.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn walk_min<F: FnMut(usize, &[u8]) -> Option<u64>>(dir: &[u8], mount_len: usize, mut read: F) -> u64
+    requires
+        forall|l: usize, d: &[u8]| d@.len() <= dir@.len() ==> #[trigger] call_requires(read, (l, d)),
+{
+    let mut min = UNLIMITED;
+    let mut levels = Levels::new(dir, mount_len);
+    while let Some((level, d)) = levels.next_level()
+        invariant
+            levels.wf(),
+            levels.dir == dir,
+            forall|l: usize, d: &[u8]| d@.len() <= dir@.len() ==> #[trigger] call_requires(read, (l, d)),
+        decreases levels.rest(),
+    {
+        if let Some(v) = read(level, d) {
+            min = min.min(v);
+        }
     }
     min
 }
@@ -909,6 +982,12 @@ pub struct Cgroup {
     high: AtomicU64,
     /// Last `memory.current` sample.
     current: AtomicU64,
+    /// Per level from the leaf up ([`LEVELS`]): its own `min(memory.max,
+    /// memory.high)` as of the last limit walk ([`UNLIMITED`] for none),
+    /// and its last `memory.current` sample (read only where the level
+    /// has a limit; unused at level 0, whose usage is `current`).
+    level_limit: [AtomicU64; LEVELS],
+    level_current: [AtomicU64; LEVELS],
     /// Coarse-clock time of the last sample and of the last limit walk.
     sampled_at: AtomicU64,
     limits_at: AtomicU64,
@@ -954,6 +1033,21 @@ impl Cgroup {
             limit: AtomicU64::new(UNLIMITED),
             high: AtomicU64::new(UNLIMITED),
             current: AtomicU64::new(0),
+            // `[const { AtomicU64::new(UNLIMITED) }; LEVELS]` and
+            // `[const { AtomicU64::new(0) }; LEVELS]`, spelled out: Verus has
+            // no array-fill expression of a type that is not `Copy`.
+            level_limit: [
+                AtomicU64::new(UNLIMITED), AtomicU64::new(UNLIMITED), AtomicU64::new(UNLIMITED), AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED), AtomicU64::new(UNLIMITED), AtomicU64::new(UNLIMITED), AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED), AtomicU64::new(UNLIMITED), AtomicU64::new(UNLIMITED), AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED), AtomicU64::new(UNLIMITED), AtomicU64::new(UNLIMITED), AtomicU64::new(UNLIMITED),
+            ],
+            level_current: [
+                AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+                AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+                AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+                AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+            ],
             sampled_at: AtomicU64::new(0),
             limits_at: AtomicU64::new(0),
             events_low: AtomicU64::new(0),
@@ -1019,6 +1113,19 @@ impl Cgroup {
         self.current.load(Ordering::Relaxed)
     }
 
+    /// `(limit, current)` of the ancestor `level` levels up (the parent at
+    /// 1), within [`LEVELS`]: its own limit ([`UNLIMITED`] for none) and
+    /// its own usage as last sampled. The leaf is not among them: its own
+    /// limit is never below the effective one, against the same usage.
+    /// (One ancestor at a time rather than an iterator over them, which
+    /// Verus does not specify.)
+    pub fn ancestor(&self, level: usize) -> (u64, u64)
+        requires
+            1 <= level < LEVELS,
+    {
+        (self.level_limit[level].load(Ordering::Relaxed), self.level_current[level].load(Ordering::Relaxed))
+    }
+
     /// The last `memory.events` counters sampled, every field the file
     /// has (zero before the first sample, and for a line the kernel does
     /// not print: `oom_kill` before 4.13).
@@ -1074,6 +1181,20 @@ impl Cgroup {
     #[cfg(test)]
     pub fn sampled_at(&self) -> u64 {
         self.sampled_at.load(Ordering::Relaxed)
+    }
+
+    /// A tracked cgroup at `mount` joined with `path`, every file present,
+    /// for the tests that drive the samplers with captured files.
+    #[cfg(test)]
+    pub fn at(mount: &[u8], path: &[u8]) -> Cgroup {
+        let mut cg = Cgroup::untracked(State::Tracked);
+        let (dir_len, mount_len) = join_dir(&mut cg.dir, mount, path).unwrap();
+        cg.dir_len = dir_len as u16;
+        cg.mount_len = mount_len as u16;
+        cg.has_limit_files = true;
+        cg.has_current = true;
+        cg.has_events = true;
+        cg
     }
 }
 
@@ -1248,16 +1369,98 @@ mod linux {
         read_small_file(path, buf)
     }
 
-    /// `dir/name` parsed as a limit file; `None` when absent or malformed.
-    fn read_limit(dir: &[u8], name: &[u8]) -> Option<u64>
+    /// What [`read_in`] promises of a read, as the samplers need it of any
+    /// reader they take (`read_in`, or a test's captured files): callable
+    /// for a directory and a file name that fit [`file_path`], and a count
+    /// within the buffer.
+    pub open spec fn reader_ok<R: FnMut(&[u8], &[u8], &mut [u8]) -> Option<usize>>(read: R) -> bool {
+        &&& forall|d: &[u8], n: &[u8], b: &mut [u8]|
+            d@.len() + FILE_ROOM <= PATH_CAP && n@.len() + 2 <= FILE_ROOM ==> #[trigger] call_requires(read, (d, n, b))
+        &&& forall|d: &[u8], n: &[u8], b: &mut [u8], r: Option<usize>|
+            #[trigger] call_ensures(read, (d, n, b), r) ==> (r matches Some(k) ==> k <= b@.len())
+    }
+
+    /// [`read_in`] as the samplers' reader ([`reader_ok`]), where syscalls
+    /// are allowed. (A closure over it rather than the function item
+    /// `read_in` itself, whose `call_requires` the verifier does not
+    /// carry into a `&mut` argument.)
+    #[inline(always)]
+    fn reader() -> (r: impl FnMut(&[u8], &[u8], &mut [u8]) -> Option<usize>)
         requires
             crate::sys::may_syscall(),
+        ensures
+            reader_ok(r),
+    {
+        |d: &[u8], n: &[u8], b: &mut [u8]| -> (r: Option<usize>)
+            requires
+                crate::sys::may_syscall(),
+                d@.len() + FILE_ROOM <= PATH_CAP,
+                n@.len() + 2 <= FILE_ROOM,
+            ensures
+                r matches Some(k) ==> k <= old(b)@.len(),
+            { read_in(d, n, b) }
+    }
+
+    /// `dir/name` parsed as a limit file through `read` (`read_in`, or a
+    /// test's captured files); `None` when absent or malformed.
+    fn read_limit<R: FnMut(&[u8], &[u8], &mut [u8]) -> Option<usize>>(read: &mut R, dir: &[u8], name: &[u8]) -> Option<u64>
+        requires
+            reader_ok(*old(read)),
             dir@.len() + FILE_ROOM <= PATH_CAP,
             name@.len() + 2 <= FILE_ROOM,
+        ensures
+            *final(read) == *old(read),
     {
         let mut buf = [0u8; 64];
-        let n = read_in(dir, name, &mut buf)?;
+        let n = read(dir, name, &mut buf)?;
         parse_limit(&buf[..n])
+    }
+
+    /// The minimum of the limit file `name` over the levels of the walk of
+    /// `dir`, each level within [`LEVELS`] also lowering its own entry of
+    /// `own`: `walk_min(dir, mount_len, |l, d| limit_of(l, d, name))` with
+    /// `limit_of` the closure that reads the level's file and records it
+    /// in `own`, spelled out, since the closures would capture `read` and
+    /// `own` by mutable reference, which Verus does not support.
+    fn own_min<R: FnMut(&[u8], &[u8], &mut [u8]) -> Option<usize>>(
+        dir: &[u8],
+        mount_len: usize,
+        read: &mut R,
+        own: &mut [u64; LEVELS],
+        name: &[u8],
+    ) -> u64
+        requires
+            reader_ok(*old(read)),
+            dir@.len() + FILE_ROOM <= PATH_CAP,
+            name@.len() + 2 <= FILE_ROOM,
+        ensures
+            *final(read) == *old(read),
+    {
+        let mut min = UNLIMITED;
+        let mut levels = Levels::new(dir, mount_len);
+        while let Some((level, d)) = levels.next_level()
+            invariant
+                levels.wf(),
+                levels.dir == dir,
+                dir@.len() + FILE_ROOM <= PATH_CAP,
+                name@.len() + 2 <= FILE_ROOM,
+                *read == *old(read),
+                reader_ok(*read),
+            decreases levels.rest(),
+        {
+            let v = read_limit(read, d, name);
+            // `if let (Some(o), Some(v)) = (own.get_mut(level), v)`,
+            // spelled out.
+            if level < LEVELS {
+                if let Some(v) = v {
+                    own[level] = own[level].min(v);
+                }
+            }
+            if let Some(v) = v {
+                min = min.min(v);
+            }
+        }
+        min
     }
 
     /// The first cgroup2 mount point in `/proc/self/mountinfo`, copied into
@@ -1344,57 +1547,93 @@ mod linux {
             cg
         }
 
-        /// The effective limits: the minimum of `memory.max` and of
-        /// `memory.high` over the levels from the leaf to the mount.
         fn walk_limits(&self, now: u64)
             requires
                 crate::sys::may_syscall(),
         {
-            self.limits_at.store(now, Ordering::Relaxed);
-            let (dir, mlen) = (self.dir(), self.mount_len as usize);
-            self.limit.store(
-                walk_min(
-                    dir,
-                    mlen,
-                    |d: &[u8]| -> (r: Option<u64>)
-                        requires
-                            d@.len() + FILE_ROOM <= PATH_CAP,
-                        { read_limit(d, b"memory.max") },
-                ),
-                Ordering::Relaxed,
-            );
-            self.high.store(
-                walk_min(
-                    dir,
-                    mlen,
-                    |d: &[u8]| -> (r: Option<u64>)
-                        requires
-                            d@.len() + FILE_ROOM <= PATH_CAP,
-                        { read_limit(d, b"memory.high") },
-                ),
-                Ordering::Relaxed,
-            );
+            self.walk_limits_with(now, &mut reader());
         }
 
-        /// Read `memory.current` and `memory.events` now, unconditionally,
-        /// and re-walk the limits if [`LIMIT_INTERVAL_NS`] has passed.
         fn sample_now(&self, now: u64)
             requires
                 crate::sys::may_syscall(),
         {
+            self.sample_now_with(now, &mut reader());
+        }
+
+        /// The effective limits: the minimum of `memory.max` and of
+        /// `memory.high` over the levels from the leaf to the mount; and
+        /// each of the first [`LEVELS`] levels' own `min(max, high)`.
+        /// `read` reads one file (`read_in`, or a test's captured files).
+        pub(super) fn walk_limits_with<R: FnMut(&[u8], &[u8], &mut [u8]) -> Option<usize>>(&self, now: u64, read: &mut R)
+            requires
+                reader_ok(*old(read)),
+            ensures
+                *final(read) == *old(read),
+        {
+            self.limits_at.store(now, Ordering::Relaxed);
+            let (dir, mlen) = (self.dir(), self.mount_len as usize);
+            let mut own = [UNLIMITED; LEVELS];
+            self.limit.store(own_min(dir, mlen, read, &mut own, b"memory.max"), Ordering::Relaxed);
+            self.high.store(own_min(dir, mlen, read, &mut own, b"memory.high"), Ordering::Relaxed);
+            // `for (slot, v) in self.level_limit.iter().zip(own)`, spelled
+            // out: Verus does not specify `Zip`.
+            let mut i = 0;
+            while i < LEVELS
+                invariant
+                    i <= LEVELS,
+                decreases LEVELS - i,
+            {
+                self.level_limit[i].store(own[i], Ordering::Relaxed);
+                i += 1;
+            }
+        }
+
+        /// Read `memory.current` and `memory.events` now, unconditionally,
+        /// and `memory.current` of every ancestor in [`LEVELS`] with a
+        /// limit of its own; re-walk the limits if [`LIMIT_INTERVAL_NS`]
+        /// has passed. `read` as in [`Cgroup::walk_limits_with`].
+        pub(super) fn sample_now_with<R: FnMut(&[u8], &[u8], &mut [u8]) -> Option<usize>>(&self, now: u64, read: &mut R)
+            requires
+                reader_ok(*old(read)),
+            ensures
+                *final(read) == *old(read),
+        {
+            // The walk first, so an ancestor that just gained a limit has
+            // its usage read in this same sample.
+            if now.wrapping_sub(self.limits_at.load(Ordering::Relaxed)) >= LIMIT_INTERVAL_NS {
+                self.walk_limits_with(now, read);
+            }
             if self.has_current {
-                if let Some(v) = read_limit(self.dir(), b"memory.current") {
+                if let Some(v) = read_limit(read, self.dir(), b"memory.current") {
                     self.current.store(v, Ordering::Relaxed);
+                }
+            }
+            // `walk_levels(self.dir(), self.mount_len as usize, |level, d|
+            // ..)`, spelled out: the closure would capture `read` by mutable
+            // reference, which Verus does not support.
+            let dir = self.dir();
+            let mut levels = Levels::new(dir, self.mount_len as usize);
+            while let Some((level, d)) = levels.next_level()
+                invariant
+                    levels.wf(),
+                    levels.dir == dir,
+                    dir@.len() + FILE_ROOM <= PATH_CAP,
+                    *read == *old(read),
+                    reader_ok(*read),
+                decreases levels.rest(),
+            {
+                if level != 0 && level < LEVELS && self.level_limit[level].load(Ordering::Relaxed) != UNLIMITED {
+                    if let Some(v) = read_limit(read, d, b"memory.current") {
+                        self.level_current[level].store(v, Ordering::Relaxed);
+                    }
                 }
             }
             if self.has_events {
                 let mut buf = [0u8; FILE_BUF];
-                if let Some(n) = read_in(self.dir(), b"memory.events", &mut buf) {
+                if let Some(n) = read(self.dir(), b"memory.events", &mut buf) {
                     self.note_events(parse_events(&buf[..n]));
                 }
-            }
-            if now.wrapping_sub(self.limits_at.load(Ordering::Relaxed)) >= LIMIT_INTERVAL_NS {
-                self.walk_limits(now);
             }
         }
 
@@ -1645,7 +1884,7 @@ mod tests {
         file: &str,
     ) -> (u64, Vec<String>) {
         let mut visited = Vec::new();
-        let v = walk_min(dir.as_bytes(), mount.len(), |d| {
+        let v = walk_min(dir.as_bytes(), mount.len(), |_, d| {
             let d = std::str::from_utf8(d).unwrap();
             visited.push(String::from(d));
             t.get(d)
@@ -1699,6 +1938,150 @@ mod tests {
             ("/sys/fs/cgroup/a", "memory.max", "4096\n"),
         ]);
         assert_eq!(walk(&t, "/sys/fs/cgroup/a/b", m, "memory.max").0, 4096);
+    }
+
+    /// Sample `/sys/fs/cgroup/a/b` from captured files: one limit walk and
+    /// one sample. Returns the cgroup, its band and every file read.
+    fn sample_tree(
+        t: &BTreeMap<String, BTreeMap<String, String>>,
+    ) -> (Cgroup, crate::policy::Band, Vec<String>) {
+        let cg = Cgroup::at(b"/sys/fs/cgroup", b"/a/b");
+        let (band, reads) = sample_at(&cg, t, LIMIT_INTERVAL_NS);
+        (cg, band, reads)
+    }
+
+    /// One sample of `cg` at `now` from captured files (with the limit
+    /// walk when [`LIMIT_INTERVAL_NS`] has passed); its band and every
+    /// file read.
+    fn sample_at(
+        cg: &Cgroup,
+        t: &BTreeMap<String, BTreeMap<String, String>>,
+        now: u64,
+    ) -> (crate::policy::Band, Vec<String>) {
+        let mut reads = Vec::new();
+        let mut read = |d: &[u8], name: &[u8], buf: &mut [u8]| {
+            let (d, name) = (
+                std::str::from_utf8(d).unwrap(),
+                std::str::from_utf8(name).unwrap(),
+            );
+            reads.push(std::format!("{d}/{name}"));
+            let c = t.get(d)?.get(name)?.as_bytes();
+            buf[..c.len()].copy_from_slice(c);
+            Some(c.len())
+        };
+        cg.sample_now_with(now, &mut read);
+        (crate::policy::cgroup_band(cg), reads)
+    }
+
+    /// The kernel holds each level to its own limit by its own usage,
+    /// which for an ancestor counts its other children too: the band is
+    /// the most severe over the levels with a limit, not the leaf's usage
+    /// against the smallest limit.
+    #[test]
+    fn ancestor_usage_against_its_own_limit() {
+        use crate::policy::Band;
+        const MIB: u64 = 1 << 20;
+        let mib = |n: u64| std::format!("{}\n", n * MIB);
+        // Parent limited to 1000 MiB holding 950 MiB, the leaf 100 MiB of
+        // it with no limit of its own: the parent is at 95%.
+        let t = tree(&[
+            ("/sys/fs/cgroup/a/b", "memory.max", "max\n"),
+            ("/sys/fs/cgroup/a/b", "memory.current", &mib(100)),
+            ("/sys/fs/cgroup/a", "memory.max", &mib(1000)),
+            ("/sys/fs/cgroup/a", "memory.current", &mib(950)),
+            ("/sys/fs/cgroup", "memory.current", &mib(4000)),
+        ]);
+        let (cg, band, reads) = sample_tree(&t);
+        assert_eq!(cg.limit(), 1000 * MIB);
+        assert_eq!(cg.current(), 100 * MIB);
+        assert_eq!(band, Band::Immediate);
+        // The unlimited mount level's usage is never read.
+        assert!(
+            !reads.contains(&String::from("/sys/fs/cgroup/memory.current")),
+            "{reads:?}"
+        );
+        // The parent at 80% through `memory.high`: the scaled band.
+        let t = tree(&[
+            ("/sys/fs/cgroup/a/b", "memory.current", &mib(100)),
+            ("/sys/fs/cgroup/a", "memory.high", &mib(1000)),
+            ("/sys/fs/cgroup/a", "memory.current", &mib(800)),
+        ]);
+        assert!(matches!(sample_tree(&t).1, Band::Scaled(_)));
+        // The leaf's own limit binds: 450 of 500 MiB is 90%, while the
+        // parent is at 60%.
+        let t = tree(&[
+            ("/sys/fs/cgroup/a/b", "memory.max", &mib(500)),
+            ("/sys/fs/cgroup/a/b", "memory.current", &mib(450)),
+            ("/sys/fs/cgroup/a", "memory.max", &mib(1000)),
+            ("/sys/fs/cgroup/a", "memory.current", &mib(600)),
+        ]);
+        assert_eq!(sample_tree(&t).1, Band::Immediate);
+        // Everyone well under their limits: `Low`.
+        let t = tree(&[
+            ("/sys/fs/cgroup/a/b", "memory.max", &mib(500)),
+            ("/sys/fs/cgroup/a/b", "memory.current", &mib(100)),
+            ("/sys/fs/cgroup/a", "memory.max", &mib(1000)),
+            ("/sys/fs/cgroup/a", "memory.current", &mib(300)),
+        ]);
+        assert_eq!(sample_tree(&t).1, Band::Low);
+        // No limit anywhere: `Unlimited`, and only the leaf's usage read.
+        let t = tree(&[
+            ("/sys/fs/cgroup/a/b", "memory.current", &mib(100)),
+            ("/sys/fs/cgroup/a", "memory.current", &mib(950)),
+        ]);
+        let (_, band, reads) = sample_tree(&t);
+        assert_eq!(band, Band::Unlimited);
+        assert_eq!(
+            reads
+                .iter()
+                .filter(|r| r.ends_with("/memory.current"))
+                .collect::<Vec<_>>(),
+            ["/sys/fs/cgroup/a/b/memory.current"]
+        );
+        // A parent that gains a limit between two walks counts in the
+        // sample that walks: the walk runs before the usage reads.
+        let cg = Cgroup::at(b"/sys/fs/cgroup", b"/a/b");
+        assert_eq!(sample_at(&cg, &t, LIMIT_INTERVAL_NS).0, Band::Unlimited);
+        let t = tree(&[
+            ("/sys/fs/cgroup/a/b", "memory.current", &mib(100)),
+            ("/sys/fs/cgroup/a", "memory.max", &mib(1000)),
+            ("/sys/fs/cgroup/a", "memory.current", &mib(950)),
+        ]);
+        assert_eq!(sample_at(&cg, &t, 2 * LIMIT_INTERVAL_NS).0, Band::Immediate);
+    }
+
+    /// A path deeper than [`LEVELS`]: an ancestor within them is held to
+    /// its own usage; one beyond them only through the leaf's usage
+    /// against the effective limit, and its usage is never read.
+    #[test]
+    fn ancestor_usage_beyond_the_tracked_levels() {
+        use crate::policy::Band;
+        const MIB: u64 = 1 << 20;
+        let mib = |n: u64| std::format!("{}\n", n * MIB);
+        // 17 levels under the mount: the leaf is level 0, `/l1/l2` level
+        // 15, `/l1` level 16 and the mount level 17.
+        let path: String = (1..=17).map(|i| std::format!("/l{i}")).collect();
+        let leaf = std::format!("/sys/fs/cgroup{path}");
+        let cg = Cgroup::at(b"/sys/fs/cgroup", path.as_bytes());
+        let t = tree(&[
+            (&leaf, "memory.current", &mib(100)),
+            ("/sys/fs/cgroup/l1/l2", "memory.max", &mib(1000)),
+            ("/sys/fs/cgroup/l1/l2", "memory.current", &mib(950)),
+        ]);
+        assert_eq!(sample_at(&cg, &t, LIMIT_INTERVAL_NS).0, Band::Immediate);
+        let cg = Cgroup::at(b"/sys/fs/cgroup", path.as_bytes());
+        let t = tree(&[
+            (&leaf, "memory.current", &mib(100)),
+            ("/sys/fs/cgroup/l1", "memory.max", &mib(1000)),
+            ("/sys/fs/cgroup/l1", "memory.current", &mib(950)),
+        ]);
+        let (band, reads) = sample_at(&cg, &t, LIMIT_INTERVAL_NS);
+        assert_eq!(cg.limit(), 1000 * MIB);
+        assert_eq!(band, Band::Low);
+        assert!(
+            !reads.contains(&String::from("/sys/fs/cgroup/l1/memory.current")),
+            "{reads:?}"
+        );
     }
 
     /// The edges of the walk: `mount_len` is what `join_dir` returns (no

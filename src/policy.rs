@@ -2,9 +2,10 @@
 //! the figures `sys::cgroup` samples.
 //!
 //! The pure part ([`band`], [`effective_decay_ns`], [`retention_cap`],
-//! [`keep_ratio`]) maps the effective limit (`min(memory.high,
-//! memory.max)` up the hierarchy) and the last `memory.current` sample to
-//! the table's rows:
+//! [`keep_ratio`]) maps a limit (`min(memory.high, memory.max)`) and the
+//! last `memory.current` sample to the table's rows; [`cgroup_band`]
+//! takes the most severe row over the levels of the hierarchy that have
+//! a limit, each against its own usage:
 //!
 //! | usage                | decay period            | retention          | cache GC          |
 //! |----------------------|-------------------------|--------------------|-------------------|
@@ -62,7 +63,7 @@ use crate::lock::LockOrder;
 #[cfg(verus_only)]
 use crate::lock::rank_class;
 use crate::purge::NEVER;
-use crate::sys::cgroup::UNLIMITED;
+use crate::sys::cgroup::{Cgroup, LEVELS, UNLIMITED};
 use crate::vspec::count::CountPerm;
 #[cfg(verus_only)]
 use crate::vspec::count::count_id;
@@ -103,8 +104,9 @@ pub proof fn frac_one_value()
     assert((1u32 << 16u32) == 0x1_0000) by (bit_vector);
 }
 
-/// The row of the table usage falls in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The row of the table usage falls in, ordered from the least severe to
+/// the most.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Band {
     /// No effective limit (or nothing tracked): everything as configured.
     Unlimited,
@@ -496,6 +498,70 @@ pub fn band(limit: u64, current: u64) -> (b: Band)
             ppm - SCALED_FROM_PPM,
             IMMEDIATE_FROM_PPM - SCALED_FROM_PPM,
         ))
+    }
+}
+
+/// The most severe row over the hierarchy (design 11): the effective
+/// limit against the leaf's usage, which also stands in for any limited
+/// level beyond `sys::cgroup::LEVELS`; and each ancestor with a limit of
+/// its own against its own usage, since the kernel holds an ancestor to
+/// its limit by the usage of all its children. (`cg.ancestors().fold(..,
+/// |b, (l, c)| b.max(band(l, c)))`, spelled out: one ancestor at a time,
+/// `max` through [`most_severe`].)
+pub fn cgroup_band(cg: &Cgroup) -> (r: Band)
+    ensures
+        r.wf(),
+{
+    let mut b = band(cg.limit().min(cg.high()), cg.current());
+    let mut level = 1;
+    while level < LEVELS
+        invariant
+            1 <= level <= LEVELS,
+            b.wf(),
+        decreases LEVELS - level,
+    {
+        let (l, c) = cg.ancestor(level);
+        b = most_severe(b, band(l, c));
+        level += 1;
+    }
+    b
+}
+
+/// Where `b` sits in `Band`'s order (the derived `Ord`: the variants in
+/// declaration order, `Scaled` by its position), as a number.
+pub open spec fn severity(b: Band) -> int {
+    match b {
+        Band::Unlimited => 0,
+        Band::Low => 1,
+        Band::Scaled(f) => 2 + f,
+        Band::Immediate => 3 + u32::MAX,
+    }
+}
+
+/// `a.max(b)` in `Band`'s order: `b` unless `a` is more severe (`max`
+/// returns its second argument on a tie). Spelled out: Verus does not
+/// specify derived orders.
+fn most_severe(a: Band, b: Band) -> (r: Band)
+    ensures
+        r == a || r == b,
+        severity(r) >= severity(a),
+        severity(r) >= severity(b),
+{
+    let key = |x: Band| -> (k: u64)
+        ensures
+            k == severity(x),
+        {
+            match x {
+                Band::Unlimited => 0,
+                Band::Low => 1,
+                Band::Scaled(f) => 2 + f as u64,
+                Band::Immediate => 3 + u32::MAX as u64,
+            }
+        };
+    if key(b) >= key(a) {
+        b
+    } else {
+        a
     }
 }
 
@@ -930,7 +996,7 @@ pub fn evaluate(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
     let cg = &shared.cgroup;
     let p = &shared.policy;
     let limit = cg.limit().min(cg.high());
-    let b = band(limit, cg.current());
+    let b = cgroup_band(cg);
     if b == Band::Unlimited {
         // A limit that went away (`docker update`) resets the outcome once;
         // otherwise nothing to do and nothing to read.

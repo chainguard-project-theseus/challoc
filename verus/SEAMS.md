@@ -3585,7 +3585,7 @@ pub fn commit(&self, addr: usize, len: usize, Tracked(ord): Tracked<&mut LockOrd
 
 ### S182. `empty_bytes`
 
-src/policy.rs:905. Kind: external_body. Category: panic/abort.
+src/policy.rs:971. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > `Empty` bytes held by every class of every arena and by the huge allocator: one lock hold per class that has an `Empty` slab (the lock-free `oldest_empty` says which), one for the huge allocator.
@@ -4000,7 +4000,7 @@ pub assume_specification[ getauxval ](kind: usize) -> (r: usize)
 
 ### S213. `scan_lines`
 
-src/sys/cgroup.rs:798. Kind: no_decreases. Category: termination.
+src/sys/cgroup.rs:871. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > Feed `buf`-sized chunks from `read` to `on_line` one complete line at a time (without the newline), carrying a partial line across chunks; stops early when `on_line` returns `true`, and returns where that line is in `buf` (`None` when no line was taken).
@@ -4022,7 +4022,7 @@ pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: 
 
 ### S214. `DisplaySpecImpl for PathBytes<'_>`
 
-src/sys/cgroup.rs:1086. Kind: spec_impl. Category: core library.
+src/sys/cgroup.rs:1207. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -4035,7 +4035,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for PathBytes<'_> {
 
 ### S215. `DisplaySpecImpl for Limit`
 
-src/sys/cgroup.rs:1154. Kind: spec_impl. Category: core library.
+src/sys/cgroup.rs:1275. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust

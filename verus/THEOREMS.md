@@ -2768,9 +2768,13 @@ past `2^43` bytes included. `frac16`'s exact contract (`den <= 2^47`)
 covers `band`'s constant denominator 200 000, and `mul16`'s is exact.
 
 **Entry points.** None: no C symbol's `ensures` changes. The theorem is
-about two pure functions: `band`, which `evaluate` (`:853`, from
-`purge::on_tick` and the background thread) and `Shared::init`
-(`heap/shared.rs`) call, and `effective_decay_ns`, which
+about two pure functions: `band`, which `cgroup_band` applies to the
+effective limit against the leaf's usage and to each limited ancestor
+within `sys::cgroup::LEVELS` against its own usage, keeping the most
+severe (`most_severe`, `Band`'s derived order spelled out over
+`severity`), and which `evaluate` (`:853`, from `purge::on_tick` and the
+background thread) and `Shared::init` (`heap/shared.rs`) call through
+`cgroup_band`; and `effective_decay_ns`, which
 `Policy::effective_decay_ns` (`:740`) applies to the stored band for
 the decay walks (`purge.rs`), `stats.cgroup.decay_ms`
 (`api/mallctl.rs`) and the reports (`api/print.rs`).
@@ -2781,11 +2785,16 @@ the decay walks (`purge.rs`), `stats.cgroup.decay_ms`
 either.
 
 **Scope and where the statement is weaker than the code.**
-- One limit. `evaluate` passes `min(memory.max, memory.high)` up the
-  hierarchy as sampled; when that changes between two samples (`docker
-  update`, a write to `memory.high`), the two bands are not comparable
-  by this theorem, and a higher limit at the same usage does lengthen
-  the period, as it should.
+- One limit per term. `cgroup_band` takes `min(memory.max,
+  memory.high)` up the hierarchy against the leaf's usage, and each
+  ancestor's own limit against its own usage, as sampled; the theorem
+  holds of each term (`band` at one limit), and `most_severe` never
+  returns a less severe band than either argument (its `ensures`), but
+  that the maximum over the terms is monotone in the usages is not
+  stated. When a limit changes between two samples (`docker update`, a
+  write to `memory.high`), the two bands are not comparable by this
+  theorem, and a higher limit at the same usage does lengthen the
+  period, as it should.
 - Pure functions only. `Policy` stores the band as atomics
   (`scaled16`, one more than the position in the scaled band so that
   `Scaled(0)` at the 70% edge is told from `Low`, 0 outside it;

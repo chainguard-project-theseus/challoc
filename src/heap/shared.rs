@@ -1543,7 +1543,7 @@ impl Shared {
             // is `Empty` yet: retention 0).
             let limit = cgroup.limit().min(cgroup.high());
             policy.apply(
-                crate::policy::band(limit, cgroup.current()),
+                crate::policy::cgroup_band(cgroup),
                 limit,
                 0,
                 cgroup.rises().0,
