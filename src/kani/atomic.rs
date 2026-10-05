@@ -38,10 +38,10 @@ fn any_ptr(x: &mut u64) -> *mut u64 {
     }
 }
 
-/// S260 `core::sync::atomic::Atomic::<*mut T>::new`: returns, for every pointer.
-/// S258 `core::sync::atomic::Atomic::<*mut T>::load`: under `!(order is Release) && !(order is
-/// AcqRel)`, returns. S259 `core::sync::atomic::Atomic::<*mut T>::store`: under `!(order is
-/// Acquire) && !(order is AcqRel)`, returns. S261 `core::sync::atomic::Atomic::<*mut T>::swap`:
+/// S261 `core::sync::atomic::Atomic::<*mut T>::new`: returns, for every pointer.
+/// S259 `core::sync::atomic::Atomic::<*mut T>::load`: under `!(order is Release) && !(order is
+/// AcqRel)`, returns. S260 `core::sync::atomic::Atomic::<*mut T>::store`: under `!(order is
+/// Acquire) && !(order is AcqRel)`, returns. S262 `core::sync::atomic::Atomic::<*mut T>::swap`:
 /// no `requires`; returns under every ordering. (Sequentially, each also
 /// reads what was last written, which the contracts do not claim.)
 #[kani::proof]
@@ -80,7 +80,7 @@ fn atomic_ptr_bad_orders() {
     super::must_not_return();
 }
 
-/// S329 `core::sync::atomic::Atomic::<u32>::as_ptr`: no `ensures`; it returns the address of
+/// S330 `core::sync::atomic::Atomic::<u32>::as_ptr`: no `ensures`; it returns the address of
 /// the atomic's value (a write through it is what the next load reads).
 #[kani::proof]
 fn atomic_u32_as_ptr() {
@@ -93,7 +93,7 @@ fn atomic_u32_as_ptr() {
     assert_eq!(a.load(Ordering::Relaxed), v);
 }
 
-/// S267 `load_bool`: under `!(order is Release) && !(order is AcqRel)`,
+/// S268 `load_bool`: under `!(order is Release) && !(order is AcqRel)`,
 /// returns (the stored value, sequentially).
 #[kani::proof]
 fn load_bool() {
@@ -104,7 +104,7 @@ fn load_bool() {
     assert_eq!(crate::vspec::atomic::load_bool(&a, o), v);
 }
 
-/// S327 `core::sync::atomic::compiler_fence`: under `!(order is Relaxed)`, returns (on every
+/// S328 `core::sync::atomic::compiler_fence`: under `!(order is Relaxed)`, returns (on every
 /// such ordering, so it does not unwind); on `Relaxed` it panics, as its
 /// comment says (`compiler_fence_relaxed`).
 #[kani::proof]
@@ -134,7 +134,7 @@ impl Drop for Counted<'_> {
     }
 }
 
-/// S275 `core::mem::drop`: no contract; it returns, having run its
+/// S276 `core::mem::drop`: no contract; it returns, having run its
 /// argument's destructor once (for a type with a destructor) and done
 /// nothing else (for a `Copy` type).
 #[kani::proof]
@@ -147,7 +147,7 @@ fn mem_drop() {
     core::mem::drop(());
 }
 
-/// S319 `core::cell::UnsafeCell::<T>::new`: no `ensures`; it returns, a cell holding
+/// S320 `core::cell::UnsafeCell::<T>::new`: no `ensures`; it returns, a cell holding
 /// the value, for a word, a zero-sized type and a type with a destructor
 /// (which `new` does not run).
 #[kani::proof]

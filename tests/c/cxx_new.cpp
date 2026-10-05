@@ -11,7 +11,8 @@
  *     and the nothrow form returns nullptr;
  *   - an installed std::new_handler is called until it gives up, then
  *     bad_alloc is thrown (or nullptr returned);
- *   - a non-power-of-two align_val_t fails at once, without the handler.
+ *   - a non-power-of-two align_val_t fails at once, without the handler;
+ *   - a handler that throws makes every nothrow form return nullptr.
  *
  * Compiled by src/api/c_programs.rs with the container's C++ compiler.
  */
@@ -363,6 +364,46 @@ static void test_bad_alignment()
     }
 }
 
+struct handler_error : std::bad_alloc {};
+
+static std::atomic<int> throwing_calls;
+
+static void throwing_handler()
+{
+    throwing_calls++;
+    throw handler_error();
+}
+
+/* [new.delete.single]: a nothrow form returns null where the throwing
+ * form would exit through an exception, including one thrown by the
+ * new_handler; letting it escape a noexcept operator calls std::terminate.
+ * The throwing form passes the handler's own exception on unchanged. */
+static void test_throwing_handler()
+{
+    throwing_calls = 0;
+    std::set_new_handler(throwing_handler);
+    sink = operator new(IMPOSSIBLE, std::nothrow);
+    CHECK(sink == nullptr, "nothrow new with a throwing handler returned %p", sink);
+    sink = operator new[](IMPOSSIBLE, std::nothrow);
+    CHECK(sink == nullptr, "nothrow new[] with a throwing handler returned %p", sink);
+    sink = operator new(IMPOSSIBLE, std::align_val_t(4096), std::nothrow);
+    CHECK(sink == nullptr, "nothrow aligned new with a throwing handler returned %p", sink);
+    sink = operator new[](IMPOSSIBLE, std::align_val_t(4096), std::nothrow);
+    CHECK(sink == nullptr, "nothrow aligned new[] with a throwing handler returned %p", sink);
+    CHECK(throwing_calls == 4, "throwing handler called %d times, expected 4", throwing_calls.load());
+
+    bool caught = false;
+    try {
+        sink = operator new(IMPOSSIBLE);
+        CHECK(false, "new with a throwing handler returned %p", sink);
+    } catch (const handler_error &) {
+        caught = true;
+    }
+    CHECK(caught, "new with a throwing handler did not pass its exception on");
+    CHECK(throwing_calls == 5, "throwing handler called %d times, expected 5", throwing_calls.load());
+    std::set_new_handler(nullptr);
+}
+
 int main()
 {
     require_challoc();
@@ -372,6 +413,7 @@ int main()
     test_bad_alloc();
     test_new_handler();
     test_bad_alignment();
+    test_throwing_handler();
     if (failures) {
         fprintf(stderr, "cxx_new: %d failures\n", failures.load());
         return 1;

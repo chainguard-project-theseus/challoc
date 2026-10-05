@@ -162,6 +162,7 @@ core::sync::atomic::compiler_fence	core library	Kani	discharged (verus/seams/vsp
 core::fmt::Formatter::<'a>::write_str	core library	Kani	discharged (verus/seams/vspec-fmt-Formatter-write_str.md)
 core::fmt::Formatter::<'a>::write_fmt	function pointer	Kani	discharged (verus/seams/vspec-fmt-Formatter-write_fmt.md)
 pthread_setspecific	FFI/syscall	none (assumption)
+call_handler_caught	FFI/syscall	none (assumption)
 src/sys/auxv.rs:getauxval	FFI/syscall	none (assumption)
 WriteCallback	function pointer	Kani
 libc::FILE	FFI/syscall	none (assumption)

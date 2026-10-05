@@ -1,6 +1,6 @@
 # `WordPerm` (`vspec/word.rs`)
 
-Seam S391 of `verus/SEAMS.md`: src/vspec/word.rs:50. Kind: external_body type. Category: atomics primitive.
+Seam S392 of `verus/SEAMS.md`: src/vspec/word.rs:50. Kind: external_body type. Category: atomics primitive.
 Discharged by the records of its wrappers and `run.sh`'s access check
 (part 3).
 

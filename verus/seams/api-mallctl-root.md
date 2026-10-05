@@ -1,6 +1,6 @@
 # `root`
 
-Seam S13 of `verus/SEAMS.md`: src/api/mallctl.rs:1122. Kind: external_body. Category: function pointer.
+Seam S14 of `verus/SEAMS.md`: src/api/mallctl.rs:1122. Kind: external_body. Category: function pointer.
 Discharged by Kani.
 
 ## Contract

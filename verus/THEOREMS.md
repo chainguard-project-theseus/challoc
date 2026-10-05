@@ -1113,7 +1113,8 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   (`heap/mod.rs:5158`, `:5382`), `Meta::commit`
   (`meta.rs:2745`), `print::emit` and
   `jemalloc::call_hook` (the report's call-outs, theorem 16), the
-  C++ `call_handler`,
+  C++ `call_handler` and `call_handler_caught` (the `nothrow_t` forms'
+  call through `cxx_handler.cpp`'s catch),
   `call_get_new_handler`, `call_throw_bad_alloc` (`api/cxx.rs:176`,
   `:147`, `:107`), the
   `pthread_setspecific` wrapper (which may allocate; `heap/shared.rs`,
@@ -7079,7 +7080,9 @@ alone):
     when libstdc++ is absent). `oom` has no `decreases` (it waits on the
     program's handler).
 24. `new` `nothrow_t` (`api/cxx.rs:226`). R: as row 23. F: NULL after
-    the handler loop; not stated beyond `fits`.
+    the handler loop, or at once when the handler throws (`oom` calls it
+    through `call_handler_caught`, `cxx_handler.cpp`'s catch, which
+    reports a throw as `false`); not stated beyond `fits`.
 25. `new` `align_val_t` (`api/cxx.rs:260`). R: `is_pow2(align) ==>
     fits(r, size, align)`. F: the throwing forms as row 23
     (`new_aligned` ensures `!nothrow ==> r@.addr != 0`); `p` because

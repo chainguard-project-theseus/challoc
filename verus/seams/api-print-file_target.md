@@ -1,6 +1,6 @@
 # `file_target`
 
-Seam S44 of `verus/SEAMS.md`: src/api/print.rs:1356. Kind: external_body. Category: function pointer.
+Seam S45 of `verus/SEAMS.md`: src/api/print.rs:1356. Kind: external_body. Category: function pointer.
 Discharged by Kani.
 
 ## Contract

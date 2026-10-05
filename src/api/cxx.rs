@@ -18,6 +18,13 @@
 //! `.eh_frame` entries and no landing pads, exactly like C code compiled
 //! with unwind tables; `tests/c/cxx_new.cpp` catches it under the preload.
 //!
+//! The `nothrow_t` forms must return null even when the handler throws,
+//! and Rust cannot catch a C++ exception, so they call the handler through
+//! `challoc_call_new_handler` in `cxx_handler.cpp` (compiled by build.rs),
+//! which catches anything the handler throws and reports it as 0. The
+//! throwing forms call the handler directly, so its exception reaches the
+//! caller unchanged.
+//!
 //! The sized `delete` forms are `free_sized` and `free_aligned_sized`
 //! (design 13.1): the size (and `align_val_t`) name a class through the
 //! same `class_for(size, align)` the matching `new` used, so a correct
@@ -43,6 +50,12 @@ use vstd::prelude::{Tracked, verus};
 
 /// `std::new_handler`: `void (*)()`, null when none is installed.
 type NewHandler = Option<unsafe extern "C" fn()>;
+
+unsafe extern "C" {
+    /// `src/api/cxx_handler.cpp`: calls `handler` and returns 1, or 0 when
+    /// it threw (the exception is caught and destroyed there).
+    fn challoc_call_new_handler(handler: unsafe extern "C" fn()) -> core::ffi::c_int;
+}
 
 verus! {
 
@@ -184,10 +197,26 @@ fn call_handler(handler: Handler)
     unsafe { (handler.0)() }
 }
 
+/// Call the program's `new_handler` through `challoc_call_new_handler`
+/// (`cxx_handler.cpp`), which catches anything it throws: `false` when it
+/// threw. Trusted: an FFI call with a function pointer; nothing is
+/// claimed about the result.
+#[verifier::external_body]
+#[inline(always)]
+fn call_handler_caught(handler: Handler) -> bool
+    requires
+        crate::sys::may_syscall(),
+{
+    // SAFETY: a `void (*)()` installed by the program through
+    // `std::set_new_handler`; the shim catches whatever it throws.
+    unsafe { challoc_call_new_handler(handler.0) != 0 }
+}
+
 /// The `operator new` failure protocol: call the `new_handler` and retry
 /// until an attempt succeeds or no handler is installed, then throw
-/// `std::bad_alloc` (or return null for the `nothrow_t` forms). `align` is
-/// 0 for the unaligned operators. `blk` gets the block's token.
+/// `std::bad_alloc` (or return null for the `nothrow_t` forms, also when
+/// the handler throws). `align` is 0 for the unaligned operators. `blk`
+/// gets the block's token.
 #[cold]
 #[inline(never)]
 #[verifier::exec_allows_no_decreases_clause] // ends only when the program's handler frees memory, is removed or throws
@@ -215,7 +244,13 @@ fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live
             }
             throw_bad_alloc()
         };
-        call_handler(handler);
+        if nothrow {
+            if !call_handler_caught(handler) {
+                return ptr::null_mut();
+            }
+        } else {
+            call_handler(handler);
+        }
         let p = if align == 0 {
             libc::malloc_block(size, Tracked(blk), Tracked(errno))
         } else {

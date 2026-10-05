@@ -73,6 +73,9 @@ Add `QUANTUM=8` for the 8-byte size-class quantum Valkey needs, and
 `PLATFORM=linux/amd64` for an x86_64 build on Apple silicon (emulated:
 correctness only). `CONTRIBUTING.md` lists every variable.
 
+The library is Rust plus one C++ file (`src/api/cxx_handler.cpp`), so a
+build outside the container needs a C++ compiler as well as cargo.
+
 ## Installing and using
 
 `make install` builds the library and installs it under `DESTDIR` +

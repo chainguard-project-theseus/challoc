@@ -1161,9 +1161,12 @@ fn jemalloc_symbols_in_release_so() {
 }
 
 /// The release `.so` defines all 20 operator symbols, references
-/// libstdc++'s two helpers only weakly (so a C process without libstdc++
-/// still loads it under `BIND_NOW`), and has `.eh_frame` coverage for the
-/// operator that `std::bad_alloc` unwinds through.
+/// libstdc++'s two helpers and the C++ runtime entry points of
+/// `cxx_handler.cpp` only weakly (so a C process without libstdc++ still
+/// loads it under `BIND_NOW`), has no other strong undefined symbol than
+/// glibc's, keeps the shim's function out of the dynamic symbol table, and
+/// has `.eh_frame` coverage for the operator that `std::bad_alloc` unwinds
+/// through.
 #[test]
 fn cxx_symbols_in_release_so() {
     let so = release_so();
@@ -1208,7 +1211,13 @@ fn cxx_symbols_in_release_so() {
             "{sym} is not a defined global function in {so}:\n{dynsym}"
         );
     }
-    for sym in ["_ZSt15get_new_handlerv", "_ZSt17__throw_bad_allocv"] {
+    for sym in [
+        "_ZSt15get_new_handlerv",
+        "_ZSt17__throw_bad_allocv",
+        "__gxx_personality_v0",
+        "__cxa_begin_catch",
+        "__cxa_end_catch",
+    ] {
         let line = dynsym
             .lines()
             .find(|l| l.ends_with(&std::format!(" {sym}")));
@@ -1218,6 +1227,16 @@ fn cxx_symbols_in_release_so() {
             "{sym} must be a weak undefined reference: {line}"
         );
     }
+    for line in dynsym.lines() {
+        assert!(
+            !(line.contains(" GLOBAL ") && line.contains(" UND ")) || line.contains("@GLIBC_"),
+            "strong undefined symbol outside glibc: {line}"
+        );
+    }
+    assert!(
+        !dynsym.contains("challoc_call_new_handler"),
+        "the shim's function must stay hidden:\n{dynsym}"
+    );
     assert!(
         !dynsym.contains("libstdc++"),
         "no DT_NEEDED on libstdc++ expected"

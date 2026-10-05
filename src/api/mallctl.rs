@@ -4383,7 +4383,7 @@ mod tests {
 mod kani_root {
     use super::{ROOT, root};
 
-    /// S13 `root`, `ensures r@ == root_nodes()`: every call returns
+    /// S14 `root`, `ensures r@ == root_nodes()`: every call returns
     /// `ROOT` itself, an immutable static, so the same nodes each time
     /// (`root_nodes` is uninterpreted: ROOT's contents interpret it).
     #[kani::proof]
