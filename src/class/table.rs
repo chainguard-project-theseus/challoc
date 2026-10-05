@@ -28,6 +28,9 @@ use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_only)]
 use crate::vspec::addr::cast_provenance;
 #[cfg(verus_only)]
+use crate::vspec::atom::usize_id;
+use crate::vspec::atom::{UsizePerm, load_usize_in, new_usize, store_usize};
+#[cfg(verus_only)]
 use crate::vspec::lock::{lock_frame, lock_init, lock_inv};
 use crate::vspec::once::Once;
 #[cfg(verus_only)]
@@ -36,6 +39,7 @@ use crate::vspec::once::Step;
 use crate::vspec::word::{WordPerm, word_addr};
 #[cfg(verus_only)]
 use vstd::arithmetic::power2::pow2;
+use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::prelude::*;
 use vstd::raw_ptr::{PointsTo, ptr_ref};
 #[cfg(verus_only)]
@@ -480,7 +484,32 @@ pub struct SlabTable {
     pub(super) desc_perms: Tracked<Map<int, PointsTo<SlabDesc>>>,
     pub(super) word_perms: Tracked<Map<int, PointsTo<AtomicU64>>>,
     pub(super) owner_perms: Tracked<Map<int, PointsTo<AtomicU16>>>,
+    /// Ghost (no bytes): the watermark's invariant ([`CommittedPred`]),
+    /// which holds its permission: it is at most `nslabs`.
+    pub(super) committed_inv: Tracked<CommittedInv>,
 }
+
+/// Namespace of the watermark invariants ([`CommittedPred`]).
+pub open spec fn committed_ns() -> int {
+    0x6877_6d6b
+}
+
+/// A watermark's invariant, keyed by the atomic's identity
+/// (`vspec::atom::usize_id`) and the table's slab count: the watermark is
+/// at most the slab count. `new` makes it with the atomic (value 0), and
+/// `take_group`, its one writer, stores the end of the group it hands
+/// out, at most `nslabs`, inside it.
+pub struct CommittedPred;
+
+impl InvariantPredicate<(int, usize), UsizePerm> for CommittedPred {
+    open spec fn inv(k: (int, usize), perm: UsizePerm) -> bool {
+        &&& perm.id() == k.0
+        &&& perm.value() <= k.1
+    }
+}
+
+/// The invariant of one watermark.
+pub type CommittedInv = AtomicInvariant<(int, usize), UsizePerm, CommittedPred>;
 
 } // verus!
 
@@ -846,10 +875,13 @@ impl SlabTable {
             // Page groups on page boundaries, for the purge ranges.
             lemma_groups_paged(base, slabs_per_page, t.lg_slab, regions.lg_page, page);
         }
+        // The watermark, with its invariant (0, at most any slab count).
+        let (committed_slabs, Tracked(cperm)) = new_usize(0);
+        let tracked committed_inv = CommittedInv::new((usize_id(&committed_slabs), nslabs), cperm, committed_ns());
         Some(SlabTable {
             bits_base,
             owners_base,
-            committed_slabs: AtomicUsize::new(0),
+            committed_slabs,
             slab_bits: cls.slab_bits() as u16,
             class: class as u16,
             lg_group: group.trailing_zeros() as u8,
@@ -871,6 +903,7 @@ impl SlabTable {
             desc_perms: Tracked(dmap),
             word_perms: Tracked(wmap),
             owner_perms: Tracked(omap),
+            committed_inv: Tracked(committed_inv),
         })
     }
 }
@@ -1618,7 +1651,9 @@ impl SlabTable {
     /// It also holds the permissions `new` carved for the three arrays
     /// ([`SlabTable::perms_ok`]), and its guard geometry is the class's
     /// ([`guard_geom`](crate::layout::guard_geom), `axiom_slot_loc`), with
-    /// page groups of at most `2^26` slabs.
+    /// page groups of at most `2^26` slabs. The watermark's invariant
+    /// ([`CommittedPred`]) is the one over its atomic and the slab count, in
+    /// [`committed_ns`].
     ///
     /// [`process_regions`]: crate::layout::process_regions
     #[verifier::type_invariant]
@@ -1655,6 +1690,8 @@ impl SlabTable {
         &&& self.inner.0.rank() == rank_table(self.class as int)
         &&& self.lg_page == process_regions().lg_page
         &&& groups_paged(self.base, self.slabs_per_page, class_table()[self.class as int].lg_slab, self.lg_page)
+        &&& self.committed_inv@.constant() == (usize_id(&self.committed_slabs), self.nslabs)
+        &&& self.committed_inv@.namespace() == committed_ns()
     }
 
     /// Hand-out groups of the region (owner words).
@@ -2122,15 +2159,9 @@ impl SlabTable {
     }
 
     /// The watermark, loaded with `order` (inlined, so the caller's load
-    /// is the bare `core` one with its ordering).
-    ///
-    /// Trusted: the watermark is at most the slab count. Its one atomic is
-    /// written only by `new` (0) and by `take_group`, which stores the end
-    /// of the group it hands out, at most `nslabs` (proved there); vstd
-    /// specifies the load as returning any value, and nothing ties the
-    /// atomic to those writes.
+    /// is the bare `core` one with its ordering): at most the slab count,
+    /// read inside its invariant ([`CommittedPred`]).
     #[inline(always)]
-    #[verifier::external_body]
     fn watermark(&self, order: Ordering) -> (r: usize)
         requires
             // `core`'s load panics for these two.
@@ -2138,9 +2169,14 @@ impl SlabTable {
             !(order is AcqRel),
         ensures
             r <= self.spec_nslabs(),
-        opens_invariants none
+        opens_invariants [committed_ns()]
     {
-        self.committed_slabs.load(order)
+        proof {
+            use_type_invariant(self);
+        }
+        // Inside the watermark's invariant ([`CommittedPred`]), which
+        // bounds it by the slab count.
+        load_usize_in(&self.committed_slabs, order, &self.committed_inv)
     }
 
     /// Number of slabs (including guard slabs) handed to an arena: their
@@ -2220,7 +2256,7 @@ impl SlabTable {
     pub fn is_handed_out(&self, slab: usize) -> (r: bool)
         ensures
             r ==> slab < self.spec_nslabs(),
-        opens_invariants none
+        opens_invariants [committed_ns()]
     {
         slab < self.watermark(Ordering::Relaxed)
     }
@@ -3273,7 +3309,12 @@ impl SlabTable {
             vstd::arithmetic::div_mod::lemma_mod_self_0(gr as int);
             assert(gi.inv());
         }
-        self.committed_slabs.store(end, Ordering::Release);
+        proof {
+            use_type_invariant(&*self);
+        }
+        vstd::open_atomic_invariant!(self.committed_inv.borrow() => perm => {
+            store_usize(&self.committed_slabs, end, Ordering::Release, Tracked(&mut perm));
+        });
         // `thp:auto` (design 7, 17; `thp.rs`): the group's range, still
         // reserved `PROT_NONE`, is advised once here, so the slabs the
         // arena commits from it fault in as folios of the enabled size.

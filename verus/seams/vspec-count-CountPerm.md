@@ -1,6 +1,6 @@
 # `CountPerm` (`vspec/count.rs`)
 
-Seam S298 of `verus/SEAMS.md`: src/vspec/count.rs:48. Kind: external_body type. Category: atomics primitive.
+Seam S299 of `verus/SEAMS.md`: src/vspec/count.rs:53. Kind: external_body type. Category: atomics primitive.
 Discharged by the records of its wrappers and `run.sh`'s access check
 (part 3).
 
@@ -14,10 +14,13 @@ pub tracked struct CountPerm
 
 The type is an `external_body` tracked struct with one private unit
 field; `id()` and `value()` are uninterpreted spec functions on it. It
-has no `Copy` or `Clone`, and no exec constructor: permissions come only
-from `Arenas::init`, which writes each count 0 and mints its permission
-inside its invariant before the registry is published (S61), a separate
-seam.
+has no `Copy` or `Clone`, and one exec constructor, `vspec::count::new`
+(S304, a separate seam), which makes a new atomic together with its one
+permission: `Arenas::init` calls it for each bound count (value 0) and
+for the arena count, and keeps each permission inside its invariant
+before the registry is published, and `Policy::new` calls it for the
+position (value 0), whose permission its invariant (`policy::FracPred`)
+keeps.
 
 ## Statement
 
@@ -29,9 +32,9 @@ each checked elsewhere:
 1. **Not duplicable.** Verus checks it: a tracked value of a type with
    no `Copy` moves, and nothing in `src/` implements `Copy` or `Clone`
    for it (it is declared in `vspec/count.rs` only, with no derive).
-2. **One permission per atomic.** The minting seam's (`Arenas::init`,
-   which writes each count 0 and mints its permission inside its
-   invariant before the registry is published (S61)); not claimed here.
+2. **One permission per atomic.** The minting seam's
+   (`vspec::count::new`, S304, which mints one permission with the
+   atomic it makes); not claimed here.
 3. **The value is the atomic's.** Every write of the atomic once it is
    shared, and every read whose value a proof uses, is one of the
    wrappers in `vspec/count.rs`, each of which has a record reading
@@ -40,12 +43,19 @@ each checked elsewhere:
    `vspec-count-fetch_add.md`, `vspec-count-fetch_sub.md` (discharged)
    and `vspec-count-load.md` (evidence: its contract does not exclude
    the orderings with which `load` panics, which does not bear on the
-   value it returns). The one other write is `Arenas::init`'s
-   `ptr::write` of 0 into each count, before the registry is published,
-   where it mints the permission with value 0 (the invariant's count of
-   no tickets). `run.sh` checks this by name: `src/arena.rs` names the
-   bound counts only in a wrapper call, the spec `count_id`, and
-   `init`'s two zeroing lines.
+   value it returns). The arena count is also written by `store`
+   (S302, `Arenas::create`) and the position by `swap` (S305,
+   `Policy::apply`): wrappers with no record of their own (trusted,
+   proposed tool loom/GenMC), whose contracts read `value()` the same
+   way; the bound counts, which the records above are about, never go
+   through them. The one other write of a counter is the move of the
+   atomic `new` made into place (`Arenas::init`'s `ptr::write` before
+   the registry is published, `Policy::new`'s struct literal), with the
+   permission `new` minted for its value. `run.sh` checks this by name:
+   `src/arena.rs` names the bound counts and the arena count, and
+   `src/policy.rs` the position, only in a wrapper call and the spec
+   `count_id` (and, for the bound counts, ghost `assert`/`forall`
+   lines).
 
 Models: `loom_count_bind_assign_unbind`, `loom_count_split_rmw_loses_a_ticket`
 
@@ -139,9 +149,10 @@ line names exist and are not ignored, that the source lines the copies
 mirror are in place (`verus/loom/pins.txt`), and, by name, that the
 atomic writes the word and count records rely on are where they say
 (non-test `bitmap.rs` writes words only through `vspec/word.rs`;
-`class/table.rs` writes atomics only on three listed lines; `arena.rs`
-touches the bound counts only through `vspec/count.rs` and
-`Arenas::init`'s zeroing; `STATE` has two writes); then it runs every
+`class/table.rs` writes atomics only on two listed lines and through
+`vspec/atom.rs`; `arena.rs` touches the bound counts and the arena
+count, and `policy.rs` the position, only through `vspec/count.rs`;
+`STATE` has two writes); then it runs every
 loom model and control. A body that breaks the property fails a model
 where the model runs the real code (`lock.rs`, `bitmap.rs`,
 `vspec/word.rs`, `vspec/count.rs`); a changed copied line fails the pin

@@ -1,6 +1,6 @@
 # `SetTable::set_table_ptr`
 
-Seam S90 of `verus/SEAMS.md`: src/class/sets.rs:600. Kind: external_body. Category: raw pointer (internal).
+Seam S89 of `verus/SEAMS.md`: src/class/sets.rs:600. Kind: external_body. Category: raw pointer (internal).
 Discharged by Kani.
 
 ## Contract

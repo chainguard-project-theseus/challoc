@@ -14,6 +14,7 @@ use vstd::prelude::*;
 
 pub(crate) mod addr;
 pub(crate) mod arena;
+pub(crate) mod atom;
 pub(crate) mod atomic;
 pub(crate) mod check;
 pub(crate) mod class;

@@ -1,6 +1,6 @@
 # `addr_mix`
 
-Seam S125 of `verus/SEAMS.md`: src/heap/flush.rs:1459. Kind: external_body. Category: raw pointer (internal).
+Seam S123 of `verus/SEAMS.md`: src/heap/flush.rs:1459. Kind: external_body. Category: raw pointer (internal).
 Discharged by Kani.
 
 ## Contract

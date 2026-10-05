@@ -1,6 +1,6 @@
 # `Result::<T, E>::unwrap_or`
 
-Seam S370 of `verus/SEAMS.md`: src/vspec/sys.rs:60. Kind: assume_spec. Category: core library.
+Seam S373 of `verus/SEAMS.md`: src/vspec/sys.rs:60. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

@@ -556,8 +556,9 @@ the assumed `Heap::wf` and the huge lock axiom.
   `table::axiom_init_descs`, `_owners`, `_words` (`class/table.rs:1238`,
   `:1248`, `:1260`, the values are initialised), the slice primitive
   under `words_ref` (`vspec::slice::slice_from_perms`, a slice over
-  consecutive word permissions) and `watermark` (`:1894`, at
-  most the slab count). Premise: only committed pages are read (the
+  consecutive word permissions) and the watermark's load
+  (`vspec::atom::load_usize_in`, inside the watermark's invariant, which
+  bounds it by the slab count). Premise: only committed pages are read (the
   accessors' `# Safety`).
 - `TwoLevelBitmap::from_raw`, `from_raw_chunked` (`bitmap.rs`) are
   verified: they build each word's permission, holding 0, from the
@@ -1142,7 +1143,7 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   and `cached_recently` (`heap/cache.rs`, address arithmetic and loads),
   `arena_volatile` (`heap/mod.rs`, a volatile read),
   `load_owner` (a `Relaxed` load) and
-  `watermark` (`class/table.rs`),
+  the watermark's load (`vspec::atom::load_usize_in`, an atomic load),
   `vspec::word::load` (an atomic load), `layout::regions::class_entry`
   (an empty `asm!`), `addr_to_ptr`, `api::shared_ptr` and
   `shared_unchecked`.
@@ -1216,9 +1217,11 @@ pub fn lock(&self) -> (g: LockGuard<'_, T>)         // Lock<T>, lock.rs:276
 
 and so, by default, do the other acquiring functions (`try_acquire`,
 `lock_slow`, both `try_lock`s, `lock.rs:63`, `:93`, `:72`, `:293`). The
-fast paths declare `none`, or only the bitmap words' namespace for the
-unsized free (`bitmap::word_ns()`, the one `AtomicInvariant`
-`is_set_unchecked` opens for its bit test):
+fast paths declare `none`, or only the bitmap words' and the watermarks'
+namespaces for the unsized free (`bitmap::word_ns()`, the one
+`AtomicInvariant` `is_set_unchecked` opens for its bit test, and
+`class::committed_ns()`, the one `SlabTable::watermark` opens to read
+the watermark, which its invariant bounds by the slab count):
 
 ```rust
 pub(super) fn malloc_fast(size: usize, blk) -> (r: Option<*mut u8>)   // api/libc.rs:315
@@ -1226,9 +1229,9 @@ pub(super) fn malloc_fast(size: usize, blk) -> (r: Option<*mut u8>)   // api/lib
 pub fn alloc_fast(&mut self, class: usize, flags: u8, blk) -> ...    // heap/paths.rs:59
     opens_invariants none
 pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, blk) -> (r: bool)   // heap/paths.rs:573
-    opens_invariants [crate::bitmap::word_ns()]
+    opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns()]
 pub fn free_fast_class(...) -> (r: Option<usize>)                    // heap/paths.rs:614
-    opens_invariants [crate::bitmap::word_ns()]
+    opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns()]
 pub fn free_sized_fast(...) -> (r: bool)                             // heap/paths.rs:654
     opens_invariants none
 pub fn existing_heap(shared: *const Shared) -> ...                   // heap/thread.rs:148
@@ -1291,7 +1294,7 @@ paths, verified unless marked trusted:
 - **Free checks:** `Shared::push_flags`, `multi_arena`, `checked_slot`,
   `set_slot`, `sized_slot`, `GuardTest::is_guard`,
   `Heap::arena_volatile` (RefinedRust,
-  `verus/seams/heap-Heap-arena_volatile.md`); `SlabTable::watermark` (trusted),
+  `verus/seams/heap-Heap-arena_volatile.md`); `SlabTable::watermark`,
   `is_handed_out`, `is_set_unchecked`, `owner_unchecked`,
   `owner_at`, `load_owner` (trusted).
 - **Layout:** `Regions::slab_slot`, `slot_in_class`, `region_len`, the
@@ -1319,7 +1322,7 @@ library's machine code is identical to the previous commit's on x86_64.
   - `tls::get` and `get_tp` (asm), `fast_flags` (a field read),
     `heap_from_slot` (calls `pac::auth`), `home_ptr_at`.
   - `cached_recently` (the loop above), `arena_volatile`,
-    `watermark`, `class_entry`.
+    `vspec::atom::load_usize_in` (the watermark's load), `class_entry`.
   - `pac::sign` and `auth` (asm; under `cfg(test)` a counter
     increment), `addr_to_ptr`.
 - **New wrappers.** `vspec::atomic::load_bool`: the `core`
@@ -4765,7 +4768,7 @@ Two integrity sites of the first version of this theorem are gone, both
 over the arena count, which is now an atomic invariant (`NarenasPred`,
 `arena.rs`): the counter's permission (`vspec::count::CountPerm`) has a
 value at most `MAX_ARENAS`. `Arenas::init` (verified) makes it with the
-permission `arena::fresh_count` mints for the clamped automatic count,
+permission `vspec::count::new` mints for the clamped automatic count,
 `Arenas::create` stores `index + 1` inside it for an `index` below
 `MAX_ARENAS`, and `Arenas::count` (verified, no longer `external_body`)
 loads inside it, so its `ensures r <= MAX_ARENAS` is proved. With it, `stats::arena_at` requires `i <
@@ -4871,7 +4874,7 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   projections and `shared_unchecked`, `published_line`, the `STATE`
   wrappers (`state_load`, `state_claim`, `state_publish`: one bare
   atomic operation each), `ClassTable::table`, `class_entry`,
-  `SlabTable::watermark`, the registry reader `arena_at`
+  the watermark's load `vspec::atom::load_usize_in`, the registry reader `arena_at`
   (`arena.rs:1264`), `Config::get` and `KEYS`, the caller-memory helpers
   of `mallctl` (`name_byte`, `name_bytes`, `old_len`, `copy_prefix`,
   `store`, `load`, `query_ptr`, `store_triple`, `mib_in`: raw accesses
@@ -5250,14 +5253,15 @@ order and the counts.
   ignored, as for the bitmap words).
 - `Arenas::init` (verified after this theorem's merge) ensures `wf` of the
   registry it writes: each bound count is written with a permission of
-  value 0 from `arena::fresh_count` (`external_body`, the only place a
-  `CountPerm` is minted, one per counter), and its invariant holds that
+  value 0 from `vspec::count::new` (`external_body`, the only place a
+  `CountPerm` is minted, one per counter; `Policy::new` mints the
+  position's there too), and its invariant holds that
   permission and a fresh ticket set emptied of the `{0}` that shows its
   location is its own (`fresh_sets`, `fresh_invs`). Its field writes go
   through the permissions `axiom_arenas_layout` (rustc's field order,
   checked by the build) gives and `axiom_arenas_assemble` joins, as for
   `Arena::init`. The arena count's invariant (`NarenasPred`, the type
-  invariant's `count_inv`) holds a permission `fresh_count` mints with
+  invariant's `count_inv`) holds a permission `vspec::count::new` mints with
   the clamped automatic count. Nothing writes a bound count outside the
   wrappers afterwards (by inspection).
 - `key_less` (`arena.rs:1382`, `external_body`): `core`'s `<` on `(u32,

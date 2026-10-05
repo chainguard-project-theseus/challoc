@@ -1,6 +1,6 @@
 # `WordPerm` (`vspec/word.rs`)
 
-Seam S388 of `verus/SEAMS.md`: src/vspec/word.rs:50. Kind: external_body type. Category: atomics primitive.
+Seam S391 of `verus/SEAMS.md`: src/vspec/word.rs:50. Kind: external_body type. Category: atomics primitive.
 Discharged by the records of its wrappers and `run.sh`'s access check
 (part 3).
 
@@ -42,7 +42,8 @@ facts, each checked elsewhere:
    only through the wrappers (its other loads are plain `core` loads,
    whose result Verus takes as any value), and `src/class/table.rs`,
    which casts word addresses to `&AtomicU64` for the bitmap and the bit
-   test, writes atomics only on three listed lines, none a bitmap word.
+   test, writes atomics only on two listed lines and through
+   `vspec/atom.rs`'s `store_usize` (the watermark), none a bitmap word.
 
 Models: `loom_bitmap_release_then_reserve`, `loom_bitmap_two_claimers`, `loom_bitmap_init_is_published`, `loom_free_after_synchronised_handoff`
 
@@ -136,9 +137,10 @@ line names exist and are not ignored, that the source lines the copies
 mirror are in place (`verus/loom/pins.txt`), and, by name, that the
 atomic writes the word and count records rely on are where they say
 (non-test `bitmap.rs` writes words only through `vspec/word.rs`;
-`class/table.rs` writes atomics only on three listed lines; `arena.rs`
-touches the bound counts only through `vspec/count.rs` and
-`Arenas::init`'s zeroing; `STATE` has two writes); then it runs every
+`class/table.rs` writes atomics only on two listed lines and through
+`vspec/atom.rs`; `arena.rs` touches the bound counts and the arena
+count, and `policy.rs` the position, only through `vspec/count.rs`;
+`STATE` has two writes); then it runs every
 loom model and control. A body that breaks the property fails a model
 where the model runs the real code (`lock.rs`, `bitmap.rs`,
 `vspec/word.rs`, `vspec/count.rs`); a changed copied line fails the pin

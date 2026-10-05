@@ -82,22 +82,28 @@ done
 #   call (the scan stops at the `#[cfg(test)] mod tests` line, which must
 #   be the file's last item);
 # - class/table.rs, which casts bitmap word addresses to `&AtomicU64` and
-#   passes them on, writes atomics only on the three lines listed (the
-#   owner word, a test's corrupting write of it, the watermark);
+#   passes them on, writes atomics only on the two lines listed (the
+#   owner word and a test's corrupting write of it) and through
+#   vspec/atom.rs's `store_usize` wrapper (the watermark);
 # - arena.rs names the bound counts only in a vspec/count.rs wrapper
 #   call, the spec `count_id`, and ghost `assert`/`forall` lines
-#   (`Arenas::init` builds each count with `fresh_count(0)`);
+#   (`Arenas::init` builds each count with `vspec::count::new(0)`);
+# - arena.rs names the arena count (`self.count`), and policy.rs the
+#   position (`.frac16`), only in a vspec/count.rs wrapper call and the
+#   spec `count_id` (each is made with `vspec::count::new`; the ghost
+#   `self.count.ptr()` of `Arenas::init`'s field permissions aside);
 # - `STATE` has two writes, `state_claim`'s compare-exchange and
 #   `state_publish`'s `READY` store.
 bad=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t = 0 }
     /\.(fetch_[a-z]+|store|swap|compare_exchange|compare_exchange_weak)\(/ && !/crate::vspec::word::/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/bitmap.rs
     awk '{ x = $0; sub(/^[ \t]+/, "", x) }
     /\.(fetch_[a-z]+|store|swap|compare_exchange|compare_exchange_weak)\(/ && !/^[ \t]*\/\// && x != "w.store(arena, Ordering::Relaxed)" \
-        && x != "(*((self.owners_base + group * 2) as *const AtomicU16)).store(arena, Ordering::Relaxed)" \
-        && x != "self.committed_slabs.store(end, Ordering::Release);" { print FILENAME ":" FNR ": " $0 }' src/class/table.rs
+        && x != "(*((self.owners_base + group * 2) as *const AtomicU16)).store(arena, Ordering::Relaxed)" { print FILENAME ":" FNR ": " $0 }' src/class/table.rs
     awk '{ x = $0; sub(/^[ \t]+/, "", x) }
     (/\.bound([^A-Za-z0-9_]|$)/ || /\(\*bound\)/) && !/crate::vspec::count::/ && !/count_id\(/ && !/^[ \t]*\/\// \
-        && !/assert\(/ && !/forall\|/ { print FILENAME ":" FNR ": " $0 }' src/arena.rs)
+        && !/assert\(/ && !/forall\|/ { print FILENAME ":" FNR ": " $0 }' src/arena.rs
+    awk '/self\.count([^A-Za-z0-9_(]|$)/ && !/self\.count\.ptr\(\)/ && !/crate::vspec::count::/ && !/count_id\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/arena.rs
+    awk '/\.frac16([^A-Za-z0-9_]|$)/ && !/crate::vspec::count::/ && !/count_id\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/policy.rs)
 nstate=$(find src -name '*.rs' ! -path 'src/loom_tests/*' -exec grep -hE '(^|[^A-Za-z0-9_])STATE\.(store|swap|compare_exchange|fetch_)' {} + | wc -l | tr -d ' ')
 [ "$nstate" = 2 ] || bad="$bad
 src/api/mod.rs: $nstate writes of STATE, not 2 (record api-state_claim.md)"

@@ -683,7 +683,7 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, Tracked(b
         !r ==> final(blk).claims(p) && final(blk).len() == old(blk).len(),
         !r ==> *final(blk) == *old(blk) || old(blk).block(p),
         r ==> old(blk).block(p),
-    opens_invariants [crate::bitmap::word_ns()]
+    opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns()]
 {
     match shared.checked_slot(p, h) {
         Some(class) => {
@@ -726,7 +726,7 @@ pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, Tra
         r is None ==> final(blk).claims(p) && final(blk).len() == old(blk).len(),
         r is None ==> *final(blk) == *old(blk) || old(blk).block(p),
         r matches Some(c) ==> old(blk).slot_block(p, c as int),
-    opens_invariants [crate::bitmap::word_ns()]
+    opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns()]
 {
     let Some(class) = shared.checked_slot(p, h) else { return None };
     let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
@@ -1121,7 +1121,7 @@ mod kani_aborts {
     use super::debug_scheduled;
     use crate::kani_proofs::must_not_return;
 
-    /// S139 `debug_scheduled`, no `requires`, no `ensures`: with debug
+    /// S137 `debug_scheduled`, no `requires`, no `ensures`: with debug
     /// assertions on (Kani's build, and the tests'), it returns exactly
     /// when `allocs as u32` has no bit of `mask`, and otherwise never
     /// returns.

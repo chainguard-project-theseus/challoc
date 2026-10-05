@@ -1,6 +1,6 @@
 # `check`
 
-Seam S278 of `verus/SEAMS.md`: src/vspec/check.rs:16. Kind: external_body. Category: panic/abort.
+Seam S279 of `verus/SEAMS.md`: src/vspec/check.rs:16. Kind: external_body. Category: panic/abort.
 Discharged by Kani.
 
 ## Contract

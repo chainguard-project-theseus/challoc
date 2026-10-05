@@ -63,6 +63,9 @@ use crate::lock::LockOrder;
 use crate::lock::rank_class;
 use crate::purge::NEVER;
 use crate::sys::cgroup::UNLIMITED;
+use crate::vspec::count::CountPerm;
+#[cfg(verus_only)]
+use crate::vspec::count::count_id;
 #[cfg(verus_only)]
 use vstd::arithmetic::div_mod::{
     lemma_div_is_ordered, lemma_fundamental_div_mod, lemma_fundamental_div_mod_converse_div,
@@ -70,6 +73,7 @@ use vstd::arithmetic::div_mod::{
 };
 #[cfg(verus_only)]
 use vstd::arithmetic::mul::lemma_mul_inequality;
+use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::prelude::*;
 
 verus! {
@@ -665,15 +669,43 @@ pub struct Policy {
     /// [`THP_MIN_LIMIT`] (`thp::forced_by_limit`, decided by
     /// `Shared::init`).
     thp_forced: bool,
+    /// Ghost (no bytes): the position's invariant ([`FracPred`]), which
+    /// holds its permission: it is at most [`FRAC_ONE`].
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    frac_inv: Tracked<FracInv>,
 }
+
+/// Namespace of the position's invariant ([`FracPred`]).
+pub open spec fn frac_ns() -> int {
+    0x6672_6163
+}
+
+/// The position's invariant, keyed by the atomic's identity
+/// (`vspec::count::count_id`): it is at most [`FRAC_ONE`]. `new` makes
+/// it with the atomic (value 0), and `apply`, its one writer, swaps in
+/// the position of a band that satisfies `Band::wf`, inside it.
+pub struct FracPred;
+
+impl InvariantPredicate<int, CountPerm> for FracPred {
+    open spec fn inv(k: int, perm: CountPerm) -> bool {
+        &&& perm.id() == k
+        &&& perm.value() <= 0x1_0000
+    }
+}
+
+/// The invariant of the position.
+pub type FracInv = AtomicInvariant<int, CountPerm, FracPred>;
 
 impl Policy {
     /// Defaults; `high_rises` is the cgroup record's count at init, so a
     /// container whose `memory.events` already showed `high` events does
     /// not start with a full purge.
     pub const fn new(high_rises: u64, thp_forced: bool) -> Policy {
+        // The position, with its invariant (0, at most `FRAC_ONE`).
+        let (frac16, Tracked(fperm)) = crate::vspec::count::new(0);
+        let tracked frac_inv = FracInv::new(count_id(&frac16), fperm, frac_ns());
         Policy {
-            frac16: AtomicU32::new(0),
+            frac16,
             immediate: AtomicBool::new(false),
             keep16: AtomicU32::new(KEEP_ALL),
             cap: AtomicU64::new(UNLIMITED),
@@ -684,22 +716,33 @@ impl Policy {
             limited: AtomicBool::new(false),
             eager_excess: AtomicBool::new(false),
             thp_forced,
+            frac_inv: Tracked(frac_inv),
         }
     }
 
-    /// The stored position in the scaled band. Trusted to be at most
-    /// [`FRAC_ONE`]: `new` stores 0 and the only other store is `apply`'s,
-    /// of the position of a band that satisfies `Band::wf` (its
-    /// precondition, unchecked since its callers are unverified;
-    /// `evaluate` and `Shared::init` pass the result of [`band`], which
-    /// ensures it). Verus has no view of the value in an `AtomicU32`.
-    #[verifier::external_body]
+    /// The position's invariant is the one over this atomic, in
+    /// [`frac_ns`].
+    #[verifier::type_invariant]
+    spec fn inv(self) -> bool {
+        &&& self.frac_inv@.constant() == count_id(&self.frac16)
+        &&& self.frac_inv@.namespace() == frac_ns()
+    }
+
+    /// The stored position in the scaled band, read inside its invariant
+    /// ([`FracPred`]): at most [`FRAC_ONE`].
     #[inline(always)]
     fn position(&self) -> (f: u32)
         ensures
             f <= 0x1_0000,
     {
-        self.frac16.load(Ordering::Relaxed)
+        proof {
+            use_type_invariant(self);
+        }
+        let f;
+        vstd::open_atomic_invariant!(self.frac_inv.borrow() => perm => {
+            f = crate::vspec::count::load(&self.frac16, Ordering::Relaxed, Tracked(&perm));
+        });
+        f
     }
 
     /// The band as last evaluated (`Unlimited` when no limit was seen).
@@ -806,7 +849,14 @@ impl Policy {
             UNLIMITED
         };
         let mut changed = self.limited.swap(limited, Ordering::Relaxed) != limited;
-        changed = (self.frac16.swap(frac, Ordering::Relaxed) != frac) || changed;
+        proof {
+            use_type_invariant(self);
+        }
+        let prev_frac;
+        vstd::open_atomic_invariant!(self.frac_inv.borrow() => perm => {
+            prev_frac = crate::vspec::count::swap(&self.frac16, frac, Ordering::Relaxed, Tracked(&mut perm));
+        });
+        changed = (prev_frac != frac) || changed;
         changed = (self.immediate.swap(immediate, Ordering::Relaxed) != immediate) || changed;
         self.cap.store(cap, Ordering::Relaxed);
         self.empty_bytes

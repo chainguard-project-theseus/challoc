@@ -1,6 +1,6 @@
 # `SlabDesc::sub_live`
 
-Seam S218 of `verus/SEAMS.md`: src/slab.rs:431. Kind: external_body. Category: atomics primitive.
+Seam S215 of `verus/SEAMS.md`: src/slab.rs:431. Kind: external_body. Category: atomics primitive.
 Discharged by reading the body (part 3); the loom models are context only,
 for the allocator invariant the contract no longer claims.
 
@@ -143,9 +143,10 @@ line names exist and are not ignored, that the source lines the copies
 mirror are in place (`verus/loom/pins.txt`), and, by name, that the
 atomic writes the word and count records rely on are where they say
 (non-test `bitmap.rs` writes words only through `vspec/word.rs`;
-`class/table.rs` writes atomics only on three listed lines; `arena.rs`
-touches the bound counts only through `vspec/count.rs` and
-`Arenas::init`'s zeroing; `STATE` has two writes); then it runs every
+`class/table.rs` writes atomics only on two listed lines and through
+`vspec/atom.rs`; `arena.rs` touches the bound counts and the arena
+count, and `policy.rs` the position, only through `vspec/count.rs`;
+`STATE` has two writes); then it runs every
 loom model and control. A body that breaks the property fails a model
 where the model runs the real code (`lock.rs`, `bitmap.rs`,
 `vspec/word.rs`, `vspec/count.rs`); a changed copied line fails the pin

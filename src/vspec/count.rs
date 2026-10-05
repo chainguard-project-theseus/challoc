@@ -1,6 +1,9 @@
 //! `u32` counters as atomics with a ghost permission, for the arena
 //! registry's bound counts (`arena.rs`, `Arenas::bound`; `verus/THEOREMS.md`,
-//! "Balanced arena assignment") and its arena count (`Arenas::count`).
+//! "Balanced arena assignment") and its arena count (`Arenas::count`),
+//! and for the policy's position (`policy.rs`, `Policy::position`), a
+//! `u32` value an atomic invariant bounds (`verus/TODO.md`, "Coverage
+//! ceiling", ATOM).
 //!
 //! The same pattern as `word.rs` for the class bitmap words: a
 //! [`CountPerm`] names the counter's identity and value, each operation is
@@ -11,23 +14,25 @@
 //!
 //! Trusted, all of it:
 //! - each wrapped `core` operation is one atomic operation on the counter
-//!   (a load, a store or a wrapping read-modify-write), as `core`
-//!   documents;
+//!   (a load, a store, a swap or a wrapping read-modify-write), as `core`
+//!   documents, and [`new`] is `AtomicU32::new`, which makes a new atomic;
 //! - the proof model is sequentially consistent: the specifications ignore
 //!   `ordering`, so nothing here proves that `Relaxed` is strong enough
 //!   (`verus/TODO.md`, Tier 4);
 //! - [`count_id`] is the counter's identity, and a permission is for the
 //!   counter with its [`CountPerm::id`]. The permissions are minted one per
-//!   counter, with the counter, by `arena::fresh_count`, which
-//!   `Arenas::init` calls and whose permissions it keeps inside its
-//!   invariants.
+//!   counter, with the counter, by [`new`]: `Arenas::init` keeps those of
+//!   the bound counts and the arena count inside its invariants, and
+//!   `Policy::new` that of the position inside its invariant.
 //!
 //! A permission's value is its counter's: every access to a bound count
 //! goes through these wrappers (`Arenas::assign`, `bind`, `unbind`,
 //! `bound`), each inside the counter's invariant (`arena::BoundPred`),
 //! and so does every access to the arena count (`Arenas::count`,
-//! `Arenas::create`) inside its invariant (`arena::NarenasPred`);
-//! `Arenas::init` writes each counter before the registry is published.
+//! `Arenas::create`) inside its invariant (`arena::NarenasPred`), and to
+//! the position (`Policy::position`, `Policy::apply`) inside its
+//! (`policy::FracPred`); `Arenas::init` writes each counter of the
+//! registry before the registry is published.
 
 use crate::sync::atomic::{AtomicU32, Ordering};
 use vstd::prelude::*;
@@ -91,13 +96,16 @@ pub fn fetch_sub(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Track
     c.fetch_sub(v, ordering)
 }
 
-/// `c.store(v, ordering)`.
+/// `c.store(v, ordering)` (it panics for an `Acquire` or `AcqRel`
+/// ordering).
 #[inline(always)]
 #[verifier::external_body]
 #[verifier::atomic]
 pub fn store(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>)
     requires
         old(perm).id() == count_id(c),
+        !(ordering is Acquire),
+        !(ordering is AcqRel),
     ensures
         final(perm).id() == old(perm).id(),
         final(perm).value() == v,
@@ -120,6 +128,38 @@ pub fn load(c: &AtomicU32, ordering: Ordering, Tracked(perm): Tracked<&CountPerm
     no_unwind
 {
     c.load(ordering)
+}
+
+/// `AtomicU32::new(v)`, with the one permission to it: the only place a
+/// [`CountPerm`] is minted, one per counter, with the counter it is for.
+/// It is `const` for `Policy::new`, which runs at run time: neither may
+/// appear in a `const` item, each use of which would be a new atomic with
+/// the same permission.
+#[inline(always)]
+#[verifier::external_body]
+pub const fn new(v: u32) -> (r: (AtomicU32, Tracked<CountPerm>))
+    ensures
+        r.1@.id() == count_id(&r.0),
+        r.1@.value() == v,
+{
+    (AtomicU32::new(v), Tracked::assume_new())
+}
+
+/// `c.swap(v, ordering)`: the previous value.
+#[inline(always)]
+#[verifier::external_body]
+#[verifier::atomic]
+pub fn swap(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>) -> (prev: u32)
+    requires
+        old(perm).id() == count_id(c),
+    ensures
+        final(perm).id() == old(perm).id(),
+        prev == old(perm).value(),
+        final(perm).value() == v,
+    opens_invariants none
+    no_unwind
+{
+    c.swap(v, ordering)
 }
 
 } // verus!

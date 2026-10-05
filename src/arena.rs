@@ -1387,7 +1387,7 @@ pub open spec fn narenas_ns() -> int {
 /// The arena count's invariant, about the counter whose [`count_id`] is
 /// the key: its permission's value is at most [`MAX_ARENAS`]. Its two
 /// writers keep it: `Arenas::init` stores the automatic count it clamped
-/// to `1..=MAX_ARENAS` (with the permission [`fresh_count`] minted for
+/// to `1..=MAX_ARENAS` (with the permission `vspec::count::new` minted for
 /// it), and `Arenas::create` stores `index + 1` for an `index` below `MAX_ARENAS`.
 pub struct NarenasPred;
 
@@ -1749,22 +1749,6 @@ axiom fn axiom_arenas_assemble(
         a.value().count_inv == parts.count_inv.value(),
 ;
 
-/// A new counter of value `v`, and the permission to it ([`CountPerm`]).
-/// Trusted: `CountPerm` has no constructor, as nothing in
-/// `vspec/count.rs` mints one; this is where each is minted, one per
-/// counter, with the counter it is for (`Arenas::init` writes each bound
-/// count and the arena count in place and keeps each permission in its
-/// counter's invariant).
-#[verifier::external_body]
-#[inline(always)]
-fn fresh_count(v: u32) -> (r: (AtomicU32, Tracked<CountPerm>))
-    ensures
-        r.1@.id() == count_id(&r.0),
-        r.1@.value() == v,
-{
-    (AtomicU32::new(v), Tracked::assume_new())
-}
-
 /// The set `{0}`, the one element each fresh ticket set starts with to
 /// tell its location from the others' ([`fresh_sets`]).
 spec fn just0() -> Set<int> {
@@ -1903,7 +1887,7 @@ impl Arenas {
         // SAFETY: the fields of `init`'s storage, through their permissions.
         unsafe {
             ptr_mut_write(field_at(this, AR_LOCK), Tracked(&mut parts.lock), Lock::new(auto, Ghost(rank_arenas())));
-            let (c, perm) = fresh_count(auto);
+            let (c, perm) = crate::vspec::count::new(auto);
             ptr_mut_write(field_at(this, AR_COUNT), Tracked(&mut parts.count), c);
             ptr_mut_write(field_at(this, AR_AUTO), Tracked(&mut parts.auto), auto);
             perm
@@ -1945,7 +1929,7 @@ impl Arenas {
             let table: *mut AtomicPtr<Arena> = field_at(this, AR_TABLE);
             let bound: *mut AtomicU32 = field_at(this, AR_BOUND);
             ptr_mut_write(elem_at(table, i, MAX_ARENAS), Tracked(t), AtomicPtr::new(ptr::null_mut()));
-            let (c, perm) = fresh_count(0);
+            let (c, perm) = crate::vspec::count::new(0);
             ptr_mut_write(elem_at(bound, i, MAX_ARENAS), Tracked(b), c);
             perm
         }
@@ -2013,11 +1997,11 @@ impl Arenas {
     /// permission to its storage in `slot`, handed back initialised and
     /// well formed ([`Arenas::wf`]): every bound count is written 0, and
     /// its invariant ([`BoundPred`]) holds the permission
-    /// [`fresh_count`] minted for it and a fresh, empty ticket set, each
+    /// `vspec::count::new` minted for it and a fresh, empty ticket set, each
     /// set at a location of its own; no ticket exists yet. Likewise the
     /// ghost `count_inv`: `count` is written the clamped automatic count,
     /// and its invariant ([`NarenasPred`], in [`narenas_ns`]) holds the
-    /// permission [`fresh_count`] minted for it.
+    /// permission `vspec::count::new` minted for it.
     ///
     /// # Safety
     /// `this` must point to writable storage that nothing else reads until
@@ -2602,6 +2586,10 @@ impl Arenas {
             self.wf(),
             i < MAX_ARENAS,
     {
+        proof {
+            assert(self.invs@.contains_key(i as int));
+            assert(self.invs@[i as int].constant().id == count_id(&self.bound[i as int]));
+        }
         let tracked inv = self.invs.borrow().tracked_borrow(i as int);
         let n;
         vstd::open_atomic_invariant!(inv => v => {
@@ -2624,6 +2612,10 @@ impl Arenas {
         ensures
             self.ticket_of(r@, i as int),
     {
+        proof {
+            assert(self.invs@.contains_key(i as int));
+            assert(self.invs@[i as int].constant().id == count_id(&self.bound[i as int]));
+        }
         let tracked inv = self.invs.borrow().tracked_borrow(i as int);
         let tracked t;
         vstd::open_atomic_invariant!(inv => v => {

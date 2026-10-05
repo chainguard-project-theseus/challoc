@@ -54,7 +54,7 @@ src/class/mod.rs	desc.add_live(n);
 # (free.rs): is_handed_out, is_set_unchecked, owner_at, check_live.
 src/class/table.rs	w.load(Ordering::Relaxed)
 src/class/table.rs	w.store(arena, Ordering::Relaxed)
-src/class/table.rs	self.committed_slabs.load(order)
+src/class/table.rs	load_usize_in(&self.committed_slabs, order, &self.committed_inv)
 src/class/table.rs	self.watermark(Ordering::Acquire)
 src/class/table.rs	slab < self.watermark(Ordering::Relaxed)
 src/class/table.rs	x = crate::vspec::word::load(w, Ordering::Relaxed, Tracked(&perm));
@@ -64,7 +64,7 @@ src/class/table.rs	if !self.is_handed_out(slab) {
 src/class/table.rs	if !unsafe { self.is_set_unchecked(slab, slot) } {
 src/class/table.rs	let Tracked(m) = self.bits_unchecked(slab).init(cls.nslots(), Ghost(slab as int), Tracked(fs));
 src/class/table.rs	store_owner(owner_word, arena, Ghost(*self), Ghost(s >> self.lg_group), Tracked(om));
-src/class/table.rs	self.committed_slabs.store(end, Ordering::Release);
+src/class/table.rs	store_usize(&self.committed_slabs, end, Ordering::Release, Tracked(&mut perm));
 # heap/shared.rs: checked_slot, set_slot (free.rs).
 src/heap/shared.rs	let Some((class, table, slab)) = self.set_slot(p) else { return None };
 src/heap/shared.rs	if unsafe { table.owner_unchecked(slab) } != home {

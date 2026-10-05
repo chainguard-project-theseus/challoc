@@ -2286,7 +2286,7 @@ impl Shared {
             self.wf(),
         ensures
             r matches Some(c) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
-        opens_invariants [crate::bitmap::word_ns()]
+        opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns()]
     {
         let Some((class, table, slab)) = self.set_slot(p) else { return None };
         if self.multi_arena() {
@@ -2511,7 +2511,7 @@ impl Shared {
         ensures
             r matches Some((c, _, _)) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
             r matches Some((_, t, s)) ==> s < t.spec_nslabs(),
-        opens_invariants [crate::bitmap::word_ns()]
+        opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns()]
     {
         let Some((class, slab, slot)) = self.regions.slab_slot(p as usize) else { return None };
         // SAFETY: `slab_slot` only returns `class < NCLASSES`.
@@ -2740,7 +2740,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S144..S159, S160: each `S_*` is its field's `offset_of!`, and the
+    /// S142..S157, S158: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {

@@ -1,6 +1,6 @@
 # `KEYS`
 
-Seam S112 of `verus/SEAMS.md`: src/config.rs:817. Kind: external_body const. Category: function pointer.
+Seam S110 of `verus/SEAMS.md`: src/config.rs:817. Kind: external_body const. Category: function pointer.
 Discharged by Kani.
 
 ## Contract

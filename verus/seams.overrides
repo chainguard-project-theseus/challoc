@@ -294,11 +294,15 @@ StatePerm	atomics primitive	loom/GenMC
 state_load	atomics primitive	loom/GenMC
 state_claim	atomics primitive	loom/GenMC	discharged (verus/seams/api-state_claim.md)
 state_publish	atomics primitive	loom/GenMC
-# Arenas::count: every store writes at most MAX_ARENAS and a load returns
-# a stored value, so no memory-model question; verified in Verus through
-# vspec/count.rs inside the count's invariant (NarenasPred).
-SlabTable::watermark	allocator invariant	RefinedRust
-Policy::position	allocator invariant	RefinedRust
+# The atomic invariants on named fields (vspec/atom.rs, vspec/count.rs):
+# Arenas::count (NarenasPred), SlabTable::watermark (CommittedPred) and
+# Policy::position (FracPred) are verified, each store writing a value in
+# range; the watermark's permission wrappers and count.rs's swap are the
+# same kind of primitive as the bound counts' and the bitmap words', and
+# new_usize mints its permission as count.rs's new does.
+UsizePerm	atomics primitive	loom/GenMC
+new_usize	atomics primitive	none (assumption)
+src/vspec/count.rs:swap	atomics primitive	loom/GenMC
 AR_TABLE	core library	Kani
 AR_BOUND	core library	Kani
 AR_LOCK	core library	Kani
@@ -308,7 +312,7 @@ AR_INVS	core library	Kani
 AR_COUNT_INV	core library	Kani
 axiom_arenas_layout	core library	Kani
 axiom_arenas_assemble	raw pointer (internal)	none (assumption)
-fresh_count	atomics primitive	none (assumption)
+src/vspec/count.rs:new	atomics primitive	none (assumption)
 core::sync::atomic::Atomic::<*mut T>::load	core library	Kani	discharged (verus/seams/vspec-arena-Atomic-ptr-load.md)
 core::sync::atomic::Atomic::<*mut T>::store	core library	Kani	discharged (verus/seams/vspec-arena-Atomic-ptr-store.md)
 core::sync::atomic::Atomic::<*mut T>::new	core library	Kani	discharged (verus/seams/vspec-arena-Atomic-ptr-new.md)

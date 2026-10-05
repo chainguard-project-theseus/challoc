@@ -1,6 +1,6 @@
 # `Config::set_listed`
 
-Seam S107 of `verus/SEAMS.md`: src/config.rs:350. Kind: external_body. Category: function pointer.
+Seam S105 of `verus/SEAMS.md`: src/config.rs:350. Kind: external_body. Category: function pointer.
 Discharged by Kani.
 
 ## Contract
