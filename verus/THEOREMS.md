@@ -4496,13 +4496,18 @@ pub proof fn theorem_decay_deadline_under_pressure(base: u64, limit: u64, c1: u6
 At one limit and configured period, higher usage never gives a longer
 step, so the deadline bound under it is no later than under lower usage.
 `Policy::effective_decay_ns` (`policy.rs:740`), the period
-`purge::decay` passes to every gate, ensures `ns <= base`: the stored
+`purge::decay` and `purge::decay_arena` pass to every gate, ensures
+`ns <= base`: the stored
 band never lengthens a configured step either.
 
 **Covers.** Both gates: `ClassState::decay_with` (`class/decay.rs:915`)
 and `Huge::decay_with` (`huge/mod.rs:4129`) ensure `decay`'s contract
-for the `decay_ns` they are given (also through `mallctl
-arena.<i>.decay`, which passes the unscaled period). `Arena::decay_with`
+for the `decay_ns` they are given. Since upstream #97 `mallctl
+arena.<i>.decay` (`purge::decay_arena`) gives them the periods
+`purge::decay` does, through the same `decay_one` and `decay_huge`
+(the policy-scaled `effective_decay_ns`, and for the huge extents the
+huge tier's own period); before, it passed the unscaled periods, and
+arena 0's period rather than the huge tier's to the huge walk. `Arena::decay_with`
 and `purge::decay` (`purge.rs:745`, through `earliest`) take the minimum
 of the per-gate deadlines; the background thread (`purge/background.rs:429`)
 sleeps until `purge::decay`'s result, and `on_tick` discards it. No C
@@ -5099,7 +5104,7 @@ arena `arena`), `SlabTable`, `SetTable` (`gated`), `Huge`, `Meta`,
 | huge: `Shared::alloc_huge` → `alloc_run` → `alloc_aligned` (huge; the lowest-fit `find` runs under it) → `alloc_desc`, `free_desc`, `Table::ensure`, `Set::ensure` (own store), `take` → `retire` (meta); `free_run` (huge) → `Table::ensure`, `retire` (meta) | Huge < Meta |
 | cache flushes and routing: `Heap::flush_all` (`tcache.flush` through `Tcaches::flush`, `thread.tcache.flush` and `arena.<i>.purge` through `flush_caller`, `thread.tcache.enabled` through `set_tcache_enabled`) → `flush_arena` → `flush` → `release_routed` (class) and `free_caches_in` → `Meta::free` (meta); `gc` → `gc_arena` → `flush`; `set_arena` → `other_caches` (meta, when it creates a node) | class locks one at a time, then Meta |
 | arena creation `Arenas::create`, heap creation `Heap::create` → `assign_home` (arenas) and `create_detached` (meta), explicit caches `Tcaches::create`/`destroy` (tcaches → meta / class, meta, huge) | Tcaches < Arenas, Meta, Class, Huge |
-| purge `purge_all`, `purge_arena`, `decay` → `Arena::decay_with`, `ClassState::decay_with`, `Huge::decay_with`, `on_tick`, `sample` → `policy::evaluate`; background `start` (state, then meta) and `main` | class, huge, state locks one at a time |
+| purge `purge_all`, `purge_arena`, `decay` and `decay_arena` (through `decay_one`, `decay_huge`) → `Arena::decay_with`, `ClassState::decay_with`, `Huge::decay_with`, `on_tick`, `sample` → `policy::evaluate`; background `start` (state, then meta) and `main` | class, huge, state locks one at a time |
 | statistics `epoch`, `collect` (`collect_into`, with its exact-stats ghost outputs) and `arena_stats_all`, under the process statistics lock held across the scan (upstream #91) | Stats < Class(i, c) < Table(c), and Stats < Huge, Meta, ArenaStats(i), each released before the next is taken; `arena_stats_all`: Stats < ArenaStats(i) |
 | statistics `collect_all`, `mallinfo2`, `snapshot`, `arena_stats` (class → table, huge, meta, arena and process statistics), `mallctl` `ctl` and its named readers (`stats.*`, `stats.cgroup.empty_bytes`), `utilization`, `owner_of`, `get_defrag_hint`, `malloc_trim` | each lock with nothing above it held |
 | `fork_prepare` (`api/mod.rs:819`) | Tcaches < Arenas < Stats < Class(i, c) (arenas ascending, classes ascending) < Table(c) < Huge < Meta < ArenaStats(i) < State, through one root token; Sets(i) gated |
@@ -6468,7 +6473,7 @@ How it is proved:
   separated. `Shared::lemma_huge_process` (`heap/shared.rs:1626`) proves
   it from `Shared::wf`; `purge_empty`, `purge_extent`, `purge_curve`,
   `decay`, `decay_with` and `free_run` require it, and `purge::purge_all`,
-  `purge_arena` and `decay` now require `shared.wf()` (every caller has
+  `purge_arena`, `decay` and `decay_arena` now require `shared.wf()` (every caller has
   it). `Huge::lemma_purge_range` (`huge/mod.rs:3357`): pages `start..start
   + pages` (at least one) of the region are a well-formed range, since
   `npages * page <= huge_len`. `purge_extent` pushes an `Empty` extent

@@ -1456,22 +1456,10 @@ impl Arena {
         crate::purge::note_decay_changed();
     }
 
-    /// Decay step over every class (see `ClassState::decay`): the earliest
-    /// next deadline, `None` when nothing is `Empty` or decay is off.
-    pub fn decay(&self, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
-        requires
-            crate::sys::may_abort(),
-            crate::sys::may_syscall(),
-            old(ord).allows(rank_class(0, 0)),
-        ensures
-            *final(ord) == *old(ord),
-    {
-        self.decay_with(now, self.decay_ns(), crate::policy::KEEP_ALL, Tracked(ord))
-    }
-
-    /// [`decay`](Arena::decay) with the period the cgroup policy gives
-    /// this arena and its keep ratio for the retention cap (design 11);
-    /// `NEVER` does nothing.
+    /// Decay step over every class (see `ClassState::decay_with`) with
+    /// the period the cgroup policy gives this arena and its keep ratio
+    /// for the retention cap (design 11): the earliest next deadline,
+    /// `None` when nothing is `Empty`; `NEVER` does nothing.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
         requires
             crate::sys::may_abort(),

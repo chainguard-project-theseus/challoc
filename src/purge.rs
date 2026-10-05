@@ -38,6 +38,7 @@
 
 use crate::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use crate::arena::Arena;
 use crate::heap::Shared;
 use crate::lock::LockOrder;
 #[cfg(verus_only)]
@@ -1151,6 +1152,10 @@ pub fn note_decay_changed()
 /// nanoseconds) and return the earliest future deadline, `None` when
 /// nothing is `Empty` or decay is off. Lock-free for a class with nothing
 /// due.
+///
+/// Never inlined, so `Heap::tick` (through `on_tick`) and
+/// `background::main` keep a call here rather than a copy of the loop.
+#[inline(never)]
 pub fn decay(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
     requires
         crate::sys::may_abort(),
@@ -1180,20 +1185,72 @@ pub fn decay(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -
             count <= crate::arena::MAX_ARENAS,
     {
         if let Some(arena) = shared.arenas.get_existing(i as u16) {
-            // Each arena's own period, scaled by the policy's band.
-            next = earliest(next, arena.decay_with(now, policy.effective_decay_ns(arena.decay_ns()), keep16, Tracked(ord)));
+            next = earliest(next, decay_one(shared, arena, now, keep16, Tracked(ord)));
         }
     }
-    // The huge allocator is shared by every arena: its own period when
-    // `huge_dirty_decay_ms` is set, else arena 0's (design 7).
-    let decay_ns = policy.effective_decay_ns(shared.huge_decay_ns());
-    if decay_ns != NEVER {
-        proof {
-            shared.lemma_huge_process();
-        }
-        next = earliest(next, shared.huge.decay_with(now, decay_ns, keep16, Tracked(ord)));
-    }
+    next = earliest(next, decay_huge(shared, now, keep16, Tracked(ord)));
     next
+}
+
+/// `arena.<i>.decay`: the decay walks of one arena (plus, for arena 0,
+/// the huge extents, which belong to no single arena's sets) that are due
+/// at `now`, on the periods and keep ratio [`decay`] gives them. `None`
+/// if the arena does not exist.
+pub fn decay_arena(shared: &Shared, index: u16, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -> Option<()>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
+    let arena = shared.arenas.get_existing(index)?;
+    let keep16 = shared.policy.keep16();
+    decay_one(shared, arena, now, keep16, Tracked(ord));
+    if index == 0 {
+        decay_huge(shared, now, keep16, Tracked(ord));
+    }
+    Some(())
+}
+
+/// One arena's walks on its own period, scaled by the policy's band.
+fn decay_one(shared: &Shared, arena: &Arena, now: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
+    arena.decay_with(
+        now,
+        shared.policy.effective_decay_ns(arena.decay_ns()),
+        keep16,
+        Tracked(ord),
+    )
+}
+
+/// The huge allocator's walk. It is shared by every arena: its own period
+/// when `huge_dirty_decay_ms` is set, else arena 0's (design 7), scaled by
+/// the policy's band.
+fn decay_huge(shared: &Shared, now: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
+    let decay_ns = shared.policy.effective_decay_ns(shared.huge_decay_ns());
+    if decay_ns == NEVER {
+        return None;
+    }
+    proof {
+        shared.lemma_huge_process();
+    }
+    shared.huge.decay_with(now, decay_ns, keep16, Tracked(ord))
 }
 
 /// The earlier of two optional deadlines; either one when the other is

@@ -35,7 +35,7 @@
 //! Runs whose usable size exceeds `retain_max` (default 64 MiB) are
 //! `MADV_DONTNEED`ed the moment they are freed (every run under
 //! `huge_dirty_decay_ms:0`, [`Huge::set_purge_on_free`]); smaller ones
-//! become `Empty` and wait for the decay walk ([`Huge::decay`], on arena
+//! become `Empty` and wait for the decay walk ([`Huge::decay_with`], on arena
 //! 0's period or the huge tier's own `huge_dirty_decay_ms`, design 7) or a
 //! full purge ([`Huge::purge_empty`]). `Empty` extents sit in a FIFO list ordered by
 //! `dirty_at`, so purging is a pop from the head.
@@ -4546,10 +4546,9 @@ impl Huge {
         n
     }
 
-    /// Decay step (design section 8), as `ClassState::decay`: the gate
-    /// runs `purge_curve` over the list at most once per step of the
-    /// curve and returns the next deadline, `None` when nothing is
-    /// `Empty`. Lock-free unless a walk is due.
+    /// [`decay_with`](Huge::decay_with) keeping everything the curve
+    /// allows.
+    #[cfg(test)]
     pub fn decay(&self, now: u64, decay_ns: u64, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
         requires
             crate::sys::may_abort(),
@@ -4562,8 +4561,11 @@ impl Huge {
         self.decay_with(now, decay_ns, crate::policy::KEEP_ALL, Tracked(ord))
     }
 
-    /// [`decay`](Huge::decay) with the cgroup policy's keep ratio (design
-    /// 11), as `ClassState::decay_with`.
+    /// Decay step (design section 8), as `ClassState::decay_with`: the
+    /// gate runs `purge_curve` over the list at most once per step of the
+    /// curve, with the cgroup policy's keep ratio (design 11), and returns
+    /// the next deadline, `None` when nothing is `Empty`. Lock-free unless
+    /// a walk is due.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u64>)
         requires
             crate::sys::may_abort(),

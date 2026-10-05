@@ -1102,7 +1102,7 @@ fn root() -> (r: &'static [Node])
 
 ### S15. `axiom_c_call`
 
-src/api/mallctl.rs:3249. Kind: axiom. Category: C-program contract.
+src/api/mallctl.rs:3239. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point (a `mallctl` one: `malloc_stats_print`'s are `api/print.rs`'s) and with the arguments `e` names: the export wrapper's own parameters, which C passed under the entry point's contract ([`CCall::fresh`]: each pointer argument's [`crate::vspec::cbuf::CArg`] facts, of memory of the program's, and the string argument's view).
@@ -1697,7 +1697,7 @@ axiom fn axiom_arena_assemble(
 
 ### S56. `key_less`
 
-src/arena.rs:1711. Kind: external_body. Category: core library.
+src/arena.rs:1699. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `a < b` on `(u32, bool)`: [`key_lt`].
@@ -1710,7 +1710,7 @@ fn key_less(a: (u32, bool), b: (u32, bool)) -> (r: bool)
 
 ### S57. `AR_TABLE`
 
-src/arena.rs:1745. Kind: external_body const. Category: core library.
+src/arena.rs:1733. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1719,7 +1719,7 @@ const AR_TABLE: usize = core::mem::offset_of!(Arenas, table);
 
 ### S58. `AR_BOUND`
 
-src/arena.rs:1747. Kind: external_body const. Category: core library.
+src/arena.rs:1735. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1728,7 +1728,7 @@ const AR_BOUND: usize = core::mem::offset_of!(Arenas, bound);
 
 ### S59. `AR_LOCK`
 
-src/arena.rs:1749. Kind: external_body const. Category: core library.
+src/arena.rs:1737. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1737,7 +1737,7 @@ const AR_LOCK: usize = core::mem::offset_of!(Arenas, lock);
 
 ### S60. `AR_COUNT`
 
-src/arena.rs:1751. Kind: external_body const. Category: core library.
+src/arena.rs:1739. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1746,7 +1746,7 @@ const AR_COUNT: usize = core::mem::offset_of!(Arenas, count);
 
 ### S61. `AR_AUTO`
 
-src/arena.rs:1753. Kind: external_body const. Category: core library.
+src/arena.rs:1741. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1755,7 +1755,7 @@ const AR_AUTO: usize = core::mem::offset_of!(Arenas, auto);
 
 ### S62. `AR_INVS`
 
-src/arena.rs:1755. Kind: external_body const. Category: core library.
+src/arena.rs:1743. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1764,7 +1764,7 @@ const AR_INVS: usize = core::mem::offset_of!(Arenas, invs);
 
 ### S63. `AR_COUNT_INV`
 
-src/arena.rs:1757. Kind: external_body const. Category: core library.
+src/arena.rs:1745. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1773,7 +1773,7 @@ const AR_COUNT_INV: usize = core::mem::offset_of!(Arenas, count_inv);
 
 ### S64. `AR_SPARE`
 
-src/arena.rs:1759. Kind: external_body const. Category: core library.
+src/arena.rs:1747. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1782,7 +1782,7 @@ const AR_SPARE: usize = core::mem::offset_of!(Arenas, spare);
 
 ### S65. `AR_SPARE_INV`
 
-src/arena.rs:1761. Kind: external_body const. Category: core library.
+src/arena.rs:1749. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1791,7 +1791,7 @@ const AR_SPARE_INV: usize = core::mem::offset_of!(Arenas, spare_inv);
 
 ### S66. `axiom_arenas_layout`
 
-src/arena.rs:1771. Kind: axiom. Category: core library.
+src/arena.rs:1759. Kind: axiom. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `Arenas`'s layout: each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `spare_inv`, after `invs` and `count_inv`) by the size.
@@ -1820,7 +1820,7 @@ axiom fn axiom_arenas_layout()
 
 ### S67. `axiom_arenas_lock_inv`
 
-src/arena.rs:1829. Kind: axiom. Category: allocator invariant.
+src/arena.rs:1817. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The creation lock (`Arenas` holds the only `Lock<u32>` outside the tests) has no invariant: every value satisfies it, so its holders owe nothing and learn nothing from it.
@@ -1834,7 +1834,7 @@ pub broadcast axiom fn axiom_arenas_lock_inv(v: u32)
 
 ### S68. `axiom_arenas_assemble`
 
-src/arena.rs:1972. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:1960. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arenas` at `p` (`Arenas::split`'s parts and array elements, every one initialised), as the `Arenas`: the value of each field is what its permission holds.
@@ -1884,7 +1884,7 @@ axiom fn axiom_arenas_assemble(
 
 ### S69. `arena_at`
 
-src/arena.rs:2521. Kind: external_body. Category: raw pointer (internal).
+src/arena.rs:2509. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The arena a non-null registry entry points at.
@@ -3198,7 +3198,7 @@ axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc, tracked 
 
 ### S156. `Huge::read_run_word`
 
-src/huge/mod.rs:5489. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/huge/mod.rs:5491. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The word at `a`, read once, for [`Huge::check_zero`].
@@ -3213,12 +3213,12 @@ unsafe fn read_run_word(&self, a: usize) -> u64
 
 ### S157. `not_a_run_page`
 
-src/huge/mod.rs:7368. Kind: abort_standin. Category: panic/abort.
+src/huge/mod.rs:7370. Kind: abort_standin. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`Huge::free_run`]'s abort for a page that is not in the descriptor table, where the build calls [`not_a_run`] with the page's address.
 
-Stands in at: src/huge/mod.rs:6954 (`Huge::free_run`).
+Stands in at: src/huge/mod.rs:6956 (`Huge::free_run`).
 
 ```rust
 fn not_a_run_page(page: usize) -> !
@@ -3561,7 +3561,7 @@ pub fn commit(&self, addr: usize, len: usize, Tracked(ord): Tracked<&mut LockOrd
 
 ### S180. `Explicit::drop`
 
-src/purge.rs:162. Kind: external_body. Category: atomics primitive.
+src/purge.rs:163. Kind: external_body. Category: atomics primitive.
 Tool: Kani. Status: discharged (verus/seams/purge-Explicit-drop.md).
 
 ```rust
@@ -3572,7 +3572,7 @@ fn drop(&mut self)
 
 ### S181. `total_bytes`
 
-src/purge.rs:709. Kind: external_body. Category: core library.
+src/purge.rs:710. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/purge-total_bytes.md).
 
 > The sum of the lengths of `ranges`.
