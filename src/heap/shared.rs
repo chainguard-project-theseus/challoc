@@ -911,12 +911,9 @@ impl Shared {
 }
 
 /// [`Tcaches::init`] on the field at `p`, through the permission to it.
-/// Trusted: `Tcaches::init` (`heap/tcaches.rs`) is not verified; it
-/// writes every field of the registry.
 ///
 /// # Safety
 /// As `Tcaches::init`.
-#[verifier::external_body]
 #[inline(always)]
 unsafe fn init_tcaches(p: *mut Tcaches, Tracked(perm): Tracked<&mut PointsTo<Tcaches>>)
     requires
@@ -927,7 +924,7 @@ unsafe fn init_tcaches(p: *mut Tcaches, Tracked(perm): Tracked<&mut PointsTo<Tca
         final(perm).is_init(),
 {
     // SAFETY: as the caller guarantees.
-    unsafe { Tcaches::init(p) }
+    unsafe { Tcaches::init(p, Tracked(perm)) }
 }
 
 /// The in-place writes and reads of [`Shared::init`], each through the
@@ -2701,7 +2698,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S138..S153, S154: each `S_*` is its field's `offset_of!`, and the
+    /// S134..S149, S150: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {

@@ -1600,14 +1600,13 @@ proof fn scatter_ents(tracked bag: &mut GhostSubset<int>, tracked m: &mut Map<*m
 /// written (a slice holds values) and every permission keeps its address
 /// and, if it was written, stays written. The slice starts out holding
 /// the written entries' values, the entries end up holding the slice's
-/// final values, and no other permission changes.
-///
-/// Trusted: `slice::from_raw_parts_mut` over the permissions.
+/// final values, and no other permission changes
+/// ([`slice_mut_from_perms`](crate::vspec::slice::slice_mut_from_perms)
+/// over the stack entries, keyed by [`slot_ptr`]).
 ///
 /// # Safety
 /// The entries are this heap's stack storage and nothing else reads or
 /// writes them while the slice lives.
-#[verifier::external_body]
 #[inline(always)]
 #[allow(clippy::needless_lifetimes, reason = "the permission and the slice share the lifetime in the Verus signature")]
 unsafe fn stack_mut<'a>(
@@ -1635,8 +1634,12 @@ unsafe fn stack_mut<'a>(
             old(perms).contains_key(q) && (forall|i: int| start <= i < start + len ==> q != #[trigger] slot_ptr(slots, i))
                 ==> #[trigger] final(perms)[q] == old(perms)[q],
 {
+    proof {
+        // The primitive's contract names the entries by `ptr_add`.
+        assert forall|i: int| #[trigger] crate::vspec::ptr::ptr_add(slots, i as usize) == slot_ptr(slots, i) by {}
+    }
     // SAFETY: guaranteed by the caller.
-    unsafe { core::slice::from_raw_parts_mut(slots.add(start), len) }
+    unsafe { crate::vspec::slice::slice_mut_from_perms(slots, start, len, Tracked(perms)) }
 }
 
 /// [`Heap::handed_ok`] unfolded, for the heap's pops and their callers.
@@ -6102,7 +6105,7 @@ mod kani_aborts {
     use super::{assert_flushed, assert_refill_empty};
     use crate::kani_proofs::must_not_return;
 
-    /// S123 `assert_flushed`, `ensures *len == 0`: on any other `len` the
+    /// S119 `assert_flushed`, `ensures *len == 0`: on any other `len` the
     /// call never returns.
     #[kani::proof]
     #[kani::should_panic]
@@ -6114,7 +6117,7 @@ mod kani_aborts {
         }
     }
 
-    /// S124 `assert_refill_empty`, `ensures *len == 0`: as
+    /// S120 `assert_refill_empty`, `ensures *len == 0`: as
     /// `assert_flushed`.
     #[kani::proof]
     #[kani::should_panic]

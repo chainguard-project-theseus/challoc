@@ -13,8 +13,8 @@ use crate::meta::Meta;
 use crate::sys::Errno;
 #[cfg(verus_only)]
 use crate::vspec::addr::cast_provenance;
+use crate::vspec::zero::ZeroRaw;
 use vstd::prelude::*;
-use vstd::raw_ptr::PointsToRaw;
 
 verus! {
 
@@ -81,7 +81,7 @@ impl Lazy {
     /// its length rounded up to a whole word, which
     /// [`Meta::reserve_table`] hands out once.
     #[inline(always)]
-    pub(crate) fn reserve_raw(meta: &Meta, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Option<Lazy>, Tracked<PointsToRaw>))
+    pub(crate) fn reserve_raw(meta: &Meta, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Option<Lazy>, Tracked<ZeroRaw>))
         requires
             crate::sys::may_syscall(),
             crate::meta::is_pow2(align),
@@ -89,7 +89,7 @@ impl Lazy {
         ensures
             r.0 matches Some(l) ==> l.spec_base() + l.spec_len() <= crate::meta::va_limit() && l.spec_len() == len && l.spec_committed() == 0,
             r.0 matches Some(l) ==> meta.holds(l.spec_base() as int, len as int),
-            r.0 matches Some(l) ==> l.spec_base() % align == 0,
+            r.0 matches Some(l) ==> l.spec_base() % align == 0 && l.spec_base() > 0,
             r.0 matches Some(l) ==> r.1@.is_range(l.spec_base() as int, (len + 7) / 8 * 8),
             r.0 matches Some(l) ==> r.1@.provenance() == cast_provenance(),
             *final(ord) == *old(ord),
@@ -305,6 +305,56 @@ pub(crate) open spec fn slot_bytes(base: int, rows: int, stride: int, slot: int)
     vstd::set::Set::range(base, base + 8 * (rows * stride)).filter(|a: int| ((a - base) / 8) % stride == slot)
 }
 
+/// Level-1 words of a set over `n` slab numbers
+/// ([`TwoLevelBitmap::l1_words`]).
+pub(crate) open spec fn l1_of(n: int) -> int {
+    ((n + 63) / 64 + 63) / 64
+}
+
+/// Slot `slot` of group `g`'s table starts a chunked view that
+/// [`TwoLevelBitmap::from_raw_chunked`] can build: its first word is not
+/// at address 0, and the words it spans lie inside the allocation of the
+/// table (`vspec::ptr::alloc_len` of the table's pointers, which
+/// `addr_to_ptr` makes with [`cast_provenance`]). [`SetTable::new`] states
+/// it for every slot while it holds the permission to the whole table.
+pub(crate) open spec fn slot_alloc_ok(groups: [Group; SET_GROUPS], nslabs: [usize; SET_GROUPS], g: int, slot: int) -> bool {
+    let a = groups[g].base + 8 * slot;
+    &&& 0 < a
+    &&& 8 * crate::bitmap::chunked_span(l1_of(nslabs[g] as int), groups[g].stride as int) <= crate::vspec::ptr::alloc_len(cast_provenance(), a as usize)
+}
+
+/// Every slot of a table of `65 * l1` rows of `stride` words at `base`
+/// from `lo` on lies in the allocation of `raw`, the permission to the
+/// table ([`slot_alloc_ok`], by `vspec::ptr::axiom_raw_valid`).
+proof fn lemma_slots_alloc(tracked raw: &ZeroRaw, base: int, l1: int, stride: int, lo: int)
+    requires
+        0 < base,
+        l1 >= 0,
+        stride >= 1,
+        0 <= lo <= stride,
+        base + 8 * (65 * l1 * stride) <= usize::MAX,
+        raw.is_range(base, 8 * (65 * l1 * stride)),
+        raw.provenance() == cast_provenance(),
+    ensures
+        forall|slot: int| lo <= slot < stride ==> 8 * crate::bitmap::chunked_span(l1, stride)
+            <= #[trigger] crate::vspec::ptr::alloc_len(cast_provenance(), (base + 8 * slot) as usize),
+    decreases stride - lo,
+{
+    broadcast use {vstd::raw_ptr::group_raw_ptr_axioms, vstd::set_lib::range_set_properties};
+    if lo >= stride {
+        return;
+    }
+    let a = base + 8 * lo;
+    let span = crate::bitmap::chunked_span(l1, stride);
+    if l1 > 0 {
+        assert(8 * lo + 8 * span <= 8 * (65 * l1 * stride)) by (nonlinear_arith)
+            requires span == (65 * l1 - 1) * stride + 1, 0 <= lo < stride, l1 >= 1;
+    }
+    let p = vstd::raw_ptr::ptr_mut_from_data::<u8>(vstd::raw_ptr::PtrData::<u8> { addr: a as usize, provenance: cast_provenance(), metadata: () });
+    crate::vspec::ptr::axiom_raw_valid(raw.raw(), p, 8 * span);
+    lemma_slots_alloc(raw, base, l1, stride, lo + 1);
+}
+
 /// The slot of set `kind` of class `c` in its group (`Set::in_table`).
 pub(crate) open spec fn slot_spec(pos: [u8; NCLASSES], groups: [Group; SET_GROUPS], c: int, kind: int) -> int {
     kind * groups[group_spec(c)].count + pos[c]
@@ -383,16 +433,18 @@ pub(crate) open spec fn pos_apart(pos: [u8; NCLASSES], c: int) -> bool {
         0 <= d1 < c && 0 <= d2 < c && d1 != d2 && #[trigger] group_spec(d1) == #[trigger] group_spec(d2) ==> pos[d1] != pos[d2]
 }
 
-/// The permission to the bytes of group `g`'s table, as reserved.
-spec fn group_raw(raws: Map<int, PointsToRaw>, groups: [Group; SET_GROUPS], nslabs: [usize; SET_GROUPS], g: int) -> bool {
+/// The permission to the bytes of group `g`'s table, as reserved, and
+/// the table's slots ([`slot_alloc_ok`]).
+spec fn group_raw(raws: Map<int, ZeroRaw>, groups: [Group; SET_GROUPS], nslabs: [usize; SET_GROUPS], g: int) -> bool {
     &&& raws.contains_key(g)
     &&& raws[g].is_range(groups[g].base as int, 8 * (rows_of(nslabs[g] as int) * groups[g].stride))
     &&& raws[g].provenance() == cast_provenance()
+    &&& forall|slot: int| 0 <= slot < groups[g].stride ==> #[trigger] slot_alloc_ok(groups, nslabs, g, slot)
 }
 
 /// Set `k` of class `d` can be split off `raws`, its group's remaining
 /// bytes.
-spec fn splittable(raws: Map<int, PointsToRaw>, pos: [u8; NCLASSES], groups: [Group; SET_GROUPS], nslabs: [usize; SET_GROUPS], d: int, k: int) -> bool {
+spec fn splittable(raws: Map<int, ZeroRaw>, pos: [u8; NCLASSES], groups: [Group; SET_GROUPS], nslabs: [usize; SET_GROUPS], d: int, k: int) -> bool {
     &&& raws.contains_key(group_spec(d))
     &&& set_bytes(pos, groups, nslabs, d, k).subset_of(raws[group_spec(d)].dom())
     &&& raws[group_spec(d)].provenance() == cast_provenance()
@@ -403,12 +455,12 @@ spec fn splittable(raws: Map<int, PointsToRaw>, pos: [u8; NCLASSES], groups: [Gr
 /// Distinct classes of one group have distinct positions, so no two
 /// slots meet.
 proof fn split_sets(
-    tracked raws: &mut Map<int, PointsToRaw>,
+    tracked raws: &mut Map<int, ZeroRaw>,
     pos: [u8; NCLASSES],
     groups: [Group; SET_GROUPS],
     nslabs: [usize; SET_GROUPS],
     c: int,
-) -> (tracked r: Map<(int, int), PointsToRaw>)
+) -> (tracked r: Map<(int, int), ZeroRaw>)
     requires
         0 <= c <= NCLASSES,
         pos_apart(pos, NCLASSES as int),
@@ -530,11 +582,14 @@ impl SetTable {
     }
 
     /// `m` holds set `kind` of class `c`: the permission to its slot's
-    /// bytes ([`set_bytes`]), which [`Set::in_table`] takes.
-    pub(crate) open spec fn holds_set(&self, m: Map<(int, int), PointsToRaw>, c: int, kind: int) -> bool {
+    /// bytes ([`set_bytes`]), which read as zero and which
+    /// [`Set::in_table`] takes, and the slot starts a view inside its
+    /// group's table ([`slot_alloc_ok`]).
+    pub(crate) open spec fn holds_set(&self, m: Map<(int, int), ZeroRaw>, c: int, kind: int) -> bool {
         &&& m.contains_key((c, kind))
         &&& m[(c, kind)].dom() == set_bytes(self.pos, self.groups, self.nslabs, c, kind)
         &&& m[(c, kind)].provenance() == cast_provenance()
+        &&& slot_alloc_ok(self.groups, self.nslabs, group_spec(c), slot_spec(self.pos, self.groups, c, kind))
     }
 }
 
@@ -552,13 +607,14 @@ impl Set {
     /// count, through `words`, the permission to its slot's bytes, which
     /// [`SetTable::new`] handed out once ([`SetTable::holds_set`]).
     /// `table` must outlive the set.
-    pub(crate) fn in_table(table: &SetTable, class: usize, kind: usize, Tracked(words): Tracked<PointsToRaw>) -> (r: Set)
+    pub(crate) fn in_table(table: &SetTable, class: usize, kind: usize, Tracked(words): Tracked<ZeroRaw>) -> (r: Set)
         requires
             class < NCLASSES,
             kind < SETS_PER_CLASS,
             table.class_ok(process_regions(), class as int),
             words.dom() == set_bytes(table.pos, table.groups, table.nslabs, class as int, kind as int),
             words.provenance() == cast_provenance(),
+            slot_alloc_ok(table.groups, table.nslabs, group_spec(class as int), slot_spec(table.pos, table.groups, class as int, kind as int)),
         ensures
             r.map.wf(),
             r.map.spec_nbits() == table.nslabs[group_spec(class as int)],
@@ -585,6 +641,11 @@ impl Set {
             assert(65 * l1 * s * 8 == 8 * (65 * l1) * s) by (nonlinear_arith);
             assert(rows_of(n) * s == 65 * l1 * s);
             lemma_slot_bytes(group.base as int, rows_of(n), s, slot as int);
+            // The view's first word and the words it spans
+            // (`from_raw_chunked`'s requires).
+            broadcast use vstd::raw_ptr::group_raw_ptr_axioms;
+            assert(8 * slot + 8 * crate::bitmap::chunked_span(l1, s) <= 8 * (65 * l1) * s) by (nonlinear_arith)
+                requires 0 <= slot < s, l1 >= 1, crate::bitmap::chunked_span(l1, s) == (65 * l1 - 1) * s + 1;
         }
         // SAFETY: the slot's words are `base + 8 * (slot + r * stride)`,
         // disjoint from every other slot's, zero, never freed; the rows a
@@ -727,7 +788,7 @@ impl SetTable {
         meta: &Meta,
         regions: &Regions,
         Ghost(arena): Ghost<u16>,
-        Tracked(sets): Tracked<&mut Map<(int, int), PointsToRaw>>,
+        Tracked(sets): Tracked<&mut Map<(int, int), ZeroRaw>>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: Option<SetTable>)
         requires
@@ -806,7 +867,7 @@ impl SetTable {
             }
         }
         // Ghost: each reserved group's permission to its table's bytes.
-        let tracked mut raws: Map<int, PointsToRaw> = Map::tracked_empty();
+        let tracked mut raws: Map<int, ZeroRaw> = Map::tracked_empty();
         let mut tables = [Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY, Lazy::EMPTY];
         for g in 0..SET_GROUPS
             invariant
@@ -850,6 +911,7 @@ impl SetTable {
                     assert((len + 7) / 8 * 8 == 8 * (rows_of(n) * grp.stride)) by (nonlinear_arith)
                         requires len == 8 * rows * grp.stride, rows == rows_of(n);
                     lemma_mod_8(grp.base as int, page as int);
+                    lemma_slots_alloc(&raw, grp.base as int, ((n + 63) / 64 + 63) / 64, grp.stride as int, 0);
                     raws.tracked_insert(g as int, raw);
                     assert forall|d: int| 0 <= d < NCLASSES implies #[trigger] placed(pos, groups, nslabs, *regions, d) by {
                         assert(placed(pos, groups0, nslabs, *regions, d));
@@ -863,6 +925,13 @@ impl SetTable {
                     assert forall|h: int| 0 <= h < g + 1 && groups[h].count != 0 implies #[trigger] group_raw(raws, groups, nslabs, h) by {
                         if h < g {
                             assert(group_raw(raws0, groups0, nslabs, h));
+                            assert forall|slot: int| 0 <= slot < groups[h].stride implies #[trigger] slot_alloc_ok(groups, nslabs, h, slot) by {
+                                assert(slot_alloc_ok(groups0, nslabs, h, slot));
+                            }
+                        } else {
+                            assert forall|slot: int| 0 <= slot < groups[h].stride implies #[trigger] slot_alloc_ok(groups, nslabs, h, slot) by {
+                                assert(crate::vspec::ptr::alloc_len(cast_provenance(), (grp.base + 8 * slot) as usize) >= 0);
+                            }
                         }
                     }
                 }
@@ -889,6 +958,15 @@ impl SetTable {
             assert forall|d: int| 0 <= d < NCLASSES implies 0 <= #[trigger] group_spec(d) < SET_GROUPS
                 && (pos[d] as int) < groups[group_spec(d)].count by {
                 assert(placed(pos, groups, nslabs, *regions, d));
+            }
+            // Every class's slots start a view inside its group's table.
+            assert forall|d: int, k: int| 0 <= d < NCLASSES && 0 <= k < SETS_PER_CLASS implies #[trigger] slot_alloc_ok(groups, nslabs, group_spec(d), slot_spec(pos, groups, d, k)) by {
+                assert(placed(pos, groups, nslabs, *regions, d));
+                assert(reserved(groups, nslabs, d));
+                assert(group_raw(raws, groups, nslabs, group_spec(d)));
+                let (p, n) = (pos[d] as int, groups[group_spec(d)].count as int);
+                assert(0 <= k * n + p < 3 * n) by (nonlinear_arith)
+                    requires 0 <= p < n, 0 <= k < 3;
             }
             let tracked m = split_sets(&mut raws, pos, groups, nslabs, 0);
             *sets = m;
@@ -973,7 +1051,7 @@ impl SetTable {
 mod kani_sets {
     use super::SetTable;
 
-    /// S85 `SetTable::set_table_ptr`: no `ensures`; it returns, the
+    /// S83 `SetTable::set_table_ptr`: no `ensures`; it returns, the
     /// table's address (on an all-zero table: every field is an integer,
     /// a lock word or ghost, so zero is a valid table).
     #[kani::proof]

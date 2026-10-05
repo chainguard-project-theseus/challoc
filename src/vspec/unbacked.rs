@@ -96,8 +96,9 @@ impl Unbacked {
     }
 
     /// The permission to the bytes of a lazily committed table, still
-    /// uncommitted. Trusted, with a premise nothing checks: Verus does not
-    /// model page protection. The bytes stay `PROT_NONE` until
+    /// uncommitted, and the token that they read as zero. Trusted, with a
+    /// premise nothing checks: Verus does not model page protection.
+    /// The bytes stay `PROT_NONE` until
     /// `Lazy::ensure` commits their page, and the holder of the
     /// permission reads only pages it has committed. `SlabTable` keeps
     /// that by its watermark: a slab's descriptor, bitmap words and owner
@@ -113,14 +114,20 @@ impl Unbacked {
     /// `verus/audit/invariants.md`): [`Meta::reserve_table`](crate::meta::Meta::reserve_table),
     /// its one caller, passes the token `Inner::reserve` just carved for
     /// the table. Not at address 0 (`Meta::reserve_table` ensures it):
-    /// a permission there proves `false` (`PointsTo::is_nonnull`).
+    /// a permission there proves `false` (`PointsTo::is_nonnull`). The
+    /// zero token is [`Unbacked::commit`]'s `mmap(2)` fact, on the same
+    /// premise: the bytes have been `PROT_NONE` since their reservation
+    /// mapped them, so each reads as zero once its page is committed,
+    /// before anything writes it, and nothing reads it earlier.
     #[verifier::external_body]
-    pub proof fn into_lazy(tracked self) -> (tracked r: PointsToRaw)
+    pub proof fn into_lazy(tracked self) -> (tracked r: (PointsToRaw, Zeroed))
         requires
             self.addr() > 0,
         ensures
-            r.is_range(self.addr(), self.len()),
-            r.provenance() == cast_provenance(),
+            r.0.is_range(self.addr(), self.len()),
+            r.0.provenance() == cast_provenance(),
+            r.1.addr() == self.addr(),
+            r.1.len() == self.len(),
     {
         unimplemented!()
     }

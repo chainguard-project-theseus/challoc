@@ -468,5 +468,5 @@ hand-off (a data race on the block) are P5's documented ones.
 | `SlabDesc::sub_live` (S206) | discharged | the contract now requires `may_abort()` and claims no value, so the assertion's abort is allowed; one wait-free RMW |
 | `RawLock::lock_slow` (S178) | evidence (unchanged) | deadlock freedom only; the mutex is not starvation-free |
 | `Arenas::count` (S63) | declined, tool Verus | every store writes at most `MAX_ARENAS` and a load returns a stored value: an allocator invariant, provable as the bound counts are |
-| `words_ref` (S93) | declined, tool none | a raw-pointer slice over permissions; no memory-model content |
+| `words_ref` (S93; its trusted part is now `slice_from_perms`, which it calls) | declined, tool none | a raw-pointer slice over permissions; no memory-model content |
 | `Lock::get_unlocked` (S182) | declined, tool none | its `ensures` is the lock invariant (every holder restores it), the assumption `axiom_acquired` also makes |

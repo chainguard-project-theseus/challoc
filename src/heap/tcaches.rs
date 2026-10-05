@@ -17,6 +17,7 @@ use super::{FreshHeap, Heap, Shared};
 #[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, verus};
+use vstd::raw_ptr::PointsTo;
 
 verus! {
 
@@ -43,20 +44,33 @@ impl Tcaches {
     }
 }
 
-} // verus!
-
 impl Tcaches {
-    /// Initialise `this` in place, empty.
+    /// Initialise `this` in place, empty, through the permission `perm` to
+    /// its storage, handed back initialised. Trusted: field-by-field
+    /// writes through `&raw mut` projections, which Verus does not support
+    /// (raw borrows); the lock is created with rank `rank_tcaches()`, the
+    /// type invariant. Verifying it takes an exec change: the projections
+    /// as byte offsets with a permission per field (`arena::field_at` and
+    /// `take_field`, as `Arena::init` does), or one write of the whole
+    /// value.
     ///
     /// # Safety
     /// `this` must point to writable storage that nothing else reads until
     /// this returns.
-    pub unsafe fn init(this: *mut Tcaches) {
+    // `perm` is read only by the contract (ghost).
+    #[allow(unused_variables)]
+    #[verifier::external_body]
+    pub unsafe fn init(this: *mut Tcaches, Tracked(perm): Tracked<&mut PointsTo<Tcaches>>)
+        requires
+            old(perm).ptr() == this,
+            old(perm).is_uninit(),
+        ensures
+            final(perm).ptr() == this,
+            final(perm).is_init(),
+    {
         // SAFETY: the caller guarantees `this` is writable and unaliased.
         unsafe {
-            // Rank `rank_tcaches()` (the type invariant, trusted with this
-            // function, which is not verified).
-            ptr::write(&raw mut (*this).lock, Lock::new((), Ghost::assume_new()));
+            ptr::write(&raw mut (*this).lock, Lock::new((), Ghost(rank_tcaches())));
             let table = &raw mut (*this).table;
             for i in 0..MAX_TCACHES {
                 ptr::write(&raw mut (*table)[i], AtomicPtr::new(ptr::null_mut()));
@@ -64,8 +78,6 @@ impl Tcaches {
         }
     }
 }
-
-verus! {
 
 /// A heap [`Heap::create`] or [`Heap::create_detached`] returned and
 /// nothing has destroyed: an explicit cache's non-null table entry, or

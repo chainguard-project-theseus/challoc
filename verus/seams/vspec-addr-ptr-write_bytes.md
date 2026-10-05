@@ -1,6 +1,6 @@
 # `core::ptr::write_bytes::<T>`
 
-Seam S262 of `verus/SEAMS.md`: src/vspec/addr.rs:40. Kind: assume_spec. Category: raw pointer (internal).
+Seam S257 of `verus/SEAMS.md`: src/vspec/addr.rs:40. Kind: assume_spec. Category: raw pointer (internal).
 Discharged by Kani.
 
 ## Contract

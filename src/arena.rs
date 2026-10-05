@@ -59,6 +59,8 @@ use crate::vspec::count::{count_id, wrap32};
 use crate::vspec::lock::lock_inv;
 #[cfg(verus_only)]
 use crate::vspec::ptr::{axiom_ptr_add_addr, axiom_raw_valid, in_alloc, ptr_add};
+#[cfg(verus_only)]
+use crate::vspec::zero::ZeroRaw;
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 #[cfg(verus_only)]
 use vstd::layout::{align_of, size_of};
@@ -905,7 +907,7 @@ impl Arena {
             }
             // Ghost: the permissions to the class sets' slots, each taken
             // once, by its class's `ClassState::new`.
-            let tracked mut slots: Map<(int, int), PointsToRaw> = Map::tracked_empty();
+            let tracked mut slots: Map<(int, int), ZeroRaw> = Map::tracked_empty();
             let sets = match SetTable::new(meta, regions, Ghost(index), Tracked(&mut slots), Tracked(ord)) {
                 Some(sets) => {
                     let tracked mut perm = perm.tracked_unwrap();

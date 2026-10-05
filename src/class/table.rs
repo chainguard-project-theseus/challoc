@@ -738,7 +738,7 @@ impl SlabTable {
             assert(stride == (stride as u32) as usize);
         }
         let tracked (dmap, wmap, omap, dps) = table_perms(
-            _draw.get(), _braw.get(), _oraw.get(), descs.spec_base() as int, bits.spec_base() as int, owners.spec_base() as int,
+            _draw.get().into_raw(), _braw.get().into_raw(), _oraw.get().into_raw(), descs.spec_base() as int, bits.spec_base() as int, owners.spec_base() as int,
             align, stagger as int, stride as int, nslabs as int, cls.slab_bits as int, group as int, class as int);
         let bits_base = bits.start() + stagger;
         let owners_base = owners.start() + stagger;
@@ -1175,12 +1175,25 @@ proof fn lemma_round_words(st: int, nb: int)
     ensures
         st + 8 * ((nb + 63) / 64) <= (st + (nb + 7) / 8 + 7) / 8 * 8,
 {
+    // Each quotient is pinned by linear bounds (constant divisors), so the
+    // goal follows without nonlinear reasoning.
     let c = (nb + 7) / 8;
+    let w = (nb + 63) / 64;
+    let d = (c + 7) / 8;
+    let s = st / 8;
+    let e = (st + c + 7) / 8;
     vstd::arithmetic::div_mod::lemma_fundamental_div_mod(nb + 7, 8);
     vstd::arithmetic::div_mod::lemma_fundamental_div_mod(c + 7, 8);
     vstd::arithmetic::div_mod::lemma_fundamental_div_mod(nb + 63, 64);
     vstd::arithmetic::div_mod::lemma_fundamental_div_mod(st, 8);
     vstd::arithmetic::div_mod::lemma_fundamental_div_mod(st + c + 7, 8);
+    assert(nb <= 8 * c <= nb + 7);
+    assert(nb <= 64 * w <= nb + 63);
+    assert(c <= 8 * d <= c + 7);
+    assert(st == 8 * s);
+    assert(st + c <= 8 * e <= st + c + 7);
+    assert(w <= d);
+    assert(e == s + d);
 }
 
 /// `m >> lg` slabs of `1 << lg` bytes fit in `m` bytes: slab `s` below
@@ -1379,13 +1392,8 @@ axiom fn axiom_init_words(tracked perms: Map<int, PointsTo<AtomicU64>>, n: int) 
 
 /// `core::slice::from_raw_parts(p, n)` over `n` class bitmap words whose
 /// permissions `perms` holds from key `j0` on, at `p`, `p + 8`, ...
-/// Trusted: vstd has no slice view of permissions. `n` initialised,
-/// aligned, consecutive `AtomicU64`s with consecutive keys of one
-/// table's map, all carved from one reservation's permission (private;
-/// `bits_unchecked`, its one caller, passes `SlabTable::word_perms`),
-/// are what `from_raw_parts` asks for, and the slice's words are the ones
-/// the permissions are to.
-#[verifier::external_body]
+/// ([`slice_from_perms`](crate::vspec::slice::slice_from_perms) over the
+/// class bitmap words).
 #[inline(always)]
 fn words_ref<'a>(p: *const AtomicU64, n: usize, Ghost(j0): Ghost<int>, Tracked(perms): Tracked<&'a Map<int, PointsTo<AtomicU64>>>) -> (r: &'a [AtomicU64])
     requires
@@ -1398,8 +1406,10 @@ fn words_ref<'a>(p: *const AtomicU64, n: usize, Ghost(j0): Ghost<int>, Tracked(p
         r@.len() == n,
         forall|i: int| 0 <= i < n ==> #[trigger] r@[i] == perms[j0 + i].value(),
 {
-    // SAFETY: the precondition.
-    unsafe { core::slice::from_raw_parts(p, n) }
+    proof {
+        lemma_layouts();
+    }
+    crate::vspec::slice::slice_from_perms(p, n, Ghost(j0), Tracked(perms))
 }
 
 /// The ghost side of the view `SlabTable::bits` gives of `slab`: slot 0 is

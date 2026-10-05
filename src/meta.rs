@@ -51,7 +51,7 @@ use crate::vspec::layout::{layout_align, layout_ok, layout_size};
 #[cfg(verus_only)]
 use crate::vspec::meta::{axiom_meta_lock_frame, axiom_meta_lock_inv};
 use crate::vspec::unbacked::Unbacked;
-use crate::vspec::zero::{Zeroed, write_zero};
+use crate::vspec::zero::{ZeroRaw, Zeroed, write_zero};
 #[cfg(verus_only)]
 use vstd::arithmetic::div_mod::{lemma_add_mod_noop, lemma_sub_mod_noop};
 #[cfg(verus_only)]
@@ -1378,6 +1378,21 @@ proof fn zero_prefix(tracked z: Zeroed, k: int) -> (tracked r: Zeroed)
     }
 }
 
+/// `raw` with the zero fact of `z` when `z` covers its bytes (else no
+/// bytes). Callers pass a permission and the token made with it
+/// ([`ZeroRaw::axiom_new`]'s premise).
+proof fn zero_raw(tracked raw: PointsToRaw, tracked z: Zeroed) -> (tracked r: ZeroRaw)
+    ensures
+        r.provenance() == raw.provenance(),
+        (forall|a: int| #[trigger] raw.dom().contains(a) ==> z.has(a)) ==> r.dom() == raw.dom(),
+{
+    if forall|a: int| #[trigger] raw.dom().contains(a) ==> z.has(a) {
+        ZeroRaw::axiom_new(raw, z)
+    } else {
+        ZeroRaw::empty(raw.provenance())
+    }
+}
+
 /// `raw` when `keep`, else an empty permission of its provenance.
 proof fn raw_if(tracked raw: PointsToRaw, keep: bool) -> (tracked r: PointsToRaw)
     ensures
@@ -2666,11 +2681,13 @@ impl Meta {
     /// allocator's too: each table is whole pages.
     ///
     /// With the permission to those `words_up(len)` bytes, which this
-    /// allocator hands out once: an eager table's from `Inner::handed`,
-    /// where `Inner::reserve_eager` left it, and a reservation's from the
+    /// allocator hands out once, and the token that they read as zero
+    /// (together a [`ZeroRaw`]): an eager table's from `Inner::handed` and
+    /// `Inner::handed_zero`, where `Inner::reserve_eager` left them (fresh
+    /// memory above the bump pointer), and a reservation's from the
     /// `Unbacked` token `Inner::reserve` carved for it
     /// ([`Unbacked::into_lazy`], whose premise is the commit before use).
-    pub fn reserve_table(&self, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Option<usize>, Tracked<PointsToRaw>))
+    pub fn reserve_table(&self, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Option<usize>, Tracked<ZeroRaw>))
         requires
             crate::sys::may_syscall(),
             is_pow2(align),
@@ -2695,19 +2712,21 @@ impl Meta {
             if let Some(p) = g.reserve_eager(len, align, Tracked(&mut claim)) {
                 let _gi: &mut Inner = &mut g;
                 let tracked mut raw = take_raw(_gi.handed.borrow_mut());
+                let tracked hz = take_zero(_gi.handed_zero.borrow_mut());
                 proof {
                     let (page, l) = (g1.page, if len == 0 { 1usize } else { len });
                     lemma_align_bits(l, page, (l + (page - 1)) as usize);
                     lemma_words_up_fit(page, align_up_spec(l, page) as int, len as int);
                     raw = keep_prefix(raw, p as int, p + words_up(len as int), p + align_up_spec(l, page));
                 }
-                return (Some(p), Tracked(raw));
+                let tracked z = zero_raw(raw, hz);
+                return (Some(p), Tracked(z));
             }
         }
         let ghost g2 = g@;
         let tracked mut given = Unbacked::empty(0);
         let r = g.reserve(len, align, Tracked(&mut claim), Tracked(&mut given));
-        let tracked mut raw = PointsToRaw::empty(cast_provenance());
+        let tracked mut z = ZeroRaw::empty(cast_provenance());
         proof {
             if let Some(s) = r {
                 assert(g2.wf());
@@ -2716,10 +2735,11 @@ impl Meta {
                 vstd::arithmetic::div_mod::lemma_small_mod(0, g2.page as nat);
                 lemma_sub_mod_noop(g2.top as int, s as int, g2.page as int);
                 lemma_words_up_fit(g2.page, g2.top - s, len as int);
-                raw = keep_prefix(given.into_lazy(), s as int, s + words_up(len as int), g2.top as int);
+                let tracked (raw, gz) = given.into_lazy();
+                z = zero_raw(keep_prefix(raw, s as int, s + words_up(len as int), g2.top as int), gz);
             }
         }
-        (r, Tracked(raw))
+        (r, Tracked(z))
     }
 
     /// The ghost identity of the live-object records ([`Inner::live_id`];

@@ -1,6 +1,6 @@
 # `DisplaySpecImpl for LgSize`
 
-Seam S225 of `verus/SEAMS.md`: src/sys/features.rs:77. Kind: spec_impl. Category: core library.
+Seam S220 of `verus/SEAMS.md`: src/sys/features.rs:77. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract

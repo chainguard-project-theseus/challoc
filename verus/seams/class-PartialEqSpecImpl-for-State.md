@@ -1,6 +1,6 @@
 # `PartialEqSpecImpl for State`
 
-Seam S79 of `verus/SEAMS.md`: src/class/mod.rs:1476. Kind: spec_impl. Category: core library.
+Seam S77 of `verus/SEAMS.md`: src/class/mod.rs:1475. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract

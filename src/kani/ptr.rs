@@ -38,7 +38,7 @@ fn is_null_on<T>(x: &mut T) {
     assert_eq!((e as *const T).is_null(), a == 0);
 }
 
-/// S264 `<*mut T>::is_null` and S265 `<*const T>::is_null`: `r == (p@.addr
+/// S259 `<*mut T>::is_null` and S260 `<*const T>::is_null`: `r == (p@.addr
 /// == 0)`, at sized types (a byte, a word, a zero-sized type) on pointers
 /// to an object and on pointers from every address, and at unsized types
 /// (a slice, a `str`, a trait object, whose `is_null` looks at the data
@@ -77,7 +77,7 @@ fn ptr_is_null() {
     assert!(dmn.is_null());
 }
 
-/// S277 `<*const T>::cast::<U>`: `r@.addr == p@.addr`, from sized and
+/// S272 `<*const T>::cast::<U>`: `r@.addr == p@.addr`, from sized and
 /// unsized pointees to bytes, words and a zero-sized type, on pointers
 /// to an object and from every address.
 #[kani::proof]
@@ -97,7 +97,7 @@ fn ptr_cast() {
     assert_eq!(q.cast::<u8>() as usize, a);
 }
 
-/// S369 `core::ptr::from_ref` and S370 `core::ptr::from_mut`: no
+/// S366 `core::ptr::from_ref` and S367 `core::ptr::from_mut`: no
 /// `ensures`; they return, the referent's address, for sized and
 /// unsized referents.
 #[kani::proof]
@@ -145,7 +145,7 @@ fn ptr_add_on<T: Copy + PartialEq + kani::Arbitrary, const N: usize>() {
     assert_eq!(unsafe { d.add(0) }, d);
 }
 
-/// S336 `<*mut T>::add`: `r == ptr_add(p, count)`, `ptr_add` being the
+/// S331 `<*mut T>::add`: `r == ptr_add(p, count)`, `ptr_add` being the
 /// uninterpreted function that `axiom_ptr_add_addr` (S329) describes:
 /// the address `count * size_of::<T>()` bytes on, with `p`'s provenance
 /// and metadata. At a byte, a word, a padded element and a zero-sized
@@ -204,7 +204,7 @@ fn write_bytes_on<T: Copy + kani::Arbitrary, const N: usize>() {
     unsafe { core::ptr::write_bytes(any_aligned::<T>(), kani::any(), 0) };
 }
 
-/// S262 `core::ptr::write_bytes::<T>`: no `ensures`; under its `requires`
+/// S257 `core::ptr::write_bytes::<T>`: no `ensures`; under its `requires`
 /// it is defined and returns (and writes what `core` documents), at a
 /// byte and a word. (Not at a zero-sized type: Kani 0.68 reports an
 /// empty fill through a pointer to an array of `()` as a write to a
@@ -276,7 +276,7 @@ fn copy_nonoverlapping_on<T: Copy + PartialEq + kani::Arbitrary, const N: usize>
     unsafe { core::ptr::copy_nonoverlapping(s, d, 0) };
 }
 
-/// S263 `core::ptr::copy_nonoverlapping::<T>`: no `ensures`; under its
+/// S258 `core::ptr::copy_nonoverlapping::<T>`: no `ensures`; under its
 /// `requires` it is defined and returns (and copies what `core`
 /// documents), at a byte and a word, and at a zero-sized type with every
 /// count.
@@ -291,7 +291,7 @@ fn ptr_copy_nonoverlapping() {
     unsafe { core::ptr::copy_nonoverlapping(zp as *const (), zp, kani::any()) };
 }
 
-/// S386 `write_zero`: under `n == 0 || valid_writes(p, n)` (here: the
+/// S385 `write_zero`: under `n == 0 || valid_writes(p, n)` (here: the
 /// `n` bytes from offset `i` lie in an 8-byte buffer, every `i` and `n`,
 /// or `n == 0` and `p` any pointer), it returns, and afterwards the `n`
 /// bytes at `p` read zero and no other byte changed: the fact its
@@ -315,7 +315,7 @@ fn write_zero() {
     let _ = unsafe { crate::vspec::zero::write_zero(core::ptr::without_provenance_mut(m), 0) };
 }
 
-/// S354 `array_get_unchecked`: under `i < N`, a reference to `a[i]`, for
+/// S349 `array_get_unchecked`: under `i < N`, a reference to `a[i]`, for
 /// every array of 1, 2 or 6 words or of 3 padded pairs and every index
 /// in it.
 #[kani::proof]

@@ -110,8 +110,9 @@ and the call does not return (theorem 3, which is not voided for it).
   field). `Heap::set_arena`
   (`heap/mod.rs:3132`) ensures nothing; the next `heap_from_slot`
   assumes `wf` again.
-- Trusted, but stated over the permissions: `stack_mut`
-  (`heap/mod.rs:1309`, the slice over the stack's `PointsTo`s),
+- Trusted, but stated over the permissions: the slice primitive under
+  `stack_mut` (`vspec::slice::slice_mut_from_perms`, the slice over the
+  stack's `PointsTo`s; `stack_mut` itself is verified over it),
   `Heap::cache_ptr` (`heap/cache.rs:302`, on the `malloc` and `free`
   fast paths: the home header for `class` is owned and caches `class`),
   `cached_recently` (`heap/cache.rs:608`), and the `others` list
@@ -527,15 +528,24 @@ the assumed `Heap::wf` and the huge lock axiom.
   bytes once, an eager table's from `meta::Inner::handed` and a
   reservation's through `Unbacked::into_lazy` (`vspec/unbacked.rs`,
   which uses up the reservation's token),
-  `table::axiom_init_descs`, `_owners`, `_words` (`class/table.rs:974`,
-  `:984`, `:996`, the values are initialised), `words_ref` (`:1013`, a
-  slice over consecutive word permissions) and `watermark` (`:1580`, at
+  `table::axiom_init_descs`, `_owners`, `_words` (`class/table.rs:1238`,
+  `:1248`, `:1260`, the values are initialised), the slice primitive
+  under `words_ref` (`vspec::slice::slice_from_perms`, a slice over
+  consecutive word permissions) and `watermark` (`:1894`, at
   most the slab count). Premise: only committed pages are read (the
   accessors' `# Safety`).
-- `TwoLevelBitmap::from_raw`, `from_raw_chunked` (`bitmap.rs`): their
-  `place` ensures, over the words' permission each takes (a table's
-  bytes, or a `SetTable` slot's, which `SetTable::new` carves once per
-  slot from its groups' reservations).
+- `TwoLevelBitmap::from_raw`, `from_raw_chunked` (`bitmap.rs`) are
+  verified: they build each word's permission, holding 0, from the
+  words' `ZeroRaw` each takes (a table's bytes, or a `SetTable` slot's,
+  which `SetTable::new` carves once per slot from its groups'
+  reservations) through `vspec::zero::axiom_zero_word` (eight bytes that
+  read as zero are the `u64` 0). The zero facts are `Meta::reserve_table`'s:
+  an eager table's from `meta::Inner::handed_zero` (fresh memory above
+  the bump pointer, `Unbacked::commit`), a reservation's from
+  `Unbacked::into_lazy` (the same `mmap` fact, on its commit-before-read
+  premise). Premise (`ZeroRaw::axiom_new`): a permission is paired only
+  with the zero token made with it, whose bytes nothing has written since
+  (`meta::zero_raw`, the one pairing).
 - `heap::axiom_fresh_stack` (`heap/mod.rs`): a stack `Meta::alloc_raw`
   just returned is fresh (it uses up the block's permission);
   `Heap::lemma_caches_in_meta` (`heap/mod.rs`) needs `cell_in_meta`,

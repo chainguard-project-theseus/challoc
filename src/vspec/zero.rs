@@ -4,6 +4,9 @@
 //! (`verus/TODO.md`, "Zeroed memory").
 
 use vstd::prelude::*;
+use vstd::raw_ptr::PointsToRaw;
+#[cfg(verus_only)]
+use vstd::raw_ptr::{PointsTo, Provenance};
 
 verus! {
 
@@ -12,7 +15,9 @@ verus! {
 /// A token is made only where the bytes are known to be zero: by the
 /// `write_bytes` of [`write_zero`]; from the kernel's contract for fresh
 /// and discarded anonymous memory, for the metadata region's committed
-/// bytes (`vspec::unbacked::Unbacked::commit`), a zeroed claim's slots
+/// bytes (`vspec::unbacked::Unbacked::commit`) and a lazily committed
+/// table's (`Unbacked::into_lazy`, read only once committed), a zeroed
+/// claim's slots
 /// (`class::axiom_fresh_slots_zero` and `axiom_discarded_slots_zero`,
 /// called by `ClassState::take`) and a huge run's pages
 /// (`vspec::sys::axiom_fresh_anon_zero` and `axiom_discarded_zero`, called
@@ -88,6 +93,125 @@ impl Zeroed {
     {
         Zeroed { addr: self.addr, len: self.len + next.len }
     }
+}
+
+/// Ghost permission to bytes that read as zero: a raw permission together
+/// with the [`Zeroed`] token for its bytes, which [`ZeroRaw::axiom_new`]
+/// consumes. The metadata tables the allocator reserves come with one
+/// (`meta::Meta::reserve_table`), and a bitmap built on such a table
+/// starts from words that read as zero (`bitmap::TwoLevelBitmap::from_raw`
+/// and `from_raw_chunked`, through [`axiom_zero_word`]). Like a
+/// `PointsToRaw` it splits by byte set ([`ZeroRaw::split`]) and grants
+/// access to its bytes (`vspec::ptr::axiom_raw_valid` on
+/// [`ZeroRaw::raw`]); it is linear, so a `ZeroRaw` makes each word's
+/// zero permission once (its source, [`ZeroRaw::axiom_new`], has a
+/// premise of its own).
+pub tracked struct ZeroRaw {
+    tracked raw: PointsToRaw,
+}
+
+impl ZeroRaw {
+    /// The bytes.
+    pub closed spec fn dom(&self) -> Set<int> {
+        self.raw.dom()
+    }
+
+    /// The provenance of the permission.
+    pub closed spec fn provenance(&self) -> Provenance {
+        self.raw.provenance()
+    }
+
+    /// The bytes are exactly `[start, start + len)`.
+    pub open spec fn is_range(&self, start: int, len: int) -> bool {
+        Set::range(start, start + len) =~= self.dom()
+    }
+
+    /// The bytes of `raw`, which `z` reads as zero. Trusted for one
+    /// premise nothing checks: `z`'s bytes have not been written since
+    /// `z` was made. A `Zeroed` token is not tied to the writes made to
+    /// its bytes (its doc), so pairing a token with a permission to bytes
+    /// written since (an `into_typed` write, then `leak_contents` and
+    /// `into_raw`) would make [`axiom_zero_word`] claim 0 for a word that
+    /// holds something else. Its one caller, `meta::zero_raw` in
+    /// `Meta::reserve_table`, pairs a table's permission with the token
+    /// made with it: an eager table's (`Inner::handed` and
+    /// `Inner::handed_zero`, cut from `fresh` and `fresh_zero` together,
+    /// fresh memory above the bump pointer that nothing has written) or a
+    /// reservation's (both from one `Unbacked::into_lazy`).
+    #[verifier::external_body]
+    pub proof fn axiom_new(tracked raw: PointsToRaw, tracked z: Zeroed) -> (tracked r: ZeroRaw)
+        requires
+            forall|a: int| #[trigger] raw.dom().contains(a) ==> z.has(a),
+        ensures
+            r.dom() == raw.dom(),
+            r.provenance() == raw.provenance(),
+    {
+        ZeroRaw { raw }
+    }
+
+    /// No bytes.
+    pub proof fn empty(provenance: Provenance) -> (tracked r: ZeroRaw)
+        ensures
+            r.dom() == Set::<int>::empty(),
+            r.provenance() == provenance,
+    {
+        ZeroRaw { raw: PointsToRaw::empty(provenance) }
+    }
+
+    /// The bytes in `range`, and the rest (`PointsToRaw::split`).
+    pub proof fn split(tracked self, range: Set<int>) -> (tracked r: (ZeroRaw, ZeroRaw))
+        requires
+            range.subset_of(self.dom()),
+        ensures
+            r.0.dom() == range,
+            r.0.provenance() == self.provenance(),
+            r.1.dom() == self.dom().difference(range),
+            r.1.provenance() == self.provenance(),
+    {
+        let tracked (a, b) = self.raw.split(range);
+        (ZeroRaw { raw: a }, ZeroRaw { raw: b })
+    }
+
+    /// The permission alone, without the zero fact.
+    pub proof fn into_raw(tracked self) -> (tracked r: PointsToRaw)
+        ensures
+            r.dom() == self.dom(),
+            r.provenance() == self.provenance(),
+    {
+        self.raw
+    }
+
+    /// The permission, borrowed (for `vspec::ptr::axiom_raw_valid`).
+    pub proof fn raw(tracked &self) -> (tracked r: &PointsToRaw)
+        ensures
+            r.dom() == self.dom(),
+            r.provenance() == self.provenance(),
+    {
+        &self.raw
+    }
+}
+
+/// The eight bytes of `z`, which read as zero, as the `u64` at `p`
+/// holding 0: `PointsToRaw::into_typed`, initialised with the value the
+/// bytes hold. Trusted for that value, which vstd's raw permissions do not
+/// track: eight zero bytes are the `u64` 0 in either byte order. The
+/// premises are `into_typed`'s (a non-null `p` aligned for `u64` whose
+/// eight bytes are exactly `z`'s, of `p`'s provenance), so the permission
+/// is one `into_typed` would give; `z` is used up, so the zero fact makes
+/// one permission.
+#[verifier::external_body]
+pub proof fn axiom_zero_word(tracked z: ZeroRaw, p: *mut u64) -> (tracked w: PointsTo<u64>)
+    requires
+        p@.addr != 0,
+        p@.addr as int % 8 == 0,
+        z.is_range(p@.addr as int, 8),
+        z.provenance() == p@.provenance,
+    ensures
+        w.ptr() == p,
+        w.is_init(),
+        w.value() == 0,
+{
+    unimplemented!()
 }
 
 /// The usable bytes of a huge run for a request of `size` bytes: `size`

@@ -90,14 +90,13 @@ use crate::sys::Errno;
 use crate::vspec::core_int::popcount;
 #[cfg(verus_only)]
 use crate::vspec::lock::{lock_frame, lock_init, lock_inv};
-use crate::vspec::zero::Zeroed;
+use crate::vspec::zero::{ZeroRaw, Zeroed};
 #[cfg(verus_only)]
 use table::{
     bits_ghost, bits_shape, desc_at, guard_marked, lemma_bit_in_slab, slab_marked, slab_mask_of,
     words_of,
 };
 use vstd::prelude::*;
-use vstd::raw_ptr::PointsToRaw;
 use vstd::resource::set::GhostPersistentSubset;
 use vstd::resource::set::GhostSingleton;
 use vstd::resource::set::GhostSubset;
@@ -2897,7 +2896,7 @@ impl ClassState {
         table: &SlabTable,
         arena: u16,
         sets: &SetTable,
-        Tracked(slots): Tracked<&mut Map<(int, int), PointsToRaw>>,
+        Tracked(slots): Tracked<&mut Map<(int, int), ZeroRaw>>,
     ) -> (r: Option<ClassState>)
         requires
             sets.over(process_regions()),
@@ -4278,7 +4277,9 @@ proof fn lemma_zero_keys_from0(z: Map<int, Zeroed>, out: Seq<*mut u8>, hi: int, 
         zero_keys(z, out, 0, 0, hi, size),
 {
     assert forall|i: int| 0 <= i < hi implies #[trigger] z.contains_key(0 + i) && z[0 + i].covers(out[i], size) by {
+        assert(0 + i == i);
         assert(z.contains_key(i));
+        assert(z[i].covers(out[i], size));
     }
 }
 
