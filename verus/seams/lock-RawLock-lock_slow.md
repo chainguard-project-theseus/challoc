@@ -1,6 +1,6 @@
 # `RawLock::lock_slow`
 
-Seam S178 of `verus/SEAMS.md`: src/lock.rs:122. Kind: no_decreases. Category: termination.
+Seam S181 of `verus/SEAMS.md`: src/lock.rs:122. Kind: no_decreases. Category: termination.
 Evidence from loom (deadlock freedom; termination is not established, part 3).
 
 ## Contract

@@ -85,7 +85,8 @@ done
 #   passes them on, writes atomics only on the three lines listed (the
 #   owner word, a test's corrupting write of it, the watermark);
 # - arena.rs names the bound counts only in a vspec/count.rs wrapper
-#   call, the spec `count_id`, and `Arenas::init`'s two lines writing 0;
+#   call, the spec `count_id`, and ghost `assert`/`forall` lines
+#   (`Arenas::init` builds each count with `fresh_count(0)`);
 # - `STATE` has two writes, `state_claim`'s compare-exchange and
 #   `state_publish`'s `READY` store.
 bad=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t = 0 }
@@ -96,8 +97,7 @@ bad=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t =
         && x != "self.committed_slabs.store(end, Ordering::Release);" { print FILENAME ":" FNR ": " $0 }' src/class/table.rs
     awk '{ x = $0; sub(/^[ \t]+/, "", x) }
     (/\.bound([^A-Za-z0-9_]|$)/ || /\(\*bound\)/) && !/crate::vspec::count::/ && !/count_id\(/ && !/^[ \t]*\/\// \
-        && x != "let bound = &raw mut (*this).bound;" \
-        && x != "ptr::write(&raw mut (*bound)[i], AtomicU32::new(0));" { print FILENAME ":" FNR ": " $0 }' src/arena.rs)
+        && !/assert\(/ && !/forall\|/ { print FILENAME ":" FNR ": " $0 }' src/arena.rs)
 nstate=$(find src -name '*.rs' ! -path 'src/loom_tests/*' -exec grep -hE '(^|[^A-Za-z0-9_])STATE\.(store|swap|compare_exchange|fetch_)' {} + | wc -l | tr -d ' ')
 [ "$nstate" = 2 ] || bad="$bad
 src/api/mod.rs: $nstate writes of STATE, not 2 (record api-state_claim.md)"
