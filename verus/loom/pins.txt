@@ -1,5 +1,6 @@
 # verus/loom/pins.txt: the lines of the source that the loom models copy
-# (src/loom_tests/init.rs, exit.rs and the class steps of bitmap.rs),
+# (src/loom_tests/init.rs, exit.rs, the class steps of bitmap.rs, and the
+# table and arena steps of free.rs and count.rs),
 # which verus/loom/run.sh requires to appear, whitespace-trimmed, in this
 # order in each file. A change to a copied ordering or step fails the
 # script until the copy, this list and the records that cite it are
@@ -11,10 +12,12 @@
 src/api/mod.rs	if STATE.load(Ordering::Acquire) == READY {
 src/api/mod.rs	init_slow()
 src/api/mod.rs	if STATE.load(Ordering::Acquire) == READY {
-src/api/mod.rs	match STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire) {
+src/api/mod.rs	(STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire), Tracked::assume_new())
+src/api/mod.rs	let (won, Tracked(steps)) = claim_init();
+src/api/mod.rs	match won {
 src/api/mod.rs	Ok(_) => {
 src/api/mod.rs	INIT_TID.store(sys::gettid() as u32, Ordering::Relaxed);
-src/api/mod.rs	init();
+src/api/mod.rs	init(Tracked(steps));
 src/api/mod.rs	STATE.store(READY, Ordering::Release);
 src/api/mod.rs	Err(READY) => {}
 src/api/mod.rs	if INIT_TID.load(Ordering::Relaxed) == sys::gettid() as u32 {
@@ -40,7 +43,36 @@ src/slab.rs	assert!(prev >= n, "slab: live count underflow ({prev} - {n})");
 src/class/mod.rs	let live = desc.live();
 src/class/mod.rs	let avail = self.class().nslots() - live;
 src/class/mod.rs	desc.add_live(n);
-# class/table.rs: the commit count's publication (bitmap.rs).
+# class/table.rs: the owner word's store and load (free.rs), the commit
+# count's publication (bitmap.rs, free.rs), and the free path's checks
+# (free.rs): is_handed_out, is_set_unchecked, owner_at, check_live.
+src/class/table.rs	w.load(Ordering::Relaxed)
+src/class/table.rs	w.store(arena, Ordering::Relaxed)
 src/class/table.rs	self.committed_slabs.load(order)
 src/class/table.rs	self.watermark(Ordering::Acquire)
+src/class/table.rs	slab < self.watermark(Ordering::Relaxed)
+src/class/table.rs	x = crate::vspec::word::load(w, Ordering::Relaxed, Tracked(&perm));
+src/class/table.rs	(x >> (bit % 64)) & 1 == 1
+src/class/table.rs	load_owner(ptr_ref(word, Tracked(self.owner_perms.borrow().tracked_borrow(group as int))), Ghost(*self), Ghost(slab))
+src/class/table.rs	if !self.is_handed_out(slab) {
+src/class/table.rs	if !unsafe { self.is_set_unchecked(slab, slot) } {
+src/class/table.rs	let Tracked(m) = self.bits_unchecked(slab).init(cls.nslots(), Ghost(slab as int), Tracked(fs));
+src/class/table.rs	store_owner(owner_word, arena, Ghost(*self), Ghost(s >> self.lg_group), Tracked(om));
 src/class/table.rs	self.committed_slabs.store(end, Ordering::Release);
+# heap/shared.rs: checked_slot, set_slot (free.rs).
+src/heap/shared.rs	let Some((class, table, slab)) = self.set_slot(p) else { return None };
+src/heap/shared.rs	if unsafe { table.owner_unchecked(slab) } != home {
+src/heap/shared.rs	if !table.is_handed_out(slab) {
+src/heap/shared.rs	if !unsafe { table.is_set_unchecked(slab, slot) } {
+# arena.rs: unbind, assign, load_bound, count_in (count.rs).
+src/arena.rs	prev = crate::vspec::count::fetch_sub(&self.bound[index as usize], 1, Ordering::Relaxed, Tracked(&mut perm));
+src/arena.rs	if prev == 0 {
+src/arena.rs	unbind_unbound(index);
+src/arena.rs	let _g = self.lock.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+src/arena.rs	let mut best_key = (u32::MAX, true);
+src/arena.rs	let key = (self.load_bound(i), self.table[i].load(Ordering::Relaxed).is_null());
+src/arena.rs	if key_less(key, best_key) {
+src/arena.rs	if key == (0, false) {
+src/arena.rs	let t = self.count_in(best);
+src/arena.rs	n = crate::vspec::count::load(&self.bound[i], Ordering::Relaxed, Tracked(&perm));
+src/arena.rs	crate::vspec::count::fetch_add(&self.bound[i], 1, Ordering::Relaxed, Tracked(&mut perm));

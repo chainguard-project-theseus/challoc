@@ -80,22 +80,22 @@ documentation (kernel, ISA, C standard) its contract follows.
 | raw pointer (internal) | ptr | 52 |
 | raw pointer from C caller | c-ptr | 18 |
 | panic/abort | abort | 9 |
-| atomics primitive | atomic | 15 |
+| atomics primitive | atomic | 14 |
 | platform/kernel fact | platform | 10 |
 | C-program contract | c-contract | 7 |
 | termination | termination | 9 |
 | core library | core | 123 |
-| allocator invariant | invariant | 48 |
+| allocator invariant | invariant | 49 |
 
 | tool | short | seams |
 |---|---|---:|
 | Islaris/Isla | Isla | 28 |
 | RefinedRust | RR | 27 |
 | Kani | Kani | 171 |
-| loom/GenMC | GenMC | 22 |
-| Verus | Verus | 5 |
+| loom/GenMC | GenMC | 19 |
+| Verus | Verus | 6 |
 | Miri (evidence only) | Miri | 18 |
-| none (assumption) | none | 104 |
+| none (assumption) | none | 106 |
 
 | kind | short | seams |
 |---|---|---:|
@@ -122,17 +122,16 @@ Seams by category and tool:
 | UnsafeCell/volatile/transmute | Islaris/Isla | 1 |
 | UnsafeCell/volatile/transmute | RefinedRust | 4 |
 | UnsafeCell/volatile/transmute | Kani | 2 |
-| UnsafeCell/volatile/transmute | loom/GenMC | 3 |
+| UnsafeCell/volatile/transmute | loom/GenMC | 2 |
 | UnsafeCell/volatile/transmute | Verus | 1 |
-| UnsafeCell/volatile/transmute | none (assumption) | 11 |
+| UnsafeCell/volatile/transmute | none (assumption) | 12 |
 | raw pointer (internal) | RefinedRust | 16 |
 | raw pointer (internal) | Kani | 14 |
-| raw pointer (internal) | loom/GenMC | 1 |
-| raw pointer (internal) | none (assumption) | 21 |
+| raw pointer (internal) | none (assumption) | 22 |
 | raw pointer from C caller | Miri (evidence only) | 18 |
 | panic/abort | Kani | 9 |
 | atomics primitive | Kani | 2 |
-| atomics primitive | loom/GenMC | 13 |
+| atomics primitive | loom/GenMC | 12 |
 | platform/kernel fact | Islaris/Isla | 1 |
 | platform/kernel fact | none (assumption) | 9 |
 | C-program contract | none (assumption) | 7 |
@@ -143,7 +142,7 @@ Seams by category and tool:
 | allocator invariant | RefinedRust | 6 |
 | allocator invariant | Kani | 1 |
 | allocator invariant | loom/GenMC | 2 |
-| allocator invariant | Verus | 4 |
+| allocator invariant | Verus | 5 |
 | allocator invariant | none (assumption) | 35 |
 
 ## Index
@@ -198,7 +197,7 @@ the full name, the line and the contract.
 | S25 | `Global::get` | body | cell | none | trusted |
 | S26 | `shared_ref` | body | cell | none | trusted |
 | S27 | `shared_ptr` | body | cell | RR | trusted |
-| S28 | `claim_init` | body | atomic | GenMC | trusted |
+| S28 | `claim_init` | body | atomic | GenMC | discharged |
 | S29 | `init_slow` | no-dec | termination | GenMC | discharged |
 | S30 | `shared_storage_ptr` | body | cell | none | trusted |
 | S31 | `publish_features` | body | cell | none | trusted |
@@ -243,7 +242,7 @@ the full name, the line and the contract.
 | S60 | `key_less` | body | core | Kani | trusted |
 | S61 | `Arenas::init` | body | ptr | none | trusted |
 | S62 | `arena_at` | body | ptr | none | trusted |
-| S63 | `Arenas::count` | body | atomic | GenMC | trusted |
+| S63 | `Arenas::count` | body | invariant | Verus | trusted |
 
 ### src/bitmap.rs
 
@@ -291,14 +290,14 @@ the full name, the line and the contract.
 |---|---|---|---|---|---|
 | S84 | `axiom_table_lock_inv` | axiom | invariant | none | trusted |
 | S85 | `axiom_table_lock_frame` | axiom | invariant | none | trusted |
-| S86 | `load_owner` | body | invariant | GenMC | trusted |
-| S87 | `store_owner` | body | invariant | GenMC | trusted |
+| S86 | `load_owner` | body | invariant | GenMC | evidence |
+| S87 | `store_owner` | body | invariant | GenMC | discharged |
 | S88 | `axiom_slot_loc` | axiom | invariant | none | trusted |
 | S89 | `axiom_fresh_words` | axiom | invariant | none | trusted |
 | S90 | `axiom_init_descs` | axiom | ptr | none | trusted |
 | S91 | `axiom_init_owners` | axiom | ptr | none | trusted |
 | S92 | `axiom_init_words` | axiom | ptr | none | trusted |
-| S93 | `words_ref` | body | ptr | GenMC | trusted |
+| S93 | `words_ref` | body | ptr | none | trusted |
 | S94 | `SlabTable::watermark` | body | invariant | RR | trusted |
 
 ### src/class/verify.rs
@@ -467,9 +466,9 @@ the full name, the line and the contract.
 | S179 | `axiom_entry` | axiom | c-contract | none | trusted |
 | S180 | `axiom_held_below` | axiom | invariant | none | trusted |
 | S181 | `axiom_acquired` | axiom | invariant | none | trusted |
-| S182 | `Lock::get_unlocked` | body | cell | GenMC | trusted |
-| S183 | `LockGuard::deref` | body | cell | GenMC | trusted |
-| S184 | `LockGuard::deref_mut` | body | cell | GenMC | trusted |
+| S182 | `Lock::get_unlocked` | body | cell | none | trusted |
+| S183 | `LockGuard::deref` | body | cell | GenMC | discharged |
+| S184 | `LockGuard::deref_mut` | body | cell | GenMC | discharged |
 | S185 | `LockGuard::drop` | body | atomic | GenMC | discharged |
 
 ### src/meta.rs
@@ -521,7 +520,7 @@ the full name, the line and the contract.
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
 | S205 | `SlabDesc::at` | body | ptr | none | trusted |
-| S206 | `SlabDesc::sub_live` | body | atomic | GenMC | evidence |
+| S206 | `SlabDesc::sub_live` | body | atomic | GenMC | discharged |
 
 ### src/stats.rs
 
@@ -693,10 +692,10 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S288 | `CountPerm` | type | atomic | GenMC | trusted |
-| S289 | `fetch_add` | body | atomic | GenMC | trusted |
-| S290 | `fetch_sub` | body | atomic | GenMC | trusted |
-| S291 | `load` | body | atomic | GenMC | trusted |
+| S288 | `CountPerm` | type | atomic | GenMC | discharged |
+| S289 | `fetch_add` | body | atomic | GenMC | discharged |
+| S290 | `fetch_sub` | body | atomic | GenMC | discharged |
+| S291 | `load` | body | atomic | GenMC | evidence |
 
 ### src/vspec/errno.rs
 
@@ -855,10 +854,10 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S370 | `WordPerm` | type | atomic | GenMC | trusted |
+| S370 | `WordPerm` | type | atomic | GenMC | discharged |
 | S371 | `fetch_or` | body | atomic | GenMC | discharged |
 | S372 | `store` | body | atomic | GenMC | discharged |
-| S373 | `load` | body | atomic | GenMC | trusted |
+| S373 | `load` | body | atomic | GenMC | discharged |
 | S374 | `fetch_and` | body | atomic | GenMC | discharged |
 
 ### src/vspec/zero.rs
@@ -1233,7 +1232,7 @@ pub fn shared_ptr() -> *const Shared opens_invariants none
 ### S28. `claim_init`
 
 src/api/mod.rs:409. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/api-claim_init.md).
 
 > `STATE`'s compare-exchange from `UNINIT` to `INITIALISING`, which [`init_slow`] runs: the winner gets the process's one-shot tokens ([`once::all_steps`]).
 
@@ -1728,8 +1727,8 @@ unsafe fn arena_at<'a>(p: *mut Arena, Ghost(index): Ghost<u16>) -> (r: &'a Arena
 
 ### S63. `Arenas::count`
 
-src/arena.rs:1955. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/arena.rs:1955. Kind: external_body. Category: allocator invariant.
+Tool: Verus. Status: trusted.
 
 > Number of arena indices in use (`arenas.narenas`).
 
@@ -2160,7 +2159,7 @@ pub(super) broadcast axiom fn axiom_table_lock_frame(init: TableInner, v: TableI
 ### S86. `load_owner`
 
 src/class/table.rs:235. Kind: external_body. Category: allocator invariant.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: evidence (verus/seams/class-table-load_owner.md).
 
 > `w.load(Relaxed)` of the owner word of handed-out slab `slab`'s group: the arena that owns the slab.
 
@@ -2177,7 +2176,7 @@ fn load_owner(w: &AtomicU16, Ghost(t): Ghost<SlabTable>, Ghost(slab): Ghost<usiz
 ### S87. `store_owner`
 
 src/class/table.rs:267. Kind: external_body. Category: allocator invariant.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/class-table-store_owner.md).
 
 > `w.store(arena, Relaxed)` of the owner word of hand-out group `group`: from here on [`slab_owner`] of every slab of the group is `arena`.
 
@@ -2274,7 +2273,7 @@ axiom fn axiom_init_words(tracked perms: Map<int, PointsTo<AtomicU64>>, n: int) 
 ### S93. `words_ref`
 
 src/class/table.rs:1250. Kind: external_body. Category: raw pointer (internal).
-Tool: loom/GenMC. Status: trusted.
+Tool: none (assumption). Status: trusted.
 
 > `core::slice::from_raw_parts(p, n)` over `n` class bitmap words whose permissions `perms` holds from key `j0` on, at `p`, `p + 8`, ...
 
@@ -3592,7 +3591,7 @@ axiom fn axiom_acquired<T>(l: Lock<T>, g: LockGuard<'_, T>)
 ### S182. `Lock::get_unlocked`
 
 src/lock.rs:678. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: loom/GenMC. Status: trusted.
+Tool: none (assumption). Status: trusted.
 
 > Access the value without locking.
 
@@ -3609,7 +3608,7 @@ pub unsafe fn get_unlocked<'a>(&'a self, Tracked(held): Tracked<&'a mut LockHeld
 ### S183. `LockGuard::deref`
 
 src/lock.rs:710. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/lock-LockGuard-deref.md).
 
 ```rust
 fn deref(&self) -> (r: &T)
@@ -3620,7 +3619,7 @@ fn deref(&self) -> (r: &T)
 ### S184. `LockGuard::deref_mut`
 
 src/lock.rs:722. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/lock-LockGuard-deref_mut.md).
 
 ```rust
 fn deref_mut(&mut self) -> (r: &mut T)
@@ -3905,7 +3904,7 @@ pub unsafe fn at<'a>(base: usize, class: usize, slab: usize) -> &'a SlabDesc
 ### S206. `SlabDesc::sub_live`
 
 src/slab.rs:264. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: evidence (verus/seams/slab-SlabDesc-sub_live.md).
+Tool: loom/GenMC. Status: discharged (verus/seams/slab-SlabDesc-sub_live.md).
 
 > Subtract `n` from `live`, returning the previous value.
 
@@ -5051,7 +5050,7 @@ pub assume_specification[ core::hint::spin_loop ]();
 ### S288. `CountPerm`
 
 src/vspec/count.rs:43. Kind: external_body type. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/vspec-count-CountPerm.md).
 
 > Ghost permission to the counter with identity [`id`](CountPerm::id): its current [`value`](CountPerm::value).
 
@@ -5062,7 +5061,7 @@ pub tracked struct CountPerm
 ### S289. `fetch_add`
 
 src/vspec/count.rs:59. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/vspec-count-fetch_add.md).
 
 > `c.fetch_add(v, ordering)`, wrapping.
 
@@ -5081,7 +5080,7 @@ pub fn fetch_add(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Track
 ### S290. `fetch_sub`
 
 src/vspec/count.rs:76. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/vspec-count-fetch_sub.md).
 
 > `c.fetch_sub(v, ordering)`, wrapping.
 
@@ -5100,7 +5099,7 @@ pub fn fetch_sub(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Track
 ### S291. `load`
 
 src/vspec/count.rs:93. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: evidence (verus/seams/vspec-count-load.md).
 
 > `c.load(ordering)`: the permission's value.
 
@@ -6246,7 +6245,7 @@ pub proof fn into_lazy(tracked self) -> (tracked r: PointsToRaw)
 ### S370. `WordPerm`
 
 src/vspec/word.rs:45. Kind: external_body type. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/vspec-word-WordPerm.md).
 
 > Ghost permission to the word at [`addr`](WordPerm::addr): its current [`value`](WordPerm::value).
 
@@ -6296,7 +6295,7 @@ pub fn store(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&
 ### S373. `load`
 
 src/vspec/word.rs:100. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/vspec-word-load.md).
 
 > `w.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 

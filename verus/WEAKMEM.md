@@ -348,6 +348,31 @@ cut down.
   `READY` store races; a waiter on an unpublished `INITIALISING`
   fails. loom cannot explore two waiters spinning at once (they yield
   to each other with no bound), so the models have one.
+- P5 (`loom_tests/free.rs`: the real `AtomicBitmap` and
+  `vspec::word::load` over one loom word; copies of `take_group`'s tail,
+  a claimer's `Acquire` watermark load and the free path's checks from
+  `checked_slot`/`set_slot`): an allocating thread hands its slot to
+  the freeing thread while a third claims and releases the word's
+  other slot. With a `Release`/`Acquire` hand-off (13337 executions)
+  every free sees the slab handed out, the bit set and the owner
+  stored, with no race on the block. With a `Relaxed` hand-off (17501;
+  a data race on the block, so outside the C contract) all four
+  outcomes appear: the checks pass, the watermark read below the slab,
+  the bit read clear, and the owner word read as its initial 0. Each
+  of the last three is a fast-path miss; the slow path re-reads, and
+  only a stale re-read too makes a spurious abort or releases the slot
+  to arena 0 (possible, not modelled). Controls: the `Relaxed`
+  hand-off with the free touching the block races; with the claimer's
+  watermark load `Relaxed`, a synchronised free can read the owner as 0
+  (38029). `multi_arena` is not modelled.
+- Arena bound counts (`loom_tests/count.rs`: the real `vspec/count.rs`
+  wrappers, `Relaxed` as `arena.rs`; copies of `assign` under the real
+  `RawLock`, `count_in`, `unbind`, `load_bound`): 2 arenas, the main
+  thread homed on arena 0 and binding and unbinding a heap on arena 1,
+  two threads assigned and unbound (10872962 executions, about 6
+  minutes): no `unbind` reads 0, no holder reads its arena's count as
+  0, and the counts end at the tickets out. Control: a `fetch_add`
+  split into a load and a store loses a ticket.
 - The background thread's exit (copy of `background::main`'s loop and
   `request(false)`; `loom_tests/exit.rs`): the thread returns after a
   withdrawal, also with another kick in between. Controls: a withdrawal
@@ -363,7 +388,7 @@ cut down.
 | 1 | loom: `RawLock` with a futex stand-in (P2) | 1-2 | done |
 | 2 | loom: bitmap claim/release, `live`, slot data cells (P1) | 2-3 | done |
 | 3 | loom: background wake-up copy; try the P3 race | 1 | done |
-| 4 | loom: `READY` publication copy (P4); free hand-off (P5) | 1-2 | P4 done, P5 open |
+| 4 | loom: `READY` publication copy (P4); free hand-off (P5) | 1-2 | done |
 | 5 | GenMC: C models of P1-P3 under RC11 | 3-4 | open |
 | 6 | CI: `sh verus/loom/run.sh` | 0.5 | open |
 
@@ -387,7 +412,8 @@ they do not lift the proofs to weak memory.
 
 The 25 seams `verus/SEAMS.md` gave to loom/GenMC, triaged (records
 under `verus/seams/`, models re-run by `sh verus/loom/run.sh`, which
-first checks each record against the ledger). No model found an outcome
+first checks each record against the ledger; seam numbers of commit
+8635213, when it was done). No model found an outcome
 a contract excludes; P3 stays the one open weak-memory bug, and no seam
 below depends on it. GenMC is not installed in the environment this was
 done in (no C toolchain to build it), so every result is loom's.
@@ -399,9 +425,9 @@ done in (no C toolchain to build it), so every result is loom's.
 | `LockGuard::drop` (S181) | discharged | P2 models run the real `unlock` |
 | `fetch_or`, `fetch_and`, `store` (`vspec/word.rs`; S361, S364, S362) | discharged | C11 per-location coherence gives the contract; P1 models check the cross-location edges the SC proof needs |
 | `RawLock::lock_slow` (S176) | evidence | P2 models show deadlock freedom; termination does not hold (the mutex is not starvation-free) |
-| `SlabDesc::sub_live` (S202) | evidence | P1 models; that the abort is unreachable is an allocator invariant |
-| `load` (`vspec/word.rs`, S363) | trusted | its caller, the `free` bit test, is P5, which no model reaches yet |
-| `WordPerm` (S360) | trusted | the type is the SC abstraction itself; its content is the wrappers' contracts and that every write goes through them |
+| `SlabDesc::sub_live` (S202) | evidence, then discharged (second pass) | P1 models; that the abort is unreachable is an allocator invariant, which the contract (now `requires may_abort()`) no longer claims |
+| `load` (`vspec/word.rs`, S363) | trusted, then discharged (second pass) | its caller, the `free` bit test, is P5, which no model reached then |
+| `WordPerm` (S360) | trusted, then discharged (second pass) | the type is the SC abstraction itself; its content is the wrappers' contracts and that every write goes through them |
 | `ClassState::claim_with` (S74) | trusted, retooled to RefinedRust | termination rests on `live` not rising between `plan`'s and `take`'s reads under the class lock (read-read coherence); a Verus `decreases` with that fact as an allocator-invariant axiom fits better than a bounded checker |
 | `SlabTable::watermark`, `Policy::position`, `load_lg_slab_min`, `load_lg_pmd`, `load_lg_meta` (S91, S184, S244-S246) | reassigned: allocator invariant, RefinedRust | every store writes a value in range, and a load of any ordering returns a value some store wrote: no memory-model question |
 | `Arenas::init` (S58) | reassigned: raw pointer (internal), RefinedRust | single-threaded in-place construction; its `Release` store is published again by `READY` |
@@ -418,3 +444,29 @@ harness over every ordering would fail until the `requires` is added.
 Every caller passes `Relaxed` or `Acquire`. vstd's own `load`
 specifications have the same gap. The `compiler_fence` specification
 has no caller in `src/`.
+
+### Second pass (2026-10-04)
+
+The 14 seams still with loom/GenMC and no record at commit 0c9cd77,
+plus the two earlier evidence records (seam numbers of that commit). GenMC
+is still not installed (no C toolchain to build it), so every result is
+loom's. No model found an outcome a contract excludes for a program
+within the C contract; the free path's outcomes after a `Relaxed`
+hand-off (a data race on the block) are P5's documented ones.
+
+| Seam | Result | Why |
+|---|---|---|
+| `load` (`vspec/word.rs`, S373) | discharged | per-word coherence gives the value; the proof uses it only for "a set bit is not a guard slab", true of every value; P5 models |
+| `WordPerm` (S370) | discharged | its four wrappers are discharged; `run.sh` checks by name that non-test `bitmap.rs` writes words only through them and `class/table.rs` writes none |
+| `fetch_add`, `fetch_sub` (`vspec/count.rs`, S289, S290) | discharged | RMW atomicity for every ordering; theorem 34's invariants each name one counter and pure ghost tickets; count models |
+| `load` (`vspec/count.rs`, S291) | evidence | as `fetch_add`, but the contract does not exclude `Release`/`AcqRel`, with which `core`'s `load` panics (no caller passes them; a `requires` would make it a discharge) |
+| `CountPerm` (S288) | discharged | as `WordPerm`, over the count wrappers; `run.sh` checks by name that `arena.rs` touches the counts only through them and `init`'s zeroing |
+| `load_owner` (S86) | evidence | write-read coherence gives the stored arena to a load ordered after the store; that each caller is so ordered is the doc comment's premise, not in the contract (a free meets it when it follows its allocation, as C requires; a racy or invalid free can read 0) |
+| `store_owner` (S87) | discharged | the store is the word's only write (Verus's markers), so every load ordered after it reads `arena`; excluding the others is the reader's premise |
+| `claim_init` (S28) | discharged | a successful exchange reads `UNINIT`, which only the initial value holds, so at most one per process; `run.sh` checks `STATE` has two writes |
+| `LockGuard::deref`, `deref_mut` (S183, S184) | discharged | P2 models (mutual exclusion and the release/acquire edge) and C11's visible side effect; the models use a loom cell beside the real lock word, not `Lock<T>` |
+| `SlabDesc::sub_live` (S206) | discharged | the contract now requires `may_abort()` and claims no value, so the assertion's abort is allowed; one wait-free RMW |
+| `RawLock::lock_slow` (S178) | evidence (unchanged) | deadlock freedom only; the mutex is not starvation-free |
+| `Arenas::count` (S63) | declined, tool Verus | every store writes at most `MAX_ARENAS` and a load returns a stored value: an allocator invariant, provable as the bound counts are |
+| `words_ref` (S93) | declined, tool none | a raw-pointer slice over permissions; no memory-model content |
+| `Lock::get_unlocked` (S182) | declined, tool none | its `ensures` is the lock invariant (every holder restores it), the assumption `axiom_acquired` also makes |

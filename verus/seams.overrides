@@ -67,8 +67,8 @@ axiom_fresh_words	allocator invariant	none (assumption)
 axiom_init_descs	raw pointer (internal)	none (assumption)
 axiom_init_owners	raw pointer (internal)	none (assumption)
 axiom_init_words	raw pointer (internal)	none (assumption)
-load_owner	allocator invariant	loom/GenMC
-store_owner	allocator invariant	loom/GenMC
+load_owner	allocator invariant	loom/GenMC	evidence (verus/seams/class-table-load_owner.md)
+store_owner	allocator invariant	loom/GenMC	discharged (verus/seams/class-table-store_owner.md)
 desc_ptr_addr	raw pointer (internal)	Kani	discharged (verus/seams/class-verify-desc_ptr_addr.md)
 Config::set_listed	function pointer	Kani	discharged (verus/seams/config-Config-set_listed.md)
 Config::get	function pointer	Kani	discharged (verus/seams/config-Config-get.md)
@@ -162,8 +162,8 @@ axiom_raw_valid	raw pointer (internal)	none (assumption)
 axiom_fresh_anon_zero	platform/kernel fact	none (assumption)
 axiom_discarded_zero	platform/kernel fact	none (assumption)
 Unbacked::commit	platform/kernel fact	none (assumption)
-WordPerm	atomics primitive	loom/GenMC
-CountPerm	atomics primitive	loom/GenMC
+WordPerm	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-WordPerm.md)
+CountPerm	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-CountPerm.md)
 core::sync::atomic::compiler_fence	core library	Kani
 crate::layout::adopt_page_geometry	UnsafeCell/volatile/transmute	Verus
 core::fmt::Formatter::<'a>::write_str	core library	Kani	discharged (verus/seams/vspec-fmt-Formatter-write_str.md)
@@ -275,10 +275,19 @@ src/api/mallctl.rs:shared	allocator invariant	none (assumption)
 init_slow	termination	loom/GenMC	discharged (verus/seams/api-init_slow.md)
 src/purge/background.rs:main	termination	loom/GenMC	discharged (verus/seams/purge-background-main.md)
 RawLock::lock_slow	termination	loom/GenMC	evidence (verus/seams/lock-RawLock-lock_slow.md)
-SlabDesc::sub_live	atomics primitive	loom/GenMC	evidence (verus/seams/slab-SlabDesc-sub_live.md)
+SlabDesc::sub_live	atomics primitive	loom/GenMC	discharged (verus/seams/slab-SlabDesc-sub_live.md)
 fetch_or	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-fetch_or.md)
 fetch_and	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-fetch_and.md)
 src/vspec/word.rs:store	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-store.md)
+src/vspec/word.rs:load	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-load.md)
+fetch_add	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-fetch_add.md)
+fetch_sub	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-fetch_sub.md)
+src/vspec/count.rs:load	atomics primitive	loom/GenMC	evidence (verus/seams/vspec-count-load.md)
+claim_init	atomics primitive	loom/GenMC	discharged (verus/seams/api-claim_init.md)
+# Arenas::count: every store writes at most MAX_ARENAS and a load returns
+# a stored value, so no memory-model question; provable in Verus as the
+# bound counts are (vspec/count.rs), once a permission wraps it.
+Arenas::count	allocator invariant	Verus
 SlabTable::watermark	allocator invariant	RefinedRust
 Policy::position	allocator invariant	RefinedRust
 load_lg_slab_min	allocator invariant	RefinedRust
@@ -307,7 +316,7 @@ src/class/mod.rs:axiom_class_lock_inv	allocator invariant	none (assumption)
 src/class/sets.rs:axiom_set_tables_lock_inv	allocator invariant	none (assumption)
 src/class/table.rs:axiom_table_lock_frame	allocator invariant	none (assumption)
 src/class/table.rs:axiom_table_lock_inv	allocator invariant	none (assumption)
-src/class/table.rs:words_ref	raw pointer (internal)	loom/GenMC
+src/class/table.rs:words_ref	raw pointer (internal)	none (assumption)
 src/class/verify.rs:read_word	UnsafeCell/volatile/transmute	none (assumption)
 src/heap/mod.rs:Heap::destroy	raw pointer (internal)	none (assumption)
 src/heap/mod.rs:init_fields	raw pointer (internal)	none (assumption)
@@ -316,9 +325,9 @@ src/heap/thread.rs:heap_from_slot	raw pointer (internal)	none (assumption)
 src/huge/mod.rs:Huge::check_zero	UnsafeCell/volatile/transmute	none (assumption)
 src/layout/mod.rs:ClassTable::new	UnsafeCell/volatile/transmute	none (assumption)
 src/layout/mod.rs:ClassTable::table	UnsafeCell/volatile/transmute	none (assumption)
-src/lock.rs:Lock::get_unlocked	UnsafeCell/volatile/transmute	loom/GenMC
-src/lock.rs:LockGuard::deref	UnsafeCell/volatile/transmute	loom/GenMC
-src/lock.rs:LockGuard::deref_mut	UnsafeCell/volatile/transmute	loom/GenMC
+src/lock.rs:Lock::get_unlocked	UnsafeCell/volatile/transmute	none (assumption)
+src/lock.rs:LockGuard::deref	UnsafeCell/volatile/transmute	loom/GenMC	discharged (verus/seams/lock-LockGuard-deref.md)
+src/lock.rs:LockGuard::deref_mut	UnsafeCell/volatile/transmute	loom/GenMC	discharged (verus/seams/lock-LockGuard-deref_mut.md)
 src/purge/background.rs:axiom_state_lock_inv	allocator invariant	none (assumption)
 src/purge/background.rs:shared_arg	raw pointer (internal)	none (assumption)
 src/slab.rs:SlabDesc::at	raw pointer (internal)	none (assumption)

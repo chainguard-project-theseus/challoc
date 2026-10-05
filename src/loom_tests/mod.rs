@@ -3,7 +3,10 @@
 //! Built only under `cfg(loom)`, where `crate::sync` re-exports loom's
 //! atomics and the crate is cut down to the modules whose real code is
 //! checked here (`lib.rs`): `lock` (P2, the futex replaced by the
-//! stand-in in `futex`) and `bitmap` (P1, with `vspec::word`). The
+//! stand-in in `futex`), `bitmap` (P1, with `vspec::word`) and the
+//! `vspec::word`/`vspec::count` wrappers that `free.rs` (P5, with copies
+//! of the table steps) and `count.rs` (the arena bound counts, with
+//! copies of the `Arenas` steps) call. The
 //! background wake-up (P3), the background thread's exit and the
 //! publication of `Shared` (P4) live in statics built in `const` context,
 //! which loom cannot construct, so `background.rs`, `exit.rs` and
@@ -33,9 +36,13 @@ mod background;
 #[cfg(test)]
 mod bitmap;
 #[cfg(test)]
+mod count;
+#[cfg(test)]
 mod dpor;
 #[cfg(test)]
 mod exit;
+#[cfg(test)]
+mod free;
 #[cfg(test)]
 pub(crate) mod futex;
 #[cfg(test)]
@@ -46,7 +53,7 @@ mod lock;
 /// Run `f` under every interleaving loom reaches (exhaustive: no
 /// preemption bound unless `LOOM_MAX_PREEMPTIONS` sets one).
 fn model<F: Fn() + Sync + Send + 'static>(f: F) {
-    loom::model::Builder::new().check(f);
+    check(loom::model::Builder::new(), f);
 }
 
 /// Run `f` with at most `bound` preemptions (unless
@@ -58,5 +65,19 @@ fn model_bounded<F: Fn() + Sync + Send + 'static>(bound: usize, f: F) {
     if b.preemption_bound.is_none() {
         b.preemption_bound = Some(bound);
     }
-    b.check(f);
+    check(b, f);
+}
+
+/// Run the model and print how many executions it explored (shown with
+/// `--nocapture`; the records quote these counts).
+fn check<F: Fn() + Sync + Send + 'static>(b: loom::model::Builder, f: F) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let n = Arc::new(AtomicUsize::new(0));
+    let m = n.clone();
+    b.check(move || {
+        m.fetch_add(1, Ordering::Relaxed);
+        f()
+    });
+    std::println!("loom: {} executions", n.load(Ordering::Relaxed));
 }
