@@ -42,8 +42,12 @@ use vstd::prelude::{Tracked, verus};
 /// `std::new_handler`: `void (*)()`, null when none is installed.
 type NewHandler = Option<unsafe extern "C" fn()>;
 
+verus! {
+
 /// Address of libstdc++'s `std::get_new_handler()`, or null when no
 /// libstdc++ is loaded in the process.
+/// Trusted: inline assembly.
+#[verifier::external_body]
 #[inline(never)]
 fn get_new_handler_addr() -> *const c_void {
     let out: *const c_void;
@@ -67,8 +71,6 @@ fn get_new_handler_addr() -> *const c_void {
     }
     out
 }
-
-verus! {
 
 /// Address of libstdc++'s `std::__throw_bad_alloc()`, or null.
 /// Trusted: inline assembly.
@@ -96,22 +98,6 @@ fn throw_bad_alloc_addr() -> *const c_void {
     }
     out
 }
-
-} // verus!
-
-/// The installed `new_handler`, if libstdc++ is present and one is set.
-fn new_handler() -> NewHandler {
-    let get = get_new_handler_addr();
-    if get.is_null() {
-        return None;
-    }
-    // SAFETY: `std::get_new_handler` takes no arguments and returns a plain
-    // function pointer, which is C-compatible on both ABIs.
-    let get: unsafe extern "C" fn() -> NewHandler = unsafe { core::mem::transmute(get) };
-    unsafe { get() }
-}
-
-verus! {
 
 /// Call `std::__throw_bad_alloc` at `t`, its non-null address.
 /// Trusted: calls a function pointer (Verus has no function pointer
@@ -151,12 +137,35 @@ fn throw_bad_alloc() -> !
 #[verifier::external_body]
 struct Handler(unsafe extern "C" fn());
 
-/// [`new_handler`] as a [`Handler`].
-/// Trusted: reads a function pointer from libstdc++.
+/// Call `std::get_new_handler` at `get`, its non-null address: the
+/// installed `new_handler`, if one is set.
+/// Trusted: calls a function pointer and reads one from libstdc++. That
+/// `get` is the address [`get_new_handler_addr`] returned is not stated
+/// (Verus cannot name it); [`installed_handler`] is the one caller.
 #[verifier::external_body]
 #[inline(always)]
-fn installed_handler() -> Option<Handler> {
-    new_handler().map(Handler)
+fn call_get_new_handler(get: *const c_void) -> Option<Handler>
+    requires
+        crate::sys::may_syscall(),
+        get@.addr != 0,
+{
+    // SAFETY: `std::get_new_handler` takes no arguments and returns a plain
+    // function pointer, which is C-compatible on both ABIs.
+    let get: unsafe extern "C" fn() -> NewHandler = unsafe { core::mem::transmute(get) };
+    unsafe { get() }.map(Handler)
+}
+
+/// The installed `new_handler`, if libstdc++ is present and one is set.
+#[inline(always)]
+fn installed_handler() -> Option<Handler>
+    requires
+        crate::sys::may_syscall(),
+{
+    let get = get_new_handler_addr();
+    if get.is_null() {
+        return None;
+    }
+    call_get_new_handler(get)
 }
 
 /// Call the program's `new_handler`.
@@ -618,6 +627,6 @@ mod tests {
         // run here.
         assert!(get_new_handler_addr().is_null());
         assert!(throw_bad_alloc_addr().is_null());
-        assert!(new_handler().is_none());
+        assert!(installed_handler().is_none());
     }
 }

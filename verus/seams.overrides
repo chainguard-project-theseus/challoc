@@ -11,7 +11,7 @@
 # "trusted" (see "Recording a non-Verus result" in verus/SEAMS.md). A
 # line that matches no seam is an error.
 Handler	function pointer	Kani
-installed_handler	function pointer	Kani
+atfork_handlers	function pointer	Kani
 oom	termination	none (assumption)
 set_errno	FFI/syscall	none (assumption)
 lend	C-program contract	none (assumption)
@@ -309,8 +309,6 @@ ClassState::claim_with	termination	RefinedRust
 # the tool its category's default would give is replaced here.
 src/api/mod.rs:Global::get	UnsafeCell/volatile/transmute	none (assumption)
 src/api/mod.rs:publish_features	UnsafeCell/volatile/transmute	none (assumption)
-src/api/mod.rs:save_sigmask	UnsafeCell/volatile/transmute	none (assumption)
-src/api/mod.rs:saved_sigmask	UnsafeCell/volatile/transmute	none (assumption)
 src/api/mod.rs:shared_ref	UnsafeCell/volatile/transmute	none (assumption)
 src/api/mod.rs:shared_storage_ptr	UnsafeCell/volatile/transmute	none (assumption)
 src/class/mod.rs:axiom_class_lock	allocator invariant	none (assumption)

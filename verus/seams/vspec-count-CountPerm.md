@@ -1,6 +1,6 @@
 # `CountPerm` (`vspec/count.rs`)
 
-Seam S286 of `verus/SEAMS.md`: src/vspec/count.rs:43. Kind: external_body type. Category: atomics primitive.
+Seam S285 of `verus/SEAMS.md`: src/vspec/count.rs:43. Kind: external_body type. Category: atomics primitive.
 Discharged by the records of its wrappers and `run.sh`'s access check
 (part 3).
 

@@ -1023,14 +1023,15 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   function it calls unchecked, `requires may_syscall()` too:
   `sys::getrandom`, `read`, `write` (`sys/mod.rs:569`, `:755`, `:825`),
   `linux::try_reserve` (`layout/regions.rs:1443`), `ThreadKey::create`
-  (`heap/shared.rs:255`), `register_fork_handlers` (`api/mod.rs:412`),
+  (`heap/shared.rs:255`), `atfork_handlers` (`api/mod.rs:502`),
   `background::spawn` and `pthread_join` (`purge/background.rs:333`,
   `:229`), `init_fields`, `Heap::destroy`
   (`heap/mod.rs:5158`, `:5382`), `Meta::commit`, `Meta::free`
   (`meta.rs:2745`, `:2796`), mallctl's reader call `call` and
   `heap_set_arena` (`api/mallctl.rs:192`, `:1462`), `print::emit`
   (the report's only call-out, theorem 16), the C++ `call_handler`,
-  `call_throw_bad_alloc` (`api/cxx.rs:163`, `:119`), the
+  `call_get_new_handler`, `call_throw_bad_alloc` (`api/cxx.rs:176`,
+  `:147`, `:107`), the
   `pthread_setspecific` wrapper (which may allocate; `heap/shared.rs`,
   from theorem 15, in place of an `assume_specification`), `Set::ensure`
   (`class/sets.rs`, which commits set words through `Meta`; its
@@ -1827,7 +1828,8 @@ axioms below are the other source.
   which keep the invariant their last holder left, as the lock axioms
   assume for every acquire.
 - The signal mask's save and restore (`save_sigmask`, `saved_sigmask`,
-  `external_body`) are not part of the statement.
+  verified, but Verus does not model `FORK_SIGMASK`'s contents) are not
+  part of the statement.
 
 ## 14. Arena isolation (slab ownership and release routing)
 
@@ -4703,8 +4705,8 @@ body), `malloc_info` and `malloc_stats`, which require `may_abort()`.
   0`; `huge_usable_pages` and `arena_at` require `may_abort_corrupt()`
   or their condition.
 - Every trusted body that can abort requires the capability: those that
-  call an abort or a function that requires it (`register_fork_handlers`,
-  `Heap::destroy`, `heap_set_arena`, `background::spawn`,
+  call an abort or a function that requires it (`Heap::destroy`,
+  `heap_set_arena`, `background::spawn`,
   `call_throw_bad_alloc`, `owner_locked`, `state_locked`,
   `page_group_is_idle`, `Huge::check_zero`, the `verus_only` stand-in
   `not_a_run_page`) and those that `assert!` or `panic!` (`check`,

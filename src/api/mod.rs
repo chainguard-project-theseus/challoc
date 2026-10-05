@@ -106,7 +106,7 @@ pub mod print;
 #[cfg(test)]
 mod c_programs;
 
-use crate::sync::atomic::{AtomicU32, Ordering};
+use crate::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 
@@ -189,6 +189,8 @@ exec static FEATURE_LINE: Global<FeatureLine> = Global::new();
 
 } // verus!
 
+verus! {
+
 /// Signal mask of the forking thread, saved by `fork_prepare` and restored by
 /// `fork_release`. One slot suffices because it is only written and read
 /// while the writer holds every allocator lock: a second thread in
@@ -196,10 +198,9 @@ exec static FEATURE_LINE: Global<FeatureLine> = Global::new();
 /// the unit tests call them directly) waits on the first class lock before
 /// it can store, and the releaser reads before its first unlock. A handler
 /// cannot nest a fork inside the window because signals are blocked for its
-/// duration.
-static FORK_SIGMASK: Global<u64> = Global::new();
-
-verus! {
+/// duration. An atomic so that verified code can read and write it: the
+/// accesses are relaxed (a plain load and store), ordered by the locks.
+exec static FORK_SIGMASK: AtomicU64 = AtomicU64::new(0);
 
 /// `SHARED` as a reference, the one read of the static every accessor
 /// below makes.
@@ -493,19 +494,29 @@ unsafe fn publish_features(features: Features) {
     }
 }
 
-/// Register the fork handlers, aborting if glibc refuses. Trusted: passes
-/// function pointers, which Verus does not support, and formats the abort.
+/// `pthread_atfork` with the three fork handlers: 0, or the error number.
+/// Trusted: passes function pointers, which Verus does not support.
+/// Nothing is claimed of the result.
 #[verifier::external_body]
+#[inline(always)]
+fn atfork_handlers() -> i32
+    requires
+        crate::sys::may_syscall(),
+{
+    // SAFETY: the three handlers are plain `extern "C"` functions that only
+    // touch allocator locks.
+    unsafe { ::libc::pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) }
+}
+
+/// Register the fork handlers, aborting if glibc refuses.
 #[inline(always)]
 fn register_fork_handlers()
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
-    // SAFETY: the three handlers are plain `extern "C"` functions that only
-    // touch allocator locks.
-    let rc =
-        unsafe { ::libc::pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) };
+    broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
+    let rc = atfork_handlers();
     if rc != 0 {
         sys::abort_fmt(format_args!("pthread_atfork failed: {}", sys::Errno(rc)));
     }
@@ -995,34 +1006,25 @@ extern "C" fn fork_prepare() {
     proof {
         assert(fork_holds(*s, held, state));
     }
-    // SAFETY: every allocator lock is held, so no other forking thread can
-    // touch the slot until `fork_release` has read it (see `FORK_SIGMASK`).
-    unsafe { save_sigmask(mask) };
+    // Every allocator lock is held, so no other forking thread can touch
+    // the slot until `fork_release` has read it (see `FORK_SIGMASK`).
+    save_sigmask(mask);
 }
 
-/// Save the signal mask for `fork_release`. Trusted: a write of the
-/// `UnsafeCell` behind [`FORK_SIGMASK`].
-///
-/// # Safety
-/// The caller holds every allocator lock (see [`FORK_SIGMASK`]).
-#[verifier::external_body]
+/// Save the signal mask for `fork_release`. The caller holds every
+/// allocator lock (see [`FORK_SIGMASK`]).
 #[inline(always)]
-unsafe fn save_sigmask(mask: u64) {
-    // SAFETY: guaranteed by the caller.
-    unsafe { (*FORK_SIGMASK.0.get()).write(mask) };
+fn save_sigmask(mask: u64) {
+    FORK_SIGMASK.store(mask, Ordering::Relaxed);
 }
 
-/// The signal mask `fork_prepare` saved. Trusted: a read of the
-/// `UnsafeCell` behind [`FORK_SIGMASK`].
-///
-/// # Safety
-/// Written by the `fork_prepare` that paired with this release, and still
-/// the caller's because every lock is held.
-#[verifier::external_body]
+/// The signal mask `fork_prepare` saved: written by the `fork_prepare`
+/// that paired with this release, and still the caller's because every
+/// lock is held. Nothing is claimed of the value (Verus does not model
+/// the atomic's contents).
 #[inline(always)]
-unsafe fn saved_sigmask() -> u64 {
-    // SAFETY: guaranteed by the caller.
-    unsafe { (*FORK_SIGMASK.0.get()).assume_init() }
+fn saved_sigmask() -> u64 {
+    FORK_SIGMASK.load(Ordering::Relaxed)
 }
 
 /// Release the locks taken by `fork_prepare`, in reverse order, then let
@@ -1040,9 +1042,9 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
 {
     let s = shared();
     let tracked mut held = axiom_fork_resumed(s, &state);
-    // SAFETY: written by the `fork_prepare` that paired with this release,
-    // and still ours because every lock is held until the unlocks below.
-    let mask = unsafe { saved_sigmask() };
+    // Written by the `fork_prepare` that paired with this release, and
+    // still ours because every lock is held until the unlocks below.
+    let mask = saved_sigmask();
     purge::background::fork_unlock(Tracked(state));
     // Arenas cannot appear while the creation lock is held, so this is the
     // same set `fork_prepare` locked (the premise `arena_held` and
