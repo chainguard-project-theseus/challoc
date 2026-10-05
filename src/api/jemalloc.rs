@@ -939,4 +939,33 @@ mod tests {
             dallocx(p, flags);
         }
     }
+
+    /// A sized free of a huge run accepts any size whose page count is the
+    /// run's: every size with the run's `nallocx`, the small size of a run
+    /// an alignment made huge, and the size `realloc` last kept.
+    #[test]
+    fn sdallocx_of_a_huge_run_takes_any_size_in_its_last_page() {
+        let size = (1 << 20) + 1;
+        let usable = nallocx(size, 0);
+        for hint in [size, usable - 1, usable] {
+            let p = mallocx(size, 0);
+            assert!(!p.is_null());
+            assert_eq!(nallocx(hint, 0), usable);
+            sdallocx(p, hint, 0);
+        }
+        // A run an alignment made huge takes the small size it was asked
+        // for, with or without the alignment flag.
+        let flags = mallocx_lg_align(20) as c_int;
+        let p = mallocx(64, flags);
+        assert!(!p.is_null());
+        sdallocx(p, 64, flags);
+        let p = crate::api::libc::aligned_alloc(1 << 20, 64);
+        assert!(!p.is_null());
+        crate::api::libc::free_aligned_sized(p, 1 << 20, 64);
+        // A run `realloc` kept takes the size the caller last asked for.
+        let p = mallocx(1 << 20, 0);
+        let q = crate::api::libc::realloc(p, (1 << 20) - 100);
+        assert_eq!(q, p);
+        crate::api::libc::free_sized(q, (1 << 20) - 100);
+    }
 }

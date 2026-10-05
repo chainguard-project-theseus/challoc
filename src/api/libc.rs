@@ -272,7 +272,8 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>) {
 }
 
 /// C23 `free_sized(p, size)`: `size` must be the size requested from
-/// `malloc`/`calloc`/`realloc` (or any size in the same class).
+/// `malloc`/`calloc`/`realloc` (or any size in the same class, or for a
+/// huge run any size whose page count is the run's).
 #[inline(always)]
 pub fn free_sized(p: *mut u8, size: usize) {
     // As in `malloc`: a size above the small table is a tail call, so the
