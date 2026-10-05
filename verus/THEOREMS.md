@@ -4002,8 +4002,8 @@ bitmap side: every release goes back to the slot's own arena).
 The
 `file:line`s are the `fn` line at this section's commit.
 
-**Statement.** Two parts; the first is proved, the second is **false**
-today and is stated as what holds instead.
+**Statement.** Two parts; the first is proved, the second holds by
+construction (read from the code, not stated as an `ensures`).
 
 1. **Identities** (proved). Every `ArenaStats` an arena stores, and
    every one `collect_arena`, `collect_into` and `collect_all` compute,
@@ -4041,10 +4041,10 @@ today and is stated as what holds instead.
        r.inv()
    ```
 
-2. **Coherence** (one half by construction; the other false; what
-   holds). The intended claim: after an `epoch`, the stored per-arena
-   figures sum to the stored totals (they come from one collection),
-   and `mallctl("epoch")` returns the number its own refresh stored.
+2. **Coherence** (by construction, since upstream #91 and #92). After
+   an `epoch`, the stored per-arena figures sum to the stored totals
+   (they come from one collection), and `mallctl("epoch")` returns the
+   number its own refresh stored.
    - Arenas and totals (by construction, since upstream #91):
      `collect_into` takes the process statistics lock
      (`shared.stats.lock()`) first and holds it across its whole scan,
@@ -4066,16 +4066,19 @@ today and is stated as what holds instead.
      new collection beside the old totals. The lock order this needs
      (the process statistics lock ranked below the class locks) is
      theorem 33's.
-   - The epoch number (false): the `Epoch` arm of `mallctl::ctl`
-     (`api/mallctl.rs:1878`) calls `stats::epoch` and discards the
-     number it returns, then reads `stats::snapshot(shared).epoch`,
-     which another writer may have bumped in between. A concurrency
-     test (four threads, 2000 epoch writes each) reads the same number
-     back twice on every run (7988 to 7999 distinct of 8000). jemalloc
-     holds `ctl_mtx` across the refresh and the read. `stats::epoch`
-     itself returns the epoch number its own call stored (`collect_into`
-     stores and returns one `Snapshot` under one hold of the snapshot
-     lock).
+   - The epoch number (by construction, since upstream #92): the
+     `Epoch` arm of `mallctl::ctl` reads back, on a write, the number
+     `stats::epoch` returned, which is the epoch number its own call
+     stored (`collect_into` stores and returns one `Snapshot` under one
+     hold of the snapshot lock), and on a read alone
+     `stats::snapshot(shared).epoch`. Before the fix it discarded
+     `stats::epoch`'s number and re-read the snapshot, which another
+     writer may have bumped in between; the test
+     `api::mallctl::tests::concurrent_epoch_writes_read_back_their_own_numbers`
+     (four threads, 2000 epoch writes each, every number read back
+     distinct) read the same number back twice on every run (7988 to
+     7999 distinct of 8000) and passes now. jemalloc holds `ctl_mtx`
+     across the refresh and the read.
 
    Neither is stated as an `ensures`: `collect_into`'s ties only the
    totals' `allocated` (`totals_exact`) and `mapped` to `rd`, not to
@@ -4143,9 +4146,12 @@ for `k <= 256`.
   not exact.
 - `pactive` and `pdirty` (`active / page`, `dirty / page`) and the bins'
   counters are outside the identities.
-- Coherence across concurrent epochs, and between an epoch's arena
-  stores and its snapshot store for a concurrent reader, is false
-  (part 2).
+- Coherence (part 2) is read from the code, not proved: no `ensures`
+  ties the figures stored under the arenas' statistics locks to the
+  totals stored under the process statistics lock, and a reader of one
+  arena's `stats.arenas.<i>.*` (`arena_stats`, which does not take the
+  process statistics lock) may see it from a newer collection than the
+  `stats.*` totals it read before.
 
 ## 28. Cache flush completeness
 

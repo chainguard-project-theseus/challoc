@@ -2663,10 +2663,13 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
     };
     match op {
         Epoch => {
-            if io.write::<u64>()?.is_some() {
-                stats::epoch(shared, Tracked(&mut ord));
-            }
-            io.read(stats::snapshot(shared, Tracked(&mut ord)).epoch, Tracked(cc))
+            // A write reads back the number its own refresh stored, not a
+            // later writer's.
+            let e = match io.write::<u64>()? {
+                Some(_) => stats::epoch(shared, Tracked(&mut ord)),
+                None => stats::snapshot(shared, Tracked(&mut ord)).epoch,
+            };
+            io.read(e, Tracked(cc))
         },
         BackgroundThread => {
             if let Some(on) = io.write_bool()? {
@@ -3530,6 +3533,57 @@ mod tests {
         let one: u64 = 1;
         assert_eq!(ctl_rw("epoch", Some(&mut e), Some(&one)), 0);
         e
+    }
+
+    /// Each `epoch` write stores a new number and reads that number back,
+    /// so concurrent writers all read back different numbers. The four
+    /// writers start every write together, on a private allocator so no
+    /// other test's epochs interleave.
+    #[test]
+    fn concurrent_epoch_writes_read_back_their_own_numbers() {
+        use std::sync::Barrier;
+        let s = crate::testutil::shared();
+        let mut mib = [0usize; MAX_MIB];
+        let (len, node) = name_to_mib(b"epoch", &mut mib).unwrap();
+        let write = || {
+            let mut e: u64 = 0;
+            let mut elen = size_of::<u64>();
+            let one: u64 = 1;
+            let io = Io {
+                oldp: &mut e as *mut u64 as *mut c_void,
+                oldlenp: &mut elen,
+                newp: &one as *const u64 as *const c_void,
+                newlen: size_of::<u64>(),
+            };
+            // Checked after the join: a failed write must not leave the
+            // other writers waiting at the barrier.
+            ctl(s, node, &mib[..len], &io, Tracked::assume_new()).map(|()| e)
+        };
+        let go = Barrier::new(4);
+        let seen: Vec<Result<u64, c_int>> = std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..4)
+                .map(|_| {
+                    sc.spawn(|| {
+                        (0..2000)
+                            .map(|_| {
+                                go.wait();
+                                write()
+                            })
+                            .collect::<Vec<Result<u64, c_int>>>()
+                    })
+                })
+                .collect();
+            hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+        let seen: Vec<u64> = seen.into_iter().map(|r| r.expect("epoch write")).collect();
+        let mut sorted = seen.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            (sorted.len(), sorted.first(), sorted.last()),
+            (seen.len(), Some(&1), Some(&(seen.len() as u64))),
+            "(distinct, lowest, highest) epoch numbers read back"
+        );
     }
 
     fn cstring_at(p: *const c_char) -> std::string::String {
