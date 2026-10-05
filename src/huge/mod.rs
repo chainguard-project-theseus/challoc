@@ -559,6 +559,28 @@ impl Huge {
         Some(self.usable_pages(size)? << self.lg_page)
     }
 
+    /// Pages a run for `size` bytes at `align` takes, its guard included, or
+    /// `None` when no placement in the region can hold it: the size cannot
+    /// be represented, the run is longer than the region, or `align` is
+    /// larger than the region. [`Huge::alloc_run`] and [`Huge::placeable`]
+    /// share these checks.
+    fn run_pages(&self, size: usize, align: usize) -> Option<usize> {
+        let need = self.usable_pages(size)?.checked_add(GUARD_PAGES)?;
+        if need > self.npages || align > (self.npages << self.lg_page) {
+            return None;
+        }
+        Some(need)
+    }
+
+    /// Whether [`Huge::alloc_run`] can place a run for `size` bytes at
+    /// `align` in an empty region: [`Huge::run_pages`] holds, and the run
+    /// fits from the first `align`-aligned page. Aligned starts repeat every
+    /// `align` bytes, so if the first one leaves no room, none does.
+    pub fn placeable(&self, size: usize, align: usize) -> bool {
+        self.run_pages(size, align)
+            .is_some_and(|need| self.align_page(0, align) + need <= self.npages)
+    }
+
     /// First page at or after `page` whose address is a multiple of
     /// `align` (a power of two).
     #[inline]
@@ -590,15 +612,10 @@ impl Huge {
             align.is_power_of_two(),
             "huge: alignment not a power of two"
         );
-        let Some(usable_pages) = self.usable_pages(size) else {
+        let Some(need) = self.run_pages(size, align) else {
             return Placed::NONE;
         };
-        let Some(need) = usable_pages.checked_add(GUARD_PAGES) else {
-            return Placed::NONE;
-        };
-        if need > self.npages || align > (self.npages << self.lg_page) {
-            return Placed::NONE;
-        }
+        let usable_pages = need - GUARD_PAGES;
         let page = self.page_size();
         let mut g = self.inner.lock();
         let Some((s, ext)) = self.find(&g, need, align) else {
