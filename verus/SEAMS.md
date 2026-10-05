@@ -3557,7 +3557,7 @@ pub fn commit(&self, addr: usize, len: usize, Tracked(ord): Tracked<&mut LockOrd
 
 ### S180. `empty_bytes`
 
-src/policy.rs:902. Kind: external_body. Category: panic/abort.
+src/policy.rs:905. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > `Empty` bytes held by every class of every arena and by the huge allocator: one lock hold per class that has an `Empty` slab (the lock-free `oldest_empty` says which), one for the huge allocator.

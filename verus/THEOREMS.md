@@ -2710,7 +2710,7 @@ extent touching the mark, returning it or `None`. Merges of `Empty` and
 A theorem about two pure functions, `band` and `effective_decay_ns`, at
 one fixed limit and one configured period. It is not about the stored
 policy the purge reads (`Policy`'s atomics, whose round trip is not
-proved and is not exact at the 70% edge, below), nor about the purge
+proved, below), nor about the purge
 being timely: what the decay walks do with the period is out of scope.
 
 Read at this section's commit (the `file:line`s are the `fn` line
@@ -2778,18 +2778,18 @@ either.
   by this theorem, and a higher limit at the same usage does lengthen
   the period, as it should.
 - Pure functions only. `Policy` stores the band as atomics
-  (`frac16`, `immediate`, `limited`; `Policy::apply`) and
-  `Policy::band` (`:703`) rebuilds it: that round trip is not proved
-  (`position` is `external_body` because Verus has no view of an
-  `AtomicU32`'s value), and it is not exact: usage at the 70% edge
-  (700,000 to 700,003 ppm of the limit) gives `Scaled(0)`, which
-  `Policy::band` reads back as `Low`. The period is the same, but the
-  advice is not: `advice` is lazy only with headroom, the `Low` band, so
-  by the design table usage at 70% is eager, while the stored policy's
-  `headroom()` reads `Low` there and the purge gets the lazy advice
-  (fixed upstream after this base; the code here still maps it).
+  (`scaled16`, one more than the position in the scaled band so that
+  `Scaled(0)` at the 70% edge is told from `Low`, 0 outside it;
+  `immediate`, `limited`; `Policy::apply`) and `Policy::band` (`:703`)
+  rebuilds it: that round trip is not proved. `Policy::position` reads
+  `scaled16` inside its atomic invariant (`FracPred`: at most
+  `FRAC_ONE + 1`), which bounds the value but does not say which store
+  wrote it; that `apply` stores `Scaled(f)` as `f + 1` and `band` reads
+  it back as `Scaled(f)` (the 70% edge's `Scaled(0)` included, no longer
+  read back as `Low`) is the code, checked by the test
+  `policy::tests::policy_band_round_trips_at_the_scaled_edge`.
   Concurrent `evaluate` calls or a reader between `apply`'s stores (a
-  torn `limited`/`frac16`/`immediate` triple) are not covered, nor is
+  torn `limited`/`scaled16`/`immediate` triple) are not covered, nor is
   what the decay walks do with the period.
 - A 0 limit. `spec_band(0, c)` is `Unlimited` for every usage, as for
   `UNLIMITED` (no limit known), while `thp::forced_by_limit` treats a 0

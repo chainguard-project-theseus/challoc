@@ -640,8 +640,9 @@ pub fn keep_ratio(cap: u64, retention: u64) -> (keep: u32)
 /// the periodic tick. All atomics: written by whichever thread took the
 /// sample, read by every slow path that runs periodic work.
 pub struct Policy {
-    /// Position in the scaled band ([`FRAC_ONE`] units); 0 outside it.
-    frac16: AtomicU32,
+    /// One more than the position in the scaled band ([`FRAC_ONE`] units),
+    /// so `Scaled(0)` at the 70% edge is told from `Low`; 0 outside it.
+    scaled16: AtomicU32,
     /// In the immediate band.
     immediate: AtomicBool,
     /// Keep ratio for the walks ([`KEEP_ALL`] when uncapped).
@@ -670,7 +671,7 @@ pub struct Policy {
     /// `Shared::init`).
     thp_forced: bool,
     /// Ghost (no bytes): the position's invariant ([`FracPred`]), which
-    /// holds its permission: it is at most [`FRAC_ONE`].
+    /// holds its permission: it is at most [`FRAC_ONE`] + 1.
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     frac_inv: Tracked<FracInv>,
 }
@@ -681,15 +682,16 @@ pub open spec fn frac_ns() -> int {
 }
 
 /// The position's invariant, keyed by the atomic's identity
-/// (`vspec::count::count_id`): it is at most [`FRAC_ONE`]. `new` makes
+/// (`vspec::count::count_id`): it is at most [`FRAC_ONE`] + 1. `new` makes
 /// it with the atomic (value 0), and `apply`, its one writer, swaps in
-/// the position of a band that satisfies `Band::wf`, inside it.
+/// one more than the position of a scaled band (clamped to [`FRAC_ONE`])
+/// or 0, inside it.
 pub struct FracPred;
 
 impl InvariantPredicate<int, CountPerm> for FracPred {
     open spec fn inv(k: int, perm: CountPerm) -> bool {
         &&& perm.id() == k
-        &&& perm.value() <= 0x1_0000
+        &&& perm.value() <= 0x1_0001
     }
 }
 
@@ -701,11 +703,11 @@ impl Policy {
     /// container whose `memory.events` already showed `high` events does
     /// not start with a full purge.
     pub const fn new(high_rises: u64, thp_forced: bool) -> Policy {
-        // The position, with its invariant (0, at most `FRAC_ONE`).
-        let (frac16, Tracked(fperm)) = crate::vspec::count::new(0);
-        let tracked frac_inv = FracInv::new(count_id(&frac16), fperm, frac_ns());
+        // The position, with its invariant (0, at most `FRAC_ONE` + 1).
+        let (scaled16, Tracked(fperm)) = crate::vspec::count::new(0);
+        let tracked frac_inv = FracInv::new(count_id(&scaled16), fperm, frac_ns());
         Policy {
-            frac16,
+            scaled16,
             immediate: AtomicBool::new(false),
             keep16: AtomicU32::new(KEEP_ALL),
             cap: AtomicU64::new(UNLIMITED),
@@ -724,23 +726,24 @@ impl Policy {
     /// [`frac_ns`].
     #[verifier::type_invariant]
     spec fn inv(self) -> bool {
-        &&& self.frac_inv@.constant() == count_id(&self.frac16)
+        &&& self.frac_inv@.constant() == count_id(&self.scaled16)
         &&& self.frac_inv@.namespace() == frac_ns()
     }
 
-    /// The stored position in the scaled band, read inside its invariant
-    /// ([`FracPred`]): at most [`FRAC_ONE`].
+    /// The stored position in the scaled band, one more than the position
+    /// (0 outside the band), read inside its invariant ([`FracPred`]): at
+    /// most [`FRAC_ONE`] + 1.
     #[inline(always)]
     fn position(&self) -> (f: u32)
         ensures
-            f <= 0x1_0000,
+            f <= 0x1_0001,
     {
         proof {
             use_type_invariant(self);
         }
         let f;
         vstd::open_atomic_invariant!(self.frac_inv.borrow() => perm => {
-            f = crate::vspec::count::load(&self.frac16, Ordering::Relaxed, Tracked(&perm));
+            f = crate::vspec::count::load(&self.scaled16, Ordering::Relaxed, Tracked(&perm));
         });
         f
     }
@@ -757,7 +760,7 @@ impl Policy {
         } else {
             match self.position() {
                 0 => Band::Low,
-                f => Band::Scaled(f),
+                f => Band::Scaled(f - 1),
             }
         }
     }
@@ -833,13 +836,13 @@ impl Policy {
     /// process-wide `Empty` bytes) and the cgroup's `high_rises` count.
     /// Returns `true` when the decay driver should look again now (the
     /// band changed or a full purge is owed).
-    pub fn apply(&self, band: Band, limit: u64, retention: u64, high_rises: u64) -> bool
-        requires
-            band.wf(),
-    {
-        let (frac, immediate) = match band {
+    pub fn apply(&self, band: Band, limit: u64, retention: u64, high_rises: u64) -> bool {
+        proof {
+            frac_one_value();
+        }
+        let (scaled, immediate) = match band {
             Band::Unlimited | Band::Low => (0, false),
-            Band::Scaled(f) => (f, false),
+            Band::Scaled(f) => (f.min(FRAC_ONE) + 1, false),
             Band::Immediate => (0, true),
         };
         let limited = band != Band::Unlimited;
@@ -854,9 +857,9 @@ impl Policy {
         }
         let prev_frac;
         vstd::open_atomic_invariant!(self.frac_inv.borrow() => perm => {
-            prev_frac = crate::vspec::count::swap(&self.frac16, frac, Ordering::Relaxed, Tracked(&mut perm));
+            prev_frac = crate::vspec::count::swap(&self.scaled16, scaled, Ordering::Relaxed, Tracked(&mut perm));
         });
-        changed = (prev_frac != frac) || changed;
+        changed = (prev_frac != scaled) || changed;
         changed = (self.immediate.swap(immediate, Ordering::Relaxed) != immediate) || changed;
         self.cap.store(cap, Ordering::Relaxed);
         self.empty_bytes
@@ -1186,6 +1189,38 @@ mod tests {
             assert_eq!(advice(b, false, false), Eager, "{b:?}");
             // An explicit purge is eager in every band.
             assert_eq!(advice(b, true, true), Eager, "{b:?}");
+        }
+    }
+
+    /// `apply` then `band` gives back every band [`band`] produces, the
+    /// bottom of the scaled band (`Scaled(0)`, from 70% to just above it)
+    /// included: it is not read back as `Low`, so it gets no headroom and
+    /// no lazy advice.
+    #[test]
+    fn policy_band_round_trips_at_the_scaled_edge() {
+        // 700_003 ppm: above the edge, still position 0 in the band.
+        let giga = 1_000_000_000u64;
+        assert_eq!(band(giga, giga * 7 / 10 + 3_000), Band::Scaled(0));
+        for (limit, current) in [
+            (L, L * 7 / 10),
+            (giga, giga * 7 / 10 + 3_000),
+            (L, L * 8 / 10),
+            (L, L * 9 / 10 - 1),
+        ] {
+            let b = band(limit, current);
+            assert!(matches!(b, Band::Scaled(_)), "{current}/{limit}: {b:?}");
+            let p = Policy::new(0, false);
+            p.apply(band(limit, 0), limit, 0, 0);
+            assert!(p.headroom());
+            let changed = p.apply(b, limit, 0, 0);
+            assert_eq!(p.band(), b, "{current}/{limit}");
+            assert!(!p.headroom(), "{b:?}");
+            assert!(changed, "{b:?} is a change from Low");
+        }
+        for b in [Band::Unlimited, Band::Low, Band::Immediate] {
+            let p = Policy::new(0, false);
+            p.apply(b, L, 0, 0);
+            assert_eq!(p.band(), b);
         }
     }
 
