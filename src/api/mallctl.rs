@@ -63,6 +63,8 @@ use crate::arena::{ARENAS_ALL, MAX_ARENAS};
 use crate::config::{KEYS, Value};
 use crate::heap::{self, Heap, Shared};
 use crate::huge::RunState;
+#[cfg(verus_only)]
+use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, NBINS, NCLASSES};
 use crate::lock::LockOrder;
 #[cfg(verus_only)]
@@ -77,7 +79,7 @@ use Op::*;
 use Reading::*;
 #[cfg(verus_only)]
 use vstd::prelude::*;
-use vstd::prelude::{Ghost, Tracked, verus};
+use vstd::prelude::{Ghost, Tracked, int, verus};
 #[cfg(verus_only)]
 use vstd::string::*;
 
@@ -1813,14 +1815,20 @@ pub struct Utilization {
 }
 
 impl Utilization {
-    exec const ZERO: Utilization = Utilization {
-        slabcur_addr: ptr::null_mut(),
-        nfree: 0,
-        nregs: 0,
-        size: 0,
-        bin_nfree: 0,
-        bin_nregs: 0,
-    };
+    exec const ZERO: Utilization
+        ensures
+            triple_is(Self::ZERO, 0, 0, 0),
+            no_bin(Self::ZERO),
+    {
+        Utilization {
+            slabcur_addr: ptr::null_mut(),
+            nfree: 0,
+            nregs: 0,
+            size: 0,
+            bin_nfree: 0,
+            bin_nregs: 0,
+        }
+    }
 }
 
 // A trusted wrapper, claiming nothing, for a heap call a key makes:
@@ -1841,39 +1849,195 @@ fn heap_set_arena(h: &mut Heap, shared: &Shared, arena: u16, Tracked(ord): Track
     h.set_arena(shared, arena, Tracked(ord))
 }
 
+// ---------------------------------------------------------------------------
+// Exact utilization and defrag hint (the theorem "Utilization and defrag
+// hint are exact", verus/THEOREMS.md). The figures are atomic loads Verus
+// does not constrain, so the statement is over the values the call read:
+// each output is the stated function of `p`'s classification and of those
+// reads, as layer 1 of theorem 22 states the stats figures.
+// ---------------------------------------------------------------------------
+
+/// `rg.classify(p) == k` as far as [`Regions::classify`]'s postcondition
+/// fixes it: a slot start of a class region (which, with separated
+/// regions, is `Slab` of its class, slab and slot), a page start of the
+/// huge region with its page index, and `Invalid` for anything that is
+/// neither.
+///
+/// [`Regions::classify`]: crate::layout::Regions::classify
+pub open spec fn classified(rg: crate::layout::Regions, p: usize, k: Kind) -> bool {
+    &&& k matches Kind::Slab { class, slab, slot } ==> class < NCLASSES && slot < class_table()[class as int].nslots
+        && rg.is_slot_addr(class as int, p) && p as int == rg.slot_at(class as int, slab as int, slot as int)
+        && (slab as int) < rg.spec_nslabs(class as int)
+    &&& k matches Kind::Huge { page } ==> rg.is_huge_block(p, 1) && page == ((p - rg.huge_base) as usize) >> rg.lg_page
+    &&& rg.separated() ==> forall|c: int| #[trigger] rg.is_slot_addr(c, p) ==> (k matches Kind::Slab { class, .. } && class as int == c)
+}
+
+/// What a utilization query read (ghost): `p`'s classification, and the
+/// value each load returned. `allocated` is the slot's bitmap bit
+/// (`desc_if_committed`), `live` the slab's live count as `nfree` used
+/// it (`nslots - nfree`: the load, clamped at `nslots`), `found` that the
+/// arena the descriptor names is built, `st` and `curregs` that arena's
+/// class counters from one lock hold (`bin_stats`, theorem 22), `lowest`
+/// its lowest partial slab, and `run` the huge descriptor at `p`'s page
+/// (`Huge::lookup`, under the huge lock).
+/// the huge descriptor at `p`'s page (`Huge::lookup`, under the huge lock).
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub ghost struct UtilRead {
+    pub kind: Kind,
+    pub allocated: bool,
+    pub committed: bool,
+    pub live: int,
+    pub found: bool,
+    pub st: crate::class::ClassStats,
+    pub curregs: int,
+    pub lowest: Option<usize>,
+    pub run: Option<crate::huge::RunInfo>,
+}
+
+/// `a - b`, or 0 below zero (`saturating_sub`).
+pub open spec fn sat_sub(a: int, b: int) -> int {
+    if a >= b { a - b } else { 0 }
+}
+
+/// `u`'s `(nfree, nregs, size)` triple, the one `batch_query` stores.
+pub open spec fn triple_is(u: Utilization, nfree: int, nregs: int, size: int) -> bool {
+    u.nfree == nfree && u.nregs == nregs && u.size == size
+}
+
+/// No bin-wide figures and no current slab (the non-verbose query, and
+/// everything that is not a live slot of a bin class).
+pub open spec fn no_bin(u: Utilization) -> bool {
+    u.bin_nfree == 0 && u.bin_nregs == 0 && u.slabcur_addr@.addr == 0
+}
+
+/// The figures a query of `p` reports from the reads `rd`: for a live
+/// slot of a bin class (bit set, slab committed), `(nslots - live,
+/// nslots, nslots * size)`, plus, verbose and with the owning arena
+/// built, `curslabs * nslots` regions of which `curregs` are out and the
+/// lowest partial slab's address (null when there is none); `(0, 1,
+/// size)` for a live slot of a class above `BIN_MAX` (the classes from
+/// `NBINS` on); `(0, 1, usable)` for the start of an active huge run;
+/// zeros for everything else.
+#[verifier::opaque]
+pub open spec fn util_from(rg: crate::layout::Regions, p: usize, verbose: bool, rd: UtilRead, u: Utilization) -> bool {
+    match rd.kind {
+        Kind::Slab { class, .. } => {
+            let c = class_table()[class as int];
+            if !rd.allocated || !rd.committed {
+                triple_is(u, 0, 0, 0) && no_bin(u)
+            } else if c.size > crate::layout::BIN_MAX {
+                triple_is(u, 0, 1, c.size as int) && no_bin(u)
+            } else {
+                let curslabs = rd.st.committed - rd.st.empty - rd.st.purged;
+                &&& triple_is(u, sat_sub(c.nslots as int, rd.live), c.nslots as int, c.nslots * c.size)
+                &&& if verbose && rd.found {
+                    &&& u.bin_nregs == curslabs * c.nslots
+                    &&& u.bin_nfree == u.bin_nregs - rd.curregs
+                    &&& u.slabcur_addr@.addr == match rd.lowest {
+                        Some(s) => rg.class_base[class as int] + (s << c.lg_slab),
+                        None => 0,
+                    }
+                } else {
+                    no_bin(u)
+                }
+            }
+        },
+        Kind::Huge { page } => match rd.run {
+            Some(r) if r.start == page && r.state == RunState::Active => triple_is(u, 0, 1, r.usable as int) && no_bin(u),
+            _ => triple_is(u, 0, 0, 0) && no_bin(u),
+        },
+        Kind::Invalid => triple_is(u, 0, 0, 0) && no_bin(u),
+    }
+}
+
+/// `rd` is a possible read of a query of `p` that reported `u`: `rd.kind`
+/// is `p`'s classification, the counters are within what `bin_stats`
+/// returns (no more slots out than the live-capable slabs hold), the
+/// lowest partial slab is a slab of the class, and `u` is
+/// [`util_from`]`(rd)`.
+pub open spec fn util_read(rg: crate::layout::Regions, p: usize, verbose: bool, rd: UtilRead, u: Utilization) -> bool {
+    &&& classified(rg, p, rd.kind)
+    &&& rd.st.empty + rd.st.purged <= rd.st.committed
+    &&& 0 <= rd.curregs <= (rd.st.committed - rd.st.empty - rd.st.purged) * (match rd.kind {
+        Kind::Slab { class, .. } => class_table()[class as int].nslots as int,
+        _ => 0,
+    })
+    &&& (rd.lowest matches Some(s) ==> rd.kind matches Kind::Slab { class, .. } && (s as int) < rg.spec_nslabs(class as int))
+    &&& util_from(rg, p, verbose, rd, u)
+}
+
 /// The utilisation figures of `p` (see the module docs). `verbose` adds
 /// the bin-wide figures and `slabcur_addr`, which cost one class lock.
-pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilization
+pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> (u: Utilization)
     requires
         crate::sys::may_syscall(),
         shared.wf(),
+    ensures
+        // Exact over the values the call read ([`util_from`]).
+        exists|rd: UtilRead| #[trigger] util_read(crate::layout::process_regions(), p as usize, verbose, rd, u),
 {
     proof {
         shared.lemma_wf();
+        reveal(util_from);
     }
     // Premise (lock order): called from the `mallctl` entry points, which
     // hold no lock.
     let tracked mut ord = axiom_entry();
     let mut u = Utilization::ZERO;
+    let ghost mut rd = UtilRead {
+        kind: Kind::Invalid,
+        allocated: false,
+        committed: false,
+        live: 0,
+        found: false,
+        st: crate::class::ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0 },
+        curregs: 0,
+        lowest: None,
+        run: None,
+    };
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
+            proof {
+                rd.kind = Kind::Slab { class, slab, slot };
+                crate::vspec::class::axiom_class_table_wf(class as int);
+            }
             let class = class as usize;
             let t = shared.table(class);
             let cls = t.class();
             if !t.is_allocated(slab as usize, slot as usize) {
+                proof {
+                    assert(util_read(crate::layout::process_regions(), p as usize, verbose, rd, u));
+                }
                 return u;
             }
+            proof {
+                rd.allocated = true;
+            }
             let Some(d) = t.desc_if_committed(slab as usize) else {
+                proof {
+                    assert(util_read(crate::layout::process_regions(), p as usize, verbose, rd, u));
+                }
                 return u;
             };
+            proof {
+                rd.committed = true;
+            }
             if class >= NBINS {
                 // Reported like a large extent (`layout::BIN_MAX`): one
                 // region of its own size, no bin figures.
                 u.nregs = 1;
                 u.size = cls.size();
+                proof {
+                    assert(util_read(crate::layout::process_regions(), p as usize, verbose, rd, u));
+                }
                 return u;
             }
             u.nfree = d.nfree(cls);
+            proof {
+                // `nfree` is `nslots` less the live count it loaded.
+                rd.live = cls.nslots - u.nfree;
+            }
             u.nregs = cls.nslots();
             // The region bytes of the slab, not its power-of-two size: the
             // tail past the last slot belongs to no region, and Valkey's
@@ -1892,18 +2056,30 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
                                 c <= k,
                                 n >= 0,
                         ;
+                        rd.found = true;
+                        rd.st = st;
+                        rd.curregs = curregs as int;
                     }
                     u.bin_nregs = st.curslabs() * cls.nslots();
                     u.bin_nfree = u.bin_nregs.saturating_sub(curregs);
                     if let Some(s) = cs.lowest_partial(Tracked(&mut ord)) {
                         cs.nslabs_are_the_region_s();
                         u.slabcur_addr = addr_to_ptr(shared.regions.slab_addr(class, s)) as *mut c_void;
+                        proof {
+                            rd.lowest = Some(s);
+                        }
                     }
                 }
             }
         },
         Kind::Huge { page } => {
+            proof {
+                rd.kind = Kind::Huge { page };
+            }
             if let Some(r) = shared.huge.lookup(page, Tracked(&mut ord)) {
+                proof {
+                    rd.run = Some(r);
+                }
                 if r.start == page && r.state == RunState::Active {
                     u.nregs = 1;
                     u.size = r.usable;
@@ -1911,6 +2087,9 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
             }
         },
         Kind::Invalid => {},
+    }
+    proof {
+        assert(util_read(crate::layout::process_regions(), p as usize, verbose, rd, u));
     }
     u
 }
@@ -1950,6 +2129,12 @@ pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16>
     }
 }
 
+/// `(nfree, nregs, size)` is the triple a non-verbose utilization query of
+/// `p` reports for some possible read ([`util_read`]).
+pub open spec fn util_triple(rg: crate::layout::Regions, p: usize, nfree: int, nregs: int, size: int) -> bool {
+    exists|rd: UtilRead, u: Utilization| #[trigger] util_read(rg, p, false, rd, u) && triple_is(u, nfree, nregs, size)
+}
+
 /// Pointer `i` of the caller's `newp` array, whose byte length the caller
 /// gave as `newlen`. Trusted: a raw unaligned read of the 8 bytes at
 /// `ptrs + 8 * i`, which the precondition puts inside those `newlen` bytes
@@ -1984,9 +2169,14 @@ unsafe fn store_triple(
     nregs: usize,
     size: usize,
     Ghost(oldlen): Ghost<usize>,
+    Ghost(q): Ghost<*const c_void>,
 )
     requires
         (3 * i + 3) * 8 <= oldlen,
+        // What is stored is the non-verbose query of `q`, the pointer
+        // `query_ptr` read for index `i` (the theorem "Utilization and
+        // defrag hint are exact").
+        util_triple(crate::layout::process_regions(), q as usize, nfree as int, nregs as int, size as int),
 {
     // SAFETY: guaranteed by the caller.
     unsafe {
@@ -2041,8 +2231,9 @@ fn batch_query(shared: &Shared, io: &Io) -> Result<(), c_int>
         // SAFETY: `n` pointers are readable at `newp` and `3 * n` words
         // writable at `oldp`, both checked against the caller's lengths.
         unsafe {
-            let u = utilization(shared, query_ptr(ptrs, i, Ghost(io.newlen)), false);
-            store_triple(out, i, u.nfree, u.nregs, u.size, Ghost(oldlen));
+            let q = query_ptr(ptrs, i, Ghost(io.newlen));
+            let u = utilization(shared, q, false);
+            store_triple(out, i, u.nfree, u.nregs, u.size, Ghost(oldlen), Ghost(q));
         }
     }
     Ok(())

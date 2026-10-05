@@ -644,6 +644,73 @@ pub fn nallocx(size: usize, flags: c_int) -> (r: usize)
     usable_for(super::shared(), size, &f).unwrap_or(0)
 }
 
+/// What `get_defrag_hint` read (ghost): whether the allocator was ready,
+/// `p`'s classification, the slot's bitmap bit (`allocated`), that its
+/// slab is below the watermark (`committed`), the slab's live count, that
+/// the arena its descriptor names is built (`found`), that arena's lowest
+/// partial slab of the class (`lowest`), its counters from one lock hold
+/// (`st`, `curregs`: `bin_stats`, theorem 22), and what the current slab
+/// took out of `curregs` (`cur_live`: the live count of the lowest partial
+/// slab, clamped at `curregs`; `None` when there is no such slab or its
+/// descriptor read as uncommitted).
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub ghost struct HintRead {
+    pub ready: bool,
+    pub kind: Kind,
+    pub allocated: bool,
+    pub committed: bool,
+    pub live: int,
+    pub found: bool,
+    pub lowest: Option<usize>,
+    pub st: crate::class::ClassStats,
+    pub curregs: int,
+    pub cur_live: Option<int>,
+}
+
+/// The design 13.5 rule over the reads `rd`: `p` is a live slot (bit set,
+/// slab committed) of a slab class, its slab is not full (`live <
+/// nslots`), the owning arena is built, the slab is not the class's lowest
+/// partial slab there (jemalloc's `slabcur`), and `live * (curslabs - 1)
+/// <= curregs - live(slabcur)`, the current slab taken out of the average
+/// (both differences clamped at zero) when its descriptor was read, and
+/// `live * curslabs <= curregs` when it was not.
+#[verifier::opaque]
+pub open spec fn defrag_rule(rd: HintRead) -> bool {
+    &&& rd.ready
+    &&& match rd.kind {
+        Kind::Slab { class, slab, .. } => {
+            let n = class_table()[class as int].nslots as int;
+            let curslabs = rd.st.committed - rd.st.empty - rd.st.purged;
+            &&& rd.allocated
+            &&& rd.committed
+            &&& rd.live < n
+            &&& rd.found
+            &&& rd.lowest != Some(slab as usize)
+            &&& match rd.cur_live {
+                Some(l) => rd.live * crate::api::mallctl::sat_sub(curslabs, 1) <= crate::api::mallctl::sat_sub(rd.curregs, l),
+                None => rd.live * curslabs <= rd.curregs,
+            }
+        },
+        _ => false,
+    }
+}
+
+/// `rd` is a possible read of a `get_defrag_hint(p)` that returned `r`:
+/// once the allocator is ready, `rd.kind` is `p`'s classification in the
+/// process's regions; the counters are within what `bin_stats` returns,
+/// the slab's live count fits a `u32`, and `r` is 1 exactly when
+/// [`defrag_rule`] holds. `cur_live` is the amount `curregs` lost to the
+/// current slab (its live count, clamped at `curregs`).
+pub open spec fn hint_read(p: usize, rd: HintRead, r: c_int) -> bool {
+    &&& rd.ready ==> crate::api::mallctl::classified(crate::layout::process_regions(), p, rd.kind)
+    &&& rd.st.empty + rd.st.purged <= rd.st.committed
+    &&& 0 <= rd.live <= u32::MAX
+    &&& 0 <= rd.curregs
+    &&& (rd.cur_live matches Some(l) ==> 0 <= l)
+    &&& r == if defrag_rule(rd) { 1int } else { 0int }
+}
+
 /// `get_defrag_hint(ptr)`: the extension Redis adds to its bundled jemalloc
 /// (`iget_defrag_hint`), which KeyDB's defragmenter calls as
 /// `je_get_defrag_hint` on every allocation it considers moving
@@ -674,39 +741,111 @@ pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
         crate::sys::may_syscall(),
     ensures
         r == 0 || r == 1,
+        // Exact over the values the call read: 1 iff the design 13.5 rule.
+        exists|rd: HintRead| #[trigger] hint_read(p as usize, rd, r),
 {
-    let Some(shared) = super::shared_if_ready() else { return 0 };
+    proof {
+        reveal(defrag_rule);
+    }
+    let ghost mut rd = HintRead {
+        ready: false,
+        kind: Kind::Invalid,
+        allocated: false,
+        committed: false,
+        live: 0,
+        found: false,
+        lowest: None,
+        st: crate::class::ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0 },
+        curregs: 0,
+        cur_live: None,
+    };
+    let Some(shared) = super::shared_if_ready() else {
+        proof {
+            assert(hint_read(p as usize, rd, 0));
+        }
+        return 0;
+    };
     proof {
         shared.lemma_wf();
+        rd.ready = true;
     }
-    let Kind::Slab { class, slab, slot } = shared.regions.classify(p as usize) else { return 0 };
+    let Kind::Slab { class, slab, slot } = shared.regions.classify(p as usize) else {
+        proof {
+            // `rd.kind` stays `Invalid`: `classified` allows it for a huge
+            // page start, and `defrag_rule` treats the two alike.
+            assert(hint_read(p as usize, rd, 0));
+        }
+        return 0;
+    };
+    proof {
+        rd.kind = Kind::Slab { class, slab, slot };
+    }
     let class = class as usize;
     let t = shared.table(class);
     let (slab, slot) = (slab as usize, slot as usize);
     if !t.is_allocated(slab, slot) {
+        proof {
+            assert(hint_read(p as usize, rd, 0));
+        }
         return 0;
     }
-    let Some(d) = t.desc_if_committed(slab) else { return 0 };
+    proof {
+        rd.allocated = true;
+    }
+    let Some(d) = t.desc_if_committed(slab) else {
+        proof {
+            assert(hint_read(p as usize, rd, 0));
+        }
+        return 0;
+    };
     let cls = t.class();
     let live = d.live();
+    proof {
+        rd.committed = true;
+        rd.live = live as int;
+    }
     if live >= cls.nslots() {
+        proof {
+            assert(hint_read(p as usize, rd, 0));
+        }
         return 0;
     }
-    let Some(a) = shared.arenas.get_existing(d.arena()) else { return 0 };
+    let Some(a) = shared.arenas.get_existing(d.arena()) else {
+        proof {
+            assert(hint_read(p as usize, rd, 0));
+        }
+        return 0;
+    };
+    proof {
+        rd.found = true;
+    }
     let cs = a.class(class);
     // Premise (lock order): called from the entry point, which holds no
     // lock.
     let tracked mut ord = axiom_entry();
     let slabcur = cs.lowest_partial(Tracked(&mut ord));
+    proof {
+        rd.lowest = slabcur;
+    }
     if slabcur == Some(slab) {
+        proof {
+            assert(hint_read(p as usize, rd, 0));
+        }
         return 0;
     }
     let (st, mut curregs) = cs.bin_stats(Tracked(&mut ord));
     let mut curslabs = st.curslabs();
+    proof {
+        rd.st = st;
+        rd.curregs = curregs as int;
+    }
     if let Some(dc) = slabcur.and_then(|s| t.desc_if_committed(s)) {
         // Take the current slab out of the average, as jemalloc does.
         curregs = curregs.saturating_sub(dc.live());
         curslabs = curslabs.saturating_sub(1);
+        proof {
+            rd.cur_live = Some(rd.curregs - curregs);
+        }
     }
     proof {
         // `live` is below the class's `nslots` and `curslabs` at most the
@@ -717,6 +856,9 @@ pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
             requires
                 0 <= live < n,
                 0 <= curslabs <= c;
+    }
+    proof {
+        assert(hint_read(p as usize, rd, (live * curslabs <= curregs) as c_int));
     }
     (live * curslabs <= curregs) as c_int
 }

@@ -1,6 +1,6 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the thirty-four whole-allocator theorems as the code
+Reference for the thirty-five whole-allocator theorems as the code
 states them: the Verus statement, the entry points it covers, and every
 trusted premise it rests on, with `file:line`. Read at `b2cad68`
 (branch `verus`); line numbers are the `fn`/`axiom` line at that commit,
@@ -5229,6 +5229,231 @@ counted.
 - `Arenas::bound` and `get_existing` (the exit purge's "last heap left"
   test in `destroy`) are outside: `destroy` is trusted.
 
+## 35. Utilization and defrag hint are exact (over the values read)
+
+The `file:line`s are the `fn`/`spec` line at this section's commit.
+Valkey's and KeyDB's defragmenters depend on these shapes
+(`allocatorShouldDefrag` divides `size` by `nregs` and asserts a bin
+size; `activeDefragAlloc` moves an object when the hint is 1).
+
+**Statement.** Over the values each call loaded (a ghost record its body
+fills in from the loaded locals; Verus does not constrain the loads,
+so "exact" is over those values, as in layer 1 of theorem 22):
+`experimental.utilization.query` (`utilization`, `api/mallctl.rs:1938`)
+and every triple `batch_query` (`:2160`) stores report, for a live slot
+(bitmap bit set, slab below the watermark) of a bin class, `(nslots -
+live, nslots, nslots * size)`, plus, verbose and with the owning arena
+built, `bin_nregs = curslabs * nslots`, `bin_nfree = bin_nregs -
+curregs` and the lowest partial slab's address as `slabcur_addr` (null
+when there is none); `(0, 1, size)` for a live slot of a class above
+`BIN_MAX`; `(0, 1, usable)` for the start of an active huge run; zeros
+for everything else. `get_defrag_hint(p)` (`api/jemalloc.rs:736`) is 1
+exactly when the design 13.5 rule holds over its reads: the allocator is
+ready, `p` is a live slot of a slab class whose slab is not full (`live
+< nslots`), the owning arena is built, the slab is not that arena's
+lowest partial slab of the class (jemalloc's `slabcur`), and `live *
+(curslabs - 1) <= curregs - live(slabcur)` (both differences clamped at
+zero; `live * curslabs <= curregs` when the current slab's descriptor
+read as uncommitted or there is no partial slab); 0 otherwise.
+
+Each function proves this in its body: at every `return` it asserts
+`util_read`/`hint_read` of the record built from what it loaded. Its
+`ensures` exports it as an existential over the record, so what a caller
+can use is weaker (see "Where the statement is weaker than the code").
+
+```rust
+// api/mallctl.rs:1938
+pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> (u: Utilization)
+    requires crate::sys::may_syscall(), shared.wf(),
+    ensures
+        exists|rd: UtilRead| #[trigger] util_read(crate::layout::process_regions(), p as usize, verbose, rd, u),
+
+// api/mallctl.rs:1889 (opaque, revealed in utilization; abridged; c = class_table()[class])
+pub open spec fn util_from(rg: Regions, p: usize, verbose: bool, rd: UtilRead, u: Utilization) -> bool {
+    match rd.kind {
+        Kind::Slab { class, .. } =>
+            if !rd.allocated || !rd.committed { triple_is(u, 0, 0, 0) && no_bin(u) }
+            else if c.size > BIN_MAX { triple_is(u, 0, 1, c.size) && no_bin(u) }
+            else {
+                &&& triple_is(u, sat_sub(c.nslots, rd.live), c.nslots, c.nslots * c.size)
+                &&& if verbose && rd.found {
+                    &&& u.bin_nregs == curslabs * c.nslots
+                    &&& u.bin_nfree == u.bin_nregs - rd.curregs
+                    &&& u.slabcur_addr@.addr == match rd.lowest {
+                        Some(s) => rg.class_base[class] + (s << c.lg_slab), None => 0 }
+                } else { no_bin(u) }
+            },
+        Kind::Huge { page } => match rd.run {
+            Some(r) if r.start == page && r.state == RunState::Active =>
+                triple_is(u, 0, 1, r.usable) && no_bin(u),
+            _ => triple_is(u, 0, 0, 0) && no_bin(u) },
+        Kind::Invalid => triple_is(u, 0, 0, 0) && no_bin(u),
+    }
+}
+// :1925: util_read = classified(rg, p, rd.kind) (:1833, classify's
+// postcondition), the bin_stats bounds on rd.st and rd.curregs
+// (curregs <= curslabs * nslots), rd.lowest a slab of the class, and util_from.
+
+// api/mallctl.rs:2131 (trusted writer; the precondition is checked at the call)
+unsafe fn store_triple(out: *mut usize, i: usize, nfree: usize, nregs: usize, size: usize,
+    Ghost(oldlen): Ghost<usize>, Ghost(q): Ghost<*const c_void>)
+    requires
+        (3 * i + 3) * 8 <= oldlen,
+        util_triple(crate::layout::process_regions(), q as usize, nfree, nregs, size),
+// batch_query's loop body (:2160):
+//     let q = query_ptr(ptrs, i, Ghost(io.newlen));
+//     let u = utilization(shared, q, false);
+//     store_triple(out, i, u.nfree, u.nregs, u.size, Ghost(oldlen), Ghost(q));
+
+// api/jemalloc.rs:736, :676 (opaque, revealed in get_defrag_hint), :702
+pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
+    requires crate::sys::may_syscall(),
+    ensures r == 0 || r == 1, exists|rd: HintRead| #[trigger] hint_read(p as usize, rd, r),
+pub open spec fn defrag_rule(rd: HintRead) -> bool {
+    &&& rd.ready
+    &&& match rd.kind {
+        Kind::Slab { class, slab, .. } => {
+            &&& rd.allocated &&& rd.committed &&& rd.live < n &&& rd.found
+            &&& rd.lowest != Some(slab as usize)
+            &&& match rd.cur_live {
+                Some(l) => rd.live * sat_sub(curslabs, 1) <= sat_sub(rd.curregs, l),
+                None => rd.live * curslabs <= rd.curregs }
+        },
+        _ => false }
+}
+// hint_read: rd.ready ==> classified(process_regions(), p, rd.kind), the
+// bin_stats bound on rd.st, rd.live <= u32::MAX, and
+// r == if defrag_rule(rd) { 1 } else { 0 }.
+```
+
+`UtilRead` (`:1852`) and `HintRead` (`api/jemalloc.rs:655`) are ghost
+records of what the call read: `p`'s classification, the slot's bitmap
+bit (`is_allocated`), the watermark test (`desc_if_committed`), the slab's
+live count (`live`'s load in the hint; `nslots - nfree` in the query,
+that is `nfree`'s load clamped at `nslots`), whether the arena the
+descriptor names is built (`get_existing`), that arena's class counters
+from one lock hold (`bin_stats`: `st`, `curregs`), its lowest partial
+slab (`lowest_partial`), the huge descriptor at `p`'s page
+(`Huge::lookup`, under the huge lock), and for the hint the amount
+`curregs` lost to the current slab (`cur_live`: its live count clamped at
+`curregs`).
+
+In words:
+
+- **The classification is exact.** `classified` restates
+  `Regions::classify`'s postcondition; with `Shared::wf`'s separated
+  regions a slot start is `Slab` of its class, slab and slot, and a
+  `Huge` page is the page start it names. So "a live slot of a bin
+  class" in the figures is `p`'s own class and slot.
+- **The shapes are exact.** For each branch the figure is the stated
+  function of the reads, with no slack: `nfree = nslots - live`
+  (`SlabDesc::nfree` now ensures `r <= class.nslots`), `nregs`, `size`
+  and `bin_nregs` exact products, `bin_nfree` an exact difference
+  (`bin_stats`' clamp keeps `curregs` within `bin_nregs`, so the
+  `saturating_sub` never clamps), the slab address `slab_addr`'s. The
+  `BIN_MAX` boundary is by size: `NBINS` now ensures that the classes
+  below it are exactly those whose `spec_class_size` is at most `BIN_MAX`
+  (`layout/mod.rs:129`; `count_bins`, `:138`, proves it with
+  `lemma_class_size_mono`), and `Utilization::ZERO`
+  (`api/mallctl.rs:1784`) ensures its zero figures.
+- **`batch_query` stores exactly those triples.** `store_triple` requires
+  its triple to be `util_triple` of `q`, the pointer `query_ptr` read for
+  index `i` (passed as a ghost argument): some possible read of a
+  non-verbose query of `q` reports that triple. Verus checks the
+  precondition at the one call, so every triple written is the query's
+  answer for the pointer read at its index.
+- **The hint is the rule.** In the body, `r == 1` iff `defrag_rule(rd)`
+  for the record of the loads; every early `return 0` (not ready, not a
+  slot, bit clear, uncommitted, full slab, no arena, `slab == slabcur`)
+  is a conjunct the rule requires.
+- **`curregs` is theorem 22's.** The `curregs` read is `bin_stats`'
+  second value, the figure theorem 22 sums: at a quiescent state it is
+  the arena's `claimed - released` for the class, its slots out (cached
+  and live, `Books::theorem_quiescent`).
+
+Machine code is unchanged (x86_64 disassembly identical to the base
+`0c9cd77`): the read records and the new parameter of `store_triple` are
+ghost, `NBINS`, `count_bins` and `ZERO` keep their bodies (an `exec
+const` with an `ensures` evaluates the same expression), and the one
+exec edit, `batch_query` binding `query_ptr`'s result to `q` before
+passing it to `utilization`, is the same expression evaluated in the same
+order.
+
+**How it is proved.** A ghost `rd` is filled in as each value is read
+(`rd.live = cls.nslots - u.nfree` from `nfree`'s bound in `utilization`;
+`rd.cur_live` is `curregs` before less `curregs` after the subtraction
+in the hint), and each `return` asserts `util_read`/`hint_read` of it,
+the trigger of the existential `ensures`. `util_from` and `defrag_rule`
+are opaque, revealed only in the two bodies, so their callers' queries
+hold them as atoms. The `BIN_MAX` branch uses `axiom_class_table_wf`
+(`size == spec_class_size`) and `NBINS`' new `ensures`. `util_triple`'s
+existential has one trigger, `util_read(.., rd, u)`, over a conjunction
+whose other conjunct (`triple_is(u, ..)`) does not mention `rd`, so it
+cannot carry a trigger of its own; it is a goal (proved from
+`utilization`'s `ensures` at the call), not a hypothesis instantiated
+elsewhere.
+
+**Findings.** None: the code matches the statement. The tests
+`utilization_queries_answer_valkeys_defragmenter` (`api/mallctl.rs:3804`)
+and `get_defrag_hint_follows_the_utilization_data`
+(`api/jemalloc.rs:1428`) exercise the shapes and the rule at run time.
+
+**Premises beyond the common ones.**
+- The loads Verus does not constrain are the reads: the bitmap word, the
+  watermark, the descriptor's `live` and `arena`, the arena table entry,
+  the class's `released`/`claimed` and its locked `stats`, the partial
+  set and the huge descriptor. "Exact" is over those values.
+- The records are what was loaded: each field is set from the local the
+  code loaded (by reading the body; the `ensures` cannot name the
+  instant of a load).
+- `query_ptr` and `store_triple` (`external_body`, ledger S20 and S21):
+  `query_ptr` returns the pointer at index `i` of the caller's array;
+  `store_triple` writes `nfree`, `nregs`, `size` at words `3i..3i+3` and
+  nothing else. That the stored triples are still there when `mallctl`
+  returns needs the caller's `oldp` and `newp` not to overlap (a later
+  `store_triple` could overwrite a pointer before it is read, or a later
+  query read a stored word as a pointer) and nothing else to write them
+  during the call; neither is checked.
+- `classified`'s `Invalid` and `Huge` cases are as weak as `classify`'s
+  postcondition: it does not say a huge page start is `Huge` (it is, by
+  the body).
+
+**Scope.** `utilization` (both `mallctl` keys) and `get_defrag_hint`,
+for every pointer. `owner_of` (`arenas.lookup`) is not covered.
+
+**Where the statement is weaker than the code.**
+- The `ensures` are existential over the record: to a caller, `rd` is
+  some read consistent with the result, not the one the body made (the
+  same caveat as theorem 22's ghost outputs). A caller can derive only
+  this: from `utilization`, that `nregs` and `size` are exact for the
+  branch the result is consistent with (zeros, `(1, size)` of `p`'s
+  class above `BIN_MAX`, `(nslots, nslots * size)` of `p`'s bin class, or
+  `(1, any usable)` for a huge page), that `nfree <= nslots`, that
+  `bin_nregs` is a multiple of `nslots` with `bin_nfree <= bin_nregs`,
+  and that a non-null `slabcur_addr` is a slab start of the class; from
+  `get_defrag_hint`, only `r == 1 ==>` the allocator is ready and `p` is
+  a slot start of a slab class (both values are consistent with some
+  read whenever that holds). The iff with the rule holds over the actual
+  loads inside the body, not in the contract.
+- The reads are not one snapshot: the bit, the watermark, `live`, the
+  arena counters and the partial set are separate loads (the class lock
+  is taken twice by the hint and by the verbose query), so the figures
+  are exact for what was read, not for one instant. A claim in flight
+  makes `nfree` under-report (`SlabDesc::nfree`); theorem 22's
+  quiescence premise makes `curregs` exact.
+- "Live slot" is "bit set": a cached slot (in a thread cache) also has
+  its bit set, so it reads as live, as in jemalloc (the bit is the
+  `free` check's).
+- `usable` is the huge descriptor's `usable` field as read under the huge
+  lock; that it equals the run's pages before the guard (`Live::len`) is
+  not restated here.
+- `cur_live` is the amount the subtraction removed (the current slab's
+  live count clamped at `curregs`); the statement does not name the load.
+- The arena's class counters are those of `a.class(class)` for the arena
+  the descriptor named when read; that it is the slab's owner at that
+  instant is theorem 14's (slab ownership never changes once assigned),
+  not restated.
+
 ## Interface contract
 
 The per-call theorems above (1-3, 5-7 and the "Bad input" section)
@@ -5736,7 +5961,10 @@ alone):
     wrappers `heap_set_tcache_enabled` and `tcaches_flush` are gone. Per
     heap reference, as theorem 20; no cell changes (the key's effect is
     not one of the columns).
-35. `get_defrag_hint` (`api/jemalloc.rs:465`). F: `r == 0 || r == 1`. B:
+35. `get_defrag_hint` (`api/jemalloc.rs:465`). F: `r == 0 || r == 1`;
+    in its body, 1 exactly when the design 13.5 rule holds over its reads
+    (section "Utilization and defrag hint are exact", `api/jemalloc.rs:736`
+    at that section's commit; the `ensures` exports it existentially). B:
     never aborts, for every pointer and before init (theorem 32): it
     requires no `may_abort()`, which an abort would need, and the
     theorem's witness calls it without (`api/jemalloc.rs:667` at that

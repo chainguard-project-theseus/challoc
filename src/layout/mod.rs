@@ -126,17 +126,39 @@ pub const BIN_MAX: usize = 4096;
 verus! {
 
 /// Number of classes up to [`BIN_MAX`]: 28 for `quantum16`, 32 for `quantum8`.
-pub exec const NBINS: usize = count_bins();
+pub exec const NBINS: usize
+    ensures
+        NBINS <= NCLASSES,
+        // The classes below it are exactly those up to `BIN_MAX`.
+        forall|c: int| 0 <= c < NCLASSES ==> (c < NBINS <==> #[trigger] spec_class_size(c) <= BIN_MAX),
+{
+    count_bins()
+}
 
 const fn count_bins() -> (n: usize)
-    ensures n <= NCLASSES,
+    ensures
+        n <= NCLASSES,
+        forall|c: int| 0 <= c < NCLASSES ==> (c < n <==> #[trigger] spec_class_size(c) <= BIN_MAX),
 {
     let mut n = 0;
     while n < NCLASSES && class_size_at(n) <= BIN_MAX
-        invariant n <= NCLASSES,
+        invariant
+            n <= NCLASSES,
+            forall|c: int| 0 <= c < n ==> #[trigger] spec_class_size(c) <= BIN_MAX,
         decreases NCLASSES - n,
     {
         n += 1;
+    }
+    proof {
+        // The sizes grow with the class, so none past the first one above
+        // `BIN_MAX` is at or below it.
+        assert forall|c: int| 0 <= c < NCLASSES && spec_class_size(c) <= BIN_MAX implies c < n by {
+            if c >= n {
+                if c > n {
+                    lemma_class_size_mono(n as int, c);
+                }
+            }
+        }
     }
     n
 }

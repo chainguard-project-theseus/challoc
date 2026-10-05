@@ -283,7 +283,10 @@ impl SlabDesc {
     /// Free slots according to `live` (design 13.4 `nfree`). Transiently
     /// under-reports while a claim reservation is in flight.
     #[inline]
-    pub fn nfree(&self, class: &crate::layout::Class) -> usize {
+    pub fn nfree(&self, class: &crate::layout::Class) -> (r: usize)
+        ensures
+            r <= class.nslots,
+    {
         class.nslots().saturating_sub(self.live())
     }
 }

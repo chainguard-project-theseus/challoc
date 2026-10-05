@@ -989,7 +989,7 @@ fn store_out(out: *mut *mut u8, p: *mut u8)
 
 ### S10. `Reader`
 
-src/api/mallctl.rs:192. Kind: ext_type_spec. Category: function pointer.
+src/api/mallctl.rs:194. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -998,7 +998,7 @@ struct ExReader(Reader);
 
 ### S11. `call`
 
-src/api/mallctl.rs:204. Kind: external_body. Category: function pointer.
+src/api/mallctl.rs:206. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > `read(mib)`.
@@ -1012,7 +1012,7 @@ fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int>
 
 ### S12. `shared`
 
-src/api/mallctl.rs:243. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:245. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The allocator state, initialised.
@@ -1027,7 +1027,7 @@ fn shared() -> (r: &'static Shared)
 
 ### S13. `root`
 
-src/api/mallctl.rs:1023. Kind: external_body. Category: function pointer.
+src/api/mallctl.rs:1025. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-mallctl-root.md).
 
 > [`ROOT`].
@@ -1040,7 +1040,7 @@ fn root() -> (r: &'static [Node])
 
 ### S14. `name_byte`
 
-src/api/mallctl.rs:1582. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:1584. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Byte `n` of the caller's name.
@@ -1051,7 +1051,7 @@ unsafe fn name_byte(p: *const u8, n: usize) -> u8
 
 ### S15. `name_bytes`
 
-src/api/mallctl.rs:1594. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:1596. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The caller's name's first `n` bytes, borrowed for the call.
@@ -1064,7 +1064,7 @@ unsafe fn name_bytes(p: *const u8, n: usize) -> (r: &'static [u8])
 
 ### S16. `old_len`
 
-src/api/mallctl.rs:1654. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:1656. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > `*oldlenp`.
@@ -1075,7 +1075,7 @@ unsafe fn old_len(oldlenp: *mut usize) -> usize
 
 ### S17. `copy_prefix`
 
-src/api/mallctl.rs:1669. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:1671. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Copy the first `n` bytes of `v` to `oldp`.
@@ -1089,7 +1089,7 @@ unsafe fn copy_prefix<T: Copy>(v: &T, oldp: *mut c_void, n: usize, Ghost(oldlen)
 
 ### S18. `store`
 
-src/api/mallctl.rs:1686. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:1688. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store `v` at `oldp`.
@@ -1102,7 +1102,7 @@ unsafe fn store<T: Copy>(oldp: *mut c_void, v: T, Ghost(oldlen): Ghost<usize>)
 
 ### S19. `load`
 
-src/api/mallctl.rs:1703. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:1705. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The value at `newp`.
@@ -1115,7 +1115,7 @@ unsafe fn load<T: Copy>(newp: *const c_void, Ghost(newlen): Ghost<usize>) -> T
 
 ### S20. `heap_set_arena`
 
-src/api/mallctl.rs:1833. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:1841. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `h.set_arena(shared, arena)`.
@@ -1132,7 +1132,7 @@ fn heap_set_arena(h: &mut Heap, shared: &Shared, arena: u16, Tracked(ord): Track
 
 ### S21. `query_ptr`
 
-src/api/mallctl.rs:1962. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:2147. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Pointer `i` of the caller's `newp` array, whose byte length the caller gave as `newlen`.
@@ -1145,7 +1145,7 @@ unsafe fn query_ptr(ptrs: *const *const c_void, i: usize, Ghost(newlen): Ghost<u
 
 ### S22. `store_triple`
 
-src/api/mallctl.rs:1980. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:2165. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store triple `i`, `(nfree, nregs, size)`, into the caller's `oldp` array, whose byte length the caller gave as `*oldlenp == oldlen`.
@@ -1158,14 +1158,19 @@ unsafe fn store_triple(
     nregs: usize,
     size: usize,
     Ghost(oldlen): Ghost<usize>,
+    Ghost(q): Ghost<*const c_void>,
 )
     requires
         (3 * i + 3) * 8 <= oldlen,
+        // What is stored is the non-verbose query of `q`, the pointer
+        // `query_ptr` read for index `i` (the theorem "Utilization and
+        // defrag hint are exact").
+        util_triple(crate::layout::process_regions(), q as usize, nfree as int, nregs as int, size as int),
 ```
 
 ### S23. `mib_cap`
 
-src/api/mallctl.rs:2458. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:2649. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > `*miblenp`.
@@ -1176,7 +1181,7 @@ unsafe fn mib_cap(miblenp: *mut usize) -> usize
 
 ### S24. `mib_out`
 
-src/api/mallctl.rs:2472. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:2663. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Copy `mib[..len]` out to `mibp` and store `len` at `miblenp`.
@@ -1190,7 +1195,7 @@ unsafe fn mib_out(mib: &[usize; MAX_MIB], mibp: *mut usize, miblenp: *mut usize,
 
 ### S25. `mib_in`
 
-src/api/mallctl.rs:2517. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:2708. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Copy the caller's `miblen` MIB entries into `local`.
@@ -3323,7 +3328,7 @@ proof fn axiom_zero_entry(tracked perm: PointsTo<Entry>, tracked z: Zeroed) -> (
 
 ### S163. `ClassTable`
 
-src/layout/mod.rs:1149. Kind: external_body type. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1171. Kind: external_body type. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The size-class table in use, indexed by class number: [`BASE_CLASSES`] with the slab geometry of the classes below the kernel page raised to the page by [`adopt_page_geometry`] once at init.
@@ -3334,7 +3339,7 @@ pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 
 ### S164. `ClassTable::new`
 
-src/layout/mod.rs:1156. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1178. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 ```rust
@@ -3343,7 +3348,7 @@ const fn new(table: [Class; NCLASSES]) -> ClassTable
 
 ### S165. `ClassTable::table`
 
-src/layout/mod.rs:1168. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1190. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The table, for verified code.
