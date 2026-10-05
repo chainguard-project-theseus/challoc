@@ -2462,30 +2462,45 @@ mod linux_tests {
             );
             return;
         }
-        // Spin for 100 ms of the coarse clock calling `sample` as fast as
-        // possible: at most one read per 10 ms window (plus one for the
-        // window the spin starts in), and not far fewer.
+        // Call `sample` with the coarse clock as fast as possible for at
+        // least 100 ms and until three reads. Each call must read exactly
+        // when `SAMPLE_INTERVAL_NS` has passed since the last read: two
+        // reads are never closer, and a due sample is never suppressed.
+        // The check is per call, so a thread descheduled for most of the
+        // spin makes fewer calls but never a wrong one.
         let start = sys::now_coarse_ns();
+        let mut last = cg.sampled_at();
         let mut reads = 0;
         let mut calls = 0u64;
         loop {
             let now = sys::now_coarse_ns();
-            if now - start >= 100_000_000 {
+            if now - start >= 100_000_000 && reads >= 3 {
                 break;
             }
-            if cg.sample(now) {
+            let due = now.saturating_sub(last) >= SAMPLE_INTERVAL_NS;
+            let read = cg.sample(now);
+            assert_eq!(read, due, "call {calls}: now {now} ns, last read {last} ns");
+            if read {
+                last = now;
                 reads += 1;
             }
             calls += 1;
         }
-        eprintln!("cgroup: {reads} reads in {calls} sample calls over 100 ms");
-        assert!(reads <= 12, "{reads} reads in 100 ms");
-        assert!(reads >= 3, "{reads} reads in 100 ms");
+        assert_eq!(cg.sampled_at(), last);
+        eprintln!(
+            "cgroup: {reads} reads in {calls} sample calls over {} ms",
+            (sys::now_coarse_ns() - start) / 1_000_000
+        );
         // Two calls in the same instant: the second never reads.
         let now = sys::now_coarse_ns() + SAMPLE_INTERVAL_NS;
         assert!(cg.sample(now));
         assert!(!cg.sample(now));
         assert_eq!(cg.sampled_at(), now);
+        // The interval is 10 ms to the nanosecond, which the coarse clock's
+        // ticks cannot resolve: 1 ns short does not read, 10 ms does.
+        assert_eq!(SAMPLE_INTERVAL_NS, 10_000_000);
+        assert!(!cg.sample(now + SAMPLE_INTERVAL_NS - 1));
+        assert!(cg.sample(now + SAMPLE_INTERVAL_NS));
     }
 
     #[test]
