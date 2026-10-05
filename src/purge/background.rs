@@ -2,7 +2,7 @@
 //! the decay passes and the cgroup sampling on its own stack, started by
 //! configuration or `mallctl("background_thread")`.
 
-use crate::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use crate::sync::atomic::{AtomicBool, AtomicU32, Ordering, fence};
 use core::ffi::c_void;
 
 use crate::heap::{Shared, TLS_CREATING, TLS_EXITED};
@@ -118,6 +118,15 @@ pub fn wake()
     requires
         crate::sys::may_syscall(),
 {
+    // Store buffering with `start`: the caller stored what the thread
+    // must see (a first `oldest_empty`, a decay period) and this loads
+    // `PRESENT`, while `start` stores `PRESENT` and the thread, after
+    // `start`'s kick, loads what the caller stored. Without a `SeqCst`
+    // fence on each side both loads may read the old value: no kick
+    // here, and the thread asleep on what it last saw (with no deadline,
+    // for a first `Empty`). `start` has the other fence; `tests/loom`
+    // checks the pair.
+    fence(Ordering::SeqCst);
     if present() {
         kick();
     }
@@ -222,6 +231,10 @@ pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> bool
     // did nothing while the thread was not yet present: make it look
     // again.
     if present {
+        // The other side of `wake`'s fence: the `PRESENT` store, then
+        // the kick, after which the thread loads what `wake`'s caller
+        // stored.
+        fence(Ordering::SeqCst);
         kick();
     }
     present

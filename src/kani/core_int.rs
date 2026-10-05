@@ -127,7 +127,7 @@ fn u32_is_power_of_two() {
     assert_eq!(x.is_power_of_two(), spec_is_pow2_below(x as u128, 32));
 }
 
-/// S380 `u64::is_power_of_two`: `r <==> exists k < 64, x == pow2(k)`.
+/// S381 `u64::is_power_of_two`: `r <==> exists k < 64, x == pow2(k)`.
 #[kani::proof]
 #[kani::unwind(66)]
 fn u64_is_power_of_two() {
@@ -174,7 +174,7 @@ fn i64_wrapping_neg() {
     }
 }
 
-/// S374 `isize::wrapping_neg`: `-x`, and `isize::MIN` for `isize::MIN`.
+/// S375 `isize::wrapping_neg`: `-x`, and `isize::MIN` for `isize::MIN`.
 #[kani::proof]
 fn isize_wrapping_neg() {
     let x: isize = kani::any();
@@ -208,14 +208,14 @@ fn char_to_digit() {
     assert_eq!(c.to_digit(radix), spec_to_digit(c as u32, radix));
 }
 
-/// S371 `u8::is_ascii_digit`: `r <==> 48 <= b <= 57`.
+/// S372 `u8::is_ascii_digit`: `r <==> 48 <= b <= 57`.
 #[kani::proof]
 fn u8_is_ascii_digit() {
     let b: u8 = kani::any();
     assert_eq!(b.is_ascii_digit(), 48 <= b && b <= 57);
 }
 
-/// S372 `u8::is_ascii_whitespace`: space, tab, line feed, form feed and
+/// S373 `u8::is_ascii_whitespace`: space, tab, line feed, form feed and
 /// carriage return.
 #[kani::proof]
 fn u8_is_ascii_whitespace() {

@@ -158,6 +158,7 @@ Unbacked::commit	platform/kernel fact	none (assumption)
 WordPerm	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-WordPerm.md)
 CountPerm	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-CountPerm.md)
 core::sync::atomic::compiler_fence	core library	Kani	discharged (verus/seams/vspec-misc-compiler_fence.md)
+core::sync::atomic::fence	core library	Kani
 core::fmt::Formatter::<'a>::write_str	core library	Kani	discharged (verus/seams/vspec-fmt-Formatter-write_str.md)
 core::fmt::Formatter::<'a>::write_fmt	function pointer	Kani	discharged (verus/seams/vspec-fmt-Formatter-write_fmt.md)
 pthread_setspecific	FFI/syscall	none (assumption)

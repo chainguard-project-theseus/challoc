@@ -80,7 +80,7 @@ fn atomic_ptr_bad_orders() {
     super::must_not_return();
 }
 
-/// S326 `core::sync::atomic::Atomic::<u32>::as_ptr`: no `ensures`; it returns the address of
+/// S327 `core::sync::atomic::Atomic::<u32>::as_ptr`: no `ensures`; it returns the address of
 /// the atomic's value (a write through it is what the next load reads).
 #[kani::proof]
 fn atomic_u32_as_ptr() {
@@ -122,6 +122,27 @@ fn compiler_fence_relaxed() {
     let o = any_order();
     kani::assume(matches!(o, Ordering::Relaxed));
     core::sync::atomic::compiler_fence(o);
+    super::must_not_return();
+}
+
+/// S325 `core::sync::atomic::fence`: under `!(order is Relaxed)`, returns (on
+/// every such ordering, so it does not unwind); on `Relaxed` it panics,
+/// as its comment says (`fence_relaxed`).
+#[kani::proof]
+fn fence() {
+    let o = any_order();
+    kani::assume(!matches!(o, Ordering::Relaxed));
+    core::sync::atomic::fence(o);
+}
+
+/// `fence(Relaxed)` panics (the excluded ordering). Not part of the
+/// contract.
+#[kani::proof]
+#[kani::should_panic]
+fn fence_relaxed() {
+    let o = any_order();
+    kani::assume(matches!(o, Ordering::Relaxed));
+    core::sync::atomic::fence(o);
     super::must_not_return();
 }
 

@@ -74,7 +74,7 @@ fn option_map_or() {
     }
 }
 
-/// S377 `Result::<T, E>::map_or`: `default` for `Err` (and `f` not called),
+/// S378 `Result::<T, E>::map_or`: `default` for `Err` (and `f` not called),
 /// `f(v)` for `Ok(v)`.
 #[kani::proof]
 fn result_map_or() {
@@ -99,7 +99,7 @@ fn result_map_or() {
     }
 }
 
-/// S378 `Option::<T>::is_some_and`: `false` for `None` (and `f` not called),
+/// S379 `Option::<T>::is_some_and`: `false` for `None` (and `f` not called),
 /// `f(v)` for `Some(v)`.
 #[kani::proof]
 fn option_is_some_and() {
@@ -123,7 +123,7 @@ fn option_is_some_and() {
     }
 }
 
-/// S379 `Result::<T, E>::unwrap_or`: the `Ok` value, else `default`.
+/// S380 `Result::<T, E>::unwrap_or`: the `Ok` value, else `default`.
 #[kani::proof]
 fn result_unwrap_or() {
     let res = any_result();
@@ -135,7 +135,7 @@ fn result_unwrap_or() {
     }
 }
 
-/// S387 `Option::<&T>::copied`: `Some(*v)` for `Some(v)`, else `None`.
+/// S388 `Option::<&T>::copied`: `Some(*v)` for `Some(v)`, else `None`.
 #[kani::proof]
 fn option_copied() {
     let x: u64 = kani::any();
@@ -147,7 +147,7 @@ fn option_copied() {
     }
 }
 
-/// S325 `Option::<T>::as_deref_mut`: no `ensures`; it returns without a panic
+/// S326 `Option::<T>::as_deref_mut`: no `ensures`; it returns without a panic
 /// (here: `None` for `None`, else a reborrow of the contents, through
 /// which a write lands in the option).
 #[kani::proof]
@@ -248,7 +248,7 @@ fn cstr_as_ptr() {
     assert!(core::ptr::eq(s.as_ptr() as *const u8, &a[0]));
 }
 
-/// S382 `core::str::from_utf8`: no `ensures`; it returns without a panic
+/// S383 `core::str::from_utf8`: no `ensures`; it returns without a panic
 /// for every byte string up to 4 bytes (one UTF-8 sequence's longest).
 #[kani::proof]
 #[kani::unwind(6)]
@@ -261,7 +261,7 @@ fn str_from_utf8() {
     }
 }
 
-/// S384 `<core::fmt::Error as core::default::Default>::default`: no `ensures`; it returns.
+/// S385 `<core::fmt::Error as core::default::Default>::default`: no `ensures`; it returns.
 #[kani::proof]
 fn fmt_error_default() {
     let e = <core::fmt::Error as Default>::default();
@@ -315,7 +315,7 @@ fn ptr_add_addr<T: Copy + PartialEq + kani::Arbitrary, const N: usize>() {
     }
 }
 
-/// S342 `axiom_ptr_add_addr`, at a byte, a word and a padded element type.
+/// S343 `axiom_ptr_add_addr`, at a byte, a word and a padded element type.
 #[kani::proof]
 fn ptr_add_addr_instances() {
     ptr_add_addr::<u8, 5>();

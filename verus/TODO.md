@@ -175,7 +175,7 @@ The gap list already tracks realloc contents and the rest of the failure semanti
 
 ### Weak memory and external models
 
-- Carry out the weak-memory checks in [WEAKMEM.md](WEAKMEM.md). Verus assumes sequential consistency and does not establish that the shipped `Relaxed`, `Acquire`, and `Release` orderings suffice. #72 fixes the background purge wake-up’s startup race; its weak-memory form (WEAKMEM.md P3) still needs a fix.
+- Carry out the weak-memory checks in [WEAKMEM.md](WEAKMEM.md). Verus assumes sequential consistency and does not establish that the shipped `Relaxed`, `Acquire`, and `Release` orderings suffice. #72 fixes the background purge wake-up’s startup race and upstream #124 its weak-memory form (WEAKMEM.md P3, a `fence(SeqCst)` on each side, checked by `tests/loom`).
 - Fix the heap's cache handles, which Miri rejects under both Stacked and Tree Borrows: a raw pointer into `Heap::caches` from `cache_ptr(&mut self)` is used inside later `&mut self` methods ([MIRI.md](MIRI.md), finding 1). Verus's permissions do not model Rust's aliasing rules, so the proofs cannot catch this.
 - Model the kernel and CPU boundary before reducing trust in assembly and syscall wrappers, including `sys/raw.rs`’s syscall functions, TLS, PAC, and CPU instructions. The kernel contracts for `mmap`, `madvise`, and `mprotect` remain premises.
 - Use a liveness-capable model for lock waits and `claim_with`. The Verus theorems state partial correctness: they describe calls that return.

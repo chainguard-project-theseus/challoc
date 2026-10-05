@@ -1,6 +1,6 @@
 //! Specifications of the derived `PartialEq` of three enums verified code
 //! compares (`config::Thp`, `sys::thp_host::ThpSetting`,
-//! `huge::RunState`), and of `Option::map_or` and `compiler_fence`.
+//! `huge::RunState`), and of `Option::map_or`, `compiler_fence` and `fence`.
 
 use vstd::prelude::*;
 
@@ -63,6 +63,17 @@ pub assume_specification[ str::as_ptr ](s: &str) -> *const u8;
 /// `core::sync::atomic::compiler_fence`: panics on `Relaxed` only, and
 /// has no effect Verus models.
 pub assume_specification[ core::sync::atomic::compiler_fence ](order: core::sync::atomic::Ordering)
+    requires
+        !(order is Relaxed),
+    opens_invariants none
+    no_unwind
+;
+
+/// `core::sync::atomic::fence`: panics on `Relaxed` only, as
+/// `compiler_fence`, and has no effect Verus models (Verus's memory model
+/// is sequentially consistent; the ordering it adds is checked by the
+/// loom models in `tests/loom`, not here).
+pub assume_specification[ core::sync::atomic::fence ](order: core::sync::atomic::Ordering)
     requires
         !(order is Relaxed),
     opens_invariants none

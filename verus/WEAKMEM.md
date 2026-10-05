@@ -111,7 +111,8 @@ each syscall is a compiler barrier.
   `start` stores `PRESENT`, the thread loads `oldest_empty`, all
   `Relaxed`. That is the store-buffering shape: both loads may read the
   old values unless the four accesses are `SeqCst` or fenced (loom
-  reproduces it with PR #72's kick, as shipped; "loom results" below).
+  reproduced it with PR #72's kick; "loom results" below). Fixed by
+  upstream #124: a `fence(SeqCst)` on each side (`wake`, `start`).
 
 ### P4. Publishing `Shared`
 
@@ -205,7 +206,7 @@ data races, which is the check P1 needs for slot data.
   crate already links `std` under `cfg(test)`). So: real code for the
   struct-based protocols (P1 through `AtomicBitmap::from_words` over a
   slice of loom atomics, P2 through `RawLock`), small copies for the
-  static-based ones (P3, P4).
+  static-based ones (P3, P4; P3's copy is upstream's `tests/loom` crate now).
 
 ### GenMC
 
@@ -305,36 +306,40 @@ cut down.
   shows the slot-data check has teeth. Not modelled: sub-word views,
   more than one word, purge, the claim's `xorshift` start word.
 - P3 (copy of `purge/background.rs`, `purge.rs`): both lost wake-ups
-  reproduce, as a loom deadlock with the thread asleep without a
-  deadline:
-  - `loom_background_startup_race`: the tree before PR #72 (`start` does
-    not kick). Reachable under SC.
-  - `loom_background_kick_store_buffering`: as shipped, with
-    chainguard-dev/challoc PR #72's fix (`start` calls `kick()` after it
-    stores `PRESENT`) and the shipped `Relaxed` orderings. The free
-    stores `oldest_empty` and reads `PRESENT == false`; `start` stores
-    `PRESENT` and kicks; the thread, woken by that kick (it synchronises
-    with it through `SEQ`), still reads `oldest_empty == 0`. Not
-    reachable under SC; a real ordering bug of the fixed code.
-  - The fix that passes (`loom_background_kick_with_fences`): a
-    `fence(SeqCst)` in `wake` before the `present()` load (after the
-    caller's `oldest_empty` store) and one in `start` between
-    `PRESENT.store` and `kick()`. Under C++20 (P0668) the two fences
-    are totally ordered: if `start`'s comes first, the free reads
-    `PRESENT == true` and kicks; if the free's comes first, the thread
-    reads the free's store, since `start`'s fence happens before the
-    thread's load (through the kick and `SEQ`) and a load reading 0
-    would put `start`'s fence before the free's. loom's `SeqCst` fence
-    is stronger than C++20's (it joins the fenced threads' views into
-    one clock), so the pass rests on that argument; the failures are
-    behaviours C++20 allows. Either fence alone still fails
-    (`..._free_fence_only`, `..._start_fence_only`). Both sites are off
-    the fast paths: `wake` runs on a class's first `Empty` slab and on
-    a decay-period change, `start` once per thread start. Making the
-    four accesses `SeqCst` instead is also correct under C++20, but
-    loom regards `SeqCst` accesses as `AcqRel` and reports a false
-    deadlock (`..._seqcst_accesses`, ignored; loom's README,
-    "Unsupported features"), so only the fenced form is checked here.
+  reproduced, as a loom deadlock with the thread asleep without a
+  deadline, in a copy this effort kept in `src/loom_tests/background.rs`
+  (removed with the upstream fix, whose model replaces it):
+  - The startup race: the tree before PR #72 (`start` did not kick).
+    Reachable under SC; fixed by PR #72's kick after `start` stores
+    `PRESENT`.
+  - Store buffering: with PR #72's kick and the `Relaxed` orderings,
+    the free stores `oldest_empty` and reads `PRESENT == false`;
+    `start` stores `PRESENT` and kicks; the thread, woken by that kick
+    (it synchronises with it through `SEQ`), still reads
+    `oldest_empty == 0`. Not reachable under SC; a real ordering bug of
+    the PR #72 code.
+  - The fix, upstream #124 (in this tree): a `fence(SeqCst)` in `wake`
+    before the `present()` load (after the caller's `oldest_empty`
+    store) and one in `start` between `PRESENT.store` and `kick()`.
+    Under C++20 (P0668) the two fences are totally ordered: if
+    `start`'s comes first, the free reads `PRESENT == true` and kicks;
+    if the free's comes first, the thread reads the free's store,
+    since `start`'s fence happens before the thread's load (through the
+    kick and `SEQ`) and a load reading 0 would put `start`'s fence
+    before the free's. loom's `SeqCst` fence is stronger than C++20's
+    (it joins the fenced threads' views into one clock), so a pass
+    rests on that argument; the failures are behaviours C++20 allows.
+    The model is upstream's `tests/loom/src/background.rs` (its own
+    crate, stock loom 0.7.2, run by CI): `loom_background_wake` (both
+    fences) passes, and without the fences or with either one alone
+    the deadlock is reached (`should_panic` tests);
+    `tests/loom/tests/pins.rs` checks that the source still has the
+    copied lines, in order. Both fences are off the fast paths: `wake`
+    runs on a class's first `Empty` slab and on a decay-period change,
+    `start` once per thread start. Making the four accesses `SeqCst`
+    instead is also correct under C++20, but loom regards `SeqCst`
+    accesses as `AcqRel` and reports a false deadlock (loom's README,
+    "Unsupported features"), so only the fenced form is checked.
   - Hardware: the model leaves out the class lock the free releases
     before `wake` and the state lock `start` stores `PRESENT` under. A
     `Release` swap does not keep a later load behind an earlier store,
@@ -342,8 +347,9 @@ cut down.
     full barrier, so the store-buffering lost wake-up needs aarch64 (or
     a compiler that moves the accesses) to show on hardware. The
     startup race needs neither.
-  PR #72 put the kick in `purge/background.rs`; the two fences are not
-  there, and are not part of this change.
+  Verus calls `fence` through `vspec::misc`'s specification of it
+  (panics on `Relaxed` only, no effect Verus models), so `wake` and
+  `start` stay verified.
 - P4 (copy of `api/mod.rs`'s `init_slow`, `shared`, `shared_if_ready`;
   `loom_tests/init.rs`): two callers and a free, and a re-entrant
   `init`. `init` runs once, every caller and the free read the value
@@ -437,10 +443,10 @@ and P3 has a candidate bug to confirm or refute. Step 0 touches 16
 files outside `verus/` and needs the codegen check; steps 1-4 add test
 code only. The P3 races are confirmed ("loom results"). PR #72 (in the
 base) added the kick after `start` stores `PRESENT`, which closes the
-startup race; the rest of the fix is in `purge/background.rs`, outside
-this plan: a `fence(SeqCst)` between that store and the kick and one in
-`wake` (the four accesses made `SeqCst` also work, but loom cannot check
-that form).
+startup race; the rest of the fix, a `fence(SeqCst)` between that store
+and the kick and one in `wake`, is upstream #124 (in this tree), with
+its own loom model in `tests/loom` (the four accesses made `SeqCst` also
+work, but loom cannot check that form).
 
 What stays assumed after the plan: the Verus proofs are still SC
 proofs. The checks above show that the shipped orderings give the
@@ -453,7 +459,7 @@ The 25 seams `verus/SEAMS.md` gave to loom/GenMC, triaged (records
 under `verus/seams/`, models re-run by `sh verus/loom/run.sh`, which
 first checks each record against the ledger; seam numbers of commit
 8635213, when it was done). No model found an outcome
-a contract excludes; P3 stays the one open weak-memory bug, and no seam
+a contract excludes; P3, the one weak-memory bug found, is fixed (upstream #124), and no seam
 below depends on it. GenMC is not installed in the environment this was
 done in (no C toolchain to build it), so every result is loom's.
 

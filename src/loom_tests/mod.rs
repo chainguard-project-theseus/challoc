@@ -37,8 +37,6 @@
 // skips a module only by the attribute on its own declaration.
 
 #[cfg(test)]
-mod background;
-#[cfg(test)]
 mod bitmap;
 #[cfg(test)]
 mod count;

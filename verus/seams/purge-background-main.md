@@ -1,6 +1,6 @@
 # `main` (`purge/background.rs`)
 
-Seam S189 of `verus/SEAMS.md`: src/purge/background.rs:444. Kind: no_decreases. Category: termination.
+Seam S189 of `verus/SEAMS.md`: src/purge/background.rs:457. Kind: no_decreases. Category: termination.
 Discharged by loom (termination after a final `request(false)`, given that each pass and the exit's lock return; part 3).
 
 ## Contract
@@ -75,7 +75,7 @@ Models: `loom_exit_after_withdrawal`, `loom_exit_after_withdrawal_with_waker`, `
   clear `present` on its way out comes after the decision; the models
   stop at the decision, and the lock's return is the condition above.
   The copied lines are pinned (`verus/loom/pins.txt`).
-- **P3 (WEAKMEM.md).** The open lost wake-up of the decay pass (`B`
+- **P3 (WEAKMEM.md).** The lost wake-up of the decay pass (fixed by upstream #124; `B`
   asleep with no deadline while a class has `Empty` slabs) is about the
   thread's progress between passes, not its exit: `request(false)`
   kicks unconditionally, so this record does not depend on P3.
