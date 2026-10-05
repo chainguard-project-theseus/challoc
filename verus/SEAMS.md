@@ -973,12 +973,12 @@ fn oom(size: usize, align: usize, nothrow: bool, Tracked(blk): Tracked<&mut Live
 
 ### S8. `store_usable`
 
-src/api/libc.rs:1448. Kind: external_body. Category: raw pointer from C caller.
+src/api/libc.rs:1454. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store `n` through `usable` unless it is null (`usable` is optional for the three allocating entry points; a null makes them plain `malloc`/`calloc`/`realloc`), with the [`Stored`] token for the store.
 
-Body mints Tracked at line 1457.
+Body mints Tracked at line 1463.
 
 ```rust
 fn store_usable(usable: *mut usize, n: usize) -> (s: Tracked<Stored>)
@@ -989,7 +989,7 @@ fn store_usable(usable: *mut usize, n: usize) -> (s: Tracked<Stored>)
 
 ### S9. `store_out`
 
-src/api/libc.rs:2342. Kind: external_body. Category: raw pointer from C caller.
+src/api/libc.rs:2348. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Store the allocation through `posix_memalign`'s out-pointer.
@@ -1181,7 +1181,7 @@ unsafe fn store_triple(
 
 ### S23. `mib_cap`
 
-src/api/mallctl.rs:2649. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:2652. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > `*miblenp`.
@@ -1192,7 +1192,7 @@ unsafe fn mib_cap(miblenp: *mut usize) -> usize
 
 ### S24. `mib_out`
 
-src/api/mallctl.rs:2663. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:2666. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Copy `mib[..len]` out to `mibp` and store `len` at `miblenp`.
@@ -1206,7 +1206,7 @@ unsafe fn mib_out(mib: &[usize; MAX_MIB], mibp: *mut usize, miblenp: *mut usize,
 
 ### S25. `mib_in`
 
-src/api/mallctl.rs:2708. Kind: external_body. Category: raw pointer from C caller.
+src/api/mallctl.rs:2711. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > Copy the caller's `miblen` MIB entries into `local`.
@@ -1498,7 +1498,7 @@ fn stderr_target() -> Target
 
 ### S47. `Arena::axiom_array_layout`
 
-src/arena.rs:325. Kind: axiom. Category: core library.
+src/arena.rs:328. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-Arena-axiom_array_layout.md).
 
 > An array of `N` `T`s is `N` `T`s back to back, aligned as one: the size and alignment the Rust reference gives arrays.
@@ -1515,7 +1515,7 @@ pub(crate) axiom fn axiom_array_layout<T, const N: usize>()
 
 ### S48. `Arena::axiom_array_join`
 
-src/arena.rs:427. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:430. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The initialised elements of an array, as the array: the value whose element `i` each holds.
@@ -1538,7 +1538,7 @@ pub(crate) axiom fn axiom_array_join<T, const N: usize>(base: *mut [T; N], track
 
 ### S49. `A_INDEX`
 
-src/arena.rs:449. Kind: external_body const. Category: core library.
+src/arena.rs:452. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_INDEX.md).
 
 ```rust
@@ -1547,7 +1547,7 @@ const A_INDEX: usize = core::mem::offset_of!(Arena, index);
 
 ### S50. `A_DECAY_NS`
 
-src/arena.rs:451. Kind: external_body const. Category: core library.
+src/arena.rs:454. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_DECAY_NS.md).
 
 ```rust
@@ -1556,7 +1556,7 @@ const A_DECAY_NS: usize = core::mem::offset_of!(Arena, decay_ns);
 
 ### S51. `A_SETS`
 
-src/arena.rs:453. Kind: external_body const. Category: core library.
+src/arena.rs:456. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_SETS.md).
 
 ```rust
@@ -1565,7 +1565,7 @@ const A_SETS: usize = core::mem::offset_of!(Arena, sets);
 
 ### S52. `A_SETS_PERM`
 
-src/arena.rs:455. Kind: external_body const. Category: core library.
+src/arena.rs:458. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_SETS_PERM.md).
 
 ```rust
@@ -1574,7 +1574,7 @@ const A_SETS_PERM: usize = core::mem::offset_of!(Arena, sets_perm);
 
 ### S53. `A_CLASSES`
 
-src/arena.rs:457. Kind: external_body const. Category: core library.
+src/arena.rs:460. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_CLASSES.md).
 
 ```rust
@@ -1583,7 +1583,7 @@ const A_CLASSES: usize = core::mem::offset_of!(Arena, classes);
 
 ### S54. `A_LARGE`
 
-src/arena.rs:459. Kind: external_body const. Category: core library.
+src/arena.rs:462. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_LARGE.md).
 
 ```rust
@@ -1592,7 +1592,7 @@ const A_LARGE: usize = core::mem::offset_of!(Arena, large);
 
 ### S55. `A_STATS`
 
-src/arena.rs:461. Kind: external_body const. Category: core library.
+src/arena.rs:464. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_STATS.md).
 
 ```rust
@@ -1601,7 +1601,7 @@ const A_STATS: usize = core::mem::offset_of!(Arena, stats);
 
 ### S56. `A_LAST_EXIT_PURGE`
 
-src/arena.rs:463. Kind: external_body const. Category: core library.
+src/arena.rs:466. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_LAST_EXIT_PURGE.md).
 
 ```rust
@@ -1610,7 +1610,7 @@ const A_LAST_EXIT_PURGE: usize = core::mem::offset_of!(Arena, last_exit_purge);
 
 ### S57. `axiom_arena_layout`
 
-src/arena.rs:469. Kind: axiom. Category: core library.
+src/arena.rs:472. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-axiom_arena_layout.md).
 
 > `Arena`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last by the size.
@@ -1638,7 +1638,7 @@ axiom fn axiom_arena_layout()
 
 ### S58. `axiom_arena_assemble`
 
-src/arena.rs:674. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:677. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arena` at `p` (`Arena::split`'s parts and class states, every one initialised), as the `Arena`: the value of each field is what its permission holds.
@@ -1685,7 +1685,7 @@ axiom fn axiom_arena_assemble(
 
 ### S59. `key_less`
 
-src/arena.rs:1432. Kind: external_body. Category: core library.
+src/arena.rs:1480. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `a < b` on `(u32, bool)`: [`key_lt`].
@@ -1698,7 +1698,7 @@ fn key_less(a: (u32, bool), b: (u32, bool)) -> (r: bool)
 
 ### S60. `AR_TABLE`
 
-src/arena.rs:1458. Kind: external_body const. Category: core library.
+src/arena.rs:1506. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1707,7 +1707,7 @@ const AR_TABLE: usize = core::mem::offset_of!(Arenas, table);
 
 ### S61. `AR_BOUND`
 
-src/arena.rs:1460. Kind: external_body const. Category: core library.
+src/arena.rs:1508. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1716,7 +1716,7 @@ const AR_BOUND: usize = core::mem::offset_of!(Arenas, bound);
 
 ### S62. `AR_LOCK`
 
-src/arena.rs:1462. Kind: external_body const. Category: core library.
+src/arena.rs:1510. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1725,7 +1725,7 @@ const AR_LOCK: usize = core::mem::offset_of!(Arenas, lock);
 
 ### S63. `AR_COUNT`
 
-src/arena.rs:1464. Kind: external_body const. Category: core library.
+src/arena.rs:1512. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1734,7 +1734,7 @@ const AR_COUNT: usize = core::mem::offset_of!(Arenas, count);
 
 ### S64. `AR_AUTO`
 
-src/arena.rs:1466. Kind: external_body const. Category: core library.
+src/arena.rs:1514. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1743,7 +1743,7 @@ const AR_AUTO: usize = core::mem::offset_of!(Arenas, auto);
 
 ### S65. `AR_INVS`
 
-src/arena.rs:1468. Kind: external_body const. Category: core library.
+src/arena.rs:1516. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1752,7 +1752,7 @@ const AR_INVS: usize = core::mem::offset_of!(Arenas, invs);
 
 ### S66. `AR_COUNT_INV`
 
-src/arena.rs:1470. Kind: external_body const. Category: core library.
+src/arena.rs:1518. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1761,7 +1761,7 @@ const AR_COUNT_INV: usize = core::mem::offset_of!(Arenas, count_inv);
 
 ### S67. `axiom_arenas_layout`
 
-src/arena.rs:1480. Kind: axiom. Category: core library.
+src/arena.rs:1528. Kind: axiom. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `Arenas`'s layout: each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `count_inv`, after `invs`) by the size.
@@ -1788,7 +1788,7 @@ axiom fn axiom_arenas_layout()
 
 ### S68. `axiom_arenas_lock_inv`
 
-src/arena.rs:1534. Kind: axiom. Category: allocator invariant.
+src/arena.rs:1582. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The creation lock (`Arenas` holds the only `Lock<u32>` outside the tests) has no invariant: every value satisfies it, so its holders owe nothing and learn nothing from it.
@@ -1802,7 +1802,7 @@ pub broadcast axiom fn axiom_arenas_lock_inv(v: u32)
 
 ### S69. `axiom_arenas_assemble`
 
-src/arena.rs:1667. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:1715. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arenas` at `p` (`Arenas::split`'s parts and array elements, every one initialised), as the `Arenas`: the value of each field is what its permission holds.
@@ -1846,12 +1846,12 @@ axiom fn axiom_arenas_assemble(
 
 ### S70. `fresh_count`
 
-src/arena.rs:1710. Kind: external_body. Category: atomics primitive.
+src/arena.rs:1758. Kind: external_body. Category: atomics primitive.
 Tool: none (assumption). Status: trusted.
 
 > A new counter of value `v`, and the permission to it ([`CountPerm`]).
 
-Body mints Tracked at line 1715.
+Body mints Tracked at line 1763.
 
 ```rust
 fn fresh_count(v: u32) -> (r: (AtomicU32, Tracked<CountPerm>))
@@ -1862,7 +1862,7 @@ fn fresh_count(v: u32) -> (r: (AtomicU32, Tracked<CountPerm>))
 
 ### S71. `arena_at`
 
-src/arena.rs:2193. Kind: external_body. Category: raw pointer (internal).
+src/arena.rs:2241. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The arena a non-null registry entry points at.
@@ -1923,7 +1923,7 @@ pub const unsafe fn from_raw_chunked(nbits: usize, ptr: *mut u64, stride: usize,
 
 ### S74. `ClassState::page_group_is_idle`
 
-src/class/decay.rs:247. Kind: external_body. Category: allocator invariant.
+src/class/decay.rs:330. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Whether the page group of `slab` (`spp` slabs, `spp > 1`) can be discarded: every slab in it is committed, owned by this arena, and `Fresh`, `Empty` or `Purged`.
@@ -2919,7 +2919,7 @@ Tool: none (assumption). Status: trusted.
 
 > Flush every cache, free them and the heap itself back to the metadata allocator.
 
-Body mints Tracked at line 6031.
+Body mints Tracked at line 6031; mints Tracked at line 6043.
 
 ```rust
 pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
@@ -3408,7 +3408,7 @@ axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc, tracked 
 
 ### S168. `Huge::check_zero`
 
-src/huge/mod.rs:5128. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/huge/mod.rs:5190. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The `check_zero` debug mode: the first and last word of every usable page of a run reported zero must read zero.
@@ -3421,12 +3421,12 @@ fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: 
 
 ### S169. `not_a_run_page`
 
-src/huge/mod.rs:6996. Kind: abort_standin. Category: panic/abort.
+src/huge/mod.rs:7058. Kind: abort_standin. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`Huge::free_run`]'s abort for a page that is not in the descriptor table, where the build calls [`not_a_run`] with the page's address.
 
-Stands in at: src/huge/mod.rs:6591 (`Huge::free_run`).
+Stands in at: src/huge/mod.rs:6653 (`Huge::free_run`).
 
 ```rust
 fn not_a_run_page(page: usize) -> !
@@ -3795,7 +3795,7 @@ fn drop(&mut self)
 
 ### S195. `total_bytes`
 
-src/purge.rs:465. Kind: external_body. Category: core library.
+src/purge.rs:480. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/purge-total_bytes.md).
 
 > The sum of the lengths of `ranges`.

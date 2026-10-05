@@ -8,7 +8,7 @@ use crate::layout::class_table;
 use crate::lock::LockOrder;
 #[cfg(verus_only)]
 use crate::lock::{axiom_held_below, rank_class};
-use crate::purge::{Batch, Curve, STEPS};
+use crate::purge::{Batch, Curve, Left, STEPS};
 use crate::slab::State;
 use vstd::prelude::*;
 
@@ -189,6 +189,83 @@ pub(super) open spec fn walk_ok(cs: &ClassState, g: Inner) -> bool {
     &&& g.nbits() == cs.spec_nslabs()
 }
 
+/// `slab` is the lowest member of `g`'s empty set above `last`: the slab
+/// [`ClassState::walk_empty`] visits after `last`. Opaque, as are the two
+/// below, so a visit's query carries each as one fact.
+#[verifier::opaque]
+pub(super) open spec fn next_after(g: Inner, last: int, slab: int) -> bool {
+    forall|x: nat| #[trigger] g.empty.map@.contains(x) && x > last ==> x >= slab
+}
+
+/// No member of `g`'s empty set lies above `last`: where the walk ends.
+#[verifier::opaque]
+pub(super) open spec fn none_above(g: Inner, last: int) -> bool {
+    forall|x: nat| #[trigger] g.empty.map@.contains(x) ==> x <= last
+}
+
+/// Every member of `g`'s empty set lies above `last`: a purge walk that
+/// purged every slab it visited.
+#[verifier::opaque]
+spec fn all_above(g: Inner, last: int) -> bool {
+    forall|x: nat| #[trigger] g.empty.map@.contains(x) ==> x > last
+}
+
+/// A purge of `slab`, the lowest member above `last`, that took it out of
+/// the empty set and added none keeps every member above the walk.
+proof fn lemma_all_above(g0: Inner, g1: Inner, last: int, slab: int)
+    requires
+        all_above(g0, last),
+        next_after(g0, last, slab),
+        forall|x: nat| #[trigger] g1.empty.map@.contains(x) ==> g0.empty.map@.contains(x),
+        slab >= 0,
+        !g1.empty.map@.contains(slab as nat),
+    ensures
+        all_above(g1, slab),
+{
+    reveal(all_above);
+    reveal(next_after);
+    assert forall|x: nat| #[trigger] g1.empty.map@.contains(x) implies x > slab by {
+        assert(g0.empty.map@.contains(x));
+    }
+}
+
+/// A purge walk's count `n` and its batch `b` agree: it purged a slab iff
+/// it pushed a byte (`sent() + total()`, never negative). Opaque, for
+/// [`Purger::inv`].
+#[verifier::opaque]
+spec fn counted(n: usize, b: Batch) -> bool {
+    &&& b.sent() + b.total() >= 0
+    &&& (n > 0) == (b.sent() + b.total() > 0)
+}
+
+/// A purge of `k >= 1` slabs that pushed `d > 0` bytes keeps [`counted`].
+proof fn lemma_counted_step(n: usize, k: usize, b0: Batch, b1: Batch, d: int)
+    requires
+        counted(n, b0),
+        k >= 1,
+        n + k <= usize::MAX,
+        d > 0,
+        b1.sent() + b1.total() == b0.sent() + b0.total() + d,
+    ensures
+        counted((n + k) as usize, b1),
+{
+    reveal(counted);
+}
+
+/// A walk that ended (`none_above`) with every member above it
+/// (`all_above`) leaves the empty set empty.
+proof fn lemma_walked_empty(g: Inner, last: int)
+    requires
+        none_above(g, last),
+        all_above(g, last),
+    ensures
+        g.empty.map@ == vstd::set::Set::<nat>::empty(),
+{
+    reveal(none_above);
+    reveal(all_above);
+    assert(g.empty.map@ =~= vstd::set::Set::<nat>::empty());
+}
+
 /// A visitor of [`ClassState::walk_empty`]: the state of a walk (a
 /// histogram, a count of slabs purged and their batch) as a struct, so
 /// the walk's writes to it are visible to Verus, which does not model a
@@ -201,9 +278,13 @@ pub(super) trait EmptyVisitor {
     /// increasing order.
     spec fn last(&self) -> int;
 
+    /// Whether the walk purges every slab it visits; no visit changes it.
+    spec fn full(&self) -> bool;
+
     /// Visit `slab` of the empty set (stamped `dirty_at`) under the class
     /// lock (`g`), keeping the lock value's invariant; a purge takes slabs
-    /// out of the empty set.
+    /// out of the empty set. `slab` is the lowest member above the last
+    /// slab visited.
     fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64)
         requires
             crate::sys::may_abort(),
@@ -212,10 +293,12 @@ pub(super) trait EmptyVisitor {
             old(self).last() < slab,
             walk_ok(cs, *old(g)),
             old(g).empty.map@.contains(slab as nat),
+            next_after(*old(g), old(self).last(), slab as int),
             dirty_at != 0,
         ensures
             final(self).inv(cs, *final(g)),
             final(self).last() == slab,
+            final(self).full() == old(self).full(),
             walk_ok(cs, *final(g)),
     ;
 }
@@ -306,7 +389,8 @@ impl ClassState {
     /// visitor may take slabs out of the set, including ones ahead of the
     /// walk (a purge takes the whole page group), and the walk does not
     /// visit those. The visitor keeps the invariant; the walk ends because
-    /// every visit moves past the slab it visited.
+    /// every visit moves past the slab it visited. It ends with no member
+    /// of the set above the last slab visited.
     pub(super) fn walk_empty<V: EmptyVisitor>(&self, g: &mut Inner, v: &mut V)
         requires
             crate::sys::may_abort(),
@@ -317,15 +401,27 @@ impl ClassState {
         ensures
             walk_ok(self, *final(g)),
             final(v).inv(self, *final(g)),
+            final(v).full() == old(v).full(),
+            none_above(*final(g), final(v).last()),
     {
+        let ghost f0 = v.full();
         let mut next = g.empty.map.lowest_set();
+        proof {
+            reveal(next_after);
+            reveal(none_above);
+        }
         while let Some(slab) = next
             invariant
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 walk_ok(self, *g),
                 v.inv(self, *g),
+                v.full() == f0,
                 next matches Some(x) ==> v.last() < x && g.empty.map@.contains(x as nat),
+                next matches Some(x) ==> next_after(*g, v.last(), x as int),
+                next is None ==> none_above(*g, v.last()),
+            ensures
+                none_above(*g, v.last()),
             decreases
                 match next {
                     Some(x) => self.spec_nslabs() - x,
@@ -342,6 +438,10 @@ impl ClassState {
             let dirty_at = self.dirty_locked(g, desc, Ghost(slab));
             v.visit(self, g, slab, dirty_at);
             next = g.empty.map.lowest_set_from(slab + 1);
+            proof {
+                reveal(next_after);
+                reveal(none_above);
+            }
         }
     }
 }
@@ -388,7 +488,12 @@ impl Purger {
             p.last@ == -1,
             p.states@ == states,
             forall|b: int| (p.batch.free())(b) == idle_byte(t, states, b),
+            p.batch.sent() == 0,
+            counted(p.n, p.batch),
     {
+        proof {
+            reveal(counted);
+        }
         Purger {
             spp,
             n: 0,
@@ -417,11 +522,14 @@ impl Purger {
         &&& forall|s: nat| #[trigger] g.states@.contains_key(s) == self.states@.contains_key(s)
         &&& forall|s: nat| #[trigger] g.states@.contains_key(s)
             ==> (g.st(s) == State::Active) == (self.states@[s] == State::Active)
+        &&& counted(self.n, self.batch)
     }
 
     /// Visit `slab` (stamped `dirty_at`): purge its page group when
     /// `purge` holds and the group is idle, else keep it and fold its
-    /// stamp into `oldest`.
+    /// stamp into `oldest`. With one slab per page, `purge` always purges
+    /// `slab`: a walk that purged every slab before it still has no
+    /// member of the empty set at or below it.
     #[inline(always)]
     fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64, purge: bool)
         requires
@@ -436,8 +544,14 @@ impl Purger {
             final(self).inv(cs, *final(g)),
             final(self).last@ == slab,
             walk_ok(cs, *final(g)),
+            old(self).spp == 1 && purge && all_above(*old(g), old(self).last@) && next_after(
+                *old(g),
+                old(self).last@,
+                slab as int,
+            ) ==> all_above(*final(g), slab as int),
     {
         let spp = self.spp;
+        let ghost last0 = self.last@;
         let ghost first = slab & !sub(spp, 1);
         proof {
             assert(g.slab_ok(slab as nat));
@@ -477,12 +591,25 @@ impl Purger {
                 // none of this walk's context.
                 lemma_group_idle(*g, slab, spp, first);
             }
+            let ghost n0 = self.n;
+            let ghost b0 = self.batch;
             let k = cs.purge_group(g, slab, spp, &mut self.batch);
             proof {
                 assert(self.end@ as int * slab_bytes(cs) <= first as int * slab_bytes(cs)) by (nonlinear_arith)
                     requires self.end@ <= first, slab_bytes(cs) >= 0;
                 assert(first as int * slab_bytes(cs) + spp as int * slab_bytes(cs) == (first + spp) as int * slab_bytes(cs))
                     by (nonlinear_arith);
+                // `slab` is in its own group, and was `Empty`.
+                assert(k >= 1);
+                lemma_slab_bytes_pos(cs.spec_table());
+                assert(slab_bytes(cs) > 0);
+                assert(spp as int * slab_bytes(cs) > 0) by (nonlinear_arith)
+                    requires spp >= 1, slab_bytes(cs) > 0;
+                lemma_counted_step(n0, k, b0, self.batch, spp as int * slab_bytes(cs));
+                if spp == 1 && all_above(g0, last0) && next_after(g0, last0, slab as int) {
+                    assert(!g.empty.map@.contains(slab as nat));
+                    lemma_all_above(g0, *g, last0, slab as int);
+                }
             }
             self.n += k;
             self.end = Ghost((first + spp) as usize);
@@ -503,6 +630,8 @@ impl Purger {
 }
 
 /// `purge_empty`'s visitor: purge every slab stamped at or before `cutoff`.
+/// With `cutoff == u64::MAX` and one slab per page it purges every slab
+/// it visits, so no member of the empty set is left at or below the last.
 struct PurgeOlder {
     cutoff: u64,
     p: Purger,
@@ -510,11 +639,16 @@ struct PurgeOlder {
 
 impl EmptyVisitor for PurgeOlder {
     closed spec fn inv(&self, cs: &ClassState, g: Inner) -> bool {
-        self.p.inv(cs, g)
+        &&& self.p.inv(cs, g)
+        &&& self.full() ==> all_above(g, self.p.last@)
     }
 
     closed spec fn last(&self) -> int {
         self.p.last@
+    }
+
+    closed spec fn full(&self) -> bool {
+        self.cutoff == u64::MAX && self.p.spp == 1
     }
 
     #[inline(always)]
@@ -536,7 +670,17 @@ impl ClassState {
     /// Recomputes `oldest_empty` from the survivors. Returns the number
     /// purged, at most the slab count: each purged slab is below the end
     /// of the last page group pushed, inside the class region.
-    pub fn purge_empty(&self, cutoff: u64, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
+    ///
+    /// `left` gets the bytes discarded, nonzero iff a slab was purged, and
+    /// the slabs `Empty` in the lock value released: with `cutoff ==
+    /// u64::MAX`, none unless the class has several slabs per page
+    /// ([`Left::clean`]).
+    pub fn purge_empty(
+        &self,
+        cutoff: u64,
+        Tracked(left): Tracked<&mut Ghost<Left>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: usize)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -544,6 +688,15 @@ impl ClassState {
         ensures
             *final(ord) == *old(ord),
             r <= self.spec_nslabs(),
+            final(left)@.bytes >= 0,
+            (r > 0) == (final(left)@.bytes > 0),
+            final(left)@.arenas == Set::<int>::empty(),
+            final(left)@.classes == set![(self.spec_arena() as int, self.spec_class() as int)],
+            forall|t: (int, int, int)| #[trigger] final(left)@.slabs.contains(t)
+                ==> t.0 == self.spec_arena() && t.1 == self.spec_class(),
+            !final(left)@.huge,
+            final(left)@.extents == ISet::<int>::empty(),
+            cutoff == u64::MAX ==> final(left)@.clean(),
     {
         broadcast use {super::axiom_class_lock, super::axiom_class_lock_inv};
         proof {
@@ -554,11 +707,50 @@ impl ClassState {
         let mut v = PurgeOlder { cutoff, p: Purger::new(spp, Ghost(self.spec_table()), Ghost(g@.states@)) };
         proof {
             assert(0usize & sub(spp, 1) == 0) by (bit_vector);
+            reveal(all_above);
             assert(v.p.inv(self, g@));
         }
         self.walk_empty(&mut g, &mut v);
         v.p.batch.flush();
         self.gate.set_oldest_empty(v.p.oldest);
+        proof {
+            reveal(counted);
+            let (a, c) = (self.spec_arena() as int, self.spec_class() as int);
+            let lv = g@;
+            // The slabs the released value records as owned and `Empty`:
+            // by the seam's invariant, its empty set (`Inner::slab_core`).
+            let slabs = ISet::new(
+                |t: (int, int, int)|
+                    t.0 == a && t.1 == c && t.2 >= 0 && lv.owns(t.2 as nat) && lv.st(t.2 as nat) == State::Empty,
+            );
+            *left = Ghost(
+                Left {
+                    bytes: v.p.batch.sent(),
+                    arenas: Set::empty(),
+                    classes: set![(a, c)],
+                    slabs,
+                    huge: false,
+                    extents: ISet::empty(),
+                },
+            );
+            if cutoff == u64::MAX {
+                if spp == 1 {
+                    lemma_walked_empty(lv, v.p.last@);
+                    assert forall|t: (int, int, int)| !slabs.contains(t) by {
+                        if t.2 >= 0 {
+                            assert(lv.slab_ok(t.2 as nat));
+                        }
+                    }
+                    assert(slabs =~= ISet::<(int, int, int)>::empty());
+                } else {
+                    let x = crate::layout::guard_geom(c).0;
+                    if x == 0 {
+                        assert(1usize << x == 1usize) by (bit_vector)
+                            requires x == 0u8;
+                    }
+                }
+            }
+        }
         v.p.n
     }
 }
@@ -678,10 +870,14 @@ impl ClassState {
             final(batch).wf(),
             final(batch).total() <= old(batch).total() + spp as int * slab_bytes(self),
             final(batch).free() == old(batch).free(),
+            final(batch).sent() + final(batch).total() == old(batch).sent() + old(batch).total() + spp as int
+                * slab_bytes(self),
             forall|s: nat| #[trigger] final(g).states@.contains_key(s) == old(g).states@.contains_key(s),
             forall|s: nat| #[trigger] old(g).states@.contains_key(s)
                 ==> (final(g).st(s) == State::Active) == (old(g).st(s) == State::Active),
             n <= spp,
+            old(g).empty.map@.contains(slab as nat) && (slab & !((spp - 1) as usize)) <= slab
+                < (slab & !((spp - 1) as usize)) + spp ==> n >= 1,
     {
         proof {
             use_type_invariant(self);
@@ -732,6 +928,10 @@ impl ClassState {
                 forall|s: nat| first <= s < first + spp ==> #[trigger] g.owns(s),
                 forall|x: nat| #[trigger] g.empty.map@.contains(x) ==> g1.empty.map@.contains(x),
                 forall|x: nat| first <= x < slabs.start ==> !(#[trigger] g.empty.map@.contains(x)),
+                // `slab`, in the empty set, is purged when the loop reaches it.
+                g1.empty.map@.contains(slab as nat) && first <= slab < first + spp && slabs.start <= slab
+                    ==> g.empty.map@.contains(slab as nat),
+                g1.empty.map@.contains(slab as nat) && first <= slab < first + spp && slabs.start > slab ==> n >= 1,
                 forall|x: nat| #[trigger] g.states@.contains_key(x) == g1.states@.contains_key(x),
                 forall|x: nat| #[trigger] g1.states@.contains_key(x)
                     ==> (g.st(x) == State::Active) == (g1.st(x) == State::Active),
@@ -827,6 +1027,10 @@ impl<'a> EmptyVisitor for Histogram<'a> {
         self.last@
     }
 
+    closed spec fn full(&self) -> bool {
+        false
+    }
+
     #[allow(unused_variables)]
     #[inline(always)]
     fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64) {
@@ -860,6 +1064,10 @@ impl<'a> EmptyVisitor for PurgeCurve<'a> {
 
     closed spec fn last(&self) -> int {
         self.p.last@
+    }
+
+    closed spec fn full(&self) -> bool {
+        false
     }
 
     #[inline(always)]

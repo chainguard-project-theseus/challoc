@@ -2479,9 +2479,11 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             flush_caller(shared, Tracked(&mut ord));
             let i = at(mib, 1);
             if all_arenas(shared, i) {
-                purge::purge_all(shared, Tracked(&mut ord));
+                let tracked mut left = Ghost(purge::Left::none());
+                purge::purge_all(shared, Tracked(&mut left), Tracked(&mut ord));
             } else {
-                purge::purge_arena(shared, arena_index(i)?, Tracked(&mut ord)).ok_or(ENOENT)?;
+                let tracked mut left = Ghost(purge::Left::none());
+                purge::purge_arena(shared, arena_index(i)?, Tracked(&mut left), Tracked(&mut ord)).ok_or(ENOENT)?;
             }
             Ok(())
         },
@@ -2510,7 +2512,8 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 return Err(EFAULT);
             }
             flush_caller(shared, Tracked(&mut ord));
-            purge::purge_arena(shared, arena_index(i)?, Tracked(&mut ord)).ok_or(ENOENT)?;
+            let tracked mut left = Ghost(purge::Left::none());
+            purge::purge_arena(shared, arena_index(i)?, Tracked(&mut left), Tracked(&mut ord)).ok_or(ENOENT)?;
             Ok(())
         },
         ArenaDirtyDecayMs => {

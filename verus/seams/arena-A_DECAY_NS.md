@@ -1,6 +1,6 @@
 # `A_DECAY_NS`
 
-Seam S50 of `verus/SEAMS.md`: src/arena.rs:451. Kind: external_body const. Category: core library.
+Seam S50 of `verus/SEAMS.md`: src/arena.rs:454. Kind: external_body const. Category: core library.
 Discharged by Kani.
 
 ## Contract

@@ -55,7 +55,7 @@ use crate::vspec::zero::covers_usable;
 use vstd::arithmetic::power2::pow2;
 #[cfg(verus_only)]
 use vstd::prelude::*;
-use vstd::prelude::{Tracked, verus};
+use vstd::prelude::{Ghost, Tracked, verus};
 
 verus! {
 
@@ -1048,7 +1048,13 @@ proof fn lemma_usable_for_run(shared: &Shared, p: *mut u8, size: usize, old: usi
                 s == pg * n + s % pg,
                 s % pg < pg,
         ;
-        assert(n != 0);
+        assert(pg <= usize::MAX);
+        assert(n != 0) by (nonlinear_arith)
+            requires
+                n * pg > s - pg,
+                s > usize::MAX,
+                pg <= usize::MAX,
+        ;
     }
 }
 
@@ -2509,20 +2515,31 @@ proof fn lemma_user_block_shrink(p: usize, big: int, small: int)
 /// then purge every `Empty` slab and huge extent whatever its age (design
 /// section 8). Returns 1 if anything was purged, 0 otherwise or before
 /// init. `pad` is glibc's top-of-heap allowance and has no meaning here.
-pub fn malloc_trim(_pad: usize) -> (r: c_int)
+///
+/// Whole-allocator theorem "Explicit purge leaves no empty slabs": `left`
+/// is [`purge_all`](crate::purge::purge_all)'s record after init (nothing
+/// purged before), and the result is 1 iff it discarded a byte.
+pub fn malloc_trim(_pad: usize, Tracked(left): Tracked<&mut Ghost<crate::purge::Left>>) -> (r: c_int)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         r == 0 || r == 1,
+        (r == 1) == (final(left)@.bytes > 0),
+        final(left)@.covers(),
+        final(left)@.clean(),
 {
+    proof {
+        *left = Ghost(crate::purge::Left::none());
+        crate::purge::Left::lemma_none();
+    }
     let Some(shared) = super::shared_if_ready() else { return 0 };
     // Premise (lock order): `malloc_trim`'s caller holds no allocator lock.
     let tracked mut ord = axiom_entry();
     if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
         h.flush_all(shared, Tracked(&mut ord));
     }
-    (crate::purge::purge_all(shared, Tracked(&mut ord)) > 0) as c_int
+    (crate::purge::purge_all(shared, Tracked(&mut *left), Tracked(&mut ord)) > 0) as c_int
 }
 
 } // verus!
@@ -2684,7 +2701,8 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::malloc_trim(pad)
+        let tracked mut left = Ghost(crate::purge::Left::none());
+        super::malloc_trim(pad, Tracked(&mut left))
     }
 
     // challoc's size-returning entry points (design 13.7): challoc's own
@@ -3232,10 +3250,10 @@ mod tests {
             assert!(!h.is_null());
             unsafe { ptr::write_bytes(h, 1, 4 << 20) };
             free(h);
-            malloc_trim(0) == 1
+            malloc_trim(0, Tracked::assume_new()) == 1
         });
         assert!(purged, "malloc_trim never reported the freed run purged");
-        let quiet = (0..32).any(|_| malloc_trim(0) == 0);
+        let quiet = (0..32).any(|_| malloc_trim(0, Tracked::assume_new()) == 0);
         assert!(quiet, "malloc_trim never found nothing to purge");
     }
 

@@ -5989,7 +5989,7 @@ impl Heap {
     /// metadata allocator. `h` is dangling afterwards. A counted heap
     /// (`bound`) is unbound from its home arena with its ticket
     /// ([`Heap::homed_ok`]; the trusted body passes `Tracked::assume_new()`
-    /// for it).
+    /// for it, and for the exit purge's ghost record).
     ///
     /// # Safety
     /// `h` must come from [`Heap::create`] on `shared` and no longer be in
@@ -6040,7 +6040,7 @@ impl Heap {
             if shared.arenas.bound(arena) == 0 && !crate::purge::background::present() {
                 if let Some(a) = shared.arenas.get_existing(arena) {
                     if a.take_exit_purge(now_ns()) {
-                        crate::purge::purge_arena(shared, arena, Tracked(&mut *ord));
+                        crate::purge::purge_arena(shared, arena, Tracked::assume_new(), Tracked(&mut *ord));
                     }
                 }
             }

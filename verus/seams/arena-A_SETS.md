@@ -1,6 +1,6 @@
 # `A_SETS`
 
-Seam S51 of `verus/SEAMS.md`: src/arena.rs:453. Kind: external_body const. Category: core library.
+Seam S51 of `verus/SEAMS.md`: src/arena.rs:456. Kind: external_body const. Category: core library.
 Discharged by Kani.
 
 ## Contract

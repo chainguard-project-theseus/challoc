@@ -291,7 +291,10 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     // Slab 0 goes Empty; its group mates 1..4 are Active, so nothing is purged.
     cs.release(&p[..n]);
     assert_eq!(cs.desc(0).state(), State::Empty);
-    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 0);
+    assert_eq!(
+        cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        0
+    );
     assert_eq!(cs.desc(0).state(), State::Empty);
     assert_eq!(cs.oldest_empty(), cs.desc(0).dirty_at());
     // Another arena gets the next group (slabs 128..256: groups are
@@ -340,8 +343,14 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
             ..Default::default()
         }
     );
-    assert_eq!(other.purge_empty(u64::MAX, Tracked::assume_new()), 0);
-    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 3);
+    assert_eq!(
+        other.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        0
+    );
+    assert_eq!(
+        cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        3
+    );
     for s in 4..7 {
         assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
     }
@@ -361,7 +370,10 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     cs.release(&in_slab(&r, 0));
     let oldest = cs.desc(1).dirty_at();
     assert!(cs.desc(0).dirty_at() >= oldest);
-    assert_eq!(cs.purge_empty(oldest, Tracked::assume_new()), 4);
+    assert_eq!(
+        cs.purge_empty(oldest, Tracked::assume_new(), Tracked::assume_new()),
+        4
+    );
     for s in 0..4 {
         assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
         assert_eq!(cs.desc(s).dirty_at(), 0);
@@ -382,7 +394,10 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     assert_eq!(z[0] as usize, base);
     cs.release(&z);
     assert_eq!(cs.desc(0).state(), State::Empty);
-    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 1);
+    assert_eq!(
+        cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
     assert_eq!(cs.desc(0).state(), State::Purged);
     assert_eq!(
         cs.stats(),
@@ -841,9 +856,19 @@ fn release_all_makes_empty_then_reuse_then_purge() {
     cs.release(&q);
     assert_eq!(d.state(), State::Empty);
     // Purge with a cutoff before dirty_at does nothing; after it purges.
-    assert_eq!(cs.purge_empty(d.dirty_at() - 1, Tracked::assume_new()), 0);
+    assert_eq!(
+        cs.purge_empty(
+            d.dirty_at() - 1,
+            Tracked::assume_new(),
+            Tracked::assume_new()
+        ),
+        0
+    );
     assert_eq!(d.state(), State::Empty);
-    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 1);
+    assert_eq!(
+        cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
     assert_eq!(d.state(), State::Purged);
     assert_eq!(d.dirty_at(), 0);
     assert_eq!(
@@ -978,7 +1003,10 @@ fn decay_purges_the_oldest_empty_slabs_along_the_curve() {
     let (r, _) = env.claim(&cs, nslots * 2);
     cs.release(&r);
     assert!(cs.oldest_empty() > 0);
-    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 2);
+    assert_eq!(
+        cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        2
+    );
     assert_eq!(cs.oldest_empty(), 0);
 }
 
@@ -1019,7 +1047,10 @@ fn purge_batches_a_whole_region() {
     assert_eq!(claim.n, nslots * n);
     cs.release(&p);
     assert_eq!(cs.stats().empty, n);
-    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), n);
+    assert_eq!(
+        cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        n
+    );
     assert_eq!(cs.stats().purged, n);
     assert_eq!(cs.oldest_empty(), 0);
     for s in 0..n {
@@ -1148,7 +1179,10 @@ fn works_for_every_class() {
         }
         cs.release(&p);
         assert_eq!(cs.desc(0).state(), State::Empty, "class {c}");
-        assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 1);
+        assert_eq!(
+            cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+            1
+        );
     }
     let s = env.meta.stats(Tracked::assume_new());
     // The tables are reservations or, at this layout's sizes, eager carves.
@@ -1307,7 +1341,10 @@ fn two_arenas_share_one_region() {
     assert_eq!(cs1.desc(2).state(), State::Empty);
     assert_eq!(cs1.stats().empty, 2);
     assert_eq!(cs0.stats().empty, 0);
-    assert_eq!(cs1.purge_empty(u64::MAX, Tracked::assume_new()), 2);
+    assert_eq!(
+        cs1.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        2
+    );
     assert_eq!(cs0.stats().purged, 0);
     assert_eq!(cs1.stats().purged, 2);
     cs0.release(&p0);
@@ -1652,7 +1689,7 @@ fn randomised_model_check() {
     assert_eq!(st.empty, st.committed);
     assert_eq!(st.nonfull, 0);
     assert_eq!(
-        cs.purge_empty(u64::MAX, Tracked::assume_new()),
+        cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
         st.committed
     );
     let st = cs.stats();
@@ -1751,7 +1788,7 @@ fn purge_never_races_a_claim() {
         std::thread::spawn(move || {
             let mut n = 0;
             while !stop.load(core::sync::atomic::Ordering::Relaxed) {
-                n += cs.purge_empty(u64::MAX, Tracked::assume_new());
+                n += cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new());
                 purged.store(n, core::sync::atomic::Ordering::Relaxed);
             }
             n
@@ -1815,7 +1852,10 @@ fn purge_zeroes_memory_and_commit_is_visible() {
     assert!(!claim.zeroed);
     assert_eq!(unsafe { *q[0] }, 0xAB);
     cs.release(&q);
-    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 1);
+    assert_eq!(
+        cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
     let (r, claim) = env.claim(&cs, 5);
     assert_eq!(r, p);
     assert!(claim.zeroed);
@@ -1856,7 +1896,10 @@ fn check_zero_passes_fresh_and_purged_slabs() {
         unsafe { *q = 0xAB };
     }
     cs.release(&p);
-    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 1);
+    assert_eq!(
+        cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
     let (q, claim) = env.claim(&cs, 5);
     assert_eq!(q, p);
     assert!(claim.zeroed);
@@ -1873,7 +1916,10 @@ fn check_zero_aborts_on_a_dirty_purged_slab() {
     let cs = env.class(small_class(), 0);
     let (p, _) = env.claim(&cs, 2);
     cs.release(&p);
-    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 1);
+    assert_eq!(
+        cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
     // The last word of the second slot: the check reads both ends.
     let size = cs.class().size();
     unsafe { ptr::write_volatile(p[1].add(size - 8) as *mut u64, 0xDEAD_BEEF) };
@@ -1991,7 +2037,10 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
             break;
         }
         // Round 2: the same window on the slab once purged.
-        assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 1);
+        assert_eq!(
+            cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+            1
+        );
         assert_eq!(cs.desc(0).state(), State::Purged);
         if !purge::purged_is_zero() {
             break;
@@ -2127,7 +2176,7 @@ fn a_purge_of_an_empty_slab_the_counts_do_not_know_aborts() {
     cs.release(&b[..1]);
     assert_eq!(cs.stats().empty, 1);
     cs.inner.lock_t().stats.empty = 0;
-    cs.purge_empty(u64::MAX, Tracked::assume_new());
+    cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new());
 }
 
 /// `claim_prefix`'s cross-check: a `Fresh` slab (handed out, not yet
@@ -2292,7 +2341,10 @@ fn a_plan_that_takes_a_purged_slab_the_counts_do_not_know_aborts() {
     let (b, claim) = env.claim(&cs, 1);
     assert_eq!(claim.n, 1);
     cs.release(&b);
-    assert_eq!(cs.purge_empty(u64::MAX, Tracked::assume_new()), 1);
+    assert_eq!(
+        cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
     assert_eq!(cs.stats().purged, 1);
     // Corrupt the count: the set still holds the slab.
     cs.inner.lock_t().stats.purged = 0;
@@ -2375,7 +2427,7 @@ fn a_purge_over_an_empty_set_slab_that_is_not_empty_aborts() {
     // Corrupt the descriptor: the set says `Empty`, the state byte says
     // `Active`.
     cs.desc(1).set_state(State::Active);
-    cs.purge_empty(u64::MAX, Tracked::assume_new());
+    cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new());
 }
 
 /// `min_nonzero`: the fold of the purge walks over `dirty_at`

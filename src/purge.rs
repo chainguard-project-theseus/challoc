@@ -233,6 +233,10 @@ pub struct Batch {
     /// Ghost: the bytes the batch may discard.
     #[allow(dead_code)]
     free: Ghost<spec_fn(int) -> bool>,
+    /// Ghost: the bytes handed to [`discard`] so far, every flush's
+    /// ranges summed.
+    #[allow(dead_code)]
+    sent: Ghost<int>,
 }
 
 /// Every byte of `[addr, addr + len)` is one `free` admits.
@@ -322,6 +326,13 @@ impl Batch {
         lens(self.ranges@, self.n as int)
     }
 
+    /// Bytes handed to [`discard`] since [`Batch::new`]: what the batch's
+    /// flushes discarded. A push adds its length to `sent() + total()`,
+    /// and a flush moves `total()` into `sent()`.
+    pub closed spec fn sent(&self) -> int {
+        self.sent@
+    }
+
     /// Ranges held.
     pub closed spec fn count(&self) -> nat {
         self.n as nat
@@ -334,8 +345,9 @@ impl Batch {
             b.total() == 0,
             b.count() == 0,
             b.free() == free,
+            b.sent() == 0,
     {
-        Batch { ranges: [(0, 0); MAX_BATCH], n: 0, free: Ghost(free) }
+        Batch { ranges: [(0, 0); MAX_BATCH], n: 0, free: Ghost(free), sent: Ghost(0) }
     }
 
     #[inline]
@@ -378,6 +390,7 @@ impl Batch {
             final(self).wf(),
             final(self).total() <= old(self).total() + len,
             final(self).free() == old(self).free(),
+            final(self).sent() + final(self).total() == old(self).sent() + old(self).total() + len,
     {
         proof {
             lemma_lens(self.ranges@, self.ranges@, self.n as int);
@@ -432,6 +445,7 @@ impl Batch {
             final(self).count() == 0,
             final(self).total() == 0,
             final(self).free() == old(self).free(),
+            final(self).sent() == old(self).sent() + old(self).total(),
     {
         if self.n != 0 {
             let advice = advice();
@@ -452,6 +466,7 @@ impl Batch {
                 }
             }
             discard(&self.ranges[..self.n], advice, Ghost(self.free@));
+            self.sent = Ghost(self.sent@ + lens(self.ranges@, self.n as int));
             self.n = 0;
         }
     }
@@ -685,6 +700,113 @@ impl Decayer {
     }
 }
 
+/// What an explicit purge left (ghost): the whole-allocator theorem
+/// "Explicit purge leaves no empty slabs" (`verus/THEOREMS.md`). Each
+/// purge sets it from the lock values it releases, just before each
+/// release: to a caller it is only a value its `ensures` constrain.
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub ghost struct Left {
+    /// Bytes handed to [`discard`] ([`Batch::sent`]), every batch summed.
+    pub bytes: int,
+    /// Arenas whose every class was purged.
+    pub arenas: Set<int>,
+    /// `(arena, class)` of every class lock the purge took and released.
+    pub classes: Set<(int, int)>,
+    /// `(arena, class, slab)` of every slab `Empty` in a class lock value
+    /// the purge released.
+    pub slabs: ISet<(int, int, int)>,
+    /// Whether the purge took and released the huge lock.
+    pub huge: bool,
+    /// The addresses of the descriptors of the extents `Empty` in the huge
+    /// lock value the purge released (none when `huge` is false).
+    pub extents: ISet<int>,
+}
+
+/// Class `c`'s slabs are smaller than the process's page, so a page holds
+/// several (`SlabTable::slabs_per_page`, the class's guard geometry): only
+/// for a page above 64 KiB, which no supported kernel has
+/// (`layout::lg_slab_at`; `axiom_process_page_at_most_64k`).
+pub open spec fn paged(c: int) -> bool {
+    crate::layout::guard_geom(c).0 != 0
+}
+
+impl Left {
+    /// Nothing purged.
+    pub open spec fn none() -> Left {
+        Left {
+            bytes: 0,
+            arenas: Set::empty(),
+            classes: Set::empty(),
+            slabs: ISet::empty(),
+            huge: false,
+            extents: ISet::empty(),
+        }
+    }
+
+    /// Two purges' records together.
+    pub open spec fn join(self, o: Left) -> Left {
+        Left {
+            bytes: self.bytes + o.bytes,
+            arenas: self.arenas + o.arenas,
+            classes: self.classes + o.classes,
+            slabs: self.slabs + o.slabs,
+            huge: self.huge || o.huge,
+            extents: self.extents + o.extents,
+        }
+    }
+
+    /// The theorem's conclusion: no slab was left `Empty` in a class
+    /// lock value released, except in a class with several slabs per page
+    /// (whose page group another slab can keep from being discarded), and
+    /// no huge extent was left `Empty`; the byte count is not negative.
+    pub open spec fn clean(self) -> bool {
+        &&& forall|t: (int, int, int)| #[trigger] self.slabs.contains(t) ==> paged(t.1)
+        &&& self.extents == ISet::<int>::empty()
+        &&& self.bytes >= 0
+    }
+
+    /// The classes purged are every class of the arenas purged.
+    pub open spec fn covers(self) -> bool {
+        forall|a: int, c: int| #[trigger] self.classes.contains((a, c))
+            <==> self.arenas.contains(a) && 0 <= c < crate::layout::NCLASSES
+    }
+
+    /// Nothing purged is clean and covers.
+    pub proof fn lemma_none()
+        ensures
+            Left::none().clean(),
+            Left::none().covers(),
+    {
+    }
+
+    /// Two clean records join to a clean one, two that cover to one that
+    /// covers.
+    pub proof fn lemma_join(a: Left, b: Left)
+        ensures
+            a.clean() && b.clean() ==> a.join(b).clean(),
+            a.covers() && b.covers() ==> a.join(b).covers(),
+    {
+        let j = a.join(b);
+        if a.clean() && b.clean() {
+            assert(j.extents =~= ISet::<int>::empty());
+            assert forall|t: (int, int, int)| #[trigger] j.slabs.contains(t) implies paged(t.1) by {
+                if a.slabs.contains(t) {
+                } else {
+                    assert(b.slabs.contains(t));
+                }
+            }
+        }
+        if a.covers() && b.covers() {
+            assert forall|x: int, c: int| #[trigger] j.classes.contains((x, c))
+                <==> j.arenas.contains(x) && 0 <= c < crate::layout::NCLASSES by {
+                assert(a.classes.contains((x, c)) <==> a.arenas.contains(x) && 0 <= c < crate::layout::NCLASSES);
+                assert(b.classes.contains((x, c)) <==> b.arenas.contains(x) && 0 <= c < crate::layout::NCLASSES);
+            }
+        }
+    }
+}
+
 /// Arena indices to visit: [`crate::arena::Arenas::count`], which never
 /// exceeds the table (`create` stops at [`MAX_ARENAS`]; `count` is
 /// verified to ensure it, so the clamp is redundant and stays only to
@@ -702,15 +824,30 @@ fn arena_count(shared: &Shared) -> (n: usize)
 /// Purge every `Empty` slab of every arena and every huge extent
 /// regardless of age, eagerly (`malloc_trim(0)`, the `high`-rise full
 /// purge: the memory is wanted back now). Returns how many were purged.
-pub fn purge_all(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> usize
+///
+/// Whole-allocator theorem "Explicit purge leaves no empty slabs": `left`
+/// gets the bytes discarded, nonzero iff anything was purged, the arenas
+/// visited, every class of each, and the huge allocator, with no slab or
+/// extent `Empty` in the lock value each purge released, except in a class
+/// with several slabs per page ([`Left::clean`]).
+pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         old(ord).allows(rank_class(0, 0)),
     ensures
         *final(ord) == *old(ord),
+        (r > 0) == (final(left)@.bytes > 0),
+        forall|i: int| #[trigger] final(left)@.arenas.contains(i) ==> 0 <= i < crate::arena::MAX_ARENAS,
+        final(left)@.covers(),
+        final(left)@.huge,
+        final(left)@.clean(),
 {
     let _explicit = Explicit::enter();
+    proof {
+        *left = Ghost(Left::none());
+        Left::lemma_none();
+    }
     let mut n: usize = 0;
     let count = arena_count(shared);
     for i in 0..count
@@ -721,13 +858,38 @@ pub fn purge_all(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> usiz
             *ord == *old(ord),
             count <= crate::arena::MAX_ARENAS,
             n <= i * 0x8_0000_0000_0000,
+            (n > 0) == (left@.bytes > 0),
+            forall|a: int| #[trigger] left@.arenas.contains(a) ==> 0 <= a < i,
+            left@.covers(),
+            !left@.huge,
+            left@.clean(),
     {
         if let Some(arena) = shared.arenas.get_existing(i as u16) {
+            let tracked mut la = Ghost(Left::none());
             // At most `NCLASSES * 2^45` slabs an arena.
-            n += arena.purge_all(Tracked(ord));
+            n += arena.purge_all(Tracked(&mut la), Tracked(ord));
+            proof {
+                let l0 = left@;
+                Left::lemma_join(l0, la@);
+                *left = Ghost(l0.join(la@));
+                assert forall|a: int| #[trigger] left@.arenas.contains(a) implies 0 <= a < i + 1 by {
+                    if !l0.arenas.contains(a) {
+                        assert(la@.arenas.contains(a));
+                    }
+                }
+            }
         }
     }
-    n + shared.huge.purge_empty(u64::MAX, Tracked(ord))
+    let tracked mut lh = Ghost(Left::none());
+    let h = shared.huge.purge_empty(u64::MAX, Tracked(&mut lh), Tracked(ord));
+    proof {
+        let l0 = left@;
+        Left::lemma_join(l0, lh@);
+        *left = Ghost(l0.join(lh@));
+        assert(left@.arenas =~= l0.arenas);
+        assert(left@.classes =~= l0.classes);
+    }
+    n + h
 }
 
 /// A class or the huge allocator went from no `Empty` slab to one: wake a
@@ -767,7 +929,8 @@ pub fn decay(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -
     // before the walks so they see the survivors (none, normally).
     let policy = &shared.policy;
     if policy.take_full_purge() {
-        purge_all(shared, Tracked(ord));
+        let tracked mut left = Ghost(Left::none());
+        purge_all(shared, Tracked(&mut left), Tracked(ord));
     }
     let keep16 = policy.keep16();
     let mut next: Option<u64> = None;
@@ -807,19 +970,44 @@ fn earliest(next: Option<u64>, d: Option<u64>) -> Option<u64> {
 /// `arena.<i>.purge`: purge every `Empty` slab of one arena regardless of
 /// age (plus, for arena 0, the huge extents, which belong to no single
 /// arena's sets), eagerly. `None` if the arena does not exist.
-pub fn purge_arena(shared: &Shared, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> Option<usize>
+///
+/// `left` gets what [`purge_all`] says of its purges: here every class of
+/// arena `index` and, for arena 0, the huge allocator.
+pub fn purge_arena(
+    shared: &Shared,
+    index: u16,
+    Tracked(left): Tracked<&mut Ghost<Left>>,
+    Tracked(ord): Tracked<&mut LockOrder>,
+) -> (r: Option<usize>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         old(ord).allows(rank_class(0, 0)),
     ensures
         *final(ord) == *old(ord),
+        r is None ==> final(left)@ == Left::none(),
+        r matches Some(n) ==> (n > 0) == (final(left)@.bytes > 0),
+        r is Some ==> final(left)@.arenas == set![index as int],
+        final(left)@.huge == (r is Some && index == 0),
+        final(left)@.covers(),
+        final(left)@.clean(),
 {
     let _explicit = Explicit::enter();
+    proof {
+        *left = Ghost(Left::none());
+        Left::lemma_none();
+    }
     let arena = shared.arenas.get_existing(index)?;
-    let mut n = arena.purge_all(Tracked(ord));
+    let mut n = arena.purge_all(Tracked(&mut *left), Tracked(ord));
     if index == 0 {
-        n += shared.huge.purge_empty(u64::MAX, Tracked(ord));
+        let tracked mut lh = Ghost(Left::none());
+        n += shared.huge.purge_empty(u64::MAX, Tracked(&mut lh), Tracked(ord));
+        proof {
+            let l0 = left@;
+            Left::lemma_join(l0, lh@);
+            *left = Ghost(l0.join(lh@));
+            assert(left@.arenas =~= l0.arenas);
+        }
     }
     Some(n)
 }

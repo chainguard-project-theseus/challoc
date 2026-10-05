@@ -1968,7 +1968,7 @@ mod tests {
         let dirty = a.small_dirty + a.large_dirty + a.huge_dirty;
 
         // Purge: dirty becomes retained; resident falls back to metadata.
-        assert!(crate::purge::purge_all(s, Tracked::assume_new()) > 0);
+        assert!(crate::purge::purge_all(s, Tracked::assume_new(), Tracked::assume_new()) > 0);
         assert_eq!(epoch(s, Tracked::assume_new()), 4);
         let a = arena_stats(s, 0, Tracked::assume_new()).unwrap();
         let tot = snapshot(s, Tracked::assume_new()).totals;

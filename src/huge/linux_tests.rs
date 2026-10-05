@@ -29,7 +29,10 @@ fn check_zero_passes_fresh_and_purged_runs() {
     assert_eq!(q, p);
     assert!(!zero);
     env.free(&h, q);
-    assert_eq!(h.purge_empty(u64::MAX, Tracked::assume_new()), 1);
+    assert_eq!(
+        h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
     let (r, zero) = env.alloc(&h, size, 1);
     assert_eq!(r, p);
     assert!(zero && all(r, size, 0));
@@ -47,7 +50,10 @@ fn check_zero_aborts_on_a_dirty_purged_run() {
     let size = 3 * page_size();
     let (p, _) = env.alloc(&h, size, 1);
     env.free(&h, p);
-    assert_eq!(h.purge_empty(u64::MAX, Tracked::assume_new()), 1);
+    assert_eq!(
+        h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
     unsafe { ptr::write_volatile(p.add(size - 8) as *mut u64, 0xDEAD_BEEF) };
     let _ = env.alloc(&h, size, 1);
 }
@@ -67,7 +73,10 @@ fn memory_is_writable_and_the_zero_flag_is_honest() {
     assert!(!zero);
     assert!(all(q, size, 0xAB));
     env.free(&h, q);
-    assert_eq!(h.purge_empty(u64::MAX, Tracked::assume_new()), 1);
+    assert_eq!(
+        h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
     let (r, zero) = env.alloc(&h, size, 1);
     assert_eq!(r, p);
     assert!(zero && all(r, size, 0));
@@ -104,7 +113,10 @@ fn stale_guards_inside_a_reused_extent_are_writable_and_purgeable() {
     assert_eq!(h.stats(Tracked::assume_new()).empty, 1);
     // One extent of 16 pages with three old guard positions inside:
     // purging it must succeed whatever their protection is.
-    assert_eq!(h.purge_empty(u64::MAX, Tracked::assume_new()), 1);
+    assert_eq!(
+        h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
     let (big, zero) = env.alloc(&h, 15 * page_size(), 1);
     assert_eq!(big, ps[0]);
     assert!(zero && all(big, 15 * page_size(), 0));

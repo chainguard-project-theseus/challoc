@@ -214,7 +214,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
         "never purged by decay"
     );
     assert_eq!(
-        crate::purge::purge_all(s, Tracked::assume_new()),
+        crate::purge::purge_all(s, Tracked::assume_new(), Tracked::assume_new()),
         1,
         "malloc_trim still purges it"
     );

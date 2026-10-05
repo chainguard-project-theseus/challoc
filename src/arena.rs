@@ -45,6 +45,9 @@ use crate::lock::{Lock, LockOrder};
 #[cfg(verus_only)]
 use crate::lock::{rank_arena_stats, rank_arenas, rank_class, rank_meta, rank_sets};
 use crate::meta::Meta;
+use crate::purge::Left;
+#[cfg(verus_only)]
+use crate::purge::paged;
 use crate::stats::ArenaStats;
 use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_only)]
@@ -1035,8 +1038,11 @@ impl Arena {
     }
 
     /// Purge every `Empty` slab of every class whatever its age. Returns
-    /// how many were purged.
-    pub fn purge_all(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
+    /// how many were purged. `left` gets the bytes discarded, nonzero iff
+    /// a slab was purged, and every class of this arena, none with an
+    /// `Empty` slab in the lock value its purge released unless it has
+    /// several slabs per page ([`Left::clean`]).
+    pub fn purge_all(&self, Tracked(left): Tracked<&mut Ghost<Left>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -1044,7 +1050,25 @@ impl Arena {
         ensures
             r <= NCLASSES * 0x2000_0000_0000,
             *final(ord) == *old(ord),
+            (r > 0) == (final(left)@.bytes > 0),
+            final(left)@.arenas == set![self.spec_index() as int],
+            final(left)@.covers(),
+            !final(left)@.huge,
+            final(left)@.clean(),
     {
+        proof {
+            use_type_invariant(self);
+            *left = Ghost(
+                Left {
+                    bytes: 0,
+                    arenas: set![self.spec_index() as int],
+                    classes: Set::empty(),
+                    slabs: ISet::empty(),
+                    huge: false,
+                    extents: ISet::empty(),
+                },
+            );
+        }
         let mut sum = 0usize;
         let mut c = 0;
         while c < NCLASSES
@@ -1055,11 +1079,35 @@ impl Arena {
                 ord.allows(rank_class(0, 0)),
                 *ord == *old(ord),
                 sum <= c * 0x2000_0000_0000,
+                (sum > 0) == (left@.bytes > 0),
+                left@.arenas == set![self.spec_index() as int],
+                forall|a: int, k: int| #[trigger] left@.classes.contains((a, k))
+                    <==> a == self.spec_index() && 0 <= k < c,
+                !left@.huge,
+                left@.clean(),
             decreases NCLASSES - c,
         {
             let cs = &self.classes[c];
             cs.nslabs_fit();
-            sum += cs.purge_empty(u64::MAX, Tracked(ord));
+            let tracked mut lc = Ghost(Left::none());
+            sum += cs.purge_empty(u64::MAX, Tracked(&mut lc), Tracked(ord));
+            proof {
+                use_type_invariant(self);
+                let l0 = left@;
+                *left = Ghost(l0.join(lc@));
+                assert forall|a: int, k: int| #[trigger] left@.classes.contains((a, k))
+                    <==> a == self.spec_index() && 0 <= k < c + 1 by {
+                    assert(l0.classes.contains((a, k)) <==> a == self.spec_index() && 0 <= k < c);
+                }
+                assert(left@.arenas =~= set![self.spec_index() as int]);
+                assert forall|t: (int, int, int)| #[trigger] left@.slabs.contains(t) implies paged(t.1) by {
+                    if l0.slabs.contains(t) {
+                    } else {
+                        assert(lc@.slabs.contains(t));
+                    }
+                }
+                assert(left@.extents =~= ISet::<int>::empty());
+            }
             c += 1;
         }
         sum

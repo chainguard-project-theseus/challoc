@@ -4569,7 +4569,11 @@ token).
   (the page group's slabs, `slab & !((spp - 1) as usize)`), under
   `quantum8` even with only the `push` `ensures` added; that proof is
   sensitive to any change in the `Batch` contracts its module sees.
-  Hardening it comes first.
+  Hardening it comes first. (Since hardened: `Batch::sent`, the bytes
+  handed to `discard`, with exact `sent() + total()` `ensures` on `push`
+  and `flush`, now verifies everywhere; theorem "Explicit purge leaves
+  no empty slabs" uses it. A per-range record for this branch is still
+  open.)
 - `madvise` does what it is asked (the kernel contract, a common
   premise); a failed `madvise` aborts in `discard`.
 - The huge lock axioms (`vspec/huge.rs`), as for theorems 17 and 19.
@@ -5844,6 +5848,185 @@ interface). Machine code is unchanged on x86_64 (identical to a build of
 `take` already required; `next_slab` and `next_fresh_slab` now state that
 they leave the partial set alone and that `None` means both idle sets
 are empty.
+## 38. Explicit purge leaves no empty slabs (at each lock release; one slab per page)
+
+Stated per lock release, over a ghost record (`purge::Left`) the purges
+set themselves: when `purge::purge_all` or `purge_arena` returns, no
+class of an arena it visited had an `Empty` slab in the class lock value
+its purge released, except in a class with several slabs per page, and
+the huge allocator had no `Empty` extent in the huge lock value its
+purge released; the count returned is nonzero iff a byte was handed to
+`discard`, so `malloc_trim` returns 1 iff its purge discarded a byte.
+The record's link to the lock values is the two assignments that set it
+(`*left = Ghost(..)` from the guard's value just before it drops, in
+`ClassState::purge_empty` and `Huge::purge_empty`), read from the code:
+the `ensures` alone do not bind it to a lock, as theorem 22's ghost
+reads. Not a statement about the allocator at return: frees after each
+lock is released can make new `Empty` slabs (it is the state at return
+only at quiescence).
+The `file:line`s are the `fn`/`spec` line at this section's commit.
+
+**Statement.**
+
+```rust
+// purge.rs:709
+pub ghost struct Left {
+    pub bytes: int,                         // bytes handed to `discard`
+    pub arenas: Set<int>,                   // arenas whose every class was purged
+    pub classes: Set<(int, int)>,           // (arena, class) locks taken and released
+    pub slabs: ISet<(int, int, int)>,       // (arena, class, slab) `Empty` in a released value
+    pub huge: bool,                         // the huge lock was taken and released
+    pub extents: ISet<int>,                 // descriptors `Empty` in the released huge value
+}
+
+// purge.rs:730: class `c` has several slabs per page.
+pub open spec fn paged(c: int) -> bool { crate::layout::guard_geom(c).0 != 0 }
+
+// purge.rs:763, :770
+pub open spec fn clean(self) -> bool {
+    &&& forall|t: (int, int, int)| #[trigger] self.slabs.contains(t) ==> paged(t.1)
+    &&& self.extents == ISet::<int>::empty()
+    &&& self.bytes >= 0
+}
+pub open spec fn covers(self) -> bool {
+    forall|a: int, c: int| #[trigger] self.classes.contains((a, c))
+        <==> self.arenas.contains(a) && 0 <= c < NCLASSES
+}
+
+// purge.rs:832
+pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>,
+    Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
+    ensures
+        (r > 0) == (final(left)@.bytes > 0),
+        forall|i: int| #[trigger] final(left)@.arenas.contains(i) ==> 0 <= i < MAX_ARENAS,
+        final(left)@.covers(),
+        final(left)@.huge,
+        final(left)@.clean(),
+
+// purge.rs:975
+pub fn purge_arena(shared: &Shared, index: u16, Tracked(left): ..., Tracked(ord): ...)
+    -> (r: Option<usize>)
+    ensures
+        r is None ==> final(left)@ == Left::none(),
+        r matches Some(n) ==> (n > 0) == (final(left)@.bytes > 0),
+        r is Some ==> final(left)@.arenas == set![index as int],
+        final(left)@.huge == (r is Some && index == 0),
+        final(left)@.covers(),
+        final(left)@.clean(),
+
+// api/libc.rs:2438
+pub fn malloc_trim(_pad: usize, Tracked(left): Tracked<&mut Ghost<Left>>) -> (r: c_int)
+    ensures
+        r == 0 || r == 1,
+        (r == 1) == (final(left)@.bytes > 0),
+        final(left)@.covers(),
+        final(left)@.clean(),
+```
+
+(Line breaks added; `ord` clauses dropped.) In words: `purge_all`
+(`malloc_trim`, `arena.<ARENAS_ALL>.purge`, the cgroup `high`-rise full
+purge in `purge::decay`) visits the arenas in `left.arenas`, all below
+`MAX_ARENAS`, and for each purges every class (`covers`), then the huge
+allocator (`huge`); each class purge leaves no slab `Empty` in the value
+its lock releases unless the class is `paged`, and the huge purge leaves
+no extent `Empty` (`clean`, which also says `bytes >= 0`). `bytes`, the
+sum over every batch of the bytes it handed to `discard`, is positive
+iff the returned count is.
+
+How it is proved:
+- **The walk ends past every member** (`class/decay.rs`).
+  `ClassState::walk_empty` (`:394`) ensures `none_above(g, last)` (`:202`,
+  opaque): no member of the empty set lies above the last slab visited;
+  each visit is handed `next_after(g, last, slab)` (`:196`, opaque):
+  `slab` is the lowest member above the last, from `lowest_set` and
+  `lowest_set_from`'s contracts.
+- **A full-cutoff purge with one slab per page purges every visit.**
+  `Purger::visit` (`:534`) ensures that with `spp == 1` and `purge`, a walk
+  whose empty set was all above the last slab (`all_above`, `:209`,
+  opaque) still is after `slab` (`lemma_all_above`, `:215`):
+  `purge_group` takes `slab`'s group, here `slab` alone, out of the set
+  and adds nothing. `PurgeOlder` (`:635`) keeps `all_above` as an
+  invariant when it is `full` (`cutoff == u64::MAX`, so `dirty_at <=
+  cutoff` always, and `spp == 1`), a trait-level `EmptyVisitor::full`
+  that every visit and the walk keep; `lemma_walked_empty` (`:257`)
+  closes `none_above` and `all_above` to an empty set. `Inner::slab_core`
+  makes the empty set exactly the owned `Empty` slabs, so
+  `ClassState::purge_empty` (`:678`) sets `left.slabs` to the released
+  value's owned `Empty` slabs, tagged with its arena and class, and
+  proves it empty (by `slab_core`, from the empty set), or, when `spp !=
+  1`, the class `paged` (`slabs_per_page` ensures `spp == 1 <<
+  guard_geom(c).0`).
+- **The huge purge empties the `Empty` list.** In `Huge::purge_empty`
+  (`huge/mod.rs:3790`) the loop exits at a null head (the list is empty:
+  a non-empty list starts at a live, non-null descriptor) or at a stamp
+  past `cutoff`, impossible at `u64::MAX`; `Inner::wf` puts every `Empty`
+  descriptor on the list, so `left.extents`, the released value's
+  `Empty` descriptors, is empty.
+- **Count iff bytes.** `Batch` has a ghost `sent` (`purge.rs:332`): `push`
+  (`:381`) adds its length to `sent() + total()` exactly and `flush`
+  (`:438`) moves `total()` into `sent()`. `Purger::inv` keeps `counted`
+  (`decay.rs:236`, opaque): `n > 0` iff `sent() + total() > 0`;
+  `purge_group` (`:849`) pushes `spp` slabs' bytes and, now, returns at
+  least 1 when `slab` is in the empty set (`lemma_counted_step`, `:242`).
+  The huge loop keeps the same relation over `purge_extent`
+  (`huge/mod.rs:3959`, at least a page pushed per extent). After each
+  purge's final flush, `sent()` is its `bytes`.
+- **Composition.** `Arena::purge_all` (`arena.rs:1032`) joins its
+  classes' records (`Left::join`, `lemma_join`, `purge.rs:785`), with the
+  arena invariant giving `classes[c]` class `c` and the arena's index;
+  `purge_all` and `purge_arena` join the arenas' and the huge records;
+  `malloc_trim` returns `(purge_all(..) > 0) as c_int`, and `Left::none()`
+  before init.
+
+**Covers.** `malloc_trim`; `mallctl` `arena.<i>.purge` (both forms) and
+`arena.<i>.destroy`; the full purge `purge::decay` runs on a cgroup
+`high` rise; the exit purge in `Heap::destroy` (trusted, so only through
+`purge_arena`'s contract).
+
+**Premises beyond the common ones.**
+- The class and huge lock axioms (`axiom_class_lock_inv`,
+  `vspec/huge.rs`), as for theorems 17, 19 and 29: the value a lock
+  hands over satisfies its invariant, which is what ties the empty set to
+  the `Empty` slabs and the `Empty` list to the `Empty` extents.
+- `madvise` does what it is asked (a common premise); `discard` aborts if
+  it fails. `bytes` counts what `discard` is handed.
+- One slab per page, for the class half: `paged(c)` is false exactly
+  when `slabs_per_page` is 1. That holds for every class on every
+  supported page size (`layout::lg_slab_at`, `layout/mod.rs:1002`,
+  raises every slab to the page up to 64 KiB, and
+  `axiom_process_page_at_most_64k`, `layout/regions.rs:118`), but nothing
+  proves it of the process's table: `guard_geom` is uninterpreted and
+  `class_table()` is not tied to `classes_for_page` (`SlabTable::new`
+  computes `slabs_per_page = (page / slab).max(1)`, `class/table.rs:547`).
+  The statement keeps it as the `paged` exception instead.
+
+**Scope and where the statement is weaker than the code.**
+- At each lock release, not at return: the record is set from the lock
+  value just before each guard drops; after that, a free can bring a
+  slab back to `Empty` (`on_live_zero`) or free a huge run into an
+  `Empty` extent. At quiescence (no other thread allocating or freeing)
+  the values released are the values at return.
+- With several slabs per page (a page above 64 KiB), an `Empty` slab
+  whose page group holds an `Active` slab, a slab of another arena or an
+  uncommitted one stays `Empty` by design (`page_group_is_idle` vetoes
+  the discard): the code's behaviour, not a bug, and the `paged`
+  exception.
+- The arenas visited are those `get_existing` finds below the count
+  `arena_count` read once: an arena built during the purge may be
+  skipped; `left.arenas` is not stated to contain every built arena.
+- The record is ghost and set by the function itself: a caller learns it
+  only through the `ensures` (as theorem 22's ghost reads), and that it
+  is the released value's is read from the body (`*left = Ghost(..)`
+  from `g@` right before the release), not exported as a lock fact.
+- `malloc_trim`'s cache flush (`flush_all`) runs before the purge and
+  discards nothing; "1 iff bytes were discarded" is about the purge.
+- Ghost only: the release library is identical to the base commit's
+  (440 of 440 functions, x86_64; aarch64 not compared in this lane, it
+  cannot link aarch64 here). `purge_all` binds the huge purge's
+  count to a local before the sum (`let h = ..; n + h`), the same code.
+  One unrelated proof step needed a hint under the new context:
+  `api/libc.rs`'s huge-usable lemma now proves `n != 0` by
+  `nonlinear_arith` (proof only).
 
 ## Interface contract
 

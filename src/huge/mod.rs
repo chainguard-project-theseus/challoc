@@ -57,7 +57,7 @@ use crate::lock::{Lock, LockOrder, RawLock};
 #[cfg(verus_only)]
 use crate::lock::{axiom_entry, axiom_held_below, rank_huge, rank_meta};
 use crate::meta::Meta;
-use crate::purge::{self, Batch, Curve, Decayer};
+use crate::purge::{self, Batch, Curve, Decayer, Left};
 use crate::sys::{self, Errno};
 #[cfg(verus_only)]
 use crate::vspec::huge::{axiom_huge_lock_frame, axiom_huge_lock_inv};
@@ -3783,7 +3783,16 @@ impl Huge {
     /// Purge every `Empty` extent whose `dirty_at` is at or before `cutoff`
     /// (`u64::MAX` for all): `MADV_DONTNEED`, then `Purged`. Returns the
     /// number purged, at most the region's pages.
-    pub fn purge_empty(&self, cutoff: u64, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
+    ///
+    /// `left` gets the bytes discarded, nonzero iff an extent was purged,
+    /// and the extents `Empty` in the lock value released: with `cutoff ==
+    /// u64::MAX`, none ([`Left::clean`]).
+    pub fn purge_empty(
+        &self,
+        cutoff: u64,
+        Tracked(left): Tracked<&mut Ghost<Left>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: usize)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -3791,6 +3800,13 @@ impl Huge {
         ensures
             *final(ord) == *old(ord),
             r <= u32::MAX,
+            final(left)@.bytes >= 0,
+            (r > 0) == (final(left)@.bytes > 0),
+            final(left)@.arenas == vstd::set::Set::<int>::empty(),
+            final(left)@.classes == vstd::set::Set::<(int, int)>::empty(),
+            final(left)@.slabs == ISet::<(int, int, int)>::empty(),
+            final(left)@.huge,
+            cutoff == u64::MAX ==> final(left)@.clean(),
     {
         broadcast use axiom_huge_lock_inv, axiom_huge_lock_frame;
 
@@ -3826,10 +3842,20 @@ impl Huge {
                 batch.wf(),
                 batch.total() + epages(g@.elist@, g@.descs@) * self.spec_page() <= self.npages * self.spec_page(),
                 n as int + g@.elist@.len() <= g@.next_page,
+                batch.sent() + batch.total() >= 0,
+                (n > 0) == (batch.sent() + batch.total() > 0),
+            ensures
+                cutoff == u64::MAX ==> g@.elist@.len() == 0,
             decreases g@.elist@.len(),
         {
             let d = g.empty_head;
             if d.is_null() {
+                proof {
+                    // A non-empty list starts at a live descriptor, never null.
+                    if g@.elist@.len() > 0 {
+                        assert(enode(g@.elist@, g@.descs@, 0));
+                    }
+                }
                 break;
             }
             proof {
@@ -3857,6 +3883,7 @@ impl Huge {
             let ghost l0 = g@.elist@;
             let ghost d0 = g@.descs@;
             let ghost t0 = batch.total();
+            let ghost s0 = batch.sent();
             proof {
                 assert(l0.index_of(d) == 0) by {
                     assert(l0.no_duplicates());
@@ -3864,6 +3891,13 @@ impl Huge {
             }
             self.purge_extent(&mut g, d, &mut batch);
             proof {
+                // The extent's pages, at least one, went into the batch.
+                assert(desc_ok(d0[d].value(), g@.next_page));
+                let pp = self.spec_page();
+                let pn = d0[d].value().pages as int;
+                assert(pn * pp > 0) by (nonlinear_arith)
+                    requires pn >= 1, pp > 0;
+                assert(batch.sent() + batch.total() > s0 + t0);
                 let l1 = g@.elist@;
                 lemma_epages_remove(l0, d0, 0);
                 assert forall|i: int| 0 <= i < l1.len() implies #[trigger] g@.descs@[l1[i]].value().pages
@@ -3883,6 +3917,33 @@ impl Huge {
         self.sync_oldest(&g);
         proof {
             assert(g@.wf());
+            let lv = g@;
+            let ext = ISet::new(
+                |a: int|
+                    exists|x: *mut HugeDesc| #[trigger]
+                        lv.descs@.contains_key(x) && x@.addr == a && lv.descs@[x].value().state == RunState::Empty as u8,
+            );
+            *left = Ghost(
+                Left {
+                    bytes: batch.sent(),
+                    arenas: vstd::set::Set::empty(),
+                    classes: vstd::set::Set::empty(),
+                    slabs: ISet::empty(),
+                    huge: true,
+                    extents: ext,
+                },
+            );
+            if cutoff == u64::MAX {
+                // Every `Empty` extent is on the list, which is empty.
+                assert forall|a: int| !ext.contains(a) by {
+                    if ext.contains(a) {
+                        let x = choose|x: *mut HugeDesc| #[trigger]
+                            lv.descs@.contains_key(x) && x@.addr == a && lv.descs@[x].value().state == RunState::Empty as u8;
+                        assert(lv.elist@.contains(x));
+                    }
+                }
+                assert(ext =~= ISet::<int>::empty());
+            }
         }
         n
     }
@@ -3916,6 +3977,7 @@ impl Huge {
             final(batch).free() == old(batch).free(),
             r == old(g).descs@[d].value().pages,
             final(batch).total() <= old(batch).total() + r * self.spec_page(),
+            final(batch).sent() + final(batch).total() == old(batch).sent() + old(batch).total() + r * self.spec_page(),
             final(g).elist@ == old(g).elist@.remove(old(g).elist@.index_of(d)),
             forall|x: *mut HugeDesc| #[trigger] old(g).descs@.contains_key(x) ==> final(g).descs@[x].value().pages
                 == old(g).descs@[x].value().pages,

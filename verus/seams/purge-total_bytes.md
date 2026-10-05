@@ -1,6 +1,6 @@
 # `total_bytes`
 
-Seam S195 of `verus/SEAMS.md`: src/purge.rs:465. Kind: external_body. Category: core library.
+Seam S195 of `verus/SEAMS.md`: src/purge.rs:480. Kind: external_body. Category: core library.
 Discharged by Kani.
 
 ## Contract
