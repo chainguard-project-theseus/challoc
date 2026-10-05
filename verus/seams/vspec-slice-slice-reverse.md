@@ -1,6 +1,6 @@
 # `<[T]>::reverse`
 
-Seam S330 of `verus/SEAMS.md`: src/vspec/slice.rs:52. Kind: assume_spec. Category: core library.
+Seam S334 of `verus/SEAMS.md`: src/vspec/slice.rs:52. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

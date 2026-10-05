@@ -1077,42 +1077,99 @@ impl Cgroup {
     }
 }
 
-} // verus!
+/// A path shown as text, one `?` per byte that is not printable ASCII, for
+/// the `cgroup:` line.
+struct PathBytes<'a>(&'a [u8]);
+
+// Any bytes format (ghost only: ordinary builds have no `std_specs`).
+#[cfg(verus_only)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for PathBytes<'_> {
+    open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
+
+impl fmt::Display for PathBytes<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for &b in self.0 {
+            f.write_str(if b == b' ' || b.is_ascii_graphic() {
+                unsafe_char(b)
+            } else {
+                "?"
+            })?;
+        }
+        Ok(())
+    }
+}
+
+/// The printable ASCII bytes, `' '..='~'`, in order.
+const fn printable_ascii() -> (r: [u8; 95])
+    ensures
+        forall|i: int| 0 <= i < 95 ==> #[trigger] r[i] == 0x20 + i,
+{
+    let mut t = [0u8; 95];
+    let mut i = 0;
+    while i < 95
+        invariant
+            i <= 95,
+            forall|j: int| 0 <= j < i ==> #[trigger] t[j] == 0x20 + j,
+        decreases 95 - i,
+    {
+        t[i] = 0x20 + i as u8;
+        i += 1;
+    }
+    t
+}
+
+/// [`printable_ascii`]'s table, for [`unsafe_char`].
+exec const PRINTABLE: [u8; 95]
+    ensures
+        forall|i: int| 0 <= i < 95 ==> #[trigger] PRINTABLE[i] == 0x20 + i,
+{
+    printable_ascii()
+}
+
+/// One printable ASCII byte as a `&'static str`.
+fn unsafe_char(b: u8) -> &'static str
+    requires
+        0x20 <= b <= 0x7e,
+{
+    let table: &'static [u8; 95] = &PRINTABLE;
+    let i = (b - b' ') as usize;
+    proof {
+        let s = table@.subrange(i as int, i + 1);
+        assert(s =~= seq![b]);
+        reveal_with_fuel(vstd::utf8::valid_utf8, 2);
+        assert(vstd::utf8::valid_utf8(s));
+    }
+    // SAFETY: `PRINTABLE` is ASCII, so every one-byte window is UTF-8.
+    unsafe { core::str::from_utf8_unchecked(&table[i..i + 1]) }
+}
+
+/// A limit, `max` when unlimited, for the `cgroup:` line.
+struct Limit(u64);
+
+// Any limit formats (ghost only).
+#[cfg(verus_only)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for Limit {
+    open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
+
+impl fmt::Display for Limit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0 == UNLIMITED {
+            f.write_str("max")
+        } else {
+            write!(f, "{}", self.0)
+        }
+    }
+}
 
 impl fmt::Display for Cgroup {
     /// The `cgroup:` line of `malloc_stats_print`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        struct Bytes<'a>(&'a [u8]);
-        impl fmt::Display for Bytes<'_> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                for &b in self.0 {
-                    f.write_str(if b == b' ' || b.is_ascii_graphic() {
-                        unsafe_char(b)
-                    } else {
-                        "?"
-                    })?;
-                }
-                Ok(())
-            }
-        }
-        /// One printable ASCII byte as a `&'static str`.
-        fn unsafe_char(b: u8) -> &'static str {
-            const TABLE: &[u8; 95] =
-                b" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
-            let i = (b - b' ') as usize;
-            // SAFETY: `TABLE` is ASCII, so every one-byte window is UTF-8.
-            unsafe { core::str::from_utf8_unchecked(&TABLE[i..i + 1]) }
-        }
-        struct Limit(u64);
-        impl fmt::Display for Limit {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                if self.0 == UNLIMITED {
-                    f.write_str("max")
-                } else {
-                    write!(f, "{}", self.0)
-                }
-            }
-        }
         match self.state {
             State::Disabled => return f.write_str("cgroup: not tracked (cgroup:false)"),
             State::NoUnifiedPath => {
@@ -1127,9 +1184,9 @@ impl fmt::Display for Cgroup {
         write!(
             f,
             "cgroup: {} (mount {}, path {}) limit {} high {} current {} events high {} (+{}) max {} (+{})",
-            Bytes(self.dir()),
-            Bytes(self.mount()),
-            Bytes(self.path()),
+            PathBytes(self.dir()),
+            PathBytes(self.mount()),
+            PathBytes(self.path()),
             Limit(self.limit()),
             Limit(self.high()),
             self.current(),
@@ -1140,6 +1197,8 @@ impl fmt::Display for Cgroup {
         )
     }
 }
+
+} // verus!
 
 mod linux {
     use super::*;

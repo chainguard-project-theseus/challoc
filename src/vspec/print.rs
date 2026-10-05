@@ -14,8 +14,8 @@ verus! {
 #[verifier::external_body]
 pub struct ExFile(libc::FILE);
 
-/// `config::Thp::name` (outside `verus!`: a `CStr` literal), the key's
-/// static name.
+/// `config::Thp::name`, the key's static name. `Thp::name` is verified
+/// now; calling it from `api/print.rs` directly would retire this wrapper.
 #[verifier::external_body]
 #[inline(always)]
 pub(crate) fn thp_name(k: crate::config::Thp) -> &'static core::ffi::CStr {
@@ -46,9 +46,9 @@ pub(crate) fn base_slab_sizes(lo: usize, hi: usize) -> (usize, usize)
 }
 
 // `sys::cgroup::Cgroup` formats under any formatter, for the report's
-// `cgroup:` line. Trusted: its `Display` is outside `verus!`; it writes
-// `str`s and integers only, and its byte escape indexes its 95-byte table
-// only for `' '..='~'`. Ghost only: ordinary builds have no `std_specs`.
+// `cgroup:` line: its `Display` (in `sys/cgroup.rs`) is verified with no
+// precondition, so `fmt_req` is true. Ghost only: ordinary builds have no
+// `std_specs`.
 #[cfg(verus_only)]
 impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::cgroup::Cgroup {
     open spec fn fmt_req(&self, f: &core::fmt::Formatter<'_>) -> bool {

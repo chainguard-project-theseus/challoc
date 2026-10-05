@@ -17,6 +17,11 @@ pub assume_specification[ u8::is_ascii_whitespace ](b: &u8) -> (r: bool)
     ensures r <==> (*b == 32 || *b == 9 || *b == 10 || *b == 12 || *b == 13),
 ;
 
+/// `u8::is_ascii_graphic`: `!`..`~`.
+pub assume_specification[ u8::is_ascii_graphic ](b: &u8) -> (r: bool)
+    ensures r <==> 33 <= *b <= 126,
+;
+
 /// `isize::wrapping_neg`: `-x`, except that `isize::MIN` is its own
 /// negation.
 pub assume_specification[ isize::wrapping_neg ](x: isize) -> (r: isize)
@@ -76,6 +81,13 @@ pub struct ExUtf8Error(core::str::Utf8Error);
 
 /// `core::str::from_utf8`: the bytes as a `str` when they are UTF-8.
 pub assume_specification[ core::str::from_utf8 ](v: &[u8]) -> Result<&str, core::str::Utf8Error>;
+
+/// `core::str::from_utf8_unchecked`: its safety contract is that the
+/// bytes are UTF-8.
+pub assume_specification[ core::str::from_utf8_unchecked ](v: &[u8]) -> &str
+    requires
+        vstd::utf8::valid_utf8(v@),
+;
 
 /// The unit `fmt::Error`, built through its derived `Default`.
 pub assume_specification[ <core::fmt::Error as core::default::Default>::default ]() -> core::fmt::Error;

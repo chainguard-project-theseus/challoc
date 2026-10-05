@@ -1,6 +1,6 @@
 # `Config::get`
 
-Seam S95 of `verus/SEAMS.md`: src/config.rs:359. Kind: external_body. Category: function pointer.
+Seam S97 of `verus/SEAMS.md`: src/config.rs:366. Kind: external_body. Category: function pointer.
 Discharged by Kani.
 
 ## Contract
@@ -30,7 +30,7 @@ Reproduce: `sh verus/kani/run.sh --harness config::kani_config::get_contract` (b
 - `ensures r is Some <==> listed(key@)`: the assertion.
 - Gap: Kani 0.68 has no C string literals, and the `thp` and
   `percpu_arena` readers return `Thp::name()` and
-  `PercpuArena::name()`, which are `match`es of three literals each.
+  `PercpuArena::name()`, which index const arrays of three literals each.
   The harness stubs both (`#[kani::stub]`) with the same bytes through
   `CStr::from_bytes_with_nul`; the stubs are not the originals, but
   the `ensures` is about `Some`, which the readers return whatever the

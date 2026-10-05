@@ -71,6 +71,8 @@ store_owner	allocator invariant	loom/GenMC	discharged (verus/seams/class-table-s
 Config::set_listed	function pointer	Kani	discharged (verus/seams/config-Config-set_listed.md)
 Config::get	function pointer	Kani	discharged (verus/seams/config-Config-get.md)
 KEYS	function pointer	Kani	discharged (verus/seams/config-KEYS.md)
+THP_NAMES	core library	none (assumption)
+PERCPU_ARENA_NAMES	core library	none (assumption)
 read_slot	raw pointer from C caller	Miri (evidence only)
 byte_at	raw pointer from C caller	Miri (evidence only)
 bytes_at	raw pointer from C caller	Miri (evidence only)

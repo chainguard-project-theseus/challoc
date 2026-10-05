@@ -109,14 +109,23 @@ pub enum PercpuArena {
     Phycpu,
 }
 
-} // verus!
+/// The names [`Thp::name`] gives, in variant order. Outside the
+/// verifier's view (Verus takes no `CStr` literal); nothing is claimed
+/// about them.
+#[verifier::external_body]
+const THP_NAMES: [&'static CStr; 3] = [c"never", c"auto", c"always"];
+
+/// The names [`PercpuArena::name`] gives, in variant order, as
+/// [`THP_NAMES`].
+#[verifier::external_body]
+const PERCPU_ARENA_NAMES: [&'static CStr; 3] = [c"disabled", c"percpu", c"phycpu"];
 
 impl Thp {
     pub const fn name(self) -> &'static CStr {
         match self {
-            Thp::Never => c"never",
-            Thp::Auto => c"auto",
-            Thp::Always => c"always",
+            Thp::Never => THP_NAMES[0],
+            Thp::Auto => THP_NAMES[1],
+            Thp::Always => THP_NAMES[2],
         }
     }
 }
@@ -124,14 +133,12 @@ impl Thp {
 impl PercpuArena {
     pub const fn name(self) -> &'static CStr {
         match self {
-            PercpuArena::Disabled => c"disabled",
-            PercpuArena::Percpu => c"percpu",
-            PercpuArena::Phycpu => c"phycpu",
+            PercpuArena::Disabled => PERCPU_ARENA_NAMES[0],
+            PercpuArena::Percpu => PERCPU_ARENA_NAMES[1],
+            PercpuArena::Phycpu => PERCPU_ARENA_NAMES[2],
         }
     }
 }
-
-verus! {
 
 /// Every tunable of design section 12; [`Config::DEFAULT`] holds the
 /// compiled defaults. `docs/tuning.md` section 2 documents each key: its
@@ -2767,7 +2774,7 @@ mod kani_config {
         }
     }
 
-    /// S94 `Config::set_listed`: under `requires old(self).wf()`,
+    /// S96 `Config::set_listed`: under `requires old(self).wf()`,
     /// `r is None <==> !listed(key)`, an unchanged config on `None`, and
     /// `wf` kept, for every well-formed config, every entry's name and
     /// every key up to `KEY_MAX` bytes, and every value up to `VALUE_MAX`
@@ -2794,8 +2801,8 @@ mod kani_config {
     }
 
     /// `Thp::name`, the same bytes through `CStr::from_bytes_with_nul`
-    /// (Kani 0.68 has no C string literals; the original is a `match` of
-    /// three of them).
+    /// (Kani 0.68 has no C string literals; the original indexes
+    /// `THP_NAMES`, three of them).
     #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
     fn stub_thp_name(t: Thp) -> &'static CStr {
         let b: &'static [u8] = match t {
@@ -2817,7 +2824,7 @@ mod kani_config {
         CStr::from_bytes_with_nul(b).unwrap()
     }
 
-    /// S95 `Config::get`: `r is Some <==> listed(key)`, for every config
+    /// S97 `Config::get`: `r is Some <==> listed(key)`, for every config
     /// and every key `any_key` gives. The two `name` methods the `thp` and
     /// `percpu_arena` readers call are stubbed (above).
     #[kani::proof]
@@ -2830,7 +2837,7 @@ mod kani_config {
         let c = any_config();
         assert_eq!(c.get(key).is_some(), listed(key));
     }
-    /// S96 `KEYS`: every name in it is `listed`.
+    /// S98 `KEYS`: every name in it is `listed`.
     #[kani::proof]
     #[kani::unwind(25)]
     fn keys_are_listed() {
@@ -2857,7 +2864,7 @@ mod kani_config {
         }
     }
 
-    /// S97 `DisplaySpecImpl for Issue` (`fmt_req` true): every variant,
+    /// S99 `DisplaySpecImpl for Issue` (`fmt_req` true): every variant,
     /// over arbitrary byte strings up to 3 bytes and every `to`.
     #[kani::proof]
     #[kani::unwind(22)]
@@ -2869,7 +2876,7 @@ mod kani_config {
         formats(&any_issue(&a[..i], &b[..j]));
     }
 
-    /// S98 `DisplaySpecImpl for Bytes` (`fmt_req` true): every byte string
+    /// S100 `DisplaySpecImpl for Bytes` (`fmt_req` true): every byte string
     /// up to 4 bytes, and one of 65 arbitrary bytes (past the 64 it shows,
     /// so the `...` branch runs).
     #[kani::proof]

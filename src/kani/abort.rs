@@ -3,7 +3,7 @@
 use super::must_not_return;
 use crate::vspec::check::check;
 
-/// S261 `check`, `ensures c`: on a false `c` the call never returns (it
+/// S265 `check`, `ensures c`: on a false `c` the call never returns (it
 /// panics, and challoc's panics abort), so it returns only if `c`.
 #[kani::proof]
 #[kani::should_panic]

@@ -1209,18 +1209,17 @@ impl ClassTable {
 // read-only for the life of the process.
 unsafe impl Sync for ClassTable {}
 
+verus! {
+
 impl Deref for ClassTable {
     type Target = [Class; NCLASSES];
 
+    /// The table, as [`ClassTable::table`] gives it.
     #[inline(always)]
     fn deref(&self) -> &[Class; NCLASSES] {
-        // SAFETY: see the `Sync` impl; no write can be in flight while a
-        // reference exists.
-        unsafe { &*self.0.get() }
+        self.table()
     }
 }
-
-verus! {
 
 pub exec static CLASSES: ClassTable = ClassTable::new(BASE_CLASSES);
 

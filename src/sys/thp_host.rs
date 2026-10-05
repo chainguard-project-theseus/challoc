@@ -431,18 +431,15 @@ impl Thp {
             ("mthp", Value::Sizes(self.enabled_sizes())),
         ]
     }
-}
 
-} // verus!
-
-impl Thp {
-    /// The two THP keys: `thp=<setting|none> mthp=<sizes|none>`. Outside
-    /// `verus!`: an array's `IntoIter` has no specification;
-    /// [`Thp::word_pairs`] builds them.
+    /// The two THP keys: `thp=<setting|none> mthp=<sizes|none>`, built
+    /// by [`Thp::word_pairs`].
     pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> {
         self.word_pairs().into_iter()
     }
 }
+
+} // verus!
 
 impl fmt::Display for Thp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
