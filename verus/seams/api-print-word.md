@@ -1,6 +1,6 @@
 # `word`
 
-Seam S43 of `verus/SEAMS.md`: src/api/print.rs:377. Kind: external_body. Category: core library.
+Seam S40 of `verus/SEAMS.md`: src/api/print.rs:377. Kind: external_body. Category: core library.
 Discharged by Kani.
 
 ## Contract

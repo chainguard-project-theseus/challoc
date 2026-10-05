@@ -1,6 +1,6 @@
 # `load` (`vspec/count.rs`)
 
-Seam S297 of `verus/SEAMS.md`: src/vspec/count.rs:122. Kind: external_body. Category: atomics primitive.
+Seam S294 of `verus/SEAMS.md`: src/vspec/count.rs:122. Kind: external_body. Category: atomics primitive.
 Evidence from loom and the C11 coherence rules (part 3): the contract
 does not exclude the two orderings with which the body panics.
 

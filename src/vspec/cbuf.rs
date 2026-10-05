@@ -1,7 +1,8 @@
 //! The C caller's buffers: what the C contract of an entry point hands
 //! challoc for one call through a pointer argument (a string, a byte
-//! buffer and its length, a `size_t`, an out-pointer), as permissions and
-//! validity facts verified code can read and write through.
+//! buffer and its length, an array of `size_t`s and its length, a
+//! `size_t`, an out-pointer), as permissions and validity facts verified
+//! code can read and write through.
 //!
 //! The trust sits at the C boundary, in one linear token per call, minted
 //! once by the export wrapper of the C symbol from its own parameters and
@@ -19,7 +20,7 @@
 //!   facts of their contracts ([`CArg::facts`], given at the mint), a view
 //!   of its string argument ([`CStr`]), and shared read permissions to the
 //!   caller's string bytes and `size_t`s ([`CCall::str_byte`],
-//!   [`CCall::sized`], [`CCall::size`]), each borrowed from the token. Two
+//!   [`CCall::sized`], [`CCall::counted`]), each borrowed from the token. Two
 //!   shared permissions to one byte prove nothing (vstd's `is_disjoint`
 //!   needs one of them `&mut`), and validity bounds (`vspec::ptr::rw_len`,
 //!   `r_len`) are only ever bounded from below. A shared permission states
@@ -100,7 +101,7 @@ pub open spec fn c_apart(addr: int, len: int) -> bool {
 /// but no ghost permission covers them (`heap_new` uses up the fresh
 /// heap's permission, and the heap is reached through references): the
 /// premise under which a read permission to them ([`CCall::str_byte`],
-/// [`CCall::sized`], [`CCall::size`]) aliases nothing verified code
+/// [`CCall::sized`], [`CCall::counted`]) aliases nothing verified code
 /// holds. A permission model that covered them (a linear `PointsTo<Heap>`,
 /// say) would have to leave them out. Uninterpreted: nothing states which
 /// bytes these are.
@@ -194,18 +195,24 @@ pub ghost enum CArg {
     /// A buffer and the initialised `size_t` that holds its length in
     /// bytes (`mallctl`'s `oldp` and `oldlenp`).
     Sized(*mut u8, *const usize),
-    /// An initialised `size_t` (`mallctlnametomib`'s `miblenp`).
-    Size(*const usize),
+    /// `n` readable `size_t`s (`mallctlbymib`'s `mib` and `miblen`).
+    Words(*const usize, usize),
+    /// An array of `size_t`s and the initialised `size_t` that holds its
+    /// length in elements, which challoc writes back
+    /// (`mallctlnametomib`'s `mibp` and `miblenp`).
+    Counted(*mut usize, *const usize),
 }
 
 impl CArg {
     /// What the contract gives on its own: a read-only buffer's validity,
-    /// and a `size_t`'s separation.
+    /// a `size_t`'s separation, and a written-back `size_t`'s validity as
+    /// a buffer of its own ([`c_buffer`]).
     pub open spec fn facts(self) -> bool {
         match self {
             CArg::Buffer(p, len) => c_readable(p, len as int),
             CArg::Sized(_, lenp) => c_ro_apart(lenp@.addr as int, vstd::layout::size_of::<usize>() as int),
-            CArg::Size(p) => c_ro_apart(p@.addr as int, vstd::layout::size_of::<usize>() as int),
+            CArg::Words(p, n) => c_readable(p as *mut usize, n as int * vstd::layout::size_of::<usize>()),
+            CArg::Counted(_, lenp) => c_buffer(lenp as *mut usize, vstd::layout::size_of::<usize>() as int),
             CArg::Str(_) => true,
         }
     }
@@ -228,8 +235,7 @@ pub ghost enum CEntry {
 impl CEntry {
     /// `a` is one of the call's pointer arguments that carry a contract
     /// ([`CArg`]): one C passed not null (a null one carries none; the
-    /// entry points test them first). `mallctlbymib`'s `mib` and
-    /// `mallctlnametomib`'s `mibp` are not modelled.
+    /// entry points test them first).
     pub open spec fn passed(self, a: CArg) -> bool {
         match self {
             CEntry::Mallctl { name, oldp, oldlenp, newp, newlen } => {
@@ -237,11 +243,12 @@ impl CEntry {
                 ||| oldp@.addr != 0 && oldlenp@.addr != 0 && a == CArg::Sized(oldp, oldlenp)
                 ||| newp@.addr != 0 && a == CArg::Buffer(newp, newlen)
             },
-            CEntry::NameToMib { name, miblenp, .. } => {
+            CEntry::NameToMib { name, mibp, miblenp } => {
                 ||| name@.addr != 0 && a == CArg::Str(name)
-                ||| miblenp@.addr != 0 && a == CArg::Size(miblenp)
+                ||| mibp@.addr != 0 && miblenp@.addr != 0 && a == CArg::Counted(mibp, miblenp)
             },
-            CEntry::ByMib { oldp, oldlenp, newp, newlen, .. } => {
+            CEntry::ByMib { mib, miblen, oldp, oldlenp, newp, newlen } => {
+                ||| mib@.addr != 0 && a == CArg::Words(mib, miblen)
                 ||| oldp@.addr != 0 && oldlenp@.addr != 0 && a == CArg::Sized(oldp, oldlenp)
                 ||| newp@.addr != 0 && a == CArg::Buffer(newp, newlen)
             },
@@ -266,8 +273,9 @@ impl CEntry {
                 &&& (oldp@.addr != 0 && oldlenp@.addr != 0 ==> CArg::Sized(oldp, oldlenp).facts())
                 &&& (newp@.addr != 0 ==> CArg::Buffer(newp, newlen).facts())
             },
-            CEntry::NameToMib { miblenp, .. } => miblenp@.addr != 0 ==> CArg::Size(miblenp).facts(),
-            CEntry::ByMib { oldp, oldlenp, newp, newlen, .. } => {
+            CEntry::NameToMib { mibp, miblenp, .. } => mibp@.addr != 0 && miblenp@.addr != 0 ==> CArg::Counted(mibp, miblenp).facts(),
+            CEntry::ByMib { mib, miblen, oldp, oldlenp, newp, newlen } => {
+                &&& (mib@.addr != 0 ==> CArg::Words(mib, miblen).facts())
                 &&& (oldp@.addr != 0 && oldlenp@.addr != 0 ==> CArg::Sized(oldp, oldlenp).facts())
                 &&& (newp@.addr != 0 ==> CArg::Buffer(newp, newlen).facts())
             },
@@ -344,9 +352,7 @@ impl CStr {
 /// token mints none after. The premise of the write bound of a C caller's
 /// buffer ([`c_buffer`]), and so of every write into one (the unaligned
 /// writes of `vspec::ptr`, and `copy_nonoverlapping` and `write_bytes`
-/// through the bound), and of the trusted writes `mallctl`'s
-/// `copy_prefix` and `mib_out` (whose `mibp` is not modelled: its write is
-/// premised on `miblenp`'s). It belongs to a provenance, not to a token:
+/// through the bound). It belongs to a provenance, not to a token:
 /// it is sound with one token per proof context, which holds since only
 /// the export wrappers mint them, each one, and no verified function
 /// takes two. Uninterpreted: only `open_writes` states it.
@@ -372,7 +378,7 @@ axiom fn axiom_c_writes(prov: Provenance)
 /// [`c_writes`], which is per provenance, is this token's.
 ///
 /// The token mints shared read permissions (to a byte of the string,
-/// [`CCall::str_byte`]; to a `size_t`, [`CCall::sized`], [`CCall::size`])
+/// [`CCall::str_byte`]; to a `size_t`, [`CCall::sized`], [`CCall::counted`])
 /// for as long as it is borrowed, and only while no write through the
 /// call's buffers and no call back into C has begun
 /// ([`CCall::written`]). A write needs [`c_writes`], which only
@@ -485,22 +491,26 @@ impl CCall {
             c_buffer(p, r.value() as int),
     ;
 
-    /// Trusted (the C contract of a `size_t` argument): the shared read
-    /// permission to the call's initialised `size_t` at `p`, for as long
-    /// as the token is borrowed. Only before a write
-    /// ([`CCall::written`]).
-    pub axiom fn size<'a>(tracked &'a self, p: *const usize) -> (tracked r: &'a PointsTo<usize>)
+    /// Trusted (the C contract of a counted array): the shared read
+    /// permission to the call's initialised `size_t` at `lenp`, for as
+    /// long as the token is borrowed, and the array at `p` it gives the
+    /// length of, that many `size_t`s ([`c_buffer`]). Only before a write
+    /// ([`CCall::written`]). The `size_t`'s own validity and separation
+    /// are the argument's fact ([`CArg::facts`]).
+    pub axiom fn counted<'a>(tracked &'a self, p: *mut usize, lenp: *const usize) -> (tracked r: &'a PointsTo<usize>)
         requires
             !self.written(),
-            self.has(CArg::Size(p)),
+            self.has(CArg::Counted(p, lenp)),
         ensures
-            r.ptr() == p as *mut usize,
+            r.ptr() == lenp as *mut usize,
             r.is_init(),
+            c_buffer(p, r.value() as int * vstd::layout::size_of::<usize>()),
     ;
 
     /// End the token's reads: for the call's out-argument `a` (`mallctl`'s
-    /// `oldp`, `mallctlnametomib`'s `miblenp`), begin writing through it,
-    /// so writes through its provenance are open ([`c_writes`]); for any
+    /// `oldp`, `mallctlnametomib`'s `mibp` and `miblenp`), begin writing
+    /// through it, so writes through its provenance are open
+    /// ([`c_writes`]; both pointers' for a counted array); for any
     /// other argument (`malloc_stats_print`'s `opts`, before it calls back
     /// into C, which may change the string) no write is opened. Either way
     /// the token mints no read permission from now on
@@ -514,12 +524,16 @@ impl CCall {
             final(self).string() == old(self).string(),
             final(self).written(),
             a matches CArg::Sized(p, _) ==> c_writes(p@.provenance),
-            a matches CArg::Size(p) ==> c_writes(p@.provenance),
+            a matches CArg::Counted(p, _) ==> c_writes(p@.provenance),
+            a matches CArg::Counted(_, lenp) ==> c_writes(lenp@.provenance),
     {
         self.written = true;
         match a {
             CArg::Sized(p, _) => axiom_c_writes(p@.provenance),
-            CArg::Size(p) => axiom_c_writes(p@.provenance),
+            CArg::Counted(p, lenp) => {
+                axiom_c_writes(p@.provenance);
+                axiom_c_writes(lenp@.provenance);
+            },
             _ => {},
         }
     }

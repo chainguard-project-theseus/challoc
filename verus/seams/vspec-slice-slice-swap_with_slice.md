@@ -1,6 +1,6 @@
 # `<[T]>::swap_with_slice`
 
-Seam S365 of `verus/SEAMS.md`: src/vspec/slice.rs:170. Kind: assume_spec. Category: core library.
+Seam S363 of `verus/SEAMS.md`: src/vspec/slice.rs:170. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

@@ -186,6 +186,24 @@ pub proof fn axiom_raw_valid(tracked raw: &vstd::raw_ptr::PointsToRaw, p: *mut u
 {
 }
 
+/// `ptr::from_ref(v)`: the address of the `T` behind a reference, valid
+/// for reads of its `size_of::<T>()` bytes, which do not wrap the address
+/// space. Trusted: a reference points to a live, initialised `T` (the
+/// `core::ptr` documentation's "Safety"), which Verus does not relate to
+/// an address. Nothing is claimed about which memory it is, nor that
+/// its padding bytes are initialised (they are copied as bytes only:
+/// `mallctl`'s `copy_prefix`, the one caller). `T: Copy` keeps out
+/// `UnsafeCell`s and atomics, whose bytes another thread may write.
+#[verifier::external_body]
+#[inline(always)]
+pub fn ref_ptr<T: Copy>(v: &T) -> (r: *const T)
+    ensures
+        valid_reads(r, vstd::layout::size_of::<T>() as int),
+        r@.addr + vstd::layout::size_of::<T>() <= usize::MAX,
+{
+    core::ptr::from_ref(v)
+}
+
 } // verus!
 
 verus! {

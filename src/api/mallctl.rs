@@ -81,6 +81,9 @@ use crate::vspec::cbuf::CCall;
 use crate::vspec::cbuf::{
     CArg, CEntry, c_buffer, c_readable, c_writes, lemma_c_buffer_at, lemma_c_readable_at,
 };
+use crate::vspec::ptr::ref_ptr;
+#[cfg(verus_only)]
+use crate::vspec::ptr::{axiom_ptr_add_addr, ptr_add};
 use Op::*;
 use Reading::*;
 #[cfg(verus_only)]
@@ -1816,17 +1819,17 @@ unsafe fn old_len(oldlenp: *mut usize, Ghost(oldp): Ghost<*mut u8>, Tracked(call
     *ptr_ref(oldlenp, Tracked(len))
 }
 
-/// Copy the first `n` bytes of `v` to `oldp`. Trusted: a raw copy into
-/// the caller's buffer, whose byte length the caller gave as
+/// Copy the first `n` bytes of `v` to `oldp`: a raw copy into the
+/// caller's buffer, whose byte length the caller gave as
 /// `*oldlenp == oldlen` ([`c_buffer`], from [`old_len`]), once its writes
-/// are open ([`c_writes`]). The precondition keeps the copy inside `v` and
-/// inside those `oldlen` bytes. Verus cannot take the pointer of a
-/// reference (`v as *const T`), and the copy would need `v` apart from
-/// the caller's buffer.
+/// are open ([`c_writes`]). The precondition keeps the copy inside `v`
+/// ([`ref_ptr`]) and inside those `oldlen` bytes. Nothing is copied if
+/// the two overlap, which they never do for a caller that keeps the
+/// `mallctl` contract (its buffer is the program's memory, `v` a value on
+/// challoc's stack); the call fails with `EINVAL` either way.
 ///
 /// # Safety
 /// `oldp` holds `oldlen` writable bytes.
-#[verifier::external_body]
 #[inline(always)]
 unsafe fn copy_prefix<T: Copy>(v: &T, oldp: *mut c_void, n: usize, Ghost(oldlen): Ghost<usize>)
     requires
@@ -1835,8 +1838,17 @@ unsafe fn copy_prefix<T: Copy>(v: &T, oldp: *mut c_void, n: usize, Ghost(oldlen)
         c_buffer(oldp as *mut u8, oldlen as int),
         c_writes(oldp@.provenance),
 {
-    // SAFETY: guaranteed by the caller.
-    unsafe { ptr::copy_nonoverlapping(v as *const T as *const u8, oldp as *mut u8, n) };
+    let src = ref_ptr(v) as *const u8;
+    let (s, d) = (src as usize, oldp as usize);
+    if s + n <= d || d + n <= s {
+        proof {
+            broadcast use vstd::layout::align_of_u8;
+            lemma_c_buffer_at(oldp as *mut u8, oldlen as int, oldp as *mut u8, 0);
+        }
+        // SAFETY: `n` bytes of `v`, readable, into the `oldlen` writable
+        // bytes at `oldp`, apart.
+        unsafe { ptr::copy_nonoverlapping(src, oldp as *mut u8, n) };
+    }
 }
 
 /// Store `v` at `oldp`: an unaligned write of the `size_of::<T>()` bytes
@@ -2867,42 +2879,65 @@ pub fn mallctl(
 }
 
 /// `*miblenp`, through the read permission the call's token gives
-/// ([`CArg::Size`], [`CCall::size`]), before any write through it.
+/// ([`CArg::Counted`], [`CCall::counted`]), which also makes `mibp` an
+/// array of that many `size_t`s, before any write through either.
 ///
 /// # Safety
 /// `miblenp` is the caller's non-null capacity pointer.
 #[inline(always)]
-unsafe fn mib_cap(miblenp: *mut usize, Tracked(cc): Tracked<&CCall>) -> usize
+unsafe fn mib_cap(miblenp: *mut usize, Ghost(mibp): Ghost<*mut usize>, Tracked(cc): Tracked<&CCall>) -> (r: usize)
     requires
         !cc.written(),
-        cc.has(CArg::Size(miblenp as *const usize)),
+        cc.has(CArg::Counted(mibp, miblenp as *const usize)),
+    ensures
+        c_buffer(mibp, r as int * size_of::<usize>()),
 {
-    let tracked cap = cc.size(miblenp as *const usize);
+    let tracked cap = cc.counted(mibp, miblenp as *const usize);
     // SAFETY: guaranteed by the caller.
     *ptr_ref(miblenp, Tracked(cap))
 }
 
-/// Copy `mib[..len]` out to `mibp` and store `len` at `miblenp`. Trusted:
-/// raw writes, of `len` words the precondition puts inside the capacity
-/// `*miblenp == cap` the caller gave, once the writes through `miblenp`
-/// are open ([`c_writes`]).
+/// Copy `mib[..len]` out to `mibp` and store `len` at `miblenp`: unaligned
+/// writes, one word at a time, of `len` words inside the capacity
+/// `*miblenp == cap` the caller gave ([`c_buffer`], from [`mib_cap`]), and
+/// of the `size_t` at `miblenp` ([`CArg::facts`]), once the writes through
+/// both are open ([`c_writes`]).
 ///
 /// # Safety
 /// `mibp` holds `cap` writable `size_t`s; `miblenp` is the caller's
 /// non-null capacity pointer.
-#[verifier::external_body]
 #[inline(always)]
 unsafe fn mib_out(mib: &[usize; MAX_MIB], mibp: *mut usize, miblenp: *mut usize, len: usize, Ghost(cap): Ghost<usize>)
     requires
         len <= MAX_MIB,
         len <= cap,
+        c_buffer(mibp, cap as int * size_of::<usize>()),
+        c_buffer(miblenp, size_of::<usize>() as int),
+        c_writes(mibp@.provenance),
         c_writes(miblenp@.provenance),
 {
-    // SAFETY: guaranteed by the caller.
-    unsafe {
-        ptr::copy_nonoverlapping(mib.as_ptr(), mibp, len);
-        *miblenp = len;
+    let mut i = 0;
+    while i < len
+        invariant
+            i <= len <= MAX_MIB,
+            len <= cap,
+            c_buffer(mibp, cap as int * size_of::<usize>()),
+            c_writes(mibp@.provenance),
+        decreases len - i,
+    {
+        proof {
+            axiom_ptr_add_addr(mibp, i);
+            lemma_c_buffer_at(mibp, cap as int * 8, ptr_add(mibp, i), i as int * 8);
+        }
+        // SAFETY: word `i < len <= cap` of the caller's array.
+        unsafe { mibp.add(i).write_unaligned(mib[i]) };
+        i += 1;
     }
+    proof {
+        lemma_c_buffer_at(miblenp, 8, miblenp, 0);
+    }
+    // SAFETY: the caller's capacity pointer.
+    unsafe { miblenp.write_unaligned(len) };
 }
 
 /// `mallctlnametomib(name, mibp, miblenp)`: `*miblenp` is the capacity in
@@ -2928,31 +2963,45 @@ pub fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usi
     // SAFETY: the caller's capacity pointer and an array of that many
     // `size_t`.
     unsafe {
-        let cap = mib_cap(miblenp, Tracked(&cc));
+        let cap = mib_cap(miblenp, Ghost(mibp), Tracked(&cc));
         if cap < len {
             return EINVAL;
         }
         proof {
-            cc.open_writes(CArg::Size(miblenp as *const usize));
+            cc.open_writes(CArg::Counted(mibp, miblenp as *const usize));
         }
         mib_out(&mib, mibp, miblenp, len, Ghost(cap));
     }
     0
 }
 
-/// Copy the caller's `miblen` MIB entries into `local`. Trusted: a raw
-/// read.
+/// Copy the caller's `miblen` MIB entries into `local`: unaligned reads,
+/// one word at a time, of the `miblen` `size_t`s the caller gave
+/// ([`CArg::Words`], [`c_readable`]).
 ///
 /// # Safety
 /// `miblen` entries are readable at `mib`.
-#[verifier::external_body]
 #[inline(always)]
 unsafe fn mib_in(mib: *const usize, local: &mut [usize; MAX_MIB], miblen: usize)
     requires
         miblen <= MAX_MIB,
+        c_readable(mib as *mut usize, miblen as int * size_of::<usize>()),
 {
-    // SAFETY: guaranteed by the caller.
-    unsafe { ptr::copy_nonoverlapping(mib, local.as_mut_ptr(), miblen) };
+    let mut i = 0;
+    while i < miblen
+        invariant
+            i <= miblen <= MAX_MIB,
+            c_readable(mib as *mut usize, miblen as int * size_of::<usize>()),
+        decreases miblen - i,
+    {
+        proof {
+            axiom_ptr_add_addr(mib as *mut usize, i);
+            lemma_c_readable_at(mib as *mut usize, miblen as int * 8, ptr_add(mib as *mut usize, i), i as int * 8);
+        }
+        // SAFETY: entry `i < miblen` of the caller's MIB.
+        local[i] = unsafe { mib.add(i).read_unaligned() };
+        i += 1;
+    }
 }
 
 /// `mallctlbymib(mib, miblen, oldp, oldlenp, newp, newlen)`. The value

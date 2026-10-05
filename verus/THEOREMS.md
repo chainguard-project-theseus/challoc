@@ -3186,7 +3186,7 @@ and `stats.arenas.<i>.bins.<j>.*`) is the decimal value of its
 component. `ctl`'s `requires` is discharged at both of its callers:
 `mallctl` (`:2008`) passes `name_to_mib`'s node with `&mib[..len]`, the
 MIB it built; `mallctlbymib` (`:2108`) passes `mib_to_node`'s node with
-the MIB it resolved, whatever the caller supplied (through the trusted
+the MIB it resolved, whatever the caller supplied (read by the verified
 `mib_in`). So a key is always performed on a node its MIB names, with
 that MIB's entries unchanged. That the fixed positions `ctl` and the
 readers read with `at` (1 for the `<i>` of `arena.<i>`, 2 for the `<j>`
@@ -4801,8 +4801,8 @@ the C contract, as the premises below say), and only
   `stats.cgroup.empty_bytes` (`policy::empty_bytes`) included: the
   witness requires no `integrity_aborts()`.
 - `mallctlnametomib` (`:2411`) requires no abort capability: it never
-  aborts, before init too (it never runs it), for a `name` and `miblenp`
-  that keep their C contract.
+  aborts, before init too (it never runs it), for a `name`, `mibp` and
+  `miblenp` that keep their C contract.
 
 A corollary needs no new witness: theorem 8's
 `theorem_no_syscall_on_fast_paths` (`api/libc.rs:531`) requires nothing,
@@ -4920,10 +4920,15 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   each as the token of its call (`cc`, `cb`: `CCall::fresh` of the
   call's `CEntry`; one witness per call, so none holds two), which only the export wrappers mint (the private
   `axiom_c_call` of `mallctl.rs`'s `exports`); `mallctlnametomib`'s
-  token covers `name` and `miblenp` (`CEntry::NameToMib`). Nothing is stated
-  for a name or buffer that breaks it: longer than `isize::MAX` bytes,
-  wrapping the address space, or in challoc's own memory other than a
-  counter it publishes read as such (`cbuf::c_ro_apart`).
+  token covers `name`, and `mibp` with `miblenp` (`CEntry::NameToMib`,
+  `CArg::Counted`: `*miblenp` `size_t`s at `mibp`), and
+  `mallctlbymib`'s its `mib` too (`CArg::Words`: `miblen` `size_t`s).
+  Nothing is stated for a name, MIB or buffer that breaks it: longer
+  than `isize::MAX` bytes, wrapping the address space, or in challoc's
+  own memory other than a counter it publishes read as such
+  (`cbuf::c_ro_apart`); nor for an overstated `*miblenp` or a `mib`
+  shorter than `miblen`, even where challoc fails the call without
+  reading it (`miblen > MAX_MIB`, a capacity below the MIB's length).
 - Init is complete. `shared()` (`api/mod.rs:234`) runs init the first
   time, and init aborts (`init_slow`, `:404`: re-entrant init; `init`,
   `:504`, and below: a metadata region too small, a failed reservation,
@@ -4946,11 +4951,9 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   wrappers (`state_load`, `state_claim`, `state_publish`: one bare
   atomic operation each), `ClassTable::table`, `class_entry`,
   the watermark's load `vspec::atom::load_usize_in`, the registry reader `arena_at`
-  (`arena.rs:1264`), `Config::get` and `KEYS`, the caller-memory helpers
-  of `mallctl` still trusted (`copy_prefix`, `mib_out`, `mib_in`: raw
-  copies that
-  fault on a bad pointer rather than panic; the other accesses to the
-  caller's memory verify over `vspec::cbuf` and the `core` specs of
+  (`arena.rs:1264`), `Config::get` and `KEYS`, `vspec::ptr::ref_ptr`
+  (the address of `copy_prefix`'s value; the accesses to the caller's
+  memory verify over `vspec::cbuf` and the `core` specs of
   `vspec::ptr`), the kernel fact `axiom_read_count` (`sys::read`'s
   count bound, which keeps the cgroup reader's slice in bounds),
   `fig_add`, `fig_mul` and `fig_add64` (`policy::empty_bytes`' sums),
@@ -7134,10 +7137,10 @@ alone):
 34. `mallctl`, `mallctlnametomib`, `mallctlbymib` (`api/mallctl.rs:1585`,
     `:1646`, `:1685`): verified bodies, no `ensures` on the return code
     (`result`, `:1573`, maps `Err(e)` to `e`). Every access to the
-    caller's memory claims at most bounds: `copy_prefix`, `mib_out` and
-    `mib_in` are `external_body`, and `name_byte`, `name_bytes`, `old_len`,
-    `store`, `load`, `query_ptr`, `store_triple` and `mib_cap` verify over
-    the C contract of their arguments (`vspec::cbuf`). So B (a bad
+    caller's memory claims at most bounds: `name_byte`, `name_bytes`,
+    `old_len`, `store`, `load`, `copy_prefix`, `query_ptr`,
+    `store_triple`, `mib_cap`, `mib_out` and `mib_in` verify over the C
+    contract of their arguments (`vspec::cbuf`). So B (a bad
     `oldlenp` or `newlen`, an unknown name) is
     not stated as an error result; the batch-query length check (bug #1)
     is verified inside the body. B is `p` by theorem 32: once init has
