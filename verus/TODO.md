@@ -21,17 +21,49 @@ A background purge wake-up could also be lost at startup: `start` published `PRE
 
 ## Coverage ceiling
 
-About 1,050 unverified function lines are beyond Verus’s current reach: inline assembly (~330), FFI, syscalls, and function pointers (~230), `UnsafeCell`, volatile access, `transmute`, and `from_ne_bytes` (~330), atomics and the panic handler (~100), and raw pointers from C callers (~100). These categories overlap. Keeping upstream’s exact code, identical hot-path codegen, and no new soundness risk puts coverage near a soft ceiling.
+Recomputed October 5, 2026, at `0c9cd77`, from `verus-count -list` (and `-arch aarch64`). Every function `verus-count` reports as unverified (195 on x86_64: 162 trusted inside `verus!` and 33 outside it; 196 on aarch64, which adds `sys::tls::get_tp`) falls into one of four classes:
 
-Possible relaxations and rough gains:
+- (a) Verifiable in Verus now: ghost-only changes, moving items into `verus!`, identical codegen, at most a new `core` specification of the kind Kani already discharges (`verus/seams/`).
+- (b) Verifiable in Verus after a named model or design change (the keys below).
+- (c) Dischargeable by a named tool (Kani, Isla, loom/GenMC, RefinedRust), with a record under `verus/seams/`. Already-discharged functions belong here.
+- (d) Permanent assumptions: kernel, libc, C caller, loader, or language runtime.
 
-- Done: `panic!` aborts now format through `abort_fmt` (33 more functions verify; aborts lose their file and line).
-- Allow codegen drift for cold raw-pointer permissions: ~40 functions and ~350 lines.
-- Rewrite cold iterators: ~5 functions and ~80 lines.
-- Allow hot-path codegen changes after Dan’s benchmarks: ~10 functions and ~80 lines.
-- Trust per-call permissions for pointers from C callers: ~15 functions and ~100 lines. This adds soundness risk and is not recommended.
+| class | x86_64 functions | lines | aarch64 functions | lines |
+|---|---:|---:|---:|---:|
+| (a) | 6 | 99 | 6 | 99 |
+| (b) | 90 | 888 | 90 | 888 |
+| (c), already discharged | 27 | 246 | 35 | 365 |
+| (c), open | 48 | 536 | 41 | 434 |
+| (d) | 24 | 240 | 24 | 240 |
 
-Other tools could cover much of the remainder: Islaris for inline assembly, RefinedRust/Iris for `UnsafeCell` and raw pointers, Kani for function pointers, and GenMC/loom for weak memory. Connecting their results to the Verus contracts would require documented, reviewed translations.
+Reachable ceilings, out of 1,260 functions (x86_64: 28,598 lines; aarch64 within 0.5 points):
+
+| | Verus only | lines | Verus + other tools | lines |
+|---|---:|---:|---:|---:|
+| now | 1,065 (84.5%) | 93.0% | 1,092 (86.7%) | 93.8% |
+| (a) | 1,071 (85.0%) | 93.3% | 1,098 (87.1%) | 94.2% |
+| (a)+(b) | 1,161 (92.1%) | 96.4% | 1,188 (94.3%) | 97.3% |
+| (a)+(b)+(c) | 1,161 (92.1%) | 96.4% | 1,236 (98.1%) | 99.2% |
+
+The 24 functions in (d) (1.9%, 240 lines) are the floor. `verus-count` reports 30 discharged functions (combined 1,095), but `init_slow` and `background::main` are verified functions whose `no_decreases` seam is discharged, so they are already counted as verified. The third extra is most likely `Explicit::drop`, which matches `LockGuard::drop`’s record by name. `verus-count` also counts the two `cfg(loom)` shims in `lock.rs`, which no Verus configuration compiles. Excluding them, as `cfg(test)` code is excluded, would remove 2 functions from both the totals and class (c).
+
+(a), 6 functions: `seed` needs a spec for `u64::from_ne_bytes`. `heap_set_arena` (mallctl.rs) needs `Heap::wf` to state `home() < MAX_ARENAS`, and the wrapper needs the callee's other premises (`shared.wf()`, the thread heap's `wf`, `arena < MAX_ARENAS`), all of which the caller has. `Cgroup::fmt` and its three nested items need those items moved out of the body and specs for `u8::is_ascii_graphic` and `from_utf8_unchecked`. `Bytes::fmt` loops over a slice and the `fmt`s write through `write!`, as other verified `Display` impls do. The risk is the range index `TABLE[i..i + 1]`.
+
+(b) by change. Each count is the functions the change alone unlocks, plus, as (+n), those that also need another change; the line counts cover both. In a key such as `DESC+ITER`, `+` means the function needs both changes.
+
+- ONCE, 10 functions and 59 lines: an atomic invariant on `api::STATE` holds the init-once permissions for `SHARED`, `FEATURES`, `FEATURE_LINE`, and `CLASSES`, frozen at `READY` into `&'static` permissions (vstd `tracked_static_ref`). This covers `Global::get`, `shared_ref`, `claim_init`, `publish_features`, `mallctl::shared`, `ClassTable::{table, deref}`, and `adopt_page_geometry`, plus the hot `shared_of` and `fast_flags` through `ptr_ref`, a ghost-only change.
+- CPERM, 13 (+1 with SLICE) functions and 87 lines: a C-boundary permission axiom per entry point (`mallctl*`, `posix_memalign`, the `*_usable` entries, `malloc_stats_print`’s `opts`) grants `PointsTo` for the caller’s buffers. This covers `store_usable`, `store_out`, `opt_byte`, and the eleven `mallctl` raw accessors. It does not remove trust; it moves the trust into the C contract, which is a (d) assumption anyway. An axiom for a buffer that aliases challoc’s own memory would prove `false`, so the TODO’s earlier advice against this change still holds unless the axiom is made disjoint by construction.
+- Atomic invariants on named fields, 12 (+2 with ITER) functions and 129 lines. ATOM covers `SlabTable::committed_slabs`, `Policy::frac16`, and `thp::{LG_SLAB_MIN, LG_PMD, LG_META}` (5 functions). ARENAS covers `Arenas::{table, count}`, tied to the creation lock’s ghost (`arena_held`, `count_held`, `arena_at`, `Arenas::count`, and with ITER `Arenas::iter` and `empty_bytes`). OWNER covers the `SlabTable` owner words, tied to the owner marks (`load_owner`, `store_owner`, `owner_locked`).
+- DESC, 6 (+1 with ITER) functions and 105 lines: the class lock’s ghost `Inner` owns permissions to the descriptors of its owned slabs. This covers `state_locked`, `set_state_locked`, `dirty_locked`, `set_dirty_locked`, `take_checks`, `SlabDesc::at`, and with ITER `page_group_is_idle`.
+- Heap-owned permissions, 10 (+2) functions and 152 lines. OTHERS: the heap’s ghost state owns a typed permission per `others` node (`node_next`, `node_arena`, `node_set_arena`, `node_caches`, `node_caches_detached`, and with ITER `Heap::nodes`). HEAPPERM: the TLS slot and `Tcaches` registry hand out a linear `PointsTo<Heap>` (`heap_at`, `heap_new`, the hot `heap_from_slot`). META: callers thread the claim and permission that `Meta` returned (`Meta::commit`, `Meta::free`). `Heap::destroy` needs all three.
+- ITER, 6 (+6 shared with the others) functions and 110 lines: rewrite cold iterator chains and closures as index loops. This covers `write_words`, `Features::{words, fmt}`, `Thp::{words, fmt}`, and `Probe::words`; its codegen drift is off the hot set.
+- Smaller changes. LOCK puts a lock’s value in a `PCell` whose permission the raw lock’s invariant holds (`get_unlocked`, `LockGuard::{deref, deref_mut}`; 3 functions). COLD writes the whole value through its permission in the cold initialisers (`Arenas::init`, `Tcaches::init`, `init_tcaches`; 3). RDE replaces the `mallctl` reader function pointers with an enum and a match (`call`, `stat`, `opt_nodes`; 3). FNH puts the function pointers in config `Key`, print `Target`, and the message hook behind opaque handles (`Sink::write_str`, `names`, and with ITER `malloc_write` and `Key::find`; 4). SLICE assembles slices from per-element permissions (`words_ref`, `stack_mut`; 2). TBLREF gives tables `&'static` permissions (`ClassState::table`, `Set::ensure`; 2). UMP adds a permission model for memory challoc owns between free and malloc (`read_word`, `Huge::check_zero`; 2). FORK carries `FORK_SIGMASK`’s permission in `ForkHeld` (2). HOT allows codegen changes on the free and release paths after benchmarks (`cached_recently`, `sub_live`; 2). ZERO states zeroed contents for fresh metadata permissions, which `fresh()` needs: the `PointsToRaw` that `from_raw` and `from_raw_chunked` take says nothing about contents, and `into_typed` gives uninitialised words (2). FMT writes `Says::fmt` as a hand-written match: an orphan `DebugSpecImpl` for `Option<State>` is not allowed (1). NSLOTS caps `MAX_NSLOTS` at 65,535 (`group_by_slab`; 1).
+
+(c) by tool: Isla has 18 functions and 374 lines on x86_64 (3 discharged) and 19 functions on aarch64 (11 discharged). They are inline assembly: the syscall stubs, TLS `get` and `set`, `thread_pointer`, `symbols`, the two `cxx` GOT loads, `trap`, the PAC operations, and `class_entry`’s empty barrier. The x86_64 stubs need an x86 Sail model, and the GOT and TLS loads keep a loader residue. Kani has 42 functions and 234 lines (20 discharged): address and cast facts, `CStr` literals, aborts, `core` arithmetic, and the trivial function-pointer forwarders, and `arena::fits`, a `const fn` that only `const` assertions call (vstd’s `size_of` and `align_of` are not `const`, and rustc’s const evaluation already checks every call). GenMC has 8 functions and 89 lines (4 discharged): the `vspec::word` and `vspec::count` atomic primitives and `LockGuard::drop`. RefinedRust has 5 functions and 77 lines: partial initialisation in `init_fields`, `mark_bound`, and `node_link`, and the hot field projections `home_ptr_at` and `arena_volatile`. loom has the 2 shims.
+
+(d), 24 functions: libc (10: `pthread_*`, `errno`, `spawn`, `shared_arg`, `register_fork_handlers`), the kernel (5: `read`, `write`, `getrandom`, `try_reserve`, `read_cpu_id`), the C program (4: `call_handler`, `message_hook`, `emit`, `errno::lend`), the C++ runtime (2), the loader (2: `Shared::begin`, the permission to a static’s storage; `rseq::read_global`), and the panic handler (1).
+
+The five changes that unlock the most are ONCE (10), the atomic invariants (14 with ITER), DESC (7), the heap-owned permissions (12), and ITER (6 on its own, and needed by 6 of the others). Together they move 49 functions and about 480 lines into Verus (Verus-only 1,114 functions, 88.4%, and 94.6% of lines), or 1,120 functions with (a). CPERM unlocks 14 more functions, but it relocates trust rather than removing it.
 
 ## Open work
 
