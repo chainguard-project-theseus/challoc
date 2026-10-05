@@ -252,8 +252,10 @@ pub proof fn theorem_stored_zero_iff_null(p: *mut u8, size: int, align: int, n: 
 /// out-pointer `ptr` (and nothing, when `ptr` is null), the last store it
 /// makes through it, so `*ptr == val` when it returns.
 ///
-/// A token is made only by `libc::store_usable`, from the store it
-/// performs; it is not a permission to access `*ptr`, and nothing ties it
+/// A token is made only from the permission of a store through `ptr`
+/// ([`Stored::stored`]; the permission is a `vspec::cbuf::COut`, which
+/// only `libc`'s `axiom_c_out` makes, and `libc::store_usable` is its one
+/// writer); it is not a permission to access `*ptr`, and nothing ties it
 /// to later writes. The entry points return the token of their last
 /// store, and their postconditions state its value at the moment of
 /// return.
@@ -271,6 +273,19 @@ impl Stored {
     /// The value stored through it.
     pub closed spec fn val(&self) -> usize {
         self.val
+    }
+
+    /// The token of the store of `val` through `ptr`, from the permission
+    /// it was made with (`out`, the C caller's out-pointer's), which now
+    /// holds `val`; for a null `ptr`, the token of no store.
+    pub proof fn stored(tracked out: &crate::vspec::cbuf::COut<usize>, ptr: *mut usize, val: usize) -> (tracked s: Stored)
+        requires
+            ptr@.addr == 0 || (out.opt() matches Some(q) && q.ptr() == ptr && q.is_init() && q.value() == val),
+        ensures
+            s.ptr() == ptr,
+            s.val() == val,
+    {
+        Stored { ptr, val }
     }
 }
 

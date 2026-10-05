@@ -910,7 +910,11 @@ pub proof fn lemma_run_interior(a: usize, len: int, b: usize)
 /// and two tokens of one slot or overlapping runs let a proof derive
 /// `false`. The run-time checks behind the frees (the bitmap bit test,
 /// the huge table lookup, the cache flush's release) stay in the code
-/// for such programs.
+/// for such programs. The contract also keeps the call's other pointer
+/// arguments out of the block (`challoc_realloc_usable`'s `usable`, whose
+/// permission `api::libc`'s `axiom_c_out` gives): its bytes are the
+/// call's, and a write through such an argument would change them behind
+/// the permission this token holds.
 pub axiom fn axiom_c_claim(p: *mut u8) -> (tracked r: Live)
     ensures
         r.claims(p),
@@ -923,8 +927,10 @@ pub axiom fn axiom_c_claim(p: *mut u8) -> (tracked r: Live)
 /// claimed and decommitted only when it holds no allocated slot; a run's
 /// pages are committed by `Huge::take` and released only by its free),
 /// and nothing else holds a permission to them (no `PointsToRaw` is ever
-/// made for the class or huge regions but here and in [`axiom_c_claim`],
-/// and the metadata region's permissions lie apart from them).
+/// made for the class or huge regions but here and in [`axiom_c_claim`];
+/// the metadata region's permissions lie apart from them; and the
+/// permissions `vspec::cbuf` gives for a C caller's arguments are to
+/// memory the program holds, never a block being handed out).
 ///
 /// Once-only, by the discipline of the module's API, which Verus checks
 /// at every caller (the axiom is private, so its callers are this

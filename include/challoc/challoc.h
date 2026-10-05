@@ -55,7 +55,8 @@ void *challoc_malloc_usable(size_t size, size_t *usable);
 void *challoc_calloc_usable(size_t n, size_t size, size_t *usable);
 
 /* realloc(ptr, size); *usable = the usable size of the block returned (0
- * when it is NULL, realloc(ptr, 0) included). */
+ * when it is NULL, realloc(ptr, 0) included). `usable` must not point into
+ * the block at ptr, which the call takes over. */
 void *challoc_realloc_usable(void *ptr, size_t size, size_t *usable);
 
 /* free(ptr); returns the usable size ptr had, 0 for NULL. The exact check of

@@ -1,6 +1,6 @@
 # `Option::<T>::or_else`
 
-Seam S310 of `verus/SEAMS.md`: src/vspec/heap.rs:19. Kind: assume_spec. Category: core library.
+Seam S307 of `verus/SEAMS.md`: src/vspec/heap.rs:19. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

@@ -336,9 +336,11 @@ turns that into `is_huge_block(p, max(size, 1))`.
 - `mallocx` with no alignment flag is stated at alignment 1, not the
   quantum, though with no `MALLOCX_LG_ALIGN` the code returns a class or
   run aligned to at least the quantum.
-- `posix_memalign` (`api/libc.rs:1190`) states only its return code:
-  `store_out` (`api/libc.rs:1182`) is `external_body` and claims
-  nothing about `*out`.
+- `posix_memalign` (`api/libc.rs`) states only its return code;
+  `posix_memalign_block` adds that on a `0` return `*out` holds, through
+  the call's out-pointer permission (`vspec::cbuf::COut`, which the
+  verified `store_out` writes through), the block whose token it hands
+  out. Neither states `*out` untouched on failure.
 - `fits` says `size` bytes; the code gives the class size or the run's
   usable bytes (theorem 2).
 
@@ -3189,9 +3191,11 @@ first ends at the first dot.
 - `root` (`external_body`): every call returns the same nodes,
   `root_nodes()`. It is `&ROOT`, a static, so this holds; nothing about
   the tree's content is assumed (the theorem holds for any tree).
-- The caller's name is read by `cstr` through `name_byte`/`name_bytes`
-  (`external_body`, bounds only); the theorem is about the bytes they
-  return.
+- The caller's name is read by `cstr` through `name_byte`/`name_bytes`,
+  verified over the C contract of a string argument (`vspec::cbuf`;
+  the call's token `CCall`, minted by the export wrapper, and its
+  `str_byte`; `name_bytes` states only the length); the theorem is about
+  the bytes they return.
 
 **Scope.**
 - What a `Read` node's reader returns (`call`, a verified `match` over
@@ -4702,19 +4706,29 @@ pub open spec fn may_abort_corrupt() -> bool {
 
 #[cfg(verus_only)]
 fn theorem_read_only_never_aborts(shared: &Shared, size: usize, flags: c_int, p: *const u8,
-    verbose: bool, io: &mallctl::Io, name: *const c_char, mibp: *const usize, miblen: usize,
-    mib: &[usize])
+    verbose: bool, io: &mallctl::Io, name: *const c_char, mib: &[usize],
+    Tracked(cc): Tracked<CCall>)
     requires
         crate::sys::may_syscall(),
         crate::sys::integrity_aborts(),
         shared.wf(),
+        cc.fresh(CEntry::Mallctl { name: name as *const u8, oldp: io.oldp as *mut u8, .. }),
 
 #[cfg(verus_only)]
 pub(super) fn theorem_mallctl_reads_never_abort(shared: &Shared, name: *const c_char,
-    mibp: *const usize, miblen: usize, io: &Io, m: &[usize])
+    io: &Io, m: &[usize], Tracked(cc): Tracked<CCall>)
     requires
         crate::sys::may_syscall(),
         shared.wf(),
+        cc.fresh(CEntry::Mallctl { .. }), // as above
+
+#[cfg(verus_only)]
+pub(super) fn theorem_mallctlbymib_reads_never_abort(shared: &Shared, mibp: *const usize,
+    miblen: usize, io: &Io, Tracked(cb): Tracked<CCall>)
+    requires
+        crate::sys::may_syscall(),
+        shared.wf(),
+        cb.fresh(CEntry::ByMib { mib: mibp, miblen, oldp: io.oldp as *mut u8, .. }),
 ```
 
 (Bodies elided.) `may_abort()` is a capability, as theorem 8's
@@ -4728,7 +4742,9 @@ instead: `vspec::check` (`requires may_abort_corrupt() || c`) and
 capability at all; both hold `may_syscall()` (the read-only paths take
 locks) and a well-formed `Shared`: they make the calls below and
 verify. So these calls abort at most at an integrity check, whatever
-their arguments, and only `mallinfo`/`mallinfo2` reach one:
+their arguments (for the `mallctl*` pointers, whatever arguments keep
+the C contract, as the premises below say), and only
+`mallinfo`/`mallinfo2` reach one:
 
 - `get_defrag_hint(p)` (`api/jemalloc.rs:667`), whole, for every `p`
   and before init. It requires no abort capability at all (only
@@ -4761,7 +4777,8 @@ their arguments, and only `mallinfo`/`mallinfo2` reach one:
   `stats.cgroup.empty_bytes` (`policy::empty_bytes`) included: the
   witness requires no `integrity_aborts()`.
 - `mallctlnametomib` (`:2411`) requires no abort capability: it never
-  aborts, before init too (it never runs it).
+  aborts, before init too (it never runs it), for a `name` and `miblenp`
+  that keep their C contract.
 
 A corollary needs no new witness: theorem 8's
 `theorem_no_syscall_on_fast_paths` (`api/libc.rs:531`) requires nothing,
@@ -4870,6 +4887,15 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   at run time.
 
 **Premises beyond the common ones.**
+- The `mallctl` pointers keep their C contract (`vspec::cbuf`): the
+  witnesses take it as the entry points `mallctl` and `mallctlbymib` do,
+  each as the token of its call (`cc`, `cb`: `CCall::fresh` of the
+  call's `CEntry`; one witness per call, so none holds two), which only the export wrappers mint (the private
+  `axiom_c_call` of `mallctl.rs`'s `exports`); `mallctlnametomib`'s
+  token covers `name` and `miblenp` (`CEntry::NameToMib`). Nothing is stated
+  for a name or buffer that breaks it: longer than `isize::MAX` bytes,
+  wrapping the address space, or in challoc's own memory other than a
+  counter it publishes read as such (`cbuf::c_ro_apart`).
 - Init is complete. `shared()` (`api/mod.rs:234`) runs init the first
   time, and init aborts (`init_slow`, `:404`: re-entrant init; `init`,
   `:504`, and below: a metadata region too small, a failed reservation,
@@ -4893,10 +4919,12 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   atomic operation each), `ClassTable::table`, `class_entry`,
   the watermark's load `vspec::atom::load_usize_in`, the registry reader `arena_at`
   (`arena.rs:1264`), `Config::get` and `KEYS`, the caller-memory helpers
-  of `mallctl` (`name_byte`, `name_bytes`, `old_len`, `copy_prefix`,
-  `store`, `load`, `query_ptr`, `store_triple`, `mib_in`: raw accesses
-  that fault on a bad pointer rather than panic), `sys::read` (whose
-  trusted `n <= buf.len()` keeps the cgroup reader's slice in bounds),
+  of `mallctl` still trusted (`copy_prefix`, `mib_out`, `mib_in`: raw
+  copies that
+  fault on a bad pointer rather than panic; the other accesses to the
+  caller's memory verify over `vspec::cbuf` and the `core` specs of
+  `vspec::ptr`), `sys::read` (whose trusted `n <= buf.len()` keeps the
+  cgroup reader's slice in bounds),
   `fig_add`, `fig_mul` and `policy::empty_bytes`'s sums, and the `core`
   functions vstd and `vspec` specify.
 - The shipped release profile: overflow checks and debug assertions
@@ -5526,10 +5554,13 @@ and `get_defrag_hint_follows_the_utilization_data`
 - The records are what was loaded: each field is set from the local the
   code loaded (by reading the body; the `ensures` cannot name the
   instant of a load).
-- `query_ptr` and `store_triple` (`external_body`, ledger S20 and S21):
-  `query_ptr` returns the pointer at index `i` of the caller's array;
-  `store_triple` writes `nfree`, `nregs`, `size` at words `3i..3i+3` and
-  nothing else. That the stored triples are still there when `mallctl`
+- `query_ptr` and `store_triple` (verified over the C contract of the
+  caller's buffers, `vspec::cbuf`): `query_ptr` reads the pointer at
+  index `i` of the caller's array (its value is not stated: the records
+  are over the value read); `store_triple` writes `nfree`, `nregs`,
+  `size` at words `3i..3i+3` and nothing else (by its body: the unaligned
+  writes' effect is not stated). That the stored triples
+  are still there when `mallctl`
   returns needs the caller's `oldp` and `newp` not to overlap (a later
   `store_triple` could overwrite a pointer before it is read, or a later
   query read a stored word as a pointer) and nothing else to write them
@@ -6661,9 +6692,11 @@ Notes that recur below:
   blk.len()` too (row 15). The allocating `_usable` entry points are
   `.0` of `_stored` twins (`malloc_usable_stored`,
   `realloc_usable_stored`; `calloc_usable_zeroed`'s third result) that
-  return the `Stored` token of `store_usable` (`external_body`, its
-  ensures `s@.ptr() == usable && s@.val() == n`), the last store through
-  `usable`. They state `usable_is(r, size, s@.val())` for a non-null
+  return the `Stored` token of `store_usable` (verified: it writes through
+  the out-pointer's permission, the call's `vspec::cbuf::COut` that the
+  export wrapper mints with `libc.rs`'s private `axiom_c_out`, and the token,
+  `s@.ptr() == usable && s@.val() == n`, is made from it), the last store
+  through `usable`. They state `usable_is(r, size, s@.val())` for a non-null
   result. For a huge run they read the size back with `usable_size`,
   right after `alloc_huge`, with the run token `alloc_huge` returned,
   whose usable bytes are `huge_usable(size)` (`alloc_huge`'s `ensures`:
@@ -6717,18 +6750,18 @@ alone):
    glibc's, which rounds the alignment up (the module doc names the
    `EINVAL`). F: a NULL for a power-of-two alignment comes with `ENOMEM`.
 6. `posix_memalign` (`api/libc.rs:1251`). R: `alloc_aligned`
-   (`:1146`) ensures `fits(p, size, align)`, but `store_out` (`:1243`,
-   `external_body`) claims nothing about `*out`. F: the return code is
-   `0`, `ENOMEM` or `EINVAL`; `EINVAL` leaves `errno` unchanged, and
+   (`:1146`) ensures `fits(p, size, align)`, and `store_out` (verified,
+   through the call's `vspec::cbuf::COut`) stores `p` through `out`. F:
+   the return code is `0`, `ENOMEM` or `EINVAL`; `EINVAL` leaves `errno`
+   unchanged, and
    `ENOMEM` comes from `alloc_aligned`'s `enomem`, so it also sets
    `errno = ENOMEM` (the function's doc says only that the `EINVAL` path
    leaves `errno` alone; the module doc's "leaves `errno` alone" is wider
-   than the code). Not stated: `0` iff an allocation was stored, and
-   `*out` untouched on failure (gap 4). B:
+   than the code). Not stated: `*out` untouched on failure (gap 4). B:
    `r == EINVAL <==> !(is_pow2(align) && align % 8 == 0)`.
    D: `posix_memalign_block` ensures, on a `0` return, the token of a
-   block of at least `size` bytes aligned to `align`, but not that it is
-   the one stored through `out` (`store_out`), hence `p`.
+   block of at least `size` bytes aligned to `align`, and that it is the
+   one stored through `out` (`*out`'s value through the `COut`), so `p`.
 7. `valloc` (`api/libc.rs:1297`). R: `fits` at the page
    (`1 << lg_page`). F: NULL with `ENOMEM`.
 8. `pvalloc` (`api/libc.rs:1306`). R: `fits(r, size, page)`. The
@@ -6924,18 +6957,24 @@ alone):
 33. `malloc_stats_print` (`api/print.rs:1112`): verified body, no
     `ensures`. Its `export_pair!` wrapper (`:1315`) is outside `verus!`
     (its `write_cb` is a function pointer) and only wraps the callback
-    in the opaque `WriteCallback`. B: the program's `opts` string and
-    callback are read through trusted code (`opt_byte`, `emit`).
+    in the opaque `WriteCallback` and calls the verified
+    `exports::stats_print_entry`, which mints the call's token. B: the
+    program's `opts` string is read by `opt_byte`, verified over the C
+    contract of a string argument (`vspec::cbuf`; the token `CCall` from
+    the private `axiom_c_call` of `print.rs`'s `exports`, and its
+    `str_c_byte`), and the callback through trusted code (`emit`).
 34. `mallctl`, `mallctlnametomib`, `mallctlbymib` (`api/mallctl.rs:1585`,
     `:1646`, `:1685`): verified bodies, no `ensures` on the return code
     (`result`, `:1573`, maps `Err(e)` to `e`). Every access to the
-    caller's memory is `external_body` and claims at most bounds:
-    `name_byte`, `name_bytes`, `old_len`, `copy_prefix`, `store`, `load`,
-    `query_ptr`, `store_triple`, `mib_cap`, `mib_out`, `mib_in` (`:803`
-    to `:1676`). So B (a bad `oldlenp` or `newlen`, an unknown name) is
+    caller's memory claims at most bounds: `copy_prefix`, `mib_out` and
+    `mib_in` are `external_body`, and `name_byte`, `name_bytes`, `old_len`,
+    `store`, `load`, `query_ptr`, `store_triple` and `mib_cap` verify over
+    the C contract of their arguments (`vspec::cbuf`). So B (a bad
+    `oldlenp` or `newlen`, an unknown name) is
     not stated as an error result; the batch-query length check (bug #1)
     is verified inside the body. B is `p` by theorem 32: once init has
-    run, no name, MIB or buffer length makes a read under `opt`,
+    run, no name, MIB or buffer length that keeps the C contract of the
+    pointers (`vspec::cbuf`) makes a read under `opt`,
     `arenas` or `stats`, or a utilization query, abort (not even at an
     integrity check); writes, operations and
     the other reads may. Theorem 21 (MIB round-trip) states that a name and its MIB
@@ -7061,8 +7100,9 @@ alone):
 4. **Failure-path contracts**: `r@.addr == 0 ==> p` still live for the
    realloc family is now in the cores (`realloc_block`,
    `realloc_usable_stored`, `rallocx_zeroed` give back the caller's
-   token); what is left is `posix_memalign`'s `*out` through a `PointsTo`
-   for `store_out` (row 6). `!nothrow ==> r@.addr != 0` for `operator new`
+   token); what is left is that `posix_memalign` leaves `*out` untouched
+   on failure (row 6: `store_out` writes through the call's `COut`, so a
+   `0` return states `*out`). `!nothrow ==> r@.addr != 0` for `operator new`
    is done ("No block at address 0": row 23's F to `P`).
 5. **Byte contents**: a `PointsToRaw`-level spec of user blocks and of
    `copy_nonoverlapping` would turn the C column (4 rows) to `P`. It

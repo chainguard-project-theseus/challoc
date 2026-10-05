@@ -1,6 +1,6 @@
 # `array_get_unchecked`
 
-Seam S357 of `verus/SEAMS.md`: src/vspec/slice.rs:212. Kind: external_body. Category: core library.
+Seam S360 of `verus/SEAMS.md`: src/vspec/slice.rs:235. Kind: external_body. Category: core library.
 Discharged by Kani.
 
 ## Contract

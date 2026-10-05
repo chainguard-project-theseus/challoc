@@ -33,11 +33,13 @@ use crate::lock::axiom_entry;
 use crate::purge;
 use crate::stats::{self, ArenaStats, Snapshot, fig_add, fig_mul};
 use crate::sys::bytes_is;
+use crate::vspec::cbuf;
 use crate::vspec::errno::{ThreadErrno, set_errno};
 use crate::vspec::print::{base_slab_sizes, stats_allocated, thp_name};
 #[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{Tracked, verus};
+use vstd::raw_ptr::ptr_ref;
 #[cfg(verus_only)]
 use vstd::string::StringSliceAdditionalSpecFns;
 
@@ -299,23 +301,39 @@ struct Opts {
     no_bins: bool,
 }
 
-/// Byte `i` of the caller's option string. Trusted: a raw read, within
-/// the string by jemalloc's contract ([`Opts::parse`]).
+/// Byte `i` of the caller's option string, through the read permission
+/// the call's token gives ([`cbuf::CCall::str_c_byte`]): the byte its view
+/// names, in the string because no byte before it is the NUL.
 ///
 /// # Safety
 /// `opts + i` is a readable byte of the caller's string.
-#[verifier::external_body]
 #[inline(always)]
-unsafe fn opt_byte(opts: *const c_char, i: usize) -> u8 {
+unsafe fn opt_byte(opts: *const c_char, i: usize, Tracked(cc): Tracked<&cbuf::CCall>) -> (r: u8)
+    requires
+        cc.reads_str(opts as *const u8),
+        cc.string().before_nul(i as int),
+    ensures
+        r == cc.string().bytes()[i as int],
+{
+    proof {
+        broadcast use vstd::layout::layout_of_primitives, vstd::raw_ptr::axiom_ptr_mut_from_data;
+        cc.string().lemma_in(i as int);
+        crate::vspec::ptr::axiom_ptr_add_addr(opts as *mut c_char, i);
+    }
     // SAFETY: guaranteed by the caller.
-    unsafe { opts.add(i).read() as u8 }
+    let q = unsafe { opts.add(i) };
+    let tracked b = cc.str_c_byte(opts as *const u8, q, i as int);
+    *ptr_ref(q, Tracked(b)) as u8
 }
 
 impl Opts {
     /// `opts` is the caller's option string: null, or readable up to and
-    /// including its NUL terminator (jemalloc's contract); at most 64
-    /// bytes are read, so a longer string is truncated, never overrun.
-    fn parse(opts: *const c_char) -> (o: Opts)
+    /// including its NUL terminator (jemalloc's contract,
+    /// [`cbuf::CArg::Str`]), read through the call's token `cc`; at most
+    /// 64 bytes are read, so a longer string is truncated, never overrun.
+    fn parse(opts: *const c_char, Tracked(cc): Tracked<&cbuf::CCall>) -> (o: Opts)
+        requires
+            opts@.addr != 0 ==> cc.reads_str(opts as *const u8),
         ensures
             opts@.addr == 0 ==> !o.json && !o.no_general && !o.no_arenas && !o.no_bins,
     {
@@ -330,10 +348,15 @@ impl Opts {
         if opts.is_null() {
             return o;
         }
-        for i in 0..64 {
+        for i in 0..64
+            invariant_except_break
+                cc.string().before_nul(i as int),
+            invariant
+                cc.reads_str(opts as *const u8),
+        {
             // SAFETY: the caller's NUL-terminated option string; reads stop
             // at the terminator or after 64 bytes.
-            let b = unsafe { opt_byte(opts, i) };
+            let b = unsafe { opt_byte(opts, i, Tracked(cc)) };
             match b {
                 0 => break,
                 b'J' => o.json = true,
@@ -1113,15 +1136,24 @@ fn nbins() -> (r: usize)
     if n < NCLASSES { n } else { NCLASSES }
 }
 
-/// [`malloc_stats_print`] into `target`.
+/// [`malloc_stats_print`] into `target`, `opts` read through the call's
+/// token `cc`, whose reads end before the first call back into C (the
+/// sink's `write_cb`, which may change the string).
 #[inline(always)]
-fn stats_print(target: Target, opts: *const c_char)
+fn stats_print(target: Target, opts: *const c_char, Tracked(cc): Tracked<&mut cbuf::CCall>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        // The C contract of `opts` (`malloc_stats_print`'s caller's).
+        opts@.addr != 0 ==> old(cc).reads_str(opts as *const u8),
 {
     let shared = super::shared();
-    let o = Opts::parse(opts);
+    let o = Opts::parse(opts, Tracked(&*cc));
+    proof {
+        if opts@.addr != 0 {
+            cc.open_writes(cbuf::CArg::Str(opts as *const u8));
+        }
+    }
     let tracked u = axiom_unlocked();
     let mut sink = Sink::new(target, Tracked(u));
     let _ = if o.json {
@@ -1134,13 +1166,17 @@ fn stats_print(target: Target, opts: *const c_char)
 
 /// `malloc_stats_print(write_cb, cbopaque, opts)`. The C entry points
 /// (outside `verus!`: their `write_cb` is a function pointer) wrap
-/// `write_cb` in a [`WriteCallback`].
-pub fn malloc_stats_print(write_cb: WriteCallback, cbopaque: *mut c_void, opts: *const c_char)
+/// `write_cb` in a [`WriteCallback`], and `cc` is the call's token, minted
+/// for exactly these arguments ([`cbuf::CEntry::StatsPrint`]) by
+/// `exports::stats_print_entry`.
+pub fn malloc_stats_print(write_cb: WriteCallback, cbopaque: *mut c_void, opts: *const c_char, Tracked(cc): Tracked<cbuf::CCall>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        cc.fresh(cbuf::CEntry::StatsPrint { opts: opts as *const u8 }),
 {
-    stats_print(Target::Callback(write_cb, cbopaque), opts)
+    let tracked mut cc = cc;
+    stats_print(Target::Callback(write_cb, cbopaque), opts, Tracked(&mut cc))
 }
 
 // ---------------------------------------------------------------------------
@@ -1336,16 +1372,48 @@ fn stderr_target() -> Target {
 
 #[cfg(not(test))]
 mod exports {
+    #[cfg(verus_only)]
+    use crate::vspec::cbuf::{CCall, CEntry};
     use core::ffi::{c_char, c_int, c_void};
     use vstd::prelude::{Tracked, verus};
 
     export_pair! {
         fn malloc_stats_print / je_malloc_stats_print(write_cb: super::WriteCb, cbopaque: *mut c_void, opts: *const c_char) {
-            super::malloc_stats_print(super::WriteCallback(write_cb), cbopaque, opts)
+            stats_print_entry(super::WriteCallback(write_cb), cbopaque, opts)
         }
     }
 
     verus! {
+
+    /// Trusted (the C contract of the entry point, `vspec::cbuf`): the
+    /// token of this call from C, through the entry point and with the
+    /// arguments `e` names, which C passed under its contract
+    /// ([`CCall::fresh`]: the string `opts`, of memory of the program's,
+    /// and its view). Private to this module, whose functions are the C
+    /// entry points: [`stats_print_entry`], the verified half of the
+    /// `malloc_stats_print` exports, mints its call's token once, from its
+    /// own parameters. A string that breaks the contract (not
+    /// NUL-terminated, wrapping the address space, in challoc's memory
+    /// other than a published counter) makes it false.
+    axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
+        requires
+            e is StatsPrint,
+        ensures
+            c.fresh(e),
+    ;
+
+    /// The body of the `malloc_stats_print` exports, which stay outside
+    /// `verus!` (their `write_cb` is a function pointer): the call's
+    /// token for `opts`, and the Rust entry point.
+    #[inline(always)]
+    fn stats_print_entry(write_cb: super::WriteCallback, cbopaque: *mut c_void, opts: *const c_char)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+    {
+        let tracked cc = axiom_c_call(CEntry::StatsPrint { opts: opts as *const u8 });
+        super::malloc_stats_print(write_cb, cbopaque, opts, Tracked(cc))
+    }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
@@ -1377,6 +1445,12 @@ mod tests {
     use std::string::String;
     use std::sync::Mutex;
     use std::vec::Vec;
+
+    // The entry point with its C signature, with the call's token as the
+    // export wrapper mints it (ghost: nothing at run time).
+    fn malloc_stats_print(write_cb: WriteCallback, cbopaque: *mut c_void, opts: *const c_char) {
+        super::malloc_stats_print(write_cb, cbopaque, opts, Tracked::assume_new())
+    }
 
     static CAPTURE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
     /// Held across a whole `report`: the callback appends one chunk at a
@@ -2264,7 +2338,7 @@ mod tests {
 mod kani_print {
     use super::{Target, file_target, hist_line, stderr_target, word};
 
-    /// S51 `word`, no `requires`, no `ensures`: it returns for every C
+    /// S42 `word`, no `requires`, no `ensures`: it returns for every C
     /// string up to 3 bytes before its NUL, UTF-8 or not (built at run
     /// time: Kani 0.68 has no C string literals).
     #[kani::proof]
@@ -2278,7 +2352,7 @@ mod kani_print {
         assert!(w == "?" || w.as_bytes() == &a[..n]);
     }
 
-    /// S52 `hist_line`, no `ensures`: it returns, for every argument and
+    /// S43 `hist_line`, no `ensures`: it returns, for every argument and
     /// whatever the writer returns (`W` is a writer that may fail any
     /// write; Kani fails the harness on any panic).
     #[kani::proof]
@@ -2296,7 +2370,7 @@ mod kani_print {
         );
     }
 
-    /// S53 `file_target`, no `ensures`: it returns, `Target::File` of the
+    /// S44 `file_target`, no `ensures`: it returns, `Target::File` of the
     /// stream, for any pointer (it is not dereferenced).
     #[kani::proof]
     fn file_target_returns() {
@@ -2304,7 +2378,7 @@ mod kani_print {
         assert!(matches!(file_target(p), Target::File(q) if q == p));
     }
 
-    /// S54 `stderr_target`, no `ensures`: it returns, `Target::Stderr`.
+    /// S45 `stderr_target`, no `ensures`: it returns, `Target::Stderr`.
     #[kani::proof]
     fn stderr_target_returns() {
         assert!(matches!(stderr_target(), Target::Stderr));

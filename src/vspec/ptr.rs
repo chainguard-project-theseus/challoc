@@ -31,6 +31,13 @@ pub uninterp spec fn alloc_len(prov: Provenance, addr: usize) -> int;
 /// a decommit ends it), and verified code uses each one right away.
 pub uninterp spec fn rw_len(prov: Provenance, addr: usize) -> int;
 
+/// How many bytes from `addr` are valid for reads, perhaps only reads,
+/// through a pointer with provenance `prov`: as [`rw_len`], for memory a
+/// C caller hands over read-only (`mallctl`'s `name` and `newp`, which may
+/// be in `.rodata`; `vspec::cbuf::c_readable`). Uninterpreted; only those
+/// facts bound it.
+pub uninterp spec fn r_len(prov: Provenance, addr: usize) -> int;
+
 /// The `len` bytes from `p` lie inside the allocation `p` is derived from
 /// (the range may end one past its last byte): the bounds condition of
 /// `<*mut T>::add`.
@@ -43,9 +50,10 @@ pub open spec fn valid_writes<T>(p: *mut T, len: int) -> bool {
     0 <= len <= rw_len(p@.provenance, p@.addr)
 }
 
-/// `p` is valid for reads of `len` bytes.
+/// `p` is valid for reads of `len` bytes: by the read-write bound, or by
+/// the read-only one ([`r_len`]).
 pub open spec fn valid_reads<T>(p: *const T, len: int) -> bool {
-    0 <= len <= rw_len(p@.provenance, p@.addr)
+    0 <= len && (len <= rw_len(p@.provenance, p@.addr) || len <= r_len(p@.provenance, p@.addr))
 }
 
 /// The address [`ptr_add`] stands for: `count` elements past `p`, when
@@ -79,6 +87,75 @@ pub assume_specification<T>[ <*mut T>::add ](p: *mut T, count: usize) -> (r: *mu
         count as int * vstd::layout::size_of::<T>() == 0 || in_alloc(p, count as int * vstd::layout::size_of::<T>()),
     ensures
         r == ptr_add(p, count),
+    opens_invariants none
+;
+
+/// `<*const T>::add`, with the safety contract of `<*mut T>::add`: the
+/// result is [`ptr_add`] of the pointer as a `*mut T`, back as a
+/// `*const T` (`axiom_ptr_add_addr` gives its address).
+pub assume_specification<T>[ <*const T>::add ](p: *const T, count: usize) -> (r: *const T)
+    requires
+        count as int * vstd::layout::size_of::<T>() <= isize::MAX,
+        count as int * vstd::layout::size_of::<T>() == 0 || in_alloc(p as *mut T, count as int * vstd::layout::size_of::<T>()),
+    ensures
+        r == ptr_add(p as *mut T, count) as *const T,
+    opens_invariants none
+;
+
+} // verus!
+
+verus! {
+
+// The unaligned reads and writes of `mallctl`'s value transfer, through
+// the C caller's buffers (`vspec::cbuf::c_buffer`). Each has the safety
+// contract of the `core` documentation: the pointer is valid for reads or
+// writes of `size_of::<T>()` bytes, with no alignment needed. As for
+// `copy_nonoverlapping` (`vspec::addr`), the effect is not stated, so
+// Verus assumes a write changes no memory a ghost permission covers: the
+// writes require the bytes apart from the metadata mapping and the
+// `Shared` static (`vspec::cbuf::c_apart`), where verified code holds its
+// permissions, and the other holders (a block's `UserMem`, the frozen
+// init-once statics, lock values, the fork slot, `errno`) are memory no
+// contract-keeping C argument names while they are held (the `cbuf`
+// module doc), so the writes are for the C caller's buffers only; and the
+// writes through the pointer's provenance open (`vspec::cbuf::c_writes`:
+// the call's token was taken `&mut` and mints no read permission from
+// then on; a caller's buffer is writable only under it, `c_buffer`), so
+// no permission the token minted is held across one. The value a read
+// returns is not stated either. A read also needs the bytes to be a valid
+// `T`, which no precondition here can say: the `T`s read (integers and
+// raw pointers, by `mallctl`'s `load` and `query_ptr`, the only verified
+// callers) are valid for any initialised bytes.
+
+/// `core::ptr::read_unaligned`.
+pub assume_specification<T>[ core::ptr::read_unaligned::<T> ](src: *const T) -> T
+    requires
+        valid_reads(src, vstd::layout::size_of::<T>() as int),
+    opens_invariants none
+;
+
+/// `<*const T>::read_unaligned`.
+pub assume_specification<T>[ <*const T>::read_unaligned ](src: *const T) -> T
+    requires
+        valid_reads(src, vstd::layout::size_of::<T>() as int),
+    opens_invariants none
+;
+
+/// `core::ptr::write_unaligned`.
+pub assume_specification<T>[ core::ptr::write_unaligned::<T> ](dst: *mut T, src: T)
+    requires
+        valid_writes(dst, vstd::layout::size_of::<T>() as int),
+        crate::vspec::cbuf::c_apart(dst@.addr as int, vstd::layout::size_of::<T>() as int),
+        crate::vspec::cbuf::c_writes(dst@.provenance),
+    opens_invariants none
+;
+
+/// `<*mut T>::write_unaligned`.
+pub assume_specification<T>[ <*mut T>::write_unaligned ](dst: *mut T, val: T)
+    requires
+        valid_writes(dst, vstd::layout::size_of::<T>() as int),
+        crate::vspec::cbuf::c_apart(dst@.addr as int, vstd::layout::size_of::<T>() as int),
+        crate::vspec::cbuf::c_writes(dst@.provenance),
     opens_invariants none
 ;
 

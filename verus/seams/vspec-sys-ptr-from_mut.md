@@ -1,6 +1,6 @@
 # `core::ptr::from_mut`
 
-Seam S375 of `verus/SEAMS.md`: src/vspec/sys.rs:98. Kind: assume_spec. Category: raw pointer (internal).
+Seam S378 of `verus/SEAMS.md`: src/vspec/sys.rs:98. Kind: assume_spec. Category: raw pointer (internal).
 Discharged by Kani.
 
 ## Contract

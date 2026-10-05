@@ -286,6 +286,8 @@ impl Heap {
     ///
     /// # Safety
     /// As for [`Heap::pop`].
+    #[verifier::spinoff_prover]
+    #[verifier::rlimit(30)]
     pub(super) unsafe fn pop_compact_run(
         &mut self,
         cache: *mut CacheHeader,

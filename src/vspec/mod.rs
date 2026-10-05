@@ -16,6 +16,7 @@ pub(crate) mod addr;
 pub(crate) mod arena;
 pub(crate) mod atom;
 pub(crate) mod atomic;
+pub(crate) mod cbuf;
 pub(crate) mod check;
 pub(crate) mod class;
 mod config;

@@ -1,6 +1,6 @@
 # `DisplaySpecImpl for Features`
 
-Seam S225 of `verus/SEAMS.md`: src/sys/features.rs:200. Kind: spec_impl. Category: core library.
+Seam S217 of `verus/SEAMS.md`: src/sys/features.rs:200. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract

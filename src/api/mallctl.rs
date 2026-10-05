@@ -76,11 +76,17 @@ use crate::sys;
 use crate::sys::Errno;
 use crate::sys::bytes_is;
 use crate::vspec::addr::addr_to_ptr;
+use crate::vspec::cbuf::CCall;
+#[cfg(verus_only)]
+use crate::vspec::cbuf::{
+    CArg, CEntry, c_buffer, c_readable, c_writes, lemma_c_buffer_at, lemma_c_readable_at,
+};
 use Op::*;
 use Reading::*;
 #[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, int, verus};
+use vstd::raw_ptr::ptr_ref;
 #[cfg(verus_only)]
 use vstd::string::*;
 
@@ -1664,30 +1670,52 @@ fn mib_to_key(mib: &[usize]) -> Result<&'static str, c_int> {
 
 verus! {
 
-/// Byte `n` of the caller's name. Trusted: a raw read; the `mallctl`
-/// contract makes the name readable up to and including its NUL, and
-/// [`cstr`] reads no further.
+/// Byte `n` of the caller's name, through the read permission the call's
+/// token gives ([`CCall::str_byte`]): the byte its view names, in the
+/// string because no byte before it is the NUL.
 ///
 /// # Safety
 /// `p + n` is a byte of the caller's name, at or before its NUL.
-#[verifier::external_body]
 #[inline(always)]
-unsafe fn name_byte(p: *const u8, n: usize) -> u8 {
+unsafe fn name_byte(p: *const u8, n: usize, Tracked(call): Tracked<&CCall>) -> (r: u8)
+    requires
+        call.reads_str(p),
+        call.string().before_nul(n as int),
+    ensures
+        r == call.string().bytes()[n as int],
+{
+    proof {
+        call.string().lemma_in(n as int);
+        crate::vspec::ptr::axiom_ptr_add_addr(p as *mut u8, n);
+    }
     // SAFETY: guaranteed by the caller.
-    unsafe { p.add(n).read() }
+    let q = unsafe { p.add(n) };
+    let tracked b = call.str_byte(p, q, n as int);
+    *ptr_ref(q, Tracked(b))
 }
 
-/// The caller's name's first `n` bytes, borrowed for the call. Trusted:
-/// [`cstr`] has just read them.
+/// The caller's name's first `n` bytes, borrowed for as long as the
+/// call's token is: they are before its NUL, so readable
+/// ([`crate::vspec::cbuf::CStr::wf`]), and no write through the call's
+/// buffers begins while the slice lives ([`CCall::open_writes`] takes the
+/// token `&mut`). Nothing is claimed about their values: `from_raw_parts`
+/// states only the length.
 ///
 /// # Safety
 /// The `n` bytes at `p` are readable for the duration of the call.
-#[verifier::external_body]
 #[inline(always)]
-unsafe fn name_bytes(p: *const u8, n: usize) -> (r: &'static [u8])
+unsafe fn name_bytes<'a>(p: *const u8, n: usize, Tracked(call): Tracked<&'a CCall>) -> (r: &'a [u8])
+    requires
+        p@.addr != 0,
+        call.reads_str(p),
+        n < call.string().bytes().len(),
+        n < MAX_NAME,
     ensures
         r@.len() == n,
 {
+    proof {
+        broadcast use vstd::layout::align_of_u8;
+    }
     // SAFETY: guaranteed by the caller.
     unsafe { core::slice::from_raw_parts(p, n) }
 }
@@ -1696,10 +1724,13 @@ unsafe fn name_bytes(p: *const u8, n: usize) -> (r: &'static [u8])
 /// string of `MAX_NAME` bytes or more.
 ///
 /// `p` is the caller's `name` argument: null, or readable up to and
-/// including its NUL terminator (the `mallctl` contract); at most
-/// `MAX_NAME` bytes are ever read, and the slice borrows the caller's
-/// memory for the duration of the call.
-fn cstr(p: *const c_char) -> (r: Option<&'static [u8]>)
+/// including its NUL terminator (the `mallctl` contract, [`CArg::Str`]),
+/// read through the call's token `call`; at most `MAX_NAME` bytes are
+/// ever read, and the slice borrows the caller's memory for as long as
+/// the token is borrowed.
+fn cstr<'a>(p: *const c_char, Tracked(call): Tracked<&'a CCall>) -> (r: Option<&'a [u8]>)
+    requires
+        p@.addr != 0 ==> call.reads_str(p as *const u8),
     ensures
         r matches Some(s) ==> s@.len() < MAX_NAME,
         p@.addr == 0 ==> r is None,
@@ -1707,13 +1738,20 @@ fn cstr(p: *const c_char) -> (r: Option<&'static [u8]>)
     if p.is_null() {
         return None;
     }
-    let p = p.cast::<u8>();
+    // An `as` cast, not `cast::<u8>()`: Verus specifies it as keeping the
+    // provenance, which the token's string view needs (the `cast` spec
+    // states only the address). Both compile to nothing; the `allow` is
+    // for aarch64, where `c_char` is `u8`.
+    #[allow(clippy::unnecessary_cast)]
+    let p = p as *const u8;
     let mut n = 0;
     // SAFETY: the caller passes a NUL-terminated name; reads stop at the
     // terminator or the cap.
-    while n < MAX_NAME && unsafe { name_byte(p, n) } != 0
+    while n < MAX_NAME && unsafe { name_byte(p, n, Tracked(call)) } != 0
         invariant
             n <= MAX_NAME,
+            call.reads_str(p),
+            call.string().before_nul(n as int),
         decreases MAX_NAME - n,
     {
         n += 1;
@@ -1721,8 +1759,11 @@ fn cstr(p: *const c_char) -> (r: Option<&'static [u8]>)
     if n == MAX_NAME {
         return None;
     }
+    proof {
+        call.string().lemma_in(n as int);
+    }
     // SAFETY: `n` bytes before the terminator were just read.
-    Some(unsafe { name_bytes(p, n) })
+    Some(unsafe { name_bytes(p, n, Tracked(call)) })
 }
 
 // ---------------------------------------------------------------------------
@@ -1738,22 +1779,50 @@ pub struct Io {
     pub newlen: usize,
 }
 
-/// `*oldlenp`. Trusted: a raw read of the caller's length pointer.
+impl Io {
+    /// The `mallctl` caller's contract for the four pointers
+    /// (`vspec::cbuf`), with `call` the call's token: with both `oldp` and
+    /// `oldlenp` given, they are the call's sized buffer ([`CArg::Sized`]:
+    /// `oldlenp` is an initialised `size_t` and `oldp` holds that many
+    /// bytes); and the new value is [`Io::given`]. [`mallctl`] and
+    /// [`mallctlbymib`] have it for the pointers C passed.
+    pub open spec fn handed(self, call: CCall) -> bool {
+        &&& (self.oldp@.addr != 0 && self.oldlenp@.addr != 0 ==> call.has(CArg::Sized(self.oldp as *mut u8, self.oldlenp as *const usize)))
+        &&& self.given()
+    }
+
+    /// A given `newp` holds `newlen` readable bytes ([`c_readable`]).
+    pub open spec fn given(self) -> bool {
+        self.newp@.addr != 0 ==> c_readable(self.newp as *mut u8, self.newlen as int)
+    }
+}
+
+/// `*oldlenp`, through the read permission the call's token gives
+/// ([`CCall::sized`]), which also makes `oldp` a buffer of that many
+/// bytes. Before any write through the call's buffers.
 ///
 /// # Safety
 /// `oldlenp` is the caller's out-pointer per the `mallctl` contract.
-#[verifier::external_body]
 #[inline(always)]
-unsafe fn old_len(oldlenp: *mut usize) -> usize {
+unsafe fn old_len(oldlenp: *mut usize, Ghost(oldp): Ghost<*mut u8>, Tracked(call): Tracked<&CCall>) -> (r: usize)
+    requires
+        !call.written(),
+        call.has(CArg::Sized(oldp, oldlenp as *const usize)),
+    ensures
+        c_buffer(oldp, r as int),
+{
+    let tracked len = call.sized(oldp, oldlenp as *const usize);
     // SAFETY: guaranteed by the caller.
-    unsafe { *oldlenp }
+    *ptr_ref(oldlenp, Tracked(len))
 }
 
 /// Copy the first `n` bytes of `v` to `oldp`. Trusted: a raw copy into
 /// the caller's buffer, whose byte length the caller gave as
-/// `*oldlenp == oldlen`. The precondition keeps the copy inside `v` and
-/// inside those `oldlen` bytes (that `oldp` holds `*oldlenp` bytes is the
-/// `mallctl` caller's contract).
+/// `*oldlenp == oldlen` ([`c_buffer`], from [`old_len`]), once its writes
+/// are open ([`c_writes`]). The precondition keeps the copy inside `v` and
+/// inside those `oldlen` bytes. Verus cannot take the pointer of a
+/// reference (`v as *const T`), and the copy would need `v` apart from
+/// the caller's buffer.
 ///
 /// # Safety
 /// `oldp` holds `oldlen` writable bytes.
@@ -1763,51 +1832,67 @@ unsafe fn copy_prefix<T: Copy>(v: &T, oldp: *mut c_void, n: usize, Ghost(oldlen)
     requires
         n <= size_of::<T>(),
         n <= oldlen,
+        c_buffer(oldp as *mut u8, oldlen as int),
+        c_writes(oldp@.provenance),
 {
     // SAFETY: guaranteed by the caller.
     unsafe { ptr::copy_nonoverlapping(v as *const T as *const u8, oldp as *mut u8, n) };
 }
 
-/// Store `v` at `oldp`. Trusted: a raw unaligned write of the
-/// `size_of::<T>()` bytes the precondition says `*oldlenp == oldlen`
-/// gives (the `mallctl` caller's contract).
+/// Store `v` at `oldp`: an unaligned write of the `size_of::<T>()` bytes
+/// the caller's buffer holds ([`c_buffer`], `*oldlenp == oldlen`), once
+/// its writes are open ([`c_writes`]).
 ///
 /// # Safety
 /// `oldp` holds `oldlen` writable bytes.
-#[verifier::external_body]
 #[inline(always)]
 unsafe fn store<T: Copy>(oldp: *mut c_void, v: T, Ghost(oldlen): Ghost<usize>)
     requires
-        oldlen == size_of::<T>(),
+        oldlen as int == vstd::layout::size_of::<T>(),
+        c_buffer(oldp as *mut u8, oldlen as int),
+        c_writes(oldp@.provenance),
 {
+    proof {
+        broadcast use vstd::raw_ptr::axiom_ptr_mut_from_data;
+        lemma_c_buffer_at(oldp as *mut u8, oldlen as int, oldp as *mut T, 0);
+    }
     // SAFETY: guaranteed by the caller.
     unsafe { ptr::write_unaligned(oldp as *mut T, v) };
 }
 
-/// The value at `newp`. Trusted: a raw unaligned read of the
-/// `size_of::<T>()` bytes the precondition says `newlen` gives (the
-/// `mallctl` caller's contract). Every `T` it is used at (integers and
-/// raw pointers) is valid for any bytes.
+/// The value at `newp`: an unaligned read of the `size_of::<T>()` bytes
+/// the caller's buffer holds ([`c_readable`], `newlen`). Every `T` it is
+/// used at (integers and raw pointers) is valid for any bytes; the value
+/// is not stated.
 ///
 /// # Safety
 /// `newp` holds `newlen` readable bytes.
-#[verifier::external_body]
 #[inline(always)]
 unsafe fn load<T: Copy>(newp: *const c_void, Ghost(newlen): Ghost<usize>) -> T
     requires
-        newlen == size_of::<T>(),
+        newlen as int == vstd::layout::size_of::<T>(),
+        c_readable(newp as *mut u8, newlen as int),
 {
+    proof {
+        broadcast use vstd::raw_ptr::axiom_ptr_mut_from_data;
+        lemma_c_readable_at(newp as *mut u8, newlen as int, newp as *mut T, 0);
+    }
     // SAFETY: guaranteed by the caller.
     unsafe { ptr::read_unaligned(newp as *const T) }
 }
 
 impl Io {
-    /// Copy `v` out if the caller asked for it. A wrong `*oldlenp` copies
-    /// the common prefix and fails with `EINVAL`.
-    fn read<T: Copy>(&self, v: T) -> (r: Result<(), c_int>)
+    /// Copy `v` out if the caller asked for it, through the call's token
+    /// `call`, before any write through its buffers. A wrong `*oldlenp`
+    /// copies the common prefix and fails with `EINVAL`.
+    fn read<T: Copy>(&self, v: T, Tracked(call): Tracked<&mut CCall>) -> (r: Result<(), c_int>)
+        requires
+            self.handed(*old(call)),
+            !old(call).written(),
         ensures
             r matches Err(e) ==> e == EINVAL,
             self.oldp@.addr == 0 || self.oldlenp@.addr == 0 ==> r is Ok,
+            final(call).entry() == old(call).entry(),
     {
         if self.oldp.is_null() || self.oldlenp.is_null() {
             return Ok(());
@@ -1815,8 +1900,12 @@ impl Io {
         let want = size_of::<T>();
         // SAFETY: `oldp`/`oldlenp` are the caller's out-pointers per the
         // `mallctl` contract; `*oldlenp` bytes are writable at `oldp`.
+        let ghost oldp = self.oldp as *mut u8;
         unsafe {
-            let have = old_len(self.oldlenp);
+            let have = old_len(self.oldlenp, Ghost(oldp), Tracked(&*call));
+            proof {
+                call.open_writes(CArg::Sized(oldp, self.oldlenp as *const usize));
+            }
             if have != want {
                 copy_prefix(&v, self.oldp, have.min(want), Ghost(have));
                 return Err(EINVAL);
@@ -1828,6 +1917,8 @@ impl Io {
 
     /// The new value, if the caller passed one; `EINVAL` on a size mismatch.
     fn write<T: Copy>(&self) -> (r: Result<Option<T>, c_int>)
+        requires
+            self.given(),
         ensures
             r matches Err(e) ==> e == EINVAL,
             self.newp@.addr == 0 <==> r == Ok::<Option<T>, c_int>(None),
@@ -1845,6 +1936,8 @@ impl Io {
 
     /// A C `bool`: any non-zero byte is true.
     fn write_bool(&self) -> (r: Result<Option<bool>, c_int>)
+        requires
+            self.given(),
         ensures
             r matches Err(e) ==> e == EINVAL,
             self.newp@.addr == 0 <==> r == Ok::<Option<bool>, c_int>(None),
@@ -2209,31 +2302,39 @@ pub open spec fn util_triple(rg: crate::layout::Regions, p: usize, nfree: int, n
 }
 
 /// Pointer `i` of the caller's `newp` array, whose byte length the caller
-/// gave as `newlen`. Trusted: a raw unaligned read of the 8 bytes at
-/// `ptrs + 8 * i`, which the precondition puts inside those `newlen` bytes
-/// (that `newp` holds `newlen` bytes is the `mallctl` caller's contract).
+/// gave as `newlen`: an unaligned read of the 8 bytes at `ptrs + 8 * i`,
+/// which the precondition puts inside those `newlen` bytes ([`c_readable`]).
 ///
 /// # Safety
 /// `ptrs` holds `newlen` readable bytes.
-#[verifier::external_body]
 #[inline(always)]
 unsafe fn query_ptr(ptrs: *const *const c_void, i: usize, Ghost(newlen): Ghost<usize>) -> *const c_void
     requires
         (i + 1) * 8 <= newlen,
+        c_readable(ptrs as *mut u8, newlen as int),
 {
+    proof {
+        broadcast use vstd::raw_ptr::axiom_ptr_mut_from_data;
+        broadcast use vstd::layout::layout_of_references_and_pointers, vstd::layout::layout_of_references_and_pointers_for_sized_types;
+        let base = ptrs as *mut *const c_void;
+        lemma_c_readable_at(ptrs as *mut u8, newlen as int, base, 0);
+        assert(vstd::layout::size_of::<*const c_void>() == 8);
+        assert(i * vstd::layout::size_of::<*const c_void>() <= newlen);
+        assert(crate::vspec::ptr::in_alloc(base, newlen as int));
+        crate::vspec::ptr::axiom_ptr_add_addr(base, i);
+        lemma_c_readable_at(ptrs as *mut u8, newlen as int, crate::vspec::ptr::ptr_add(base, i), 8 * i);
+    }
     // SAFETY: guaranteed by the caller.
     unsafe { ptrs.add(i).read_unaligned() }
 }
 
 /// Store triple `i`, `(nfree, nregs, size)`, into the caller's `oldp`
-/// array, whose byte length the caller gave as `*oldlenp == oldlen`.
-/// Trusted: raw unaligned writes of words `3 * i .. 3 * i + 3`, which the
-/// precondition puts inside those `oldlen` bytes (that `oldp` holds
-/// `*oldlenp` bytes is the `mallctl` caller's contract).
+/// array, whose byte length the caller gave as `*oldlenp == oldlen`:
+/// unaligned writes of words `3 * i .. 3 * i + 3`, which the precondition
+/// puts inside those `oldlen` bytes ([`c_buffer`]).
 ///
 /// # Safety
 /// `out` holds `oldlen` writable bytes.
-#[verifier::external_body]
 #[inline(always)]
 unsafe fn store_triple(
     out: *mut usize,
@@ -2250,7 +2351,20 @@ unsafe fn store_triple(
         // `query_ptr` read for index `i` (the theorem "Utilization and
         // defrag hint are exact").
         util_triple(crate::layout::process_regions(), q as usize, nfree as int, nregs as int, size as int),
+        c_buffer(out as *mut u8, oldlen as int),
+        c_writes(out@.provenance),
 {
+    proof {
+        broadcast use vstd::raw_ptr::axiom_ptr_mut_from_data;
+        lemma_c_buffer_at(out as *mut u8, oldlen as int, out, 0);
+        let (k0, k1, k2) = ((3 * i) as usize, (3 * i + 1) as usize, (3 * i + 2) as usize);
+        crate::vspec::ptr::axiom_ptr_add_addr(out, k0);
+        lemma_c_buffer_at(out as *mut u8, oldlen as int, crate::vspec::ptr::ptr_add(out, k0), 8 * k0);
+        crate::vspec::ptr::axiom_ptr_add_addr(out, k1);
+        lemma_c_buffer_at(out as *mut u8, oldlen as int, crate::vspec::ptr::ptr_add(out, k1), 8 * k1);
+        crate::vspec::ptr::axiom_ptr_add_addr(out, k2);
+        lemma_c_buffer_at(out as *mut u8, oldlen as int, crate::vspec::ptr::ptr_add(out, k2), 8 * k2);
+    }
     // SAFETY: guaranteed by the caller.
     unsafe {
         out.add(3 * i).write_unaligned(nfree);
@@ -2263,11 +2377,14 @@ unsafe fn store_triple(
 /// `oldp` an array of `(nfree, nregs, size)` triples of the same count.
 /// Only an exact fit is accepted: `newlen` is `8 * n` and `*oldlenp` is
 /// `24 * n` for some `n > 0`, so every read and write of the loop stays
-/// inside the caller's buffers.
-fn batch_query(shared: &Shared, io: &Io) -> Result<(), c_int>
+/// inside the caller's buffers. `call` is the call's token, before any
+/// write through its buffers.
+fn batch_query(shared: &Shared, io: &Io, Tracked(call): Tracked<&mut CCall>) -> Result<(), c_int>
     requires
         crate::sys::may_syscall(),
         shared.wf(),
+        io.handed(*old(call)),
+        !old(call).written(),
 {
     if io.oldp.is_null() || io.oldlenp.is_null() || io.newp.is_null() {
         return Err(EINVAL);
@@ -2275,7 +2392,11 @@ fn batch_query(shared: &Shared, io: &Io) -> Result<(), c_int>
     let psz = size_of::<*const c_void>();
     let tsz = 3 * size_of::<usize>();
     // SAFETY: `oldlenp` is the caller's length pointer.
-    let oldlen = unsafe { old_len(io.oldlenp) };
+    let ghost oldp = io.oldp as *mut u8;
+    let oldlen = unsafe { old_len(io.oldlenp, Ghost(oldp), Tracked(&*call)) };
+    proof {
+        call.open_writes(CArg::Sized(oldp, io.oldlenp as *const usize));
+    }
     let n = io.newlen / psz;
     // `checked_mul`: a count whose triples overflow must not wrap onto
     // the caller's `oldlen` and send the loop past both arrays.
@@ -2284,12 +2405,20 @@ fn batch_query(shared: &Shared, io: &Io) -> Result<(), c_int>
     }
     let ptrs = io.newp as *const *const c_void;
     let out = io.oldp as *mut usize;
+    proof {
+        broadcast use vstd::raw_ptr::axiom_ptr_mut_from_data;
+        assert(c_readable(ptrs as *mut u8, io.newlen as int));
+        assert(c_buffer(out as *mut u8, oldlen as int));
+    }
     for i in 0..n
         invariant
             crate::sys::may_syscall(),
             shared.wf(),
             n * 8 <= io.newlen,
             n * 24 == oldlen,
+            c_buffer(out as *mut u8, oldlen as int),
+            c_writes(out@.provenance),
+            c_readable(ptrs as *mut u8, io.newlen as int),
     {
         proof {
             assert((i + 1) * 8 <= n * 8) by (nonlinear_arith)
@@ -2475,31 +2604,37 @@ fn thread_heap<'a>(shared: &'a Shared) -> (r: Result<&'a mut Heap, c_int>)
     heap::heap_for_thread(shared).ok_or(EAGAIN)
 }
 
-/// Copy a reading out with its type's size.
-fn read_out(io: &Io, r: Reading) -> (res: Result<(), c_int>)
+/// Copy a reading out with its type's size, through the call's token.
+fn read_out(io: &Io, r: Reading, Tracked(cc): Tracked<&mut CCall>) -> (res: Result<(), c_int>)
+    requires
+        io.handed(*old(cc)),
+        !old(cc).written(),
     ensures
         res matches Err(e) ==> e == EINVAL,
 {
     match r {
-        Bool(v) => io.read(v),
-        Unsigned(v) => io.read(v),
-        U32(v) => io.read(v),
-        Size(v) => io.read(v),
-        Ssize(v) => io.read(v),
-        U64(v) => io.read(v),
-        Str(v) => io.read(v),
-        U64Ptr(v) => io.read(v),
+        Bool(v) => io.read(v, Tracked(cc)),
+        Unsigned(v) => io.read(v, Tracked(cc)),
+        U32(v) => io.read(v, Tracked(cc)),
+        Size(v) => io.read(v, Tracked(cc)),
+        Ssize(v) => io.read(v, Tracked(cc)),
+        U64(v) => io.read(v, Tracked(cc)),
+        Str(v) => io.read(v, Tracked(cc)),
+        U64Ptr(v) => io.read(v, Tracked(cc)),
     }
 }
 
 /// Perform the key `node` names with the numeric components of `mib`:
 /// a read-only key through its reader, an [`Op`] as an arm. `ENOENT` for
-/// an interior node.
-fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int>
+/// an interior node. `cc` is the call's token, before any write through
+/// its buffers.
+fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracked<&mut CCall>) -> Result<(), c_int>
     requires
         crate::sys::may_abort() || ctl_never_aborts(*node, mib@),
         crate::sys::may_syscall(),
         shared.wf(),
+        io.handed(*old(cc)),
+        !old(cc).written(),
         // Both entry points pass the node the MIB resolves to.
         resolve(root_nodes(), mib@) == Some(*node),
 {
@@ -2509,7 +2644,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
         Entry::Dir(_) => return Err(ENOENT),
         Entry::Read(read) => {
             io.read_only()?;
-            return read_out(io, call(read, mib)?);
+            return read_out(io, call(read, mib)?, Tracked(cc));
         },
         Entry::Op(op) => op,
     };
@@ -2518,7 +2653,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             if io.write::<u64>()?.is_some() {
                 stats::epoch(shared, Tracked(&mut ord));
             }
-            io.read(stats::snapshot(shared, Tracked(&mut ord)).epoch)
+            io.read(stats::snapshot(shared, Tracked(&mut ord)).epoch, Tracked(cc))
         },
         BackgroundThread => {
             if let Some(on) = io.write_bool()? {
@@ -2527,7 +2662,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                     return Err(EAGAIN);
                 }
             }
-            io.read(purge::background::present())
+            io.read(purge::background::present(), Tracked(cc))
         },
         MaxBackgroundThreads => {
             if let Some(n) = io.write::<usize>()? {
@@ -2535,17 +2670,17 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                     return Err(EINVAL);
                 }
             }
-            io.read(1usize)
+            io.read(1usize, Tracked(cc))
         },
         ArenasCreate => {
             // `newp` may carry extent hooks, which challoc has no use for.
             let i = shared.arenas.create(shared, Tracked(&mut ord)).ok_or(EAGAIN)?;
-            io.read(i as c_uint)
+            io.read(i as c_uint, Tracked(cc))
         },
         ArenasLookup => {
             let p = io.write::<*const c_void>()?.ok_or(EINVAL)?;
             let a = owner_of(shared, p).ok_or(EFAULT)?;
-            io.read(a as c_uint)
+            io.read(a as c_uint, Tracked(cc))
         },
         ArenaPurge => {
             io.void()?;
@@ -2604,13 +2739,13 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 if let Some(ms) = new {
                     shared.set_decay_ms(ms as i64);
                 }
-                return io.read(ms_of(shared.decay_ns()));
+                return io.read(ms_of(shared.decay_ns()), Tracked(cc));
             }
             let arena = shared.arena(arena_index(i)?, Tracked(&mut ord)).ok_or(ENOENT)?;
             if let Some(ms) = new {
                 arena.set_decay_ms(ms as i64);
             }
-            io.read(ms_of(arena.decay_ns()))
+            io.read(ms_of(arena.decay_ns()), Tracked(cc))
         },
         ThreadTcacheFlush => {
             io.void()?;
@@ -2627,7 +2762,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                     assert(!on ==> h.cleared() && h.drained());
                 }
             }
-            io.read(h.tcache_enabled())
+            io.read(h.tcache_enabled(), Tracked(cc))
         },
         ThreadArena => {
             let h = thread_heap(shared)?;
@@ -2637,7 +2772,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 }
                 h.set_arena(shared, a as u16, Tracked(&mut ord));
             }
-            io.read(h.arena() as c_uint)
+            io.read(h.arena() as c_uint, Tracked(cc))
         },
         TcacheCreate => {
             io.read_only()?;
@@ -2648,7 +2783,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 None => 0,
             };
             let t = shared.tcaches.create(shared, home, Tracked(&mut ord)).ok_or(EFAULT)?;
-            io.read(t as c_uint)
+            io.read(t as c_uint, Tracked(cc))
         },
         TcacheFlush | TcacheDestroy => {
             io.write_only()?;
@@ -2668,9 +2803,9 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
         },
         UtilQuery => {
             let p = io.write::<*const c_void>()?.ok_or(EINVAL)?;
-            io.read(utilization(shared, p, true))
+            io.read(utilization(shared, p, true), Tracked(cc))
         },
-        UtilBatchQuery => batch_query(shared, io),
+        UtilBatchQuery => batch_query(shared, io, Tracked(cc)),
     }
 }
 
@@ -2685,19 +2820,30 @@ fn result(r: Result<(), c_int>) -> (c: c_int)
     }
 }
 
-/// `mallctl(name, oldp, oldlenp, newp, newlen)`.
+/// `mallctl(name, oldp, oldlenp, newp, newlen)`. The pointers are C's,
+/// under the `mallctl` contract: `cc` is the call's token, minted by the
+/// export wrapper for exactly these arguments ([`CEntry::Mallctl`]).
 pub fn mallctl(
     name: *const c_char,
     oldp: *mut c_void,
     oldlenp: *mut usize,
     newp: *const c_void,
     newlen: usize,
+    Tracked(cc): Tracked<CCall>,
 ) -> c_int
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        cc.fresh(CEntry::Mallctl {
+            name: name as *const u8,
+            oldp: oldp as *mut u8,
+            oldlenp: oldlenp as *const usize,
+            newp: newp as *mut u8,
+            newlen,
+        }),
 {
-    let Some(name) = cstr(name) else {
+    let tracked mut cc = cc;
+    let Some(name) = cstr(name, Tracked(&cc)) else {
         return EINVAL;
     };
     let mut mib = [0usize; MAX_MIB];
@@ -2716,23 +2862,30 @@ pub fn mallctl(
             newp,
             newlen,
         },
+        Tracked(&mut cc),
     ))
 }
 
-/// `*miblenp`. Trusted: a raw read of the caller's capacity pointer.
+/// `*miblenp`, through the read permission the call's token gives
+/// ([`CArg::Size`], [`CCall::size`]), before any write through it.
 ///
 /// # Safety
 /// `miblenp` is the caller's non-null capacity pointer.
-#[verifier::external_body]
 #[inline(always)]
-unsafe fn mib_cap(miblenp: *mut usize) -> usize {
+unsafe fn mib_cap(miblenp: *mut usize, Tracked(cc): Tracked<&CCall>) -> usize
+    requires
+        !cc.written(),
+        cc.has(CArg::Size(miblenp as *const usize)),
+{
+    let tracked cap = cc.size(miblenp as *const usize);
     // SAFETY: guaranteed by the caller.
-    unsafe { *miblenp }
+    *ptr_ref(miblenp, Tracked(cap))
 }
 
 /// Copy `mib[..len]` out to `mibp` and store `len` at `miblenp`. Trusted:
 /// raw writes, of `len` words the precondition puts inside the capacity
-/// `*miblenp == cap` the caller gave.
+/// `*miblenp == cap` the caller gave, once the writes through `miblenp`
+/// are open ([`c_writes`]).
 ///
 /// # Safety
 /// `mibp` holds `cap` writable `size_t`s; `miblenp` is the caller's
@@ -2743,6 +2896,7 @@ unsafe fn mib_out(mib: &[usize; MAX_MIB], mibp: *mut usize, miblenp: *mut usize,
     requires
         len <= MAX_MIB,
         len <= cap,
+        c_writes(miblenp@.provenance),
 {
     // SAFETY: guaranteed by the caller.
     unsafe {
@@ -2752,9 +2906,15 @@ unsafe fn mib_out(mib: &[usize; MAX_MIB], mibp: *mut usize, miblenp: *mut usize,
 }
 
 /// `mallctlnametomib(name, mibp, miblenp)`: `*miblenp` is the capacity in
-/// and the length out.
-pub fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> c_int {
-    let Some(name) = cstr(name) else {
+/// and the length out. The pointers are C's, under the
+/// `mallctlnametomib` contract: `cc` is the call's token, minted by the
+/// export wrapper for exactly these arguments ([`CEntry::NameToMib`]).
+pub fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize, Tracked(cc): Tracked<CCall>) -> c_int
+    requires
+        cc.fresh(CEntry::NameToMib { name: name as *const u8, mibp, miblenp: miblenp as *const usize }),
+{
+    let tracked mut cc = cc;
+    let Some(name) = cstr(name, Tracked(&cc)) else {
         return EINVAL;
     };
     if mibp.is_null() || miblenp.is_null() {
@@ -2768,9 +2928,12 @@ pub fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usi
     // SAFETY: the caller's capacity pointer and an array of that many
     // `size_t`.
     unsafe {
-        let cap = mib_cap(miblenp);
+        let cap = mib_cap(miblenp, Tracked(&cc));
         if cap < len {
             return EINVAL;
+        }
+        proof {
+            cc.open_writes(CArg::Size(miblenp as *const usize));
         }
         mib_out(&mib, mibp, miblenp, len, Ghost(cap));
     }
@@ -2792,7 +2955,10 @@ unsafe fn mib_in(mib: *const usize, local: &mut [usize; MAX_MIB], miblen: usize)
     unsafe { ptr::copy_nonoverlapping(mib, local.as_mut_ptr(), miblen) };
 }
 
-/// `mallctlbymib(mib, miblen, oldp, oldlenp, newp, newlen)`.
+/// `mallctlbymib(mib, miblen, oldp, oldlenp, newp, newlen)`. The value
+/// pointers are C's, under the `mallctl` contract: `cc` is the call's
+/// token, minted by the export wrapper for exactly these arguments
+/// ([`CEntry::ByMib`]).
 pub fn mallctlbymib(
     mib: *const usize,
     miblen: usize,
@@ -2800,11 +2966,21 @@ pub fn mallctlbymib(
     oldlenp: *mut usize,
     newp: *const c_void,
     newlen: usize,
+    Tracked(cc): Tracked<CCall>,
 ) -> c_int
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        cc.fresh(CEntry::ByMib {
+            mib,
+            miblen,
+            oldp: oldp as *mut u8,
+            oldlenp: oldlenp as *const usize,
+            newp: newp as *mut u8,
+            newlen,
+        }),
 {
+    let tracked mut cc = cc;
     if mib.is_null() || miblen == 0 || miblen > MAX_MIB {
         return EINVAL;
     }
@@ -2826,6 +3002,7 @@ pub fn mallctlbymib(
             newp,
             newlen,
         },
+        Tracked(&mut cc),
     ))
 }
 
@@ -2849,45 +3026,47 @@ fn never_aborts(node: &Node, mib: &[usize]) -> (r: bool)
 }
 
 /// Theorem "Read-only APIs never abort", for `mallctl`: the calls
-/// [`mallctl`] and [`mallctlbymib`] make after their `super::shared()`,
-/// for a read-only key other than `thread.*`'s four (every key under
-/// `opt`, `arenas` and `stats`, `version` and `config.*`) or a
-/// utilization query, and every reader of those keys, made where neither
-/// [`crate::sys::may_abort`] nor [`crate::sys::integrity_aborts`] holds.
-/// Each call verifies, so none of them aborts, not even at an integrity
-/// check.
+/// [`mallctl`] makes after its `super::shared()`, for a read-only key
+/// other than `thread.*`'s four (every key under `opt`, `arenas` and
+/// `stats`, `version` and `config.*`) or a utilization query, and every
+/// reader of those keys, made where neither [`crate::sys::may_abort`] nor
+/// [`crate::sys::integrity_aborts`] holds; `mallctlbymib`'s are
+/// [`theorem_mallctlbymib_reads_never_abort`]'s. Each call verifies, so
+/// none of them aborts, not even at an integrity check. The pointers are
+/// taken to keep the C contract, as the entry point takes them: `cc` is
+/// the call's token ([`CEntry::Mallctl`]), as its export wrapper mints it
+/// (one per witness, as one per call: no verified function holds two);
+/// the theorem says nothing of a name or buffer that breaks it (longer
+/// than `isize::MAX` bytes, wrapping the address space, or in challoc's
+/// memory).
 ///
 /// Verification only (`cfg(verus_only)`): the build has no such function.
 #[cfg(verus_only)]
 pub(super) fn theorem_mallctl_reads_never_abort(
     shared: &Shared,
     name: *const c_char,
-    mibp: *const usize,
-    miblen: usize,
     io: &Io,
     m: &[usize],
+    Tracked(cc): Tracked<CCall>,
 )
     requires
         crate::sys::may_syscall(),
         shared.wf(),
+        cc.fresh(CEntry::Mallctl {
+            name: name as *const u8,
+            oldp: io.oldp as *mut u8,
+            oldlenp: io.oldlenp as *const usize,
+            newp: io.newp as *mut u8,
+            newlen: io.newlen,
+        }),
 {
+    let tracked mut cc = cc;
     // `mallctl` after its `super::shared()`, for a covered key.
-    if let Some(name) = cstr(name) {
+    if let Some(name) = cstr(name, Tracked(&cc)) {
         let mut mib = [0usize; MAX_MIB];
         if let Ok((len, node)) = name_to_mib(name, &mut mib) {
             if never_aborts(node, &mib[..len]) {
-                let _ = result(ctl(shared, node, &mib[..len], io));
-            }
-        }
-    }
-    // `mallctlbymib` after its `super::shared()`, likewise.
-    if !mibp.is_null() && miblen != 0 && miblen <= MAX_MIB {
-        let mut local = [0usize; MAX_MIB];
-        // SAFETY: as in `mallctlbymib`.
-        unsafe { mib_in(mibp, &mut local, miblen) };
-        if let Ok(node) = mib_to_node(&local[..miblen]) {
-            if never_aborts(node, &local[..miblen]) {
-                let _ = result(ctl(shared, node, &local[..miblen], io));
+                let _ = result(ctl(shared, node, &mib[..len], io, Tracked(&mut cc)));
             }
         }
     }
@@ -2942,6 +3121,46 @@ pub(super) fn theorem_mallctl_reads_never_abort(
     let _ = version(m);
 }
 
+/// Theorem "Read-only APIs never abort", for `mallctlbymib`: the calls it
+/// makes after its `super::shared()`, for a MIB of a key or query
+/// [`theorem_mallctl_reads_never_abort`] covers, as there, with `cb`
+/// the call's token ([`CEntry::ByMib`]).
+///
+/// Verification only (`cfg(verus_only)`): the build has no such function.
+#[cfg(verus_only)]
+pub(super) fn theorem_mallctlbymib_reads_never_abort(
+    shared: &Shared,
+    mibp: *const usize,
+    miblen: usize,
+    io: &Io,
+    Tracked(cb): Tracked<CCall>,
+)
+    requires
+        crate::sys::may_syscall(),
+        shared.wf(),
+        cb.fresh(CEntry::ByMib {
+            mib: mibp,
+            miblen,
+            oldp: io.oldp as *mut u8,
+            oldlenp: io.oldlenp as *const usize,
+            newp: io.newp as *mut u8,
+            newlen: io.newlen,
+        }),
+{
+    let tracked mut cb = cb;
+    // `mallctlbymib` after its `super::shared()`.
+    if !mibp.is_null() && miblen != 0 && miblen <= MAX_MIB {
+        let mut local = [0usize; MAX_MIB];
+        // SAFETY: as in `mallctlbymib`.
+        unsafe { mib_in(mibp, &mut local, miblen) };
+        if let Ok(node) = mib_to_node(&local[..miblen]) {
+            if never_aborts(node, &local[..miblen]) {
+                let _ = result(ctl(shared, node, &local[..miblen], io, Tracked(&mut cb)));
+            }
+        }
+    }
+}
+
 } // verus!
 
 // ---------------------------------------------------------------------------
@@ -2950,12 +3169,102 @@ pub(super) fn theorem_mallctl_reads_never_abort(
 
 #[cfg(not(test))]
 mod exports {
+    use crate::vspec::cbuf::CCall;
+    #[cfg(verus_only)]
+    use crate::vspec::cbuf::CEntry;
     use core::ffi::{c_char, c_int, c_void};
-    use vstd::prelude::verus;
+    use vstd::prelude::{Tracked, verus};
 
     // `verified_export_pair!` expands inside its own `verus!`; this outer
-    // block holds it (Verus passes the invocation through).
+    // block holds it (Verus passes the invocation through) and the mints.
     verus! {
+
+    /// Trusted (the C contract of the entry point, `vspec::cbuf`): the
+    /// token of this call from C, through the entry point (a `mallctl` one:
+    /// `malloc_stats_print`'s are `api/print.rs`'s) and with the
+    /// arguments `e` names: the export wrapper's own parameters, which C
+    /// passed under the entry point's contract ([`CCall::fresh`]: each
+    /// pointer argument's [`crate::vspec::cbuf::CArg`] facts, of memory of
+    /// the program's, and the string argument's view). Private to this
+    /// module, whose functions are the C entry points and their mints
+    /// below: each entry point mints its call's token once, from its own
+    /// parameters, so no other verified code can mint one or name another
+    /// call's arguments. A C caller that breaks the contract (a buffer
+    /// past `isize::MAX` bytes or wrapping the address space, a pointer
+    /// into challoc's memory other than a published counter read as such)
+    /// makes it false, as a double free makes `axiom_c_claim` false.
+    axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
+        requires
+            !(e is StatsPrint),
+        ensures
+            c.fresh(e),
+    ;
+
+    // The mints, one per entry point, called once by its two exports: the
+    // bodies of `verified_export_pair!` are plain Rust blocks, so the
+    // token comes back as a `Tracked` value, as `vspec::errno::lend`'s.
+
+    /// The token of a `mallctl` call ([`axiom_c_call`]).
+    #[inline(always)]
+    // The parameters are read by the ghost code only.
+    #[allow(unused_variables)]
+    fn mallctl_call(name: *const c_char, oldp: *mut c_void, oldlenp: *mut usize, newp: *const c_void, newlen: usize) -> (cc: Tracked<CCall>)
+        ensures
+            cc@.fresh(CEntry::Mallctl {
+                name: name as *const u8,
+                oldp: oldp as *mut u8,
+                oldlenp: oldlenp as *const usize,
+                newp: newp as *mut u8,
+                newlen,
+            }),
+    {
+        let tracked cc = axiom_c_call(CEntry::Mallctl {
+            name: name as *const u8,
+            oldp: oldp as *mut u8,
+            oldlenp: oldlenp as *const usize,
+            newp: newp as *mut u8,
+            newlen,
+        });
+        Tracked(cc)
+    }
+
+    /// The token of a `mallctlnametomib` call ([`axiom_c_call`]).
+    #[inline(always)]
+    // The parameters are read by the ghost code only.
+    #[allow(unused_variables)]
+    fn nametomib_call(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> (cc: Tracked<CCall>)
+        ensures
+            cc@.fresh(CEntry::NameToMib { name: name as *const u8, mibp, miblenp: miblenp as *const usize }),
+    {
+        let tracked cc = axiom_c_call(CEntry::NameToMib { name: name as *const u8, mibp, miblenp: miblenp as *const usize });
+        Tracked(cc)
+    }
+
+    /// The token of a `mallctlbymib` call ([`axiom_c_call`]).
+    #[inline(always)]
+    // The parameters are read by the ghost code only.
+    #[allow(unused_variables)]
+    fn bymib_call(mib: *const usize, miblen: usize, oldp: *mut c_void, oldlenp: *mut usize, newp: *const c_void, newlen: usize) -> (cc: Tracked<CCall>)
+        ensures
+            cc@.fresh(CEntry::ByMib {
+                mib,
+                miblen,
+                oldp: oldp as *mut u8,
+                oldlenp: oldlenp as *const usize,
+                newp: newp as *mut u8,
+                newlen,
+            }),
+    {
+        let tracked cc = axiom_c_call(CEntry::ByMib {
+            mib,
+            miblen,
+            oldp: oldp as *mut u8,
+            oldlenp: oldlenp as *const usize,
+            newp: newp as *mut u8,
+            newlen,
+        });
+        Tracked(cc)
+    }
 
     verified_export_pair! {
         fn mallctl / je_mallctl(
@@ -2965,10 +3274,12 @@ mod exports {
             newp: *const c_void,
             newlen: usize
         ) -> c_int {
-            super::mallctl(name, oldp, oldlenp, newp, newlen)
+            let cc = mallctl_call(name, oldp, oldlenp, newp, newlen);
+            super::mallctl(name, oldp, oldlenp, newp, newlen, cc)
         }
         fn mallctlnametomib / je_mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> c_int {
-            super::mallctlnametomib(name, mibp, miblenp)
+            let cc = nametomib_call(name, mibp, miblenp);
+            super::mallctlnametomib(name, mibp, miblenp, cc)
         }
         fn mallctlbymib / je_mallctlbymib(
             mib: *const usize,
@@ -2978,7 +3289,8 @@ mod exports {
             newp: *const c_void,
             newlen: usize
         ) -> c_int {
-            super::mallctlbymib(mib, miblen, oldp, oldlenp, newp, newlen)
+            let cc = bymib_call(mib, miblen, oldp, oldlenp, newp, newlen);
+            super::mallctlbymib(mib, miblen, oldp, oldlenp, newp, newlen, cc)
         }
     }
 
@@ -2995,6 +3307,41 @@ mod tests {
     use crate::heap::mallocx::{MALLOCX_TCACHE_NONE, mallocx_arena, mallocx_tcache};
     use std::ffi::CString;
     use std::vec::Vec;
+
+    // The entry points with their C signatures, each with the call's
+    // token as the export wrappers mint it (ghost: nothing at run time).
+    fn mallctl(
+        name: *const c_char,
+        oldp: *mut c_void,
+        oldlenp: *mut usize,
+        newp: *const c_void,
+        newlen: usize,
+    ) -> c_int {
+        super::mallctl(name, oldp, oldlenp, newp, newlen, Tracked::assume_new())
+    }
+
+    fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> c_int {
+        super::mallctlnametomib(name, mibp, miblenp, Tracked::assume_new())
+    }
+
+    fn mallctlbymib(
+        mib: *const usize,
+        miblen: usize,
+        oldp: *mut c_void,
+        oldlenp: *mut usize,
+        newp: *const c_void,
+        newlen: usize,
+    ) -> c_int {
+        super::mallctlbymib(
+            mib,
+            miblen,
+            oldp,
+            oldlenp,
+            newp,
+            newlen,
+            Tracked::assume_new(),
+        )
+    }
 
     /// `mallctl` by name with typed in/out values.
     fn ctl_rw<T: Copy>(name: &str, old: Option<&mut T>, new: Option<&T>) -> c_int {
@@ -4036,7 +4383,7 @@ mod tests {
 mod kani_root {
     use super::{ROOT, root};
 
-    /// S14 `root`, `ensures r@ == root_nodes()`: every call returns
+    /// S13 `root`, `ensures r@ == root_nodes()`: every call returns
     /// `ROOT` itself, an immutable static, so the same nodes each time
     /// (`root_nodes` is uninterpreted: ROOT's contents interpret it).
     #[kani::proof]

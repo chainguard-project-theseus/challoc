@@ -10,6 +10,29 @@ pub assume_specification<T>[ core::slice::from_ref ](s: &T) -> (r: &[T])
         r@ == seq![*s],
 ;
 
+/// `core::slice::from_raw_parts`, with the safety contract of the `core`
+/// documentation that can be stated here: `data` is not null, aligned,
+/// and valid for reads of the slice's `len * size_of::<T>()` bytes, at
+/// most `isize::MAX`. The read bound must be the read-only one a C
+/// caller's argument has (`r_len`, which only `vspec::cbuf`'s facts
+/// bound), not the read-write one of memory verified code holds a
+/// permission to (`rw_len`, `axiom_raw_valid`), whose bytes it may write
+/// through that permission while the slice lives. Not stated: that the
+/// elements are initialised `T`s and unchanged for `'a` (the one caller,
+/// `mallctl`'s `name_bytes`, reads the caller's string for the call and
+/// ties `'a` to the call's token, which every write and call back into C
+/// takes `&mut`, `vspec::cbuf::CCall::open_writes`). The length is the
+/// result's; its elements are not stated.
+pub assume_specification<'a, T>[ core::slice::from_raw_parts::<'a, T> ](data: *const T, len: usize) -> (r: &'a [T])
+    requires
+        data@.addr != 0,
+        data@.addr as int % vstd::layout::align_of::<T>() as int == 0,
+        len as int * vstd::layout::size_of::<T>() <= isize::MAX,
+        len as int * vstd::layout::size_of::<T>() <= crate::vspec::ptr::r_len(data@.provenance, data@.addr),
+    ensures
+        r@.len() == len,
+;
+
 } // verus!
 
 verus! {

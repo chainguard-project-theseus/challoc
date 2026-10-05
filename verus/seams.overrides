@@ -16,11 +16,7 @@ atfork_handlers	function pointer	Kani
 oom	termination	none (assumption)
 set_errno	FFI/syscall	none (assumption)
 lend	C-program contract	none (assumption)
-store_usable	raw pointer from C caller	Miri (evidence only)
-store_out	raw pointer from C caller	Miri (evidence only)
 root	function pointer	Kani	discharged (verus/seams/api-mallctl-root.md)
-old_len	raw pointer from C caller	Miri (evidence only)
-mib_cap	raw pointer from C caller	Miri (evidence only)
 shared_ptr	UnsafeCell/volatile/transmute	RefinedRust
 shared_unchecked	allocator invariant	none (assumption)
 axiom_fork_resumed_state	C-program contract	none (assumption)
@@ -268,6 +264,9 @@ src/sys/features.rs:DisplaySpecImpl for Features	core library	Kani	discharged (v
 src/vspec/class.rs:core::mem::drop	core library	Kani	discharged (verus/seams/vspec-class-mem-drop.md)
 src/vspec/print.rs:DisplaySpecImpl for sys::cgroup::Cgroup	core library	Kani	discharged (verus/seams/vspec-print-DisplaySpecImpl-for-sys-cgroup-Cgroup.md)
 <[T]>::rotate_left	core library	Kani	discharged (verus/seams/vspec-slice-slice-rotate_left.md)
+src/api/libc.rs:axiom_c_out	C-program contract	none (assumption)
+src/api/mallctl.rs:axiom_c_call	C-program contract	none (assumption)
+src/api/print.rs:axiom_c_call	C-program contract	none (assumption)
 src/api/mallctl.rs:shared	allocator invariant	none (assumption)
 # The loom/GenMC triage (verus/WEAKMEM.md, "Seams"): records for what
 # the loom models establish, and the items that need no weak-memory
@@ -353,6 +352,11 @@ src/vspec/addr.rs:core::ptr::copy_nonoverlapping::<T>	raw pointer (internal)	Kan
 src/vspec/addr.rs:core::ptr::write_bytes::<T>	raw pointer (internal)	Kani	discharged (verus/seams/vspec-addr-ptr-write_bytes.md)
 src/vspec/arena.rs:axiom_arena_stats_lock_inv	allocator invariant	none (assumption)
 src/vspec/config.rs:<*const T>::cast::<U>	raw pointer (internal)	Kani	discharged (verus/seams/vspec-config-const-ptr-cast.md)
+src/vspec/cbuf.rs:CCall::str_byte	C-program contract	none (assumption)
+src/vspec/cbuf.rs:CCall::str_c_byte	C-program contract	none (assumption)
+src/vspec/cbuf.rs:CCall::size	C-program contract	none (assumption)
+src/vspec/cbuf.rs:CCall::sized	C-program contract	none (assumption)
+src/vspec/cbuf.rs:axiom_c_writes	C-program contract	none (assumption)
 src/vspec/huge.rs:axiom_huge_lock_frame	allocator invariant	none (assumption)
 src/vspec/huge.rs:axiom_huge_lock_inv	allocator invariant	none (assumption)
 src/vspec/lock.rs:core::cell::UnsafeCell::<T>::new	UnsafeCell/volatile/transmute	Kani	discharged (verus/seams/vspec-lock-UnsafeCell-new.md)
@@ -364,3 +368,9 @@ src/vspec/sys.rs:core::ptr::from_mut	raw pointer (internal)	Kani	discharged (ver
 src/vspec/sys.rs:core::ptr::from_ref	raw pointer (internal)	Kani	discharged (verus/seams/vspec-sys-ptr-from_ref.md)
 src/vspec/zero.rs:write_zero	raw pointer (internal)	Kani	discharged (verus/seams/vspec-zero-write_zero.md)
 DisplaySpecImpl for Thp	core library	Verus
+src/vspec/ptr.rs:<*const T>::add	raw pointer (internal)	Kani
+src/vspec/ptr.rs:<*const T>::read_unaligned	raw pointer (internal)	Kani
+src/vspec/ptr.rs:<*mut T>::write_unaligned	raw pointer (internal)	Kani
+src/vspec/ptr.rs:core::ptr::read_unaligned::<T>	raw pointer (internal)	Kani
+src/vspec/ptr.rs:core::ptr::write_unaligned::<T>	raw pointer (internal)	Kani
+src/vspec/slice.rs:core::slice::from_raw_parts::<'a, T>	raw pointer (internal)	Kani

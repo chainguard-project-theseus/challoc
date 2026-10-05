@@ -8,7 +8,7 @@ use core::ptr;
 use crate::arena::Arena;
 use crate::layout::CLASSES;
 #[cfg(verus_only)]
-use crate::layout::{NCLASSES, process_regions, slots_in};
+use crate::layout::{NCLASSES, class_table, process_regions, slots_in};
 use crate::lock::LockOrder;
 #[cfg(verus_only)]
 use crate::lock::rank_class;
@@ -220,6 +220,22 @@ impl Heap {
                         lemma_plain_stored(out@[i], claimed[n - 1 - i], class as int, slots);
                     } else {
                         assert(out@ == reversed);
+                    }
+                }
+                if claim.zeroed {
+                    // One quantifier per conjunct, each instantiating
+                    // `claim_zero_ok` through its trigger term, so the
+                    // precondition below does not depend on which conjunct
+                    // Z3 splits on.
+                    assert(class_table()[old_perms.cls[cache]].size == class_table()[class as int].size);
+                    assert forall|k: int| 0 <= k < n implies #[trigger] ztok.contains_key(k) by {
+                        assert(0 <= k < claim.n);
+                        assert(ztok.contains_key(k));
+                    }
+                    assert forall|k: int| 0 <= k < n implies #[trigger] ztok[k].covers(claimed[k], class_table()[old_perms.cls[cache]].size as int) by {
+                        assert(0 <= k < claim.n);
+                        assert(ztok.contains_key(k));
+                        assert(ztok[k].covers(claimed[k], class_table()[class as int].size as int));
                     }
                 }
                 CachePerms::lemma_install_claim(perms, ztok, old_perms, cache, n, claim.zeroed, claimed);
@@ -1474,7 +1490,7 @@ fn addr_mix(h: &Heap) -> u64 {
 mod kani_flush {
     use super::Heap;
 
-    /// S118 `addr_mix`: no `ensures`; it returns, the heap's address
+    /// S110 `addr_mix`: no `ensures`; it returns, the heap's address
     /// rotated left by 17 bits (on an all-zero heap: pointers null,
     /// counters zero, ghost fields empty, all valid).
     #[kani::proof]

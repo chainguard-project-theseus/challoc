@@ -561,7 +561,11 @@ pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
 /// and the utilization queries are called whole; `nallocx`, `mallinfo`,
 /// `mallinfo2`, `challoc_features` and `mallctl` through the calls their
 /// bodies make after `shared()`, whose init may abort (it returns at once
-/// once init has completed, which `shared` stands for here).
+/// once init has completed, which `shared` stands for here). The
+/// `mallctl` call takes its token `cc` as its export wrapper mints it
+/// (`vspec::cbuf::CCall`); `mallctlbymib`'s witness, with its own call's
+/// token, is `mallctl::theorem_mallctlbymib_reads_never_abort` (no
+/// verified function holds two tokens).
 ///
 /// Verification only (`cfg(verus_only)`): the build has no such function.
 #[cfg(verus_only)]
@@ -573,14 +577,20 @@ fn theorem_read_only_never_aborts(
     verbose: bool,
     io: &mallctl::Io,
     name: *const core::ffi::c_char,
-    mibp: *const usize,
-    miblen: usize,
     mib: &[usize],
+    Tracked(cc): Tracked<crate::vspec::cbuf::CCall>,
 )
     requires
         crate::sys::may_syscall(),
         crate::sys::integrity_aborts(),
         shared.wf(),
+        cc.fresh(crate::vspec::cbuf::CEntry::Mallctl {
+            name: name as *const u8,
+            oldp: io.oldp as *mut u8,
+            oldlenp: io.oldlenp as *const usize,
+            newp: io.newp as *mut u8,
+            newlen: io.newlen,
+        }),
 {
     proof {
         shared.lemma_wf();
@@ -608,7 +618,7 @@ fn theorem_read_only_never_aborts(
     // `experimental.utilization.query` and `batch_query`, whole, and the
     // rest of `mallctl`.
     let _ = mallctl::utilization(shared, p as *const core::ffi::c_void, verbose);
-    mallctl::theorem_mallctl_reads_never_abort(shared, name, mibp, miblen, io, mib);
+    mallctl::theorem_mallctl_reads_never_abort(shared, name, io, mib, Tracked(cc));
 }
 
 } // verus!
