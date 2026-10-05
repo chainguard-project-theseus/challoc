@@ -75,9 +75,9 @@ for f in $(awk -F'\t' '!/^#/ && NF == 2 { print $1 }' verus/loom/pins.txt | sort
     ' verus/loom/pins.txt "$f")
 	[ -z "$missing" ] || { echo "loom: $f no longer has, in the order of verus/loom/pins.txt: $missing" >&2; exit 1; }
 done
-# What the WordPerm, CountPerm and state_claim records rely on, checked by
-# name (a write through a pointer cast these patterns do not name is
-# caught only by review):
+# What the WordPerm, CountPerm, state_claim and DescPerm accessor records
+# rely on, checked by name (a write through a pointer cast these patterns
+# do not name is caught only by review):
 # - every atomic write in non-test bitmap.rs is a vspec/word.rs wrapper
 #   call (the scan stops at the `#[cfg(test)] mod tests` line, which must
 #   be the file's last item);
@@ -93,7 +93,16 @@ done
 #   spec `count_id` (each is made with `vspec::count::new`; the ghost
 #   `self.count.ptr()` of `Arenas::init`'s field permissions aside);
 # - `STATE` has two writes, `state_claim`'s compare-exchange and
-#   `state_publish`'s `READY` store.
+#   `state_publish`'s `READY` store;
+# - non-test slab.rs names a descriptor's `state`, `shadow`, `arena` and
+#   `dirty_at` (private fields, so no other module can), on any receiver,
+#   only in a `Relaxed` load, a `DescPerm` spec body, or the eight write
+#   lines of `init`, `set_state`, `set_dirty_at` and the `#[cfg(test)]`
+#   `set_arena`, each in its function and each exactly once; no line
+#   starts a split write chain, takes a field's address, names
+#   `SlabDesc { .. }` or writes through `as *mut SlabDesc`, `write_bytes`,
+#   `write_volatile`, `addr_of` or `transmute`: the DescPerm accessors'
+#   records (verus/seams/slab-SlabDesc-*.md).
 bad=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t = 0 }
     /\.(fetch_[a-z]+|store|swap|compare_exchange|compare_exchange_weak)\(/ && !/crate::vspec::word::/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/bitmap.rs
     awk '{ x = $0; sub(/^[ \t]+/, "", x) }
@@ -103,12 +112,55 @@ bad=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t =
     (/\.bound([^A-Za-z0-9_]|$)/ || /\(\*bound\)/) && !/crate::vspec::count::/ && !/count_id\(/ && !/^[ \t]*\/\// \
         && !/assert\(/ && !/forall\|/ { print FILENAME ":" FNR ": " $0 }' src/arena.rs
     awk '/self\.count([^A-Za-z0-9_(]|$)/ && !/self\.count\.ptr\(\)/ && !/crate::vspec::count::/ && !/count_id\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/arena.rs
-    awk '/\.frac16([^A-Za-z0-9_]|$)/ && !/crate::vspec::count::/ && !/count_id\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/policy.rs)
+    awk '/\.frac16([^A-Za-z0-9_]|$)/ && !/crate::vspec::count::/ && !/count_id\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/policy.rs
+    awk 'function bad() { print FILENAME ":" FNR ": " $0 }
+    BEGIN {
+        want["init" SUBSEP "self.state.store(State::Fresh as u8, Ordering::Relaxed);"] = 1
+        want["init" SUBSEP "self.shadow.store(State::Fresh as u8 + 1, Ordering::Relaxed);"] = 1
+        want["init" SUBSEP "self.arena.store(arena, Ordering::Relaxed);"] = 1
+        want["init" SUBSEP "self.dirty_at.store(0, Ordering::Relaxed);"] = 1
+        want["set_state" SUBSEP "self.state.store(s as u8, Ordering::Relaxed);"] = 1
+        want["set_state" SUBSEP "self.shadow.store(s as u8 + 1, Ordering::Relaxed);"] = 1
+        want["set_dirty_at" SUBSEP "self.dirty_at.store(ns, Ordering::Relaxed);"] = 1
+        want["test set_arena" SUBSEP "self.arena.store(arena, Ordering::Relaxed);"] = 1
+    }
+    /^#\[cfg\(test\)\]$/ { t = 1; next }
+    t && /^mod tests/ { exit }
+    { t = 0 }
+    /^[ \t]*\/\// { next }
+    { x = $0; sub(/[ \t]*\/\/.*$/, "", x); sub(/^[ \t]+/, "", x); sub(/[ \t]+$/, "", x) }
+    match(x, /fn [a-z_]+/) { f = substr(x, RSTART + 3, RLENGTH - 3); if (prev == "#[cfg(test)]") f = "test " f }
+    x != "" { prev = x }
+    x ~ /^\.(store|swap|fetch_[a-z]+|compare_exchange|compare_exchange_weak|as_ptr|get_mut|into_inner)\(/ || x ~ /addr_of|write_bytes|write_volatile|as \*mut SlabDesc|transmute/ { bad(); next }
+    x ~ /SlabDesc *\{/ && x != "pub struct SlabDesc {" && x != "impl SlabDesc {" { bad(); next }
+    x ~ /&(mut )?[A-Za-z0-9_.()*]*\.(state|shadow|arena|dirty_at)([^A-Za-z0-9_(.]|$)/ { bad(); next }
+    {
+        s = x
+        while (match(s, /\.(state|shadow|arena|dirty_at)([^A-Za-z0-9_(]|$)/)) {
+            fld = substr(s, RSTART + 1, RLENGTH - 1); sub(/[^A-Za-z_]$/, "", fld)
+            after = substr(s, RSTART + 1 + length(fld))
+            if (index(after, ".load(Ordering::Relaxed)") == 1) {
+                # a read: Verus takes its value as any value unless a permission says otherwise
+            } else if (after ~ /^\.(store|swap|fetch_[a-z]+|compare_exchange|compare_exchange_weak)\(/) {
+                if ((f SUBSEP x) in want) seen[f SUBSEP x]++
+                else { bad(); next }
+            } else if (!((x == "self.state" && f == "state") || (x == "self.arena" && f == "arena"))) {
+                bad(); next
+            }
+            s = substr(s, RSTART + RLENGTH)
+        }
+    }
+    END {
+        for (k in want) if (seen[k] != want[k]) {
+            split(k, p, SUBSEP)
+            print FILENAME ": " (seen[k] + 0) " writes, not " want[k] ", in " p[1] ": " p[2]
+        }
+    }' src/slab.rs)
 nstate=$(find src -name '*.rs' ! -path 'src/loom_tests/*' -exec grep -hE '(^|[^A-Za-z0-9_])STATE\.(store|swap|compare_exchange|fetch_)' {} + | wc -l | tr -d ' ')
 [ "$nstate" = 2 ] || bad="$bad
 src/api/mod.rs: $nstate writes of STATE, not 2 (record api-state_claim.md)"
 if [ -n "$bad" ]; then
-	echo "loom: an atomic access outside what the records allow (vspec-word-WordPerm.md, vspec-count-CountPerm.md, api-state_claim.md):" >&2
+	echo "loom: an atomic access outside what the records allow (vspec-word-WordPerm.md, vspec-count-CountPerm.md, api-state_claim.md, slab-SlabDesc-*.md):" >&2
 	echo "$bad" >&2
 	exit 1
 fi

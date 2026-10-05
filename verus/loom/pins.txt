@@ -1,6 +1,6 @@
 # verus/loom/pins.txt: the lines of the source that the loom models copy
-# (src/loom_tests/init.rs, exit.rs, the class steps of bitmap.rs, and the
-# table and arena steps of free.rs and count.rs),
+# (src/loom_tests/init.rs, exit.rs, slab.rs, the class steps of
+# bitmap.rs, and the table and arena steps of free.rs and count.rs),
 # which verus/loom/run.sh requires to appear, whitespace-trimmed, in this
 # order in each file. A change to a copied ordering or step fails the
 # script until the copy, this list and the records that cite it are
@@ -40,11 +40,24 @@ src/purge/background.rs	let seq = SEQ.load(Ordering::SeqCst);
 src/purge/background.rs	if !requested() {
 src/purge/background.rs	return core::ptr::null_mut();
 src/purge/background.rs	let _ = unsafe { sys::futex_wait(SEQ.as_ptr(), seq, timeout.as_ref()) };
-# slab.rs: live, add_live, sub_live (bitmap.rs).
+# slab.rs: the accessors of the lock-protected fields, init,
+# state_byte_held, dirty_held, arena_held, set_state and set_dirty_at
+# (slab.rs), and live, add_live, sub_live (bitmap.rs), in source order.
+src/slab.rs	self.state.store(State::Fresh as u8, Ordering::Relaxed);
+src/slab.rs	self.shadow.store(State::Fresh as u8 + 1, Ordering::Relaxed);
+src/slab.rs	self.arena.store(arena, Ordering::Relaxed);
+src/slab.rs	self.live.store(0, Ordering::Relaxed);
+src/slab.rs	self.dirty_at.store(0, Ordering::Relaxed);
+src/slab.rs	self.state.load(Ordering::Relaxed)
+src/slab.rs	self.dirty_at.load(Ordering::Relaxed)
+src/slab.rs	self.arena.load(Ordering::Relaxed)
+src/slab.rs	self.state.store(s as u8, Ordering::Relaxed);
+src/slab.rs	self.shadow.store(s as u8 + 1, Ordering::Relaxed);
 src/slab.rs	self.live.load(Ordering::Acquire) as usize
 src/slab.rs	self.live.fetch_add(n as u32, Ordering::AcqRel) as usize
 src/slab.rs	let prev = self.live.fetch_sub(n as u32, Ordering::AcqRel) as usize;
 src/slab.rs	assert!(prev >= n, "slab: live count underflow ({prev} - {n})");
+src/slab.rs	self.dirty_at.store(ns, Ordering::Relaxed);
 # class/mod.rs: take's reservation (bitmap.rs).
 src/class/mod.rs	let live = desc.live();
 src/class/mod.rs	let avail = self.class().nslots() - live;

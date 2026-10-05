@@ -89,9 +89,9 @@ verus! {
 /// The caller may make a system call (theorem 8 in `verus/THEOREMS.md`).
 /// Every instruction that enters the kernel is inside a function that
 /// requires this: the `raw::syscall0`..`syscall6` seams, and every
-/// trusted body or specification that can reach the kernel (`read`,
-/// `write`, `getrandom`, the pthread calls, `Meta::commit`,
-/// the report sink's flush, ...; THEOREMS.md lists them).
+/// trusted body or specification that can reach the kernel (the pthread
+/// calls, `Meta::commit`, the report sink's flush, ...; THEOREMS.md lists
+/// them).
 /// So a verified function can reach the kernel only if its own `requires`
 /// (or its loop's invariant) carries the fact, or it calls
 /// [`grant_syscalls`], or it holds a `Stderr` (whose type invariant
@@ -702,11 +702,23 @@ mod linux {
 
     // ---- misc ------------------------------------------------------------
 
+    /// Kernel fact (`getrandom(2)`, Linux's `drivers/char/random.c`): a
+    /// `getrandom` that does not fail returns the number of bytes it
+    /// stored, at most `buflen`, unless a ptrace tracer or a seccomp
+    /// supervisor rewrites the result (assumed absent, as the trusted
+    /// wrapper assumed before). About the call `raw::syscall3` names in
+    /// `r`; nothing about the bytes.
+    pub broadcast axiom fn axiom_getrandom_count(buf: usize, buflen: usize, flags: usize, r: usize)
+        requires
+            #[trigger] raw::returned3(nr::GETRANDOM, buf, buflen, flags, r),
+        ensures
+            r <= usize::MAX - MAX_ERRNO ==> r <= buflen,
+    ;
+
     /// `getrandom(2)`. Returns the number of bytes written, which may be
     /// short; callers that need the full buffer should loop.
     ///
-    /// Trusted: the kernel writes at most `buf.len()` bytes and says so.
-    #[verifier::external_body]
+    /// The count bound is the kernel's ([`axiom_getrandom_count`]).
     #[inline]
     pub fn getrandom(buf: &mut [u8], flags: u32) -> (r: Result<usize, Errno>)
         requires
@@ -715,6 +727,8 @@ mod linux {
             r matches Ok(n) ==> n <= old(buf)@.len(),
             final(buf)@.len() == old(buf)@.len(),
     {
+        broadcast use axiom_getrandom_count;
+
         // SAFETY: the pointer/length pair describes a live, writable slice.
         decode(unsafe {
             raw::syscall3(
@@ -889,10 +903,23 @@ mod linux {
         .map(|fd| fd as i32)
     }
 
+    /// Kernel fact (`read(2)`, Linux's `fs/read_write.c`): a `read` that
+    /// does not fail returns the number of bytes it stored, at most
+    /// `count`, unless a ptrace tracer or a seccomp supervisor rewrites
+    /// the result or a driver returns more than it was asked for (the VFS
+    /// does not clamp it), all assumed absent, as the trusted wrapper
+    /// assumed before. About the call `raw::syscall3` names in `r`;
+    /// nothing about the bytes.
+    pub broadcast axiom fn axiom_read_count(fd: usize, buf: usize, count: usize, r: usize)
+        requires
+            #[trigger] raw::returned3(nr::READ, fd, buf, count, r),
+        ensures
+            r <= usize::MAX - MAX_ERRNO ==> r <= count,
+    ;
+
     /// `read(2)`.
     ///
-    /// Trusted: the kernel reads at most `buf.len()` bytes and says so.
-    #[verifier::external_body]
+    /// The count bound is the kernel's ([`axiom_read_count`]).
     #[inline]
     pub fn read(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
         requires
@@ -901,6 +928,8 @@ mod linux {
             r matches Ok(n) ==> n <= old(buf)@.len(),
             final(buf)@.len() == old(buf)@.len(),
     {
+        broadcast use axiom_read_count;
+
         // SAFETY: the pointer/length pair describes a live, writable slice.
         decode(unsafe {
             raw::syscall3(
@@ -959,10 +988,21 @@ mod linux {
         r
     }
 
+    /// Kernel fact (`write(2)`, Linux's `fs/read_write.c`): a `write` that
+    /// does not fail returns the number of bytes it took, at most `count`,
+    /// unless a ptrace tracer or a seccomp supervisor rewrites the result
+    /// (assumed absent, as the trusted wrapper assumed before).
+    /// About the call `raw::syscall3` names in `r`.
+    pub broadcast axiom fn axiom_write_count(fd: usize, buf: usize, count: usize, r: usize)
+        requires
+            #[trigger] raw::returned3(nr::WRITE, fd, buf, count, r),
+        ensures
+            r <= usize::MAX - MAX_ERRNO ==> r <= count,
+    ;
+
     /// `write(2)`.
     ///
-    /// Trusted: the kernel writes at most `buf.len()` bytes and says so.
-    #[verifier::external_body]
+    /// The count bound is the kernel's ([`axiom_write_count`]).
     #[inline]
     pub fn write(fd: i32, buf: &[u8]) -> (r: Result<usize, Errno>)
         requires
@@ -970,6 +1010,8 @@ mod linux {
         ensures
             r matches Ok(n) ==> n <= buf@.len(),
     {
+        broadcast use axiom_write_count;
+
         // SAFETY: the pointer/length pair describes a live slice.
         decode(unsafe {
             raw::syscall3(

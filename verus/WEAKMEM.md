@@ -473,3 +473,18 @@ hand-off (a data race on the block) are P5's documented ones.
 | `Arenas::count` (S63) | declined, tool Verus | every store writes at most `MAX_ARENAS` and a load returns a stored value: an allocator invariant, provable as the bound counts are |
 | `words_ref` (S93; its trusted part is now `slice_from_perms`, which it calls) | declined, tool none | a raw-pointer slice over permissions; no memory-model content |
 | `Lock::get_unlocked` (S182) | superseded (now verified over `axiom_held`) | was: its `ensures` is the lock invariant (every holder restores it), the assumption `axiom_acquired` also makes |
+
+### Third pass (2026-10-05)
+
+The six `SlabDesc` accessors of the descriptor permissions
+(`slab::DescPerm`), trusted since the class lock's ghost took the
+permissions over (seam numbers of commit 82ca40d7). The model
+(`loom_tests/slab.rs`) is a copy, since `slab` needs `layout`, which
+the `cfg(loom)` build leaves out. At 82ca40d7 that build does not
+compile: `vspec/count.rs`'s `new` is a `const fn` calling loom's
+`AtomicU32::new`, which is not `const`; the model was run with `new`
+made non-`const` for the run.
+
+| Seam | Result | Why |
+|---|---|---|
+| `SlabDesc::init`, `state_byte_held`, `dirty_held`, `arena_held`, `set_state`, `set_dirty_at` (S197-S201, S203) | discharged, given the lock edge `axiom_acquired` assumes | every access through a permission is made holding the lock whose value holds it (the commit lock's, then the class lock's), so successive holders are ordered by happens-before and per-location coherence gives the last write through it, for `Relaxed` too; `run.sh` checks by name that `slab.rs` writes the three fields only in the accessors; the model runs the hand-over between the two locks on one thread and checks the class lock's edge to the next holder, and a control shows a read outside the lock is stale |

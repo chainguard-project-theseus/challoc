@@ -1,6 +1,6 @@
 # `PartialEqSpecImpl for sys::Errno`
 
-Seam S384 of `verus/SEAMS.md`: src/vspec/sys.rs:124. Kind: spec_impl. Category: core library.
+Seam S384 of `verus/SEAMS.md`: src/vspec/sys.rs:131. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract

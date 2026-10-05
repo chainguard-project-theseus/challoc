@@ -9,13 +9,17 @@ own record ([sys-raw-aarch64-syscall3.md](sys-raw-aarch64-syscall3.md)).
 
 ## 1. Contract
 
-Entry S230 of verus/SEAMS.md at 8635213 (`src/sys/raw.rs:65`, kind
-external_body, `requires crate::sys::may_syscall()`, no `ensures`):
+Entry S236 of verus/SEAMS.md (`src/sys/raw.rs:82`, kind external_body,
+`requires crate::sys::may_syscall()`, `ensures super::returned3(nr, a0,
+a1, a2, r)`; quoted on 2026-10-05, when the `ensures` was added: at
+8635213 there was none):
 
 ```rust
-pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize
+pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
     requires
         crate::sys::may_syscall(),
+    ensures
+        super::returned3(nr, a0, a1, a2, r),
 ```
 
 The body Verus does not see, at 8635213:
@@ -65,17 +69,35 @@ facts:
 
 ## 3. Translation
 
-The contract has one `requires` and no `ensures`: Verus assumes only
-that the call returns some `usize` and changes nothing it tracks.
+The contract has one `requires` and one `ensures`: Verus assumes that
+the call returns some `usize` and changes nothing it tracks (Verus does
+not model the kernel's writes through a pointer argument: the callers
+that pass a buffer leave its contents unconstrained, see
+`vspec-sys-slice-as_mut_ptr.md`), and that
+the word it returns is the kernel's answer to this call,
+`returned3(nr, a0, a1, a2, r)`. `returned3` is an uninterpreted ghost
+predicate (`src/sys/raw.rs`) that only this stub ensures: by itself it
+constrains nothing, so every fact Verus derives from the contract alone
+is one it derives without the `ensures`. Its meaning is given by the
+kernel-fact axioms in `sys` (`axiom_read_count`, `axiom_write_count`,
+`axiom_getrandom_count`; category platform/kernel fact, tool none, so
+separate seams), each of which says what Linux returns for one system
+call; the predicate tells them which call. That `r` is the word the
+kernel left in the result register is the asm block's output binding
+(fact 1 and the operands paragraph below); what that word can be is the
+axioms', not this record's.
 `may_syscall()` is an opaque ghost capability (`true`, "a capability,
 not a claim about the world", `src/sys/mod.rs`) that restricts which
 verified callers may reach this stub: theorem 8 (no system call on the
 fast paths, verus/THEOREMS.md) rests on every stub that enters the
 kernel requiring it, as this one does (part 2). It says nothing about
-the machine, so it maps to no precondition of the instruction. The kernel's effects (the
-mapping `mmap` creates, the bytes `read` stores) are the contracts of
-the `sys` wrappers, separate seams (FFI/syscall, tool none). What the
-stub itself must do is the asm block's interface: enter the kernel with
+the machine, so it maps to no precondition of the instruction. The
+kernel's effects are outside this record: the mapping `mmap` creates and
+the like are the contracts of the trusted `sys` wrappers (FFI/syscall,
+tool none), the counts `read`, `write` and `getrandom` return are the
+kernel-fact axioms above, and the bytes the kernel stores through a
+pointer argument are modelled by nothing (the callers take the buffer's
+contents as unconstrained). What the stub itself must do is the asm block's interface: enter the kernel with
 the syscall number in rax and the arguments in rdi, rsi and rdx, leave every register the block does
 not declare as an output (rax) or clobber (rcx, r11) as it was, and
 resume at the next instruction with the result in rax.

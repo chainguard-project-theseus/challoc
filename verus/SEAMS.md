@@ -74,14 +74,14 @@ documentation (kernel, ISA, C standard) its contract follows.
 | category | short | seams |
 |---|---|---:|
 | inline asm | asm | 27 |
-| FFI/syscall | ffi | 18 |
+| FFI/syscall | ffi | 15 |
 | function pointer | fnptr | 22 |
 | UnsafeCell/volatile/transmute | cell | 20 |
 | raw pointer (internal) | ptr | 46 |
 | raw pointer from C caller | c-ptr | 7 |
 | panic/abort | abort | 8 |
 | atomics primitive | atomic | 30 |
-| platform/kernel fact | platform | 10 |
+| platform/kernel fact | platform | 13 |
 | C-program contract | c-contract | 17 |
 | termination | termination | 9 |
 | core library | core | 143 |
@@ -99,11 +99,11 @@ documentation (kernel, ISA, C standard) its contract follows.
 
 | kind | short | seams |
 |---|---|---:|
-| external_body | body | 158 |
+| external_body | body | 155 |
 | external_body proof | proof | 13 |
 | external_body type | type | 9 |
 | external_body const | const | 38 |
-| axiom | axiom | 58 |
+| axiom | axiom | 61 |
 | assume_spec | spec | 79 |
 | ext_type_spec | ext-type | 12 |
 | ext_trait_spec | ext-trait | 1 |
@@ -116,7 +116,7 @@ Seams by category and tool:
 | category | tool | seams |
 |---|---|---:|
 | inline asm | Islaris/Isla | 27 |
-| FFI/syscall | none (assumption) | 18 |
+| FFI/syscall | none (assumption) | 15 |
 | function pointer | Kani | 22 |
 | UnsafeCell/volatile/transmute | Islaris/Isla | 1 |
 | UnsafeCell/volatile/transmute | RefinedRust | 5 |
@@ -132,7 +132,7 @@ Seams by category and tool:
 | atomics primitive | loom/GenMC | 26 |
 | atomics primitive | none (assumption) | 2 |
 | platform/kernel fact | Islaris/Isla | 1 |
-| platform/kernel fact | none (assumption) | 9 |
+| platform/kernel fact | none (assumption) | 12 |
 | C-program contract | none (assumption) | 17 |
 | termination | RefinedRust | 1 |
 | termination | loom/GenMC | 3 |
@@ -512,14 +512,14 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S199 | `desc_stride` | body | core | Kani | trusted |
-| S200 | `SlabDesc::init` | body | atomic | GenMC | trusted |
-| S201 | `SlabDesc::state_byte_held` | body | atomic | GenMC | trusted |
-| S202 | `SlabDesc::dirty_held` | body | atomic | GenMC | trusted |
-| S203 | `SlabDesc::arena_held` | body | atomic | GenMC | trusted |
-| S204 | `SlabDesc::set_state` | body | atomic | GenMC | trusted |
+| S199 | `desc_stride` | body | core | Kani | discharged |
+| S200 | `SlabDesc::init` | body | atomic | GenMC | discharged |
+| S201 | `SlabDesc::state_byte_held` | body | atomic | GenMC | discharged |
+| S202 | `SlabDesc::dirty_held` | body | atomic | GenMC | discharged |
+| S203 | `SlabDesc::arena_held` | body | atomic | GenMC | discharged |
+| S204 | `SlabDesc::set_state` | body | atomic | GenMC | discharged |
 | S205 | `SlabDesc::sub_live` | body | atomic | GenMC | discharged |
-| S206 | `SlabDesc::set_dirty_at` | body | atomic | GenMC | trusted |
+| S206 | `SlabDesc::set_dirty_at` | body | atomic | GenMC | discharged |
 
 ### src/stats.rs
 
@@ -565,11 +565,11 @@ the full name, the line and the contract.
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
 | S221 | `axiom_thread_mask` | axiom | c-contract | none | trusted |
-| S222 | `getrandom` | body | ffi | none | trusted |
+| S222 | `axiom_getrandom_count` | axiom | platform | none | trusted |
 | S223 | `getrandom_exact` | no-dec | termination | none | trusted |
-| S224 | `read` | body | ffi | none | trusted |
+| S224 | `axiom_read_count` | axiom | platform | none | trusted |
 | S225 | `read_full` | no-dec | termination | none | trusted |
-| S226 | `write` | body | ffi | none | trusted |
+| S226 | `axiom_write_count` | axiom | platform | none | trusted |
 | S227 | `write_all` | no-dec | termination | none | trusted |
 | S228 | `sigprocmask_block` | body | ffi | none | trusted |
 | S229 | `sigprocmask_setmask` | body | ffi | none | trusted |
@@ -3801,7 +3801,7 @@ pub fn thread_pointer() -> usize
 ### S199. `desc_stride`
 
 src/slab.rs:264. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/slab-desc_stride.md).
 
 > Descriptor stride for `class` in bytes.
 
@@ -3814,7 +3814,7 @@ pub fn desc_stride(class: usize) -> (r: usize)
 ### S200. `SlabDesc::init`
 
 src/slab.rs:303. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/slab-SlabDesc-init.md).
 
 > Initialise the descriptor of a slab handed to `arena`: `Fresh`, no live slots.
 
@@ -3832,7 +3832,7 @@ pub fn init(&self, arena: u16, Tracked(p): Tracked<&mut DescPerm>)
 ### S201. `SlabDesc::state_byte_held`
 
 src/slab.rs:344. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/slab-SlabDesc-state_byte_held.md).
 
 > The `state` byte, as [`state_held`](SlabDesc::state_held).
 
@@ -3845,7 +3845,7 @@ fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, De
 ### S202. `SlabDesc::dirty_held`
 
 src/slab.rs:355. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/slab-SlabDesc-dirty_held.md).
 
 > [`dirty_at`](SlabDesc::dirty_at), as [`state_held`](SlabDesc::state_held).
 
@@ -3858,7 +3858,7 @@ pub fn dirty_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, Des
 ### S203. `SlabDesc::arena_held`
 
 src/slab.rs:366. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/slab-SlabDesc-arena_held.md).
 
 > [`arena`](SlabDesc::arena), as [`state_held`](SlabDesc::state_held).
 
@@ -3871,7 +3871,7 @@ pub fn arena_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, Des
 ### S204. `SlabDesc::set_state`
 
 src/slab.rs:377. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/slab-SlabDesc-set_state.md).
 
 > Only ever called with the class lock held, which holds `p`.
 
@@ -3902,7 +3902,7 @@ pub fn sub_live(&self, n: usize) -> usize
 ### S206. `SlabDesc::set_dirty_at`
 
 src/slab.rs:449. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/slab-SlabDesc-set_dirty_at.md).
 
 > Only ever called with the class lock held, which holds `p`.
 
@@ -4126,25 +4126,25 @@ pub axiom fn axiom_thread_mask() -> (tracked sig: SigMask)
 ;
 ```
 
-### S222. `getrandom`
+### S222. `axiom_getrandom_count`
 
-src/sys/mod.rs:711. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:711. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
-> `getrandom(2)`.
+> Kernel fact (`getrandom(2)`, Linux's `drivers/char/random.c`): a `getrandom` that does not fail returns the number of bytes it stored, at most `buflen`, unless a ptrace tracer or a seccomp supervisor rewrites the result (assumed absent, as the trusted wrapper assumed before).
 
 ```rust
-pub fn getrandom(buf: &mut [u8], flags: u32) -> (r: Result<usize, Errno>)
+pub broadcast axiom fn axiom_getrandom_count(buf: usize, buflen: usize, flags: usize, r: usize)
     requires
-        crate::sys::may_syscall(),
+        #[trigger] raw::returned3(nr::GETRANDOM, buf, buflen, flags, r),
     ensures
-        r matches Ok(n) ==> n <= old(buf)@.len(),
-        final(buf)@.len() == old(buf)@.len(),
+        r <= usize::MAX - MAX_ERRNO ==> r <= buflen,
+;
 ```
 
 ### S223. `getrandom_exact`
 
-src/sys/mod.rs:733. Kind: no_decreases. Category: termination.
+src/sys/mod.rs:747. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > Fill `buf` completely from `getrandom`, retrying short reads and `EINTR`.
@@ -4155,25 +4155,25 @@ pub fn getrandom_exact(buf: &mut [u8]) -> Result<(), Errno>
         crate::sys::may_syscall(),
 ```
 
-### S224. `read`
+### S224. `axiom_read_count`
 
-src/sys/mod.rs:897. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:913. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
-> `read(2)`.
+> Kernel fact (`read(2)`, Linux's `fs/read_write.c`): a `read` that does not fail returns the number of bytes it stored, at most `count`, unless a ptrace tracer or a seccomp supervisor rewrites the result or a driver returns more than it was asked for (the VFS does not clamp it), all assumed absent, as the trusted wrapper assumed before.
 
 ```rust
-pub fn read(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
+pub broadcast axiom fn axiom_read_count(fd: usize, buf: usize, count: usize, r: usize)
     requires
-        crate::sys::may_syscall(),
+        #[trigger] raw::returned3(nr::READ, fd, buf, count, r),
     ensures
-        r matches Ok(n) ==> n <= old(buf)@.len(),
-        final(buf)@.len() == old(buf)@.len(),
+        r <= usize::MAX - MAX_ERRNO ==> r <= count,
+;
 ```
 
 ### S225. `read_full`
 
-src/sys/mod.rs:919. Kind: no_decreases. Category: termination.
+src/sys/mod.rs:948. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > Read as much of `buf` as the file yields, retrying `EINTR`.
@@ -4187,24 +4187,25 @@ pub fn read_full(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
         final(buf)@.len() == old(buf)@.len(),
 ```
 
-### S226. `write`
+### S226. `axiom_write_count`
 
-src/sys/mod.rs:967. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:996. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
-> `write(2)`.
+> Kernel fact (`write(2)`, Linux's `fs/read_write.c`): a `write` that does not fail returns the number of bytes it took, at most `count`, unless a ptrace tracer or a seccomp supervisor rewrites the result (assumed absent, as the trusted wrapper assumed before).
 
 ```rust
-pub fn write(fd: i32, buf: &[u8]) -> (r: Result<usize, Errno>)
+pub broadcast axiom fn axiom_write_count(fd: usize, buf: usize, count: usize, r: usize)
     requires
-        crate::sys::may_syscall(),
+        #[trigger] raw::returned3(nr::WRITE, fd, buf, count, r),
     ensures
-        r matches Ok(n) ==> n <= buf@.len(),
+        r <= usize::MAX - MAX_ERRNO ==> r <= count,
+;
 ```
 
 ### S227. `write_all`
 
-src/sys/mod.rs:988. Kind: no_decreases. Category: termination.
+src/sys/mod.rs:1030. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > Write all of `buf`, retrying short writes and `EINTR`.
@@ -4217,7 +4218,7 @@ pub fn write_all(fd: i32, buf: &[u8])
 
 ### S228. `sigprocmask_block`
 
-src/sys/mod.rs:1159. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:1201. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The raw `rt_sigprocmask(SIG_BLOCK, all, before)`, returning the syscall's word.
@@ -4238,7 +4239,7 @@ unsafe fn sigprocmask_block(
 
 ### S229. `sigprocmask_setmask`
 
-src/sys/mod.rs:1192. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:1234. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The raw `rt_sigprocmask(SIG_SETMASK, mask, NULL)`, returning the syscall's word.
@@ -4253,7 +4254,7 @@ unsafe fn sigprocmask_setmask(mask: &u64, Tracked(sig): Tracked<&mut SigMask>) -
 
 ### S230. `trap`
 
-src/sys/mod.rs:1240. Kind: external_body. Category: inline asm.
+src/sys/mod.rs:1282. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-linux-trap.md).
 
 > Architecture trap instruction, for the impossible case where the kernel returns from a terminating syscall.
@@ -4341,7 +4342,7 @@ pub fn strip(p: usize) -> usize
 
 ### S236. `syscall0`
 
-src/sys/raw.rs:20. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:37. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall0.md).
 
 ```rust
@@ -4352,7 +4353,7 @@ pub unsafe fn syscall0(nr: usize) -> usize
 
 ### S237. `syscall1`
 
-src/sys/raw.rs:35. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:52. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall1.md).
 
 ```rust
@@ -4363,7 +4364,7 @@ pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
 
 ### S238. `syscall2`
 
-src/sys/raw.rs:50. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:67. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall2.md).
 
 ```rust
@@ -4374,18 +4375,20 @@ pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
 
 ### S239. `syscall3`
 
-src/sys/raw.rs:65. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:82. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall3.md).
 
 ```rust
-pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize
+pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
     requires
         crate::sys::may_syscall(),
+    ensures
+        super::returned3(nr, a0, a1, a2, r),
 ```
 
 ### S240. `syscall4`
 
-src/sys/raw.rs:80. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:99. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall4.md).
 
 ```rust
@@ -4396,7 +4399,7 @@ pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) ->
 
 ### S241. `syscall5`
 
-src/sys/raw.rs:96. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:115. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall5.md).
 
 ```rust
@@ -4414,7 +4417,7 @@ pub unsafe fn syscall5(
 
 ### S242. `syscall6`
 
-src/sys/raw.rs:119. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:138. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall6.md).
 
 ```rust
@@ -4433,7 +4436,7 @@ pub unsafe fn syscall6(
 
 ### S243. `syscall0`
 
-src/sys/raw.rs:153. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:172. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall0.md).
 
 ```rust
@@ -4444,7 +4447,7 @@ pub unsafe fn syscall0(nr: usize) -> usize
 
 ### S244. `syscall1`
 
-src/sys/raw.rs:167. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:186. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall1.md).
 
 ```rust
@@ -4455,7 +4458,7 @@ pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
 
 ### S245. `syscall2`
 
-src/sys/raw.rs:181. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:200. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall2.md).
 
 ```rust
@@ -4466,18 +4469,20 @@ pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
 
 ### S246. `syscall3`
 
-src/sys/raw.rs:196. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:215. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall3.md).
 
 ```rust
-pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize
+pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
     requires
         crate::sys::may_syscall(),
+    ensures
+        super::returned3(nr, a0, a1, a2, r),
 ```
 
 ### S247. `syscall4`
 
-src/sys/raw.rs:211. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:232. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall4.md).
 
 ```rust
@@ -4488,7 +4493,7 @@ pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) ->
 
 ### S248. `syscall5`
 
-src/sys/raw.rs:226. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:247. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall5.md).
 
 ```rust
@@ -4506,7 +4511,7 @@ pub unsafe fn syscall5(
 
 ### S249. `syscall6`
 
-src/sys/raw.rs:248. Kind: external_body. Category: inline asm.
+src/sys/raw.rs:269. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall6.md).
 
 ```rust
@@ -6358,18 +6363,21 @@ pub assume_specification[ isize::wrapping_neg ](x: isize) -> (r: isize)
 
 ### S370. `<[T]>::as_mut_ptr`
 
-src/vspec/sys.rs:33. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:37. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-slice-as_mut_ptr.md).
 
 > The address of a slice's first element, for a syscall argument; the verified code never dereferences it.
 
 ```rust
-pub assume_specification<T>[ <[T]>::as_mut_ptr ](s: &mut [T]) -> *mut T;
+pub assume_specification<T>[ <[T]>::as_mut_ptr ](s: &mut [T]) -> *mut T
+    ensures
+        final(s)@.len() == old(s)@.len(),
+;
 ```
 
 ### S371. `<[T]>::as_ptr`
 
-src/vspec/sys.rs:35. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:42. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-slice-as_ptr.md).
 
 ```rust
@@ -6378,7 +6386,7 @@ pub assume_specification<T>[ <[T]>::as_ptr ](s: &[T]) -> *const T;
 
 ### S372. `Result::<T, E>::map_or`
 
-src/vspec/sys.rs:38. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:45. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-Result-map_or.md).
 
 > `Result::map_or`: `f` of the `Ok` value, else `default`.
@@ -6399,7 +6407,7 @@ pub assume_specification<T, E, U, F: FnOnce(T) -> U>[ Result::<T, E>::map_or ](
 
 ### S373. `Option::<T>::is_some_and`
 
-src/vspec/sys.rs:51. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:58. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-Option-is_some_and.md).
 
 > `Option::is_some_and`: `f` of the value, `false` for `None`.
@@ -6416,7 +6424,7 @@ pub assume_specification<T, F: FnOnce(T) -> bool>[ Option::<T>::is_some_and ](o:
 
 ### S374. `Result::<T, E>::unwrap_or`
 
-src/vspec/sys.rs:60. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:67. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-Result-unwrap_or.md).
 
 > `Result::unwrap_or`: the `Ok` value, else `default`.
@@ -6433,7 +6441,7 @@ pub assume_specification<T, E>[ Result::<T, E>::unwrap_or ](result: Result<T, E>
 
 ### S375. `u64::is_power_of_two`
 
-src/vspec/sys.rs:73. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:80. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-u64-is_power_of_two.md).
 
 > `u64::is_power_of_two`.
@@ -6447,7 +6455,7 @@ pub assume_specification[ u64::is_power_of_two ](x: u64) -> (r: bool)
 
 ### S376. `core::str::Utf8Error`
 
-src/vspec/sys.rs:80. Kind: ext_type_spec. Category: core library.
+src/vspec/sys.rs:87. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -6456,7 +6464,7 @@ pub struct ExUtf8Error(core::str::Utf8Error);
 
 ### S377. `core::str::from_utf8`
 
-src/vspec/sys.rs:83. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:90. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-str-from_utf8.md).
 
 > `core::str::from_utf8`: the bytes as a `str` when they are UTF-8.
@@ -6467,7 +6475,7 @@ pub assume_specification[ core::str::from_utf8 ](v: &[u8]) -> Result<&str, core:
 
 ### S378. `core::str::from_utf8_unchecked`
 
-src/vspec/sys.rs:87. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:94. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `core::str::from_utf8_unchecked`: its safety contract is that the bytes are UTF-8.
@@ -6481,7 +6489,7 @@ pub assume_specification[ core::str::from_utf8_unchecked ](v: &[u8]) -> &str
 
 ### S379. `<core::fmt::Error as core::default::Default>::default`
 
-src/vspec/sys.rs:93. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:100. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-fmt-Error-Default-default.md).
 
 > The unit `fmt::Error`, built through its derived `Default`.
@@ -6492,7 +6500,7 @@ pub assume_specification[ <core::fmt::Error as core::default::Default>::default 
 
 ### S380. `core::ptr::from_ref`
 
-src/vspec/sys.rs:96. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/sys.rs:103. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-ptr-from_ref.md).
 
 > A reference as a raw pointer, for a syscall argument.
@@ -6503,7 +6511,7 @@ pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_ref ](r
 
 ### S381. `core::ptr::from_mut`
 
-src/vspec/sys.rs:98. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/sys.rs:105. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-ptr-from_mut.md).
 
 ```rust
@@ -6512,7 +6520,7 @@ pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_mut ](r
 
 ### S382. `Option::<&T>::copied`
 
-src/vspec/sys.rs:101. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:108. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-Option-copied.md).
 
 > `Option::copied`: the referent, copied.
@@ -6529,7 +6537,7 @@ pub assume_specification<T: Copy>[ Option::<&T>::copied ](o: Option<&T>) -> (r: 
 
 ### S383. `PartialEqSpecImpl for sys::cgroup::State`
 
-src/vspec/sys.rs:113. Kind: spec_impl. Category: core library.
+src/vspec/sys.rs:120. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-PartialEqSpecImpl-for-sys-cgroup-State.md).
 
 ```rust
@@ -6546,7 +6554,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::sys::cgroup::State {
 
 ### S384. `PartialEqSpecImpl for sys::Errno`
 
-src/vspec/sys.rs:124. Kind: spec_impl. Category: core library.
+src/vspec/sys.rs:131. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-PartialEqSpecImpl-for-sys-Errno.md).
 
 ```rust
@@ -6563,7 +6571,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::sys::Errno {
 
 ### S385. `axiom_fresh_anon_zero`
 
-src/vspec/sys.rs:165. Kind: axiom. Category: platform/kernel fact.
+src/vspec/sys.rs:172. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > `mmap(2)`: a private anonymous mapping reads as zero until it is first written.
@@ -6580,7 +6588,7 @@ pub(crate) axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: cr
 
 ### S386. `axiom_discarded_zero`
 
-src/vspec/sys.rs:185. Kind: axiom. Category: platform/kernel fact.
+src/vspec/sys.rs:192. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > `madvise(2)`: after `MADV_DONTNEED` on private anonymous memory, reads return zero-fill-on-demand pages (`MADV_FREE` gives no such guarantee: the old contents stay until the kernel reclaims the page).

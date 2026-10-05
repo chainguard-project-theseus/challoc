@@ -7,10 +7,11 @@
 //! `vspec::word`/`vspec::count` wrappers that `free.rs` (P5, with copies
 //! of the table steps) and `count.rs` (the arena bound counts, with
 //! copies of the `Arenas` steps) call. The
-//! background wake-up (P3), the background thread's exit and the
-//! publication of `Shared` (P4) live in statics built in `const` context,
-//! which loom cannot construct, so `background.rs`, `exit.rs` and
-//! `init.rs` check copies that cite the code they mirror.
+//! background wake-up (P3), the background thread's exit, the
+//! publication of `Shared` (P4) and the slab descriptors (`slab.rs`,
+//! whose module needs `layout`) live in statics built in `const` context
+//! or in modules this build leaves out, so `background.rs`, `exit.rs`,
+//! `init.rs` and `slab.rs` check copies that cite the code they mirror.
 //!
 //! ```sh
 //! sh verus/loom/run.sh
@@ -49,6 +50,8 @@ pub(crate) mod futex;
 mod init;
 #[cfg(test)]
 mod lock;
+#[cfg(test)]
+mod slab;
 
 /// Run `f` under every interleaving loom reaches (exhaustive: no
 /// preemption bound unless `LOOM_MAX_PREEMPTIONS` sets one).

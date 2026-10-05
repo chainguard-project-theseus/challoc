@@ -113,8 +113,9 @@ branch bound) or a failed assertion. Its model and its bounds:
   models cannot show it: an ordering missing from that re-check would be
   supplied by the stand-in. Linux's futex has such an edge in practice
   and documents no memory ordering.
-- A copy (`init.rs`, `exit.rs`, the class steps of `bitmap.rs`, the
-  table steps of `free.rs`, the arena steps of `count.rs`) cites the
+- A copy (`init.rs`, `exit.rs`, `slab.rs`, the class steps of
+  `bitmap.rs`, the table steps of `free.rs`, the arena steps of
+  `count.rs`) cites the
   code it mirrors; `verus/loom/pins.txt` lists the source lines it
   copies, which `run.sh` requires in place and in order. A change
   elsewhere in the copied functions is caught by review only.

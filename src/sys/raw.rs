@@ -7,6 +7,23 @@
 //!
 //! These are the trusted base of the verified wrappers in `sys`: each is
 //! `external_body` and specified as returning some word, nothing more.
+//! `syscall3` also names the word as the kernel's answer to its call
+//! ([`returned3`]), which means nothing until a kernel-fact axiom in `sys`
+//! (one per system call) says what that answer can be.
+
+use vstd::prelude::verus;
+#[cfg(verus_only)]
+use vstd::prelude::*;
+
+verus! {
+
+/// Ghost: `r` is the word the kernel returned to a `syscall3(nr, a0, a1,
+/// a2)` call. Uninterpreted, and ensured only by `syscall3`: it says
+/// nothing by itself, and gives the `sys` kernel-fact axioms
+/// (`axiom_read_count` and its siblings) the call they are about.
+pub uninterp spec fn returned3(nr: usize, a0: usize, a1: usize, a2: usize, r: usize) -> bool;
+
+} // verus!
 
 #[cfg(target_arch = "x86_64")]
 mod imp {
@@ -62,9 +79,11 @@ mod imp {
 
     #[verifier::external_body]
     #[inline(always)]
-    pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize
+    pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
         requires
             crate::sys::may_syscall(),
+        ensures
+            super::returned3(nr, a0, a1, a2, r),
     {
         let ret: usize;
         // SAFETY: as above.
@@ -193,9 +212,11 @@ mod imp {
 
     #[verifier::external_body]
     #[inline(always)]
-    pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize
+    pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
         requires
             crate::sys::may_syscall(),
+        ensures
+            super::returned3(nr, a0, a1, a2, r),
     {
         let ret: usize;
         // SAFETY: as above.

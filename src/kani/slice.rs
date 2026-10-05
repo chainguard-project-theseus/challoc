@@ -239,12 +239,15 @@ fn array_into_iter() {
 #[kani::unwind(8)]
 fn slice_as_ptr() {
     let (mut a, n) = any_words();
+    let old = a;
     let p = a[..n].as_ptr();
     let q = a[..n].as_mut_ptr();
     assert_eq!(p, q as *const u64);
     if n > 0 {
         assert!(core::ptr::eq(p, &a[0]));
     }
+    assert!(same(&a[..n], &old[..n]));
+    assert!(same(&a, &old));
 }
 
 /// `s.rotate_left(mid)` on the first `n` of `L` elements labelled

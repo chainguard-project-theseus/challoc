@@ -29,8 +29,15 @@ pub assume_specification[ isize::wrapping_neg ](x: isize) -> (r: isize)
 ;
 
 /// The address of a slice's first element, for a syscall argument; the
-/// verified code never dereferences it.
-pub assume_specification<T>[ <[T]>::as_mut_ptr ](s: &mut [T]) -> *mut T;
+/// verified code never dereferences it. Taking it leaves the slice as
+/// long as it was; its contents are left unconstrained, so that a buffer
+/// the kernel then writes through the address (`read`, `getrandom`, the
+/// mask of `ncpus`), which `raw::syscall3` does not model, is
+/// not taken to keep its old bytes.
+pub assume_specification<T>[ <[T]>::as_mut_ptr ](s: &mut [T]) -> *mut T
+    ensures
+        final(s)@.len() == old(s)@.len(),
+;
 
 pub assume_specification<T>[ <[T]>::as_ptr ](s: &[T]) -> *const T;
 

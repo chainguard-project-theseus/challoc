@@ -477,6 +477,29 @@ const _: () = assert!(
     "a page-sized slab geometry changes a descriptor stride"
 );
 
+/// Kani harness for `desc_stride` (`verus/seams/slab-desc_stride.md`).
+#[cfg(kani)]
+mod kani_desc_stride {
+    use super::{DESC_STRIDE, desc_stride};
+    use crate::layout::NCLASSES;
+
+    /// S199 `desc_stride`, `requires class < NCLASSES`, `ensures r <=
+    /// u32::MAX, r == stride_of(class as int)`: for every `class <
+    /// NCLASSES` the call returns without a panic, and what it returns
+    /// is `DESC_STRIDE[class]` widened (so at most `u32::MAX`), the same
+    /// on every call: a function of `class` alone, which `stride_of`
+    /// names.
+    #[kani::proof]
+    fn desc_stride_reads_the_table() {
+        let class: usize = kani::any();
+        kani::assume(class < NCLASSES);
+        let r = desc_stride(class);
+        assert!(r <= u32::MAX as usize);
+        assert_eq!(r, DESC_STRIDE[class] as usize);
+        assert_eq!(desc_stride(class), r);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -759,9 +759,11 @@ block; the free cores take the token C holds (common premises, "The
   invariants.
 - Class and commit lock axioms (`class/mod.rs:1459`, `:1467`,
   `class/table.rs:188`, `:196`), the class lock bridge `owner_locked`
-  (`class/mod.rs`), the descriptor permissions (`slab::DescPerm`: the
-  accessors in `slab.rs`, `slab::desc_stride` and
-  `table::axiom_init_descs`) and `next_slab_locked`
+  (`class/mod.rs`), the descriptor permissions (`slab::DescPerm`:
+  `table::axiom_init_descs`, which mints them; the accessors in
+  `slab.rs` and `slab::desc_stride` are discharged by loom and Kani,
+  `verus/seams/slab-*.md`, the accessors given the lock edge
+  `lock::axiom_acquired` assumes) and `next_slab_locked`
   (`class/table.rs:3217`).
 - Heap creation and the unfollowed cache writers (common premise): a new
   heap's caches are taken to be empty and `tokened`.
@@ -1105,7 +1107,6 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
 - Every trusted body or specification that can reach the kernel, by a
   syscall, a libc call, a call through a function pointer or a verified
   function it calls unchecked, `requires may_syscall()` too:
-  `sys::getrandom`, `read`, `write` (`sys/mod.rs:569`, `:755`, `:825`),
   `linux::try_reserve` (`layout/regions.rs:1443`), `ThreadKey::create`
   (`heap/shared.rs:255`), `atfork_handlers` (`api/mod.rs:502`),
   `background::spawn` and `pthread_join` (`purge/background.rs:333`,
@@ -1122,7 +1123,9 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   (`shared::seed`, which reads `getrandom`, is verified: its syscalls
   are in `getrandom_exact` and `now_coarse_ns`; so is `Set::ensure`,
   which commits set words through `Meta`, and `thread.arena` calls
-  `Heap::set_arena` directly.)
+  `Heap::set_arena` directly. `sys::getrandom`, `read` and `write` are
+  verified too: they reach the kernel through `raw::syscall3`, and their
+  count bounds are kernel-fact axioms on its result.)
 - `may_syscall` is opaque, so a verified function can prove it only from
   its own `requires` (or a loop invariant that carries it in from
   there), from `grant_syscalls`, or from the type invariant of a
@@ -4943,8 +4946,8 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   copies that
   fault on a bad pointer rather than panic; the other accesses to the
   caller's memory verify over `vspec::cbuf` and the `core` specs of
-  `vspec::ptr`), `sys::read` (whose trusted `n <= buf.len()` keeps the
-  cgroup reader's slice in bounds),
+  `vspec::ptr`), the kernel fact `axiom_read_count` (`sys::read`'s
+  count bound, which keeps the cgroup reader's slice in bounds),
   `fig_add`, `fig_mul` and `policy::empty_bytes`'s sums, and the `core`
   functions vstd and `vspec` specify.
 - The shipped release profile: overflow checks and debug assertions
