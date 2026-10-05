@@ -115,13 +115,16 @@ pub fn store(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&
     c.store(v, ordering)
 }
 
-/// `c.load(ordering)`: the permission's value.
+/// `c.load(ordering)`: the permission's value (it panics for a `Release`
+/// or `AcqRel` ordering).
 #[inline(always)]
 #[verifier::external_body]
 #[verifier::atomic]
 pub fn load(c: &AtomicU32, ordering: Ordering, Tracked(perm): Tracked<&CountPerm>) -> (r: u32)
     requires
         perm.id() == count_id(c),
+        !(ordering is Release),
+        !(ordering is AcqRel),
     ensures
         r == perm.value(),
     opens_invariants none
@@ -134,7 +137,9 @@ pub fn load(c: &AtomicU32, ordering: Ordering, Tracked(perm): Tracked<&CountPerm
 /// [`CountPerm`] is minted, one per counter, with the counter it is for.
 /// It is `const` for `Policy::new`, which runs at run time: neither may
 /// appear in a `const` item, each use of which would be a new atomic with
-/// the same permission.
+/// the same permission. Not under `cfg(loom)`, whose `AtomicU32::new` is
+/// not `const` (the loom models make their counters directly).
+#[cfg(not(loom))]
 #[inline(always)]
 #[verifier::external_body]
 pub const fn new(v: u32) -> (r: (AtomicU32, Tracked<CountPerm>))

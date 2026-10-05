@@ -75,9 +75,9 @@ for f in $(awk -F'\t' '!/^#/ && NF == 2 { print $1 }' verus/loom/pins.txt | sort
     ' verus/loom/pins.txt "$f")
 	[ -z "$missing" ] || { echo "loom: $f no longer has, in the order of verus/loom/pins.txt: $missing" >&2; exit 1; }
 done
-# What the WordPerm, CountPerm, state_claim and DescPerm accessor records
-# rely on, checked by name (a write through a pointer cast these patterns
-# do not name is caught only by review):
+# What the WordPerm, CountPerm, UsizePerm, state_claim and DescPerm accessor
+# records rely on, checked by name (a write through a pointer cast these
+# patterns do not name is caught only by review):
 # - every atomic write in non-test bitmap.rs is a vspec/word.rs wrapper
 #   call (the scan stops at the `#[cfg(test)] mod tests` line, which must
 #   be the file's last item);
@@ -89,9 +89,13 @@ done
 #   call, the spec `count_id`, and ghost `assert`/`forall` lines
 #   (`Arenas::init` builds each count with `vspec::count::new(0)`);
 # - arena.rs names the arena count (`self.count`), and policy.rs the
-#   position (`.frac16`), only in a vspec/count.rs wrapper call and the
+#   position (`.scaled16`), only in a vspec/count.rs wrapper call and the
 #   spec `count_id` (each is made with `vspec::count::new`; the ghost
 #   `self.count.ptr()` of `Arenas::init`'s field permissions aside);
+# - nothing writes the watermark (`committed_slabs`) but through
+#   vspec/atom.rs's `store_usize`, and only class/table.rs (and the loom
+#   models) calls the vspec/atom.rs wrappers (`new_usize`,
+#   `load_usize_in`, `store_usize`);
 # - `STATE` has two writes, `state_claim`'s compare-exchange and
 #   `state_publish`'s `READY` store;
 # - non-test slab.rs names a descriptor's `state`, `shadow`, `arena` and
@@ -112,7 +116,7 @@ bad=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t =
     (/\.bound([^A-Za-z0-9_]|$)/ || /\(\*bound\)/) && !/crate::vspec::count::/ && !/count_id\(/ && !/^[ \t]*\/\// \
         && !/assert\(/ && !/forall\|/ { print FILENAME ":" FNR ": " $0 }' src/arena.rs
     awk '/self\.count([^A-Za-z0-9_(]|$)/ && !/self\.count\.ptr\(\)/ && !/crate::vspec::count::/ && !/count_id\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/arena.rs
-    awk '/\.frac16([^A-Za-z0-9_]|$)/ && !/crate::vspec::count::/ && !/count_id\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/policy.rs
+    awk '/\.scaled16([^A-Za-z0-9_]|$)/ && !/crate::vspec::count::/ && !/count_id\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/policy.rs
     awk 'function bad() { print FILENAME ":" FNR ": " $0 }
     BEGIN {
         want["init" SUBSEP "self.state.store(State::Fresh as u8, Ordering::Relaxed);"] = 1
@@ -155,12 +159,15 @@ bad=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t =
             split(k, p, SUBSEP)
             print FILENAME ": " (seen[k] + 0) " writes, not " want[k] ", in " p[1] ": " p[2]
         }
-    }' src/slab.rs)
+    }' src/slab.rs
+    find src -name '*.rs' ! -path 'src/loom_tests/*' -exec awk '/committed_slabs\.(fetch_[a-z]+|store|swap|compare_exchange|compare_exchange_weak)\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' {} +
+    find src -name '*.rs' ! -path 'src/loom_tests/*' ! -path src/vspec/atom.rs ! -path src/class/table.rs \
+        -exec awk '/(new_usize|load_usize_in|store_usize)\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' {} +)
 nstate=$(find src -name '*.rs' ! -path 'src/loom_tests/*' -exec grep -hE '(^|[^A-Za-z0-9_])STATE\.(store|swap|compare_exchange|fetch_)' {} + | wc -l | tr -d ' ')
 [ "$nstate" = 2 ] || bad="$bad
 src/api/mod.rs: $nstate writes of STATE, not 2 (record api-state_claim.md)"
 if [ -n "$bad" ]; then
-	echo "loom: an atomic access outside what the records allow (vspec-word-WordPerm.md, vspec-count-CountPerm.md, api-state_claim.md, slab-SlabDesc-*.md):" >&2
+	echo "loom: an atomic access outside what the records allow (vspec-word-WordPerm.md, vspec-count-CountPerm.md, vspec-atom-UsizePerm.md, api-state_claim.md, slab-SlabDesc-*.md):" >&2
 	echo "$bad" >&2
 	exit 1
 fi

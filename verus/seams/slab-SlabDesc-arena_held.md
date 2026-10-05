@@ -35,7 +35,7 @@ Three facts, the third checked by loom.
    each release to the next acquire that takes the lock, so everything
    one holder did happens before everything the next holder does. The
    Verus proofs already assume this edge for every lock value
-   (`lock::axiom_acquired`, S174, trusted: a named residual assumption
+   (`lock::axiom_acquired`, S177, trusted: a named residual assumption
    of this record too), and the loom models of the real `RawLock`
    check it (`loom_lock_two_threads`, `loom_lock_three_threads`, below;
    `lock-LockGuard-drop.md` for the release, and the superseded
@@ -46,12 +46,11 @@ Three facts, the third checked by loom.
    loom's atomics, under two real `RawLock`s standing for a class
    table's commit lock and an arena's class lock, with the permission
    made concrete: its three values in a loom `UnsafeCell` under the lock
-   whose value holds it. At 82ca40d7 the `cfg(loom)` build does not
+   whose value holds it. At 82ca40d7 the `cfg(loom)` build did not
    compile (`vspec/count.rs`'s `new` is a `const fn` calling loom's
-   `AtomicU32::new`, which is not `const`), so the models were run on a
-   copy of the tree with that one `const` removed, which changes no
-   model (each calls `new` at run time; 2026-10-05: the 34 loom tests
-   not ignored all pass there).
+   `AtomicU32::new`, which is not `const`); `new` is now left out of
+   that build (no model calls it; the models make their counters
+   directly), and `run.sh` builds and runs every model unchanged.
    The two slab models are exhaustive:
 
 Models: `loom_slab_desc_reads_through_the_lock`, `loom_slab_desc_unlocked_read_is_stale`, `loom_lock_two_threads`, `loom_lock_three_threads`
@@ -80,7 +79,7 @@ Models: `loom_slab_desc_reads_through_the_lock`, `loom_slab_desc_unlocked_read_i
 
 - **Reading the permission.** `DescPerm` (`slab.rs`) is plain ghost
   data: not `Copy`, fields private to `slab.rs`, and built only by
-  `class::table::axiom_init_descs` (S85, a separate seam, tool none),
+  `class::table::axiom_init_descs` (S88, a separate seam, tool none),
   once per descriptor of a class table, recording the zero the
   reservation's bytes hold. Read `p.state()`, `p.dirty()` and
   `p.arena()` as the values of the last writes, in the modification
@@ -180,7 +179,9 @@ branch bound) or a failed assertion. Its model and its bounds:
   thread's last load too, and changes nothing else, so it only adds
   backtracking points (the execution counts measured are all at least
   stock loom's; the initialisation models' grew from 1, 522 and 1472 to
-  10, 29839 and 213383). `src/loom_tests/dpor.rs` fails without it. The
+  10, 29839 and 213383, the arena count and watermark models' from 36
+  to 4482 each, and their `Relaxed`-store controls pass under stock
+  loom). `src/loom_tests/dpor.rs` fails without it. The
   patch is ours, reviewed but not proved; loom's own test suite was not
   run with it (its dev-dependencies are not in the offline registry).
 - The futex is the stand-in `src/loom_tests/futex.rs`: one futex word
@@ -193,11 +194,12 @@ branch bound) or a failed assertion. Its model and its bounds:
   supplied by the stand-in. Linux's futex has such an edge in practice
   and documents no memory ordering.
 - A copy (`init.rs`, `exit.rs`, `slab.rs`, the class steps of
-  `bitmap.rs`, the table steps of `free.rs`, the arena steps of
-  `count.rs`) cites the
-  code it mirrors; `verus/loom/pins.txt` lists the source lines it
-  copies, which `run.sh` requires in place and in order. A change
-  elsewhere in the copied functions is caught by review only.
+  `bitmap.rs`, the table steps of `free.rs` and `watermark.rs`, the
+  arena steps of `count.rs` and `narenas.rs`, the policy step of
+  `position.rs`) cites the code it mirrors; `verus/loom/pins.txt` lists
+  the source lines it copies, which `run.sh` requires in place and in
+  order. A change elsewhere in the copied functions is caught by review
+  only.
 
 The Verus proofs assume sequential consistency. A loom record checks
 that the orderings the code uses give the happens-before edges and the
@@ -222,8 +224,5 @@ accesses, in order), and the access check on `slab.rs` named above;
 then it runs every loom model and control. A changed accessor line
 fails the pin check, a new write of the three fields outside the
 accessors fails the access check, and a changed contract fails the
-ledger check, until this record and its model are revisited. Until
-`vspec/count.rs` builds under `cfg(loom)` (fact 3 above), the script stops at
-the build, after the checks. It is
-run by hand (about 15 minutes with the build); no CI job
-runs it yet.
+ledger check, until this record and its model are revisited. It is run
+by hand (about 15 minutes with the build); no CI job runs it yet.

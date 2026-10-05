@@ -15,8 +15,8 @@ pub tracked struct WordPerm
 The type is an `external_body` tracked struct with one private unit
 field; `addr()` and `value()` are uninterpreted spec functions on it. It
 has no `Copy` or `Clone`, and no exec constructor: permissions come only
-from `table::axiom_fresh_words`, once per class bitmap, by
-`SlabTable::new` (S89), a separate seam.
+from `table::axiom_fresh_words` (S87, a separate seam), once per class
+bitmap, by `SlabTable::new`.
 
 ## Statement
 
@@ -29,8 +29,8 @@ facts, each checked elsewhere:
    no `Copy` moves, and nothing in `src/` implements `Copy` or `Clone`
    for it (it is declared in `vspec/word.rs` only, with no derive).
 2. **One permission per atomic.** The minting seam's
-   (`table::axiom_fresh_words`, once per class bitmap, by
-   `SlabTable::new` (S89)); not claimed here.
+   (`table::axiom_fresh_words`, S87, once per class bitmap, by
+   `SlabTable::new`); not claimed here.
 3. **The value is the atomic's.** Every write of the atomic once it is
    shared, and every read whose value a proof uses, is one of the
    wrappers in `vspec/word.rs`, each of which has a record reading
@@ -94,7 +94,9 @@ branch bound) or a failed assertion. Its model and its bounds:
   thread's last load too, and changes nothing else, so it only adds
   backtracking points (the execution counts measured are all at least
   stock loom's; the initialisation models' grew from 1, 522 and 1472 to
-  10, 29839 and 213383). `src/loom_tests/dpor.rs` fails without it. The
+  10, 29839 and 213383, the arena count and watermark models' from 36
+  to 4482 each, and their `Relaxed`-store controls pass under stock
+  loom). `src/loom_tests/dpor.rs` fails without it. The
   patch is ours, reviewed but not proved; loom's own test suite was not
   run with it (its dev-dependencies are not in the offline registry).
 - The futex is the stand-in `src/loom_tests/futex.rs`: one futex word
@@ -107,11 +109,12 @@ branch bound) or a failed assertion. Its model and its bounds:
   supplied by the stand-in. Linux's futex has such an edge in practice
   and documents no memory ordering.
 - A copy (`init.rs`, `exit.rs`, `slab.rs`, the class steps of
-  `bitmap.rs`, the table steps of `free.rs`, the arena steps of
-  `count.rs`) cites the
-  code it mirrors; `verus/loom/pins.txt` lists the source lines it
-  copies, which `run.sh` requires in place and in order. A change
-  elsewhere in the copied functions is caught by review only.
+  `bitmap.rs`, the table steps of `free.rs` and `watermark.rs`, the
+  arena steps of `count.rs` and `narenas.rs`, the policy step of
+  `position.rs`) cites the code it mirrors; `verus/loom/pins.txt` lists
+  the source lines it copies, which `run.sh` requires in place and in
+  order. A change elsewhere in the copied functions is caught by review
+  only.
 
 The Verus proofs assume sequential consistency. A loom record checks
 that the orderings the code uses give the happens-before edges and the
@@ -136,15 +139,19 @@ checks that `verus/SEAMS.md` is current, that the contract above is
 still the ledger's entry for this seam, that the models the `Models:`
 line names exist and are not ignored, that the source lines the copies
 mirror are in place (`verus/loom/pins.txt`), and, by name, that the
-atomic writes the word and count records rely on are where they say
-(non-test `bitmap.rs` writes words only through `vspec/word.rs`;
-`class/table.rs` writes atomics only on two listed lines and through
-`vspec/atom.rs`; `arena.rs` touches the bound counts and the arena
-count, and `policy.rs` the position, only through `vspec/count.rs`;
-`STATE` has two writes); then it runs every
-loom model and control. A body that breaks the property fails a model
-where the model runs the real code (`lock.rs`, `bitmap.rs`,
-`vspec/word.rs`, `vspec/count.rs`); a changed copied line fails the pin
-check; a changed contract fails the ledger check, until this record and
-its models are revisited. The script is run by hand (about 15 minutes
-with the build); no CI job runs it yet.
+atomic writes the word, count, watermark and descriptor records rely on
+are where they say (non-test `bitmap.rs` writes words only through
+`vspec/word.rs`; `class/table.rs` writes atomics only on two listed
+lines and through `vspec/atom.rs`; `arena.rs` touches the bound counts
+and the arena count, and `policy.rs` the position, only through
+`vspec/count.rs`; nothing writes the watermark but `store_usize`, and
+only `class/table.rs` calls `vspec/atom.rs` (the loom models aside);
+`STATE` has two writes; non-test `slab.rs` writes a descriptor's
+`state`, `shadow`, `arena` and `dirty_at` only in its accessors); then
+it runs every loom model and control. A
+body that breaks the property fails a model where the model runs the
+real code (`lock.rs`, `bitmap.rs`, `vspec/word.rs`, `vspec/count.rs`,
+`vspec/atom.rs`); a changed copied line fails the pin check; a changed
+contract fails the ledger check, until this record and its models are
+revisited. The script is run by hand (about 15 minutes with the build);
+no CI job runs it yet.

@@ -269,13 +269,14 @@ cut down.
   verifies all three configurations unchanged. Under `cfg(loom)`,
   `lib.rs` compiles only `bitmap`, `lock`, `sync` and `vspec` (less
   `vspec/print.rs`): every other module builds its statics in `const`
-  context. `RawLock::new` has a non-`const` twin there, `Lock<T>` is
-  left out (its `const fn new`), and `lock.rs` sleeps on the stand-in
-  `loom_tests/futex.rs`: one loom mutex and condition variable for the
-  model's one futex word (checked), the compare under the mutex as
-  the kernel's is under the hash-bucket lock, and a wake of one
-  waiter (`notify_one`, as `FUTEX_WAKE` with `n == 1`; waking all
-  would hide a lost wake-up). `SPINS` is 2 under loom.
+  context. `RawLock::new` has a non-`const` twin there, `Lock<T>` (its
+  `const fn new`) and `vspec::count::new` (a `const fn`; the models
+  make their counters directly) are left out, and `lock.rs` sleeps on
+  the stand-in `loom_tests/futex.rs`: one loom mutex and condition
+  variable for the model's one futex word (checked), the compare under
+  the mutex as the kernel's is under the hash-bucket lock, and a wake
+  of one waiter (`notify_one`, as `FUTEX_WAKE` with `n == 1`; waking
+  all would hide a lost wake-up). `SPINS` is 2 under loom.
 - Bounds: every model is exhaustive (no preemption bound) except the
   three-thread lock model and its control (the dropped mark), bounded
   at 5 preemptions (unbounded did not finish in 25 minutes).
@@ -376,6 +377,41 @@ cut down.
   minutes): no `unbind` reads 0, no holder reads its arena's count as
   0, and the counts end at the tickets out. Control: a `fetch_add`
   split into a load and a store loses a ticket.
+- Arena count (`loom_tests/narenas.rs`: the real `vspec/count.rs`
+  `store` and `load`; copies of `create` under the real `RawLock`,
+  `count`, `iter`): two creators and a scanner, `MAX_ARENAS` 3 (4482
+  executions): the count stays in range and never goes back for a
+  reader, a scan finds every explicit arena below the count it read
+  built and reads it race-free, a `create` under the lock reads the
+  count as the lock's value with every arena below it built, and the
+  count ends at the lock's value. Control: a `Relaxed` count store lets
+  a scan see a count before its arena.
+- Policy position (`Policy::scaled16`, one more than the position;
+  `loom_tests/position.rs`: the real `swap` and `load`; copies of
+  `apply`'s swap and `position`): two concurrent appliers and a reader
+  (940): every load is a stored value, at most `FRAC_ONE + 1`, and the
+  swaps' results and the final value form one chain. Control: a swap
+  split into a load and a store breaks the chain.
+- Class table watermark (`loom_tests/watermark.rs`: the real
+  `vspec/atom.rs` `store_usize` and `load_usize_in`; copies of
+  `take_group` under the real `RawLock` and `watermark`): two hand-outs
+  and a reader (4482): every load is at most the slab count and never
+  goes back, `take_group`'s `check_zero` comparison under the lock
+  always holds, and an `Acquire` load sees the owner of every group
+  below it. Control: a `Relaxed` watermark store does not publish the
+  owner. P5's and P1's publication models (`free.rs`,
+  `loom_bitmap_init_is_published`) now go through the same wrappers;
+  their execution counts are unchanged.
+- Slab descriptors' lock-protected fields (`loom_tests/slab.rs`: a
+  copy of the six `DescPerm` accessors, under two real `RawLock`s for
+  the commit lock and a class lock, the permission a loom `UnsafeCell`
+  in the lock value holding it): one thread hands a slab out
+  (`take_group`'s `init` and the move between the locks, then
+  `set_state(Active)`), another reads the three fields through the
+  permission under the class lock and writes `Empty` and a stamp (36
+  executions): every read returns the last write through the
+  permission, with no race on the permission. Control: a read outside
+  the class lock, after a `Relaxed` flag, is stale.
 - The background thread's exit (copy of `background::main`'s loop and
   `request(false)`; `loom_tests/exit.rs`): the thread returns after a
   withdrawal, also with another kick in between. Controls: a withdrawal
@@ -476,15 +512,45 @@ hand-off (a data race on the block) are P5's documented ones.
 
 ### Third pass (2026-10-05)
 
-The six `SlabDesc` accessors of the descriptor permissions
-(`slab::DescPerm`), trusted since the class lock's ghost took the
-permissions over (seam numbers of commit 82ca40d7). The model
-(`loom_tests/slab.rs`) is a copy, since `slab` needs `layout`, which
-the `cfg(loom)` build leaves out. At 82ca40d7 that build does not
-compile: `vspec/count.rs`'s `new` is a `const fn` calling loom's
-`AtomicU32::new`, which is not `const`; the model was run with `new`
-made non-`const` for the run.
+The loom/GenMC seams of `vspec/count.rs`, `vspec/atom.rs` and `lock.rs`
+still without a discharge at commit 82ca40d7, and the six `SlabDesc`
+accessors of the descriptor permissions (`slab::DescPerm`), trusted
+since the class lock's ghost took the permissions over (seam numbers of
+that commit; `vspec/word.rs` had none left). GenMC is still not
+installed, so every result is loom's. No model found an outcome a
+contract excludes. The slab model (`loom_tests/slab.rs`) is a copy,
+since `slab` needs `layout`, which the `cfg(loom)` build leaves out; the
+others run the real `vspec` wrappers. The base's `run.sh` no longer
+built: `vspec::count::new` had become `const` (for `Policy::new`), and
+loom's `AtomicU32::new` is not; `new` is now left out of the
+`cfg(loom)` build (the models make their counters directly).
 
 | Seam | Result | Why |
 |---|---|---|
+| `store` (`vspec/count.rs`, S294) | discharged | one store under the creation lock, which orders the stores; `NarenasPred` bounds one atomic by a constant, so any ordering keeps it; narenas models (the `Release`/`Acquire` pair also publishes the arena, which no verified proof relies on) |
+| `swap` (`vspec/count.rs`, S297) | discharged | RMW atomicity for every ordering; `FracPred` bounds one atomic by a constant; position models (concurrent appliers form one chain) |
+| `load` (`vspec/count.rs`, S295) | evidence, now discharged | the contract now excludes `Release` and `AcqRel` (ghost only; every caller passes `Relaxed` or `Acquire`); count, narenas and position models |
+| `UsizePerm` (S261) | discharged | as `CountPerm`, over the two watermark wrappers; `run.sh` checks by name that nothing writes `committed_slabs` but `store_usize` and that only `class/table.rs` (and the loom models) calls the wrappers |
+| `store_usize` (S264) | discharged | one store under the commit lock; `CommittedPred` bounds one atomic by a constant; watermark, free and bitmap models (the publication of the owner word and the bitmap is `load_owner`'s premise, checked, not in the contract) |
+| `load_usize_in` (S263) | discharged | per-atomic coherence gives the held permission's value, whose predicate relates it to constants only; the same models, with both orderings of `SlabTable::watermark` |
 | `SlabDesc::init`, `state_byte_held`, `dirty_held`, `arena_held`, `set_state`, `set_dirty_at` (S197-S201, S203) | discharged, given the lock edge `axiom_acquired` assumes | every access through a permission is made holding the lock whose value holds it (the commit lock's, then the class lock's), so successive holders are ordered by happens-before and per-location coherence gives the last write through it, for `Relaxed` too; `run.sh` checks by name that `slab.rs` writes the three fields only in the accessors; the model runs the hand-over between the two locks on one thread and checks the class lock's edge to the next holder, and a control shows a read outside the lock is stale |
+| `RawLock::lock_slow` (S171) | evidence (unchanged) | deadlock freedom only; the mutex is not starvation-free, so termination is an assumption no bounded model can discharge |
+
+Left in `vspec/count.rs`, `vspec/atom.rs` and `lock.rs`: `new` (S296)
+and `new_usize` (S262) are minting seams with tool none (one permission
+per atomic is an assumption); `Lock::cell_ref`, `Lock::cell_mut` (S176, S177; tool
+Verus, kept `external_body` for the machine code of their callers) and
+the lock axioms (S172-S175) are not weak-memory questions.
+`LockGuard::drop` (S178) is discharged but stays `external_body`:
+verifying it in Verus needs `RawLock::release` declared `opens_invariants
+none` and `no_unwind`, and so `sys::futex_wake`, `sys::futex` and the
+raw syscall below it.
+
+The arena count model also checks, inside `create` under the creation
+lock, that the count reads the lock's value and every explicit arena
+below it is built: the frozen table the trusted `api::count_held` and
+`api::arena_held` (S37, S36) assume for the fork handlers; those seams
+stay trusted (tool and status unchanged), the model covers only
+`create`'s reads. Under stock loom (no DPOR patch) the arena count and
+watermark models explore 36 executions instead of 4482, and their
+`Relaxed`-store controls pass: two more models the patch is needed for.

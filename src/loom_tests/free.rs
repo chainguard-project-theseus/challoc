@@ -1,12 +1,14 @@
 //! P5: the `free` fast path's `Relaxed` reads (`verus/WEAKMEM.md`). The
 //! bitmap is the real `AtomicBitmap` (`bitmap.rs`: `init`, `claim_from`,
 //! `release`) and the bit test the real `vspec::word::load`, over one loom
-//! word for a slab of [`NSLOTS`] slots; the table steps around them are
-//! copies of `class/table.rs` and `heap/shared.rs`, with their orderings:
+//! word for a slab of [`NSLOTS`] slots, and the watermark's accesses the
+//! real `vspec::atom` wrappers (`store_usize`, `load_usize_in`); the table
+//! steps around them are copies of `class/table.rs` and `heap/shared.rs`,
+//! with their orderings:
 //!
 //! - the hand-out is the tail of `SlabTable::take_group`: the slab's
 //!   bitmap `init` (`Relaxed` writes), `store_owner` (the group's owner
-//!   word, `Relaxed`), then `committed_slabs.store(end, Release)`;
+//!   word, `Relaxed`), then `store_usize(end, Release)` of the watermark;
 //! - a claimer finds the slab through `committed_slabs()` (`Acquire`), as
 //!   in `bitmap.rs`'s `loom_bitmap_init_is_published`;
 //! - the free path is `Shared::checked_slot` and `set_slot` (and
@@ -33,9 +35,10 @@
 //! that carry a slab from `take_group` to a claimer (here the claimer's
 //! `Acquire` load of the watermark stands for that chain).
 
-use super::model;
+use super::{UsizeInv, model};
 use crate::bitmap::AtomicBitmap;
 use crate::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use crate::vspec::atom::{load_usize_in, store_usize};
 use loom::cell::UnsafeCell;
 use loom::thread;
 use std::boxed::Box;
@@ -71,6 +74,8 @@ enum Out {
 struct Table {
     /// `SlabTable::committed_slabs`, the watermark.
     committed: AtomicUsize,
+    /// `SlabTable::committed_inv` (ghost).
+    inv: UsizeInv,
     /// The group's owner word.
     owner: AtomicU16,
     /// The slab's bitmap word.
@@ -92,6 +97,7 @@ impl Table {
     fn new() -> Table {
         Table {
             committed: AtomicUsize::new(0),
+            inv: Tracked::assume_new(),
             owner: AtomicU16::new(0),
             words: [AtomicU64::new(0)],
             data: [UnsafeCell::new(0), UnsafeCell::new(0)],
@@ -107,14 +113,14 @@ impl Table {
     fn hand_out(&self) {
         self.bitmap().init_t(NSLOTS);
         self.owner.store(ARENA, Ordering::Relaxed);
-        self.committed.store(1, Ordering::Release);
+        store_usize(&self.committed, 1, Ordering::Release, Tracked::assume_new());
     }
 
     /// A claim of one slot of a slab found through `committed_slabs()`,
     /// whose load is `order` (`Acquire` as shipped);
     /// `None` when the slab is not handed out yet or no slot is clear.
     fn claim(&self, order: Ordering) -> Option<usize> {
-        if self.committed.load(order) == 0 {
+        if load_usize_in(&self.committed, order, &self.inv) == 0 {
             return None;
         }
         let (w, bits) = self.bitmap().claim_from_t(0, 1)?;
@@ -141,7 +147,7 @@ impl Table {
     fn check(&self, slot: usize) -> Out {
         let slab = 0;
         // `is_handed_out`.
-        if slab >= self.committed.load(Ordering::Relaxed) {
+        if slab >= load_usize_in(&self.committed, Ordering::Relaxed, &self.inv) {
             return Out::NeverCommitted;
         }
         // `is_set_unchecked`.

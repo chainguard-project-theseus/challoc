@@ -634,10 +634,10 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S260 | `UsizePerm` | type | atomic | GenMC | trusted |
+| S260 | `UsizePerm` | type | atomic | GenMC | discharged |
 | S261 | `new_usize` | body | atomic | none | trusted |
-| S262 | `load_usize_in` | body | atomic | GenMC | trusted |
-| S263 | `store_usize` | body | atomic | GenMC | trusted |
+| S262 | `load_usize_in` | body | atomic | GenMC | discharged |
+| S263 | `store_usize` | body | atomic | GenMC | discharged |
 
 ### src/vspec/atomic.rs
 
@@ -702,10 +702,10 @@ the full name, the line and the contract.
 | S290 | `CountPerm` | type | atomic | GenMC | discharged |
 | S291 | `fetch_add` | body | atomic | GenMC | discharged |
 | S292 | `fetch_sub` | body | atomic | GenMC | discharged |
-| S293 | `store` | body | atomic | GenMC | trusted |
-| S294 | `load` | body | atomic | GenMC | evidence |
+| S293 | `store` | body | atomic | GenMC | discharged |
+| S294 | `load` | body | atomic | GenMC | discharged |
 | S295 | `new` | body | atomic | none | trusted |
-| S296 | `swap` | body | atomic | GenMC | trusted |
+| S296 | `swap` | body | atomic | GenMC | discharged |
 
 ### src/vspec/errno.rs
 
@@ -3457,7 +3457,7 @@ pub axiom fn axiom_held_below<'a>(r: int) -> (tracked o: LockOrder<'a>)
 
 ### S174. `axiom_acquired`
 
-src/lock.rs:532. Kind: axiom. Category: allocator invariant.
+src/lock.rs:535. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The lock invariant's assumption where it enters for a guard (the other entry is [`axiom_held`], for a holder of the raw lock): a thread that has just acquired the raw lock of `l` takes the permission of `l`'s cell out of the raw lock's invariant, and the value in the cell satisfies [`lock_inv`] (every earlier holder restored it) and keeps [`lock_frame`] of the value the lock was created with.
@@ -3473,7 +3473,7 @@ axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
 
 ### S175. `axiom_held`
 
-src/lock.rs:547. Kind: axiom. Category: allocator invariant.
+src/lock.rs:550. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The lock invariant's assumption where it enters for a holder of the raw lock ([`Lock::get_unlocked`]): the holder's [`LockHeld`] token lends the permission of `l`'s cell for as long as the token stays borrowed, and the value satisfies [`lock_inv`] and keeps [`lock_frame`], as at [`axiom_acquired`].
@@ -3492,12 +3492,12 @@ axiom fn axiom_held<'a, T>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (track
 
 ### S176. `Lock::cell_ref`
 
-src/lock.rs:799. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:802. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow`] with the permission `t`.
 
-Body mints Tracked at line 807.
+Body mints Tracked at line 810.
 
 ```rust
 fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
@@ -3511,12 +3511,12 @@ fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
 
 ### S177. `Lock::cell_mut`
 
-src/lock.rs:814. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:817. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow_mut`] with the permission `t`.
 
-Body mints Tracked at line 824.
+Body mints Tracked at line 827.
 
 ```rust
 fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b mut T)
@@ -3532,7 +3532,7 @@ fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b 
 
 ### S178. `LockGuard::drop`
 
-src/lock.rs:834. Kind: external_body. Category: atomics primitive.
+src/lock.rs:837. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/lock-LockGuard-drop.md).
 
 ```rust
@@ -4693,7 +4693,7 @@ pub broadcast axiom fn axiom_arena_stats_lock_inv(v: crate::stats::ArenaStats)
 ### S260. `UsizePerm`
 
 src/vspec/atom.rs:45. Kind: external_body type. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/vspec-atom-UsizePerm.md).
 
 > Ghost permission to the atomic `usize` with identity [`id`](UsizePerm::id): its current [`value`](UsizePerm::value).
 
@@ -4720,7 +4720,7 @@ pub fn new_usize(v: usize) -> (r: (AtomicUsize, Tracked<UsizePerm>))
 ### S262. `load_usize_in`
 
 src/vspec/atom.rs:82. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/vspec-atom-load_usize_in.md).
 
 > `a.load(ordering)` inside `inv`, an invariant that holds `a`'s permission (every permission its predicate admits is for the atomic its key names first): the permission's value, so a value the predicate admits.
 
@@ -4744,7 +4744,7 @@ pub fn load_usize_in<P: InvariantPredicate<(int, usize), UsizePerm>>(
 ### S263. `store_usize`
 
 src/vspec/atom.rs:105. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/vspec-atom-store_usize.md).
 
 > `a.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
@@ -5184,7 +5184,7 @@ pub fn fetch_sub(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Track
 ### S293. `store`
 
 src/vspec/count.rs:104. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/vspec-count-store.md).
 
 > `c.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
@@ -5203,15 +5203,17 @@ pub fn store(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&
 
 ### S294. `load`
 
-src/vspec/count.rs:122. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: evidence (verus/seams/vspec-count-load.md).
+src/vspec/count.rs:123. Kind: external_body. Category: atomics primitive.
+Tool: loom/GenMC. Status: discharged (verus/seams/vspec-count-load.md).
 
-> `c.load(ordering)`: the permission's value.
+> `c.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
 ```rust
 pub fn load(c: &AtomicU32, ordering: Ordering, Tracked(perm): Tracked<&CountPerm>) -> (r: u32)
     requires
         perm.id() == count_id(c),
+        !(ordering is Release),
+        !(ordering is AcqRel),
     ensures
         r == perm.value(),
     opens_invariants none
@@ -5220,12 +5222,12 @@ pub fn load(c: &AtomicU32, ordering: Ordering, Tracked(perm): Tracked<&CountPerm
 
 ### S295. `new`
 
-src/vspec/count.rs:140. Kind: external_body. Category: atomics primitive.
+src/vspec/count.rs:145. Kind: external_body. Category: atomics primitive.
 Tool: none (assumption). Status: trusted.
 
 > `AtomicU32::new(v)`, with the one permission to it: the only place a [`CountPerm`] is minted, one per counter, with the counter it is for.
 
-Body mints Tracked at line 145.
+Body mints Tracked at line 150.
 
 ```rust
 pub const fn new(v: u32) -> (r: (AtomicU32, Tracked<CountPerm>))
@@ -5236,8 +5238,8 @@ pub const fn new(v: u32) -> (r: (AtomicU32, Tracked<CountPerm>))
 
 ### S296. `swap`
 
-src/vspec/count.rs:152. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/vspec/count.rs:157. Kind: external_body. Category: atomics primitive.
+Tool: loom/GenMC. Status: discharged (verus/seams/vspec-count-swap.md).
 
 > `c.swap(v, ordering)`: the previous value.
 

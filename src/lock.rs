@@ -447,7 +447,10 @@ fn wake(state: &AtomicU32)
 #[cfg(loom)]
 use crate::loom_tests::futex::{wait, wake};
 
+// Test code: the `cfg(loom)` build exists only for the loom models
+// (`loom_tests`, which `lib.rs` builds under `cfg(test)`).
 #[cfg(loom)]
+#[cfg(test)]
 impl RawLock {
     /// loom's atomics have no `const` constructor.
     pub fn new() -> RawLock {

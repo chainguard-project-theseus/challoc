@@ -25,14 +25,16 @@
 //! claimer, so the `Relaxed` hint load never hides a slot that `live`
 //! promised (the abort's bound, 2^22 passes, is far above it).
 
-use super::model;
+use super::{UsizeInv, model};
 use crate::bitmap::AtomicBitmap;
 use crate::lock::RawLock;
-use crate::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use crate::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use crate::vspec::atom::{load_usize_in, store_usize};
 use loom::cell::UnsafeCell;
 use loom::thread;
 use std::boxed::Box;
 use std::vec::Vec;
+use vstd::prelude::Tracked;
 
 const NSLOTS: usize = 2;
 const SLAB_MASK: u64 = (1 << NSLOTS) - 1;
@@ -267,18 +269,23 @@ fn loom_bitmap_two_claimers() {
 }
 
 /// `init`'s `Relaxed` writes, published by a `Release` store and read
-/// through an `Acquire` load (`class/table.rs`, `committed_slabs`): a
-/// claimer that sees the slab committed never claims its padding.
+/// through an `Acquire` load of the commit count (`class/table.rs`,
+/// `committed_slabs`, through the real `vspec::atom` wrappers): a claimer
+/// that sees the slab committed never claims its padding.
 #[test]
+// `cfg(test)` again: `verus/seams.sh` skips test code only by this
+// attribute, and the permissions minted below are not seams.
+#[cfg(test)]
 fn loom_bitmap_init_is_published() {
     model(|| {
         let s = leak(Slab::new());
-        let committed = leak(AtomicU32::new(0));
+        let committed = leak(AtomicUsize::new(0));
+        let inv: &UsizeInv = leak(Tracked::assume_new());
         let t = thread::spawn(move || {
             s.bitmap().init_t(NSLOTS);
-            committed.store(1, Ordering::Release);
+            store_usize(committed, 1, Ordering::Release, Tracked::assume_new());
         });
-        if committed.load(Ordering::Acquire) == 1 {
+        if load_usize_in(committed, Ordering::Acquire, inv) == 1 {
             let m = s.bitmap().claim(NSLOTS + 1).map_or(0, |(_, m)| m);
             assert_eq!(m & !SLAB_MASK, 0, "claimed padding: {m:#x}");
         }

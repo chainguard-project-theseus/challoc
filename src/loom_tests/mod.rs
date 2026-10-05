@@ -4,14 +4,18 @@
 //! atomics and the crate is cut down to the modules whose real code is
 //! checked here (`lib.rs`): `lock` (P2, the futex replaced by the
 //! stand-in in `futex`), `bitmap` (P1, with `vspec::word`) and the
-//! `vspec::word`/`vspec::count` wrappers that `free.rs` (P5, with copies
-//! of the table steps) and `count.rs` (the arena bound counts, with
-//! copies of the `Arenas` steps) call. The
+//! `vspec::word`/`vspec::count`/`vspec::atom` wrappers that `free.rs`
+//! (P5, with copies of the table steps), `watermark.rs` (the class
+//! table's watermark, with copies of the table steps), `count.rs` and
+//! `narenas.rs` (the arena bound counts and the arena count, with copies
+//! of the `Arenas` steps) and `position.rs` (the policy's position, with
+//! copies of the `Policy` steps) call. The
 //! background wake-up (P3), the background thread's exit, the
 //! publication of `Shared` (P4) and the slab descriptors (`slab.rs`,
-//! whose module needs `layout`) live in statics built in `const` context
-//! or in modules this build leaves out, so `background.rs`, `exit.rs`,
-//! `init.rs` and `slab.rs` check copies that cite the code they mirror.
+//! whose module needs `layout`) live in statics built in `const` context,
+//! which loom cannot construct, or in modules this build leaves out, so
+//! `background.rs`, `exit.rs`, `init.rs` and `slab.rs` check copies that
+//! cite the code they mirror.
 //!
 //! ```sh
 //! sh verus/loom/run.sh
@@ -51,7 +55,13 @@ mod init;
 #[cfg(test)]
 mod lock;
 #[cfg(test)]
+mod narenas;
+#[cfg(test)]
+mod position;
+#[cfg(test)]
 mod slab;
+#[cfg(test)]
+mod watermark;
 
 /// Run `f` under every interleaving loom reaches (exhaustive: no
 /// preemption bound unless `LOOM_MAX_PREEMPTIONS` sets one).
@@ -84,3 +94,28 @@ fn check<F: Fn() + Sync + Send + 'static>(b: loom::model::Builder, f: F) {
     });
     std::println!("loom: {} executions", n.load(Ordering::Relaxed));
 }
+
+vstd::prelude::verus! {
+
+/// The predicate of the invariant the models pass to
+/// `vspec::atom::load_usize_in`. Its bodies are ghost, absent from these
+/// builds: the models check the values the loads return themselves.
+pub(super) struct AnyUsize;
+
+impl vstd::invariant::InvariantPredicate<(vstd::prelude::int, usize), crate::vspec::atom::UsizePerm> for AnyUsize {
+    open spec fn inv(k: (vstd::prelude::int, usize), perm: crate::vspec::atom::UsizePerm) -> bool {
+        true
+    }
+}
+
+} // verus!
+
+/// The invariant argument of `vspec::atom::load_usize_in` (ghost: no
+/// bytes, nothing to build).
+pub(super) type UsizeInv = vstd::prelude::Tracked<
+    vstd::invariant::AtomicInvariant<
+        (vstd::prelude::int, usize),
+        crate::vspec::atom::UsizePerm,
+        AnyUsize,
+    >,
+>;
