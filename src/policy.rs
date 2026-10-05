@@ -63,6 +63,7 @@ use crate::lock::LockOrder;
 #[cfg(verus_only)]
 use crate::lock::rank_class;
 use crate::purge::NEVER;
+use crate::stats::fig_add64;
 use crate::sys::cgroup::{Cgroup, LEVELS, UNLIMITED};
 use crate::vspec::count::CountPerm;
 #[cfg(verus_only)]
@@ -960,14 +961,12 @@ impl Policy {
 /// allocator: one lock hold per class that has an `Empty` slab (the
 /// lock-free `oldest_empty` says which), one for the huge allocator.
 ///
-/// Trusted: the iterator over the arenas and the unchecked sums stay as
-/// written; callers rely on nothing but the type. The locks may wait in
-/// the kernel. It cannot abort in the shipped build: the sums wrap
-/// (overflow checks are off in release), and `Arenas::iter` indexes the
-/// registry below `arenas.count()`, which is verified to be at most
-/// `MAX_ARENAS` (`arena::NarenasPred`), so its bounds check never fails.
-/// Lock order: it takes class locks, then the huge lock, one at a time.
-#[verifier::external_body]
+/// The arenas are those [`Arenas::get_existing`](crate::arena::Arenas::get_existing)
+/// finds below `arenas.count()`. The sums are [`fig_add64`], which wraps
+/// as `+` does in the shipped build (overflow checks are off in release);
+/// callers rely on nothing but the type. The locks may wait in the
+/// kernel. Lock order: it takes class locks, then the huge lock, one at a
+/// time.
 pub fn empty_bytes(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u64
     requires
         crate::sys::may_syscall(),
@@ -976,10 +975,18 @@ pub fn empty_bytes(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u6
         *final(ord) == *old(ord),
 {
     let mut total = 0u64;
-    for arena in shared.arenas.iter() {
-        total += arena.empty_bytes(Tracked(&mut *ord)) as u64;
+    let n = shared.arenas.count() as usize;
+    for i in 0..n
+        invariant
+            crate::sys::may_syscall(),
+            ord.allows(rank_class(0, 0)),
+            *ord == *old(ord),
+    {
+        if let Some(arena) = shared.arenas.get_existing(i as u16) {
+            total = fig_add64(total, arena.empty_bytes(Tracked(&mut *ord)) as u64);
+        }
     }
-    total + shared.huge.empty_bytes(Tracked(ord)) as u64
+    fig_add64(total, shared.huge.empty_bytes(Tracked(ord)) as u64)
 }
 
 /// Evaluate the table against the cgroup record after a sample. Without a

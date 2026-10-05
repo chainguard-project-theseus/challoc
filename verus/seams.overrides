@@ -125,7 +125,6 @@ src/lock.rs:Lock::cell_ref	UnsafeCell/volatile/transmute	Verus
 src/lock.rs:Lock::cell_mut	UnsafeCell/volatile/transmute	Verus
 LockGuard::drop	atomics primitive	loom/GenMC	discharged (verus/seams/lock-LockGuard-drop.md)
 Meta::commit	allocator invariant	none (assumption)
-empty_bytes	panic/abort	Kani
 total_bytes	core library	Kani	discharged (verus/seams/purge-total_bytes.md)
 errno_location	FFI/syscall	none (assumption)
 errno_read	FFI/syscall	none (assumption)

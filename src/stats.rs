@@ -868,11 +868,9 @@ pub fn collect_bin(cs: &ClassState, Tracked(ord): Tracked<&mut LockOrder>) -> (r
     }
 }
 
-/// Arena `i` of the scan [`Arenas::iter`] makes: `None` for an index not
-/// built yet. `i` is below `arenas.narenas`, which never exceeds
-/// `MAX_ARENAS` (`Arenas::count`'s invariant).
-///
-/// [`Arenas::iter`]: crate::arena::Arenas::iter
+/// Arena `i` of the registry scan over every index below the count: `None`
+/// for an index not built yet. `i` is below `arenas.narenas`, which never
+/// exceeds `MAX_ARENAS` (`Arenas::count`'s invariant).
 pub(crate) fn arena_at(shared: &Shared, i: usize) -> (r: Option<&Arena>)
     requires
         i < MAX_ARENAS,

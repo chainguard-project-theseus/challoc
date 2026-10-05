@@ -1,6 +1,6 @@
 # `core::mem::drop`
 
-Seam S276 of `verus/SEAMS.md`: src/vspec/class.rs:21. Kind: assume_spec. Category: core library.
+Seam S275 of `verus/SEAMS.md`: src/vspec/class.rs:21. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

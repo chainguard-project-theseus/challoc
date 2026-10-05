@@ -873,9 +873,10 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
     }
     if !o.no_arenas {
         // `for_each_arena` with a closure that keeps the first error,
-        // spelled as the scan `Arenas::iter` makes (`stats::arena_at`):
-        // Verus does not model the closure's mutable captures. An error
-        // returns at once, where the closure skipped the remaining arenas.
+        // spelled as a scan of every index below the count
+        // (`stats::arena_at`): Verus does not model the closure's mutable
+        // captures. An error returns at once, where the closure skipped
+        // the remaining arenas.
         let n = shared.arenas.count() as usize;
         for i in 0..n
             invariant

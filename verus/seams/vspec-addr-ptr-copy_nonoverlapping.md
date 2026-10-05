@@ -1,6 +1,6 @@
 # `core::ptr::copy_nonoverlapping::<T>`
 
-Seam S256 of `verus/SEAMS.md`: src/vspec/addr.rs:51. Kind: assume_spec. Category: raw pointer (internal).
+Seam S255 of `verus/SEAMS.md`: src/vspec/addr.rs:51. Kind: assume_spec. Category: raw pointer (internal).
 Discharged by Kani.
 
 ## Contract
@@ -51,7 +51,7 @@ Reproduce: `sh verus/kani/run.sh --harness kani_proofs::ptr::ptr_copy_nonoverlap
   (or two distinct arrays). The empty case is checked on pointers to
   no object.
 - No `ensures`: the call is defined and returns. As for `write_bytes`
-  (S253), the harness also shows that nothing outside the destination
+  (S252), the harness also shows that nothing outside the destination
   range is written.
 
 Gap: generic over `T`; checked at a byte and a word, and at a zero-sized
@@ -65,7 +65,7 @@ only limits the sizes.
 Provenance: every non-empty range is checked on pointers derived from
 a local array, which Kani tracks as one object. The allocator's
 pointers are integer-to-pointer casts of mapped addresses
-(`vspec::addr::addr_to_ptr`, S252, whose provenance claim stays
+(`vspec::addr::addr_to_ptr`, S251, whose provenance claim stays
 trusted); Kani has no model of those mappings. The record covers what
 the function does on a range that is valid; that the allocator's
 ranges are valid is what the premises behind `rw_len` and `alloc_len`

@@ -4836,7 +4836,9 @@ MAX_ARENAS`, which every caller's loop below the count shows, and its
 table index below `arenas.count()`, cannot fail (it required
 `may_abort_corrupt()` for that, and nothing before theorem 32, not even
 `may_syscall()`, though it takes the class and huge locks: a gap in
-theorem 8's list of trusted bodies, closed then). With both, no mallctl
+theorem 8's list of trusted bodies, closed then; it is verified since,
+as an index loop over `Arenas::get_existing` with `fig_add64` sums, and
+has no table index left to check). With both, no mallctl
 read needs `may_abort_corrupt()`, so `ctl`, `call`, the readers,
 `policy::evaluate`, `purge::sample`, `print::policy_line` and
 `print::json_general` no longer require it.
@@ -4948,11 +4950,12 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   caller's memory verify over `vspec::cbuf` and the `core` specs of
   `vspec::ptr`), the kernel fact `axiom_read_count` (`sys::read`'s
   count bound, which keeps the cgroup reader's slice in bounds),
-  `fig_add`, `fig_mul` and `policy::empty_bytes`'s sums, and the `core`
-  functions vstd and `vspec` specify.
+  `fig_add`, `fig_mul` and `fig_add64` (`policy::empty_bytes`' sums),
+  and the `core` functions vstd and `vspec` specify.
 - The shipped release profile: overflow checks and debug assertions
-  off. With them on (the dev profile the tests use), `fig_add`'s `+`,
-  `empty_bytes`' `+=` and the `debug_assert!`s on these paths can panic.
+  off. With them on (the dev profile the tests use), the `+` of
+  `fig_add` and `fig_add64` (`empty_bytes`' sums among them) and the
+  `debug_assert!`s on these paths can panic.
 - The integrity checks above hold: a failed one means corrupt allocator
   state, not a bad argument.
 
@@ -5143,7 +5146,8 @@ the gate premise below.
   `Heap::destroy` and `Meta::commit`: each states the
   lowest rank its body takes (`assign_home`, trusted at this theorem's
   merge, is verified since theorem 34, and so are `Set::ensure` and
-  the call `thread.arena` makes, `Heap::set_arena`);
+  the call `thread.arena` makes, `Heap::set_arena`; `policy::empty_bytes`
+  is verified since it became an index loop over `Arenas::get_existing`);
   `purge::background::state` names `STATE`'s rank.
 - *Ranks set in constructors*: none is trusted. `Tcaches::init` is
   verified (one write of the whole value, whose lock it creates with

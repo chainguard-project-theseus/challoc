@@ -1,6 +1,6 @@
 # `core::ptr::write_bytes::<T>`
 
-Seam S255 of `verus/SEAMS.md`: src/vspec/addr.rs:40. Kind: assume_spec. Category: raw pointer (internal).
+Seam S254 of `verus/SEAMS.md`: src/vspec/addr.rs:40. Kind: assume_spec. Category: raw pointer (internal).
 Discharged by Kani.
 
 ## Contract
@@ -63,7 +63,7 @@ model artefact; `core` writes nothing). The proofs fill bytes only
 Provenance: every non-empty range is checked on pointers derived from
 a local array, which Kani tracks as one object. The allocator's
 pointers are integer-to-pointer casts of mapped addresses
-(`vspec::addr::addr_to_ptr`, S252, whose provenance claim stays
+(`vspec::addr::addr_to_ptr`, S251, whose provenance claim stays
 trusted); Kani has no model of those mappings. The record covers what
 the function does on a range that is valid; that the allocator's
 ranges are valid is what the premises behind `rw_len` and `alloc_len`

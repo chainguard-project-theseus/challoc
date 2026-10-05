@@ -1,6 +1,6 @@
 # `core::fmt::Formatter::<'a>::write_str`
 
-Seam S304 of `verus/SEAMS.md`: src/vspec/fmt.rs:23. Kind: assume_spec. Category: core library.
+Seam S303 of `verus/SEAMS.md`: src/vspec/fmt.rs:23. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

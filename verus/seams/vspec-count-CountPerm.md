@@ -1,6 +1,6 @@
 # `CountPerm` (`vspec/count.rs`)
 
-Seam S294 of `verus/SEAMS.md`: src/vspec/count.rs:53. Kind: external_body type. Category: atomics primitive.
+Seam S293 of `verus/SEAMS.md`: src/vspec/count.rs:53. Kind: external_body type. Category: atomics primitive.
 Discharged by the records of its wrappers and `run.sh`'s access check
 (part 3).
 
@@ -15,7 +15,7 @@ pub tracked struct CountPerm
 The type is an `external_body` tracked struct with one private unit
 field; `id()` and `value()` are uninterpreted spec functions on it. It
 has no `Copy` or `Clone`, and one exec constructor, `vspec::count::new`
-(S304, a separate seam), which makes a new atomic together with its one
+(S303, a separate seam), which makes a new atomic together with its one
 permission: `Arenas::init` calls it for each bound count (value 0) and
 for the arena count, and keeps each permission inside its invariant
 before the registry is published, and `Policy::new` calls it for the
@@ -33,7 +33,7 @@ each checked elsewhere:
    no `Copy` moves, and nothing in `src/` implements `Copy` or `Clone`
    for it (it is declared in `vspec/count.rs` only, with no derive).
 2. **One permission per atomic.** The minting seam's
-   (`vspec::count::new`, S304, which mints one permission with the
+   (`vspec::count::new`, S303, which mints one permission with the
    atomic it makes); not claimed here.
 3. **The value is the atomic's.** Every write of the atomic once it is
    shared, and every read whose value a proof uses, is one of the
@@ -44,7 +44,7 @@ each checked elsewhere:
    and `vspec-count-load.md` (evidence: its contract does not exclude
    the orderings with which `load` panics, which does not bear on the
    value it returns). The arena count is also written by `store`
-   (S302, `Arenas::create`) and the position by `swap` (S305,
+   (S301, `Arenas::create`) and the position by `swap` (S304,
    `Policy::apply`): wrappers with no record of their own (trusted,
    proposed tool loom/GenMC), whose contracts read `value()` the same
    way; the bound counts, which the records above are about, never go

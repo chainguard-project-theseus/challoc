@@ -2480,10 +2480,11 @@ impl Arenas {
 
 } // verus!
 
+#[cfg(test)]
 impl Arenas {
-    /// Every arena that exists, in index order (`Shared::set_decay_ms`,
-    /// `policy::empty_bytes`). The table index is below `count()`, which
-    /// is verified to be at most `MAX_ARENAS`, so it is in bounds.
+    /// Every arena that exists, in index order. The table index is below
+    /// `count()`, which is verified to be at most `MAX_ARENAS`, so it is in
+    /// bounds.
     pub fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Arena> + 'a {
         let n = self.count() as usize;
         (0..n).filter_map(move |i| {
@@ -2964,7 +2965,7 @@ impl Arenas {
     /// [`MAX_ARENAS`], read inside the count's invariant
     /// ([`NarenasPred`]). The fork handlers' lock order needs the bound
     /// (they visit the indices below the count as `u16` arena indices),
-    /// and so do the scans over the registry ([`Arenas::iter`] and
+    /// and so do the scans over the registry (`policy::empty_bytes` and
     /// `stats::arena_at`).
     #[inline]
     pub fn count(&self) -> (r: u32)
