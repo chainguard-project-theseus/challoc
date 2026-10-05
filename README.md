@@ -148,7 +148,7 @@ challoc exports the standard C functions including C23's `free_sized` and
 usable size from the work the call already did (design 13.7).
 
 It is stricter than jemalloc in two ways: a sized free must name the
-pointer's class, and `malloc_usable_size`, `realloc` and `sallocx` abort on
+pointer's class (for a huge run, its page count), and `malloc_usable_size`, `realloc` and `sallocx` abort on
 a freed or foreign pointer, where jemalloc's behaviour is undefined
 (`docs/hardening.md`).
 

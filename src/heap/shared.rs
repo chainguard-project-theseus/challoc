@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use crate::arena::{Arena, Arenas};
 use crate::class::SlabTable;
 use crate::config::Config;
-use crate::huge::Huge;
+use crate::huge::{Huge, RunState};
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
@@ -912,21 +912,41 @@ impl Shared {
 
     /// The sized free's abort: a slab pointer whose class is not the one
     /// the size hint names (`sdallocx`'s contract is `nallocx(size, flags)
-    /// == sallocx(p)`). Huge runs and pointers that are not allocations pass
-    /// here and are judged by the exact free that follows.
+    /// == sallocx(p)`), or the start of an active huge run whose page count
+    /// is not the one `size` rounds to (any size whose page count is the
+    /// run's passes, which also lets `free_aligned_sized` name the small
+    /// size of a run an alignment made huge). Pointers that are not
+    /// allocations pass here and are judged by the exact free that follows.
     #[cold]
     #[inline(never)]
     pub fn check_size_hint(&self, p: *mut u8, size: usize, hint: Option<usize>) {
-        if let Kind::Slab { class, .. } = self.regions.classify(p as usize) {
-            if hint != Some(class as usize) {
-                panic!(
-                    "sized free of {:#x}: size hint {} does not match the allocation (class {}, {} bytes)",
-                    p as usize,
-                    size,
-                    class,
-                    CLASSES[class as usize].size()
-                );
+        match self.regions.classify(p as usize) {
+            Kind::Slab { class, .. } => {
+                if hint != Some(class as usize) {
+                    panic!(
+                        "sized free of {:#x}: size hint {} does not match the allocation (class {}, {} bytes)",
+                        p as usize,
+                        size,
+                        class,
+                        CLASSES[class as usize].size()
+                    );
+                }
             }
+            Kind::Huge { page } => {
+                let Some(run) = self.huge.lookup(page) else {
+                    return;
+                };
+                if run.start == page
+                    && run.state == RunState::Active
+                    && self.huge.usable_for(size) != Some(run.usable)
+                {
+                    panic!(
+                        "sized free of {:#x}: size hint {} does not match the allocation (huge run, {} bytes)",
+                        p as usize, size, run.usable
+                    );
+                }
+            }
+            _ => {}
         }
     }
 

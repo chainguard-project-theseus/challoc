@@ -603,6 +603,17 @@ ctests! {
         negative!("free_sized_huge_hint", SIGABRT, &["sized free of 0x", "size hint 1048576 does not match"],
             stdout_lacks: &["returned"]),
     ];
+    /// A sized free of a huge run with a size that does not round to the
+    /// run's pages: the slow path's hint check aborts at the call.
+    c_negative_sized_huge_mismatch => [
+        negative!("sized_huge_mismatch", SIGABRT, &["sized free of 0x", "size hint 64 does not match the allocation (huge run"],
+            stdout_lacks: &["returned"]),
+    ];
+    /// The same through C23 `free_sized` with a size larger than the run.
+    c_negative_free_sized_huge_mismatch => [
+        negative!("free_sized_huge_mismatch", SIGABRT, &["sized free of 0x", "size hint 4194304 does not match the allocation (huge run"],
+            stdout_lacks: &["returned"]),
+    ];
     /// Item 43: a huge run freed twice, and a free of a page inside a huge
     /// run; both are the huge allocator's own aborts.
     c_negative_huge_double_free => [

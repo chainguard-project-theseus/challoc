@@ -41,6 +41,10 @@
  *   negative free_sized_huge_hint free_sized(slab pointer, 1 MiB): a huge
  *                                 size hint on a slab pointer aborts at the
  *                                 call (the hint names no class)
+ *   negative sized_huge_mismatch  sdallocx(1 MiB run, 64, 0): the size does not
+ *                                 round to the run's pages, so the call aborts
+ *   negative free_sized_huge_mismatch
+ *                                 free_sized(1 MiB run, 4 MiB): the same
  *   negative huge_double_free     free of a 1 MiB run twice
  *   negative huge_interior_free   free of the second page of a 1 MiB run
  *   negative free_usable_interior challoc_free_usable(p + size/2): the
@@ -300,6 +304,18 @@ int main(int argc, char **argv)
         bad = p;
         free_sized(bad, 1u << 20); /* must abort: a huge hint on a slab slot */
         printf("free_sized(%p, 1 MiB) returned\n", bad);
+    } else if (strcmp(mode, "sized_huge_mismatch") == 0) {
+        REQUIRE(sdallocx != NULL, "sdallocx not exported");
+        bad = malloc(1u << 20);
+        REQUIRE(bad != NULL, "malloc(1 MiB) failed");
+        sdallocx(bad, 64, 0); /* must abort: 64 bytes is not the run's size */
+        printf("sdallocx(%p, 64, 0) of a 1 MiB run returned\n", bad);
+    } else if (strcmp(mode, "free_sized_huge_mismatch") == 0) {
+        REQUIRE(free_sized != NULL, "free_sized not exported");
+        bad = malloc(1u << 20);
+        REQUIRE(bad != NULL, "malloc(1 MiB) failed");
+        free_sized(bad, 4u << 20); /* must abort: 4 MiB is not the run's size */
+        printf("free_sized(%p, 4 MiB) of a 1 MiB run returned\n", bad);
     } else if (strcmp(mode, "huge_double_free") == 0) {
         size_t size = 1u << 20;
         bad = malloc(size);
