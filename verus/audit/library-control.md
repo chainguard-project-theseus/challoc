@@ -310,6 +310,10 @@ the parts against the slice's final contents.
   `flag_sort` branch would bring the case inside verified code, but it
   changes a flush-path function, which this audit leaves to the
   coordinator.
+  (Superseded by upstream #102, ported in this tree: `flag_sort`'s
+  cursors are `u32` and it is verified for up to `MAX_NSLOTS` entries,
+  so no guard is needed; `group_by_slab` stays trusted for its
+  `sort_unstable` fallback.)
 - Record wording fixed (no contract change): the loop and unwind
   sentence copied into the records of S277, S280, S340, S341 and S342
   (no loop in four of their harnesses, 33 iterations in the fifth),
