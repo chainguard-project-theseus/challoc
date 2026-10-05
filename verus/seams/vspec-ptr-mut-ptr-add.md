@@ -44,7 +44,7 @@ Reproduce: `sh verus/kani/run.sh --harness kani_proofs::ptr::ptr_add` (both quan
   here the array `p` was derived from; the empty-offset case is the
   `add(0)` and zero-sized checks, on pointers to no allocation.
 - `ensures r == ptr_add(p, count)`: `ptr_add` is uninterpreted; what
-  the proofs know of it is `axiom_ptr_add_addr` (S328, discharged by
+  the proofs know of it is `axiom_ptr_add_addr` (S329, discharged by
   Kani the same way): the address `count * size_of::<T>()` bytes on,
   `p`'s provenance and metadata. The harness checks that address and
   that provenance (the read through `r`); `T: Sized`, so the metadata
@@ -61,8 +61,9 @@ longer arrays only scale the numbers.
 Provenance: every non-empty range is checked on pointers derived from
 a local array, which Kani tracks as one object. The allocator's
 pointers are integer-to-pointer casts of mapped addresses
-(`vspec::addr::addr_to_ptr`, S251, whose provenance claim stays
-trusted); Kani has no model of those mappings. The record covers what
+(`vspec::addr::addr_to_ptr`, S250, discharged by Kani except its
+provenance claim, which stays an assumption); Kani has no model of
+those mappings. The record covers what
 the function does on a range that is valid; that the allocator's
 ranges are valid is what the premises behind `rw_len` and `alloc_len`
 (other seams) state.

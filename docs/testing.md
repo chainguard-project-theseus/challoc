@@ -211,8 +211,10 @@ Two Kani 0.68 (CBMC 6.11) modelling bugs shape the harnesses: a
 `write_bytes`, `copy` or `copy_nonoverlapping` with a symbolic count
 into an array of 8-byte elements writes one element too few (so the
 memory harnesses run their lengths as constants), and `<` on a
-symbolic `bool` holds of `false < false` (so `arena::key_less`, a
-tuple comparison, has no harness). A harness that leans on either would check the model,
+symbolic `bool` is unconstrained (both results are reachable for every
+pair of operands; so the harness of `arena::key_less`, a tuple
+comparison, runs its two `bool`s as literals and compares the expected
+keys as integers). A harness that leans on either would check the model,
 not the code.
 
 ## RefinedRust

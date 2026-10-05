@@ -334,3 +334,20 @@ fn array_get_unchecked() {
     on::<u64, 6>();
     on::<(u64, u8), 3>();
 }
+
+/// S250 `addr_to_ptr`, no `requires`, `ensures p as usize == addr, p ==
+/// addr_ptr(addr), p@.provenance == cast_provenance()`: for every address
+/// it returns, the pointer's address is `addr`, and it is the cast
+/// `addr as *mut u8` (`addr_ptr(addr)` read as that cast), the same
+/// pointer on every call. The provenance clause is not checked here (it
+/// stays an assumption; see the record).
+#[kani::proof]
+fn addr_to_ptr_is_the_cast() {
+    use crate::vspec::addr::addr_to_ptr;
+    let addr: usize = kani::any();
+    let p = addr_to_ptr(addr);
+    assert_eq!(p as usize, addr);
+    assert_eq!(p.addr(), addr);
+    assert_eq!(p, addr as *mut u8);
+    assert_eq!(addr_to_ptr(addr), p);
+}

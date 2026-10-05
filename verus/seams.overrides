@@ -70,7 +70,7 @@ byte_at	raw pointer from C caller	Miri (evidence only)
 bytes_at	raw pointer from C caller	Miri (evidence only)
 env_var	raw pointer from C caller	Miri (evidence only)
 group_by_slab	core library	Kani
-key_less	core library	Kani
+key_less	core library	Kani	discharged (verus/seams/arena-key_less.md)
 addr_mix	raw pointer (internal)	Kani	discharged (verus/seams/heap-flush-addr_mix.md)
 axiom_fresh_stack	allocator invariant	none (assumption)
 assert_flushed	panic/abort	Kani	discharged (verus/seams/heap-assert_flushed.md)
@@ -142,7 +142,7 @@ write_all	termination	none (assumption)
 axiom_user_va_limit	platform/kernel fact	none (assumption)
 axiom_auth_sign	platform/kernel fact	Islaris/Isla	discharged (verus/seams/sys-pac-axiom_auth_sign.md)
 check	panic/abort	Kani	discharged (verus/seams/vspec-check-check.md)
-abort_integrity	panic/abort	Kani
+abort_integrity	panic/abort	Kani	discharged (verus/seams/sys-abort-abort_integrity.md)
 axiom_class_table_wf	allocator invariant	Kani
 stats_allocated	core library	Kani	discharged (verus/seams/vspec-print-stats_allocated.md)
 axiom_ptr_add_addr	core library	Kani	discharged (verus/seams/vspec-ptr-axiom_ptr_add_addr.md)
@@ -364,7 +364,7 @@ src/purge/background.rs:shared_arg	raw pointer (internal)	none (assumption)
 src/stats.rs:axiom_snapshot_lock_inv	allocator invariant	none (assumption)
 src/vspec/addr.rs:<*const T>::is_null	raw pointer (internal)	Kani	discharged (verus/seams/vspec-addr-const-ptr-is_null.md)
 src/vspec/addr.rs:<*mut T>::is_null	raw pointer (internal)	Kani	discharged (verus/seams/vspec-addr-mut-ptr-is_null.md)
-src/vspec/addr.rs:addr_to_ptr	raw pointer (internal)	Kani
+src/vspec/addr.rs:addr_to_ptr	raw pointer (internal)	Kani	discharged (verus/seams/vspec-addr-addr_to_ptr.md)
 src/vspec/addr.rs:core::ptr::copy_nonoverlapping::<T>	raw pointer (internal)	Kani	discharged (verus/seams/vspec-addr-ptr-copy_nonoverlapping.md)
 src/vspec/addr.rs:core::ptr::write_bytes::<T>	raw pointer (internal)	Kani	discharged (verus/seams/vspec-addr-ptr-write_bytes.md)
 src/vspec/arena.rs:axiom_arena_stats_lock_inv	allocator invariant	none (assumption)

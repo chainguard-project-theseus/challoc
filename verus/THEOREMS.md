@@ -5367,7 +5367,8 @@ order and the counts.
   `PAtomicPtr`, whose permission vstd mints, and holds no bound count.
   Nothing writes a bound count outside the wrappers afterwards (by
   inspection).
-- `key_less` (`arena.rs:1382`, `external_body`): `core`'s `<` on `(u32,
+- `key_less` (`arena.rs:1710`, `external_body`, discharged by Kani:
+  `verus/seams/arena-key_less.md`): `core`'s `<` on `(u32,
   bool)` is lexicographic with `false < true`. vstd specifies no order on
   `bool`; a verified spelling of the comparison changed
   `create_heap_for_thread`'s machine code.

@@ -242,7 +242,7 @@ the full name, the line and the contract.
 | S53 | `A_LAST_EXIT_PURGE` | const | core | Kani | discharged |
 | S54 | `axiom_arena_layout` | axiom | core | Kani | discharged |
 | S55 | `axiom_arena_assemble` | axiom | ptr | none | trusted |
-| S56 | `key_less` | body | core | Kani | trusted |
+| S56 | `key_less` | body | core | Kani | discharged |
 | S57 | `AR_TABLE` | const | core | Kani | trusted |
 | S58 | `AR_BOUND` | const | core | Kani | trusted |
 | S59 | `AR_LOCK` | const | core | Kani | trusted |
@@ -528,7 +528,7 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S207 | `abort_integrity` | body | abort | Kani | trusted |
+| S207 | `abort_integrity` | body | abort | Kani | discharged |
 
 ### src/sys/auxv.rs
 
@@ -616,7 +616,7 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S250 | `addr_to_ptr` | body | ptr | Kani | trusted |
+| S250 | `addr_to_ptr` | body | ptr | Kani | discharged |
 | S251 | `ptr::write_bytes::<T>` | spec | ptr | Kani | discharged |
 | S252 | `ptr::copy_nonoverlapping::<T>` | spec | ptr | Kani | discharged |
 | S253 | `<*mut T>::is_null` | spec | ptr | Kani | discharged |
@@ -1700,7 +1700,7 @@ axiom fn axiom_arena_assemble(
 ### S56. `key_less`
 
 src/arena.rs:1699. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/arena-key_less.md).
 
 > `a < b` on `(u32, bool)`: [`key_lt`].
 
@@ -3921,7 +3921,7 @@ pub broadcast axiom fn axiom_snapshot_lock_inv(v: Snapshot)
 ### S207. `abort_integrity`
 
 src/sys/abort.rs:175. Kind: external_body. Category: panic/abort.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/sys-abort-abort_integrity.md).
 
 > [`abort_fmt`] at an integrity check: a test of allocator state that no verified invariant constrains failed ([`super::integrity_aborts`]).
 
@@ -4534,7 +4534,7 @@ pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsSlot>)
 ### S250. `addr_to_ptr`
 
 src/vspec/addr.rs:26. Kind: external_body. Category: raw pointer (internal).
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-addr-addr_to_ptr.md).
 
 > `addr as *mut u8`: a pointer to `addr` (Verus supports only the other direction of the cast), [`addr_ptr`], with [`cast_provenance`].
 

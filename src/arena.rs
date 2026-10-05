@@ -3113,3 +3113,37 @@ pub(crate) mod kani_layout {
         array_layout::<AtomicU64, 7>();
     }
 }
+
+/// Kani check of `key_less` (record under `verus/seams/`).
+#[cfg(kani)]
+mod kani_key_less {
+    use super::key_less;
+
+    /// A `(u32, bool)` key as the integer `2 * k.0 + k.1`: the integers
+    /// compare as `key_lt` orders the keys (lexicographic, `false <
+    /// true`).
+    fn key(k: (u32, bool)) -> u64 {
+        ((k.0 as u64) << 1) | k.1 as u64
+    }
+
+    /// S56 `key_less`, `ensures r == key_lt(a, b)`: for every pair of
+    /// keys. The counts are symbolic and the two `bool`s run over their
+    /// four values as literals: Kani 0.68 (CBMC 6.11) leaves `<` on two
+    /// symbolic `bool`s unconstrained (both results are reachable for
+    /// every pair of operands, checked in a scratch crate), so a harness
+    /// with symbolic `bool`s would reject the correct body. The expected
+    /// value compares integers, and the two results are matched by
+    /// branching on one, with no `bool` comparison.
+    #[kani::proof]
+    fn key_less_is_key_lt() {
+        let a0: u32 = kani::any();
+        let b0: u32 = kani::any();
+        kani::cover!(a0 == b0);
+        kani::cover!(a0 < b0);
+        for (x, y) in [(false, false), (false, true), (true, false), (true, true)] {
+            let want = key((a0, x)) < key((b0, y));
+            let r = key_less((a0, x), (b0, y));
+            assert!(if r { want } else { !want });
+        }
+    }
+}
