@@ -2076,3 +2076,53 @@ mod linux_tests {
         drop(v);
     }
 }
+
+/// Kani check of `Cgroup`'s `Display` (record under `verus/seams/`).
+#[cfg(kani)]
+mod kani_fmt {
+    use super::{Cgroup, State};
+    use crate::kani_proofs::fmt::formats;
+    use core::sync::atomic::Ordering::Relaxed;
+
+    /// The longest directory checked.
+    const DIR_MAX: u16 = 3;
+
+    /// S317 `DisplaySpecImpl for sys::cgroup::Cgroup` (`fmt_req` true):
+    /// every state, every figure, and every directory of up to `DIR_MAX`
+    /// bytes (every byte value) with every mount prefix of it, the type
+    /// invariant's `mount_len <= dir_len` (what `mount()` and `path()`
+    /// slice by).
+    #[kani::proof]
+    #[kani::unwind(22)]
+    fn display_cgroup() {
+        let states = [
+            State::Disabled,
+            State::NoUnifiedPath,
+            State::NoMount,
+            State::PathTooLong,
+            State::Tracked,
+        ];
+        let s: usize = kani::any();
+        kani::assume(s < states.len());
+        let mut c = Cgroup::untracked(states[s]);
+        let (dir_len, mount_len): (u16, u16) = (kani::any(), kani::any());
+        kani::assume(dir_len <= DIR_MAX && mount_len <= dir_len);
+        for k in 0..DIR_MAX as usize {
+            c.dir[k] = kani::any();
+        }
+        c.dir_len = dir_len;
+        c.mount_len = mount_len;
+        for a in [
+            &c.limit,
+            &c.high,
+            &c.current,
+            &c.events_high,
+            &c.events_max,
+            &c.high_rises,
+            &c.max_rises,
+        ] {
+            a.store(kani::any(), Relaxed);
+        }
+        formats(&c);
+    }
+}

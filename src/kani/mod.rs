@@ -7,10 +7,12 @@
 //! `docs/testing.md` has the details.
 
 mod abort;
+mod atomic;
 mod core_int;
 mod eq;
 pub(crate) mod fmt;
 mod misc;
+mod ptr;
 mod report;
 mod slice;
 mod stats;

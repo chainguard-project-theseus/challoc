@@ -1461,3 +1461,20 @@ fn addr_mix(h: &Heap) -> u64 {
 }
 
 } // verus!
+
+/// Kani check of `addr_mix` (record under `verus/seams/`).
+#[cfg(kani)]
+mod kani_flush {
+    use super::Heap;
+
+    /// S111 `addr_mix`: no `ensures`; it returns, the heap's address
+    /// rotated left by 17 bits (on an all-zero heap: pointers null,
+    /// counters zero, ghost fields empty, all valid).
+    #[kani::proof]
+    fn addr_mix_returns() {
+        // SAFETY: every field of `Heap` is valid all-zero.
+        let h: Heap = unsafe { core::mem::zeroed() };
+        let a = &h as *const Heap as u64;
+        assert_eq!(super::addr_mix(&h), a.rotate_left(17));
+    }
+}

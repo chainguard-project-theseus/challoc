@@ -206,6 +206,14 @@ states. A failing harness names the check that failed; a changed
 contract fails the script's first step (each record must still quote
 its seam's contract) until the record and its harness follow.
 
+Two Kani 0.68 (CBMC 6.11) modelling bugs shape the harnesses: a
+`write_bytes`, `copy` or `copy_nonoverlapping` with a symbolic count
+into an array of 8-byte elements writes one element too few (so the
+memory harnesses run their lengths as constants), and `<` on a
+symbolic `bool` holds of `false < false` (so `arena::key_less`, a
+tuple comparison, has no harness). A harness that leans on either would check the model,
+not the code.
+
 ## RefinedRust
 
 The plain raw-pointer bodies `verus/SEAMS.md` gives to RefinedRust are

@@ -967,3 +967,19 @@ impl SetTable {
         out
     }
 }
+
+/// Kani check of `set_table_ptr` (record under `verus/seams/`).
+#[cfg(kani)]
+mod kani_sets {
+    use super::SetTable;
+
+    /// S78 `SetTable::set_table_ptr`: no `ensures`; it returns, the
+    /// table's address (on an all-zero table: every field is an integer,
+    /// a lock word or ghost, so zero is a valid table).
+    #[kani::proof]
+    fn set_table_ptr_returns() {
+        // SAFETY: every field of `SetTable` is valid all-zero.
+        let t: SetTable = unsafe { core::mem::zeroed() };
+        assert!(core::ptr::eq(super::set_table_ptr(&t), &t));
+    }
+}

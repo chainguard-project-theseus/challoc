@@ -929,3 +929,27 @@ mod kani_total {
         assert_eq!(total_bytes(&r[..n]) as u128, lens);
     }
 }
+
+/// Kani check of `Explicit`'s `drop` (record under `verus/seams/`).
+#[cfg(kani)]
+mod kani_explicit {
+    use super::{EXPLICIT, Explicit};
+    use core::sync::atomic::Ordering::Relaxed;
+
+    /// S183 `Explicit::drop`: no `requires`, no `ensures`, `no_unwind`:
+    /// it returns without a panic for every count `EXPLICIT` holds (one
+    /// less afterwards, wrapping at zero as an atomic subtraction does),
+    /// both when a guard from `Explicit::enter` drops and when the count
+    /// was changed in between.
+    #[kani::proof]
+    fn explicit_drop_returns() {
+        let c: u32 = kani::any();
+        EXPLICIT.store(c, Relaxed);
+        let g = Explicit::enter();
+        assert_eq!(EXPLICIT.load(Relaxed), c.wrapping_add(1));
+        let d: u32 = kani::any();
+        EXPLICIT.store(d, Relaxed);
+        drop(g);
+        assert_eq!(EXPLICIT.load(Relaxed), d.wrapping_sub(1));
+    }
+}

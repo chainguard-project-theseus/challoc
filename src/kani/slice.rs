@@ -4,12 +4,13 @@
 //! at `*mut u8`, `usize` and pairs of `usize`, all plain `Copy` words, and
 //! none of these methods looks at the element type beyond moving or
 //! comparing it) for every slice up to `MAX` elements (`SORTED_MAX` for
-//! `is_sorted`) with arbitrary contents. `sort_unstable`,
-//! `select_nth_unstable` and `rotate_left` have no harness: each switches
-//! algorithm with the length (insertion sort below 21 elements, a small
-//! sort to 32, partitioning above; three rotation algorithms), the
-//! proofs use them on slices of thousands, and Kani reaches only the
-//! short branches.
+//! `is_sorted`) with arbitrary contents. `sort_unstable` and
+//! `select_nth_unstable` have no harness: each switches algorithm with
+//! the length (insertion sort below 21 elements, a small sort to 32,
+//! partitioning above), the proofs use them on slices of thousands, and
+//! Kani reaches only the short branches. `rotate_left` (three rotation
+//! algorithms) is checked at lengths that reach each of them, on
+//! labelled elements (see [`rotate_on`]).
 
 /// The longest slice checked. The methods checked at this bound run one
 /// loop whatever the length.
@@ -244,4 +245,104 @@ fn slice_as_ptr() {
     if n > 0 {
         assert!(core::ptr::eq(p, &a[0]));
     }
+}
+
+/// `s.rotate_left(mid)` on the first `n` of `L` elements labelled
+/// `label(0..L)`, for `n == L` or every `n <= L` (`!fixed`), and every
+/// `mid <= n`: element `k < n` ends up holding the label of `(k + mid) %
+/// n` (`old.subrange(mid, n) + old.subrange(0, mid)`), and the elements
+/// from `n` on keep theirs.
+///
+/// `rotate_left` has no bound on `T`: it cannot look at the values, so
+/// its control flow depends only on the length, `mid` and `T`'s size and
+/// alignment (parametricity), and every copy, chunked swap or typed move
+/// in it runs between element-aligned offsets over whole elements, so it
+/// permutes whole elements with their bytes in place. Labelling every
+/// word distinctly then makes one run per `(n, mid)` show the
+/// permutation, so the result for every content of a `T` of that size
+/// and alignment; the contents need not be symbolic. `n` and `mid` run
+/// over their values as constants (with a symbolic length, Kani 0.68
+/// copies one element too few of 8-byte elements: `src/kani/ptr.rs`).
+fn rotate_on<T: Copy + PartialEq, const L: usize>(label: fn(usize) -> T, fixed: bool) {
+    rotate_mids::<T, L>(label, fixed, 0, L);
+}
+
+/// [`rotate_on`] for the `mid`s from `lo` to `hi` only (those up to `n`).
+fn rotate_mids<T: Copy + PartialEq, const L: usize>(
+    label: fn(usize) -> T,
+    fixed: bool,
+    lo: usize,
+    hi: usize,
+) {
+    for n in if fixed { L } else { 0 }..=L {
+        for mid in lo..=if hi < n { hi } else { n } {
+            let mut a: [T; L] = core::array::from_fn(label);
+            a[..n].rotate_left(mid);
+            for k in 0..L {
+                let want = if k < n { (k + mid) % n } else { k };
+                assert!(a[k] == label(want));
+            }
+        }
+    }
+}
+
+/// A word labelled `k`.
+fn word(k: usize) -> u64 {
+    k as u64
+}
+
+/// A 32-byte element labelled `k`, each word distinctly (the largest
+/// element the block-swap algorithm takes).
+fn quad(k: usize) -> [u64; 4] {
+    let k = 4 * k as u64;
+    [k, k + 1, k + 2, k + 3]
+}
+
+/// A 40-byte element labelled `k`, each word distinctly (past
+/// `[usize; 4]`: the cycle algorithm whenever the shorter side does not
+/// fit the buffer).
+fn quint(k: usize) -> [u64; 5] {
+    let k = 5 * k as u64;
+    [k, k + 1, k + 2, k + 3, k + 4]
+}
+
+/// S335 `<[T]>::rotate_left`: under `mid <= len`, `final(s)@ ==
+/// old(s)@.subrange(mid, len) + old(s)@.subrange(0, mid)`. `core` picks
+/// one of three algorithms from `min(mid, len - mid)`, `len` and `T`'s
+/// size (`core/src/slice/rotate.rs`): through a 256-byte stack buffer
+/// when the shorter side fits in it, else by cycles (gcd) when `len < 24`
+/// or `T` is over 32 bytes, else by block swaps. On 8-byte elements (the
+/// proofs' slot words; the one caller is `heap::compact`'s refill) the
+/// buffer takes a shorter side of up to 32: every `len <= 8` and `mid`
+/// here (the buffer), and `len` 70 below.
+#[kani::proof]
+#[kani::unwind(10)]
+fn slice_rotate_left() {
+    rotate_on::<u64, 8>(word, false);
+}
+
+/// S344 on 8-byte elements at `len` 70, `mid` 31 to 39: the buffer for a
+/// shorter side of 31, 32 (`mid` 31, 32, 38, 39), block swaps past it
+/// (`mid` 33 to 37). All `mid`s of this length took CBMC over 90 minutes.
+#[kani::proof]
+#[kani::unwind(72)]
+fn slice_rotate_left_long() {
+    rotate_mids::<u64, 70>(word, true, 31, 39);
+}
+
+/// S344, the cycle algorithm, which 8-byte elements never reach: on
+/// 40-byte elements (over `[usize; 4]`, a buffer of 6) at `len` 16.
+#[kani::proof]
+#[kani::unwind(42)]
+fn slice_rotate_left_cycles() {
+    rotate_on::<[u64; 5], 16>(quint, true);
+}
+
+/// S344 on 32-byte elements (a buffer of 8): cycles below `len` 24
+/// (`len` 20), block swaps from there (`len` 26).
+#[kani::proof]
+#[kani::unwind(106)]
+fn slice_rotate_left_quads() {
+    rotate_on::<[u64; 4], 20>(quad, true);
+    rotate_on::<[u64; 4], 26>(quad, true);
 }

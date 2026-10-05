@@ -278,7 +278,7 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S78 | `SetTable::set_table_ptr` | body | ptr | Kani | trusted |
+| S78 | `SetTable::set_table_ptr` | body | ptr | Kani | discharged |
 | S79 | `Set::ensure` | body | ptr | none | trusted |
 | S80 | `axiom_set_tables_lock_inv` | axiom | invariant | none | trusted |
 
@@ -336,7 +336,7 @@ the full name, the line and the contract.
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
 | S110 | `group_by_slab` | body | core | Kani | trusted |
-| S111 | `addr_mix` | body | ptr | Kani | trusted |
+| S111 | `addr_mix` | body | ptr | Kani | discharged |
 
 ### src/heap/live.rs
 
@@ -429,7 +429,7 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S159 | `axiom_zero_entry` | proof | ptr | Kani | trusted |
+| S159 | `axiom_zero_entry` | proof | ptr | Kani | discharged |
 
 ### src/layout/mod.rs
 
@@ -483,7 +483,7 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S183 | `Explicit::drop` | body | atomic | Kani | trusted |
+| S183 | `Explicit::drop` | body | atomic | Kani | discharged |
 | S184 | `total_bytes` | body | core | Kani | discharged |
 
 ### src/purge/background.rs
@@ -553,8 +553,8 @@ the full name, the line and the contract.
 | S210 | `DisplaySpecImpl for SizeSet` | spec-impl | core | Kani | discharged |
 | S211 | `DisplaySpecImpl for LgSize` | spec-impl | core | Kani | discharged |
 | S212 | `DisplaySpecImpl for Value` | spec-impl | core | Kani | discharged |
-| S213 | `DisplaySpecImpl for Features` | spec-impl | core | Kani | trusted |
-| S214 | `Features::fmt` | body | fnptr | Kani | trusted |
+| S213 | `DisplaySpecImpl for Features` | spec-impl | core | Kani | discharged |
+| S214 | `Features::fmt` | body | fnptr | Kani | discharged |
 
 ### src/sys/mod.rs
 
@@ -610,10 +610,10 @@ the full name, the line and the contract.
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
 | S244 | `addr_to_ptr` | body | ptr | Kani | trusted |
-| S245 | `ptr::write_bytes::<T>` | spec | ptr | Kani | trusted |
-| S246 | `ptr::copy_nonoverlapping::<T>` | spec | ptr | Kani | trusted |
-| S247 | `<*mut T>::is_null` | spec | ptr | Kani | trusted |
-| S248 | `<*const T>::is_null` | spec | ptr | Kani | trusted |
+| S245 | `ptr::write_bytes::<T>` | spec | ptr | Kani | discharged |
+| S246 | `ptr::copy_nonoverlapping::<T>` | spec | ptr | Kani | discharged |
+| S247 | `<*mut T>::is_null` | spec | ptr | Kani | discharged |
+| S248 | `<*const T>::is_null` | spec | ptr | Kani | discharged |
 | S249 | `axiom_slot_writable` | proof | invariant | Verus | trusted |
 | S250 | `axiom_huge_writable` | proof | invariant | Verus | trusted |
 
@@ -621,17 +621,17 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S251 | `Atomic::<*mut T>::load` | spec | core | Kani | trusted |
-| S252 | `Atomic::<*mut T>::store` | spec | core | Kani | trusted |
-| S253 | `Atomic::<*mut T>::new` | spec | core | Kani | trusted |
-| S254 | `Atomic::<*mut T>::swap` | spec | core | Kani | trusted |
+| S251 | `Atomic::<*mut T>::load` | spec | core | Kani | discharged |
+| S252 | `Atomic::<*mut T>::store` | spec | core | Kani | discharged |
+| S253 | `Atomic::<*mut T>::new` | spec | core | Kani | discharged |
+| S254 | `Atomic::<*mut T>::swap` | spec | core | Kani | discharged |
 | S255 | `axiom_arena_stats_lock_inv` | axiom | invariant | none | trusted |
 
 ### src/vspec/atomic.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S256 | `load_bool` | body | atomic | Kani | trusted |
+| S256 | `load_bool` | body | atomic | Kani | discharged |
 
 ### src/vspec/check.rs
 
@@ -644,7 +644,7 @@ the full name, the line and the contract.
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
 | S258 | `axiom_class_table_wf` | axiom | invariant | Kani | trusted |
-| S259 | `mem::drop` | spec | core | Kani | trusted |
+| S259 | `mem::drop` | spec | core | Kani | discharged |
 | S260 | `layout::adopt_page_geometry` | spec | cell | Verus | trusted |
 
 ### src/vspec/config.rs
@@ -652,7 +652,7 @@ the full name, the line and the contract.
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
 | S261 | `ffi::CStr` | ext-type | core | Kani | trusted |
-| S262 | `<*const T>::cast::<U>` | spec | ptr | Kani | trusted |
+| S262 | `<*const T>::cast::<U>` | spec | ptr | Kani | discharged |
 | S263 | `ffi::CStr::as_ptr` | spec | core | Kani | discharged |
 | S264 | `char::to_digit` | spec | core | Kani | discharged |
 | S265 | `i64::wrapping_neg` | spec | core | Kani | discharged |
@@ -697,7 +697,7 @@ the full name, the line and the contract.
 |---|---|---|---|---|---|
 | S285 | `ExWrite` | ext-trait | core | Kani | trusted |
 | S286 | `fmt::Formatter::<'a>::write_str` | spec | core | Kani | discharged |
-| S287 | `fmt::Formatter::<'a>::write_fmt` | spec | fnptr | Kani | trusted |
+| S287 | `fmt::Formatter::<'a>::write_fmt` | spec | fnptr | Kani | discharged |
 | S288 | `DisplaySpecIm...r sys::Errno` | spec-impl | core | Kani | discharged |
 | S289 | `DebugSpecImpl... slab::State` | spec-impl | core | Kani | discharged |
 | S290 | `DebugSpecImpl...ge::RunState` | spec-impl | core | Kani | discharged |
@@ -732,7 +732,7 @@ the full name, the line and the contract.
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
 | S301 | `cell::UnsafeCell<T>` | ext-type | cell | Kani | trusted |
-| S302 | `cell::UnsafeCell::<T>::new` | spec | cell | Kani | trusted |
+| S302 | `cell::UnsafeCell::<T>::new` | spec | cell | Kani | discharged |
 
 ### src/vspec/meta.rs
 
@@ -750,14 +750,14 @@ the full name, the line and the contract.
 | S307 | `PartialEqSpec...ge::RunState` | spec-impl | core | Kani | discharged |
 | S308 | `Option::<T>::map_or` | spec | core | Kani | discharged |
 | S309 | `str::as_ptr` | spec | core | Kani | discharged |
-| S310 | `compiler_fence` | spec | core | Kani | trusted |
+| S310 | `compiler_fence` | spec | core | Kani | discharged |
 | S311 | `Option::<T>::as_deref_mut` | spec | core | Kani | discharged |
 
 ### src/vspec/misc_extra.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S312 | `Atomic::<u32>::as_ptr` | spec | core | Kani | trusted |
+| S312 | `Atomic::<u32>::as_ptr` | spec | core | Kani | discharged |
 
 ### src/vspec/policy.rs
 
@@ -772,7 +772,7 @@ the full name, the line and the contract.
 | S314 | `libc::FILE` | ext-type | ffi | none | trusted |
 | S315 | `thp_name` | body | core | Kani | trusted |
 | S316 | `base_slab_sizes` | body | fnptr | Kani | discharged |
-| S317 | `DisplaySpecImp...cgroup::Cgroup` | spec-impl | core | Kani | trusted |
+| S317 | `DisplaySpecIm...roup::Cgroup` | spec-impl | core | Kani | discharged |
 | S318 | `PartialEqSpec...:PercpuArena` | spec-impl | core | Kani | discharged |
 | S319 | `stats_allocated` | body | core | Kani | discharged |
 
@@ -781,7 +781,7 @@ the full name, the line and the contract.
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
 | S320 | `axiom_ptr_add_addr` | proof | core | Kani | discharged |
-| S321 | `<*mut T>::add` | spec | ptr | Kani | trusted |
+| S321 | `<*mut T>::add` | spec | ptr | Kani | discharged |
 | S322 | `axiom_raw_valid` | proof | ptr | none | trusted |
 
 ### src/vspec/slice.rs
@@ -800,11 +800,11 @@ the full name, the line and the contract.
 | S332 | `<[T]>::sort_unstable_by_key::<K, F>` | spec | core | Kani | trusted |
 | S333 | `<[T]>::get_unchecked_mut::<I>` | spec | core | Kani | discharged |
 | S334 | `<[T]>::swap_with_slice` | spec | core | Kani | discharged |
-| S335 | `<[T]>::rotate_left` | spec | core | Kani | trusted |
+| S335 | `<[T]>::rotate_left` | spec | core | Kani | discharged |
 | S336 | `array::IntoIter<T, N>` | ext-type | core | Kani | trusted |
 | S337 | `<[T; N] as core...tor>::into_iter` | spec | core | Kani | discharged |
 | S338 | `<core::array::I...Iterator>::next` | spec | core | Kani | discharged |
-| S339 | `array_get_unchecked` | body | core | Kani | trusted |
+| S339 | `array_get_unchecked` | body | core | Kani | discharged |
 
 ### src/vspec/sys.rs
 
@@ -824,8 +824,8 @@ the full name, the line and the contract.
 | S351 | `str::from_utf8` | spec | core | Kani | discharged |
 | S352 | `str::from_utf8_unchecked` | spec | core | Kani | trusted |
 | S353 | `<core::fmt::Err...fault>::default` | spec | core | Kani | discharged |
-| S354 | `ptr::from_ref` | spec | ptr | Kani | trusted |
-| S355 | `ptr::from_mut` | spec | ptr | Kani | trusted |
+| S354 | `ptr::from_ref` | spec | ptr | Kani | discharged |
+| S355 | `ptr::from_mut` | spec | ptr | Kani | discharged |
 | S356 | `Option::<&T>::copied` | spec | core | Kani | discharged |
 | S357 | `PartialEqSpec...group::State` | spec-impl | core | Kani | discharged |
 | S358 | `PartialEqSpec...r sys::Errno` | spec-impl | core | Kani | discharged |
@@ -853,7 +853,7 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S368 | `write_zero` | body | ptr | Kani | trusted |
+| S368 | `write_zero` | body | ptr | Kani | discharged |
 
 ## Entries
 
@@ -2044,7 +2044,7 @@ axiom fn axiom_discarded_slots_zero(
 ### S78. `SetTable::set_table_ptr`
 
 src/class/sets.rs:545. Kind: external_body. Category: raw pointer (internal).
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/class-sets-SetTable-set_table_ptr.md).
 
 > `table` as the pointer [`Store::Shared`] keeps.
 
@@ -2526,7 +2526,7 @@ pub(super) fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8])
 ### S111. `addr_mix`
 
 src/heap/flush.rs:1459. Kind: external_body. Category: raw pointer (internal).
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/heap-flush-addr_mix.md).
 
 > `rng`'s mix of the heap's address into its seed: the address of `h`, rotated left by 17 bits.
 
@@ -3252,7 +3252,7 @@ fn not_a_run_page(page: usize) -> !
 ### S159. `axiom_zero_entry`
 
 src/huge/table.rs:177. Kind: external_body proof. Category: raw pointer (internal).
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/huge-table-axiom_zero_entry.md).
 
 > An all-zero entry is empty, given the permission to its uninitialised bytes and the token that they read as zero.
 
@@ -3600,7 +3600,7 @@ pub fn empty_bytes(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u6
 ### S183. `Explicit::drop`
 
 src/purge.rs:162. Kind: external_body. Category: atomics primitive.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/purge-Explicit-drop.md).
 
 ```rust
 fn drop(&mut self)
@@ -3991,7 +3991,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for Value {
 ### S213. `DisplaySpecImpl for Features`
 
 src/sys/features.rs:209. Kind: spec_impl. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/sys-features-DisplaySpecImpl-for-Features.md).
 
 ```rust
 impl vstd::std_specs::fmt::DisplaySpecImpl for Features {
@@ -4004,7 +4004,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for Features {
 ### S214. `Features::fmt`
 
 src/sys/features.rs:222. Kind: external_body. Category: function pointer.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/sys-features-Features-fmt.md).
 
 > One line, `key=value` separated by spaces, for `challoc_features()`, `malloc_stats_print` and abort messages: [`Features::words`].
 
@@ -4434,7 +4434,7 @@ pub fn addr_to_ptr(addr: usize) -> (p: *mut u8)
 ### S245. `core::ptr::write_bytes::<T>`
 
 src/vspec/addr.rs:40. Kind: assume_spec. Category: raw pointer (internal).
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-addr-ptr-write_bytes.md).
 
 > `core::ptr::write_bytes`, with the safety contract of the `core` documentation: `dst` is properly aligned and, unless the fill is empty, valid for writes of `count * size_of::<T>()` bytes.
 
@@ -4449,7 +4449,7 @@ pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8,
 ### S246. `core::ptr::copy_nonoverlapping::<T>`
 
 src/vspec/addr.rs:51. Kind: assume_spec. Category: raw pointer (internal).
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-addr-ptr-copy_nonoverlapping.md).
 
 > `core::ptr::copy_nonoverlapping`, with the safety contract of the `core` documentation: both pointers are properly aligned and, unless the copy is empty, `src` is valid for reads and `dst` for writes of `count * size_of::<T>()` bytes, and the two ranges do not overlap.
 
@@ -4470,7 +4470,7 @@ pub assume_specification<T>[ core::ptr::copy_nonoverlapping::<T> ](src: *const T
 ### S247. `<*mut T>::is_null`
 
 src/vspec/addr.rs:64. Kind: assume_spec. Category: raw pointer (internal).
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-addr-mut-ptr-is_null.md).
 
 > `<*mut T>::is_null`: the address is zero.
 
@@ -4486,7 +4486,7 @@ pub assume_specification<T: core::marker::PointeeSized>[ <*mut T>::is_null ](p: 
 ### S248. `<*const T>::is_null`
 
 src/vspec/addr.rs:72. Kind: assume_spec. Category: raw pointer (internal).
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-addr-const-ptr-is_null.md).
 
 > `<*const T>::is_null`: the address is zero.
 
@@ -4537,7 +4537,7 @@ pub proof fn axiom_huge_writable(regions: crate::layout::Regions, page: usize, l
 ### S251. `core::sync::atomic::Atomic::<*mut T>::load`
 
 src/vspec/arena.rs:13. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-arena-Atomic-ptr-load.md).
 
 > `AtomicPtr::load`, which vstd does not specify: any pointer.
 
@@ -4555,7 +4555,7 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::load ](
 ### S252. `core::sync::atomic::Atomic::<*mut T>::store`
 
 src/vspec/arena.rs:24. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-arena-Atomic-ptr-store.md).
 
 > `AtomicPtr::store`, which vstd does not specify.
 
@@ -4574,7 +4574,7 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::store ](
 ### S253. `core::sync::atomic::Atomic::<*mut T>::new`
 
 src/vspec/arena.rs:35. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-arena-Atomic-ptr-new.md).
 
 > `AtomicPtr::new`, which vstd does not specify.
 
@@ -4585,7 +4585,7 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::new ](v: *mut
 ### S254. `core::sync::atomic::Atomic::<*mut T>::swap`
 
 src/vspec/arena.rs:38. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-arena-Atomic-ptr-swap.md).
 
 > `AtomicPtr::swap`, which vstd does not specify: any previous pointer.
 
@@ -4614,7 +4614,7 @@ pub broadcast axiom fn axiom_arena_stats_lock_inv(v: crate::stats::ArenaStats)
 ### S256. `load_bool`
 
 src/vspec/atomic.rs:25. Kind: external_body. Category: atomics primitive.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-atomic-load_bool.md).
 
 > `a.load(order)`, which panics for a `Release` or `AcqRel` ordering.
 
@@ -4661,7 +4661,7 @@ pub broadcast axiom fn axiom_class_table_wf(i: int)
 ### S259. `core::mem::drop`
 
 src/vspec/class.rs:21. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-class-mem-drop.md).
 
 > `core::mem::drop`: runs `x`'s destructor (for a lock guard, the unlock).
 
@@ -4694,7 +4694,7 @@ pub struct ExCStr(core::ffi::CStr);
 ### S262. `<*const T>::cast::<U>`
 
 src/vspec/config.rs:20. Kind: assume_spec. Category: raw pointer (internal).
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-config-const-ptr-cast.md).
 
 > `<*const T>::cast`: the same address as a pointer to `U`.
 
@@ -5040,7 +5040,7 @@ pub assume_specification<'a>[ core::fmt::Formatter::<'a>::write_str ](f: &mut co
 ### S287. `core::fmt::Formatter::<'a>::write_fmt`
 
 src/vspec/fmt.rs:26. Kind: assume_spec. Category: function pointer.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-fmt-Formatter-write_fmt.md).
 
 > `Formatter::write_fmt`: as for `write_str`.
 
@@ -5232,7 +5232,7 @@ pub struct ExUnsafeCell<T: ?Sized>(core::cell::UnsafeCell<T>);
 ### S302. `core::cell::UnsafeCell::<T>::new`
 
 src/vspec/lock.rs:22. Kind: assume_spec. Category: UnsafeCell/volatile/transmute.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-lock-UnsafeCell-new.md).
 
 > `UnsafeCell::new`: wraps the value; nothing is claimed about the cell.
 
@@ -5353,7 +5353,7 @@ pub assume_specification[ str::as_ptr ](s: &str) -> *const u8;
 ### S310. `core::sync::atomic::compiler_fence`
 
 src/vspec/misc.rs:65. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-misc-compiler_fence.md).
 
 > `core::sync::atomic::compiler_fence`: panics on `Relaxed` only, and has no effect Verus models.
 
@@ -5380,7 +5380,7 @@ pub assume_specification<T: core::ops::DerefMut>[ Option::<T>::as_deref_mut ](o:
 ### S312. `core::sync::atomic::Atomic::<u32>::as_ptr`
 
 src/vspec/misc_extra.rs:11. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-misc_extra-Atomic-u32-as_ptr.md).
 
 > `AtomicU32::as_ptr`: the address of the atomic's value, for a futex syscall argument.
 
@@ -5442,7 +5442,7 @@ pub(crate) fn base_slab_sizes(lo: usize, hi: usize) -> (usize, usize)
 ### S317. `DisplaySpecImpl for sys::cgroup::Cgroup`
 
 src/vspec/print.rs:53. Kind: spec_impl. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-print-DisplaySpecImpl-for-sys-cgroup-Cgroup.md).
 
 ```rust
 impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::cgroup::Cgroup {
@@ -5503,7 +5503,7 @@ pub proof fn axiom_ptr_add_addr<T>(p: *mut T, count: usize)
 ### S321. `<*mut T>::add`
 
 src/vspec/ptr.rs:76. Kind: assume_spec. Category: raw pointer (internal).
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-ptr-mut-ptr-add.md).
 
 > `<*mut T>::add`, with the safety contract of the `core` documentation: the byte offset `count * size_of::<T>()` fits in an `isize`, and, when it is not zero, the whole range from `p` to the result is inside the allocation `p` points into ([`in_alloc`]).
 
@@ -5740,7 +5740,7 @@ pub assume_specification<T>[ <[T]>::swap_with_slice ](a: &mut [T], b: &mut [T])
 ### S335. `<[T]>::rotate_left`
 
 src/vspec/slice.rs:156. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-slice-slice-rotate_left.md).
 
 > `s.rotate_left(mid)`: panics unless `mid <= s.len()`.
 
@@ -5802,7 +5802,7 @@ pub assume_specification<T, const N: usize>[ <core::array::IntoIter<T, N> as cor
 ### S339. `array_get_unchecked`
 
 src/vspec/slice.rs:212. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-slice-array_get_unchecked.md).
 
 > `a.get_unchecked(i)` on an array, for the fast paths: vstd's array-to-slice coercion (`vstd::array::array_as_slice`) declares Verus's default invariant mask, `any`, which a function that opens none cannot call (`vspec::atomic`, theorem 9 of `verus/THEOREMS.md`).
 
@@ -6005,7 +6005,7 @@ pub assume_specification[ <core::fmt::Error as core::default::Default>::default 
 ### S354. `core::ptr::from_ref`
 
 src/vspec/sys.rs:96. Kind: assume_spec. Category: raw pointer (internal).
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-sys-ptr-from_ref.md).
 
 > A reference as a raw pointer, for a syscall argument.
 
@@ -6016,7 +6016,7 @@ pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_ref ](r
 ### S355. `core::ptr::from_mut`
 
 src/vspec/sys.rs:98. Kind: assume_spec. Category: raw pointer (internal).
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-sys-ptr-from_mut.md).
 
 ```rust
 pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_mut ](r: &mut T) -> *mut T;
@@ -6230,7 +6230,7 @@ pub fn fetch_and(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Track
 ### S368. `write_zero`
 
 src/vspec/zero.rs:300. Kind: external_body. Category: raw pointer (internal).
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-zero-write_zero.md).
 
 > `write_bytes(p, 0, n)`, returning the token for what it wrote.
 

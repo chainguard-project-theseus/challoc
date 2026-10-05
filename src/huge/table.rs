@@ -1741,3 +1741,27 @@ mod tests {
         t.remove(7);
     }
 }
+
+/// Kani check of `axiom_zero_entry` (record under `verus/seams/`).
+#[cfg(kani)]
+mod kani_table {
+    use super::Entry;
+
+    /// S159 `axiom_zero_entry`, its executable content: 16 zero bytes,
+    /// aligned as an `Entry`, read as an `Entry` (a defined read: a
+    /// `usize` and a raw pointer accept every bit pattern), and that
+    /// entry is empty (`!occupied`: its `desc` has address 0). The
+    /// entry is 16 bytes (`z.len() == 16`), the size the `global layout`
+    /// line states.
+    #[kani::proof]
+    fn zero_entry_is_empty() {
+        assert_eq!(core::mem::size_of::<Entry>(), 16);
+        let z = [0u64; 2];
+        assert!(core::mem::align_of::<Entry>() <= core::mem::align_of::<[u64; 2]>());
+        // SAFETY: 16 initialised bytes, aligned for `Entry`, whose fields
+        // accept every bit pattern.
+        let e: Entry = unsafe { core::ptr::read(z.as_ptr().cast::<Entry>()) };
+        assert_eq!(e.desc as usize, 0);
+        assert_eq!(e.key, 0);
+    }
+}

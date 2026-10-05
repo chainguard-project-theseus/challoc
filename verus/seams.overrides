@@ -58,7 +58,7 @@ ClassState::take_checks	panic/abort	Kani
 axiom_fresh_slots_zero	allocator invariant	none (assumption)
 axiom_discarded_slots_zero	allocator invariant	none (assumption)
 axiom_c_claim	C-program contract	none (assumption)
-SetTable::set_table_ptr	raw pointer (internal)	Kani
+SetTable::set_table_ptr	raw pointer (internal)	Kani	discharged (verus/seams/class-sets-SetTable-set_table_ptr.md)
 Unbacked::into_lazy	allocator invariant	none (assumption)
 Set::ensure	raw pointer (internal)	none (assumption)
 axiom_slot_loc	allocator invariant	none (assumption)
@@ -79,7 +79,7 @@ bytes_at	raw pointer from C caller	Miri (evidence only)
 env_var	raw pointer from C caller	Miri (evidence only)
 group_by_slab	core library	Kani
 key_less	core library	Kani
-addr_mix	raw pointer (internal)	Kani
+addr_mix	raw pointer (internal)	Kani	discharged (verus/seams/heap-flush-addr_mix.md)
 axiom_fresh_stack	allocator invariant	none (assumption)
 assert_flushed	panic/abort	Kani	discharged (verus/seams/heap-assert_flushed.md)
 assert_refill_empty	panic/abort	Kani	discharged (verus/seams/heap-assert_refill_empty.md)
@@ -117,7 +117,7 @@ init_tcaches	allocator invariant	RefinedRust
 heap_at	raw pointer (internal)	RefinedRust
 heap_new	raw pointer (internal)	RefinedRust
 axiom_run_locs	allocator invariant	none (assumption)
-axiom_zero_entry	raw pointer (internal)	Kani
+axiom_zero_entry	raw pointer (internal)	Kani	discharged (verus/seams/huge-table-axiom_zero_entry.md)
 ClassTable	UnsafeCell/volatile/transmute	none (assumption)
 axiom_process_page_at_most_64k	platform/kernel fact	none (assumption)
 Reserved	platform/kernel fact	none (assumption)
@@ -142,7 +142,7 @@ fig_add	core library	Kani	discharged (verus/seams/stats-fig_add.md)
 fig_mul	core library	Kani	discharged (verus/seams/stats-fig_mul.md)
 fig_add64	core library	Kani	discharged (verus/seams/stats-fig_add64.md)
 scan_lines	termination	none (assumption)
-Features::fmt	function pointer	Kani
+Features::fmt	function pointer	Kani	discharged (verus/seams/sys-features-Features-fmt.md)
 getrandom_exact	termination	none (assumption)
 read_full	termination	none (assumption)
 write_all	termination	none (assumption)
@@ -162,10 +162,10 @@ axiom_discarded_zero	platform/kernel fact	none (assumption)
 Unbacked::commit	platform/kernel fact	none (assumption)
 WordPerm	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-WordPerm.md)
 CountPerm	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-CountPerm.md)
-core::sync::atomic::compiler_fence	core library	Kani
+core::sync::atomic::compiler_fence	core library	Kani	discharged (verus/seams/vspec-misc-compiler_fence.md)
 crate::layout::adopt_page_geometry	UnsafeCell/volatile/transmute	Verus
 core::fmt::Formatter::<'a>::write_str	core library	Kani	discharged (verus/seams/vspec-fmt-Formatter-write_str.md)
-core::fmt::Formatter::<'a>::write_fmt	function pointer	Kani
+core::fmt::Formatter::<'a>::write_fmt	function pointer	Kani	discharged (verus/seams/vspec-fmt-Formatter-write_fmt.md)
 pthread_setspecific	FFI/syscall	none (assumption)
 src/sys/auxv.rs:getauxval	FFI/syscall	none (assumption)
 Reader	function pointer	Kani
@@ -202,7 +202,7 @@ axiom_held_below	allocator invariant	none (assumption)
 src/sys/pac.rs:sign	inline asm	Islaris/Isla	discharged (verus/seams/sys-pac-sign.md)
 src/sys/pac.rs:auth	inline asm	Islaris/Isla	discharged (verus/seams/sys-pac-auth.md)
 src/sys/pac.rs:strip	inline asm	Islaris/Isla	discharged (verus/seams/sys-pac-strip.md)
-array_get_unchecked	core library	Kani
+array_get_unchecked	core library	Kani	discharged (verus/seams/vspec-slice-array_get_unchecked.md)
 # Discharged with Kani (verus/kani/run.sh, docs/testing.md).
 usize::trailing_zeros	core library	Kani	discharged (verus/seams/vspec-core_int-usize-trailing_zeros.md)
 usize::leading_zeros	core library	Kani	discharged (verus/seams/vspec-core_int-usize-leading_zeros.md)
@@ -265,6 +265,10 @@ core::slice::from_ref	core library	Kani	discharged (verus/seams/vspec-slice-slic
 <core::array::IntoIter<T, N> as core::iter::Iterator>::next	core library	Kani	discharged (verus/seams/vspec-slice-array-IntoIter-Iterator-next.md)
 <[T]>::as_mut_ptr	core library	Kani	discharged (verus/seams/vspec-sys-slice-as_mut_ptr.md)
 <[T]>::as_ptr	core library	Kani	discharged (verus/seams/vspec-sys-slice-as_ptr.md)
+src/sys/features.rs:DisplaySpecImpl for Features	core library	Kani	discharged (verus/seams/sys-features-DisplaySpecImpl-for-Features.md)
+src/vspec/class.rs:core::mem::drop	core library	Kani	discharged (verus/seams/vspec-class-mem-drop.md)
+src/vspec/print.rs:DisplaySpecImpl for sys::cgroup::Cgroup	core library	Kani	discharged (verus/seams/vspec-print-DisplaySpecImpl-for-sys-cgroup-Cgroup.md)
+<[T]>::rotate_left	core library	Kani	discharged (verus/seams/vspec-slice-slice-rotate_left.md)
 src/api/mallctl.rs:shared	allocator invariant	none (assumption)
 # The loom/GenMC triage (verus/WEAKMEM.md, "Seams"): records for what
 # the loom models establish, and the items that need no weak-memory
@@ -287,13 +291,13 @@ claim_init	atomics primitive	loom/GenMC	discharged (verus/seams/api-claim_init.m
 SlabTable::watermark	allocator invariant	RefinedRust
 Policy::position	allocator invariant	RefinedRust
 Arenas::init	raw pointer (internal)	none (assumption)
-core::sync::atomic::Atomic::<*mut T>::load	core library	Kani
-core::sync::atomic::Atomic::<*mut T>::store	core library	Kani
-core::sync::atomic::Atomic::<*mut T>::new	core library	Kani
-core::sync::atomic::Atomic::<*mut T>::swap	core library	Kani
-core::sync::atomic::Atomic::<u32>::as_ptr	core library	Kani
-load_bool	atomics primitive	Kani
-Explicit::drop	atomics primitive	Kani
+core::sync::atomic::Atomic::<*mut T>::load	core library	Kani	discharged (verus/seams/vspec-arena-Atomic-ptr-load.md)
+core::sync::atomic::Atomic::<*mut T>::store	core library	Kani	discharged (verus/seams/vspec-arena-Atomic-ptr-store.md)
+core::sync::atomic::Atomic::<*mut T>::new	core library	Kani	discharged (verus/seams/vspec-arena-Atomic-ptr-new.md)
+core::sync::atomic::Atomic::<*mut T>::swap	core library	Kani	discharged (verus/seams/vspec-arena-Atomic-ptr-swap.md)
+core::sync::atomic::Atomic::<u32>::as_ptr	core library	Kani	discharged (verus/seams/vspec-misc_extra-Atomic-u32-as_ptr.md)
+load_bool	atomics primitive	Kani	discharged (verus/seams/vspec-atomic-load_bool.md)
+Explicit::drop	atomics primitive	Kani	discharged (verus/seams/purge-Explicit-drop.md)
 ClassState::claim_with	termination	RefinedRust
 # RefinedRust cannot take these (no atomics, UnsafeCell, integer-to-pointer
 # or inline asm support, and no view of Verus ghost state; .lane pilot §4):
@@ -323,20 +327,20 @@ src/purge/background.rs:axiom_state_lock_inv	allocator invariant	none (assumptio
 src/purge/background.rs:shared_arg	raw pointer (internal)	none (assumption)
 src/slab.rs:SlabDesc::at	raw pointer (internal)	none (assumption)
 src/stats.rs:axiom_snapshot_lock_inv	allocator invariant	none (assumption)
-src/vspec/addr.rs:<*const T>::is_null	raw pointer (internal)	Kani
-src/vspec/addr.rs:<*mut T>::is_null	raw pointer (internal)	Kani
+src/vspec/addr.rs:<*const T>::is_null	raw pointer (internal)	Kani	discharged (verus/seams/vspec-addr-const-ptr-is_null.md)
+src/vspec/addr.rs:<*mut T>::is_null	raw pointer (internal)	Kani	discharged (verus/seams/vspec-addr-mut-ptr-is_null.md)
 src/vspec/addr.rs:addr_to_ptr	raw pointer (internal)	Kani
-src/vspec/addr.rs:core::ptr::copy_nonoverlapping::<T>	raw pointer (internal)	Kani
-src/vspec/addr.rs:core::ptr::write_bytes::<T>	raw pointer (internal)	Kani
+src/vspec/addr.rs:core::ptr::copy_nonoverlapping::<T>	raw pointer (internal)	Kani	discharged (verus/seams/vspec-addr-ptr-copy_nonoverlapping.md)
+src/vspec/addr.rs:core::ptr::write_bytes::<T>	raw pointer (internal)	Kani	discharged (verus/seams/vspec-addr-ptr-write_bytes.md)
 src/vspec/arena.rs:axiom_arena_stats_lock_inv	allocator invariant	none (assumption)
-src/vspec/config.rs:<*const T>::cast::<U>	raw pointer (internal)	Kani
+src/vspec/config.rs:<*const T>::cast::<U>	raw pointer (internal)	Kani	discharged (verus/seams/vspec-config-const-ptr-cast.md)
 src/vspec/huge.rs:axiom_huge_lock_frame	allocator invariant	none (assumption)
 src/vspec/huge.rs:axiom_huge_lock_inv	allocator invariant	none (assumption)
-src/vspec/lock.rs:core::cell::UnsafeCell::<T>::new	UnsafeCell/volatile/transmute	Kani
+src/vspec/lock.rs:core::cell::UnsafeCell::<T>::new	UnsafeCell/volatile/transmute	Kani	discharged (verus/seams/vspec-lock-UnsafeCell-new.md)
 src/vspec/lock.rs:core::cell::UnsafeCell<T>	UnsafeCell/volatile/transmute	Kani
 src/vspec/meta.rs:axiom_meta_lock_frame	allocator invariant	none (assumption)
 src/vspec/meta.rs:axiom_meta_lock_inv	allocator invariant	none (assumption)
-src/vspec/ptr.rs:<*mut T>::add	raw pointer (internal)	Kani
-src/vspec/sys.rs:core::ptr::from_mut	raw pointer (internal)	Kani
-src/vspec/sys.rs:core::ptr::from_ref	raw pointer (internal)	Kani
-src/vspec/zero.rs:write_zero	raw pointer (internal)	Kani
+src/vspec/ptr.rs:<*mut T>::add	raw pointer (internal)	Kani	discharged (verus/seams/vspec-ptr-mut-ptr-add.md)
+src/vspec/sys.rs:core::ptr::from_mut	raw pointer (internal)	Kani	discharged (verus/seams/vspec-sys-ptr-from_mut.md)
+src/vspec/sys.rs:core::ptr::from_ref	raw pointer (internal)	Kani	discharged (verus/seams/vspec-sys-ptr-from_ref.md)
+src/vspec/zero.rs:write_zero	raw pointer (internal)	Kani	discharged (verus/seams/vspec-zero-write_zero.md)

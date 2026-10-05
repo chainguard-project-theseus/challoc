@@ -901,3 +901,69 @@ mod kani_fmt {
         formats(&LgSize(lg));
     }
 }
+
+/// Kani check of `Features`' `Display` (record under `verus/seams/`).
+#[cfg(kani)]
+mod kani_features {
+    use super::{Features, Value};
+    use crate::kani_proofs::fmt::formats;
+    use crate::rseq::Probe;
+    use crate::sys::thp_host::{Thp, ThpSetting};
+    use core::fmt;
+
+    /// `Value`'s `fmt` as its own harness (`display_feature_value`, S217)
+    /// shows it: it returns, `Ok` or `Err`, without a panic, for every
+    /// value. What it writes does not matter to the caller.
+    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
+    fn value_fmt(_: &Value, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if kani::any() { Ok(()) } else { Err(fmt::Error) }
+    }
+
+    /// S214 `Features::fmt` (no contract: it returns without a panic) and
+    /// S213 `DisplaySpecImpl for Features` (`fmt_req` true): every
+    /// `Features` value, under the plain and a padded formatter, whatever
+    /// the writer returns. Each `Value` is formatted by the stub above,
+    /// whose behaviour (any result, no panic) is what S217's harness
+    /// proves of the real `fmt` for every value; the rest (the word
+    /// pairs, the iterator chain, `write_words`, the keys) runs as built.
+    #[kani::proof]
+    #[kani::stub(<Value as core::fmt::Display>::fmt, value_fmt)]
+    #[kani::unwind(12)]
+    fn display_features() {
+        let settings = [
+            ThpSetting::Always,
+            ThpSetting::Inherit,
+            ThpSetting::Madvise,
+            ThpSetting::Never,
+        ];
+        let s: usize = kani::any();
+        kani::assume(s <= settings.len());
+        let f = Features {
+            page_size: kani::any(),
+            page_shift: kani::any(),
+            guard_install: kani::any(),
+            mseal: kani::any(),
+            anon_name: kani::any(),
+            thp: Thp {
+                enabled: if s < settings.len() {
+                    Some(settings[s])
+                } else {
+                    None
+                },
+                lg_pmd: kani::any(),
+                listed: kani::any(),
+                always: kani::any(),
+                madvise: kani::any(),
+            },
+            rseq: Probe {
+                present: kani::any(),
+                size: kani::any(),
+                flags: kani::any(),
+                offset: kani::any(),
+                registered: kani::any(),
+            },
+            pac: kani::any(),
+        };
+        formats(&f);
+    }
+}

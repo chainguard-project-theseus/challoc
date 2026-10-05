@@ -322,3 +322,38 @@ fn ptr_add_addr_instances() {
     ptr_add_addr::<u64, 5>();
     ptr_add_addr::<(u64, u8), 3>();
 }
+
+/// Writes through `Formatter::write_fmt`: a literal alone (`fmt::write`'s
+/// path for arguments that are one static string), a literal of 128
+/// bytes and more between placeholders (its long-piece path), and
+/// placeholders with and without options.
+struct WriteFmt<'a>(&'a str, u64);
+
+impl core::fmt::Display for WriteFmt<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_fmt(format_args!("challoc"))?;
+        f.write_fmt(format_args!(
+            "{}: a piece of more than one hundred and twenty-eight bytes, \
+             which fmt::write passes to the writer by its own path, the one \
+             it takes for every literal of that length or longer: {}",
+            self.0, self.1
+        ))?;
+        f.write_fmt(format_args!("<{}|{:>6}|{:#x}>", self.0, self.1, self.1))
+    }
+}
+
+/// S287 `Formatter::write_fmt`: no `requires`, no `ensures`; it returns,
+/// for the arguments above with every string up to 4 bytes and every
+/// number, whatever the writer returns. (`formats` also runs it under a
+/// padded formatter, which `write_fmt` ignores: each argument gets its
+/// placeholder's options.)
+#[kani::proof]
+#[kani::unwind(22)]
+fn formatter_write_fmt() {
+    let a: [u8; 4] = kani::any();
+    let n: usize = kani::any();
+    kani::assume(n <= 4);
+    if let Ok(s) = core::str::from_utf8(&a[..n]) {
+        super::fmt::formats(&WriteFmt(s, kani::any()));
+    }
+}
