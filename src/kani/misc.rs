@@ -235,7 +235,7 @@ fn str_as_ptr() {
     let _ = e.as_ptr();
 }
 
-/// S268 `CStr::as_ptr`: no `ensures`; it returns, the address of the
+/// S267 `CStr::as_ptr`: no `ensures`; it returns, the address of the
 /// first byte, for every C string up to 3 bytes before its NUL (built at
 /// run time: Kani 0.68 has no C string literals).
 #[kani::proof]

@@ -697,6 +697,20 @@ impl SlabTable {
         let bits_base = bits.start() + stagger;
         let owners_base = owners.start() + stagger;
         let desc_base = descs.start() + stagger;
+        // The commit lock's invariant (`TableInner::inv`) of the value
+        // below, conjunct by conjunct, so `Lock::new`'s `lock_inv` does not
+        // rest on the solver assembling it from the whole context.
+        proof {
+            assert(imarks.id() == mark_auth.id());
+            assert(init_marks(0 * (cls.slab_bits as usize), nslabs * (cls.slab_bits as usize)).subset_of(imarks@));
+            assert(owner_marks(0, nslabs as int).subset_of(imarks@));
+            assert(lazy_ok(descs, page));
+            assert(lazy_ok(bits, page));
+            assert(lazy_ok(owners, page));
+            assert(1 <= page <= 0x8000_0000_0000_0000);
+            assert(group >= 1);
+            assert(0usize < nslabs ==> 0usize % group == 0);
+        }
         let inner = Padded(Lock::new(TableInner {
             descs,
             bits,

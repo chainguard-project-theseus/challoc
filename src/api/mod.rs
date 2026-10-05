@@ -1969,7 +1969,7 @@ mod tests {
     /// capability allows); `may_abort` and `may_abort_corrupt` appear only
     /// as `requires` or loop invariant clauses that start with them;
     /// `integrity_aborts` only in its definition and in the `requires` of
-    /// the theorem's witnesses; the integrity checks, the calls of
+    /// the theorem's witness; the integrity checks, the calls of
     /// `abort_integrity` and of `vspec::check::check` (which need only
     /// `may_abort_corrupt`), only in the functions THEOREMS.md lists. And
     /// every `external_body` function that does not return, or whose body
@@ -1999,7 +1999,6 @@ mod tests {
         // The integrity checks: (file, function) of each call.
         let sites = [
             ("stats.rs", "fn huge_pages_short("),
-            ("stats.rs", "fn arena_at("),
             ("arena.rs", "fn alloc_sets("),
             ("class/table.rs", "pub fn new("),
             ("bitmap.rs", "pub fn allocated("),
@@ -2009,7 +2008,6 @@ mod tests {
         let corrupt_only = [
             ("sys/abort.rs", "pub fn abort_integrity("),
             ("vspec/check.rs", "pub fn check("),
-            ("policy.rs", "pub fn empty_bytes("),
         ];
         // Trusted bodies whose panic is their `requires`, so cannot fail.
         let unfailing = [("heap/others.rs", "fn assert_not_home(")];

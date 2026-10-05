@@ -287,7 +287,6 @@ claim_init	atomics primitive	loom/GenMC	discharged (verus/seams/api-claim_init.m
 # Arenas::count: every store writes at most MAX_ARENAS and a load returns
 # a stored value, so no memory-model question; provable in Verus as the
 # bound counts are (vspec/count.rs), once a permission wraps it.
-Arenas::count	allocator invariant	Verus
 SlabTable::watermark	allocator invariant	RefinedRust
 Policy::position	allocator invariant	RefinedRust
 load_lg_slab_min	allocator invariant	RefinedRust

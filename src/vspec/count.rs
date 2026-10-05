@@ -1,6 +1,6 @@
 //! `u32` counters as atomics with a ghost permission, for the arena
 //! registry's bound counts (`arena.rs`, `Arenas::bound`; `verus/THEOREMS.md`,
-//! "Balanced arena assignment").
+//! "Balanced arena assignment") and its arena count (`Arenas::count`).
 //!
 //! The same pattern as `word.rs` for the class bitmap words: a
 //! [`CountPerm`] names the counter's identity and value, each operation is
@@ -11,7 +11,8 @@
 //!
 //! Trusted, all of it:
 //! - each wrapped `core` operation is one atomic operation on the counter
-//!   (a load or a wrapping read-modify-write), as `core` documents;
+//!   (a load, a store or a wrapping read-modify-write), as `core`
+//!   documents;
 //! - the proof model is sequentially consistent: the specifications ignore
 //!   `ordering`, so nothing here proves that `Relaxed` is strong enough
 //!   (`verus/TODO.md`, Tier 4);
@@ -22,7 +23,9 @@
 //! A permission's value is its counter's: every access to a bound count
 //! goes through these wrappers (`Arenas::assign`, `bind`, `unbind`,
 //! `bound`), each inside the counter's invariant (`arena::BoundPred`),
-//! and `Arenas::init` writes it before the registry is published.
+//! and so does every access to the arena count (`Arenas::count`,
+//! `Arenas::create`) inside its invariant (`arena::NarenasPred`);
+//! `Arenas::init` writes each counter before the registry is published.
 
 use crate::sync::atomic::{AtomicU32, Ordering};
 use vstd::prelude::*;
@@ -84,6 +87,22 @@ pub fn fetch_sub(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Track
     no_unwind
 {
     c.fetch_sub(v, ordering)
+}
+
+/// `c.store(v, ordering)`.
+#[inline(always)]
+#[verifier::external_body]
+#[verifier::atomic]
+pub fn store(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>)
+    requires
+        old(perm).id() == count_id(c),
+    ensures
+        final(perm).id() == old(perm).id(),
+        final(perm).value() == v,
+    opens_invariants none
+    no_unwind
+{
+    c.store(v, ordering)
 }
 
 /// `c.load(ordering)`: the permission's value.

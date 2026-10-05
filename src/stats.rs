@@ -44,7 +44,9 @@
 //! so two concurrent epochs can leave one's arena figures beside the
 //! other's totals (`concurrent_epochs_leave_arenas_summing_to_the_totals`).
 
-use crate::arena::{Arena, MAX_ARENAS};
+use crate::arena::Arena;
+#[cfg(verus_only)]
+use crate::arena::MAX_ARENAS;
 use crate::class::ClassState;
 use crate::heap::Shared;
 use crate::huge::{GUARD_PAGES, HugeStats};
@@ -55,7 +57,6 @@ use crate::lock::LockOrder;
 #[cfg(verus_only)]
 use crate::lock::{rank_arena_stats, rank_class, rank_stats};
 use crate::meta::MetaStats;
-use crate::vspec::check::check;
 use vstd::prelude::*;
 
 pub mod ledger;
@@ -868,18 +869,15 @@ pub fn collect_bin(cs: &ClassState, Tracked(ord): Tracked<&mut LockOrder>) -> (r
 
 /// Arena `i` of the scan [`Arenas::iter`] makes: `None` for an index not
 /// built yet. `i` is below `arenas.narenas`, which never exceeds
-/// `MAX_ARENAS`; past it the scan's table index would be out of bounds,
-/// and this aborts as that would.
+/// `MAX_ARENAS` (`Arenas::count`'s invariant).
 ///
 /// [`Arenas::iter`]: crate::arena::Arenas::iter
 pub(crate) fn arena_at(shared: &Shared, i: usize) -> (r: Option<&Arena>)
     requires
-        crate::sys::may_abort_corrupt() || i < MAX_ARENAS,
-    ensures
         i < MAX_ARENAS,
+    ensures
         r matches Some(a) ==> a.spec_index() as int == i,
 {
-    check(i < MAX_ARENAS, "stats: arena index past MAX_ARENAS");
     shared.arenas.get_existing(i as u16)
 }
 
@@ -1148,6 +1146,7 @@ fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(S
     }
     for i in 0..n as usize
         invariant
+            n as usize <= MAX_ARENAS,
             crate::sys::may_abort_corrupt(),
             crate::sys::may_syscall(),
             shared.wf(),
@@ -1286,7 +1285,6 @@ pub fn arena_stats(shared: &Shared, index: u16, Tracked(ord): Tracked<&mut LockO
 /// stored figures summed. Its `index` is 4096.
 pub fn arena_stats_all(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: ArenaStats)
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
         old(ord).allows(rank_arena_stats(0)),
     ensures
@@ -1297,7 +1295,7 @@ pub fn arena_stats_all(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -
     let n = shared.arenas.count();
     for i in 0..n as usize
         invariant
-            crate::sys::may_abort_corrupt(),
+            n as usize <= MAX_ARENAS,
             crate::sys::may_syscall(),
             all.index == crate::arena::ARENAS_ALL as u16,
             ord.allows(rank_arena_stats(0)),
@@ -1343,6 +1341,7 @@ pub fn collect_all(shared: &Shared, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaSt
     }
     for i in 0..n as usize
         invariant
+            n as usize <= MAX_ARENAS,
             crate::sys::may_abort_corrupt(),
             crate::sys::may_syscall(),
             shared.wf(),

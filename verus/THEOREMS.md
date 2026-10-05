@@ -4602,7 +4602,6 @@ pub(super) fn theorem_mallctl_reads_never_abort(shared: &Shared, name: *const c_
     mibp: *const usize, miblen: usize, io: &Io, m: &[usize])
     requires
         crate::sys::may_syscall(),
-        crate::sys::integrity_aborts(),
         shared.wf(),
 ```
 
@@ -4611,13 +4610,13 @@ pub(super) fn theorem_mallctl_reads_never_abort(shared: &Shared, name: *const c_
 and `grant_aborts` gives it only in the bodies of `extern "C"`
 functions. The integrity checks, the aborts that test allocator state no
 verified invariant constrains, accept the narrower `may_abort_corrupt()`
-instead: `vspec::check` (`requires may_abort_corrupt() || c`),
-`sys::abort_integrity` (`sys/abort.rs:175`) and the trusted
-`policy::empty_bytes`. The witnesses hold only `integrity_aborts()`,
-which nothing grants, besides `may_syscall()` (the read-only paths take
+instead: `vspec::check` (`requires may_abort_corrupt() || c`) and
+`sys::abort_integrity` (`sys/abort.rs:175`). The first witness holds only
+`integrity_aborts()`, which nothing grants, the second holds no abort
+capability at all; both hold `may_syscall()` (the read-only paths take
 locks) and a well-formed `Shared`: they make the calls below and
 verify. So these calls abort at most at an integrity check, whatever
-their arguments:
+their arguments, and only `mallinfo`/`mallinfo2` reach one:
 
 - `get_defrag_hint(p)` (`api/jemalloc.rs:667`), whole, for every `p`
   and before init. It requires no abort capability at all (only
@@ -4629,7 +4628,7 @@ their arguments:
 - `mallinfo2` and `mallinfo` (`api/glibc.rs:91`, `:135`) after
   `shared()`: their bodies call `stats::collect_all`, `page_size`,
   `fig_add`, `fig_mul` and `saturating_sub`, and `mallinfo` clamps; the
-  witness makes the calls. Only the integrity checks below.
+  witness makes the calls. Only the integrity check below.
 - `challoc_features` (`api/mod.rs:321`) after `shared()`: the static
   feature line; never aborts.
 - `mallctl` and `mallctlbymib` after their `super::shared()`: `cstr`,
@@ -4638,16 +4637,16 @@ their arguments:
   node, a read under `opt`, `arenas` or `stats` (`reader_never_aborts`,
   `:218`: root entries 4, 5 and 7), or `experimental.utilization.query`
   and `batch_query` (`utilization`, `:1781`, `batch_query`, `:1933`).
-  `ctl` requires `may_abort() || ctl_never_aborts(*node, mib@)` and
-  `may_abort_corrupt()`. Every reader under those subtrees is a named
-  verified function (`opt_value`, `:2002`; the 43 readers from `:330`,
-  formerly closures outside `verus!`), each called by the witness; `call`
-  (`:197`), which runs the reader of the node the MIB resolves to,
-  requires `may_abort()` or `reader_never_aborts(mib@)` with that link.
-  Of the reads, only `stats.arenas.<i>.*` with `i` =
+  `ctl` requires `may_abort() || ctl_never_aborts(*node, mib@)`. Every
+  reader under those subtrees is a named verified function
+  (`opt_value`, `:2002`; the 43 readers from `:330`, formerly closures
+  outside `verus!`), each called by the witness; `call` (`:197`), which
+  runs the reader of the node the MIB resolves to, requires `may_abort()`
+  or `reader_never_aborts(mib@)` with that link. Every such read and
+  both utilization queries never abort, `stats.arenas.<i>.*` with `i` =
   `MALLCTL_ARENAS_ALL` (`stats::arena_stats_all`) and
-  `stats.cgroup.empty_bytes` (`policy::empty_bytes`) reach an integrity
-  check; every other read and both utilization queries never abort.
+  `stats.cgroup.empty_bytes` (`policy::empty_bytes`) included: the
+  witness requires no `integrity_aborts()`.
 - `mallctlnametomib` (`:2411`) requires no abort capability: it never
   aborts, before init too (it never runs it).
 
@@ -4657,7 +4656,7 @@ so the cache fast paths of `malloc`, `free`, `free_sized` and
 `challoc_free_usable` it calls never abort either; their checks that
 fail leave the fast path for the slow one, which requires `may_abort()`.
 
-The integrity checks the covered calls reach (`api::tests::
+The integrity check the covered calls reach (`api::tests::
 abort_grants_only_at_roots`, `api/mod.rs:1868`, lists the callers of
 `check` and `abort_integrity` and the trusted bodies that require
 `may_abort_corrupt()` alone):
@@ -4668,18 +4667,39 @@ abort_grants_only_at_roots`, `api/mod.rs:1868`, lists the callers of
   on a corrupt counter. Reached by `mallinfo`/`mallinfo2`
   (`collect_all`), not by any mallctl read (the `stats.*` totals read the
   stored snapshot).
-- `stats::arena_at` (`:870`, `check(i < MAX_ARENAS)`): an index below
-  `arenas.count()` at or above `MAX_ARENAS`; `count` is a plain atomic,
-  stored only by `Arenas::init` (clamped to `MAX_ARENAS`) and
-  `Arenas::create` (below it). Reached by `collect_all` and
-  `arena_stats_all`.
-- `policy::empty_bytes` (`policy.rs:848`, trusted): `Arenas::iter`
-  indexes the arena registry below `arenas.count()`, a bounds-checked
-  index that panics on the same corrupt count. It required nothing
-  before (not even `may_syscall()`, though it takes the class and huge
-  locks: a gap in theorem 8's list of trusted bodies, closed here; its
-  caller `print::policy_line` gained `may_syscall()` with it). Reached by
-  `stats.cgroup.empty_bytes`.
+
+Two integrity sites of the first version of this theorem are gone, both
+over the arena count, which is now an atomic invariant (`NarenasPred`,
+`arena.rs`): the counter's permission (`vspec::count::CountPerm`) has a
+value at most `MAX_ARENAS`. `Arenas::init` (trusted) makes it with the
+clamped automatic count, `Arenas::create` stores `index + 1` inside it
+for an `index` below `MAX_ARENAS`, and `Arenas::count` (verified, no
+longer `external_body`) loads inside it, so its `ensures r <=
+MAX_ARENAS` is proved. With it, `stats::arena_at` requires `i <
+MAX_ARENAS`, which every caller's loop below the count shows, and its
+`check(i < MAX_ARENAS)` is gone (it was reached by `collect_all` and
+`arena_stats_all`); `policy::empty_bytes` (trusted) requires only
+`may_syscall()`: its one panic, the bounds check of `Arenas::iter`'s
+table index below `arenas.count()`, cannot fail (it required
+`may_abort_corrupt()` for that, and nothing before theorem 32, not even
+`may_syscall()`, though it takes the class and huge locks: a gap in
+theorem 8's list of trusted bodies, closed then). With both, no mallctl
+read needs `may_abort_corrupt()`, so `ctl`, `call`, the readers,
+`policy::evaluate`, `purge::sample`, `print::policy_line` and
+`print::json_general` no longer require it.
+
+The `large` word gets no invariant: no honest one rules out the
+remaining check. `Shared::free_huge` subtracts a run from its arena's
+word after `Huge::free_run` retired it, so between the two the run's
+pages can be reallocated and added to the same arena's word again. The
+word therefore counts the live runs plus one per free in progress, and
+nothing bounds the frees in progress (one per thread), so nothing proves
+the page half below `2^32`; past it the low half carries into the run
+half and the guard test can fail. Ruling it out needs an exec change
+(the subtraction made at the retirement, under the huge lock inside
+`free_run`, before the pages can be reused; an addition under the lock
+alone would not do) or a trusted bound on concurrent frees.
+
 The other integrity checks (`arena::alloc_sets`, `SlabTable::new` and
 `AtomicBitmap::allocated`'s `check`s) are on no covered path. Nor is
 `print::Sink::flush`'s `check(self.len < 1024)`, the report buffer's
@@ -4696,14 +4716,15 @@ body), `malloc_info` and `malloc_stats`, which require `may_abort()`.
   `may_abort_corrupt()`, or `c` for `check`. `die`, `exit_group` and
   `trap` (the process's end) require `may_abort()` too.
 - 356 `requires` and loop-invariant clauses name `may_abort()` and 37
-  name `may_abort_corrupt()`. Abort-site specs that the caller can
-  discharge say so: `RunState::from_u8` and `HugeDesc::state`
-  (`huge/mod.rs:105`, `:236`) require `may_abort() || v <= 2`
-  (`|| spec_state() <= 2`), which the huge lock invariant (`desc_ok`)
-  gives `Huge::lookup` (`:3692`); `assert_flushed` and
-  `assert_refill_empty` (`heap/mod.rs`) require `may_abort() || *len ==
-  0`; `huge_usable_pages` and `arena_at` require `may_abort_corrupt()`
-  or their condition.
+  (12 since the arena count invariant) name `may_abort_corrupt()`.
+  Abort-site specs that the caller can discharge say so:
+  `RunState::from_u8` and `HugeDesc::state` (`huge/mod.rs:105`, `:236`)
+  require `may_abort() || v <= 2` (`|| spec_state() <= 2`), which the
+  huge lock invariant (`desc_ok`) gives `Huge::lookup` (`:3692`);
+  `assert_flushed` and `assert_refill_empty` (`heap/mod.rs`) require
+  `may_abort() || *len == 0`; `huge_usable_pages` requires
+  `may_abort_corrupt()` or its condition, and `arena_at` its condition
+  alone.
 - Every trusted body that can abort requires the capability: those that
   call an abort or a function that requires it (`Heap::destroy`,
   `heap_set_arena`, `background::spawn`,
@@ -4719,13 +4740,13 @@ body), `malloc_info` and `malloc_stats`, which require `may_abort()`.
   can prove `may_abort()` only from its own `requires` (or a loop
   invariant that carries it), or from `grant_aborts`, and
   `may_abort_corrupt()` only from those or `integrity_aborts()`, which
-  only the witnesses require.
+  only `theorem_read_only_never_aborts` requires.
 - `grant_aborts` is called only in `extern "C"` bodies (the
   `verified_export_pair!` macro, `api/mod.rs:68`, and every hand-written
   export: 44 grants); never in a `-> !` function, unlike
   `grant_syscalls`. `api::tests::abort_grants_only_at_roots` checks the
   source: the grants, `may_abort*` only as `requires`/invariant clauses,
-  `integrity_aborts` only in the witnesses' `requires`, the integrity
+  `integrity_aborts` only in the witness' `requires`, the integrity
   checks only in the functions listed above, and the trusted bodies.
   Outside tests no Rust code calls an `extern "C"` function of the
   crate.
@@ -4805,16 +4826,26 @@ body), `malloc_info` and `malloc_stats`, which require `may_abort()`.
   `may_syscall()`, and a fault (a bad caller pointer for `mallctl`'s
   `oldp`/`newp`, or a `PROT_NONE` page) is outside it, as is reaching
   `SIGABRT` rather than hanging, or termination (the lock waits).
-- Corrupt state is not excluded: the integrity checks may fire for
-  `stats.arenas.4096.*`, `stats.cgroup.empty_bytes` and `mallinfo`; the
-  theorem names them rather than proving them unreachable (the `large`
-  and `count` words would need atomic invariants).
+- Corrupt state is not excluded for `mallinfo` and `mallinfo2`: the
+  `large` word's check may fire; the theorem names it rather than
+  proving it unreachable (above: the word has no honest invariant that
+  excludes it).
 
 Machine code: the hot set is unchanged (x86_64 disassembly identical to
 the base commit outside the readers). The 43 `stats.*` and `arenas.*`
 reader closures became named functions with the same normalized
 disassembly (one `FnOnce::call_once` body each before, a named symbol
 now); nothing else changed.
+
+Machine code of the arena count invariant: the hot set is unchanged.
+`count`'s load and `create`'s store are the bare `core` calls (the
+`vspec::count` wrappers are `#[inline(always)]`), and the ghost field
+has no bytes. Removing `arena_at`'s `check` changed, on x86_64 against
+the base commit, only the functions it is inlined into, all statistics
+and reports off the allocation paths: `stats::collect_all`,
+`stats::collect_into`, `mallctl::arena_stats`, `malloc_stats`,
+`malloc_info` and `malloc_stats_print` (the compare and abort branch
+gone, registers allocated differently).
 ## 33. Lock order is acyclic
 
 Read at this section's commit (the `file:line`s are the `fn`/`axiom`
@@ -4892,8 +4923,9 @@ arena `arena`), `SlabTable`, `SetTable` (`gated`), `Huge`, `Meta`,
 `fork_prepare` proves it with loop invariants `ord.top() <
 rank_class(i, 0)`, `< rank_class(i, c)`, `< rank_table(c)`, `<
 rank_arena_stats(i)`; the arena indices it visits are below
-`MAX_ARENAS` (`Arenas::count`, now trusted for that bound, `arena.rs:1569`),
-so the `u16` arena indices of the arenas it finds increase with `i`.
+`MAX_ARENAS` (`Arenas::count`, trusted for that bound then, verified
+under its invariant `NarenasPred` since), so the `u16` arena indices of
+the arenas it finds increase with `i`.
 
 **The gated locks** (`lock.rs:327`, `RawLock::lock_held_gated`,
 `lock.rs:188`). The code does not follow `fork_prepare`'s documented
@@ -5689,9 +5721,8 @@ alone):
     not stated as an error result; the batch-query length check (bug #1)
     is verified inside the body. B is `p` by theorem 32: once init has
     run, no name, MIB or buffer length makes a read under `opt`,
-    `arenas` or `stats`, or a utilization query, abort (but at the
-    integrity checks of `stats.arenas.4096.*` and
-    `stats.cgroup.empty_bytes`); writes, operations and
+    `arenas` or `stats`, or a utilization query, abort (not even at an
+    integrity check); writes, operations and
     the other reads may. Theorem 21 (MIB round-trip) states that a name and its MIB
     reach the same node with the same indices (on the cores, not the
     exports). The cache flush keys (theorem "cache flush completeness"):

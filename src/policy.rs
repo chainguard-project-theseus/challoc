@@ -843,16 +843,15 @@ impl Policy {
 ///
 /// Trusted: the iterator over the arenas and the unchecked sums stay as
 /// written; callers rely on nothing but the type. The locks may wait in
-/// the kernel, and `Arenas::iter` indexes the registry below
-/// `arenas.count()`, which panics only if that count is past
-/// `MAX_ARENAS`: an integrity check (theorem "Read-only APIs never
-/// abort"). Lock order: it takes class locks, then the huge lock, one at
-/// a time.
+/// the kernel. It cannot abort in the shipped build: the sums wrap
+/// (overflow checks are off in release), and `Arenas::iter` indexes the
+/// registry below `arenas.count()`, which is verified to be at most
+/// `MAX_ARENAS` (`arena::NarenasPred`), so its bounds check never fails.
+/// Lock order: it takes class locks, then the huge lock, one at a time.
 #[verifier::external_body]
 pub fn empty_bytes(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u64
     requires
         crate::sys::may_syscall(),
-        crate::sys::may_abort_corrupt(),
         old(ord).allows(rank_class(0, 0)),
     ensures
         *final(ord) == *old(ord),
@@ -870,7 +869,6 @@ pub fn empty_bytes(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u6
 /// when the band changed or a full purge is owed.
 pub fn evaluate(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
         old(ord).allows(rank_class(0, 0)),
     ensures

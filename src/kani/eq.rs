@@ -41,7 +41,7 @@ fn slab_state_index(s: slab::State) -> usize {
     }
 }
 
-/// S68 `PartialEqSpecImpl for State` (`slab::State`, class/mod.rs).
+/// S67 `PartialEqSpecImpl for State` (`slab::State`, class/mod.rs).
 #[kani::proof]
 fn eq_slab_state() {
     let v = [

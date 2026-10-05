@@ -1,6 +1,6 @@
 # `node_link`
 
-Seam S122 of `verus/SEAMS.md`: src/heap/others.rs:110. Kind: external_body. Category: raw pointer (internal).
+Seam S121 of `verus/SEAMS.md`: src/heap/others.rs:110. Kind: external_body. Category: raw pointer (internal).
 Discharged by RefinedRust.
 
 ## Contract

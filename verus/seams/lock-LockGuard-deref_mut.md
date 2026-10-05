@@ -1,6 +1,6 @@
 # `LockGuard::deref_mut`
 
-Seam S181 of `verus/SEAMS.md`: src/lock.rs:722. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+Seam S180 of `verus/SEAMS.md`: src/lock.rs:722. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Discharged by the C11 data-race rules, given the lock's mutual exclusion
 and acquire/release edge, which loom checks on the real lock word (part
 3); the models do not run the body below.

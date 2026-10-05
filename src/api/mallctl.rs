@@ -204,7 +204,6 @@ struct ExReader(Reader);
 fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_abort() || (reader_never_aborts(mib@) && reads(mib@, read)),
 {
     (read.0)(mib)
@@ -408,7 +407,6 @@ fn arenas_quantum(_m: &[usize]) -> Result<Reading, c_int>
 
 fn bin_curregs(m: &[usize]) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     Ok(Size(bin_stats(m)?.curregs))
@@ -416,7 +414,6 @@ fn bin_curregs(m: &[usize]) -> Result<Reading, c_int>
 
 fn bin_curslabs(m: &[usize]) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     Ok(Size(bin_stats(m)?.curslabs))
@@ -424,7 +421,6 @@ fn bin_curslabs(m: &[usize]) -> Result<Reading, c_int>
 
 fn bin_nonfull_slabs(m: &[usize]) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     Ok(Size(bin_stats(m)?.nonfull_slabs))
@@ -432,7 +428,6 @@ fn bin_nonfull_slabs(m: &[usize]) -> Result<Reading, c_int>
 
 fn small_allocated(m: &[usize]) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     Ok(Size(arena_stats(shared(), at(m, 2))?.small_allocated))
@@ -440,7 +435,6 @@ fn small_allocated(m: &[usize]) -> Result<Reading, c_int>
 
 fn small_resident(m: &[usize]) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     let a = arena_stats(shared(), at(m, 2))?;
@@ -450,7 +444,6 @@ fn small_resident(m: &[usize]) -> Result<Reading, c_int>
 
 fn large_allocated(m: &[usize]) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     Ok(Size(arena_stats(shared(), at(m, 2))?.large_allocated))
@@ -458,7 +451,6 @@ fn large_allocated(m: &[usize]) -> Result<Reading, c_int>
 
 fn arena_pactive(m: &[usize]) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     Ok(Size(arena_stats(shared(), at(m, 2))?.pactive))
@@ -466,7 +458,6 @@ fn arena_pactive(m: &[usize]) -> Result<Reading, c_int>
 
 fn arena_pdirty(m: &[usize]) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     Ok(Size(arena_stats(shared(), at(m, 2))?.pdirty))
@@ -474,7 +465,6 @@ fn arena_pdirty(m: &[usize]) -> Result<Reading, c_int>
 
 fn arena_pmuzzy(m: &[usize]) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     Ok(Size(arena_stats(shared(), at(m, 2))?.pmuzzy))
@@ -482,7 +472,6 @@ fn arena_pmuzzy(m: &[usize]) -> Result<Reading, c_int>
 
 fn arena_resident(m: &[usize]) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     Ok(Size(arena_stats(shared(), at(m, 2))?.resident))
@@ -490,7 +479,6 @@ fn arena_resident(m: &[usize]) -> Result<Reading, c_int>
 
 fn arena_mapped(m: &[usize]) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     Ok(Size(arena_stats(shared(), at(m, 2))?.mapped))
@@ -498,7 +486,6 @@ fn arena_mapped(m: &[usize]) -> Result<Reading, c_int>
 
 fn arena_retained(m: &[usize]) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     Ok(Size(arena_stats(shared(), at(m, 2))?.retained))
@@ -552,7 +539,6 @@ fn cgroup_retention_cap(_m: &[usize]) -> Result<Reading, c_int>
 
 fn cgroup_empty_bytes(_m: &[usize]) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     tracked()?;
@@ -2122,7 +2108,6 @@ fn bin_class(mib: &[usize]) -> (r: Result<crate::layout::Class, c_int>)
 #[allow(clippy::redundant_comparisons)]
 fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int>
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
 {
     let a = arena_stats(shared(), at(mib, 2))?;
@@ -2178,7 +2163,6 @@ fn ms_of(ns: u64) -> (r: isize)
 /// range check, which they fail).
 fn arena_stats(shared: &Shared, i: usize) -> (r: Result<ArenaStats, c_int>)
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
     ensures
         r matches Err(e) ==> e == ENOENT,
@@ -2249,7 +2233,6 @@ fn read_out(io: &Io, r: Reading) -> (res: Result<(), c_int>)
 /// an interior node.
 fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int>
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_abort() || ctl_never_aborts(*node, mib@),
         crate::sys::may_syscall(),
         shared.wf(),
@@ -2595,9 +2578,10 @@ fn never_aborts(node: &Node, mib: &[usize]) -> (r: bool)
 /// Theorem "Read-only APIs never abort", for `mallctl`: the calls
 /// [`mallctl`] and [`mallctlbymib`] make after their `super::shared()`,
 /// for a key under `opt`, `arenas` or `stats` or a utilization query, and
-/// every named reader of those keys, made where only
-/// [`crate::sys::integrity_aborts`] holds, not [`crate::sys::may_abort`].
-/// Each call verifies, so none of them aborts but at an integrity check.
+/// every named reader of those keys, made where neither
+/// [`crate::sys::may_abort`] nor [`crate::sys::integrity_aborts`] holds.
+/// Each call verifies, so none of them aborts, not even at an integrity
+/// check.
 ///
 /// Verification only (`cfg(verus_only)`): the build has no such function.
 #[cfg(verus_only)]
@@ -2611,7 +2595,6 @@ pub(super) fn theorem_mallctl_reads_never_abort(
 )
     requires
         crate::sys::may_syscall(),
-        crate::sys::integrity_aborts(),
         shared.wf(),
 {
     // `mallctl` after its `super::shared()`, for a covered key.

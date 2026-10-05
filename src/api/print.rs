@@ -528,7 +528,6 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
 /// what it gives arena 0.
 fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
@@ -825,6 +824,7 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
         let n = shared.arenas.count() as usize;
         for i in 0..n
             invariant
+                n <= crate::arena::MAX_ARENAS,
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 shared.wf(),
@@ -855,7 +855,6 @@ fn json_general<W: Write>(
     arenas_follow: bool,
 ) -> fmt::Result
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
@@ -1049,6 +1048,7 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
         let n = shared.arenas.count() as usize;
         for i in 0..n
             invariant
+                n <= crate::arena::MAX_ARENAS,
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 shared.wf(),
@@ -1164,6 +1164,7 @@ fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
     let n = shared.arenas.count() as usize;
     for i in 0..n
         invariant
+            n <= crate::arena::MAX_ARENAS,
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),
@@ -1253,6 +1254,7 @@ fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result
     let n = shared.arenas.count() as usize;
     for i in 0..n
         invariant
+            n <= crate::arena::MAX_ARENAS,
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             shared.wf(),

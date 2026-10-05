@@ -1,6 +1,6 @@
 # `<[T]>::get_unchecked::<I>`
 
-Seam S281 of `verus/SEAMS.md`: src/vspec/core_int.rs:85. Kind: assume_spec. Category: core library.
+Seam S280 of `verus/SEAMS.md`: src/vspec/core_int.rs:85. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

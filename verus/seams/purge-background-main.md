@@ -1,6 +1,6 @@
 # `main` (`purge/background.rs`)
 
-Seam S196 of `verus/SEAMS.md`: src/purge/background.rs:442. Kind: no_decreases. Category: termination.
+Seam S195 of `verus/SEAMS.md`: src/purge/background.rs:442. Kind: no_decreases. Category: termination.
 Discharged by loom (termination after a final `request(false)`, given that each pass and the exit's lock return; part 3).
 
 ## Contract
@@ -46,7 +46,7 @@ Models: `loom_exit_after_withdrawal`, `loom_exit_after_withdrawal_with_waker`, `
   callees' termination, such as the cgroup sampler's, are their own
   seams) and a `futex_wait`, which returns at its deadline, on a wake,
   on a changed `SEQ` or on a signal; and that the exit's
-  `STATE.lock()` returns, which is `RawLock::lock_slow`'s seam (S176,
+  `STATE.lock()` returns, which is `RawLock::lock_slow`'s seam (S177,
   evidence only: the lock is not starvation-free).
 - **Why the models are enough.** Every write to `SEQ` is a `fetch_add`
   (`kick`), so every value `B` can load after `W`'s `fetch_add` heads

@@ -144,9 +144,11 @@ pub proof fn grant_aborts()
 
 /// The capability of the integrity checks alone: an abort only where a
 /// test of allocator state that no verified invariant constrains (a word
-/// other threads update with plain atomics, a counter only unverified
-/// code keeps) fails, so only if that state is corrupt. Nothing grants
-/// it: the theorem's witnesses require it in place of [`may_abort`].
+/// other threads update with plain atomics, such as an arena's `large`
+/// word, which verified code updates but no invariant bounds) fails, so
+/// only if that state is corrupt. Nothing grants it: the theorem's
+/// witness `theorem_read_only_never_aborts` requires it in place of
+/// [`may_abort`].
 #[verifier::opaque]
 pub open spec fn integrity_aborts() -> bool {
     true

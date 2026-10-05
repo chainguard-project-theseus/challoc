@@ -116,7 +116,7 @@ fn slice_is_sorted_by_key() {
     assert_eq!(r, (1..n).all(|k| key(&a[k - 1]) <= key(&a[k])));
 }
 
-/// S281 `<[T]>::get_unchecked`: under the `index` precondition (in
+/// S280 `<[T]>::get_unchecked`: under the `index` precondition (in
 /// bounds), the element or subslice `index` gives, at the instantiations
 /// the proofs use: `usize` (`heap/flush.rs`, `arena.rs`, `api/libc.rs`),
 /// `RangeTo` and `RangeFrom`. Kani's undefined-behaviour checks cover the

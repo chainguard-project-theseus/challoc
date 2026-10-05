@@ -686,8 +686,9 @@ impl Decayer {
 }
 
 /// Arena indices to visit: [`crate::arena::Arenas::count`], which never
-/// exceeds the table (`create` stops at [`MAX_ARENAS`]); the clamp states
-/// that for the verifier.
+/// exceeds the table (`create` stops at [`MAX_ARENAS`]; `count` is
+/// verified to ensure it, so the clamp is redundant and stays only to
+/// keep the machine code).
 ///
 /// [`MAX_ARENAS`]: crate::arena::MAX_ARENAS
 #[inline]
@@ -851,7 +852,6 @@ pub fn on_tick(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>)
 /// not passed. Slow paths only (the periodic tick, the background thread).
 fn sample(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>)
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
         old(ord).allows(rank_class(0, 0)),
     ensures
@@ -912,7 +912,7 @@ mod kani_total {
     /// The most ranges checked.
     const MAX: usize = 4;
 
-    /// S188 `total_bytes`, `requires lens(ranges, len) <= u64::MAX`, no
+    /// S187 `total_bytes`, `requires lens(ranges, len) <= u64::MAX`, no
     /// `ensures`: under it the call returns (the sum, which cannot
     /// overflow), for every list of up to `MAX` ranges.
     #[kani::proof]

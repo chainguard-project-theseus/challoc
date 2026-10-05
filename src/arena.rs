@@ -1305,12 +1305,38 @@ pub struct Arenas {
     /// ([`BoundPred`]), one per index ([`Arenas::wf`]).
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     invs: Tracked<Map<int, BoundInv>>,
+    /// Ghost (no bytes): the invariant of `count` ([`NarenasPred`];
+    /// the type invariant names it).
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    count_inv: Tracked<NarenasInv>,
 }
 
 /// Namespace of the bound-count invariants.
 pub open spec fn bound_ns() -> int {
     0x626e_6463
 }
+
+/// Namespace of the arena count's invariant ([`NarenasPred`]).
+pub open spec fn narenas_ns() -> int {
+    0x6e61_726e
+}
+
+/// The arena count's invariant, about the counter whose [`count_id`] is
+/// the key: its permission's value is at most [`MAX_ARENAS`]. Its two
+/// writers keep it: `Arenas::init` stores the automatic count it clamped
+/// to `1..=MAX_ARENAS` (trusted, with the invariant it makes), and
+/// `Arenas::create` stores `index + 1` for an `index` below `MAX_ARENAS`.
+pub struct NarenasPred;
+
+impl InvariantPredicate<int, CountPerm> for NarenasPred {
+    open spec fn inv(k: int, v: CountPerm) -> bool {
+        &&& v.id() == k
+        &&& v.value() <= MAX_ARENAS
+    }
+}
+
+/// The invariant of the arena count.
+pub type NarenasInv = AtomicInvariant<int, CountPerm, NarenasPred>;
 
 /// What one bound count is about: the counter ([`count_id`]) and the
 /// ghost set of the tickets of the heaps homed on its arena.
@@ -1421,7 +1447,10 @@ impl Arenas {
     /// write sets: every bound count is written 0, and its invariant
     /// ([`BoundPred`]) is the one a fresh counter permission of value 0
     /// and a fresh, empty ticket set would make (`GhostSetAuth::new`), each
-    /// set at a location of its own; no ticket exists yet.
+    /// set at a location of its own; no ticket exists yet. Likewise the
+    /// ghost `count_inv`: `count` is written the clamped automatic count,
+    /// and its invariant ([`NarenasPred`], in [`narenas_ns`]) is the one a
+    /// fresh counter permission of that value would make.
     ///
     /// # Safety
     /// `this` must point to writable storage that nothing else reads until
@@ -1455,11 +1484,20 @@ impl Arenas {
     /// [`bound_ns`], with a ticket set at a location no other index uses.
     pub closed spec fn wf(&self) -> bool {
         &&& 1 <= self.auto <= MAX_ARENAS
-        &&& forall|i: int| 0 <= i < MAX_ARENAS ==> {
-            &&& #[trigger] self.invs@.contains_key(i)
-            &&& self.invs@[i].constant().id == count_id(&self.bound[i])
-            &&& self.invs@[i].namespace() == bound_ns()
-        }
+        // One quantifier per conjunct, each with both triggers (a fact
+        // about entry `i` is found from either term).
+        &&& forall|i: int|
+            #![trigger self.invs@.contains_key(i)]
+            #![trigger self.invs@[i]]
+            0 <= i < MAX_ARENAS ==> self.invs@.contains_key(i)
+        &&& forall|i: int|
+            #![trigger self.invs@.contains_key(i)]
+            #![trigger self.invs@[i]]
+            0 <= i < MAX_ARENAS ==> self.invs@[i].constant().id == count_id(&self.bound[i])
+        &&& forall|i: int|
+            #![trigger self.invs@.contains_key(i)]
+            #![trigger self.invs@[i]]
+            0 <= i < MAX_ARENAS ==> self.invs@[i].namespace() == bound_ns()
         &&& forall|i: int, j: int| 0 <= i < MAX_ARENAS && 0 <= j < MAX_ARENAS && i != j
             ==> #[trigger] self.spec_loc(i) != #[trigger] self.spec_loc(j)
     }
@@ -1517,7 +1555,8 @@ impl Arenas {
 
 impl Arenas {
     /// Every arena that exists, in index order (`Shared::set_decay_ms`,
-    /// `policy::empty_bytes`).
+    /// `policy::empty_bytes`). The table index is below `count()`, which
+    /// is verified to be at most `MAX_ARENAS`, so it is in bounds.
     pub fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Arena> + 'a {
         let n = self.count() as usize;
         (0..n).filter_map(move |i| {
@@ -1802,7 +1841,11 @@ impl Arenas {
         }
         self.build(shared, index as u16, Tracked(&mut under))?;
         *g = index + 1;
-        self.count.store(index + 1, Ordering::Release);
+        // Inside the count's invariant ([`NarenasPred`]): `index + 1` is at
+        // most `MAX_ARENAS`.
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => perm => {
+            crate::vspec::count::store(&self.count, index + 1, Ordering::Release, Tracked(&mut perm));
+        });
         Some(index as u16)
     }
 
@@ -1944,19 +1987,25 @@ impl Arenas {
         Tracked(t)
     }
 
-    /// Number of arena indices in use (`arenas.narenas`). Trusted: at most
-    /// [`MAX_ARENAS`], which its two writers keep (`init` stores the
-    /// automatic count it clamped to `1..=MAX_ARENAS`, `create` stores
-    /// `index + 1` for an `index` below it); Verus gives the load any
-    /// value. The fork handlers' lock order needs the bound (they visit
-    /// the indices below the count as `u16` arena indices).
+    /// Number of arena indices in use (`arenas.narenas`): at most
+    /// [`MAX_ARENAS`], read inside the count's invariant
+    /// ([`NarenasPred`]). The fork handlers' lock order needs the bound
+    /// (they visit the indices below the count as `u16` arena indices),
+    /// and so do the scans over the registry ([`Arenas::iter`] and
+    /// `stats::arena_at`).
     #[inline]
-    #[verifier::external_body]
     pub fn count(&self) -> (r: u32)
         ensures
             r as usize <= MAX_ARENAS,
     {
-        self.count.load(Ordering::Acquire)
+        proof {
+            use_type_invariant(self);
+        }
+        let r;
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => perm => {
+            r = crate::vspec::count::load(&self.count, Ordering::Acquire, Tracked(&perm));
+        });
+        r
     }
 
     /// Number of automatic arenas (`opt.narenas` as applied).
@@ -2006,11 +2055,14 @@ impl Arenas {
         self.lock.spec_raw()
     }
 
-    /// The creation lock is the arena creation lock of the lock order
-    /// (`init` creates it so; trusted with `init`).
+    /// The creation lock is the arena creation lock of the lock order, and
+    /// `count_inv` is the invariant of `count` ([`NarenasPred`]) in
+    /// [`narenas_ns`] (`init` creates both so; trusted with `init`).
     #[verifier::type_invariant]
-    spec fn rank_ok(self) -> bool {
-        self.lock.rank() == rank_arenas()
+    spec fn type_inv(self) -> bool {
+        &&& self.lock.rank() == rank_arenas()
+        &&& self.count_inv@.constant() == count_id(&self.count)
+        &&& self.count_inv@.namespace() == narenas_ns()
     }
 
 }
