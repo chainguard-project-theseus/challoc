@@ -68,7 +68,7 @@ pub use paths::{
 pub use shared::Built;
 pub use shared::Shared;
 #[cfg(test)]
-use shared::{GuardTest, guard_interval_for};
+use shared::{FAIL_SETSPECIFIC, GuardTest, guard_interval_for};
 pub use thread::{TLS_CREATING, TLS_EXITED, fast_flags};
 pub use thread::{existing_heap, heap_destructor, heap_for_thread};
 

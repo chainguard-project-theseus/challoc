@@ -249,6 +249,11 @@ const _: () = assert!(
             / 128
 );
 
+/// Makes the next [`ThreadKey::set`] on the thread with this kernel id
+/// fail as `pthread_setspecific` would, for tests.
+#[cfg(test)]
+pub static FAIL_SETSPECIFIC: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 verus! {
 
 /// The `pthread_key` whose destructor tears down a thread's heap.
@@ -299,25 +304,32 @@ verus! {
 
 impl ThreadKey {
     /// Register `heap` for destruction when the calling thread exits.
-    /// `pthread_setspecific` may re-enter the allocator on this thread, so
-    /// the slot (`tls`) must hold a sentinel ([`reentry_benign`]); the
-    /// call leaves it as it was.
-    pub fn set(&self, heap: *mut Heap, Tracked(tls): Tracked<&mut TlsSlot>)
+    /// `false` if `pthread_setspecific` fails, which for a live key
+    /// happens only past glibc's first 32 keys, when it cannot allocate
+    /// the second-level block; `true` without registering when the key
+    /// does not exist. `pthread_setspecific` may re-enter the allocator
+    /// on this thread, so the slot (`tls`) must hold a sentinel
+    /// ([`reentry_benign`]); the call leaves it as it was.
+    pub fn set(&self, heap: *mut Heap, Tracked(tls): Tracked<&mut TlsSlot>) -> (r: bool)
         requires
-            crate::sys::may_abort(),
             crate::sys::may_syscall(),
             reentry_benign(old(tls).value()),
         ensures
             *final(tls) == *old(tls),
     {
         if !self.valid {
-            return;
+            return true;
+        }
+        #[cfg(test)]
+        if FAIL_SETSPECIFIC
+            .compare_exchange(tid(), 0, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return false;
         }
         // SAFETY: the key was created by `create`; glibc stores the
         // pointer without dereferencing it.
-        if unsafe { pthread_setspecific(self.key, heap as *const c_void, Tracked(tls)) } != 0 {
-            crate::sys::abort_fmt(format_args!("heap: pthread_setspecific failed"));
-        }
+        unsafe { pthread_setspecific(self.key, heap as *const c_void, Tracked(tls)) == 0 }
     }
 }
 

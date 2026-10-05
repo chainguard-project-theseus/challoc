@@ -1415,7 +1415,12 @@ returns at once, registering nothing, when the key is invalid
 (`pthread_key_create` failed at init); the heap is still created and
 published in TLS, so its cached slots are stranded when its thread
 exits, and there is no heapless fallback for that case. A
-`pthread_setspecific` failure aborts instead. Theorem 15 covers
+`pthread_setspecific` failure (past glibc's first 32 keys, when its
+second-level block cannot be allocated) does not abort: `ThreadKey::set`
+returns `false`, and `create_heap_for_thread` destroys the heap at once
+through `Heap::destroy`, the destructor's own path, so (a)'s flush covers
+it, empties the slot again and serves the call without a cache, as after
+a failed `Heap::create`; the next call tries again. Theorem 15 covers
 registration's re-entrancy, not its success.
 
 Read at the lane commit `2801c34`, before its merge onto the live-block
@@ -2145,7 +2150,7 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize,
         slot == 0 ==> final(tls).creates() == old(tls).creates() + 1,
         slot == 0 && r is None ==> final(tls).value() == 0,
 
-pub fn set(&self, heap: *mut Heap, Tracked(tls): Tracked<&mut TlsSlot>)  // ThreadKey
+pub fn set(&self, heap: *mut Heap, Tracked(tls): Tracked<&mut TlsSlot>) -> (r: bool)  // ThreadKey
     requires reentry_benign(old(tls).value()),
     ensures *final(tls) == *old(tls),
 ```
@@ -2162,7 +2167,11 @@ shared borrow of the token, and its callees (`tls_heap_slot`,
 `TLS_EXITED`, after the thread's destructor has run. On an empty slot
 `heap_for_thread` makes exactly one `Heap::create` call and leaves the
 slot empty unless it returns a heap; above the sentinels it returns the
-published heap and writes nothing.
+published heap and writes nothing. The empty-slot case includes the
+heapless path: when `ThreadKey::set` returns `false` (`pthread_setspecific`
+failed) the heap is destroyed (`Heap::destroy`, with the slot still on
+`TLS_CREATING`) and the slot written back to empty before `None` is
+returned, so the next call on the thread creates again.
 
 **If `Heap::create` itself allocated.** `Heap::create` runs on the
 empty slot, before `TLS_CREATING` is set, and its contract says it
@@ -2222,6 +2231,9 @@ it).
 - `sys::tls::get`, `get_tp`, `set` (inline asm, `external_body`): a read
   returns the token's value; a write makes it the token's value.
 - `Heap::create` makes no call that can allocate (above).
+- `Heap::destroy` (`external_body`, theorem 10), on the heapless path:
+  it takes no slot token and writes no slot (by inspection; the slot
+  holds `TLS_CREATING` across it, so a nested entry would be benign).
 
 **Where the statement is weaker than the code.**
 - It covers only the slot and heap creation. A nested call's other
@@ -5250,7 +5262,9 @@ In words:
   or returns it with the heap; `create_heap_for_thread`
   (`heap/thread.rs:165`) installs it in the heap's ghost `homed` field
   with the permissions, which `Heap::lemma_fresh_wf` (`heap/mod.rs:3050`)
-  turns into `homed_ok`. `set_arena` (`:5281`, `thread.arena`) hands the
+  turns into `homed_ok`; when `ThreadKey::set` refuses the heap
+  (theorem 15's heapless path) it drops the ticket and hands the heap to
+  `destroy`, which unbinds it. `set_arena` (`:5281`, `thread.arena`) hands the
   old home's ticket to `unbind` and stores `bind`'s ticket for the new
   home. `destroy` (`:5907`, trusted) unbinds a counted heap's home arena.
   No other code makes or spends a ticket, so the tickets out for arena

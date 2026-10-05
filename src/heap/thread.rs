@@ -78,7 +78,8 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
 /// The calling thread's heap, created on first use. `None` when the thread
 /// must be served without a cache: heap creation is in progress on it
 /// (`pthread_setspecific` re-entered the allocator), its destructor has run,
-/// or the metadata region is exhausted.
+/// the metadata region is exhausted, or the thread-exit key cannot take
+/// the heap.
 ///
 /// The `&mut Heap` is exclusive by construction, not by the type system:
 /// only the owning thread reaches its heap through TLS, and every entry
@@ -148,10 +149,12 @@ fn tls_value_for(shared: &Shared, h: *mut Heap, Tracked(tls): Tracked<&TlsSlot>)
 
 /// Create, register and publish the calling thread's heap (`slot` is its
 /// TLS value, 0 when it has none yet); `None` while a creation is in
-/// progress, after the exit destructor ran, or when the metadata region is
-/// exhausted. The new heap is well formed ([`Heap::wf`]): its ghost state
-/// is the permissions `Heap::create` returns, which own its home headers,
-/// all empty ([`CachePerms::fresh`](super::CachePerms::fresh)), an empty
+/// progress, after the exit destructor ran, when the metadata region is
+/// exhausted, or when the thread-exit key cannot take the heap (which is
+/// then destroyed and the slot emptied again). The new heap is well
+/// formed ([`Heap::wf`]): its ghost state is the permissions
+/// `Heap::create` returns, which own its home headers, all empty
+/// ([`CachePerms::fresh`](super::CachePerms::fresh)), an empty
 /// `others` list, and the record of where the home headers are
 /// (`Heap::home_hdrs`, [`home_hdr`](super::home_hdr) of the new heap).
 ///
@@ -179,12 +182,21 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(tls): Tra
     }
     // Premise (lock order): reached from the first allocation of a thread,
     // on its slow path, with no lock held.
-    let (h, Tracked(perms), Tracked(fresh)) = Heap::create(shared, Tracked(tls), Tracked(&mut axiom_entry()));
+    let tracked mut ord = axiom_entry();
+    let (h, Tracked(perms), Tracked(fresh)) = Heap::create(shared, Tracked(tls), Tracked(&mut ord));
     if h.is_null() {
         return None;
     }
     crate::sys::tls::set(addr_to_ptr(TLS_CREATING) as *mut c_void, Tracked(tls));
-    shared.key.set(h, Tracked(tls));
+    if !shared.key.set(h, Tracked(tls)) {
+        // Thread exit could not free the heap, so it goes now and this
+        // call is served without one; the next call tries again, as
+        // after a failed `Heap::create`.
+        // SAFETY: created above and never published.
+        unsafe { Heap::destroy(h, shared, Tracked(&mut ord)) };
+        crate::sys::tls::set(ptr::null_mut(), Tracked(tls));
+        return None;
+    }
     crate::sys::tls::set(tls_value_for(shared, h, Tracked(&*tls)), Tracked(tls));
     let tracked (homed, stored) = fresh.tracked_unwrap();
     // SAFETY: freshly created and owned by this thread.

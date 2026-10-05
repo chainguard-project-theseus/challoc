@@ -216,6 +216,47 @@ fn creating_and_exited_sentinels_are_served_directly() {
     .unwrap();
 }
 
+/// A thread whose heap the thread-exit key cannot take
+/// (`pthread_setspecific` fails: past its first 32 keys glibc allocates
+/// a second-level block, and that allocation can fail) is served
+/// without a cache: its first call, a `free` here, which has no error to
+/// return, releases straight to the slab, the heap goes back to the
+/// metadata allocator, and the next call tries again.
+#[test]
+fn key_registration_failure_is_served_directly() {
+    let s = shared();
+    let c = class_of(48).unwrap();
+    let p = s
+        .alloc_direct(&s.arena0, c, Tracked::assume_new(), Tracked::assume_new())
+        .0 as usize;
+    assert_ne!(p, 0);
+    std::thread::spawn(move || {
+        let meta_before = s.meta.stats(Tracked::assume_new()).allocated;
+        let bound_before = s.arenas.bound(0);
+        assert!(tls::get(Tracked::assume_new()).is_null());
+        FAIL_SETSPECIFIC.store(crate::sys::gettid() as u32, Ordering::Relaxed);
+        free(s, p as *mut u8, Tracked::assume_new());
+        assert_eq!(FAIL_SETSPECIFIC.load(Ordering::Relaxed), 0, "set never ran");
+        assert!(
+            tls::get(Tracked::assume_new()).is_null(),
+            "no heap, and none half-registered"
+        );
+        assert_eq!(live(s, c), 0);
+        assert_eq!(s.meta.stats(Tracked::assume_new()).allocated, meta_before);
+        assert_eq!(s.arenas.bound(0), bound_before);
+        // The next call registers a heap as usual.
+        let q = alloc(s, c, Tracked::assume_new());
+        assert!(!q.is_null());
+        assert!(tls::get(Tracked::assume_new()) as usize > TLS_EXITED);
+        let h = existing_heap(s).unwrap() as *mut Heap as *mut c_void;
+        let key = s.thread_key().expect("key");
+        assert_eq!(unsafe { libc::pthread_getspecific(key) }, h);
+        free(s, q, Tracked::assume_new());
+    })
+    .join()
+    .unwrap();
+}
+
 /// `PUSH_PAC` follows the probe and the key,
 /// and the key is off by default (the test builders turn it on).
 #[test]
