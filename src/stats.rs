@@ -39,10 +39,10 @@
 //! bytes are the same number, and the totals are sums of the same
 //! per-arena values. Verus proves them for every stored `ArenaStats` and,
 //! with up to 256 arenas, every stored `Snapshot` (`verus/THEOREMS.md`,
-//! "Stats identities and epoch coherence"). Coherence is weaker: an
-//! `epoch` stores the arenas' figures before it takes the snapshot lock,
-//! so two concurrent epochs can leave one's arena figures beside the
-//! other's totals (`concurrent_epochs_leave_arenas_summing_to_the_totals`).
+//! "Stats identities and epoch coherence"). Coherence is by construction:
+//! an `epoch` holds the snapshot lock across its whole collection, so
+//! concurrent epochs publish one whole collection at a time
+//! (`concurrent_epochs_leave_arenas_summing_to_the_totals`).
 
 use crate::arena::Arena;
 #[cfg(verus_only)]
@@ -1115,12 +1115,19 @@ pub proof fn lemma_totals_add(t: Totals, a: ArenaStats)
 /// the totals theirs whenever the arenas' `mapped` sum fits, which it
 /// does for up to 256 arenas ([`Snapshot::inv`]); the snapshot stored
 /// is the one returned.
+///
+/// The process statistics lock is held across the whole collection, so
+/// one collection is published at a time: concurrent `epoch`s never leave
+/// arenas and totals from different collections, and a reader of the
+/// snapshot never sees the arenas of a collection whose totals are not
+/// stored yet. It nests outside the class, slab table, huge, metadata and
+/// per-arena statistics locks the collection takes (design section 9).
 fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Snapshot)
     requires
         crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
         shared.wf(),
-        old(ord).allows(rank_class(0, 0)),
+        old(ord).allows(rank_stats()),
     ensures
         totals_exact(final(rd)@.0, final(rd)@.1, r.totals),
         r.narenas == final(rd)@.0.len(),
@@ -1134,8 +1141,13 @@ fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(S
 {
     broadcast use axiom_snapshot_lock_inv;
 
-    let huge = shared.huge.stats(Tracked(ord));
-    let meta = shared.meta.stats(Tracked(ord));
+    proof {
+        shared.lemma_ranks();
+    }
+    let tracked mut under = LockOrder::spare();
+    let mut g = shared.stats.lock(Tracked(ord), Tracked(&mut under));
+    let huge = shared.huge.stats(Tracked(&mut under));
+    let meta = shared.meta.stats(Tracked(&mut under));
     let mut totals = Totals::EMPTY;
     let mut narenas: u32 = 0;
     let n = shared.arenas.count();
@@ -1163,12 +1175,11 @@ fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(S
             // Arena 0, the only one above `2^55`, comes first.
             sum_mapped(reads) <= 0x400_0000_0000_0000 + reads.len() * 0x80_0000_0000_0000,
             sum_mapped(reads) <= usize::MAX ==> totals.mapped == sum_mapped(reads) && totals.identities(),
-            ord.allows(rank_class(0, 0)),
-            *ord == *old(ord),
+            under.top() == rank_stats(),
     {
         if let Some(arena) = arena_at(shared, i) {
             let tracked mut pg = Ghost(0int);
-            let a = collect_arena_with(shared, arena, &huge, &meta, Tracked(&mut pg), Tracked(ord));
+            let a = collect_arena_with(shared, arena, &huge, &meta, Tracked(&mut pg), Tracked(&mut under));
             let ghost p = pg@;
             proof {
                 lemma_reads_step(reads, pages, a, p);
@@ -1184,14 +1195,10 @@ fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(S
             }
             narenas += 1;
             if store {
-                arena.store_stats(&a, Tracked(ord));
+                arena.store_stats(&a, Tracked(&mut under));
             }
         }
     }
-    proof {
-        shared.lemma_ranks();
-    }
-    let mut g = shared.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
     proof {
         assert(totals_exact(reads, pages, totals));
         *rd = Ghost((reads, pages));
@@ -1228,7 +1235,7 @@ pub fn epoch(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u64
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
-        old(ord).allows(rank_class(0, 0)),
+        old(ord).allows(rank_stats()),
     ensures
         *final(ord) == *old(ord),
 {
@@ -1243,7 +1250,7 @@ pub fn collect(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Sn
         crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
         shared.wf(),
-        old(ord).allows(rank_class(0, 0)),
+        old(ord).allows(rank_stats()),
     ensures
         r.inv(),
         *final(ord) == *old(ord),
@@ -1285,15 +1292,22 @@ pub fn arena_stats(shared: &Shared, index: u16, Tracked(ord): Tracked<&mut LockO
 }
 
 /// `stats.arenas.4096.*` (`MALLCTL_ARENAS_ALL`): every existing arena's
-/// stored figures summed. Its `index` is 4096.
+/// stored figures summed, all from one `epoch` (the process statistics
+/// lock keeps one from storing midway). Its `index` is 4096.
 pub fn arena_stats_all(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: ArenaStats)
     requires
         crate::sys::may_syscall(),
-        old(ord).allows(rank_arena_stats(0)),
+        shared.wf(),
+        old(ord).allows(rank_stats()),
     ensures
         r.index == crate::arena::ARENAS_ALL as u16,
         *final(ord) == *old(ord),
 {
+    proof {
+        shared.lemma_ranks();
+    }
+    let tracked mut under = LockOrder::spare();
+    let _published = shared.stats.lock(Tracked(ord), Tracked(&mut under));
     let mut all = ArenaStats::empty(crate::arena::ARENAS_ALL as u16);
     let n = shared.arenas.count();
     for i in 0..n as usize
@@ -1301,11 +1315,10 @@ pub fn arena_stats_all(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -
             n as usize <= MAX_ARENAS,
             crate::sys::may_syscall(),
             all.index == crate::arena::ARENAS_ALL as u16,
-            ord.allows(rank_arena_stats(0)),
-            *ord == *old(ord),
+            under.top() == rank_stats(),
     {
         if let Some(arena) = arena_at(shared, i) {
-            all.add(&arena.stats(Tracked(ord)));
+            all.add(&arena.stats(Tracked(&mut under)));
         }
     }
     all
@@ -2146,6 +2159,70 @@ mod tests {
         assert_eq!(tot.resident, s0.resident + s1.resident);
         assert!(tot.identities_hold(), "{tot:?}");
         t.destroy();
+    }
+
+    /// Two `epoch`s at once each publish one whole collection: the stored
+    /// arenas sum to the stored totals after every round, whichever writer
+    /// stored last. Arena 0's bins and huge runs move between collections,
+    /// so two collections differ and a mix of them shows.
+    #[test]
+    fn concurrent_epochs_leave_arenas_summing_to_the_totals() {
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let s = shared();
+        // More arenas widen the window between the first arena's store
+        // and the totals' store.
+        for _ in 0..15 {
+            s.arenas.create(s, Tracked::assume_new()).expect("arena");
+        }
+        let stop = AtomicBool::new(false);
+        // Stops the traffic thread even if a round panics, so a failure
+        // fails the test instead of hanging it.
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        let mut bad = None;
+        std::thread::scope(|sc| {
+            let _stop = Stop(&stop);
+            sc.spawn(|| {
+                let t = TestHeap::new(s);
+                let c = class_with(64);
+                while !stop.load(Ordering::Relaxed) {
+                    let (h, _) = t.alloc_huge(300 * 1024, 16);
+                    let ps: Vec<*mut u8> = (0..64).map(|_| t.alloc(c)).collect();
+                    for p in ps {
+                        t.free(p);
+                    }
+                    t.free(h);
+                    t.flush_all();
+                }
+                t.destroy();
+            });
+            for round in 0..2000 {
+                let go = Barrier::new(2);
+                std::thread::scope(|w| {
+                    for _ in 0..2 {
+                        w.spawn(|| {
+                            go.wait();
+                            epoch(s, Tracked::assume_new());
+                        });
+                    }
+                });
+                let snap = snapshot(s, Tracked::assume_new());
+                let mut sum = Totals::EMPTY;
+                for a in s.arenas.iter() {
+                    sum.add_arena(&a.stats(Tracked::assume_new()));
+                }
+                if sum != snap.totals {
+                    bad = Some((round, sum, snap.totals));
+                    break;
+                }
+            }
+        });
+        assert_eq!(bad, None, "(round, arenas summed, stored totals)");
     }
 
     /// `BinStats` and `Totals` helpers.

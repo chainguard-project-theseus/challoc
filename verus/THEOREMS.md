@@ -4041,39 +4041,45 @@ today and is stated as what holds instead.
        r.inv()
    ```
 
-2. **Coherence** (false; what holds). The intended claim: after an
-   `epoch`, the stored per-arena figures sum to the stored totals (they
-   come from one collection), and `mallctl("epoch")` returns the number
-   its own refresh stored. Both fail with concurrent epoch writers:
-   - `collect_into` calls `arena.store_stats(&a)` for each arena inside
-     its scan and takes `shared.stats.lock()` only afterwards, for the
-     totals. Writers A and B scan concurrently; B stores arena 0, A
-     stores arena 0, A stores its totals, B stores its totals: arena 0
-     holds A's figures, the totals B's. A concurrency test
-     (16 arenas, one thread allocating and freeing, two
-     epoch writers per round) fails within 20 rounds on every run (5 of
-     5 here), e.g. arenas summing to `resident` 1130496 against stored
-     totals of 819200. A reader between one epoch's arena stores and its
-     snapshot store sees the same mix even with a single writer.
-   - The `Epoch` arm of `mallctl::ctl` (`api/mallctl.rs:1878`) calls
-     `stats::epoch` and discards the number it returns, then reads
-     `stats::snapshot(shared).epoch`, which another writer may have
-     bumped in between. A concurrency test
-     (four threads, 2000 epoch writes each) reads
-     the same number back twice on every run (7988 to 7999 distinct of
-     8000). jemalloc holds `ctl_mtx` across the refresh and the read.
+2. **Coherence** (one half by construction; the other false; what
+   holds). The intended claim: after an `epoch`, the stored per-arena
+   figures sum to the stored totals (they come from one collection),
+   and `mallctl("epoch")` returns the number its own refresh stored.
+   - Arenas and totals (by construction, since upstream #91):
+     `collect_into` takes the process statistics lock
+     (`shared.stats.lock()`) first and holds it across its whole scan,
+     storing each arena's figures (`arena.store_stats(&a)`, under that
+     arena's statistics lock) and then the totals under the one hold.
+     It sums into the totals exactly the figures it stores for each
+     arena (the same local `a`, read once), and `Arena::store_stats` has
+     no other caller, so the arenas' stored figures change only under
+     the process statistics lock: two `epoch`s cannot interleave their
+     stores, and a reader holding that lock (`snapshot`, and
+     `arena_stats_all`, which takes it across its sum) sees one whole
+     collection. The test
+     `stats::tests::concurrent_epochs_leave_arenas_summing_to_the_totals`
+     (16 arenas, one thread allocating and freeing, two epoch writers
+     per round, 2000 rounds) failed within 20 rounds before the fix and
+     passes now. `arena_stats` (one arena's figures) does not take the
+     process statistics lock, so a reader of `stats.arenas.<i>.*`
+     beside `stats.*` during an `epoch` may still see one arena of the
+     new collection beside the old totals. The lock order this needs
+     (the process statistics lock ranked below the class locks) is
+     theorem 33's.
+   - The epoch number (false): the `Epoch` arm of `mallctl::ctl`
+     (`api/mallctl.rs:1878`) calls `stats::epoch` and discards the
+     number it returns, then reads `stats::snapshot(shared).epoch`,
+     which another writer may have bumped in between. A concurrency
+     test (four threads, 2000 epoch writes each) reads the same number
+     back twice on every run (7988 to 7999 distinct of 8000). jemalloc
+     holds `ctl_mtx` across the refresh and the read. `stats::epoch`
+     itself returns the epoch number its own call stored (`collect_into`
+     stores and returns one `Snapshot` under one hold of the snapshot
+     lock).
 
-   The tests go with the upstream fix rather than here; the fix is
-   exec code (store the arenas' figures and the snapshot under one lock,
-   or serialise `epoch`; return `stats::epoch`'s value), which this
-   theorem does not change. What each call does by construction (read
-   from the body, not stated as an `ensures`): `collect_into` sums into
-   the totals exactly the figures it stores for each arena (the same
-   local `a`, read once), and stores and returns one `Snapshot` under
-   one hold of the snapshot lock, so `stats::epoch` returns the epoch
-   number its own call stored. Its `ensures` ties only the totals'
-   `allocated` (`totals_exact`) and `mapped` to `rd`, not to what was
-   stored.
+   Neither is stated as an `ensures`: `collect_into`'s ties only the
+   totals' `allocated` (`totals_exact`) and `mapped` to `rd`, not to
+   what was stored.
 
 **Covers.** `mallctl` `stats.{allocated,active,metadata,resident,
 retained,mapped}` and `stats.arenas.<i>.*` (from `snapshot` and
@@ -5032,10 +5038,11 @@ that cannot block or be waited on (below).
 // lock.rs: the ranks, lowest first (spec fns, lock.rs:263-308).
 rank_tcaches()                 0x100_0000              explicit-cache table lock
 rank_arenas()                  0x200_0000              arena creation lock
+rank_stats()                   0x280_0000              process statistics lock
 rank_class(i, c)               0x300_0000 + 0x100 i + c   class c of arena i
 rank_table(c)                  0x400_0000 + c          slab table of class c
 rank_sets(i)                   0x500_0000 + i          slab sets of arena i (gated)
-rank_huge(), rank_meta(), rank_stats()  0x600_0000, 0x700_0000, 0x800_0000
+rank_huge(), rank_meta()       0x600_0000, 0x700_0000
 rank_arena_stats(i)            0x900_0000 + i
 rank_state()                   0xA00_0000              background thread state
 
@@ -5087,8 +5094,9 @@ arena `arena`), `SlabTable`, `SetTable` (`gated`), `Huge`, `Meta`,
 | cache flushes and routing: `Heap::flush_all` (`tcache.flush` through `Tcaches::flush`, `thread.tcache.flush` and `arena.<i>.purge` through `flush_caller`, `thread.tcache.enabled` through `set_tcache_enabled`) → `flush_arena` → `flush` → `release_routed` (class) and `free_caches_in` → `Meta::free` (meta); `gc` → `gc_arena` → `flush`; `set_arena` → `other_caches` (meta, when it creates a node) | class locks one at a time, then Meta |
 | arena creation `Arenas::create`, heap creation `Heap::create` → `assign_home` (arenas) and `create_detached` (meta), explicit caches `Tcaches::create`/`destroy` (tcaches → meta / class, meta, huge) | Tcaches < Arenas, Meta, Class, Huge |
 | purge `purge_all`, `purge_arena`, `decay` → `Arena::decay_with`, `ClassState::decay_with`, `Huge::decay_with`, `on_tick`, `sample` → `policy::evaluate`; background `start` (state, then meta) and `main` | class, huge, state locks one at a time |
-| statistics `epoch`, `collect`, `collect_all` (with their exact-stats ghost outputs), `mallinfo2`, `snapshot`, `arena_stats(_all)` (class → table, huge, meta, arena and process statistics), `mallctl` `ctl` and its named readers (`stats.*`, `stats.cgroup.empty_bytes`), `utilization`, `owner_of`, `get_defrag_hint`, `malloc_trim` | each lock with nothing above it held |
-| `fork_prepare` (`api/mod.rs:819`) | Tcaches < Arenas < Class(i, c) (arenas ascending, classes ascending) < Table(c) < Huge < Meta < Stats < ArenaStats(i) < State, through one root token; Sets(i) gated |
+| statistics `epoch`, `collect` (`collect_into`, with its exact-stats ghost outputs) and `arena_stats_all`, under the process statistics lock held across the scan (upstream #91) | Stats < Class(i, c) < Table(c), and Stats < Huge, Meta, ArenaStats(i), each released before the next is taken; `arena_stats_all`: Stats < ArenaStats(i) |
+| statistics `collect_all`, `mallinfo2`, `snapshot`, `arena_stats` (class → table, huge, meta, arena and process statistics), `mallctl` `ctl` and its named readers (`stats.*`, `stats.cgroup.empty_bytes`), `utilization`, `owner_of`, `get_defrag_hint`, `malloc_trim` | each lock with nothing above it held |
+| `fork_prepare` (`api/mod.rs:819`) | Tcaches < Arenas < Stats < Class(i, c) (arenas ascending, classes ascending) < Table(c) < Huge < Meta < ArenaStats(i) < State, through one root token; Sets(i) gated |
 
 `fork_prepare` proves it with loop invariants `ord.top() <
 rank_class(i, 0)`, `< rank_class(i, c)`, `< rank_table(c)`, `<

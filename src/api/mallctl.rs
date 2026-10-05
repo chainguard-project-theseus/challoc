@@ -2569,6 +2569,7 @@ fn ms_of(ns: u64) -> (r: isize)
 fn arena_stats(shared: &Shared, i: usize) -> (r: Result<ArenaStats, c_int>)
     requires
         crate::sys::may_syscall(),
+        shared.wf(),
     ensures
         r matches Err(e) ==> e == ENOENT,
 {

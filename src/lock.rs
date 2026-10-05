@@ -259,10 +259,10 @@ pub closed spec fn lock_rs_only() -> bool {
 /// The lock order (theorem "Lock order is acyclic", `verus/THEOREMS.md`).
 /// Every allocator lock has a rank, fixed when it is created
 /// ([`RawLock::new`]): the explicit-cache table lock, the arena creation
-/// lock, the class locks (by arena, then class), the slab table locks (by
-/// class), the slab-set locks (by arena), the huge, metadata and process
-/// statistics locks, the arena statistics locks (by arena) and the
-/// background thread's state lock, in that order. A blocking acquisition
+/// lock, the process statistics lock, the class locks (by arena, then
+/// class), the slab table locks (by class), the slab-set locks (by
+/// arena), the huge and metadata locks, the arena statistics locks (by
+/// arena) and the background thread's state lock, in that order. A blocking acquisition
 /// ranks above every allocator lock the thread holds ([`LockOrder`]), so
 /// no set of threads can each wait for a lock the next one holds: around
 /// such a cycle the ranks would climb back to where they started.
@@ -273,6 +273,13 @@ pub open spec fn rank_tcaches() -> int {
 /// The arena creation lock.
 pub open spec fn rank_arenas() -> int {
     0x200_0000
+}
+
+/// The process statistics lock: held across `epoch`'s scan, which
+/// takes the class, slab table, huge, metadata and arena statistics
+/// locks.
+pub open spec fn rank_stats() -> int {
+    0x280_0000
 }
 
 /// The class lock of class `c` (below `0x100`) of arena `i`.
@@ -298,11 +305,6 @@ pub open spec fn rank_huge() -> int {
 /// The metadata lock.
 pub open spec fn rank_meta() -> int {
     0x700_0000
-}
-
-/// The process statistics lock.
-pub open spec fn rank_stats() -> int {
-    0x800_0000
 }
 
 /// The statistics lock of arena `i`.

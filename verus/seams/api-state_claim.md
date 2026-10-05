@@ -1,6 +1,6 @@
 # `state_claim`
 
-Seam S20 of `verus/SEAMS.md`: src/api/mod.rs:363. Kind: external_body. Category: atomics primitive.
+Seam S20 of `verus/SEAMS.md`: src/api/mod.rs:365. Kind: external_body. Category: atomics primitive.
 Discharged by the C11 atomicity rules and loom (part 3).
 
 ## Contract

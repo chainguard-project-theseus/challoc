@@ -766,9 +766,12 @@ Creating the thread from a `free` slow path saves and restores `errno`.
 `pthread_atfork` handlers registered at init (`api/mod.rs`): the prepare
 handler blocks every signal on the forking thread, then takes every lock
 in nesting order: the explicit-cache table lock (outermost: it is held
-across heap creation and destruction), the arena creation lock, every
-arena's class locks and slab-set lock, the slab table locks, the huge
-lock, the metadata lock, the statistics locks (leaves), and the
+across heap creation and destruction), the arena creation lock, the
+process statistics lock (held across every statistics scan, which
+takes the class, slab table, huge, metadata and per-arena statistics
+locks, so one `epoch` collection is published at a time), every arena's
+class locks and slab-set lock, the slab table locks, the huge lock, the
+metadata lock, the per-arena statistics locks (leaves), and the
 background thread's state lock last. The parent and child handlers
 release them in reverse and restore the signal mask. The test
 `fork_handlers_take_and_release_every_lock` derives the list of `Lock`
@@ -1164,8 +1167,10 @@ report `size` as `nregs * size`, so `size / nregs` is exactly the class
 size, as Valkey asserts.
 
 `epoch` merges every heap's pending statistics into arena totals
-(`stats.rs`). `stats.allocated` is the sum over classes of `live * size`
-plus huge usable bytes; `active` counts committed slabs and huge runs that
+(`stats.rs`) and publishes the arenas and the process totals as one
+collection, under the process statistics lock (section 9), as jemalloc's
+refresh does under `ctl_mtx`. `stats.allocated` is the sum over classes
+of `live * size` plus huge usable bytes; `active` counts committed slabs and huge runs that
 are not `Empty` or `Purged`; `resident` is `active` plus `Empty` bytes
 plus committed metadata; `retained` is `Purged` bytes; `mapped` is
 `resident + retained`.

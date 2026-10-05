@@ -1102,7 +1102,7 @@ fn root() -> (r: &'static [Node])
 
 ### S15. `axiom_c_call`
 
-src/api/mallctl.rs:3245. Kind: axiom. Category: C-program contract.
+src/api/mallctl.rs:3246. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point (a `mallctl` one: `malloc_stats_print`'s are `api/print.rs`'s) and with the arguments `e` names: the export wrapper's own parameters, which C passed under the entry point's contract ([`CCall::fresh`]: each pointer argument's [`crate::vspec::cbuf::CArg`] facts, of memory of the program's, and the string argument's view).
@@ -1118,7 +1118,7 @@ axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
 
 ### S16. `fork_slot`
 
-src/api/mod.rs:217. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:219. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > [`FORK_SIGMASK`] as a reference.
@@ -1131,7 +1131,7 @@ fn fork_slot() -> (r: &'static AtomicU64)
 
 ### S17. `StatePerm`
 
-src/api/mod.rs:280. Kind: external_body type. Category: atomics primitive.
+src/api/mod.rs:282. Kind: external_body type. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Ghost permission to `STATE`: its current [`value`](StatePerm::value).
@@ -1142,7 +1142,7 @@ pub tracked struct StatePerm
 
 ### S18. `axiom_state`
 
-src/api/mod.rs:336. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:338. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `STATE`'s invariant.
@@ -1156,7 +1156,7 @@ axiom fn axiom_state() -> (tracked r: &'static AtomicInvariant<(), StateVal, Sta
 
 ### S19. `state_load`
 
-src/api/mod.rs:347. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:349. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `STATE.load(Acquire)`: the permission's value.
@@ -1171,7 +1171,7 @@ fn state_load(Tracked(perm): Tracked<&StatePerm>) -> (r: u32)
 
 ### S20. `state_claim`
 
-src/api/mod.rs:363. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:365. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/api-state_claim.md).
 
 > `STATE`'s exchange from `UNINIT` to `INITIALISING`: `Ok(UNINIT)` when it was `UNINIT` (and is now `INITIALISING`), `Err` of the value it has otherwise, left unchanged.
@@ -1187,7 +1187,7 @@ fn state_claim(Tracked(perm): Tracked<&mut StatePerm>) -> (r: Result<u32, u32>)
 
 ### S21. `state_publish`
 
-src/api/mod.rs:378. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:380. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `STATE`'s `READY` store, `Release`.
@@ -1202,7 +1202,7 @@ fn state_publish(Tracked(perm): Tracked<&mut StatePerm>)
 
 ### S22. `shared_ptr`
 
-src/api/mod.rs:468. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:470. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The allocator state's address, with no readiness check and no reference formed: what the fast paths hand `heap::existing_heap`, which reads one byte through it only after the thread's TLS slot has proved init complete.
@@ -1213,7 +1213,7 @@ pub fn shared_ptr() -> *const Shared opens_invariants none
 
 ### S23. `shared_unchecked`
 
-src/api/mod.rs:486. Kind: external_body. Category: allocator invariant.
+src/api/mod.rs:488. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The allocator state without the readiness check.
@@ -1227,7 +1227,7 @@ pub unsafe fn shared_unchecked() -> (r: &'static Shared)
 
 ### S24. `published_line`
 
-src/api/mod.rs:507. Kind: external_body. Category: allocator invariant.
+src/api/mod.rs:509. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The published feature line, without the readiness check.
@@ -1239,7 +1239,7 @@ unsafe fn published_line() -> &'static FeatureLine
 
 ### S25. `init_slow`
 
-src/api/mod.rs:685. Kind: no_decreases. Category: termination.
+src/api/mod.rs:687. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: discharged (verus/seams/api-init_slow.md).
 
 > The first caller runs `init` and publishes `READY`; a concurrent one waits for it (termination is not claimed: the wait ends when the other thread's `init` does); the initialising thread re-entering aborts.
@@ -1255,7 +1255,7 @@ fn init_slow() -> (r: &'static Shared)
 
 ### S26. `shared_storage_ptr`
 
-src/api/mod.rs:735. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:737. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The storage of [`SHARED`], the process's [`Shared::storage`].
@@ -1269,7 +1269,7 @@ fn shared_storage_ptr() -> (p: *mut Shared)
 
 ### S27. `features_ptr`
 
-src/api/mod.rs:756. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:758. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The storage of [`FEATURES`].
@@ -1283,7 +1283,7 @@ fn features_ptr() -> (p: *mut Features)
 
 ### S28. `line_ptr`
 
-src/api/mod.rs:768. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:770. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The storage of [`FEATURE_LINE`].
@@ -1297,7 +1297,7 @@ fn line_ptr() -> (p: *mut FeatureLine)
 
 ### S29. `axiom_statics`
 
-src/api/mod.rs:787. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:789. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permissions to the storage of the statics `init` writes itself, for `once`, the process's token of this step: [`FEATURES`] and [`FEATURE_LINE`], uninitialised, and the class table ([`layout::CLASSES`]), holding its initial value, [`layout::BASE_CLASSES`] (`ClassTable::new`), whose entries are well formed and sized ([`layout::table_ok`]).
@@ -1323,7 +1323,7 @@ axiom fn axiom_statics(tracked once: once::Once) -> (tracked r: (
 
 ### S30. `atfork_handlers`
 
-src/api/mod.rs:833. Kind: external_body. Category: function pointer.
+src/api/mod.rs:835. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > `pthread_atfork` with the three fork handlers: 0, or the error number.
@@ -1336,7 +1336,7 @@ fn atfork_handlers() -> i32
 
 ### S31. `axiom_fork_resumed_state`
 
-src/api/mod.rs:1186. Kind: axiom. Category: C-program contract.
+src/api/mod.rs:1188. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_holds`] (glibc runs them on the forking thread, after `_Fork`; in the child that thread is the copy of the forking one), and nothing released a lock in between: signals are blocked from the prepare handler's first step, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) do not take an allocator lock.
@@ -1350,7 +1350,7 @@ axiom fn axiom_fork_resumed_state() -> (tracked state: LockHeld)
 
 ### S32. `axiom_fork_resumed`
 
-src/api/mod.rs:1205. Kind: axiom. Category: C-program contract.
+src/api/mod.rs:1207. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise: see [`axiom_fork_resumed_state`]; the rest of the hold, at the `Shared` the release reads, with the arena count and the arenas `fork_prepare` read and the mask it saved in [`FORK_SIGMASK`] (`n`, `arenas` and `saved` are those reads and that store, which the ensures does not name: the premise is that they are; the slot's content is a mask the kernel held, and only a holder of every lock writes it, see [`save_sigmask`]), and the permission to the slot whose value is that content ([`ForkHeld::has_slot`]): the one trusted link between the slot and the hold, through which [`saved_sigmask`] reads (no other permission to the slot exists).
@@ -1368,7 +1368,7 @@ axiom fn axiom_fork_resumed(s: &Shared, tracked state: &LockHeld) -> (tracked he
 
 ### S33. `axiom_fork_resumed_sig`
 
-src/api/mod.rs:1237. Kind: axiom. Category: C-program contract.
+src/api/mod.rs:1239. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff, its signal half; see [`axiom_fork_resumed_state`]): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_sig_holds`] (in the child, its copy, which inherits the mask), whose mask has stayed as that handler left it, every blockable signal blocked: glibc's `_Fork` restores the mask it found, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) leave the mask as they found it.
@@ -1382,7 +1382,7 @@ axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
 
 ### S34. `arena_held`
 
-src/api/mod.rs:1252. Kind: external_body. Category: allocator invariant.
+src/api/mod.rs:1254. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `s.arenas.get_existing(i as u16)` while `held` holds the creation lock: the arena `fork_prepare` found at `i`.
@@ -1400,7 +1400,7 @@ fn arena_held<'a>(s: &'a Shared, i: usize, Tracked(held): Tracked<&ForkHeld>) ->
 
 ### S35. `count_held`
 
-src/api/mod.rs:1269. Kind: external_body. Category: allocator invariant.
+src/api/mod.rs:1271. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `s.arenas.count()` while `held` holds the creation lock: the count `fork_prepare` read.
@@ -1697,7 +1697,7 @@ axiom fn axiom_arena_assemble(
 
 ### S56. `key_less`
 
-src/arena.rs:1710. Kind: external_body. Category: core library.
+src/arena.rs:1711. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `a < b` on `(u32, bool)`: [`key_lt`].
@@ -1710,7 +1710,7 @@ fn key_less(a: (u32, bool), b: (u32, bool)) -> (r: bool)
 
 ### S57. `AR_TABLE`
 
-src/arena.rs:1744. Kind: external_body const. Category: core library.
+src/arena.rs:1745. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1719,7 +1719,7 @@ const AR_TABLE: usize = core::mem::offset_of!(Arenas, table);
 
 ### S58. `AR_BOUND`
 
-src/arena.rs:1746. Kind: external_body const. Category: core library.
+src/arena.rs:1747. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1728,7 +1728,7 @@ const AR_BOUND: usize = core::mem::offset_of!(Arenas, bound);
 
 ### S59. `AR_LOCK`
 
-src/arena.rs:1748. Kind: external_body const. Category: core library.
+src/arena.rs:1749. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1737,7 +1737,7 @@ const AR_LOCK: usize = core::mem::offset_of!(Arenas, lock);
 
 ### S60. `AR_COUNT`
 
-src/arena.rs:1750. Kind: external_body const. Category: core library.
+src/arena.rs:1751. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1746,7 +1746,7 @@ const AR_COUNT: usize = core::mem::offset_of!(Arenas, count);
 
 ### S61. `AR_AUTO`
 
-src/arena.rs:1752. Kind: external_body const. Category: core library.
+src/arena.rs:1753. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1755,7 +1755,7 @@ const AR_AUTO: usize = core::mem::offset_of!(Arenas, auto);
 
 ### S62. `AR_INVS`
 
-src/arena.rs:1754. Kind: external_body const. Category: core library.
+src/arena.rs:1755. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1764,7 +1764,7 @@ const AR_INVS: usize = core::mem::offset_of!(Arenas, invs);
 
 ### S63. `AR_COUNT_INV`
 
-src/arena.rs:1756. Kind: external_body const. Category: core library.
+src/arena.rs:1757. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1773,7 +1773,7 @@ const AR_COUNT_INV: usize = core::mem::offset_of!(Arenas, count_inv);
 
 ### S64. `AR_SPARE`
 
-src/arena.rs:1758. Kind: external_body const. Category: core library.
+src/arena.rs:1759. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1782,7 +1782,7 @@ const AR_SPARE: usize = core::mem::offset_of!(Arenas, spare);
 
 ### S65. `AR_SPARE_INV`
 
-src/arena.rs:1760. Kind: external_body const. Category: core library.
+src/arena.rs:1761. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1791,7 +1791,7 @@ const AR_SPARE_INV: usize = core::mem::offset_of!(Arenas, spare_inv);
 
 ### S66. `axiom_arenas_layout`
 
-src/arena.rs:1770. Kind: axiom. Category: core library.
+src/arena.rs:1771. Kind: axiom. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `Arenas`'s layout: each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `spare_inv`, after `invs` and `count_inv`) by the size.
@@ -1820,7 +1820,7 @@ axiom fn axiom_arenas_layout()
 
 ### S67. `axiom_arenas_lock_inv`
 
-src/arena.rs:1828. Kind: axiom. Category: allocator invariant.
+src/arena.rs:1829. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The creation lock (`Arenas` holds the only `Lock<u32>` outside the tests) has no invariant: every value satisfies it, so its holders owe nothing and learn nothing from it.
@@ -1834,7 +1834,7 @@ pub broadcast axiom fn axiom_arenas_lock_inv(v: u32)
 
 ### S68. `axiom_arenas_assemble`
 
-src/arena.rs:1971. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:1972. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arenas` at `p` (`Arenas::split`'s parts and array elements, every one initialised), as the `Arenas`: the value of each field is what its permission holds.
@@ -1884,7 +1884,7 @@ axiom fn axiom_arenas_assemble(
 
 ### S69. `arena_at`
 
-src/arena.rs:2520. Kind: external_body. Category: raw pointer (internal).
+src/arena.rs:2521. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The arena a non-null registry entry points at.
@@ -3427,7 +3427,7 @@ fn lock_slow(&self)
 
 ### S172. `axiom_entry`
 
-src/lock.rs:406. Kind: axiom. Category: C-program contract.
+src/lock.rs:408. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (an entry point): the calling thread holds no allocator lock.
@@ -3442,7 +3442,7 @@ pub axiom fn axiom_entry<'a>() -> (tracked o: LockOrder<'a>)
 
 ### S173. `axiom_held_below`
 
-src/lock.rs:416. Kind: axiom. Category: allocator invariant.
+src/lock.rs:418. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Premise: the calling thread holds only allocator locks ranked below `r`.
@@ -3457,7 +3457,7 @@ pub axiom fn axiom_held_below<'a>(r: int) -> (tracked o: LockOrder<'a>)
 
 ### S174. `axiom_acquired`
 
-src/lock.rs:535. Kind: axiom. Category: allocator invariant.
+src/lock.rs:537. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The lock invariant's assumption where it enters for a guard (the other entry is [`axiom_held`], for a holder of the raw lock): a thread that has just acquired the raw lock of `l` takes the permission of `l`'s cell out of the raw lock's invariant, and the value in the cell satisfies [`lock_inv`] (every earlier holder restored it) and keeps [`lock_frame`] of the value the lock was created with.
@@ -3473,7 +3473,7 @@ axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
 
 ### S175. `axiom_held`
 
-src/lock.rs:550. Kind: axiom. Category: allocator invariant.
+src/lock.rs:552. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The lock invariant's assumption where it enters for a holder of the raw lock ([`Lock::get_unlocked`]): the holder's [`LockHeld`] token lends the permission of `l`'s cell for as long as the token stays borrowed, and the value satisfies [`lock_inv`] and keeps [`lock_frame`], as at [`axiom_acquired`].
@@ -3492,12 +3492,12 @@ axiom fn axiom_held<'a, T>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (track
 
 ### S176. `Lock::cell_ref`
 
-src/lock.rs:802. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:804. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow`] with the permission `t`.
 
-Body mints Tracked at line 810.
+Body mints Tracked at line 812.
 
 ```rust
 fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
@@ -3511,12 +3511,12 @@ fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
 
 ### S177. `Lock::cell_mut`
 
-src/lock.rs:817. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:819. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow_mut`] with the permission `t`.
 
-Body mints Tracked at line 827.
+Body mints Tracked at line 829.
 
 ```rust
 fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b mut T)
@@ -3532,7 +3532,7 @@ fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b 
 
 ### S178. `LockGuard::drop`
 
-src/lock.rs:837. Kind: external_body. Category: atomics primitive.
+src/lock.rs:839. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/lock-LockGuard-drop.md).
 
 ```rust
