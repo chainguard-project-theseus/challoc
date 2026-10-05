@@ -97,7 +97,7 @@ fn ptr_cast() {
     assert_eq!(q.cast::<u8>() as usize, a);
 }
 
-/// S379 `core::ptr::from_ref` and S380 `core::ptr::from_mut`: no
+/// S387 `core::ptr::from_ref` and S388 `core::ptr::from_mut`: no
 /// `ensures`; they return, the referent's address, for sized and
 /// unsized referents.
 #[kani::proof]
@@ -145,7 +145,7 @@ fn ptr_add_on<T: Copy + PartialEq + kani::Arbitrary, const N: usize>() {
     assert_eq!(unsafe { d.add(0) }, d);
 }
 
-/// S338 `<*mut T>::add`: `r == ptr_add(p, count)`, `ptr_add` being the
+/// S346 `<*mut T>::add`: `r == ptr_add(p, count)`, `ptr_add` being the
 /// uninterpreted function that `axiom_ptr_add_addr` (S345) describes:
 /// the address `count * size_of::<T>()` bytes on, with `p`'s provenance
 /// and metadata. At a byte, a word, a padded element and a zero-sized
@@ -291,7 +291,7 @@ fn ptr_copy_nonoverlapping() {
     unsafe { core::ptr::copy_nonoverlapping(zp as *const (), zp, kani::any()) };
 }
 
-/// S398 `write_zero`: under `n == 0 || valid_writes(p, n)` (here: the
+/// S406 `write_zero`: under `n == 0 || valid_writes(p, n)` (here: the
 /// `n` bytes from offset `i` lie in an 8-byte buffer, every `i` and `n`,
 /// or `n == 0` and `p` any pointer), it returns, and afterwards the `n`
 /// bytes at `p` read zero and no other byte changed: the fact its
@@ -315,7 +315,7 @@ fn write_zero() {
     let _ = unsafe { crate::vspec::zero::write_zero(core::ptr::without_provenance_mut(m), 0) };
 }
 
-/// S362 `array_get_unchecked`: under `i < N`, a reference to `a[i]`, for
+/// S370 `array_get_unchecked`: under `i < N`, a reference to `a[i]`, for
 /// every array of 1, 2 or 6 words or of 3 padded pairs and every index
 /// in it.
 #[kani::proof]

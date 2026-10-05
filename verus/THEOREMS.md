@@ -1135,7 +1135,7 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
 - `grant_syscalls` is called only in the bodies of `extern "C"`
   functions and of `sys::abort_fmt` (`sys/abort.rs:143`), which never
   returns; a panic, a failed `vspec::check` included, reaches it through
-  the `#[panic_handler]` (`lib.rs:108`). Outside tests, no Rust code
+  the `#[panic_handler]` (`lib.rs:130`). Outside tests, no Rust code
   calls an `extern "C"` function of the crate.
   `api::tests::syscall_grants_only_at_roots` checks the source: every
   grant is in an `extern "C"` or `-> !` function, and `may_syscall`
@@ -4757,8 +4757,9 @@ pub(super) fn theorem_mallctlbymib_reads_never_abort(shared: &Shared, mibp: *con
 (Bodies elided.) `may_abort()` is a capability, as theorem 8's
 `may_syscall()`: every function that can reach an abort requires it,
 and `grant_aborts` gives it only in the bodies of `extern "C"`
-functions. The integrity checks, the aborts that test allocator state no
-verified invariant constrains, accept the narrower `may_abort_corrupt()`
+functions and of the panic handler. The integrity checks, the aborts
+that test allocator state no verified invariant constrains, accept the
+narrower `may_abort_corrupt()`
 instead: `vspec::check` (`requires may_abort_corrupt() || c`) and
 `sys::abort_integrity` (`sys/abort.rs:175`). The first witness holds only
 `integrity_aborts()`, which nothing grants, the second holds no abort
@@ -4864,7 +4865,7 @@ bound, never fails: `Sink`'s type invariant states the bound, and
 **Why the capability can be trusted.**
 - Every abort goes through `abort_fmt` (`sys/abort.rs:146`): `abort`
   (`:136`), every `-> !` helper, and the `#[panic_handler]`
-  (`lib.rs:116`) that a `panic!` in a trusted body reaches. `abort_fmt`
+  (`lib.rs:130`) that a `panic!` in a trusted body reaches. `abort_fmt`
   and `abort` require `may_abort()`; `abort_integrity` (trusted, a call
   of `abort_fmt`) and `check` (trusted, an `assert!`) require
   `may_abort_corrupt()`, or `c` for `check`. `die`, `exit_group` and
@@ -4897,8 +4898,10 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   only `theorem_read_only_never_aborts` requires.
 - `grant_aborts` is called only in `extern "C"` bodies (the
   `verified_export_pair!` macro, `api/mod.rs:68`, and every hand-written
-  export: 44 grants); never in a `-> !` function, unlike
-  `grant_syscalls`. `api::tests::abort_grants_only_at_roots` checks the
+  export: 44 grants) and in the `#[panic_handler]`, which the panic
+  runtime calls and no Rust code does; never in `abort_fmt` or another
+  `-> !` helper, unlike `grant_syscalls`.
+  `api::tests::abort_grants_only_at_roots` checks the
   source: the grants, `may_abort*` only as `requires`/invariant clauses,
   `integrity_aborts` only in the witness' `requires`, the integrity
   checks only in the functions listed above, and the trusted bodies.

@@ -374,6 +374,7 @@ src/vspec/lock.rs:core::cell::UnsafeCell::<T>::new	UnsafeCell/volatile/transmute
 src/vspec/lock.rs:core::cell::UnsafeCell<T>	UnsafeCell/volatile/transmute	Kani
 src/vspec/meta.rs:axiom_meta_lock_frame	allocator invariant	none (assumption)
 src/vspec/meta.rs:axiom_meta_lock_inv	allocator invariant	none (assumption)
+src/vspec/panic.rs:axiom_fmt_req_all_panic_message	panic/abort	none (assumption)
 src/vspec/ptr.rs:<*mut T>::add	raw pointer (internal)	Kani	discharged (verus/seams/vspec-ptr-mut-ptr-add.md)
 src/vspec/sys.rs:core::ptr::from_mut	raw pointer (internal)	Kani	discharged (verus/seams/vspec-sys-ptr-from_mut.md)
 src/vspec/sys.rs:core::ptr::from_ref	raw pointer (internal)	Kani	discharged (verus/seams/vspec-sys-ptr-from_ref.md)

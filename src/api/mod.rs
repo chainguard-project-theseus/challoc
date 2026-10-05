@@ -2667,8 +2667,14 @@ mod tests {
                 }
                 if t.contains(grant.as_str()) {
                     grants += 1;
+                    // The C entry points, and the panic handler.
                     assert!(
-                        sig.contains("extern \"C\" fn "),
+                        sig.contains("extern \"C\" fn ")
+                            || (rel == "lib.rs"
+                                && sig.starts_with("fn panic(info: &core::panic::PanicInfo")
+                                && lines
+                                    .windows(2)
+                                    .any(|w| w[0] == "#[panic_handler]" && w[1] == sig)),
                         "{}: an abort grant in `{sig}`",
                         at()
                     );

@@ -132,8 +132,9 @@ pub open spec fn may_abort() -> bool {
 }
 
 /// Grant [`may_abort`]. Called only at the roots of the allocator's call
-/// graph, the bodies of `extern "C"` functions (unlike [`grant_syscalls`],
-/// never in a function that does not return);
+/// graph: the bodies of `extern "C"` functions and of the panic handler
+/// (the panic runtime calls it; no code in the crate does), and, unlike
+/// [`grant_syscalls`], never `abort_fmt`'s;
 /// `api::tests::abort_grants_only_at_roots` checks the source for that.
 pub proof fn grant_aborts()
     ensures

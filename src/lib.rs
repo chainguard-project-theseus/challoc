@@ -116,6 +116,8 @@ mod vspec;
 #[path = "kani/mod.rs"]
 mod kani_proofs;
 
+verus! {
+
 /// Panic handler for the `no_std` library. The crate is built with
 /// `panic = "abort"`, so this is only reached by an explicit `panic!` or a
 /// failed debug assertion. It reports through `sys::abort_fmt`, which writes
@@ -126,6 +128,12 @@ mod kani_proofs;
 #[cfg(not(any(test, kani)))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
+    proof {
+        // A root of the call graph: the panic runtime calls it, nothing
+        // in the crate does.
+        crate::sys::grant_aborts();
+        broadcast use crate::vspec::panic::axiom_fmt_req_all_panic_message;
+    }
     match info.location() {
         Some(loc) => sys::abort_fmt(format_args!(
             "{} [{}:{}]",
@@ -136,6 +144,8 @@ fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
         None => sys::abort_fmt(format_args!("{}", info.message())),
     }
 }
+
+} // verus!
 
 #[cfg(test)]
 mod tests {
