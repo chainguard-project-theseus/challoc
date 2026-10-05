@@ -1,6 +1,6 @@
 # `store_owner` (`class/table.rs`)
 
-Seam S82 of `verus/SEAMS.md`: src/class/table.rs:331. Kind: external_body. Category: allocator invariant.
+Seam S84 of `verus/SEAMS.md`: src/class/table.rs:331. Kind: external_body. Category: allocator invariant.
 Discharged by loom and the C11 coherence rules (part 3); the store's
 uniqueness is Verus's (the owner-store markers it uses up).
 

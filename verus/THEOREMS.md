@@ -5305,8 +5305,13 @@ order and the counts.
   checked by the build) gives and `axiom_arenas_assemble` joins, as for
   `Arena::init`. The arena count's invariant (`NarenasPred`, the type
   invariant's `count_inv`) holds a permission `vspec::count::new` mints with
-  the clamped automatic count. Nothing writes a bound count outside the
-  wrappers afterwards (by inspection).
+  the clamped automatic count. The spare storage of a failed build
+  (`spare`, null at init) and its invariant (`SparePred`, the type
+  invariant's `spare_inv`) are two more fields of the layout and the
+  assembly (offsets `AR_SPARE`, `AR_SPARE_INV`); `spare` is vstd's
+  `PAtomicPtr`, whose permission vstd mints, and holds no bound count.
+  Nothing writes a bound count outside the wrappers afterwards (by
+  inspection).
 - `key_less` (`arena.rs:1382`, `external_body`): `core`'s `<` on `(u32,
   bool)` is lexicographic with `false < true`. vstd specifies no order on
   `bool`; a verified spelling of the comparison changed

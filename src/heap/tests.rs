@@ -2191,6 +2191,63 @@ fn arena_registry_creates_and_looks_up() {
     assert_eq!(s.decay_ns(), 5_000_000);
 }
 
+/// A build whose `Arena::init` fails keeps its storage for the next
+/// build: the reservation is never freed, so every retry under metadata
+/// pressure (each slow path of a heap homed on an unbuilt arena, each
+/// `arenas.create`) would otherwise strand another `Arena`.
+#[test]
+fn failed_arena_build_leaves_its_storage_to_the_next() {
+    use core::sync::atomic::Ordering::Relaxed;
+    let s = shared();
+    // On the reservation side the arena's storage is the lowest
+    // reservation right after its build, so `top` names it.
+    s.meta.set_eager_for_test(false);
+    crate::arena::FAIL_INIT.store(&s.meta as *const _ as usize, Relaxed);
+    assert!(s.arenas.create(s, Tracked::assume_new()).is_none());
+    assert_eq!(crate::arena::FAIL_INIT.load(Relaxed), 0, "init never ran");
+    let stranded = s.meta.top();
+    assert_eq!(s.arenas.count(), 1);
+    let i = s.arenas.create(s, Tracked::assume_new()).unwrap();
+    assert_eq!(i, 1);
+    assert_eq!(
+        s.arena(i, Tracked::assume_new()).unwrap() as *const Arena as usize,
+        stranded,
+        "the build after a failed one reuses its storage"
+    );
+}
+
+/// An `Arena::init` that fails because the region cannot hold the slab
+/// set tables returns the `SetTable` object it allocated for them.
+#[test]
+fn failed_arena_init_frees_its_set_table_object() {
+    let s = shared();
+    s.meta.set_eager_for_test(false);
+    let st = s.meta.stats(Tracked::assume_new());
+    if st.reserved != 0 {
+        // Init put tables on the reservation side (no eager tables on
+        // this host), so `writable` no longer locates the object side's
+        // frontier.
+        std::eprintln!(
+            "SKIP failed_arena_init_frees_its_set_table_object: eager tables off on this host"
+        );
+        return;
+    }
+    // Leave room for the arena's storage and one page: not enough for
+    // the set tables (two groups or more, a page each at least).
+    let arena = align_up(core::mem::size_of::<Arena>(), page_size());
+    let gap = s.meta.top() - (s.meta.base() + st.writable);
+    s.meta
+        .reserve(
+            gap - arena - page_size(),
+            page_size(),
+            Tracked::assume_new(),
+        )
+        .unwrap();
+    let allocated = s.meta.stats(Tracked::assume_new()).allocated;
+    assert!(s.arenas.create(s, Tracked::assume_new()).is_none());
+    assert_eq!(s.meta.stats(Tracked::assume_new()).allocated, allocated);
+}
+
 /// `narenas:3`: a new heap is bound to the automatic arena with the
 /// fewest bound heaps (ties: a built one first, then the lowest index),
 /// `destroy` releases the binding, and arenas are built on first touch.

@@ -303,6 +303,8 @@ AR_COUNT	core library	Kani
 AR_AUTO	core library	Kani
 AR_INVS	core library	Kani
 AR_COUNT_INV	core library	Kani
+AR_SPARE	core library	Kani
+AR_SPARE_INV	core library	Kani
 axiom_arenas_layout	core library	Kani
 axiom_arenas_assemble	raw pointer (internal)	none (assumption)
 src/vspec/count.rs:new	atomics primitive	none (assumption)

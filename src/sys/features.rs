@@ -875,14 +875,14 @@ mod kani_fmt {
     use super::{LgSize, SizeSet};
     use crate::kani_proofs::fmt::formats;
 
-    /// S214 `DisplaySpecImpl for SizeSet` (`fmt_req` true): every set.
+    /// S216 `DisplaySpecImpl for SizeSet` (`fmt_req` true): every set.
     #[kani::proof]
     #[kani::unwind(66)]
     fn display_size_set() {
         formats(&SizeSet(kani::any()));
     }
 
-    /// S215 `DisplaySpecImpl for LgSize` (`fmt_req` is `self.0 < 64`):
+    /// S217 `DisplaySpecImpl for LgSize` (`fmt_req` is `self.0 < 64`):
     /// every such size.
     #[kani::proof]
     #[kani::unwind(22)]
@@ -902,7 +902,7 @@ mod kani_features {
     use crate::sys::thp_host::{Thp, ThpSetting};
     use core::fmt;
 
-    /// `Value`'s `fmt` as its own harness (`display_feature_value`, S229)
+    /// `Value`'s `fmt` as its own harness (`display_feature_value`, S231)
     /// shows it: it returns, `Ok` or `Err`, without a panic, for every
     /// value. What it writes does not matter to the caller.
     #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
@@ -910,11 +910,11 @@ mod kani_features {
         if kani::any() { Ok(()) } else { Err(fmt::Error) }
     }
 
-    /// S217 `DisplaySpecImpl for Features` (`fmt_req` true), through
+    /// S219 `DisplaySpecImpl for Features` (`fmt_req` true), through
     /// `Features::fmt` (verified in Verus): every
     /// `Features` value, under the plain and a padded formatter, whatever
     /// the writer returns. Each `Value` is formatted by the stub above,
-    /// whose behaviour (any result, no panic) is what S229's harness
+    /// whose behaviour (any result, no panic) is what S231's harness
     /// proves of the real `fmt` for every value; the rest (the word
     /// arrays, `write_words`, the keys) runs as built.
     #[kani::proof]

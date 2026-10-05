@@ -44,7 +44,7 @@ use crate::layout::{NCLASSES, Regions};
 use crate::lock::{Lock, LockOrder};
 #[cfg(verus_only)]
 use crate::lock::{rank_arena_stats, rank_arenas, rank_class, rank_meta, rank_sets};
-use crate::meta::Meta;
+use crate::meta::{Meta, MetaClaim};
 use crate::purge::Left;
 #[cfg(verus_only)]
 use crate::purge::paged;
@@ -61,11 +61,11 @@ use crate::vspec::lock::lock_inv;
 use crate::vspec::ptr::{axiom_ptr_add_addr, axiom_raw_valid, in_alloc, ptr_add};
 #[cfg(verus_only)]
 use crate::vspec::zero::ZeroRaw;
+use vstd::atomic::{PAtomicPtr, PermissionPtr};
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 #[cfg(verus_only)]
 use vstd::layout::{align_of, size_of};
 use vstd::prelude::*;
-#[cfg(verus_only)]
 use vstd::raw_ptr::PointsToRaw;
 use vstd::raw_ptr::{PointsTo, ptr_mut_write, ptr_ref};
 use vstd::resource::Loc;
@@ -123,6 +123,12 @@ pub struct Arena {
 // hands out nothing but that pointer to a process-lifetime, locked table.
 unsafe impl Sync for Arena {}
 unsafe impl Send for Arena {}
+
+/// Makes the next [`Arena::init`] over the metadata allocator at this
+/// address fail before it allocates anything, as an exhausted region
+/// would, for tests.
+#[cfg(test)]
+pub static FAIL_INIT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 verus! {
 
@@ -428,6 +434,73 @@ pub(crate) proof fn split_array<T, const N: usize>(tracked a: PointsTo<[T; N]>) 
     split_elems(raw, base, 0, N as nat)
 }
 
+/// The bytes of the element permissions `lo..hi` of `m`, the array of
+/// `T`s from `base`, whatever they hold (each value is given up), as one
+/// permission: the inverse of [`split_elems`].
+proof fn join_elems<T>(tracked m: Map<int, PointsTo<T>>, base: *mut T, lo: int, hi: int) -> (tracked r: PointsToRaw)
+    requires
+        0 <= lo <= hi <= usize::MAX,
+        elems_at(m, base, lo, hi),
+        in_alloc(base, hi * size_of::<T>()),
+        base@.addr + hi * size_of::<T>() <= usize::MAX,
+    ensures
+        r.provenance() == base@.provenance,
+        forall|x: int|
+            base@.addr + lo * size_of::<T>() <= x < base@.addr + hi * size_of::<T>() ==> #[trigger] r.dom().contains(x),
+    decreases hi - lo,
+{
+    broadcast use vstd::raw_ptr::group_raw_ptr_axioms;
+
+    let sz = size_of::<T>() as int;
+    if lo == hi {
+        PointsToRaw::empty(base@.provenance)
+    } else {
+        assert(lo * sz + sz == (lo + 1) * sz) by (nonlinear_arith);
+        assert(0 <= lo * sz <= hi * sz) by (nonlinear_arith)
+            requires
+                0 <= lo <= hi,
+                sz >= 0,
+        ;
+        let tracked mut m = m;
+        assert(m.contains_key(lo));
+        let ghost m0 = m;
+        let tracked mut e = m.tracked_remove(lo);
+        assert(elems_at(m, base, lo + 1, hi)) by {
+            assert forall|i: int| lo + 1 <= i < hi implies #[trigger] m.contains_key(i) && m[i].ptr() == ptr_add(base, i as usize) by {
+                assert(m0.contains_key(i));
+            }
+        }
+        let tracked rest = join_elems(m, base, lo + 1, hi);
+        axiom_ptr_add_addr(base, lo as usize);
+        e.leak_contents();
+        let tracked er = e.into_raw();
+        let tracked r = er.join(rest);
+        assert forall|x: int| base@.addr + lo * sz <= x < base@.addr + hi * sz implies #[trigger] r.dom().contains(x) by {
+            if x < base@.addr + (lo + 1) * sz {
+                assert(er.dom().contains(x));
+            } else {
+                assert(rest.dom().contains(x));
+            }
+        }
+        r
+    }
+}
+
+/// The address and provenance of [`field_ptr`]: `off` bytes past `p`'s,
+/// with `p`'s provenance, for an offset inside the `S` at `p`.
+pub(crate) proof fn lemma_field_addr<S, T>(p: *mut S, off: usize)
+    requires
+        storage_ok(p),
+        off <= size_of::<S>(),
+    ensures
+        field_ptr::<S, T>(p, off)@.addr == p@.addr + off,
+        field_ptr::<S, T>(p, off)@.provenance == p@.provenance,
+{
+    broadcast use vstd::raw_ptr::group_raw_ptr_axioms, vstd::layout::layout_of_primitives;
+
+    axiom_ptr_add_addr(p as *mut u8, off);
+}
+
 } // verus!
 
 verus! {
@@ -649,6 +722,85 @@ impl Arena {
         lemma_field_cast::<Arena, [ClassState; NCLASSES], ClassState>(p, A_CLASSES);
         (ArenaParts { index, decay_ns, sets, sets_perm, large, stats, last_exit_purge }, classes, pad)
     }
+
+    /// The storage of the `Arena` at `p` as one uninitialised permission
+    /// again, from the permissions [`Arena::split`] made of it, whatever
+    /// they hold (each value is given up): what a failed [`Arena::init`]
+    /// hands back.
+    proof fn unsplit(
+        tracked parts: ArenaParts,
+        tracked classes: Map<int, PointsTo<ClassState>>,
+        tracked pad: PointsToRaw,
+        p: *mut Arena,
+    ) -> (tracked a: PointsTo<Arena>)
+        requires
+            parts.at(p),
+            classes_at(classes, p),
+            pad_covers(pad, p),
+            pad.provenance() == p@.provenance,
+        ensures
+            a.ptr() == p,
+            a.is_uninit(),
+    {
+        broadcast use vstd::raw_ptr::group_raw_ptr_axioms, vstd::layout::layout_of_primitives;
+
+        axiom_arena_layout();
+        axiom_array_layout::<ClassState, NCLASSES>();
+        let tracked ArenaParts {
+            mut index,
+            mut decay_ns,
+            mut sets,
+            mut sets_perm,
+            mut large,
+            mut stats,
+            mut last_exit_purge,
+        } = parts;
+        lemma_field_addr::<Arena, u16>(p, A_INDEX);
+        lemma_field_addr::<Arena, AtomicU64>(p, A_DECAY_NS);
+        lemma_field_addr::<Arena, *const SetTable>(p, A_SETS);
+        lemma_field_addr::<Arena, Tracked<&'static PointsTo<SetTable>>>(p, A_SETS_PERM);
+        lemma_field_addr::<Arena, ClassState>(p, A_CLASSES);
+        lemma_field_addr::<Arena, AtomicU64>(p, A_LARGE);
+        // Over several lines, as in `axiom_arena_layout`.
+        lemma_field_addr::<
+            Arena,
+            Lock<ArenaStats>,
+        >(p, A_STATS);
+        lemma_field_addr::<Arena, AtomicU64>(p, A_LAST_EXIT_PURGE);
+        index.leak_contents();
+        decay_ns.leak_contents();
+        sets.leak_contents();
+        sets_perm.leak_contents();
+        large.leak_contents();
+        stats.leak_contents();
+        last_exit_purge.leak_contents();
+        let tracked r_index = index.into_raw();
+        let tracked r_decay_ns = decay_ns.into_raw();
+        let tracked r_sets = sets.into_raw();
+        let tracked r_sets_perm = sets_perm.into_raw();
+        let tracked r_large = large.into_raw();
+        let tracked r_stats = stats.into_raw();
+        let tracked r_last = last_exit_purge.into_raw();
+        let base = field_ptr::<Arena, ClassState>(p, A_CLASSES);
+        let tracked r_classes = join_elems(classes, base, 0, NCLASSES as int);
+        let tracked raw = pad.join(r_index).join(r_decay_ns).join(r_sets).join(r_sets_perm).join(r_classes).join(r_large).join(
+            r_stats,
+        ).join(r_last);
+        let sz = size_of::<Arena>() as int;
+        assert forall|x: int| p@.addr <= x < p@.addr + sz implies #[trigger] raw.dom().contains(x) by {
+            assert(pad.dom().contains(x) || in_field::<u16>(x, p, A_INDEX) || in_field::<AtomicU64>(x, p, A_DECAY_NS)
+                || in_field::<*const SetTable>(x, p, A_SETS) || in_field::<Tracked<&'static PointsTo<SetTable>>>(x, p, A_SETS_PERM)
+                || in_field::<[ClassState; NCLASSES]>(x, p, A_CLASSES) || in_field::<AtomicU64>(x, p, A_LARGE)
+                || in_field::<Lock<ArenaStats>>(x, p, A_STATS) || in_field::<AtomicU64>(x, p, A_LAST_EXIT_PURGE));
+            if in_field::<[ClassState; NCLASSES]>(x, p, A_CLASSES) {
+                assert(r_classes.dom().contains(x));
+            }
+        }
+        let tracked (exact, _) = raw.split(Set::range(p@.addr as int, p@.addr + sz));
+        let tracked a = exact.into_typed::<Arena>(p@.addr);
+        assert(a.ptr()@ == p@);
+        a
+    }
 }
 
 /// The written fields of the `Arena` at `p` (`Arena::split`'s parts and
@@ -729,28 +881,40 @@ impl Arena {
     }
 
     /// Storage for the slab set table from `meta`, null when it is full,
-    /// with the permission to it. The table fits an object (the check is
-    /// on constants, so the build folds it away).
+    /// with the permission to its bytes and the claim [`Meta::free`] takes
+    /// back with them. The table fits an object (the check is on
+    /// constants, so the build folds it away).
+    // The tracked result is part of the signature.
+    #[allow(clippy::type_complexity)]
     #[inline(always)]
-    fn alloc_sets(meta: &Meta, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut SetTable, Tracked<Option<PointsTo<SetTable>>>))
+    fn alloc_sets(meta: &Meta, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut SetTable, Tracked<(PointsToRaw, MetaClaim)>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_meta()),
         ensures
-            r.0@.addr != 0 ==> r.1@ is Some && r.1@->0.ptr() == r.0 && r.1@->0.is_uninit(),
+            r.0@.addr != 0 ==> {
+                &&& r.1@.0.is_range(r.0@.addr as int, size_of::<SetTable>() as int)
+                &&& r.1@.0.provenance() == r.0@.provenance
+                &&& r.0@.addr as int % align_of::<SetTable>() as int == 0
+                &&& r.1@.1.held(meta.live_id(), r.0 as *mut u8, size_of::<SetTable>() as int, align_of::<SetTable>() as int)
+            },
             *final(ord) == *old(ord),
     {
+        broadcast use vstd::raw_ptr::group_raw_ptr_axioms;
+
         let layout = core::alloc::Layout::new::<SetTable>();
         crate::vspec::check::check(
             layout.size() <= crate::meta::MAX_BINNED && layout.align() <= crate::meta::MAX_ALIGN,
             "arena: slab set table larger than an object",
         );
-        let (p, Tracked(blk)) = meta.alloc_raw(layout, Tracked(ord));
-        let tracked (raw, _) = blk;
+        let (p, blk) = meta.alloc_raw(layout, Tracked(ord));
+        let ghost p8 = p;
         let p = p as *mut SetTable;
-        let tracked perm = table_perm(raw, p);
-        (p, Tracked(perm))
+        proof {
+            assert((p as *mut u8)@ == p8@);
+        }
+        (p, blk)
     }
 
     /// `sets_ptr` into the field and its frozen permission `perm` into
@@ -843,9 +1007,11 @@ impl Arena {
     /// from `tables` on (their frozen permissions in `tperms`), through the
     /// permission to its storage in `slot`, which is handed back
     /// initialised. Returns `false` if the metadata region cannot hold the
-    /// slab sets, leaving `this` unusable (and `slot` empty). Every
-    /// `classes[c]` is written, with a state of class `c` (the type
-    /// invariant), before `true` is returned.
+    /// slab sets, leaving `this` unusable until a later `init` over the
+    /// same storage succeeds: `slot` gets the storage back uninitialised,
+    /// and the slab set table object, when the sets themselves did not
+    /// fit, goes back to `meta`. Every `classes[c]` is written, with a
+    /// state of class `c` (the type invariant), before `true` is returned.
     ///
     /// # Safety
     /// `this` must point to writable storage for an `Arena` that nothing
@@ -874,6 +1040,7 @@ impl Arena {
             crate::class::tables_ok(*tperms, tables),
         ensures
             r ==> (final(slot).perm matches Some(p) && p.ptr() == this && p.is_init() && p.value().spec_index() == index),
+            !r ==> (final(slot).perm matches Some(p) && p.ptr() == this && p.is_uninit()),
             *final(ord) == *old(ord),
     {
         let tracked (mut parts, mut classes, pad) = Arena::split(slot.perm.tracked_take());
@@ -881,16 +1048,27 @@ impl Arena {
         // every write goes through the permission to its field.
         unsafe {
             Arena::put_head(this, index, decay_ns, Tracked(&mut parts));
-            let (sets_ptr, Tracked(perm)) = Arena::alloc_sets(meta, Tracked(ord));
-            if sets_ptr.is_null() {
+            #[cfg(test)]
+            if FAIL_INIT
+                .compare_exchange(meta as *const Meta as usize, 0, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
                 return false;
             }
+            let (sets_ptr, Tracked(blk)) = Arena::alloc_sets(meta, Tracked(ord));
+            if sets_ptr.is_null() {
+                proof {
+                    slot.perm = Some(Arena::unsplit(parts, classes, pad, this));
+                }
+                return false;
+            }
+            let tracked (raw, claim) = blk;
+            let tracked mut perm = table_perm(raw, sets_ptr).tracked_unwrap();
             // Ghost: the permissions to the class sets' slots, each taken
             // once, by its class's `ClassState::new`.
             let tracked mut slots: Map<(int, int), ZeroRaw> = Map::tracked_empty();
             let Tracked(sets_perm) = match SetTable::new(meta, regions, Ghost(index), Tracked(&mut slots), Tracked(ord)) {
                 Some(sets) => {
-                    let tracked mut perm = perm.tracked_unwrap();
                     ptr_mut_write(sets_ptr, Tracked(&mut perm), sets);
                     // Frozen: nothing writes or frees the table again; the
                     // arena and its class states' sets share it.
@@ -898,7 +1076,14 @@ impl Arena {
                     Arena::put_sets(this, sets_ptr, Tracked(perm), Tracked(&mut parts.sets), Tracked(&mut parts.sets_perm));
                     Tracked(perm)
                 },
-                None => return false,
+                None => {
+                    let tracked raw = perm.into_raw();
+                    meta.free(sets_ptr as *mut u8, core::alloc::Layout::new::<SetTable>(), Tracked((raw, claim)), Tracked(ord));
+                    proof {
+                        slot.perm = Some(Arena::unsplit(parts, classes, pad, this));
+                    }
+                    return false;
+                },
             };
             for c in 0..NCLASSES
                 invariant
@@ -936,7 +1121,12 @@ impl Arena {
                             }
                         }
                     },
-                    None => return false,
+                    None => {
+                        proof {
+                            slot.perm = Some(Arena::unsplit(parts, classes, pad, this));
+                        }
+                        return false;
+                    },
                 }
             }
             Arena::put_tail(this, index, Tracked(&mut parts));
@@ -1349,6 +1539,12 @@ pub struct Arenas {
     /// `unbind` subtracts); explicit caches are not counted.
     bound: [AtomicU32; MAX_ARENAS],
     table: [AtomicPtr<Arena>; MAX_ARENAS],
+    /// The storage of a build whose `Arena::init` failed, for the next
+    /// build to reuse: a reservation is never freed, so a retry under
+    /// metadata pressure would otherwise strand one per attempt. Null
+    /// when there is none; only touched under `lock`, inside its
+    /// invariant ([`SparePred`]).
+    spare: PAtomicPtr<Arena>,
     /// Ghost (no bytes): the invariant of each bound count
     /// ([`BoundPred`]), one per index ([`Arenas::wf`]).
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
@@ -1357,6 +1553,10 @@ pub struct Arenas {
     /// the type invariant names it).
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     count_inv: Tracked<NarenasInv>,
+    /// Ghost (no bytes): the invariant of `spare` ([`SparePred`]), which
+    /// holds its permission and the permission to the storage it names.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    spare_inv: Tracked<SpareInv>,
 }
 
 /// Namespace of the bound-count invariants.
@@ -1385,6 +1585,49 @@ impl InvariantPredicate<int, CountPerm> for NarenasPred {
 
 /// The invariant of the arena count.
 pub type NarenasInv = AtomicInvariant<int, CountPerm, NarenasPred>;
+
+/// Namespace of the spare storage's invariant ([`SparePred`]).
+pub open spec fn spare_ns() -> int {
+    0x7370_6172
+}
+
+/// The permission to `spare`: vstd's `PermissionPtr`, which is not `Send`
+/// (it names a raw pointer type), in a value an atomic invariant can hold.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct SparePerm {
+    pub tracked p: PermissionPtr<Arena>,
+}
+
+/// What the spare storage's invariant holds: the permission to `spare`
+/// and, when `spare` is not null, the permission to the storage it names.
+pub type SpareVal = (SparePerm, Option<PointsTo<Arena>>);
+
+/// The spare storage's invariant, about the atomic whose identity is the
+/// key: null holds no storage, and any other value is the address of an
+/// uninitialised `Arena`'s storage, clear of the end of the address
+/// space, whose permission the invariant holds (what [`Arena::init`]
+/// needs). `Arenas::init` makes it with `spare` null, and `Arenas::build`,
+/// under the creation lock, takes the storage out with a swap to null and
+/// puts back the storage of a failed `Arena::init` with a store.
+pub struct SparePred;
+
+impl InvariantPredicate<int, SpareVal> for SparePred {
+    open spec fn inv(k: int, v: SpareVal) -> bool {
+        &&& v.0.p.id() == k
+        &&& if v.0.p.value()@.addr == 0 {
+            v.1 is None
+        } else {
+            &&& v.1 matches Some(q)
+            &&& q.ptr() == v.0.p.value()
+            &&& q.is_uninit()
+            &&& q.ptr()@.addr + size_of::<Arena>() <= usize::MAX
+        }
+    }
+}
+
+/// The invariant of the spare storage.
+pub type SpareInv = AtomicInvariant<int, SpareVal, SparePred>;
 
 /// What one bound count is about: the counter ([`count_id`]) and the
 /// ghost set of the tickets of the heaps homed on its arena.
@@ -1484,6 +1727,14 @@ pub open spec fn picks_least(snap: Seq<(u32, bool)>, auto: int, r: int) -> bool 
 
 } // verus!
 
+// SAFETY: a ghost permission: it lives only in a `Tracked` (the
+// `spare_inv` invariant), which has no bytes at run time, so no pointer
+// moves between threads with it. Over two lines: `verus/seams.sh` reads a
+// one-line `impl ... {}` as an `impl` whose block opens at the next brace.
+#[rustfmt::skip]
+unsafe impl Send for SparePerm {
+}
+
 verus! {
 
 // Byte offsets of `Arenas`'s fields, opaque to Verus as `Arena`'s are;
@@ -1503,12 +1754,16 @@ const AR_AUTO: usize = core::mem::offset_of!(Arenas, auto);
 const AR_INVS: usize = core::mem::offset_of!(Arenas, invs);
 #[verifier::external_body]
 const AR_COUNT_INV: usize = core::mem::offset_of!(Arenas, count_inv);
+#[verifier::external_body]
+const AR_SPARE: usize = core::mem::offset_of!(Arenas, spare);
+#[verifier::external_body]
+const AR_SPARE_INV: usize = core::mem::offset_of!(Arenas, spare_inv);
 
 /// `Arenas`'s layout: each field at its offset, aligned, and ending by
-/// the next one's offset, the last (the zero-sized ghost `count_inv`,
-/// after `invs`) by the size. `Arenas` is not `repr(C)`, so the
-/// order is the one rustc picks (the table, the bound counts, then the
-/// rest in declaration order).
+/// the next one's offset, the last (the zero-sized ghost `spare_inv`,
+/// after `invs` and `count_inv`) by the size. `Arenas` is not `repr(C)`,
+/// so the order is the one rustc picks (the table, the bound counts, the
+/// 8-byte `lock` and `spare`, then the rest in declaration order).
 /// Trusted, and checked by the build: the `const` assertion after this
 /// block evaluates the same conditions with `fits`, so a compiler that
 /// orders the fields otherwise fails the build there.
@@ -1522,11 +1777,13 @@ axiom fn axiom_arenas_layout()
         field_fits::<
             Arenas,
             Lock<u32>,
-        >(AR_LOCK, AR_COUNT as int),
+        >(AR_LOCK, AR_SPARE as int),
+        field_fits::<Arenas, PAtomicPtr<Arena>>(AR_SPARE, AR_COUNT as int),
         field_fits::<Arenas, AtomicU32>(AR_COUNT, AR_AUTO as int),
         field_fits::<Arenas, u32>(AR_AUTO, AR_INVS as int),
         field_fits::<Arenas, Tracked<Map<int, BoundInv>>>(AR_INVS, AR_COUNT_INV as int),
-        field_fits::<Arenas, Tracked<NarenasInv>>(AR_COUNT_INV, size_of::<Arenas>() as int),
+        field_fits::<Arenas, Tracked<NarenasInv>>(AR_COUNT_INV, AR_SPARE_INV as int),
+        field_fits::<Arenas, Tracked<SpareInv>>(AR_SPARE_INV, size_of::<Arenas>() as int),
         size_of::<Arenas>() <= isize::MAX,
 ;
 
@@ -1539,11 +1796,13 @@ const _: () = assert!(
             <= isize::MAX as u128
         && fits::<Arenas, [AtomicU32; MAX_ARENAS]>(AR_BOUND, AR_LOCK)
         && MAX_ARENAS as u128 * core::mem::size_of::<AtomicU32>() as u128 <= isize::MAX as u128
-        && fits::<Arenas, Lock<u32>>(AR_LOCK, AR_COUNT)
+        && fits::<Arenas, Lock<u32>>(AR_LOCK, AR_SPARE)
+        && fits::<Arenas, PAtomicPtr<Arena>>(AR_SPARE, AR_COUNT)
         && fits::<Arenas, AtomicU32>(AR_COUNT, AR_AUTO)
         && fits::<Arenas, u32>(AR_AUTO, AR_INVS)
         && fits::<Arenas, Tracked<Map<int, BoundInv>>>(AR_INVS, AR_COUNT_INV)
-        && fits::<Arenas, Tracked<NarenasInv>>(AR_COUNT_INV, core::mem::size_of::<Arenas>())
+        && fits::<Arenas, Tracked<NarenasInv>>(AR_COUNT_INV, AR_SPARE_INV)
+        && fits::<Arenas, Tracked<SpareInv>>(AR_SPARE_INV, core::mem::size_of::<Arenas>())
         && core::mem::size_of::<Arenas>() <= isize::MAX as usize
 );
 
@@ -1582,6 +1841,8 @@ tracked struct ArenasParts {
     tracked auto: PointsTo<u32>,
     tracked invs: PointsTo<Tracked<Map<int, BoundInv>>>,
     tracked count_inv: PointsTo<Tracked<NarenasInv>>,
+    tracked spare: PointsTo<PAtomicPtr<Arena>>,
+    tracked spare_inv: PointsTo<Tracked<SpareInv>>,
 }
 
 impl ArenasParts {
@@ -1594,6 +1855,8 @@ impl ArenasParts {
         &&& self.auto.ptr() == field_ptr::<Arenas, u32>(p, AR_AUTO)
         &&& self.invs.ptr() == field_ptr::<Arenas, Tracked<Map<int, BoundInv>>>(p, AR_INVS)
         &&& self.count_inv.ptr() == field_ptr::<Arenas, Tracked<NarenasInv>>(p, AR_COUNT_INV)
+        &&& self.spare.ptr() == field_ptr::<Arenas, PAtomicPtr<Arena>>(p, AR_SPARE)
+        &&& self.spare_inv.ptr() == field_ptr::<Arenas, Tracked<SpareInv>>(p, AR_SPARE_INV)
         &&& in_alloc(field_ptr::<Arenas, AtomicPtr<Arena>>(p, AR_TABLE), MAX_ARENAS as int * size_of::<AtomicPtr<Arena>>())
         &&& MAX_ARENAS * size_of::<AtomicPtr<Arena>>() <= isize::MAX
         &&& in_alloc(field_ptr::<Arenas, AtomicU32>(p, AR_BOUND), MAX_ARENAS as int * size_of::<AtomicU32>())
@@ -1630,6 +1893,8 @@ spec fn arenas_pad_covers(pad: PointsToRaw, p: *mut Arenas) -> bool {
             || in_arenas_field::<u32>(x, p, AR_AUTO)
             || in_arenas_field::<Tracked<Map<int, BoundInv>>>(x, p, AR_INVS)
             || in_arenas_field::<Tracked<NarenasInv>>(x, p, AR_COUNT_INV)
+            || in_arenas_field::<PAtomicPtr<Arena>>(x, p, AR_SPARE)
+            || in_arenas_field::<Tracked<SpareInv>>(x, p, AR_SPARE_INV)
 }
 
 impl Arenas {
@@ -1653,6 +1918,8 @@ impl Arenas {
             r.0.auto.is_uninit(),
             r.0.invs.is_uninit(),
             r.0.count_inv.is_uninit(),
+            r.0.spare.is_uninit(),
+            r.0.spare_inv.is_uninit(),
             tables_at(r.1, perm.ptr()),
             elems_uninit(r.1, 0, MAX_ARENAS as int),
             bounds_at(r.2, perm.ptr()),
@@ -1670,14 +1937,16 @@ impl Arenas {
         axiom_raw_valid(&raw, p as *mut u8, size_of::<Arenas>() as int);
         let tracked (table, raw) = take_field::<Arenas, [AtomicPtr<Arena>; MAX_ARENAS]>(raw, p, AR_TABLE, AR_BOUND as int);
         let tracked (bound, raw) = take_field::<Arenas, [AtomicU32; MAX_ARENAS]>(raw, p, AR_BOUND, AR_LOCK as int);
-        let tracked (lock, raw) = take_field::<Arenas, Lock<u32>>(raw, p, AR_LOCK, AR_COUNT as int);
+        let tracked (lock, raw) = take_field::<Arenas, Lock<u32>>(raw, p, AR_LOCK, AR_SPARE as int);
+        let tracked (spare, raw) = take_field::<Arenas, PAtomicPtr<Arena>>(raw, p, AR_SPARE, AR_COUNT as int);
         let tracked (count, raw) = take_field::<Arenas, AtomicU32>(raw, p, AR_COUNT, AR_AUTO as int);
         let tracked (auto, raw) = take_field::<Arenas, u32>(raw, p, AR_AUTO, AR_INVS as int);
         let tracked (invs, raw) = take_field::<Arenas, Tracked<Map<int, BoundInv>>>(raw, p, AR_INVS, AR_COUNT_INV as int);
-        let tracked (count_inv, pad) = take_field::<Arenas, Tracked<NarenasInv>>(
+        let tracked (count_inv, raw) = take_field::<Arenas, Tracked<NarenasInv>>(raw, p, AR_COUNT_INV, AR_SPARE_INV as int);
+        let tracked (spare_inv, pad) = take_field::<Arenas, Tracked<SpareInv>>(
             raw,
             p,
-            AR_COUNT_INV,
+            AR_SPARE_INV,
             size_of::<Arenas>() as int,
         );
         axiom_array_layout::<AtomicPtr<Arena>, MAX_ARENAS>();
@@ -1686,7 +1955,7 @@ impl Arenas {
         let tracked bounds = split_array(bound);
         lemma_field_cast::<Arenas, [AtomicPtr<Arena>; MAX_ARENAS], AtomicPtr<Arena>>(p, AR_TABLE);
         lemma_field_cast::<Arenas, [AtomicU32; MAX_ARENAS], AtomicU32>(p, AR_BOUND);
-        (ArenasParts { lock, count, auto, invs, count_inv }, tables, bounds, pad)
+        (ArenasParts { lock, count, auto, invs, count_inv, spare, spare_inv }, tables, bounds, pad)
     }
 }
 
@@ -1717,11 +1986,15 @@ axiom fn axiom_arenas_assemble(
         parts.auto.is_init(),
         parts.invs.is_init(),
         parts.count_inv.is_init(),
+        parts.spare.is_init(),
+        parts.spare_inv.is_init(),
         elems_init(tables, 0, MAX_ARENAS as int),
         elems_init(bounds, 0, MAX_ARENAS as int),
         parts.lock.value().rank() == rank_arenas(),
         parts.count_inv.value()@.constant() == count_id(&parts.count.value()),
         parts.count_inv.value()@.namespace() == narenas_ns(),
+        parts.spare_inv.value()@.constant() == parts.spare.value().id(),
+        parts.spare_inv.value()@.namespace() == spare_ns(),
     ensures
         a.ptr() == p,
         a.is_init(),
@@ -1732,6 +2005,8 @@ axiom fn axiom_arenas_assemble(
         forall|i: int| 0 <= i < MAX_ARENAS ==> #[trigger] a.value().bound[i] == bounds[i].value(),
         a.value().invs == parts.invs.value(),
         a.value().count_inv == parts.count_inv.value(),
+        a.value().spare == parts.spare.value(),
+        a.value().spare_inv == parts.spare_inv.value(),
 ;
 
 /// The set `{0}`, the one element each fresh ticket set starts with to
@@ -1970,6 +2245,36 @@ impl Arenas {
             ptr_mut_write(field_at(this, AR_COUNT_INV), Tracked(&mut parts.count_inv), count_inv);
         }
     }
+
+    /// `spare`, null, and the ghost `spare_inv` over it ([`SparePred`]:
+    /// no storage yet), through the permissions to them.
+    #[inline(always)]
+    unsafe fn put_spare(this: *mut Arenas, Tracked(parts): Tracked<&mut ArenasParts>)
+        requires
+            old(parts).at(this),
+        ensures
+            final(parts).at(this),
+            final(parts).spare.is_init(),
+            final(parts).spare_inv.is_init(),
+            final(parts).spare_inv.value()@.constant() == final(parts).spare.value().id(),
+            final(parts).spare_inv.value()@.namespace() == spare_ns(),
+            final(parts).lock == old(parts).lock,
+            final(parts).count == old(parts).count,
+            final(parts).auto == old(parts).auto,
+            final(parts).invs == old(parts).invs,
+            final(parts).count_inv == old(parts).count_inv,
+    {
+        proof {
+            axiom_arenas_layout();
+        }
+        let (spare, Tracked(sperm)) = PAtomicPtr::<Arena>::new(ptr::null_mut());
+        let tracked inv = SpareInv::new(spare.id(), (SparePerm { p: sperm }, None), spare_ns());
+        // SAFETY: the fields of `init`'s storage, through their permissions.
+        unsafe {
+            ptr_mut_write(field_at(this, AR_SPARE), Tracked(&mut parts.spare), spare);
+            ptr_mut_write(field_at(this, AR_SPARE_INV), Tracked(&mut parts.spare_inv), Tracked(inv));
+        }
+    }
 }
 
 } // verus!
@@ -1986,7 +2291,8 @@ impl Arenas {
     /// set at a location of its own; no ticket exists yet. Likewise the
     /// ghost `count_inv`: `count` is written the clamped automatic count,
     /// and its invariant ([`NarenasPred`], in [`narenas_ns`]) holds the
-    /// permission `vspec::count::new` minted for it.
+    /// permission `vspec::count::new` minted for it. `spare` is null, and
+    /// its invariant ([`SparePred`], in [`spare_ns`]) holds no storage.
     ///
     /// # Safety
     /// `this` must point to writable storage that nothing else reads until
@@ -2078,6 +2384,7 @@ impl Arenas {
             let tracked invs = fresh_invs(counts, auths, frags, MAX_ARENAS as nat);
             let tracked count_inv = NarenasInv::new(nperm.id(), nperm, narenas_ns());
             Arenas::put_invs(this, Tracked(invs), Tracked(count_inv), Tracked(&mut parts));
+            Arenas::put_spare(this, Tracked(&mut parts));
             proof {
                 let tracked a = axiom_arenas_assemble(parts, tables, bounds, pad, this);
                 let v = a.value();
@@ -2367,7 +2674,12 @@ impl Arenas {
     /// with the creation lock held and the slot known to be empty.
     /// `shared` is the published `Shared`, whose `wf` gives
     /// `Arena::init`'s preconditions (the process's well-formed regions and
-    /// the tables in class order).
+    /// the tables in class order). The storage is the spare one a failed
+    /// build left, if any, else a fresh reservation; a failed `init` leaves
+    /// it as the spare for the next build. `spare` is swapped and stored
+    /// inside its invariant ([`SparePred`]), which carries the storage's
+    /// permission between builds (vstd's permission atomic, whose
+    /// operations are `SeqCst`).
     fn build<'a>(&'a self, shared: &'a Shared, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&'a Arena>)
         requires
             crate::sys::may_abort(),
@@ -2379,46 +2691,64 @@ impl Arenas {
             r matches Some(a) ==> a.spec_index() == index,
             *final(ord) == *old(ord),
     {
-        let layout = core::alloc::Layout::new::<Arena>();
         proof {
-            shared.lemma_wf();
-            let lg = shared.regions.lg_page;
-            assert((1usize << lg) == (1usize << (lg as usize))) by (bit_vector)
-                requires
-                    lg < 64,
-            ;
-            crate::meta::lemma_is_pow2_shl(lg as usize);
+            use_type_invariant(self);
         }
-        // Never freed, so a reservation (page aligned, which covers the
-        // 128-byte class state alignment) rather than an object.
-        let align = layout.align().max(shared.regions.page_size());
-        let (s, Tracked(raw), _) = shared.meta.reserve_committed_raw(layout.size(), align, Tracked(ord));
-        let s = s?;
-        let p = addr_to_ptr(s) as *mut Arena;
         let tracked mut slot = Held::<Arena> { perm: None };
-        proof {
-            // The permission to the reservation's first `size_of::<Arena>()`
-            // bytes, as an uninitialised `Arena`: the reservation is aligned
-            // for it (a page is a multiple of any smaller power of two).
-            let a = crate::vspec::layout::layout_align(layout);
-            let page = 1usize << shared.regions.lg_page;
-            assert(align >= a && (align == a || align == page));
-            if align != a {
-                lemma_pow2_divides_larger(a, page);
-                crate::layout::lemma_aligned_down(s as int, align as int, a as int);
+        let mut p;
+        let null = ptr::null_mut();
+        vstd::open_atomic_invariant!(self.spare_inv.borrow() => v => {
+            p = self.spare.swap(Tracked(&mut v.0.p), null);
+            proof {
+                slot.perm = v.1;
+                v.1 = None;
             }
-            let tracked (raw_a, _) = raw.split(Set::range(s as int, s + size_of::<Arena>()));
-            slot.perm = Some(raw_a.into_typed::<Arena>(s));
-            assert(slot.perm->0.ptr()@ == p@);
+        });
+        if p.is_null() {
+            let layout = core::alloc::Layout::new::<Arena>();
+            proof {
+                shared.lemma_wf();
+                let lg = shared.regions.lg_page;
+                assert((1usize << lg) == (1usize << (lg as usize))) by (bit_vector)
+                    requires
+                        lg < 64,
+                ;
+                crate::meta::lemma_is_pow2_shl(lg as usize);
+            }
+            // Never freed, so a reservation (page aligned, which covers the
+            // 128-byte class state alignment) rather than an object.
+            let align = layout.align().max(shared.regions.page_size());
+            let (s, Tracked(raw), _) = shared.meta.reserve_committed_raw(layout.size(), align, Tracked(ord));
+            let s = s?;
+            p = addr_to_ptr(s) as *mut Arena;
+            proof {
+                // The permission to the reservation's first
+                // `size_of::<Arena>()` bytes, as an uninitialised `Arena`:
+                // the reservation is aligned for it (a page is a multiple
+                // of any smaller power of two).
+                let a = crate::vspec::layout::layout_align(layout);
+                let page = 1usize << shared.regions.lg_page;
+                assert(align >= a && (align == a || align == page));
+                if align != a {
+                    lemma_pow2_divides_larger(a, page);
+                    crate::layout::lemma_aligned_down(s as int, align as int, a as int);
+                }
+                let tracked (raw_a, _) = raw.split(Set::range(s as int, s + size_of::<Arena>()));
+                slot.perm = Some(raw_a.into_typed::<Arena>(s));
+                assert(slot.perm->0.ptr()@ == p@);
+            }
         }
         // The class tables, from arena 0's states, which were built over
         // them.
         proof {
+            shared.lemma_wf();
             use_type_invariant(&shared.arena0);
         }
         let (tables, Tracked(tperms)) = shared.arena0.classes[0].tables();
-        // SAFETY: fresh, zeroed, exclusively owned storage of the right
-        // size and alignment.
+        // SAFETY: exclusively owned storage of the right size and
+        // alignment, fresh or left by a failed build (never published;
+        // `init` writes every field); the tables live in `Shared` for the
+        // process.
         let ok = unsafe {
             Arena::init(
                 p,
@@ -2433,8 +2763,15 @@ impl Arenas {
             )
         };
         if !ok {
-            // The reservation is lost; the metadata region is exhausted
-            // anyway.
+            proof {
+                slot.perm.tracked_borrow().is_nonnull();
+            }
+            vstd::open_atomic_invariant!(self.spare_inv.borrow() => v => {
+                self.spare.store(Tracked(&mut v.0.p), p);
+                proof {
+                    v.1 = slot.perm;
+                }
+            });
             return None;
         }
         proof {
@@ -2691,15 +3028,18 @@ impl Arenas {
         self.lock.spec_raw()
     }
 
-    /// The creation lock is the arena creation lock of the lock order, and
+    /// The creation lock is the arena creation lock of the lock order,
     /// `count_inv` is the invariant of `count` ([`NarenasPred`]) in
-    /// [`narenas_ns`] (`init` makes both so: `axiom_arenas_assemble`
+    /// [`narenas_ns`] and `spare_inv` that of `spare` ([`SparePred`]) in
+    /// [`spare_ns`] (`init` makes them so: `axiom_arenas_assemble`
     /// requires them).
     #[verifier::type_invariant]
     spec fn type_inv(self) -> bool {
         &&& self.lock.rank() == rank_arenas()
         &&& self.count_inv@.constant() == count_id(&self.count)
         &&& self.count_inv@.namespace() == narenas_ns()
+        &&& self.spare_inv@.constant() == self.spare.id()
+        &&& self.spare_inv@.namespace() == spare_ns()
     }
 
 }
