@@ -48,7 +48,9 @@ pub type WriteCb = Option<unsafe extern "C" fn(*mut c_void, *const c_char)>;
 
 /// The caller's [`WriteCb`], wrapped so that [`Target`] and
 /// [`malloc_stats_print`] can be inside `verus!` (Verus rejects function
-/// pointer types; it sees this type as opaque).
+/// pointer types; it sees this type as opaque). Transparent, so it has
+/// `WriteCb`'s ABI and the C exports take it as their `write_cb`.
+#[repr(transparent)]
 pub struct WriteCallback(pub WriteCb);
 
 verus! {
@@ -1166,8 +1168,8 @@ fn stats_print(target: Target, opts: *const c_char, Tracked(cc): Tracked<&mut cb
 }
 
 /// `malloc_stats_print(write_cb, cbopaque, opts)`. The C entry points
-/// (outside `verus!`: their `write_cb` is a function pointer) wrap
-/// `write_cb` in a [`WriteCallback`], and `cc` is the call's token, minted
+/// take `write_cb` as a [`WriteCallback`] (its ABI is the function
+/// pointer's), and `cc` is the call's token, minted
 /// for exactly these arguments ([`cbuf::CEntry::StatsPrint`]) by
 /// `exports::stats_print_entry`.
 pub fn malloc_stats_print(write_cb: WriteCallback, cbopaque: *mut c_void, opts: *const c_char, Tracked(cc): Tracked<cbuf::CCall>)
@@ -1378,12 +1380,8 @@ mod exports {
     use core::ffi::{c_char, c_int, c_void};
     use vstd::prelude::{Tracked, verus};
 
-    export_pair! {
-        fn malloc_stats_print / je_malloc_stats_print(write_cb: super::WriteCb, cbopaque: *mut c_void, opts: *const c_char) {
-            stats_print_entry(super::WriteCallback(write_cb), cbopaque, opts)
-        }
-    }
-
+    // `verified_export_pair!` expands inside its own `verus!`; this outer
+    // block holds it (Verus passes the invocation through) and the mint.
     verus! {
 
     /// Trusted (the C contract of the entry point, `vspec::cbuf`): the
@@ -1403,9 +1401,8 @@ mod exports {
             c.fresh(e),
     ;
 
-    /// The body of the `malloc_stats_print` exports, which stay outside
-    /// `verus!` (their `write_cb` is a function pointer): the call's
-    /// token for `opts`, and the Rust entry point.
+    /// The body of the `malloc_stats_print` exports: the call's token for
+    /// `opts`, and the Rust entry point.
     #[inline(always)]
     fn stats_print_entry(write_cb: super::WriteCallback, cbopaque: *mut c_void, opts: *const c_char)
         requires
@@ -1414,6 +1411,12 @@ mod exports {
     {
         let tracked cc = axiom_c_call(CEntry::StatsPrint { opts: opts as *const u8 });
         super::malloc_stats_print(write_cb, cbopaque, opts, Tracked(cc))
+    }
+
+    verified_export_pair! {
+        fn malloc_stats_print / je_malloc_stats_print(write_cb: super::WriteCallback, cbopaque: *mut c_void, opts: *const c_char) {
+            stats_print_entry(write_cb, cbopaque, opts)
+        }
     }
 
     #[unsafe(no_mangle)]

@@ -2277,11 +2277,11 @@ the premises below (the C caller's, a source test's and Rust's types'),
 not on Verus. The intended property, which those premises give: every
 call the reports make out of the allocator happens while the calling
 thread holds no allocator lock. The reports are
-`malloc_stats_print` and `je_malloc_stats_print` (`api/print.rs:1112`,
-through `stats_print`, `:1092`), `malloc_info` (`:1216`) and
-`malloc_stats` (`:1239`). Their calls out are the caller's `write_cb`,
+`malloc_stats_print` and `je_malloc_stats_print` (`api/print.rs:1174`,
+through `stats_print`, `:1145`), `malloc_info` (`:1281`) and
+`malloc_stats` (`:1304`). Their calls out are the caller's `write_cb`,
 the `malloc_message` hook through `malloc_write`
-(`api/jemalloc.rs:116`; with no hook, `write(2)` to stderr), `fwrite`
+(`api/jemalloc.rs:155`; with no hook, `write(2)` to stderr), `fwrite`
 on the caller's stream, and `write(2)` to stderr. A callback, a hook or
 `fwrite` may allocate (glibc allocates a stream's buffer on its first
 write), so a lock held across one deadlocks the allocation.
@@ -2322,9 +2322,9 @@ permit. So Verus checks:
   handed the sink (as a `W: Write`) or a `fmt::Formatter` that writes to
   it can reach `emit`. No function that takes a lock is handed either.
 
-The unverified code of `api/print.rs` and `api/jemalloc.rs` (their
-`export_pair!` exports, and `jemalloc.rs`'s trusted `message_hook` and
-`call_hook` bodies) could still call `emit` or `malloc_write` with a
+The unverified code of `api/print.rs` and `api/jemalloc.rs` (the trusted
+bodies of `print.rs`, and `jemalloc.rs`'s `message_hook` and
+`call_hook`) could still call `emit` or `malloc_write` with a
 forged permit; it does not, and the source test below rejects
 `assume_new` in both files and any mention of `Unlocked` or a call of
 `malloc_write` elsewhere.
@@ -7135,18 +7135,18 @@ alone):
 31. `mallinfo2` (`api/glibc.rs:82`) ensures `fordblks <= arena` and the
     three zero fields; `mallinfo` (`:115`) is verified with no contract.
     The figures are unbounded counters (`fig_add`, `fig_mul`).
-32. `malloc_stats`, `malloc_info` (`api/print.rs:1239`, `:1216`):
+32. `malloc_stats`, `malloc_info` (`api/print.rs:1304`, `:1281`):
     verified bodies. F (`malloc_info`; `malloc_stats` returns nothing
     and states nothing): `malloc_info` ensures `r == 0 || r == -1`,
     `r == -1 <==> options != 0 || stream` is null, and `r == -1 ==>
     final(errno).val() == EINVAL` (*(errno)*); a `0` may leave `errno`
     changed by the sink's `fwrite`, as glibc's may. The sinks
-    (`file_target`, `stderr_target`, `:1292`, `:1299`) are
+    (`file_target`, `stderr_target`, `:1358`, `:1365`) are
     `external_body`.
-33. `malloc_stats_print` (`api/print.rs:1112`): verified body, no
-    `ensures`. Its `export_pair!` wrapper (`:1315`) is outside `verus!`
-    (its `write_cb` is a function pointer) and only wraps the callback
-    in the opaque `WriteCallback` and calls the verified
+33. `malloc_stats_print` (`api/print.rs:1174`): verified body, no
+    `ensures`. Its `verified_export_pair!` exports (`:1415`) take the
+    callback as the opaque, `#[repr(transparent)]` `WriteCallback`
+    (the C function pointer's ABI) and call the verified
     `exports::stats_print_entry`, which mints the call's token. B: the
     program's `opts` string is read by `opt_byte`, verified over the C
     contract of a string argument (`vspec::cbuf`; the token `CCall` from

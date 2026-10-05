@@ -52,22 +52,8 @@
 /// the `exports` modules, which are compiled out of the test binary (see
 /// `libc.rs`); `#[unsafe(no_mangle)]` exports each function under its own
 /// name, so the alias is spelled out in full at the definition.
-#[cfg(not(test))]
-macro_rules! export_pair {
-    ($($(#[$m:meta])* fn $name:ident / $je:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)? $body:block)*) => {
-        $(
-            $(#[$m])*
-            #[unsafe(no_mangle)]
-            pub extern "C" fn $name($($arg: $ty),*) $(-> $ret)? $body
-            $(#[$m])*
-            #[unsafe(no_mangle)]
-            pub extern "C" fn $je($($arg: $ty),*) $(-> $ret)? $body
-        )*
-    };
-}
-
-/// [`export_pair!`] inside `verus!`, for pairs whose bodies Verus checks
-/// (`libc.rs`, `jemalloc.rs`). The same two functions in the build.
+/// The bodies are inside `verus!`: Verus checks them, after granting
+/// each export the syscall and abort capabilities of a C entry point.
 #[cfg(not(test))]
 macro_rules! verified_export_pair {
     ($($(#[$m:meta])* fn $name:ident / $je:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)? $body:block)*) => {

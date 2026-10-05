@@ -1120,7 +1120,7 @@ axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
 
 ### S16. `fork_slot`
 
-src/api/mod.rs:221. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:207. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > [`FORK_SIGMASK`] as a reference.
@@ -1133,7 +1133,7 @@ fn fork_slot() -> (r: &'static AtomicU64)
 
 ### S17. `StatePerm`
 
-src/api/mod.rs:284. Kind: external_body type. Category: atomics primitive.
+src/api/mod.rs:270. Kind: external_body type. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Ghost permission to `STATE`: its current [`value`](StatePerm::value).
@@ -1144,7 +1144,7 @@ pub tracked struct StatePerm
 
 ### S18. `axiom_state`
 
-src/api/mod.rs:340. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:326. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `STATE`'s invariant.
@@ -1158,7 +1158,7 @@ axiom fn axiom_state() -> (tracked r: &'static AtomicInvariant<(), StateVal, Sta
 
 ### S19. `state_load`
 
-src/api/mod.rs:351. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:337. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `STATE.load(Acquire)`: the permission's value.
@@ -1173,7 +1173,7 @@ fn state_load(Tracked(perm): Tracked<&StatePerm>) -> (r: u32)
 
 ### S20. `state_claim`
 
-src/api/mod.rs:367. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:353. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/api-state_claim.md).
 
 > `STATE`'s exchange from `UNINIT` to `INITIALISING`: `Ok(UNINIT)` when it was `UNINIT` (and is now `INITIALISING`), `Err` of the value it has otherwise, left unchanged.
@@ -1189,7 +1189,7 @@ fn state_claim(Tracked(perm): Tracked<&mut StatePerm>) -> (r: Result<u32, u32>)
 
 ### S21. `state_publish`
 
-src/api/mod.rs:382. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:368. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `STATE`'s `READY` store, `Release`.
@@ -1204,7 +1204,7 @@ fn state_publish(Tracked(perm): Tracked<&mut StatePerm>)
 
 ### S22. `shared_ptr`
 
-src/api/mod.rs:472. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:458. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The allocator state's address, with no readiness check and no reference formed: what the fast paths hand `heap::existing_heap`, which reads one byte through it only after the thread's TLS slot has proved init complete.
@@ -1215,7 +1215,7 @@ pub fn shared_ptr() -> *const Shared opens_invariants none
 
 ### S23. `shared_unchecked`
 
-src/api/mod.rs:490. Kind: external_body. Category: allocator invariant.
+src/api/mod.rs:476. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The allocator state without the readiness check.
@@ -1229,7 +1229,7 @@ pub unsafe fn shared_unchecked() -> (r: &'static Shared)
 
 ### S24. `published_line`
 
-src/api/mod.rs:511. Kind: external_body. Category: allocator invariant.
+src/api/mod.rs:497. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The published feature line, without the readiness check.
@@ -1241,7 +1241,7 @@ unsafe fn published_line() -> &'static FeatureLine
 
 ### S25. `init_slow`
 
-src/api/mod.rs:689. Kind: no_decreases. Category: termination.
+src/api/mod.rs:675. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: discharged (verus/seams/api-init_slow.md).
 
 > The first caller runs `init` and publishes `READY`; a concurrent one waits for it (termination is not claimed: the wait ends when the other thread's `init` does); the initialising thread re-entering aborts.
@@ -1257,7 +1257,7 @@ fn init_slow() -> (r: &'static Shared)
 
 ### S26. `shared_storage_ptr`
 
-src/api/mod.rs:739. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:725. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The storage of [`SHARED`], the process's [`Shared::storage`].
@@ -1271,7 +1271,7 @@ fn shared_storage_ptr() -> (p: *mut Shared)
 
 ### S27. `features_ptr`
 
-src/api/mod.rs:760. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:746. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The storage of [`FEATURES`].
@@ -1285,7 +1285,7 @@ fn features_ptr() -> (p: *mut Features)
 
 ### S28. `line_ptr`
 
-src/api/mod.rs:772. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:758. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The storage of [`FEATURE_LINE`].
@@ -1299,7 +1299,7 @@ fn line_ptr() -> (p: *mut FeatureLine)
 
 ### S29. `axiom_statics`
 
-src/api/mod.rs:791. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:777. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permissions to the storage of the statics `init` writes itself, for `once`, the process's token of this step: [`FEATURES`] and [`FEATURE_LINE`], uninitialised, and the class table ([`layout::CLASSES`]), holding its initial value, [`layout::BASE_CLASSES`] (`ClassTable::new`), whose entries are well formed and sized ([`layout::table_ok`]).
@@ -1325,7 +1325,7 @@ axiom fn axiom_statics(tracked once: once::Once) -> (tracked r: (
 
 ### S30. `atfork_handlers`
 
-src/api/mod.rs:837. Kind: external_body. Category: function pointer.
+src/api/mod.rs:823. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > `pthread_atfork` with the three fork handlers: 0, or the error number.
@@ -1338,7 +1338,7 @@ fn atfork_handlers() -> i32
 
 ### S31. `axiom_fork_resumed_state`
 
-src/api/mod.rs:1198. Kind: axiom. Category: C-program contract.
+src/api/mod.rs:1184. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_holds`] (glibc runs them on the forking thread, after `_Fork`; in the child that thread is the copy of the forking one), and nothing released a lock in between: signals are blocked from the prepare handler's first step, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) do not take an allocator lock.
@@ -1352,7 +1352,7 @@ axiom fn axiom_fork_resumed_state() -> (tracked state: LockHeld)
 
 ### S32. `axiom_fork_resumed`
 
-src/api/mod.rs:1217. Kind: axiom. Category: C-program contract.
+src/api/mod.rs:1203. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise: see [`axiom_fork_resumed_state`]; the rest of the hold, at the `Shared` the release reads, with the arena count and the arenas `fork_prepare` read and the mask it saved in [`FORK_SIGMASK`] (`n`, `arenas` and `saved` are those reads and that store, which the ensures does not name: the premise is that they are; the slot's content is a mask the kernel held, and only a holder of every lock writes it, see [`save_sigmask`]), and the permission to the slot whose value is that content ([`ForkHeld::has_slot`]): the one trusted link between the slot and the hold, through which [`saved_sigmask`] reads (no other permission to the slot exists).
@@ -1370,7 +1370,7 @@ axiom fn axiom_fork_resumed(s: &Shared, tracked state: &LockHeld) -> (tracked he
 
 ### S33. `axiom_fork_resumed_sig`
 
-src/api/mod.rs:1249. Kind: axiom. Category: C-program contract.
+src/api/mod.rs:1235. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff, its signal half; see [`axiom_fork_resumed_state`]): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_sig_holds`] (in the child, its copy, which inherits the mask), whose mask has stayed as that handler left it, every blockable signal blocked: glibc's `_Fork` restores the mask it found, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) leave the mask as they found it.
@@ -1384,7 +1384,7 @@ axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
 
 ### S34. `arena_held`
 
-src/api/mod.rs:1264. Kind: external_body. Category: allocator invariant.
+src/api/mod.rs:1250. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `s.arenas.get_existing(i as u16)` while `held` holds the creation lock: the arena `fork_prepare` found at `i`.
@@ -1402,7 +1402,7 @@ fn arena_held<'a>(s: &'a Shared, i: usize, Tracked(held): Tracked<&ForkHeld>) ->
 
 ### S35. `count_held`
 
-src/api/mod.rs:1281. Kind: external_body. Category: allocator invariant.
+src/api/mod.rs:1267. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `s.arenas.count()` while `held` holds the creation lock: the count `fork_prepare` read.
@@ -1419,7 +1419,7 @@ fn count_held(s: &Shared, Tracked(held): Tracked<&ForkHeld>) -> (r: u32)
 
 ### S36. `WriteCallback`
 
-src/api/print.rs:61. Kind: ext_type_spec. Category: function pointer.
+src/api/print.rs:63. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > Opaque: `WriteCallback` holds a function pointer type, which Verus rejects.
@@ -1430,7 +1430,7 @@ pub struct ExWriteCallback(WriteCallback);
 
 ### S37. `Unlocked`
 
-src/api/print.rs:82. Kind: external_body type. Category: C-program contract.
+src/api/print.rs:84. Kind: external_body type. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Ghost permit: the calling thread holds no allocator lock.
@@ -1441,7 +1441,7 @@ pub(super) tracked struct Unlocked
 
 ### S38. `axiom_unlocked`
 
-src/api/print.rs:92. Kind: axiom. Category: C-program contract.
+src/api/print.rs:94. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the calling thread holds no allocator lock.
@@ -1452,7 +1452,7 @@ axiom fn axiom_unlocked() -> (tracked u: Unlocked);
 
 ### S39. `emit`
 
-src/api/print.rs:106. Kind: external_body. Category: FFI/syscall.
+src/api/print.rs:108. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Hand `buf[..len]` to `target`: the report's only calls out of the allocator.
@@ -1467,7 +1467,7 @@ fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&
 
 ### S40. `word`
 
-src/api/print.rs:377. Kind: external_body. Category: core library.
+src/api/print.rs:379. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/api-print-word.md).
 
 > A configuration value's name (`config::Value::Str`, the `thp` key).
@@ -1478,7 +1478,7 @@ fn word(s: &CStr) -> &str
 
 ### S41. `hist_line`
 
-src/api/print.rs:848. Kind: external_body. Category: function pointer.
+src/api/print.rs:850. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-print-hist_line.md).
 
 > One class's line of [`slab_histogram`].
@@ -1497,7 +1497,7 @@ fn hist_line<W: Write>(
 
 ### S42. `file_target`
 
-src/api/print.rs:1357. Kind: external_body. Category: function pointer.
+src/api/print.rs:1359. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-print-file_target.md).
 
 > `Target::File(stream)`.
@@ -1508,7 +1508,7 @@ fn file_target(stream: *mut libc::FILE) -> Target
 
 ### S43. `stderr_target`
 
-src/api/print.rs:1364. Kind: external_body. Category: function pointer.
+src/api/print.rs:1366. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-print-stderr_target.md).
 
 > `Target::Stderr`.
@@ -1519,7 +1519,7 @@ fn stderr_target() -> Target
 
 ### S44. `axiom_c_call`
 
-src/api/print.rs:1399. Kind: axiom. Category: C-program contract.
+src/api/print.rs:1397. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names, which C passed under its contract ([`CCall::fresh`]: the string `opts`, of memory of the program's, and its view).
