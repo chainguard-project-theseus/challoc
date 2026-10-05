@@ -17,8 +17,10 @@
 //!   `ordering`, so nothing here proves that `Relaxed` is strong enough
 //!   (`verus/TODO.md`, Tier 4);
 //! - [`count_id`] is the counter's identity, and a permission is for the
-//!   counter with its [`CountPerm::id`]. The permissions are minted once per
-//!   registry, by `Arenas::init`, inside its invariants.
+//!   counter with its [`CountPerm::id`]. The permissions are minted one per
+//!   counter, with the counter, by `arena::fresh_count`, which
+//!   `Arenas::init` calls and whose permissions it keeps inside its
+//!   invariants.
 //!
 //! A permission's value is its counter's: every access to a bound count
 //! goes through these wrappers (`Arenas::assign`, `bind`, `unbind`,

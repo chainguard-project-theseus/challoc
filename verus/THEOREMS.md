@@ -4683,11 +4683,11 @@ abort_grants_only_at_roots`, `api/mod.rs:1868`, lists the callers of
 Two integrity sites of the first version of this theorem are gone, both
 over the arena count, which is now an atomic invariant (`NarenasPred`,
 `arena.rs`): the counter's permission (`vspec::count::CountPerm`) has a
-value at most `MAX_ARENAS`. `Arenas::init` (trusted) makes it with the
-clamped automatic count, `Arenas::create` stores `index + 1` inside it
-for an `index` below `MAX_ARENAS`, and `Arenas::count` (verified, no
-longer `external_body`) loads inside it, so its `ensures r <=
-MAX_ARENAS` is proved. With it, `stats::arena_at` requires `i <
+value at most `MAX_ARENAS`. `Arenas::init` (verified) makes it with the
+permission `arena::fresh_count` mints for the clamped automatic count,
+`Arenas::create` stores `index + 1` inside it for an `index` below
+`MAX_ARENAS`, and `Arenas::count` (verified, no longer `external_body`)
+loads inside it, so its `ensures r <= MAX_ARENAS` is proved. With it, `stats::arena_at` requires `i <
 MAX_ARENAS`, which every caller's loop below the count shows, and its
 `check(i < MAX_ARENAS)` is gone (it was reached by `collect_all` and
 `arena_stats_all`); `policy::empty_bytes` (trusted) requires only
@@ -4997,9 +4997,10 @@ the gate premise below.
   body takes (`assign_home`, trusted at this theorem's merge, is
   verified since theorem 34); `purge::background::state` names
   `STATE`'s rank.
-- *Ranks set in unverified constructors*: `Arenas::init` and
-  `Tcaches::init` create their locks with the ranks their type
-  invariants state, as they create the rest of the value.
+- *Ranks set in unverified constructors*: `Tcaches::init` creates its
+  lock with the rank its type invariant states, as it creates the rest
+  of the value. (`Arenas::init` is verified: `axiom_arenas_assemble`
+  requires the creation lock's rank that `Arenas::type_inv` states.)
 - *The mutex*, as for fork safety: `lock` returns only once this thread
   holds the lock.
 
@@ -5169,11 +5170,18 @@ order and the counts.
   `fetch_sub` (wrapping) and `load` are one atomic operation on it,
   sequentially consistent in the model (the orderings, all `Relaxed`, are
   ignored, as for the bitmap words).
-- `Arenas::init` (`arena.rs:1419`, `external_body`) ensures `wf` of the
-  registry it writes: its ghost `invs` hold, per index, the invariant a
-  fresh counter permission of value 0 and a fresh, empty ticket set
-  would make, at locations of their own. Nothing writes a bound count
-  outside the wrappers afterwards (by inspection).
+- `Arenas::init` (verified after this theorem's merge) ensures `wf` of the
+  registry it writes: each bound count is written with a permission of
+  value 0 from `arena::fresh_count` (`external_body`, the only place a
+  `CountPerm` is minted, one per counter), and its invariant holds that
+  permission and a fresh ticket set emptied of the `{0}` that shows its
+  location is its own (`fresh_sets`, `fresh_invs`). Its field writes go
+  through the permissions `axiom_arenas_layout` (rustc's field order,
+  checked by the build) gives and `axiom_arenas_assemble` joins, as for
+  `Arena::init`. The arena count's invariant (`NarenasPred`, the type
+  invariant's `count_inv`) holds a permission `fresh_count` mints with
+  the clamped automatic count. Nothing writes a bound count outside the
+  wrappers afterwards (by inspection).
 - `key_less` (`arena.rs:1382`, `external_body`): `core`'s `<` on `(u32,
   bool)` is lexicographic with `false < true`. vstd specifies no order on
   `bool`; a verified spelling of the comparison changed
@@ -5418,7 +5426,7 @@ and `get_defrag_hint_follows_the_utilization_data`
 - The records are what was loaded: each field is set from the local the
   code loaded (by reading the body; the `ensures` cannot name the
   instant of a load).
-- `query_ptr` and `store_triple` (`external_body`, ledger S20 and S21):
+- `query_ptr` and `store_triple` (`external_body`, ledger S21 and S22):
   `query_ptr` returns the pointer at index `i` of the caller's array;
   `store_triple` writes `nfree`, `nregs`, `size` at words `3i..3i+3` and
   nothing else. That the stored triples are still there when `mallctl`

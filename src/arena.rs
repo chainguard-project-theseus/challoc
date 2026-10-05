@@ -53,6 +53,8 @@ use crate::vspec::count::CountPerm;
 #[cfg(verus_only)]
 use crate::vspec::count::{count_id, wrap32};
 #[cfg(verus_only)]
+use crate::vspec::lock::lock_inv;
+#[cfg(verus_only)]
 use crate::vspec::ptr::{axiom_ptr_add_addr, axiom_raw_valid, in_alloc, ptr_add};
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 #[cfg(verus_only)]
@@ -62,6 +64,8 @@ use vstd::prelude::*;
 use vstd::raw_ptr::PointsToRaw;
 use vstd::raw_ptr::{PointsTo, ptr_mut_write, ptr_ref};
 use vstd::resource::Loc;
+#[cfg(verus_only)]
+use vstd::resource::set::GhostSubset;
 use vstd::resource::set::{GhostSetAuth, GhostSingleton};
 
 verus! {
@@ -126,7 +130,7 @@ verus! {
 // an array into its elements. Putting the written values back together
 // into the struct's or the array's value has no counterpart in vstd and
 // is an axiom per struct ([`axiom_array_join`], `axiom_arena_assemble`,
-// `Shared`'s `axiom_shared_built`).
+// `axiom_arenas_assemble`, `Shared`'s `axiom_shared_built`).
 
 /// `p`'s address plus `off` bytes as a `*mut T`, with `p`'s provenance:
 /// the pointer `&raw mut (*p).f` gives for a field `f` of type `T` at
@@ -481,16 +485,25 @@ axiom fn axiom_arena_layout()
         size_of::<Arena>() <= isize::MAX,
 ;
 
-} // verus!
-
 /// [`field_fits`] for the build: a field of type `T` at offset `off` of
 /// an `S` is aligned for `T`, `S`'s alignment is a multiple of `T`'s, and
-/// the field ends by `next`.
-pub(crate) const fn fits<S, T>(off: usize, next: usize) -> bool {
+/// the field ends by `next`. The `requires` is met where the build
+/// evaluates it, in the `const` assertions: an overflow there is a
+/// compile error.
+pub(crate) const fn fits<S, T>(off: usize, next: usize) -> (r: bool)
+    requires
+        off + size_of::<T>() <= usize::MAX,
+    ensures
+        r == field_fits::<S, T>(off, next as int),
+{
+    broadcast use vstd::layout::align_nonzero;
+
     off % core::mem::align_of::<T>() == 0
         && core::mem::align_of::<S>() % core::mem::align_of::<T>() == 0
         && off + core::mem::size_of::<T>() <= next
 }
+
+} // verus!
 
 // `axiom_arena_layout`, checked.
 const _: () = assert!(
@@ -1324,8 +1337,8 @@ pub open spec fn narenas_ns() -> int {
 /// The arena count's invariant, about the counter whose [`count_id`] is
 /// the key: its permission's value is at most [`MAX_ARENAS`]. Its two
 /// writers keep it: `Arenas::init` stores the automatic count it clamped
-/// to `1..=MAX_ARENAS` (trusted, with the invariant it makes), and
-/// `Arenas::create` stores `index + 1` for an `index` below `MAX_ARENAS`.
+/// to `1..=MAX_ARENAS` (with the permission [`fresh_count`] minted for
+/// it), and `Arenas::create` stores `index + 1` for an `index` below `MAX_ARENAS`.
 pub struct NarenasPred;
 
 impl InvariantPredicate<int, CountPerm> for NarenasPred {
@@ -1438,43 +1451,631 @@ pub open spec fn picks_least(snap: Seq<(u32, bool)>, auto: int, r: int) -> bool 
 
 verus! {
 
+// Byte offsets of `Arenas`'s fields, opaque to Verus as `Arena`'s are;
+// `axiom_arenas_layout` states what verified code relies on, and the
+// build checks it.
+#[verifier::external_body]
+const AR_TABLE: usize = core::mem::offset_of!(Arenas, table);
+#[verifier::external_body]
+const AR_BOUND: usize = core::mem::offset_of!(Arenas, bound);
+#[verifier::external_body]
+const AR_LOCK: usize = core::mem::offset_of!(Arenas, lock);
+#[verifier::external_body]
+const AR_COUNT: usize = core::mem::offset_of!(Arenas, count);
+#[verifier::external_body]
+const AR_AUTO: usize = core::mem::offset_of!(Arenas, auto);
+#[verifier::external_body]
+const AR_INVS: usize = core::mem::offset_of!(Arenas, invs);
+#[verifier::external_body]
+const AR_COUNT_INV: usize = core::mem::offset_of!(Arenas, count_inv);
+
+/// `Arenas`'s layout: each field at its offset, aligned, and ending by
+/// the next one's offset, the last (the zero-sized ghost `count_inv`,
+/// after `invs`) by the size. `Arenas` is not `repr(C)`, so the
+/// order is the one rustc picks (the table, the bound counts, then the
+/// rest in declaration order).
+/// Trusted, and checked by the build: the `const` assertion after this
+/// block evaluates the same conditions with `fits`, so a compiler that
+/// orders the fields otherwise fails the build there.
+axiom fn axiom_arenas_layout()
+    ensures
+        field_fits::<Arenas, [AtomicPtr<Arena>; MAX_ARENAS]>(AR_TABLE, AR_BOUND as int),
+        MAX_ARENAS * size_of::<AtomicPtr<Arena>>() <= isize::MAX,
+        field_fits::<Arenas, [AtomicU32; MAX_ARENAS]>(AR_BOUND, AR_LOCK as int),
+        MAX_ARENAS * size_of::<AtomicU32>() <= isize::MAX,
+        // Over several lines, as in `axiom_arena_layout`.
+        field_fits::<
+            Arenas,
+            Lock<u32>,
+        >(AR_LOCK, AR_COUNT as int),
+        field_fits::<Arenas, AtomicU32>(AR_COUNT, AR_AUTO as int),
+        field_fits::<Arenas, u32>(AR_AUTO, AR_INVS as int),
+        field_fits::<Arenas, Tracked<Map<int, BoundInv>>>(AR_INVS, AR_COUNT_INV as int),
+        field_fits::<Arenas, Tracked<NarenasInv>>(AR_COUNT_INV, size_of::<Arenas>() as int),
+        size_of::<Arenas>() <= isize::MAX,
+;
+
+} // verus!
+
+// `axiom_arenas_layout`, checked.
+const _: () = assert!(
+    fits::<Arenas, [AtomicPtr<Arena>; MAX_ARENAS]>(AR_TABLE, AR_BOUND)
+        && MAX_ARENAS as u128 * core::mem::size_of::<AtomicPtr<Arena>>() as u128
+            <= isize::MAX as u128
+        && fits::<Arenas, [AtomicU32; MAX_ARENAS]>(AR_BOUND, AR_LOCK)
+        && MAX_ARENAS as u128 * core::mem::size_of::<AtomicU32>() as u128 <= isize::MAX as u128
+        && fits::<Arenas, Lock<u32>>(AR_LOCK, AR_COUNT)
+        && fits::<Arenas, AtomicU32>(AR_COUNT, AR_AUTO)
+        && fits::<Arenas, u32>(AR_AUTO, AR_INVS)
+        && fits::<Arenas, Tracked<Map<int, BoundInv>>>(AR_INVS, AR_COUNT_INV)
+        && fits::<Arenas, Tracked<NarenasInv>>(AR_COUNT_INV, core::mem::size_of::<Arenas>())
+        && core::mem::size_of::<Arenas>() <= isize::MAX as usize
+);
+
+// `Arena::axiom_array_layout` at `Arenas::split`'s two instances, checked.
+const _: () = assert!(
+    core::mem::size_of::<[AtomicPtr<Arena>; MAX_ARENAS]>()
+        == MAX_ARENAS * core::mem::size_of::<AtomicPtr<Arena>>()
+        && core::mem::align_of::<[AtomicPtr<Arena>; MAX_ARENAS]>()
+            == core::mem::align_of::<AtomicPtr<Arena>>()
+        && core::mem::size_of::<[AtomicU32; MAX_ARENAS]>()
+            == MAX_ARENAS * core::mem::size_of::<AtomicU32>()
+        && core::mem::align_of::<[AtomicU32; MAX_ARENAS]>() == core::mem::align_of::<AtomicU32>()
+);
+
+verus! {
+
+/// The creation lock (`Arenas` holds the only `Lock<u32>` outside the
+/// tests) has no invariant: every value satisfies it, so its holders owe
+/// nothing and learn nothing from it. `Arenas::init`'s `Lock::new` needs
+/// it of the automatic count. The bound on the count is not stated here:
+/// the arena count's own invariant ([`NarenasPred`]) carries it. Trusted
+/// only because `lock_inv` is uninterpreted.
+pub broadcast axiom fn axiom_arenas_lock_inv(v: u32)
+    ensures
+        #[trigger] lock_inv(v),
+;
+
+/// The permissions to the fields of an `Arenas` under construction but
+/// its two arrays, which are maps of their own, element by element
+/// ([`Arenas::split`]).
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+tracked struct ArenasParts {
+    tracked lock: PointsTo<Lock<u32>>,
+    tracked count: PointsTo<AtomicU32>,
+    tracked auto: PointsTo<u32>,
+    tracked invs: PointsTo<Tracked<Map<int, BoundInv>>>,
+    tracked count_inv: PointsTo<Tracked<NarenasInv>>,
+}
+
+impl ArenasParts {
+    /// Each permission is to its field of the `Arenas` at `p`, which is
+    /// [`storage_ok`], and the two arrays are inside it.
+    spec fn at(&self, p: *mut Arenas) -> bool {
+        &&& storage_ok(p)
+        &&& self.lock.ptr() == field_ptr::<Arenas, Lock<u32>>(p, AR_LOCK)
+        &&& self.count.ptr() == field_ptr::<Arenas, AtomicU32>(p, AR_COUNT)
+        &&& self.auto.ptr() == field_ptr::<Arenas, u32>(p, AR_AUTO)
+        &&& self.invs.ptr() == field_ptr::<Arenas, Tracked<Map<int, BoundInv>>>(p, AR_INVS)
+        &&& self.count_inv.ptr() == field_ptr::<Arenas, Tracked<NarenasInv>>(p, AR_COUNT_INV)
+        &&& in_alloc(field_ptr::<Arenas, AtomicPtr<Arena>>(p, AR_TABLE), MAX_ARENAS as int * size_of::<AtomicPtr<Arena>>())
+        &&& MAX_ARENAS * size_of::<AtomicPtr<Arena>>() <= isize::MAX
+        &&& in_alloc(field_ptr::<Arenas, AtomicU32>(p, AR_BOUND), MAX_ARENAS as int * size_of::<AtomicU32>())
+        &&& MAX_ARENAS * size_of::<AtomicU32>() <= isize::MAX
+    }
+}
+
+/// The table entry permissions of the `Arenas` at `p`, element by element.
+spec fn tables_at(m: Map<int, PointsTo<AtomicPtr<Arena>>>, p: *mut Arenas) -> bool {
+    elems_at(m, field_ptr::<Arenas, AtomicPtr<Arena>>(p, AR_TABLE), 0, MAX_ARENAS as int)
+}
+
+/// The bound count permissions of the `Arenas` at `p`, element by element.
+spec fn bounds_at(m: Map<int, PointsTo<AtomicU32>>, p: *mut Arenas) -> bool {
+    elems_at(m, field_ptr::<Arenas, AtomicU32>(p, AR_BOUND), 0, MAX_ARENAS as int)
+}
+
+/// Byte `x` is in the field of type `T` at offset `off` of the `Arenas`
+/// at `p`.
+spec fn in_arenas_field<T>(x: int, p: *mut Arenas, off: usize) -> bool {
+    p@.addr + off <= x < p@.addr + off + size_of::<T>()
+}
+
+/// Every byte of the `Arenas` at `p` is `pad`'s or a field's: what
+/// [`Arenas::split`] keeps of the storage once it has taken the fields
+/// (the padding), which [`axiom_arenas_assemble`] takes back.
+spec fn arenas_pad_covers(pad: PointsToRaw, p: *mut Arenas) -> bool {
+    forall|x: int|
+        p@.addr <= x < p@.addr + size_of::<Arenas>() ==> #[trigger] pad.dom().contains(x)
+            || in_arenas_field::<[AtomicPtr<Arena>; MAX_ARENAS]>(x, p, AR_TABLE)
+            || in_arenas_field::<[AtomicU32; MAX_ARENAS]>(x, p, AR_BOUND)
+            || in_arenas_field::<Lock<u32>>(x, p, AR_LOCK)
+            || in_arenas_field::<AtomicU32>(x, p, AR_COUNT)
+            || in_arenas_field::<u32>(x, p, AR_AUTO)
+            || in_arenas_field::<Tracked<Map<int, BoundInv>>>(x, p, AR_INVS)
+            || in_arenas_field::<Tracked<NarenasInv>>(x, p, AR_COUNT_INV)
+}
+
+impl Arenas {
+    /// The permissions to the fields of the uninitialised `Arenas` `perm`
+    /// is to: [`take_field`] for each field at the offsets
+    /// [`axiom_arenas_layout`] gives, and the two arrays split by
+    /// [`split_array`]; and the bytes left over, the padding.
+    proof fn split(tracked perm: PointsTo<Arenas>) -> (tracked r: (
+        ArenasParts,
+        Map<int, PointsTo<AtomicPtr<Arena>>>,
+        Map<int, PointsTo<AtomicU32>>,
+        PointsToRaw,
+    ))
+        requires
+            perm.is_uninit(),
+            perm.ptr()@.addr + size_of::<Arenas>() <= usize::MAX,
+        ensures
+            r.0.at(perm.ptr()),
+            r.0.lock.is_uninit(),
+            r.0.count.is_uninit(),
+            r.0.auto.is_uninit(),
+            r.0.invs.is_uninit(),
+            r.0.count_inv.is_uninit(),
+            tables_at(r.1, perm.ptr()),
+            elems_uninit(r.1, 0, MAX_ARENAS as int),
+            bounds_at(r.2, perm.ptr()),
+            elems_uninit(r.2, 0, MAX_ARENAS as int),
+            arenas_pad_covers(r.3, perm.ptr()),
+            r.3.provenance() == perm.ptr()@.provenance,
+    {
+        broadcast use vstd::raw_ptr::group_raw_ptr_axioms, vstd::layout::layout_of_primitives;
+
+        axiom_arenas_layout();
+        let p = perm.ptr();
+        perm.is_nonnull();
+        perm.is_aligned();
+        let tracked raw = perm.into_raw();
+        axiom_raw_valid(&raw, p as *mut u8, size_of::<Arenas>() as int);
+        let tracked (table, raw) = take_field::<Arenas, [AtomicPtr<Arena>; MAX_ARENAS]>(raw, p, AR_TABLE, AR_BOUND as int);
+        let tracked (bound, raw) = take_field::<Arenas, [AtomicU32; MAX_ARENAS]>(raw, p, AR_BOUND, AR_LOCK as int);
+        let tracked (lock, raw) = take_field::<Arenas, Lock<u32>>(raw, p, AR_LOCK, AR_COUNT as int);
+        let tracked (count, raw) = take_field::<Arenas, AtomicU32>(raw, p, AR_COUNT, AR_AUTO as int);
+        let tracked (auto, raw) = take_field::<Arenas, u32>(raw, p, AR_AUTO, AR_INVS as int);
+        let tracked (invs, raw) = take_field::<Arenas, Tracked<Map<int, BoundInv>>>(raw, p, AR_INVS, AR_COUNT_INV as int);
+        let tracked (count_inv, pad) = take_field::<Arenas, Tracked<NarenasInv>>(
+            raw,
+            p,
+            AR_COUNT_INV,
+            size_of::<Arenas>() as int,
+        );
+        axiom_array_layout::<AtomicPtr<Arena>, MAX_ARENAS>();
+        axiom_array_layout::<AtomicU32, MAX_ARENAS>();
+        let tracked tables = split_array(table);
+        let tracked bounds = split_array(bound);
+        lemma_field_cast::<Arenas, [AtomicPtr<Arena>; MAX_ARENAS], AtomicPtr<Arena>>(p, AR_TABLE);
+        lemma_field_cast::<Arenas, [AtomicU32; MAX_ARENAS], AtomicU32>(p, AR_BOUND);
+        (ArenasParts { lock, count, auto, invs, count_inv }, tables, bounds, pad)
+    }
+}
+
+/// The written fields of the `Arenas` at `p` (`Arenas::split`'s parts
+/// and array elements, every one initialised), as the `Arenas`: the value
+/// of each field is what its permission holds. Trusted, as
+/// [`axiom_arena_assemble`] is for `Arena`: vstd has no way to join typed
+/// permissions; the permissions cover every field at its offset, and
+/// `pad` every byte between and around them ([`arenas_pad_covers`]), so
+/// their bytes are the `Arenas`'s. The type invariant
+/// (`Arenas::type_inv`) is a precondition, so the value is one an
+/// `Arenas` may hold.
+axiom fn axiom_arenas_assemble(
+    tracked parts: ArenasParts,
+    tracked tables: Map<int, PointsTo<AtomicPtr<Arena>>>,
+    tracked bounds: Map<int, PointsTo<AtomicU32>>,
+    tracked pad: PointsToRaw,
+    p: *mut Arenas,
+) -> (tracked a: PointsTo<Arenas>)
+    requires
+        parts.at(p),
+        tables_at(tables, p),
+        bounds_at(bounds, p),
+        arenas_pad_covers(pad, p),
+        pad.provenance() == p@.provenance,
+        parts.lock.is_init(),
+        parts.count.is_init(),
+        parts.auto.is_init(),
+        parts.invs.is_init(),
+        parts.count_inv.is_init(),
+        elems_init(tables, 0, MAX_ARENAS as int),
+        elems_init(bounds, 0, MAX_ARENAS as int),
+        parts.lock.value().rank() == rank_arenas(),
+        parts.count_inv.value()@.constant() == count_id(&parts.count.value()),
+        parts.count_inv.value()@.namespace() == narenas_ns(),
+    ensures
+        a.ptr() == p,
+        a.is_init(),
+        a.value().lock == parts.lock.value(),
+        a.value().count == parts.count.value(),
+        a.value().auto == parts.auto.value(),
+        forall|i: int| 0 <= i < MAX_ARENAS ==> #[trigger] a.value().table[i] == tables[i].value(),
+        forall|i: int| 0 <= i < MAX_ARENAS ==> #[trigger] a.value().bound[i] == bounds[i].value(),
+        a.value().invs == parts.invs.value(),
+        a.value().count_inv == parts.count_inv.value(),
+;
+
+/// A new counter of value `v`, and the permission to it ([`CountPerm`]).
+/// Trusted: `CountPerm` has no constructor, as nothing in
+/// `vspec/count.rs` mints one; this is where each is minted, one per
+/// counter, with the counter it is for (`Arenas::init` writes each bound
+/// count and the arena count in place and keeps each permission in its
+/// counter's invariant).
+#[verifier::external_body]
+#[inline(always)]
+fn fresh_count(v: u32) -> (r: (AtomicU32, Tracked<CountPerm>))
+    ensures
+        r.1@.id() == count_id(&r.0),
+        r.1@.value() == v,
+{
+    (AtomicU32::new(v), Tracked::assume_new())
+}
+
+/// The set `{0}`, the one element each fresh ticket set starts with to
+/// tell its location from the others' ([`fresh_sets`]).
+spec fn just0() -> Set<int> {
+    Set::empty().insert(0int)
+}
+
+/// `f` is at a location none of `frags[0..k]` is at: each holds `0`, as
+/// `f` does, and two subsets at one location hold disjoint sets.
+proof fn lemma_apart(tracked f: &mut GhostSubset<int>, tracked frags: &Map<int, GhostSubset<int>>, k: nat)
+    requires
+        old(f)@ == just0(),
+        forall|j: int| 0 <= j < k ==> #[trigger] frags.contains_key(j),
+        forall|j: int| 0 <= j < k ==> #[trigger] frags[j]@ == just0(),
+    ensures
+        final(f).id() == old(f).id(),
+        final(f)@ == old(f)@,
+        forall|j: int| 0 <= j < k ==> #[trigger] frags[j].id() != final(f).id(),
+    decreases k,
+{
+    if k > 0 {
+        lemma_apart(f, frags, (k - 1) as nat);
+        let j = k - 1;
+        if f.id() == frags[j].id() {
+            f.disjoint(frags.tracked_borrow(j));
+            assert(f@.contains(0int));
+            assert(frags[j]@.contains(0int));
+        }
+    }
+}
+
+/// `n` ticket set authorities, each at a location of its own, holding
+/// `{0}`, with the subset of `{0}` that shows it ([`lemma_apart`]).
+proof fn fresh_sets(n: nat) -> (tracked r: (Map<int, GhostSetAuth<int>>, Map<int, GhostSubset<int>>))
+    ensures
+        forall|i: int| 0 <= i < n ==> #[trigger] r.0.contains_key(i),
+        forall|i: int| 0 <= i < n ==> #[trigger] r.1.contains_key(i),
+        forall|i: int| 0 <= i < n ==> #[trigger] r.0[i].id() == r.1[i].id(),
+        forall|i: int| 0 <= i < n ==> #[trigger] r.0[i]@ == just0(),
+        forall|i: int| 0 <= i < n ==> #[trigger] r.1[i]@ == just0(),
+        forall|i: int, j: int| 0 <= i < n && 0 <= j < n && i != j ==> #[trigger] r.0[i].id() != #[trigger] r.0[j].id(),
+    decreases n,
+{
+    if n == 0 {
+        (Map::tracked_empty(), Map::tracked_empty())
+    } else {
+        let k = (n - 1) as nat;
+        let tracked (mut auths, mut frags) = fresh_sets(k);
+        let tracked (auth, mut frag) = GhostSetAuth::new(just0());
+        lemma_apart(&mut frag, &frags, k);
+        let ghost (a0, f0) = (auths, frags);
+        auths.tracked_insert(k as int, auth);
+        frags.tracked_insert(k as int, frag);
+        assert forall|i: int| 0 <= i < k implies #[trigger] auths[i] == a0[i] by {}
+        assert forall|i: int| 0 <= i < k implies #[trigger] frags[i] == f0[i] by {}
+        (auths, frags)
+    }
+}
+
+/// The invariants of `n` fresh bound counts ([`BoundPred`]): count `i`'s
+/// permission (value 0) from `counts`, its ticket set from `auths`, made
+/// empty by taking back the subset `{0}` from `frags`, and no ticket.
+proof fn fresh_invs(
+    tracked counts: Map<int, CountPerm>,
+    tracked auths: Map<int, GhostSetAuth<int>>,
+    tracked frags: Map<int, GhostSubset<int>>,
+    n: nat,
+) -> (tracked m: Map<int, BoundInv>)
+    requires
+        forall|i: int| 0 <= i < n ==> #[trigger] counts.contains_key(i),
+        forall|i: int| 0 <= i < n ==> #[trigger] counts[i].value() == 0,
+        forall|i: int| 0 <= i < n ==> #[trigger] auths.contains_key(i),
+        forall|i: int| 0 <= i < n ==> #[trigger] frags.contains_key(i),
+        forall|i: int| 0 <= i < n ==> #[trigger] auths[i].id() == frags[i].id(),
+        forall|i: int| 0 <= i < n ==> #[trigger] auths[i]@ == just0(),
+        forall|i: int| 0 <= i < n ==> #[trigger] frags[i]@ == just0(),
+    ensures
+        forall|i: int| 0 <= i < n ==> #[trigger] m.contains_key(i),
+        forall|i: int| 0 <= i < n ==> #[trigger] m[i].constant() == (BoundKey { id: counts[i].id(), loc: auths[i].id() }),
+        forall|i: int| 0 <= i < n ==> #[trigger] m[i].namespace() == bound_ns(),
+    decreases n,
+{
+    if n == 0 {
+        Map::tracked_empty()
+    } else {
+        let i = n - 1;
+        let ghost (c0, a0, f0) = (counts, auths, frags);
+        let tracked mut counts = counts;
+        let tracked mut auths = auths;
+        let tracked mut frags = frags;
+        let tracked c = counts.tracked_remove(i);
+        let tracked mut a = auths.tracked_remove(i);
+        let tracked f = frags.tracked_remove(i);
+        a.delete(f);
+        assert(a@ =~= Set::<int>::empty());
+        let k = BoundKey { id: c.id(), loc: a.id() };
+        assert(wrap32(0) == 0u32);
+        let tracked inv = BoundInv::new(k, (c, a, Ghost(0int)), bound_ns());
+        assert forall|j: int| 0 <= j < i implies #[trigger] counts[j] == c0[j] by {}
+        assert forall|j: int| 0 <= j < i implies #[trigger] auths[j] == a0[j] by {}
+        assert forall|j: int| 0 <= j < i implies #[trigger] frags[j] == f0[j] by {}
+        let tracked mut m = fresh_invs(counts, auths, frags, i as nat);
+        let ghost m0 = m;
+        m.tracked_insert(i, inv);
+        assert forall|j: int| 0 <= j < i implies m[j] == m0[j] by {}
+        m
+    }
+}
+
+/// The in-place writes of [`Arenas::init`], each through the permission
+/// to the field it writes.
+impl Arenas {
+    /// `lock`, `count` and `auto`, from the automatic count `auto`; the
+    /// count's permission.
+    #[inline(always)]
+    unsafe fn put_head(this: *mut Arenas, auto: u32, Tracked(parts): Tracked<&mut ArenasParts>) -> (r: Tracked<CountPerm>)
+        requires
+            old(parts).at(this),
+            auto as usize <= MAX_ARENAS,
+        ensures
+            final(parts).at(this),
+            final(parts).lock.is_init(),
+            final(parts).lock.value().rank() == rank_arenas(),
+            final(parts).count.is_init(),
+            final(parts).auto.is_init(),
+            final(parts).auto.value() == auto,
+            final(parts).invs == old(parts).invs,
+            final(parts).count_inv == old(parts).count_inv,
+            r@.id() == count_id(&final(parts).count.value()),
+            r@.value() == auto,
+    {
+        broadcast use axiom_arenas_lock_inv;
+
+        proof {
+            axiom_arenas_layout();
+        }
+        // SAFETY: the fields of `init`'s storage, through their permissions.
+        unsafe {
+            ptr_mut_write(field_at(this, AR_LOCK), Tracked(&mut parts.lock), Lock::new(auto, Ghost(rank_arenas())));
+            let (c, perm) = fresh_count(auto);
+            ptr_mut_write(field_at(this, AR_COUNT), Tracked(&mut parts.count), c);
+            ptr_mut_write(field_at(this, AR_AUTO), Tracked(&mut parts.auto), auto);
+            perm
+        }
+    }
+
+    /// Entry `i` of `table`, null, and of `bound`, a new count of 0,
+    /// through the permissions `t` and `b` to them; the count's
+    /// permission.
+    #[inline(always)]
+    unsafe fn put_entry(
+        this: *mut Arenas,
+        i: usize,
+        Tracked(t): Tracked<&mut PointsTo<AtomicPtr<Arena>>>,
+        Tracked(b): Tracked<&mut PointsTo<AtomicU32>>,
+    ) -> (r: Tracked<CountPerm>)
+        requires
+            storage_ok(this),
+            i < MAX_ARENAS,
+            old(t).ptr() == ptr_add(field_ptr::<Arenas, AtomicPtr<Arena>>(this, AR_TABLE), i),
+            old(b).ptr() == ptr_add(field_ptr::<Arenas, AtomicU32>(this, AR_BOUND), i),
+            in_alloc(field_ptr::<Arenas, AtomicPtr<Arena>>(this, AR_TABLE), MAX_ARENAS as int * size_of::<AtomicPtr<Arena>>()),
+            MAX_ARENAS * size_of::<AtomicPtr<Arena>>() <= isize::MAX,
+            in_alloc(field_ptr::<Arenas, AtomicU32>(this, AR_BOUND), MAX_ARENAS as int * size_of::<AtomicU32>()),
+            MAX_ARENAS * size_of::<AtomicU32>() <= isize::MAX,
+        ensures
+            final(t).ptr() == old(t).ptr(),
+            final(t).is_init(),
+            final(b).ptr() == old(b).ptr(),
+            final(b).is_init(),
+            r@.id() == count_id(&final(b).value()),
+            r@.value() == 0,
+    {
+        proof {
+            axiom_arenas_layout();
+        }
+        // SAFETY: element `i` of each array field, through its permission.
+        unsafe {
+            let table: *mut AtomicPtr<Arena> = field_at(this, AR_TABLE);
+            let bound: *mut AtomicU32 = field_at(this, AR_BOUND);
+            ptr_mut_write(elem_at(table, i, MAX_ARENAS), Tracked(t), AtomicPtr::new(ptr::null_mut()));
+            let (c, perm) = fresh_count(0);
+            ptr_mut_write(elem_at(bound, i, MAX_ARENAS), Tracked(b), c);
+            perm
+        }
+    }
+
+    /// `arena0` into entry 0 of `table`, through the permission `t` to it.
+    #[inline(always)]
+    unsafe fn put_arena0(this: *mut Arenas, arena0: *mut Arena, Tracked(t): Tracked<&PointsTo<AtomicPtr<Arena>>>)
+        requires
+            storage_ok(this),
+            t.ptr() == ptr_add(field_ptr::<Arenas, AtomicPtr<Arena>>(this, AR_TABLE), 0),
+            t.is_init(),
+            in_alloc(field_ptr::<Arenas, AtomicPtr<Arena>>(this, AR_TABLE), MAX_ARENAS as int * size_of::<AtomicPtr<Arena>>()),
+            MAX_ARENAS * size_of::<AtomicPtr<Arena>>() <= isize::MAX,
+    {
+        proof {
+            axiom_arenas_layout();
+        }
+        // SAFETY: element 0 of the field, through its permission.
+        unsafe {
+            let table: *mut AtomicPtr<Arena> = field_at(this, AR_TABLE);
+            ptr_ref(elem_at(table, 0, MAX_ARENAS), Tracked(t)).store(arena0, Ordering::Release);
+        }
+    }
+
+    /// The ghost `invs` and `count_inv` (no bytes), through the
+    /// permissions to them.
+    #[inline(always)]
+    unsafe fn put_invs(
+        this: *mut Arenas,
+        invs: Tracked<Map<int, BoundInv>>,
+        count_inv: Tracked<NarenasInv>,
+        Tracked(parts): Tracked<&mut ArenasParts>,
+    )
+        requires
+            old(parts).at(this),
+        ensures
+            final(parts).at(this),
+            final(parts).invs.is_init(),
+            final(parts).invs.value() == invs,
+            final(parts).count_inv.is_init(),
+            final(parts).count_inv.value() == count_inv,
+            final(parts).lock == old(parts).lock,
+            final(parts).count == old(parts).count,
+            final(parts).auto == old(parts).auto,
+    {
+        proof {
+            axiom_arenas_layout();
+        }
+        // SAFETY: the fields of `init`'s storage, through their permissions.
+        unsafe {
+            ptr_mut_write(field_at(this, AR_INVS), Tracked(&mut parts.invs), invs);
+            ptr_mut_write(field_at(this, AR_COUNT_INV), Tracked(&mut parts.count_inv), count_inv);
+        }
+    }
+}
+
+} // verus!
+
+verus! {
+
 impl Arenas {
     /// Initialise `this` in place with `arena0` at index 0 and `narenas`
     /// automatic indices (clamped to `1..=MAX_ARENAS`), through the
     /// permission to its storage in `slot`, handed back initialised and
-    /// well formed ([`Arenas::wf`]). Trusted: field-by-field writes
-    /// through `&raw mut` projections, and the ghost `invs`, which no
-    /// write sets: every bound count is written 0, and its invariant
-    /// ([`BoundPred`]) is the one a fresh counter permission of value 0
-    /// and a fresh, empty ticket set would make (`GhostSetAuth::new`), each
+    /// well formed ([`Arenas::wf`]): every bound count is written 0, and
+    /// its invariant ([`BoundPred`]) holds the permission
+    /// [`fresh_count`] minted for it and a fresh, empty ticket set, each
     /// set at a location of its own; no ticket exists yet. Likewise the
     /// ghost `count_inv`: `count` is written the clamped automatic count,
-    /// and its invariant ([`NarenasPred`], in [`narenas_ns`]) is the one a
-    /// fresh counter permission of that value would make.
+    /// and its invariant ([`NarenasPred`], in [`narenas_ns`]) holds the
+    /// permission [`fresh_count`] minted for it.
     ///
     /// # Safety
     /// `this` must point to writable storage that nothing else reads until
     /// this returns; `arena0` must outlive the registry.
-    #[verifier::external_body]
+    #[verifier::loop_isolation(false)]
     pub unsafe fn init(this: *mut Arenas, arena0: *mut Arena, narenas: u32, Tracked(slot): Tracked<&mut Held<Arenas>>)
         requires
             old(slot).perm matches Some(p) && p.ptr() == this && p.is_uninit(),
+            this@.addr + size_of::<Arenas>() <= usize::MAX,
         ensures
             final(slot).perm matches Some(p) && p.ptr() == this && p.is_init() && p.value().wf(),
     {
         let auto = narenas.clamp(1, MAX_ARENAS as u32);
-        // SAFETY: the caller guarantees `this` is writable and unaliased.
+        let tracked (mut parts, mut tables, mut bounds, pad) = Arenas::split(slot.perm.tracked_take());
+        // Ghost: each bound count's permission, as `put_entry` mints it.
+        let tracked mut counts: Map<int, CountPerm> = Map::tracked_empty();
+        // SAFETY: the caller guarantees `this` is writable and unaliased;
+        // every write goes through the permission to its field.
         unsafe {
-            ptr::write(&raw mut (*this).lock, Lock::new(auto, Ghost(rank_arenas())));
-            ptr::write(&raw mut (*this).count, AtomicU32::new(auto));
-            ptr::write(&raw mut (*this).auto, auto);
-            let table = &raw mut (*this).table;
-            let bound = &raw mut (*this).bound;
-            for i in 0..MAX_ARENAS {
-                ptr::write(&raw mut (*table)[i], AtomicPtr::new(ptr::null_mut()));
-                ptr::write(&raw mut (*bound)[i], AtomicU32::new(0));
+            let Tracked(nperm) = Arenas::put_head(this, auto, Tracked(&mut parts));
+            for i in 0..MAX_ARENAS
+                invariant
+                    tables_at(tables, this),
+                    bounds_at(bounds, this),
+                    elems_init(tables, 0, i as int),
+                    elems_init(bounds, 0, i as int),
+                    forall|j: int| 0 <= j < i ==> #[trigger] counts.contains_key(j),
+                    forall|j: int| 0 <= j < i ==> #[trigger] counts[j].id() == count_id(&bounds[j].value()),
+                    forall|j: int| 0 <= j < i ==> #[trigger] counts[j].value() == 0,
+            {
+                let ghost (t0, b0, c0) = (tables, bounds, counts);
+                proof {
+                    assert(tables.contains_key(i as int));
+                    assert(bounds.contains_key(i as int));
+                }
+                let tracked t = tables.tracked_borrow_mut(i as int);
+                let tracked b = bounds.tracked_borrow_mut(i as int);
+                let Tracked(c) = Arenas::put_entry(this, i, Tracked(t), Tracked(b));
+                proof {
+                    counts.tracked_insert(i as int, c);
+                    assert forall|j: int| 0 <= j < MAX_ARENAS implies #[trigger] tables.contains_key(j) by {
+                        assert(t0.contains_key(j));
+                    }
+                    assert forall|j: int| 0 <= j < MAX_ARENAS implies (#[trigger] tables[j]).ptr()
+                        == ptr_add(field_ptr::<Arenas, AtomicPtr<Arena>>(this, AR_TABLE), j as usize) by {
+                        assert(t0.contains_key(j));
+                    }
+                    assert forall|j: int| 0 <= j < MAX_ARENAS implies #[trigger] bounds.contains_key(j) by {
+                        assert(b0.contains_key(j));
+                    }
+                    assert forall|j: int| 0 <= j < MAX_ARENAS implies (#[trigger] bounds[j]).ptr()
+                        == ptr_add(field_ptr::<Arenas, AtomicU32>(this, AR_BOUND), j as usize) by {
+                        assert(b0.contains_key(j));
+                    }
+                    assert forall|j: int| 0 <= j < i + 1 implies (#[trigger] tables[j]).is_init() by {
+                        if j < i {
+                            assert(t0[j] == tables[j]);
+                        }
+                    }
+                    assert forall|j: int| 0 <= j < i + 1 implies (#[trigger] bounds[j]).is_init() by {
+                        if j < i {
+                            assert(b0[j] == bounds[j]);
+                        }
+                    }
+                    assert forall|j: int| 0 <= j < i + 1 implies #[trigger] counts.contains_key(j) by {
+                        if j < i {
+                            assert(c0.contains_key(j));
+                        }
+                    }
+                    assert forall|j: int| 0 <= j < i + 1 implies #[trigger] counts[j].id() == count_id(&bounds[j].value()) by {
+                        if j < i {
+                            assert(c0[j] == counts[j]);
+                            assert(b0[j] == bounds[j]);
+                        }
+                    }
+                    assert forall|j: int| 0 <= j < i + 1 implies #[trigger] counts[j].value() == 0 by {
+                        if j < i {
+                            assert(c0[j] == counts[j]);
+                        }
+                    }
+                }
             }
-            (*table)[0].store(arena0, Ordering::Release);
+            proof {
+                assert(tables.contains_key(0));
+            }
+            Arenas::put_arena0(this, arena0, Tracked(tables.tracked_borrow(0)));
+            let tracked (auths, frags) = fresh_sets(MAX_ARENAS as nat);
+            let ghost locs = auths;
+            let tracked invs = fresh_invs(counts, auths, frags, MAX_ARENAS as nat);
+            let tracked count_inv = NarenasInv::new(nperm.id(), nperm, narenas_ns());
+            Arenas::put_invs(this, Tracked(invs), Tracked(count_inv), Tracked(&mut parts));
+            proof {
+                let tracked a = axiom_arenas_assemble(parts, tables, bounds, pad, this);
+                let v = a.value();
+                assert forall|i: int| 0 <= i < MAX_ARENAS implies #[trigger] v.invs@.contains_key(i) by {}
+                assert forall|i: int| 0 <= i < MAX_ARENAS implies #[trigger] v.invs@[i].constant().id
+                    == count_id(&v.bound[i]) by {
+                    assert(v.bound[i] == bounds[i].value());
+                }
+                assert forall|i: int| 0 <= i < MAX_ARENAS implies #[trigger] v.invs@[i].namespace() == bound_ns() by {}
+                assert forall|i: int, j: int| 0 <= i < MAX_ARENAS && 0 <= j < MAX_ARENAS && i != j
+                    implies #[trigger] v.spec_loc(i) != #[trigger] v.spec_loc(j) by {
+                    assert(v.spec_loc(i) == locs[i].id());
+                    assert(v.spec_loc(j) == locs[j].id());
+                }
+                assert(v.wf());
+                slot.perm = Some(a);
+            }
         }
     }
 
@@ -2058,7 +2659,8 @@ impl Arenas {
 
     /// The creation lock is the arena creation lock of the lock order, and
     /// `count_inv` is the invariant of `count` ([`NarenasPred`]) in
-    /// [`narenas_ns`] (`init` creates both so; trusted with `init`).
+    /// [`narenas_ns`] (`init` makes both so: `axiom_arenas_assemble`
+    /// requires them).
     #[verifier::type_invariant]
     spec fn type_inv(self) -> bool {
         &&& self.lock.rank() == rank_arenas()

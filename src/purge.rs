@@ -912,7 +912,7 @@ mod kani_total {
     /// The most ranges checked.
     const MAX: usize = 4;
 
-    /// S184 `total_bytes`, `requires lens(ranges, len) <= u64::MAX`, no
+    /// S194 `total_bytes`, `requires lens(ranges, len) <= u64::MAX`, no
     /// `ensures`: under it the call returns (the sum, which cannot
     /// overflow), for every list of up to `MAX` ranges.
     #[kani::proof]
@@ -936,7 +936,7 @@ mod kani_explicit {
     use super::{EXPLICIT, Explicit};
     use core::sync::atomic::Ordering::Relaxed;
 
-    /// S183 `Explicit::drop`: no `requires`, no `ensures`, `no_unwind`:
+    /// S193 `Explicit::drop`: no `requires`, no `ensures`, `no_unwind`:
     /// it returns without a panic for every count `EXPLICIT` holds (one
     /// less afterwards, wrapping at zero as an atomic subtraction does),
     /// both when a guard from `Explicit::enter` drops and when the count

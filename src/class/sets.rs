@@ -973,7 +973,7 @@ impl SetTable {
 mod kani_sets {
     use super::SetTable;
 
-    /// S78 `SetTable::set_table_ptr`: no `ensures`; it returns, the
+    /// S88 `SetTable::set_table_ptr`: no `ensures`; it returns, the
     /// table's address (on an all-zero table: every field is an integer,
     /// a lock word or ghost, so zero is a valid table).
     #[kani::proof]

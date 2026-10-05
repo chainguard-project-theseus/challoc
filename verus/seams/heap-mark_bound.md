@@ -1,6 +1,6 @@
 # `mark_bound`
 
-Seam S120 of `verus/SEAMS.md`: src/heap/mod.rs:5772. Kind: external_body. Category: raw pointer (internal).
+Seam S130 of `verus/SEAMS.md`: src/heap/mod.rs:5772. Kind: external_body. Category: raw pointer (internal).
 Discharged by RefinedRust.
 
 ## Contract

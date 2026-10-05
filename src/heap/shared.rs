@@ -1126,6 +1126,9 @@ impl Shared {
     {
         proof {
             axiom_shared_layout();
+            // `Arenas::init` builds in place: its storage ends below the
+            // top of the address space.
+            axiom_ptr_add_addr(this as *mut u8, S_ARENAS);
         }
         // SAFETY: as in `put_head`; `arena0` is inside the same `Shared`.
         unsafe {
@@ -2674,7 +2677,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S130..S145, S146: each `S_*` is its field's `offset_of!`, and the
+    /// S140..S155, S156: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {

@@ -1,6 +1,6 @@
 # `assert_flushed`
 
-Seam S115 of `verus/SEAMS.md`: src/heap/mod.rs:1758. Kind: external_body. Category: panic/abort.
+Seam S125 of `verus/SEAMS.md`: src/heap/mod.rs:1758. Kind: external_body. Category: panic/abort.
 Discharged by Kani.
 
 ## Contract

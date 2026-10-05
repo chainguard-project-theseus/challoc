@@ -1,6 +1,6 @@
 # `load_bool`
 
-Seam S256 of `verus/SEAMS.md`: src/vspec/atomic.rs:25. Kind: external_body. Category: atomics primitive.
+Seam S266 of `verus/SEAMS.md`: src/vspec/atomic.rs:25. Kind: external_body. Category: atomics primitive.
 Discharged by Kani.
 
 ## Contract

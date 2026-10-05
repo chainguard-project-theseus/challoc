@@ -1747,7 +1747,7 @@ mod tests {
 mod kani_table {
     use super::Entry;
 
-    /// S159 `axiom_zero_entry`, its executable content: 16 zero bytes,
+    /// S169 `axiom_zero_entry`, its executable content: 16 zero bytes,
     /// aligned as an `Entry`, read as an `Entry` (a defined read: a
     /// `usize` and a raw pointer accept every bit pattern), and that
     /// entry is empty (`!occupied`: its `desc` has address 0). The

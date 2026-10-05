@@ -379,7 +379,7 @@ mod kani_verify {
     use crate::kani_proofs::fmt::formats_debug_flat;
     use crate::slab::State;
 
-    /// S92 `DebugSpecImpl for Says` (`fmt_req` true): `None` and every
+    /// S102 `DebugSpecImpl for Says` (`fmt_req` true): `None` and every
     /// state, each formatted in turn (`{:?}` only: Kani does not finish
     /// `{:#?}` of an `Option`, whose `PadAdapter` path the record names
     /// as a gap; challoc formats `Says` with `{:?}`).
