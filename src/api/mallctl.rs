@@ -24,10 +24,10 @@
 //! Every node is an [`Entry`]: a directory, a read-only key that carries
 //! its answer in the tree (a [`Reader`], `stat(...)`, called by [`ctl`]
 //! after the read-only check with the numeric MIB components as its
-//! argument; adding such a key is one `stat` line), or an [`Op`], a key
-//! that does something (`epoch`, the `arena.<i>.*` operations,
-//! `arenas.create`/`lookup`, the `thread.*` and `tcache.*` writes, the
-//! utilization queries), which is an arm of `ctl`.
+//! argument; adding such a key is a named reader inside `verus!` and one
+//! `stat` line), or an [`Op`], a key that does something (`epoch`, the
+//! `arena.<i>.*` operations, `arenas.create`/`lookup`, the `thread.*` and
+//! `tcache.*` writes, the utilization queries), which is an arm of `ctl`.
 //!
 //! `stats.*` values are those stored by the last `epoch` (all zero before
 //! the first), as in jemalloc; `stats.arenas.4096.*` (`MALLCTL_ARENAS_ALL`)
@@ -98,11 +98,14 @@ const EINVAL: c_int = Errno::EINVAL.0;
 #[allow(clippy::redundant_static_lifetimes)]
 pub const VERSION_STR: &'static str = "5.3.0-0-gchalloc";
 
+#[allow(clippy::redundant_static_lifetimes)]
+exec const VERSION_CSTR: &'static [u8] = b"5.3.0-0-gchalloc\0";
+#[allow(clippy::redundant_static_lifetimes)]
+exec const EMPTY_CSTR: &'static [u8] = b"\0";
+
 } // verus!
 
-const VERSION_CSTR: &[u8] = b"5.3.0-0-gchalloc\0";
 const _: () = assert!(VERSION_CSTR.len() == VERSION_STR.len() + 1);
-const EMPTY_CSTR: &[u8] = b"\0";
 
 verus! {
 
@@ -193,8 +196,9 @@ struct ExReader(Reader);
 /// resolves to, and under `opt`, `arenas` and `stats` every reader is a
 /// verified function that does not require `may_abort`
 /// ([`reader_never_aborts`]); the others (`version`, `config.*` and
-/// `thread.*`) are closures, so a call to one of those needs the
-/// capability.
+/// `thread.*`) are verified functions too, but `thread.*` requires the
+/// capability and this contract does not tell the groups apart, so a call
+/// to any of those needs it.
 #[verifier::external_body]
 #[inline(always)]
 fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int>
@@ -302,33 +306,45 @@ const fn num(children: &'static [Node]) -> Node {
     dir(NUMERIC, children)
 }
 
-} // verus!
-
-const fn stat(name: &'static str, read: fn(&[usize]) -> Result<Reading, c_int>) -> Node {
+/// A read-only key. The reader comes wrapped: a function pointer type
+/// cannot appear inside `verus!`, so the tree below wraps each one.
+const fn stat(name: &'static str, read: Reader) -> Node {
     Node {
         name,
-        entry: Entry::Read(Reader(read)),
+        entry: Entry::Read(read),
     }
 }
 
-const fn opt_nodes() -> [Node; KEYS.len()] {
+/// One `opt.<key>` node per [`KEYS`] entry, in order, each read by `read`
+/// (`opt_value`, wrapped by the caller as for [`stat`]). The loop also
+/// tests `out`'s length, which is `KEYS.len()` by its type: the verifier
+/// does not evaluate the array length.
+const fn opt_nodes(read: Reader) -> [Node; KEYS.len()] {
+    let keys = KEYS;
     let mut out = [dir("", &[]); KEYS.len()];
     let mut i = 0;
-    while i < KEYS.len() {
-        out[i] = stat(KEYS[i], opt_value);
+    while i < keys.len() && i < out.len()
+        invariant
+            i <= keys@.len(),
+        decreases keys@.len() - i,
+    {
+        out[i] = stat(keys[i], read);
         i += 1;
     }
     out
 }
 
-static OPT: [Node; KEYS.len()] = opt_nodes();
+} // verus!
+
+static OPT: [Node; KEYS.len()] = opt_nodes(Reader(opt_value));
 
 verus! {
 
 // The readers of `arenas.*` and `stats.*`, named so that Verus checks
 // them: none requires `may_abort` (theorem "Read-only APIs never abort").
-// `opt.*` reads through `opt_value`; the `thread.*` readers, `version`
-// and `config.*` stay closures below.
+// `opt.*` reads through `opt_value`. The `thread.*` readers, `version`
+// and `config.*` follow; `thread.*` requires `may_abort` (it may create
+// the thread's heap).
 
 fn bin_size(m: &[usize]) -> Result<Reading, c_int>
     requires
@@ -670,20 +686,68 @@ fn stats_retained(_m: &[usize]) -> Result<Reading, c_int>
     Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.retained))
 }
 
+fn thread_allocated(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
+    Ok(U64(thread_heap(shared())?.materialise_stats().allocated))
+}
+
+fn thread_allocatedp(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
+    Ok(U64Ptr(ptr::from_ref(&thread_heap(shared())?.materialise_stats().allocated)))
+}
+
+fn thread_deallocated(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
+    Ok(U64(thread_heap(shared())?.materialise_stats().deallocated))
+}
+
+fn thread_deallocatedp(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
+    Ok(U64Ptr(ptr::from_ref(&thread_heap(shared())?.materialise_stats().deallocated)))
+}
+
+fn config_malloc_conf(_m: &[usize]) -> Result<Reading, c_int> {
+    Ok(Str(EMPTY_CSTR.as_ptr() as *const c_char))
+}
+
+fn config_debug(_m: &[usize]) -> Result<Reading, c_int> {
+    Ok(Bool(false))
+}
+
+fn config_stats(_m: &[usize]) -> Result<Reading, c_int> {
+    Ok(Bool(true))
+}
+
+fn version(_m: &[usize]) -> Result<Reading, c_int> {
+    Ok(Str(VERSION_CSTR.as_ptr() as *const c_char))
+}
+
 } // verus!
 
 static BIN_GEOMETRY: [Node; 3] = [
-    stat("size", bin_size),
-    stat("nregs", bin_nregs),
-    stat("slab_size", bin_slab_size),
+    stat("size", Reader(bin_size)),
+    stat("nregs", Reader(bin_nregs)),
+    stat("slab_size", Reader(bin_slab_size)),
 ];
 static ARENAS_BIN: [Node; 1] = [num(&BIN_GEOMETRY)];
 static ARENAS: [Node; 8] = [
-    stat("narenas", arenas_narenas),
-    stat("nbins", arenas_nbins),
-    stat("nlextents", arenas_nlextents),
-    stat("page", arenas_page),
-    stat("quantum", arenas_quantum),
+    stat("narenas", Reader(arenas_narenas)),
+    stat("nbins", Reader(arenas_nbins)),
+    stat("nlextents", Reader(arenas_nlextents)),
+    stat("page", Reader(arenas_page)),
+    stat("quantum", Reader(arenas_quantum)),
     dir("bin", &ARENAS_BIN),
     op("create", ArenasCreate),
     op("lookup", ArenasLookup),
@@ -696,25 +760,25 @@ static ARENA_I: [Node; 4] = [
 ];
 static ARENA: [Node; 1] = [num(&ARENA_I)];
 static STATS_BIN_FIELDS: [Node; 3] = [
-    stat("curregs", bin_curregs),
-    stat("curslabs", bin_curslabs),
-    stat("nonfull_slabs", bin_nonfull_slabs),
+    stat("curregs", Reader(bin_curregs)),
+    stat("curslabs", Reader(bin_curslabs)),
+    stat("nonfull_slabs", Reader(bin_nonfull_slabs)),
 ];
 static STATS_BINS: [Node; 1] = [num(&STATS_BIN_FIELDS)];
 static STATS_SMALL: [Node; 2] = [
-    stat("allocated", small_allocated),
-    stat("resident", small_resident),
+    stat("allocated", Reader(small_allocated)),
+    stat("resident", Reader(small_resident)),
 ];
-static STATS_LARGE: [Node; 1] = [stat("allocated", large_allocated)];
+static STATS_LARGE: [Node; 1] = [stat("allocated", Reader(large_allocated))];
 static STATS_ARENA_I: [Node; 9] = [
-    stat("pactive", arena_pactive),
-    stat("pdirty", arena_pdirty),
-    stat("pmuzzy", arena_pmuzzy),
+    stat("pactive", Reader(arena_pactive)),
+    stat("pdirty", Reader(arena_pdirty)),
+    stat("pmuzzy", Reader(arena_pmuzzy)),
     dir("small", &STATS_SMALL),
     dir("large", &STATS_LARGE),
-    stat("resident", arena_resident),
-    stat("mapped", arena_mapped),
-    stat("retained", arena_retained),
+    stat("resident", Reader(arena_resident)),
+    stat("mapped", Reader(arena_mapped)),
+    stat("retained", Reader(arena_retained)),
     dir("bins", &STATS_BINS),
 ];
 static STATS_ARENAS: [Node; 1] = [num(&STATS_ARENA_I)];
@@ -729,37 +793,37 @@ static STATS_ARENAS: [Node; 1] = [num(&STATS_ARENA_I)];
 // with each so far; they read with or without a cgroup: the advice exists
 // (eager without one) whether or not one is read.
 static STATS_CGROUP: [Node; 10] = [
-    stat("limit", cgroup_limit),
-    stat("high", cgroup_high),
-    stat("current", cgroup_current),
-    stat("decay_ms", cgroup_decay_ms),
-    stat("retention_cap", cgroup_retention_cap),
-    stat("empty_bytes", cgroup_empty_bytes),
-    stat("full_purges", cgroup_full_purges),
-    stat("purge_advice", cgroup_purge_advice),
-    stat("lazy_purges", cgroup_lazy_purges),
-    stat("eager_purges", cgroup_eager_purges),
+    stat("limit", Reader(cgroup_limit)),
+    stat("high", Reader(cgroup_high)),
+    stat("current", Reader(cgroup_current)),
+    stat("decay_ms", Reader(cgroup_decay_ms)),
+    stat("retention_cap", Reader(cgroup_retention_cap)),
+    stat("empty_bytes", Reader(cgroup_empty_bytes)),
+    stat("full_purges", Reader(cgroup_full_purges)),
+    stat("purge_advice", Reader(cgroup_purge_advice)),
+    stat("lazy_purges", Reader(cgroup_lazy_purges)),
+    stat("eager_purges", Reader(cgroup_eager_purges)),
 ];
 // `stats.thp.*` (design 7 and 17, `thp.rs`): the mode in force (0 off,
 // 1 folios, 2 PMD chunks), the ranges advised per region kind, and the
 // reservations `never` `MADV_NOHUGEPAGE`d (the class superblock and the
 // metadata region; 0 under `auto` and `always`).
 static STATS_THP: [Node; 7] = [
-    stat("mode", thp_mode),
-    stat("class_ranges", thp_class_ranges),
-    stat("class_bytes", thp_class_bytes),
-    stat("huge_ranges", thp_huge_ranges),
-    stat("meta_ranges", thp_meta_ranges),
-    stat("failures", thp_failures),
-    stat("nohuge_ranges", thp_nohuge_ranges),
+    stat("mode", Reader(thp_mode)),
+    stat("class_ranges", Reader(thp_class_ranges)),
+    stat("class_bytes", Reader(thp_class_bytes)),
+    stat("huge_ranges", Reader(thp_huge_ranges)),
+    stat("meta_ranges", Reader(thp_meta_ranges)),
+    stat("failures", Reader(thp_failures)),
+    stat("nohuge_ranges", Reader(thp_nohuge_ranges)),
 ];
 static STATS: [Node; 9] = [
-    stat("allocated", stats_allocated),
-    stat("active", stats_active),
-    stat("metadata", stats_metadata),
-    stat("resident", stats_resident),
-    stat("mapped", stats_mapped),
-    stat("retained", stats_retained),
+    stat("allocated", Reader(stats_allocated)),
+    stat("active", Reader(stats_active)),
+    stat("metadata", Reader(stats_metadata)),
+    stat("resident", Reader(stats_resident)),
+    stat("mapped", Reader(stats_mapped)),
+    stat("retained", Reader(stats_retained)),
     dir("arenas", &STATS_ARENAS),
     dir("cgroup", &STATS_CGROUP),
     dir("thp", &STATS_THP),
@@ -770,22 +834,10 @@ static THREAD_TCACHE: [Node; 2] = [
 ];
 static THREAD: [Node; 6] = [
     dir("tcache", &THREAD_TCACHE),
-    stat("allocated", |_| {
-        Ok(U64(thread_heap(shared())?.materialise_stats().allocated))
-    }),
-    stat("allocatedp", |_| {
-        Ok(U64Ptr(
-            &thread_heap(shared())?.materialise_stats().allocated,
-        ))
-    }),
-    stat("deallocated", |_| {
-        Ok(U64(thread_heap(shared())?.materialise_stats().deallocated))
-    }),
-    stat("deallocatedp", |_| {
-        Ok(U64Ptr(
-            &thread_heap(shared())?.materialise_stats().deallocated,
-        ))
-    }),
+    stat("allocated", Reader(thread_allocated)),
+    stat("allocatedp", Reader(thread_allocatedp)),
+    stat("deallocated", Reader(thread_deallocated)),
+    stat("deallocatedp", Reader(thread_deallocatedp)),
     op("arena", ThreadArena),
 ];
 static TCACHE: [Node; 3] = [
@@ -796,16 +848,12 @@ static TCACHE: [Node; 3] = [
 static UTILIZATION: [Node; 2] = [op("query", UtilQuery), op("batch_query", UtilBatchQuery)];
 static EXPERIMENTAL: [Node; 1] = [dir("utilization", &UTILIZATION)];
 static CONFIG: [Node; 3] = [
-    stat("malloc_conf", |_| {
-        Ok(Str(EMPTY_CSTR.as_ptr() as *const c_char))
-    }),
-    stat("debug", |_| Ok(Bool(false))),
-    stat("stats", |_| Ok(Bool(true))),
+    stat("malloc_conf", Reader(config_malloc_conf)),
+    stat("debug", Reader(config_debug)),
+    stat("stats", Reader(config_stats)),
 ];
 static ROOT: [Node; 12] = [
-    stat("version", |_| {
-        Ok(Str(VERSION_CSTR.as_ptr() as *const c_char))
-    }),
+    stat("version", Reader(version)),
     op("epoch", Epoch),
     op("background_thread", BackgroundThread),
     op("max_background_threads", MaxBackgroundThreads),
@@ -982,8 +1030,8 @@ fn is_numeric(n: &Node) -> (r: bool)
 uninterp spec fn root_nodes() -> Seq<Node>;
 
 /// [`ROOT`]. Trusted: the address of a static outside `verus!`, whose
-/// initialiser holds the readers as closures. It claims only that every
-/// call returns the same nodes, [`root_nodes`].
+/// initialiser holds the readers as function pointers. It claims only that
+/// every call returns the same nodes, [`root_nodes`].
 #[verifier::external_body]
 #[inline(always)]
 fn root() -> (r: &'static [Node])
@@ -2735,7 +2783,7 @@ mod tests {
 
     /// [`reader_never_aborts`]'s premises: `opt`, `arenas` and `stats` are
     /// entries 4, 5 and 7 of the root, and every reader under them is one
-    /// of the named, verified readers, none of them a closure.
+    /// of the named, verified readers.
     #[test]
     fn read_only_subtrees_are_roots_4_5_and_7() {
         type Read = fn(&[usize]) -> Result<Reading, c_int>;

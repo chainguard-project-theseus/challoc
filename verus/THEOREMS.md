@@ -4733,8 +4733,9 @@ body), `malloc_info` and `malloc_stats`, which require `may_abort()`.
   `mallctl::tests::read_only_subtrees_are_roots_4_5_and_7` (`api/mallctl.rs:2695`)
   checks it at run time (root entries 4, 5 and 7 are those names, and
   every reader under them is, by address, one of the 44 named
-  functions). The `version`, `config.*` and `thread.*` readers stay
-  closures outside `verus!` (`thread.*` may create the thread's heap), so
+  functions). The `version`, `config.*` and `thread.*` readers are named
+  verified functions too (`thread.*` requires `may_abort()`: it may create
+  the thread's heap), but `reader_never_aborts` does not cover them, so
   `call` needs `may_abort()` for them.
 
 **Premises beyond the common ones.**
@@ -4789,7 +4790,8 @@ body), `malloc_info` and `malloc_stats`, which require `may_abort()`.
   (`free_before_init`).
 - mallctl's writes and operations (`epoch`, `arena.<i>.*`,
   `thread.*`, `tcache.*`, `arenas.create`/`lookup`, ...), and the
-  `version` and `config.*` reads (closures), require `may_abort()`.
+  `version` and `config.*` reads (`call` does not tell them apart from
+  `thread.*`), require `may_abort()`.
 
 **Where the statement is weaker than the code.**
 - The witnesses replicate the post-`shared()` calls of `nallocx`,
