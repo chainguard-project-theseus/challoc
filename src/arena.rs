@@ -93,9 +93,10 @@ pub struct Arena {
     /// (`class/`), a separate metadata object so that `Arena` keeps its
     /// size and the offsets of everything allocated after it.
     sets: *const SetTable,
-    /// Ghost: the permission to the table at `sets`.
+    /// Ghost: the permission to the table at `sets`, frozen by `init`
+    /// (the class states' sets share it).
     #[allow(dead_code)]
-    sets_perm: Tracked<PointsTo<SetTable>>,
+    sets_perm: Tracked<&'static PointsTo<SetTable>>,
     pub classes: [ClassState; NCLASSES],
     /// Live huge runs allocated through this arena and their pages (guard
     /// included), kept by `Shared::alloc_huge` / `free_huge` since the huge
@@ -133,9 +134,12 @@ verus! {
 // the struct's: [`take_field`] splits the bytes at the offsets a layout
 // axiom states (checked by the build: see `fits`), [`split_array`] splits
 // an array into its elements. Putting the written values back together
-// into the struct's or the array's value has no counterpart in vstd and
-// is an axiom per struct ([`axiom_array_join`], `axiom_arena_assemble`,
-// `axiom_arenas_assemble`, `Shared`'s `axiom_shared_built`).
+// into the struct's value has no counterpart in vstd and is an axiom per
+// struct (`axiom_arena_assemble`, `axiom_arenas_assemble`, `Shared`'s
+// `axiom_shared_built`). An array whose elements are only read after the
+// build is not joined: `Shared::init` freezes its class tables' element
+// permissions (`tracked_static_ref`), which `axiom_shared_built` reads the
+// built tables from.
 
 /// `p`'s address plus `off` bytes as a `*mut T`, with `p`'s provenance:
 /// the pointer `&raw mut (*p).f` gives for a field `f` of type `T` at
@@ -424,25 +428,6 @@ pub(crate) proof fn split_array<T, const N: usize>(tracked a: PointsTo<[T; N]>) 
     split_elems(raw, base, 0, N as nat)
 }
 
-/// The initialised elements of an array, as the array: the value whose
-/// element `i` each holds. Trusted: vstd has no way to join typed
-/// permissions. The elements are at their addresses in one allocation
-/// (`ptr_add` is the array's index projection there), so their bytes
-/// are the array's.
-pub(crate) axiom fn axiom_array_join<T, const N: usize>(base: *mut [T; N], tracked m: Map<int, PointsTo<T>>) -> (tracked a:
-    PointsTo<[T; N]>)
-    requires
-        N > 0,
-        in_alloc(base as *mut T, N as int * size_of::<T>()),
-        base@.addr + N * size_of::<T>() <= usize::MAX,
-        elems_at(m, base as *mut T, 0, N as int),
-        elems_init(m, 0, N as int),
-    ensures
-        a.ptr() == base,
-        a.is_init(),
-        forall|i: int| 0 <= i < N ==> #[trigger] a.value()[i] == m[i].value(),
-;
-
 } // verus!
 
 verus! {
@@ -476,7 +461,7 @@ axiom fn axiom_arena_layout()
         field_fits::<Arena, u16>(A_INDEX, A_DECAY_NS as int),
         field_fits::<Arena, AtomicU64>(A_DECAY_NS, A_SETS as int),
         field_fits::<Arena, *const SetTable>(A_SETS, A_SETS_PERM as int),
-        field_fits::<Arena, Tracked<PointsTo<SetTable>>>(A_SETS_PERM, A_CLASSES as int),
+        field_fits::<Arena, Tracked<&'static PointsTo<SetTable>>>(A_SETS_PERM, A_CLASSES as int),
         field_fits::<Arena, [ClassState; NCLASSES]>(A_CLASSES, A_LARGE as int),
         NCLASSES * size_of::<ClassState>() <= isize::MAX,
         field_fits::<Arena, AtomicU64>(A_LARGE, A_STATS as int),
@@ -515,7 +500,7 @@ const _: () = assert!(
     fits::<Arena, u16>(A_INDEX, A_DECAY_NS)
         && fits::<Arena, AtomicU64>(A_DECAY_NS, A_SETS)
         && fits::<Arena, *const SetTable>(A_SETS, A_SETS_PERM)
-        && fits::<Arena, Tracked<PointsTo<SetTable>>>(A_SETS_PERM, A_CLASSES)
+        && fits::<Arena, Tracked<&'static PointsTo<SetTable>>>(A_SETS_PERM, A_CLASSES)
         && fits::<Arena, [ClassState; NCLASSES]>(A_CLASSES, A_LARGE)
         && NCLASSES as u128 * core::mem::size_of::<ClassState>() as u128 <= isize::MAX as u128
         && fits::<Arena, AtomicU64>(A_LARGE, A_STATS)
@@ -560,7 +545,7 @@ tracked struct ArenaParts {
     tracked index: PointsTo<u16>,
     tracked decay_ns: PointsTo<AtomicU64>,
     tracked sets: PointsTo<*const SetTable>,
-    tracked sets_perm: PointsTo<Tracked<PointsTo<SetTable>>>,
+    tracked sets_perm: PointsTo<Tracked<&'static PointsTo<SetTable>>>,
     tracked large: PointsTo<AtomicU64>,
     tracked stats: PointsTo<Lock<ArenaStats>>,
     tracked last_exit_purge: PointsTo<AtomicU64>,
@@ -574,7 +559,7 @@ impl ArenaParts {
         &&& self.index.ptr() == field_ptr::<Arena, u16>(p, A_INDEX)
         &&& self.decay_ns.ptr() == field_ptr::<Arena, AtomicU64>(p, A_DECAY_NS)
         &&& self.sets.ptr() == field_ptr::<Arena, *const SetTable>(p, A_SETS)
-        &&& self.sets_perm.ptr() == field_ptr::<Arena, Tracked<PointsTo<SetTable>>>(p, A_SETS_PERM)
+        &&& self.sets_perm.ptr() == field_ptr::<Arena, Tracked<&'static PointsTo<SetTable>>>(p, A_SETS_PERM)
         &&& self.large.ptr() == field_ptr::<Arena, AtomicU64>(p, A_LARGE)
         &&& self.stats.ptr() == field_ptr::<Arena, Lock<ArenaStats>>(p, A_STATS)
         &&& self.last_exit_purge.ptr() == field_ptr::<Arena, AtomicU64>(p, A_LAST_EXIT_PURGE)
@@ -603,7 +588,7 @@ spec fn pad_covers(pad: PointsToRaw, p: *mut Arena) -> bool {
             || in_field::<u16>(x, p, A_INDEX)
             || in_field::<AtomicU64>(x, p, A_DECAY_NS)
             || in_field::<*const SetTable>(x, p, A_SETS)
-            || in_field::<Tracked<PointsTo<SetTable>>>(x, p, A_SETS_PERM)
+            || in_field::<Tracked<&'static PointsTo<SetTable>>>(x, p, A_SETS_PERM)
             || in_field::<[ClassState; NCLASSES]>(x, p, A_CLASSES)
             || in_field::<AtomicU64>(x, p, A_LARGE)
             || in_field::<Lock<ArenaStats>>(x, p, A_STATS)
@@ -644,7 +629,7 @@ impl Arena {
         let tracked (index, raw) = take_field::<Arena, u16>(raw, p, A_INDEX, A_DECAY_NS as int);
         let tracked (decay_ns, raw) = take_field::<Arena, AtomicU64>(raw, p, A_DECAY_NS, A_SETS as int);
         let tracked (sets, raw) = take_field::<Arena, *const SetTable>(raw, p, A_SETS, A_SETS_PERM as int);
-        let tracked (sets_perm, raw) = take_field::<Arena, Tracked<PointsTo<SetTable>>>(
+        let tracked (sets_perm, raw) = take_field::<Arena, Tracked<&'static PointsTo<SetTable>>>(
             raw,
             p,
             A_SETS_PERM,
@@ -767,24 +752,20 @@ impl Arena {
         (p, Tracked(perm))
     }
 
-    /// `sets_ptr` into the field and its permission `perm` into
-    /// `sets_perm`; the table, where it lives.
-    // `held` is read only by the ghost argument of the last `ptr_ref`.
-    #[allow(unused_variables)]
+    /// `sets_ptr` into the field and its frozen permission `perm` into
+    /// `sets_perm`.
     #[inline(always)]
-    unsafe fn put_sets<'a>(
+    unsafe fn put_sets(
         this: *mut Arena,
         sets_ptr: *mut SetTable,
-        perm: Tracked<PointsTo<SetTable>>,
+        perm: Tracked<&'static PointsTo<SetTable>>,
         Tracked(sets): Tracked<&mut PointsTo<*const SetTable>>,
-        Tracked(sets_perm): Tracked<&'a mut PointsTo<Tracked<PointsTo<SetTable>>>>,
-    ) -> (r: &'a SetTable)
+        Tracked(sets_perm): Tracked<&mut PointsTo<Tracked<&'static PointsTo<SetTable>>>>,
+    )
         requires
             storage_ok(this),
             old(sets).ptr() == field_ptr::<Arena, *const SetTable>(this, A_SETS),
-            old(sets_perm).ptr() == field_ptr::<Arena, Tracked<PointsTo<SetTable>>>(this, A_SETS_PERM),
-            perm@.ptr() == sets_ptr,
-            perm@.is_init(),
+            old(sets_perm).ptr() == field_ptr::<Arena, Tracked<&'static PointsTo<SetTable>>>(this, A_SETS_PERM),
         ensures
             final(sets).ptr() == old(sets).ptr(),
             final(sets).is_init(),
@@ -792,19 +773,15 @@ impl Arena {
             final(sets_perm).ptr() == old(sets_perm).ptr(),
             final(sets_perm).is_init(),
             final(sets_perm).value() == perm,
-            *r == perm@.value(),
     {
         proof {
             axiom_arena_layout();
         }
         // SAFETY: the fields of `init`'s storage, through their
-        // permissions; `sets_ptr` is the metadata object the table was just
-        // written to, through `perm`.
+        // permissions.
         unsafe {
             ptr_mut_write(field_at(this, A_SETS), Tracked(sets), sets_ptr as *const SetTable);
-            ptr_mut_write(field_at(this, A_SETS_PERM), Tracked(&mut *sets_perm), perm);
-            let held: &'a Tracked<PointsTo<SetTable>> = ptr_ref(field_at(this, A_SETS_PERM), Tracked(sets_perm));
-            ptr_ref(sets_ptr, Tracked(held.borrow()))
+            ptr_mut_write(field_at(this, A_SETS_PERM), Tracked(sets_perm), perm);
         }
     }
 
@@ -861,8 +838,9 @@ impl Arena {
         }
     }
 
-    /// Initialise `this` in place as arena `index` over `tables`, through
-    /// the permission to its storage in `slot`, which is handed back
+    /// Initialise `this` in place as arena `index` over the class tables
+    /// from `tables` on (their frozen permissions in `tperms`), through the
+    /// permission to its storage in `slot`, which is handed back
     /// initialised. Returns `false` if the metadata region cannot hold the
     /// slab sets, leaving `this` unusable (and `slot` empty). Every
     /// `classes[c]` is written, with a state of class `c` (the type
@@ -870,13 +848,14 @@ impl Arena {
     ///
     /// # Safety
     /// `this` must point to writable storage for an `Arena` that nothing
-    /// else reads until this returns `true`; `tables` must outlive it.
+    /// else reads until this returns `true`.
     #[verifier::loop_isolation(false)]
     pub unsafe fn init(
         this: *mut Arena,
         meta: &Meta,
         regions: &Regions,
-        tables: &[SlabTable; NCLASSES],
+        tables: *mut SlabTable,
+        Tracked(tperms): Tracked<&'static Map<int, PointsTo<SlabTable>>>,
         index: u16,
         decay_ns: u64,
         Tracked(slot): Tracked<&mut Held<Arena>>,
@@ -891,7 +870,7 @@ impl Arena {
             regions.wf(),
             regions.separated(),
             *regions == process_regions(),
-            forall|c: int| 0 <= c < NCLASSES ==> #[trigger] tables[c].spec_class() == c,
+            crate::class::tables_ok(*tperms, tables),
         ensures
             r ==> (final(slot).perm matches Some(p) && p.ptr() == this && p.is_init() && p.value().spec_index() == index),
             *final(ord) == *old(ord),
@@ -908,11 +887,15 @@ impl Arena {
             // Ghost: the permissions to the class sets' slots, each taken
             // once, by its class's `ClassState::new`.
             let tracked mut slots: Map<(int, int), ZeroRaw> = Map::tracked_empty();
-            let sets = match SetTable::new(meta, regions, Ghost(index), Tracked(&mut slots), Tracked(ord)) {
+            let Tracked(sets_perm) = match SetTable::new(meta, regions, Ghost(index), Tracked(&mut slots), Tracked(ord)) {
                 Some(sets) => {
                     let tracked mut perm = perm.tracked_unwrap();
                     ptr_mut_write(sets_ptr, Tracked(&mut perm), sets);
-                    Arena::put_sets(this, sets_ptr, Tracked(perm), Tracked(&mut parts.sets), Tracked(&mut parts.sets_perm))
+                    // Frozen: nothing writes or frees the table again; the
+                    // arena and its class states' sets share it.
+                    let tracked perm = vstd::modes::tracked_static_ref(perm);
+                    Arena::put_sets(this, sets_ptr, Tracked(perm), Tracked(&mut parts.sets), Tracked(&mut parts.sets_perm));
+                    Tracked(perm)
                 },
                 None => return false,
             };
@@ -923,10 +906,11 @@ impl Arena {
                     forall|d: int| 0 <= d < c ==> (#[trigger] classes[d]).value().spec_class() == d,
                     forall|d: int| 0 <= d < c ==> (#[trigger] classes[d]).value().spec_arena() == index,
                     parts.index.is_init() && parts.index.value() == index,
-                    forall|d: int, k: int| c <= d < NCLASSES && 0 <= k < SETS_PER_CLASS ==> #[trigger] sets.holds_set(slots, d, k),
+                    forall|d: int, k: int| c <= d < NCLASSES && 0 <= k < SETS_PER_CLASS ==> #[trigger] sets_perm.value().holds_set(slots, d, k),
             {
                 let ghost slots0 = slots;
-                match ClassState::new(meta, regions, &tables[c], index, sets, Tracked(&mut slots)) {
+                let tp = elem_at(tables, c, NCLASSES);
+                match ClassState::new(meta, regions, tp, Tracked(tperms), Ghost(tables), Ghost(c as int), index, sets_ptr, Tracked(sets_perm), Tracked(&mut slots)) {
                     Some(cs) => {
                         let ghost before = classes;
                         proof {
@@ -946,8 +930,8 @@ impl Arena {
                                 }
                             }
                             assert(classes_at(classes, this));
-                            assert forall|d: int, k: int| c + 1 <= d < NCLASSES && 0 <= k < SETS_PER_CLASS implies #[trigger] sets.holds_set(slots, d, k) by {
-                                assert(sets.holds_set(slots0, d, k));
+                            assert forall|d: int, k: int| c + 1 <= d < NCLASSES && 0 <= k < SETS_PER_CLASS implies #[trigger] sets_perm.value().holds_set(slots, d, k) by {
+                                assert(sets_perm.value().holds_set(slots0, d, k));
                             }
                         }
                     },
@@ -973,7 +957,7 @@ impl Arena {
             use_type_invariant(self);
         }
         // Written by `init` to a live, never-freed metadata object.
-        ptr_ref(self.sets, Tracked(self.sets_perm.borrow()))
+        ptr_ref(self.sets, Tracked(*self.sets_perm.borrow()))
     }
 
     /// The slab set table [`Arena::sets`] returns.
@@ -2426,14 +2410,21 @@ impl Arenas {
             slot.perm = Some(raw_a.into_typed::<Arena>(s));
             assert(slot.perm->0.ptr()@ == p@);
         }
+        // The class tables, from arena 0's states, which were built over
+        // them.
+        proof {
+            use_type_invariant(&shared.arena0);
+        }
+        let (tables, Tracked(tperms)) = shared.arena0.classes[0].tables();
         // SAFETY: fresh, zeroed, exclusively owned storage of the right
-        // size and alignment; the tables live in `Shared` for the process.
+        // size and alignment.
         let ok = unsafe {
             Arena::init(
                 p,
                 &shared.meta,
                 &shared.regions,
-                shared.tables(),
+                tables,
+                Tracked(tperms),
                 index,
                 shared.default_decay_ns(),
                 Tracked(&mut slot),
@@ -2729,7 +2720,7 @@ pub(crate) mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S58..S65, S66: each `A_*` is its field's `offset_of!`, and the
+    /// S56..S63, S64: each `A_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_arena_layout` says.
     #[kani::proof]
     fn arena_layout() {
@@ -2744,7 +2735,7 @@ pub(crate) mod kani_layout {
         assert!(field_fits::<Arena, u16>(A_INDEX, A_DECAY_NS));
         assert!(field_fits::<Arena, AtomicU64>(A_DECAY_NS, A_SETS));
         assert!(field_fits::<Arena, *const SetTable>(A_SETS, A_SETS_PERM));
-        assert!(field_fits::<Arena, Tracked<PointsTo<SetTable>>>(
+        assert!(field_fits::<Arena, Tracked<&'static PointsTo<SetTable>>>(
             A_SETS_PERM,
             A_CLASSES
         ));
@@ -2774,7 +2765,7 @@ pub(crate) mod kani_layout {
         assert_eq!(align_of::<[T; N]>(), align_of::<T>());
     }
 
-    /// S56 `Arena::axiom_array_layout` at every instantiation the proofs
+    /// S55 `Arena::axiom_array_layout` at every instantiation the proofs
     /// use (`[ClassState; NCLASSES]` here, the two arrays of `Shared` in
     /// `heap/shared.rs`), and at primitive, zero-sized and padded element
     /// types and lengths 0, 1 and 7.

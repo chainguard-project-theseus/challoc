@@ -1922,24 +1922,6 @@ impl Utilization {
     }
 }
 
-// A trusted wrapper, claiming nothing, for a heap call a key makes:
-// `Heap::set_arena`. Its callee is in `verus!` now; delete the wrapper
-// once its call site is checked against the callee's preconditions.
-
-/// `h.set_arena(shared, arena)`. Nothing is claimed.
-#[verifier::external_body]
-#[inline(always)]
-fn heap_set_arena(h: &mut Heap, shared: &Shared, arena: u16, Tracked(ord): Tracked<&mut LockOrder>)
-    requires
-        crate::sys::may_abort(),
-        crate::sys::may_syscall(),
-        old(ord).allows(rank_class(0, 0)),
-    ensures
-        *final(ord) == *old(ord),
-{
-    h.set_arena(shared, arena, Tracked(ord))
-}
-
 // ---------------------------------------------------------------------------
 // Exact utilization and defrag hint (the theorem "Utilization and defrag
 // hint are exact", verus/THEOREMS.md). The figures are atomic loads Verus
@@ -2653,7 +2635,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 if a as usize >= MAX_ARENAS || shared.arena(a as u16, Tracked(&mut ord)).is_none() {
                     return Err(EFAULT);
                 }
-                heap_set_arena(h, shared, a as u16, Tracked(&mut ord));
+                h.set_arena(shared, a as u16, Tracked(&mut ord));
             }
             io.read(h.arena() as c_uint)
         },

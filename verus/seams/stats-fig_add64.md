@@ -1,6 +1,6 @@
 # `fig_add64`
 
-Seam S219 of `verus/SEAMS.md`: src/stats.rs:501. Kind: external_body. Category: core library.
+Seam S215 of `verus/SEAMS.md`: src/stats.rs:501. Kind: external_body. Category: core library.
 Discharged by Kani.
 
 ## Contract

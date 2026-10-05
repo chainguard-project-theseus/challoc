@@ -15,6 +15,7 @@ use crate::sys::Errno;
 use crate::vspec::addr::cast_provenance;
 use crate::vspec::zero::ZeroRaw;
 use vstd::prelude::*;
+use vstd::raw_ptr::PointsTo;
 
 verus! {
 
@@ -136,9 +137,35 @@ pub(crate) struct Set {
 
 pub(crate) enum Store {
     Own(Lazy),
-    /// The arena's table, which outlives the set (it is a field of the
-    /// same `Arena`, or leaked by the tests), and the set's group in it.
-    Shared(*const SetTable, u8),
+    /// The arena's table, which outlives the set (a metadata object of
+    /// the same `Arena`, never freed, or leaked by the tests), the set's
+    /// group in it, and (ghost) the frozen permission to the table:
+    /// nothing writes or frees it after `Arena::init`.
+    Shared(*const SetTable, u8, Tracked<&'static PointsTo<SetTable>>),
+}
+
+impl Set {
+    /// The set is a view of group `g` of the frozen table at `p`, whose
+    /// slab count is `n`.
+    pub(crate) open spec fn shared_over(&self, n: nat) -> bool {
+        &&& self.store matches Store::Shared(p, g, perm)
+        &&& perm@.ptr() == p
+        &&& perm@.is_init()
+        &&& (g as int) < SET_GROUPS
+        &&& perm@.value().nslabs[g as int] == n
+    }
+
+    /// What [`Set::ensure`] needs to commit up to `slab` with `page`: for
+    /// an own table, a page of at most `2^63` bytes and `slab` and the
+    /// level-1 word count below `2^32` (the commit end stays below
+    /// `2^62`); for a view of a shared table, `slab` below its group's
+    /// slab count.
+    pub(crate) open spec fn ensure_ok(&self, page: usize, slab: usize) -> bool {
+        match self.store {
+            Store::Own(_) => 1 <= page <= 0x8000_0000_0000_0000 && self.l1_words <= 0x1_0000_0000 && slab <= 0x1_0000_0000,
+            Store::Shared(p, g, perm) => perm@.ptr() == p && perm@.is_init() && (g as int) < SET_GROUPS && slab < perm@.value().nslabs[g as int],
+        }
+    }
 }
 
 /// Slab sets per class ([`ClassState`]: partial, empty, purged).
@@ -593,34 +620,41 @@ impl SetTable {
     }
 }
 
-/// `table` as the pointer [`Store::Shared`] keeps. Trusted: Verus has no
-/// reference-to-pointer cast; nothing is claimed about the pointer.
-#[verifier::external_body]
-#[inline(always)]
-fn set_table_ptr(table: &SetTable) -> *const SetTable {
-    table
-}
-
 impl Set {
-    /// Set `kind` (0..`SETS_PER_CLASS`) of `class` in `table`, over the
-    /// class's slab numbers: a well-formed empty set over the group's slab
-    /// count, through `words`, the permission to its slot's bytes, which
-    /// [`SetTable::new`] handed out once ([`SetTable::holds_set`]).
-    /// `table` must outlive the set.
-    pub(crate) fn in_table(table: &SetTable, class: usize, kind: usize, Tracked(words): Tracked<ZeroRaw>) -> (r: Set)
+    /// Set `kind` (0..`SETS_PER_CLASS`) of `class` in the table at `tp`,
+    /// over the class's slab numbers: a well-formed empty set over the
+    /// group's slab count, through `words`, the permission to its slot's
+    /// bytes, which [`SetTable::new`] handed out once
+    /// ([`SetTable::holds_set`]). `tperm` is the frozen permission to the
+    /// table, which the set keeps.
+    pub(crate) fn in_table(
+        tp: *const SetTable,
+        Tracked(tperm): Tracked<&'static PointsTo<SetTable>>,
+        class: usize,
+        kind: usize,
+        Tracked(words): Tracked<ZeroRaw>,
+    ) -> (r: Set)
         requires
             class < NCLASSES,
             kind < SETS_PER_CLASS,
-            table.class_ok(process_regions(), class as int),
-            words.dom() == set_bytes(table.pos, table.groups, table.nslabs, class as int, kind as int),
+            tperm.ptr() == tp,
+            tperm.is_init(),
+            tperm.value().class_ok(process_regions(), class as int),
+            words.dom() == set_bytes(tperm.value().pos, tperm.value().groups, tperm.value().nslabs, class as int, kind as int),
             words.provenance() == cast_provenance(),
-            slot_alloc_ok(table.groups, table.nslabs, group_spec(class as int), slot_spec(table.pos, table.groups, class as int, kind as int)),
+            slot_alloc_ok(
+                tperm.value().groups,
+                tperm.value().nslabs,
+                group_spec(class as int),
+                slot_spec(tperm.value().pos, tperm.value().groups, class as int, kind as int),
+            ),
         ensures
             r.map.wf(),
-            r.map.spec_nbits() == table.nslabs[group_spec(class as int)],
+            r.map.spec_nbits() == tperm.value().nslabs[group_spec(class as int)],
             r.map@ == vstd::set::Set::<nat>::empty(),
-            r.store is Shared,
+            r.shared_over(r.map.spec_nbits()),
     {
+        let table = vstd::raw_ptr::ptr_ref(tp, Tracked(tperm));
         debug_assert!(kind < SETS_PER_CLASS);
         let g = SetTable::group_of(class);
         let group = &table.groups[g];
@@ -662,7 +696,7 @@ impl Set {
         proof {
             map.lemma_fresh(nslabs);
         }
-        Set { map, store: Store::Shared(set_table_ptr(table), g as u8), l1_words: TwoLevelBitmap::l1_words(nslabs) }
+        Set { map, store: Store::Shared(tp, g as u8, Tracked(tperm)), l1_words: TwoLevelBitmap::l1_words(nslabs) }
     }
 }
 
@@ -683,7 +717,7 @@ impl Set {
         ensures
             r matches Some(s) ==> s.map.wf() && s.map.spec_nbits() == nslabs && s.map@ == vstd::set::Set::<nat>::empty(),
             r matches Some(s) ==> (meta.is_process() ==> s.map.in_meta()),
-            r matches Some(s) ==> s.store is Own,
+            r matches Some(s) ==> s.store is Own && s.l1_words <= 0x1_0000_0000,
             *final(ord) == *old(ord),
     {
         proof {
@@ -730,36 +764,34 @@ verus! {
 
 impl Set {
     /// Commit the level-0 words that hold every bit up to and including
-    /// `slab`. Only the store changes; the bitmap view is the same.
-    ///
-    /// Trusted: the preconditions of `Lazy::ensure` (a page it takes and a
-    /// commit end below `2^62`) and of `SetTable::ensure` (the set's group
-    /// and a slab below its slab count) are facts about the table `new` or
-    /// `in_table` sized and about the caller's page and slab, which no
-    /// invariant of `Set` records and the callers (`ClassState::ensure_sets`,
-    /// `huge/`) do not state; and the shared store is followed through a raw
-    /// pointer.
+    /// `slab`, which the set's table admits with `page`
+    /// ([`Set::ensure_ok`]). Only an own store changes; the bitmap view
+    /// is the same.
     ///
     /// Lock order: an own store's commit takes the metadata lock; a shared
     /// store's takes the slab-set lock of the table's arena, then the
     /// metadata lock (`SetTable::ensure`). Every slab-set lock ranks at
     /// least `rank_sets(0)`.
-    #[verifier::external_body]
+    // `perm` is read only by the ghost argument of `ptr_ref`.
+    #[allow(unused_variables)]
     pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, slab: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),
             old(ord).allows(rank_meta()),
             old(self).store is Shared ==> old(ord).allows(rank_sets(0)),
+            old(self).ensure_ok(page, slab),
         ensures
             final(self).map == old(self).map,
             final(self).l1_words == old(self).l1_words,
             (final(self).store is Own) == (old(self).store is Own),
+            old(self).store is Shared ==> final(self).store == old(self).store,
             *final(ord) == *old(ord),
     {
         match &mut self.store {
             Store::Own(table) => table.ensure(meta, page, 8 * (self.l1_words + slab / 64 + 1), Tracked(ord)),
-            // SAFETY: the table outlives the set (`Store::Shared`).
-            Store::Shared(table, g) => unsafe { &**table }.ensure(meta, *g as usize, slab, Tracked(ord)),
+            // Through the frozen permission to the table, which outlives
+            // the set.
+            Store::Shared(table, g, perm) => vstd::raw_ptr::ptr_ref(*table, Tracked(*perm.borrow())).ensure(meta, *g as usize, slab, Tracked(ord)),
         }
     }
 }
@@ -1043,21 +1075,5 @@ impl SetTable {
             out[g] = (t[g].base, t[g].committed);
         }
         out
-    }
-}
-
-/// Kani check of `set_table_ptr` (record under `verus/seams/`).
-#[cfg(kani)]
-mod kani_sets {
-    use super::SetTable;
-
-    /// S89 `SetTable::set_table_ptr`: no `ensures`; it returns, the
-    /// table's address (on an all-zero table: every field is an integer,
-    /// a lock word or ghost, so zero is a valid table).
-    #[kani::proof]
-    fn set_table_ptr_returns() {
-        // SAFETY: every field of `SetTable` is valid all-zero.
-        let t: SetTable = unsafe { core::mem::zeroed() };
-        assert!(core::ptr::eq(super::set_table_ptr(&t), &t));
     }
 }

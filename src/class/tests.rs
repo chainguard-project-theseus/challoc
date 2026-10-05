@@ -122,9 +122,13 @@ impl Env {
             ClassState::new(
                 &self.meta,
                 &self.regions,
-                table,
+                core::ptr::from_ref(table).cast_mut(),
+                Tracked::assume_new(),
+                Ghost::assume_new(),
+                Ghost::assume_new(),
                 0,
-                self.sets(),
+                core::ptr::from_ref(self.sets()),
+                Tracked::assume_new(),
                 Tracked::assume_new(),
             )
             .expect("class state"),
@@ -169,9 +173,13 @@ impl Env {
             ClassState::new(
                 &self.meta,
                 &self.regions,
-                table,
+                core::ptr::from_ref(table).cast_mut(),
+                Tracked::assume_new(),
+                Ghost::assume_new(),
+                Ghost::assume_new(),
                 arena,
-                self.sets(),
+                core::ptr::from_ref(self.sets()),
+                Tracked::assume_new(),
                 Tracked::assume_new(),
             )
             .expect("class state"),
@@ -1257,9 +1265,13 @@ fn set_table_of_many_classes_touches_one_page_per_slab_size() {
             ClassState::new(
                 &env.meta,
                 &env.regions,
-                env.table(c, 0),
+                core::ptr::from_ref(env.table(c, 0)).cast_mut(),
+                Tracked::assume_new(),
+                Ghost::assume_new(),
+                Ghost::assume_new(),
                 0,
-                sets,
+                core::ptr::from_ref(sets),
+                Tracked::assume_new(),
                 Tracked::assume_new(),
             )
             .expect("class state")

@@ -740,20 +740,22 @@ spec fn tables_at(m: Map<int, PointsTo<SlabTable>>, p: *mut Shared) -> bool {
 }
 
 /// The written fields of the `Shared` at `p` (`Shared::split`'s parts and
-/// guard tests, every one initialised, and the tables joined into their
-/// array), as the value [`shared_at`] names: the fields [`Shared::wf`]
-/// reads are what their permissions hold. Trusted, as
-/// `arena::axiom_arena_assemble` is: vstd has no way to join typed
-/// permissions, and the permissions cover every field at its offset. The
-/// permissions are used up, so nothing verified writes the fields
-/// afterwards; that nothing unverified does is `shared_at`'s own
-/// assumption. What comes back is the join, the permission to the
-/// whole value, frozen (`&'static`, as the regions' is): readers share
-/// it, and nothing can write through it.
+/// guard tests, every one initialised, and the tables), as the value
+/// [`shared_at`] names: the fields [`Shared::wf`] reads are what their
+/// permissions hold. Trusted, as `arena::axiom_arena_assemble` is: vstd
+/// has no way to join typed permissions, and the permissions cover every
+/// field at its offset. The permissions are used up, so nothing verified
+/// writes the fields afterwards; that nothing unverified does is
+/// `shared_at`'s own assumption. The tables' permissions are frozen
+/// already (`vstd::modes::tracked_static_ref`, once `init` has written
+/// them, as the regions' is), so they are only read: nothing can write
+/// through them. What comes back is the join, the permission to the
+/// whole value, frozen too (`&'static`): readers share it, and nothing
+/// can write through it.
 axiom fn axiom_shared_built(
     tracked parts: SharedParts,
     tracked guard_tests: Map<int, PointsTo<GuardTest>>,
-    tracked tables: PointsTo<[SlabTable; NCLASSES]>,
+    tracked tables: &'static Map<int, PointsTo<SlabTable>>,
     p: *mut Shared,
 ) -> (tracked r: &'static PointsTo<Shared>)
     requires
@@ -761,11 +763,11 @@ axiom fn axiom_shared_built(
         parts.written(),
         guard_tests_at(guard_tests, p),
         elems_init(guard_tests, 0, NCLASSES as int),
-        tables.ptr() == field_ptr::<Shared, [SlabTable; NCLASSES]>(p, S_TABLES),
-        tables.is_init(),
+        tables_at(*tables, p),
+        elems_init(*tables, 0, NCLASSES as int),
     ensures
         shared_at(p).push_flags == parts.push_flags.value(),
-        shared_at(p).tables == tables.value(),
+        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] shared_at(p).tables[c] == tables[c].value(),
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] shared_at(p).guard_test[c] == guard_tests[c].value(),
         shared_at(p).meta == parts.meta.value(),
         shared_at(p).huge == parts.huge.value(),
@@ -1045,22 +1047,22 @@ impl Shared {
         }
     }
 
-    /// Every table, written by [`Shared::put_table`] and joined into the
-    /// array `pt`.
+    /// The storage of the tables: their field, as a pointer to its first
+    /// element.
     #[inline(always)]
-    unsafe fn tables_of<'a>(this: *mut Shared, Tracked(pt): Tracked<&'a PointsTo<[SlabTable; NCLASSES]>>) -> (r: &'a [SlabTable; NCLASSES])
+    unsafe fn tables_ptr(this: *mut Shared) -> (r: *mut SlabTable)
         requires
             shared_ok(this),
-            pt.ptr() == field_ptr::<Shared, [SlabTable; NCLASSES]>(this, S_TABLES),
-            pt.is_init(),
         ensures
-            *r == pt.value(),
+            r == field_ptr::<Shared, SlabTable>(this, S_TABLES),
+            in_alloc(r, NCLASSES as int * size_of::<SlabTable>()),
+            NCLASSES * size_of::<SlabTable>() <= isize::MAX,
     {
         proof {
             axiom_shared_layout();
         }
-        // SAFETY: written by `put_table`; never moved.
-        unsafe { ptr_ref(field_at(this, S_TABLES), Tracked(pt)) }
+        // SAFETY: a projection inside `init`'s storage; nothing is read.
+        unsafe { field_at(this, S_TABLES) }
     }
 
     /// `guard_test[c]`, through the permission `pg` to it.
@@ -1432,16 +1434,27 @@ impl Shared {
                     None => return false,
                 }
             }
-            let tracked tables_perm = crate::arena::axiom_array_join(
-                field_ptr::<Shared, [SlabTable; NCLASSES]>(this, S_TABLES),
-                table_perms,
-            );
-            let tables = Shared::tables_of(this, Tracked(&tables_perm));
+            // Frozen: nothing writes the tables again (what changes in one
+            // is behind its locks and atomics). The class states of every
+            // arena keep these permissions, and the built `Shared` reads
+            // its tables from them (`axiom_shared_built`).
+            let tracked table_perms = vstd::modes::tracked_static_ref(table_perms);
+            let tables = Shared::tables_ptr(this);
+            proof {
+                assert(tables_at(*table_perms, this));
+                assert forall|d: int| 0 <= d < NCLASSES implies #[trigger] table_perms.contains_key(d) by {}
+                assert forall|d: int| 0 <= d < NCLASSES implies (#[trigger] table_perms[d]).ptr() == ptr_add(tables, d as usize) by {
+                    assert(table_perms.contains_key(d));
+                }
+                assert forall|d: int| 0 <= d < NCLASSES implies (#[trigger] table_perms[d]).is_init() by {}
+                assert forall|d: int| 0 <= d < NCLASSES implies (#[trigger] table_perms[d]).value().spec_class() == d by {}
+                assert(in_alloc(tables, NCLASSES as int * size_of::<SlabTable>()));
+            }
             for c in 0..NCLASSES
                 invariant
                     guard_tests_at(guard_tests, this),
                     elems_init(guard_tests, 0, c as int),
-                    forall|d: int| 0 <= d < NCLASSES ==> (#[trigger] tables[d]).spec_class() == d,
+                    crate::class::tables_ok(*table_perms, tables),
                     forall|d: int| 0 <= d < c ==> (#[trigger] guard_tests[d]).value().tests(
                         crate::layout::guard_geom(d).0, crate::layout::guard_geom(d).1),
             {
@@ -1450,7 +1463,8 @@ impl Shared {
                     assert(guard_tests.contains_key(c as int));
                 }
                 let tracked pg = guard_tests.tracked_borrow_mut(c as int);
-                Shared::put_guard_test(this, c, GuardTest::of(&tables[c]), Tracked(pg));
+                let table = ptr_ref(elem_at(tables, c, NCLASSES), Tracked(table_perms.tracked_borrow(c as int)));
+                Shared::put_guard_test(this, c, GuardTest::of(table), Tracked(pg));
                 proof {
                     assert forall|d: int| 0 <= d < NCLASSES implies #[trigger] guard_tests.contains_key(d)
                         && guard_tests[d].ptr() == ptr_add(field_ptr::<Shared, GuardTest>(this, S_GUARD_TEST), d as usize) by {
@@ -1469,7 +1483,7 @@ impl Shared {
                 axiom_shared_layout();
                 axiom_ptr_add_addr(this as *mut u8, S_ARENA0);
             }
-            if !Arena::init(arena0, meta, regions, tables, 0, decay_ns, Tracked(&mut parts.arena0), Tracked(&mut ord)) {
+            if !Arena::init(arena0, meta, regions, tables, Tracked(table_perms), 0, decay_ns, Tracked(&mut parts.arena0), Tracked(&mut ord)) {
                 return false;
             }
             let tracked huge_once = once::take(&mut steps, Step::Huge);
@@ -1529,7 +1543,7 @@ impl Shared {
                 Tracked(&mut parts.stats),
             );
             proof {
-                built.perm = Some(axiom_shared_built(parts, guard_tests, tables_perm, this));
+                built.perm = Some(axiom_shared_built(parts, guard_tests, table_perms, this));
                 let s = shared_at(this);
                 s.arenas.lemma_is_process();
                 assert(s.regions == regions0);
@@ -2740,7 +2754,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S142..S157, S158: each `S_*` is its field's `offset_of!`, and the
+    /// S137..S152, S153: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {
@@ -2789,7 +2803,7 @@ mod kani_layout {
         assert!(size_of::<Shared>() <= isize::MAX as usize);
     }
 
-    /// S56 `arena::axiom_array_layout` at the two arrays of `Shared`.
+    /// S55 `arena::axiom_array_layout` at the two arrays of `Shared`.
     #[kani::proof]
     fn shared_array_layout() {
         array_layout::<GuardTest, NCLASSES>();

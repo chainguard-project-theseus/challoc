@@ -37,29 +37,36 @@ pub struct Tcaches {
 
 impl Tcaches {
     /// The table lock is the explicit-cache table lock of the lock order
-    /// (`init` creates it so; trusted with `init`).
+    /// (`init` creates it so).
     #[verifier::type_invariant]
     spec fn rank_ok(self) -> bool {
         self.lock.rank() == rank_tcaches()
     }
 }
 
+/// Assumption (`lock.rs`): the explicit-cache table lock guards no value
+/// (`()`), so its invariant is trivially true. Nothing writes the value.
+pub broadcast axiom fn axiom_tcaches_lock_inv(v: ())
+    ensures
+        #[trigger] crate::vspec::lock::lock_inv(v),
+;
+
+/// The empty table [`Tcaches::init`] writes, every entry null. Trusted
+/// only as a value of its type: Verus has no array fill of a type that is
+/// not `Copy`, and nothing is claimed about the entries.
+#[verifier::external_body]
+#[allow(clippy::declare_interior_mutable_const, reason = "only moved into a new value, never shared")]
+exec const EMPTY_TABLE: [AtomicPtr<u8>; MAX_TCACHES] = [const { AtomicPtr::new(ptr::null_mut()) }; MAX_TCACHES];
+
 impl Tcaches {
     /// Initialise `this` in place, empty, through the permission `perm` to
-    /// its storage, handed back initialised. Trusted: field-by-field
-    /// writes through `&raw mut` projections, which Verus does not support
-    /// (raw borrows); the lock is created with rank `rank_tcaches()`, the
-    /// type invariant. Verifying it takes an exec change: the projections
-    /// as byte offsets with a permission per field (`arena::field_at` and
-    /// `take_field`, as `Arena::init` does), or one write of the whole
-    /// value.
+    /// its storage, handed back initialised: one write of the whole value,
+    /// whose lock is created with rank `rank_tcaches()` (the type
+    /// invariant) and whose table entries are null.
     ///
     /// # Safety
     /// `this` must point to writable storage that nothing else reads until
     /// this returns.
-    // `perm` is read only by the contract (ghost).
-    #[allow(unused_variables)]
-    #[verifier::external_body]
     pub unsafe fn init(this: *mut Tcaches, Tracked(perm): Tracked<&mut PointsTo<Tcaches>>)
         requires
             old(perm).ptr() == this,
@@ -68,14 +75,11 @@ impl Tcaches {
             final(perm).ptr() == this,
             final(perm).is_init(),
     {
-        // SAFETY: the caller guarantees `this` is writable and unaliased.
-        unsafe {
-            ptr::write(&raw mut (*this).lock, Lock::new((), Ghost(rank_tcaches())));
-            let table = &raw mut (*this).table;
-            for i in 0..MAX_TCACHES {
-                ptr::write(&raw mut (*table)[i], AtomicPtr::new(ptr::null_mut()));
-            }
-        }
+        broadcast use axiom_tcaches_lock_inv;
+
+        // Through the permission to the storage, which the caller makes
+        // writable and unaliased.
+        vstd::raw_ptr::ptr_mut_write(this, Tracked(perm), Tcaches { lock: Lock::new((), Ghost(rank_tcaches())), table: EMPTY_TABLE });
     }
 }
 

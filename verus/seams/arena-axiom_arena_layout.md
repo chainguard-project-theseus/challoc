@@ -1,6 +1,6 @@
 # `axiom_arena_layout`
 
-Seam S66 of `verus/SEAMS.md`: src/arena.rs:474. Kind: axiom. Category: core library.
+Seam S64 of `verus/SEAMS.md`: src/arena.rs:459. Kind: axiom. Category: core library.
 Discharged by Kani.
 
 ## Contract
@@ -8,7 +8,11 @@ Discharged by Kani.
 As changed by the library-and-control seam audit on base 8635213
 (`verus/audit/library-control.md`; Kani rerun pending), from the
 contract checked at commit 7d4e997 (the record was written at
-ae82d5b):
+ae82d5b), and on base 77c59fd by the frozen set-table permission: the
+`sets_perm` field is `Tracked<&'static PointsTo<SetTable>>`, zero-sized
+with alignment 1 as `Tracked<PointsTo<SetTable>>` was (both are
+`PhantomData`), so the harness, which checks the field at its type, is
+unchanged in substance (Kani rerun pending):
 
 ```rust
 axiom fn axiom_arena_layout()
@@ -16,7 +20,7 @@ axiom fn axiom_arena_layout()
         field_fits::<Arena, u16>(A_INDEX, A_DECAY_NS as int),
         field_fits::<Arena, AtomicU64>(A_DECAY_NS, A_SETS as int),
         field_fits::<Arena, *const SetTable>(A_SETS, A_SETS_PERM as int),
-        field_fits::<Arena, Tracked<PointsTo<SetTable>>>(A_SETS_PERM, A_CLASSES as int),
+        field_fits::<Arena, Tracked<&'static PointsTo<SetTable>>>(A_SETS_PERM, A_CLASSES as int),
         field_fits::<Arena, [ClassState; NCLASSES]>(A_CLASSES, A_LARGE as int),
         NCLASSES * size_of::<ClassState>() <= isize::MAX,
         field_fits::<Arena, AtomicU64>(A_LARGE, A_STATS as int),

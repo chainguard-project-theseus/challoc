@@ -5359,7 +5359,6 @@ impl Heap {
             old(ord).allows(rank_class(0, 0)),
             shared.wf(),
             old(self).wf(),
-            (old(self).home() as usize) < crate::arena::MAX_ARENAS,
             (arena as usize) < crate::arena::MAX_ARENAS,
         ensures
             *final(ord) == *old(ord),
@@ -6108,7 +6107,7 @@ mod kani_aborts {
     use super::{assert_flushed, assert_refill_empty};
     use crate::kani_proofs::must_not_return;
 
-    /// S127 `assert_flushed`, `ensures *len == 0`: on any other `len` the
+    /// S122 `assert_flushed`, `ensures *len == 0`: on any other `len` the
     /// call never returns.
     #[kani::proof]
     #[kani::should_panic]
@@ -6120,7 +6119,7 @@ mod kani_aborts {
         }
     }
 
-    /// S128 `assert_refill_empty`, `ensures *len == 0`: as
+    /// S123 `assert_refill_empty`, `ensures *len == 0`: as
     /// `assert_flushed`.
     #[kani::proof]
     #[kani::should_panic]

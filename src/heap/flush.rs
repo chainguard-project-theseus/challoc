@@ -503,6 +503,9 @@ impl Heap {
                 }
                 assert(aset(akept, 0, rest_len as int) <= aset(aold, 0, len));
                 assert forall|i: int| 0 <= i < len implies slot_ptr(slots, i) == old_perms.ent(cache, i) by {}
+                assert(distinct(akept, 0, rest_len as int)) by {
+                    reveal(crate::class::injective_on);
+                }
                 scatter_ents(&mut bag, &mut perms.toks, slots, akept, 0, rest_len as int);
             }
             let ghost t2 = perms.toks;
@@ -523,6 +526,7 @@ impl Heap {
                     assert(h0[j] == a2[rest_len + j]);
                 }
                 assert forall|i: int, j: int| 0 <= i < j < h1.len() implies ptr_addrs(h1)[i] != ptr_addrs(h1)[j] by {
+                    reveal(crate::class::injective_on);
                     assert(f(a2[rest_len + i]) != f(a2[rest_len + j]));
                 }
                 assert forall|v: int| aset(ptr_addrs(h1), 0, h1.len() as int).contains(v) implies bag@.contains(v) by {
@@ -534,6 +538,7 @@ impl Heap {
                     assert(aold[k] == v);
                     if aset(akept, 0, rest_len as int).contains(v) {
                         let m = choose|m: int| 0 <= m < rest_len && akept[m] == v;
+                        reveal(crate::class::injective_on);
                         assert(f(a2[m]) != f(a2[i]));
                     }
                 }
@@ -1467,7 +1472,7 @@ fn addr_mix(h: &Heap) -> u64 {
 mod kani_flush {
     use super::Heap;
 
-    /// S123 `addr_mix`: no `ensures`; it returns, the heap's address
+    /// S118 `addr_mix`: no `ensures`; it returns, the heap's address
     /// rotated left by 17 bits (on an all-zero heap: pointers null,
     /// counters zero, ghost fields empty, all valid).
     #[kani::proof]

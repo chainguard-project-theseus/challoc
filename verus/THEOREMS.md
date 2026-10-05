@@ -65,8 +65,8 @@ add.
 - `Shared::init` (`heap/shared.rs:653`) proves
   `r ==> shared_at(this).wf()`, using the tracked `Build` token
   (`:404`) and trusted in-place writers: `begin` (`:447`), `put_head`
-  (`:459`), `put_flags` (`:484`), `put_table` (`:505`), `tables_of`
-  (`:522`), `put_huge` (`:552`), `put_tail` (`:604`) and the claim-free
+  (`:459`), `put_flags` (`:484`), `put_table` (`:505`), `put_huge`
+  (`:552`), `put_tail` (`:604`) and the claim-free
   `put_guard_test`, `arena0_ptr`, `put_registries`, `put_cgroup`,
   `put_policy` (`:536`-`:592`). Arena 0 is built the same way: `put_head`,
   `put_sets`, `put_class`, `put_tail` (`arena.rs:106`-`:163`) and
@@ -182,11 +182,25 @@ and the value satisfies `lock_inv` and `lock_frame`; the other entry is
 machine code); `drop` is `external_body`. Each
 lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
 type's invariant; the theorems that use one name it. Also:
-`class::sets::axiom_set_tables_lock_inv` (`class/sets.rs:377`).
+`class::sets::axiom_set_tables_lock_inv` (`class/sets.rs:377`) and
+`heap::tcaches::axiom_tcaches_lock_inv` (the explicit-cache table lock
+guards `()`, so its invariant is true). `Tcaches::init` writes the
+`external_body` constant `heap::tcaches::EMPTY_TABLE` (the empty table;
+nothing is claimed about its entries).
 
-**Class state accessors.** `TablePtr::get` (`class/mod.rs:1595`, the
-pointer of `ClassState::table` is to the ghost table kept with it),
-`external_body`.
+**Class state accessors.** None trusted: `TablePtr::get` reads the
+class's table through the frozen permissions to every class's table
+(`class::tables_ok`), which `Shared::init` freezes
+(`vstd::modes::tracked_static_ref`) once it has written the tables,
+and `axiom_shared_built` reads the built `Shared`'s tables from; a set
+of a class state reaches the arena's set table through that table's
+frozen permission, which `Arena::init` freezes once it has written it.
+
+**Debug reads.** `class::verify::read_word` and `huge::Huge::read_run_word`
+(`external_body`): the `check_zero` debug mode's volatile reads of a word
+of a slot or run it has just claimed or taken. Each contract places the
+word inside the slot or the huge region, aligned, and claims nothing about
+the value; that its page is committed stays the caller's.
 
 **`core` and `vstd`.** The `assume_specification`s in `src/vspec/`
 (76, mostly `vspec/sys.rs`, `slice.rs` and `core_int.rs`), and vstd's
@@ -1091,18 +1105,17 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   `background::spawn` and `pthread_join` (`purge/background.rs:333`,
   `:229`), `init_fields`, `Heap::destroy`
   (`heap/mod.rs:5158`, `:5382`), `Meta::commit`, `Meta::free`
-  (`meta.rs:2745`, `:2796`), mallctl's
-  `heap_set_arena` (`api/mallctl.rs:1462`), `print::emit` and
+  (`meta.rs:2745`, `:2796`), `print::emit` and
   `jemalloc::call_hook` (the report's call-outs, theorem 16), the
   C++ `call_handler`,
   `call_get_new_handler`, `call_throw_bad_alloc` (`api/cxx.rs:176`,
   `:147`, `:107`), the
   `pthread_setspecific` wrapper (which may allocate; `heap/shared.rs`,
-  from theorem 15, in place of an `assume_specification`), `Set::ensure`
-  (`class/sets.rs`, which commits set words through `Meta`; its
-  capability and `Inner::ensure_sets`' were added at the merge).
+  from theorem 15, in place of an `assume_specification`).
   (`shared::seed`, which reads `getrandom`, is verified: its syscalls
-  are in `getrandom_exact` and `now_coarse_ns`.)
+  are in `getrandom_exact` and `now_coarse_ns`; so is `Set::ensure`,
+  which commits set words through `Meta`, and `thread.arena` calls
+  `Heap::set_arena` directly.)
 - `may_syscall` is opaque, so a verified function can prove it only from
   its own `requires` (or a loop invariant that carries it in from
   there), from `grant_syscalls`, or from the type invariant of a
@@ -2673,10 +2686,10 @@ extent touching the mark, returning it or `None`. Merges of `Empty` and
 - `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs:35`): the lock
   protects `Inner::wf`, now including the two new conjuncts (and,
   since, `free_exact`: theorem 29).
-- `class::Set::ensure` (`class/sets.rs:464`, `external_body`) leaves the
-  bitmap view unchanged; `alloc_aligned` calls it between `find` and
-  `take`. The view's `set_range`, `clear_range` and `lowest_set_from`
-  are verified (`bitmap.rs`).
+- `class::Set::ensure` (`class/sets.rs`) leaves the bitmap view
+  unchanged (verified, as is the commit it makes); `alloc_aligned`
+  calls it between `find` and `take`. The view's `set_range`,
+  `clear_range` and `lowest_set_from` are verified (`bitmap.rs`).
 
 **Where the statement is weaker than the code.**
 - It speaks of descriptors, not pages. The converse of `free_marked`
@@ -3942,9 +3955,9 @@ bitmap side: every release goes back to the slot's own arena).
   practice, but by run-time checks and inspection, not by Verus: a
   thread heap's comes from `assign_home` (below `MAX_ARENAS`, which
   `Heap::homed_ok` now states for every counted heap);
-  `set_arena` requires one below `MAX_ARENAS`, but its only caller is
-  the trusted `api::mallctl::heap_set_arena` wrapper, whose caller
-  checks `thread.arena`'s value at run time; and `Tcaches::create` takes
+  `set_arena` requires the new one below `MAX_ARENAS`, which its only
+  caller, `mallctl`'s `thread.arena`, checks at run time; and
+  `Tcaches::create` takes
   any `arena` (its callers pass the thread's home arena or 0).
 - Routing names the header a pop takes from, not the arena a refill
   inside the pop draws from: `pop_compact` and `pop_compact_run` refill
@@ -4350,8 +4363,8 @@ breaking its contract; no path sets such a bit.
 **Premises beyond the common ones.**
 - `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs`): the lock
   protects `Inner::wf`, now including `free_exact`.
-- `class::Set::ensure` (`external_body`) leaves the bitmap view
-  unchanged, as in theorem 17. The view's `set_range`, `clear_range`,
+- `class::Set::ensure` (verified) leaves the bitmap view unchanged, as
+  in theorem 17. The view's `set_range`, `clear_range`,
   `lowest_set_from` and `lemma_fresh` are verified (`bitmap.rs`).
 
 **Where the statement is weaker than the code.**
@@ -4822,9 +4835,9 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   alone.
 - Every trusted body that can abort requires the capability: those that
   call an abort or a function that requires it (`Heap::destroy`,
-  `heap_set_arena`, `background::spawn`,
+  `background::spawn`,
   `call_throw_bad_alloc`, `owner_locked`,
-  `page_group_is_idle`, `Huge::check_zero`, the `verus_only` stand-in
+  `page_group_is_idle`, the `verus_only` stand-in
   `not_a_run_page`) and those that `assert!` or `panic!` (`check`,
   `SlabDesc::sub_live`, `assert_flushed`, `assert_refill_empty`;
   `assert_not_home`'s `assert_ne!` is its `requires`). The test flags a
@@ -5071,17 +5084,17 @@ the gate premise below.
   lock value), whose shared store is that arena's table
   (`Set::ensure`). A token does not say which locks are held, so this is
   by inspection.
-- *Trusted bodies with honest specs*: `Set::ensure` (requires the
-  slab-set rank for a shared store), `policy::empty_bytes`,
-  `Heap::destroy`, `Meta::commit`, `Meta::free`, and the
-  `mallctl` wrapper `heap_set_arena`: each states the lowest rank its
-  body takes (`assign_home`, trusted at this theorem's merge, is
-  verified since theorem 34); `purge::background::state` names
-  `STATE`'s rank.
-- *Ranks set in unverified constructors*: `Tcaches::init` creates its
-  lock with the rank its type invariant states, as it creates the rest
-  of the value. (`Arenas::init` is verified: `axiom_arenas_assemble`
-  requires the creation lock's rank that `Arenas::type_inv` states.)
+- *Trusted bodies with honest specs*: `policy::empty_bytes`,
+  `Heap::destroy`, `Meta::commit` and `Meta::free`: each states the
+  lowest rank its body takes (`assign_home`, trusted at this theorem's
+  merge, is verified since theorem 34, and so are `Set::ensure` and
+  the call `thread.arena` makes, `Heap::set_arena`);
+  `purge::background::state` names `STATE`'s rank.
+- *Ranks set in constructors*: none is trusted. `Tcaches::init` is
+  verified (one write of the whole value, whose lock it creates with
+  the rank the type invariant states), and so is `Arenas::init`
+  (`axiom_arenas_assemble` requires the creation lock's rank that
+  `Arenas::type_inv` states).
 - *The mutex*, as for fork safety: `lock` returns only once this thread
   holds the lock.
 
@@ -5508,7 +5521,7 @@ and `get_defrag_hint_follows_the_utilization_data`
 - The records are what was loaded: each field is set from the local the
   code loaded (by reading the body; the `ensures` cannot name the
   instant of a load).
-- `query_ptr` and `store_triple` (`external_body`, ledger S21 and S22):
+- `query_ptr` and `store_triple` (`external_body`, ledger S20 and S21):
   `query_ptr` returns the pointer at index `i` of the caller's array;
   `store_triple` writes `nfree`, `nregs`, `size` at words `3i..3i+3` and
   nothing else. That the stored triples are still there when `mallctl`

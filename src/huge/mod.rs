@@ -1273,6 +1273,7 @@ impl Inner {
         &&& self.free.map.in_meta()
         &&& self.free.map.spec_nbits() == self.np@
         &&& self.free.store is Own
+        &&& self.free.l1_words <= 0x1_0000_0000
         &&& self.all@.no_duplicates()
         &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) <==> self.all@.contains(d)
         &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> keyed(self.table, self.descs@[d].value(), d)
@@ -2312,6 +2313,7 @@ impl Inner {
         &&& self.free.map.in_meta()
         &&& self.free.map.spec_nbits() == self.np@
         &&& self.free.store is Own
+        &&& self.free.l1_words <= 0x1_0000_0000
         &&& self.elist@ == t.elist_after(g0.elist@)
         &&& elist_ok(self.empty_head, self.empty_tail, self.elist@, self.descs@)
     }
@@ -5268,29 +5270,115 @@ impl Huge {
     /// The `check_zero` debug mode: the first and
     /// last word of every usable page of a run reported zero must read
     /// zero. Aborts with the run, the pages' prior state, the arena and the
-    /// purge advice. Faults every page in, so debug only.
-    ///
-    /// Trusted: volatile reads of the run's memory.
+    /// purge advice. Faults every page in, so debug only. The run is the
+    /// `usable_pages` pages from page `s`, inside the region.
     #[cold]
     #[inline(never)]
-    #[verifier::external_body]
     fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: u16)
         requires
             crate::sys::may_abort(),
+            s + usable_pages <= self.spec_npages(),
+            self.spec_base_aligned(),
     {
+        proof {
+            use_type_invariant(self);
+            self.lemma_page();
+            self.lemma_pages(s);
+            self.lemma_pages((s + usable_pages) as usize);
+        }
         let page = self.page_size();
         let base = self.addr(s);
-        for i in 0..usable_pages {
-            for off in [0, page - 8] {
+        let ghost p = self.spec_page();
+        // The region's end, and the run's.
+        let ghost hi = self.spec_base() + self.spec_npages() * p;
+        let ghost end = self.spec_base() + (s + usable_pages) * p;
+        proof {
+            crate::meta::lemma_pow2_bits(page);
+            assert(page % 8 == 0) by (bit_vector)
+                requires page & sub(page, 1) == 0, page >= 16;
+            let (n, u) = (self.spec_npages(), (s + usable_pages) as int);
+            assert(u * p <= n * p) by (nonlinear_arith) requires u <= n, p > 0;
+        }
+        for i in 0..usable_pages
+            invariant
+                crate::sys::may_abort(),
+                page as int == p,
+                p == self.spec_page(),
+                16 <= p,
+                page % 8 == 0,
+                base == self.spec_base() + s * p,
+                self.spec_base_aligned(),
+                end == self.spec_base() + (s + usable_pages) * p,
+                end <= hi,
+                hi == self.spec_base() + self.spec_npages() * p,
+                hi <= crate::meta::va_limit(),
+        {
+            proof {
+                let (b, si, ii, u) = (self.spec_base() as int, s as int, i as int, usable_pages as int);
+                // Page `s + i` ends inside the run.
+                vstd::arithmetic::mul::lemma_mul_inequality(si + ii + 1, si + u, p);
+                vstd::arithmetic::mul::lemma_mul_is_distributive_add_other_way(p, si, ii + 1);
+                vstd::arithmetic::mul::lemma_mul_is_distributive_add_other_way(p, ii, 1);
+                // It starts on a word: the base is a page start, and a page
+                // a multiple of 8.
+                let (q, k) = (b / p, p / 8);
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod(b, p);
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod(p, 8);
+                assert(b + si * p + ii * p == (k * q + k * si + k * ii) * 8) by (nonlinear_arith)
+                    requires b == p * q, p == 8 * k;
+                vstd::arithmetic::div_mod::lemma_mod_multiples_basic(k * q + k * si + k * ii, 8);
+            }
+            for &off in o: &[0, page - 8]
+                invariant
+                    crate::sys::may_abort(),
+                    page as int == p,
+                    p == self.spec_page(),
+                    16 <= p,
+                    page % 8 == 0,
+                    (base + i * p) % 8 == 0,
+                    base >= self.spec_base(),
+                    base + i * p + p <= end,
+                    end <= hi,
+                    hi == self.spec_base() + self.spec_npages() * p,
+                    hi <= crate::meta::va_limit(),
+                    o.seq().len() == 2,
+                    *o.seq()[0] == 0,
+                    *o.seq()[1] == page - 8,
+            {
+                proof {
+                    assert(off == *o.seq()[o.index() as int]);
+                }
                 let a = base + i * page + off;
                 // SAFETY: a usable page of the run this call just took;
                 // `prepare` committed it.
-                let word = unsafe { ptr::read_volatile(a as *const u64) };
+                let word = unsafe { self.read_run_word(a) };
                 if word != 0 {
                     dirty_zero_run(base, usable_pages, s, prior, arena, a, word);
                 }
             }
         }
+    }
+
+    /// The word at `a`, read once, for [`Huge::check_zero`]. Trusted: a
+    /// volatile read through an address (Verus has no integer-to-pointer
+    /// cast, and no permission covers a run's pages between the take and
+    /// the hand-out), and nothing is claimed about the value. The contract
+    /// places the word inside the region, aligned; that its page is
+    /// committed (the run was just taken and `prepare`d) stays the
+    /// caller's.
+    ///
+    /// # Safety
+    /// `a` is an aligned word of a committed page of the region.
+    #[inline(always)]
+    #[verifier::external_body]
+    unsafe fn read_run_word(&self, a: usize) -> u64
+        requires
+            self.spec_base() <= a,
+            a + 8 <= self.spec_base() + self.spec_npages() * self.spec_page(),
+            a % 8 == 0,
+    {
+        // SAFETY: guaranteed by the caller.
+        unsafe { ptr::read_volatile(a as *const u64) }
     }
 }
 
@@ -5570,6 +5658,7 @@ impl Inner {
         &&& self.free.map.in_meta()
         &&& self.free.map.spec_nbits() == self.np@
         &&& self.free.store is Own
+        &&& self.free.l1_words <= 0x1_0000_0000
         &&& elist_ok(self.empty_head, self.empty_tail, self.elist@, self.descs@)
         &&& self.stats.empty == self.elist@.len()
         &&& self.stats.empty_pages == epages(self.elist@, self.descs@)
@@ -6146,6 +6235,7 @@ proof fn lemma_free_end(g0: Inner, gr: Inner, gl: Inner, g1: Inner, m: Merge)
         g1.free.map.in_meta(),
         g1.free.map.spec_nbits() == g1.np@,
         g1.free.store is Own,
+        g1.free.l1_words <= 0x1_0000_0000,
         // The run authorities without the run's token.
         g1.runs@.id() == run_loc(),
         g1.pgs@.id() == page_loc(),
@@ -7083,7 +7173,7 @@ impl Huge {
             } else {
                 t0.lookup(key)
             } by {}
-            assert(g0.free.map.in_meta() && g0.free.store is Own) by {
+            assert(g0.free.map.in_meta() && g0.free.store is Own && g0.free.l1_words <= 0x1_0000_0000) by {
                 reveal(Inner::wf);
             }
             assert(gl.free.map.place() == g0.free.map.place());

@@ -97,6 +97,7 @@ use table::{
     words_of,
 };
 use vstd::prelude::*;
+use vstd::raw_ptr::PointsTo;
 use vstd::resource::set::GhostPersistentSubset;
 use vstd::resource::set::GhostSingleton;
 use vstd::resource::set::GhostSubset;
@@ -772,12 +773,13 @@ const _: () = assert!(core::mem::size_of::<ClassState>() % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % 512 != 0);
 const _: () = assert!(core::mem::size_of::<TablePtr>() == core::mem::size_of::<*const SlabTable>());
 
-// SAFETY: the only non-`Sync`, non-`Send` field is the table pointer,
-// which targets a `SlabTable` (itself `Sync`) that outlives every
-// `ClassState` pointing at it: both live in `Shared` for the life of the
-// process, or are leaked by the tests. Sharing the state across threads
-// (`Sync`) or handing it to another thread (`Send`) therefore hands out
-// nothing but a pointer to a process-lifetime, thread-safe table.
+// SAFETY: the only non-`Sync`, non-`Send` field is the table pointer
+// (`TablePtr`, whose other fields are ghost), which targets a `SlabTable`
+// (itself `Sync`) that outlives every `ClassState` pointing at it: both
+// live in `Shared` for the life of the process, or are leaked by the
+// tests. Sharing the state across threads (`Sync`) or handing it to
+// another thread (`Send`) therefore hands out nothing but a pointer to a
+// process-lifetime, thread-safe table.
 unsafe impl Sync for ClassState {}
 unsafe impl Send for ClassState {}
 
@@ -918,8 +920,10 @@ impl Inner {
     }
 
     /// The seam's counts and shapes: three well-formed sets over the
-    /// class's slabs, each count the population of its set, the committed
-    /// count the size of the committed set, the owned and committed slabs
+    /// class's slabs, each a view of the shared set table over a group
+    /// of the class's slab count ([`Set::shared_over`]) and each count the
+    /// population of its set, the committed count the size of the
+    /// committed set, the owned and committed slabs
     /// among the class's, and the current group's cursor inside the class
     /// and, while slabs are left in it, inside one hand-out group, whose
     /// end is the current group's end; the slab before the current
@@ -933,6 +937,9 @@ impl Inner {
         &&& set_wf(self.partial, self.nbits())
         &&& set_wf(self.empty, self.nbits())
         &&& set_wf(self.purged, self.nbits())
+        &&& self.partial.shared_over(self.nbits())
+        &&& self.empty.shared_over(self.nbits())
+        &&& self.purged.shared_over(self.nbits())
         &&& self.stats.nonfull == self.partial.map@.len()
         &&& self.stats.empty == self.empty.map@.len()
         &&& self.stats.purged == self.purged.map@.len()
@@ -1017,13 +1024,16 @@ impl Inner {
         &&& !(self.group_next <= s < self.group_end)
     }
 
-    /// `self` and `o` agree on everything but the sets' stores (which
-    /// [`Set::ensure`] commits), so on the invariant too
-    /// ([`Inner::lemma_same_sets`]).
+    /// `self` and `o` agree on everything [`Set::ensure`] keeps of a view
+    /// of the shared set table (only an own store changes), so on the
+    /// invariant too ([`Inner::lemma_same_sets`]).
     spec fn same_sets(&self, o: Inner) -> bool {
         &&& self.partial.map == o.partial.map
         &&& self.empty.map == o.empty.map
         &&& self.purged.map == o.purged.map
+        &&& self.partial.store == o.partial.store
+        &&& self.empty.store == o.empty.store
+        &&& self.purged.store == o.purged.store
         &&& self.stats == o.stats
         &&& self.group_next == o.group_next
         &&& self.group_end == o.group_end
@@ -1036,7 +1046,7 @@ impl Inner {
         &&& self.dperms == o.dperms
     }
 
-    /// Values that differ only in the sets' stores agree on the invariant.
+    /// Values that agree as [`Inner::same_sets`] says agree on the invariant.
     proof fn lemma_same_sets(&self, o: Inner)
         requires
             self.same_sets(o),
@@ -1061,13 +1071,16 @@ impl Inner {
 
     /// Commit the set words that hold every bit up to and including
     /// `slab` in the three sets ([`Set::ensure`]), for a group the arena
-    /// is about to receive (`take_group`, under the commit lock). Only the
-    /// stores change.
+    /// is about to receive (`take_group`, under the commit lock). The sets
+    /// are views of the shared set table, whose commit leaves them as they
+    /// are.
     #[inline(always)]
     fn ensure_sets(&mut self, meta: &Meta, page: usize, slab: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),
             old(ord).allows(rank_sets(0)),
+            old(self).base(),
+            slab < old(self).nbits(),
         ensures
             final(self).same_sets(*old(self)),
             *final(ord) == *old(ord),
@@ -1304,7 +1317,8 @@ verus! {
 broadcast use {table::lemma_spec_nslabs, table::lemma_spec_class};
 
 impl ClassState {
-    /// `class` is a class number, `table` points at that class's table,
+    /// `class` is a class number, `table` points at that class's table
+    /// (element `class` of the tables it has the permissions to),
     /// and the sets behind the lock are over its slabs. `new` proves it: it
     /// takes `class` from the table and builds the sets over the set
     /// table's count for the class's slab size, which equals `table.nslabs`
@@ -1317,6 +1331,7 @@ impl ClassState {
         &&& self.class < NCLASSES
         &&& table_at(self.table).inv()
         &&& table_at(self.table).spec_class() == self.class as usize
+        &&& index_of(self.table) == self.class as int
         &&& lock_init(self.inner.0).nbits() == table_at(self.table).spec_nslabs()
         &&& lock_init(self.inner.0).arena@ == self.arena
         &&& lock_init(self.inner.0).table@ == table_at(self.table)
@@ -1434,7 +1449,7 @@ broadcast proof fn lemma_inv_counts(v: Inner)
     }
 }
 
-/// Values that differ only in the sets' stores agree on the invariant
+/// Values that agree as [`Inner::same_sets`] says agree on the invariant
 /// ([`Inner::lemma_same_sets`]), wherever [`Inner::same_sets`] is known.
 broadcast proof fn lemma_same_sets_inv(a: Inner, b: Inner)
     ensures
@@ -1678,64 +1693,138 @@ impl ClassState {
 
 } // verus!
 
+verus! {
+
+/// The tables of every class, from `base` on, through the frozen
+/// permissions `m`, one per element: each initialised, at its index's
+/// address, and the table of the class it is the index of. What
+/// `Shared::init` freezes, and what [`Arena::init`](crate::arena::Arena::init)
+/// builds an arena's class states over.
+pub open spec fn tables_ok(m: Map<int, PointsTo<SlabTable>>, base: *mut SlabTable) -> bool {
+    &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] m.contains_key(c)
+    &&& forall|c: int| 0 <= c < NCLASSES ==> (#[trigger] m[c]).ptr() == crate::vspec::ptr::ptr_add(base, c as usize)
+    &&& forall|c: int| 0 <= c < NCLASSES ==> (#[trigger] m[c]).is_init()
+    &&& forall|c: int| 0 <= c < NCLASSES ==> (#[trigger] m[c]).value().spec_class() == c
+    &&& crate::vspec::ptr::in_alloc(base, NCLASSES as int * vstd::layout::size_of::<SlabTable>())
+    &&& NCLASSES * vstd::layout::size_of::<SlabTable>() <= isize::MAX
+}
+
+} // verus!
+
 /// The pointer to its table a [`ClassState`] keeps, in a module of its own
 /// so that [`table_ptr`](tptr::table_ptr) is the only maker of one.
 mod tptr {
     use super::SlabTable;
+    #[cfg(verus_only)]
+    use super::tables_ok;
+    #[cfg(verus_only)]
+    use crate::layout::NCLASSES;
     use vstd::prelude::*;
+    use vstd::raw_ptr::PointsTo;
 
     verus! {
 
-    /// A pointer to a table, with that table as ghost (no bytes: the
-    /// layout is the pointer's).
+    /// A pointer to the table of class `c`, with (ghost, no bytes: the
+    /// layout is the pointer's) the frozen permissions to every class's
+    /// table, from `base` on ([`tables_ok`]), whose element `c` is the
+    /// pointer's.
     pub(super) struct TablePtr {
-        p: *const SlabTable,
+        p: *mut SlabTable,
         #[allow(dead_code)]
-        t: Ghost<SlabTable>,
+        tables: Tracked<&'static Map<int, PointsTo<SlabTable>>>,
+        /// Element `c` of `tables`, held apart so that [`TablePtr::get`]
+        /// passes it on as it is: a `Tracked(..)` built there is one more
+        /// distinct `Tracked` type under `Heap::flush`, which puts it past
+        /// the MIR inliner's limit of instances of one generic item and
+        /// changes its machine code (x86_64).
+        #[allow(dead_code)]
+        perm: Tracked<&'static PointsTo<SlabTable>>,
+        #[allow(dead_code)]
+        base: Ghost<*mut SlabTable>,
+        #[allow(dead_code)]
+        c: Ghost<int>,
+    }
+
+    impl TablePtr {
+        /// The pointer is to element `c` of the tables its permissions
+        /// cover (what [`table_ptr`] requires).
+        #[verifier::type_invariant]
+        spec fn inv(self) -> bool {
+            &&& tables_ok(*self.tables@, self.base@)
+            &&& 0 <= self.c@ < NCLASSES
+            &&& self.tables@[self.c@].ptr() == self.p
+            &&& *self.perm@ == self.tables@[self.c@]
+        }
     }
 
     /// The table `p` points at.
     pub(super) closed spec fn table_at(p: TablePtr) -> SlabTable {
-        p.t@
+        p.tables@[p.c@].value()
     }
 
-    /// `table` as a [`TablePtr`], which [`table_at`] maps back to the
+    /// The class whose table `p` points at.
+    pub(super) closed spec fn index_of(p: TablePtr) -> int {
+        p.c@
+    }
+
+    /// The pointer `p` to element `c` of the tables `tables` covers, from
+    /// `base` on, as a [`TablePtr`], which [`table_at`] maps to that
     /// table.
     #[inline(always)]
-    pub(super) fn table_ptr(table: &SlabTable) -> (p: TablePtr)
+    pub(super) fn table_ptr(
+        p: *mut SlabTable,
+        Tracked(tables): Tracked<&'static Map<int, PointsTo<SlabTable>>>,
+        Ghost(base): Ghost<*mut SlabTable>,
+        Ghost(c): Ghost<int>,
+    ) -> (r: TablePtr)
+        requires
+            tables_ok(*tables, base),
+            0 <= c < NCLASSES,
+            tables[c].ptr() == p,
         ensures
-            table_at(p) == *table,
+            table_at(r) == tables[c].value(),
+            index_of(r) == c,
     {
-        TablePtr { p: core::ptr::from_ref(table), t: Ghost(*table) }
+        TablePtr { p, tables: Tracked(tables), perm: Tracked(tables.tracked_borrow(c)), base: Ghost(base), c: Ghost(c) }
     }
 
     impl TablePtr {
-        /// The table.
-        ///
-        /// Trusted: the pointer is to the ghost table kept with it.
-        /// [`table_ptr`], the only maker of a `TablePtr`, takes both from
-        /// one reference to the table (`core::ptr::from_ref`, whose result
-        /// Verus does not relate to the reference), and nothing here
-        /// writes either field afterwards. The table outlives the pointer:
-        /// `ClassState::new`'s caller keeps it for the life of the state.
+        /// The table, through its frozen permission.
         #[inline(always)]
-        #[verifier::external_body]
         pub(super) fn get(&self) -> (r: &SlabTable)
             ensures
                 *r == table_at(*self),
         {
-            // SAFETY: `p` is from a reference to a table that outlives the
-            // `ClassState` keeping it (see that field).
-            unsafe { &*self.p }
+            proof {
+                use_type_invariant(self);
+            }
+            vstd::raw_ptr::ptr_ref(self.p, self.perm)
+        }
+
+        /// The first class's table and the permissions to all of them
+        /// ([`tables_ok`]), from the pointer to it.
+        #[inline(always)]
+        pub(super) fn tables(&self) -> (r: (*mut SlabTable, Tracked<&'static Map<int, PointsTo<SlabTable>>>))
+            requires
+                index_of(*self) == 0,
+            ensures
+                tables_ok(*r.1@, r.0),
+        {
+            proof {
+                use_type_invariant(self);
+                crate::vspec::ptr::axiom_ptr_add_addr(self.base@, 0);
+                assert(self.p@ == self.base@@);
+            }
+            (self.p, Tracked(*self.tables.borrow()))
         }
     }
 
     } // verus!
 }
 
-#[cfg(verus_only)]
-use tptr::table_at;
 use tptr::{TablePtr, table_ptr};
+#[cfg(verus_only)]
+use tptr::{index_of, table_at};
 
 verus! {
 
@@ -1752,6 +1841,23 @@ impl ClassState {
             use_type_invariant(self);
         }
         self.table.get()
+    }
+
+    /// Every class's table and the frozen permissions to them
+    /// ([`tables_ok`]), from class 0's state: what
+    /// [`Arena::init`](crate::arena::Arena::init) builds another arena's
+    /// states over.
+    #[inline(always)]
+    pub(crate) fn tables(&self) -> (r: (*mut SlabTable, Tracked<&'static Map<int, PointsTo<SlabTable>>>))
+        requires
+            self.spec_class() == 0,
+        ensures
+            tables_ok(*r.1@, r.0),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        self.table.tables()
     }
 
     #[inline]
@@ -2883,36 +2989,47 @@ impl ClassState {
 verus! {
 
 impl ClassState {
-    /// Create the state for `arena` over `table`'s class, with its three
-    /// slab sets as views of the arena's `sets` table (slot `kind * count +
-    /// pos[class]` of the class's set group, `Set::in_table`), all empty,
-    /// and nothing owned or committed. `table` and `sets` must outlive the
-    /// state. `meta` and `regions` are unused: the sets live in `sets`, the
-    /// descriptors in `table`. The three sets take their slots'
-    /// permissions out of `slots` (`SetTable::new` handed them out).
+    /// Create the state for `arena` over class `c`'s table, at `tp`
+    /// (element `c` of the tables `tables` covers from `base` on), with
+    /// its three slab sets as views of the arena's set table at
+    /// `sets_ptr` (slot `kind * count + pos[class]` of the class's set
+    /// group, `Set::in_table`), all empty, and nothing owned or committed.
+    /// The state keeps the tables' frozen permissions, and the sets
+    /// `sets_perm`, the set table's. `meta` and `regions` are unused: the
+    /// sets live in the set table, the descriptors in the class's table.
+    /// The three sets take their slots' permissions out of `slots`
+    /// (`SetTable::new` handed them out).
     pub(crate) fn new(
         meta: &Meta,
         regions: &Regions,
-        table: &SlabTable,
+        tp: *mut SlabTable,
+        Tracked(tables): Tracked<&'static Map<int, PointsTo<SlabTable>>>,
+        Ghost(base): Ghost<*mut SlabTable>,
+        Ghost(c): Ghost<int>,
         arena: u16,
-        sets: &SetTable,
+        sets_ptr: *const SetTable,
+        Tracked(sets_perm): Tracked<&'static PointsTo<SetTable>>,
         Tracked(slots): Tracked<&mut Map<(int, int), ZeroRaw>>,
     ) -> (r: Option<ClassState>)
         requires
-            sets.over(process_regions()),
-            forall|k: int| 0 <= k < SETS_PER_CLASS ==> #[trigger] sets.holds_set(*old(slots), table.spec_class() as int, k),
+            tables_ok(*tables, base),
+            0 <= c < NCLASSES,
+            tables[c].ptr() == tp,
+            sets_perm.ptr() == sets_ptr,
+            sets_perm.is_init(),
+            sets_perm.value().over(process_regions()),
+            forall|k: int| 0 <= k < SETS_PER_CLASS ==> #[trigger] sets_perm.value().holds_set(*old(slots), c, k),
         ensures
-            r matches Some(s) ==> s.spec_class() == table.spec_class() && s.spec_table() == *table
-                && s.spec_arena() == arena,
-            *final(slots) == old(slots).remove((table.spec_class() as int, 0)).remove((table.spec_class() as int, 1)).remove(
-                (table.spec_class() as int, 2),
-            ),
+            r matches Some(s) ==> s.spec_class() == c && s.spec_table() == tables[c].value() && s.spec_arena() == arena,
+            *final(slots) == old(slots).remove((c, 0)).remove((c, 1)).remove((c, 2)),
     {
         broadcast use axiom_class_lock_inv;
+        let table = vstd::raw_ptr::ptr_ref(tp, Tracked(tables.tracked_borrow(c)));
         proof {
             use_type_invariant(table);
         }
         let _ = (meta, regions);
+        let sets = vstd::raw_ptr::ptr_ref(sets_ptr, Tracked(sets_perm));
         let class = table.class as usize;
         proof {
             assert(sets.class_ok(process_regions(), class as int));
@@ -2925,9 +3042,9 @@ impl ClassState {
         let tracked w0 = slots.tracked_remove((class as int, 0));
         let tracked w1 = slots.tracked_remove((class as int, 1));
         let tracked w2 = slots.tracked_remove((class as int, 2));
-        let partial = Set::in_table(sets, class, 0, Tracked(w0));
-        let empty = Set::in_table(sets, class, 1, Tracked(w1));
-        let purged = Set::in_table(sets, class, 2, Tracked(w2));
+        let partial = Set::in_table(sets_ptr, Tracked(sets_perm), class, 0, Tracked(w0));
+        let empty = Set::in_table(sets_ptr, Tracked(sets_perm), class, 1, Tracked(w1));
+        let purged = Set::in_table(sets_ptr, Tracked(sets_perm), class, 2, Tracked(w2));
         let tracked im = table.empty_marks();
         let tracked dm = Map::<nat, DescPerm>::tracked_empty();
         let inner = Inner {
@@ -2961,7 +3078,7 @@ impl ClassState {
         Some(ClassState {
             class: table.class,
             arena,
-            table: table_ptr(table),
+            table: table_ptr(tp, Tracked(tables), Ghost(base), Ghost(c)),
             gate: Decayer::new(),
             inner: Padded(Lock::new(inner, Ghost(rank_class(arena as int, table.class as int)))),
             claimed: AtomicU64::new(0),
@@ -4819,6 +4936,15 @@ pub proof fn scatter(tracked bag: &mut GhostSubset<int>, tracked m: &mut Map<int
     }
 }
 
+/// `f` is injective over the entries of `y`. Opaque: a pairwise fact,
+/// quadratic in the `f(y[_])` terms it meets wherever it is known;
+/// [`lemma_perm_distinct`] states it, and each reader reveals it where it
+/// reads it.
+#[verifier::opaque]
+pub open spec fn injective_on(y: Seq<*mut u8>, f: spec_fn(*mut u8) -> int) -> bool {
+    forall|i: int, j: int| 0 <= i < j < y.len() ==> f(y[i]) != f(y[j])
+}
+
 /// `y`, a permutation of `x` (the same multiset), is injective under `f`
 /// where `x` was, and each of its entries is one of `x`'s.
 #[verifier::spinoff_prover]
@@ -4828,10 +4954,12 @@ pub proof fn lemma_perm_distinct(x: Seq<*mut u8>, y: Seq<*mut u8>, f: spec_fn(*m
         forall|i: int, j: int| 0 <= i < j < x.len() ==> f(x[i]) != f(x[j]),
     ensures
         y.len() == x.len(),
-        forall|i: int, j: int| 0 <= i < j < y.len() ==> f(y[i]) != f(y[j]),
+        injective_on(y, f),
         forall|i: int| 0 <= i < y.len() ==> x.contains(#[trigger] y[i]),
 {
     broadcast use {vstd::seq_lib::group_to_multiset_ensures, vstd::multiset::group_multiset_axioms};
+
+    reveal(injective_on);
     assert(x.len() == x.to_multiset().len());
     assert(y.len() == y.to_multiset().len());
     assert forall|i: int| 0 <= i < y.len() implies x.contains(#[trigger] y[i]) by {
@@ -4987,6 +5115,7 @@ pub proof fn lemma_perm_addrs(x: Seq<*mut u8>, y: Seq<*mut u8>)
         assert(ptr_addrs(x)[i] != ptr_addrs(x)[j]);
     }
     lemma_perm_distinct(x, y, f);
+    reveal(injective_on);
     assert forall|i: int, j: int| 0 <= i < j < y.len() implies ptr_addrs(y)[i] != ptr_addrs(y)[j] by {
         assert(f(y[i]) != f(y[j]));
     }
