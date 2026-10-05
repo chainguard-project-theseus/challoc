@@ -144,7 +144,6 @@ axiom_auth_sign	platform/kernel fact	Islaris/Isla	discharged (verus/seams/sys-pa
 check	panic/abort	Kani	discharged (verus/seams/vspec-check-check.md)
 abort_integrity	panic/abort	Kani
 axiom_class_table_wf	allocator invariant	Kani
-thp_name	core library	Kani
 stats_allocated	core library	Kani	discharged (verus/seams/vspec-print-stats_allocated.md)
 axiom_ptr_add_addr	core library	Kani	discharged (verus/seams/vspec-ptr-axiom_ptr_add_addr.md)
 axiom_raw_valid	raw pointer (internal)	none (assumption)

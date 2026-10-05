@@ -14,14 +14,6 @@ verus! {
 #[verifier::external_body]
 pub struct ExFile(libc::FILE);
 
-/// `config::Thp::name`, the key's static name. `Thp::name` is verified
-/// now; calling it from `api/print.rs` directly would retire this wrapper.
-#[verifier::external_body]
-#[inline(always)]
-pub(crate) fn thp_name(k: crate::config::Thp) -> &'static core::ffi::CStr {
-    k.name()
-}
-
 /// The smallest and largest [`crate::layout::BASE_CLASSES`] slab size of
 /// the classes `lo..=hi` (0 for an empty range), the table geometry the
 /// report compares a page-raised range with. Trusted: the iterator chain

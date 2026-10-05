@@ -212,10 +212,15 @@ value (vstd); the three bitmap word writers (`vspec/word.rs:59`, `:76`,
 word load that returns its value (`vspec::word::load`, theorem 7). See
 `verus/WEAKMEM.md`.
 
-**Abort stand-in.** One site remains where Verus sees a trusted `-> !`
-call in place of the build's abort (`#[cfg(verus_only)]`):
-`huge/mod.rs:4786`, where the build calls `not_a_run(self.addr(page))`
-and the address of an unvalidated page cannot be bounded. Every other
+**Abort stand-in.** One site remains where Verus sees another `-> !`
+call than the build's abort (`#[cfg(verus_only)]`):
+`huge/mod.rs:6954`, where the build calls `not_a_run(self.addr(page))`
+and the address of an unvalidated page cannot be bounded. Verus sees
+`not_a_run_page(page)` there, which verifies: its body is `not_a_run`'s
+with the page in the message in place of the address. The build's
+statement (`#[cfg(not(verus_only))]`) is unchecked: its `self.addr(page)`
+is outside `addr`'s precondition, and the site stays a seam
+(`abort_standin` in `verus/SEAMS.md`). Every other
 abort helper verifies in place and ends in `sys::abort_fmt`, which
 writes the message and raises `SIGABRT` (`sys/abort.rs`). The panic
 handler (`lib.rs`) aborts. An abort satisfies every postcondition.
@@ -4901,8 +4906,7 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   call an abort or a function that requires it (`Heap::destroy`,
   `background::spawn`,
   `call_throw_bad_alloc`, `owner_locked`,
-  `page_group_is_idle`, the `verus_only` stand-in
-  `not_a_run_page`) and those that `assert!` or `panic!` (`check`,
+  `page_group_is_idle`) and those that `assert!` or `panic!` (`check`,
   `SlabDesc::sub_live`, `assert_flushed`, `assert_refill_empty`;
   `assert_not_home`'s `assert_ne!` is its `requires`). The test flags a
   trusted body that does not return, or holds an abort, `assert!`,

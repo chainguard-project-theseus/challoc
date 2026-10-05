@@ -1,6 +1,6 @@
 # `u8::is_ascii_digit`
 
-Seam S372 of `verus/SEAMS.md`: src/vspec/sys.rs:10. Kind: assume_spec. Category: core library.
+Seam S371 of `verus/SEAMS.md`: src/vspec/sys.rs:10. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

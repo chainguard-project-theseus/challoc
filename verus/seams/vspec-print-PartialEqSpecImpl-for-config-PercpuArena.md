@@ -1,6 +1,6 @@
 # `PartialEqSpecImpl for config::PercpuArena`
 
-Seam S341 of `verus/SEAMS.md`: src/vspec/print.rs:62. Kind: spec_impl. Category: core library.
+Seam S340 of `verus/SEAMS.md`: src/vspec/print.rs:54. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract

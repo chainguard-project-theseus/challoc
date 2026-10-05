@@ -35,7 +35,7 @@ use crate::stats::{self, ArenaStats, Snapshot, fig_add, fig_mul};
 use crate::sys::bytes_is;
 use crate::vspec::cbuf;
 use crate::vspec::errno::{ThreadErrno, set_errno};
-use crate::vspec::print::{base_slab_sizes, stats_allocated, thp_name};
+use crate::vspec::print::{base_slab_sizes, stats_allocated};
 #[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{Tracked, verus};
@@ -536,7 +536,7 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
     write!(
         out,
         "thp: {} -> {} ({})",
-        word(thp_name(crate::thp::key())),
+        word(crate::thp::key().name()),
         d.mode.name(),
         d.reason.text()
     )?;
@@ -960,7 +960,7 @@ fn json_general<W: Write>(
     writeln!(
         out,
         "\t\t\"thp\": {{\"key\": \"{}\", \"mode\": \"{}\", \"reason\": \"{}\", \"class_ranges\": {}, \"class_bytes\": {}, \"chunks\": {}, \"huge_ranges\": {}, \"meta_ranges\": {}, \"failures\": {}, \"nohuge_ranges\": {}, \"host\": \"{}\"}},",
-        word(thp_name(crate::thp::key())),
+        word(crate::thp::key().name()),
         td.mode.name(),
         td.reason.text(),
         ts.class_ranges,

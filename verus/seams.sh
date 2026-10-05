@@ -16,8 +16,9 @@
 #   ext_type_spec        `#[verifier::external_type_specification]`
 #   ext_trait_spec       `#[verifier::external_trait_specification]`
 #   spec_impl            `#[cfg(verus_only)] impl vstd::std_specs::...`
-#   abort_standin        `#[cfg(verus_only)]` external_body `-> !` fn that
-#                        stands for a `panic!` the build keeps
+#   abort_standin        `#[cfg(verus_only)]` `-> !` fn (verified or
+#                        external_body) that Verus sees in place of an
+#                        abort the build keeps (`cfg(not(verus_only))`)
 #   no_decreases         `#[verifier::exec_allows_no_decreases_clause]`
 #   assume_new           `Tracked::assume_new()`/`Ghost::assume_new()`
 #                        outside tests and outside external_body bodies
@@ -132,6 +133,12 @@ function spec_path(s,    i, d, ch, k) {
     return trim(substr(s, 1, i - 1))
 }
 
+# The entry's body is not checked by Verus: an external_body item, or an
+# abort stand-in that is one.
+function unchecked(e) {
+    return ekind[e] ~ /^external_body/ || (ekind[e] == "abort_standin" && eattrs[e] ~ /verifier::external_body/)
+}
+
 # Start an entry at the current line.
 function begin(kind, name,    ind) {
     n++
@@ -198,11 +205,11 @@ newfile {
     }
 
     if (cap) {
-        if (phase == 2 && c ~ /(Tracked|Ghost)::assume_new\(\)/ && ekind[cur] !~ /^external_body|^abort_standin$/) {
+        if (phase == 2 && c ~ /(Tracked|Ghost)::assume_new\(\)/ && !unchecked(cur)) {
             e = begin(c ~ /Tracked::assume_new/ ? "assume_new" : "ghost_assume_new", ename[cur])
             econtract[e] = rawt
         }
-        if (phase == 2 && ekind[cur] ~ /^external_body|^abort_standin$/) {
+        if (phase == 2 && unchecked(cur)) {
             if (c ~ /Ghost::assume_new\(\)/) enote[cur] = enote[cur] "mints Ghost at line " LN "; "
             if (c ~ /Tracked::assume_new\(\)/) enote[cur] = enote[cur] "mints Tracked at line " LN "; "
         }
@@ -270,7 +277,7 @@ newfile {
         name = qual(name)
     } else if (isfn && t ~ /(^|[ \t])axiom fn /) {
         kind = "axiom"; name = qual(fname)
-    } else if (isfn && attrs ~ /verifier::external_body/ && attrs ~ /cfg\(verus_only\)/ && c ~ /-> *!/) {
+    } else if (isfn && attrs ~ /cfg\(verus_only\)/ && c ~ /-> *!/) {
         kind = "abort_standin"; name = qual(fname)
     } else if (isfn && attrs ~ /verifier::external_body/ && t ~ /(^|[ \t])proof fn /) {
         kind = "external_body proof"; name = qual(fname)
@@ -508,7 +515,9 @@ where a result from another tool (or a stated assumption) plugs in:
 - a `#[cfg(verus_only)]` `std_specs` impl (a ghost fact about a derived
   `PartialEq` or a `Display`);
 - an abort stand-in: a `#[cfg(verus_only)]` `-> !` function Verus sees in
-  place of a formatted `panic!` that the build keeps at the call site;
+  place of an abort that the build keeps at the call site (under
+  `#[cfg(not(verus_only))]`, unchecked), even when the stand-in's own
+  body verifies;
 - an `exec_allows_no_decreases_clause` function (termination assumed);
 - a `Tracked::assume_new()` or `Ghost::assume_new()` outside tests and
   outside `external_body` bodies (an entry notes the ones inside).

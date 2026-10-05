@@ -7363,15 +7363,17 @@ pub(crate) fn already_free(p: usize) -> !
 /// Verification only (`verus_only`): the address is computed only for the
 /// message, from a page no precondition bounds, so Verus sees this call in
 /// place of the build's `not_a_run(self.addr(page))`, which stays as it
-/// is. Trusted: the `-> !` is the whole specification, and `not_a_run`
-/// never returns.
+/// is. Its body is [`not_a_run`]'s with the page in the message.
+/// Trusted: the build's statement at the site, which Verus does not
+/// check: its `self.addr(page)` is outside `addr`'s precondition (the sum
+/// wraps in a release build and panics, so aborts, in a debug one), and
+/// `not_a_run` never returns.
 #[cfg(verus_only)]
-#[verifier::external_body]
 fn not_a_run_page(page: usize) -> !
     requires
         crate::sys::may_abort(),
 {
-    panic!("invalid free of huge page {page}: not the start of a huge allocation")
+    sys::abort_fmt(format_args!("invalid free of huge page {page}: not the start of a huge allocation"))
 }
 
 /// The `check_zero` abort: a huge run handed out as zero has a dirty word.
