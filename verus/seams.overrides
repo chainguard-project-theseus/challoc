@@ -22,6 +22,7 @@ old_len	raw pointer from C caller	Miri (evidence only)
 heap_set_arena	allocator invariant	none (assumption)
 mib_cap	raw pointer from C caller	Miri (evidence only)
 shared_ptr	UnsafeCell/volatile/transmute	RefinedRust
+shared_unchecked	allocator invariant	none (assumption)
 axiom_fork_resumed_state	C-program contract	none (assumption)
 axiom_fork_resumed	C-program contract	none (assumption)
 axiom_fork_resumed_sig	C-program contract	none (assumption)
@@ -109,6 +110,8 @@ axiom_shared_layout	core library	Kani	discharged (verus/seams/heap-shared-axiom_
 axiom_shared_built	raw pointer (internal)	none (assumption)
 axiom_shared_regions	raw pointer (internal)	none (assumption)
 Shared::begin	allocator invariant	none (assumption)
+axiom_state	allocator invariant	none (assumption)
+axiom_statics	allocator invariant	none (assumption)
 heap_at	raw pointer (internal)	RefinedRust
 heap_new	raw pointer (internal)	RefinedRust
 axiom_run_locs	allocator invariant	none (assumption)
@@ -160,7 +163,6 @@ Unbacked::commit	platform/kernel fact	none (assumption)
 WordPerm	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-WordPerm.md)
 CountPerm	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-CountPerm.md)
 core::sync::atomic::compiler_fence	core library	Kani	discharged (verus/seams/vspec-misc-compiler_fence.md)
-crate::layout::adopt_page_geometry	UnsafeCell/volatile/transmute	Verus
 core::fmt::Formatter::<'a>::write_str	core library	Kani	discharged (verus/seams/vspec-fmt-Formatter-write_str.md)
 core::fmt::Formatter::<'a>::write_fmt	function pointer	Kani	discharged (verus/seams/vspec-fmt-Formatter-write_fmt.md)
 pthread_setspecific	FFI/syscall	none (assumption)
@@ -283,7 +285,10 @@ src/vspec/word.rs:load	atomics primitive	loom/GenMC	discharged (verus/seams/vspe
 fetch_add	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-fetch_add.md)
 fetch_sub	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-fetch_sub.md)
 src/vspec/count.rs:load	atomics primitive	loom/GenMC	evidence (verus/seams/vspec-count-load.md)
-claim_init	atomics primitive	loom/GenMC	discharged (verus/seams/api-claim_init.md)
+StatePerm	atomics primitive	loom/GenMC
+state_load	atomics primitive	loom/GenMC
+state_claim	atomics primitive	loom/GenMC	discharged (verus/seams/api-state_claim.md)
+state_publish	atomics primitive	loom/GenMC
 # Arenas::count: every store writes at most MAX_ARENAS and a load returns
 # a stored value, so no memory-model question; verified in Verus through
 # vspec/count.rs inside the count's invariant (NarenasPred).
@@ -310,9 +315,9 @@ ClassState::claim_with	termination	RefinedRust
 # RefinedRust cannot take these (no atomics, UnsafeCell, integer-to-pointer
 # or inline asm support, and no view of Verus ghost state; .lane pilot §4):
 # the tool its category's default would give is replaced here.
-src/api/mod.rs:Global::get	UnsafeCell/volatile/transmute	none (assumption)
-src/api/mod.rs:publish_features	UnsafeCell/volatile/transmute	none (assumption)
-src/api/mod.rs:shared_ref	UnsafeCell/volatile/transmute	none (assumption)
+src/api/mod.rs:features_ptr	UnsafeCell/volatile/transmute	none (assumption)
+src/api/mod.rs:line_ptr	UnsafeCell/volatile/transmute	none (assumption)
+src/api/mod.rs:published_line	allocator invariant	none (assumption)
 src/api/mod.rs:shared_storage_ptr	UnsafeCell/volatile/transmute	none (assumption)
 src/api/mod.rs:fork_slot	UnsafeCell/volatile/transmute	none (assumption)
 src/class/mod.rs:axiom_class_lock	allocator invariant	none (assumption)
@@ -329,6 +334,10 @@ src/heap/thread.rs:heap_from_slot	raw pointer (internal)	none (assumption)
 src/huge/mod.rs:Huge::check_zero	UnsafeCell/volatile/transmute	none (assumption)
 src/layout/mod.rs:ClassTable::new	UnsafeCell/volatile/transmute	none (assumption)
 src/layout/mod.rs:ClassTable::table	UnsafeCell/volatile/transmute	none (assumption)
+# seams.sh names `layout::classes_ptr` `ClassTable::classes_ptr`: it reads
+# the one-line `unsafe impl Sync for ClassTable {}` as opening an impl
+# for the `verus!` block after it (as for `Arena::axiom_array_layout`).
+src/layout/mod.rs:ClassTable::classes_ptr	UnsafeCell/volatile/transmute	none (assumption)
 src/lock.rs:Lock::get_unlocked	UnsafeCell/volatile/transmute	none (assumption)
 src/lock.rs:LockGuard::deref	UnsafeCell/volatile/transmute	loom/GenMC	discharged (verus/seams/lock-LockGuard-deref.md)
 src/lock.rs:LockGuard::deref_mut	UnsafeCell/volatile/transmute	loom/GenMC	discharged (verus/seams/lock-LockGuard-deref_mut.md)

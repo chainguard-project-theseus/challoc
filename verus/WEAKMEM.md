@@ -128,8 +128,11 @@ each syscall is a compiler barrier.
   pointer is the witness, since heaps are created under `shared()`.
   This crosses no thread; the TLS slot is per thread
   (`sys/tls.rs:69`, `:140`).
-- This is the premise `api::shared_ref` (`api/mod.rs:207`) states for
-  the proofs: the published value is the one `Shared::init` built.
+- This is the premise `STATE`'s invariant (`api::axiom_state`) states
+  for the proofs: a thread that loads `READY` gets the permissions
+  `init` froze (`api::Published`), so the published value is the one
+  `Shared::init` built (`api::shared_ref`); `shared_unchecked` assumes
+  it on the fast paths.
 - What to check: every `READY` reader sees the built value, including
   the page geometry, which is a plain write.
 
@@ -463,7 +466,7 @@ hand-off (a data race on the block) are P5's documented ones.
 | `CountPerm` (S288) | discharged | as `WordPerm`, over the count wrappers; `run.sh` checks by name that `arena.rs` touches the counts only through them and `init`'s zeroing |
 | `load_owner` (S86) | evidence | write-read coherence gives the stored arena to a load ordered after the store; that each caller is so ordered is the doc comment's premise, not in the contract (a free meets it when it follows its allocation, as C requires; a racy or invalid free can read 0) |
 | `store_owner` (S87) | discharged | the store is the word's only write (Verus's markers), so every load ordered after it reads `arena`; excluding the others is the reader's premise |
-| `claim_init` (S28) | discharged | a successful exchange reads `UNINIT`, which only the initial value holds, so at most one per process; `run.sh` checks `STATE` has two writes |
+| `state_claim` (was `claim_init`'s seam, now verified) | discharged | the exchange reads the last value in `STATE`'s modification order, for every ordering, so the permission carries it; at most one success is proved from `STATE`'s invariant, given `axiom_state` denotes one invariant (assumed); `run.sh` checks `STATE` has two writes; `StatePerm`, `state_load`, `state_publish` and `axiom_state` stay trusted |
 | `LockGuard::deref`, `deref_mut` (S183, S184) | discharged | P2 models (mutual exclusion and the release/acquire edge) and C11's visible side effect; the models use a loom cell beside the real lock word, not `Lock<T>` |
 | `SlabDesc::sub_live` (S206) | discharged | the contract now requires `may_abort()` and claims no value, so the assertion's abort is allowed; one wait-free RMW |
 | `RawLock::lock_slow` (S178) | evidence (unchanged) | deadlock freedom only; the mutex is not starvation-free |

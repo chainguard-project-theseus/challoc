@@ -1,6 +1,6 @@
 # `u8::is_ascii_whitespace`
 
-Seam S353 of `verus/SEAMS.md`: src/vspec/sys.rs:16. Kind: assume_spec. Category: core library.
+Seam S359 of `verus/SEAMS.md`: src/vspec/sys.rs:16. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

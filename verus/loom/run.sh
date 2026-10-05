@@ -75,7 +75,7 @@ for f in $(awk -F'\t' '!/^#/ && NF == 2 { print $1 }' verus/loom/pins.txt | sort
     ' verus/loom/pins.txt "$f")
 	[ -z "$missing" ] || { echo "loom: $f no longer has, in the order of verus/loom/pins.txt: $missing" >&2; exit 1; }
 done
-# What the WordPerm, CountPerm and claim_init records rely on, checked by
+# What the WordPerm, CountPerm and state_claim records rely on, checked by
 # name (a write through a pointer cast these patterns do not name is
 # caught only by review):
 # - every atomic write in non-test bitmap.rs is a vspec/word.rs wrapper
@@ -86,8 +86,8 @@ done
 #   owner word, a test's corrupting write of it, the watermark);
 # - arena.rs names the bound counts only in a vspec/count.rs wrapper
 #   call, the spec `count_id`, and `Arenas::init`'s two lines writing 0;
-# - `STATE` has two writes, `claim_init`'s compare-exchange and
-#   `init_slow`'s `READY` store.
+# - `STATE` has two writes, `state_claim`'s compare-exchange and
+#   `state_publish`'s `READY` store.
 bad=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t = 0 }
     /\.(fetch_[a-z]+|store|swap|compare_exchange|compare_exchange_weak)\(/ && !/crate::vspec::word::/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/bitmap.rs
     awk '{ x = $0; sub(/^[ \t]+/, "", x) }
@@ -100,9 +100,9 @@ bad=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t =
         && x != "ptr::write(&raw mut (*bound)[i], AtomicU32::new(0));" { print FILENAME ":" FNR ": " $0 }' src/arena.rs)
 nstate=$(find src -name '*.rs' ! -path 'src/loom_tests/*' -exec grep -hE '(^|[^A-Za-z0-9_])STATE\.(store|swap|compare_exchange|fetch_)' {} + | wc -l | tr -d ' ')
 [ "$nstate" = 2 ] || bad="$bad
-src/api/mod.rs: $nstate writes of STATE, not 2 (record api-claim_init.md)"
+src/api/mod.rs: $nstate writes of STATE, not 2 (record api-state_claim.md)"
 if [ -n "$bad" ]; then
-	echo "loom: an atomic access outside what the records allow (vspec-word-WordPerm.md, vspec-count-CountPerm.md, api-claim_init.md):" >&2
+	echo "loom: an atomic access outside what the records allow (vspec-word-WordPerm.md, vspec-count-CountPerm.md, api-state_claim.md):" >&2
 	echo "$bad" >&2
 	exit 1
 fi

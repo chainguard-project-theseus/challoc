@@ -29,11 +29,11 @@ reason (`api::axiom_fork_resumed_state`): see `invariants.md`,
 
 | seam | name | verdict | reason |
 |---|---|---|---|
-| S24 | `Global::get` | sound | No `ensures`; Verus assumes only `T`'s type invariants, which every stored value (`FeatureLine`'s `len < CAP` even zeroed) has. |
-| S25 | `shared_ref` | sound | Ensures the closed, value-level `Shared::wf`, which `Shared::init` proves of `shared_at(storage)`; no field `wf` reads is written after init. |
+| S24 | `Global::get` | sound | No `ensures`; Verus assumes only `T`'s type invariants, which every stored value (`FeatureLine`'s `len < CAP` even zeroed) has. (Superseded 2026-10-05: removed or verified, through the permissions `api::axiom_statics` and `STATE`'s invariant hand out.) |
+| S25 | `shared_ref` | sound | Ensures the closed, value-level `Shared::wf`, which `Shared::init` proves of `shared_at(storage)`; no field `wf` reads is written after init. (Superseded 2026-10-05: verified from `STATE`'s invariant.) |
 | S26 | `shared_ptr` | sound | No `ensures`. (An `ensures p == Shared::storage()` would let `fast_flags` require its pointer; see S159.) |
 | S28 | `shared_storage_ptr` | sound | `Shared::storage()` is one uninterpreted constant; the body returns the static's address. |
-| S29 | `publish_features` | sound | No contract; writes before the `READY` release store, `init_slow` aborts on re-entry. |
+| S29 | `publish_features` | sound | No contract; writes before the `READY` release store, `init_slow` aborts on re-entry. (Superseded 2026-10-05: removed or verified, through the permissions `api::axiom_statics` and `STATE`'s invariant hand out.) |
 | S35 | `save_sigmask` | sound | No contract. Removable by an `AtomicU64` static (an exec change; proposed, not made). |
 | S36 | `saved_sigmask` | sound | No contract; as S35. |
 | S47 | `Arena::axiom_array_join` | sound | Consumes the element permissions, which cover exactly the array's bytes (arrays have no inter-element padding); `N > 0` blocks a zero-sized array at any address. |
@@ -106,7 +106,7 @@ reason (`api::axiom_fork_resumed_state`): see `invariants.md`,
 | S258 | `Atomic::<*mut T>::new` | sound | No contract. |
 | S259 | `Atomic::<*mut T>::swap` | sound | Every ordering is valid; any result. |
 | S261 | `load_bool` | fixed | Panics for `Release`/`AcqRel`; now required away. |
-| S265 | `crate::layout::adopt_page_geometry` | sound | No claim; S167's constant rests on its single pre-publication call. |
+| S265 | `crate::layout::adopt_page_geometry` | sound | No claim; S167's constant rests on its single pre-publication call. (Superseded 2026-10-05: removed or verified, through the permissions `api::axiom_statics` and `STATE`'s invariant hand out.) |
 | S267 | `<*const T>::cast::<U>` | sound | The address is kept. |
 | S301 | `core::cell::UnsafeCell<T>` | sound | Opaque. |
 | S302 | `core::cell::UnsafeCell::<T>::new` | sound | No claim. |

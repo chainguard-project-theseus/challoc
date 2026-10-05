@@ -1,6 +1,6 @@
 # `<[T]>::get_unchecked_mut::<I>`
 
-Seam S343 of `verus/SEAMS.md`: src/vspec/slice.rs:136. Kind: assume_spec. Category: core library.
+Seam S349 of `verus/SEAMS.md`: src/vspec/slice.rs:136. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

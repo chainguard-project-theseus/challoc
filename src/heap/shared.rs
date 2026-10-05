@@ -747,13 +747,15 @@ spec fn tables_at(m: Map<int, PointsTo<SlabTable>>, p: *mut Shared) -> bool {
 /// permissions, and the permissions cover every field at its offset. The
 /// permissions are used up, so nothing verified writes the fields
 /// afterwards; that nothing unverified does is `shared_at`'s own
-/// assumption.
+/// assumption. What comes back is the join, the permission to the
+/// whole value, frozen (`&'static`, as the regions' is): readers share
+/// it, and nothing can write through it.
 axiom fn axiom_shared_built(
     tracked parts: SharedParts,
     tracked guard_tests: Map<int, PointsTo<GuardTest>>,
     tracked tables: PointsTo<[SlabTable; NCLASSES]>,
     p: *mut Shared,
-)
+) -> (tracked r: &'static PointsTo<Shared>)
     requires
         parts.at(p),
         parts.written(),
@@ -771,6 +773,9 @@ axiom fn axiom_shared_built(
         parts.arena0.perm matches Some(a) && shared_at(p).arena0 == a.value(),
         shared_at(p).stats == parts.stats.value(),
         parts.arenas.perm matches Some(a) && shared_at(p).arenas == a.value(),
+        r.ptr() == p,
+        r.is_init(),
+        r.value() == shared_at(p),
 ;
 
 /// The regions of the `Shared` at `p` are what the permission to its
@@ -788,13 +793,30 @@ axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Sh
         shared_at(p).regions == pr.value(),
 ;
 
+/// The permission to the whole `Shared` [`Shared::init`] built, frozen
+/// ([`axiom_shared_built`]), once it has: what `init` hands back to its
+/// caller, which publishes it (`api::Published`).
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct Built {
+    pub tracked perm: Option<&'static PointsTo<Shared>>,
+}
+
+impl Built {
+    /// The permission is to the `Shared` at `p`, initialised, and holds
+    /// the value built there ([`Shared::built_at`]).
+    pub open spec fn at(&self, p: *mut Shared) -> bool {
+        self.perm matches Some(r) && r.ptr() == p && r.is_init() && r.value() == shared_at(p)
+    }
+}
+
 impl Shared {
     /// The permission to `init`'s storage, uninitialised, for `once`, the
     /// process's token of this step. Trusted: `init`'s caller hands over
     /// writable storage for a `Shared` that nothing else uses (its safety
     /// contract). The token is used up, so the permission is handed out
-    /// once (`api::init_slow`'s winning exchange holds the one token,
-    /// `api::claim_init`; the unit tests, unverified callers outside this
+    /// once (`api::init_slow`'s winning exchange takes the one token out
+    /// of `STATE`'s invariant, `api::claim_init`; the unit tests, unverified callers outside this
     /// contract, build a fresh leaked box each time): two permissions for
     /// one storage proved `false` (`PointsTo::is_disjoint`), and could
     /// freeze two values of a field (`axiom_shared_regions`).
@@ -1260,6 +1282,7 @@ impl Shared {
         guard_install: bool,
         pac: bool,
         Tracked(steps): Tracked<Map<Step, Once>>,
+        Tracked(built): Tracked<&mut Built>,
     ) -> (r: bool)
         requires
             crate::sys::may_abort(),
@@ -1272,9 +1295,10 @@ impl Shared {
             space@.len() == regions.meta_len,
             config.wf(),
             pac ==> crate::sys::pac::pac_available(),
-            once::all_steps(steps),
+            once::shared_steps(steps),
         ensures
             r ==> shared_at(this).wf(),
+            r ==> final(built).at(this),
     {
         // Premise (lock order): no allocator lock exists before this
         // `Shared` is built (`init_slow` runs `init` once, before the
@@ -1356,7 +1380,7 @@ impl Shared {
             }
             proof {
                 // Every step but `Shared`'s still has its token.
-                assert forall|s: Step| s != Step::Shared implies #[trigger] once::holds(steps, s) by {
+                assert forall|s: Step| s != Step::Shared && s != Step::Statics implies #[trigger] once::holds(steps, s) by {
                     assert(once::holds(steps0, s));
                 }
             }
@@ -1505,7 +1529,7 @@ impl Shared {
                 Tracked(&mut parts.stats),
             );
             proof {
-                axiom_shared_built(parts, guard_tests, tables_perm, this);
+                built.perm = Some(axiom_shared_built(parts, guard_tests, tables_perm, this));
                 let s = shared_at(this);
                 s.arenas.lemma_is_process();
                 assert(s.regions == regions0);
@@ -1537,12 +1561,14 @@ impl Shared {
     /// built (`Arenas::wf`: its bound counts at their invariants), the
     /// process's (`Arenas::is_process`).
     ///
-    /// Assumed by every verified function that takes a `&Shared`: the
-    /// accessor that hands the published `Shared` out (`api::shared_ref`)
-    /// claims it. [`Shared::init`] proves it of the value it builds (the
+    /// Assumed by every verified function that takes a `&Shared`.
+    /// [`Shared::init`] proves it of the value it builds (the
     /// configuration is well formed: `Config::wf`, which `config::load`
-    /// ensures); what `shared_ref` adds is that the published value is that
-    /// one, unchanged.
+    /// ensures); `api::shared_ref` proves it of the published value, which
+    /// is that one, from the permission `api::STATE`'s invariant holds
+    /// from `READY` on (`api::Published`); `api::shared_unchecked`, the
+    /// fast paths' accessor, which that permission does not reach,
+    /// assumes it.
     pub closed spec fn wf(&self) -> bool {
         &&& self.regions.wf()
         &&& self.regions == crate::layout::process_regions()
@@ -2698,7 +2724,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S134..S149, S150: each `S_*` is its field's `offset_of!`, and the
+    /// S140..S155, S156: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {
@@ -2747,7 +2773,7 @@ mod kani_layout {
         assert!(size_of::<Shared>() <= isize::MAX as usize);
     }
 
-    /// S49 `arena::axiom_array_layout` at the two arrays of `Shared`.
+    /// S55 `arena::axiom_array_layout` at the two arrays of `Shared`.
     #[kani::proof]
     fn shared_array_layout() {
         array_layout::<GuardTest, NCLASSES>();

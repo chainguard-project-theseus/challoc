@@ -64,6 +64,8 @@ pub use paths::{
     alloc, alloc_declined, alloc_zeroed, free, free_direct, free_fast, free_fast_class,
     free_sized_fast,
 };
+#[cfg(verus_only)]
+pub use shared::Built;
 pub use shared::Shared;
 #[cfg(test)]
 use shared::{GuardTest, guard_interval_for};
@@ -300,7 +302,8 @@ pub proof fn theorem_guard_free(p: *mut u8, c: int, slab: int)
 ///   (`huge::Inner::lemma_in_meta`, `TwoLevelBitmap::lemma_words_placed`).
 ///
 /// Trusted premises: `Shared::wf` of the published value
-/// (`api::shared_ref`); the kernel's `mmap` contract for the three
+/// (`api::shared_unchecked`; `api::shared_ref` proves it from `STATE`'s
+/// invariant); the kernel's `mmap` contract for the three
 /// reservations (`layout::regions::linux::try_reserve`,
 /// `Reserved::is_disjoint` and `Reserved::is_apart_from_static`);
 /// `Meta`'s lock axioms (`vspec::meta::axiom_meta_lock_inv`,
@@ -6105,7 +6108,7 @@ mod kani_aborts {
     use super::{assert_flushed, assert_refill_empty};
     use crate::kani_proofs::must_not_return;
 
-    /// S119 `assert_flushed`, `ensures *len == 0`: on any other `len` the
+    /// S125 `assert_flushed`, `ensures *len == 0`: on any other `len` the
     /// call never returns.
     #[kani::proof]
     #[kani::should_panic]
@@ -6117,7 +6120,7 @@ mod kani_aborts {
         }
     }
 
-    /// S120 `assert_refill_empty`, `ensures *len == 0`: as
+    /// S126 `assert_refill_empty`, `ensures *len == 0`: as
     /// `assert_flushed`.
     #[kani::proof]
     #[kani::should_panic]

@@ -44,13 +44,20 @@ add.
   `heap::shared::axiom_process_shared` (`heap/shared.rs:390`) defines
   them as the regions and `PUSH_PAC` bit of
   `shared_at(shared_storage())` (`heap/shared.rs:372`, `:378`).
-- `api::shared_ref` (`api/mod.rs:207`, `external_body`) ensures
-  `r.wf()`; `wf`'s `regions == process_regions()` conjunct
-  (`heap/shared.rs:820`) ties it to the process. Its doc comment states
-  what is assumed: `init_slow` (`api/mod.rs:319`) runs `init` once
-  before the `READY` release store, and nothing writes a field `wf`
-  reads afterwards. `shared`, `shared_if_ready` and `shared_unchecked`
-  (`api/mod.rs:217`, `:232`, `:261`) inherit it.
+- `api::shared_ref` (verified) ensures `r.wf()`; `wf`'s
+  `regions == process_regions()` conjunct (`heap/shared.rs:820`) ties
+  it to the process. It reads the published value through the
+  permission `STATE`'s invariant holds from `READY` on
+  (`api::Published`, see "One-shot tokens" below). What was its
+  assumption (`init_slow` runs `init` once before the `READY` release
+  store, and nothing writes a field `wf` reads afterwards) is now
+  proved from narrower premises: `axiom_state` (one invariant, its
+  initial state), the `STATE` wrappers (under sequential consistency),
+  and `heap::shared::axiom_shared_built`'s join, whose `shared_at`
+  carries the "nothing unverified writes it" assumption. `shared` and
+  `shared_if_ready` load `READY` and get the permission;
+  `shared_unchecked` (the fast paths' accessor, `external_body`) and
+  `published_line` assume it, since their callers hold none.
 - Two more trusted sources of `Shared::wf`: `heap::paths::shared_of`
   (`heap/paths.rs:783`, a heap's `&Shared`) and
   `purge::background::shared_arg` (`purge/background.rs:363`, the
@@ -64,18 +71,32 @@ add.
   `put_policy` (`:536`-`:592`). Arena 0 is built the same way: `put_head`,
   `put_sets`, `put_class`, `put_tail` (`arena.rs:106`-`:163`) and
   `arena_at` (`arena.rs:515`).
-- `api::shared_storage_ptr` (`api/mod.rs:360`): the static's storage is
-  `Shared::storage()`.
-- One-shot tokens (`vspec/once.rs`): `api::claim_init` (`external_body`)
-  is `init_slow`'s compare-exchange from `UNINIT`, and hands its winner
-  one `Once` token per once-per-process step, which `init` passes to
-  `Shared::init`. `Shared::begin`, `table::axiom_slot_loc`,
-  `table::axiom_fresh_words` (one token per class each) and
-  `huge::axiom_run_locs` each use up their step's token, so Verus
-  checks that each runs at most once per process (a second call does
-  not verify: `verus/audit/invariants.md`, "One-shot premises"). What
-  stays assumed is `claim_init`'s: nothing else leaves `UNINIT`, so the
-  exchange succeeds once.
+- `api::shared_storage_ptr`, `features_ptr`, `line_ptr` and
+  `layout::classes_ptr` (`external_body`): raw-pointer projections of
+  the statics, at `Shared::storage()`, `features_storage()`,
+  `line_storage()` and `classes_storage()`.
+- One-shot tokens (`vspec/once.rs`) and `STATE`'s invariant
+  (`api::axiom_state`, `api::StatePred`): the invariant holds `STATE`'s
+  permission (`api::StatePerm`, through the wrappers `state_load`,
+  `state_claim` and `state_publish`), every step's `Once` token while
+  `STATE` is `UNINIT`, and from `READY` on the permissions `init` froze
+  (`api::Published`: the built `Shared`, from `axiom_shared_built`'s
+  join, the feature statics and the class table). `api::claim_init`
+  (verified) is `init_slow`'s compare-exchange from `UNINIT`, and takes
+  the tokens out of the invariant for its winner, which `init` passes
+  on: `Step::Statics` to `api::axiom_statics` (the class table and
+  feature statics' storage), the rest to `Shared::init`.
+  `Shared::begin`, `table::axiom_slot_loc`, `table::axiom_fresh_words`
+  (one token per class each), `huge::axiom_run_locs` and
+  `axiom_statics` each use up their step's token, so Verus checks that
+  each runs at most once per process (a second call does not verify:
+  `verus/audit/invariants.md`, "One-shot premises"). That the exchange
+  succeeds once is proved given `axiom_state` (one invariant; it holds
+  the tokens only in `UNINIT`, which nothing writes); what stays
+  assumed is that premise, `axiom_state`'s initial state, the
+  wrappers (`state_claim` is discharged,
+  `verus/seams/api-state_claim.md`) and that `STATE` has no
+  other writer (`verus/loom/run.sh` checks its two writes).
 
 **The `free` contract.** `heap::live::axiom_c_claim`
 (`heap/live.rs:489`) is the one trusted step at the C ABI boundary: for
@@ -136,8 +157,9 @@ and the call does not return (theorem 3, which is not voided for it).
   (`layout/regions.rs:1696`), `external_body`: entries are
   `class_table()`, `wf`, sized `spec_class_size`.
 - `vspec::class::axiom_class_table_wf` (`vspec/class.rs:12`), the same
-  fact for proofs; `adopt_page_geometry`'s `assume_specification`
-  (`vspec/class.rs:30`) claims nothing.
+  fact for proofs; `adopt_page_geometry` (verified) writes the table
+  through the permission `api::axiom_statics` gives and keeps
+  `table_ok`, which `api::Published` freezes at `READY`.
 
 **Kernel `mmap`.**
 - `linux::try_reserve` (`layout/regions.rs:1135`): a reservation is
@@ -978,7 +1000,7 @@ share no page with the guard pages of any live run, its own included.
 - `vspec::word::load` (`external_body`, one atomic load of the word, as
   the three writers are one atomic step each); its result is the
   permission's value under sequential consistency.
-- Class lock axioms for `ready`, and `api::shared_ref`'s `Shared::wf`
+- Class lock axioms for `ready`, and `api::shared_unchecked`'s `Shared::wf`
   for the guard tests and the table geometry the free paths read.
 
 **Where the statement is weaker than the code.**
@@ -1118,7 +1140,8 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   `load_owner` (a `Relaxed` load) and
   `watermark` (`class/table.rs`),
   `vspec::word::load` (an atomic load), `layout::regions::class_entry`
-  (an empty `asm!`), `addr_to_ptr`, `api::shared_ptr` and `shared_ref`.
+  (an empty `asm!`), `addr_to_ptr`, `api::shared_ptr` and
+  `shared_unchecked`.
   So do the `core` functions they use (`Option::map`, `?`, atomics,
   pointer arithmetic), which the common premises already trust.
 - Two values reach the kernel from code with no `requires`, and only a
@@ -1250,8 +1273,7 @@ only the functions named here:
 **The closure.** These are the functions with a declared mask on these
 paths, verified unless marked trusted:
 - **Size and process state:** `class_index`, `layout::class_of`;
-  `api::shared_ptr` (trusted), `shared_unchecked`, `shared_ref`
-  (trusted).
+  `api::shared_ptr` (trusted), `shared_unchecked` (trusted).
 - **Heap lookup:** `existing_heap` (on a ghost `TlsSlot::entry()`),
   `existing_heap_in`, `tls_heap_slot`, `sys::tls::get` and
   the aarch64 `get_tp` (trusted asm), the x86_64 `get_tp`, `fast_flags`,
@@ -1287,8 +1309,8 @@ library's machine code is identical to the previous commit's on x86_64.
 - **Trusted masks.** Each trusted function's mask is a declaration that
   Verus takes on trust. Their bodies were read, and none takes a lock or
   waits:
-  - `shared_ptr`, `shared_ref` and the `Global::get` it calls
-    (`api/mod.rs:153`, `assume_init_ref`).
+  - `shared_ptr` and `shared_unchecked` (a projection of `SHARED`
+    and a reference to it).
   - `tls::get` and `get_tp` (asm), `fast_flags` (a field read),
     `heap_from_slot` (calls `pac::auth`), `home_ptr_at`.
   - `cached_recently` (the loop above), `arena_volatile`,
@@ -1688,7 +1710,7 @@ theorem does not follow a token through the cache (see below).
   thread frees the same run in between (a double free).
 - `zero_on_free` is fixed for the process: `push_flags` is a plain field
   `init` writes once and every free path reads through `&Shared`
-  (`api::shared_ref`'s premise that nothing writes `Shared` after
+  (`api::Published`'s frozen permission: nothing writes `Shared` after
   `READY`); `zero_on_free` is a startup configuration key with no
   mallctl writer. Within one call `zero_on_free(shared)` is one value,
   so the guard on each obligation is the branch that cleared the block.
@@ -4837,8 +4859,10 @@ body), `malloc_info` and `malloc_stats`, which require `may_abort()`.
 - The trusted bodies these calls reach do not panic (read from their
   bodies at this commit): the futex wait and wake (`sys/mod.rs`; their
   results are discarded, so `EAGAIN` or `EINTR` loops) under
-  `RawLock::lock`/`unlock`, `LockGuard::drop` and `deref`, `Global::get`
-  and `shared_ref`, `ClassTable::table`, `class_entry`,
+  `RawLock::lock`/`unlock`, `LockGuard::drop` and `deref`, the static
+  projections and `shared_unchecked`, `published_line`, the `STATE`
+  wrappers (`state_load`, `state_claim`, `state_publish`: one bare
+  atomic operation each), `ClassTable::table`, `class_entry`,
   `SlabTable::watermark`, the registry reader `arena_at`
   (`arena.rs:1264`), `Config::get` and `KEYS`, the caller-memory helpers
   of `mallctl` (`name_byte`, `name_bytes`, `old_len`, `copy_prefix`,

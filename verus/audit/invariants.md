@@ -323,6 +323,9 @@ leaves `UNINIT`, so the exchange succeeds once per process; that is a
 fact about one atomic and its one writer, not about where a ghost call
 appears. `init` and `Shared::init` pass the map on; `Shared::init`
 takes each step's token where the step runs (`once::take`).
+(Superseded 2026-10-05: `claim_init` is verified; the tokens are
+`api::axiom_state`'s initial state, and `claim_init` takes them out of
+`STATE`'s invariant on the winning exchange, `state_claim`.)
 
 | seam | before | after | double call now |
 |---|---|---|---|
@@ -401,6 +404,8 @@ Still premises, and why:
 - S77's replacement `Unbacked::into_lazy`: the commit-before-read
   premise (Verus does not model page protection), as before.
 - `claim_init`: the root mint, trusted for the one compare-exchange.
+  (Superseded 2026-10-05: `claim_init` is verified; the tokens are
+  `api::axiom_state`'s initial state.)
 - S84's "once per slab" holds only while every holder of a class's
   commit lock restores `TableInner::inv` before releasing it
   (`axiom_table_lock_inv`): `LockGuard::drop` requires nothing, so a

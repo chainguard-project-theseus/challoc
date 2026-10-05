@@ -1182,9 +1182,13 @@ impl ClassTable {
     /// The table, for verified code. Trusted: the table is [`BASE_CLASSES`],
     /// whose entries are well formed and sized [`spec_class_size`]
     /// (`build_classes`'s postcondition), or that table after
-    /// [`adopt_page_geometry`], which keeps both (`apply_page_geometry`'s
-    /// postcondition), and it is written only before the allocator is
-    /// published.
+    /// [`adopt_page_geometry`], which keeps both (its contract, proved
+    /// through the permission `api::init` writes the table with and
+    /// freezes at `READY`, `api::Published`), and it is written only
+    /// before the allocator is published. What this assumes is that a
+    /// reader sees that value: the frozen permission would show it, but
+    /// readers are everywhere (the fast paths among them) and none holds
+    /// it.
     #[verifier::external_body]
     #[inline(always)]
     pub fn table(&self) -> (r: &[Class; NCLASSES])
@@ -1223,22 +1227,59 @@ impl Deref for ClassTable {
 
 pub exec static CLASSES: ClassTable = ClassTable::new(BASE_CLASSES);
 
-} // verus!
+/// The storage of [`CLASSES`]' table.
+pub uninterp spec fn classes_storage() -> *mut [Class; NCLASSES];
+
+/// Every entry of `t` is well formed and sized [`spec_class_size`]: what
+/// [`BASE_CLASSES`] is (`build_classes`'s postcondition) and what
+/// [`apply_page_geometry`] keeps.
+pub open spec fn table_ok(t: [Class; NCLASSES]) -> bool {
+    &&& forall|i: int| 0 <= i < NCLASSES ==> #[trigger] t[i].wf()
+    &&& forall|i: int| 0 <= i < NCLASSES ==> #[trigger] t[i].size == spec_class_size(i)
+}
+
+/// The storage of [`CLASSES`]' table, as a raw pointer. Trusted: a
+/// raw-pointer projection of the static.
+#[verifier::external_body]
+#[inline(always)]
+fn classes_ptr() -> (p: *mut [Class; NCLASSES])
+    ensures
+        p == classes_storage(),
+    opens_invariants none
+{
+    CLASSES.0.get()
+}
 
 /// Raise the slab of every class whose table slab is smaller than the
 /// kernel page to the page ([`lg_slab_at`]), writing `lg_slab`,
-/// `slab_mask`, `nslots` and `slab_bits` of those classes in [`CLASSES`].
-/// Returns how many
-/// classes changed (0 on a 4 KiB kernel, where the table is untouched).
+/// `slab_mask`, `nslots` and `slab_bits` of those classes in [`CLASSES`],
+/// through `perm`, the permission to its storage, and keeping
+/// [`table_ok`]. Returns how many classes changed (0 on a 4 KiB kernel,
+/// where the table is untouched).
 ///
 /// # Safety
 /// Must be called once, before the allocator is published to any other
 /// thread (`api::init` does, right after the page-size probe), and never
 /// again: nothing may access the table concurrently.
-pub unsafe fn adopt_page_geometry(lg_page: u32) -> usize {
+pub unsafe fn adopt_page_geometry(
+    lg_page: u32,
+    Tracked(perm): Tracked<&mut vstd::raw_ptr::PointsTo<[Class; NCLASSES]>>,
+) -> (changed: usize)
+    requires
+        old(perm).ptr() == classes_storage(),
+        old(perm).is_init(),
+        table_ok(old(perm).value()),
+    ensures
+        final(perm).ptr() == classes_storage(),
+        final(perm).is_init(),
+        table_ok(final(perm).value()),
+        changed <= NCLASSES,
+{
     // SAFETY: the caller guarantees exclusive access during the call.
-    apply_page_geometry(unsafe { &mut *CLASSES.0.get() }, lg_page)
+    apply_page_geometry(vstd::raw_ptr::ptr_mut_ref(classes_ptr(), Tracked(perm)), lg_page)
 }
+
+} // verus!
 
 verus! {
 
@@ -1262,8 +1303,7 @@ pub(crate) fn apply_page_geometry(table: &mut [Class; NCLASSES], lg_page: u32) -
             &&& final(table)[i].inv_odd == old(table)[i].inv_odd
             &&& final(table)[i].tz == old(table)[i].tz
         },
-        (forall|i: int| 0 <= i < NCLASSES ==> #[trigger] old(table)[i].wf() && old(table)[i].size == spec_class_size(i))
-            ==> forall|i: int| 0 <= i < NCLASSES ==> #[trigger] final(table)[i].wf() && final(table)[i].size == spec_class_size(i),
+        table_ok(*old(table)) ==> table_ok(*final(table)),
 {
     let want = classes_for_page(lg_page);
     let mut changed = 0;
@@ -1296,12 +1336,19 @@ pub(crate) fn apply_page_geometry(table: &mut [Class; NCLASSES], lg_page: u32) -
         } by {
             assert(keeps_size(table[i], old(table)[i]));
         }
-        assert forall|i: int| 0 <= i < NCLASSES && old(table)[i].wf() && old(table)[i].size == spec_class_size(i)
-            implies #[trigger] table[i].wf() by {
-            if table[i] != old(table)[i] {
-                assert(want[i].wf() && want[i].size == spec_class_size(i));
+        if table_ok(*old(table)) {
+            assert forall|i: int| 0 <= i < NCLASSES implies #[trigger] table[i].wf() by {
+                assert(old(table)[i].wf());
+                assert(old(table)[i].size == spec_class_size(i));
+                if table[i] != old(table)[i] {
+                    assert(want[i].wf() && want[i].size == spec_class_size(i));
+                    assert(keeps_size(table[i], old(table)[i]));
+                    assert(table[i].inv_ok() == old(table)[i].inv_ok());
+                }
+            }
+            assert forall|i: int| 0 <= i < NCLASSES implies #[trigger] table[i].size == spec_class_size(i) by {
                 assert(keeps_size(table[i], old(table)[i]));
-                assert(table[i].inv_ok() == old(table)[i].inv_ok());
+                assert(old(table)[i].size == spec_class_size(i));
             }
         }
     }

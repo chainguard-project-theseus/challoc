@@ -186,7 +186,8 @@ identical.
 (`api/mod.rs:360`), the pointer `api::init` hands to `Shared::init`, was
 `(*SHARED.0.get()).as_mut_ptr()`: the same `as_mut_ptr` through a temporary
 `&mut MaybeUninit<Shared>`. Every reader then takes `&Shared` from the cell
-(`Global::get`, `:155`), which invalidates (Stacked Borrows) or freezes
+(`Global::get`, `:155`; now `ptr_ref` through `shared_storage_ptr`),
+which invalidates (Stacked Borrows) or freezes
 (Tree Borrows) the pointers `init` stored, such as the registry's
 `arena0`. A reduction (an `UnsafeCell<MaybeUninit<S>>` static initialised
 that way, then an atomic store through the stored pointer after a

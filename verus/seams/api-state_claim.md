@@ -1,23 +1,31 @@
-# `claim_init`
+# `state_claim`
 
-Seam S30 of `verus/SEAMS.md`: src/api/mod.rs:434. Kind: external_body. Category: atomics primitive.
+Seam S30 of `verus/SEAMS.md`: src/api/mod.rs:363. Kind: external_body. Category: atomics primitive.
 Discharged by the C11 atomicity rules and loom (part 3).
 
 ## Contract
 
-At commit 0c9cd77:
+At the commit that introduced it (`STATE`'s invariant; it replaces
+`claim_init`'s seam, whose record this one carries over):
 
 ```rust
-fn claim_init() -> (r: (Result<u32, u32>, Tracked<Map<once::Step, once::Once>>))
+fn state_claim(Tracked(perm): Tracked<&mut StatePerm>) -> (r: Result<u32, u32>)
     ensures
-        r.0 is Ok ==> once::all_steps(r.1@),
+        old(perm).value() == UNINIT ==> r == Ok::<u32, u32>(UNINIT) && final(perm).value() == INITIALISING,
+        old(perm).value() != UNINIT ==> r == Err::<u32, u32>(old(perm).value()) && final(perm).value() == old(perm).value(),
+    opens_invariants none
+    no_unwind
 ```
 
-The body, at that commit: `(STATE.compare_exchange(UNINIT, INITIALISING,
-Acquire, Acquire), Tracked::assume_new())`. The seam is the minted
-tokens: the contract hands every caller whose exchange succeeded the
-process's one-shot tokens (`once::all_steps`), so it is sound only if at
-most one call per process succeeds. Its one caller is `init_slow`.
+The body: `STATE.compare_exchange(UNINIT, INITIALISING, Acquire,
+Acquire)`, the bare `core` call under `#[inline(always)]`. The seam is
+that `perm`, `STATE`'s ghost permission (`api::StatePerm`, held by
+`STATE`'s invariant, `api::axiom_state`), carries `STATE`'s value
+across the exchange. Its one caller is `claim_init`, inside the
+invariant. Given `axiom_state` (one invariant, starting with `STATE` at
+`UNINIT` and every token) and the wrappers' contracts, Verus proves
+that at most one call takes the tokens (the invariant holds them only
+while the value is `UNINIT`), which `claim_init` used to assume.
 
 ## Statement
 
@@ -25,12 +33,12 @@ Two parts.
 
 1. **C11.** `STATE` is an atomic whose writes are its initial value
    `UNINIT` (the static's initialiser), the successful
-   `compare_exchange`s of `claim_init` (`UNINIT` to `INITIALISING`) and
-   `init_slow`'s `READY` store: two write sites in `src/`, which
+   `compare_exchange`s of `state_claim` (`UNINIT` to `INITIALISING`) and
+   `state_publish`'s `READY` store: two write sites in `src/`, which
    `run.sh` checks. All writes are in one modification order, and a
    read-modify-write reads the last value before its own write in that
    order ([atomics.order] p10), for every ordering. A failed
-   `compare_exchange` writes nothing.
+   `compare_exchange` writes nothing and returns the value it read.
 2. **loom.** `src/loom_tests/init.rs` (described in `api-init_slow.md`)
    runs a copy of `init_slow` whose first step is this
    `compare_exchange` with these orderings (pinned in
@@ -46,25 +54,37 @@ Models: `loom_init_free_races_init`, `loom_init_two_callers`, `loom_init_reentry
 
 ## Translation
 
-- **`ensures r.0 is Ok ==> once::all_steps(r.1@)`**: the tokens are
-  ghost and Verus takes them as fresh; what makes that sound is that
-  `r.0 is Ok` holds for at most one call in the process. By part 1: a
-  successful exchange reads `UNINIT` and writes `INITIALISING`. The only
-  write of `UNINIT` is the initial value, which comes first in the
-  modification order, and an RMW reads the value immediately before its
-  own write; so a successful exchange is the first write after the
-  initial value, and there is one first write. This holds for every
-  ordering, so the `Acquire` orderings play no part in it (they matter
-  to `init_slow`'s publication, `api-init_slow.md`).
+- **The permission is `STATE`'s value.** Verus's model is sequentially
+  consistent: `perm.value()` is the value the last write in `STATE`'s
+  modification order wrote, which is what a read-modify-write reads by
+  part 1 (for every ordering, so the `Acquire` orderings play no part
+  here; they matter to `init_slow`'s publication, `api-init_slow.md`).
+  The permission starts with `STATE`'s initial value, `UNINIT`
+  (`axiom_state`'s premise), and changes only through the wrappers,
+  each at its one atomic operation, so it stays the value of the last
+  write.
+- **`old(perm).value() == UNINIT ==> r == Ok(UNINIT) && final == INITIALISING`**:
+  the exchange read `UNINIT`, which equals the expected value, so it
+  succeeded, returned `Ok` of what it read and wrote `INITIALISING`.
+- **`old(perm).value() != UNINIT ==> r == Err(old) && final == old`**:
+  it read another value, failed, returned `Err` of it and wrote
+  nothing.
+- **At most one success.** Not this contract's (Verus proves it in
+  `claim_init`, given `axiom_state`), but what the models also check:
+  the only write of `UNINIT` is the initial value, which comes first in
+  the modification order, so a successful exchange is the first write
+  after it, and there is one first write.
 - **Fork.** A child forked before the exchange starts from `UNINIT` with
   no tokens taken, and is a different process; a child forked after it
   never sees `UNINIT` again. Verus's ghost world is per process, so
   neither duplicates a token within one.
 - **Gaps.** The model is a copy (pinned); it has 2 callers. The argument
-  in the first bullet does not depend on the number of callers. That
-  `STATE` has no other writer is checked by `run.sh` syntactically
-  (writes through `STATE.` in `src/`); a write through a raw pointer to
-  it would be caught only by review.
+  above does not depend on the number of callers. That `STATE` has no
+  other writer is checked by `run.sh` syntactically (writes through
+  `STATE.` in `src/`); a write through a raw pointer to it would be
+  caught only by review. `opens_invariants none` and `no_unwind`: the
+  body is one atomic instruction (`compare_exchange` with these
+  orderings does not panic).
 
 Common to every loom record. loom 0.7.2 with
 `verus/loom/loom-0.7.2-dpor.patch` (`sh verus/loom/run.sh`, release
@@ -124,6 +144,7 @@ lift a proof to weak memory.
 
 ## Review
 
+
 Fresh-context subagent, 2026-10-04: the models against the code they
 run or copy, and this translation, looking for claims beyond what the
 models check. Its findings are folded in: `load_owner` became evidence
@@ -131,6 +152,11 @@ models check. Its findings are folded in: `load_owner` became evidence
 checks were widened and the records now say what they check, the count
 records state the happens-before a ticket's `unbind` needs, and the
 free path's stale reads are described as fast-path misses.
+
+Carried over from `api-claim_init.md` on 2026-10-05, when `STATE`'s
+invariant made `claim_init` verified and moved its seam here; the
+translation was rewritten for the wrapper's contract and checked by
+that lane's fresh-context review.
 
 ## Tests
 

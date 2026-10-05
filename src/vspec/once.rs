@@ -4,9 +4,9 @@
 //! the huge allocator's run authorities) is true only if it runs once:
 //! a second run would fix the fact a second way and prove `false`. Each
 //! such axiom uses up a [`Once`] token for its step, so a second run no
-//! longer verifies. The process's tokens, one per step, come from
-//! `api::claim_init`, the compare-exchange that wins initialisation,
-//! which succeeds once per process.
+//! longer verifies. The process's tokens, one per step, are in `api::STATE`'s
+//! invariant (`api::axiom_state`) until `api::claim_init`, the
+//! compare-exchange that wins initialisation, takes them, once per process.
 
 use vstd::prelude::*;
 
@@ -25,13 +25,16 @@ pub ghost enum Step {
     /// `class::table::axiom_fresh_words`: the word permissions of class
     /// `c`'s bitmap.
     FreshWords(int),
+    /// `api::axiom_statics`: the permissions to the storage of the statics
+    /// `api::init` writes itself, the class table and the feature statics.
+    Statics,
 }
 
 /// The right to take step [`Once::step`] once. Linear (not `Copy`), and
 /// no verified code builds one (the field is private and this module has
-/// no constructor): the process's set comes from the trusted
-/// `api::claim_init`. An axiom that takes the token by value cannot be
-/// called twice with it.
+/// no constructor): the process's set comes from `api::STATE`'s
+/// invariant (`api::axiom_state`). An axiom that takes the token by
+/// value cannot be called twice with it.
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct Once {
@@ -53,6 +56,12 @@ pub open spec fn holds(m: Map<Step, Once>, s: Step) -> bool {
 /// The tokens of every step: what `api::claim_init` hands its winner.
 pub open spec fn all_steps(m: Map<Step, Once>) -> bool {
     forall|s: Step| #[trigger] holds(m, s)
+}
+
+/// The tokens of every step but [`Step::Statics`], which `api::init`
+/// takes itself: what `heap::Shared::init` is handed.
+pub open spec fn shared_steps(m: Map<Step, Once>) -> bool {
+    forall|s: Step| s != Step::Statics ==> #[trigger] holds(m, s)
 }
 
 /// Take the token of step `s` out of `m`.

@@ -127,8 +127,12 @@ use crate::vspec::word::WordPerm;
 #[cfg(verus_only)]
 use crate::vspec::word::word_addr;
 #[cfg(verus_only)]
+use vstd::invariant::AtomicInvariant;
+use vstd::invariant::InvariantPredicate;
+#[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Map, Tracked, int, verus};
+use vstd::raw_ptr::PointsTo;
 
 verus! {
 
@@ -146,9 +150,9 @@ pub extern "C" fn challoc_version() -> *const core::ffi::c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const core::ffi::c_char
 }
 
-const UNINIT: u32 = 0;
-const INITIALISING: u32 = 1;
-const READY: u32 = 2;
+pub const UNINIT: u32 = 0;
+pub const INITIALISING: u32 = 1;
+pub const READY: u32 = 2;
 
 exec static STATE: AtomicU32 = AtomicU32::new(UNINIT);
 /// Thread id of the initialising thread while the state is `INITIALISING`,
@@ -156,25 +160,16 @@ exec static STATE: AtomicU32 = AtomicU32::new(UNINIT);
 exec static INIT_TID: AtomicU32 = AtomicU32::new(0);
 
 /// Storage for a value built in place at init and immutable afterwards.
-/// Verus does not model the contents of the `UnsafeCell`.
+/// Verus does not model the contents of the `UnsafeCell`; verified code
+/// reads and writes a static's storage through a permission to it, at
+/// the address its projection names ([`shared_storage_ptr`],
+/// [`features_ptr`], [`line_ptr`]).
 #[verifier::reject_recursive_types(T)]
 struct Global<T>(UnsafeCell<MaybeUninit<T>>);
 
 impl<T> Global<T> {
     const fn new() -> Self {
         Global(UnsafeCell::new(MaybeUninit::uninit()))
-    }
-
-    /// Trusted: reads the storage (the `# Safety` contract).
-    ///
-    /// # Safety
-    /// The value must have been initialised and `READY` observed with an
-    /// acquire load on this thread.
-    #[verifier::external_body]
-    #[inline(always)]
-    unsafe fn get(&self) -> &T {
-        // SAFETY: guaranteed by the caller.
-        unsafe { (*self.0.get()).assume_init_ref() }
     }
 }
 
@@ -226,33 +221,208 @@ fn fork_slot() -> (r: &'static AtomicU64)
     &FORK_SIGMASK
 }
 
-/// `SHARED` as a reference, the one read of the static every accessor
-/// below makes.
-///
-/// Trusted: the `UnsafeCell` read, and that the published `Shared`
-/// satisfies [`Shared::wf`]. `init` (verified) builds the value with
-/// `Shared::init`, whose contract gives `wf` of the value built in the
-/// static's storage ([`Shared::built_at`]`(`[`Shared::storage`]`)`), and
-/// aborts unless it returned `true`. What stays assumed: that this reads
-/// that value, that is, `init_slow` runs `init` once, before it publishes
-/// `READY` with a release store, and nothing writes what `wf` reads
-/// afterwards (the regions, the push flags, the configuration, the huge
-/// and metadata bounds and the slab tables are written only inside
-/// `Shared::init`; the rest of the value, locks and atomics, changes, but
-/// `wf` does not read it).
+/// The permissions to the statics `init` writes once, frozen when it is
+/// done: the published `Shared` (the value `Shared::init` built, which
+/// is well formed), the probed features, the feature line, and the
+/// class table after [`layout::adopt_page_geometry`]. `STATE`'s
+/// invariant holds them from `READY` on ([`StatePred`]), so a thread
+/// that loads `READY` gets them ([`load_state`]); being `&'static`, they
+/// are shared by every reader, and nothing writes the statics through
+/// them again (the locks and atomics inside `Shared` change through
+/// `&Shared`, but nothing [`Shared::wf`] reads does).
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct Published {
+    pub tracked shared: &'static PointsTo<Shared>,
+    pub tracked features: &'static PointsTo<Features>,
+    pub tracked line: &'static PointsTo<FeatureLine>,
+    pub tracked classes: &'static PointsTo<[layout::Class; NCLASSES]>,
+}
+
+impl Published {
+    /// Each permission is to its static and initialised; the `Shared` is
+    /// the one built at its storage, well formed; the class table is
+    /// well formed ([`layout::table_ok`]).
+    pub open spec fn ok(&self) -> bool {
+        &&& self.shared.ptr() == Shared::storage()
+        &&& self.shared.is_init()
+        &&& self.shared.value() == Shared::built_at(Shared::storage())
+        &&& self.shared.value().wf()
+        &&& self.features.ptr() == features_storage()
+        &&& self.features.is_init()
+        &&& self.line.ptr() == line_storage()
+        &&& self.line.is_init()
+        &&& self.classes.ptr() == layout::classes_storage()
+        &&& self.classes.is_init()
+        &&& layout::table_ok(self.classes.value())
+    }
+}
+
+/// The published permissions a thread has seen, if any: what the
+/// functions that load or write `STATE` hand back.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct Seen {
+    pub tracked published: Option<&'static Published>,
+}
+
+impl Seen {
+    /// The thread has seen the published permissions.
+    pub open spec fn ok(&self) -> bool {
+        self.published matches Some(p) && p.ok()
+    }
+}
+
+/// Ghost permission to `STATE`: its current [`value`](StatePerm::value).
+/// It is not `Copy`, and the one permission is in `STATE`'s invariant
+/// ([`axiom_state`]).
+#[verifier::external_body]
+pub tracked struct StatePerm {
+    _no_copy: (),
+}
+
+impl StatePerm {
+    /// `STATE`'s value.
+    pub uninterp spec fn value(&self) -> u32;
+}
+
+/// What `STATE`'s invariant holds: its permission, the process's
+/// one-shot tokens until the winning exchange takes them, and the
+/// published permissions from `READY` on.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct StateVal {
+    pub tracked perm: StatePerm,
+    pub tracked steps: Option<Map<once::Step, once::Once>>,
+    pub tracked published: Option<&'static Published>,
+}
+
+/// `STATE`'s invariant: the state is `UNINIT`, `INITIALISING` or
+/// `READY`; while it is `UNINIT` the invariant holds the tokens of every
+/// step ([`once::all_steps`]), and from `READY` on the published
+/// permissions ([`Published::ok`]). `STATE` moves from `UNINIT` to
+/// `INITIALISING` only at [`claim_init`]'s exchange, which takes the
+/// tokens, and to `READY` only at [`init_slow`]'s store, after `init`
+/// built and froze what it publishes; nothing writes it otherwise, so it
+/// never goes back.
+// Ghost: named only by proof code.
+#[allow(dead_code)]
+struct StatePred;
+
+impl InvariantPredicate<(), StateVal> for StatePred {
+    open spec fn inv(k: (), v: StateVal) -> bool {
+        &&& v.perm.value() == UNINIT || v.perm.value() == INITIALISING || v.perm.value() == READY
+        &&& v.perm.value() == UNINIT ==> (v.steps matches Some(m) && once::all_steps(m))
+        &&& v.perm.value() == READY ==> (v.published matches Some(p) && p.ok())
+    }
+}
+
+/// The namespace of `STATE`'s invariant.
+spec fn state_ns() -> int {
+    0x7374_6174
+}
+
+/// `STATE`'s invariant. Trusted: the process starts with `STATE` at
+/// `UNINIT` (the static's initialiser) and with the tokens of every step
+/// of building the allocator, none taken ([`once`]); every write of
+/// `STATE` is [`state_claim`]'s or [`state_publish`]'s, inside this
+/// invariant (`verus/loom/run.sh` checks that `STATE` has those two
+/// writes), and verified code learns its value only from them and
+/// [`state_load`] (a test-only load elsewhere carries no ghost state).
+/// The axiom stands for one invariant, the same object at every call.
+/// Verus does not know that two calls return the same object, which
+/// only weakens what it can prove: what it proves holds of the one
+/// invariant, whose namespace is fixed so that no two opens nest.
+axiom fn axiom_state() -> (tracked r: &'static AtomicInvariant<(), StateVal, StatePred>)
+    ensures
+        r.namespace() == state_ns(),
+;
+
+/// `STATE.load(Acquire)`: the permission's value. Trusted: a `core`
+/// atomic load, one atomic operation on `STATE` (`verus/TODO.md`, Tier 4,
+/// for the ordering).
+#[inline(always)]
+#[verifier::external_body]
+#[verifier::atomic]
+fn state_load(Tracked(perm): Tracked<&StatePerm>) -> (r: u32)
+    ensures
+        r == perm.value(),
+    opens_invariants none
+    no_unwind
+{
+    STATE.load(Ordering::Acquire)
+}
+
+/// `STATE`'s exchange from `UNINIT` to `INITIALISING`: `Ok(UNINIT)`
+/// when it was `UNINIT` (and is now `INITIALISING`), `Err` of the value
+/// it has otherwise, left unchanged. Trusted: a `core` compare-exchange,
+/// one atomic read-modify-write on `STATE`.
+#[inline(always)]
+#[verifier::external_body]
+#[verifier::atomic]
+fn state_claim(Tracked(perm): Tracked<&mut StatePerm>) -> (r: Result<u32, u32>)
+    ensures
+        old(perm).value() == UNINIT ==> r == Ok::<u32, u32>(UNINIT) && final(perm).value() == INITIALISING,
+        old(perm).value() != UNINIT ==> r == Err::<u32, u32>(old(perm).value()) && final(perm).value() == old(perm).value(),
+    opens_invariants none
+    no_unwind
+{
+    STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire)
+}
+
+/// `STATE`'s `READY` store, `Release`. Trusted: a `core` atomic store, one
+/// atomic operation on `STATE`.
+#[inline(always)]
+#[verifier::external_body]
+#[verifier::atomic]
+fn state_publish(Tracked(perm): Tracked<&mut StatePerm>)
+    ensures
+        final(perm).value() == READY,
+    opens_invariants none
+    no_unwind
+{
+    STATE.store(READY, Ordering::Release);
+}
+
+/// An acquire load of `STATE`, with the published permissions when it
+/// reads `READY`.
+#[inline(always)]
+fn load_state(Tracked(seen): Tracked<&mut Seen>) -> (s: u32)
+    ensures
+        s == READY ==> final(seen).ok(),
+    opens_invariants [ state_ns() ]
+{
+    let s;
+    vstd::open_atomic_invariant!(axiom_state() => v => {
+        s = state_load(Tracked(&v.perm));
+        proof {
+            if s == READY {
+                seen.published = v.published;
+            }
+        }
+    });
+    s
+}
+
+/// `SHARED` as a reference, through `published`, the permissions frozen
+/// at `READY` ([`load_state`] hands them to a thread that loads it): the
+/// value `Shared::init` built at the static's storage
+/// ([`Shared::built_at`]`(`[`Shared::storage`]`)`), well formed
+/// ([`Published::ok`]).
 ///
 /// # Safety
 /// The value must have been initialised and `READY` observed with an
-/// acquire load on this thread.
-#[verifier::external_body]
+/// acquire load on this thread (what `published` stands for).
 #[inline(always)]
-unsafe fn shared_ref() -> (r: &'static Shared)
+unsafe fn shared_ref(Tracked(published): Tracked<&'static Published>) -> (r: &'static Shared)
+    requires
+        published.ok(),
     ensures
         r.wf(),
+        *r == Shared::built_at(Shared::storage()),
     opens_invariants none
 {
-    // SAFETY: guaranteed by the caller.
-    unsafe { SHARED.get() }
+    vstd::raw_ptr::ptr_ref(shared_storage_ptr(), Tracked(published.shared))
 }
 
 /// The process's allocator state, initialising it on first use.
@@ -264,9 +434,10 @@ pub fn shared() -> (r: &'static Shared)
     ensures
         r.wf(),
 {
-    if STATE.load(Ordering::Acquire) == READY {
+    let tracked mut seen = Seen { published: None };
+    if load_state(Tracked(&mut seen)) == READY {
         // SAFETY: `READY` was published after init with a release store.
-        return unsafe { shared_ref() };
+        return unsafe { shared_ref(Tracked(seen.published.tracked_unwrap())) };
     }
     init_slow()
 }
@@ -279,9 +450,10 @@ pub fn shared_if_ready() -> (r: Option<&'static Shared>)
     ensures
         r matches Some(s) ==> s.wf(),
 {
-    if STATE.load(Ordering::Acquire) == READY {
+    let tracked mut seen = Seen { published: None };
+    if load_state(Tracked(&mut seen)) == READY {
         // SAFETY: as in `shared`.
-        Some(unsafe { shared_ref() })
+        Some(unsafe { shared_ref(Tracked(seen.published.tracked_unwrap())) })
     } else {
         None
     }
@@ -303,6 +475,13 @@ pub fn shared_ptr() -> *const Shared opens_invariants none {
 /// The calling thread must itself have observed `READY` earlier (through
 /// [`shared`] or [`shared_if_ready`]). The fast paths use the thread's heap
 /// pointer as that witness: a heap is only created under `shared()`.
+///
+/// Trusted: that the caller observed `READY`, so that the value is the
+/// published one, well formed (what [`shared_ref`] proves from the
+/// permissions frozen at `READY`). The witness the fast paths have, the
+/// heap pointer in their TLS slot, carries no ghost state, so the
+/// permissions do not reach here.
+#[verifier::external_body]
 #[inline(always)]
 pub unsafe fn shared_unchecked() -> (r: &'static Shared)
     ensures
@@ -310,7 +489,26 @@ pub unsafe fn shared_unchecked() -> (r: &'static Shared)
     opens_invariants none
 {
     // SAFETY: guaranteed by the caller.
-    unsafe { shared_ref() }
+    unsafe { &*shared_storage_ptr() }
+}
+
+/// The published feature line, without the readiness check.
+///
+/// # Safety
+/// The calling thread must itself have observed `READY` earlier (its
+/// `shared()` returned).
+///
+/// Trusted: that the caller observed `READY`, so that the line is
+/// initialised (what the permissions frozen at `READY` stand for:
+/// [`Published::ok`]). Its callers learn it from `shared()`, whose result
+/// carries no ghost state, so the permissions do not reach here.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn published_line() -> &'static FeatureLine
+    opens_invariants none
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe { &*line_ptr() }
 }
 
 } // verus!
@@ -320,7 +518,7 @@ pub unsafe fn shared_unchecked() -> (r: &'static Shared)
 pub fn features() -> &'static Features {
     let _ = shared();
     // SAFETY: `shared()` returned, so `READY` has been observed.
-    unsafe { FEATURES.get() }
+    unsafe { &*features_ptr() }
 }
 
 verus! {
@@ -334,7 +532,7 @@ pub fn feature_line() -> &'static str
 {
     let _ = shared();
     // SAFETY: `shared()` returned, so `READY` has been observed.
-    unsafe { FEATURE_LINE.get() }.as_str()
+    unsafe { published_line() }.as_str()
 }
 
 /// `challoc_features()`: the feature report as one NUL-terminated line of
@@ -351,7 +549,7 @@ pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
     }
     let _ = shared();
     // SAFETY: `shared()` returned, so `READY` has been observed.
-    unsafe { FEATURE_LINE.get() }.as_ptr()
+    unsafe { published_line() }.as_ptr()
 }
 
 /// Theorem "Read-only APIs never abort" (`verus/THEOREMS.md`): the
@@ -406,7 +604,7 @@ fn theorem_read_only_never_aborts(
     let _ = crate::stats::fig_mul(all.pdirty, all.large_runs);
     // `challoc_features` after its `shared()`.
     // SAFETY: `shared` exists, so `READY` has been observed.
-    let _ = unsafe { FEATURE_LINE.get() }.as_ptr();
+    let _ = unsafe { published_line() }.as_ptr();
     // `experimental.utilization.query` and `batch_query`, whole, and the
     // rest of `mallctl`.
     let _ = mallctl::utilization(shared, p as *const core::ffi::c_void, verbose);
@@ -426,16 +624,46 @@ verus! {
 
 /// `STATE`'s compare-exchange from `UNINIT` to `INITIALISING`, which
 /// [`init_slow`] runs: the winner gets the process's one-shot tokens
-/// ([`once::all_steps`]). Trusted: nothing stores `UNINIT` (the
-/// static's initial value) or `INITIALISING` elsewhere, so the exchange
-/// succeeds once per process and one caller gets the tokens.
-#[verifier::external_body]
+/// ([`once::all_steps`]), which `STATE`'s invariant holds while it is
+/// `UNINIT` ([`StatePred`]); nothing stores `UNINIT` or `INITIALISING`
+/// elsewhere, so the exchange succeeds once per process and one caller
+/// gets the tokens. A caller that finds `READY` gets the published
+/// permissions.
 #[inline(always)]
-fn claim_init() -> (r: (Result<u32, u32>, Tracked<Map<once::Step, once::Once>>))
+fn claim_init(Tracked(seen): Tracked<&mut Seen>) -> (r: (Result<u32, u32>, Tracked<Map<once::Step, once::Once>>))
     ensures
         r.0 is Ok ==> once::all_steps(r.1@),
+        r.0 == Err::<u32, u32>(READY) ==> final(seen).ok(),
 {
-    (STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire), Tracked::assume_new())
+    let tracked mut steps = Map::tracked_empty();
+    let won;
+    vstd::open_atomic_invariant!(axiom_state() => v => {
+        won = state_claim(Tracked(&mut v.perm));
+        proof {
+            if won is Ok {
+                steps = v.steps.tracked_take();
+            }
+            if won == Err::<u32, u32>(READY) {
+                seen.published = v.published;
+            }
+        }
+    });
+    (won, Tracked(steps))
+}
+
+/// Publish `READY` with the permissions `init` froze ([`StatePred`]).
+#[inline(always)]
+fn publish_ready(Tracked(published): Tracked<&'static Published>)
+    requires
+        published.ok(),
+    opens_invariants [ state_ns() ]
+{
+    vstd::open_atomic_invariant!(axiom_state() => v => {
+        state_publish(Tracked(&mut v.perm));
+        proof {
+            v.published = Some(published);
+        }
+    });
 }
 
 /// The first caller runs `init` and publishes `READY`; a concurrent one
@@ -451,12 +679,13 @@ fn init_slow() -> (r: &'static Shared)
     ensures
         r.wf(),
 {
-    let (won, Tracked(steps)) = claim_init();
+    let tracked mut seen = Seen { published: None };
+    let (won, Tracked(steps)) = claim_init(Tracked(&mut seen));
     match won {
         Ok(_) => {
             INIT_TID.store(sys::gettid() as u32, Ordering::Relaxed);
-            init(Tracked(steps));
-            STATE.store(READY, Ordering::Release);
+            init(Tracked(steps), Tracked(&mut seen));
+            publish_ready(Tracked(seen.published.tracked_unwrap()));
         }
         Err(READY) => {}
         Err(_) => {
@@ -465,13 +694,13 @@ fn init_slow() -> (r: &'static Shared)
             if INIT_TID.load(Ordering::Relaxed) == sys::gettid() as u32 {
                 sys::abort("allocation during initialisation (re-entrant init)");
             }
-            while STATE.load(Ordering::Acquire) != READY {
+            while load_state(Tracked(&mut seen)) != READY {
                 core::hint::spin_loop();
             }
         }
     }
     // SAFETY: `READY` observed (or published by this thread).
-    unsafe { shared_ref() }
+    unsafe { shared_ref(Tracked(seen.published.tracked_unwrap())) }
 }
 
 /// Never-committed ranges of the reservations sealed at init (design 10
@@ -496,6 +725,7 @@ pub fn sealed_ranges() -> u32
 fn shared_storage_ptr() -> (p: *mut Shared)
     ensures
         p == Shared::storage(),
+    opens_invariants none
 {
     // The cell's own pointer, not `as_mut_ptr` through a `&mut`:
     // `init` keeps pointers derived from it, and writes through the
@@ -503,19 +733,86 @@ fn shared_storage_ptr() -> (p: *mut Shared)
     SHARED.0.get().cast::<Shared>()
 }
 
+/// The address of [`FEATURES`]' storage.
+pub uninterp spec fn features_storage() -> *mut Features;
+
+/// The address of [`FEATURE_LINE`]'s storage.
+pub uninterp spec fn line_storage() -> *mut FeatureLine;
+
+/// The storage of [`FEATURES`]. Trusted: a raw-pointer projection of a
+/// static.
+#[verifier::external_body]
+#[inline(always)]
+fn features_ptr() -> (p: *mut Features)
+    ensures
+        p == features_storage(),
+    opens_invariants none
+{
+    FEATURES.0.get().cast::<Features>()
+}
+
+/// The storage of [`FEATURE_LINE`]. Trusted: a raw-pointer projection of
+/// a static.
+#[verifier::external_body]
+#[inline(always)]
+fn line_ptr() -> (p: *mut FeatureLine)
+    ensures
+        p == line_storage(),
+    opens_invariants none
+{
+    FEATURE_LINE.0.get().cast::<FeatureLine>()
+}
+
+/// The permissions to the storage of the statics `init` writes itself,
+/// for `once`, the process's token of this step: [`FEATURES`] and
+/// [`FEATURE_LINE`], uninitialised, and the class table
+/// ([`layout::CLASSES`]), holding its initial value,
+/// [`layout::BASE_CLASSES`] (`ClassTable::new`), whose entries are well
+/// formed and sized ([`layout::table_ok`]). Trusted: the statics'
+/// storage and initial values, which nothing but `init` writes
+/// ([`publish_features`], [`layout::adopt_page_geometry`]), and that
+/// `BASE_CLASSES` meets `table_ok`, which is `build_classes`'s verified
+/// postcondition but which a spec cannot read off the `exec const`; the
+/// token is used up, so the permissions are handed out once.
+axiom fn axiom_statics(tracked once: once::Once) -> (tracked r: (
+    PointsTo<Features>,
+    PointsTo<FeatureLine>,
+    PointsTo<[layout::Class; NCLASSES]>,
+))
+    requires
+        once.step() == once::Step::Statics,
+    ensures
+        r.0.ptr() == features_storage(),
+        r.0.is_uninit(),
+        r.1.ptr() == line_storage(),
+        r.1.is_uninit(),
+        r.2.ptr() == layout::classes_storage(),
+        r.2.is_init(),
+        layout::table_ok(r.2.value()),
+;
+
 /// The published feature report: `FEATURE_LINE` from `features`, then
-/// `FEATURES`. Trusted: writes of the `UnsafeCell`s behind the statics.
+/// `FEATURES`, through the permissions to their storage.
 ///
 /// # Safety
 /// Called once, by `init`, before `READY` is published.
-#[verifier::external_body]
 #[inline(always)]
-unsafe fn publish_features(features: Features) {
-    // SAFETY: written once here, before `READY` is published.
-    unsafe {
-        (*FEATURE_LINE.0.get()).write(FeatureLine::build(&features));
-        (*FEATURES.0.get()).write(features);
-    }
+unsafe fn publish_features(
+    features: Features,
+    Tracked(line): Tracked<&mut PointsTo<FeatureLine>>,
+    Tracked(feats): Tracked<&mut PointsTo<Features>>,
+)
+    requires
+        old(line).ptr() == line_storage(),
+        old(feats).ptr() == features_storage(),
+    ensures
+        final(line).ptr() == line_storage(),
+        final(line).is_init(),
+        final(feats).ptr() == features_storage(),
+        final(feats).is_init(),
+{
+    vstd::raw_ptr::ptr_mut_write(line_ptr(), Tracked(line), FeatureLine::build(&features));
+    vstd::raw_ptr::ptr_mut_write(features_ptr(), Tracked(feats), features);
 }
 
 /// `pthread_atfork` with the three fork handlers: 0, or the error number.
@@ -555,19 +852,33 @@ fn register_fork_handlers()
 /// metadata allocator owns the metadata region's address space, which
 /// `reserve_owning` hands over; `init_slow` runs it once, before it
 /// publishes `READY`, with the one-shot tokens its winning exchange got
-/// ([`claim_init`]), which `Shared::init` uses up.
-fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>)
+/// ([`claim_init`]): one for the statics it writes here, the class table
+/// and the feature statics ([`axiom_statics`]), and the rest for
+/// `Shared::init`, which uses them up. It hands back the permissions to
+/// what it wrote, frozen ([`Published`]).
+fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tracked<&mut Seen>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         once::all_steps(steps),
+    ensures
+        final(seen).ok(),
 {
+    let ghost steps0 = steps;
+    let tracked mut steps = steps;
+    let tracked statics_once = once::take(&mut steps, once::Step::Statics);
+    proof {
+        assert forall|s: once::Step| s != once::Step::Statics implies #[trigger] once::holds(steps, s) by {
+            assert(once::holds(steps0, s));
+        }
+    }
+    let tracked (mut feats, mut line, mut classes) = axiom_statics(statics_once);
     let features = Features::probe();
     // The slab geometry of the classes whose table slab is below the page
     // (design 3, page-sized slabs): written once here, before any other
     // thread can see the allocator, never again.
     // SAFETY: `init` runs once, under `INITIALISING`, before `READY`.
-    unsafe { layout::adopt_page_geometry(features.page_size.trailing_zeros()) };
+    unsafe { layout::adopt_page_geometry(features.page_size.trailing_zeros(), Tracked(&mut classes)) };
     let config = config::load();
     proof {
         assert(0x1_0000usize <= (1usize << 33)) by (bit_vector);
@@ -580,6 +891,7 @@ fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>)
     if features.mseal {
         SEALED.store(regions.seal(), Ordering::Relaxed);
     }
+    let tracked mut built = crate::heap::Built { perm: None };
     // SAFETY: the statics are written once here, before `READY` is
     // published, and `regions` are live reservations this process owns.
     unsafe {
@@ -591,16 +903,27 @@ fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>)
             features.guard_install,
             features.pac,
             Tracked(steps),
+            Tracked(&mut built),
         );
         if !ok {
             sys::abort("metadata region too small for the allocator tables");
         }
+        let tracked shared_perm = built.perm.tracked_unwrap();
         // Design 11: `Shared::init` forced the stored `thp` to `never`
         // under a cgroup limit below 1 GiB; the advice follows.
-        if SHARED.get().policy.thp_forced() {
+        if vstd::raw_ptr::ptr_ref(shared_storage_ptr(), Tracked(shared_perm)).policy.thp_forced() {
             crate::thp::force_never();
         }
-        publish_features(features);
+        publish_features(features, Tracked(&mut line), Tracked(&mut feats));
+        proof {
+            let tracked p = Published {
+                shared: shared_perm,
+                features: vstd::modes::tracked_static_ref(feats),
+                line: vstd::modes::tracked_static_ref(line),
+                classes: vstd::modes::tracked_static_ref(classes),
+            };
+            seen.published = Some(vstd::modes::tracked_static_ref(p));
+        }
     }
     register_fork_handlers();
 }

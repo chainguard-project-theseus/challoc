@@ -1,6 +1,6 @@
 # `init_slow`
 
-Seam S31 of `verus/SEAMS.md`: src/api/mod.rs:447. Kind: no_decreases. Category: termination.
+Seam S35 of `verus/SEAMS.md`: src/api/mod.rs:675. Kind: no_decreases. Category: termination.
 Discharged by loom (termination given that `init` returns; part 3).
 
 ## Contract
@@ -17,9 +17,9 @@ fn init_slow() -> (r: &'static Shared)
 ```
 
 The seam is the termination of the body's one loop, the wait
-`while STATE.load(Ordering::Acquire) != READY { spin_loop() }`: Verus
-proved the `ensures` (given `shared_ref`'s contract, a separate seam)
-for every run that returns.
+`while load_state(..) != READY { spin_loop() }` (an `Acquire` load of
+`STATE`, `state_load`): Verus proved the `ensures` for every run that
+returns.
 
 ## Statement
 
@@ -87,12 +87,15 @@ orders the publication check needs.
   (`sys::abort`), which this capability allows; the models check that
   only the initialising thread takes it.
 - **`requires crate::sys::may_syscall()`**: not used by the loop.
-- **`ensures r.wf()`**: proved by Verus from `shared_ref`'s contract,
-  whose stated premise is that a thread that observed `READY` with an
-  acquire load reads the value `init` built. The models check that
-  premise's weak-memory half for these callers (no race on the
-  published cell after an `Acquire` load of `READY`, including on the
-  free path's `shared_if_ready`); `shared_ref` stays its own seam.
+- **`ensures r.wf()`**: proved by Verus: `shared_ref` (verified) reads
+  the value through the permissions `STATE`'s invariant holds from
+  `READY` on (`api::axiom_state`, a separate seam), which this function
+  gets from `claim_init`, its own `init` or the wait's load. The
+  invariant's premise for a thread that observed `READY` with an
+  acquire load is that it reads the value `init` built. The models
+  check that premise's weak-memory half for these callers (no race on
+  the published cell after an `Acquire` load of `READY`, including on
+  the free path's `shared_if_ready`).
 - **Copy.** The model is a copy, kept in step by review. It leaves out
   what `init` does besides its writes (verified, and it does not touch
   `STATE`), the `Relaxed` configuration statics `init` stores (their
@@ -165,6 +168,14 @@ models check; its findings are folded in.
 Re-quoted at 0c9cd77 on 2026-10-04 (the contract gained a `requires`
 line), with a bullet for it in the translation; checked by the
 second pass's fresh-context review.
+
+Revisited on 2026-10-05 (`STATE`'s invariant): the body's loads and
+writes of `STATE` go through `load_state`, `claim_init` and
+`publish_ready` (the wrappers `state_load`, `state_claim`,
+`state_publish`, each the bare `core` call), with the same orderings
+and the same machine code (x86_64); the pinned lines moved with them
+(`verus/loom/pins.txt`). The contract is unchanged, and so are the
+models.
 
 ## Tests
 

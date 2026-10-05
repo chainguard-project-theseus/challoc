@@ -1,6 +1,6 @@
 # `<*mut T>::is_null`
 
-Seam S259 of `verus/SEAMS.md`: src/vspec/addr.rs:64. Kind: assume_spec. Category: raw pointer (internal).
+Seam S266 of `verus/SEAMS.md`: src/vspec/addr.rs:64. Kind: assume_spec. Category: raw pointer (internal).
 Discharged by Kani.
 
 ## Contract

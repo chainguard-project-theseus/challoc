@@ -1,6 +1,6 @@
 # `stderr_target`
 
-Seam S48 of `verus/SEAMS.md`: src/api/print.rs:1301. Kind: external_body. Category: function pointer.
+Seam S54 of `verus/SEAMS.md`: src/api/print.rs:1301. Kind: external_body. Category: function pointer.
 Discharged by Kani.
 
 ## Contract

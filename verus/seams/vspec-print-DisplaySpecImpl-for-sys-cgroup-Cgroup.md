@@ -1,6 +1,6 @@
 # `DisplaySpecImpl for sys::cgroup::Cgroup`
 
-Seam S327 of `verus/SEAMS.md`: src/vspec/print.rs:53. Kind: spec_impl. Category: core library.
+Seam S333 of `verus/SEAMS.md`: src/vspec/print.rs:53. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract

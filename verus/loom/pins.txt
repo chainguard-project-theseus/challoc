@@ -8,21 +8,27 @@
 #
 #   file<TAB>line
 #
-# api/mod.rs: shared, shared_if_ready, init_slow (init.rs).
-src/api/mod.rs	if STATE.load(Ordering::Acquire) == READY {
+# api/mod.rs: the STATE wrappers, shared, shared_if_ready, claim_init,
+# publish_ready, init_slow (init.rs).
+src/api/mod.rs	STATE.load(Ordering::Acquire)
+src/api/mod.rs	STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire)
+src/api/mod.rs	STATE.store(READY, Ordering::Release);
+src/api/mod.rs	s = state_load(Tracked(&v.perm));
+src/api/mod.rs	if load_state(Tracked(&mut seen)) == READY {
 src/api/mod.rs	init_slow()
-src/api/mod.rs	if STATE.load(Ordering::Acquire) == READY {
-src/api/mod.rs	(STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire), Tracked::assume_new())
-src/api/mod.rs	let (won, Tracked(steps)) = claim_init();
+src/api/mod.rs	if load_state(Tracked(&mut seen)) == READY {
+src/api/mod.rs	won = state_claim(Tracked(&mut v.perm));
+src/api/mod.rs	state_publish(Tracked(&mut v.perm));
+src/api/mod.rs	let (won, Tracked(steps)) = claim_init(Tracked(&mut seen));
 src/api/mod.rs	match won {
 src/api/mod.rs	Ok(_) => {
 src/api/mod.rs	INIT_TID.store(sys::gettid() as u32, Ordering::Relaxed);
-src/api/mod.rs	init(Tracked(steps));
-src/api/mod.rs	STATE.store(READY, Ordering::Release);
+src/api/mod.rs	init(Tracked(steps), Tracked(&mut seen));
+src/api/mod.rs	publish_ready(Tracked(seen.published.tracked_unwrap()));
 src/api/mod.rs	Err(READY) => {}
 src/api/mod.rs	if INIT_TID.load(Ordering::Relaxed) == sys::gettid() as u32 {
 src/api/mod.rs	sys::abort("allocation during initialisation (re-entrant init)");
-src/api/mod.rs	while STATE.load(Ordering::Acquire) != READY {
+src/api/mod.rs	while load_state(Tracked(&mut seen)) != READY {
 # purge/background.rs: requested, request, kick, main (exit.rs).
 src/purge/background.rs	REQUESTED.load(Ordering::Relaxed)
 src/purge/background.rs	REQUESTED.store(on, Ordering::Relaxed);

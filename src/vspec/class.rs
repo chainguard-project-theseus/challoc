@@ -20,13 +20,4 @@ pub broadcast axiom fn axiom_class_table_wf(i: int)
 /// `core::mem::drop`: runs `x`'s destructor (for a lock guard, the unlock).
 pub assume_specification<T>[ core::mem::drop ](x: T);
 
-/// `layout::adopt_page_geometry`: rewrites the geometry fields of the class
-/// table for the page (outside `verus!`: a `&mut` to the table taken from
-/// its `UnsafeCell`, handed to the verified `apply_page_geometry`).
-/// Nothing is claimed of the result; what the table holds afterwards is
-/// [`crate::layout::ClassTable::table`]'s trusted contract.
-/// The caller (`api::init`, once, before the allocator is published) has
-/// the table to itself, the `# Safety` contract.
-pub assume_specification[ crate::layout::adopt_page_geometry ](lg_page: u32) -> usize;
-
 } // verus!
