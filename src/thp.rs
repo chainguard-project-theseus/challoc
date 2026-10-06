@@ -965,30 +965,32 @@ mod tests {
 
     #[test]
     fn statics_follow_the_decision() {
-        // Process-wide statics: set, read, and restore Off, one test at a
-        // time.
-        let _serial = serial();
-        let t = table(Some(ThpSetting::Madvise), 0, K64);
-        let d = decide(Key::Auto, &t);
-        store(&d);
-        assert_eq!(decision(), d);
-        assert_eq!(class_mode(1 << 16), Mode::Folios);
-        assert_eq!(class_mode(1 << 12), Mode::Off);
-        assert_eq!(meta_folio_size(), 1 << 16);
-        assert_eq!(huge_min(), usize::MAX);
-        let d = decide(Key::Always, &table(Some(ThpSetting::Madvise), 0, M2));
-        store(&d);
-        assert_eq!(class_mode(1 << 12), Mode::Chunks);
-        assert_eq!(meta_folio_size(), 0);
-        assert_eq!(huge_min(), 1 << 21);
-        assert_eq!(pmd_size(), 1 << 21);
-        force_never();
-        assert_eq!(decision().mode, Mode::Off);
-        assert_eq!(decision().reason, Reason::Forced);
-        assert_eq!(class_mode(1 << 16), Mode::Off);
-        assert_eq!(meta_folio_size(), 0);
-        assert_eq!(huge_min(), usize::MAX);
-        store(&Decision::OFF);
+        crate::testutil::in_fork_child("thp decision statics", 30_000, || {
+            // Process-wide statics, written in a fork child: a decision
+            // stored here would change the paths of the class, huge and
+            // metadata tests running beside it (#69).
+            let t = table(Some(ThpSetting::Madvise), 0, K64);
+            let d = decide(Key::Auto, &t);
+            store(&d);
+            assert_eq!(decision(), d);
+            assert_eq!(class_mode(1 << 16), Mode::Folios);
+            assert_eq!(class_mode(1 << 12), Mode::Off);
+            assert_eq!(meta_folio_size(), 1 << 16);
+            assert_eq!(huge_min(), usize::MAX);
+            let d = decide(Key::Always, &table(Some(ThpSetting::Madvise), 0, M2));
+            store(&d);
+            assert_eq!(class_mode(1 << 12), Mode::Chunks);
+            assert_eq!(meta_folio_size(), 0);
+            assert_eq!(huge_min(), 1 << 21);
+            assert_eq!(pmd_size(), 1 << 21);
+            force_never();
+            assert_eq!(decision().mode, Mode::Off);
+            assert_eq!(decision().reason, Reason::Forced);
+            assert_eq!(class_mode(1 << 16), Mode::Off);
+            assert_eq!(meta_folio_size(), 0);
+            assert_eq!(huge_min(), usize::MAX);
+            store(&Decision::OFF);
+        });
     }
 
     /// `never` covers the class and metadata reservations and leaves the
@@ -996,18 +998,17 @@ mod tests {
     /// nor recorded for `force_never`.
     #[test]
     fn never_leaves_the_huge_reservation_to_the_host() {
-        let _serial = serial();
-        assert!(!Reservation::Classes.follows_host());
-        assert!(!Reservation::Metadata.follows_host());
-        assert!(Reservation::Huge.follows_host());
-        let before = stats();
-        assert!(!advise_reservation(Reservation::Huge, 1 << 40, 1 << 30));
-        assert_eq!(stats(), before);
-        assert!(
-            RESERVATIONS.iter().all(
+        crate::testutil::in_fork_child("thp huge reservation", 30_000, || {
+            assert!(!Reservation::Classes.follows_host());
+            assert!(!Reservation::Metadata.follows_host());
+            assert!(Reservation::Huge.follows_host());
+            let before = stats();
+            assert!(!advise_reservation(Reservation::Huge, 1 << 40, 1 << 30));
+            assert_eq!(stats(), before);
+            assert!(RESERVATIONS.iter().all(
                 |(a, l)| l.load(Ordering::Relaxed) == 0 || a.load(Ordering::Relaxed) != 1 << 40
-            )
-        );
+            ));
+        });
     }
 
     /// The host mode round trip (the statics are process-wide; leave
@@ -1031,15 +1032,6 @@ mod tests {
             );
         }
         HOST_MODE.store(saved, Ordering::Relaxed);
-    }
-
-    /// The tests that touch the process-wide statics (the decision, the
-    /// reservation slots, the counters) take turns.
-    static THP_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Take [`THP_TEST`]; a panic in one holder must not fail the rest.
-    fn serial() -> std::sync::MutexGuard<'static, ()> {
-        THP_TEST.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The recorded slots: `(addr, len)` of every used one, in order.
@@ -1073,84 +1065,85 @@ mod tests {
     /// outcome.
     #[test]
     fn reservations_are_recorded_in_order_up_to_the_limit() {
-        let _serial = serial();
-        reset_reservations_for_test();
-        assert_eq!(recorded(), []);
-        let kernel_thp = KERNEL_THP.swap(0, Ordering::Relaxed);
-        let before = stats();
-        assert!(is_never(), "the default key is `never`");
-        // No THP on the kernel: recorded, not advised, not counted.
-        assert!(!advise_reservation(Reservation::Classes, 0x10_0000, 0x4000));
-        assert!(!advise_reservation(
-            Reservation::Metadata,
-            0x20_0000,
-            0x8000
-        ));
-        assert_eq!(recorded(), [(0x10_0000, 0x4000), (0x20_0000, 0x8000)]);
-        assert_eq!(stats(), before);
-        // The huge reservation is not recorded (the test above), and
-        // neither is a slot beyond the limit.
-        assert!(!advise_reservation(Reservation::Huge, 0x30_0000, 0x1000));
-        assert!(!advise_reservation(Reservation::Classes, 0x40_0000, 0x1000));
-        assert!(!advise_reservation(
-            Reservation::Metadata,
-            0x50_0000,
-            0x1000
-        ));
-        assert_eq!(recorded().len(), MAX_RESERVATIONS);
-        assert!(!advise_reservation(Reservation::Classes, 0x60_0000, 0x1000));
-        assert_eq!(
-            recorded(),
-            [
-                (0x10_0000, 0x4000),
-                (0x20_0000, 0x8000),
-                (0x40_0000, 0x1000),
-                (0x50_0000, 0x1000)
-            ],
-            "the fifth reservation is dropped, the slots untouched"
-        );
-        assert_eq!(stats(), before);
-        // A kernel with THP: each class and metadata reservation is
-        // advised once and its outcome counted; the huge one is neither;
-        // `force_never` re-advises both recorded slots.
-        reset_reservations_for_test();
-        KERNEL_THP.store(1, Ordering::Relaxed);
-        let (a, b) = (region(0x4000), region(0x8000));
-        let ok = advise_reservation(Reservation::Classes, a, 0x4000);
-        assert_eq!(
-            advise_reservation(Reservation::Metadata, b, 0x8000),
-            ok,
-            "the same kernel answer twice"
-        );
-        assert!(!advise_reservation(Reservation::Huge, 0x30_0000, 0x1000));
-        assert_eq!(recorded(), [(a, 0x4000), (b, 0x8000)]);
-        let counted = |s: Stats| {
-            (
-                s.nohuge_ranges - before.nohuge_ranges,
-                s.failures - before.failures,
-            )
-        };
-        assert_eq!(counted(stats()), if ok { (2, 0) } else { (0, 2) });
-        force_never();
-        assert_eq!(decision().reason, Reason::Forced);
-        assert_eq!(
-            counted(stats()),
-            if ok { (4, 0) } else { (0, 4) },
-            "both slots advised again"
-        );
-        std::println!(
-            "thp test: MADV_NOHUGEPAGE on a fresh mapping {}",
-            if ok {
-                "taken"
+        crate::testutil::in_fork_child("thp reservation slots", 30_000, || {
+            reset_reservations_for_test();
+            assert_eq!(recorded(), []);
+            let kernel_thp = KERNEL_THP.swap(0, Ordering::Relaxed);
+            let before = stats();
+            assert!(is_never(), "the default key is `never`");
+            // No THP on the kernel: recorded, not advised, not counted.
+            assert!(!advise_reservation(Reservation::Classes, 0x10_0000, 0x4000));
+            assert!(!advise_reservation(
+                Reservation::Metadata,
+                0x20_0000,
+                0x8000
+            ));
+            assert_eq!(recorded(), [(0x10_0000, 0x4000), (0x20_0000, 0x8000)]);
+            assert_eq!(stats(), before);
+            // The huge reservation is not recorded (the test above), and
+            // neither is a slot beyond the limit.
+            assert!(!advise_reservation(Reservation::Huge, 0x30_0000, 0x1000));
+            assert!(!advise_reservation(Reservation::Classes, 0x40_0000, 0x1000));
+            assert!(!advise_reservation(
+                Reservation::Metadata,
+                0x50_0000,
+                0x1000
+            ));
+            assert_eq!(recorded().len(), MAX_RESERVATIONS);
+            assert!(!advise_reservation(Reservation::Classes, 0x60_0000, 0x1000));
+            assert_eq!(
+                recorded(),
+                [
+                    (0x10_0000, 0x4000),
+                    (0x20_0000, 0x8000),
+                    (0x40_0000, 0x1000),
+                    (0x50_0000, 0x1000)
+                ],
+                "the fifth reservation is dropped, the slots untouched"
+            );
+            assert_eq!(stats(), before);
+            // A kernel with THP: each class and metadata reservation is
+            // advised once and its outcome counted; the huge one is neither;
+            // `force_never` re-advises both recorded slots.
+            reset_reservations_for_test();
+            KERNEL_THP.store(1, Ordering::Relaxed);
+            let (a, b) = (region(0x4000), region(0x8000));
+            let ok = advise_reservation(Reservation::Classes, a, 0x4000);
+            assert_eq!(
+                advise_reservation(Reservation::Metadata, b, 0x8000),
+                ok,
+                "the same kernel answer twice"
+            );
+            assert!(!advise_reservation(Reservation::Huge, 0x30_0000, 0x1000));
+            assert_eq!(recorded(), [(a, 0x4000), (b, 0x8000)]);
+            let counted = |s: Stats| {
+                (
+                    s.nohuge_ranges - before.nohuge_ranges,
+                    s.failures - before.failures,
+                )
+            };
+            assert_eq!(counted(stats()), if ok { (2, 0) } else { (0, 2) });
+            force_never();
+            assert_eq!(decision().reason, Reason::Forced);
+            assert_eq!(
+                counted(stats()),
+                if ok { (4, 0) } else { (0, 4) },
+                "both slots advised again"
+            );
+            // Straight to fd 1: the child must not wait on std's stdout
+            // lock, which another thread may have held at the fork.
+            let line: &[u8] = if ok {
+                b"thp test: MADV_NOHUGEPAGE on a fresh mapping taken\n"
             } else {
-                "refused (no THP on this kernel)"
-            }
-        );
-        // Restore the process-wide state for the other tests.
-        store(&Decision::OFF);
-        KERNEL_THP.store(kernel_thp, Ordering::Relaxed);
-        reset_reservations_for_test();
-        release(a, 0x4000);
-        release(b, 0x8000);
+                b"thp test: MADV_NOHUGEPAGE on a fresh mapping refused (no THP on this kernel)\n"
+            };
+            unsafe { libc::write(1, line.as_ptr().cast(), line.len()) };
+            // Leave the statics as found and unmap the two regions.
+            store(&Decision::OFF);
+            KERNEL_THP.store(kernel_thp, Ordering::Relaxed);
+            reset_reservations_for_test();
+            release(a, 0x4000);
+            release(b, 0x8000);
+        });
     }
 }

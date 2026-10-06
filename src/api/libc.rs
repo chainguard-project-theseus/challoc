@@ -3353,6 +3353,8 @@ mod tests {
     /// attempts rather than asserted of one call.
     #[test]
     fn malloc_trim_reports_whether_anything_was_purged() {
+        // A background thread at a 1 ms decay would purge the run first.
+        let _serial = crate::testutil::global_state();
         let purged = (0..8).any(|_| {
             let h = malloc(4 << 20);
             assert!(!h.is_null());
@@ -3421,6 +3423,44 @@ mod tests {
                     && l.ends_with(&std::format!(" {name}"))),
                 "{name} not exported as a global function:\n{syms}"
             );
+        }
+    }
+
+    /// The x86_64 pin of `malloc` and `free` (the `global_asm!` of
+    /// `exports`) holds in the shipped library: both entries sit at 0 mod
+    /// 64 in `nm -D` (#70). The pin depends on the release profile (fat
+    /// LTO, one codegen unit) keeping each in its own section; without it
+    /// `free` moved to 16 mod 64 and cost glibc-simple 36% on Zen 5 (c4d).
+    /// Elsewhere the entries are not pinned; their offsets are printed.
+    #[test]
+    fn malloc_and_free_entries_are_cache_line_aligned_on_x86_64() {
+        let so = crate::api::c_programs::release_so();
+        let out = Command::new("nm")
+            .args(["-D", "--defined-only", &so])
+            .output()
+            .expect("nm");
+        assert!(out.status.success(), "nm -D {so} failed");
+        let syms = String::from_utf8(out.stdout).unwrap();
+        for name in ["malloc", "free"] {
+            let addr = syms
+                .lines()
+                .find_map(|l| {
+                    let mut f = l.split_whitespace();
+                    let (a, _, n) = (f.next()?, f.next()?, f.next()?);
+                    (n.split('@').next() == Some(name))
+                        .then(|| usize::from_str_radix(a, 16).ok())
+                        .flatten()
+                })
+                .unwrap_or_else(|| panic!("{name} not in nm -D of {so}:\n{syms}"));
+            std::eprintln!("entry {name} at {addr:#x}: {} mod 64", addr % 64);
+            if cfg!(target_arch = "x86_64") {
+                assert_eq!(
+                    addr % 64,
+                    0,
+                    "{name} at {addr:#x} is not at 0 mod 64 in {so}: the x86_64 entry pin \
+                     (src/api/libc.rs `exports`) no longer holds"
+                );
+            }
         }
     }
 }

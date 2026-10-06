@@ -98,6 +98,26 @@ read-only cgroup tree, Docker's seccomp hiding `mseal`, no mTHP size below the P
 `make test TEST_ALLOW_SKIP=` runs strict; real coverage of the cgroup
 writes and `mseal` needs the privileged invocation above.
 
+## Process-wide state
+
+libtest runs the tests of one process in parallel, so a test must not
+assume nobody else touches what it reads. Two tools in `src/testutil.rs`:
+
+- `global_state()`, a guard for the `api::` tests that write or assert a
+  setting of the process-wide allocator (decay, the background thread
+  request, the stats epoch). Tests that only allocate and free do not
+  take it.
+- `in_fork_child(what, timeout_ms, f)`, for a check that must see no
+  other thread (every lock free after the fork handlers) or that writes
+  a static the rest of the process must never see (the THP decision and
+  reservation slots, the purge advice mirror). The child has one thread
+  and its writes die with it.
+
+The `x86_64` placement of `malloc` and `free` at 0 mod 64 (the
+`global_asm!` in `src/api/libc.rs`) is checked on the shipped library by
+`api::libc::tests::malloc_and_free_entries_are_cache_line_aligned_on_x86_64`
+(`nm -D`); elsewhere it prints the offsets.
+
 ## The C test programs
 
 `tests/c/` holds the programs the `api::` layer runs under
