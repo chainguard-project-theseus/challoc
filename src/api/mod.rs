@@ -2827,4 +2827,349 @@ mod tests {
         }
         assert!(grants > 0 && integrity_checks > 0 && trusted > 0);
     }
+
+    /// The tokens of C's frees and reallocs (`vspec::cbuf::CCall` of a
+    /// `CEntry::Frees`, which `heap::live::axiom_c_claim` uses up into
+    /// the block's token) come from a C call, one per call, for its own
+    /// pointer: the mint (`axiom_c_block`) is private to the `exports`
+    /// modules of `libc`, `jemalloc` and `cxx` (the type system keeps every
+    /// other module from naming it), and here each of those modules
+    /// declares it once, for `CEntry::Frees` of its `p`, and each call of
+    /// it is in an `extern "C"` body (or a `verified_export_pair!` arm,
+    /// which expands to two) with a parameter `p: *mut c_void`, as
+    /// `Tracked(axiom_c_block(p))` as an argument of a lone `super::` call
+    /// of plain arguments, at most once per body, in a body of nothing
+    /// else but the abort and syscall grants, the `errno` loan and an
+    /// out-pointer's token (no loop, closure, binding or other call that
+    /// could run the mint twice or for another pointer); and no Rust code
+    /// runs a minting export (nothing names `exports`, and inside it no
+    /// export is called but through `super::`, the Rust entry point). And
+    /// no other trusted item makes a free's token: the only other axioms
+    /// whose signature names `CCall` are the claim and the buffer calls'
+    /// mints of `mallctl` and `print`, whose `requires` exclude a free's
+    /// entry; no `external_body` function's signature names it, no alias
+    /// renames it, no literal or `Self` builds one in `vspec/cbuf.rs`'s
+    /// `impl`, and every other line that names `CEntry::Frees` is
+    /// `vspec/cbuf.rs`'s or `mallctl`'s exclusion. (A trusted item that
+    /// escapes these line checks is still in `verus/SEAMS.md`.) So no
+    /// verified function holds a free's token but its export's, for the
+    /// pointer C passed.
+    #[test]
+    fn c_blocks_only_for_the_entrys_pointer() {
+        // Spelled in parts, so that this test's own lines match nothing.
+        let mint = std::format!("{}{}", "axiom_c_", "block");
+        let ty = std::format!("{}{}", "CCa", "ll");
+        let variant = std::format!("{}{}", "Fre", "es");
+        let decl = std::format!("axiom fn {mint}(p: *mut c_void) -> (tracked c: {ty})");
+        let fresh = std::format!("c.fresh(CEntry::{variant} {{ ptr: p as *mut u8 }}),");
+        let call = std::format!("Tracked({mint}(p))");
+        // A mint's line: a `super::` call of the entry point, its result
+        // cast or not, whose arguments are the body's parameters, the
+        // `errno` loan, an out-pointer's token and the mint, nothing else
+        // (no block, closure, loop or second statement).
+        let args = [
+            "p as *mut u8",
+            "size",
+            "flags",
+            "align",
+            "n",
+            "m",
+            "usable",
+            "Tracked(&mut errno)",
+            "Tracked(uout)",
+            call.as_str(),
+        ];
+        let shaped = |t: &str| {
+            let Some(r) = t.strip_prefix("super::") else {
+                return false;
+            };
+            let r = r.strip_suffix(" as *mut c_void").unwrap_or(r);
+            let Some((name, rest)) = r.split_once('(') else {
+                return false;
+            };
+            let Some(list) = rest.strip_suffix(')') else {
+                return false;
+            };
+            !name.is_empty()
+                && name.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                && list.split(", ").all(|a| args.contains(&a))
+                && list.matches(mint.as_str()).count() == 1
+        };
+        // The lines a minting body may hold besides its mint.
+        let plain = [
+            String::from("{"),
+            String::from("proof {"),
+            std::format!("crate::sys::{}{}();", "grant_", "syscalls"),
+            std::format!("crate::sys::{}{}();", "grant_", "aborts"),
+            String::from("let Tracked(mut errno) = crate::vspec::errno::lend();"),
+            String::from("let tracked uout = axiom_c_out(usable, true);"),
+        ];
+        // The axioms that may name the token's type, with the lines that
+        // must follow each: the mints, for a free's entry of their `p`; the
+        // claim, which uses one up; and the buffer calls' mints, whose
+        // `requires` exclude a free's entry.
+        let mints = [String::from("ensures"), fresh.clone(), String::from(";")];
+        let axioms = [
+            (
+                "heap/live.rs",
+                std::format!("pub axiom fn axiom_c_claim(tracked c: {ty}) -> (tracked r: Live)"),
+                std::vec![String::from("requires"), String::from("c.block() is Some,")],
+            ),
+            (
+                "api/mallctl.rs",
+                std::format!("axiom fn axiom_c_call(e: CEntry) -> (tracked c: {ty})"),
+                std::vec![
+                    String::from("requires"),
+                    String::from("!(e is StatsPrint),"),
+                    std::format!("!(e is {variant}),"),
+                    String::from("ensures"),
+                ],
+            ),
+            (
+                "api/print.rs",
+                std::format!("axiom fn axiom_c_call(e: CEntry) -> (tracked c: {ty})"),
+                std::vec![
+                    String::from("requires"),
+                    String::from("e is StatsPrint,"),
+                    String::from("ensures"),
+                ],
+            ),
+        ];
+        // The lines outside `vspec/cbuf.rs` that may name a free's entry,
+        // besides the mints' `ensures`: `mallctl`'s exclusion (`print`'s
+        // mint requires its own entry).
+        let named = [("api/mallctl.rs", std::format!("!(e is {variant}),"))];
+        // (file, the bodies that mint): one per free or realloc export
+        // (a pair's arm counted once).
+        let expected = [
+            ("api/cxx.rs", 12),
+            ("api/jemalloc.rs", 3),
+            ("api/libc.rs", 8),
+        ];
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&src, &mut files);
+        let mut found = Vec::new();
+        for path in &files {
+            let rel = path.strip_prefix(&src).unwrap().to_str().unwrap();
+            let text = std::fs::read_to_string(path).unwrap();
+            let raw: Vec<&str> = text.lines().collect();
+            // The `exports` module: from its `mod exports {` to the `}` in
+            // column 0 that closes it.
+            let start = raw.iter().position(|l| *l == "mod exports {");
+            let end = start.and_then(|s| raw.iter().skip(s).position(|l| *l == "}").map(|e| s + e));
+            let (mut decls, mut bodies) = (0, 0);
+            let mut exported: Vec<String> = Vec::new();
+            // The current body's header (joined to its `{`), whether it is
+            // an export's, its brace depth (0 outside a body), whether it
+            // minted, and its other lines.
+            let (mut sig, mut export, mut depth) = (String::new(), false, 0i32);
+            let (mut in_sig, mut minted) = (false, false);
+            let mut rest: Vec<(usize, &str)> = Vec::new();
+            // The code lines so far, and whether an `external_body`
+            // attribute waits for its item.
+            let mut prev: Vec<&str> = Vec::new();
+            let mut trusted = false;
+            // An item's signature from line `i`, joined up to its body,
+            // its `;`, or its `requires` or `ensures`.
+            let item = |i: usize| {
+                let mut s = String::new();
+                for l in &raw[i..] {
+                    let l = l.trim();
+                    if l == "requires" || l == "ensures" {
+                        break;
+                    }
+                    s.push_str(l);
+                    if l.ends_with('{') || l.ends_with(';') {
+                        break;
+                    }
+                }
+                s
+            };
+            // Inside `impl CCall` of `vspec/cbuf.rs`.
+            let mut in_impl = false;
+            for (i, l) in raw.iter().enumerate() {
+                let t = l.trim();
+                if t.starts_with("//") {
+                    continue;
+                }
+                let at = || std::format!("{rel}:{}: `{t}`", i + 1);
+                let inside = matches!((start, end), (Some(s), Some(e)) if s < i && i < e);
+                if t.contains("verifier::external_body") {
+                    trusted = true;
+                } else if fn_item(t) || t.contains("fn ") {
+                    assert!(
+                        !(trusted && item(i).contains(ty.as_str())),
+                        "{}: an `external_body` function names `{ty}`",
+                        at()
+                    );
+                    trusted = false;
+                }
+                assert!(
+                    !(t.contains("type ") && t.contains(ty.as_str())),
+                    "{}: an alias of `{ty}`",
+                    at()
+                );
+                if t.contains("axiom fn") && item(i).contains(ty.as_str()) {
+                    let next: Vec<&str> = raw[i + 1..]
+                        .iter()
+                        .map(|l| l.trim())
+                        .filter(|l| !l.is_empty() && !l.starts_with("//"))
+                        .collect();
+                    let follows = |want: &[String]| {
+                        next.len() >= want.len() && want.iter().zip(&next).all(|(w, n)| w == n)
+                    };
+                    assert!(
+                        (t == decl && follows(&mints))
+                            || axioms
+                                .iter()
+                                .any(|(f, s, w)| *f == rel && t == s && follows(w)),
+                        "{}: an axiom names `{ty}` other than as allowed",
+                        at()
+                    );
+                }
+                if rel == "vspec/cbuf.rs" && t.contains(&std::format!("{ty} {{")) {
+                    assert!(
+                        t == std::format!("pub tracked struct {ty} {{")
+                            || t == std::format!("impl {ty} {{"),
+                        "{}: `{ty}` built in `vspec/cbuf.rs`",
+                        at()
+                    );
+                }
+                if rel == "vspec/cbuf.rs" {
+                    if t == std::format!("impl {ty} {{") {
+                        in_impl = true;
+                    } else if *l == "}" {
+                        in_impl = false;
+                    }
+                    assert!(
+                        !(in_impl && (t.contains("Self {") || t.contains("Self("))),
+                        "{}: `{ty}` built in its `impl`",
+                        at()
+                    );
+                }
+                if rel != "vspec/cbuf.rs" && t.contains(variant.as_str()) {
+                    let n = prev.len();
+                    assert!(
+                        (t == fresh
+                            && inside
+                            && n >= 2
+                            && prev[n - 1] == "ensures"
+                            && prev[n - 2] == decl)
+                            || named.iter().any(|(f, s)| *f == rel && t == s),
+                        "{}: `CEntry::{variant}` named other than as allowed",
+                        at()
+                    );
+                }
+                prev.push(t);
+                if t == decl {
+                    assert!(
+                        inside,
+                        "{}: `{mint}` declared outside an `exports` module",
+                        at()
+                    );
+                    decls += 1;
+                }
+                let header = t.starts_with("pub extern \"C\" fn ")
+                    || (t.starts_with("fn ") && t.contains(" / "));
+                if depth == 0 && !in_sig && (header || fn_item(t)) {
+                    (sig, export, minted, in_sig) = (String::new(), header, false, true);
+                    rest.clear();
+                }
+                if in_sig {
+                    sig.push_str(t);
+                    in_sig = !t.ends_with('{') && !t.ends_with(';');
+                    depth = if t.ends_with('{') { 1 } else { 0 };
+                    continue;
+                }
+                if depth == 0 {
+                    assert!(
+                        !t.contains(mint.as_str()) || t == decl || !inside,
+                        "{}: `{mint}` outside an `extern \"C\"` body",
+                        at()
+                    );
+                    if !t.contains(mint.as_str()) || t == decl {
+                        continue;
+                    }
+                }
+                depth += t.matches('{').count() as i32 - t.matches('}').count() as i32;
+                if !t.contains(mint.as_str()) {
+                    rest.push((i, t));
+                } else {
+                    assert!(inside, "{}: `{mint}` outside an `exports` module", at());
+                    assert!(export, "{}: `{mint}` outside an `extern \"C\"` body", at());
+                    assert!(
+                        sig.contains("(p: *mut c_void") && shaped(t),
+                        "{}: `{mint}` other than as `{call}` of the body's `p: *mut c_void`",
+                        at()
+                    );
+                    assert!(!minted, "{}: a second `{mint}` in `{sig}`", at());
+                    minted = true;
+                    bodies += 1;
+                    // The export's names (both of a pair's arm).
+                    let names = sig.split('(').next().unwrap_or("");
+                    let names = names.trim_start_matches("pub extern \"C\" fn ");
+                    let names = names.trim_start_matches("fn ");
+                    exported.extend(names.split(" / ").map(String::from));
+                }
+                // At the body's end, a minting body holds nothing but its
+                // mint and the plain lines.
+                if depth <= 0 && minted {
+                    for &(j, u) in &rest {
+                        assert!(
+                            u.is_empty() || u == "}" || plain.iter().any(|s| s == u),
+                            "{rel}:{}: `{u}` in the minting body `{sig}`",
+                            j + 1
+                        );
+                    }
+                }
+                if depth <= 0 {
+                    (depth, minted) = (0, false);
+                    rest.clear();
+                }
+            }
+            if decls == 0 && bodies == 0 {
+                continue;
+            }
+            // No Rust code runs a minting export (each run is one C call):
+            // nothing names the `exports` module, and inside it nothing
+            // calls an export but through `super::` (the Rust entry point
+            // of that name).
+            for (i, l) in raw.iter().enumerate() {
+                let t = l.trim();
+                if t.starts_with("//") {
+                    continue;
+                }
+                assert!(
+                    !t.contains("exports::"),
+                    "{rel}:{}: `{t}` names the `exports` module",
+                    i + 1
+                );
+                let inside = matches!((start, end), (Some(s), Some(e)) if s < i && i < e);
+                let header = t.starts_with("pub extern \"C\" fn ")
+                    || (t.starts_with("fn ") && t.contains(" / "));
+                if !inside || header {
+                    continue;
+                }
+                for name in &exported {
+                    for (k, _) in t.match_indices(&std::format!("{name}(")) {
+                        let before = &t[..k];
+                        let ident = before.ends_with(|c: char| c.is_alphanumeric() || c == '_');
+                        assert!(
+                            ident || before.ends_with("super::") || before.ends_with("fn "),
+                            "{rel}:{}: `{t}` calls the export `{name}`",
+                            i + 1
+                        );
+                    }
+                }
+            }
+            assert_eq!(decls, 1, "{rel}: `{mint}` declared {decls} times");
+            found.push((String::from(rel), bodies));
+        }
+        let expected: Vec<_> = expected
+            .iter()
+            .map(|(f, n)| (String::from(*f), *n))
+            .collect();
+        assert_eq!(found, expected);
+    }
 }

@@ -16,6 +16,9 @@
 //! holds the block, so it holds the token), and take one back for a
 //! pointer C frees through the one trusted step, [`axiom_c_claim`]: the C
 //! contract of `free` and `realloc`, that only a block's holder frees it.
+//! The step uses up the token of the C call ([`crate::vspec::cbuf::CCall`]
+//! of a free or a realloc), which only the `extern "C"` bodies mint, one
+//! per call, for the pointer C passed.
 
 #[cfg(verus_only)]
 use crate::class::slot_loc;
@@ -26,6 +29,8 @@ use crate::huge::RunToken;
 use crate::huge::free_page_byte;
 #[cfg(verus_only)]
 use crate::layout::{NCLASSES, class_table, disjoint, process_regions};
+#[cfg(verus_only)]
+use crate::vspec::cbuf::CCall;
 use crate::vspec::user::UserMem;
 #[cfg(verus_only)]
 use vstd::prelude::*;
@@ -889,35 +894,47 @@ pub proof fn lemma_run_interior(a: usize, len: int, b: usize)
 /// The C contract of `free`, `realloc` and the sized frees: only a
 /// block's holder frees or reallocates it, and the holder of the block at
 /// `p` holds its token, which the allocation that made it handed to C
-/// with the block. So for a pointer C passes to a free, C holds a token
-/// that claims it ([`Live::claims`]): the slot token if `p` is a slot
-/// start, the token of the run that starts at `p` if `p` is a huge page
-/// start, each with the permission to the block's usable bytes, valid
-/// through `p`, their values whatever the program left in them; nothing
-/// otherwise (whole-allocator theorem 3 then aborts).
+/// with the block. So for a pointer `p` C passes to a free (`c`, the
+/// token of that call, a free or a realloc of `p`: `c.block() ==
+/// Some(p)`, [`CEntry::Frees`](crate::vspec::cbuf::CEntry::Frees)), C
+/// holds a token that claims it ([`Live::claims`]): the slot token if `p`
+/// is a slot start, the token of the run that starts at `p` if `p` is a
+/// huge page start, each with the permission to the block's usable bytes,
+/// valid through `p`, their values whatever the program left in them;
+/// nothing otherwise (whole-allocator theorem 3 then aborts).
 ///
 /// Trusted, at the C ABI boundary only: the Rust entry point that the
 /// export of each free or realloc symbol calls (`libc::free`,
 /// `free_sized_hint`, `realloc`, `realloc_usable`, `free_usable`,
 /// `jemalloc::rallocx`, `dallocx`, `sdallocx`; the C++ `delete`s go
-/// through the `libc` ones) calls it once, for the pointer C passed, and
-/// passes the token to the verified core (as does, once per branch, the
-/// verification-only `libc::theorem_no_syscall_on_fast_paths`). It needs
-/// no well-formed regions: some token claims any pointer. The axiom is
-/// only as sound as
-/// the contract: a pointer freed twice, or one never allocated that
-/// happens to be a slot or huge page start, has no token in C's hands,
-/// and two tokens of one slot or overlapping runs let a proof derive
-/// `false`. The run-time checks behind the frees (the bitmap bit test,
-/// the huge table lookup, the cache flush's release) stay in the code
-/// for such programs. The contract also keeps the call's other pointer
-/// arguments out of the block (`challoc_realloc_usable`'s `usable`, whose
-/// permission `api::libc`'s `axiom_c_out` gives): its bytes are the
-/// call's, and a write through such an argument would change them behind
-/// the permission this token holds.
-pub axiom fn axiom_c_claim(p: *mut u8) -> (tracked r: Live)
+/// through the `libc` ones) takes the export's call token for the pointer
+/// C passed, uses it up here, and passes the block's token to the
+/// verified core (as does, once per branch, the verification-only
+/// `libc::theorem_no_syscall_on_fast_paths`, with its parameter's).
+/// Verified code has no other way to call it: the only
+/// [`CCall`](crate::vspec::cbuf::CCall) of a free or a realloc it holds
+/// is the one passed down from an export, minted in the `extern "C"` body
+/// for the export's pointer (`axiom_c_block`, private to each `exports`
+/// module of `api/libc.rs`, `api/jemalloc.rs` and `api/cxx.rs`), and
+/// using that up leaves none.
+/// `api::tests::c_blocks_only_for_the_entrys_pointer` checks the source
+/// for at most one mint per body, for the body's own pointer parameter.
+/// It needs no well-formed regions: some token claims any pointer. The
+/// axiom is only as sound as the contract: a pointer freed twice, or one
+/// never allocated that happens to be a slot or huge page start, has no
+/// token in C's hands, and two tokens of one slot or overlapping runs let
+/// a proof derive `false`. The run-time checks behind the frees (the
+/// bitmap bit test, the huge table lookup, the cache flush's release)
+/// stay in the code for such programs. The contract also keeps the call's
+/// other pointer arguments out of the block (`challoc_realloc_usable`'s
+/// `usable`, whose permission `api::libc`'s `axiom_c_out` gives): its
+/// bytes are the call's, and a write through such an argument would
+/// change them behind the permission this token holds.
+pub axiom fn axiom_c_claim(tracked c: CCall) -> (tracked r: Live)
+    requires
+        c.block() is Some,
     ensures
-        r.claims(p),
+        r.claims(c.block()->0),
 ;
 
 /// The permission to the `len` usable bytes of the block at `p` that the

@@ -483,7 +483,7 @@ mod kani_desc_stride {
     use super::{DESC_STRIDE, desc_stride};
     use crate::layout::NCLASSES;
 
-    /// S198 `desc_stride`, `requires class < NCLASSES`, `ensures r <=
+    /// S201 `desc_stride`, `requires class < NCLASSES`, `ensures r <=
     /// u32::MAX, r == stride_of(class as int)`: for every `class <
     /// NCLASSES` the call returns without a panic, and what it returns
     /// is `DESC_STRIDE[class]` widened (so at most `u32::MAX`), the same

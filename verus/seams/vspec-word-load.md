@@ -1,6 +1,6 @@
 # `load` (`vspec/word.rs`)
 
-Seam S398 of `verus/SEAMS.md`: src/vspec/word.rs:105. Kind: external_body. Category: atomics primitive.
+Seam S401 of `verus/SEAMS.md`: src/vspec/word.rs:105. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 coherence rules (part 3).
 
 ## Contract

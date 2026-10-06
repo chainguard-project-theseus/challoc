@@ -202,7 +202,7 @@ mod exports {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::libc::free;
+    use crate::api::libc::plain::free;
     use crate::api::libc::plain::malloc;
     use crate::layout::MEDIUM_MAX;
     use std::vec::Vec;

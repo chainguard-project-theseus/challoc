@@ -6,15 +6,17 @@
 //!
 //! The trust sits at the C boundary, in one linear token per call, minted
 //! once by the export wrapper of the C symbol from its own parameters and
-//! handed to the Rust entry point (as `heap::live::axiom_c_claim` hands
-//! over a freed block's token). The mints are private to the `exports`
+//! handed to the Rust entry point. The mints are private to the `exports`
 //! modules, whose functions are the C entry points: `api/mallctl.rs`'s and
 //! `api/print.rs`'s `axiom_c_call` (a [`CCall`] for `mallctl`,
-//! `mallctlnametomib`, `mallctlbymib` and `malloc_stats_print`) and
-//! `api/libc.rs`'s `axiom_c_out` (a [`COut`] for the out-pointer of
-//! `posix_memalign` and the `challoc_*_usable` entry points). No other
-//! verified code can mint a token, so none can speak of another call's
-//! arguments, pick a length, or take a step twice.
+//! `mallctlnametomib`, `mallctlbymib` and `malloc_stats_print`),
+//! `api/libc.rs`'s, `api/jemalloc.rs`'s and `api/cxx.rs`'s
+//! `axiom_c_block` (a [`CCall`] for a free or a realloc, [`CEntry::Frees`],
+//! which `heap::live::axiom_c_claim` uses up into the freed block's
+//! token) and `api/libc.rs`'s `axiom_c_out` (a [`COut`] for the
+//! out-pointer of `posix_memalign` and the `challoc_*_usable` entry
+//! points). No other verified code can mint a token, so none can speak of
+//! another call's arguments, pick a length, or take a step twice.
 //!
 //! - [`CCall`]: the call's entry point and arguments ([`CEntry`]), the
 //!   facts of their contracts ([`CArg::facts`], given at the mint), a view
@@ -230,6 +232,13 @@ pub ghost enum CEntry {
     ByMib { mib: *const usize, miblen: usize, oldp: *mut u8, oldlenp: *const usize, newp: *mut u8, newlen: usize },
     /// `malloc_stats_print(write_cb, cbopaque, opts)`.
     StatsPrint { opts: *const u8 },
+    /// A free or a realloc of the block at `ptr` (`free`, `free_sized`,
+    /// `free_aligned_sized`, `realloc`, `reallocarray`,
+    /// `challoc_realloc_usable`, `challoc_free_usable`, `rallocx`,
+    /// `dallocx`, `sdallocx`, the C++ `delete`s, and their `je_` twins):
+    /// the pointer C passed, whose block C hands over ([`CCall::block`],
+    /// `heap::live::axiom_c_claim`). It has no buffer argument.
+    Frees { ptr: *mut u8 },
 }
 
 impl CEntry {
@@ -253,6 +262,7 @@ impl CEntry {
                 ||| newp@.addr != 0 && a == CArg::Buffer(newp, newlen)
             },
             CEntry::StatsPrint { opts } => opts@.addr != 0 && a == CArg::Str(opts),
+            CEntry::Frees { .. } => false,
         }
     }
 
@@ -263,6 +273,7 @@ impl CEntry {
             CEntry::NameToMib { name, .. } => Some(name),
             CEntry::ByMib { .. } => None,
             CEntry::StatsPrint { opts } => Some(opts),
+            CEntry::Frees { .. } => None,
         }
     }
 
@@ -280,6 +291,7 @@ impl CEntry {
                 &&& (newp@.addr != 0 ==> CArg::Buffer(newp, newlen).facts())
             },
             CEntry::StatsPrint { .. } => true,
+            CEntry::Frees { .. } => true,
         }
     }
 }
@@ -372,7 +384,12 @@ axiom fn axiom_c_writes(prov: Provenance)
 /// parameters with the private `axiom_c_call` of its `exports` module
 /// (`api/mallctl.rs`, `api/print.rs`), once, and hands it to the Rust
 /// entry point, which threads it, borrowed, to the code that reads and
-/// writes the caller's buffers. No other verified code can mint one, and
+/// writes the caller's buffers. The token of a free or a realloc
+/// ([`CEntry::Frees`]) is minted by the private `axiom_c_block` of
+/// `api/libc.rs`, `api/jemalloc.rs` and `api/cxx.rs` instead, in the
+/// `extern "C"` body itself, for the pointer C passed, and the Rust entry
+/// point uses it up into the block's token (`heap::live::axiom_c_claim`,
+/// which takes no other token). No other verified code can mint one, and
 /// none can name another call's arguments or pick a length. No verified
 /// function holds two (the theorems' witnesses take one call each), so
 /// [`c_writes`], which is per provenance, is this token's.
@@ -416,6 +433,16 @@ impl CCall {
     /// `a` is one of the call's pointer arguments ([`CEntry::passed`]).
     pub open spec fn has(self, a: CArg) -> bool {
         self.entry().passed(a)
+    }
+
+    /// The block C hands over through a free or a realloc
+    /// ([`CEntry::Frees`]): the pointer C passed; `None` for every other
+    /// entry point.
+    pub open spec fn block(self) -> Option<*mut u8> {
+        match self.entry() {
+            CEntry::Frees { ptr } => Some(ptr),
+            _ => None,
+        }
     }
 
     /// The token reads the call's string argument `p`: no write has

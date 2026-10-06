@@ -63,6 +63,7 @@ use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind};
 #[cfg(verus_only)]
 use crate::lock::axiom_entry;
+use crate::vspec::cbuf::CCall;
 #[cfg(verus_only)]
 use crate::vspec::usable::{usable_is, usable_of};
 use crate::vspec::zero::Zeroed;
@@ -414,15 +415,16 @@ pub fn mallocx_zeroed(size: usize, flags: c_int, Tracked(blk): Tracked<&mut Live
 /// block. On failure `p` is intact and null comes back. C holds the
 /// token of the block it passes ([`crate::heap::live::axiom_c_claim`]),
 /// and gets the result's.
-pub fn rallocx(p: *mut u8, size: usize, flags: c_int) -> (r: *mut u8)
+pub fn rallocx(p: *mut u8, size: usize, flags: c_int, Tracked(c): Tracked<CCall>) -> (r: *mut u8)
     requires
+        c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         crate::heap::fits(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
         p@.addr != 0 ==> crate::heap::free_target(p),
 {
-    let tracked blk = crate::heap::live::axiom_c_claim(p);
+    let tracked blk = crate::heap::live::axiom_c_claim(c);
     let tracked mut out = Live::empty();
     rallocx_zeroed(p, size, flags, Tracked(blk), Tracked(&mut out)).0
 }
@@ -564,15 +566,16 @@ pub fn sallocx(p: *mut u8, _flags: c_int) -> (r: usize)
 /// releases the slot straight to its slab bitmap). Null is a no-op. C
 /// holds the token of the block it frees
 /// ([`crate::heap::live::axiom_c_claim`]).
-pub fn dallocx(p: *mut u8, flags: c_int)
+pub fn dallocx(p: *mut u8, flags: c_int, Tracked(c): Tracked<CCall>)
     requires
+        c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
 {
-    let tracked blk = crate::heap::live::axiom_c_claim(p);
+    let tracked blk = crate::heap::live::axiom_c_claim(c);
     dallocx_block(p, flags, Tracked(blk))
 }
 
@@ -610,8 +613,9 @@ pub fn dallocx_block(p: *mut u8, flags: c_int, Tracked(blk): Tracked<Live>)
 /// [`sdallocx_flags`], a call, so that the compiler cannot merge the two
 /// sized fast paths behind a test of the hint.
 #[inline(always)]
-pub fn sdallocx(p: *mut u8, size: usize, flags: c_int)
+pub fn sdallocx(p: *mut u8, size: usize, flags: c_int, Tracked(c): Tracked<CCall>)
     requires
+        c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
@@ -619,7 +623,7 @@ pub fn sdallocx(p: *mut u8, size: usize, flags: c_int)
         p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
         p@.addr != 0 ==> crate::heap::hint_ok(p, spec_class_for(size, 1usize << ((flags as u32) & 0x3f))),
 {
-    let tracked blk = crate::heap::live::axiom_c_claim(p);
+    let tracked blk = crate::heap::live::axiom_c_claim(c);
     sdallocx_block(p, size, flags, Tracked(blk))
 }
 
@@ -959,19 +963,30 @@ pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
 
 #[cfg(not(test))]
 mod exports {
+    #[cfg(verus_only)]
+    use crate::vspec::cbuf::{CCall, CEntry};
     use core::ffi::{c_int, c_void};
-    use vstd::prelude::verus;
+    use vstd::prelude::{Tracked, verus};
 
     // `verified_export_pair!` expands inside its own `verus!`; this outer
     // block holds it (Verus passes the invocation through).
     verus! {
+
+    /// The token of a C call that hands over the block at `p` to
+    /// `rallocx`, `dallocx` or `sdallocx` ([`CCall`], [`CEntry::Frees`]).
+    /// Trusted: as `libc`'s `axiom_c_block`, which this module cannot
+    /// name.
+    axiom fn axiom_c_block(p: *mut c_void) -> (tracked c: CCall)
+        ensures
+            c.fresh(CEntry::Frees { ptr: p as *mut u8 }),
+    ;
 
     verified_export_pair! {
         fn mallocx / je_mallocx(size: usize, flags: c_int) -> *mut c_void {
             super::mallocx(size, flags) as *mut c_void
         }
         fn rallocx / je_rallocx(p: *mut c_void, size: usize, flags: c_int) -> *mut c_void {
-            super::rallocx(p as *mut u8, size, flags) as *mut c_void
+            super::rallocx(p as *mut u8, size, flags, Tracked(axiom_c_block(p))) as *mut c_void
         }
         fn xallocx / je_xallocx(p: *mut c_void, size: usize, extra: usize, flags: c_int) -> usize {
             super::xallocx(p as *mut u8, size, extra, flags)
@@ -980,10 +995,10 @@ mod exports {
             super::sallocx(p as *mut u8, flags)
         }
         fn dallocx / je_dallocx(p: *mut c_void, flags: c_int) {
-            super::dallocx(p as *mut u8, flags)
+            super::dallocx(p as *mut u8, flags, Tracked(axiom_c_block(p)))
         }
         fn sdallocx / je_sdallocx(p: *mut c_void, size: usize, flags: c_int) {
-            super::sdallocx(p as *mut u8, size, flags)
+            super::sdallocx(p as *mut u8, size, flags, Tracked(axiom_c_block(p)))
         }
         fn nallocx / je_nallocx(size: usize, flags: c_int) -> usize {
             super::nallocx(size, flags)
@@ -996,8 +1011,30 @@ mod exports {
     } // verus!
 }
 
+/// The free and realloc entry points with their C signatures, for the
+/// tests: each takes the call's token for the block
+/// (`vspec::cbuf::CCall`) the way the export wrappers mint it.
+#[cfg(test)]
+pub(crate) mod plain {
+    use core::ffi::c_int;
+    use vstd::prelude::Tracked;
+
+    pub fn rallocx(p: *mut u8, size: usize, flags: c_int) -> *mut u8 {
+        super::rallocx(p, size, flags, Tracked::assume_new())
+    }
+
+    pub fn dallocx(p: *mut u8, flags: c_int) {
+        super::dallocx(p, flags, Tracked::assume_new())
+    }
+
+    pub fn sdallocx(p: *mut u8, size: usize, flags: c_int) {
+        super::sdallocx(p, size, flags, Tracked::assume_new())
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::plain::{dallocx, rallocx, sdallocx};
     use super::*;
     use crate::heap::mallocx::{
         MALLOCX_TCACHE_NONE, MALLOCX_ZERO, Tcache, mallocx_arena, mallocx_lg_align, mallocx_tcache,
@@ -1173,7 +1210,7 @@ mod tests {
             for flags in [0, mallocx_arena(lua), mallocx_tcache(t)] {
                 let ps: Vec<*mut u8> = (0..4).map(|_| mallocx(size, flags as c_int)).collect();
                 dallocx(ps[0], flags as c_int);
-                crate::api::libc::free(ps[1]);
+                crate::api::libc::plain::free(ps[1]);
                 kept.push((ps[2], flags));
                 kept.push((ps[3], flags));
             }
@@ -1327,7 +1364,7 @@ mod tests {
         let cached_foreign = |h: &heap::Heap| h.cache_in(heap::FOREIGN, c).map_or(0, |cc| cc.len());
         let before = cached_in(h);
         let before_foreign = cached_foreign(h);
-        api_libc::free(p);
+        api_libc::plain::free(p);
         assert_eq!(cached_in(h), before);
         assert_eq!(cached_foreign(h), before_foreign + 1);
         // realloc within the class keeps the pointer and the arena.
@@ -1341,7 +1378,7 @@ mod tests {
         assert_eq!(unsafe { *q }, 0xa5);
         // Across classes, plain realloc lands in the caller's home arena.
         assert_eq!(s.classify_free(q).map(|x| x.1), Ok(home));
-        api_libc::free(q);
+        api_libc::plain::free(q);
 
         // Direct path: live count moves at once, no cache involved.
         let f = Flags::decode(mallocx_arena(lua) | MALLOCX_TCACHE_NONE);
@@ -1396,7 +1433,7 @@ mod tests {
             s.huge.lookup(page, Tracked::assume_new()).unwrap().arena,
             lua
         );
-        api_libc::free(hp);
+        api_libc::plain::free(hp);
 
         // Explicit cache.
         let t = s
@@ -1456,7 +1493,7 @@ mod tests {
             } else {
                 assert_eq!(arena, other);
             }
-            api_libc::free(p);
+            api_libc::plain::free(p);
         }
         assert_eq!(
             cached_in(h),

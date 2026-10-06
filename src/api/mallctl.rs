@@ -3224,11 +3224,13 @@ mod exports {
 
     /// Trusted (the C contract of the entry point, `vspec::cbuf`): the
     /// token of this call from C, through the entry point (a `mallctl` one:
-    /// `malloc_stats_print`'s are `api/print.rs`'s) and with the
-    /// arguments `e` names: the export wrapper's own parameters, which C
-    /// passed under the entry point's contract ([`CCall::fresh`]: each
-    /// pointer argument's [`crate::vspec::cbuf::CArg`] facts, of memory of
-    /// the program's, and the string argument's view). Private to this
+    /// `malloc_stats_print`'s are `api/print.rs`'s, a free's or a
+    /// realloc's the `axiom_c_block`s of `libc`, `jemalloc` and `cxx`)
+    /// and with the arguments `e` names: the export wrapper's own
+    /// parameters, which C passed under the entry point's contract
+    /// ([`CCall::fresh`]: each pointer argument's
+    /// [`crate::vspec::cbuf::CArg`] facts, of memory of the program's,
+    /// and the string argument's view). Private to this
     /// module, whose functions are the C entry points and their mints
     /// below: each entry point mints its call's token once, from its own
     /// parameters, so no other verified code can mint one or name another
@@ -3239,6 +3241,7 @@ mod exports {
     axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
         requires
             !(e is StatsPrint),
+            !(e is Frees),
         ensures
             c.fresh(e),
     ;
@@ -3343,8 +3346,9 @@ mod exports {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::jemalloc::{dallocx, mallocx};
-    use crate::api::libc::free;
+    use crate::api::jemalloc::mallocx;
+    use crate::api::jemalloc::plain::dallocx;
+    use crate::api::libc::plain::free;
     use crate::api::libc::plain::malloc;
     use crate::config::Config;
     use crate::heap::mallocx::{MALLOCX_TCACHE_NONE, mallocx_arena, mallocx_tcache};
@@ -4604,7 +4608,7 @@ mod tests {
 mod kani_root {
     use super::{ROOT, root};
 
-    /// S14 `root`, `ensures r@ == root_nodes()`: every call returns
+    /// S17 `root`, `ensures r@ == root_nodes()`: every call returns
     /// `ROOT` itself, an immutable static, so the same nodes each time
     /// (`root_nodes` is uninterpreted: ROOT's contents interpret it).
     #[kani::proof]

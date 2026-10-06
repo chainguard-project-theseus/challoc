@@ -6422,7 +6422,7 @@ mod kani_aborts {
     use super::{assert_flushed, assert_refill_empty};
     use crate::kani_proofs::must_not_return;
 
-    /// S116 `assert_flushed`, `ensures *len == 0`: on any other `len` the
+    /// S119 `assert_flushed`, `ensures *len == 0`: on any other `len` the
     /// call never returns.
     #[kani::proof]
     #[kani::should_panic]
@@ -6434,7 +6434,7 @@ mod kani_aborts {
         }
     }
 
-    /// S117 `assert_refill_empty`, `ensures *len == 0`: as
+    /// S120 `assert_refill_empty`, `ensures *len == 0`: as
     /// `assert_flushed`.
     #[kani::proof]
     #[kani::should_panic]

@@ -44,7 +44,7 @@ use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, class_of};
 #[cfg(verus_only)]
 use crate::lock::axiom_entry;
 use crate::sys::Errno;
-use crate::vspec::cbuf::COut;
+use crate::vspec::cbuf::{CCall, COut};
 use crate::vspec::errno::{ThreadErrno, set_errno};
 use crate::vspec::usable::Stored;
 #[cfg(verus_only)]
@@ -504,14 +504,15 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
 /// C holds the token of the block it frees ([`heap::live::axiom_c_claim`],
 /// the one trusted step of the C contract).
 #[inline(always)]
-pub fn free(p: *mut u8)
+pub fn free(p: *mut u8, Tracked(c): Tracked<CCall>)
     requires
+        c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> heap::free_target(p),
 {
-    let tracked blk = heap::live::axiom_c_claim(p);
+    let tracked blk = heap::live::axiom_c_claim(c);
     free_block(p, Tracked(blk))
 }
 
@@ -557,11 +558,15 @@ pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>)
 /// system call does: they make none. `which` picks the path, so each one
 /// starts from a fresh heap borrow. The block tokens are taken as the entry
 /// points take them: an empty `Live` for a pop, [`heap::live::axiom_c_claim`]
-/// for a free.
+/// for a free, of the call's token for `p` (`claim`, [`CCall`], as an
+/// export mints it).
 ///
 /// Verification only (`cfg(verus_only)`): the build has no such function.
 #[cfg(verus_only)]
-fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8) {
+fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8, Tracked(claim): Tracked<CCall>)
+    requires
+        claim.block() == Some(p),
+{
     let tracked mut blk = Live::empty();
     match which {
         0 => {
@@ -582,7 +587,7 @@ fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8) {
             if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&tls)) {
                 // SAFETY: as in `free`.
                 let s = unsafe { super::shared_deref(super::shared_base()) };
-                let tracked mut b = heap::live::axiom_c_claim(p);
+                let tracked mut b = heap::live::axiom_c_claim(claim);
                 // SAFETY: as in `free`.
                 let _ = unsafe { heap::free_fast_slot(s, t, tp, p, Tracked(&mut b)) };
             }
@@ -593,7 +598,7 @@ fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8) {
                 if let Some(h) = heap::existing_heap(sp) {
                     // SAFETY: as in `free`.
                     let s = unsafe { super::shared_deref(sp) };
-                    let tracked mut b = heap::live::axiom_c_claim(p);
+                    let tracked mut b = heap::live::axiom_c_claim(claim);
                     let _ = heap::free_sized_fast(s, h, p, Some(c), s.push_flags(), Tracked(&mut b));
                 }
             }
@@ -603,7 +608,7 @@ fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8) {
             if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&tls)) {
                 // SAFETY: as in `free`.
                 let s = unsafe { super::shared_deref(super::shared_base()) };
-                let tracked mut b = heap::live::axiom_c_claim(p);
+                let tracked mut b = heap::live::axiom_c_claim(claim);
                 // SAFETY: as in `free`.
                 if let Some(c) = unsafe { heap::free_fast_slot(s, t, tp, p, Tracked(&mut b)) } {
                     let _ = class_size(c);
@@ -622,8 +627,9 @@ fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8) {
 /// ([`heap::hint_ok`] of every non-null `p` it returns for). C holds the
 /// token of the block it frees ([`heap::live::axiom_c_claim`]).
 #[inline(always)]
-pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>)
+pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>, Tracked(c): Tracked<CCall>)
     requires
+        c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         hint matches Some(c) ==> c < NCLASSES,
@@ -631,7 +637,7 @@ pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>)
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> heap::hint_ok(p, hint),
 {
-    let tracked blk = heap::live::axiom_c_claim(p);
+    let tracked blk = heap::live::axiom_c_claim(c);
     free_sized_block(p, size, hint, Tracked(blk))
 }
 
@@ -716,22 +722,24 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): T
 /// `malloc`/`calloc`/`realloc` (or any size in the same class). A slot
 /// freed with the size of another class, or with a huge size, aborts.
 #[inline(always)]
-pub fn free_sized(p: *mut u8, size: usize)
+pub fn free_sized(p: *mut u8, size: usize, Tracked(c): Tracked<CCall>)
     requires
+        c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> heap::hint_ok(p, spec_class_for(size, 1)),
 {
-    free_sized_hint(p, size, class_index(size))
+    free_sized_hint(p, size, class_index(size), Tracked(c))
 }
 
 /// C23 `free_aligned_sized(p, align, size)`: the arguments given to
 /// `aligned_alloc`. An alignment that is not a power of two matches no
 /// class and aborts on a slab pointer.
-pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize)
+pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize, Tracked(c): Tracked<CCall>)
     requires
+        c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
@@ -739,7 +747,7 @@ pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize)
         p@.addr != 0 ==> heap::hint_ok(p, if is_pow2(align) { spec_class_for(size, align) } else { None }),
 {
     let hint = if align.is_power_of_two() { class_for(size, align) } else { None };
-    free_sized_hint(p, size, hint)
+    free_sized_hint(p, size, hint, Tracked(c))
 }
 
 /// Everything `free` does off its fast path: heap creation, a full cache,
@@ -1284,8 +1292,9 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
 /// the old block is intact and `errno = ENOMEM`; `realloc(p, 0)`'s null
 /// leaves `errno` alone. C holds the token of the block it passes
 /// ([`heap::live::axiom_c_claim`]), and gets the result's.
-pub fn realloc(p: *mut u8, size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+pub fn realloc(p: *mut u8, size: usize, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(c): Tracked<CCall>) -> (r: *mut u8)
     requires
+        c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
@@ -1295,7 +1304,7 @@ pub fn realloc(p: *mut u8, size: usize, Tracked(errno): Tracked<&mut ThreadErrno
         r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
         p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
-    let tracked blk = heap::live::axiom_c_claim(p);
+    let tracked blk = heap::live::axiom_c_claim(c);
     let tracked mut out = Live::empty();
     realloc_block(p, size, Tracked(blk), Tracked(&mut out), Tracked(errno))
 }
@@ -1431,8 +1440,9 @@ fn theorem_realloc_to_usable_size(p: *mut u8, Tracked(blk): Tracked<Live>, Track
 }
 
 /// `reallocarray`: `realloc(p, n * m)` with overflow reported as `ENOMEM`.
-pub fn reallocarray(p: *mut u8, n: usize, m: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+pub fn reallocarray(p: *mut u8, n: usize, m: usize, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(c): Tracked<CCall>) -> (r: *mut u8)
     requires
+        c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
@@ -1443,7 +1453,7 @@ pub fn reallocarray(p: *mut u8, n: usize, m: usize, Tracked(errno): Tracked<&mut
         p@.addr != 0 && n * m == 0 ==> final(errno).val() == old(errno).val(),
 {
     match n.checked_mul(m) {
-        Some(size) => realloc(p, size, Tracked(errno)),
+        Some(size) => realloc(p, size, Tracked(errno), Tracked(c)),
         None => enomem(Tracked(errno)),
     }
 }
@@ -1851,8 +1861,9 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(uout
 /// reported. C holds the token of the block it passes
 /// ([`heap::live::axiom_c_claim`]), and gets the result's. `uout` is the
 /// call's token for `usable`, as in [`malloc_usable`].
-pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize, Tracked(uout): Tracked<COut<usize>>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize, Tracked(uout): Tracked<COut<usize>>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(c): Tracked<CCall>) -> (r: *mut u8)
     requires
+        c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         uout.of(usable),
@@ -1863,7 +1874,7 @@ pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize, Tracked(uout)
         r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
         p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
-    let tracked blk = heap::live::axiom_c_claim(p);
+    let tracked blk = heap::live::axiom_c_claim(c);
     let tracked mut uout = uout;
     let tracked mut out = Live::empty();
     realloc_usable_stored(p, size, usable, Tracked(&mut uout), Tracked(blk), Tracked(&mut out), Tracked(errno)).0
@@ -2027,8 +2038,9 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
 /// bad pointer dies with `free`'s message. C holds the token of the block
 /// it frees ([`heap::live::axiom_c_claim`]).
 #[inline(always)]
-pub fn free_usable(p: *mut u8) -> (r: usize)
+pub fn free_usable(p: *mut u8, Tracked(c): Tracked<CCall>) -> (r: usize)
     requires
+        c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
@@ -2037,7 +2049,7 @@ pub fn free_usable(p: *mut u8) -> (r: usize)
         p@.addr != 0 ==> usable_of(p, r as int),
         p@.addr != 0 ==> 0 < r,
 {
-    let tracked blk = heap::live::axiom_c_claim(p);
+    let tracked blk = heap::live::axiom_c_claim(c);
     free_usable_block(p, Tracked(blk))
 }
 
@@ -2622,9 +2634,23 @@ pub fn malloc_trim(_pad: usize, Tracked(left): Tracked<&mut Ghost<crate::purge::
 #[cfg(not(test))]
 mod exports {
     use super::*;
+    #[cfg(verus_only)]
+    use crate::vspec::cbuf::CEntry;
     use core::ffi::c_void;
 
     verus! {
+
+    /// Trusted (the C contract of a free or a realloc, `vspec::cbuf`):
+    /// the token of this call from C, which hands over the block at `p`
+    /// ([`CCall`], [`CEntry::Frees`]), for `heap::live::axiom_c_claim` to
+    /// use up. One call is one token, and only this module's `extern "C"`
+    /// bodies, the Rust side of a C call, can name this axiom; each mints
+    /// at most one, for its own `p`
+    /// (`api::tests::c_blocks_only_for_the_entrys_pointer`).
+    axiom fn axiom_c_block(p: *mut c_void) -> (tracked c: CCall)
+        ensures
+            c.fresh(CEntry::Frees { ptr: p as *mut u8 }),
+    ;
 
     // `malloc` and `free` each sit alone in a 64-byte-aligned section on
     // x86_64 (the `global_asm!` below); their `je_` twins stay in `.text`.
@@ -2657,7 +2683,7 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::free(p as *mut u8)
+        super::free(p as *mut u8, Tracked(axiom_c_block(p)))
     }
 
     #[unsafe(no_mangle)]
@@ -2666,7 +2692,7 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::free(p as *mut u8)
+        super::free(p as *mut u8, Tracked(axiom_c_block(p)))
     }
 
     } // verus!
@@ -2748,7 +2774,7 @@ mod exports {
         }
         fn realloc / je_realloc(p: *mut c_void, size: usize) -> *mut c_void {
             let Tracked(mut errno) = crate::vspec::errno::lend();
-            super::realloc(p as *mut u8, size, Tracked(&mut errno)) as *mut c_void
+            super::realloc(p as *mut u8, size, Tracked(&mut errno), Tracked(axiom_c_block(p))) as *mut c_void
         }
         fn aligned_alloc / je_aligned_alloc(align: usize, size: usize) -> *mut c_void {
             let Tracked(mut errno) = crate::vspec::errno::lend();
@@ -2785,7 +2811,7 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::reallocarray(p as *mut u8, n, m, Tracked(&mut errno)) as *mut c_void
+        super::reallocarray(p as *mut u8, n, m, Tracked(&mut errno), Tracked(axiom_c_block(p))) as *mut c_void
     }
 
     /// C23 `free_sized`: the size is checked against the class and stands
@@ -2796,7 +2822,7 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::free_sized(p as *mut u8, size)
+        super::free_sized(p as *mut u8, size, Tracked(axiom_c_block(p)))
     }
 
     /// C23 `free_aligned_sized`: as `free_sized`, with the alignment.
@@ -2806,7 +2832,7 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::free_aligned_sized(p as *mut u8, align, size)
+        super::free_aligned_sized(p as *mut u8, align, size, Tracked(axiom_c_block(p)))
     }
 
     #[unsafe(no_mangle)]
@@ -2856,7 +2882,7 @@ mod exports {
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         let tracked uout = axiom_c_out(usable, true);
-        super::realloc_usable(p as *mut u8, size, usable, Tracked(uout), Tracked(&mut errno)) as *mut c_void
+        super::realloc_usable(p as *mut u8, size, usable, Tracked(uout), Tracked(&mut errno), Tracked(axiom_c_block(p))) as *mut c_void
     }
 
     #[unsafe(no_mangle)]
@@ -2865,15 +2891,17 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::free_usable(p as *mut u8)
+        super::free_usable(p as *mut u8, Tracked(axiom_c_block(p)))
     }
 
     } // verus!
 }
 
 /// The entry points with their C signatures, for the tests: each lends the
-/// test thread's `errno`, and passes an out-pointer's token, the way the
-/// export wrappers do (ghost: nothing at run time).
+/// test thread's `errno`, and passes an out-pointer's token and the
+/// call's token for the block it frees or reallocates
+/// (`vspec::cbuf::CCall`), the way the export wrappers do (ghost: nothing
+/// at run time).
 #[cfg(test)]
 pub(crate) mod plain {
     use core::ffi::c_int;
@@ -2892,11 +2920,11 @@ pub(crate) mod plain {
     }
 
     pub fn realloc(p: *mut u8, size: usize) -> *mut u8 {
-        super::realloc(p, size, Tracked::assume_new())
+        super::realloc(p, size, Tracked::assume_new(), Tracked::assume_new())
     }
 
     pub fn reallocarray(p: *mut u8, n: usize, m: usize) -> *mut u8 {
-        super::reallocarray(p, n, m, Tracked::assume_new())
+        super::reallocarray(p, n, m, Tracked::assume_new(), Tracked::assume_new())
     }
 
     pub fn aligned_alloc(align: usize, size: usize) -> *mut u8 {
@@ -2936,15 +2964,24 @@ pub(crate) mod plain {
             usable,
             Tracked::assume_new(),
             Tracked::assume_new(),
+            Tracked::assume_new(),
         )
+    }
+
+    pub fn free(p: *mut u8) {
+        super::free(p, Tracked::assume_new())
+    }
+
+    pub fn free_usable(p: *mut u8) -> usize {
+        super::free_usable(p, Tracked::assume_new())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::plain::{
-        aligned_alloc, calloc, calloc_usable, malloc, malloc_usable, posix_memalign, pvalloc,
-        realloc, realloc_usable, reallocarray, set_errno, valloc,
+        aligned_alloc, calloc, calloc_usable, free, free_usable, malloc, malloc_usable,
+        posix_memalign, pvalloc, realloc, realloc_usable, reallocarray, set_errno, valloc,
     };
     use super::*;
     use crate::layout::{MEDIUM_MAX, class_size_of};

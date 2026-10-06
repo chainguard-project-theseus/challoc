@@ -43,6 +43,7 @@ use core::ptr;
 
 use super::libc;
 use crate::heap::Live;
+use crate::vspec::cbuf::CCall;
 use crate::vspec::errno::ThreadErrno;
 #[cfg(verus_only)]
 use vstd::prelude::*;
@@ -378,44 +379,47 @@ pub fn new_aligned_block(size: usize, align: usize, nothrow: bool, Tracked(blk):
 
 /// The unsized `operator delete` forms: `free`, with any alignment ignored.
 #[inline(always)]
-pub fn delete(p: *mut u8)
+pub fn delete(p: *mut u8, Tracked(c): Tracked<CCall>)
     requires
+        c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
 {
-    libc::free(p)
+    libc::free(p, Tracked(c))
 }
 
 /// `operator delete(void*, size_t)` and its array form: `free_sized`. The
 /// size is the one the matching `operator new(size)` was called with, so
 /// `class_of(size)` is the slot's class.
 #[inline(always)]
-pub fn delete_sized(p: *mut u8, size: usize)
+pub fn delete_sized(p: *mut u8, size: usize, Tracked(c): Tracked<CCall>)
     requires
+        c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 ==> crate::heap::hint_ok(p, libc::spec_class_for(size, 1)),
 {
-    libc::free_sized(p, size)
+    libc::free_sized(p, size, Tracked(c))
 }
 
 /// `operator delete(void*, size_t, std::align_val_t)` and its array form:
 /// `free_aligned_sized` with the arguments the matching aligned `new`
 /// passed to `aligned_alloc`.
 #[inline(always)]
-pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize)
+pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize, Tracked(c): Tracked<CCall>)
     requires
+        c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 ==> crate::heap::hint_ok(p, if libc::is_pow2(align) { libc::spec_class_for(size, align) } else { None }),
 {
-    libc::free_aligned_sized(p, align, size)
+    libc::free_aligned_sized(p, align, size, Tracked(c))
 }
 
 } // verus!
@@ -427,10 +431,20 @@ pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize)
 
 #[cfg(not(test))]
 mod exports {
+    #[cfg(verus_only)]
+    use crate::vspec::cbuf::{CCall, CEntry};
     use core::ffi::c_void;
     use vstd::prelude::{Tracked, verus};
 
     verus! {
+
+    /// The token of a C++ call that hands over the block at `p` to an
+    /// `operator delete` ([`CCall`], [`CEntry::Frees`]). Trusted: as
+    /// `libc`'s `axiom_c_block`, which this module cannot name.
+    axiom fn axiom_c_block(p: *mut c_void) -> (tracked c: CCall)
+        ensures
+            c.fresh(CEntry::Frees { ptr: p as *mut u8 }),
+    ;
 
     /// `operator new(size_t)`
     #[unsafe(export_name = "_Znwm")]
@@ -535,7 +549,7 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::delete(p as *mut u8)
+        super::delete(p as *mut u8, Tracked(axiom_c_block(p)))
     }
 
     /// `operator delete[](void*)`
@@ -545,7 +559,7 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::delete(p as *mut u8)
+        super::delete(p as *mut u8, Tracked(axiom_c_block(p)))
     }
 
     /// `operator delete(void*, const std::nothrow_t&)`
@@ -555,7 +569,7 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::delete(p as *mut u8)
+        super::delete(p as *mut u8, Tracked(axiom_c_block(p)))
     }
 
     /// `operator delete[](void*, const std::nothrow_t&)`
@@ -565,7 +579,7 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::delete(p as *mut u8)
+        super::delete(p as *mut u8, Tracked(axiom_c_block(p)))
     }
 
     /// `operator delete(void*, size_t)`
@@ -575,7 +589,7 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::delete_sized(p as *mut u8, size)
+        super::delete_sized(p as *mut u8, size, Tracked(axiom_c_block(p)))
     }
 
     /// `operator delete[](void*, size_t)`
@@ -585,7 +599,7 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::delete_sized(p as *mut u8, size)
+        super::delete_sized(p as *mut u8, size, Tracked(axiom_c_block(p)))
     }
 
     /// `operator delete(void*, std::align_val_t)`
@@ -595,7 +609,7 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::delete(p as *mut u8)
+        super::delete(p as *mut u8, Tracked(axiom_c_block(p)))
     }
 
     /// `operator delete[](void*, std::align_val_t)`
@@ -605,7 +619,7 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::delete(p as *mut u8)
+        super::delete(p as *mut u8, Tracked(axiom_c_block(p)))
     }
 
     /// `operator delete(void*, std::align_val_t, const std::nothrow_t&)`
@@ -615,7 +629,7 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::delete(p as *mut u8)
+        super::delete(p as *mut u8, Tracked(axiom_c_block(p)))
     }
 
     /// `operator delete[](void*, std::align_val_t, const std::nothrow_t&)`
@@ -629,7 +643,7 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::delete(p as *mut u8)
+        super::delete(p as *mut u8, Tracked(axiom_c_block(p)))
     }
 
     /// `operator delete(void*, size_t, std::align_val_t)`
@@ -639,7 +653,7 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::delete_sized_aligned(p as *mut u8, size, align)
+        super::delete_sized_aligned(p as *mut u8, size, align, Tracked(axiom_c_block(p)))
     }
 
     /// `operator delete[](void*, size_t, std::align_val_t)`
@@ -649,7 +663,7 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::delete_sized_aligned(p as *mut u8, size, align)
+        super::delete_sized_aligned(p as *mut u8, size, align, Tracked(axiom_c_block(p)))
     }
 
     } // verus!

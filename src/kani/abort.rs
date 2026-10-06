@@ -3,7 +3,7 @@
 use super::must_not_return;
 use crate::vspec::check::check;
 
-/// S270 `check`, `ensures c`: on a false `c` the call never returns (it
+/// S273 `check`, `ensures c`: on a false `c` the call never returns (it
 /// panics, and challoc's panics abort), so it returns only if `c`.
 #[kani::proof]
 #[kani::should_panic]
@@ -30,7 +30,7 @@ fn stub_abort_fmt(_args: core::fmt::Arguments<'_>) -> ! {
     panic!("kani: abort_fmt")
 }
 
-/// S210 `abort_integrity`, `requires may_abort_corrupt()`, `-> !`: the
+/// S213 `abort_integrity`, `requires may_abort_corrupt()`, `-> !`: the
 /// call reaches `abort_fmt` with no other failure on the way (its own
 /// `-> !` already rules out a return; it passes `args` on unread).
 #[kani::proof]

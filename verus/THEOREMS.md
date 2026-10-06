@@ -100,24 +100,36 @@ add.
   other writer (`verus/loom/run.sh` checks its two writes).
 
 **The `free` contract.** `heap::live::axiom_c_claim`
-(`heap/live.rs:489`) is the one trusted step at the C ABI boundary: for
+(`heap/live.rs:933`) is the one trusted step at the C ABI boundary: for
 a pointer C passes to a free or a realloc, it gives a `Live` token that
-claims it (`Live::claims`, `:146`): the slot's token if the pointer is a
+claims it (`Live::claims`, `:240`): the slot's token if the pointer is a
 slot start, the token of the run that starts there if it is a huge page
 start, nothing otherwise. The allocations hand C the token of every
-block they return (`Live::gives`, `:382`), so C, which holds the block,
+block they return (`Live::gives`, `:586`), so C, which holds the block,
 holds the token. It is called once per C call, by the Rust entry point
 the export calls, before anything else: `libc::free`, `free_sized_hint`
 (`free_sized`, `free_aligned_sized`, the sized `delete`s),
 `realloc`, `realloc_usable`, `free_usable`, and `jemalloc::rallocx`,
-`dallocx`, `sdallocx` (`api/libc.rs:432`, `:477`, `:812`, `:1134`,
-`:1256`, `api/jemalloc.rs:274`, `:389`, `:428`); every verified core
-below them takes the token as a parameter. A double free, or a free of a
-slot or huge page start that is not a live block, gives C a token it
-does not hold, which makes the proof context inconsistent at that call:
-it voids theorem 3 for that free and every theorem for later calls. A
-pointer that is neither a slot start nor a huge page start gets no token
-and the call does not return (theorem 3, which is not voided for it).
+`dallocx`, `sdallocx`; every verified core below them takes the token as
+a parameter. Verified code cannot call it otherwise: it uses up the
+linear token of one C call (`vspec::cbuf::CCall`, the type of the
+C-boundary buffer tokens), of a free or a realloc of the pointer
+(`CEntry::Frees`, `CCall::block`), which no verified code builds
+(private fields, no constructor) and which only the `extern "C"` bodies
+mint, each module's `exports` with its own private `axiom_c_block` (in
+`api/libc.rs`, `api/jemalloc.rs`, `api/cxx.rs`), for the body's own
+pointer argument; the buffer calls' mints (`axiom_c_call` in
+`api/mallctl.rs` and `api/print.rs`) exclude that entry, and each entry
+point above requires its token's block to be its `p`. Once per body,
+for that body's `p`, no Rust call of a minting export, and no other
+maker of a free's token are checked on the source
+(`api::tests::c_blocks_only_for_the_entrys_pointer`, with the ledger
+for trusted items), not by Verus. A double free, or a free of a slot or
+huge page start that is not a live block, gives C a token it does not
+hold, which makes the proof context inconsistent at that call: it voids
+theorem 3 for that free and every theorem for later calls. A pointer
+that is neither a slot start nor a huge page start gets no token and
+the call does not return (theorem 3, which is not voided for it).
 
 **Every heap a verified path is handed is `Heap::wf`.**
 - `Heap::wf` (`heap/mod.rs:2479`): `CachePerms::wf`, `tracks`,
@@ -758,7 +770,7 @@ block; the free cores take the token C holds (common premises, "The
 `free` contract").
 
 **Premises beyond the common ones.**
-- `heap::live::axiom_c_claim` (`heap/live.rs:489`): the `free`
+- `heap::live::axiom_c_claim` (`heap/live.rs:933`): the `free`
   contract at the C ABI boundary, one call per C call. See "The `free`
   contract" under Common premises.
 - `table::axiom_slot_loc` (`class/table.rs`, one call in
@@ -2635,7 +2647,7 @@ and for an error-result row, that a returning call returns that result:
 | Free of a block that was freed and reallocated (ABA) | every free | frees the new block | undetectable by any allocator |
 
 *(C)*: a pointer that is a slot start or a huge page start but not a live
-block is excluded by `heap::live::axiom_c_claim` (`heap/live.rs:576`,
+block is excluded by `heap::live::axiom_c_claim` (`heap/live.rs:933`,
 the `free` contract in the common premises): the free cores take C's
 `Live` token for the pointer and give it back to the allocator, and for
 such a pointer C holds no token, so the axiom's token makes the proof
@@ -3920,7 +3932,7 @@ class exactly above `MEDIUM_MAX` (`lemma_class_for_one`, `:1020`, finds
 a serving class below the last, whose size is `MEDIUM_MAX`).
 
 **Premises beyond the common ones.**
-- The C contract `heap::live::axiom_c_claim` (`heap/live.rs:679`): the
+- The C contract `heap::live::axiom_c_claim` (`heap/live.rs:933`): the
   token `realloc` takes for `p` is the live block's, so `blk.len()` is the
   usable size `malloc_usable_size` reads.
 - `vspec::class::axiom_class_table_wf` (`vspec/class.rs:12`): the class
