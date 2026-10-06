@@ -350,7 +350,7 @@ the full name, the line and the contract.
 | S116 | `axiom_fresh_stack` | proof | invariant | none | trusted |
 | S117 | `assert_flushed` | body | abort | Kani | discharged |
 | S118 | `assert_refill_empty` | body | abort | Kani | discharged |
-| S119 | `assert_rekey_flushed` | body | abort | Kani | trusted |
+| S119 | `assert_rekey_flushed` | body | abort | Kani | discharged |
 | S120 | `arena_volatile` | body | cell | RR | discharged |
 | S121 | `FreshHeap` | type | ptr | none | trusted |
 | S122 | `init_fields` | body | ptr | none | trusted |
@@ -2676,7 +2676,7 @@ fn assert_refill_empty(len: &u32)
 ### S119. `assert_rekey_flushed`
 
 src/heap/mod.rs:1909. Kind: external_body. Category: panic/abort.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/heap-assert_rekey_flushed.md).
 
 > `assert_eq!(*len, 0, ..)`, [`CacheHeader::rekey`]'s abort on a cache that still holds slots: `*len == 0` after it returns.
 
