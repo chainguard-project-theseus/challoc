@@ -1036,7 +1036,7 @@ axiom fn axiom_c_block(p: *mut c_void) -> (tracked c: CCall)
 
 ### S10. `Hook`
 
-src/api/jemalloc.rs:118. Kind: ext_type_spec. Category: function pointer.
+src/api/jemalloc.rs:120. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1045,7 +1045,7 @@ pub struct ExHook(Hook);
 
 ### S11. `message_hook`
 
-src/api/jemalloc.rs:124. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/jemalloc.rs:126. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The installed hook, if any: `malloc_message`, else `je_malloc_message`.
@@ -1056,7 +1056,7 @@ pub fn message_hook() -> Option<Hook>
 
 ### S12. `call_hook`
 
-src/api/jemalloc.rs:142. Kind: external_body. Category: function pointer.
+src/api/jemalloc.rs:144. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > `cb(NULL, buf)`: the hook called with a null `cbopaque`, as jemalloc calls it, on the C string in `buf`, which holds a NUL.
@@ -1070,7 +1070,7 @@ fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(u): Tracked<&Unlocked>)
 
 ### S13. `axiom_c_block`
 
-src/api/jemalloc.rs:979. Kind: axiom. Category: C-program contract.
+src/api/jemalloc.rs:989. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The token of a C call that hands over the block at `p` to `rallocx`, `dallocx` or `sdallocx` ([`CCall`], [`CEntry::Frees`]).
@@ -2839,7 +2839,7 @@ pub(super) unsafe fn node_caches(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int
 
 ### S129. `debug_scheduled`
 
-src/heap/paths.rs:1124. Kind: external_body. Category: panic/abort.
+src/heap/paths.rs:1126. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (verus/seams/heap-paths-debug_scheduled.md).
 
 > [`Heap::alloc_slow`]'s `debug_assert!` that a non-empty home cache reached it through a scheduled pop the fast pop declined (design 6.4): `allocs`, the pop's count, has no bit of `mask` set.
@@ -2850,7 +2850,7 @@ fn debug_scheduled(allocs: u64, mask: u32)
 
 ### S130. `shared_of`
 
-src/heap/paths.rs:1134. Kind: external_body. Category: raw pointer (internal).
+src/heap/paths.rs:1136. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The `Shared` a heap was created on, with a lifetime free of the heap's borrow (so the heap can be borrowed mutably while it is used).
@@ -3161,7 +3161,7 @@ fn begin(this: *mut Shared, Tracked(once): Tracked<Once>) -> (r: Tracked<PointsT
 
 ### S154. `Shared::free_flags`
 
-src/heap/shared.rs:2020. Kind: external_body. Category: allocator invariant.
+src/heap/shared.rs:2032. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > The `free` fast path's dispatch byte (see the field): `push_flags`, plus [`FREE_ROUTE`] once a second arena exists.
@@ -3270,7 +3270,7 @@ pub unsafe fn heap_from_slot(t: usize, tp: usize, pac: bool) -> (r: &'static mut
 
 ### S161. `axiom_run_locs`
 
-src/huge/mod.rs:680. Kind: axiom. Category: allocator invariant.
+src/huge/mod.rs:682. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: [`Huge::new`] runs once per process, for the process's `Shared` (`Shared::init`), so the run authorities it makes are the process's ([`run_loc`], [`page_loc`]), as `class::table::axiom_slot_loc` for the slot authorities.
@@ -3287,7 +3287,7 @@ axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc, tracked 
 
 ### S162. `Huge::read_run_word`
 
-src/huge/mod.rs:5491. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/huge/mod.rs:5593. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The word at `a`, read once, for [`Huge::check_zero`].
@@ -3302,12 +3302,12 @@ unsafe fn read_run_word(&self, a: usize) -> u64
 
 ### S163. `not_a_run_page`
 
-src/huge/mod.rs:7372. Kind: abort_standin. Category: panic/abort.
+src/huge/mod.rs:7474. Kind: abort_standin. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`Huge::free_run`]'s abort for a page that is not in the descriptor table, where the build calls [`not_a_run`] with the page's address.
 
-Stands in at: src/huge/mod.rs:6956 (`Huge::free_run`).
+Stands in at: src/huge/mod.rs:7058 (`Huge::free_run`).
 
 ```rust
 fn not_a_run_page(page: usize) -> !
@@ -6885,12 +6885,12 @@ pub proof fn axiom_zero_word(tracked z: ZeroRaw, p: *mut u64) -> (tracked w: Poi
 
 ### S405. `write_zero`
 
-src/vspec/zero.rs:424. Kind: external_body. Category: raw pointer (internal).
+src/vspec/zero.rs:455. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/vspec-zero-write_zero.md).
 
 > `write_bytes(p, 0, n)`, returning the token for what it wrote.
 
-Body mints Tracked at line 433.
+Body mints Tracked at line 464.
 
 ```rust
 pub unsafe fn write_zero(p: *mut u8, n: usize) -> (z: Tracked<Zeroed>)

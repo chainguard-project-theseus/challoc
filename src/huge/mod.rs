@@ -70,6 +70,8 @@ use crate::vspec::once::Step;
 use crate::vspec::slice::array_iter_rest;
 use crate::vspec::zero::Zeroed;
 #[cfg(verus_only)]
+use crate::vspec::zero::{page_aligned, run_need, run_placeable};
+#[cfg(verus_only)]
 use vstd::arithmetic::power2::pow2;
 use vstd::prelude::*;
 use vstd::raw_ptr::{PointsTo, PointsToRaw, ptr_mut_ref, ptr_mut_write, ptr_ref};
@@ -3652,6 +3654,102 @@ impl Huge {
         }
     }
 
+    /// [`run_placeable`] over this region: a run for `size` bytes at
+    /// `align` and its guard page have a placement in the region when it is
+    /// empty ([`Huge::placeable`]).
+    pub open spec fn spec_placeable(&self, size: usize, align: usize) -> bool {
+        run_placeable(self.spec_base() as int, self.spec_page(), self.spec_npages(), size as int, align as int)
+    }
+
+    /// Pages a run for `size` bytes at `align` takes, its guard included, or
+    /// `None` when no placement in the region can hold it: the size cannot
+    /// be represented, the run is longer than the region, or `align` is
+    /// larger than the region. [`Huge::alloc_run`] and [`Huge::placeable`]
+    /// share these checks.
+    fn run_pages(&self, size: usize, align: usize) -> (r: Option<usize>)
+        ensures
+            r matches Some(need) ==> need == run_need(self.spec_page(), size as int) && need <= self.npages,
+            r matches Some(need) ==> need > GUARD_PAGES && size <= (need - GUARD_PAGES) * self.spec_page() && (need - GUARD_PAGES) * self.spec_page() <= usize::MAX,
+            r matches Some(need) ==> (need - GUARD_PAGES) * self.spec_page() == self.spec_usable(size),
+            r matches Some(_) ==> size + self.spec_page() - 1 <= usize::MAX && align <= self.npages * self.spec_page(),
+            r is None ==> !self.spec_placeable(size, align),
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_page();
+            self.lemma_pages(self.npages);
+        }
+        let n = self.usable_pages(size)?;
+        proof {
+            let p = self.spec_page();
+            assert(n < usize::MAX) by (nonlinear_arith)
+                requires
+                    n * p <= usize::MAX,
+                    p >= 16,
+            ;
+        }
+        let need = n.checked_add(GUARD_PAGES)?;
+        proof {
+            let p = self.spec_page();
+            let n = (size + p - 1) / p;
+            let m = if n == 0 { 1 } else { n };
+            // `usable_pages` gave `need - 1` pages of `spec_usable(size)`
+            // bytes, which is `m` pages.
+            assert((need - 1) * p == m * p);
+            vstd::arithmetic::mul::lemma_mul_is_commutative(m, p);
+            vstd::arithmetic::div_mod::lemma_div_multiples_vanish(m, p);
+            vstd::arithmetic::div_mod::lemma_div_multiples_vanish((need - 1) as int, p);
+            vstd::arithmetic::mul::lemma_mul_is_commutative((need - 1) as int, p);
+        }
+        if need > self.npages || align > (self.npages << self.lg_page) {
+            return None;
+        }
+        Some(need)
+    }
+
+    /// Whether [`Huge::alloc_run`] can place a run for `size` bytes at
+    /// `align` in an empty region: [`Huge::run_pages`] holds, and the run
+    /// fits from the first `align`-aligned page. Aligned starts repeat every
+    /// `align` bytes, so if the first one leaves no room, none does.
+    pub fn placeable(&self, size: usize, align: usize) -> (r: bool)
+        requires
+            self.spec_base_aligned(),
+            crate::meta::is_pow2(align),
+        ensures
+            r == self.spec_placeable(size, align),
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_page();
+            let k = choose|k: nat| k < 64 && align as nat == #[trigger] pow2(k);
+            vstd::bits::lemma_usize_pow2_no_overflow(k);
+            vstd::bits::lemma_usize_shl_is_mul(1, k as usize);
+            let ku = k as usize;
+            assert((1usize << ku) > 0 && (1usize << ku) & sub(1usize << ku, 1) == 0) by (bit_vector)
+                requires ku < 64;
+        }
+        // `run_pages(size, align).is_some_and(|need| ...)`, spelled as a
+        // `match`.
+        match self.run_pages(size, align) {
+            Some(need) => {
+                let s = self.align_page(0, align);
+                proof {
+                    let ghost p = self.spec_page();
+                    let ghost need_i = run_need(p, size as int);
+                    // A placement starts at an aligned page, so at or past
+                    // the first one, `s`.
+                    if self.spec_placeable(size, align) {
+                        let q = choose|q: int| 0 <= q && q + need_i <= self.npages && #[trigger] page_aligned(self.base as int, p, q, align as int);
+                        assert(self.aligned_at(q, align));
+                    }
+                    assert(page_aligned(self.base as int, p, s as int, align as int));
+                }
+                s + need <= self.npages
+            },
+            None => false,
+        }
+    }
+
     /// First page at or after `page` whose address is a multiple of
     /// `align` (a power of two).
     #[inline]
@@ -5250,6 +5348,7 @@ impl Huge {
             r.0.ptr@.addr != 0 ==> size + self.spec_page() - 1 <= usize::MAX,
             r.0.ptr@.addr != 0 ==> self.run_token(*final(tok), r.0),
             r.0.ptr@.addr != 0 ==> (final(tok)[0].npages() - GUARD_PAGES) * self.spec_page() == self.spec_usable(size),
+            r.0.ptr@.addr != 0 ==> self.spec_placeable(size, align),
     {
         assert!(align.is_power_of_two(), "huge: alignment not a power of two");
         self.alloc_aligned(meta, size, align, arena, Tracked(tok), Tracked(ord))
@@ -5276,6 +5375,7 @@ impl Huge {
             r.0.ptr@.addr != 0 ==> size + self.spec_page() - 1 <= usize::MAX,
             r.0.ptr@.addr != 0 ==> self.run_token(*final(tok), r.0),
             r.0.ptr@.addr != 0 ==> (final(tok)[0].npages() - GUARD_PAGES) * self.spec_page() == self.spec_usable(size),
+            r.0.ptr@.addr != 0 ==> self.spec_placeable(size, align),
     {
         broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
         proof {
@@ -5289,16 +5389,18 @@ impl Huge {
             assert((1usize << ku) > 0 && (1usize << ku) & sub(1usize << ku, 1) == 0) by (bit_vector)
                 requires ku < 64;
         }
-        let Some(usable_pages) = self.usable_pages(size) else { return (Placed::NONE, Tracked(Zeroed::empty(0))) };
-        let Some(need) = usable_pages.checked_add(GUARD_PAGES) else { return (Placed::NONE, Tracked(Zeroed::empty(0))) };
-        if need > self.npages || align > (self.npages << self.lg_page) {
-            return (Placed::NONE, Tracked(Zeroed::empty(0)));
-        }
+        let Some(need) = self.run_pages(size, align) else { return (Placed::NONE, Tracked(Zeroed::empty(0))) };
+        let usable_pages = need - GUARD_PAGES;
         let page = self.page_size();
         let tracked mut under = LockOrder::spare();
         let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
         let Some((s, ext)) = self.find(&g, need, align) else { return (Placed::NONE, Tracked(Zeroed::empty(0))) };
         let end = s + need;
+        proof {
+            // `s` is a placement, so the request is placeable.
+            assert(self.aligned_at(s as int, align));
+            assert(page_aligned(self.base as int, self.spec_page(), s as int, align as int));
+        }
 
         // Everything fallible happens before any state changes.
         let (run, _run_opt) = alloc_desc(meta, Tracked(&mut under));

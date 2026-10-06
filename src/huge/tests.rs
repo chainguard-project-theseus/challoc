@@ -1371,3 +1371,32 @@ fn huge_stats_abort_on_a_run_count_going_below_zero() {
     assert_eq!(s, HugeStats::default());
     s.sub(RunState::Active, 1);
 }
+
+/// `placeable` agrees with `alloc_run` on an empty region at the
+/// boundaries: a run plus its guard page that just fits or just
+/// overshoots the region, and alignments up to and past the region's
+/// length.
+#[test]
+fn placeable_matches_alloc_on_an_empty_region() {
+    let page = page_size();
+    for (size, align) in [
+        (huge_len() - page, 1),
+        (huge_len(), 1),
+        (huge_len() - 2 * page, page),
+        (page, huge_len() / 2),
+        (page, huge_len()),
+        (page, huge_len() * 2),
+    ] {
+        let env = Env::new();
+        let h = env.huge();
+        let (p, _) = env.alloc(&h, size, align);
+        assert_eq!(
+            h.placeable(size, align),
+            !p.is_null(),
+            "size {size:#x}, align {align:#x}"
+        );
+        if !p.is_null() {
+            env.free(&h, p);
+        }
+    }
+}

@@ -1871,6 +1871,18 @@ impl Shared {
     {
     }
 
+    /// The huge allocator's [`Huge::spec_placeable`] is the process's
+    /// [`huge_placeable`](crate::vspec::zero::huge_placeable).
+    pub(crate) proof fn lemma_huge_placeable(&self, size: usize, align: usize)
+        requires
+            self.wf(),
+        ensures
+            self.huge.spec_placeable(size, align) == crate::vspec::zero::huge_placeable(size, align),
+    {
+        self.lemma_wf();
+        self.lemma_huge_pages();
+    }
+
     /// The flag byte [`Shared::push_flags`] returns.
     pub closed spec fn flags(&self) -> u8 {
         self.push_flags
@@ -2367,6 +2379,7 @@ impl Shared {
             r.0@.addr != 0 ==> self.huge_ok(size),
             r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, self.huge_usable(size)),
             r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == self.huge_usable(size),
+            r.0@.addr != 0 ==> crate::vspec::zero::huge_placeable(size, align),
     {
         proof {
             self.lemma_huge_aligned();
@@ -2375,6 +2388,7 @@ impl Shared {
         let tracked mut tok = vstd::map::Map::<int, crate::huge::RunToken>::tracked_empty();
         let (r, z) = self.huge.alloc_run(&self.meta, size, align, arena, Tracked(&mut tok), Tracked(ord));
         proof {
+            self.lemma_huge_placeable(size, align);
             if r.ptr@.addr != 0 {
                 self.lemma_run_is_block(r.ptr@.addr, size, align);
                 let tracked t = tok.tracked_remove(0);

@@ -6870,11 +6870,11 @@ Properties:
   never abort"): no argument makes the call abort (row 35; the covered
   reads of row 34).
 - **U**: size consistency: when `mallocx(size, flags)` succeeds,
-  `nallocx(size, flags)` equals its usable size (not unconditionally:
-  `nallocx(1, MALLOCX_LG_ALIGN(63))` returns one page, 4096 with 4 KiB
-  pages, while `mallocx` returns NULL, where jemalloc's `nallocx`
-  returns 0); `sallocx` and `malloc_usable_size` give the block's real
-  usable size.
+  `nallocx(size, flags)` equals its usable size, and `nallocx` is 0
+  for a request no placement can serve, which `mallocx` always rejects
+  (a run past the huge region, or an alignment no page of it
+  satisfies: `nallocx(1, MALLOCX_LG_ALIGN(63))` is 0, as jemalloc's);
+  `sallocx` and `malloc_usable_size` give the block's real usable size.
 
 Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
 
@@ -7211,25 +7211,33 @@ alone):
 22. `nallocx` (`api/jemalloc.rs:432`). F, U: `r == 0 || size <= r` and
     `r == nalloc_usable(size, flags & 0x3f)` (`api/jemalloc.rs`), the
     size of `spec_class_for(size, 1 << (flags & 0x3f))`, or
-    `huge_usable(size)`, or 0 when the page rounding overflows. `mallocx`
+    `huge_usable(size)` when the run has a placement in the empty huge
+    region at the alignment (`huge_placeable`, `vspec/zero.rs`: the page
+    rounding does not overflow, the alignment is at most the region's
+    length, and the run and its guard page fit from some aligned page;
+    `Huge::placeable` ensures it is `Huge::spec_placeable`, the same
+    predicate over the huge allocator's own region), or 0. `mallocx`
     and `mallocx_zeroed` (through `alloc_with`) ensure
     `r != 0 ==> usable_is(r, size, nalloc_usable(size, flags & 0x3f))`,
     so `nallocx(size, flags)` is the usable size `mallocx(size, flags)`
-    gives when `mallocx` succeeds. The converse fails: `nalloc_usable`
-    ignores the alignment for a huge request, so `nallocx(1,
-    MALLOCX_LG_ALIGN(63))` returns one page (4096 with 4 KiB pages) while
-    `mallocx` returns NULL (no alignment past the huge region can be
-    served; jemalloc's `nallocx` returns 0 there). A non-zero `nallocx`
-    therefore does not promise that `mallocx` succeeds. The two calls
+    gives when `mallocx` succeeds: a run `Huge::alloc_run` places is
+    placeable (`find`'s start is one aligned page the run fits from),
+    and `Shared::alloc_huge`, `Heap::alloc_huge_in` and
+    `mallocx::alloc_huge` carry that up. `nallocx(1,
+    MALLOCX_LG_ALIGN(63))` is 0 (no alignment past the huge region can
+    be served), as jemalloc's. A non-zero `nallocx` still does not
+    promise that `mallocx` succeeds (the region may be full, or the
+    kernel refuse), only that the request is not one it always rejects.
+    The two calls
     agree because `class_for` ensures
     `r == spec_class_for(size, align)` for a power-of-two `align`, the
     smallest class that serves the request (`least_class`, from
     `class_of`'s and `class_index`'s new minimality: no smaller class
     holds `size` bytes), and `Huge::usable_for` is `Huge::spec_usable`.
-    F: `r == 0` exactly when no class serves the request and `size`
-    rounded up to a page overflows (class sizes and `huge_usable` are
-    positive); `mallocx` then returns NULL (`alloc_huge` ensures
-    `huge_ok(size)` of a non-NULL run).
+    F: `r == 0` exactly when no class serves the request and no run for
+    it is placeable (class sizes and `huge_usable` are positive);
+    `mallocx` then returns NULL (`alloc_huge` ensures `huge_placeable`
+    of a non-NULL run).
 23. `operator new`, `new[]` (`api/cxx.rs:214`). R:
     `fits(r, size, QUANTUM)`. F: the C++ contract, never NULL: `new`
     ensures `r@.addr != 0` ("No block at address 0"), from `new_block`,

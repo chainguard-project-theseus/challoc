@@ -301,6 +301,7 @@ impl Heap {
             r.0@.addr != 0 ==> shared.huge_ok(size),
             r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
             r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == shared.huge_usable(size),
+            r.0@.addr != 0 ==> crate::vspec::zero::huge_placeable(size, align),
     {
         let arena = self.arena;
         self.alloc_huge_in(shared, size, align, arena, Tracked(blk))
@@ -322,6 +323,7 @@ impl Heap {
             r.0@.addr != 0 ==> shared.huge_ok(size),
             r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
             r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == shared.huge_usable(size),
+            r.0@.addr != 0 ==> crate::vspec::zero::huge_placeable(size, align),
     {
         // Premise (lock order): huge allocations come from the entry points
         // and the slow paths, which hold no lock.

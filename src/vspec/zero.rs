@@ -224,6 +224,37 @@ pub open spec fn huge_usable(size: int) -> int {
     (if n == 0 { 1 } else { n }) * pg
 }
 
+/// Page `q` of a region of `pg`-byte pages at `base` starts at a multiple
+/// of `align` (every page does when `align` is at most a page).
+pub open spec fn page_aligned(base: int, pg: int, q: int, align: int) -> bool {
+    align <= pg || (base + q * pg) % align == 0
+}
+
+/// The pages a huge run for `size` bytes takes with its guard page: its
+/// usable pages (`size` rounded up to `pg`-byte pages, at least one) and
+/// one more.
+pub open spec fn run_need(pg: int, size: int) -> int {
+    let n = (size + pg - 1) / pg;
+    (if n == 0 { 1 } else { n }) + 1
+}
+
+/// A huge run for `size` bytes at `align` has a placement in an empty
+/// region of `np` pages of `pg` bytes at `base`: its size is representable
+/// in whole pages, `align` is at most the region's length, and the run and
+/// its guard page fit from some `align`-aligned page (`Huge::placeable`).
+pub open spec fn run_placeable(base: int, pg: int, np: int, size: int, align: int) -> bool {
+    &&& size + pg - 1 <= usize::MAX
+    &&& align <= np * pg
+    &&& exists|q: int| 0 <= q && q + run_need(pg, size) <= np && #[trigger] page_aligned(base, pg, q, align)
+}
+
+/// [`run_placeable`] for the process's huge region (`Shared::wf`: the
+/// huge allocator's base, page and page count are the regions').
+pub open spec fn huge_placeable(size: usize, align: usize) -> bool {
+    let r = crate::layout::process_regions();
+    run_placeable(r.huge_base as int, (1usize << r.lg_page) as int, (r.huge_len >> r.lg_page) as int, size as int, align as int)
+}
+
 /// `z` reads block `p`'s usable bytes from offset `from` to the block's
 /// end as zero, for a block an allocation of `size` bytes returned: the
 /// end is the class's size for a slot of a class

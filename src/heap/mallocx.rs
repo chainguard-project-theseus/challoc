@@ -279,6 +279,7 @@ pub fn alloc_huge(
         r.0@.addr != 0 ==> shared.huge_ok(size),
         r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
         r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == shared.huge_usable(size),
+        r.0@.addr != 0 ==> crate::vspec::zero::huge_placeable(size, align),
         arena is None ==> !bad_tcache(tcache),
 {
     let a = match (arena, tcache) {

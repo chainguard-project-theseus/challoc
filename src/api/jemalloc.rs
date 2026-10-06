@@ -68,7 +68,9 @@ use crate::vspec::cbuf::CCall;
 use crate::vspec::usable::{usable_is, usable_of};
 use crate::vspec::zero::Zeroed;
 #[cfg(verus_only)]
-use crate::vspec::zero::{covers_usable, huge_usable, lemma_covers_huge, lemma_covers_slot};
+use crate::vspec::zero::{
+    covers_usable, huge_placeable, huge_usable, lemma_covers_huge, lemma_covers_slot,
+};
 #[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, int, verus};
@@ -206,11 +208,13 @@ fn not_an_allocation(what: &str, p: *mut u8) -> !
 /// returns, for `lg_align` the flags' `MALLOCX_LG_ALIGN`: the size of the
 /// smallest class that serves `size` bytes at `1 << lg_align`
 /// ([`spec_class_for`]), or for a huge request `size` rounded up to whole
-/// pages ([`huge_usable`]), 0 when that rounding overflows.
+/// pages ([`huge_usable`]), 0 when no run for it fits the huge region at
+/// that alignment ([`huge_placeable`]: the rounding overflows, or the run
+/// and its guard page fit from no aligned page of the empty region).
 pub open spec fn nalloc_usable(size: usize, lg_align: u32) -> int {
     match spec_class_for(size, 1usize << lg_align) {
         Some(c) => class_table()[c as int].size as int,
-        None => if size + (1usize << crate::layout::process_regions().lg_page) - 1 <= usize::MAX {
+        None => if huge_placeable(size, 1usize << lg_align) {
             huge_usable(size as int)
         } else {
             0
@@ -219,8 +223,11 @@ pub open spec fn nalloc_usable(size: usize, lg_align: u32) -> int {
 }
 
 /// The usable size `mallocx(size, flags)` gives: the class size at the
-/// flags' alignment, or the huge run's page-rounded size. `None` when the
-/// size cannot be represented (`nallocx` returns 0).
+/// flags' alignment, or the huge run's page-rounded size. `None` when no
+/// allocation can satisfy the request, so `mallocx` always rejects it
+/// (`nallocx` returns 0): the size cannot be represented, or the run and
+/// its guard page do not fit the huge region at that alignment
+/// (`Huge::placeable`).
 pub(super) fn usable_for(shared: &Shared, size: usize, f: &Flags) -> (r: Option<usize>)
     requires
         f.lg_align < 64,
@@ -234,10 +241,13 @@ pub(super) fn usable_for(shared: &Shared, size: usize, f: &Flags) -> (r: Option<
         crate::meta::lemma_is_pow2_shl(f.lg_align as usize);
         shared.lemma_wf();
         shared.lemma_huge_usable(size);
+        shared.lemma_huge_placeable(size, 1usize << f.lg_align);
+        shared.lemma_huge_aligned();
     }
     match class_for(size, f.align()) {
         Some(c) => Some(CLASSES.table()[c].size()),
-        None => shared.huge.usable_for(size),
+        None if shared.huge.placeable(size, f.align()) => shared.huge.usable_for(size),
+        None => None,
     }
 }
 
@@ -723,7 +733,7 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<
 }
 
 /// `nallocx(size, flags)`: the usable size `mallocx` would give, or 0 when
-/// the request cannot be represented.
+/// no allocation can satisfy the request (see [`usable_for`]).
 pub fn nallocx(size: usize, flags: c_int) -> (r: usize)
     requires
         crate::sys::may_abort(),
@@ -1118,6 +1128,33 @@ mod tests {
         assert_eq!(nallocx(usize::MAX, 0), 0);
         assert_eq!(nallocx(0, 0), class_size_of(0).unwrap());
         assert!(mallocx(usize::MAX / 2, 0).is_null());
+    }
+
+    /// `nallocx` is 0 exactly when `mallocx` rejects the size or alignment:
+    /// a request larger than the huge region, or an alignment no page of it
+    /// satisfies, fails every time, so `nallocx` must say so; a large
+    /// aligned run that fits still gets its size.
+    #[test]
+    fn nallocx_is_zero_when_mallocx_rejects() {
+        for (size, flags) in [
+            (usize::MAX / 2, 0),
+            (1usize << 60, 0),
+            (1, mallocx_lg_align(62) as c_int),
+            (1, mallocx_lg_align(63) as c_int),
+        ] {
+            assert!(
+                mallocx(size, flags).is_null(),
+                "mallocx({size:#x}, {flags:#x})"
+            );
+            assert_eq!(nallocx(size, flags), 0, "nallocx({size:#x}, {flags:#x})");
+        }
+        let flags = mallocx_lg_align(24) as c_int;
+        let n = nallocx(1 << 20, flags);
+        assert_eq!(n, 1 << 20);
+        let p = mallocx(1 << 20, flags);
+        assert!(!p.is_null());
+        assert_eq!(p as usize % (1 << 24), 0);
+        dallocx(p, flags);
     }
 
     #[test]
