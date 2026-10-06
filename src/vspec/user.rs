@@ -206,14 +206,33 @@ pub unsafe fn zero_user(p: *mut u8, n: usize, Tracked(m): Tracked<&mut UserMem>)
     z
 }
 
+/// The effect on the byte state of [`copy_user`]'s
+/// `copy_nonoverlapping(src, dst, n)`, made with the permissions `s` to
+/// the `n` bytes from `src` and `d` to the `n` bytes from `dst`, which
+/// share no byte: `d` reads the `n` bytes from `dst` as `s` reads the `n`
+/// bytes from `src`, and its other bytes, its domain, its provenance and
+/// its well-formedness are kept. Trusted: the `core` specification
+/// (`vspec::addr`) states the copy's safety contract, not its effect (the
+/// Kani harness `ptr_copy_nonoverlapping` checks that effect on memory).
+/// Private, so its only caller is `copy_user`, right after the copy and
+/// with the permissions and addresses it was made with; a call with no
+/// copy would set a false byte state, not prove `false`.
+axiom fn axiom_copied_bytes(tracked s: &UserMem, tracked d: &mut UserMem, src: int, dst: int, n: int)
+    requires
+        0 <= n,
+        forall|i: int| src <= i < src + n ==> #[trigger] s.dom().contains(i),
+        forall|i: int| dst <= i < dst + n ==> #[trigger] old(d).dom().contains(i),
+        s.dom().disjoint(old(d).dom()),
+    ensures
+        final(d).frame(*old(d), dst, n),
+        final(d).reads_as(dst, *s, src, n),
+;
+
 /// `copy_nonoverlapping(src, dst, n)` with the permissions to both ranges:
 /// `s` to the `n` bytes at `src`, `d` to the `n` bytes at `dst`, which
 /// share no byte with them (two permissions held at once never do:
 /// [`UserMem::lemma_apart`]). Afterwards `d`'s byte state reads the `n`
-/// bytes at `dst` as `s`'s at `src`. Trusted for that effect, which the
-/// `core` specification (`vspec::addr`) does not state; the safety
-/// contract is `core`'s, from the permissions.
-#[verifier::external_body]
+/// bytes at `dst` as `s`'s at `src` ([`axiom_copied_bytes`]).
 #[inline(always)]
 pub unsafe fn copy_user(src: *mut u8, dst: *mut u8, n: usize, Tracked(s): Tracked<&UserMem>, Tracked(d): Tracked<&mut UserMem>)
     requires
@@ -226,9 +245,23 @@ pub unsafe fn copy_user(src: *mut u8, dst: *mut u8, n: usize, Tracked(s): Tracke
         final(d).frame(*old(d), dst@.addr as int, n as int),
         final(d).reads_as(dst@.addr as int, *s, src@.addr as int, n as int),
 {
+    proof {
+        broadcast use vstd::layout::align_of_u8;
+        s.lemma_valid(src, n as int);
+        d.lemma_valid(dst, n as int);
+        if n > 0 && !(src@.addr + n <= dst@.addr || dst@.addr + n <= src@.addr) {
+            // The later of the two first bytes lies in both ranges, so in
+            // both permissions, which share no byte.
+            let x = if src@.addr <= dst@.addr { dst@.addr as int } else { src@.addr as int };
+            assert(s.dom().contains(x) && d.dom().contains(x));
+        }
+    }
     // SAFETY: the permissions make `src` readable and `dst` writable for
     // `n` bytes, and two permissions share no byte.
-    unsafe { core::ptr::copy_nonoverlapping(src, dst, n) }
+    unsafe { core::ptr::copy_nonoverlapping(src, dst, n) };
+    proof {
+        axiom_copied_bytes(s, d, src@.addr as int, dst@.addr as int, n as int);
+    }
 }
 
 } // verus!

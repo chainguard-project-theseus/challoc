@@ -79,14 +79,14 @@ documentation (kernel, ISA, C standard) its contract follows.
 | FFI/syscall | ffi | 15 |
 | function pointer | fnptr | 22 |
 | UnsafeCell/volatile/transmute | cell | 19 |
-| raw pointer (internal) | ptr | 49 |
+| raw pointer (internal) | ptr | 48 |
 | raw pointer from C caller | c-ptr | 4 |
 | panic/abort | abort | 9 |
 | atomics primitive | atomic | 27 |
 | platform/kernel fact | platform | 13 |
 | C-program contract | c-contract | 20 |
 | termination | termination | 9 |
-| core library | core | 153 |
+| core library | core | 154 |
 | allocator invariant | invariant | 42 |
 
 | tool | short | seams |
@@ -101,11 +101,11 @@ documentation (kernel, ISA, C standard) its contract follows.
 
 | kind | short | seams |
 |---|---|---:|
-| external_body | body | 155 |
+| external_body | body | 154 |
 | external_body proof | proof | 13 |
 | external_body type | type | 7 |
 | external_body const | const | 39 |
-| axiom | axiom | 65 |
+| axiom | axiom | 66 |
 | assume_spec | spec | 86 |
 | ext_type_spec | ext-type | 15 |
 | ext_trait_spec | ext-trait | 1 |
@@ -126,7 +126,7 @@ Seams by category and tool:
 | UnsafeCell/volatile/transmute | Verus | 2 |
 | UnsafeCell/volatile/transmute | none (assumption) | 9 |
 | raw pointer (internal) | RefinedRust | 12 |
-| raw pointer (internal) | Kani | 20 |
+| raw pointer (internal) | Kani | 19 |
 | raw pointer (internal) | none (assumption) | 17 |
 | raw pointer from C caller | Miri (evidence only) | 4 |
 | panic/abort | Kani | 8 |
@@ -139,7 +139,7 @@ Seams by category and tool:
 | termination | RefinedRust | 1 |
 | termination | loom/GenMC | 3 |
 | termination | none (assumption) | 5 |
-| core library | Kani | 150 |
+| core library | Kani | 151 |
 | core library | Verus | 1 |
 | core library | none (assumption) | 2 |
 | allocator invariant | Kani | 1 |
@@ -890,7 +890,7 @@ the full name, the line and the contract.
 |---|---|---|---|---|---|
 | S402 | `axiom_zeroed_bytes` | proof | invariant | none | trusted |
 | S403 | `axiom_cast` | proof | ptr | none | trusted |
-| S404 | `copy_user` | body | ptr | Kani | trusted |
+| S404 | `axiom_copied_bytes` | axiom | core | Kani | trusted |
 
 ### src/vspec/word.rs
 
@@ -6863,24 +6863,24 @@ pub proof fn axiom_cast(tracked m: &mut UserMem)
         final(m).provenance() == crate::vspec::addr::cast_provenance(),
 ```
 
-### S404. `copy_user`
+### S404. `axiom_copied_bytes`
 
-src/vspec/user.rs:218. Kind: external_body. Category: raw pointer (internal).
+src/vspec/user.rs:220. Kind: axiom. Category: core library.
 Tool: Kani. Status: trusted.
 
-> `copy_nonoverlapping(src, dst, n)` with the permissions to both ranges: `s` to the `n` bytes at `src`, `d` to the `n` bytes at `dst`, which share no byte with them (two permissions held at once never do: [`UserMem::lemma_apart`]).
+> The effect on the byte state of [`copy_user`]'s `copy_nonoverlapping(src, dst, n)`, made with the permissions `s` to the `n` bytes from `src` and `d` to the `n` bytes from `dst`, which share no byte: `d` reads the `n` bytes from `dst` as `s` reads the `n` bytes from `src`, and its other bytes, its domain, its provenance and its well-formedness are kept.
 
 ```rust
-pub unsafe fn copy_user(src: *mut u8, dst: *mut u8, n: usize, Tracked(s): Tracked<&UserMem>, Tracked(d): Tracked<&mut UserMem>)
+axiom fn axiom_copied_bytes(tracked s: &UserMem, tracked d: &mut UserMem, src: int, dst: int, n: int)
     requires
-        s.provenance() == src@.provenance,
-        old(d).provenance() == dst@.provenance,
-        forall|i: int| src@.addr <= i < src@.addr + n ==> #[trigger] s.dom().contains(i),
-        forall|i: int| dst@.addr <= i < dst@.addr + n ==> #[trigger] old(d).dom().contains(i),
+        0 <= n,
+        forall|i: int| src <= i < src + n ==> #[trigger] s.dom().contains(i),
+        forall|i: int| dst <= i < dst + n ==> #[trigger] old(d).dom().contains(i),
         s.dom().disjoint(old(d).dom()),
     ensures
-        final(d).frame(*old(d), dst@.addr as int, n as int),
-        final(d).reads_as(dst@.addr as int, *s, src@.addr as int, n as int),
+        final(d).frame(*old(d), dst, n),
+        final(d).reads_as(dst, *s, src, n),
+;
 ```
 
 ### S405. `WordPerm`

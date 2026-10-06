@@ -278,7 +278,8 @@ fn copy_nonoverlapping_on<T: Copy + PartialEq + kani::Arbitrary, const N: usize>
 
 /// S260 `core::ptr::copy_nonoverlapping::<T>`: no `ensures`; under its
 /// `requires` it is defined and returns (and copies what `core`
-/// documents), at a byte and a word, and at a zero-sized type with every
+/// documents, the effect S404 `axiom_copied_bytes` states on the ghost
+/// byte state), at a byte and a word, and at a zero-sized type with every
 /// count.
 #[kani::proof]
 #[kani::unwind(7)]

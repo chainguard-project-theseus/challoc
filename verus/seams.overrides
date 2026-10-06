@@ -158,7 +158,7 @@ axiom_raw_valid	raw pointer (internal)	none (assumption)
 axiom_hand_out	allocator invariant	none (assumption)
 axiom_zeroed_bytes	allocator invariant	none (assumption)
 axiom_cast	raw pointer (internal)	none (assumption)
-copy_user	raw pointer (internal)	Kani
+axiom_copied_bytes	core library	Kani
 axiom_fresh_anon_zero	platform/kernel fact	none (assumption)
 axiom_discarded_zero	platform/kernel fact	none (assumption)
 Unbacked::commit	platform/kernel fact	none (assumption)

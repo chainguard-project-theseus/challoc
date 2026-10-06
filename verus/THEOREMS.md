@@ -7630,9 +7630,10 @@ alone):
    `realloc_block` (likewise `realloc_usable_stored` and `rallocx_zeroed`)
    ensures that a moved block's first `min(blk.len(), size)` bytes read
    as `p`'s did when the copy was made (`Live::copied_from`, over the
-   byte states). The copy's effect is the trusted contract of
-   `copy_user`. F: `p != 0 && size == 0 ==> r@.addr == 0` with `errno`
-   unchanged (the frame across `free`, *(errno)*), every other NULL with
+   byte states). The copy's effect on the byte states is the trusted
+   `vspec::user::axiom_copied_bytes`; its safety is verified. F:
+   `p != 0 && size == 0 ==> r@.addr == 0` with `errno` unchanged (the
+   frame across `free`, *(errno)*), every other NULL with
    `ENOMEM`, and the core (`realloc_block`) gives the caller back its own
    token for `p` on a NULL from the move (`p` is still live; the code
    returns before `heap::free`). B: `p != 0 ==> free_target(p)`, *(live)*.
