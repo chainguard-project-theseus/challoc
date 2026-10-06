@@ -295,7 +295,11 @@ impl Heap {
     ///   side, where even a sort's O(n) presorted path is about 1.25k
     ///   cycles per flush) is split directly: `is_sorted` is one pass that
     ///   stops at the first inversion, the released half is sorted and so
-    ///   grouped, and the kept half stays sorted for the next flush.
+    ///   grouped, and the kept half stays sorted for the next flush. That
+    ///   includes a whole flush (`n == len`, the `FOREIGN` cache, which is
+    ///   where xmalloc-test's consumers release the producers' slots in
+    ///   allocation order): sorted, it needs no [`group_by_slab`] pass,
+    ///   whose two sweeps over a sorted batch were about 5% of the row.
     /// - Otherwise `select_nth_unstable` on the address (O(len), in place)
     ///   puts the `n` highest at the top, and [`group_by_slab`] groups them
     ///   by slab (a counting pass over the slab numbers, O(n); nothing when
@@ -445,12 +449,13 @@ impl Heap {
             }
             let rest_len = all.len() - n;
             let kept_max;
-            let sorted = rest_len > 0 && if pac { all.is_sorted_by_key(key) } else { all.is_sorted() };
+            let sorted = if pac { all.is_sorted_by_key(key) } else { all.is_sorted() };
             if sorted {
                 // Already in address order: the split is direct, the
                 // released half is sorted and so grouped, and the kept half
-                // stays sorted for the next flush.
-                kept_max = *all.get_unchecked(rest_len - 1);
+                // stays sorted for the next flush. A whole flush keeps
+                // nothing, so nothing can straddle the split.
+                kept_max = if rest_len > 0 { *all.get_unchecked(rest_len - 1) } else { ptr::null_mut() };
                 ptr_mut_ref(cache, Tracked(perms.hdrs.tracked_borrow_mut(cache))).unsorted_flushes = 0;
             } else {
                 kept_max = if rest_len > 0 {

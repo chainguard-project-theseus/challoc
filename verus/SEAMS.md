@@ -2492,7 +2492,7 @@ pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8, 
 
 ### S109. `group_by_slab`
 
-src/heap/flush.rs:737. Kind: external_body. Category: core library.
+src/heap/flush.rs:742. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > Group a flush's released batch by slab, in place, and return its lowest address.
@@ -2509,7 +2509,7 @@ pub(super) fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8])
 
 ### S110. `addr_mix`
 
-src/heap/flush.rs:1476. Kind: external_body. Category: raw pointer (internal).
+src/heap/flush.rs:1481. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/heap-flush-addr_mix.md).
 
 > `rng`'s mix of the heap's address into its seed: the address of `h`, rotated left by 17 bits.
