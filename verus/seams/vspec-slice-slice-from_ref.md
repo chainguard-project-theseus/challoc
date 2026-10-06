@@ -1,6 +1,6 @@
 # `core::slice::from_ref`
 
-Seam S357 of `verus/SEAMS.md`: src/vspec/slice.rs:8. Kind: assume_spec. Category: core library.
+Seam S356 of `verus/SEAMS.md`: src/vspec/slice.rs:8. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

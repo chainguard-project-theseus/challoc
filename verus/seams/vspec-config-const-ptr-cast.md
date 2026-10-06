@@ -1,6 +1,6 @@
 # `<*const T>::cast::<U>`
 
-Seam S280 of `verus/SEAMS.md`: src/vspec/config.rs:20. Kind: assume_spec. Category: raw pointer (internal).
+Seam S279 of `verus/SEAMS.md`: src/vspec/config.rs:20. Kind: assume_spec. Category: raw pointer (internal).
 Discharged by Kani.
 
 ## Contract

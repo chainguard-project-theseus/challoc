@@ -9,7 +9,7 @@ use crate::lock::LockOrder;
 #[cfg(verus_only)]
 use crate::lock::{axiom_held_below, rank_class};
 use crate::purge::{Batch, Curve, Left, STEPS};
-use crate::slab::State;
+use crate::slab::{DescPerm, State};
 use vstd::prelude::*;
 
 verus! {
@@ -307,49 +307,95 @@ impl ClassState {
     /// Whether the page group of `slab` (`spp` slabs, `spp > 1`) can be
     /// discarded: every slab in it is committed, owned by this arena, and
     /// `Fresh`, `Empty` or `Purged`. Called under this arena's class lock
-    /// (`g`), which is what pins those states for this arena's slabs; a
-    /// slab of another arena, or one not yet handed out by
-    /// `next_fresh_slab`, could be claimed under a lock this thread does
-    /// not hold, so it vetoes the purge.
+    /// (`g`, the value the caller holds, and `dperms`, its descriptor
+    /// permissions), which is what pins those states for this arena's
+    /// slabs; a slab of another arena, or one not yet handed out, could be
+    /// claimed under a lock this thread does not hold, so it would veto
+    /// the purge.
     ///
-    /// The owner is read from the descriptor here where the release path
-    /// reads the owner word: they agree because a page group never
-    /// straddles a hand-out group (`SlabTable::new` asserts `group %
-    /// slabs_per_page == 0`), so every slab here is under one owner word,
-    /// and `take_group` writes that word and every descriptor's arena
-    /// once, as it hands the group out, and nothing rewrites either
-    /// (`table::slab_owner`).
+    /// Neither occurs for the real lock value: `slab` is owned (the caller
+    /// found it in the empty set), and so is every slab of its page group,
+    /// since a page group never straddles a hand-out group (`SlabTable::new`
+    /// asserts `group % slabs_per_page == 0`) and an arena owns whole
+    /// hand-out groups ([`whole_groups`]), all below the watermark. The
+    /// watermark and arena checks (`take_group` writes every descriptor's
+    /// arena as it hands the group out) stay as run-time defences against
+    /// corrupted metadata, which the proof does not need; each state is
+    /// read through its descriptor's permission, as
+    /// [`ClassState::state_locked`] reads it.
     ///
-    /// Trusted: that agreement is what the `ensures` rests on (the ghost
-    /// `g` is the value of the class lock the caller holds, whose owner
-    /// words say which slabs this arena owns), and, for the states, the
-    /// agreement of an owned slab's descriptor with `g` while the lock is
-    /// held, which [`ClassState::state_locked`] proves through the
-    /// descriptor permissions `g` holds (`Inner::descs`) and this body,
-    /// with `g` a ghost copy, reads without them; the iterator and
-    /// closure stay as written.
-    #[verifier::external_body]
-    fn page_group_is_idle(&self, Ghost(g): Ghost<Inner>, slab: usize, spp: usize) -> (r: bool)
+    /// [`whole_groups`]: super::whole_groups
+    // `(first..first + spp).all(..)` spelled out as its desugaring, a
+    // `next` loop with early returns: Verus takes no closure here. The
+    // machine code is unchanged.
+    #[allow(clippy::while_let_loop)]
+    fn page_group_is_idle(
+        &self,
+        Ghost(g): Ghost<Inner>,
+        Tracked(dperms): Tracked<&Map<nat, DescPerm>>,
+        slab: usize,
+        spp: usize,
+    ) -> (r: bool)
         requires
             crate::sys::may_abort(),
             spp > 1,
             slab + spp <= usize::MAX,
             g.arena@ == self.arena,
             g.table@ == self.spec_table(),
+            g.base(),
+            g.owns(slab as nat),
+            slab < self.spec_nslabs(),
+            spp == self.spec_table().spec_slabs_per_page(),
+            *dperms == g.dperms@,
         ensures
             r ==> forall|s: nat| #![trigger g.owns(s)] #![trigger g.st(s)] (slab & !((spp - 1) as usize)) <= s < (slab & !((spp - 1) as usize)) + spp
                 ==> g.owns(s) && g.st(s) != State::Active,
     {
+        proof {
+            use_type_invariant(self);
+        }
         let first = slab & !(spp - 1);
+        proof {
+            lemma_page_group_owned(g, self.spec_table(), slab, spp);
+        }
         let committed = self.table().committed_slabs();
-        (first..first + spp).all(|s| {
+        let mut slabs = first..first + spp;
+        loop
+            invariant
+                crate::sys::may_abort(),
+                first == slab & !((spp - 1) as usize),
+                first <= slabs.start <= slabs.end,
+                slabs.end == first + spp,
+                g.base(),
+                g.table@ == self.spec_table(),
+                *dperms == g.dperms@,
+                forall|s: nat| first <= s < first + spp ==> #[trigger] g.owns(s),
+                forall|s: nat| first <= s < slabs.start ==> #[trigger] g.st(s) != State::Active,
+            ensures
+                forall|s: nat| first <= s < first + spp ==> #[trigger] g.st(s) != State::Active,
+            decreases slabs.end - slabs.start,
+        {
+            let s = match slabs.next() {
+                Some(s) => s,
+                None => break,
+            };
             if s >= committed {
                 return false;
             }
             let d = self.desc(s);
-            d.arena() == self.arena
-                && matches!(d.state(), State::Fresh | State::Empty | State::Purged)
-        })
+            proof {
+                assert(g.owns(s as nat));
+                g.lemma_desc(s as nat);
+            }
+            // `matches!`, spelled out: Verus does not see into the macro.
+            if !(d.arena() == self.arena && match d.state_held(Ghost(s as nat), Tracked(dperms)) {
+                State::Fresh | State::Empty | State::Purged => true,
+                _ => false,
+            }) {
+                return false;
+            }
+        }
+        true
     }
 
     /// `dirty_at` of the oldest `Empty` slab as the decay driver sees it
@@ -562,7 +608,7 @@ impl Purger {
             assert(usize::MAX >> 12 == 0xf_ffff_ffff_ffffusize) by (bit_vector);
             assert(slab + spp <= usize::MAX);
         }
-        if purge && (spp == 1 || cs.page_group_is_idle(Ghost(*g), slab, spp)) {
+        if purge && (spp == 1 || cs.page_group_is_idle(Ghost(*g), Tracked(g.dperms.borrow()), slab, spp)) {
             let ghost g0 = *g;
             proof {
                 if spp == 1 {
@@ -834,6 +880,43 @@ proof fn lemma_group_idle(g: Inner, slab: usize, spp: usize, first: usize)
     reveal(group_idle);
 }
 
+/// The page group of owned slab `slab` (`spp` slabs from `slab & !(spp -
+/// 1)`) is owned: page and hand-out groups are powers of two, a page
+/// group no larger than a hand-out group (`SlabTable::inv`), so the page
+/// group lies in `slab`'s hand-out group, which the arena owns whole
+/// ([`whole_groups`](super::whole_groups)).
+proof fn lemma_page_group_owned(g: Inner, t: SlabTable, slab: usize, spp: usize)
+    requires
+        g.base(),
+        g.table@ == t,
+        t.inv(),
+        g.owns(slab as nat),
+        slab < t.spec_nslabs(),
+        spp == t.spec_slabs_per_page(),
+    ensures
+        (slab & !((spp - 1) as usize)) <= slab,
+        (slab & !((spp - 1) as usize)) + spp <= t.spec_nslabs(),
+        forall|s: nat| (slab & !((spp - 1) as usize)) <= s < (slab & !((spp - 1) as usize)) + spp ==> #[trigger] g.owns(s),
+{
+    broadcast use {super::table::lemma_spec_nslabs, super::table::lemma_spec_slabs_per_page};
+    reveal(SlabTable::page_groups_ok);
+    let (lgs, lg, n, gr) = (t.lg_slabs_per_page, t.lg_group, t.nslabs, t.group as usize);
+    assert(spp == 1usize << lgs && gr == 1usize << lg && spp <= gr && spp >= 1);
+    assert(lgs <= lg) by (bit_vector)
+        requires spp == 1usize << lgs, gr == 1usize << lg, spp <= gr, lgs <= 26, lg < 64;
+    let first = slab & !sub(spp, 1);
+    assert(first <= slab && first + spp <= n) by (bit_vector)
+        requires spp == 1usize << lgs, lgs <= 26, n & sub(spp, 1) == 0, slab < n, first == slab & !sub(spp, 1);
+    assert forall|s: nat| first <= s < first + spp implies #[trigger] g.owns(s) by {
+        let su = s as usize;
+        assert(su >> lg == slab >> lg) by (bit_vector)
+            requires spp == 1usize << lgs, lgs <= lg, lg < 64, lgs <= 26, first == slab & !sub(spp, 1), first <= su, su < first + spp, first + spp <= n, n <= 0x400_0000;
+        assert((su >> lg) << lg <= su && su < ((su >> lg) << lg) + gr) by (bit_vector)
+            requires gr == 1usize << lg, lg < 64, su < 0x400_0000;
+        super::lemma_whole_group(g.states@.dom(), t, slab as nat, s);
+    }
+}
+
 /// The page group of `slab` (`spp` slabs from `first`) in table `t`,
 /// where `slab` is not a guard slab, is a range a purge may discard
 /// ([`well_formed`](crate::purge::well_formed)): the region's base and a
@@ -917,10 +1000,11 @@ impl ClassState {
     ///
     /// The preconditions are the walks' (`Purger::visit`): the page group
     /// is this arena's (with one slab per page, `slab` is in this arena's
-    /// empty set; with more, `page_group_is_idle` read every slab's owner
-    /// word; either way `slab` is in the empty set, so not a guard slab, and
-    /// neither is any slab of its group, which is a well-formed purge range,
-    /// `lemma_group_well_formed`), and the batch holds at most the bytes of
+    /// empty set; with more, `page_group_is_idle` found every slab of the
+    /// group owned and idle; either way `slab` is in the empty set, so not
+    /// a guard slab, and neither is any slab of its group, which is a
+    /// well-formed purge range, `lemma_group_well_formed`), and the batch
+    /// holds at most the bytes of
     /// the class region below the group, which ends below `2^57`.
     // The loop carries a Verus invariant.
     #[allow(clippy::while_let_loop)]

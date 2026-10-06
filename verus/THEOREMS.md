@@ -3216,18 +3216,22 @@ batch's `free`. The makers:
   those of slabs idle in the current lock value. `purge_group` pushes a
   page group whose every slab is idle: with one slab per page, the slab
   is in the empty set (`Inner::slab_core`: `Empty`); with more,
-  `page_group_is_idle` (`:241`) says so.
+  `page_group_is_idle` says so.
 
 **Premises beyond the common ones.**
 - Huge: none beyond the huge lock axioms (`vspec/huge.rs`) and
   `huge::axiom_run_locs` (one huge allocator per process), which
   theorem 5's run tokens already use.
-- Class: `page_group_is_idle` (`class/decay.rs:241`, `external_body`)
-  now also ensures every slab of the group is not `Active` in the lock
-  value; its body reads each descriptor's state and arena, and the
-  ensures rests on the owner-word agreement it already assumed and on
-  the descriptors' agreement with the lock value, which it reads
-  without the permissions (`slab::DescPerm`) that prove it.
+- Class: none beyond the class lock axioms. `page_group_is_idle`
+  (`class/decay.rs`) is verified: every slab of the group is owned
+  because an arena owns whole hand-out groups (`class::whole_groups`,
+  part of the class lock invariant, kept by `next_fresh_slab`, which
+  adds a group `take_group` handed out all at once) and a page group
+  lies inside one hand-out group (`SlabTable::inv`: page and hand-out
+  groups are powers of two, the page group no larger); each is not
+  `Active` by its descriptor's state, read through the permission the
+  lock value holds (`slab::DescPerm`). The descriptor's arena compare
+  in the body is not needed for the proof.
 - Class, the slot-token link (not proved; see below).
 
 **Where the statement is weaker than the code.**
@@ -5212,8 +5216,8 @@ bound, never fails: `Sink`'s type invariant states the bound, and
 - Every trusted body that can abort requires the capability: those that
   call an abort or a function that requires it (`Heap::destroy`,
   `background::spawn`,
-  `call_throw_bad_alloc`, `owner_locked`,
-  `page_group_is_idle`) and those that `assert!` or `panic!` (`check`,
+  `call_throw_bad_alloc`, `owner_locked`) and those that `assert!` or
+  `panic!` (`check`,
   `SlabDesc::sub_live`, `assert_flushed`, `assert_refill_empty`;
   `assert_not_home`'s `assert_ne!` is its `requires`). The test flags a
   trusted body that does not return, or holds an abort, `assert!`,
@@ -6471,9 +6475,11 @@ How it is proved:
   `Empty` extent. At quiescence (no other thread allocating or freeing)
   the values released are the values at return.
 - With several slabs per page (a page above 64 KiB), an `Empty` slab
-  whose page group holds an `Active` slab, a slab of another arena or an
-  uncommitted one stays `Empty` by design (`page_group_is_idle` vetoes
-  the discard): the code's behaviour, not a bug, and the `paged`
+  whose page group holds an `Active` slab stays `Empty` by design
+  (`page_group_is_idle` vetoes the discard; the page group is the
+  arena's whole and handed out, `class::whole_groups`, so its watermark
+  and arena checks are run-time defences that never veto for the real
+  lock value): the code's behaviour, not a bug, and the `paged`
   exception.
 - The arenas visited are those `get_existing` finds below the count
   `arena_count` read once: an arena built during the purge may be

@@ -1,6 +1,6 @@
 # `u32::rotate_right`
 
-Seam S293 of `verus/SEAMS.md`: src/vspec/core_int.rs:73. Kind: assume_spec. Category: core library.
+Seam S292 of `verus/SEAMS.md`: src/vspec/core_int.rs:73. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

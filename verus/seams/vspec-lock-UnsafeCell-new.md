@@ -1,6 +1,6 @@
 # `core::cell::UnsafeCell::<T>::new`
 
-Seam S321 of `verus/SEAMS.md`: src/vspec/lock.rs:23. Kind: assume_spec. Category: UnsafeCell/volatile/transmute.
+Seam S320 of `verus/SEAMS.md`: src/vspec/lock.rs:23. Kind: assume_spec. Category: UnsafeCell/volatile/transmute.
 Discharged by Kani.
 
 ## Contract

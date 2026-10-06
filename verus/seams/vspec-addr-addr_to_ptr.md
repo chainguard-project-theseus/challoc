@@ -1,6 +1,6 @@
 # `addr_to_ptr`
 
-Seam S257 of `verus/SEAMS.md`: src/vspec/addr.rs:26. Kind: external_body. Category: raw pointer (internal).
+Seam S256 of `verus/SEAMS.md`: src/vspec/addr.rs:26. Kind: external_body. Category: raw pointer (internal).
 Discharged by Kani, except the provenance clause (Translation), which
 stays an assumption.
 

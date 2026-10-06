@@ -15,7 +15,7 @@ use super::table::{
     lemma_spec_nslabs, slab_marked, slab_owner,
 };
 #[cfg(verus_only)]
-use super::{SlabTable, desc_ok, descs_ok, lemma_same_sets_inv};
+use super::{SlabTable, desc_ok, descs_ok, lemma_same_sets_inv, lemma_whole_group, whole_groups};
 #[cfg(verus_only)]
 use crate::slab::{DescPerm, State};
 
@@ -324,6 +324,8 @@ proof fn lemma_shr_in(x: usize, g: usize, lg: u8)
 proof fn lemma_fresh_group(g0: Inner, g1: Inner, start: usize, end: usize)
     requires
         g0.inv(),
+        g0.table@.inv(),
+        g0.nbits() == g0.table@.spec_nslabs(),
         g0.group_end <= g0.group_next,
         start < end <= g0.nbits(),
         forall|x: nat| #[trigger] g0.owns(x) ==> x < start,
@@ -382,6 +384,30 @@ proof fn lemma_fresh_group(g0: Inner, g1: Inner, start: usize, end: usize)
         }
     }
     assert(g1.owns((end - 1) as nat));
+    // The group joins whole: each of its slabs is in hand-out group
+    // `start >> lg_group`, whose range is the group.
+    assert(whole_groups(g1.states@.dom(), g1.table@)) by {
+        let t = g1.table@;
+        let lg = t.lg_group;
+        let gs = start >> lg;
+        lemma_lg_group(t);
+        assert(start >> lg <= start) by (bit_vector);
+        assert forall|x: nat, y: nat| #![trigger g1.states@.dom().contains(x), g1.states@.dom().contains(y)]
+            g1.states@.dom().contains(x) && t.spec_group_range((x as usize) >> lg).0 <= y
+                && y < t.spec_group_range((x as usize) >> lg).1 implies g1.states@.dom().contains(y) by {
+            assert(g1.owns(x));
+            if start <= x < end {
+                lemma_shr_in(x as usize, gs, lg);
+                assert(g1.owns(y));
+            } else {
+                assert(g0.owns(x));
+                lemma_whole_group(g0.states@.dom(), t, x, y);
+                assert(g0.owns(y));
+                assert(g1.owns(y));
+            }
+        }
+        reveal(whole_groups);
+    }
     assert(g1.base());
     assert forall|x: nat| #[trigger] g1.slab_ok(x) by {
         assert(g0.slab_ok(x));

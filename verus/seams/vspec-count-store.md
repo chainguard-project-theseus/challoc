@@ -1,6 +1,6 @@
 # `store` (`vspec/count.rs`)
 
-Seam S299 of `verus/SEAMS.md`: src/vspec/count.rs:123. Kind: external_body. Category: atomics primitive.
+Seam S298 of `verus/SEAMS.md`: src/vspec/count.rs:123. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 coherence rules (part 3).
 
 ## Contract

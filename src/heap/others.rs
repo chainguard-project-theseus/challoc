@@ -896,7 +896,7 @@ impl Heap {
 mod kani_aborts {
     use super::assert_not_home;
 
-    /// S126 `assert_not_home`, `requires *arena != *home`: under it the
+    /// S125 `assert_not_home`, `requires *arena != *home`: under it the
     /// call returns, for every pair.
     #[kani::proof]
     fn assert_not_home_returns() {

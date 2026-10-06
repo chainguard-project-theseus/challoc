@@ -817,6 +817,33 @@ spec fn descs_ok(states: Map<nat, State>, dirty: Map<nat, u64>, dperms: Map<nat,
     forall|s: nat| #[trigger] states.contains_key(s) ==> desc_ok(dperms, t, arena, s, states[s], dirty[s])
 }
 
+/// `owned` is whole hand-out groups of `t`: with a slab, every slab of its
+/// group ([`SlabTable::spec_group_range`]). `take_group` hands an arena a
+/// whole group, which `next_fresh_slab` adds to the ghost at once, and no
+/// owned slab leaves. Opaque ([`lemma_whole_group`] reads it at two
+/// slabs); a function of the owned set, so that a write of an owned
+/// slab's state keeps it.
+#[verifier::opaque]
+spec fn whole_groups(owned: VSet<nat>, t: SlabTable) -> bool {
+    forall|x: nat, y: nat| #![trigger owned.contains(x), owned.contains(y)]
+        owned.contains(x) && t.spec_group_range((x as usize) >> t.lg_group).0 <= y
+            && y < t.spec_group_range((x as usize) >> t.lg_group).1 ==> owned.contains(y)
+}
+
+/// [`whole_groups`] at `x` and `y`: a slab `y` of the hand-out group of
+/// an owned slab `x` is owned.
+proof fn lemma_whole_group(owned: VSet<nat>, t: SlabTable, x: nat, y: nat)
+    requires
+        whole_groups(owned, t),
+        owned.contains(x),
+        t.spec_group_range((x as usize) >> t.lg_group).0 <= y,
+        y < t.spec_group_range((x as usize) >> t.lg_group).1,
+    ensures
+        owned.contains(y),
+{
+    reveal(whole_groups);
+}
+
 /// [`state_byte`] is one to one.
 proof fn lemma_state_byte_inj(a: State, b: State)
     ensures
@@ -932,7 +959,8 @@ impl Inner {
     /// group's end is owned, and each owned slab's markers are held
     /// (fresh ones from `init`, a guard slab's init markers), which puts
     /// both below the watermark (`SlabTable::next_slab_locked`); and every
-    /// owned slab's owner ([`slab_owner`]) is this arena; and the value
+    /// owned slab's owner ([`slab_owner`]) is this arena, the owned slabs
+    /// being whole hand-out groups ([`whole_groups`]); and the value
     /// holds every owned slab's descriptor permission, which agrees with
     /// the ghost ([`Inner::descs`]).
     spec fn base(&self) -> bool {
@@ -960,6 +988,7 @@ impl Inner {
         &&& self.group_end > 0 ==> self.owns((self.group_end - 1) as nat)
         &&& forall|s: nat| #[trigger] self.states@.contains_key(s)
             ==> slab_owner(self.table@.spec_class() as int, s as int) == self.arena@
+        &&& whole_groups(self.states@.dom(), self.table@)
         &&& self.descs()
     }
 
@@ -1522,7 +1551,11 @@ impl ClassState {
     /// below the watermark: `SlabTable::next_slab_locked` proves it for the
     /// taking arena's value from the markers, and the same argument holds
     /// for every other arena's, whose values no proof sees),
-    /// and `next_fresh_slab` then adds its slabs (verified).
+    /// and `next_fresh_slab` then adds its slabs (verified); and the word
+    /// names an arena index, so this also rests on one class state per
+    /// (arena index, class) taking groups: the published one (`Arenas`; a
+    /// failed build's class states, which a retry rebuilds with the same
+    /// index, take none). Not provable in `class/` (`verus/TODO.md`, OWNER).
     #[allow(unused_variables)]
     #[inline(always)]
     #[verifier::external_body]
@@ -1595,6 +1628,7 @@ impl ClassState {
         ensures
             final(g).descs(),
             final(g).states@ == old(g).states@.insert(slab as nat, s),
+            final(g).states@.dom() == old(g).states@.dom(),
             final(g).partial == old(g).partial,
             final(g).empty == old(g).empty,
             final(g).purged == old(g).purged,
@@ -3073,6 +3107,9 @@ impl ClassState {
             assert(n <= usize::MAX >> 12);
             assert(inner.descs()) by {
                 reveal(descs_ok);
+            }
+            assert(whole_groups(inner.states@.dom(), inner.table@)) by {
+                reveal(whole_groups);
             }
             assert(inner.base());
             assert forall|s: nat| #[trigger] inner.slab_ok(s) by {}

@@ -1,6 +1,6 @@
 # `core::ffi::CStr::as_ptr`
 
-Seam S281 of `verus/SEAMS.md`: src/vspec/config.rs:27. Kind: assume_spec. Category: core library.
+Seam S280 of `verus/SEAMS.md`: src/vspec/config.rs:27. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

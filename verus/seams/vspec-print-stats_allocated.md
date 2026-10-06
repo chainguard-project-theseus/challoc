@@ -1,6 +1,6 @@
 # `stats_allocated`
 
-Seam S347 of `verus/SEAMS.md`: src/vspec/print.rs:75. Kind: external_body. Category: core library.
+Seam S346 of `verus/SEAMS.md`: src/vspec/print.rs:75. Kind: external_body. Category: core library.
 Discharged by Kani.
 
 ## Contract

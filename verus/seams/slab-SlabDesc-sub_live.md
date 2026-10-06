@@ -1,6 +1,6 @@
 # `SlabDesc::sub_live`
 
-Seam S208 of `verus/SEAMS.md`: src/slab.rs:431. Kind: external_body. Category: atomics primitive.
+Seam S207 of `verus/SEAMS.md`: src/slab.rs:431. Kind: external_body. Category: atomics primitive.
 Discharged by reading the body (part 3); the loom models are context only,
 for the allocator invariant the contract no longer claims.
 

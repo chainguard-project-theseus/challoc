@@ -895,6 +895,7 @@ impl SlabTable {
             assert(nslabs <= (usize::MAX - base) as usize >> t.lg_slab);
             assert(base < 1usize << 57 && nslabs <= ((1usize << 57) - base) as usize >> t.lg_slab);
             assert(nslabs <= 0x400_0000 && (group as u32) as usize == 1usize << lgg);
+            assert(slabs_per_page as u32 <= group as u32);
             let ts = Slots {
                 loc: slot_auth.id(),
                 mloc: mark_auth.id(),
@@ -1698,7 +1699,8 @@ pub(crate) fn word_index(index: usize) -> (r: usize)
 
 impl SlabTable {
     /// The geometry `new` sets up and never changes: the class, its slab
-    /// bits, the power-of-two page and hand-out groups, and a region of
+    /// bits, the power-of-two page and hand-out groups (a page group no
+    /// larger than a hand-out group), and a region of
     /// `nslabs` slabs from `base` that ends inside the address space. `new`
     /// proves it from its preconditions; its caller `Shared::init` takes
     /// the ones about `regions` from its own preconditions (trusted at
@@ -1734,6 +1736,7 @@ impl SlabTable {
         &&& self.nslabs <= ((1usize << 57) - self.base) as usize >> class_table()[self.class as int].lg_slab
         &&& self.nslabs <= 0x400_0000
         &&& self.group as usize == 1usize << self.lg_group
+        &&& self.slabs_per_page <= self.group
         &&& lock_init(self.inner.0).page@ == 1usize << self.lg_page
         &&& lock_init(self.inner.0).group@ == self.group as usize
         &&& lock_init(self.inner.0).nslabs@ == self.nslabs
