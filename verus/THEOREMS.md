@@ -1,6 +1,6 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the forty-one whole-allocator theorems as the code
+Reference for the forty-three whole-allocator theorems as the code
 states them: the Verus statement, the entry points it covers, and every
 trusted premise it rests on, with `file:line`. Read at `b2cad68`
 (branch `verus`); line numbers are the `fn`/`axiom` line at that commit,
@@ -10,7 +10,7 @@ open work; this file says what the code proves today. Each title and
 first paragraph claims only what is proved: where a theorem holds only
 at a lock invariant, rests on a source test or on the C-boundary
 assumption (`axiom_c_claim`), the title or the first paragraph says so.
-The sections are numbered 1 to 34 in order; "Bad input" (the B column)
+The sections are numbered 1 to 43 in order; "Bad input" (the B column)
 and the interface contract are not numbered.
 
 Marked **unconfirmed**: facts read from comments, not checked against
@@ -6818,6 +6818,316 @@ stops the sweep.
 - Ghost only: the release library is identical to the base commit's
   (414 of 414 functions, x86_64); aarch64 not compared in this lane.
 
+## 42. Mallctl write/read contract (settings and objects)
+
+`ctl`, the core both `mallctl` and `mallctlbymib` call, ensures that a
+call that fails changed none of the allocator state the keys set (the
+background thread's request, a decay period, `thread.tcache.enabled`,
+`thread.arena`, the arenas and tcaches), but for two errors that follow
+a change in jemalloc 5.3.0's order too, and that with both `oldp` and
+`newp` a setting copied out its old value before it applied the new
+one; what changed is a ghost value each arm records where it makes the
+change, so that every change is recorded is by inspection of the arms.
+A read copies at most `*oldlenp` bytes, and a failed
+`mallctlnametomib` writes nothing. Upstream #125 made the first two true
+(the theorem candidate's counterexamples: `arena.<i>.dirty_decay_ms`
+applied the period before a read that then failed, `arenas.create` and
+`tcache.create` created before it, and four keys copied out the new
+value). The `file:line`s are the `fn`/`spec` line at this section's
+commit, all in `api/mallctl.rs` unless named.
+
+**Statement.**
+
+```rust
+ghost enum Change {                                                 // :2687
+    Unchanged,
+    Set { read_first: bool },   // a setting took the key's new value
+    Created,                    // arenas.create, tcache.create
+    Refreshed,                  // epoch's write
+}
+
+spec fn error_after_change(node: Node, r: Result<(), c_int>, c: Change) -> bool { // :2706
+    ||| c is Refreshed
+    ||| node.entry matches Entry::Op(Op::BackgroundThread) && r == Err::<(), c_int>(EAGAIN)
+}
+
+fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io,      // :2717
+    Tracked(cc): Tracked<&mut CCall>, Tracked(fx): Tracked<&mut Ghost<Change>>) -> (r: Result<(), c_int>)
+    requires ..., io.handed(*old(cc)), !old(cc).written(),
+    ensures
+        r is Err && !error_after_change(*node, r, final(fx)@) ==> final(fx)@ is Unchanged,
+        io.oldp@.addr != 0 && io.oldlenp@.addr != 0
+            ==> (final(fx)@ matches Change::Set { read_first } ==> read_first),
+
+pub open spec fn reads_ok<T>(self, call: CCall) -> bool {          // :1804 (Io)
+    self.oldp@.addr == 0 || self.oldlenp@.addr == 0
+        || call.len(self.oldlenp as *const usize) == vstd::layout::size_of::<T>()
+}
+fn read<T: Copy>(&self, v: T, Tracked(call): Tracked<&mut CCall>) -> (r: Result<(), c_int>) // :1907
+    ensures
+        r matches Err(e) ==> e == EINVAL,
+        r is Ok <==> self.reads_ok::<T>(*old(call)),
+        self.oldp@.addr != 0 && self.oldlenp@.addr != 0 ==> final(call).written(),
+fn verify_read<T: Copy>(&self, Tracked(call): Tracked<&CCall>) -> (r: Result<(), c_int>) // :1983
+    ensures
+        r matches Err(e) ==> e == EINVAL,
+        r is Ok <==> self.reads_ok::<T>(*call),
+
+pub fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize, // :3067
+    Tracked(cc): Tracked<&mut CCall>) -> (r: c_int)
+    requires old(cc).fresh(CEntry::NameToMib { .. }),
+    ensures r != 0 ==> !final(cc).written(),
+```
+
+(Abridged.) In words: `fx` is what the call changed, recorded in each
+arm right where the change is made (a ghost assignment before
+`request`, `set_decay_ms`, `set_tcache_enabled` and `set_arena`, after
+a successful `Arenas::create` or `Tcaches::create`, and after
+`stats::epoch`), and `read_first` is the call token's `written` flag at
+that moment. In those arms a token is written exactly when a read has
+copied through `oldp` (`Io::read` opens `oldp`'s writes; the only other
+opener, `batch_query`, belongs to a key that changes nothing), so
+`read_first` says the old value went out first. Every arm
+that changes a setting reads first and propagates the read's error
+with `?` before the change; `arenas.create` and `tcache.create` check
+`verify_read` before creating, and since `verify_read` and `read`
+agree (`reads_ok` of the same `*oldlenp`), the read after the creation
+cannot fail. `mallctl` and `mallctlbymib` (`:2954`, `:3132`) pass
+`ctl`'s result unchanged (`result`: `Ok` is 0, `Err(e)` is `e`).
+
+- **Reads write at most `*oldlenp` bytes.** The writes through `oldp`
+  are `copy_prefix` (`:1841`: `n <= oldlen`, `n = min(oldlen,
+  size_of::<T>())`, through `ptr::copy_nonoverlapping`), `store`
+  (`:1868`: `oldlen == size_of::<T>()`, through `write_unaligned`) and
+  `batch_query`'s triples (each inside `oldlen == 24 * n`), with
+  `oldlen` the value `old_len` (`:1816`) read from `*oldlenp`: their
+  `requires` (`c_buffer(oldp, oldlen)`, `c_writes`) bound every byte
+  written to the caller's `oldlen`. `read` copies out only when the
+  caller asked (`oldp` and `oldlenp` non-null), and fails `EINVAL`
+  after the prefix copy when the sizes differ.
+- **`mallctlnametomib` writes nothing on failure.** Its writes go
+  through `mib_out` (`:3028`), which needs `c_writes` of `mibp` and
+  `miblenp`; only `open_writes` gives those, and it runs after every
+  check (`cstr`, the null tests, `name_to_mib`, the capacity), so a
+  nonzero result leaves the token unwritten. The export wrapper now
+  passes the token by `&mut` (`let Tracked(mut cc) = nametomib_call(..)`),
+  so the ensures can name its final state.
+
+**Covers.** `mallctl` and `mallctlbymib` for every key `ctl` performs
+(`Op` arms; a `Read` key is read-only and changes nothing), and
+`mallctlnametomib`.
+
+**Premises beyond the common ones.**
+- `CCall::sized` and `CCall::counted` (`vspec/cbuf.rs:495`, `:513`,
+  trusted, the C contract of a sized buffer and a counted array) now
+  also ensure that the `size_t` read holds the token's view
+  `CCall::len(lenp)` (`:416`): C does not change `*oldlenp` (or
+  `*miblenp`) during the call before challoc writes, as for the
+  string argument's view. This is what makes `verify_read`'s check the
+  one `read` makes. No other trusted item is added.
+- The changes `fx` records are the calls named above, by inspection of
+  `ctl`'s arms: the theorem does not prove that `request`,
+  `set_decay_ms` and the rest change state, nor that no other call in
+  an arm does (see Scope).
+
+**Scope.**
+- "Allocator state" here is the settings and objects the keys write:
+  `background_thread`'s request, `arena.<i>.dirty_decay_ms` (one arena
+  or, for `arena.4096`, every arena's default), `thread.tcache.enabled`,
+  `thread.arena`, and the arena and tcache sets. Not in it, as in
+  jemalloc: the calling thread's heap, which `thread.tcache.enabled` and
+  `thread.arena` create on first use before they check their arguments;
+  thread-cache contents, which `arena.<i>.purge` and `arena.<i>.destroy`
+  flush (`flush_caller`) before they validate `<i>`, so an unknown
+  arena still flushes the caller's caches before `ENOENT`; the commands
+  (`arena.<i>.purge`, `decay`, `destroy`, `thread.tcache.flush`,
+  `tcache.flush`, `tcache.destroy`), whose callees report a missing
+  arena or tcache as their failure and are taken to do nothing then.
+- The two exceptions (`error_after_change`): `epoch`'s write refreshes
+  the stats and then reads the new epoch, so a wrong `*oldlenp` fails
+  `EINVAL` after the refresh (jemalloc's `epoch_ctl` does the same, and
+  reads the new value too; `Change::Refreshed` is recorded only once the
+  refresh is done, so a write that fails its size check is an error
+  with nothing changed); `background_thread` set to true requests
+  the thread and fails `EAGAIN` when it cannot start it, with the
+  request left set (jemalloc's `background_thread_ctl` leaves its
+  enabled flag set and fails too). A read error of `background_thread`
+  comes before the request (#125).
+- `arenas.create` and `tcache.create` read the new index (there is no
+  old value); for them the statement is that a read that would fail is
+  caught before anything is created.
+- `max_background_threads` checks its write and changes nothing.
+
+**Where the statement is weaker than the code.**
+- `read_first` is stated for settings only; `Created` and `Refreshed`
+  carry no ordering (the creates verify the read first, `epoch` reads
+  after its refresh by design).
+- Nothing is stated about the value copied out beyond its order: that
+  it is the setting's value (a load of an atomic) is the code.
+- Ghost only: `ctl`'s `fx` and `mallctlnametomib`'s `&mut` token are
+  `Tracked` parameters, erased in the build (the release library is
+  identical to the third port's, x86_64). The upstream tests
+  `contract_*` (`api::mallctl::tests`) check the behaviour at run time.
+
+## 43. jemalloc size contracts
+
+A sized free returns normally only when given a size that names the
+block: for a slot, a size and alignment whose `nallocx` is the slot's
+class size (jemalloc's `nallocx(size, flags) == sallocx(p)`); for a
+huge run, a size that rounds up to the run's pages, which is the run's
+`nallocx` at every alignment that leaves the size huge and placeable
+(stated with C's token for the run). And
+`nallocx(size, flags)` is 0 exactly when `mallocx(size, flags)` rejects
+the size or the alignment: no class serves it, and no run for it has a
+placement in the huge region even when nothing is placed; `mallocx`
+then returns NULL in every state. Upstream #126 and #127 made both true
+(the candidate's counterexamples: a sized free of a huge run ignored
+the size, and `nallocx(1, MALLOCX_LG_ALIGN(63))` was a page). The
+`file:line`s are the `fn`/`spec` line at this section's commit.
+
+**Statement.**
+
+```rust
+// heap/mod.rs:521, :534; the sized frees' cores (api/libc.rs:625
+// `free_sized_block`, api/jemalloc.rs:639 `sdallocx_block`) ensure both
+// for C's token `blk` (the free paths' `hint_ok` is theorem "Bad input")
+pub open spec fn hint_ok(p: *mut u8, hint: Option<usize>) -> bool
+pub open spec fn huge_hint_ok(blk: Live, p: *mut u8, size: usize) -> bool {
+    blk.claims(p) && !slot_start(p) && process_regions().is_huge_block(p@.addr, 1) ==> {
+        &&& size + live::page_size() - 1 <= usize::MAX
+        &&& crate::vspec::zero::huge_usable(size as int) == blk.len()
+    }
+}
+
+// api/jemalloc.rs:818, :837
+pub proof fn theorem_sized_slot_nallocx(p: *mut u8, size: usize, lg_align: u32, c: int)
+    requires
+        hint_ok(p, spec_class_for(size, 1usize << lg_align)),
+        process_regions().is_slot(c, p@.addr),
+    ensures
+        nalloc_usable(size, lg_align) == class_table()[c].size,
+pub proof fn theorem_sized_run_nallocx(blk: Live, p: *mut u8, size: usize, lg_align: u32)
+    requires
+        huge_hint_ok(blk, p, size), blk.claims(p), !slot_start(p),
+        process_regions().is_huge_block(p@.addr, 1),
+        spec_class_for(size, 1usize << lg_align) is None,
+        huge_placeable(size, 1usize << lg_align),
+    ensures
+        nalloc_usable(size, lg_align) == blk.len(),
+
+// vspec/zero.rs:245, :253
+pub open spec fn run_placeable(base: int, pg: int, np: int, size: int, align: int) -> bool {
+    &&& size + pg - 1 <= usize::MAX
+    &&& align <= np * pg
+    &&& exists|q: int| 0 <= q && q + run_need(pg, size) <= np && #[trigger] page_aligned(base, pg, q, align)
+}
+pub open spec fn huge_placeable(size: usize, align: usize) -> bool  // the process's huge region
+
+// api/jemalloc.rs:213, :753, :793
+pub open spec fn nalloc_usable(size: usize, lg_align: u32) -> int {
+    match spec_class_for(size, 1usize << lg_align) {
+        Some(c) => class_table()[c as int].size as int,
+        None => if huge_placeable(size, 1usize << lg_align) { huge_usable(size as int) } else { 0 },
+    }
+}
+pub proof fn theorem_nallocx_zero(size: usize, lg_align: u32)
+    requires regions_ok(),
+    ensures
+        nalloc_usable(size, lg_align) == 0
+            <==> spec_class_for(size, 1usize << lg_align) is None && !huge_placeable(size, 1usize << lg_align),
+#[cfg(verus_only)]
+fn theorem_nallocx_zero_rejects(size: usize, flags: c_int)   // body: n = nallocx; p = mallocx;
+    requires may_abort(), may_syscall(),                       // assert(n == 0 ==> p@.addr == 0)
+
+// huge/mod.rs:3759, :5379
+proof fn theorem_placeable_fits_empty(&self, g: &Inner, size: usize, align: usize)
+    requires g.next_page == 0, self.spec_placeable(size, align),
+    ensures exists|q: int| self.fits(g, q, run_need(self.spec_page(), size as int), align),
+pub fn alloc_run(..) -> (r: (Placed, Tracked<Zeroed>))
+    ensures r.0.ptr@.addr != 0 ==> self.spec_placeable(size, align), ...
+```
+
+(Abridged.) `nallocx` ensures `r == nalloc_usable(size, flags & 0x3f)`
+(interface row 22) and `mallocx` ensures a non-NULL result's usable size
+is `nalloc_usable` (`usable_is`). In words:
+
+- **Sized frees.** A sized free that returns normally satisfies
+  `hint_ok` (theorem "Bad input": a slot freed with another class's
+  size aborts) and, with C's token for the block, `huge_hint_ok`: for a
+  live run, `size` rounded up to whole pages is the run's usable size.
+  `theorem_sized_slot_nallocx` and `theorem_sized_run_nallocx` turn
+  these into `nallocx`: a slot's free was given a size and alignment
+  whose `nallocx` is the class size, `sallocx(p)`; a run's free a size
+  whose `nallocx` is the run's usable size at any alignment that leaves
+  it huge and placeable.
+- **`nallocx`'s zero.** `theorem_nallocx_zero`: 0 exactly when no class
+  serves the request and it is not `huge_placeable` (class sizes and a
+  run's usable size are positive). `theorem_nallocx_zero_rejects`
+  calls `nallocx` and `mallocx` with the same arguments and verifies
+  that a 0 from the first means NULL from the second, whatever the
+  allocator's state: a non-NULL block is a slot or a run, whose usable
+  size `mallocx` states is `nalloc_usable`, positive. Conversely
+  `huge_placeable` is exactly a placement in the empty region:
+  `Huge::placeable` (`huge/mod.rs:3714`) ensures it is
+  `spec_placeable`, `run_placeable` over the huge allocator's own
+  region (`Shared::lemma_huge_placeable`, `heap/shared.rs:1870`, ties
+  the two), and `theorem_placeable_fits_empty` gives a fit
+  (`Huge::fits`) under a lock value with nothing placed, which `find`
+  (`huge/mod.rs:4753`) then returns (its `None` means no page fits). A
+  run `alloc_run` places in any state was placeable (its start is an
+  aligned page the run and its guard fit from), and the
+  `alloc_huge` layers carry that up to `mallocx`.
+
+How it is proved:
+- `Huge::run_pages` (`huge/mod.rs:3669`, #126's shared check) ensures
+  its result is `run_need(page, size)` and that `None` means not
+  placeable; `placeable` compares the first aligned page `align_page(0,
+  align)` (which ensures no lower page is aligned) plus the run's pages
+  with the region: any placement starts at or after it.
+- `check_size_hint` (`heap/shared.rs:2517`): for a huge page start it
+  looks the run up with the caller's run token (`Huge::lookup`,
+  `huge/mod.rs:4034`, now ensures that with a token of a run starting
+  at `page` the result is that run's `Active` descriptor with the
+  token's usable bytes: the token's extent is in the lock's run
+  authority, which names one `Active` descriptor starting there, and
+  the table keys it at `page`) and aborts (`huge_hint_mismatch`,
+  `heap/shared.rs:2819`) unless `Huge::usable_for(size)` is the run's
+  usable size. `Regions::classify` (`layout/regions.rs:910`) now also
+  ensures that with separated regions every huge page start is `Huge`
+  (a hit of `in_superblock` lies in the strides), so no run is passed over.
+- The fast path (`free_sized_fast`, `heap/paths.rs:762`) now ensures a
+  push is a slot start's, and a declined push keeps the token's claim
+  and length, so `huge_hint_ok` of the token reaches the cores.
+
+**Premises beyond the common ones.** None new: the run token and
+`axiom_c_claim` (the C contract of a live block, "Bad input"), and the
+lock invariant of the huge allocator (theorems 23 and 29); `check_size_hint`
+is a new root of the lock-order premise (`axiom_entry`, theorem 33: the
+sized frees' slow paths hold no lock), used, not added.
+
+**Scope and where the statement is weaker than the code.**
+- A huge run's size is checked by page count, not by `nallocx` at the
+  flags: a size that rounds up to the run's pages passes at any
+  alignment, including the small size of a run an alignment made huge
+  (`mallocx(64, MALLOCX_LG_ALIGN(20))` then `sdallocx(p, 64, 0)`, where
+  `nallocx(64, 0)` is a class size) and an alignment no run could be
+  placed at. jemalloc's contract asks for the flags the block was
+  allocated with; challoc takes these as the same block (upstream's
+  test `sdallocx_of_a_huge_run_takes_any_size_in_its_last_page`).
+  `theorem_sized_run_nallocx` therefore needs the alignment to leave
+  the size huge and placeable.
+- `huge_hint_ok` is stated with C's token for the run (its pages); the
+  exports, which mint the token (`axiom_c_claim`), state only
+  `hint_ok`. A freed or foreign run is excluded by the C contract, as
+  for every free (*(C)*).
+- "Rejects" is about the size and alignment: a non-zero `nallocx` does
+  not promise success (the region may be full, metadata or the kernel
+  may refuse, an explicit arena or tcache may not exist), and the class
+  path's failures are of that kind. "Empty region" is a lock value whose
+  mark is page 0; that `find` returns a placement then is its `ensures`
+  (no `None` while a page fits), not a run of `alloc_run`.
+- Ghost only, beyond the three ports' exec changes.
+
 ## Interface contract
 
 The per-call theorems above (1-3, 5-7 and the "Bad input" section)
@@ -7263,7 +7573,8 @@ alone):
     MALLOCX_LG_ALIGN(63))` is 0 (no alignment past the huge region can
     be served), as jemalloc's. A non-zero `nallocx` still does not
     promise that `mallocx` succeeds (the region may be full, or the
-    kernel refuse), only that the request is not one it always rejects.
+    kernel refuse), only that the request is not one it always rejects
+    (theorem 43).
     The two calls
     agree because `class_for` ensures
     `r == spec_class_for(size, align)` for a power-of-two `align`, the

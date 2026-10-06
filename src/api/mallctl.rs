@@ -1798,6 +1798,12 @@ impl Io {
     pub open spec fn given(self) -> bool {
         self.newp@.addr != 0 ==> c_readable(self.newp as *mut u8, self.newlen as int)
     }
+
+    /// A read of a `T` through the call `call` succeeds: the caller asked
+    /// for nothing, or gave `T`'s size as `*oldlenp` ([`CCall::len`]).
+    pub open spec fn reads_ok<T>(self, call: CCall) -> bool {
+        self.oldp@.addr == 0 || self.oldlenp@.addr == 0 || call.len(self.oldlenp as *const usize) == vstd::layout::size_of::<T>()
+    }
 }
 
 /// `*oldlenp`, through the read permission the call's token gives
@@ -1813,6 +1819,7 @@ unsafe fn old_len(oldlenp: *mut usize, Ghost(oldp): Ghost<*mut u8>, Tracked(call
         call.has(CArg::Sized(oldp, oldlenp as *const usize)),
     ensures
         c_buffer(oldp, r as int),
+        r == call.len(oldlenp as *const usize),
 {
     let tracked len = call.sized(oldp, oldlenp as *const usize);
     // SAFETY: guaranteed by the caller.
@@ -1905,6 +1912,13 @@ impl Io {
             r matches Err(e) ==> e == EINVAL,
             self.oldp@.addr == 0 || self.oldlenp@.addr == 0 ==> r is Ok,
             final(call).entry() == old(call).entry(),
+            // It fails exactly when the caller asked for a value with a
+            // `*oldlenp` that is not `T`'s size, as `verify_read` says
+            // beforehand; asked for, the value is copied (the token is
+            // written) and no more than `*oldlenp` bytes (`copy_prefix`,
+            // `store`).
+            r is Ok <==> self.reads_ok::<T>(*old(call)),
+            self.oldp@.addr != 0 && self.oldlenp@.addr != 0 ==> final(call).written(),
     {
         if self.oldp.is_null() || self.oldlenp.is_null() {
             return Ok(());
@@ -1972,6 +1986,7 @@ impl Io {
             !call.written(),
         ensures
             r matches Err(e) ==> e == EINVAL,
+            r is Ok <==> self.reads_ok::<T>(*call),
     {
         if self.oldp.is_null() || self.oldlenp.is_null() {
             return Ok(());
@@ -2662,11 +2677,44 @@ fn read_out(io: &Io, r: Reading, Tracked(cc): Tracked<&mut CCall>) -> (res: Resu
     }
 }
 
+/// What a [`ctl`] call changed of the allocator state the `mallctl` keys
+/// set (ghost; theorem 42, "Mallctl write/read contract"): the settings
+/// (`background_thread`'s request, `arena.<i>.dirty_decay_ms`,
+/// `thread.tcache.enabled`, `thread.arena`) and the explicit arenas and
+/// tcaches.
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+ghost enum Change {
+    /// Nothing of it.
+    Unchanged,
+    /// A setting took the key's new value; `read_first`: the call's read
+    /// through `oldp`, if it asked for one, had been made before
+    /// ([`CCall::written`]), so it got the old value.
+    Set { read_first: bool },
+    /// `arenas.create` or `tcache.create` created an arena or a tcache.
+    Created,
+    /// `epoch`'s write refreshed the stats (before its read, as jemalloc's
+    /// `epoch_ctl`).
+    Refreshed,
+}
+
+/// The two errors that may follow a change `c`, both in jemalloc 5.3.0's
+/// order: `epoch`'s read after its refresh (`Change::Refreshed`; jemalloc's
+/// `epoch_ctl` reads after `ctl_refresh` too), and `background_thread`'s
+/// `EAGAIN` when the thread it requested does not start
+/// (`background_thread_ctl` keeps the enabled flag set and fails too).
+spec fn error_after_change(node: Node, r: Result<(), c_int>, c: Change) -> bool {
+    ||| c is Refreshed
+    ||| node.entry matches Entry::Op(Op::BackgroundThread) && r == Err::<(), c_int>(EAGAIN)
+}
+
 /// Perform the key `node` names with the numeric components of `mib`:
 /// a read-only key through its reader, an [`Op`] as an arm. `ENOENT` for
 /// an interior node. `cc` is the call's token, before any write through
-/// its buffers.
-fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracked<&mut CCall>) -> Result<(), c_int>
+/// its buffers. `fx` gets what the call changed (theorem 42): nothing
+/// when it fails, but for [`error_after_change`]; and a setting with the
+/// old value read first when the caller asked for it.
+fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracked<&mut CCall>, Tracked(fx): Tracked<&mut Ghost<Change>>) -> (r: Result<(), c_int>)
     requires
         crate::sys::may_abort() || ctl_never_aborts(*node, mib@),
         crate::sys::may_syscall(),
@@ -2675,7 +2723,13 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
         !old(cc).written(),
         // Both entry points pass the node the MIB resolves to.
         resolve(root_nodes(), mib@) == Some(*node),
+    ensures
+        r is Err && !error_after_change(*node, r, final(fx)@) ==> final(fx)@ is Unchanged,
+        io.oldp@.addr != 0 && io.oldlenp@.addr != 0 ==> (final(fx)@ matches Change::Set { read_first } ==> read_first),
 {
+    proof {
+        *fx = Ghost(Change::Unchanged);
+    }
     // Premise (lock order): `mallctl`'s caller holds no allocator lock.
     let tracked mut ord = axiom_entry();
     let op = match node.entry {
@@ -2694,6 +2748,11 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
                 Some(_) => stats::epoch(shared, Tracked(&mut ord)),
                 None => stats::snapshot(shared, Tracked(&mut ord)).epoch,
             };
+            proof {
+                if io.newp@.addr != 0 {
+                    *fx = Ghost(Change::Refreshed);
+                }
+            }
             io.read(e, Tracked(cc))
         },
         BackgroundThread => {
@@ -2701,6 +2760,9 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
             // The old state, before the write changes it.
             io.read(purge::background::present(), Tracked(cc))?;
             if let Some(on) = on {
+                proof {
+                    *fx = Ghost(Change::Set { read_first: cc.written() });
+                }
                 purge::background::request(on);
                 if on && !purge::background::present() && !purge::background::start(shared, Tracked(&mut ord)) {
                     return Err(EAGAIN);
@@ -2721,6 +2783,9 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
             // A read that would fail must not leave an arena behind.
             io.verify_read::<c_uint>(Tracked(&*cc))?;
             let i = shared.arenas.create(shared, Tracked(&mut ord)).ok_or(EAGAIN)?;
+            proof {
+                *fx = Ghost(Change::Created);
+            }
             io.read(i as c_uint, Tracked(cc))
         },
         ArenasLookup => {
@@ -2776,6 +2841,9 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
             if i == ARENAS_ALL as usize {
                 io.read(ms_of(shared.decay_ns()), Tracked(cc))?;
                 if let Some(ms) = new {
+                    proof {
+                        *fx = Ghost(Change::Set { read_first: cc.written() });
+                    }
                     shared.set_decay_ms(ms as i64);
                 }
                 return Ok(());
@@ -2783,6 +2851,9 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
             let arena = shared.arena(arena_index(i)?, Tracked(&mut ord)).ok_or(ENOENT)?;
             io.read(ms_of(arena.decay_ns()), Tracked(cc))?;
             if let Some(ms) = new {
+                proof {
+                    *fx = Ghost(Change::Set { read_first: cc.written() });
+                }
                 arena.set_decay_ms(ms as i64);
             }
             Ok(())
@@ -2797,6 +2868,9 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
             let on = io.write_bool()?;
             io.read(h.tcache_enabled(), Tracked(cc))?;
             if let Some(on) = on {
+                proof {
+                    *fx = Ghost(Change::Set { read_first: cc.written() });
+                }
                 h.set_tcache_enabled(shared, on, Tracked(&mut ord));
                 // Off: every cache of the thread's heap is freed, so empty
                 // (theorem "cache flush completeness").
@@ -2816,6 +2890,9 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
             }
             io.read(h.arena() as c_uint, Tracked(cc))?;
             if let Some(a) = new {
+                proof {
+                    *fx = Ghost(Change::Set { read_first: cc.written() });
+                }
                 h.set_arena(shared, a as u16, Tracked(&mut ord));
             }
             Ok(())
@@ -2831,6 +2908,9 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
                 None => 0,
             };
             let t = shared.tcaches.create(shared, home, Tracked(&mut ord)).ok_or(EFAULT)?;
+            proof {
+                *fx = Ghost(Change::Created);
+            }
             io.read(t as c_uint, Tracked(cc))
         },
         TcacheFlush | TcacheDestroy => {
@@ -2891,6 +2971,7 @@ pub fn mallctl(
         }),
 {
     let tracked mut cc = cc;
+    let tracked mut fx = Ghost(Change::Unchanged);
     let Some(name) = cstr(name, Tracked(&cc)) else {
         return EINVAL;
     };
@@ -2911,6 +2992,7 @@ pub fn mallctl(
             newlen,
         },
         Tracked(&mut cc),
+        Tracked(&mut fx),
     ))
 }
 
@@ -2980,12 +3062,15 @@ unsafe fn mib_out(mib: &[usize; MAX_MIB], mibp: *mut usize, miblenp: *mut usize,
 /// and the length out. The pointers are C's, under the
 /// `mallctlnametomib` contract: `cc` is the call's token, minted by the
 /// export wrapper for exactly these arguments ([`CEntry::NameToMib`]).
-pub fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize, Tracked(cc): Tracked<CCall>) -> c_int
+/// A failure writes nothing through `mibp` or `miblenp`: every error
+/// returns before the token's writes open (theorem 42).
+pub fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize, Tracked(cc): Tracked<&mut CCall>) -> (r: c_int)
     requires
-        cc.fresh(CEntry::NameToMib { name: name as *const u8, mibp, miblenp: miblenp as *const usize }),
+        old(cc).fresh(CEntry::NameToMib { name: name as *const u8, mibp, miblenp: miblenp as *const usize }),
+    ensures
+        r != 0 ==> !final(cc).written(),
 {
-    let tracked mut cc = cc;
-    let Some(name) = cstr(name, Tracked(&cc)) else {
+    let Some(name) = cstr(name, Tracked(&*cc)) else {
         return EINVAL;
     };
     if mibp.is_null() || miblenp.is_null() {
@@ -2999,7 +3084,7 @@ pub fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usi
     // SAFETY: the caller's capacity pointer and an array of that many
     // `size_t`.
     unsafe {
-        let cap = mib_cap(miblenp, Ghost(mibp), Tracked(&cc));
+        let cap = mib_cap(miblenp, Ghost(mibp), Tracked(&*cc));
         if cap < len {
             return EINVAL;
         }
@@ -3066,6 +3151,7 @@ pub fn mallctlbymib(
         }),
 {
     let tracked mut cc = cc;
+    let tracked mut fx = Ghost(Change::Unchanged);
     if mib.is_null() || miblen == 0 || miblen > MAX_MIB {
         return EINVAL;
     }
@@ -3088,6 +3174,7 @@ pub fn mallctlbymib(
             newlen,
         },
         Tracked(&mut cc),
+        Tracked(&mut fx),
     ))
 }
 
@@ -3146,12 +3233,13 @@ pub(super) fn theorem_mallctl_reads_never_abort(
         }),
 {
     let tracked mut cc = cc;
+    let tracked mut fx = Ghost(Change::Unchanged);
     // `mallctl` after its `super::shared()`, for a covered key.
     if let Some(name) = cstr(name, Tracked(&cc)) {
         let mut mib = [0usize; MAX_MIB];
         if let Ok((len, node)) = name_to_mib(name, &mut mib) {
             if never_aborts(node, &mib[..len]) {
-                let _ = result(ctl(shared, node, &mib[..len], io, Tracked(&mut cc)));
+                let _ = result(ctl(shared, node, &mib[..len], io, Tracked(&mut cc), Tracked(&mut fx)));
             }
         }
     }
@@ -3233,6 +3321,7 @@ pub(super) fn theorem_mallctlbymib_reads_never_abort(
         }),
 {
     let tracked mut cb = cb;
+    let tracked mut fx = Ghost(Change::Unchanged);
     // `mallctlbymib` after its `super::shared()`.
     if !mibp.is_null() && miblen != 0 && miblen <= MAX_MIB {
         let mut local = [0usize; MAX_MIB];
@@ -3240,7 +3329,7 @@ pub(super) fn theorem_mallctlbymib_reads_never_abort(
         unsafe { mib_in(mibp, &mut local, miblen) };
         if let Ok(node) = mib_to_node(&local[..miblen]) {
             if never_aborts(node, &local[..miblen]) {
-                let _ = result(ctl(shared, node, &local[..miblen], io, Tracked(&mut cb)));
+                let _ = result(ctl(shared, node, &local[..miblen], io, Tracked(&mut cb), Tracked(&mut fx)));
             }
         }
     }
@@ -3366,8 +3455,8 @@ mod exports {
             super::mallctl(name, oldp, oldlenp, newp, newlen, cc)
         }
         fn mallctlnametomib / je_mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> c_int {
-            let cc = nametomib_call(name, mibp, miblenp);
-            super::mallctlnametomib(name, mibp, miblenp, cc)
+            let Tracked(mut cc) = nametomib_call(name, mibp, miblenp);
+            super::mallctlnametomib(name, mibp, miblenp, Tracked(&mut cc))
         }
         fn mallctlbymib / je_mallctlbymib(
             mib: *const usize,
@@ -3593,7 +3682,15 @@ mod tests {
             };
             // Checked after the join: a failed write must not leave the
             // other writers waiting at the barrier.
-            ctl(s, node, &mib[..len], &io, Tracked::assume_new()).map(|()| e)
+            ctl(
+                s,
+                node,
+                &mib[..len],
+                &io,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
+            .map(|()| e)
         };
         let go = Barrier::new(4);
         let seen: Vec<Result<u64, c_int>> = std::thread::scope(|sc| {
@@ -3640,7 +3737,14 @@ mod tests {
                 newlen: 0,
             };
             assert_eq!(
-                ctl(s, node, &mib[..len], &io, Tracked::assume_new()),
+                ctl(
+                    s,
+                    node,
+                    &mib[..len],
+                    &io,
+                    Tracked::assume_new(),
+                    Tracked::assume_new()
+                ),
                 Ok(()),
                 "{name}"
             );

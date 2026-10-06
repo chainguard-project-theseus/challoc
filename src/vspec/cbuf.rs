@@ -408,6 +408,7 @@ axiom fn axiom_c_writes(prov: Provenance)
 pub tracked struct CCall {
     ghost entry: CEntry,
     ghost string: CStr,
+    ghost lens: spec_fn(*const usize) -> usize,
     ghost written: bool,
 }
 
@@ -422,6 +423,15 @@ impl CCall {
     /// meanwhile), if the entry has one ([`CEntry::string`]).
     pub closed spec fn string(self) -> CStr {
         self.string
+    }
+
+    /// The value of the call's `size_t` argument at `lenp` (`mallctl`'s
+    /// `*oldlenp`, `mallctlnametomib`'s `*miblenp`) as it is during the
+    /// call until challoc writes or calls back into C (the C contract: C
+    /// does not change it meanwhile), what [`CCall::sized`] and
+    /// [`CCall::counted`] read.
+    pub closed spec fn len(self, lenp: *const usize) -> usize {
+        (self.lens)(lenp)
     }
 
     /// A write through the call's buffers, or a call back into C, has
@@ -504,8 +514,9 @@ impl CCall {
 
     /// Trusted (the C contract of a sized buffer): the shared read
     /// permission to the call's `size_t` at `lenp`, initialised, for as
-    /// long as the token is borrowed, and the buffer at `p` it gives the
-    /// length of, that many bytes ([`c_buffer`]). Only before a write
+    /// long as the token is borrowed, holding the value the view names
+    /// ([`CCall::len`]), and the buffer at `p` it gives the length of, that
+    /// many bytes ([`c_buffer`]). Only before a write
     /// ([`CCall::written`]). The separation of the `size_t` is the
     /// argument's fact ([`CArg::facts`]).
     pub axiom fn sized<'a>(tracked &'a self, p: *mut u8, lenp: *const usize) -> (tracked r: &'a PointsTo<usize>)
@@ -515,13 +526,15 @@ impl CCall {
         ensures
             r.ptr() == lenp as *mut usize,
             r.is_init(),
+            r.value() == self.len(lenp),
             c_buffer(p, r.value() as int),
     ;
 
     /// Trusted (the C contract of a counted array): the shared read
     /// permission to the call's initialised `size_t` at `lenp`, for as
-    /// long as the token is borrowed, and the array at `p` it gives the
-    /// length of, that many `size_t`s ([`c_buffer`]). Only before a write
+    /// long as the token is borrowed, holding the value the view names
+    /// ([`CCall::len`]), and the array at `p` it gives the length of, that
+    /// many `size_t`s ([`c_buffer`]). Only before a write
     /// ([`CCall::written`]). The `size_t`'s own validity and separation
     /// are the argument's fact ([`CArg::facts`]).
     pub axiom fn counted<'a>(tracked &'a self, p: *mut usize, lenp: *const usize) -> (tracked r: &'a PointsTo<usize>)
@@ -531,6 +544,7 @@ impl CCall {
         ensures
             r.ptr() == lenp as *mut usize,
             r.is_init(),
+            r.value() == self.len(lenp),
             c_buffer(p, r.value() as int * vstd::layout::size_of::<usize>()),
     ;
 

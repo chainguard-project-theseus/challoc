@@ -749,6 +749,108 @@ pub fn nallocx(size: usize, flags: c_int) -> (r: usize)
     usable_for(super::shared(), size, &f).unwrap_or(0)
 }
 
+/// Theorem 43 ("jemalloc size contracts"), `nallocx`'s zero:
+/// `nallocx(size, flags)` is 0 exactly when no class serves `size` at
+/// the flags' alignment and no run for it has a placement in the empty
+/// huge region at that alignment ([`huge_placeable`]): a class's size
+/// and a run's usable size are positive.
+pub proof fn theorem_nallocx_zero(size: usize, lg_align: u32)
+    requires
+        crate::heap::regions_ok(),
+    ensures
+        nalloc_usable(size, lg_align) == 0 <==> spec_class_for(size, 1usize << lg_align) is None && !huge_placeable(size, 1usize << lg_align),
+{
+    let align = 1usize << lg_align;
+    if spec_class_for(size, align) is Some {
+        let c = choose|c: int| super::libc::least_class(c, size as int, align);
+        crate::vspec::class::axiom_class_table_wf(c);
+    } else if huge_placeable(size, align) {
+        lemma_huge_usable_pos(size as int);
+    }
+}
+
+/// A run's usable size is at least a page, so positive.
+proof fn lemma_huge_usable_pos(size: int)
+    requires
+        crate::heap::regions_ok(),
+        size >= 0,
+    ensures
+        huge_usable(size) > 0,
+{
+    let lg = crate::layout::process_regions().lg_page;
+    let pg = (1usize << lg) as int;
+    assert((1usize << lg) > 0) by (bit_vector)
+        requires lg < 64;
+    let n = (size + pg - 1) / pg;
+    vstd::arithmetic::div_mod::lemma_div_pos_is_pos(size + pg - 1, pg);
+    let m = if n == 0 { 1 } else { n };
+    assert(m * pg > 0) by (nonlinear_arith)
+        requires m >= 1, pg > 0;
+}
+
+/// Theorem 43: a request whose `nallocx` is 0 is one `mallocx` rejects:
+/// its result is NULL in every state of the allocator. A non-NULL block
+/// is a slot or a run ([`crate::heap::fits`]), and `mallocx` ensures its
+/// usable size is `nalloc_usable`, which is then a class's size or a
+/// run's, positive.
+#[cfg(verus_only)]
+fn theorem_nallocx_zero_rejects(size: usize, flags: c_int)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
+    let n = nallocx(size, flags);
+    let p = mallocx(size, flags);
+    proof {
+        if p@.addr != 0 {
+            let r = crate::layout::process_regions();
+            if exists|c: int| #![trigger r.is_slot(c, p@.addr)] #![trigger class_table()[c]] r.is_slot(c, p@.addr) && size <= class_table()[c].size {
+                let c = choose|c: int| #![trigger r.is_slot(c, p@.addr)] #![trigger class_table()[c]] r.is_slot(c, p@.addr) && size <= class_table()[c].size;
+                crate::vspec::class::axiom_class_table_wf(c);
+            } else {
+                lemma_huge_usable_pos(size as int);
+            }
+        }
+    }
+    assert(n == 0 ==> p@.addr == 0);
+}
+
+/// Theorem 43, a sized free of a slot: one that returns normally
+/// ([`crate::heap::hint_ok`], which the sized frees ensure) was given a
+/// size and alignment whose `nallocx` is the slot's class size, its
+/// `sallocx` (jemalloc's contract, `nallocx(size, flags) == sallocx(p)`).
+pub proof fn theorem_sized_slot_nallocx(p: *mut u8, size: usize, lg_align: u32, c: int)
+    requires
+        crate::heap::hint_ok(p, spec_class_for(size, 1usize << lg_align)),
+        crate::layout::process_regions().is_slot(c, p@.addr),
+    ensures
+        nalloc_usable(size, lg_align) == class_table()[c].size,
+{
+    assert(spec_class_for(size, 1usize << lg_align) == Some(c as usize));
+}
+
+/// Theorem 43, a sized free of a huge run: one that returns normally
+/// ([`crate::heap::huge_hint_ok`] of the caller's token for the run,
+/// which the sized frees' cores ensure) was given a size whose `nallocx`
+/// is the run's usable size, its `sallocx`, at every alignment that
+/// leaves the size huge and placeable (`nalloc_usable`'s huge branch).
+/// At another alignment the size still rounds up to the run's pages:
+/// that is the small size of a run an alignment made huge, or an
+/// alignment no run could be placed at, which the check, by page count,
+/// lets through.
+pub proof fn theorem_sized_run_nallocx(blk: Live, p: *mut u8, size: usize, lg_align: u32)
+    requires
+        crate::heap::huge_hint_ok(blk, p, size),
+        blk.claims(p),
+        !crate::heap::slot_start(p),
+        crate::layout::process_regions().is_huge_block(p@.addr, 1),
+        spec_class_for(size, 1usize << lg_align) is None,
+        huge_placeable(size, 1usize << lg_align),
+    ensures
+        nalloc_usable(size, lg_align) == blk.len(),
+{
+}
+
 /// What `get_defrag_hint` read (ghost): whether the allocator was ready,
 /// `p`'s classification, the slot's bitmap bit (`allocated`), that its
 /// slab is below the watermark (`committed`), the slab's live count, that

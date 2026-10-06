@@ -3750,6 +3750,25 @@ impl Huge {
         }
     }
 
+    /// Theorem 43, the huge half of `nallocx`'s zero: a placeable request
+    /// ([`Huge::spec_placeable`]) has a fit ([`Huge::fits`]) under a lock
+    /// value with nothing placed yet (the mark at page 0), so
+    /// [`Huge::find`], whose `None` means no page fits, places it there;
+    /// and [`Huge::alloc_run`] ensures every run it places was placeable,
+    /// so an unplaceable request fails in every state.
+    proof fn theorem_placeable_fits_empty(&self, g: &Inner, size: usize, align: usize)
+        requires
+            g.next_page == 0,
+            self.spec_placeable(size, align),
+        ensures
+            exists|q: int| self.fits(g, q, run_need(self.spec_page(), size as int), align),
+    {
+        let need = run_need(self.spec_page(), size as int);
+        let q = choose|q: int| 0 <= q && q + need <= self.npages && #[trigger] page_aligned(self.base as int, self.spec_page(), q, align as int);
+        assert(self.aligned_at(q, align));
+        assert(self.fits(g, q, need, align));
+    }
+
     /// First page at or after `page` whose address is a multiple of
     /// `align` (a power of two).
     #[inline]

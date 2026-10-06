@@ -1070,7 +1070,7 @@ fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(u): Tracked<&Unlocked>)
 
 ### S13. `axiom_c_block`
 
-src/api/jemalloc.rs:992. Kind: axiom. Category: C-program contract.
+src/api/jemalloc.rs:1094. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The token of a C call that hands over the block at `p` to `rallocx`, `dallocx` or `sdallocx` ([`CCall`], [`CEntry::Frees`]).
@@ -1142,7 +1142,7 @@ fn root() -> (r: &'static [Node])
 
 ### S18. `axiom_c_call`
 
-src/api/mallctl.rs:3283. Kind: axiom. Category: C-program contract.
+src/api/mallctl.rs:3372. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point (a `mallctl` one: `malloc_stats_print`'s are `api/print.rs`'s, a free's or a realloc's the `axiom_c_block`s of `libc`, `jemalloc` and `cxx`) and with the arguments `e` names: the export wrapper's own parameters, which C passed under the entry point's contract ([`CCall::fresh`]: each pointer argument's [`crate::vspec::cbuf::CArg`] facts, of memory of the program's, and the string argument's view).
@@ -3287,7 +3287,7 @@ axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc, tracked 
 
 ### S162. `Huge::read_run_word`
 
-src/huge/mod.rs:5620. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/huge/mod.rs:5639. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The word at `a`, read once, for [`Huge::check_zero`].
@@ -3302,12 +3302,12 @@ unsafe fn read_run_word(&self, a: usize) -> u64
 
 ### S163. `not_a_run_page`
 
-src/huge/mod.rs:7501. Kind: abort_standin. Category: panic/abort.
+src/huge/mod.rs:7520. Kind: abort_standin. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`Huge::free_run`]'s abort for a page that is not in the descriptor table, where the build calls [`not_a_run`] with the page's address.
 
-Stands in at: src/huge/mod.rs:7085 (`Huge::free_run`).
+Stands in at: src/huge/mod.rs:7104 (`Huge::free_run`).
 
 ```rust
 fn not_a_run_page(page: usize) -> !
@@ -4839,7 +4839,7 @@ axiom fn axiom_c_writes(prov: Provenance)
 
 ### S269. `CCall::str_byte`
 
-src/vspec/cbuf.rs:478. Kind: axiom. Category: C-program contract.
+src/vspec/cbuf.rs:488. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of a string argument): the read permission to byte `i` of the call's string `p`, through `q`, a pointer to it derived from the caller's; shared, for as long as the token is borrowed, and holding the byte the view names ([`CCall::string`]).
@@ -4860,7 +4860,7 @@ pub axiom fn str_byte<'a>(tracked &'a self, p: *const u8, q: *const u8, i: int) 
 
 ### S270. `CCall::str_c_byte`
 
-src/vspec/cbuf.rs:493. Kind: axiom. Category: C-program contract.
+src/vspec/cbuf.rs:503. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > [`CCall::str_byte`] through a `c_char` pointer (`malloc_stats_print`'s `opts`): the `c_char` whose bits are the byte.
@@ -4881,10 +4881,10 @@ pub axiom fn str_c_byte<'a>(tracked &'a self, p: *const u8, q: *const core::ffi:
 
 ### S271. `CCall::sized`
 
-src/vspec/cbuf.rs:511. Kind: axiom. Category: C-program contract.
+src/vspec/cbuf.rs:522. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
-> Trusted (the C contract of a sized buffer): the shared read permission to the call's `size_t` at `lenp`, initialised, for as long as the token is borrowed, and the buffer at `p` it gives the length of, that many bytes ([`c_buffer`]).
+> Trusted (the C contract of a sized buffer): the shared read permission to the call's `size_t` at `lenp`, initialised, for as long as the token is borrowed, holding the value the view names ([`CCall::len`]), and the buffer at `p` it gives the length of, that many bytes ([`c_buffer`]).
 
 ```rust
 pub axiom fn sized<'a>(tracked &'a self, p: *mut u8, lenp: *const usize) -> (tracked r: &'a PointsTo<usize>)
@@ -4894,16 +4894,17 @@ pub axiom fn sized<'a>(tracked &'a self, p: *mut u8, lenp: *const usize) -> (tra
     ensures
         r.ptr() == lenp as *mut usize,
         r.is_init(),
+        r.value() == self.len(lenp),
         c_buffer(p, r.value() as int),
 ;
 ```
 
 ### S272. `CCall::counted`
 
-src/vspec/cbuf.rs:527. Kind: axiom. Category: C-program contract.
+src/vspec/cbuf.rs:540. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
-> Trusted (the C contract of a counted array): the shared read permission to the call's initialised `size_t` at `lenp`, for as long as the token is borrowed, and the array at `p` it gives the length of, that many `size_t`s ([`c_buffer`]).
+> Trusted (the C contract of a counted array): the shared read permission to the call's initialised `size_t` at `lenp`, for as long as the token is borrowed, holding the value the view names ([`CCall::len`]), and the array at `p` it gives the length of, that many `size_t`s ([`c_buffer`]).
 
 ```rust
 pub axiom fn counted<'a>(tracked &'a self, p: *mut usize, lenp: *const usize) -> (tracked r: &'a PointsTo<usize>)
@@ -4913,6 +4914,7 @@ pub axiom fn counted<'a>(tracked &'a self, p: *mut usize, lenp: *const usize) ->
     ensures
         r.ptr() == lenp as *mut usize,
         r.is_init(),
+        r.value() == self.len(lenp),
         c_buffer(p, r.value() as int * vstd::layout::size_of::<usize>()),
 ;
 ```
