@@ -319,6 +319,9 @@ store_usize	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-atom-stor
 usize_ptr	raw pointer (internal)	none (assumption)
 src/vspec/count.rs:store	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-store.md)
 src/vspec/count.rs:swap	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-swap.md)
+# try_bind_idle's compare-and-swap (since the port of upstream #103), run
+# in the bound count model with a rival bind and its split control.
+src/vspec/count.rs:compare_exchange	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-compare_exchange.md)
 AR_TABLE	core library	Kani
 AR_BOUND	core library	Kani
 AR_LOCK	core library	Kani

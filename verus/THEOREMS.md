@@ -5708,7 +5708,8 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   `CountPerm` is the counter with its `id` (`count_id`), and `fetch_add`,
   `fetch_sub` (wrapping), `load` and, since the port of upstream #103,
   `compare_exchange` (the strong form: it fails only on a different
-  value, S305, trusted, not yet run under loom) are one atomic operation
+  value, by C++20's semantics; S303, discharged with loom and those,
+  `verus/seams/vspec-count-compare_exchange.md`) are one atomic operation
   on it, sequentially consistent in the model (the orderings, all
   `Relaxed`, are ignored, as for the bitmap words).
 - `Arenas::init` (verified after this theorem's merge) ensures `wf` of the

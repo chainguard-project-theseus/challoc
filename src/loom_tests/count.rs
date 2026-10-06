@@ -1,6 +1,7 @@
 //! The arena registry's bound counts (`arena.rs`; `verus/THEOREMS.md`,
 //! theorem 34): the real wrappers of `vspec/count.rs` (`fetch_add`,
-//! `fetch_sub`, `load`) over loom's `AtomicU32`, driven by copies of the
+//! `fetch_sub`, `load`, `compare_exchange`) over loom's `AtomicU32`,
+//! driven by copies of the
 //! `Arenas` steps that call them, with their orderings (all `Relaxed`):
 //!
 //! - [`Arenas::count_in`] is `Arenas::count_in` (and `bind`, its one-line
@@ -10,13 +11,21 @@
 //! - [`Arenas::load_bound`] is `Arenas::load_bound` (`bound`): `load`;
 //! - [`Arenas::assign`] is `Arenas::assign`: under the creation lock (the
 //!   real `RawLock`), the first least `(bound, unbuilt)` key read, then
-//!   `count_in` of it, still under the lock.
+//!   `count_in` of it, still under the lock;
+//! - [`Arenas::try_bind_idle`] is `Arenas::try_bind_idle` (and
+//!   `bind_if_idle`, its tail; `Heap::try_rehome` calls it without a
+//!   lock): a `load`, and on 0 the strong `compare_exchange(0, 1)`, a
+//!   fresh ticket only when it succeeds.
 //!
 //! A ticket (`arena::Homed`) is ghost; here a thread's tickets are what it
 //! has counted in and not yet unbound. Checked: an `unbind` never reads a
 //! count of 0 (its own ticket is counted), a holder's `load` never reads
 //! less than its own tickets, and once every thread is joined each count
-//! is the number of tickets still out. Left out: the arena table's
+//! is the number of tickets still out; and (`run_idle`) a
+//! `try_bind_idle` wins only on an arena with no ticket out, so two
+//! racing for one idle arena never both win, and of two racing alone
+//! for an idle arena exactly one wins.
+//! Left out: the arena table's
 //! `Relaxed` pointer loads in `assign` (here a fixed built/unbuilt
 //! pattern), building an arena, and the `u32` wrap (2^32 tickets).
 
@@ -41,17 +50,21 @@ struct Arenas {
     /// The `fetch_add` of [`Arenas::count_in`] split into a load and a
     /// store, for the control.
     split: bool,
+    /// The `compare_exchange` of [`Arenas::try_bind_idle`] split into a
+    /// load and a store of 1 on 0, for its control.
+    split_cas: bool,
 }
 
 // `cfg(test)` again: `verus/seams.sh` skips test code only by the attribute
 // on the item, and the permissions minted below are not seams.
 #[cfg(test)]
 impl Arenas {
-    fn new(split: bool) -> Arenas {
+    fn new(split: bool, split_cas: bool) -> Arenas {
         Arenas {
             lock: RawLock::new(),
             bound: [AtomicU32::new(0), AtomicU32::new(0)],
             split,
+            split_cas,
         }
     }
 
@@ -98,6 +111,32 @@ impl Arenas {
         self.lock.unlock();
         best
     }
+
+    /// `Arenas::try_bind_idle` and `bind_if_idle`: a fresh ticket for
+    /// arena `i` only if none is out (no lock, as `Heap::try_rehome`
+    /// calls it).
+    fn try_bind_idle(&self, i: usize) -> bool {
+        if self.load_bound(i) != 0 {
+            return false;
+        }
+        if self.split_cas {
+            if self.bound[i].load(Ordering::Relaxed) != 0 {
+                return false;
+            }
+            self.bound[i].store(1, Ordering::Relaxed);
+            true
+        } else {
+            count::compare_exchange(
+                &self.bound[i],
+                0,
+                1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+                Tracked::assume_new(),
+            )
+            .is_ok()
+        }
+    }
 }
 
 /// Leaked, as in `init.rs`: a failed model must not drop loom objects.
@@ -110,7 +149,7 @@ fn leak<T>(v: T) -> &'static T {
 /// threads are each assigned an arena and later exit (`unbind`).
 fn run(split: bool) {
     model(move || {
-        let a = leak(Arenas::new(split));
+        let a = leak(Arenas::new(split, false));
         a.count_in(0);
         let assigned: std::vec::Vec<_> = (0..2)
             .map(|_| {
@@ -147,4 +186,85 @@ fn loom_count_bind_assign_unbind() {
 #[should_panic(expected = "count")]
 fn loom_count_split_rmw_loses_a_ticket() {
     run(true);
+}
+
+/// The main thread's heap is homed on arena 0 (one ticket throughout);
+/// two new threads race to move a heap onto the idle arena 1
+/// (`try_bind_idle`), each keeping a ticket it wins until it is joined;
+/// with `rival`, the main thread meanwhile counts a heap in on arena 1
+/// (`bind`) and out again.
+fn run_idle(split_cas: bool, rival: bool) {
+    model(move || {
+        let a = leak(Arenas::new(false, split_cas));
+        a.count_in(0);
+        let racers: std::vec::Vec<_> = (0..2)
+            .map(|_| {
+                thread::spawn(move || {
+                    let won = a.try_bind_idle(1);
+                    if won {
+                        assert!(a.load_bound(1) >= 1, "a holder read its arena's count as 0");
+                    }
+                    won
+                })
+            })
+            .collect();
+        if rival {
+            a.count_in(1);
+            assert!(a.load_bound(1) >= 1, "a holder read its arena's count as 0");
+            a.unbind(1);
+        }
+        let mut won = 0u32;
+        for h in racers {
+            if h.join().unwrap() {
+                won += 1;
+            }
+        }
+        assert!(
+            won <= 1,
+            "two heaps bound to one idle arena (count 0 to 1 twice)"
+        );
+        if !rival {
+            assert_eq!(
+                won, 1,
+                "no heap bound the idle arena (its count compare-and-swap failed)"
+            );
+        }
+        assert_eq!(a.load_bound(0), 1, "arena 0's count is not its tickets");
+        assert_eq!(a.load_bound(1), won, "arena 1's count is not its tickets");
+    });
+}
+
+/// The shipped `try_bind_idle`, against a rival `bind` and `unbind`: at
+/// most one heap wins the arena, and every count stays the number of
+/// tickets out.
+#[test]
+fn loom_count_try_bind_idle_rival() {
+    run_idle(false, true);
+}
+
+/// The shipped `try_bind_idle`, two racers alone: exactly one wins.
+/// loom's compare-and-swap never fails spuriously (its weak form is its
+/// strong one), so this checks the wrapper's use of it, not that the
+/// strong form has no spurious failure.
+#[test]
+fn loom_count_try_bind_idle_one_wins() {
+    run_idle(false, false);
+}
+
+/// The check has teeth: a compare-and-swap split into a load and a store
+/// lets both racers read 0 and win, which the winner check reports.
+#[test]
+#[should_panic(expected = "two heaps bound")]
+fn loom_count_split_cas_binds_twice() {
+    run_idle(true, false);
+}
+
+/// As [`loom_count_split_cas_binds_twice`], against a rival: both racers
+/// can still read 0 and win (a racer's store of 1 can also overwrite the
+/// rival's ticket; the first failing execution loom reaches is a double
+/// win).
+#[test]
+#[should_panic(expected = "two heaps bound")]
+fn loom_count_split_cas_binds_twice_rival() {
+    run_idle(true, true);
 }

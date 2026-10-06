@@ -99,7 +99,8 @@ src/heap/paths.rs	let Some((class, slab)) = shared.set_slot(p) else { return Non
 src/heap/paths.rs	shared.home_owns(class, slab, h) && h.push_fast(class, p, 0, Tracked(&mut tk))
 src/heap/paths.rs	(flags & FREE_ROUTE == 0 || shared.home_owns(class, slab, h))
 # arena.rs: iter (narenas.rs); unbind (count.rs); build, create
-# (narenas.rs); assign, load_bound, count_in (count.rs); count (narenas.rs).
+# (narenas.rs); assign, load_bound, count_in (count.rs); count (narenas.rs);
+# try_bind_idle, bind_if_idle (count.rs).
 src/arena.rs	let n = self.count() as usize;
 src/arena.rs	let p = self.table[i].load(Ordering::Acquire);
 src/arena.rs	if p.is_null() {
@@ -123,6 +124,10 @@ src/arena.rs	let t = self.count_in(best);
 src/arena.rs	n = crate::vspec::count::load(&self.bound[i], Ordering::Relaxed, Tracked(&perm));
 src/arena.rs	crate::vspec::count::fetch_add(&self.bound[i], 1, Ordering::Relaxed, Tracked(&mut perm));
 src/arena.rs	r = crate::vspec::count::load(&self.count, Ordering::Acquire, Tracked(&perm));
+src/arena.rs	if self.load_bound(i) != 0 {
+src/arena.rs	return (false, Tracked(no_ticket(index)));
+src/arena.rs	self.bind_if_idle(i)
+src/arena.rs	r = crate::vspec::count::compare_exchange(&self.bound[i], 0, 1, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm));
 # policy.rs: position, apply (position.rs).
 src/policy.rs	f = crate::vspec::count::load(&self.scaled16, Ordering::Relaxed, Tracked(&perm));
 src/policy.rs	prev_frac = crate::vspec::count::swap(&self.scaled16, scaled, Ordering::Relaxed, Tracked(&mut perm));

@@ -704,7 +704,7 @@ the full name, the line and the contract.
 | S300 | `store` | body | atomic | GenMC | discharged |
 | S301 | `load` | body | atomic | GenMC | discharged |
 | S302 | `swap` | body | atomic | GenMC | discharged |
-| S303 | `compare_exchange` | body | atomic | GenMC | trusted |
+| S303 | `compare_exchange` | body | atomic | GenMC | discharged |
 
 ### src/vspec/errno.rs
 
@@ -5358,7 +5358,7 @@ pub fn swap(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&m
 ### S303. `compare_exchange`
 
 src/vspec/count.rs:198. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/vspec-count-compare_exchange.md).
 
 > `c.compare_exchange(current, new, success, failure)`: `Ok` with the previous value, `current`, when the counter held it and now holds `new`; otherwise `Err` with the value it holds, unchanged (the strong form never fails spuriously).
 
