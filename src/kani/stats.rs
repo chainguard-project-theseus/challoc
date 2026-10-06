@@ -36,7 +36,7 @@ fn fig_add64_exact() {
     assert_eq!(fig_add64(a, b) as u128, a as u128 + b as u128);
 }
 
-/// S341 `stats_allocated`: `small + large <= usize::MAX ==> r == small +
+/// S337 `stats_allocated`: `small + large <= usize::MAX ==> r == small +
 /// large`, for every pair (the fields it reads are arbitrary; the others
 /// are zero, and `ArenaStats::allocated` reads only those two).
 #[kani::proof]

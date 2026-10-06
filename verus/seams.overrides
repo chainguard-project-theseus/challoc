@@ -155,7 +155,6 @@ axiom_fresh_anon_zero	platform/kernel fact	none (assumption)
 axiom_discarded_zero	platform/kernel fact	none (assumption)
 Unbacked::commit	platform/kernel fact	none (assumption)
 WordPerm	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-WordPerm.md)
-CountPerm	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-CountPerm.md)
 core::sync::atomic::compiler_fence	core library	Kani	discharged (verus/seams/vspec-misc-compiler_fence.md)
 core::sync::atomic::fence	core library	Kani
 core::fmt::Formatter::<'a>::write_str	core library	Kani	discharged (verus/seams/vspec-fmt-Formatter-write_str.md)
@@ -305,10 +304,8 @@ state_publish	atomics primitive	loom/GenMC
 # new_usize mints its permission as count.rs's new does. Third loom pass
 # (verus/WEAKMEM.md, "Third pass"): the watermark wrappers, count.rs's
 # store and swap, and its load, now excluding the orderings it panics for.
-UsizePerm	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-atom-UsizePerm.md)
 load_usize_in	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-atom-load_usize_in.md)
 store_usize	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-atom-store_usize.md)
-new_usize	atomics primitive	none (assumption)
 src/vspec/count.rs:store	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-store.md)
 src/vspec/count.rs:swap	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-swap.md)
 AR_TABLE	core library	Kani
@@ -322,7 +319,6 @@ AR_SPARE	core library	Kani
 AR_SPARE_INV	core library	Kani
 axiom_arenas_layout	core library	Kani
 axiom_arenas_assemble	raw pointer (internal)	none (assumption)
-src/vspec/count.rs:new	atomics primitive	none (assumption)
 core::sync::atomic::Atomic::<*mut T>::load	core library	Kani	discharged (verus/seams/vspec-arena-Atomic-ptr-load.md)
 core::sync::atomic::Atomic::<*mut T>::store	core library	Kani	discharged (verus/seams/vspec-arena-Atomic-ptr-store.md)
 core::sync::atomic::Atomic::<*mut T>::new	core library	Kani	discharged (verus/seams/vspec-arena-Atomic-ptr-new.md)

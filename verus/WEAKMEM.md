@@ -543,8 +543,10 @@ loom's `AtomicU32::new` is not; `new` is now left out of the
 | `RawLock::lock_slow` (S171) | evidence (unchanged) | deadlock freedom only; the mutex is not starvation-free, so termination is an assumption no bounded model can discharge |
 
 Left in `vspec/count.rs`, `vspec/atom.rs` and `lock.rs`: `new` (S296)
-and `new_usize` (S262) are minting seams with tool none (one permission
-per atomic is an assumption); `Lock::cell_ref`, `Lock::cell_mut` (S176, S177; tool
+and `new_usize` (S262) were minting seams with tool none (one permission
+per atomic was an assumption; both are verified since, with ghost
+identities and the permission types' fields private to their modules,
+and the `CountPerm` and `UsizePerm` type seams are retired); `Lock::cell_ref`, `Lock::cell_mut` (S176, S177; tool
 Verus, kept `external_body` for the machine code of their callers) and
 the lock axioms (S172-S175) are not weak-memory questions.
 `LockGuard::drop` (S178) is discharged but stays `external_body`:

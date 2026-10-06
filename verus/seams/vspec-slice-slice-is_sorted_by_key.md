@@ -1,6 +1,6 @@
 # `<[T]>::is_sorted_by_key::<'a, F, K>`
 
-Seam S357 of `verus/SEAMS.md`: src/vspec/slice.rs:102. Kind: assume_spec. Category: core library.
+Seam S353 of `verus/SEAMS.md`: src/vspec/slice.rs:102. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

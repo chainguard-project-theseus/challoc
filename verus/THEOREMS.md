@@ -5351,8 +5351,8 @@ order and the counts.
   ignored, as for the bitmap words).
 - `Arenas::init` (verified after this theorem's merge) ensures `wf` of the
   registry it writes: each bound count is written with a permission of
-  value 0 from `vspec::count::new` (`external_body`, the only place a
-  `CountPerm` is minted, one per counter; `Policy::new` mints the
+  value 0 from `vspec::count::new` (verified, its identity a ghost one;
+  the only place a `CountPerm` is minted, one per counter; `Policy::new` mints the
   position's there too), and its invariant holds that
   permission and a fresh ticket set emptied of the `{0}` that shows its
   location is its own (`fresh_sets`, `fresh_invs`). Its field writes go

@@ -15,24 +15,38 @@
 //! Trusted, all of it:
 //! - each wrapped `core` operation is one atomic operation on the counter
 //!   (a load, a store, a swap or a wrapping read-modify-write), as `core`
-//!   documents, and [`new`] is `AtomicU32::new`, which makes a new atomic;
+//!   documents;
 //! - the proof model is sequentially consistent: the specifications ignore
 //!   `ordering`, so nothing here proves that `Relaxed` is strong enough
 //!   (`verus/TODO.md`, Tier 4);
 //! - [`count_id`] is the counter's identity, and a permission is for the
-//!   counter with its [`CountPerm::id`]. The permissions are minted one per
-//!   counter, with the counter, by [`new`]: `Arenas::init` keeps those of
-//!   the bound counts and the arena count inside its invariants, and
-//!   `Policy::new` that of the position inside its invariant.
+//!   counter with its [`CountPerm::id`]. The identity is a ghost one, as
+//!   vstd's `PAtomicU32::id`: a function of the atomic's value, so fixed
+//!   when `AtomicU32::new` makes the atomic and kept when the atomic is
+//!   moved into place (`Arenas::init`'s `ptr::write`, `Policy::new`'s
+//!   struct literal), not its address;
+//! - atomics made by different calls have different identities: assumed,
+//!   as no code makes two atomics Verus can prove equal (it knows nothing
+//!   of `AtomicU32::new`'s result); a `const` item holding [`new`]'s or
+//!   `Policy::new`'s result would, each use of it copying one atomic and
+//!   its permission (`verus/loom/run.sh` checks by name that none does);
+//! - one permission per counter: [`CountPerm`]'s fields are private to
+//!   this module and [`new`] is the only code that builds one, once, with
+//!   the atomic it makes (`verus/loom/run.sh` checks it by name; `new`
+//!   itself is verified);
+//! - a permission's value is its counter's: every access to a bound count
+//!   goes through these wrappers (`Arenas::assign`, `bind`, `unbind`,
+//!   `bound`), each inside the counter's invariant (`arena::BoundPred`),
+//!   and so does every access to the arena count (`Arenas::count`,
+//!   `Arenas::create`) inside its invariant (`arena::NarenasPred`), and to
+//!   the position (`Policy::position`, `Policy::apply`) inside its
+//!   (`policy::FracPred`); `Arenas::init` writes each counter of the
+//!   registry before the registry is published (`verus/loom/run.sh`
+//!   checks the accesses by name).
 //!
-//! A permission's value is its counter's: every access to a bound count
-//! goes through these wrappers (`Arenas::assign`, `bind`, `unbind`,
-//! `bound`), each inside the counter's invariant (`arena::BoundPred`),
-//! and so does every access to the arena count (`Arenas::count`,
-//! `Arenas::create`) inside its invariant (`arena::NarenasPred`), and to
-//! the position (`Policy::position`, `Policy::apply`) inside its
-//! (`policy::FracPred`); `Arenas::init` writes each counter of the
-//! registry before the registry is published.
+//! `Arenas::init` keeps the permissions of the bound counts and the arena
+//! count inside its invariants, and `Policy::new` that of the position
+//! inside its invariant.
 
 use crate::sync::atomic::{AtomicU32, Ordering};
 use vstd::prelude::*;
@@ -48,18 +62,23 @@ pub open spec fn wrap32(x: int) -> u32 {
 }
 
 /// Ghost permission to the counter with identity [`id`](CountPerm::id):
-/// its current [`value`](CountPerm::value). It is not `Copy`.
-#[verifier::external_body]
+/// its current [`value`](CountPerm::value). It is not `Copy`, and its
+/// fields are private to this module, which builds one only in [`new`].
 pub tracked struct CountPerm {
-    _no_copy: (),
+    ghost id: int,
+    ghost value: u32,
 }
 
 impl CountPerm {
     /// The counter this permission is for.
-    pub uninterp spec fn id(&self) -> int;
+    pub closed spec fn id(&self) -> int {
+        self.id
+    }
 
     /// The counter's value.
-    pub uninterp spec fn value(&self) -> u32;
+    pub closed spec fn value(&self) -> u32 {
+        self.value
+    }
 }
 
 /// `c.fetch_add(v, ordering)`, wrapping.
@@ -141,13 +160,13 @@ pub fn load(c: &AtomicU32, ordering: Ordering, Tracked(perm): Tracked<&CountPerm
 /// not `const` (the loom models make their counters directly).
 #[cfg(not(loom))]
 #[inline(always)]
-#[verifier::external_body]
 pub const fn new(v: u32) -> (r: (AtomicU32, Tracked<CountPerm>))
     ensures
         r.1@.id() == count_id(&r.0),
         r.1@.value() == v,
 {
-    (AtomicU32::new(v), Tracked::assume_new())
+    let c = AtomicU32::new(v);
+    (c, Tracked(CountPerm { id: count_id(&c), value: v }))
 }
 
 /// `c.swap(v, ordering)`: the previous value.

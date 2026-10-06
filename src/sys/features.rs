@@ -902,7 +902,7 @@ mod kani_features {
     use crate::sys::thp_host::{Thp, ThpSetting};
     use core::fmt;
 
-    /// `Value`'s `fmt` as its own harness (`display_feature_value`, S231)
+    /// `Value`'s `fmt` as its own harness (`display_feature_value`, S215)
     /// shows it: it returns, `Ok` or `Err`, without a panic, for every
     /// value. What it writes does not matter to the caller.
     #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
@@ -914,7 +914,7 @@ mod kani_features {
     /// `Features::fmt` (verified in Verus): every
     /// `Features` value, under the plain and a padded formatter, whatever
     /// the writer returns. Each `Value` is formatted by the stub above,
-    /// whose behaviour (any result, no panic) is what S231's harness
+    /// whose behaviour (any result, no panic) is what S215's harness
     /// proves of the real `fmt` for every value; the rest (the word
     /// arrays, `write_words`, the keys) runs as built.
     #[kani::proof]

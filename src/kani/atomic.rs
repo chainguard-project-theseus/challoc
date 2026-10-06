@@ -80,7 +80,7 @@ fn atomic_ptr_bad_orders() {
     super::must_not_return();
 }
 
-/// S327 `core::sync::atomic::Atomic::<u32>::as_ptr`: no `ensures`; it returns the address of
+/// S323 `core::sync::atomic::Atomic::<u32>::as_ptr`: no `ensures`; it returns the address of
 /// the atomic's value (a write through it is what the next load reads).
 #[kani::proof]
 fn atomic_u32_as_ptr() {
@@ -93,7 +93,7 @@ fn atomic_u32_as_ptr() {
     assert_eq!(a.load(Ordering::Relaxed), v);
 }
 
-/// S264 `load_bool`: under `!(order is Release) && !(order is AcqRel)`,
+/// S262 `load_bool`: under `!(order is Release) && !(order is AcqRel)`,
 /// returns (the stored value, sequentially).
 #[kani::proof]
 fn load_bool() {
@@ -104,7 +104,7 @@ fn load_bool() {
     assert_eq!(crate::vspec::atomic::load_bool(&a, o), v);
 }
 
-/// S324 `core::sync::atomic::compiler_fence`: under `!(order is Relaxed)`, returns (on every
+/// S320 `core::sync::atomic::compiler_fence`: under `!(order is Relaxed)`, returns (on every
 /// such ordering, so it does not unwind); on `Relaxed` it panics, as its
 /// comment says (`compiler_fence_relaxed`).
 #[kani::proof]
@@ -125,7 +125,7 @@ fn compiler_fence_relaxed() {
     super::must_not_return();
 }
 
-/// S325 `core::sync::atomic::fence`: under `!(order is Relaxed)`, returns (on
+/// S321 `core::sync::atomic::fence`: under `!(order is Relaxed)`, returns (on
 /// every such ordering, so it does not unwind); on `Relaxed` it panics,
 /// as its comment says (`fence_relaxed`).
 #[kani::proof]
@@ -155,7 +155,7 @@ impl Drop for Counted<'_> {
     }
 }
 
-/// S272 `core::mem::drop`: no contract; it returns, having run its
+/// S270 `core::mem::drop`: no contract; it returns, having run its
 /// argument's destructor once (for a type with a destructor) and done
 /// nothing else (for a `Copy` type).
 #[kani::proof]
@@ -168,7 +168,7 @@ fn mem_drop() {
     core::mem::drop(());
 }
 
-/// S316 `core::cell::UnsafeCell::<T>::new`: no `ensures`; it returns, a cell holding
+/// S312 `core::cell::UnsafeCell::<T>::new`: no `ensures`; it returns, a cell holding
 /// the value, for a word, a zero-sized type and a type with a destructor
 /// (which `new` does not run).
 #[kani::proof]

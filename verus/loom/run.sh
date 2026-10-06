@@ -75,9 +75,10 @@ for f in $(awk -F'\t' '!/^#/ && NF == 2 { print $1 }' verus/loom/pins.txt | sort
     ' verus/loom/pins.txt "$f")
 	[ -z "$missing" ] || { echo "loom: $f no longer has, in the order of verus/loom/pins.txt: $missing" >&2; exit 1; }
 done
-# What the WordPerm, CountPerm, UsizePerm, state_claim and DescPerm accessor
-# records rely on, checked by name (a write through a pointer cast these
-# patterns do not name is caught only by review):
+# What the WordPerm record, the count and watermark wrappers' records and the
+# state_claim and DescPerm accessor records rely on, checked by name (a
+# write through a pointer cast these patterns do not name is caught only
+# by review):
 # - every atomic write in non-test bitmap.rs is a vspec/word.rs wrapper
 #   call (the scan stops at the `#[cfg(test)] mod tests` line, which must
 #   be the file's last item);
@@ -96,6 +97,14 @@ done
 #   vspec/atom.rs's `store_usize`, and only class/table.rs (and the loom
 #   models) calls the vspec/atom.rs wrappers (`new_usize`,
 #   `load_usize_in`, `store_usize`);
+# - vspec/count.rs builds a `CountPerm` only in `new`, and vspec/atom.rs
+#   a `UsizePerm` only in `new_usize`, with one literal (the fields are
+#   private to those modules, so no other module can): one permission per
+#   atomic, minted with it. Each file names its type only in the struct
+#   and impl lines and that one literal (no `Self { .. }`, alias, rename,
+#   derive, trait impl or child module); and no `const` item initialiser
+#   in src names `count::new`, `new_usize` or `Policy::new` (each use of
+#   such an item would copy one atomic and its permission);
 # - `STATE` has two writes, `state_claim`'s compare-exchange and
 #   `state_publish`'s `READY` store;
 # - non-test slab.rs names a descriptor's `state`, `shadow`, `arena` and
@@ -162,12 +171,35 @@ bad=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t =
     }' src/slab.rs
     find src -name '*.rs' ! -path 'src/loom_tests/*' -exec awk '/committed_slabs\.(fetch_[a-z]+|store|swap|compare_exchange|compare_exchange_weak)\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' {} +
     find src -name '*.rs' ! -path 'src/loom_tests/*' ! -path src/vspec/atom.rs ! -path src/class/table.rs \
-        -exec awk '/(new_usize|load_usize_in|store_usize)\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' {} +)
+        -exec awk '/(new_usize|load_usize_in|store_usize)\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' {} +
+    for p in 'src/vspec/count.rs CountPerm new' 'src/vspec/atom.rs UsizePerm new_usize'; do
+        set -- $p
+        awk -v ty="$2" -v fn="$3" 'function bad() { print FILENAME ":" FNR ": " $0 }
+        /^[ \t]*\/\// { next }
+        { x = $0; sub(/[ \t]*\/\/.*$/, "", x) }
+        match(x, /fn [a-z_0-9]+/) { f = substr(x, RSTART + 3, RLENGTH - 3) }
+        x ~ /(^|[^A-Za-z0-9_])Self([^A-Za-z0-9_:]|$)/ || x ~ /derive|^[ \t]*(pub[^ ]* )?mod / || x ~ ("for " ty "([^A-Za-z0-9_]|$)") { bad(); next }
+        x == ("pub tracked struct " ty " {") || x == ("impl " ty " {") { next }
+        {
+            s = x
+            while (match(s, "(^|[^A-Za-z0-9_])" ty)) {
+                s = substr(s, RSTART + RLENGTH)
+                if (s ~ /^[A-Za-z0-9_]/) continue
+                if (s ~ /^[ \t]*(\{|$)/ && f == fn) n++
+                else if (s !~ /^[>),|]/ && s !~ /^\]/) { bad(); break }
+            }
+        }
+        END { if (n != 1) print FILENAME ": " (n + 0) " " ty " literals in " fn ", not 1" }' "$1"
+    done
+    find src -name '*.rs' -exec awk '/^[ \t]*(pub(\([a-z]+\))? )?const [A-Z_0-9]+[ \t]*:/ { c = 1 }
+        c && /(count::new|new_usize|Policy::new)\(/ { print FILENAME ":" FNR ": " $0 }
+        c && /;[ \t]*(\/\/.*)?$/ { c = 0 }' {} +
+    )
 nstate=$(find src -name '*.rs' ! -path 'src/loom_tests/*' -exec grep -hE '(^|[^A-Za-z0-9_])STATE\.(store|swap|compare_exchange|fetch_)' {} + | wc -l | tr -d ' ')
 [ "$nstate" = 2 ] || bad="$bad
 src/api/mod.rs: $nstate writes of STATE, not 2 (record api-state_claim.md)"
 if [ -n "$bad" ]; then
-	echo "loom: an atomic access outside what the records allow (vspec-word-WordPerm.md, vspec-count-CountPerm.md, vspec-atom-UsizePerm.md, api-state_claim.md, slab-SlabDesc-*.md):" >&2
+	echo "loom: an atomic access outside what the records allow (vspec-word-WordPerm.md, the vspec/count.rs and vspec/atom.rs wrappers' records, api-state_claim.md, slab-SlabDesc-*.md):" >&2
 	echo "$bad" >&2
 	exit 1
 fi

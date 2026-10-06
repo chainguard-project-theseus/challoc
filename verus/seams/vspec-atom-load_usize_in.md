@@ -1,6 +1,6 @@
 # `load_usize_in` (`vspec/atom.rs`)
 
-Seam S262 of `verus/SEAMS.md`: src/vspec/atom.rs:82. Kind: external_body. Category: atomics primitive.
+Seam S260 of `verus/SEAMS.md`: src/vspec/atom.rs:95. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 coherence rules (part 3).
 
 ## Contract
@@ -70,7 +70,8 @@ Models: `loom_watermark_take_group_publishes`, `loom_watermark_relaxed_store_is_
 - **`requires inv@.constant().0 == usize_id(a)` and the `forall`**:
   every permission the invariant can hold is for `a`, so the permission
   inside `inv` is `a`'s; part 1 is about that atomic alone. That it is
-  the only permission for `a` is the minting seam's (`new_usize`, S265).
+  the only permission for `a` is `new_usize`'s, which is verified and
+  the only code that builds a `UsizePerm` (`run.sh` checks it by name).
 - **`requires !(ordering is Release)`, `!(ordering is AcqRel)`**: the
   two orderings for which `core`'s `load` panics; with them excluded the
   body is one atomic load and returns (`no_unwind`). The call sites
@@ -80,7 +81,7 @@ Models: `loom_watermark_take_group_publishes`, `loom_watermark_relaxed_store_is_
   `p` held in `inv` satisfies `P::inv` at every step, and the load
   returns its value. Read `p.value()` as the value of the last write to
   `a` in the per-location order of part 1 (every write goes through
-  `store_usize`, inside `inv`; `vspec-atom-UsizePerm.md`). Part 1 places
+  `store_usize`, inside `inv`; `run.sh`'s access check). Part 1 places
   this load in that order right after the write it reads, so `r` is
   `p.value()` there and `p` is a witness of the `exists`, for every
   ordering `load` accepts. `P::inv` is a function of the invariant's
