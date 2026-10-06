@@ -6,7 +6,7 @@ Discharged by Kani.
 ## Contract
 
 As changed by the library-and-control seam audit on base 8635213
-(`verus/audit/library-control.md`; Kani rerun pending), from the
+(`verus/audit/library-control.md`; Kani re-run below), from the
 contract checked at commit 7d4e997 (the record was written at
 ae82d5b):
 
@@ -95,8 +95,14 @@ reviewed the reconciliation.
 Ported onto upstream #87, 2026-10-06: the contract is unchanged; the
 `shared_array_layout` harness now checks `[ClassLine; NCLASSES]` in
 place of `[GuardTest; NCLASSES]` (the build's `const` assertion of the
-same, on both targets and quanta, passes). The Kani re-run of that
-harness is pending: Kani was not available where the port ran.
+same, on both targets and quanta, passes).
+
+Re-run at the port's last code commit (upstream #116 onto the CCall
+tip), 2026-10-06, with Kani 0.68.0 under both quanta:
+`arena::kani_layout::array_layout_instances` and
+`heap::shared::kani_layout::shared_array_layout` pass (0 of 247 and 0
+of 58 checks failed in each), which also settles the audit's pending
+re-run (above).
 
 ## Tests
 

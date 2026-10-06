@@ -359,7 +359,7 @@ fn formatter_write_fmt() {
 }
 
 /// S332 `core::hint::assert_unchecked` (since the port of upstream #101):
-/// under its `requires` (`cond`) the call returns. Not run yet.
+/// under its `requires` (`cond`) the call returns; passes (Kani 0.68.0).
 #[kani::proof]
 fn hint_assert_unchecked() {
     let cond: bool = kani::any();

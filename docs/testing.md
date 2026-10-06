@@ -113,10 +113,10 @@ assume nobody else touches what it reads. Two tools in `src/testutil.rs`:
   reservation slots, the purge advice mirror). The child has one thread
   and its writes die with it.
 
-The `x86_64` placement of `malloc` and `free` at 0 mod 64 (the
-`global_asm!` in `src/api/libc.rs`) is checked on the shipped library by
-`api::libc::tests::malloc_and_free_entries_are_cache_line_aligned_on_x86_64`
-(`nm -D`); elsewhere it prints the offsets.
+The placement of `malloc` and `free` (the `global_asm!`s in
+`src/api/libc.rs`: 0/0 mod 64 on `x86_64`, 16/28 on `aarch64`) is
+checked on the shipped library by
+`api::libc::tests::malloc_and_free_entries_are_pinned` (`nm -D`).
 
 ## The C test programs
 

@@ -1090,7 +1090,7 @@ axiom fn axiom_c_block(p: *mut c_void) -> (tracked c: CCall)
 
 ### S14. `axiom_c_block`
 
-src/api/libc.rs:2786. Kind: axiom. Category: C-program contract.
+src/api/libc.rs:2827. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of a free or a realloc, `vspec::cbuf`): the token of this call from C, which hands over the block at `p` ([`CCall`], [`CEntry::Frees`]), for `heap::live::axiom_c_claim` to use up.
@@ -1104,7 +1104,7 @@ axiom fn axiom_c_block(p: *mut c_void) -> (tracked c: CCall)
 
 ### S15. `axiom_c_out`
 
-src/api/libc.rs:2882. Kind: axiom. Category: C-program contract.
+src/api/libc.rs:2923. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of an out-pointer argument, `vspec::cbuf`): the token of this call for the C caller's out-pointer `p`, the permission to write the `T` it names: none for a null `p`, and `p` is not null when the contract does not allow null (`nullable` false: `posix_memalign`'s `memptr`).

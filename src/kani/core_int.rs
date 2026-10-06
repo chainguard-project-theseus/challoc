@@ -172,7 +172,7 @@ fn u32_rotate_right() {
 }
 
 /// S295 `u64::rotate_right` (since the port of upstream #101): `r ==
-/// rotr64(x, n)`, for every `n` (also `n >= 64`). Not run yet.
+/// rotr64(x, n)`, for every `n` (also `n >= 64`); passes (Kani 0.68.0).
 #[kani::proof]
 fn u64_rotate_right() {
     let x: u64 = kani::any();

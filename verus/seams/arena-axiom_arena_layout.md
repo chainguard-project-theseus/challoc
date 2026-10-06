@@ -6,13 +6,13 @@ Discharged by Kani.
 ## Contract
 
 As changed by the library-and-control seam audit on base 8635213
-(`verus/audit/library-control.md`; Kani rerun pending), from the
+(`verus/audit/library-control.md`; Kani re-run below), from the
 contract checked at commit 7d4e997 (the record was written at
 ae82d5b), and on base 77c59fd by the frozen set-table permission: the
 `sets_perm` field is `Tracked<&'static PointsTo<SetTable>>`, zero-sized
 with alignment 1 as `Tracked<PointsTo<SetTable>>` was (both are
 `PhantomData`), so the harness, which checks the field at its type, is
-unchanged in substance (Kani rerun pending):
+unchanged in substance (Kani re-run below):
 
 ```rust
 axiom fn axiom_arena_layout()
@@ -99,6 +99,12 @@ Reconciled onto commit 7d4e997, 2026-10-03: the contract above
 compared with the ledger's entry there, and the harness re-run under
 both quanta with the same Kani (it passes). A fresh-context subagent
 reviewed the reconciliation.
+
+Re-run at the port's last code commit (upstream #116 onto the CCall
+tip), 2026-10-06, with Kani 0.68.0 under both quanta:
+`arena::kani_layout::arena_layout` passes (0 of 161 checks failed in
+each), which settles the audit's and the set-table permission's
+pending re-runs (above).
 
 ## Tests
 

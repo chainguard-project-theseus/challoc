@@ -68,9 +68,13 @@ Written at the port of upstream #101, 2026-10-06, from the
 contract above is the ledger's entry, and the harness asserts it
 (`S_REGION_HI`, and the fit of `push_flags` before it and of
 `region_hi` before `regions`); the build's `const` assertion of the
-same conditions passes on both targets and quanta. The Kani run is
-pending: Kani was not available where the port ran. No fresh-context
+same conditions passes on both targets and quanta. No fresh-context
 review of the harness against this record yet.
+
+Re-run at the port's last code commit (upstream #116 onto the CCall
+tip), 2026-10-06, with Kani 0.68.0 under both quanta:
+`heap::shared::kani_layout::shared_layout` passes (0 of 366 checks
+failed in each).
 
 ## Tests
 

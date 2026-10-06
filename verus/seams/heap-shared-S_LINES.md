@@ -80,9 +80,12 @@ Ported onto upstream #87, 2026-10-06: the contract above is the
 ledger's entry, and the harness asserts it (`S_LINES`, and the class
 lines' field fit ahead of `free_flags`, in place of the guard tests');
 the build's `const` assertion of the same conditions passes on both
-targets and quanta. The Kani re-run is pending: Kani was not available
-where the port ran (`sh verus/kani/run.sh --harness
-heap::shared::kani_layout::shared_layout`).
+targets and quanta.
+
+Re-run at the port's last code commit (upstream #116 onto the CCall
+tip), 2026-10-06, with Kani 0.68.0 under both quanta:
+`heap::shared::kani_layout::shared_layout` passes (0 of 366 checks
+failed in each).
 
 ## Tests
 

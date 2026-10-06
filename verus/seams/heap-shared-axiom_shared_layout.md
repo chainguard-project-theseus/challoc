@@ -11,7 +11,7 @@ of upstream #87 (a first conjunct for the new
 class lines, `[ClassLine; NCLASSES]` at `S_LINES`, ahead of
 `free_flags`; the guard tests' conjunct after `regions` gone, `regions`
 now ending at `S_TABLES`; `ClassLine` in place of `GuardTest` in the
-array bound; Kani re-run pending, below), before that by the port of
+array bound; Kani re-run below), before that by the port of
 upstream #78 (its first conjunct: the field
 `multi_arena: AtomicBool` became `free_flags: AtomicU8`, offset
 `S_FREE_FLAGS`; Kani re-run there, below), and before that by the
@@ -126,13 +126,17 @@ Ported onto upstream #87, 2026-10-06: the contract above is the
 ledger's entry there, and the harness asserts it (the class lines'
 offset and fit first, the guard tests' gone); the build's `const`
 assertion of the same conditions passes on both targets and quanta.
-The Kani re-run is pending: Kani was not available where the port ran.
+The Kani re-run is below.
 
 Ported onto upstream #101, 2026-10-06: the contract above is the
 ledger's entry there (the new field `region_hi: usize` between
 `push_flags` and `regions`, at `S_REGION_HI`), and the harness asserts
 it; the build's `const` assertion of the same conditions passes on both
-targets and quanta. The Kani re-run is pending, as for #87.
+targets and quanta.
+
+Re-run at the port's last code commit (upstream #116 onto the CCall
+tip), 2026-10-06, with Kani 0.68.0 under both quanta: it passes (0 of
+366 checks failed in each), which settles the re-runs of #87 and #101.
 
 ## Tests
 
