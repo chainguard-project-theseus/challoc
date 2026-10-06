@@ -29,6 +29,8 @@ src/rseq.rs	thread_pointer	asm!("mrs {tp}, tpidr_el0", tp = out(reg) tp, options
 src/sys/mod.rs	trap	asm!("brk #0x1", options(noreturn, nostack));
 src/sys/tls.rs	get	asm!( "adrp {off}, :gottprel:challoc_tls", "ldr {off}, [{off}, :gottprel_lo12:challoc_tls]", "mrs {tp}, tpidr_el0", "ldr {out}, [{tp}, {off}]", off = out(reg) _, tp = out(reg) _, out = out(reg) out, options(nostack, readonly, preserves_flags), );
 src/sys/tls.rs	set	asm!( "adrp {off}, :gottprel:challoc_tls", "ldr {off}, [{off}, :gottprel_lo12:challoc_tls]", "mrs {tp}, tpidr_el0", "str {val}, [{tp}, {off}]", off = out(reg) _, tp = out(reg) _, val = in(reg) value, options(nostack, preserves_flags), );
+src/api/mod.rs	shared_base	asm!("/* {0} */", inout(reg) p, options(pure, nomem, nostack, preserves_flags));
+src/class/table.rs	word_index	asm!("/* {0} */", inout(reg) index, options(pure, nomem, nostack, preserves_flags));
 src/api/cxx.rs	throw_bad_alloc_addr	asm!( ".weak _ZSt17__throw_bad_allocv", "mov {out}, qword ptr [rip + _ZSt17__throw_bad_allocv@GOTPCREL]", out = out(reg) out, options(nostack, readonly, preserves_flags), );
 src/api/cxx.rs	get_new_handler_addr	asm!( ".weak _ZSt15get_new_handlerv", "mov {out}, qword ptr [rip + _ZSt15get_new_handlerv@GOTPCREL]", out = out(reg) out, options(nostack, readonly, preserves_flags), );
 src/config.rs	malloc_conf_addr	asm!( "mov {out}, qword ptr [rip + malloc_conf@GOTPCREL]", out = out(reg) out, options(nostack, readonly, preserves_flags), );

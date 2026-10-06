@@ -1,6 +1,6 @@
 # `core::sync::atomic::compiler_fence`
 
-Seam S321 of `verus/SEAMS.md`: src/vspec/misc.rs:65. Kind: assume_spec. Category: core library.
+Seam S322 of `verus/SEAMS.md`: src/vspec/misc.rs:65. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

@@ -307,7 +307,7 @@ pub proof fn theorem_guard_free(p: *mut u8, c: int, slab: int)
 ///   (`huge::Inner::lemma_in_meta`, `TwoLevelBitmap::lemma_words_placed`).
 ///
 /// Trusted premises: `Shared::wf` of the published value
-/// (`api::shared_unchecked`; `api::shared_ref` proves it from `STATE`'s
+/// (`api::shared_deref`; `api::shared_ref` proves it from `STATE`'s
 /// invariant); the kernel's `mmap` contract for the three
 /// reservations (`layout::regions::linux::try_reserve`,
 /// `Reserved::is_disjoint` and `Reserved::is_apart_from_static`);
@@ -6422,7 +6422,7 @@ mod kani_aborts {
     use super::{assert_flushed, assert_refill_empty};
     use crate::kani_proofs::must_not_return;
 
-    /// S114 `assert_flushed`, `ensures *len == 0`: on any other `len` the
+    /// S116 `assert_flushed`, `ensures *len == 0`: on any other `len` the
     /// call never returns.
     #[kani::proof]
     #[kani::should_panic]
@@ -6434,7 +6434,7 @@ mod kani_aborts {
         }
     }
 
-    /// S115 `assert_refill_empty`, `ensures *len == 0`: as
+    /// S117 `assert_refill_empty`, `ensures *len == 0`: as
     /// `assert_flushed`.
     #[kani::proof]
     #[kani::should_panic]

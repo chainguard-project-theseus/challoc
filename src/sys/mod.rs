@@ -267,42 +267,6 @@ pub const fn yn(b: bool) -> &'static str {
     if b { "yes" } else { "no" }
 }
 
-/// `r` itself, through an empty `asm!` the compiler cannot see into, so it
-/// treats the address as a run-time value held in one register. For a
-/// reference to a static on aarch64: every field is then a load at an
-/// offset from that register, where the known address otherwise makes
-/// LLVM rematerialise an `adrp`/`add` pair per field group (the `free`
-/// fast path built four of them from one static). No memory is read or
-/// written; off aarch64 (RIP-relative addressing, no pairs) it is `r`.
-///
-/// Trusted: the empty template leaves the register, and so the reference,
-/// unchanged.
-#[inline(always)]
-#[verifier::external_body]
-pub fn opaque<T>(r: &T) -> (o: &T)
-    ensures
-        *o == *r,
-    opens_invariants none
-{
-    #[cfg(target_arch = "aarch64")]
-    {
-        let mut p = r as *const T;
-        // SAFETY: an empty instruction sequence; `p` is unchanged.
-        unsafe {
-            core::arch::asm!(
-                "/* {p} */",
-                p = inout(reg) p,
-                options(pure, nomem, nostack, preserves_flags)
-            );
-            &*p
-        }
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        r
-    }
-}
-
 /// An ASCII decimal digit.
 pub open spec fn is_digit(b: u8) -> bool {
     48 <= b <= 57

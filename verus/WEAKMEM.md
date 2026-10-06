@@ -124,7 +124,8 @@ each syscall is a compiler barrier.
   table's page geometry (`layout::adopt_page_geometry`), and the
   init-time `Relaxed` configuration stores (thp, purge, background,
   `SEALED`).
-- The fast paths skip the `READY` load (`shared_unchecked`,
+- The fast paths skip the `READY` load (`shared_unchecked`; since
+  upstream #77 `shared_base` and `shared_deref`;
   `shared_ptr`, `api/mod.rs:250`, `:261`): the thread's own TLS heap
   pointer is the witness, since heaps are created under `shared()`.
   This crosses no thread; the TLS slot is per thread
@@ -132,7 +133,8 @@ each syscall is a compiler barrier.
 - This is the premise `STATE`'s invariant (`api::axiom_state`) states
   for the proofs: a thread that loads `READY` gets the permissions
   `init` froze (`api::Published`), so the published value is the one
-  `Shared::init` built (`api::shared_ref`); `shared_unchecked` assumes
+  `Shared::init` built (`api::shared_ref`); `shared_unchecked` (since
+  #77 `shared_deref`) assumes
   it on the fast paths.
 - What to check: every `READY` reader sees the built value, including
   the page geometry, which is a plain write.

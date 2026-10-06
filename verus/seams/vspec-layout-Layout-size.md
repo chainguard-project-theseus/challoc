@@ -1,6 +1,6 @@
 # `Layout::size`
 
-Seam S308 of `verus/SEAMS.md`: src/vspec/layout.rs:31. Kind: assume_spec. Category: core library.
+Seam S309 of `verus/SEAMS.md`: src/vspec/layout.rs:31. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

@@ -56,7 +56,8 @@ add.
   and `heap::shared::axiom_shared_built`'s join, whose `shared_at`
   carries the "nothing unverified writes it" assumption. `shared` and
   `shared_if_ready` load `READY` and get the permission;
-  `shared_unchecked` (the fast paths' accessor, `external_body`) and
+  `shared_unchecked` (the fast paths' accessor, `external_body`; since
+  upstream #77 `shared_deref`, at the address `shared_base` gives) and
   `published_line` assume it, since their callers hold none.
 - Two more trusted sources of `Shared::wf`: `heap::paths::shared_of`
   (`heap/paths.rs:783`, a heap's `&Shared`) and
@@ -1059,7 +1060,8 @@ share no page with the guard pages of any live run, its own included.
 - `vspec::word::load` (`external_body`, one atomic load of the word, as
   the three writers are one atomic step each); its result is the
   permission's value under sequential consistency.
-- Class lock axioms for `ready`, and `api::shared_unchecked`'s `Shared::wf`
+- Class lock axioms for `ready`, and `api::shared_unchecked`'s (since
+  upstream #77 `api::shared_deref`'s) `Shared::wf`
   for the guard tests and the table geometry the free paths read.
 
 **Where the statement is weaker than the code.**
@@ -1118,14 +1120,19 @@ call them:
   (`Shared::set_slot`), `Shared::free_flags`, `heap_from_slot` and
   `free_fast_push` (the owner test `Shared::home_owns` under
   `FREE_ROUTE`, and `Heap::push_fast`) inside it.
+  Since upstream #77 `api::shared_base` and `shared_deref` take the
+  place of `shared_unchecked` and `sys::opaque`, and the bit test's
+  word index goes through `class::table::word_index`.
 - `free_sized`, and `sdallocx` with no flags: `class_index`, `shared_ptr`,
   `existing_heap`, `shared_unchecked` and `heap::free_sized_fast`
-  (`heap/paths.rs:594`).
+  (`heap/paths.rs:594`); since upstream #77 `shared_base` in place of
+  `shared_ptr`, and `shared_deref` in place of `shared_unchecked`.
 - `challoc_free_usable`: `existing_heap`, `shared_ptr`,
   `shared_unchecked`, `heap::free_fast_class` (`heap/paths.rs:564`) and
   `class_size` (`api/libc.rs:890`); since upstream #78
   `tls_heap_slot`, `shared_unchecked`, `free_fast_slot` and
-  `class_size`.
+  `class_size` (since #77 `shared_base` and `shared_deref` in place of
+  `shared_unchecked`).
 
 `theorem_no_syscall_on_fast_paths`, a verification-only function
 (`cfg(verus_only)`; the build has none), makes these calls where
@@ -1211,7 +1218,10 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   `vspec::word::load` (an atomic load), `layout::regions::class_entry`
   (an empty `asm!`), `addr_to_ptr`, `api::shared_ptr` and
   `shared_unchecked`; since upstream #78 also `Shared::free_flags` (a
-  `Relaxed` load) and `sys::opaque` (an empty `asm!` on aarch64).
+  `Relaxed` load) and `sys::opaque` (an empty `asm!` on aarch64), and
+  since #77 `api::shared_base` and `class::table::word_index` (each an
+  empty `asm!` on aarch64) and `api::shared_deref` (a reference to the
+  static) in place of `sys::opaque` and `shared_unchecked`.
   So do the `core` functions they use (`Option::map`, `?`, atomics,
   pointer arithmetic), which the common premises already trust.
 - Two values reach the kernel from code with no `requires`, and only a
@@ -1316,6 +1326,16 @@ fn free_fast_push(table: &SlabTable, slab: usize, class: usize, h: &mut Heap, p:
     opens_invariants none
 ```
 
+and since upstream #77 the free paths reach `Shared` through these two,
+in place of `shared_unchecked`:
+
+```rust
+pub fn shared_base() -> (r: *const Shared)                          // api/mod.rs
+    opens_invariants none
+pub unsafe fn shared_deref(p: *const Shared) -> (r: &'static Shared)
+    opens_invariants none
+```
+
 (Signatures shortened.) `any` is no subset of either mask, so no call
 chain from a masked function reaches a lock acquisition: **no function
 the `malloc` and `free` fast branches call can acquire a lock**. The
@@ -1350,19 +1370,23 @@ only the functions named here:
   #78: `tls_heap_slot` (on a ghost `TlsSlot::entry()`),
   `shared_unchecked`, `sys::opaque`, `free_fast_slot`; then `free_slow`,
   which returns at once for null (no null test of the fast branch's
-  own: null is in no class region).
+  own: null is in no class region). Since #77 `shared_base` and
+  `shared_deref` in place of `shared_unchecked` and `sys::opaque`.
 - `free_sized` and `sdallocx` with `flags == 0`: `class_index`, then
   `free_sized_block`'s `existing_heap`, `shared_unchecked`, `push_flags`,
-  `free_sized_fast`; then `free_sized_slow`.
+  `free_sized_fast`; then `free_sized_slow` (since #77 `shared_base`,
+  its `existing_heap` and `shared_deref`).
 - `challoc_free_usable` (`free_usable_block`): its `free_fast_class` call on the same heap
   lookup (since upstream #78, `free_fast_slot` on `free`'s TLS read,
-  without `sys::opaque`). The class size it then returns comes from the
+  without `sys::opaque`; since #77 through `shared_base` and
+  `shared_deref`). The class size it then returns comes from the
   unmasked `class_size`, outside the theorem.
 
 **The closure.** These are the functions with a declared mask on these
 paths, verified unless marked trusted:
 - **Size and process state:** `class_index`, `layout::class_of`;
-  `api::shared_ptr` (trusted), `shared_unchecked` (trusted).
+  `api::shared_ptr` (trusted), `shared_unchecked` (trusted; since
+  upstream #77 `shared_base` and `shared_deref`, both trusted).
 - **Heap lookup:** `existing_heap` (on a ghost `TlsSlot::entry()`),
   `existing_heap_in`, `tls_heap_slot`, `sys::tls::get` and
   the aarch64 `get_tp` (trusted asm), the x86_64 `get_tp`, `fast_flags`,
@@ -1379,13 +1403,15 @@ paths, verified unless marked trusted:
   `Heap::arena_volatile` (RefinedRust,
   `verus/seams/heap-Heap-arena_volatile.md`); `SlabTable::watermark`,
   `is_handed_out`, `is_set_unchecked`, `owner_unchecked`,
-  `owner_at`, `load_owner` (trusted).
+  `owner_at`, `load_owner` (trusted), and since #77 `word_index`
+  (trusted, an empty `asm!` on aarch64).
 - **Layout:** `Regions::slab_slot_unbounded` (since #78, for the
   unsized path; `slab_slot` before), `slot_in_class`, `region_len`, the
   free function `layout::regions::class_entry` (trusted);
   `Class::slab_size`, `slab_mask`, `slot_of_offset`.
 - **Primitives:** `sys::pac::sign` and `auth` (trusted asm),
-  `sys::opaque` (trusted, an empty `asm!` on aarch64, since #78),
+  `sys::opaque` (trusted, an empty `asm!` on aarch64, from #78 until
+  #77 replaced it with `shared_base`),
   `vspec::addr::addr_to_ptr` (trusted), and the `vspec` items under
   "Premises".
 
@@ -1417,6 +1443,11 @@ gone.
     increment), `addr_to_ptr`.
   - Since upstream #78: `Shared::free_flags` (one `Relaxed` load) and
     `sys::opaque` (an empty `asm!`, or the identity off aarch64).
+  - Since upstream #77, in place of `sys::opaque` and
+    `shared_unchecked`: `shared_base` and `word_index` (each an empty
+    `asm!` on aarch64, or the identity off it; Isla records
+    `verus/seams/api-shared_base.md`, `class-table-word_index.md`) and
+    `shared_deref` (a reference to the static).
 - **New wrappers.** `vspec::atomic::load_bool` (removed with upstream
   #78, above): the `core`
   atomic load, declared `opens_invariants none`; `load_owner`
@@ -5049,7 +5080,8 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   bodies at this commit): the futex wait and wake (`sys/mod.rs`; their
   results are discarded, so `EAGAIN` or `EINTR` loops) under
   `RawLock::lock`/`unlock`, `LockGuard::drop` and `deref`, the static
-  projections and `shared_unchecked`, `published_line`, the `STATE`
+  projections and `shared_unchecked` (since upstream #77 `shared_base`
+  and `shared_deref`), `published_line`, the `STATE`
   wrappers (`state_load`, `state_claim`, `state_publish`: one bare
   atomic operation each), `ClassTable::table`, `class_entry`,
   the watermark's load `vspec::atom::load_usize_in`, the registry reader `arena_at`

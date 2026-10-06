@@ -3109,7 +3109,7 @@ mod kani_config {
         }
     }
 
-    /// S92 `Config::set_listed`: under `requires old(self).wf()`,
+    /// S94 `Config::set_listed`: under `requires old(self).wf()`,
     /// `r is None <==> !listed(key)`, an unchanged config on `None`, and
     /// `wf` kept, for every well-formed config, every entry's name and
     /// every key up to `KEY_MAX` bytes, and every value up to `VALUE_MAX`
@@ -3159,7 +3159,7 @@ mod kani_config {
         CStr::from_bytes_with_nul(b).unwrap()
     }
 
-    /// S93 `Config::get`: `r is Some <==> listed(key)`, for every config
+    /// S95 `Config::get`: `r is Some <==> listed(key)`, for every config
     /// and every key `any_key` gives. The two `name` methods the `thp` and
     /// `percpu_arena` readers call are stubbed (above).
     #[kani::proof]
@@ -3172,7 +3172,7 @@ mod kani_config {
         let c = any_config();
         assert_eq!(c.get(key).is_some(), listed(key));
     }
-    /// S97 `KEYS`: every name in it is `listed`.
+    /// S99 `KEYS`: every name in it is `listed`.
     #[kani::proof]
     #[kani::unwind(25)]
     fn keys_are_listed() {
@@ -3200,7 +3200,7 @@ mod kani_config {
         }
     }
 
-    /// S98 `DisplaySpecImpl for Issue<'_>` (`fmt_req` true): every variant,
+    /// S100 `DisplaySpecImpl for Issue<'_>` (`fmt_req` true): every variant,
     /// over arbitrary byte strings up to 3 bytes and every `to`.
     #[kani::proof]
     #[kani::unwind(22)]
@@ -3212,7 +3212,7 @@ mod kani_config {
         formats(&any_issue(&a[..i], &b[..j]));
     }
 
-    /// S99 `DisplaySpecImpl for Bytes<'_>` (`fmt_req` true): every byte string
+    /// S101 `DisplaySpecImpl for Bytes<'_>` (`fmt_req` true): every byte string
     /// up to 4 bytes, and one of 65 arbitrary bytes (past the 64 it shows,
     /// so the `...` branch runs).
     #[kani::proof]

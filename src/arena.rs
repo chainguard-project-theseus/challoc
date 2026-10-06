@@ -3051,7 +3051,7 @@ pub(crate) mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S46..S53, S54: each `A_*` is its field's `offset_of!`, and the
+    /// S47..S54, S55: each `A_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_arena_layout` says.
     #[kani::proof]
     fn arena_layout() {
@@ -3096,7 +3096,7 @@ pub(crate) mod kani_layout {
         assert_eq!(align_of::<[T; N]>(), align_of::<T>());
     }
 
-    /// S45 `Arena::axiom_array_layout` at every instantiation the proofs
+    /// S46 `Arena::axiom_array_layout` at every instantiation the proofs
     /// use (`[ClassState; NCLASSES]` here, the two arrays of `Shared` in
     /// `heap/shared.rs`), and at primitive, zero-sized and padded element
     /// types and lengths 0, 1 and 7.
@@ -3126,7 +3126,7 @@ mod kani_key_less {
         ((k.0 as u64) << 1) | k.1 as u64
     }
 
-    /// S56 `key_less`, `ensures r == key_lt(a, b)`: for every pair of
+    /// S57 `key_less`, `ensures r == key_lt(a, b)`: for every pair of
     /// keys. The counts are symbolic and the two `bool`s run over their
     /// four values as literals: Kani 0.68 (CBMC 6.11) leaves `<` on two
     /// symbolic `bool`s unconstrained (both results are reachable for

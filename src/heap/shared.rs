@@ -1602,7 +1602,7 @@ impl Shared {
     /// configuration is well formed: `Config::wf`, which `config::load`
     /// ensures); `api::shared_ref` proves it of the published value, which
     /// is that one, from the permission `api::STATE`'s invariant holds
-    /// from `READY` on (`api::Published`); `api::shared_unchecked`, the
+    /// from `READY` on (`api::Published`); `api::shared_deref`, the
     /// fast paths' accessor, which that permission does not reach,
     /// assumes it.
     pub closed spec fn wf(&self) -> bool {
@@ -2846,7 +2846,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S129..S144, S145: each `S_*` is its field's `offset_of!`, and the
+    /// S131..S146, S147: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {
@@ -2892,7 +2892,7 @@ mod kani_layout {
         assert!(size_of::<Shared>() <= isize::MAX as usize);
     }
 
-    /// S45 `Arena::axiom_array_layout` at the two arrays of `Shared`.
+    /// S46 `Arena::axiom_array_layout` at the two arrays of `Shared`.
     #[kani::proof]
     fn shared_array_layout() {
         array_layout::<GuardTest, NCLASSES>();

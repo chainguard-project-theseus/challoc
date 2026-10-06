@@ -1,6 +1,6 @@
 # `debug_scheduled`
 
-Seam S124 of `verus/SEAMS.md`: src/heap/paths.rs:1124. Kind: external_body. Category: panic/abort.
+Seam S126 of `verus/SEAMS.md`: src/heap/paths.rs:1124. Kind: external_body. Category: panic/abort.
 Discharged by Kani.
 
 ## Contract

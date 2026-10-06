@@ -17,6 +17,20 @@ all twenty-eight discharged (the 27 and `axiom_auth_sign`), and the plan
 for what is left: other CPUs, the linked code, Islaris and CI. Seam
 numbers and line numbers are from 8635213.
 
+Since the port of upstream #77 two more inline-asm seams are
+discharged, both register-pinning hints with an empty template
+(`/* {0} */`, one `inout(reg)` operand) on aarch64:
+`api::shared_base` ([record](seams/api-shared_base.md), the free paths'
+address of `SHARED`) and `class::table::word_index`
+([record](seams/class-table-word_index.md), the free bit test's word
+index). An empty template assembles to no instruction, so there is
+nothing for Isla to trace: `run.sh` checks their templates (section 1,
+`templates.txt`), and the records argue the rest (the operand comes
+out of the one register it went in). `sys::opaque`, the hint upstream
+#78 added and #77 replaced with `shared_base`, is gone.
+`layout::regions::class_entry`'s x86_64 hint is the same shape and is
+still trusted without a record.
+
 ## Setup
 
 What the Isla lanes installed, in a Linux VM without a package manager,

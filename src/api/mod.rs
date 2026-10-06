@@ -459,27 +459,61 @@ pub fn shared_ptr() -> *const Shared opens_invariants none {
     (&raw const SHARED.0).cast::<Shared>()
 }
 
-/// The allocator state without the readiness check.
+/// [`shared_ptr`] for the free paths. On aarch64 the address goes through
+/// an empty `asm!`, so LLVM keeps it in one register and every field the
+/// free path reads (the push flags, the region geometry, the class
+/// tables, the arena flag) is one `ldr` at an immediate offset from it.
+/// Without that each field is its own `adrp` (and `add`) of `SHARED +
+/// offset`: LLVM folds the offset into the relocation, so the page
+/// addresses of two fields never CSE, and `free` paid five of them.
+/// x86_64 addresses statics `rip`-relative at no cost, so there the
+/// address stays a constant. Like [`shared_ptr`], no reference is formed.
+///
+/// Trusted: a raw-pointer projection of a static, at the address of
+/// [`Shared::storage`], as [`shared_ptr`] and `shared_storage_ptr`; the
+/// aarch64 template is empty (`verus/isla/templates.txt` pins it), so the
+/// register the operand is in for input and output comes out unchanged.
+#[verifier::external_body]
+#[inline(always)]
+pub fn shared_base() -> (r: *const Shared)
+    ensures
+        r@.addr == Shared::storage()@.addr,
+    opens_invariants none
+{
+    #[allow(unused_mut)]
+    let mut p = shared_ptr();
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: an empty template; the pointer is unchanged.
+    unsafe {
+        core::arch::asm!("/* {0} */", inout(reg) p, options(pure, nomem, nostack, preserves_flags));
+    }
+    p
+}
+
+/// The allocator state at `p`, a [`shared_base`] result, without the
+/// readiness check: `&*p`, as the free paths write it.
 ///
 /// # Safety
 /// The calling thread must itself have observed `READY` earlier (through
 /// [`shared`] or [`shared_if_ready`]). The fast paths use the thread's heap
 /// pointer as that witness: a heap is only created under `shared()`.
 ///
-/// Trusted: that the caller observed `READY`, so that the value is the
-/// published one, well formed (what [`shared_ref`] proves from the
-/// permissions frozen at `READY`). The witness the fast paths have, the
-/// heap pointer in their TLS slot, carries no ghost state, so the
-/// permissions do not reach here.
+/// Trusted: that the caller observed `READY`, so that the value at the
+/// storage's address is the published one, well formed (what
+/// [`shared_ref`] proves from the permissions frozen at `READY`). The
+/// witness the fast paths have, the heap pointer in their TLS slot,
+/// carries no ghost state, so the permissions do not reach here.
 #[verifier::external_body]
 #[inline(always)]
-pub unsafe fn shared_unchecked() -> (r: &'static Shared)
+pub unsafe fn shared_deref(p: *const Shared) -> (r: &'static Shared)
+    requires
+        p@.addr == Shared::storage()@.addr,
     ensures
         r.wf(),
     opens_invariants none
 {
     // SAFETY: guaranteed by the caller.
-    unsafe { &*shared_storage_ptr() }
+    unsafe { &*p }
 }
 
 /// The published feature line, without the readiness check.

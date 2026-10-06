@@ -284,7 +284,7 @@ pub fn tls_heap_slot(Tracked(tls): Tracked<&TlsSlot>) -> (r: Option<(usize, usiz
 /// process's `Shared` (every caller passes `api::shared_ptr` or the
 /// published reference), whose `PUSH_PAC` bit is [`super::pac_mode`]. It
 /// is the well-formed `Shared` `init` built (`Shared::wf`, the claim
-/// `api::shared_ref` proves and `api::shared_unchecked` assumes), so the
+/// `api::shared_ref` proves and `api::shared_deref` assumes), so the
 /// bit is set only when `sys::pac::pac_available`.
 #[inline(always)]
 #[verifier::external_body]

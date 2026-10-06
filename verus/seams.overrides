@@ -18,7 +18,8 @@ set_errno	FFI/syscall	none (assumption)
 lend	C-program contract	none (assumption)
 root	function pointer	Kani	discharged (verus/seams/api-mallctl-root.md)
 shared_ptr	UnsafeCell/volatile/transmute	RefinedRust
-shared_unchecked	allocator invariant	none (assumption)
+shared_deref	allocator invariant	none (assumption)
+shared_base	inline asm	Islaris/Isla	evidence (verus/seams/api-shared_base.md)
 axiom_fork_resumed_state	C-program contract	none (assumption)
 axiom_fork_resumed	C-program contract	none (assumption)
 axiom_fork_resumed_sig	C-program contract	none (assumption)
@@ -120,6 +121,7 @@ Reserved::is_apart_from_static	platform/kernel fact	none (assumption)
 Reserved::into_unbacked	platform/kernel fact	none (assumption)
 src/layout/regions.rs:word	core library	Kani	discharged (verus/seams/layout-regions-word.md)
 class_entry	UnsafeCell/volatile/transmute	Islaris/Isla
+word_index	inline asm	Islaris/Isla	evidence (verus/seams/class-table-word_index.md)
 axiom_acquired	allocator invariant	none (assumption)
 axiom_held	allocator invariant	none (assumption)
 src/lock.rs:Lock::cell_ref	UnsafeCell/volatile/transmute	Verus
