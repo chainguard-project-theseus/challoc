@@ -527,6 +527,22 @@ pub open spec fn hint_ok(p: *mut u8, hint: Option<usize>) -> bool {
     forall|c: int| #[trigger] process_regions().is_slot(c, p@.addr) ==> hint == Some(c as usize)
 }
 
+/// The huge half of a sized free's check ([`hint_ok`] is the slot half):
+/// for `p` a page start of the huge region and no slot start, with `blk`
+/// the caller's token for it (the run's, [`Live::claims`]), `size`
+/// rounded up to whole pages ([`huge_usable`]) is the run's usable size,
+/// the run's `nallocx` for a size no class serves. Also the small size of
+/// a run an alignment made huge, and any size `realloc` kept the run for.
+/// `Shared::check_size_hint` aborts on a size that fails it.
+///
+/// [`huge_usable`]: crate::vspec::zero::huge_usable
+pub open spec fn huge_hint_ok(blk: Live, p: *mut u8, size: usize) -> bool {
+    blk.claims(p) && !slot_start(p) && process_regions().is_huge_block(p@.addr, 1) ==> {
+        &&& size + live::page_size() - 1 <= usize::MAX
+        &&& crate::vspec::zero::huge_usable(size as int) == blk.len()
+    }
+}
+
 /// A slot start of class `c` has no other class, so the hint `Some(c)`
 /// names its class.
 pub proof fn lemma_hint_ok(p: *mut u8, c: int)

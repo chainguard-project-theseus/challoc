@@ -544,7 +544,8 @@ remain for explicit `MALLOCX_ARENA` allocations and `thread.arena`.
 2. `heap = tls()`; `cache = heap.caches[c]`; if `len == cap`, slow path.
    `slots[len++] = p`. Neither the bitmap word nor the owner word is
    loaded.
-3. Slow path: a slab pointer whose class is not `c_hint` aborts
+3. Slow path: a slab pointer whose class is not `c_hint`, or the start
+   of an active huge run whose page count `n` does not round to, aborts
    (jemalloc's contract, `nallocx(n, flags) == sallocx(p)`); otherwise
    the exact `free` above.
 
@@ -1056,8 +1057,8 @@ a C++ `catch (...)` whose runtime references (`__cxa_begin_catch`,
 forms call the handler directly, so its exception reaches the caller
 unchanged. The sized `delete` forms are `free_sized` and
 `free_aligned_sized`: the size and alignment name a class through the
-same `class_for(size, align)` the matching `new` used, and a mismatch
-aborts (jemalloc's sized `delete` is `sdallocx` with the same contract).
+same `class_for(size, align)` the matching `new` used (or, for a huge
+run, its page count), and a mismatch aborts (jemalloc's sized `delete` is `sdallocx` with the same contract).
 The unsized aligned forms take the plain `free` path.
 
 ### 13.2 jemalloc
@@ -1079,7 +1080,10 @@ explicit cache `t`), bits 20-31 `arena` (0 default, `a+1` arena `a`).
 `sdallocx(p, size, flags)` requires `nallocx(size, flags) == sallocx(p)`,
 as jemalloc documents: the class that `size` and `MALLOCX_LG_ALIGN` name
 is checked against the pointer's class and a mismatch aborts (`challoc:
-sized free of ...: size hint N does not match the allocation`); the slot
+sized free of ...: size hint N does not match the allocation`); a huge
+run takes any size whose page count is the run's (any size with the run's
+`nallocx`, and the small size of a run an alignment made huge), and
+another size aborts the same way; the slot
 bit is not read, so an invalid or double free through `sdallocx` is
 detected at the cache flush (6.3); a slot start in a guard slab is
 rejected at the call. `dallocx` is `free` with flags. C23 `free_sized` and

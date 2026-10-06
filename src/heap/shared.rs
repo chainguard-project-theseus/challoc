@@ -14,7 +14,7 @@ use crate::arena::{
 };
 use crate::class::SlabTable;
 use crate::config::Config;
-use crate::huge::Huge;
+use crate::huge::{Huge, RunState};
 #[cfg(verus_only)]
 use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
@@ -2515,25 +2515,67 @@ impl Shared {
 
     /// The sized free's abort: a slab pointer whose class is not the one
     /// the size hint names (`sdallocx`'s contract is `nallocx(size, flags)
-    /// == sallocx(p)`). Huge runs and pointers that are not allocations pass
-    /// here and are judged by the exact free that follows.
+    /// == sallocx(p)`), or the start of an active huge run whose page count
+    /// is not the one `size` rounds to (any size whose page count is the
+    /// run's passes, which also lets `free_aligned_sized` name the small
+    /// size of a run an alignment made huge). Pointers that are not
+    /// allocations pass here and are judged by the exact free that follows.
+    /// `blk` is the caller's token for `p` ([`super::Live::claims`]): for a
+    /// run, it names the run whose page count `size` must round to
+    /// ([`crate::heap::huge_hint_ok`]).
     #[cold]
     #[inline(never)]
-    pub fn check_size_hint(&self, p: *mut u8, size: usize, hint: Option<usize>)
+    pub fn check_size_hint(&self, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<&super::Live>)
         requires
             crate::sys::may_abort(),
+            crate::sys::may_syscall(),
             self.wf(),
         ensures
             crate::heap::hint_ok(p, hint),
+            crate::heap::huge_hint_ok(*blk, p, size),
     {
         proof {
             self.lemma_wf();
             self.lemma_regions_ok();
         }
-        if let Kind::Slab { class, .. } = self.regions.classify(p as usize) {
-            if hint != Some(class as usize) {
-                hint_mismatch(p, size, class);
-            }
+        match self.regions.classify(p as usize) {
+            Kind::Slab { class, .. } => {
+                if hint != Some(class as usize) {
+                    hint_mismatch(p, size, class);
+                }
+                proof {
+                    // A slot address is no huge page start.
+                    crate::vspec::zero::lemma_slot_not_huge(class as int, p@.addr);
+                }
+            },
+            Kind::Huge { page } => {
+                let ghost claimed = blk.claims(p) && !crate::heap::slot_start(p);
+                proof {
+                    if claimed {
+                        blk.lemma_run_block(p, page);
+                    }
+                }
+                // Premise (lock order): called from the sized frees' slow
+                // paths, which hold no allocator lock.
+                let tracked mut ord = axiom_entry();
+                let Some(run) = self.huge.lookup(page, Tracked(blk.run_ref()), Tracked(&mut ord)) else {
+                    return;
+                };
+                if run.start == page && run.state == RunState::Active && self.huge.usable_for(size) != Some(run.usable) {
+                    huge_hint_mismatch(p, size, run.usable);
+                }
+                proof {
+                    // The run's usable bytes are the token's, and `size`
+                    // rounds up to them.
+                    self.lemma_huge_usable(size);
+                }
+            },
+            _ => {
+                proof {
+                    // Every huge page start is classified `Huge`.
+                    assert(!crate::layout::process_regions().is_huge_block(p@.addr, 1));
+                }
+            },
         }
     }
 
@@ -2839,6 +2881,22 @@ fn hint_mismatch(p: *mut u8, size: usize, class: u32) -> !
         size,
         class,
         CLASSES.table()[class as usize].size()
+    ));
+}
+
+/// [`Shared::check_size_hint`]'s abort for a huge run: `size` does not
+/// round up to the run's `usable` bytes.
+#[cold]
+#[inline(never)]
+fn huge_hint_mismatch(p: *mut u8, size: usize, usable: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
+    crate::sys::abort_fmt(format_args!(
+        "sized free of {:#x}: size hint {} does not match the allocation (huge run, {} bytes)",
+        p as usize,
+        size,
+        usable
     ));
 }
 

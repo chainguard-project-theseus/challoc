@@ -2279,7 +2279,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> (u: Util
             proof {
                 rd.kind = Kind::Huge { page };
             }
-            if let Some(r) = shared.huge.lookup(page, Tracked(&mut ord)) {
+            if let Some(r) = shared.huge.lookup(page, Tracked(&None), Tracked(&mut ord)) {
                 proof {
                     rd.run = Some(r);
                 }
@@ -2321,7 +2321,7 @@ pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16>
             }
         },
         Kind::Huge { page } => {
-            let r = shared.huge.lookup(page, Tracked(&mut ord))?;
+            let r = shared.huge.lookup(page, Tracked(&None), Tracked(&mut ord))?;
             if r.start == page && r.state == RunState::Active {
                 Some(r.arena)
             } else {

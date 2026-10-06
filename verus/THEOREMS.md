@@ -2559,7 +2559,7 @@ selected argument checks below. Pointer shape needs no C contract for
 the call itself; like every theorem it holds in a run that has made no
 earlier non-live free, which the live-pointer contract (`axiom_c_claim`)
 excludes. For the pointer shape (no block start, misaligned, interior),
-the size hints of a live slot or a non-block pointer, cache ids of
+the size hints of a live slot, a live huge run or a non-block pointer, cache ids of
 `MAX_TCACHES` or more and the alignments, a bad argument either makes
 the call not return or gets the documented error result. "Does not return" is what is proved; the code
 aborts, but that the call reaches `SIGABRT` rather than hanging is not
@@ -2567,8 +2567,8 @@ proved (partial correctness). A stale or double free of a slot or huge
 page start, and a size hint on such a pointer, are not proved to be
 rejected: the C-boundary assumption excludes them (*(C)* below), and
 the run-time checks that catch some of them are code, not theorem (the
-rows marked *(C)*). Not checked by the code either: a huge run's size on
-a sized free, and a free of a block that was freed and reallocated,
+rows marked *(C)*). Not checked by the code either: a free of a block
+that was freed and reallocated,
 which no allocator can tell from a live one (table below). Stated as
 `ensures` on the Rust functions the exports call (an abort satisfies
 every postcondition, so each one says what holds of a call that
@@ -2591,6 +2591,18 @@ fn free_aligned_sized(p, align, size)
 fn sdallocx(p, size, flags)
     ensures p@.addr != 0 ==> hint_ok(p, spec_class_for(size, 1usize << ((flags as u32) & 0x3f))),
             p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
+
+// heap/mod.rs (the huge half of the size hint, over the caller's token
+// `blk` for `p`); api/libc.rs `free_sized_block`, api/jemalloc.rs
+// `sdallocx_block` (the cores the exports call with C's token)
+pub open spec fn huge_hint_ok(blk: Live, p: *mut u8, size: usize) -> bool {
+    blk.claims(p) && !slot_start(p) && process_regions().is_huge_block(p@.addr, 1) ==> {
+        &&& size + live::page_size() - 1 <= usize::MAX
+        &&& crate::vspec::zero::huge_usable(size as int) == blk.len()
+    }
+}
+fn free_sized_block(p, size, hint, blk)   ensures p@.addr != 0 ==> huge_hint_ok(blk, p, size),
+fn sdallocx_block(p, size, flags, blk)    ensures p@.addr != 0 ==> huge_hint_ok(blk, p, size),
 
 // heap/mallocx.rs:95; api/jemalloc.rs:184, :275, :440
 pub open spec fn bad_tcache(t: Tcache) -> bool {
@@ -2630,7 +2642,7 @@ and for an error-result row, that a returning call returns that result:
 | The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`Huge::usable_size`: `not_a_run`) | no: the queries take no token, and nothing states it |
 | Slot freed with the size of another class, or a huge size | `free_sized`, `free_aligned_sized`, `sdallocx`, sized `delete`s | abort (`hint_mismatch`) | yes for a live slot: `hint_ok`; for a non-live one, *(C)* |
 | Non-power-of-two alignment to `free_aligned_sized` or the sized aligned `delete` | as above | abort on a slot | as above: `hint_ok(p, None)`, so no slot start returns |
-| Huge run freed with a size that names another usable size | sized frees | freed; the size is ignored (as jemalloc does) | no: not checked |
+| Huge run freed with a size that does not round up to its pages | sized frees | abort (`huge_hint_mismatch`) | yes for a live run: `huge_hint_ok` over C's token for it; for a non-live one, *(C)* |
 | Non-power-of-two or zero alignment | `aligned_alloc`, `memalign` | NULL (`EINVAL`) | yes (row 5; `EINVAL` by *(errno)*) |
 | Alignment not a power of two, or not a multiple of `sizeof(void *)` | `posix_memalign` | `EINVAL` | yes (row 6) |
 | Alignment that is not a power of two, 0 included | `new`, `new[]` (`align_val_t`) | NULL (`nothrow_t`) or `bad_alloc`, at once (no handler call, by inspection) | yes: `new_aligned` (the NULL or the throw) |
@@ -2695,6 +2707,20 @@ C token and hold unconditionally.
   has one class (`lemma_hint_ok`, from `vspec::zero::lemma_slot_unique`).
   `class_index` ensures `r == spec_class_for(n, 1)`, so the hints
   `free_sized` and `sdallocx` (flags 0) pass are `spec_class_for`'s.
+  For `Huge { page }`, `check_size_hint` looks the page up
+  (`Huge::lookup`, with the caller's run token, which makes the result
+  that run's descriptor: `Active`, starting at `page`, its usable bytes
+  the token's) and aborts (`huge_hint_mismatch`) unless
+  `Huge::usable_for(size)` is the run's usable size, so it ensures
+  `huge_hint_ok(blk, p, size)`. `classify` now also ensures that with
+  separated regions every page start of the huge region is `Huge`
+  (`in_superblock` ensures a hit lies in the strides), so a run is
+  never passed over as `Invalid`. The fast path declines a huge pointer
+  (`free_sized_fast` ensures a push is a slot start's), and a declined
+  push leaves the token's claim and length, so the cores
+  (`free_sized_block`, `sdallocx_block`, `sdallocx_flags`,
+  `sdallocx_routed`, `free_sized_slow`, `free_sized_unhinted`) ensure
+  `huge_hint_ok` of C's token.
 - Flags: `Tcaches::get` (`heap/tcaches.rs:143`) ensures `None` for an
   id of `MAX_TCACHES` or more; `mallocx::alloc`, `alloc_huge` (without
   an explicit arena) and `free` (`heap/mallocx.rs:151`, `:241`, `:280`)
@@ -2721,11 +2747,15 @@ through `slab_slot`'s completeness; *(C)* is the `free` contract.
 - `errno` is the F column (*(errno)* in the interface contract), not
   this section's.
 
-- Not checked, by the code either: a huge run freed through a sized
-  free with a size that names another usable size. `hint_ok` constrains
-  slot starts only, and `check_size_hint` passes every other pointer to
-  the exact free, which ignores the size (jemalloc's `nallocx(size) ==
-  sallocx(p)` is not checked for huge runs).
+- A huge run's size hint is checked by page count, not by `nallocx`
+  with the flags: any size that rounds up to the run's pages passes
+  (`huge_hint_ok`), which is every size with the run's `nallocx` when
+  no class serves it at the flags' alignment, and also the small size
+  of a run an alignment made huge (`free_aligned_sized(p, 1 MiB, 64)`
+  after `aligned_alloc(1 MiB, 64)`), with or without the alignment
+  flag. `huge_hint_ok` is stated with C's token for the run (it names
+  the run's pages); the exports, which mint that token, state only
+  `hint_ok`.
 
 **Where the statement is weaker than the code.**
 - The *(C)* rows: the run-time checks abort where they fire, but the
@@ -5270,8 +5300,10 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
   routes (`heap/mallocx.rs:254`, `:294`); `libc::alloc_huge`,
   `malloc_trim` (`api/libc.rs`); `Huge::usable_size` (`huge/mod.rs`,
   called from the `api::libc` and `api::jemalloc` entry points and
-  `Shared::zero_huge` on the free paths); `ctl`, `utilization`, `owner_of`,
-  `arena_stats`, and the named readers `cgroup_empty_bytes` and
+  `Shared::zero_huge` on the free paths); `Shared::check_size_hint`
+  (`heap/shared.rs`, the sized frees' slow paths, since #127); `ctl`,
+  `utilization`, `owner_of`, `arena_stats`, and the named readers
+  `cgroup_empty_bytes` and
   `stats_allocated` to `stats_retained` (`api/mallctl.rs`; `mallctl`
   calls them through its node table); `get_defrag_hint`; the report and
   `mallinfo2` call sites (`api/print.rs`, `api/glibc.rs`), and the same
@@ -7105,7 +7137,9 @@ alone):
     spec_class_for(size, 1))` and `free_aligned_sized` the same for
     `spec_class_for(size, align)`, or `None` for a non-power-of-two
     alignment, so a slot freed with another class's size, or with a bad
-    alignment, aborts ("Bad input"). The slow path checks it
+    alignment, aborts ("Bad input"); a huge run freed with a size that
+    does not round up to its pages aborts too (`free_sized_block`
+    ensures `huge_hint_ok` of C's token). The slow path checks it
     (`Shared::check_size_hint`, which ensures `hint_ok`); the fast
     path (`free_sized_fast`) pushes only a slot of the hinted class, and
     its liveness is checked when the cache flushes. F: as `free` (no
@@ -7206,7 +7240,9 @@ alone):
     is checked as in row 11, for slots: `p != 0 ==> hint_ok(p,
     spec_class_for(size, 1 << (flags & 0x3f)))` (`flags == 0` is
     `free_sized`, and `sdallocx_flags`/`sdallocx_routed` hint
-    `class_for(size, align)`); a huge run's size is not checked. An
+    `class_for(size, align)`); for a huge run, the size must round up
+    to the run's pages (`sdallocx_block` ensures `p != 0 ==>
+    huge_hint_ok(blk, p, size)` of C's token, "Bad input"). An
     explicit cache id of `MAX_TCACHES` or more aborts (`!bad_tcache`).
 22. `nallocx` (`api/jemalloc.rs:432`). F, U: `r == 0 || size <= r` and
     `r == nalloc_usable(size, flags & 0x3f)` (`api/jemalloc.rs`), the
@@ -7465,5 +7501,5 @@ alone):
    freed with another class's size aborts. The *(live)* cells stay `p`:
    a stale or double free of a slot or huge page start is excluded by
    `axiom_c_claim`, not proved to abort. Left: model arena and cache
-   existence (rows 16, 17, 20, 21) and tie a huge run's size to the
-   sized frees' hint, which the code does not check either.
+   existence (rows 16, 17, 20, 21). A huge run's size is tied to the
+   sized frees' hint since #127 (`huge_hint_ok`, "Bad input").

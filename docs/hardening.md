@@ -48,7 +48,8 @@ returns the class size.
 
 Through the sized path, `sdallocx(p, size, flags)`, C23 `free_sized` and
 `free_aligned_sized` (what Valkey frees with): the size is checked against
-the pointer's class at the call (a size that names another class aborts,
+the pointer's class, or a huge run's page count, at the call (a size that
+names another class or page count aborts,
 `nallocx(size, flags) == sallocx(p)` is the contract), a slot start inside
 a guard slab aborts at the call, the slot bit is not read, and any other
 invalid or double free is caught when the thread cache flushes the slot to
@@ -110,9 +111,9 @@ MTE half waits for a host that exposes MTE (AmpereOne, #51).
 
 Two things are stricter than jemalloc: the size passed to `sdallocx`,
 `free_sized`, `free_aligned_sized` or a sized `operator delete` must name
-the class the pointer was allocated from, and `malloc_usable_size`,
-`realloc` and `sallocx` on a foreign pointer, or on a freed one whose
-slot is back in its slab's bitmap, abort where jemalloc's behaviour is
-undefined (a freed slot still in a cache passes, section 1). A program
-that leaned on that leniency dies with `SIGABRT` and a `challoc:`
-message instead of corrupting the heap.
+the class the pointer was allocated from (for a huge run, its page
+count), and `malloc_usable_size`, `realloc` and `sallocx` on a foreign
+pointer, or on a freed one whose slot is back in its slab's bitmap,
+abort where jemalloc's behaviour is undefined (a freed slot still in a
+cache passes, section 1). A program that leaned on that leniency dies
+with `SIGABRT` and a `challoc:` message instead of corrupting the heap.

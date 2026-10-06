@@ -301,14 +301,14 @@ pub proof fn lemma_slot_unique(c1: int, c2: int, p: usize)
     }
 }
 
-/// A slot start is no page start of the huge region: its class region lies
-/// in the superblock, which `Regions::separated` keeps apart from the huge
-/// region.
+/// A slot address (a guard slab's too) is no page start of the huge
+/// region: its class region lies in the superblock, which
+/// `Regions::separated` keeps apart from the huge region.
 pub proof fn lemma_slot_not_huge(c: int, p: usize)
     requires
         crate::layout::process_regions().wf(),
         crate::layout::process_regions().separated(),
-        crate::layout::process_regions().is_slot(c, p),
+        crate::layout::process_regions().is_slot_addr(c, p),
     ensures
         !crate::layout::process_regions().is_huge_block(p, 1),
 {

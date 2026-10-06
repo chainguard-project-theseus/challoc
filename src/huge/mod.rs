@@ -4008,21 +4008,48 @@ impl Huge {
         g.desc(d).usable
     }
 
-    /// Descriptor of the extent starting or ending at `page`, if any.
-    pub fn lookup(&self, page: usize, Tracked(ord): Tracked<&mut LockOrder>) -> Option<RunInfo>
+    /// Descriptor of the extent starting or ending at `page`, if any. With
+    /// `tok` the token of a live run that starts at `page`, that run's
+    /// descriptor: `Active`, starting at `page`, its usable bytes the
+    /// token's usable pages (as [`Huge::usable_size`]).
+    pub fn lookup(&self, page: usize, Tracked(tok): Tracked<&Option<RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<RunInfo>)
         requires
             crate::sys::may_syscall(),
             old(ord).allows(rank_huge()),
         ensures
             *final(ord) == *old(ord),
+            tok is Some && tok.unwrap().wf() && tok.unwrap().start() == page ==> (r matches Some(i) && i.start == page && i.state == RunState::Active && i.usable == (tok.unwrap().npages() - GUARD_PAGES) * self.spec_page()),
     {
-        broadcast use axiom_huge_lock_inv;
+        broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
 
         proof {
             use_type_invariant(self);
         }
         let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let d = g.table.get(page);
+        let _gi: &Inner = &g;
+        proof {
+            // A token of a run starting at `page` names an `Active`
+            // descriptor that starts there, which the table maps `page` to.
+            if tok is Some && tok.unwrap().wf() && tok.unwrap().start() == page {
+                let tracked t = tok.tracked_borrow();
+                theorem_run_counted(_gi, t);
+                lemma_run_auths(g@);
+                lemma_active(g@.descs@);
+                let x = choose|x: *mut HugeDesc|
+                    #![trigger g@.descs@.contains_key(x)]
+                    #![trigger run_at(g@.descs@[x].value(), (t.start(), t.npages()))]
+                    g@.descs@.contains_key(x) && run_at(g@.descs@[x].value(), (t.start(), t.npages()));
+                assert(keyed(g@.table, g@.descs@[x].value(), x));
+                assert(d == x);
+                assert(run_ok(g@.descs@[x].value(), g@.lg@));
+                let v = g@.descs@[x].value();
+                assert(v.state == RunState::Active as u8 && v.start == page && v.pages == t.npages());
+                assert(state_of(v.state) == RunState::Active);
+                assert(g@.lg@ == self.lg_page);
+                assert(v.usable == (t.npages() - GUARD_PAGES) * self.spec_page());
+            }
+        }
         if d.is_null() {
             return None;
         }

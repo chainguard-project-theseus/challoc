@@ -1070,7 +1070,7 @@ fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(u): Tracked<&Unlocked>)
 
 ### S13. `axiom_c_block`
 
-src/api/jemalloc.rs:989. Kind: axiom. Category: C-program contract.
+src/api/jemalloc.rs:992. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The token of a C call that hands over the block at `p` to `rallocx`, `dallocx` or `sdallocx` ([`CCall`], [`CEntry::Frees`]).
@@ -1084,7 +1084,7 @@ axiom fn axiom_c_block(p: *mut c_void) -> (tracked c: CCall)
 
 ### S14. `axiom_c_block`
 
-src/api/libc.rs:2650. Kind: axiom. Category: C-program contract.
+src/api/libc.rs:2655. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of a free or a realloc, `vspec::cbuf`): the token of this call from C, which hands over the block at `p` ([`CCall`], [`CEntry::Frees`]), for `heap::live::axiom_c_claim` to use up.
@@ -1098,7 +1098,7 @@ axiom fn axiom_c_block(p: *mut c_void) -> (tracked c: CCall)
 
 ### S15. `axiom_c_out`
 
-src/api/libc.rs:2746. Kind: axiom. Category: C-program contract.
+src/api/libc.rs:2751. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of an out-pointer argument, `vspec::cbuf`): the token of this call for the C caller's out-pointer `p`, the permission to write the `T` it names: none for a null `p`, and `p` is not null when the contract does not allow null (`nullable` false: `posix_memalign`'s `memptr`).
@@ -2629,7 +2629,7 @@ axiom fn axiom_hand_out(p: *mut u8, len: int) -> (tracked m: UserMem)
 
 ### S118. `axiom_fresh_stack`
 
-src/heap/mod.rs:1707. Kind: external_body proof. Category: allocator invariant.
+src/heap/mod.rs:1723. Kind: external_body proof. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The `cap` entries of the fresh stack `slots` join `perms`, unwritten, as entries `0..cap` of header `hdr` (`CachePerms::owner`).
@@ -2675,7 +2675,7 @@ proof fn axiom_fresh_stack(
 
 ### S119. `assert_flushed`
 
-src/heap/mod.rs:1850. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:1866. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (verus/seams/heap-assert_flushed.md).
 
 > `assert_eq!(*len, 0, ..)`, the abort of [`Heap::free_caches`] and [`Heap::free_caches_in`] on a cache that still holds slots: `*len == 0` after it returns.
@@ -2690,7 +2690,7 @@ fn assert_flushed(len: &u32)
 
 ### S120. `assert_refill_empty`
 
-src/heap/mod.rs:1866. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:1882. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (verus/seams/heap-assert_refill_empty.md).
 
 > `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap inconsistency: `*len == 0` after it returns, as for `vspec::check`.
@@ -2705,7 +2705,7 @@ fn assert_refill_empty(len: &u32)
 
 ### S121. `arena_volatile`
 
-src/heap/mod.rs:4584. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/heap/mod.rs:4600. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: discharged (verus/seams/heap-Heap-arena_volatile.md).
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::home_owns`]): a plain load is hoisted above the multi-arena test (`FREE_ROUTE`) and touches the heap's header line on every single-arena `free`.
@@ -2719,7 +2719,7 @@ pub(super) fn arena_volatile(&self) -> (r: u16)
 
 ### S122. `FreshHeap`
 
-src/heap/mod.rs:5982. Kind: external_body type. Category: raw pointer (internal).
+src/heap/mod.rs:5998. Kind: external_body type. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The plain fields of the fresh heap at [`FreshHeap::heap`]: the permission to them ([`FreshHeap::head`], the 128 bytes before `caches`, [`heap_head`]), which [`init_fields`] takes and keeps here, and what the trusted writers stored in them, for `tcaches::heap_new` to read back: the home arena ([`init_fields`]) and whether the heap is counted ([`mark_bound`]).
@@ -2730,12 +2730,12 @@ pub(super) tracked struct FreshHeap
 
 ### S123. `init_fields`
 
-src/heap/mod.rs:6018. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:6034. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The fields of a fresh heap before its home headers, stored field by field ([`Heap::create_detached`]).
 
-Body mints Tracked at line 6047.
+Body mints Tracked at line 6063.
 
 ```rust
 unsafe fn init_fields(
@@ -2756,7 +2756,7 @@ unsafe fn init_fields(
 
 ### S124. `mark_bound`
 
-src/heap/mod.rs:6092. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:6108. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: discharged (verus/seams/heap-mark_bound.md).
 
 > `(*h).bound = true` for a heap [`Heap::create`] has just made.
@@ -2775,12 +2775,12 @@ unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 
 ### S125. `Heap::destroy`
 
-src/heap/mod.rs:6322. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:6338. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Flush every cache, free them and the heap itself back to the metadata allocator.
 
-Body mints Tracked at line 6335; mints Tracked at line 6341; mints Tracked at line 6343; mints Tracked at line 6351; mints Tracked at line 6363; mints Tracked at line 6368.
+Body mints Tracked at line 6351; mints Tracked at line 6357; mints Tracked at line 6359; mints Tracked at line 6367; mints Tracked at line 6379; mints Tracked at line 6384.
 
 ```rust
 pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
@@ -2839,7 +2839,7 @@ pub(super) unsafe fn node_caches(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int
 
 ### S129. `debug_scheduled`
 
-src/heap/paths.rs:1126. Kind: external_body. Category: panic/abort.
+src/heap/paths.rs:1128. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (verus/seams/heap-paths-debug_scheduled.md).
 
 > [`Heap::alloc_slow`]'s `debug_assert!` that a non-empty home cache reached it through a scheduled pop the fast pop declined (design 6.4): `allocs`, the pop's count, has no bit of `mask` set.
@@ -2850,7 +2850,7 @@ fn debug_scheduled(allocs: u64, mask: u32)
 
 ### S130. `shared_of`
 
-src/heap/paths.rs:1136. Kind: external_body. Category: raw pointer (internal).
+src/heap/paths.rs:1138. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The `Shared` a heap was created on, with a lifetime free of the heap's borrow (so the heap can be borrowed mutably while it is used).
@@ -3287,7 +3287,7 @@ axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc, tracked 
 
 ### S162. `Huge::read_run_word`
 
-src/huge/mod.rs:5593. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/huge/mod.rs:5620. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The word at `a`, read once, for [`Huge::check_zero`].
@@ -3302,12 +3302,12 @@ unsafe fn read_run_word(&self, a: usize) -> u64
 
 ### S163. `not_a_run_page`
 
-src/huge/mod.rs:7474. Kind: abort_standin. Category: panic/abort.
+src/huge/mod.rs:7501. Kind: abort_standin. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`Huge::free_run`]'s abort for a page that is not in the descriptor table, where the build calls [`not_a_run`] with the page's address.
 
-Stands in at: src/huge/mod.rs:7058 (`Huge::free_run`).
+Stands in at: src/huge/mod.rs:7085 (`Huge::free_run`).
 
 ```rust
 fn not_a_run_page(page: usize) -> !
@@ -3398,7 +3398,7 @@ pub axiom fn axiom_process_page_at_most_64k()
 
 ### S170. `Reserved`
 
-src/layout/regions.rs:1897. Kind: external_body type. Category: platform/kernel fact.
+src/layout/regions.rs:1950. Kind: external_body type. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Ghost ownership of one live reservation, `len()` bytes from `addr()`, that [`try_reserve`] obtained from the kernel.
@@ -3409,7 +3409,7 @@ pub tracked struct Reserved
 
 ### S171. `Reserved::is_apart_from_static`
 
-src/layout/regions.rs:1914. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:1967. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): a live reservation does not overlap the process's `Shared` static ([`shared_static_addr`]).
@@ -3424,7 +3424,7 @@ pub proof fn is_apart_from_static(tracked &self)
 
 ### S172. `Reserved::is_disjoint`
 
-src/layout/regions.rs:1931. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:1984. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): two live mappings do not overlap.
@@ -3441,7 +3441,7 @@ pub proof fn is_disjoint(tracked &mut self, tracked other: &Self)
 
 ### S173. `Reserved::into_unbacked`
 
-src/layout/regions.rs:1950. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:2003. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > The reservation as uncommitted address space this process owns, for the one owner that commits it piece by piece (`Meta`, for the metadata region).
@@ -3455,12 +3455,12 @@ pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
 
 ### S174. `try_reserve`
 
-src/layout/regions.rs:1970. Kind: external_body. Category: FFI/syscall.
+src/layout/regions.rs:2023. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Reserve address space with `PROT_NONE`, `MAP_NORESERVE`: on success, the address and the token for the `len` bytes there.
 
-Body mints Tracked at line 1978.
+Body mints Tracked at line 2031.
 
 ```rust
 fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
@@ -3472,7 +3472,7 @@ fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
 
 ### S175. `word`
 
-src/layout/regions.rs:2174. Kind: external_body. Category: core library.
+src/layout/regions.rs:2227. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/layout-regions-word.md).
 
 > Word `i` of the random bytes (`8 * i` on, the target's byte order).
@@ -3485,7 +3485,7 @@ fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
 
 ### S176. `class_entry`
 
-src/layout/regions.rs:2601. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/regions.rs:2654. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Islaris/Isla. Status: trusted.
 
 > `&CLASSES[c]` for the fast paths' classification, `c < NCLASSES`.

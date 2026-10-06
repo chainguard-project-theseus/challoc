@@ -945,9 +945,37 @@ impl Regions {
 
     /// Whether `p` falls in the class superblock (a class region or a gap).
     #[inline]
-    fn in_superblock(&self, p: usize) -> bool
+    fn in_superblock(&self, p: usize) -> (r: bool)
         requires self.wf(),
+        ensures
+            // With the strides below `2^48`, a hit lies in a stride.
+            r && self.separated() ==> self.superblock <= p && p < self.superblock + NCLASSES * ((1usize << self.lg_stride) as int),
     {
+        proof {
+            if self.separated() {
+                let (sb, ls) = (self.superblock, self.lg_stride);
+                let n = NCLASSES;
+                let lim = n << ls;
+                assert(n * ((1usize << ls) as int) <= 0x1_0000_0000_0000);
+                vstd::arithmetic::power2::lemma_pow2_pos(ls as nat);
+                vstd::bits::lemma_usize_pow2_no_overflow(ls as nat);
+                vstd::bits::lemma_usize_shl_is_mul(1, ls as usize);
+                assert(n * vstd::arithmetic::power2::pow2(ls as nat) <= usize::MAX);
+                vstd::bits::lemma_usize_shl_is_mul(n, ls as usize);
+                assert(lim as int == n * ((1usize << ls) as int));
+                vstd::bits::lemma_usize_shr_is_div(lim, ls as usize);
+                vstd::arithmetic::div_mod::lemma_div_multiples_vanish(n as int, vstd::arithmetic::power2::pow2(ls as nat) as int);
+                assert(lim >> ls == n);
+                let d = p.wrapping_sub(sb);
+                assert(d == (if p >= sb { (p - sb) as usize } else { (p - sb + 0x1_0000_0000_0000_0000) as usize }));
+                assert(d >> ls < n ==> d < lim) by (bit_vector)
+                    requires
+                        lim == n << ls,
+                        lim >> ls == n,
+                        ls < 64,
+                ;
+            }
+        }
         p.wrapping_sub(self.superblock) >> self.lg_stride < NCLASSES
     }
 
@@ -965,6 +993,8 @@ impl Regions {
             r matches Kind::Huge { page } ==> page <= self.huge_len >> self.lg_page,
             // Exact: a page start of the huge region, `page` its index.
             r matches Kind::Huge { page } ==> self.is_huge_block(p, 1) && page == ((p - self.huge_base) as usize) >> self.lg_page,
+            // And every page start of the huge region is `Huge`.
+            self.separated() && self.is_huge_block(p, 1) ==> r matches Kind::Huge { .. },
             // Exact with separated regions: a slot start is `Slab`, of its
             // class ([`Regions::slab_slot`]).
             self.separated() ==> forall|c: int| #[trigger] self.is_slot_addr(c, p) ==> (r matches Kind::Slab { class, .. } && class as int == c),
@@ -977,6 +1007,19 @@ impl Regions {
                 assert(rel >> lg < 0x1_0000_0000usize) by (bit_vector)
                     requires rel < (1usize << lr), lr <= 38, 12 <= lg;
                 assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+                // A slot lies in its class's stride, apart from the huge
+                // region.
+                if self.separated() && self.is_huge_block(p, 1) {
+                    let c = class as int;
+                    let stride = (1usize << self.lg_stride) as int;
+                    self.lemma_slot_in_region(c, p);
+                    assert(self.superblock + c * stride <= self.class_base[c]);
+                    assert((c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)
+                        requires
+                            c < NCLASSES,
+                            stride >= 0,
+                    ;
+                }
             }
             return Kind::Slab { class: class as u32, slab: slab as u32, slot: slot as u32 };
         }
@@ -995,6 +1038,16 @@ impl Regions {
                     requires rel & sub(1usize << lg, 1) == 0, lg < 64;
             }
             return Kind::Huge { page: rel >> self.lg_page };
+        }
+        proof {
+            // A page start of the huge region passes the test above.
+            if self.separated() && self.is_huge_block(p, 1) {
+                let lg = self.lg_page;
+                assert(rel == p - self.huge_base);
+                assert(rel % (1usize << lg) == 0);
+                assert(rel & sub(1usize << lg, 1) == 0) by (bit_vector)
+                    requires rel % (1usize << lg) == 0, lg < 64;
+            }
         }
         Kind::Invalid
     }
@@ -1337,7 +1390,7 @@ impl Regions {
     pub proof fn lemma_slot_in_region(self, c: int, p: usize)
         requires
             self.wf(),
-            self.is_slot(c, p),
+            self.is_slot_addr(c, p),
         ensures
             self.class_base[c] <= p,
             p + class_table()[c].size <= self.class_base[c] + (1usize << self.lg_region),

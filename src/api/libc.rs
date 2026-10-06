@@ -653,6 +653,7 @@ pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(bl
     ensures
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> heap::hint_ok(p, hint),
+        p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
         p@.addr != 0 ==> blk.block(p),
 {
     let tracked mut blk = blk;
@@ -687,6 +688,7 @@ fn free_sized_unhinted(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>)
     ensures
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> heap::hint_ok(p, None),
+        p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
         p@.addr != 0 ==> blk.block(p),
 {
     if !p.is_null() {
@@ -707,11 +709,12 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): T
     ensures
         heap::free_target(p),
         heap::hint_ok(p, hint),
+        heap::huge_hint_ok(blk, p, size),
         blk.block(p),
 {
     match super::shared_if_ready() {
         Some(shared) => {
-            shared.check_size_hint(p, size, hint);
+            shared.check_size_hint(p, size, hint, Tracked(&blk));
             heap::free(shared, p, Tracked(blk))
         }
         None => free_before_init(p),
@@ -719,8 +722,10 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): T
 }
 
 /// C23 `free_sized(p, size)`: `size` must be the size requested from
-/// `malloc`/`calloc`/`realloc` (or any size in the same class). A slot
-/// freed with the size of another class, or with a huge size, aborts.
+/// `malloc`/`calloc`/`realloc` (or any size in the same class, or for a
+/// huge run any size whose page count is the run's). A slot freed with
+/// the size of another class, or with a huge size, aborts; so does a huge
+/// run freed with a size of another page count.
 #[inline(always)]
 pub fn free_sized(p: *mut u8, size: usize, Tracked(c): Tracked<CCall>)
     requires
