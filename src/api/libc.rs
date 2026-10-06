@@ -738,6 +738,12 @@ pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(bl
     let Some(c) = hint else {
         return free_sized_unhinted(p, size, Tracked(blk));
     };
+    // On x86_64 there is no null test here: null is below every class
+    // region, so its offset from the hint's region base wraps to a value
+    // with bits above the region set, `ClassLine::sized_ok` declines it,
+    // and `free_sized_slow` returns on null. On aarch64 the test stays (a
+    // `cbz`; its layout is kept, see `Heap`).
+    #[cfg(not(target_arch = "x86_64"))]
     if p.is_null() {
         return;
     }
@@ -772,9 +778,11 @@ fn free_sized_unhinted(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>)
     }
 }
 
-/// Off the sized fast path: the hint mismatch abort, then everything the
-/// exact `free` does (so a full cache or a huge run still gets the exact
-/// check, and a bad pointer the usual message).
+/// Off the sized fast path: on x86_64 a null pointer (which the fast
+/// path's `sized_ok` declines rather than testing for), the hint
+/// mismatch abort, then everything the exact `free` does (so a full cache
+/// or a huge run still gets the exact check, and a bad pointer the usual
+/// message).
 #[cold]
 #[inline(never)]
 fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>)
@@ -783,11 +791,15 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): T
         blk.claims(p),
         crate::sys::may_syscall(),
     ensures
-        heap::free_target(p),
-        heap::hint_ok(p, hint),
-        heap::huge_hint_ok(blk, p, size),
-        blk.block(p),
+        p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> heap::hint_ok(p, hint),
+        p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
+        p@.addr != 0 ==> blk.block(p),
 {
+    #[cfg(target_arch = "x86_64")]
+    if p.is_null() {
+        return;
+    }
     match super::shared_if_ready() {
         Some(shared) => {
             shared.check_size_hint(p, size, hint, Tracked(&blk));

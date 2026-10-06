@@ -2881,7 +2881,9 @@ through `slab_slot`'s completeness; *(C)* is the `free` contract.
 
 **Scope.**
 - NULL: `free`, `free_sized`, `dallocx`, `sdallocx` and the `delete`s
-  return at once for NULL (not stated: there is no model of the
+  return for NULL (at once, except since upstream #78 `free` and since
+  #100 the x86_64 hinted sized frees, after their fast path declines
+  it; not stated: there is no model of the
   allocator state a no-op leaves alone); `malloc_usable_size(NULL)` is 0
   (proved); `sallocx` and `xallocx` abort for NULL (proved: they ensure
   `p@.addr != 0`, from their explicit test and "No block at address 0").
@@ -4000,7 +4002,13 @@ premises (`axiom_class_table_wf`).
   `set_slot` returns is a slot start, never at 0; since upstream #87
   through the class line, the same ensures) and `free_slow`
   returns for it, so the no-op
-  is the slow path's (`free_slow`'s `p@.addr != 0 ==>` ensures).
+  is the slow path's (`free_slow`'s `p@.addr != 0 ==>` ensures). Since
+  upstream #100 the hinted sized free on x86_64 has no null test either
+  (`free_sized_block`'s is `cfg(not(target_arch = "x86_64"))`): null
+  never passes `sized_slot` (what it returns is a slot start of the
+  hinted class, `ClassLine::lemma_sized_ok`, never at 0) and
+  `free_sized_slow` returns for it on x86_64, whose `ensures` are now
+  `p@.addr != 0 ==>` as `free_slow`'s are.
 
 ## 25. Realloc follows the class/page keep rule
 
