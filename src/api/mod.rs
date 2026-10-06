@@ -1212,6 +1212,67 @@ mod tests {
         assert!(stopped, "background thread did not stop");
     }
 
+    #[test]
+    fn background_thread_that_exits_before_its_start_publishes_is_not_present() {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let _serial = crate::testutil::global_state();
+        let s = crate::testutil::shared();
+        assert!(!purge::background::present());
+        // The request is withdrawn while `start` is between creating the
+        // thread and publishing it, and the new thread sees that and exits
+        // first: `start` must not then publish a thread that is gone.
+        let exited = Arc::new(AtomicBool::new(false));
+        let exited_seen = Arc::clone(&exited);
+        let exits = purge::background::EXITS.load(Ordering::SeqCst);
+        *purge::background::BEFORE_PUBLISH.lock().unwrap() =
+            Some(std::boxed::Box::new(move || {
+                // No panics here: unwinding out of `start` would leave the
+                // state marked as creating for every later test.
+                purge::background::request(false);
+                for _ in 0..1000 {
+                    if purge::background::EXITS.load(Ordering::SeqCst) != exits {
+                        exited_seen.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }));
+        purge::background::request(true);
+        purge::background::start(s);
+        purge::background::BEFORE_PUBLISH.lock().unwrap().take();
+        let present_after_exit = purge::background::present();
+        // Asked again, the thread must come back: a stale `present` would
+        // make `start` return at once with no thread running.
+        purge::background::request(true);
+        let restarted = purge::background::start(s);
+        let exits_before_stop = purge::background::EXITS.load(Ordering::SeqCst);
+        purge::background::request(false);
+        let mut stopped = false;
+        for _ in 0..400 {
+            if purge::background::EXITS.load(Ordering::SeqCst) != exits_before_stop
+                && !purge::background::present()
+            {
+                stopped = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        if stopped {
+            purge::background::join_exited();
+        }
+        assert!(
+            exited.load(Ordering::SeqCst),
+            "the new thread did not exit in the hook"
+        );
+        assert!(
+            !present_after_exit,
+            "start published a thread that had already exited"
+        );
+        assert!(restarted, "background thread did not restart");
+        assert!(stopped, "restarted background thread did not stop");
+    }
+
     /// One stack for the life of the process (design 8.1): a
     /// stop/start cycle joins the exited thread and hands the same
     /// reservation to the next one, so toggling `background_thread` does
