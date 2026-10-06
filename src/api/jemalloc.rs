@@ -1847,11 +1847,11 @@ mod tests {
         sdallocx(p, 64, flags);
         let p = crate::api::libc::plain::aligned_alloc(1 << 20, 64);
         assert!(!p.is_null());
-        crate::api::libc::free_aligned_sized(p, 1 << 20, 64);
+        crate::api::libc::plain::free_aligned_sized(p, 1 << 20, 64);
         // A run `realloc` kept takes the size the caller last asked for.
         let p = mallocx(1 << 20, 0);
         let q = crate::api::libc::plain::realloc(p, (1 << 20) - 100);
         assert_eq!(q, p);
-        crate::api::libc::free_sized(q, (1 << 20) - 100);
+        crate::api::libc::plain::free_sized(q, (1 << 20) - 100);
     }
 }

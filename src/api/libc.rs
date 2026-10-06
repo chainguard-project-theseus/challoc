@@ -2980,6 +2980,14 @@ pub(crate) mod plain {
     pub fn free_usable(p: *mut u8) -> usize {
         super::free_usable(p, Tracked::assume_new())
     }
+
+    pub fn free_sized(p: *mut u8, size: usize) {
+        super::free_sized(p, size, Tracked::assume_new())
+    }
+
+    pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize) {
+        super::free_aligned_sized(p, align, size, Tracked::assume_new())
+    }
 }
 
 #[cfg(test)]
