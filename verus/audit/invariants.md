@@ -97,7 +97,7 @@ code makes.
 | S177 | `axiom_acquired` (lock.rs) | sound (premise) | private, called on the guard just built; `deref_mut` havocs the guard, so a changed guard cannot meet its `requires` |
 | S182 | `Meta::commit` (meta.rs) | sound (premise) | callers trusted to pass an aligned, uncommitted range inside a reservation or eager table (see Open) |
 | S183 | `Meta::free` (meta.rs) | sound (premise) | callers trusted to pass a live block with its layout; null or an oversized layout aborts (see Open); closed after the audit: verified, its callers give back the `MetaClaim` the allocation handed out |
-| S188 | `axiom_state_lock_inv` (purge/background.rs) | sound | initial value meets it; `start` and `fork_child` assert it |
+| S188 | `axiom_state_lock_inv` (purge/background.rs) | sound | initial value meets it; `start` (both holds), `main`'s exit and `fork_child` assert it; since upstream #128 it also has `exited ==> !present` |
 | S206 | `axiom_snapshot_lock_inv` (stats.rs) | sound | `Snapshot::EMPTY` meets it; `collect_into` asserts it |
 | S222 | `axiom_user_va_limit` (sys/pac.rs) | sound | Linux's default map window is at most 2^48 on both targets |
 | S223 | `axiom_auth_sign` (sys/pac.rs) | sound | true for every address below `user_va_limit()` (at most 2^48) and every modifier, and with the keys disabled |

@@ -447,6 +447,16 @@ cut down.
   without its kick, or a `Relaxed` `SEQ` load in the thread, leaves it
   asleep. The exit does not depend on P3: `request(false)` kicks
   unconditionally.
+- The background thread's publication against its exit (upstream #128;
+  copy of `start`'s two state lock holds and kick, `main`'s exit and
+  `request(false)`; `loom_tests/publish.rs`): after a final withdrawal
+  the thread has exited and neither the state nor `PRESENT` says it is
+  present, also when it exits between `start`'s two holds (503448
+  executions). Control: a
+  publication of `thread.is_some()` alone (the code before #128) leaves
+  the exited thread published. The flags are under the state lock, so
+  this is about the interleaving, not the orderings; Verus proves the
+  lock-value side (`exited ==> !present` in `axiom_state_lock_inv`).
 
 ## Plan
 

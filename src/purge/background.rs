@@ -34,6 +34,9 @@ const MIN_SLEEP_NS: u64 = 1_000_000;
 struct State {
     present: bool,
     creating: bool,
+    /// The thread being created has already exited: it found the request
+    /// withdrawn before `start` published it, so `start` must not.
+    exited: bool,
     /// The one stack, reserved by the first `start` and reused by every
     /// later one; 0 until then.
     stack: usize,
@@ -42,28 +45,36 @@ struct State {
     thread: Option<::libc::pthread_t>,
 }
 
-/// Assumption: every holder of the state lock leaves the stack's end
-/// in range, so the lock's invariant is `stack + STACK_SIZE <= usize::MAX`
-/// (0 before the first start; after it, a reservation of `STACK_SIZE`
-/// bytes, which `Meta::reserve` places below `va_limit`). The verified
-/// holders keep it: `start` asserts it after writing `stack`, and `main`
-/// and `fork_child` (the fork child's writer through
-/// `Lock::get_unlocked`) keep it by not writing `stack`. Verus checks
-/// nothing when a guard is released, so this is the claim. The test-only
-/// readers (`join_exited`, `stack`, `thread`) never write `stack`, and no
-/// other code touches the value.
+/// Assumption: every holder of the state lock leaves the stack's end in
+/// range and no thread published that has exited, so the lock's
+/// invariant is `stack + STACK_SIZE <= usize::MAX` (0 before the first
+/// start; after it, a reservation of `STACK_SIZE` bytes, which
+/// `Meta::reserve` places below `va_limit`) and `exited ==> !present`
+/// (upstream #128: a thread that found the request withdrawn and exited
+/// before its `start` published it stays unpublished). The verified
+/// holders keep it: `start` asserts it after writing `stack` and
+/// `present` (which it sets only to `thread.is_some() && !exited`, and
+/// clears `exited` only while nothing is present), `main` asserts it
+/// after its exit's writes (`present` false, `exited` true), and
+/// `fork_child` (the fork child's writer through `Lock::get_unlocked`)
+/// after clearing both; `request`, `start_requested` and `auto_tick`
+/// write nothing under it. Verus checks nothing when a guard is
+/// released, so this is the claim. The test-only readers
+/// (`join_exited`, `stack`, `thread`) never write `stack`, `present` or
+/// `exited`, and no other code touches the value.
 broadcast axiom fn axiom_state_lock_inv(v: State)
     ensures
-        #[trigger] lock_inv(v) == (v.stack + STACK_SIZE <= usize::MAX),
+        #[trigger] lock_inv(v) == (v.stack + STACK_SIZE <= usize::MAX && (v.exited ==> !v.present)),
 ;
 
 exec static STATE: Lock<State> = {
     proof {
-        axiom_state_lock_inv(State { present: false, creating: false, stack: 0, thread: None });
+        axiom_state_lock_inv(State { present: false, creating: false, exited: false, stack: 0, thread: None });
     }
     Lock::new(State {
         present: false,
         creating: false,
+        exited: false,
         stack: 0,
         thread: None,
     }, Ghost(rank_state()))
@@ -126,6 +137,10 @@ pub static BEFORE_PUBLISH: std::sync::Mutex<Option<std::boxed::Box<dyn FnOnce() 
 /// Waits the thread has started with no timeout, for tests.
 #[cfg(test)]
 pub static UNTIMED_WAITS: AtomicU32 = AtomicU32::new(0);
+/// Times the thread has exited because it was no longer requested, for
+/// tests.
+#[cfg(test)]
+pub static EXITS: AtomicU32 = AtomicU32::new(0);
 
 verus! {
 
@@ -266,6 +281,8 @@ pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> bool
             return false;
         }
         g.creating = true;
+        g.exited = false;
+        assert(lock_inv(g@));
         (g.stack, g.thread.take())
     };
     // SAFETY: `__errno_location` returns this thread's `errno`.
@@ -287,7 +304,7 @@ pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> bool
         g.creating = false;
         g.stack = stack;
         g.thread = thread;
-        g.present = thread.is_some();
+        g.present = thread.is_some() && !g.exited;
         PRESENT.store(g.present, Ordering::Relaxed);
         assert(lock_inv(g@));
         g.present
@@ -693,8 +710,17 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
         let seq = SEQ.load(Ordering::SeqCst);
         if !requested() {
             let mut g = state().lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
+            let ghost before = g@;
             g.present = false;
+            g.exited = true;
+            proof {
+                axiom_state_lock_inv(before);
+                axiom_state_lock_inv(g@);
+            }
+            assert(lock_inv(g@));
             PRESENT.store(false, Ordering::Relaxed);
+            #[cfg(test)]
+            EXITS.fetch_add(1, Ordering::SeqCst);
             return core::ptr::null_mut();
         }
         let now = sys::now_coarse_ns();
@@ -831,6 +857,7 @@ pub fn fork_child(Tracked(held): Tracked<&mut LockHeld>)
     let ghost before = *st;
     st.present = false;
     st.creating = false;
+    st.exited = false;
     // The parent's thread does not exist here and its `pthread_t`
     // must never be joined (the wait would be on a thread id the
     // kernel never clears in this process); the stack is kept and is

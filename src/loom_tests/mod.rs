@@ -10,11 +10,12 @@
 //! `narenas.rs` (the arena bound counts and the arena count, with copies
 //! of the `Arenas` steps) and `position.rs` (the policy's position, with
 //! copies of the `Policy` steps) call. The
-//! background wake-up (P3), the background thread's exit, the
+//! background wake-up (P3), the background thread's exit and its
+//! publication by `start`, the
 //! publication of `Shared` (P4) and the slab descriptors (`slab.rs`,
 //! whose module needs `layout`) live in statics built in `const` context,
 //! which loom cannot construct, or in modules this build leaves out, so
-//! `background.rs`, `exit.rs`, `init.rs` and `slab.rs` check copies that
+//! `background.rs`, `exit.rs`, `publish.rs`, `init.rs` and `slab.rs` check copies that
 //! cite the code they mirror.
 //!
 //! ```sh
@@ -56,6 +57,8 @@ mod lock;
 mod narenas;
 #[cfg(test)]
 mod position;
+#[cfg(test)]
+mod publish;
 #[cfg(test)]
 mod slab;
 #[cfg(test)]

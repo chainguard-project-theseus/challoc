@@ -1,5 +1,5 @@
 # verus/loom/pins.txt: the lines of the source that the loom models copy
-# (src/loom_tests/init.rs, exit.rs, slab.rs, the class steps of
+# (src/loom_tests/init.rs, exit.rs, publish.rs, slab.rs, the class steps of
 # bitmap.rs, the table steps of free.rs and watermark.rs, the arena steps
 # of count.rs and narenas.rs, and the policy step of position.rs),
 # which verus/loom/run.sh requires to appear, whitespace-trimmed, in this
@@ -30,15 +30,34 @@ src/api/mod.rs	Err(READY) => {}
 src/api/mod.rs	if INIT_TID.load(Ordering::Relaxed) == sys::gettid() as u32 {
 src/api/mod.rs	sys::abort("allocation during initialisation (re-entrant init)");
 src/api/mod.rs	while load_state(Tracked(&mut seen)) != READY {
-# purge/background.rs: requested, request, kick, main (exit.rs).
+# purge/background.rs: requested, request, kick, main (exit.rs); start's
+# two holds and its kick, and main's exit (publish.rs).
 src/purge/background.rs	REQUESTED.load(Ordering::Relaxed)
+src/purge/background.rs	let _g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
 src/purge/background.rs	REQUESTED.store(on, Ordering::Relaxed);
 src/purge/background.rs	if !on {
 src/purge/background.rs	kick();
 src/purge/background.rs	SEQ.fetch_add(1, Ordering::SeqCst);
 src/purge/background.rs	let _ = unsafe { sys::futex_wake(SEQ.as_ptr(), 1) };
+src/purge/background.rs	let mut g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+src/purge/background.rs	if g.present {
+src/purge/background.rs	if g.creating {
+src/purge/background.rs	g.creating = true;
+src/purge/background.rs	g.exited = false;
+src/purge/background.rs	let (stack, thread) = create(shared, stack, previous, Tracked(ord));
+src/purge/background.rs	let mut g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+src/purge/background.rs	g.creating = false;
+src/purge/background.rs	g.present = thread.is_some() && !g.exited;
+src/purge/background.rs	PRESENT.store(g.present, Ordering::Relaxed);
+src/purge/background.rs	if present {
+src/purge/background.rs	fence(Ordering::SeqCst);
+src/purge/background.rs	kick();
 src/purge/background.rs	let seq = SEQ.load(Ordering::SeqCst);
 src/purge/background.rs	if !requested() {
+src/purge/background.rs	let mut g = state().lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
+src/purge/background.rs	g.present = false;
+src/purge/background.rs	g.exited = true;
+src/purge/background.rs	PRESENT.store(false, Ordering::Relaxed);
 src/purge/background.rs	return core::ptr::null_mut();
 src/purge/background.rs	let _ = unsafe { sys::futex_wait(SEQ.as_ptr(), seq, timeout.as_ref()) };
 # slab.rs: the accessors of the lock-protected fields, init,

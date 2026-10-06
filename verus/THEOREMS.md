@@ -2196,7 +2196,9 @@ empty at the end, so each listed lock is released once, by its holder.
 `Lock::get_unlocked`, which requires the state lock's token
 (`lock.rs:382`); `purge::background::fork_child`
 (`purge/background.rs:502`) proves the state's lock invariant on the
-value it leaves (`:520`). After either handler no listed lock is held.
+value it leaves (`:520`; since upstream #128 the invariant also has
+`exited ==> !present`, and the child clears both). After either handler
+no listed lock is held.
 In the child, no lock is owned by a thread that no longer exists: at
 the fork the forking thread held every listed lock (the mutex premise
 below excludes a second holder), and the child's one thread is that

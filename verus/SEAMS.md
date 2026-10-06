@@ -3711,21 +3711,21 @@ fn total_bytes(ranges: &[(usize, usize)]) -> (bytes: u64)
 
 ### S190. `axiom_state_lock_inv`
 
-src/purge/background.rs:55. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:65. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> Assumption: every holder of the state lock leaves the stack's end in range, so the lock's invariant is `stack + STACK_SIZE <= usize::MAX` (0 before the first start; after it, a reservation of `STACK_SIZE` bytes, which `Meta::reserve` places below `va_limit`).
+> Assumption: every holder of the state lock leaves the stack's end in range and no thread published that has exited, so the lock's invariant is `stack + STACK_SIZE <= usize::MAX` (0 before the first start; after it, a reservation of `STACK_SIZE` bytes, which `Meta::reserve` places below `va_limit`) and `exited ==> !present` (upstream #128: a thread that found the request withdrawn and exited before its `start` published it stays unpublished).
 
 ```rust
 broadcast axiom fn axiom_state_lock_inv(v: State)
     ensures
-        #[trigger] lock_inv(v) == (v.stack + STACK_SIZE <= usize::MAX),
+        #[trigger] lock_inv(v) == (v.stack + STACK_SIZE <= usize::MAX && (v.exited ==> !v.present)),
 ;
 ```
 
 ### S191. `errno_location`
 
-src/purge/background.rs:214. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:229. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > This thread's `errno` slot.
@@ -3736,7 +3736,7 @@ fn errno_location() -> *mut i32
 
 ### S192. `errno_read`
 
-src/purge/background.rs:226. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:241. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The `errno` at `errno`.
@@ -3747,7 +3747,7 @@ unsafe fn errno_read(errno: *mut i32) -> i32
 
 ### S193. `errno_write`
 
-src/purge/background.rs:237. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:252. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Store `v` at `errno`.
@@ -3758,7 +3758,7 @@ unsafe fn errno_write(errno: *mut i32, v: i32)
 
 ### S194. `pthread_join`
 
-src/purge/background.rs:466. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:483. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_join(t, NULL)`: 0 or an error number.
@@ -3771,7 +3771,7 @@ unsafe fn pthread_join(t: ::libc::pthread_t) -> i32
 
 ### S195. `spawn`
 
-src/purge/background.rs:577. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:594. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_create` on the committed `[base, base + len)`, joinable so a restart can wait for its exit.
@@ -3786,7 +3786,7 @@ fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t>
 
 ### S196. `shared_arg`
 
-src/purge/background.rs:657. Kind: external_body. Category: raw pointer (internal).
+src/purge/background.rs:674. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The `Shared` that [`spawn`] passes as the thread's argument.
@@ -3799,7 +3799,7 @@ fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
 
 ### S197. `main`
 
-src/purge/background.rs:673. Kind: no_decreases. Category: termination.
+src/purge/background.rs:690. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: discharged (verus/seams/purge-background-main.md).
 
 > The thread's body: decay and sample until the request is withdrawn.
@@ -3810,7 +3810,7 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void
 
 ### S198. `detach_from_starter`
 
-src/purge/background.rs:736. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:762. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The thread inherits the scheduling of whichever thread created it, and under the lazy start that is any allocating thread: a worker pinned to one CPU, niced or real-time.
@@ -3823,7 +3823,7 @@ fn detach_from_starter()
 
 ### S199. `state`
 
-src/purge/background.rs:772. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/purge/background.rs:798. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > `&STATE`.
