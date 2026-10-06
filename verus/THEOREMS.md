@@ -132,8 +132,9 @@ and the call does not return (theorem 3, which is not voided for it).
   (`heap/mod.rs:3132`) ensures nothing; the next `heap_from_slot`
   assumes `wf` again.
 - Trusted, but stated over the permissions: the slice primitive under
-  `stack_mut` (`vspec::slice::slice_mut_from_perms`, the slice over the
-  stack's `PointsTo`s; `stack_mut` itself is verified over it),
+  `stack_mut` (`vspec::slice::slice_mut_elems`, the slice over exactly
+  its entries' `PointsTo`s, which the verified `slice_mut_from_perms`
+  carves out of the stack's; `stack_mut` itself is verified over it),
   `Heap::cache_ptr` (`heap/cache.rs:302`, on the `malloc` and `free`
   fast paths: the home header for `class` is owned and caches `class`),
   `cached_recently` (`heap/cache.rs:608`), and the `others` list

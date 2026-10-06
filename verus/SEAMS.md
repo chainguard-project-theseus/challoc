@@ -846,7 +846,7 @@ the full name, the line and the contract.
 | S363 | `<core::array::I...Iterator>::next` | spec | core | Kani | discharged |
 | S364 | `array_get_unchecked` | body | core | Kani | discharged |
 | S365 | `slice_from_perms` | body | ptr | RR | trusted |
-| S366 | `slice_mut_from_perms` | body | ptr | RR | trusted |
+| S366 | `slice_mut_elems` | body | ptr | RR | trusted |
 
 ### src/vspec/sys.rs
 
@@ -6238,7 +6238,7 @@ pub unsafe fn array_get_unchecked<T, const N: usize>(a: &[T; N], i: usize) -> (r
 
 ### S365. `slice_from_perms`
 
-src/vspec/slice.rs:268. Kind: external_body. Category: raw pointer (internal).
+src/vspec/slice.rs:283. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `core::slice::from_raw_parts(p, n)` over `n` initialised `T`s whose permissions `perms` holds from key `j0` on, element `i`'s at key `j0 + i`, at `p`, `p + size_of::<T>()`, ...
@@ -6267,42 +6267,39 @@ pub fn slice_from_perms<'a, T>(
         forall|i: int| 0 <= i < n ==> #[trigger] r@[i] == perms[j0 + i].value(),
 ```
 
-### S366. `slice_mut_from_perms`
+### S366. `slice_mut_elems`
 
-src/vspec/slice.rs:317. Kind: external_body. Category: raw pointer (internal).
+src/vspec/slice.rs:339. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
-> `core::slice::from_raw_parts_mut(base.add(start), n)` over the elements `start..start + n` of the `T`s at `base`, whose permissions `perms` holds keyed by their pointers, element `i`'s at `base.add(i)`.
+> `core::slice::from_raw_parts_mut(base.add(start), n)` over the elements `start..start + n` of the `T`s at `base`, whose permissions `elems` holds keyed by their pointers, element `i`'s at `base.add(i)`, and no other permission: the slice of those elements, for as long as `elems` stays borrowed.
 
 ```rust
-pub unsafe fn slice_mut_from_perms<'a, T>(
+pub unsafe fn slice_mut_elems<'a, T>(
     base: *mut T,
     start: usize,
     n: usize,
-    Tracked(perms): Tracked<&'a mut Map<*mut T, vstd::raw_ptr::PointsTo<T>>>,
+    Tracked(elems): Tracked<&'a mut Map<*mut T, vstd::raw_ptr::PointsTo<T>>>,
 ) -> (r: &'a mut [T])
     requires
         0 < n,
+        forall|q: *mut T| #[trigger] old(elems).contains_key(q) ==> elem_key(base, start as int, n as int, q),
         forall|i: int| start <= i < start + n ==> {
             let q = #[trigger] crate::vspec::ptr::ptr_add(base, i as usize);
-            old(perms).contains_key(q) && old(perms)[q].ptr() == q
+            old(elems).contains_key(q) && old(elems)[q].ptr() == q
         },
     ensures
         r@.len() == n,
         final(r)@.len() == n,
-        forall|q: *mut T| #![trigger old(perms).contains_key(q)] #![trigger final(perms).contains_key(q)] #![trigger final(perms)[q]] old(perms).contains_key(q) ==> {
-            &&& final(perms).contains_key(q)
-            &&& final(perms)[q].ptr() == old(perms)[q].ptr()
-            &&& (old(perms)[q].is_init() ==> final(perms)[q].is_init())
+        forall|i: int| start <= i < start + n ==> {
+            let q = #[trigger] crate::vspec::ptr::ptr_add(base, i as usize);
+            &&& final(elems).contains_key(q)
+            &&& final(elems)[q].ptr() == q
+            &&& final(elems)[q].opt_value() == vstd::raw_ptr::MemContents::Init(final(r)@[i - start])
         },
-        forall|i: int| start <= i < start + n ==> #[trigger] final(perms)[crate::vspec::ptr::ptr_add(base, i as usize)].is_init(),
         forall|i: int|
-            start <= i < start + n && old(perms)[crate::vspec::ptr::ptr_add(base, i as usize)].is_init()
-                ==> r@[i - start] == #[trigger] old(perms)[crate::vspec::ptr::ptr_add(base, i as usize)].value(),
-        forall|i: int| start <= i < start + n ==> #[trigger] final(perms)[crate::vspec::ptr::ptr_add(base, i as usize)].value() == final(r)@[i - start],
-        forall|q: *mut T|
-            old(perms).contains_key(q) && (forall|i: int| start <= i < start + n ==> q != #[trigger] crate::vspec::ptr::ptr_add(base, i as usize))
-                ==> #[trigger] final(perms)[q] == old(perms)[q],
+            start <= i < start + n && old(elems)[crate::vspec::ptr::ptr_add(base, i as usize)].is_init()
+                ==> r@[i - start] == #[trigger] old(elems)[crate::vspec::ptr::ptr_add(base, i as usize)].value(),
 ```
 
 ### S367. `u8::is_ascii_digit`

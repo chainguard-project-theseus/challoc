@@ -248,6 +248,21 @@ pub unsafe fn array_get_unchecked<T, const N: usize>(a: &[T; N], i: usize) -> (r
 
 verus! {
 
+// Slices over element permissions. vstd's `PointsTo` is for one sized
+// `T` (an array `[T; N]` among them, with `N` fixed at compile time);
+// the slices here have lengths known only at run time
+// (`class::table::words_ref`, `heap::stack_mut`), so the element
+// permissions stand for a slice permission. The mutable slice's trusted
+// step, `slice_mut_elems`, takes a map holding exactly its elements'
+// permissions, which `slice_mut_from_perms` carves out of its caller's
+// map (`Map::tracked_borrow_mut_split`), so the rest of that contract is
+// proved. `slice_from_perms` stays one trusted step: a shared borrow
+// changes no permission, so its contract has no frame to prove, and a
+// slice permission type lent by the element permissions (an axiom, with
+// a `ptr_ref`-like builder) verifies but adds a `Tracked` type at the
+// call, which changed the machine code of the flush path (`Heap::flush`
+// and `group_by_slab` reach `words_ref`).
+
 /// `core::slice::from_raw_parts(p, n)` over `n` initialised `T`s whose
 /// permissions `perms` holds from key `j0` on, element `i`'s at key
 /// `j0 + i`, at `p`, `p + size_of::<T>()`, ... (a slice view of
@@ -291,28 +306,80 @@ pub fn slice_from_perms<'a, T>(
     unsafe { core::slice::from_raw_parts(p, n) }
 }
 
+/// `q` is one of the `ptr_add` keys `start..start + n` from `base`.
+pub open spec fn elem_key<T>(base: *mut T, start: int, n: int, q: *mut T) -> bool {
+    exists|i: int| start <= i < start + n && q == #[trigger] crate::vspec::ptr::ptr_add(base, i as usize)
+}
+
 /// `core::slice::from_raw_parts_mut(base.add(start), n)` over the elements
-/// `start..start + n` of the `T`s at `base`, whose permissions `perms`
-/// holds keyed by their pointers, element `i`'s at `base.add(i)`. The
-/// slice borrows the permissions: each must be owned, not necessarily
-/// initialised; when the borrow ends every one it covered is initialised
-/// to the slice's final value there, every permission keeps its pointer
-/// and, if it was initialised, stays so, and no other permission changes.
-/// The slice starts out holding the initialised elements' values.
-/// Trusted: such permissions give what `from_raw_parts_mut` asks for (the
-/// elements valid for reads and writes and aligned, and accessed through
-/// the slice alone while it lives, which the borrow of the permissions
+/// `start..start + n` of the `T`s at `base`, whose permissions `elems`
+/// holds keyed by their pointers, element `i`'s at `base.add(i)`, and no
+/// other permission: the slice of those elements, for as long as `elems`
+/// stays borrowed. Each permission must be owned, not necessarily
+/// initialised; the slice starts out holding the initialised elements'
+/// values, and when the borrow ends `elems` holds each element's
+/// permission again, with its pointer, initialised to the slice's final
+/// value there. Trusted: such permissions give what `from_raw_parts_mut` asks
+/// for (the elements valid for reads and writes and aligned, and accessed
+/// through the slice alone while it lives, which the borrow of `elems`
 /// keeps), and a write through a slice leaves the element initialised.
 /// Premises, not in the `requires` (the keys are `ptr_add`s, which say
 /// nothing of addresses on their own): the elements are consecutive in
 /// one allocation of at most `isize::MAX` bytes, so `base.add(start)` is
-/// in bounds; and an element read through the slice before it is written
-/// holds a value of `T` (`from_raw_parts_mut` asks for initialised
-/// elements, which a permission that is not initialised does not show).
-/// The one caller, `heap::stack_mut`, passes a cache stack's entries,
-/// which lie in the stack's allocation (`heap::slot_in`), and its callers
-/// read an entry only after a claim or a push wrote it.
+/// in bounds, and `T` is not zero-sized, so no two keys are one pointer;
+/// and an element read through the slice before it is written holds a
+/// value of `T` (`from_raw_parts_mut` asks for initialised elements,
+/// which a permission that is not initialised does not show). The one
+/// caller is `slice_mut_from_perms`, for `heap::stack_mut`, which passes
+/// a cache stack's `*mut u8` entries (in the stack's allocation,
+/// `heap::slot_in`); `stack_mut`'s callers read an entry only after a
+/// claim or a push wrote it.
 #[verifier::external_body]
+#[inline(always)]
+pub unsafe fn slice_mut_elems<'a, T>(
+    base: *mut T,
+    start: usize,
+    n: usize,
+    Tracked(elems): Tracked<&'a mut Map<*mut T, vstd::raw_ptr::PointsTo<T>>>,
+) -> (r: &'a mut [T])
+    requires
+        0 < n,
+        forall|q: *mut T| #[trigger] old(elems).contains_key(q) ==> elem_key(base, start as int, n as int, q),
+        forall|i: int| start <= i < start + n ==> {
+            let q = #[trigger] crate::vspec::ptr::ptr_add(base, i as usize);
+            old(elems).contains_key(q) && old(elems)[q].ptr() == q
+        },
+    ensures
+        r@.len() == n,
+        final(r)@.len() == n,
+        forall|i: int| start <= i < start + n ==> {
+            let q = #[trigger] crate::vspec::ptr::ptr_add(base, i as usize);
+            &&& final(elems).contains_key(q)
+            &&& final(elems)[q].ptr() == q
+            &&& final(elems)[q].opt_value() == vstd::raw_ptr::MemContents::Init(final(r)@[i - start])
+        },
+        forall|i: int|
+            start <= i < start + n && old(elems)[crate::vspec::ptr::ptr_add(base, i as usize)].is_init()
+                ==> r@[i - start] == #[trigger] old(elems)[crate::vspec::ptr::ptr_add(base, i as usize)].value(),
+{
+    // SAFETY: the precondition and the premises above.
+    unsafe { core::slice::from_raw_parts_mut(base.add(start), n) }
+}
+
+/// `core::slice::from_raw_parts_mut(base.add(start), n)` over the elements
+/// `start..start + n` of the `T`s at `base`, whose permissions `perms`
+/// holds keyed by their pointers, element `i`'s at `base.add(i)`:
+/// [`slice_mut_elems`] over those elements' permissions, the others kept
+/// apart (`Map::tracked_borrow_mut_split`). The slice borrows the
+/// permissions: each must be owned, not necessarily initialised; when the
+/// borrow ends every one it covered is initialised to the slice's final
+/// value there, every permission keeps its pointer and, if it was
+/// initialised, stays so, and no other permission changes. The slice
+/// starts out holding the initialised elements' values. The one caller is
+/// `heap::stack_mut` (a cache stack's entries).
+///
+/// # Safety
+/// The premises of [`slice_mut_elems`].
 #[inline(always)]
 pub unsafe fn slice_mut_from_perms<'a, T>(
     base: *mut T,
@@ -343,8 +410,18 @@ pub unsafe fn slice_mut_from_perms<'a, T>(
             old(perms).contains_key(q) && (forall|i: int| start <= i < start + n ==> q != #[trigger] crate::vspec::ptr::ptr_add(base, i as usize))
                 ==> #[trigger] final(perms)[q] == old(perms)[q],
 {
-    // SAFETY: the precondition and the premises above.
-    unsafe { core::slice::from_raw_parts_mut(base.add(start), n) }
+    let ghost keys = perms.dom().filter(|q: *mut T| elem_key(base, start as int, n as int, q));
+    let tracked (elems, _rest) = perms.tracked_borrow_mut_split(keys);
+    proof {
+        assert forall|i: int| start <= i < start + n implies {
+            let q = #[trigger] crate::vspec::ptr::ptr_add(base, i as usize);
+            elems[q] == old(perms)[q]
+        } by {
+            assert(keys.contains(crate::vspec::ptr::ptr_add(base, i as usize)));
+        }
+    }
+    // SAFETY: guaranteed by the caller.
+    unsafe { slice_mut_elems(base, start, n, Tracked(elems)) }
 }
 
 } // verus!
