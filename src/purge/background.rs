@@ -22,6 +22,9 @@ const MIN_SLEEP_NS: u64 = 1_000_000;
 struct State {
     present: bool,
     creating: bool,
+    /// The thread being created has already exited: it found the request
+    /// withdrawn before `start` published it, so `start` must not.
+    exited: bool,
     /// The one stack, reserved by the first `start` and reused by every
     /// later one; 0 until then.
     stack: usize,
@@ -33,6 +36,7 @@ struct State {
 static STATE: Lock<State> = Lock::new(State {
     present: false,
     creating: false,
+    exited: false,
     stack: 0,
     thread: None,
 });
@@ -91,6 +95,10 @@ pub static BEFORE_PUBLISH: std::sync::Mutex<Option<std::boxed::Box<dyn FnOnce() 
 /// Waits the thread has started with no timeout, for tests.
 #[cfg(test)]
 pub static UNTIMED_WAITS: AtomicU32 = AtomicU32::new(0);
+/// Times the thread has exited because it was no longer requested, for
+/// tests.
+#[cfg(test)]
+pub static EXITS: AtomicU32 = AtomicU32::new(0);
 
 #[inline]
 pub fn present() -> bool {
@@ -175,6 +183,7 @@ pub fn start(shared: &Shared) -> bool {
             return false;
         }
         g.creating = true;
+        g.exited = false;
         (g.stack, g.thread.take())
     };
     // SAFETY: `__errno_location` returns this thread's `errno`.
@@ -196,7 +205,7 @@ pub fn start(shared: &Shared) -> bool {
         g.creating = false;
         g.stack = stack;
         g.thread = thread;
-        g.present = thread.is_some();
+        g.present = thread.is_some() && !g.exited;
         PRESENT.store(g.present, Ordering::Relaxed);
         g.present
     };
@@ -470,7 +479,10 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
         if !requested() {
             let mut g = STATE.lock();
             g.present = false;
+            g.exited = true;
             PRESENT.store(false, Ordering::Relaxed);
+            #[cfg(test)]
+            EXITS.fetch_add(1, Ordering::SeqCst);
             return core::ptr::null_mut();
         }
         let now = sys::now_coarse_ns();
@@ -551,6 +563,7 @@ pub fn fork_child() {
     let st = unsafe { STATE.get_unlocked() };
     st.present = false;
     st.creating = false;
+    st.exited = false;
     // The parent's thread does not exist here and its `pthread_t`
     // must never be joined (the wait would be on a thread id the
     // kernel never clears in this process); the stack is kept and is
