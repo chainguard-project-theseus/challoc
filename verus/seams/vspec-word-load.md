@@ -1,6 +1,6 @@
 # `load` (`vspec/word.rs`)
 
-Seam S401 of `verus/SEAMS.md`: src/vspec/word.rs:105. Kind: external_body. Category: atomics primitive.
+Seam S403 of `verus/SEAMS.md`: src/vspec/word.rs:105. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 coherence rules (part 3).
 
 ## Contract
@@ -20,7 +20,10 @@ pub fn load(w: &AtomicU64, ordering: Ordering, Tracked(perm): Tracked<&WordPerm>
 ```
 
 The body, at that commit: `w.load(ordering)`. Its one call site is
-`SlabTable::is_set_unchecked` (`Relaxed`), the `free` path's bit test,
+`SlabTable::is_set_unchecked` (`Relaxed`), the `free` path's bit test
+(since the port of upstream #87 `SlabTable::bit_word`, which
+`is_set_unchecked` and the class line's `ClassLine::set_slab`, the
+`free` fast path's bit test, both call),
 inside the word's invariant; the proof uses the value only for its
 `ensures` that a set bit is not in a guard slab (`bitmap::guards_ok`: a
 guard slab's bits are clear in every value the invariant allows).
@@ -53,13 +56,21 @@ Two parts.
 Models: `loom_free_after_synchronised_handoff`, `loom_free_after_relaxed_handoff`, `loom_free_relaxed_handoff_is_a_race`, `loom_free_unpublished_owner_is_misrouted`
 
    - `loom_free_after_synchronised_handoff` (`Release`/`Acquire`
-     hand-off; 13337 executions): every free that receives the slot sees
+     hand-off; 31214 executions, 13337 before upstream #87): every free that receives the slot sees
      it handed out, its bit set and the owner stored, and its writes to
-     the block do not race with the allocating thread's.
+     the block do not race with the allocating thread's. Since upstream
+     #87 the fast path reads the class line's copy of the watermark,
+     which the hand-out stores after the watermark itself, so a free
+     synchronised with the watermark's store can read the copy behind
+     (the model's `Lagged`): a fast-path miss, after which the slow
+     path's re-read of the table's watermark finds the slab, and the
+     bit and the owner are as before.
    - `loom_free_after_relaxed_handoff` (`Relaxed` hand-off, the free
-     does not touch the block; 17501): records the outcomes; all four
+     does not touch the block; 50926, 17501 before upstream #87): records the outcomes; all four
      appear: the checks pass, the watermark reads below the slab, the
-     bit reads clear, and the owner word reads its initial 0. Each of
+     bit reads clear, and the owner word reads its initial 0 (since #87
+     five: also `Lagged`, the copy behind and the watermark past the
+     slab). Each of
      the last three fails the fast path (`checked_slot` returns `None`;
      since upstream #78 `free_fast_slot`);
      the slow path (`classify_free`, then `check_located`) repeats the
@@ -72,7 +83,7 @@ Models: `loom_free_after_synchronised_handoff`, `loom_free_after_relaxed_handoff
      (`loom_free_relaxed_handoff_is_a_race`); with the claimer's
      watermark load `Relaxed`, a free after a synchronising hand-off can
      read the owner as 0 (`loom_free_unpublished_owner_is_misrouted`;
-     38029).
+     91770; 38029 before upstream #87).
 
 ## Translation
 

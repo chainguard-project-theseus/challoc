@@ -93,7 +93,7 @@ Shared::free_flags	allocator invariant	Verus
 S_FREE_FLAGS	core library	Kani	discharged (verus/seams/heap-shared-S_FREE_FLAGS.md)
 S_PUSH_FLAGS	core library	Kani	discharged (verus/seams/heap-shared-S_PUSH_FLAGS.md)
 S_REGIONS	core library	Kani	discharged (verus/seams/heap-shared-S_REGIONS.md)
-S_GUARD_TEST	core library	Kani	discharged (verus/seams/heap-shared-S_GUARD_TEST.md)
+S_LINES	core library	Kani	discharged (verus/seams/heap-shared-S_LINES.md)
 S_TABLES	core library	Kani	discharged (verus/seams/heap-shared-S_TABLES.md)
 S_ARENA0	core library	Kani	discharged (verus/seams/heap-shared-S_ARENA0.md)
 S_META	core library	Kani	discharged (verus/seams/heap-shared-S_META.md)
@@ -312,6 +312,7 @@ state_publish	atomics primitive	loom/GenMC
 # store and swap, and its load, now excluding the orderings it panics for.
 load_usize_in	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-atom-load_usize_in.md)
 store_usize	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-atom-store_usize.md)
+usize_ptr	raw pointer (internal)	none (assumption)
 src/vspec/count.rs:store	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-store.md)
 src/vspec/count.rs:swap	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-swap.md)
 AR_TABLE	core library	Kani

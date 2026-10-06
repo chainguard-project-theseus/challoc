@@ -1,7 +1,8 @@
 //! `usize` atomics with a ghost permission, for the atomic invariants
 //! that bound a value challoc only ever stores in range (`verus/TODO.md`,
 //! "Coverage ceiling", ATOM): a class table's hand-out watermark
-//! (`class/table.rs`, `committed_slabs`). The `u32` values (`policy.rs`'s
+//! (`class/table.rs`, `committed_slabs`) and its copy in the class's line
+//! (`heap::ClassLine`, stored through a pointer). The `u32` values (`policy.rs`'s
 //! position, `arena.rs`'s arena count) use `count.rs`'s
 //! [`CountPerm`](super::count::CountPerm).
 //!
@@ -34,7 +35,12 @@
 //!   `new_usize` itself is verified);
 //! - a permission's value is its atomic's: every store to an atomic that
 //!   has one goes through these wrappers, inside the atomic's invariant
-//!   (`SlabTable::take_group`; `verus/loom/run.sh` checks it by name).
+//!   (`SlabTable::take_group`; the class lines' watermark copies are stored
+//!   by `take_group` and `SlabTable::mirror_watermark`, through `store_usize_at`;
+//!   `verus/loom/run.sh` checks it by name);
+//! - [`usize_id_at`] names the atomic a pointer from [`usize_ptr`] was
+//!   made from, for as long as it stays in place: the class lines' copies
+//!   live in the `Shared`, which never moves (`Shared::init`'s contract).
 
 use crate::sync::atomic::{AtomicUsize, Ordering};
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
@@ -127,6 +133,51 @@ pub fn store_usize(a: &AtomicUsize, v: usize, ordering: Ordering, Tracked(perm):
     no_unwind
 {
     a.store(v, ordering)
+}
+
+/// The identity ([`usize_id`]) of the atomic `usize` at `p`: what a
+/// pointer [`usize_ptr`] made from a reference to it points at.
+pub uninterp spec fn usize_id_at(p: *const AtomicUsize) -> int;
+
+/// `a as *const AtomicUsize`: a pointer to the atomic, which names it
+/// ([`usize_id_at`]). Trusted: Verus has no reference-to-pointer cast.
+/// The pointer names `a` for as long as `a` stays where it is, which is
+/// the caller's to keep (`SlabTable::mirror_watermark`'s safety contract:
+/// the class line it points into is in a `Shared` that never moves).
+#[inline(always)]
+#[verifier::external_body]
+pub fn usize_ptr(a: &AtomicUsize) -> (r: *const AtomicUsize)
+    ensures
+        usize_id_at(r) == usize_id(a),
+    opens_invariants none
+    no_unwind
+{
+    a
+}
+
+/// `(*p).store(v, ordering)` through a pointer from [`usize_ptr`], with
+/// the permission of the atomic it names (it panics for an `Acquire` or
+/// `AcqRel` ordering).
+///
+/// # Safety
+/// `p` points to a live `AtomicUsize`: the one it was made from, still
+/// in place.
+#[inline(always)]
+#[verifier::external_body]
+#[verifier::atomic]
+pub unsafe fn store_usize_at(p: *const AtomicUsize, v: usize, ordering: Ordering, Tracked(perm): Tracked<&mut UsizePerm>)
+    requires
+        old(perm).id() == usize_id_at(p),
+        !(ordering is Acquire),
+        !(ordering is AcqRel),
+    ensures
+        final(perm).id() == old(perm).id(),
+        final(perm).value() == v,
+    opens_invariants none
+    no_unwind
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe { (*p).store(v, ordering) }
 }
 
 } // verus!

@@ -64,10 +64,11 @@ src/class/mod.rs	let live = desc.live();
 src/class/mod.rs	let avail = self.class().nslots() - live;
 src/class/mod.rs	desc.add_live(n);
 # class/table.rs: the owner word's store and load (free.rs), the commit
-# count's publication (bitmap.rs, free.rs, watermark.rs), the free path's
-# checks (free.rs): is_handed_out, is_set_unchecked, owner_at,
-# check_live, and take_group's lock, bound, check_zero comparison and
-# `next_slab = end` (watermark.rs).
+# count's publication (bitmap.rs, free.rs, watermark.rs) and its copy
+# into the class line (free.rs, since upstream #87), the free path's
+# checks (free.rs): is_handed_out, the bit word (bit_word),
+# is_set_unchecked, owner_at, check_live, and take_group's lock, bound,
+# check_zero comparison and `next_slab = end` (watermark.rs).
 src/class/table.rs	w.load(Ordering::Relaxed)
 src/class/table.rs	w.store(arena, Ordering::Relaxed)
 src/class/table.rs	load_usize_in(&self.committed_slabs, order, &self.committed_inv)
@@ -85,14 +86,18 @@ src/class/table.rs	let Tracked(m) = self.bits_unchecked(slab).init(cls.nslots(),
 src/class/table.rs	store_owner(owner_word, arena, Ghost(*self), Ghost(s >> self.lg_group), Tracked(om));
 src/class/table.rs	gi.next_slab = end;
 src/class/table.rs	store_usize(&self.committed_slabs, end, Ordering::Release, Tracked(&mut perm));
-# heap/shared.rs: home_owns, set_slot (free.rs).
-src/heap/shared.rs	unsafe { table.owner_unchecked(slab) == home }
-src/heap/shared.rs	if !table.is_handed_out(slab) {
-src/heap/shared.rs	if !unsafe { table.is_set_unchecked(slab, slot) } {
-# heap/paths.rs: free_fast_slot's bit test and free_fast_push's arena tests (free.rs).
-src/heap/paths.rs	let Some((class, table, slab)) = shared.set_slot(p) else { return None };
-src/heap/paths.rs	FREE_ROUTE => Shared::home_owns(table, slab, h) && h.push_fast(class, p, 0, Tracked(&mut tk)),
-src/heap/paths.rs	(flags & FREE_ROUTE == 0 || Shared::home_owns(table, slab, h))
+src/class/table.rs	unsafe { store_usize_at(gi.mirror, end, Ordering::Release, Tracked(&mut perm)) };
+# heap/shared.rs: ClassLine::set_slab (the x86_64 order: the watermark
+# copy, the bit test) and ClassLine::owner, home_owns (free.rs).
+src/heap/shared.rs	let committed = crate::class::load_mirror(&self.committed, &self.committed_inv);
+src/heap/shared.rs	if slab >= committed {
+src/heap/shared.rs	if (unsafe { table.bit_word(bits_base, index, Ghost(slab), Ghost(slot as usize), Ghost(bit)) } >> (bit % 64)) & 1 == 0 {
+src/heap/shared.rs	unsafe { table.owner_from(self.owners_base, self.lg_group, slab) }
+src/heap/shared.rs	.owner(slab, crate::vspec::slice::array_get_unchecked(&self.tables, class)) == home
+# heap/paths.rs: free_fast_slot's bit test and free_fast_tail's arena tests (free.rs).
+src/heap/paths.rs	let Some((class, slab)) = shared.set_slot(p) else { return None };
+src/heap/paths.rs	shared.home_owns(class, slab, h) && h.push_fast(class, p, 0, Tracked(&mut tk))
+src/heap/paths.rs	(flags & FREE_ROUTE == 0 || shared.home_owns(class, slab, h))
 # arena.rs: iter (narenas.rs); unbind (count.rs); build, create
 # (narenas.rs); assign, load_bound, count_in (count.rs); count (narenas.rs).
 src/arena.rs	let n = self.count() as usize;

@@ -1,23 +1,28 @@
-# `S_GUARD_TEST`
+# `S_LINES`
 
-Seam S137 of `verus/SEAMS.md`: src/heap/shared.rs:584. Kind: external_body const. Category: core library.
+Seam S134 of `verus/SEAMS.md`: src/heap/shared.rs:895. Kind: external_body const. Category: core library.
 Discharged by Kani.
 
 ## Contract
 
-At commit 7d4e997 (checked again there; the record was written at
-ae82d5b):
+Written by the port of upstream #87, which added the field `lines:
+[ClassLine; NCLASSES]` at offset 0, ahead of `free_flags`, and removed
+the dense `guard_test: [GuardTest; NCLASSES]` after `regions` (each
+`ClassLine` now carries its class's guard test), whose seam,
+`S_GUARD_TEST`, this record replaces; that one was checked at commit
+7d4e997 (written at ae82d5b). At the port:
 
 ```rust
-const S_GUARD_TEST: usize = core::mem::offset_of!(Shared, guard_test);
+const S_LINES: usize = core::mem::offset_of!(Shared, lines);
 ```
 
 ## Statement
 
 Kani 0.68.0 (CBMC 6.11.0, nightly-2026-08-21) proves the harness `heap::shared::kani_layout::shared_layout` (`src/heap/shared.rs`):
-`S_GUARD_TEST == offset_of!(Shared, guard_test)`, and the field-fit conditions of
+`S_LINES == offset_of!(Shared, lines)`, and the field-fit conditions of
 `axiom_shared_layout` at that value (see its record,
-`verus/seams/heap-shared-axiom_shared_layout.md`).
+`verus/seams/heap-shared-axiom_shared_layout.md`). Pending a re-run at
+the port (see "Review").
 
 Reproduce: `sh verus/kani/run.sh --harness heap::shared::kani_layout::shared_layout` (both quanta;
 `--harness` takes the full path).
@@ -61,13 +66,23 @@ a wrong result, but the proofs' "no panic" claim rests on this policy.
 
 ## Review
 
-Fresh-context subagent, 2026-10-02: the harness against the contract
+Fresh-context subagent, 2026-10-02 (as `S_GUARD_TEST`): the harness
+against the contract
 and this translation; its findings are folded in.
 
-Reconciled onto commit 7d4e997, 2026-10-03: the contract above
+Reconciled onto commit 7d4e997, 2026-10-03 (as `S_GUARD_TEST`): its
+contract
 compared with the ledger's entry there, and the harness re-run under
 both quanta with the same Kani (it passes). A fresh-context subagent
 reviewed the reconciliation.
+
+Ported onto upstream #87, 2026-10-06: the contract above is the
+ledger's entry, and the harness asserts it (`S_LINES`, and the class
+lines' field fit ahead of `free_flags`, in place of the guard tests');
+the build's `const` assertion of the same conditions passes on both
+targets and quanta. The Kani re-run is pending: Kani was not available
+where the port ran (`sh verus/kani/run.sh --harness
+heap::shared::kani_layout::shared_layout`).
 
 ## Tests
 

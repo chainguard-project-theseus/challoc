@@ -483,9 +483,13 @@ entry points in `api/` are built from them.
    multiply, rotate, compare against `nslots`); load the class bitmap
    word; verify the bit is set. Otherwise abort. The slab is compared
    with the class's hand-out watermark before the bitmap load, and that
-   compare is the region bound too (`Regions::slab_slot_unbounded`): an
+   compare is the region bound too (`ClassLine::set_slab`): an
    address past the region, or below its base where the offset wraps,
    has a slab number of at least `nslabs`, which no watermark reaches.
+   Every per-class value this step reads (region base, slot geometry,
+   bitmap base, a copy of the watermark stored after the table's own) sits
+   in one 64-byte line per class, `Shared::lines`, whose stride is the
+   cache headers', so one scaled class index addresses both.
    (Dropping the watermark instead, by reserving the bitmaps `PROT_READ`
    so a never-handed slab reads a clear bit, was measured and rejected:
    `mlockall` populates the 8 GiB of read-only tails with zero-page
@@ -538,9 +542,10 @@ remain for explicit `MALLOCX_ARENA` allocations and `thread.arena`.
    paths behind a test of the hint, and a huge size leaves for the slow
    path before the heap lookup. The hint names the region: `rel = p - class_base[c_hint]`; if
    `rel` is past the region or not a slot start, slow path. A guard slab
-   goes to the slow path too, tested with one 8-byte load from a dense
-   per-class pair (`Shared::guard_test[c]`, `GuardTest`: `(slab +
-   slabs_per_page) & mask == 0`). The class table line is not touched.
+   goes to the slow path too (`GuardTest`: `(slab + slabs_per_page) &
+   mask == 0`). The region base, the slot geometry and the guard pair are
+   read from the class's line (`Shared::lines[c]`, the one plain `free`
+   reads); the class table line is not touched.
 2. `heap = tls()`; `cache = heap.caches[c]`; if `len == cap`, slow path.
    `slots[len++] = p`. Neither the bitmap word nor the owner word is
    loaded.

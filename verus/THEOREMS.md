@@ -68,7 +68,8 @@ add.
   (`:404`) and trusted in-place writers: `begin` (`:447`), `put_head`
   (`:459`), `put_flags` (`:484`), `put_table` (`:505`), `put_huge`
   (`:552`), `put_tail` (`:604`) and the claim-free
-  `put_guard_test`, `arena0_ptr`, `put_registries`, `put_cgroup`,
+  `put_guard_test` (since upstream #87 `put_line` and `lines_ptr`, the
+  class lines'), `arena0_ptr`, `put_registries`, `put_cgroup`,
   `put_policy` (`:536`-`:592`). Arena 0 is built the same way: `put_head`,
   `put_sets`, `put_class`, `put_tail` (`arena.rs:106`-`:163`) and
   `arena_at` (`arena.rs:515`).
@@ -186,6 +187,32 @@ the call does not return (theorem 3, which is not voided for it).
   fact for proofs; `adopt_page_geometry` (verified) writes the table
   through the permission `api::axiom_statics` gives and keeps
   `table_ok`, which `api::Published` freezes at `READY`.
+
+**Class lines (since upstream #87).** The `free` fast paths read each
+class's slot geometry, bitmap and owner bases, hand-out group and a
+copy of its hand-out watermark from `Shared::lines` (`heap::ClassLine`),
+which `Shared::wf` states are the class's (`ClassLine::wf`: what
+`ClassLine::of` writes from the regions, the class table and the
+table; `init` freezes the lines' permissions as it does the tables',
+and `axiom_shared_built` states them). The copy is proved bounded and
+trusted only in how it is reached:
+- its bound (at most the table's slab count, which bounds the bitmap
+  and owner words the fast path then reads through the table's
+  permissions) is an atomic invariant in the line (the watermark's
+  `class::table::CommittedPred`), and every store into it is verified
+  inside it (`SlabTable::mirror_watermark`, `take_group`);
+- the table stores through a raw pointer to the copy:
+  `vspec::atom::usize_ptr` (a reference-to-pointer cast,
+  `external_body`) names the atomic (`usize_id_at`), and
+  `vspec::atom::store_usize_at` (`external_body`) stores through the
+  pointer with that atomic's permission; that the pointer stays valid
+  is `Shared::init`'s contract (the `Shared` never moves);
+- that a slab below the copy has its bitmap words and owner word
+  committed (what `table::load_owner`'s premise and
+  `Unbacked::into_lazy` state of a slab below the watermark) rests on
+  the copy never being ahead of the watermark: each store into it is
+  of a value the watermark held, under the commit lock and after the
+  watermark's own store. Read off the code, not proved.
 
 **Kernel `mmap`.**
 - `linux::try_reserve` (`layout/regions.rs:1135`): a reservation is
@@ -459,7 +486,8 @@ Below them, `heap::free` and `free_direct` (`heap/paths.rs:667`, `:682`),
 `Heap::free` (`:196`), and the fast paths `free_fast`,
 `free_fast_class`, `free_sized_fast` (`:518`, `:548`, `:577`, on their
 `true`/`Some` result; since upstream #78 the unsized ones are
-`free_fast_slot` and its `free_fast_push`, on their `Some` result) ensure
+`free_fast_slot` and its `free_fast_push`, on their `Some` result; since
+#87 `free_fast_tail` in place of `free_fast_push`) ensure
 it; the cache pushes and
 `Shared::free_direct` (`heap/shared.rs:1115`) require `is_slot` of their
 class, `Shared::free_huge` (`:1312`) a page index from
@@ -472,7 +500,11 @@ class, `Shared::free_huge` (`:1312`) a page index from
 - `Shared::classify_free` and `Regions::classify` are verified; the
   sized fast path's `slot_in_class` and `Regions::slab_slot` (and, since
   upstream #78, the unsized fast path's `Regions::slab_slot_unbounded`)
-  read the class table through `class_entry` (common premise).
+  read the class table through `class_entry` (common premise). Since
+  upstream #87 both fast paths read the geometry from the class's line
+  (`ClassLine::set_slab`, `Shared::sized_slot`; "Class lines", common
+  premises); `slot_in_class` is test-only and `slab_slot_unbounded`
+  gone.
 
 **Where the statement is weaker than the code.**
 - Liveness is a precondition, not a run-time result: every verified
@@ -1037,14 +1069,27 @@ region.
   table's type invariant), and `slab_slot_unbounded` ensures
   `slab_slot`'s facts (offset inside the region, `is_slot_addr`, the
   slot's address) once the slab is below that count; so `set_slot`
-  still ensures `is_slot` of what it returns.
+  still ensures `is_slot` of what it returns. Since upstream #87
+  `set_slot` reads the class's line (`ClassLine::set_slab`): its
+  slot-start test is `Class::slot_of_offset`'s on the line's copy of
+  the class geometry (`ClassLine::lemma_slot_start`, over
+  `layout::lemma_slot_test`), its region bound the compare with the
+  line's watermark copy, which the copy's invariant bounds by the
+  table's slab count, the region's (`ClassLine::wf`), and its bit test
+  `SlabTable::bit_word` (the word load `is_set_unchecked` now calls
+  too), which ensures `!guard_slab` of a set bit; so `set_slot` still
+  ensures `is_slot`, and that the slab is below the slab count.
 - Sized frees: `Shared::sized_slot` (`heap/shared.rs:1806`) through
   `GuardTest::is_guard`, which now ensures its formula;
   `GuardTest::lemma_is_guard` (`:175`, `bit_vector`) proves the folded
   test (`(slab + spp) & (mask << lg) == 0`) equal to `guard_of` for
   every slab of a region (`slab < 2^26`, `lg <= 26`), and `Shared::wf`
   (`:1416`) now states that `guard_test[c]` tests the class's geometry
-  (`GuardTest::of`, `:204`, which `init` stores).
+  (`GuardTest::of`, `:204`, which `init` stores). Since upstream #87 the
+  test is the class line's (`lines[c].guard`, which `ClassLine::wf`
+  states is `GuardTest::of` the table), and the slot-start test the
+  line's (`ClassLine::sized_ok`, after the region bound), in place of
+  `Regions::slot_in_class`.
 - Cached slots: the cache invariant already holds `is_slot` of every
   entry, so pops, refills, flushes and rebuilds carry the guard
   exclusion unchanged.
@@ -1068,13 +1113,18 @@ share no page with the guard pages of any live run, its own included.
   assumption that names the slot tokens' authority, no new kind of
   premise.
 - `heap::shared::axiom_shared_built` (`heap/shared.rs:664`) now also
-  states the stored guard tests, as it states the tables.
+  states the stored guard tests, as it states the tables (since
+  upstream #87 the stored class lines, which carry them).
+- Since upstream #87, the class lines' premises ("Class lines", common
+  premises): the watermark copy is never ahead of the watermark, and
+  the copy's pointer stays valid.
 - `vspec::word::load` (`external_body`, one atomic load of the word, as
   the three writers are one atomic step each); its result is the
   permission's value under sequential consistency.
 - Class lock axioms for `ready`, and `api::shared_unchecked`'s (since
   upstream #77 `api::shared_deref`'s) `Shared::wf`
-  for the guard tests and the table geometry the free paths read.
+  for the guard tests and the table geometry the free paths read (since
+  upstream #87, for the class lines).
 
 **Where the statement is weaker than the code.**
 - Huge runs are covered only at the lock invariant: `alloc_run` now
@@ -1134,11 +1184,18 @@ call them:
   `FREE_ROUTE`, and `Heap::push_fast`) inside it.
   Since upstream #77 `api::shared_base` and `shared_deref` take the
   place of `shared_unchecked` and `sys::opaque`, and the bit test's
-  word index goes through `class::table::word_index`.
+  word index goes through `class::table::word_index`. Since upstream
+  #87 the bit test reads the class's line (`ClassLine::set_slab`: its
+  `slot_start`, `class::load_mirror` of the watermark copy, the aarch64
+  `bit_fields`, `word_index` and `SlabTable::bit_word`), the owner test
+  is `ClassLine::owner` (`SlabTable::owner_from`), and
+  `free_fast_tail` takes the place of `free_fast_push`, with the heap
+  from `heap_from_slot` in each arm of its dispatch.
 - `free_sized`, and `sdallocx` with no flags: `class_index`, `shared_ptr`,
   `existing_heap`, `shared_unchecked` and `heap::free_sized_fast`
   (`heap/paths.rs:594`); since upstream #77 `shared_base` in place of
-  `shared_ptr`, and `shared_deref` in place of `shared_unchecked`.
+  `shared_ptr`, and `shared_deref` in place of `shared_unchecked`; since
+  #87 `sized_slot` reads the class's line (`ClassLine::sized_ok`).
 - `challoc_free_usable`: `existing_heap`, `shared_ptr`,
   `shared_unchecked`, `heap::free_fast_class` (`heap/paths.rs:564`) and
   `class_size` (`api/libc.rs:890`); since upstream #78
@@ -1227,7 +1284,9 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   `arena_volatile` (`heap/mod.rs`, a volatile read),
   `load_owner` (a `Relaxed` load) and
   the watermark's load (`vspec::atom::load_usize_in`, an atomic load),
-  `vspec::word::load` (an atomic load), `layout::regions::class_entry`
+  `vspec::word::load` (an atomic load; since upstream #87 the class
+  line's watermark copy is read by the same `load_usize_in`, through the
+  verified `class::load_mirror`), `layout::regions::class_entry`
   (an empty `asm!`), `addr_to_ptr`, `api::shared_ptr` and
   `shared_unchecked`; since upstream #78 also `Shared::free_flags` (a
   `Relaxed` load) and `sys::opaque` (an empty `asm!` on aarch64), and
@@ -1348,6 +1407,17 @@ pub unsafe fn shared_deref(p: *const Shared) -> (r: &'static Shared)
     opens_invariants none
 ```
 
+Since upstream #87 the dispatch after the bit test is this one, in
+place of `free_fast_push` (the heap comes from the slot value in each
+arm), and the bit test reads the class's line, whose watermark copy's
+invariant is in `committed_ns()` too (`class::load_mirror`), so
+`free_fast_slot`'s mask is unchanged:
+
+```rust
+unsafe fn free_fast_tail(shared: &Shared, class: usize, slab: usize, p: *mut u8, flags: u8, t: usize, tp: usize, blk) -> (r: Option<usize>)   // heap/paths.rs
+    opens_invariants none
+```
+
 (Signatures shortened.) `any` is no subset of either mask, so no call
 chain from a masked function reaches a lock acquisition: **no function
 the `malloc` and `free` fast branches call can acquire a lock**. The
@@ -1406,7 +1476,8 @@ paths, verified unless marked trusted:
 - **Pop:** `Heap::alloc_fast`, `pop_fast`, `cache_ptr`, `home_ptr_at`
   (trusted), `pop_top`, `CacheHeader::slots`.
 - **Push:** `free_fast_slot`, `free_fast_push` (since upstream #78; before,
-  `free_fast`, `free_fast_class`), `free_sized_fast`,
+  `free_fast`, `free_fast_class`; since #87 `free_fast_tail` in place of
+  `free_fast_push`), `free_sized_fast`,
   `Heap::push_fast`, `push_cache_flags`, `push_cache`, `cached_recently`
   (trusted).
 - **Free checks:** `Shared::push_flags`, `Shared::free_flags`
@@ -1416,11 +1487,18 @@ paths, verified unless marked trusted:
   `verus/seams/heap-Heap-arena_volatile.md`); `SlabTable::watermark`,
   `is_handed_out`, `is_set_unchecked`, `owner_unchecked`,
   `owner_at`, `load_owner` (trusted), and since #77 `word_index`
-  (trusted, an empty `asm!` on aarch64).
+  (trusted, an empty `asm!` on aarch64). Since #87 the class line's
+  `ClassLine::set_slab`, `slot_start`, `bit_fields` (aarch64), `owner`
+  and `sized_ok`, `class::load_mirror`, and `SlabTable::bit_word` and
+  `owner_from` in place of `is_handed_out`, `is_set_unchecked`,
+  `owner_unchecked` (removed) and `owner_at`; `load_owner`, `word_index`
+  and `GuardTest::is_guard` stay.
 - **Layout:** `Regions::slab_slot_unbounded` (since #78, for the
   unsized path; `slab_slot` before), `slot_in_class`, `region_len`, the
   free function `layout::regions::class_entry` (trusted);
-  `Class::slab_size`, `slab_mask`, `slot_of_offset`.
+  `Class::slab_size`, `slab_mask`, `slot_of_offset`. Since #87 only
+  `region_len` (the sized path's bound): the lines hold the geometry,
+  `slab_slot_unbounded` is gone and `slot_in_class` is test-only.
 - **Primitives:** `sys::pac::sign` and `auth` (trusted asm),
   `sys::opaque` (trusted, an empty `asm!` on aarch64, from #78 until
   #77 replaced it with `shared_base`),
@@ -1439,7 +1517,11 @@ Upstream #78 replaced the `multi_arena` load with the `FREE_ROUTE` bit
 of the `free_flags` byte the push dispatch loads anyway
 (`Shared::free_flags`, trusted, `opens_invariants none`), so the
 `vspec::atomic::load_bool` wrapper below had no caller left and is
-gone.
+gone. Since upstream #87 the class line's sized check spells
+`slot_start(rel).is_some()` as a `match` (vstd's `Option::is_some` has
+the default mask; the same code), and `set_slab` and `owner` are given
+the class's table for its word and owner permissions (it is not loaded
+from: the machine code is upstream's).
 
 **Premises beyond the common ones.**
 - **Trusted masks.** Each trusted function's mask is a declaration that
@@ -1828,7 +1910,9 @@ premise below that nothing writes them in between.
   (`lemma_free_route_bits`), and `free_fast_slot` ensures
   `zero_on_free(shared) ==> r is None`. That the byte's `PUSH_ZERO` bit
   is `flags()`'s rests on `Shared::free_flags`' trusted contract (common
-  premises; `Shared::lemma_free_flags`).
+  premises; `Shared::lemma_free_flags`). Since upstream #87
+  `free_fast_tail` makes the same dispatch in place of `free_fast_push`
+  (each arm taking the heap from the slot value) and ensures the same.
 - `realloc`, `rallocx`, `dallocx`, explicit tcaches and the sized paths'
   slow halves all free through `heap::free`, `Heap::free` or (for
   `MALLOCX_TCACHE_NONE`) `heap::free_direct`, so through the paths
@@ -2185,8 +2269,11 @@ an owned slab, and ensures its pick's owner; `plan` collects
   its invariant before releasing it (`axiom_table_lock_inv`; not
   checked at the release, `LockGuard::drop`). "Handed out before read"
   is not checked by Verus: `owner_at` requires only `slab < nslabs`,
-  and its callers (`owner`, `check_located`, `owner_unchecked`) test
-  the watermark first.
+  and its callers (`owner`, `check_located`, `owner_unchecked`; since
+  upstream #87 `owner_from`, through the class line's copies of
+  `owners_base` and `lg_group`, in place of `owner_unchecked`) test
+  the watermark first (`owner_from`'s caller, the class line's copy of
+  it, which is never ahead of it: "Class lines", common premises).
 - Sequential consistency for the owner words, as for every atomic.
   `check_located` reaches the owner load after a `Relaxed` watermark
   load (`check_live`), the one owner path without `Acquire`.
@@ -2208,7 +2295,10 @@ an owned slab, and ensures its pick's owner; `plan` collects
   `owner_unchecked` (verified); it only picks the cache. Since upstream
   #78 it is `Shared::home_owns`, which `free_fast_push` calls when the
   `free_flags` byte has `FREE_ROUTE` (several arenas); with one arena
-  it is skipped, as the `multi_arena` test skipped it before.
+  it is skipped, as the `multi_arena` test skipped it before. Since
+  upstream #87 `home_owns` reads the owner word through the class line
+  (`ClassLine::owner`, `SlabTable::owner_from`, verified, the same
+  `load_owner`), and `free_fast_tail` calls it.
 
 ## 15. Re-entrant heap registration
 
@@ -3853,7 +3943,8 @@ premises (`axiom_class_table_wf`).
   documented no-op; that NULL is no free target says only that they
   cannot have acted on a block there. Since upstream #78 `free` has no
   null test on its fast branch: null never passes the bit test (what
-  `set_slot` returns is a slot start, never at 0) and `free_slow`
+  `set_slot` returns is a slot start, never at 0; since upstream #87
+  through the class line, the same ensures) and `free_slow`
   returns for it, so the no-op
   is the slow path's (`free_slow`'s `p@.addr != 0 ==>` ensures).
 

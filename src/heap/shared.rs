@@ -1,9 +1,10 @@
 //! [`Shared`], the process-wide allocator state every heap works against,
 //! and the checks it performs for the fast and slow paths; the thread-exit
-//! key and the thread id, clock and seed a heap reads, and the sized fast
-//! path's [`GuardTest`].
+//! key and the thread id, clock and seed a heap reads, and the per-class
+//! [`ClassLine`] the `free` fast paths read, with the sized path's
+//! [`GuardTest`].
 
-use crate::sync::atomic::{AtomicU8, Ordering};
+use crate::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use core::ffi::c_void;
 use core::ptr;
 
@@ -12,17 +13,18 @@ use crate::arena::{Arena, Arenas, Held, elem_at, field_at, fits};
 use crate::arena::{
     elems_at, elems_init, elems_uninit, field_fits, field_ptr, split_array, storage_ok, take_field,
 };
-use crate::class::SlabTable;
+use crate::class::{CommittedInv, SlabTable};
 use crate::config::Config;
 use crate::huge::{Huge, RunState};
-#[cfg(verus_only)]
-use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
+#[cfg(verus_only)]
+use crate::layout::{class_table, process_regions};
 use crate::lock::RawLock;
 use crate::lock::{Lock, LockOrder};
 #[cfg(verus_only)]
 use crate::lock::{
-    axiom_entry, rank_arenas, rank_class, rank_huge, rank_meta, rank_stats, rank_tcaches,
+    axiom_entry, rank_arenas, rank_class, rank_huge, rank_meta, rank_stats, rank_table,
+    rank_tcaches,
 };
 use crate::meta::Meta;
 use crate::policy::Policy;
@@ -30,6 +32,9 @@ use crate::stats::Snapshot;
 #[cfg(verus_only)]
 use crate::stats::axiom_snapshot_lock_inv;
 use crate::sys::cgroup::Cgroup;
+#[cfg(verus_only)]
+use crate::vspec::atom::usize_id;
+use crate::vspec::atom::usize_ptr;
 #[cfg(verus_only)]
 use crate::vspec::once;
 use crate::vspec::once::{Once, Step};
@@ -68,13 +73,19 @@ pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
 /// key. Built in place by [`Shared::init`] because the class states borrow
 /// `meta`, `regions` and `tables`.
 ///
-/// `repr(C)` fixes the order: `free_flags` and `regions`, read by every
-/// `malloc` and `free`, come first, then the line-aligned tables (read by
-/// every `free`) and arena 0's class states, so the locks inside `meta` and
-/// `huge` (taken on heap creation and huge allocations) never share a cache
-/// line with them.
+/// `repr(C)` fixes the order: the per-class lines (read by every `free`),
+/// then `free_flags` and `regions`, read by every `malloc` and `free`,
+/// then the line-aligned tables and arena 0's class states, so the locks
+/// inside `meta` and `huge` (taken on heap creation and huge allocations)
+/// never share a cache line with them.
 #[repr(C)]
 pub struct Shared {
+    /// What the `free` and sized `free` fast paths read per class, one
+    /// line each ([`ClassLine`]). At offset 0: the fast paths hold a
+    /// class's line as a reference, and LLVM builds its address as
+    /// `Shared + class * 64` plus the array's offset, one more `add`
+    /// whenever that offset is not zero.
+    pub(crate) lines: [ClassLine; NCLASSES],
     /// The one byte the `free` fast path loads for its dispatch:
     /// [`push_flags`](Shared::push_flags) plus [`FREE_ROUTE`], set once a
     /// second arena exists. Until then every slab and every heap is arena
@@ -88,9 +99,9 @@ pub struct Shared {
     /// already sees the bit. The sized path and `malloc` read
     /// `push_flags`, which never changes after init.
     ///
-    /// First, so it shares a cache line with the `Regions` fields that
-    /// `slab_slot` reads on every `free` (`superblock`, `lg_stride`, the
-    /// low `class_base` entries): after `Regions` it would sit on its own
+    /// Right before `regions`, so it shares a cache line with the
+    /// `Regions` fields that `set_slot` reads on every `free`
+    /// (`superblock`, `lg_stride`): after `Regions` it would sit on its own
     /// line, and larson's working set turns every extra line into an L2
     /// hit.
     pub(crate) free_flags: AtomicU8,
@@ -107,11 +118,6 @@ pub struct Shared {
     /// one predicted branch.
     pub(crate) push_flags: u8,
     pub regions: Regions,
-    /// The sized fast path's guard test per class: a dense array (8 bytes
-    /// per class, seven lines for all 52) so `sized_slot` never touches
-    /// the 384-byte class table line (it reads neither the watermark nor
-    /// the descriptor; both checks are the flush's).
-    pub(crate) guard_test: [GuardTest; NCLASSES],
     pub(crate) tables: [SlabTable; NCLASSES],
     pub arena0: Arena,
     pub meta: Meta,
@@ -140,6 +146,302 @@ pub struct Shared {
     pub cgroup: crate::sys::cgroup::Cgroup,
 }
 
+/// Everything the `free` fast path reads for one class, in one 64-byte
+/// line: the slot geometry (`Regions::class_base[c]` and `CLASSES[c]`'s
+/// slot-start test), the bitmap and owner array of [`SlabTable`] and a
+/// copy of its hand-out watermark. `[ClassLine; NCLASSES]` has a
+/// power-of-two stride equal to the heap's cache headers', so the class
+/// index scaled once addresses both, and every field is one load at an
+/// immediate offset from it; before, `free` indexed three arrays of
+/// different strides (`class_base`, the 32-byte `CLASSES`, the 384-byte
+/// tables, one `lea`/`shl` or `madd` each) and read three lines. The 52
+/// lines are consecutive, so they fill distinct L1 sets.
+///
+/// The copy of the watermark is stored after the table's own, under its
+/// commit lock ([`SlabTable::mirror_watermark`]), so it is never ahead of
+/// it: a slab below the copy has its bitmap words and owner word, and the
+/// relaxed load is enough for the reason [`SlabTable::desc_if_committed`]
+/// gives. A copy that lags the table only sends a `free` into a slab
+/// just handed out to the slow path, which repeats the check against the
+/// table itself.
+#[repr(C, align(64))]
+pub struct ClassLine {
+    class_base: usize,
+    bits_base: usize,
+    committed: AtomicUsize,
+    owners_base: usize,
+    slab_mask: u32,
+    inv_odd: u32,
+    nslots: u32,
+    slab_bits: u16,
+    tz: u8,
+    lg_slab: u8,
+    lg_group: u8,
+    /// The sized fast path's guard test for this class.
+    pub(super) guard: GuardTest,
+    /// Ghost (no bytes): the watermark copy's invariant, which bounds it
+    /// by the table's slab count as the table's own bounds the watermark
+    /// (`class::table::CommittedPred`); every store into the copy
+    /// is of a watermark value, inside it.
+    committed_inv: Tracked<CommittedInv>,
+}
+
+} // verus!
+
+const _: () = assert!(core::mem::size_of::<ClassLine>() == 64);
+const _: () = assert!(core::mem::offset_of!(Shared, lines) == 0);
+
+verus! {
+
+impl ClassLine {
+    /// The line of class `c`, whose table is `t` and regions `regions`:
+    /// the region base, the class's slot geometry (`class_table()[c]`,
+    /// after `adopt_page_geometry`), the table's bitmap and owner bases,
+    /// hand-out group and guard test ([`GuardTest::tests`]), and a
+    /// watermark copy bounded by the table's slab count.
+    pub(super) closed spec fn wf(&self, t: SlabTable, regions: Regions, c: int) -> bool {
+        let cls = class_table()[c];
+        &&& self.class_base == regions.class_base[c]
+        &&& t.spec_nslabs() as int == regions.spec_nslabs(c)
+        &&& t.spec_nslabs() <= 0x400_0000
+        &&& self.bits_base == t.spec_bits_base()
+        &&& self.owners_base == t.spec_owners_base()
+        &&& self.lg_group == t.spec_lg_group()
+        &&& self.slab_mask == cls.slab_mask
+        &&& self.inv_odd == cls.inv_odd
+        &&& self.nslots == cls.nslots
+        &&& self.slab_bits == cls.slab_bits
+        &&& self.tz == cls.tz
+        &&& self.lg_slab == cls.lg_slab
+        &&& self.guard.tests(crate::layout::guard_geom(c).0, crate::layout::guard_geom(c).1)
+        &&& self.committed_inv@.constant() == (usize_id(&self.committed), t.spec_nslabs())
+        &&& self.committed_inv@.namespace() == crate::class::committed_ns()
+    }
+
+    fn of(regions: &Regions, table: &SlabTable, class: usize) -> (r: ClassLine)
+        requires
+            class < NCLASSES,
+            *regions == process_regions(),
+            table.spec_class() == class,
+        ensures
+            r.wf(*table, *regions, class as int),
+    {
+        let cls = &CLASSES.table()[class];
+        let (committed, committed_inv) = table.new_mirror();
+        ClassLine {
+            class_base: regions.class_base[class],
+            bits_base: table.bits_base(),
+            committed,
+            owners_base: table.owners_base(),
+            slab_mask: cls.slab_mask,
+            inv_odd: cls.inv_odd,
+            nslots: cls.nslots,
+            slab_bits: cls.slab_bits,
+            tz: cls.tz,
+            lg_slab: cls.lg_slab,
+            lg_group: table.lg_group(),
+            guard: GuardTest::of(table),
+            committed_inv,
+        }
+    }
+
+    /// The slot-start test ([`Class::slot_of_offset`]) on `rel`, the
+    /// offset from the region base: the slot number, or `None` for an
+    /// address that is not a slot start of its slab.
+    ///
+    /// [`Class::slot_of_offset`]: crate::layout::Class::slot_of_offset
+    #[inline(always)]
+    fn slot_start(&self, rel: usize) -> (r: Option<u32>)
+        ensures
+            ({
+                let q = crate::vspec::core_int::rotr32(((rel as u32) & self.slab_mask).wrapping_mul(self.inv_odd), self.tz as u32);
+                r == if q < self.nslots { Some(q) } else { None }
+            }),
+        opens_invariants none
+    {
+        let slot = ((rel as u32) & self.slab_mask)
+            .wrapping_mul(self.inv_odd)
+            .rotate_right(self.tz as u32);
+        if slot < self.nslots { Some(slot) } else { None }
+    }
+
+    /// The slot-start test of class `c`'s line, as [`slot_start`]
+    /// computes it, is [`Class::slot_of_offset`]'s on the in-slab offset:
+    /// a slot `q` below `nslots` whose start is the offset.
+    ///
+    /// [`slot_start`]: ClassLine::slot_start
+    /// [`Class::slot_of_offset`]: crate::layout::Class::slot_of_offset
+    proof fn lemma_slot_start(&self, t: SlabTable, regions: Regions, c: int, rel: usize, q: u32)
+        requires
+            0 <= c < NCLASSES,
+            self.wf(t, regions, c),
+            q == crate::vspec::core_int::rotr32(((rel as u32) & self.slab_mask).wrapping_mul(self.inv_odd), self.tz as u32),
+            q < self.nslots,
+        ensures
+            q < class_table()[c].nslots,
+            rel & (((1usize << class_table()[c].lg_slab) - 1) as usize) == q * class_table()[c].size,
+    {
+        crate::vspec::class::axiom_class_table_wf(c);
+        let cls = class_table()[c];
+        let lg = cls.lg_slab;
+        let m = cls.slab_mask;
+        let mu = ((1usize << lg) - 1) as usize;
+        assert(m as usize == mu);
+        assert(crate::layout::MAX_SLAB == 0x40_0000) by (bit_vector);
+        let off = rel & mu;
+        assert(off < (1usize << lg) && (rel as u32) & m == off as u32) by (bit_vector)
+            requires lg <= 22, mu == ((1usize << lg) - 1) as usize, m as usize == mu, off == rel & mu;
+        crate::layout::lemma_slot_test(cls, off, q);
+    }
+
+    /// The sized free's check on this class's line: whether `p`, at `rel`
+    /// from the region base and already known inside the region, is a
+    /// slot start in a slab that is not a guard slab.
+    #[inline(always)]
+    fn sized_ok(&self, rel: usize) -> (r: bool)
+        requires
+            self.lg_slab < 64,
+        ensures
+            r == (crate::vspec::core_int::rotr32(((rel as u32) & self.slab_mask).wrapping_mul(self.inv_odd), self.tz as u32) < self.nslots
+                && !self.guard.spec_is_guard(rel >> self.lg_slab)),
+        opens_invariants none
+    {
+        // `is_some()` spelled as a `match` (the same code): vstd's
+        // specification of `Option::is_some` may open any invariant.
+        match self.slot_start(rel) {
+            Some(_) => !self.guard.is_guard(rel >> self.lg_slab),
+            None => false,
+        }
+    }
+
+    /// The `free` check on this class's line: `Some(slab)` when `p` is a
+    /// slot start in a slab below the watermark whose bit is set, `None`
+    /// otherwise. The slot-start test is [`Class::slot_of_offset`]; the
+    /// watermark compare is also the region bound (an address past the
+    /// region, in the gap after it or below its base yields a slab number
+    /// of at least `nslabs`, which no watermark reaches). `table` is the
+    /// class's table, whose bitmap word permissions the bit test reads
+    /// through (it only names them: no load from it).
+    ///
+    /// [`Class::slot_of_offset`]: crate::layout::Class::slot_of_offset
+    #[inline(always)]
+    fn set_slab(&self, p: usize, table: &SlabTable) -> (r: Option<usize>)
+        requires
+            table.spec_class() < NCLASSES,
+            self.wf(*table, process_regions(), table.spec_class() as int),
+            process_regions().wf(),
+        ensures
+            r matches Some(slab) ==> slab < table.spec_nslabs()
+                && process_regions().is_slot(table.spec_class() as int, p),
+        opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns()]
+    {
+        let ghost c = table.spec_class() as int;
+        proof {
+            crate::vspec::class::axiom_class_table_wf(c);
+        }
+        // On aarch64 every field is read up front, before the first
+        // branch: read after it, LLVM rebuilt the line's address (one more
+        // `add`), and up front the two compares fold into a `ccmp`. On
+        // x86_64 that order costs callee-saved registers (`push` and `pop`
+        // of `rbx`, and `r14`), so there each is read just before its use.
+        #[cfg(target_arch = "aarch64")]
+        let (lg_slab, slab_bits, bits_base, committed) = self.bit_fields();
+        let rel = p.wrapping_sub(self.class_base);
+        let Some(slot) = self.slot_start(rel) else { return None };
+        #[cfg(not(target_arch = "aarch64"))]
+        let lg_slab = self.lg_slab;
+        let slab = rel >> lg_slab;
+        #[cfg(not(target_arch = "aarch64"))]
+        let committed = crate::class::load_mirror(&self.committed, &self.committed_inv);
+        if slab >= committed {
+            return None;
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        let (slab_bits, bits_base) = (self.slab_bits, self.bits_base);
+        proof {
+            self.lemma_slot_start(*table, process_regions(), c, rel, slot);
+            crate::vspec::class::axiom_class_table_wf(c);
+            assert(slab_bits == class_table()[c].slab_bits);
+            assert(slot < slab_bits) by {
+                assert(class_table()[c].nslots <= class_table()[c].slab_bits);
+            }
+            assert(slab * (slab_bits as int) + slab_bits <= 0x400_0000 * 0x1_0000) by (nonlinear_arith)
+                requires slab < 0x400_0000, slab_bits <= 0x1_0000;
+        }
+        let bit = slab * slab_bits as usize + slot as usize;
+        // As in `SlabTable::is_set_unchecked`: on aarch64 `bit >> 6` and a
+        // scaled `ldr`, not LLVM's `(bit >> 3) & !7`.
+        let index = crate::class::word_index(bit / 64);
+        // SAFETY: `slab` is below a value the watermark held and `slot`
+        // below `nslots`, so the word is in the committed bitmap.
+        if (unsafe { table.bit_word(bits_base, index, Ghost(slab), Ghost(slot as usize), Ghost(bit)) } >> (bit % 64)) & 1 == 0 {
+            return None;
+        }
+        proof {
+            // Below the table's slab count, which is the region's: the
+            // offset is inside the region, a slot start of `slab`, which a
+            // set bit says is not a guard slab.
+            let regions = process_regions();
+            let lg = class_table()[c].lg_slab;
+            let lr = regions.lg_region;
+            let rl = 1usize << lr;
+            assert(rel < rl) by (bit_vector)
+                requires
+                    lg <= 22,
+                    22 <= lr < 64,
+                    rl == 1usize << lr,
+                    slab == rel >> lg,
+                    slab < rl >> lg,
+            ;
+            regions.lemma_slot_of(c, p, slot as usize);
+            regions.lemma_is_slot(c, slab as int, slot as int, p);
+        }
+        Some(slab)
+    }
+
+    /// What [`set_slab`](ClassLine::set_slab) reads past the slot-start
+    /// test: `lg_slab`, `slab_bits`, `bits_base` and the watermark copy.
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    fn bit_fields(&self) -> (r: (u8, u16, usize, usize))
+        requires
+            self.committed_inv@.constant().0 == usize_id(&self.committed),
+            self.committed_inv@.namespace() == crate::class::committed_ns(),
+        ensures
+            r.0 == self.lg_slab,
+            r.1 == self.slab_bits,
+            r.2 == self.bits_base,
+            r.3 <= self.committed_inv@.constant().1,
+        opens_invariants [crate::class::committed_ns()]
+    {
+        (
+            self.lg_slab,
+            self.slab_bits,
+            self.bits_base,
+            crate::class::load_mirror(&self.committed, &self.committed_inv),
+        )
+    }
+
+    /// The arena that owns `slab`'s group, through `table`'s owner word
+    /// permissions (`table` is the class's: no load from it).
+    ///
+    /// # Safety
+    /// `slab` is one [`set_slab`](ClassLine::set_slab) returned.
+    #[inline(always)]
+    unsafe fn owner(&self, slab: usize, table: &SlabTable) -> (r: u16)
+        requires
+            table.spec_class() < NCLASSES,
+            self.wf(*table, process_regions(), table.spec_class() as int),
+            slab < table.spec_nslabs(),
+        ensures
+            r == crate::class::slab_owner(table.spec_class() as int, slab as int),
+        opens_invariants none
+    {
+        // SAFETY: as `SlabTable::owner_at`.
+        unsafe { table.owner_from(self.owners_base, self.lg_group, slab) }
+    }
+}
+
 /// [`SlabTable::is_guard_slab`] folded into one add and one mask on the
 /// slab number, for the sized fast path: `(slab + add) & mask == 0` with
 /// `add = slabs_per_page` and `mask = (interval - 1) << lg_slabs_per_page`
@@ -147,7 +449,7 @@ pub struct Shared {
 /// test, since `slab + spp` is `((slab >> lg_spp) + 1) << lg_spp` plus the
 /// low bits the shifted mask ignores. With guards off the mask is
 /// `u32::MAX << lg_spp` and `slab + spp` is never below `spp`, so nothing
-/// matches. `Shared::init` fills one per class from its table;
+/// matches. `Shared::init` fills one into each class's [`ClassLine`];
 /// `guard_test_agrees_with_the_tables` checks the two forms against each
 /// other over every class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,6 +460,21 @@ pub struct GuardTest {
 }
 
 } // verus!
+
+#[cfg(test)]
+impl ClassLine {
+    /// Tests: the line's fields as `(class_base, bits_base, watermark copy,
+    /// owners_base, lg_group)`.
+    pub(super) fn parts(&self) -> (usize, usize, usize, usize, u8) {
+        (
+            self.class_base,
+            self.bits_base,
+            self.committed.load(Ordering::Relaxed),
+            self.owners_base,
+            self.lg_group,
+        )
+    }
+}
 
 verus! {
 
@@ -575,13 +892,13 @@ impl Shared {
 // evaluate, so their values are opaque to it; `axiom_shared_layout`
 // states what verified code relies on, and the build checks it.
 #[verifier::external_body]
+const S_LINES: usize = core::mem::offset_of!(Shared, lines);
+#[verifier::external_body]
 const S_FREE_FLAGS: usize = core::mem::offset_of!(Shared, free_flags);
 #[verifier::external_body]
 const S_PUSH_FLAGS: usize = core::mem::offset_of!(Shared, push_flags);
 #[verifier::external_body]
 const S_REGIONS: usize = core::mem::offset_of!(Shared, regions);
-#[verifier::external_body]
-const S_GUARD_TEST: usize = core::mem::offset_of!(Shared, guard_test);
 #[verifier::external_body]
 const S_TABLES: usize = core::mem::offset_of!(Shared, tables);
 #[verifier::external_body]
@@ -613,12 +930,12 @@ const S_CGROUP: usize = core::mem::offset_of!(Shared, cgroup);
 /// evaluates the same conditions with `arena::fits`.
 axiom fn axiom_shared_layout()
     ensures
+        field_fits::<Shared, [ClassLine; NCLASSES]>(S_LINES, S_FREE_FLAGS as int),
         field_fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS as int),
         field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGIONS as int),
-        field_fits::<Shared, Regions>(S_REGIONS, S_GUARD_TEST as int),
-        field_fits::<Shared, [GuardTest; NCLASSES]>(S_GUARD_TEST, S_TABLES as int),
+        field_fits::<Shared, Regions>(S_REGIONS, S_TABLES as int),
         field_fits::<Shared, [SlabTable; NCLASSES]>(S_TABLES, S_ARENA0 as int),
-        NCLASSES * size_of::<GuardTest>() <= isize::MAX,
+        NCLASSES * size_of::<ClassLine>() <= isize::MAX,
         NCLASSES * size_of::<SlabTable>() <= isize::MAX,
         field_fits::<Shared, Arena>(S_ARENA0, S_META as int),
         field_fits::<Shared, Meta>(S_META, S_HUGE as int),
@@ -642,12 +959,12 @@ axiom fn axiom_shared_layout()
 
 // `axiom_shared_layout`, checked.
 const _: () = assert!(
-    fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS)
+    fits::<Shared, [ClassLine; NCLASSES]>(S_LINES, S_FREE_FLAGS)
+        && fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS)
         && fits::<Shared, u8>(S_PUSH_FLAGS, S_REGIONS)
-        && fits::<Shared, Regions>(S_REGIONS, S_GUARD_TEST)
-        && fits::<Shared, [GuardTest; NCLASSES]>(S_GUARD_TEST, S_TABLES)
+        && fits::<Shared, Regions>(S_REGIONS, S_TABLES)
         && fits::<Shared, [SlabTable; NCLASSES]>(S_TABLES, S_ARENA0)
-        && NCLASSES as u128 * core::mem::size_of::<GuardTest>() as u128 <= isize::MAX as u128
+        && NCLASSES as u128 * core::mem::size_of::<ClassLine>() as u128 <= isize::MAX as u128
         && NCLASSES as u128 * core::mem::size_of::<SlabTable>() as u128 <= isize::MAX as u128
         && fits::<Shared, Arena>(S_ARENA0, S_META)
         && fits::<Shared, Meta>(S_META, S_HUGE)
@@ -665,8 +982,8 @@ const _: () = assert!(
 
 // `arena::Arena::axiom_array_layout` at `split`'s two instances, checked.
 const _: () = assert!(
-    core::mem::size_of::<[GuardTest; NCLASSES]>() == NCLASSES * core::mem::size_of::<GuardTest>()
-        && core::mem::align_of::<[GuardTest; NCLASSES]>() == core::mem::align_of::<GuardTest>()
+    core::mem::size_of::<[ClassLine; NCLASSES]>() == NCLASSES * core::mem::size_of::<ClassLine>()
+        && core::mem::align_of::<[ClassLine; NCLASSES]>() == core::mem::align_of::<ClassLine>()
         && core::mem::size_of::<[SlabTable; NCLASSES]>()
             == NCLASSES * core::mem::size_of::<SlabTable>()
         && core::mem::align_of::<[SlabTable; NCLASSES]>() == core::mem::align_of::<SlabTable>()
@@ -676,7 +993,7 @@ verus! {
 
 /// The permissions to the fields of a `Shared` under construction but
 /// its regions (frozen once written: [`axiom_shared_regions`]) and its
-/// guard tests and tables, which are maps of their own, element by
+/// class lines and tables, which are maps of their own, element by
 /// element ([`Shared::split`]). `arena0` and `arenas` are [`Held`]
 /// because `Arena::init` and `Arenas::init` take theirs out and
 /// hand them back.
@@ -702,8 +1019,8 @@ tracked struct SharedParts {
 /// inside its allocation.
 spec fn shared_ok(p: *mut Shared) -> bool {
     &&& storage_ok(p)
-    &&& in_alloc(field_ptr::<Shared, GuardTest>(p, S_GUARD_TEST), NCLASSES as int * size_of::<GuardTest>())
-    &&& NCLASSES * size_of::<GuardTest>() <= isize::MAX
+    &&& in_alloc(field_ptr::<Shared, ClassLine>(p, S_LINES), NCLASSES as int * size_of::<ClassLine>())
+    &&& NCLASSES * size_of::<ClassLine>() <= isize::MAX
     &&& in_alloc(field_ptr::<Shared, SlabTable>(p, S_TABLES), NCLASSES as int * size_of::<SlabTable>())
     &&& NCLASSES * size_of::<SlabTable>() <= isize::MAX
     &&& field_ptr::<Shared, SlabTable>(p, S_TABLES)@.addr + NCLASSES * size_of::<SlabTable>() <= usize::MAX
@@ -747,9 +1064,9 @@ impl SharedParts {
     }
 }
 
-/// The guard test permissions of the `Shared` at `p`, element by element.
-spec fn guard_tests_at(m: Map<int, PointsTo<GuardTest>>, p: *mut Shared) -> bool {
-    elems_at(m, field_ptr::<Shared, GuardTest>(p, S_GUARD_TEST), 0, NCLASSES as int)
+/// The class line permissions of the `Shared` at `p`, element by element.
+spec fn lines_at(m: Map<int, PointsTo<ClassLine>>, p: *mut Shared) -> bool {
+    elems_at(m, field_ptr::<Shared, ClassLine>(p, S_LINES), 0, NCLASSES as int)
 }
 
 /// The table permissions of the `Shared` at `p`, element by element.
@@ -758,35 +1075,35 @@ spec fn tables_at(m: Map<int, PointsTo<SlabTable>>, p: *mut Shared) -> bool {
 }
 
 /// The written fields of the `Shared` at `p` (`Shared::split`'s parts and
-/// guard tests, every one initialised, and the tables), as the value
+/// class lines, every one initialised, and the tables), as the value
 /// [`shared_at`] names: the fields [`Shared::wf`] reads are what their
 /// permissions hold. Trusted, as `arena::axiom_arena_assemble` is: vstd
 /// has no way to join typed permissions, and the permissions cover every
 /// field at its offset. The permissions are used up, so nothing verified
 /// writes the fields afterwards; that nothing unverified does is
-/// `shared_at`'s own assumption. The tables' permissions are frozen
-/// already (`vstd::modes::tracked_static_ref`, once `init` has written
-/// them, as the regions' is), so they are only read: nothing can write
-/// through them. What comes back is the join, the permission to the
-/// whole value, frozen too (`&'static`): readers share it, and nothing
-/// can write through it.
+/// `shared_at`'s own assumption. The tables' and the class lines'
+/// permissions are frozen already (`vstd::modes::tracked_static_ref`,
+/// once `init` has written them, as the regions' is), so they are only
+/// read: nothing can write through them. What comes back is the join, the
+/// permission to the whole value, frozen too (`&'static`): readers share
+/// it, and nothing can write through it.
 axiom fn axiom_shared_built(
     tracked parts: SharedParts,
-    tracked guard_tests: Map<int, PointsTo<GuardTest>>,
+    tracked lines: &'static Map<int, PointsTo<ClassLine>>,
     tracked tables: &'static Map<int, PointsTo<SlabTable>>,
     p: *mut Shared,
 ) -> (tracked r: &'static PointsTo<Shared>)
     requires
         parts.at(p),
         parts.written(),
-        guard_tests_at(guard_tests, p),
-        elems_init(guard_tests, 0, NCLASSES as int),
+        lines_at(*lines, p),
+        elems_init(*lines, 0, NCLASSES as int),
         tables_at(*tables, p),
         elems_init(*tables, 0, NCLASSES as int),
     ensures
         shared_at(p).push_flags == parts.push_flags.value(),
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] shared_at(p).tables[c] == tables[c].value(),
-        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] shared_at(p).guard_test[c] == guard_tests[c].value(),
+        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] shared_at(p).lines[c] == lines[c].value(),
         shared_at(p).meta == parts.meta.value(),
         shared_at(p).huge == parts.huge.value(),
         shared_at(p).config == parts.config.value(),
@@ -861,11 +1178,11 @@ impl Shared {
 
     /// The permissions to the fields of the uninitialised `Shared` `perm`
     /// is to: [`take_field`] for each field at the offsets
-    /// [`axiom_shared_layout`] gives, and the guard tests and the tables
+    /// [`axiom_shared_layout`] gives, and the class lines and the tables
     /// split by [`split_array`]; the regions' permission last.
     proof fn split(tracked perm: PointsTo<Shared>) -> (tracked r: (
         SharedParts,
-        Map<int, PointsTo<GuardTest>>,
+        Map<int, PointsTo<ClassLine>>,
         Map<int, PointsTo<SlabTable>>,
         PointsTo<Regions>,
     ))
@@ -889,7 +1206,7 @@ impl Shared {
             r.0.tcaches.is_uninit(),
             r.0.stats.is_uninit(),
             r.0.cgroup.is_uninit(),
-            guard_tests_at(r.1, perm.ptr()),
+            lines_at(r.1, perm.ptr()),
             elems_uninit(r.1, 0, NCLASSES as int),
             tables_at(r.2, perm.ptr()),
             elems_uninit(r.2, 0, NCLASSES as int),
@@ -902,15 +1219,10 @@ impl Shared {
         perm.is_aligned();
         let tracked raw = perm.into_raw();
         axiom_raw_valid(&raw, p as *mut u8, size_of::<Shared>() as int);
+        let tracked (lines, raw) = take_field::<Shared, [ClassLine; NCLASSES]>(raw, p, S_LINES, S_FREE_FLAGS as int);
         let tracked (free_flags, raw) = take_field::<Shared, AtomicU8>(raw, p, S_FREE_FLAGS, S_PUSH_FLAGS as int);
         let tracked (push_flags, raw) = take_field::<Shared, u8>(raw, p, S_PUSH_FLAGS, S_REGIONS as int);
-        let tracked (regions, raw) = take_field::<Shared, Regions>(raw, p, S_REGIONS, S_GUARD_TEST as int);
-        let tracked (guard_test, raw) = take_field::<Shared, [GuardTest; NCLASSES]>(
-            raw,
-            p,
-            S_GUARD_TEST,
-            S_TABLES as int,
-        );
+        let tracked (regions, raw) = take_field::<Shared, Regions>(raw, p, S_REGIONS, S_TABLES as int);
         let tracked (tables, raw) = take_field::<Shared, [SlabTable; NCLASSES]>(raw, p, S_TABLES, S_ARENA0 as int);
         let tracked (arena0, raw) = take_field::<Shared, Arena>(raw, p, S_ARENA0, S_META as int);
         let tracked (meta, raw) = take_field::<Shared, Meta>(raw, p, S_META, S_HUGE as int);
@@ -923,11 +1235,11 @@ impl Shared {
         let tracked (tcaches, raw) = take_field::<Shared, Tcaches>(raw, p, S_TCACHES, S_STATS as int);
         let tracked (stats, raw) = take_field::<Shared, Lock<Snapshot>>(raw, p, S_STATS, S_CGROUP as int);
         let tracked (cgroup, _raw) = take_field::<Shared, Cgroup>(raw, p, S_CGROUP, size_of::<Shared>() as int);
-        crate::arena::axiom_array_layout::<GuardTest, NCLASSES>();
+        crate::arena::axiom_array_layout::<ClassLine, NCLASSES>();
         crate::arena::axiom_array_layout::<SlabTable, NCLASSES>();
-        let tracked guard_tests = split_array(guard_test);
+        let tracked lines = split_array(lines);
         let tracked tables = split_array(tables);
-        crate::arena::lemma_field_cast::<Shared, [GuardTest; NCLASSES], GuardTest>(p, S_GUARD_TEST);
+        crate::arena::lemma_field_cast::<Shared, [ClassLine; NCLASSES], ClassLine>(p, S_LINES);
         crate::arena::lemma_field_cast::<Shared, [SlabTable; NCLASSES], SlabTable>(p, S_TABLES);
         (
             SharedParts {
@@ -945,7 +1257,7 @@ impl Shared {
                 stats,
                 cgroup,
             },
-            guard_tests,
+            lines,
             tables,
             regions,
         )
@@ -1083,26 +1395,44 @@ impl Shared {
         unsafe { field_at(this, S_TABLES) }
     }
 
-    /// `guard_test[c]`, through the permission `pg` to it.
+    /// `lines[c]`, through the permission `pl` to it.
     #[inline(always)]
-    unsafe fn put_guard_test(this: *mut Shared, c: usize, g: GuardTest, Tracked(pg): Tracked<&mut PointsTo<GuardTest>>)
+    unsafe fn put_line(this: *mut Shared, c: usize, l: ClassLine, Tracked(pl): Tracked<&mut PointsTo<ClassLine>>)
         requires
             shared_ok(this),
             c < NCLASSES,
-            old(pg).ptr() == ptr_add(field_ptr::<Shared, GuardTest>(this, S_GUARD_TEST), c),
+            old(pl).ptr() == ptr_add(field_ptr::<Shared, ClassLine>(this, S_LINES), c),
         ensures
-            final(pg).ptr() == old(pg).ptr(),
-            final(pg).is_init(),
-            final(pg).value() == g,
+            final(pl).ptr() == old(pl).ptr(),
+            final(pl).is_init(),
+            final(pl).value() == l,
     {
         proof {
             axiom_shared_layout();
         }
         // SAFETY: element `c` of the field, through its permission.
         unsafe {
-            let guard_test: *mut GuardTest = field_at(this, S_GUARD_TEST);
-            ptr_mut_write(elem_at(guard_test, c, NCLASSES), Tracked(pg), g)
+            let lines: *mut ClassLine = field_at(this, S_LINES);
+            ptr_mut_write(elem_at(lines, c, NCLASSES), Tracked(pl), l)
         }
+    }
+
+    /// The storage of the class lines: their field, as a pointer to its
+    /// first element.
+    #[inline(always)]
+    unsafe fn lines_ptr(this: *mut Shared) -> (r: *mut ClassLine)
+        requires
+            shared_ok(this),
+        ensures
+            r == field_ptr::<Shared, ClassLine>(this, S_LINES),
+            in_alloc(r, NCLASSES as int * size_of::<ClassLine>()),
+            NCLASSES * size_of::<ClassLine>() <= isize::MAX,
+    {
+        proof {
+            axiom_shared_layout();
+        }
+        // SAFETY: a projection inside `init`'s storage; nothing is read.
+        unsafe { field_at(this, S_LINES) }
     }
 
     /// The storage of arena 0.
@@ -1287,7 +1617,7 @@ impl Shared {
     /// has `MADV_GUARD_INSTALL`, without which no guard is placed at all
     /// (the `PROT_NONE` fallback would split every class region into one
     /// VMA per guard, see `class/`).
-    // The second loop writes `guard_test[c]` of the storage from `tables[c]`.
+    // The class line loops write `lines[c]` of the storage from `tables[c]`.
     #[allow(clippy::needless_range_loop)]
     #[verifier::loop_isolation(false)]
     #[verifier::rlimit(20)]
@@ -1337,7 +1667,7 @@ impl Shared {
         let tracked mut steps = steps;
         let tracked shared_once = once::take(&mut steps, Step::Shared);
         let Tracked(perm) = Shared::begin(this, Tracked(shared_once));
-        let tracked (mut parts, mut guard_tests, mut table_perms, mut regions_perm) = Shared::split(perm);
+        let tracked (mut parts, mut line_perms, mut table_perms, mut regions_perm) = Shared::split(perm);
         proof {
             assert(shared_ok(this));
             crate::arena::lemma_field_cast::<Shared, [SlabTable; NCLASSES], SlabTable>(this, S_TABLES);
@@ -1414,6 +1744,7 @@ impl Shared {
                     forall|d: int| 0 <= d < c ==> (#[trigger] table_perms[d]).value().spec_class() == d,
                     forall|d: int| 0 <= d < c ==> (#[trigger] table_perms[d]).value().meta_ok(),
                     ord.allows(rank_meta()),
+                    ord.allows(rank_table(0)),
                     forall|d: int| c <= d < NCLASSES ==> #[trigger] once::holds(steps, Step::SlotLoc(d)),
                     forall|d: int| c <= d < NCLASSES ==> #[trigger] once::holds(steps, Step::FreshWords(d)),
                     once::holds(steps, Step::Huge),
@@ -1469,33 +1800,67 @@ impl Shared {
                 assert forall|d: int| 0 <= d < NCLASSES implies (#[trigger] table_perms[d]).value().spec_class() == d by {}
                 assert(in_alloc(tables, NCLASSES as int * size_of::<SlabTable>()));
             }
+            // Each class's line, from its table and the regions.
+            let lines = Shared::lines_ptr(this);
             for c in 0..NCLASSES
                 invariant
-                    guard_tests_at(guard_tests, this),
-                    elems_init(guard_tests, 0, c as int),
+                    lines_at(line_perms, this),
+                    elems_init(line_perms, 0, c as int),
                     crate::class::tables_ok(*table_perms, tables),
-                    forall|d: int| 0 <= d < c ==> (#[trigger] guard_tests[d]).value().tests(
-                        crate::layout::guard_geom(d).0, crate::layout::guard_geom(d).1),
+                    forall|d: int| 0 <= d < NCLASSES ==> (#[trigger] table_perms[d]).value().spec_class() == d,
+                    forall|d: int| 0 <= d < c ==> (#[trigger] line_perms[d]).value().wf(table_perms[d].value(), *regions, d),
             {
-                let ghost before = guard_tests;
+                let ghost before = line_perms;
                 proof {
-                    assert(guard_tests.contains_key(c as int));
+                    assert(line_perms.contains_key(c as int));
+                    assert(table_perms.contains_key(c as int));
                 }
-                let tracked pg = guard_tests.tracked_borrow_mut(c as int);
+                let tracked pl = line_perms.tracked_borrow_mut(c as int);
                 let table = ptr_ref(elem_at(tables, c, NCLASSES), Tracked(table_perms.tracked_borrow(c as int)));
-                Shared::put_guard_test(this, c, GuardTest::of(table), Tracked(pg));
+                Shared::put_line(this, c, ClassLine::of(regions, table, c), Tracked(pl));
                 proof {
-                    assert forall|d: int| #![trigger guard_tests.contains_key(d)] #![trigger guard_tests[d]] 0 <= d < NCLASSES implies guard_tests.contains_key(d)
-                        && guard_tests[d].ptr() == ptr_add(field_ptr::<Shared, GuardTest>(this, S_GUARD_TEST), d as usize) by {
+                    assert forall|d: int| #![trigger line_perms.contains_key(d)] #![trigger line_perms[d]] 0 <= d < NCLASSES implies line_perms.contains_key(d)
+                        && line_perms[d].ptr() == ptr_add(field_ptr::<Shared, ClassLine>(this, S_LINES), d as usize) by {
                         assert(before.contains_key(d));
                     }
-                    assert forall|d: int| 0 <= d < c + 1 implies (#[trigger] guard_tests[d]).is_init()
-                        && guard_tests[d].value().tests(crate::layout::guard_geom(d).0, crate::layout::guard_geom(d).1) by {
+                    assert forall|d: int| 0 <= d < c + 1 implies (#[trigger] line_perms[d]).is_init()
+                        && line_perms[d].value().wf(table_perms[d].value(), *regions, d) by {
                         if d != c {
-                            assert(before[d] == guard_tests[d]);
+                            assert(before[d] == line_perms[d]);
                         }
                     }
                 }
+            }
+            // Frozen too: the lines' fields are written once, here, and
+            // what changes in one (the watermark copy) is an atomic.
+            let tracked line_perms = vstd::modes::tracked_static_ref(line_perms);
+            proof {
+                assert forall|d: int| 0 <= d < NCLASSES implies #[trigger] line_perms.contains_key(d) by {}
+                assert forall|d: int| 0 <= d < NCLASSES implies (#[trigger] line_perms[d]).ptr() == ptr_add(lines, d as usize) by {
+                    assert(line_perms.contains_key(d));
+                }
+            }
+            // Each table stores its watermark into its line's copy from
+            // now on.
+            for c in 0..NCLASSES
+                invariant
+                    crate::sys::may_syscall(),
+                    lines_at(*line_perms, this),
+                    elems_init(*line_perms, 0, NCLASSES as int),
+                    forall|d: int| 0 <= d < NCLASSES ==> (#[trigger] line_perms[d]).ptr() == ptr_add(lines, d as usize),
+                    crate::class::tables_ok(*table_perms, tables),
+                    forall|d: int| 0 <= d < NCLASSES ==> (#[trigger] line_perms[d]).value().wf(table_perms[d].value(), *regions, d),
+                    ord.allows(rank_table(0)),
+            {
+                proof {
+                    assert(line_perms.contains_key(c as int));
+                    assert(table_perms.contains_key(c as int));
+                    assert(line_perms[c as int].value().wf(table_perms[c as int].value(), *regions, c as int));
+                }
+                let line = ptr_ref(elem_at(lines, c, NCLASSES), Tracked(line_perms.tracked_borrow(c as int)));
+                let table = ptr_ref(elem_at(tables, c, NCLASSES), Tracked(table_perms.tracked_borrow(c as int)));
+                // The `Shared` never moves (this function's contract).
+                table.mirror_watermark(usize_ptr(&line.committed), Tracked(line.committed_inv.borrow()), Tracked(&mut ord));
             }
             let arena0 = Shared::arena0_ptr(this);
             proof {
@@ -1562,7 +1927,7 @@ impl Shared {
                 Tracked(&mut parts.stats),
             );
             proof {
-                built.perm = Some(axiom_shared_built(parts, guard_tests, table_perms, this));
+                built.perm = Some(axiom_shared_built(parts, line_perms, table_perms, this));
                 let s = shared_at(this);
                 s.arenas.lemma_is_process();
                 assert(s.regions == regions0);
@@ -1582,9 +1947,11 @@ impl Shared {
     /// changes afterwards (every field is written once, before the
     /// `Shared` is published): the address-space layout is well formed and
     /// separated and is the process's ([`crate::layout::process_regions`]);
-    /// `tables[c]` is class `c`'s table, and `guard_test[c]` its guard test
-    /// ([`GuardTest::of`], over the class's guard geometry,
-    /// [`guard_geom`](crate::layout::guard_geom)); `huge` covers exactly the huge
+    /// `tables[c]` is class `c`'s table, and `lines[c]` its class line
+    /// ([`ClassLine::of`]: its table's bases and group, the class geometry,
+    /// the guard test over the class's guard geometry,
+    /// [`guard_geom`](crate::layout::guard_geom), and a watermark copy bounded
+    /// by the table's slab count); `huge` covers exactly the huge
     /// region's pages, starting at the huge base with the regions' page;
     /// the [`PUSH_PAC`] bit is [`super::pac_mode`], set only where the process
     /// may execute the PAC instructions (`sys::pac::pac_available`, from the
@@ -1615,7 +1982,7 @@ impl Shared {
         &&& super::pac_mode() ==> crate::sys::pac::pac_available()
         &&& self.config.wf()
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].spec_class() == c
-        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.guard_test[c].tests(crate::layout::guard_geom(c).0, crate::layout::guard_geom(c).1)
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.lines[c].wf(self.tables[c], self.regions, c)
         &&& self.huge.spec_npages() == self.huge_pages()
         &&& self.meta.spec_base() == self.regions.meta_base
         &&& self.meta.spec_len() == self.regions.meta_len
@@ -2290,11 +2657,11 @@ impl Shared {
     /// The sized free's check (`sdallocx`, `free_sized`; design 6.3): `p`
     /// must be a slot start in a non-guard slab of the class the size hint
     /// names, `hint` (`class_for(size, align)`, `None` for a huge size).
-    /// Arithmetic on the pointer and two dense lines: the hint names the
-    /// region, so [`Regions::slot_in_class`] checks the pointer against
-    /// that region alone (no superblock classification and no class
-    /// compare), and the guard test is one
-    /// 8-byte load from [`GuardTest`]'s dense array. Neither the slab
+    /// Arithmetic on the pointer and the class's [`ClassLine`]: the hint
+    /// names the region, so the pointer is checked against that region
+    /// alone (no superblock classification and no class compare; the
+    /// reference form is [`Regions::slot_in_class`]), and the guard test
+    /// is the line's [`GuardTest`]. Neither the slab
     /// descriptor nor the class table line is touched: the bit test that
     /// makes plain `free` exact is left to the flush, and so is the
     /// watermark. A slot start in a slab no arena has been handed, or in
@@ -2322,19 +2689,42 @@ impl Shared {
         opens_invariants none
     {
         let Some(class) = hint else { return None };
-        let Some((slab, _slot)) = self.regions.slot_in_class(class, p as usize) else { return None };
-        // SAFETY: `class_of`/`class_for` only produce `class < NCLASSES`
-        // (`slot_in_class` relies on the same).
-        if unsafe { crate::vspec::slice::array_get_unchecked(&self.guard_test, class) }.is_guard(slab) {
+        debug_assert!(class < NCLASSES);
+        // SAFETY: `class_of`/`class_for` only produce `class < NCLASSES`.
+        let line = unsafe { crate::vspec::slice::array_get_unchecked(&self.lines, class) };
+        let rel = (p as usize).wrapping_sub(line.class_base);
+        proof {
+            assert(self.lines[class as int].wf(self.tables[class as int], self.regions, class as int));
+            crate::vspec::class::axiom_class_table_wf(class as int);
+        }
+        if rel >= self.regions.region_len() || !line.sized_ok(rel) {
             return None;
         }
         proof {
-            // The dense test is the table's (`Shared::wf`), so the slab is
-            // not a guard slab.
+            // The line's tests are the class's slot-start test and its
+            // table's guard test (`Shared::wf`): a slot start inside the
+            // region, in a slab that is not a guard slab.
             let c = class as int;
-            self.regions.lemma_nslabs_bound(c);
-            self.guard_test[c].lemma_is_guard(crate::layout::guard_geom(c).0, crate::layout::guard_geom(c).1, slab);
-            self.regions.lemma_is_slot(c, slab as int, _slot as int, p as usize);
+            let regions = self.regions;
+            assert(self.lines[c].wf(self.tables[c], regions, c));
+            let q = crate::vspec::core_int::rotr32(((rel as u32) & line.slab_mask).wrapping_mul(line.inv_odd), line.tz as u32);
+            line.lemma_slot_start(self.tables[c], regions, c, rel, q);
+            crate::vspec::class::axiom_class_table_wf(c);
+            regions.lemma_nslabs_bound(c);
+            let lg = class_table()[c].lg_slab;
+            let lr = regions.lg_region;
+            let slab = rel >> lg;
+            assert(slab < (1usize << lr) >> lg && slab < 0x400_0000) by (bit_vector)
+                requires
+                    lg <= 22,
+                    12 <= lg,
+                    22 <= lr <= 38,
+                    rel < 1usize << lr,
+                    slab == rel >> lg,
+            ;
+            line.guard.lemma_is_guard(crate::layout::guard_geom(c).0, crate::layout::guard_geom(c).1, slab);
+            regions.lemma_slot_of(c, p as usize, q as usize);
+            regions.lemma_is_slot(c, slab as int, q as int, p as usize);
         }
         Some(class)
     }
@@ -2346,9 +2736,11 @@ impl Shared {
     /// [`checked_slot`]: Shared::checked_slot
     /// [`set_slot`]: Shared::set_slot
     #[inline(always)]
-    pub(super) fn home_owns(table: &SlabTable, slab: usize, h: &Heap) -> (r: bool)
+    pub(super) fn home_owns(&self, class: usize, slab: usize, h: &Heap) -> (r: bool)
         requires
-            slab < table.spec_nslabs(),
+            self.wf(),
+            class < NCLASSES,
+            slab < self.tables[class as int].spec_nslabs(),
         opens_invariants none
     {
         // The home arena is read on the multi-arena branch only. A plain
@@ -2357,8 +2749,14 @@ impl Shared {
         // line, which nothing else on the fast paths reads; a volatile
         // read stays here.
         let home = h.arena_volatile();
-        // SAFETY: the caller found `slab` below the watermark.
-        unsafe { table.owner_unchecked(slab) == home }
+        proof {
+            assert(self.lines[class as int].wf(self.tables[class as int], self.regions, class as int));
+        }
+        // SAFETY: the caller's `class` and `slab` came from `set_slot`.
+        unsafe {
+            crate::vspec::slice::array_get_unchecked(&self.lines, class)
+                .owner(slab, crate::vspec::slice::array_get_unchecked(&self.tables, class)) == home
+        }
     }
 
     /// Allocate a huge run of `size` bytes aligned to `align` in `arena`:
@@ -2599,45 +2997,38 @@ impl Shared {
     }
 
     /// The bit test the two `free` fast-path checks share: `Some((class,
-    /// table, slab))` when `p` is a slot start in a handed-out slab of
-    /// `class` whose bit is set (the table and slab are what
-    /// [`checked_slot`]'s arena test then reads), `None` for anything
-    /// else; never aborts.
+    /// slab))` when `p` is a slot start in a handed-out slab of `class`
+    /// whose bit is set (what [`checked_slot`]'s arena test then reads),
+    /// `None` for anything else; never aborts. The class index, not a
+    /// reference to its [`ClassLine`]: a reference made LLVM materialise
+    /// the line's address (one more `add`) ahead of loads that address it
+    /// from the base and the scaled index anyway. The class's table is
+    /// named for the line's bit test ([`ClassLine::set_slab`]), which reads
+    /// the bitmap word through its permissions; nothing is loaded from it.
     ///
     /// [`checked_slot`]: Shared::checked_slot
     #[inline(always)]
-    pub(super) fn set_slot(&self, p: *mut u8) -> (r: Option<(usize, &SlabTable, usize)>)
+    pub(super) fn set_slot(&self, p: *mut u8) -> (r: Option<(usize, usize)>)
         requires
             self.wf(),
         ensures
-            r matches Some((c, _, _)) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
-            r matches Some((_, t, s)) ==> s < t.spec_nslabs(),
+            r matches Some((c, _)) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
+            r matches Some((c, s)) ==> s < self.tables[c as int].spec_nslabs(),
         opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns()]
     {
-        let Some((class, slab, slot)) = self.regions.slab_slot_unbounded(p as usize) else { return None };
-        // SAFETY: `slab_slot_unbounded` only returns `class < NCLASSES`.
-        let table = unsafe { crate::vspec::slice::array_get_unchecked(&self.tables, class) };
-        // The watermark compare is the region bound as well: a pointer
-        // outside the class region has a slab number of at least `nslabs`
-        // (`slab_slot_unbounded`), past any watermark.
-        if !table.is_handed_out(slab) {
+        let p = p as usize;
+        let class = p.wrapping_sub(self.regions.superblock) >> self.regions.lg_stride;
+        if class >= NCLASSES {
             return None;
         }
+        // SAFETY: `class < NCLASSES` was just checked.
+        let line = unsafe { crate::vspec::slice::array_get_unchecked(&self.lines, class) };
         proof {
-            // Below the table's slab count, which is the region's: the
-            // offset is inside the region, a slot start of `slab`.
-            assert(table.spec_nslabs() as int == crate::layout::process_regions().spec_nslabs(class as int));
+            assert(self.lines[class as int].wf(self.tables[class as int], self.regions, class as int));
+            assert(self.tables[class as int].spec_class() == class);
         }
-        // SAFETY: `slab` is below the watermark and `slab_slot_unbounded`
-        // validated `slot < nslots`.
-        if !unsafe { table.is_set_unchecked(slab, slot) } {
-            return None;
-        }
-        proof {
-            // A set bit is not in a guard slab.
-            self.regions.lemma_is_slot(class as int, slab as int, slot as int, p as usize);
-        }
-        Some((class, table, slab))
+        let Some(slab) = line.set_slab(p, unsafe { crate::vspec::slice::array_get_unchecked(&self.tables, class) }) else { return None };
+        Some((class, slab))
     }
 
     /// Release a cache's sorted batch of `class` slots, starting with
@@ -2796,8 +3187,9 @@ impl Shared {
     /// in a handed-out slab whose bit is set and whose arena is `home` (the
     /// arena load is skipped while only arena 0 exists), `None` for
     /// anything else. It never aborts; [`classify_free`] on the slow path
-    /// repeats the checks and does. Every table read is bounds-free: the
-    /// class index comes from `slab_slot_unbounded`, the bitmap word from a
+    /// repeats the checks and does. Every read is bounds-free: the
+    /// class index is checked against `NCLASSES` and every per-class field
+    /// comes from its [`ClassLine`], the bitmap word from a
     /// slot already known to be below `nslots` in a slab below the
     /// watermark, whose compare is the region bound too (no separate
     /// `region_len` test). The fast path itself
@@ -2832,8 +3224,8 @@ impl Shared {
     /// [`home_owns`]: Shared::home_owns
     #[cfg(test)]
     pub(super) fn checked_slot(&self, p: *mut u8, h: &Heap) -> Option<usize> {
-        let (class, table, slab) = self.set_slot(p)?;
-        if self.multi_arena() && !Self::home_owns(table, slab, h) {
+        let (class, slab) = self.set_slot(p)?;
+        if self.multi_arena() && !self.home_owns(class, slab, h) {
             return None;
         }
         Some(class)
@@ -2851,7 +3243,7 @@ impl Shared {
     /// [`checked_slot`]: Shared::checked_slot
     #[cfg(test)]
     pub(super) fn checked_slot_any(&self, p: *mut u8) -> Option<usize> {
-        self.set_slot(p).map(|(class, _, _)| class)
+        self.set_slot(p).map(|(class, _)| class)
     }
 }
 
@@ -2918,14 +3310,14 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S131..S146, S147: each `S_*` is its field's `offset_of!`, and the
+    /// S134..S149, S150: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {
+        assert_eq!(S_LINES, offset_of!(Shared, lines));
         assert_eq!(S_FREE_FLAGS, offset_of!(Shared, free_flags));
         assert_eq!(S_PUSH_FLAGS, offset_of!(Shared, push_flags));
         assert_eq!(S_REGIONS, offset_of!(Shared, regions));
-        assert_eq!(S_GUARD_TEST, offset_of!(Shared, guard_test));
         assert_eq!(S_TABLES, offset_of!(Shared, tables));
         assert_eq!(S_ARENA0, offset_of!(Shared, arena0));
         assert_eq!(S_META, offset_of!(Shared, meta));
@@ -2938,17 +3330,17 @@ mod kani_layout {
         assert_eq!(S_TCACHES, offset_of!(Shared, tcaches));
         assert_eq!(S_STATS, offset_of!(Shared, stats));
         assert_eq!(S_CGROUP, offset_of!(Shared, cgroup));
+        assert!(field_fits::<Shared, [ClassLine; NCLASSES]>(
+            S_LINES,
+            S_FREE_FLAGS
+        ));
         assert!(field_fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS));
         assert!(field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGIONS));
-        assert!(field_fits::<Shared, Regions>(S_REGIONS, S_GUARD_TEST));
-        assert!(field_fits::<Shared, [GuardTest; NCLASSES]>(
-            S_GUARD_TEST,
-            S_TABLES
-        ));
+        assert!(field_fits::<Shared, Regions>(S_REGIONS, S_TABLES));
         assert!(field_fits::<Shared, [SlabTable; NCLASSES]>(
             S_TABLES, S_ARENA0
         ));
-        assert!(NCLASSES as u128 * size_of::<GuardTest>() as u128 <= isize::MAX as u128);
+        assert!(NCLASSES as u128 * size_of::<ClassLine>() as u128 <= isize::MAX as u128);
         assert!(NCLASSES as u128 * size_of::<SlabTable>() as u128 <= isize::MAX as u128);
         assert!(field_fits::<Shared, Arena>(S_ARENA0, S_META));
         assert!(field_fits::<Shared, Meta>(S_META, S_HUGE));
@@ -2967,7 +3359,7 @@ mod kani_layout {
     /// S49 `Arena::axiom_array_layout` at the two arrays of `Shared`.
     #[kani::proof]
     fn shared_array_layout() {
-        array_layout::<GuardTest, NCLASSES>();
+        array_layout::<ClassLine, NCLASSES>();
         array_layout::<SlabTable, NCLASSES>();
     }
 }

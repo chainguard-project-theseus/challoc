@@ -478,7 +478,7 @@ proof fn lemma_rotate(y: u32, t: u32, q: u32, bound: u32)
 /// back to `j`; conversely a `q` below `nslots` (at most `2^22 >> tz`)
 /// means the product was `q << tz`, and multiplying it back by `d` gives
 /// the offset as `q * size`, both below `2^22`.
-proof fn lemma_slot_test(c: Class, offset: usize, q: u32)
+pub(crate) proof fn lemma_slot_test(c: Class, offset: usize, q: u32)
     requires
         c.wf(),
         offset < (1usize << c.lg_slab),
@@ -1160,11 +1160,12 @@ verus! {
 /// with the slab geometry of the classes below the kernel page raised to
 /// the page by [`adopt_page_geometry`] once at init. It is a table at a
 /// fixed address, not a pointer selected at init
-/// and not a runtime shift where `lg_slab` is read, so the `free` and
-/// `sdallocx` fast paths (`Regions::slab_slot`, `Regions::slot_in_class`)
-/// load a class's geometry exactly as they did from the compile-time
-/// table: one indexed load per field from a link-time constant address,
-/// nothing dependent added. The price is that the table lives in
+/// and not a runtime shift where `lg_slab` is read, so its readers
+/// (`Regions::slab_slot` and the slow paths) load a class's geometry
+/// exactly as they did from the compile-time table: one indexed load per
+/// field from a link-time constant address, nothing dependent added. The
+/// `free` and `sdallocx` fast paths read a copy `Shared::init` makes into
+/// each class's `heap::ClassLine`, after this adoption. The price is that the table lives in
 /// writable memory; the process-wide state the fast paths already trust
 /// (`Shared`'s `Regions`) does too.
 #[verifier::external_body]

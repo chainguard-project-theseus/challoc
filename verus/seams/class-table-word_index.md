@@ -9,10 +9,12 @@ is checked is the template pin.
 ## 1. Contract
 
 The ledger's entry (`verus/SEAMS.md`, `word_index`), at the port of
-upstream #77 onto `lane`, kind external_body; `#[inline(always)]`:
+upstream #87 (`pub(crate)` since; before, at the port of
+upstream #77 onto `lane`, private), kind external_body;
+`#[inline(always)]`:
 
 ```rust
-fn word_index(index: usize) -> (r: usize)
+pub(crate) fn word_index(index: usize) -> (r: usize)
     ensures
         r == index,
     opens_invariants none
@@ -34,7 +36,11 @@ index
 Upstream #77 writes the same `asm!` inline in
 `SlabTable::is_set_unchecked`; here it is this function, which
 `is_set_unchecked` calls on `bit / 64` (inlined, the same machine
-code), so that Verus sees only the contract.
+code), so that Verus sees only the contract. Upstream #87 writes it
+inline a second time, in `heap::ClassLine::set_slab` (the `free` fast
+path's bit test on the class line); there too it is this function,
+`pub(crate)` since (re-exported as `class::word_index`), and the machine
+code is upstream's.
 
 ## 2. Statement
 

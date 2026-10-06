@@ -27,9 +27,9 @@ use crate::sys::{self, Errno, MADV_GUARD_INSTALL, PROT_NONE, PROT_READ, PROT_WRI
 use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_only)]
 use crate::vspec::addr::cast_provenance;
+use crate::vspec::atom::{UsizePerm, load_usize_in, new_usize, store_usize, store_usize_at};
 #[cfg(verus_only)]
-use crate::vspec::atom::usize_id;
-use crate::vspec::atom::{UsizePerm, load_usize_in, new_usize, store_usize};
+use crate::vspec::atom::{usize_id, usize_id_at};
 #[cfg(verus_only)]
 use crate::vspec::lock::{lock_frame, lock_init, lock_inv};
 use crate::vspec::once::Once;
@@ -92,6 +92,16 @@ pub(crate) struct TableInner {
     pub(super) dbase: Ghost<int>,
     #[allow(dead_code)]
     pub(super) dstride: Ghost<int>,
+    /// A copy of the watermark the `free` fast path reads from its
+    /// per-class line (`heap::ClassLine`), stored right after the
+    /// watermark itself, so it is never ahead of it; null until
+    /// [`SlabTable::mirror_watermark`].
+    pub(super) mirror: *const AtomicUsize,
+    /// Ghost: the copy's invariant once `mirror_watermark` has set the
+    /// pointer ([`TableInner::inv`]): the one over the atomic at `mirror`
+    /// and the slab count, as for the watermark ([`CommittedPred`]).
+    #[allow(dead_code)]
+    pub(super) mirror_inv: Tracked<Option<&'static CommittedInv>>,
 }
 
 /// A page group of a class table starts and ends on a page boundary: the
@@ -159,6 +169,8 @@ impl TableInner {
         &&& self.mloc == o.mloc
         &&& self.dbase == o.dbase
         &&& self.dstride == o.dstride
+        &&& self.mirror == o.mirror
+        &&& self.mirror_inv == o.mirror_inv
     }
 
     /// The guard count stays below the slabs handed out, which stay below
@@ -166,7 +178,9 @@ impl TableInner {
     /// groups until the region's end; the three tables are committed in
     /// page units. The commit lock holds the init markers of every bit
     /// and the owner-store markers of every slab from the watermark on,
-    /// and those slabs' descriptor permissions as `new` minted them.
+    /// and those slabs' descriptor permissions as `new` minted them. Once
+    /// [`SlabTable::mirror_watermark`] has set the watermark copy's pointer,
+    /// it holds the copy's invariant (`take_group` stores into it).
     pub(super) open spec fn inv(self) -> bool {
         &&& self.guards <= self.next_slab
         &&& self.next_slab <= usize::MAX >> 12
@@ -180,6 +194,8 @@ impl TableInner {
         &&& init_marks(self.next_slab * self.sb@, self.nslabs@ * self.sb@).subset_of(self.fresh@@)
         &&& owner_marks(self.next_slab as int, self.nslabs@ as int).subset_of(self.fresh@@)
         &&& forall|s: int| self.next_slab <= s < self.nslabs@ ==> #[trigger] dfresh(self.dperms@, self.dbase@, self.dstride@, s)
+        &&& self.mirror@.addr != 0 ==> (self.mirror_inv@ matches Some(i) && i.constant() == (usize_id_at(self.mirror), self.nslabs@)
+            && i.namespace() == committed_ns())
     }
 }
 
@@ -200,7 +216,8 @@ impl TableInner {
 /// hands out, below the `next_slab` it publishes (the init ones for
 /// `AtomicBitmap::init`, or for the arena to keep for a guard slab, the
 /// owner-store ones for `store_owner`), and nothing else moves them.
-/// `guards` only reads; the test
+/// `mirror_watermark` (verified) sets the copy's pointer and its
+/// invariant together. `guards` only reads; the test
 /// helper `corrupt_owner_word` (unverified) only commits through
 /// `Lazy::ensure`.
 pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
@@ -286,13 +303,16 @@ pub open spec fn slot_owner(c: int, p: usize) -> u16 {
 /// `w.load(Relaxed)` of the owner word of handed-out slab `slab`'s group:
 /// the arena that owns the slab. Trusted, the read half of the
 /// [`slab_owner`] premise: the caller has seen the watermark past `slab`
-/// (the safety condition of [`SlabTable::owner_at`], its one caller), so
+/// (the safety condition of [`SlabTable::owner_at`] and
+/// [`SlabTable::owner_from`], its two callers), so
 /// the group was handed out, its word was stored once before the
 /// watermark moved ([`store_owner`]) and nothing writes it afterwards.
 /// Verus does not check that condition (`owner_at` requires only `slab <
 /// nslabs`): its callers, `owner` (after the watermark test),
-/// `check_located` (after `check_live`) and `owner_unchecked` (after
-/// `is_handed_out`), are what meet it. Sequential consistency, as for
+/// `check_located` (after `check_live`) and the `free` fast path's
+/// `heap::ClassLine::owner` (after the class line's watermark copy test,
+/// and the copy is never ahead of the watermark), are what meet it.
+/// Sequential consistency, as for
 /// every atomic here (`verus/WEAKMEM.md`).
 #[verifier::external_body]
 #[inline(always)]
@@ -510,6 +530,22 @@ impl InvariantPredicate<(int, usize), UsizePerm> for CommittedPred {
 
 /// The invariant of one watermark.
 pub type CommittedInv = AtomicInvariant<(int, usize), UsizePerm, CommittedPred>;
+
+/// `a.load(Relaxed)` of a class line's watermark copy (`heap::ClassLine`)
+/// inside its invariant `inv`: at most the slab count the invariant
+/// names (its table's). The relaxed load is enough for the reason
+/// [`SlabTable::desc_if_committed`] gives.
+#[inline(always)]
+pub(crate) fn load_mirror(a: &AtomicUsize, inv: &Tracked<CommittedInv>) -> (r: usize)
+    requires
+        inv@.constant().0 == usize_id(a),
+        inv@.namespace() == committed_ns(),
+    ensures
+        r <= inv@.constant().1,
+    opens_invariants [committed_ns()]
+{
+    load_usize_in(a, Ordering::Relaxed, inv)
+}
 
 } // verus!
 
@@ -817,6 +853,7 @@ impl SlabTable {
             owners,
             next_slab: 0,
             guards: 0,
+            mirror: core::ptr::null(),
             page: Ghost(page),
             group: Ghost(group),
             nslabs: Ghost(nslabs),
@@ -826,6 +863,7 @@ impl SlabTable {
             dperms: Tracked(dps),
             dbase: Ghost(desc_base as int),
             dstride: Ghost(stride as int),
+            mirror_inv: Tracked(None),
         }, Ghost(rank_table(class as int))));
         proof {
             assert(lock_init(inner.0).page@ == 1usize << regions.lg_page);
@@ -1643,7 +1681,7 @@ proof fn lemma_nslabs_bound(n: usize, m: usize, lg: usize)
 /// aarch64 it is the identity.
 #[inline(always)]
 #[verifier::external_body]
-fn word_index(index: usize) -> (r: usize)
+pub(crate) fn word_index(index: usize) -> (r: usize)
     ensures
         r == index,
     opens_invariants none
@@ -1844,7 +1882,7 @@ impl SlabTable {
 
     /// The owner word of a hand-out group of the region, the two bytes
     /// [`owner_word`](SlabTable::owner_word) and
-    /// [`owner_unchecked`](SlabTable::owner_unchecked) point at
+    /// [`owner_at`](SlabTable::owner_at) point at
     /// (`owners_base + 2 * group`), is metadata.
     pub proof fn lemma_owner_in_meta(&self, group: int)
         requires
@@ -1914,6 +1952,22 @@ impl SlabTable {
     /// The class, for other modules' contracts.
     pub closed spec fn spec_class(&self) -> usize {
         self.class as usize
+    }
+
+    /// The start of the class bitmap, for other modules' contracts (the
+    /// class line's copy, `heap::ClassLine`).
+    pub closed spec fn spec_bits_base(&self) -> usize {
+        self.bits_base
+    }
+
+    /// The start of the group owner array, for other modules' contracts.
+    pub closed spec fn spec_owners_base(&self) -> usize {
+        self.owners_base
+    }
+
+    /// `log2` of the hand-out group, for other modules' contracts.
+    pub closed spec fn spec_lg_group(&self) -> u8 {
+        self.lg_group
     }
 
     /// The class bitmap's slot tokens (`bitmap.rs`, "Slot tokens"): bits of
@@ -2136,6 +2190,93 @@ impl SlabTable {
         self.guard_mask
     }
 
+    /// A watermark copy for this table's class line (`heap::ClassLine`):
+    /// a new atomic at 0, with its invariant over this table's slab count
+    /// ([`CommittedPred`], as the watermark's), for
+    /// [`mirror_watermark`](SlabTable::mirror_watermark) to keep it up.
+    pub(crate) fn new_mirror(&self) -> (r: (AtomicUsize, Tracked<CommittedInv>))
+        ensures
+            r.1@.constant() == (usize_id(&r.0), self.spec_nslabs()),
+            r.1@.namespace() == committed_ns(),
+    {
+        let (a, Tracked(perm)) = new_usize(0);
+        let tracked inv = CommittedInv::new((usize_id(&a), self.nslabs), perm, committed_ns());
+        (a, Tracked(inv))
+    }
+
+    /// Keep `*mirror` equal to the hand-out watermark from now on: it is
+    /// set to the current value here and stored after the watermark at
+    /// every hand-out, under the commit lock, so a reader of the copy never
+    /// sees a value the watermark has not held (`heap::ClassLine`).
+    /// `inv` is the copy's invariant, which bounds it by the slab count as
+    /// [`CommittedPred`] bounds the watermark: every store into the copy
+    /// (here and in [`take_group`]) is one of a watermark value, inside it.
+    ///
+    /// # Safety
+    /// `mirror` must stay valid for as long as this table is used.
+    ///
+    /// [`take_group`]: SlabTable::take_group
+    pub unsafe fn mirror_watermark(&self, mirror: *const AtomicUsize, Tracked(inv): Tracked<&'static CommittedInv>, Tracked(ord): Tracked<&mut LockOrder>)
+        requires
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_table(0)),
+            inv.constant() == (usize_id_at(mirror), self.spec_nslabs()),
+            inv.namespace() == committed_ns(),
+        ensures
+            *final(ord) == *old(ord),
+    {
+        broadcast use {axiom_table_lock_inv, axiom_table_lock_frame};
+        proof {
+            use_type_invariant(self);
+        }
+        let tracked mut under = LockOrder::spare();
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
+        let wm = self.watermark(Ordering::Relaxed);
+        // SAFETY: guaranteed by the caller.
+        vstd::open_atomic_invariant!(inv => perm => {
+            unsafe { store_usize_at(mirror, wm, Ordering::Release, Tracked(&mut perm)) };
+        });
+        let gi = &mut *g;
+        gi.mirror = mirror;
+        proof {
+            gi.mirror_inv = Tracked(Some(inv));
+            assert(gi.inv());
+        }
+    }
+
+    /// Start of the class bitmap (for `heap::ClassLine`).
+    #[inline]
+    pub fn bits_base(&self) -> (r: usize)
+        ensures
+            r == self.spec_bits_base(),
+            // The table's slab count is its class region's, at most `2^26`.
+            self.spec_nslabs() as int == process_regions().spec_nslabs(self.spec_class() as int),
+            self.spec_nslabs() <= 0x400_0000,
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        self.bits_base
+    }
+
+    /// Start of the group owner array (for `heap::ClassLine`).
+    #[inline]
+    pub fn owners_base(&self) -> (r: usize)
+        ensures
+            r == self.spec_owners_base(),
+    {
+        self.owners_base
+    }
+
+    /// `log2` of the hand-out group (for `heap::ClassLine`).
+    #[inline]
+    pub fn lg_group(&self) -> (r: u8)
+        ensures
+            r == self.spec_lg_group(),
+    {
+        self.lg_group
+    }
+
     /// Slabs per page group; 1 unless the page is larger than the slab. A
     /// power of two that divides the slab count, so page groups tile the
     /// region.
@@ -2257,11 +2398,11 @@ impl SlabTable {
     /// smaller watermark (`None`, and the slow path repeats the check with
     /// acquire) or the tables' initial zero words (a clear bit); it can
     /// never see a watermark above what has been handed out, so the pages
-    /// are always mapped. [`is_set_unchecked`] and [`owner_unchecked`]
+    /// are always mapped. [`is_set_unchecked`] and [`owner_at`]
     /// rely on the same argument.
     ///
     /// [`is_set_unchecked`]: SlabTable::is_set_unchecked
-    /// [`owner_unchecked`]: SlabTable::owner_unchecked
+    /// [`owner_at`]: SlabTable::owner_at
     #[inline(always)]
     pub fn desc_if_committed(&self, slab: usize) -> Option<&SlabDesc> {
         if slab >= self.watermark(Ordering::Relaxed) {
@@ -2280,9 +2421,9 @@ impl SlabTable {
     pub fn is_handed_out(&self, slab: usize) -> (r: bool)
         ensures
             r ==> slab < self.spec_nslabs(),
-            // The table's slab count is its class region's, so the `free`
-            // fast path's watermark compare also bounds the region
-            // (`Shared::set_slot`).
+            // The table's slab count is its class region's, so a watermark
+            // compare also bounds the region (the `free` fast path makes
+            // its compare on the class line's copy, `heap::ClassLine`).
             self.spec_nslabs() as int == process_regions().spec_nslabs(self.spec_class() as int),
         opens_invariants [committed_ns()]
     {
@@ -2413,6 +2554,64 @@ impl SlabTable {
         }
     }
 
+    /// The bitmap word `index` of the class bitmap at `bits_base` (this
+    /// table's, or a class line's copy of it), holding bit `bit` of slot
+    /// `slot` of `slab`: one relaxed load through its permission, inside
+    /// the word's invariant. A set `bit` is not in a guard slab
+    /// (`bitmap::guards_ok`). The bit test of [`is_set_unchecked`] and of
+    /// the `free` fast path's class line (`heap::ClassLine::set_slab`).
+    ///
+    /// # Safety
+    /// As [`is_set_unchecked`]: `slab` must be below a value the
+    /// watermark has held (its bitmap word is committed).
+    ///
+    /// [`is_set_unchecked`]: SlabTable::is_set_unchecked
+    #[inline(always)]
+    pub(crate) unsafe fn bit_word(&self, bits_base: usize, index: usize, Ghost(slab): Ghost<usize>, Ghost(slot): Ghost<usize>, Ghost(bit): Ghost<usize>) -> (x: u64)
+        requires
+            bits_base == self.spec_bits_base(),
+            slab < self.spec_nslabs(),
+            slot < class_table()[self.spec_class() as int].nslots,
+            bit == slab * class_table()[self.spec_class() as int].slab_bits + slot,
+            index == bit / 64,
+        ensures
+            (x >> (bit % 64)) & 1 != 0 ==> !self.spec_is_guard(slab) && !crate::layout::guard_slab(self.spec_class() as int, slab as int),
+        opens_invariants [crate::bitmap::word_ns()]
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_bits_fit(slab);
+            assert(slot < self.slab_bits);
+        }
+        let ghost j = bit as int / 64;
+        proof {
+            assert(j < self.spec_nwords());
+            assert(self.word_perms@.contains_key(j));
+            assert(self.word_invs@.contains_key(j));
+        }
+        let word = addr_to_ptr(bits_base + index * 8) as *const AtomicU64;
+        let w = ptr_ref(word, Tracked(self.word_perms.borrow().tracked_borrow(j)));
+        let tracked inv = self.word_invs.borrow().tracked_borrow(j);
+        let x;
+        vstd::open_atomic_invariant!(inv => pair => {
+            let tracked (perm, g, u, d) = pair;
+            x = crate::vspec::word::load(w, Ordering::Relaxed, Tracked(&perm));
+            proof {
+                self.lemma_guard_slab(slab as int);
+                if self.spec_is_guard(slab) {
+                    let s = self.spec_slots();
+                    crate::bitmap::lemma_slab_bit(s, slab as int, slot as int);
+                    crate::bitmap::lemma_guard_clear(inv.constant(), (perm, g, u, d), bit as int);
+                    assert((bit - 64 * j) as u64 == (bit % 64) as u64);
+                    let (v, k) = (x, (bit - 64 * j) as u64);
+                    assert((v >> k) & 1u64 != 1u64 ==> (v >> k) & 1u64 == 0u64) by (bit_vector);
+                }
+                pair = (perm, g, u, d);
+            }
+        });
+        x
+    }
+
     /// The `free` check's bit (design section 4): whether `slot` of `slab`
     /// is marked allocated (or cached). One relaxed load of the bitmap
     /// word, through its permission, no bounds checks.
@@ -2439,38 +2638,15 @@ impl SlabTable {
             assert(slot < self.slab_bits);
         }
         let bit = slab * self.slab_bits as usize + slot;
-        let ghost j = bit as int / 64;
-        proof {
-            assert(j < self.spec_nwords());
-            assert(self.word_perms@.contains_key(j));
-            assert(self.word_invs@.contains_key(j));
-        }
         // On aarch64 the word index goes through an empty `asm!`: left
         // alone, LLVM rewrites `(bit >> 6) << 3` as `(bit >> 3) & !7`, a
         // shift and a mask ahead of the load on `free`'s dependent chain,
         // where `bit >> 6` and a scaled `ldr` is one instruction. x86_64
         // already scales the index in the load.
         let index = word_index(bit / 64);
-        let word = addr_to_ptr(self.bits_base + index * 8) as *const AtomicU64;
         // The caller guarantees the word is inside the handed-out part of
         // the bitmap (committed).
-        let w = ptr_ref(word, Tracked(self.word_perms.borrow().tracked_borrow(j)));
-        let tracked inv = self.word_invs.borrow().tracked_borrow(j);
-        let x;
-        vstd::open_atomic_invariant!(inv => pair => {
-            let tracked (perm, g, u, d) = pair;
-            x = crate::vspec::word::load(w, Ordering::Relaxed, Tracked(&perm));
-            proof {
-                self.lemma_guard_slab(slab as int);
-                if self.spec_is_guard(slab) {
-                    let s = self.spec_slots();
-                    crate::bitmap::lemma_slab_bit(s, slab as int, slot as int);
-                    crate::bitmap::lemma_guard_clear(inv.constant(), (perm, g, u, d), bit as int);
-                    assert((bit - 64 * j) as u64 == (bit % 64) as u64);
-                }
-                pair = (perm, g, u, d);
-            }
-        });
+        let x = unsafe { self.bit_word(self.bits_base, index, Ghost(slab), Ghost(slot), Ghost(bit)) };
         (x >> (bit % 64)) & 1 == 1
     }
 
@@ -2484,27 +2660,6 @@ impl SlabTable {
         debug_assert!(slot < self.class().nslots());
         // SAFETY: the watermark check, then a slot below `nslots`.
         self.is_handed_out(slab) && unsafe { self.is_set_unchecked(slab, slot) }
-    }
-
-    /// The arena that owns `slab`'s group, without a watermark check.
-    ///
-    /// # Safety
-    /// `slab` must have been handed out ([`is_handed_out`]).
-    ///
-    /// The read is [`owner_at`](SlabTable::owner_at)'s; a handed-out slab
-    /// is below the slab count ([`is_handed_out`]'s postcondition), which
-    /// its one caller outside this file, `Shared::checked_slot`, has from
-    /// `Shared::set_slot`.
-    ///
-    /// [`is_handed_out`]: SlabTable::is_handed_out
-    #[inline(always)]
-    pub unsafe fn owner_unchecked(&self, slab: usize) -> u16
-        requires
-            slab < self.spec_nslabs(),
-        opens_invariants none
-    {
-        // SAFETY: the caller's.
-        unsafe { self.owner_at(slab) }
     }
 
     /// The arena that owns `slab`'s group: one relaxed load of its owner
@@ -2533,6 +2688,34 @@ impl SlabTable {
         // `owners_base` before the shift: in this order the `free` fast
         // path's owner test schedules its loads as the plain code does.
         let word = addr_to_ptr(self.owners_base + (slab >> self.lg_group) * 2) as *const AtomicU16;
+        load_owner(ptr_ref(word, Tracked(self.owner_perms.borrow().tracked_borrow(group as int))), Ghost(*self), Ghost(slab))
+    }
+
+    /// [`owner_at`](SlabTable::owner_at) with the owner array's start and
+    /// the group shift given by the caller (a class line's copies of this
+    /// table's, `heap::ClassLine::owner`).
+    ///
+    /// # Safety
+    /// As [`owner_at`](SlabTable::owner_at).
+    #[inline(always)]
+    pub(crate) unsafe fn owner_from(&self, owners_base: usize, lg_group: u8, slab: usize) -> (r: u16)
+        requires
+            owners_base == self.spec_owners_base(),
+            lg_group == self.spec_lg_group(),
+            slab < self.spec_nslabs(),
+        ensures
+            r == slab_owner(self.spec_class() as int, slab as int),
+        opens_invariants none
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_group_in_range(slab);
+        }
+        let ghost group = slab >> self.lg_group;
+        proof {
+            assert(self.owner_perms@.contains_key(group as int));
+        }
+        let word = addr_to_ptr(owners_base + (slab >> lg_group) * 2) as *const AtomicU16;
         load_owner(ptr_ref(word, Tracked(self.owner_perms.borrow().tracked_borrow(group as int))), Ghost(*self), Ghost(slab))
     }
 
@@ -3354,6 +3537,14 @@ impl SlabTable {
         vstd::open_atomic_invariant!(self.committed_inv.borrow() => perm => {
             store_usize(&self.committed_slabs, end, Ordering::Release, Tracked(&mut perm));
         });
+        if !gi.mirror.is_null() {
+            let tracked mi = gi.mirror_inv.borrow().tracked_unwrap();
+            // SAFETY: `mirror_watermark`'s caller keeps the copy alive as
+            // long as the table.
+            vstd::open_atomic_invariant!(mi => perm => {
+                unsafe { store_usize_at(gi.mirror, end, Ordering::Release, Tracked(&mut perm)) };
+            });
+        }
         // `thp:auto` (design 7, 17; `thp.rs`): the group's range, still
         // reserved `PROT_NONE`, is advised once here, so the slabs the
         // arena commits from it fault in as folios of the enabled size.

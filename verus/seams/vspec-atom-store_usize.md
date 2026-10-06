@@ -1,6 +1,6 @@
 # `store_usize` (`vspec/atom.rs`)
 
-Seam S267 of `verus/SEAMS.md`: src/vspec/atom.rs:118. Kind: external_body. Category: atomics primitive.
+Seam S267 of `verus/SEAMS.md`: src/vspec/atom.rs:124. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 coherence rules (part 3).
 
 ## Contract
@@ -71,16 +71,19 @@ Models: `loom_watermark_take_group_publishes`, `loom_watermark_relaxed_store_is_
      the owner of every group below `w` stored, the full region returns
      `None`, and once every thread is joined the watermark is the slab
      count.
-   - `loom_free_after_synchronised_handoff` (13337): a free that
+   - `loom_free_after_synchronised_handoff` (31214; 13337 before upstream #87): a free that
      receives the slot through a synchronising hand-off finds the slab
      handed out (the watermark past it), the bit set and the owner
-     stored. `loom_bitmap_init_is_published` (6): a claimer that loads
+     stored (since #87 the hand-out also stores the class line's copy,
+     through `vspec::atom::store_usize_at`, after the watermark; a free
+     that reads the copy behind declines to the slow path, whose
+     re-read of the watermark finds the slab). `loom_bitmap_init_is_published` (6): a claimer that loads
      the watermark past the slab never claims `init`'s padding.
    - Controls: with the watermark stored `Relaxed`
      (`loom_watermark_relaxed_store_is_unpublished`), an `Acquire` load
      can return a group whose owner word still reads 0; with the
      claimer's load `Relaxed` (`loom_free_unpublished_owner_is_misrouted`,
-     38029), a synchronised free can read the owner as 0.
+     91770; 38029 before upstream #87), a synchronised free can read the owner as 0.
 
 ## Translation
 

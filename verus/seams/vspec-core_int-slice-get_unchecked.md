@@ -1,6 +1,6 @@
 # `<[T]>::get_unchecked::<I>`
 
-Seam S291 of `verus/SEAMS.md`: src/vspec/core_int.rs:85. Kind: assume_spec. Category: core library.
+Seam S293 of `verus/SEAMS.md`: src/vspec/core_int.rs:85. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract
@@ -41,7 +41,8 @@ Reproduce: `sh verus/kani/run.sh --harness kani_proofs::slice::slice_get_uncheck
   undefined-behaviour checks cover the unchecked access, including
   `core`'s debug precondition check of it.
 - Gap: generic over `T`; Kani checks `u64` elements, while the proofs
-  index slices of `ClassState`, `SlabTable`, `GuardTest`, the class
+  index slices of `ClassState`, `SlabTable`, `ClassLine` (since the port
+  of upstream #87; `GuardTest` before), the class
   table's `Class` and `usize` (`class_base`), and `*mut u8`. The
   access is pointer arithmetic by `size_of::<T>()` and reads no element,
   so the type enters only through that size. Bounded: slices up to 6

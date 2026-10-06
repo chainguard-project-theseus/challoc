@@ -1,6 +1,6 @@
 # `core::fmt::Formatter::<'a>::write_fmt`
 
-Seam S302 of `verus/SEAMS.md`: src/vspec/fmt.rs:26. Kind: assume_spec. Category: function pointer.
+Seam S304 of `verus/SEAMS.md`: src/vspec/fmt.rs:26. Kind: assume_spec. Category: function pointer.
 Discharged by Kani.
 
 ## Contract

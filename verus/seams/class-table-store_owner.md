@@ -1,6 +1,6 @@
 # `store_owner` (`class/table.rs`)
 
-Seam S86 of `verus/SEAMS.md`: src/class/table.rs:331. Kind: external_body. Category: allocator invariant.
+Seam S86 of `verus/SEAMS.md`: src/class/table.rs:351. Kind: external_body. Category: allocator invariant.
 Discharged by loom and the C11 coherence rules (part 3); the store's
 uniqueness is Verus's (the owner-store markers it uses up).
 
@@ -39,10 +39,10 @@ Two parts.
 
 Models: `loom_free_after_synchronised_handoff`, `loom_free_unpublished_owner_is_misrouted`
 
-   - `loom_free_after_synchronised_handoff` (13337 executions): every
+   - `loom_free_after_synchronised_handoff` (31214 executions since the port of upstream #87, 13337 before): every
      free ordered after the hand-out through the claimer's `Acquire`
      watermark load and a synchronising hand-off reads the stored arena.
-   - `loom_free_unpublished_owner_is_misrouted` (control, 38029):
+   - `loom_free_unpublished_owner_is_misrouted` (control, 91770; 38029 before upstream #87):
      without the `Acquire` edge it can read 0.
 
 ## Translation

@@ -1,6 +1,6 @@
 # `load_usize_in` (`vspec/atom.rs`)
 
-Seam S266 of `verus/SEAMS.md`: src/vspec/atom.rs:95. Kind: external_body. Category: atomics primitive.
+Seam S266 of `verus/SEAMS.md`: src/vspec/atom.rs:101. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 coherence rules (part 3).
 
 ## Contract
@@ -60,9 +60,13 @@ Models: `loom_watermark_take_group_publishes`, `loom_watermark_relaxed_store_is_
      load, of either ordering, returns at most the slab count, and a
      thread's loads never go back.
    - The free path's outcomes (`vspec-word-load.md`): after a
-     synchronising hand-off (13337) the `Relaxed` load always finds the
-     slab handed out; after a `Relaxed` hand-off (17501, outside the C
-     contract) it may read the initial 0, a fast-path miss.
+     synchronising hand-off (31214; 13337 before upstream #87) the `Relaxed` load always finds the
+     slab handed out; after a `Relaxed` hand-off (50926, 17501 before upstream #87, outside the C
+     contract) it may read the initial 0, a fast-path miss. Since #87
+     the fast path's load is of the class line's copy of the watermark
+     (the same wrapper, through `class::load_mirror`), which a
+     synchronised free can read behind (`Lagged`, a fast-path miss);
+     the slow path's load of the watermark itself then finds the slab.
    - The controls of `vspec-atom-store_usize.md`.
 
 ## Translation

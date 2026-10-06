@@ -20,7 +20,6 @@ use super::{
     pac_mode, regions_ok, slot_start, slot_token,
 };
 use super::{FOREIGN, FREE_ROUTE, Heap, Live, PUSH_PAC, Shared, existing_heap, heap_for_thread};
-use crate::class::SlabTable;
 #[cfg(verus_only)]
 use crate::class::slot_loc;
 #[cfg(verus_only)]
@@ -670,17 +669,17 @@ impl Heap {
 }
 
 /// The `free` fast path's form for the entry points: the bit test
-/// ([`Shared::set_slot`]), then the heap from the thread's TLS slot value
-/// (`tls_heap_slot`, which proved the heap exists and so that this thread
-/// observed `READY`) and the `free_flags` byte, both produced only after
-/// the bit test, then the owner-word test with [`FREE_ROUTE`] and the push
-/// ([`free_fast_push`]). `Some(class)` when `p` was verified as a slot of
-/// `class` and pushed (`challoc_free_usable` reports its size, design
-/// 13.7), `None` whenever anything is off the fast path (not a verified
-/// slab slot, another arena's slab, full cache); the caller then goes
-/// through a cold [`free`], which repeats the checks and aborts when they
-/// fail. Contains no call, so the entry point that inlines it needs no
-/// frame. Nothing in the slot check needs the heap or the byte, and on
+/// ([`Shared::set_slot`]), then the `free_flags` byte and the heap from
+/// the thread's TLS slot value (`tls_heap_slot`, which proved the heap
+/// exists and so that this thread observed `READY`), both produced only
+/// after the bit test, then the owner-word test with [`FREE_ROUTE`] and
+/// the push ([`free_fast_tail`]). `Some(class)` when `p` was verified as
+/// a slot of `class` and pushed (`challoc_free_usable` reports its size,
+/// design 13.7), `None` whenever anything is off the fast path (not a
+/// verified slab slot, another arena's slab, full cache); the caller then
+/// goes through a cold [`free`], which repeats the checks and aborts when
+/// they fail. Contains no call, so the entry point that inlines it needs
+/// no frame. Nothing in the slot check needs the heap or the byte, and on
 /// x86_64 a byte loaded up front stays live across the bit arithmetic and
 /// costs `free` a callee-saved register (`push`/`pop` of `rbx`). `blk` is
 /// the caller's token for `p` ([`Live::claims`]): the push takes its slot
@@ -703,41 +702,37 @@ pub unsafe fn free_fast_slot(shared: &Shared, t: usize, tp: usize, p: *mut u8, T
         r matches Some(c) ==> old(blk).slot_block(p, c as int),
     opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns()]
 {
-    let Some((class, table, slab)) = shared.set_slot(p) else { return None };
+    let Some((class, slab)) = shared.set_slot(p) else { return None };
     let flags = shared.free_flags();
     proof {
         shared.lemma_free_flags(flags);
     }
-    // SAFETY: guaranteed by the caller; `flags` carries the process's
-    // `PUSH_PAC`.
-    let h = unsafe { heap_from_slot(t, tp, flags & PUSH_PAC != 0) };
-    proof {
-        shared.lemma_regions_ok();
-    }
-    free_fast_push(table, slab, class, h, p, flags, Tracked(blk))
+    // SAFETY: guaranteed by the caller.
+    unsafe { free_fast_tail(shared, class, slab, p, flags, t, tp, Tracked(blk)) }
 }
 
-/// The body of the `free` fast paths after the bit test: the owner-word
-/// test with [`FREE_ROUTE`], the push. `flags` is `Shared::free_flags`:
-/// zero (the default configuration with one arena) is the plain push;
-/// [`FREE_ROUTE`] adds the owner-word test, and the opt-in hardening bits
-/// select the push as for the other paths. `blk` as for
-/// [`free_fast_slot`].
+/// The body of the `free` fast paths after the bit test: the heap from
+/// the slot value `(t, tp)`, the owner-word test with [`FREE_ROUTE`], the
+/// push. `flags` is `Shared::free_flags`: zero (the default configuration
+/// with one arena) is the plain push; [`FREE_ROUTE`] adds the owner-word
+/// test, and the opt-in hardening bits select the push as for the other
+/// paths. `blk` as for [`free_fast_slot`].
+///
+/// # Safety
+/// As [`free_fast_slot`].
 #[inline(always)]
-fn free_fast_push(table: &SlabTable, slab: usize, class: usize, h: &mut Heap, p: *mut u8, flags: u8, Tracked(blk): Tracked<&mut Live>) -> (r: Option<usize>)
+unsafe fn free_fast_tail(shared: &Shared, class: usize, slab: usize, p: *mut u8, flags: u8, t: usize, tp: usize, Tracked(blk): Tracked<&mut Live>) -> (r: Option<usize>)
     requires
-        regions_ok(),
+        shared.wf(),
         class < NCLASSES,
         process_regions().is_slot(class as int, p@.addr),
-        slab < table.spec_nslabs(),
-        (flags & PUSH_PAC != 0) == pac_mode(),
-        (flags & PUSH_PAC != 0) ==> pac::pac_available(),
-        old(h).wf(),
+        slab < shared.tables[class as int].spec_nslabs(),
+        flags & !FREE_ROUTE == shared.flags() & !FREE_ROUTE,
         old(blk).claims(p),
     ensures
-        final(h).keeps(*old(h)),
         r matches Some(c) ==> c == class,
         flags & PUSH_ZERO != 0 ==> r is None,
+        zero_on_free(shared) ==> r is None,
         r is Some ==> free_target(p),
         r is None ==> final(blk).claims(p) && final(blk).len() == old(blk).len(),
         r is None ==> *final(blk) == *old(blk) || old(blk).block(p),
@@ -747,17 +742,26 @@ fn free_fast_push(table: &SlabTable, slab: usize, class: usize, h: &mut Heap, p:
     let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
     let ghost orig = *blk;
     proof {
+        shared.lemma_regions_ok();
         lend_slot(blk, &mut tk, class as int, p);
         lemma_free_route_bits(flags);
+        shared.lemma_free_flags(flags);
     }
     // The two default configurations (one arena, several arenas) each get
     // one compare and the plain push; the opt-in hardening takes the
-    // general dispatch.
+    // general dispatch. SAFETY (all three): guaranteed by the caller;
+    // `flags` carries the process's `PUSH_PAC`, and the two default
+    // configurations have it clear, so their slot value is the heap itself
+    // and they skip the `PUSH_PAC` test of `heap_from_slot`.
     let pushed = match flags {
-        0 => h.push_fast(class, p, 0, Tracked(&mut tk)),
-        FREE_ROUTE => Shared::home_owns(table, slab, h) && h.push_fast(class, p, 0, Tracked(&mut tk)),
+        0 => unsafe { heap_from_slot(t, tp, false) }.push_fast(class, p, 0, Tracked(&mut tk)),
+        FREE_ROUTE => {
+            let h = unsafe { heap_from_slot(t, tp, false) };
+            shared.home_owns(class, slab, h) && h.push_fast(class, p, 0, Tracked(&mut tk))
+        }
         _ => {
-            (flags & FREE_ROUTE == 0 || Shared::home_owns(table, slab, h))
+            let h = unsafe { heap_from_slot(t, tp, flags & PUSH_PAC != 0) };
+            (flags & FREE_ROUTE == 0 || shared.home_owns(class, slab, h))
                 && h.push_fast(class, p, flags & !FREE_ROUTE, Tracked(&mut tk))
         }
     };
@@ -769,7 +773,7 @@ fn free_fast_push(table: &SlabTable, slab: usize, class: usize, h: &mut Heap, p:
     if pushed { Some(class) } else { None }
 }
 
-/// The bits of a `free_flags` byte the dispatch of [`free_fast_push`]
+/// The bits of a `free_flags` byte the dispatch of [`free_fast_tail`]
 /// passes on: the byte without [`FREE_ROUTE`] keeps its [`PUSH_PAC`] and
 /// [`PUSH_ZERO`] bits, and `0` and `FREE_ROUTE` have neither.
 proof fn lemma_free_route_bits(flags: u8)
@@ -1213,6 +1217,21 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
 /// byte given.
 #[cfg(test)]
 pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> Option<usize> {
-    let (class, table, slab) = shared.set_slot(p)?;
-    free_fast_push(table, slab, class, h, p, flags, Tracked::assume_new())
+    debug_assert!(flags & PUSH_PAC == 0);
+    let (class, slab) = shared.set_slot(p)?;
+    // SAFETY: `h` stands for its slot value: the tests' heaps are not
+    // signed (no `PUSH_PAC` in their `free_flags`), so `heap_from_slot`
+    // returns it as it is.
+    unsafe {
+        free_fast_tail(
+            shared,
+            class,
+            slab,
+            p,
+            flags,
+            h as *mut Heap as usize,
+            0,
+            Tracked::assume_new(),
+        )
+    }
 }

@@ -31,14 +31,14 @@ each syscall is a compiler barrier.
 | `arena.rs` | 21 | registry `AtomicPtr`s, count, stats |
 | `slab.rs` | 16 | `SlabDesc`: state, arena, `live`, dirty |
 | `class/mod.rs` | 15 | class counters |
-| `class/table.rs` | 11 | watermark; bitmap and owner words |
+| `class/table.rs` | 11 | watermark; bitmap and owner words (since upstream #87 also the watermark copy's two stores, through `vspec::atom::store_usize_at`, not in the count) |
 | `api/mod.rs` | 9 | `STATE`, `INIT_TID`, `SEALED` |
 | `purge/background.rs` | 9 | `PRESENT`, `REQUESTED`, `SEQ` |
 | `bitmap.rs` | 8 | `&[AtomicU64]` words |
 | `heap/tcaches.rs` | 5 | `[AtomicPtr<u8>; 1024]` |
 | `lock.rs` | 5 | the lock word |
 | `huge/mod.rs` | 4 | `retain_max`, `purge_on_free` |
-| `heap/shared.rs` | 2 | `free_flags` (until upstream #78, `multi_arena`) |
+| `heap/shared.rs` | 2 | `free_flags` (until upstream #78, `multi_arena`); since upstream #87 the class lines' watermark copies, read through `class::load_mirror` (not in the count) |
 
 ## Protocols that matter
 
@@ -144,7 +144,9 @@ each syscall is a compiler barrier.
 - The free path reads `multi_arena` (`heap/shared.rs:981`; since
   upstream #78 the `FREE_ROUTE` bit of the `free_flags` byte, read after
   the bit test, `Shared::free_flags`), the
-  watermark (`class/table.rs:1200`, `:1214`), the bitmap bit (`:1293`)
+  watermark (`class/table.rs:1200`, `:1214`; since upstream #87 its copy
+  in the class line, `heap::ClassLine`, which `take_group` stores right
+  after the watermark), the bitmap bit (`:1293`)
   and the owner word (`:1320`) `Relaxed`, with no acquire. The argument
   (`class/table.rs:1179`-`:1194`, `heap/shared.rs:55`) is that the
   program frees after it allocates, so happens-before runs from the
@@ -366,11 +368,16 @@ cut down.
 - P5 (`loom_tests/free.rs`: the real `AtomicBitmap` and
   `vspec::word::load` over one loom word; copies of `take_group`'s tail,
   a claimer's `Acquire` watermark load and the free path's checks from
-  `checked_slot`/`set_slot`): an allocating thread hands its slot to
+  `checked_slot`/`set_slot`, since upstream #87 through the class line):
+  an allocating thread hands its slot to
   the freeing thread while a third claims and releases the word's
-  other slot. With a `Release`/`Acquire` hand-off (13337 executions)
+  other slot. With a `Release`/`Acquire` hand-off (31214 executions since the port of upstream #87, 13337 before)
   every free sees the slab handed out, the bit set and the owner
-  stored, with no race on the block. With a `Relaxed` hand-off (17501;
+  stored, with no race on the block. Since upstream #87 the fast
+  path's load is of the class line's watermark copy, stored after the
+  watermark, so a synchronised free can also read the copy behind
+  (`Lagged`): a fast-path miss whose slow path re-reads the table's
+  watermark and finds the slab. With a `Relaxed` hand-off (50926, 17501 before upstream #87;
   a data race on the block, so outside the C contract) all four
   outcomes appear: the checks pass, the watermark read below the slab,
   the bit read clear, and the owner word read as its initial 0. Each
@@ -379,7 +386,7 @@ cut down.
   to arena 0 (possible, not modelled). Controls: the `Relaxed`
   hand-off with the free touching the block races; with the claimer's
   watermark load `Relaxed`, a synchronised free can read the owner as 0
-  (38029). `multi_arena` (now `free_flags`' `FREE_ROUTE` bit) is not
+  (91770; 38029 before upstream #87). `multi_arena` (now `free_flags`' `FREE_ROUTE` bit) is not
   modelled.
 - Arena bound counts (`loom_tests/count.rs`: the real `vspec/count.rs`
   wrappers, `Relaxed` as `arena.rs`; copies of `assign` under the real

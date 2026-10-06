@@ -1,22 +1,27 @@
 //! P5: the `free` fast path's `Relaxed` reads (`verus/WEAKMEM.md`). The
 //! bitmap is the real `AtomicBitmap` (`bitmap.rs`: `init`, `claim_from`,
 //! `release`) and the bit test the real `vspec::word::load`, over one loom
-//! word for a slab of [`NSLOTS`] slots, and the watermark's accesses the
-//! real `vspec::atom` wrappers (`store_usize`, `load_usize_in`); the table
-//! steps around them are copies of `class/table.rs` and `heap/shared.rs`,
-//! with their orderings:
+//! word for a slab of [`NSLOTS`] slots, and the watermark's and its class
+//! line copy's accesses the real `vspec::atom` wrappers (`store_usize`,
+//! `store_usize_at`, `load_usize_in`); the table steps around them are
+//! copies of `class/table.rs` and `heap/shared.rs`, with their orderings:
 //!
 //! - the hand-out is the tail of `SlabTable::take_group`: the slab's
 //!   bitmap `init` (`Relaxed` writes), `store_owner` (the group's owner
-//!   word, `Relaxed`), then `store_usize(end, Release)` of the watermark;
+//!   word, `Relaxed`), then `store_usize(end, Release)` of the watermark
+//!   and, since upstream #87, `store_usize_at(end, Release)` of its copy
+//!   in the class line (`heap::ClassLine`, through the pointer
+//!   `SlabTable::mirror_watermark` stored);
 //! - a claimer finds the slab through `committed_slabs()` (`Acquire`), as
 //!   in `bitmap.rs`'s `loom_bitmap_init_is_published`;
 //! - the free path is `Shared::set_slot` and `home_owns` (through
-//!   `heap::free_fast_slot` and `free_fast_push`; and
-//!   `SlabTable::check_located`, which makes the same reads):
-//!   `is_handed_out` (the watermark, `Relaxed`), `is_set_unchecked` (the
-//!   bit, `Relaxed`, through `vspec::word::load`), then `owner_unchecked`
-//!   (`load_owner`, `Relaxed`).
+//!   `heap::free_fast_slot` and `free_fast_tail`): since upstream #87
+//!   `ClassLine::set_slab`, the watermark copy (`load_mirror`,
+//!   `Relaxed`), the bit (`SlabTable::bit_word`, `Relaxed`, through
+//!   `vspec::word::load`), then `ClassLine::owner` (`owner_from`,
+//!   `load_owner`, `Relaxed`); `SlabTable::check_located`, on the slow
+//!   path, makes the same reads from the table (`is_handed_out`, the
+//!   watermark itself).
 //!
 //! The allocating thread hands the slot to the freeing thread through an
 //! atomic: with a `Release` store and an `Acquire` load (a synchronising
@@ -40,7 +45,7 @@
 use super::{UsizeInv, model};
 use crate::bitmap::AtomicBitmap;
 use crate::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
-use crate::vspec::atom::{load_usize_in, store_usize};
+use crate::vspec::atom::{load_usize_in, store_usize, store_usize_at, usize_ptr};
 use loom::cell::UnsafeCell;
 use loom::thread;
 use std::boxed::Box;
@@ -64,7 +69,14 @@ const ARENA: u16 = 3;
 enum Out {
     /// Handed out, bit set, owner `ARENA`: the free goes ahead.
     Ok,
-    /// The watermark read below the slab.
+    /// As `Ok`, but the class line's watermark copy read below the slab
+    /// (it is stored after the watermark, so a free synchronised with the
+    /// watermark's store need not see it): the fast path declines, and the
+    /// slow path, which repeats the check against the table's watermark
+    /// (`check_located`), goes ahead.
+    Lagged,
+    /// The watermark copy and then the table's watermark read below the
+    /// slab.
     NeverCommitted,
     /// The bit read clear.
     NotLive,
@@ -78,6 +90,10 @@ struct Table {
     committed: AtomicUsize,
     /// `SlabTable::committed_inv` (ghost).
     inv: UsizeInv,
+    /// The watermark's copy in the class line (`heap::ClassLine`).
+    mirror: AtomicUsize,
+    /// Its invariant (`ClassLine`'s ghost `committed_inv`).
+    mirror_inv: UsizeInv,
     /// The group's owner word.
     owner: AtomicU16,
     /// The slab's bitmap word.
@@ -100,6 +116,8 @@ impl Table {
         Table {
             committed: AtomicUsize::new(0),
             inv: Tracked::assume_new(),
+            mirror: AtomicUsize::new(0),
+            mirror_inv: Tracked::assume_new(),
             owner: AtomicU16::new(0),
             words: [AtomicU64::new(0)],
             data: [UnsafeCell::new(0), UnsafeCell::new(0)],
@@ -111,11 +129,21 @@ impl Table {
         AtomicBitmap::from_words_t(&self.words)
     }
 
-    /// The tail of `take_group`: `init`, `store_owner`, the watermark.
+    /// The tail of `take_group`: `init`, `store_owner`, the watermark,
+    /// then its copy.
     fn hand_out(&self) {
         self.bitmap().init_t(NSLOTS);
         self.owner.store(ARENA, Ordering::Relaxed);
         store_usize(&self.committed, 1, Ordering::Release, Tracked::assume_new());
+        // SAFETY: the copy is a field of this leaked table.
+        unsafe {
+            store_usize_at(
+                usize_ptr(&self.mirror),
+                1,
+                Ordering::Release,
+                Tracked::assume_new(),
+            )
+        };
     }
 
     /// A claim of one slot of a slab found through `committed_slabs()`,
@@ -148,21 +176,23 @@ impl Table {
     /// The free path's checks of `slot` (slab 0).
     fn check(&self, slot: usize) -> Out {
         let slab = 0;
-        // `is_handed_out`.
-        if slab >= load_usize_in(&self.committed, Ordering::Relaxed, &self.inv) {
+        // `ClassLine::set_slab`'s watermark copy (`load_mirror`); below
+        // the slab, the slow path's `check_live` reads the table's.
+        let lagged = slab >= load_usize_in(&self.mirror, Ordering::Relaxed, &self.mirror_inv);
+        if lagged && slab >= load_usize_in(&self.committed, Ordering::Relaxed, &self.inv) {
             return Out::NeverCommitted;
         }
-        // `is_set_unchecked`.
+        // `bit_word`.
         let x = crate::vspec::word::load(&self.words[0], Ordering::Relaxed, Tracked::assume_new());
         if (x >> slot) & 1 != 1 {
             return Out::NotLive;
         }
-        // `owner_unchecked` (`load_owner`).
+        // `ClassLine::owner` (`owner_from`, `load_owner`).
         let owner = self.owner.load(Ordering::Relaxed);
         if owner != ARENA {
             return Out::Misrouted(owner);
         }
-        Out::Ok
+        if lagged { Out::Lagged } else { Out::Ok }
     }
 }
 
@@ -203,7 +233,7 @@ fn run(
             let slot = p - 1;
             let r = t.check(slot);
             seen.lock().unwrap().insert(r);
-            if touch && r == Out::Ok {
+            if touch && matches!(r, Out::Ok | Out::Lagged) {
                 // The cache link the free writes into the block.
                 t.write(slot, 0);
                 t.release(slot);
@@ -216,7 +246,9 @@ fn run(
 }
 
 /// A synchronising hand-off: every free that receives the slot finds it
-/// handed out, live and owned by `ARENA`, and its writes to the block do
+/// handed out, live and owned by `ARENA` (on the fast path, or, when the
+/// class line's watermark copy lags, since upstream #87, on the slow
+/// path's re-read of the table), and its writes to the block do
 /// not race with the allocating thread's.
 #[test]
 fn loom_free_after_synchronised_handoff() {
@@ -228,12 +260,17 @@ fn loom_free_after_synchronised_handoff() {
         &SEEN,
     );
     let seen = SEEN.lock().unwrap();
-    assert_eq!(*seen, BTreeSet::from([Out::Ok]), "outcomes: {seen:?}");
+    assert_eq!(
+        *seen,
+        BTreeSet::from([Out::Ok, Out::Lagged]),
+        "outcomes: {seen:?}"
+    );
 }
 
 /// A `Relaxed` hand-off (a data race on the block under C11, so outside
 /// the C contract): documents what the checks may then read. Each of the
-/// three reads can be stale: the watermark below the slab, the bit clear,
+/// three reads can be stale: the watermark copy below the slab (with the
+/// table's watermark too, or not: `Lagged`), the bit clear,
 /// or the owner word's initial 0, each a fast-path miss (see [`Out`]:
 /// a spurious abort or a slot released to arena 0 needs the slow path's
 /// re-read stale too). The free does not touch the block here (that
@@ -251,6 +288,7 @@ fn loom_free_after_relaxed_handoff() {
     std::println!("relaxed hand-off outcomes: {seen:?}");
     let all = BTreeSet::from([
         Out::Ok,
+        Out::Lagged,
         Out::NeverCommitted,
         Out::NotLive,
         Out::Misrouted(0),

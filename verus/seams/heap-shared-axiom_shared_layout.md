@@ -1,28 +1,33 @@
 # `axiom_shared_layout`
 
-Seam S150 of `verus/SEAMS.md`: src/heap/shared.rs:614. Kind: axiom. Category: core library.
+Seam S150 of `verus/SEAMS.md`: src/heap/shared.rs:931. Kind: axiom. Category: core library.
 Discharged by Kani.
 
 ## Contract
 
-As changed by the port of upstream #78 (its first conjunct: the field
+As changed by the port of upstream #87 (a first conjunct for the new
+class lines, `[ClassLine; NCLASSES]` at `S_LINES`, ahead of
+`free_flags`; the guard tests' conjunct after `regions` gone, `regions`
+now ending at `S_TABLES`; `ClassLine` in place of `GuardTest` in the
+array bound; Kani re-run pending, below), before that by the port of
+upstream #78 (its first conjunct: the field
 `multi_arena: AtomicBool` became `free_flags: AtomicU8`, offset
 `S_FREE_FLAGS`; Kani re-run there, below), and before that by the
 library-and-control seam audit on base 8635213
 (`verus/audit/library-control.md`; its Kani re-run was pending until
-this port), from the
+the #78 port), from the
 contract checked at commit 7d4e997 (the record was written at
 ae82d5b):
 
 ```rust
 axiom fn axiom_shared_layout()
     ensures
+        field_fits::<Shared, [ClassLine; NCLASSES]>(S_LINES, S_FREE_FLAGS as int),
         field_fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS as int),
         field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGIONS as int),
-        field_fits::<Shared, Regions>(S_REGIONS, S_GUARD_TEST as int),
-        field_fits::<Shared, [GuardTest; NCLASSES]>(S_GUARD_TEST, S_TABLES as int),
+        field_fits::<Shared, Regions>(S_REGIONS, S_TABLES as int),
         field_fits::<Shared, [SlabTable; NCLASSES]>(S_TABLES, S_ARENA0 as int),
-        NCLASSES * size_of::<GuardTest>() <= isize::MAX,
+        NCLASSES * size_of::<ClassLine>() <= isize::MAX,
         NCLASSES * size_of::<SlabTable>() <= isize::MAX,
         field_fits::<Shared, Arena>(S_ARENA0, S_META as int),
         field_fits::<Shared, Meta>(S_META, S_HUGE as int),
@@ -50,7 +55,7 @@ each of the sixteen `S_*` offsets equals its field's `offset_of!`,
 and for each field, with its type `T` and the next field's offset (the
 last: `size_of::<Shared>()`) as `next`, `field_fits::<Shared, T>(off, next)`
 holds (restated with its `int` sum in `u128`), as does
-`size_of::<Shared>() <= isize::MAX`, `NCLASSES * size_of::<GuardTest>()
+`size_of::<Shared>() <= isize::MAX`, `NCLASSES * size_of::<ClassLine>()
 <= isize::MAX` and `NCLASSES * size_of::<SlabTable>() <= isize::MAX`
 (in `u128`).
 
@@ -63,7 +68,7 @@ Reproduce: `sh verus/kani/run.sh --harness heap::shared::kani_layout::shared_lay
 - Each `ensures field_fits::<Shared, T>(S_X, S_NEXT as int)`: one
   `assert!`, with the same types in the same order (`field_fits` as in
   `arena::axiom_arena_layout`'s record).
-- `ensures NCLASSES * size_of::<GuardTest>() <= isize::MAX` and the
+- `ensures NCLASSES * size_of::<ClassLine>() <= isize::MAX` and the
   same for `SlabTable` (the `requires` of `axiom_array_layout` at the
   two arrays): the two `assert!`s after the `tables` field's, their
   products in `u128`.
@@ -112,6 +117,12 @@ Reconciled onto the port of upstream #78, 2026-10-06: the contract
 above is the ledger's entry there, and the harness re-run under both
 quanta with the same Kani passes (0 of 345 checks failed in each),
 which also settles the audit's pending re-run.
+
+Ported onto upstream #87, 2026-10-06: the contract above is the
+ledger's entry there, and the harness asserts it (the class lines'
+offset and fit first, the guard tests' gone); the build's `const`
+assertion of the same conditions passes on both targets and quanta.
+The Kani re-run is pending: Kani was not available where the port ran.
 
 ## Tests
 

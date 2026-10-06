@@ -128,9 +128,11 @@ pub use sets::SET_GROUPS;
 pub(crate) use sets::SETS_PER_CLASS;
 pub(crate) use sets::Set;
 pub use sets::SetTable;
+pub use table::CommittedInv;
 pub use table::SlabTable;
 #[cfg(verus_only)]
 pub use table::{committed_ns, lemma_tz_shl, slab_owner, slot_loc, slot_owner};
+pub(crate) use table::{load_mirror, word_index};
 use verify::{fresh_with_live, release_into_fresh};
 
 verus! {

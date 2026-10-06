@@ -1,6 +1,6 @@
 # `load_owner` (`class/table.rs`)
 
-Seam S85 of `verus/SEAMS.md`: src/class/table.rs:299. Kind: external_body. Category: allocator invariant.
+Seam S85 of `verus/SEAMS.md`: src/class/table.rs:319. Kind: external_body. Category: allocator invariant.
 Evidence from loom and the C11 coherence rules (part 3): they settle the
 memory-model half (a load ordered after the owner store reads it); that
 every caller's load is so ordered, the doc comment's premise, is not in
@@ -23,7 +23,8 @@ fn load_owner(w: &AtomicU16, Ghost(t): Ghost<SlabTable>, Ghost(slab): Ghost<usiz
 The body, at that commit: `w.load(Ordering::Relaxed)`. The contract's
 `requires` say only which word it is; the doc comment adds a premise
 Verus does not check: the caller has seen the watermark past `slab` (the
-safety condition of `SlabTable::owner_at`, its one caller), so the group
+safety condition of `SlabTable::owner_at`, its one caller until the port
+of upstream #87, and of `owner_from` since), so the group
 was handed out and its word was stored once, by `store_owner`, before
 the watermark moved. Without that premise the `ensures` is false even
 under SC: for a slab below `nslabs` never handed out the load returns 0,
@@ -33,7 +34,15 @@ Callers: `owner` (after an `Acquire` load of the watermark),
 test) and `owner_unchecked` (from `Shared::checked_slot`, the `free`
 fast path; since upstream #78 from `Shared::home_owns`, which
 `free_fast_push` calls with `FREE_ROUTE` in the `free_flags` byte,
-after `set_slot`'s `Relaxed` watermark load and bit test).
+after `set_slot`'s `Relaxed` watermark load and bit test). Since
+upstream #87 the fast path's owner load is `SlabTable::owner_from`'s
+(the second caller, the same address from the class line's copies of
+`owners_base` and `lg_group`), from `ClassLine::owner` through
+`Shared::home_owns`, which `free_fast_tail` calls, after the class
+line's `Relaxed` load of its watermark copy and the bit test;
+`owner_unchecked` is gone. The copy is never ahead of the watermark
+(it is stored after it, under the commit lock), so the premise is the
+same.
 
 ## Statement
 
@@ -56,14 +65,14 @@ Two parts.
 
 Models: `loom_free_after_synchronised_handoff`, `loom_free_after_relaxed_handoff`, `loom_free_unpublished_owner_is_misrouted`
 
-   - `loom_free_after_synchronised_handoff` (13337 executions): with a
+   - `loom_free_after_synchronised_handoff` (31214 executions since the port of upstream #87, 13337 before): with a
      `Release`/`Acquire` hand-off of the slot, every free reads the
      stored arena.
-   - `loom_free_after_relaxed_handoff` (17501): with a `Relaxed`
+   - `loom_free_after_relaxed_handoff` (50926; 17501 before upstream #87): with a `Relaxed`
      hand-off the free can read the owner as 0, besides the other stale
      outcomes (on the fast path that is a miss; the slow path re-reads,
      `vspec-word-load.md`).
-   - `loom_free_unpublished_owner_is_misrouted` (control, 38029): with
+   - `loom_free_unpublished_owner_is_misrouted` (control, 91770; 38029 before upstream #87): with
      the claimer's watermark load `Relaxed` (the hand-out's `Release`
      store kept), a free after a synchronising hand-off can read 0; so
      the claimer's `Acquire` load carries the edge the synchronised
@@ -87,7 +96,9 @@ Models: `loom_free_after_synchronised_handoff`, `loom_free_after_relaxed_handoff
   - `owner`: its watermark load is `Acquire` and reads a `Release` store
     past `slab` (every write of the watermark after `new` is such a
     store, by `take_group` under the commit lock), so it meets it.
-  - `check_located` and `owner_unchecked` (the `free` paths): their
+  - `check_located` and `owner_unchecked` (the `free` paths; since
+    upstream #87 `owner_from`, after the class line's watermark copy):
+    their
     watermark loads are `Relaxed` and give no edge. The edge comes from
     the program: the slot's bit read set, so some claim handed the slot
     out; for a block the program allocated and frees after the

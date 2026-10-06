@@ -24,7 +24,8 @@ pub(crate) axiom fn axiom_array_layout<T, const N: usize>()
 
 Kani 0.68.0 (CBMC 6.11.0, nightly-2026-08-21) proves the harness `arena::kani_layout::array_layout_instances, heap::shared::kani_layout::shared_array_layout` (`src/arena.rs, src/heap/shared.rs`):
 for `[ClassState; NCLASSES]` (`arena::kani_layout::array_layout_instances`)
-and `[GuardTest; NCLASSES]`, `[SlabTable; NCLASSES]`
+and `[ClassLine; NCLASSES]` (since the port of upstream #87, in place
+of `[GuardTest; NCLASSES]`), `[SlabTable; NCLASSES]`
 (`heap::shared::kani_layout::shared_array_layout`), the three arrays
 the proofs split with `split_array`, and for `u8` (lengths 0 and 7),
 `u64` (1 and 7), `(u64, u8)` (a padded element), `()` (zero-sized),
@@ -56,7 +57,8 @@ Reproduce: `sh verus/kani/run.sh --harness arena::kani_layout::array_layout_inst
 - The instances are checked by Kani for x86_64 only; the three
   `split_array` instances are also checked on every target and
   quantum by build-time assertions (in `arena.rs` for `ClassState` and
-  in `heap/shared.rs` for `GuardTest` and `SlabTable`, added by the seam
+  in `heap/shared.rs` for `ClassLine` (since #87; `GuardTest` before) and
+  `SlabTable`, added by the seam
   audit `verus/audit/invariants.md`). `verus/kani/run.sh` runs the
   harnesses under both quanta, since `NCLASSES` is the length of the
   three arrays.
@@ -89,6 +91,12 @@ Reconciled onto commit 7d4e997, 2026-10-03: the contract above
 compared with the ledger's entry there, and the harness re-run under
 both quanta with the same Kani (it passes). A fresh-context subagent
 reviewed the reconciliation.
+
+Ported onto upstream #87, 2026-10-06: the contract is unchanged; the
+`shared_array_layout` harness now checks `[ClassLine; NCLASSES]` in
+place of `[GuardTest; NCLASSES]` (the build's `const` assertion of the
+same, on both targets and quanta, passes). The Kani re-run of that
+harness is pending: Kani was not available where the port ran.
 
 ## Tests
 
