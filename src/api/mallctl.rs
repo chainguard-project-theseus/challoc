@@ -1960,6 +1960,31 @@ impl Io {
             { b != 0 }))
     }
 
+    /// `EINVAL`, copying nothing, if the caller asked for a value and
+    /// `*oldlenp` is not `size_of::<T>()`: the size check of jemalloc's
+    /// `VERIFY_READ`, for keys that must not act on a read that will fail.
+    /// Unlike `VERIFY_READ`, a null `oldp` passes (the caller asked for
+    /// nothing) and `*oldlenp` is left as it is. `*oldlenp` is read through
+    /// the call's token `call`, before any write through its buffers.
+    fn verify_read<T: Copy>(&self, Tracked(call): Tracked<&CCall>) -> (r: Result<(), c_int>)
+        requires
+            self.handed(*call),
+            !call.written(),
+        ensures
+            r matches Err(e) ==> e == EINVAL,
+    {
+        if self.oldp.is_null() || self.oldlenp.is_null() {
+            return Ok(());
+        }
+        let ghost oldp = self.oldp as *mut u8;
+        // SAFETY: `oldlenp` is the caller's out-pointer per the `mallctl`
+        // contract.
+        if unsafe { old_len(self.oldlenp, Ghost(oldp), Tracked(call)) } != size_of::<T>() {
+            return Err(EINVAL);
+        }
+        Ok(())
+    }
+
     fn read_only(&self) -> (r: Result<(), c_int>)
         ensures
             r is Ok <==> self.newp@.addr == 0 && self.newlen == 0,
@@ -2672,13 +2697,16 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
             io.read(e, Tracked(cc))
         },
         BackgroundThread => {
-            if let Some(on) = io.write_bool()? {
+            let on = io.write_bool()?;
+            // The old state, before the write changes it.
+            io.read(purge::background::present(), Tracked(cc))?;
+            if let Some(on) = on {
                 purge::background::request(on);
                 if on && !purge::background::present() && !purge::background::start(shared, Tracked(&mut ord)) {
                     return Err(EAGAIN);
                 }
             }
-            io.read(purge::background::present(), Tracked(cc))
+            Ok(())
         },
         MaxBackgroundThreads => {
             if let Some(n) = io.write::<usize>()? {
@@ -2690,6 +2718,8 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
         },
         ArenasCreate => {
             // `newp` may carry extent hooks, which challoc has no use for.
+            // A read that would fail must not leave an arena behind.
+            io.verify_read::<c_uint>(Tracked(&*cc))?;
             let i = shared.arenas.create(shared, Tracked(&mut ord)).ok_or(EAGAIN)?;
             io.read(i as c_uint, Tracked(cc))
         },
@@ -2741,17 +2771,21 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
                     return Err(EFAULT);
                 }
             }
+            // The old period is read before the new one is applied, so a
+            // read error changes nothing.
             if i == ARENAS_ALL as usize {
+                io.read(ms_of(shared.decay_ns()), Tracked(cc))?;
                 if let Some(ms) = new {
                     shared.set_decay_ms(ms as i64);
                 }
-                return io.read(ms_of(shared.decay_ns()), Tracked(cc));
+                return Ok(());
             }
             let arena = shared.arena(arena_index(i)?, Tracked(&mut ord)).ok_or(ENOENT)?;
+            io.read(ms_of(arena.decay_ns()), Tracked(cc))?;
             if let Some(ms) = new {
                 arena.set_decay_ms(ms as i64);
             }
-            io.read(ms_of(arena.decay_ns()), Tracked(cc))
+            Ok(())
         },
         ThreadTcacheFlush => {
             io.void()?;
@@ -2760,7 +2794,9 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
         },
         ThreadTcacheEnabled => {
             let h = thread_heap(shared)?;
-            if let Some(on) = io.write_bool()? {
+            let on = io.write_bool()?;
+            io.read(h.tcache_enabled(), Tracked(cc))?;
+            if let Some(on) = on {
                 h.set_tcache_enabled(shared, on, Tracked(&mut ord));
                 // Off: every cache of the thread's heap is freed, so empty
                 // (theorem "cache flush completeness").
@@ -2768,20 +2804,26 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
                     assert(!on ==> h.cleared() && h.drained());
                 }
             }
-            io.read(h.tcache_enabled(), Tracked(cc))
+            Ok(())
         },
         ThreadArena => {
             let h = thread_heap(shared)?;
-            if let Some(a) = io.write::<c_uint>()? {
+            let new = io.write::<c_uint>()?;
+            if let Some(a) = new {
                 if a as usize >= MAX_ARENAS || shared.arena(a as u16, Tracked(&mut ord)).is_none() {
                     return Err(EFAULT);
                 }
+            }
+            io.read(h.arena() as c_uint, Tracked(cc))?;
+            if let Some(a) = new {
                 h.set_arena(shared, a as u16, Tracked(&mut ord));
             }
-            io.read(h.arena() as c_uint, Tracked(cc))
+            Ok(())
         },
         TcacheCreate => {
             io.read_only()?;
+            // A read that would fail must not leave a tcache behind.
+            io.verify_read::<c_uint>(Tracked(&*cc))?;
             // `existing_heap(shared).map_or(0, |h| h.arena())`, spelled as
             // a `match`.
             let home = match heap::existing_heap(heap::shared_ptr(shared)) {
@@ -4600,6 +4642,125 @@ mod tests {
                 dallocx(p, MALLOCX_TCACHE_NONE as c_int);
             }
         }
+    }
+
+    /// The mallctl write/read contract: an error leaves allocator state
+    /// unchanged, and with both `oldp` and `newp` the old value is read
+    /// before the new one is applied (as jemalloc 5.3.0 reads first in
+    /// `arena_i_decay_ms_ctl_impl` and `thread_arena_ctl`, captures the old
+    /// value in `thread_tcache_enabled_ctl`, and checks `*oldlenp` with
+    /// `VERIFY_READ` in `arenas_create_ctl` and `tcache_create_ctl`).
+    fn ctl_raw<T: Copy, U: Copy>(name: &str, old: &mut T, oldlen: usize, new: Option<&U>) -> c_int {
+        let cname = CString::new(name).unwrap();
+        let mut len = oldlen;
+        let (newp, newlen) = match new {
+            Some(n) => (n as *const U as *const c_void, size_of::<U>()),
+            None => (ptr::null(), 0),
+        };
+        mallctl(
+            cname.as_ptr(),
+            old as *mut T as *mut c_void,
+            &mut len,
+            newp,
+            newlen,
+        )
+    }
+
+    #[test]
+    fn contract_dirty_decay_ms_error_leaves_period_unchanged() {
+        // `arena.4096.dirty_decay_ms` writes from other tests set every
+        // arena's period.
+        let _serial = crate::testutil::global_state();
+        let a: c_uint = get("arenas.create");
+        let key = std::format!("arena.{a}.dirty_decay_ms");
+        assert_eq!(set(&key, 250isize), 0);
+        // Wrong `*oldlenp` with a valid new value: EINVAL, so nothing
+        // may change.
+        let mut old = 0u32;
+        let rc = ctl_raw::<u32, isize>(&key, &mut old, size_of::<u32>(), Some(&313isize));
+        assert_eq!(rc, EINVAL);
+        assert_eq!(get::<isize>(&key), 250, "an EINVAL read applied the write");
+    }
+
+    #[test]
+    fn contract_dirty_decay_ms_reads_the_old_period() {
+        let _serial = crate::testutil::global_state();
+        let a: c_uint = get("arenas.create");
+        let key = std::format!("arena.{a}.dirty_decay_ms");
+        assert_eq!(set(&key, 250isize), 0);
+        let mut old = 0isize;
+        let rc = ctl_raw::<isize, isize>(&key, &mut old, size_of::<isize>(), Some(&313isize));
+        assert_eq!(rc, 0);
+        assert_eq!(old, 250, "oldp got the new period, not the old one");
+    }
+
+    #[test]
+    fn contract_arenas_create_error_creates_nothing() {
+        // A sentinel no arena index has: a create that went ahead would
+        // copy the low half of its new index over it.
+        let mut old = u16::MAX;
+        let rc = ctl_raw::<u16, u8>("arenas.create", &mut old, size_of::<u16>(), None);
+        assert_eq!(rc, EINVAL);
+        assert_eq!(
+            old,
+            u16::MAX,
+            "an EINVAL arenas.create created an arena and copied its index"
+        );
+    }
+
+    #[test]
+    fn contract_tcache_create_error_creates_nothing() {
+        // A sentinel no tcache ID has, as for `arenas.create`.
+        let mut old = u16::MAX;
+        let rc = ctl_raw::<u16, u8>("tcache.create", &mut old, size_of::<u16>(), None);
+        assert_eq!(rc, EINVAL);
+        assert_eq!(
+            old,
+            u16::MAX,
+            "an EINVAL tcache.create created a tcache and copied its ID"
+        );
+    }
+
+    #[test]
+    fn contract_thread_tcache_enabled_reads_the_old_value() {
+        assert!(get::<bool>("thread.tcache.enabled"));
+        let mut old = true;
+        let rc = ctl_raw::<bool, bool>(
+            "thread.tcache.enabled",
+            &mut old,
+            size_of::<bool>(),
+            Some(&false),
+        );
+        assert_eq!(rc, 0);
+        assert_eq!(set("thread.tcache.enabled", true), 0);
+        assert!(old, "oldp got the new value, not the old one");
+    }
+
+    #[test]
+    fn contract_thread_arena_reads_the_old_value() {
+        let home: c_uint = get("thread.arena");
+        let a: c_uint = get("arenas.create");
+        let mut old: c_uint = c_uint::MAX;
+        let rc = ctl_raw::<c_uint, c_uint>("thread.arena", &mut old, size_of::<c_uint>(), Some(&a));
+        assert_eq!(rc, 0);
+        assert_eq!(set("thread.arena", home), 0);
+        assert_eq!(old, home, "oldp got the new arena, not the old one");
+    }
+
+    #[test]
+    fn contract_background_thread_error_leaves_request_unchanged() {
+        let _serial = crate::testutil::global_state();
+        let before = purge::background::requested();
+        // A wrong `*oldlenp` with a valid new value: the read fails before
+        // the request is made, so no thread is started either.
+        let mut old = 0u32;
+        let rc = ctl_raw::<u32, bool>("background_thread", &mut old, size_of::<u32>(), Some(&true));
+        assert_eq!(rc, EINVAL);
+        assert_eq!(
+            purge::background::requested(),
+            before,
+            "an EINVAL read made the request"
+        );
     }
 }
 
