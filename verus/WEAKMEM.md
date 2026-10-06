@@ -38,7 +38,7 @@ each syscall is a compiler barrier.
 | `heap/tcaches.rs` | 5 | `[AtomicPtr<u8>; 1024]` |
 | `lock.rs` | 5 | the lock word |
 | `huge/mod.rs` | 4 | `retain_max`, `purge_on_free` |
-| `heap/shared.rs` | 2 | `multi_arena` |
+| `heap/shared.rs` | 2 | `free_flags` (until upstream #78, `multi_arena`) |
 
 ## Protocols that matter
 
@@ -139,7 +139,9 @@ each syscall is a compiler barrier.
 
 ### P5. The free fast path's `Relaxed` reads
 
-- The free path reads `multi_arena` (`heap/shared.rs:981`), the
+- The free path reads `multi_arena` (`heap/shared.rs:981`; since
+  upstream #78 the `FREE_ROUTE` bit of the `free_flags` byte, read after
+  the bit test, `Shared::free_flags`), the
   watermark (`class/table.rs:1200`, `:1214`), the bitmap bit (`:1293`)
   and the owner word (`:1320`) `Relaxed`, with no acquire. The argument
   (`class/table.rs:1179`-`:1194`, `heap/shared.rs:55`) is that the
@@ -147,6 +149,7 @@ each syscall is a compiler barrier.
   allocation.
 - A pointer handed between threads through a non-synchronising channel
   (a `Relaxed` atomic) breaks that chain. A stale `multi_arena == false`
+  (now a stale byte without `FREE_ROUTE`)
   skips the arena check and the slot goes to the wrong arena's cache; a
   stale bit weakens only the double-free check.
 - What to check: with a synchronising hand-off, a free never aborts
@@ -374,7 +377,8 @@ cut down.
   to arena 0 (possible, not modelled). Controls: the `Relaxed`
   hand-off with the free touching the block races; with the claimer's
   watermark load `Relaxed`, a synchronised free can read the owner as 0
-  (38029). `multi_arena` is not modelled.
+  (38029). `multi_arena` (now `free_flags`' `FREE_ROUTE` bit) is not
+  modelled.
 - Arena bound counts (`loom_tests/count.rs`: the real `vspec/count.rs`
   wrappers, `Relaxed` as `arena.rs`; copies of `assign` under the real
   `RawLock`, `count_in`, `unbind`, `load_bound`): 2 arenas, the main
@@ -477,10 +481,10 @@ done in (no C toolchain to build it), so every result is loom's.
 | `SlabTable::watermark`, `Policy::position`, `load_lg_slab_min`, `load_lg_pmd`, `load_lg_meta` (S91, S184, S244-S246) | reassigned: allocator invariant, RefinedRust | every store writes a value in range, and a load of any ordering returns a value some store wrote: no memory-model question; since verified in Verus, no longer seams: the watermark and the position over atomic invariants (`vspec/atom.rs`, `vspec/count.rs`), the three loads with no range claim (their readers shift with `wrapping_shl`) |
 | `Arenas::init` (S58) | reassigned: raw pointer (internal), RefinedRust | single-threaded in-place construction; its `Release` store is published again by `READY` |
 | `AtomicPtr::{load, store, new, swap}`, `AtomicU32::as_ptr`, `compiler_fence` (S256-S259, S312, S310) | reassigned: core library, Kani | specifications of `core` functions with no value claims: whether they return without a panic |
-| `load_bool`, `Explicit::drop` (S261, S186) | reassigned: Kani | a one-operation body that must return; no ordering is relied on |
+| `load_bool`, `Explicit::drop` (S261, S186) | reassigned: Kani (`load_bool` removed with upstream #78: no caller left) | a one-operation body that must return; no ordering is relied on |
 
 Contracts the reassignment exposed: `AtomicPtr::load`'s specification
-and `load_bool` have no `requires` on the ordering, but `core`'s `load`
+and `load_bool` (since removed) have no `requires` on the ordering, but `core`'s `load`
 panics for `Release` and `AcqRel` (the `store` specification has the
 matching `requires`). Neither is `no_unwind`, so Verus already allows
 the call to unwind and no proof is unsound; but under the Kani records'

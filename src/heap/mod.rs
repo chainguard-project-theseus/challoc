@@ -60,9 +60,10 @@ use compact::{
 pub use compact::{MODE_OFF, MODE_PROBE};
 pub use live::Live;
 pub use others::ArenaCaches;
+#[cfg(test)]
+pub use paths::free_fast;
 pub use paths::{
-    alloc, alloc_declined, alloc_zeroed, free, free_direct, free_fast, free_fast_class,
-    free_sized_fast,
+    alloc, alloc_declined, alloc_zeroed, free, free_direct, free_fast_slot, free_sized_fast,
 };
 #[cfg(verus_only)]
 pub use shared::Built;
@@ -70,7 +71,7 @@ pub use shared::Shared;
 #[cfg(test)]
 use shared::{FAIL_SETSPECIFIC, GuardTest, guard_interval_for};
 pub use thread::{TLS_CREATING, TLS_EXITED, fast_flags};
-pub use thread::{existing_heap, heap_destructor, heap_for_thread};
+pub use thread::{existing_heap, heap_destructor, heap_for_thread, tls_heap_slot};
 
 use core::alloc::Layout;
 use core::ptr;
@@ -154,6 +155,10 @@ pub const PUSH_ZERO: u8 = 2;
 /// when the kernel exposes `HWCAP_PACA`/`PACG` and `pac_pointers` is not
 /// `false`; never set on x86_64.
 pub const PUSH_PAC: u8 = 4;
+/// `Shared::free_flags` bit, never in `push_flags`: more than one arena
+/// exists, so plain `free` compares the slot's owner word with the heap's
+/// home arena before pushing.
+pub const FREE_ROUTE: u8 = 8;
 
 /// The process's `Shared` has [`PUSH_PAC`] set: cache entries are stored
 /// signed ([`Shared::wf`], [`Heap::wf`]). One value, since a process
@@ -4564,11 +4569,11 @@ impl Heap {
     }
 
     /// [`Heap::arena`] through a volatile load, for the `free` check's
-    /// arena test ([`Shared::checked_slot`]): a plain load is hoisted
-    /// above the multi-arena flag test and touches the heap's header line
-    /// on every single-arena `free`. A volatile read of a plain field,
-    /// which reads the field's value: the `rr::` specification states the
-    /// `ensures`, and RefinedRust proves the body against it
+    /// arena test ([`Shared::home_owns`]): a plain load is hoisted above
+    /// the multi-arena test (`FREE_ROUTE`) and touches the heap's header
+    /// line on every single-arena `free`. A volatile read of a plain
+    /// field, which reads the field's value: the `rr::` specification
+    /// states the `ensures`, and RefinedRust proves the body against it
     /// (`verus/refinedrust/run.sh`, record under `verus/seams/`).
     #[inline(always)]
     #[cfg_attr(refinedrust, rr::params("l", "sh" : "loc", "tid" : "Z", "ar" : "Z"))]

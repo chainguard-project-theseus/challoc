@@ -1,6 +1,6 @@
 # `load` (`vspec/word.rs`)
 
-Seam S396 of `verus/SEAMS.md`: src/vspec/word.rs:105. Kind: external_body. Category: atomics primitive.
+Seam S397 of `verus/SEAMS.md`: src/vspec/word.rs:105. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 coherence rules (part 3).
 
 ## Contract
@@ -60,7 +60,8 @@ Models: `loom_free_after_synchronised_handoff`, `loom_free_after_relaxed_handoff
      does not touch the block; 17501): records the outcomes; all four
      appear: the checks pass, the watermark reads below the slab, the
      bit reads clear, and the owner word reads its initial 0. Each of
-     the last three fails the fast path (`checked_slot` returns `None`);
+     the last three fails the fast path (`checked_slot` returns `None`;
+     since upstream #78 `free_fast_slot`);
      the slow path (`classify_free`, then `check_located`) repeats the
      same `Relaxed` reads and aborts (`never_committed`, the double-free
      check) or releases the slot to arena 0 only if its re-read is stale
@@ -113,7 +114,8 @@ Models: `loom_free_after_synchronised_handoff`, `loom_free_after_relaxed_handoff
   synchronised model checks this; the `Relaxed` model shows the bit read
   clear outside that premise.
 - **Gaps.** One word, 2 slots, 4 threads, one slab and one group. Not
-  modelled: `multi_arena`, sub-word slabs, the cache push after the
+  modelled: `multi_arena` (since upstream #78 the `FREE_ROUTE` bit of
+  `free_flags`), sub-word slabs, the cache push after the
   checks, and the class lock and sets that carry a slab from
   `take_group` to a claimer (the claimer's `Acquire` load of the
   watermark stands for that chain). The table steps are copies (pinned,

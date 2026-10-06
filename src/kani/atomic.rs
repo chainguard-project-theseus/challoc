@@ -1,7 +1,6 @@
 //! The atomics, fences and cells of `core` that `vspec/arena.rs`,
 //! `vspec/misc.rs`, `vspec/misc_extra.rs`, `vspec/class.rs` and
-//! `vspec/lock.rs` specify, and the trusted wrapper
-//! `vspec::atomic::load_bool`, checked against their contracts on one
+//! `vspec/lock.rs` specify, checked against their contracts on one
 //! thread. Their contracts claim nothing about values (vstd's atomics
 //! claim nothing either): what is checked is that a call under the
 //! contract's `requires` returns without a panic or undefined behaviour,
@@ -11,7 +10,7 @@
 //! threads in, and no harness constrains it.
 
 use core::cell::{Cell, UnsafeCell};
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 /// Every `Ordering`.
 const ORDERS: [Ordering; 5] = [
@@ -38,10 +37,10 @@ fn any_ptr(x: &mut u64) -> *mut u64 {
     }
 }
 
-/// S257 `core::sync::atomic::Atomic::<*mut T>::new`: returns, for every pointer.
-/// S255 `core::sync::atomic::Atomic::<*mut T>::load`: under `!(order is Release) && !(order is
-/// AcqRel)`, returns. S256 `core::sync::atomic::Atomic::<*mut T>::store`: under `!(order is
-/// Acquire) && !(order is AcqRel)`, returns. S258 `core::sync::atomic::Atomic::<*mut T>::swap`:
+/// S259 `core::sync::atomic::Atomic::<*mut T>::new`: returns, for every pointer.
+/// S257 `core::sync::atomic::Atomic::<*mut T>::load`: under `!(order is Release) && !(order is
+/// AcqRel)`, returns. S258 `core::sync::atomic::Atomic::<*mut T>::store`: under `!(order is
+/// Acquire) && !(order is AcqRel)`, returns. S260 `core::sync::atomic::Atomic::<*mut T>::swap`:
 /// no `requires`; returns under every ordering. (Sequentially, each also
 /// reads what was last written, which the contracts do not claim.)
 #[kani::proof]
@@ -80,7 +79,7 @@ fn atomic_ptr_bad_orders() {
     super::must_not_return();
 }
 
-/// S323 `core::sync::atomic::Atomic::<u32>::as_ptr`: no `ensures`; it returns the address of
+/// S324 `core::sync::atomic::Atomic::<u32>::as_ptr`: no `ensures`; it returns the address of
 /// the atomic's value (a write through it is what the next load reads).
 #[kani::proof]
 fn atomic_u32_as_ptr() {
@@ -93,18 +92,7 @@ fn atomic_u32_as_ptr() {
     assert_eq!(a.load(Ordering::Relaxed), v);
 }
 
-/// S262 `load_bool`: under `!(order is Release) && !(order is AcqRel)`,
-/// returns (the stored value, sequentially).
-#[kani::proof]
-fn load_bool() {
-    let v: bool = kani::any();
-    let a = AtomicBool::new(v);
-    let o = any_order();
-    kani::assume(!matches!(o, Ordering::Release | Ordering::AcqRel));
-    assert_eq!(crate::vspec::atomic::load_bool(&a, o), v);
-}
-
-/// S320 `core::sync::atomic::compiler_fence`: under `!(order is Relaxed)`, returns (on every
+/// S321 `core::sync::atomic::compiler_fence`: under `!(order is Relaxed)`, returns (on every
 /// such ordering, so it does not unwind); on `Relaxed` it panics, as its
 /// comment says (`compiler_fence_relaxed`).
 #[kani::proof]
@@ -125,7 +113,7 @@ fn compiler_fence_relaxed() {
     super::must_not_return();
 }
 
-/// S321 `core::sync::atomic::fence`: under `!(order is Relaxed)`, returns (on
+/// S322 `core::sync::atomic::fence`: under `!(order is Relaxed)`, returns (on
 /// every such ordering, so it does not unwind); on `Relaxed` it panics,
 /// as its comment says (`fence_relaxed`).
 #[kani::proof]
@@ -155,7 +143,7 @@ impl Drop for Counted<'_> {
     }
 }
 
-/// S270 `core::mem::drop`: no contract; it returns, having run its
+/// S271 `core::mem::drop`: no contract; it returns, having run its
 /// argument's destructor once (for a type with a destructor) and done
 /// nothing else (for a `Copy` type).
 #[kani::proof]
@@ -168,7 +156,7 @@ fn mem_drop() {
     core::mem::drop(());
 }
 
-/// S312 `core::cell::UnsafeCell::<T>::new`: no `ensures`; it returns, a cell holding
+/// S313 `core::cell::UnsafeCell::<T>::new`: no `ensures`; it returns, a cell holding
 /// the value, for a word, a zero-sized type and a type with a destructor
 /// (which `new` does not run).
 #[kani::proof]

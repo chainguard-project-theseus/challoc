@@ -1,6 +1,6 @@
 # `Option::<&T>::copied`
 
-Seam S383 of `verus/SEAMS.md`: src/vspec/sys.rs:108. Kind: assume_spec. Category: core library.
+Seam S384 of `verus/SEAMS.md`: src/vspec/sys.rs:108. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

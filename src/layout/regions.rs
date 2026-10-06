@@ -808,6 +808,83 @@ impl Regions {
         Some((c, slab, slot))
     }
 
+    /// [`slab_slot`] without the region bound, for a caller that compares
+    /// the slab with the class's hand-out watermark next (the `free` fast
+    /// path, `Shared::set_slot`): an address past the region, in the gap
+    /// that follows it or below its base (the offset wraps) yields a slab
+    /// number of at least `nslabs`, which no watermark reaches, so that
+    /// one compare is also the region bound. `Some((class, slab, slot))`
+    /// when `p` is in the class superblock at a slot start of its slab
+    /// geometry; the slab is meaningful only below the watermark.
+    ///
+    /// Proved: what [`slab_slot`] ensures holds as soon as the slab is
+    /// below the region's slab count ([`Regions::spec_nslabs`]), the bound
+    /// the watermark compare gives.
+    ///
+    /// [`slab_slot`]: Regions::slab_slot
+    #[inline(always)]
+    pub fn slab_slot_unbounded(&self, p: usize) -> (r: Option<(usize, usize, usize)>)
+        requires self.wf(),
+        ensures
+            r matches Some((c, slab, slot)) ==> {
+                let cls = class_table()[c as int];
+                let rel = p.wrapping_sub(self.class_base[c as int]);
+                &&& c < NCLASSES
+                &&& cls.wf()
+                &&& slab == rel >> cls.lg_slab
+                &&& slot < cls.nslots
+                &&& (slab as int) < self.spec_nslabs(c as int) ==> {
+                    &&& rel < (1usize << self.lg_region)
+                    &&& self.is_slot_addr(c as int, p)
+                    &&& p as int == self.slot_at(c as int, slab as int, slot as int)
+                }
+            },
+        opens_invariants none
+    {
+        let c = p.wrapping_sub(self.superblock) >> self.lg_stride;
+        if c >= NCLASSES {
+            return None;
+        }
+        // SAFETY: `c < NCLASSES` was just checked; both arrays have
+        // `NCLASSES` entries.
+        let cls = unsafe { class_entry(c) };
+        proof {
+            assert(cls.wf());
+        }
+        let rel = p.wrapping_sub(unsafe { *crate::vspec::slice::array_get_unchecked(&self.class_base, c) });
+        proof {
+            let lg = cls.lg_slab;
+            let m = cls.slab_mask as usize;
+            assert(m == ((1usize << lg) - 1) as usize);
+            assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+            assert((rel & m) < (1usize << lg)) by (bit_vector)
+                requires lg <= 22, m == ((1usize << lg) - 1) as usize;
+            assert(self.class_base@[c as int] == self.class_base[c as int]);
+        }
+        let (slot, valid) = cls.slot_of_offset(rel & cls.slab_mask());
+        if !valid {
+            return None;
+        }
+        proof {
+            let lg = cls.lg_slab;
+            let lr = self.lg_region;
+            let rl = 1usize << lr;
+            let slab = rel >> lg;
+            if (slab as int) < self.spec_nslabs(c as int) {
+                assert(rel < rl) by (bit_vector)
+                    requires
+                        lg <= 22,
+                        22 <= lr < 64,
+                        rl == 1usize << lr,
+                        slab == rel >> lg,
+                        slab < rl >> lg,
+                ;
+                self.lemma_slot_of(c as int, p, slot);
+            }
+        }
+        Some((c, rel >> cls.lg_slab, slot))
+    }
+
     /// The sized free's classification (design 6.3): the size hint names
     /// `class`, so the region is known and the
     /// pointer is only checked against it, `Some((slab, slot))` when `p` is
@@ -2484,7 +2561,7 @@ mod linux {
     mod kani_word {
         use super::{NCLASSES, word};
 
-        /// S169 `word`, `requires i < NCLASSES + 3`, no `ensures`: under
+        /// S170 `word`, `requires i < NCLASSES + 3`, no `ensures`: under
         /// it the call returns, for every byte string and index (and the
         /// word is bytes `8 * i..8 * i + 8` in native order).
         #[kani::proof]

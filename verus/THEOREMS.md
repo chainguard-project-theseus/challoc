@@ -148,6 +148,18 @@ and the call does not return (theorem 3, which is not voided for it).
   result is a permutation of the batch (the flush's tokens follow it).
 - `thread::fast_flags` (`heap/thread.rs:170`): the `PUSH_PAC` bit read
   through a raw pointer is `pac_mode()`.
+- `Shared::free_flags` (`heap/shared.rs`, `external_body`, since upstream
+  #78; `requires self.wf()`): the `free` fast path's dispatch byte, one
+  `Relaxed` load, is `push_flags` up to the `FREE_ROUTE` bit (`r &
+  !FREE_ROUTE == flags() & !FREE_ROUTE`). `init` writes both bytes from
+  one value (`put_flags`, verified), and the only other write is
+  `set_multi_arena`'s `fetch_or(FREE_ROUTE)`; read off the code, not
+  proved (an atomic invariant on the byte would prove it in Verus). The
+  contract holds of some value whatever `push_flags` is (it does of
+  `push_flags`). With `Shared::wf` the byte's `PUSH_PAC` bit is
+  `pac_mode()` and its `PUSH_ZERO` bit `flags()`'s
+  (`Shared::lemma_free_flags`), which is what `heap_from_slot` and the
+  push need.
 - TLS asm: `sys::tls::get` (`sys/tls.rs:125`), `get_tp` (aarch64,
   `:180`), `set` (`:205`); a read returns the `TlsSlot` token's value
   and `set` makes the written value the token's (theorem 15), nothing
@@ -208,10 +220,12 @@ the value; that its page is committed stays the caller's.
 specifications of `core`.
 
 **Memory model.** Sequential consistency. Atomic loads return any
-value (vstd); the three bitmap word writers (`vspec/word.rs:59`, `:76`,
-`:92`) are one atomic step each and ignore the ordering, as is the one
-word load that returns its value (`vspec::word::load`, theorem 7). See
-`verus/WEAKMEM.md`.
+value (vstd), except `Shared::free_flags`, whose contract (above), of a
+well-formed `Shared`, covers every value a reader of the published one
+can load once it observed `READY`; the three bitmap word writers
+(`vspec/word.rs:59`, `:76`, `:92`) are one atomic step each and ignore
+the ordering, as is the one word load that returns its value
+(`vspec::word::load`, theorem 7). See `verus/WEAKMEM.md`.
 
 **Abort stand-in.** One site remains where Verus sees another `-> !`
 call than the build's abort (`#[cfg(verus_only)]`):
@@ -431,7 +445,9 @@ guard slabs, so a call with a pointer into one does not return either
 Below them, `heap::free` and `free_direct` (`heap/paths.rs:667`, `:682`),
 `Heap::free` (`:196`), and the fast paths `free_fast`,
 `free_fast_class`, `free_sized_fast` (`:518`, `:548`, `:577`, on their
-`true`/`Some` result) ensure it; the cache pushes and
+`true`/`Some` result; since upstream #78 the unsized ones are
+`free_fast_slot` and its `free_fast_push`, on their `Some` result) ensure
+it; the cache pushes and
 `Shared::free_direct` (`heap/shared.rs:1115`) require `is_slot` of their
 class, `Shared::free_huge` (`:1312`) a page index from
 `Shared::classify_free` (`:1139`).
@@ -441,8 +457,9 @@ class, `Shared::free_huge` (`:1312`) a page index from
   helpers (`heap::paths::invalid_free`, `heap/paths.rs:729`, and the
   class and huge abort helpers) verify and call it.
 - `Shared::classify_free` and `Regions::classify` are verified; the
-  sized fast path's `slot_in_class` and `Regions::slab_slot` read the
-  class table through `class_entry` (common premise).
+  sized fast path's `slot_in_class` and `Regions::slab_slot` (and, since
+  upstream #78, the unsized fast path's `Regions::slab_slot_unbounded`)
+  read the class table through `class_entry` (common premise).
 
 **Where the statement is weaker than the code.**
 - Liveness is a precondition, not a run-time result: every verified
@@ -998,6 +1015,16 @@ region.
   `set_slot` (so `checked_slot`, the `free` fast path) and the three
   `api/libc.rs` `check_live` callers (`usable_size`,
   `old_size_or_keep`, `realloc_old`) turn it into `is_slot`.
+  Since upstream #78 the fast path is `heap::free_fast_slot`, whose bit
+  test is `set_slot`, and `set_slot` takes its slab from
+  `Regions::slab_slot_unbounded`, which has no region bound: its slab
+  number is checked against the region only by the watermark compare.
+  `SlabTable::is_handed_out` now ensures, besides `slab < nslabs`, that
+  the table's slab count is its class region's (`spec_nslabs`, from the
+  table's type invariant), and `slab_slot_unbounded` ensures
+  `slab_slot`'s facts (offset inside the region, `is_slot_addr`, the
+  slot's address) once the slab is below that count; so `set_slot`
+  still ensures `is_slot` of what it returns.
 - Sized frees: `Shared::sized_slot` (`heap/shared.rs:1806`) through
   `GuardTest::is_guard`, which now ensures its formula;
   `GuardTest::lemma_is_guard` (`:175`, `bit_vector`) proves the folded
@@ -1084,13 +1111,21 @@ call them:
 - `free`: `existing_heap`, `shared_ptr`, `api::shared_unchecked`
   (`api/mod.rs:273`), `Shared::push_flags` and `heap::free_fast`
   (`heap/paths.rs:533`), with the check (`Shared::checked_slot`) and the
-  push (`Heap::push_fast`) inside it.
+  push (`Heap::push_fast`) inside it. Since upstream #78 (null left to
+  the slow path, the heap and the dispatch byte produced after the bit
+  test): `heap::tls_heap_slot` (the TLS read), `api::shared_unchecked`,
+  `sys::opaque` and `heap::free_fast_slot`, with the bit test
+  (`Shared::set_slot`), `Shared::free_flags`, `heap_from_slot` and
+  `free_fast_push` (the owner test `Shared::home_owns` under
+  `FREE_ROUTE`, and `Heap::push_fast`) inside it.
 - `free_sized`, and `sdallocx` with no flags: `class_index`, `shared_ptr`,
   `existing_heap`, `shared_unchecked` and `heap::free_sized_fast`
   (`heap/paths.rs:594`).
 - `challoc_free_usable`: `existing_heap`, `shared_ptr`,
   `shared_unchecked`, `heap::free_fast_class` (`heap/paths.rs:564`) and
-  `class_size` (`api/libc.rs:890`).
+  `class_size` (`api/libc.rs:890`); since upstream #78
+  `tls_heap_slot`, `shared_unchecked`, `free_fast_slot` and
+  `class_size`.
 
 `theorem_no_syscall_on_fast_paths`, a verification-only function
 (`cfg(verus_only)`; the build has none), makes these calls where
@@ -1175,7 +1210,8 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   the watermark's load (`vspec::atom::load_usize_in`, an atomic load),
   `vspec::word::load` (an atomic load), `layout::regions::class_entry`
   (an empty `asm!`), `addr_to_ptr`, `api::shared_ptr` and
-  `shared_unchecked`.
+  `shared_unchecked`; since upstream #78 also `Shared::free_flags` (a
+  `Relaxed` load) and `sys::opaque` (an empty `asm!` on aarch64).
   So do the `core` functions they use (`Option::map`, `?`, atomics,
   pointer arithmetic), which the common premises already trust.
 - Two values reach the kernel from code with no `requires`, and only a
@@ -1269,6 +1305,17 @@ pub unsafe fn shared_unchecked() -> (r: &'static Shared)            // api/mod.r
     opens_invariants none
 ```
 
+Since upstream #78 the unsized `free` fast path is these two, in place
+of `free_fast` and `free_fast_class` (which are now test-only wrappers
+of the same `set_slot` and `free_fast_push`):
+
+```rust
+pub unsafe fn free_fast_slot(shared: &Shared, t: usize, tp: usize, p: *mut u8, blk) -> (r: Option<usize>)   // heap/paths.rs
+    opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns()]
+fn free_fast_push(table: &SlabTable, slab: usize, class: usize, h: &mut Heap, p: *mut u8, flags: u8, blk) -> (r: Option<usize>)
+    opens_invariants none
+```
+
 (Signatures shortened.) `any` is no subset of either mask, so no call
 chain from a masked function reaches a lock acquisition: **no function
 the `malloc` and `free` fast branches call can acquire a lock**. The
@@ -1299,13 +1346,18 @@ only the functions named here:
   `operator new` family's fast path. A declined pop tail-calls
   `malloc_slow_class`.
 - `free` (`free_block`, `api/libc.rs`): `existing_heap`, `shared_unchecked`,
-  `Shared::push_flags`, `free_fast`; then `free_slow`.
+  `Shared::push_flags`, `free_fast`; then `free_slow`. Since upstream
+  #78: `tls_heap_slot` (on a ghost `TlsSlot::entry()`),
+  `shared_unchecked`, `sys::opaque`, `free_fast_slot`; then `free_slow`,
+  which returns at once for null (no null test of the fast branch's
+  own: null is in no class region).
 - `free_sized` and `sdallocx` with `flags == 0`: `class_index`, then
   `free_sized_block`'s `existing_heap`, `shared_unchecked`, `push_flags`,
   `free_sized_fast`; then `free_sized_slow`.
 - `challoc_free_usable` (`free_usable_block`): its `free_fast_class` call on the same heap
-  lookup. The class size it then returns comes from the unmasked
-  `class_size`, outside the theorem.
+  lookup (since upstream #78, `free_fast_slot` on `free`'s TLS read,
+  without `sys::opaque`). The class size it then returns comes from the
+  unmasked `class_size`, outside the theorem.
 
 **The closure.** These are the functions with a declared mask on these
 paths, verified unless marked trusted:
@@ -1317,19 +1369,23 @@ paths, verified unless marked trusted:
   `heap_from_slot` (trusted).
 - **Pop:** `Heap::alloc_fast`, `pop_fast`, `cache_ptr`, `home_ptr_at`
   (trusted), `pop_top`, `CacheHeader::slots`.
-- **Push:** `free_fast`, `free_fast_class`, `free_sized_fast`,
+- **Push:** `free_fast_slot`, `free_fast_push` (since upstream #78; before,
+  `free_fast`, `free_fast_class`), `free_sized_fast`,
   `Heap::push_fast`, `push_cache_flags`, `push_cache`, `cached_recently`
   (trusted).
-- **Free checks:** `Shared::push_flags`, `multi_arena`, `checked_slot`,
-  `set_slot`, `sized_slot`, `GuardTest::is_guard`,
+- **Free checks:** `Shared::push_flags`, `Shared::free_flags`
+  (trusted, since #78), `home_owns` and `set_slot` (before #78,
+  `multi_arena` and `checked_slot`), `sized_slot`, `GuardTest::is_guard`,
   `Heap::arena_volatile` (RefinedRust,
   `verus/seams/heap-Heap-arena_volatile.md`); `SlabTable::watermark`,
   `is_handed_out`, `is_set_unchecked`, `owner_unchecked`,
   `owner_at`, `load_owner` (trusted).
-- **Layout:** `Regions::slab_slot`, `slot_in_class`, `region_len`, the
+- **Layout:** `Regions::slab_slot_unbounded` (since #78, for the
+  unsized path; `slab_slot` before), `slot_in_class`, `region_len`, the
   free function `layout::regions::class_entry` (trusted);
   `Class::slab_size`, `slab_mask`, `slot_of_offset`.
 - **Primitives:** `sys::pac::sign` and `auth` (trusted asm),
+  `sys::opaque` (trusted, an empty `asm!` on aarch64, since #78),
   `vspec::addr::addr_to_ptr` (trusted), and the `vspec` items under
   "Premises".
 
@@ -1341,6 +1397,11 @@ the default mask. So the eight `?`s on these paths are now
 through the wrappers below; `owner_at`'s load is arena isolation's
 trusted `load_owner` (theorem 14), which declares the mask. The release
 library's machine code is identical to the previous commit's on x86_64.
+Upstream #78 replaced the `multi_arena` load with the `FREE_ROUTE` bit
+of the `free_flags` byte the push dispatch loads anyway
+(`Shared::free_flags`, trusted, `opens_invariants none`), so the
+`vspec::atomic::load_bool` wrapper below had no caller left and is
+gone.
 
 **Premises beyond the common ones.**
 - **Trusted masks.** Each trusted function's mask is a declaration that
@@ -1354,7 +1415,10 @@ library's machine code is identical to the previous commit's on x86_64.
     `vspec::atom::load_usize_in` (the watermark's load), `class_entry`.
   - `pac::sign` and `auth` (asm; under `cfg(test)` a counter
     increment), `addr_to_ptr`.
-- **New wrappers.** `vspec::atomic::load_bool`: the `core`
+  - Since upstream #78: `Shared::free_flags` (one `Relaxed` load) and
+    `sys::opaque` (an empty `asm!`, or the identity off aarch64).
+- **New wrappers.** `vspec::atomic::load_bool` (removed with upstream
+  #78, above): the `core`
   atomic load, declared `opens_invariants none`; `load_owner`
   (`class/table.rs`, a `Relaxed` load) declares the same mask.
   `vspec::slice::array_get_unchecked` stands for `get_unchecked` on an
@@ -1713,6 +1777,15 @@ premise below that nothing writes them in between.
   `Shared::zero_on_free` ensures `r == (flags() & PUSH_ZERO != 0)`. A
   declined push keeps the slot's token for the slow path (`!r ==>
   *final(tk) == *old(tk)`), which is `free_slow_in`.
+  Since upstream #78 plain `free` and `challoc_free_usable` push through
+  `free_fast_slot`, which hands `free_fast_push` the `free_flags` byte
+  in place of `push_flags()`; `free_fast_push` passes `push_fast` 0 for
+  the bytes 0 and `FREE_ROUTE` and the byte without `FREE_ROUTE`
+  otherwise, so it declines whenever the byte has `PUSH_ZERO`
+  (`lemma_free_route_bits`), and `free_fast_slot` ensures
+  `zero_on_free(shared) ==> r is None`. That the byte's `PUSH_ZERO` bit
+  is `flags()`'s rests on `Shared::free_flags`' trusted contract (common
+  premises; `Shared::lemma_free_flags`).
 - `realloc`, `rallocx`, `dallocx`, explicit tcaches and the sized paths'
   slow halves all free through `heap::free`, `Heap::free` or (for
   `MALLOCX_TCACHE_NONE`) `heap::free_direct`, so through the paths
@@ -2089,7 +2162,10 @@ an owned slab, and ensures its pick's owner; `plan` collects
   postcondition (the huge lock's ghost descriptors carry it, but no
   token survives between the calls).
 - `checked_slot`'s owner test on the `free` fast path reads through
-  `owner_unchecked` (verified); it only picks the cache.
+  `owner_unchecked` (verified); it only picks the cache. Since upstream
+  #78 it is `Shared::home_owns`, which `free_fast_push` calls when the
+  `free_flags` byte has `FREE_ROUTE` (several arenas); with one arena
+  it is skipped, as the `multi_arena` test skipped it before.
 
 ## 15. Re-entrant heap registration
 
@@ -3702,7 +3778,11 @@ premises (`axiom_class_table_wf`).
   the loop run forever is not stated (`oom` has no `decreases`).
 - The free side: `free` and the sized frees return for NULL as a
   documented no-op; that NULL is no free target says only that they
-  cannot have acted on a block there.
+  cannot have acted on a block there. Since upstream #78 `free` has no
+  null test on its fast branch: null never passes the bit test (what
+  `set_slot` returns is a slot start, never at 0) and `free_slow`
+  returns for it, so the no-op
+  is the slow path's (`free_slow`'s `p@.addr != 0 ==>` ensures).
 
 ## 25. Realloc follows the class/page keep rule
 
@@ -6964,7 +7044,9 @@ alone):
    aborts (`free_before_init`, `:508`). U: `p != 0 ==> usable_of(p, r)`,
    exact for a slot, the descriptor's shape for a huge run, *(U)*.
 10. `free` (`api/libc.rs:386`). B: `p != 0 ==> free_target(p)`, *(live)*;
-    NULL is a no-op (early return; not in the `ensures`). F: `errno`
+    NULL is a no-op (not in the `ensures`; since upstream #78 the return
+    is `free_slow`'s, after the fast branch's TLS read and bit test, which
+    null never passes). F: `errno`
     preservation (the module doc's promise): `free` is not handed the
     `errno` token, so it cannot reach `set_errno`, and a caller's token is
     unchanged across it (proved where verified code calls it: `realloc`
@@ -7018,7 +7100,8 @@ alone):
     B: as `free` (`free_usable_block`). U: `p != 0 ==> usable_of(p, r)`,
     *(U)*, and `r == blk.len()`, the freed block's usable bytes (the
     class size, or the run's usable pages, from its token on both paths):
-    the class size from `heap::free_fast_class`, which ensures
+    the class size from `heap::free_fast_class` (since upstream #78
+    `heap::free_fast_slot`), which ensures
     `is_slot(c, p)`, or from `free_usable_slow`'s classification
     (`:1081`), or `Huge::usable_size` there. The `r == blk.len()` half
     is the core's; at the export `blk` is the token `axiom_c_claim` gives

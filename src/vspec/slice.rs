@@ -227,7 +227,7 @@ verus! {
 /// `a.get_unchecked(i)` on an array, for the fast paths: vstd's
 /// array-to-slice coercion (`vstd::array::array_as_slice`) declares Verus's
 /// default invariant mask, `any`, which a function that opens none cannot
-/// call (`vspec::atomic`, theorem 9 of `verus/THEOREMS.md`). Trusted: the
+/// call (theorem 9 of `verus/THEOREMS.md`). Trusted: the
 /// element at an index in bounds, which is `get_unchecked`'s safety
 /// contract.
 #[inline(always)]

@@ -85,11 +85,14 @@ src/class/table.rs	let Tracked(m) = self.bits_unchecked(slab).init(cls.nslots(),
 src/class/table.rs	store_owner(owner_word, arena, Ghost(*self), Ghost(s >> self.lg_group), Tracked(om));
 src/class/table.rs	gi.next_slab = end;
 src/class/table.rs	store_usize(&self.committed_slabs, end, Ordering::Release, Tracked(&mut perm));
-# heap/shared.rs: checked_slot, set_slot (free.rs).
-src/heap/shared.rs	let Some((class, table, slab)) = self.set_slot(p) else { return None };
-src/heap/shared.rs	if unsafe { table.owner_unchecked(slab) } != home {
+# heap/shared.rs: home_owns, set_slot (free.rs).
+src/heap/shared.rs	unsafe { table.owner_unchecked(slab) == home }
 src/heap/shared.rs	if !table.is_handed_out(slab) {
 src/heap/shared.rs	if !unsafe { table.is_set_unchecked(slab, slot) } {
+# heap/paths.rs: free_fast_slot's bit test and free_fast_push's arena tests (free.rs).
+src/heap/paths.rs	let Some((class, table, slab)) = shared.set_slot(p) else { return None };
+src/heap/paths.rs	FREE_ROUTE => Shared::home_owns(table, slab, h) && h.push_fast(class, p, 0, Tracked(&mut tk)),
+src/heap/paths.rs	(flags & FREE_ROUTE == 0 || Shared::home_owns(table, slab, h))
 # arena.rs: iter (narenas.rs); unbind (count.rs); build, create
 # (narenas.rs); assign, load_bound, count_in (count.rs); count (narenas.rs).
 src/arena.rs	let n = self.count() as usize;

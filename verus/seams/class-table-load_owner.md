@@ -31,7 +31,9 @@ while `slab_owner` of it is whatever a later `store_owner` makes it.
 Callers: `owner` (after an `Acquire` load of the watermark),
 `check_located` (after `check_live`'s `Relaxed` watermark load and bit
 test) and `owner_unchecked` (from `Shared::checked_slot`, the `free`
-fast path, after `set_slot`'s `Relaxed` watermark load and bit test).
+fast path; since upstream #78 from `Shared::home_owns`, which
+`free_fast_push` calls with `FREE_ROUTE` in the `free_flags` byte,
+after `set_slot`'s `Relaxed` watermark load and bit test).
 
 ## Statement
 
@@ -47,7 +49,8 @@ Two parts.
    `vspec-word-load.md`: a copy of `take_group`'s tail (bitmap `init`,
    the owner store, the watermark's `Release` store), a claimer that
    finds the slab through an `Acquire` load of the watermark, and a free
-   path copied from `checked_slot`/`set_slot` (`Relaxed` watermark, the
+   path copied from `checked_slot`/`set_slot` (since upstream #78
+   `set_slot`/`home_owns`; `Relaxed` watermark, the
    real `vspec::word::load` bit test, then the owner load, `Relaxed`, as
    `load_owner`).
 
@@ -108,7 +111,8 @@ Models: `loom_free_after_synchronised_handoff`, `loom_free_after_relaxed_handoff
     the watermark past `slab`, with the hand-off premise for the free
     paths) would leave the memory-model half above as the whole seam.
 - **`opens_invariants none`**: the body opens no Verus invariant.
-- **Gaps (model).** One group of one slab, 4 threads; `multi_arena` is
+- **Gaps (model).** One group of one slab, 4 threads; `multi_arena` (since
+  upstream #78 the `FREE_ROUTE` bit of `free_flags`) is
   not modelled; the class lock and sets between `take_group` and a
   claimer are stood in for by the claimer's `Acquire` watermark load;
   the steps are copies (pinned, `verus/loom/pins.txt`).

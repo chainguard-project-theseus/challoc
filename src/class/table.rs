@@ -2256,8 +2256,15 @@ impl SlabTable {
     pub fn is_handed_out(&self, slab: usize) -> (r: bool)
         ensures
             r ==> slab < self.spec_nslabs(),
+            // The table's slab count is its class region's, so the `free`
+            // fast path's watermark compare also bounds the region
+            // (`Shared::set_slot`).
+            self.spec_nslabs() as int == process_regions().spec_nslabs(self.spec_class() as int),
         opens_invariants [committed_ns()]
     {
+        proof {
+            use_type_invariant(self);
+        }
         slab < self.watermark(Ordering::Relaxed)
     }
 
@@ -2489,11 +2496,13 @@ impl SlabTable {
             use_type_invariant(self);
             self.lemma_group_in_range(slab);
         }
-        let group = slab >> self.lg_group;
+        let ghost group = slab >> self.lg_group;
         proof {
             assert(self.owner_perms@.contains_key(group as int));
         }
-        let word = addr_to_ptr(self.owners_base + group * 2) as *const AtomicU16;
+        // `owners_base` before the shift: in this order the `free` fast
+        // path's owner test schedules its loads as the plain code does.
+        let word = addr_to_ptr(self.owners_base + (slab >> self.lg_group) * 2) as *const AtomicU16;
         load_owner(ptr_ref(word, Tracked(self.owner_perms.borrow().tracked_borrow(group as int))), Ghost(*self), Ghost(slab))
     }
 

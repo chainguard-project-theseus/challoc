@@ -11,7 +11,8 @@
 //!   word, `Relaxed`), then `store_usize(end, Release)` of the watermark;
 //! - a claimer finds the slab through `committed_slabs()` (`Acquire`), as
 //!   in `bitmap.rs`'s `loom_bitmap_init_is_published`;
-//! - the free path is `Shared::checked_slot` and `set_slot` (and
+//! - the free path is `Shared::set_slot` and `home_owns` (through
+//!   `heap::free_fast_slot` and `free_fast_push`; and
 //!   `SlabTable::check_located`, which makes the same reads):
 //!   `is_handed_out` (the watermark, `Relaxed`), `is_set_unchecked` (the
 //!   bit, `Relaxed`, through `vspec::word::load`), then `owner_unchecked`
@@ -29,7 +30,8 @@
 //! word other writes keep changing. With a `Relaxed` hand-off the model
 //! records which outcomes appear, to document them.
 //!
-//! Left out: `multi_arena` (a `Relaxed` flag read before the owner, set
+//! Left out: the `FREE_ROUTE` bit of `Shared::free_flags` (a `Relaxed`
+//! byte read after the bit test and before the owner word, its bit set
 //! once when a second arena is built; not modelled), the cache push after
 //! the checks, more than one word or group, and the class lock and sets
 //! that carry a slab from `take_group` to a claimer (here the claimer's
@@ -53,7 +55,7 @@ const NSLOTS: usize = 2;
 const ARENA: u16 = 3;
 
 /// What the free path's checks found. Every outcome but `Ok` is a miss of
-/// the fast path (`checked_slot` returns `None`); the slow path
+/// the fast path (`free_fast_slot` returns `None`); the slow path
 /// (`classify_free`, then `check_located`) repeats the same `Relaxed`
 /// reads, and only if its re-read is stale too does it abort
 /// (`never_committed`, the double-free check) or release the slot to the

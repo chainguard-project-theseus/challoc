@@ -85,7 +85,8 @@ debug_scheduled	panic/abort	Kani	discharged (verus/seams/heap-paths-debug_schedu
 shared_of	raw pointer (internal)	RefinedRust
 axiom_process_shared	allocator invariant	none (assumption)
 ThreadKey::create	function pointer	Kani
-S_MULTI_ARENA	core library	Kani	discharged (verus/seams/heap-shared-S_MULTI_ARENA.md)
+Shared::free_flags	allocator invariant	Verus
+S_FREE_FLAGS	core library	Kani	discharged (verus/seams/heap-shared-S_FREE_FLAGS.md)
 S_PUSH_FLAGS	core library	Kani	discharged (verus/seams/heap-shared-S_PUSH_FLAGS.md)
 S_REGIONS	core library	Kani	discharged (verus/seams/heap-shared-S_REGIONS.md)
 S_GUARD_TEST	core library	Kani	discharged (verus/seams/heap-shared-S_GUARD_TEST.md)
@@ -324,7 +325,6 @@ core::sync::atomic::Atomic::<*mut T>::store	core library	Kani	discharged (verus/
 core::sync::atomic::Atomic::<*mut T>::new	core library	Kani	discharged (verus/seams/vspec-arena-Atomic-ptr-new.md)
 core::sync::atomic::Atomic::<*mut T>::swap	core library	Kani	discharged (verus/seams/vspec-arena-Atomic-ptr-swap.md)
 core::sync::atomic::Atomic::<u32>::as_ptr	core library	Kani	discharged (verus/seams/vspec-misc_extra-Atomic-u32-as_ptr.md)
-load_bool	atomics primitive	Kani	discharged (verus/seams/vspec-atomic-load_bool.md)
 Explicit::drop	atomics primitive	Kani	discharged (verus/seams/purge-Explicit-drop.md)
 ClassState::claim_with	termination	RefinedRust
 # RefinedRust cannot take these (no atomics, UnsafeCell, integer-to-pointer

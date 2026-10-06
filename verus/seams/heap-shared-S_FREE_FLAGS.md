@@ -1,21 +1,24 @@
-# `S_MULTI_ARENA`
+# `S_FREE_FLAGS`
 
-Seam S129 of `verus/SEAMS.md`: src/heap/shared.rs:572. Kind: external_body const. Category: core library.
+Seam S129 of `verus/SEAMS.md`: src/heap/shared.rs:578. Kind: external_body const. Category: core library.
 Discharged by Kani.
 
 ## Contract
 
-At commit 7d4e997 (checked again there; the record was written at
+As renamed by the port of upstream #78 (the field `multi_arena:
+AtomicBool` became `free_flags: AtomicU8`, at the same offset, 0, with
+the same size and alignment, 1), and checked there; before, as
+`S_MULTI_ARENA`, at commit 7d4e997 (the record was written at
 ae82d5b):
 
 ```rust
-const S_MULTI_ARENA: usize = core::mem::offset_of!(Shared, multi_arena);
+const S_FREE_FLAGS: usize = core::mem::offset_of!(Shared, free_flags);
 ```
 
 ## Statement
 
 Kani 0.68.0 (CBMC 6.11.0, nightly-2026-08-21) proves the harness `heap::shared::kani_layout::shared_layout` (`src/heap/shared.rs`):
-`S_MULTI_ARENA == offset_of!(Shared, multi_arena)`, and the field-fit conditions of
+`S_FREE_FLAGS == offset_of!(Shared, free_flags)`, and the field-fit conditions of
 `axiom_shared_layout` at that value (see its record,
 `verus/seams/heap-shared-axiom_shared_layout.md`).
 
@@ -68,6 +71,10 @@ Reconciled onto commit 7d4e997, 2026-10-03: the contract above
 compared with the ledger's entry there, and the harness re-run under
 both quanta with the same Kani (it passes). A fresh-context subagent
 reviewed the reconciliation.
+
+Reconciled onto the port of upstream #78, 2026-10-06: the contract
+above is the ledger's entry there, and the harness re-run under both
+quanta with the same Kani passes (0 of 345 checks failed in each).
 
 ## Tests
 

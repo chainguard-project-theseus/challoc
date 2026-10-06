@@ -527,17 +527,21 @@ pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>)
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> blk.block(p),
 {
-    if p.is_null() {
-        return;
-    }
     let tracked mut blk = blk;
     // As in `malloc`: the check-and-push has no calls, and every other
     // outcome, including the aborts, is reached through one tail call.
-    if let Some(h) = heap::existing_heap(super::shared_ptr()) {
+    // Null is one of those outcomes: it is in no class region (the
+    // superblock is mapped far above address 0, so `slab_slot_unbounded`'s class
+    // index of null is out of range) and `free_slow` returns for it, so
+    // the common case pays no test of its own (jemalloc's `free` fast
+    // path leaves null to its slow path the same way).
+    let tracked tls = crate::sys::tls::TlsSlot::entry();
+    if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&tls)) {
         // SAFETY: this thread's heap exists, so this thread observed
         // `READY` when it created the heap.
-        let shared = unsafe { super::shared_unchecked() };
-        if heap::free_fast(shared, h, p, shared.push_flags(), Tracked(&mut blk)) {
+        let shared = crate::sys::opaque(unsafe { super::shared_unchecked() });
+        // SAFETY: the slot value of this thread.
+        if unsafe { heap::free_fast_slot(shared, t, tp, p, Tracked(&mut blk)) }.is_some() {
             return;
         }
     }
@@ -559,39 +563,50 @@ pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>)
 #[cfg(verus_only)]
 fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8) {
     let tracked mut blk = Live::empty();
-    let shared = super::shared_ptr();
-    let Some(h) = heap::existing_heap(shared) else { return };
     match which {
         0 => {
             if let Some(c) = class_index(size) {
-                // SAFETY: as in `malloc`.
-                let flags = unsafe { heap::fast_flags(shared) };
-                let _ = h.alloc_fast(c, flags, Tracked(&mut blk));
+                let shared = super::shared_ptr();
+                if let Some(h) = heap::existing_heap(shared) {
+                    // SAFETY: as in `malloc`.
+                    let flags = unsafe { heap::fast_flags(shared) };
+                    let _ = h.alloc_fast(c, flags, Tracked(&mut blk));
+                }
             }
         },
         1 => {
             let _ = malloc_fast(size, Tracked(&mut blk));
         },
         2 => {
-            // SAFETY: as in `free`.
-            let s = unsafe { super::shared_unchecked() };
-            let tracked mut b = heap::live::axiom_c_claim(p);
-            let _ = heap::free_fast(s, h, p, s.push_flags(), Tracked(&mut b));
+            let tracked tls = crate::sys::tls::TlsSlot::entry();
+            if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&tls)) {
+                // SAFETY: as in `free`.
+                let s = crate::sys::opaque(unsafe { super::shared_unchecked() });
+                let tracked mut b = heap::live::axiom_c_claim(p);
+                // SAFETY: as in `free`.
+                let _ = unsafe { heap::free_fast_slot(s, t, tp, p, Tracked(&mut b)) };
+            }
         },
         3 => {
             if let Some(c) = class_index(size) {
-                // SAFETY: as in `free`.
-                let s = unsafe { super::shared_unchecked() };
-                let tracked mut b = heap::live::axiom_c_claim(p);
-                let _ = heap::free_sized_fast(s, h, p, Some(c), s.push_flags(), Tracked(&mut b));
+                if let Some(h) = heap::existing_heap(super::shared_ptr()) {
+                    // SAFETY: as in `free`.
+                    let s = unsafe { super::shared_unchecked() };
+                    let tracked mut b = heap::live::axiom_c_claim(p);
+                    let _ = heap::free_sized_fast(s, h, p, Some(c), s.push_flags(), Tracked(&mut b));
+                }
             }
         },
         _ => {
-            // SAFETY: as in `free`.
-            let s = unsafe { super::shared_unchecked() };
-            let tracked mut b = heap::live::axiom_c_claim(p);
-            if let Some(c) = heap::free_fast_class(s, h, p, s.push_flags(), Tracked(&mut b)) {
-                let _ = class_size(c);
+            let tracked tls = crate::sys::tls::TlsSlot::entry();
+            if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&tls)) {
+                // SAFETY: as in `free`.
+                let s = unsafe { super::shared_unchecked() };
+                let tracked mut b = heap::live::axiom_c_claim(p);
+                // SAFETY: as in `free`.
+                if let Some(c) = unsafe { heap::free_fast_slot(s, t, tp, p, Tracked(&mut b)) } {
+                    let _ = class_size(c);
+                }
             }
         },
     }
@@ -737,9 +752,12 @@ fn free_slow(p: *mut u8, Tracked(blk): Tracked<Live>)
         blk.claims(p),
         crate::sys::may_syscall(),
     ensures
-        heap::free_target(p),
-        blk.block(p),
+        p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> blk.block(p),
 {
+    if p.is_null() {
+        return;
+    }
     match super::shared_if_ready() {
         Some(shared) => heap::free(shared, p, Tracked(blk)),
         None => free_before_init(p),
@@ -2042,10 +2060,12 @@ pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>) -> (r: usize)
     if p.is_null() {
         return 0;
     }
-    if let Some(h) = heap::existing_heap(super::shared_ptr()) {
+    let tracked tls = crate::sys::tls::TlsSlot::entry();
+    if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&tls)) {
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_unchecked() };
-        if let Some(class) = heap::free_fast_class(shared, h, p, shared.push_flags(), Tracked(&mut blk)) {
+        // SAFETY: as in `free`.
+        if let Some(class) = unsafe { heap::free_fast_slot(shared, t, tp, p, Tracked(&mut blk)) } {
             proof {
                 shared.lemma_regions_ok();
                 crate::vspec::usable::lemma_usable_slot(p, class as int, 0);

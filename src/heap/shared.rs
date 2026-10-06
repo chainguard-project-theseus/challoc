@@ -3,7 +3,7 @@
 //! key and the thread id, clock and seed a heap reads, and the sized fast
 //! path's [`GuardTest`].
 
-use crate::sync::atomic::{AtomicBool, Ordering};
+use crate::sync::atomic::{AtomicU8, Ordering};
 use core::ffi::c_void;
 use core::ptr;
 
@@ -42,7 +42,7 @@ use super::heap_destructor;
 use super::tcaches::Tcaches;
 #[cfg(verus_only)]
 use super::thread::reentry_benign;
-use super::{Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
+use super::{FREE_ROUTE, Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
 #[cfg(verus_only)]
 use crate::class::slot_loc;
 #[cfg(verus_only)]
@@ -68,26 +68,32 @@ pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
 /// key. Built in place by [`Shared::init`] because the class states borrow
 /// `meta`, `regions` and `tables`.
 ///
-/// `repr(C)` fixes the order: `multi_arena` and `regions`, read by every
+/// `repr(C)` fixes the order: `free_flags` and `regions`, read by every
 /// `malloc` and `free`, come first, then the line-aligned tables (read by
 /// every `free`) and arena 0's class states, so the locks inside `meta` and
 /// `huge` (taken on heap creation and huge allocations) never share a cache
 /// line with them.
 #[repr(C)]
 pub struct Shared {
-    /// Set once a second arena exists. Until then every slab and every
-    /// heap is arena 0 and the `free` fast path skips the descriptor's
-    /// arena load. Relaxed: a slot of arena `a > 0` can only be freed after
-    /// it was allocated, which happened after `a` was built and this flag
-    /// stored, and the program itself orders that allocation before the
-    /// free; so any thread freeing such a slot already sees the flag.
+    /// The one byte the `free` fast path loads for its dispatch:
+    /// [`push_flags`](Shared::push_flags) plus [`FREE_ROUTE`], set once a
+    /// second arena exists. Until then every slab and every heap is arena
+    /// 0 and the `free` fast path skips the owner-word load; with
+    /// `FREE_ROUTE` in the byte, the default configuration's test against
+    /// zero sends `free` to the arena test, so a single-arena `free` pays
+    /// no separate load and branch for it. Relaxed: a slot of arena `a > 0`
+    /// can only be freed after it was allocated, which happened after `a`
+    /// was built and this bit stored, and the program itself orders that
+    /// allocation before the free; so any thread freeing such a slot
+    /// already sees the bit. The sized path and `malloc` read
+    /// `push_flags`, which never changes after init.
     ///
     /// First, so it shares a cache line with the `Regions` fields that
     /// `slab_slot` reads on every `free` (`superblock`, `lg_stride`, the
     /// low `class_base` entries): after `Regions` it would sit on its own
     /// line, and larson's working set turns every extra line into an L2
     /// hit.
-    pub(crate) multi_arena: AtomicBool,
+    pub(crate) free_flags: AtomicU8,
     /// The opt-in hardening a push applies, as [`PUSH_SCAN`]
     /// (`double_free_scan`, design 6.3 step 3: every push compares the
     /// slot against the top four cache entries and aborts on a match) and
@@ -239,12 +245,12 @@ impl GuardTest {
 } // verus!
 
 const _: () = assert!(
-    core::mem::offset_of!(Shared, multi_arena) / 128
+    core::mem::offset_of!(Shared, free_flags) / 128
         == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, superblock))
             / 128
 );
 const _: () = assert!(
-    core::mem::offset_of!(Shared, multi_arena) / 128
+    core::mem::offset_of!(Shared, free_flags) / 128
         == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, lg_stride))
             / 128
 );
@@ -569,7 +575,7 @@ impl Shared {
 // evaluate, so their values are opaque to it; `axiom_shared_layout`
 // states what verified code relies on, and the build checks it.
 #[verifier::external_body]
-const S_MULTI_ARENA: usize = core::mem::offset_of!(Shared, multi_arena);
+const S_FREE_FLAGS: usize = core::mem::offset_of!(Shared, free_flags);
 #[verifier::external_body]
 const S_PUSH_FLAGS: usize = core::mem::offset_of!(Shared, push_flags);
 #[verifier::external_body]
@@ -607,7 +613,7 @@ const S_CGROUP: usize = core::mem::offset_of!(Shared, cgroup);
 /// evaluates the same conditions with `arena::fits`.
 axiom fn axiom_shared_layout()
     ensures
-        field_fits::<Shared, AtomicBool>(S_MULTI_ARENA, S_PUSH_FLAGS as int),
+        field_fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS as int),
         field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGIONS as int),
         field_fits::<Shared, Regions>(S_REGIONS, S_GUARD_TEST as int),
         field_fits::<Shared, [GuardTest; NCLASSES]>(S_GUARD_TEST, S_TABLES as int),
@@ -636,7 +642,7 @@ axiom fn axiom_shared_layout()
 
 // `axiom_shared_layout`, checked.
 const _: () = assert!(
-    fits::<Shared, AtomicBool>(S_MULTI_ARENA, S_PUSH_FLAGS)
+    fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS)
         && fits::<Shared, u8>(S_PUSH_FLAGS, S_REGIONS)
         && fits::<Shared, Regions>(S_REGIONS, S_GUARD_TEST)
         && fits::<Shared, [GuardTest; NCLASSES]>(S_GUARD_TEST, S_TABLES)
@@ -677,7 +683,7 @@ verus! {
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 tracked struct SharedParts {
-    tracked multi_arena: PointsTo<AtomicBool>,
+    tracked free_flags: PointsTo<AtomicU8>,
     tracked push_flags: PointsTo<u8>,
     tracked arena0: Held<Arena>,
     tracked meta: PointsTo<Meta>,
@@ -708,7 +714,7 @@ impl SharedParts {
     /// ([`shared_ok`]); `arena0` and `arenas` when they are held.
     spec fn at(&self, p: *mut Shared) -> bool {
         &&& shared_ok(p)
-        &&& self.multi_arena.ptr() == field_ptr::<Shared, AtomicBool>(p, S_MULTI_ARENA)
+        &&& self.free_flags.ptr() == field_ptr::<Shared, AtomicU8>(p, S_FREE_FLAGS)
         &&& self.push_flags.ptr() == field_ptr::<Shared, u8>(p, S_PUSH_FLAGS)
         &&& (self.arena0.perm matches Some(a) ==> a.ptr() == field_ptr::<Shared, Arena>(p, S_ARENA0))
         &&& self.meta.ptr() == field_ptr::<Shared, Meta>(p, S_META)
@@ -725,7 +731,7 @@ impl SharedParts {
 
     /// Every field is written.
     spec fn written(&self) -> bool {
-        &&& self.multi_arena.is_init()
+        &&& self.free_flags.is_init()
         &&& self.push_flags.is_init()
         &&& self.arena0.perm matches Some(a) && a.is_init()
         &&& self.meta.is_init()
@@ -868,7 +874,7 @@ impl Shared {
             perm.ptr()@.addr + size_of::<Shared>() <= usize::MAX,
         ensures
             r.0.at(perm.ptr()),
-            r.0.multi_arena.is_uninit(),
+            r.0.free_flags.is_uninit(),
             r.0.push_flags.is_uninit(),
             r.3.ptr() == field_ptr::<Shared, Regions>(perm.ptr(), S_REGIONS),
             r.3.is_uninit(),
@@ -896,7 +902,7 @@ impl Shared {
         perm.is_aligned();
         let tracked raw = perm.into_raw();
         axiom_raw_valid(&raw, p as *mut u8, size_of::<Shared>() as int);
-        let tracked (multi_arena, raw) = take_field::<Shared, AtomicBool>(raw, p, S_MULTI_ARENA, S_PUSH_FLAGS as int);
+        let tracked (free_flags, raw) = take_field::<Shared, AtomicU8>(raw, p, S_FREE_FLAGS, S_PUSH_FLAGS as int);
         let tracked (push_flags, raw) = take_field::<Shared, u8>(raw, p, S_PUSH_FLAGS, S_REGIONS as int);
         let tracked (regions, raw) = take_field::<Shared, Regions>(raw, p, S_REGIONS, S_GUARD_TEST as int);
         let tracked (guard_test, raw) = take_field::<Shared, [GuardTest; NCLASSES]>(
@@ -925,7 +931,7 @@ impl Shared {
         crate::arena::lemma_field_cast::<Shared, [SlabTable; NCLASSES], SlabTable>(p, S_TABLES);
         (
             SharedParts {
-                multi_arena,
+                free_flags,
                 push_flags,
                 arena0: Held { perm: Some(arena0) },
                 meta,
@@ -967,8 +973,7 @@ unsafe fn init_tcaches(p: *mut Tcaches, Tracked(perm): Tracked<&mut PointsTo<Tca
 /// permission to the field it writes or reads (`SharedParts`), in
 /// `init`'s order; `this` is the storage `init` was handed.
 impl Shared {
-    /// `meta`, `regions` and `multi_arena` (false); the written metadata
-    /// allocator.
+    /// `meta` and `regions`; the written metadata allocator.
     #[inline(always)]
     unsafe fn put_head<'a>(
         this: *mut Shared,
@@ -976,13 +981,11 @@ impl Shared {
         regions: Regions,
         Tracked(pm): Tracked<&'a mut PointsTo<Meta>>,
         Tracked(pr): Tracked<&mut PointsTo<Regions>>,
-        Tracked(pa): Tracked<&mut PointsTo<AtomicBool>>,
     ) -> (r: &'a Meta)
         requires
             shared_ok(this),
             old(pm).ptr() == field_ptr::<Shared, Meta>(this, S_META),
             old(pr).ptr() == field_ptr::<Shared, Regions>(this, S_REGIONS),
-            old(pa).ptr() == field_ptr::<Shared, AtomicBool>(this, S_MULTI_ARENA),
         ensures
             final(pm).ptr() == old(pm).ptr(),
             final(pm).is_init(),
@@ -990,8 +993,6 @@ impl Shared {
             final(pr).ptr() == old(pr).ptr(),
             final(pr).is_init(),
             final(pr).value() == regions,
-            final(pa).ptr() == old(pa).ptr(),
-            final(pa).is_init(),
             *r == meta,
     {
         proof {
@@ -1003,28 +1004,32 @@ impl Shared {
             let meta_ptr = field_at(this, S_META);
             ptr_mut_write(meta_ptr, Tracked(&mut *pm), meta);
             ptr_mut_write(field_at(this, S_REGIONS), Tracked(pr), regions);
-            ptr_mut_write(field_at(this, S_MULTI_ARENA), Tracked(pa), AtomicBool::new(false));
             ptr_ref(meta_ptr, Tracked(&*pm))
         }
     }
 
-    /// `push_flags`; the written regions.
+    /// `push_flags` and `free_flags` (the same byte: no [`FREE_ROUTE`]
+    /// yet); the written regions.
     #[inline(always)]
     unsafe fn put_flags<'a>(
         this: *mut Shared,
         flags: u8,
         Tracked(pf): Tracked<&mut PointsTo<u8>>,
+        Tracked(pa): Tracked<&mut PointsTo<AtomicU8>>,
         Tracked(pr): Tracked<&'a PointsTo<Regions>>,
     ) -> (r: &'a Regions)
         requires
             shared_ok(this),
             old(pf).ptr() == field_ptr::<Shared, u8>(this, S_PUSH_FLAGS),
+            old(pa).ptr() == field_ptr::<Shared, AtomicU8>(this, S_FREE_FLAGS),
             pr.ptr() == field_ptr::<Shared, Regions>(this, S_REGIONS),
             pr.is_init(),
         ensures
             final(pf).ptr() == old(pf).ptr(),
             final(pf).is_init(),
             final(pf).value() == flags,
+            final(pa).ptr() == old(pa).ptr(),
+            final(pa).is_init(),
             *r == pr.value(),
     {
         proof {
@@ -1033,6 +1038,7 @@ impl Shared {
         // SAFETY: as in `put_head`; `regions` was written by `put_head`.
         unsafe {
             ptr_mut_write(field_at(this, S_PUSH_FLAGS), Tracked(pf), flags);
+            ptr_mut_write(field_at(this, S_FREE_FLAGS), Tracked(pa), AtomicU8::new(flags));
             ptr_ref(field_at(this, S_REGIONS), Tracked(pr))
         }
     }
@@ -1357,7 +1363,6 @@ impl Shared {
                 regions,
                 Tracked(&mut parts.meta),
                 Tracked(&mut regions_perm),
-                Tracked(&mut parts.multi_arena),
             );
             // Frozen: nothing writes the field again.
             let tracked regions_perm = vstd::modes::tracked_static_ref(regions_perm);
@@ -1377,6 +1382,7 @@ impl Shared {
                         0
                     }),
                 Tracked(&mut parts.push_flags),
+                Tracked(&mut parts.free_flags),
                 Tracked(regions_perm),
             );
             proof {
@@ -1994,10 +2000,48 @@ impl Shared {
         unsafe { self.tables.get_unchecked(class) }
     }
 
-    /// Whether more than one arena exists (see the field).
+    /// The `free` fast path's dispatch byte (see the field): `push_flags`,
+    /// plus [`FREE_ROUTE`] once a second arena exists.
+    ///
+    /// Trusted: the byte without [`FREE_ROUTE`] is `push_flags`. `init`
+    /// stores `push_flags` itself (`put_flags`, which writes both fields
+    /// from one value), and the only other write is
+    /// [`set_multi_arena`](Shared::set_multi_arena)'s `fetch_or` of
+    /// [`FREE_ROUTE`]; `push_flags` is never written after `init`. Verus
+    /// specifies a `core` atomic load as any value, so the invariant that
+    /// ties the two bytes is stated here rather than carried by a ghost
+    /// permission. It is stated of a well-formed `Shared` (the published
+    /// one, or one `init` built); a reader of the published one has
+    /// observed `READY` (its heap exists), so it loads `init`'s store or a
+    /// later `fetch_or`, under any ordering. The ensures is satisfiable
+    /// whatever `push_flags` holds (`push_flags` itself meets it).
     #[inline(always)]
-    pub fn multi_arena(&self) -> bool opens_invariants none {
-        crate::vspec::atomic::load_bool(&self.multi_arena, Ordering::Relaxed)
+    #[verifier::external_body]
+    pub fn free_flags(&self) -> (r: u8)
+        requires
+            self.wf(),
+        ensures
+            r & !FREE_ROUTE == self.flags() & !FREE_ROUTE,
+        opens_invariants none
+    {
+        self.free_flags.load(Ordering::Relaxed)
+    }
+
+    /// What [`Shared::free_flags`]' byte carries over from `push_flags`:
+    /// its [`PUSH_PAC`] bit is [`super::pac_mode`], set only where the
+    /// process may execute the PAC instructions, and its [`PUSH_ZERO`]
+    /// bit is `zero_on_free`'s.
+    pub proof fn lemma_free_flags(&self, f: u8)
+        requires
+            self.wf(),
+            f & !FREE_ROUTE == self.flags() & !FREE_ROUTE,
+        ensures
+            (f & PUSH_PAC != 0) == super::pac_mode(),
+            (f & PUSH_PAC != 0) ==> crate::sys::pac::pac_available(),
+            (f & PUSH_ZERO != 0) == (self.flags() & PUSH_ZERO != 0),
+    {
+        let pf = self.push_flags;
+        assert(f & !8u8 == pf & !8u8 ==> (f & 4u8 == pf & 4u8 && f & 2u8 == pf & 2u8)) by (bit_vector);
     }
 
     /// The flag byte both fast paths load: [`PUSH_SCAN`], [`PUSH_ZERO`]
@@ -2047,7 +2091,7 @@ impl Shared {
 
     /// A second arena is being built (`Arenas::build`).
     pub fn set_multi_arena(&self) {
-        self.multi_arena.store(true, Ordering::Relaxed);
+        self.free_flags.fetch_or(FREE_ROUTE, Ordering::Relaxed);
     }
 
     /// The cache GC period the periodic tick uses: `tcache_gc_interval_ms`,
@@ -2283,59 +2327,26 @@ impl Shared {
         Some(class)
     }
 
-    /// The `free` fast path's check: `Some(class)` when `p` is a slot start
-    /// in a handed-out slab whose bit is set and whose arena is `home` (the
-    /// arena load is skipped while only arena 0 exists), `None` for
-    /// anything else. It never aborts; [`classify_free`] on the slow path
-    /// repeats the checks and does. Every table read is bounds-free: the
-    /// class index comes from `slab_slot`, the bitmap word from a slot
-    /// already known to be below `nslots` in a slab below the watermark.
+    /// The arena half of [`checked_slot`]: whether the group owner word of
+    /// `slab`, a slab holding a slot whose bit [`set_slot`] found set, names
+    /// `h`'s home arena. Read only with several arenas ([`FREE_ROUTE`]).
     ///
-    /// The two loads that depend on the pointer are from dense structures
-    /// (design section 4): the class bitmap word (one bit per slot, so a
-    /// 550 MiB heap of 1 KiB values is 70 KB of bitmap and stays in L2)
-    /// and, with several arenas, the group owner word (one `u16` per
-    /// line-sized group of slabs). Neither touches the slab descriptor
-    /// (one 64-byte line per slab, a cache miss per free on a large heap),
-    /// and both are lines only the owning arena's refills and flushes
-    /// write, because slabs are handed to arenas in groups that own whole
-    /// lines.
-    ///
-    /// The geometry comes from [`Regions::slab_slot`] (`class_base[c]`,
-    /// `lg_region`, `CLASSES[c]`), not from a copy in `tables[c]`: those
-    /// arrays are dense (about a dozen lines for all 52 classes, so L1
-    /// resident under any workload) and `class_base[c]` is one indexed
-    /// load, whereas the per-class table line is one of 52 and reached
-    /// through a multiply. With the geometry on the table line the chain
-    /// class -> `madd` -> table load -> slab -> bitmap word would be the
-    /// whole of `free`'s critical path; here the table's `bits_base`,
-    /// `slab_bits` and `committed_slabs` loads run alongside the slot
-    /// arithmetic and are needed only for the word address.
-    ///
-    /// [`classify_free`]: Shared::classify_free
-    /// [`Regions::slab_slot`]: crate::layout::Regions::slab_slot
+    /// [`checked_slot`]: Shared::checked_slot
+    /// [`set_slot`]: Shared::set_slot
     #[inline(always)]
-    pub(super) fn checked_slot(&self, p: *mut u8, h: &Heap) -> (r: Option<usize>)
+    pub(super) fn home_owns(table: &SlabTable, slab: usize, h: &Heap) -> (r: bool)
         requires
-            self.wf(),
-        ensures
-            r matches Some(c) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
-        opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns()]
+            slab < table.spec_nslabs(),
+        opens_invariants none
     {
-        let Some((class, table, slab)) = self.set_slot(p) else { return None };
-        if self.multi_arena() {
-            // The home arena is read on this branch only. A plain load is
-            // hoisted above the flag test (the heap is known valid) and
-            // then every single-arena `free` touches the heap's header
-            // line, which nothing else on the fast paths reads; a volatile
-            // read stays here.
-            let home = h.arena_volatile();
-            // SAFETY: `slab` is below the watermark.
-            if unsafe { table.owner_unchecked(slab) } != home {
-                return None;
-            }
-        }
-        Some(class)
+        // The home arena is read on the multi-arena branch only. A plain
+        // load is hoisted above the flag test (the heap is known valid)
+        // and then every single-arena `free` touches the heap's header
+        // line, which nothing else on the fast paths reads; a volatile
+        // read stays here.
+        let home = h.arena_volatile();
+        // SAFETY: the caller found `slab` below the watermark.
+        unsafe { table.owner_unchecked(slab) == home }
     }
 
     /// Allocate a huge run of `size` bytes aligned to `align` in `arena`:
@@ -2539,7 +2550,7 @@ impl Shared {
     ///
     /// [`checked_slot`]: Shared::checked_slot
     #[inline(always)]
-    fn set_slot(&self, p: *mut u8) -> (r: Option<(usize, &SlabTable, usize)>)
+    pub(super) fn set_slot(&self, p: *mut u8) -> (r: Option<(usize, &SlabTable, usize)>)
         requires
             self.wf(),
         ensures
@@ -2547,14 +2558,22 @@ impl Shared {
             r matches Some((_, t, s)) ==> s < t.spec_nslabs(),
         opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns()]
     {
-        let Some((class, slab, slot)) = self.regions.slab_slot(p as usize) else { return None };
-        // SAFETY: `slab_slot` only returns `class < NCLASSES`.
+        let Some((class, slab, slot)) = self.regions.slab_slot_unbounded(p as usize) else { return None };
+        // SAFETY: `slab_slot_unbounded` only returns `class < NCLASSES`.
         let table = unsafe { crate::vspec::slice::array_get_unchecked(&self.tables, class) };
+        // The watermark compare is the region bound as well: a pointer
+        // outside the class region has a slab number of at least `nslabs`
+        // (`slab_slot_unbounded`), past any watermark.
         if !table.is_handed_out(slab) {
             return None;
         }
-        // SAFETY: `slab` is below the watermark, `slab_slot` validated
-        // `slot < nslots`.
+        proof {
+            // Below the table's slab count, which is the region's: the
+            // offset is inside the region, a slot start of `slab`.
+            assert(table.spec_nslabs() as int == crate::layout::process_regions().spec_nslabs(class as int));
+        }
+        // SAFETY: `slab` is below the watermark and `slab_slot_unbounded`
+        // validated `slot < nslots`.
         if !unsafe { table.is_set_unchecked(slab, slot) } {
             return None;
         }
@@ -2717,6 +2736,59 @@ impl Shared {
         self.key.key()
     }
 
+    /// The `free` fast path's check: `Some(class)` when `p` is a slot start
+    /// in a handed-out slab whose bit is set and whose arena is `home` (the
+    /// arena load is skipped while only arena 0 exists), `None` for
+    /// anything else. It never aborts; [`classify_free`] on the slow path
+    /// repeats the checks and does. Every table read is bounds-free: the
+    /// class index comes from `slab_slot_unbounded`, the bitmap word from a
+    /// slot already known to be below `nslots` in a slab below the
+    /// watermark, whose compare is the region bound too (no separate
+    /// `region_len` test). The fast path itself
+    /// (`heap::free_fast_slot`) makes the same two tests from
+    /// [`set_slot`] and [`home_owns`], the arena test selected by the
+    /// `free_flags` byte it loads anyway; this form serves the tests.
+    ///
+    /// The two loads that depend on the pointer are from dense structures
+    /// (design section 4): the class bitmap word (one bit per slot, so a
+    /// 550 MiB heap of 1 KiB values is 70 KB of bitmap and stays in L2)
+    /// and, with several arenas, the group owner word (one `u16` per
+    /// line-sized group of slabs). Neither touches the slab descriptor
+    /// (one 64-byte line per slab, a cache miss per free on a large heap),
+    /// and both are lines only the owning arena's refills and flushes
+    /// write, because slabs are handed to arenas in groups that own whole
+    /// lines.
+    ///
+    /// The geometry comes from [`Regions::slab_slot`] (`class_base[c]`,
+    /// `lg_region`, `CLASSES[c]`), not from a copy in `tables[c]`: those
+    /// arrays are dense (about a dozen lines for all 52 classes, so L1
+    /// resident under any workload) and `class_base[c]` is one indexed
+    /// load, whereas the per-class table line is one of 52 and reached
+    /// through a multiply. With the geometry on the table line the chain
+    /// class -> `madd` -> table load -> slab -> bitmap word would be the
+    /// whole of `free`'s critical path; here the table's `bits_base`,
+    /// `slab_bits` and `committed_slabs` loads run alongside the slot
+    /// arithmetic and are needed only for the word address.
+    ///
+    /// [`classify_free`]: Shared::classify_free
+    /// [`Regions::slab_slot`]: crate::layout::Regions::slab_slot
+    /// [`set_slot`]: Shared::set_slot
+    /// [`home_owns`]: Shared::home_owns
+    #[cfg(test)]
+    pub(super) fn checked_slot(&self, p: *mut u8, h: &Heap) -> Option<usize> {
+        let (class, table, slab) = self.set_slot(p)?;
+        if self.multi_arena() && !Self::home_owns(table, slab, h) {
+            return None;
+        }
+        Some(class)
+    }
+
+    /// Whether more than one arena exists (see the field).
+    #[cfg(test)]
+    pub fn multi_arena(&self) -> bool {
+        self.free_flags() & FREE_ROUTE != 0
+    }
+
     /// [`checked_slot`] without the arena test: the bit test alone, so a
     /// test can pin down what [`checked_slot`]'s two halves each decide.
     ///
@@ -2778,7 +2850,7 @@ mod kani_layout {
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {
-        assert_eq!(S_MULTI_ARENA, offset_of!(Shared, multi_arena));
+        assert_eq!(S_FREE_FLAGS, offset_of!(Shared, free_flags));
         assert_eq!(S_PUSH_FLAGS, offset_of!(Shared, push_flags));
         assert_eq!(S_REGIONS, offset_of!(Shared, regions));
         assert_eq!(S_GUARD_TEST, offset_of!(Shared, guard_test));
@@ -2794,10 +2866,7 @@ mod kani_layout {
         assert_eq!(S_TCACHES, offset_of!(Shared, tcaches));
         assert_eq!(S_STATS, offset_of!(Shared, stats));
         assert_eq!(S_CGROUP, offset_of!(Shared, cgroup));
-        assert!(field_fits::<Shared, AtomicBool>(
-            S_MULTI_ARENA,
-            S_PUSH_FLAGS
-        ));
+        assert!(field_fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS));
         assert!(field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGIONS));
         assert!(field_fits::<Shared, Regions>(S_REGIONS, S_GUARD_TEST));
         assert!(field_fits::<Shared, [GuardTest; NCLASSES]>(

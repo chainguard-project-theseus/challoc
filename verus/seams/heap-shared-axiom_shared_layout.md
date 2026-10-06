@@ -1,19 +1,23 @@
 # `axiom_shared_layout`
 
-Seam S145 of `verus/SEAMS.md`: src/heap/shared.rs:608. Kind: axiom. Category: core library.
+Seam S145 of `verus/SEAMS.md`: src/heap/shared.rs:614. Kind: axiom. Category: core library.
 Discharged by Kani.
 
 ## Contract
 
-As changed by the library-and-control seam audit on base 8635213
-(`verus/audit/library-control.md`; Kani rerun pending), from the
+As changed by the port of upstream #78 (its first conjunct: the field
+`multi_arena: AtomicBool` became `free_flags: AtomicU8`, offset
+`S_FREE_FLAGS`; Kani re-run there, below), and before that by the
+library-and-control seam audit on base 8635213
+(`verus/audit/library-control.md`; its Kani re-run was pending until
+this port), from the
 contract checked at commit 7d4e997 (the record was written at
 ae82d5b):
 
 ```rust
 axiom fn axiom_shared_layout()
     ensures
-        field_fits::<Shared, AtomicBool>(S_MULTI_ARENA, S_PUSH_FLAGS as int),
+        field_fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS as int),
         field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGIONS as int),
         field_fits::<Shared, Regions>(S_REGIONS, S_GUARD_TEST as int),
         field_fits::<Shared, [GuardTest; NCLASSES]>(S_GUARD_TEST, S_TABLES as int),
@@ -103,6 +107,11 @@ Reconciled onto commit 7d4e997, 2026-10-03: the contract above
 compared with the ledger's entry there, and the harness re-run under
 both quanta with the same Kani (it passes). A fresh-context subagent
 reviewed the reconciliation.
+
+Reconciled onto the port of upstream #78, 2026-10-06: the contract
+above is the ledger's entry there, and the harness re-run under both
+quanta with the same Kani passes (0 of 345 checks failed in each),
+which also settles the audit's pending re-run.
 
 ## Tests
 

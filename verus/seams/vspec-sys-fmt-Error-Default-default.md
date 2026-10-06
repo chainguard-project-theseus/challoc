@@ -1,6 +1,6 @@
 # `<core::fmt::Error as core::default::Default>::default`
 
-Seam S380 of `verus/SEAMS.md`: src/vspec/sys.rs:100. Kind: assume_spec. Category: core library.
+Seam S381 of `verus/SEAMS.md`: src/vspec/sys.rs:100. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

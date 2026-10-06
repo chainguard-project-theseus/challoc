@@ -1,6 +1,6 @@
 # `S_GC_INTERVAL_NS`
 
-Seam S137 of `verus/SEAMS.md`: src/heap/shared.rs:588. Kind: external_body const. Category: core library.
+Seam S137 of `verus/SEAMS.md`: src/heap/shared.rs:594. Kind: external_body const. Category: core library.
 Discharged by Kani.
 
 ## Contract
