@@ -691,7 +691,7 @@ the full name, the line and the contract.
 | S292 | `usize::next_power_of_two` | spec | core | Kani | discharged |
 | S293 | `usize::div_ceil` | spec | core | Kani | trusted |
 | S294 | `u32::rotate_right` | spec | core | Kani | discharged |
-| S295 | `u64::rotate_right` | spec | core | Kani | trusted |
+| S295 | `u64::rotate_right` | spec | core | Kani | discharged |
 | S296 | `<[T]>::get_unchecked::<I>` | spec | core | Kani | discharged |
 | S297 | `hint::spin_loop` | spec | core | Kani | trusted |
 
@@ -774,7 +774,7 @@ the full name, the line and the contract.
 | S330 | `str::as_ptr` | spec | core | Kani | discharged |
 | S331 | `compiler_fence` | spec | core | Kani | discharged |
 | S332 | `fence` | spec | core | Kani | trusted |
-| S333 | `hint::assert_unchecked` | spec | core | Kani | trusted |
+| S333 | `hint::assert_unchecked` | spec | core | Kani | discharged |
 | S334 | `Option::<T>::as_deref_mut` | spec | core | Kani | discharged |
 
 ### src/vspec/misc_extra.rs
@@ -5221,7 +5221,7 @@ pub assume_specification[ u32::rotate_right ](x: u32, n: u32) -> (r: u32)
 ### S295. `u64::rotate_right`
 
 src/vspec/core_int.rs:91. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-core_int-u64-rotate_right.md).
 
 > `u64::rotate_right`: the bits shifted out at the bottom come back in at the top (the count is taken modulo 64, as `core` documents).
 
@@ -5785,7 +5785,7 @@ pub assume_specification[ core::sync::atomic::fence ](order: core::sync::atomic:
 ### S333. `core::hint::assert_unchecked`
 
 src/vspec/misc.rs:89. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-misc-hint-assert_unchecked.md).
 
 > `core::hint::assert_unchecked`: undefined behaviour unless `cond` holds (`core`'s safety contract), which this makes a precondition; it has no effect Verus models.
 

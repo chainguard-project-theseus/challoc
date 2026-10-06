@@ -5,9 +5,10 @@ Discharged by Kani.
 
 ## Contract
 
-Written by the port of upstream #101, which added the field
-`region_hi: usize` after `push_flags` (the bits of an offset past a
-class region, the sized check's region bound). At the port:
+At commit caf28956 (the port of upstream #101, which added the field
+`region_hi: usize` between `push_flags` and `regions`: the bits of an
+offset past a class region, the sized check's region bound; checked
+again at 61768ed6):
 
 ```rust
 const S_REGION_HI: usize = core::mem::offset_of!(Shared, region_hi);
@@ -18,8 +19,7 @@ const S_REGION_HI: usize = core::mem::offset_of!(Shared, region_hi);
 Kani 0.68.0 (CBMC 6.11.0, nightly-2026-08-21) proves the harness `heap::shared::kani_layout::shared_layout` (`src/heap/shared.rs`):
 `S_REGION_HI == offset_of!(Shared, region_hi)`, and the field-fit conditions of
 `axiom_shared_layout` at that value (see its record,
-`verus/seams/heap-shared-axiom_shared_layout.md`). Pending a run at
-the port (see "Review").
+`verus/seams/heap-shared-axiom_shared_layout.md`).
 
 Reproduce: `sh verus/kani/run.sh --harness heap::shared::kani_layout::shared_layout` (both quanta;
 `--harness` takes the full path).
@@ -34,13 +34,17 @@ conditions hold of it. No input: the check is exact.
 
 The layout is the target's: Kani evaluates it for x86_64; every
 build, for either target and quantum, also evaluates the same conditions
-in a `const` assertion (`fits`, next to the axiom), which is the
-stronger check (rustc's own layout, on every build) and the reason a
-layout change cannot ship unnoticed. `verus/kani/run.sh` runs the
-harness under both quanta, since `NCLASSES` sizes the arrays. The
-ghost field types (`Tracked<PointsTo<..>>`) are zero-sized in builds;
-the axiom is about the build's layout, which is what the pointers the
-proofs place address.
+in a `const` assertion (`arena::fits`, right after the axiom; its
+`ensures` is `field_fits`, its sum in `usize`, where an overflow fails
+the build), which is the stronger check (rustc's own layout, on every
+build) and the reason a layout change cannot ship unnoticed. The
+assertion does not restate `S_REGION_HI == offset_of!(Shared,
+region_hi)`, which holds by the const's definition. `verus/kani/run.sh`
+runs the harness under both quanta, since `NCLASSES` sizes the arrays.
+`Shared`'s own fields are all exec; the ghost fields inside its field
+types (`ClassLine::committed_inv`, `Arena::sets_perm`) are `Tracked`,
+zero-sized in builds, and the axiom is about the build's layout, which
+is what the pointers the proofs place address.
 
 Common to every Kani record: Kani checks the MIR of a debug build
 (overflow checks and debug assertions on) for x86_64, with CBMC's
@@ -68,13 +72,26 @@ Written at the port of upstream #101, 2026-10-06, from the
 contract above is the ledger's entry, and the harness asserts it
 (`S_REGION_HI`, and the fit of `push_flags` before it and of
 `region_hi` before `regions`); the build's `const` assertion of the
-same conditions passes on both targets and quanta. No fresh-context
-review of the harness against this record yet.
+same conditions passes on both targets and quanta.
 
-Re-run at the port's last code commit (upstream #116 onto the CCall
+Re-run at commit 9c2de60f (the port of upstream #116 onto the CCall
 tip), 2026-10-06, with Kani 0.68.0 under both quanta:
 `heap::shared::kani_layout::shared_layout` passes (0 of 366 checks
 failed in each).
+
+Fresh-context subagent, 2026-10-06, at commit 61768ed6: the harness,
+the build's `const` assertion and the ledger entry against this
+record. It found the harness asserts what the Statement says (the
+offset, and the fits of `push_flags` before `region_hi` and of
+`region_hi` before `regions`, with the axiom's types and order); its
+other findings (a stale "pending" line, the commits the contract and
+the re-run were taken at, the harness comment's seam numbers, the
+ghost-field sentence, what the `const` assertion checks) are folded
+in, and a second fresh-context subagent reviewed the revision. Only
+this record was revised: its siblings (`heap-shared-S_PUSH_FLAGS.md`
+and the other `heap-shared-S_*` records) keep the earlier wording of
+the two Translation sentences. Re-run at 61768ed6, 2026-10-06, with Kani 0.68.0 under both
+quanta: it passes (0 of 366 checks failed in each).
 
 ## Tests
 

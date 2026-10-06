@@ -3126,7 +3126,7 @@ pub(crate) mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S50..S57, S58: each `A_*` is its field's `offset_of!`, and the
+    /// S49..S56, S57: each `A_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_arena_layout` says.
     #[kani::proof]
     fn arena_layout() {
