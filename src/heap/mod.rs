@@ -69,7 +69,7 @@ pub use paths::{
 pub use shared::Built;
 pub use shared::Shared;
 #[cfg(test)]
-use shared::{FAIL_SETSPECIFIC, GuardTest, guard_interval_for};
+use shared::{FAIL_SETSPECIFIC, guard_interval_for};
 pub use thread::{TLS_CREATING, TLS_EXITED, fast_flags};
 pub use thread::{existing_heap, heap_destructor, heap_for_thread, tls_heap_slot};
 
@@ -1658,6 +1658,9 @@ proof fn scatter_ents(tracked bag: &mut GhostSubset<int>, tracked m: &mut Map<*m
 /// writes them while the slice lives.
 #[inline(always)]
 #[allow(clippy::needless_lifetimes, reason = "the permission and the slice share the lifetime in the Verus signature")]
+// Its own solver: in the module's shared one the per-entry
+// postconditions failed after upstream #101, on the earlier queries' state.
+#[verifier::spinoff_prover]
 unsafe fn stack_mut<'a>(
     slots: *mut *mut u8,
     start: usize,

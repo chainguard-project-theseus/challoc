@@ -92,6 +92,7 @@ ThreadKey::create	function pointer	Kani
 Shared::free_flags	allocator invariant	Verus
 S_FREE_FLAGS	core library	Kani	discharged (verus/seams/heap-shared-S_FREE_FLAGS.md)
 S_PUSH_FLAGS	core library	Kani	discharged (verus/seams/heap-shared-S_PUSH_FLAGS.md)
+S_REGION_HI	core library	Kani	discharged (verus/seams/heap-shared-S_REGION_HI.md)
 S_REGIONS	core library	Kani	discharged (verus/seams/heap-shared-S_REGIONS.md)
 S_LINES	core library	Kani	discharged (verus/seams/heap-shared-S_LINES.md)
 S_TABLES	core library	Kani	discharged (verus/seams/heap-shared-S_TABLES.md)

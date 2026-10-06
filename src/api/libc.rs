@@ -40,7 +40,7 @@ use crate::QUANTUM;
 use crate::heap::{self, Live, Shared};
 #[cfg(verus_only)]
 use crate::layout::class_table;
-use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, class_of};
+use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, SMALL_MAX, class_of, class_of_small};
 #[cfg(verus_only)]
 use crate::lock::axiom_entry;
 use crate::sys::Errno;
@@ -129,30 +129,65 @@ pub(super) fn class_index(n: usize) -> (r: Option<usize>)
 {
     let r = class_of(n);
     proof {
-        reveal(crate::layout::classes_below);
-        if let Some(c) = r {
-            assert forall|j: int| c <= j < NCLASSES implies n <= #[trigger] class_table()[j].size by {
-                crate::vspec::class::axiom_class_table_wf(j);
-                if j > c {
-                    crate::layout::lemma_class_size_mono(c as int, j);
-                }
-            }
-            assert forall|j: int| 0 <= j < c implies #[trigger] class_table()[j].size < n by {
-                crate::vspec::class::axiom_class_table_wf(j);
-                assert(crate::layout::spec_class_size(j) < n);
-            }
-            assert forall|j: int| 0 <= j < c implies !#[trigger] class_serves(j, n as int, 1) by {
-                assert(class_table()[j].size < n);
-            }
-            lemma_class_for_some(n, 1, c as int);
-        } else {
-            assert forall|j: int| 0 <= j < NCLASSES implies !#[trigger] class_serves(j, n as int, 1) by {
-                crate::vspec::class::axiom_class_table_wf(j);
-            }
-            lemma_class_for_none(n, 1);
-        }
+        lemma_class_index(n, r);
     }
     r
+}
+
+/// [`class_index`] of a request of at most [`SMALL_MAX`] bytes, from the
+/// small table alone ([`class_of_small`]): the same class.
+#[inline(always)]
+pub(super) fn class_index_small(n: usize) -> (r: usize)
+    requires
+        n <= SMALL_MAX,
+    ensures
+        r < NCLASSES,
+        forall|j: int| r <= j < NCLASSES ==> n <= #[trigger] class_table()[j].size,
+        forall|j: int| 0 <= j < r ==> #[trigger] class_table()[j].size < n,
+        Some(r) == spec_class_for(n, 1),
+    opens_invariants none
+{
+    let r = class_of_small(n);
+    proof {
+        lemma_class_index(n, Some(r));
+    }
+    r
+}
+
+/// What [`class_index`] ensures, from what `class_of` (and
+/// `class_of_small`) ensure of `r`.
+proof fn lemma_class_index(n: usize, r: Option<usize>)
+    requires
+        r is Some <==> n <= MEDIUM_MAX,
+        r matches Some(c) ==> c < NCLASSES && n <= crate::layout::spec_class_size(c as int),
+        r matches Some(c) ==> crate::layout::classes_below(c as int, n as int),
+    ensures
+        r matches Some(c) ==> forall|j: int| c <= j < NCLASSES ==> n <= #[trigger] class_table()[j].size,
+        r matches Some(c) ==> forall|j: int| 0 <= j < c ==> #[trigger] class_table()[j].size < n,
+        r == spec_class_for(n, 1),
+{
+    reveal(crate::layout::classes_below);
+    if let Some(c) = r {
+        assert forall|j: int| c <= j < NCLASSES implies n <= #[trigger] class_table()[j].size by {
+            crate::vspec::class::axiom_class_table_wf(j);
+            if j > c {
+                crate::layout::lemma_class_size_mono(c as int, j);
+            }
+        }
+        assert forall|j: int| 0 <= j < c implies #[trigger] class_table()[j].size < n by {
+            crate::vspec::class::axiom_class_table_wf(j);
+            assert(crate::layout::spec_class_size(j) < n);
+        }
+        assert forall|j: int| 0 <= j < c implies !#[trigger] class_serves(j, n as int, 1) by {
+            assert(class_table()[j].size < n);
+        }
+        lemma_class_for_some(n, 1, c as int);
+    } else {
+        assert forall|j: int| 0 <= j < NCLASSES implies !#[trigger] class_serves(j, n as int, 1) by {
+            crate::vspec::class::axiom_class_table_wf(j);
+        }
+        lemma_class_for_none(n, 1);
+    }
 }
 
 /// A slot result of the class `class_index(size)` (or any later one)
@@ -282,8 +317,45 @@ pub fn malloc_block(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno
 {
     // The fast path is a cache pop with no calls in it; everything else
     // (init, heap creation, refill, huge, ENOMEM) is one tail call away so
-    // the exported `malloc` needs no stack frame.
+    // the exported `malloc` needs no stack frame. A size above the small
+    // table is one tail call too ([`malloc_medium`]): with the class taken
+    // only from the table here, its stride-scaled entry addresses the
+    // cache header as it is (`class_of_small`).
+    if size > SMALL_MAX {
+        return malloc_medium(size, Tracked(blk), Tracked(errno));
+    }
+    malloc_class(size, class_index_small(size), Tracked(blk), Tracked(errno))
+}
+
+/// `malloc` of a size above the small table: the same pop, behind the
+/// computed class.
+#[inline(never)]
+fn malloc_medium(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        heap::fits(r, size as int, QUANTUM as int),
+        final(blk).gives(r, size as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
+{
     let Some(c) = class_index(size) else { return malloc_slow(size, Tracked(blk), Tracked(errno)) };
+    malloc_class(size, c, Tracked(blk), Tracked(errno))
+}
+
+/// `malloc`'s pop for a known class `c` of `size` (`class_index`'s).
+#[inline(always)]
+fn malloc_class(size: usize, c: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        c < NCLASSES,
+        forall|j: int| c <= j < NCLASSES ==> size <= #[trigger] class_table()[j].size,
+    ensures
+        heap::fits(r, size as int, QUANTUM as int),
+        final(blk).gives(r, size as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
+{
     let shared = super::shared_ptr();
     let Some(h) = heap::existing_heap(shared) else { return malloc_slow(size, Tracked(blk), Tracked(errno)) };
     // SAFETY: this thread's heap exists, so this thread observed `READY`
@@ -570,7 +642,9 @@ fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8, Tracked(
     let tracked mut blk = Live::empty();
     match which {
         0 => {
-            if let Some(c) = class_index(size) {
+            // As `malloc` takes the class (since upstream #101).
+            let hint = if size <= SMALL_MAX { Some(class_index_small(size)) } else { class_index(size) };
+            if let Some(c) = hint {
                 let shared = super::shared_ptr();
                 if let Some(h) = heap::existing_heap(shared) {
                     // SAFETY: as in `malloc`.
@@ -593,7 +667,9 @@ fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8, Tracked(
             }
         },
         3 => {
-            if let Some(c) = class_index(size) {
+            // As `free_sized_with` takes the class (since upstream #101).
+            let hint = if size <= SMALL_MAX { Some(class_index_small(size)) } else { class_index(size) };
+            if let Some(c) = hint {
                 let sp = super::shared_base();
                 if let Some(h) = heap::existing_heap(sp) {
                     // SAFETY: as in `free`.
@@ -736,7 +812,50 @@ pub fn free_sized(p: *mut u8, size: usize, Tracked(c): Tracked<CCall>)
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> heap::hint_ok(p, spec_class_for(size, 1)),
 {
-    free_sized_hint(p, size, class_index(size), Tracked(c))
+    let tracked blk = heap::live::axiom_c_claim(c);
+    free_sized_with(p, size, Tracked(blk))
+}
+
+/// [`free_sized`] with the caller's token for `p` ([`Live::claims`]),
+/// which the free takes back (`free_sized_block`'s); also `sdallocx`'s
+/// with no flags.
+#[inline(always)]
+pub fn free_sized_with(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        blk.claims(p),
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> heap::hint_ok(p, spec_class_for(size, 1)),
+        p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
+        p@.addr != 0 ==> blk.block(p),
+{
+    // As in `malloc`: a size above the small table is a tail call, so the
+    // class comes only from the table here and the stride-scaled entry
+    // addresses the class line and the cache header as it is. That keeps
+    // the sized path within its registers, with no spill (on Genoa a
+    // `push` and a `pop` here cost `valkey1` 8%, #46).
+    if size > SMALL_MAX {
+        return free_sized_medium(p, size, Tracked(blk));
+    }
+    free_sized_block(p, size, Some(class_index_small(size)), Tracked(blk))
+}
+
+/// `free_sized` of a size above the small table.
+#[inline(never)]
+fn free_sized_medium(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        blk.claims(p),
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> heap::hint_ok(p, spec_class_for(size, 1)),
+        p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
+        p@.addr != 0 ==> blk.block(p),
+{
+    free_sized_block(p, size, class_index(size), Tracked(blk))
 }
 
 /// C23 `free_aligned_sized(p, align, size)`: the arguments given to

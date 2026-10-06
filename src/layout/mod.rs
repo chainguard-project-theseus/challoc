@@ -572,6 +572,183 @@ pub(crate) proof fn lemma_slot_test(c: Class, offset: usize, q: u32)
     }
 }
 
+/// Multiplication modulo `2^64` is associative.
+pub(crate) proof fn lemma_wmul64_assoc(a: u64, b: u64, c: u64)
+    ensures
+        a.wrapping_mul(b).wrapping_mul(c) == a.wrapping_mul(b.wrapping_mul(c)),
+{
+    let m = 0x1_0000_0000_0000_0000int;
+    vstd::arithmetic::div_mod::lemma_mul_mod_noop_right(a as int, (b as int) * (c as int), m);
+    vstd::arithmetic::div_mod::lemma_mul_mod_noop_left((a as int) * (b as int), c as int, m);
+    vstd::arithmetic::mul::lemma_mul_is_associative(a as int, b as int, c as int);
+}
+
+/// The rotate of the 64-bit slot-start test ([`lemma_rotate`] on 64
+/// bits): `q`, `y` rotated right by `t`, is below a bound of `2^22 >> t`
+/// or less only if the low `t` bits of `y` are clear, so `y` is `q << t`.
+proof fn lemma_rotate64(y: u64, t: u64, q: u64, bound: u64)
+    requires
+        t < 64,
+        q == crate::vspec::core_int::rotr64(y, t as u32),
+        bound <= 0x40_0000u64 >> t,
+    ensures
+        q < bound ==> y == q << t,
+{
+    assert(q < bound ==> y == q << t) by (bit_vector)
+        requires
+            t < 64,
+            t == 0 ==> q == y,
+            t != 0 ==> q == (y >> t) | (y << sub(64u64, t)),
+            bound <= 0x40_0000u64 >> t,
+    ;
+}
+
+/// The sized free's exact-division test on 64 bits
+/// (`heap::ClassLine::sized_ok`, [`lemma_slot_test`] widened): with
+/// `size = d << tz`, `d` odd and `inv` its inverse modulo `2^64`, a `q =
+/// (x * inv).rotate_right(tz)` below `nslots` means `x` is `q * size`,
+/// whatever bits `x` has: the product was `q << tz`, and multiplying it
+/// back by `d` gives `x` modulo `2^64` and `q * size`, below `2^22`.
+pub(crate) proof fn lemma_slot_test64(c: Class, inv: u64, x: u64, q: u64)
+    requires
+        c.wf(),
+        ((c.size as u64) >> (c.tz as u64)).wrapping_mul(inv) == 1,
+        q == crate::vspec::core_int::rotr64(x.wrapping_mul(inv), c.tz as u32),
+        q < c.nslots as u64,
+    ensures
+        x as int == q as int * c.size as int,
+        (q as int * c.size as int) < 0x40_0000,
+{
+    let s32 = c.size;
+    let t32 = c.tz as u32;
+    let s = c.size as u64;
+    let t = c.tz as u64;
+    let d = s >> t;
+    let n = c.nslots as u64;
+    assert(MEDIUM_MAX == 0x4_0000);
+    assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+    let d32 = s32 >> t32;
+    assert(t <= 18 && d << t == s && d & 1 == 1 && (1u64 << t) <= s && d <= s) by (bit_vector)
+        requires
+            d32 << t32 == s32,
+            d32 & 1 == 1,
+            t32 < 32,
+            s32 <= 0x4_0000u32,
+            d32 == s32 >> t32,
+            s == s32 as u64,
+            t == t32 as u64,
+            d == s >> t,
+    ;
+    vstd::bits::lemma_u64_pow2_no_overflow(t as nat);
+    vstd::bits::lemma_u64_shl_is_mul(1, t);
+    vstd::bits::lemma_u64_shr_is_div(0x40_0000u64, t);
+    vstd::arithmetic::power2::lemma_pow2_pos(t as nat);
+    let p = vstd::arithmetic::power2::pow2(t as nat) as int;
+    assert(n as int * p <= 0x40_0000) by (nonlinear_arith)
+        requires
+            n as int * s as int <= 0x40_0000,
+            p <= s as int,
+            n >= 1,
+            p > 0,
+    ;
+    vstd::arithmetic::div_mod::lemma_div_is_ordered(n as int * p, 0x40_0000, p);
+    vstd::arithmetic::div_mod::lemma_div_multiples_vanish(n as int, p);
+    assert(n <= 0x40_0000u64 >> t);
+    let y = x.wrapping_mul(inv);
+    lemma_rotate64(y, t, q, n);
+    // `y` is `q << t`; times `d` it is `x` (`inv * d` is 1) and `q * s`.
+    assert(y == q << t);
+    lemma_wmul64_assoc(x, inv, d);
+    assert(inv.wrapping_mul(d) == d.wrapping_mul(inv)) by (bit_vector);
+    vstd::arithmetic::div_mod::lemma_small_mod(x as nat, 0x1_0000_0000_0000_0000);
+    assert(x.wrapping_mul(1u64) == x);
+    assert(y.wrapping_mul(d) == x);
+    assert((q as int * s as int) < 0x40_0000) by (nonlinear_arith)
+        requires
+            q < n,
+            n as int * s as int <= 0x40_0000,
+            s > 0,
+    ;
+    assert(q as int * p < 0x1_0000_0000_0000_0000 && d as int * p <= 0x10_0000_0000) by (nonlinear_arith)
+        requires
+            (q as int * s as int) < 0x40_0000,
+            p <= s as int,
+            q >= 0,
+            d as int <= s as int,
+            s as int <= 0x4_0000,
+            p >= 1,
+    ;
+    vstd::bits::lemma_u64_shl_is_mul(q, t);
+    vstd::bits::lemma_u64_shl_is_mul(d, t);
+    assert((q as int * p) * (d as int) == q as int * s as int) by (nonlinear_arith)
+        requires
+            s as int == d as int * p,
+    ;
+    assert(q as int * p < 0x1_0000_0000_0000_0000) by (nonlinear_arith)
+        requires
+            q as int * s as int <= 0x40_0000,
+            p <= s as int,
+            q >= 0,
+    ;
+    assert(y as int == q as int * p);
+    vstd::arithmetic::div_mod::lemma_small_mod((q as int * s as int) as nat, 0x1_0000_0000_0000_0000);
+    assert(y.wrapping_mul(d) as int == q as int * s as int);
+}
+
+/// The low half of the 64-bit inverse of a class's odd part is its
+/// 32-bit inverse, `inv_odd` (the inverse modulo `2^32` is unique), and
+/// the inverse of `size >> trailing_zeros(size)` is that of `size >> tz`.
+pub(crate) proof fn lemma_inv_low(c: Class, inv: u64)
+    requires
+        c.wf(),
+        ((c.size as u64) >> (vstd::std_specs::bits::u64_trailing_zeros(c.size as u64) as u64)).wrapping_mul(inv) == 1,
+    ensures
+        ((c.size as u64) >> (c.tz as u64)).wrapping_mul(inv) == 1,
+        inv as u32 == c.inv_odd,
+{
+    let s32 = c.size;
+    let t32 = c.tz as u32;
+    let s = c.size as u64;
+    let d32 = s32 >> t32;
+    vstd::std_specs::bits::axiom_u64_trailing_zeros(s);
+    let tz = vstd::std_specs::bits::u64_trailing_zeros(s) as u64;
+    let t = c.tz as u64;
+    assert(MEDIUM_MAX == 0x4_0000);
+    // `tz` is the size's trailing zero count: the odd part is `d`.
+    assert(tz == t) by (bit_vector)
+        requires
+            d32 << t32 == s32,
+            d32 & 1 == 1,
+            t32 < 32,
+            d32 == s32 >> t32,
+            s == s32 as u64,
+            t == t32 as u64,
+            1 <= s,
+            tz <= 64,
+            tz < 64 ==> (s >> tz) & 1u64 == 1u64,
+            s << sub(64, tz) == 0,
+            s == 0 <==> tz == 64,
+    ;
+    let d = s >> t;
+    let a = inv as u32;
+    assert(d as u32 == d32) by (bit_vector)
+        requires d == s >> t, s == s32 as u64, t == t32 as u64, t32 < 32, d32 == s32 >> t32;
+    // `d * a` is the low half of `d * inv`, 1.
+    let dw = d.wrapping_mul(inv);
+    assert(dw as u32 == (d as u32).wrapping_mul(inv as u32)) by (bit_vector)
+        requires dw == d.wrapping_mul(inv);
+    assert(d32.wrapping_mul(a) == 1);
+    // So `a == a * (d * inv_odd) == (a * d) * inv_odd == inv_odd`.
+    let w = c.inv_odd;
+    assert(d32.wrapping_mul(w) == 1);
+    lemma_wmul_assoc(a, d32, w);
+    assert(a.wrapping_mul(d32) == d32.wrapping_mul(a)) by (bit_vector);
+    lemma_wmul_one(a);
+    let one: u32 = 1;
+    assert(one.wrapping_mul(w) == w) by (bit_vector)
+        requires one == 1u32;
+}
+
 } // verus!
 
 verus! {
@@ -1458,27 +1635,40 @@ const fn class_of_slow(n: usize) -> (r: Option<usize>)
 
 const SMALL_LOOKUP_LEN: usize = SMALL_MAX / QUANTUM + 1;
 
+/// Entry `e` of the small table at index `i` (requests of `i` quanta):
+/// a class number times [`CLASS_STRIDE`], of the least class that holds
+/// `i` quanta.
+pub open spec fn small_entry_ok(e: u16, i: int) -> bool {
+    let c = e as int / CLASS_STRIDE as int;
+    &&& (e as int) % (CLASS_STRIDE as int) == 0
+    &&& c < NCLASSES
+    &&& i * QUANTUM <= spec_class_size(c)
+    &&& classes_below(c, i * QUANTUM)
+}
+
 /// The `panic!` is unreachable: the last class is `MEDIUM_MAX`, above every
 /// entry's request.
-const fn build_small_lookup() -> (out: [u8; SMALL_LOOKUP_LEN])
+const fn build_small_lookup() -> (out: [u16; SMALL_LOOKUP_LEN])
     ensures
-        forall|i: int| 0 <= i < SMALL_LOOKUP_LEN ==> (#[trigger] out[i] as int) < NCLASSES
-            && i * QUANTUM <= spec_class_size(out[i] as int)
-            && classes_below(out[i] as int, i * QUANTUM),
+        forall|i: int| 0 <= i < SMALL_LOOKUP_LEN ==> small_entry_ok(#[trigger] out[i], i),
 {
-    let mut out = [0u8; SMALL_LOOKUP_LEN];
+    let mut out = [0u16; SMALL_LOOKUP_LEN];
     let mut i = 0;
     while i < SMALL_LOOKUP_LEN
         invariant
             i <= SMALL_LOOKUP_LEN,
-            forall|j: int| 0 <= j < i ==> (#[trigger] out[j] as int) < NCLASSES
-                && j * QUANTUM <= spec_class_size(out[j] as int)
-                && classes_below(out[j] as int, j * QUANTUM),
+            forall|j: int| 0 <= j < i ==> small_entry_ok(#[trigger] out[j], j),
         decreases SMALL_LOOKUP_LEN - i,
     {
         // Entry `i` serves every request that rounds up to `i` quanta.
         out[i] = match class_of_slow(i * QUANTUM) {
-            Some(c) => c as u8,
+            Some(c) => {
+                proof {
+                    assert(c * 64 < 0x1_0000 && (c * 64) / 64 == c as int && (c * 64) % 64 == 0) by (nonlinear_arith)
+                        requires c < NCLASSES, NCLASSES <= 64;
+                }
+                (c * CLASS_STRIDE) as u16
+            },
             None => panic!("small lookup out of range"),
         };
         i += 1;
@@ -1486,15 +1676,94 @@ const fn build_small_lookup() -> (out: [u8; SMALL_LOOKUP_LEN])
     out
 }
 
-/// Request size rounded up to quanta, then class number (design section 3:
-/// "a small table for requests up to 1024").
-exec static SMALL_LOOKUP: [u8; SMALL_LOOKUP_LEN]
+/// The stride of the per-class lines the fast paths index: the heap's
+/// cache headers and the shared class lines are both one 64-byte line
+/// per class (`heap/` asserts both).
+pub const CLASS_STRIDE: usize = 64;
+
+/// Request size rounded up to quanta, then class number times
+/// [`CLASS_STRIDE`] (design section 3: "a small table for requests up to
+/// 1024"). The fast paths scale the class by the stride to reach its
+/// lines; with the scaled entry in the table, [`class_of_small`]'s
+/// division and their multiplication cancel, which saves them a copy, a
+/// shift and the register they took.
+exec static SMALL_LOOKUP: [u16; SMALL_LOOKUP_LEN]
     ensures
-        forall|i: int| 0 <= i < SMALL_LOOKUP_LEN ==> (#[trigger] SMALL_LOOKUP[i] as int) < NCLASSES
-            && i * QUANTUM <= spec_class_size(SMALL_LOOKUP[i] as int)
-            && classes_below(SMALL_LOOKUP[i] as int, i * QUANTUM),
+        forall|i: int| 0 <= i < SMALL_LOOKUP_LEN ==> small_entry_ok(#[trigger] SMALL_LOOKUP[i], i),
 {
     build_small_lookup()
+}
+
+} // verus!
+
+const _: () = assert!(NCLASSES * CLASS_STRIDE <= u16::MAX as usize);
+
+verus! {
+
+/// The table entry for `n`: [`class_of`] for a small request, the class
+/// number with the compiler told that the entry is a multiple of the
+/// stride (so that `class * CLASS_STRIDE` folds back into the entry).
+#[inline(always)]
+fn small_class(n: usize) -> (r: usize)
+    requires
+        n <= SMALL_MAX,
+    ensures
+        r < NCLASSES && n <= spec_class_size(r as int),
+        classes_below(r as int, n as int),
+    opens_invariants none
+{
+    proof {
+        reveal(classes_below);
+        let q = ((n + QUANTUM - 1) as int) / (QUANTUM as int);
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod((n + QUANTUM - 1) as int, QUANTUM as int);
+        vstd::arithmetic::div_mod::lemma_mod_bound((n + QUANTUM - 1) as int, QUANTUM as int);
+        assert(n <= q * QUANTUM) by (nonlinear_arith)
+            requires
+                (n + QUANTUM - 1) as int == QUANTUM * q + ((n + QUANTUM - 1) as int) % (QUANTUM as int),
+                ((n + QUANTUM - 1) as int) % (QUANTUM as int) < QUANTUM;
+        assert(q < SMALL_LOOKUP_LEN);
+        // Every class below the entry's is below `q` quanta, so, a
+        // multiple of the quantum, at most `q - 1` of them: below `n`.
+        // (`SMALL_LOOKUP` cannot be read here; its entry is a class
+        // below `NCLASSES` and `classes_below` it at `q` quanta.)
+        assert forall|j: int| 0 <= j < NCLASSES && #[trigger] spec_class_size(j) < q * QUANTUM implies spec_class_size(j) < n by {
+            lemma_class_size_quantum(j);
+            let s = spec_class_size(j);
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(s, QUANTUM as int);
+            let t = s / (QUANTUM as int);
+            assert(s < q * QUANTUM);
+            assert(t * QUANTUM < q * QUANTUM) by (nonlinear_arith)
+                requires s == QUANTUM * t + 0, s < q * QUANTUM;
+            assert(t <= q - 1) by (nonlinear_arith)
+                requires t * QUANTUM < q * QUANTUM, QUANTUM > 0;
+            assert(t * QUANTUM <= (q - 1) * QUANTUM) by (nonlinear_arith)
+                requires t <= q - 1, QUANTUM > 0;
+            assert((q - 1) * QUANTUM < n) by (nonlinear_arith)
+                requires
+                    (n + QUANTUM - 1) as int == QUANTUM * q + ((n + QUANTUM - 1) as int) % (QUANTUM as int),
+                    ((n + QUANTUM - 1) as int) % (QUANTUM as int) >= 0;
+        }
+    }
+    let off = SMALL_LOOKUP[(n + QUANTUM - 1) / QUANTUM] as usize;
+    // SAFETY: every entry is a class number times the stride
+    // (`build_small_lookup`).
+    unsafe { core::hint::assert_unchecked(off % CLASS_STRIDE == 0) };
+    off / CLASS_STRIDE
+}
+
+/// Class number for a request of at most [`SMALL_MAX`] bytes; `n` must
+/// be in range (the table index is bounds-checked regardless).
+#[inline(always)]
+pub fn class_of_small(n: usize) -> (r: usize)
+    requires
+        n <= SMALL_MAX,
+    ensures
+        r < NCLASSES && n <= spec_class_size(r as int),
+        classes_below(r as int, n as int),
+    opens_invariants none
+{
+    debug_assert!(n <= SMALL_MAX);
+    small_class(n)
 }
 
 /// Class number for a request of `n` bytes, or `None` when `n` is huge.
@@ -1511,38 +1780,7 @@ pub fn class_of(n: usize) -> (r: Option<usize>)
         reveal(classes_below);
     }
     if n <= SMALL_MAX {
-        proof {
-            let q = ((n + QUANTUM - 1) as int) / (QUANTUM as int);
-            vstd::arithmetic::div_mod::lemma_fundamental_div_mod((n + QUANTUM - 1) as int, QUANTUM as int);
-            vstd::arithmetic::div_mod::lemma_mod_bound((n + QUANTUM - 1) as int, QUANTUM as int);
-            assert(n <= q * QUANTUM) by (nonlinear_arith)
-                requires
-                    (n + QUANTUM - 1) as int == QUANTUM * q + ((n + QUANTUM - 1) as int) % (QUANTUM as int),
-                    ((n + QUANTUM - 1) as int) % (QUANTUM as int) < QUANTUM;
-            assert(q < SMALL_LOOKUP_LEN);
-            // Every class below the entry's is below `q` quanta, so, a
-            // multiple of the quantum, at most `q - 1` of them: below `n`.
-            // (`SMALL_LOOKUP` cannot be read here; its entry is below
-            // `NCLASSES` and `classes_below` it at `q` quanta.)
-            assert forall|j: int| 0 <= j < NCLASSES && #[trigger] spec_class_size(j) < q * QUANTUM implies spec_class_size(j) < n by {
-                lemma_class_size_quantum(j);
-                let s = spec_class_size(j);
-                vstd::arithmetic::div_mod::lemma_fundamental_div_mod(s, QUANTUM as int);
-                let t = s / (QUANTUM as int);
-                assert(s < q * QUANTUM);
-                assert(t * QUANTUM < q * QUANTUM) by (nonlinear_arith)
-                    requires s == QUANTUM * t + 0, s < q * QUANTUM;
-                assert(t <= q - 1) by (nonlinear_arith)
-                    requires t * QUANTUM < q * QUANTUM, QUANTUM > 0;
-                assert(t * QUANTUM <= (q - 1) * QUANTUM) by (nonlinear_arith)
-                    requires t <= q - 1, QUANTUM > 0;
-                assert((q - 1) * QUANTUM < n) by (nonlinear_arith)
-                    requires
-                        (n + QUANTUM - 1) as int == QUANTUM * q + ((n + QUANTUM - 1) as int) % (QUANTUM as int),
-                        ((n + QUANTUM - 1) as int) % (QUANTUM as int) >= 0;
-            }
-        }
-        Some(SMALL_LOOKUP[(n + QUANTUM - 1) / QUANTUM] as usize)
+        Some(small_class(n))
     } else if n <= MEDIUM_MAX {
         // Classes in (2^lg, 2^(lg+1)] are 2^lg + k * 2^(lg-2) for k = 1..4.
         let m = n - 1;

@@ -1,6 +1,7 @@
 //! Specifications of the derived `PartialEq` of three enums verified code
 //! compares (`config::Thp`, `sys::thp_host::ThpSetting`,
-//! `huge::RunState`), and of `Option::map_or`, `compiler_fence` and `fence`.
+//! `huge::RunState`), and of `Option::map_or`, `compiler_fence`, `fence`
+//! and `core::hint::assert_unchecked`.
 
 use vstd::prelude::*;
 
@@ -76,6 +77,18 @@ pub assume_specification[ core::sync::atomic::compiler_fence ](order: core::sync
 pub assume_specification[ core::sync::atomic::fence ](order: core::sync::atomic::Ordering)
     requires
         !(order is Relaxed),
+    opens_invariants none
+    no_unwind
+;
+
+/// `core::hint::assert_unchecked`: undefined behaviour unless `cond`
+/// holds (`core`'s safety contract), which this makes a precondition; it
+/// has no effect Verus models. Its one verified caller is
+/// `layout::small_class`, where the condition is the small table's
+/// postcondition.
+pub assume_specification[ core::hint::assert_unchecked ](cond: bool)
+    requires
+        cond,
     opens_invariants none
     no_unwind
 ;

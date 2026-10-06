@@ -1,11 +1,13 @@
 # `axiom_shared_layout`
 
-Seam S150 of `verus/SEAMS.md`: src/heap/shared.rs:931. Kind: axiom. Category: core library.
+Seam S152 of `verus/SEAMS.md`: src/heap/shared.rs:1080. Kind: axiom. Category: core library.
 Discharged by Kani.
 
 ## Contract
 
-As changed by the port of upstream #87 (a first conjunct for the new
+As changed by the port of upstream #101 (`region_hi: usize` between
+`push_flags` and `regions`, at `S_REGION_HI`), before that by the port
+of upstream #87 (a first conjunct for the new
 class lines, `[ClassLine; NCLASSES]` at `S_LINES`, ahead of
 `free_flags`; the guard tests' conjunct after `regions` gone, `regions`
 now ending at `S_TABLES`; `ClassLine` in place of `GuardTest` in the
@@ -24,7 +26,8 @@ axiom fn axiom_shared_layout()
     ensures
         field_fits::<Shared, [ClassLine; NCLASSES]>(S_LINES, S_FREE_FLAGS as int),
         field_fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS as int),
-        field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGIONS as int),
+        field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGION_HI as int),
+        field_fits::<Shared, usize>(S_REGION_HI, S_REGIONS as int),
         field_fits::<Shared, Regions>(S_REGIONS, S_TABLES as int),
         field_fits::<Shared, [SlabTable; NCLASSES]>(S_TABLES, S_ARENA0 as int),
         NCLASSES * size_of::<ClassLine>() <= isize::MAX,
@@ -51,7 +54,8 @@ axiom fn axiom_shared_layout()
 ## Statement
 
 Kani 0.68.0 (CBMC 6.11.0, nightly-2026-08-21) proves the harness `heap::shared::kani_layout::shared_layout` (`src/heap/shared.rs`):
-each of the sixteen `S_*` offsets equals its field's `offset_of!`,
+each of the seventeen `S_*` offsets (sixteen before upstream #101)
+equals its field's `offset_of!`,
 and for each field, with its type `T` and the next field's offset (the
 last: `size_of::<Shared>()`) as `next`, `field_fits::<Shared, T>(off, next)`
 holds (restated with its `int` sum in `u128`), as does
@@ -123,6 +127,12 @@ ledger's entry there, and the harness asserts it (the class lines'
 offset and fit first, the guard tests' gone); the build's `const`
 assertion of the same conditions passes on both targets and quanta.
 The Kani re-run is pending: Kani was not available where the port ran.
+
+Ported onto upstream #101, 2026-10-06: the contract above is the
+ledger's entry there (the new field `region_hi: usize` between
+`push_flags` and `regions`, at `S_REGION_HI`), and the harness asserts
+it; the build's `const` assertion of the same conditions passes on both
+targets and quanta. The Kani re-run is pending, as for #87.
 
 ## Tests
 

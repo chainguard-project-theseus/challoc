@@ -2176,7 +2176,7 @@ impl SlabTable {
 
     /// `guard_interval - 1` (all ones when guards are off): the mask of
     /// [`is_guard_slab`], for the dense copy the sized fast path reads
-    /// (`heap::GuardTest`).
+    /// (the guard word of `heap::ClassLine`).
     ///
     /// [`is_guard_slab`]: SlabTable::is_guard_slab
     #[inline]

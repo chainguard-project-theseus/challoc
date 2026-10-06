@@ -76,6 +76,24 @@ pub assume_specification[ u32::rotate_right ](x: u32, n: u32) -> (r: u32)
     opens_invariants none
 ;
 
+/// `x` rotated right by `n` bits (`u64::rotate_right`), the count taken
+/// modulo 64.
+pub open spec fn rotr64(x: u64, n: u32) -> u64 {
+    if n % 64 == 0 {
+        x
+    } else {
+        (x >> ((n % 64) as u64)) | (x << ((64 - n % 64) as u64))
+    }
+}
+
+/// `u64::rotate_right`: the bits shifted out at the bottom come back in at
+/// the top (the count is taken modulo 64, as `core` documents).
+pub assume_specification[ u64::rotate_right ](x: u64, n: u32) -> (r: u64)
+    ensures
+        r == rotr64(x, n),
+    opens_invariants none
+;
+
 } // verus!
 
 verus! {

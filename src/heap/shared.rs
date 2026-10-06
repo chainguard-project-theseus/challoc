@@ -2,7 +2,7 @@
 //! and the checks it performs for the fast and slow paths; the thread-exit
 //! key and the thread id, clock and seed a heap reads, and the per-class
 //! [`ClassLine`] the `free` fast paths read, with the sized path's
-//! [`GuardTest`].
+//! check.
 
 use crate::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use core::ffi::c_void;
@@ -117,6 +117,10 @@ pub struct Shared {
     /// options default to off), so the fast path tests one byte and takes
     /// one predicted branch.
     pub(crate) push_flags: u8,
+    /// `!(regions.region_len() - 1)`: the bits of an offset from a class
+    /// base that put it past the class region, read by the sized check
+    /// ([`ClassLine::sized_ok`]) on the line `push_flags` is on.
+    pub(crate) region_hi: usize,
     pub regions: Regions,
     pub(crate) tables: [SlabTable; NCLASSES],
     pub arena0: Arena,
@@ -170,15 +174,32 @@ pub struct ClassLine {
     bits_base: usize,
     committed: AtomicUsize,
     owners_base: usize,
+    /// The inverse modulo `2^64` of the odd part of the class size, the
+    /// multiplier of the sized check ([`ClassLine::sized_ok`]); its low
+    /// half is [`Class::inv_odd`], the multiplier of the `free` path's
+    /// 32-bit slot-start test.
+    ///
+    /// [`Class::inv_odd`]: crate::layout::Class::inv_odd
+    inv: u64,
+    /// Slots per slab, as a `u64` so that the sized check compares its
+    /// 64-bit quotient against the field in memory; the `free` path reads
+    /// the low half.
+    nslots: u64,
     slab_mask: u32,
-    inv_odd: u32,
-    nslots: u32,
     slab_bits: u16,
-    tz: u8,
     lg_slab: u8,
     lg_group: u8,
-    /// The sized fast path's guard test for this class.
-    pub(super) guard: GuardTest,
+    /// The last eight bytes are the sized check's guard word
+    /// ([`ClassLine::guard_word`]), one load: `guard_mask` is
+    /// [`SlabTable::guard_mask`] over page groups of `2^lg_guard` bytes,
+    /// `tz` the slot-start test's rotate.
+    guard_mask: u32,
+    tz: u8,
+    /// `log2` of a page group in bytes: `lg_slab` plus
+    /// `log2(slabs_per_page)`.
+    lg_guard: u8,
+    /// Zero: initialised, so that the guard word's load reads no padding.
+    _pad: [u8; 2],
     /// Ghost (no bytes): the watermark copy's invariant, which bounds it
     /// by the table's slab count as the table's own bounds the watermark
     /// (`class::table::CommittedPred`); every store into the copy
@@ -188,17 +209,29 @@ pub struct ClassLine {
 
 } // verus!
 
-const _: () = assert!(core::mem::size_of::<ClassLine>() == 64);
+const _: () = assert!(core::mem::size_of::<ClassLine>() == crate::layout::CLASS_STRIDE);
 const _: () = assert!(core::mem::offset_of!(Shared, lines) == 0);
 
 verus! {
 
+/// What [`ClassLine::guard_word`] loads: `guard_mask | tz << 32 |
+/// lg_guard << 40`, the padding above zero.
+pub(super) open spec fn guard_word_of(guard_mask: u32, tz: u8, lg_guard: u8) -> u64 {
+    (guard_mask as u64) | ((tz as u64) << 32u64) | ((lg_guard as u64) << 40u64)
+}
+
+/// What [`ClassLine::is_guard`] computes.
+pub(super) open spec fn is_guard_spec(rel: usize, gw: u64) -> bool {
+    (vstd::wrapping::usize_specs::wrapping_shr(rel, (gw >> 40u64) as u32) as u32).wrapping_add(1) & (gw as u32) == 0
+}
+
 impl ClassLine {
     /// The line of class `c`, whose table is `t` and regions `regions`:
     /// the region base, the class's slot geometry (`class_table()[c]`,
-    /// after `adopt_page_geometry`), the table's bitmap and owner bases,
-    /// hand-out group and guard test ([`GuardTest::tests`]), and a
-    /// watermark copy bounded by the table's slab count.
+    /// after `adopt_page_geometry`) with its 64-bit inverse, the table's
+    /// bitmap and owner bases, hand-out group and guard geometry, zero
+    /// padding, and a watermark copy bounded by the table's slab count,
+    /// the region's.
     pub(super) closed spec fn wf(&self, t: SlabTable, regions: Regions, c: int) -> bool {
         let cls = class_table()[c];
         &&& self.class_base == regions.class_base[c]
@@ -208,12 +241,16 @@ impl ClassLine {
         &&& self.owners_base == t.spec_owners_base()
         &&& self.lg_group == t.spec_lg_group()
         &&& self.slab_mask == cls.slab_mask
-        &&& self.inv_odd == cls.inv_odd
-        &&& self.nslots == cls.nslots
+        &&& ((cls.size as u64) >> (cls.tz as u64)).wrapping_mul(self.inv) == 1
+        &&& self.inv as u32 == cls.inv_odd
+        &&& self.nslots == cls.nslots as u64
         &&& self.slab_bits == cls.slab_bits
         &&& self.tz == cls.tz
         &&& self.lg_slab == cls.lg_slab
-        &&& self.guard.tests(crate::layout::guard_geom(c).0, crate::layout::guard_geom(c).1)
+        &&& self.guard_mask == crate::layout::guard_geom(c).1
+        &&& crate::layout::guard_geom(c).0 <= 26
+        &&& self.lg_guard == cls.lg_slab + crate::layout::guard_geom(c).0
+        &&& self._pad[0] == 0 && self._pad[1] == 0
         &&& self.committed_inv@.constant() == (usize_id(&self.committed), t.spec_nslabs())
         &&& self.committed_inv@.namespace() == crate::class::committed_ns()
     }
@@ -226,21 +263,39 @@ impl ClassLine {
         ensures
             r.wf(*table, *regions, class as int),
     {
+        broadcast use crate::vspec::class::axiom_class_table_wf;
+
         let cls = &CLASSES.table()[class];
+        proof {
+            assert(cls.wf());
+        }
         let (committed, committed_inv) = table.new_mirror();
+        let spp = table.slabs_per_page();
+        proof {
+            let lg = crate::layout::guard_geom(class as int).0;
+            assert(spp == 1usize << (lg as u64)) by (bit_vector)
+                requires spp == 1usize << lg;
+            crate::class::lemma_tz_shl(spp, lg as u64);
+        }
+        let inv = inverse_of_odd_part_u64(cls.size());
+        proof {
+            crate::layout::lemma_inv_low(*cls, inv);
+        }
         ClassLine {
             class_base: regions.class_base[class],
             bits_base: table.bits_base(),
             committed,
             owners_base: table.owners_base(),
+            inv,
+            nslots: cls.nslots as u64,
             slab_mask: cls.slab_mask,
-            inv_odd: cls.inv_odd,
-            nslots: cls.nslots,
+            guard_mask: table.guard_mask(),
             slab_bits: cls.slab_bits,
             tz: cls.tz,
             lg_slab: cls.lg_slab,
             lg_group: table.lg_group(),
-            guard: GuardTest::of(table),
+            lg_guard: cls.lg_slab + spp.trailing_zeros() as u8,
+            _pad: [0; 2],
             committed_inv,
         }
     }
@@ -254,15 +309,19 @@ impl ClassLine {
     fn slot_start(&self, rel: usize) -> (r: Option<u32>)
         ensures
             ({
-                let q = crate::vspec::core_int::rotr32(((rel as u32) & self.slab_mask).wrapping_mul(self.inv_odd), self.tz as u32);
-                r == if q < self.nslots { Some(q) } else { None }
+                let q = crate::vspec::core_int::rotr32(((rel as u32) & self.slab_mask).wrapping_mul(self.inv as u32), self.tz as u32);
+                r == if q < self.nslots as u32 { Some(q) } else { None }
             }),
         opens_invariants none
     {
         let slot = ((rel as u32) & self.slab_mask)
-            .wrapping_mul(self.inv_odd)
+            .wrapping_mul(self.inv as u32)
             .rotate_right(self.tz as u32);
-        if slot < self.nslots { Some(slot) } else { None }
+        if slot < self.nslots as u32 {
+            Some(slot)
+        } else {
+            None
+        }
     }
 
     /// The slot-start test of class `c`'s line, as [`slot_start`]
@@ -275,8 +334,8 @@ impl ClassLine {
         requires
             0 <= c < NCLASSES,
             self.wf(t, regions, c),
-            q == crate::vspec::core_int::rotr32(((rel as u32) & self.slab_mask).wrapping_mul(self.inv_odd), self.tz as u32),
-            q < self.nslots,
+            q == crate::vspec::core_int::rotr32(((rel as u32) & self.slab_mask).wrapping_mul(self.inv as u32), self.tz as u32),
+            q < self.nslots as u32,
         ensures
             q < class_table()[c].nslots,
             rel & (((1usize << class_table()[c].lg_slab) - 1) as usize) == q * class_table()[c].size,
@@ -291,27 +350,207 @@ impl ClassLine {
         let off = rel & mu;
         assert(off < (1usize << lg) && (rel as u32) & m == off as u32) by (bit_vector)
             requires lg <= 22, mu == ((1usize << lg) - 1) as usize, m as usize == mu, off == rel & mu;
+        assert(self.nslots as u32 == cls.nslots);
         crate::layout::lemma_slot_test(cls, off, q);
     }
 
     /// The sized free's check on this class's line: whether `p`, at `rel`
-    /// from the region base and already known inside the region, is a
-    /// slot start in a slab that is not a guard slab.
+    /// from the region base, is inside the region and a slot start in a
+    /// slab that is not a guard slab. `region_hi` is
+    /// [`Shared::region_hi`], the offset bits at and above the region
+    /// length.
+    ///
+    /// The region bound and the slot-start test are one 64-bit test: `x`
+    /// keeps the in-slab offset `rel & slab_mask` plus the bits of `rel`
+    /// past the region, and `q = (x * inv).rotate_right(tz)` is below
+    /// `nslots` exactly when `x` is a multiple of the size and `x / size <
+    /// nslots` (the exact-division test of [`Class::slot_of_offset`], on 64
+    /// bits). An offset inside the region leaves `x` the in-slab offset, so
+    /// that is the slot-start test; an offset past it leaves `x >= 2^32`,
+    /// more than `nslots * size` (a slab is at most `MAX_SLAB`), so `q` is
+    /// at least `nslots` whether or not `x` is a multiple. The guard test
+    /// is [`ClassLine::is_guard`] on the guard word. The whole check
+    /// accepts exactly what the reference form does
+    /// ([`Regions::slot_in_class`] and [`SlabTable::is_guard_slab`];
+    /// `sized_slot_agrees_with_the_reference`). Proved: what it accepts is
+    /// a slot start inside the region in a slab that is not a guard slab
+    /// ([`ClassLine::lemma_sized_ok`]).
+    ///
+    /// The shape is about loads. Each one waits on the size (the class
+    /// indexes the line) or the pointer, and in a program whose frees take
+    /// both from a cache miss (a Valkey `SET` reads the old value's pointer
+    /// and size from the key's entry) they all wait in the load queue and
+    /// the scheduler until the miss returns. On Zen 4 (Genoa) that
+    /// capacity, more than the instruction count, sets how far the core
+    /// runs ahead to the next miss: `valkey1` is 8% faster with 13 such
+    /// loads in `sdallocx` than with 16 (#46). So the bound has no load of
+    /// its own, and the guard mask and both shift counts are one load.
+    ///
+    /// [`Class::slot_of_offset`]: crate::layout::Class::slot_of_offset
     #[inline(always)]
-    fn sized_ok(&self, rel: usize) -> (r: bool)
+    fn sized_ok(&self, rel: usize, region_hi: usize) -> (r: bool)
         requires
-            self.lg_slab < 64,
+            self._pad[0] == 0 && self._pad[1] == 0,
         ensures
-            r == (crate::vspec::core_int::rotr32(((rel as u32) & self.slab_mask).wrapping_mul(self.inv_odd), self.tz as u32) < self.nslots
-                && !self.guard.spec_is_guard(rel >> self.lg_slab)),
+            ({
+                let gw = guard_word_of(self.guard_mask, self.tz, self.lg_guard);
+                let x = (rel & (self.slab_mask as usize | region_hi)) as u64;
+                let q = crate::vspec::core_int::rotr64(x.wrapping_mul(self.inv), (gw >> 32u64) as u32);
+                r == (q < self.nslots && !is_guard_spec(rel, gw))
+            }),
         opens_invariants none
     {
-        // `is_some()` spelled as a `match` (the same code): vstd's
-        // specification of `Option::is_some` may open any invariant.
-        match self.slot_start(rel) {
-            Some(_) => !self.guard.is_guard(rel >> self.lg_slab),
-            None => false,
-        }
+        let gw = self.guard_word();
+        let x = (rel & (self.slab_mask as usize | region_hi)) as u64;
+        // `rotate_right` takes its count modulo 64: `tz`, the low byte.
+        let q = x.wrapping_mul(self.inv).rotate_right((gw >> 32) as u32);
+        q < self.nslots && !Self::is_guard(rel, gw)
+    }
+
+    /// What [`sized_ok`](ClassLine::sized_ok) accepts, on class `c`'s
+    /// line with `region_hi` the regions' bits past the region length: a
+    /// slot `q` of the class, at `rel` inside the region, in slab `rel >>
+    /// lg_slab`, which is not a guard slab.
+    proof fn lemma_sized_ok(&self, t: SlabTable, regions: Regions, c: int, rel: usize, region_hi: usize)
+        requires
+            0 <= c < NCLASSES,
+            self.wf(t, regions, c),
+            regions.wf(),
+            region_hi == !(((1usize << regions.lg_region) - 1) as usize),
+            ({
+                let gw = guard_word_of(self.guard_mask, self.tz, self.lg_guard);
+                let x = (rel & (self.slab_mask as usize | region_hi)) as u64;
+                let q = crate::vspec::core_int::rotr64(x.wrapping_mul(self.inv), (gw >> 32u64) as u32);
+                q < self.nslots && !is_guard_spec(rel, gw)
+            }),
+        ensures
+            ({
+                let gw = guard_word_of(self.guard_mask, self.tz, self.lg_guard);
+                let x = (rel & (self.slab_mask as usize | region_hi)) as u64;
+                let q = crate::vspec::core_int::rotr64(x.wrapping_mul(self.inv), (gw >> 32u64) as u32);
+                let cls = class_table()[c];
+                &&& rel < (1usize << regions.lg_region)
+                &&& q < cls.nslots as u64
+                &&& rel & (((1usize << cls.lg_slab) - 1) as usize) == (q as usize) * cls.size
+                &&& (rel >> cls.lg_slab) < regions.spec_nslabs(c)
+                &&& !crate::layout::guard_slab(c, (rel >> cls.lg_slab) as int)
+            }),
+    {
+        crate::vspec::class::axiom_class_table_wf(c);
+        regions.lemma_nslabs_bound(c);
+        let cls = class_table()[c];
+        let (gm, tz, lgg) = (self.guard_mask, self.tz, self.lg_guard);
+        let gw = guard_word_of(gm, tz, lgg);
+        let x = (rel & (self.slab_mask as usize | region_hi)) as u64;
+        let cnt = (gw >> 32u64) as u32;
+        let y = x.wrapping_mul(self.inv);
+        let q = crate::vspec::core_int::rotr64(y, cnt);
+        // The rotate's count is `tz`: the guard word's bits from 32 on are
+        // `tz`, then `lg_guard` from 40, then zero.
+        assert(cnt % 64 == (tz as u32) % 64 && (gw as u32) == gm && ((gw >> 40u64) as u32) == lgg as u32) by (bit_vector)
+            requires gw == (gm as u64) | ((tz as u64) << 32u64) | ((lgg as u64) << 40u64), cnt == (gw >> 32u64) as u32;
+        assert(q == crate::vspec::core_int::rotr64(y, tz as u32));
+        crate::layout::lemma_slot_test64(cls, self.inv, x, q);
+        // `x` is `q * size`, below `2^22`: `rel` has no bit past the
+        // region, and its in-slab offset is `x`.
+        let (lr, ls, m) = (regions.lg_region, cls.lg_slab, self.slab_mask);
+        assert(m as usize == ((1usize << ls) - 1) as usize);
+        let mu = m as usize;
+        assert(rel < (1usize << lr) && (rel & mu) as u64 == x) by (bit_vector)
+            requires
+                ls <= 22,
+                22 <= lr <= 38,
+                mu == ((1usize << ls) - 1) as usize,
+                region_hi == !(((1usize << lr) - 1) as usize),
+                x == (rel & (mu | region_hi)) as u64,
+                x < 0x40_0000u64,
+        ;
+        let slab = rel >> ls;
+        assert(slab < (1usize << lr) >> ls && slab < 0x400_0000 && rel < 0x40_0000_0000usize) by (bit_vector)
+            requires
+                ls <= 22,
+                12 <= ls,
+                22 <= lr <= 38,
+                rel < 1usize << lr,
+                slab == rel >> ls,
+        ;
+        // The guard test is the table's, `guard_of`, on `slab`: the page
+        // group is `rel >> (lg_slab + lg_spp)`, below `2^26`.
+        let lspp = crate::layout::guard_geom(c).0;
+        assert(lgg == ls + lspp);
+        let (lsu, lsppu, lgu) = (ls as usize, lspp as usize, lgg as usize);
+        assert(lgu == lsu + lsppu && lgu < 64);
+        let g = (rel >> lgu) as u32;
+        let pg = (slab >> lsppu) as u32;
+        assert(g == pg && pg < 0x400_0000u32) by (bit_vector)
+            requires
+                12 <= lsu,
+                lsu <= 22,
+                lsppu <= 26,
+                lgu == lsu + lsppu,
+                rel < 0x40_0000_0000usize,
+                slab == rel >> lsu,
+                g == (rel >> lgu) as u32,
+                pg == (slab >> lsppu) as u32,
+        ;
+        assert(vstd::wrapping::usize_specs::wrapping_shr(rel, lgg as u32) == rel >> lgu);
+        assert(slab >> lspp == slab >> lsppu);
+        reveal(crate::layout::guard_of);
+    }
+
+    /// `guard_mask | tz << 32 | lg_guard << 40` (the padding above is
+    /// zero), from one 8-byte load.
+    ///
+    /// Trusted: the load reads four fields through one `u64` (the layout
+    /// below, little-endian on x86_64 and aarch64), which Verus has no
+    /// permission for, and on x86_64 it goes through an empty `asm!`
+    /// (the template of `api::shared_base`'s and `class::table::word_index`'s,
+    /// there on aarch64; here unpinned) that leaves the value
+    /// unchanged.
+    #[inline(always)]
+    #[verifier::external_body]
+    fn guard_word(&self) -> (r: u64)
+        requires
+            self._pad[0] == 0 && self._pad[1] == 0,
+        ensures
+            r == guard_word_of(self.guard_mask, self.tz, self.lg_guard),
+        opens_invariants none
+    {
+        // SAFETY: the eight initialised bytes from `guard_mask` to the end
+        // of `self`, 8-aligned (asserted below).
+        #[allow(unused_mut)]
+        let mut gw = unsafe {
+            ptr::read(
+                (self as *const ClassLine as *const u8)
+                    .add(core::mem::offset_of!(ClassLine, guard_mask))
+                    as *const u64,
+            )
+        };
+        // SAFETY: an empty template; `gw` comes out unchanged. Without it
+        // LLVM splits the load back into a byte load per shift count.
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::asm!("/* {0} */", inout(reg) gw, options(pure, nomem, nostack, preserves_flags))
+        };
+        gw
+    }
+
+    /// [`SlabTable::is_guard_slab`] on the offset `rel` from the region
+    /// base, from a guard word: `rel >> lg_guard` is the page group
+    /// (`slab >> lg_slabs_per_page`), a guard when `(group + 1) &
+    /// guard_mask == 0`. With guards off the mask is all ones and only
+    /// group `u32::MAX` would match, which is past every region; an offset
+    /// past the region is rejected by the bound in [`ClassLine::sized_ok`]
+    /// whatever this says. `guard_test_agrees_with_the_tables` checks it
+    /// against the table for every class.
+    #[inline(always)]
+    fn is_guard(rel: usize, gw: u64) -> (r: bool)
+        ensures
+            r == is_guard_spec(rel, gw),
+        opens_invariants none
+    {
+        // `wrapping_shr` takes its count modulo 64: `lg_guard`.
+        (rel.wrapping_shr((gw >> 40) as u32) as u32).wrapping_add(1) & (gw as u32) == 0
     }
 
     /// The `free` check on this class's line: `Some(slab)` when `p` is a
@@ -442,23 +681,6 @@ impl ClassLine {
     }
 }
 
-/// [`SlabTable::is_guard_slab`] folded into one add and one mask on the
-/// slab number, for the sized fast path: `(slab + add) & mask == 0` with
-/// `add = slabs_per_page` and `mask = (interval - 1) << lg_slabs_per_page`
-/// says `((slab >> lg_spp) + 1) & (interval - 1) == 0`, the page-group
-/// test, since `slab + spp` is `((slab >> lg_spp) + 1) << lg_spp` plus the
-/// low bits the shifted mask ignores. With guards off the mask is
-/// `u32::MAX << lg_spp` and `slab + spp` is never below `spp`, so nothing
-/// matches. `Shared::init` fills one into each class's [`ClassLine`];
-/// `guard_test_agrees_with_the_tables` checks the two forms against each
-/// other over every class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(C)]
-pub struct GuardTest {
-    add: u32,
-    mask: u32,
-}
-
 } // verus!
 
 #[cfg(test)]
@@ -474,92 +696,17 @@ impl ClassLine {
             self.lg_group,
         )
     }
-}
 
-verus! {
-
-impl GuardTest {
-    /// `self` is the test of a table whose slabs per page is `1 << lg` (at
-    /// most a region's `2^26` slabs) and
-    /// whose guard mask is `mask` ([`GuardTest::of`]).
-    pub(super) closed spec fn tests(self, lg: u8, mask: u32) -> bool {
-        &&& lg <= 26
-        &&& self.add == 1u32 << lg
-        &&& self.mask == mask << lg
+    /// Tests: the sized check's 64-bit multiplier.
+    pub(super) fn inv(&self) -> u64 {
+        self.inv
     }
 
-    /// What [`GuardTest::is_guard`] computes.
-    pub(super) closed spec fn spec_is_guard(self, slab: usize) -> bool {
-        (slab as u32).wrapping_add(self.add) & self.mask == 0
-    }
-
-    /// Whether `slab` is a guard slab of the class this pair describes.
-    #[inline(always)]
-    pub(super) fn is_guard(self, slab: usize) -> (r: bool)
-        ensures
-            r == self.spec_is_guard(slab),
-        opens_invariants none
-    {
-        (slab as u32).wrapping_add(self.add) & self.mask == 0
-    }
-
-    /// The folded test agrees with the table's ([`guard_of`]) on every
-    /// slab of a region (at most `2^26`), whose page groups are at most
-    /// the region (`lg <= 26`): `slab + (1 << lg)` neither wraps nor
-    /// reaches the mask bits the shift drops.
-    ///
-    /// [`guard_of`]: crate::layout::guard_of
-    pub(super) proof fn lemma_is_guard(self, lg: u8, mask: u32, slab: usize)
-        requires
-            self.tests(lg, mask),
-            slab < 0x400_0000,
-        ensures
-            self.spec_is_guard(slab) == crate::layout::guard_of(lg, mask, slab),
-    {
-        reveal(crate::layout::guard_of);
-        let (add, m) = (self.add, self.mask);
-        let s = slab as u32;
-        let pg = (slab >> lg) as u32;
-        assert(s < 0x400_0000u32 && pg == s >> lg && pg < 0x400_0000u32) by (bit_vector)
-            requires slab < 0x400_0000, s == slab as u32, pg == (slab >> lg) as u32;
-        assert(add <= 0x400_0000u32) by (bit_vector)
-            requires add == 1u32 << lg, lg <= 26;
-        let sum = (s + add) as u32;
-        let pg1 = (pg + 1) as u32;
-        assert((sum & m == 0) == (pg1 & mask == 0)) by (bit_vector)
-            requires
-                add == 1u32 << lg,
-                m == mask << lg,
-                lg <= 26,
-                s < 0x400_0000u32,
-                sum == s + add,
-                pg == s >> lg,
-                pg1 == pg + 1,
-        ;
-    }
-
-    pub(super) fn of(table: &SlabTable) -> (r: GuardTest)
-        ensures
-            r.tests(crate::layout::guard_geom(table.spec_class() as int).0, crate::layout::guard_geom(table.spec_class() as int).1),
-    {
-        let lg_spp = table.slabs_per_page().trailing_zeros();
-        proof {
-            let lg = crate::layout::guard_geom(table.spec_class() as int).0;
-            let spp = table.spec_slabs_per_page();
-            assert(spp == 1usize << (lg as u64)) by (bit_vector)
-                requires spp == 1usize << lg;
-            crate::class::lemma_tz_shl(spp, lg as u64);
-            assert(spp as u32 == 1u32 << lg) by (bit_vector)
-                requires spp == 1usize << lg, lg <= 26;
-        }
-        GuardTest {
-            add: table.slabs_per_page() as u32,
-            mask: table.guard_mask().wrapping_shl(lg_spp),
-        }
+    /// Tests: [`ClassLine::is_guard`] on this line.
+    pub(super) fn is_guard_at(&self, rel: usize) -> bool {
+        Self::is_guard(rel, self.guard_word())
     }
 }
-
-} // verus!
 
 const _: () = assert!(
     core::mem::offset_of!(Shared, free_flags) / 128
@@ -898,6 +1045,8 @@ const S_FREE_FLAGS: usize = core::mem::offset_of!(Shared, free_flags);
 #[verifier::external_body]
 const S_PUSH_FLAGS: usize = core::mem::offset_of!(Shared, push_flags);
 #[verifier::external_body]
+const S_REGION_HI: usize = core::mem::offset_of!(Shared, region_hi);
+#[verifier::external_body]
 const S_REGIONS: usize = core::mem::offset_of!(Shared, regions);
 #[verifier::external_body]
 const S_TABLES: usize = core::mem::offset_of!(Shared, tables);
@@ -932,7 +1081,8 @@ axiom fn axiom_shared_layout()
     ensures
         field_fits::<Shared, [ClassLine; NCLASSES]>(S_LINES, S_FREE_FLAGS as int),
         field_fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS as int),
-        field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGIONS as int),
+        field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGION_HI as int),
+        field_fits::<Shared, usize>(S_REGION_HI, S_REGIONS as int),
         field_fits::<Shared, Regions>(S_REGIONS, S_TABLES as int),
         field_fits::<Shared, [SlabTable; NCLASSES]>(S_TABLES, S_ARENA0 as int),
         NCLASSES * size_of::<ClassLine>() <= isize::MAX,
@@ -961,7 +1111,8 @@ axiom fn axiom_shared_layout()
 const _: () = assert!(
     fits::<Shared, [ClassLine; NCLASSES]>(S_LINES, S_FREE_FLAGS)
         && fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS)
-        && fits::<Shared, u8>(S_PUSH_FLAGS, S_REGIONS)
+        && fits::<Shared, u8>(S_PUSH_FLAGS, S_REGION_HI)
+        && fits::<Shared, usize>(S_REGION_HI, S_REGIONS)
         && fits::<Shared, Regions>(S_REGIONS, S_TABLES)
         && fits::<Shared, [SlabTable; NCLASSES]>(S_TABLES, S_ARENA0)
         && NCLASSES as u128 * core::mem::size_of::<ClassLine>() as u128 <= isize::MAX as u128
@@ -1002,6 +1153,7 @@ verus! {
 tracked struct SharedParts {
     tracked free_flags: PointsTo<AtomicU8>,
     tracked push_flags: PointsTo<u8>,
+    tracked region_hi: PointsTo<usize>,
     tracked arena0: Held<Arena>,
     tracked meta: PointsTo<Meta>,
     tracked huge: PointsTo<Huge>,
@@ -1033,6 +1185,7 @@ impl SharedParts {
         &&& shared_ok(p)
         &&& self.free_flags.ptr() == field_ptr::<Shared, AtomicU8>(p, S_FREE_FLAGS)
         &&& self.push_flags.ptr() == field_ptr::<Shared, u8>(p, S_PUSH_FLAGS)
+        &&& self.region_hi.ptr() == field_ptr::<Shared, usize>(p, S_REGION_HI)
         &&& (self.arena0.perm matches Some(a) ==> a.ptr() == field_ptr::<Shared, Arena>(p, S_ARENA0))
         &&& self.meta.ptr() == field_ptr::<Shared, Meta>(p, S_META)
         &&& self.huge.ptr() == field_ptr::<Shared, Huge>(p, S_HUGE)
@@ -1050,6 +1203,7 @@ impl SharedParts {
     spec fn written(&self) -> bool {
         &&& self.free_flags.is_init()
         &&& self.push_flags.is_init()
+        &&& self.region_hi.is_init()
         &&& self.arena0.perm matches Some(a) && a.is_init()
         &&& self.meta.is_init()
         &&& self.huge.is_init()
@@ -1102,6 +1256,7 @@ axiom fn axiom_shared_built(
         elems_init(*tables, 0, NCLASSES as int),
     ensures
         shared_at(p).push_flags == parts.push_flags.value(),
+        shared_at(p).region_hi == parts.region_hi.value(),
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] shared_at(p).tables[c] == tables[c].value(),
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] shared_at(p).lines[c] == lines[c].value(),
         shared_at(p).meta == parts.meta.value(),
@@ -1193,6 +1348,7 @@ impl Shared {
             r.0.at(perm.ptr()),
             r.0.free_flags.is_uninit(),
             r.0.push_flags.is_uninit(),
+            r.0.region_hi.is_uninit(),
             r.3.ptr() == field_ptr::<Shared, Regions>(perm.ptr(), S_REGIONS),
             r.3.is_uninit(),
             r.0.arena0.perm matches Some(a) && a.is_uninit(),
@@ -1221,7 +1377,8 @@ impl Shared {
         axiom_raw_valid(&raw, p as *mut u8, size_of::<Shared>() as int);
         let tracked (lines, raw) = take_field::<Shared, [ClassLine; NCLASSES]>(raw, p, S_LINES, S_FREE_FLAGS as int);
         let tracked (free_flags, raw) = take_field::<Shared, AtomicU8>(raw, p, S_FREE_FLAGS, S_PUSH_FLAGS as int);
-        let tracked (push_flags, raw) = take_field::<Shared, u8>(raw, p, S_PUSH_FLAGS, S_REGIONS as int);
+        let tracked (push_flags, raw) = take_field::<Shared, u8>(raw, p, S_PUSH_FLAGS, S_REGION_HI as int);
+        let tracked (region_hi, raw) = take_field::<Shared, usize>(raw, p, S_REGION_HI, S_REGIONS as int);
         let tracked (regions, raw) = take_field::<Shared, Regions>(raw, p, S_REGIONS, S_TABLES as int);
         let tracked (tables, raw) = take_field::<Shared, [SlabTable; NCLASSES]>(raw, p, S_TABLES, S_ARENA0 as int);
         let tracked (arena0, raw) = take_field::<Shared, Arena>(raw, p, S_ARENA0, S_META as int);
@@ -1245,6 +1402,7 @@ impl Shared {
             SharedParts {
                 free_flags,
                 push_flags,
+                region_hi,
                 arena0: Held { perm: Some(arena0) },
                 meta,
                 huge,
@@ -1320,19 +1478,22 @@ impl Shared {
         }
     }
 
-    /// `push_flags` and `free_flags` (the same byte: no [`FREE_ROUTE`]
-    /// yet); the written regions.
+    /// `push_flags`, `region_hi` and `free_flags` (the same byte as
+    /// `push_flags`: no [`FREE_ROUTE`] yet); the written regions.
     #[inline(always)]
     unsafe fn put_flags<'a>(
         this: *mut Shared,
         flags: u8,
+        region_hi: usize,
         Tracked(pf): Tracked<&mut PointsTo<u8>>,
+        Tracked(ph): Tracked<&mut PointsTo<usize>>,
         Tracked(pa): Tracked<&mut PointsTo<AtomicU8>>,
         Tracked(pr): Tracked<&'a PointsTo<Regions>>,
     ) -> (r: &'a Regions)
         requires
             shared_ok(this),
             old(pf).ptr() == field_ptr::<Shared, u8>(this, S_PUSH_FLAGS),
+            old(ph).ptr() == field_ptr::<Shared, usize>(this, S_REGION_HI),
             old(pa).ptr() == field_ptr::<Shared, AtomicU8>(this, S_FREE_FLAGS),
             pr.ptr() == field_ptr::<Shared, Regions>(this, S_REGIONS),
             pr.is_init(),
@@ -1340,6 +1501,9 @@ impl Shared {
             final(pf).ptr() == old(pf).ptr(),
             final(pf).is_init(),
             final(pf).value() == flags,
+            final(ph).ptr() == old(ph).ptr(),
+            final(ph).is_init(),
+            final(ph).value() == region_hi,
             final(pa).ptr() == old(pa).ptr(),
             final(pa).is_init(),
             *r == pr.value(),
@@ -1350,6 +1514,7 @@ impl Shared {
         // SAFETY: as in `put_head`; `regions` was written by `put_head`.
         unsafe {
             ptr_mut_write(field_at(this, S_PUSH_FLAGS), Tracked(pf), flags);
+            ptr_mut_write(field_at(this, S_REGION_HI), Tracked(ph), region_hi);
             ptr_mut_write(field_at(this, S_FREE_FLAGS), Tracked(pa), AtomicU8::new(flags));
             ptr_ref(field_at(this, S_REGIONS), Tracked(pr))
         }
@@ -1699,6 +1864,11 @@ impl Shared {
             proof {
                 axiom_shared_regions(regions_perm, this);
             }
+            proof {
+                let lr = regions.lg_region;
+                assert(1usize << lr >= 1) by (bit_vector)
+                    requires lr < 64;
+            }
             let regions = Shared::put_flags(
                 this,
                 (if config.double_free_scan {
@@ -1711,7 +1881,9 @@ impl Shared {
                     } else {
                         0
                     }),
+                !(regions.region_len() - 1),
                 Tracked(&mut parts.push_flags),
+                Tracked(&mut parts.region_hi),
                 Tracked(&mut parts.free_flags),
                 Tracked(regions_perm),
             );
@@ -1946,7 +2118,9 @@ impl Shared {
     /// What `Shared::init` establishes of the value it builds, and nothing
     /// changes afterwards (every field is written once, before the
     /// `Shared` is published): the address-space layout is well formed and
-    /// separated and is the process's ([`crate::layout::process_regions`]);
+    /// separated and is the process's ([`crate::layout::process_regions`]),
+    /// and `region_hi` is the offset bits at and above a class region's
+    /// length (since upstream #101);
     /// `tables[c]` is class `c`'s table, and `lines[c]` its class line
     /// ([`ClassLine::of`]: its table's bases and group, the class geometry,
     /// the guard test over the class's guard geometry,
@@ -1976,6 +2150,7 @@ impl Shared {
         &&& self.regions.wf()
         &&& self.regions == crate::layout::process_regions()
         &&& self.regions.separated()
+        &&& self.region_hi == !(((1usize << self.regions.lg_region) - 1) as usize)
         &&& self.huge.spec_base() == self.regions.huge_base
         &&& self.huge.spec_page() == (1usize << self.regions.lg_page) as int
         &&& (self.push_flags & PUSH_PAC != 0) == super::pac_mode()
@@ -2660,8 +2835,9 @@ impl Shared {
     /// Arithmetic on the pointer and the class's [`ClassLine`]: the hint
     /// names the region, so the pointer is checked against that region
     /// alone (no superblock classification and no class compare; the
-    /// reference form is [`Regions::slot_in_class`]), and the guard test
-    /// is the line's [`GuardTest`]. Neither the slab
+    /// reference form is [`Regions::slot_in_class`]), as one
+    /// [`ClassLine::sized_ok`]: the region bound folded into the
+    /// slot-start test, and the guard test. Neither the slab
     /// descriptor nor the class table line is touched: the bit test that
     /// makes plain `free` exact is left to the flush, and so is the
     /// watermark. A slot start in a slab no arena has been handed, or in
@@ -2695,34 +2871,23 @@ impl Shared {
         let rel = (p as usize).wrapping_sub(line.class_base);
         proof {
             assert(self.lines[class as int].wf(self.tables[class as int], self.regions, class as int));
-            crate::vspec::class::axiom_class_table_wf(class as int);
         }
-        if rel >= self.regions.region_len() || !line.sized_ok(rel) {
+        if !line.sized_ok(rel, self.region_hi) {
             return None;
         }
         proof {
-            // The line's tests are the class's slot-start test and its
-            // table's guard test (`Shared::wf`): a slot start inside the
-            // region, in a slab that is not a guard slab.
+            // The line's one test is the class's slot-start test inside
+            // the region and its table's guard test (`Shared::wf`): a slot
+            // start in a slab that is not a guard slab.
             let c = class as int;
             let regions = self.regions;
-            assert(self.lines[c].wf(self.tables[c], regions, c));
-            let q = crate::vspec::core_int::rotr32(((rel as u32) & line.slab_mask).wrapping_mul(line.inv_odd), line.tz as u32);
-            line.lemma_slot_start(self.tables[c], regions, c, rel, q);
+            line.lemma_sized_ok(self.tables[c], regions, c, rel, self.region_hi);
             crate::vspec::class::axiom_class_table_wf(c);
-            regions.lemma_nslabs_bound(c);
-            let lg = class_table()[c].lg_slab;
-            let lr = regions.lg_region;
-            let slab = rel >> lg;
-            assert(slab < (1usize << lr) >> lg && slab < 0x400_0000) by (bit_vector)
-                requires
-                    lg <= 22,
-                    12 <= lg,
-                    22 <= lr <= 38,
-                    rel < 1usize << lr,
-                    slab == rel >> lg,
-            ;
-            line.guard.lemma_is_guard(crate::layout::guard_geom(c).0, crate::layout::guard_geom(c).1, slab);
+            let q = crate::vspec::core_int::rotr64(
+                ((rel & (line.slab_mask as usize | self.region_hi)) as u64).wrapping_mul(line.inv),
+                (guard_word_of(line.guard_mask, line.tz, line.lg_guard) >> 32u64) as u32,
+            );
+            let slab = rel >> class_table()[c].lg_slab;
             regions.lemma_slot_of(c, p as usize, q as usize);
             regions.lemma_is_slot(c, slab as int, q as int, p as usize);
         }
@@ -3310,13 +3475,14 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S134..S149, S150: each `S_*` is its field's `offset_of!`, and the
+    /// S135..S151, S152: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {
         assert_eq!(S_LINES, offset_of!(Shared, lines));
         assert_eq!(S_FREE_FLAGS, offset_of!(Shared, free_flags));
         assert_eq!(S_PUSH_FLAGS, offset_of!(Shared, push_flags));
+        assert_eq!(S_REGION_HI, offset_of!(Shared, region_hi));
         assert_eq!(S_REGIONS, offset_of!(Shared, regions));
         assert_eq!(S_TABLES, offset_of!(Shared, tables));
         assert_eq!(S_ARENA0, offset_of!(Shared, arena0));
@@ -3335,7 +3501,8 @@ mod kani_layout {
             S_FREE_FLAGS
         ));
         assert!(field_fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS));
-        assert!(field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGIONS));
+        assert!(field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGION_HI));
+        assert!(field_fits::<Shared, usize>(S_REGION_HI, S_REGIONS));
         assert!(field_fits::<Shared, Regions>(S_REGIONS, S_TABLES));
         assert!(field_fits::<Shared, [SlabTable; NCLASSES]>(
             S_TABLES, S_ARENA0
@@ -3363,3 +3530,88 @@ mod kani_layout {
         array_layout::<SlabTable, NCLASSES>();
     }
 }
+
+verus! {
+
+/// The inverse modulo `2^64` of the odd part of `size` ([`ClassLine`]'s
+/// `inv`): Newton's iteration `x = x * (2 - d * x)` doubles the correct
+/// low bits from the 3 that `x = d` has for odd `d`, so five steps give
+/// 96.
+const fn inverse_of_odd_part_u64(size: usize) -> (r: u64)
+    requires
+        1 <= size <= crate::layout::MEDIUM_MAX,
+    ensures
+        ((size as u64) >> (vstd::std_specs::bits::u64_trailing_zeros(size as u64) as u64)).wrapping_mul(r) == 1,
+{
+    let ghost t64 = vstd::std_specs::bits::u64_trailing_zeros(size as u64);
+    proof {
+        let w = size as u64;
+        vstd::std_specs::bits::axiom_u64_trailing_zeros(w);
+        let t = t64 as u64;
+        assert(crate::layout::MEDIUM_MAX == 0x4_0000);
+        assert(t < 64 && (w >> t) & 1 == 1) by (bit_vector)
+            requires 1 <= w <= 0x4_0000u64, t <= 64, t < 64 ==> (w >> t) & 1u64 == 1u64, w == 0 <==> t == 64;
+    }
+    let d = (size as u64) >> size.trailing_zeros();
+    let mut x = d;
+    let mut i = 0;
+    proof {
+        assert(d & 1 == 1 ==> d.wrapping_mul(d) & 7 == 1) by (bit_vector);
+    }
+    while i < 5
+        invariant
+            0 <= i <= 5,
+            d == (size as u64) >> (t64 as u64),
+            d & 1 == 1,
+            i == 0 ==> d.wrapping_mul(x) & 7 == 1,
+            i == 1 ==> d.wrapping_mul(x) & 0x3f == 1,
+            i == 2 ==> d.wrapping_mul(x) & 0xfff == 1,
+            i == 3 ==> d.wrapping_mul(x) & 0xff_ffff == 1,
+            i == 4 ==> d.wrapping_mul(x) & 0xffff_ffff_ffff == 1,
+            i == 5 ==> d.wrapping_mul(x) == 1,
+        decreases 5 - i,
+    {
+        let ghost x0 = x;
+        let ghost e = d.wrapping_mul(x);
+        x = x.wrapping_mul(2u64.wrapping_sub(d.wrapping_mul(x)));
+        proof {
+            crate::layout::lemma_wmul64_assoc(d, x0, 2u64.wrapping_sub(e));
+            lemma_newton64(e);
+        }
+        i += 1;
+    }
+    x
+}
+
+/// One step of Newton's iteration for the inverse modulo `2^64`: if
+/// `e = d * x` is 1 in its low `k` bits, `d * x * (2 - e) = e * (2 - e)`
+/// is 1 in its low `2k`.
+proof fn lemma_newton64(e: u64)
+    ensures
+        e & 7 == 1 ==> e.wrapping_mul(2u64.wrapping_sub(e)) & 0x3f == 1,
+        e & 0x3f == 1 ==> e.wrapping_mul(2u64.wrapping_sub(e)) & 0xfff == 1,
+        e & 0xfff == 1 ==> e.wrapping_mul(2u64.wrapping_sub(e)) & 0xff_ffff == 1,
+        e & 0xff_ffff == 1 ==> e.wrapping_mul(2u64.wrapping_sub(e)) & 0xffff_ffff_ffff == 1,
+        e & 0xffff_ffff_ffff == 1 ==> e.wrapping_mul(2u64.wrapping_sub(e)) == 1,
+{
+    assert(e & 7 == 1 ==> e.wrapping_mul(2u64.wrapping_sub(e)) & 0x3f == 1) by (bit_vector);
+    assert(e & 0x3f == 1 ==> e.wrapping_mul(2u64.wrapping_sub(e)) & 0xfff == 1) by (bit_vector);
+    assert(e & 0xfff == 1 ==> e.wrapping_mul(2u64.wrapping_sub(e)) & 0xff_ffff == 1) by (bit_vector);
+    assert(e & 0xff_ffff == 1 ==> e.wrapping_mul(2u64.wrapping_sub(e)) & 0xffff_ffff_ffff == 1) by (bit_vector);
+    assert(e & 0xffff_ffff_ffff == 1 ==> e.wrapping_mul(2u64.wrapping_sub(e)) == 1) by (bit_vector);
+}
+
+} // verus!
+
+// The guard word: `guard_mask`, `tz`, `lg_guard` and the zero padding are
+// the line's last eight bytes, 8-aligned.
+const _: () = assert!(
+    core::mem::offset_of!(ClassLine, guard_mask) == 56
+        && core::mem::offset_of!(ClassLine, tz) == 60
+        && core::mem::offset_of!(ClassLine, lg_guard) == 61
+        && core::mem::offset_of!(ClassLine, _pad) == 62
+);
+
+// The guard word is read as one native `u64`: `guard_word`'s contract
+// takes the bytes little-endian.
+const _: () = assert!(cfg!(target_endian = "little"));

@@ -835,23 +835,99 @@ fn class_lines_agree_with_the_tables() {
     th.destroy();
 }
 
-/// The [`GuardTest`] the sized fast path reads agrees with
-/// [`SlabTable::is_guard_slab`] for every class over the first slabs of
-/// the region and around its end, with guards on and off.
+/// Each class line's 64-bit `inv` inverts the odd part of the class size
+/// modulo `2^64`, and its low half is the class table's 32-bit
+/// `inv_odd`, the multiplier the `free` path's slot-start test reads.
+#[test]
+fn class_line_inverse_matches_the_class_table() {
+    let s = shared();
+    for c in 0..NCLASSES {
+        let cls = &CLASSES[c];
+        let inv = s.lines[c].inv();
+        let odd = (cls.size() >> cls.tz) as u64;
+        assert_eq!(odd.wrapping_mul(inv), 1, "class {c}");
+        assert_eq!(inv as u32, cls.inv_odd, "class {c}");
+    }
+}
+
+/// The sized fast path's one-test bound and slot-start check
+/// ([`ClassLine::sized_ok`]) accepts exactly what the reference does: a
+/// slot start inside the class's region ([`Regions::slot_in_class`]) in
+/// a slab that is not a guard slab ([`SlabTable::is_guard_slab`]). Every
+/// class, guards on and off, at every byte offset of the first slots and
+/// the last ones of the region, at slot starts and their neighbours
+/// across whole slabs, around the region's ends, at the region bits
+/// shifted in above it (one bit and its neighbours at each position), and
+/// at random 64-bit pointers and random offsets inside the region.
+#[test]
+fn sized_slot_agrees_with_the_reference() {
+    for s in [TestShared::new().guards().build(), shared()] {
+        let r = &s.regions;
+        let len = r.region_len();
+        let mut st = 0x9e37_79b9_7f4a_7c15u64;
+        for c in 0..NCLASSES {
+            let t = s.table(c);
+            let cls = &CLASSES[c];
+            let base = r.class_base[c];
+            let check = |rel: usize| {
+                let p = base.wrapping_add(rel);
+                let want = r
+                    .slot_in_class(c, p)
+                    .is_some_and(|(slab, _)| !t.is_guard_slab(slab));
+                assert_eq!(
+                    s.sized_slot(p as *mut u8, Some(c)).is_some(),
+                    want,
+                    "class {c} offset {rel:#x}"
+                );
+            };
+            let size = cls.size();
+            for rel in (0..4 * size).chain(len - 4 * size..len + 4 * size) {
+                check(rel);
+            }
+            for slab in [0, 1, 2, t.nslabs() / 2, t.nslabs() - 1] {
+                let start = slab << cls.lg_slab;
+                for k in 0..=cls.nslots() {
+                    for d in [0usize, 1, 8, 16, usize::MAX] {
+                        check((start + k * size).wrapping_add(d));
+                    }
+                }
+            }
+            for b in 0..usize::BITS {
+                for d in [0usize, 1, usize::MAX, size, size.wrapping_neg()] {
+                    check((1usize << b).wrapping_add(d));
+                    check(len.wrapping_neg().wrapping_add(1usize << b).wrapping_add(d));
+                }
+            }
+            for _ in 0..20_000 {
+                let x = xorshift(&mut st) as usize;
+                check(x);
+                check(x % len);
+                check(x % len / size * size);
+            }
+        }
+    }
+}
+
+/// The guard test the sized fast path reads ([`ClassLine::is_guard_at`])
+/// agrees with [`SlabTable::is_guard_slab`] for every class over the
+/// first slabs of the region and around its end, at the slab's first and
+/// last byte, with guards on and off.
 #[test]
 fn guard_test_agrees_with_the_tables() {
     for s in [TestShared::new().guards().build(), shared()] {
         for c in 0..NCLASSES {
             let t = s.table(c);
-            let g = s.lines[c].guard;
-            assert_eq!(g, GuardTest::of(t));
+            let line = &s.lines[c];
+            let lg_slab = CLASSES[c].lg_slab;
             let n = t.nslabs();
             for slab in (0..1024.min(n)).chain(n.saturating_sub(64)..n) {
-                assert_eq!(
-                    g.is_guard(slab),
-                    t.is_guard_slab(slab),
-                    "class {c} slab {slab}"
-                );
+                for rel in [slab << lg_slab, ((slab + 1) << lg_slab) - 1] {
+                    assert_eq!(
+                        line.is_guard_at(rel),
+                        t.is_guard_slab(slab),
+                        "class {c} slab {slab} offset {rel:#x}"
+                    );
+                }
             }
         }
     }

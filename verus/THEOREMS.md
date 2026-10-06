@@ -109,7 +109,11 @@ start, nothing otherwise. The allocations hand C the token of every
 block they return (`Live::gives`, `:586`), so C, which holds the block,
 holds the token. It is called once per C call, by the Rust entry point
 the export calls, before anything else: `libc::free`, `free_sized_hint`
-(`free_sized`, `free_aligned_sized`, the sized `delete`s),
+(`free_sized`, `free_aligned_sized`, the sized `delete`s; since upstream
+#101 `free_sized`, and so `operator delete(void*, size_t)` and its array
+form, claim in `free_sized` itself, which hands the token to
+`free_sized_with`, as `sdallocx` does; `free_aligned_sized` and the
+aligned sized `delete`s still claim in `free_sized_hint`),
 `realloc`, `realloc_usable`, `free_usable`, and `jemalloc::rallocx`,
 `dallocx`, `sdallocx`; every verified core below them takes the token as
 a parameter. Verified code cannot call it otherwise: it uses up the
@@ -213,6 +217,13 @@ trusted only in how it is reached:
   the copy never being ahead of the watermark: each store into it is
   of a value the watermark held, under the commit lock and after the
   watermark's own store. Read off the code, not proved.
+- since upstream #101 the sized check reads the line's last eight
+  bytes as one `u64`, `ClassLine::guard_word` (`external_body`: a
+  type-punned load, and on x86_64 an empty `asm!`), whose contract is
+  the word the fields make (`guard_mask | tz << 32 | lg_guard << 40`,
+  the padding zero, which `ClassLine::wf` states); the line's 64-bit
+  inverse (`inverse_of_odd_part_u64`, verified) and `Shared::region_hi`
+  (written by `init`, stated by `Shared::wf`) are proved.
 
 **Kernel `mmap`.**
 - `linux::try_reserve` (`layout/regions.rs:1135`): a reservation is
@@ -1086,10 +1097,17 @@ region.
   every slab of a region (`slab < 2^26`, `lg <= 26`), and `Shared::wf`
   (`:1416`) now states that `guard_test[c]` tests the class's geometry
   (`GuardTest::of`, `:204`, which `init` stores). Since upstream #87 the
-  test is the class line's (`lines[c].guard`, which `ClassLine::wf`
-  states is `GuardTest::of` the table), and the slot-start test the
+  test is the class line's (until #101 `lines[c].guard`, which `ClassLine::wf`
+  stated is `GuardTest::of` the table), and the slot-start test the
   line's (`ClassLine::sized_ok`, after the region bound), in place of
-  `Regions::slot_in_class`.
+  `Regions::slot_in_class`. Since upstream #101 the region bound and the
+  slot-start test are one 64-bit exact-division test, and `GuardTest` is
+  gone: `ClassLine::lemma_sized_ok` proves that what `sized_ok` accepts
+  is a slot start inside the region (`layout::lemma_slot_test64`: a
+  quotient below `nslots` means the masked offset is `q * size`, below
+  `2^22`, so no bit past the region is set) in a slab the table's guard
+  test, `guard_of`, does not name (the guard word's page-group test on
+  `rel >> lg_guard`, the slab's page group, below `2^26`).
 - Cached slots: the cache invariant already holds `is_slot` of every
   entry, so pops, refills, flushes and rebuilds carry the guard
   exclusion unchanged.
@@ -1172,6 +1190,12 @@ call them:
   `Heap::alloc_fast` (`heap/paths.rs:55`), whose body is `pop_fast`
   (`:81`). `calloc`'s cache pop is the same `pop_fast`, and
   `operator new`'s fast path is `malloc_fast` (`api/libc.rs:286`).
+  Since upstream #101 a size of at most `SMALL_MAX` takes its class from
+  the small table alone (`class_index_small`, over `class_of_small` and
+  `layout::small_class`, whose `assert_unchecked` is the table's
+  postcondition) and a larger one tail-calls `malloc_medium`
+  (`class_index`); both pop through `malloc_class` (`shared_ptr`,
+  `existing_heap`, `fast_flags`, `alloc_fast`).
 - `free`: `existing_heap`, `shared_ptr`, `api::shared_unchecked`
   (`api/mod.rs:273`), `Shared::push_flags` and `heap::free_fast`
   (`heap/paths.rs:533`), with the check (`Shared::checked_slot`) and the
@@ -1195,7 +1219,11 @@ call them:
   `existing_heap`, `shared_unchecked` and `heap::free_sized_fast`
   (`heap/paths.rs:594`); since upstream #77 `shared_base` in place of
   `shared_ptr`, and `shared_deref` in place of `shared_unchecked`; since
-  #87 `sized_slot` reads the class's line (`ClassLine::sized_ok`).
+  #87 `sized_slot` reads the class's line (`ClassLine::sized_ok`); since
+  #101 `free_sized`'s class comes from `class_index_small` (a larger size
+  tail-calls `free_sized_medium`), through `free_sized_with`, which
+  `sdallocx` with no flags calls too, and `sized_ok` reads the guard word
+  (`ClassLine::guard_word`, `is_guard`).
 - `challoc_free_usable`: `existing_heap`, `shared_ptr`,
   `shared_unchecked`, `heap::free_fast_class` (`heap/paths.rs:564`) and
   `class_size` (`api/libc.rs:890`); since upstream #78
@@ -1215,7 +1243,9 @@ Each entry point's body (its `_block` core: `malloc_block`, `free_block`,
 `may_syscall()`) calls nothing else before its slow-path tail
 call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
 `free_sized_unhinted` for a size no class holds, `free_sized_slow`,
-`free_usable_slow`), which requires `may_syscall()`.
+`free_usable_slow`; since upstream #101 also `malloc_medium` and
+`free_sized_medium`, for sizes above the small table), which requires
+`may_syscall()`.
 
 **Why the capability can be trusted.**
 - The only instructions that enter the kernel are the `syscall`/`svc 0`
@@ -1292,7 +1322,10 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   `Relaxed` load) and `sys::opaque` (an empty `asm!` on aarch64), and
   since #77 `api::shared_base` and `class::table::word_index` (each an
   empty `asm!` on aarch64) and `api::shared_deref` (a reference to the
-  static) in place of `sys::opaque` and `shared_unchecked`.
+  static) in place of `sys::opaque` and `shared_unchecked`; since
+  upstream #101 `ClassLine::guard_word` (one load, and on x86_64 an empty
+  `asm!`), and the specification of `core::hint::assert_unchecked` (no
+  instruction).
   So do the `core` functions they use (`Option::map`, `?`, atomics,
   pointer arithmetic), which the common premises already trust.
 - Two values reach the kernel from code with no `requires`, and only a
@@ -1446,7 +1479,9 @@ only the functions named here:
   `existing_heap`, `fast_flags`, `Heap::alloc_fast`. `malloc_fast` is
   the same branch as one masked function; it is also the C++
   `operator new` family's fast path. A declined pop tail-calls
-  `malloc_slow_class`.
+  `malloc_slow_class`. Since #101 `class_index_small` in place of
+  `class_index` for a size of at most `SMALL_MAX`, then `malloc_class`
+  (the same calls); a larger size tail-calls `malloc_medium`.
 - `free` (`free_block`, `api/libc.rs`): `existing_heap`, `shared_unchecked`,
   `Shared::push_flags`, `free_fast`; then `free_slow`. Since upstream
   #78: `tls_heap_slot` (on a ghost `TlsSlot::entry()`),
@@ -1457,7 +1492,10 @@ only the functions named here:
 - `free_sized` and `sdallocx` with `flags == 0`: `class_index`, then
   `free_sized_block`'s `existing_heap`, `shared_unchecked`, `push_flags`,
   `free_sized_fast`; then `free_sized_slow` (since #77 `shared_base`,
-  its `existing_heap` and `shared_deref`).
+  its `existing_heap` and `shared_deref`). Since #101 `class_index_small`
+  for a size of at most `SMALL_MAX` (a larger one tail-calls
+  `free_sized_medium`, outside the masks as `free_sized_slow` is), and
+  the branch is `free_sized_with`'s, `sdallocx`'s too.
 - `challoc_free_usable` (`free_usable_block`): its `free_fast_class` call on the same heap
   lookup (since upstream #78, `free_fast_slot` on `free`'s TLS read,
   without `sys::opaque`; since #77 through `shared_base` and
@@ -1468,7 +1506,8 @@ only the functions named here:
 paths, verified unless marked trusted:
 - **Size and process state:** `class_index`, `layout::class_of`;
   `api::shared_ptr` (trusted), `shared_unchecked` (trusted; since
-  upstream #77 `shared_base` and `shared_deref`, both trusted).
+  upstream #77 `shared_base` and `shared_deref`, both trusted); since
+  #101 `class_index_small`, `layout::class_of_small` and `small_class`.
 - **Heap lookup:** `existing_heap` (on a ghost `TlsSlot::entry()`),
   `existing_heap_in`, `tls_heap_slot`, `sys::tls::get` and
   the aarch64 `get_tp` (trusted asm), the x86_64 `get_tp`, `fast_flags`,
@@ -1492,12 +1531,15 @@ paths, verified unless marked trusted:
   and `sized_ok`, `class::load_mirror`, and `SlabTable::bit_word` and
   `owner_from` in place of `is_handed_out`, `is_set_unchecked`,
   `owner_unchecked` (removed) and `owner_at`; `load_owner`, `word_index`
-  and `GuardTest::is_guard` stay.
+  stay, and `GuardTest::is_guard` until #101 (since then `GuardTest` is gone: the
+  sized check is `ClassLine::sized_ok`, over `guard_word`, trusted, and
+  `is_guard`).
 - **Layout:** `Regions::slab_slot_unbounded` (since #78, for the
   unsized path; `slab_slot` before), `slot_in_class`, `region_len`, the
   free function `layout::regions::class_entry` (trusted);
-  `Class::slab_size`, `slab_mask`, `slot_of_offset`. Since #87 only
-  `region_len` (the sized path's bound): the lines hold the geometry,
+  `Class::slab_size`, `slab_mask`, `slot_of_offset`. From #87 until #101 only
+  `region_len` (the sized path's bound; since #101 `Shared::region_hi`,
+  a field, and nothing from the layout): the lines hold the geometry,
   `slab_slot_unbounded` is gone and `slot_in_class` is test-only.
 - **Primitives:** `sys::pac::sign` and `auth` (trusted asm),
   `sys::opaque` (trusted, an empty `asm!` on aarch64, from #78 until
@@ -1517,11 +1559,19 @@ Upstream #78 replaced the `multi_arena` load with the `FREE_ROUTE` bit
 of the `free_flags` byte the push dispatch loads anyway
 (`Shared::free_flags`, trusted, `opens_invariants none`), so the
 `vspec::atomic::load_bool` wrapper below had no caller left and is
-gone. Since upstream #87 the class line's sized check spells
+gone. From upstream #87 until #101 the class line's sized check spelled
 `slot_start(rel).is_some()` as a `match` (vstd's `Option::is_some` has
 the default mask; the same code), and `set_slab` and `owner` are given
 the class's table for its word and owner permissions (it is not loaded
-from: the machine code is upstream's).
+from: the machine code is upstream's). Since #101 the verified
+`sized_slot`'s `let Some(class) = hint else { return None }` (upstream
+writes `hint?`, which vstd specifies with the default mask) is small
+enough that rustc's MIR inliner inlines it into `free_sized_fast`, where
+upstream's stays a call until LLVM; where the hint is not a constant,
+in `free_sized_medium` and `sdallocx_flags` (both off the hot set),
+the two cold tail calls come out in the other order, the same
+instructions otherwise (upstream with the same `let`-`else` compiles
+identically). The hot set's machine code is upstream's.
 
 **Premises beyond the common ones.**
 - **Trusted masks.** Each trusted function's mask is a declaration that
@@ -1542,6 +1592,8 @@ from: the machine code is upstream's).
     `asm!` on aarch64, or the identity off it; Isla records
     `verus/seams/api-shared_base.md`, `class-table-word_index.md`) and
     `shared_deref` (a reference to the static).
+  - Since upstream #101: `ClassLine::guard_word` (one 8-byte load and,
+    on x86_64, an empty `asm!`).
 - **New wrappers.** `vspec::atomic::load_bool` (removed with upstream
   #78, above): the `core`
   atomic load, declared `opens_invariants none`; `load_owner`
@@ -1551,7 +1603,9 @@ from: the machine code is upstream's).
 - **Masks on existing specifications.**
   - Added here: `opens_invariants none` on the `vspec` specifications the
     paths use: `usize::leading_zeros` and `u32::rotate_right`
-    (`vspec/core_int.rs`), and `<*mut T>::add` (`vspec/ptr.rs`).
+    (`vspec/core_int.rs`), and `<*mut T>::add` (`vspec/ptr.rs`); since
+    upstream #101 `u64::rotate_right` (`vspec/core_int.rs`) and
+    `core::hint::assert_unchecked` (`vspec/misc.rs`), both new.
   - Already declared: `vspec::word::load` (`vspec/word.rs:96`, the bit
     test's load), `<*mut T>::is_null` (`vspec/addr.rs:64`), and vstd's
     `ptr_ref`, `ptr_mut_ref`, `ptr_mut_write` and `wrapping_*`.
@@ -1896,7 +1950,7 @@ premise below that nothing writes them in between.
   `push_fast` (`:553`) ensure `flags & PUSH_ZERO != 0 ==> !r`, so
   `free_fast`, `free_fast_class` and `free_sized_fast` ensure the same
   and fall back to the exact `heap::free`; every push is handed
-  `Shared::push_flags()` (`api/libc.rs` `free`, `free_sized_hint`,
+  `Shared::push_flags()` (`api/libc.rs` `free`, `free_sized_block`,
   `challoc_free_usable`; `api/jemalloc.rs` `sdallocx`; `Heap::push`;
   `Heap::free_other`), whose result is `flags()`, and
   `Shared::zero_on_free` ensures `r == (flags() & PUSH_ZERO != 0)`. A
@@ -2844,8 +2898,8 @@ through `slab_slot`'s completeness; *(C)* is the `free` contract.
   of a run an alignment made huge (`free_aligned_sized(p, 1 MiB, 64)`
   after `aligned_alloc(1 MiB, 64)`), with or without the alignment
   flag. `huge_hint_ok` is stated with C's token for the run (it names
-  the run's pages); the exports, which mint that token, state only
-  `hint_ok`.
+  the run's pages); the entry points that claim it from the call's
+  `CCall` (which the exports mint) state only `hint_ok`.
 
 **Where the statement is weaker than the code.**
 - The *(C)* rows: the run-time checks abort where they fire, but the
@@ -7189,6 +7243,13 @@ How it is proved:
 - The fast path (`free_sized_fast`, `heap/paths.rs:762`) now ensures a
   push is a slot start's, and a declined push keeps the token's claim
   and length, so `huge_hint_ok` of the token reaches the cores.
+- Since upstream #101 `free_sized` claims C's token itself and hands it
+  to `free_sized_with` (also `sdallocx_block`'s no-flags branch), which
+  passes it to `free_sized_block`, or, above `SMALL_MAX`, to
+  `free_sized_medium`, which does; both ensure `huge_hint_ok` of the
+  token as `free_sized_block` does, so the statement covers the new
+  sized path (the huge sizes are above `SMALL_MAX` and reach
+  `check_size_hint` through `free_sized_medium`).
 
 **Premises beyond the common ones.** None new: the run token and
 `axiom_c_claim` (the C contract of a live block, "Bad input"), and the
@@ -7208,8 +7269,10 @@ sized frees' slow paths hold no lock), used, not added.
   `theorem_sized_run_nallocx` therefore needs the alignment to leave
   the size huge and placeable.
 - `huge_hint_ok` is stated with C's token for the run (its pages); the
-  exports, which mint the token (`axiom_c_claim`), state only
-  `hint_ok`. A freed or foreign run is excluded by the C contract, as
+  entry points that claim it (`axiom_c_claim`, of the call's `CCall`,
+  which the exports mint with `axiom_c_block`: `free_sized`,
+  `free_aligned_sized`, `sdallocx`) state only `hint_ok`. A freed or
+  foreign run is excluded by the C contract, as
   for every free (*(C)*).
 - "Rejects" is about the size and alignment: a non-zero `nallocx` does
   not promise success (the region may be full, metadata or the kernel

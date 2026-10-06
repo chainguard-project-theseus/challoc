@@ -121,7 +121,7 @@ impl CacheHeader {
 
 } // verus!
 
-const _: () = assert!(CACHE_HEADER == 64);
+const _: () = assert!(CACHE_HEADER == 64 && CACHE_HEADER == crate::layout::CLASS_STRIDE);
 const _: () = assert!(core::mem::offset_of!(CacheHeader, slots) < 64 - 8);
 
 verus! {

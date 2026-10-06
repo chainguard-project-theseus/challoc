@@ -665,7 +665,7 @@ pub fn sdallocx_block(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Track
         }
     }
     if flags == 0 {
-        return super::libc::free_sized_block(p, size, super::libc::class_index(size), Tracked(blk));
+        return super::libc::free_sized_with(p, size, Tracked(blk));
     }
     sdallocx_flags(p, size, flags, Tracked(blk))
 }

@@ -1,6 +1,6 @@
 # `S_FREE_FLAGS`
 
-Seam S135 of `verus/SEAMS.md`: src/heap/shared.rs:897. Kind: external_body const. Category: core library.
+Seam S136 of `verus/SEAMS.md`: src/heap/shared.rs:1044. Kind: external_body const. Category: core library.
 Discharged by Kani.
 
 ## Contract
