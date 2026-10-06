@@ -1,6 +1,6 @@
 # `store` (`vspec/count.rs`)
 
-Seam S300 of `verus/SEAMS.md`: src/vspec/count.rs:123. Kind: external_body. Category: atomics primitive.
+Seam S299 of `verus/SEAMS.md`: src/vspec/count.rs:123. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 coherence rules (part 3).
 
 ## Contract
@@ -100,7 +100,7 @@ Models: `loom_narenas_create_publishes`, `loom_narenas_relaxed_store_is_unpublis
   proof depends on it), and, while a thread holds the creation lock,
   the count and the table are frozen: a load reads the lock's value
   and the arenas below it. The second is the premise of the trusted
-  `api::count_held` and `api::arena_held` (S38, S37, separate seams,
+  `api::count_held` and `api::arena_held` (S37, S36, separate seams,
   not discharged here): the fork handlers read the count and the table
   under the lock and rely on later reads returning the same. The model
   checks both in its configuration (`create` asserts the second under

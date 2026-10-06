@@ -3525,7 +3525,7 @@ mod kani_layout {
         assert!(size_of::<Shared>() <= isize::MAX as usize);
     }
 
-    /// S49 `Arena::axiom_array_layout` at the two arrays of `Shared`.
+    /// S48 `Arena::axiom_array_layout` at the two arrays of `Shared`.
     #[kani::proof]
     fn shared_array_layout() {
         array_layout::<ClassLine, NCLASSES>();

@@ -3096,7 +3096,7 @@ pub(crate) mod kani_layout {
         assert_eq!(align_of::<[T; N]>(), align_of::<T>());
     }
 
-    /// S49 `Arena::axiom_array_layout` at every instantiation the proofs
+    /// S48 `Arena::axiom_array_layout` at every instantiation the proofs
     /// use (`[ClassState; NCLASSES]` here, the two arrays of `Shared` in
     /// `heap/shared.rs`), and at primitive, zero-sized and padded element
     /// types and lengths 0, 1 and 7.
@@ -3126,7 +3126,7 @@ mod kani_key_less {
         ((k.0 as u64) << 1) | k.1 as u64
     }
 
-    /// S60 `key_less`, `ensures r == key_lt(a, b)`: for every pair of
+    /// S59 `key_less`, `ensures r == key_lt(a, b)`: for every pair of
     /// keys. The counts are symbolic and the two `bool`s run over their
     /// four values as literals: Kani 0.68 (CBMC 6.11) leaves `<` on two
     /// symbolic `bool`s unconstrained (both results are reachable for

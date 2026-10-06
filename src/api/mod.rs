@@ -192,22 +192,19 @@ verus! {
 /// accesses are relaxed (a plain load and store), ordered by the locks.
 /// The release reads it through the permission its hold carries
 /// ([`ForkHeld::has_slot`]), so the value read is the mask the hold
-/// records.
+/// records. Its identity is carried by the holds rather than stated of
+/// the static (Verus cannot name a static in a specification): the
+/// prepare's hold records the word it stored to
+/// ([`ForkHeld::slot_addr`], bookkeeping: nothing reads that hold
+/// after the store), and the release's hold is handed over for the word
+/// [`fork_slot`] returns to the release ([`resume::resumed`]); that the
+/// two are one word is the handoff's premise.
 exec static FORK_SIGMASK: AtomicU64 = AtomicU64::new(0);
 
-/// The identity of [`FORK_SIGMASK`] for its permission
-/// ([`ForkHeld::has_slot`]); [`fork_slot`] names the static.
-pub uninterp spec fn fork_slot_addr() -> usize;
-
-/// [`FORK_SIGMASK`] as a reference. Trusted: Verus cannot name a static
-/// in a specification, so its identity ([`fork_slot_addr`]) is stated
-/// here. Nothing is claimed of its content.
-#[verifier::external_body]
+/// [`FORK_SIGMASK`] as a reference. Nothing is claimed of it: the holds
+/// carry its identity (see [`FORK_SIGMASK`]).
 #[inline(always)]
-fn fork_slot() -> (r: &'static AtomicU64)
-    ensures
-        word_addr(r) == fork_slot_addr(),
-{
+fn fork_slot() -> &'static AtomicU64 {
     &FORK_SIGMASK
 }
 
@@ -1062,11 +1059,12 @@ pub open spec fn lock_at(s: Shared, arenas: Map<int, Arena>, k: ForkLock) -> Raw
 /// The hold of the fork lock list (theorem "fork safety", THEOREMS.md):
 /// the arenas `fork_prepare` found, `n` the arena count it read, and one
 /// [`LockHeld`] per listed lock, each the hold of the lock its key names,
-/// and the content of [`FORK_SIGMASK`] its holder stored (`saved`),
-/// with, in the release's hold, the slot's permission (`slot`).
+/// the content of [`FORK_SIGMASK`] its holder stored (`saved`) and the
+/// address of the word it stored it to (`slot_addr`), with, in the
+/// release's hold, the permission to that word (`slot`).
 /// Built, by convention, only by `fork_prepare` as it takes the locks
-/// and by [`axiom_fork_resumed`] for the release: the fields are private
-/// to `api` (its submodules can see them too), and [`arena_held`] and
+/// and by [`resume::axiom_fork_resumed`] for the release: the fields are
+/// private to `api` (its submodules can see them too), and [`arena_held`] and
 /// [`count_held`] trust that the `n` and `arenas` of the bundle they are
 /// handed are what `fork_prepare` read.
 // Ghost: built and read only by proof code.
@@ -1076,6 +1074,7 @@ pub tracked struct ForkHeld {
     ghost arenas: Map<int, Arena>,
     tracked toks: Map<ForkLock, LockHeld>,
     ghost saved: Option<u64>,
+    ghost slot_addr: usize,
     tracked slot: Option<WordPerm>,
 }
 
@@ -1107,12 +1106,20 @@ impl ForkHeld {
         self.saved
     }
 
-    /// The hold has the permission to [`FORK_SIGMASK`], and its value is
-    /// the content the hold records: the release's hold, as
-    /// [`axiom_fork_resumed`] hands it over (`fork_prepare` stores without
-    /// one, under every lock).
+    /// The address of the word this hold's holder stored its
+    /// [`saved`](ForkHeld::saved) content to ([`save_sigmask`]: the word
+    /// of [`FORK_SIGMASK`]); meaningful once that is `Some`.
+    pub closed spec fn slot_addr(self) -> usize {
+        self.slot_addr
+    }
+
+    /// The hold has the permission to the word it records
+    /// ([`slot_addr`](ForkHeld::slot_addr)), and its value is the content
+    /// the hold records: the release's hold, as [`resume::axiom_fork_resumed`]
+    /// hands it over (`fork_prepare` stores without one, under every
+    /// lock).
     pub closed spec fn has_slot(self) -> bool {
-        self.slot matches Some(p) && p.addr() == fork_slot_addr() && self.saved == Some(p.value())
+        self.slot matches Some(p) && p.addr() == self.slot_addr && self.saved == Some(p.value())
     }
 
     /// The hold has no permission to [`FORK_SIGMASK`]: the prepare's hold,
@@ -1122,19 +1129,19 @@ impl ForkHeld {
         self.slot is None
     }
 
-    /// This hold after [`save_sigmask`] stored `m` in the slot.
-    pub closed spec fn with_saved(self, m: u64) -> ForkHeld {
-        ForkHeld { saved: Some(m), ..self }
+    /// This hold after [`save_sigmask`] stored `m` in the word at `a`.
+    pub closed spec fn with_saved(self, m: u64, a: usize) -> ForkHeld {
+        ForkHeld { saved: Some(m), slot_addr: a, ..self }
     }
 
     /// Storing in the slot changes neither the locks held nor the arenas.
-    proof fn lemma_with_saved(self, s: Shared, m: u64)
+    proof fn lemma_with_saved(self, s: Shared, m: u64, a: usize)
         ensures
-            self.wf(s) ==> self.with_saved(m).wf(s),
-            self.all() ==> self.with_saved(m).all(),
-            self.with_saved(m).saved() == Some(m),
+            self.wf(s) ==> self.with_saved(m, a).wf(s),
+            self.all() ==> self.with_saved(m, a).all(),
+            self.with_saved(m, a).saved() == Some(m),
     {
-        let t = self.with_saved(m);
+        let t = self.with_saved(m, a);
         assert(t.keys() == self.keys());
         assert(t.arenas() == self.arenas());
         assert(t.n() == self.n());
@@ -1208,7 +1215,7 @@ pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: LockHeld) -
 /// before ours (whose prepare runs after ours and whose parent and
 /// child handlers run before ours) do not take an allocator lock. Ghost
 /// state does not cross the C calls, so the hold is handed over here:
-/// the state lock's token, then [`axiom_fork_resumed`] for the rest, at
+/// the state lock's token, then [`resume::axiom_fork_resumed`] for the rest, at
 /// the `&Shared` the release reads (the same object: `shared` returns
 /// the one static). Each handler calls them once, which nothing
 /// enforces: a second call would hand out a second token for a held
@@ -1218,29 +1225,6 @@ pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: LockHeld) -
 axiom fn axiom_fork_resumed_state() -> (tracked state: LockHeld)
     ensures
         state.held() == purge::background::state_lock(),
-;
-
-/// Premise: see [`axiom_fork_resumed_state`]; the rest of the hold, at
-/// the `Shared` the release reads, with the arena count and the arenas
-/// `fork_prepare` read and the mask it saved in [`FORK_SIGMASK`] (`n`,
-/// `arenas` and `saved` are those reads and that store, which the
-/// ensures does not name: the premise is that they are; the slot's
-/// content is a mask the kernel held, and only a holder of every lock
-/// writes it, see [`save_sigmask`]), and the permission to the slot
-/// whose value is that content ([`ForkHeld::has_slot`]): the one
-/// trusted link between the slot and the hold, through which
-/// [`saved_sigmask`] reads (no other permission to the slot exists).
-/// `state` must be
-/// the state lock's token: a fact about a token the caller already has is
-/// a requirement, never a conclusion (ensured, it let a token of any other
-/// lock prove `false`).
-axiom fn axiom_fork_resumed(s: &Shared, tracked state: &LockHeld) -> (tracked held: ForkHeld)
-    requires
-        state.held() == purge::background::state_lock(),
-    ensures
-        fork_holds(*s, held, *state),
-        held.has_slot(),
-        held.saved() matches Some(m) && effective(m) == m,
 ;
 
 /// The signal half of the fork hold: `sig` (the calling thread's mask)
@@ -1264,7 +1248,7 @@ pub(crate) open spec fn fork_sig_holds(sig: SigMask, held: ForkHeld, orig: u64) 
 /// glibc's `_Fork` restores the mask it found, and the atfork handlers
 /// registered before ours (whose prepare runs after ours and whose parent
 /// and child handlers run before ours) leave the mask as they found it.
-/// The slot's content is [`axiom_fork_resumed`]'s. Each handler calls
+/// The slot's content is [`resume::axiom_fork_resumed`]'s. Each handler calls
 /// this once, which nothing enforces.
 axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
     ensures
@@ -1423,7 +1407,7 @@ extern "C" fn fork_prepare() {
             }
         }
     }
-    let tracked mut held = ForkHeld { n: n as int, arenas, toks, saved: None, slot: None };
+    let tracked mut held = ForkHeld { n: n as int, arenas, toks, saved: None, slot_addr: 0, slot: None };
     for c in 0..NCLASSES
         invariant
             crate::sys::may_syscall(),
@@ -1516,7 +1500,7 @@ extern "C" fn fork_prepare() {
     let ghost before = held;
     save_sigmask(mask, Ghost(*s), Tracked(&mut held), Tracked(&state));
     proof {
-        before.lemma_with_saved(*s, mask);
+        before.lemma_with_saved(*s, mask, held.slot_addr());
         assert(fork_holds(*s, held, state));
         assert(fork_sig_holds(sig, held, orig));
     }
@@ -1539,16 +1523,19 @@ fn save_sigmask(
         fork_holds(s, *old(held), *state),
         old(held).no_slot(),
     ensures
-        *final(held) == old(held).with_saved(mask),
+        *final(held) == old(held).with_saved(mask, final(held).slot_addr()),
 {
-    fork_slot().store(mask, Ordering::Relaxed);
+    let slot = fork_slot();
+    slot.store(mask, Ordering::Relaxed);
     proof {
         held.saved = Some(mask);
+        held.slot_addr = word_addr(slot);
     }
 }
 
 /// The signal mask `fork_prepare` saved, the content the hold records:
-/// read through the hold's permission to [`FORK_SIGMASK`]
+/// read from `w` ([`FORK_SIGMASK`], the word the hold records) through
+/// the hold's permission to it
 /// ([`ForkHeld::has_slot`]), which only a holder of every allocator lock
 /// has (required, ghost). The value is still the one this thread's
 /// prepare handler saved: [`save_sigmask`] requires that hold too, so a
@@ -1557,6 +1544,7 @@ fn save_sigmask(
 /// after this release's unlocks.
 #[inline(always)]
 fn saved_sigmask(
+    w: &AtomicU64,
     Ghost(s): Ghost<Shared>,
     Tracked(held): Tracked<&ForkHeld>,
     Tracked(state): Tracked<&LockHeld>,
@@ -1564,11 +1552,12 @@ fn saved_sigmask(
     requires
         fork_holds(s, *held, *state),
         held.has_slot(),
+        held.slot_addr() == word_addr(w),
     ensures
         held.saved() == Some(r),
 {
     let tracked slot = held.slot.tracked_borrow();
-    crate::vspec::word::load(fork_slot(), Ordering::Relaxed, Tracked(slot))
+    crate::vspec::word::load(w, Ordering::Relaxed, Tracked(slot))
 }
 
 /// Release the locks taken by `fork_prepare`, in reverse order, then let
@@ -1590,7 +1579,7 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
         state.held() == purge::background::state_lock(),
 {
     let s = shared();
-    let tracked mut held = axiom_fork_resumed(s, &state);
+    let (slot, Tracked(mut held)) = resume::resumed(s, Tracked(&state));
     let tracked mut sig = axiom_fork_resumed_sig();
     let ghost saved = held.saved()->Some_0;
     proof {
@@ -1599,7 +1588,7 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
     }
     // Written by the `fork_prepare` that paired with this release, and
     // still ours because every lock is held until the unlocks below.
-    let mask = saved_sigmask(Ghost(*s), Tracked(&held), Tracked(&state));
+    let mask = saved_sigmask(slot, Ghost(*s), Tracked(&held), Tracked(&state));
     purge::background::fork_unlock(Tracked(state));
     // Arenas cannot appear while the creation lock is held, so this is the
     // same set `fork_prepare` locked (the premise `arena_held` and
@@ -1757,6 +1746,75 @@ extern "C" fn fork_child() {
 }
 
 } // verus!
+
+/// The release's handoff of the fork hold, in a module of its own: its
+/// axiom is private here, so the only code that can mint the permission
+/// to the signal-mask slot is [`resumed`](resume::resumed), which mints
+/// it for [`fork_slot`]'s word and no other.
+mod resume {
+    #[cfg(verus_only)]
+    use super::fork_holds;
+    use super::{ForkHeld, fork_slot};
+    use crate::heap::Shared;
+    use crate::lock::LockHeld;
+    use crate::sync::atomic::AtomicU64;
+    #[cfg(verus_only)]
+    use crate::{purge, sys::effective, vspec::word::word_addr};
+    use vstd::prelude::{Tracked, verus};
+
+    verus! {
+
+    /// Premise (see `api::axiom_fork_resumed_state`): the rest of the
+    /// hold, with the permission to `slot`, which must be the word the
+    /// prepare stored its mask to: [`resumed`] passes [`fork_slot`]'s
+    /// `&FORK_SIGMASK`, as the prepare's store did, and a static has one
+    /// address (the same premise as for `s`, the `Shared` the release
+    /// reads); passed any other word, it would mint a second permission
+    /// to it, which is why it is private to this module. The hold has the
+    /// arena count and the arenas `fork_prepare` read and the mask it
+    /// saved in `FORK_SIGMASK` (`n`, `arenas` and `saved` are those reads
+    /// and that store, which the ensures does not name: the premise is
+    /// that they are; the slot's content is a mask the kernel held, and
+    /// only a holder of every lock writes it, see `save_sigmask`), and the
+    /// permission to the slot whose value is that content
+    /// ([`ForkHeld::has_slot`]): the one trusted link between the slot and
+    /// the hold, through which `saved_sigmask` reads (no other permission
+    /// to the slot exists). `state` must be the state lock's token: a fact
+    /// about a token the caller already has is a requirement, never a
+    /// conclusion (ensured, it let a token of any other lock prove
+    /// `false`).
+    axiom fn axiom_fork_resumed(s: &Shared, slot: &AtomicU64, tracked state: &LockHeld) -> (tracked held: ForkHeld)
+        requires
+            state.held() == purge::background::state_lock(),
+        ensures
+            fork_holds(*s, held, *state),
+            held.has_slot(),
+            held.slot_addr() == word_addr(slot),
+            held.saved() matches Some(m) && effective(m) == m,
+    ;
+
+    /// The slot, [`fork_slot`], and the release's hold of every lock, with
+    /// the permission to that slot: [`axiom_fork_resumed`] for the word
+    /// [`fork_slot`] returns. Each handler calls it once, which nothing
+    /// enforces (see `api::axiom_fork_resumed_state`).
+    // `s` is only named by the specification and the ghost call.
+    #[allow(unused_variables)]
+    #[inline(always)]
+    pub(super) fn resumed(s: &Shared, Tracked(state): Tracked<&LockHeld>) -> (r: (&'static AtomicU64, Tracked<ForkHeld>))
+        requires
+            state.held() == purge::background::state_lock(),
+        ensures
+            fork_holds(*s, r.1@, *state),
+            r.1@.has_slot(),
+            r.1@.slot_addr() == word_addr(r.0),
+            r.1@.saved() matches Some(m) && effective(m) == m,
+    {
+        let slot = fork_slot();
+        (slot, Tracked(axiom_fork_resumed(s, slot, state)))
+    }
+
+    } // verus!
+}
 
 #[cfg(test)]
 mod tests {

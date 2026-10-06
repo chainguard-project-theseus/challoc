@@ -1,6 +1,6 @@
 # `Explicit::drop`
 
-Seam S188 of `verus/SEAMS.md`: src/purge.rs:163. Kind: external_body. Category: atomics primitive.
+Seam S187 of `verus/SEAMS.md`: src/purge.rs:163. Kind: external_body. Category: atomics primitive.
 Discharged by Kani.
 
 ## Contract

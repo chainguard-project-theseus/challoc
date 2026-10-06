@@ -5,7 +5,7 @@ The aarch64 `get_tp` in `src/sys/tls.rs` (`src/sys/tls.rs:get_tp` in
 seam). Tool: Isla. Status: discharged, with the ELF TLS and loader facts
 as named residual assumptions, and with its `ensures` (the value read is
 the token's) resting on the ghost slot model's premise, which `set`
-(S243, still trusted) also carries: Isla shows which memory the read
+(S254, still trusted) also carries: Isla shows which memory the read
 reads, not that the token equals it (part 3).
 
 ## 1. Contract
@@ -123,7 +123,7 @@ fault.
   `TlsSlot::entry` returns a token whose value is `arbitrary()`, one
   fixed but unspecified spec value, so nothing in the verified code ties
   it to the slot; the premise is that a token stands for the calling
-  thread's slot, that `set` (S243, trusted) makes the written value the
+  thread's slot, that `set` (S254, trusted) makes the written value the
   token's, and that no token is read after the slot changed other than
   through it (verus/THEOREMS.md, theorem 15, premises; `src/sys/tls.rs`).
   So the `ensures` is this premise plus `set`'s trusted contract; what
@@ -175,7 +175,7 @@ reviewed again that day by a fresh-context reviewer (a Claude subagent
 with no prior context of this work), told to look for translations that
 overclaim. Its finding on this record is folded in: the `ensures` is
 stated as resting on the ghost slot premise and `set`'s trusted contract
-(S243), both named in the status line, and `TlsSlot::entry`'s
+(S254), both named in the status line, and `TlsSlot::entry`'s
 `arbitrary()` value is described as what it is. A human review is
 pending.
 

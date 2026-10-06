@@ -204,7 +204,7 @@ impl RawLock {
 /// [`RawLock::unlock_held`] takes it back as it unlocks. The field is
 /// private to this module, so outside it only `lock_held` builds one;
 /// the other source is the fork handlers' handoff axioms
-/// (`api::axiom_fork_resumed_state`, `api::axiom_fork_resumed`), which
+/// (`api::axiom_fork_resumed_state`, `api::resume::axiom_fork_resumed`), which
 /// restate across the C calls the tokens `fork_prepare` ended with. The
 /// token is not `Copy`, so each token is handed back at most once. A
 /// token names its lock by value (Verus has no addresses of

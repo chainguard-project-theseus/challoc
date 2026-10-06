@@ -27,7 +27,7 @@
 //!   uninterpreted identity). The permissions are minted once per class
 //!   bitmap, by `SlabTable::new` (`table::axiom_fresh_words`), and for the
 //!   fork signal-mask slot (`api::FORK_SIGMASK`) by each fork release's
-//!   handoff (`api::axiom_fork_resumed`), at the slot's content.
+//!   handoff (`api::resume::resumed`, for `fork_slot`'s word), at its content.
 //!
 //! A permission's value is its word's: every write of a class bitmap word
 //! goes through these wrappers (`AtomicBitmap::init`, `claim_word` and

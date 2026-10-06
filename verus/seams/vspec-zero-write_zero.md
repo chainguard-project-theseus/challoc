@@ -1,6 +1,6 @@
 # `write_zero`
 
-Seam S411 of `verus/SEAMS.md`: src/vspec/zero.rs:455. Kind: external_body. Category: raw pointer (internal).
+Seam S410 of `verus/SEAMS.md`: src/vspec/zero.rs:455. Kind: external_body. Category: raw pointer (internal).
 Discharged by Kani.
 
 ## Contract
@@ -50,7 +50,7 @@ one `write_bytes` whatever the length.
 Provenance: every non-empty range is checked on pointers derived from
 a local array, which Kani tracks as one object. The allocator's
 pointers are integer-to-pointer casts of mapped addresses
-(`vspec::addr::addr_to_ptr`, S250, discharged by Kani except its
+(`vspec::addr::addr_to_ptr`, S255, discharged by Kani except its
 provenance claim, which stays an assumption); Kani has no model of
 those mappings. The record covers what
 the function does on a range that is valid; that the allocator's

@@ -1,6 +1,6 @@
 # `load` (`vspec/count.rs`)
 
-Seam S301 of `verus/SEAMS.md`: src/vspec/count.rs:142. Kind: external_body. Category: atomics primitive.
+Seam S300 of `verus/SEAMS.md`: src/vspec/count.rs:142. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 coherence rules (part 3).
 
 ## Contract
@@ -102,7 +102,7 @@ Models: `loom_count_bind_assign_unbind`, `loom_count_split_rmw_loses_a_ticket`, 
   (a holder never reads its arena's count as 0). In `Arenas::count` and
   `Policy::position` the proof uses only the invariant's bound, which
   every write meets (`vspec-count-store.md`, `vspec-count-swap.md`);
-  the trusted `api::count_held` (S35, a separate seam) also assumes that
+  the trusted `api::count_held` (S37, a separate seam) also assumes that
   a load made under the creation lock reads the lock's value, which the
   narenas model checks in `create` (`vspec-count-store.md`).
 - **`opens_invariants none`**: the body opens no Verus invariant (read

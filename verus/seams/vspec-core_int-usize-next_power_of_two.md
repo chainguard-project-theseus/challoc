@@ -1,6 +1,6 @@
 # `usize::next_power_of_two`
 
-Seam S292 of `verus/SEAMS.md`: src/vspec/core_int.rs:48. Kind: assume_spec. Category: core library.
+Seam S291 of `verus/SEAMS.md`: src/vspec/core_int.rs:48. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract
