@@ -1,6 +1,6 @@
 # `S_CONFIG`
 
-Seam S146 of `verus/SEAMS.md`: src/heap/shared.rs:1064. Kind: external_body const. Category: core library.
+Seam S146 of `verus/SEAMS.md`: src/heap/shared.rs:1066. Kind: external_body const. Category: core library.
 Discharged by Kani.
 
 ## Contract
