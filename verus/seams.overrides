@@ -12,7 +12,7 @@
 # line that matches no seam is an error.
 Handler	function pointer	Kani
 Hook	function pointer	Kani
-atfork_handlers	function pointer	Kani
+atfork_handlers	function pointer	none (assumption)
 oom	termination	none (assumption)
 set_errno	FFI/syscall	none (assumption)
 lend	C-program contract	none (assumption)

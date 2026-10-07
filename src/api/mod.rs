@@ -531,14 +531,29 @@ pub fn shared_ptr() -> (r: *const Shared)
 /// offset`: LLVM folds the offset into the relocation, so the page
 /// addresses of two fields never CSE, and `free` paid five of them.
 /// x86_64 addresses statics `rip`-relative at no cost, so there the
-/// address stays a constant. Like [`shared_ptr`], no reference is formed.
+/// address stays a constant: `shared_storage_ptr`'s, the pointer
+/// [`Shared::storage`] names (address and provenance). Only the static's
+/// cell is borrowed (`UnsafeCell::get`): no reference to the allocator
+/// state is formed, as in [`shared_ptr`].
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub fn shared_base() -> (r: *const Shared)
+    ensures
+        r == Shared::storage() as *const Shared,
+    opens_invariants none
+{
+    shared_storage_ptr() as *const Shared
+}
+
+/// [`shared_base`] on aarch64: [`shared_ptr`] through the empty `asm!`.
 ///
 /// Trusted: a raw-pointer projection of a static, the pointer
-/// [`Shared::storage`] names, as `shared_storage_ptr`'s: the same cell of
-/// the same static (`UnsafeCell` is `repr(transparent)`), so the same
-/// address and provenance; the aarch64 template is empty
+/// [`Shared::storage`] names, as [`shared_ptr`] and `shared_storage_ptr`:
+/// the same cell of the same static (`UnsafeCell` is `repr(transparent)`),
+/// so the same address and provenance; the template is empty
 /// (`verus/isla/templates.txt` pins it), so the register the operand is
 /// in for input and output comes out unchanged.
+#[cfg(target_arch = "aarch64")]
 #[verifier::external_body]
 #[inline(always)]
 pub fn shared_base() -> (r: *const Shared)
@@ -546,9 +561,7 @@ pub fn shared_base() -> (r: *const Shared)
         r == Shared::storage() as *const Shared,
     opens_invariants none
 {
-    #[allow(unused_mut)]
     let mut p = shared_ptr();
-    #[cfg(target_arch = "aarch64")]
     // SAFETY: an empty template; the pointer is unchanged.
     unsafe {
         core::arch::asm!("/* {0} */", inout(reg) p, options(pure, nomem, nostack, preserves_flags));

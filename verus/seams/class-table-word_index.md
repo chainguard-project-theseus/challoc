@@ -1,17 +1,18 @@
-# `class::table::word_index`
+# `class::table::word_index` (aarch64)
 
-The `word_index` in `src/class/table.rs`, one item for both
-architectures (the `asm!` is under `#[cfg(target_arch = "aarch64")]`
-inside its body). Tool: Isla. Status: evidence only: the aarch64
-template is empty, so there is no instruction for Isla to trace; what
-is checked is the template pin.
+The aarch64 `word_index` in `src/class/table.rs`, under
+`#[cfg(target_arch = "aarch64")]`. The x86_64 one, under
+`#[cfg(target_arch = "x86_64")]`, has no `asm!`: its body is `index`,
+and Verus verifies it against the same contract. Tool: Isla. Status:
+evidence only: the aarch64 template is empty, so there is no
+instruction for Isla to trace; what is checked is the template pin.
 
 ## 1. Contract
 
-The ledger's entry (`verus/SEAMS.md`, `word_index`), at the port of
-upstream #87 (`pub(crate)` since; before, at the port of
-upstream #77 onto `lane`, private), kind external_body;
-`#[inline(always)]`:
+The ledger's entry (`verus/SEAMS.md`, `word_index`), at the split of
+the item per architecture (before, at the port of upstream #87, one
+item for both, `pub(crate)` since; at the port of upstream #77 onto
+`lane`, private), kind external_body; `#[inline(always)]`:
 
 ```rust
 pub(crate) fn word_index(index: usize) -> (r: usize)
@@ -23,9 +24,7 @@ pub(crate) fn word_index(index: usize) -> (r: usize)
 The body Verus does not see:
 
 ```rust
-#[allow(unused_mut)]
 let mut index = index;
-#[cfg(target_arch = "aarch64")]
 // SAFETY: an empty template; `index` comes out unchanged.
 unsafe {
     core::arch::asm!("/* {0} */", inout(reg) index, options(pure, nomem, nostack, preserves_flags));
@@ -58,8 +57,8 @@ upstream).
 - `inout(reg) index`: one general register holds `index` on entry to
   the block and is read back as `index` on exit (the Rust reference,
   "Inline assembly", `inout`). With no instruction in between, the
-  value read back is the value written: `r == index`, on aarch64 as
-  off it (where the block is compiled out and the body is `index`).
+  value read back is the value written: `r == index`. (On x86_64 the
+  item is `index` itself, verified, and not this record's.)
 - `options(pure, nomem, nostack, preserves_flags)`: promises an empty
   instruction sequence keeps trivially.
 
@@ -72,11 +71,16 @@ documentation, not checked.
 Written on 2026-10-06 with the port of upstream #77. Reviewed then by a
 fresh-context reviewer (a Claude subagent with no prior context of this
 work), with the whole port: it found the contract true of the body and
-nothing to fix in this record. A human review is pending.
+nothing to fix in this record. Revised on 2026-10-07 for the split per
+architecture (package ASMHINT), reviewed then by a fresh-context
+reviewer: it found the contract true of the aarch64 body, nothing newly
+trusted, and doc fixes only, folded in. A human review is pending.
 
 ## 5. Tests
 
-`verus/isla/run.sh` fails when the `asm!` call changes (any
+`verus/isla/run.sh`, section 1, fails when the `asm!` call changes (any
 instruction added to the template, or another operand or option),
-until this record is revisited, and when the ledger entry with this
-record's status has another contract.
+until this record is revisited. Its contract and architecture checks
+cover discharged records only, so this record's quote of the ledger
+entry and its title's architecture are kept by hand (`sh
+verus/seams.sh --check` keeps the entry itself current).

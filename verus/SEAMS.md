@@ -93,11 +93,11 @@ documentation (kernel, ISA, C standard) its contract follows.
 |---|---|---:|
 | Islaris/Isla | Isla | 31 |
 | RefinedRust | RR | 16 |
-| Kani | Kani | 207 |
+| Kani | Kani | 206 |
 | loom/GenMC | GenMC | 35 |
 | Verus | Verus | 4 |
 | Miri (evidence only) | Miri | 4 |
-| none (assumption) | none | 124 |
+| none (assumption) | none | 125 |
 
 | kind | short | seams |
 |---|---|---:|
@@ -119,7 +119,8 @@ Seams by category and tool:
 | inline asm | Islaris/Isla | 30 |
 | inline asm | Kani | 1 |
 | FFI/syscall | none (assumption) | 15 |
-| function pointer | Kani | 22 |
+| function pointer | Kani | 21 |
+| function pointer | none (assumption) | 1 |
 | UnsafeCell/volatile/transmute | RefinedRust | 6 |
 | UnsafeCell/volatile/transmute | Kani | 2 |
 | UnsafeCell/volatile/transmute | Verus | 2 |
@@ -210,7 +211,7 @@ the full name, the line and the contract.
 | S32 | `features_ptr` | body | cell | none | trusted |
 | S33 | `line_ptr` | body | cell | none | trusted |
 | S34 | `axiom_statics` | axiom | invariant | none | trusted |
-| S35 | `atfork_handlers` | body | fnptr | Kani | trusted |
+| S35 | `atfork_handlers` | body | fnptr | none | trusted |
 | S36 | `axiom_fork_resumed_state` | axiom | c-contract | none | trusted |
 | S37 | `axiom_fork_resumed_sig` | axiom | c-contract | none | trusted |
 | S38 | `axiom_fork_resumed` | axiom | c-contract | none | trusted |
@@ -1276,10 +1277,10 @@ pub fn shared_ptr() -> (r: *const Shared)
 
 ### S26. `shared_base`
 
-src/api/mod.rs:544. Kind: external_body. Category: inline asm.
+src/api/mod.rs:559. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: evidence (verus/seams/api-shared_base.md).
 
-> [`shared_ptr`] for the free paths.
+> [`shared_base`] on aarch64: [`shared_ptr`] through the empty `asm!`.
 
 ```rust
 pub fn shared_base() -> (r: *const Shared)
@@ -1290,7 +1291,7 @@ pub fn shared_base() -> (r: *const Shared)
 
 ### S27. `published_line`
 
-src/api/mod.rs:605. Kind: external_body. Category: allocator invariant.
+src/api/mod.rs:618. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The feature line, without the readiness check.
@@ -1302,7 +1303,7 @@ unsafe fn published_line() -> &'static FeatureLine
 
 ### S28. `build_line`
 
-src/api/mod.rs:627. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:640. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > Complete the probed features' THP size table if init skipped it and build the feature line into [`FEATURE_LINE`] (`feature_line_ready`'s build).
@@ -1315,7 +1316,7 @@ unsafe fn build_line()
 
 ### S29. `line_ready`
 
-src/api/mod.rs:677. Kind: no_decreases. Category: termination.
+src/api/mod.rs:690. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > [`feature_line_ready`] after its `shared()`: build the line, or wait for the thread building it (termination is not claimed: the wait ends when the other thread's build does).
@@ -1328,7 +1329,7 @@ fn line_ready()
 
 ### S30. `init_slow`
 
-src/api/mod.rs:857. Kind: no_decreases. Category: termination.
+src/api/mod.rs:870. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: discharged (verus/seams/api-init_slow.md).
 
 > The first caller runs `init` and publishes `READY`; a concurrent one waits for it (termination is not claimed: the wait ends when the other thread's `init` does); the initialising thread re-entering aborts.
@@ -1344,7 +1345,7 @@ fn init_slow() -> (r: &'static Shared)
 
 ### S31. `shared_storage_ptr`
 
-src/api/mod.rs:907. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:920. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The storage of [`SHARED`], the process's [`Shared::storage`].
@@ -1358,7 +1359,7 @@ fn shared_storage_ptr() -> (p: *mut Shared)
 
 ### S32. `features_ptr`
 
-src/api/mod.rs:928. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:941. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The storage of [`FEATURES`].
@@ -1372,7 +1373,7 @@ fn features_ptr() -> (p: *mut Features)
 
 ### S33. `line_ptr`
 
-src/api/mod.rs:940. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:953. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The storage of [`FEATURE_LINE`].
@@ -1386,7 +1387,7 @@ fn line_ptr() -> (p: *mut FeatureLine)
 
 ### S34. `axiom_statics`
 
-src/api/mod.rs:962. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:975. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permissions to the storage of the statics `init` writes itself, for `once`, the process's token of this step: [`FEATURES`] and [`FEATURE_LINE`], uninitialised, and the class table ([`layout::CLASSES`]), holding its initial value, [`layout::BASE_CLASSES`] (`ClassTable::new`), whose entries are well formed and sized ([`layout::table_ok`]).
@@ -1412,8 +1413,8 @@ axiom fn axiom_statics(tracked once: once::Once) -> (tracked r: (
 
 ### S35. `atfork_handlers`
 
-src/api/mod.rs:1001. Kind: external_body. Category: function pointer.
-Tool: Kani. Status: trusted.
+src/api/mod.rs:1014. Kind: external_body. Category: function pointer.
+Tool: none (assumption). Status: trusted.
 
 > `pthread_atfork` with the three fork handlers: 0, or the error number.
 
@@ -1425,7 +1426,7 @@ fn atfork_handlers() -> i32
 
 ### S36. `axiom_fork_resumed_state`
 
-src/api/mod.rs:1404. Kind: axiom. Category: C-program contract.
+src/api/mod.rs:1417. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_holds`] (glibc runs them on the forking thread, after `_Fork`; in the child that thread is the copy of the forking one), and nothing released a lock in between: signals are blocked from the prepare handler's first step, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) do not take an allocator lock.
@@ -1439,7 +1440,7 @@ axiom fn axiom_fork_resumed_state() -> (tracked state: LockHeld)
 
 ### S37. `axiom_fork_resumed_sig`
 
-src/api/mod.rs:1432. Kind: axiom. Category: C-program contract.
+src/api/mod.rs:1445. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff, its signal half; see [`axiom_fork_resumed_state`]): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_sig_holds`] (in the child, its copy, which inherits the mask), whose mask has stayed as that handler left it, every blockable signal blocked: glibc's `_Fork` restores the mask it found, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) leave the mask as they found it.
@@ -1453,7 +1454,7 @@ axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
 
 ### S38. `axiom_fork_resumed`
 
-src/api/mod.rs:2027. Kind: axiom. Category: C-program contract.
+src/api/mod.rs:2040. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (see `api::axiom_fork_resumed_state`): the rest of the hold, with the permission to `slot`, which must be the word the prepare stored its mask to: [`resumed`] passes [`fork_slot`]'s `&FORK_SIGMASK`, as the prepare's store did, and a static has one address (the same premise as for `s`, the `Shared` the release reads); passed any other word, it would mint a second permission to it, which is why it is private to this module.
@@ -2291,10 +2292,10 @@ axiom fn axiom_init_words(tracked perms: Map<int, PointsTo<AtomicU64>>, n: int) 
 
 ### S91. `word_index`
 
-src/class/table.rs:1929. Kind: external_body. Category: inline asm.
+src/class/table.rs:1941. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: evidence (verus/seams/class-table-word_index.md).
 
-> `index` itself, through an empty `asm!` on aarch64, for [`SlabTable::is_set_unchecked`]'s word index: LLVM then cannot fold the index's shift into the word address, and the load scales it.
+> [`word_index`] on aarch64: `index` through the empty `asm!`.
 
 ```rust
 pub(crate) fn word_index(index: usize) -> (r: usize)

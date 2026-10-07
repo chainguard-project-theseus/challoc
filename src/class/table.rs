@@ -1917,13 +1917,25 @@ proof fn lemma_nslabs_bound(n: usize, m: usize, lg: usize)
         requires n <= m >> lg, 12 <= lg <= 22;
 }
 
-/// `index` itself, through an empty `asm!` on aarch64, for
-/// [`SlabTable::is_set_unchecked`]'s word index: LLVM then cannot fold the
-/// index's shift into the word address, and the load scales it.
+/// `index` itself, for [`SlabTable::is_set_unchecked`]'s word index. On
+/// aarch64 it goes through an empty `asm!` (the next item): LLVM then
+/// cannot fold the index's shift into the word address, and the load
+/// scales it. On x86_64 it is the identity.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub(crate) fn word_index(index: usize) -> (r: usize)
+    ensures
+        r == index,
+    opens_invariants none
+{
+    index
+}
+
+/// [`word_index`] on aarch64: `index` through the empty `asm!`.
 ///
 /// Trusted: the empty template leaves the register `index` is in, for
-/// input and output, unchanged (`verus/isla/templates.txt` pins it); off
-/// aarch64 it is the identity.
+/// input and output, unchanged (`verus/isla/templates.txt` pins it).
+#[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[verifier::external_body]
 pub(crate) fn word_index(index: usize) -> (r: usize)
@@ -1931,9 +1943,7 @@ pub(crate) fn word_index(index: usize) -> (r: usize)
         r == index,
     opens_invariants none
 {
-    #[allow(unused_mut)]
     let mut index = index;
-    #[cfg(target_arch = "aarch64")]
     // SAFETY: an empty template; `index` comes out unchanged.
     unsafe {
         core::arch::asm!("/* {0} */", inout(reg) index, options(pure, nomem, nostack, preserves_flags));

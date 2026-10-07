@@ -1451,8 +1451,10 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   `shared_unchecked`; since upstream #78 also `Shared::free_flags` (a
   `Relaxed` load) and `sys::opaque` (an empty `asm!` on aarch64), and
   since #77 `api::shared_base` and `class::table::word_index` (each an
-  empty `asm!` on aarch64) and `api::shared_deref` (a reference to the
-  static) in place of `sys::opaque` and `shared_unchecked`; since
+  empty `asm!` on aarch64; since ASMHINT trusted on aarch64 only, the
+  x86_64 items verified, `shared_base` over `api::shared_storage_ptr`,
+  a raw-pointer projection of `SHARED`) and `api::shared_deref` (a
+  reference to the static) in place of `sys::opaque` and `shared_unchecked`; since
   upstream #101 `ClassLine::guard_word` (one load, and on x86_64 an empty
   `asm!`), and the specification of `core::hint::assert_unchecked` (no
   instruction). Since package P7 `heap_from_slot`, `fast_flags`,
@@ -1654,8 +1656,9 @@ only the functions named here:
 paths, verified unless marked trusted:
 - **Size and process state:** `class_index`, `layout::class_of`;
   `api::shared_ptr` (trusted), `shared_unchecked` (trusted; since
-  upstream #77 `shared_base`, trusted, and `shared_deref`, trusted
-  until package P7 and verified since); since
+  upstream #77 `shared_base`, trusted (since ASMHINT only on aarch64,
+  the x86_64 item verified, over the trusted `shared_storage_ptr`), and
+  `shared_deref`, trusted until package P7 and verified since); since
   #101 `class_index_small`, `layout::class_of_small` and `small_class`.
 - **Heap lookup:** `existing_heap` (on a ghost `TlsSlot::entry()`),
   `existing_heap_in`, `tls_heap_slot`, `sys::tls::get` and
@@ -1676,7 +1679,8 @@ paths, verified unless marked trusted:
   `verus/seams/heap-Heap-arena_volatile.md`); `SlabTable::watermark`,
   `is_handed_out`, `is_set_unchecked`, `owner_unchecked`,
   `owner_at`, `load_owner` (trusted), and since #77 `word_index`
-  (trusted, an empty `asm!` on aarch64). Since #87 the class line's
+  (trusted on aarch64, an empty `asm!`; since ASMHINT the x86_64 item,
+  the identity, verified). Since #87 the class line's
   `ClassLine::set_slab`, `slot_start`, `bit_fields` (aarch64), `owner`
   and `sized_ok`, `class::load_mirror`, and `SlabTable::bit_word` and
   `owner_from` in place of `is_handed_out`, `is_set_unchecked`,
@@ -1740,7 +1744,11 @@ identically). The hot set's machine code is upstream's.
     `sys::opaque` (an empty `asm!`, or the identity off aarch64).
   - Since upstream #77, in place of `sys::opaque` and
     `shared_unchecked`: `shared_base` and `word_index` (each an empty
-    `asm!` on aarch64, or the identity off it; Isla records
+    `asm!` on aarch64, trusted there; since ASMHINT the x86_64 items
+    verify: `word_index` is the identity, and `shared_base` is
+    `shared_storage_ptr`'s pointer (address and provenance), so on x86_64
+    `api::shared_storage_ptr` (trusted, `opens_invariants none`, a
+    projection of `SHARED`) is on these paths in its place; Isla records
     `verus/seams/api-shared_base.md`, `class-table-word_index.md`) and
     `shared_deref` (a reference to the static).
   - Since upstream #101: `ClassLine::guard_word` (one 8-byte load and,

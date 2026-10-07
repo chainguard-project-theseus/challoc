@@ -1,17 +1,22 @@
-# `api::shared_base`
+# `api::shared_base` (aarch64)
 
-The `shared_base` in `src/api/mod.rs`, one item for both architectures
-(the `asm!` is under `#[cfg(target_arch = "aarch64")]` inside its body).
+The aarch64 `shared_base` in `src/api/mod.rs`, under
+`#[cfg(target_arch = "aarch64")]`. The x86_64 one, under
+`#[cfg(target_arch = "x86_64")]`, has no `asm!`: its body is
+`shared_storage_ptr() as *const Shared`, and Verus verifies it against
+the same contract (since P7 the pointer, address and provenance), from
+`shared_storage_ptr`'s ensures (S31, trusted, no tool).
 Tool: Isla. Status: evidence only: the aarch64 template is empty, so
 there is no instruction for Isla to trace; what is checked is the
 template pin, and the projection of the static stays assumed.
 
 ## 1. Contract
 
-The ledger's entry (`verus/SEAMS.md`, `shared_base`), at the port of
-upstream #77 onto `lane`, with the `ensures` strengthened from the
-address to the pointer by package P7 (READY+HEAPPERM), kind
-external_body; `#[inline(always)]`:
+The ledger's entry (`verus/SEAMS.md`, `shared_base`), at the split of
+the item per architecture (package ASMHINT), with the `ensures`
+strengthened earlier from the address to the pointer by package P7
+(READY+HEAPPERM; before both, at the port of upstream #77 onto `lane`,
+one item for both), kind external_body; `#[inline(always)]`:
 
 ```rust
 pub fn shared_base() -> (r: *const Shared)
@@ -23,9 +28,7 @@ pub fn shared_base() -> (r: *const Shared)
 The body Verus does not see:
 
 ```rust
-#[allow(unused_mut)]
 let mut p = shared_ptr();
-#[cfg(target_arch = "aarch64")]
 // SAFETY: an empty template; the pointer is unchanged.
 unsafe {
     core::arch::asm!("/* {0} */", inout(reg) p, options(pure, nomem, nostack, preserves_flags));
@@ -51,8 +54,7 @@ upstream).
   and is read back as `p` on exit (the Rust reference, "Inline
   assembly", `inout`: the same register for input and output). With no
   instruction in between, the value read back is the value written, so
-  `p` is unchanged, on aarch64 as off it (where the block is compiled
-  out).
+  `p` is unchanged.
 - `options(pure, nomem, nostack, preserves_flags)`: promises about the
   block (no side effect, no memory access, no stack use, no flag
   write) that an empty instruction sequence keeps trivially.
@@ -84,11 +86,16 @@ work), with the whole port: it found the contract true of the body
 address, `UnsafeCell` being `repr(transparent)`) and nothing to fix in
 this record. Package P7 (READY+HEAPPERM) strengthened the `ensures` to
 the pointer; its fresh-context review read this record with the change.
-A human review is pending.
+Revised on 2026-10-07 for the split per architecture (package ASMHINT),
+reviewed then by a fresh-context reviewer: it found the contract true
+of the aarch64 body, nothing newly trusted, and doc fixes only, folded
+in. A human review is pending.
 
 ## 5. Tests
 
-`verus/isla/run.sh` fails when the `asm!` call changes (any
+`verus/isla/run.sh`, section 1, fails when the `asm!` call changes (any
 instruction added to the template, or another operand or option),
-until this record is revisited, and when the ledger entry with this
-record's status has another contract.
+until this record is revisited. Its contract and architecture checks
+cover discharged records only, so this record's quote of the ledger
+entry and its title's architecture are kept by hand (`sh
+verus/seams.sh --check` keeps the entry itself current).
