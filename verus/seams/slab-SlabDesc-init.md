@@ -87,7 +87,7 @@ Models: `loom_slab_desc_reads_through_the_lock`, `loom_slab_desc_unlocked_read_i
 
 - **Reading the permission.** `DescPerm` (`slab.rs`) is plain ghost
   data: not `Copy`, fields private to `slab.rs`, and built only by
-  `class::table::axiom_init_descs` (S88, a separate seam, tool none),
+  `class::table::axiom_init_descs` (S89, a separate seam, tool none),
   once per descriptor of a class table, recording the zero the
   reservation's bytes hold. Read `p.state()`, `p.dirty()` and
   `p.arena()` as the values of the last writes, in the modification

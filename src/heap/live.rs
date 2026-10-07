@@ -279,6 +279,7 @@ impl Live {
         ensures
             r.block(p),
             r.slot_of(c),
+            r.slot_tok() == t,
             r.len() == class_table()[c].size,
     {
         let len = class_table()[c].size as int;
@@ -939,18 +940,23 @@ pub axiom fn axiom_c_claim(tracked c: CCall) -> (tracked r: Live)
 ;
 
 /// The permission to the `len` usable bytes of the block at `p` that the
-/// allocator is handing out (or, for `Huge::check_zero`'s reads, a run
-/// `Huge::take` has just taken, before its hand-out: the run token comes
-/// back out through `Live::into_run`, which drops the permission), valid
-/// through `p`, the bytes' values unknown.
+/// allocator is handing out (or, for the `check_zero` reads, a run
+/// `Huge::take` has just taken or a slot a claim has just taken, before
+/// its hand-out: `Huge::check_zero` and `ClassState::check_zero` give the
+/// token back out through `Live::into_run` or `Live::take_slot`, which
+/// drop the permission), valid through `p`, the bytes' values unknown.
 /// Trusted, for what the allocation paths do not track: the block's bytes
 /// are committed (a slot's slab is committed before its first slot is
 /// claimed and decommitted only when it holds no allocated slot; a run's
 /// pages are committed by `Huge::prepare`, before `Huge::take`, and released
 /// only by its free),
 /// and nothing else holds a permission to them (no `PointsToRaw` is ever
-/// made for the class or huge regions but here and in [`axiom_c_claim`];
-/// the metadata region's permissions lie apart from them; and the
+/// made for the class or huge regions but here, in [`axiom_c_claim`] and
+/// in `class::axiom_fresh_slab_mem`, which lends one, for reads, to the
+/// slots of a `Fresh` slab, none of whose slot tokens is out of the
+/// bitmap, for as long as its descriptor permission is borrowed, which
+/// its one caller does under the class lock; the metadata region's
+/// permissions lie apart from them; and the
 /// permissions `vspec::cbuf` gives for a C caller's arguments are to
 /// memory the program holds, never a block being handed out).
 ///

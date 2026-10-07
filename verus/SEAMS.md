@@ -78,7 +78,7 @@ documentation (kernel, ISA, C standard) its contract follows.
 | inline asm | asm | 30 |
 | FFI/syscall | ffi | 16 |
 | function pointer | fnptr | 22 |
-| UnsafeCell/volatile/transmute | cell | 21 |
+| UnsafeCell/volatile/transmute | cell | 20 |
 | raw pointer (internal) | ptr | 49 |
 | raw pointer from C caller | c-ptr | 4 |
 | panic/abort | abort | 9 |
@@ -87,7 +87,7 @@ documentation (kernel, ISA, C standard) its contract follows.
 | C-program contract | c-contract | 20 |
 | termination | termination | 11 |
 | core library | core | 154 |
-| allocator invariant | invariant | 41 |
+| allocator invariant | invariant | 42 |
 
 | tool | short | seams |
 |---|---|---:|
@@ -101,11 +101,11 @@ documentation (kernel, ISA, C standard) its contract follows.
 
 | kind | short | seams |
 |---|---|---:|
-| external_body | body | 156 |
+| external_body | body | 155 |
 | external_body proof | proof | 13 |
 | external_body type | type | 7 |
 | external_body const | const | 39 |
-| axiom | axiom | 68 |
+| axiom | axiom | 69 |
 | assume_spec | spec | 87 |
 | ext_type_spec | ext-type | 15 |
 | ext_trait_spec | ext-trait | 1 |
@@ -124,7 +124,7 @@ Seams by category and tool:
 | UnsafeCell/volatile/transmute | RefinedRust | 8 |
 | UnsafeCell/volatile/transmute | Kani | 2 |
 | UnsafeCell/volatile/transmute | Verus | 2 |
-| UnsafeCell/volatile/transmute | none (assumption) | 8 |
+| UnsafeCell/volatile/transmute | none (assumption) | 7 |
 | raw pointer (internal) | RefinedRust | 12 |
 | raw pointer (internal) | Kani | 20 |
 | raw pointer (internal) | none (assumption) | 17 |
@@ -145,7 +145,7 @@ Seams by category and tool:
 | allocator invariant | Kani | 1 |
 | allocator invariant | loom/GenMC | 2 |
 | allocator invariant | Verus | 1 |
-| allocator invariant | none (assumption) | 37 |
+| allocator invariant | none (assumption) | 38 |
 
 ## Index
 
@@ -272,34 +272,34 @@ the full name, the line and the contract.
 | S78 | `ClassState::claim_with` | no-dec | termination | RR | trusted |
 | S79 | `axiom_fresh_slots_zero` | axiom | invariant | none | trusted |
 | S80 | `axiom_discarded_slots_zero` | axiom | invariant | none | trusted |
+| S81 | `axiom_fresh_slab_mem` | axiom | invariant | none | trusted |
 
 ### src/class/sets.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S81 | `axiom_set_tables_lock_inv` | axiom | invariant | none | trusted |
+| S82 | `axiom_set_tables_lock_inv` | axiom | invariant | none | trusted |
 
 ### src/class/table.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S82 | `axiom_table_lock_inv` | axiom | invariant | none | trusted |
-| S83 | `axiom_table_lock_frame` | axiom | invariant | none | trusted |
-| S84 | `load_owner` | body | invariant | GenMC | evidence |
-| S85 | `store_owner` | body | invariant | GenMC | discharged |
-| S86 | `axiom_slot_loc` | axiom | invariant | none | trusted |
-| S87 | `axiom_fresh_words` | axiom | invariant | none | trusted |
-| S88 | `axiom_init_descs` | axiom | ptr | none | trusted |
-| S89 | `axiom_init_owners` | axiom | ptr | none | trusted |
-| S90 | `axiom_init_words` | axiom | ptr | none | trusted |
-| S91 | `word_index` | body | asm | Isla | evidence |
+| S83 | `axiom_table_lock_inv` | axiom | invariant | none | trusted |
+| S84 | `axiom_table_lock_frame` | axiom | invariant | none | trusted |
+| S85 | `load_owner` | body | invariant | GenMC | evidence |
+| S86 | `store_owner` | body | invariant | GenMC | discharged |
+| S87 | `axiom_slot_loc` | axiom | invariant | none | trusted |
+| S88 | `axiom_fresh_words` | axiom | invariant | none | trusted |
+| S89 | `axiom_init_descs` | axiom | ptr | none | trusted |
+| S90 | `axiom_init_owners` | axiom | ptr | none | trusted |
+| S91 | `axiom_init_words` | axiom | ptr | none | trusted |
+| S92 | `word_index` | body | asm | Isla | evidence |
 
 ### src/class/verify.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S92 | `DebugSpecImpl for Says` | spec-impl | core | Kani | discharged |
-| S93 | `read_word` | body | cell | none | trusted |
+| S93 | `DebugSpecImpl for Says` | spec-impl | core | Kani | discharged |
 
 ### src/config.rs
 
@@ -2029,7 +2029,7 @@ fn owner_locked(&self, g: &Inner, slab: usize) -> (r: u16)
 
 ### S78. `ClassState::claim_with`
 
-src/class/mod.rs:3317. Kind: no_decreases. Category: termination.
+src/class/mod.rs:3326. Kind: no_decreases. Category: termination.
 Tool: RefinedRust. Status: trusted.
 
 > The loop of [`claim`] and [`claim_random`].
@@ -2055,7 +2055,7 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
 
 ### S79. `axiom_fresh_slots_zero`
 
-src/class/mod.rs:4275. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:4292. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `vspec::sys::axiom_fresh_anon_zero` (`mmap(2)`: a private anonymous mapping reads as zero until it is first written) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -2084,7 +2084,7 @@ axiom fn axiom_fresh_slots_zero(
 
 ### S80. `axiom_discarded_slots_zero`
 
-src/class/mod.rs:4313. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:4330. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `vspec::sys::axiom_discarded_zero` (`madvise(2)`: after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -2111,7 +2111,36 @@ axiom fn axiom_discarded_slots_zero(
 ;
 ```
 
-### S81. `axiom_set_tables_lock_inv`
+### S81. `axiom_fresh_slab_mem`
+
+src/class/mod.rs:4383. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> The permission to the bytes of slots `0..nslots` of slab `slab` of table `g.table`, lent for as long as `held`, the slab's descriptor permission in the class lock value `g` (`Inner::dperms`), is borrowed: what `ClassState::check_fresh_slab_is_zero` reads the slab's slots through (the `check_zero` debug mode), before the slab's first claim.
+
+```rust
+axiom fn axiom_fresh_slab_mem<'a>(g: Inner, slab: int, tracked held: &'a DescPerm) -> (tracked m: &'a crate::vspec::user::UserMem)
+    requires
+        g.table@.inv(),
+        0 <= slab < g.table@.spec_nslabs(),
+        !g.table@.spec_is_guard(slab as usize),
+        held.id() == desc_id(&desc_at(g.table@, slab as usize)),
+        held.state() == state_byte(State::Fresh),
+        g.dperms@.contains_key(slab as nat),
+        g.dperms@[slab as nat] == *held,
+        g.owns(slab as nat),
+        g.st(slab as nat) == State::Fresh,
+        g.committed@.contains(slab as nat),
+    ensures
+        m.covers(
+            process_regions().slot_at(g.table@.spec_class() as int, slab, 0),
+            class_table()[g.table@.spec_class() as int].nslots * class_table()[g.table@.spec_class() as int].size,
+        ),
+        m.provenance() == crate::vspec::addr::cast_provenance(),
+;
+```
+
+### S82. `axiom_set_tables_lock_inv`
 
 src/class/sets.rs:812. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -2125,7 +2154,7 @@ pub broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
 ;
 ```
 
-### S82. `axiom_table_lock_inv`
+### S83. `axiom_table_lock_inv`
 
 src/class/table.rs:226. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -2139,7 +2168,7 @@ pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
 ;
 ```
 
-### S83. `axiom_table_lock_frame`
+### S84. `axiom_table_lock_frame`
 
 src/class/table.rs:234. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -2154,7 +2183,7 @@ pub(super) broadcast axiom fn axiom_table_lock_frame(init: TableInner, v: TableI
 ;
 ```
 
-### S84. `load_owner`
+### S85. `load_owner`
 
 src/class/table.rs:322. Kind: external_body. Category: allocator invariant.
 Tool: loom/GenMC. Status: evidence (verus/seams/class-table-load_owner.md).
@@ -2171,7 +2200,7 @@ fn load_owner(w: &AtomicU16, Ghost(t): Ghost<SlabTable>, Ghost(slab): Ghost<usiz
     opens_invariants none
 ```
 
-### S85. `store_owner`
+### S86. `store_owner`
 
 src/class/table.rs:354. Kind: external_body. Category: allocator invariant.
 Tool: loom/GenMC. Status: discharged (verus/seams/class-table-store_owner.md).
@@ -2189,9 +2218,9 @@ fn store_owner(w: &AtomicU16, arena: u16, Ghost(t): Ghost<SlabTable>, Ghost(grou
             ==> #[trigger] slab_owner(t.spec_class() as int, x) == arena,
 ```
 
-### S86. `axiom_slot_loc`
+### S87. `axiom_slot_loc`
 
-src/class/table.rs:1611. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:1614. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: `SlabTable::new` runs once per class in a process (`Shared::init`, its one caller, builds the class tables of the one `Shared`, as `layout::process_regions` assumes), so the authority it makes is the class's, and so is its marker authority (`mloc`, [`mark_loc`]).
@@ -2206,9 +2235,9 @@ axiom fn axiom_slot_loc(c: int, loc: Loc, mloc: Loc, glg: u8, gmask: u32, tracke
         crate::layout::guard_geom(c) == (glg, gmask);
 ```
 
-### S87. `axiom_fresh_words`
+### S88. `axiom_fresh_words`
 
-src/class/table.rs:1634. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:1637. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the permissions of the `n` words of the table at `base` that `Meta::reserve_table` has just returned, each holding zero: the table has never been written (`meta.rs`: carved once and never freed), and nothing but the bitmap views reaches it.
@@ -2222,9 +2251,9 @@ axiom fn axiom_fresh_words(base: usize, n: nat, c: int, tracked once: Once) -> (
         forall|j: int| #![trigger r.contains_key(j)] #![trigger r[j]] 0 <= j < n ==> r.contains_key(j) && r[j].addr() == base + 8 * j && r[j].value() == 0;
 ```
 
-### S88. `axiom_init_descs`
+### S89. `axiom_init_descs`
 
-src/class/table.rs:1716. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1719. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the descriptors at the permissions `perms` carved for keys `0..n` hold values.
@@ -2239,9 +2268,9 @@ axiom fn axiom_init_descs(tracked perms: Map<int, PointsTo<SlabDesc>>, n: int) -
 ;
 ```
 
-### S89. `axiom_init_owners`
+### S90. `axiom_init_owners`
 
-src/class/table.rs:1742. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1745. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the owner words at the permissions `perms` carved for keys `0..n` hold values, as [`axiom_init_descs`] (an `AtomicU16` is valid for every bit pattern).
@@ -2254,9 +2283,9 @@ axiom fn axiom_init_owners(tracked perms: Map<int, PointsTo<AtomicU16>>, n: int)
 ;
 ```
 
-### S90. `axiom_init_words`
+### S91. `axiom_init_words`
 
-src/class/table.rs:1754. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:1757. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the class bitmap words at the permissions `perms` carved for keys `0..n` hold values, as [`axiom_init_descs`], and each is the word at its permission's address, the identity [`word_addr`] names (the identity the word permissions of [`axiom_fresh_words`] are for).
@@ -2270,9 +2299,9 @@ axiom fn axiom_init_words(tracked perms: Map<int, PointsTo<AtomicU64>>, n: int) 
 ;
 ```
 
-### S91. `word_index`
+### S92. `word_index`
 
-src/class/table.rs:1910. Kind: external_body. Category: inline asm.
+src/class/table.rs:1913. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: evidence (verus/seams/class-table-word_index.md).
 
 > `index` itself, through an empty `asm!` on aarch64, for [`SlabTable::is_set_unchecked`]'s word index: LLVM then cannot fold the index's shift into the word address, and the load scales it.
@@ -2284,9 +2313,9 @@ pub(crate) fn word_index(index: usize) -> (r: usize)
     opens_invariants none
 ```
 
-### S92. `DebugSpecImpl for Says`
+### S93. `DebugSpecImpl for Says`
 
-src/class/verify.rs:242. Kind: spec_impl. Category: core library.
+src/class/verify.rs:306. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/class-verify-DebugSpecImpl-for-Says.md).
 
 ```rust
@@ -2295,21 +2324,6 @@ impl vstd::std_specs::fmt::DebugSpecImpl for Says {
         true
     }
 }
-```
-
-### S93. `read_word`
-
-src/class/verify.rs:313. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: none (assumption). Status: trusted.
-
-> The word at `p + off` of a slot `p` of class `c`, read once (trusted: nothing is claimed about the value).
-
-```rust
-unsafe fn read_word(p: *mut u8, off: usize, Ghost(c): Ghost<int>) -> u64
-    requires
-        process_regions().is_slot(c, p@.addr),
-        off as int + 8 <= class_table()[c].size,
-        (p@.addr as int + off as int) % 8 == 0,
 ```
 
 ### S94. `THP_NAMES`
@@ -2567,7 +2581,7 @@ fn addr_mix(h: &Heap) -> u64
 
 ### S114. `axiom_c_claim`
 
-src/heap/live.rs:934. Kind: axiom. Category: C-program contract.
+src/heap/live.rs:935. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The C contract of `free`, `realloc` and the sized frees: only a block's holder frees or reallocates it, and the holder of the block at `p` holds its token, which the allocation that made it handed to C with the block.
@@ -2583,10 +2597,10 @@ pub axiom fn axiom_c_claim(tracked c: CCall) -> (tracked r: Live)
 
 ### S115. `axiom_hand_out`
 
-src/heap/live.rs:970. Kind: axiom. Category: allocator invariant.
+src/heap/live.rs:976. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> The permission to the `len` usable bytes of the block at `p` that the allocator is handing out (or, for `Huge::check_zero`'s reads, a run `Huge::take` has just taken, before its hand-out: the run token comes back out through `Live::into_run`, which drops the permission), valid through `p`, the bytes' values unknown.
+> The permission to the `len` usable bytes of the block at `p` that the allocator is handing out (or, for the `check_zero` reads, a run `Huge::take` has just taken or a slot a claim has just taken, before its hand-out: `Huge::check_zero` and `ClassState::check_zero` give the token back out through `Live::into_run` or `Live::take_slot`, which drop the permission), valid through `p`, the bytes' values unknown.
 
 ```rust
 axiom fn axiom_hand_out(p: *mut u8, len: int) -> (tracked m: UserMem)
@@ -6945,7 +6959,7 @@ pub proof fn into_lazy(tracked self) -> (tracked r: (PointsToRaw, Zeroed))
 
 ### S409. `axiom_zeroed_bytes`
 
-src/vspec/user.rs:150. Kind: external_body proof. Category: allocator invariant.
+src/vspec/user.rs:174. Kind: external_body proof. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The bytes a [`Zeroed`] token covers read as zero, so a permission's byte state for them is zero.
@@ -6961,7 +6975,7 @@ pub proof fn axiom_zeroed_bytes(tracked z: &Zeroed, tracked m: &mut UserMem)
 
 ### S410. `axiom_cast`
 
-src/vspec/user.rs:174. Kind: external_body proof. Category: raw pointer (internal).
+src/vspec/user.rs:198. Kind: external_body proof. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The permission to bytes of challoc's memory, of any provenance, as the permission to them through an integer-to-pointer cast ([`addr_to_ptr`](crate::vspec::addr::addr_to_ptr), of [`cast_provenance`](crate::vspec::addr::cast_provenance)), the bytes and their values unchanged.
@@ -6977,7 +6991,7 @@ pub proof fn axiom_cast(tracked m: &mut UserMem)
 
 ### S411. `axiom_copied_bytes`
 
-src/vspec/user.rs:220. Kind: axiom. Category: core library.
+src/vspec/user.rs:244. Kind: axiom. Category: core library.
 Tool: Kani. Status: evidence (verus/seams/vspec-user-axiom_copied_bytes.md).
 
 > The effect on the byte state of [`copy_user`]'s `copy_nonoverlapping(src, dst, n)`, made with the permissions `s` to the `n` bytes from `src` and `d` to the `n` bytes from `dst`, which share no byte: `d` reads the `n` bytes from `dst` as `s` reads the `n` bytes from `src`, and its other bytes, its domain, its provenance and its well-formedness are kept.

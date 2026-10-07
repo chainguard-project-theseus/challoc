@@ -1991,6 +1991,7 @@ impl ClassState {
         ensures
             r@.addr == process_regions().slot_at(self.spec_class() as int, slab as int, slot as int),
             process_regions().is_bit_slot(self.spec_class() as int, r@.addr),
+            r@.provenance == crate::vspec::addr::cast_provenance(),
     {
         proof {
             use_type_invariant(self);
@@ -2731,7 +2732,15 @@ impl ClassState {
                 if live != 0 {
                     fresh_with_live(self.class as usize, slab, self.arena, desc, self.table().bits(slab).allocated(self.class().nslots()));
                 }
-                self.check_fresh_slab_is_zero(slab);
+                proof {
+                    assert(g.st(slab as nat) == State::Fresh);
+                    g.lemma_desc(slab as nat);
+                    use_type_invariant(self);
+                }
+                // The slab's slots, read through the permission lent while
+                // the lock value's descriptor permission of the slab is
+                // borrowed.
+                self.check_fresh_slab_is_zero(slab, Tracked(axiom_fresh_slab_mem(*g, slab as int, g.dperms.borrow().tracked_borrow(slab as nat))));
             }
         }
         let ghost g0 = *g;
@@ -3744,7 +3753,15 @@ impl ClassState {
                     }
                 }
                 if check_zero {
-                    self.check_zero(&out[got..got + want], pick);
+                    proof {
+                        // The pick's slots' tokens, keyed from `base + got`.
+                        let sl = out@.subrange(got as int, (got + want) as int);
+                        assert forall|j: int| 0 <= j < want implies otoks.entry(*_t0, #[trigger] sl[j], base + got + j) by {
+                            assert(sl[j] == out@[got + j]);
+                            assert(otoks.entry(*_t0, out@[got + j], base + (got + j)));
+                        }
+                    }
+                    self.check_zero(&out[got..got + want], pick, Tracked(&mut *otoks), Ghost(base + got));
                 }
                 got += want;
                 proof {
@@ -4328,6 +4345,59 @@ axiom fn axiom_discarded_slots_zero(
     ensures
         z.addr() == t.spec_slots().addr(slab * t.spec_slots().sb),
         z.len() == n * t.spec_slots().size,
+;
+
+/// The permission to the bytes of slots `0..nslots` of slab `slab` of
+/// table `g.table`, lent for as long as `held`, the slab's descriptor
+/// permission in the class lock value `g` (`Inner::dperms`), is borrowed:
+/// what `ClassState::check_fresh_slab_is_zero` reads the slab's slots
+/// through (the `check_zero` debug mode), before the slab's first claim.
+/// The bytes' values are unknown; the permission is valid through the
+/// casts `slot_ptr` makes. Borrowed, it makes them valid for reads only
+/// (`UserMem::lemma_valid_reads`).
+///
+/// Required, so proved at the call site: `held` is the descriptor
+/// permission of slab `slab` of a well-formed table, which records
+/// `Fresh` (`DescPerm`: one per descriptor, minted by
+/// `table::axiom_init_descs`; the borrow keeps it, so the descriptor's
+/// state, from being written), and is `g`'s for the slab; the slab is
+/// not a guard slab, and is owned by `g`'s arena, `Fresh` and committed
+/// in `g`'s ghost state.
+///
+/// Premise, the caller's and trusted: `g` is the value of the class lock
+/// the caller holds and `g.table` that class's table (which the
+/// descriptor permission alone does not say: the table's commit lock
+/// holds a slab's before the slab is handed out, and `inv` does not tie a
+/// table value to its class's one table), so the bytes are committed, and
+/// no other permission to them is held while `held` is borrowed. A slab
+/// is committed (`next_fresh_slab`) before the lock value's ghost
+/// records it so, and
+/// no decommit path takes a non-guard `Fresh` slab (a purge may discard,
+/// not unmap, a page group holding one); none of a `Fresh` slab's slots
+/// is allocated, cached or in a claim: the claims (`claim_prefix`,
+/// `finish`'s bit loop) take slots only of a slab `take` has made
+/// `Active`, and a slab leaves `Fresh` only through
+/// `ClassState::set_state_locked`, which never sets it, so
+/// `heap::live`'s `axiom_hand_out` mints no permission to these bytes
+/// meanwhile. Call site: `ClassState::take`.
+axiom fn axiom_fresh_slab_mem<'a>(g: Inner, slab: int, tracked held: &'a DescPerm) -> (tracked m: &'a crate::vspec::user::UserMem)
+    requires
+        g.table@.inv(),
+        0 <= slab < g.table@.spec_nslabs(),
+        !g.table@.spec_is_guard(slab as usize),
+        held.id() == desc_id(&desc_at(g.table@, slab as usize)),
+        held.state() == state_byte(State::Fresh),
+        g.dperms@.contains_key(slab as nat),
+        g.dperms@[slab as nat] == *held,
+        g.owns(slab as nat),
+        g.st(slab as nat) == State::Fresh,
+        g.committed@.contains(slab as nat),
+    ensures
+        m.covers(
+            process_regions().slot_at(g.table@.spec_class() as int, slab, 0),
+            class_table()[g.table@.spec_class() as int].nslots * class_table()[g.table@.spec_class() as int].size,
+        ),
+        m.provenance() == crate::vspec::addr::cast_provenance(),
 ;
 
 /// The tokens a pick holds: the prefix a zero pick claimed under the lock.

@@ -20,7 +20,8 @@ verus! {
 /// load of each of them reads.
 ///
 /// The permission makes its bytes valid for reads and writes
-/// ([`UserMem::lemma_valid`], from `vspec::ptr::axiom_raw_valid`). The byte
+/// ([`UserMem::lemma_valid`], from `vspec::ptr::axiom_raw_valid`; a
+/// borrowed one only for reads, [`UserMem::lemma_valid_reads`]). The byte
 /// state is a ghost record, not memory: it is true because every write
 /// verified code makes to user memory takes the permission and updates it
 /// ([`zero_user`], [`copy_user`]), and the program, which writes the bytes
@@ -93,15 +94,38 @@ impl UserMem {
     }
 
     /// The permission makes the `len` bytes from `p` (of its provenance)
-    /// valid for reads and writes (`vspec::ptr::axiom_raw_valid`).
-    pub proof fn lemma_valid(tracked &self, p: *mut u8, len: int)
+    /// valid for reads and writes (`vspec::ptr::axiom_raw_valid`). Writes
+    /// take the permission itself: a borrowed one only reads
+    /// ([`UserMem::lemma_valid_reads`]). Unchanged.
+    pub proof fn lemma_valid(tracked &mut self, p: *mut u8, len: int)
+        requires
+            0 <= len,
+            old(self).provenance() == p@.provenance,
+            forall|i: int| p@.addr <= i < p@.addr + len ==> #[trigger] old(self).dom().contains(i),
+        ensures
+            *final(self) == *old(self),
+            crate::vspec::ptr::valid_writes(p, len),
+            crate::vspec::ptr::valid_reads(p as *const u8, len),
+    {
+        assert(self.raw.contains_range(p@.addr as int, len)) by {
+            assert forall|i: int| #[trigger] Set::range(p@.addr as int, p@.addr + len).contains(i) implies self.dom().contains(i) by {
+                broadcast use vstd::set_lib::range_set_properties;
+            }
+        }
+        crate::vspec::ptr::axiom_raw_valid(&self.raw, p, len);
+    }
+
+    /// The permission makes the `len` bytes from `p` (of its provenance)
+    /// valid for reads, inside the allocation `p` is derived from
+    /// (`vspec::ptr::axiom_raw_valid`).
+    pub proof fn lemma_valid_reads(tracked &self, p: *mut u8, len: int)
         requires
             0 <= len,
             self.provenance() == p@.provenance,
             forall|i: int| p@.addr <= i < p@.addr + len ==> #[trigger] self.dom().contains(i),
         ensures
-            crate::vspec::ptr::valid_writes(p, len),
             crate::vspec::ptr::valid_reads(p as *const u8, len),
+            crate::vspec::ptr::in_alloc(p, len),
     {
         assert(self.raw.contains_range(p@.addr as int, len)) by {
             assert forall|i: int| #[trigger] Set::range(p@.addr as int, p@.addr + len).contains(i) implies self.dom().contains(i) by {
@@ -247,7 +271,7 @@ pub unsafe fn copy_user(src: *mut u8, dst: *mut u8, n: usize, Tracked(s): Tracke
 {
     proof {
         broadcast use vstd::layout::align_of_u8;
-        s.lemma_valid(src, n as int);
+        s.lemma_valid_reads(src, n as int);
         d.lemma_valid(dst, n as int);
         if n > 0 && !(src@.addr + n <= dst@.addr || dst@.addr + n <= src@.addr) {
             // The later of the two first bytes lies in both ranges, so in

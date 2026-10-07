@@ -4,12 +4,17 @@
 #[cfg(test)]
 use super::abort::wrong_arena;
 #[cfg(verus_only)]
+use super::slot_loc;
+#[cfg(verus_only)]
 use super::table::bits_shape;
-use super::{ClassState, Pick, SlabTable};
+use super::{ClassState, Pick, SlabTable, SlotToks};
 #[cfg(verus_only)]
 use crate::layout::{NCLASSES, class_table, process_regions, slots_in};
 use crate::purge;
 use crate::slab::{SlabDesc, State};
+#[cfg(verus_only)]
+use crate::vspec::addr::cast_provenance;
+use crate::vspec::user::UserMem;
 #[cfg(verus_only)]
 use vstd::arithmetic::power2::pow2;
 use vstd::prelude::*;
@@ -46,25 +51,36 @@ impl ClassState {
 
 verus! {
 
-// The `check_zero` debug checks. The walks are verified; the reads of
-// slot memory and the formatted aborts are trusted helpers below.
+// The `check_zero` debug checks. The walks and the reads of slot memory
+// (through permissions to the slots) are verified; the formatted aborts
+// are helpers below.
 impl ClassState {
     /// The `check_zero` debug mode: the first and
     /// last word of every slot of a pick reported zero must read zero.
     /// Aborts with everything the C-level assertion cannot say: the class,
     /// slab, the slab's state when the refill selected it (`Fresh` blames
     /// the commit path, `Purged` the discard path), the arena, the discard
-    /// backend and the offending word.
+    /// backend and the offending word. `toks` holds the slots' tokens
+    /// (keys from `key`), which the claim just took. The reads of each
+    /// slot go through the permission its hand-out will mint
+    /// (`heap::live::Live::from_slot`): it is minted here, used for the
+    /// reads and dropped with the token given back (`Live::take_slot`), so
+    /// no permission to the slots is held when this returns.
     #[cold]
     #[inline(never)]
-    pub(super) fn check_zero(&self, slots: &[*mut u8], pick: &Pick)
+    pub(super) fn check_zero(&self, slots: &[*mut u8], pick: &Pick, Tracked(toks): Tracked<&mut SlotToks>, Ghost(key): Ghost<int>)
         requires
             crate::sys::may_abort(),
             slots_in(slots@, self.spec_class() as int, 0, slots@.len() as int),
+            old(toks).holds(self.spec_table(), slots@, key, 0, slots@.len() as int),
+        ensures
+            *final(toks) == *old(toks),
     {
         proof {
             use_type_invariant(self);
             self.spec_table().lemma_region();
+            self.spec_table().lemma_regions_ok();
+            self.spec_table().lemma_slots_wf();
         }
         let size = self.class().size();
         proof {
@@ -73,29 +89,49 @@ impl ClassState {
         for &p in it: slots
             invariant
                 crate::sys::may_abort(),
+                crate::heap::regions_ok(),
                 size >= 8,
                 size == class_table()[self.spec_class() as int].size,
                 size as int % 8 == 0,
                 self.spec_class() < NCLASSES,
                 crate::layout::base_aligned(process_regions().class_base[self.spec_class() as int] as int, self.spec_class() as int, process_regions().lg_page),
+                self.spec_table().spec_slots().loc == slot_loc(self.spec_class() as int),
                 it.seq().len() == slots@.len(),
                 forall|i: int| 0 <= i < slots@.len() ==> *#[trigger] it.seq()[i] == slots@[i],
                 slots_in(slots@, self.spec_class() as int, 0, slots@.len() as int),
+                old(toks).holds(self.spec_table(), slots@, key, 0, slots@.len() as int),
+                *toks == *old(toks),
         {
+            let ghost c = self.spec_class() as int;
+            let ghost k = key + it.index();
             proof {
-                let c = self.spec_class() as int;
                 assert(p == *it.seq()[it.index() as int]);
                 assert(process_regions().is_slot(c, p@.addr));
                 lemma_slot_word(c, p);
+                assert(toks.entry(self.spec_table(), slots@[it.index() as int], k));
+            }
+            // The slot's token, out of `toks` into the hand-out's token,
+            // with the permission to the slot's bytes.
+            let tracked blk = crate::heap::live::Live::from_slot(toks.toks.tracked_remove(k), c, p);
+            let ghost t0 = old(toks).toks[k];
+            proof {
+                blk.lemma_mem();
+                blk.lemma_slot_len(p, c);
             }
             for &off in o: &[0, size - 8]
                 invariant
                     crate::sys::may_abort(),
+                    crate::heap::regions_ok(),
                     size >= 8,
                     size == class_table()[self.spec_class() as int].size,
                     size as int % 8 == 0,
+                    c == self.spec_class() as int,
                     p@.addr as int % 8 == 0,
                     process_regions().is_slot(self.spec_class() as int, p@.addr),
+                    blk.slot_block(p, c),
+                    blk.slot_tok() == t0,
+                    blk.mem_ok(),
+                    blk.mem().covers(p@.addr as int, size as int),
                     o.seq().len() == 2,
                     *o.seq()[0] == 0,
                     *o.seq()[1] == size - 8,
@@ -104,29 +140,44 @@ impl ClassState {
                     assert(off == *o.seq()[o.index() as int]);
                 }
                 // SAFETY: `p` is a slot this claim just reserved in a
-                // committed slab; slots are at least 16 bytes and 8-aligned.
-                let word = unsafe { read_word(p, off, Ghost(self.spec_class() as int)) };
+                // committed slab; slots are at least 8 bytes and 8-aligned,
+                // and `blk`'s permission covers the slot.
+                let word = unsafe { read_word(p, off, Ghost(self.spec_class() as int), Tracked(blk.mem_ref())) };
                 if word != 0 {
                     self.dirty_word(pick, size, p, off, word);
                 }
+            }
+            proof {
+                // The token back, the permission dropped with it.
+                let tracked t = blk.take_slot(c);
+                toks.toks.tracked_insert(k, t);
+                assert(toks.toks =~= old(toks).toks);
             }
         }
     }
 
     /// `check_zero`: the first word of every slot of a `Fresh` slab must
     /// read zero before its first claim; a dirty one means the memory was
-    /// written before this table ever handed the slab out.
+    /// written before this table ever handed the slab out. The reads go
+    /// through `m`, the permission to the slab's slots that `take` lends
+    /// under the class lock (`axiom_fresh_slab_mem`).
     #[cold]
     #[inline(never)]
-    pub(super) fn check_fresh_slab_is_zero(&self, slab: usize)
+    pub(super) fn check_fresh_slab_is_zero(&self, slab: usize, Tracked(m): Tracked<&UserMem>)
         requires
             crate::sys::may_abort(),
             slab < self.spec_nslabs(),
             !self.spec_table().spec_is_guard(slab),
+            m.covers(
+                process_regions().slot_at(self.spec_class() as int, slab as int, 0),
+                class_table()[self.spec_class() as int].nslots * class_table()[self.spec_class() as int].size,
+            ),
+            m.provenance() == cast_provenance(),
     {
         proof {
             use_type_invariant(self);
             self.spec_table().lemma_region();
+            self.spec_table().lemma_regions_ok();
             self.spec_table().lemma_guard_slab(slab as int);
             lemma_slot_size(self.spec_class() as int);
         }
@@ -135,6 +186,7 @@ impl ClassState {
         for slot in 0..cls.nslots()
             invariant
                 crate::sys::may_abort(),
+                crate::heap::regions_ok(),
                 slab < self.spec_nslabs(),
                 *cls == class_table()[self.spec_class() as int],
                 cls.wf(),
@@ -144,14 +196,26 @@ impl ClassState {
                 crate::layout::base_aligned(process_regions().class_base[self.spec_class() as int] as int, self.spec_class() as int, process_regions().lg_page),
                 self.spec_nslabs() as int == process_regions().spec_nslabs(self.spec_class() as int),
                 class_table()[self.spec_class() as int].size >= 8,
+                m.covers(
+                    process_regions().slot_at(self.spec_class() as int, slab as int, 0),
+                    class_table()[self.spec_class() as int].nslots * class_table()[self.spec_class() as int].size,
+                ),
+                m.provenance() == cast_provenance(),
         {
             let p = self.slot_ptr(slab, slot);
             proof {
-                process_regions().lemma_is_slot(self.spec_class() as int, slab as int, slot as int, p@.addr);
-                lemma_slot_word(self.spec_class() as int, p);
+                let c = self.spec_class() as int;
+                process_regions().lemma_is_slot(c, slab as int, slot as int, p@.addr);
+                lemma_slot_word(c, p);
+                // The slot's first word is inside the slab's slots.
+                let (b, sz, n, s) = (process_regions().slot_at(c, slab as int, 0), cls.size as int, cls.nslots as int, slot as int);
+                assert(p@.addr as int == b + s * sz);
+                assert(s * sz + 8 <= n * sz) by (nonlinear_arith)
+                    requires s < n, sz >= 8;
             }
-            // SAFETY: a slot of a committed slab; the class lock is held.
-            let word = unsafe { read_word(p, 0, Ghost(self.spec_class() as int)) };
+            // SAFETY: a slot of a committed slab; the class lock is held,
+            // and `m` covers the slab's slots.
+            let word = unsafe { read_word(p, 0, Ghost(self.spec_class() as int), Tracked(m)) };
             if word != 0 {
                 self.fresh_slab_dirty(slab, slot, p, word, &bm);
             }
@@ -299,24 +363,41 @@ proof fn lemma_slot_size(c: int)
     crate::layout::lemma_aligned_down(class_table()[c].size as int, crate::QUANTUM as int, 8);
 }
 
-/// The word at `p + off` of a slot `p` of class `c`, read once (trusted:
-/// nothing is claimed about the value). The contract places the word
-/// inside the slot, aligned, and the slot outside the guard slabs; that
-/// its slab is committed (the caller has just claimed a slot of it, or
-/// holds its class lock while it is `Fresh`) stays the caller's, as no
-/// ghost state records commitment.
+/// The word at `p + off` of a slot `p` of class `c`, read once through
+/// the permission `m` to it (nothing is claimed about the value). The
+/// contract places the word inside the slot, aligned; `m` covers the
+/// slot's bytes up to the word's end, through `p`'s provenance.
 ///
 /// # Safety
-/// `p + off` is an aligned word of committed slot memory.
+/// `p + off` is an aligned word that `m` covers.
 #[inline(always)]
-#[verifier::external_body]
-unsafe fn read_word(p: *mut u8, off: usize, Ghost(c): Ghost<int>) -> u64
+unsafe fn read_word(p: *mut u8, off: usize, Ghost(c): Ghost<int>, Tracked(m): Tracked<&UserMem>) -> u64
     requires
+        crate::heap::regions_ok(),
         process_regions().is_slot(c, p@.addr),
         off as int + 8 <= class_table()[c].size,
         (p@.addr as int + off as int) % 8 == 0,
+        m.provenance() == p@.provenance,
+        forall|x: int| p@.addr <= x < p@.addr + off + 8 ==> #[trigger] m.dom().contains(x),
 {
-    // SAFETY: guaranteed by the caller.
+    proof {
+        broadcast use {vstd::layout::layout_of_primitives, vstd::layout::group_align_properties, vstd::layout::align_nonzero};
+        crate::vspec::class::axiom_class_table_wf(c);
+        process_regions().lemma_slot_in_region(c, p@.addr);
+        // The word is inside the allocation, which `add` needs.
+        m.lemma_valid_reads(p, off + 8);
+        crate::vspec::ptr::axiom_ptr_add_addr(p, off);
+        let q = crate::vspec::ptr::ptr_add(p, off);
+        assert forall|x: int| q@.addr <= x < q@.addr + 8 implies #[trigger] m.dom().contains(x) by {
+            assert(p@.addr <= x < p@.addr + off + 8);
+        }
+        m.lemma_valid_reads(q, 8);
+        crate::vspec::ptr::axiom_plain_u64();
+        // A `u64` is aligned to its size, so to its alignment.
+        crate::layout::lemma_aligned_down(q@.addr as int, 8, vstd::layout::align_of::<u64>() as int);
+    }
+    // SAFETY: `m` makes the eight bytes at `p + off` valid for reads
+    // through `p`, and they are aligned.
     unsafe { core::ptr::read_volatile(p.add(off) as *const u64) }
 }
 
@@ -386,7 +467,7 @@ mod kani_verify {
     use crate::kani_proofs::fmt::formats_debug_flat;
     use crate::slab::State;
 
-    /// S92 `DebugSpecImpl for Says` (`fmt_req` true): `None` and every
+    /// S93 `DebugSpecImpl for Says` (`fmt_req` true): `None` and every
     /// state, each formatted in turn (`{:?}` only: Kani does not finish
     /// `{:#?}` of an `Option`, whose `PadAdapter` path the record names
     /// as a gap; challoc formats `Says` with `{:?}`).

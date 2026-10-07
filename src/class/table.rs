@@ -926,6 +926,9 @@ impl SlabTable {
         // The watermark, with its invariant (0, at most any slab count).
         let (committed_slabs, Tracked(cperm)) = new_usize(0);
         let tracked committed_inv = CommittedInv::new((usize_id(&committed_slabs), nslabs), cperm, committed_ns());
+        proof {
+            reveal(regions_held);
+        }
         Some(SlabTable {
             bits_base,
             owners_base,
@@ -1922,6 +1925,15 @@ pub(crate) fn word_index(index: usize) -> (r: usize)
     index
 }
 
+/// The process's regions are well formed and separated
+/// ([`regions_ok`](crate::heap::regions_ok)), as [`SlabTable::new`]
+/// requires. Opaque ([`SlabTable::lemma_regions_ok`] reads it), so the
+/// invariant's users do not pay for it.
+#[verifier::opaque]
+pub(super) open spec fn regions_held() -> bool {
+    crate::heap::regions_ok()
+}
+
 impl SlabTable {
     /// The geometry `new` sets up and never changes: the class, its slab
     /// bits, the power-of-two page and hand-out groups (a page group no
@@ -1943,7 +1955,8 @@ impl SlabTable {
     /// page groups of at most `2^26` slabs and a guard mask of the shape
     /// `2^k - 1` ([`mask_shape`]). The watermark's invariant
     /// ([`CommittedPred`]) is the one over its atomic and the slab count, in
-    /// [`committed_ns`].
+    /// [`committed_ns`]. The process's regions are well formed and
+    /// separated ([`regions_held`]).
     ///
     /// [`process_regions`]: crate::layout::process_regions
     #[verifier::type_invariant]
@@ -1984,6 +1997,7 @@ impl SlabTable {
         &&& groups_paged(self.base, self.slabs_per_page, class_table()[self.class as int].lg_slab, self.lg_page)
         &&& self.committed_inv@.constant() == (usize_id(&self.committed_slabs), self.nslabs)
         &&& self.committed_inv@.namespace() == committed_ns()
+        &&& regions_held()
     }
 
     /// Hand-out groups of the region (owner words).
@@ -2306,6 +2320,17 @@ impl SlabTable {
             self.spec_is_guard(slab as usize) == crate::layout::guard_slab(self.spec_class() as int, slab),
             self.spec_is_guard(slab as usize) == self.spec_slots().guard(slab),
     {
+    }
+
+    /// The process's regions are well formed and separated
+    /// ([`regions_ok`](crate::heap::regions_ok)): `new` requires it.
+    pub(super) proof fn lemma_regions_ok(&self)
+        requires
+            self.inv(),
+        ensures
+            crate::heap::regions_ok(),
+    {
+        reveal(regions_held);
     }
 
     /// The table covers its class's region of the process's regions,
@@ -3060,6 +3085,7 @@ impl SlabTable {
             slot < class_table()[self.spec_class() as int].nslots && !crate::layout::guard_slab(self.spec_class() as int, slab as int)
                 ==> process_regions().is_slot(self.spec_class() as int, r@.addr),
             process_regions().is_bit_slot(self.spec_class() as int, r@.addr),
+            r@.provenance == cast_provenance(),
     {
         proof {
             use_type_invariant(self);

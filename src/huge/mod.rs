@@ -5739,7 +5739,7 @@ impl Huge {
         let q = crate::vspec::addr::addr_to_ptr(a);
         proof {
             broadcast use {vstd::raw_ptr::axiom_ptr_mut_from_data, vstd::layout::layout_of_primitives, vstd::layout::group_align_properties, vstd::layout::align_nonzero};
-            m.lemma_valid(q, 8);
+            m.lemma_valid_reads(q, 8);
             crate::vspec::ptr::axiom_plain_u64();
             // A `u64` is aligned to its size, so to its alignment.
             crate::layout::lemma_aligned_down(a as int, 8, vstd::layout::align_of::<u64>() as int);

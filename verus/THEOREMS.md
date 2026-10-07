@@ -278,11 +278,21 @@ and `axiom_shared_built` reads the built `Shared`'s tables from; a set
 of a class state reaches the arena's set table through that table's
 frozen permission, which `Arena::init` freezes once it has written it.
 
-**Debug reads.** `class::verify::read_word` (`external_body`): the
-`check_zero` debug mode's volatile read of a word of a slot it has just
-claimed, or of a `Fresh` slab's slot under the class lock. Its contract
-places the word inside the slot, aligned, and claims nothing about the
-value; that its slab is committed stays the caller's. The huge reads
+**Debug reads.** No trusted read; one trusted permission mint.
+`class::verify::read_word`, the `check_zero` debug mode's volatile read
+of a word of a slot, is verified (`core::ptr::read_volatile`,
+`vspec::ptr`), through a permission to the slot's bytes:
+`ClassState::check_zero` mints each claimed slot's from the slot token
+the claim just took (`heap::live::Live::from_slot`, the hand-out's mint)
+and gives the token back with the permission dropped
+(`Live::take_slot`); `ClassState::check_fresh_slab_is_zero` reads a
+`Fresh` slab's unclaimed slots, which no token covers, through the
+permission `class::axiom_fresh_slab_mem` lends for as long as `take`
+borrows the slab's descriptor permission from the class lock value
+(trusted: the slab is committed and nothing else holds a permission to
+its slots while it is `Fresh`; a borrowed permission only reads,
+`vspec::user::UserMem::lemma_valid_reads`). Neither claims anything
+about the value. The huge reads
 (`huge::Huge::read_run_word`) are verified: `Huge::check_zero` mints the
 run's permission from the run token `take` just made
 (`heap::live::Live::from_run`, the hand-out's mint), reads through it with
