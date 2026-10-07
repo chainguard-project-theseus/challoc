@@ -91,9 +91,9 @@ documentation (kernel, ISA, C standard) its contract follows.
 
 | tool | short | seams |
 |---|---|---:|
-| Islaris/Isla | Isla | 32 |
+| Islaris/Isla | Isla | 31 |
 | RefinedRust | RR | 16 |
-| Kani | Kani | 206 |
+| Kani | Kani | 207 |
 | loom/GenMC | GenMC | 35 |
 | Verus | Verus | 4 |
 | Miri (evidence only) | Miri | 4 |
@@ -116,7 +116,8 @@ Seams by category and tool:
 
 | category | tool | seams |
 |---|---|---:|
-| inline asm | Islaris/Isla | 31 |
+| inline asm | Islaris/Isla | 30 |
+| inline asm | Kani | 1 |
 | FFI/syscall | none (assumption) | 15 |
 | function pointer | Kani | 22 |
 | UnsafeCell/volatile/transmute | RefinedRust | 6 |
@@ -374,7 +375,7 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S130 | `ClassLine::guard_word` | body | asm | Isla | trusted |
+| S130 | `ClassLine::guard_word` | body | asm | Kani | evidence |
 | S131 | `ThreadKey::create` | body | fnptr | Kani | trusted |
 | S132 | `pthread_setspecific` | body | ffi | none | trusted |
 | S133 | `axiom_process_shared` | axiom | invariant | none | trusted |
@@ -2878,7 +2879,7 @@ fn debug_scheduled(allocs: u64, mask: u32)
 ### S130. `ClassLine::guard_word`
 
 src/heap/shared.rs:518. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Kani. Status: evidence (verus/seams/heap-shared-ClassLine-guard_word.md).
 
 > `guard_mask | tz << 32 | lg_guard << 40` (the padding above is zero), from one 8-byte load.
 

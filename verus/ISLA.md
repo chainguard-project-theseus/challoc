@@ -31,7 +31,12 @@ out of the one register it went in). `sys::opaque`, the hint upstream
 `layout::regions::class_entry`'s x86_64 hint is the same shape; since
 package P7 it is its own item, `layout::regions::entry_barrier`, pinned
 the same way ([record](seams/layout-regions-entry_barrier.md), evidence),
-and `class_entry` around it is verified.
+and `class_entry` around it is verified. `heap::ClassLine::guard_word`'s
+x86_64 hint (upstream #101) is the same shape too: its template is in
+`templates.txt`, and its [record](seams/heap-shared-ClassLine-guard_word.md)
+is evidence, as `word_index`'s is: Kani checks the 8-byte load (on a
+pinned copy, `verus/kani/pins.txt`), and the block has only its
+template pin.
 
 ## Setup
 

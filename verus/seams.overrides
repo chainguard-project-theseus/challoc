@@ -125,6 +125,7 @@ Reserved::into_unbacked	platform/kernel fact	none (assumption)
 src/layout/regions.rs:word	core library	Kani	discharged (verus/seams/layout-regions-word.md)
 entry_barrier	inline asm	Islaris/Isla	evidence (verus/seams/layout-regions-entry_barrier.md)
 word_index	inline asm	Islaris/Isla	evidence (verus/seams/class-table-word_index.md)
+ClassLine::guard_word	inline asm	Kani	evidence (verus/seams/heap-shared-ClassLine-guard_word.md)
 axiom_acquired	allocator invariant	none (assumption)
 axiom_held	allocator invariant	none (assumption)
 src/lock.rs:Lock::cell_ref	UnsafeCell/volatile/transmute	Verus

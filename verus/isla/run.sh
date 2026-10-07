@@ -82,14 +82,27 @@ fail() {
 # Each line of templates.txt is `FILE<TAB>FN<TAB>ASM`: some `asm!(...)`
 # call inside `fn FN` in FILE must read ASM.
 asm_blocks() { # FILE FN: every asm!(...) call in fn FN, one per line
+	# A call runs from `asm!(` to its matching `)` (parentheses inside
+	# string literals not counted), with the `;` right after it if any.
 	awk -v fn="$2" '
 		$0 ~ "fn " fn "\\(" { infn = 1; depth = 0 }
 		infn && /^(    )?}/ && !inasm { infn = 0 }
-		infn && /asm!\(/ { inasm = 1; buf = "" }
+		infn && !inasm && /asm!\(/ { inasm = 1; buf = ""; d = 0; instr = 0 }
 		inasm {
 			line = $0; sub(/^[ \t]+/, "", line)
-			buf = buf (buf == "" ? "" : " ") line
-			if (line ~ /\);$/) { inasm = 0; sub(/^.*asm!\(/, "asm!(", buf); print buf }
+			if (buf == "") line = substr(line, index(line, "asm!("))
+			out = ""; done = 0
+			for (k = 1; k <= length(line) && !done; k++) {
+				c = substr(line, k, 1); out = out c
+				if (c == "\"") instr = !instr
+				else if (!instr && c == "(") d++
+				else if (!instr && c == ")" && --d == 0) {
+					done = 1
+					if (substr(line, k + 1, 1) == ";") out = out ";"
+				}
+			}
+			buf = buf (buf == "" ? "" : " ") out
+			if (done) { inasm = 0; print buf }
 		}' "$root/$1"
 }
 tab=$(printf '\t')

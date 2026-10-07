@@ -7,7 +7,10 @@
 # or evidence with tool Kani exists, is the record the ledger entry of
 # its seam names, and still quotes that entry's contract (records of
 # other tools, such as Isla's, quote other text first). A changed
-# contract fails here until the record and its harness are revisited.
+# contract fails here until the record and its harness are revisited;
+# so does a change to the source lines a harness copies
+# (verus/kani/pins.txt: Kani cannot run inline assembly, so a harness
+# runs a copy of the body around it).
 # Then runs the harnesses under both quanta, since the layout,
 # class-table and geometry harnesses depend on `NCLASSES`, and exits
 # non-zero if the check or either run fails.
@@ -50,6 +53,20 @@ if [ -n "$stale" ]; then
 	echo "$stale" >&2
 	exit 1
 fi
+# The source lines a harness runs a copy of (verus/kani/pins.txt), in
+# place, consecutive, in order.
+for f in $(awk -F'\t' '!/^#/ && NF == 2 { print $1 }' verus/kani/pins.txt | sort -u); do
+	missing=$(awk -F'\t' -v f="$f" '
+        FILENAME == "verus/kani/pins.txt" { if ($0 !~ /^#/ && NF == 2 && $1 == f) p[++n] = $2; next }
+        k == 0 && !started { gap = 1; started = 1 }
+        { t = $0; sub(/^[ \t]+/, "", t); sub(/[ \t]+$/, "", t) }
+        t == "" || t ~ /^\/\// || k >= n { next }
+        t == p[k + 1] { k++; gap = 0; if (p[k + 1] == "...") { k++; gap = 1 } next }
+        !gap { exit }
+        END { if (k < n) print p[k + 1] }
+    ' verus/kani/pins.txt "$f")
+	[ -z "$missing" ] || { echo "kani: $f no longer has, as verus/kani/pins.txt lists it: $missing" >&2; exit 1; }
+done
 echo "kani: $(echo "$records" | wc -w) records match the ledger"
 
 jobs=${KANI_JOBS:-1}
