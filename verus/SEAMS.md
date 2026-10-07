@@ -6608,7 +6608,7 @@ pub unsafe fn array_get_unchecked<T, const N: usize>(a: &[T; N], i: usize) -> (r
 
 ### S386. `slice_from_perms`
 
-src/vspec/slice.rs:283. Kind: external_body. Category: raw pointer (internal).
+src/vspec/slice.rs:297. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `core::slice::from_raw_parts(p, n)` over `n` initialised `T`s whose permissions `perms` holds from key `j0` on, element `i`'s at key `j0 + i`, at `p`, `p + size_of::<T>()`, ...
@@ -6639,7 +6639,7 @@ pub fn slice_from_perms<'a, T>(
 
 ### S387. `slice_mut_elems`
 
-src/vspec/slice.rs:339. Kind: external_body. Category: raw pointer (internal).
+src/vspec/slice.rs:353. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `core::slice::from_raw_parts_mut(base.add(start), n)` over the elements `start..start + n` of the `T`s at `base`, whose permissions `elems` holds keyed by their pointers, element `i`'s at `base.add(i)`, and no other permission: the slice of those elements, for as long as `elems` stays borrowed.

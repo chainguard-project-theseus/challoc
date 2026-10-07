@@ -248,20 +248,34 @@ pub unsafe fn array_get_unchecked<T, const N: usize>(a: &[T; N], i: usize) -> (r
 
 verus! {
 
-// Slices over element permissions. vstd's `PointsTo` is for one sized
-// `T` (an array `[T; N]` among them, with `N` fixed at compile time);
-// the slices here have lengths known only at run time
-// (`class::table::words_ref`, `heap::stack_mut`), so the element
-// permissions stand for a slice permission. The mutable slice's trusted
+// Slices over element permissions. vstd makes a reference from a
+// permission only for one sized `T` (`ptr_ref`, `ptr_mut_ref` over a
+// `PointsTo<T>`). An array permission `PointsTo<[T; N]>` would give a
+// `&[T; N]`, and so a slice, but its `N` is fixed at compile time, and
+// neither region here has one: the class bitmap is the
+// `nslabs * slab_bits` bits of a run-time reservation, of which
+// `class::table::words_ref` takes one slab's `slab_bits / 64` words (1
+// to `MAX_SLAB_WORDS`, by class); a cache stack holds `cap` entries
+// (`Config::cap_for`, a run-time `u32`), of which `heap::stack_mut`
+// takes any `start..start + len`. A permission for a longer fixed array
+// would claim memory past the region (after the bitmap's last slab, past
+// the stack's allocation), and a dispatch on the length would change the
+// machine code. So the element permissions stand for a slice
+// permission, with one trusted step per slice kind: vstd specifies
+// neither `from_raw_parts` nor `from_raw_parts_mut`, this crate
+// specifies no `from_raw_parts_mut`, and its `core::slice::from_raw_parts`
+// specification asks for a C caller's read bound (`r_len`) and states no
+// values. The mutable slice's trusted
 // step, `slice_mut_elems`, takes a map holding exactly its elements'
 // permissions, which `slice_mut_from_perms` carves out of its caller's
 // map (`Map::tracked_borrow_mut_split`), so the rest of that contract is
 // proved. `slice_from_perms` stays one trusted step: a shared borrow
 // changes no permission, so its contract has no frame to prove, and a
 // slice permission type lent by the element permissions (an axiom, with
-// a `ptr_ref`-like builder) verifies but adds a `Tracked` type at the
-// call, which changed the machine code of the flush path (`Heap::flush`
-// and `group_by_slab` reach `words_ref`).
+// a `ptr_ref`-like builder) lets `slice_from_perms` verify but only
+// moves the trusted step into the builder, and adds a `Tracked` type at
+// the call, which changed the machine code of the flush path
+// (`Heap::flush` and `group_by_slab` reach `words_ref`).
 
 /// `core::slice::from_raw_parts(p, n)` over `n` initialised `T`s whose
 /// permissions `perms` holds from key `j0` on, element `i`'s at key
