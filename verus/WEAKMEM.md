@@ -510,7 +510,7 @@ done in (no C toolchain to build it), so every result is loom's.
 | `LockGuard::drop` (S181) | discharged | P2 models run the real `unlock` |
 | `fetch_or`, `fetch_and`, `store` (`vspec/word.rs`; S361, S364, S362) | discharged | C11 per-location coherence gives the contract; P1 models check the cross-location edges the SC proof needs |
 | `RawLock::lock_slow` (S176) | evidence | P2 models show deadlock freedom; termination does not hold (the mutex is not starvation-free) |
-| `SlabDesc::sub_live` (S202) | evidence, then discharged (second pass) | P1 models; that the abort is unreachable is an allocator invariant, which the contract (now `requires may_abort()`) no longer claims |
+| `SlabDesc::sub_live` (S202) | evidence, then discharged (second pass) | P1 models; that the abort is unreachable is an allocator invariant, which the contract (`requires may_abort()`, since theorem 44 `may_abort_pending()`) no longer claims |
 | `load` (`vspec/word.rs`, S363) | trusted, then discharged (second pass) | its caller, the `free` bit test, is P5, which no model reached then |
 | `WordPerm` (S360) | trusted, then discharged (second pass) | the type is the SC abstraction itself; its content is the wrappers' contracts and that every write goes through them |
 | `ClassState::claim_with` (S74) | trusted, retooled to RefinedRust | termination rests on `live` not rising between `plan`'s and `take`'s reads under the class lock (read-read coherence); a Verus `decreases` with that fact as an allocator-invariant axiom fits better than a bounded checker |
@@ -550,7 +550,7 @@ hand-off (a data race on the block) are P5's documented ones.
 | `store_owner` (S87) | discharged | the store is the word's only write (Verus's markers), so every load ordered after it reads `arena`; excluding the others is the reader's premise |
 | `state_claim` (was `claim_init`'s seam, now verified) | discharged | the exchange reads the last value in `STATE`'s modification order, for every ordering, so the permission carries it; at most one success is proved from `STATE`'s invariant, given `axiom_state` denotes one invariant (assumed); `run.sh` checks `STATE` has two writes; `StatePerm`, `state_load`, `state_publish` and `axiom_state` stay trusted |
 | `LockGuard::deref`, `deref_mut` (S183, S184) | superseded (now verified over the lock's `PCell`; the mutual exclusion and edge are `axiom_acquired`'s assumption) | was: P2 models (mutual exclusion and the release/acquire edge) and C11's visible side effect; the models use a loom cell beside the real lock word, not `Lock<T>` |
-| `SlabDesc::sub_live` (S206) | discharged | the contract now requires `may_abort()` and claims no value, so the assertion's abort is allowed; one wait-free RMW |
+| `SlabDesc::sub_live` (S206) | discharged | the contract now requires `may_abort()` (since theorem 44 `may_abort_pending()`) and claims no value, so the assertion's abort is allowed; one wait-free RMW |
 | `RawLock::lock_slow` (S178) | evidence (unchanged) | deadlock freedom only; the mutex is not starvation-free |
 | `Arenas::count` (S63) | declined, tool Verus | every store writes at most `MAX_ARENAS` and a load returns a stored value: an allocator invariant, provable as the bound counts are |
 | `words_ref` (S93; its trusted part is now `slice_from_perms`, which it calls) | declined, tool none | a raw-pointer slice over permissions; no memory-model content |

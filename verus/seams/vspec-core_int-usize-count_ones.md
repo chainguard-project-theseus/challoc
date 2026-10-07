@@ -1,6 +1,6 @@
 # `usize::count_ones`
 
-Seam S295 of `verus/SEAMS.md`: src/vspec/core_int.rs:33. Kind: assume_spec. Category: core library.
+Seam S296 of `verus/SEAMS.md`: src/vspec/core_int.rs:33. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

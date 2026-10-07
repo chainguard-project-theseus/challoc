@@ -2844,7 +2844,7 @@ impl Shared {
     #[inline]
     pub(super) fn owner(&self, index: u16) -> (r: &Arena)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_pending(),
         ensures
             self.wf() ==> r.spec_index() == index,
     {
@@ -2931,7 +2931,7 @@ impl Shared {
     /// `tok` is the slot's token; it goes back to the slot's bitmap word.
     pub fn free_direct(&self, arena: u16, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && self.wf() && crate::class::slot_owner(class as int, p@.addr) == arena),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             class < NCLASSES,
@@ -2952,6 +2952,11 @@ impl Shared {
             crate::class::lemma_aset_front(a, 0, 1);
             crate::class::lemma_aset_step(a, 0, 0, 1);
             assert(aset(a, 0, 1) =~= set![p@.addr as int]);
+            // A batch of one live slot of `arena`.
+            if self.wf() {
+                self.lemma_regions_ok();
+            }
+            assert(seq![p][0] == p);
         }
         self.owner(arena).class(class).release_with(&[p], Tracked(bag), Tracked(ord));
     }
@@ -2959,11 +2964,14 @@ impl Shared {
     /// Classify `p` for `free`: `Ok((class, arena))` for an allocated slab
     /// slot (the bitmap check happens here), `Err(page)` for a page-aligned
     /// pointer into the huge region (the huge allocator checks it). Aborts
-    /// on anything else.
+    /// on anything else. `blk` is the caller's token for `p`: with the
+    /// token of the live block there, neither `invalid_free` nor
+    /// `check_located`'s bit test can fire; its watermark compare is a
+    /// pending check (theorem "Valid programs never abort").
     #[inline(always)]
-    pub fn classify_free(&self, p: *mut u8) -> (r: Result<(usize, u16), usize>)
+    pub fn classify_free(&self, p: *mut u8, Tracked(blk): Tracked<&super::Live>) -> (r: Result<(usize, u16), usize>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
             self.wf(),
         ensures
             r matches Ok((c, _)) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
@@ -2974,10 +2982,21 @@ impl Shared {
             r matches Err(page) ==> crate::layout::process_regions().is_huge_block(p@.addr, 1)
                 && page == ((p@.addr - crate::layout::process_regions().huge_base) as usize) >> crate::layout::process_regions().lg_page,
     {
+        proof {
+            self.lemma_wf();
+            self.lemma_regions_ok();
+        }
         match self.regions.classify(p as usize) {
             Kind::Slab { class, slab, slot } => {
                 let class = class as usize;
-                let arena = self.table(class).check_located(slab as usize, slot as usize, p as usize);
+                proof {
+                    if blk.block(p) {
+                        // A live block at a slot address is the live slot,
+                        // whose token `blk` holds.
+                        blk.lemma_block_slot_addr(p, class as int);
+                    }
+                }
+                let arena = self.table(class).check_located(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()));
                 proof {
                     // `check_located` returned: not a guard slab.
                     self.regions.lemma_is_slot(class as int, slab as int, slot as int, p as usize);
@@ -2987,7 +3006,21 @@ impl Shared {
                 Ok((class, arena))
             }
             Kind::Huge { page } => Err(page),
-            Kind::Invalid => invalid_free(p as usize),
+            Kind::Invalid => {
+                proof {
+                    if blk.block(p) {
+                        // A slot start or a page start of the huge region,
+                        // which `classify` never calls `Invalid`.
+                        blk.lemma_block_target(p);
+                        if crate::heap::slot_start(p) {
+                            let c = choose|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr);
+                            assert(self.regions.is_slot_addr(c, p@.addr));
+                        }
+                    }
+                    assert(!blk.block(p));
+                }
+                invalid_free(p as usize)
+            },
         }
     }
 
@@ -3145,7 +3178,7 @@ impl Shared {
     #[inline(never)]
     pub fn zero_huge(&self, page: usize, Tracked(blk): Tracked<&mut super::Live>) -> (z: Tracked<Zeroed>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             self.wf(),
             page <= self.huge_pages(),
@@ -3216,7 +3249,7 @@ impl Shared {
     /// run start. Returns the usable bytes released.
     pub fn free_huge(&self, page: usize, Tracked(tok): Tracked<crate::huge::RunToken>, Tracked(ord): Tracked<&mut LockOrder>) -> usize
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_huge()),
             self.wf(),
@@ -3573,17 +3606,31 @@ impl Shared {
     pub(super) fn checked_slot_any(&self, p: *mut u8) -> Option<usize> {
         self.set_slot(p).map(|(class, _)| class)
     }
+
+    /// Tests: [`classify_free`] without the caller's token.
+    ///
+    /// [`classify_free`]: Shared::classify_free
+    #[cfg(test)]
+    pub fn classify_free_t(&self, p: *mut u8) -> Result<(usize, u16), usize> {
+        self.classify_free(p, Tracked::assume_new())
+    }
 }
 
 verus! {
 
+/// An arena index no arena was built for. From an owner word or a
+/// descriptor ([`Shared::owner`]) a pending check of theorem "Valid
+/// programs never abort": the word names the arena that claimed the
+/// slab, but no verified invariant says it was built. Every other caller
+/// (`alloc_huge`, of its caller's index, and the heap's own choices)
+/// holds [`crate::sys::may_abort`].
 #[cold]
 #[inline(never)]
 fn no_such_arena(index: u16) -> !
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort_pending(),
 {
-    crate::sys::abort_fmt(format_args!("arena {index} does not exist"))
+    crate::sys::abort_pending(format_args!("arena {index} does not exist"))
 }
 
 /// [`Shared::check_size_hint`]'s abort: the size hint names a class other

@@ -1,25 +1,28 @@
 # `SlabDesc::sub_live`
 
-Seam S211 of `verus/SEAMS.md`: src/slab.rs:431. Kind: external_body. Category: atomics primitive.
+Seam S210 of `verus/SEAMS.md`: src/slab.rs:431. Kind: external_body. Category: atomics primitive.
 Discharged by reading the body (part 3); the loom models are context only,
 for the allocator invariant the contract no longer claims.
 
 ## Contract
 
-At commit 0c9cd77:
+At the commit of theorem 44 ("Valid programs never abort", on
+4f75a5b7):
 
 ```rust
 pub fn sub_live(&self, n: usize) -> usize
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort_pending(),
 ```
 
-The body, at that commit: `let prev = self.live.fetch_sub(n as u32,
-AcqRel) as usize; assert!(prev >= n, ...); prev`. The contract claims no
-value, and `requires crate::sys::may_abort()` lets the call abort: the
-assertion is a `panic!`, which the `panic = "abort"` profiles turn into
-an abort. (At 8635213, with no `requires`, the contract said the
-assertion never fires; that was evidence only.)
+The body, at that commit (unchanged since 0c9cd77): `let prev =
+self.live.fetch_sub(n as u32, AcqRel) as usize; assert!(prev >= n, ...);
+prev`. The contract claims no value, and `requires
+crate::sys::may_abort_pending()` lets the call abort: the assertion is a
+`panic!`, which the `panic = "abort"` profiles turn into an abort.
+(At 8635213, with no `requires`, the contract said the assertion never
+fires; that was evidence only. From 0c9cd77 to theorem 44 it required
+`may_abort()`.)
 
 ## Statement
 
@@ -38,11 +41,17 @@ the number of slots held; the `Acquire` load of `live` under the lock
 
 ## Translation
 
-- **`requires crate::sys::may_abort()`**: the caller may abort, so the
-  assertion firing is within the contract (the panic reaches the
-  panic handler, which aborts through `abort_fmt`, the path
-  `may_abort` names). No `ensures`: nothing is claimed of the value
-  returned.
+- **`requires crate::sys::may_abort_pending()`**: the caller may abort
+  at one of theorem 44's pending checks (`may_abort() ||
+  pending_aborts()`, `sys/mod.rs`), so the assertion firing is within
+  the contract (the panic reaches the panic handler, which aborts
+  through `abort_fmt`). The assertion tests the live count, which no
+  verified invariant relates to the slot tokens, so theorem 44 ("Valid
+  programs never abort", verus/THEOREMS.md) names it among the checks
+  it does not prove unreachable yet, and
+  `api::tests::abort_grants_only_at_roots` lists `sub_live` among the
+  trusted bodies that require only `may_abort_pending`. No `ensures`:
+  nothing is claimed of the value returned.
 - **What is left to show**: that the call returns or aborts, with no
   undefined behaviour. The body is one `fetch_sub` (a single atomic
   read-modify-write, wait-free for every ordering), a comparison and
@@ -136,7 +145,11 @@ run or copy, and this translation, looking for claims beyond what the
 models check; its findings are folded in. Again 2026-10-04, after the
 contract gained `requires may_abort()` and the record became a
 discharge: it found the loom models add nothing the contract needs,
-which the header now says.
+which the header now says. 2026-10-07, theorem 44: the `requires`
+became `may_abort_pending()` (`may_abort() || pending_aborts()`, so
+weaker than before; the body unchanged). Two fresh-context subagent
+passes on theorem 44 reviewed the capability against the body (an
+`assert!` on the live count) and found it consistent.
 
 ## Tests
 

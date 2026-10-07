@@ -179,6 +179,34 @@ pub fn abort_integrity(args: fmt::Arguments<'_>) -> !
     abort_fmt(args)
 }
 
+/// [`abort_fmt`] at a resource failure: a resource the allocator needs
+/// failed it ([`super::kernel_aborts`]). Trusted: the call, which needs
+/// [`super::may_abort`], under the narrower [`super::may_abort_kernel`].
+/// `api::tests::abort_grants_only_at_roots` lists its callers;
+/// THEOREMS.md ("Valid programs never abort") says what each one tests.
+#[verifier::external_body]
+#[inline(always)]
+pub fn abort_kernel(args: fmt::Arguments<'_>) -> !
+    requires
+        crate::sys::may_abort_kernel(),
+{
+    abort_fmt(args)
+}
+
+/// [`abort_fmt`] at one of theorem "Valid programs never abort"'s pending
+/// checks ([`super::pending_aborts`]). Trusted: the call, which needs
+/// [`super::may_abort`], under the narrower [`super::may_abort_pending`].
+/// `api::tests::abort_grants_only_at_roots` lists its callers; THEOREMS.md
+/// says what each one tests.
+#[verifier::external_body]
+#[inline(always)]
+pub fn abort_pending(args: fmt::Arguments<'_>) -> !
+    requires
+        crate::sys::may_abort_pending(),
+{
+    abort_fmt(args)
+}
+
 /// Raise `SIGABRT` on the calling thread, mirroring glibc's `abort`:
 /// unblock the signal, deliver it, and if a handler swallowed it reset the
 /// disposition to default and deliver again. `exit_group` is the last

@@ -8,22 +8,32 @@ use vstd::prelude::*;
 
 verus! {
 
+/// A slab at or above its class's watermark: never handed to an arena,
+/// so no slot of it was allocated. For a free with the slot's token a
+/// pending check of theorem "Valid programs never abort" (`pending_aborts`:
+/// nothing relates the watermark to the tokens yet); its other callers
+/// hold `may_abort()`.
 #[cold]
 #[inline(never)]
 pub(super) fn never_committed(class: usize, slab: usize) -> !
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort_pending(),
 {
-    sys::abort_fmt(format_args!("invalid free: class {class} slab {slab} was never allocated"))
+    sys::abort_pending(format_args!("invalid free: class {class} slab {slab} was never allocated"))
 }
 
+/// A slab's owner word and its descriptor name different arenas: one of
+/// them is corrupt. On the release path a pending check of theorem
+/// "Valid programs never abort" (no verified invariant relates the
+/// descriptor's arena to the owner word); its other callers hold
+/// `may_abort()`.
 #[cold]
 #[inline(never)]
 pub(super) fn owner_mismatch(class: usize, group: usize, slab: usize, word: u16, desc: u16) -> !
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort_pending(),
 {
-    sys::abort_fmt(format_args!(
+    sys::abort_pending(format_args!(
         "heap inconsistency: class {class} group {group}: owner word says arena {word}, slab {slab}'s descriptor says arena {desc}"
     ))
 }
@@ -55,14 +65,16 @@ pub(super) fn guard_free(p: usize, class: usize, slab: usize) -> !
 
 /// A release into a `Fresh` slab: handed to an arena but not committed
 /// (at or above the arena's commit cursor), or committed and never
-/// claimed. No slot of it was ever handed out.
+/// claimed. No slot of it was ever handed out. For a free with the slot's
+/// token a pending check of theorem "Valid programs never abort" (nothing
+/// relates the slab states to the tokens yet).
 #[cold]
 #[inline(never)]
 pub(super) fn release_into_fresh_slab(p: usize, class: usize, slab: usize) -> !
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort_pending(),
 {
-    sys::abort_fmt(format_args!(
+    sys::abort_pending(format_args!(
         "invalid free of {p:#x} (class {class} slab {slab}): the slab has never been allocated from"
     ))
 }

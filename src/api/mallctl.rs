@@ -4646,7 +4646,7 @@ mod tests {
             !again.is_null(),
             "the destroyed arena still serves MALLOCX_ARENA allocations"
         );
-        assert_eq!(s.classify_free(again).map(|x| x.1), Ok(a as u16));
+        assert_eq!(s.classify_free_t(again).map(|x| x.1), Ok(a as u16));
         assert_eq!(
             call(&std::format!("arena.{a}.destroy")),
             0,
@@ -4713,7 +4713,7 @@ mod tests {
         assert_eq!(get::<c_uint>("thread.arena"), a);
         // Plain malloc comes from that arena through the thread's own caches.
         let q = malloc(200);
-        assert_eq!(s.classify_free(q).map(|x| x.1), Ok(a as u16));
+        assert_eq!(s.classify_free_t(q).map(|x| x.1), Ok(a as u16));
         free(q);
         assert_eq!(set("thread.arena", 4000 as c_uint), EFAULT);
         assert_eq!(set("thread.arena", 5000 as c_uint), EFAULT);

@@ -267,14 +267,14 @@ pub open spec fn covers_usable(z: Zeroed, p: *mut u8, from: int, size: int) -> b
     &&& crate::layout::process_regions().is_huge_block(p@.addr, 1) ==> from + z.len() >= huge_usable(size)
 }
 
-/// A slot start belongs to one class: class `c`'s region lies inside
-/// stride `c` of the superblock (`Regions::separated`).
+/// A slot address (a guard slab's too) belongs to one class: class `c`'s
+/// region lies inside stride `c` of the superblock (`Regions::separated`).
 pub proof fn lemma_slot_unique(c1: int, c2: int, p: usize)
     requires
         crate::layout::process_regions().wf(),
         crate::layout::process_regions().separated(),
-        crate::layout::process_regions().is_slot(c1, p),
-        crate::layout::process_regions().is_slot(c2, p),
+        crate::layout::process_regions().is_slot_addr(c1, p),
+        crate::layout::process_regions().is_slot_addr(c2, p),
     ensures
         c1 == c2,
 {

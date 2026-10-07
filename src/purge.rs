@@ -603,7 +603,7 @@ impl Batch {
     /// the batch is full.
     pub fn push(&mut self, addr: usize, len: usize)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_kernel(),
             crate::sys::may_syscall(),
             old(self).wf(),
             addr + len <= usize::MAX,
@@ -664,7 +664,7 @@ impl Batch {
     /// invariant), which is what makes the discard sound.
     pub fn flush(&mut self)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_kernel(),
             crate::sys::may_syscall(),
             old(self).wf(),
         ensures
@@ -1385,7 +1385,7 @@ verus! {
 #[verifier::loop_isolation(false)]
 fn discard(ranges: &[(usize, usize)], advice: Advice, Ghost(free): Ghost<spec_fn(int) -> bool>)
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort_kernel(),
         crate::sys::may_syscall(),
         ranges.len() <= MAX_BATCH,
         forall|i: int| #![auto] 0 <= i < ranges.len() ==> frees(free, ranges[i].0 as int, ranges[i].1 as int),
@@ -1398,7 +1398,7 @@ fn discard(ranges: &[(usize, usize)], advice: Advice, Ghost(free): Ghost<spec_fn
         // SAFETY: the ranges are page-aligned parts of our own mappings
         // that the caller holds free (the `Batch` invariant).
         if let Err(e) = unsafe { sys::madvise(addr, len, advice) } {
-            sys::abort_fmt(format_args!("purge: madvise({advice}) of {addr:#x}+{len:#x} failed: {e}"));
+            sys::abort_kernel(format_args!("purge: madvise({advice}) of {addr:#x}+{len:#x} failed: {e}"));
         }
     }
 }
@@ -1424,7 +1424,7 @@ mod kani_total {
     /// The most ranges checked.
     const MAX: usize = 4;
 
-    /// S190 `total_bytes`, `requires lens(ranges, len) <= u64::MAX`, no
+    /// S189 `total_bytes`, `requires lens(ranges, len) <= u64::MAX`, no
     /// `ensures`: under it the call returns (the sum, which cannot
     /// overflow), for every list of up to `MAX` ranges.
     #[kani::proof]
@@ -1448,7 +1448,7 @@ mod kani_explicit {
     use super::{EXPLICIT, Explicit};
     use core::sync::atomic::Ordering::Relaxed;
 
-    /// S189 `Explicit::drop`: no `requires`, no `ensures`, `no_unwind`:
+    /// S188 `Explicit::drop`: no `requires`, no `ensures`, `no_unwind`:
     /// it returns without a panic for every count `EXPLICIT` holds (one
     /// less afterwards, wrapping at zero as an atomic subtraction does),
     /// both when a guard from `Explicit::enter` drops and when the count

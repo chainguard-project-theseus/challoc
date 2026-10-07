@@ -960,7 +960,7 @@ pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>) ->
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            shared.table(class).check_live(slab as usize, slot as usize, p as usize);
+            shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()));
             proof {
                 // `check_live` returned: not a guard slab.
                 crate::layout::process_regions().lemma_is_slot(class as int, slab as int, slot as int, p as usize);
@@ -1373,7 +1373,7 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            shared.table(class).check_live(slab as usize, slot as usize, p as usize);
+            shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()));
             proof {
                 // `check_live` returned: not a guard slab.
                 crate::layout::process_regions().lemma_is_slot(class as int, slab as int, slot as int, p as usize);
@@ -2124,7 +2124,7 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            shared.table(class).check_live(slab as usize, slot as usize, p as usize);
+            shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()));
             proof {
                 // `check_live` returned: not a guard slab.
                 crate::layout::process_regions().lemma_is_slot(class as int, slab as int, slot as int, p as usize);
@@ -2258,7 +2258,7 @@ fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>) -> (r: usize)
         shared.lemma_wf();
         shared.lemma_regions_ok();
     }
-    let usable = match shared.classify_free(p) {
+    let usable = match shared.classify_free(p, Tracked(&blk)) {
         Ok((class, _)) => {
             proof {
                 crate::vspec::usable::lemma_usable_slot(p, class as int, 0);

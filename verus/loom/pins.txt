@@ -97,7 +97,7 @@ src/class/table.rs	x = crate::vspec::word::load(w, Ordering::Relaxed, Tracked(&p
 src/class/table.rs	(x >> (bit % 64)) & 1 == 1
 src/class/table.rs	load_owner(ptr_ref(word, Tracked(self.owner_perms.borrow().tracked_borrow(group as int))), Ghost(*self), Ghost(slab))
 src/class/table.rs	if !self.is_handed_out(slab) {
-src/class/table.rs	if !unsafe { self.is_set_unchecked(slab, slot) } {
+src/class/table.rs	if !unsafe { self.is_set_unchecked(slab, slot, Tracked(held)) } {
 src/class/table.rs	let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
 src/class/table.rs	if s >= self.nslabs {
 src/class/table.rs	if purge::check_zero() && s != self.committed_slabs.load(Ordering::Relaxed) {

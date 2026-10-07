@@ -499,6 +499,66 @@ impl Live {
         &self.run
     }
 
+    /// The slot token the token holds, if any.
+    pub closed spec fn slot_opt(self) -> Option<GhostSingleton<int>> {
+        self.slot
+    }
+
+    /// Borrow the slot token, if any, for the `free` check's bit test
+    /// (`SlabTable::check_live`): a live slot's bit is set.
+    pub proof fn slot_ref(tracked &self) -> (tracked r: &Option<GhostSingleton<int>>)
+        ensures
+            *r == self.slot_opt(),
+            self.has_slot() ==> *r == Some(self.slot_tok()),
+    {
+        &self.slot
+    }
+
+    /// The token of the live block at `p`, a slot address of class `c`
+    /// (in a guard slab or not): the live slot's, so `p` is a slot of `c`
+    /// outside the guard slabs (theorem 7), and the token holds its slot
+    /// token.
+    pub proof fn lemma_block_slot_addr(&self, p: *mut u8, c: int)
+        requires
+            crate::heap::regions_ok(),
+            self.block(p),
+            process_regions().is_slot_addr(c, p@.addr),
+        ensures
+            self.slot_block(p, c),
+            process_regions().is_slot(c, p@.addr),
+            self.has_slot(),
+            self.slot_tok().id() == slot_loc(c),
+            self.slot_tok()@ == p@.addr as int,
+    {
+        if self.run is Some {
+            // A run's start is a page start of the huge region, which no
+            // slot address is.
+            crate::vspec::zero::lemma_slot_not_huge(c, p@.addr);
+            self.lemma_len_pos();
+        } else {
+            crate::vspec::zero::lemma_slot_unique(self.class, c, p@.addr);
+        }
+    }
+
+    /// The token of a live block is the token of a slot start or of a page
+    /// start of the huge region: [`Regions::classify`] never calls its
+    /// pointer `Invalid`.
+    ///
+    /// [`Regions::classify`]: crate::layout::Regions::classify
+    pub proof fn lemma_block_target(&self, p: *mut u8)
+        requires
+            crate::heap::regions_ok(),
+            self.block(p),
+        ensures
+            crate::heap::free_target(p),
+    {
+        if self.run is None {
+            assert(process_regions().is_slot(self.class, p@.addr));
+        } else {
+            self.lemma_len_pos();
+        }
+    }
+
     /// A token that claims `p`, a page start of the huge region, holds the
     /// token of the run at `p`'s page `page`, whose usable bytes are the
     /// block's.

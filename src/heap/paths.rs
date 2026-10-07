@@ -265,7 +265,7 @@ impl Heap {
             shared.lemma_wf();
             shared.lemma_regions_ok();
         }
-        match shared.classify_free(p) {
+        match shared.classify_free(p, Tracked(&blk)) {
             Ok((class, arena)) => {
                 proof {
                     blk.lemma_claimed_block(p);
@@ -343,7 +343,7 @@ impl Heap {
     #[inline(never)]
     pub(super) fn free_huge(&mut self, shared: &Shared, page: usize, Tracked(blk): Tracked<Live>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(self).wf(),
             shared.wf(),
@@ -1025,7 +1025,7 @@ pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
 /// as for [`free`].
 pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
         crate::sys::may_syscall(),
         shared.wf(),
         blk.claims(p),
@@ -1040,7 +1040,7 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
     // Premise (lock order): called from the entry points, which hold no
     // lock.
     let tracked mut ord = axiom_entry();
-    match shared.classify_free(p) {
+    match shared.classify_free(p, Tracked(&blk)) {
         Ok((class, arena)) => {
             proof {
                 blk.lemma_claimed_block(p);
@@ -1108,6 +1108,69 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
                 }
             }
         }
+    }
+}
+
+/// Theorem 44 (`verus/THEOREMS.md`, "Valid programs never abort"), first
+/// tranche, checked: the free of a live block through no cache, called
+/// with the block's token and without [`crate::sys::may_abort`], only
+/// with [`crate::sys::valid_aborts`]' two capabilities (a resource
+/// failure, and the checks the theorem names but does not prove
+/// unreachable yet). The call verifies, so every other abort it can
+/// reach is unreachable.
+///
+/// Verification only (`cfg(verus_only)`): the build has no such function.
+#[cfg(verus_only)]
+fn theorem_valid_free_never_aborts(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::kernel_aborts(),
+        crate::sys::pending_aborts(),
+        shared.wf(),
+        blk.block(p),
+{
+    proof {
+        shared.lemma_regions_ok();
+        blk.lemma_claims(p);
+    }
+    free_direct(shared, p, Tracked(blk));
+}
+
+/// Theorem 44, first tranche, checked: the free of a live huge run on a
+/// thread with a heap, as [`Heap::free`] makes it (`classify_free`, then
+/// [`Heap::free_huge`]), with the capabilities of
+/// [`theorem_valid_free_never_aborts`].
+///
+/// Verification only (`cfg(verus_only)`): the build has no such function.
+#[cfg(verus_only)]
+fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::kernel_aborts(),
+        crate::sys::pending_aborts(),
+        shared.wf(),
+        old(h).wf(),
+        blk.block(p),
+        process_regions().is_huge_block(p@.addr, 1),
+{
+    proof {
+        shared.lemma_wf();
+        shared.lemma_regions_ok();
+        blk.lemma_claims(p);
+    }
+    match shared.classify_free(p, Tracked(&blk)) {
+        Ok((class, _)) => {
+            proof {
+                // A page start of the huge region is no slot.
+                crate::vspec::zero::lemma_slot_not_huge(class as int, p@.addr);
+            }
+        },
+        Err(page) => {
+            proof {
+                blk.lemma_run_block(p, page);
+            }
+            h.free_huge(shared, page, Tracked(blk))
+        },
     }
 }
 

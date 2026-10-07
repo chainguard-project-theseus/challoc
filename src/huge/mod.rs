@@ -364,7 +364,7 @@ impl HugeStats {
     /// Uncount one extent of `pages` in `state`.
     fn sub(&mut self, state: RunState, pages: usize)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_pending(),
         ensures
             *final(self) == match state {
                 RunState::Active => HugeStats {
@@ -424,9 +424,9 @@ pub(crate) fn bad_run_state_byte(v: u8) -> !
 #[inline(never)]
 pub(crate) fn huge_count_underflow(state: RunState) -> !
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort_pending(),
 {
-    sys::abort_fmt(format_args!("huge: {state:?} extent count underflow"))
+    sys::abort_pending(format_args!("huge: {state:?} extent count underflow"))
 }
 
 } // verus!
@@ -624,6 +624,12 @@ spec fn desc_ok(v: HugeDesc, next_page: usize) -> bool {
     &&& v.start + v.pages <= next_page
 }
 
+/// Every live descriptor's state byte is a run state ([`desc_ok`]'s first
+/// clause), so [`HugeDesc::state`] aborts on none of them.
+spec fn states_ok(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> bool {
+    forall|x: *mut HugeDesc| #[trigger] descs.contains_key(x) ==> descs[x].value().state <= 2
+}
+
 /// An `Active` descriptor is a run: its pages are the usable pages and
 /// the guard after them, and `usable` is the usable pages' bytes, for
 /// pages of `2^lg` bytes ([`Huge::take`] writes it so).
@@ -686,6 +692,14 @@ axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc, tracked 
         run_loc() == r,
         page_loc() == p,
 ;
+
+/// `tok` is the token of a live run starting at page `page`, as a live
+/// run's token holds it (`heap::live::Live::run_ref`).
+pub open spec fn holds_run(tok: Option<RunToken>, page: int) -> bool {
+    &&& tok matches Some(t)
+    &&& t.wf()
+    &&& t.start() == page
+}
 
 /// Ghost token of a live huge run: its extent `(start, npages)`, the run's
 /// first page and its page count with the guard, as a singleton of the
@@ -1612,7 +1626,7 @@ impl Inner {
     /// neighbours. The free bitmap and the `Empty` list are the caller's.
     fn add_extent(&mut self, d: *mut HugeDesc)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             old(self).table.wf(),
             perms_ok(old(self).descs@),
             old(self).descs@.contains_key(d),
@@ -1659,7 +1673,7 @@ impl Inner {
     /// pointer comparisons need.
     fn drop_extent(&mut self, d: *mut HugeDesc, Ghost(others): Ghost<Seq<*mut HugeDesc>>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             old(self).table.wf(),
             perms_ok(old(self).descs@),
             old(self).descs@.contains_key(d),
@@ -1707,7 +1721,7 @@ impl Inner {
     /// extent of a page or more keyed in the table that ends there is it.
     fn free_before(&self, page: usize) -> (r: *mut HugeDesc)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && states_ok(self.descs@)),
             self.lookups_live(),
         ensures
             r@.addr != 0 ==> {
@@ -1736,7 +1750,7 @@ impl Inner {
     /// extent keyed in the table that starts there is it.
     fn free_after(&self, page: usize) -> (r: *mut HugeDesc)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && states_ok(self.descs@)),
             self.lookups_live(),
         ensures
             r@.addr != 0 ==> {
@@ -3000,7 +3014,7 @@ impl Inner {
     /// descriptor still reads `Active` here and is in no list).
     fn retire(&mut self, meta: &Meta, d: *mut HugeDesc, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && old(self).descs@[d].value().state <= 2),
             crate::sys::may_syscall(),
             perms_ok(old(self).descs@),
             elist_ok(old(self).empty_head, old(self).empty_tail, old(self).elist@, old(self).descs@),
@@ -4009,9 +4023,11 @@ impl Huge {
     /// The result is the bytes of the run's usable pages, as its descriptor
     /// counts them (`Huge::take` writes `usable` from the pages it commits):
     /// the usable pages of the run token `tok` holds, if it is this run's.
+    /// With that token neither abort can fire (theorem "Valid programs
+    /// never abort").
     pub fn usable_size(&self, page: usize, Tracked(tok): Tracked<&Option<RunToken>>) -> (r: usize)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && holds_run(*tok, page as int)),
             crate::sys::may_syscall(),
             page <= self.spec_npages(),
         ensures
@@ -4031,14 +4047,37 @@ impl Huge {
         let tracked mut ord = axiom_entry();
         let g = self.inner.lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
         let d = g.table.get(page);
+        let _gi: &Inner = &g;
+        proof {
+            // As in `lookup`: the token's run is the `Active` descriptor
+            // the table maps `page` to.
+            if holds_run(*tok, page as int) {
+                let tracked t = tok.tracked_borrow();
+                theorem_run_counted(_gi, t);
+                lemma_run_auths(g@);
+                lemma_active(g@.descs@);
+                let x = choose|x: *mut HugeDesc|
+                    #![trigger g@.descs@.contains_key(x)]
+                    #![trigger run_at(g@.descs@[x].value(), (t.start(), t.npages()))]
+                    g@.descs@.contains_key(x) && run_at(g@.descs@[x].value(), (t.start(), t.npages()));
+                assert(keyed(g@.table, g@.descs@[x].value(), x));
+                assert(d == x);
+                assert(state_of(g@.descs@[x].value().state) == RunState::Active);
+            }
+        }
         // Table entries are live descriptors.
         if d.is_null() || g.desc(d).start() != page {
+            proof {
+                assert(!holds_run(*tok, page as int));
+            }
             not_a_run(self.addr(page));
         }
         if g.desc(d).state() != RunState::Active {
+            proof {
+                assert(!holds_run(*tok, page as int));
+            }
             already_free(self.addr(page));
         }
-        let _gi: &Inner = &g;
         proof {
             // A live descriptor's pages lie below the mark.
             assert(g@.descs@.contains_key(d));
@@ -7172,7 +7211,7 @@ impl Huge {
     #[verifier::loop_isolation(false)]
     pub fn free_run(&self, meta: &Meta, page: usize, Tracked(tok): Tracked<RunToken>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: RunInfo)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             self.is_process(),
             meta.is_process(),
@@ -7202,10 +7241,30 @@ impl Huge {
             lemma_free_start(g0, page);
         }
         let d = g.table.get(page);
+        let _gi: &Inner = &g;
+        proof {
+            // The token's run is the `Active` descriptor the table maps
+            // `page` to (as in `lookup`): none of the three checks below
+            // can fail (theorem "Valid programs never abort").
+            let tracked t = &tok;
+            theorem_run_counted(_gi, t);
+            lemma_run_auths(g@);
+            lemma_active(g@.descs@);
+            let x = choose|x: *mut HugeDesc|
+                #![trigger g@.descs@.contains_key(x)]
+                #![trigger run_at(g@.descs@[x].value(), (t.start(), t.npages()))]
+                g@.descs@.contains_key(x) && run_at(g@.descs@[x].value(), (t.start(), t.npages()));
+            assert(keyed(g@.table, g@.descs@[x].value(), x));
+            assert(d == x);
+            assert(state_of(g@.descs@[x].value().state) == RunState::Active);
+        }
         if d.is_null() {
-            #[cfg(verus_only)]
-            not_a_run_page(page);
-            #[cfg(not(verus_only))]
+            proof {
+                // The table maps `page` to the token's run. (Unreachable,
+                // so the address `self.addr(page)` of an unvalidated page is
+                // never computed.)
+                assert(false);
+            }
             not_a_run(self.addr(page));
         }
         let ghost vd = d0[d].value();
@@ -7219,9 +7278,15 @@ impl Huge {
         let (start, n, state, usable, arena) =
             (g.desc(d).start(), g.desc(d).pages(), g.desc(d).state(), g.desc(d).usable, g.desc(d).arena());
         if state != RunState::Active {
+            proof {
+                assert(false);
+            }
             already_free(self.addr(page));
         }
         if start != page {
+            proof {
+                assert(false);
+            }
             not_a_run(self.addr(page));
         }
         // The run's token: its extent is this run's (one `Active` extent
@@ -7249,7 +7314,7 @@ impl Huge {
         }
         if self.guard_install {
             if let Err(e) = guard_remove(addr + (n - GUARD_PAGES) * page_size, GUARD_PAGES * page_size) {
-                sys::abort_fmt(format_args!("huge: madvise(MADV_GUARD_REMOVE) of {addr:#x} failed: {e}"));
+                sys::abort_kernel(format_args!("huge: madvise(MADV_GUARD_REMOVE) of {addr:#x} failed: {e}"));
             }
         }
         let now = now_ns().max(1);
@@ -7606,25 +7671,6 @@ pub(crate) fn already_free(p: usize) -> !
         crate::sys::may_abort(),
 {
     sys::abort_fmt(format_args!("double free of {p:#x}: huge allocation already freed"))
-}
-
-/// [`Huge::free_run`]'s abort for a page that is not in the descriptor
-/// table, where the build calls [`not_a_run`] with the page's address.
-///
-/// Verification only (`verus_only`): the address is computed only for the
-/// message, from a page no precondition bounds, so Verus sees this call in
-/// place of the build's `not_a_run(self.addr(page))`, which stays as it
-/// is. Its body is [`not_a_run`]'s with the page in the message.
-/// Trusted: the build's statement at the site, which Verus does not
-/// check: its `self.addr(page)` is outside `addr`'s precondition (the sum
-/// wraps in a release build and panics, so aborts, in a debug one), and
-/// `not_a_run` never returns.
-#[cfg(verus_only)]
-fn not_a_run_page(page: usize) -> !
-    requires
-        crate::sys::may_abort(),
-{
-    sys::abort_fmt(format_args!("invalid free of huge page {page}: not the start of a huge allocation"))
 }
 
 /// The `check_zero` abort: a huge run handed out as zero has a dirty word.

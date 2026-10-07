@@ -1850,7 +1850,7 @@ fn a_scheduled_pop_whose_gc_empties_the_cache_refills_instead_of_wrapping() {
     let p = t.alloc(c);
     assert_eq!(t.ticks(), ticks + 1);
     assert!(!p.is_null());
-    let (cls, arena) = s.classify_free(p).ok().expect("a slot of the class");
+    let (cls, arena) = s.classify_free_t(p).ok().expect("a slot of the class");
     assert_eq!((cls, arena), (c, 0));
     // The GC flushed `p0`, the rebuild dropped back to probing, and the
     // refill served the pop: half a cache minus the one popped.
@@ -2586,7 +2586,7 @@ fn automatic_arenas_are_assigned_least_loaded_and_built_lazily() {
     assert!(s.arenas.get_existing(1).is_some());
     assert!(s.multi_arena());
     assert_eq!(s.arena0.classes[c].desc(0).arena(), 1);
-    assert_eq!(s.classify_free(p), Ok((c, 1)));
+    assert_eq!(s.classify_free_t(p), Ok((c, 1)));
     t.heap().free(s, p, Tracked::assume_new());
     assert_eq!(t.heap().cache(c).unwrap().len(), HALF);
     // `thread.arena` moves the binding with the heap.
@@ -2679,7 +2679,7 @@ fn a_young_heap_moves_onto_the_idle_arena_it_frees_into() {
     let w2 = TestHeap::new(s);
     assert_eq!(w2.heap().arena(), 2);
     let own = w2.alloc(c);
-    assert_eq!(s.classify_free(own), Ok((c, 2)));
+    assert_eq!(s.classify_free_t(own), Ok((c, 2)));
     // A foreign free while arena 1 is held: onto FOREIGN, no move.
     w2.free(inherited[0]);
     assert_eq!(w2.heap().arena(), 2);
@@ -2714,7 +2714,7 @@ fn a_young_heap_moves_onto_the_idle_arena_it_frees_into() {
     }
     assert_eq!(w2.cache(c).len(), inherited.len() - 2);
     // A pop serves an inherited slot.
-    assert_eq!(s.classify_free(w2.alloc(c)), Ok((c, 1)));
+    assert_eq!(s.classify_free_t(w2.alloc(c)), Ok((c, 1)));
     // One move per heap: arena 2 is idle, but `own` goes onto FOREIGN.
     w2.free(own);
     assert_eq!(w2.heap().arena(), 1);
@@ -2978,9 +2978,9 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     let (p1, zero) = h.alloc_in(s, a1, c, Tracked::assume_new());
     assert!(!p1.is_null() && zero);
     let (p2, _) = h.alloc_in(s, a2, c, Tracked::assume_new());
-    assert_eq!(s.classify_free(p0), Ok((c, 0)));
-    assert_eq!(s.classify_free(p1), Ok((c, a1)));
-    assert_eq!(s.classify_free(p2), Ok((c, a2)));
+    assert_eq!(s.classify_free_t(p0), Ok((c, 0)));
+    assert_eq!(s.classify_free_t(p1), Ok((c, a1)));
+    assert_eq!(s.classify_free_t(p2), Ok((c, a2)));
     assert_ne!(
         s.arena0.classes[c].locate(p0).0,
         s.arena0.classes[c].locate(p1).0
@@ -3049,7 +3049,7 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     // Direct paths against an explicit arena.
     let a = s.arena(a1, Tracked::assume_new()).unwrap();
     let (d, _, _) = s.alloc_direct(a, c, Tracked::assume_new(), Tracked::assume_new());
-    assert_eq!(s.classify_free(d), Ok((c, a1)));
+    assert_eq!(s.classify_free_t(d), Ok((c, a1)));
     assert_eq!(a.classes[c].desc(s.arena0.classes[c].locate(d).0).live(), 1);
     s.free_direct(a1, c, d, Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(a.classes[c].stats().empty, per_refill);
@@ -3134,10 +3134,10 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
     h.set_arena(s, a1, Tracked::assume_new());
     // Default path: arena 0.
     let (d, _) = h.alloc_zeroed(s, c, Tracked::assume_new());
-    assert_eq!(s.classify_free(d), Ok((c, 0)));
+    assert_eq!(s.classify_free_t(d), Ok((c, 0)));
     // The home arena named explicitly: stays home.
     let (p, _) = h.alloc_in(s, a1, c, Tracked::assume_new());
-    assert_eq!(s.classify_free(p), Ok((c, a1)));
+    assert_eq!(s.classify_free_t(p), Ok((c, a1)));
     assert_eq!(
         s.arena(a1, Tracked::assume_new()).unwrap().classes[c]
             .stats()
@@ -3148,7 +3148,7 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
     // nothing of that class there: no node, no cache, right arena.
     let before = s.meta.stats(Tracked::assume_new()).allocated;
     let (q, _) = h.alloc_in(s, 0, c, Tracked::assume_new());
-    assert_eq!(s.classify_free(q), Ok((c, 0)));
+    assert_eq!(s.classify_free_t(q), Ok((c, 0)));
     assert_eq!(
         s.meta.stats(Tracked::assume_new()).allocated,
         before,
@@ -3224,7 +3224,7 @@ fn set_arena_swaps_cache_arrays() {
     // arena-0 slot is foreign now and goes onto the FOREIGN cache, not
     // onto arena 0's node.
     let q = h.alloc(s, c, Tracked::assume_new());
-    assert_eq!(s.classify_free(q), Ok((c, a1)));
+    assert_eq!(s.classify_free_t(q), Ok((c, a1)));
     assert!(free_fast(s, h, p1, s.free_flags()));
     assert!(!free_fast(s, h, p0, s.free_flags()));
     h.free(s, p0, Tracked::assume_new());
@@ -3926,7 +3926,7 @@ fn a_free_routed_to_an_unbuilt_arena_aborts() {
     let table = s.table(c);
     assert!(s.arenas.get_existing(5).is_none());
     table.corrupt_owner_word(&s.meta, slab as usize / table.group(), 5);
-    assert_eq!(s.classify_free(p), Ok((c, 5)));
+    assert_eq!(s.classify_free_t(p), Ok((c, 5)));
     h.free(s, p, Tracked::assume_new());
     h.flush_all(s, Tracked::assume_new());
 }

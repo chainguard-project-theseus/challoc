@@ -120,10 +120,12 @@ pub proof fn grant_syscalls()
 /// The caller may abort the process: reach `abort_fmt`, which every abort
 /// goes through (`abort`, `vspec::check`, the trusted bodies that can
 /// panic, and the panic handler). Every function that can reach an abort
-/// requires this, so a verified function that neither requires it, nor
-/// carries it in a loop invariant, nor calls [`grant_aborts`] never
-/// aborts: the read-only entry points (theorem "Read-only APIs never
-/// abort" in `verus/THEOREMS.md`).
+/// requires this, or one of the narrower capabilities of the aborts it
+/// reaches ([`may_abort_corrupt`], [`may_abort_kernel`],
+/// [`may_abort_pending`]), so a verified function that neither requires
+/// one, nor carries it in a loop invariant, nor calls [`grant_aborts`]
+/// never aborts: the read-only entry points (theorem "Read-only APIs
+/// never abort" in `verus/THEOREMS.md`).
 ///
 /// Opaque, with no meaning: a capability, not a claim about the world.
 #[verifier::opaque]
@@ -160,6 +162,57 @@ pub open spec fn integrity_aborts() -> bool {
 /// [`may_abort`] has it.
 pub open spec fn may_abort_corrupt() -> bool {
     may_abort() || integrity_aborts()
+}
+
+/// The capability of the resource-failure aborts alone: an abort only
+/// where a resource the allocator needs fails it (a system call that
+/// returns an error, such as an `madvise`, or metadata that the
+/// reservation or the kernel cannot supply, which leaves the huge
+/// descriptor table full), which nothing the program does rules out.
+/// Nothing grants it: the witnesses of theorem "Valid programs never
+/// abort" in `verus/THEOREMS.md` require it in place of [`may_abort`].
+#[verifier::opaque]
+pub open spec fn kernel_aborts() -> bool {
+    true
+}
+
+/// The caller may abort at a resource failure ([`kernel_aborts`]): what
+/// [`abort_kernel`] requires. Every holder of [`may_abort`] has it.
+pub open spec fn may_abort_kernel() -> bool {
+    may_abort() || kernel_aborts()
+}
+
+/// The capability of the free paths' checks that theorem "Valid programs
+/// never abort" names but does not yet prove unreachable for a live
+/// block (the watermark, the live count, the slab state, the owner word
+/// and the huge extent counts against the tokens): checks that fire on
+/// an invalid free, and on a valid one only if allocator state no
+/// verified invariant constrains is corrupt. Apart from
+/// [`integrity_aborts`], so the read-only paths of theorem 32, which hold
+/// that, reach none of them. Nothing grants it: the theorem's witnesses
+/// require it in place of [`may_abort`].
+#[verifier::opaque]
+pub open spec fn pending_aborts() -> bool {
+    true
+}
+
+/// The caller may abort at one of theorem 44's pending checks
+/// ([`pending_aborts`]): what [`abort_pending`] requires. Every holder
+/// of [`may_abort`] has it.
+pub open spec fn may_abort_pending() -> bool {
+    may_abort() || pending_aborts()
+}
+
+/// The aborts a valid program's free may reach (theorem "Valid programs
+/// never abort"): a resource failure ([`kernel_aborts`]) and a pending
+/// check ([`pending_aborts`]). A function on the covered free paths
+/// requires [`may_abort`] or, in its place, this (alone, or with what a
+/// live block gives it: its token, or a fact the token implies), or only
+/// [`may_abort_pending`] or [`may_abort_kernel`], or none (`locate` of a
+/// slot address); every other abort it reaches is proved unreachable
+/// then.
+pub open spec fn valid_aborts() -> bool {
+    kernel_aborts() && pending_aborts()
 }
 
 } // verus!

@@ -868,12 +868,14 @@ impl Table {
     /// the last slot: a probe for an absent key ends at an empty slot, so
     /// a full table would spin in `find`. `ensure` keeps production load
     /// at or below one half; only a free after a failed growth (its
-    /// `ensure` is best effort) can get here.
+    /// `ensure` is best effort) can get here, after metadata could not be
+    /// had: a resource failure (`abort_kernel`; theorem "Valid programs
+    /// never abort" names it).
     // The negated test is the form the proof states.
     #[allow(clippy::nonminimal_bool)]
     pub(super) fn insert(&mut self, key: usize, desc: *mut HugeDesc)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_kernel(),
             old(self).wf(),
             old(self).lookup(key) is None,
             desc@.addr != 0,
@@ -890,7 +892,7 @@ impl Table {
                 },
     {
         if !(self.count + 1 < self.cap()) {
-            crate::sys::abort_fmt(format_args!("huge: descriptor table full"));
+            crate::sys::abort_kernel(format_args!("huge: descriptor table full"));
         }
         let ghost cap = self.spec_cap();
         let ghost v = self.view();
@@ -1189,7 +1191,7 @@ impl Table {
     /// failure the table is unchanged and still works, only fuller.
     pub(super) fn ensure(&mut self, meta: &Meta, page: usize, extra: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), ()>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_meta()),
             old(self).wf(),
@@ -1249,7 +1251,7 @@ impl Table {
         }
         for i in 0..old.cap()
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 self.spec_mid() == old.spec_mid(),
                 old.wf(),
                 ov == old.view(),
@@ -1865,7 +1867,7 @@ mod tests {
 mod kani_table {
     use super::Entry;
 
-    /// S166 `axiom_zero_entry`, its executable content: 16 zero bytes,
+    /// S165 `axiom_zero_entry`, its executable content: 16 zero bytes,
     /// aligned as an `Entry`, read as an `Entry` (a defined read: a
     /// `usize` and a raw pointer accept every bit pattern), and that
     /// entry is empty (`!occupied`: its `desc` has address 0). The

@@ -29,7 +29,7 @@ impl SlabTable {
     #[cfg(test)]
     pub fn check(&self, p: *mut u8) -> u16 {
         let (slab, slot) = self.locate(p);
-        self.check_located(slab, slot, p as usize)
+        self.check_located(slab, slot, p as usize, Tracked::assume_new())
     }
 }
 
@@ -228,7 +228,7 @@ impl ClassState {
     #[inline(never)]
     pub(super) fn check_shadow(&self, slab: usize, at: &str)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_pending(),
     {
         let d = self.desc(slab);
         let (state, shadow) = d.state_bytes();
@@ -280,9 +280,9 @@ impl ClassState {
     #[inline(always)]
     fn shadow_written(&self, slab: usize, at: &str, d: &SlabDesc, state: u8, shadow: u8) -> !
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_pending(),
     {
-        crate::sys::abort_fmt(format_args!(
+        crate::sys::abort_pending(format_args!(
             "check_zero: class {} slab {slab} (arena {}) descriptor at {:#x} was written outside the API, seen at {at}: state byte {state:#x}, shadow {shadow:#x} (says {:?}), live {}, arena field {}, dirty_at {}",
             self.class,
             self.arena,
@@ -422,9 +422,9 @@ pub(super) fn fresh_with_live(class: usize, slab: usize, arena: u16, desc: &Slab
 #[inline(never)]
 pub(super) fn release_into_fresh(class: usize, slab: usize, arena: u16, desc: &SlabDesc, n: usize) -> !
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort_pending(),
 {
-    crate::sys::abort_fmt(format_args!(
+    crate::sys::abort_pending(format_args!(
         "check_zero: release of {n} slot(s) into class {class} slab {slab} (arena {arena}) whose descriptor reads Fresh (live {}, owner {}, dirty_at {}), descriptor at {:#x}",
         desc.live(),
         desc.arena(),

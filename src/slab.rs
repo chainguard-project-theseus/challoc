@@ -40,9 +40,9 @@ pub const DESC_ALIGN: usize = 64;
 #[inline(never)]
 fn bad_state_byte(v: u8) -> !
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort_pending(),
 {
-    crate::sys::abort_fmt(format_args!("slab: state byte {v:#x} is not a slab state"))
+    crate::sys::abort_pending(format_args!("slab: state byte {v:#x} is not a slab state"))
 }
 
 /// Lifecycle of a committed slab.
@@ -68,7 +68,7 @@ impl State {
     #[inline]
     pub fn from_u8(v: u8) -> (r: State)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_pending(),
         ensures
             state_byte(r) == v,
     {
@@ -319,7 +319,7 @@ impl SlabDesc {
     #[inline]
     pub fn state(&self) -> State
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_pending(),
     {
         State::from_u8(self.state.load(Ordering::Relaxed))
     }
@@ -330,7 +330,7 @@ impl SlabDesc {
     #[inline(always)]
     pub fn state_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: State)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_pending(),
         ensures
             perm_for(*m, k, self) ==> state_byte(r) == m[k].state(),
     {
@@ -430,7 +430,7 @@ impl SlabDesc {
     #[verifier::external_body]
     pub fn sub_live(&self, n: usize) -> usize
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_pending(),
     {
         let prev = self.live.fetch_sub(n as u32, Ordering::AcqRel) as usize;
         assert!(prev >= n, "slab: live count underflow ({prev} - {n})");
@@ -483,7 +483,7 @@ mod kani_desc_stride {
     use super::{DESC_STRIDE, desc_stride};
     use crate::layout::NCLASSES;
 
-    /// S205 `desc_stride`, `requires class < NCLASSES`, `ensures r <=
+    /// S204 `desc_stride`, `requires class < NCLASSES`, `ensures r <=
     /// u32::MAX, r == stride_of(class as int)`: for every `class <
     /// NCLASSES` the call returns without a panic, and what it returns
     /// is `DESC_STRIDE[class]` widened (so at most `u32::MAX`), the same

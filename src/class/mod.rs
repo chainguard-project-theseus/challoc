@@ -1563,7 +1563,7 @@ impl ClassState {
     #[verifier::external_body]
     fn owner_locked(&self, g: &Inner, slab: usize) -> (r: u16)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_pending(),
             g.arena@ == self.arena,
             g.table@ == self.spec_table(),
         ensures
@@ -1590,7 +1590,7 @@ impl ClassState {
     #[inline(always)]
     fn state_locked(&self, g: &Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>) -> (r: State)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_pending(),
             g.descs(),
             g.table@ == self.spec_table(),
             *d == desc_at(self.spec_table(), slab),
@@ -1962,7 +1962,7 @@ impl ClassState {
     #[inline]
     pub fn desc(&self, slab: usize) -> (r: &SlabDesc)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_pending(),
         ensures
             *r == desc_at(self.spec_table(), slab),
     {
@@ -2003,7 +2003,7 @@ impl ClassState {
     #[inline]
     pub fn locate(&self, p: *mut u8) -> (r: (usize, usize))
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::heap::regions_ok() && process_regions().is_slot_addr(self.spec_class() as int, p@.addr)),
         ensures
             r.0 < self.spec_nslabs(),
             r.1 < class_table()[self.spec_class() as int].nslots,
@@ -2141,7 +2141,7 @@ impl ClassState {
     /// (`AtomicBitmap::release`).
     fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen, Tracked(tok): Tracked<GhostSubset<int>>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
             word < words_of(class_table()[self.spec_class() as int].slab_bits as usize),
@@ -2177,6 +2177,11 @@ impl ClassState {
         let (prev, was_full) = bm.release(word, mask, Tracked(tok));
         if prev & mask != mask {
             proof {
+                // The released slots' bits were set: `tok` holds their
+                // tokens, so the word did not (`AtomicBitmap::release`).
+                assert(prev & mask == mask) by (bit_vector)
+                    requires mask & !prev == 0u64;
+                assert(false);
                 let x = mask & !prev;
                 assert(x != 0u64 && subset(x, mask)) by (bit_vector)
                     requires prev & mask != mask, x == mask & !prev;
@@ -2203,7 +2208,7 @@ impl ClassState {
     #[allow(clippy::explicit_auto_deref)]
     fn reopen(&self, reopen: &mut Reopen, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(reopen).len <= MAX_PICKS,
             old(reopen).below(self.spec_nslabs()),
@@ -2222,7 +2227,7 @@ impl ClassState {
         let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         for &s in it: &reopen.slabs[..reopen.len]
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 g@.inv(),
                 g@.nbits() == self.spec_nslabs(),
                 g@.arena@ == self.arena,
@@ -2250,7 +2255,7 @@ impl ClassState {
 
     fn dec_live(&self, slab: usize, n: usize, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
             old(ord).allows(rank_class(0, 0)),
@@ -2364,7 +2369,7 @@ impl ClassState {
     #[allow(clippy::explicit_auto_deref)]
     fn on_live_zero(&self, slab: usize, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
             old(ord).allows(rank_class(0, 0)),
@@ -2960,7 +2965,7 @@ impl ClassState {
         Tracked(ord): Tracked<&mut LockOrder>,
     )
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
             lo <= hi,
@@ -2990,7 +2995,7 @@ impl ClassState {
         }
         for w in it: lo..=hi
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 ord.allows(rank_class(0, 0)),
                 *ord == *old(ord),
@@ -4750,6 +4755,20 @@ proof fn lemma_word_pop(s: Slots, f: int, w: int, m0: u64, b: u64)
     assert(mask_bits(s, f, w, m0) =~= rhs);
 }
 
+/// The process's regions are well formed and every pointer of `ptrs` is a
+/// slot of class `c` outside the guard slabs, as the slots of live blocks
+/// are (theorem "Valid programs never abort").
+pub open spec fn live_slots(c: int, ptrs: Seq<*mut u8>) -> bool {
+    &&& crate::heap::regions_ok()
+    &&& forall|i: int| 0 <= i < ptrs.len() ==> #[trigger] process_regions().is_slot(c, ptrs[i]@.addr)
+}
+
+/// [`live_slots`], each in a slab `arena` owns.
+pub open spec fn owned_slots(c: int, arena: u16, ptrs: Seq<*mut u8>) -> bool {
+    &&& live_slots(c, ptrs)
+    &&& forall|i: int| 0 <= i < ptrs.len() ==> #[trigger] slot_owner(c, ptrs[i]@.addr) == arena
+}
+
 /// The addresses of a batch of slot pointers, as the tokens name them.
 pub open spec fn ptr_addrs(s: Seq<*mut u8>) -> Seq<int> {
     Seq::new(s.len(), |i: int| s[i]@.addr as int)
@@ -5280,7 +5299,7 @@ impl ClassState {
     /// [`release_owned`]: ClassState::release_owned
     pub fn release_with(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<GhostSubset<int>>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && owned_slots(self.spec_class() as int, self.spec_arena(), ptrs@)),
             crate::sys::may_syscall(),
             bag.id() == slot_loc(self.spec_class() as int),
             aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= bag@,
@@ -5296,6 +5315,10 @@ impl ClassState {
         let tracked mut bag = bag;
         let n = self.release_owned(ptrs, Tracked(&mut bag), Tracked(ord));
         if n != ptrs.len() {
+            proof {
+                // The first slot left is another arena's.
+                assert(!owned_slots(self.spec_class() as int, self.spec_arena(), ptrs@));
+            }
             let p = ptrs[n];
             let (slab, _) = self.locate(p);
             wrong_arena(p as usize, self.class as usize, self.table().owner(slab), self.arena);
@@ -5337,7 +5360,7 @@ impl ClassState {
     #[allow(clippy::explicit_counter_loop)]
     pub fn release_owned(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<&mut GhostSubset<int>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && live_slots(self.spec_class() as int, ptrs@)),
             crate::sys::may_syscall(),
             old(bag).id() == slot_loc(self.spec_class() as int),
             aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= old(bag)@,
@@ -5394,7 +5417,7 @@ impl ClassState {
                 i == it.index(),
                 end == ptrs@.len(),
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || (crate::sys::valid_aborts() && live_slots(self.spec_class() as int, ptrs@)),
                 ord.allows(rank_class(0, 0)),
                 *ord == *old(ord),
                 end == ptrs@.len() || end == i,
@@ -5437,6 +5460,13 @@ impl ClassState {
                 forall|j: int| 0 <= j < end ==> #[trigger] slot_owner(self.spec_class() as int, ptrs@[j]@.addr) == self.arena,
                 end < ptrs@.len() ==> slot_owner(self.spec_class() as int, ptrs@[end as int]@.addr) != self.arena,
         {
+            proof {
+                // A live slot is a slot start of the class.
+                assert(p == ptrs@[i as int]);
+                if live_slots(self.spec_class() as int, ptrs@) {
+                    assert(process_regions().is_slot(self.spec_class() as int, ptrs@[i as int]@.addr));
+                }
+            }
             let (slab, slot) = self.locate(p);
             proof {
                 // The slab `locate` found is the one `slot_owner` names.
@@ -5489,6 +5519,12 @@ impl ClassState {
                 // cause. The descriptor line is read by `dec_live`
                 // anyway.
                 if self.table().is_guard_slab(slab) {
+                    proof {
+                        // A live slot is in no guard slab (theorem 7).
+                        _t.lemma_guard_slab(slab as int);
+                        assert(!process_regions().is_slot(self.spec_class() as int, ptrs@[i as int]@.addr));
+                        assert(!live_slots(self.spec_class() as int, ptrs@));
+                    }
                     guard_free(p as usize, self.class as usize, slab);
                 }
                 let d = self.desc(slab);
@@ -5531,6 +5567,31 @@ impl ClassState {
             }
             let w = &mut local[word];
             if *w & bit != 0 {
+                proof {
+                    // The bit is set in the scratch words only for a slot
+                    // whose token `ltoks` holds, and `tok` is `p`'s: the
+                    // batch's tokens are unique, so it holds `p` once.
+                    let f = slab * s.sb;
+                    let k = (slot % 64) as u64;
+                    let b = f + slot;
+                    let x = *w;
+                    assert(x == before[word as int]);
+                    assert((x >> k) & 1u64 == 1u64) by (bit_vector)
+                        requires bit == 1u64 << k, k < 64, x & bit != 0u64;
+                    assert(has_bit(x, k));
+                    if count == 0 || !(lo_w <= word <= hi_w) {
+                        assert(x == 0u64);
+                        assert((0u64 >> k) & 1u64 != 1u64) by (bit_vector);
+                    }
+                    assert(slot == 64 * word + k);
+                    assert(b - f == 64 * word + k);
+                    assert((b - f) / 64 == word && (b - f) % 64 == k);
+                    assert(s.real(b));
+                    assert(scratch_bits(s, f, before, lo_w as int, hi_w as int).contains(b));
+                    assert(ltoks@.contains(s.addr(b)));
+                    ltoks.disjoint_singleton(&tok);
+                    assert(false);
+                }
                 double_free(p as usize, self.class as usize, slab, slot);
             }
             proof {

@@ -3190,14 +3190,29 @@ mod tests {
     /// trusted bodies THEOREMS.md lists. A trusted body that aborts only
     /// through a verified function it calls is not caught by the last
     /// check (the list in THEOREMS.md is read from the code).
+    ///
+    /// The same for theorem "Valid programs never abort" (44), of its two
+    /// capabilities: `kernel_aborts` and `pending_aborts` appear only in
+    /// their definitions, in `valid_aborts`' and in the `requires` of the
+    /// theorem's witnesses; the calls of their sinks, `abort_kernel` and
+    /// `abort_pending` (which need only `may_abort_kernel` and
+    /// `may_abort_pending`), only in the functions THEOREMS.md lists; a
+    /// trusted body that can abort requires one of them alone only if
+    /// THEOREMS.md lists it; and no `use` names one of the four sinks
+    /// outside `sys/` and `vspec/` (a renamed sink would escape the lists).
     #[test]
     fn abort_grants_only_at_roots() {
         // Spelled in parts, so that this test's own lines match nothing.
         let grant = std::format!("{}{}", "grant_", "aborts");
         let cap = std::format!("{}{}", "may_", "abort");
         let integrity = std::format!("{}{}", "integrity_", "aborts");
+        let kernel = std::format!("{}{}", "kernel_", "aborts");
+        let pending = std::format!("{}{}", "pending_", "aborts");
         let sink = std::format!("{}{}(", "abort_", "integrity");
+        let ksink = std::format!("{}{}(", "abort_", "kernel");
+        let psink = std::format!("{}{}(", "abort_", "pending");
         let checks = std::format!("{}{}(", "chec", "k");
+        let valid = std::format!("{}{}", "valid_", "aborts");
         let allowed = [
             std::format!("pub open spec fn {cap}() -> bool {{"),
             std::format!("pub proof fn {grant}()"),
@@ -3206,6 +3221,14 @@ mod tests {
             std::format!("pub open spec fn {integrity}() -> bool {{"),
             std::format!("pub open spec fn {cap}_corrupt() -> bool {{"),
             std::format!("{cap}() || {integrity}()"),
+            std::format!("pub open spec fn {kernel}() -> bool {{"),
+            std::format!("pub open spec fn {cap}_kernel() -> bool {{"),
+            std::format!("{cap}() || {kernel}()"),
+            std::format!("pub open spec fn {pending}() -> bool {{"),
+            std::format!("pub open spec fn {cap}_pending() -> bool {{"),
+            std::format!("{cap}() || {pending}()"),
+            std::format!("{kernel}() && {pending}()"),
+            std::format!("pub open spec fn {valid}() -> bool {{"),
         ];
         // The integrity checks: (file, function) of each call.
         let sites = [
@@ -3216,10 +3239,33 @@ mod tests {
             ("api/print.rs", "fn flush("),
             ("heap/shared.rs", "pub fn cgroup_now("),
         ];
+        // Theorem 44's resource-failure aborts and pending checks.
+        let kernel_sites = [
+            ("huge/mod.rs", "pub fn free_run("),
+            ("huge/table.rs", "fn insert("),
+            ("purge.rs", "fn discard("),
+        ];
+        let pending_sites = [
+            ("class/abort.rs", "fn never_committed("),
+            ("class/abort.rs", "fn owner_mismatch("),
+            ("class/abort.rs", "fn release_into_fresh_slab("),
+            ("class/verify.rs", "fn shadow_written("),
+            ("class/verify.rs", "fn release_into_fresh("),
+            ("heap/shared.rs", "fn no_such_arena("),
+            ("huge/mod.rs", "fn huge_count_underflow("),
+            ("slab.rs", "fn bad_state_byte("),
+        ];
         // The trusted bodies that require only `may_abort_corrupt`.
         let corrupt_only = [
             ("sys/abort.rs", "pub fn abort_integrity("),
             ("vspec/check.rs", "pub fn check("),
+        ];
+        // The trusted bodies that require only `may_abort_kernel`, or
+        // only `may_abort_pending`.
+        let kernel_only = [("sys/abort.rs", "pub fn abort_kernel(")];
+        let pending_only = [
+            ("sys/abort.rs", "pub fn abort_pending("),
+            ("slab.rs", "pub fn sub_live("),
         ];
         // Trusted bodies whose panic is their `requires`, so cannot fail.
         let unfailing = [("heap/others.rs", "fn assert_not_home(")];
@@ -3238,7 +3284,8 @@ mod tests {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut files = Vec::new();
         walk(&src, &mut files);
-        let (mut grants, mut integrity_checks, mut trusted) = (0, 0, 0);
+        let (mut grants, mut integrity_checks, mut kernel_checks, mut pending_checks, mut trusted) =
+            (0, 0, 0, 0, 0);
         for path in &files {
             let rel = path.strip_prefix(&src).unwrap().to_str().unwrap();
             // The Kani harnesses (`kani/` and the `#[cfg(kani)]` modules)
@@ -3257,6 +3304,7 @@ mod tests {
                 None => &lines[..],
             };
             let (mut sig, mut kw) = ("", "");
+            let mut in_use = false;
             // Brace depth inside a `#[cfg(kani)]` item (one ends at its
             // closing brace, or at `;` if it has no body), and whether its
             // body has opened.
@@ -3320,13 +3368,22 @@ mod tests {
                         "{}: `{integrity}` outside a witness's requires",
                         at()
                     );
-                } else if t.contains(cap.as_str()) {
+                } else if t.contains(kernel.as_str()) || t.contains(pending.as_str()) {
+                    assert!(
+                        (t.ends_with(&std::format!("::{kernel}(),"))
+                            || t.ends_with(&std::format!("::{pending}(),")))
+                            && kw == "requires"
+                            && sig.contains("fn theorem_"),
+                        "{}: `{kernel}` or `{pending}` outside a witness's requires",
+                        at()
+                    );
+                } else if t.contains(cap.as_str()) || t.contains(valid.as_str()) {
                     assert!(
                         t.starts_with(&std::format!("crate::sys::{cap}"))
                             && t.ends_with(',')
                             && !t.contains("|| true")
                             && clause,
-                        "{}: `{cap}` used other than as a requires or invariant clause",
+                        "{}: `{cap}` or `{valid}` used other than as a requires or invariant clause",
                         at()
                     );
                 }
@@ -3341,6 +3398,42 @@ mod tests {
                     assert!(
                         sites.iter().any(|(f, s)| *f == rel && sig.contains(s)),
                         "{}: an integrity check in `{sig}`, not listed",
+                        at()
+                    );
+                }
+                // `abort_kernel(` and `abort_pending(` as whole names, not
+                // `may_abort_kernel(` or `may_abort_pending(`.
+                let whole = |s: &str| {
+                    t.match_indices(s)
+                        .any(|(j, _)| j == 0 || t.as_bytes()[j - 1] != b'_')
+                };
+                for (s, list, n) in [
+                    (ksink.as_str(), &kernel_sites[..], &mut kernel_checks),
+                    (psink.as_str(), &pending_sites[..], &mut pending_checks),
+                ] {
+                    if whole(s) && !t.starts_with("pub fn ") {
+                        *n += 1;
+                        assert!(
+                            list.iter().any(|(f, s)| *f == rel && sig.contains(s)),
+                            "{}: a theorem 44 abort in `{sig}`, not listed",
+                            at()
+                        );
+                    }
+                }
+                // No sink under another name: no `use` (of any visibility,
+                // over any number of lines) names one outside `sys/` and
+                // `vspec/`.
+                let first = t.split_whitespace().take(2).any(|w| w == "use");
+                if first || in_use {
+                    in_use = !t.ends_with(';');
+                    let sinks = [&sink, &ksink, &psink].map(|s| s.trim_end_matches('('));
+                    assert!(
+                        rel.starts_with("sys/")
+                            || rel.starts_with("vspec/")
+                            || (!sinks.iter().any(|s| t.contains(*s))
+                                && !t.contains("check::check")
+                                && !t.contains("check::{")),
+                        "{}: a `use` of an abort sink",
                         at()
                     );
                 }
@@ -3378,15 +3471,25 @@ mod tests {
                 let listed =
                     |l: &[(&str, &str)]| l.iter().any(|(p, s)| *p == rel && lines[f].contains(s));
                 assert!(
-                    header.contains(full.as_str())
+                    (header.contains(full.as_str()) && !header.contains(valid.as_str()))
                         || (header.contains(&std::format!("crate::sys::{cap}_corrupt()"))
                             && listed(&corrupt_only))
+                        || (header.contains(&std::format!("crate::sys::{cap}_kernel()"))
+                            && listed(&kernel_only))
+                        || (header.contains(&std::format!("crate::sys::{cap}_pending()"))
+                            && listed(&pending_only))
                         || listed(&unfailing),
                     "{at}: a trusted body that can abort, without `{cap}`"
                 );
             }
         }
-        assert!(grants > 0 && integrity_checks > 0 && trusted > 0);
+        assert!(
+            grants > 0
+                && integrity_checks > 0
+                && kernel_checks > 0
+                && pending_checks > 0
+                && trusted > 0
+        );
     }
 
     /// The tokens of C's frees and reallocs (`vspec::cbuf::CCall` of a

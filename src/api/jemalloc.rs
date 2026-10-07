@@ -1421,12 +1421,12 @@ mod tests {
         let c = crate::layout::class_of(300).unwrap();
         // Default cache, explicit arena.
         let p = mallocx(300, mallocx_arena(lua) as c_int);
-        assert_eq!(s.classify_free(p), Ok((c, lua)));
+        assert_eq!(s.classify_free_t(p), Ok((c, lua)));
         // rallocx within the class keeps it in the Lua arena; across
         // classes with the arena flag lands there too.
         assert_eq!(rallocx(p, 320, mallocx_arena(lua) as c_int), p);
         let q = rallocx(p, 3000, mallocx_arena(lua) as c_int);
-        assert_eq!(s.classify_free(q).map(|x| x.1), Ok(lua));
+        assert_eq!(s.classify_free_t(q).map(|x| x.1), Ok(lua));
         dallocx(q, mallocx_arena(lua) as c_int);
         // No cache: the live count moves at once.
         let flags = (mallocx_arena(lua) | MALLOCX_TCACHE_NONE) as c_int;
@@ -1451,7 +1451,7 @@ mod tests {
         assert!(s.tcaches.destroy(s, t, Tracked::assume_new()));
         // Huge runs record the arena.
         let h = mallocx(2 << 20, mallocx_arena(lua) as c_int);
-        let Err(page) = s.classify_free(h) else {
+        let Err(page) = s.classify_free_t(h) else {
             panic!("not huge")
         };
         assert_eq!(
@@ -1496,7 +1496,7 @@ mod tests {
         let (p, _, _) = mallocx::alloc(s, c, f.arena, f.tcache, Tracked::assume_new());
         assert!(!p.is_null());
         unsafe { core::ptr::write_bytes(p, 0xa5, size) };
-        assert_eq!(s.classify_free(p), Ok((c, lua)));
+        assert_eq!(s.classify_free_t(p), Ok((c, lua)));
         let h = heap::existing_heap(s).unwrap();
         // This thread's automatic arena: whichever `Arenas::assign` gave
         // the test thread (the default is `min(4 * ncpus, 64)` arenas).
@@ -1522,7 +1522,7 @@ mod tests {
         assert_ne!(q, p);
         assert_eq!(unsafe { *q }, 0xa5);
         // Across classes, plain realloc lands in the caller's home arena.
-        assert_eq!(s.classify_free(q).map(|x| x.1), Ok(home));
+        assert_eq!(s.classify_free_t(q).map(|x| x.1), Ok(home));
         api_libc::plain::free(q);
 
         // Direct path: live count moves at once, no cache involved.
@@ -1571,7 +1571,7 @@ mod tests {
             Tracked::assume_new(),
         );
         assert!(!hp.is_null());
-        let Err(page) = s.classify_free(hp) else {
+        let Err(page) = s.classify_free_t(hp) else {
             panic!("not huge")
         };
         assert_eq!(
@@ -1591,7 +1591,7 @@ mod tests {
         let f = Flags::decode(mallocx_tcache(t) | mallocx_arena(lua));
         assert_eq!(f.tcache, Tcache::Explicit(t));
         let (e, _, _) = mallocx::alloc(s, c, f.arena, f.tcache, Tracked::assume_new());
-        assert_eq!(s.classify_free(e), Ok((c, lua)));
+        assert_eq!(s.classify_free_t(e), Ok((c, lua)));
         let th = s.tcaches.get(t).unwrap();
         let before = th.cache_in(lua, c).unwrap().len();
         let before_foreign = th.cache_in(heap::FOREIGN, c).map_or(0, |cc| cc.len());
@@ -1639,7 +1639,7 @@ mod tests {
         for (i, &p) in ptrs.iter().enumerate() {
             let p = p as *mut u8;
             assert_eq!(unsafe { *p }, i as u8);
-            let (class, arena) = s.classify_free(p).unwrap();
+            let (class, arena) = s.classify_free_t(p).unwrap();
             assert_eq!(class, c);
             if i % 2 == 0 {
                 assert_eq!(arena, lua);

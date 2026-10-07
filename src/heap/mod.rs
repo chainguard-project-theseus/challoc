@@ -5930,7 +5930,7 @@ impl Heap {
             return false;
         }
         // The flush released every cached slot: test `p`'s bit again.
-        match shared.classify_free(p) {
+        match shared.classify_free(p, Tracked(&*blk)) {
             Ok((c, a)) => {
                 proof {
                     shared.lemma_regions_ok();
