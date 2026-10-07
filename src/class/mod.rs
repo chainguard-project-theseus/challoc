@@ -1144,6 +1144,7 @@ impl Inner {
             old(ord).allows(rank_sets(0)),
             old(self).base(),
             slab < old(self).nbits(),
+            meta.is_process(),
         ensures
             final(self).same_sets(*old(self)),
             *final(ord) == *old(ord),
@@ -2573,6 +2574,7 @@ impl ClassState {
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             self.published_by(*pubw@),
+            meta.is_process(),
         ensures
             *final(ord) == *old(ord),
             np == 0 && want > 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
@@ -3251,6 +3253,7 @@ impl ClassState {
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             self.published_by(*pubw@),
+            meta.is_process(),
         ensures
             *final(ord) == *old(ord),
             r.n <= old(out)@.len(),
@@ -3274,6 +3277,7 @@ impl ClassState {
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             self.published_by(*pubw@),
+            meta.is_process(),
         ensures
             *final(ord) == *old(ord),
             r.0.n <= old(out)@.len(),
@@ -3308,6 +3312,7 @@ impl ClassState {
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             self.published_by(*pubw@),
+            meta.is_process(),
         ensures
             *final(ord) == *old(ord),
             r.n <= old(out)@.len(),
@@ -3331,6 +3336,7 @@ impl ClassState {
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             self.published_by(*pubw@),
+            meta.is_process(),
         ensures
             *final(ord) == *old(ord),
             r.0.n <= old(out)@.len(),
@@ -3422,6 +3428,7 @@ impl ClassState {
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             self.published_by(*pubw@),
+            meta.is_process(),
         ensures
             *final(ord) == *old(ord),
             r.0.n <= old(out)@.len(),
@@ -3455,6 +3462,7 @@ impl ClassState {
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 self.published_by(*pubw@),
+                meta.is_process(),
                 t == self.spec_table(),
                 s == t.spec_slots(),
                 t.inv(),
@@ -5172,7 +5180,7 @@ pub open spec fn injective_on(y: Seq<*mut u8>, f: spec_fn(*mut u8) -> int) -> bo
 pub proof fn lemma_perm_distinct(x: Seq<*mut u8>, y: Seq<*mut u8>, f: spec_fn(*mut u8) -> int)
     requires
         x.to_multiset() == y.to_multiset(),
-        forall|i: int, j: int| 0 <= i < j < x.len() ==> f(x[i]) != f(x[j]),
+        injective_on(x, f),
     ensures
         y.len() == x.len(),
         injective_on(y, f),
@@ -5332,8 +5340,11 @@ pub proof fn lemma_perm_addrs(x: Seq<*mut u8>, y: Seq<*mut u8>)
 {
     broadcast use lemma_aset;
     let f = |p: *mut u8| p@.addr as int;
-    assert forall|i: int, j: int| 0 <= i < j < x.len() implies f(x[i]) != f(x[j]) by {
-        assert(ptr_addrs(x)[i] != ptr_addrs(x)[j]);
+    assert(injective_on(x, f)) by {
+        reveal(injective_on);
+        assert forall|i: int, j: int| 0 <= i < j < x.len() implies f(x[i]) != f(x[j]) by {
+            assert(ptr_addrs(x)[i] != ptr_addrs(x)[j]);
+        }
     }
     lemma_perm_distinct(x, y, f);
     reveal(injective_on);

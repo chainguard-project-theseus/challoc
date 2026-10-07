@@ -1048,6 +1048,7 @@ impl Arena {
             regions.wf(),
             regions.separated(),
             *regions == process_regions(),
+            meta.is_process(),
             crate::class::tables_ok(*tperms, tables),
         ensures
             r ==> (final(slot).perm matches Some(p) && p.ptr() == this && p.is_init() && p.value().spec_index() == index),

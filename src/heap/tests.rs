@@ -2545,6 +2545,7 @@ fn failed_arena_init_frees_its_set_table_object() {
             gap - arena - page_size(),
             page_size(),
             Tracked::assume_new(),
+            Tracked::assume_new(),
         )
         .unwrap();
     let allocated = s.meta.stats(Tracked::assume_new()).allocated;

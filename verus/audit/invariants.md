@@ -68,7 +68,7 @@ code makes.
 | S75 | `axiom_fresh_slots_zero` (class/mod.rs) | fixed | `n` was unbounded: a range past the slab; now `n <= nslots` |
 | S76 | `axiom_discarded_slots_zero` (class/mod.rs) | fixed | as S75; the `purged_is_zero` premise is still the call site's exec test |
 | S77 | `axiom_table_bytes` (class/sets.rs) | fixed | at `base == 0` proved `false` (`into_typed` then `is_nonnull`); now requires `0 < base` (`Meta::reserve_table` ensures it); still a premise that `(base, len)` is a fresh `reserve_table` result: a second call, or a range over another permission's bytes, proves `false` (`is_disjoint`); closed after the audit ("One-shot premises") |
-| S80 | `axiom_set_tables_lock_inv` (class/sets.rs) | sound | `lock_inv` is `true` for its type; the only axiom for it |
+| S80 | `axiom_set_tables_lock_inv` (class/sets.rs) | sound | `lock_inv` is `true` for its type; the only axiom for it; changed after the audit (META): `lock_inv(v) == forall g. v[g].claimed()`, a premise on its writers (`SetTable::new` proves it, `SetTable::ensure` keeps it through `Lazy::ensure`), sound (premise) |
 | S81 | `axiom_table_lock_inv` (class/table.rs) | sound | initial value verified; `take_group` asserts `inv`; `commit_run`'s and `commit_slab`'s `guards` bound is the documented premise |
 | S82 | `axiom_table_lock_frame` (class/table.rs) | sound | nothing writes the geometry or `mloc`; after the audit (OWNER) also `sloc`, which nothing writes |
 | S83 | `load_owner` (class/table.rs) | sound (premise) | every caller gates on the watermark before the read; verified after the audit (OWNER: the watermark's witness), no longer a seam |
@@ -95,7 +95,7 @@ code makes.
 | S171 | `Reserved::is_disjoint` (layout/regions.rs) | fixed | false for an empty reservation inside another; now requires both non-empty |
 | S172 | `Reserved::into_unbacked` (layout/regions.rs) | sound | consumes the token |
 | S177 | `axiom_acquired` (lock.rs) | sound (premise) | private, called on the guard just built; `deref_mut` havocs the guard, so a changed guard cannot meet its `requires` |
-| S182 | `Meta::commit` (meta.rs) | sound (premise) | callers trusted to pass an aligned, uncommitted range inside a reservation or eager table (see Open) |
+| S182 | `Meta::commit` (meta.rs) | sound (premise) | callers trusted to pass an aligned, uncommitted range inside a reservation or eager table (see Open); closed after the audit: verified (package META), its callers give it the claim to the range that `reserve` or `reserve_table` handed out, which the lazily committed tables keep (`Lazy::claimed`) |
 | S183 | `Meta::free` (meta.rs) | sound (premise) | callers trusted to pass a live block with its layout; null or an oversized layout aborts (see Open); closed after the audit: verified, its callers give back the `MetaClaim` the allocation handed out |
 | S188 | `axiom_state_lock_inv` (purge/background.rs) | sound | initial value meets it; `start` (both holds), `main`'s exit and `fork_child` assert it; since upstream #128 it also has `exited ==> !present` |
 | S206 | `axiom_snapshot_lock_inv` (stats.rs) | sound | `Snapshot::EMPTY` meets it; `collect_into` asserts it |
@@ -451,6 +451,13 @@ Still premises, and why:
   allocator's `dclaims` and its table's `claim`), so a double or
   mismatched free cannot be verified; `Heap::destroy`'s trusted body
   passes `Tracked::assume_new()` for the claims of what it frees.
+  Closed after the audit for S182 (package META): `Meta::commit` is
+  verified; it requires the claim to the range (page aligned, inside
+  what `reserve` or `reserve_table` handed out, every page uncommitted)
+  and takes the range's part of it, which its callers carry (each
+  `Lazy` table the part past its watermark, `Lazy::claimed`; the
+  background stack its reservation's), so a double commit cannot be
+  verified.
 - S18 `heap_set_arena` could go once `Heap::wf` carries
   `arena < MAX_ARENAS`.
 - S121 `assign_home` could go if `Arenas::assign` looped to

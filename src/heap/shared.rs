@@ -1166,7 +1166,7 @@ tracked struct SharedParts {
     tracked push_flags: PointsTo<u8>,
     tracked region_hi: PointsTo<usize>,
     tracked arena0: Held<Arena>,
-    tracked meta: PointsTo<Meta>,
+    tracked meta: Held<Meta>,
     tracked huge: PointsTo<Huge>,
     tracked gc_interval_ns: PointsTo<u64>,
     tracked policy: PointsTo<Policy>,
@@ -1198,7 +1198,7 @@ impl SharedParts {
         &&& self.push_flags.ptr() == field_ptr::<Shared, u8>(p, S_PUSH_FLAGS)
         &&& self.region_hi.ptr() == field_ptr::<Shared, usize>(p, S_REGION_HI)
         &&& (self.arena0.perm matches Some(a) ==> a.ptr() == field_ptr::<Shared, Arena>(p, S_ARENA0))
-        &&& self.meta.ptr() == field_ptr::<Shared, Meta>(p, S_META)
+        &&& (self.meta.perm matches Some(m) ==> m.ptr() == field_ptr::<Shared, Meta>(p, S_META))
         &&& self.huge.ptr() == field_ptr::<Shared, Huge>(p, S_HUGE)
         &&& self.gc_interval_ns.ptr() == field_ptr::<Shared, u64>(p, S_GC_INTERVAL_NS)
         &&& self.policy.ptr() == field_ptr::<Shared, Policy>(p, S_POLICY)
@@ -1210,13 +1210,13 @@ impl SharedParts {
         &&& self.cgroup.ptr() == field_ptr::<Shared, Deferred>(p, S_CGROUP)
     }
 
-    /// Every field is written (arena 0 too, whose permission `init`
-    /// freezes for the arena registry, so not among these).
+    /// Every field is written (arena 0 and the metadata allocator too,
+    /// whose permissions `init` freezes, arena 0's for the arena registry
+    /// and the allocator's for [`axiom_shared_meta`], so not among these).
     spec fn written(&self) -> bool {
         &&& self.free_flags.is_init()
         &&& self.push_flags.is_init()
         &&& self.region_hi.is_init()
-        &&& self.meta.is_init()
         &&& self.huge.is_init()
         &&& self.gc_interval_ns.is_init()
         &&& self.policy.is_init()
@@ -1250,7 +1250,8 @@ spec fn tables_at(m: Map<int, PointsTo<SlabTable>>, p: *mut Shared) -> bool {
 /// 0's permissions are frozen already (`vstd::modes::tracked_static_ref`,
 /// once `init` has written them, as the regions' is; arena 0's for the
 /// arena registry's table, `Arenas::init`), so they are only read:
-/// nothing can write through them. What comes back is the join, the
+/// nothing can write through them. The metadata allocator's is frozen too,
+/// and [`axiom_shared_meta`] states its field. What comes back is the join, the
 /// permission to the whole value, frozen too (`&'static`): readers share
 /// it, and nothing can write through it.
 axiom fn axiom_shared_built(
@@ -1263,6 +1264,7 @@ axiom fn axiom_shared_built(
     requires
         parts.at(p),
         parts.written(),
+        parts.meta.perm is None,
         lines_at(*lines, p),
         elems_init(*lines, 0, NCLASSES as int),
         tables_at(*tables, p),
@@ -1275,7 +1277,6 @@ axiom fn axiom_shared_built(
         shared_at(p).region_hi == parts.region_hi.value(),
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] shared_at(p).tables[c] == tables[c].value(),
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] shared_at(p).lines[c] == lines[c].value(),
-        shared_at(p).meta == parts.meta.value(),
         shared_at(p).huge == parts.huge.value(),
         shared_at(p).config == parts.config.value(),
         shared_at(p).arena0 == arena0.value(),
@@ -1299,6 +1300,24 @@ axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Sh
         pr.is_init(),
     ensures
         shared_at(p).regions == pr.value(),
+;
+
+/// The metadata allocator of the `Shared` at `p` is what the permission
+/// to its `meta` field holds, once that permission is frozen
+/// (`vstd::modes::tracked_static_ref`, in [`Shared::put_head`], right
+/// after it writes the field), as [`axiom_shared_regions`] states of the
+/// regions: no verified code can write the field again, so the value is
+/// the built one. Trusted, as [`axiom_shared_built`] is; stated apart
+/// because `init` needs the allocator's identities
+/// ([`process_pages_id`](crate::meta::process_pages_id)) before the
+/// build is done, for the lazily committed tables it reserves. Called
+/// only by `put_head`, on the permission it has just written and frozen.
+axiom fn axiom_shared_meta(tracked pm: &'static PointsTo<Meta>, p: *mut Shared)
+    requires
+        pm.ptr() == field_ptr::<Shared, Meta>(p, S_META),
+        pm.is_init(),
+    ensures
+        shared_at(p).meta == pm.value(),
 ;
 
 /// The permission to the whole `Shared` [`Shared::init`] built, frozen
@@ -1368,7 +1387,7 @@ impl Shared {
             r.3.ptr() == field_ptr::<Shared, Regions>(perm.ptr(), S_REGIONS),
             r.3.is_uninit(),
             r.0.arena0.perm matches Some(a) && a.is_uninit(),
-            r.0.meta.is_uninit(),
+            r.0.meta.perm matches Some(m) && m.is_uninit(),
             r.0.huge.is_uninit(),
             r.0.gc_interval_ns.is_uninit(),
             r.0.policy.is_uninit(),
@@ -1420,7 +1439,7 @@ impl Shared {
                 push_flags,
                 region_hi,
                 arena0: Held { perm: Some(arena0) },
-                meta,
+                meta: Held { perm: Some(meta) },
                 huge,
                 gc_interval_ns,
                 policy,
@@ -1459,23 +1478,25 @@ unsafe fn init_tcaches(p: *mut Tcaches, Tracked(perm): Tracked<&mut PointsTo<Tca
 /// permission to the field it writes or reads (`SharedParts`), in
 /// `init`'s order; `this` is the storage `init` was handed.
 impl Shared {
-    /// `meta` and `regions`; the written metadata allocator.
+    /// `meta` and `regions`; the written metadata allocator, its field's
+    /// permission taken out of `pm` and frozen: nothing writes the field
+    /// again, and the `Shared` built at `this` holds `meta`
+    /// ([`axiom_shared_meta`]).
     #[inline(always)]
     unsafe fn put_head<'a>(
         this: *mut Shared,
         meta: Meta,
         regions: Regions,
-        Tracked(pm): Tracked<&'a mut PointsTo<Meta>>,
+        Tracked(pm): Tracked<&'a mut Held<Meta>>,
         Tracked(pr): Tracked<&mut PointsTo<Regions>>,
     ) -> (r: &'a Meta)
         requires
             shared_ok(this),
-            old(pm).ptr() == field_ptr::<Shared, Meta>(this, S_META),
+            old(pm).perm matches Some(m) && m.ptr() == field_ptr::<Shared, Meta>(this, S_META),
             old(pr).ptr() == field_ptr::<Shared, Regions>(this, S_REGIONS),
         ensures
-            final(pm).ptr() == old(pm).ptr(),
-            final(pm).is_init(),
-            final(pm).value() == meta,
+            final(pm).perm is None,
+            shared_at(this).meta == meta,
             final(pr).ptr() == old(pr).ptr(),
             final(pr).is_init(),
             final(pr).value() == regions,
@@ -1484,13 +1505,18 @@ impl Shared {
         proof {
             axiom_shared_layout();
         }
+        let tracked mut m = pm.perm.tracked_take();
         // SAFETY: the fields of `init`'s storage, through their
         // permissions; never moved.
         unsafe {
             let meta_ptr = field_at(this, S_META);
-            ptr_mut_write(meta_ptr, Tracked(&mut *pm), meta);
+            ptr_mut_write(meta_ptr, Tracked(&mut m), meta);
             ptr_mut_write(field_at(this, S_REGIONS), Tracked(pr), regions);
-            ptr_ref(meta_ptr, Tracked(&*pm))
+            let tracked m = vstd::modes::tracked_static_ref(m);
+            proof {
+                axiom_shared_meta(m, this);
+            }
+            ptr_ref(meta_ptr, Tracked(m))
         }
     }
 
@@ -1864,6 +1890,7 @@ impl Shared {
             assert(crate::config::MAX_GUARD_SLAB_INTERVAL == 0x40_0000) by (compute);
             axiom_process_shared();
             crate::meta::lemma_process_live_id();
+            crate::meta::lemma_process_pages_id();
             let lg = regions.lg_page;
             assert((1usize << lg) == (1usize << (lg as usize))) by (bit_vector)
                 requires
@@ -2175,7 +2202,9 @@ impl Shared {
     /// probe `init` was given); `meta` allocates from
     /// the metadata region, which holds every class table's descriptors,
     /// bitmap and owner words, and is the process's (its live-object
-    /// records are [`process_live_id`](crate::meta::process_live_id)'s),
+    /// records are [`process_live_id`](crate::meta::process_live_id)'s, its
+    /// claims to reserved pages [`process_pages_id`](crate::meta::process_pages_id)'s,
+    /// on the regions' page),
     /// and `huge` gives its descriptor and table blocks back to it
     /// (`Huge::spec_mid`); `arenas` is the registry `Arenas::init`
     /// built (`Arenas::wf`: its bound counts at their invariants), the
@@ -2201,6 +2230,8 @@ impl Shared {
         &&& self.meta.spec_base() == self.regions.meta_base
         &&& self.meta.spec_len() == self.regions.meta_len
         &&& self.meta.live_id() == crate::meta::process_live_id()
+        &&& self.meta.pages_id() == crate::meta::process_pages_id()
+        &&& self.meta.page() == (1usize << self.regions.lg_page)
         &&& self.huge.spec_mid() == self.meta.live_id()
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok()
         &&& self.arena0.spec_index() == 0
@@ -3748,7 +3779,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S137..S153, S154: each `S_*` is its field's `offset_of!`, and the
+    /// S133..S149, S150: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {

@@ -332,6 +332,43 @@ proof fn lemma_words_up_fit(page: usize, room: int, len: int)
     ;
 }
 
+/// A length rounded up to whole pages fits in a room of whole pages that
+/// holds the length.
+pub proof fn lemma_align_up_fit(len: usize, page: usize, room: int)
+    requires
+        page > 0,
+        page & sub(page, 1) == 0,
+        len <= room,
+        room % (page as int) == 0,
+        len + page <= usize::MAX,
+    ensures
+        align_up_spec(len, page) <= room,
+        align_up_spec(len, page) % page == 0,
+        len <= align_up_spec(len, page),
+{
+    lemma_align_bits(len, page, (len + (page - 1)) as usize);
+    let r = align_up_spec(len, page) as int;
+    let p = page as int;
+    if r > room {
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(r, p);
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(room, p);
+        let (q1, q2) = (r / p, room / p);
+        assert(r == p * q1 && room == p * q2);
+        assert(q1 > q2) by (nonlinear_arith)
+            requires
+                p * q1 > p * q2,
+                p > 0,
+        ;
+        assert(r - room >= p) by (nonlinear_arith)
+            requires
+                r == p * q1,
+                room == p * q2,
+                q1 >= q2 + 1,
+                p > 0,
+        ;
+    }
+}
+
 /// Bin sizes, ascending.
 pub exec static BINS: [u32; NBINS]
     ensures
@@ -617,6 +654,28 @@ pub(crate) proof fn lemma_process_live_id()
 {
 }
 
+/// The identity of the unclaimed-byte map of the process's `Meta` (the
+/// one [`process_live_id`] names): the claims to its reserved pages that
+/// the lazily committed tables carry (`class::sets::Lazy`) have it.
+/// [`Meta::is_process`] says a `Meta` has it.
+pub closed spec fn process_pages_id() -> Loc {
+    crate::heap::Shared::built_at(crate::heap::Shared::storage()).meta.pages_id()
+}
+
+/// [`process_pages_id`] unfolded.
+pub(crate) proof fn lemma_process_pages_id()
+    ensures
+        process_pages_id() == crate::heap::Shared::built_at(crate::heap::Shared::storage()).meta.pages_id(),
+{
+}
+
+/// The process's page, `2^lg_page` of its regions: the page of its `Meta`
+/// ([`Meta::is_process`]), in which the lazily committed tables commit
+/// (`class::sets::Lazy`).
+pub open spec fn process_page() -> usize {
+    1usize << crate::layout::process_regions().lg_page
+}
+
 /// Whether small tables may be carved from the object side (the module
 /// doc): decided on the first table from the kernel's overcommit mode and
 /// the THP policy in force, never assumed. A `u8` with three values, not
@@ -824,6 +883,22 @@ proof fn lemma_claim_at(c: Map<int, bool>, m: Map<int, bool>, a: int)
     assert(c.dom().contains(a) ==> m.dom().contains(a) && c[a] == m[a]);
 }
 
+/// The claim to `[lo, hi)` on side `s` holds `[lo, mid)` for `mid` up to
+/// `hi`, every byte on the side of its first.
+proof fn lemma_claim_range(c: Map<int, bool>, lo: int, mid: int, hi: int, s: bool)
+    requires
+        c == claim_map(lo, hi, s),
+        lo <= mid <= hi,
+        lo < hi,
+    ensures
+        set_int_range(lo, mid) <= c.dom(),
+        forall|a: int| #[trigger] c.dom().contains(a) ==> c[a] == c[lo],
+{
+    lemma_int_range(lo, hi);
+    assert(c.dom().contains(lo));
+    assert forall|a: int| set_int_range(lo, mid).contains(a) implies c.dom().contains(a) by {}
+}
+
 /// Giving back `c`, a claim of bytes on side `s`, takes its size off that
 /// side and leaves the other alone.
 proof fn lemma_side_consume(m: Map<int, bool>, c: Map<int, bool>, s: bool)
@@ -993,7 +1068,7 @@ const fn align_up(x: usize, a: usize) -> (r: usize)
 }
 
 /// Rounding `y = x + a - 1` down to a multiple of `a` rounds `x` up.
-proof fn lemma_align_bits(x: usize, a: usize, y: usize)
+pub(crate) proof fn lemma_align_bits(x: usize, a: usize, y: usize)
     requires
         a > 0,
         a & sub(a, 1) == 0,
@@ -1087,7 +1162,7 @@ proof fn lemma_mod_mask(x: usize, a: usize)
 }
 
 /// Of two powers of two, the larger is a multiple of the smaller.
-proof fn lemma_pow2_divides(a: usize, p: usize)
+pub(crate) proof fn lemma_pow2_divides(a: usize, p: usize)
     requires
         a & sub(a, 1) == 0,
         p > 0,
@@ -1839,6 +1914,7 @@ impl Inner {
             r.wf(),
             r.base == base,
             r.len == len,
+            r.page == page,
     {
         proof {
             lemma_pow2_bits(page);
@@ -2538,10 +2614,10 @@ impl Inner {
         Some(start)
     }
 
-    /// Commit `[addr, addr + len)`, given `claim`, the claim to those
+    /// Commit `[addr, addr + len)`, given `claim`, a claim holding those
     /// bytes that [`reserve`](Inner::reserve) or
     /// [`reserve_eager`](Inner::reserve_eager) recorded (on the side
-    /// `top_side` names). Taken only on success.
+    /// `top_side` names). Their part of it is taken only on success.
     fn commit(
         &mut self,
         addr: usize,
@@ -2556,7 +2632,7 @@ impl Inner {
             len % old(self).page == 0,
             len > 0,
             old(claim).id() == old(self).pages_id(),
-            old(claim)@.dom() == set_int_range(addr as int, addr + len),
+            set_int_range(addr as int, addr + len) <= old(claim)@.dom(),
             forall|a: int| #[trigger] old(claim)@.dom().contains(a) ==> old(claim)@[a] == top_side,
         ensures
             final(self).wf(),
@@ -2564,20 +2640,31 @@ impl Inner {
             final(self).pages_id() == old(self).pages_id(),
             final(self).base == old(self).base,
             final(self).len == old(self).len,
+            final(claim).id() == old(claim).id(),
             r is Err ==> *final(self) == *old(self) && *final(claim) == *old(claim),
+            r is Ok ==> final(claim)@ == old(claim)@.remove_keys(set_int_range(addr as int, addr + len)),
             // A range on the reservation side was committed by `commit_range`.
             r is Ok && old(self).top <= addr ==> final(self).top_committed == old(self).top_committed + len,
     {
         let ghost m = self.pages@@;
+        let ghost range = set_int_range(addr as int, addr + len);
+        // The range's part of the claim, which a success takes.
+        let ghost part = claim@.restrict(range);
         proof {
             claim.agree(self.pages.borrow());
             lemma_int_range(addr as int, addr + len);
-            assert(claim@.dom().contains(addr as int));
-            assert(claim@.dom().contains(addr + len - 1));
-            lemma_claim_at(claim@, m, addr as int);
-            lemma_claim_at(claim@, m, addr + len - 1);
-            lemma_side_consume(m, claim@, top_side);
-            vstd::set_lib::lemma_len_subset(claim@.dom(), side_set(m, top_side));
+            assert(part.dom() =~= range);
+            assert(part <= m) by {
+                assert forall|a: int| #[trigger] part.dom().contains(a) implies m.dom().contains(a) && part[a] == m[a] by {
+                    lemma_claim_at(claim@, m, a);
+                }
+            }
+            assert(part.dom().contains(addr as int));
+            assert(part.dom().contains(addr + len - 1));
+            lemma_claim_at(part, m, addr as int);
+            lemma_claim_at(part, m, addr + len - 1);
+            lemma_side_consume(m, part, top_side);
+            vstd::set_lib::lemma_len_subset(part.dom(), side_set(m, top_side));
         }
         assert!(
             addr % self.page == 0 && len % self.page == 0 && len > 0,
@@ -2597,8 +2684,10 @@ impl Inner {
             self.flush()?;
             self.stats.committed += len;
             proof {
-                let tracked c = claim.take();
+                let tracked c = claim.split(range);
+                assert(c@ =~= part);
                 self.pages.borrow_mut().delete(c);
+                assert(claim@ =~= old(claim)@.remove_keys(range));
                 assert(self.pages_wf());
             }
             return Ok(());
@@ -2613,8 +2702,10 @@ impl Inner {
         self.top_committed += len;
         self.stats.committed += len;
         proof {
-            let tracked c = claim.take();
+            let tracked c = claim.split(range);
+            assert(c@ =~= part);
             self.pages.borrow_mut().delete(c);
+            assert(claim@ =~= old(claim)@.remove_keys(range));
             assert(self.pages_wf());
         }
         Ok(())
@@ -2819,6 +2910,7 @@ impl Meta {
         ensures
             r.spec_base() == base,
             r.spec_len() == len,
+            r.page() == page,
     {
         broadcast use axiom_meta_lock_inv;
 
@@ -2980,8 +3072,17 @@ impl Meta {
     /// when it would collide with the object area. For a table that is
     /// used from its base up, [`reserve_table`](Meta::reserve_table); this
     /// is for a reservation that needs a `PROT_NONE` part (the background
-    /// thread's stack guard).
-    pub fn reserve(&self, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
+    /// thread's stack guard). On success `claim` is the claim to the
+    /// reserved pages, which `commit` takes: it holds every byte of
+    /// `[s, s + len)`, on the reservation side (`true`), and maybe more
+    /// above (the rounding).
+    pub fn reserve(
+        &self,
+        len: usize,
+        align: usize,
+        Tracked(claim): Tracked<&mut GhostSubmap<int, bool>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: Option<usize>)
         requires
             crate::sys::may_syscall(),
             is_pow2(align),
@@ -2989,6 +3090,9 @@ impl Meta {
         ensures
             r matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
             r matches Some(s) ==> self.holds(s as int, len as int),
+            r matches Some(s) ==> s % self.page() == 0,
+            r matches Some(s) ==> final(claim).id() == self.pages_id() && set_int_range(s as int, s + len) <= final(claim)@.dom(),
+            r matches Some(s) ==> forall|a: int| #[trigger] final(claim)@.dom().contains(a) ==> final(claim)@[a],
             *final(ord) == *old(ord),
     {
         broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
@@ -2996,9 +3100,8 @@ impl Meta {
             use_type_invariant(self);
         }
 
-        let tracked mut claim = GhostSubmap::<int, bool>::dummy();
         let tracked mut given = Unbacked::empty(0);
-        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).reserve(len, align, Tracked(&mut claim), Tracked(&mut given))
+        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).reserve(len, align, Tracked(claim), Tracked(&mut given))
     }
 
     /// [`reserve_table`](Meta::reserve_table) and commit the whole range.
@@ -3104,7 +3207,19 @@ impl Meta {
     /// and a reservation's from the
     /// `Unbacked` token `Inner::reserve` carved for it
     /// ([`Unbacked::into_lazy`], whose premise is the commit before use).
-    pub fn reserve_table(&self, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Option<usize>, Tracked<ZeroRaw>))
+    ///
+    /// On success `claim` is the claim to the table's pages, which
+    /// [`commit`](Meta::commit) takes: every byte of the table rounded up
+    /// to whole pages, and maybe more above (an eager table of no bytes is
+    /// a page, a reservation's alignment rounds its start down), all on
+    /// one side.
+    pub fn reserve_table(
+        &self,
+        len: usize,
+        align: usize,
+        Tracked(claim): Tracked<&mut GhostSubmap<int, bool>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: (Option<usize>, Tracked<ZeroRaw>))
         requires
             crate::sys::may_syscall(),
             is_pow2(align),
@@ -3115,6 +3230,10 @@ impl Meta {
             r.0 matches Some(s) ==> self.holds(s as int, words_up(len as int)),
             r.0 matches Some(s) ==> r.1@.is_range(s as int, words_up(len as int)),
             r.0 matches Some(s) ==> r.1@.provenance() == cast_provenance(),
+            r.0 matches Some(s) ==> self.page() > 0 && self.page() & sub(self.page(), 1) == 0 && s % self.page() == 0,
+            r.0 matches Some(s) ==> final(claim).id() == self.pages_id()
+                && set_int_range(s as int, s + align_up_spec(len, self.page())) <= final(claim)@.dom(),
+            r.0 matches Some(s) ==> forall|a: int| #[trigger] final(claim)@.dom().contains(a) ==> final(claim)@[a] == final(claim)@[s as int],
             *final(ord) == *old(ord),
     {
         broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
@@ -3122,11 +3241,10 @@ impl Meta {
             use_type_invariant(self);
         }
 
-        let tracked mut claim = GhostSubmap::<int, bool>::dummy();
         let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         if g.eager_ok(len) {
             let ghost g1 = g@;
-            if let Some(p) = g.reserve_eager(len, align, Tracked(&mut claim)) {
+            if let Some(p) = g.reserve_eager(len, align, Tracked(&mut *claim)) {
                 let _gi: &mut Inner = &mut g;
                 let tracked raw = take_raw(_gi.handed.borrow_mut());
                 let tracked hz = take_zero(_gi.handed_zero.borrow_mut());
@@ -3148,6 +3266,9 @@ impl Meta {
                     lemma_words_up_fit(page, tlen, len as int);
                     table = keep_prefix(mine, p as int, p + words_up(len as int), e);
                     tz = mine_z;
+                    // The claim is the table's `tlen` bytes, whole pages.
+                    lemma_align_up_fit(len, page, tlen);
+                    lemma_claim_range(claim@, p as int, p + align_up_spec(len, page), p + tlen, false);
                 }
                 let tracked z = zero_raw(table, tz);
                 return (Some(p), Tracked(z));
@@ -3155,7 +3276,7 @@ impl Meta {
         }
         let ghost g2 = g@;
         let tracked mut given = Unbacked::empty(0);
-        let r = g.reserve(len, align, Tracked(&mut claim), Tracked(&mut given));
+        let r = g.reserve(len, align, Tracked(&mut *claim), Tracked(&mut given));
         let tracked mut z = ZeroRaw::empty(cast_provenance());
         proof {
             if let Some(s) = r {
@@ -3165,6 +3286,9 @@ impl Meta {
                 vstd::arithmetic::div_mod::lemma_small_mod(0, g2.page as nat);
                 lemma_sub_mod_noop(g2.top as int, s as int, g2.page as int);
                 lemma_words_up_fit(g2.page, g2.top - s, len as int);
+                // The claim is `[s, top)`, whole pages holding the table.
+                lemma_align_up_fit(len, g2.page, g2.top - s);
+                lemma_claim_range(claim@, s as int, s + align_up_spec(len, g2.page), g2.top as int, true);
                 let tracked (raw, gz) = given.into_lazy();
                 z = zero_raw(keep_prefix(raw, s as int, s + words_up(len as int), g2.top as int), gz);
             }
@@ -3245,47 +3369,36 @@ impl Meta {
     /// This allocator's region is the process's metadata region
     /// (`Shared::wf` says so of the `Shared`'s `meta`), so what it
     /// [`holds`](Meta::holds) is metadata
-    /// ([`Regions::in_meta`](crate::layout::Regions::in_meta)).
+    /// ([`Regions::in_meta`](crate::layout::Regions::in_meta)); its claims
+    /// to reserved pages are the process's ([`process_pages_id`]), and so
+    /// is its page ([`process_page`]).
     pub open spec fn is_process(&self) -> bool {
         &&& self.spec_base() == crate::layout::process_regions().meta_base
         &&& self.spec_len() == crate::layout::process_regions().meta_len
+        &&& self.pages_id() == process_pages_id()
+        &&& self.page() == process_page()
     }
 
     /// Make `[addr, addr + len)`, page aligned and inside a reservation or
     /// an eagerly carved table, readable and writable (for the latter the
     /// deferred commit of the object side through its frontier, if still
-    /// pending, and the accounting): [`commit_claimed`] with the caller's claim to the
-    /// range. Trusted: the claim is the caller contract, which no caller
-    /// can show, since callers keep their tables' commit watermarks
-    /// without ghost state: the range is page aligned, lies inside one
-    /// reservation or eager table this allocator handed out, and no page
-    /// of it has been committed before. The callers trusted at each call:
-    /// the tables' `Lazy::ensure` (from their commit watermark up) and
-    /// the background thread's stack (once, after its reservation).
+    /// pending, and the accounting): [`commit_claimed`] with the caller's
+    /// claim, which holds the range, every byte of it on the side `side`
+    /// names (`true` for a reservation, `false` for an eager table):
+    /// [`reserve`](Meta::reserve) or [`reserve_table`](Meta::reserve_table)
+    /// handed it out, and a commit takes the range's part of it, so no page
+    /// of the range has been committed before. The callers are the tables'
+    /// `Lazy::ensure` (from their commit watermark up, with the claim each
+    /// table keeps) and the background thread's stack (once, after its
+    /// reservation).
     ///
     /// [`commit_claimed`]: Meta::commit_claimed
-    #[verifier::external_body]
-    pub fn commit(&self, addr: usize, len: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), Errno>)
-        requires
-            crate::sys::may_syscall(),
-            old(ord).allows(rank_meta()),
-        ensures
-            *final(ord) == *old(ord),
-    {
-        self.commit_claimed(addr, len, Ghost::assume_new(), Tracked::assume_new(), Tracked(ord))
-    }
-
-    /// [`commit`](Meta::commit), given `claim`, the claim to the range's
-    /// bytes that [`reserve`](Meta::reserve) or
-    /// [`reserve_table`](Meta::reserve_table) recorded on the side
-    /// `top_side` names (`true` for a reservation, `false` for an eager
-    /// table).
-    fn commit_claimed(
+    pub fn commit(
         &self,
         addr: usize,
         len: usize,
-        Ghost(top_side): Ghost<bool>,
-        Tracked(claim): Tracked<GhostSubmap<int, bool>>,
+        Ghost(side): Ghost<bool>,
+        Tracked(claim): Tracked<&mut GhostSubmap<int, bool>>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: Result<(), Errno>)
         requires
@@ -3293,20 +3406,49 @@ impl Meta {
             addr % self.page() == 0,
             len % self.page() == 0,
             len > 0,
-            claim.id() == self.pages_id(),
-            claim@.dom() == set_int_range(addr as int, addr + len),
-            forall|a: int| #[trigger] claim@.dom().contains(a) ==> claim@[a] == top_side,
+            old(claim).id() == self.pages_id(),
+            set_int_range(addr as int, addr + len) <= old(claim)@.dom(),
+            forall|a: int| #[trigger] old(claim)@.dom().contains(a) ==> old(claim)@[a] == side,
             old(ord).allows(rank_meta()),
         ensures
             *final(ord) == *old(ord),
+            final(claim).id() == old(claim).id(),
+            r is Ok ==> final(claim)@ == old(claim)@.remove_keys(set_int_range(addr as int, addr + len)),
+            r is Err ==> final(claim)@ == old(claim)@,
+    {
+        self.commit_claimed(addr, len, Ghost(side), Tracked(claim), Tracked(ord))
+    }
+
+    /// [`commit`](Meta::commit) under the lock.
+    fn commit_claimed(
+        &self,
+        addr: usize,
+        len: usize,
+        Ghost(top_side): Ghost<bool>,
+        Tracked(claim): Tracked<&mut GhostSubmap<int, bool>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: Result<(), Errno>)
+        requires
+            crate::sys::may_syscall(),
+            addr % self.page() == 0,
+            len % self.page() == 0,
+            len > 0,
+            old(claim).id() == self.pages_id(),
+            set_int_range(addr as int, addr + len) <= old(claim)@.dom(),
+            forall|a: int| #[trigger] old(claim)@.dom().contains(a) ==> old(claim)@[a] == top_side,
+            old(ord).allows(rank_meta()),
+        ensures
+            *final(ord) == *old(ord),
+            final(claim).id() == old(claim).id(),
+            r is Ok ==> final(claim)@ == old(claim)@.remove_keys(set_int_range(addr as int, addr + len)),
+            r is Err ==> final(claim)@ == old(claim)@,
     {
         broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
         proof {
             use_type_invariant(self);
         }
 
-        let tracked mut claim = claim;
-        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).commit(addr, len, Ghost(top_side), Tracked(&mut claim))
+        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).commit(addr, len, Ghost(top_side), Tracked(claim))
     }
 
     /// Return an object allocated with the same `layout`: [`free_claimed`]
@@ -3441,7 +3583,7 @@ impl Meta {
         align: usize,
         ord: Tracked<&mut LockOrder>,
     ) -> Option<usize> {
-        self.reserve_table(len, align, ord).0
+        self.reserve_table(len, align, Tracked::assume_new(), ord).0
     }
 
     /// Tests: force tables onto the object side (`true`) or the
@@ -3734,7 +3876,12 @@ mod tests {
         assert_eq!(m.stats(Tracked::assume_new()).bumped, 16 * page_size());
         assert!(m.alloc(layout(1, 1), Tracked::assume_new()).is_null());
         assert_eq!(
-            m.reserve(page_size(), page_size(), Tracked::assume_new()),
+            m.reserve(
+                page_size(),
+                page_size(),
+                Tracked::assume_new(),
+                Tracked::assume_new()
+            ),
             None,
             "no room left for a reservation"
         );
@@ -3754,13 +3901,23 @@ mod tests {
         let m = b.meta();
         let end = b.base + b.len;
         let r1 = m
-            .reserve(3 * page_size(), page_size(), Tracked::assume_new())
+            .reserve(
+                3 * page_size(),
+                page_size(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
             .unwrap();
         assert_eq!(r1, end - 3 * page_size());
         assert_eq!(m.top(), r1);
         // Sub-page lengths round up; large alignment rounds the start down.
         let r2 = m
-            .reserve(10, 8 * page_size(), Tracked::assume_new())
+            .reserve(
+                10,
+                8 * page_size(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
             .unwrap();
         assert_eq!(r2 % (8 * page_size()), 0);
         assert!(r2 + page_size() <= r1);
@@ -3769,8 +3926,14 @@ mod tests {
         assert_eq!(s.reserved, end - r2);
         assert_eq!(s.committed, 0, "reservations are uncommitted");
         // Commit part of r1, write into it.
-        m.commit(r1 + page_size(), page_size(), Tracked::assume_new())
-            .unwrap();
+        m.commit(
+            r1 + page_size(),
+            page_size(),
+            Ghost::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+        .unwrap();
         assert_eq!(m.stats(Tracked::assume_new()).committed, page_size());
         unsafe { core::slice::from_raw_parts_mut((r1 + page_size()) as *mut u8, page_size()) }
             .fill(7);
@@ -3807,7 +3970,12 @@ mod tests {
         assert_eq!(m.stats(Tracked::assume_new()).bumped, m.top() - b.base);
         assert_eq!(n, (m.top() - b.base) / page_size() - 2);
         assert_eq!(
-            m.reserve(page_size(), page_size(), Tracked::assume_new()),
+            m.reserve(
+                page_size(),
+                page_size(),
+                Tracked::assume_new(),
+                Tracked::assume_new()
+            ),
             None
         );
         assert_eq!(
@@ -3842,7 +4010,14 @@ mod tests {
             m.stats(Tracked::assume_new()).reserved,
             EAGER_MAX + page_size()
         );
-        m.commit(big, page_size(), Tracked::assume_new()).unwrap();
+        m.commit(
+            big,
+            page_size(),
+            Ghost::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+        .unwrap();
         let s = m.stats(Tracked::assume_new());
         assert_eq!((s.committed, s.writable), (page_size(), page_size()));
         m.set_eager_for_test(false);
@@ -3904,10 +4079,19 @@ mod tests {
         assert!(before.writable >= before.bumped && before.writable % page_size() == 0);
         assert!(before.committed <= before.writable);
         // The owner's commits: writable does not move, committed counts.
-        m.commit(t1, page_size(), Tracked::assume_new()).unwrap();
+        m.commit(
+            t1,
+            page_size(),
+            Ghost::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+        .unwrap();
         m.commit(
             t3 + EAGER_MAX - page_size(),
             page_size(),
+            Ghost::assume_new(),
+            Tracked::assume_new(),
             Tracked::assume_new(),
         )
         .unwrap();
@@ -3937,7 +4121,12 @@ mod tests {
         let m = b.meta();
         m.set_eager_for_test(true);
         let top = m
-            .reserve(4 * page_size(), page_size(), Tracked::assume_new())
+            .reserve(
+                4 * page_size(),
+                page_size(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
             .unwrap();
         assert_eq!(top, b.base + 12 * page_size());
         // 10 pages fit on the object side (12 free); the chunk commit
@@ -3985,10 +4174,22 @@ mod tests {
             )
         );
         assert_eq!(s.committed, 0, "nothing asked for yet");
-        m.commit(t1, 10 * page_size(), Tracked::assume_new())
-            .unwrap();
-        m.commit(t2, 2 * page_size(), Tracked::assume_new())
-            .unwrap();
+        m.commit(
+            t1,
+            10 * page_size(),
+            Ghost::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+        .unwrap();
+        m.commit(
+            t2,
+            2 * page_size(),
+            Ghost::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+        .unwrap();
         assert_eq!(m.stats(Tracked::assume_new()).committed, 12 * page_size());
     }
 
@@ -4010,18 +4211,41 @@ mod tests {
         let b = Backing::new(8 * page_size());
         let m = b.meta();
         assert_eq!(
-            m.reserve(9 * page_size(), page_size(), Tracked::assume_new()),
+            m.reserve(
+                9 * page_size(),
+                page_size(),
+                Tracked::assume_new(),
+                Tracked::assume_new()
+            ),
             None
         );
         assert_eq!(
-            m.reserve(usize::MAX, page_size(), Tracked::assume_new()),
+            m.reserve(
+                usize::MAX,
+                page_size(),
+                Tracked::assume_new(),
+                Tracked::assume_new()
+            ),
             None
         );
-        assert_eq!(m.reserve(page_size(), 1 << 40, Tracked::assume_new()), None);
+        assert_eq!(
+            m.reserve(
+                page_size(),
+                1 << 40,
+                Tracked::assume_new(),
+                Tracked::assume_new()
+            ),
+            None
+        );
         assert_eq!(m.stats(Tracked::assume_new()).reserved, 0);
         assert_eq!(m.top(), b.base + b.len);
         assert_eq!(
-            m.reserve(8 * page_size(), page_size(), Tracked::assume_new()),
+            m.reserve(
+                8 * page_size(),
+                page_size(),
+                Tracked::assume_new(),
+                Tracked::assume_new()
+            ),
             Some(b.base)
         );
         assert_eq!(
@@ -4084,8 +4308,19 @@ mod tests {
         // Several pages, so the one-page reservation leaves room below it.
         let b = Backing::new(4 * page_size());
         let m = b.meta();
-        let _ = m.reserve(page_size(), page_size(), Tracked::assume_new());
-        let _ = m.commit(b.base, page_size(), Tracked::assume_new());
+        let _ = m.reserve(
+            page_size(),
+            page_size(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
+        let _ = m.commit(
+            b.base,
+            page_size(),
+            Ghost::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
     }
 
     /// Random alloc/free against a model: no overlap, alignment, contents
@@ -4249,8 +4484,14 @@ mod tests {
         let (last, last_len) = tables[19];
         assert_eq!(s.writable, align_up(last + last_len - b.base, chunk()));
         assert_eq!(s.committed, s.writable - s.eager, "the chunk slack only");
-        m.commit(tables[3].0, page_size(), Tracked::assume_new())
-            .unwrap();
+        m.commit(
+            tables[3].0,
+            page_size(),
+            Ghost::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+        .unwrap();
         assert_eq!(
             writable_ranges(b.base, b.len),
             vec![(b.base, b.base + s.writable)],
@@ -4309,8 +4550,14 @@ mod tests {
         let big = m
             .reserve_table_addr(EAGER_MAX + page_size(), page_size(), Tracked::assume_new())
             .unwrap();
-        m.commit(big + page_size(), page_size(), Tracked::assume_new())
-            .unwrap();
+        m.commit(
+            big + page_size(),
+            page_size(),
+            Ghost::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+        .unwrap();
         // The object side's frontier: the chunks through the small table's
         // end (one chunk under 4 KiB pages, four pages under 64 KiB pages).
         let front = align_up(small + 3 * page_size() - b.base, chunk());
@@ -4399,7 +4646,14 @@ mod tests {
                     Tracked::assume_new(),
                 )
                 .unwrap();
-            m.commit(t, page_size(), Tracked::assume_new()).unwrap();
+            m.commit(
+                t,
+                page_size(),
+                Ghost::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
+            .unwrap();
             unsafe { core::ptr::write_volatile(t as *mut u64, i as u64 + 1) };
             tables.push((t, len));
         }

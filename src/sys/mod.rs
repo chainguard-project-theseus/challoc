@@ -90,7 +90,7 @@ verus! {
 /// Every instruction that enters the kernel is inside a function that
 /// requires this: the `raw::syscall0`..`syscall6` seams, and every
 /// trusted body or specification that can reach the kernel (the pthread
-/// calls, `Meta::commit`, the report sink's flush, ...; THEOREMS.md lists
+/// calls, the report sink's flush, ...; THEOREMS.md lists
 /// them).
 /// So a verified function can reach the kernel only if its own `requires`
 /// (or its loop's invariant) carries the fact, or it calls

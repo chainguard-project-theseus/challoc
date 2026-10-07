@@ -137,12 +137,14 @@ pub(super) open spec fn groups_paged(base: usize, spp: u32, lg_slab: u8, lg_page
     &&& (spp as int * (1usize << lg_slab) as int) % page == 0
 }
 
-/// The facts [`Lazy::ensure`] needs of a table committed in `page` units,
+/// The facts [`Lazy::ensure`] needs of a table committed in `page` units
+/// (its claim to its uncommitted pages among them, [`Lazy::claimed`]),
 /// which it keeps.
 pub(super) open spec fn lazy_ok(l: Lazy, page: usize) -> bool {
     &&& l.spec_len() <= 0x4000_0000_0000_0000
     &&& l.spec_committed() <= l.spec_len() + page
     &&& l.spec_base() + l.spec_len() + page <= usize::MAX
+    &&& l.claimed()
 }
 
 /// `p` is the permission of the descriptor at `addr` as the reservation
@@ -832,6 +834,7 @@ impl SlabTable {
             regions.wf(),
             regions.separated(),
             *regions == process_regions(),
+            meta.is_process(),
             class < NCLASSES,
             guard_interval != 1,
             guard_interval == 0 || exists|k: nat| k < 32 && guard_interval as nat == #[trigger] pow2(k),
@@ -4302,6 +4305,7 @@ impl SlabTable {
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_table(0)),
+            meta.is_process(),
             old(sets).table@ == *self,
             old(sets).arena@ == arena,
             old(sets).base(),

@@ -20,6 +20,8 @@ use crate::vspec::lock::lock_inv;
 #[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, verus};
+#[cfg(verus_only)]
+use vstd::set_lib::set_int_range;
 
 verus! {
 
@@ -540,10 +542,27 @@ fn create(
             crate::meta::lemma_is_pow2_shl(shared.regions.lg_page as usize);
         }
         // `.filter(|&s| shared.meta.commit(..).is_ok())`, spelled out:
-        // vstd does not specify `Option::filter`.
-        match shared.meta.reserve(STACK_SIZE, page, Tracked(ord)) {
+        // vstd does not specify `Option::filter`. The commit takes the
+        // reservation's claim to the pages above the guard.
+        let tracked mut claim = vstd::resource::map::GhostSubmap::<int, bool>::dummy();
+        match shared.meta.reserve(STACK_SIZE, page, Tracked(&mut claim), Tracked(ord)) {
             Some(s) => {
-                if shared.meta.commit(s + page, STACK_SIZE - page, Tracked(ord)).is_ok() {
+                proof {
+                    shared.lemma_meta();
+                    let lg = shared.regions.lg_page;
+                    assert(sub(0x4_0000usize, 1usize << lg) % (1usize << lg) == 0 && 0 < (1usize << lg) < 0x4_0000usize) by (bit_vector)
+                        requires lg <= 16;
+                    vstd::arithmetic::div_mod::lemma_add_mod_noop(s as int, page as int, page as int);
+                    vstd::arithmetic::div_mod::lemma_mod_self_0(page as int);
+                    vstd::arithmetic::div_mod::lemma_small_mod(0, page as nat);
+                    assert(set_int_range(s + page, (s + page) + (STACK_SIZE - page)) <= claim@.dom()) by {
+                        assert forall|a: int| set_int_range(s + page, (s + page) + (STACK_SIZE - page)).contains(a)
+                            implies claim@.dom().contains(a) by {
+                            assert(set_int_range(s as int, s + STACK_SIZE).contains(a));
+                        }
+                    }
+                }
+                if shared.meta.commit(s + page, STACK_SIZE - page, Ghost(true), Tracked(&mut claim), Tracked(ord)).is_ok() {
                     Some(s)
                 } else {
                     None

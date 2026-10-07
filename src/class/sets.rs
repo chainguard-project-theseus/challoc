@@ -16,6 +16,9 @@ use crate::vspec::addr::cast_provenance;
 use crate::vspec::zero::ZeroRaw;
 use vstd::prelude::*;
 use vstd::raw_ptr::PointsTo;
+use vstd::resource::map::GhostSubmap;
+#[cfg(verus_only)]
+use vstd::set_lib::set_int_range;
 
 verus! {
 
@@ -40,8 +43,15 @@ pub(crate) struct Lazy {
     pub(crate) base: usize,
     len: usize,
     committed: usize,
+    /// Ghost: the claim to the table's pages not committed yet, which
+    /// [`Lazy::ensure`] gives `Meta::commit` as it commits them, and the
+    /// side of the metadata region the table was reserved on
+    /// ([`Meta::reserve_table`]).
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    claim: Tracked<GhostSubmap<int, bool>>,
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    side: Ghost<bool>,
 }
-
 impl Lazy {
     /// The table lies below the metadata limit, so the rounding in
     /// [`Lazy::ensure`] does not wrap: what `reserve` proves of the
@@ -51,8 +61,43 @@ impl Lazy {
         self.base + self.len <= crate::meta::va_limit()
     }
 
+    /// What [`Lazy::ensure`]'s commits need of a table of some bytes: its
+    /// base and its commit watermark are on pages of the process
+    /// ([`process_page`](crate::meta::process_page)), and while the
+    /// watermark is below the table's end rounded up to pages, the table
+    /// holds the claim to the pages from the watermark to there, of the
+    /// process's `Meta` ([`process_pages_id`](crate::meta::process_pages_id)),
+    /// all on the table's side. [`Lazy::reserve_raw`] and `EMPTY` make
+    /// tables that keep it, and `ensure` keeps it; each holder of a table
+    /// keeps it with the table: in its own invariant (`SetTable`'s lock
+    /// invariant, `TableInner::inv` through `lazy_ok`, the huge free set's
+    /// `Set::own_claimed` in `huge::Inner::wf`), and `Set::ensure` requires
+    /// it (`Set::ensure_ok`). Not a type invariant: `ensure` lends the claim
+    /// to `Meta::commit` while the watermark is still the old one.
+    pub(crate) closed spec fn claimed(self) -> bool {
+        let p = crate::meta::process_page();
+        let end = crate::meta::align_up_spec(self.len, p);
+        self.len > 0 ==> {
+            &&& p > 0
+            &&& p & sub(p, 1) == 0
+            &&& self.base % p == 0
+            &&& self.committed % p == 0
+            &&& self.committed < end ==> {
+                &&& self.claim@.id() == crate::meta::process_pages_id()
+                &&& self.claim@@.dom() == set_int_range(self.base + self.committed, self.base + end)
+                &&& forall|a: int| #[trigger] self.claim@@.dom().contains(a) ==> self.claim@@[a] == self.side@
+            }
+        }
+    }
+
     /// A table of no bytes: `ensure` is a no-op on it.
-    pub(crate) exec const EMPTY: Lazy = Lazy { base: 0, len: 0, committed: 0 };
+    pub(crate) exec const EMPTY: Lazy
+        ensures
+            Self::EMPTY.spec_len() == 0,
+            Self::EMPTY.claimed(),
+    {
+        Lazy { base: 0, len: 0, committed: 0, claim: Tracked(GhostSubmap::dummy()), side: Ghost(false) }
+    }
 
     /// The table's first byte.
     pub(crate) closed spec fn spec_base(&self) -> usize {
@@ -81,19 +126,23 @@ impl Lazy {
     /// Reserve a table of `len` bytes aligned to `align` (and, with
     /// metadata THP on, to the folio), with the permission to its bytes,
     /// its length rounded up to a whole word, which
-    /// [`Meta::reserve_table`] hands out once.
+    /// [`Meta::reserve_table`] hands out once. The table keeps the claim
+    /// to its pages ([`Lazy::claimed`]) that `reserve_table` hands out
+    /// with it, cut to the table rounded up to pages.
     #[inline(always)]
     pub(crate) fn reserve_raw(meta: &Meta, len: usize, align: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Option<Lazy>, Tracked<ZeroRaw>))
         requires
             crate::sys::may_syscall(),
             crate::meta::is_pow2(align),
             old(ord).allows(rank_meta()),
+            meta.is_process(),
         ensures
             r.0 matches Some(l) ==> l.spec_base() + l.spec_len() <= crate::meta::va_limit() && l.spec_len() == len && l.spec_committed() == 0,
             r.0 matches Some(l) ==> meta.holds(l.spec_base() as int, len as int),
             r.0 matches Some(l) ==> l.spec_base() % align == 0 && l.spec_base() > 0,
             r.0 matches Some(l) ==> r.1@.is_range(l.spec_base() as int, (len + 7) / 8 * 8),
             r.0 matches Some(l) ==> r.1@.provenance() == cast_provenance(),
+            r.0 matches Some(l) ==> l.claimed(),
             *final(ord) == *old(ord),
     {
         proof {
@@ -103,7 +152,8 @@ impl Lazy {
         // boundary, so the rounded commits of `ensure` cover whole aligned
         // folios and the kernel can map them as such.
         let folio = crate::thp::meta_folio_size();
-        let (base, raw) = meta.reserve_table(len, align.max(folio), Tracked(ord));
+        let tracked mut claim = GhostSubmap::<int, bool>::dummy();
+        let (base, raw) = meta.reserve_table(len, align.max(folio), Tracked(&mut claim), Tracked(ord));
         let Some(base) = base else {
             return (None, raw);
         };
@@ -123,7 +173,20 @@ impl Lazy {
                 vstd::arithmetic::div_mod::lemma_mod_multiples_basic(q * r, a as int);
             }
         }
-        (Some(Lazy { base, len, committed: 0 }), raw)
+        // The claim to the table's pages, cut out of `claim`, which may
+        // hold more.
+        let ghost end = crate::meta::align_up_spec(len, crate::meta::process_page());
+        let ghost side = claim@[base as int];
+        let ghost c0 = claim@;
+        let tracked mine = claim.split(set_int_range(base as int, base + end));
+        proof {
+            vstd::arithmetic::div_mod::lemma_small_mod(0, meta.page() as nat);
+            assert forall|a: int| #[trigger] mine@.dom().contains(a) implies mine@[a] == side by {
+                assert(c0.dom().contains(a));
+                assert(c0[a] == mine@[a]);
+            }
+        }
+        (Some(Lazy { base, len, committed: 0, claim: Tracked(mine), side: Ghost(side) }), raw)
     }
 }
 
@@ -156,14 +219,22 @@ impl Set {
         &&& perm@.value().nslabs[g as int] == n
     }
 
+    /// The set is on its own table, which holds its claim to its
+    /// uncommitted pages ([`Lazy::claimed`]).
+    pub(crate) open spec fn own_claimed(&self) -> bool {
+        self.store matches Store::Own(l) && l.claimed()
+    }
+
     /// What [`Set::ensure`] needs to commit up to `slab` with `page`: for
-    /// an own table, a page of at most `2^63` bytes and `slab` and the
+    /// an own table, the process's page (`Lazy::ensure`), at most `2^63`
+    /// bytes, and `slab` and the
     /// level-1 word count below `2^32` (the commit end stays below
     /// `2^62`); for a view of a shared table, `slab` below its group's
     /// slab count.
     pub(crate) open spec fn ensure_ok(&self, page: usize, slab: usize) -> bool {
         match self.store {
-            Store::Own(_) => 1 <= page <= 0x8000_0000_0000_0000 && self.l1_words <= 0x1_0000_0000 && slab <= 0x1_0000_0000,
+            Store::Own(l) => l.claimed() && 1 <= page <= 0x8000_0000_0000_0000 && self.l1_words <= 0x1_0000_0000 && slab <= 0x1_0000_0000
+                && page == crate::meta::process_page(),
             Store::Shared(p, g, perm) => perm@.ptr() == p && perm@.is_init() && (g as int) < SET_GROUPS && slab < perm@.value().nslabs[g as int],
         }
     }
@@ -257,18 +328,25 @@ impl Lazy {
     /// Make the first `upto` bytes committed. The table's end rounded up
     /// to `page` bounds what is ever committed, so `committed <= len +
     /// page` holds after every call with the same `page` (and the
-    /// watermark only grows, so a call never breaks the bound).
+    /// watermark only grows, so a call never breaks the bound). `page` is
+    /// the process's and `meta` its allocator, whose claim to the pages
+    /// past the watermark the table holds ([`Lazy::claimed`]); a commit
+    /// gives `meta` the claim to the pages it commits.
     pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, upto: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),
             1 <= page <= 0x8000_0000_0000_0000,
             old(ord).allows(rank_meta()),
             upto <= 0x4000_0000_0000_0000,
+            meta.is_process(),
+            page == crate::meta::process_page(),
+            old(self).claimed(),
         ensures
             final(self).spec_base() == old(self).spec_base(),
             final(self).spec_len() == old(self).spec_len(),
             *final(ord) == *old(ord),
             old(self).spec_committed() <= old(self).spec_len() + page ==> final(self).spec_committed() <= final(self).spec_len() + page,
+            final(self).claimed(),
     {
         proof {
             use_type_invariant(&*self);
@@ -290,10 +368,86 @@ impl Lazy {
         }
         let want = ((upto + unit - 1) & !(unit - 1)).min((self.len + page - 1) & !(page - 1));
         if want > self.committed {
-            meta.commit(self.base + self.committed, want - self.committed, Tracked(ord))?;
+            proof {
+                self.lemma_commit_range(page, upto, unit, want);
+            }
+            // The claim is lent to the commit, which takes the committed
+            // pages' part of it, and comes back before the error return.
+            let ghost c0 = self.claim@@;
+            let tracked mut claim = self.claim.borrow_mut().take();
+            let r = meta.commit(self.base + self.committed, want - self.committed, Ghost(self.side@), Tracked(&mut claim), Tracked(ord));
+            proof {
+                self.claim = Tracked(claim);
+            }
+            r?;
+            proof {
+                let end = crate::meta::align_up_spec(self.len, page);
+                assert(self.claim@@.dom() =~= set_int_range(self.base + want, self.base + end));
+                assert forall|a: int| #[trigger] self.claim@@.dom().contains(a) implies self.claim@@[a] == self.side@ by {
+                    assert(c0.dom().contains(a));
+                }
+            }
             self.committed = want;
         }
         Ok(())
+    }
+
+    /// What [`Lazy::ensure`]'s commit of `[base + committed, base + want)`
+    /// needs, for `want` the smaller of `upto` rounded up to `unit` (a
+    /// power of two of at least the page, or the page) and the table's end
+    /// rounded up to the page: the range is whole pages of the process's
+    /// `Meta`, and the table's claim holds it.
+    proof fn lemma_commit_range(&self, page: usize, upto: usize, unit: usize, want: usize)
+        requires
+            self.inv(),
+            self.claimed(),
+            page == crate::meta::process_page(),
+            1 <= page <= 0x8000_0000_0000_0000,
+            upto <= 0x4000_0000_0000_0000,
+            unit == page || (unit > page && exists|k: u64| k < 64 && unit == #[trigger] (1usize << k)),
+            unit <= 0x8000_0000_0000_0000,
+            want == if ((upto + unit - 1) as usize) & !((unit - 1) as usize) <= ((self.len + page - 1) as usize) & !((page - 1) as usize) {
+                ((upto + unit - 1) as usize) & !((unit - 1) as usize)
+            } else {
+                ((self.len + page - 1) as usize) & !((page - 1) as usize)
+            },
+            want > self.committed,
+        ensures
+            self.len > 0,
+            (self.base + self.committed) % (page as int) == 0,
+            (want - self.committed) % (page as int) == 0,
+            want % page == 0,
+            self.base + want <= usize::MAX,
+            self.committed < crate::meta::align_up_spec(self.len, page),
+            want <= crate::meta::align_up_spec(self.len, page),
+            set_int_range(self.base + self.committed, (self.base + self.committed) + (want - self.committed)) <= self.claim@@.dom(),
+    {
+        let end = crate::meta::align_up_spec(self.len, page);
+        if self.len == 0 {
+            // An empty table's end rounds to 0: nothing to commit.
+            assert(((0 + page - 1) as usize) & !((page - 1) as usize) == 0usize) by (bit_vector)
+                requires page >= 1;
+            assert(false);
+        }
+
+        let (p, u) = (page, unit);
+        if unit > page {
+            let k = choose|k: u64| k < 64 && unit == #[trigger] (1usize << k);
+            assert(u & sub(u, 1) == 0) by (bit_vector)
+                requires k < 64, u == 1usize << k;
+        }
+        crate::meta::lemma_align_bits(upto, unit, (upto + (unit - 1)) as usize);
+        crate::meta::lemma_align_bits(self.len, page, (self.len + (page - 1)) as usize);
+        crate::meta::lemma_pow2_divides(unit, page);
+        let a = ((upto + unit - 1) as usize) & !((unit - 1) as usize);
+        crate::meta::lemma_mod_trans(a as int, unit as int, page as int);
+        assert(want % page == 0);
+        vstd::arithmetic::div_mod::lemma_add_mod_noop(self.base as int, self.committed as int, page as int);
+        vstd::arithmetic::div_mod::lemma_sub_mod_noop(want as int, self.committed as int, page as int);
+        vstd::arithmetic::div_mod::lemma_small_mod(0, page as nat);
+        assert(set_int_range(self.base + self.committed, self.base + want) <= self.claim@@.dom()) by {
+            assert forall|x: int| set_int_range(self.base + self.committed, self.base + want).contains(x) implies self.claim@@.dom().contains(x) by {}
+        }
     }
 }
 
@@ -601,6 +755,7 @@ impl SetTable {
     #[verifier::type_invariant]
     spec fn inv(self) -> bool {
         &&& 1 <= self.page <= 0x8000_0000_0000_0000
+        &&& self.page == crate::meta::process_page()
         &&& forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] self.groups[g].stride <= 3 * NCLASSES
         &&& forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] self.nslabs[g] <= 0x400_0000
         &&& rank_sets(0) <= self.tables.rank() < rank_sets(0x1_0000)
@@ -732,11 +887,14 @@ impl Set {
             page >= 8,
             page <= 0x8000_0000_0000_0000,
             nslabs <= 0x1_0000_0000,
+            meta.is_process(),
+            page == crate::meta::process_page(),
             old(ord).allows(rank_meta()),
         ensures
             r matches Some(s) ==> s.map.wf() && s.map.spec_nbits() == nslabs && s.map@ == vstd::set::Set::<nat>::empty(),
             r matches Some(s) ==> (meta.is_process() ==> s.map.in_meta()),
             r matches Some(s) ==> s.store is Own && s.l1_words <= 0x1_0000_0000,
+            r matches Some(s) ==> (s.store matches Store::Own(l) && l.claimed()),
             *final(ord) == *old(ord),
     {
         proof {
@@ -799,10 +957,12 @@ impl Set {
             old(ord).allows(rank_meta()),
             old(self).store is Shared ==> old(ord).allows(rank_sets(0)),
             old(self).ensure_ok(page, slab),
+            meta.is_process(),
         ensures
             final(self).map == old(self).map,
             final(self).l1_words == old(self).l1_words,
             (final(self).store is Own) == (old(self).store is Own),
+            final(self).store matches Store::Own(l) ==> l.claimed(),
             old(self).store is Shared ==> final(self).store == old(self).store,
             *final(ord) == *old(ord),
     {
@@ -820,14 +980,16 @@ impl Set {
 verus! {
 
 /// Assumption (`lock.rs`): the commit watermarks behind
-/// [`SetTable::tables`] keep no invariant beyond their type's: the bounds
-/// `SetTable::ensure` needs are `Lazy`'s type invariant and
-/// `SetTable`'s, and `Lazy::ensure` takes any watermark. Their one
-/// writer, `SetTable::ensure`, is verified; the test-only
+/// [`SetTable::tables`] keep each table's claim to its uncommitted pages
+/// ([`Lazy::claimed`]), which `Lazy::ensure` needs and keeps; the bounds
+/// `SetTable::ensure` needs are `Lazy`'s type invariant and `SetTable`'s.
+/// Their one writer, `SetTable::ensure`, is verified, and keeps it by
+/// `Lazy::ensure`'s postcondition (no assertion before the guard drops);
+/// `SetTable::new` proves it of the tables it reserves; the test-only
 /// `committed_ranges` only reads.
-pub broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
+pub(crate) broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
     ensures
-        #[trigger] crate::lock::lock_inv(v),
+        #[trigger] crate::lock::lock_inv(v) == forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] v[g].claimed(),
 ;
 
 impl SetTable {
@@ -847,6 +1009,8 @@ impl SetTable {
             regions.wf(),
             // A page of at least 4 KiB: the group tables start on a word.
             regions.separated(),
+            *regions == process_regions(),
+            meta.is_process(),
             old(ord).allows(rank_meta()),
         ensures
             r matches Some(t) ==> t.over(*regions) && t.rank() == rank_sets(arena as int),
@@ -933,6 +1097,8 @@ impl SetTable {
                 crate::meta::is_pow2(page),
                 page % 8 == 0 && page >= 8,
                 ord.allows(rank_meta()),
+                meta.is_process(),
+                forall|h: int| 0 <= h < SET_GROUPS ==> #[trigger] tables[h].claimed(),
                 *ord == *old(ord),
         {
             if groups[g].count != 0 {
@@ -1064,10 +1230,12 @@ impl SetTable {
             g < SET_GROUPS,
             slab < self.nslabs[g as int],
             old(ord).allows(rank_sets(0)),
+            meta.is_process(),
         ensures
             *final(ord) == *old(ord),
     {
         proof {
+            broadcast use axiom_set_tables_lock_inv;
             use_type_invariant(self);
             let w = slab / 64;
             assert(w <= 0x10_0000);

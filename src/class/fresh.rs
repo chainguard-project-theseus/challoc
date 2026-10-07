@@ -44,6 +44,7 @@ impl ClassState {
             old(g).oauth@.id() == self.spec_oloc(),
             self.published_by(*pubw@),
             old(ord).allows(rank_table(0)),
+            meta.is_process(),
         ensures
             *final(ord) == *old(ord),
             final(g).nbits() == old(g).nbits(),
@@ -134,6 +135,7 @@ impl ClassState {
             old(g).oauth@.id() == self.spec_oloc(),
             self.published_by(*pubw@),
             old(ord).allows(rank_table(0)),
+            meta.is_process(),
         ensures
             *final(ord) == *old(ord),
             r is None ==> final(g).inv(),
@@ -169,6 +171,7 @@ impl ClassState {
                 crate::sys::may_syscall(),
                 ord.allows(rank_table(0)),
                 *ord == *old(ord),
+                meta.is_process(),
                 g.inv(),
                 g.nbits() == self.spec_nslabs(),
                 g.nbits() == old(g).nbits(),

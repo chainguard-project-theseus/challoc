@@ -176,7 +176,7 @@ fn layout_ok(l: &Layout) -> bool {
     l.align().is_power_of_two() && l.size() as u128 + l.align() as u128 - 1 <= isize::MAX as u128
 }
 
-/// S329 `Layout::from_size_align`, S327 `Layout::size` and S327
+/// S329 `Layout::from_size_align`, S327 `Layout::size` and S328
 /// `Layout::align`: `Ok` exactly when `align > 0`, `align & (align - 1)
 /// == 0` and `size <= isize::MAX - (align - 1)` (in `int`), and then
 /// `size()` and `align()` give the arguments back and the layout is

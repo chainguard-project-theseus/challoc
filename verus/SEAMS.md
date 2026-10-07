@@ -79,7 +79,7 @@ documentation (kernel, ISA, C standard) its contract follows.
 | FFI/syscall | ffi | 13 |
 | function pointer | fnptr | 22 |
 | UnsafeCell/volatile/transmute | cell | 15 |
-| raw pointer (internal) | ptr | 44 |
+| raw pointer (internal) | ptr | 45 |
 | raw pointer from C caller | c-ptr | 4 |
 | panic/abort | abort | 10 |
 | atomics primitive | atomic | 41 |
@@ -87,7 +87,7 @@ documentation (kernel, ISA, C standard) its contract follows.
 | C-program contract | c-contract | 20 |
 | termination | termination | 11 |
 | core library | core | 155 |
-| allocator invariant | invariant | 43 |
+| allocator invariant | invariant | 42 |
 
 | tool | short | seams |
 |---|---|---:|
@@ -101,11 +101,11 @@ documentation (kernel, ISA, C standard) its contract follows.
 
 | kind | short | seams |
 |---|---|---:|
-| external_body | body | 151 |
+| external_body | body | 150 |
 | external_body proof | proof | 13 |
 | external_body type | type | 8 |
 | external_body const | const | 39 |
-| axiom | axiom | 78 |
+| axiom | axiom | 79 |
 | assume_spec | spec | 87 |
 | ext_type_spec | ext-type | 15 |
 | ext_trait_spec | ext-trait | 1 |
@@ -127,7 +127,7 @@ Seams by category and tool:
 | UnsafeCell/volatile/transmute | none (assumption) | 8 |
 | raw pointer (internal) | RefinedRust | 9 |
 | raw pointer (internal) | Kani | 21 |
-| raw pointer (internal) | none (assumption) | 14 |
+| raw pointer (internal) | none (assumption) | 15 |
 | raw pointer from C caller | Miri (evidence only) | 4 |
 | panic/abort | Kani | 9 |
 | panic/abort | none (assumption) | 1 |
@@ -144,7 +144,7 @@ Seams by category and tool:
 | core library | none (assumption) | 4 |
 | allocator invariant | Kani | 1 |
 | allocator invariant | loom/GenMC | 1 |
-| allocator invariant | none (assumption) | 41 |
+| allocator invariant | none (assumption) | 40 |
 
 ## Index
 
@@ -398,77 +398,72 @@ the full name, the line and the contract.
 | S150 | `axiom_shared_layout` | axiom | core | Kani | discharged |
 | S151 | `axiom_shared_built` | axiom | ptr | none | trusted |
 | S152 | `axiom_shared_regions` | axiom | ptr | none | trusted |
-| S153 | `Shared::begin` | body | invariant | none | trusted |
+| S153 | `axiom_shared_meta` | axiom | ptr | none | trusted |
+| S154 | `Shared::begin` | body | invariant | none | trusted |
 
 ### src/heap/tcaches.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S154 | `axiom_tcaches_lock_inv` | axiom | invariant | none | trusted |
-| S155 | `EMPTY_TABLE` | const | core | Kani | trusted |
-| S156 | `heap_at` | body | ptr | RR | trusted |
+| S155 | `axiom_tcaches_lock_inv` | axiom | invariant | none | trusted |
+| S156 | `EMPTY_TABLE` | const | core | Kani | trusted |
+| S157 | `heap_at` | body | ptr | RR | trusted |
 
 ### src/heap/thread.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S157 | `HeapPerm` | type | invariant | none | trusted |
-| S158 | `HeapPerm::assemble` | axiom | ptr | none | trusted |
-| S159 | `slot_heap_ref` | body | ptr | none | trusted |
+| S158 | `HeapPerm` | type | invariant | none | trusted |
+| S159 | `HeapPerm::assemble` | axiom | ptr | none | trusted |
+| S160 | `slot_heap_ref` | body | ptr | none | trusted |
 
 ### src/huge/mod.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S160 | `axiom_run_locs` | axiom | invariant | none | trusted |
+| S161 | `axiom_run_locs` | axiom | invariant | none | trusted |
 
 ### src/huge/table.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S161 | `axiom_zero_entry` | proof | ptr | Kani | discharged |
+| S162 | `axiom_zero_entry` | proof | ptr | Kani | discharged |
 
 ### src/layout/mod.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S162 | `ClassTable` | type | cell | none | trusted |
-| S163 | `axiom_class_table` | axiom | invariant | none | trusted |
-| S164 | `ClassTable::new` | body | cell | none | trusted |
-| S165 | `ClassTable::table` | body | cell | none | trusted |
-| S166 | `ClassTable::classes_ptr` | body | cell | none | trusted |
+| S163 | `ClassTable` | type | cell | none | trusted |
+| S164 | `axiom_class_table` | axiom | invariant | none | trusted |
+| S165 | `ClassTable::new` | body | cell | none | trusted |
+| S166 | `ClassTable::table` | body | cell | none | trusted |
+| S167 | `ClassTable::classes_ptr` | body | cell | none | trusted |
 
 ### src/layout/regions.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S167 | `axiom_process_page_at_most_64k` | axiom | platform | none | trusted |
-| S168 | `Reserved` | type | platform | none | trusted |
-| S169 | `Reserved::is_apart_from_static` | proof | platform | none | trusted |
-| S170 | `Reserved::is_disjoint` | proof | platform | none | trusted |
-| S171 | `Reserved::into_unbacked` | proof | platform | none | trusted |
-| S172 | `try_reserve` | body | ffi | none | trusted |
-| S173 | `word` | body | core | Kani | discharged |
-| S174 | `entry_barrier` | body | asm | Isla | evidence |
+| S168 | `axiom_process_page_at_most_64k` | axiom | platform | none | trusted |
+| S169 | `Reserved` | type | platform | none | trusted |
+| S170 | `Reserved::is_apart_from_static` | proof | platform | none | trusted |
+| S171 | `Reserved::is_disjoint` | proof | platform | none | trusted |
+| S172 | `Reserved::into_unbacked` | proof | platform | none | trusted |
+| S173 | `try_reserve` | body | ffi | none | trusted |
+| S174 | `word` | body | core | Kani | discharged |
+| S175 | `entry_barrier` | body | asm | Isla | evidence |
 
 ### src/lock.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S175 | `RawLock::lock_slow` | no-dec | termination | GenMC | evidence |
-| S176 | `axiom_entry` | axiom | c-contract | none | trusted |
-| S177 | `axiom_held_below` | axiom | invariant | none | trusted |
-| S178 | `axiom_acquired` | axiom | invariant | none | trusted |
-| S179 | `axiom_held` | axiom | invariant | none | trusted |
-| S180 | `Lock::cell_ref` | body | cell | Verus | trusted |
-| S181 | `Lock::cell_mut` | body | cell | Verus | trusted |
-| S182 | `LockGuard::drop` | body | atomic | GenMC | discharged |
-
-### src/meta.rs
-
-| # | item | kind | category | tool | status |
-|---|---|---|---|---|---|
-| S183 | `Meta::commit` | body | invariant | none | trusted |
+| S176 | `RawLock::lock_slow` | no-dec | termination | GenMC | evidence |
+| S177 | `axiom_entry` | axiom | c-contract | none | trusted |
+| S178 | `axiom_held_below` | axiom | invariant | none | trusted |
+| S179 | `axiom_acquired` | axiom | invariant | none | trusted |
+| S180 | `axiom_held` | axiom | invariant | none | trusted |
+| S181 | `Lock::cell_ref` | body | cell | Verus | trusted |
+| S182 | `Lock::cell_mut` | body | cell | Verus | trusted |
+| S183 | `LockGuard::drop` | body | atomic | GenMC | discharged |
 
 ### src/purge.rs
 
@@ -1834,7 +1829,7 @@ axiom fn axiom_arena_assemble(
 
 ### S62. `key_less`
 
-src/arena.rs:1850. Kind: external_body. Category: core library.
+src/arena.rs:1851. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-key_less.md).
 
 > `a < b` on `(u32, bool)`: [`key_lt`].
@@ -1847,7 +1842,7 @@ fn key_less(a: (u32, bool), b: (u32, bool)) -> (r: bool)
 
 ### S63. `AR_TABLE`
 
-src/arena.rs:1884. Kind: external_body const. Category: core library.
+src/arena.rs:1885. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1856,7 +1851,7 @@ const AR_TABLE: usize = core::mem::offset_of!(Arenas, table);
 
 ### S64. `AR_BOUND`
 
-src/arena.rs:1886. Kind: external_body const. Category: core library.
+src/arena.rs:1887. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1865,7 +1860,7 @@ const AR_BOUND: usize = core::mem::offset_of!(Arenas, bound);
 
 ### S65. `AR_LOCK`
 
-src/arena.rs:1888. Kind: external_body const. Category: core library.
+src/arena.rs:1889. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1874,7 +1869,7 @@ const AR_LOCK: usize = core::mem::offset_of!(Arenas, lock);
 
 ### S66. `AR_COUNT`
 
-src/arena.rs:1890. Kind: external_body const. Category: core library.
+src/arena.rs:1891. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1883,7 +1878,7 @@ const AR_COUNT: usize = core::mem::offset_of!(Arenas, count);
 
 ### S67. `AR_AUTO`
 
-src/arena.rs:1892. Kind: external_body const. Category: core library.
+src/arena.rs:1893. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1892,7 +1887,7 @@ const AR_AUTO: usize = core::mem::offset_of!(Arenas, auto);
 
 ### S68. `AR_INVS`
 
-src/arena.rs:1894. Kind: external_body const. Category: core library.
+src/arena.rs:1895. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1901,7 +1896,7 @@ const AR_INVS: usize = core::mem::offset_of!(Arenas, invs);
 
 ### S69. `AR_COUNT_INV`
 
-src/arena.rs:1896. Kind: external_body const. Category: core library.
+src/arena.rs:1897. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1910,7 +1905,7 @@ const AR_COUNT_INV: usize = core::mem::offset_of!(Arenas, count_inv);
 
 ### S70. `AR_SPARE`
 
-src/arena.rs:1898. Kind: external_body const. Category: core library.
+src/arena.rs:1899. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1919,7 +1914,7 @@ const AR_SPARE: usize = core::mem::offset_of!(Arenas, spare);
 
 ### S71. `AR_SPARE_INV`
 
-src/arena.rs:1900. Kind: external_body const. Category: core library.
+src/arena.rs:1901. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1928,7 +1923,7 @@ const AR_SPARE_INV: usize = core::mem::offset_of!(Arenas, spare_inv);
 
 ### S72. `axiom_arenas_layout`
 
-src/arena.rs:1910. Kind: axiom. Category: core library.
+src/arena.rs:1911. Kind: axiom. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `Arenas`'s layout: each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `spare_inv`, after `invs` and `count_inv`) by the size.
@@ -1957,7 +1952,7 @@ axiom fn axiom_arenas_layout()
 
 ### S73. `axiom_arenas_lock_inv`
 
-src/arena.rs:1973. Kind: axiom. Category: allocator invariant.
+src/arena.rs:1974. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The creation lock's invariant ([`Created::ok`]): `n` is at most [`MAX_ARENAS`], the holder's half of the snapshot has the count `n`, and no published entry at or above it.
@@ -1971,7 +1966,7 @@ pub broadcast axiom fn axiom_arenas_lock_inv(v: Created)
 
 ### S74. `axiom_arenas_lock_frame`
 
-src/arena.rs:1984. Kind: axiom. Category: allocator invariant.
+src/arena.rs:1985. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the creation lock's value keeps the snapshot half's location and never goes below the count it was created with (the automatic count, `Arenas::type_inv`).
@@ -1985,7 +1980,7 @@ broadcast axiom fn axiom_arenas_lock_frame(init: Created, v: Created)
 
 ### S75. `axiom_arenas_assemble`
 
-src/arena.rs:2127. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:2128. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arenas` at `p` (`Arenas::split`'s parts and array elements, every one initialised), as the `Arenas`: the value of each field is what its permission holds.
@@ -2038,7 +2033,7 @@ axiom fn axiom_arenas_assemble(
 
 ### S76. `axiom_class_lock_inv`
 
-src/class/mod.rs:1558. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:1559. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the class lock's value keeps the set/count seam's invariant, ghost link included, while the lock is free.
@@ -2052,7 +2047,7 @@ broadcast axiom fn axiom_class_lock_inv(v: Inner)
 
 ### S77. `axiom_class_lock`
 
-src/class/mod.rs:1568. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:1569. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the sets behind a class lock stay over the slab count they were created with.
@@ -2067,7 +2062,7 @@ broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
 
 ### S78. `PartialEqSpecImpl for State`
 
-src/class/mod.rs:1578. Kind: spec_impl. Category: core library.
+src/class/mod.rs:1579. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/class-PartialEqSpecImpl-for-State.md).
 
 ```rust
@@ -2084,7 +2079,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for State {
 
 ### S79. `ClassState::claim_with`
 
-src/class/mod.rs:3419. Kind: no_decreases. Category: termination.
+src/class/mod.rs:3425. Kind: no_decreases. Category: termination.
 Tool: RefinedRust. Status: trusted.
 
 > The loop of [`claim`] and [`claim_random`].
@@ -2096,6 +2091,7 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
         crate::sys::may_syscall(),
         old(ord).allows(rank_class(0, 0)),
         self.published_by(*pubw@),
+        meta.is_process(),
     ensures
         *final(ord) == *old(ord),
         r.0.n <= old(out)@.len(),
@@ -2111,7 +2107,7 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
 
 ### S80. `axiom_fresh_slots_zero`
 
-src/class/mod.rs:4388. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:4396. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `vspec::sys::axiom_fresh_anon_zero` (`mmap(2)`: a private anonymous mapping reads as zero until it is first written) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -2140,7 +2136,7 @@ axiom fn axiom_fresh_slots_zero(
 
 ### S81. `axiom_discarded_slots_zero`
 
-src/class/mod.rs:4426. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:4434. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `vspec::sys::axiom_discarded_zero` (`madvise(2)`: after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -2169,7 +2165,7 @@ axiom fn axiom_discarded_slots_zero(
 
 ### S82. `axiom_fresh_slab_mem`
 
-src/class/mod.rs:4479. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:4487. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permission to the bytes of slots `0..nslots` of slab `slab` of table `g.table`, lent for as long as `held`, the slab's descriptor permission in the class lock value `g` (`Inner::dperms`), is borrowed: what `ClassState::check_fresh_slab_is_zero` reads the slab's slots through (the `check_zero` debug mode), before the slab's first claim.
@@ -2198,21 +2194,21 @@ axiom fn axiom_fresh_slab_mem<'a>(g: Inner, slab: int, tracked held: &'a DescPer
 
 ### S83. `axiom_set_tables_lock_inv`
 
-src/class/sets.rs:828. Kind: axiom. Category: allocator invariant.
+src/class/sets.rs:990. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> Assumption (`lock.rs`): the commit watermarks behind [`SetTable::tables`] keep no invariant beyond their type's: the bounds `SetTable::ensure` needs are `Lazy`'s type invariant and `SetTable`'s, and `Lazy::ensure` takes any watermark.
+> Assumption (`lock.rs`): the commit watermarks behind [`SetTable::tables`] keep each table's claim to its uncommitted pages ([`Lazy::claimed`]), which `Lazy::ensure` needs and keeps; the bounds `SetTable::ensure` needs are `Lazy`'s type invariant and `SetTable`'s.
 
 ```rust
-pub broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
+pub(crate) broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
     ensures
-        #[trigger] crate::lock::lock_inv(v),
+        #[trigger] crate::lock::lock_inv(v) == forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] v[g].claimed(),
 ;
 ```
 
 ### S84. `axiom_table_lock_inv`
 
-src/class/table.rs:255. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:257. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the commit lock's value keeps [`TableInner::inv`] while the lock is free.
@@ -2226,7 +2222,7 @@ pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
 
 ### S85. `axiom_table_lock_frame`
 
-src/class/table.rs:263. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:265. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The commit lock's ghost geometry, marker authorities and descriptor array never change: nothing writes them.
@@ -2242,7 +2238,7 @@ pub(super) broadcast axiom fn axiom_table_lock_frame(init: TableInner, v: TableI
 
 ### S86. `store_owner`
 
-src/class/table.rs:500. Kind: external_body. Category: allocator invariant.
+src/class/table.rs:502. Kind: external_body. Category: allocator invariant.
 Tool: loom/GenMC. Status: discharged (verus/seams/class-table-store_owner.md).
 
 > `(*w).store(arena, Relaxed)` of the owner word of hand-out group `group`, through its permission `perm`: the permission holds `arena` ([`u16_value`], as `vspec::atom::load_u16_at` reads it back), and from here on [`slab_owner`] of every slab of the group is `arena`.
@@ -2273,7 +2269,7 @@ fn store_owner(
 
 ### S87. `axiom_slot_loc`
 
-src/class/table.rs:1965. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:1968. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: `SlabTable::new` runs once per class in a process (`Shared::init`, its one caller, builds the class tables of the one `Shared`, as `layout::process_regions` assumes), so the authority it makes is the class's, and so is its marker authority (`mloc`, [`mark_loc`]).
@@ -2290,7 +2286,7 @@ axiom fn axiom_slot_loc(c: int, loc: Loc, mloc: Loc, glg: u8, gmask: u32, tracke
 
 ### S88. `axiom_fresh_words`
 
-src/class/table.rs:1988. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:1991. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the permissions of the `n` words of the table at `base` that `Meta::reserve_table` has just returned, each holding zero: the table has never been written (`meta.rs`: carved once and never freed), and nothing but the bitmap views reaches it.
@@ -2306,7 +2302,7 @@ axiom fn axiom_fresh_words(base: usize, n: nat, c: int, tracked once: Once) -> (
 
 ### S89. `axiom_init_descs`
 
-src/class/table.rs:2070. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:2073. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the descriptors at the permissions `perms` carved for keys `0..n` hold values.
@@ -2323,7 +2319,7 @@ axiom fn axiom_init_descs(tracked perms: Map<int, PointsTo<SlabDesc>>, n: int) -
 
 ### S90. `axiom_init_owners`
 
-src/class/table.rs:2096. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:2099. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the owner words at the permissions `perms` carved for keys `0..n` hold values, as [`axiom_init_descs`] (an `AtomicU16` is valid for every bit pattern).
@@ -2338,7 +2334,7 @@ axiom fn axiom_init_owners(tracked perms: Map<int, PointsTo<AtomicU16>>, n: int)
 
 ### S91. `axiom_init_words`
 
-src/class/table.rs:2108. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:2111. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the class bitmap words at the permissions `perms` carved for keys `0..n` hold values, as [`axiom_init_descs`], and each is the word at its permission's address, the identity [`word_addr`] names (the identity the word permissions of [`axiom_fresh_words`] are for).
@@ -2354,7 +2350,7 @@ axiom fn axiom_init_words(tracked perms: Map<int, PointsTo<AtomicU64>>, n: int) 
 
 ### S92. `word_index`
 
-src/class/table.rs:2277. Kind: external_body. Category: inline asm.
+src/class/table.rs:2280. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: evidence (verus/seams/class-table-word_index.md).
 
 > [`word_index`] on aarch64: `index` through the empty `asm!`.
@@ -2628,7 +2624,7 @@ pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8, 
 
 ### S113. `addr_mix`
 
-src/heap/flush.rs:1776. Kind: external_body. Category: raw pointer (internal).
+src/heap/flush.rs:1783. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/heap-flush-addr_mix.md).
 
 > `rng`'s mix of the heap's address into its seed: the address of `h`, rotated left by 17 bits.
@@ -3156,7 +3152,7 @@ axiom fn axiom_shared_layout()
 
 ### S151. `axiom_shared_built`
 
-src/heap/shared.rs:1256. Kind: axiom. Category: raw pointer (internal).
+src/heap/shared.rs:1257. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Shared` at `p` (`Shared::split`'s parts and class lines, every one initialised, and the tables), as the value [`shared_at`] names: the fields [`Shared::wf`] reads are what their permissions hold.
@@ -3172,6 +3168,7 @@ axiom fn axiom_shared_built(
     requires
         parts.at(p),
         parts.written(),
+        parts.meta.perm is None,
         lines_at(*lines, p),
         elems_init(*lines, 0, NCLASSES as int),
         tables_at(*tables, p),
@@ -3184,7 +3181,6 @@ axiom fn axiom_shared_built(
         shared_at(p).region_hi == parts.region_hi.value(),
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] shared_at(p).tables[c] == tables[c].value(),
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] shared_at(p).lines[c] == lines[c].value(),
-        shared_at(p).meta == parts.meta.value(),
         shared_at(p).huge == parts.huge.value(),
         shared_at(p).config == parts.config.value(),
         shared_at(p).arena0 == arena0.value(),
@@ -3198,7 +3194,7 @@ axiom fn axiom_shared_built(
 
 ### S152. `axiom_shared_regions`
 
-src/heap/shared.rs:1296. Kind: axiom. Category: raw pointer (internal).
+src/heap/shared.rs:1297. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The regions of the `Shared` at `p` are what the permission to its `regions` field holds, once that permission is frozen (`vstd::modes::tracked_static_ref`, right after [`Shared::put_head`] writes the field): no verified code can write the field again, so the value is the built one.
@@ -3213,14 +3209,31 @@ axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Sh
 ;
 ```
 
-### S153. `Shared::begin`
+### S153. `axiom_shared_meta`
 
-src/heap/shared.rs:1338. Kind: external_body. Category: allocator invariant.
+src/heap/shared.rs:1315. Kind: axiom. Category: raw pointer (internal).
+Tool: none (assumption). Status: trusted.
+
+> The metadata allocator of the `Shared` at `p` is what the permission to its `meta` field holds, once that permission is frozen (`vstd::modes::tracked_static_ref`, in [`Shared::put_head`], right after it writes the field), as [`axiom_shared_regions`] states of the regions: no verified code can write the field again, so the value is the built one.
+
+```rust
+axiom fn axiom_shared_meta(tracked pm: &'static PointsTo<Meta>, p: *mut Shared)
+    requires
+        pm.ptr() == field_ptr::<Shared, Meta>(p, S_META),
+        pm.is_init(),
+    ensures
+        shared_at(p).meta == pm.value(),
+;
+```
+
+### S154. `Shared::begin`
+
+src/heap/shared.rs:1357. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permission to `init`'s storage, uninitialised, for `once`, the process's token of this step.
 
-Body mints Tracked at line 1347.
+Body mints Tracked at line 1366.
 
 ```rust
 fn begin(this: *mut Shared, Tracked(once): Tracked<Once>) -> (r: Tracked<PointsTo<Shared>>)
@@ -3233,7 +3246,7 @@ fn begin(this: *mut Shared, Tracked(once): Tracked<Once>) -> (r: Tracked<PointsT
         this@.addr + size_of::<Shared>() <= usize::MAX,
 ```
 
-### S154. `axiom_tcaches_lock_inv`
+### S155. `axiom_tcaches_lock_inv`
 
 src/heap/tcaches.rs:53. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -3247,7 +3260,7 @@ pub broadcast axiom fn axiom_tcaches_lock_inv(v: ())
 ;
 ```
 
-### S155. `EMPTY_TABLE`
+### S156. `EMPTY_TABLE`
 
 src/heap/tcaches.rs:63. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
@@ -3258,7 +3271,7 @@ Tool: Kani. Status: trusted.
 exec const EMPTY_TABLE: [AtomicPtr<u8>; MAX_TCACHES] = [const { AtomicPtr::new(ptr::null_mut()) }; MAX_TCACHES];
 ```
 
-### S156. `heap_at`
+### S157. `heap_at`
 
 src/heap/tcaches.rs:126. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
@@ -3271,7 +3284,7 @@ pub(super) unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
         r.wf(),
 ```
 
-### S157. `HeapPerm`
+### S158. `HeapPerm`
 
 src/heap/thread.rs:68. Kind: external_body type. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -3282,7 +3295,7 @@ Tool: none (assumption). Status: trusted.
 pub tracked struct HeapPerm
 ```
 
-### S158. `HeapPerm::assemble`
+### S159. `HeapPerm::assemble`
 
 src/heap/thread.rs:96. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
@@ -3303,7 +3316,7 @@ pub(super) axiom fn assemble(tracked s: super::FreshHeap, tracked perms: &super:
 ;
 ```
 
-### S159. `slot_heap_ref`
+### S160. `slot_heap_ref`
 
 src/heap/thread.rs:146. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
@@ -3323,7 +3336,7 @@ pub(super) unsafe fn slot_heap_ref<'a>(h: *mut Heap, Tracked(tls): Tracked<&'a m
     opens_invariants none
 ```
 
-### S160. `axiom_run_locs`
+### S161. `axiom_run_locs`
 
 src/huge/mod.rs:688. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -3340,7 +3353,7 @@ axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc, tracked 
 ;
 ```
 
-### S161. `axiom_zero_entry`
+### S162. `axiom_zero_entry`
 
 src/huge/table.rs:242. Kind: external_body proof. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/huge-table-axiom_zero_entry.md).
@@ -3359,7 +3372,7 @@ proof fn axiom_zero_entry(tracked perm: PointsTo<Entry>, tracked z: Zeroed) -> (
         !occupied(r.value()),
 ```
 
-### S162. `ClassTable`
+### S163. `ClassTable`
 
 src/layout/mod.rs:1351. Kind: external_body type. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
@@ -3370,7 +3383,7 @@ Tool: none (assumption). Status: trusted.
 pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 ```
 
-### S163. `axiom_class_table`
+### S164. `axiom_class_table`
 
 src/layout/mod.rs:1362. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -3387,7 +3400,7 @@ pub axiom fn axiom_class_table(tracked t: &'static vstd::raw_ptr::PointsTo<[Clas
 ;
 ```
 
-### S164. `ClassTable::new`
+### S165. `ClassTable::new`
 
 src/layout/mod.rs:1372. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
@@ -3396,7 +3409,7 @@ Tool: none (assumption). Status: trusted.
 const fn new(table: [Class; NCLASSES]) -> ClassTable
 ```
 
-### S165. `ClassTable::table`
+### S166. `ClassTable::table`
 
 src/layout/mod.rs:1390. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
@@ -3411,7 +3424,7 @@ pub fn table(&self) -> (r: &[Class; NCLASSES])
         forall|i: int| 0 <= i < NCLASSES ==> #[trigger] r[i].size == spec_class_size(i),
 ```
 
-### S166. `ClassTable::classes_ptr`
+### S167. `ClassTable::classes_ptr`
 
 src/layout/mod.rs:1441. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
@@ -3425,7 +3438,7 @@ fn classes_ptr() -> (p: *mut [Class; NCLASSES])
     opens_invariants none
 ```
 
-### S167. `axiom_process_page_at_most_64k`
+### S168. `axiom_process_page_at_most_64k`
 
 src/layout/regions.rs:192. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -3438,7 +3451,7 @@ pub axiom fn axiom_process_page_at_most_64k()
         process_regions().lg_page <= 16;
 ```
 
-### S168. `Reserved`
+### S169. `Reserved`
 
 src/layout/regions.rs:1968. Kind: external_body type. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -3449,7 +3462,7 @@ Tool: none (assumption). Status: trusted.
 pub tracked struct Reserved
 ```
 
-### S169. `Reserved::is_apart_from_static`
+### S170. `Reserved::is_apart_from_static`
 
 src/layout/regions.rs:1985. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -3464,7 +3477,7 @@ pub proof fn is_apart_from_static(tracked &self)
         disjoint(self.addr() as int, self.len() as int, shared_static_addr(), shared_static_len()),
 ```
 
-### S170. `Reserved::is_disjoint`
+### S171. `Reserved::is_disjoint`
 
 src/layout/regions.rs:2002. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -3481,7 +3494,7 @@ pub proof fn is_disjoint(tracked &mut self, tracked other: &Self)
         disjoint(old(self).addr() as int, old(self).len() as int, other.addr() as int, other.len() as int),
 ```
 
-### S171. `Reserved::into_unbacked`
+### S172. `Reserved::into_unbacked`
 
 src/layout/regions.rs:2021. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -3495,7 +3508,7 @@ pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
         u.len() == self.len(),
 ```
 
-### S172. `try_reserve`
+### S173. `try_reserve`
 
 src/layout/regions.rs:2041. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
@@ -3512,7 +3525,7 @@ fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
         r matches Ok((a, t)) ==> t@.addr() == a && t@.len() == len && 0 < a && a + len <= user_va_limit(),
 ```
 
-### S173. `word`
+### S174. `word`
 
 src/layout/regions.rs:2245. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/layout-regions-word.md).
@@ -3525,7 +3538,7 @@ fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
         i < NCLASSES + 3,
 ```
 
-### S174. `entry_barrier`
+### S175. `entry_barrier`
 
 src/layout/regions.rs:2741. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: evidence (verus/seams/layout-regions-entry_barrier.md).
@@ -3539,7 +3552,7 @@ fn entry_barrier(p: *const super::Class) -> (r: *const super::Class)
     opens_invariants none
 ```
 
-### S175. `RawLock::lock_slow`
+### S176. `RawLock::lock_slow`
 
 src/lock.rs:120. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: evidence (verus/seams/lock-RawLock-lock_slow.md).
@@ -3552,7 +3565,7 @@ fn lock_slow(&self)
         crate::sys::may_syscall(),
 ```
 
-### S176. `axiom_entry`
+### S177. `axiom_entry`
 
 src/lock.rs:364. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
@@ -3567,7 +3580,7 @@ pub axiom fn axiom_entry<'a>() -> (tracked o: LockOrder<'a>)
 ;
 ```
 
-### S177. `axiom_held_below`
+### S178. `axiom_held_below`
 
 src/lock.rs:374. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -3582,7 +3595,7 @@ pub axiom fn axiom_held_below<'a>(r: int) -> (tracked o: LockOrder<'a>)
 ;
 ```
 
-### S178. `axiom_acquired`
+### S179. `axiom_acquired`
 
 src/lock.rs:493. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -3598,7 +3611,7 @@ axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
 ;
 ```
 
-### S179. `axiom_held`
+### S180. `axiom_held`
 
 src/lock.rs:508. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -3617,7 +3630,7 @@ axiom fn axiom_held<'a, T>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (track
 ;
 ```
 
-### S180. `Lock::cell_ref`
+### S181. `Lock::cell_ref`
 
 src/lock.rs:816. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
@@ -3636,7 +3649,7 @@ fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
     no_unwind
 ```
 
-### S181. `Lock::cell_mut`
+### S182. `Lock::cell_mut`
 
 src/lock.rs:831. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
@@ -3657,7 +3670,7 @@ fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b 
     no_unwind
 ```
 
-### S182. `LockGuard::drop`
+### S183. `LockGuard::drop`
 
 src/lock.rs:851. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/lock-LockGuard-drop.md).
@@ -3666,24 +3679,6 @@ Tool: loom/GenMC. Status: discharged (verus/seams/lock-LockGuard-drop.md).
 fn drop(&mut self)
     opens_invariants none
     no_unwind
-```
-
-### S183. `Meta::commit`
-
-src/meta.rs:3268. Kind: external_body. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
-
-> Make `[addr, addr + len)`, page aligned and inside a reservation or an eagerly carved table, readable and writable (for the latter the deferred commit of the object side through its frontier, if still pending, and the accounting): [`commit_claimed`] with the caller's claim to the range.
-
-Body mints Ghost at line 3275; mints Tracked at line 3275.
-
-```rust
-pub fn commit(&self, addr: usize, len: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), Errno>)
-    requires
-        crate::sys::may_syscall(),
-        old(ord).allows(rank_meta()),
-    ensures
-        *final(ord) == *old(ord),
 ```
 
 ### S184. `Explicit::drop`
@@ -3712,7 +3707,7 @@ fn total_bytes(ranges: &[(usize, usize)]) -> (bytes: u64)
 
 ### S186. `axiom_state_lock_inv`
 
-src/purge/background.rs:66. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:68. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: every holder of the state lock leaves the stack's end in range and no thread published that has exited, so the lock's invariant is `stack + STACK_SIZE <= usize::MAX` (0 before the first start; after it, a reservation of `STACK_SIZE` bytes, which `Meta::reserve` places below `va_limit`) and `exited ==> !present` (upstream #128: a thread that found the request withdrawn and exited before its `start` published it stays unpublished).
@@ -3726,7 +3721,7 @@ broadcast axiom fn axiom_state_lock_inv(v: State)
 
 ### S187. `pthread_join`
 
-src/purge/background.rs:457. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:459. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_join(t, NULL)`: 0 or an error number.
@@ -3739,7 +3734,7 @@ unsafe fn pthread_join(t: ::libc::pthread_t) -> i32
 
 ### S188. `spawn`
 
-src/purge/background.rs:579. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:598. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_create` on the committed `[base, base + len)`, joinable so a restart can wait for its exit.
@@ -3754,7 +3749,7 @@ fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t>
 
 ### S189. `shared_arg`
 
-src/purge/background.rs:665. Kind: external_body. Category: raw pointer (internal).
+src/purge/background.rs:684. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The `Shared` that [`spawn`] passes as the thread's argument.
@@ -3767,7 +3762,7 @@ fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
 
 ### S190. `main`
 
-src/purge/background.rs:681. Kind: no_decreases. Category: termination.
+src/purge/background.rs:700. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: discharged (verus/seams/purge-background-main.md).
 
 > The thread's body: decay and sample until the request is withdrawn.
@@ -3778,7 +3773,7 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void
 
 ### S191. `axiom_state_lock`
 
-src/purge/background.rs:781. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:800. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: [`state_lock`] is the raw lock of [`STATE`].
@@ -5908,7 +5903,7 @@ pub assume_specification<T>[ core::cell::UnsafeCell::<T>::new ](value: T) -> cor
 
 ### S333. `axiom_meta_lock_inv`
 
-src/vspec/meta.rs:41. Kind: axiom. Category: allocator invariant.
+src/vspec/meta.rs:43. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: every holder of the metadata lock leaves `Inner::wf` true when it unlocks, so the lock's invariant is `Inner::wf`.
@@ -5922,7 +5917,7 @@ pub(crate) broadcast axiom fn axiom_meta_lock_inv(v: crate::meta::Inner)
 
 ### S334. `axiom_meta_lock_frame`
 
-src/vspec/meta.rs:54. Kind: axiom. Category: allocator invariant.
+src/vspec/meta.rs:56. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: the page size, the region's bounds and the identities of the ghost records (live objects, unclaimed reserved bytes) never change after `Meta::owning` sets them.

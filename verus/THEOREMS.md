@@ -755,9 +755,14 @@ the assumed `Heap::wf` and the huge lock axiom.
   makes its bytes valid and in one allocation.
 - `vspec::meta::axiom_meta_lock_inv`, `axiom_meta_lock_frame`
   (`vspec/meta.rs:39`, `:52`): the metadata lock protects `Inner::wf`;
-  bounds and ghost identities fixed. `Meta::commit` (`meta.rs:2944`) is
-  `external_body`: it assumes its caller's claim (the range was
-  reserved by this `Meta` and not committed). `Meta::free` is verified:
+  bounds and ghost identities fixed. `Meta::commit` is verified (package
+  META): its caller gives the claim to the range that `reserve` or
+  `reserve_table` handed out, which each lazily committed table keeps
+  for its pages past its watermark (`class::sets::Lazy::claimed`, over
+  the process's `Meta`, `meta::process_pages_id`, known during `init`
+  through `heap::shared::axiom_shared_meta`) and the background stack
+  takes after its reservation; a commit takes the range's part.
+  `Meta::free` is verified:
   its caller gives back the `MetaClaim` the allocation handed out, which
   the cache permissions (`CachePerms::claimed`) and the huge allocator
   (`huge::Inner`'s `dclaims`, the descriptor table's `claim`) carry;
@@ -1418,9 +1423,8 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   (`heap/shared.rs:255`), `atfork_handlers` (`api/mod.rs:502`),
   `background::spawn` and `pthread_join` (`purge/background.rs:333`,
   `:229`), `Heap::destroy`
-  (`heap/mod.rs:6624`; `init_fields` verifies since P6, its `tid()` and
-  `now_ns()` checked), `Meta::commit`
-  (`meta.rs:2745`), `print::emit` and
+  (`heap/mod.rs:6669`; `init_fields` verifies since P6, its `tid()` and
+  `now_ns()` checked, and `Meta::commit` since package META), `print::emit` and
   `jemalloc::call_hook` (the report's call-outs, theorem 16), the
   C++ `call_handler` and `call_handler_caught` (the `nothrow_t` forms'
   call through `cxx_handler.cpp`'s catch),
@@ -5871,10 +5875,11 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
   functions take the caller's token and require it below the lock the
   closure takes, so the premise restates a checked precondition for code
   that runs during the call.
-- *Trusted bodies with honest specs*: `policy::empty_bytes`,
-  `Heap::destroy` and `Meta::commit`: each states the
+- *Trusted bodies with honest specs*: `policy::empty_bytes` and
+  `Heap::destroy`: each states the
   lowest rank its body takes (`assign_home`, trusted at this theorem's
-  merge, is verified since theorem 34, and so are `Set::ensure` and
+  merge, is verified since theorem 34, `Meta::commit` since package
+  META, and so are `Set::ensure` and
   the call `thread.arena` makes, `Heap::set_arena`; `policy::empty_bytes`
   is verified since it became an index loop over `Arenas::get_existing`);
   `purge::background::state`, which names `STATE`'s rank, verifies over

@@ -30,8 +30,10 @@ verus! {
 /// rollback), `reserve_table` and `stats` are verified to keep it.
 /// `Meta::free` takes its caller's claim to the object (a `MetaClaim`,
 /// which `alloc_raw` and `alloc_zeroed` hand out) and passes it to
-/// `free_claimed`; `Meta::commit` assumes its caller's claim and passes it
-/// to `commit_claimed`, so that claim is trusted there, not here. The
+/// `free_claimed`; `Meta::commit` takes its caller's claim to the pages
+/// (which `reserve` and `reserve_table` hand out, and each lazily
+/// committed table keeps, `class::sets::Lazy::claimed`) and passes it to
+/// `commit_claimed`, which takes the committed range's part. The
 /// only writers not verified are the test-only
 /// `set_eager_for_test` and `eager_allowed`, which touch only `eager`,
 /// which `wf` does not mention. The fork handlers take and

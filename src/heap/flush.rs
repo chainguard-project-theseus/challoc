@@ -64,6 +64,7 @@ impl Heap {
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             cs.published_by(*pubw@),
+            shared.wf(),
         ensures
             *final(ord) == *old(ord),
             final(self).perms == old(self).perms,
@@ -86,6 +87,9 @@ impl Heap {
             crate::class::claim_zero_ok(r.0, final(out)@, r.1@, cs.spec_class() as int),
     {
         cs.slot_tokens_are_the_class_s();
+        proof {
+            shared.lemma_meta();
+        }
         let r = if slot_randomize(shared) {
             let rng = self.rng();
             cs.claim_random_zero(&shared.meta, out, rng, Tracked(toks), pubw, Tracked(ord))
@@ -809,9 +813,12 @@ proof fn lemma_flush_perm(slots: *mut *mut u8, aold: Seq<int>, a0: Seq<*mut u8>,
     let len = a0.len() as int;
     let akept = addrs_of(a2, n, slots);
     let ar = addrs_of(a2.subrange(n, len), len - n, slots);
-    assert forall|i: int, j: int| 0 <= i < j < len implies f(a0[i]) != f(a0[j]) by {
-        assert(aold[i] == addrs_of(a0, len, slots)[i]);
-        assert(aold[j] == addrs_of(a0, len, slots)[j]);
+    assert(crate::class::injective_on(a0, f)) by {
+        reveal(crate::class::injective_on);
+        assert forall|i: int, j: int| 0 <= i < j < len implies f(a0[i]) != f(a0[j]) by {
+            assert(aold[i] == addrs_of(a0, len, slots)[i]);
+            assert(aold[j] == addrs_of(a0, len, slots)[j]);
+        }
     }
     crate::class::lemma_perm_distinct(a0, a2, f);
     reveal(crate::class::injective_on);

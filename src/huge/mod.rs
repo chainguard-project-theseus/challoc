@@ -1312,7 +1312,7 @@ impl Inner {
         &&& self.free.map.wf()
         &&& self.free.map.in_meta()
         &&& self.free.map.spec_nbits() == self.np@
-        &&& self.free.store is Own
+        &&& self.free.own_claimed()
         &&& self.free.l1_words <= 0x1_0000_0000
         &&& self.all@.no_duplicates()
         &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) <==> self.all@.contains(d)
@@ -2411,7 +2411,7 @@ impl Inner {
         &&& self.free.map.wf()
         &&& self.free.map.in_meta()
         &&& self.free.map.spec_nbits() == self.np@
-        &&& self.free.store is Own
+        &&& self.free.own_claimed()
         &&& self.free.l1_words <= 0x1_0000_0000
         &&& self.elist@ == t.elist_after(g0.elist@)
         &&& elist_ok(self.empty_head, self.empty_tail, self.elist@, self.descs@)
@@ -3186,6 +3186,7 @@ impl Huge {
             regions.huge_base + regions.huge_len <= crate::meta::va_limit(),
             (1usize << regions.lg_page) >= crate::meta::MIN_ALIGN,
             meta.is_process(),
+            crate::meta::process_page() == (1usize << regions.lg_page),
             old(ord).allows(rank_meta()),
             once.step() == Step::Huge,
         ensures
@@ -6071,7 +6072,7 @@ impl Inner {
         &&& self.free.map.wf()
         &&& self.free.map.in_meta()
         &&& self.free.map.spec_nbits() == self.np@
-        &&& self.free.store is Own
+        &&& self.free.own_claimed()
         &&& self.free.l1_words <= 0x1_0000_0000
         &&& elist_ok(self.empty_head, self.empty_tail, self.elist@, self.descs@)
         &&& self.stats.empty == self.elist@.len()
@@ -6653,7 +6654,7 @@ proof fn lemma_free_end(g0: Inner, gr: Inner, gl: Inner, g1: Inner, m: Merge)
         g1.free.map.wf(),
         g1.free.map.in_meta(),
         g1.free.map.spec_nbits() == g1.np@,
-        g1.free.store is Own,
+        g1.free.own_claimed(),
         g1.free.l1_words <= 0x1_0000_0000,
         // The run authorities without the run's token.
         g1.runs@.id() == run_loc(),
@@ -7626,7 +7627,7 @@ impl Huge {
             } else {
                 t0.lookup(key)
             } by {}
-            assert(g0.free.map.in_meta() && g0.free.store is Own && g0.free.l1_words <= 0x1_0000_0000) by {
+            assert(g0.free.map.in_meta() && g0.free.own_claimed() && g0.free.l1_words <= 0x1_0000_0000) by {
                 reveal(Inner::wf);
             }
             assert(gl.free.map.place() == g0.free.map.place());
