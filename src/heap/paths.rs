@@ -8,10 +8,13 @@ use crate::layout::{CLASSES, NCLASSES};
 #[cfg(verus_only)]
 use crate::lock::axiom_entry;
 use crate::sys::pac;
+use crate::sys::tls::TlsSlot;
 use crate::vspec::addr::addr_to_ptr;
 use crate::vspec::zero::Zeroed;
 
 use super::thread::heap_from_slot;
+#[cfg(verus_only)]
+use super::thread::{TLS_EXITED, slot_ok};
 #[cfg(verus_only)]
 use super::zero::zero_on_free;
 use super::{
@@ -724,12 +727,24 @@ impl Heap {
 ///
 /// # Safety
 /// `(t, tp)` from [`tls_heap_slot`](super::thread::tls_heap_slot) on this
-/// thread.
+/// thread, with its token `tls` (the preconditions), which lends the heap
+/// ([`heap_from_slot`]).
 #[inline(always)]
-pub unsafe fn free_fast_slot(shared: &Shared, t: usize, tp: usize, p: *mut u8, Tracked(blk): Tracked<&mut Live>) -> (r: Option<usize>)
+pub unsafe fn free_fast_slot(
+    shared: &Shared,
+    t: usize,
+    tp: usize,
+    p: *mut u8,
+    Tracked(blk): Tracked<&mut Live>,
+    Tracked(tls): Tracked<&mut TlsSlot>,
+) -> (r: Option<usize>)
     requires
         shared.wf(),
         old(blk).claims(p),
+        slot_ok(*old(tls)),
+        t == old(tls).value(),
+        t > TLS_EXITED,
+        tp == old(tls).tp(),
     ensures
         r matches Some(c) ==> c < NCLASSES && process_regions().is_slot(c as int, p@.addr),
         zero_on_free(shared) ==> r is None,
@@ -737,6 +752,7 @@ pub unsafe fn free_fast_slot(shared: &Shared, t: usize, tp: usize, p: *mut u8, T
         r is None ==> final(blk).claims(p) && final(blk).len() == old(blk).len(),
         r is None ==> *final(blk) == *old(blk) || old(blk).block(p),
         r matches Some(c) ==> old(blk).slot_block(p, c as int),
+        final(tls).lent(*old(tls)),
     opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns()]
 {
     let Some((class, slab)) = shared.set_slot(p) else { return None };
@@ -745,7 +761,7 @@ pub unsafe fn free_fast_slot(shared: &Shared, t: usize, tp: usize, p: *mut u8, T
         shared.lemma_free_flags(flags);
     }
     // SAFETY: guaranteed by the caller.
-    unsafe { free_fast_tail(shared, class, slab, p, flags, t, tp, Tracked(blk)) }
+    unsafe { free_fast_tail(shared, class, slab, p, flags, t, tp, Tracked(blk), Tracked(tls)) }
 }
 
 /// The body of the `free` fast paths after the bit test: the heap from
@@ -758,7 +774,7 @@ pub unsafe fn free_fast_slot(shared: &Shared, t: usize, tp: usize, p: *mut u8, T
 /// # Safety
 /// As [`free_fast_slot`].
 #[inline(always)]
-unsafe fn free_fast_tail(shared: &Shared, class: usize, slab: usize, p: *mut u8, flags: u8, t: usize, tp: usize, Tracked(blk): Tracked<&mut Live>) -> (r: Option<usize>)
+unsafe fn free_fast_tail(shared: &Shared, class: usize, slab: usize, p: *mut u8, flags: u8, t: usize, tp: usize, Tracked(blk): Tracked<&mut Live>, Tracked(tls): Tracked<&mut TlsSlot>) -> (r: Option<usize>)
     requires
         shared.wf(),
         class < NCLASSES,
@@ -766,6 +782,10 @@ unsafe fn free_fast_tail(shared: &Shared, class: usize, slab: usize, p: *mut u8,
         slab < shared.tables[class as int].spec_nslabs(),
         flags & !FREE_ROUTE == shared.flags() & !FREE_ROUTE,
         old(blk).claims(p),
+        slot_ok(*old(tls)),
+        t == old(tls).value(),
+        t > TLS_EXITED,
+        tp == old(tls).tp(),
     ensures
         r matches Some(c) ==> c == class,
         flags & PUSH_ZERO != 0 ==> r is None,
@@ -774,6 +794,7 @@ unsafe fn free_fast_tail(shared: &Shared, class: usize, slab: usize, p: *mut u8,
         r is None ==> final(blk).claims(p) && final(blk).len() == old(blk).len(),
         r is None ==> *final(blk) == *old(blk) || old(blk).block(p),
         r matches Some(c) ==> old(blk).slot_block(p, c as int),
+        final(tls).lent(*old(tls)),
     opens_invariants none
 {
     let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
@@ -791,13 +812,13 @@ unsafe fn free_fast_tail(shared: &Shared, class: usize, slab: usize, p: *mut u8,
     // configurations have it clear, so their slot value is the heap itself
     // and they skip the `PUSH_PAC` test of `heap_from_slot`.
     let pushed = match flags {
-        0 => unsafe { heap_from_slot(t, tp, false) }.push_fast(class, p, 0, Tracked(&mut tk)),
+        0 => unsafe { heap_from_slot(t, tp, false, Tracked(tls)) }.push_fast(class, p, 0, Tracked(&mut tk)),
         FREE_ROUTE => {
-            let h = unsafe { heap_from_slot(t, tp, false) };
+            let h = unsafe { heap_from_slot(t, tp, false, Tracked(tls)) };
             shared.home_owns(class, slab, h) && h.push_fast(class, p, 0, Tracked(&mut tk))
         }
         _ => {
-            let h = unsafe { heap_from_slot(t, tp, flags & PUSH_PAC != 0) };
+            let h = unsafe { heap_from_slot(t, tp, flags & PUSH_PAC != 0, Tracked(tls)) };
             (flags & FREE_ROUTE == 0 || shared.home_owns(class, slab, h))
                 && h.push_fast(class, p, flags & !FREE_ROUTE, Tracked(&mut tk))
         }
@@ -1090,9 +1111,22 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
     }
 }
 
-/// `shared` as the raw pointer [`existing_heap`] takes.
+/// `shared` as the raw pointer [`existing_heap`] takes: the process's
+/// `Shared`, at its storage. Trusted: a reference-to-pointer conversion,
+/// whose address Verus does not model; a well-formed `Shared` is the one
+/// at [`Shared::storage`], the only place one is built (`Shared::init`
+/// requires it), as `init_fields` assumes of the `&Shared` it stores (one
+/// `Shared` per process, `shared::axiom_process_shared`; the unit tests
+/// build others, and the claim is about the shipped library).
 #[inline(always)]
-pub(crate) fn shared_ptr(shared: &Shared) -> *const Shared {
+#[verifier::external_body]
+pub(crate) fn shared_ptr(shared: &Shared) -> (r: *const Shared)
+    requires
+        shared.wf(),
+    ensures
+        r == Shared::storage() as *const Shared,
+    opens_invariants none
+{
     ptr::from_ref(shared)
 }
 
@@ -1171,17 +1205,20 @@ fn debug_scheduled(allocs: u64, mask: u32) {
 }
 
 /// The `Shared` a heap was created on, with a lifetime free of the heap's
-/// borrow (so the heap can be borrowed mutably while it is used).
-/// Trusted: a raw-pointer dereference; a heap never outlives its `Shared`,
-/// which `init` made well formed.
+/// borrow (so the heap can be borrowed mutably while it is used): the
+/// heap's `shared` field, which is the process's `Shared` at its storage
+/// ([`Heap::wf`]), read through the permission frozen at `READY`, as
+/// `api::shared_deref` reads it.
 #[inline(always)]
-#[verifier::external_body]
 pub(super) fn shared_of<'a>(p: *const Shared) -> (r: &'a Shared)
+    requires
+        p == Shared::storage() as *const Shared,
+        crate::api::ready(),
     ensures
         r.wf(),
 {
-    // SAFETY: as above.
-    unsafe { &*p }
+    // SAFETY: the preconditions.
+    unsafe { crate::api::shared_deref(p) }
 }
 
 /// `CLASSES[class].size()` without the bounds check: every `class` on the
@@ -1205,7 +1242,7 @@ mod kani_aborts {
     use super::debug_scheduled;
     use crate::kani_proofs::must_not_return;
 
-    /// S129 `debug_scheduled`, no `requires`, no `ensures`: with debug
+    /// S131 `debug_scheduled`, no `requires`, no `ensures`: with debug
     /// assertions on (Kani's build, and the tests'), it returns exactly
     /// when `allocs as u32` has no bit of `mask`, and otherwise never
     /// returns.
@@ -1268,6 +1305,7 @@ pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> 
             flags,
             h as *mut Heap as usize,
             0,
+            Tracked::assume_new(),
             Tracked::assume_new(),
         )
     }

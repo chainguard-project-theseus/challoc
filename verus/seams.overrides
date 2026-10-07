@@ -17,8 +17,9 @@ oom	termination	none (assumption)
 set_errno	FFI/syscall	none (assumption)
 lend	C-program contract	none (assumption)
 root	function pointer	Kani	discharged (verus/seams/api-mallctl-root.md)
-shared_ptr	UnsafeCell/volatile/transmute	RefinedRust
-shared_deref	allocator invariant	none (assumption)
+src/api/mod.rs:shared_ptr	UnsafeCell/volatile/transmute	none (assumption)
+axiom_ready	allocator invariant	none (assumption)
+axiom_published	allocator invariant	none (assumption)
 shared_base	inline asm	Islaris/Isla	evidence (verus/seams/api-shared_base.md)
 axiom_fork_resumed_state	C-program contract	none (assumption)
 axiom_fork_resumed	C-program contract	none (assumption)
@@ -85,7 +86,7 @@ node_caches_detached	raw pointer (internal)	RefinedRust
 assert_not_home	panic/abort	Kani	discharged (verus/seams/heap-others-assert_not_home.md)
 Heap::node_caches	raw pointer (internal)	RefinedRust
 debug_scheduled	panic/abort	Kani	discharged (verus/seams/heap-paths-debug_scheduled.md)
-shared_of	raw pointer (internal)	RefinedRust
+src/heap/paths.rs:shared_ptr	allocator invariant	none (assumption)
 axiom_process_shared	allocator invariant	none (assumption)
 ThreadKey::create	function pointer	Kani
 Shared::free_flags	allocator invariant	Verus
@@ -113,7 +114,7 @@ Shared::begin	allocator invariant	none (assumption)
 axiom_state	allocator invariant	none (assumption)
 axiom_statics	allocator invariant	none (assumption)
 heap_at	raw pointer (internal)	RefinedRust
-heap_new	raw pointer (internal)	RefinedRust
+HeapPerm::assemble	raw pointer (internal)	none (assumption)
 axiom_run_locs	allocator invariant	none (assumption)
 axiom_zero_entry	raw pointer (internal)	Kani	discharged (verus/seams/huge-table-axiom_zero_entry.md)
 ClassTable	UnsafeCell/volatile/transmute	none (assumption)
@@ -123,7 +124,7 @@ Reserved::is_disjoint	platform/kernel fact	none (assumption)
 Reserved::is_apart_from_static	platform/kernel fact	none (assumption)
 Reserved::into_unbacked	platform/kernel fact	none (assumption)
 src/layout/regions.rs:word	core library	Kani	discharged (verus/seams/layout-regions-word.md)
-class_entry	UnsafeCell/volatile/transmute	Islaris/Isla
+entry_barrier	inline asm	Islaris/Isla	evidence (verus/seams/layout-regions-entry_barrier.md)
 word_index	inline asm	Islaris/Isla	evidence (verus/seams/class-table-word_index.md)
 axiom_acquired	allocator invariant	none (assumption)
 axiom_held	allocator invariant	none (assumption)
@@ -362,8 +363,10 @@ src/heap/mod.rs:Heap::destroy	raw pointer (internal)	none (assumption)
 src/heap/mod.rs:init_fields	raw pointer (internal)	none (assumption)
 src/heap/tcaches.rs:axiom_tcaches_lock_inv	allocator invariant	none (assumption)
 src/heap/tcaches.rs:EMPTY_TABLE	core library	Kani
-src/heap/thread.rs:fast_flags	raw pointer (internal)	none (assumption)
-src/heap/thread.rs:heap_from_slot	raw pointer (internal)	none (assumption)
+axiom_class_table	allocator invariant	none (assumption)
+axiom_array_elem	core library	none (assumption)
+HeapPerm	allocator invariant	none (assumption)
+TlsSlot::entry	allocator invariant	none (assumption)
 src/layout/mod.rs:ClassTable::new	UnsafeCell/volatile/transmute	none (assumption)
 src/layout/mod.rs:ClassTable::table	UnsafeCell/volatile/transmute	none (assumption)
 # seams.sh names `layout::classes_ptr` `ClassTable::classes_ptr`: it reads
@@ -407,3 +410,4 @@ src/vspec/ptr.rs:axiom_plain_u64	core library	none (assumption)
 src/vspec/ptr.rs:core::ptr::read_volatile::<T>	raw pointer (internal)	Kani
 src/vspec/ptr.rs:core::ptr::write_unaligned::<T>	raw pointer (internal)	Kani
 src/vspec/slice.rs:core::slice::from_raw_parts::<'a, T>	raw pointer (internal)	Kani
+slot_heap_ref	raw pointer (internal)	none (assumption)

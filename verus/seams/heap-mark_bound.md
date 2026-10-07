@@ -1,11 +1,13 @@
 # `mark_bound`
 
-Seam S123 of `verus/SEAMS.md`: src/heap/mod.rs:6395. Kind: external_body. Category: raw pointer (internal).
+Seam S124 of `verus/SEAMS.md`: src/heap/mod.rs:6441. Kind: external_body. Category: raw pointer (internal).
 Discharged by RefinedRust.
 
 ## Contract
 
-At commit 0c9cd77:
+At commit 0c9cd77, with `final(s).shared() == old(s).shared()` added by
+package P7 (READY+HEAPPERM), when `FreshHeap` began to record the
+`shared` field (`FreshHeap::shared`):
 
 ```rust
 unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
@@ -17,6 +19,7 @@ unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
         final(s).head() == old(s).head(),
         final(s).arena() == old(s).arena(),
         final(s).bound(),
+        final(s).shared() == old(s).shared(),
 ```
 
 `heap_head(h, head)` is `head.is_range(h@.addr, 128)`, `head.provenance()
@@ -66,14 +69,15 @@ Reproduce: `sh verus/refinedrust/run.sh` (both quanta).
 ## Translation
 
 The contract speaks of the fresh heap through the linear token
-`FreshHeap` (S121, `none (assumption)`): `s.heap()` is the heap,
+`FreshHeap` (S123, `none (assumption)`): `s.heap()` is the heap,
 `s.head()` the permission to its 128 bytes of plain fields, and, by the
 token's trusted meaning ("what the trusted writers stored in them"),
 `s.arena()` and `s.bound()` are what `init_fields` and `mark_bound`
 stored in the heap's `arena` and `bound` fields. `init_fields` stores
 them (it ensures `s.arena()` is the arena it stored and `!s.bound()`),
-and `tcaches::heap_new` reads them back (`r.arena as int == s.arena()`,
-`r.bound == s.bound()`). The translation uses that meaning to read
+and `thread::HeapPerm::assemble` (trusted, behind `tcaches::heap_new`)
+reads them back (`r.value().arena as int == s.arena()`,
+`r.value().bound == s.bound()`). The translation uses that meaning to read
 `s.heap()` and `s.head()` as the heap at `l` and the permission to its
 head, `ar` as the bytes of `s.arena()` and `b` as `s.bound()`.
 
@@ -84,7 +88,7 @@ because nothing else writes the head's first ten fields between
 holder of the head's permission, `create_detached` writes the rest of
 the block through the other permission (`rest`), and `create` calls
 `mark_bound` right after `create_detached` returns. Since the port of
-upstream #103, `create` then calls `mark_rehome` (S124, discharged by
+upstream #103, `create` then calls `mark_rehome` (S126, discharged by
 RefinedRust, `heap-mark_rehome.md`), which stores `true` into `rehome`
 alone: a field after `rng`, at byte 88 under rustc's layout, outside
 `HeapHead` (whose fields end at byte 74, below), so it leaves the bytes
@@ -130,14 +134,18 @@ field before `caches` with its bytes).
 - `ensures final(s).arena() == old(s).arena()`: `arena` holds the same
   bytes `ar`, so the same `u16`.
 - `ensures final(s).bound()`: `bound` holds `true`.
-- Beyond the contract: the other eight head fields hold the same bytes,
-  so the body does not change `others`. `tcaches::heap_new`'s trusted
-  `r.others@.addr == 0` needs that, and it rests as well on
-  `init_fields` storing null (trusted) and on the premise above.
+- `ensures final(s).shared() == old(s).shared()`: `shared` holds the
+  same bytes `sh`, so the same pointer, which is what the token records
+  of it (`init_fields` stored it, trusted, S124).
+- Beyond the contract: the other seven head fields hold the same bytes,
+  so the body does not change `others`. `thread::HeapPerm::assemble`'s
+  trusted `r.value().others@.addr == 0` (S163, which `tcaches::heap_new`
+  now verifies over) needs that, and it rests as well on `init_fields`
+  storing null (trusted) and on the premise above.
 - `s` (`Tracked<&mut FreshHeap>`) is zero-sized outside Verus; the
   patched frontend translates it as unit.
 - Gaps:
-  - The token's meaning (S121) and the no-other-writer premise above
+  - The token's meaning (S123) and the no-other-writer premise above
     are what this rests on; the proof shows the body keeps them, not
     that they hold.
   - Verus's permission (`PointsToRaw`: a range and a provenance) is
@@ -185,7 +193,10 @@ for the reason `bound` must hold a `bool` to be stated in terms of
 syntactic types, for the no-other-writer premise to be named apart
 from the token's documented meaning, for the gap between Verus's
 permissions and RefinedRust's ownership and the unasserted layout to
-be named, and for the padding to be mentioned; all are above. A human
+be named, and for the padding to be mentioned; all are above. Package
+P7 (READY+HEAPPERM) added the `shared` conjunct to the contract, read
+from the same statement (`sh` unchanged); its fresh-context review
+read this record with the change. A human
 review is pending.
 
 ## Tests

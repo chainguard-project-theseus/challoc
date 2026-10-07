@@ -311,8 +311,9 @@ impl Heap {
     /// [`head_ok`]): `create_detached` starts the list empty and
     /// `other_caches` links a node in at the head with its `next`, both
     /// proved; across calls the permissions are part of [`Heap::wf`],
-    /// which the trusted conversions that hand a heap to verified code
-    /// (`tcaches::heap_at`, `thread::heap_from_slot`) assume. The
+    /// which the trusted sources of a heap (`tcaches::heap_at`, and the
+    /// slot token `TlsSlot::entry` that `thread::heap_from_slot` borrows
+    /// from) assume. The
     /// unverified readers of `next` ([`Heap::nodes`], for `destroy` and
     /// `cache_in`) only read it; `destroy`, the one writer that unlinks
     /// nodes, frees the heap.
@@ -897,7 +898,7 @@ impl Heap {
 mod kani_aborts {
     use super::assert_not_home;
 
-    /// S127 `assert_not_home`, `requires *arena != *home`: under it the
+    /// S128 `assert_not_home`, `requires *arena != *home`: under it the
     /// call returns, for every pair.
     #[kani::proof]
     fn assert_not_home_returns() {

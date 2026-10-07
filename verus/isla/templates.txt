@@ -40,3 +40,4 @@ src/rseq.rs	thread_pointer	asm!("mov {tp}, qword ptr fs:[0]", tp = out(reg) tp, 
 src/sys/mod.rs	trap	asm!("ud2", options(noreturn, nostack));
 src/sys/tls.rs	get	asm!( "mov {out}, qword ptr [rip + challoc_tls@GOTTPOFF]", "mov {out}, qword ptr fs:[{out}]", out = out(reg) out, options(nostack, readonly, preserves_flags), );
 src/sys/tls.rs	set	asm!( "mov {off}, qword ptr [rip + challoc_tls@GOTTPOFF]", "mov qword ptr fs:[{off}], {val}", off = out(reg) _, val = in(reg) value, options(nostack, preserves_flags), );
+src/layout/regions.rs	entry_barrier	asm!("/* {0} */", inout(reg) p, options(pure, nomem, nostack, preserves_flags));

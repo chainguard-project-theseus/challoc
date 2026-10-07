@@ -47,15 +47,24 @@
          // SAFETY: as in `malloc_conf_addr`.
 --- a/src/layout/regions.rs
 +++ b/src/layout/regions.rs
-@@ -1703,7 +1703,7 @@
- {
+@@ -2725,7 +2725,7 @@
+     let tracked entry = crate::vspec::ptr::axiom_array_elem(published.classes, c);
      // SAFETY: `c < NCLASSES` (the caller's contract).
-     let p = unsafe { CLASSES.as_ptr().add(c) };
+     let p = unsafe { (super::classes_ptr() as *const super::Class).add(c) };
 -    #[cfg(target_arch = "x86_64")]
 +    #[cfg(all(target_arch = "x86_64", not(miri)))]
-     let p = {
-         let mut p = p;
-         // SAFETY: an empty instruction sequence; `p` comes out unchanged.
+     let p = entry_barrier(p);
+     // SAFETY: `p` points into the table, which is never written after init.
+     vstd::raw_ptr::ptr_ref(p, Tracked(entry))
+@@ -2735,7 +2735,7 @@
+ /// Trusted: the template is empty (`verus/isla/templates.txt` pins it),
+ /// so the register the operand is in for input and output comes out
+ /// unchanged, as for `api::shared_base`.
+-#[cfg(target_arch = "x86_64")]
++#[cfg(all(target_arch = "x86_64", not(miri)))]
+ #[verifier::external_body]
+ #[inline(always)]
+ fn entry_barrier(p: *const super::Class) -> (r: *const super::Class)
 --- a/src/lib.rs
 +++ b/src/lib.rs
 @@ -8,7 +8,7 @@

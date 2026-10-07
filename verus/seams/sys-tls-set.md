@@ -11,14 +11,14 @@ code writes, not what the token holds (part 3).
 ## 1. Contract
 
 Entry S243 of verus/SEAMS.md as numbered at 8635213 (S247 and
-`src/sys/tls.rs:208` at 64d801a), kind external_body;
+`src/sys/tls.rs:208` at 64d801a; S264 since package P7, READY+HEAPPERM,
+which restated the `ensures` as `TlsSlot::set_to`), kind external_body;
 `#[inline(always)]`:
 
 ```rust
 pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsSlot>)
     ensures
-        final(slot).value() == value as usize,
-        final(slot).creates() == old(slot).creates(),
+        final(slot).set_to(*old(slot), value as usize),
 ```
 
 The bodies Verus does not see, at 64d801a: on x86_64
@@ -88,13 +88,20 @@ and 7 (aarch64) and 12 (x86_64); setup in verus/ISLA.md.
 
 ## 3. Translation
 
-`ensures final(slot).value() == value as usize`: facts 3 and 5 show
-the calling thread's slot ends holding `value`'s bits and nothing else
-in memory changes; that the token's value is then the slot's contents
-is the ghost model's premise ([sys-tls-get_tp.md](sys-tls-get_tp.md),
-part 3; verus/THEOREMS.md, theorem 15), here as the definition of what
-`set` does to the token. `final(slot).creates() == old(slot).creates()`
-is about ghost state only: the asm block has no ghost effect. The
+`ensures final(slot).set_to(*old(slot), value as usize)`, that is
+(`TlsSlot::set_to`, an open spec) `final(slot).value() == value as
+usize` and the token's `creates()`, `tp()` and `heap()` as they were:
+facts 3 and 5 show the calling thread's slot ends holding `value`'s
+bits and nothing else in memory changes; that the token's value is
+then the slot's contents is the ghost model's premise
+([sys-tls-get_tp.md](sys-tls-get_tp.md), part 3; verus/THEOREMS.md,
+theorem 15), here as the definition of what `set` does to the token.
+The other three are about ghost state only (the `Heap::create` count,
+the thread pointer the token records, and the heap permission it
+holds): the asm block has no ghost effect, and the thread pointer
+register is not written (fact 3 on aarch64, where `tp` is an output the
+block reads `tpidr_el0` into and does not write back; on x86_64 the
+block names no thread-pointer register). The
 declared interface holds: the outputs (`off`, and `tp` on aarch64) are
 the only registers written, `nostack` (the one memory write is the
 slot, not the stack), `preserves_flags`. Residuals and gaps as in
@@ -117,8 +124,10 @@ sys-linux-trap.md relies on rip staying at the `ud2`; a control checks
 it), the description of `ud2`'s infeasible paths, one encoding per
 register in the TLS and `fs:[0]` census, a stricter `arch_at`, a
 cross-check of the 64-bit mode assumption against the `syscall` job, the
-wording of the template fact, and the seam numbers at 64d801a. A human
-review is pending.
+wording of the template fact, and the seam numbers at 64d801a.
+Package P7 (READY+HEAPPERM) restated the `ensures` over the token's new
+ghost fields (`tp`, `heap`); its fresh-context review read this record
+with the change. A human review is pending.
 
 ## 5. Tests
 

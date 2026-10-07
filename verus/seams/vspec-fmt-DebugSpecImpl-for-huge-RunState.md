@@ -1,6 +1,6 @@
 # `DebugSpecImpl for huge::RunState`
 
-Seam S316 of `verus/SEAMS.md`: src/vspec/fmt.rs:65. Kind: spec_impl. Category: core library.
+Seam S319 of `verus/SEAMS.md`: src/vspec/fmt.rs:65. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract

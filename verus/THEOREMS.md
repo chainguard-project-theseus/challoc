@@ -55,10 +55,25 @@ add.
   initial state), the `STATE` wrappers (under sequential consistency),
   and `heap::shared::axiom_shared_built`'s join, whose `shared_at`
   carries the "nothing unverified writes it" assumption. `shared` and
-  `shared_if_ready` load `READY` and get the permission;
-  `shared_unchecked` (the fast paths' accessor, `external_body`; since
-  upstream #77 `shared_deref`, at the address `shared_base` gives)
-  assumes it, since its callers hold none. `published_line` assumes
+  `shared_if_ready` load `READY` and get the permission. Since package
+  P7 (READY+HEAPPERM) the fact that it was published travels in
+  contracts as the uninterpreted `api::ready()`: `Shared::wf` includes
+  it (`Shared::built` is what `Shared::init` proves), and so do
+  `Heap::wf` and the TLS slot token holding a heap
+  (`heap::thread::slot_ok`); `api::axiom_ready` states it of a thread
+  holding a `Published`, and `api::axiom_published` gives a thread that
+  has it the frozen permissions back (both trusted: a `ready()` fact
+  reaches a thread only through a load of `READY` or the publication,
+  or from a thread it runs after, carried along in contracts, and no
+  linear permission to the frozen statics exists once one does). The
+  trusted items that hand out a `Shared::wf` or `Heap::wf` they did not
+  get from a verified caller assert it too, a widening of what they
+  claim since P7: `sys::tls::TlsSlot::entry`, `tcaches::heap_at`,
+  `purge::background::shared_arg` and `mallctl::shared`. `shared_unchecked` (the fast paths'
+  accessor; since upstream #77 `shared_deref`, at the pointer
+  `shared_base` gives) is verified that way since P7, as are
+  `heap::thread::fast_flags` and `heap::paths::shared_of`.
+  `published_line` assumes
   the feature line built: since upstream #110 the line is not written
   by `init` but by `api::build_line` (trusted, the writer of `FEATURES`
   and `FEATURE_LINE` after `READY`), at its first request
@@ -66,12 +81,22 @@ add.
   `LINE_STATE`'s exchange from `LINE_UNBUILT` and publishes
   `LINE_READY` after it); its premise is that its caller observed
   `LINE_READY` (the exchange and the state carry no ghost state).
-- Two more trusted sources of `Shared::wf`: `heap::paths::shared_of`
-  (`heap/paths.rs:783`, a heap's `&Shared`) and
+- One more trusted source of `Shared::wf`:
   `purge::background::shared_arg` (`purge/background.rs:363`, the
-  background thread's argument), both `external_body`.
+  background thread's argument, `external_body`), besides
+  `api::mallctl::shared`. (`heap::paths::shared_of`, a heap's
+  `&Shared`, was the other until P7; it reads the heap's `shared` field
+  through the frozen permission now.)
+- One `Shared`, at its storage (since P7): a well-formed `&Shared` is
+  the one at `Shared::storage()`, the only place `Shared::init` builds
+  one. Assumed where a reference becomes a pointer:
+  `heap::paths::shared_ptr` (`external_body`, what the cold paths hand
+  `existing_heap`) and `heap::init_fields` (trusted already; the heap's
+  `shared` field, recorded by `FreshHeap::shared`, which `Heap::wf`
+  states is the storage). The unit tests build other `Shared`s; the
+  premise is about the shipped library, as `axiom_process_shared`'s.
 - `Shared::init` (`heap/shared.rs:653`) proves
-  `r ==> shared_at(this).wf()`, using the tracked `Build` token
+  `r ==> shared_at(this).built()`, using the tracked `Build` token
   (`:404`) and trusted in-place writers: `begin` (`:447`), `put_head`
   (`:459`), `put_flags` (`:484`), `put_table` (`:505`), `put_huge`
   (`:552`), `put_tail` (`:604`) and the claim-free
@@ -90,7 +115,9 @@ add.
   `state_claim` and `state_publish`), every step's `Once` token while
   `STATE` is `UNINIT`, and from `READY` on the permissions `init` froze
   (`api::Published`: the built `Shared`, from `axiom_shared_built`'s
-  join, and the class table; since upstream #110 not the feature
+  join, and the class table, whose value is `layout::class_table()`
+  since P7, by the definitional `layout::axiom_class_table` on the
+  frozen permission; since upstream #110 not the feature
   statics, which the feature line's first request completes and
   writes, `api::build_line`). `api::claim_init`
   (verified) is `init_slow`'s compare-exchange from `UNINIT`, and takes
@@ -149,15 +176,28 @@ the call does not return (theorem 3, which is not voided for it).
 **Every heap a verified path is handed is `Heap::wf`.**
 - `Heap::wf` (`heap/mod.rs:2479`): `CachePerms::wf`, `tracks`,
   `zero_ok`, `tokened`, `regions_ok()`, `list_ok`.
-- Assumed by `thread::heap_from_slot` (`heap/thread.rs:191`) and
-  `tcaches::heap_at` (`heap/tcaches.rs:70`), both `external_body`.
+  Since P7 also `ready()` and that its `shared` field is the process's
+  `Shared` at its storage.
+- Assumed by `tcaches::heap_at` (`heap/tcaches.rs:70`,
+  `external_body`), and, for the calling thread's heap, by the slot
+  token `sys::tls::TlsSlot::entry` (an axiom since P7): a token whose
+  slot holds a heap holds the heap's linear permission
+  (`heap::thread::HeapPerm`, abstract: a `vstd` `PointsTo<Heap>` would
+  own the home headers' bytes a second time, next to the heap's own
+  `CachePerms`) for the heap the value names, with the heap well formed
+  (`heap::thread::slot_ok`). `thread::heap_from_slot` (verified since
+  P7) authenticates the value and borrows the heap from the token
+  through the trusted `heap::thread::slot_heap_ref`;
+  `create_heap_for_thread` puts a new heap's permission in the token
+  (`tcaches::heap_new`, over the trusted `HeapPerm::assemble`, which
+  states what `init_fields`, `mark_bound` and `mark_rehome` stored).
 - Heap creation is trusted: `Heap::create` (`heap/mod.rs:3297`),
   `create_detached` (`:3312`), `destroy` (`:3350`).
 - Writers the permissions do not follow, assumed to keep `wf`:
   `others::swap_home` (`heap/others.rs:149`), `Heap::free_caches`
   (`heap/mod.rs:2745`, verified, but it writes the untracked `caches`
   field). `Heap::set_arena`
-  (`heap/mod.rs:3132`) ensures nothing; the next `heap_from_slot`
+  (`heap/mod.rs:3132`) ensures nothing; the next `TlsSlot::entry`
   assumes `wf` again.
 - Trusted, but stated over the permissions: the slice primitive under
   `stack_mut` (`vspec::slice::slice_mut_elems`, the slice over exactly
@@ -177,8 +217,10 @@ the call does not return (theorem 3, which is not voided for it).
   flush's kept-half sort and the fallback of the verified
   `flush::group_by_slab` (whose result is a permutation of the batch,
   so the flush's tokens follow it).
-- `thread::fast_flags` (`heap/thread.rs:170`): the `PUSH_PAC` bit read
-  through a raw pointer is `pac_mode()`.
+- `thread::fast_flags` (verified since P7): the `PUSH_PAC` bit, read
+  through the permission frozen at `READY` at the pointer
+  `api::shared_ptr`, `api::shared_base` or `heap::paths::shared_ptr`
+  gives, is `pac_mode()`.
 - `Shared::free_flags` (`heap/shared.rs`, `external_body`, since upstream
   #78; `requires self.wf()`): the `free` fast path's dispatch byte, one
   `Relaxed` load, is `push_flags` up to the `FREE_ROUTE` bit (`r &
@@ -193,13 +235,25 @@ the call does not return (theorem 3, which is not voided for it).
   push need.
 - TLS asm: `sys::tls::get` (`sys/tls.rs:125`), `get_tp` (aarch64,
   `:180`), `set` (`:205`); a read returns the `TlsSlot` token's value
-  and `set` makes the written value the token's (theorem 15), nothing
-  more.
+  (and, since P7, the aarch64 `get_tp` the token's thread pointer,
+  `TlsSlot::tp`) and `set` makes the written value the token's and
+  leaves its ghost fields alone (theorem 15), nothing more.
 
 **Class table.**
-- `ClassTable::table` (`layout/mod.rs:1115`) and `Regions::class_entry`
-  (`layout/regions.rs:1696`), `external_body`: entries are
-  `class_table()`, `wf`, sized `spec_class_size`.
+- `ClassTable::table` (`layout/mod.rs:1115`, `external_body`): entries
+  are `class_table()`, `wf`, sized `spec_class_size`. (Its readers
+  include `Shared::init`, before `READY`, and the `Deref` impl, which
+  can state no precondition, so it does not read through the frozen
+  permission.)
+- `layout::regions::class_entry` (verified since P7, `requires
+  api::ready()`): the entry, through the class table's permission
+  frozen at `READY` (`api::axiom_published`), its element
+  (`vspec::ptr::axiom_array_elem`, trusted: the layout of arrays and
+  that a frozen permission to one gives one to each element), whose
+  value is `class_table()` (`layout::axiom_class_table`, trusted,
+  definitional), at the pointer the x86_64 barrier returns unchanged
+  (`entry_barrier`, an empty `asm!`, evidence:
+  `verus/seams/layout-regions-entry_barrier.md`).
 - `vspec::class::axiom_class_table_wf` (`vspec/class.rs:12`), the same
   fact for proofs; `adopt_page_geometry` (verified) writes the table
   through the permission `api::axiom_statics` gives and keeps
@@ -1371,8 +1425,8 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   Re-entrant heap registration (theorem 15): `heap_for_thread_in`,
   `ThreadKey::set` and its `pthread_setspecific` wrapper require it,
   while `existing_heap_in`, `tls_heap_slot` and `tls::get`/`get_tp`
-  (which only take the `TlsSlot` token) do not, so the fast paths stay
-  as above. No allocator lock across external calls (theorem 16):
+  (which only read the `TlsSlot` token or borrow its heap) do not, so
+  the fast paths stay as above. No allocator lock across external calls (theorem 16):
   `print::emit`, `Sink::new` and `Sink::flush` require it.
 
 So a system call happens only below a frame that requires
@@ -1400,7 +1454,12 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   static) in place of `sys::opaque` and `shared_unchecked`; since
   upstream #101 `ClassLine::guard_word` (one load, and on x86_64 an empty
   `asm!`), and the specification of `core::hint::assert_unchecked` (no
-  instruction).
+  instruction). Since package P7 `heap_from_slot`, `fast_flags`,
+  `shared_deref` and `class_entry` are verified (Verus checks they make no
+  system call); in their place the trusted bodies are
+  `heap::thread::slot_heap_ref` (a cast), `layout::regions::entry_barrier`
+  (an empty `asm!`, x86_64) and `heap::paths::shared_ptr` (a cast, on
+  the cold paths only).
   So do the `core` functions they use (`Option::map`, `?`, atomics,
   pointer arithmetic), which the common premises already trust.
 - Two values reach the kernel from code with no `requires`, and only a
@@ -1594,12 +1653,14 @@ only the functions named here:
 paths, verified unless marked trusted:
 - **Size and process state:** `class_index`, `layout::class_of`;
   `api::shared_ptr` (trusted), `shared_unchecked` (trusted; since
-  upstream #77 `shared_base` and `shared_deref`, both trusted); since
+  upstream #77 `shared_base`, trusted, and `shared_deref`, trusted
+  until package P7 and verified since); since
   #101 `class_index_small`, `layout::class_of_small` and `small_class`.
 - **Heap lookup:** `existing_heap` (on a ghost `TlsSlot::entry()`),
   `existing_heap_in`, `tls_heap_slot`, `sys::tls::get` and
-  the aarch64 `get_tp` (trusted asm), the x86_64 `get_tp`, `fast_flags`,
-  `heap_from_slot` (trusted).
+  the aarch64 `get_tp` (trusted asm), the x86_64 `get_tp`, `fast_flags`
+  (verified since P7), `heap_from_slot` (verified since P7, over the
+  trusted `slot_heap_ref`).
 - **Pop:** `Heap::alloc_fast`, `pop_fast`, `cache_ptr`, `home_ptr_at`
   (trusted), `pop_top`, `CacheHeader::slots`.
 - **Push:** `free_fast_slot`, `free_fast_push` (since upstream #78; before,
@@ -1624,7 +1685,8 @@ paths, verified unless marked trusted:
   `is_guard`).
 - **Layout:** `Regions::slab_slot_unbounded` (since #78, for the
   unsized path; `slab_slot` before), `slot_in_class`, `region_len`, the
-  free function `layout::regions::class_entry` (trusted);
+  free function `layout::regions::class_entry` (trusted; verified since
+  package P7, over the trusted `entry_barrier` on x86_64);
   `Class::slab_size`, `slab_mask`, `slot_of_offset`. From #87 until #101 only
   `region_len` (the sized path's bound; since #101 `Shared::region_hi`,
   a field, and nothing from the layout): the lines hold the geometry,
@@ -1682,6 +1744,11 @@ identically). The hot set's machine code is upstream's.
     `shared_deref` (a reference to the static).
   - Since upstream #101: `ClassLine::guard_word` (one 8-byte load and,
     on x86_64, an empty `asm!`).
+  - Since package P7 `shared_deref`, `fast_flags`, `heap_from_slot` and
+    `class_entry` are verified (their masks are checked); in their place
+    `heap::thread::slot_heap_ref` (a cast) and, on x86_64,
+    `layout::regions::entry_barrier` (an empty `asm!`; evidence record
+    `verus/seams/layout-regions-entry_barrier.md`).
 - **New wrappers.** `vspec::atomic::load_bool` (removed with upstream
   #78, above): the `core`
   atomic load, declared `opens_invariants none`; `load_owner`
@@ -2601,6 +2668,21 @@ it).
   does not park, a nested allocation there may create this thread's
   heap, and `create` does not read its token again, so the premise
   holds.
+  Since package P7 (READY+HEAPPERM) the token also carries the thread
+  pointer (`TlsSlot::tp`) and, while the slot holds a heap, the heap's
+  linear permission (`heap::thread::HeapPerm`), which
+  `create_heap_for_thread` puts there and the slot readers borrow
+  (`heap_from_slot`, through the trusted `slot_heap_ref`); `entry` is
+  an axiom returning `&'static mut TlsSlot`, the thread's one slot,
+  with `heap::thread::slot_ok`: a heap value comes with the permission
+  to the heap it names, well formed (so `api::ready()`), and nothing
+  else with one. It is made at the same top-level users and also at
+  the `free` entry points' fast paths (`api::libc`: `free`,
+  `free_usable`), which read the slot through it. Above the sentinels
+  `heap_for_thread_in` and `existing_heap_in` (which now borrows the
+  token `&mut`) leave the token as it was but for what its heap holds
+  (`TlsSlot::lent`), in place of "unchanged"; at a benign value they
+  still leave it exactly as it was.
 - `heap::shared::pthread_setspecific` (`external_body`): an FFI call
   whose nested allocator entries reach the slot only through the cores
   (or, at a benign value, `create`, which then writes nothing), holding
@@ -2608,7 +2690,9 @@ it).
   of `libc::pthread_setspecific` (formerly in `vspec/heap.rs`), which
   claimed nothing.
 - `sys::tls::get`, `get_tp`, `set` (inline asm, `external_body`): a read
-  returns the token's value; a write makes it the token's value.
+  returns the token's value; a write makes it the token's value (since
+  P7: and leaves its thread pointer and heap permission alone; the
+  aarch64 `get_tp` returns the token's thread pointer).
 - `Heap::create` makes no call that can allocate (above).
 - `Heap::destroy` (`external_body`, theorem 10), on the heapless path:
   it takes no slot token and writes no slot (by inspection; the slot
@@ -3402,10 +3486,12 @@ entries, and the slot token under every cached entry
 (`CachePerms::tokened`; "Uniqueness: slot tokens" in `verus/TODO.md`).
 `perms` is a private field of `Heap`, so only `heap` code can change a
 cache, and only through a `&mut Heap`. A verified function obtains a
-heap only from the trusted `thread::heap_from_slot` (through
+heap only from `thread::heap_from_slot` (verified since package P7,
+borrowing it from the slot token, `TlsSlot::entry`; through
 `heap_for_thread_in` and `existing_heap_in`), `tcaches::heap_at`
 (through `Tcaches::get`, and `heap_destructor`) or `tcaches::heap_new`
-(heap creation; `mallctl::thread_heap` goes through `heap_for_thread`),
+(heap creation, verified since P7 over `HeapPerm::assemble`;
+`mallctl::thread_heap` goes through `heap_for_thread`),
 and each reference is assumed `Heap::wf` afresh: no ghost state links two
 references to the same heap. The theorem is therefore stated per
 reference: every heap the direct paths obtain, they leave caching
@@ -4720,7 +4806,7 @@ below were `#[inline(always)]` calls).
 
 **Premises beyond the common ones.**
 - Every heap a verified path is handed is `Heap::wf` (common premises:
-  `heap_from_slot`, `heap_at`), and the statements are per reference, as
+  `TlsSlot::entry`, `heap_at`), and the statements are per reference, as
   in theorem 20: `flush_caller`, `Tcaches::flush` and the
   `ThreadTcacheEnabled` arm each state the result for the reference they
   hold; that the next call's reference is the same heap in the same
@@ -5865,7 +5951,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   `CountPerm` is the counter with its `id` (`count_id`), and `fetch_add`,
   `fetch_sub` (wrapping), `load` and, since the port of upstream #103,
   `compare_exchange` (the strong form: it fails only on a different
-  value, by C++20's semantics; S306, discharged with loom and those,
+  value, by C++20's semantics; S309, discharged with loom and those,
   `verus/seams/vspec-count-compare_exchange.md`) are one atomic operation
   on it, sequentially consistent in the model (the orderings, all
   `Relaxed`, are ignored, as for the bitmap words).
@@ -5913,7 +5999,12 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   A token is valid while its heap is live: `destroy` does not take it,
   so one kept past `destroy` would be stale for a later heap in the same
   block; no code keeps one (`create_heap_for_thread` uses it right after
-  `create`, `Tcaches::create` drops it).
+  `create`, `Tcaches::create` drops it). Since package P7 `heap_new` is
+  verified: the token is used up by the trusted
+  `thread::HeapPerm::assemble`, which makes the heap's linear permission
+  with those claims (and, from `FreshHeap::shared`, that its `shared`
+  field is the process's `Shared`), and `heap_new` puts it in the
+  thread's slot token and borrows the heap from there.
 - `Heap::destroy` (trusted) unbinds a counted heap's home arena with that
   heap's ticket (its body passes `Tracked::assume_new()`), first, and
   frees the heap, ticket and all. Since the unbind now comes before the
@@ -5923,7 +6014,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   is off by that ticket inside the trusted body only (the flush's proof
   uses no arena invariant).
 - `homed_ok`'s `rehome ==> bound` (since #103): a new thread heap is
-  counted, so it holds whatever `mark_rehome` (S124, RefinedRust:
+  counted, so it holds whatever `mark_rehome` (S125, RefinedRust:
   `true`, `verus/seams/heap-mark_rehome.md`) stored;
   an explicit cache, assumed `wf` (`heap_at`), rests on `init_fields`
   storing `false` (trusted) and on `create` being the one writer that
@@ -5931,7 +6022,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   it). `same_shape`, `caches_same`, `updates` and the field lists
   of `claim` and the accounting lemmas now keep `rehome` too.
 - Every heap a verified path is handed is `Heap::wf`, now with
-  `homed_ok` (common premises: `heap_from_slot`, `heap_at`): a thread
+  `homed_ok` (common premises: `TlsSlot::entry`, `heap_at`): a thread
   heap's ticket is the one `create_heap_for_thread` installed, kept by
   every verified writer (`keeps`, `same_shape`, `caches_same` and
   `updates` now keep `bound` and `homed`); an explicit cache is not

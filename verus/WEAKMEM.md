@@ -144,8 +144,15 @@ each syscall is a compiler barrier.
   for the proofs: a thread that loads `READY` gets the permissions
   `init` froze (`api::Published`), so the published value is the one
   `Shared::init` built (`api::shared_ref`); `shared_unchecked` (since
-  #77 `shared_deref`) assumes
-  it on the fast paths.
+  #77 `shared_deref`) assumed
+  it on the fast paths until package P7, which carries the fact as
+  `api::ready()` from the load to the thread's heap and TLS slot token
+  and reads through the frozen permissions (`api::axiom_published`):
+  the premise is now that a `ready()` fact reaches a thread only after
+  it loaded `READY` (or published it), or after a thread that did (the
+  background thread, through `pthread_create`): the same happens-before.
+  Besides `load_state`, the trusted `TlsSlot::entry`, `heap_at`,
+  `shared_arg` and `mallctl::shared` assert it (`api::ready`).
 - What to check: every `READY` reader sees the built value, including
   the page geometry, which is a plain write.
 

@@ -337,9 +337,11 @@ impl Heap {
     /// the address creation wrote the header at ([`home_hdr`](super::home_hdr)
     /// of the heap's address), as the heap's record has it
     /// ([`Heap::home_ptr`]). `create_heap_for_thread` makes the record; for
-    /// a heap `tcaches::heap_at` or `thread::heap_from_slot` hands out it
-    /// is assumed with `wf`. It holds of a heap at the address it was
-    /// created at: verified code never moves, swaps or builds a `Heap`.
+    /// a heap `tcaches::heap_at` hands out, or the thread's slot token
+    /// (`TlsSlot::entry`) lends, it is assumed with `wf`. It holds of a
+    /// heap at the address it was created at: verified code never moves,
+    /// swaps or builds a `Heap`. (Verus has no raw borrow, so the address
+    /// of `self.caches` cannot be computed in verified code.)
     #[inline(always)]
     #[verifier::external_body]
     fn home_ptr_at(&mut self, class: usize) -> (r: *mut CacheHeader)

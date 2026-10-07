@@ -13,7 +13,11 @@ use crate::lock::{Lock, LockOrder};
 #[cfg(verus_only)]
 use crate::lock::{rank_class, rank_tcaches};
 
+#[cfg(verus_only)]
+use super::thread::HeapPerm;
+use super::thread::slot_heap_ref;
 use super::{FreshHeap, Heap, Shared};
+use crate::sys::tls::TlsSlot;
 #[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, verus};
@@ -91,7 +95,10 @@ impl Tcaches {
 /// ([`CachePerms::fresh`](super::CachePerms::fresh); `Tcaches::create`
 /// takes no reference to its heap, so it drops them), every
 /// writer of its caches proves it keeps `wf`, and no ghost state carries
-/// that from one call to the next. That includes the heap's arena
+/// that from one call to the next. Since package P7 `Heap::wf` includes
+/// `api::ready()` and that the heap's `shared` is the process's `Shared`,
+/// so this asserts both: a heap is created under a well-formed `&Shared`
+/// (`init_fields`). That includes the heap's arena
 /// ticket ([`Heap::homed_ok`]): an explicit cache is not counted and
 /// holds none; a thread heap holds the one `create_heap_for_thread`
 /// installed and `set_arena` exchanged. The safety contract (one
@@ -103,9 +110,13 @@ impl Tcaches {
 /// `Tcaches::get` has a pointer loaded from its table and
 /// `thread::heap_destructor` the one the C library hands it (non-null
 /// by POSIX, unchecked), and the permissions creation returned are
-/// dropped (`Tcaches::create`) or installed in the heap's own ghost
-/// state (`create_heap_for_thread`); carrying them from one call to the
-/// next needs a ghost registry of live heaps.
+/// dropped (`Tcaches::create`); carrying them from one call to the next
+/// needs a ghost registry of live explicit caches, which callers use
+/// without a lock (the C caller's contract). A thread heap's permission
+/// is in its TLS slot token ([`HeapPerm`](super::thread::HeapPerm),
+/// which `create_heap_for_thread` puts there), but the destructor's
+/// pointer comes from the C library, not from the slot, and nothing ties
+/// the two.
 ///
 /// # Safety
 /// `p` is such a heap, and nothing else uses it while the reference
@@ -121,41 +132,48 @@ pub(super) unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
 }
 
 /// The heap [`Heap::create`] has just returned, as a reference, before
-/// its ghost state is installed: its `others` field is null, as
-/// `init_fields` stored it, and its `arena` and `bound` are what `s`
-/// records (`init_fields` and `mark_bound` stored them). Trusted: Verus
-/// has no raw-pointer dereference. `s` comes only from those trusted
-/// writers, once per heap made, and is used up here. Nothing is claimed
-/// about the heap's ghost fields: the caller installs the permissions and
-/// the ticket creation returned (`create_heap_for_thread`). Those
-/// permissions own the whole heap: `s` holds the permission to its plain
-/// fields ([`FreshHeap::head`](super::FreshHeap::head),
-/// [`heap_head`](super::heap_head)), given up here to the reference,
-/// and `perms` its home headers
-/// ([`CachePerms::fresh`](super::CachePerms::fresh)), which the caller
-/// installs as the heap's ghost state.
+/// its ghost state is installed, borrowed from the thread's slot token
+/// `tls`, which takes its permission ([`HeapPerm`], made here by
+/// [`HeapPerm::assemble`]) and is lent for as long as the reference
+/// lives: its `others` field is null, as `init_fields` stored it, and its
+/// `arena` and `bound` are what `s` records (`init_fields` and
+/// `mark_bound` stored them). Nothing is claimed about the heap's ghost
+/// fields: the caller installs the permissions and the ticket creation
+/// returned (`create_heap_for_thread`), through the reference, so the
+/// token's permission describes the heap with them once the reference
+/// ends.
 ///
 /// # Safety
 /// `p` is a heap `Heap::create` has just returned, and nothing else uses
 /// it while the reference lives.
-#[verifier::external_body]
 #[inline(always)]
 pub(super) unsafe fn heap_new<'a>(
     p: *mut Heap,
     Tracked(s): Tracked<FreshHeap>,
     Tracked(perms): Tracked<&super::CachePerms>,
+    Tracked(tls): Tracked<&'a mut TlsSlot>,
 ) -> (r: &'a mut Heap)
     requires
         s.heap() == p,
         super::heap_head(p, s.head()),
         perms.fresh(p),
+        old(tls).heap() is None,
     ensures
         r.others@.addr == 0,
         r.arena as int == s.arena(),
         r.bound == s.bound(),
+        r.shared == s.shared(),
+        final(tls).value() == old(tls).value(),
+        final(tls).creates() == old(tls).creates(),
+        final(tls).tp() == old(tls).tp(),
+        final(tls).heap() matches Some(hp) && hp.addr() == p@.addr && hp.value() == *final(r),
 {
+    let tracked hp = HeapPerm::assemble(s, perms);
+    proof {
+        tls.put_heap(hp);
+    }
     // SAFETY: guaranteed by the caller.
-    unsafe { &mut *p }
+    unsafe { slot_heap_ref(p, Tracked(tls)) }
 }
 
 impl Tcaches {

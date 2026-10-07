@@ -236,18 +236,67 @@ pub tracked struct Published {
 
 impl Published {
     /// Each permission is to its static and initialised; the `Shared` is
-    /// the one built at its storage, well formed; the class table is
-    /// well formed ([`layout::table_ok`]).
+    /// the one built at its storage, as `Shared::init` built it
+    /// ([`Shared::built`]); the class table is well formed
+    /// ([`layout::table_ok`]) and is [`layout::class_table`].
     pub open spec fn ok(&self) -> bool {
         &&& self.shared.ptr() == Shared::storage()
         &&& self.shared.is_init()
         &&& self.shared.value() == Shared::built_at(Shared::storage())
-        &&& self.shared.value().wf()
+        &&& self.shared.value().built()
         &&& self.classes.ptr() == layout::classes_storage()
         &&& self.classes.is_init()
         &&& layout::table_ok(self.classes.value())
+        &&& self.classes.value() == layout::class_table()
     }
 }
+
+/// The allocator is published: `init` has frozen the permissions
+/// [`Published`] holds. A fact rather than a token, so that it travels in
+/// contracts at no cost: [`Shared::wf`] includes it (a `&Shared` is handed
+/// out only from `READY` on), so does `heap::Heap::wf` (a heap is created
+/// under a `&Shared`), and a thread's TLS slot holding a heap implies it
+/// (`heap::thread::slot_ok`). Whoever has it gets the frozen permissions
+/// back from [`axiom_published`]. Uninterpreted. Verified code learns it
+/// from [`axiom_ready`], of a thread that holds a `Published` (the
+/// publication itself, or a load of `READY`, [`load_state`]); and the
+/// trusted items whose contracts give a `Shared::wf` or a `Heap::wf` of
+/// a value they did not get from a verified caller assert it too:
+/// `sys::tls::TlsSlot::entry` (a slot holding a heap), `heap::tcaches::heap_at`,
+/// `purge::background::shared_arg` (the background thread, which
+/// `pthread_create` orders after its creator, which had it) and
+/// `mallctl::shared`. Each asserts it of a thread that loaded `READY`, or
+/// runs after one that did, which is what it means.
+pub uninterp spec fn ready() -> bool;
+
+/// Trusted: a thread that holds the frozen permissions ([`Published`],
+/// which `init` builds when it freezes them and `STATE`'s invariant holds
+/// from `READY` on, [`load_state`]) may state [`ready`]. A `Published`
+/// exists only once `init` has used up the linear permissions to the
+/// statics it covers (`api::axiom_statics` hands them out once, for the
+/// process's one-shot token), so no thread that can state `ready` holds
+/// one of those.
+pub axiom fn axiom_ready(tracked p: &'static Published)
+    requires
+        p.ok(),
+    ensures
+        ready(),
+;
+
+/// Trusted: the frozen permissions, for a thread that knows the allocator
+/// is published ([`ready`]): a `&'static Published` like the one `init`
+/// froze. Another reference to frozen permissions is harmless: they only
+/// give shared references to statics nothing writes again ([`Published`]),
+/// and no linear permission to those statics exists once `ready` can be
+/// stated ([`axiom_ready`]). That the fact reaches a thread only after it,
+/// or a thread it happens after, saw `READY` is what [`ready`]'s producers
+/// ensure (see there), carried along in contracts.
+pub axiom fn axiom_published() -> (tracked r: &'static Published)
+    requires
+        ready(),
+    ensures
+        r.ok(),
+;
 
 /// The published permissions a thread has seen, if any: what the
 /// functions that load or write `STATE` hand back.
@@ -413,7 +462,12 @@ unsafe fn shared_ref(Tracked(published): Tracked<&'static Published>) -> (r: &'s
         *r == Shared::built_at(Shared::storage()),
     opens_invariants none
 {
-    vstd::raw_ptr::ptr_ref(shared_storage_ptr(), Tracked(published.shared))
+    let r = vstd::raw_ptr::ptr_ref(shared_storage_ptr(), Tracked(published.shared));
+    proof {
+        axiom_ready(published);
+        r.lemma_built_wf();
+    }
+    r
 }
 
 /// The process's allocator state, initialising it on first use.
@@ -453,10 +507,17 @@ pub fn shared_if_ready() -> (r: Option<&'static Shared>)
 /// The allocator state's address, with no readiness check and no
 /// reference formed: what the fast paths hand `heap::existing_heap`, which
 /// reads one byte through it only after the thread's TLS slot has proved
-/// init complete. Trusted: a raw-pointer projection of a static.
+/// init complete. Trusted: a raw-pointer projection of a static, the
+/// pointer [`Shared::storage`] names, as `shared_storage_ptr`'s: the same
+/// cell of the same static (`UnsafeCell` is `repr(transparent)`), so the
+/// same address and provenance.
 #[verifier::external_body]
 #[inline(always)]
-pub fn shared_ptr() -> *const Shared opens_invariants none {
+pub fn shared_ptr() -> (r: *const Shared)
+    ensures
+        r == Shared::storage() as *const Shared,
+    opens_invariants none
+{
     (&raw const SHARED.0).cast::<Shared>()
 }
 
@@ -470,15 +531,17 @@ pub fn shared_ptr() -> *const Shared opens_invariants none {
 /// x86_64 addresses statics `rip`-relative at no cost, so there the
 /// address stays a constant. Like [`shared_ptr`], no reference is formed.
 ///
-/// Trusted: a raw-pointer projection of a static, at the address of
-/// [`Shared::storage`], as [`shared_ptr`] and `shared_storage_ptr`; the
-/// aarch64 template is empty (`verus/isla/templates.txt` pins it), so the
-/// register the operand is in for input and output comes out unchanged.
+/// Trusted: a raw-pointer projection of a static, the pointer
+/// [`Shared::storage`] names, as `shared_storage_ptr`'s: the same cell of
+/// the same static (`UnsafeCell` is `repr(transparent)`), so the same
+/// address and provenance; the aarch64 template is empty
+/// (`verus/isla/templates.txt` pins it), so the register the operand is
+/// in for input and output comes out unchanged.
 #[verifier::external_body]
 #[inline(always)]
 pub fn shared_base() -> (r: *const Shared)
     ensures
-        r@.addr == Shared::storage()@.addr,
+        r == Shared::storage() as *const Shared,
     opens_invariants none
 {
     #[allow(unused_mut)]
@@ -492,29 +555,31 @@ pub fn shared_base() -> (r: *const Shared)
 }
 
 /// The allocator state at `p`, a [`shared_base`] result, without the
-/// readiness check: `&*p`, as the free paths write it.
+/// readiness check: `&*p`, as the free paths write it, through the
+/// permission frozen at `READY` ([`axiom_published`]).
 ///
 /// # Safety
-/// The calling thread must itself have observed `READY` earlier (through
-/// [`shared`] or [`shared_if_ready`]). The fast paths use the thread's heap
-/// pointer as that witness: a heap is only created under `shared()`.
-///
-/// Trusted: that the caller observed `READY`, so that the value at the
-/// storage's address is the published one, well formed (what
-/// [`shared_ref`] proves from the permissions frozen at `READY`). The
-/// witness the fast paths have, the heap pointer in their TLS slot,
-/// carries no ghost state, so the permissions do not reach here.
-#[verifier::external_body]
+/// The calling thread must have observed `READY` earlier, or run after a
+/// thread that did (through
+/// [`shared`] or [`shared_if_ready`]): [`ready`], which the fast paths
+/// have from the thread's heap (a heap is only created under a
+/// `&Shared`, `heap::Heap::wf`) or its TLS slot holding one
+/// (`heap::thread::slot_ok`).
 #[inline(always)]
 pub unsafe fn shared_deref(p: *const Shared) -> (r: &'static Shared)
     requires
-        p@.addr == Shared::storage()@.addr,
+        p == Shared::storage() as *const Shared,
+        ready(),
     ensures
         r.wf(),
     opens_invariants none
 {
-    // SAFETY: guaranteed by the caller.
-    unsafe { &*p }
+    let tracked published = axiom_published();
+    let r = vstd::raw_ptr::ptr_ref(p, Tracked(published.shared));
+    proof {
+        r.lemma_built_wf();
+    }
+    r
 }
 
 /// The feature line, without the readiness check.
@@ -1043,9 +1108,11 @@ fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tra
         }
         publish_features(features, Tracked(&mut feats));
         proof {
+            let tracked classes = vstd::modes::tracked_static_ref(classes);
+            layout::axiom_class_table(classes);
             let tracked p = Published {
                 shared: shared_perm,
-                classes: vstd::modes::tracked_static_ref(classes),
+                classes,
             };
             seen.published = Some(vstd::modes::tracked_static_ref(p));
         }

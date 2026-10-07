@@ -1,6 +1,6 @@
 # `core::hint::assert_unchecked`
 
-Seam S338 of `verus/SEAMS.md`: src/vspec/misc.rs:89. Kind: assume_spec. Category: core library.
+Seam S341 of `verus/SEAMS.md`: src/vspec/misc.rs:89. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

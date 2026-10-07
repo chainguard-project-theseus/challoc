@@ -67,6 +67,7 @@ impl Heap {
             final(self).arena == old(self).arena,
             final(self).home_hdrs == old(self).home_hdrs,
             final(self).others == old(self).others,
+            final(self).shared == old(self).shared,
             final(self).bound == old(self).bound,
             final(self).homed == old(self).homed,
             final(self).rehome == old(self).rehome,
@@ -1574,7 +1575,7 @@ fn addr_mix(h: &Heap) -> u64 {
 mod kani_flush {
     use super::Heap;
 
-    /// S113 `addr_mix`: no `ensures`; it returns, the heap's address
+    /// S114 `addr_mix`: no `ensures`; it returns, the heap's address
     /// rotated left by 17 bits (on an all-zero heap: pointers null,
     /// counters zero, ghost fields empty, all valid).
     #[kani::proof]

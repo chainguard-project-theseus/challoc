@@ -528,11 +528,17 @@ fn create(
     // `pthread_create` allocates the new thread's DTV with `calloc`
     // and `pthread_join` frees an exited thread's key data, neither of
     // which may re-enter this thread's heap mid-operation.
-    let tracked mut tls = crate::sys::tls::TlsSlot::entry();
-    let saved = crate::sys::tls::get(Tracked(&tls));
+    let tracked tls = crate::sys::tls::TlsSlot::entry();
+    let saved = crate::sys::tls::get(Tracked(&*tls));
     let park = saved as usize > TLS_EXITED;
+    // The heap's permission is set aside while the slot is parked, as a
+    // nested entry at `TLS_CREATING` has none, and put back after.
+    let tracked mut parked: Option<crate::heap::HeapPerm> = None;
     if park {
-        crate::sys::tls::set(addr_to_ptr(TLS_CREATING) as *mut c_void, Tracked(&mut tls));
+        proof {
+            parked = tls.take_heap();
+        }
+        crate::sys::tls::set(addr_to_ptr(TLS_CREATING) as *mut c_void, Tracked(&mut *tls));
     }
     // The previous thread exited at a wake-up (`request(false)`) but
     // glibc's exit path still runs on the stack until the kernel has
@@ -577,7 +583,12 @@ fn create(
         None => None,
     };
     if park {
-        crate::sys::tls::set(saved, Tracked(&mut tls));
+        crate::sys::tls::set(saved, Tracked(&mut *tls));
+        proof {
+            if parked is Some {
+                tls.put_heap(parked.tracked_unwrap());
+            }
+        }
     }
     (stack.unwrap_or(0), thread)
 }
@@ -668,7 +679,13 @@ verus! {
 
 /// The `Shared` that [`spawn`] passes as the thread's argument. Trusted:
 /// a raw-pointer dereference; the pointer is the `Shared` `start` was
-/// given, which its contract requires to be well formed.
+/// given, which its contract requires to be well formed. Since package
+/// P7 `Shared::wf` includes `api::ready()`, so this also asserts that the
+/// allocator is published, for the new thread: `start`'s caller had it,
+/// and `pthread_create` orders the thread after it. The deref itself
+/// would verify through `api::axiom_published` (as `heap::paths::shared_of`
+/// does); what is trusted is that `arg` is that `Shared`, at its storage,
+/// which no contract can say of the argument the C library passes.
 #[verifier::external_body]
 #[inline(always)]
 fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)

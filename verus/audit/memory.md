@@ -10,6 +10,11 @@ Does the `ensures` hold of the body for every input meeting the
 `requires`, in both quanta and on aarch64 and x86_64? Is it still needed?
 Is it stronger than its callers need?
 
+Since package P7 (READY+HEAPPERM) S26 `shared_ptr` has an `ensures`,
+and S132 `shared_of`, S158 `heap_new`, S159 `fast_flags`, S160
+`heap_from_slot` and S175 `class_entry` verify (`verus/THEOREMS.md`,
+common premises); the rows below are as audited at 8635213.
+
 Verdicts: **sound** (no derivation of `false`, the contract holds of the
 body; notes say what its truth rests on where that is an unchecked
 `# Safety` duty), **fixed** (the contract was false or unsound and is

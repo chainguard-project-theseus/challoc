@@ -826,7 +826,7 @@ impl Regions {
     /// slow path decides what `None` means.
     #[inline(always)]
     pub fn slab_slot(&self, p: usize) -> (r: Option<(usize, usize, usize)>)
-        requires self.wf(),
+        requires self.wf(), crate::api::ready(),
         ensures
             r matches Some((c, slab, slot)) ==> {
                 let cls = class_table()[c as int];
@@ -969,7 +969,7 @@ impl Regions {
     /// [`slab_slot`]: Regions::slab_slot
     #[inline]
     pub fn classify(&self, p: usize) -> (r: Kind)
-        requires self.wf(),
+        requires self.wf(), crate::api::ready(),
         ensures
             r matches Kind::Slab { class, slab, slot } ==>
                 class < NCLASSES && slot < class_table()[class as int].nslots && self.is_slot_addr(class as int, p)
@@ -2673,7 +2673,7 @@ mod linux {
     mod kani_word {
         use super::{NCLASSES, word};
 
-        /// S176 `word`, `requires i < NCLASSES + 3`, no `ensures`: under
+        /// S178 `word`, `requires i < NCLASSES + 3`, no `ensures`: under
         /// it the call returns, for every byte string and index (and the
         /// word is bytes `8 * i..8 * i + 8` in native order).
         #[kani::proof]
@@ -2691,47 +2691,64 @@ mod linux {
 
 verus! {
 
-/// `&CLASSES[c]` for the fast paths' classification, `c < NCLASSES`.
+/// `&CLASSES[c]` for the fast paths' classification, `c < NCLASSES`,
+/// through the permission to the table frozen at `READY`
+/// (`api::axiom_published`): its entry `c` ([`crate::vspec::ptr::axiom_array_elem`]),
+/// which is `class_table()[c]` ([`super::axiom_class_table`]), well formed
+/// and sized [`super::spec_class_size`] ([`super::table_ok`]).
 ///
-/// On x86_64 the entry's address goes through an empty `asm!` so that it
-/// is one register: left alone, LLVM keeps the table base and the scaled
-/// index in two registers for the slot test's loads (`(idx, base, 1)`
-/// addressing; the table is RIP-relative, so it cannot be a displacement)
-/// and adds them again for `lg_slab`, and the extra register costs `free`
-/// and `sdallocx` a callee-saved push and pop (2 instructions each per
-/// call, measured). aarch64 folds the address into one shifted add on its
-/// own, and the barrier there costs `free` an instruction.
+/// On x86_64 the entry's address goes through an empty `asm!`
+/// ([`entry_barrier`]) so that it is one register: left alone, LLVM keeps
+/// the table base and the scaled index in two registers for the slot
+/// test's loads (`(idx, base, 1)` addressing; the table is RIP-relative,
+/// so it cannot be a displacement) and adds them again for `lg_slab`, and
+/// the extra register costs `free` and `sdallocx` a callee-saved push and
+/// pop (2 instructions each per call, measured). aarch64 folds the
+/// address into one shifted add on its own, and the barrier there costs
+/// `free` an instruction.
 ///
 /// # Safety
-/// `c < NCLASSES`.
-///
-/// Trusted, like [`super::ClassTable::table`]: the entry is `CLASSES[c]`,
-/// well formed and sized [`super::spec_class_size`].
-// PORT-RESTORE: new upstream accessor (asm barrier); trusted entry read, same claim as ClassTable::table.
-#[verifier::external_body]
+/// `c < NCLASSES`, and the allocator is published ([`crate::api::ready`]),
+/// the preconditions.
 #[inline(always)]
 unsafe fn class_entry(c: usize) -> (r: &'static super::Class)
     requires
         c < NCLASSES,
+        crate::api::ready(),
     ensures
         *r == class_table()[c as int],
         r.wf(),
         r.size == super::spec_class_size(c as int),
     opens_invariants none
 {
+    let tracked published = crate::api::axiom_published();
+    let tracked entry = crate::vspec::ptr::axiom_array_elem(published.classes, c);
     // SAFETY: `c < NCLASSES` (the caller's contract).
-    let p = unsafe { CLASSES.as_ptr().add(c) };
+    let p = unsafe { (super::classes_ptr() as *const super::Class).add(c) };
     #[cfg(target_arch = "x86_64")]
-    let p = {
-        let mut p = p;
-        // SAFETY: an empty instruction sequence; `p` comes out unchanged.
-        unsafe {
-            core::arch::asm!("/* {0} */", inout(reg) p, options(pure, nomem, nostack, preserves_flags))
-        };
-        p
-    };
+    let p = entry_barrier(p);
     // SAFETY: `p` points into the table, which is never written after init.
-    unsafe { &*p }
+    vstd::raw_ptr::ptr_ref(p, Tracked(entry))
+}
+
+/// [`class_entry`]'s barrier on x86_64: `p`, through an empty `asm!`.
+/// Trusted: the template is empty (`verus/isla/templates.txt` pins it),
+/// so the register the operand is in for input and output comes out
+/// unchanged, as for `api::shared_base`.
+#[cfg(target_arch = "x86_64")]
+#[verifier::external_body]
+#[inline(always)]
+fn entry_barrier(p: *const super::Class) -> (r: *const super::Class)
+    ensures
+        r == p,
+    opens_invariants none
+{
+    let mut p = p;
+    // SAFETY: an empty instruction sequence; `p` comes out unchanged.
+    unsafe {
+        core::arch::asm!("/* {0} */", inout(reg) p, options(pure, nomem, nostack, preserves_flags));
+    }
+    p
 }
 
 } // verus!

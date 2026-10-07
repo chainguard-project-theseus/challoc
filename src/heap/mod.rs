@@ -70,7 +70,9 @@ pub use shared::Built;
 pub use shared::Shared;
 #[cfg(test)]
 use shared::{FAIL_SETSPECIFIC, guard_interval_for};
-pub use thread::{TLS_CREATING, TLS_EXITED, fast_flags};
+#[cfg(verus_only)]
+pub use thread::slot_ok;
+pub use thread::{HeapPerm, TLS_CREATING, TLS_EXITED, fast_flags};
 pub use thread::{existing_heap, heap_destructor, heap_for_thread, tls_heap_slot};
 
 use core::alloc::Layout;
@@ -317,8 +319,8 @@ pub proof fn theorem_guard_free(p: *mut u8, c: int, slab: int)
 ///   (`huge::Inner::lemma_in_meta`, `TwoLevelBitmap::lemma_words_placed`).
 ///
 /// Trusted premises: `Shared::wf` of the published value
-/// (`api::shared_deref`; `api::shared_ref` proves it from `STATE`'s
-/// invariant); the kernel's `mmap` contract for the three
+/// (`api::shared_ref` and `api::shared_deref` prove it from `STATE`'s
+/// invariant and `api::axiom_published`); the kernel's `mmap` contract for the three
 /// reservations (`layout::regions::linux::try_reserve`,
 /// `Reserved::is_disjoint` and `Reserved::is_apart_from_static`);
 /// `Meta`'s lock axioms (`vspec::meta::axiom_meta_lock_inv`,
@@ -3217,15 +3219,19 @@ impl Heap {
     /// ([`stack_mut`], whose contract states every entry it changes), the
     /// `thread.arena` exchange ([`Heap::swap_hdrs`]) and the cache resets
     /// ([`Heap::free_caches_in`]). Assumed of every existing heap a
-    /// verified path is handed (`tcaches::heap_at`,
-    /// `thread::heap_from_slot`): the heap behind a TLS slot or a
-    /// `tcache` id is as the last verified writer left it, since no ghost
-    /// state survives between calls. `destroy` (trusted) frees the heap,
+    /// verified path is handed (`tcaches::heap_at`, and the thread's slot
+    /// token, `TlsSlot::entry`, whose heap `thread::heap_from_slot`
+    /// borrows): the heap behind a TLS slot or a `tcache` id is as the
+    /// last verified writer left it, since no ghost state survives
+    /// between calls. `destroy` (trusted) frees the heap,
     /// so it claims nothing after. The `others` list is [`Heap::list`]
     /// ([`Heap::list_ok`]): creation starts it empty, `other_caches`
     /// links nodes in, and `destroy` frees the heap. A heap exists only
     /// once the process's `Shared` is published, so its regions come with
-    /// it ([`regions_ok`]). The home headers are the ones
+    /// it ([`regions_ok`]), and so does that fact ([`crate::api::ready`],
+    /// from the `&Shared` it was created under); its `shared` field is
+    /// that `Shared`, at its storage ([`FreshHeap::shared`]), and nothing
+    /// writes it again. The home headers are the ones
     /// `create_heap_for_thread` recorded ([`Heap::home_ok`]). They are
     /// also the plain field `caches`, whose value Verus models apart from
     /// the permissions to the same bytes: verified code only reads the
@@ -3239,6 +3245,8 @@ impl Heap {
         &&& self.perms@.tokened()
         &&& self.perms@.claimed()
         &&& regions_ok()
+        &&& crate::api::ready()
+        &&& self.shared == Shared::storage() as *const Shared
         &&& self.list_ok()
         &&& self.home_ok()
         &&& self.homed_ok()
@@ -3269,6 +3277,8 @@ impl Heap {
         &&& self.perms@.tokened()
         &&& self.perms@.claimed()
         &&& regions_ok()
+        &&& crate::api::ready()
+        &&& self.shared == Shared::storage() as *const Shared
         &&& self.list_ok()
         &&& self.home_ok()
         &&& self.home_hdrs == old.home_hdrs
@@ -3359,16 +3369,19 @@ impl Heap {
     /// A heap whose cache permissions are those creation returns
     /// ([`CachePerms::fresh`]), whose `others` list is empty and whose home
     /// headers are where creation wrote them at `h` is well formed, once
-    /// the process's `Shared` is ([`regions_ok`]); a thread heap, counted
-    /// and holding its ticket ([`Heap::homed_ok`]).
+    /// the process's `Shared` is published ([`regions_ok`], [`crate::api::ready`])
+    /// and its `shared` is that one; a thread heap, counted and holding its
+    /// ticket ([`Heap::homed_ok`]).
     proof fn lemma_fresh_wf(&self, h: *mut Heap)
         requires
             self.perms@.fresh(h),
             self.list@.len() == 0,
             self.keys@.len() == 0,
             self.others@.addr == 0,
+            self.shared == Shared::storage() as *const Shared,
             self.home_hdrs@ == Seq::new(NCLASSES as nat, |c: int| home_hdr(h, c)),
             regions_ok(),
+            crate::api::ready(),
             self.bound,
             self.homed@ matches Some(t) && homed_on(t, self.arena as int),
         ensures
@@ -3585,12 +3598,25 @@ impl Heap {
     }
 
     /// What a well-formed heap tells its callers outside this module: the
-    /// process's regions are well formed and separated.
+    /// process's regions are well formed and separated, and the allocator
+    /// is published ([`crate::api::ready`]).
     pub proof fn lemma_wf_regions(&self)
         requires
             self.wf(),
         ensures
             regions_ok(),
+            crate::api::ready(),
+    {
+    }
+
+    /// A well-formed heap's `shared` is the process's `Shared`, at its
+    /// storage, which is published.
+    proof fn lemma_wf_shared(&self)
+        requires
+            self.wf(),
+        ensures
+            self.shared == Shared::storage() as *const Shared,
+            crate::api::ready(),
     {
     }
 
@@ -3875,6 +3901,7 @@ impl Heap {
         &&& self.perms@ == old.perms@
         &&& self.caches == old.caches
         &&& self.others == old.others
+        &&& self.shared == old.shared
         &&& self.list@ == old.list@
         &&& self.keys@ == old.keys@
         &&& self.home_hdrs@ == old.home_hdrs@
@@ -4102,6 +4129,7 @@ impl Heap {
             new.keys == old.keys,
             new.arena == old.arena,
             new.others == old.others,
+            new.shared == old.shared,
             new.home_hdrs == old.home_hdrs,
             new.heads == old.heads,
             new.bound == old.bound,
@@ -4165,6 +4193,7 @@ impl Heap {
             b.homed == a.homed,
             b.rehome == a.rehome,
             b.others == a.others,
+            b.shared == a.shared,
             b.home_hdrs == a.home_hdrs,
             b.heads == a.heads,
         ensures
@@ -4372,6 +4401,7 @@ impl Heap {
             new.homed == old.homed,
             new.rehome == old.rehome,
             new.others == old.others,
+            new.shared == old.shared,
             new.home_hdrs == old.home_hdrs,
             new.heads == old.heads,
             forall|p2: *mut CacheHeader, j: int|
@@ -4421,6 +4451,7 @@ impl Heap {
         &&& self.rehome == old.rehome
         &&& self.homed == old.homed
         &&& self.others == old.others
+        &&& self.shared == old.shared
         &&& self.home_hdrs == old.home_hdrs
         &&& self.heads == old.heads
     }
@@ -4511,6 +4542,7 @@ impl Heap {
             new.homed == old.homed,
             new.rehome == old.rehome,
             new.others == old.others,
+            new.shared == old.shared,
             new.home_hdrs == old.home_hdrs,
             new.heads == old.heads,
             v.len == 0 && v.cap == 0 && v.low_water == 0 && v.zeroed == 0 && v.run_end == 0,
@@ -6155,6 +6187,7 @@ impl Heap {
         &&& self.rehome == old.rehome
         &&& self.homed == old.homed
         &&& self.others == old.others
+        &&& self.shared == old.shared
         &&& self.home_hdrs == old.home_hdrs
         &&& self.heads == old.heads
     }
@@ -6270,11 +6303,13 @@ global layout Heap is size == 3712, align == 64;
 /// The plain fields of the fresh heap at [`FreshHeap::heap`]: the
 /// permission to them ([`FreshHeap::head`], the 128 bytes before
 /// `caches`, [`heap_head`]), which [`init_fields`] takes and keeps here,
-/// and what the trusted writers stored in them, for `tcaches::heap_new`
-/// to read back: the home arena ([`init_fields`]) and whether the heap is
-/// counted ([`mark_bound`]). Linear and not `Copy`: the one holder of the
-/// heap-head permission, made by [`init_fields`] once per heap and used up
-/// by `heap_new`, which gives the permission to the reference. It is valid
+/// and what the trusted writers stored in them, for
+/// `thread::HeapPerm::assemble` to read back: the `Shared` and the home
+/// arena ([`init_fields`]) and whether the heap is counted
+/// ([`mark_bound`]). Linear and not `Copy`: the one holder of the
+/// heap-head permission, made by [`init_fields`] once per heap and used
+/// up by `HeapPerm::assemble` (`tcaches::heap_new`), which gives the
+/// permission to the heap's. It is valid
 /// while its heap is live: `destroy` (trusted) does not take it, so one
 /// kept past `destroy` would be stale for a later heap in the same block.
 /// `create_heap_for_thread` uses it right after `create`, and
@@ -6296,6 +6331,9 @@ impl FreshHeap {
 
     /// [`mark_bound`] set `bound`.
     pub(super) uninterp spec fn bound(&self) -> bool;
+
+    /// The `Shared` pointer [`init_fields`] stored in `shared`.
+    pub(super) uninterp spec fn shared(&self) -> *const Shared;
 }
 
 /// The fields of a fresh heap before its home headers, stored field by
@@ -6303,7 +6341,13 @@ impl FreshHeap {
 /// the raw heap pointer, which Verus does not support. `head.0` is the
 /// permission to the 128 bytes before `caches` ([`heap_head`]); the
 /// stores leave it as it was, and it goes into the [`FreshHeap`] returned,
-/// which claims only that and what was stored in `arena` and `bound`.
+/// which claims only that and what was stored in `shared`, `arena` and
+/// `bound`. The `shared` stored is the well-formed `&Shared` given, as a
+/// pointer: the one at [`Shared::storage`], the only place a `Shared` is
+/// built (`Shared::init` requires it) and so the only address a
+/// well-formed `&Shared` has (one `Shared` per process,
+/// [`axiom_process_shared`](shared::axiom_process_shared); the unit tests
+/// build others, and the claim is about the shipped library).
 /// `head.1` is the heap block's claim, which is dropped: `destroy`'s
 /// trusted body gives `Meta::free` its own. It comes along so that the
 /// permission travels with the same type as `Meta::alloc_raw`'s: every
@@ -6325,11 +6369,13 @@ unsafe fn init_fields(
     requires
         crate::sys::may_syscall(),
         heap_head(h, head.0),
+        shared.wf(),
     ensures
         r@.heap() == h,
         r@.head() == head.0,
         r@.arena() == arena as int,
         !r@.bound(),
+        r@.shared() == Shared::storage() as *const Shared,
 {
     // SAFETY: guaranteed by the caller.
     unsafe {
@@ -6401,6 +6447,7 @@ unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
         final(s).head() == old(s).head(),
         final(s).arena() == old(s).arena(),
         final(s).bound(),
+        final(s).shared() == old(s).shared(),
 {
     // SAFETY: guaranteed by the caller.
     unsafe { (*h).bound = true };
@@ -6450,10 +6497,10 @@ unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 /// turns a new thread heap into a reference, installs them as its ghost
 /// state and proves [`Heap::wf`] of it ([`Heap::lemma_fresh_wf`]);
 /// `Tcaches::create` keeps only the pointer and drops them. The trusted
-/// conversions that hand an
-/// existing heap to verified code (`tcaches::heap_at`,
-/// `thread::heap_from_slot`) assume `wf` of every heap they return, which
-/// creation establishes and every writer keeps (see [`Heap::wf`]).
+/// sources of an existing heap (`tcaches::heap_at`, and the slot token
+/// `TlsSlot::entry`, whose heap `thread::heap_from_slot` borrows) assume
+/// `wf` of every heap they hand out, which creation establishes and
+/// every writer keeps (see [`Heap::wf`]).
 /// `destroy` stays trusted: verifying it changes LTO's inlining of
 /// `Meta::free` and `meta::Inner::alloc` elsewhere in the library.
 impl Heap {
@@ -6482,9 +6529,11 @@ impl Heap {
         ensures
             r.0@.addr != 0 ==> r.1@.fresh(r.0),
             r.0@.addr != 0 ==> (r.2@ matches Some((t, s)) && homed_on(t, t.arena) && s.heap() == r.0 && s.arena() == t.arena
-                && s.bound() && heap_head(r.0, s.head())),
+                && s.bound() && heap_head(r.0, s.head()) && s.shared() == Shared::storage() as *const Shared),
             final(tls).value() == old(tls).value(),
             final(tls).creates() == old(tls).creates() + 1,
+            final(tls).tp() == old(tls).tp(),
+            final(tls).heap() == old(tls).heap(),
             *final(ord) == *old(ord),
     {
         proof {
@@ -6529,7 +6578,7 @@ impl Heap {
         ensures
             r.0@.addr != 0 ==> r.1@.fresh(r.0),
             r.0@.addr != 0 ==> (r.2@ matches Some(st) && st.heap() == r.0 && st.arena() == arena as int && !st.bound()
-                && heap_head(r.0, st.head())),
+                && heap_head(r.0, st.head()) && st.shared() == Shared::storage() as *const Shared),
             *final(ord) == *old(ord),
     {
         proof {
@@ -6772,7 +6821,7 @@ mod kani_aborts {
     use super::{assert_flushed, assert_refill_empty, assert_rekey_flushed};
     use crate::kani_proofs::must_not_return;
 
-    /// S117 `assert_flushed`, `ensures *len == 0`: on any other `len` the
+    /// S118 `assert_flushed`, `ensures *len == 0`: on any other `len` the
     /// call never returns.
     #[kani::proof]
     #[kani::should_panic]
@@ -6784,7 +6833,7 @@ mod kani_aborts {
         }
     }
 
-    /// S118 `assert_refill_empty`, `ensures *len == 0`: as
+    /// S119 `assert_refill_empty`, `ensures *len == 0`: as
     /// `assert_flushed`.
     #[kani::proof]
     #[kani::should_panic]
@@ -6796,7 +6845,7 @@ mod kani_aborts {
         }
     }
 
-    /// S119 `assert_rekey_flushed`, `ensures *len == 0`: as
+    /// S120 `assert_rekey_flushed`, `ensures *len == 0`: as
     /// `assert_flushed`.
     #[kani::proof]
     #[kani::should_panic]

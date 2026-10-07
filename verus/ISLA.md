@@ -28,8 +28,10 @@ nothing for Isla to trace: `run.sh` checks their templates (section 1,
 `templates.txt`), and the records argue the rest (the operand comes
 out of the one register it went in). `sys::opaque`, the hint upstream
 #78 added and #77 replaced with `shared_base`, is gone.
-`layout::regions::class_entry`'s x86_64 hint is the same shape and is
-still trusted without a record.
+`layout::regions::class_entry`'s x86_64 hint is the same shape; since
+package P7 it is its own item, `layout::regions::entry_barrier`, pinned
+the same way ([record](seams/layout-regions-entry_barrier.md), evidence),
+and `class_entry` around it is verified.
 
 ## Setup
 

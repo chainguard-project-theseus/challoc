@@ -71,41 +71,41 @@ documentation (kernel, ISA, C standard) its contract follows.
 
 ## Totals
 
-419 seams. The short names are the index's.
+423 seams. The short names are the index's.
 
 | category | short | seams |
 |---|---|---:|
-| inline asm | asm | 30 |
+| inline asm | asm | 31 |
 | FFI/syscall | ffi | 16 |
 | function pointer | fnptr | 22 |
-| UnsafeCell/volatile/transmute | cell | 20 |
-| raw pointer (internal) | ptr | 49 |
+| UnsafeCell/volatile/transmute | cell | 19 |
+| raw pointer (internal) | ptr | 47 |
 | raw pointer from C caller | c-ptr | 4 |
 | panic/abort | abort | 9 |
 | atomics primitive | atomic | 29 |
 | platform/kernel fact | platform | 13 |
 | C-program contract | c-contract | 20 |
 | termination | termination | 11 |
-| core library | core | 154 |
-| allocator invariant | invariant | 42 |
+| core library | core | 155 |
+| allocator invariant | invariant | 47 |
 
 | tool | short | seams |
 |---|---|---:|
 | Islaris/Isla | Isla | 32 |
-| RefinedRust | RR | 21 |
+| RefinedRust | RR | 18 |
 | Kani | Kani | 204 |
 | loom/GenMC | GenMC | 35 |
 | Verus | Verus | 4 |
 | Miri (evidence only) | Miri | 4 |
-| none (assumption) | none | 119 |
+| none (assumption) | none | 126 |
 
 | kind | short | seams |
 |---|---|---:|
-| external_body | body | 155 |
+| external_body | body | 152 |
 | external_body proof | proof | 13 |
-| external_body type | type | 7 |
+| external_body type | type | 8 |
 | external_body const | const | 39 |
-| axiom | axiom | 69 |
+| axiom | axiom | 75 |
 | assume_spec | spec | 87 |
 | ext_type_spec | ext-type | 15 |
 | ext_trait_spec | ext-trait | 1 |
@@ -117,15 +117,14 @@ Seams by category and tool:
 
 | category | tool | seams |
 |---|---|---:|
-| inline asm | Islaris/Isla | 30 |
+| inline asm | Islaris/Isla | 31 |
 | FFI/syscall | none (assumption) | 16 |
 | function pointer | Kani | 22 |
-| UnsafeCell/volatile/transmute | Islaris/Isla | 1 |
-| UnsafeCell/volatile/transmute | RefinedRust | 8 |
+| UnsafeCell/volatile/transmute | RefinedRust | 7 |
 | UnsafeCell/volatile/transmute | Kani | 2 |
 | UnsafeCell/volatile/transmute | Verus | 2 |
-| UnsafeCell/volatile/transmute | none (assumption) | 7 |
-| raw pointer (internal) | RefinedRust | 12 |
+| UnsafeCell/volatile/transmute | none (assumption) | 8 |
+| raw pointer (internal) | RefinedRust | 10 |
 | raw pointer (internal) | Kani | 20 |
 | raw pointer (internal) | none (assumption) | 17 |
 | raw pointer from C caller | Miri (evidence only) | 4 |
@@ -141,11 +140,11 @@ Seams by category and tool:
 | termination | none (assumption) | 5 |
 | core library | Kani | 150 |
 | core library | Verus | 1 |
-| core library | none (assumption) | 3 |
+| core library | none (assumption) | 4 |
 | allocator invariant | Kani | 1 |
 | allocator invariant | loom/GenMC | 2 |
 | allocator invariant | Verus | 1 |
-| allocator invariant | none (assumption) | 38 |
+| allocator invariant | none (assumption) | 43 |
 
 ## Index
 
@@ -195,732 +194,736 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S19 | `StatePerm` | type | atomic | GenMC | trusted |
-| S20 | `axiom_state` | axiom | invariant | none | trusted |
-| S21 | `state_load` | body | atomic | GenMC | trusted |
-| S22 | `state_claim` | body | atomic | GenMC | discharged |
-| S23 | `state_publish` | body | atomic | GenMC | trusted |
-| S24 | `shared_ptr` | body | cell | RR | trusted |
-| S25 | `shared_base` | body | asm | Isla | evidence |
-| S26 | `shared_deref` | body | invariant | none | trusted |
-| S27 | `published_line` | body | invariant | none | trusted |
-| S28 | `build_line` | body | cell | RR | trusted |
-| S29 | `line_ready` | no-dec | termination | GenMC | trusted |
-| S30 | `init_slow` | no-dec | termination | GenMC | discharged |
-| S31 | `shared_storage_ptr` | body | cell | none | trusted |
-| S32 | `features_ptr` | body | cell | none | trusted |
-| S33 | `line_ptr` | body | cell | none | trusted |
-| S34 | `axiom_statics` | axiom | invariant | none | trusted |
-| S35 | `atfork_handlers` | body | fnptr | Kani | trusted |
-| S36 | `axiom_fork_resumed_state` | axiom | c-contract | none | trusted |
-| S37 | `axiom_fork_resumed_sig` | axiom | c-contract | none | trusted |
-| S38 | `axiom_fork_resumed` | axiom | c-contract | none | trusted |
+| S19 | `axiom_ready` | axiom | invariant | none | trusted |
+| S20 | `axiom_published` | axiom | invariant | none | trusted |
+| S21 | `StatePerm` | type | atomic | GenMC | trusted |
+| S22 | `axiom_state` | axiom | invariant | none | trusted |
+| S23 | `state_load` | body | atomic | GenMC | trusted |
+| S24 | `state_claim` | body | atomic | GenMC | discharged |
+| S25 | `state_publish` | body | atomic | GenMC | trusted |
+| S26 | `shared_ptr` | body | cell | none | trusted |
+| S27 | `shared_base` | body | asm | Isla | evidence |
+| S28 | `published_line` | body | invariant | none | trusted |
+| S29 | `build_line` | body | cell | RR | trusted |
+| S30 | `line_ready` | no-dec | termination | GenMC | trusted |
+| S31 | `init_slow` | no-dec | termination | GenMC | discharged |
+| S32 | `shared_storage_ptr` | body | cell | none | trusted |
+| S33 | `features_ptr` | body | cell | none | trusted |
+| S34 | `line_ptr` | body | cell | none | trusted |
+| S35 | `axiom_statics` | axiom | invariant | none | trusted |
+| S36 | `atfork_handlers` | body | fnptr | Kani | trusted |
+| S37 | `axiom_fork_resumed_state` | axiom | c-contract | none | trusted |
+| S38 | `axiom_fork_resumed_sig` | axiom | c-contract | none | trusted |
+| S39 | `axiom_fork_resumed` | axiom | c-contract | none | trusted |
 
 ### src/api/print.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S39 | `WriteCallback` | ext-type | fnptr | Kani | trusted |
-| S40 | `Unlocked` | type | c-contract | none | trusted |
-| S41 | `axiom_unlocked` | axiom | c-contract | none | trusted |
-| S42 | `emit` | body | ffi | none | trusted |
-| S43 | `word` | body | core | Kani | discharged |
-| S44 | `hist_line` | body | fnptr | Kani | discharged |
-| S45 | `file_target` | body | fnptr | Kani | discharged |
-| S46 | `stderr_target` | body | fnptr | Kani | discharged |
-| S47 | `axiom_c_call` | axiom | c-contract | none | trusted |
+| S40 | `WriteCallback` | ext-type | fnptr | Kani | trusted |
+| S41 | `Unlocked` | type | c-contract | none | trusted |
+| S42 | `axiom_unlocked` | axiom | c-contract | none | trusted |
+| S43 | `emit` | body | ffi | none | trusted |
+| S44 | `word` | body | core | Kani | discharged |
+| S45 | `hist_line` | body | fnptr | Kani | discharged |
+| S46 | `file_target` | body | fnptr | Kani | discharged |
+| S47 | `stderr_target` | body | fnptr | Kani | discharged |
+| S48 | `axiom_c_call` | axiom | c-contract | none | trusted |
 
 ### src/arena.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S48 | `Arena::axiom_array_layout` | axiom | core | Kani | discharged |
-| S49 | `A_INDEX` | const | core | Kani | discharged |
-| S50 | `A_DECAY_NS` | const | core | Kani | discharged |
-| S51 | `A_SETS` | const | core | Kani | discharged |
-| S52 | `A_SETS_PERM` | const | core | Kani | discharged |
-| S53 | `A_CLASSES` | const | core | Kani | discharged |
-| S54 | `A_LARGE` | const | core | Kani | discharged |
-| S55 | `A_STATS` | const | core | Kani | discharged |
-| S56 | `A_LAST_EXIT_PURGE` | const | core | Kani | discharged |
-| S57 | `axiom_arena_layout` | axiom | core | Kani | discharged |
-| S58 | `axiom_arena_assemble` | axiom | ptr | none | trusted |
-| S59 | `key_less` | body | core | Kani | discharged |
-| S60 | `AR_TABLE` | const | core | Kani | trusted |
-| S61 | `AR_BOUND` | const | core | Kani | trusted |
-| S62 | `AR_LOCK` | const | core | Kani | trusted |
-| S63 | `AR_COUNT` | const | core | Kani | trusted |
-| S64 | `AR_AUTO` | const | core | Kani | trusted |
-| S65 | `AR_INVS` | const | core | Kani | trusted |
-| S66 | `AR_COUNT_INV` | const | core | Kani | trusted |
-| S67 | `AR_SPARE` | const | core | Kani | trusted |
-| S68 | `AR_SPARE_INV` | const | core | Kani | trusted |
-| S69 | `axiom_arenas_layout` | axiom | core | Kani | trusted |
-| S70 | `axiom_arenas_lock_inv` | axiom | invariant | none | trusted |
-| S71 | `axiom_arenas_lock_frame` | axiom | invariant | none | trusted |
-| S72 | `axiom_arenas_assemble` | axiom | ptr | none | trusted |
-| S73 | `arena_at` | body | ptr | none | trusted |
+| S49 | `Arena::axiom_array_layout` | axiom | core | Kani | discharged |
+| S50 | `A_INDEX` | const | core | Kani | discharged |
+| S51 | `A_DECAY_NS` | const | core | Kani | discharged |
+| S52 | `A_SETS` | const | core | Kani | discharged |
+| S53 | `A_SETS_PERM` | const | core | Kani | discharged |
+| S54 | `A_CLASSES` | const | core | Kani | discharged |
+| S55 | `A_LARGE` | const | core | Kani | discharged |
+| S56 | `A_STATS` | const | core | Kani | discharged |
+| S57 | `A_LAST_EXIT_PURGE` | const | core | Kani | discharged |
+| S58 | `axiom_arena_layout` | axiom | core | Kani | discharged |
+| S59 | `axiom_arena_assemble` | axiom | ptr | none | trusted |
+| S60 | `key_less` | body | core | Kani | discharged |
+| S61 | `AR_TABLE` | const | core | Kani | trusted |
+| S62 | `AR_BOUND` | const | core | Kani | trusted |
+| S63 | `AR_LOCK` | const | core | Kani | trusted |
+| S64 | `AR_COUNT` | const | core | Kani | trusted |
+| S65 | `AR_AUTO` | const | core | Kani | trusted |
+| S66 | `AR_INVS` | const | core | Kani | trusted |
+| S67 | `AR_COUNT_INV` | const | core | Kani | trusted |
+| S68 | `AR_SPARE` | const | core | Kani | trusted |
+| S69 | `AR_SPARE_INV` | const | core | Kani | trusted |
+| S70 | `axiom_arenas_layout` | axiom | core | Kani | trusted |
+| S71 | `axiom_arenas_lock_inv` | axiom | invariant | none | trusted |
+| S72 | `axiom_arenas_lock_frame` | axiom | invariant | none | trusted |
+| S73 | `axiom_arenas_assemble` | axiom | ptr | none | trusted |
+| S74 | `arena_at` | body | ptr | none | trusted |
 
 ### src/class/mod.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S74 | `axiom_class_lock_inv` | axiom | invariant | none | trusted |
-| S75 | `axiom_class_lock` | axiom | invariant | none | trusted |
-| S76 | `PartialEqSpecImpl for State` | spec-impl | core | Kani | discharged |
-| S77 | `ClassState::owner_locked` | body | invariant | none | trusted |
-| S78 | `ClassState::claim_with` | no-dec | termination | RR | trusted |
-| S79 | `axiom_fresh_slots_zero` | axiom | invariant | none | trusted |
-| S80 | `axiom_discarded_slots_zero` | axiom | invariant | none | trusted |
-| S81 | `axiom_fresh_slab_mem` | axiom | invariant | none | trusted |
+| S75 | `axiom_class_lock_inv` | axiom | invariant | none | trusted |
+| S76 | `axiom_class_lock` | axiom | invariant | none | trusted |
+| S77 | `PartialEqSpecImpl for State` | spec-impl | core | Kani | discharged |
+| S78 | `ClassState::owner_locked` | body | invariant | none | trusted |
+| S79 | `ClassState::claim_with` | no-dec | termination | RR | trusted |
+| S80 | `axiom_fresh_slots_zero` | axiom | invariant | none | trusted |
+| S81 | `axiom_discarded_slots_zero` | axiom | invariant | none | trusted |
+| S82 | `axiom_fresh_slab_mem` | axiom | invariant | none | trusted |
 
 ### src/class/sets.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S82 | `axiom_set_tables_lock_inv` | axiom | invariant | none | trusted |
+| S83 | `axiom_set_tables_lock_inv` | axiom | invariant | none | trusted |
 
 ### src/class/table.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S83 | `axiom_table_lock_inv` | axiom | invariant | none | trusted |
-| S84 | `axiom_table_lock_frame` | axiom | invariant | none | trusted |
-| S85 | `load_owner` | body | invariant | GenMC | evidence |
-| S86 | `store_owner` | body | invariant | GenMC | discharged |
-| S87 | `axiom_slot_loc` | axiom | invariant | none | trusted |
-| S88 | `axiom_fresh_words` | axiom | invariant | none | trusted |
-| S89 | `axiom_init_descs` | axiom | ptr | none | trusted |
-| S90 | `axiom_init_owners` | axiom | ptr | none | trusted |
-| S91 | `axiom_init_words` | axiom | ptr | none | trusted |
-| S92 | `word_index` | body | asm | Isla | evidence |
+| S84 | `axiom_table_lock_inv` | axiom | invariant | none | trusted |
+| S85 | `axiom_table_lock_frame` | axiom | invariant | none | trusted |
+| S86 | `load_owner` | body | invariant | GenMC | evidence |
+| S87 | `store_owner` | body | invariant | GenMC | discharged |
+| S88 | `axiom_slot_loc` | axiom | invariant | none | trusted |
+| S89 | `axiom_fresh_words` | axiom | invariant | none | trusted |
+| S90 | `axiom_init_descs` | axiom | ptr | none | trusted |
+| S91 | `axiom_init_owners` | axiom | ptr | none | trusted |
+| S92 | `axiom_init_words` | axiom | ptr | none | trusted |
+| S93 | `word_index` | body | asm | Isla | evidence |
 
 ### src/class/verify.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S93 | `DebugSpecImpl for Says` | spec-impl | core | Kani | discharged |
+| S94 | `DebugSpecImpl for Says` | spec-impl | core | Kani | discharged |
 
 ### src/config.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S94 | `THP_NAMES` | const | core | none | trusted |
-| S95 | `PERCPU_ARENA_NAMES` | const | core | none | trusted |
-| S96 | `Config::set_listed` | body | fnptr | Kani | discharged |
-| S97 | `Config::get` | body | fnptr | Kani | discharged |
-| S98 | `Parse` | ext-type | fnptr | Kani | trusted |
-| S99 | `Read` | ext-type | fnptr | Kani | trusted |
-| S100 | `TABLE` | const | fnptr | Kani | trusted |
-| S101 | `KEYS` | const | fnptr | Kani | discharged |
-| S102 | `DisplaySpecIm...or Issue<'_>` | spec-impl | core | Kani | discharged |
-| S103 | `DisplaySpecIm...or Bytes<'_>` | spec-impl | core | Kani | discharged |
-| S104 | `parse_from` | body | fnptr | Kani | trusted |
-| S105 | `read_slot` | body | c-ptr | Miri | trusted |
-| S106 | `malloc_conf_addr` | body | asm | Isla | discharged |
-| S107 | `je_malloc_conf_addr` | body | asm | Isla | discharged |
-| S108 | `byte_at` | body | c-ptr | Miri | trusted |
-| S109 | `bytes_at` | body | c-ptr | Miri | trusted |
-| S110 | `env_var` | body | c-ptr | Miri | trusted |
+| S95 | `THP_NAMES` | const | core | none | trusted |
+| S96 | `PERCPU_ARENA_NAMES` | const | core | none | trusted |
+| S97 | `Config::set_listed` | body | fnptr | Kani | discharged |
+| S98 | `Config::get` | body | fnptr | Kani | discharged |
+| S99 | `Parse` | ext-type | fnptr | Kani | trusted |
+| S100 | `Read` | ext-type | fnptr | Kani | trusted |
+| S101 | `TABLE` | const | fnptr | Kani | trusted |
+| S102 | `KEYS` | const | fnptr | Kani | discharged |
+| S103 | `DisplaySpecIm...or Issue<'_>` | spec-impl | core | Kani | discharged |
+| S104 | `DisplaySpecIm...or Bytes<'_>` | spec-impl | core | Kani | discharged |
+| S105 | `parse_from` | body | fnptr | Kani | trusted |
+| S106 | `read_slot` | body | c-ptr | Miri | trusted |
+| S107 | `malloc_conf_addr` | body | asm | Isla | discharged |
+| S108 | `je_malloc_conf_addr` | body | asm | Isla | discharged |
+| S109 | `byte_at` | body | c-ptr | Miri | trusted |
+| S110 | `bytes_at` | body | c-ptr | Miri | trusted |
+| S111 | `env_var` | body | c-ptr | Miri | trusted |
 
 ### src/heap/cache.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S111 | `Heap::home_ptr_at` | body | ptr | RR | trusted |
-| S112 | `Heap::cached_recently` | body | ptr | RR | trusted |
+| S112 | `Heap::home_ptr_at` | body | ptr | RR | trusted |
+| S113 | `Heap::cached_recently` | body | ptr | RR | trusted |
 
 ### src/heap/flush.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S113 | `addr_mix` | body | ptr | Kani | discharged |
+| S114 | `addr_mix` | body | ptr | Kani | discharged |
 
 ### src/heap/live.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S114 | `axiom_c_claim` | axiom | c-contract | none | trusted |
-| S115 | `axiom_hand_out` | axiom | invariant | none | trusted |
+| S115 | `axiom_c_claim` | axiom | c-contract | none | trusted |
+| S116 | `axiom_hand_out` | axiom | invariant | none | trusted |
 
 ### src/heap/mod.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S116 | `axiom_fresh_stack` | proof | invariant | none | trusted |
-| S117 | `assert_flushed` | body | abort | Kani | discharged |
-| S118 | `assert_refill_empty` | body | abort | Kani | discharged |
-| S119 | `assert_rekey_flushed` | body | abort | Kani | discharged |
-| S120 | `arena_volatile` | body | cell | RR | discharged |
-| S121 | `FreshHeap` | type | ptr | none | trusted |
-| S122 | `init_fields` | body | ptr | none | trusted |
-| S123 | `mark_bound` | body | ptr | RR | discharged |
-| S124 | `mark_rehome` | body | ptr | RR | discharged |
-| S125 | `Heap::destroy` | body | ptr | none | trusted |
+| S117 | `axiom_fresh_stack` | proof | invariant | none | trusted |
+| S118 | `assert_flushed` | body | abort | Kani | discharged |
+| S119 | `assert_refill_empty` | body | abort | Kani | discharged |
+| S120 | `assert_rekey_flushed` | body | abort | Kani | discharged |
+| S121 | `arena_volatile` | body | cell | RR | discharged |
+| S122 | `FreshHeap` | type | ptr | none | trusted |
+| S123 | `init_fields` | body | ptr | none | trusted |
+| S124 | `mark_bound` | body | ptr | RR | discharged |
+| S125 | `mark_rehome` | body | ptr | RR | discharged |
+| S126 | `Heap::destroy` | body | ptr | none | trusted |
 
 ### src/heap/others.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S126 | `node_caches_detached` | body | ptr | RR | trusted |
-| S127 | `assert_not_home` | body | abort | Kani | discharged |
-| S128 | `Heap::node_caches` | body | ptr | RR | trusted |
+| S127 | `node_caches_detached` | body | ptr | RR | trusted |
+| S128 | `assert_not_home` | body | abort | Kani | discharged |
+| S129 | `Heap::node_caches` | body | ptr | RR | trusted |
 
 ### src/heap/paths.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S129 | `debug_scheduled` | body | abort | Kani | discharged |
-| S130 | `shared_of` | body | ptr | RR | trusted |
+| S130 | `shared_ptr` | body | invariant | none | trusted |
+| S131 | `debug_scheduled` | body | abort | Kani | discharged |
 
 ### src/heap/shared.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S131 | `ClassLine::guard_word` | body | asm | Isla | trusted |
-| S132 | `ThreadKey::create` | body | fnptr | Kani | trusted |
-| S133 | `pthread_setspecific` | body | ffi | none | trusted |
-| S134 | `axiom_process_shared` | axiom | invariant | none | trusted |
-| S135 | `S_LINES` | const | core | Kani | discharged |
-| S136 | `S_FREE_FLAGS` | const | core | Kani | discharged |
-| S137 | `S_PUSH_FLAGS` | const | core | Kani | discharged |
-| S138 | `S_REGION_HI` | const | core | Kani | discharged |
-| S139 | `S_REGIONS` | const | core | Kani | discharged |
-| S140 | `S_TABLES` | const | core | Kani | discharged |
-| S141 | `S_ARENA0` | const | core | Kani | discharged |
-| S142 | `S_META` | const | core | Kani | discharged |
-| S143 | `S_HUGE` | const | core | Kani | discharged |
-| S144 | `S_GC_INTERVAL_NS` | const | core | Kani | discharged |
-| S145 | `S_POLICY` | const | core | Kani | discharged |
-| S146 | `S_CONFIG` | const | core | Kani | discharged |
-| S147 | `S_KEY` | const | core | Kani | discharged |
-| S148 | `S_ARENAS` | const | core | Kani | discharged |
-| S149 | `S_TCACHES` | const | core | Kani | discharged |
-| S150 | `S_STATS` | const | core | Kani | discharged |
-| S151 | `S_CGROUP` | const | core | Kani | discharged |
-| S152 | `axiom_shared_layout` | axiom | core | Kani | discharged |
-| S153 | `axiom_shared_built` | axiom | ptr | none | trusted |
-| S154 | `axiom_shared_regions` | axiom | ptr | none | trusted |
-| S155 | `Shared::begin` | body | invariant | none | trusted |
-| S156 | `Shared::free_flags` | body | invariant | Verus | trusted |
+| S132 | `ClassLine::guard_word` | body | asm | Isla | trusted |
+| S133 | `ThreadKey::create` | body | fnptr | Kani | trusted |
+| S134 | `pthread_setspecific` | body | ffi | none | trusted |
+| S135 | `axiom_process_shared` | axiom | invariant | none | trusted |
+| S136 | `S_LINES` | const | core | Kani | discharged |
+| S137 | `S_FREE_FLAGS` | const | core | Kani | discharged |
+| S138 | `S_PUSH_FLAGS` | const | core | Kani | discharged |
+| S139 | `S_REGION_HI` | const | core | Kani | discharged |
+| S140 | `S_REGIONS` | const | core | Kani | discharged |
+| S141 | `S_TABLES` | const | core | Kani | discharged |
+| S142 | `S_ARENA0` | const | core | Kani | discharged |
+| S143 | `S_META` | const | core | Kani | discharged |
+| S144 | `S_HUGE` | const | core | Kani | discharged |
+| S145 | `S_GC_INTERVAL_NS` | const | core | Kani | discharged |
+| S146 | `S_POLICY` | const | core | Kani | discharged |
+| S147 | `S_CONFIG` | const | core | Kani | discharged |
+| S148 | `S_KEY` | const | core | Kani | discharged |
+| S149 | `S_ARENAS` | const | core | Kani | discharged |
+| S150 | `S_TCACHES` | const | core | Kani | discharged |
+| S151 | `S_STATS` | const | core | Kani | discharged |
+| S152 | `S_CGROUP` | const | core | Kani | discharged |
+| S153 | `axiom_shared_layout` | axiom | core | Kani | discharged |
+| S154 | `axiom_shared_built` | axiom | ptr | none | trusted |
+| S155 | `axiom_shared_regions` | axiom | ptr | none | trusted |
+| S156 | `Shared::begin` | body | invariant | none | trusted |
+| S157 | `Shared::free_flags` | body | invariant | Verus | trusted |
 
 ### src/heap/tcaches.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S157 | `axiom_tcaches_lock_inv` | axiom | invariant | none | trusted |
-| S158 | `EMPTY_TABLE` | const | core | Kani | trusted |
-| S159 | `heap_at` | body | ptr | RR | trusted |
-| S160 | `heap_new` | body | ptr | RR | trusted |
+| S158 | `axiom_tcaches_lock_inv` | axiom | invariant | none | trusted |
+| S159 | `EMPTY_TABLE` | const | core | Kani | trusted |
+| S160 | `heap_at` | body | ptr | RR | trusted |
 
 ### src/heap/thread.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S161 | `fast_flags` | body | ptr | none | trusted |
-| S162 | `heap_from_slot` | body | ptr | none | trusted |
+| S161 | `HeapPerm` | type | invariant | none | trusted |
+| S162 | `HeapPerm::assemble` | axiom | ptr | none | trusted |
+| S163 | `slot_heap_ref` | body | ptr | none | trusted |
 
 ### src/huge/mod.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S163 | `axiom_run_locs` | axiom | invariant | none | trusted |
-| S164 | `not_a_run_page` | abort | abort | Kani | trusted |
+| S164 | `axiom_run_locs` | axiom | invariant | none | trusted |
+| S165 | `not_a_run_page` | abort | abort | Kani | trusted |
 
 ### src/huge/table.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S165 | `axiom_zero_entry` | proof | ptr | Kani | discharged |
+| S166 | `axiom_zero_entry` | proof | ptr | Kani | discharged |
 
 ### src/layout/mod.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S166 | `ClassTable` | type | cell | none | trusted |
-| S167 | `ClassTable::new` | body | cell | none | trusted |
-| S168 | `ClassTable::table` | body | cell | none | trusted |
-| S169 | `ClassTable::classes_ptr` | body | cell | none | trusted |
+| S167 | `ClassTable` | type | cell | none | trusted |
+| S168 | `axiom_class_table` | axiom | invariant | none | trusted |
+| S169 | `ClassTable::new` | body | cell | none | trusted |
+| S170 | `ClassTable::table` | body | cell | none | trusted |
+| S171 | `ClassTable::classes_ptr` | body | cell | none | trusted |
 
 ### src/layout/regions.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S170 | `axiom_process_page_at_most_64k` | axiom | platform | none | trusted |
-| S171 | `Reserved` | type | platform | none | trusted |
-| S172 | `Reserved::is_apart_from_static` | proof | platform | none | trusted |
-| S173 | `Reserved::is_disjoint` | proof | platform | none | trusted |
-| S174 | `Reserved::into_unbacked` | proof | platform | none | trusted |
-| S175 | `try_reserve` | body | ffi | none | trusted |
-| S176 | `word` | body | core | Kani | discharged |
-| S177 | `class_entry` | body | cell | Isla | trusted |
+| S172 | `axiom_process_page_at_most_64k` | axiom | platform | none | trusted |
+| S173 | `Reserved` | type | platform | none | trusted |
+| S174 | `Reserved::is_apart_from_static` | proof | platform | none | trusted |
+| S175 | `Reserved::is_disjoint` | proof | platform | none | trusted |
+| S176 | `Reserved::into_unbacked` | proof | platform | none | trusted |
+| S177 | `try_reserve` | body | ffi | none | trusted |
+| S178 | `word` | body | core | Kani | discharged |
+| S179 | `entry_barrier` | body | asm | Isla | evidence |
 
 ### src/lock.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S178 | `RawLock::lock_slow` | no-dec | termination | GenMC | evidence |
-| S179 | `axiom_entry` | axiom | c-contract | none | trusted |
-| S180 | `axiom_held_below` | axiom | invariant | none | trusted |
-| S181 | `axiom_acquired` | axiom | invariant | none | trusted |
-| S182 | `axiom_held` | axiom | invariant | none | trusted |
-| S183 | `Lock::cell_ref` | body | cell | Verus | trusted |
-| S184 | `Lock::cell_mut` | body | cell | Verus | trusted |
-| S185 | `LockGuard::drop` | body | atomic | GenMC | discharged |
+| S180 | `RawLock::lock_slow` | no-dec | termination | GenMC | evidence |
+| S181 | `axiom_entry` | axiom | c-contract | none | trusted |
+| S182 | `axiom_held_below` | axiom | invariant | none | trusted |
+| S183 | `axiom_acquired` | axiom | invariant | none | trusted |
+| S184 | `axiom_held` | axiom | invariant | none | trusted |
+| S185 | `Lock::cell_ref` | body | cell | Verus | trusted |
+| S186 | `Lock::cell_mut` | body | cell | Verus | trusted |
+| S187 | `LockGuard::drop` | body | atomic | GenMC | discharged |
 
 ### src/meta.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S186 | `Meta::commit` | body | invariant | none | trusted |
+| S188 | `Meta::commit` | body | invariant | none | trusted |
 
 ### src/purge.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S187 | `Explicit::drop` | body | atomic | Kani | discharged |
-| S188 | `total_bytes` | body | core | Kani | discharged |
+| S189 | `Explicit::drop` | body | atomic | Kani | discharged |
+| S190 | `total_bytes` | body | core | Kani | discharged |
 
 ### src/purge/background.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S189 | `axiom_state_lock_inv` | axiom | invariant | none | trusted |
-| S190 | `errno_location` | body | ffi | none | trusted |
-| S191 | `errno_read` | body | ffi | none | trusted |
-| S192 | `errno_write` | body | ffi | none | trusted |
-| S193 | `pthread_join` | body | ffi | none | trusted |
-| S194 | `spawn` | body | ffi | none | trusted |
-| S195 | `shared_arg` | body | ptr | none | trusted |
-| S196 | `main` | no-dec | termination | GenMC | discharged |
-| S197 | `detach_from_starter` | body | ffi | none | trusted |
-| S198 | `state` | body | cell | RR | trusted |
+| S191 | `axiom_state_lock_inv` | axiom | invariant | none | trusted |
+| S192 | `errno_location` | body | ffi | none | trusted |
+| S193 | `errno_read` | body | ffi | none | trusted |
+| S194 | `errno_write` | body | ffi | none | trusted |
+| S195 | `pthread_join` | body | ffi | none | trusted |
+| S196 | `spawn` | body | ffi | none | trusted |
+| S197 | `shared_arg` | body | ptr | none | trusted |
+| S198 | `main` | no-dec | termination | GenMC | discharged |
+| S199 | `detach_from_starter` | body | ffi | none | trusted |
+| S200 | `state` | body | cell | RR | trusted |
 
 ### src/rseq.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S199 | `read_global` | body | ptr | RR | trusted |
-| S200 | `read_cpu_id` | body | cell | RR | trusted |
-| S201 | `symbols` | body | asm | Isla | discharged |
-| S202 | `thread_pointer` | body | asm | Isla | discharged |
+| S201 | `read_global` | body | ptr | RR | trusted |
+| S202 | `read_cpu_id` | body | cell | RR | trusted |
+| S203 | `symbols` | body | asm | Isla | discharged |
+| S204 | `thread_pointer` | body | asm | Isla | discharged |
 
 ### src/slab.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S203 | `desc_stride` | body | core | Kani | discharged |
-| S204 | `SlabDesc::init` | body | atomic | GenMC | discharged |
-| S205 | `SlabDesc::state_byte_held` | body | atomic | GenMC | discharged |
-| S206 | `SlabDesc::dirty_held` | body | atomic | GenMC | discharged |
-| S207 | `SlabDesc::arena_held` | body | atomic | GenMC | discharged |
-| S208 | `SlabDesc::set_state` | body | atomic | GenMC | discharged |
-| S209 | `SlabDesc::sub_live` | body | atomic | GenMC | discharged |
-| S210 | `SlabDesc::set_dirty_at` | body | atomic | GenMC | discharged |
+| S205 | `desc_stride` | body | core | Kani | discharged |
+| S206 | `SlabDesc::init` | body | atomic | GenMC | discharged |
+| S207 | `SlabDesc::state_byte_held` | body | atomic | GenMC | discharged |
+| S208 | `SlabDesc::dirty_held` | body | atomic | GenMC | discharged |
+| S209 | `SlabDesc::arena_held` | body | atomic | GenMC | discharged |
+| S210 | `SlabDesc::set_state` | body | atomic | GenMC | discharged |
+| S211 | `SlabDesc::sub_live` | body | atomic | GenMC | discharged |
+| S212 | `SlabDesc::set_dirty_at` | body | atomic | GenMC | discharged |
 
 ### src/stats.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S211 | `fig_add` | body | core | Kani | discharged |
-| S212 | `fig_mul` | body | core | Kani | discharged |
-| S213 | `fig_add64` | body | core | Kani | discharged |
-| S214 | `axiom_snapshot_lock_inv` | axiom | invariant | none | trusted |
+| S213 | `fig_add` | body | core | Kani | discharged |
+| S214 | `fig_mul` | body | core | Kani | discharged |
+| S215 | `fig_add64` | body | core | Kani | discharged |
+| S216 | `axiom_snapshot_lock_inv` | axiom | invariant | none | trusted |
 
 ### src/sys/abort.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S215 | `abort_integrity` | body | abort | Kani | discharged |
+| S217 | `abort_integrity` | body | abort | Kani | discharged |
 
 ### src/sys/auxv.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S216 | `getauxval` | spec | ffi | none | trusted |
-| S217 | `getauxval` | spec | ffi | none | trusted |
+| S218 | `getauxval` | spec | ffi | none | trusted |
+| S219 | `getauxval` | spec | ffi | none | trusted |
 
 ### src/sys/cgroup.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S218 | `scan_lines` | no-dec | termination | none | trusted |
-| S219 | `DisplaySpecImp... PathBytes<'_>` | spec-impl | core | Kani | trusted |
-| S220 | `DisplaySpecImpl for Limit` | spec-impl | core | Kani | trusted |
-| S221 | `Deferred::discover` | no-dec | termination | GenMC | trusted |
-| S222 | `Deferred::cell_ref` | body | cell | RR | trusted |
-| S223 | `Deferred::cell_write` | body | cell | RR | trusted |
+| S220 | `scan_lines` | no-dec | termination | none | trusted |
+| S221 | `DisplaySpecImp... PathBytes<'_>` | spec-impl | core | Kani | trusted |
+| S222 | `DisplaySpecImpl for Limit` | spec-impl | core | Kani | trusted |
+| S223 | `Deferred::discover` | no-dec | termination | GenMC | trusted |
+| S224 | `Deferred::cell_ref` | body | cell | RR | trusted |
+| S225 | `Deferred::cell_write` | body | cell | RR | trusted |
 
 ### src/sys/features.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S224 | `DisplaySpecImpl for SizeSet` | spec-impl | core | Kani | discharged |
-| S225 | `DisplaySpecImpl for LgSize` | spec-impl | core | Kani | discharged |
-| S226 | `DisplaySpecImpl for Value` | spec-impl | core | Kani | discharged |
-| S227 | `DisplaySpecImpl for Features` | spec-impl | core | Kani | discharged |
+| S226 | `DisplaySpecImpl for SizeSet` | spec-impl | core | Kani | discharged |
+| S227 | `DisplaySpecImpl for LgSize` | spec-impl | core | Kani | discharged |
+| S228 | `DisplaySpecImpl for Value` | spec-impl | core | Kani | discharged |
+| S229 | `DisplaySpecImpl for Features` | spec-impl | core | Kani | discharged |
 
 ### src/sys/mod.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S228 | `axiom_thread_mask` | axiom | c-contract | none | trusted |
-| S229 | `axiom_getrandom_count` | axiom | platform | none | trusted |
-| S230 | `getrandom_exact` | no-dec | termination | none | trusted |
-| S231 | `axiom_read_count` | axiom | platform | none | trusted |
-| S232 | `read_full` | no-dec | termination | none | trusted |
-| S233 | `axiom_write_count` | axiom | platform | none | trusted |
-| S234 | `write_all` | no-dec | termination | none | trusted |
-| S235 | `sigprocmask_block` | body | ffi | none | trusted |
-| S236 | `sigprocmask_setmask` | body | ffi | none | trusted |
-| S237 | `trap` | body | asm | Isla | discharged |
+| S230 | `axiom_thread_mask` | axiom | c-contract | none | trusted |
+| S231 | `axiom_getrandom_count` | axiom | platform | none | trusted |
+| S232 | `getrandom_exact` | no-dec | termination | none | trusted |
+| S233 | `axiom_read_count` | axiom | platform | none | trusted |
+| S234 | `read_full` | no-dec | termination | none | trusted |
+| S235 | `axiom_write_count` | axiom | platform | none | trusted |
+| S236 | `write_all` | no-dec | termination | none | trusted |
+| S237 | `sigprocmask_block` | body | ffi | none | trusted |
+| S238 | `sigprocmask_setmask` | body | ffi | none | trusted |
+| S239 | `trap` | body | asm | Isla | discharged |
 
 ### src/sys/pac.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S238 | `axiom_user_va_limit` | axiom | platform | none | trusted |
-| S239 | `axiom_auth_sign` | axiom | platform | Isla | discharged |
-| S240 | `sign` | body | asm | Isla | discharged |
-| S241 | `auth` | body | asm | Isla | discharged |
-| S242 | `strip` | body | asm | Isla | discharged |
+| S240 | `axiom_user_va_limit` | axiom | platform | none | trusted |
+| S241 | `axiom_auth_sign` | axiom | platform | Isla | discharged |
+| S242 | `sign` | body | asm | Isla | discharged |
+| S243 | `auth` | body | asm | Isla | discharged |
+| S244 | `strip` | body | asm | Isla | discharged |
 
 ### src/sys/raw.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S243 | `syscall0` | body | asm | Isla | discharged |
-| S244 | `syscall1` | body | asm | Isla | discharged |
-| S245 | `syscall2` | body | asm | Isla | discharged |
-| S246 | `syscall3` | body | asm | Isla | discharged |
-| S247 | `syscall4` | body | asm | Isla | discharged |
-| S248 | `syscall5` | body | asm | Isla | discharged |
-| S249 | `syscall6` | body | asm | Isla | discharged |
-| S250 | `syscall0` | body | asm | Isla | discharged |
-| S251 | `syscall1` | body | asm | Isla | discharged |
-| S252 | `syscall2` | body | asm | Isla | discharged |
-| S253 | `syscall3` | body | asm | Isla | discharged |
-| S254 | `syscall4` | body | asm | Isla | discharged |
-| S255 | `syscall5` | body | asm | Isla | discharged |
-| S256 | `syscall6` | body | asm | Isla | discharged |
+| S245 | `syscall0` | body | asm | Isla | discharged |
+| S246 | `syscall1` | body | asm | Isla | discharged |
+| S247 | `syscall2` | body | asm | Isla | discharged |
+| S248 | `syscall3` | body | asm | Isla | discharged |
+| S249 | `syscall4` | body | asm | Isla | discharged |
+| S250 | `syscall5` | body | asm | Isla | discharged |
+| S251 | `syscall6` | body | asm | Isla | discharged |
+| S252 | `syscall0` | body | asm | Isla | discharged |
+| S253 | `syscall1` | body | asm | Isla | discharged |
+| S254 | `syscall2` | body | asm | Isla | discharged |
+| S255 | `syscall3` | body | asm | Isla | discharged |
+| S256 | `syscall4` | body | asm | Isla | discharged |
+| S257 | `syscall5` | body | asm | Isla | discharged |
+| S258 | `syscall6` | body | asm | Isla | discharged |
 
 ### src/sys/thp_host.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S257 | `DisplaySpecImpl for Thp` | spec-impl | core | Verus | trusted |
+| S259 | `DisplaySpecImpl for Thp` | spec-impl | core | Verus | trusted |
 
 ### src/sys/tls.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S258 | `get` | body | asm | Isla | discharged |
-| S259 | `get_tp` | body | asm | Isla | discharged |
-| S260 | `set` | body | asm | Isla | discharged |
+| S260 | `TlsSlot::entry` | axiom | invariant | none | trusted |
+| S261 | `get` | body | asm | Isla | discharged |
+| S262 | `get_tp` | body | asm | Isla | discharged |
+| S263 | `set` | body | asm | Isla | discharged |
 
 ### src/vspec/addr.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S261 | `addr_to_ptr` | body | ptr | Kani | discharged |
-| S262 | `ptr::write_bytes::<T>` | spec | ptr | Kani | discharged |
-| S263 | `ptr::copy_nonoverlapping::<T>` | spec | ptr | Kani | discharged |
-| S264 | `<*mut T>::is_null` | spec | ptr | Kani | discharged |
-| S265 | `<*const T>::is_null` | spec | ptr | Kani | discharged |
+| S264 | `addr_to_ptr` | body | ptr | Kani | discharged |
+| S265 | `ptr::write_bytes::<T>` | spec | ptr | Kani | discharged |
+| S266 | `ptr::copy_nonoverlapping::<T>` | spec | ptr | Kani | discharged |
+| S267 | `<*mut T>::is_null` | spec | ptr | Kani | discharged |
+| S268 | `<*const T>::is_null` | spec | ptr | Kani | discharged |
 
 ### src/vspec/arena.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S266 | `Atomic::<*mut T>::load` | spec | core | Kani | discharged |
-| S267 | `Atomic::<*mut T>::store` | spec | core | Kani | discharged |
-| S268 | `Atomic::<*mut T>::new` | spec | core | Kani | discharged |
-| S269 | `Atomic::<*mut T>::swap` | spec | core | Kani | discharged |
-| S270 | `axiom_arena_stats_lock_inv` | axiom | invariant | none | trusted |
+| S269 | `Atomic::<*mut T>::load` | spec | core | Kani | discharged |
+| S270 | `Atomic::<*mut T>::store` | spec | core | Kani | discharged |
+| S271 | `Atomic::<*mut T>::new` | spec | core | Kani | discharged |
+| S272 | `Atomic::<*mut T>::swap` | spec | core | Kani | discharged |
+| S273 | `axiom_arena_stats_lock_inv` | axiom | invariant | none | trusted |
 
 ### src/vspec/atom.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S271 | `load_usize_in` | body | atomic | GenMC | discharged |
-| S272 | `store_usize` | body | atomic | GenMC | discharged |
-| S273 | `usize_ptr` | body | ptr | none | trusted |
-| S274 | `store_usize_at` | body | atomic | GenMC | trusted |
+| S274 | `load_usize_in` | body | atomic | GenMC | discharged |
+| S275 | `store_usize` | body | atomic | GenMC | discharged |
+| S276 | `usize_ptr` | body | ptr | none | trusted |
+| S277 | `store_usize_at` | body | atomic | GenMC | trusted |
 
 ### src/vspec/cbuf.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S275 | `axiom_c_writes` | axiom | c-contract | none | trusted |
-| S276 | `CCall::str_byte` | axiom | c-contract | none | trusted |
-| S277 | `CCall::str_c_byte` | axiom | c-contract | none | trusted |
-| S278 | `CCall::sized` | axiom | c-contract | none | trusted |
-| S279 | `CCall::counted` | axiom | c-contract | none | trusted |
+| S278 | `axiom_c_writes` | axiom | c-contract | none | trusted |
+| S279 | `CCall::str_byte` | axiom | c-contract | none | trusted |
+| S280 | `CCall::str_c_byte` | axiom | c-contract | none | trusted |
+| S281 | `CCall::sized` | axiom | c-contract | none | trusted |
+| S282 | `CCall::counted` | axiom | c-contract | none | trusted |
 
 ### src/vspec/check.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S280 | `check` | body | abort | Kani | discharged |
+| S283 | `check` | body | abort | Kani | discharged |
 
 ### src/vspec/class.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S281 | `axiom_class_table_wf` | axiom | invariant | Kani | trusted |
-| S282 | `mem::drop` | spec | core | Kani | discharged |
+| S284 | `axiom_class_table_wf` | axiom | invariant | Kani | trusted |
+| S285 | `mem::drop` | spec | core | Kani | discharged |
 
 ### src/vspec/config.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S283 | `ffi::CStr` | ext-type | core | Kani | trusted |
-| S284 | `<*const T>::cast::<U>` | spec | ptr | Kani | discharged |
-| S285 | `ffi::CStr::as_ptr` | spec | core | Kani | discharged |
-| S286 | `char::to_digit` | spec | core | Kani | discharged |
-| S287 | `i64::wrapping_neg` | spec | core | Kani | discharged |
-| S288 | `usize::ilog2` | spec | core | Kani | discharged |
+| S286 | `ffi::CStr` | ext-type | core | Kani | trusted |
+| S287 | `<*const T>::cast::<U>` | spec | ptr | Kani | discharged |
+| S288 | `ffi::CStr::as_ptr` | spec | core | Kani | discharged |
+| S289 | `char::to_digit` | spec | core | Kani | discharged |
+| S290 | `i64::wrapping_neg` | spec | core | Kani | discharged |
+| S291 | `usize::ilog2` | spec | core | Kani | discharged |
 
 ### src/vspec/core_int.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S289 | `usize::trailing_zeros` | spec | core | Kani | discharged |
-| S290 | `usize::leading_zeros` | spec | core | Kani | discharged |
-| S291 | `u64::count_ones` | spec | core | Kani | discharged |
-| S292 | `usize::count_ones` | spec | core | Kani | discharged |
-| S293 | `usize::is_power_of_two` | spec | core | Kani | discharged |
-| S294 | `u32::is_power_of_two` | spec | core | Kani | discharged |
-| S295 | `usize::next_power_of_two` | spec | core | Kani | discharged |
-| S296 | `usize::div_ceil` | spec | core | Kani | trusted |
-| S297 | `u32::rotate_right` | spec | core | Kani | discharged |
-| S298 | `u64::rotate_right` | spec | core | Kani | discharged |
-| S299 | `<[T]>::get_unchecked::<I>` | spec | core | Kani | discharged |
-| S300 | `hint::spin_loop` | spec | core | Kani | trusted |
+| S292 | `usize::trailing_zeros` | spec | core | Kani | discharged |
+| S293 | `usize::leading_zeros` | spec | core | Kani | discharged |
+| S294 | `u64::count_ones` | spec | core | Kani | discharged |
+| S295 | `usize::count_ones` | spec | core | Kani | discharged |
+| S296 | `usize::is_power_of_two` | spec | core | Kani | discharged |
+| S297 | `u32::is_power_of_two` | spec | core | Kani | discharged |
+| S298 | `usize::next_power_of_two` | spec | core | Kani | discharged |
+| S299 | `usize::div_ceil` | spec | core | Kani | trusted |
+| S300 | `u32::rotate_right` | spec | core | Kani | discharged |
+| S301 | `u64::rotate_right` | spec | core | Kani | discharged |
+| S302 | `<[T]>::get_unchecked::<I>` | spec | core | Kani | discharged |
+| S303 | `hint::spin_loop` | spec | core | Kani | trusted |
 
 ### src/vspec/count.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S301 | `fetch_add` | body | atomic | GenMC | discharged |
-| S302 | `fetch_sub` | body | atomic | GenMC | discharged |
-| S303 | `store` | body | atomic | GenMC | discharged |
-| S304 | `load` | body | atomic | GenMC | discharged |
-| S305 | `swap` | body | atomic | GenMC | discharged |
-| S306 | `compare_exchange` | body | atomic | GenMC | discharged |
+| S304 | `fetch_add` | body | atomic | GenMC | discharged |
+| S305 | `fetch_sub` | body | atomic | GenMC | discharged |
+| S306 | `store` | body | atomic | GenMC | discharged |
+| S307 | `load` | body | atomic | GenMC | discharged |
+| S308 | `swap` | body | atomic | GenMC | discharged |
+| S309 | `compare_exchange` | body | atomic | GenMC | discharged |
 
 ### src/vspec/entry.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S307 | `store` | body | atomic | GenMC | discharged |
-| S308 | `load` | body | atomic | GenMC | discharged |
+| S310 | `store` | body | atomic | GenMC | discharged |
+| S311 | `load` | body | atomic | GenMC | discharged |
 
 ### src/vspec/errno.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S309 | `lend` | body | c-contract | none | trusted |
-| S310 | `set_errno` | body | ffi | none | trusted |
+| S312 | `lend` | body | c-contract | none | trusted |
+| S313 | `set_errno` | body | ffi | none | trusted |
 
 ### src/vspec/fmt.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S311 | `ExWrite` | ext-trait | core | Kani | trusted |
-| S312 | `fmt::Formatter::<'a>::write_str` | spec | core | Kani | discharged |
-| S313 | `fmt::Formatter::<'a>::write_fmt` | spec | fnptr | Kani | discharged |
-| S314 | `DisplaySpecIm...r sys::Errno` | spec-impl | core | Kani | discharged |
-| S315 | `DebugSpecImpl... slab::State` | spec-impl | core | Kani | discharged |
-| S316 | `DebugSpecImpl...ge::RunState` | spec-impl | core | Kani | discharged |
+| S314 | `ExWrite` | ext-trait | core | Kani | trusted |
+| S315 | `fmt::Formatter::<'a>::write_str` | spec | core | Kani | discharged |
+| S316 | `fmt::Formatter::<'a>::write_fmt` | spec | fnptr | Kani | discharged |
+| S317 | `DisplaySpecIm...r sys::Errno` | spec-impl | core | Kani | discharged |
+| S318 | `DebugSpecImpl... slab::State` | spec-impl | core | Kani | discharged |
+| S319 | `DebugSpecImpl...ge::RunState` | spec-impl | core | Kani | discharged |
 
 ### src/vspec/heap.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S317 | `ffi::c_void` | ext-type | core | Kani | trusted |
-| S318 | `Option::<T>::or_else` | spec | core | Kani | discharged |
+| S320 | `ffi::c_void` | ext-type | core | Kani | trusted |
+| S321 | `Option::<T>::or_else` | spec | core | Kani | discharged |
 
 ### src/vspec/huge.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S319 | `axiom_huge_lock_inv` | axiom | invariant | none | trusted |
-| S320 | `axiom_huge_lock_frame` | axiom | invariant | none | trusted |
+| S322 | `axiom_huge_lock_inv` | axiom | invariant | none | trusted |
+| S323 | `axiom_huge_lock_frame` | axiom | invariant | none | trusted |
 
 ### src/vspec/layout.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S321 | `Layout` | ext-type | core | Kani | trusted |
-| S322 | `alloc::LayoutError` | ext-type | core | Kani | trusted |
-| S323 | `Layout::size` | spec | core | Kani | discharged |
-| S324 | `Layout::align` | spec | core | Kani | discharged |
-| S325 | `Layout::from_size_align` | spec | core | Kani | discharged |
-| S326 | `Layout::new::<T>` | spec | core | Kani | discharged |
+| S324 | `Layout` | ext-type | core | Kani | trusted |
+| S325 | `alloc::LayoutError` | ext-type | core | Kani | trusted |
+| S326 | `Layout::size` | spec | core | Kani | discharged |
+| S327 | `Layout::align` | spec | core | Kani | discharged |
+| S328 | `Layout::from_size_align` | spec | core | Kani | discharged |
+| S329 | `Layout::new::<T>` | spec | core | Kani | discharged |
 
 ### src/vspec/lock.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S327 | `cell::UnsafeCell<T>` | ext-type | cell | Kani | trusted |
-| S328 | `cell::UnsafeCell::<T>::new` | spec | cell | Kani | discharged |
+| S330 | `cell::UnsafeCell<T>` | ext-type | cell | Kani | trusted |
+| S331 | `cell::UnsafeCell::<T>::new` | spec | cell | Kani | discharged |
 
 ### src/vspec/meta.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S329 | `axiom_meta_lock_inv` | axiom | invariant | none | trusted |
-| S330 | `axiom_meta_lock_frame` | axiom | invariant | none | trusted |
+| S332 | `axiom_meta_lock_inv` | axiom | invariant | none | trusted |
+| S333 | `axiom_meta_lock_frame` | axiom | invariant | none | trusted |
 
 ### src/vspec/misc.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S331 | `PartialEqSpec... config::Thp` | spec-impl | core | Kani | discharged |
-| S332 | `PartialEqSpec...::ThpSetting` | spec-impl | core | Kani | discharged |
-| S333 | `PartialEqSpec...ge::RunState` | spec-impl | core | Kani | discharged |
-| S334 | `Option::<T>::map_or` | spec | core | Kani | discharged |
-| S335 | `str::as_ptr` | spec | core | Kani | discharged |
-| S336 | `compiler_fence` | spec | core | Kani | discharged |
-| S337 | `fence` | spec | core | Kani | trusted |
-| S338 | `hint::assert_unchecked` | spec | core | Kani | discharged |
-| S339 | `Option::<T>::as_deref_mut` | spec | core | Kani | discharged |
+| S334 | `PartialEqSpec... config::Thp` | spec-impl | core | Kani | discharged |
+| S335 | `PartialEqSpec...::ThpSetting` | spec-impl | core | Kani | discharged |
+| S336 | `PartialEqSpec...ge::RunState` | spec-impl | core | Kani | discharged |
+| S337 | `Option::<T>::map_or` | spec | core | Kani | discharged |
+| S338 | `str::as_ptr` | spec | core | Kani | discharged |
+| S339 | `compiler_fence` | spec | core | Kani | discharged |
+| S340 | `fence` | spec | core | Kani | trusted |
+| S341 | `hint::assert_unchecked` | spec | core | Kani | discharged |
+| S342 | `Option::<T>::as_deref_mut` | spec | core | Kani | discharged |
 
 ### src/vspec/misc_extra.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S340 | `Atomic::<u32>::as_ptr` | spec | core | Kani | discharged |
+| S343 | `Atomic::<u32>::as_ptr` | spec | core | Kani | discharged |
 
 ### src/vspec/panic.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S341 | `panic::PanicInfo<'a>` | ext-type | core | Kani | trusted |
-| S342 | `panic::Location<'a>` | ext-type | core | Kani | trusted |
-| S343 | `panic::PanicMessage<'a>` | ext-type | core | Kani | trusted |
-| S344 | `panic::PanicInfo::<'a>::location` | spec | core | Kani | trusted |
-| S345 | `panic::PanicInfo::<'a>::message` | spec | core | Kani | trusted |
-| S346 | `panic::Location::<'a>::file` | spec | core | Kani | trusted |
-| S347 | `panic::Location::<'a>::line` | spec | core | Kani | trusted |
-| S348 | `axiom_fmt_req_all_panic_message` | axiom | abort | none | trusted |
+| S344 | `panic::PanicInfo<'a>` | ext-type | core | Kani | trusted |
+| S345 | `panic::Location<'a>` | ext-type | core | Kani | trusted |
+| S346 | `panic::PanicMessage<'a>` | ext-type | core | Kani | trusted |
+| S347 | `panic::PanicInfo::<'a>::location` | spec | core | Kani | trusted |
+| S348 | `panic::PanicInfo::<'a>::message` | spec | core | Kani | trusted |
+| S349 | `panic::Location::<'a>::file` | spec | core | Kani | trusted |
+| S350 | `panic::Location::<'a>::line` | spec | core | Kani | trusted |
+| S351 | `axiom_fmt_req_all_panic_message` | axiom | abort | none | trusted |
 
 ### src/vspec/policy.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S349 | `<u64>::div_ceil` | spec | core | Kani | trusted |
+| S352 | `<u64>::div_ceil` | spec | core | Kani | trusted |
 
 ### src/vspec/print.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S350 | `libc::FILE` | ext-type | ffi | none | trusted |
-| S351 | `base_slab_sizes` | body | fnptr | Kani | discharged |
-| S352 | `DisplaySpecIm...roup::Cgroup` | spec-impl | core | Kani | discharged |
-| S353 | `PartialEqSpec...:PercpuArena` | spec-impl | core | Kani | discharged |
-| S354 | `stats_allocated` | body | core | Kani | discharged |
+| S353 | `libc::FILE` | ext-type | ffi | none | trusted |
+| S354 | `base_slab_sizes` | body | fnptr | Kani | discharged |
+| S355 | `DisplaySpecIm...roup::Cgroup` | spec-impl | core | Kani | discharged |
+| S356 | `PartialEqSpec...:PercpuArena` | spec-impl | core | Kani | discharged |
+| S357 | `stats_allocated` | body | core | Kani | discharged |
 
 ### src/vspec/ptr.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S355 | `axiom_ptr_add_addr` | proof | core | Kani | discharged |
-| S356 | `<*mut T>::add` | spec | ptr | Kani | discharged |
-| S357 | `<*const T>::add` | spec | ptr | Kani | trusted |
-| S358 | `ptr::read_unaligned::<T>` | spec | ptr | Kani | trusted |
-| S359 | `<*const T>::read_unaligned` | spec | ptr | Kani | trusted |
-| S360 | `axiom_plain_u64` | axiom | core | none | trusted |
-| S361 | `ptr::read_volatile::<T>` | spec | ptr | Kani | trusted |
-| S362 | `ptr::write_unaligned::<T>` | spec | ptr | Kani | trusted |
-| S363 | `<*mut T>::write_unaligned` | spec | ptr | Kani | trusted |
-| S364 | `axiom_raw_valid` | proof | ptr | none | trusted |
-| S365 | `ref_ptr` | body | ptr | Kani | trusted |
+| S358 | `axiom_ptr_add_addr` | proof | core | Kani | discharged |
+| S359 | `<*mut T>::add` | spec | ptr | Kani | discharged |
+| S360 | `<*const T>::add` | spec | ptr | Kani | trusted |
+| S361 | `ptr::read_unaligned::<T>` | spec | ptr | Kani | trusted |
+| S362 | `<*const T>::read_unaligned` | spec | ptr | Kani | trusted |
+| S363 | `axiom_plain_u64` | axiom | core | none | trusted |
+| S364 | `ptr::read_volatile::<T>` | spec | ptr | Kani | trusted |
+| S365 | `ptr::write_unaligned::<T>` | spec | ptr | Kani | trusted |
+| S366 | `<*mut T>::write_unaligned` | spec | ptr | Kani | trusted |
+| S367 | `axiom_raw_valid` | proof | ptr | none | trusted |
+| S368 | `axiom_array_elem` | axiom | core | none | trusted |
+| S369 | `ref_ptr` | body | ptr | Kani | trusted |
 
 ### src/vspec/slice.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S366 | `slice::from_ref` | spec | core | Kani | discharged |
-| S367 | `slice::from_raw_parts::<'a, T>` | spec | ptr | Kani | trusted |
-| S368 | `<&'a mut [T] as...tor>::into_iter` | spec | core | Kani | discharged |
-| S369 | `<[T]>::swap` | spec | core | Kani | discharged |
-| S370 | `<[T]>::reverse` | spec | core | Kani | discharged |
-| S371 | `<[T]>::is_sorted` | spec | core | Kani | discharged |
-| S372 | `<[T]>::is_sorte...key::<'a, F, K>` | spec | core | Kani | discharged |
-| S373 | `<[T]>::select_nth_unstable` | spec | core | Kani | trusted |
-| S374 | `<[T]>::select_nth...e_by_key::<K, F>` | spec | core | Kani | trusted |
-| S375 | `<[T]>::sort_unstable` | spec | core | Kani | discharged |
-| S376 | `<[T]>::sort_unstable_by_key::<K, F>` | spec | core | Kani | trusted |
-| S377 | `<[T]>::get_unchecked_mut::<I>` | spec | core | Kani | discharged |
-| S378 | `<[T]>::swap_with_slice` | spec | core | Kani | discharged |
-| S379 | `<[T]>::rotate_left` | spec | core | Kani | discharged |
-| S380 | `array::IntoIter<T, N>` | ext-type | core | Kani | trusted |
-| S381 | `<[T; N] as core...tor>::into_iter` | spec | core | Kani | discharged |
-| S382 | `<core::array::I...Iterator>::next` | spec | core | Kani | discharged |
-| S383 | `array_get_unchecked` | body | core | Kani | discharged |
-| S384 | `slice_from_perms` | body | ptr | RR | trusted |
-| S385 | `slice_mut_elems` | body | ptr | RR | trusted |
+| S370 | `slice::from_ref` | spec | core | Kani | discharged |
+| S371 | `slice::from_raw_parts::<'a, T>` | spec | ptr | Kani | trusted |
+| S372 | `<&'a mut [T] as...tor>::into_iter` | spec | core | Kani | discharged |
+| S373 | `<[T]>::swap` | spec | core | Kani | discharged |
+| S374 | `<[T]>::reverse` | spec | core | Kani | discharged |
+| S375 | `<[T]>::is_sorted` | spec | core | Kani | discharged |
+| S376 | `<[T]>::is_sorte...key::<'a, F, K>` | spec | core | Kani | discharged |
+| S377 | `<[T]>::select_nth_unstable` | spec | core | Kani | trusted |
+| S378 | `<[T]>::select_nth...e_by_key::<K, F>` | spec | core | Kani | trusted |
+| S379 | `<[T]>::sort_unstable` | spec | core | Kani | discharged |
+| S380 | `<[T]>::sort_unstable_by_key::<K, F>` | spec | core | Kani | trusted |
+| S381 | `<[T]>::get_unchecked_mut::<I>` | spec | core | Kani | discharged |
+| S382 | `<[T]>::swap_with_slice` | spec | core | Kani | discharged |
+| S383 | `<[T]>::rotate_left` | spec | core | Kani | discharged |
+| S384 | `array::IntoIter<T, N>` | ext-type | core | Kani | trusted |
+| S385 | `<[T; N] as core...tor>::into_iter` | spec | core | Kani | discharged |
+| S386 | `<core::array::I...Iterator>::next` | spec | core | Kani | discharged |
+| S387 | `array_get_unchecked` | body | core | Kani | discharged |
+| S388 | `slice_from_perms` | body | ptr | RR | trusted |
+| S389 | `slice_mut_elems` | body | ptr | RR | trusted |
 
 ### src/vspec/sys.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S386 | `u8::is_ascii_digit` | spec | core | Kani | discharged |
-| S387 | `u8::is_ascii_whitespace` | spec | core | Kani | discharged |
-| S388 | `u8::is_ascii_graphic` | spec | core | Kani | trusted |
-| S389 | `isize::wrapping_neg` | spec | core | Kani | discharged |
-| S390 | `<[T]>::as_mut_ptr` | spec | core | Kani | discharged |
-| S391 | `<[T]>::as_ptr` | spec | core | Kani | discharged |
-| S392 | `Result::<T, E>::map_or` | spec | core | Kani | discharged |
-| S393 | `Option::<T>::is_some_and` | spec | core | Kani | discharged |
-| S394 | `Result::<T, E>::unwrap_or` | spec | core | Kani | discharged |
-| S395 | `u64::is_power_of_two` | spec | core | Kani | discharged |
-| S396 | `str::Utf8Error` | ext-type | core | Kani | trusted |
-| S397 | `str::from_utf8` | spec | core | Kani | discharged |
-| S398 | `str::from_utf8_unchecked` | spec | core | Kani | trusted |
-| S399 | `<core::fmt::Err...fault>::default` | spec | core | Kani | discharged |
-| S400 | `ptr::from_ref` | spec | ptr | Kani | discharged |
-| S401 | `ptr::from_mut` | spec | ptr | Kani | discharged |
-| S402 | `Option::<&T>::copied` | spec | core | Kani | discharged |
-| S403 | `PartialEqSpec...group::State` | spec-impl | core | Kani | discharged |
-| S404 | `PartialEqSpec...r sys::Errno` | spec-impl | core | Kani | discharged |
-| S405 | `axiom_fresh_anon_zero` | axiom | platform | none | trusted |
-| S406 | `axiom_discarded_zero` | axiom | platform | none | trusted |
+| S390 | `u8::is_ascii_digit` | spec | core | Kani | discharged |
+| S391 | `u8::is_ascii_whitespace` | spec | core | Kani | discharged |
+| S392 | `u8::is_ascii_graphic` | spec | core | Kani | trusted |
+| S393 | `isize::wrapping_neg` | spec | core | Kani | discharged |
+| S394 | `<[T]>::as_mut_ptr` | spec | core | Kani | discharged |
+| S395 | `<[T]>::as_ptr` | spec | core | Kani | discharged |
+| S396 | `Result::<T, E>::map_or` | spec | core | Kani | discharged |
+| S397 | `Option::<T>::is_some_and` | spec | core | Kani | discharged |
+| S398 | `Result::<T, E>::unwrap_or` | spec | core | Kani | discharged |
+| S399 | `u64::is_power_of_two` | spec | core | Kani | discharged |
+| S400 | `str::Utf8Error` | ext-type | core | Kani | trusted |
+| S401 | `str::from_utf8` | spec | core | Kani | discharged |
+| S402 | `str::from_utf8_unchecked` | spec | core | Kani | trusted |
+| S403 | `<core::fmt::Err...fault>::default` | spec | core | Kani | discharged |
+| S404 | `ptr::from_ref` | spec | ptr | Kani | discharged |
+| S405 | `ptr::from_mut` | spec | ptr | Kani | discharged |
+| S406 | `Option::<&T>::copied` | spec | core | Kani | discharged |
+| S407 | `PartialEqSpec...group::State` | spec-impl | core | Kani | discharged |
+| S408 | `PartialEqSpec...r sys::Errno` | spec-impl | core | Kani | discharged |
+| S409 | `axiom_fresh_anon_zero` | axiom | platform | none | trusted |
+| S410 | `axiom_discarded_zero` | axiom | platform | none | trusted |
 
 ### src/vspec/unbacked.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S407 | `Unbacked::commit` | proof | platform | none | trusted |
-| S408 | `Unbacked::into_lazy` | proof | invariant | none | trusted |
+| S411 | `Unbacked::commit` | proof | platform | none | trusted |
+| S412 | `Unbacked::into_lazy` | proof | invariant | none | trusted |
 
 ### src/vspec/user.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S409 | `axiom_zeroed_bytes` | proof | invariant | none | trusted |
-| S410 | `axiom_cast` | proof | ptr | none | trusted |
-| S411 | `axiom_copied_bytes` | axiom | core | Kani | evidence |
+| S413 | `axiom_zeroed_bytes` | proof | invariant | none | trusted |
+| S414 | `axiom_cast` | proof | ptr | none | trusted |
+| S415 | `axiom_copied_bytes` | axiom | core | Kani | evidence |
 
 ### src/vspec/word.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S412 | `WordPerm` | type | atomic | GenMC | discharged |
-| S413 | `fetch_or` | body | atomic | GenMC | discharged |
-| S414 | `store` | body | atomic | GenMC | discharged |
-| S415 | `load` | body | atomic | GenMC | discharged |
-| S416 | `fetch_and` | body | atomic | GenMC | discharged |
+| S416 | `WordPerm` | type | atomic | GenMC | discharged |
+| S417 | `fetch_or` | body | atomic | GenMC | discharged |
+| S418 | `store` | body | atomic | GenMC | discharged |
+| S419 | `load` | body | atomic | GenMC | discharged |
+| S420 | `fetch_and` | body | atomic | GenMC | discharged |
 
 ### src/vspec/zero.rs
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S417 | `ZeroRaw::axiom_new` | proof | invariant | none | trusted |
-| S418 | `axiom_zero_word` | proof | core | Kani | trusted |
-| S419 | `write_zero` | body | ptr | Kani | discharged |
+| S421 | `ZeroRaw::axiom_new` | proof | invariant | none | trusted |
+| S422 | `axiom_zero_word` | proof | core | Kani | trusted |
+| S423 | `write_zero` | body | ptr | Kani | discharged |
 
 ## Entries
 
@@ -1098,7 +1101,7 @@ axiom fn axiom_c_block(p: *mut c_void) -> (tracked c: CCall)
 
 ### S14. `axiom_c_block`
 
-src/api/libc.rs:2827. Kind: axiom. Category: C-program contract.
+src/api/libc.rs:2833. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of a free or a realloc, `vspec::cbuf`): the token of this call from C, which hands over the block at `p` ([`CCall`], [`CEntry::Frees`]), for `heap::live::axiom_c_claim` to use up.
@@ -1112,7 +1115,7 @@ axiom fn axiom_c_block(p: *mut c_void) -> (tracked c: CCall)
 
 ### S15. `axiom_c_out`
 
-src/api/libc.rs:2923. Kind: axiom. Category: C-program contract.
+src/api/libc.rs:2929. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of an out-pointer argument, `vspec::cbuf`): the token of this call for the C caller's out-pointer `p`, the permission to write the `T` it names: none for a null `p`, and `p` is not null when the contract does not allow null (`nullable` false: `posix_memalign`'s `memptr`).
@@ -1171,9 +1174,41 @@ axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
 ;
 ```
 
-### S19. `StatePerm`
+### S19. `axiom_ready`
 
-src/api/mod.rs:271. Kind: external_body type. Category: atomics primitive.
+src/api/mod.rs:279. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> Trusted: a thread that holds the frozen permissions ([`Published`], which `init` builds when it freezes them and `STATE`'s invariant holds from `READY` on, [`load_state`]) may state [`ready`].
+
+```rust
+pub axiom fn axiom_ready(tracked p: &'static Published)
+    requires
+        p.ok(),
+    ensures
+        ready(),
+;
+```
+
+### S20. `axiom_published`
+
+src/api/mod.rs:294. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> Trusted: the frozen permissions, for a thread that knows the allocator is published ([`ready`]): a `&'static Published` like the one `init` froze.
+
+```rust
+pub axiom fn axiom_published() -> (tracked r: &'static Published)
+    requires
+        ready(),
+    ensures
+        r.ok(),
+;
+```
+
+### S21. `StatePerm`
+
+src/api/mod.rs:320. Kind: external_body type. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Ghost permission to `STATE`: its current [`value`](StatePerm::value).
@@ -1182,9 +1217,9 @@ Tool: loom/GenMC. Status: trusted.
 pub tracked struct StatePerm
 ```
 
-### S20. `axiom_state`
+### S22. `axiom_state`
 
-src/api/mod.rs:327. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:376. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `STATE`'s invariant.
@@ -1196,9 +1231,9 @@ axiom fn axiom_state() -> (tracked r: &'static AtomicInvariant<(), StateVal, Sta
 ;
 ```
 
-### S21. `state_load`
+### S23. `state_load`
 
-src/api/mod.rs:338. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:387. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `STATE.load(Acquire)`: the permission's value.
@@ -1211,9 +1246,9 @@ fn state_load(Tracked(perm): Tracked<&StatePerm>) -> (r: u32)
     no_unwind
 ```
 
-### S22. `state_claim`
+### S24. `state_claim`
 
-src/api/mod.rs:354. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:403. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/api-state_claim.md).
 
 > `STATE`'s exchange from `UNINIT` to `INITIALISING`: `Ok(UNINIT)` when it was `UNINIT` (and is now `INITIALISING`), `Err` of the value it has otherwise, left unchanged.
@@ -1227,9 +1262,9 @@ fn state_claim(Tracked(perm): Tracked<&mut StatePerm>) -> (r: Result<u32, u32>)
     no_unwind
 ```
 
-### S23. `state_publish`
+### S25. `state_publish`
 
-src/api/mod.rs:369. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:418. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `STATE`'s `READY` store, `Release`.
@@ -1242,20 +1277,23 @@ fn state_publish(Tracked(perm): Tracked<&mut StatePerm>)
     no_unwind
 ```
 
-### S24. `shared_ptr`
+### S26. `shared_ptr`
 
-src/api/mod.rs:459. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: RefinedRust. Status: trusted.
+src/api/mod.rs:516. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+Tool: none (assumption). Status: trusted.
 
 > The allocator state's address, with no readiness check and no reference formed: what the fast paths hand `heap::existing_heap`, which reads one byte through it only after the thread's TLS slot has proved init complete.
 
 ```rust
-pub fn shared_ptr() -> *const Shared opens_invariants none
+pub fn shared_ptr() -> (r: *const Shared)
+    ensures
+        r == Shared::storage() as *const Shared,
+    opens_invariants none
 ```
 
-### S25. `shared_base`
+### S27. `shared_base`
 
-src/api/mod.rs:479. Kind: external_body. Category: inline asm.
+src/api/mod.rs:542. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: evidence (verus/seams/api-shared_base.md).
 
 > [`shared_ptr`] for the free paths.
@@ -1263,29 +1301,13 @@ Tool: Islaris/Isla. Status: evidence (verus/seams/api-shared_base.md).
 ```rust
 pub fn shared_base() -> (r: *const Shared)
     ensures
-        r@.addr == Shared::storage()@.addr,
+        r == Shared::storage() as *const Shared,
     opens_invariants none
 ```
 
-### S26. `shared_deref`
+### S28. `published_line`
 
-src/api/mod.rs:509. Kind: external_body. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
-
-> The allocator state at `p`, a [`shared_base`] result, without the readiness check: `&*p`, as the free paths write it.
-
-```rust
-pub unsafe fn shared_deref(p: *const Shared) -> (r: &'static Shared)
-    requires
-        p@.addr == Shared::storage()@.addr,
-    ensures
-        r.wf(),
-    opens_invariants none
-```
-
-### S27. `published_line`
-
-src/api/mod.rs:538. Kind: external_body. Category: allocator invariant.
+src/api/mod.rs:603. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The feature line, without the readiness check.
@@ -1295,9 +1317,9 @@ unsafe fn published_line() -> &'static FeatureLine
     opens_invariants none
 ```
 
-### S28. `build_line`
+### S29. `build_line`
 
-src/api/mod.rs:560. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:625. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > Complete the probed features' THP size table if init skipped it and build the feature line into [`FEATURE_LINE`] (`feature_line_ready`'s build).
@@ -1308,9 +1330,9 @@ unsafe fn build_line()
         crate::sys::may_syscall(),
 ```
 
-### S29. `line_ready`
+### S30. `line_ready`
 
-src/api/mod.rs:610. Kind: no_decreases. Category: termination.
+src/api/mod.rs:675. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > [`feature_line_ready`] after its `shared()`: build the line, or wait for the thread building it (termination is not claimed: the wait ends when the other thread's build does).
@@ -1321,9 +1343,9 @@ fn line_ready()
         crate::sys::may_syscall(),
 ```
 
-### S30. `init_slow`
+### S31. `init_slow`
 
-src/api/mod.rs:790. Kind: no_decreases. Category: termination.
+src/api/mod.rs:855. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: discharged (verus/seams/api-init_slow.md).
 
 > The first caller runs `init` and publishes `READY`; a concurrent one waits for it (termination is not claimed: the wait ends when the other thread's `init` does); the initialising thread re-entering aborts.
@@ -1337,9 +1359,9 @@ fn init_slow() -> (r: &'static Shared)
         r.wf(),
 ```
 
-### S31. `shared_storage_ptr`
+### S32. `shared_storage_ptr`
 
-src/api/mod.rs:840. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:905. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The storage of [`SHARED`], the process's [`Shared::storage`].
@@ -1351,9 +1373,9 @@ fn shared_storage_ptr() -> (p: *mut Shared)
     opens_invariants none
 ```
 
-### S32. `features_ptr`
+### S33. `features_ptr`
 
-src/api/mod.rs:861. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:926. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The storage of [`FEATURES`].
@@ -1365,9 +1387,9 @@ fn features_ptr() -> (p: *mut Features)
     opens_invariants none
 ```
 
-### S33. `line_ptr`
+### S34. `line_ptr`
 
-src/api/mod.rs:873. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:938. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The storage of [`FEATURE_LINE`].
@@ -1379,9 +1401,9 @@ fn line_ptr() -> (p: *mut FeatureLine)
     opens_invariants none
 ```
 
-### S34. `axiom_statics`
+### S35. `axiom_statics`
 
-src/api/mod.rs:895. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:960. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permissions to the storage of the statics `init` writes itself, for `once`, the process's token of this step: [`FEATURES`] and [`FEATURE_LINE`], uninitialised, and the class table ([`layout::CLASSES`]), holding its initial value, [`layout::BASE_CLASSES`] (`ClassTable::new`), whose entries are well formed and sized ([`layout::table_ok`]).
@@ -1405,9 +1427,9 @@ axiom fn axiom_statics(tracked once: once::Once) -> (tracked r: (
 ;
 ```
 
-### S35. `atfork_handlers`
+### S36. `atfork_handlers`
 
-src/api/mod.rs:934. Kind: external_body. Category: function pointer.
+src/api/mod.rs:999. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > `pthread_atfork` with the three fork handlers: 0, or the error number.
@@ -1418,9 +1440,9 @@ fn atfork_handlers() -> i32
         crate::sys::may_syscall(),
 ```
 
-### S36. `axiom_fork_resumed_state`
+### S37. `axiom_fork_resumed_state`
 
-src/api/mod.rs:1335. Kind: axiom. Category: C-program contract.
+src/api/mod.rs:1402. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_holds`] (glibc runs them on the forking thread, after `_Fork`; in the child that thread is the copy of the forking one), and nothing released a lock in between: signals are blocked from the prepare handler's first step, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) do not take an allocator lock.
@@ -1432,9 +1454,9 @@ axiom fn axiom_fork_resumed_state() -> (tracked state: LockHeld)
 ;
 ```
 
-### S37. `axiom_fork_resumed_sig`
+### S38. `axiom_fork_resumed_sig`
 
-src/api/mod.rs:1363. Kind: axiom. Category: C-program contract.
+src/api/mod.rs:1430. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff, its signal half; see [`axiom_fork_resumed_state`]): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_sig_holds`] (in the child, its copy, which inherits the mask), whose mask has stayed as that handler left it, every blockable signal blocked: glibc's `_Fork` restores the mask it found, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) leave the mask as they found it.
@@ -1446,9 +1468,9 @@ axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
 ;
 ```
 
-### S38. `axiom_fork_resumed`
+### S39. `axiom_fork_resumed`
 
-src/api/mod.rs:1958. Kind: axiom. Category: C-program contract.
+src/api/mod.rs:2025. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (see `api::axiom_fork_resumed_state`): the rest of the hold, with the permission to `slot`, which must be the word the prepare stored its mask to: [`resumed`] passes [`fork_slot`]'s `&FORK_SIGMASK`, as the prepare's store did, and a static has one address (the same premise as for `s`, the `Shared` the release reads); passed any other word, it would mint a second permission to it, which is why it is private to this module.
@@ -1465,7 +1487,7 @@ axiom fn axiom_fork_resumed(s: &Shared, slot: &AtomicU64, tracked state: &LockHe
 ;
 ```
 
-### S39. `WriteCallback`
+### S40. `WriteCallback`
 
 src/api/print.rs:63. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
@@ -1476,7 +1498,7 @@ Tool: Kani. Status: trusted.
 pub struct ExWriteCallback(WriteCallback);
 ```
 
-### S40. `Unlocked`
+### S41. `Unlocked`
 
 src/api/print.rs:84. Kind: external_body type. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
@@ -1487,7 +1509,7 @@ Tool: none (assumption). Status: trusted.
 pub(super) tracked struct Unlocked
 ```
 
-### S41. `axiom_unlocked`
+### S42. `axiom_unlocked`
 
 src/api/print.rs:94. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
@@ -1498,7 +1520,7 @@ Tool: none (assumption). Status: trusted.
 axiom fn axiom_unlocked() -> (tracked u: Unlocked);
 ```
 
-### S42. `emit`
+### S43. `emit`
 
 src/api/print.rs:108. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
@@ -1513,7 +1535,7 @@ fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&
     no_unwind
 ```
 
-### S43. `word`
+### S44. `word`
 
 src/api/print.rs:379. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/api-print-word.md).
@@ -1524,7 +1546,7 @@ Tool: Kani. Status: discharged (verus/seams/api-print-word.md).
 fn word(s: &CStr) -> &str
 ```
 
-### S44. `hist_line`
+### S45. `hist_line`
 
 src/api/print.rs:856. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-print-hist_line.md).
@@ -1543,7 +1565,7 @@ fn hist_line<W: Write>(
 ) -> fmt::Result
 ```
 
-### S45. `file_target`
+### S46. `file_target`
 
 src/api/print.rs:1367. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-print-file_target.md).
@@ -1554,7 +1576,7 @@ Tool: Kani. Status: discharged (verus/seams/api-print-file_target.md).
 fn file_target(stream: *mut libc::FILE) -> Target
 ```
 
-### S46. `stderr_target`
+### S47. `stderr_target`
 
 src/api/print.rs:1374. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-print-stderr_target.md).
@@ -1565,7 +1587,7 @@ Tool: Kani. Status: discharged (verus/seams/api-print-stderr_target.md).
 fn stderr_target() -> Target
 ```
 
-### S47. `axiom_c_call`
+### S48. `axiom_c_call`
 
 src/api/print.rs:1405. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
@@ -1581,7 +1603,7 @@ axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
 ;
 ```
 
-### S48. `Arena::axiom_array_layout`
+### S49. `Arena::axiom_array_layout`
 
 src/arena.rs:344. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-Arena-axiom_array_layout.md).
@@ -1598,7 +1620,7 @@ pub(crate) axiom fn axiom_array_layout<T, const N: usize>()
 ;
 ```
 
-### S49. `A_INDEX`
+### S50. `A_INDEX`
 
 src/arena.rs:516. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_INDEX.md).
@@ -1607,7 +1629,7 @@ Tool: Kani. Status: discharged (verus/seams/arena-A_INDEX.md).
 const A_INDEX: usize = core::mem::offset_of!(Arena, index);
 ```
 
-### S50. `A_DECAY_NS`
+### S51. `A_DECAY_NS`
 
 src/arena.rs:518. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_DECAY_NS.md).
@@ -1616,7 +1638,7 @@ Tool: Kani. Status: discharged (verus/seams/arena-A_DECAY_NS.md).
 const A_DECAY_NS: usize = core::mem::offset_of!(Arena, decay_ns);
 ```
 
-### S51. `A_SETS`
+### S52. `A_SETS`
 
 src/arena.rs:520. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_SETS.md).
@@ -1625,7 +1647,7 @@ Tool: Kani. Status: discharged (verus/seams/arena-A_SETS.md).
 const A_SETS: usize = core::mem::offset_of!(Arena, sets);
 ```
 
-### S52. `A_SETS_PERM`
+### S53. `A_SETS_PERM`
 
 src/arena.rs:522. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_SETS_PERM.md).
@@ -1634,7 +1656,7 @@ Tool: Kani. Status: discharged (verus/seams/arena-A_SETS_PERM.md).
 const A_SETS_PERM: usize = core::mem::offset_of!(Arena, sets_perm);
 ```
 
-### S53. `A_CLASSES`
+### S54. `A_CLASSES`
 
 src/arena.rs:524. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_CLASSES.md).
@@ -1643,7 +1665,7 @@ Tool: Kani. Status: discharged (verus/seams/arena-A_CLASSES.md).
 const A_CLASSES: usize = core::mem::offset_of!(Arena, classes);
 ```
 
-### S54. `A_LARGE`
+### S55. `A_LARGE`
 
 src/arena.rs:526. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_LARGE.md).
@@ -1652,7 +1674,7 @@ Tool: Kani. Status: discharged (verus/seams/arena-A_LARGE.md).
 const A_LARGE: usize = core::mem::offset_of!(Arena, large);
 ```
 
-### S55. `A_STATS`
+### S56. `A_STATS`
 
 src/arena.rs:528. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_STATS.md).
@@ -1661,7 +1683,7 @@ Tool: Kani. Status: discharged (verus/seams/arena-A_STATS.md).
 const A_STATS: usize = core::mem::offset_of!(Arena, stats);
 ```
 
-### S56. `A_LAST_EXIT_PURGE`
+### S57. `A_LAST_EXIT_PURGE`
 
 src/arena.rs:530. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-A_LAST_EXIT_PURGE.md).
@@ -1670,7 +1692,7 @@ Tool: Kani. Status: discharged (verus/seams/arena-A_LAST_EXIT_PURGE.md).
 const A_LAST_EXIT_PURGE: usize = core::mem::offset_of!(Arena, last_exit_purge);
 ```
 
-### S57. `axiom_arena_layout`
+### S58. `axiom_arena_layout`
 
 src/arena.rs:536. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-axiom_arena_layout.md).
@@ -1698,7 +1720,7 @@ axiom fn axiom_arena_layout()
 ;
 ```
 
-### S58. `axiom_arena_assemble`
+### S59. `axiom_arena_assemble`
 
 src/arena.rs:820. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
@@ -1745,7 +1767,7 @@ axiom fn axiom_arena_assemble(
 ;
 ```
 
-### S59. `key_less`
+### S60. `key_less`
 
 src/arena.rs:1795. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-key_less.md).
@@ -1758,7 +1780,7 @@ fn key_less(a: (u32, bool), b: (u32, bool)) -> (r: bool)
         r == key_lt(a, b),
 ```
 
-### S60. `AR_TABLE`
+### S61. `AR_TABLE`
 
 src/arena.rs:1829. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
@@ -1767,7 +1789,7 @@ Tool: Kani. Status: trusted.
 const AR_TABLE: usize = core::mem::offset_of!(Arenas, table);
 ```
 
-### S61. `AR_BOUND`
+### S62. `AR_BOUND`
 
 src/arena.rs:1831. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
@@ -1776,7 +1798,7 @@ Tool: Kani. Status: trusted.
 const AR_BOUND: usize = core::mem::offset_of!(Arenas, bound);
 ```
 
-### S62. `AR_LOCK`
+### S63. `AR_LOCK`
 
 src/arena.rs:1833. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
@@ -1785,7 +1807,7 @@ Tool: Kani. Status: trusted.
 const AR_LOCK: usize = core::mem::offset_of!(Arenas, lock);
 ```
 
-### S63. `AR_COUNT`
+### S64. `AR_COUNT`
 
 src/arena.rs:1835. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
@@ -1794,7 +1816,7 @@ Tool: Kani. Status: trusted.
 const AR_COUNT: usize = core::mem::offset_of!(Arenas, count);
 ```
 
-### S64. `AR_AUTO`
+### S65. `AR_AUTO`
 
 src/arena.rs:1837. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
@@ -1803,7 +1825,7 @@ Tool: Kani. Status: trusted.
 const AR_AUTO: usize = core::mem::offset_of!(Arenas, auto);
 ```
 
-### S65. `AR_INVS`
+### S66. `AR_INVS`
 
 src/arena.rs:1839. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
@@ -1812,7 +1834,7 @@ Tool: Kani. Status: trusted.
 const AR_INVS: usize = core::mem::offset_of!(Arenas, invs);
 ```
 
-### S66. `AR_COUNT_INV`
+### S67. `AR_COUNT_INV`
 
 src/arena.rs:1841. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
@@ -1821,7 +1843,7 @@ Tool: Kani. Status: trusted.
 const AR_COUNT_INV: usize = core::mem::offset_of!(Arenas, count_inv);
 ```
 
-### S67. `AR_SPARE`
+### S68. `AR_SPARE`
 
 src/arena.rs:1843. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
@@ -1830,7 +1852,7 @@ Tool: Kani. Status: trusted.
 const AR_SPARE: usize = core::mem::offset_of!(Arenas, spare);
 ```
 
-### S68. `AR_SPARE_INV`
+### S69. `AR_SPARE_INV`
 
 src/arena.rs:1845. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
@@ -1839,7 +1861,7 @@ Tool: Kani. Status: trusted.
 const AR_SPARE_INV: usize = core::mem::offset_of!(Arenas, spare_inv);
 ```
 
-### S69. `axiom_arenas_layout`
+### S70. `axiom_arenas_layout`
 
 src/arena.rs:1855. Kind: axiom. Category: core library.
 Tool: Kani. Status: trusted.
@@ -1868,7 +1890,7 @@ axiom fn axiom_arenas_layout()
 ;
 ```
 
-### S70. `axiom_arenas_lock_inv`
+### S71. `axiom_arenas_lock_inv`
 
 src/arena.rs:1918. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -1882,7 +1904,7 @@ pub broadcast axiom fn axiom_arenas_lock_inv(v: Created)
 ;
 ```
 
-### S71. `axiom_arenas_lock_frame`
+### S72. `axiom_arenas_lock_frame`
 
 src/arena.rs:1929. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -1896,7 +1918,7 @@ broadcast axiom fn axiom_arenas_lock_frame(init: Created, v: Created)
 ;
 ```
 
-### S72. `axiom_arenas_assemble`
+### S73. `axiom_arenas_assemble`
 
 src/arena.rs:2072. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
@@ -1949,7 +1971,7 @@ axiom fn axiom_arenas_assemble(
 ;
 ```
 
-### S73. `arena_at`
+### S74. `arena_at`
 
 src/arena.rs:2739. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
@@ -1964,7 +1986,7 @@ unsafe fn arena_at<'a>(p: *mut Arena, Ghost(index): Ghost<u16>) -> (r: &'a Arena
         r.spec_index() == index,
 ```
 
-### S74. `axiom_class_lock_inv`
+### S75. `axiom_class_lock_inv`
 
 src/class/mod.rs:1506. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -1978,7 +2000,7 @@ broadcast axiom fn axiom_class_lock_inv(v: Inner)
 ;
 ```
 
-### S75. `axiom_class_lock`
+### S76. `axiom_class_lock`
 
 src/class/mod.rs:1514. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -1992,7 +2014,7 @@ broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
 ;
 ```
 
-### S76. `PartialEqSpecImpl for State`
+### S77. `PartialEqSpecImpl for State`
 
 src/class/mod.rs:1523. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/class-PartialEqSpecImpl-for-State.md).
@@ -2009,7 +2031,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for State {
 }
 ```
 
-### S77. `ClassState::owner_locked`
+### S78. `ClassState::owner_locked`
 
 src/class/mod.rs:1564. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -2027,7 +2049,7 @@ fn owner_locked(&self, g: &Inner, slab: usize) -> (r: u16)
         r == slab_owner(self.spec_class() as int, slab as int),
 ```
 
-### S78. `ClassState::claim_with`
+### S79. `ClassState::claim_with`
 
 src/class/mod.rs:3326. Kind: no_decreases. Category: termination.
 Tool: RefinedRust. Status: trusted.
@@ -2053,7 +2075,7 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
         r.0.n == 0 && old(out)@.len() > 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
 ```
 
-### S79. `axiom_fresh_slots_zero`
+### S80. `axiom_fresh_slots_zero`
 
 src/class/mod.rs:4292. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -2082,7 +2104,7 @@ axiom fn axiom_fresh_slots_zero(
 ;
 ```
 
-### S80. `axiom_discarded_slots_zero`
+### S81. `axiom_discarded_slots_zero`
 
 src/class/mod.rs:4330. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -2111,7 +2133,7 @@ axiom fn axiom_discarded_slots_zero(
 ;
 ```
 
-### S81. `axiom_fresh_slab_mem`
+### S82. `axiom_fresh_slab_mem`
 
 src/class/mod.rs:4383. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -2140,7 +2162,7 @@ axiom fn axiom_fresh_slab_mem<'a>(g: Inner, slab: int, tracked held: &'a DescPer
 ;
 ```
 
-### S82. `axiom_set_tables_lock_inv`
+### S83. `axiom_set_tables_lock_inv`
 
 src/class/sets.rs:812. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -2154,7 +2176,7 @@ pub broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
 ;
 ```
 
-### S83. `axiom_table_lock_inv`
+### S84. `axiom_table_lock_inv`
 
 src/class/table.rs:226. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -2168,7 +2190,7 @@ pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
 ;
 ```
 
-### S84. `axiom_table_lock_frame`
+### S85. `axiom_table_lock_frame`
 
 src/class/table.rs:234. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -2183,7 +2205,7 @@ pub(super) broadcast axiom fn axiom_table_lock_frame(init: TableInner, v: TableI
 ;
 ```
 
-### S85. `load_owner`
+### S86. `load_owner`
 
 src/class/table.rs:322. Kind: external_body. Category: allocator invariant.
 Tool: loom/GenMC. Status: evidence (verus/seams/class-table-load_owner.md).
@@ -2200,7 +2222,7 @@ fn load_owner(w: &AtomicU16, Ghost(t): Ghost<SlabTable>, Ghost(slab): Ghost<usiz
     opens_invariants none
 ```
 
-### S86. `store_owner`
+### S87. `store_owner`
 
 src/class/table.rs:354. Kind: external_body. Category: allocator invariant.
 Tool: loom/GenMC. Status: discharged (verus/seams/class-table-store_owner.md).
@@ -2218,7 +2240,7 @@ fn store_owner(w: &AtomicU16, arena: u16, Ghost(t): Ghost<SlabTable>, Ghost(grou
             ==> #[trigger] slab_owner(t.spec_class() as int, x) == arena,
 ```
 
-### S87. `axiom_slot_loc`
+### S88. `axiom_slot_loc`
 
 src/class/table.rs:1614. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -2235,7 +2257,7 @@ axiom fn axiom_slot_loc(c: int, loc: Loc, mloc: Loc, glg: u8, gmask: u32, tracke
         crate::layout::guard_geom(c) == (glg, gmask);
 ```
 
-### S88. `axiom_fresh_words`
+### S89. `axiom_fresh_words`
 
 src/class/table.rs:1637. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -2251,7 +2273,7 @@ axiom fn axiom_fresh_words(base: usize, n: nat, c: int, tracked once: Once) -> (
         forall|j: int| #![trigger r.contains_key(j)] #![trigger r[j]] 0 <= j < n ==> r.contains_key(j) && r[j].addr() == base + 8 * j && r[j].value() == 0;
 ```
 
-### S89. `axiom_init_descs`
+### S90. `axiom_init_descs`
 
 src/class/table.rs:1719. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
@@ -2268,7 +2290,7 @@ axiom fn axiom_init_descs(tracked perms: Map<int, PointsTo<SlabDesc>>, n: int) -
 ;
 ```
 
-### S90. `axiom_init_owners`
+### S91. `axiom_init_owners`
 
 src/class/table.rs:1745. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
@@ -2283,7 +2305,7 @@ axiom fn axiom_init_owners(tracked perms: Map<int, PointsTo<AtomicU16>>, n: int)
 ;
 ```
 
-### S91. `axiom_init_words`
+### S92. `axiom_init_words`
 
 src/class/table.rs:1757. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
@@ -2299,7 +2321,7 @@ axiom fn axiom_init_words(tracked perms: Map<int, PointsTo<AtomicU64>>, n: int) 
 ;
 ```
 
-### S92. `word_index`
+### S93. `word_index`
 
 src/class/table.rs:1913. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: evidence (verus/seams/class-table-word_index.md).
@@ -2313,7 +2335,7 @@ pub(crate) fn word_index(index: usize) -> (r: usize)
     opens_invariants none
 ```
 
-### S93. `DebugSpecImpl for Says`
+### S94. `DebugSpecImpl for Says`
 
 src/class/verify.rs:306. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/class-verify-DebugSpecImpl-for-Says.md).
@@ -2326,7 +2348,7 @@ impl vstd::std_specs::fmt::DebugSpecImpl for Says {
 }
 ```
 
-### S94. `THP_NAMES`
+### S95. `THP_NAMES`
 
 src/config.rs:116. Kind: external_body const. Category: core library.
 Tool: none (assumption). Status: trusted.
@@ -2337,7 +2359,7 @@ Tool: none (assumption). Status: trusted.
 const THP_NAMES: [&'static CStr; 3] = [c"never", c"auto", c"always"];
 ```
 
-### S95. `PERCPU_ARENA_NAMES`
+### S96. `PERCPU_ARENA_NAMES`
 
 src/config.rs:121. Kind: external_body const. Category: core library.
 Tool: none (assumption). Status: trusted.
@@ -2348,7 +2370,7 @@ Tool: none (assumption). Status: trusted.
 const PERCPU_ARENA_NAMES: [&'static CStr; 3] = [c"disabled", c"percpu", c"phycpu"];
 ```
 
-### S96. `Config::set_listed`
+### S97. `Config::set_listed`
 
 src/config.rs:396. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/config-Config-set_listed.md).
@@ -2365,7 +2387,7 @@ fn set_listed<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Option<Resul
         old(self).wf() ==> final(self).wf(),
 ```
 
-### S97. `Config::get`
+### S98. `Config::get`
 
 src/config.rs:412. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/config-Config-get.md).
@@ -2378,7 +2400,7 @@ pub fn get(&self, key: &[u8]) -> (r: Option<Value>)
         r is Some <==> listed(key@),
 ```
 
-### S98. `Parse`
+### S99. `Parse`
 
 src/config.rs:549. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
@@ -2387,7 +2409,7 @@ Tool: Kani. Status: trusted.
 struct ExParse(Parse);
 ```
 
-### S99. `Read`
+### S100. `Read`
 
 src/config.rs:555. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
@@ -2396,7 +2418,7 @@ Tool: Kani. Status: trusted.
 struct ExRead(Read);
 ```
 
-### S100. `TABLE`
+### S101. `TABLE`
 
 src/config.rs:837. Kind: external_body const. Category: function pointer.
 Tool: Kani. Status: trusted.
@@ -2407,7 +2429,7 @@ Tool: Kani. Status: trusted.
 pub exec const TABLE: &'static [Key] = ENTRIES;
 ```
 
-### S101. `KEYS`
+### S102. `KEYS`
 
 src/config.rs:872. Kind: external_body const. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/config-KEYS.md).
@@ -2420,7 +2442,7 @@ pub exec const KEYS: &'static [&'static str]
         forall|i: int| 0 <= i < KEYS@.len() ==> listed(#[trigger] KEYS@[i].spec_bytes()),
 ```
 
-### S102. `DisplaySpecImpl for Issue<'_>`
+### S103. `DisplaySpecImpl for Issue<'_>`
 
 src/config.rs:1004. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/config-DisplaySpecImpl-for-Issue.md).
@@ -2433,7 +2455,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for Issue<'_> {
 }
 ```
 
-### S103. `DisplaySpecImpl for Bytes<'_>`
+### S104. `DisplaySpecImpl for Bytes<'_>`
 
 src/config.rs:1061. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/config-DisplaySpecImpl-for-Bytes.md).
@@ -2446,7 +2468,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for Bytes<'_> {
 }
 ```
 
-### S104. `parse_from`
+### S105. `parse_from`
 
 src/config.rs:1570. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
@@ -2464,7 +2486,7 @@ fn parse_from(cfg: &mut Config, text: &[u8], cut: bool, source: &str, out: &mut 
         old(cfg).wf() ==> final(cfg).wf(),
 ```
 
-### S105. `read_slot`
+### S106. `read_slot`
 
 src/config.rs:1672. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
@@ -2475,7 +2497,7 @@ Tool: Miri (evidence only). Status: trusted.
 unsafe fn read_slot(slot: *const *const c_char) -> *const c_char
 ```
 
-### S106. `malloc_conf_addr`
+### S107. `malloc_conf_addr`
 
 src/config.rs:1685. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/config-linux-malloc_conf_addr.md).
@@ -2486,7 +2508,7 @@ Tool: Islaris/Isla. Status: discharged (verus/seams/config-linux-malloc_conf_add
 fn malloc_conf_addr() -> *const c_void
 ```
 
-### S107. `je_malloc_conf_addr`
+### S108. `je_malloc_conf_addr`
 
 src/config.rs:1710. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/config-linux-je_malloc_conf_addr.md).
@@ -2497,7 +2519,7 @@ Tool: Islaris/Isla. Status: discharged (verus/seams/config-linux-je_malloc_conf_
 fn je_malloc_conf_addr() -> *const c_void
 ```
 
-### S108. `byte_at`
+### S109. `byte_at`
 
 src/config.rs:1771. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
@@ -2508,7 +2530,7 @@ Tool: Miri (evidence only). Status: trusted.
 unsafe fn byte_at(p: *const u8, n: usize) -> u8
 ```
 
-### S109. `bytes_at`
+### S110. `bytes_at`
 
 src/config.rs:1783. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
@@ -2521,7 +2543,7 @@ unsafe fn bytes_at(p: *const u8, n: usize) -> (r: &'static [u8])
         r@.len() == n,
 ```
 
-### S110. `env_var`
+### S111. `env_var`
 
 src/config.rs:1799. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
@@ -2534,9 +2556,9 @@ pub fn env_var(name: &[u8]) -> (r: Option<(&'static [u8], bool)>)
         r matches Some((s, cut)) ==> s@.len() <= MAX_TEXT,
 ```
 
-### S111. `Heap::home_ptr_at`
+### S112. `Heap::home_ptr_at`
 
-src/heap/cache.rs:345. Kind: external_body. Category: raw pointer (internal).
+src/heap/cache.rs:347. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The home header for `class`: `heap + 128 + 64 * class`, no load.
@@ -2551,9 +2573,9 @@ fn home_ptr_at(&mut self, class: usize) -> (r: *mut CacheHeader)
     opens_invariants none
 ```
 
-### S112. `Heap::cached_recently`
+### S113. `Heap::cached_recently`
 
-src/heap/cache.rs:718. Kind: external_body. Category: raw pointer (internal).
+src/heap/cache.rs:720. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `double_free_scan`'s compare (design 6.3 step 3): whether `e`, the entry as it would be stored (signed under `pac`), is one of the top four of the `len` entries in `slots`.
@@ -2568,9 +2590,9 @@ pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8, 
     opens_invariants none
 ```
 
-### S113. `addr_mix`
+### S114. `addr_mix`
 
-src/heap/flush.rs:1566. Kind: external_body. Category: raw pointer (internal).
+src/heap/flush.rs:1567. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/heap-flush-addr_mix.md).
 
 > `rng`'s mix of the heap's address into its seed: the address of `h`, rotated left by 17 bits.
@@ -2579,7 +2601,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-flush-addr_mix.md).
 fn addr_mix(h: &Heap) -> u64
 ```
 
-### S114. `axiom_c_claim`
+### S115. `axiom_c_claim`
 
 src/heap/live.rs:935. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
@@ -2595,7 +2617,7 @@ pub axiom fn axiom_c_claim(tracked c: CCall) -> (tracked r: Live)
 ;
 ```
 
-### S115. `axiom_hand_out`
+### S116. `axiom_hand_out`
 
 src/heap/live.rs:976. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -2614,9 +2636,9 @@ axiom fn axiom_hand_out(p: *mut u8, len: int) -> (tracked m: UserMem)
 ;
 ```
 
-### S116. `axiom_fresh_stack`
+### S117. `axiom_fresh_stack`
 
-src/heap/mod.rs:1736. Kind: external_body proof. Category: allocator invariant.
+src/heap/mod.rs:1738. Kind: external_body proof. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The `cap` entries of the fresh stack `slots` join `perms`, unwritten, as entries `0..cap` of header `hdr` (`CachePerms::owner`).
@@ -2660,9 +2682,9 @@ proof fn axiom_fresh_stack(
             },
 ```
 
-### S117. `assert_flushed`
+### S118. `assert_flushed`
 
-src/heap/mod.rs:1879. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:1881. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (verus/seams/heap-assert_flushed.md).
 
 > `assert_eq!(*len, 0, ..)`, the abort of [`Heap::free_caches`] and [`Heap::free_caches_in`] on a cache that still holds slots: `*len == 0` after it returns.
@@ -2675,9 +2697,9 @@ fn assert_flushed(len: &u32)
         *len == 0,
 ```
 
-### S118. `assert_refill_empty`
+### S119. `assert_refill_empty`
 
-src/heap/mod.rs:1895. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:1897. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (verus/seams/heap-assert_refill_empty.md).
 
 > `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap inconsistency: `*len == 0` after it returns, as for `vspec::check`.
@@ -2690,9 +2712,9 @@ fn assert_refill_empty(len: &u32)
         *len == 0,
 ```
 
-### S119. `assert_rekey_flushed`
+### S120. `assert_rekey_flushed`
 
-src/heap/mod.rs:1909. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:1911. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (verus/seams/heap-assert_rekey_flushed.md).
 
 > `assert_eq!(*len, 0, ..)`, [`CacheHeader::rekey`]'s abort on a cache that still holds slots: `*len == 0` after it returns.
@@ -2705,9 +2727,9 @@ fn assert_rekey_flushed(len: &u32)
         *len == 0,
 ```
 
-### S120. `arena_volatile`
+### S121. `arena_volatile`
 
-src/heap/mod.rs:4650. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/heap/mod.rs:4682. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: discharged (verus/seams/heap-Heap-arena_volatile.md).
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::home_owns`]): a plain load is hoisted above the multi-arena test (`FREE_ROUTE`) and touches the heap's header line on every single-arena `free`.
@@ -2719,25 +2741,25 @@ pub(super) fn arena_volatile(&self) -> (r: u16)
     opens_invariants none
 ```
 
-### S121. `FreshHeap`
+### S122. `FreshHeap`
 
-src/heap/mod.rs:6283. Kind: external_body type. Category: raw pointer (internal).
+src/heap/mod.rs:6318. Kind: external_body type. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
-> The plain fields of the fresh heap at [`FreshHeap::heap`]: the permission to them ([`FreshHeap::head`], the 128 bytes before `caches`, [`heap_head`]), which [`init_fields`] takes and keeps here, and what the trusted writers stored in them, for `tcaches::heap_new` to read back: the home arena ([`init_fields`]) and whether the heap is counted ([`mark_bound`]).
+> The plain fields of the fresh heap at [`FreshHeap::heap`]: the permission to them ([`FreshHeap::head`], the 128 bytes before `caches`, [`heap_head`]), which [`init_fields`] takes and keeps here, and what the trusted writers stored in them, for `thread::HeapPerm::assemble` to read back: the `Shared` and the home arena ([`init_fields`]) and whether the heap is counted ([`mark_bound`]).
 
 ```rust
 pub(super) tracked struct FreshHeap
 ```
 
-### S122. `init_fields`
+### S123. `init_fields`
 
-src/heap/mod.rs:6319. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:6363. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The fields of a fresh heap before its home headers, stored field by field ([`Heap::create_detached`]).
 
-Body mints Tracked at line 6350.
+Body mints Tracked at line 6396.
 
 ```rust
 unsafe fn init_fields(
@@ -2749,16 +2771,18 @@ unsafe fn init_fields(
     requires
         crate::sys::may_syscall(),
         heap_head(h, head.0),
+        shared.wf(),
     ensures
         r@.heap() == h,
         r@.head() == head.0,
         r@.arena() == arena as int,
         !r@.bound(),
+        r@.shared() == Shared::storage() as *const Shared,
 ```
 
-### S123. `mark_bound`
+### S124. `mark_bound`
 
-src/heap/mod.rs:6395. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:6441. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: discharged (verus/seams/heap-mark_bound.md).
 
 > `(*h).bound = true` for a heap [`Heap::create`] has just made.
@@ -2773,11 +2797,12 @@ unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
         final(s).head() == old(s).head(),
         final(s).arena() == old(s).arena(),
         final(s).bound(),
+        final(s).shared() == old(s).shared(),
 ```
 
-### S124. `mark_rehome`
+### S125. `mark_rehome`
 
-src/heap/mod.rs:6434. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:6481. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: discharged (verus/seams/heap-mark_rehome.md).
 
 > `(*h).rehome = true` for a thread heap [`Heap::create`] has just made and marked bound ([`mark_bound`]): it may still move its home ([`Heap::try_rehome`]).
@@ -2791,14 +2816,14 @@ unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
         *final(s) == *old(s),
 ```
 
-### S125. `Heap::destroy`
+### S126. `Heap::destroy`
 
-src/heap/mod.rs:6664. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:6713. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Flush every cache, free them and the heap itself back to the metadata allocator.
 
-Body mints Tracked at line 6683; mints Tracked at line 6686; mints Tracked at line 6692; mints Tracked at line 6694; mints Tracked at line 6713; mints Tracked at line 6718.
+Body mints Tracked at line 6732; mints Tracked at line 6735; mints Tracked at line 6741; mints Tracked at line 6743; mints Tracked at line 6762; mints Tracked at line 6767.
 
 ```rust
 pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
@@ -2812,7 +2837,7 @@ pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(ord): Tracked<&mut 
         *final(ord) == *old(ord),
 ```
 
-### S126. `node_caches_detached`
+### S127. `node_caches_detached`
 
 src/heap/others.rs:233. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
@@ -2827,7 +2852,7 @@ pub(super) unsafe fn node_caches_detached<'a>(o: *mut ArenaCaches, Ghost(h): Gho
         o == h.node_from_end(r),
 ```
 
-### S127. `assert_not_home`
+### S128. `assert_not_home`
 
 src/heap/others.rs:272. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (verus/seams/heap-others-assert_not_home.md).
@@ -2840,9 +2865,9 @@ fn assert_not_home(arena: &u16, home: &u16)
         *arena != *home,
 ```
 
-### S128. `Heap::node_caches`
+### S129. `Heap::node_caches`
 
-src/heap/others.rs:398. Kind: external_body. Category: raw pointer (internal).
+src/heap/others.rs:399. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `&(*o).caches` for node `o`, the `r`-th from the end of the `others` list, as plain headers (for [`Heap::stats`]).
@@ -2855,9 +2880,25 @@ pub(super) unsafe fn node_caches(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int
         o == self.node_from_end(r),
 ```
 
-### S129. `debug_scheduled`
+### S130. `shared_ptr`
 
-src/heap/paths.rs:1169. Kind: external_body. Category: panic/abort.
+src/heap/paths.rs:1123. Kind: external_body. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> `shared` as the raw pointer [`existing_heap`] takes: the process's `Shared`, at its storage.
+
+```rust
+pub(crate) fn shared_ptr(shared: &Shared) -> (r: *const Shared)
+    requires
+        shared.wf(),
+    ensures
+        r == Shared::storage() as *const Shared,
+    opens_invariants none
+```
+
+### S131. `debug_scheduled`
+
+src/heap/paths.rs:1203. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (verus/seams/heap-paths-debug_scheduled.md).
 
 > [`Heap::alloc_slow`]'s `debug_assert!` that a non-empty home cache reached it through a scheduled pop the fast pop declined (design 6.4): `allocs`, the pop's count, has no bit of `mask` set.
@@ -2866,20 +2907,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-paths-debug_scheduled.md).
 fn debug_scheduled(allocs: u64, mask: u32)
 ```
 
-### S130. `shared_of`
-
-src/heap/paths.rs:1179. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
-
-> The `Shared` a heap was created on, with a lifetime free of the heap's borrow (so the heap can be borrowed mutably while it is used).
-
-```rust
-pub(super) fn shared_of<'a>(p: *const Shared) -> (r: &'a Shared)
-    ensures
-        r.wf(),
-```
-
-### S131. `ClassLine::guard_word`
+### S132. `ClassLine::guard_word`
 
 src/heap/shared.rs:518. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
@@ -2895,7 +2923,7 @@ fn guard_word(&self) -> (r: u64)
     opens_invariants none
 ```
 
-### S132. `ThreadKey::create`
+### S133. `ThreadKey::create`
 
 src/heap/shared.rs:750. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
@@ -2908,7 +2936,7 @@ pub fn create() -> ThreadKey
         crate::sys::may_syscall(),
 ```
 
-### S133. `pthread_setspecific`
+### S134. `pthread_setspecific`
 
 src/heap/shared.rs:831. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
@@ -2924,7 +2952,7 @@ unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tr
         *final(tls) == *old(tls),
 ```
 
-### S134. `axiom_process_shared`
+### S135. `axiom_process_shared`
 
 src/heap/shared.rs:1026. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -2939,7 +2967,7 @@ pub(crate) axiom fn axiom_process_shared()
 ;
 ```
 
-### S135. `S_LINES`
+### S136. `S_LINES`
 
 src/heap/shared.rs:1048. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_LINES.md).
@@ -2948,7 +2976,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_LINES.md).
 const S_LINES: usize = core::mem::offset_of!(Shared, lines);
 ```
 
-### S136. `S_FREE_FLAGS`
+### S137. `S_FREE_FLAGS`
 
 src/heap/shared.rs:1050. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_FREE_FLAGS.md).
@@ -2957,7 +2985,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_FREE_FLAGS.md).
 const S_FREE_FLAGS: usize = core::mem::offset_of!(Shared, free_flags);
 ```
 
-### S137. `S_PUSH_FLAGS`
+### S138. `S_PUSH_FLAGS`
 
 src/heap/shared.rs:1052. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_PUSH_FLAGS.md).
@@ -2966,7 +2994,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_PUSH_FLAGS.md).
 const S_PUSH_FLAGS: usize = core::mem::offset_of!(Shared, push_flags);
 ```
 
-### S138. `S_REGION_HI`
+### S139. `S_REGION_HI`
 
 src/heap/shared.rs:1054. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_REGION_HI.md).
@@ -2975,7 +3003,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_REGION_HI.md).
 const S_REGION_HI: usize = core::mem::offset_of!(Shared, region_hi);
 ```
 
-### S139. `S_REGIONS`
+### S140. `S_REGIONS`
 
 src/heap/shared.rs:1056. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_REGIONS.md).
@@ -2984,7 +3012,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_REGIONS.md).
 const S_REGIONS: usize = core::mem::offset_of!(Shared, regions);
 ```
 
-### S140. `S_TABLES`
+### S141. `S_TABLES`
 
 src/heap/shared.rs:1058. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_TABLES.md).
@@ -2993,7 +3021,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_TABLES.md).
 const S_TABLES: usize = core::mem::offset_of!(Shared, tables);
 ```
 
-### S141. `S_ARENA0`
+### S142. `S_ARENA0`
 
 src/heap/shared.rs:1060. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_ARENA0.md).
@@ -3002,7 +3030,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_ARENA0.md).
 const S_ARENA0: usize = core::mem::offset_of!(Shared, arena0);
 ```
 
-### S142. `S_META`
+### S143. `S_META`
 
 src/heap/shared.rs:1062. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_META.md).
@@ -3011,7 +3039,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_META.md).
 const S_META: usize = core::mem::offset_of!(Shared, meta);
 ```
 
-### S143. `S_HUGE`
+### S144. `S_HUGE`
 
 src/heap/shared.rs:1064. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_HUGE.md).
@@ -3020,7 +3048,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_HUGE.md).
 const S_HUGE: usize = core::mem::offset_of!(Shared, huge);
 ```
 
-### S144. `S_GC_INTERVAL_NS`
+### S145. `S_GC_INTERVAL_NS`
 
 src/heap/shared.rs:1066. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_GC_INTERVAL_NS.md).
@@ -3029,7 +3057,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_GC_INTERVAL_NS.md).
 const S_GC_INTERVAL_NS: usize = core::mem::offset_of!(Shared, gc_interval_ns);
 ```
 
-### S145. `S_POLICY`
+### S146. `S_POLICY`
 
 src/heap/shared.rs:1068. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_POLICY.md).
@@ -3038,7 +3066,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_POLICY.md).
 const S_POLICY: usize = core::mem::offset_of!(Shared, policy);
 ```
 
-### S146. `S_CONFIG`
+### S147. `S_CONFIG`
 
 src/heap/shared.rs:1070. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_CONFIG.md).
@@ -3047,7 +3075,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_CONFIG.md).
 const S_CONFIG: usize = core::mem::offset_of!(Shared, config);
 ```
 
-### S147. `S_KEY`
+### S148. `S_KEY`
 
 src/heap/shared.rs:1072. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_KEY.md).
@@ -3056,7 +3084,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_KEY.md).
 const S_KEY: usize = core::mem::offset_of!(Shared, key);
 ```
 
-### S148. `S_ARENAS`
+### S149. `S_ARENAS`
 
 src/heap/shared.rs:1074. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_ARENAS.md).
@@ -3065,7 +3093,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_ARENAS.md).
 const S_ARENAS: usize = core::mem::offset_of!(Shared, arenas);
 ```
 
-### S149. `S_TCACHES`
+### S150. `S_TCACHES`
 
 src/heap/shared.rs:1076. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_TCACHES.md).
@@ -3074,7 +3102,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_TCACHES.md).
 const S_TCACHES: usize = core::mem::offset_of!(Shared, tcaches);
 ```
 
-### S150. `S_STATS`
+### S151. `S_STATS`
 
 src/heap/shared.rs:1078. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_STATS.md).
@@ -3083,7 +3111,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_STATS.md).
 const S_STATS: usize = core::mem::offset_of!(Shared, stats);
 ```
 
-### S151. `S_CGROUP`
+### S152. `S_CGROUP`
 
 src/heap/shared.rs:1080. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-S_CGROUP.md).
@@ -3092,7 +3120,7 @@ Tool: Kani. Status: discharged (verus/seams/heap-shared-S_CGROUP.md).
 const S_CGROUP: usize = core::mem::offset_of!(Shared, cgroup);
 ```
 
-### S152. `axiom_shared_layout`
+### S153. `axiom_shared_layout`
 
 src/heap/shared.rs:1086. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/heap-shared-axiom_shared_layout.md).
@@ -3129,7 +3157,7 @@ axiom fn axiom_shared_layout()
 ;
 ```
 
-### S153. `axiom_shared_built`
+### S154. `axiom_shared_built`
 
 src/heap/shared.rs:1251. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
@@ -3170,7 +3198,7 @@ axiom fn axiom_shared_built(
 ;
 ```
 
-### S154. `axiom_shared_regions`
+### S155. `axiom_shared_regions`
 
 src/heap/shared.rs:1290. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
@@ -3187,7 +3215,7 @@ axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Sh
 ;
 ```
 
-### S155. `Shared::begin`
+### S156. `Shared::begin`
 
 src/heap/shared.rs:1332. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -3207,9 +3235,9 @@ fn begin(this: *mut Shared, Tracked(once): Tracked<Once>) -> (r: Tracked<PointsT
         this@.addr + size_of::<Shared>() <= usize::MAX,
 ```
 
-### S156. `Shared::free_flags`
+### S157. `Shared::free_flags`
 
-src/heap/shared.rs:2699. Kind: external_body. Category: allocator invariant.
+src/heap/shared.rs:2736. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > The `free` fast path's dispatch byte (see the field): `push_flags`, plus [`FREE_ROUTE`] once a second arena exists.
@@ -3223,9 +3251,9 @@ pub fn free_flags(&self) -> (r: u8)
     opens_invariants none
 ```
 
-### S157. `axiom_tcaches_lock_inv`
+### S158. `axiom_tcaches_lock_inv`
 
-src/heap/tcaches.rs:49. Kind: axiom. Category: allocator invariant.
+src/heap/tcaches.rs:53. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the explicit-cache table lock guards no value (`()`), so its invariant is trivially true.
@@ -3237,9 +3265,9 @@ pub broadcast axiom fn axiom_tcaches_lock_inv(v: ())
 ;
 ```
 
-### S158. `EMPTY_TABLE`
+### S159. `EMPTY_TABLE`
 
-src/heap/tcaches.rs:59. Kind: external_body const. Category: core library.
+src/heap/tcaches.rs:63. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 > The empty table [`Tcaches::init`] writes, every entry null.
@@ -3248,9 +3276,9 @@ Tool: Kani. Status: trusted.
 exec const EMPTY_TABLE: [AtomicPtr<u8>; MAX_TCACHES] = [const { AtomicPtr::new(ptr::null_mut()) }; MAX_TCACHES];
 ```
 
-### S159. `heap_at`
+### S160. `heap_at`
 
-src/heap/tcaches.rs:115. Kind: external_body. Category: raw pointer (internal).
+src/heap/tcaches.rs:126. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > A heap [`Heap::create`] or [`Heap::create_detached`] returned and nothing has destroyed: an explicit cache's non-null table entry, or the calling thread's heap at exit.
@@ -3261,62 +3289,59 @@ pub(super) unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
         r.wf(),
 ```
 
-### S160. `heap_new`
+### S161. `HeapPerm`
 
-src/heap/tcaches.rs:143. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
-
-> The heap [`Heap::create`] has just returned, as a reference, before its ghost state is installed: its `others` field is null, as `init_fields` stored it, and its `arena` and `bound` are what `s` records (`init_fields` and `mark_bound` stored them).
-
-```rust
-pub(super) unsafe fn heap_new<'a>(
-    p: *mut Heap,
-    Tracked(s): Tracked<FreshHeap>,
-    Tracked(perms): Tracked<&super::CachePerms>,
-) -> (r: &'a mut Heap)
-    requires
-        s.heap() == p,
-        super::heap_head(p, s.head()),
-        perms.fresh(p),
-    ensures
-        r.others@.addr == 0,
-        r.arena as int == s.arena(),
-        r.bound == s.bound(),
-```
-
-### S161. `fast_flags`
-
-src/heap/thread.rs:291. Kind: external_body. Category: raw pointer (internal).
+src/heap/thread.rs:68. Kind: external_body type. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> `Shared::push_flags` through a raw pointer (`api::shared_ptr`).
+> Ghost: the permission to a thread heap, linear: the thread's TLS slot token holds it while the slot holds the heap ([`TlsSlot`](crate::sys::tls::TlsSlot), [`slot_ok`]), and [`slot_heap_ref`] lends the heap out of the token, for as long as the token is lent.
 
 ```rust
-pub unsafe fn fast_flags(shared: *const Shared) -> (r: u8)
+pub tracked struct HeapPerm
+```
+
+### S162. `HeapPerm::assemble`
+
+src/heap/thread.rs:93. Kind: axiom. Category: raw pointer (internal).
+Tool: none (assumption). Status: trusted.
+
+> The permission to the heap [`Heap::create`] has just made at `s.heap()`, from the token holding the permission to its plain fields and what the trusted writers stored in them ([`FreshHeap`](super::FreshHeap): `init_fields`, `mark_bound`, `mark_rehome`), used up here, and with its home headers written `EMPTY` through `perms` ([`CachePerms::fresh`](super::CachePerms::fresh)), which the caller installs as the heap's ghost state.
+
+```rust
+pub(super) axiom fn assemble(tracked s: super::FreshHeap, tracked perms: &super::CachePerms) -> (tracked r: HeapPerm)
+    requires
+        super::heap_head(s.heap(), s.head()),
+        perms.fresh(s.heap()),
     ensures
-        (r & PUSH_PAC != 0) == super::pac_mode(),
-        (r & PUSH_PAC != 0) ==> crate::sys::pac::pac_available(),
+        r.addr() == s.heap()@.addr,
+        r.value().others@.addr == 0,
+        r.value().arena as int == s.arena(),
+        r.value().bound == s.bound(),
+        r.value().shared == s.shared(),
+;
+```
+
+### S163. `slot_heap_ref`
+
+src/heap/thread.rs:143. Kind: external_body. Category: raw pointer (internal).
+Tool: none (assumption). Status: trusted.
+
+> The heap whose permission the slot token holds, at `h`, as a reference, for as long as the token is lent.
+
+```rust
+pub(super) unsafe fn slot_heap_ref<'a>(h: *mut Heap, Tracked(tls): Tracked<&'a mut TlsSlot>) -> (r: &'a mut Heap)
+    requires
+        old(tls).heap() matches Some(hp) && hp.addr() == h@.addr,
+    ensures
+        *r == old(tls).heap()->Some_0.value(),
+        final(tls).value() == old(tls).value(),
+        final(tls).creates() == old(tls).creates(),
+        final(tls).tp() == old(tls).tp(),
+        final(tls).heap() matches Some(hp) && hp.addr() == h@.addr && hp.value() == *final(r),
     opens_invariants none
 ```
 
-### S162. `heap_from_slot`
-
-src/heap/thread.rs:314. Kind: external_body. Category: raw pointer (internal).
-Tool: none (assumption). Status: trusted.
-
-> The heap a TLS slot value names: authenticated against the thread pointer when `pac` ([`PUSH_PAC`]), the value itself otherwise.
-
-```rust
-pub unsafe fn heap_from_slot(t: usize, tp: usize, pac: bool) -> (r: &'static mut Heap)
-    requires
-        pac == super::pac_mode(),
-        pac ==> crate::sys::pac::pac_available(),
-    ensures
-        r.wf(),
-    opens_invariants none
-```
-
-### S163. `axiom_run_locs`
+### S164. `axiom_run_locs`
 
 src/huge/mod.rs:682. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -3333,7 +3358,7 @@ axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc, tracked 
 ;
 ```
 
-### S164. `not_a_run_page`
+### S165. `not_a_run_page`
 
 src/huge/mod.rs:7623. Kind: abort_standin. Category: panic/abort.
 Tool: Kani. Status: trusted.
@@ -3348,7 +3373,7 @@ fn not_a_run_page(page: usize) -> !
         crate::sys::may_abort(),
 ```
 
-### S165. `axiom_zero_entry`
+### S166. `axiom_zero_entry`
 
 src/huge/table.rs:242. Kind: external_body proof. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/huge-table-axiom_zero_entry.md).
@@ -3367,7 +3392,7 @@ proof fn axiom_zero_entry(tracked perm: PointsTo<Entry>, tracked z: Zeroed) -> (
         !occupied(r.value()),
 ```
 
-### S166. `ClassTable`
+### S167. `ClassTable`
 
 src/layout/mod.rs:1351. Kind: external_body type. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
@@ -3378,18 +3403,35 @@ Tool: none (assumption). Status: trusted.
 pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 ```
 
-### S167. `ClassTable::new`
+### S168. `axiom_class_table`
 
-src/layout/mod.rs:1358. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1362. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> Trusted: what [`class_table`] names, the contents of [`CLASSES`] after init, is what a frozen permission to its storage holds.
+
+```rust
+pub axiom fn axiom_class_table(tracked t: &'static vstd::raw_ptr::PointsTo<[Class; NCLASSES]>)
+    requires
+        t.ptr() == classes_storage(),
+        t.is_init(),
+    ensures
+        class_table() == t.value(),
+;
+```
+
+### S169. `ClassTable::new`
+
+src/layout/mod.rs:1372. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 ```rust
 const fn new(table: [Class; NCLASSES]) -> ClassTable
 ```
 
-### S168. `ClassTable::table`
+### S170. `ClassTable::table`
 
-src/layout/mod.rs:1374. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1390. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The table, for verified code.
@@ -3402,9 +3444,9 @@ pub fn table(&self) -> (r: &[Class; NCLASSES])
         forall|i: int| 0 <= i < NCLASSES ==> #[trigger] r[i].size == spec_class_size(i),
 ```
 
-### S169. `ClassTable::classes_ptr`
+### S171. `ClassTable::classes_ptr`
 
-src/layout/mod.rs:1425. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1441. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The storage of [`CLASSES`]' table, as a raw pointer.
@@ -3416,7 +3458,7 @@ fn classes_ptr() -> (p: *mut [Class; NCLASSES])
     opens_invariants none
 ```
 
-### S170. `axiom_process_page_at_most_64k`
+### S172. `axiom_process_page_at_most_64k`
 
 src/layout/regions.rs:192. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -3429,7 +3471,7 @@ pub axiom fn axiom_process_page_at_most_64k()
         process_regions().lg_page <= 16;
 ```
 
-### S171. `Reserved`
+### S173. `Reserved`
 
 src/layout/regions.rs:1968. Kind: external_body type. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -3440,7 +3482,7 @@ Tool: none (assumption). Status: trusted.
 pub tracked struct Reserved
 ```
 
-### S172. `Reserved::is_apart_from_static`
+### S174. `Reserved::is_apart_from_static`
 
 src/layout/regions.rs:1985. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -3455,7 +3497,7 @@ pub proof fn is_apart_from_static(tracked &self)
         disjoint(self.addr() as int, self.len() as int, shared_static_addr(), shared_static_len()),
 ```
 
-### S173. `Reserved::is_disjoint`
+### S175. `Reserved::is_disjoint`
 
 src/layout/regions.rs:2002. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -3472,7 +3514,7 @@ pub proof fn is_disjoint(tracked &mut self, tracked other: &Self)
         disjoint(old(self).addr() as int, old(self).len() as int, other.addr() as int, other.len() as int),
 ```
 
-### S174. `Reserved::into_unbacked`
+### S176. `Reserved::into_unbacked`
 
 src/layout/regions.rs:2021. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -3486,7 +3528,7 @@ pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
         u.len() == self.len(),
 ```
 
-### S175. `try_reserve`
+### S177. `try_reserve`
 
 src/layout/regions.rs:2041. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
@@ -3503,7 +3545,7 @@ fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
         r matches Ok((a, t)) ==> t@.addr() == a && t@.len() == len && 0 < a && a + len <= user_va_limit(),
 ```
 
-### S176. `word`
+### S178. `word`
 
 src/layout/regions.rs:2245. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/layout-regions-word.md).
@@ -3516,25 +3558,21 @@ fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
         i < NCLASSES + 3,
 ```
 
-### S177. `class_entry`
+### S179. `entry_barrier`
 
-src/layout/regions.rs:2713. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: Islaris/Isla. Status: trusted.
+src/layout/regions.rs:2741. Kind: external_body. Category: inline asm.
+Tool: Islaris/Isla. Status: evidence (verus/seams/layout-regions-entry_barrier.md).
 
-> `&CLASSES[c]` for the fast paths' classification, `c < NCLASSES`.
+> [`class_entry`]'s barrier on x86_64: `p`, through an empty `asm!`.
 
 ```rust
-unsafe fn class_entry(c: usize) -> (r: &'static super::Class)
-    requires
-        c < NCLASSES,
+fn entry_barrier(p: *const super::Class) -> (r: *const super::Class)
     ensures
-        *r == class_table()[c as int],
-        r.wf(),
-        r.size == super::spec_class_size(c as int),
+        r == p,
     opens_invariants none
 ```
 
-### S178. `RawLock::lock_slow`
+### S180. `RawLock::lock_slow`
 
 src/lock.rs:120. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: evidence (verus/seams/lock-RawLock-lock_slow.md).
@@ -3547,7 +3585,7 @@ fn lock_slow(&self)
         crate::sys::may_syscall(),
 ```
 
-### S179. `axiom_entry`
+### S181. `axiom_entry`
 
 src/lock.rs:364. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
@@ -3562,7 +3600,7 @@ pub axiom fn axiom_entry<'a>() -> (tracked o: LockOrder<'a>)
 ;
 ```
 
-### S180. `axiom_held_below`
+### S182. `axiom_held_below`
 
 src/lock.rs:374. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -3577,7 +3615,7 @@ pub axiom fn axiom_held_below<'a>(r: int) -> (tracked o: LockOrder<'a>)
 ;
 ```
 
-### S181. `axiom_acquired`
+### S183. `axiom_acquired`
 
 src/lock.rs:493. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -3593,7 +3631,7 @@ axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
 ;
 ```
 
-### S182. `axiom_held`
+### S184. `axiom_held`
 
 src/lock.rs:508. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -3612,7 +3650,7 @@ axiom fn axiom_held<'a, T>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (track
 ;
 ```
 
-### S183. `Lock::cell_ref`
+### S185. `Lock::cell_ref`
 
 src/lock.rs:816. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
@@ -3631,7 +3669,7 @@ fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
     no_unwind
 ```
 
-### S184. `Lock::cell_mut`
+### S186. `Lock::cell_mut`
 
 src/lock.rs:831. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
@@ -3652,7 +3690,7 @@ fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b 
     no_unwind
 ```
 
-### S185. `LockGuard::drop`
+### S187. `LockGuard::drop`
 
 src/lock.rs:851. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/lock-LockGuard-drop.md).
@@ -3663,7 +3701,7 @@ fn drop(&mut self)
     no_unwind
 ```
 
-### S186. `Meta::commit`
+### S188. `Meta::commit`
 
 src/meta.rs:3268. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -3681,7 +3719,7 @@ pub fn commit(&self, addr: usize, len: usize, Tracked(ord): Tracked<&mut LockOrd
         *final(ord) == *old(ord),
 ```
 
-### S187. `Explicit::drop`
+### S189. `Explicit::drop`
 
 src/purge.rs:165. Kind: external_body. Category: atomics primitive.
 Tool: Kani. Status: discharged (verus/seams/purge-Explicit-drop.md).
@@ -3692,7 +3730,7 @@ fn drop(&mut self)
     no_unwind
 ```
 
-### S188. `total_bytes`
+### S190. `total_bytes`
 
 src/purge.rs:712. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/purge-total_bytes.md).
@@ -3705,7 +3743,7 @@ fn total_bytes(ranges: &[(usize, usize)]) -> (bytes: u64)
         lens(ranges@, ranges.len() as int) <= u64::MAX,
 ```
 
-### S189. `axiom_state_lock_inv`
+### S191. `axiom_state_lock_inv`
 
 src/purge/background.rs:65. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -3719,7 +3757,7 @@ broadcast axiom fn axiom_state_lock_inv(v: State)
 ;
 ```
 
-### S190. `errno_location`
+### S192. `errno_location`
 
 src/purge/background.rs:229. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
@@ -3730,7 +3768,7 @@ Tool: none (assumption). Status: trusted.
 fn errno_location() -> *mut i32
 ```
 
-### S191. `errno_read`
+### S193. `errno_read`
 
 src/purge/background.rs:241. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
@@ -3741,7 +3779,7 @@ Tool: none (assumption). Status: trusted.
 unsafe fn errno_read(errno: *mut i32) -> i32
 ```
 
-### S192. `errno_write`
+### S194. `errno_write`
 
 src/purge/background.rs:252. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
@@ -3752,7 +3790,7 @@ Tool: none (assumption). Status: trusted.
 unsafe fn errno_write(errno: *mut i32, v: i32)
 ```
 
-### S193. `pthread_join`
+### S195. `pthread_join`
 
 src/purge/background.rs:483. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
@@ -3765,9 +3803,9 @@ unsafe fn pthread_join(t: ::libc::pthread_t) -> i32
         crate::sys::may_syscall(),
 ```
 
-### S194. `spawn`
+### S196. `spawn`
 
-src/purge/background.rs:594. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:605. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_create` on the committed `[base, base + len)`, joinable so a restart can wait for its exit.
@@ -3780,9 +3818,9 @@ fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t>
         shared.wf(),
 ```
 
-### S195. `shared_arg`
+### S197. `shared_arg`
 
-src/purge/background.rs:674. Kind: external_body. Category: raw pointer (internal).
+src/purge/background.rs:691. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The `Shared` that [`spawn`] passes as the thread's argument.
@@ -3793,9 +3831,9 @@ fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
         r.wf(),
 ```
 
-### S196. `main`
+### S198. `main`
 
-src/purge/background.rs:690. Kind: no_decreases. Category: termination.
+src/purge/background.rs:707. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: discharged (verus/seams/purge-background-main.md).
 
 > The thread's body: decay and sample until the request is withdrawn.
@@ -3804,9 +3842,9 @@ Tool: loom/GenMC. Status: discharged (verus/seams/purge-background-main.md).
 extern "C" fn main(arg: *mut c_void) -> *mut c_void
 ```
 
-### S197. `detach_from_starter`
+### S199. `detach_from_starter`
 
-src/purge/background.rs:762. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:779. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The thread inherits the scheduling of whichever thread created it, and under the lazy start that is any allocating thread: a worker pinned to one CPU, niced or real-time.
@@ -3817,9 +3855,9 @@ fn detach_from_starter()
         crate::sys::may_syscall(),
 ```
 
-### S198. `state`
+### S200. `state`
 
-src/purge/background.rs:798. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/purge/background.rs:815. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > `&STATE`.
@@ -3831,7 +3869,7 @@ fn state() -> (r: &'static Lock<State>)
         r.rank() == rank_state(),
 ```
 
-### S199. `read_global`
+### S201. `read_global`
 
 src/rseq.rs:129. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
@@ -3844,7 +3882,7 @@ unsafe fn read_global<T: Copy>(p: *const T) -> T
         p@.addr != 0,
 ```
 
-### S200. `read_cpu_id`
+### S202. `read_cpu_id`
 
 src/rseq.rs:151. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
@@ -3857,7 +3895,7 @@ unsafe fn read_cpu_id(area: *mut u8, Ghost(size): Ghost<u32>) -> u32
         size as int >= CPU_ID_OFFSET + 4,
 ```
 
-### S201. `symbols`
+### S203. `symbols`
 
 src/rseq.rs:165. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/rseq-symbols.md).
@@ -3868,7 +3906,7 @@ Tool: Islaris/Isla. Status: discharged (verus/seams/rseq-symbols.md).
 fn symbols() -> (*const isize, *const u32, *const u32)
 ```
 
-### S202. `thread_pointer`
+### S204. `thread_pointer`
 
 src/rseq.rs:208. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/rseq-thread_pointer.md).
@@ -3879,7 +3917,7 @@ Tool: Islaris/Isla. Status: discharged (verus/seams/rseq-thread_pointer.md).
 pub fn thread_pointer() -> usize
 ```
 
-### S203. `desc_stride`
+### S205. `desc_stride`
 
 src/slab.rs:264. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/slab-desc_stride.md).
@@ -3892,7 +3930,7 @@ pub fn desc_stride(class: usize) -> (r: usize)
     ensures r <= u32::MAX, r == stride_of(class as int),
 ```
 
-### S204. `SlabDesc::init`
+### S206. `SlabDesc::init`
 
 src/slab.rs:303. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/slab-SlabDesc-init.md).
@@ -3910,7 +3948,7 @@ pub fn init(&self, arena: u16, Tracked(p): Tracked<&mut DescPerm>)
         final(p).arena() == arena,
 ```
 
-### S205. `SlabDesc::state_byte_held`
+### S207. `SlabDesc::state_byte_held`
 
 src/slab.rs:344. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/slab-SlabDesc-state_byte_held.md).
@@ -3923,7 +3961,7 @@ fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, De
         perm_for(*m, k, self) ==> r == m[k].state(),
 ```
 
-### S206. `SlabDesc::dirty_held`
+### S208. `SlabDesc::dirty_held`
 
 src/slab.rs:355. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/slab-SlabDesc-dirty_held.md).
@@ -3936,7 +3974,7 @@ pub fn dirty_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, Des
         perm_for(*m, k, self) ==> r == m[k].dirty(),
 ```
 
-### S207. `SlabDesc::arena_held`
+### S209. `SlabDesc::arena_held`
 
 src/slab.rs:366. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/slab-SlabDesc-arena_held.md).
@@ -3949,7 +3987,7 @@ pub fn arena_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, Des
         perm_for(*m, k, self) ==> r == m[k].arena(),
 ```
 
-### S208. `SlabDesc::set_state`
+### S210. `SlabDesc::set_state`
 
 src/slab.rs:377. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/slab-SlabDesc-set_state.md).
@@ -3967,7 +4005,7 @@ pub fn set_state(&self, s: State, Tracked(p): Tracked<&mut DescPerm>)
         final(p).arena() == old(p).arena(),
 ```
 
-### S209. `SlabDesc::sub_live`
+### S211. `SlabDesc::sub_live`
 
 src/slab.rs:431. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/slab-SlabDesc-sub_live.md).
@@ -3980,7 +4018,7 @@ pub fn sub_live(&self, n: usize) -> usize
         crate::sys::may_abort(),
 ```
 
-### S210. `SlabDesc::set_dirty_at`
+### S212. `SlabDesc::set_dirty_at`
 
 src/slab.rs:449. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/slab-SlabDesc-set_dirty_at.md).
@@ -3998,7 +4036,7 @@ pub fn set_dirty_at(&self, ns: u64, Tracked(p): Tracked<&mut DescPerm>)
         final(p).arena() == old(p).arena(),
 ```
 
-### S211. `fig_add`
+### S213. `fig_add`
 
 src/stats.rs:481. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/stats-fig_add.md).
@@ -4011,7 +4049,7 @@ pub(crate) fn fig_add(a: usize, b: usize) -> (r: usize)
         a + b <= usize::MAX ==> r == a + b,
 ```
 
-### S212. `fig_mul`
+### S214. `fig_mul`
 
 src/stats.rs:491. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/stats-fig_mul.md).
@@ -4024,7 +4062,7 @@ pub(crate) fn fig_mul(a: usize, b: usize) -> (r: usize)
         a * b <= usize::MAX ==> r == a * b,
 ```
 
-### S213. `fig_add64`
+### S215. `fig_add64`
 
 src/stats.rs:501. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/stats-fig_add64.md).
@@ -4037,7 +4075,7 @@ pub(crate) fn fig_add64(a: u64, b: u64) -> (r: u64)
         a + b <= u64::MAX ==> r == a + b,
 ```
 
-### S214. `axiom_snapshot_lock_inv`
+### S216. `axiom_snapshot_lock_inv`
 
 src/stats.rs:600. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -4051,7 +4089,7 @@ pub broadcast axiom fn axiom_snapshot_lock_inv(v: Snapshot)
 ;
 ```
 
-### S215. `abort_integrity`
+### S217. `abort_integrity`
 
 src/sys/abort.rs:175. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (verus/seams/sys-abort-abort_integrity.md).
@@ -4064,7 +4102,7 @@ pub fn abort_integrity(args: fmt::Arguments<'_>) -> !
         crate::sys::may_abort_corrupt(),
 ```
 
-### S216. `getauxval`
+### S218. `getauxval`
 
 src/sys/auxv.rs:39. Kind: assume_spec. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
@@ -4078,7 +4116,7 @@ pub assume_specification[ getauxval ](kind: usize) -> (r: usize)
 ;
 ```
 
-### S217. `getauxval`
+### S219. `getauxval`
 
 src/sys/auxv.rs:51. Kind: assume_spec. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
@@ -4093,7 +4131,7 @@ pub assume_specification[ getauxval ](kind: usize) -> (r: usize)
 ;
 ```
 
-### S218. `scan_lines`
+### S220. `scan_lines`
 
 src/sys/cgroup.rs:881. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
@@ -4115,7 +4153,7 @@ pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: 
         found matches Some((lo, hi)) ==> lo <= hi <= final(buf)@.len(),
 ```
 
-### S219. `DisplaySpecImpl for PathBytes<'_>`
+### S221. `DisplaySpecImpl for PathBytes<'_>`
 
 src/sys/cgroup.rs:1221. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: trusted.
@@ -4128,7 +4166,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for PathBytes<'_> {
 }
 ```
 
-### S220. `DisplaySpecImpl for Limit`
+### S222. `DisplaySpecImpl for Limit`
 
 src/sys/cgroup.rs:1289. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: trusted.
@@ -4141,7 +4179,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for Limit {
 }
 ```
 
-### S221. `Deferred::discover`
+### S223. `Deferred::discover`
 
 src/sys/cgroup.rs:1416. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
@@ -4155,7 +4193,7 @@ pub fn discover<F: FnOnce(&Cgroup)>(&self, wait: bool, found: F) -> bool
         forall|cg: &Cgroup| #[trigger] call_requires(found, (cg,)),
 ```
 
-### S222. `Deferred::cell_ref`
+### S224. `Deferred::cell_ref`
 
 src/sys/cgroup.rs:1460. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
@@ -4167,7 +4205,7 @@ unsafe fn cell_ref(&self) -> &Cgroup
     opens_invariants none
 ```
 
-### S223. `Deferred::cell_write`
+### S225. `Deferred::cell_write`
 
 src/sys/cgroup.rs:1477. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
@@ -4179,7 +4217,7 @@ unsafe fn cell_write(&self, cg: Cgroup) -> &Cgroup
     opens_invariants none
 ```
 
-### S224. `DisplaySpecImpl for SizeSet`
+### S226. `DisplaySpecImpl for SizeSet`
 
 src/sys/features.rs:42. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/sys-features-DisplaySpecImpl-for-SizeSet.md).
@@ -4192,7 +4230,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for SizeSet {
 }
 ```
 
-### S225. `DisplaySpecImpl for LgSize`
+### S227. `DisplaySpecImpl for LgSize`
 
 src/sys/features.rs:77. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/sys-features-DisplaySpecImpl-for-LgSize.md).
@@ -4205,7 +4243,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for LgSize {
 }
 ```
 
-### S226. `DisplaySpecImpl for Value`
+### S228. `DisplaySpecImpl for Value`
 
 src/sys/features.rs:110. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/sys-features-DisplaySpecImpl-for-Value.md).
@@ -4218,7 +4256,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for Value {
 }
 ```
 
-### S227. `DisplaySpecImpl for Features`
+### S229. `DisplaySpecImpl for Features`
 
 src/sys/features.rs:204. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/sys-features-DisplaySpecImpl-for-Features.md).
@@ -4231,7 +4269,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for Features {
 }
 ```
 
-### S228. `axiom_thread_mask`
+### S230. `axiom_thread_mask`
 
 src/sys/mod.rs:254. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
@@ -4245,7 +4283,7 @@ pub axiom fn axiom_thread_mask() -> (tracked sig: SigMask)
 ;
 ```
 
-### S229. `axiom_getrandom_count`
+### S231. `axiom_getrandom_count`
 
 src/sys/mod.rs:712. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -4261,7 +4299,7 @@ pub broadcast axiom fn axiom_getrandom_count(buf: usize, buflen: usize, flags: u
 ;
 ```
 
-### S230. `getrandom_exact`
+### S232. `getrandom_exact`
 
 src/sys/mod.rs:748. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
@@ -4274,7 +4312,7 @@ pub fn getrandom_exact(buf: &mut [u8]) -> Result<(), Errno>
         crate::sys::may_syscall(),
 ```
 
-### S231. `axiom_read_count`
+### S233. `axiom_read_count`
 
 src/sys/mod.rs:914. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -4290,7 +4328,7 @@ pub broadcast axiom fn axiom_read_count(fd: usize, buf: usize, count: usize, r: 
 ;
 ```
 
-### S232. `read_full`
+### S234. `read_full`
 
 src/sys/mod.rs:949. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
@@ -4306,7 +4344,7 @@ pub fn read_full(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
         final(buf)@.len() == old(buf)@.len(),
 ```
 
-### S233. `axiom_write_count`
+### S235. `axiom_write_count`
 
 src/sys/mod.rs:997. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -4322,7 +4360,7 @@ pub broadcast axiom fn axiom_write_count(fd: usize, buf: usize, count: usize, r:
 ;
 ```
 
-### S234. `write_all`
+### S236. `write_all`
 
 src/sys/mod.rs:1031. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
@@ -4335,7 +4373,7 @@ pub fn write_all(fd: i32, buf: &[u8])
         crate::sys::may_syscall(),
 ```
 
-### S235. `sigprocmask_block`
+### S237. `sigprocmask_block`
 
 src/sys/mod.rs:1202. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
@@ -4356,7 +4394,7 @@ unsafe fn sigprocmask_block(
             == all_blocked()),
 ```
 
-### S236. `sigprocmask_setmask`
+### S238. `sigprocmask_setmask`
 
 src/sys/mod.rs:1235. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
@@ -4371,7 +4409,7 @@ unsafe fn sigprocmask_setmask(mask: &u64, Tracked(sig): Tracked<&mut SigMask>) -
         r <= usize::MAX - MAX_ERRNO ==> final(sig).mask() == effective(*mask),
 ```
 
-### S237. `trap`
+### S239. `trap`
 
 src/sys/mod.rs:1283. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-linux-trap.md).
@@ -4384,7 +4422,7 @@ pub fn trap() -> !
         crate::sys::may_abort(),
 ```
 
-### S238. `axiom_user_va_limit`
+### S240. `axiom_user_va_limit`
 
 src/sys/pac.rs:165. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -4398,7 +4436,7 @@ pub axiom fn axiom_user_va_limit()
 ;
 ```
 
-### S239. `axiom_auth_sign`
+### S241. `axiom_auth_sign`
 
 src/sys/pac.rs:175. Kind: axiom. Category: platform/kernel fact.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-pac-axiom_auth_sign.md).
@@ -4414,7 +4452,7 @@ pub broadcast axiom fn axiom_auth_sign(p: usize, modifier: usize)
 ;
 ```
 
-### S240. `sign`
+### S242. `sign`
 
 src/sys/pac.rs:188. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-pac-sign.md).
@@ -4430,7 +4468,7 @@ pub fn sign(p: usize, modifier: usize) -> (r: usize)
     opens_invariants none
 ```
 
-### S241. `auth`
+### S243. `auth`
 
 src/sys/pac.rs:226. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-pac-auth.md).
@@ -4446,7 +4484,7 @@ pub fn auth(p: usize, modifier: usize) -> (r: usize)
     opens_invariants none
 ```
 
-### S242. `strip`
+### S244. `strip`
 
 src/sys/pac.rs:264. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-pac-strip.md).
@@ -4459,7 +4497,7 @@ pub fn strip(p: usize) -> usize
         pac_available(),
 ```
 
-### S243. `syscall0`
+### S245. `syscall0`
 
 src/sys/raw.rs:37. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall0.md).
@@ -4470,7 +4508,7 @@ pub unsafe fn syscall0(nr: usize) -> usize
         crate::sys::may_syscall(),
 ```
 
-### S244. `syscall1`
+### S246. `syscall1`
 
 src/sys/raw.rs:52. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall1.md).
@@ -4481,7 +4519,7 @@ pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
         crate::sys::may_syscall(),
 ```
 
-### S245. `syscall2`
+### S247. `syscall2`
 
 src/sys/raw.rs:67. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall2.md).
@@ -4492,7 +4530,7 @@ pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
         crate::sys::may_syscall(),
 ```
 
-### S246. `syscall3`
+### S248. `syscall3`
 
 src/sys/raw.rs:82. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall3.md).
@@ -4505,7 +4543,7 @@ pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
         super::returned3(nr, a0, a1, a2, r),
 ```
 
-### S247. `syscall4`
+### S249. `syscall4`
 
 src/sys/raw.rs:99. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall4.md).
@@ -4516,7 +4554,7 @@ pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) ->
         crate::sys::may_syscall(),
 ```
 
-### S248. `syscall5`
+### S250. `syscall5`
 
 src/sys/raw.rs:115. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall5.md).
@@ -4534,7 +4572,7 @@ pub unsafe fn syscall5(
         crate::sys::may_syscall(),
 ```
 
-### S249. `syscall6`
+### S251. `syscall6`
 
 src/sys/raw.rs:138. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-x86_64-syscall6.md).
@@ -4553,7 +4591,7 @@ pub unsafe fn syscall6(
         crate::sys::may_syscall(),
 ```
 
-### S250. `syscall0`
+### S252. `syscall0`
 
 src/sys/raw.rs:172. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall0.md).
@@ -4564,7 +4602,7 @@ pub unsafe fn syscall0(nr: usize) -> usize
         crate::sys::may_syscall(),
 ```
 
-### S251. `syscall1`
+### S253. `syscall1`
 
 src/sys/raw.rs:186. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall1.md).
@@ -4575,7 +4613,7 @@ pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
         crate::sys::may_syscall(),
 ```
 
-### S252. `syscall2`
+### S254. `syscall2`
 
 src/sys/raw.rs:200. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall2.md).
@@ -4586,7 +4624,7 @@ pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
         crate::sys::may_syscall(),
 ```
 
-### S253. `syscall3`
+### S255. `syscall3`
 
 src/sys/raw.rs:215. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall3.md).
@@ -4599,7 +4637,7 @@ pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
         super::returned3(nr, a0, a1, a2, r),
 ```
 
-### S254. `syscall4`
+### S256. `syscall4`
 
 src/sys/raw.rs:232. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall4.md).
@@ -4610,7 +4648,7 @@ pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) ->
         crate::sys::may_syscall(),
 ```
 
-### S255. `syscall5`
+### S257. `syscall5`
 
 src/sys/raw.rs:247. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall5.md).
@@ -4628,7 +4666,7 @@ pub unsafe fn syscall5(
         crate::sys::may_syscall(),
 ```
 
-### S256. `syscall6`
+### S258. `syscall6`
 
 src/sys/raw.rs:269. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-raw-aarch64-syscall6.md).
@@ -4647,7 +4685,7 @@ pub unsafe fn syscall6(
         crate::sys::may_syscall(),
 ```
 
-### S257. `DisplaySpecImpl for Thp`
+### S259. `DisplaySpecImpl for Thp`
 
 src/sys/thp_host.rs:438. Kind: spec_impl. Category: core library.
 Tool: Verus. Status: trusted.
@@ -4660,9 +4698,24 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for Thp {
 }
 ```
 
-### S258. `get`
+### S260. `TlsSlot::entry`
 
-src/sys/tls.rs:125. Kind: external_body. Category: inline asm.
+src/sys/tls.rs:163. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> The calling thread's token at a top-level user of the slot, as the slot's last user left it: what [`heap::thread::slot_ok`] states of the value it holds (a heap value comes with the heap's permission, the heap well formed, and nothing else with one), and `tp` this thread's thread pointer.
+
+```rust
+pub(crate) axiom fn entry() -> (tracked r: &'static mut TlsSlot)
+    ensures
+        crate::heap::slot_ok(*r),
+        r.creates() == 0,
+;
+```
+
+### S261. `get`
+
+src/sys/tls.rs:250. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-tls-get.md).
 
 > Read the calling thread's slot.
@@ -4674,9 +4727,9 @@ pub fn get(Tracked(slot): Tracked<&TlsSlot>) -> (r: *mut c_void)
     opens_invariants none
 ```
 
-### S259. `get_tp`
+### S262. `get_tp`
 
-src/sys/tls.rs:182. Kind: external_body. Category: inline asm.
+src/sys/tls.rs:309. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-tls-get_tp.md).
 
 > Read the calling thread's slot together with the thread pointer (`tpidr_el0`), the modifier the heap pointer is signed with when pointer authentication is on (`sys::pac`, design 6.1): one asm sequence that keeps the thread pointer it loads to reach the slot, so the caller's `autda` costs no extra register move.
@@ -4685,12 +4738,13 @@ Tool: Islaris/Isla. Status: discharged (verus/seams/sys-tls-get_tp.md).
 pub fn get_tp(Tracked(slot): Tracked<&TlsSlot>) -> (r: (*mut c_void, usize))
     ensures
         r.0 as usize == slot.value(),
+        r.1 == slot.tp(),
     opens_invariants none
 ```
 
-### S260. `set`
+### S263. `set`
 
-src/sys/tls.rs:208. Kind: external_body. Category: inline asm.
+src/sys/tls.rs:336. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (verus/seams/sys-tls-set.md).
 
 > Write the calling thread's slot.
@@ -4698,11 +4752,10 @@ Tool: Islaris/Isla. Status: discharged (verus/seams/sys-tls-set.md).
 ```rust
 pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsSlot>)
     ensures
-        final(slot).value() == value as usize,
-        final(slot).creates() == old(slot).creates(),
+        final(slot).set_to(*old(slot), value as usize),
 ```
 
-### S261. `addr_to_ptr`
+### S264. `addr_to_ptr`
 
 src/vspec/addr.rs:26. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/vspec-addr-addr_to_ptr.md).
@@ -4718,7 +4771,7 @@ pub fn addr_to_ptr(addr: usize) -> (p: *mut u8)
     opens_invariants none
 ```
 
-### S262. `core::ptr::write_bytes::<T>`
+### S265. `core::ptr::write_bytes::<T>`
 
 src/vspec/addr.rs:40. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/vspec-addr-ptr-write_bytes.md).
@@ -4733,7 +4786,7 @@ pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8,
 ;
 ```
 
-### S263. `core::ptr::copy_nonoverlapping::<T>`
+### S266. `core::ptr::copy_nonoverlapping::<T>`
 
 src/vspec/addr.rs:51. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/vspec-addr-ptr-copy_nonoverlapping.md).
@@ -4754,7 +4807,7 @@ pub assume_specification<T>[ core::ptr::copy_nonoverlapping::<T> ](src: *const T
 ;
 ```
 
-### S264. `<*mut T>::is_null`
+### S267. `<*mut T>::is_null`
 
 src/vspec/addr.rs:64. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/vspec-addr-mut-ptr-is_null.md).
@@ -4770,7 +4823,7 @@ pub assume_specification<T: core::marker::PointeeSized>[ <*mut T>::is_null ](p: 
 ;
 ```
 
-### S265. `<*const T>::is_null`
+### S268. `<*const T>::is_null`
 
 src/vspec/addr.rs:72. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/vspec-addr-const-ptr-is_null.md).
@@ -4786,7 +4839,7 @@ pub assume_specification<T: core::marker::PointeeSized>[ <*const T>::is_null ](p
 ;
 ```
 
-### S266. `core::sync::atomic::Atomic::<*mut T>::load`
+### S269. `core::sync::atomic::Atomic::<*mut T>::load`
 
 src/vspec/arena.rs:13. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-arena-Atomic-ptr-load.md).
@@ -4804,7 +4857,7 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::load ](
 ;
 ```
 
-### S267. `core::sync::atomic::Atomic::<*mut T>::store`
+### S270. `core::sync::atomic::Atomic::<*mut T>::store`
 
 src/vspec/arena.rs:24. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-arena-Atomic-ptr-store.md).
@@ -4823,7 +4876,7 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::store ](
 ;
 ```
 
-### S268. `core::sync::atomic::Atomic::<*mut T>::new`
+### S271. `core::sync::atomic::Atomic::<*mut T>::new`
 
 src/vspec/arena.rs:35. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-arena-Atomic-ptr-new.md).
@@ -4834,7 +4887,7 @@ Tool: Kani. Status: discharged (verus/seams/vspec-arena-Atomic-ptr-new.md).
 pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::new ](v: *mut T) -> core::sync::atomic::Atomic<*mut T>;
 ```
 
-### S269. `core::sync::atomic::Atomic::<*mut T>::swap`
+### S272. `core::sync::atomic::Atomic::<*mut T>::swap`
 
 src/vspec/arena.rs:38. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-arena-Atomic-ptr-swap.md).
@@ -4849,7 +4902,7 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::swap ](
 ) -> *mut T;
 ```
 
-### S270. `axiom_arena_stats_lock_inv`
+### S273. `axiom_arena_stats_lock_inv`
 
 src/vspec/arena.rs:48. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -4863,7 +4916,7 @@ pub broadcast axiom fn axiom_arena_stats_lock_inv(v: crate::stats::ArenaStats)
 ;
 ```
 
-### S271. `load_usize_in`
+### S274. `load_usize_in`
 
 src/vspec/atom.rs:101. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-atom-load_usize_in.md).
@@ -4887,7 +4940,7 @@ pub fn load_usize_in<P: InvariantPredicate<(int, usize), UsizePerm>>(
     no_unwind
 ```
 
-### S272. `store_usize`
+### S275. `store_usize`
 
 src/vspec/atom.rs:124. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-atom-store_usize.md).
@@ -4907,7 +4960,7 @@ pub fn store_usize(a: &AtomicUsize, v: usize, ordering: Ordering, Tracked(perm):
     no_unwind
 ```
 
-### S273. `usize_ptr`
+### S276. `usize_ptr`
 
 src/vspec/atom.rs:149. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
@@ -4922,7 +4975,7 @@ pub fn usize_ptr(a: &AtomicUsize) -> (r: *const AtomicUsize)
     no_unwind
 ```
 
-### S274. `store_usize_at`
+### S277. `store_usize_at`
 
 src/vspec/atom.rs:168. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
@@ -4942,9 +4995,9 @@ pub unsafe fn store_usize_at(p: *const AtomicUsize, v: usize, ordering: Ordering
     no_unwind
 ```
 
-### S275. `axiom_c_writes`
+### S278. `axiom_c_writes`
 
-src/vspec/cbuf.rs:376. Kind: axiom. Category: C-program contract.
+src/vspec/cbuf.rs:377. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: what [`CCall::open_writes`] stands for (private: only it takes the step, with the token taken `&mut`).
@@ -4956,9 +5009,9 @@ axiom fn axiom_c_writes(prov: Provenance)
 ;
 ```
 
-### S276. `CCall::str_byte`
+### S279. `CCall::str_byte`
 
-src/vspec/cbuf.rs:489. Kind: axiom. Category: C-program contract.
+src/vspec/cbuf.rs:490. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of a string argument): the read permission to byte `i` of the call's string `p`, through `q`, a pointer to it derived from the caller's; shared, for as long as the token is borrowed, and holding the byte the view names ([`CCall::string`]).
@@ -4977,9 +5030,9 @@ pub axiom fn str_byte<'a>(tracked &'a self, p: *const u8, q: *const u8, i: int) 
 ;
 ```
 
-### S277. `CCall::str_c_byte`
+### S280. `CCall::str_c_byte`
 
-src/vspec/cbuf.rs:504. Kind: axiom. Category: C-program contract.
+src/vspec/cbuf.rs:505. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > [`CCall::str_byte`] through a `c_char` pointer (`malloc_stats_print`'s `opts`): the `c_char` whose bits are the byte.
@@ -4998,9 +5051,9 @@ pub axiom fn str_c_byte<'a>(tracked &'a self, p: *const u8, q: *const core::ffi:
 ;
 ```
 
-### S278. `CCall::sized`
+### S281. `CCall::sized`
 
-src/vspec/cbuf.rs:523. Kind: axiom. Category: C-program contract.
+src/vspec/cbuf.rs:524. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of a sized buffer): the shared read permission to the call's `size_t` at `lenp`, initialised, for as long as the token is borrowed, holding the value the view names ([`CCall::len`]), and the buffer at `p` it gives the length of, that many bytes ([`c_buffer`]).
@@ -5018,9 +5071,9 @@ pub axiom fn sized<'a>(tracked &'a self, p: *mut u8, lenp: *const usize) -> (tra
 ;
 ```
 
-### S279. `CCall::counted`
+### S282. `CCall::counted`
 
-src/vspec/cbuf.rs:541. Kind: axiom. Category: C-program contract.
+src/vspec/cbuf.rs:542. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of a counted array): the shared read permission to the call's initialised `size_t` at `lenp`, for as long as the token is borrowed, holding the value the view names ([`CCall::len`]), and the array at `p` it gives the length of, that many `size_t`s ([`c_buffer`]).
@@ -5038,7 +5091,7 @@ pub axiom fn counted<'a>(tracked &'a self, p: *mut usize, lenp: *const usize) ->
 ;
 ```
 
-### S280. `check`
+### S283. `check`
 
 src/vspec/check.rs:16. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (verus/seams/vspec-check-check.md).
@@ -5053,7 +5106,7 @@ pub fn check(c: bool, msg: &'static str)
         c,
 ```
 
-### S281. `axiom_class_table_wf`
+### S284. `axiom_class_table_wf`
 
 src/vspec/class.rs:12. Kind: axiom. Category: allocator invariant.
 Tool: Kani. Status: trusted.
@@ -5070,7 +5123,7 @@ pub broadcast axiom fn axiom_class_table_wf(i: int)
 ;
 ```
 
-### S282. `core::mem::drop`
+### S285. `core::mem::drop`
 
 src/vspec/class.rs:21. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-class-mem-drop.md).
@@ -5081,7 +5134,7 @@ Tool: Kani. Status: discharged (verus/seams/vspec-class-mem-drop.md).
 pub assume_specification<T>[ core::mem::drop ](x: T);
 ```
 
-### S283. `core::ffi::CStr`
+### S286. `core::ffi::CStr`
 
 src/vspec/config.rs:17. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -5092,7 +5145,7 @@ Tool: Kani. Status: trusted.
 pub struct ExCStr(core::ffi::CStr);
 ```
 
-### S284. `<*const T>::cast::<U>`
+### S287. `<*const T>::cast::<U>`
 
 src/vspec/config.rs:20. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/vspec-config-const-ptr-cast.md).
@@ -5106,7 +5159,7 @@ pub assume_specification<T: core::marker::PointeeSized, U>[ <*const T>::cast::<U
 ;
 ```
 
-### S285. `core::ffi::CStr::as_ptr`
+### S288. `core::ffi::CStr::as_ptr`
 
 src/vspec/config.rs:27. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-config-ffi-CStr-as_ptr.md).
@@ -5117,7 +5170,7 @@ Tool: Kani. Status: discharged (verus/seams/vspec-config-ffi-CStr-as_ptr.md).
 pub assume_specification[ core::ffi::CStr::as_ptr ](s: &core::ffi::CStr) -> *const core::ffi::c_char;
 ```
 
-### S286. `char::to_digit`
+### S289. `char::to_digit`
 
 src/vspec/config.rs:32. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-config-char-to_digit.md).
@@ -5133,7 +5186,7 @@ pub assume_specification[ char::to_digit ](c: char, radix: u32) -> (r: Option<u3
 ;
 ```
 
-### S287. `i64::wrapping_neg`
+### S290. `i64::wrapping_neg`
 
 src/vspec/config.rs:40. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-config-i64-wrapping_neg.md).
@@ -5146,7 +5199,7 @@ pub assume_specification[ i64::wrapping_neg ](x: i64) -> (r: i64)
 ;
 ```
 
-### S288. `usize::ilog2`
+### S291. `usize::ilog2`
 
 src/vspec/config.rs:45. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-config-usize-ilog2.md).
@@ -5160,7 +5213,7 @@ pub assume_specification[ usize::ilog2 ](x: usize) -> (r: u32)
 ;
 ```
 
-### S289. `usize::trailing_zeros`
+### S292. `usize::trailing_zeros`
 
 src/vspec/core_int.rs:13. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-core_int-usize-trailing_zeros.md).
@@ -5171,7 +5224,7 @@ pub assume_specification[ usize::trailing_zeros ](x: usize) -> (r: u32)
 ;
 ```
 
-### S290. `usize::leading_zeros`
+### S293. `usize::leading_zeros`
 
 src/vspec/core_int.rs:17. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-core_int-usize-leading_zeros.md).
@@ -5183,7 +5236,7 @@ pub assume_specification[ usize::leading_zeros ](x: usize) -> (r: u32)
 ;
 ```
 
-### S291. `u64::count_ones`
+### S294. `u64::count_ones`
 
 src/vspec/core_int.rs:29. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-core_int-u64-count_ones.md).
@@ -5194,7 +5247,7 @@ pub assume_specification[ u64::count_ones ](x: u64) -> (r: u32)
 ;
 ```
 
-### S292. `usize::count_ones`
+### S295. `usize::count_ones`
 
 src/vspec/core_int.rs:33. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-core_int-usize-count_ones.md).
@@ -5205,7 +5258,7 @@ pub assume_specification[ usize::count_ones ](x: usize) -> (r: u32)
 ;
 ```
 
-### S293. `usize::is_power_of_two`
+### S296. `usize::is_power_of_two`
 
 src/vspec/core_int.rs:37. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-core_int-usize-is_power_of_two.md).
@@ -5216,7 +5269,7 @@ pub assume_specification[ usize::is_power_of_two ](x: usize) -> (r: bool)
 ;
 ```
 
-### S294. `u32::is_power_of_two`
+### S297. `u32::is_power_of_two`
 
 src/vspec/core_int.rs:42. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-core_int-u32-is_power_of_two.md).
@@ -5229,7 +5282,7 @@ pub assume_specification[ u32::is_power_of_two ](x: u32) -> (r: bool)
 ;
 ```
 
-### S295. `usize::next_power_of_two`
+### S298. `usize::next_power_of_two`
 
 src/vspec/core_int.rs:48. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-core_int-usize-next_power_of_two.md).
@@ -5247,7 +5300,7 @@ pub assume_specification[ usize::next_power_of_two ](x: usize) -> (r: usize)
 ;
 ```
 
-### S296. `usize::div_ceil`
+### S299. `usize::div_ceil`
 
 src/vspec/core_int.rs:57. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -5259,7 +5312,7 @@ pub assume_specification[ usize::div_ceil ](x: usize, d: usize) -> (r: usize)
 ;
 ```
 
-### S297. `u32::rotate_right`
+### S300. `u32::rotate_right`
 
 src/vspec/core_int.rs:73. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-core_int-u32-rotate_right.md).
@@ -5274,7 +5327,7 @@ pub assume_specification[ u32::rotate_right ](x: u32, n: u32) -> (r: u32)
 ;
 ```
 
-### S298. `u64::rotate_right`
+### S301. `u64::rotate_right`
 
 src/vspec/core_int.rs:91. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-core_int-u64-rotate_right.md).
@@ -5289,7 +5342,7 @@ pub assume_specification[ u64::rotate_right ](x: u64, n: u32) -> (r: u64)
 ;
 ```
 
-### S299. `<[T]>::get_unchecked::<I>`
+### S302. `<[T]>::get_unchecked::<I>`
 
 src/vspec/core_int.rs:103. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-core_int-slice-get_unchecked.md).
@@ -5304,7 +5357,7 @@ pub assume_specification<T, I>[ <[T]>::get_unchecked::<I> ](slice: &[T], i: I) -
 ;
 ```
 
-### S300. `core::hint::spin_loop`
+### S303. `core::hint::spin_loop`
 
 src/vspec/core_int.rs:114. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -5315,7 +5368,7 @@ Tool: Kani. Status: trusted.
 pub assume_specification[ core::hint::spin_loop ]();
 ```
 
-### S301. `fetch_add`
+### S304. `fetch_add`
 
 src/vspec/count.rs:89. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-count-fetch_add.md).
@@ -5334,7 +5387,7 @@ pub fn fetch_add(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Track
     no_unwind
 ```
 
-### S302. `fetch_sub`
+### S305. `fetch_sub`
 
 src/vspec/count.rs:106. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-count-fetch_sub.md).
@@ -5353,7 +5406,7 @@ pub fn fetch_sub(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Track
     no_unwind
 ```
 
-### S303. `store`
+### S306. `store`
 
 src/vspec/count.rs:124. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-count-store.md).
@@ -5373,7 +5426,7 @@ pub fn store(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&
     no_unwind
 ```
 
-### S304. `load`
+### S307. `load`
 
 src/vspec/count.rs:143. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-count-load.md).
@@ -5392,7 +5445,7 @@ pub fn load(c: &AtomicU32, ordering: Ordering, Tracked(perm): Tracked<&CountPerm
     no_unwind
 ```
 
-### S305. `swap`
+### S308. `swap`
 
 src/vspec/count.rs:177. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-count-swap.md).
@@ -5411,7 +5464,7 @@ pub fn swap(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&m
     no_unwind
 ```
 
-### S306. `compare_exchange`
+### S309. `compare_exchange`
 
 src/vspec/count.rs:198. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-count-compare_exchange.md).
@@ -5439,7 +5492,7 @@ pub fn compare_exchange(
     no_unwind
 ```
 
-### S307. `store`
+### S310. `store`
 
 src/vspec/entry.rs:74. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-entry-store.md).
@@ -5459,7 +5512,7 @@ pub fn store<T>(a: &AtomicPtr<T>, v: *mut T, ordering: Ordering, Tracked(perm): 
     no_unwind
 ```
 
-### S308. `load`
+### S311. `load`
 
 src/vspec/entry.rs:93. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-entry-load.md).
@@ -5478,7 +5531,7 @@ pub fn load<T>(a: &AtomicPtr<T>, ordering: Ordering, Tracked(perm): Tracked<&Ent
     no_unwind
 ```
 
-### S309. `lend`
+### S312. `lend`
 
 src/vspec/errno.rs:55. Kind: external_body. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
@@ -5491,7 +5544,7 @@ Body mints Tracked at line 56.
 pub fn lend() -> (e: Tracked<ThreadErrno>)
 ```
 
-### S310. `set_errno`
+### S313. `set_errno`
 
 src/vspec/errno.rs:63. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
@@ -5504,7 +5557,7 @@ pub fn set_errno(e: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)
         final(errno).val() == e,
 ```
 
-### S311. `ExWrite`
+### S314. `ExWrite`
 
 src/vspec/fmt.rs:11. Kind: ext_trait_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -5521,7 +5574,7 @@ pub trait ExWrite {
 }
 ```
 
-### S312. `core::fmt::Formatter::<'a>::write_str`
+### S315. `core::fmt::Formatter::<'a>::write_str`
 
 src/vspec/fmt.rs:23. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-fmt-Formatter-write_str.md).
@@ -5532,7 +5585,7 @@ Tool: Kani. Status: discharged (verus/seams/vspec-fmt-Formatter-write_str.md).
 pub assume_specification<'a>[ core::fmt::Formatter::<'a>::write_str ](f: &mut core::fmt::Formatter<'a>, data: &str) -> core::fmt::Result;
 ```
 
-### S313. `core::fmt::Formatter::<'a>::write_fmt`
+### S316. `core::fmt::Formatter::<'a>::write_fmt`
 
 src/vspec/fmt.rs:26. Kind: assume_spec. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/vspec-fmt-Formatter-write_fmt.md).
@@ -5543,7 +5596,7 @@ Tool: Kani. Status: discharged (verus/seams/vspec-fmt-Formatter-write_fmt.md).
 pub assume_specification<'a>[ core::fmt::Formatter::<'a>::write_fmt ](f: &mut core::fmt::Formatter<'a>, args: core::fmt::Arguments<'_>) -> core::fmt::Result;
 ```
 
-### S314. `DisplaySpecImpl for sys::Errno`
+### S317. `DisplaySpecImpl for sys::Errno`
 
 src/vspec/fmt.rs:38. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-fmt-DisplaySpecImpl-for-sys-Errno.md).
@@ -5556,7 +5609,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::Errno {
 }
 ```
 
-### S315. `DebugSpecImpl for slab::State`
+### S318. `DebugSpecImpl for slab::State`
 
 src/vspec/fmt.rs:58. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-fmt-DebugSpecImpl-for-slab-State.md).
@@ -5569,7 +5622,7 @@ impl vstd::std_specs::fmt::DebugSpecImpl for crate::slab::State {
 }
 ```
 
-### S316. `DebugSpecImpl for huge::RunState`
+### S319. `DebugSpecImpl for huge::RunState`
 
 src/vspec/fmt.rs:65. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-fmt-DebugSpecImpl-for-huge-RunState.md).
@@ -5582,7 +5635,7 @@ impl vstd::std_specs::fmt::DebugSpecImpl for crate::huge::RunState {
 }
 ```
 
-### S317. `core::ffi::c_void`
+### S320. `core::ffi::c_void`
 
 src/vspec/heap.rs:12. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -5591,7 +5644,7 @@ Tool: Kani. Status: trusted.
 pub struct ExCVoid(core::ffi::c_void);
 ```
 
-### S318. `Option::<T>::or_else`
+### S321. `Option::<T>::or_else`
 
 src/vspec/heap.rs:19. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-heap-Option-or_else.md).
@@ -5608,7 +5661,7 @@ pub assume_specification<T, F: FnOnce() -> Option<T>>[ Option::<T>::or_else ](op
 ;
 ```
 
-### S319. `axiom_huge_lock_inv`
+### S322. `axiom_huge_lock_inv`
 
 src/vspec/huge.rs:35. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -5622,7 +5675,7 @@ pub(crate) broadcast axiom fn axiom_huge_lock_inv(v: crate::huge::Inner)
 ;
 ```
 
-### S320. `axiom_huge_lock_frame`
+### S323. `axiom_huge_lock_frame`
 
 src/vspec/huge.rs:44. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -5636,7 +5689,7 @@ pub(crate) broadcast axiom fn axiom_huge_lock_frame(a: crate::huge::Inner, b: cr
 ;
 ```
 
-### S321. `Layout`
+### S324. `Layout`
 
 src/vspec/layout.rs:15. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -5645,7 +5698,7 @@ Tool: Kani. Status: trusted.
 pub struct ExLayout(Layout);
 ```
 
-### S322. `core::alloc::LayoutError`
+### S325. `core::alloc::LayoutError`
 
 src/vspec/layout.rs:19. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -5654,7 +5707,7 @@ Tool: Kani. Status: trusted.
 pub struct ExLayoutError(core::alloc::LayoutError);
 ```
 
-### S323. `Layout::size`
+### S326. `Layout::size`
 
 src/vspec/layout.rs:31. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-layout-Layout-size.md).
@@ -5667,7 +5720,7 @@ pub assume_specification[ Layout::size ](l: &Layout) -> (r: usize)
 ;
 ```
 
-### S324. `Layout::align`
+### S327. `Layout::align`
 
 src/vspec/layout.rs:37. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-layout-Layout-align.md).
@@ -5680,7 +5733,7 @@ pub assume_specification[ Layout::align ](l: &Layout) -> (r: usize)
 ;
 ```
 
-### S325. `Layout::from_size_align`
+### S328. `Layout::from_size_align`
 
 src/vspec/layout.rs:45. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-layout-Layout-from_size_align.md).
@@ -5698,7 +5751,7 @@ pub assume_specification[ Layout::from_size_align ](size: usize, align: usize) -
 ;
 ```
 
-### S326. `Layout::new::<T>`
+### S329. `Layout::new::<T>`
 
 src/vspec/layout.rs:59. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-layout-Layout-new.md).
@@ -5713,7 +5766,7 @@ pub assume_specification<T>[ Layout::new::<T> ]() -> (r: Layout)
 ;
 ```
 
-### S327. `core::cell::UnsafeCell<T>`
+### S330. `core::cell::UnsafeCell<T>`
 
 src/vspec/lock.rs:20. Kind: ext_type_spec. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: trusted.
@@ -5724,7 +5777,7 @@ Tool: Kani. Status: trusted.
 pub struct ExUnsafeCell<T: ?Sized>(core::cell::UnsafeCell<T>);
 ```
 
-### S328. `core::cell::UnsafeCell::<T>::new`
+### S331. `core::cell::UnsafeCell::<T>::new`
 
 src/vspec/lock.rs:23. Kind: assume_spec. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (verus/seams/vspec-lock-UnsafeCell-new.md).
@@ -5735,7 +5788,7 @@ Tool: Kani. Status: discharged (verus/seams/vspec-lock-UnsafeCell-new.md).
 pub assume_specification<T>[ core::cell::UnsafeCell::<T>::new ](value: T) -> core::cell::UnsafeCell<T>;
 ```
 
-### S329. `axiom_meta_lock_inv`
+### S332. `axiom_meta_lock_inv`
 
 src/vspec/meta.rs:41. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -5749,7 +5802,7 @@ pub(crate) broadcast axiom fn axiom_meta_lock_inv(v: crate::meta::Inner)
 ;
 ```
 
-### S330. `axiom_meta_lock_frame`
+### S333. `axiom_meta_lock_frame`
 
 src/vspec/meta.rs:54. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -5764,7 +5817,7 @@ pub(crate) broadcast axiom fn axiom_meta_lock_frame(a: crate::meta::Inner, b: cr
 ;
 ```
 
-### S331. `PartialEqSpecImpl for config::Thp`
+### S334. `PartialEqSpecImpl for config::Thp`
 
 src/vspec/misc.rs:14. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-misc-PartialEqSpecImpl-for-config-Thp.md).
@@ -5781,7 +5834,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::config::Thp {
 }
 ```
 
-### S332. `PartialEqSpecImpl for sys::thp_host::ThpSetting`
+### S335. `PartialEqSpecImpl for sys::thp_host::ThpSetting`
 
 src/vspec/misc.rs:25. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-misc-PartialEqSpecImpl-for-sys-thp_host-ThpSetting.md).
@@ -5798,7 +5851,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::sys::thp_host::ThpSettin
 }
 ```
 
-### S333. `PartialEqSpecImpl for huge::RunState`
+### S336. `PartialEqSpecImpl for huge::RunState`
 
 src/vspec/misc.rs:36. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-misc-PartialEqSpecImpl-for-huge-RunState.md).
@@ -5815,7 +5868,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::huge::RunState {
 }
 ```
 
-### S334. `Option::<T>::map_or`
+### S337. `Option::<T>::map_or`
 
 src/vspec/misc.rs:48. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-misc-Option-map_or.md).
@@ -5834,7 +5887,7 @@ pub assume_specification<T, U, F: FnOnce(T) -> U>[ Option::<T>::map_or ](
 ;
 ```
 
-### S335. `str::as_ptr`
+### S338. `str::as_ptr`
 
 src/vspec/misc.rs:62. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-misc-str-as_ptr.md).
@@ -5845,7 +5898,7 @@ Tool: Kani. Status: discharged (verus/seams/vspec-misc-str-as_ptr.md).
 pub assume_specification[ str::as_ptr ](s: &str) -> *const u8;
 ```
 
-### S336. `core::sync::atomic::compiler_fence`
+### S339. `core::sync::atomic::compiler_fence`
 
 src/vspec/misc.rs:66. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-misc-compiler_fence.md).
@@ -5861,7 +5914,7 @@ pub assume_specification[ core::sync::atomic::compiler_fence ](order: core::sync
 ;
 ```
 
-### S337. `core::sync::atomic::fence`
+### S340. `core::sync::atomic::fence`
 
 src/vspec/misc.rs:77. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -5877,7 +5930,7 @@ pub assume_specification[ core::sync::atomic::fence ](order: core::sync::atomic:
 ;
 ```
 
-### S338. `core::hint::assert_unchecked`
+### S341. `core::hint::assert_unchecked`
 
 src/vspec/misc.rs:89. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-misc-hint-assert_unchecked.md).
@@ -5893,7 +5946,7 @@ pub assume_specification[ core::hint::assert_unchecked ](cond: bool)
 ;
 ```
 
-### S339. `Option::<T>::as_deref_mut`
+### S342. `Option::<T>::as_deref_mut`
 
 src/vspec/misc.rs:103. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-misc-Option-as_deref_mut.md).
@@ -5904,7 +5957,7 @@ Tool: Kani. Status: discharged (verus/seams/vspec-misc-Option-as_deref_mut.md).
 pub assume_specification<T: core::ops::DerefMut>[ Option::<T>::as_deref_mut ](o: &mut Option<T>) -> Option<&mut <T as core::ops::Deref>::Target>;
 ```
 
-### S340. `core::sync::atomic::Atomic::<u32>::as_ptr`
+### S343. `core::sync::atomic::Atomic::<u32>::as_ptr`
 
 src/vspec/misc_extra.rs:11. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-misc_extra-Atomic-u32-as_ptr.md).
@@ -5915,7 +5968,7 @@ Tool: Kani. Status: discharged (verus/seams/vspec-misc_extra-Atomic-u32-as_ptr.m
 pub assume_specification[ core::sync::atomic::Atomic::<u32>::as_ptr ](a: &core::sync::atomic::Atomic<u32>) -> *mut u32;
 ```
 
-### S341. `core::panic::PanicInfo<'a>`
+### S344. `core::panic::PanicInfo<'a>`
 
 src/vspec/panic.rs:13. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -5924,7 +5977,7 @@ Tool: Kani. Status: trusted.
 pub struct ExPanicInfo<'a>(core::panic::PanicInfo<'a>);
 ```
 
-### S342. `core::panic::Location<'a>`
+### S345. `core::panic::Location<'a>`
 
 src/vspec/panic.rs:17. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -5933,7 +5986,7 @@ Tool: Kani. Status: trusted.
 pub struct ExLocation<'a>(core::panic::Location<'a>);
 ```
 
-### S343. `core::panic::PanicMessage<'a>`
+### S346. `core::panic::PanicMessage<'a>`
 
 src/vspec/panic.rs:21. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -5942,7 +5995,7 @@ Tool: Kani. Status: trusted.
 pub struct ExPanicMessage<'a>(core::panic::PanicMessage<'a>);
 ```
 
-### S344. `core::panic::PanicInfo::<'a>::location`
+### S347. `core::panic::PanicInfo::<'a>::location`
 
 src/vspec/panic.rs:26. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -5953,7 +6006,7 @@ Tool: Kani. Status: trusted.
 pub assume_specification<'a>[ core::panic::PanicInfo::<'a>::location ](info: &core::panic::PanicInfo<'a>) -> Option<&'static core::panic::Location<'static>>;
 ```
 
-### S345. `core::panic::PanicInfo::<'a>::message`
+### S348. `core::panic::PanicInfo::<'a>::message`
 
 src/vspec/panic.rs:30. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -5964,7 +6017,7 @@ Tool: Kani. Status: trusted.
 pub assume_specification<'a, 'b>[ core::panic::PanicInfo::<'a>::message ](info: &'b core::panic::PanicInfo<'a>) -> core::panic::PanicMessage<'b>;
 ```
 
-### S346. `core::panic::Location::<'a>::file`
+### S349. `core::panic::Location::<'a>::file`
 
 src/vspec/panic.rs:33. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -5975,7 +6028,7 @@ Tool: Kani. Status: trusted.
 pub assume_specification<'a>[ core::panic::Location::<'a>::file ](loc: &core::panic::Location<'a>) -> &'a str;
 ```
 
-### S347. `core::panic::Location::<'a>::line`
+### S350. `core::panic::Location::<'a>::line`
 
 src/vspec/panic.rs:36. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -5986,7 +6039,7 @@ Tool: Kani. Status: trusted.
 pub assume_specification<'a>[ core::panic::Location::<'a>::line ](loc: &core::panic::Location<'a>) -> u32;
 ```
 
-### S348. `axiom_fmt_req_all_panic_message`
+### S351. `axiom_fmt_req_all_panic_message`
 
 src/vspec/panic.rs:47. Kind: axiom. Category: panic/abort.
 Tool: none (assumption). Status: trusted.
@@ -6000,7 +6053,7 @@ pub broadcast axiom fn axiom_fmt_req_all_panic_message<'a>()
 ;
 ```
 
-### S349. `<u64>::div_ceil`
+### S352. `<u64>::div_ceil`
 
 src/vspec/policy.rs:10. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -6016,7 +6069,7 @@ pub assume_specification[<u64>::div_ceil](lhs: u64, rhs: u64) -> (q: u64)
 ;
 ```
 
-### S350. `libc::FILE`
+### S353. `libc::FILE`
 
 src/vspec/print.rs:15. Kind: ext_type_spec. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
@@ -6027,7 +6080,7 @@ Tool: none (assumption). Status: trusted.
 pub struct ExFile(libc::FILE);
 ```
 
-### S351. `base_slab_sizes`
+### S354. `base_slab_sizes`
 
 src/vspec/print.rs:27. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/vspec-print-base_slab_sizes.md).
@@ -6040,7 +6093,7 @@ pub(crate) fn base_slab_sizes(lo: usize, hi: usize) -> (usize, usize)
         hi < crate::layout::NCLASSES,
 ```
 
-### S352. `DisplaySpecImpl for sys::cgroup::Cgroup`
+### S355. `DisplaySpecImpl for sys::cgroup::Cgroup`
 
 src/vspec/print.rs:45. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-print-DisplaySpecImpl-for-sys-cgroup-Cgroup.md).
@@ -6053,7 +6106,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::cgroup::Cgroup {
 }
 ```
 
-### S353. `PartialEqSpecImpl for config::PercpuArena`
+### S356. `PartialEqSpecImpl for config::PercpuArena`
 
 src/vspec/print.rs:54. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-print-PartialEqSpecImpl-for-config-PercpuArena.md).
@@ -6070,7 +6123,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::config::PercpuArena {
 }
 ```
 
-### S354. `stats_allocated`
+### S357. `stats_allocated`
 
 src/vspec/print.rs:75. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-print-stats_allocated.md).
@@ -6083,7 +6136,7 @@ pub(crate) fn stats_allocated(s: &crate::stats::ArenaStats) -> (r: usize)
         s.small_allocated + s.large_allocated <= usize::MAX ==> r == s.small_allocated + s.large_allocated,
 ```
 
-### S355. `axiom_ptr_add_addr`
+### S358. `axiom_ptr_add_addr`
 
 src/vspec/ptr.rs:69. Kind: external_body proof. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-ptr-axiom_ptr_add_addr.md).
@@ -6101,7 +6154,7 @@ pub proof fn axiom_ptr_add_addr<T>(p: *mut T, count: usize)
         ptr_add(p, count)@.metadata == p@.metadata,
 ```
 
-### S356. `<*mut T>::add`
+### S359. `<*mut T>::add`
 
 src/vspec/ptr.rs:84. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/vspec-ptr-mut-ptr-add.md).
@@ -6119,7 +6172,7 @@ pub assume_specification<T>[ <*mut T>::add ](p: *mut T, count: usize) -> (r: *mu
 ;
 ```
 
-### S357. `<*const T>::add`
+### S360. `<*const T>::add`
 
 src/vspec/ptr.rs:96. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: trusted.
@@ -6137,7 +6190,7 @@ pub assume_specification<T>[ <*const T>::add ](p: *const T, count: usize) -> (r:
 ;
 ```
 
-### S358. `core::ptr::read_unaligned::<T>`
+### S361. `core::ptr::read_unaligned::<T>`
 
 src/vspec/ptr.rs:131. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: trusted.
@@ -6152,7 +6205,7 @@ pub assume_specification<T>[ core::ptr::read_unaligned::<T> ](src: *const T) -> 
 ;
 ```
 
-### S359. `<*const T>::read_unaligned`
+### S362. `<*const T>::read_unaligned`
 
 src/vspec/ptr.rs:138. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: trusted.
@@ -6167,7 +6220,7 @@ pub assume_specification<T>[ <*const T>::read_unaligned ](src: *const T) -> T
 ;
 ```
 
-### S360. `axiom_plain_u64`
+### S363. `axiom_plain_u64`
 
 src/vspec/ptr.rs:153. Kind: axiom. Category: core library.
 Tool: none (assumption). Status: trusted.
@@ -6181,7 +6234,7 @@ pub axiom fn axiom_plain_u64()
 ;
 ```
 
-### S361. `core::ptr::read_volatile::<T>`
+### S364. `core::ptr::read_volatile::<T>`
 
 src/vspec/ptr.rs:163. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: trusted.
@@ -6198,7 +6251,7 @@ pub assume_specification<T>[ core::ptr::read_volatile::<T> ](src: *const T) -> T
 ;
 ```
 
-### S362. `core::ptr::write_unaligned::<T>`
+### S365. `core::ptr::write_unaligned::<T>`
 
 src/vspec/ptr.rs:172. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: trusted.
@@ -6215,7 +6268,7 @@ pub assume_specification<T>[ core::ptr::write_unaligned::<T> ](dst: *mut T, src:
 ;
 ```
 
-### S363. `<*mut T>::write_unaligned`
+### S366. `<*mut T>::write_unaligned`
 
 src/vspec/ptr.rs:181. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: trusted.
@@ -6232,7 +6285,7 @@ pub assume_specification<T>[ <*mut T>::write_unaligned ](dst: *mut T, val: T)
 ;
 ```
 
-### S364. `axiom_raw_valid`
+### S367. `axiom_raw_valid`
 
 src/vspec/ptr.rs:204. Kind: external_body proof. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
@@ -6251,9 +6304,30 @@ pub proof fn axiom_raw_valid(tracked raw: &vstd::raw_ptr::PointsToRaw, p: *mut u
         in_alloc(p, len),
 ```
 
-### S365. `ref_ptr`
+### S368. `axiom_array_elem`
 
-src/vspec/ptr.rs:226. Kind: external_body. Category: raw pointer (internal).
+src/vspec/ptr.rs:226. Kind: axiom. Category: core library.
+Tool: none (assumption). Status: trusted.
+
+> Element `i` of a frozen array: a `'static` shared permission to a `[T; N]` gives one to each of its elements, holding that element, at [`ptr_add`] of the array's address as a `*mut T`; and the array's first `i` elements lie inside the allocation it is in, in fewer than `isize::MAX` bytes, so `<*mut T>::add(i)` is defined on that pointer.
+
+```rust
+pub axiom fn axiom_array_elem<T, const N: usize>(tracked a: &'static vstd::raw_ptr::PointsTo<[T; N]>, i: usize) -> (tracked r: &'static vstd::raw_ptr::PointsTo<T>)
+    requires
+        i < N,
+        a.is_init(),
+    ensures
+        in_alloc(a.ptr() as *mut T, i as int * vstd::layout::size_of::<T>()),
+        i as int * vstd::layout::size_of::<T>() <= isize::MAX,
+        r.ptr() == ptr_add(a.ptr() as *mut T, i),
+        r.is_init(),
+        r.value() == a.value()[i as int],
+;
+```
+
+### S369. `ref_ptr`
+
+src/vspec/ptr.rs:248. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted.
 
 > `ptr::from_ref(v)`: the address of the `T` behind a reference, valid for reads of its `size_of::<T>()` bytes, which do not wrap the address space.
@@ -6265,7 +6339,7 @@ pub fn ref_ptr<T: Copy>(v: &T) -> (r: *const T)
         r@.addr + vstd::layout::size_of::<T>() <= usize::MAX,
 ```
 
-### S366. `core::slice::from_ref`
+### S370. `core::slice::from_ref`
 
 src/vspec/slice.rs:8. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-slice-from_ref.md).
@@ -6279,7 +6353,7 @@ pub assume_specification<T>[ core::slice::from_ref ](s: &T) -> (r: &[T])
 ;
 ```
 
-### S367. `core::slice::from_raw_parts::<'a, T>`
+### S371. `core::slice::from_raw_parts::<'a, T>`
 
 src/vspec/slice.rs:26. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: trusted.
@@ -6298,7 +6372,7 @@ pub assume_specification<'a, T>[ core::slice::from_raw_parts::<'a, T> ](data: *c
 ;
 ```
 
-### S368. `<&'a mut [T] as core::iter::IntoIterator>::into_iter`
+### S372. `<&'a mut [T] as core::iter::IntoIterator>::into_iter`
 
 src/vspec/slice.rs:43. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-mut-slice-IntoIterator-into_iter.md).
@@ -6321,7 +6395,7 @@ pub assume_specification<'a, T>[ <&'a mut [T] as core::iter::IntoIterator>::into
 ;
 ```
 
-### S369. `<[T]>::swap`
+### S373. `<[T]>::swap`
 
 src/vspec/slice.rs:62. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-slice-swap.md).
@@ -6338,7 +6412,7 @@ pub assume_specification<T>[ <[T]>::swap ](s: &mut [T], a: usize, b: usize)
 ;
 ```
 
-### S370. `<[T]>::reverse`
+### S374. `<[T]>::reverse`
 
 src/vspec/slice.rs:75. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-slice-reverse.md).
@@ -6352,7 +6426,7 @@ pub assume_specification<T>[ <[T]>::reverse ](s: &mut [T])
 ;
 ```
 
-### S371. `<[T]>::is_sorted`
+### S375. `<[T]>::is_sorted`
 
 src/vspec/slice.rs:99. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-slice-is_sorted.md).
@@ -6363,7 +6437,7 @@ Tool: Kani. Status: discharged (verus/seams/vspec-slice-slice-is_sorted.md).
 pub assume_specification<T: PartialOrd>[ <[T]>::is_sorted ](s: &[T]) -> bool;
 ```
 
-### S372. `<[T]>::is_sorted_by_key::<'a, F, K>`
+### S376. `<[T]>::is_sorted_by_key::<'a, F, K>`
 
 src/vspec/slice.rs:102. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-slice-is_sorted_by_key.md).
@@ -6377,7 +6451,7 @@ pub assume_specification<'a, T, F: FnMut(&'a T) -> K, K: PartialOrd>[ <[T]>::is_
 ;
 ```
 
-### S373. `<[T]>::select_nth_unstable`
+### S377. `<[T]>::select_nth_unstable`
 
 src/vspec/slice.rs:114. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -6397,7 +6471,7 @@ pub assume_specification<T: Ord>[ <[T]>::select_nth_unstable ](s: &mut [T], inde
 ;
 ```
 
-### S374. `<[T]>::select_nth_unstable_by_key::<K, F>`
+### S378. `<[T]>::select_nth_unstable_by_key::<K, F>`
 
 src/vspec/slice.rs:126. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -6418,7 +6492,7 @@ pub assume_specification<T, K: Ord, F: FnMut(&T) -> K>[ <[T]>::select_nth_unstab
 ;
 ```
 
-### S375. `<[T]>::sort_unstable`
+### S379. `<[T]>::sort_unstable`
 
 src/vspec/slice.rs:139. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-slice-sort_unstable.md).
@@ -6434,7 +6508,7 @@ pub assume_specification<T: Ord>[ <[T]>::sort_unstable ](s: &mut [T])
 ;
 ```
 
-### S376. `<[T]>::sort_unstable_by_key::<K, F>`
+### S380. `<[T]>::sort_unstable_by_key::<K, F>`
 
 src/vspec/slice.rs:147. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -6452,7 +6526,7 @@ pub assume_specification<T, K: Ord, F: FnMut(&T) -> K>[ <[T]>::sort_unstable_by_
 ;
 ```
 
-### S377. `<[T]>::get_unchecked_mut::<I>`
+### S381. `<[T]>::get_unchecked_mut::<I>`
 
 src/vspec/slice.rs:159. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-slice-get_unchecked_mut.md).
@@ -6467,7 +6541,7 @@ pub assume_specification<T, I>[ <[T]>::get_unchecked_mut::<I> ](slice: &mut [T],
 ;
 ```
 
-### S378. `<[T]>::swap_with_slice`
+### S382. `<[T]>::swap_with_slice`
 
 src/vspec/slice.rs:170. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-slice-swap_with_slice.md).
@@ -6484,7 +6558,7 @@ pub assume_specification<T>[ <[T]>::swap_with_slice ](a: &mut [T], b: &mut [T])
 ;
 ```
 
-### S379. `<[T]>::rotate_left`
+### S383. `<[T]>::rotate_left`
 
 src/vspec/slice.rs:179. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-slice-rotate_left.md).
@@ -6500,7 +6574,7 @@ pub assume_specification<T>[ <[T]>::rotate_left ](s: &mut [T], mid: usize)
 ;
 ```
 
-### S380. `core::array::IntoIter<T, N>`
+### S384. `core::array::IntoIter<T, N>`
 
 src/vspec/slice.rs:198. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -6511,7 +6585,7 @@ Tool: Kani. Status: trusted.
 pub struct ExArrayIntoIter<T, const N: usize>(core::array::IntoIter<T, N>);
 ```
 
-### S381. `<[T; N] as core::iter::IntoIterator>::into_iter`
+### S385. `<[T; N] as core::iter::IntoIterator>::into_iter`
 
 src/vspec/slice.rs:204. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-array-IntoIterator-into_iter.md).
@@ -6528,7 +6602,7 @@ pub assume_specification<T, const N: usize>[ <[T; N] as core::iter::IntoIterator
 ;
 ```
 
-### S382. `<core::array::IntoIter<T, N> as core::iter::Iterator>::next`
+### S386. `<core::array::IntoIter<T, N> as core::iter::Iterator>::next`
 
 src/vspec/slice.rs:214. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-array-IntoIter-Iterator-next.md).
@@ -6546,7 +6620,7 @@ pub assume_specification<T, const N: usize>[ <core::array::IntoIter<T, N> as cor
 ;
 ```
 
-### S383. `array_get_unchecked`
+### S387. `array_get_unchecked`
 
 src/vspec/slice.rs:235. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-slice-array_get_unchecked.md).
@@ -6563,7 +6637,7 @@ pub unsafe fn array_get_unchecked<T, const N: usize>(a: &[T; N], i: usize) -> (r
     no_unwind
 ```
 
-### S384. `slice_from_perms`
+### S388. `slice_from_perms`
 
 src/vspec/slice.rs:283. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
@@ -6594,7 +6668,7 @@ pub fn slice_from_perms<'a, T>(
         forall|i: int| 0 <= i < n ==> #[trigger] r@[i] == perms[j0 + i].value(),
 ```
 
-### S385. `slice_mut_elems`
+### S389. `slice_mut_elems`
 
 src/vspec/slice.rs:339. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
@@ -6629,7 +6703,7 @@ pub unsafe fn slice_mut_elems<'a, T>(
                 ==> r@[i - start] == #[trigger] old(elems)[crate::vspec::ptr::ptr_add(base, i as usize)].value(),
 ```
 
-### S386. `u8::is_ascii_digit`
+### S390. `u8::is_ascii_digit`
 
 src/vspec/sys.rs:10. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-u8-is_ascii_digit.md).
@@ -6642,7 +6716,7 @@ pub assume_specification[ u8::is_ascii_digit ](b: &u8) -> (r: bool)
 ;
 ```
 
-### S387. `u8::is_ascii_whitespace`
+### S391. `u8::is_ascii_whitespace`
 
 src/vspec/sys.rs:16. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-u8-is_ascii_whitespace.md).
@@ -6655,7 +6729,7 @@ pub assume_specification[ u8::is_ascii_whitespace ](b: &u8) -> (r: bool)
 ;
 ```
 
-### S388. `u8::is_ascii_graphic`
+### S392. `u8::is_ascii_graphic`
 
 src/vspec/sys.rs:21. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -6668,7 +6742,7 @@ pub assume_specification[ u8::is_ascii_graphic ](b: &u8) -> (r: bool)
 ;
 ```
 
-### S389. `isize::wrapping_neg`
+### S393. `isize::wrapping_neg`
 
 src/vspec/sys.rs:27. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-isize-wrapping_neg.md).
@@ -6681,7 +6755,7 @@ pub assume_specification[ isize::wrapping_neg ](x: isize) -> (r: isize)
 ;
 ```
 
-### S390. `<[T]>::as_mut_ptr`
+### S394. `<[T]>::as_mut_ptr`
 
 src/vspec/sys.rs:37. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-slice-as_mut_ptr.md).
@@ -6695,7 +6769,7 @@ pub assume_specification<T>[ <[T]>::as_mut_ptr ](s: &mut [T]) -> *mut T
 ;
 ```
 
-### S391. `<[T]>::as_ptr`
+### S395. `<[T]>::as_ptr`
 
 src/vspec/sys.rs:42. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-slice-as_ptr.md).
@@ -6704,7 +6778,7 @@ Tool: Kani. Status: discharged (verus/seams/vspec-sys-slice-as_ptr.md).
 pub assume_specification<T>[ <[T]>::as_ptr ](s: &[T]) -> *const T;
 ```
 
-### S392. `Result::<T, E>::map_or`
+### S396. `Result::<T, E>::map_or`
 
 src/vspec/sys.rs:45. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-Result-map_or.md).
@@ -6725,7 +6799,7 @@ pub assume_specification<T, E, U, F: FnOnce(T) -> U>[ Result::<T, E>::map_or ](
 ;
 ```
 
-### S393. `Option::<T>::is_some_and`
+### S397. `Option::<T>::is_some_and`
 
 src/vspec/sys.rs:58. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-Option-is_some_and.md).
@@ -6742,7 +6816,7 @@ pub assume_specification<T, F: FnOnce(T) -> bool>[ Option::<T>::is_some_and ](o:
 ;
 ```
 
-### S394. `Result::<T, E>::unwrap_or`
+### S398. `Result::<T, E>::unwrap_or`
 
 src/vspec/sys.rs:67. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-Result-unwrap_or.md).
@@ -6759,7 +6833,7 @@ pub assume_specification<T, E>[ Result::<T, E>::unwrap_or ](result: Result<T, E>
 ;
 ```
 
-### S395. `u64::is_power_of_two`
+### S399. `u64::is_power_of_two`
 
 src/vspec/sys.rs:80. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-u64-is_power_of_two.md).
@@ -6773,7 +6847,7 @@ pub assume_specification[ u64::is_power_of_two ](x: u64) -> (r: bool)
 ;
 ```
 
-### S396. `core::str::Utf8Error`
+### S400. `core::str::Utf8Error`
 
 src/vspec/sys.rs:87. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -6782,7 +6856,7 @@ Tool: Kani. Status: trusted.
 pub struct ExUtf8Error(core::str::Utf8Error);
 ```
 
-### S397. `core::str::from_utf8`
+### S401. `core::str::from_utf8`
 
 src/vspec/sys.rs:90. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-str-from_utf8.md).
@@ -6793,7 +6867,7 @@ Tool: Kani. Status: discharged (verus/seams/vspec-sys-str-from_utf8.md).
 pub assume_specification[ core::str::from_utf8 ](v: &[u8]) -> Result<&str, core::str::Utf8Error>;
 ```
 
-### S398. `core::str::from_utf8_unchecked`
+### S402. `core::str::from_utf8_unchecked`
 
 src/vspec/sys.rs:94. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
@@ -6807,7 +6881,7 @@ pub assume_specification[ core::str::from_utf8_unchecked ](v: &[u8]) -> &str
 ;
 ```
 
-### S399. `<core::fmt::Error as core::default::Default>::default`
+### S403. `<core::fmt::Error as core::default::Default>::default`
 
 src/vspec/sys.rs:100. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-fmt-Error-Default-default.md).
@@ -6818,7 +6892,7 @@ Tool: Kani. Status: discharged (verus/seams/vspec-sys-fmt-Error-Default-default.
 pub assume_specification[ <core::fmt::Error as core::default::Default>::default ]() -> core::fmt::Error;
 ```
 
-### S400. `core::ptr::from_ref`
+### S404. `core::ptr::from_ref`
 
 src/vspec/sys.rs:103. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-ptr-from_ref.md).
@@ -6829,7 +6903,7 @@ Tool: Kani. Status: discharged (verus/seams/vspec-sys-ptr-from_ref.md).
 pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_ref ](r: &T) -> *const T;
 ```
 
-### S401. `core::ptr::from_mut`
+### S405. `core::ptr::from_mut`
 
 src/vspec/sys.rs:105. Kind: assume_spec. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-ptr-from_mut.md).
@@ -6838,7 +6912,7 @@ Tool: Kani. Status: discharged (verus/seams/vspec-sys-ptr-from_mut.md).
 pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_mut ](r: &mut T) -> *mut T;
 ```
 
-### S402. `Option::<&T>::copied`
+### S406. `Option::<&T>::copied`
 
 src/vspec/sys.rs:108. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-Option-copied.md).
@@ -6855,7 +6929,7 @@ pub assume_specification<T: Copy>[ Option::<&T>::copied ](o: Option<&T>) -> (r: 
 ;
 ```
 
-### S403. `PartialEqSpecImpl for sys::cgroup::State`
+### S407. `PartialEqSpecImpl for sys::cgroup::State`
 
 src/vspec/sys.rs:120. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-PartialEqSpecImpl-for-sys-cgroup-State.md).
@@ -6872,7 +6946,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::sys::cgroup::State {
 }
 ```
 
-### S404. `PartialEqSpecImpl for sys::Errno`
+### S408. `PartialEqSpecImpl for sys::Errno`
 
 src/vspec/sys.rs:131. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/vspec-sys-PartialEqSpecImpl-for-sys-Errno.md).
@@ -6889,7 +6963,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::sys::Errno {
 }
 ```
 
-### S405. `axiom_fresh_anon_zero`
+### S409. `axiom_fresh_anon_zero`
 
 src/vspec/sys.rs:172. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -6906,7 +6980,7 @@ pub(crate) axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: cr
 ;
 ```
 
-### S406. `axiom_discarded_zero`
+### S410. `axiom_discarded_zero`
 
 src/vspec/sys.rs:192. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -6923,7 +6997,7 @@ pub(crate) axiom fn axiom_discarded_zero(addr: int, len: int) -> (tracked z: cra
 ;
 ```
 
-### S407. `Unbacked::commit`
+### S411. `Unbacked::commit`
 
 src/vspec/unbacked.rs:92. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
@@ -6939,7 +7013,7 @@ pub proof fn commit(tracked self) -> (tracked r: (PointsToRaw, Zeroed))
         r.1.len() == self.len(),
 ```
 
-### S408. `Unbacked::into_lazy`
+### S412. `Unbacked::into_lazy`
 
 src/vspec/unbacked.rs:131. Kind: external_body proof. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -6957,7 +7031,7 @@ pub proof fn into_lazy(tracked self) -> (tracked r: (PointsToRaw, Zeroed))
         r.1.len() == self.len(),
 ```
 
-### S409. `axiom_zeroed_bytes`
+### S413. `axiom_zeroed_bytes`
 
 src/vspec/user.rs:174. Kind: external_body proof. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -6973,7 +7047,7 @@ pub proof fn axiom_zeroed_bytes(tracked z: &Zeroed, tracked m: &mut UserMem)
         final(m).reads_zero(z.addr(), z.len()),
 ```
 
-### S410. `axiom_cast`
+### S414. `axiom_cast`
 
 src/vspec/user.rs:198. Kind: external_body proof. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
@@ -6989,7 +7063,7 @@ pub proof fn axiom_cast(tracked m: &mut UserMem)
         final(m).provenance() == crate::vspec::addr::cast_provenance(),
 ```
 
-### S411. `axiom_copied_bytes`
+### S415. `axiom_copied_bytes`
 
 src/vspec/user.rs:244. Kind: axiom. Category: core library.
 Tool: Kani. Status: evidence (verus/seams/vspec-user-axiom_copied_bytes.md).
@@ -7009,7 +7083,7 @@ axiom fn axiom_copied_bytes(tracked s: &UserMem, tracked d: &mut UserMem, src: i
 ;
 ```
 
-### S412. `WordPerm`
+### S416. `WordPerm`
 
 src/vspec/word.rs:50. Kind: external_body type. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-word-WordPerm.md).
@@ -7020,7 +7094,7 @@ Tool: loom/GenMC. Status: discharged (verus/seams/vspec-word-WordPerm.md).
 pub tracked struct WordPerm
 ```
 
-### S413. `fetch_or`
+### S417. `fetch_or`
 
 src/vspec/word.rs:66. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-word-fetch_or.md).
@@ -7039,7 +7113,7 @@ pub fn fetch_or(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracke
     no_unwind
 ```
 
-### S414. `store`
+### S418. `store`
 
 src/vspec/word.rs:84. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-word-store.md).
@@ -7059,7 +7133,7 @@ pub fn store(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&
     no_unwind
 ```
 
-### S415. `load`
+### S419. `load`
 
 src/vspec/word.rs:105. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-word-load.md).
@@ -7078,7 +7152,7 @@ pub fn load(w: &AtomicU64, ordering: Ordering, Tracked(perm): Tracked<&WordPerm>
     no_unwind
 ```
 
-### S416. `fetch_and`
+### S420. `fetch_and`
 
 src/vspec/word.rs:122. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-word-fetch_and.md).
@@ -7097,7 +7171,7 @@ pub fn fetch_and(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Track
     no_unwind
 ```
 
-### S417. `ZeroRaw::axiom_new`
+### S421. `ZeroRaw::axiom_new`
 
 src/vspec/zero.rs:142. Kind: external_body proof. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
@@ -7113,7 +7187,7 @@ pub proof fn axiom_new(tracked raw: PointsToRaw, tracked z: Zeroed) -> (tracked 
         r.provenance() == raw.provenance(),
 ```
 
-### S418. `axiom_zero_word`
+### S422. `axiom_zero_word`
 
 src/vspec/zero.rs:203. Kind: external_body proof. Category: core library.
 Tool: Kani. Status: trusted.
@@ -7133,7 +7207,7 @@ pub proof fn axiom_zero_word(tracked z: ZeroRaw, p: *mut u64) -> (tracked w: Poi
         w.value() == 0,
 ```
 
-### S419. `write_zero`
+### S423. `write_zero`
 
 src/vspec/zero.rs:455. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/vspec-zero-write_zero.md).

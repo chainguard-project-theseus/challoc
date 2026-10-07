@@ -101,8 +101,9 @@ pub open spec fn c_apart(addr: int, len: int) -> bool {
 /// read: a thread heap's `allocated` and `deallocated` totals
 /// (`Heap::snapshot`), whose addresses `mallctl`'s `thread.allocatedp`
 /// and `thread.deallocatedp` hand out. They lie in the metadata mapping,
-/// but no ghost permission covers them (`heap_new` uses up the fresh
-/// heap's permission, and the heap is reached through references): the
+/// but no ghost permission covers them (`thread::HeapPerm::assemble`
+/// uses up the fresh heap's head permission into the abstract `HeapPerm`,
+/// which names no bytes, and the heap is reached through references): the
 /// premise under which a read permission to them ([`CCall::str_byte`],
 /// [`CCall::sized`], [`CCall::counted`]) aliases nothing verified code
 /// holds. A permission model that covered them (a linear `PointsTo<Heap>`,

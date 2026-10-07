@@ -2752,7 +2752,7 @@ mod kani_fmt {
     /// The longest directory checked.
     const DIR_MAX: u16 = 3;
 
-    /// S352 `DisplaySpecImpl for sys::cgroup::Cgroup` (`fmt_req` true):
+    /// S355 `DisplaySpecImpl for sys::cgroup::Cgroup` (`fmt_req` true):
     /// every state, every figure, and every directory of up to `DIR_MAX`
     /// bytes (every byte value) with every mount prefix of it, the type
     /// invariant's `mount_len <= dir_len` (what `mount()` and `path()`

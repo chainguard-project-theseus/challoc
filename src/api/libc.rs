@@ -609,12 +609,12 @@ pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>)
     // the common case pays no test of its own (jemalloc's `free` fast
     // path leaves null to its slow path the same way).
     let tracked tls = crate::sys::tls::TlsSlot::entry();
-    if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&tls)) {
+    if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&*tls)) {
         // SAFETY: this thread's heap exists, so this thread observed
         // `READY` when it created the heap.
         let shared = unsafe { super::shared_deref(super::shared_base()) };
         // SAFETY: the slot value of this thread.
-        if unsafe { heap::free_fast_slot(shared, t, tp, p, Tracked(&mut blk)) }.is_some() {
+        if unsafe { heap::free_fast_slot(shared, t, tp, p, Tracked(&mut blk), Tracked(tls)) }.is_some() {
             return;
         }
     }
@@ -658,12 +658,12 @@ fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8, Tracked(
         },
         2 => {
             let tracked tls = crate::sys::tls::TlsSlot::entry();
-            if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&tls)) {
+            if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&*tls)) {
                 // SAFETY: as in `free`.
                 let s = unsafe { super::shared_deref(super::shared_base()) };
                 let tracked mut b = heap::live::axiom_c_claim(claim);
                 // SAFETY: as in `free`.
-                let _ = unsafe { heap::free_fast_slot(s, t, tp, p, Tracked(&mut b)) };
+                let _ = unsafe { heap::free_fast_slot(s, t, tp, p, Tracked(&mut b), Tracked(tls)) };
             }
         },
         3 => {
@@ -672,6 +672,9 @@ fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8, Tracked(
             if let Some(c) = hint {
                 let sp = super::shared_base();
                 if let Some(h) = heap::existing_heap(sp) {
+                    proof {
+                        h.lemma_wf_regions();
+                    }
                     // SAFETY: as in `free`.
                     let s = unsafe { super::shared_deref(sp) };
                     let tracked mut b = heap::live::axiom_c_claim(claim);
@@ -681,12 +684,12 @@ fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8, Tracked(
         },
         _ => {
             let tracked tls = crate::sys::tls::TlsSlot::entry();
-            if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&tls)) {
+            if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&*tls)) {
                 // SAFETY: as in `free`.
                 let s = unsafe { super::shared_deref(super::shared_base()) };
                 let tracked mut b = heap::live::axiom_c_claim(claim);
                 // SAFETY: as in `free`.
-                if let Some(c) = unsafe { heap::free_fast_slot(s, t, tp, p, Tracked(&mut b)) } {
+                if let Some(c) = unsafe { heap::free_fast_slot(s, t, tp, p, Tracked(&mut b), Tracked(tls)) } {
                     let _ = class_size(c);
                 }
             }
@@ -749,6 +752,9 @@ pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(bl
     }
     let sp = super::shared_base();
     if let Some(h) = heap::existing_heap(sp) {
+        proof {
+            h.lemma_wf_regions();
+        }
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_deref(sp) };
         if heap::free_sized_fast(shared, h, p, Some(c), shared.push_flags(), Tracked(&mut blk)) {
@@ -2211,11 +2217,11 @@ pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>) -> (r: usize)
         return 0;
     }
     let tracked tls = crate::sys::tls::TlsSlot::entry();
-    if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&tls)) {
+    if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&*tls)) {
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_deref(super::shared_base()) };
         // SAFETY: as in `free`.
-        if let Some(class) = unsafe { heap::free_fast_slot(shared, t, tp, p, Tracked(&mut blk)) } {
+        if let Some(class) = unsafe { heap::free_fast_slot(shared, t, tp, p, Tracked(&mut blk), Tracked(tls)) } {
             proof {
                 shared.lemma_regions_ok();
                 crate::vspec::usable::lemma_usable_slot(p, class as int, 0);

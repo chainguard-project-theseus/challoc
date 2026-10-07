@@ -213,6 +213,28 @@ pub proof fn axiom_raw_valid(tracked raw: &vstd::raw_ptr::PointsToRaw, p: *mut u
 {
 }
 
+/// Element `i` of a frozen array: a `'static` shared permission to a
+/// `[T; N]` gives one to each of its elements, holding that element, at
+/// [`ptr_add`] of the array's address as a `*mut T`; and the array's first
+/// `i` elements lie inside the allocation it is in, in fewer than
+/// `isize::MAX` bytes, so `<*mut T>::add(i)` is defined on that pointer.
+/// Trusted: the `core` layout of arrays (`N` elements `size_of::<T>()`
+/// apart, from the array's address; a Rust object is at most `isize::MAX`
+/// bytes) and the meaning of a permission (one to an array owns its
+/// elements' bytes), neither of which vstd states. Shared and `'static`
+/// only, so nothing is written through either permission.
+pub axiom fn axiom_array_elem<T, const N: usize>(tracked a: &'static vstd::raw_ptr::PointsTo<[T; N]>, i: usize) -> (tracked r: &'static vstd::raw_ptr::PointsTo<T>)
+    requires
+        i < N,
+        a.is_init(),
+    ensures
+        in_alloc(a.ptr() as *mut T, i as int * vstd::layout::size_of::<T>()),
+        i as int * vstd::layout::size_of::<T>() <= isize::MAX,
+        r.ptr() == ptr_add(a.ptr() as *mut T, i),
+        r.is_init(),
+        r.value() == a.value()[i as int],
+;
+
 /// `ptr::from_ref(v)`: the address of the `T` behind a reference, valid
 /// for reads of its `size_of::<T>()` bytes, which do not wrap the address
 /// space. Trusted: a reference points to a live, initialised `T` (the

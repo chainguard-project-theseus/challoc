@@ -1353,6 +1353,20 @@ pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 /// The contents of [`CLASSES`] after init.
 pub uninterp spec fn class_table() -> [Class; NCLASSES];
 
+/// Trusted: what [`class_table`] names, the contents of [`CLASSES`] after
+/// init, is what a frozen permission to its storage holds. `api::init`
+/// freezes the one permission to it (`api::axiom_statics` hands it out
+/// once, for the process's one-shot token) after [`adopt_page_geometry`],
+/// and nothing writes the table through a `'static` shared permission, so
+/// every such permission holds that one value.
+pub axiom fn axiom_class_table(tracked t: &'static vstd::raw_ptr::PointsTo<[Class; NCLASSES]>)
+    requires
+        t.ptr() == classes_storage(),
+        t.is_init(),
+    ensures
+        class_table() == t.value(),
+;
+
 impl ClassTable {
     #[verifier::external_body]
     const fn new(table: [Class; NCLASSES]) -> ClassTable {
@@ -1366,9 +1380,11 @@ impl ClassTable {
     /// through the permission `api::init` writes the table with and
     /// freezes at `READY`, `api::Published`), and it is written only
     /// before the allocator is published. What this assumes is that a
-    /// reader sees that value: the frozen permission would show it, but
-    /// readers are everywhere (the fast paths among them) and none holds
-    /// it.
+    /// reader sees that value: the frozen permission would show it
+    /// (`api::axiom_published`, given `api::ready()`, as
+    /// `regions::class_entry`, the fast paths' reader, uses it), but
+    /// `Shared::init` reads the table before `READY`, and `Deref`
+    /// (`CLASSES[c]`) can state no precondition.
     #[verifier::external_body]
     #[inline(always)]
     pub fn table(&self) -> (r: &[Class; NCLASSES])

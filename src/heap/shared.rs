@@ -1017,7 +1017,7 @@ pub uninterp spec fn shared_at(p: *mut Shared) -> Shared;
 /// pointer-signing mode ([`process_regions`], [`super::pac_mode`]) are
 /// those of the `Shared` in its storage, which `api::init` builds once,
 /// before it publishes `READY`. Both are uninterpreted and no other axiom
-/// relates them to a value, so this defines them; trusted accessors
+/// relates them to a value, so this defines them; the accessors
 /// (`fast_flags`, the slot readers) state their results in terms of them.
 /// The unit tests build further `Shared`s elsewhere; the assumption is
 /// about the shipped library.
@@ -1776,7 +1776,7 @@ impl Shared {
     /// `MADV_GUARD_INSTALL` support), the registries and the thread-exit
     /// key. Returns `false` if the metadata region cannot hold the tables,
     /// leaving `this` unusable. On `true` the built value satisfies
-    /// [`Shared::wf`]. Every field is written through the permission to it,
+    /// [`Shared::built`]. Every field is written through the permission to it,
     /// carved from the storage's ([`Shared::begin`], [`Shared::split`]).
     ///
     /// # Safety
@@ -1826,7 +1826,7 @@ impl Shared {
             pac ==> crate::sys::pac::pac_available(),
             once::shared_steps(steps),
         ensures
-            r ==> shared_at(this).wf(),
+            r ==> shared_at(this).built(),
             r ==> final(built).at(this),
     {
         // Premise (lock order): no allocator lock exists before this
@@ -2173,15 +2173,10 @@ impl Shared {
     /// built (`Arenas::wf`: its bound counts at their invariants), the
     /// process's (`Arenas::is_process`).
     ///
-    /// Assumed by every verified function that takes a `&Shared`.
     /// [`Shared::init`] proves it of the value it builds (the
     /// configuration is well formed: `Config::wf`, which `config::load`
-    /// ensures); `api::shared_ref` proves it of the published value, which
-    /// is that one, from the permission `api::STATE`'s invariant holds
-    /// from `READY` on (`api::Published`); `api::shared_deref`, the
-    /// fast paths' accessor, which that permission does not reach,
-    /// assumes it.
-    pub closed spec fn wf(&self) -> bool {
+    /// ensures), before `READY` is published; [`Shared::wf`] adds that.
+    pub closed spec fn built(&self) -> bool {
         &&& self.regions.wf()
         &&& self.regions == crate::layout::process_regions()
         &&& self.regions.separated()
@@ -2203,6 +2198,47 @@ impl Shared {
         &&& self.stats.rank() == rank_stats()
         &&& self.arenas.wf()
         &&& self.arenas.is_process()
+    }
+
+    /// The value is as `Shared::init` built it ([`Shared::built`]), and the
+    /// allocator is published ([`crate::api::ready`]): a `&Shared` is handed
+    /// out only from `READY` on, which is what lets a holder reach the
+    /// frozen permissions (`api::axiom_published`) and lets the thread
+    /// heaps it creates carry the fact (`Heap::wf`).
+    ///
+    /// Assumed by every verified function that takes a `&Shared`.
+    /// `api::shared_ref` proves it of the published value, which is the
+    /// one `Shared::init` built, from the permission `api::STATE`'s
+    /// invariant holds from `READY` on (`api::Published`), and so do
+    /// `api::shared_deref`, the free paths' accessor, and
+    /// `heap::paths::shared_of` from the same permissions; the trusted
+    /// readers `purge::background::shared_arg` and `mallctl::shared`
+    /// assume it.
+    pub closed spec fn wf(&self) -> bool {
+        &&& self.built()
+        &&& crate::api::ready()
+    }
+
+    /// A built `Shared` ([`Shared::built`]) is well formed once the
+    /// allocator is published.
+    pub proof fn lemma_built_wf(&self)
+        requires
+            self.built(),
+            crate::api::ready(),
+        ensures
+            self.wf(),
+    {
+    }
+
+    /// A well-formed `Shared` was built ([`Shared::built`]) and the
+    /// allocator is published.
+    pub proof fn lemma_wf_ready(&self)
+        requires
+            self.wf(),
+        ensures
+            self.built(),
+            crate::api::ready(),
+    {
     }
 
     /// `meta` is the process's metadata allocator ([`Shared::wf`]), whose
@@ -2471,6 +2507,7 @@ impl Shared {
             self.wf(),
         ensures
             self.regions.wf(),
+            crate::api::ready(),
             self.regions == crate::layout::process_regions(),
             self.regions.separated(),
             self.huge.spec_base() == self.regions.huge_base,
@@ -3652,7 +3689,7 @@ mod kani_layout {
         assert!(size_of::<Shared>() <= isize::MAX as usize);
     }
 
-    /// S48 `Arena::axiom_array_layout` at the two arrays of `Shared`.
+    /// S49 `Arena::axiom_array_layout` at the two arrays of `Shared`.
     #[kani::proof]
     fn shared_array_layout() {
         array_layout::<ClassLine, NCLASSES>();
