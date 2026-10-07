@@ -318,6 +318,7 @@ state_publish	atomics primitive	loom/GenMC	discharged (verus/seams/api-state_pub
 load_usize_in	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-atom-load_usize_in.md)
 store_usize	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-atom-store_usize.md)
 usize_ptr	raw pointer (internal)	none (assumption)
+store_usize_at	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-atom-store_usize_at.md)
 src/vspec/count.rs:store	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-store.md)
 src/vspec/count.rs:swap	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-swap.md)
 # try_bind_idle's compare-and-swap (since the port of upstream #103), run

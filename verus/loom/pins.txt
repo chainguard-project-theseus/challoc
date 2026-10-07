@@ -87,9 +87,16 @@ src/class/mod.rs	desc.add_live(n);
 # into the class line (free.rs, since upstream #87), the free path's
 # checks (free.rs): is_handed_out, the bit word (bit_word),
 # is_set_unchecked, owner_at, check_live, and take_group's lock, bound,
-# check_zero comparison and `next_slab = end` (watermark.rs).
+# check_zero comparison and `next_slab = end` (watermark.rs); and the
+# copy's two writers, mirror_watermark's lock, watermark load, store and
+# install, and take_group's store under `if !gi.mirror.is_null()`
+# (watermark.rs's copy model, since ATOMAT).
 src/class/table.rs	w.load(Ordering::Relaxed)
 src/class/table.rs	w.store(arena, Ordering::Relaxed)
+src/class/table.rs	let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
+src/class/table.rs	let wm = self.watermark(Ordering::Relaxed);
+src/class/table.rs	unsafe { store_usize_at(mirror, wm, Ordering::Release, Tracked(&mut perm)) };
+src/class/table.rs	gi.mirror = mirror;
 src/class/table.rs	load_usize_in(&self.committed_slabs, order, &self.committed_inv)
 src/class/table.rs	self.watermark(Ordering::Acquire)
 src/class/table.rs	slab < self.watermark(Ordering::Relaxed)
@@ -105,6 +112,7 @@ src/class/table.rs	let Tracked(m) = self.bits_unchecked(slab).init(cls.nslots(),
 src/class/table.rs	store_owner(owner_word, arena, Ghost(*self), Ghost(s >> self.lg_group), Tracked(om));
 src/class/table.rs	gi.next_slab = end;
 src/class/table.rs	store_usize(&self.committed_slabs, end, Ordering::Release, Tracked(&mut perm));
+src/class/table.rs	if !gi.mirror.is_null() {
 src/class/table.rs	unsafe { store_usize_at(gi.mirror, end, Ordering::Release, Tracked(&mut perm)) };
 # heap/shared.rs: ClassLine::set_slab (the x86_64 order: the watermark
 # copy, the bit test) and ClassLine::owner, home_owns (free.rs).

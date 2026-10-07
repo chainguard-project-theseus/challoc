@@ -645,7 +645,7 @@ the full name, the line and the contract.
 | S272 | `load_usize_in` | body | atomic | GenMC | discharged |
 | S273 | `store_usize` | body | atomic | GenMC | discharged |
 | S274 | `usize_ptr` | body | ptr | none | trusted |
-| S275 | `store_usize_at` | body | atomic | GenMC | trusted |
+| S275 | `store_usize_at` | body | atomic | GenMC | discharged |
 
 ### src/vspec/cbuf.rs
 
@@ -4947,7 +4947,7 @@ pub fn usize_ptr(a: &AtomicUsize) -> (r: *const AtomicUsize)
 ### S275. `store_usize_at`
 
 src/vspec/atom.rs:168. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/vspec-atom-store_usize_at.md).
 
 > `(*p).store(v, ordering)` through a pointer from [`usize_ptr`], with the permission of the atomic it names (it panics for an `Acquire` or `AcqRel` ordering).
 
