@@ -3,6 +3,7 @@
 # root cgroup (the same list for both). Below 6.13 no guard slab exists,
 # below 6.10 no mseal, THP advice-gated; the
 # unit-test group has no memory limit for the bands. ci/skip-summary.sh.
+a_sealed_range_aborts
 c_cgroup_policy_bands
 c_guard_slab_fault
 c_mseal

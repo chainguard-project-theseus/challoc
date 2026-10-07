@@ -5,6 +5,7 @@
 # unit-test group has no memory limit for the bands. ci/skip-summary.sh.
 # 5.14 only: RLIMIT_NPROC (by then counted in ucounts) does not refuse a
 # thread after root drops to nobody, so lazy_bg/nproc skips; 5.10 runs it.
+a_sealed_range_aborts
 c_cgroup_policy_bands
 c_guard_slab_fault
 c_lazy_bg

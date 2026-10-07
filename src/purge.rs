@@ -5,9 +5,15 @@
 //!   `madvise`. The advice is decided at each flush ([`advice`], design 8
 //!   and 11): `MADV_FREE` under the cgroup policy's headroom band
 //!   ([`set_headroom`]), `MADV_DONTNEED` everywhere else and always for an
-//!   explicit purge ([`purge_all`], [`purge_arena`]). A range that fails to
-//!   discard aborts: the heap's idea of what is resident would otherwise be
-//!   wrong.
+//!   explicit purge ([`purge_all`], [`purge_arena`]). The flush reports
+//!   each range to the caller as discarded or not, and the caller changes
+//!   state only for the discarded ones: a range `madvise` refuses (`EINVAL`
+//!   on `mlock`ed pages) stays `Empty`, dirty and never assumed zero, and
+//!   is counted in [`failed_discards`] instead of [`discarded_bytes`]. The
+//!   next explicit purge retries it; a decay walk that hit one backs its
+//!   owner off for [`DISCARD_RETRY_NS`] ([`Decayer::back_off`]). Any
+//!   other errno (`ENOMEM`: a reservation of ours is gone; `EPERM`: a
+//!   sealed range) is a heap inconsistency and aborts.
 //! - The decay curve ([`Curve`], `purge/curve.rs`) and its driver
 //!   ([`decay`]): jemalloc's decay shape, a smootherstep from one to zero
 //!   over the `dirty_decay_ms` window. Each `(arena, class)` and the huge
@@ -35,8 +41,8 @@
 //! and `Fresh` memory stays known zero.
 //!
 //! The curve's tests sit in `purge/curve.rs`, the other pure tests and the
-//! `serial` lock the class tests share in `purge/tests.rs`, and the one that
-//! needs a kernel in `purge/linux_tests.rs`.
+//! `serial` lock the class tests share in `purge/tests.rs`, and the ones that
+//! need a kernel in `purge/linux_tests.rs`.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -56,6 +62,11 @@ pub use curve::{Curve, NEVER, STEPS, decay_ns_from_ms};
 /// Ranges per batch (design section 8).
 pub const MAX_BATCH: usize = 64;
 
+/// How long a decay walk whose discard failed holds its owner's next walk
+/// off ([`Decayer::back_off`]): the memory is most likely locked, and a
+/// zero or short period would otherwise retry it at every tick.
+pub const DISCARD_RETRY_NS: u64 = 1_000_000_000;
+
 /// `lazy_band` (default true): `MADV_FREE` under the headroom band.
 static LAZY_BAND: AtomicBool = AtomicBool::new(true);
 /// The policy's last evaluation put usage under 70% of a known limit with
@@ -70,11 +81,15 @@ static EXPLICIT: AtomicU32 = AtomicU32::new(0);
 /// A lazy batch has been issued in this process: `Purged` memory is no
 /// longer known to be zero (the module doc). Sticky.
 static LAZY_EVER: AtomicBool = AtomicBool::new(false);
-/// Batches and bytes issued with each advice (the report, `stats.cgroup.*`).
+/// Batches that discarded anything, and bytes discarded, with each advice
+/// (the report, `stats.cgroup.*`).
 static LAZY_BATCHES: AtomicU64 = AtomicU64::new(0);
 static EAGER_BATCHES: AtomicU64 = AtomicU64::new(0);
 static LAZY_BYTES: AtomicU64 = AtomicU64::new(0);
 static EAGER_BYTES: AtomicU64 = AtomicU64::new(0);
+/// Pieces and bytes whose discard failed (the report).
+static FAILED_PIECES: AtomicU64 = AtomicU64::new(0);
+static FAILED_BYTES: AtomicU64 = AtomicU64::new(0);
 /// `check_zero`: the debug mode that reads every slot or page handed out
 /// as "known zero" and aborts on a dirty word.
 static CHECK_ZERO: AtomicBool = AtomicBool::new(false);
@@ -125,7 +140,7 @@ pub fn advice_reason() -> &'static str {
     }
 }
 
-/// `(lazy batches, eager batches)` flushed so far.
+/// `(lazy batches, eager batches)` that discarded anything so far.
 pub fn batches() -> (u64, u64) {
     (
         LAZY_BATCHES.load(Ordering::Relaxed),
@@ -138,6 +153,17 @@ pub fn discarded_bytes() -> (u64, u64) {
     (
         LAZY_BYTES.load(Ordering::Relaxed),
         EAGER_BYTES.load(Ordering::Relaxed),
+    )
+}
+
+/// `(pieces, bytes)` whose discard failed so far: the ranges as pushed (a
+/// page group, an extent) that stayed dirty (the module doc), the middle
+/// pieces of a refused merged range left without a call included
+/// ([`Batch`]). A piece retried and refused again counts again.
+pub fn failed_discards() -> (u64, u64) {
+    (
+        FAILED_PIECES.load(Ordering::Relaxed),
+        FAILED_BYTES.load(Ordering::Relaxed),
     )
 }
 
@@ -202,18 +228,43 @@ pub fn purged_is_zero() -> bool {
 /// process's own reservations whose pages are *free* (an `Empty` slab, a
 /// freed huge run: reachable through no live pointer) and stay so until
 /// the flush returns. The callers (`ClassState::purge_empty` and
-/// `purge_curve`, `Huge::free_run`, `purge_empty` and `purge_curve`) push
-/// under the class or huge lock that keeps the ranges free and flush
-/// before releasing it; the batch never outlives that hold.
+/// `purge_curve`, `Huge::free_run` through [`discard_one`], `purge_empty`
+/// and `purge_curve`) push under the class or huge lock that keeps the
+/// ranges free and flush before releasing it; the batch never outlives
+/// that hold.
+///
+/// The memory stays in its free state (`Empty`) until the flush reports
+/// it discarded: `push` and `flush` take the caller's `settle(addr, len,
+/// discarded)`, which the flush (a full batch flushes inside `push`)
+/// calls for every range it issued, and the caller makes the memory
+/// `Purged` only when `discarded` is true. Only ranges pushed with the
+/// same length merge (a walk's page groups); a merged range the kernel
+/// refuses is issued again piece by piece, as pushed, and each piece is
+/// reported on its own, so a locked page keeps only its own piece dirty.
+/// A piece `madvise` refused part of is reported not discarded, and the
+/// bytes a refused call did discard are not counted.
+///
+/// The re-issue starts with the first and the last piece; when both are
+/// refused too, the middle ones are reported refused without a call.
+/// Under `mlockall` every range is refused, and a merged range of `n`
+/// pieces then costs 3 calls instead of `n + 1` (64 MiB of 4 KiB groups
+/// would be ~16k `EINVAL`s per walk, under the class lock). The price is
+/// a range locked at both ends and not in the middle: its unlocked middle
+/// stays dirty, which is always safe (only not returned yet), until an
+/// end is unlocked or reused, or a later batch merges the run another
+/// way. One locked page in an otherwise unlocked run, the common case,
+/// still keeps only its own piece dirty.
 pub struct Batch {
-    ranges: [(usize, usize); MAX_BATCH],
+    /// `(addr, len, piece)`: `len` is a multiple of `piece`, the length
+    /// of each range merged into it.
+    ranges: [(usize, usize, usize); MAX_BATCH],
     n: usize,
 }
 
 impl Batch {
     pub const fn new() -> Batch {
         Batch {
-            ranges: [(0, 0); MAX_BATCH],
+            ranges: [(0, 0, 0); MAX_BATCH],
             n: 0,
         }
     }
@@ -236,53 +287,94 @@ impl Batch {
     }
 
     /// Add `[addr, addr + len)` (free, per the type's invariant), flushing
-    /// first if the batch is full.
-    pub fn push(&mut self, addr: usize, len: usize) {
-        // Adjacent ranges pushed in address order (a run of empty 4 KiB
-        // slabs) go out as one.
+    /// first, with `settle`, if the batch is full.
+    pub fn push(&mut self, addr: usize, len: usize, settle: impl FnMut(usize, usize, bool)) {
+        // Adjacent ranges of one length pushed in address order (a run of
+        // empty 4 KiB slabs) go out as one.
         if self.n != 0 {
-            let (last, last_len) = self.ranges[self.n - 1];
-            if last + last_len == addr {
+            let (last, last_len, piece) = self.ranges[self.n - 1];
+            if last + last_len == addr && len == piece {
                 self.ranges[self.n - 1].1 = last_len + len;
                 return;
             }
         }
         if self.is_full() {
-            self.flush();
+            self.flush(settle);
         }
-        self.ranges[self.n] = (addr, len);
+        self.ranges[self.n] = (addr, len, len);
         self.n += 1;
     }
 
-    /// Discard every range with `madvise`, then empty the batch. The advice is
-    /// [`advice`] at this moment, counted per batch and per byte; a lazy
-    /// flush makes `Purged` memory unknown-zero for the rest of the process
-    /// (the module doc), which is published before the discard so a claim
-    /// of one of these ranges after the caller's lock drops sees it. Aborts
-    /// if a range cannot be discarded. The ranges are free (the type's
-    /// invariant), which is what makes the discard sound.
-    pub fn flush(&mut self) {
+    /// Discard every range with `madvise`, report each to `settle(addr,
+    /// len, discarded)` (a refused merged range piece by piece, the type's
+    /// doc), then empty the batch. The advice is [`advice`] at this moment;
+    /// a batch that discarded anything is counted, and so are the bytes
+    /// discarded ([`discarded_bytes`]; a refused piece counts in
+    /// [`failed_discards`]). A lazy flush makes `Purged` memory
+    /// unknown-zero for the rest of the process (the module doc), which is
+    /// published before the discard so a claim of one of these ranges
+    /// after the caller's lock drops sees it. The ranges are free (the
+    /// type's invariant), which is what makes the discard sound.
+    pub fn flush(&mut self, mut settle: impl FnMut(usize, usize, bool)) {
         if self.n != 0 {
             let advice = advice();
-            let bytes: u64 = self.ranges[..self.n]
-                .iter()
-                .map(|&(_, len)| len as u64)
-                .sum();
-            match advice {
-                Advice::Lazy => {
-                    LAZY_EVER.store(true, Ordering::Relaxed);
-                    LAZY_BATCHES.fetch_add(1, Ordering::Relaxed);
-                    LAZY_BYTES.fetch_add(bytes, Ordering::Relaxed);
+            if advice == Advice::Lazy {
+                LAZY_EVER.store(true, Ordering::Relaxed);
+            }
+            let mut bytes = 0u64;
+            for &(addr, len, piece) in &self.ranges[..self.n] {
+                if discard(addr, len, advice) {
+                    bytes += len as u64;
+                    settle(addr, len, true);
+                    continue;
                 }
-                Advice::Eager => {
-                    EAGER_BATCHES.fetch_add(1, Ordering::Relaxed);
-                    EAGER_BYTES.fetch_add(bytes, Ordering::Relaxed);
+                // A range of one piece is not issued twice; when its first
+                // and last pieces are refused as well, neither are the
+                // middle ones (the type's doc).
+                let last = addr + len - piece;
+                let first_done = piece < len && discard(addr, piece, advice);
+                let last_done = piece < len && discard(last, piece, advice);
+                let middle = first_done || last_done;
+                for at in (addr..addr + len).step_by(piece) {
+                    let done = if at == addr {
+                        first_done
+                    } else if at == last {
+                        last_done
+                    } else {
+                        middle && discard(at, piece, advice)
+                    };
+                    if done {
+                        bytes += piece as u64;
+                        settle(at, piece, true);
+                    } else {
+                        FAILED_PIECES.fetch_add(1, Ordering::Relaxed);
+                        FAILED_BYTES.fetch_add(piece as u64, Ordering::Relaxed);
+                        settle(at, piece, false);
+                    }
                 }
             }
-            discard(&self.ranges[..self.n], advice);
+            if bytes != 0 {
+                let (batches, total) = match advice {
+                    Advice::Lazy => (&LAZY_BATCHES, &LAZY_BYTES),
+                    Advice::Eager => (&EAGER_BATCHES, &EAGER_BYTES),
+                };
+                batches.fetch_add(1, Ordering::Relaxed);
+                total.fetch_add(bytes, Ordering::Relaxed);
+            }
             self.n = 0;
         }
     }
+}
+
+/// Discard `[addr, addr + len)` alone, free per the [`Batch`] invariant,
+/// as a batch of one: whether it was discarded (`Huge::free_run`'s purge
+/// at free time).
+pub fn discard_one(addr: usize, len: usize) -> bool {
+    let mut discarded = false;
+    let mut batch = Batch::new();
+    batch.push(addr, len, |_, _, _| {});
+    batch.flush(|_, _, d| discarded = d);
+    discarded
 }
 
 /// The step gate of design section 8, one per `ClassState` and one in
@@ -290,8 +382,9 @@ impl Batch {
 /// none is known), written under the owner's lock and read without it by
 /// the decay driver, and the deadline of the owner's next walk.
 /// [`Decayer::decay`] runs the owner's walk at most once per step of the
-/// curve; the walks themselves (`ClassState::purge_curve`,
-/// `Huge::purge_curve`) differ and stay with their owners.
+/// curve, and not before the back-off a failed discard set has passed;
+/// the walks themselves (`ClassState::purge_curve`, `Huge::purge_curve`)
+/// differ and stay with their owners.
 pub struct Decayer {
     /// `dirty_at` of the oldest `Empty` member, 0 when none. It may lag
     /// behind a claim that reused the oldest member, in which case it is
@@ -299,6 +392,9 @@ pub struct Decayer {
     oldest_empty: AtomicU64,
     /// When the next walk is due; 0 before the first.
     next_walk: AtomicU64,
+    /// No walk before this ([`Decayer::back_off`]); 0 until a walk's
+    /// discard fails.
+    retry_at: AtomicU64,
 }
 
 impl Decayer {
@@ -306,7 +402,18 @@ impl Decayer {
         Decayer {
             oldest_empty: AtomicU64::new(0),
             next_walk: AtomicU64::new(0),
+            retry_at: AtomicU64::new(0),
         }
+    }
+
+    /// A walk at `now` could not discard some of what it chose (the
+    /// module doc): hold the owner's walks off for [`DISCARD_RETRY_NS`],
+    /// whatever the period, so memory `madvise` keeps refusing is retried
+    /// once a second rather than at every tick. Called by the walk, under
+    /// the owner's lock.
+    pub fn back_off(&self, now: u64) {
+        self.retry_at
+            .store(now.saturating_add(DISCARD_RETRY_NS), Ordering::Relaxed);
     }
 
     /// `dirty_at` of the oldest `Empty` member as the driver sees it (0
@@ -340,10 +447,11 @@ impl Decayer {
 
     /// Decay step: once the oldest `Empty` member is a step of the curve
     /// old, run `walk(now, curve)` (which purges along the curve and
-    /// republishes the oldest `dirty_at`) at most once per step. Returns
-    /// the owner's next deadline (the end of the oldest member's first
-    /// step, or of the current step), `None` when nothing is `Empty`.
-    /// Lock-free unless a walk is due.
+    /// republishes the oldest `dirty_at`) at most once per step and not
+    /// during a back-off. Returns the owner's next deadline (the end of the
+    /// oldest member's first step, of the back-off, or of the current
+    /// step), `None` when nothing is `Empty`. Lock-free unless a walk is
+    /// due.
     pub fn decay(&self, now: u64, decay_ns: u64, walk: impl FnOnce(u64, &Curve)) -> Option<u64> {
         let oldest = self.oldest_empty();
         if oldest == 0 {
@@ -354,6 +462,10 @@ impl Decayer {
         let first = oldest.saturating_add(step);
         if now < first {
             return Some(first);
+        }
+        let retry = self.retry_at.load(Ordering::Relaxed);
+        if now < retry {
+            return Some(retry);
         }
         // A deadline further away than one step was set under a longer
         // period since shortened: walk now.
@@ -367,7 +479,7 @@ impl Decayer {
         if self.oldest_empty() == 0 {
             None
         } else {
-            Some(next)
+            Some(next.max(self.retry_at.load(Ordering::Relaxed)))
         }
     }
 }
@@ -506,19 +618,40 @@ pub fn note_decay_changed() {
     background::wake();
 }
 
-/// Issue `advice` on `ranges`, which are free (the [`Batch`]
+/// Issue `advice` on `[addr, addr + len)`, which is free (the [`Batch`]
 /// invariant; this is the one place the batch's ranges reach the
-/// kernel).
-fn discard(ranges: &[(usize, usize)], advice: Advice) {
+/// kernel). Whether the kernel took it: on a refusal (`EINVAL` for a
+/// range with `mlock`ed pages, under `mlockall` every range) the pages
+/// keep their contents, or some of them do (Linux applies the advice to
+/// the VMAs before the one it refuses). Every supported kernel has
+/// `MADV_FREE` (design 17), so `EINVAL` is never an unknown advice. Any
+/// other errno aborts: `ENOMEM` (part
+/// of the range not mapped) means one of our reservations is gone,
+/// `EPERM` that the program sealed our free memory, and anything else is
+/// unexplained.
+fn discard(addr: usize, len: usize, advice: Advice) -> bool {
+    assert!(
+        {
+            let page = sys::features::page_size();
+            addr % page == 0 && len % page == 0 && len != 0
+        },
+        "purge: discard of {addr:#x}+{len:#x} is not page-aligned"
+    );
+    #[cfg(test)]
+    DISCARD_CALLS.fetch_add(1, Ordering::Relaxed);
     let advice = advice.madv();
-    for &(addr, len) in ranges {
-        // SAFETY: the ranges are page-aligned parts of our own mappings
-        // that the caller holds free (the `Batch` invariant).
-        if let Err(e) = unsafe { sys::madvise(addr, len, advice) } {
-            panic!("purge: madvise({advice}) of {addr:#x}+{len:#x} failed: {e}");
-        }
+    // SAFETY: the range is a page-aligned part of our own mappings that
+    // the caller holds free (the `Batch` invariant).
+    match unsafe { sys::madvise(addr, len, advice) } {
+        Ok(()) => true,
+        Err(sys::Errno::EINVAL) => false,
+        Err(e) => panic!("purge: madvise({advice}) of {addr:#x}+{len:#x} failed: {e}"),
     }
 }
+
+/// `madvise` calls [`discard`] made (the tests' syscall counts).
+#[cfg(test)]
+static DISCARD_CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// The background thread (design 8.1).
 pub mod background;

@@ -1,7 +1,8 @@
 //! Test fixtures shared across modules: [`TestShared`], the one builder of
-//! a [`Shared`] over a synthetic layout, a deterministic [`xorshift`], and
+//! a [`Shared`] over a synthetic layout, a deterministic [`xorshift`],
 //! [`global_state`], the guard of the tests that write or assert the
-//! process-wide allocator's settings.
+//! process-wide allocator's settings, and [`mlock_or_skip`] for the
+//! tests of purges that fail on locked memory.
 
 use core::mem::MaybeUninit;
 use std::boxed::Box;
@@ -205,5 +206,30 @@ pub(crate) fn in_fork_child(what: &str, timeout_ms: u64, f: impl FnOnce()) {
     assert!(
         libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
         "{what}: fork child failed (status {status:#x}; its panic is on stderr)"
+    );
+}
+
+/// `mlock` `[addr, addr + len)` for a test, or, when the host refuses (a
+/// low `RLIMIT_MEMLOCK`), [`skip`] the test and return false.
+pub(crate) fn mlock_or_skip(test: &str, addr: usize, len: usize) -> bool {
+    if unsafe { libc::mlock(addr as *const _, len) } == 0 {
+        return true;
+    }
+    skip(
+        test,
+        &std::format!("mlock({len}) failed: {}", std::io::Error::last_os_error()),
+    );
+    false
+}
+
+/// Print `test`'s `SKIP` line with `reason`, the host lacking a feature
+/// the test needs; the skip fails the test unless
+/// `CHALLOC_TEST_ALLOW_SKIP` is set (docs/testing.md, "Skips").
+pub(crate) fn skip(test: &str, reason: &str) {
+    let line = std::format!("SKIP {test} {reason}");
+    std::eprintln!("{line}");
+    assert!(
+        std::env::var_os("CHALLOC_TEST_ALLOW_SKIP").is_some(),
+        "{line}\n(set CHALLOC_TEST_ALLOW_SKIP=1 to let a test pass with a note on a host without the feature)"
     );
 }
