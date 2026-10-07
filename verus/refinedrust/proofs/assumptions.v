@@ -2,6 +2,7 @@
     `Print Assumptions` below names only the axioms RefinedRust itself
     uses (`statements.v` checks what each proves). *)
 From challoc.challoc.proofs Require Import
-  proof_heap_Heap_arena_volatile proof_heap_mark_bound.
+  proof_heap_Heap_arena_volatile proof_heap_mark_bound proof_heap_mark_rehome.
 Print Assumptions heap_Heap_arena_volatile_proof.
 Print Assumptions heap_mark_bound_proof.
+Print Assumptions heap_mark_rehome_proof.

@@ -84,10 +84,12 @@ because nothing else writes the head's first ten fields between
 holder of the head's permission, `create_detached` writes the rest of
 the block through the other permission (`rest`), and `create` calls
 `mark_bound` right after `create_detached` returns. Since the port of
-upstream #103, `create` then calls `mark_rehome` (S126, trusted), which
-stores `true` into `rehome` alone: a field after `rng`, at byte 88
-under rustc's layout, outside `HeapHead` (whose fields end at byte 74,
-below), so it leaves the bytes this proof is about as they were.
+upstream #103, `create` then calls `mark_rehome` (S124, discharged by
+RefinedRust, `heap-mark_rehome.md`), which stores `true` into `rehome`
+alone: a field after `rng`, at byte 88 under rustc's layout, outside
+`HeapHead` (whose fields end at byte 74, below), so it leaves the bytes
+this proof is about as they were (its proof gives back every other
+field before `caches` with its bytes).
 
 - `requires old(s).heap() == h`: `h = l`.
 - `requires heap_head(h, old(s).head())`: Verus's permission for the

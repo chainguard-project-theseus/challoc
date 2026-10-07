@@ -82,7 +82,7 @@ assert_rekey_flushed	panic/abort	Kani	discharged (verus/seams/heap-assert_rekey_
 FreshHeap	raw pointer (internal)	none (assumption)
 arena_volatile	UnsafeCell/volatile/transmute	RefinedRust	discharged (verus/seams/heap-Heap-arena_volatile.md)
 mark_bound	raw pointer (internal)	RefinedRust	discharged (verus/seams/heap-mark_bound.md)
-mark_rehome	raw pointer (internal)	RefinedRust
+mark_rehome	raw pointer (internal)	RefinedRust	discharged (verus/seams/heap-mark_rehome.md)
 node_caches_detached	raw pointer (internal)	RefinedRust
 assert_not_home	panic/abort	Kani	discharged (verus/seams/heap-others-assert_not_home.md)
 Heap::node_caches	raw pointer (internal)	RefinedRust

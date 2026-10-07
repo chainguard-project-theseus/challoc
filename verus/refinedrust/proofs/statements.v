@@ -4,9 +4,10 @@
 From refinedrust Require Import typing.
 From challoc.challoc.generated Require Import
   generated_template_heap_Heap_arena_volatile
-  generated_template_heap_mark_bound.
+  generated_template_heap_mark_bound
+  generated_template_heap_mark_rehome.
 From challoc.challoc.proofs Require Import
-  proof_heap_Heap_arena_volatile proof_heap_mark_bound.
+  proof_heap_Heap_arena_volatile proof_heap_mark_bound proof_heap_mark_rehome.
 
 Section statements.
   Context `{RRGS : !refinedrustGS Σ}.
@@ -14,4 +15,6 @@ Section statements.
     heap_Heap_arena_volatile_proof.
   Definition heap_mark_bound_statement : ∀ π, heap_mark_bound_lemma π :=
     heap_mark_bound_proof.
+  Definition heap_mark_rehome_statement : ∀ π, heap_mark_rehome_lemma π :=
+    heap_mark_rehome_proof.
 End statements.

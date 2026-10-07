@@ -63,3 +63,41 @@ Definition HeapArenaHead_sls : struct_layout_spec :=
     ("arena", IntSynType U16)] StructReprC.
 Notation HeapArenaHead_ty :=
   (struct_t HeapArenaHead_sls +[alias_ptr_t; int U32; int U16]) (only parsing).
+
+(** The fields of a [heap::Heap] before its [caches], as [mark_rehome]
+    owns them: [HeapHead]'s, then [rng], [rehome] and [rehome_from]. They
+    end at byte 92 and it is 96 bytes, 8-aligned, under rustc's layout
+    ([rng] at 80, [rehome] at 88, [rehome_from] at 90; offsets in
+    [mark_rehome]'s record). *)
+Definition HeapRehomeHead_sls (thread_stats : syn_type) : struct_layout_spec :=
+  mk_sls "HeapRehomeHead" [
+    ("shared", PtrSynType);
+    ("tid", IntSynType U32);
+    ("arena", IntSynType U16);
+    ("slow_ticks", IntSynType U32);
+    ("last_gc", IntSynType U64);
+    ("uncached", thread_stats);
+    ("others", PtrSynType);
+    ("snapshot", thread_stats);
+    ("tcache_enabled", BoolSynType);
+    ("bound", BoolSynType);
+    ("rng", IntSynType U64);
+    ("rehome", BoolSynType);
+    ("rehome_from", IntSynType U16)] StructReprC.
+
+(** That head of a fresh heap, as [mark_rehome]'s specification owns it:
+    [rehome] holds the flag [rh] ([init_fields] stored [false]), and
+    every other field the bytes it holds ([value_t false], as in
+    [HeapHead_fresh]; [arena] and [bound] among them, so what
+    [FreshHeap] records is stated unchanged). *)
+Notation HeapRehomeHead_fresh thread_stats :=
+  (struct_t (HeapRehomeHead_sls thread_stats)
+    +[value_t false PtrSynType; value_t false (IntSynType U32);
+      value_t false (IntSynType U16); value_t false (IntSynType U32);
+      value_t false (IntSynType U64); value_t false thread_stats;
+      value_t false PtrSynType; value_t false thread_stats;
+      value_t false BoolSynType; value_t false BoolSynType;
+      value_t false (IntSynType U64); bool_t; value_t false (IntSynType U16)])
+  (only parsing).
+Notation HeapRehomeHead_fresh_rfn sh tid ar st lg un ot sn te bd rg rh rf :=
+  (-[#sh; #tid; #ar; #st; #lg; #un; #ot; #sn; #te; #bd; #rg; #rh; #rf]) (only parsing).

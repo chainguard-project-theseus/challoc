@@ -355,7 +355,7 @@ the full name, the line and the contract.
 | S121 | `FreshHeap` | type | ptr | none | trusted |
 | S122 | `init_fields` | body | ptr | none | trusted |
 | S123 | `mark_bound` | body | ptr | RR | discharged |
-| S124 | `mark_rehome` | body | ptr | RR | trusted |
+| S124 | `mark_rehome` | body | ptr | RR | discharged |
 | S125 | `Heap::destroy` | body | ptr | none | trusted |
 
 ### src/heap/others.rs
@@ -2760,8 +2760,8 @@ unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 
 ### S124. `mark_rehome`
 
-src/heap/mod.rs:6421. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/heap/mod.rs:6430. Kind: external_body. Category: raw pointer (internal).
+Tool: RefinedRust. Status: discharged (verus/seams/heap-mark_rehome.md).
 
 > `(*h).rehome = true` for a thread heap [`Heap::create`] has just made and marked bound ([`mark_bound`]): it may still move its home ([`Heap::try_rehome`]).
 
@@ -2776,12 +2776,12 @@ unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 
 ### S125. `Heap::destroy`
 
-src/heap/mod.rs:6651. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:6660. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Flush every cache, free them and the heap itself back to the metadata allocator.
 
-Body mints Tracked at line 6670; mints Tracked at line 6673; mints Tracked at line 6679; mints Tracked at line 6681; mints Tracked at line 6700; mints Tracked at line 6705.
+Body mints Tracked at line 6679; mints Tracked at line 6682; mints Tracked at line 6688; mints Tracked at line 6690; mints Tracked at line 6709; mints Tracked at line 6714.
 
 ```rust
 pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)

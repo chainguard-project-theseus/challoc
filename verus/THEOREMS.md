@@ -5766,7 +5766,8 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   is off by that ticket inside the trusted body only (the flush's proof
   uses no arena invariant).
 - `homed_ok`'s `rehome ==> bound` (since #103): a new thread heap is
-  counted, so it holds whatever `mark_rehome` (trusted, S126) stored;
+  counted, so it holds whatever `mark_rehome` (S124, RefinedRust:
+  `true`, `verus/seams/heap-mark_rehome.md`) stored;
   an explicit cache, assumed `wf` (`heap_at`), rests on `init_fields`
   storing `false` (trusted) and on `create` being the one writer that
   sets `rehome` (by inspection; `set_arena` and `try_rehome` clear

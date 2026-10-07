@@ -6408,8 +6408,13 @@ unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 /// a field [`init_fields`] wrote (`false`), inside the 128 bytes `s` holds
 /// the permission to ([`FreshHeap::head`], [`heap_head`]) but after the
 /// fields the token records (`rehome` follows `rng`): it leaves the
-/// permission and the token as they were. Trusted: `&raw mut`
-/// projections of the raw heap pointer, which Verus does not support.
+/// permission and the token as they were. RefinedRust proves the body
+/// against the `rr::` specification, which owns the heap's fields before
+/// `caches`, `rehome` holding a `bool` and the others any bytes, and
+/// gives them back with `rehome` holding `true` and the others' bytes
+/// (`arena` and `bound` among them) unchanged (`verus/refinedrust/run.sh`,
+/// record under `verus/seams/`); that the token is unchanged rests on
+/// [`FreshHeap`]'s trusted meaning.
 /// That a heap with `rehome` set is bound (a conjunct of
 /// [`Heap::homed_ok`]) holds here because `create` calls it right after
 /// [`mark_bound`] and nothing writes the head before `heap_new` reads it.
@@ -6417,6 +6422,10 @@ unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 /// # Safety
 /// `h` is a fresh heap, exclusively owned.
 #[inline(always)]
+#[cfg_attr(refinedrust, rr::params("l" : "loc", "sh", "tid", "ar", "st", "lg", "un", "ot", "sn", "te", "bd", "rg", "rf" : "val", "rh" : "bool"))]
+#[cfg_attr(refinedrust, rr::args("l", "()"))]
+#[cfg_attr(refinedrust, rr::requires(#type "l" : "HeapRehomeHead_fresh_rfn sh tid ar st lg un ot sn te bd rg rh rf" @ "HeapRehomeHead_fresh heap_ThreadStats_st"))]
+#[cfg_attr(refinedrust, rr::ensures(#type "l" : "HeapRehomeHead_fresh_rfn sh tid ar st lg un ot sn te bd rg true rf" @ "HeapRehomeHead_fresh heap_ThreadStats_st"))]
 #[verifier::external_body]
 unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
     requires
