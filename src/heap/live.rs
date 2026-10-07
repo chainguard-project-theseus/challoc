@@ -298,6 +298,7 @@ impl Live {
         ensures
             r.block(p),
             r.run_at(t.start(), t.npages()),
+            r.run_opt() == Some(t),
             r.len() == run_usable(t.npages()),
     {
         let len = run_usable(t.npages());
@@ -938,11 +939,15 @@ pub axiom fn axiom_c_claim(tracked c: CCall) -> (tracked r: Live)
 ;
 
 /// The permission to the `len` usable bytes of the block at `p` that the
-/// allocator is handing out, valid through `p`, the bytes' values unknown.
+/// allocator is handing out (or, for `Huge::check_zero`'s reads, a run
+/// `Huge::take` has just taken, before its hand-out: the run token comes
+/// back out through `Live::into_run`, which drops the permission), valid
+/// through `p`, the bytes' values unknown.
 /// Trusted, for what the allocation paths do not track: the block's bytes
 /// are committed (a slot's slab is committed before its first slot is
 /// claimed and decommitted only when it holds no allocated slot; a run's
-/// pages are committed by `Huge::take` and released only by its free),
+/// pages are committed by `Huge::prepare`, before `Huge::take`, and released
+/// only by its free),
 /// and nothing else holds a permission to them (no `PointsToRaw` is ever
 /// made for the class or huge regions but here and in [`axiom_c_claim`];
 /// the metadata region's permissions lie apart from them; and the

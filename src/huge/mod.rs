@@ -3431,7 +3431,7 @@ impl Huge {
     /// and the process's regions are well formed and separated
     /// (`Shared::wf`, `Shared::lemma_huge_process`). Closed:
     /// [`Huge::lemma_is_process`] establishes it and
-    /// [`Huge::lemma_purge_range`] uses it.
+    /// [`Huge::lemma_purge_range`] and [`Huge::lemma_run_block`] use it.
     pub closed spec fn is_process(&self) -> bool {
         let r = crate::layout::process_regions();
         &&& crate::heap::regions_ok()
@@ -3502,6 +3502,51 @@ impl Huge {
             implies #[trigger] crate::purge::discardable(b) by {
             assert(crate::purge::huge_byte(b));
         }
+    }
+
+    /// The run of `usable` usable pages from page `s` of the process's huge
+    /// allocator, at `p`, is a block of the huge region in the process's
+    /// terms (`heap::live::Live::from_run`'s premises, for
+    /// [`Huge::check_zero`]): `p` is the address of page `s`, and the
+    /// usable pages lie in the huge region.
+    proof fn lemma_run_block(&self, s: usize, usable: usize, p: *mut u8)
+        requires
+            self.is_process(),
+            usable >= 1,
+            s + usable <= self.spec_npages(),
+            p@.addr == self.spec_base() + s * self.spec_page(),
+        ensures
+            crate::heap::regions_ok(),
+            crate::heap::live::page_addr(s as int) == p@.addr as int,
+            crate::layout::process_regions().is_huge_block(p@.addr, crate::heap::live::run_usable(usable + GUARD_PAGES)),
+    {
+        let r = crate::layout::process_regions();
+        let lg = r.lg_page;
+        let pg = self.spec_page();
+        assert(12 <= lg <= crate::layout::LG_MAX_SLAB);
+        vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+        vstd::bits::lemma_usize_shl_is_mul(1, lg as usize);
+        vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
+        vstd::bits::lemma_usize_shr_is_div(r.huge_len, lg as usize);
+        assert(pg == crate::heap::live::page_size() && pg > 0);
+        let (si, u) = (s as int, usable as int);
+        // The run starts on a page.
+        vstd::arithmetic::div_mod::lemma_mod_multiples_basic(si, pg);
+        assert(usable * pg > 0) by (nonlinear_arith)
+            requires usable >= 1, pg > 0;
+        // The run lies in the region: `npages * pg <= huge_len`.
+        let np = self.spec_npages();
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(r.huge_len as int, pg);
+        vstd::arithmetic::div_mod::lemma_mod_bound(r.huge_len as int, pg);
+        assert(np * pg <= r.huge_len) by (nonlinear_arith)
+            requires
+                np == r.huge_len as int / pg,
+                r.huge_len as int == pg * (r.huge_len as int / pg) + r.huge_len as int % pg,
+                r.huge_len as int % pg >= 0,
+        ;
+        assert(0 <= si * pg && si * pg + u * pg <= np * pg) by (nonlinear_arith)
+            requires 0 <= si, si + u <= np, pg > 0;
+        assert(crate::heap::live::run_usable(usable + GUARD_PAGES) == u * pg);
     }
 
     #[inline]
@@ -5382,6 +5427,7 @@ impl Huge {
             crate::sys::may_syscall(),
             crate::meta::is_pow2(align),
             self.spec_base_aligned(),
+            self.is_process(),
             meta.is_process(),
             meta.live_id() == self.spec_mid(),
             old(ord).allows(rank_huge()),
@@ -5409,6 +5455,7 @@ impl Huge {
             crate::sys::may_syscall(),
             crate::meta::is_pow2(align),
             self.spec_base_aligned(),
+            self.is_process(),
             meta.is_process(),
             meta.live_id() == self.spec_mid(),
             old(ord).allows(rank_huge()),
@@ -5490,7 +5537,7 @@ impl Huge {
         let pages = g.desc(run).pages();
         self.sync_oldest(&g);
         if let (true, Some(prior)) = (zeroed, prior) {
-            self.check_zero(s, usable_pages, prior, arena);
+            self.check_zero(s, usable_pages, prior, arena, Tracked(tok));
         }
         proof {
             self.lemma_run_at(s, usable_pages, size, align);
@@ -5536,14 +5583,26 @@ impl Huge {
     /// last word of every usable page of a run reported zero must read
     /// zero. Aborts with the run, the pages' prior state, the arena and the
     /// purge advice. Faults every page in, so debug only. The run is the
-    /// `usable_pages` pages from page `s`, inside the region.
+    /// `usable_pages` pages from page `s`, inside the region; `tok[0]` is
+    /// its token, which `take` just made. The reads go through the
+    /// permission to the run's usable bytes that the hand-out will mint
+    /// (`heap::live::Live::from_run`): it is minted here, used for the
+    /// reads and dropped with the token given back (`Live::into_run`), so
+    /// no permission to the run is held when this returns.
     #[cold]
     #[inline(never)]
-    fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: u16)
+    fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>)
         requires
             crate::sys::may_abort(),
             s + usable_pages <= self.spec_npages(),
             self.spec_base_aligned(),
+            self.is_process(),
+            old(tok).contains_key(0),
+            old(tok)[0].wf(),
+            old(tok)[0].start() == s,
+            old(tok)[0].npages() == usable_pages + GUARD_PAGES,
+        ensures
+            *final(tok) == *old(tok),
     {
         proof {
             use_type_invariant(self);
@@ -5557,6 +5616,22 @@ impl Huge {
         // The region's end, and the run's.
         let ghost hi = self.spec_base() + self.spec_npages() * p;
         let ghost end = self.spec_base() + (s + usable_pages) * p;
+        // The run's block, as its hand-out will make it, through the cast
+        // of its first page's address (the reads' pointers are casts too).
+        let ghost run_ptr = vstd::raw_ptr::ptr_mut_from_data::<u8>(
+            vstd::raw_ptr::PtrData::<u8> { addr: base, provenance: crate::vspec::addr::cast_provenance(), metadata: () },
+        );
+        let ghost t0 = tok[0];
+        proof {
+            broadcast use vstd::raw_ptr::axiom_ptr_mut_from_data;
+            t0.lemma_wf();
+            self.lemma_run_block(s, usable_pages, run_ptr);
+        }
+        let tracked blk = crate::heap::live::Live::from_run(tok.tracked_remove(0), run_ptr);
+        proof {
+            blk.lemma_mem();
+            vstd::arithmetic::mul::lemma_mul_is_distributive_add_other_way(p, s as int, usable_pages as int);
+        }
         proof {
             crate::meta::lemma_pow2_bits(page);
             assert(page % 8 == 0) by (bit_vector)
@@ -5577,6 +5652,12 @@ impl Huge {
                 end <= hi,
                 hi == self.spec_base() + self.spec_npages() * p,
                 hi <= crate::meta::va_limit(),
+                blk.mem_ok(),
+                blk.mem().covers(base as int, usable_pages * p),
+                blk.mem().provenance() == crate::vspec::addr::cast_provenance(),
+                blk.block(run_ptr),
+                blk.run_opt() == Some(t0),
+                end == base + usable_pages * p,
         {
             proof {
                 let (b, si, ii, u) = (self.spec_base() as int, s as int, i as int, usable_pages as int);
@@ -5606,6 +5687,12 @@ impl Huge {
                     end <= hi,
                     hi == self.spec_base() + self.spec_npages() * p,
                     hi <= crate::meta::va_limit(),
+                    base == self.spec_base() + s * p,
+                    end == self.spec_base() + (s + usable_pages) * p,
+                    blk.mem_ok(),
+                    blk.mem().covers(base as int, usable_pages * p),
+                    blk.mem().provenance() == crate::vspec::addr::cast_provenance(),
+                    end == base + usable_pages * p,
                     o.seq().len() == 2,
                     *o.seq()[0] == 0,
                     *o.seq()[1] == page - 8,
@@ -5615,35 +5702,51 @@ impl Huge {
                 }
                 let a = base + i * page + off;
                 // SAFETY: a usable page of the run this call just took;
-                // `prepare` committed it.
-                let word = unsafe { self.read_run_word(a) };
+                // `prepare` committed it, and `blk`'s permission covers it.
+                proof {
+                    assert forall|x: int| a <= x < a + 8 implies #[trigger] blk.mem().dom().contains(x) by {
+                        assert(base <= x < base + usable_pages * p);
+                    }
+                }
+                let word = unsafe { self.read_run_word(a, Tracked(blk.mem_ref())) };
                 if word != 0 {
                     dirty_zero_run(base, usable_pages, s, prior, arena, a, word);
                 }
             }
         }
+        proof {
+            // The token back, the permission dropped with it.
+            let tracked t = blk.into_run(s as int);
+            tok.tracked_insert(0, t);
+            assert(*tok =~= *old(tok));
+        }
     }
 
-    /// The word at `a`, read once, for [`Huge::check_zero`]. Trusted: a
-    /// volatile read through an address (Verus has no integer-to-pointer
-    /// cast, and no permission covers a run's pages between the take and
-    /// the hand-out), and nothing is claimed about the value. The contract
-    /// places the word inside the region, aligned; that its page is
-    /// committed (the run was just taken and `prepare`d) stays the
-    /// caller's.
+    /// The word at `a`, read once, for [`Huge::check_zero`], through the
+    /// permission `m` to it (the run's, which `check_zero` mints), by the
+    /// cast of `a` (`m` is of the cast's provenance). Nothing is claimed
+    /// about the value.
     ///
     /// # Safety
-    /// `a` is an aligned word of a committed page of the region.
+    /// `a` is an aligned word that `m` covers.
     #[inline(always)]
-    #[verifier::external_body]
-    unsafe fn read_run_word(&self, a: usize) -> u64
+    unsafe fn read_run_word(&self, a: usize, Tracked(m): Tracked<&crate::vspec::user::UserMem>) -> u64
         requires
-            self.spec_base() <= a,
-            a + 8 <= self.spec_base() + self.spec_npages() * self.spec_page(),
+            m.provenance() == crate::vspec::addr::cast_provenance(),
+            forall|x: int| a <= x < a + 8 ==> #[trigger] m.dom().contains(x),
             a % 8 == 0,
     {
-        // SAFETY: guaranteed by the caller.
-        unsafe { ptr::read_volatile(a as *const u64) }
+        let q = crate::vspec::addr::addr_to_ptr(a);
+        proof {
+            broadcast use {vstd::raw_ptr::axiom_ptr_mut_from_data, vstd::layout::layout_of_primitives, vstd::layout::group_align_properties, vstd::layout::align_nonzero};
+            m.lemma_valid(q, 8);
+            crate::vspec::ptr::axiom_plain_u64();
+            // A `u64` is aligned to its size, so to its alignment.
+            crate::layout::lemma_aligned_down(a as int, 8, vstd::layout::align_of::<u64>() as int);
+        }
+        // SAFETY: `m` makes the eight bytes at `a` valid for reads through
+        // the cast, and `a` is aligned.
+        unsafe { ptr::read_volatile(q as *const u64) }
     }
 }
 

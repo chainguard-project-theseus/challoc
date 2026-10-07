@@ -3051,6 +3051,7 @@ impl Shared {
     {
         proof {
             self.lemma_huge_aligned();
+            self.lemma_huge_process();
         }
         let Some(a) = self.arena(arena, Tracked(ord)) else { no_such_arena(arena) };
         let tracked mut tok = vstd::map::Map::<int, crate::huge::RunToken>::tracked_empty();
@@ -3580,7 +3581,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S137..S153, S154: each `S_*` is its field's `offset_of!`, and the
+    /// S135..S151, S152: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {

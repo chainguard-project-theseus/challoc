@@ -275,11 +275,16 @@ and `axiom_shared_built` reads the built `Shared`'s tables from; a set
 of a class state reaches the arena's set table through that table's
 frozen permission, which `Arena::init` freezes once it has written it.
 
-**Debug reads.** `class::verify::read_word` and `huge::Huge::read_run_word`
-(`external_body`): the `check_zero` debug mode's volatile reads of a word
-of a slot or run it has just claimed or taken. Each contract places the
-word inside the slot or the huge region, aligned, and claims nothing about
-the value; that its page is committed stays the caller's.
+**Debug reads.** `class::verify::read_word` (`external_body`): the
+`check_zero` debug mode's volatile read of a word of a slot it has just
+claimed, or of a `Fresh` slab's slot under the class lock. Its contract
+places the word inside the slot, aligned, and claims nothing about the
+value; that its slab is committed stays the caller's. The huge reads
+(`huge::Huge::read_run_word`) are verified: `Huge::check_zero` mints the
+run's permission from the run token `take` just made
+(`heap::live::Live::from_run`, the hand-out's mint), reads through it with
+`core::ptr::read_volatile` (`vspec::ptr`) and gives the token back with the
+permission dropped (`Live::into_run`).
 
 **`core` and `vstd`.** The `assume_specification`s in `src/vspec/`
 (76, mostly `vspec/sys.rs`, `slice.rs` and `core_int.rs`), and vstd's

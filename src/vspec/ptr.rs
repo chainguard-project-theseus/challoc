@@ -141,6 +141,33 @@ pub assume_specification<T>[ <*const T>::read_unaligned ](src: *const T) -> T
     opens_invariants none
 ;
 
+/// Every initialised value of `T`'s size is a `T` with no ghost content:
+/// a volatile read of a `T` makes a valid value out of any bytes.
+/// Uninterpreted; [`axiom_plain_u64`] states it for `u64`, the only type
+/// verified code reads that way.
+pub uninterp spec fn plain<T>() -> bool;
+
+/// [`plain`] for `u64`: every initialised eight bytes are a `u64`, which
+/// holds no ghost state. Trusted: the `core` documentation of the integer
+/// types (no invalid bit patterns).
+pub axiom fn axiom_plain_u64()
+    ensures
+        plain::<u64>(),
+;
+
+/// `core::ptr::read_volatile`, with the safety contract of the `core`
+/// documentation: `src` is valid for reads of `size_of::<T>()` bytes and
+/// aligned for `T`, and the bytes are a valid `T`, which the spec asks of
+/// every value of the type ([`plain`]: only `u64`). The value read is not
+/// stated.
+pub assume_specification<T>[ core::ptr::read_volatile::<T> ](src: *const T) -> T
+    requires
+        plain::<T>(),
+        valid_reads(src, vstd::layout::size_of::<T>() as int),
+        src@.addr as int % vstd::layout::align_of::<T>() as int == 0,
+    opens_invariants none
+;
+
 /// `core::ptr::write_unaligned`.
 pub assume_specification<T>[ core::ptr::write_unaligned::<T> ](dst: *mut T, src: T)
     requires

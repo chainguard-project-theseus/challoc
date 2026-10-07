@@ -1,6 +1,6 @@
 # `PartialEqSpecImpl for config::Thp`
 
-Seam S331 of `verus/SEAMS.md`: src/vspec/misc.rs:14. Kind: spec_impl. Category: core library.
+Seam S330 of `verus/SEAMS.md`: src/vspec/misc.rs:14. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract

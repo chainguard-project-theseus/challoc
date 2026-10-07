@@ -360,7 +360,6 @@ src/heap/tcaches.rs:axiom_tcaches_lock_inv	allocator invariant	none (assumption)
 src/heap/tcaches.rs:EMPTY_TABLE	core library	Kani
 src/heap/thread.rs:fast_flags	raw pointer (internal)	none (assumption)
 src/heap/thread.rs:heap_from_slot	raw pointer (internal)	none (assumption)
-src/huge/mod.rs:Huge::read_run_word	UnsafeCell/volatile/transmute	none (assumption)
 src/layout/mod.rs:ClassTable::new	UnsafeCell/volatile/transmute	none (assumption)
 src/layout/mod.rs:ClassTable::table	UnsafeCell/volatile/transmute	none (assumption)
 # seams.sh names `layout::classes_ptr` `ClassTable::classes_ptr`: it reads
@@ -399,5 +398,7 @@ src/vspec/ptr.rs:<*const T>::add	raw pointer (internal)	Kani
 src/vspec/ptr.rs:<*const T>::read_unaligned	raw pointer (internal)	Kani
 src/vspec/ptr.rs:<*mut T>::write_unaligned	raw pointer (internal)	Kani
 src/vspec/ptr.rs:core::ptr::read_unaligned::<T>	raw pointer (internal)	Kani
+src/vspec/ptr.rs:axiom_plain_u64	core library	none (assumption)
+src/vspec/ptr.rs:core::ptr::read_volatile::<T>	raw pointer (internal)	Kani
 src/vspec/ptr.rs:core::ptr::write_unaligned::<T>	raw pointer (internal)	Kani
 src/vspec/slice.rs:core::slice::from_raw_parts::<'a, T>	raw pointer (internal)	Kani
