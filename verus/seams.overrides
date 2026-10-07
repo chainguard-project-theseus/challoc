@@ -15,6 +15,7 @@ Hook	function pointer	Kani
 atfork_handlers	function pointer	none (assumption)
 oom	termination	none (assumption)
 set_errno	FFI/syscall	none (assumption)
+get_errno	FFI/syscall	none (assumption)
 lend	C-program contract	none (assumption)
 root	function pointer	Kani	discharged (verus/seams/api-mallctl-root.md)
 src/api/mod.rs:shared_ptr	UnsafeCell/volatile/transmute	none (assumption)
@@ -133,9 +134,6 @@ src/lock.rs:Lock::cell_mut	UnsafeCell/volatile/transmute	Verus
 LockGuard::drop	atomics primitive	loom/GenMC	discharged (verus/seams/lock-LockGuard-drop.md)
 Meta::commit	allocator invariant	none (assumption)
 total_bytes	core library	Kani	discharged (verus/seams/purge-total_bytes.md)
-errno_location	FFI/syscall	none (assumption)
-errno_read	FFI/syscall	none (assumption)
-errno_write	FFI/syscall	none (assumption)
 pthread_join	FFI/syscall	none (assumption)
 spawn	FFI/syscall	none (assumption)
 read_global	raw pointer (internal)	RefinedRust

@@ -5987,7 +5987,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   `CountPerm` is the counter with its `id` (`count_id`), and `fetch_add`,
   `fetch_sub` (wrapping), `load` and, since the port of upstream #103,
   `compare_exchange` (the strong form: it fails only on a different
-  value, by C++20's semantics; S307, discharged with loom and those,
+  value, by C++20's semantics; S304, discharged with loom and those,
   `verus/seams/vspec-count-compare_exchange.md`) are one atomic operation
   on it, sequentially consistent in the model (the orderings, all
   `Relaxed`, are ignored, as for the bitmap words).
@@ -8260,7 +8260,8 @@ Notes that recur below:
   `val()` is the value challoc last wrote to it. A token comes only from
   `lend` (`external_body`, no `ensures`: the caller's `errno` is
   unknown), which each export wrapper that may write `errno` calls once
-  before the call, and the only write is `set_errno` (`external_body`,
+  before the call (and `purge::background::start` for its save and
+  restore, below), and the only write is `set_errno` (`external_body`,
   `ensures final(errno).val() == e`), which takes it `&mut`; the copy in
   `api/print.rs` is gone. Every Rust function between a wrapper and a
   `set_errno` takes `Tracked<&mut ThreadErrno>` and, except the
@@ -8278,11 +8279,14 @@ Notes that recur below:
   `0 < class_base[c]` and `0 < huge_base`, which `from_parts` proves or
   requires and `reserve` proves from `try_reserve`'s `0 < a`, the
   kernel's `mmap` contract). A function that is not handed the token
-  (`free`, the sized frees, the `*allocx` family) cannot reach
-  `set_errno`, so a caller's token is unchanged across it; `realloc`'s
+  (`free`, the sized frees, the `*allocx` family) reaches `set_errno`
+  only through `background::start`, under a token of its own, so a
+  caller's token is unchanged across it; `realloc`'s
   `p != 0 && size == 0 ==> final(errno).val() == old(errno).val()` is
   that frame for `free`, proved. The premises: `lend` is called only by
-  export wrappers, once per call, which nothing but a `grep lend` checks
+  export wrappers, once per call, and by `background::start`, whose
+  `set_errno` puts back the value its `get_errno` read (by inspection:
+  `get_errno` claims nothing); only a `grep lend` checks the callers
   (verified code that called it could write `errno` without the
   caller's token); a nested call (an allocation from inside libc or a
   C++ `new_handler`) gets its own token from its own wrapper. And the
@@ -8298,8 +8302,10 @@ Notes that recur below:
   undoes it: `free`'s path never runs init (`shared_if_ready`), glibc's
   `pthread_setspecific` does not touch `errno` on a path that returns
   (a failed second-level allocation sets `ENOMEM`, and challoc then
-  aborts), and `background::start` saves and restores it around its
-  calls (`errno_read`, `errno_write`, trusted, outside the model).
+  aborts), and `background::start` saves it with `get_errno` and
+  restores it with `set_errno` around its calls, under a token of its
+  own from `lend` (`vspec/errno.rs`; `get_errno` is trusted and claims
+  nothing about the value it reads).
 - *(live)*: `free_target` (`heap/mod.rs:432`, theorem 3) is proved. A
   call with a pointer that is not a slot start or a huge page start does
   not return. A free core takes the caller's token for `p` (`Live::claims`) and ensures

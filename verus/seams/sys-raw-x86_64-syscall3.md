@@ -9,7 +9,7 @@ own record ([sys-raw-aarch64-syscall3.md](sys-raw-aarch64-syscall3.md)).
 
 ## 1. Contract
 
-Entry S236 of verus/SEAMS.md (`src/sys/raw.rs:82`, kind external_body,
+Entry S233 of verus/SEAMS.md (`src/sys/raw.rs:82`, kind external_body,
 `requires crate::sys::may_syscall()`, `ensures super::returned3(nr, a0,
 a1, a2, r)`; quoted on 2026-10-05, when the `ensures` was added: at
 8635213 there was none):

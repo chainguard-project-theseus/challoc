@@ -69,7 +69,7 @@ Reproduce: `sh verus/refinedrust/run.sh` (both quanta).
 ## Translation
 
 The contract speaks of the fresh heap through the linear token
-`FreshHeap` (S121, `none (assumption)`): `s.heap()` is the heap,
+`FreshHeap` (S122, `none (assumption)`): `s.heap()` is the heap,
 `s.head()` the permission to its 128 bytes of plain fields, and, by the
 token's trusted meaning ("what the trusted writers stored in them"),
 `s.arena()` and `s.bound()` are what `init_fields` and `mark_bound`
@@ -145,7 +145,7 @@ field before `caches` with its bytes).
 - `s` (`Tracked<&mut FreshHeap>`) is zero-sized outside Verus; the
   patched frontend translates it as unit.
 - Gaps:
-  - The token's meaning (S121) and the no-other-writer premise above
+  - The token's meaning (S122) and the no-other-writer premise above
     are what this rests on; the proof shows the body keeps them, not
     that they hold.
   - Verus's permission (`PointsToRaw`: a range and a provenance) is

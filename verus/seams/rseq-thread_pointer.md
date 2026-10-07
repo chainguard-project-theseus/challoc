@@ -8,7 +8,7 @@ on the Armv8.5-A model and its x86_64 half on the x86-64 model.
 
 ## 1. Contract
 
-Entry S200 of verus/SEAMS.md as numbered at 8635213 (S203 and
+Entry S197 of verus/SEAMS.md as numbered at 8635213 (S200 and
 `src/rseq.rs:220` at 64d801a), kind external_body, no `requires`, no
 `ensures`; `#[inline(always)]`:
 

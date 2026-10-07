@@ -1,6 +1,6 @@
 # `ref_ptr` (`vspec/ptr.rs`)
 
-Seam S367 of `verus/SEAMS.md`: src/vspec/ptr.rs:248. Kind: external_body. Category: raw pointer (internal).
+Seam S365 of `verus/SEAMS.md`: src/vspec/ptr.rs:248. Kind: external_body. Category: raw pointer (internal).
 Discharged by Kani and `core`'s rules for references (Translation).
 
 ## Contract

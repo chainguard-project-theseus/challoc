@@ -13,7 +13,7 @@ plain Rust and is never reached.
 
 ## 1. Contract
 
-Entry S225 of verus/SEAMS.md at 8635213 (`src/sys/pac.rs:226`, kind
+Entry S222 of verus/SEAMS.md at 8635213 (`src/sys/pac.rs:226`, kind
 external_body):
 
 ```rust

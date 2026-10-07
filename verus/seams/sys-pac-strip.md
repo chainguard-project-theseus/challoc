@@ -10,7 +10,7 @@ body is `xpacd`; the x86_64 body is plain Rust and is never reached.
 
 ## 1. Contract
 
-Entry S226 of verus/SEAMS.md at 8635213 (`src/sys/pac.rs:264`, kind
+Entry S223 of verus/SEAMS.md at 8635213 (`src/sys/pac.rs:264`, kind
 external_body):
 
 ```rust

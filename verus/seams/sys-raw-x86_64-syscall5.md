@@ -9,7 +9,7 @@ own record ([sys-raw-aarch64-syscall5.md](sys-raw-aarch64-syscall5.md)).
 
 ## 1. Contract
 
-Entry S232 of verus/SEAMS.md at 8635213 (`src/sys/raw.rs:96`, kind
+Entry S229 of verus/SEAMS.md at 8635213 (`src/sys/raw.rs:96`, kind
 external_body, `requires crate::sys::may_syscall()`, no `ensures`):
 
 ```rust

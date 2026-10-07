@@ -11,7 +11,7 @@ reads, not that the token equals it (part 3).
 
 ## 1. Contract
 
-Entry S241 of verus/SEAMS.md as numbered at 8635213 (S245 and
+Entry S238 of verus/SEAMS.md as numbered at 8635213 (S242 and
 `src/sys/tls.rs:125` at 64d801a), kind external_body;
 `#[inline(always)]`:
 

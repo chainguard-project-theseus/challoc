@@ -9,7 +9,7 @@ model.
 
 ## 1. Contract
 
-Entry S221 of verus/SEAMS.md as numbered at 8635213 (S225 and
+Entry S218 of verus/SEAMS.md as numbered at 8635213 (S222 and
 `src/sys/mod.rs:1077` at 64d801a), kind external_body;
 `#[inline(always)]`:
 

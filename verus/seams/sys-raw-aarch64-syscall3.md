@@ -9,7 +9,7 @@ kernel's syscall ABI as a named residual assumption (part 3). The x86_64
 
 ## 1. Contract
 
-Entry S243 of verus/SEAMS.md (`src/sys/raw.rs:215`, kind external_body,
+Entry S240 of verus/SEAMS.md (`src/sys/raw.rs:215`, kind external_body,
 `requires crate::sys::may_syscall()`, `ensures super::returned3(nr, a0,
 a1, a2, r)`; quoted on 2026-10-05, when the `ensures` was added: at
 8635213 there was none):

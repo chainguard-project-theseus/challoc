@@ -16,7 +16,7 @@ is plain Rust and is never reached.
 
 ## 1. Contract
 
-Entry S224 of verus/SEAMS.md at 8635213 (`src/sys/pac.rs:188`, kind
+Entry S221 of verus/SEAMS.md at 8635213 (`src/sys/pac.rs:188`, kind
 external_body):
 
 ```rust

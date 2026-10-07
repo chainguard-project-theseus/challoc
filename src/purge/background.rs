@@ -14,6 +14,7 @@ use crate::lock::{Lock, LockHeld, LockOrder, Padded};
 use crate::lock::{axiom_entry, rank_class, rank_meta, rank_state};
 use crate::sys::{self, Timespec};
 use crate::vspec::addr::addr_to_ptr;
+use crate::vspec::errno::{get_errno, lend, set_errno};
 #[cfg(verus_only)]
 use crate::vspec::lock::lock_inv;
 #[cfg(verus_only)]
@@ -230,38 +231,6 @@ fn kick()
     let _ = unsafe { sys::futex_wake(SEQ.as_ptr(), 1) };
 }
 
-/// This thread's `errno` slot. Trusted: `__errno_location`, a libc call;
-/// nothing is claimed about the address.
-#[verifier::external_body]
-#[inline(always)]
-fn errno_location() -> *mut i32 {
-    // SAFETY: `__errno_location` returns this thread's `errno`.
-    unsafe { ::libc::__errno_location() }
-}
-
-/// The `errno` at `errno`. Trusted: a raw read; nothing is claimed about
-/// the value.
-///
-/// # Safety
-/// `errno` is [`errno_location`]'s result on this thread.
-#[verifier::external_body]
-#[inline(always)]
-unsafe fn errno_read(errno: *mut i32) -> i32 {
-    // SAFETY: guaranteed by the caller.
-    unsafe { *errno }
-}
-
-/// Store `v` at `errno`. Trusted: a raw write.
-///
-/// # Safety
-/// `errno` is [`errno_location`]'s result on this thread.
-#[verifier::external_body]
-#[inline(always)]
-unsafe fn errno_write(errno: *mut i32, v: i32) {
-    // SAFETY: guaranteed by the caller.
-    unsafe { *errno = v };
-}
-
 /// Create the thread if it does not exist. `true` if one exists on
 /// return; `false` if creation failed or is in progress on another
 /// thread (the caller then purges in the foreground for this tick).
@@ -293,13 +262,10 @@ pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> bool
         assert(lock_inv(g@));
         (g.stack, g.thread.take())
     };
-    // SAFETY: `__errno_location` returns this thread's `errno`.
-    let errno = errno_location();
-    let saved_errno = unsafe { errno_read(errno) };
+    let Tracked(mut errno) = lend();
+    let saved_errno = get_errno(Tracked(&errno));
     let (stack, thread) = create(shared, stack, previous, Tracked(ord));
-    // SAFETY: `errno` is this thread's `errno` slot (above), valid for
-    // the life of the thread.
-    unsafe { errno_write(errno, saved_errno) };
+    set_errno(saved_errno, Tracked(&mut errno));
     #[cfg(test)]
     if thread.is_some() {
         let hook = BEFORE_PUBLISH.lock().unwrap().take();

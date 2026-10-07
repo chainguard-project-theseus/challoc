@@ -3685,7 +3685,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S135..S151, S152: each `S_*` is its field's `offset_of!`, and the
+    /// S136..S152, S153: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {

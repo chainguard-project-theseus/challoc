@@ -1,6 +1,6 @@
 # `u64::rotate_right`
 
-Seam S299 of `verus/SEAMS.md`: src/vspec/core_int.rs:91. Kind: assume_spec. Category: core library.
+Seam S296 of `verus/SEAMS.md`: src/vspec/core_int.rs:91. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract
@@ -71,7 +71,7 @@ a wrong result, but the proofs' "no panic" claim rests on this policy.
 ## Review
 
 Written 2026-10-06 at commit 61768ed6, from the `u32::rotate_right`
-record (S292: the same harness shape, the same kind of seam): the
+record (S289: the same harness shape, the same kind of seam): the
 contract above is the ledger's entry there, and `spec_rotr64` was
 compared with `rotr64` term by term. A fresh-context subagent
 reviewed this record against the harness and the contract; its

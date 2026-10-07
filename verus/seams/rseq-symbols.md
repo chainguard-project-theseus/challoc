@@ -9,7 +9,7 @@ x86_64 half on the x86-64 model.
 
 ## 1. Contract
 
-Entry S199 of verus/SEAMS.md as numbered at 8635213 (S202 and
+Entry S196 of verus/SEAMS.md as numbered at 8635213 (S199 and
 `src/rseq.rs:177` at 64d801a), kind external_body, no `requires`, no
 `ensures`; `#[inline(never)]`:
 
