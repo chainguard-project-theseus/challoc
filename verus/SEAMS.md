@@ -836,7 +836,7 @@ the full name, the line and the contract.
 | S364 | `<*mut T>::write_unaligned` | spec | ptr | Kani | trusted |
 | S365 | `axiom_raw_valid` | proof | ptr | none | trusted |
 | S366 | `axiom_array_elem` | axiom | core | none | trusted |
-| S367 | `ref_ptr` | body | ptr | Kani | trusted |
+| S367 | `ref_ptr` | body | ptr | Kani | discharged |
 
 ### src/vspec/slice.rs
 
@@ -6295,7 +6295,7 @@ pub axiom fn axiom_array_elem<T, const N: usize>(tracked a: &'static vstd::raw_p
 ### S367. `ref_ptr`
 
 src/vspec/ptr.rs:248. Kind: external_body. Category: raw pointer (internal).
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-ptr-ref_ptr.md).
 
 > `ptr::from_ref(v)`: the address of the `T` behind a reference, valid for reads of its `size_of::<T>()` bytes, which do not wrap the address space.
 

@@ -352,3 +352,60 @@ fn addr_to_ptr_is_the_cast() {
     assert_eq!(p, addr as *mut u8);
     assert_eq!(addr_to_ptr(addr), p);
 }
+
+/// S367 `ref_ptr`, no `requires`, `ensures valid_reads(r, size_of::<T>())`
+/// and `r@.addr + size_of::<T>() <= usize::MAX`: for a `T` behind a
+/// reference (a local, and an element and a field inside a larger
+/// object), it returns the referent's address; adding `size_of::<T>()`
+/// to it does not wrap; and the `size_of::<T>()` bytes from it read,
+/// each byte (as `MaybeUninit<u8>`, so padding is allowed) and all at
+/// once into a `MaybeUninit<T>` (`copy_nonoverlapping`, as `mallctl`'s
+/// `copy_prefix` reads them), giving back the value. At `Copy` types of
+/// one, four and eight bytes, a padded pair, an odd-sized array and a
+/// zero-sized type.
+#[kani::proof]
+#[kani::unwind(17)]
+fn ptr_ref_ptr() {
+    use crate::vspec::ptr::ref_ptr;
+    use core::mem::MaybeUninit;
+    fn reads<T: Copy + PartialEq>(v: &T) {
+        let r = ref_ptr(v);
+        assert_eq!(r as usize, v as *const T as usize);
+        assert!((r as usize).checked_add(size_of::<T>()).is_some());
+        let b = r.cast::<MaybeUninit<u8>>();
+        for i in 0..size_of::<T>() {
+            // SAFETY: the contract's `valid_reads`, byte `i` of the range.
+            let _ = unsafe { b.add(i).read() };
+        }
+        let mut c = MaybeUninit::<T>::uninit();
+        // SAFETY: the contract's `valid_reads`, the whole range, into a
+        // local of the same size.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                r as *const u8,
+                c.as_mut_ptr() as *mut u8,
+                size_of::<T>(),
+            )
+        };
+        // SAFETY: every byte of a `T` was copied from one.
+        assert!(unsafe { c.assume_init() } == *v);
+        // SAFETY: as above.
+        assert!(unsafe { r.read() } == *v);
+    }
+    fn on<T: Copy + PartialEq + kani::Arbitrary>() {
+        let x: T = kani::any();
+        reads(&x);
+        let a: [T; 3] = kani::any();
+        reads(&a[1]);
+        let p: (u8, T, u16) = kani::any();
+        reads(&p.1);
+    }
+    on::<u8>();
+    on::<bool>();
+    on::<u32>();
+    on::<u64>();
+    on::<usize>();
+    on::<(u8, u64)>();
+    on::<[u8; 3]>();
+    on::<()>();
+}
