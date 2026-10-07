@@ -4,13 +4,13 @@
 #   sh verus/kani/run.sh [cargo kani options, e.g. --harness <path>]
 #
 # First checks that every record verus/seams.overrides marks discharged
-# with tool Kani exists, is the record the ledger entry of its seam
-# names, and still quotes that entry's contract (records of other
-# tools, such as Isla's, quote other text first). A changed contract
-# fails here until the record and its harness are revisited. Then runs
-# the harnesses under both quanta, since the layout, class-table and
-# geometry harnesses depend on `NCLASSES`, and exits non-zero if the
-# check or either run fails.
+# or evidence with tool Kani exists, is the record the ledger entry of
+# its seam names, and still quotes that entry's contract (records of
+# other tools, such as Isla's, quote other text first). A changed
+# contract fails here until the record and its harness are revisited.
+# Then runs the harnesses under both quanta, since the layout,
+# class-table and geometry harnesses depend on `NCLASSES`, and exits
+# non-zero if the check or either run fails.
 # Needs Kani 0.68.0 (`sh verus/kani/setup.sh`). The flags:
 # `--ignore-global-asm` because `api/libc.rs` and `sys/tls.rs` hold
 # `global_asm!` (symbol aliases and the TLS slot) that no harness reaches;
@@ -21,18 +21,18 @@
 set -eu
 cd "$(dirname "$0")/../.."
 
-records=$(awk -F'\t' '$3 == "Kani" && $4 ~ /^discharged \(verus\/seams\/.*\.md\)$/ { r = $4; sub(/^discharged \(/, "", r); sub(/\)$/, "", r); print r }' verus/seams.overrides)
+records=$(awk -F'\t' '$3 == "Kani" && $4 ~ /^(discharged|evidence) \(verus\/seams\/.*\.md\)$/ { r = $4; sub(/^[a-z]+ \(/, "", r); sub(/\)$/, "", r); print r }' verus/seams.overrides)
 for r in $records; do
 	[ -f "$r" ] || { echo "kani: $r is named in verus/seams.overrides but missing" >&2; exit 1; }
 done
 # A record's header names its seam (`Seam S<n> of ...`), which must be
 # the ledger entry whose status names the record, and the record's first
-# ```rust block must be that entry's.
+# ```rust block must be that entry's (a record with none fails).
 stale=$(awk '
-    FNR == 1 { inblock = 0; done = 0; s = "" }
+    FNR == 1 { if (prev != "" && prev != "verus/SEAMS.md" && !done) print prev; prev = FILENAME; inblock = 0; done = 0; s = "" }
     FILENAME == "verus/SEAMS.md" && /^### S[0-9]+\. / { s = $2; sub(/\.$/, "", s); done = 0; next }
-    FILENAME == "verus/SEAMS.md" && /Status: discharged \(verus\/seams\/.*\.md\)\.$/ {
-        r = $0; sub(/.*Status: discharged \(/, "", r); sub(/\)\.$/, "", r); owner[r] = s; next
+    FILENAME == "verus/SEAMS.md" && /Status: (discharged|evidence) \(verus\/seams\/.*\.md\)\.$/ {
+        r = $0; sub(/.*Status: [a-z]+ \(/, "", r); sub(/\)\.$/, "", r); owner[r] = s; next
     }
     FILENAME != "verus/SEAMS.md" && s == "" && /^Seam S[0-9]+ / { s = $2; next }
     /^```rust$/ && !done { inblock = 1; block = ""; next }
@@ -43,9 +43,10 @@ stale=$(awk '
         next
     }
     inblock { block = block $0 "\n" }
+    END { if (prev != "verus/SEAMS.md" && !done) print prev }
 ' verus/SEAMS.md $records)
 if [ -n "$stale" ]; then
-	echo "kani: these records name another seam than the ledger entry naming them, or quote a contract it no longer has:" >&2
+	echo "kani: these records name another seam than the ledger entry naming them, or quote a contract it no longer has (or none):" >&2
 	echo "$stale" >&2
 	exit 1
 fi
