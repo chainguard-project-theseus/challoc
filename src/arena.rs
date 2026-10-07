@@ -41,7 +41,7 @@ use crate::heap::Shared;
 #[cfg(verus_only)]
 use crate::layout::process_regions;
 use crate::layout::{NCLASSES, Regions};
-use crate::lock::{Lock, LockOrder};
+use crate::lock::{Lock, LockHeld, LockOrder};
 #[cfg(verus_only)]
 use crate::lock::{rank_arena_stats, rank_arenas, rank_class, rank_meta, rank_sets};
 use crate::meta::{Meta, MetaClaim};
@@ -55,8 +55,11 @@ use crate::vspec::arena::axiom_arena_stats_lock_inv;
 use crate::vspec::count::CountPerm;
 #[cfg(verus_only)]
 use crate::vspec::count::{count_id, wrap32};
+use crate::vspec::entry::EntryPerm;
 #[cfg(verus_only)]
-use crate::vspec::lock::lock_inv;
+use crate::vspec::entry::entry_id;
+#[cfg(verus_only)]
+use crate::vspec::lock::{lock_frame, lock_init, lock_inv};
 #[cfg(verus_only)]
 use crate::vspec::ptr::{axiom_ptr_add_addr, axiom_raw_valid, in_alloc, ptr_add};
 #[cfg(verus_only)]
@@ -69,6 +72,7 @@ use vstd::prelude::*;
 use vstd::raw_ptr::PointsToRaw;
 use vstd::raw_ptr::{PointsTo, ptr_mut_write, ptr_ref};
 use vstd::resource::Loc;
+use vstd::resource::ghost_var::{GhostVar, GhostVarAuth};
 #[cfg(verus_only)]
 use vstd::resource::set::GhostSubset;
 use vstd::resource::set::{GhostSetAuth, GhostSingleton};
@@ -1519,8 +1523,8 @@ verus! {
 /// store once the arena is usable (automatic arenas may still be
 /// unmaterialised, see [`Arenas::get`]).
 pub struct Arenas {
-    /// Creation lock; the value is `count` for the writer.
-    lock: Lock<u32>,
+    /// Creation lock; the value is `count` for the writer ([`Created`]).
+    lock: Lock<Created>,
     count: AtomicU32,
     /// Indices below this are automatic (`narenas`).
     auto: u32,
@@ -1538,8 +1542,8 @@ pub struct Arenas {
     /// ([`BoundPred`]), one per index ([`Arenas::wf`]).
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     invs: Tracked<Map<int, BoundInv>>,
-    /// Ghost (no bytes): the invariant of `count` ([`NarenasPred`];
-    /// the type invariant names it).
+    /// Ghost (no bytes): the registry's invariant, over `count` and the
+    /// table entries ([`NarenasPred`]; the type invariant names it).
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     count_inv: Tracked<NarenasInv>,
     /// Ghost (no bytes): the invariant of `spare` ([`SparePred`]), which
@@ -1558,22 +1562,114 @@ pub open spec fn narenas_ns() -> int {
     0x6e61_726e
 }
 
-/// The arena count's invariant, about the counter whose [`count_id`] is
-/// the key: its permission's value is at most [`MAX_ARENAS`]. Its two
-/// writers keep it: `Arenas::init` stores the automatic count it clamped
-/// to `1..=MAX_ARENAS` (with the permission `vspec::count::new` minted for
-/// it), and `Arenas::create` stores `index + 1` for an `index` below `MAX_ARENAS`.
-pub struct NarenasPred;
+/// The registry as the creation lock's holder knows it: the arena count
+/// and the published table entries, each the arena at its index (a
+/// [`GhostVar`] in the lock's value, [`Created`], agreeing with the
+/// [`GhostVarAuth`] in the registry's invariant, [`NarenasPred`]).
+pub type Snap = (u32, Map<int, Arena>);
 
-impl InvariantPredicate<int, CountPerm> for NarenasPred {
-    open spec fn inv(k: int, v: CountPerm) -> bool {
-        &&& v.id() == k
-        &&& v.value() <= MAX_ARENAS
+/// The creation lock's value: `n`, the next explicit index (the arena
+/// count, which only the holder writes), and, as a ghost, the holder's
+/// half of the registry's [`Snap`]: the count and the table change only
+/// with it, so a holder (a guard's, or the fork handlers', which keep the
+/// cell's permission: [`Arenas::lock_held`]) reads them as the half says.
+/// No bytes beyond `n`: `half` is zero-sized.
+pub struct Created {
+    n: u32,
+    /// Ghost (no bytes): the holder's half of the registry's snapshot.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    half: Tracked<GhostVar<Snap>>,
+}
+
+impl Created {
+    /// What [`lock_inv`] states of a creation lock's value
+    /// ([`axiom_arenas_lock_inv`]): `n` is at most [`MAX_ARENAS`], the
+    /// half's count is `n`, and every published entry is below it.
+    pub closed spec fn ok(self) -> bool {
+        &&& self.n <= MAX_ARENAS
+        &&& self.half@@.0 == self.n
+        &&& forall|i: int| #[trigger] self.half@@.1.contains_key(i) ==> 0 <= i < self.n
+    }
+
+    /// The holder's half's snapshot.
+    pub closed spec fn snap(self) -> Snap {
+        self.half@@
     }
 }
 
-/// The invariant of the arena count.
-pub type NarenasInv = AtomicInvariant<int, CountPerm, NarenasPred>;
+/// The permission of the creation lock's cell, as the fork handlers keep
+/// it ([`Arenas::lock_held`], `api::ForkHeld`).
+pub type CreatedPerm = vstd::cell::pcell::PointsTo<Created>;
+
+/// What the registry's invariant ([`NarenasPred`]) is about: the arena
+/// count ([`count_id`]), each table entry ([`entry_id`], by index) and the
+/// location of the snapshot's halves ([`Snap`]).
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub ghost struct RegKey {
+    pub count: int,
+    pub entries: Seq<int>,
+    pub snap: Loc,
+}
+
+/// What the registry's invariant holds: the arena count's permission,
+/// each table entry's, the frozen permission of each published arena, and
+/// the snapshot's authority.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct RegVal {
+    pub tracked count: CountPerm,
+    pub tracked entries: Map<int, EntryPerm<Arena>>,
+    pub tracked arenas: Map<int, &'static PointsTo<Arena>>,
+    pub tracked auth: GhostVarAuth<Snap>,
+}
+
+/// Table entry `i` in the registry's invariant: its permission is for the
+/// entry the key names, and the entry is null when the snapshot has no
+/// arena at `i`, or else the address of that arena, initialised, at index
+/// `i`, whose frozen permission the invariant holds.
+pub open spec fn entry_ok(k: RegKey, v: RegVal, i: int) -> bool {
+    &&& v.entries.contains_key(i)
+    &&& v.entries[i].id() == k.entries[i]
+    &&& if v.entries[i].value()@.addr == 0 {
+        !v.auth@.1.contains_key(i)
+    } else {
+        &&& v.auth@.1.contains_key(i)
+        &&& v.arenas.contains_key(i)
+        &&& v.arenas[i].ptr() == v.entries[i].value()
+        &&& v.arenas[i].is_init()
+        &&& v.arenas[i].value() == v.auth@.1[i]
+        &&& v.auth@.1[i].spec_index() == i
+    }
+}
+
+/// The registry's invariant (the arena count's), about the atomics and
+/// the snapshot location of the key: the count's permission's value is at
+/// most [`MAX_ARENAS`] and is the snapshot's count, and every table entry
+/// is [`entry_ok`]: null, or a built arena at its index, which the
+/// snapshot names; the snapshot names no index beyond the table. Its
+/// writers keep it, each with the snapshot's update, which takes the
+/// creation lock's half: `Arenas::init` (the clamped automatic count,
+/// every entry null but entry 0, arena 0), `Arenas::create` (`index + 1`
+/// for an `index` below `MAX_ARENAS`) and `Arenas::build` (a null entry,
+/// under the creation lock, gets the arena it built, whose permission it
+/// freezes). A published entry is never written again: `build` stores
+/// only into an entry the snapshot has no arena at.
+pub struct NarenasPred;
+
+impl InvariantPredicate<RegKey, RegVal> for NarenasPred {
+    open spec fn inv(k: RegKey, v: RegVal) -> bool {
+        &&& v.count.id() == k.count
+        &&& v.count.value() <= MAX_ARENAS
+        &&& v.auth.id() == k.snap
+        &&& v.auth@.0 == v.count.value()
+        &&& forall|i: int| 0 <= i < MAX_ARENAS ==> #[trigger] entry_ok(k, v, i)
+        &&& forall|i: int| #[trigger] v.auth@.1.contains_key(i) ==> 0 <= i < MAX_ARENAS
+    }
+}
+
+/// The registry's invariant.
+pub type NarenasInv = AtomicInvariant<RegKey, RegVal, NarenasPred>;
 
 /// Namespace of the spare storage's invariant ([`SparePred`]).
 pub open spec fn spare_ns() -> int {
@@ -1765,7 +1861,7 @@ axiom fn axiom_arenas_layout()
         // Over several lines, as in `axiom_arena_layout`.
         field_fits::<
             Arenas,
-            Lock<u32>,
+            Lock<Created>,
         >(AR_LOCK, AR_SPARE as int),
         field_fits::<Arenas, PAtomicPtr<Arena>>(AR_SPARE, AR_COUNT as int),
         field_fits::<Arenas, AtomicU32>(AR_COUNT, AR_AUTO as int),
@@ -1785,7 +1881,7 @@ const _: () = assert!(
             <= isize::MAX as u128
         && fits::<Arenas, [AtomicU32; MAX_ARENAS]>(AR_BOUND, AR_LOCK)
         && MAX_ARENAS as u128 * core::mem::size_of::<AtomicU32>() as u128 <= isize::MAX as u128
-        && fits::<Arenas, Lock<u32>>(AR_LOCK, AR_SPARE)
+        && fits::<Arenas, Lock<Created>>(AR_LOCK, AR_SPARE)
         && fits::<Arenas, PAtomicPtr<Arena>>(AR_SPARE, AR_COUNT)
         && fits::<Arenas, AtomicU32>(AR_COUNT, AR_AUTO)
         && fits::<Arenas, u32>(AR_AUTO, AR_INVS)
@@ -1808,15 +1904,31 @@ const _: () = assert!(
 
 verus! {
 
-/// The creation lock (`Arenas` holds the only `Lock<u32>` outside the
-/// tests) has no invariant: every value satisfies it, so its holders owe
-/// nothing and learn nothing from it. `Arenas::init`'s `Lock::new` needs
-/// it of the automatic count. The bound on the count is not stated here:
-/// the arena count's own invariant ([`NarenasPred`]) carries it. Trusted
-/// only because `lock_inv` is uninterpreted.
-pub broadcast axiom fn axiom_arenas_lock_inv(v: u32)
+/// The creation lock's invariant ([`Created::ok`]): `n` is at most
+/// [`MAX_ARENAS`], the holder's half of the snapshot has the count `n`,
+/// and no published entry at or above it. Trusted only because `lock_inv`
+/// is uninterpreted. Its writers are verified and show it: `Arenas::init`'s
+/// `Lock::new` (the automatic count, arena 0 alone), `Arenas::create`,
+/// which publishes entry `n` and then stores `n + 1` for an `n` below
+/// `MAX_ARENAS` (a failed `build` leaves the value as it was, `build`'s
+/// ensures), and `Arenas::materialise`, which publishes an automatic
+/// index, below the count (the frame, [`axiom_arenas_lock_frame`]). The
+/// fork handlers keep the cell's permission and write nothing
+/// (`Lock::lock_held_perm`).
+pub broadcast axiom fn axiom_arenas_lock_inv(v: Created)
     ensures
-        #[trigger] lock_inv(v),
+        #[trigger] lock_inv(v) == v.ok(),
+;
+
+/// Assumption (`lock.rs`): the creation lock's value keeps the snapshot
+/// half's location and never goes below the count it was created with
+/// (the automatic count, `Arenas::type_inv`). Its writers keep both:
+/// `Arenas::create` raises `n` by one and updates the half in place
+/// (`GhostVarAuth::update` keeps its location), and `Arenas::build`
+/// updates the half in place.
+broadcast axiom fn axiom_arenas_lock_frame(init: Created, v: Created)
+    ensures
+        #[trigger] lock_frame(init, v) ==> v.n >= init.n && v.half@.id() == init.half@.id(),
 ;
 
 /// The permissions to the fields of an `Arenas` under construction but
@@ -1825,7 +1937,7 @@ pub broadcast axiom fn axiom_arenas_lock_inv(v: u32)
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 tracked struct ArenasParts {
-    tracked lock: PointsTo<Lock<u32>>,
+    tracked lock: PointsTo<Lock<Created>>,
     tracked count: PointsTo<AtomicU32>,
     tracked auto: PointsTo<u32>,
     tracked invs: PointsTo<Tracked<Map<int, BoundInv>>>,
@@ -1839,7 +1951,7 @@ impl ArenasParts {
     /// [`storage_ok`], and the two arrays are inside it.
     spec fn at(&self, p: *mut Arenas) -> bool {
         &&& storage_ok(p)
-        &&& self.lock.ptr() == field_ptr::<Arenas, Lock<u32>>(p, AR_LOCK)
+        &&& self.lock.ptr() == field_ptr::<Arenas, Lock<Created>>(p, AR_LOCK)
         &&& self.count.ptr() == field_ptr::<Arenas, AtomicU32>(p, AR_COUNT)
         &&& self.auto.ptr() == field_ptr::<Arenas, u32>(p, AR_AUTO)
         &&& self.invs.ptr() == field_ptr::<Arenas, Tracked<Map<int, BoundInv>>>(p, AR_INVS)
@@ -1877,7 +1989,7 @@ spec fn arenas_pad_covers(pad: PointsToRaw, p: *mut Arenas) -> bool {
         p@.addr <= x < p@.addr + size_of::<Arenas>() ==> #[trigger] pad.dom().contains(x)
             || in_arenas_field::<[AtomicPtr<Arena>; MAX_ARENAS]>(x, p, AR_TABLE)
             || in_arenas_field::<[AtomicU32; MAX_ARENAS]>(x, p, AR_BOUND)
-            || in_arenas_field::<Lock<u32>>(x, p, AR_LOCK)
+            || in_arenas_field::<Lock<Created>>(x, p, AR_LOCK)
             || in_arenas_field::<AtomicU32>(x, p, AR_COUNT)
             || in_arenas_field::<u32>(x, p, AR_AUTO)
             || in_arenas_field::<Tracked<Map<int, BoundInv>>>(x, p, AR_INVS)
@@ -1926,7 +2038,7 @@ impl Arenas {
         axiom_raw_valid(&raw, p as *mut u8, size_of::<Arenas>() as int);
         let tracked (table, raw) = take_field::<Arenas, [AtomicPtr<Arena>; MAX_ARENAS]>(raw, p, AR_TABLE, AR_BOUND as int);
         let tracked (bound, raw) = take_field::<Arenas, [AtomicU32; MAX_ARENAS]>(raw, p, AR_BOUND, AR_LOCK as int);
-        let tracked (lock, raw) = take_field::<Arenas, Lock<u32>>(raw, p, AR_LOCK, AR_SPARE as int);
+        let tracked (lock, raw) = take_field::<Arenas, Lock<Created>>(raw, p, AR_LOCK, AR_SPARE as int);
         let tracked (spare, raw) = take_field::<Arenas, PAtomicPtr<Arena>>(raw, p, AR_SPARE, AR_COUNT as int);
         let tracked (count, raw) = take_field::<Arenas, AtomicU32>(raw, p, AR_COUNT, AR_AUTO as int);
         let tracked (auto, raw) = take_field::<Arenas, u32>(raw, p, AR_AUTO, AR_INVS as int);
@@ -1980,8 +2092,11 @@ axiom fn axiom_arenas_assemble(
         elems_init(tables, 0, MAX_ARENAS as int),
         elems_init(bounds, 0, MAX_ARENAS as int),
         parts.lock.value().rank() == rank_arenas(),
-        parts.count_inv.value()@.constant() == count_id(&parts.count.value()),
+        parts.count_inv.value()@.constant().count == count_id(&parts.count.value()),
+        forall|i: int| 0 <= i < MAX_ARENAS ==> #[trigger] parts.count_inv.value()@.constant().entries[i] == entry_id(&tables[i].value()),
         parts.count_inv.value()@.namespace() == narenas_ns(),
+        lock_init(parts.lock.value()).half@.id() == parts.count_inv.value()@.constant().snap,
+        lock_init(parts.lock.value()).n == parts.auto.value(),
         parts.spare_inv.value()@.constant() == parts.spare.value().id(),
         parts.spare_inv.value()@.namespace() == spare_ns(),
     ensures
@@ -2112,14 +2227,23 @@ impl Arenas {
     /// `lock`, `count` and `auto`, from the automatic count `auto`; the
     /// count's permission.
     #[inline(always)]
-    unsafe fn put_head(this: *mut Arenas, auto: u32, Tracked(parts): Tracked<&mut ArenasParts>) -> (r: Tracked<CountPerm>)
+    unsafe fn put_head(
+        this: *mut Arenas,
+        auto: u32,
+        half: Tracked<GhostVar<Snap>>,
+        Tracked(parts): Tracked<&mut ArenasParts>,
+    ) -> (r: Tracked<CountPerm>)
         requires
             old(parts).at(this),
             auto as usize <= MAX_ARENAS,
+            half@@.0 == auto,
+            forall|i: int| #[trigger] half@@.1.contains_key(i) ==> 0 <= i < auto,
         ensures
             final(parts).at(this),
             final(parts).lock.is_init(),
             final(parts).lock.value().rank() == rank_arenas(),
+            lock_init(final(parts).lock.value()).n == auto,
+            lock_init(final(parts).lock.value()).half == half,
             final(parts).count.is_init(),
             final(parts).auto.is_init(),
             final(parts).auto.value() == auto,
@@ -2135,7 +2259,7 @@ impl Arenas {
         }
         // SAFETY: the fields of `init`'s storage, through their permissions.
         unsafe {
-            ptr_mut_write(field_at(this, AR_LOCK), Tracked(&mut parts.lock), Lock::new(auto, Ghost(rank_arenas())));
+            ptr_mut_write(field_at(this, AR_LOCK), Tracked(&mut parts.lock), Lock::new(Created { n: auto, half }, Ghost(rank_arenas())));
             let (c, perm) = crate::vspec::count::new(auto);
             ptr_mut_write(field_at(this, AR_COUNT), Tracked(&mut parts.count), c);
             ptr_mut_write(field_at(this, AR_AUTO), Tracked(&mut parts.auto), auto);
@@ -2152,7 +2276,7 @@ impl Arenas {
         i: usize,
         Tracked(t): Tracked<&mut PointsTo<AtomicPtr<Arena>>>,
         Tracked(b): Tracked<&mut PointsTo<AtomicU32>>,
-    ) -> (r: Tracked<CountPerm>)
+    ) -> (r: Tracked<(CountPerm, EntryPerm<Arena>)>)
         requires
             storage_ok(this),
             i < MAX_ARENAS,
@@ -2167,8 +2291,10 @@ impl Arenas {
             final(t).is_init(),
             final(b).ptr() == old(b).ptr(),
             final(b).is_init(),
-            r@.id() == count_id(&final(b).value()),
-            r@.value() == 0,
+            r@.0.id() == count_id(&final(b).value()),
+            r@.0.value() == 0,
+            r@.1.id() == entry_id(&final(t).value()),
+            r@.1.value()@.addr == 0,
     {
         proof {
             axiom_arenas_layout();
@@ -2177,22 +2303,32 @@ impl Arenas {
         unsafe {
             let table: *mut AtomicPtr<Arena> = field_at(this, AR_TABLE);
             let bound: *mut AtomicU32 = field_at(this, AR_BOUND);
-            ptr_mut_write(elem_at(table, i, MAX_ARENAS), Tracked(t), AtomicPtr::new(ptr::null_mut()));
-            let (c, perm) = crate::vspec::count::new(0);
+            let (e, Tracked(eperm)) = crate::vspec::entry::new(ptr::null_mut());
+            ptr_mut_write(elem_at(table, i, MAX_ARENAS), Tracked(t), e);
+            let (c, Tracked(cperm)) = crate::vspec::count::new(0);
             ptr_mut_write(elem_at(bound, i, MAX_ARENAS), Tracked(b), c);
-            perm
+            Tracked((cperm, eperm))
         }
     }
 
     /// `arena0` into entry 0 of `table`, through the permission `t` to it.
     #[inline(always)]
-    unsafe fn put_arena0(this: *mut Arenas, arena0: *mut Arena, Tracked(t): Tracked<&PointsTo<AtomicPtr<Arena>>>)
+    unsafe fn put_arena0(
+        this: *mut Arenas,
+        arena0: *mut Arena,
+        Tracked(t): Tracked<&PointsTo<AtomicPtr<Arena>>>,
+        Tracked(e): Tracked<&mut EntryPerm<Arena>>,
+    )
         requires
             storage_ok(this),
             t.ptr() == ptr_add(field_ptr::<Arenas, AtomicPtr<Arena>>(this, AR_TABLE), 0),
             t.is_init(),
+            old(e).id() == entry_id(&t.value()),
             in_alloc(field_ptr::<Arenas, AtomicPtr<Arena>>(this, AR_TABLE), MAX_ARENAS as int * size_of::<AtomicPtr<Arena>>()),
             MAX_ARENAS * size_of::<AtomicPtr<Arena>>() <= isize::MAX,
+        ensures
+            final(e).id() == old(e).id(),
+            final(e).value() == arena0,
     {
         proof {
             axiom_arenas_layout();
@@ -2200,7 +2336,7 @@ impl Arenas {
         // SAFETY: element 0 of the field, through its permission.
         unsafe {
             let table: *mut AtomicPtr<Arena> = field_at(this, AR_TABLE);
-            ptr_ref(elem_at(table, 0, MAX_ARENAS), Tracked(t)).store(arena0, Ordering::Release);
+            crate::vspec::entry::store(ptr_ref(elem_at(table, 0, MAX_ARENAS), Tracked(t)), arena0, Ordering::Release, Tracked(e));
         }
     }
 
@@ -2280,17 +2416,30 @@ impl Arenas {
     /// set at a location of its own; no ticket exists yet. Likewise the
     /// ghost `count_inv`: `count` is written the clamped automatic count,
     /// and its invariant ([`NarenasPred`], in [`narenas_ns`]) holds the
-    /// permission `vspec::count::new` minted for it. `spare` is null, and
-    /// its invariant ([`SparePred`], in [`spare_ns`]) holds no storage.
+    /// permission `vspec::count::new` minted for it, every table entry's
+    /// (`vspec::entry::new`; all null but entry 0, arena 0, whose frozen
+    /// permission `a0` it keeps) and the snapshot's authority, whose other
+    /// half goes into the creation lock's value ([`Created`]). `spare` is
+    /// null, and its invariant ([`SparePred`], in [`spare_ns`]) holds no
+    /// storage.
     ///
     /// # Safety
     /// `this` must point to writable storage that nothing else reads until
     /// this returns; `arena0` must outlive the registry.
     #[verifier::loop_isolation(false)]
-    pub unsafe fn init(this: *mut Arenas, arena0: *mut Arena, narenas: u32, Tracked(slot): Tracked<&mut Held<Arenas>>)
+    pub unsafe fn init(
+        this: *mut Arenas,
+        arena0: *mut Arena,
+        narenas: u32,
+        Tracked(a0): Tracked<&'static PointsTo<Arena>>,
+        Tracked(slot): Tracked<&mut Held<Arenas>>,
+    )
         requires
             old(slot).perm matches Some(p) && p.ptr() == this && p.is_uninit(),
             this@.addr + size_of::<Arenas>() <= usize::MAX,
+            a0.ptr() == arena0,
+            a0.is_init(),
+            a0.value().spec_index() == 0,
         ensures
             final(slot).perm matches Some(p) && p.ptr() == this && p.is_init() && p.value().wf(),
     {
@@ -2298,10 +2447,15 @@ impl Arenas {
         let tracked (mut parts, mut tables, mut bounds, pad) = Arenas::split(slot.perm.tracked_take());
         // Ghost: each bound count's permission, as `put_entry` mints it.
         let tracked mut counts: Map<int, CountPerm> = Map::tracked_empty();
+        // Ghost: each table entry's permission, as `put_entry` mints it.
+        let tracked mut entries: Map<int, EntryPerm<Arena>> = Map::tracked_empty();
+        // Ghost: the snapshot's halves, the automatic count and arena 0.
+        let ghost snap0: Snap = (auto, Map::empty().insert(0int, a0.value()));
+        let tracked (auth, half) = GhostVarAuth::<Snap>::new(snap0);
         // SAFETY: the caller guarantees `this` is writable and unaliased;
         // every write goes through the permission to its field.
         unsafe {
-            let Tracked(nperm) = Arenas::put_head(this, auto, Tracked(&mut parts));
+            let Tracked(nperm) = Arenas::put_head(this, auto, Tracked(half), Tracked(&mut parts));
             for i in 0..MAX_ARENAS
                 invariant
                     tables_at(tables, this),
@@ -2311,17 +2465,38 @@ impl Arenas {
                     forall|j: int| 0 <= j < i ==> #[trigger] counts.contains_key(j),
                     forall|j: int| 0 <= j < i ==> #[trigger] counts[j].id() == count_id(&bounds[j].value()),
                     forall|j: int| 0 <= j < i ==> #[trigger] counts[j].value() == 0,
+                    forall|j: int| 0 <= j < i ==> #[trigger] entries.contains_key(j),
+                    forall|j: int| 0 <= j < i ==> #[trigger] entries[j].id() == entry_id(&tables[j].value()),
+                    forall|j: int| 0 <= j < i ==> (#[trigger] entries[j]).value()@.addr == 0,
             {
-                let ghost (t0, b0, c0) = (tables, bounds, counts);
+                let ghost (t0, b0, c0, e0) = (tables, bounds, counts, entries);
                 proof {
                     assert(tables.contains_key(i as int));
                     assert(bounds.contains_key(i as int));
                 }
                 let tracked t = tables.tracked_borrow_mut(i as int);
                 let tracked b = bounds.tracked_borrow_mut(i as int);
-                let Tracked(c) = Arenas::put_entry(this, i, Tracked(t), Tracked(b));
+                let Tracked(ce) = Arenas::put_entry(this, i, Tracked(t), Tracked(b));
+                let tracked (c, e) = ce;
                 proof {
                     counts.tracked_insert(i as int, c);
+                    entries.tracked_insert(i as int, e);
+                    assert forall|j: int| 0 <= j < i + 1 implies #[trigger] entries.contains_key(j) by {
+                        if j < i {
+                            assert(e0.contains_key(j));
+                        }
+                    }
+                    assert forall|j: int| 0 <= j < i + 1 implies #[trigger] entries[j].id() == entry_id(&tables[j].value()) by {
+                        if j < i {
+                            assert(e0[j] == entries[j]);
+                            assert(t0[j] == tables[j]);
+                        }
+                    }
+                    assert forall|j: int| 0 <= j < i + 1 implies (#[trigger] entries[j]).value()@.addr == 0 by {
+                        if j < i {
+                            assert(e0[j] == entries[j]);
+                        }
+                    }
                     assert forall|j: int| 0 <= j < MAX_ARENAS implies #[trigger] tables.contains_key(j) by {
                         assert(t0.contains_key(j));
                     }
@@ -2366,12 +2541,40 @@ impl Arenas {
             }
             proof {
                 assert(tables.contains_key(0));
+                assert(entries.contains_key(0));
             }
-            Arenas::put_arena0(this, arena0, Tracked(tables.tracked_borrow(0)));
+            let ghost e1 = entries;
+            Arenas::put_arena0(this, arena0, Tracked(tables.tracked_borrow(0)), Tracked(entries.tracked_borrow_mut(0)));
             let tracked (auths, frags) = fresh_sets(MAX_ARENAS as nat);
             let ghost locs = auths;
             let tracked invs = fresh_invs(counts, auths, frags, MAX_ARENAS as nat);
-            let tracked count_inv = NarenasInv::new(nperm.id(), nperm, narenas_ns());
+            // The registry's invariant: entry 0 is arena 0, whose frozen
+            // permission the caller gave, and every other entry is null.
+            let tracked mut arenas: Map<int, &'static PointsTo<Arena>> = Map::tracked_empty();
+            proof {
+                a0.is_nonnull();
+                arenas.tracked_insert(0int, a0);
+            }
+            let ghost ents = entries;
+            let ghost key = RegKey {
+                count: nperm.id(),
+                entries: Seq::new(MAX_ARENAS as nat, |j: int| ents[j].id()),
+                snap: auth.id(),
+            };
+            let tracked val = RegVal { count: nperm, entries, arenas, auth };
+            proof {
+                assert forall|j: int| 0 <= j < MAX_ARENAS implies #[trigger] entry_ok(key, val, j) by {
+                    assert(e1.contains_key(j));
+                    if j != 0 {
+                        assert(ents[j] == e1[j]);
+                    }
+                }
+                assert forall|j: int| 0 <= j < MAX_ARENAS implies #[trigger] key.entries[j] == entry_id(&tables[j].value()) by {
+                    assert(e1.contains_key(j));
+                    assert(ents[j].id() == e1[j].id());
+                }
+            }
+            let tracked count_inv = NarenasInv::new(key, val, narenas_ns());
             Arenas::put_invs(this, Tracked(invs), Tracked(count_inv), Tracked(&mut parts));
             Arenas::put_spare(this, Tracked(&mut parts));
             proof {
@@ -2490,17 +2693,44 @@ impl Arenas {
 
 verus! {
 
-/// The arena a non-null registry entry points at. Trusted: Verus has no
-/// raw-pointer dereference. Entries are published by `build` with a
-/// release store after `Arena::init`, and arenas are never freed. The
-/// arena at entry `index` is arena `index` (`spec_index`): `build`
-/// stores the arena `Arena::init` built as `index` into entry `index`,
-/// `Arenas::init` stores `Shared::arena0`, built as 0, into entry 0, and
-/// nothing else writes an entry. The contract states the address fact
-/// every caller shows, that `p` is not null; that a non-null entry is a
-/// live, initialised arena is the registry's protocol above, which no
-/// ghost state carries (`build` holds the arena's permission only until
-/// it publishes it).
+/// The arena a non-null registry entry points at, read through `perm`,
+/// the frozen permission the registry's invariant holds for the entry
+/// ([`entry_ok`]): `build` freezes the permission of the arena
+/// `Arena::init` built as `index` when it publishes it into entry
+/// `index`, and `Arenas::init` puts arena 0's, which `Shared::init`
+/// froze, at entry 0. Arenas are never freed, and a frozen permission
+/// lets nothing write through it.
+///
+/// # Safety
+/// None beyond the contract: `perm` is the permission to the arena at `p`.
+#[inline(always)]
+unsafe fn arena_ref<'a>(p: *mut Arena, perm: Tracked<&'a PointsTo<Arena>>, Ghost(index): Ghost<u16>) -> (r: &'a Arena)
+    requires
+        perm@.ptr() == p,
+        perm@.is_init(),
+        perm@.value().spec_index() == index,
+    ensures
+        *r == perm@.value(),
+        r.spec_index() == index,
+{
+    ptr_ref(p, perm)
+}
+
+/// [`arena_ref`] without the permission, for [`Arenas::get_existing`]
+/// alone. Trusted: Verus has no raw-pointer dereference without a
+/// permission, and `get_existing` cannot take one: it is on the `free`
+/// flush path (`Shared::owner`), where one more distinct `Tracked` type
+/// (the entry's permission for the load, or the arena's for
+/// [`arena_ref`]) changes the machine code of `Heap::flush` and
+/// `group_by_slab` (measured: rustc's MIR inliner gives up at 16
+/// instances of `Tracked::assume_new_fallback` reachable from the root;
+/// brief, "distinct Tracked types per root"). What it assumes is what the
+/// registry's invariant states and the verified readers ([`Arenas::get`],
+/// [`Arenas::get_frozen`]) prove through [`arena_ref`]: a non-null entry
+/// `index` is the address of a built arena at index `index`, frozen
+/// ([`entry_ok`]); `get_existing`'s load is a plain one, outside the
+/// invariant, so the contract states only the address fact every caller
+/// shows, that `p` is not null.
 ///
 /// # Safety
 /// `p` is a non-null entry loaded from `Arenas::table[index]`.
@@ -2631,11 +2861,28 @@ impl Arenas {
         if i >= MAX_ARENAS {
             return None;
         }
-        let p = self.table[i].load(Ordering::Acquire);
+        proof {
+            use_type_invariant(self);
+        }
+        // Inside the registry's invariant ([`entry_ok`]): a non-null entry
+        // is a built arena at index `i`, with its frozen permission.
+        let p;
+        let tracked mut perm: Option<&'static PointsTo<Arena>> = None;
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
+            proof {
+                assert(entry_ok(self.count_inv@.constant(), v, i as int));
+            }
+            p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked(v.entries.tracked_borrow(i as int)));
+            proof {
+                if p@.addr != 0 {
+                    perm = Some(*v.arenas.tracked_borrow(i as int));
+                }
+            }
+        });
         if !p.is_null() {
             // SAFETY: arenas are never freed; the pointer was published
             // after `Arena::init` with a release store.
-            return Some(unsafe { arena_at(p, Ghost(index)) });
+            return Some(unsafe { arena_ref(p, Tracked(perm.tracked_unwrap()), Ghost(index)) });
         }
         self.materialise(shared, index, Tracked(ord))
     }
@@ -2660,13 +2907,43 @@ impl Arenas {
             use_type_invariant(self);
         }
         let tracked mut under = LockOrder::spare();
-        let _g = self.lock.lock(Tracked(ord), Tracked(&mut under));
-        let p = self.table[index as usize].load(Ordering::Acquire);
+        let mut g = self.lock.lock(Tracked(ord), Tracked(&mut under));
+        // The lock's value, for its half of the snapshot ([`Created`]);
+        // read only by the proof.
+        #[allow(unused_variables)]
+        let c = &mut *g;
+        proof {
+            broadcast use {axiom_arenas_lock_inv, axiom_arenas_lock_frame};
+
+            assert(c.ok());
+        }
+        // As in `get`; under the lock, the snapshot's half also says
+        // whether the entry is null.
+        let p;
+        let tracked mut perm: Option<&'static PointsTo<Arena>> = None;
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
+            proof {
+                assert(entry_ok(self.count_inv@.constant(), v, index as int));
+                v.auth.agree(c.half.borrow());
+            }
+            p = crate::vspec::entry::load(&self.table[index as usize], Ordering::Acquire, Tracked(v.entries.tracked_borrow(index as int)));
+            proof {
+                if p@.addr != 0 {
+                    perm = Some(*v.arenas.tracked_borrow(index as int));
+                }
+            }
+        });
         if !p.is_null() {
             // SAFETY: as in `get`.
-            return Some(unsafe { arena_at(p, Ghost(index)) });
+            return Some(unsafe { arena_ref(p, Tracked(perm.tracked_unwrap()), Ghost(index)) });
         }
-        self.build(shared, index, Tracked(&mut under))
+        let r = self.build(shared, index, Tracked(c.half.borrow_mut()), Tracked(&mut under));
+        proof {
+            // The lock's invariant again: an automatic index is below the
+            // count (the frame keeps the count at or above `auto`).
+            assert(lock_inv(*c));
+        }
+        r
     }
 
     /// Build arena `index` in the metadata region and publish it. Called
@@ -2679,16 +2956,32 @@ impl Arenas {
     /// inside its invariant ([`SparePred`]), which carries the storage's
     /// permission between builds (vstd's permission atomic, whose
     /// operations are `SeqCst`).
-    fn build<'a>(&'a self, shared: &'a Shared, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&'a Arena>)
+    ///
+    /// `h` is the creation lock's half of the registry's snapshot (the
+    /// caller's guard's, [`Created`]), which has no arena at `index`; a
+    /// built arena is published in it too.
+    fn build<'a>(
+        &'a self,
+        shared: &'a Shared,
+        index: u16,
+        Tracked(h): Tracked<&mut GhostVar<Snap>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: Option<&'a Arena>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             (index as usize) < MAX_ARENAS,
             shared.wf(),
             old(ord).allows(rank_meta()),
+            old(h).id() == self.count_inv@.constant().snap,
+            !old(h)@.1.contains_key(index as int),
         ensures
             r matches Some(a) ==> a.spec_index() == index,
             *final(ord) == *old(ord),
+            final(h).id() == old(h).id(),
+            final(h)@.0 == old(h)@.0,
+            r is None ==> final(h)@ == old(h)@,
+            r matches Some(a) ==> final(h)@.1 == old(h)@.1.insert(index as int, *a),
     {
         proof {
             use_type_invariant(self);
@@ -2776,10 +3069,37 @@ impl Arenas {
         proof {
             slot.perm.tracked_borrow().is_nonnull();
         }
+        // The arena's permission, frozen: the registry's invariant keeps a
+        // copy for every reader of the entry ([`entry_ok`]).
+        let tracked fr: &'static PointsTo<Arena> = vstd::modes::tracked_static_ref(slot.perm.tracked_unwrap());
         shared.set_multi_arena();
-        self.table[index as usize].store(p, Ordering::Release);
+        // Inside the registry's invariant, with the creation lock's half:
+        // the entry was null (the snapshot has no arena at `index`), and
+        // the store publishes the arena there, in the snapshot too.
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
+            let ghost v0 = v;
+            let ghost k = self.count_inv@.constant();
+            proof {
+                assert(entry_ok(k, v, index as int));
+                v.auth.agree(h);
+            }
+            crate::vspec::entry::store(&self.table[index as usize], p, Ordering::Release, Tracked(v.entries.tracked_borrow_mut(index as int)));
+            proof {
+                v.arenas.tracked_insert(index as int, fr);
+                let ghost s0 = v.auth@;
+                v.auth.update(h, (s0.0, s0.1.insert(index as int, fr.value())));
+                assert forall|j: int| 0 <= j < MAX_ARENAS implies #[trigger] entry_ok(k, v, j) by {
+                    assert(entry_ok(k, v0, j));
+                }
+                assert forall|j: int| #[trigger] v.auth@.1.contains_key(j) implies 0 <= j < MAX_ARENAS by {
+                    if j != index as int {
+                        assert(v0.auth@.1.contains_key(j));
+                    }
+                }
+            }
+        });
         // SAFETY: just built and published.
-        Some(unsafe { arena_at(p, Ghost(index)) })
+        Some(unsafe { arena_ref(p, Tracked(fr), Ghost(index)) })
     }
 
     /// `arenas.create`: a new explicit arena. `None` when the table or the
@@ -2799,17 +3119,41 @@ impl Arenas {
         }
         let tracked mut under = LockOrder::spare();
         let mut g = self.lock.lock(Tracked(ord), Tracked(&mut under));
-        let index = *g;
+        let index = g.n;
         if index as usize >= MAX_ARENAS {
             return None;
         }
-        self.build(shared, index as u16, Tracked(&mut under))?;
-        *g = index + 1;
+        // The lock's value, with its half of the snapshot ([`Created`]):
+        // no arena at `index`, the count, yet.
+        let c = &mut *g;
+        proof {
+            broadcast use {axiom_arenas_lock_inv, axiom_arenas_lock_frame};
+
+            assert(c.ok());
+        }
+        self.build(shared, index as u16, Tracked(c.half.borrow_mut()), Tracked(&mut under))?;
+        c.n = index + 1;
         // Inside the count's invariant ([`NarenasPred`]): `index + 1` is at
-        // most `MAX_ARENAS`.
-        vstd::open_atomic_invariant!(self.count_inv.borrow() => perm => {
-            crate::vspec::count::store(&self.count, index + 1, Ordering::Release, Tracked(&mut perm));
+        // most `MAX_ARENAS`, and the snapshot's count moves with it.
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
+            let ghost v0 = v;
+            let ghost k = self.count_inv@.constant();
+            proof {
+                v.auth.agree(c.half.borrow());
+            }
+            crate::vspec::count::store(&self.count, index + 1, Ordering::Release, Tracked(&mut v.count));
+            proof {
+                let ghost s0 = v.auth@;
+                v.auth.update(c.half.borrow_mut(), ((index + 1) as u32, s0.1));
+                assert forall|j: int| 0 <= j < MAX_ARENAS implies #[trigger] entry_ok(k, v, j) by {
+                    assert(entry_ok(k, v0, j));
+                }
+            }
         });
+        proof {
+            // The lock's invariant again: arena `index` is below the count.
+            assert(lock_inv(*c));
+        }
         Some(index as u16)
     }
 
@@ -2825,6 +3169,124 @@ impl Arenas {
         let p = self.table[i].load(Ordering::Acquire);
         // SAFETY: a non-null entry of the table.
         if p.is_null() { None } else { Some(unsafe { arena_at(p, Ghost(index)) }) }
+    }
+
+    /// [`Arenas::get_existing`] for a holder of the creation lock that
+    /// keeps the permission of its cell, `cp` (the fork handlers,
+    /// [`Arenas::lock_held`]): the arena at `index` in the lock value's
+    /// half of the snapshot ([`Created`]), which nothing can change while
+    /// the holder keeps `cp`. The same code as `get_existing`; the lock
+    /// value is read only for its ghost half.
+    #[inline(always)]
+    pub fn get_frozen<'a>(&'a self, index: u16, cp: Tracked<&CreatedPerm>) -> (r: Option<&'a Arena>)
+        requires
+            self.frozen(*cp@),
+        ensures
+            r is Some <==> cp@.value().snap().1.contains_key(index as int),
+            r matches Some(a) ==> *a == cp@.value().snap().1[index as int],
+            r matches Some(a) ==> a.spec_index() == index,
+    {
+        let i = index as usize;
+        if i >= MAX_ARENAS {
+            return None;
+        }
+        proof {
+            use_type_invariant(self);
+        }
+        // Read only by the proof (its ghost half).
+        #[allow(unused_variables)]
+        let c = self.lock.value_held(cp);
+        let p;
+        let tracked mut perm: Option<&'static PointsTo<Arena>> = None;
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
+            proof {
+                assert(entry_ok(self.count_inv@.constant(), v, i as int));
+                v.auth.agree(c.half.borrow());
+            }
+            p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked(v.entries.tracked_borrow(i as int)));
+            proof {
+                if p@.addr != 0 {
+                    perm = Some(*v.arenas.tracked_borrow(i as int));
+                }
+            }
+        });
+        // SAFETY: a non-null entry of the table.
+        if p.is_null() { None } else { Some(unsafe { arena_ref(p, Tracked(perm.tracked_unwrap()), Ghost(index)) }) }
+    }
+
+    /// [`Arenas::count`] for a holder of the creation lock that keeps the
+    /// permission of its cell, `cp`, as in [`Arenas::get_frozen`]: the
+    /// count in the lock value's half of the snapshot.
+    #[inline(always)]
+    pub fn count_frozen(&self, cp: Tracked<&CreatedPerm>) -> (r: u32)
+        requires
+            self.frozen(*cp@),
+        ensures
+            r == cp@.value().snap().0,
+            r as usize <= MAX_ARENAS,
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        // Read only by the proof (its ghost half).
+        #[allow(unused_variables)]
+        let c = self.lock.value_held(cp);
+        let r;
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
+            proof {
+                v.auth.agree(c.half.borrow());
+            }
+            r = crate::vspec::count::load(&self.count, Ordering::Acquire, Tracked(&v.count));
+        });
+        r
+    }
+
+    /// The creation lock, taken for the fork handlers: `RawLock::lock_held`
+    /// with the permission of the lock's cell, which they keep until the
+    /// release (`Lock::lock_held_perm`), so that nothing changes the count
+    /// or the table meanwhile ([`Arenas::frozen`]).
+    #[inline(always)]
+    pub fn lock_held(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Tracked<(LockHeld, CreatedPerm)>)
+        requires
+            crate::sys::may_syscall(),
+            old(ord).root(),
+            old(ord).allows(rank_arenas()),
+        ensures
+            r@.0.held() == self.spec_raw_lock(),
+            self.frozen(r@.1),
+            final(ord).root(),
+            final(ord).top() == rank_arenas(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let r = self.lock.lock_held_perm(Tracked(ord));
+        proof {
+            broadcast use {axiom_arenas_lock_inv, axiom_arenas_lock_frame};
+
+        }
+        r
+    }
+
+    /// `cp` is the permission of the creation lock's cell, whose value
+    /// keeps the lock's invariant and has the snapshot's half
+    /// ([`Created`]) of this registry: what [`Arenas::lock_held`] hands
+    /// the fork handlers.
+    pub closed spec fn frozen(&self, cp: CreatedPerm) -> bool {
+        &&& self.lock.has_perm(cp)
+        &&& cp.value().ok()
+        &&& cp.value().half@.id() == self.count_inv@.constant().snap
+    }
+
+    /// The snapshot of an [`Arenas::frozen`] permission: a count of at most
+    /// [`MAX_ARENAS`], and arenas only below it.
+    pub proof fn lemma_frozen(&self, cp: CreatedPerm)
+        requires
+            self.frozen(cp),
+        ensures
+            cp.value().snap().0 <= MAX_ARENAS,
+            forall|i: int| #[trigger] cp.value().snap().1.contains_key(i) ==> 0 <= i < cp.value().snap().0,
+    {
     }
 
     /// Automatic arenas, as `init` clamped them.
@@ -2974,8 +3436,8 @@ impl Arenas {
             use_type_invariant(self);
         }
         let r;
-        vstd::open_atomic_invariant!(self.count_inv.borrow() => perm => {
-            r = crate::vspec::count::load(&self.count, Ordering::Acquire, Tracked(&perm));
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
+            r = crate::vspec::count::load(&self.count, Ordering::Acquire, Tracked(&v.count));
         });
         r
     }
@@ -3094,15 +3556,20 @@ impl Arenas {
     }
 
     /// The creation lock is the arena creation lock of the lock order,
-    /// `count_inv` is the invariant of `count` ([`NarenasPred`]) in
-    /// [`narenas_ns`] and `spare_inv` that of `spare` ([`SparePred`]) in
+    /// `count_inv` is the registry's invariant ([`NarenasPred`]) over
+    /// `count` and the table entries, in [`narenas_ns`], whose snapshot
+    /// half is the creation lock's initial value's, with `n` the automatic
+    /// count, and `spare_inv` that of `spare` ([`SparePred`]) in
     /// [`spare_ns`] (`init` makes them so: `axiom_arenas_assemble`
     /// requires them).
     #[verifier::type_invariant]
     spec fn type_inv(self) -> bool {
         &&& self.lock.rank() == rank_arenas()
-        &&& self.count_inv@.constant() == count_id(&self.count)
+        &&& self.count_inv@.constant().count == count_id(&self.count)
+        &&& forall|i: int| 0 <= i < MAX_ARENAS ==> #[trigger] self.count_inv@.constant().entries[i] == entry_id(&self.table[i])
         &&& self.count_inv@.namespace() == narenas_ns()
+        &&& lock_init(self.lock).half@.id() == self.count_inv@.constant().snap
+        &&& lock_init(self.lock).n == self.auto
         &&& self.spare_inv@.constant() == self.spare.id()
         &&& self.spare_inv@.namespace() == spare_ns()
     }
@@ -3171,7 +3638,7 @@ pub(crate) mod kani_layout {
         assert_eq!(align_of::<[T; N]>(), align_of::<T>());
     }
 
-    /// S50 `Arena::axiom_array_layout` at every instantiation the proofs
+    /// S48 `Arena::axiom_array_layout` at every instantiation the proofs
     /// use (`[ClassState; NCLASSES]` here, the two arrays of `Shared` in
     /// `heap/shared.rs`), and at primitive, zero-sized and padded element
     /// types and lengths 0, 1 and 7.
@@ -3201,7 +3668,7 @@ mod kani_key_less {
         ((k.0 as u64) << 1) | k.1 as u64
     }
 
-    /// S61 `key_less`, `ensures r == key_lt(a, b)`: for every pair of
+    /// S59 `key_less`, `ensures r == key_lt(a, b)`: for every pair of
     /// keys. The counts are symbolic and the two `bool`s run over their
     /// four values as literals: Kani 0.68 (CBMC 6.11) leaves `<` on two
     /// symbolic `bool`s unconstrained (both results are reachable for

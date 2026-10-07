@@ -23,8 +23,6 @@ shared_base	inline asm	Islaris/Isla	evidence (verus/seams/api-shared_base.md)
 axiom_fork_resumed_state	C-program contract	none (assumption)
 axiom_fork_resumed	C-program contract	none (assumption)
 axiom_fork_resumed_sig	C-program contract	none (assumption)
-arena_held	allocator invariant	none (assumption)
-count_held	allocator invariant	none (assumption)
 src/purge/background.rs:state	UnsafeCell/volatile/transmute	RefinedRust
 src/api/print.rs:word	core library	Kani	discharged (verus/seams/api-print-word.md)
 axiom_unlocked	C-program contract	none (assumption)
@@ -322,6 +320,11 @@ src/vspec/count.rs:swap	atomics primitive	loom/GenMC	discharged (verus/seams/vsp
 # try_bind_idle's compare-and-swap (since the port of upstream #103), run
 # in the bound count model with a rival bind and its split control.
 src/vspec/count.rs:compare_exchange	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-compare_exchange.md)
+# The arena registry's table entries (vspec/entry.rs, ARENAS): the same
+# kind of primitive as count.rs's load and store, run by the arena count
+# model (src/loom_tests/narenas.rs).
+src/vspec/entry.rs:load	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-entry-load.md)
+src/vspec/entry.rs:store	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-entry-store.md)
 AR_TABLE	core library	Kani
 AR_BOUND	core library	Kani
 AR_LOCK	core library	Kani
@@ -349,6 +352,7 @@ src/api/mod.rs:published_line	allocator invariant	none (assumption)
 src/api/mod.rs:shared_storage_ptr	UnsafeCell/volatile/transmute	none (assumption)
 src/class/mod.rs:axiom_class_lock	allocator invariant	none (assumption)
 src/arena.rs:axiom_arenas_lock_inv	allocator invariant	none (assumption)
+src/arena.rs:axiom_arenas_lock_frame	allocator invariant	none (assumption)
 src/class/mod.rs:axiom_class_lock_inv	allocator invariant	none (assumption)
 src/class/sets.rs:axiom_set_tables_lock_inv	allocator invariant	none (assumption)
 src/class/table.rs:axiom_table_lock_frame	allocator invariant	none (assumption)

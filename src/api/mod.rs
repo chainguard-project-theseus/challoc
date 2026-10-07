@@ -1145,11 +1145,13 @@ pub open spec fn lock_at(s: Shared, arenas: Map<int, Arena>, k: ForkLock) -> Raw
 /// the content of [`FORK_SIGMASK`] its holder stored (`saved`) and the
 /// address of the word it stored it to (`slot_addr`), with, in the
 /// release's hold, the permission to that word (`slot`).
+/// It also keeps the permission of the creation lock's cell (`created`,
+/// from `Arenas::lock_held`), whose value's half of the registry's
+/// snapshot is `n` and `arenas` ([`ForkHeld::wf`]), so the count and the
+/// table cannot change while it is kept ([`arena_held`], [`count_held`]).
 /// Built, by convention, only by `fork_prepare` as it takes the locks
 /// and by [`resume::axiom_fork_resumed`] for the release: the fields are
-/// private to `api` (its submodules can see them too), and [`arena_held`] and
-/// [`count_held`] trust that the `n` and `arenas` of the bundle they are
-/// handed are what `fork_prepare` read.
+/// private to `api` (its submodules can see them too).
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct ForkHeld {
@@ -1159,9 +1161,15 @@ pub tracked struct ForkHeld {
     ghost saved: Option<u64>,
     ghost slot_addr: usize,
     tracked slot: Option<WordPerm>,
+    tracked created: crate::arena::CreatedPerm,
 }
 
 impl ForkHeld {
+    /// The permission of the creation lock's cell the hold keeps.
+    pub closed spec fn created(self) -> crate::arena::CreatedPerm {
+        self.created
+    }
+
     /// The arena count `fork_prepare` read.
     pub closed spec fn n(self) -> int {
         self.n
@@ -1228,6 +1236,7 @@ impl ForkHeld {
         assert(t.keys() == self.keys());
         assert(t.arenas() == self.arenas());
         assert(t.n() == self.n());
+        assert(t.created() == self.created());
         assert forall|k: ForkLock| #[trigger] t.lock(k) == self.lock(k) by {}
     }
 
@@ -1241,6 +1250,7 @@ impl ForkHeld {
             final(self).arenas() == old(self).arenas(),
             final(self).saved() == old(self).saved(),
             final(self).no_slot() == old(self).no_slot(),
+            final(self).created() == old(self).created(),
     {
         self.toks.tracked_insert(k, t);
     }
@@ -1257,16 +1267,22 @@ impl ForkHeld {
             final(self).arenas() == old(self).arenas(),
             final(self).saved() == old(self).saved(),
             final(self).no_slot() == old(self).no_slot(),
+            final(self).created() == old(self).created(),
     {
         self.toks.tracked_remove(k)
     }
 
     /// `n` is a count `fork_prepare` read (a `u32`), each token is the hold
     /// of the lock its key names in `s`, and the arenas are indices below
-    /// `n`.
+    /// `n`; the creation lock's cell permission is `s`'s registry's, and
+    /// its value's half of the snapshot is `n` and the arenas
+    /// (`Arenas::frozen`).
     pub(crate) open spec fn wf(self, s: Shared) -> bool {
         &&& 0 <= self.n() <= u32::MAX
         &&& forall|i: int| #[trigger] self.arenas().contains_key(i) ==> 0 <= i < self.n()
+        &&& s.arenas.frozen(self.created())
+        &&& self.created().value().snap().0 as int == self.n()
+        &&& self.created().value().snap().1 == self.arenas()
         &&& forall|k: ForkLock|
             #![trigger self.keys().contains(k)]
             #![trigger self.lock(k)]
@@ -1339,17 +1355,19 @@ axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
 ;
 
 /// `s.arenas.get_existing(i as u16)` while `held` holds the creation
-/// lock: the arena `fork_prepare` found at `i`. Trusted (the premise of
-/// a frozen arena table): `Arenas::create` and `Arenas::build` write the
-/// count and the table only under the creation lock, which this thread
-/// has held since `fork_prepare` read them, so a read now returns what
-/// that read did (an arena, once published, is never freed or moved).
-/// The requirements are ghost; `held` must be `fork_prepare`'s bundle
-/// or the resumed one (see [`ForkHeld`]).
-#[verifier::external_body]
+/// lock: the arena `fork_prepare` found at `i`. `held` keeps the
+/// permission of the creation lock's cell, whose value's half of the
+/// registry's snapshot is the count and the arenas `fork_prepare` read
+/// ([`ForkHeld::wf`]); `Arenas::create` and `Arenas::build` change the
+/// count and the table only with that half, so a read now returns what
+/// that read did (`Arenas::get_frozen`). The hold must still have the
+/// creation lock's token (required): the cell permission outlives the
+/// release's `unlock_held` (it is not handed back), so the token, not the
+/// permission, is what says the lock is still held.
 #[inline(always)]
 fn arena_held<'a>(s: &'a Shared, i: usize, Tracked(held): Tracked<&ForkHeld>) -> (r: Option<&'a Arena>)
     requires
+        held.wf(*s),
         held.keys().contains(ForkLock::Arenas),
         held.lock(ForkLock::Arenas) == s.spec_fork_locks().1,
         i < held.n(),
@@ -1357,23 +1375,24 @@ fn arena_held<'a>(s: &'a Shared, i: usize, Tracked(held): Tracked<&ForkHeld>) ->
         r is Some <==> held.arenas().contains_key(i as int),
         r matches Some(a) ==> *a == held.arenas()[i as int],
 {
-    s.arenas.get_existing(i as u16)
+    proof {
+        s.arenas.lemma_frozen(held.created);
+    }
+    s.arenas.get_frozen(i as u16, Tracked(&held.created))
 }
 
 /// `s.arenas.count()` while `held` holds the creation lock: the count
-/// `fork_prepare` read. Trusted, as [`arena_held`]. The bundle's `n` is
-/// a `u32` (required, and part of [`ForkHeld::wf`]): the result is one.
-#[verifier::external_body]
+/// `fork_prepare` read, as [`arena_held`] (`Arenas::count_frozen`).
 #[inline(always)]
 fn count_held(s: &Shared, Tracked(held): Tracked<&ForkHeld>) -> (r: u32)
     requires
-        0 <= held.n() <= u32::MAX,
+        held.wf(*s),
         held.keys().contains(ForkLock::Arenas),
         held.lock(ForkLock::Arenas) == s.spec_fork_locks().1,
     ensures
         r as int == held.n(),
 {
-    s.arenas.count()
+    s.arenas.count_frozen(Tracked(&held.created))
 }
 
 /// Block signals, then take every allocator lock so the child inherits a
@@ -1430,9 +1449,14 @@ extern "C" fn fork_prepare() {
     proof {
         toks.tracked_insert(ForkLock::Tcaches, t);
     }
-    let Tracked(t) = s.arenas_lock().lock_held(Tracked(&mut ord));
+    // With the permission of the creation lock's cell, which the hold
+    // keeps: the count and the table stay as read below until the release.
+    let Tracked(tcp) = s.arenas.lock_held(Tracked(&mut ord));
+    let tracked (t, cp) = tcp;
     proof {
+        s.lemma_arenas_lock();
         toks.tracked_insert(ForkLock::Arenas, t);
+        s.arenas.lemma_frozen(cp);
     }
     let Tracked(t) = s.stats_lock().lock_held(Tracked(&mut ord));
     proof {
@@ -1440,16 +1464,21 @@ extern "C" fn fork_prepare() {
     }
     let ghost mut arenas: Map<int, Arena> = Map::empty();
     // Each `for a in s.arenas.iter()` is spelled as the scan `Arenas::iter`
-    // makes, through `Arenas::get_existing` (Verus does not specify the
-    // iterator), and `a.classes[c]` as `Arena::class`, as in
-    // `fork_release`.
-    let n = s.arenas.count() as usize;
+    // makes, through `Arenas::get_frozen` (`get_existing` with the
+    // creation lock's half; Verus does not specify the iterator), and
+    // `a.classes[c]` as `Arena::class`, as in `fork_release`.
+    let n = s.arenas.count_frozen(Tracked(&cp)) as usize;
     for i in 0..n
         invariant
             crate::sys::may_syscall(),
             sig.wf(),
             sig.mask() == all_blocked(),
             n <= crate::arena::MAX_ARENAS,
+            s.arenas.frozen(cp),
+            n == cp.value().snap().0,
+            forall|j: int| #[trigger] arenas.contains_key(j) ==> arenas[j] == cp.value().snap().1[j],
+            forall|j: int| #[trigger] arenas.contains_key(j) ==> cp.value().snap().1.contains_key(j),
+            forall|j: int| 0 <= j < i && #[trigger] cp.value().snap().1.contains_key(j) ==> arenas.contains_key(j),
             forall|j: int| #[trigger] arenas.contains_key(j) ==> 0 <= j < i,
             forall|j: int| #[trigger] arenas.contains_key(j) ==> arenas[j].spec_index() as int == j,
             forall|k: ForkLock| #[trigger] toks.contains_key(k) <==> (k == ForkLock::Tcaches || k
@@ -1459,7 +1488,7 @@ extern "C" fn fork_prepare() {
             ord.root(),
             ord.top() < rank_class(i as int, 0),
     {
-        if let Some(a) = s.arenas.get_existing(i as u16) {
+        if let Some(a) = s.arenas.get_frozen(i as u16, Tracked(&cp)) {
             let ghost before = arenas;
             proof {
                 arenas = arenas.insert(i as int, *a);
@@ -1472,6 +1501,13 @@ extern "C" fn fork_prepare() {
                     arenas == before.insert(i as int, *a),
                     a.spec_index() as int == i,
                     i < crate::arena::MAX_ARENAS,
+                    s.arenas.frozen(cp),
+                    n == cp.value().snap().0,
+                    cp.value().snap().1.contains_key(i as int),
+                    *a == cp.value().snap().1[i as int],
+                    forall|j: int| #[trigger] before.contains_key(j) ==> before[j] == cp.value().snap().1[j],
+                    forall|j: int| #[trigger] before.contains_key(j) ==> cp.value().snap().1.contains_key(j),
+                    forall|j: int| 0 <= j < i && #[trigger] cp.value().snap().1.contains_key(j) ==> before.contains_key(j),
                     forall|j: int| #[trigger] before.contains_key(j) ==> 0 <= j < i,
                     forall|k: ForkLock| #[trigger] toks.contains_key(k) <==> (k == ForkLock::Tcaches
                         || k == ForkLock::Arenas || k == ForkLock::Stats || class_part(k, before.dom()) || (
@@ -1499,7 +1535,11 @@ extern "C" fn fork_prepare() {
             }
         }
     }
-    let tracked mut held = ForkHeld { n: n as int, arenas, toks, saved: None, slot_addr: 0, slot: None };
+    proof {
+        s.arenas.lemma_frozen(cp);
+        assert(arenas =~= cp.value().snap().1);
+    }
+    let tracked mut held = ForkHeld { n: n as int, arenas, toks, saved: None, slot_addr: 0, slot: None, created: cp };
     for c in 0..NCLASSES
         invariant
             crate::sys::may_syscall(),
@@ -1683,8 +1723,8 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
     let mask = saved_sigmask(slot, Ghost(*s), Tracked(&held), Tracked(&state));
     purge::background::fork_unlock(Tracked(state));
     // Arenas cannot appear while the creation lock is held, so this is the
-    // same set `fork_prepare` locked (the premise `arena_held` and
-    // `count_held` state), in reverse. Each `for i in
+    // same set `fork_prepare` locked (what `arena_held` and `count_held`
+    // prove from the hold's cell permission), in reverse. Each `for i in
     // (0..n).rev()` is spelled as a countdown: Verus does not specify
     // `Rev`.
     // The class states are read through `Arena::class`, the verified
@@ -1886,7 +1926,14 @@ mod resume {
     /// to the slot exists). `state` must be the state lock's token: a fact
     /// about a token the caller already has is a requirement, never a
     /// conclusion (ensured, it let a token of any other lock prove
-    /// `false`).
+    /// `false`). The hold also has the permission of the creation lock's
+    /// cell that `fork_prepare` took (`Arenas::lock_held`, through
+    /// [`ForkHeld::wf`]): restated, as the tokens are, and still the only
+    /// one, since the prepare's hold kept it and no one wrote the value.
+    /// That permission is exclusive (vstd's `PointsTo::is_exclusive`), so a
+    /// second call would prove `false`, not just restate a token: the one
+    /// caller is [`resumed`], called once per handler (the test
+    /// `fork_hold_is_resumed_once` checks there is one call site).
     axiom fn axiom_fork_resumed(s: &Shared, slot: &AtomicU64, tracked state: &LockHeld) -> (tracked held: ForkHeld)
         requires
             state.held() == purge::background::state_lock(),
@@ -2245,6 +2292,28 @@ mod tests {
                 other => panic!("no fork-handler assertion for lock {other}"),
             }
         }
+    }
+
+    /// `resume::axiom_fork_resumed` restates the fork hold, whose creation
+    /// lock cell permission is exclusive: a second call would prove
+    /// `false`. Its one call is in `resume::resumed`, and `resumed`'s one
+    /// call is in `fork_release`, which each handler calls once.
+    #[test]
+    fn fork_hold_is_resumed_once() {
+        // Spelled in parts, so that this test's own lines match nothing.
+        let src = include_str!("mod.rs");
+        let calls = |name: &str| {
+            src.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .filter(|l| l.contains(name) && !l.contains("fn "))
+                .count()
+        };
+        let axiom = std::format!("{}{}(", "axiom_fork_", "resumed");
+        let resumed = std::format!("{}{}(", "resume::", "resumed");
+        let release = std::format!("{}{}(", "fork_", "release");
+        assert_eq!(calls(&axiom), 1, "calls of the resume axiom");
+        assert_eq!(calls(&resumed), 1, "calls of resume::resumed");
+        assert_eq!(calls(&release), 2, "calls of fork_release");
     }
 
     /// The set of locks the handlers cover is exactly the set of locks in

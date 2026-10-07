@@ -679,6 +679,62 @@ impl<T> Lock<T> {
         let tracked perm = axiom_held(*self, held);
         self.value.borrow_mut(Tracked(perm))
     }
+
+    /// [`RawLock::lock_held`] for a holder that also keeps the value:
+    /// acquire, and return the hold's token with the permission of the
+    /// cell, taken out of the free lock's invariant as [`Lock::lock`]
+    /// takes it for its guard ([`axiom_acquired`]). The holder reads the
+    /// value through it ([`Lock::value_held`]), and nothing can write the
+    /// value while it keeps it: the fork handlers keep the creation
+    /// lock's (`arena::Created`) from `fork_prepare` to the release. The
+    /// release's `RawLock::unlock_held` takes only the token: the
+    /// permission is not handed back but outlives the hold, with the value
+    /// unchanged (so still satisfying [`lock_inv`]) and unused after the
+    /// unlock; readers that rely on the value being current must also
+    /// require the token (`api::arena_held`, `api::count_held`). The
+    /// caller must not take a guard of this lock (or call
+    /// [`Lock::get_unlocked`]) while it keeps the permission: that would be
+    /// a second permission to the cell (the lock order already refuses a
+    /// guard's scope here, `ord` must be a root).
+    ///
+    /// Lock order: as [`RawLock::lock_held`].
+    #[inline(always)]
+    pub fn lock_held_perm(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Tracked<(LockHeld, PointsTo<T>)>)
+        requires
+            crate::sys::may_syscall(),
+            old(ord).root(),
+            old(ord).allows(self.rank()),
+        ensures
+            r@.0.held() == self.spec_raw(),
+            self.has_perm(r@.1),
+            lock_inv(*r@.1.value()),
+            lock_frame(lock_init(*self), *r@.1.value()),
+            final(ord).root(),
+            final(ord).top() == self.rank(),
+    {
+        self.raw.lock();
+        proof {
+            ord.top = self.rank();
+        }
+        Tracked((LockHeld { lock: self.raw }, axiom_acquired(*self)))
+    }
+
+    /// The value, read through the permission `perm` of the cell, which a
+    /// holder keeps ([`Lock::lock_held_perm`]).
+    #[inline(always)]
+    pub fn value_held<'a>(&'a self, perm: Tracked<&'a PointsTo<T>>) -> (r: &'a T)
+        requires
+            self.has_perm(*perm@),
+        ensures
+            *r == *perm@.value(),
+    {
+        self.value.borrow(perm)
+    }
+
+    /// `p` is the permission of this lock's cell.
+    pub closed spec fn has_perm(&self, p: PointsTo<T>) -> bool {
+        p.id() == self.value.id()
+    }
 }
 
 /// Exclusive access to a [`Lock`]'s value; unlocks on drop. Holds the
@@ -811,7 +867,8 @@ mod tests {
     /// `axiom_acquired` and `axiom_held` mint a permission of a lock's
     /// cell, and two alive at once would prove `false` (vstd's
     /// `PointsTo::is_exclusive`): the first is called only where
-    /// `Lock::lock` and `Lock::try_lock` build their guard, the second
+    /// `Lock::lock` and `Lock::try_lock` build their guard and where
+    /// `Lock::lock_held_perm` hands the permission to its holder, the second
     /// only in `Lock::get_unlocked`. Both are private to this file.
     #[test]
     fn permission_axioms_are_called_only_at_acquisitions() {
@@ -840,7 +897,7 @@ mod tests {
                 h.push(func);
             }
         }
-        assert_eq!(a, ["lock", "try_lock"]);
+        assert_eq!(a, ["lock", "try_lock", "lock_held_perm"]);
         assert_eq!(h, ["get_unlocked"]);
     }
 

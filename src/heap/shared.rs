@@ -1205,12 +1205,12 @@ impl SharedParts {
         &&& self.cgroup.ptr() == field_ptr::<Shared, Deferred>(p, S_CGROUP)
     }
 
-    /// Every field is written.
+    /// Every field is written (arena 0 too, whose permission `init`
+    /// freezes for the arena registry, so not among these).
     spec fn written(&self) -> bool {
         &&& self.free_flags.is_init()
         &&& self.push_flags.is_init()
         &&& self.region_hi.is_init()
-        &&& self.arena0.perm matches Some(a) && a.is_init()
         &&& self.meta.is_init()
         &&& self.huge.is_init()
         &&& self.gc_interval_ns.is_init()
@@ -1241,16 +1241,18 @@ spec fn tables_at(m: Map<int, PointsTo<SlabTable>>, p: *mut Shared) -> bool {
 /// has no way to join typed permissions, and the permissions cover every
 /// field at its offset. The permissions are used up, so nothing verified
 /// writes the fields afterwards; that nothing unverified does is
-/// `shared_at`'s own assumption. The tables' and the class lines'
-/// permissions are frozen already (`vstd::modes::tracked_static_ref`,
-/// once `init` has written them, as the regions' is), so they are only
-/// read: nothing can write through them. What comes back is the join, the
+/// `shared_at`'s own assumption. The tables', the class lines' and arena
+/// 0's permissions are frozen already (`vstd::modes::tracked_static_ref`,
+/// once `init` has written them, as the regions' is; arena 0's for the
+/// arena registry's table, `Arenas::init`), so they are only read:
+/// nothing can write through them. What comes back is the join, the
 /// permission to the whole value, frozen too (`&'static`): readers share
 /// it, and nothing can write through it.
 axiom fn axiom_shared_built(
     tracked parts: SharedParts,
     tracked lines: &'static Map<int, PointsTo<ClassLine>>,
     tracked tables: &'static Map<int, PointsTo<SlabTable>>,
+    tracked arena0: &'static PointsTo<Arena>,
     p: *mut Shared,
 ) -> (tracked r: &'static PointsTo<Shared>)
     requires
@@ -1260,6 +1262,8 @@ axiom fn axiom_shared_built(
         elems_init(*lines, 0, NCLASSES as int),
         tables_at(*tables, p),
         elems_init(*tables, 0, NCLASSES as int),
+        arena0.ptr() == field_ptr::<Shared, Arena>(p, S_ARENA0),
+        arena0.is_init(),
     ensures
         shared_at(p).push_flags == parts.push_flags.value(),
         shared_at(p).region_hi == parts.region_hi.value(),
@@ -1268,7 +1272,7 @@ axiom fn axiom_shared_built(
         shared_at(p).meta == parts.meta.value(),
         shared_at(p).huge == parts.huge.value(),
         shared_at(p).config == parts.config.value(),
-        parts.arena0.perm matches Some(a) && shared_at(p).arena0 == a.value(),
+        shared_at(p).arena0 == arena0.value(),
         shared_at(p).stats == parts.stats.value(),
         parts.arenas.perm matches Some(a) && shared_at(p).arenas == a.value(),
         r.ptr() == p,
@@ -1640,12 +1644,13 @@ impl Shared {
     }
 
     /// `gc_interval_ns` and the two registries (`Arenas::init` with
-    /// `arena0`, `Tcaches::init`).
+    /// `arena0` and its frozen permission `a0`, `Tcaches::init`).
     #[inline(always)]
     unsafe fn put_registries(
         this: *mut Shared,
         gc_interval_ns: u64,
         arena0: *mut Arena,
+        a0: Tracked<&'static PointsTo<Arena>>,
         narenas: u32,
         Tracked(pg): Tracked<&mut PointsTo<u64>>,
         Tracked(pa): Tracked<&mut Held<Arenas>>,
@@ -1655,6 +1660,9 @@ impl Shared {
             shared_ok(this),
             old(pg).ptr() == field_ptr::<Shared, u64>(this, S_GC_INTERVAL_NS),
             old(pa).perm matches Some(a) && a.ptr() == field_ptr::<Shared, Arenas>(this, S_ARENAS) && a.is_uninit(),
+            a0@.ptr() == arena0,
+            a0@.is_init(),
+            a0@.value().spec_index() == 0,
             old(pt).ptr() == field_ptr::<Shared, Tcaches>(this, S_TCACHES),
             old(pt).is_uninit(),
         ensures
@@ -1673,7 +1681,7 @@ impl Shared {
         // SAFETY: as in `put_head`; `arena0` is inside the same `Shared`.
         unsafe {
             ptr_mut_write(field_at(this, S_GC_INTERVAL_NS), Tracked(pg), gc_interval_ns);
-            Arenas::init(field_at(this, S_ARENAS), arena0, narenas, Tracked(pa));
+            Arenas::init(field_at(this, S_ARENAS), arena0, narenas, a0, Tracked(pa));
             init_tcaches(field_at(this, S_TCACHES), Tracked(pt));
         }
     }
@@ -2048,6 +2056,9 @@ impl Shared {
             if !Arena::init(arena0, meta, regions, tables, Tracked(table_perms), 0, decay_ns, Tracked(&mut parts.arena0), Tracked(&mut ord)) {
                 return false;
             }
+            // Arena 0's permission, frozen: the arena registry's table
+            // keeps it for entry 0, and `axiom_shared_built` takes it.
+            let tracked a0 = vstd::modes::tracked_static_ref(parts.arena0.perm.tracked_take());
             let tracked huge_once = once::take(&mut steps, Step::Huge);
             match Huge::new(meta, regions, guard_install, Tracked(huge_once), Tracked(&mut ord)) {
                 Some(h) => {
@@ -2063,6 +2074,7 @@ impl Shared {
                 this,
                 GC_INTERVAL_NS,
                 arena0,
+                Tracked(a0),
                 config.narenas,
                 Tracked(&mut parts.gc_interval_ns),
                 Tracked(&mut parts.arenas),
@@ -2122,7 +2134,7 @@ impl Shared {
                 Tracked(&mut parts.stats),
             );
             proof {
-                built.perm = Some(axiom_shared_built(parts, line_perms, table_perms, this));
+                built.perm = Some(axiom_shared_built(parts, line_perms, table_perms, a0, this));
                 let s = shared_at(this);
                 s.arenas.lemma_is_process();
                 assert(s.regions == regions0);
@@ -2584,6 +2596,14 @@ impl Shared {
             self.meta.spec_raw_lock(),
             self.stats.spec_raw(),
         )
+    }
+
+    /// The arena creation lock of [`Shared::spec_fork_locks`] is the
+    /// registry's (`Arenas::lock_held` takes it for the fork handlers).
+    pub(crate) proof fn lemma_arenas_lock(&self)
+        ensures
+            self.spec_fork_locks().1 == self.arenas.spec_raw_lock(),
+    {
     }
 
     /// The process statistics lock's rank in the lock order (`lock.rs`).
@@ -3632,7 +3652,7 @@ mod kani_layout {
         assert!(size_of::<Shared>() <= isize::MAX as usize);
     }
 
-    /// S50 `Arena::axiom_array_layout` at the two arrays of `Shared`.
+    /// S48 `Arena::axiom_array_layout` at the two arrays of `Shared`.
     #[kani::proof]
     fn shared_array_layout() {
         array_layout::<ClassLine, NCLASSES>();

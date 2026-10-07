@@ -569,9 +569,10 @@ raw syscall below it.
 
 The arena count model also checks, inside `create` under the creation
 lock, that the count reads the lock's value and every explicit arena
-below it is built: the frozen table the trusted `api::count_held` and
-`api::arena_held` (S37, S36) assume for the fork handlers; those seams
-stay trusted (tool and status unchanged), the model covers only
+below it is built: the frozen table that `api::count_held` and
+`api::arena_held` now prove for the fork handlers in the SC model
+(package P8, through `vspec/entry.rs`, whose wrappers the model
+runs); the model covers only
 `create`'s reads. Under stock loom (no DPOR patch) the arena count and
 watermark models explore 36 executions instead of 4482, and their
 `Relaxed`-store controls pass: two more models the patch is needed for.

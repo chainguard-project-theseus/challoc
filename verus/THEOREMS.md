@@ -2191,17 +2191,21 @@ axioms below are the other source.
   runs after ours and whose parent and child handlers run before ours)
   take no allocator lock. Each handler calls each axiom once; nothing
   enforces that.
-- *A frozen arena table* (`arena_held`, `api/mod.rs:671`, and
-  `count_held`, `:687`; `external_body`). While this thread holds the
-  arena creation lock, `Arenas::count` and `get_existing(i)` return what
-  `fork_prepare`'s first reads returned. `Arenas::create` and `build`
-  write the count and the table only under that lock, and a published
-  arena is never freed or moved. That the release, and `fork_prepare`'s
-  second arena scan, cover the same arenas as its first scan rests on
-  these two and the handoff. They take a bundle (`ForkHeld`) and trust
-  its `n` and `arenas`; its fields are private to `api`, and by
-  convention only `fork_prepare` and `axiom_fork_resumed` build one
-  (`api`'s submodules could too).
+- *A frozen arena table* is no longer a premise: `arena_held` and
+  `count_held` (`api/mod.rs`) verify. `fork_prepare` takes the creation
+  lock with `Arenas::lock_held`, which also hands it the permission of
+  the lock's cell (`Lock::lock_held_perm`); the hold keeps it
+  (`ForkHeld::created`). The lock's value (`arena::Created`) carries a
+  ghost half of the registry's snapshot (the count and the published
+  arenas), whose other half is in the registry's invariant
+  (`arena::NarenasPred`, which also holds every table entry's permission
+  and each published arena's frozen permission); `Arenas::create` and
+  `build` change the count and the table only with both halves. So reads
+  under the hold (`Arenas::count_frozen`, `get_frozen`) return the
+  snapshot `fork_prepare` read, and the release and `fork_prepare`'s
+  second arena scan cover the same arenas as its first scan, given the
+  handoff (whose `axiom_fork_resumed` now also restates the cell
+  permission as part of the hold, `ForkHeld::wf`).
 - `purge::background::state` (`purge/background.rs:462`,
   `external_body`): the static `STATE`'s raw lock is `state_lock()`
   (Verus does not read statics in specifications).

@@ -94,6 +94,12 @@ done
 #   position (`.scaled16`), only in a vspec/count.rs wrapper call and the
 #   spec `count_id` (each is made with `vspec::count::new`; the ghost
 #   `self.count.ptr()` of `Arenas::init`'s field permissions aside);
+# - arena.rs writes a table entry (`self.table[..]`) only through
+#   vspec/entry.rs's `store` (no `.table[..].store(` or other write on a
+#   line, and `elem_at(table, ..)` only in an entry `store` call or in
+#   `put_entry`'s write of the atomic `vspec::entry::new` made;
+#   `Arenas::init` makes each entry with `vspec::entry::new`): the
+#   entry wrappers' records;
 # - nothing writes the watermark (`committed_slabs`) but through
 #   vspec/atom.rs's `store_usize`, and only class/table.rs (and the loom
 #   models) calls the vspec/atom.rs wrappers (`new_usize`,
@@ -132,6 +138,8 @@ bad=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t =
     (/\.bound([^A-Za-z0-9_]|$)/ || /\(\*bound\)/) && !/crate::vspec::count::/ && !/count_id\(/ && !/^[ \t]*\/\// \
         && !/assert\(/ && !/forall\|/ { print FILENAME ":" FNR ": " $0 }' src/arena.rs
     awk '/self\.count([^A-Za-z0-9_(]|$)/ && !/self\.count\.ptr\(\)/ && !/crate::vspec::count::/ && !/count_id\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/arena.rs
+    awk '/\.table\[[^]]*\]\.(store|swap|fetch_[a-z]+|compare_exchange|compare_exchange_weak)\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/arena.rs
+    awk '/elem_at\(table,/ && !/crate::vspec::entry::store\(/ && !/ptr_mut_write\(elem_at\(table, i, MAX_ARENAS\), Tracked\(t\), e\);/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/arena.rs
     awk '/\.scaled16([^A-Za-z0-9_]|$)/ && !/crate::vspec::count::/ && !/count_id\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/policy.rs
     awk 'function bad() { print FILENAME ":" FNR ": " $0 }
     BEGIN {

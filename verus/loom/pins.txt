@@ -107,14 +107,14 @@ src/arena.rs	if p.is_null() {
 src/arena.rs	prev = crate::vspec::count::fetch_sub(&self.bound[index as usize], 1, Ordering::Relaxed, Tracked(&mut perm));
 src/arena.rs	if prev == 0 {
 src/arena.rs	unbind_unbound(index);
-src/arena.rs	self.table[index as usize].store(p, Ordering::Release);
+src/arena.rs	crate::vspec::entry::store(&self.table[index as usize], p, Ordering::Release, Tracked(v.entries.tracked_borrow_mut(index as int)));
 src/arena.rs	let mut g = self.lock.lock(Tracked(ord), Tracked(&mut under));
-src/arena.rs	let index = *g;
+src/arena.rs	let index = g.n;
 src/arena.rs	if index as usize >= MAX_ARENAS {
 src/arena.rs	return None;
-src/arena.rs	self.build(shared, index as u16, Tracked(&mut under))?;
-src/arena.rs	*g = index + 1;
-src/arena.rs	crate::vspec::count::store(&self.count, index + 1, Ordering::Release, Tracked(&mut perm));
+src/arena.rs	self.build(shared, index as u16, Tracked(c.half.borrow_mut()), Tracked(&mut under))?;
+src/arena.rs	c.n = index + 1;
+src/arena.rs	crate::vspec::count::store(&self.count, index + 1, Ordering::Release, Tracked(&mut v.count));
 src/arena.rs	let _g = self.lock.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
 src/arena.rs	let mut best_key = (u32::MAX, true);
 src/arena.rs	let key = (self.load_bound(i), self.table[i].load(Ordering::Relaxed).is_null());
@@ -123,7 +123,7 @@ src/arena.rs	if key == (0, false) {
 src/arena.rs	let t = self.count_in(best);
 src/arena.rs	n = crate::vspec::count::load(&self.bound[i], Ordering::Relaxed, Tracked(&perm));
 src/arena.rs	crate::vspec::count::fetch_add(&self.bound[i], 1, Ordering::Relaxed, Tracked(&mut perm));
-src/arena.rs	r = crate::vspec::count::load(&self.count, Ordering::Acquire, Tracked(&perm));
+src/arena.rs	r = crate::vspec::count::load(&self.count, Ordering::Acquire, Tracked(&v.count));
 src/arena.rs	if self.load_bound(i) != 0 {
 src/arena.rs	return (false, Tracked(no_ticket(index)));
 src/arena.rs	self.bind_if_idle(i)

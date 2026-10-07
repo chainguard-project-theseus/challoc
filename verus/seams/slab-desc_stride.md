@@ -1,6 +1,6 @@
 # `desc_stride`
 
-Seam S204 of `verus/SEAMS.md`: src/slab.rs:264. Kind: external_body. Category: core library.
+Seam S203 of `verus/SEAMS.md`: src/slab.rs:264. Kind: external_body. Category: core library.
 Discharged by Kani.
 
 ## Contract

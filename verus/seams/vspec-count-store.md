@@ -1,6 +1,6 @@
 # `store` (`vspec/count.rs`)
 
-Seam S304 of `verus/SEAMS.md`: src/vspec/count.rs:124. Kind: external_body. Category: atomics primitive.
+Seam S303 of `verus/SEAMS.md`: src/vspec/count.rs:124. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 coherence rules (part 3).
 
 ## Contract
@@ -87,24 +87,24 @@ Models: `loom_narenas_create_publishes`, `loom_narenas_relaxed_store_is_unpublis
   the lock's value).
 - **`opens_invariants none`**: the body opens no Verus invariant (read
   from the source).
-- **What the SC proof carries across locations.** `NarenasPred` names
-  one counter and a constant bound (`MAX_ARENAS`); no invariant relates
-  the count to another location. The verified proofs use only that a
-  load returns at most `MAX_ARENAS` (`Arenas::count`: the fork
-  handlers' lock order and the registry scans), which part 1 gives per
-  counter: every write is in bounds (the initial automatic count and
-  each `index + 1` with `index < MAX_ARENAS`, which Verus proves at the
-  write), and a load returns one of them. Two more facts are the
-  registry's protocol, which no ghost state carries: a scan finds the
-  arenas below the count it read built (a null entry is skipped, so no
-  proof depends on it), and, while a thread holds the creation lock,
-  the count and the table are frozen: a load reads the lock's value
-  and the arenas below it. The second is the premise of the trusted
-  `api::count_held` and `api::arena_held` (S37, S36, separate seams,
-  not discharged here): the fork handlers read the count and the table
-  under the lock and rely on later reads returning the same. The model
-  checks both in its configuration (`create` asserts the second under
-  the lock); the control shows a `Relaxed` store breaks the first.
+- **What the SC proof carries across locations.** Since package P8,
+  `NarenasPred` names the count, every table entry (`vspec/entry.rs`)
+  and ghost state: the frozen permissions of the published arenas and
+  the authority of the registry's snapshot, whose other half is in the
+  creation lock's value (`arena::Created`). The count's facts the
+  verified proofs use are still per location: a load returns at most
+  `MAX_ARENAS` (`Arenas::count`: the fork handlers' lock order and the
+  registry scans), which part 1 gives, every write being in bounds (the
+  initial automatic count and each `index + 1` with
+  `index < MAX_ARENAS`, which Verus proves at the write), and a load
+  under the creation lock reads the snapshot's count
+  (`Arenas::count_frozen`, for `api::count_held`), which needs the
+  holder's read to see the last write, made by an earlier holder: the
+  lock's release/acquire edge orders the two, which the model checks
+  (`create` asserts the count is the lock's value under the lock). A
+  scan's finding the arenas below the count it read built is still the
+  registry's protocol, which no proof depends on (a null entry is
+  skipped); the control shows a `Relaxed` store breaks it.
 - **Gaps.** 2 creators and one scanner; `MAX_ARENAS` 3 and one
   automatic arena, built from the start (the lazy build of automatic
   arenas by `Arenas::get` is not modelled); `build` cannot fail, and its

@@ -21,6 +21,7 @@ pub(crate) mod class;
 mod config;
 pub(crate) mod core_int;
 pub(crate) mod count;
+pub(crate) mod entry;
 pub(crate) mod errno;
 pub(crate) mod fmt;
 mod heap;
