@@ -304,9 +304,9 @@ fetch_add	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-fetch
 fetch_sub	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-fetch_sub.md)
 src/vspec/count.rs:load	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-load.md)
 StatePerm	atomics primitive	loom/GenMC
-state_load	atomics primitive	loom/GenMC
+state_load	atomics primitive	loom/GenMC	discharged (verus/seams/api-state_load.md)
 state_claim	atomics primitive	loom/GenMC	discharged (verus/seams/api-state_claim.md)
-state_publish	atomics primitive	loom/GenMC
+state_publish	atomics primitive	loom/GenMC	discharged (verus/seams/api-state_publish.md)
 # The atomic invariants on named fields (vspec/atom.rs, vspec/count.rs):
 # Arenas::count (NarenasPred), SlabTable::watermark (CommittedPred) and
 # Policy::position (FracPred) are verified, each store writing a value in

@@ -216,9 +216,9 @@ bad=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t =
     )
 nstate=$(find src -name '*.rs' ! -path 'src/loom_tests/*' -exec grep -hE '(^|[^A-Za-z0-9_])STATE\.(store|swap|compare_exchange|fetch_)' {} + | wc -l | tr -d ' ')
 [ "$nstate" = 2 ] || bad="$bad
-src/api/mod.rs: $nstate writes of STATE, not 2 (record api-state_claim.md)"
+src/api/mod.rs: $nstate writes of STATE, not 2 (records api-state_claim.md, api-state_load.md, api-state_publish.md)"
 if [ -n "$bad" ]; then
-	echo "loom: an atomic access outside what the records allow (vspec-word-WordPerm.md, the vspec/count.rs and vspec/atom.rs wrappers' records, api-state_claim.md, slab-SlabDesc-*.md):" >&2
+	echo "loom: an atomic access outside what the records allow (vspec-word-WordPerm.md, the vspec/count.rs and vspec/atom.rs wrappers' records, api-state_*.md, slab-SlabDesc-*.md):" >&2
 	echo "$bad" >&2
 	exit 1
 fi

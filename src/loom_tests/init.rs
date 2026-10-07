@@ -23,7 +23,16 @@
 //! left spinning is a reported deadlock: loom's `spin_loop` yields, and a
 //! thread that only yields while no other can run fails the model); a
 //! re-entrant call from `init` aborts and never waits for itself; no other
-//! thread takes the re-entry abort.
+//! thread takes the re-entry abort. And, for the `STATE` wrappers'
+//! records (`api-state_load.md`, `api-state_publish.md`): every access
+//! to `STATE` reads one of its three values, and a thread's accesses
+//! never go back in `STATE`'s modification order (`UNINIT`, then
+//! `INITIALISING`, then `READY`, each written once) from the last value
+//! it read or wrote (coherence: [`Statics::state_load`] checks each
+//! load, `init_slow` each exchange); and, in
+//! `loom_init_publisher_reads_ready`, the initialiser loading `STATE`
+//! right after its `READY` store (a load the model adds, not in the
+//! source) reads `READY`.
 //!
 //! Left out: `gettid`, here a distinct number per modelled thread (the
 //! kernel's tids of live threads are distinct and never 0); what `init`
@@ -61,11 +70,15 @@ struct Variant {
     /// `init` itself calls `shared()` (an allocation during
     /// initialisation).
     reenter: bool,
+    /// The initialiser loads `STATE` right after its `READY` store (a
+    /// load the model adds, not in the source).
+    readback: bool,
 }
 
 const SHIPPED: Variant = Variant {
     publish: Ordering::Release,
     reenter: false,
+    readback: false,
 };
 
 struct Statics {
@@ -103,14 +116,26 @@ impl Statics {
         self.shared.with(|p| unsafe { *p })
     }
 
+    /// `api::state_load`: an `Acquire` load of `STATE`. `seen` is the
+    /// thread's last value of `STATE`, read or written (model
+    /// bookkeeping): the load reads one of the three values, never one
+    /// before `seen` in the modification order, and becomes `seen`.
+    fn state_load(&self, seen: &mut u32) -> u32 {
+        let s = self.state.load(Ordering::Acquire);
+        assert!(s <= READY, "STATE read {s}");
+        assert!(s >= *seen, "STATE went back from {} to {s}", *seen);
+        *seen = s;
+        s
+    }
+
     /// `api::init`: build the value, here one plain write.
-    fn init(&self, tid: u32, v: Variant) {
+    fn init(&self, tid: u32, v: Variant, seen: &mut u32) {
         self.inits.fetch_add(1, Ordering::Relaxed);
         // SAFETY: only the `compare_exchange` winner runs `init`, before
         // `READY` (loom reports a race if not).
         self.shared.with_mut(|p| unsafe { *p = BUILT });
         if v.reenter {
-            let r = match self.shared(tid, v) {
+            let r = match self.shared(tid, v, seen) {
                 Out::Abort => 1,
                 Out::Shared(_) => 2,
             };
@@ -119,24 +144,37 @@ impl Statics {
     }
 
     /// `api::init_slow`.
-    fn init_slow(&self, tid: u32, v: Variant) -> Out {
-        match self.state.compare_exchange(
-            UNINIT,
-            INITIALISING,
-            Ordering::Acquire,
-            Ordering::Acquire,
-        ) {
+    fn init_slow(&self, tid: u32, v: Variant, seen: &mut u32) -> Out {
+        let won =
+            self.state
+                .compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire);
+        // The exchange read `UNINIT` (and wrote `INITIALISING`) or the
+        // value it returns, never one before `seen`.
+        let s = won.unwrap_or_else(|s| s);
+        assert!(
+            s <= READY && s >= *seen,
+            "exchange read {s} after {}",
+            *seen
+        );
+        *seen = if won.is_ok() { INITIALISING } else { s };
+        match won {
             Ok(_) => {
                 self.init_tid.store(tid, Ordering::Relaxed);
-                self.init(tid, v);
+                self.init(tid, v, seen);
                 self.state.store(READY, v.publish);
+                *seen = READY;
+                if v.readback {
+                    // `state_publish`'s `final(perm).value() == READY`: the
+                    // publisher's next load reads it (a load the model adds).
+                    assert_eq!(self.state_load(seen), READY);
+                }
             }
             Err(READY) => {}
             Err(_) => {
                 if self.init_tid.load(Ordering::Relaxed) == tid {
                     return Out::Abort;
                 }
-                while self.state.load(Ordering::Acquire) != READY {
+                while self.state_load(seen) != READY {
                     crate::sync::hint::spin_loop();
                 }
             }
@@ -145,16 +183,17 @@ impl Statics {
     }
 
     /// `api::shared`.
-    fn shared(&self, tid: u32, v: Variant) -> Out {
-        if self.state.load(Ordering::Acquire) == READY {
+    fn shared(&self, tid: u32, v: Variant, seen: &mut u32) -> Out {
+        if self.state_load(seen) == READY {
             return Out::Shared(self.shared_ref());
         }
-        self.init_slow(tid, v)
+        self.init_slow(tid, v, seen)
     }
 
     /// `api::shared_if_ready`.
     fn shared_if_ready(&self) -> Option<u64> {
-        if self.state.load(Ordering::Acquire) == READY {
+        let mut seen = UNINIT;
+        if self.state_load(&mut seen) == READY {
             Some(self.shared_ref())
         } else {
             None
@@ -178,7 +217,12 @@ fn run(callers: u32, v: Variant) {
     model(move || {
         let st = leak(Statics::new());
         let hs: Vec<_> = (1..=callers)
-            .map(|tid| thread::spawn(move || st.shared(tid, v)))
+            .map(|tid| {
+                thread::spawn(move || {
+                    let mut seen = UNINIT;
+                    st.shared(tid, v, &mut seen)
+                })
+            })
             .collect();
         if let Some(x) = st.shared_if_ready() {
             assert_eq!(x, BUILT, "a ready reader saw another value");
@@ -235,6 +279,22 @@ fn loom_init_reentry_aborts() {
     );
 }
 
+/// `state_publish`'s contract as the publisher sees it: two callers and a
+/// free as in [`loom_init_two_callers`], with the initialiser loading
+/// `STATE` right after its `READY` store: it reads `READY`. (Every model
+/// also checks each load and exchange of `STATE` against the thread's
+/// last value: [`Statics::state_load`].)
+#[test]
+fn loom_init_publisher_reads_ready() {
+    run(
+        2,
+        Variant {
+            readback: true,
+            ..SHIPPED
+        },
+    );
+}
+
 /// The publication check has teeth: a `Relaxed` `READY` store lets a
 /// reader see `READY` without `init`'s write.
 #[test]
@@ -258,6 +318,7 @@ fn loom_init_unpublished_wait_fails() {
         let st = leak(Statics::new());
         st.state.store(INITIALISING, Ordering::Relaxed);
         st.init_tid.store(1, Ordering::Relaxed);
-        let _ = st.init_slow(2, SHIPPED);
+        let mut seen = UNINIT;
+        let _ = st.init_slow(2, SHIPPED, &mut seen);
     });
 }

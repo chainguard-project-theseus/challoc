@@ -197,9 +197,9 @@ the full name, the line and the contract.
 | S19 | `axiom_published` | axiom | invariant | none | trusted |
 | S20 | `StatePerm` | type | atomic | GenMC | trusted |
 | S21 | `axiom_state` | axiom | invariant | none | trusted |
-| S22 | `state_load` | body | atomic | GenMC | trusted |
+| S22 | `state_load` | body | atomic | GenMC | discharged |
 | S23 | `state_claim` | body | atomic | GenMC | discharged |
-| S24 | `state_publish` | body | atomic | GenMC | trusted |
+| S24 | `state_publish` | body | atomic | GenMC | discharged |
 | S25 | `shared_ptr` | body | cell | none | trusted |
 | S26 | `shared_base` | body | asm | Isla | evidence |
 | S27 | `published_line` | body | invariant | none | trusted |
@@ -1217,7 +1217,7 @@ axiom fn axiom_state() -> (tracked r: &'static AtomicInvariant<(), StateVal, Sta
 ### S22. `state_load`
 
 src/api/mod.rs:389. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/api-state_load.md).
 
 > `STATE.load(Acquire)`: the permission's value.
 
@@ -1248,7 +1248,7 @@ fn state_claim(Tracked(perm): Tracked<&mut StatePerm>) -> (r: Result<u32, u32>)
 ### S24. `state_publish`
 
 src/api/mod.rs:420. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: discharged (verus/seams/api-state_publish.md).
 
 > `STATE`'s `READY` store, `Release`.
 
