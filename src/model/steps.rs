@@ -99,11 +99,13 @@ impl Model<'_> {
             Purge::PurgeLocked => {
                 // purge_empty under the lock: `walk_empty` asserts
                 // `desc.state() == State::Empty && desc.live() == 0` for
-                // every slab of the empty set, then `purge_group`:
-                // `d.set_state(State::Purged); d.set_dirty_at(0);
-                // g.empty_take(s); g.purged_add(s);` and the discard
-                // (`batch.flush()` before the lock is dropped), after
-                // which the memory reads zero.
+                // every slab of the empty set, `push_group` queues its
+                // page group, and the discard (`batch.flush()` before the
+                // lock is dropped) reports it to `settle`, which on success
+                // runs `d.set_state(State::Purged); d.set_dirty_at(0);`
+                // and moves the slab from `empty` to `purged`, after which
+                // the memory reads zero (a failed discard leaves it
+                // `Empty`, as if not chosen).
                 let a = th.arena as usize;
                 let mut desc = String::from("purge:");
                 let mut set = sh.empty[a];
