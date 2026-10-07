@@ -903,7 +903,7 @@ the full name, the line and the contract.
 |---|---|---|---|---|---|
 | S410 | `axiom_zeroed_bytes` | proof | invariant | none | trusted |
 | S411 | `axiom_cast` | proof | ptr | none | trusted |
-| S412 | `axiom_copied_bytes` | axiom | core | Kani | trusted |
+| S412 | `axiom_copied_bytes` | axiom | core | Kani | evidence |
 
 ### src/vspec/word.rs
 
@@ -6996,7 +6996,7 @@ pub proof fn axiom_cast(tracked m: &mut UserMem)
 ### S412. `axiom_copied_bytes`
 
 src/vspec/user.rs:220. Kind: axiom. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: evidence (verus/seams/vspec-user-axiom_copied_bytes.md).
 
 > The effect on the byte state of [`copy_user`]'s `copy_nonoverlapping(src, dst, n)`, made with the permissions `s` to the `n` bytes from `src` and `d` to the `n` bytes from `dst`, which share no byte: `d` reads the `n` bytes from `dst` as `s` reads the `n` bytes from `src`, and its other bytes, its domain, its provenance and its well-formedness are kept.
 

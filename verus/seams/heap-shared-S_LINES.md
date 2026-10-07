@@ -21,7 +21,7 @@ const S_LINES: usize = core::mem::offset_of!(Shared, lines);
 Kani 0.68.0 (CBMC 6.11.0, nightly-2026-08-21) proves the harness `heap::shared::kani_layout::shared_layout` (`src/heap/shared.rs`):
 `S_LINES == offset_of!(Shared, lines)`, and the field-fit conditions of
 `axiom_shared_layout` at that value (see its record,
-`verus/seams/heap-shared-axiom_shared_layout.md`). Pending a re-run at
+`verus/seams/heap-shared-axiom_shared_layout.md`). Re-run since
 the port (see "Review").
 
 Reproduce: `sh verus/kani/run.sh --harness heap::shared::kani_layout::shared_layout` (both quanta;
@@ -37,13 +37,18 @@ conditions hold of it. No input: the check is exact.
 
 The layout is the target's: Kani evaluates it for x86_64; every
 build, for either target and quantum, also evaluates the same conditions
-in a `const` assertion (`fits`, next to the axiom), which is the
-stronger check (rustc's own layout, on every build) and the reason a
-layout change cannot ship unnoticed. `verus/kani/run.sh` runs the
-harness under both quanta, since `NCLASSES` sizes the arrays. The
-ghost field types (`Tracked<PointsTo<..>>`) are zero-sized in builds;
-the axiom is about the build's layout, which is what the pointers the
-proofs place address.
+in a `const` assertion (`arena::fits`, right after the axiom; its
+`ensures` is `field_fits`, its sum in `usize`, where an overflow fails
+the build), which is the stronger check (rustc's own layout, on every
+build) and the reason a layout change cannot ship unnoticed. The
+assertion does not restate `S_LINES == offset_of!(Shared,
+lines)`, which holds by the const's definition. `verus/kani/run.sh`
+runs the harness under both quanta, since `NCLASSES` sizes the arrays.
+`Shared`'s own fields are all exec; the ghost fields inside its field
+types (`Tracked` and `Ghost` ones, such as `ClassLine::committed_inv`,
+`Arena::sets_perm`, `Arenas::count_inv` and `Lock::init`) are
+zero-sized in builds, and the axiom is about the build's layout, which
+is what the pointers the proofs place address.
 
 Common to every Kani record: Kani checks the MIR of a debug build
 (overflow checks and debug assertions on) for x86_64, with CBMC's
@@ -82,10 +87,21 @@ lines' field fit ahead of `free_flags`, in place of the guard tests');
 the build's `const` assertion of the same conditions passes on both
 targets and quanta.
 
-Re-run at the port's last code commit (upstream #116 onto the CCall
+Re-run at commit 9c2de60f (the port of upstream #116 onto the CCall
 tip), 2026-10-06, with Kani 0.68.0 under both quanta:
 `heap::shared::kani_layout::shared_layout` passes (0 of 366 checks
 failed in each).
+
+Re-run at commit c76d91a7, 2026-10-07, with Kani 0.68.0 under both
+quanta: `heap::shared::kani_layout::shared_layout` passes (0 of 366
+checks failed in each).
+
+Translation revised, 2026-10-07, to the wording of the reviewed
+`heap-shared-S_REGION_HI.md`: the `const` assertion is `arena::fits`,
+right after the axiom (its `ensures`, its sum in `usize`), and it does
+not restate the offsets; and `Shared`'s own fields are all exec, the
+ghost fields (`Tracked` and `Ghost`) being inside its field types.
+A fresh-context subagent checked the revision against the code.
 
 ## Tests
 

@@ -51,7 +51,7 @@ Reproduce: `sh verus/kani/run.sh --harness kani_proofs::ptr::ptr_copy_nonoverlap
   (or two distinct arrays). The empty case is checked on pointers to
   no object.
 - No `ensures`: the call is defined and returns. As for `write_bytes`
-  (S256), the harness also shows that nothing outside the destination
+  (S263), the harness also shows that nothing outside the destination
   range is written.
 
 Gap: generic over `T`; checked at a byte and a word, and at a zero-sized
@@ -65,7 +65,7 @@ only limits the sizes.
 Provenance: every non-empty range is checked on pointers derived from
 a local array, which Kani tracks as one object. The allocator's
 pointers are integer-to-pointer casts of mapped addresses
-(`vspec::addr::addr_to_ptr`, S255, discharged by Kani except its
+(`vspec::addr::addr_to_ptr`, S262, discharged by Kani except its
 provenance claim, which stays an assumption); Kani has no model of
 those mappings. The record covers what
 the function does on a range that is valid; that the allocator's

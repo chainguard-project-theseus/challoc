@@ -5,8 +5,9 @@ Discharged by Kani.
 
 ## Contract
 
-As changed by the port of upstream #110 (the last field, `cgroup`, a
-`sys::cgroup::Deferred` in place of a `Cgroup`; Kani re-run pending),
+As changed by the port of upstream #110 (ecf28b1d: the last field,
+`cgroup`, a `sys::cgroup::Deferred` in place of a `Cgroup`; Kani
+re-run below),
 before that by the port of upstream #101 (`region_hi: usize` between
 `push_flags` and `regions`, at `S_REGION_HI`), before that by the port
 of upstream #87 (a first conjunct for the new
@@ -82,13 +83,18 @@ Reproduce: `sh verus/kani/run.sh --harness heap::shared::kani_layout::shared_lay
 
 The layout is the target's: Kani evaluates it for x86_64; every
 build, for either target and quantum, also evaluates the same conditions
-in a `const` assertion (`fits`, next to the axiom), which is the
-stronger check (rustc's own layout, on every build) and the reason a
-layout change cannot ship unnoticed. `verus/kani/run.sh` runs the
-harness under both quanta, since `NCLASSES` sizes the arrays. The
-ghost field types (`Tracked<PointsTo<..>>`) are zero-sized in builds;
-the axiom is about the build's layout, which is what the pointers the
-proofs place address.
+in a `const` assertion (`arena::fits`, right after the axiom; its
+`ensures` is `field_fits`, its sum in `usize`, where an overflow fails
+the build), which is the stronger check (rustc's own layout, on every
+build) and the reason a layout change cannot ship unnoticed. The
+assertion does not restate that each `S_*` is its field's
+`offset_of!`, which holds by the consts' definitions. `verus/kani/run.sh`
+runs the harness under both quanta, since `NCLASSES` sizes the arrays.
+`Shared`'s own fields are all exec; the ghost fields inside its field
+types (`Tracked` and `Ghost` ones, such as `ClassLine::committed_inv`,
+`Arena::sets_perm`, `Arenas::count_inv` and `Lock::init`) are
+zero-sized in builds, and the axiom is about the build's layout, which
+is what the pointers the proofs place address.
 
 Common to every Kani record: Kani checks the MIR of a debug build
 (overflow checks and debug assertions on) for x86_64, with CBMC's
@@ -136,9 +142,26 @@ ledger's entry there (the new field `region_hi: usize` between
 it; the build's `const` assertion of the same conditions passes on both
 targets and quanta.
 
-Re-run at the port's last code commit (upstream #116 onto the CCall
+Re-run at commit 9c2de60f (the port of upstream #116 onto the CCall
 tip), 2026-10-06, with Kani 0.68.0 under both quanta: it passes (0 of
 366 checks failed in each), which settles the re-runs of #87 and #101.
+
+Ported onto upstream #110 (ecf28b1d), 2026-10-07, checked at c76d91a7:
+the contract above is the ledger's entry there (the last field a
+`Deferred`, at `S_CGROUP`), and the harness asserts it; the build's
+`const` assertion of the same conditions passes on both targets and
+quanta.
+
+Re-run at commit c76d91a7, 2026-10-07, with Kani 0.68.0 under both
+quanta: `heap::shared::kani_layout::shared_layout` passes (0 of 366
+checks failed in each), which settles the re-run of #110.
+
+Translation revised, 2026-10-07, to the wording of the reviewed
+`heap-shared-S_REGION_HI.md`: the `const` assertion is `arena::fits`,
+right after the axiom (its `ensures`, its sum in `usize`), and it does
+not restate the offsets; and `Shared`'s own fields are all exec, the
+ghost fields (`Tracked` and `Ghost`) being inside its field types.
+A fresh-context subagent checked the revision against the code.
 
 ## Tests
 

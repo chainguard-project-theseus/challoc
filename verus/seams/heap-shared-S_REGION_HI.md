@@ -42,7 +42,8 @@ assertion does not restate `S_REGION_HI == offset_of!(Shared,
 region_hi)`, which holds by the const's definition. `verus/kani/run.sh`
 runs the harness under both quanta, since `NCLASSES` sizes the arrays.
 `Shared`'s own fields are all exec; the ghost fields inside its field
-types (`ClassLine::committed_inv`, `Arena::sets_perm`) are `Tracked`,
+types (`Tracked` and `Ghost` ones, such as `ClassLine::committed_inv`,
+`Arena::sets_perm`, `Arenas::count_inv` and `Lock::init`) are
 zero-sized in builds, and the axiom is about the build's layout, which
 is what the pointers the proofs place address.
 
@@ -87,11 +88,21 @@ offset, and the fits of `push_flags` before `region_hi` and of
 other findings (a stale "pending" line, the commits the contract and
 the re-run were taken at, the harness comment's seam numbers, the
 ghost-field sentence, what the `const` assertion checks) are folded
-in, and a second fresh-context subagent reviewed the revision. Only
-this record was revised: its siblings (`heap-shared-S_PUSH_FLAGS.md`
-and the other `heap-shared-S_*` records) keep the earlier wording of
-the two Translation sentences. Re-run at 61768ed6, 2026-10-06, with Kani 0.68.0 under both
-quanta: it passes (0 of 366 checks failed in each).
+in, and a second fresh-context subagent reviewed the revision. Re-run
+at 61768ed6, 2026-10-06, with Kani 0.68.0 under both quanta: it
+passes (0 of 366 checks failed in each).
+
+Re-run at commit c76d91a7, 2026-10-07, with Kani 0.68.0 under both
+quanta: `heap::shared::kani_layout::shared_layout` passes (0 of 366
+checks failed in each).
+
+Its Translation's ghost-field sentence revised, 2026-10-07: it named
+two ghost fields as if they were all of them; it now says the ghost
+fields are `Tracked` and `Ghost` ones and names four as examples.
+The sibling records (the other `heap-shared-S_*` records and
+`heap-shared-axiom_shared_layout.md`) now have this record's wording
+of the two Translation sentences.
+A fresh-context subagent checked the revision against the code.
 
 ## Tests
 
