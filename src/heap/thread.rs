@@ -78,18 +78,21 @@ impl HeapPerm {
 
     /// The permission to the heap [`Heap::create`] has just made at
     /// `s.heap()`, from the token holding the permission to its plain
-    /// fields and what the trusted writers stored in them
-    /// ([`FreshHeap`](super::FreshHeap): `init_fields`, `mark_bound`,
-    /// `mark_rehome`), used up here, and with its home headers written
+    /// fields and what the field writers stored in them
+    /// ([`FreshHeap`](super::FreshHeap): `init_fields`, verified, and the
+    /// trusted `mark_bound` and `mark_rehome`), used up here, and with its
+    /// home headers written
     /// `EMPTY` through `perms` ([`CachePerms::fresh`](super::CachePerms::fresh)),
     /// which the caller installs as the heap's ghost state. The heap's
-    /// `others` is null and its `arena` and `bound` are what `s` records;
-    /// nothing is claimed about its other fields or its ghost fields.
-    /// Trusted: the field stores before the home headers are `&raw mut`
-    /// projections Verus does not support, so no verified permission
-    /// covers the whole `Heap`; this is the claim `tcaches::heap_new`'s
-    /// body made before it was verified over it. Made once per heap: `s`
-    /// is linear and made once per heap by `init_fields`.
+    /// `others` is null and its `shared`, `arena` and `bound` are what `s`
+    /// records; nothing is claimed about its other fields or its ghost
+    /// fields. Trusted: `init_fields` stores the fields before the home
+    /// headers through the raw permission `s` holds, which forgets the
+    /// values, and the whole-`Heap` permission is abstract (above), so
+    /// nothing verified joins the two; this is the claim
+    /// `tcaches::heap_new`'s body made before it was verified over it.
+    /// Made once per heap: `s` is linear and made once per heap by
+    /// `init_fields`.
     pub(super) axiom fn assemble(tracked s: super::FreshHeap, tracked perms: &super::CachePerms) -> (tracked r: HeapPerm)
         requires
             super::heap_head(s.heap(), s.head()),

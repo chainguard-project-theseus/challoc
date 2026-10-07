@@ -37,6 +37,7 @@
 mod cache;
 mod compact;
 mod flush;
+mod fresh;
 pub mod live;
 pub mod mallocx;
 mod others;
@@ -86,6 +87,7 @@ use crate::lock::LockOrder;
 #[cfg(verus_only)]
 use crate::lock::{rank_arenas, rank_class, rank_meta};
 
+use fresh::{FreshHeap, init_fields};
 use others::{node_block_layout, node_caches_detached, node_set_arena};
 pub(crate) use paths::shared_ptr;
 use paths::{invalid_free, shared_of};
@@ -6303,102 +6305,6 @@ global layout Heap is size == 3456, align == 64;
 #[cfg(feature = "quantum8")]
 global layout Heap is size == 3712, align == 64;
 
-/// The plain fields of the fresh heap at [`FreshHeap::heap`]: the
-/// permission to them ([`FreshHeap::head`], the 128 bytes before
-/// `caches`, [`heap_head`]), which [`init_fields`] takes and keeps here,
-/// and what the trusted writers stored in them, for
-/// `thread::HeapPerm::assemble` to read back: the `Shared` and the home
-/// arena ([`init_fields`]) and whether the heap is counted
-/// ([`mark_bound`]). Linear and not `Copy`: the one holder of the
-/// heap-head permission, made by [`init_fields`] once per heap and used
-/// up by `HeapPerm::assemble` (`tcaches::heap_new`), which gives the
-/// permission to the heap's. It is valid
-/// while its heap is live: `destroy` (trusted) does not take it, so one
-/// kept past `destroy` would be stale for a later heap in the same block.
-/// `create_heap_for_thread` uses it right after `create`, and
-/// `Tcaches::create` drops it.
-#[verifier::external_body]
-pub(super) tracked struct FreshHeap {
-    _no_copy: (),
-}
-
-impl FreshHeap {
-    /// The heap the fields were stored in.
-    pub(super) uninterp spec fn heap(&self) -> *mut Heap;
-
-    /// The permission to the heap's plain fields the token holds.
-    pub(super) uninterp spec fn head(&self) -> vstd::raw_ptr::PointsToRaw;
-
-    /// The home arena [`init_fields`] stored.
-    pub(super) uninterp spec fn arena(&self) -> int;
-
-    /// [`mark_bound`] set `bound`.
-    pub(super) uninterp spec fn bound(&self) -> bool;
-
-    /// The `Shared` pointer [`init_fields`] stored in `shared`.
-    pub(super) uninterp spec fn shared(&self) -> *const Shared;
-}
-
-/// The fields of a fresh heap before its home headers, stored field by
-/// field ([`Heap::create_detached`]). Trusted: `&raw mut` projections of
-/// the raw heap pointer, which Verus does not support. `head.0` is the
-/// permission to the 128 bytes before `caches` ([`heap_head`]); the
-/// stores leave it as it was, and it goes into the [`FreshHeap`] returned,
-/// which claims only that and what was stored in `shared`, `arena` and
-/// `bound`. The `shared` stored is the well-formed `&Shared` given, as a
-/// pointer: the one at [`Shared::storage`], the only place a `Shared` is
-/// built (`Shared::init` requires it) and so the only address a
-/// well-formed `&Shared` has (one `Shared` per process,
-/// [`axiom_process_shared`](shared::axiom_process_shared); the unit tests
-/// build others, and the claim is about the shipped library).
-/// `head.1` is the heap block's claim, which is dropped: `destroy`'s
-/// trusted body gives `Meta::free` its own. It comes along so that the
-/// permission travels with the same type as `Meta::alloc_raw`'s: every
-/// erased `Tracked(..)` expression is a call to
-/// `Tracked::<T>::assume_new_fallback`, and rustc's MIR inliner gives up
-/// on a function from which more than 16 instances of it, by `T`, are
-/// reachable (`mir_callgraph_cyclic`), which `heap_for_thread` is at.
-///
-/// # Safety
-/// `h` is a fresh metadata block for a `Heap`, exclusively owned.
-#[inline(always)]
-#[verifier::external_body]
-unsafe fn init_fields(
-    h: *mut Heap,
-    shared: &Shared,
-    arena: u16,
-    Tracked(head): Tracked<(vstd::raw_ptr::PointsToRaw, crate::meta::MetaClaim)>,
-) -> (r: Tracked<FreshHeap>)
-    requires
-        crate::sys::may_syscall(),
-        heap_head(h, head.0),
-        shared.wf(),
-    ensures
-        r@.heap() == h,
-        r@.head() == head.0,
-        r@.arena() == arena as int,
-        !r@.bound(),
-        r@.shared() == Shared::storage() as *const Shared,
-{
-    // SAFETY: guaranteed by the caller.
-    unsafe {
-        ptr::write(&raw mut (*h).shared, shared);
-        ptr::write(&raw mut (*h).tid, tid());
-        ptr::write(&raw mut (*h).arena, arena);
-        ptr::write(&raw mut (*h).slow_ticks, 0);
-        ptr::write(&raw mut (*h).last_gc, now_ns());
-        ptr::write(&raw mut (*h).uncached, ThreadStats::default());
-        ptr::write(&raw mut (*h).others, ptr::null_mut());
-        ptr::write(&raw mut (*h).snapshot, ThreadStats::default());
-        ptr::write(&raw mut (*h).tcache_enabled, true);
-        ptr::write(&raw mut (*h).bound, false);
-        ptr::write(&raw mut (*h).rng, 0);
-        ptr::write(&raw mut (*h).rehome, false);
-        ptr::write(&raw mut (*h).rehome_from, FOREIGN);
-    }
-    Tracked::assume_new()
-}
-
 /// [`Arenas::assign`](crate::arena::Arenas::assign) on the process's
 /// arenas, with the new heap's ticket for the arena it picked.
 #[inline(always)]
@@ -6431,7 +6337,7 @@ fn assign_home(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (u
 /// `bound` holding a `bool` and the others any bytes, and gives them
 /// back with `bound` holding `true` and the others' bytes unchanged
 /// (`verus/refinedrust/run.sh`, record under `verus/seams/`); that this
-/// is what `s` records rests on [`FreshHeap`]'s trusted meaning.
+/// is what `s` records rests on what [`FreshHeap`] stands for.
 ///
 /// # Safety
 /// `h` is a fresh heap, exclusively owned.
@@ -6468,7 +6374,7 @@ unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 /// gives them back with `rehome` holding `true` and the others' bytes
 /// (`arena` and `bound` among them) unchanged (`verus/refinedrust/run.sh`,
 /// record under `verus/seams/`); that the token is unchanged rests on
-/// [`FreshHeap`]'s trusted meaning.
+/// what [`FreshHeap`] stands for.
 /// That a heap with `rehome` set is bound (a conjunct of
 /// [`Heap::homed_ok`]) holds here because `create` calls it right after
 /// [`mark_bound`] and nothing writes the head before `heap_new` reads it.
@@ -6492,10 +6398,12 @@ unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
     unsafe { (*h).rehome = true };
 }
 
-/// Heap creation and teardown. Creation is verified up to the field
-/// stores before the home headers ([`init_fields`]): it writes each home
-/// header `EMPTY` through the permission `Meta::alloc_raw` hands out for
-/// its line, and returns those permissions, which [`CachePerms::fresh`]
+/// Heap creation and teardown. Creation is verified but for the stores
+/// to `bound` and `rehome` ([`mark_bound`], [`mark_rehome`]; RefinedRust):
+/// it stores the fields before the home headers through the permission
+/// to them ([`init_fields`]), writes each home header `EMPTY` through the
+/// permission `Meta::alloc_raw` hands out for its line, and returns
+/// those permissions, which [`CachePerms::fresh`]
 /// describes (a heap that holds nothing). `thread::create_heap_for_thread`
 /// turns a new thread heap into a reference, installs them as its ghost
 /// state and proves [`Heap::wf`] of it ([`Heap::lemma_fresh_wf`]);
@@ -6516,9 +6424,9 @@ impl Heap {
     /// slot token (`TlsSlot::creates`), which it otherwise leaves alone.
     /// And the heap's ticket for its home arena ([`Homed`]), which the
     /// caller installs with the permissions, with the permission to the
-    /// heap's plain fields and what was stored in its `arena` and `bound`
-    /// ([`FreshHeap`], for `tcaches::heap_new`); on null, the ticket is
-    /// given back (`unbind`).
+    /// heap's plain fields and what was stored in its `shared`, `arena`
+    /// and `bound` ([`FreshHeap`], for `tcaches::heap_new`); on null, the
+    /// ticket is given back (`unbind`).
     fn create(
         shared: &Shared,
         Tracked(tls): Tracked<&mut crate::sys::tls::TlsSlot>,

@@ -136,7 +136,7 @@ pub(super) unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
 /// `tls`, which takes its permission ([`HeapPerm`], made here by
 /// [`HeapPerm::assemble`]) and is lent for as long as the reference
 /// lives: its `others` field is null, as `init_fields` stored it, and its
-/// `arena` and `bound` are what `s` records (`init_fields` and
+/// `shared`, `arena` and `bound` are what `s` records (`init_fields` and
 /// `mark_bound` stored them). Nothing is claimed about the heap's ghost
 /// fields: the caller installs the permissions and the ticket creation
 /// returned (`create_heap_for_thread`), through the reference, so the

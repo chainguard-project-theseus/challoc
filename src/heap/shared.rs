@@ -3863,7 +3863,7 @@ mod kani_guard_word {
         }
     }
 
-    /// S133 `ClassLine::guard_word`, `requires` the padding zero,
+    /// S131 `ClassLine::guard_word`, `requires` the padding zero,
     /// `ensures r == guard_word_of(guard_mask, tz, lg_guard)`: on a line
     /// with every field any value but `_pad` zero, the one 8-byte load
     /// returns `guard_mask | tz << 32 | lg_guard << 40`, through the

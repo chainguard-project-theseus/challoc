@@ -1,6 +1,6 @@
 # `WordPerm` (`vspec/word.rs`)
 
-Seam S419 of `verus/SEAMS.md`: src/vspec/word.rs:50. Kind: external_body type. Category: atomics primitive.
+Seam S417 of `verus/SEAMS.md`: src/vspec/word.rs:50. Kind: external_body type. Category: atomics primitive.
 Discharged by the records of its wrappers and `run.sh`'s access check
 (part 3).
 
@@ -15,7 +15,7 @@ pub tracked struct WordPerm
 The type is an `external_body` tracked struct with one private unit
 field; `addr()` and `value()` are uninterpreted spec functions on it. It
 has no `Copy` or `Clone`, and no exec constructor: permissions come only
-from `table::axiom_fresh_words` (S88, a separate seam), once per class
+from `table::axiom_fresh_words` (S87, a separate seam), once per class
 bitmap, by `SlabTable::new`.
 
 ## Statement
@@ -29,7 +29,7 @@ facts, each checked elsewhere:
    no `Copy` moves, and nothing in `src/` implements `Copy` or `Clone`
    for it (it is declared in `vspec/word.rs` only, with no derive).
 2. **One permission per atomic.** The minting seam's
-   (`table::axiom_fresh_words`, S88, once per class bitmap, by
+   (`table::axiom_fresh_words`, S87, once per class bitmap, by
    `SlabTable::new`); not claimed here.
 3. **The value is the atomic's.** Every write of the atomic once it is
    shared, and every read whose value a proof uses, is one of the

@@ -1,6 +1,6 @@
 # `compare_exchange` (`vspec/byte.rs`)
 
-Seam S276 of `verus/SEAMS.md`: src/vspec/byte.rs:136. Kind: external_body. Category: atomics primitive.
+Seam S274 of `verus/SEAMS.md`: src/vspec/byte.rs:136. Kind: external_body. Category: atomics primitive.
 Discharged by the C11 atomicity rules and loom (part 2).
 
 ## Contract

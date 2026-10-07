@@ -1,6 +1,6 @@
 # `ClassLine::guard_word`
 
-Seam S133 of `verus/SEAMS.md`: src/heap/shared.rs:519. Kind: external_body. Category: inline asm.
+Seam S131 of `verus/SEAMS.md`: src/heap/shared.rs:519. Kind: external_body. Category: inline asm.
 Evidence: Kani settles the load (on a pinned copy); the x86_64 `asm!` block, an empty template, is pinned for Isla but has no instruction to trace, so its effect (none) is argued, as for `word_index`'s record (Translation, "Status").
 
 ## Contract

@@ -1,7 +1,7 @@
 # `store_usize_at` (`vspec/atom.rs`)
 
-Seam S273 of `verus/SEAMS.md`: src/vspec/atom.rs:168. Kind: external_body. Category: atomics primitive.
-Discharged by loom and the C11 coherence rules (part 3), given `usize_ptr`'s identity (S274, trusted).
+Seam S271 of `verus/SEAMS.md`: src/vspec/atom.rs:168. Kind: external_body. Category: atomics primitive.
+Discharged by loom and the C11 coherence rules (part 3), given `usize_ptr`'s identity (S270, trusted).
 
 ## Contract
 
@@ -34,7 +34,7 @@ the end of the group it hands out, right after the watermark's own
 store (`store_usize`, `vspec-atom-store_usize.md`). The pointer is
 `usize_ptr(&line.committed)` (`heap/shared.rs`, `Shared::init`), into
 the never-moving `Shared`'s class line; `usize_ptr`'s `ensures
-usize_id_at(r) == usize_id(a)` (S274) is the identity half of this
+usize_id_at(r) == usize_id(a)` (S269) is the identity half of this
 package, which stays trusted (whether a Kani record of an address
 identity counts as discharging it is an open question for the
 maintainers, not settled in this repository).
@@ -98,11 +98,11 @@ Models: `loom_watermark_mirror_follows`, `loom_watermark_mirror_installed_concur
 ## Translation
 
 - **`requires old(perm).id() == usize_id_at(p)`**: the permission is for
-  the atomic `p` names. With `usize_ptr`'s `ensures` (S274, trusted),
+  the atomic `p` names. With `usize_ptr`'s `ensures` (S269, trusted),
   that is the atomic `p` was made from, `line.committed`; the safety
   contract (the atomic still in place: `Shared` never moves) makes
   `*p` that atomic, so part 1 is about it alone. The identity and the
-  liveness are premises here (S274 and `mirror_watermark`'s safety
+  liveness are premises here (S269 and `mirror_watermark`'s safety
   contract), not checked by the models, which make the pointer from a
   field of a leaked table.
 - **`requires !(ordering is Acquire)`, `!(ordering is AcqRel)`**: the

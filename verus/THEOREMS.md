@@ -110,10 +110,11 @@ add.
 - One `Shared`, at its storage (since P7): a well-formed `&Shared` is
   the one at `Shared::storage()`, the only place `Shared::init` builds
   one. Assumed where a reference becomes a pointer:
-  `heap::paths::shared_ptr` (`external_body`, what the cold paths hand
-  `existing_heap`) and `heap::init_fields` (trusted already; the heap's
-  `shared` field, recorded by `FreshHeap::shared`, which `Heap::wf`
-  states is the storage). The unit tests build other `Shared`s; the
+  `heap::paths::shared_ptr` (`external_body`), what the cold paths hand
+  `existing_heap` and what `heap::init_fields` (verified since P6,
+  trusted with this claim before) stores in the heap's `shared` field,
+  recorded by `FreshHeap::shared`, which `Heap::wf` states is the
+  storage. The unit tests build other `Shared`s; the
   premise is about the shipped library, as `axiom_process_shared`'s.
 - `Shared::init` (`heap/shared.rs:653`) proves
   `r ==> shared_at(this).built()`, using the tracked `Build` token
@@ -211,8 +212,10 @@ the call does not return (theorem 3, which is not voided for it).
   `create_heap_for_thread` puts a new heap's permission in the token
   (`tcaches::heap_new`, over the trusted `HeapPerm::assemble`, which
   states what `init_fields`, `mark_bound` and `mark_rehome` stored).
-- Heap creation is trusted: `Heap::create` (`heap/mod.rs:3297`),
-  `create_detached` (`:3312`), `destroy` (`:3350`).
+- Heap creation is verified but for the stores to `bound` and `rehome`
+  (`mark_bound`, `mark_rehome`, discharged by RefinedRust; `init_fields`
+  verifies since P6): `Heap::create` (`heap/mod.rs:6430`),
+  `create_detached` (`:6480`). Teardown is trusted: `destroy` (`:6624`).
 - Writers the permissions do not follow, assumed to keep `wf`:
   `others::swap_home` (`heap/others.rs:149`), `Heap::free_caches`
   (`heap/mod.rs:2745`, verified, but it writes the untracked `caches`
@@ -1409,8 +1412,9 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   `linux::try_reserve` (`layout/regions.rs:1443`), `ThreadKey::create`
   (`heap/shared.rs:255`), `atfork_handlers` (`api/mod.rs:502`),
   `background::spawn` and `pthread_join` (`purge/background.rs:333`,
-  `:229`), `init_fields`, `Heap::destroy`
-  (`heap/mod.rs:5158`, `:5382`), `Meta::commit`
+  `:229`), `Heap::destroy`
+  (`heap/mod.rs:6624`; `init_fields` verifies since P6, its `tid()` and
+  `now_ns()` checked), `Meta::commit`
   (`meta.rs:2745`), `print::emit` and
   `jemalloc::call_hook` (the report's call-outs, theorem 16), the
   C++ `call_handler` and `call_handler_caught` (the `nothrow_t` forms'
@@ -6012,7 +6016,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   `CountPerm` is the counter with its `id` (`count_id`), and `fetch_add`,
   `fetch_sub` (wrapping), `load` and, since the port of upstream #103,
   `compare_exchange` (the strong form: it fails only on a different
-  value, by C++20's semantics; S308, discharged with loom and those,
+  value, by C++20's semantics; S306, discharged with loom and those,
   `verus/seams/vspec-count-compare_exchange.md`) are one atomic operation
   on it, sequentially consistent in the model (the orderings, all
   `Relaxed`, are ignored, as for the bitmap words).
@@ -6040,20 +6044,29 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   `bool`; a verified spelling of the comparison changed
   `create_heap_for_thread`'s machine code.
 - The fresh heap's fields, read back: one linear ghost token,
-  `FreshHeap` (`heap/mod.rs:5634`, `external_body`, not `Copy`), holds
-  the permission to the heap's 128 bytes of plain fields (`head()`,
-  `heap_head`) and records what the trusted writers stored in `arena`
-  and `bound`. `init_fields` (`:6014`) takes the head permission that
-  `create_detached` splits off the heap's block (with the block's
-  `MetaClaim`, which it drops) and returns the token
-  holding it (the only way to make one); `mark_bound` (`:5737`) needs
+  `FreshHeap` (`heap/fresh.rs`, a tracked struct, not `Copy`; an
+  `external_body` type until P6), holds the permission to the heap's
+  128 bytes of plain fields (`head()`, `heap_head`) and records what
+  the field writers stored in `shared`, `arena` and `bound`. `init_fields`
+  (verified since P6) takes the head permission that `create_detached`
+  splits off the heap's block (with the block's `MetaClaim`, which it
+  drops), stores the fields through permissions carved from it (one
+  per field up to `last_gc`, then one `HeadRest` for the rest, so the
+  stores keep their alignment and machine code), forgets the values
+  and returns the token holding the permission, with `shared`, `arena` and
+  `bound` set to what it stored (`shared` is `shared_ptr`'s, at
+  `Shared::storage`). That the token's `shared`, `arena` and `bound`
+  are the fields' values is not a Verus fact: the token's fields are
+  private to `heap::fresh` (`init_fields`'s module), so nothing else
+  builds, takes apart or changes one but the trusted `mark_bound` and
+  `mark_rehome`. `mark_bound` (`heap/mod.rs:6350`) needs
   and keeps the permission and records `bound` (RefinedRust proves its
   body stores `true` there and leaves the other head fields' bytes,
   `verus/seams/heap-mark_bound.md`); `tcaches::heap_new`
-  (`heap/tcaches.rs:124`, trusted, already the source of the fresh
-  heap's `others`) uses the token up, giving the permission to the
-  reference, and claims the heap's `arena` and `bound` are what it
-  records. `create_detached` and `create` pass it on. The memory-requires
+  (`heap/tcaches.rs:150`) uses the token up (through
+  `HeapPerm::assemble`, below), giving the permission to the heap's,
+  whose `others`, `shared`, `arena` and `bound` are what it records.
+  `create_detached` and `create` pass it on. The memory-requires
   audit (`bdce79a`) had these bodies take and return the bare
   `PointsToRaw`; the token now carries it, so one linear object, not
   two, stands for the fresh heap.
@@ -6075,10 +6088,10 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   is off by that ticket inside the trusted body only (the flush's proof
   uses no arena invariant).
 - `homed_ok`'s `rehome ==> bound` (since #103): a new thread heap is
-  counted, so it holds whatever `mark_rehome` (S126, RefinedRust:
+  counted, so it holds whatever `mark_rehome` (S124, RefinedRust:
   `true`, `verus/seams/heap-mark_rehome.md`) stored;
   an explicit cache, assumed `wf` (`heap_at`), rests on `init_fields`
-  storing `false` (trusted) and on `create` being the one writer that
+  storing `false` (verified since P6) and on `create` being the one writer that
   sets `rehome` (by inspection; `set_arena` and `try_rehome` clear
   it). `same_shape`, `caches_same`, `updates` and the field lists
   of `claim` and the accounting lemmas now keep `rehome` too.

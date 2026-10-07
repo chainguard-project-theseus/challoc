@@ -45,14 +45,14 @@ pub(crate) fn formats_debug_flat<T: Debug>(v: &T) {
     let _ = write!(Sink, "{:>24?}", v);
 }
 
-/// S320 `DisplaySpecImpl for sys::Errno` (`fmt_req` true): every `i32`.
+/// S318 `DisplaySpecImpl for sys::Errno` (`fmt_req` true): every `i32`.
 #[kani::proof]
 #[kani::unwind(12)]
 fn display_errno() {
     formats(&Errno(kani::any()));
 }
 
-/// S321 `DebugSpecImpl for slab::State` (`fmt_req` true): every variant.
+/// S319 `DebugSpecImpl for slab::State` (`fmt_req` true): every variant.
 #[kani::proof]
 fn debug_slab_state() {
     let v = [
@@ -66,7 +66,7 @@ fn debug_slab_state() {
     formats_debug(&v[i]);
 }
 
-/// S322 `DebugSpecImpl for huge::RunState` (`fmt_req` true): every
+/// S320 `DebugSpecImpl for huge::RunState` (`fmt_req` true): every
 /// variant.
 #[kani::proof]
 fn debug_run_state() {
@@ -92,7 +92,7 @@ fn any_feature_value() -> features::Value {
     }
 }
 
-/// S224 `DisplaySpecImpl for Value` (`sys::features::Value`, `fmt_req`
+/// S222 `DisplaySpecImpl for Value` (`sys::features::Value`, `fmt_req`
 /// true): every variant, every number and bit set.
 #[kani::proof]
 #[kani::unwind(66)]

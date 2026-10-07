@@ -10,7 +10,7 @@ pointer authentication is one of the two kinds checked, Armv8.3-v8.5
 FEAT_PAuth or FEAT_PAuth2 with FEAT_FPAC as on the C4A reference
 machine), and two of its own (part 3): the kernel's user VA is one of
 the six sizes checked, and `user_va_limit()` is at most the VA width the
-kernel configures, which rests on `axiom_user_va_limit` (S229, trusted).
+kernel configures, which rests on `axiom_user_va_limit` (S233, trusted).
 
 ## 1. Contract
 
@@ -88,7 +88,7 @@ passes.
   of the kernel capped by its default map window, and `VA_BITS` there is
   the build option, which can exceed what the kernel configures: a
   kernel built for 52 bits on a CPU without 52-bit VA support runs with
-  a 48-bit TCR. What closes that case is `axiom_user_va_limit` (S229,
+  a 48-bit TCR. What closes that case is `axiom_user_va_limit` (S233,
   trusted): the limit is at most `2^48`, at most the configured width in
   every configuration here except the 36-, 39-, 42- and 47-bit ones,
   where the build option is the configured width (Linux falls back
@@ -115,7 +115,7 @@ passes.
 Translation reviewed on 2026-10-03 by a fresh-context reviewer (a Claude
 subagent with no prior context of this work), told to look for
 translations that overclaim. Its findings on this record are folded in:
-the precondition's bound shown to rest on axiom_user_va_limit (S229)
+the precondition's bound shown to rest on axiom_user_va_limit (S233)
 where the kernel's build option exceeds the configured VA, named in the
 status line; FEAT_PAuth2 named as a residual; and those on sign's
 record and run.sh apply here.

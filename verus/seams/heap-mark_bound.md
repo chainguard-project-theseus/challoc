@@ -1,6 +1,6 @@
 # `mark_bound`
 
-Seam S125 of `verus/SEAMS.md`: src/heap/mod.rs:6444. Kind: external_body. Category: raw pointer (internal).
+Seam S123 of `verus/SEAMS.md`: src/heap/mod.rs:6350. Kind: external_body. Category: raw pointer (internal).
 Discharged by RefinedRust.
 
 ## Contract
@@ -69,9 +69,12 @@ Reproduce: `sh verus/refinedrust/run.sh` (both quanta).
 ## Translation
 
 The contract speaks of the fresh heap through the linear token
-`FreshHeap` (S122, `none (assumption)`): `s.heap()` is the heap,
-`s.head()` the permission to its 128 bytes of plain fields, and, by the
-token's trusted meaning ("what the trusted writers stored in them"),
+`FreshHeap` (a tracked struct with ghost fields, no longer a seam since
+`init_fields` verifies): `s.heap()` is the heap, `s.head()` the
+permission to its 128 bytes of plain fields, and, by the token's
+meaning ("what the field writers stored in them": its fields are
+private to `heap::fresh`, where only `init_fields` builds one, with
+what it stored),
 `s.arena()` and `s.bound()` are what `init_fields` and `mark_bound`
 stored in the heap's `arena` and `bound` fields. `init_fields` stores
 them (it ensures `s.arena()` is the arena it stored and `!s.bound()`),
@@ -88,7 +91,7 @@ because nothing else writes the head's first ten fields between
 holder of the head's permission, `create_detached` writes the rest of
 the block through the other permission (`rest`), and `create` calls
 `mark_bound` right after `create_detached` returns. Since the port of
-upstream #103, `create` then calls `mark_rehome` (S124, discharged by
+upstream #103, `create` then calls `mark_rehome` (S121, discharged by
 RefinedRust, `heap-mark_rehome.md`), which stores `true` into `rehome`
 alone: a field after `rng`, at byte 88 under rustc's layout, outside
 `HeapHead` (whose fields end at byte 74, below), so it leaves the bytes
@@ -136,18 +139,20 @@ field before `caches` with its bytes).
 - `ensures final(s).bound()`: `bound` holds `true`.
 - `ensures final(s).shared() == old(s).shared()`: `shared` holds the
   same bytes `sh`, so the same pointer, which is what the token records
-  of it (`init_fields` stored it, trusted, S122).
+  of it (`init_fields` stored it, verified, through the head
+  permission).
 - Beyond the contract: the other seven head fields hold the same bytes,
   so the body does not change `others`. `thread::HeapPerm::assemble`'s
-  trusted `r.value().others@.addr == 0` (S161, which `tcaches::heap_new`
+  trusted `r.value().others@.addr == 0` (S158, which `tcaches::heap_new`
   now verifies over) needs that, and it rests as well on `init_fields`
-  storing null (trusted) and on the premise above.
+  storing null (verified, through the head permission) and on the
+  premise above.
 - `s` (`Tracked<&mut FreshHeap>`) is zero-sized outside Verus; the
   patched frontend translates it as unit.
 - Gaps:
-  - The token's meaning (S122) and the no-other-writer premise above
-    are what this rests on; the proof shows the body keeps them, not
-    that they hold.
+  - The token's meaning (`FreshHeap`'s, which `heap::fresh` keeps
+    private) and the no-other-writer premise above are what this rests
+    on; the proof shows the body keeps them, not that they hold.
   - Verus's permission (`PointsToRaw`: a range and a provenance) is
     read as RefinedRust's exclusive ownership of those bytes in its
     own memory model (an allocation in bounds, owned by the caller,
@@ -156,11 +161,16 @@ field before `caches` with its bytes).
     as for every RefinedRust record.
   - Layout: the offsets RefinedRust computes for the head are those of
     `Heap`'s own fields in its C layout, equal to rustc's under the
-    premise above. The crate asserts only `offset_of!(Heap, caches) ==
-    128`; the offsets above were checked once, not on every build. A
+    premise above. The crate asserts `offset_of!(Heap, caches) ==
+    128` and, since `init_fields` verifies, on every build, the offset
+    of every field before it (`heap/fresh.rs`: each is an `H_*`
+    constant, `arena`'s 12, or `H_REST` plus its offset in `HeadRest`,
+    which puts `bound` at 73) and its type (`FIELD_TYPES`); `global
+    layout ThreadStats` fixes `ThreadStats` at 16 bytes, alignment 8. A
     change to the fields up to `bound` makes the proof fail
     (`struct_prefix_offset` asks `HeapHead_sls`'s fields to be `Heap`'s
-    first ones); a change to `ThreadStats`' size or alignment does not.
+    first ones); a change to `ThreadStats`' size or alignment fails
+    the build.
     RefinedRust ignores `repr(align(64))` on `CacheHeader`, which only
     moves fields after `rng`, which the proof never touches.
   - The MIR checked is nightly-2026-08-28's (rustc 1.100, unoptimised,

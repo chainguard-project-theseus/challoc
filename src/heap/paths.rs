@@ -1174,13 +1174,13 @@ fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8
     }
 }
 
-/// `shared` as the raw pointer [`existing_heap`] takes: the process's
-/// `Shared`, at its storage. Trusted: a reference-to-pointer conversion,
-/// whose address Verus does not model; a well-formed `Shared` is the one
-/// at [`Shared::storage`], the only place one is built (`Shared::init`
-/// requires it), as `init_fields` assumes of the `&Shared` it stores (one
-/// `Shared` per process, `shared::axiom_process_shared`; the unit tests
-/// build others, and the claim is about the shipped library).
+/// `shared` as the raw pointer [`existing_heap`] takes and `init_fields`
+/// stores in a new heap: the process's `Shared`, at its storage. Trusted:
+/// a reference-to-pointer conversion, whose address Verus does not model;
+/// a well-formed `Shared` is the one at [`Shared::storage`], the only
+/// place one is built (`Shared::init` requires it; one `Shared` per
+/// process, `shared::axiom_process_shared`; the unit tests build others,
+/// and the claim is about the shipped library).
 #[inline(always)]
 #[verifier::external_body]
 pub(crate) fn shared_ptr(shared: &Shared) -> (r: *const Shared)
@@ -1305,7 +1305,7 @@ mod kani_aborts {
     use super::debug_scheduled;
     use crate::kani_proofs::must_not_return;
 
-    /// S132 `debug_scheduled`, no `requires`, no `ensures`: with debug
+    /// S130 `debug_scheduled`, no `requires`, no `ensures`: with debug
     /// assertions on (Kani's build, and the tests'), it returns exactly
     /// when `allocs as u32` has no bit of `mask`, and otherwise never
     /// returns.

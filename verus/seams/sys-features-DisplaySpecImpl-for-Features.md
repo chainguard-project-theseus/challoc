@@ -1,6 +1,6 @@
 # `DisplaySpecImpl for Features`
 
-Seam S225 of `verus/SEAMS.md`: src/sys/features.rs:204. Kind: spec_impl. Category: core library.
+Seam S223 of `verus/SEAMS.md`: src/sys/features.rs:204. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract
@@ -34,22 +34,22 @@ Reproduce: `sh verus/kani/run.sh --harness sys::features::kani_features::display
   formatter, and Verus assumes the call returns without a panic: the
   harness, for every value.
 
-The stub: `Value`'s `Display` is a seam of its own (S228, discharged
+The stub: `Value`'s `Display` is a seam of its own (S221, discharged
 by Kani's `kani_proofs::fmt::display_feature_value`, which shows that
 its `fmt` returns, `Ok` or `Err`, without a panic, for every value and
 under the same formatters). The stub returns exactly the results that
 harness allows, so the check covers everything else `fmt` runs (the
 word pairs, the iterator chain, `write_words`, the keys and
-separators) on the real code, and `Value`'s formatting by S228's
+separators) on the real code, and `Value`'s formatting by S221's
 result.
 
 Why the stub covers the real `fmt`: `write_words` formats each value
 with `write!(f, "{key}={value}")`, which gives `Value`'s `fmt` a
 formatter with default options over the same writer, the `{}` case of
-S228's harness. The writer (`kani_proofs::fmt::Sink`) keeps no state
+S221's harness. The writer (`kani_proofs::fmt::Sink`) keeps no state
 and picks each result independently, so what the real `fmt` wrote
 before returning changes nothing later; only its result matters, and
-the stub returns every result S228 allows. (S228's harness builds
+the stub returns every result S221 allows. (S221's harness builds
 `Value::Word` from two words, while `Features` passes the THP setting
 names and `none`; `Word`'s `fmt` is one `write_str` of the word,
 whatever it is.)

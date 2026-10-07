@@ -1,6 +1,6 @@
 # `<core::array::IntoIter<T, N> as core::iter::Iterator>::next`
 
-Seam S389 of `verus/SEAMS.md`: src/vspec/slice.rs:214. Kind: assume_spec. Category: core library.
+Seam S387 of `verus/SEAMS.md`: src/vspec/slice.rs:214. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

@@ -1,6 +1,6 @@
 # `store` (`vspec/byte.rs`)
 
-Seam S275 of `verus/SEAMS.md`: src/vspec/byte.rs:114. Kind: external_body. Category: atomics primitive.
+Seam S273 of `verus/SEAMS.md`: src/vspec/byte.rs:114. Kind: external_body. Category: atomics primitive.
 Discharged by the C11 release/acquire rules and loom (part 2).
 
 ## Contract

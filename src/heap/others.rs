@@ -135,7 +135,7 @@ pub open spec fn heads_ok(heads: Map<*mut ArenaCaches, NodeHead>, l: Seq<*mut Ar
 
 /// `p`, 64-byte aligned, plus `off` (a multiple of `size_of::<T>()`,
 /// which divides 64) is aligned for a `T`.
-proof fn lemma_field_aligned<T>(p: int, off: int)
+pub(super) proof fn lemma_field_aligned<T>(p: int, off: int)
     requires
         p % 64 == 0,
         0 < size_of::<T>(),
@@ -898,7 +898,7 @@ impl Heap {
 mod kani_aborts {
     use super::assert_not_home;
 
-    /// S129 `assert_not_home`, `requires *arena != *home`: under it the
+    /// S127 `assert_not_home`, `requires *arena != *home`: under it the
     /// call returns, for every pair.
     #[kani::proof]
     fn assert_not_home_returns() {

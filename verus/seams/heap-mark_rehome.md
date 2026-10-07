@@ -1,6 +1,6 @@
 # `mark_rehome`
 
-Seam S126 of `verus/SEAMS.md`: src/heap/mod.rs:6484. Kind: external_body. Category: raw pointer (internal).
+Seam S124 of `verus/SEAMS.md`: src/heap/mod.rs:6390. Kind: external_body. Category: raw pointer (internal).
 Discharged by RefinedRust.
 
 ## Contract
@@ -70,10 +70,12 @@ Reproduce: `sh verus/refinedrust/run.sh` (both quanta).
 ## Translation
 
 The contract speaks of the fresh heap through the linear token
-`FreshHeap` (S122, `none (assumption)`), as `mark_bound`'s does
-(`heap-mark_bound.md`, whose reading of the token this record shares):
-`s.heap()` is the heap, `s.head()` the permission to its 128 bytes of
-plain fields, and, by the token's trusted meaning, `s.arena()` and
+`FreshHeap` (a tracked struct with ghost fields, no longer a seam since
+`init_fields` verifies), as `mark_bound`'s does (`heap-mark_bound.md`,
+whose reading of the token this record shares): `s.heap()` is the
+heap, `s.head()` the permission to its 128 bytes of plain fields, and,
+by the token's meaning (`FreshHeap`'s, which `heap::fresh` keeps
+private), `s.arena()` and
 `s.bound()` are what `init_fields` and `mark_bound` stored in the
 heap's `arena` and `bound` fields. The translation reads `s.heap()` and
 `s.head()` as the heap at `l` and the permission to its head, `ar` as
@@ -139,9 +141,9 @@ is padded to 80).
 - `s` (`Tracked<&mut FreshHeap>`) is zero-sized outside Verus; the
   patched frontend translates it as unit.
 - Gaps:
-  - The token's meaning (S122) and the no-other-writer premise above
-    are what this rests on; the proof shows the body keeps them, not
-    that they hold.
+  - The token's meaning (`FreshHeap`'s, which `heap::fresh` keeps
+    private) and the no-other-writer premise above are what this rests
+    on; the proof shows the body keeps them, not that they hold.
   - Verus's permission (`PointsToRaw`: a range and a provenance) is
     read as RefinedRust's exclusive ownership of those bytes in its own
     memory model, as for every RefinedRust record; the two logics are
