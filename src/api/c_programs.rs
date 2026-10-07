@@ -680,6 +680,18 @@ ctests! {
     c_setxid => [
         CTest { prog: "setxid", conf: Some("abort_conf:true,background_thread:true"), ..BASE },
     ];
+    /// `tests/c/mlock_purge.c`: purge over `mlock`ed memory, whose
+    /// `madvise` fails. A freed locked huge run and locked slabs survive
+    /// `malloc_trim(0)`, the purge at free time, the decay walk and the
+    /// background thread, stay dirty (`calloc` clears them), are retried
+    /// with a back-off, and are purged once unlocked.
+    c_mlock_purge => [
+        CTest { prog: "mlock_purge", args: &["huge"], conf: Some("abort_conf:true"), ..BASE },
+        CTest { prog: "mlock_purge", args: &["slab"], conf: Some("abort_conf:true"), ..BASE },
+        CTest { prog: "mlock_purge", args: &["free"], conf: Some("abort_conf:true,huge_dirty_decay_ms:0"), ..BASE },
+        CTest { prog: "mlock_purge", args: &["decay"], conf: Some("abort_conf:true,background_thread:false,dirty_decay_ms:100"), ..BASE },
+        CTest { prog: "mlock_purge", args: &["background"], conf: Some("abort_conf:true,background_thread:true,dirty_decay_ms:100"), ..BASE },
+    ];
     /// `tests/c/lazy_bg.c`: the lazy background thread under the default
     /// configuration (design 8.1). A small workload stays single-threaded
     /// and can unshare a user namespace; a burst starts the thread and it

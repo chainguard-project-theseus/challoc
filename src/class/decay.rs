@@ -14,13 +14,24 @@ pub(super) fn min_nonzero(cur: u64, t: u64) -> u64 {
     if cur == 0 || t < cur { t } else { cur }
 }
 
+/// What a purge walk's flushes settled: slabs made `Purged`, the oldest
+/// `dirty_at` among the survivors (`min_nonzero`), and whether a discard
+/// failed.
+#[derive(Default)]
+struct Tally {
+    purged: usize,
+    oldest: u64,
+    failed: bool,
+}
+
 impl ClassState {
     /// Walk this arena's empty set in address order under the class lock
     /// (`g`): `f(g, slab, dirty_at)` for every slab in it, after the
     /// check that the slab is what the set says (`Empty`, `live == 0`;
     /// anything else is a heap inconsistency and aborts). `f` may take
-    /// slabs out of the set, including ones ahead of the walk (a purge
-    /// takes the whole page group), and the walk does not visit those.
+    /// slabs out of the set (a purge's flush settles the page groups
+    /// behind the walk); one ahead of the walk that it took out would
+    /// not be visited.
     pub(super) fn walk_empty(&self, g: &mut Inner, mut f: impl FnMut(&mut Inner, usize, u64)) {
         let mut next = g.empty.map.lowest_set();
         while let Some(slab) = next {
@@ -38,39 +49,73 @@ impl ClassState {
     /// Purge every `Empty` slab whose `dirty_at` is at or before `cutoff`
     /// (`u64::MAX` for all of them) and make it `Purged`. The discards go
     /// out in batches of [`purge::MAX_BATCH`] under the class lock, so no
-    /// claim can hand out a slab between its state change and the discard.
-    /// Recomputes `oldest_empty` from the survivors. Returns the number
-    /// purged.
+    /// claim can hand out a slab between the discard and its state change;
+    /// a slab whose discard fails stays `Empty` (the next purge retries
+    /// it). Recomputes `oldest_empty` from the survivors. Returns the
+    /// number purged.
     pub fn purge_empty(&self, cutoff: u64) -> usize {
         let spp = self.table().slabs_per_page();
         let mut g = self.inner.lock();
-        let mut n = 0;
+        let mut t = Tally::default();
         let mut batch = Batch::new();
-        let mut oldest = 0u64;
+        // Slabs below `pushed` are in a page group already in the batch.
+        let mut pushed = 0;
         self.walk_empty(&mut g, |g, slab, dirty_at| {
+            if slab < pushed {
+                return;
+            }
             if dirty_at <= cutoff && (spp == 1 || self.page_group_is_idle(slab, spp)) {
-                n += self.purge_group(g, slab, spp, &mut batch);
+                pushed = self.push_group(g, slab, spp, &mut batch, &mut t);
             } else {
-                oldest = min_nonzero(oldest, dirty_at);
+                t.oldest = min_nonzero(t.oldest, dirty_at);
             }
         });
-        batch.flush();
-        self.gate.set_oldest_empty(oldest);
-        n
+        batch.flush(|addr, len, done| self.settle(&mut g, addr, len, done, &mut t));
+        self.gate.set_oldest_empty(t.oldest);
+        t.purged
     }
 
-    /// Discard the whole page group of `slab` (one slab when the slab is
-    /// at least a page) and make every `Empty` slab in it `Purged`, a
-    /// younger one included, since nothing in the group is in use. Under
-    /// the class lock; the caller checked the group is idle. Returns the
-    /// number of slabs purged.
-    fn purge_group(&self, g: &mut Inner, slab: usize, spp: usize, batch: &mut Batch) -> usize {
+    /// Push the whole page group of `slab` (one slab when the slab is at
+    /// least a page) to `batch`; once it is discarded ([`settle`]) every
+    /// `Empty` slab in it becomes `Purged`, a younger one included, since
+    /// nothing in the group is in use. Under the class lock; the caller
+    /// checked the group is idle. Returns the slab after the group.
+    ///
+    /// [`settle`]: ClassState::settle
+    fn push_group(
+        &self,
+        g: &mut Inner,
+        slab: usize,
+        spp: usize,
+        batch: &mut Batch,
+        t: &mut Tally,
+    ) -> usize {
         let first = slab & !(spp - 1);
-        batch.push(self.slab_addr(first), self.class().slab_size() * spp);
-        let mut n = 0;
-        for s in first..first + spp {
+        batch.push(
+            self.slab_addr(first),
+            self.class().slab_size() * spp,
+            |addr, len, done| self.settle(g, addr, len, done, t),
+        );
+        first + spp
+    }
+
+    /// The flush's report on `[addr, addr + len)`, page groups pushed by
+    /// [`push_group`] (under the class lock since): discarded, every
+    /// `Empty` slab in it becomes `Purged`; not, they stay `Empty` and
+    /// count among the survivors for `oldest_empty`.
+    ///
+    /// [`push_group`]: ClassState::push_group
+    fn settle(&self, g: &mut Inner, addr: usize, len: usize, done: bool, t: &mut Tally) {
+        let slab_size = self.class().slab_size();
+        let first = (addr - self.slab_addr(0)) / slab_size;
+        t.failed |= !done;
+        for s in first..first + len / slab_size {
             let d = self.desc(s);
             if d.state() != State::Empty {
+                continue;
+            }
+            if !done {
+                t.oldest = min_nonzero(t.oldest, d.dirty_at());
                 continue;
             }
             d.set_state(State::Purged);
@@ -89,9 +134,8 @@ impl ClassState {
                 .checked_sub(1)
                 .unwrap_or_else(|| slab_count_underflow("empty"));
             g.stats.purged += 1;
-            n += 1;
+            t.purged += 1;
         }
-        n
     }
 
     /// Decay walk (design section 8): purge the oldest `Empty` slabs until
@@ -99,9 +143,10 @@ impl ClassState {
     /// over the `Empty` slabs of the weight of their age, rounded up. Slabs
     /// are purged oldest step first; within the cut-off step the highest
     /// addresses go, so the lowest, which a claim takes first, stay. The
-    /// discards go out in batches under the class lock, as `purge_empty`.
-    /// Recomputes `oldest_empty` from the survivors. Returns the number
-    /// purged.
+    /// discards go out in batches under the class lock, as `purge_empty`;
+    /// a failed one leaves its slabs `Empty` and backs the gate off
+    /// (`Decayer::back_off`). Recomputes `oldest_empty` from the
+    /// survivors. Returns the number purged.
     fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize {
         let spp = self.table().slabs_per_page();
         let mut g = self.inner.lock();
@@ -138,10 +183,14 @@ impl ClassState {
         }
         let mut keep = acc - need;
         // Second pass: purge.
-        let mut n = 0;
+        let mut t = Tally::default();
         let mut batch = Batch::new();
-        oldest = 0;
+        // Slabs below `pushed` are in a page group already in the batch.
+        let mut pushed = 0;
         self.walk_empty(&mut g, |g, slab, dirty_at| {
+            if slab < pushed {
+                return;
+            }
             let step = curve.step(now, dirty_at);
             let purge = step > cut
                 || (step == cut && {
@@ -153,14 +202,17 @@ impl ClassState {
                     }
                 });
             if purge && (spp == 1 || self.page_group_is_idle(slab, spp)) {
-                n += self.purge_group(g, slab, spp, &mut batch);
+                pushed = self.push_group(g, slab, spp, &mut batch, &mut t);
             } else {
-                oldest = min_nonzero(oldest, dirty_at);
+                t.oldest = min_nonzero(t.oldest, dirty_at);
             }
         });
-        batch.flush();
-        self.gate.set_oldest_empty(oldest);
-        n
+        batch.flush(|addr, len, done| self.settle(&mut g, addr, len, done, &mut t));
+        if t.failed {
+            self.gate.back_off(now);
+        }
+        self.gate.set_oldest_empty(t.oldest);
+        t.purged
     }
 
     /// Whether the page group of `slab` (`spp` slabs, `spp > 1`) can be

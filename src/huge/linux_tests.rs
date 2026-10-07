@@ -321,3 +321,64 @@ fn concurrent_threads_see_their_own_patterns() {
     }
     assert_eq!(h.stats().runs, 0);
 }
+
+/// Extents whose discard fails (`mlock`ed: `EINVAL`) stay `Empty` in
+/// their place with their contents: after the purge at free time, a full
+/// purge and a decay walk (which backs the gate off for
+/// `DISCARD_RETRY_NS`); a reuse is not reported zero, and once unlocked
+/// they purge.
+#[test]
+fn extents_whose_discard_fails_stay_empty() {
+    let env = Env::new();
+    let h = env.huge();
+    let size = 2 * page_size();
+    // `q` keeps `p` and `r` from coalescing.
+    let (p, _) = env.alloc(&h, size, 1);
+    let (q, _) = env.alloc(&h, size, 1);
+    let (r, _) = env.alloc(&h, size, 1);
+    fill(p, size, 0x5A);
+    fill(r, size, 0x5A);
+    let test = "extents_whose_discard_fails_stay_empty";
+    if !crate::testutil::mlock_or_skip(test, p as usize, size) {
+        return;
+    }
+    if !crate::testutil::mlock_or_skip(test, r as usize, size) {
+        unsafe { libc::munlock(p as *const _, size) };
+        return;
+    }
+    env.free(&h, p);
+    h.set_purge_on_free(true);
+    env.free(&h, r);
+    h.set_purge_on_free(false);
+    let check_empty = || {
+        let st = h.stats();
+        assert_eq!((st.empty, st.purged), (2, 0), "{st:?}");
+        for x in [p, r] {
+            assert_eq!(h.lookup(env.page_of(x)).unwrap().state, RunState::Empty);
+            assert!(all(x, size, 0x5A));
+        }
+    };
+    check_empty();
+    assert_eq!(h.purge_empty(u64::MAX), 0);
+    check_empty();
+    const W: u64 = 200_000;
+    let t0 = h.oldest_dirty_at().unwrap();
+    let retry = t0 + W + purge::DISCARD_RETRY_NS;
+    assert_eq!(h.decay(t0 + W, W), Some(retry));
+    check_empty();
+    unsafe {
+        libc::munlock(p as *const _, size);
+        libc::munlock(r as *const _, size);
+    }
+    assert_eq!(h.decay(t0 + 2 * W, W), Some(retry));
+    check_empty();
+    // The oldest `Empty` extent is reused, dirty.
+    let (p2, zero) = env.alloc(&h, size, 1);
+    assert_eq!(p2, p);
+    assert!(!zero);
+    env.free(&h, p2);
+    assert_eq!(h.purge_empty(u64::MAX), 2);
+    assert_eq!(h.stats().empty, 0);
+    assert!(all(p, size, 0) && all(r, size, 0));
+    env.free(&h, q);
+}

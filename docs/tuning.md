@@ -334,9 +334,9 @@ Observability: `stats.cgroup.limit`, `.high` (`SIZE_MAX` when unlimited),
 `.current`, `.decay_ms` (arena 0's effective period), `.retention_cap`,
 `.empty_bytes`, `.full_purges` (`ENOENT` when nothing is tracked), and,
 readable whether or not a cgroup is tracked, `stats.cgroup.purge_advice`
-(1 lazy, 0 eager), `.lazy_purges`, `.eager_purges`. The report's
-`cgroup:`, `cgroup policy:` and `purge advice:` lines carry the same
-(section 6).
+(1 lazy, 0 eager), `.lazy_purges`, `.eager_purges` (batches that
+discarded anything). The report's `cgroup:`, `cgroup policy:` and `purge
+advice:` lines carry the same (section 6).
 
 ## 5. THP on `always` hosts (Chainguard OS)
 
@@ -427,7 +427,7 @@ The lines an operator reads first, in the order they appear:
 | `Metadata: reserved N, committed N, writable N, allocated N, bumped N, tables N, small tables N` | descriptor tables, bitmaps and heaps; `writable` is the one mapping the small tables share, `small tables` how many of `tables` live in it (design 2) |
 | `cgroup: <dir> (mount <m>, path <p>) limit L high H current C [(stale)] events high N (+r) max N (+r)` or `cgroup: not tracked (<reason>)` | `limit`/`high` are the effective values up the hierarchy (`max` when unlimited); `(stale)` means the last `memory.current` read failed and `C` is the last figure read |
 | `cgroup policy: defaults (no limit)` / `under 70% (defaults, retention capped)` / `70..90% (decay scaled, N% into the band)` / `over 90% (purge at once, cache GC every tick)` `decay_ms N retention_cap N keep N% empty_bytes N full_purges N thp as configured` | the band as last evaluated and what it gave arena 0; `empty_bytes` is the retention the cap acts on. The band is the most severe of the leaf and each limited ancestor against its own limit, so it can exceed what the `cgroup:` line's `current` and `limit` imply |
-| `purge advice: lazy MADV_FREE (under 70% of the limit)` / `eager MADV_DONTNEED (no headroom known)` `lazy_purges N (B bytes) eager_purges N (B bytes) purged_is_zero true\|false` | which advice the next purge issues and why (the reasons are `explicit purge`, `lazy_band:false`, `under 70% of the limit`, `returning the excess over the cap`, `no headroom known`); `purged_is_zero false` means a lazy batch has happened and `calloc` now clears reused purged memory |
+| `purge advice: lazy MADV_FREE (under 70% of the limit)` / `eager MADV_DONTNEED (no headroom known)` `lazy_purges N (B bytes) eager_purges N (B bytes) purged_is_zero true\|false failed_discards N (B bytes)` | which advice the next purge issues and why (the reasons are `explicit purge`, `lazy_band:false`, `under 70% of the limit`, `returning the excess over the cap`, `no headroom known`); `lazy_purges` and `eager_purges` count the batches that discarded anything and the bytes discarded (not a batch the kernel refused whole, nor the bytes a refused call discarded before it stopped); `purged_is_zero false` means a lazy batch was issued, even one the kernel refused (so it can read `false` with `lazy_purges 0`), and `calloc` now clears reused purged memory; `failed_discards` counts the page groups and huge extents (and their bytes) `madvise` refused or that a refused merged range left uncalled, which stay dirty and are retried: memory locked with `mlock` or `mlockall` cannot be purged |
 | `thp: <key> -> off\|folios\|chunks (<reason>) [nohuge N (classes, metadata; huge follows host)] [slab_min S pmd P meta M huge on\|off] class_ranges N (B bytes, C chunks) huge_ranges N meta_ranges N failures N; host <mode>` | section 5; the reason text says why `auto` or `always` is inert |
 | `arenas[N]:` blocks | `dirty_decay_ms` per arena (`arena.<i>.dirty_decay_ms`), `pactive/pdirty`, the `allocated active dirty retained` totals, the bins table (`size nregs curslabs curregs`, the compaction counters `refilled`, `compacted`) and the slab occupancy histogram (non-empty slabs per eighth of `nslots`), which shows where the live data sits after a delete phase |
 
