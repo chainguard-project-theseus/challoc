@@ -59,8 +59,8 @@ code makes.
 | S57 | `axiom_arena_assemble` (arena.rs) | sound (premise) | consumes the field permissions but mints the padding bytes too, which `split` dropped (`_raw`) |
 | S62 | `ClassState::page_group_is_idle` (class/decay.rs) | sound (premise) | true for the real `g` (the guard's value); a made-up ghost `g` gets the `ensures` for free; stale doc (`transfer_group`) corrected |
 | S63 | `axiom_class_lock_inv` (class/mod.rs) | sound | one `lock_inv` axiom for class `Inner`; every verified holder restores `inv` |
-| S64 | `axiom_class_lock` (class/mod.rs) | sound | one `lock_frame` axiom; nothing writes `nbits`, `arena`, `table` |
-| S66 | `ClassState::owner_locked` (class/mod.rs) | weakened | claimed `(r == arena) == owns(slab)`; callers use only `r == arena ==> owns`; the converse is provable and no longer trusted |
+| S64 | `axiom_class_lock` (class/mod.rs) | sound | one `lock_frame` axiom; nothing writes `nbits`, `arena`, `table`; after the audit (OWNER) the frame also keeps the owned-slab record's id (`oauth`), written only by `take_group` |
+| S66 | `ClassState::owner_locked` (class/mod.rs) | weakened | claimed `(r == arena) == owns(slab)`; callers use only `r == arena ==> owns`; the converse is provable and no longer trusted; verified after the audit (OWNER: the published-arena records and the owned-slab record), no longer a seam |
 | S67 | `ClassState::state_locked` (class/mod.rs) | sound (premise) | every state write goes through `set_state_locked` or `SlabDesc::init` under the lock; since verified through the descriptor permissions (`slab::DescPerm`), no longer a seam |
 | S68 | `ClassState::set_state_locked` (class/mod.rs) | sound (premise) | frame lists every `Inner` field but the one it changes; since verified through the descriptor permissions (`slab::DescPerm`), no longer a seam |
 | S69 | `ClassState::dirty_locked` (class/mod.rs) | sound (premise) | as S67; since verified through the descriptor permissions (`slab::DescPerm`), no longer a seam |
@@ -70,8 +70,8 @@ code makes.
 | S77 | `axiom_table_bytes` (class/sets.rs) | fixed | at `base == 0` proved `false` (`into_typed` then `is_nonnull`); now requires `0 < base` (`Meta::reserve_table` ensures it); still a premise that `(base, len)` is a fresh `reserve_table` result: a second call, or a range over another permission's bytes, proves `false` (`is_disjoint`); closed after the audit ("One-shot premises") |
 | S80 | `axiom_set_tables_lock_inv` (class/sets.rs) | sound | `lock_inv` is `true` for its type; the only axiom for it |
 | S81 | `axiom_table_lock_inv` (class/table.rs) | sound | initial value verified; `take_group` asserts `inv`; `commit_run`'s and `commit_slab`'s `guards` bound is the documented premise |
-| S82 | `axiom_table_lock_frame` (class/table.rs) | sound | nothing writes the geometry or `mloc` |
-| S83 | `load_owner` (class/table.rs) | sound (premise) | every caller gates on the watermark before the read |
+| S82 | `axiom_table_lock_frame` (class/table.rs) | sound | nothing writes the geometry or `mloc`; after the audit (OWNER) also `sloc`, which nothing writes |
+| S83 | `load_owner` (class/table.rs) | sound (premise) | every caller gates on the watermark before the read; verified after the audit (OWNER: the watermark's witness), no longer a seam |
 | S84 | `store_owner` (class/table.rs) | sound (premise) | one call, in `take_group`; `slab_owner` has no time, so two stores of one group prove `false`; closed after the audit ("One-shot premises") |
 | S85 | `axiom_slot_loc` (class/table.rs) | sound (premise) | one call per `SlabTable::new`; two calls proved `false`; closed after the audit ("One-shot premises") |
 | S86 | `axiom_fresh_words` (class/table.rs) | fixed | one call at `base = usize::MAX` proved `false` (a `usize` `addr()` equal to `usize::MAX + 8`); now requires the words end below `usize::MAX`; a second call stays a premise (no `false`, but a stale duplicate would let `word::load` claim a wrong value); closed after the audit ("One-shot premises") |

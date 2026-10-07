@@ -73,6 +73,7 @@ use vstd::raw_ptr::PointsToRaw;
 use vstd::raw_ptr::{PointsTo, ptr_mut_write, ptr_ref};
 use vstd::resource::Loc;
 use vstd::resource::ghost_var::{GhostVar, GhostVarAuth};
+use vstd::resource::map::{GhostMapAuth, GhostPersistentPointsTo};
 #[cfg(verus_only)]
 use vstd::resource::set::GhostSubset;
 use vstd::resource::set::{GhostSetAuth, GhostSingleton};
@@ -1448,6 +1449,13 @@ impl Arena {
         self.classes[class]
     }
 
+    /// The locations of the arena's class states' owned-slab records
+    /// (`ClassState::spec_oloc`), by class: what the registry's record of
+    /// a published arena keeps of it ([`Published`]).
+    pub open spec fn spec_olocs(&self) -> Seq<Loc> {
+        Seq::new(NCLASSES as nat, |c: int| self.spec_class_state(c).spec_oloc())
+    }
+
     /// The decay period in nanoseconds (`purge::NEVER` when purging is off).
     #[inline]
     pub fn decay_ns(&self) -> u64 {
@@ -1608,19 +1616,24 @@ impl Created {
 pub type CreatedPerm = vstd::cell::pcell::PointsTo<Created>;
 
 /// What the registry's invariant ([`NarenasPred`]) is about: the arena
-/// count ([`count_id`]), each table entry ([`entry_id`], by index) and the
-/// location of the snapshot's halves ([`Snap`]).
+/// count ([`count_id`]), each table entry ([`entry_id`], by index), the
+/// location of the snapshot's halves ([`Snap`]), the location of the
+/// published arenas' persistent record ([`Published`]) and arena 0, which
+/// `Arenas::init` publishes.
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[allow(dead_code)]
 pub ghost struct RegKey {
     pub count: int,
     pub entries: Seq<int>,
     pub snap: Loc,
+    pub pubs: Loc,
+    pub arena0: Arena,
 }
 
 /// What the registry's invariant holds: the arena count's permission,
-/// each table entry's, the frozen permission of each published arena, and
-/// the snapshot's authority.
+/// each table entry's, the frozen permission of each published arena, the
+/// snapshot's authority, and the authority of the published arenas'
+/// record with each published arena's persistent entry, frozen.
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct RegVal {
@@ -1628,12 +1641,38 @@ pub tracked struct RegVal {
     pub tracked entries: Map<int, EntryPerm<Arena>>,
     pub tracked arenas: Map<int, &'static PointsTo<Arena>>,
     pub tracked auth: GhostVarAuth<Snap>,
+    pub tracked pmap: GhostMapAuth<int, Seq<Loc>>,
+    pub tracked pubs: Map<int, &'static Published>,
+}
+
+/// Persistent knowledge of one published arena: its index and its value,
+/// an entry of the registry's record of published arenas, which only
+/// grows (an entry is published once and never written again,
+/// [`NarenasPred`]). What [`Arenas::get_existing_published`] and [`Arenas::get`]
+/// return with the arena, so that two holders of the same index know
+/// they hold the same arena ([`published`]).
+pub type Published = GhostPersistentPointsTo<int, Seq<Loc>>;
+
+/// `w` names `a` as the arena the process registry published at `a`'s
+/// index: two class states of one class and arena index that both have
+/// such a record are the same ([`process_pub_loc`]).
+pub open spec fn published(w: Published, a: Arena) -> bool {
+    &&& w.id() == process_pub_loc()
+    &&& w.key() == a.spec_index() as int
+    &&& w.value() == a.spec_olocs()
+}
+
+/// The location of the process registry's record of published arenas
+/// (`Shared::built_at(Shared::storage())`'s, [`Arenas::is_process`]).
+pub closed spec fn process_pub_loc() -> Loc {
+    Shared::built_at(Shared::storage()).arenas.spec_pub_loc()
 }
 
 /// Table entry `i` in the registry's invariant: its permission is for the
 /// entry the key names, and the entry is null when the snapshot has no
 /// arena at `i`, or else the address of that arena, initialised, at index
-/// `i`, whose frozen permission the invariant holds.
+/// `i`, whose frozen permission the invariant holds, with its frozen
+/// persistent record.
 pub open spec fn entry_ok(k: RegKey, v: RegVal, i: int) -> bool {
     &&& v.entries.contains_key(i)
     &&& v.entries[i].id() == k.entries[i]
@@ -1646,6 +1685,10 @@ pub open spec fn entry_ok(k: RegKey, v: RegVal, i: int) -> bool {
         &&& v.arenas[i].is_init()
         &&& v.arenas[i].value() == v.auth@.1[i]
         &&& v.auth@.1[i].spec_index() == i
+        &&& v.pubs.contains_key(i)
+        &&& v.pubs[i].id() == k.pubs
+        &&& v.pubs[i].key() == i
+        &&& v.pubs[i].value() == v.auth@.1[i].spec_olocs()
     }
 }
 
@@ -1660,7 +1703,9 @@ pub open spec fn entry_ok(k: RegKey, v: RegVal, i: int) -> bool {
 /// for an `index` below `MAX_ARENAS`) and `Arenas::build` (a null entry,
 /// under the creation lock, gets the arena it built, whose permission it
 /// freezes). A published entry is never written again: `build` stores
-/// only into an entry the snapshot has no arena at.
+/// only into an entry the snapshot has no arena at. The record of
+/// published arenas is the snapshot's map (each writer that adds an
+/// arena to the snapshot adds its persistent entry), and has arena 0.
 pub struct NarenasPred;
 
 impl InvariantPredicate<RegKey, RegVal> for NarenasPred {
@@ -1671,6 +1716,10 @@ impl InvariantPredicate<RegKey, RegVal> for NarenasPred {
         &&& v.auth@.0 == v.count.value()
         &&& forall|i: int| 0 <= i < MAX_ARENAS ==> #[trigger] entry_ok(k, v, i)
         &&& forall|i: int| #[trigger] v.auth@.1.contains_key(i) ==> 0 <= i < MAX_ARENAS
+        &&& v.pmap.id() == k.pubs
+        &&& v.pmap@.dom() == v.auth@.1.dom()
+        &&& v.auth@.1.contains_key(0)
+        &&& v.auth@.1[0] == k.arena0
     }
 }
 
@@ -2447,7 +2496,7 @@ impl Arenas {
             a0.is_init(),
             a0.value().spec_index() == 0,
         ensures
-            final(slot).perm matches Some(p) && p.ptr() == this && p.is_init() && p.value().wf(),
+            final(slot).perm matches Some(p) && p.ptr() == this && p.is_init() && p.value().wf() && p.value().spec_arena0() == a0.value(),
     {
         let auto = narenas.clamp(1, MAX_ARENAS as u32);
         let tracked (mut parts, mut tables, mut bounds, pad) = Arenas::split(slot.perm.tracked_take());
@@ -2561,13 +2610,24 @@ impl Arenas {
                 a0.is_nonnull();
                 arenas.tracked_insert(0int, a0);
             }
+            // The record of published arenas, with arena 0's persistent
+            // entry, frozen.
+            let tracked (mut pmap, _) = GhostMapAuth::<int, Seq<Loc>>::new(Map::empty());
+            let tracked p0 = vstd::modes::tracked_static_ref(pmap.insert(0int, a0.value().spec_olocs()).persist());
+            let tracked mut pubs: Map<int, &'static Published> = Map::tracked_empty();
+            proof {
+                pubs.tracked_insert(0int, p0);
+                assert(pmap@.dom() =~= snap0.1.dom());
+            }
             let ghost ents = entries;
             let ghost key = RegKey {
                 count: nperm.id(),
                 entries: Seq::new(MAX_ARENAS as nat, |j: int| ents[j].id()),
                 snap: auth.id(),
+                pubs: pmap.id(),
+                arena0: a0.value(),
             };
-            let tracked val = RegVal { count: nperm, entries, arenas, auth };
+            let tracked val = RegVal { count: nperm, entries, arenas, auth, pmap, pubs };
             proof {
                 assert forall|j: int| 0 <= j < MAX_ARENAS implies #[trigger] entry_ok(key, val, j) by {
                     assert(e1.contains_key(j));
@@ -2598,6 +2658,7 @@ impl Arenas {
                     assert(v.spec_loc(j) == locs[j].id());
                 }
                 assert(v.wf());
+                assert(v.spec_arena0() == a0.value());
                 slot.perm = Some(a);
             }
         }
@@ -2636,8 +2697,20 @@ impl Arenas {
     /// `Shared::built_at(Shared::storage())`, `Shared::wf`), so their ticket
     /// sets are at [`bound_loc`] and a heap's ticket names its arena in
     /// this registry: one set of invariants, one authority per location.
-    pub(crate) closed spec fn is_process(&self) -> bool {
-        self.invs == Shared::built_at(Shared::storage()).arenas.invs
+    pub closed spec fn is_process(&self) -> bool {
+        &&& self.invs == Shared::built_at(Shared::storage()).arenas.invs
+        &&& self.spec_pub_loc() == Shared::built_at(Shared::storage()).arenas.spec_pub_loc()
+    }
+
+    /// The location of the registry's record of published arenas
+    /// ([`Published`]).
+    pub closed spec fn spec_pub_loc(&self) -> Loc {
+        self.count_inv@.constant().pubs
+    }
+
+    /// Arena 0, as `init` published it.
+    pub closed spec fn spec_arena0(&self) -> Arena {
+        self.count_inv@.constant().arena0
     }
 
     /// The process registry is [`Arenas::is_process`].
@@ -2828,14 +2901,15 @@ impl Arenas {
     /// been built yet is built here (cold); an explicit index that
     /// `create` has not handed out, or one beyond the table, is `None`.
     #[inline]
-    pub fn get<'a>(&'a self, shared: &'a Shared, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&'a Arena>)
+    pub fn get<'a>(&'a self, shared: &'a Shared, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<(&'a Arena, Tracked<&'static Published>)>)
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             shared.wf(),
             old(ord).allows(rank_arenas()),
         ensures
-            r matches Some(a) ==> a.spec_index() == index,
+            r matches Some((a, w)) ==> a.spec_index() == index && w@.id() == self.spec_pub_loc() && (self.is_process() ==> w@.id() == process_pub_loc())
+                && w@.key() == index as int && w@.value() == a.spec_olocs(),
             *final(ord) == *old(ord),
     {
         let i = index as usize;
@@ -2846,9 +2920,11 @@ impl Arenas {
             use_type_invariant(self);
         }
         // Inside the registry's invariant ([`entry_ok`]): a non-null entry
-        // is a built arena at index `i`, with its frozen permission.
+        // is a built arena at index `i`, with its frozen permission and its
+        // persistent record.
         let p;
         let tracked mut perm: Option<&'static PointsTo<Arena>> = None;
+        let tracked mut pw: Option<&'static Published> = None;
         vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
             proof {
                 assert(entry_ok(self.count_inv@.constant(), v, i as int));
@@ -2857,20 +2933,21 @@ impl Arenas {
             proof {
                 if p@.addr != 0 {
                     perm = Some(*v.arenas.tracked_borrow(i as int));
+                    pw = Some(*v.pubs.tracked_borrow(i as int));
                 }
             }
         });
         if !p.is_null() {
             // SAFETY: arenas are never freed; the pointer was published
             // after `Arena::init` with a release store.
-            return Some(unsafe { arena_ref(p, Tracked(perm.tracked_unwrap()), Ghost(index)) });
+            return Some((unsafe { arena_ref(p, Tracked(perm.tracked_unwrap()), Ghost(index)) }, Tracked(pw.tracked_unwrap())));
         }
         self.materialise(shared, index, Tracked(ord))
     }
 
     #[cold]
     #[inline(never)]
-    fn materialise<'a>(&'a self, shared: &'a Shared, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&'a Arena>)
+    fn materialise<'a>(&'a self, shared: &'a Shared, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<(&'a Arena, Tracked<&'static Published>)>)
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
@@ -2878,7 +2955,8 @@ impl Arenas {
             shared.wf(),
             old(ord).allows(rank_arenas()),
         ensures
-            r matches Some(a) ==> a.spec_index() == index,
+            r matches Some((a, w)) ==> a.spec_index() == index && w@.id() == self.spec_pub_loc() && (self.is_process() ==> w@.id() == process_pub_loc())
+                && w@.key() == index as int && w@.value() == a.spec_olocs(),
             *final(ord) == *old(ord),
     {
         if index as u32 >= self.auto {
@@ -2902,6 +2980,7 @@ impl Arenas {
         // whether the entry is null.
         let p;
         let tracked mut perm: Option<&'static PointsTo<Arena>> = None;
+        let tracked mut pw: Option<&'static Published> = None;
         vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
             proof {
                 assert(entry_ok(self.count_inv@.constant(), v, index as int));
@@ -2911,12 +2990,13 @@ impl Arenas {
             proof {
                 if p@.addr != 0 {
                     perm = Some(*v.arenas.tracked_borrow(index as int));
+                    pw = Some(*v.pubs.tracked_borrow(index as int));
                 }
             }
         });
         if !p.is_null() {
             // SAFETY: as in `get`.
-            return Some(unsafe { arena_ref(p, Tracked(perm.tracked_unwrap()), Ghost(index)) });
+            return Some((unsafe { arena_ref(p, Tracked(perm.tracked_unwrap()), Ghost(index)) }, Tracked(pw.tracked_unwrap())));
         }
         let r = self.build(shared, index, Tracked(c.half.borrow_mut()), Tracked(&mut under));
         proof {
@@ -2947,7 +3027,7 @@ impl Arenas {
         index: u16,
         Tracked(h): Tracked<&mut GhostVar<Snap>>,
         Tracked(ord): Tracked<&mut LockOrder>,
-    ) -> (r: Option<&'a Arena>)
+    ) -> (r: Option<(&'a Arena, Tracked<&'static Published>)>)
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
@@ -2957,12 +3037,13 @@ impl Arenas {
             old(h).id() == self.count_inv@.constant().snap,
             !old(h)@.1.contains_key(index as int),
         ensures
-            r matches Some(a) ==> a.spec_index() == index,
+            r matches Some((a, w)) ==> a.spec_index() == index && w@.id() == self.spec_pub_loc() && (self.is_process() ==> w@.id() == process_pub_loc())
+                && w@.key() == index as int && w@.value() == a.spec_olocs(),
             *final(ord) == *old(ord),
             final(h).id() == old(h).id(),
             final(h)@.0 == old(h)@.0,
             r is None ==> final(h)@ == old(h)@,
-            r matches Some(a) ==> final(h)@.1 == old(h)@.1.insert(index as int, *a),
+            r matches Some((a, w)) ==> final(h)@.1 == old(h)@.1.insert(index as int, *a),
     {
         proof {
             use_type_invariant(self);
@@ -3056,7 +3137,9 @@ impl Arenas {
         shared.set_multi_arena();
         // Inside the registry's invariant, with the creation lock's half:
         // the entry was null (the snapshot has no arena at `index`), and
-        // the store publishes the arena there, in the snapshot too.
+        // the store publishes the arena there, in the snapshot and in the
+        // record of published arenas too.
+        let tracked mut pw: Option<&'static Published> = None;
         vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
             let ghost v0 = v;
             let ghost k = self.count_inv@.constant();
@@ -3069,6 +3152,9 @@ impl Arenas {
                 v.arenas.tracked_insert(index as int, fr);
                 let ghost s0 = v.auth@;
                 v.auth.update(h, (s0.0, s0.1.insert(index as int, fr.value())));
+                let tracked w = vstd::modes::tracked_static_ref(v.pmap.insert(index as int, fr.value().spec_olocs()).persist());
+                v.pubs.tracked_insert(index as int, w);
+                pw = Some(w);
                 assert forall|j: int| 0 <= j < MAX_ARENAS implies #[trigger] entry_ok(k, v, j) by {
                     assert(entry_ok(k, v0, j));
                 }
@@ -3080,7 +3166,7 @@ impl Arenas {
             }
         });
         // SAFETY: just built and published.
-        Some(unsafe { arena_ref(p, Tracked(fr), Ghost(index)) })
+        Some((unsafe { arena_ref(p, Tracked(fr), Ghost(index)) }, Tracked(pw.tracked_unwrap())))
     }
 
     /// `arenas.create`: a new explicit arena. `None` when the table or the
@@ -3140,11 +3226,12 @@ impl Arenas {
 
     /// Arena `index` if it has been built, without building it: the
     /// entry loaded inside the registry's invariant and the arena read
-    /// through its frozen permission, as [`Arenas::get`]. On the `free`
-    /// flush path (`Shared::owner`), where the entry's and the arena's
-    /// permissions are two of the distinct `Tracked` types under
-    /// `Heap::flush`, which is at 16 of the 17 rustc's MIR inliner
-    /// allows (`mir_callgraph_cyclic`; `verus/TODO.md`, OWNER).
+    /// through its frozen permission, as [`Arenas::get`]. For the readers
+    /// that need no record of the arena (stats, purge, policy, mallctl):
+    /// [`Arenas::get_existing_published`] is the same code returning the
+    /// record too, whose `Tracked` type would be one more distinct type
+    /// under `api::mallctl::batch_query`, already at the 17 rustc's MIR
+    /// inliner allows (`mir_callgraph_cyclic`; `verus/TODO.md`, OWNER).
     pub fn get_existing(&self, index: u16) -> (r: Option<&Arena>)
         ensures
             r matches Some(a) ==> a.spec_index() == index,
@@ -3171,6 +3258,69 @@ impl Arenas {
         });
         // SAFETY: a non-null entry of the table.
         if p.is_null() { None } else { Some(unsafe { arena_ref(p, Tracked(perm.tracked_unwrap()), Ghost(index)) }) }
+    }
+
+    /// [`Arenas::get_existing`] with the arena's persistent record
+    /// ([`Published`]) from the registry's invariant, the same code. On
+    /// the `free` flush path (`Shared::owner`), where the entry's and the
+    /// arena's permissions and the record are three of the distinct
+    /// `Tracked` types under `Heap::flush`, which is at the 17 rustc's
+    /// MIR inliner allows (`mir_callgraph_cyclic`; `verus/TODO.md`,
+    /// OWNER).
+    pub fn get_existing_published(&self, index: u16) -> (r: Option<(&Arena, Tracked<&'static Published>)>)
+        ensures
+            r matches Some((a, w)) ==> a.spec_index() == index && w@.id() == self.spec_pub_loc() && (self.is_process() ==> w@.id() == process_pub_loc())
+                && w@.key() == index as int && w@.value() == a.spec_olocs(),
+    {
+        let i = index as usize;
+        if i >= MAX_ARENAS {
+            return None;
+        }
+        proof {
+            use_type_invariant(self);
+        }
+        let p;
+        let tracked mut perm: Option<&'static PointsTo<Arena>> = None;
+        let tracked mut pw: Option<&'static Published> = None;
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
+            proof {
+                assert(entry_ok(self.count_inv@.constant(), v, i as int));
+            }
+            p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked(v.entries.tracked_borrow(i as int)));
+            proof {
+                if p@.addr != 0 {
+                    perm = Some(*v.arenas.tracked_borrow(i as int));
+                    pw = Some(*v.pubs.tracked_borrow(i as int));
+                }
+            }
+        });
+        // SAFETY: a non-null entry of the table.
+        if p.is_null() { None } else { Some((unsafe { arena_ref(p, Tracked(perm.tracked_unwrap()), Ghost(index)) }, Tracked(pw.tracked_unwrap()))) }
+    }
+
+    /// Arena 0's persistent record ([`Published`]), from the registry's
+    /// invariant, which has it since `init` (arena 0 is never stored
+    /// again): for `Shared::owner` and `Shared::arena`, which return
+    /// arena 0 without a load of its entry. Ghost, but for the `Tracked`.
+    #[inline(always)]
+    pub fn published0(&self) -> (r: Tracked<&'static Published>)
+        ensures
+            r@.id() == self.spec_pub_loc(),
+            self.is_process() ==> r@.id() == process_pub_loc(),
+            r@.key() == 0,
+            r@.value() == self.spec_arena0().spec_olocs(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let tracked mut pw: Option<&'static Published> = None;
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
+            proof {
+                assert(entry_ok(self.count_inv@.constant(), v, 0));
+                pw = Some(*v.pubs.tracked_borrow(0));
+            }
+        });
+        Tracked(pw.tracked_unwrap())
     }
 
     /// [`Arenas::get_existing`] for a holder of the creation lock that

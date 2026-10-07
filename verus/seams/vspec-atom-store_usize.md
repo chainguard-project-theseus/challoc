@@ -1,6 +1,6 @@
 # `store_usize` (`vspec/atom.rs`)
 
-Seam S269 of `verus/SEAMS.md`: src/vspec/atom.rs:124. Kind: external_body. Category: atomics primitive.
+Seam S267 of `verus/SEAMS.md`: src/vspec/atom.rs:126. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 coherence rules (part 3).
 
 ## Contract
@@ -23,7 +23,8 @@ pub fn store_usize(a: &AtomicUsize, v: usize, ordering: Ordering, Tracked(perm):
 The body, at that commit: `a.store(v, ordering)`. Its one call site is
 `SlabTable::take_group` (`Release`), which stores the end of the group
 it hands out into the watermark inside the watermark's invariant
-(`table::CommittedPred`), under the table's commit lock, after the
+(`table::WatermarkPred`, `table::CommittedPred` before package OWNER),
+under the table's commit lock, after the
 group's bitmap `init` and its owner word (`store_owner`).
 
 ## Statement
@@ -39,7 +40,8 @@ Two parts.
    which every read reads the last write before it. `core`'s `store`
    panics for `Acquire` and `AcqRel` and is otherwise one atomic store.
 2. **loom.** Three model files (see the common part below) run the real
-   wrappers of `vspec/atom.rs` (`store_usize`, `load_usize_in`, compiled
+   wrappers of `vspec/atom.rs` (`store_usize`, `load_usize_seen` and, for
+   the class line's copy, `load_usize_in`, compiled
    over loom's `AtomicUsize`) with the orderings `class/table.rs`
    passes:
    - `src/loom_tests/watermark.rs`: copies of `take_group` (under the
@@ -47,7 +49,7 @@ Two parts.
      `UnsafeCell`: `None` at `s >= nslabs`, the `check_zero` comparison
      of `s` with a `Relaxed` load of the watermark, the owner word
      stored `Relaxed`, `next_slab = end`, then `store_usize(end,
-     Release)`) and of `SlabTable::watermark` (`load_usize_in`,
+     Release)`) and of `SlabTable::watermark` (`load_usize_seen`,
      `Acquire` as `committed_slabs()`, then `Relaxed` as
      `is_handed_out` and `desc_if_committed`), over 2 slabs of one slab
      per group: two threads each hand out a group (to arenas 1 and 2)
@@ -56,7 +58,8 @@ Two parts.
    - `src/loom_tests/free.rs` (`vspec-word-load.md`): the hand-out's
      tail (the real `AtomicBitmap::init`, the owner word, then
      `store_usize(1, Release)`), a claimer's `Acquire` load and the
-     free path's `Relaxed` load (`is_handed_out`).
+     free path's `Relaxed` loads (the class line's copy, then the
+     watermark, `handed_out_seen`).
    - `src/loom_tests/bitmap.rs`: the real `init`, then `store_usize(1,
      Release)`, and a claimer's `Acquire` load.
 
@@ -106,18 +109,25 @@ Models: `loom_watermark_take_group_publishes`, `loom_watermark_relaxed_store_is_
   model checks (the `check_zero` comparison, and the final watermark).
 - **`opens_invariants none`**: the body opens no Verus invariant (read
   from the source).
-- **What the SC proof carries across locations.** `CommittedPred` names
-  one atomic and a constant (the table's slab count); no invariant
-  relates the watermark to another location. The proofs use only that a
-  load returns at most the slab count (`SlabTable::watermark`), which
-  part 1 gives: every write is in bounds (the initial 0 and each `end`,
-  which Verus proves at most `nslabs` at the write), and a load returns
-  one of them. That a load past a slab sees the slab's bitmap and owner
-  word is the table's publication protocol, a premise of
-  `load_owner` (`class-table-load_owner.md`) and `desc_unchecked`, not
-  part of this contract; the models check that the `Release` store and
-  an `Acquire` load supply it, and the controls show a `Relaxed` store
-  or load would not.
+- **What the SC proof carries across locations.** Since package OWNER
+  the watermark's invariant is `table::WatermarkPred`: it names one
+  atomic, a constant (the table's slab count) and the location of the
+  owner words' witness markers, and holds, besides the permission, a
+  persistent set of those markers (ghost, no location), which
+  `take_group` sets inside the invariant at this store to the commit
+  lock's copy, with the markers of the group whose owner word it has
+  just stored. The proofs use that a load returns at most the slab
+  count, which part 1 gives (every write is in bounds: the initial 0 and
+  each `end`, which Verus proves at most `nslabs` at the write, and a
+  load returns one of them), and that a load past a slab hands its
+  reader the slab's witness marker (`vspec-atom-load_usize_seen.md`),
+  which the owner word's invariant turns into the stored owner
+  (`table::load_owner`). The weak-memory reading of that last fact,
+  and of a load past a slab seeing the slab's bitmap (a premise of
+  `desc_unchecked`), is the table's publication protocol, not part of
+  this contract; the models check that the `Release` store and an
+  `Acquire` load supply it, and the controls show a `Relaxed` store or
+  load would not.
 - **Gaps.** 2 hand-outs, one slab per group, at most 3 threads; the
   commits (`ensure`, and its failure, which returns before the store),
   the descriptors (`SlabDesc::init`, the `owner_mismatch` check,

@@ -1,6 +1,6 @@
 # `Heap::cached_recently`
 
-Seam S114 of `verus/SEAMS.md`: src/heap/cache.rs:721. Kind: external_body. Category: raw pointer (internal).
+Seam S112 of `verus/SEAMS.md`: src/heap/cache.rs:721. Kind: external_body. Category: raw pointer (internal).
 Discharged by Kani.
 
 ## Contract

@@ -3,6 +3,7 @@
 
 use super::abort::slab_count_underflow;
 use super::{ClassState, Inner};
+use crate::arena::Published;
 use crate::lock::LockOrder;
 #[cfg(verus_only)]
 use crate::lock::rank_table;
@@ -15,7 +16,7 @@ use super::table::{
     lemma_slab_marked_mono, lemma_spec_class, lemma_spec_nslabs, slab_marked, slab_owner,
 };
 #[cfg(verus_only)]
-use super::{desc_ok, descs_ok, lemma_same_sets_inv, lemma_whole_group, whole_groups};
+use super::{desc_ok, descs_ok, lemma_same_sets_inv, lemma_whole_group, owned_rec, whole_groups};
 #[cfg(verus_only)]
 use crate::slab::{DescPerm, State};
 
@@ -32,7 +33,7 @@ impl ClassState {
     /// slabs inside a group are committed as guards and skipped. The
     /// commit lock nests inside the class lock. `None` when the region,
     /// the metadata region or a commit is exhausted.
-    pub(super) fn next_slab(&self, g: &mut Inner, meta: &Meta, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
+    pub(super) fn next_slab(&self, g: &mut Inner, meta: &Meta, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -40,12 +41,15 @@ impl ClassState {
             old(g).nbits() == self.spec_nslabs(),
             old(g).arena@ == self.arena,
             old(g).table@ == self.spec_table(),
+            old(g).oauth@.id() == self.spec_oloc(),
+            self.published_by(*pubw@),
             old(ord).allows(rank_table(0)),
         ensures
             *final(ord) == *old(ord),
             final(g).nbits() == old(g).nbits(),
             final(g).arena == old(g).arena,
             final(g).table == old(g).table,
+            final(g).oauth@.id() == old(g).oauth@.id(),
             r is None ==> final(g).inv(),
             r matches Some(s) ==> s < self.spec_nslabs() && final(g).ready(s as nat),
             // `None` only once both idle sets are empty, with the partial
@@ -94,7 +98,7 @@ impl ClassState {
             }
             return Some(s);
         }
-        self.next_fresh_slab(g, meta, Tracked(ord))
+        self.next_fresh_slab(g, meta, pubw, Tracked(ord))
     }
 
     /// The fresh half of [`next_slab`], for an arena whose sets are empty:
@@ -111,14 +115,15 @@ impl ClassState {
     /// as `SlabDesc::init` writes them, and as its current group: no arena's
     /// ghost holds them, since ownership exists only below the watermark
     /// `take_group` moved past them (`SlabTable::next_slab_locked`, proved
-    /// for this arena's value; see `owner_locked` for the others). Slabs
+    /// for this arena's value; no proof needs it of another arena's:
+    /// `owner_locked` reads a group's taker from its owner word). Slabs
     /// already owned keep their ghost state and stamp. The loop ends
     /// because every group taken ends beyond the current group's end and
     /// every other round consumes a slab of the current group.
     ///
     /// [`next_slab`]: ClassState::next_slab
     #[inline(never)]
-    pub(super) fn next_fresh_slab(&self, g: &mut Inner, meta: &Meta, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
+    pub(super) fn next_fresh_slab(&self, g: &mut Inner, meta: &Meta, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -126,6 +131,8 @@ impl ClassState {
             old(g).nbits() == self.spec_nslabs(),
             old(g).arena@ == self.arena,
             old(g).table@ == self.spec_table(),
+            old(g).oauth@.id() == self.spec_oloc(),
+            self.published_by(*pubw@),
             old(ord).allows(rank_table(0)),
         ensures
             *final(ord) == *old(ord),
@@ -147,6 +154,7 @@ impl ClassState {
             forall|s: nat| #[trigger] old(g).committed@.contains(s) ==> final(g).committed@.contains(s),
             final(g).arena == old(g).arena,
             final(g).table == old(g).table,
+            final(g).oauth@.id() == old(g).oauth@.id(),
     {
         let table = self.table();
         proof {
@@ -166,9 +174,13 @@ impl ClassState {
                 g.nbits() == old(g).nbits(),
                 g.arena == old(g).arena,
                 g.table == old(g).table,
+                g.oauth@.id() == old(g).oauth@.id(),
+                old(g).oauth@.id() == self.spec_oloc(),
+                self.published_by(*pubw@),
                 g.arena@ == self.arena,
                 g.table@ == self.spec_table(),
                 *table == self.spec_table(),
+                table.spec_class() == self.spec_class(),
                 table.inv(),
                 table.lg_group < 32,
                 self.spec_nslabs() <= 0x400_0000,
@@ -188,11 +200,11 @@ impl ClassState {
                 let tracked mut im = g.inited.borrow().duplicate();
                 // So do its descriptors' permissions.
                 let tracked mut dp = Map::<nat, DescPerm>::tracked_empty();
-                let (start, end) = table.take_group(meta, self.arena, g, page, Tracked(&mut im), Tracked(&mut dp), Tracked(ord))?;
+                let (start, end) = table.take_group(meta, self.arena, g, page, Tracked(&mut im), Tracked(&mut dp), pubw, Tracked(ord))?;
                 let ghost g0 = *g;
                 let ghost dpv = dp;
                 proof {
-                    assert(g0.same_sets(ga));
+                    assert(g0.same_sets_but_rec(ga));
                     assert(ga.inv());
                     g.inited.borrow_mut().combine(im);
                     g.dperms.borrow_mut().tracked_union_prefer_right(dp);
@@ -234,7 +246,14 @@ impl ClassState {
                             }
                         }
                     }
-                    lemma_fresh_group(g0, *g, start, end);
+                    // `g0` with the record it had before the group: the value
+                    // the group joins, which has the invariant.
+                    let g0r = Inner { oauth: ga.oauth, ..g0 };
+                    assert(g0r.same_sets(ga));
+                    assert forall|x: nat| #[trigger] g0r.owns(x) implies x < start by {
+                        assert(ga.owns(x));
+                    }
+                    lemma_fresh_group(g0r, *g, start, end);
                 }
             }
             let s = g.group_next;
@@ -356,9 +375,20 @@ proof fn lemma_fresh_group(g0: Inner, g1: Inner, start: usize, end: usize)
             ==> #[trigger] slab_marked(g0.table@, x, g1.inited@@),
         forall|x: int| start <= x < end && g0.table@.spec_is_guard(x as usize)
             ==> #[trigger] guard_marked(g0.table@, x, g1.inited@@),
+        g1.oauth@@ == g0.oauth@@.union(vstd::set::Set::<int>::range(start as int, end as int)),
     ensures
         g1.inv(),
 {
+    assert(owned_rec(g1.oauth@@, g1.states@)) by {
+        broadcast use vstd::set_lib::range_set_properties;
+        assert forall|x: int| #[trigger] g1.oauth@@.contains(x) implies 0 <= x && g1.states@.contains_key(x as nat) by {
+            if !(start <= x < end) {
+                assert(g0.oauth@@.contains(x));
+                assert(g0.owns(x as nat));
+            }
+            assert(g1.owns(x as nat));
+        }
+    }
     assert(g1.nbits() == g0.nbits());
     assert forall|x: nat| #[trigger] g1.states@.contains_key(x) implies x < g1.nbits() by {
         assert(g1.owns(x));

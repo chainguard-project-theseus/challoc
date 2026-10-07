@@ -66,6 +66,9 @@
 //! lock), so a concurrent release either is visible to that check or sets
 //! the bit afterwards.
 
+use crate::arena::Published;
+#[cfg(verus_only)]
+use crate::arena::process_pub_loc;
 #[cfg(verus_only)]
 use crate::bitmap::subset;
 #[cfg(verus_only)]
@@ -98,9 +101,9 @@ use table::{
 };
 use vstd::prelude::*;
 use vstd::raw_ptr::PointsTo;
-use vstd::resource::set::GhostPersistentSubset;
 use vstd::resource::set::GhostSingleton;
 use vstd::resource::set::GhostSubset;
+use vstd::resource::set::{GhostPersistentSubset, GhostSetAuth};
 #[cfg(verus_only)]
 use vstd::set::Set as VSet;
 #[cfg(verus_only)]
@@ -131,7 +134,7 @@ pub(crate) use sets::{SETS_PER_CLASS, lemma_set_table_layout};
 pub use table::CommittedInv;
 pub use table::SlabTable;
 #[cfg(verus_only)]
-pub use table::{committed_ns, lemma_tz_shl, slab_owner, slot_loc, slot_owner};
+pub use table::{committed_ns, lemma_tz_shl, owner_ns, slab_owner, slot_loc, slot_owner};
 pub(crate) use table::{load_mirror, word_index};
 use verify::{fresh_with_live, release_into_fresh};
 
@@ -658,8 +661,9 @@ struct Inner {
     group_end: usize,
     /// Ghost: the slabs this arena owns (their group's owner word names
     /// this arena, guard slabs included), each with the state its
-    /// descriptor holds while this lock is held. The trusted bridge
-    /// [`ClassState::owner_locked`] ties it to the owner words, and the
+    /// descriptor holds while this lock is held. The bridge
+    /// [`ClassState::owner_locked`] ties it to the owner words (through the
+    /// owned-slab record, [`Inner::oauth`]), and the
     /// descriptor permissions ([`Inner::descs`]) to the descriptors.
     #[allow(dead_code)]
     states: Ghost<Map<nat, State>>,
@@ -693,6 +697,16 @@ struct Inner {
     /// read and write through.
     #[allow(dead_code)]
     dperms: Tracked<Map<nat, DescPerm>>,
+    /// Ghost: the authority of the record of this state's owned slabs,
+    /// whose every element is an owned slab, at a location of this state
+    /// alone (minted by `new`, fixed by [`axiom_class_lock`]). `take_group`
+    /// adds a group's slabs as it stores the group's owner word, and keeps
+    /// their persistent part in the word's invariant
+    /// (`table::OwnerPred`), which is how [`ClassState::owner_locked`]
+    /// tells that a group whose owner word names this arena is this
+    /// state's.
+    #[allow(dead_code)]
+    oauth: Tracked<GhostSetAuth<int>>,
 }
 
 } // verus!
@@ -817,6 +831,13 @@ spec fn desc_ok(dperms: Map<nat, DescPerm>, t: SlabTable, arena: u16, s: nat, st
 #[verifier::opaque]
 spec fn descs_ok(states: Map<nat, State>, dirty: Map<nat, u64>, dperms: Map<nat, DescPerm>, t: SlabTable, arena: u16) -> bool {
     forall|s: nat| #[trigger] states.contains_key(s) ==> desc_ok(dperms, t, arena, s, states[s], dirty[s])
+}
+
+/// Every slab the record `rec` ([`Inner::oauth`]) has is one `states`
+/// owns: only which slabs are owned matters, as for [`whole_groups`].
+spec fn owned_rec(rec: VSet<int>, states: Map<nat, State>) -> bool {
+    &&& forall|x: int| #[trigger] rec.contains(x) ==> 0 <= x
+    &&& forall|x: int| #[trigger] rec.contains(x) ==> states.contains_key(x as nat)
 }
 
 /// `owned` is whole hand-out groups of `t`: with a slab, every slab of its
@@ -992,6 +1013,7 @@ impl Inner {
             ==> slab_owner(self.table@.spec_class() as int, s as int) == self.arena@
         &&& whole_groups(self.states@.dom(), self.table@)
         &&& self.descs()
+        &&& owned_rec(self.oauth@@, self.states@)
     }
 
     /// The ghost link at slab `s`, apart from the current group: the
@@ -1061,6 +1083,14 @@ impl Inner {
     /// of the shared set table (only an own store changes), so on the
     /// invariant too ([`Inner::lemma_same_sets`]).
     spec fn same_sets(&self, o: Inner) -> bool {
+        &&& self.same_sets_but_rec(o)
+        &&& self.oauth@@ == o.oauth@@
+        &&& self.oauth@.id() == o.oauth@.id()
+    }
+
+    /// [`Inner::same_sets`] but for the owned-slab record ([`Inner::oauth`]),
+    /// which `SlabTable::take_group` adds a group to.
+    spec fn same_sets_but_rec(&self, o: Inner) -> bool {
         &&& self.partial.map == o.partial.map
         &&& self.empty.map == o.empty.map
         &&& self.purged.map == o.purged.map
@@ -1137,6 +1167,8 @@ impl Inner {
         &&& self.table == o.table
         &&& self.inited == o.inited
         &&& self.dperms == o.dperms
+        &&& self.oauth@@ == o.oauth@@
+        &&& self.oauth@.id() == o.oauth@.id()
     }
 
     /// The exempt slab back in the link closes the invariant.
@@ -1376,6 +1408,26 @@ impl ClassState {
         table_at(self.table)
     }
 
+    /// The location of this state's owned-slab record ([`Inner::oauth`]):
+    /// its class lock value's, fixed at `new`.
+    pub closed spec fn spec_oloc(&self) -> vstd::resource::Loc {
+        lock_init(self.inner.0).oauth@.id()
+    }
+
+    /// `w` names this state as the published state of its class and arena
+    /// index: the class `spec_class` state of the arena the process
+    /// registry published at `spec_arena` (`arena::published`). Only the
+    /// published states take groups and release slots (the callers of
+    /// `take_group` and `owner_locked` hold such a record), and two
+    /// records of one index name one arena, so one state per (arena index,
+    /// class) takes groups.
+    pub open spec fn published_by(&self, w: Published) -> bool {
+        &&& w.id() == process_pub_loc()
+        &&& w.key() == self.spec_arena() as int
+        &&& w.value().len() == NCLASSES
+        &&& w.value()[self.spec_class() as int] == self.spec_oloc()
+    }
+
     /// Slabs of the class region.
     pub closed spec fn spec_nslabs(&self) -> usize {
         table_at(self.table).spec_nslabs()
@@ -1510,10 +1562,13 @@ broadcast axiom fn axiom_class_lock_inv(v: Inner)
 
 /// Assumption (`lock.rs`): the sets behind a class lock stay over
 /// the slab count they were created with. Every `Inner` method keeps
-/// `nbits` (`same_rest`), and nothing replaces the sets.
+/// `nbits` (`same_rest`), and nothing replaces the sets; nor the ghost
+/// arena, table and owned-slab record authority (`oauth`, whose only
+/// writer, `SlabTable::take_group`'s `insert_set`, keeps its location).
 broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
     ensures
-        #[trigger] lock_frame(init, v) == (v.nbits() == init.nbits() && v.arena == init.arena && v.table == init.table),
+        #[trigger] lock_frame(init, v) == (v.nbits() == init.nbits() && v.arena == init.arena && v.table == init.table
+            && v.oauth@.id() == init.oauth@.id()),
 ;
 
 // The derived `PartialEq` of `slab::State` compares variants (trusted, as
@@ -1531,46 +1586,48 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for State {
 }
 
 /// The bridges between the ghost link (`Inner::states`) and the owner
-/// words and descriptors it stands for. `owner_locked` is trusted and
-/// compiles to the one call in its body; the descriptor ones read and
-/// write through the permissions the lock value holds (`Inner::descs`),
-/// each compiling to the one access in its body. `g` must be the value
-/// behind a class lock
+/// words and descriptors it stands for. `owner_locked` compiles to the
+/// one call in its body; the descriptor ones read and write through the
+/// permissions the lock value holds (`Inner::descs`), each compiling to
+/// the one access in its body. `g` must be the value behind a class lock
 /// over this state's table (its ghost `table`, required) that the caller
-/// holds. `owner_locked` also requires this arena's (its ghost `arena`).
+/// holds. `owner_locked` also requires this arena's (its ghost `arena`
+/// and owned-slab record).
 impl ClassState {
-    /// Bridge (trusted): under this arena's class lock, a slab whose
-    /// group's owner word names this arena is one of its owned slabs; the
-    /// word's value is [`slab_owner`] (the read in its body,
-    /// `SlabTable::owner`, ensures it). The converse, that an owned slab's
-    /// owner is this arena, is proved (`Inner::base`, kept from
-    /// `take_group`'s store through `next_fresh_slab`) and not claimed
-    /// here: no caller needs it. The direction claimed is
-    /// assumed: the owner words move only with the ghost
-    /// ownership, a whole group at a time: `take_group` writes a new
-    /// group's word, once, under the taking arena's lock and the commit
-    /// lock, where no arena's ghost holds the group (ownership exists only
-    /// below the watermark: `SlabTable::next_slab_locked` proves it for the
-    /// taking arena's value from the markers, and the same argument holds
-    /// for every other arena's, whose values no proof sees),
-    /// and `next_fresh_slab` then adds its slabs (verified); and the word
-    /// names an arena index, so this also rests on one class state per
-    /// (arena index, class) taking groups: the published one (`Arenas`; a
-    /// failed build's class states, which a retry rebuilds with the same
-    /// index, take none). Not provable in `class/` (`verus/TODO.md`, OWNER).
+    /// Bridge: under this arena's class lock (`g`), the arena that owns
+    /// `slab` ([`slab_owner`], `SlabTable::owner`), which, if it is this
+    /// arena, owns `slab` here. `pubw` is the registry's record of this
+    /// state's arena ([`ClassState::published_by`]): the owner word of a
+    /// handed-out group records its taker, the published state of the
+    /// arena it names (`take_group` requires the taker's record), and the
+    /// group's slabs in that state's owned-slab record
+    /// (`table::OwnerPred`); two records of one index name one arena, so
+    /// the taker is this state, and `g` has the slab in its record, whose
+    /// every slab is owned ([`Inner::base`]). The converse, that an owned
+    /// slab's owner is this arena, is proved too (`Inner::base`, kept from
+    /// `take_group`'s store through `next_fresh_slab`); no caller needs
+    /// it here.
+    // `pubw` is read only by the proof (ghost).
     #[allow(unused_variables)]
     #[inline(always)]
-    #[verifier::external_body]
-    fn owner_locked(&self, g: &Inner, slab: usize) -> (r: u16)
+    fn owner_locked(&self, g: &Inner, slab: usize, pubw: Tracked<&'static Published>) -> (r: u16)
         requires
             crate::sys::may_abort_pending(),
             g.arena@ == self.arena,
             g.table@ == self.spec_table(),
+            g.base(),
+            g.oauth@.id() == self.spec_oloc(),
+            self.published_by(*pubw@),
         ensures
             r == self.arena ==> g.owns(slab as nat),
             r == slab_owner(self.spec_class() as int, slab as int),
     {
-        self.table().owner(slab)
+        proof {
+            use_type_invariant(self);
+        }
+        let (r, seen) = self.table().owner(slab);
+        self.table().owned_by(slab, seen, g, pubw);
+        r
     }
 
     /// The descriptor `d` of slab `slab` read under an arena's class lock
@@ -1642,6 +1699,7 @@ impl ClassState {
             final(g).arena == old(g).arena,
             final(g).table == old(g).table,
             final(g).inited == old(g).inited,
+            final(g).oauth == old(g).oauth,
     {
         let ghost g0 = *g;
         let ghost k = slab as nat;
@@ -1713,6 +1771,7 @@ impl ClassState {
             final(g).arena == old(g).arena,
             final(g).table == old(g).table,
             final(g).inited == old(g).inited,
+            final(g).oauth == old(g).oauth,
     {
         let ghost g0 = *g;
         let ghost k = slab as nat;
@@ -2140,7 +2199,7 @@ impl ClassState {
     /// them). The `live` update is separate so a batch can do one per slab.
     /// The double-free abort cannot fire: the tokens say every bit is set
     /// (`AtomicBitmap::release`).
-    fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen, Tracked(tok): Tracked<&mut GhostSubset<int>>, Tracked(ord): Tracked<&mut LockOrder>)
+    fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen, Tracked(tok): Tracked<&mut GhostSubset<int>>, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
@@ -2153,6 +2212,7 @@ impl ClassState {
             old(reopen).len <= MAX_PICKS,
             old(reopen).below(self.spec_nslabs()),
             old(ord).allows(rank_class(0, 0)),
+            self.published_by(*pubw@),
         ensures
             final(reopen).len <= MAX_PICKS,
             final(reopen).below(self.spec_nslabs()),
@@ -2196,7 +2256,7 @@ impl ClassState {
             double_free(self.slot_ptr(slab, slot) as usize, self.class as usize, slab, slot);
         }
         if was_full && !reopen.push(slab) {
-            self.reopen(reopen, Tracked(ord));
+            self.reopen(reopen, pubw, Tracked(ord));
             reopen.push(slab);
         }
     }
@@ -2209,13 +2269,14 @@ impl ClassState {
     /// lock) and `Reopen` (the state and owner test per slab).
     // Verus needs the explicit reborrow.
     #[allow(clippy::explicit_auto_deref)]
-    fn reopen(&self, reopen: &mut Reopen, Tracked(ord): Tracked<&mut LockOrder>)
+    fn reopen(&self, reopen: &mut Reopen, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(reopen).len <= MAX_PICKS,
             old(reopen).below(self.spec_nslabs()),
             old(ord).allows(rank_class(0, 0)),
+            self.published_by(*pubw@),
         ensures
             final(reopen).len == 0,
             *final(ord) == *old(ord),
@@ -2235,6 +2296,8 @@ impl ClassState {
                 g@.nbits() == self.spec_nslabs(),
                 g@.arena@ == self.arena,
                 g@.table@ == self.spec_table(),
+                g@.oauth@.id() == self.spec_oloc(),
+                self.published_by(*pubw@),
 
                 it.seq().len() == reopen.len,
                 forall|i: int| 0 <= i < reopen.len ==> *#[trigger] it.seq()[i] == reopen.slabs[i],
@@ -2249,19 +2312,20 @@ impl ClassState {
             // Between the word's clear and this lock hold the slab may have
             // gone `Empty` (in `dec_live`); only an `Active` slab of this
             // arena goes back into the partial set.
-            if self.state_locked(&*g, self.desc(slab), Ghost(slab)) == State::Active && self.owner_locked(&*g, slab) == self.arena {
+            if self.state_locked(&*g, self.desc(slab), Ghost(slab)) == State::Active && self.owner_locked(&*g, slab, pubw) == self.arena {
                 g.set_partial(slab);
             }
         }
         reopen.len = 0;
     }
 
-    fn dec_live(&self, slab: usize, n: usize, Tracked(ord): Tracked<&mut LockOrder>)
+    fn dec_live(&self, slab: usize, n: usize, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
             old(ord).allows(rank_class(0, 0)),
+            self.published_by(*pubw@),
         ensures
             *final(ord) == *old(ord),
     {
@@ -2272,7 +2336,7 @@ impl ClassState {
             }
         }
         if self.desc(slab).sub_live(n) == n {
-            self.on_live_zero(slab, Tracked(ord));
+            self.on_live_zero(slab, pubw, Tracked(ord));
         }
     }
 
@@ -2370,12 +2434,13 @@ impl ClassState {
     /// owner test and the transition).
     // Verus needs the explicit reborrow.
     #[allow(clippy::explicit_auto_deref)]
-    fn on_live_zero(&self, slab: usize, Tracked(ord): Tracked<&mut LockOrder>)
+    fn on_live_zero(&self, slab: usize, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             slab < self.spec_nslabs(),
             old(ord).allows(rank_class(0, 0)),
+            self.published_by(*pubw@),
         ensures
             *final(ord) == *old(ord),
     {
@@ -2390,7 +2455,7 @@ impl ClassState {
                 self.check_shadow(slab, "on_live_zero");
             }
             // A slab of another arena is no business of this arena's sets.
-            if self.owner_locked(&*g, slab) != self.arena {
+            if self.owner_locked(&*g, slab, pubw) != self.arena {
                 return;
             }
             let desc = self.desc(slab);
@@ -2500,12 +2565,14 @@ impl ClassState {
         Tracked(pz): Tracked<&mut Map<int, Zeroed>>,
         Tracked(pm): Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
         Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>,
+        pubw: Tracked<&'static Published>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (np: usize)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
+            self.published_by(*pubw@),
         ensures
             *final(ord) == *old(ord),
             np == 0 && want > 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
@@ -2540,6 +2607,8 @@ impl ClassState {
                 g@.nbits() == self.spec_nslabs(),
                 g@.arena@ == self.arena,
                 g@.table@ == self.spec_table(),
+                g@.oauth@.id() == self.spec_oloc(),
+                self.published_by(*pubw@),
                 *cls == class_table()[self.spec_class() as int],
                 np <= MAX_PICKS,
                 picks_ok(picks@, np as int, self.spec_nslabs(), cls.nslots as nat),
@@ -2608,6 +2677,8 @@ impl ClassState {
                 g@.nbits() == self.spec_nslabs(),
                 g@.arena@ == self.arena,
                 g@.table@ == self.spec_table(),
+                g@.oauth@.id() == self.spec_oloc(),
+                self.published_by(*pubw@),
                 *cls == class_table()[self.spec_class() as int],
                 np <= MAX_PICKS,
                 picks_ok(picks@, np as int, self.spec_nslabs(), cls.nslots as nat),
@@ -2619,7 +2690,7 @@ impl ClassState {
                 np == 0 ==> self.seen_below(g@, seen, self.spec_nslabs() as int),
             decreases MAX_PICKS - np,
         {
-            let s = match self.next_slab(&mut g, meta, Tracked(&mut under)) {
+            let s = match self.next_slab(&mut g, meta, pubw, Tracked(&mut under)) {
                 Some(s) => s,
                 None => {
                     proof {
@@ -2700,6 +2771,7 @@ impl ClassState {
             final(g).group_end == old(g).group_end,
             final(g).arena == old(g).arena,
             final(g).table == old(g).table,
+            final(g).oauth@.id() == old(g).oauth@.id(),
             *final(np) == *old(np) + 1,
             final(picks)[*old(np) as int].n as int + *final(remaining) == *old(remaining),
             (final(picks)[*old(np) as int].slab as usize) < self.spec_nslabs(),
@@ -2845,7 +2917,7 @@ impl ClassState {
             g.lemma_desc(slab as nat);
         }
         if cfg!(debug_assertions) {
-            let owner = self.table().owner(slab);
+            let owner = self.table().owner(slab).0;
             let arena = desc.arena_held(Ghost(slab as nat), Tracked(g.dperms.borrow()));
             debug_assert!(owner == self.arena, "take: slab {slab} state {:?} live {live}: owner {owner}, not arena {}", desc.state(), self.arena);
             debug_assert!(arena == self.arena, "take: slab {slab} descriptor arena {arena}, not arena {}", self.arena);
@@ -2966,11 +3038,13 @@ impl ClassState {
         count: usize,
         reopen: &mut Reopen,
         Tracked(toks): Tracked<&mut GhostSubset<int>>,
+        pubw: Tracked<&'static Published>,
         Tracked(ord): Tracked<&mut LockOrder>,
     )
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
+            self.published_by(*pubw@),
             slab < self.spec_nslabs(),
             lo <= hi,
             hi < old(local)@.len(),
@@ -3002,6 +3076,7 @@ impl ClassState {
         for w in it: lo..=hi
             invariant
                 crate::sys::may_abort() || crate::sys::valid_aborts(),
+                self.published_by(*pubw@),
                 crate::sys::may_syscall(),
                 ord.allows(rank_class(0, 0)),
                 *ord == *old(ord),
@@ -3035,10 +3110,10 @@ impl ClassState {
             let tracked mut tok = toks.split(word_addrs(self.spec_table(), slab as int, w as int, mask));
             if mask != 0 {
                 local[w] = 0;
-                self.release_word(slab, w, mask, reopen, Tracked(&mut tok), Tracked(ord));
+                self.release_word(slab, w, mask, reopen, Tracked(&mut tok), pubw, Tracked(ord));
             }
         }
-        self.dec_live(slab, count, Tracked(ord));
+        self.dec_live(slab, count, pubw, Tracked(ord));
     }
 }
 
@@ -3105,6 +3180,7 @@ impl ClassState {
         let purged = Set::in_table(sets_ptr, Tracked(sets_perm), class, 2, Tracked(w2));
         let tracked im = table.empty_marks();
         let tracked dm = Map::<nat, DescPerm>::tracked_empty();
+        let tracked (oa, _) = GhostSetAuth::<int>::new(vstd::set::Set::empty());
         let inner = Inner {
             partial,
             empty,
@@ -3120,6 +3196,7 @@ impl ClassState {
             table: Ghost(*table),
             inited: Tracked(im),
             dperms: Tracked(dm),
+            oauth: Tracked(oa),
         };
         proof {
             let n = inner.nbits();
@@ -3133,6 +3210,7 @@ impl ClassState {
             assert(whole_groups(inner.states@.dom(), inner.table@)) by {
                 reveal(whole_groups);
             }
+            assert(owned_rec(inner.oauth@@, inner.states@));
             assert(inner.base());
             assert forall|s: nat| #[trigger] inner.slab_ok(s) by {}
         }
@@ -3167,11 +3245,12 @@ impl ClassState {
     ///
     /// [`plan`]: ClassState::plan
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn claim(&self, meta: &Meta, out: &mut [*mut u8], Tracked(ord): Tracked<&mut LockOrder>) -> (r: Claim)
+    pub fn claim(&self, meta: &Meta, out: &mut [*mut u8], pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Claim)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
+            self.published_by(*pubw@),
         ensures
             *final(ord) == *old(ord),
             r.n <= old(out)@.len(),
@@ -3180,7 +3259,7 @@ impl ClassState {
     {
         let tracked mut toks = SlotToks::empty();
         let tracked mut ex: Ghost<(Inner, Map<nat, usize>)> = Ghost(arbitrary());
-        self.claim_with(meta, out, None, Tracked(&mut toks), Tracked(&mut ex), Tracked(ord)).0
+        self.claim_with(meta, out, None, Tracked(&mut toks), Tracked(&mut ex), pubw, Tracked(ord)).0
     }
 
     /// [`claim`], with the claimed slots' tokens: `toks` gets the token of
@@ -3189,11 +3268,12 @@ impl ClassState {
     /// claim is zeroed ([`claim_zero_ok`]).
     ///
     /// [`claim`]: ClassState::claim
-    pub fn claim_tokens(&self, meta: &Meta, out: &mut [*mut u8], Tracked(toks): Tracked<&mut SlotToks>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+    pub fn claim_tokens(&self, meta: &Meta, out: &mut [*mut u8], Tracked(toks): Tracked<&mut SlotToks>, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
+            self.published_by(*pubw@),
         ensures
             *final(ord) == *old(ord),
             r.0.n <= old(out)@.len(),
@@ -3204,7 +3284,7 @@ impl ClassState {
             claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
     {
         let tracked mut ex: Ghost<(Inner, Map<nat, usize>)> = Ghost(arbitrary());
-        self.claim_with(meta, out, None, Tracked(toks), Tracked(&mut ex), Tracked(ord))
+        self.claim_with(meta, out, None, Tracked(toks), Tracked(&mut ex), pubw, Tracked(ord))
     }
 
     /// [`claim`] for `slot_randomize` (design section 4): the same slabs
@@ -3222,11 +3302,12 @@ impl ClassState {
     /// [`claim`]: ClassState::claim
     /// [`claim_random_zero`]: ClassState::claim_random_zero
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn claim_random(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Claim)
+    pub fn claim_random(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Claim)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
+            self.published_by(*pubw@),
         ensures
             *final(ord) == *old(ord),
             r.n <= old(out)@.len(),
@@ -3234,7 +3315,7 @@ impl ClassState {
             slots_in(final(out)@, self.spec_class() as int, 0, r.n as int),
     {
         let tracked mut toks = SlotToks::empty();
-        self.claim_random_zero(meta, out, rng, Tracked(&mut toks), Tracked(ord)).0
+        self.claim_random_zero(meta, out, rng, Tracked(&mut toks), pubw, Tracked(ord)).0
     }
 
     /// [`claim_random`] with the zero tokens of the slots it wrote
@@ -3244,11 +3325,12 @@ impl ClassState {
     /// [`claim_random`]: ClassState::claim_random
     /// [`claim_tokens`]: ClassState::claim_tokens
     #[verifier::spinoff_prover]
-    pub fn claim_random_zero(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64, Tracked(toks): Tracked<&mut SlotToks>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+    pub fn claim_random_zero(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64, Tracked(toks): Tracked<&mut SlotToks>, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
+            self.published_by(*pubw@),
         ensures
             *final(ord) == *old(ord),
             r.0.n <= old(out)@.len(),
@@ -3259,7 +3341,7 @@ impl ClassState {
             claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
     {
         let tracked mut ex: Ghost<(Inner, Map<nat, usize>)> = Ghost(arbitrary());
-        let (c, Tracked(z)) = self.claim_with(meta, out, Some(rng), Tracked(toks), Tracked(&mut ex), Tracked(ord));
+        let (c, Tracked(z)) = self.claim_with(meta, out, Some(rng), Tracked(toks), Tracked(&mut ex), pubw, Tracked(ord));
         let tracked mut z = z;
         let ghost mid = out@;
         let ghost size = class_table()[self.spec_class() as int].size as int;
@@ -3334,11 +3416,12 @@ impl ClassState {
     /// [`claim_random`]: ClassState::claim_random
     #[verifier::spinoff_prover]
     #[verifier::exec_allows_no_decreases_clause]
-    fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>, Tracked(toks): Tracked<&mut SlotToks>, Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+    fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>, Tracked(toks): Tracked<&mut SlotToks>, Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
+            self.published_by(*pubw@),
         ensures
             *final(ord) == *old(ord),
             r.0.n <= old(out)@.len(),
@@ -3371,6 +3454,7 @@ impl ClassState {
             invariant
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
+                self.published_by(*pubw@),
                 t == self.spec_table(),
                 s == t.spec_slots(),
                 t.inv(),
@@ -3391,7 +3475,7 @@ impl ClassState {
             let tracked mut ptoks: Map<int, GhostSubset<int>> = Map::tracked_empty();
             let tracked mut pz: Map<int, Zeroed> = Map::tracked_empty();
             let tracked mut pm: Map<int, GhostPersistentSubset<int>> = Map::tracked_empty();
-            let np = self.plan(meta, out.len() - got, &mut picks, Tracked(&mut ptoks), Tracked(&mut pz), Tracked(&mut pm), Tracked(&mut *ex), Tracked(ord));
+            let np = self.plan(meta, out.len() - got, &mut picks, Tracked(&mut ptoks), Tracked(&mut pz), Tracked(&mut pm), Tracked(&mut *ex), pubw, Tracked(ord));
             if np == 0 {
                 proof {
                     dry = true;
@@ -5303,10 +5387,11 @@ impl ClassState {
     /// bitmap words.
     ///
     /// [`release_owned`]: ClassState::release_owned
-    pub fn release_with(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<GhostSubset<int>>, Tracked(ord): Tracked<&mut LockOrder>)
+    pub fn release_with(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<GhostSubset<int>>, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort() || (crate::sys::valid_aborts() && owned_slots(self.spec_class() as int, self.spec_arena(), ptrs@)),
             crate::sys::may_syscall(),
+            self.published_by(*pubw@),
             bag.id() == slot_loc(self.spec_class() as int),
             aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= bag@,
             distinct(ptr_addrs(ptrs@), 0, ptrs@.len() as int),
@@ -5319,7 +5404,7 @@ impl ClassState {
     {
         broadcast use lemma_aset;
         let tracked mut bag = bag;
-        let n = self.release_owned(ptrs, Tracked(&mut bag), Tracked(ord));
+        let n = self.release_owned(ptrs, Tracked(&mut bag), pubw, Tracked(ord));
         if n != ptrs.len() {
             proof {
                 // The first slot left is another arena's.
@@ -5327,7 +5412,7 @@ impl ClassState {
             }
             let p = ptrs[n];
             let (slab, _) = self.locate(p);
-            wrong_arena(p as usize, self.class as usize, self.table().owner(slab), self.arena);
+            wrong_arena(p as usize, self.class as usize, self.table().owner(slab).0, self.arena);
         }
     }
 
@@ -5364,7 +5449,7 @@ impl ClassState {
     /// [`release_with`]: ClassState::release_with
     // The counter carries a Verus invariant.
     #[allow(clippy::explicit_counter_loop)]
-    pub fn release_owned(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<&mut GhostSubset<int>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
+    pub fn release_owned(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<&mut GhostSubset<int>>, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
         requires
             crate::sys::may_abort() || (crate::sys::valid_aborts() && live_slots(self.spec_class() as int, ptrs@)),
             crate::sys::may_syscall(),
@@ -5372,6 +5457,7 @@ impl ClassState {
             aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= old(bag)@,
             distinct(ptr_addrs(ptrs@), 0, ptrs@.len() as int),
             old(ord).allows(rank_class(0, 0)),
+            self.published_by(*pubw@),
         ensures
             *final(ord) == *old(ord),
             r <= ptrs@.len(),
@@ -5424,6 +5510,7 @@ impl ClassState {
                 end == ptrs@.len(),
             invariant
                 crate::sys::may_abort() || (crate::sys::valid_aborts() && live_slots(self.spec_class() as int, ptrs@)),
+                self.published_by(*pubw@),
                 ord.allows(rank_class(0, 0)),
                 *ord == *old(ord),
                 end == ptrs@.len() || end == i,
@@ -5482,7 +5569,7 @@ impl ClassState {
             if slab != cur_slab {
                 if count != 0 {
                     let ghost pre = local@;
-                    self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(&mut ltoks), Tracked(ord));
+                    self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(&mut ltoks), pubw, Tracked(ord));
                     proof {
                         assert forall|v: int| 0 <= v < MAX_SLAB_WORDS implies subset(#[trigger] local@[v], slab_mask_of(sb)) by {
                             let m = slab_mask_of(sb);
@@ -5508,7 +5595,7 @@ impl ClassState {
                     lo_w = usize::MAX;
                     hi_w = 0;
                 }
-                if self.table().owner(slab) != self.arena {
+                if self.table().owner(slab).0 != self.arena {
                     end = i;
                     break;
                 }
@@ -5644,9 +5731,9 @@ impl ClassState {
             i += 1;
         }
         if count != 0 {
-            self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(&mut ltoks), Tracked(ord));
+            self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(&mut ltoks), pubw, Tracked(ord));
         }
-        self.reopen(&mut reopen, Tracked(ord));
+        self.reopen(&mut reopen, pubw, Tracked(ord));
         if end != 0 {
             self.released.fetch_add(end as u64, Ordering::Relaxed);
         }
@@ -5661,7 +5748,12 @@ impl ClassState {
     /// Tests: [`ClassState::release_with`] without the slot tokens.
     #[cfg(test)]
     pub(crate) fn release(&self, ptrs: &[*mut u8]) {
-        self.release_with(ptrs, Tracked::assume_new(), Tracked::assume_new())
+        self.release_with(
+            ptrs,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
     }
 }
 

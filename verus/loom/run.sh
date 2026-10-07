@@ -84,9 +84,13 @@ done
 #   be the file's last item);
 # - class/table.rs, which casts bitmap word addresses to `&AtomicU64` and
 #   passes them on, writes atomics only on the two lines listed (the
-#   owner word and a test's corrupting write of it) and through
-#   vspec/atom.rs's `store_usize` wrapper (the watermark) and, since
-#   upstream #87, `store_usize_at` (its copy in the class line);
+#   owner word, `store_owner`'s, and a test's corrupting write of it) and
+#   through vspec/atom.rs's `store_usize` wrapper (the watermark) and,
+#   since upstream #87, `store_usize_at` (its copy in the class line): the
+#   owner word's value, which `load_u16_at` reads through its permission,
+#   is `store_owner`'s; and only class/table.rs names the owner words'
+#   invariants (`owner_invs`), which hold those permissions, so no other
+#   file can reach a word through one;
 # - arena.rs names the bound counts only in a vspec/count.rs wrapper
 #   call, the spec `count_id`, and ghost `assert`/`forall` lines
 #   (`Arenas::init` builds each count with `vspec::count::new(0)`);
@@ -103,8 +107,9 @@ done
 # - nothing writes the watermark (`committed_slabs`) but through
 #   vspec/atom.rs's `store_usize`, and only class/table.rs (and the loom
 #   models) calls the vspec/atom.rs wrappers (`new_usize`,
-#   `load_usize_in`, `store_usize` and, since upstream #87, the class
-#   line copy's `store_usize_at`; `heap/shared.rs` reads the copy through
+#   `load_usize_in`, `load_usize_seen`, `load_u16_at`, `store_usize` and,
+#   since upstream #87, the class line copy's `store_usize_at`;
+#   `heap/shared.rs` reads the copy through
 #   `class::load_mirror` and makes its pointer with `usize_ptr`), and
 #   non-test heap/shared.rs writes no class line's copy (`.committed`)
 #   directly: `store_usize_at`, from class/table.rs, is its one writer;
@@ -157,7 +162,7 @@ done
 bad=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t = 0 }
     /\.(fetch_[a-z]+|store|swap|compare_exchange|compare_exchange_weak)\(/ && !/crate::vspec::word::/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/bitmap.rs
     awk '{ x = $0; sub(/^[ \t]+/, "", x) }
-    /\.(fetch_[a-z]+|store|swap|compare_exchange|compare_exchange_weak)\(/ && !/^[ \t]*\/\// && x != "w.store(arena, Ordering::Relaxed)" \
+    /\.(fetch_[a-z]+|store|swap|compare_exchange|compare_exchange_weak)\(/ && !/^[ \t]*\/\// && x != "unsafe { (*w).store(arena, Ordering::Relaxed) }" \
         && x != "(*((self.owners_base + group * 2) as *const AtomicU16)).store(arena, Ordering::Relaxed)" { print FILENAME ":" FNR ": " $0 }' src/class/table.rs
     awk '{ x = $0; sub(/^[ \t]+/, "", x) }
     (/\.bound([^A-Za-z0-9_]|$)/ || /\(\*bound\)/) && !/crate::vspec::count::/ && !/count_id\(/ && !/^[ \t]*\/\// \
@@ -213,9 +218,11 @@ bad=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t =
     awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^(impl|mod) / { t = 2 } t == 2 && /^}/ { t = 0; next } t == 2 { next } { t = 0 }
         /\.committed\.(fetch_[a-z]+|store|swap|compare_exchange|compare_exchange_weak)\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/heap/shared.rs
     find src -name '*.rs' ! -path 'src/loom_tests/*' ! -path src/vspec/atom.rs ! -path src/class/table.rs \
-        -exec awk '/(new_usize|load_usize_in|store_usize|store_usize_at)\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' {} +
+        -exec awk '/(new_usize|load_usize_in|load_usize_seen|load_u16_at|store_usize|store_usize_at)\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' {} +
     find src -name '*.rs' ! -path 'src/loom_tests/*' ! -path src/vspec/atom.rs ! -path src/heap/shared.rs \
         -exec awk '/usize_ptr\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' {} +
+    find src -name '*.rs' ! -path 'src/loom_tests/*' ! -path src/class/table.rs \
+        -exec awk '/owner_invs/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' {} +
     for p in 'src/vspec/count.rs CountPerm new' 'src/vspec/atom.rs UsizePerm new_usize' 'src/vspec/byte.rs BytePerm new'; do
         set -- $p
         awk -v ty="$2" -v fn="$3" 'function bad() { print FILENAME ":" FNR ": " $0 }

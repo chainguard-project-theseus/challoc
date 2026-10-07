@@ -9,10 +9,11 @@ use crate::vspec::flags::RouteByte;
 use core::ffi::c_void;
 use core::ptr;
 
-use crate::arena::{Arena, Arenas, Held, elem_at, field_at, fits};
+use crate::arena::{Arena, Arenas, Held, Published, elem_at, field_at, fits};
 #[cfg(verus_only)]
 use crate::arena::{
-    elems_at, elems_init, elems_uninit, field_fits, field_ptr, split_array, storage_ok, take_field,
+    elems_at, elems_init, elems_uninit, field_fits, field_ptr, published, split_array, storage_ok,
+    take_field,
 };
 use crate::class::{CommittedInv, SlabTable};
 use crate::config::Config;
@@ -668,8 +669,10 @@ impl ClassLine {
         )
     }
 
-    /// The arena that owns `slab`'s group, through `table`'s owner word
-    /// permissions (`table` is the class's: no load from it).
+    /// The owner word of `slab`'s group, through `table`'s owner word
+    /// invariants (`table` is the class's: no load from it). No witness
+    /// that the group was handed out goes with it, so the value is
+    /// unknown (`SlabTable::owner_from`): `home_owns` only compares it.
     ///
     /// # Safety
     /// `slab` is one [`set_slab`](ClassLine::set_slab) returned.
@@ -679,9 +682,7 @@ impl ClassLine {
             table.spec_class() < NCLASSES,
             self.wf(*table, process_regions(), table.spec_class() as int),
             slab < table.spec_nslabs(),
-        ensures
-            r == crate::class::slab_owner(table.spec_class() as int, slab as int),
-        opens_invariants none
+        opens_invariants [crate::class::owner_ns()]
     {
         // SAFETY: as `SlabTable::owner_at`.
         unsafe { table.owner_from(self.owners_base, self.lg_group, slab) }
@@ -1674,7 +1675,8 @@ impl Shared {
         ensures
             final(pg).ptr() == old(pg).ptr(),
             final(pg).is_init(),
-            final(pa).perm matches Some(a) && a.ptr() == field_ptr::<Shared, Arenas>(this, S_ARENAS) && a.is_init() && a.value().wf(),
+            final(pa).perm matches Some(a) && a.ptr() == field_ptr::<Shared, Arenas>(this, S_ARENAS) && a.is_init() && a.value().wf()
+                && a.value().spec_arena0() == a0@.value(),
             final(pt).ptr() == old(pt).ptr(),
             final(pt).is_init(),
     {
@@ -2205,6 +2207,7 @@ impl Shared {
         &&& self.stats.rank() == rank_stats()
         &&& self.arenas.wf()
         &&& self.arenas.is_process()
+        &&& self.arenas.spec_arena0() == self.arena0
     }
 
     /// The value is as `Shared::init` built it ([`Shared::built`]), and the
@@ -2826,7 +2829,7 @@ impl Shared {
     }
     /// touch; see `Arenas::get`).
     #[inline]
-    pub fn arena(&self, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&Arena>)
+    pub fn arena(&self, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<(&Arena, Tracked<&'static Published>)>)
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
@@ -2834,12 +2837,23 @@ impl Shared {
             self.wf(),
         ensures
             *final(ord) == *old(ord),
-            r matches Some(a) ==> a.spec_index() == index,
+            r matches Some((a, w)) ==> a.spec_index() == index && published(*w@, *a),
     {
         if index == 0 {
-            return Some(&self.arena0);
+            return Some((&self.arena0, self.arena0_published()));
         }
         self.arenas.get(self, index, Tracked(ord))
+    }
+
+    /// Arena 0's record in the registry ([`Published`],
+    /// `Arenas::published0`), which names `arena0` (`Shared::wf`). No
+    /// code: the registry's invariant is opened for the proof alone.
+    #[inline(always)]
+    pub(crate) fn arena0_published(&self) -> (r: Tracked<&'static Published>)
+        ensures
+            self.wf() ==> published(*r@, self.arena0),
+    {
+        self.arenas.published0()
     }
 
     /// Arena `index`, which must exist: the index came from a slab or run
@@ -2849,16 +2863,16 @@ impl Shared {
     /// instead of quietly materialising an automatic arena to release the
     /// slot through.
     #[inline]
-    pub(super) fn owner(&self, index: u16) -> (r: &Arena)
+    pub(super) fn owner(&self, index: u16) -> (r: (&Arena, Tracked<&'static Published>))
         requires
             crate::sys::may_abort_pending(),
         ensures
-            self.wf() ==> r.spec_index() == index,
+            self.wf() ==> r.0.spec_index() == index && published(*r.1@, *r.0),
     {
         if index == 0 {
-            return &self.arena0;
+            return (&self.arena0, self.arena0_published());
         }
-        match self.arenas.get_existing(index) {
+        match self.arenas.get_existing_published(index) {
             Some(a) => a,
             None => no_such_arena(index),
         }
@@ -2892,11 +2906,12 @@ impl Shared {
     /// Claim one slot of `class` in `arena` straight from the slab bitmaps,
     /// bypassing every cache. Null when the region is exhausted. The flag
     /// says the memory is known zero; `blk` gets the slot's token.
-    pub fn alloc_direct(&self, arena: &Arena, class: usize, Tracked(blk): Tracked<&mut super::Live>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+    pub fn alloc_direct(&self, arena: &Arena, pubw: Tracked<&'static Published>, class: usize, Tracked(blk): Tracked<&mut super::Live>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
+            published(*pubw@, *arena),
             class < NCLASSES,
             self.wf(),
         ensures
@@ -2909,7 +2924,7 @@ impl Shared {
         let cs = arena.class(class);
         cs.slot_tokens_are_the_class_s();
         let tracked mut toks = crate::class::SlotToks::empty();
-        let (c, Tracked(mut z)) = cs.claim_tokens(&self.meta, &mut out, Tracked(&mut toks), Tracked(ord));
+        let (c, Tracked(mut z)) = cs.claim_tokens(&self.meta, &mut out, Tracked(&mut toks), pubw, Tracked(ord));
         if c.n == 0 {
             (ptr::null_mut(), false, Tracked(Zeroed::empty(0)))
         } else {
@@ -2941,6 +2956,7 @@ impl Shared {
             crate::sys::may_abort() || (crate::sys::valid_aborts() && self.wf() && crate::class::slot_owner(class as int, p@.addr) == arena),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
+            self.wf(),
             class < NCLASSES,
             crate::layout::process_regions().is_slot(class as int, p@.addr),
             tok.id() == slot_loc(class as int),
@@ -2965,7 +2981,8 @@ impl Shared {
             }
             assert(seq![p][0] == p);
         }
-        self.owner(arena).class(class).release_with(&[p], Tracked(bag), Tracked(ord));
+        let (oa, ow) = self.owner(arena);
+        oa.class(class).release_with(&[p], Tracked(bag), ow, Tracked(ord));
     }
 
     /// Classify `p` for `free`: `Ok((class, arena))` for an allocated slab
@@ -3108,7 +3125,7 @@ impl Shared {
             self.wf(),
             class < NCLASSES,
             slab < self.tables[class as int].spec_nslabs(),
-        opens_invariants none
+        opens_invariants [crate::class::owner_ns()]
     {
         // The home arena is read on the multi-arena branch only. A plain
         // load is hoisted above the flag test (the heap is known valid)
@@ -3150,7 +3167,7 @@ impl Shared {
             self.lemma_huge_aligned();
             self.lemma_huge_process();
         }
-        let Some(a) = self.arena(arena, Tracked(ord)) else { no_such_arena(arena) };
+        let Some((a, _)) = self.arena(arena, Tracked(ord)) else { no_such_arena(arena) };
         let tracked mut tok = vstd::map::Map::<int, crate::huge::RunToken>::tracked_empty();
         let (r, z) = self.huge.alloc_run(&self.meta, size, align, arena, Tracked(&mut tok), Tracked(ord));
         proof {
@@ -3275,7 +3292,7 @@ impl Shared {
         proof {
             assert(run.pages == np);
         }
-        self.owner(run.arena).note_huge_free(run.pages);
+        self.owner(run.arena).0.note_huge_free(run.pages);
         run.usable
     }
 
@@ -3389,7 +3406,7 @@ impl Shared {
                 self.regions.lemma_slab_index(class as int, slab as int, _slot as int, p as usize);
             }
         }
-        t.owner(slab)
+        t.owner(slab).0
     }
 
     /// The bit test the two `free` fast-path checks share: `Some((class,
@@ -3514,7 +3531,8 @@ impl Shared {
                     }
                 }
             }
-            done += self.owner(a).class(class).release_owned(&ptrs[done..], Tracked(&mut *bag), Tracked(ord));
+            let (oa, ow) = self.owner(a);
+            done += oa.class(class).release_owned(&ptrs[done..], Tracked(&mut *bag), ow, Tracked(ord));
             proof {
                 let r = done - d0;
                 crate::class::lemma_aset_split(pa, d0, done as int, ptrs@.len() as int);
@@ -3901,7 +3919,7 @@ mod kani_guard_word {
         }
     }
 
-    /// S131 `ClassLine::guard_word`, `requires` the padding zero,
+    /// S129 `ClassLine::guard_word`, `requires` the padding zero,
     /// `ensures r == guard_word_of(guard_mask, tz, lg_guard)`: on a line
     /// with every field any value but `_pad` zero, the one 8-byte load
     /// returns `guard_mask | tz << 32 | lg_guard << 40`, through the

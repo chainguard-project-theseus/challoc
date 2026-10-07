@@ -5,7 +5,12 @@
 
 use super::Inner;
 use super::abort::{guard_free, invalid_free, invalid_pointer, never_committed, owner_mismatch};
+#[cfg(verus_only)]
+use super::owned_rec;
 use super::sets::Lazy;
+use crate::arena::Published;
+#[cfg(verus_only)]
+use crate::arena::process_pub_loc;
 use crate::bitmap::{AtomicBitmap, WordInv};
 #[cfg(verus_only)]
 use crate::bitmap::{Slots, fresh_mark, fresh_marks, init_mark, init_marks, words_wf};
@@ -27,9 +32,12 @@ use crate::sys::{self, Errno, MADV_GUARD_INSTALL, PROT_NONE, PROT_READ, PROT_WRI
 use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_only)]
 use crate::vspec::addr::cast_provenance;
-use crate::vspec::atom::{UsizePerm, load_usize_in, new_usize, store_usize, store_usize_at};
+use crate::vspec::atom::{
+    SeenVal, UsizePerm, load_u16_at, load_usize_in, load_usize_seen, new_usize, store_usize,
+    store_usize_at,
+};
 #[cfg(verus_only)]
-use crate::vspec::atom::{usize_id, usize_id_at};
+use crate::vspec::atom::{u16_value, usize_id, usize_id_at};
 #[cfg(verus_only)]
 use crate::vspec::lock::{lock_frame, lock_init, lock_inv};
 use crate::vspec::once::Once;
@@ -102,6 +110,17 @@ pub(crate) struct TableInner {
     /// and the slab count, as for the watermark ([`CommittedPred`]).
     #[allow(dead_code)]
     pub(super) mirror_inv: Tracked<Option<&'static CommittedInv>>,
+    /// Ghost: the location of the owner words' witness markers
+    /// ([`OwnerPred`]), fixed at `new` ([`axiom_table_lock_frame`]), and
+    /// those markers, persistent, of every slab below `next_slab`: the
+    /// groups handed out, whose owner words were stored. `take_group` adds
+    /// each group's as it stores its word, and copies the set into the
+    /// watermark's invariant with the watermark it stores
+    /// ([`WatermarkPred`]).
+    #[allow(dead_code)]
+    pub(super) sloc: Ghost<Loc>,
+    #[allow(dead_code)]
+    pub(super) seen: Tracked<GhostPersistentSubset<int>>,
 }
 
 /// A page group of a class table starts and ends on a page boundary: the
@@ -171,6 +190,8 @@ impl TableInner {
         &&& self.dstride == o.dstride
         &&& self.mirror == o.mirror
         &&& self.mirror_inv == o.mirror_inv
+        &&& self.sloc == o.sloc
+        &&& self.seen == o.seen
     }
 
     /// The guard count stays below the slabs handed out, which stay below
@@ -180,7 +201,9 @@ impl TableInner {
     /// and the owner-store markers of every slab from the watermark on,
     /// and those slabs' descriptor permissions as `new` minted them. Once
     /// [`SlabTable::mirror_watermark`] has set the watermark copy's pointer,
-    /// it holds the copy's invariant (`take_group` stores into it).
+    /// it holds the copy's invariant (`take_group` stores into it). Its
+    /// persistent owner-word witness markers cover every slab below
+    /// `next_slab`.
     pub(super) open spec fn inv(self) -> bool {
         &&& self.guards <= self.next_slab
         &&& self.next_slab <= usize::MAX >> 12
@@ -196,6 +219,8 @@ impl TableInner {
         &&& forall|s: int| self.next_slab <= s < self.nslabs@ ==> #[trigger] dfresh(self.dperms@, self.dbase@, self.dstride@, s)
         &&& self.mirror@.addr != 0 ==> (self.mirror_inv@ matches Some(i) && i.constant() == (usize_id_at(self.mirror), self.nslabs@)
             && i.namespace() == committed_ns())
+        &&& self.seen@.id() == self.sloc@
+        &&& owner_marks(0, self.next_slab as int).subset_of(self.seen@@)
     }
 }
 
@@ -219,6 +244,10 @@ impl TableInner {
 /// hands out, below the `next_slab` it publishes (the init ones for
 /// `AtomicBitmap::init`, or for the arena to keep for a guard slab, the
 /// owner-store ones for `store_owner`), and nothing else moves them.
+/// The persistent witness markers it holds cover the slabs below
+/// `next_slab`: `take_group` adds those of the group whose owner word it
+/// stores before it publishes the group's end, and only it moves
+/// `next_slab`.
 /// `mirror_watermark` (verified) sets the copy's pointer and its
 /// invariant together. `guards` only reads; the test
 /// helper `corrupt_owner_word` (unverified) only commits through
@@ -228,13 +257,14 @@ pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
         #[trigger] lock_inv(v) == v.inv(),
 ;
 
-/// The commit lock's ghost geometry, marker authority and descriptor
+/// The commit lock's ghost geometry, marker authorities and descriptor
 /// array never change:
 /// nothing writes them.
 pub(super) broadcast axiom fn axiom_table_lock_frame(init: TableInner, v: TableInner)
     ensures
         #[trigger] lock_frame(init, v) == (v.page == init.page && v.group == init.group && v.nslabs == init.nslabs
-            && v.sb == init.sb && v.mloc == init.mloc && v.dbase == init.dbase && v.dstride == init.dstride),
+            && v.sb == init.sb && v.mloc == init.mloc && v.dbase == init.dbase && v.dstride == init.dstride
+            && v.sloc == init.sloc),
 ;
 
 /// The descriptor of `slab` in `t`'s descriptor array: what
@@ -246,12 +276,91 @@ pub closed spec fn desc_at(t: SlabTable, slab: usize) -> SlabDesc {
     t.desc_perms@[slab as int].value()
 }
 
-/// The owner word of hand-out group `group` in `t`'s owner array: what
-/// [`SlabTable::owner_word`] returns, the one its permission is to. Names
-/// the word, as [`desc_at`] names a descriptor; nothing about its value.
-pub(super) closed spec fn owner_word_at(t: SlabTable, group: usize) -> AtomicU16 {
-    t.owner_perms@[group as int].value()
+/// The pointer to the owner word at `addr`, of the provenance an address
+/// cast picks up ([`perm_at`]): what [`SlabTable::owner_word`] returns for
+/// the word of a hand-out group, the one its permission is to.
+pub(super) open spec fn owner_ptr_at(addr: int) -> *mut AtomicU16 {
+    ptr_mut_from_data::<AtomicU16>(PtrData { addr: addr as usize, provenance: cast_provenance(), metadata: () })
 }
+
+/// Namespace of the owner words' invariants ([`OwnerPred`]).
+pub open spec fn owner_ns() -> int {
+    0x6f77_6e72
+}
+
+/// What the invariant of one hand-out group's owner word is about: the
+/// word's pointer, the class, the group's slabs `lo..hi`
+/// ([`SlabTable::spec_group_range`]) and the location of the table's
+/// witness markers.
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub ghost struct OwnerKey {
+    pub ptr: *mut AtomicU16,
+    pub class: int,
+    pub lo: int,
+    pub hi: int,
+    pub sloc: Loc,
+}
+
+/// What an owner word's invariant holds: the word's permission; the
+/// witness markers of the group's slabs ([`owner_marks`] at the key's
+/// location), exclusive while the word is not stored and persistent once
+/// it is; and, once it is, the taker's record ([`Taker`]).
+pub type OwnerVal = (PointsTo<AtomicU16>, GhostSubset<int>, GhostPersistentSubset<int>, Option<Taker>);
+
+/// Who took a group, as its owner word's invariant keeps it: the
+/// registry's persistent record of the taking state's arena
+/// (`arena::Published`, which the taker holds: `take_group`'s `pubw`),
+/// and the group's slabs in the taking state's owned-slab record
+/// (`Inner::oauth`), persistent.
+pub type Taker = (&'static Published, GhostPersistentSubset<int>);
+
+/// An owner word's invariant: the permission is to the key's word, and
+/// either the exclusive markers hold the group's witness markers (the
+/// word is not stored yet: `new` makes every group's so), or the
+/// persistent ones do and the word holds the group's owner, which took
+/// the group ([`owner_stored`]). `take_group`'s store ([`store_owner`])
+/// is the one write, inside it: it persists the markers as it stores,
+/// keeps the persistent ones for the watermark's invariant
+/// ([`WatermarkPred`]), and records the taker. A reader that holds a
+/// persistent marker of a slab of the group rules the first case out (the
+/// exclusive markers are disjoint from every persistent one,
+/// `GhostSubset::disjoint_persistent`), so it reads the owner
+/// ([`load_owner`]), and the taker ([`SlabTable::owned_by`]).
+pub struct OwnerPred;
+
+impl InvariantPredicate<OwnerKey, OwnerVal> for OwnerPred {
+    open spec fn inv(k: OwnerKey, v: OwnerVal) -> bool {
+        &&& v.0.ptr() == k.ptr
+        &&& v.0.is_init()
+        &&& v.1.id() == k.sloc
+        &&& v.2.id() == k.sloc
+        &&& (owner_marks(k.lo, k.hi).subset_of(v.1@) || owner_stored(k, u16_value(v.0.value()), v.2@, v.3))
+    }
+}
+
+/// The owner word of the group of `k` holds `value`, the owner of each of
+/// its slabs, `seen` has the group's witness markers, and the group was
+/// taken by the published state of class `k.class` and arena `value`,
+/// which has the group's slabs in its owned-slab record ([`taken_by`]).
+pub open spec fn owner_stored(k: OwnerKey, value: u16, seen: Set<int>, taker: Option<Taker>) -> bool {
+    &&& owner_marks(k.lo, k.hi).subset_of(seen)
+    &&& forall|x: int| k.lo <= x < k.hi ==> #[trigger] slab_owner(k.class, x) == value
+    &&& taker matches Some(t) && taken_by(k, value, t)
+}
+
+/// `t` is the record of a taker of the group of `k` for arena `value`:
+/// the process registry's record of arena `value`, and the group's slabs
+/// in its class `k.class` state's owned-slab record.
+pub open spec fn taken_by(k: OwnerKey, value: u16, t: Taker) -> bool {
+    &&& t.0.id() == process_pub_loc()
+    &&& t.0.key() == value as int
+    &&& t.1.id() == t.0.value()[k.class]
+    &&& forall|x: int| k.lo <= x < k.hi ==> #[trigger] t.1@.contains(x)
+}
+
+/// The invariant of one owner word.
+pub type OwnerInv = AtomicInvariant<OwnerKey, OwnerVal, OwnerPred>;
 
 /// The arena that owns slab `slab` of class `c`'s region: the index
 /// [`SlabTable::take_group`] stores in the owner word of the slab's
@@ -259,15 +368,18 @@ pub(super) closed spec fn owner_word_at(t: SlabTable, group: usize) -> AtomicU16
 /// before the watermark passes the group. Fixed for the life of the
 /// process from then on (arena isolation, `verus/THEOREMS.md`): the word
 /// is written once, by that store ([`store_owner`]), and every load of a
-/// handed-out group's word returns it ([`load_owner`]). Uninterpreted:
-/// those two trusted wrappers are all that state it. Keyed by the class
+/// handed-out group's word returns it ([`load_owner`], through the word's
+/// invariant, [`OwnerPred`]). Uninterpreted: the trusted store is all
+/// that states it. Keyed by the class
 /// alone, which rests on there being one table per class per process
 /// (the premise [`axiom_slot_loc`] names; tests that build several
 /// tables, or corrupt an owner word, are outside it).
 pub uninterp spec fn slab_owner(c: int, slab: int) -> u16;
 
 /// The marker of the owner store of slab `x` ([`store_owner`]): negative,
-/// so apart from every bit's fresh and init markers (`bitmap.rs`).
+/// so apart from every bit's fresh and init markers (`bitmap.rs`). At the
+/// location of a table's witness markers ([`OwnerPred`]), slab `x`'s
+/// witness marker.
 pub open spec fn owner_mark(x: int) -> int {
     -1 - x
 }
@@ -303,35 +415,65 @@ pub open spec fn slot_owner(c: int, p: usize) -> u16 {
     slab_owner(c, process_regions().slab_index(c, p))
 }
 
-/// `w.load(Relaxed)` of the owner word of handed-out slab `slab`'s group:
-/// the arena that owns the slab. Trusted, the read half of the
-/// [`slab_owner`] premise: the caller has seen the watermark past `slab`
-/// (the safety condition of [`SlabTable::owner_at`] and
-/// [`SlabTable::owner_from`], its two callers), so
-/// the group was handed out, its word was stored once before the
-/// watermark moved ([`store_owner`]) and nothing writes it afterwards.
-/// Verus does not check that condition (`owner_at` requires only `slab <
-/// nslabs`): its callers, `owner` (after the watermark test),
-/// `check_located` (after `check_live`) and the `free` fast path's
-/// `heap::ClassLine::owner` (after the class line's watermark copy test,
-/// and the copy is never ahead of the watermark), are what meet it.
-/// Sequential consistency, as for
-/// every atomic here (`verus/WEAKMEM.md`).
-#[verifier::external_body]
+/// `(*w).load(Relaxed)` of the owner word of handed-out slab `slab`'s
+/// group in `t`: the arena that owns the slab. `seen` is the caller's
+/// witness that the group was handed out: slab `slab`'s witness marker,
+/// persistent, which a load of the watermark past `slab` returns
+/// ([`SlabTable::watermark_seen`]: the watermark's invariant holds the
+/// markers of every slab below it, [`WatermarkPred`]). The load is through
+/// the word's permission, inside its invariant ([`OwnerPred`]), which
+/// the marker shows to be past the store ([`store_owner`]): there the word
+/// holds the group's owner. Sequential consistency, as for every atomic
+/// here (`verus/WEAKMEM.md`).
+// `t` and `seen` are read only by the proof (ghost).
+#[allow(unused_variables)]
 #[inline(always)]
-fn load_owner(w: &AtomicU16, Ghost(t): Ghost<SlabTable>, Ghost(slab): Ghost<usize>) -> (r: u16)
+fn load_owner(t: &SlabTable, w: *const AtomicU16, Ghost(slab): Ghost<usize>, seen: Tracked<&GhostPersistentSubset<int>>) -> (r: u16)
     requires
         slab < t.spec_nslabs(),
-        *w == owner_word_at(t, slab >> t.lg_group),
+        w == owner_ptr_at(t.owner_addr((slab >> t.lg_group) as int)),
+        seen@.id() == t.spec_sloc(),
+        seen@@.contains(owner_mark(slab as int)),
     ensures
         r == slab_owner(t.spec_class() as int, slab as int),
-    opens_invariants none
+    opens_invariants [owner_ns()]
 {
-    w.load(Ordering::Relaxed)
+    proof {
+        use_type_invariant(t);
+        t.lemma_group_in_range(slab);
+        t.lemma_slab_in_group(slab);
+    }
+    let ghost g = (slab >> t.lg_group) as int;
+    let ghost (lo, hi) = (t.spec_group_range(g as usize).0 as int, t.spec_group_range(g as usize).1 as int);
+    proof {
+        assert(t.owner_invs@.contains_key(g));
+        broadcast use vstd::set_lib::range_set_properties;
+        assert(owner_marks(lo, hi).contains(owner_mark(slab as int)));
+    }
+    let r;
+    vstd::open_atomic_invariant!(t.owner_invs.borrow().tracked_borrow(g) => v => {
+        // SAFETY: the invariant's permission is to the word at `w`.
+        r = unsafe { load_u16_at(w, Ordering::Relaxed, Tracked(&v.0)) };
+        proof {
+            let k = t.owner_invs@[g].constant();
+            assert(k.lo == lo && k.hi == hi && k.class == t.spec_class() as int);
+            // Not the unstored case: its markers are disjoint from the
+            // persistent `seen`, which has slab `slab`'s.
+            if owner_marks(lo, hi).subset_of(v.1@) {
+                v.1.disjoint_persistent(seen.get());
+                assert(v.1@.contains(owner_mark(slab as int)));
+            }
+            assert(owner_stored(k, r, v.2@, v.3));
+            assert(slab_owner(k.class, slab as int) == r);
+        }
+    });
+    r
 }
 
-/// `w.store(arena, Relaxed)` of the owner word of hand-out group `group`:
-/// from here on [`slab_owner`] of every slab of the group is `arena`.
+/// `(*w).store(arena, Relaxed)` of the owner word of hand-out group
+/// `group`, through its permission `perm`: the permission holds `arena`
+/// ([`u16_value`], as `vspec::atom::load_u16_at` reads it back), and from
+/// here on [`slab_owner`] of every slab of the group is `arena`.
 /// Trusted, the write half of the [`slab_owner`] premise: called only by
 /// [`SlabTable::take_group`], under the commit lock, for the group at the
 /// watermark, past every fallible step, after which it moves the
@@ -346,21 +488,39 @@ fn load_owner(w: &AtomicU16, Ghost(t): Ghost<SlabTable>, Ghost(slab): Ghost<usiz
 /// it releases the lock, which `take_group` asserts and Verus does not
 /// check at the release (`LockGuard::drop`), so a holder that took the
 /// markers and released without moving the watermark would let the next
-/// one store again.
-// `marks` is read only by the requires (ghost).
+/// one store again. It runs inside the word's invariant ([`OwnerPred`]),
+/// which holds `perm`; every store to an owner word is this one (the test
+/// helper `corrupt_owner_word` aside), so the value `perm` holds is the
+/// word's.
+// `perm` and `marks` are read only by the specification (ghost).
 #[allow(unused_variables)]
 #[verifier::external_body]
+#[verifier::atomic]
 #[inline(always)]
-fn store_owner(w: &AtomicU16, arena: u16, Ghost(t): Ghost<SlabTable>, Ghost(group): Ghost<usize>, Tracked(marks): Tracked<GhostSubset<int>>)
+fn store_owner(
+    w: *const AtomicU16,
+    arena: u16,
+    Ghost(t): Ghost<SlabTable>,
+    Ghost(group): Ghost<usize>,
+    Tracked(perm): Tracked<&mut PointsTo<AtomicU16>>,
+    Tracked(marks): Tracked<GhostSubset<int>>,
+)
     requires
-        *w == owner_word_at(t, group),
+        old(perm).ptr() == w,
+        old(perm).is_init(),
         marks.id() == mark_loc(t.spec_class() as int),
         owner_marks(t.spec_group_range(group).0 as int, t.spec_group_range(group).1 as int).subset_of(marks@),
     ensures
+        final(perm).ptr() == old(perm).ptr(),
+        final(perm).is_init(),
+        u16_value(final(perm).value()) == arena,
         forall|x: int| t.spec_group_range(group).0 <= x < t.spec_group_range(group).1
             ==> #[trigger] slab_owner(t.spec_class() as int, x) == arena,
+    opens_invariants none
+    no_unwind
 {
-    w.store(arena, Ordering::Relaxed)
+    // SAFETY: `perm` is to the owner word at `w`, committed.
+    unsafe { (*w).store(arena, Ordering::Relaxed) }
 }
 
 /// `p` is an initialised permission to the `T` at `addr`, through a
@@ -513,10 +673,14 @@ pub struct SlabTable {
     /// `Heap::flush`).
     pub(super) desc_perms: Tracked<Map<int, PointsTo<SlabDesc>>>,
     pub(super) word_perms: Tracked<&'static Map<int, PointsTo<AtomicU64>>>,
-    pub(super) owner_perms: Tracked<Map<int, PointsTo<AtomicU16>>>,
-    /// Ghost (no bytes): the watermark's invariant ([`CommittedPred`]),
-    /// which holds its permission: it is at most `nslabs`.
-    pub(super) committed_inv: Tracked<CommittedInv>,
+    /// Ghost (no bytes): the invariant of every hand-out group's owner
+    /// word ([`OwnerPred`]), which holds the word's permission, frozen
+    /// (`new`) as `word_invs` is.
+    pub(super) owner_invs: Tracked<&'static Map<int, OwnerInv>>,
+    /// Ghost (no bytes): the watermark's invariant ([`WatermarkPred`]),
+    /// which holds its permission: it is at most `nslabs`, and the owner
+    /// words of the groups below it are stored.
+    pub(super) committed_inv: Tracked<WatermarkInv>,
 }
 
 /// Namespace of the watermark invariants ([`CommittedPred`]).
@@ -524,11 +688,12 @@ pub open spec fn committed_ns() -> int {
     0x6877_6d6b
 }
 
-/// A watermark's invariant, keyed by the atomic's identity
-/// (`vspec::atom::usize_id`) and the table's slab count: the watermark is
-/// at most the slab count. `new` makes it with the atomic (value 0), and
-/// `take_group`, its one writer, stores the end of the group it hands
-/// out, at most `nslabs`, inside it.
+/// A watermark copy's invariant, keyed by the atomic's identity
+/// (`vspec::atom::usize_id`) and the table's slab count: the copy is at
+/// most the slab count. [`SlabTable::new_mirror`] makes it with the atomic
+/// (value 0), and [`SlabTable::mirror_watermark`] and `take_group`, its
+/// writers, store watermark values, at most `nslabs`, inside it. The
+/// table's own watermark has [`WatermarkPred`].
 pub struct CommittedPred;
 
 impl InvariantPredicate<(int, usize), UsizePerm> for CommittedPred {
@@ -538,8 +703,31 @@ impl InvariantPredicate<(int, usize), UsizePerm> for CommittedPred {
     }
 }
 
-/// The invariant of one watermark.
+/// The invariant of one watermark copy (`heap::ClassLine`).
 pub type CommittedInv = AtomicInvariant<(int, usize), UsizePerm, CommittedPred>;
+
+/// A table's watermark invariant: [`CommittedPred`]'s, keyed also by the
+/// location of the table's owner-word witness markers, with a persistent
+/// set of them that has every slab's below the watermark. `new` makes it
+/// with the atomic (value 0) and an empty set; `take_group`, its one
+/// writer, stores the end of the group it hands out, after that group's
+/// owner word, with the commit lock's copy of the markers
+/// ([`TableInner::inv`]), which by then has the group's. A load returns a
+/// copy of the set (`vspec::atom::load_usize_seen`): the witness the owner
+/// reads take ([`load_owner`]).
+pub struct WatermarkPred;
+
+impl InvariantPredicate<(int, usize, Loc), SeenVal> for WatermarkPred {
+    open spec fn inv(k: (int, usize, Loc), v: SeenVal) -> bool {
+        &&& v.0.id() == k.0
+        &&& v.0.value() <= k.1
+        &&& v.1.id() == k.2
+        &&& owner_marks(0, v.0.value() as int).subset_of(v.1@)
+    }
+}
+
+/// The invariant of a table's watermark.
+pub type WatermarkInv = AtomicInvariant<(int, usize, Loc), SeenVal, WatermarkPred>;
 
 /// `a.load(Relaxed)` of a class line's watermark copy (`heap::ClassLine`)
 /// inside its invariant `inv`: at most the slab count the invariant
@@ -837,6 +1025,27 @@ impl SlabTable {
         let bits_base = bits.start() + stagger;
         let owners_base = owners.start() + stagger;
         let desc_base = descs.start() + stagger;
+        // The owner words' witness markers: exclusive in each word's
+        // invariant until its store (`OwnerPred`), with the word's
+        // permission; and the empty persistent sets of them the commit lock
+        // and the watermark start from.
+        let tracked (_sauth, smarks) = GhostSetAuth::<int>::new(owner_marks(0, nslabs as int));
+        let ghost sloc = smarks.id();
+        let tracked seen0 = smarks.empty().persist();
+        let tracked seen1 = seen0.duplicate();
+        let ghost lgg = u64_trailing_zeros(group as u64) as u8;
+        let ghost ng = (nslabs + group - 1) / (group as int);
+        proof {
+            assert((group as u32) as usize == 1usize << lgg && lgg < 64);
+            let (n, gr) = (nslabs as int, group as int);
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(n + gr - 1, gr);
+            assert(0 <= ng);
+            assert(ng == 0 || (ng - 1) * gr < n) by (nonlinear_arith)
+                requires ng * gr + (n + gr - 1) % gr == n + gr - 1, 0 <= (n + gr - 1) % gr, gr >= 1, ng >= 0;
+            assert(ng * gr >= n) by (nonlinear_arith)
+                requires ng * gr + (n + gr - 1) % gr == n + gr - 1, (n + gr - 1) % gr < gr;
+        }
+        let tracked oinvs = fresh_owner_invs(omap, smarks, owners_base as int, class as int, lgg, group as u32, nslabs, ng as nat);
         // The commit lock's invariant (`TableInner::inv`) of the value
         // below, conjunct by conjunct, so `Lock::new`'s `lock_inv` does not
         // rest on the solver assembling it from the whole context.
@@ -879,8 +1088,11 @@ impl SlabTable {
             dbase: Ghost(desc_base as int),
             dstride: Ghost(stride as int),
             mirror_inv: Tracked(None),
+            sloc: Ghost(sloc),
+            seen: Tracked(seen0),
         }, Ghost(rank_table(class as int))));
         proof {
+            assert(lock_init(inner.0).sloc@ == sloc);
             assert(lock_init(inner.0).page@ == 1usize << regions.lg_page);
             assert(lock_init(inner.0).group@ == group);
             assert(lock_init(inner.0).nslabs@ == nslabs);
@@ -932,7 +1144,7 @@ impl SlabTable {
         }
         // The watermark, with its invariant (0, at most any slab count).
         let (committed_slabs, Tracked(cperm)) = new_usize(0);
-        let tracked committed_inv = CommittedInv::new((usize_id(&committed_slabs), nslabs), cperm, committed_ns());
+        let tracked committed_inv = WatermarkInv::new((usize_id(&committed_slabs), nslabs, sloc), (cperm, seen1), committed_ns());
         proof {
             reveal(regions_held);
         }
@@ -960,7 +1172,7 @@ impl SlabTable {
             mark_auth: Tracked(mark_auth),
             desc_perms: Tracked(dmap),
             word_perms: Tracked(vstd::modes::tracked_static_ref(wmap)),
-            owner_perms: Tracked(omap),
+            owner_invs: Tracked(vstd::modes::tracked_static_ref(oinvs)),
             committed_inv: Tracked(committed_inv),
         })
     }
@@ -1313,6 +1525,130 @@ proof fn carve_owners(tracked raw: PointsToRaw, base: int, n: int) -> (tracked r
         assert(carved[0 + g].ptr()@.addr == base + 2 * g);
     }
     r
+}
+
+/// The slabs of hand-out group `g` of a table with `2^lg` slabs per group
+/// and `nslabs` slabs: from `g << lg`, `group` of them, clipped to the
+/// region ([`SlabTable::spec_group_range`]).
+pub(super) open spec fn group_range_at(lg: u8, group: u32, nslabs: usize, g: usize) -> (usize, usize) {
+    let start = g << lg;
+    (start, if start + group as usize <= nslabs { (start + group as usize) as usize } else { nslabs })
+}
+
+/// [`group_range_at`] in numbers, for a group that starts inside the
+/// region: it starts at `g * group` and ends `group` slabs later or at the
+/// region's end.
+proof fn lemma_range_at(lg: u8, group: u32, nslabs: usize, g: usize)
+    requires
+        lg < 64,
+        group as usize == 1usize << lg,
+        (g as int) * (group as int) < nslabs,
+    ensures
+        group_range_at(lg, group, nslabs, g).0 == (g as int) * (group as int),
+        group_range_at(lg, group, nslabs, g).1 == if (g as int) * (group as int) + group <= nslabs {
+            (g as int) * (group as int) + group
+        } else {
+            nslabs as int
+        },
+{
+    let lgu = lg as usize;
+    vstd::bits::lemma_usize_pow2_no_overflow(lgu as nat);
+    vstd::bits::lemma_usize_shl_is_mul(1, lgu);
+    assert((1usize << lg) == (1usize << lgu) && (g << lg) == (g << lgu)) by (bit_vector)
+        requires lgu == lg as usize;
+    vstd::bits::lemma_usize_shl_is_mul(g, lgu);
+}
+
+/// `i` is the invariant [`OwnerPred`] of the owner word of hand-out group
+/// `g` of class `class`'s table, whose owner array starts at `base`, with
+/// `2^lg` slabs per group, `nslabs` slabs and its witness markers at
+/// `sloc`.
+pub(super) open spec fn owner_inv_at(i: OwnerInv, base: int, class: int, lg: u8, group: u32, nslabs: usize, sloc: Loc, g: int) -> bool {
+    &&& i.constant() == OwnerKey {
+        ptr: owner_ptr_at(base + 2 * g),
+        class,
+        lo: group_range_at(lg, group, nslabs, g as usize).0 as int,
+        hi: group_range_at(lg, group, nslabs, g as usize).1 as int,
+        sloc,
+    }
+    &&& i.namespace() == owner_ns()
+}
+
+/// The invariants ([`OwnerPred`]) of the owner words of hand-out groups
+/// `0..n`, as `new` makes them: not stored, each with its word's
+/// permission, taken from `perms`, and the witness markers of its slabs,
+/// split off `marks`.
+proof fn fresh_owner_invs(
+    tracked perms: Map<int, PointsTo<AtomicU16>>,
+    tracked marks: GhostSubset<int>,
+    base: int,
+    class: int,
+    lg: u8,
+    group: u32,
+    nslabs: usize,
+    n: nat,
+) -> (tracked r: Map<int, OwnerInv>)
+    requires
+        forall|g: int| #![trigger perms.contains_key(g)] #![trigger perms[g]] 0 <= g < n ==> perms.contains_key(g) && perm_at(perms[g], base + 2 * g),
+        lg < 64,
+        group as usize == 1usize << lg,
+        n == 0 || (n - 1) * (group as int) < nslabs,
+        owner_marks(0, if n * (group as int) <= nslabs { n * (group as int) } else { nslabs as int }).subset_of(marks@),
+    ensures
+        forall|g: int| #![trigger r.contains_key(g)] #![trigger r[g]] 0 <= g < n ==> r.contains_key(g)
+            && owner_inv_at(r[g], base, class, lg, group, nslabs, marks.id(), g),
+    decreases n,
+{
+    broadcast use vstd::set_lib::range_set_properties;
+    if n == 0 {
+        Map::tracked_empty()
+    } else {
+        let g = n - 1;
+        let gr = group as int;
+        assert((1usize << lg) >= 1) by (bit_vector)
+            requires lg < 64;
+        assert(0 <= g * gr) by (nonlinear_arith)
+            requires 0 <= g, 0 <= gr;
+        assert(n * gr == g * gr + gr) by (nonlinear_arith)
+            requires g == n - 1;
+        assert(g <= g * gr) by (nonlinear_arith)
+            requires 0 <= g, 1 <= gr;
+        assert((g as usize) as int == g);
+        lemma_range_at(lg, group, nslabs, g as usize);
+        let lo = group_range_at(lg, group, nslabs, g as usize).0 as int;
+        let hi = group_range_at(lg, group, nslabs, g as usize).1 as int;
+        let tracked mut perms = perms;
+        let tracked mut marks = marks;
+        let ghost m0 = marks@;
+        assert(owner_marks(lo, hi).subset_of(marks@));
+        let tracked m = marks.split(owner_marks(lo, hi));
+        assert(owner_marks(0, lo).subset_of(marks@)) by {
+            assert forall|x: int| #[trigger] owner_marks(0, lo).contains(x) implies marks@.contains(x) by {
+                assert(m0.contains(x));
+                assert(!owner_marks(lo, hi).contains(x));
+            }
+        }
+        let tracked e = m.empty().persist();
+        assert(perms.contains_key(g));
+        let tracked p = perms.tracked_remove(g);
+        let k = OwnerKey { ptr: owner_ptr_at(base + 2 * g), class, lo, hi, sloc: marks.id() };
+        let tracked inv = OwnerInv::new(k, (p, m, e, None), owner_ns());
+        if g > 0 {
+            assert((g - 1) * gr < nslabs) by (nonlinear_arith)
+                requires g * gr < nslabs, gr >= 0, g >= 1;
+        }
+        assert(lo == g * gr && g * gr <= nslabs);
+        assert((if (g as nat) * gr <= nslabs { (g as nat) * gr } else { nslabs as int }) == lo);
+        let tracked mut r = fresh_owner_invs(perms, marks, base, class, lg, group, nslabs, g as nat);
+        let ghost r0 = r;
+        r.tracked_insert(g, inv);
+        assert forall|j: int| #![trigger r.contains_key(j)] #![trigger r[j]] 0 <= j < n implies r.contains_key(j) && owner_inv_at(r[j], base, class, lg, group, nslabs, marks.id(), j) by {
+            if j < g {
+                assert(r0.contains_key(j));
+            }
+        }
+        r
+    }
 }
 
 /// A length rounded up to a whole word covers it.
@@ -2021,9 +2357,15 @@ impl SlabTable {
         &&& self.inner.0.rank() == rank_table(self.class as int)
         &&& self.lg_page == process_regions().lg_page
         &&& groups_paged(self.base, self.slabs_per_page, class_table()[self.class as int].lg_slab, self.lg_page)
-        &&& self.committed_inv@.constant() == (usize_id(&self.committed_slabs), self.nslabs)
+        &&& self.committed_inv@.constant() == (usize_id(&self.committed_slabs), self.nslabs, self.spec_sloc())
         &&& self.committed_inv@.namespace() == committed_ns()
         &&& regions_held()
+    }
+
+    /// The location of the owner words' witness markers ([`OwnerPred`]):
+    /// the commit lock's, fixed at `new`.
+    pub closed spec fn spec_sloc(&self) -> Loc {
+        lock_init(self.inner.0).sloc@
     }
 
     /// Hand-out groups of the region (owner words).
@@ -2034,8 +2376,9 @@ impl SlabTable {
     /// The permissions `new` carved from the three reservations: to
     /// descriptor `s` at `desc_base + s * desc_stride`, to class bitmap word
     /// `j` at `bits_base + 8 * j` (the word [`word_addr`] names there), and
-    /// to owner word `g` at `owners_base + 2 * g`, for every slab, word and
-    /// hand-out group of the region; none of the arrays wraps.
+    /// to owner word `g` at `owners_base + 2 * g` (held by the word's
+    /// invariant, [`owner_inv_at`]), for every slab, word and hand-out
+    /// group of the region; none of the arrays wraps.
     pub(super) closed spec fn perms_ok(&self) -> bool {
         &&& self.desc_base + self.nslabs * (self.desc_stride as int) <= usize::MAX
         &&& self.desc_base % DESC_ALIGN == 0
@@ -2049,8 +2392,8 @@ impl SlabTable {
         &&& forall|j: int| #![trigger self.word_perms@.contains_key(j)] #![trigger self.word_perms@[j]] 0 <= j < self.spec_nwords() ==> self.word_perms@.contains_key(j)
             && perm_at(self.word_perms@[j], self.bits_base + 8 * j)
             && word_addr(&self.word_perms@[j].value()) == self.bits_base + 8 * j
-        &&& forall|g: int| #![trigger self.owner_perms@.contains_key(g)] #![trigger self.owner_perms@[g]] 0 <= g < self.spec_ngroups() ==> self.owner_perms@.contains_key(g)
-            && perm_at(self.owner_perms@[g], self.owners_base + 2 * g)
+        &&& forall|g: int| #![trigger self.owner_invs@.contains_key(g)] #![trigger self.owner_invs@[g]] 0 <= g < self.spec_ngroups() ==> self.owner_invs@.contains_key(g)
+            && owner_inv_at(self.owner_invs@[g], self.owners_base as int, self.class as int, self.lg_group, self.group, self.nslabs, self.spec_sloc(), g)
     }
 
     /// The descriptor array, the class bitmap and the owner array lie in
@@ -2377,8 +2720,7 @@ impl SlabTable {
     ///
     /// [`group_range`]: SlabTable::group_range
     pub(super) open spec fn spec_group_range(self, group: usize) -> (usize, usize) {
-        let start = group << self.lg_group;
-        (start, if start + self.group as usize <= self.nslabs { (start + self.group as usize) as usize } else { self.nslabs })
+        group_range_at(self.lg_group, self.group, self.nslabs, group)
     }
 
     #[inline]
@@ -2606,7 +2948,30 @@ impl SlabTable {
 
     /// The watermark, loaded with `order` (inlined, so the caller's load
     /// is the bare `core` one with its ordering): at most the slab count,
-    /// read inside its invariant ([`CommittedPred`]).
+    /// read inside its invariant ([`WatermarkPred`]), with the witness the
+    /// invariant holds with it: the persistent witness markers of every
+    /// slab below it, whose owner words are stored ([`load_owner`]).
+    #[inline(always)]
+    fn watermark_seen(&self, order: Ordering) -> (r: (usize, Tracked<&'static GhostPersistentSubset<int>>))
+        requires
+            // `core`'s load panics for these two.
+            !(order is Release),
+            !(order is AcqRel),
+        ensures
+            r.0 <= self.spec_nslabs(),
+            r.1@.id() == self.spec_sloc(),
+            owner_marks(0, r.0 as int).subset_of(r.1@@),
+        opens_invariants [committed_ns()]
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        load_usize_seen(&self.committed_slabs, order, &self.committed_inv)
+    }
+
+    /// The watermark, loaded with `order`, as [`watermark_seen`] loads it.
+    ///
+    /// [`watermark_seen`]: SlabTable::watermark_seen
     #[inline(always)]
     fn watermark(&self, order: Ordering) -> (r: usize)
         requires
@@ -2617,12 +2982,7 @@ impl SlabTable {
             r <= self.spec_nslabs(),
         opens_invariants [committed_ns()]
     {
-        proof {
-            use_type_invariant(self);
-        }
-        // Inside the watermark's invariant ([`CommittedPred`]), which
-        // bounds it by the slab count.
-        load_usize_in(&self.committed_slabs, order, &self.committed_inv)
+        self.watermark_seen(order).0
     }
 
     /// Number of slabs (including guard slabs) handed to an arena: their
@@ -2633,6 +2993,21 @@ impl SlabTable {
             r <= self.spec_nslabs(),
     {
         self.watermark(Ordering::Acquire)
+    }
+
+    /// [`committed_slabs`], with the witness the watermark's invariant
+    /// holds with it ([`watermark_seen`]).
+    ///
+    /// [`committed_slabs`]: SlabTable::committed_slabs
+    /// [`watermark_seen`]: SlabTable::watermark_seen
+    #[inline]
+    fn committed_seen(&self) -> (r: (usize, Tracked<&'static GhostPersistentSubset<int>>))
+        ensures
+            r.0 <= self.spec_nslabs(),
+            r.1@.id() == self.spec_sloc(),
+            owner_marks(0, r.0 as int).subset_of(r.1@@),
+    {
+        self.watermark_seen(Ordering::Acquire)
     }
 
     /// Guard slabs committed so far.
@@ -2712,6 +3087,31 @@ impl SlabTable {
             use_type_invariant(self);
         }
         slab < self.watermark(Ordering::Relaxed)
+    }
+
+    /// [`is_handed_out`], with the witness the watermark's invariant holds
+    /// with the value loaded ([`watermark_seen`]): for a slab handed out,
+    /// its persistent witness marker, which [`owner_at`] takes.
+    ///
+    /// [`is_handed_out`]: SlabTable::is_handed_out
+    /// [`watermark_seen`]: SlabTable::watermark_seen
+    /// [`owner_at`]: SlabTable::owner_at
+    #[inline(always)]
+    fn handed_out_seen(&self, slab: usize) -> (r: (bool, Tracked<&'static GhostPersistentSubset<int>>))
+        ensures
+            r.0 ==> slab < self.spec_nslabs(),
+            r.0 ==> r.1@@.contains(owner_mark(slab as int)),
+            r.1@.id() == self.spec_sloc(),
+        opens_invariants [committed_ns()]
+    {
+        let (w, seen) = self.watermark_seen(Ordering::Relaxed);
+        proof {
+            broadcast use vstd::set_lib::range_set_properties;
+            if slab < w {
+                assert(owner_marks(0, w as int).contains(owner_mark(slab as int)));
+            }
+        }
+        (slab < w, seen)
     }
 
     /// Descriptor of `slab` without a watermark check, through its
@@ -2993,60 +3393,71 @@ impl SlabTable {
     }
 
     /// The arena that owns `slab`'s group: one relaxed load of its owner
-    /// word, through its permission ([`SlabTable::perms_ok`]).
+    /// word, through its permission, inside its invariant ([`load_owner`]).
+    /// `seen` is the witness that the group was handed out: slab `slab`'s
+    /// persistent witness marker, from a load of the watermark past it
+    /// ([`watermark_seen`](SlabTable::watermark_seen)).
     ///
     /// # Safety
-    /// `slab` must be below a value the watermark has held: the owner word
-    /// of a handed-out group was committed and written before the
-    /// watermark moved (the premise of `Unbacked::into_lazy`).
+    /// `slab` must be below a value the watermark has held (which `seen`
+    /// shows): the owner word of a handed-out group was committed and
+    /// written before the watermark moved (the premise of
+    /// `Unbacked::into_lazy`).
     #[inline(always)]
-    unsafe fn owner_at(&self, slab: usize) -> (r: u16)
+    unsafe fn owner_at(&self, slab: usize, seen: Tracked<&GhostPersistentSubset<int>>) -> (r: u16)
         requires
             slab < self.spec_nslabs(),
+            seen@.id() == self.spec_sloc(),
+            seen@@.contains(owner_mark(slab as int)),
         ensures
             r == slab_owner(self.spec_class() as int, slab as int),
-        opens_invariants none
+        opens_invariants [owner_ns()]
     {
         proof {
             use_type_invariant(self);
             self.lemma_group_in_range(slab);
         }
-        let ghost group = slab >> self.lg_group;
-        proof {
-            assert(self.owner_perms@.contains_key(group as int));
-        }
         // `owners_base` before the shift: in this order the `free` fast
         // path's owner test schedules its loads as the plain code does.
         let word = addr_to_ptr(self.owners_base + (slab >> self.lg_group) * 2) as *const AtomicU16;
-        load_owner(ptr_ref(word, Tracked(self.owner_perms.borrow().tracked_borrow(group as int))), Ghost(*self), Ghost(slab))
+        load_owner(self, word, Ghost(slab), seen)
     }
 
-    /// [`owner_at`](SlabTable::owner_at) with the owner array's start and
-    /// the group shift given by the caller (a class line's copies of this
-    /// table's, `heap::ClassLine::owner`).
+    /// A relaxed load of the owner word of `slab`'s group, with the owner
+    /// array's start and the group shift given by the caller (a class
+    /// line's copies of this table's, `heap::ClassLine::owner`), through
+    /// the word's permission, inside its invariant ([`OwnerPred`]). Without
+    /// a witness that the group was handed out, the value is unknown: the
+    /// `free` fast path compares it with the home arena and takes the slow
+    /// path, which reads it again ([`check_located`]), when it differs.
     ///
     /// # Safety
     /// As [`owner_at`](SlabTable::owner_at).
+    ///
+    /// [`check_located`]: SlabTable::check_located
     #[inline(always)]
     pub(crate) unsafe fn owner_from(&self, owners_base: usize, lg_group: u8, slab: usize) -> (r: u16)
         requires
             owners_base == self.spec_owners_base(),
             lg_group == self.spec_lg_group(),
             slab < self.spec_nslabs(),
-        ensures
-            r == slab_owner(self.spec_class() as int, slab as int),
-        opens_invariants none
+        opens_invariants [owner_ns()]
     {
         proof {
             use_type_invariant(self);
             self.lemma_group_in_range(slab);
         }
-        let ghost group = slab >> self.lg_group;
+        let ghost g = (slab >> self.lg_group) as int;
         proof {
-            assert(self.owner_perms@.contains_key(group as int));
+            assert(self.owner_invs@.contains_key(g));
         }
         let word = addr_to_ptr(owners_base + (slab >> lg_group) * 2) as *const AtomicU16;
-        load_owner(ptr_ref(word, Tracked(self.owner_perms.borrow().tracked_borrow(group as int))), Ghost(*self), Ghost(slab))
+        let r;
+        vstd::open_atomic_invariant!(self.owner_invs.borrow().tracked_borrow(g) => v => {
+            // SAFETY: the invariant's permission is to the word at `word`.
+            r = unsafe { load_u16_at(word, Ordering::Relaxed, Tracked(&v.0)) };
+        });
+        r
     }
 
     /// Slab `slab`'s `slab_bits` bits from `slab * slab_bits` lie in the
@@ -3099,21 +3510,104 @@ impl SlabTable {
         assert(g + (n - 1) == n + g - 1);
     }
 
-    /// The arena that owns `slab` ([`slab_owner`]). Aborts for a slab that
-    /// was never handed out.
+    /// What the owner word of handed-out slab `slab`'s group records of
+    /// its taker ([`OwnerPred`]), for a reader holding the registry's
+    /// record `pubw` of an arena: if the slab's owner is that arena, the
+    /// taker was that arena's class state (the two records of one index
+    /// agree, `GhostPersistentPointsTo::intersection_agrees`), so `g`, a
+    /// class lock value whose owned-slab record is that state's, has the
+    /// slab in it. `seen` is the witness that the group was handed out
+    /// ([`SlabTable::owner`] returns it). No code: the invariant is opened
+    /// for the proof alone.
+    // `g`, `seen` and `pubw` are read only by the proof (ghost).
+    #[allow(unused_variables)]
+    #[inline(always)]
+    pub(super) fn owned_by(&self, slab: usize, seen: Tracked<&GhostPersistentSubset<int>>, g: &Inner, pubw: Tracked<&'static Published>)
+        requires
+            slab < self.spec_nslabs(),
+            seen@.id() == self.spec_sloc(),
+            seen@@.contains(owner_mark(slab as int)),
+            pubw@.id() == process_pub_loc(),
+            g.oauth@.id() == pubw@.value()[self.spec_class() as int],
+        ensures
+            slab_owner(self.spec_class() as int, slab as int) as int == pubw@.key() ==> g.oauth@@.contains(slab as int),
+        opens_invariants [owner_ns()]
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_group_in_range(slab);
+            self.lemma_slab_in_group(slab);
+        }
+        let ghost gr = (slab >> self.lg_group) as int;
+        let ghost (lo, hi) = (self.spec_group_range(gr as usize).0 as int, self.spec_group_range(gr as usize).1 as int);
+        proof {
+            assert(self.owner_invs@.contains_key(gr));
+            broadcast use vstd::set_lib::range_set_properties;
+            assert(owner_marks(lo, hi).contains(owner_mark(slab as int)));
+        }
+        vstd::open_atomic_invariant!(self.owner_invs.borrow().tracked_borrow(gr) => v => {
+            proof {
+                let k = self.owner_invs@[gr].constant();
+                assert(k.lo == lo && k.hi == hi && k.class == self.spec_class() as int);
+                // Stored, as in `load_owner`.
+                if owner_marks(lo, hi).subset_of(v.1@) {
+                    v.1.disjoint_persistent(seen.get());
+                    assert(v.1@.contains(owner_mark(slab as int)));
+                }
+                let value = u16_value(v.0.value());
+                assert(owner_stored(k, value, v.2@, v.3));
+                assert(slab_owner(k.class, slab as int) == value);
+                let tracked t = v.3.tracked_borrow();
+                assert(taken_by(k, value, *t));
+                if value as int == pubw@.key() {
+                    let tracked mut w = t.0.duplicate();
+                    w.intersection_agrees(pubw.get());
+                    t.1.agree(g.oauth.borrow());
+                    assert(t.1@.contains(slab as int));
+                }
+            }
+        });
+    }
+
+    /// Slab `slab` is one of its hand-out group's, `slab >> lg_group`
+    /// ([`spec_group_range`](SlabTable::spec_group_range)).
+    proof fn lemma_slab_in_group(&self, slab: usize)
+        requires
+            self.inv(),
+            slab < self.nslabs,
+        ensures
+            self.spec_group_range(slab >> self.lg_group).0 <= slab < self.spec_group_range(slab >> self.lg_group).1,
+    {
+        let (lg, gr, n) = (self.lg_group, self.group as usize, self.nslabs);
+        let g = slab >> lg;
+        assert((g << lg) <= slab && slab < (g << lg) + gr) by (bit_vector)
+            requires lg < 64, gr == 1usize << lg, g == slab >> lg, slab < 0x400_0000;
+    }
+
+    /// The arena that owns `slab` ([`slab_owner`]), with the witness that
+    /// the group was handed out that the watermark's load returned, for
+    /// [`SlabTable::owned_by`]. Aborts for a slab that was never handed
+    /// out.
     #[inline]
-    pub fn owner(&self, slab: usize) -> (r: u16)
+    pub fn owner(&self, slab: usize) -> (r: (u16, Tracked<&'static GhostPersistentSubset<int>>))
         requires
             crate::sys::may_abort_pending(),
         ensures
             slab < self.spec_nslabs(),
-            r == slab_owner(self.spec_class() as int, slab as int),
+            r.0 == slab_owner(self.spec_class() as int, slab as int),
+            r.1@.id() == self.spec_sloc(),
+            r.1@@.contains(owner_mark(slab as int)),
     {
-        if slab >= self.committed_slabs() {
+        let (committed, seen) = self.committed_seen();
+        if slab >= committed {
             never_committed(self.class as usize, slab);
         }
+        proof {
+            broadcast use vstd::set_lib::range_set_properties;
+            assert(owner_marks(0, committed as int).contains(owner_mark(slab as int)));
+        }
         // SAFETY: `slab` is below the acquire-loaded watermark.
-        unsafe { self.owner_at(slab) }
+        (unsafe { self.owner_at(slab, seen) }, seen)
     }
 
     #[inline]
@@ -3304,9 +3798,9 @@ impl SlabTable {
             slab < self.spec_nslabs(),
             !crate::layout::guard_slab(self.spec_class() as int, slab as int),
     {
-        self.check_live(slab, slot, p, Tracked(held));
+        let seen = self.check_live_seen(slab, slot, p, Tracked(held));
         // SAFETY: `check_live` returned, so `slab` is below the watermark.
-        unsafe { self.owner_at(slab) }
+        unsafe { self.owner_at(slab, seen) }
     }
 
     /// The bit test of [`check_located`], without the owner: the exact
@@ -3343,7 +3837,29 @@ impl SlabTable {
             // A guard slab's bits are clear: it aborts by name.
             !crate::layout::guard_slab(self.spec_class() as int, slab as int),
     {
-        if !self.is_handed_out(slab) {
+        self.check_live_seen(slab, slot, p, Tracked(held));
+    }
+
+    /// [`check_live`], with the witness that `slab` was handed out that
+    /// its watermark load returned ([`handed_out_seen`]), for
+    /// [`check_located`]'s owner load.
+    ///
+    /// [`check_live`]: SlabTable::check_live
+    /// [`handed_out_seen`]: SlabTable::handed_out_seen
+    /// [`check_located`]: SlabTable::check_located
+    #[inline(always)]
+    fn check_live_seen(&self, slab: usize, slot: usize, p: usize, Tracked(held): Tracked<&Option<GhostSingleton<int>>>) -> (r: Tracked<&'static GhostPersistentSubset<int>>)
+        requires
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && holds_slot(*held, self.spec_class() as int, slab as int, slot as int)),
+            slot < class_table()[self.spec_class() as int].nslots,
+        ensures
+            slab < self.spec_nslabs(),
+            !crate::layout::guard_slab(self.spec_class() as int, slab as int),
+            r@.id() == self.spec_sloc(),
+            r@@.contains(owner_mark(slab as int)),
+    {
+        let (handed, seen) = self.handed_out_seen(slab);
+        if !handed {
             never_committed(self.class as usize, slab);
         }
         debug_assert!(slot < self.class().nslots());
@@ -3355,6 +3871,7 @@ impl SlabTable {
             }
             self.not_live(slab, slot, p);
         }
+        seen
     }
 
     /// The abort of [`check_live`] for a clear bit: a guard slab by name,
@@ -3768,7 +4285,8 @@ impl SlabTable {
     /// [`commit_run`]: SlabTable::commit_run
     /// [`next_slab_locked`]: SlabTable::next_slab_locked
     // Verus needs the explicit reborrow and a loop with an invariant.
-    #[allow(clippy::explicit_auto_deref, clippy::while_let_loop)]
+    // `pubw` is read only by the proof (ghost).
+    #[allow(clippy::explicit_auto_deref, clippy::while_let_loop, unused_variables)]
     pub(super) fn take_group(
         &self,
         meta: &Meta,
@@ -3777,6 +4295,7 @@ impl SlabTable {
         sets_page: usize,
         Tracked(inited): Tracked<&mut GhostPersistentSubset<int>>,
         Tracked(dout): Tracked<&mut Map<nat, DescPerm>>,
+        pubw: Tracked<&'static Published>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: Option<(usize, usize)>)
         requires
@@ -3789,8 +4308,17 @@ impl SlabTable {
             old(sets).nbits() == self.spec_nslabs(),
             old(inited).id() == self.spec_slots().mloc,
             old(dout).dom().is_empty(),
+            // The taker is the published state of this class and arena
+            // (`ClassState::published_by`), whose owned-slab record `sets`
+            // has.
+            pubw@.id() == process_pub_loc(),
+            pubw@.key() == arena as int,
+            old(sets).oauth@.id() == pubw@.value()[self.spec_class() as int],
         ensures
-            final(sets).same_sets(*old(sets)),
+            final(sets).same_sets_but_rec(*old(sets)),
+            final(sets).oauth@.id() == old(sets).oauth@.id(),
+            r is None ==> final(sets).same_sets(*old(sets)),
+            r matches Some((s, e)) ==> final(sets).oauth@@ == old(sets).oauth@@.union(Set::<int>::range(s as int, e as int)),
             *final(ord) == *old(ord),
             final(inited).id() == old(inited).id(),
             old(inited)@.subset_of(final(inited)@),
@@ -3856,7 +4384,17 @@ impl SlabTable {
         }
         // SAFETY: the owner page for the group was committed above.
         let owner_word = unsafe { self.owner_word(s >> self.lg_group) };
-        let previous = owner_word.load(Ordering::Relaxed);
+        let ghost og = (s >> self.lg_group) as int;
+        proof {
+            use_type_invariant(self);
+            assert(self.owner_invs@.contains_key(og));
+        }
+        let previous;
+        vstd::open_atomic_invariant!(self.owner_invs.borrow().tracked_borrow(og) => v => {
+            // SAFETY: the owner page for the group was committed above; the
+            // invariant's permission is to the word.
+            previous = unsafe { load_u16_at(owner_word, Ordering::Relaxed, Tracked(&v.0)) };
+        });
         let ghost g0 = g@;
         // `for slab in s..end`, spelled out (both loops): Verus rejects
         // `continue` in a `for` loop. The `continue` keeps the plain loop's
@@ -4091,7 +4629,46 @@ impl SlabTable {
             assert(owner_marks(s as int, end as int).subset_of(gi.fresh@@));
         }
         let tracked om = gi.fresh.borrow_mut().split(owner_marks(s as int, end as int));
-        store_owner(owner_word, arena, Ghost(*self), Ghost(s >> self.lg_group), Tracked(om));
+        // The store, inside the word's invariant: the group's witness
+        // markers become persistent with it, and the commit lock's copy of
+        // the persistent ones takes them.
+        proof {
+            use_type_invariant(&*self);
+            self.lemma_group_in_range(s);
+            assert(self.spec_group_range(s >> self.lg_group) == (s, end));
+        }
+        let tracked mut stored = GhostPersistentSubset::<int>::dummy();
+        vstd::open_atomic_invariant!(self.owner_invs.borrow().tracked_borrow(og) => v => {
+            proof {
+                if owner_marks(s as int, end as int).subset_of(v.1@) {
+                    stored = v.1.take().persist();
+                    v.2 = stored.duplicate();
+                } else {
+                    stored = v.2.duplicate();
+                }
+            }
+            store_owner(owner_word, arena, Ghost(*self), Ghost(s >> self.lg_group), Tracked(&mut v.0), Tracked(om));
+            proof {
+                // The taker: its arena's record and the group's slabs in
+                // its owned-slab record, which had none of them (it owns
+                // only slabs below `s`).
+                assert(sets.oauth@@.disjoint(Set::<int>::range(s as int, end as int))) by {
+                    broadcast use vstd::set_lib::range_set_properties;
+                    assert(owned_rec(old(sets).oauth@@, old(sets).states@));
+                    assert forall|x: int| #[trigger] sets.oauth@@.contains(x) implies !Set::<int>::range(s as int, end as int).contains(x) by {
+                        assert(old(sets).oauth@@.contains(x));
+                        assert(old(sets).owns(x as nat));
+                    }
+                }
+                let tracked f = sets.oauth.borrow_mut().insert_set(Set::<int>::range(s as int, end as int));
+                v.3 = Some((pubw.get(), f.persist()));
+            }
+        });
+        proof {
+            broadcast use vstd::set_lib::range_set_properties;
+            gi.seen.borrow_mut().combine(stored);
+            assert(owner_marks(0, end as int) =~= owner_marks(0, s as int).union(owner_marks(s as int, end as int)));
+        }
         gi.next_slab = end;
         proof {
             assert(owner_marks(end as int, self.spec_nslabs() as int).subset_of(gi.fresh@@)) by {
@@ -4105,8 +4682,11 @@ impl SlabTable {
         proof {
             use_type_invariant(&*self);
         }
-        vstd::open_atomic_invariant!(self.committed_inv.borrow() => perm => {
-            store_usize(&self.committed_slabs, end, Ordering::Release, Tracked(&mut perm));
+        vstd::open_atomic_invariant!(self.committed_inv.borrow() => v => {
+            store_usize(&self.committed_slabs, end, Ordering::Release, Tracked(&mut v.0));
+            proof {
+                v.1 = gi.seen.borrow().duplicate();
+            }
         });
         if !gi.mirror.is_null() {
             let tracked mi = gi.mirror_inv.borrow().tracked_unwrap();
@@ -4235,26 +4815,24 @@ impl SlabTable {
         }
     }
 
-    /// The owner word of `group`, through its permission
+    /// The owner word of `group`, the one its invariant's permission is to
     /// ([`SlabTable::perms_ok`]).
     ///
     /// # Safety
     /// The group must have been handed out, or be about to be under the
-    /// commit lock (its owner page is committed: the premise of
-    /// `Unbacked::into_lazy`).
+    /// commit lock, before the word is read (its owner page is committed:
+    /// the premise of `Unbacked::into_lazy`).
     #[inline]
-    pub(super) unsafe fn owner_word(&self, group: usize) -> (r: &AtomicU16)
+    pub(super) unsafe fn owner_word(&self, group: usize) -> (r: *const AtomicU16)
         requires
             group < self.spec_ngroups(),
         ensures
-            *r == owner_word_at(*self, group),
+            r == owner_ptr_at(self.owner_addr(group as int)),
     {
         proof {
             use_type_invariant(self);
-            assert(self.owner_perms@.contains_key(group as int));
         }
-        let p = addr_to_ptr(self.owners_base + group * 2) as *const AtomicU16;
-        ptr_ref(p, Tracked(self.owner_perms.borrow().tracked_borrow(group as int)))
+        addr_to_ptr(self.owners_base + group * 2) as *const AtomicU16
     }
 }
 

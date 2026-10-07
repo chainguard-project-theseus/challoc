@@ -1,6 +1,6 @@
 # `DisplaySpecImpl for Issue<'_>`
 
-Seam S104 of `verus/SEAMS.md`: src/config.rs:1004. Kind: spec_impl. Category: core library.
+Seam S102 of `verus/SEAMS.md`: src/config.rs:1004. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract

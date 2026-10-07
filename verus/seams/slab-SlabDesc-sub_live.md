@@ -1,6 +1,6 @@
 # `SlabDesc::sub_live`
 
-Seam S204 of `verus/SEAMS.md`: src/slab.rs:431. Kind: external_body. Category: atomics primitive.
+Seam S202 of `verus/SEAMS.md`: src/slab.rs:431. Kind: external_body. Category: atomics primitive.
 Discharged by reading the body (part 3); the loom models are context only,
 for the allocator invariant the contract no longer claims.
 
@@ -68,7 +68,8 @@ the number of slots held; the `Acquire` load of `live` under the lock
   a slot's reservation happens before its claim, which happens before
   its release (on the claiming thread, or through the program's hand-off
   of the pointer to the freeing thread, which must synchronise:
-  `verus/seams/class-table-load_owner.md`), so the `add_live` precedes
+  `verus/seams/vspec-atom-load_u16_at.md` and `verus/WEAKMEM.md` P5),
+  so the `add_live` precedes
   the `fetch_sub` in that order and the running value never drops below
   the slots still held. The models check this for 2 slots and 3
   threads, on a copy (pinned, `verus/loom/pins.txt`).

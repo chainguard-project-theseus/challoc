@@ -636,3 +636,23 @@ path's load.
 | Seam | Result | Why |
 |---|---|---|
 | `new`, `load`, `fetch_or` (`vspec/flags.rs`, S314-S316) | discharged | per-location coherence: every write is `new`'s or a `fetch_or` within `ROUTE`, so every value in the modification order keeps the made bits, for any ordering, for a reader that happens after `init` (the premise of the trusted seams that hand out a well-formed `&Shared`); the type confines the atomic operations to the wrappers and `run.sh` checks the calls and raw writes by name (heuristic); flags models (478 and 613414 executions) and two controls (a `Relaxed` `READY` store leaves the reader unordered after `init`'s write; a bit outside `ROUTE` fails the assertions) |
+### Package OWNER (2026-10-07)
+
+`load_owner`'s premise, that a reader who saw the watermark past a slab
+sees its owner word, is now a ghost witness in its contract, so
+`load_owner` and `ClassState::owner_locked` verify and the owner words'
+memory-model half is two loom-discharged wrappers and the changed
+`store_owner`:
+
+| Seam | Result | Why |
+|---|---|---|
+| `load_owner` | retired (verified) | the watermark's invariant (`table::WatermarkPred`) holds the owner words' witness markers below it, which `load_usize_seen` hands the reader; the word's invariant (`table::OwnerPred`) holds the stored owner once they are persistent |
+| `load_usize_seen` (S273) | discharged | per-atomic coherence gives the held permission's value, as `load_usize_in`; the copy of the persistent set is a ghost duplicate; watermark, free and bitmap models (the table's watermark loads) |
+| `load_u16_at` (S274) | discharged | per-word coherence: the word's writes are its initial 0 and `store_owner`'s one store; a load ordered after the store reads it. The witness says which loads are so ordered under SC; under C11 an `Acquire` watermark load or the program's hand-off supplies the edge, and a free not ordered after its allocation can read 0 (P5's documented outcome) |
+| `store_owner` (S82) | discharged (contract changed) | as before; it now stores through the word's permission inside the word's invariant and records the value (`u16_value`) |
+| `load_usize_in` (S269) | discharged (now only the class line's copy) | the table's own watermark is read with `load_usize_seen`; free models |
+
+The models are the second pass's, with the table's watermark loads
+through `load_usize_seen` and the owner loads through `load_u16_at`
+(`src/loom_tests/watermark.rs`, `free.rs`, `bitmap.rs`).
+

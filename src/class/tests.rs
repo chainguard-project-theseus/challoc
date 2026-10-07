@@ -189,7 +189,12 @@ impl Env {
 
     fn claim(&self, cs: &ClassState, n: usize) -> (Vec<*mut u8>, Claim) {
         let mut out = vec![ptr::null_mut(); n];
-        let c = cs.claim(&self.meta, &mut out, Tracked::assume_new());
+        let c = cs.claim(
+            &self.meta,
+            &mut out,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         out.truncate(c.n);
         (out, c)
     }
@@ -316,8 +321,8 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     assert_eq!(cs.table().group(), 128);
     assert!(cs.is_guard_slab(124) && !cs.is_guard_slab(128));
     assert_eq!(q[0] as usize, env.regions.slab_addr(c, 128));
-    assert_eq!(cs.table().owner(128), 1);
-    assert_eq!(cs.table().owner(5), 0);
+    assert_eq!(cs.table().owner(128).0, 1);
+    assert_eq!(cs.table().owner(5).0, 0);
     assert_eq!(cs.table().committed_slabs(), 256);
     assert_eq!(cs.table().guards(Tracked::assume_new()), 0);
     let (r, _) = env.claim(&cs, 3 * n);
@@ -470,7 +475,7 @@ fn slabs_are_handed_out_in_line_sized_groups() {
     assert_eq!(cs.stats().committed, 1);
     assert!(t.bits(0).is_full());
     for s in 1..128 {
-        assert_eq!(t.owner(s), 0, "slab {s}");
+        assert_eq!(t.owner(s).0, 0, "slab {s}");
         assert_eq!(t.desc(s).state(), State::Fresh, "slab {s}");
         assert_eq!(t.desc(s).arena(), 0, "slab {s}");
         assert_eq!(t.desc(s).live(), 0, "slab {s}");
@@ -486,9 +491,9 @@ fn slabs_are_handed_out_in_line_sized_groups() {
     assert_eq!(claim, Claim { n: 1, zeroed: true });
     assert_eq!(q[0] as usize, env.regions.slab_addr(c, 128));
     assert_eq!(t.committed_slabs(), 256);
-    assert_eq!(t.owner(128), 1);
-    assert_eq!(t.owner(255), 1);
-    assert_eq!(t.owner(127), 0);
+    assert_eq!(t.owner(128).0, 1);
+    assert_eq!(t.owner(255).0, 1);
+    assert_eq!(t.owner(127).0, 0);
     assert_eq!(t.check(q[0]), 1);
     assert_eq!(t.check(p[0]), 0);
     // Arena 0 keeps filling its own group: slab 1 next, in the same
@@ -1399,7 +1404,7 @@ fn a_disagreeing_descriptor_arena_aborts_the_release() {
     let cs = env.class(small_class(), 0);
     let (p, _) = env.claim(&cs, 1);
     let (slab, _) = cs.locate(p[0]);
-    assert_eq!(cs.table().owner(slab), 0);
+    assert_eq!(cs.table().owner(slab).0, 0);
     cs.desc(slab).set_arena(1);
     cs.release(&p);
 }
@@ -1970,6 +1975,7 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
+            Tracked::assume_new(),
         );
         assert_eq!(np, 1);
         assert_eq!((picks[0].slab, picks[0].n, picks[0].state), (0, 1, prior));
@@ -2290,6 +2296,7 @@ fn a_plan_over_a_slab_with_live_above_nslots_aborts() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
 }
 
@@ -2309,6 +2316,7 @@ fn a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts() {
         &env.meta,
         1,
         &mut picks,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -2397,7 +2405,13 @@ fn claim_random_hands_out_the_same_slots_in_a_random_order() {
     let cs = env.class(c, 0);
     let mut rng = 0x2545_f491_4f6c_dd1du64;
     let mut out = vec![ptr::null_mut(); n];
-    let claim = cs.claim_random(&env.meta, &mut out, &mut rng, Tracked::assume_new());
+    let claim = cs.claim_random(
+        &env.meta,
+        &mut out,
+        &mut rng,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!(claim.n, n);
     assert!(
         claim.zeroed,
@@ -2423,10 +2437,22 @@ fn claim_random_hands_out_the_same_slots_in_a_random_order() {
     cs.release(&out);
     assert_eq!(cs.desc(0).state(), State::Empty);
     let mut half = vec![ptr::null_mut(); n / 2];
-    let c1 = cs.claim_random(&env.meta, &mut half, &mut rng, Tracked::assume_new());
+    let c1 = cs.claim_random(
+        &env.meta,
+        &mut half,
+        &mut rng,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!((c1.n, c1.zeroed), (n / 2, false), "an Empty slab is dirty");
     let mut rest = vec![ptr::null_mut(); n - n / 2];
-    let c2 = cs.claim_random(&env.meta, &mut rest, &mut rng, Tracked::assume_new());
+    let c2 = cs.claim_random(
+        &env.meta,
+        &mut rest,
+        &mut rng,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!(
         (c2.n, c2.zeroed),
         (n - n / 2, false),
@@ -2504,6 +2530,7 @@ fn a_plan_that_takes_a_purged_slab_the_counts_do_not_know_aborts() {
         &env.meta,
         1,
         &mut picks,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),

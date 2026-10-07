@@ -1668,7 +1668,7 @@ mod tests {
         );
         h.flush_all(s, Tracked::assume_new());
         // Per-arena purge covers the Lua arena's slabs only.
-        let lua_arena = s.arena(lua, Tracked::assume_new()).unwrap();
+        let lua_arena = s.arena(lua, Tracked::assume_new()).unwrap().0;
         let empty_before = lua_arena.classes[c].stats().empty;
         assert!(
             empty_before >= 1,
@@ -1736,7 +1736,7 @@ mod tests {
             .map(|(_, p)| *p)
             .collect();
         let t = s.table(c);
-        let cs = s.arena(a, Tracked::assume_new()).unwrap().class(c);
+        let cs = s.arena(a, Tracked::assume_new()).unwrap().0.class(c);
         let mut moved = 0;
         for &p in &live {
             let hint = get_defrag_hint(p);
@@ -1807,7 +1807,7 @@ mod tests {
             "the utilization query keeps jemalloc's large-extent shape"
         );
         let tm = s.table(cm);
-        let csm = s.arena(a, Tracked::assume_new()).unwrap().class(cm);
+        let csm = s.arena(a, Tracked::assume_new()).unwrap().0.class(cm);
         let (lone_slab, _) = tm.locate(*big.last().unwrap());
         assert_eq!(tm.desc(lone_slab).live(), 1);
         let lone_hint = get_defrag_hint(*big.last().unwrap());

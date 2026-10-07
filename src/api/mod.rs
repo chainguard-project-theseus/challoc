@@ -2669,6 +2669,7 @@ mod tests {
                         state(
                             s.arena(a, Tracked::assume_new())
                                 .unwrap()
+                                .0
                                 .stats_raw_lock()
                                 .is_locked(),
                             &std::format!("arena {a} stats"),
@@ -2683,7 +2684,7 @@ mod tests {
                     for &a in arenas {
                         for c in 0..NCLASSES {
                             state(
-                                s.arena(a, Tracked::assume_new()).unwrap().classes[c]
+                                s.arena(a, Tracked::assume_new()).unwrap().0.classes[c]
                                     .raw_lock()
                                     .is_locked(),
                                 &std::format!("arena {a} class {c}"),
@@ -2696,6 +2697,7 @@ mod tests {
                         state(
                             s.arena(a, Tracked::assume_new())
                                 .unwrap()
+                                .0
                                 .sets()
                                 .raw_lock()
                                 .is_locked(),

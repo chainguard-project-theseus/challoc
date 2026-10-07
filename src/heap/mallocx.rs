@@ -253,7 +253,7 @@ fn alloc_direct(shared: &Shared, class: usize, arena: u16, Tracked(blk): Tracked
     // hold no lock.
     let tracked mut ord = axiom_entry();
     match shared.arena(arena, Tracked(&mut ord)) {
-        Some(a) => shared.alloc_direct(a, class, Tracked(blk), Tracked(&mut ord)),
+        Some((a, w)) => shared.alloc_direct(a, w, class, Tracked(blk), Tracked(&mut ord)),
         None => (ptr::null_mut(), false, Tracked(Zeroed::empty(0))),
     }
 }

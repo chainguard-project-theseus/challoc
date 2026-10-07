@@ -227,7 +227,13 @@ fn key_registration_failure_is_served_directly() {
     let s = shared();
     let c = class_of(48).unwrap();
     let p = s
-        .alloc_direct(&s.arena0, c, Tracked::assume_new(), Tracked::assume_new())
+        .alloc_direct(
+            &s.arena0,
+            Tracked::assume_new(),
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
         .0 as usize;
     assert_ne!(p, 0);
     std::thread::spawn(move || {
@@ -630,19 +636,43 @@ fn changed_arena_child() {
     assert_eq!(s.arenas.create(s, Tracked::assume_new()), Some(1));
     let c = class_of(64).unwrap();
     let (a0, a1) = (
-        s.arena(0, Tracked::assume_new()).unwrap(),
-        s.arena(1, Tracked::assume_new()).unwrap(),
+        s.arena(0, Tracked::assume_new()).unwrap().0,
+        s.arena(1, Tracked::assume_new()).unwrap().0,
     );
     // Two slots per slab: neither release empties its slab or reopens
     // it, so the only `ClassState` write is the `released` add.
-    let (p1, _, _) = s.alloc_direct(a1, c, Tracked::assume_new(), Tracked::assume_new());
-    let (q1, _, _) = s.alloc_direct(a1, c, Tracked::assume_new(), Tracked::assume_new());
-    let (p0, _, _) = s.alloc_direct(a0, c, Tracked::assume_new(), Tracked::assume_new());
-    let (q0, _, _) = s.alloc_direct(a0, c, Tracked::assume_new(), Tracked::assume_new());
+    let (p1, _, _) = s.alloc_direct(
+        a1,
+        Tracked::assume_new(),
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
+    let (q1, _, _) = s.alloc_direct(
+        a1,
+        Tracked::assume_new(),
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
+    let (p0, _, _) = s.alloc_direct(
+        a0,
+        Tracked::assume_new(),
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
+    let (q0, _, _) = s.alloc_direct(
+        a0,
+        Tracked::assume_new(),
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert!(!p0.is_null() && !q0.is_null() && !p1.is_null() && !q1.is_null());
     let t = s.table(c);
     let (slab0, _) = t.locate(p0);
-    assert_eq!((t.owner(t.locate(p1).0), t.owner(slab0)), (1, 0));
+    assert_eq!((t.owner(t.locate(p1).0).0, t.owner(slab0).0), (1, 0));
     let cs = a1.class(c) as *const crate::class::ClassState as usize;
     let hi = cs + core::mem::size_of::<crate::class::ClassState>();
     FLIP_LO.store(cs, Ordering::Relaxed);

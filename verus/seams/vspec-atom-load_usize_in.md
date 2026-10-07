@@ -1,6 +1,6 @@
 # `load_usize_in` (`vspec/atom.rs`)
 
-Seam S268 of `verus/SEAMS.md`: src/vspec/atom.rs:101. Kind: external_body. Category: atomics primitive.
+Seam S266 of `verus/SEAMS.md`: src/vspec/atom.rs:103. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 coherence rules (part 3).
 
 ## Contract
@@ -25,11 +25,14 @@ pub fn load_usize_in<P: InvariantPredicate<(int, usize), UsizePerm>>(
 ```
 
 The body, at that commit: `a.load(ordering)`; `inv` is named only by
-the specification. Its one call site is `SlabTable::watermark`, with
-`P` = `table::CommittedPred` (the permission's value is at most the
-table's slab count) and the caller's ordering: `Acquire` from
-`committed_slabs()`, `Relaxed` from `is_handed_out` (the `free` path)
-and `desc_if_committed`.
+the specification. Its one call site is `table::load_mirror`, the
+class line's copy of the watermark (`heap::ClassLine::set_slab` and,
+on aarch64, `bit_fields`, the `free` fast path), `Relaxed`, with `P` =
+`table::CommittedPred` (the copy is at most the table's slab count).
+Until package OWNER it was also `SlabTable::watermark`'s; the table's
+own watermark is now read with `load_usize_seen`
+(`vspec-atom-load_usize_seen.md`), which hands out the owner words'
+witness with the value.
 
 ## Statement
 
@@ -43,31 +46,27 @@ Two parts.
    can be put in one total order, consistent with happens-before, in
    which every read reads the last write before it. `core`'s `load`
    panics for `Release` and `AcqRel` and is otherwise one atomic load.
-2. **loom.** The models of `vspec-atom-store_usize.md` (see the common
-   part below), which run this wrapper over loom's `AtomicUsize` with
-   both orderings of the call site: `src/loom_tests/watermark.rs`
-   (`Acquire`, then `Relaxed`, while two threads hand out groups),
-   `src/loom_tests/free.rs` (the claimer's `Acquire` load, the free
-   path's `Relaxed` one) and `src/loom_tests/bitmap.rs` (a claimer's
-   `Acquire` load). The invariant argument is a ghost value
+2. **loom.** The models of `src/loom_tests/free.rs` (see the common
+   part below and `vspec-atom-store_usize.md`), which run this wrapper
+   over loom's `AtomicUsize` for the free path's `Relaxed` load of the
+   class line's copy (stored by the real `store_usize_at` after the
+   watermark). The invariant argument is a ghost value
    (`Tracked::assume_new()`, no bytes) of a test predicate that Verus
    never sees; the models check the values the loads return
    themselves. Exhaustive:
 
-Models: `loom_watermark_take_group_publishes`, `loom_watermark_relaxed_store_is_unpublished`, `loom_free_after_synchronised_handoff`, `loom_free_after_relaxed_handoff`, `loom_free_unpublished_owner_is_misrouted`, `loom_bitmap_init_is_published`
+Models: `loom_free_after_synchronised_handoff`, `loom_free_after_relaxed_handoff`, `loom_free_unpublished_owner_is_misrouted`
 
-   - `loom_watermark_take_group_publishes` (4482 executions): every
-     load, of either ordering, returns at most the slab count, and a
-     thread's loads never go back.
    - The free path's outcomes (`vspec-word-load.md`): after a
-     synchronising hand-off (31214; 13337 before upstream #87) the `Relaxed` load always finds the
-     slab handed out; after a `Relaxed` hand-off (50926, 17501 before upstream #87, outside the C
-     contract) it may read the initial 0, a fast-path miss. Since #87
-     the fast path's load is of the class line's copy of the watermark
-     (the same wrapper, through `class::load_mirror`), which a
-     synchronised free can read behind (`Lagged`, a fast-path miss);
-     the slow path's load of the watermark itself then finds the slab.
-   - The controls of `vspec-atom-store_usize.md`.
+     synchronising hand-off (31214 executions, as before package OWNER,
+     whose models read the table's watermark with `load_usize_seen`) the free
+     finds the slab handed out, through the copy or, when it reads the
+     copy behind (`Lagged`, a fast-path miss), through the slow path's
+     load of the watermark itself; after a `Relaxed` hand-off (50926,
+     outside the C contract) it may read the initial 0, a fast-path
+     miss.
+   - The control `loom_free_unpublished_owner_is_misrouted` (91770) of
+     `vspec-atom-store_usize.md`.
 
 ## Translation
 
@@ -85,7 +84,7 @@ Models: `loom_watermark_take_group_publishes`, `loom_watermark_relaxed_store_is_
   `p` held in `inv` satisfies `P::inv` at every step, and the load
   returns its value. Read `p.value()` as the value of the last write to
   `a` in the per-location order of part 1 (every write goes through
-  `store_usize`, inside `inv`; `run.sh`'s access check). Part 1 places
+  `store_usize_at`, inside `inv`; `run.sh`'s access check). Part 1 places
   this load in that order right after the write it reads, so `r` is
   `p.value()` there and `p` is a witness of the `exists`, for every
   ordering `load` accepts. `P::inv` is a function of the invariant's
@@ -96,9 +95,9 @@ Models: `loom_watermark_take_group_publishes`, `loom_watermark_relaxed_store_is_
   stops a caller from calling it while `inv` is open, as opening it
   would.
 - **What the SC proof carries across locations.** Nothing:
-  `CommittedPred` bounds the watermark by the slab count, a constant,
+  `CommittedPred` bounds the copy by the slab count, a constant,
   and the proofs use only that bound. That a load past a slab sees the
-  slab's bitmap and owner is the table's publication protocol, which
+  slab's bit is the table's publication protocol, which
   `vspec-atom-store_usize.md` describes and the models check; it is not
   part of this contract.
 - **Gaps.** Those of `vspec-atom-store_usize.md`; the predicate in the

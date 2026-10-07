@@ -25,11 +25,11 @@
 //! claimer, so the `Relaxed` hint load never hides a slot that `live`
 //! promised (the abort's bound, 2^22 passes, is far above it).
 
-use super::{UsizeInv, model};
+use super::{SeenInv, model};
 use crate::bitmap::AtomicBitmap;
 use crate::lock::RawLock;
 use crate::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use crate::vspec::atom::{load_usize_in, store_usize};
+use crate::vspec::atom::{load_usize_seen, store_usize};
 use loom::cell::UnsafeCell;
 use loom::thread;
 use std::boxed::Box;
@@ -280,12 +280,12 @@ fn loom_bitmap_init_is_published() {
     model(|| {
         let s = leak(Slab::new());
         let committed = leak(AtomicUsize::new(0));
-        let inv: &UsizeInv = leak(Tracked::assume_new());
+        let inv: &SeenInv = leak(Tracked::assume_new());
         let t = thread::spawn(move || {
             s.bitmap().init_t(NSLOTS);
             store_usize(committed, 1, Ordering::Release, Tracked::assume_new());
         });
-        if load_usize_in(committed, Ordering::Acquire, inv) == 1 {
+        if load_usize_seen(committed, Ordering::Acquire, inv).0 == 1 {
             let m = s.bitmap().claim(NSLOTS + 1).map_or(0, |(_, m)| m);
             assert_eq!(m & !SLAB_MASK, 0, "claimed padding: {m:#x}");
         }

@@ -1,28 +1,44 @@
 # `store_owner` (`class/table.rs`)
 
-Seam S88 of `verus/SEAMS.md`: src/class/table.rs:354. Kind: external_body. Category: allocator invariant.
+Seam S86 of `verus/SEAMS.md`: src/class/table.rs:500. Kind: external_body. Category: allocator invariant.
 Discharged by loom and the C11 coherence rules (part 3); the store's
 uniqueness is Verus's (the owner-store markers it uses up).
 
 ## Contract
 
-At commit 0c9cd77:
+At the package OWNER commit (parent add590d1):
 
 ```rust
-fn store_owner(w: &AtomicU16, arena: u16, Ghost(t): Ghost<SlabTable>, Ghost(group): Ghost<usize>, Tracked(marks): Tracked<GhostSubset<int>>)
+fn store_owner(
+    w: *const AtomicU16,
+    arena: u16,
+    Ghost(t): Ghost<SlabTable>,
+    Ghost(group): Ghost<usize>,
+    Tracked(perm): Tracked<&mut PointsTo<AtomicU16>>,
+    Tracked(marks): Tracked<GhostSubset<int>>,
+)
     requires
-        *w == owner_word_at(t, group),
+        old(perm).ptr() == w,
+        old(perm).is_init(),
         marks.id() == mark_loc(t.spec_class() as int),
         owner_marks(t.spec_group_range(group).0 as int, t.spec_group_range(group).1 as int).subset_of(marks@),
     ensures
+        final(perm).ptr() == old(perm).ptr(),
+        final(perm).is_init(),
+        u16_value(final(perm).value()) == arena,
         forall|x: int| t.spec_group_range(group).0 <= x < t.spec_group_range(group).1
             ==> #[trigger] slab_owner(t.spec_class() as int, x) == arena,
+    opens_invariants none
+    no_unwind
 ```
 
-The body, at that commit: `w.store(arena, Ordering::Relaxed)`. Its one
-caller is `SlabTable::take_group`, under the commit lock, for the group
-at the watermark, past every fallible step; `take_group` then stores the
-watermark past the group with `Release`.
+The body, at that commit: `unsafe { (*w).store(arena, Ordering::Relaxed) }`
+(`w.store(arena, Ordering::Relaxed)` on the word's reference before
+package OWNER, which added `perm` and its `ensures` and the atomic
+attribute). Its one caller is `SlabTable::take_group`, under the commit
+lock, for the group at the watermark, past every fallible step, inside
+the word's invariant (`table::OwnerPred`), which holds `perm`;
+`take_group` then stores the watermark past the group with `Release`.
 
 ## Statement
 
@@ -31,44 +47,64 @@ Two parts.
 1. **C11, per word.** A store is one write in the word's modification
    order; a load reads some write of that order, and by write-read
    coherence ([intro.races] p18) one that the store happens before reads
-   the store or a later write.
+   the store or a later write. With the one store per word (the
+   markers, below), the word's writes are its initial 0 and this store.
 2. **loom.** The models of `src/loom_tests/free.rs` (described in
-   `vspec-word-load.md` and `class-table-load_owner.md`), whose hand-out
+   `vspec-word-load.md` and `vspec-atom-load_u16_at.md`), whose hand-out
    step copies `take_group`'s order: bitmap `init`, the owner store
-   (`Relaxed`), the watermark store (`Release`).
+   (`Relaxed`), the watermark store (`Release`); and those of
+   `src/loom_tests/watermark.rs`, whose `take_group` copy stores each
+   group's owner `Relaxed` before the watermark, the readers loading the
+   words through `vspec::atom::load_u16_at`.
 
-Models: `loom_free_after_synchronised_handoff`, `loom_free_unpublished_owner_is_misrouted`
+Models: `loom_free_after_synchronised_handoff`, `loom_free_unpublished_owner_is_misrouted`, `loom_watermark_take_group_publishes`
 
-   - `loom_free_after_synchronised_handoff` (31214 executions since the port of upstream #87, 13337 before): every
+   - `loom_free_after_synchronised_handoff` (31214 executions): every
      free ordered after the hand-out through the claimer's `Acquire`
      watermark load and a synchronising hand-off reads the stored arena.
-   - `loom_free_unpublished_owner_is_misrouted` (control, 91770; 38029 before upstream #87):
+   - `loom_watermark_take_group_publishes` (4482): a reader whose
+     `Acquire` load returns `w` reads the stored arena of every group
+     below `w`.
+   - `loom_free_unpublished_owner_is_misrouted` (control, 91770):
      without the `Acquire` edge it can read 0.
 
 ## Translation
 
-- **`requires *w == owner_word_at(t, group)`**: the word is `group`'s
-  owner word.
+- **`requires old(perm).ptr() == w`, `old(perm).is_init()`**: `perm` is
+  the permission to the word at `w`, which `take_group` takes from the
+  word's invariant; part 1 is about that word.
 - **`requires` on `marks`**: the call uses up the owner-store markers of
   the group's slabs, which the class's table minted once each and its
   commit lock holds for the slabs from the watermark on. That makes this
   the group's only store of an owner: Verus checks the markers'
   accounting, under the lock's premise (`axiom_table_lock_inv`, a
   separate seam). No memory-model content.
+- **`ensures final(perm).ptr() == old(perm).ptr()`, `is_init()`**: the
+  store writes through the pointer the permission is to, and leaves the
+  word initialised.
+- **`ensures u16_value(final(perm).value()) == arena`**: read the
+  permission's value as the value of the word's last write in its
+  modification order (`vspec-atom-load_u16_at.md`): after the store it
+  is `arena`, and with this the only store, it stays so.
 - **`ensures` `slab_owner(c, x) == arena` for the group's slabs**: a
   ghost fact, timeless in Verus. Its weak-memory reading is that every
   load of the word that the store happens before returns `arena`: with
-  the store the word's only write after its initial 0 (the previous
-  bullet), part 1 gives that. Loads not ordered after the store may read
-  0. Excluding them is the reader's business: `load_owner`'s doc comment
-  premise ("has seen the watermark past the slab"), which is not in its
-  contract; `class-table-load_owner.md` (evidence) says which callers
-  meet it and which programs do not. This record claims the store's half
-  only.
-- **Gaps.** Those of `class-table-load_owner.md` (model bounds, copies,
-  the class lock and sets between `take_group` and a claimer). The
-  word's initial 0 is the committed metadata page's; that a handed-out
-  group's owner page stays committed is not checked here.
+  the store the word's only write after its initial 0, part 1 gives
+  that. Loads not ordered after the store may read 0. Excluding them is
+  the reader's business: since package OWNER, `table::load_owner`
+  requires a witness that the reader's load of the watermark passed the
+  group (`vspec-atom-load_usize_seen.md`, whose translation says which
+  loads are so ordered, and `verus/WEAKMEM.md` P5 for the programs where
+  they are not). This record claims the store's half only.
+- **`opens_invariants none`**, **`#[verifier::atomic]`**: the body is
+  one atomic store and opens no invariant (read from the source), so it
+  can run inside the word's invariant; it returns (`no_unwind`).
+- **Gaps.** One group of one slab (`free.rs`) or two (`watermark.rs`),
+  at most 4 threads; the class lock and sets between `take_group` and a
+  claimer are stood in for by the claimer's `Acquire` watermark load;
+  the steps are copies (pinned, `verus/loom/pins.txt`). The word's
+  initial 0 is the committed metadata page's; that a handed-out group's
+  owner page stays committed is not checked here.
 
 Common to every loom record. loom 0.7.2 with
 `verus/loom/loom-0.7.2-dpor.patch` (`sh verus/loom/run.sh`, release
@@ -139,6 +175,15 @@ models check. Its findings are folded in: `load_owner` became evidence
 checks were widened and the records now say what they check, the count
 records state the happens-before a ticket's `unbind` needs, and the
 free path's stale reads are described as fast-path misses.
+
+Fresh-context subagent, 2026-10-07: a strict soundness pass on package
+OWNER's trusted items (`load_usize_seen`, `load_u16_at`, `store_owner`'s
+new contract, and the new conjuncts of `axiom_table_lock_inv`,
+`axiom_table_lock_frame` and `axiom_class_lock`) and on these records.
+It found no soundness issue. Its findings are folded in: `run.sh` now
+also checks that only `class/table.rs` names the owner words'
+invariants, `load_u16_at` is `pub(crate)`, `owned_rec` is split into
+one quantifier per conjunct, and four doc inaccuracies are fixed.
 
 ## Tests
 

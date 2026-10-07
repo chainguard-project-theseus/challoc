@@ -37,10 +37,10 @@ fn any_ptr(x: &mut u64) -> *mut u64 {
     }
 }
 
-/// S265 `core::sync::atomic::Atomic::<*mut T>::new`: returns, for every pointer.
-/// S263 `core::sync::atomic::Atomic::<*mut T>::load`: under `!(order is Release) && !(order is
-/// AcqRel)`, returns. S264 `core::sync::atomic::Atomic::<*mut T>::store`: under `!(order is
-/// Acquire) && !(order is AcqRel)`, returns. S266 `core::sync::atomic::Atomic::<*mut T>::swap`:
+/// S263 `core::sync::atomic::Atomic::<*mut T>::new`: returns, for every pointer.
+/// S261 `core::sync::atomic::Atomic::<*mut T>::load`: under `!(order is Release) && !(order is
+/// AcqRel)`, returns. S262 `core::sync::atomic::Atomic::<*mut T>::store`: under `!(order is
+/// Acquire) && !(order is AcqRel)`, returns. S264 `core::sync::atomic::Atomic::<*mut T>::swap`:
 /// no `requires`; returns under every ordering. (Sequentially, each also
 /// reads what was last written, which the contracts do not claim.)
 #[kani::proof]

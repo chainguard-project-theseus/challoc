@@ -1,6 +1,7 @@
 //! The class table's hand-out watermark (`class/table.rs`,
 //! `committed_slabs`): the real wrappers of `vspec/atom.rs`
-//! (`store_usize`, `load_usize_in`) over loom's `AtomicUsize`, driven by
+//! (`store_usize`, `load_usize_seen`, and `load_u16_at` for the owner
+//! words) over loom's atomics, driven by
 //! copies of the `SlabTable` steps that call them, with their orderings:
 //!
 //! - [`Table::take_group`] is `SlabTable::take_group` without the
@@ -12,7 +13,7 @@
 //!   and, once the class line's copy is installed (`gi.mirror`
 //!   non-null), `store_usize_at(end, Release)` of the copy, through the
 //!   pointer `usize_ptr` made;
-//! - [`Table::watermark`] is `SlabTable::watermark`: `load_usize_in`
+//! - [`Table::watermark`] is `SlabTable::watermark`: `load_usize_seen`
 //!   with the caller's ordering, `Acquire` for `committed_slabs()` and
 //!   `Relaxed` for `is_handed_out` and `desc_if_committed`;
 //! - [`Table::mirror_watermark`] is `SlabTable::mirror_watermark`: under
@@ -29,10 +30,11 @@
 //! never install the copy.
 //!
 //! Checked: every load returns at most the slab count (what
-//! `CommittedPred` bounds); a thread's loads never go back (read-read
+//! `WatermarkPred` bounds); a thread's loads never go back (read-read
 //! coherence); the `check_zero` comparison under the lock always finds
 //! the watermark at `next_slab`; an `Acquire` load that returns `w`
-//! sees the owner of every group below `w` stored; and once every
+//! sees the owner of every group below `w` stored (the witness
+//! `load_usize_seen` hands `load_owner`); and once every
 //! thread is joined the watermark is `next_slab`. Left out: the
 //! commits (`ensure`, and its failure, which returns before the store;
 //! `init` of the bitmap: `free.rs` and `bitmap.rs` run `init` before
@@ -41,10 +43,12 @@
 //! owner word, the THP advice after the store, and groups of more than
 //! one slab.
 
-use super::{UsizeInv, model};
+use super::{SeenInv, UsizeInv, model};
 use crate::lock::RawLock;
 use crate::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
-use crate::vspec::atom::{load_usize_in, store_usize, store_usize_at, usize_ptr};
+use crate::vspec::atom::{
+    load_u16_at, load_usize_in, load_usize_seen, store_usize, store_usize_at, usize_ptr,
+};
 use loom::cell::UnsafeCell;
 use loom::thread;
 use std::boxed::Box;
@@ -61,7 +65,7 @@ struct Table {
     /// `SlabTable::committed_slabs`.
     committed: AtomicUsize,
     /// `SlabTable::committed_inv` (ghost).
-    inv: UsizeInv,
+    inv: SeenInv,
     /// The groups' owner words (0: never written).
     owners: [AtomicU16; NSLABS],
     /// The class line's copy of the watermark (`heap::ClassLine`'s
@@ -104,7 +108,7 @@ impl Table {
 
     /// `SlabTable::watermark`.
     fn watermark(&self, order: Ordering) -> usize {
-        load_usize_in(&self.committed, order, &self.inv)
+        load_usize_seen(&self.committed, order, &self.inv).0
     }
 
     /// `SlabTable::take_group` for `arena`: the group `[s, s + 1)`.
@@ -186,7 +190,10 @@ impl Table {
         assert!(w <= NSLABS, "watermark {w} above the slab count");
         for slab in 0..w {
             assert_ne!(
-                self.owners[slab].load(Ordering::Relaxed),
+                // SAFETY: a field of this leaked table.
+                unsafe {
+                    load_u16_at(&self.owners[slab], Ordering::Relaxed, Tracked::assume_new())
+                },
                 0,
                 "slab {slab} below an Acquire watermark {w} has no owner"
             );

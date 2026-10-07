@@ -41,7 +41,6 @@ A_STATS	core library	Kani	discharged (verus/seams/arena-A_STATS.md)
 A_LAST_EXIT_PURGE	core library	Kani	discharged (verus/seams/arena-A_LAST_EXIT_PURGE.md)
 axiom_arena_layout	core library	Kani	discharged (verus/seams/arena-axiom_arena_layout.md)
 axiom_arena_assemble	raw pointer (internal)	none (assumption)
-ClassState::owner_locked	allocator invariant	none (assumption)
 axiom_fresh_slots_zero	allocator invariant	none (assumption)
 axiom_discarded_slots_zero	allocator invariant	none (assumption)
 axiom_fresh_slab_mem	allocator invariant	none (assumption)
@@ -57,7 +56,6 @@ axiom_fresh_words	allocator invariant	none (assumption)
 axiom_init_descs	raw pointer (internal)	none (assumption)
 axiom_init_owners	raw pointer (internal)	none (assumption)
 axiom_init_words	raw pointer (internal)	none (assumption)
-load_owner	allocator invariant	loom/GenMC	evidence (verus/seams/class-table-load_owner.md)
 store_owner	allocator invariant	loom/GenMC	discharged (verus/seams/class-table-store_owner.md)
 Config::set_listed	function pointer	Kani	discharged (verus/seams/config-Config-set_listed.md)
 Config::get	function pointer	Kani	discharged (verus/seams/config-Config-get.md)
@@ -323,7 +321,7 @@ src/vspec/byte.rs:compare_exchange	atomics primitive	loom/GenMC	discharged (veru
 axiom_line_orphaned	platform/kernel fact	none (assumption)
 axiom_cell_orphaned	platform/kernel fact	none (assumption)
 # The atomic invariants on named fields (vspec/atom.rs, vspec/count.rs):
-# Arenas::count (NarenasPred), SlabTable::watermark (CommittedPred) and
+# Arenas::count (NarenasPred), SlabTable::watermark (WatermarkPred) and
 # Policy::position (FracPred) are verified, each store writing a value in
 # range; the watermark's permission wrappers and count.rs's swap are the
 # same kind of primitive as the bound counts' and the bitmap words', and
@@ -332,6 +330,10 @@ axiom_cell_orphaned	platform/kernel fact	none (assumption)
 # store and swap, and its load, now excluding the orderings it panics for.
 load_usize_in	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-atom-load_usize_in.md)
 store_usize	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-atom-store_usize.md)
+# The watermark load that hands the reader the owner words' witness
+# (package OWNER), and the owner words' load through their permission.
+load_usize_seen	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-atom-load_usize_seen.md)
+load_u16_at	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-atom-load_u16_at.md)
 usize_ptr	raw pointer (internal)	none (assumption)
 store_usize_at	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-atom-store_usize_at.md)
 src/vspec/count.rs:store	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-store.md)

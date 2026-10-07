@@ -979,7 +979,7 @@ impl Heap {
         let refilled = if arena == FOREIGN {
             0
         } else {
-            shared.owner(arena).class(class).refilled() as u32
+            shared.owner(arena).0.class(class).refilled() as u32
         };
         let cache = self.cache_slot(shared, arena, class, Tracked(ord));
         if cache.is_null() {
@@ -1098,7 +1098,7 @@ mod kani_cache {
         assert_eq!(r, hit);
     }
 
-    /// S114 `Heap::cached_recently`, `requires` the `len` entries from
+    /// S112 `Heap::cached_recently`, `requires` the `len` entries from
     /// `slots` permitted and written and, unless `len` is 0, their bytes
     /// in one allocation (`slot_in`), `ensures` a hit is an entry among the `len` with `e`'s address (the harness checks more: the result is exactly whether one of the top `min(len, 4)` entries is `e`): it returns, reading
     /// only those entries, for every `len` from 0 to 8 (both branches,

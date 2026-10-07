@@ -520,11 +520,11 @@ impl Heap {
         // fast path or an entry point, none of which holds a lock.
         let tracked mut ord = axiom_entry();
         self.tick::<true>(shared, Tracked(&mut ord));
-        let Some(a) = shared.arena(arena, Tracked(&mut ord)) else { return (ptr::null_mut(), false) };
+        let Some((a, w)) = shared.arena(arena, Tracked(&mut ord)) else { return (ptr::null_mut(), false) };
         let cache = self.ensure_cache(shared, arena, class, Tracked(&mut ord));
         let ghost s1 = *self;
         if cache.is_null() {
-            let (p, zero, t) = shared.alloc_direct(a, class, Tracked(blk), Tracked(&mut ord));
+            let (p, zero, t) = shared.alloc_direct(a, w, class, Tracked(blk), Tracked(&mut ord));
             if !p.is_null() {
                 self.count_direct_alloc(class);
             }
@@ -534,7 +534,7 @@ impl Heap {
         }
         // SAFETY: `cache` is this heap's real cache for `(arena, class)`.
         unsafe {
-            let len = self.refill(shared, a, cache, class, Tracked(&mut ord));
+            let len = self.refill(shared, a, w, cache, class, Tracked(&mut ord));
             proof {
                 Heap::lemma_keeps_routes(s1, *self, arena, class as int, cache);
                 self.lemma_poppable(arena, class as int, cache);
@@ -770,7 +770,7 @@ pub unsafe fn free_fast_slot(
         r is None ==> *final(blk) == *old(blk) || old(blk).block(p),
         r matches Some(c) ==> old(blk).slot_block(p, c as int),
         final(tls).lent(*old(tls)),
-    opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns()]
+    opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns(), crate::class::owner_ns()]
 {
     let Some((class, slab)) = shared.set_slot(p) else { return None };
     let flags = shared.free_flags();
@@ -812,7 +812,7 @@ unsafe fn free_fast_tail(shared: &Shared, class: usize, slab: usize, p: *mut u8,
         r is None ==> *final(blk) == *old(blk) || old(blk).block(p),
         r matches Some(c) ==> old(blk).slot_block(p, c as int),
         final(tls).lent(*old(tls)),
-    opens_invariants none
+    opens_invariants [crate::class::owner_ns()]
 {
     let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
     let ghost orig = *blk;
@@ -954,7 +954,7 @@ pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) ->
         Some(h) => h.alloc(shared, class, Tracked(blk)),
         // Premise (lock order, `lock::axiom_entry`): the C caller holds no
         // allocator lock.
-        None => shared.alloc_direct(&shared.arena0, class, Tracked(blk), Tracked(&mut axiom_entry())).0,
+        None => shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(&mut axiom_entry())).0,
     }
 }
 
@@ -982,7 +982,7 @@ pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut 
         Some(h) => h.alloc_slow(shared, class, Tracked(blk)).0,
         // Premise (lock order, `lock::axiom_entry`): the C caller holds no
         // allocator lock.
-        None => shared.alloc_direct(&shared.arena0, class, Tracked(blk), Tracked(&mut axiom_entry())).0,
+        None => shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(&mut axiom_entry())).0,
     }
 }
 
@@ -1012,7 +1012,7 @@ pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Li
         },
         // Premise (lock order, `lock::axiom_entry`): the C caller holds no
         // allocator lock.
-        None => shared.alloc_direct(&shared.arena0, class, Tracked(blk), Tracked(&mut axiom_entry())),
+        None => shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(&mut axiom_entry())),
     }
 }
 
@@ -1416,7 +1416,7 @@ mod kani_aborts {
     use super::debug_scheduled;
     use crate::kani_proofs::must_not_return;
 
-    /// S130 `debug_scheduled`, no `requires`, no `ensures`: with debug
+    /// S128 `debug_scheduled`, no `requires`, no `ensures`: with debug
     /// assertions on (Kani's build, and the tests'), it returns exactly
     /// when `allocs as u32` has no bit of `mask`, and otherwise never
     /// returns.

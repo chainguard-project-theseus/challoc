@@ -111,36 +111,40 @@ src/slab.rs	self.dirty_at.store(ns, Ordering::Relaxed);
 src/class/mod.rs	let live = desc.live();
 src/class/mod.rs	let avail = self.class().nslots() - live;
 src/class/mod.rs	desc.add_live(n);
-# class/table.rs: the owner word's store and load (free.rs), the commit
+# class/table.rs: the owner word's loads (load_owner, owner_from) and store
+# (free.rs, watermark.rs), the commit
 # count's publication (bitmap.rs, free.rs, watermark.rs) and its copy
 # into the class line (free.rs, since upstream #87), the free path's
-# checks (free.rs): is_handed_out, the bit word (bit_word),
+# checks (free.rs): is_handed_out and handed_out_seen, the bit word (bit_word),
 # is_set_unchecked, owner_at, check_live, and take_group's lock, bound,
 # check_zero comparison and `next_slab = end` (watermark.rs); and the
 # copy's two writers, mirror_watermark's lock, watermark load, store and
 # install, and take_group's store under `if !gi.mirror.is_null()`
 # (watermark.rs's copy model, since ATOMAT).
-src/class/table.rs	w.load(Ordering::Relaxed)
-src/class/table.rs	w.store(arena, Ordering::Relaxed)
+src/class/table.rs	r = unsafe { load_u16_at(w, Ordering::Relaxed, Tracked(&v.0)) };
+src/class/table.rs	unsafe { (*w).store(arena, Ordering::Relaxed) }
 src/class/table.rs	let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
 src/class/table.rs	let wm = self.watermark(Ordering::Relaxed);
 src/class/table.rs	unsafe { store_usize_at(mirror, wm, Ordering::Release, Tracked(&mut perm)) };
 src/class/table.rs	gi.mirror = mirror;
-src/class/table.rs	load_usize_in(&self.committed_slabs, order, &self.committed_inv)
+src/class/table.rs	load_usize_seen(&self.committed_slabs, order, &self.committed_inv)
 src/class/table.rs	self.watermark(Ordering::Acquire)
 src/class/table.rs	slab < self.watermark(Ordering::Relaxed)
+src/class/table.rs	let (w, seen) = self.watermark_seen(Ordering::Relaxed);
 src/class/table.rs	x = crate::vspec::word::load(w, Ordering::Relaxed, Tracked(&perm));
 src/class/table.rs	(x >> (bit % 64)) & 1 == 1
-src/class/table.rs	load_owner(ptr_ref(word, Tracked(self.owner_perms.borrow().tracked_borrow(group as int))), Ghost(*self), Ghost(slab))
-src/class/table.rs	if !self.is_handed_out(slab) {
+src/class/table.rs	load_owner(self, word, Ghost(slab), seen)
+src/class/table.rs	r = unsafe { load_u16_at(word, Ordering::Relaxed, Tracked(&v.0)) };
+src/class/table.rs	let (handed, seen) = self.handed_out_seen(slab);
+src/class/table.rs	if !handed {
 src/class/table.rs	if !unsafe { self.is_set_unchecked(slab, slot, Tracked(held)) } {
 src/class/table.rs	let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
 src/class/table.rs	if s >= self.nslabs {
 src/class/table.rs	if purge::check_zero() && s != self.committed_slabs.load(Ordering::Relaxed) {
 src/class/table.rs	let Tracked(m) = self.bits_unchecked(slab).init(cls.nslots(), Ghost(slab as int), Tracked(fs));
-src/class/table.rs	store_owner(owner_word, arena, Ghost(*self), Ghost(s >> self.lg_group), Tracked(om));
+src/class/table.rs	store_owner(owner_word, arena, Ghost(*self), Ghost(s >> self.lg_group), Tracked(&mut v.0), Tracked(om));
 src/class/table.rs	gi.next_slab = end;
-src/class/table.rs	store_usize(&self.committed_slabs, end, Ordering::Release, Tracked(&mut perm));
+src/class/table.rs	store_usize(&self.committed_slabs, end, Ordering::Release, Tracked(&mut v.0));
 src/class/table.rs	if !gi.mirror.is_null() {
 src/class/table.rs	unsafe { store_usize_at(gi.mirror, end, Ordering::Release, Tracked(&mut perm)) };
 # heap/shared.rs: ClassLine::set_slab (the x86_64 order: the watermark

@@ -5,7 +5,7 @@
 
 use core::ptr;
 
-use crate::arena::Arena;
+use crate::arena::{Arena, Published};
 use crate::layout::CLASSES;
 #[cfg(verus_only)]
 use crate::layout::{NCLASSES, class_table, process_regions, slots_in};
@@ -56,12 +56,14 @@ impl Heap {
         cs: &crate::class::ClassState,
         out: &mut [*mut u8],
         Tracked(toks): Tracked<&mut crate::class::SlotToks>,
+        pubw: Tracked<&'static Published>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: (crate::class::Claim, Tracked<Map<int, Zeroed>>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
+            cs.published_by(*pubw@),
         ensures
             *final(ord) == *old(ord),
             final(self).perms == old(self).perms,
@@ -86,9 +88,9 @@ impl Heap {
         cs.slot_tokens_are_the_class_s();
         let r = if slot_randomize(shared) {
             let rng = self.rng();
-            cs.claim_random_zero(&shared.meta, out, rng, Tracked(toks), Tracked(ord))
+            cs.claim_random_zero(&shared.meta, out, rng, Tracked(toks), pubw, Tracked(ord))
         } else {
-            cs.claim_tokens(&shared.meta, out, Tracked(toks), Tracked(ord))
+            cs.claim_tokens(&shared.meta, out, Tracked(toks), pubw, Tracked(ord))
         };
         proof {
             toks.lemma_owns_keyed(cs.spec_table(), out@, r.0.n as int);
@@ -137,11 +139,12 @@ impl Heap {
     /// from `ensure_cache` on a fresh header, or after re-reading `len`
     /// following a `tick`. The `assert_eq!` ([`assert_refill_empty`]) is
     /// the abort on a heap inconsistency, not the contract.
-    pub(super) unsafe fn refill(&mut self, shared: &Shared, arena: &Arena, cache: *mut CacheHeader, class: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: u32)
+    pub(super) unsafe fn refill(&mut self, shared: &Shared, arena: &Arena, pubw: Tracked<&'static Published>, cache: *mut CacheHeader, class: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: u32)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
+            crate::arena::published(*pubw@, *arena),
             class < NCLASSES,
             old(self).wf(),
             old(self).owns(cache),
@@ -171,7 +174,7 @@ impl Heap {
             // The claimed slots' tokens, by index into `out`.
             let tracked mut toks = crate::class::SlotToks::empty();
             let cs = arena.class(class);
-            let (claim, Tracked(mut ztok)) = self.claim(shared, cs, out, Tracked(&mut toks), Tracked(ord));
+            let (claim, Tracked(mut ztok)) = self.claim(shared, cs, out, Tracked(&mut toks), pubw, Tracked(ord));
             let ghost claimed = out@;
             proof {
                 assert(toks.owns(cs.spec_table(), claimed, 0, 0, claim.n as int));
@@ -1781,7 +1784,7 @@ fn addr_mix(h: &Heap) -> u64 {
 mod kani_flush {
     use super::Heap;
 
-    /// S115 `addr_mix`: no `ensures`; it returns, the heap's address
+    /// S113 `addr_mix`: no `ensures`; it returns, the heap's address
     /// rotated left by 17 bits (on an all-zero heap: pointers null,
     /// counters zero, ghost fields empty, all valid).
     #[kani::proof]

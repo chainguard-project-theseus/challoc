@@ -128,3 +128,28 @@ pub(super) type UsizeInv = vstd::prelude::Tracked<
         AnyUsize,
     >,
 >;
+
+vstd::prelude::verus! {
+
+/// The predicate of the invariant the models pass to
+/// `vspec::atom::load_usize_seen` (the class tables' watermark). Ghost,
+/// as [`AnyUsize`].
+pub(super) struct AnySeen;
+
+impl vstd::invariant::InvariantPredicate<(vstd::prelude::int, usize), crate::vspec::atom::SeenVal> for AnySeen {
+    open spec fn inv(k: (vstd::prelude::int, usize), v: crate::vspec::atom::SeenVal) -> bool {
+        true
+    }
+}
+
+} // verus!
+
+/// The invariant argument of `vspec::atom::load_usize_seen` (ghost: no
+/// bytes, nothing to build).
+pub(super) type SeenInv = vstd::prelude::Tracked<
+    vstd::invariant::AtomicInvariant<
+        (vstd::prelude::int, usize),
+        crate::vspec::atom::SeenVal,
+        AnySeen,
+    >,
+>;

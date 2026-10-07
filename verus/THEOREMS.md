@@ -307,8 +307,9 @@ trusted only in how it is reached:
   pointer with that atomic's permission; that the pointer stays valid
   is `Shared::init`'s contract (the `Shared` never moves);
 - that a slab below the copy has its bitmap words and owner word
-  committed (what `table::load_owner`'s premise and
-  `Unbacked::into_lazy` state of a slab below the watermark) rests on
+  committed (what `Unbacked::into_lazy` states of a slab below the
+  watermark, and `table::load_owner`'s premise was until package OWNER,
+  whose witness now shows the word stored) rests on
   the copy never being ahead of the watermark: each store into it is
   of a value the watermark held, under the commit lock and after the
   watermark's own store. Read off the code, not proved.
@@ -962,8 +963,12 @@ block; the free cores take the token C holds (common premises, "The
   (`class/table.rs:1373`), whose `word_addr` ties them to the word
   invariants.
 - Class and commit lock axioms (`class/mod.rs:1459`, `:1467`,
-  `class/table.rs:188`, `:196`), the class lock bridge `owner_locked`
-  (`class/mod.rs`), the descriptor permissions (`slab::DescPerm`:
+  `class/table.rs:188`, `:196`; since package OWNER the commit lock's
+  value also keeps the owner words' persistent witness markers of the
+  slabs below `next_slab`, and the class lock's frame the location of
+  the owned-slab record, `Inner::oauth`; the class lock bridge
+  `owner_locked` verifies since then), the descriptor permissions
+  (`slab::DescPerm`:
   `table::axiom_init_descs`, which mints them; the accessors in
   `slab.rs` and `slab::desc_stride` are discharged by loom and Kani,
   `verus/seams/slab-*.md`, the accessors given the lock edge
@@ -1468,8 +1473,11 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   `mrs`), `pac::auth` and `sign` (PAC instructions), `Heap::home_ptr_at`
   and `cached_recently` (`heap/cache.rs`, address arithmetic and loads),
   `arena_volatile` (`heap/mod.rs`, a volatile read),
-  `load_owner` (a `Relaxed` load) and
-  the watermark's load (`vspec::atom::load_usize_in`, an atomic load),
+  `load_owner` (a `Relaxed` load; verified since package OWNER, over
+  `vspec::atom::load_u16_at`, an atomic load, which the fast path's
+  `owner_from` uses) and
+  the watermark's load (`vspec::atom::load_usize_in`, an atomic load;
+  `load_usize_seen` since package OWNER),
   `vspec::word::load` (an atomic load; since upstream #87 the class
   line's watermark copy is read by the same `load_usize_in`, through the
   verified `class::load_mirror`), `layout::regions::class_entry`
@@ -1628,6 +1636,20 @@ unsafe fn free_fast_tail(shared: &Shared, class: usize, slab: usize, p: *mut u8,
     opens_invariants none
 ```
 
+Since package OWNER the owner word is read inside its invariant
+(`class::table::OwnerPred`, in `class::owner_ns()`), so the owner test
+and the functions above it declare that namespace: `free_fast_tail`,
+`Shared::home_owns`, `ClassLine::owner` and `SlabTable::owner_from`
+declare `[crate::class::owner_ns()]`, and `free_fast_slot` adds it to
+its two:
+
+```rust
+pub unsafe fn free_fast_slot(shared: &Shared, t: usize, tp: usize, p: *mut u8, blk) -> (r: Option<usize>)   // heap/paths.rs
+    opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns(), crate::class::owner_ns()]
+unsafe fn free_fast_tail(shared: &Shared, class: usize, slab: usize, p: *mut u8, flags: u8, t: usize, tp: usize, blk) -> (r: Option<usize>)   // heap/paths.rs
+    opens_invariants [crate::class::owner_ns()]
+```
+
 (Signatures shortened.) `any` is no subset of either mask, so no call
 chain from a masked function reaches a lock acquisition: **no function
 the `malloc` and `free` fast branches call can acquire a lock**. The
@@ -1705,13 +1727,18 @@ paths, verified unless marked trusted:
   `Heap::arena_volatile` (RefinedRust,
   `verus/seams/heap-Heap-arena_volatile.md`); `SlabTable::watermark`,
   `is_handed_out`, `is_set_unchecked`, `owner_unchecked`,
-  `owner_at`, `load_owner` (trusted), and since #77 `word_index`
+  `owner_at`, `owner_from`, `handed_out_seen`, `check_live_seen`,
+  `load_owner` (verified since OWNER; its loads are the loom-discharged
+  `load_u16_at` and `load_usize_seen`), and since #77 `word_index`
   (trusted on aarch64, an empty `asm!`; since ASMHINT the x86_64 item,
   the identity, verified). Since #87 the class line's
   `ClassLine::set_slab`, `slot_start`, `bit_fields` (aarch64), `owner`
   and `sized_ok`, `class::load_mirror`, and `SlabTable::bit_word` and
   `owner_from` in place of `is_handed_out`, `is_set_unchecked`,
-  `owner_unchecked` (removed) and `owner_at`; `load_owner`, `word_index`
+  `owner_unchecked` (removed) and `owner_at`; `load_owner` (until
+  package OWNER: since then `owner_from` loads through
+  `vspec::atom::load_u16_at`, trusted, inside the word's invariant, and
+  `load_owner` is not on the fast path), `word_index`
   stay, and `GuardTest::is_guard` until #101 (since then `GuardTest` is gone: the
   sized check is `ClassLine::sized_ok`, over `guard_word`, trusted, and
   `is_guard`).
@@ -2552,6 +2579,34 @@ an owned slab, and ensures its pick's owner; `plan` collects
 - Sequential consistency for the owner words, as for every atomic.
   `check_located` reaches the owner load after a `Relaxed` watermark
   load (`check_live`), the one owner path without `Acquire`.
+- **Since package OWNER** the first two premises, and the "handed out
+  before read" half of the "written once" one, are smaller.
+  `load_owner` verifies: the watermark's invariant
+  (`table::WatermarkPred`) holds the owner words' witness markers of
+  every slab below it, which a load hands its reader
+  (`vspec::atom::load_usize_seen`), and an owner word's invariant
+  (`table::OwnerPred`) holds the word's permission and the stored owner
+  once the group's markers are persistent, so "handed out before read"
+  is checked for `owner` and `check_located`; the fast path's
+  `owner_from` claims nothing of the value, which `home_owns` only
+  compares. `store_owner` stays trusted (loom-discharged) and also
+  records the value in the word's permission (`vspec::atom::u16_value`,
+  read back by `vspec::atom::load_u16_at`). `owner_locked` verifies:
+  the word records its taker (the registry's record of the taking
+  state's arena, `arena::Published`, and the group's slabs in that
+  state's owned-slab record, `Inner::oauth`), `take_group` and
+  `owner_locked`'s callers hold the registry's record of their own arena
+  (`ClassState::published_by`), and two records of one index agree, so
+  "the word names this arena ⇒ the slab is owned" is proved, failed
+  builds' class states included (they hold no record). What remains
+  trusted on this path: `store_owner` (one store per slab, through the
+  markers), `vspec::atom::load_u16_at` and `load_usize_seen` (loom- and
+  C11-discharged; `u16_value` stays the word's value because every
+  store to an owner word is `store_owner`'s, which `verus/loom/run.sh`
+  checks by name), `axiom_table_lock_inv` (its `seen` and `next_slab`
+  conjuncts, as the others, are not checked at the release),
+  `axiom_class_lock` (the owned-slab record's location never changes),
+  sequential consistency, and one table per class (`axiom_slot_loc`).
 
 **Where the statement is weaker than the code.**
 - The claim side stops at the picks: `plan` states that every slab it
@@ -5530,7 +5585,8 @@ bound, never fails: `Sink`'s type invariant states the bound, and
 - Every trusted body that can abort requires the capability: those that
   call an abort or a function that requires it (`Heap::destroy`,
   `background::spawn`,
-  `call_throw_bad_alloc`, `owner_locked`) and those that `assert!` or
+  `call_throw_bad_alloc`; `owner_locked` until package OWNER) and those
+  that `assert!` or
   `panic!` (`check`,
   `SlabDesc::sub_live`, `assert_flushed`, `assert_refill_empty`;
   `assert_not_home`'s `assert_ne!` is its `requires`). The test flags a
@@ -6090,7 +6146,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   is off by that ticket inside the trusted body only (the flush's proof
   uses no arena invariant).
 - `homed_ok`'s `rehome ==> bound` (since #103): a new thread heap is
-  counted, so it holds whatever `mark_rehome` (S124, RefinedRust:
+  counted, so it holds whatever `mark_rehome` (S122, RefinedRust:
   `true`, `verus/seams/heap-mark_rehome.md`) stored;
   an explicit cache, assumed `wf` (`heap_at`), rests on `init_fields`
   storing `false` (verified since P6) and on `create` being the one writer that

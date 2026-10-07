@@ -229,11 +229,11 @@ impl Heap {
                     let mut len = self.hdr_ref(cache).len;
                     if len == 0 {
                         // The GC emptied the cache.
-                        let Some(a) = shared.arena(self.hdr_ref(cache).arena, Tracked(&mut ord)) else {
+                        let Some((a, w)) = shared.arena(self.hdr_ref(cache).arena, Tracked(&mut ord)) else {
                             return (ptr::null_mut(), false);
                         };
                         let ghost s = *self;
-                        len = self.refill(shared, a, cache, class, Tracked(&mut ord));
+                        len = self.refill(shared, a, w, cache, class, Tracked(&mut ord));
                         proof {
                             Heap::lemma_keeps_poppable(s, *self, class as int, cache);
                         }
@@ -342,10 +342,10 @@ impl Heap {
                         let shared: &Shared = shared_of(self.shared);
                         // Premise (lock order): as in `pop_compact`.
                         let tracked mut ord = axiom_entry();
-                        let Some(a) = shared.arena(self.hdr_ref(cache).arena, Tracked(&mut ord)) else {
+                        let Some((a, w)) = shared.arena(self.hdr_ref(cache).arena, Tracked(&mut ord)) else {
                             return (ptr::null_mut(), false);
                         };
-                        len = self.refill(shared, a, cache, class, Tracked(&mut ord));
+                        len = self.refill(shared, a, w, cache, class, Tracked(&mut ord));
                         if len == 0 {
                             return (ptr::null_mut(), false);
                         }
@@ -481,7 +481,7 @@ impl Heap {
         ensures
             *final(ord) == *old(ord),
     {
-        let cs = shared.owner(arena).class(class);
+        let cs = shared.owner(arena).0.class(class);
         let (holes, capacity) = cs.holes(Tracked(ord));
         holes >= COMPACT_MIN_SLABS * CLASSES.table()[class].compact_slots()
             && holes * COMPACT_MIN_RATIO >= capacity
@@ -507,7 +507,7 @@ impl Heap {
         ensures
             *final(ord) == *old(ord),
     {
-        let cs = shared.owner(arena).class(class);
+        let cs = shared.owner(arena).0.class(class);
         let refilled = cs.refilled() as u32;
         let delta = refilled.wrapping_sub(prev_refilled) as usize;
         let verdict = if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES.table()[class].compact_slots() {
@@ -568,7 +568,7 @@ impl Heap {
         unsafe {
             let arena = self.hdr_ref(cache).arena;
             if !Self::fragmented(shared, arena, class, Tracked(&mut ord)) {
-                shared.owner(arena).class(class).note_compact_mode(false);
+                shared.owner(arena).0.class(class).note_compact_mode(false);
                 let h = self.hdr_mut(cache);
                 h.set_mode(MODE_PROBE);
                 proof {
@@ -608,7 +608,8 @@ impl Heap {
             let ghost s1 = sl;
             let out = stack_mut(slots, len, want, Tracked(&mut sl));
             let tracked mut toks = crate::class::SlotToks::empty();
-            let (claim, Tracked(mut ztok)) = self.claim(shared, shared.owner(arena).class(class), out, Tracked(&mut toks), Tracked(&mut ord));
+            let (oa, ow) = shared.owner(arena);
+            let (claim, Tracked(mut ztok)) = self.claim(shared, oa.class(class), out, Tracked(&mut toks), ow, Tracked(&mut ord));
             let ghost claimed = out@;
             let n = claim.n;
             if n == 0 {
@@ -620,7 +621,7 @@ impl Heap {
                 }
                 return;
             }
-            shared.owner(arena).class(class).note_compact(n);
+            shared.owner(arena).0.class(class).note_compact(n);
             out[..n].reverse();
             let ghost reversed = out@;
             if shared.pac() {

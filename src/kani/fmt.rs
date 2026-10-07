@@ -92,7 +92,7 @@ fn any_feature_value() -> features::Value {
     }
 }
 
-/// S222 `DisplaySpecImpl for Value` (`sys::features::Value`, `fmt_req`
+/// S220 `DisplaySpecImpl for Value` (`sys::features::Value`, `fmt_req`
 /// true): every variant, every number and bit set.
 #[kani::proof]
 #[kani::unwind(66)]

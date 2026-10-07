@@ -2391,7 +2391,7 @@ pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16>
         Kind::Slab { class, slab, slot } => {
             let t = shared.table(class as usize);
             if t.is_allocated(slab as usize, slot as usize) {
-                Some(t.owner(slab as usize))
+                Some(t.owner(slab as usize).0)
             } else {
                 None
             }
@@ -2913,7 +2913,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
                 }
                 return Ok(());
             }
-            let arena = shared.arena(arena_index(i)?, Tracked(&mut ord)).ok_or(ENOENT)?;
+            let (arena, _) = shared.arena(arena_index(i)?, Tracked(&mut ord)).ok_or(ENOENT)?;
             io.read(ms_of(arena.decay_ns()), Tracked(cc))?;
             if let Some(ms) = new {
                 proof {
@@ -3987,6 +3987,7 @@ mod tests {
         let p = s
             .alloc_direct(
                 &s.arena0,
+                Tracked::assume_new(),
                 class,
                 Tracked::assume_new(),
                 Tracked::assume_new(),
@@ -4605,7 +4606,10 @@ mod tests {
         assert_eq!(set(&std::format!("arena.{a}.dirty_decay_ms"), 250isize), 0);
         assert_eq!(get::<isize>(&std::format!("arena.{a}.dirty_decay_ms")), 250);
         assert_eq!(
-            s.arena(a as u16, Tracked::assume_new()).unwrap().decay_ns(),
+            s.arena(a as u16, Tracked::assume_new())
+                .unwrap()
+                .0
+                .decay_ns(),
             250_000_000
         );
         assert_eq!(set(&std::format!("arena.{a}.dirty_decay_ms"), -1isize), 0);
@@ -4623,7 +4627,7 @@ mod tests {
         // Free everything in the arena, then purge: its Empty slab goes.
         dallocx(p, 0);
         dallocx(h, 0);
-        let arena = s.arena(a as u16, Tracked::assume_new()).unwrap();
+        let arena = s.arena(a as u16, Tracked::assume_new()).unwrap().0;
         let c = crate::layout::class_of(500).unwrap();
         // The slot sits in this thread's cache for arena `a` until the
         // purge flushes the caller.

@@ -3,7 +3,9 @@
 //! `release`) and the bit test the real `vspec::word::load`, over one loom
 //! word for a slab of [`NSLOTS`] slots, and the watermark's and its class
 //! line copy's accesses the real `vspec::atom` wrappers (`store_usize`,
-//! `store_usize_at`, `load_usize_in`); the table steps around them are
+//! `store_usize_at`, `load_usize_seen` for the watermark, `load_usize_in`
+//! for its copy, and `load_u16_at` for the owner word); the table steps
+//! around them are
 //! copies of `class/table.rs` and `heap/shared.rs`, with their orderings:
 //!
 //! - the hand-out is the tail of `SlabTable::take_group`: the slab's
@@ -19,8 +21,8 @@
 //!   `ClassLine::set_slab`, the watermark copy (`load_mirror`,
 //!   `Relaxed`), the bit (`SlabTable::bit_word`, `Relaxed`, through
 //!   `vspec::word::load`), then `ClassLine::owner` (`owner_from`,
-//!   `load_owner`, `Relaxed`); `SlabTable::check_located`, on the slow
-//!   path, makes the same reads from the table (`is_handed_out`, the
+//!   `load_u16_at`, `Relaxed`); `SlabTable::check_located`, on the slow
+//!   path, makes the same reads from the table (`handed_out_seen`, the
 //!   watermark itself).
 //!
 //! The allocating thread hands the slot to the freeing thread through an
@@ -42,10 +44,12 @@
 //! that carry a slab from `take_group` to a claimer (here the claimer's
 //! `Acquire` load of the watermark stands for that chain).
 
-use super::{UsizeInv, model};
+use super::{SeenInv, UsizeInv, model};
 use crate::bitmap::AtomicBitmap;
 use crate::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
-use crate::vspec::atom::{load_usize_in, store_usize, store_usize_at, usize_ptr};
+use crate::vspec::atom::{
+    load_u16_at, load_usize_in, load_usize_seen, store_usize, store_usize_at, usize_ptr,
+};
 use loom::cell::UnsafeCell;
 use loom::thread;
 use std::boxed::Box;
@@ -89,7 +93,7 @@ struct Table {
     /// `SlabTable::committed_slabs`, the watermark.
     committed: AtomicUsize,
     /// `SlabTable::committed_inv` (ghost).
-    inv: UsizeInv,
+    inv: SeenInv,
     /// The watermark's copy in the class line (`heap::ClassLine`).
     mirror: AtomicUsize,
     /// Its invariant (`ClassLine`'s ghost `committed_inv`).
@@ -150,7 +154,7 @@ impl Table {
     /// whose load is `order` (`Acquire` as shipped);
     /// `None` when the slab is not handed out yet or no slot is clear.
     fn claim(&self, order: Ordering) -> Option<usize> {
-        if load_usize_in(&self.committed, order, &self.inv) == 0 {
+        if load_usize_seen(&self.committed, order, &self.inv).0 == 0 {
             return None;
         }
         let (w, bits) = self.bitmap().claim_from_t(0, 1)?;
@@ -179,7 +183,7 @@ impl Table {
         // `ClassLine::set_slab`'s watermark copy (`load_mirror`); below
         // the slab, the slow path's `check_live` reads the table's.
         let lagged = slab >= load_usize_in(&self.mirror, Ordering::Relaxed, &self.mirror_inv);
-        if lagged && slab >= load_usize_in(&self.committed, Ordering::Relaxed, &self.inv) {
+        if lagged && slab >= load_usize_seen(&self.committed, Ordering::Relaxed, &self.inv).0 {
             return Out::NeverCommitted;
         }
         // `bit_word`.
@@ -187,8 +191,9 @@ impl Table {
         if (x >> slot) & 1 != 1 {
             return Out::NotLive;
         }
-        // `ClassLine::owner` (`owner_from`, `load_owner`).
-        let owner = self.owner.load(Ordering::Relaxed);
+        // `ClassLine::owner` (`owner_from`, `load_u16_at`).
+        // SAFETY: a field of this leaked table.
+        let owner = unsafe { load_u16_at(&self.owner, Ordering::Relaxed, Tracked::assume_new()) };
         if owner != ARENA {
             return Out::Misrouted(owner);
         }

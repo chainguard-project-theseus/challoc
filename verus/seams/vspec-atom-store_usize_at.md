@@ -1,7 +1,7 @@
 # `store_usize_at` (`vspec/atom.rs`)
 
-Seam S271 of `verus/SEAMS.md`: src/vspec/atom.rs:168. Kind: external_body. Category: atomics primitive.
-Discharged by loom and the C11 coherence rules (part 3), given `usize_ptr`'s identity (S270, trusted).
+Seam S269 of `verus/SEAMS.md`: src/vspec/atom.rs:170. Kind: external_body. Category: atomics primitive.
+Discharged by loom and the C11 coherence rules (part 3), given `usize_ptr`'s identity (S268, trusted).
 
 ## Contract
 

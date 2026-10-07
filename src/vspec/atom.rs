@@ -42,9 +42,11 @@
 //!   made from, for as long as it stays in place: the class lines' copies
 //!   live in the `Shared`, which never moves (`Shared::init`'s contract).
 
-use crate::sync::atomic::{AtomicUsize, Ordering};
+use crate::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::prelude::*;
+use vstd::raw_ptr::PointsTo;
+use vstd::resource::set::GhostPersistentSubset;
 
 verus! {
 
@@ -178,6 +180,82 @@ pub unsafe fn store_usize_at(p: *const AtomicUsize, v: usize, ordering: Ordering
 {
     // SAFETY: guaranteed by the caller.
     unsafe { (*p).store(v, ordering) }
+}
+
+/// What the invariant of a [`load_usize_seen`] atomic holds: the atomic's
+/// permission and a persistent set, the record of what a reader that
+/// loaded the value may rely on (for a class table's watermark, the
+/// owner words stored below it: `class::table::WatermarkPred`).
+pub type SeenVal = (UsizePerm, GhostPersistentSubset<int>);
+
+/// `a.load(ordering)` inside `inv`, an invariant that holds `a`'s
+/// permission with a persistent set ([`SeenVal`]): the permission's value,
+/// so a value the predicate admits, and a copy of the set the invariant
+/// held with it, frozen. It panics for a `Release` or `AcqRel` ordering.
+///
+/// It is what opening `inv` around a load through the permission, then
+/// duplicating the set (`GhostPersistentSubset::duplicate`) and freezing
+/// the copy (`vstd::modes::tracked_static_ref`) would prove: the set is
+/// persistent, so a copy taken with the load stays true after it. It
+/// takes the invariant rather than the permission for the reason
+/// [`load_usize_in`] gives, and returns the copy as a `&'static` that the
+/// readers pass on as it is (a `Tracked(..)` built on the `free` flush
+/// path is one more distinct `Tracked` type under `Heap::flush`).
+// The invariant is only named by the specification.
+#[allow(unused_variables)]
+#[inline(always)]
+#[verifier::external_body]
+pub fn load_usize_seen<K, P: InvariantPredicate<K, SeenVal>>(
+    a: &AtomicUsize,
+    ordering: Ordering,
+    inv: &Tracked<AtomicInvariant<K, SeenVal, P>>,
+) -> (r: (usize, Tracked<&'static GhostPersistentSubset<int>>))
+    requires
+        forall|v: SeenVal| #[trigger] P::inv(inv@.constant(), v) ==> v.0.id() == usize_id(a),
+        !(ordering is Release),
+        !(ordering is AcqRel),
+    ensures
+        exists|v: SeenVal| #[trigger] P::inv(inv@.constant(), v) && v.0.value() == r.0
+            && r.1@.id() == v.1.id() && r.1@@ == v.1@,
+    opens_invariants [inv@.namespace()]
+    no_unwind
+{
+    (a.load(ordering), Tracked::assume_new())
+}
+
+/// The value of an atomic `u16` as its permission holds it: what a load
+/// through the permission returns ([`load_u16_at`]). Uninterpreted: the
+/// trusted wrappers that read or write a `u16` atomic through its
+/// `PointsTo` are all that state it (the class tables' owner words: the
+/// load here, the one store `class::table::store_owner`).
+pub uninterp spec fn u16_value(a: AtomicU16) -> u16;
+
+/// `(*p).load(ordering)` through `perm`, the permission to the atomic at
+/// `p`: the value the permission holds ([`u16_value`]). It panics for a
+/// `Release` or `AcqRel` ordering. Trusted, as the wrappers above: one
+/// atomic load (`core`'s), and every store to an atomic read here goes
+/// through a wrapper that updates the permission (the owner words':
+/// `class::table::store_owner`; `verus/loom/run.sh` checks it by name),
+/// so the value the permission holds is the atomic's.
+///
+/// # Safety
+/// `p` points to the live atomic `perm` is to.
+#[inline(always)]
+#[verifier::external_body]
+#[verifier::atomic]
+pub(crate) unsafe fn load_u16_at(p: *const AtomicU16, ordering: Ordering, Tracked(perm): Tracked<&PointsTo<AtomicU16>>) -> (r: u16)
+    requires
+        perm.ptr() == p,
+        perm.is_init(),
+        !(ordering is Release),
+        !(ordering is AcqRel),
+    ensures
+        r == u16_value(perm.value()),
+    opens_invariants none
+    no_unwind
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe { (*p).load(ordering) }
 }
 
 } // verus!
