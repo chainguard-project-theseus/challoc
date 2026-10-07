@@ -119,7 +119,7 @@ fn slice_is_sorted_by_key() {
     assert_eq!(r, (1..n).all(|k| key(&a[k - 1]) <= key(&a[k])));
 }
 
-/// S299 `<[T]>::get_unchecked::<I>`: under the `index` precondition (in
+/// S297 `<[T]>::get_unchecked::<I>`: under the `index` precondition (in
 /// bounds), the element or subslice `index` gives, at the instantiations
 /// the proofs use: `usize` (`heap/flush.rs`, `arena.rs`, `api/libc.rs`),
 /// `RangeTo` and `RangeFrom`. Kani's undefined-behaviour checks cover the
@@ -213,7 +213,7 @@ fn slice_iter_mut() {
     assert!(same(&a[n..], &old[n..]));
 }
 
-/// S386 `<[T; N] as core::iter::IntoIterator>::into_iter` and S389 its `next`: the
+/// S386 `<[T; N] as core::iter::IntoIterator>::into_iter` and S387 its `next`: the
 /// iterator starts with every element in order, `next` hands out the
 /// front one, and returns `None` (and stays empty) once all are out.
 #[kani::proof]
@@ -326,7 +326,7 @@ fn slice_rotate_left() {
     rotate_on::<u64, 8>(word, false);
 }
 
-/// S386 on 8-byte elements at `len` 70, `mid` 31 to 39: the buffer for a
+/// S384 on 8-byte elements at `len` 70, `mid` 31 to 39: the buffer for a
 /// shorter side of 31, 32 (`mid` 31, 32, 38, 39), block swaps past it
 /// (`mid` 33 to 37). All `mid`s of this length took CBMC over 90 minutes.
 #[kani::proof]
@@ -335,7 +335,7 @@ fn slice_rotate_left_long() {
     rotate_mids::<u64, 70>(word, true, 31, 39);
 }
 
-/// S386, the cycle algorithm, which 8-byte elements never reach: on
+/// S384, the cycle algorithm, which 8-byte elements never reach: on
 /// 40-byte elements (over `[usize; 4]`, a buffer of 6) at `len` 16.
 #[kani::proof]
 #[kani::unwind(42)]
@@ -343,7 +343,7 @@ fn slice_rotate_left_cycles() {
     rotate_on::<[u64; 5], 16>(quint, true);
 }
 
-/// S386 on 32-byte elements (a buffer of 8): cycles below `len` 24
+/// S384 on 32-byte elements (a buffer of 8): cycles below `len` 24
 /// (`len` 20), block swaps from there (`len` 26).
 #[kani::proof]
 #[kani::unwind(106)]

@@ -103,14 +103,24 @@ impl Tcaches {
 /// holds none; a thread heap holds the one `create_heap_for_thread`
 /// installed and `set_arena` exchanged. The safety contract (one
 /// reference at a time) is what keeps a ticket from being used twice.
-/// It also includes the permissions to the `others` nodes' `arena` and
-/// `next` fields (`Heap::heads`), which `other_caches` and `set_arena`
-/// keep.
-/// No memory precondition is stated: neither caller can show one.
+/// It also includes the permissions to the `others` nodes' `arena`, `pad`
+/// and `next` fields and the rest of their blocks with the blocks' claims
+/// (`Heap::heads`), which `other_caches` and `set_arena`
+/// keep. And the heap's home headers are the ones creation wrote at `p`
+/// (`Heap::home_at`), as `create_heap_for_thread` records them: `p` is
+/// the pointer `Heap::create` returned (the table stores it, and the C
+/// library hands back the value registered with it), so it has the
+/// address and the provenance the heap's home headers were recorded with;
+/// `Heap::destroy` gives the heap's block back from it, a metadata block,
+/// which does not wrap the address space.
+/// No memory precondition is stated: no caller can show one.
 /// `Tcaches::get` has a pointer loaded from its table and
 /// `thread::heap_destructor` the one the C library hands it (non-null
-/// by POSIX, unchecked), and the permissions creation returned are
-/// dropped (`Tcaches::create`); carrying them from one call to the next
+/// by POSIX, unchecked), and `Heap::destroy` the one either of them, or
+/// `create_heap_for_thread` on its failure path, hands on; the
+/// permissions creation returned are
+/// dropped (`Tcaches::create`, and `create_heap_for_thread` when the
+/// thread key cannot take the heap); carrying them from one call to the next
 /// needs a ghost registry of live explicit caches, which callers use
 /// without a lock (the C caller's contract). A thread heap's permission
 /// is in its TLS slot token ([`HeapPerm`](super::thread::HeapPerm),
@@ -126,6 +136,7 @@ impl Tcaches {
 pub(super) unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
     ensures
         r.wf(),
+        r.home_at(p),
 {
     // SAFETY: guaranteed by the caller.
     unsafe { &mut *p }

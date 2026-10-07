@@ -26,7 +26,7 @@ fn any_result() -> Result<u64, u32> {
     }
 }
 
-/// S322 `Option::<T>::or_else`: `option` itself when it is `Some` (and `f` not
+/// S320 `Option::<T>::or_else`: `option` itself when it is `Some` (and `f` not
 /// called), else what `f()` returned.
 #[kani::proof]
 fn option_or_else() {
@@ -49,7 +49,7 @@ fn option_or_else() {
     }
 }
 
-/// S338 `Option::<T>::map_or`: `default` for `None` (and `f` not called),
+/// S336 `Option::<T>::map_or`: `default` for `None` (and `f` not called),
 /// `f(v)` for `Some(v)`.
 #[kani::proof]
 fn option_map_or() {
@@ -147,7 +147,7 @@ fn option_copied() {
     }
 }
 
-/// S343 `Option::<T>::as_deref_mut`: no `ensures`; it returns without a panic
+/// S341 `Option::<T>::as_deref_mut`: no `ensures`; it returns without a panic
 /// (here: `None` for `None`, else a reborrow of the contents, through
 /// which a write lands in the option).
 #[kani::proof]
@@ -176,7 +176,7 @@ fn layout_ok(l: &Layout) -> bool {
     l.align().is_power_of_two() && l.size() as u128 + l.align() as u128 - 1 <= isize::MAX as u128
 }
 
-/// S329 `Layout::from_size_align`, S327 `Layout::size` and S328
+/// S327 `Layout::from_size_align`, S325 `Layout::size` and S326
 /// `Layout::align`: `Ok` exactly when `align > 0`, `align & (align - 1)
 /// == 0` and `size <= isize::MAX - (align - 1)` (in `int`), and then
 /// `size()` and `align()` give the arguments back and the layout is
@@ -206,7 +206,7 @@ fn layout_new<T>() {
     assert!(layout_ok(&l));
 }
 
-/// S330 `Layout::new::<T>`, with S326 and S327 on its result, at the
+/// S328 `Layout::new::<T>`, with S325 and S326 on its result, at the
 /// types the proofs build layouts of (`SetTable`, `Arena`, `Heap`,
 /// `HugeDesc`: `grep -rn Layout::new src`) and
 /// at a zero-sized and an over-aligned type.
@@ -225,7 +225,7 @@ fn layout_new_instances() {
     layout_new::<Page>();
 }
 
-/// S339 `str::as_ptr`: no `ensures`; it returns, the address of the first
+/// S337 `str::as_ptr`: no `ensures`; it returns, the address of the first
 /// byte.
 #[kani::proof]
 fn str_as_ptr() {
@@ -235,7 +235,7 @@ fn str_as_ptr() {
     let _ = e.as_ptr();
 }
 
-/// S285 `core::ffi::CStr::as_ptr`: no `ensures`; it returns, the address of the
+/// S283 `core::ffi::CStr::as_ptr`: no `ensures`; it returns, the address of the
 /// first byte, for every C string up to 3 bytes before its NUL (built at
 /// run time: Kani 0.68 has no C string literals).
 #[kani::proof]
@@ -277,7 +277,7 @@ impl core::fmt::Display for WriteStr<'_> {
     }
 }
 
-/// S316 `core::fmt::Formatter::<'a>::write_str`: no `requires`, no `ensures`; it returns,
+/// S314 `core::fmt::Formatter::<'a>::write_str`: no `requires`, no `ensures`; it returns,
 /// for every string up to 4 bytes, under the plain and a padded formatter
 /// and whatever the writer returns.
 #[kani::proof]
@@ -315,7 +315,7 @@ fn ptr_add_addr<T: Copy + PartialEq + kani::Arbitrary, const N: usize>() {
     }
 }
 
-/// S359 `axiom_ptr_add_addr`, at a byte, a word and a padded element type.
+/// S357 `axiom_ptr_add_addr`, at a byte, a word and a padded element type.
 #[kani::proof]
 fn ptr_add_addr_instances() {
     ptr_add_addr::<u8, 5>();
@@ -342,7 +342,7 @@ impl core::fmt::Display for WriteFmt<'_> {
     }
 }
 
-/// S317 `core::fmt::Formatter::<'a>::write_fmt`: no `requires`, no `ensures`; it returns,
+/// S315 `core::fmt::Formatter::<'a>::write_fmt`: no `requires`, no `ensures`; it returns,
 /// for the arguments above with every string up to 4 bytes and every
 /// number, whatever the writer returns. (`formats` also runs it under a
 /// padded formatter, which `write_fmt` ignores: each argument gets its
@@ -358,7 +358,7 @@ fn formatter_write_fmt() {
     }
 }
 
-/// S342 `core::hint::assert_unchecked` (since the port of upstream #101):
+/// S340 `core::hint::assert_unchecked` (since the port of upstream #101):
 /// under its `requires` (`cond`) the call returns; passes (Kani 0.68.0).
 #[kani::proof]
 fn hint_assert_unchecked() {

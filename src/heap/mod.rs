@@ -3040,6 +3040,52 @@ impl CachePerms {
     {
     }
 
+    /// Giving up owned headers, the rest of the permissions unchanged,
+    /// keeps every fact [`Heap::wf`] states of them (`Heap::destroy`, as
+    /// it frees a node): each states something of an owned header in
+    /// terms of the parts that did not change.
+    proof fn lemma_remove_hdrs(old: CachePerms, new: CachePerms)
+        requires
+            old.wf(),
+            old.tracks(),
+            old.zero_ok(),
+            old.tokened(),
+            old.claimed(),
+            new == (CachePerms { hdrs: new.hdrs, ..old }),
+            forall|p: *mut CacheHeader| #[trigger] new.hdrs.contains_key(p) ==> old.hdrs.contains_key(p),
+            forall|p: *mut CacheHeader| #[trigger] new.hdrs.contains_key(p) ==> new.hdrs[p] == old.hdrs[p],
+        ensures
+            new.wf(),
+            new.tracks(),
+            new.zero_ok(),
+            new.tokened(),
+            new.claimed(),
+    {
+        reveal(CachePerms::claimed);
+        CachePerms::lemma_zero_remove(old, new);
+        assert forall|q: *mut CacheHeader| #[trigger] new.hdrs.contains_key(q) implies cell_ok(q, new.hdrs[q], new.slots) by {
+            assert(cell_ok(q, old.hdrs[q], old.slots));
+        }
+        assert forall|q: *mut CacheHeader, i: int|
+            #![trigger new.ent(q, i)]
+            new.hdrs.contains_key(q) && 0 <= i < new.hdr(q).cap implies {
+                &&& new.owner.contains_key(new.ent(q, i))
+                &&& new.owner[new.ent(q, i)] == (q, i)
+                &&& (i < new.hdr(q).len ==> new.holds(new.cls[q], new.ent(q, i), new.hdr(q).slots))
+            } by {
+            assert(new.ent(q, i) == old.ent(q, i));
+        }
+        assert forall|q: *mut CacheHeader, i: int|
+            #![trigger new.ent(q, i)]
+            new.hdrs.contains_key(q) && 0 <= i < new.hdr(q).len implies new.tok_at(q, i) by {
+            assert(new.ent(q, i) == old.ent(q, i));
+            assert(old.tok_at(q, i));
+        }
+        assert forall|q: *mut CacheHeader| #[trigger] new.hdrs.contains_key(q) && new.hdr(q).cap != 0 implies stack_claimed(new.hdr(q), new.blocks) by {
+            assert(stack_claimed(old.hdr(q), old.blocks));
+        }
+    }
+
     /// A header `old` does not own joining it unused (no stack, nothing
     /// cached), as a header of class `c`, keeps everything `old` had.
     proof fn lemma_insert_unused(old: CachePerms, new: CachePerms, p: *mut CacheHeader, c: int)
@@ -3228,7 +3274,7 @@ impl Heap {
     /// token, `TlsSlot::entry`, whose heap `thread::heap_from_slot`
     /// borrows): the heap behind a TLS slot or a `tcache` id is as the
     /// last verified writer left it, since no ghost state survives
-    /// between calls. `destroy` (trusted) frees the heap,
+    /// between calls. `destroy` frees the heap,
     /// so it claims nothing after. The `others` list is [`Heap::list`]
     /// ([`Heap::list_ok`]): creation starts it empty, `other_caches`
     /// links nodes in, and `destroy` frees the heap. A heap exists only
@@ -3240,8 +3286,8 @@ impl Heap {
     /// `create_heap_for_thread` recorded ([`Heap::home_ok`]). They are
     /// also the plain field `caches`, whose value Verus models apart from
     /// the permissions to the same bytes: verified code only reads the
-    /// field (`fold_counters`, `stats`), and only `destroy`'s
-    /// [`Heap::free_caches`] writes through it. A heap counted in its
+    /// field (`fold_counters`, `stats`), and only [`Heap::free_caches`]
+    /// (the tests') writes through it. A heap counted in its
     /// home arena's bound count holds its ticket ([`Heap::homed_ok`]).
     pub closed spec fn wf(&self) -> bool {
         &&& self.perms@.wf()
@@ -3262,7 +3308,7 @@ impl Heap {
     /// heap, from `create` to `destroy`) holds the ticket for its home
     /// arena, and a heap that is not counted holds none. `create` installs
     /// it, `set_arena` and `try_rehome` exchange it with the binding, and
-    /// `destroy` (trusted) gives it back with the binding. A heap that may
+    /// `destroy` gives it back with the binding. A heap that may
     /// still move its home (`rehome`, set only by `create`) is counted.
     pub closed spec fn homed_ok(&self) -> bool {
         &&& self.bound == self.homed@ is Some
@@ -3304,6 +3350,15 @@ impl Heap {
         &&& forall|c: int, i: int, k: int|
             0 <= c < NCLASSES && 0 <= i < self.list@.len() && 0 <= k < NCLASSES
                 ==> #[trigger] self.home_hdrs@[c] != #[trigger] node_hdr(self.list@[i], k)
+    }
+
+    /// The heap's home headers are those of the heap at `h`
+    /// ([`home_hdr`]), where `create_heap_for_thread` records them for
+    /// the heap `Heap::create` made at `h`, and the heap's block, from
+    /// `h`, does not wrap the address space (it is a metadata block).
+    pub(super) closed spec fn home_at(&self, h: *mut Heap) -> bool {
+        &&& self.home_hdrs@ == Seq::new(NCLASSES as nat, |c: int| home_hdr(h, c))
+        &&& h@.addr + vstd::layout::size_of::<Heap>() <= usize::MAX
     }
 
     /// The home header for `class` ([`Heap::home_ok`]).
@@ -3687,6 +3742,23 @@ impl Heap {
         &&& node_placed(node)
     }
 
+
+    /// The headers of a node the heap owns: each has its initialised
+    /// permission in the heap's ([`cell_ok`]), which holds its value.
+    proof fn lemma_node_cells(&self, o: *mut ArenaCaches)
+        requires
+            self.wf(),
+            self.owns_node(o),
+        ensures
+            forall|c: int| 0 <= c < NCLASSES ==> self.perms@.hdrs.contains_key(#[trigger] node_hdr(o, c)),
+            forall|c: int| 0 <= c < NCLASSES ==> self.perms@.hdrs[#[trigger] node_hdr(o, c)].ptr() == node_hdr(o, c),
+            forall|c: int| 0 <= c < NCLASSES ==> self.perms@.hdrs[#[trigger] node_hdr(o, c)].is_init(),
+            forall|c: int| 0 <= c < NCLASSES ==> self.hdr(#[trigger] node_hdr(o, c)) == self.perms@.hdrs[node_hdr(o, c)].value(),
+    {
+        assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] cell_ok(node_hdr(o, c), self.perms@.hdrs[node_hdr(o, c)], self.perms@.slots) by {
+            assert(self.owns(node_hdr(o, c)));
+        }
+    }
 
     /// The class owned header `p` caches ([`CachePerms::cls`]).
     pub closed spec fn hdr_class(&self, p: *mut CacheHeader) -> int {
@@ -4214,12 +4286,15 @@ impl Heap {
 
 
     /// Reset every (flushed) header of one array to [`CacheHeader::EMPTY`]
-    /// and free its stack, for `destroy`, which frees the heap next. It
-    /// writes the headers through the plain field, so the permissions are
-    /// stale afterwards ([`Heap::wf`]); [`Heap::free_caches_in`] is the
-    /// form that keeps them. `stacks` holds, by class, the permission to
-    /// each stack's bytes and its claim ([`stack_given`]), which `destroy`
-    /// (trusted) hands over for the heap's stacks.
+    /// and free its stack, through a plain reference to the array (the
+    /// tests' teardown of a bare cache array). It writes the headers
+    /// through the reference, so a heap's permissions to them would be
+    /// stale afterwards ([`Heap::wf`]): `destroy` frees through
+    /// [`Heap::free_caches_in`], the form that keeps them. `stacks`
+    /// holds, by class, the permission to each stack's bytes and its
+    /// claim ([`stack_given`]).
+    // Only the tests call it since `destroy` frees through the permissions.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn free_caches(
         shared: &Shared,
         caches: &mut [CacheHeader; NCLASSES],
@@ -5688,7 +5763,7 @@ impl Heap {
             let next = unsafe { self.node_next(o, Ghost(r)) };
             let ghost h = *self;
             unsafe {
-                Self::fold_counters(&mut self.uncached, node_caches_detached(o, Ghost(h), Ghost(r)));
+                Self::fold_counters(&mut self.uncached, node_caches_detached(o, Tracked(self.perms.borrow()), Ghost(h), Ghost(r)));
             }
             proof {
                 assert(self.owns_node(o));
@@ -6443,6 +6518,138 @@ unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
     unsafe { (*h).rehome = true };
 }
 
+/// Header `c` of the run of headers that starts at address `s` with
+/// provenance `prov`: 64 bytes each (`cache::lemma_header_layout`). The
+/// home headers of the heap at `h` are the run from `h + 128`
+/// ([`home_hdr`]); a node's headers the run from its second line
+/// ([`node_hdr`]).
+spec fn run_hdr(s: int, prov: vstd::raw_ptr::Provenance, c: int) -> *mut CacheHeader {
+    vstd::raw_ptr::ptr_mut_from_data(vstd::raw_ptr::PtrData::<CacheHeader> { addr: (s + 64 * c) as usize, provenance: prov, metadata: () })
+}
+
+/// The first `k` headers of the run from `s` ([`run_hdr`]).
+spec fn run_set(s: int, prov: vstd::raw_ptr::Provenance, k: int) -> Set<*mut CacheHeader> {
+    Set::range(0, k).map(|c: int| run_hdr(s, prov, c))
+}
+
+/// [`run_set`] unfolded.
+broadcast proof fn lemma_run_set(s: int, prov: vstd::raw_ptr::Provenance, k: int, p: *mut CacheHeader)
+    ensures
+        #[trigger] run_set(s, prov, k).contains(p) <==> exists|c: int| 0 <= c < k && p == #[trigger] run_hdr(s, prov, c),
+{
+    broadcast use Set::lemma_map_contains;
+
+    if run_set(s, prov, k).contains(p) {
+        let c = choose|c: int| Set::range(0, k).contains(c) && p == (|c: int| run_hdr(s, prov, c))(c);
+        assert(0 <= c < k && p == run_hdr(s, prov, c));
+    }
+    if exists|c: int| 0 <= c < k && p == #[trigger] run_hdr(s, prov, c) {
+        let c = choose|c: int| 0 <= c < k && p == #[trigger] run_hdr(s, prov, c);
+        assert(Set::range(0, k).contains(c));
+    }
+}
+
+/// Take the permissions of the first `k` headers of the run from `s` out
+/// of `hdrs`, each made raw bytes again (`PointsTo::leak_contents`,
+/// `into_raw`), joined: the permission to the run's `64 * k` bytes.
+proof fn take_hdr_run(
+    tracked hdrs: &mut Map<*mut CacheHeader, PointsTo<CacheHeader>>,
+    s: int,
+    prov: vstd::raw_ptr::Provenance,
+    k: int,
+) -> (tracked r: vstd::raw_ptr::PointsToRaw)
+    requires
+        0 <= k,
+        0 <= s,
+        s + 64 * k <= usize::MAX,
+        forall|c: int| 0 <= c < k ==> old(hdrs).contains_key(#[trigger] run_hdr(s, prov, c)),
+        forall|c: int| 0 <= c < k ==> old(hdrs)[#[trigger] run_hdr(s, prov, c)].ptr() == run_hdr(s, prov, c),
+    ensures
+        r.is_range(s, 64 * k),
+        r.provenance() == prov,
+        *final(hdrs) == old(hdrs).remove_keys(run_set(s, prov, k)),
+    decreases k,
+{
+    broadcast use {vstd::raw_ptr::group_raw_ptr_axioms, lemma_run_set};
+
+    if k == 0 {
+        assert(old(hdrs).remove_keys(run_set(s, prov, 0)) =~= *old(hdrs));
+        vstd::raw_ptr::PointsToRaw::empty(prov)
+    } else {
+        cache::lemma_header_layout();
+        let tracked r0 = take_hdr_run(hdrs, s, prov, k - 1);
+        let p = run_hdr(s, prov, k - 1);
+        assert(!run_set(s, prov, k - 1).contains(p)) by {
+            if run_set(s, prov, k - 1).contains(p) {
+                let c = choose|c: int| 0 <= c < k - 1 && p == #[trigger] run_hdr(s, prov, c);
+                assert(run_hdr(s, prov, c)@.addr == p@.addr);
+            }
+        }
+        let tracked mut hp = hdrs.tracked_remove(p);
+        hp.leak_contents();
+        let tracked raw = hp.into_raw();
+        assert(raw.dom() =~= Set::range(s + 64 * (k - 1), s + 64 * k));
+        let tracked r = r0.join(raw);
+        assert(r.dom() =~= Set::range(s, s + 64 * k));
+        assert(*hdrs =~= old(hdrs).remove_keys(run_set(s, prov, k))) by {
+            assert forall|q: *mut CacheHeader| #[trigger] run_set(s, prov, k).contains(q) <==> run_set(s, prov, k - 1).contains(q) || q == p by {
+                if run_set(s, prov, k).contains(q) {
+                    let c = choose|c: int| 0 <= c < k && q == #[trigger] run_hdr(s, prov, c);
+                    if c < k - 1 {
+                        assert(run_set(s, prov, k - 1).contains(q));
+                    }
+                }
+                if run_set(s, prov, k - 1).contains(q) {
+                    let c = choose|c: int| 0 <= c < k - 1 && q == #[trigger] run_hdr(s, prov, c);
+                    assert(run_set(s, prov, k).contains(run_hdr(s, prov, c)));
+                }
+                if q == p {
+                    assert(run_set(s, prov, k).contains(run_hdr(s, prov, k - 1)));
+                }
+            }
+        }
+        r
+    }
+}
+
+/// The block of the heap `heap` at `h`, which `Heap::create` took from
+/// [`Meta::alloc_raw`](crate::meta::Meta::alloc_raw), for `Heap::destroy`
+/// to give back: the permission to the block's `size_of::<Heap>()` bytes
+/// and the block's claim, for the permissions to the heap's home headers
+/// (the run from `h + 128`, [`home_hdr`]), which this takes out of the
+/// heap's cache permissions `perms` and uses up. Only a well-formed heap's
+/// own home headers qualify (`heap` is the heap `perms` are the ghost state
+/// of, and its home headers are at `h`, [`Heap::home_at`]; a premise, not
+/// checked: the caller passes the heap's own value, `*heap` of the
+/// reference `tcaches::heap_at(h)` returned, never one it built), and they are
+/// used up, so the block comes back once per heap: the heap owns one
+/// permission to each of its home headers, and the one-reference contract
+/// of the trusted source of an existing heap (`tcaches::heap_at`) is what
+/// keeps two ghost copies of a heap from being destroyed. Trusted:
+/// creation split the block's permission into the home headers'
+/// (`CachePerms::fresh`) and the head's, the 128 bytes of plain fields
+/// before them, which went to [`init_fields`] and on to the heap's
+/// permission (`thread::HeapPerm::assemble`), abstract; and `init_fields`
+/// drops the claim (what it takes has the type `alloc_raw` returns, for
+/// the erased `Tracked` instances, see `init_fields`). So this states that
+/// the head and the claim are still the heap's while its home headers'
+/// permissions are, which holds while the heap is live. The heap's own
+/// permission is dropped with it: the thread-exit destructor takes it out
+/// of the slot token before it parks the slot on `TLS_EXITED`, an
+/// explicit cache has none, and `create_heap_for_thread`'s failure path
+/// drops what creation returned before it calls `destroy`.
+axiom fn axiom_heap_block(h: *mut Heap, heap: Heap, tracked perms: &mut CachePerms) -> (tracked r: (vstd::raw_ptr::PointsToRaw, crate::meta::MetaClaim))
+    requires
+        heap.wf(),
+        heap.home_at(h),
+        *old(perms) == heap.perms@,
+    ensures
+        *final(perms) == (CachePerms { hdrs: old(perms).hdrs.remove_keys(run_set(h@.addr + 128, h@.provenance, NCLASSES as int)), ..*old(perms) }),
+        r.0.is_range(h@.addr as int, vstd::layout::size_of::<Heap>() as int),
+        r.0.provenance() == h@.provenance,
+        r.1.held(crate::meta::process_live_id(), h as *mut u8, vstd::layout::size_of::<Heap>() as int, vstd::layout::align_of::<Heap>() as int),
+;
+
 /// Heap creation and teardown. Creation is verified but for the stores
 /// to `bound` and `rehome` ([`mark_bound`], [`mark_rehome`]; RefinedRust):
 /// it stores the fields before the home headers through the permission
@@ -6457,8 +6664,9 @@ unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 /// `TlsSlot::entry`, whose heap `thread::heap_from_slot` borrows) assume
 /// `wf` of every heap they hand out, which creation establishes and
 /// every writer keeps (see [`Heap::wf`]).
-/// `destroy` stays trusted: verifying it changes LTO's inlining of
-/// `Meta::free` and `meta::Inner::alloc` elsewhere in the library.
+/// `destroy` is verified (package P10): its walk over `node_next`, its
+/// frees through the permissions and its cleared binding flags change its
+/// own machine code and no other function's.
 impl Heap {
     /// Create a heap in the metadata region for the calling thread, homed
     /// on the least-loaded automatic arena and counted there
@@ -6651,21 +6859,122 @@ impl Heap {
         (h, Tracked(perms), Tracked(Some(stored)))
     }
 
+    /// The heap with its first `others` node given up (`destroy`, once
+    /// the node's caches are freed): the node's headers out of the cache
+    /// permissions ([`run_set`] of its second line, [`node_hdr`]), the
+    /// node off the list and out of `heads`, and `others` the node after
+    /// it. It stays well formed: what [`Heap::wf`] states of the rest is
+    /// unchanged, and no other node's header nor a home header is one of
+    /// the node's ([`Heap::lemma_nodes_apart`], [`Heap::home_ok`]).
+    proof fn lemma_pop_node(old: Heap, new: Heap)
+        requires
+            old.wf(),
+            old.list@.len() > 0,
+            new.list@ == old.list@.drop_first(),
+            new.keys@ == old.keys@.drop_first(),
+            new.heads@ == old.heads@.remove(old.list@[0]),
+            new.perms@ == (CachePerms {
+                hdrs: old.perms@.hdrs.remove_keys(run_set(old.list@[0]@.addr + 64, old.list@[0]@.provenance, NCLASSES as int)),
+                ..old.perms@
+            }),
+            old.list@.len() > 1 ==> new.others == old.list@[1],
+            old.list@.len() == 1 ==> new.others@.addr == 0,
+            new.home_hdrs == old.home_hdrs,
+            new.arena == old.arena,
+            new.bound == old.bound,
+            new.homed == old.homed,
+            new.rehome == old.rehome,
+            new.shared == old.shared,
+        ensures
+            new.wf(),
+    {
+        broadcast use lemma_run_set;
+
+        let n = old.list@[0];
+        let gone = run_set(n@.addr + 64, n@.provenance, NCLASSES as int);
+        CachePerms::lemma_remove_hdrs(old.perms@, new.perms@);
+        // A header of the node is one of `gone`, and only those are.
+        assert forall|p: *mut CacheHeader| #[trigger] gone.contains(p) implies exists|d: int| 0 <= d < NCLASSES && p == #[trigger] node_hdr(n, d) by {
+            let d = choose|d: int| 0 <= d < NCLASSES && p == #[trigger] run_hdr(n@.addr + 64, n@.provenance, d);
+            assert(run_hdr(n@.addr + 64, n@.provenance, d) == node_hdr(n, d));
+        }
+        // The other nodes keep their headers.
+        assert forall|i: int| 0 <= i < new.list@.len() implies (#[trigger] new.list@[i])@.addr != 0 && new.owns_node(new.list@[i]) by {
+            assert(new.list@[i] == old.list@[i + 1]);
+            old.lemma_list(old.list@.len() - (i + 1));
+            assert(old.list@[i + 1] == old.node_from_end(old.list@.len() - (i + 1)));
+            assert forall|c: int| #![trigger node_hdr(new.list@[i], c)] 0 <= c < NCLASSES implies new.owns(node_hdr(new.list@[i], c))
+                && new.hdr_class(node_hdr(new.list@[i], c)) == c by {
+                let p = node_hdr(old.list@[i + 1], c);
+                assert(old.owns(p) && old.hdr_class(p) == c);
+                if gone.contains(p) {
+                    let d = choose|d: int| 0 <= d < NCLASSES && p == #[trigger] node_hdr(n, d);
+                    old.lemma_nodes_apart(i + 1, 0, c, d);
+                }
+            }
+        }
+        // The home headers stay.
+        assert forall|c: int| 0 <= c < NCLASSES implies new.owns(#[trigger] new.home_hdrs@[c]) && new.hdr_class(new.home_hdrs@[c]) == c by {
+            let p = old.home_hdrs@[c];
+            assert(old.owns(p) && old.hdr_class(p) == c);
+            if gone.contains(p) {
+                let d = choose|d: int| 0 <= d < NCLASSES && p == #[trigger] node_hdr(n, d);
+                assert(old.home_hdrs@[c] != node_hdr(old.list@[0], d));
+            }
+        }
+        assert forall|c: int, i: int, k: int|
+            0 <= c < NCLASSES && 0 <= i < new.list@.len() && 0 <= k < NCLASSES implies #[trigger] new.home_hdrs@[c] != #[trigger] node_hdr(
+                new.list@[i],
+                k,
+            ) by {
+            assert(new.list@[i] == old.list@[i + 1]);
+            assert(old.home_hdrs@[c] != node_hdr(old.list@[i + 1], k));
+        }
+        // The list is the rest of the old one.
+        assert forall|i: int, j: int| 0 <= i < j < new.list@.len() implies new.list@[i] != new.list@[j] by {
+            assert(old.list@[i + 1] != old.list@[j + 1]);
+        }
+        assert forall|i: int, j: int| 0 <= i < j < new.keys@.len() implies new.keys@[i] != new.keys@[j] by {
+            assert(old.keys@[i + 1] != old.keys@[j + 1]);
+        }
+        assert forall|i: int| 0 <= i < new.keys@.len() implies #[trigger] new.keys@[i] != new.arena by {
+            assert(old.keys@[i + 1] != old.arena);
+        }
+        old.lemma_heads();
+        reveal(others::heads_ok);
+        assert forall|i: int| 0 <= i < new.list@.len() implies #[trigger] others::head_ok(new.heads@, new.list@, new.keys@, i) by {
+            assert(others::head_ok(old.heads@, old.list@, old.keys@, i + 1));
+            assert(old.list@[i + 1] != old.list@[0]);
+            assert(new.list@[i] == old.list@[i + 1]);
+            if i + 1 < new.list@.len() {
+                assert(new.list@[i + 1] == old.list@[i + 2]);
+            }
+        }
+        assert(others::heads_ok(new.heads@, new.list@, new.keys@));
+    }
+
     /// Flush every cache, free them and the heap itself back to the
-    /// metadata allocator. `h` is dangling afterwards. A counted heap
-    /// (`bound`) is unbound from its home arena with its ticket before
-    /// the flush ([`Heap::homed_ok`]; the trusted body passes
-    /// `Tracked::assume_new()` for it, and for the exit purge's ghost
-    /// record).
+    /// metadata allocator. `h` is dangling afterwards. The heap is the one
+    /// [`tcaches::heap_at`] hands out for `h`, with its ghost state, which
+    /// owns everything freed here: the caches' permissions and their
+    /// stacks' claims ([`Heap::free_caches_in`] frees each array), each
+    /// `others` node's permissions and its block's claim
+    /// ([`others::block_ok`]: the node is freed as the walk passes it,
+    /// and the heap stays well formed without it, [`Heap::lemma_pop_node`]),
+    /// and the home headers' permissions, which stand for the heap's own
+    /// block ([`axiom_heap_block`]). A counted heap (`bound`) is unbound
+    /// from its home arena with its ticket before the flush
+    /// ([`Heap::homed_ok`]) and is not counted from then on: `bound` and
+    /// `rehome` are cleared with the ticket gone (nothing reads them again
+    /// but this, which keeps the `bound` it read for the exit purge).
     ///
     /// # Safety
     /// `h` must come from [`Heap::create`] on `shared` and no longer be in
     /// use by any thread.
     ///
-    /// Lock order (trusted with the body): the flush takes class locks,
-    /// the frees the metadata lock, and the exit purge class locks and
-    /// the huge lock, one at a time.
-    #[verifier::external_body]
+    /// Lock order: the flush takes class locks, the frees the metadata
+    /// lock, and the exit purge class locks and the huge lock, one at a
+    /// time.
     pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
@@ -6676,31 +6985,164 @@ impl Heap {
         ensures
             *final(ord) == *old(ord),
     {
+        proof {
+            shared.lemma_wf();
+            shared.lemma_meta();
+        }
         // SAFETY: the caller gives us exclusive ownership of the heap.
-        let heap = unsafe { &mut *h };
+        let heap = unsafe { tcaches::heap_at(h) };
         // Unbound before the flush: the arena is idle from here on, so a
         // thread this one just started (larson's successor, which frees
         // what this one allocated) can be homed on it, or move there
         // ([`Heap::try_rehome`]), while the flush below runs. The heap's
         // ticket (`homed`, which `Heap::homed_ok` says it holds while
         // `bound`) goes back with the binding.
-        if heap.bound {
-            shared.arenas.unbind(heap.arena, Tracked::assume_new());
+        let bound = heap.bound;
+        if bound {
+            let tracked t = heap.homed.borrow_mut().tracked_take();
+            proof {
+                shared.arenas.lemma_homed(t, heap.arena as int);
+            }
+            shared.arenas.unbind(heap.arena, Tracked(t));
+            heap.bound = false;
+            heap.rehome = false;
         }
+        let ghost arena_ok = (heap.arena as int) < crate::arena::MAX_ARENAS;
         heap.flush_all(shared, Tracked(&mut *ord));
-        Self::free_caches(shared, &mut heap.caches, Tracked::assume_new(), Tracked(&mut *ord));
-        for o in Self::nodes(heap.others) {
-            // SAFETY: `others` is a list of live metadata blocks owned by
-            // this heap; the iterator has read `next` already, so the
-            // block can go.
-            unsafe {
-                Self::free_caches(shared, &mut (*o).caches, Tracked::assume_new(), Tracked(&mut *ord));
-                let block = (o as *mut u8).sub(64 * (*o).pad as usize);
-                shared.meta.free(block, node_block_layout(), Tracked::assume_new(), Tracked(&mut *ord));
+        let ghost hf = *heap;
+        heap.free_caches_in(shared, ptr::null_mut(), Tracked(&mut *ord));
+        // `for o in Self::nodes(heap.others)`, spelled out over
+        // `node_next`: as the iterator does, the node's `next` is read
+        // before the node is freed. Each node leaves the list as it goes
+        // (`others` is its successor), so the heap stays well formed for
+        // the next one's walk. `r` counts the nodes left, this one
+        // included.
+        let mut o = heap.others;
+        let ghost mut r = heap.list_len();
+        proof {
+            heap.lemma_list(r);
+            assert forall|i: int, c: int| 0 <= i < heap.list@.len() && 0 <= c < NCLASSES implies #[trigger] heap.cached_len(
+                node_hdr(heap.list@[i], c),
+            ) == 0 by {
+                let p = node_hdr(hf.list@[i], c);
+                assert forall|k: int| 0 <= k < NCLASSES implies p != #[trigger] hf.array_hdr(ptr::null_mut(), k) by {
+                    hf.lemma_home_apart(k, i, c);
+                }
+                assert(hf.owns_node(hf.list@[i])) by {
+                    hf.lemma_list(hf.list@.len() - i);
+                    assert(hf.list@[i] == hf.node_from_end(hf.list@.len() - i));
+                }
+                assert(heap.hdr(p) == hf.hdr(p));
+                assert(hf.cached_len(node_hdr(hf.list@[i], c)) == 0);
+                assert(heap.list@ == hf.list@);
             }
         }
+        while !o.is_null()
+            invariant
+                crate::sys::may_abort(),
+                crate::sys::may_syscall(),
+                shared.wf(),
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
+                heap.wf(),
+                heap.home_at(h),
+                bound ==> arena_ok,
+                arena_ok == ((heap.arena as int) < crate::arena::MAX_ARENAS),
+                r == heap.list_len(),
+                o == heap.others,
+                r == 0 ==> o@.addr == 0,
+                r > 0 ==> o == heap.node_from_end(r),
+                forall|i: int, c: int| 0 <= i < heap.list@.len() && 0 <= c < NCLASSES ==> #[trigger] heap.cached_len(node_hdr(heap.list@[i], c)) == 0,
+            decreases r,
+        {
+            proof {
+                heap.lemma_list(r);
+                assert(o == heap.list@[0]);
+                assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] heap.cached_len(heap.array_hdr(o, c)) == 0 by {
+                    assert(heap.array_hdr(o, c) == node_hdr(heap.list@[0], c));
+                }
+            }
+            // SAFETY: `others` is a list of live metadata blocks owned by
+            // this heap; the node is freed below, after its `next`.
+            let next = unsafe { heap.node_next(o, Ghost(r)) };
+            let ghost h0 = *heap;
+            heap.free_caches_in(shared, o, Tracked(&mut *ord));
+            // SAFETY: as above.
+            let pad = unsafe { heap.node_pad(o, Ghost(r)) };
+            let ghost h1 = *heap;
+            // The node's block, from what the heap keeps for it: its first
+            // line's fields and the rest of the block ([`others::block_ok`]),
+            // and its headers' permissions, made raw again.
+            let ghost b = o@.addr - 64 * pad;
+            let tracked mut blk = (vstd::raw_ptr::PointsToRaw::empty(o@.provenance), crate::meta::MetaClaim::tracked_none());
+            proof {
+                h1.lemma_list(r);
+                h1.lemma_head(r);
+                assert(others::block_ok(h1.heads@[o], o));
+                assert(pad == h1.heads@[o].pad.value());
+                h1.lemma_node_cells(o);
+                assert(h1.list@[0] == o);
+                assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] run_hdr(o@.addr + 64, o@.provenance, c) == node_hdr(o, c) by {}
+                assert(o@.addr + 64 + 64 * NCLASSES <= usize::MAX);
+                let tracked nh = heap.heads.borrow_mut().tracked_remove(o);
+                let tracked hr = take_hdr_run(&mut heap.perms.borrow_mut().hdrs, o@.addr + 64, o@.provenance, NCLASSES as int);
+                let tracked others::NodeHead { arena: mut pa, next: mut pn, pad: mut pp, rest, claim } = nh;
+                broadcast use vstd::raw_ptr::group_raw_ptr_axioms, vstd::layout::layout_of_primitives,
+                    vstd::layout::layout_of_references_and_pointers_for_sized_types;
+                crate::vspec::ptr::axiom_ptr_add_addr(o as *mut u8, 2);
+                crate::vspec::ptr::axiom_ptr_add_addr(o as *mut u8, 8);
+                crate::vspec::ptr::axiom_raw_valid(&rest, crate::vspec::ptr::ptr_sub(o as *mut u8, (64 * pad) as usize), 64 * pad as int);
+                pa.leak_contents();
+                pp.leak_contents();
+                pn.leak_contents();
+                let tracked ra = pa.into_raw();
+                let tracked rp = pp.into_raw();
+                let tracked rn = pn.into_raw();
+                assert(ra.dom() =~= Set::range(o@.addr as int, o@.addr + 2));
+                assert(rp.dom() =~= Set::range(o@.addr + 2, o@.addr + 3));
+                assert(rn.dom() =~= Set::range(o@.addr + 8, o@.addr + 16));
+                assert(hr.dom() =~= Set::range(o@.addr + 64, o@.addr + 64 + 64 * NCLASSES));
+                assert(rest.dom() == others::rest_dom(o, pad));
+                others::lemma_block_size();
+                let tracked raw = rest.join(ra).join(rp).join(rn).join(hr);
+                assert(raw.dom() =~= Set::range(b, b + others::block_size()));
+                blk = (raw, claim);
+                assert(blk.1.held(crate::meta::process_live_id(), others::node_block(o, pad), others::block_size(), 64));
+                heap.list = Ghost(h1.list@.drop_first());
+                heap.keys = Ghost(h1.keys@.drop_first());
+            }
+            // SAFETY: the node lies `pad` lines into its block.
+            let block = unsafe { (o as *mut u8).sub(64 * pad as usize) };
+            proof {
+                shared.lemma_meta();
+                assert(block == others::node_block(o, pad));
+                assert(block@.addr == b);
+            }
+            shared.meta.free(block, node_block_layout(), Tracked(blk), Tracked(&mut *ord));
+            heap.others = next;
+            proof {
+                Heap::lemma_pop_node(h1, *heap);
+                assert forall|i: int, c: int| 0 <= i < heap.list@.len() && 0 <= c < NCLASSES implies #[trigger] heap.cached_len(
+                    node_hdr(heap.list@[i], c),
+                ) == 0 by {
+                    let p = node_hdr(h0.list@[i + 1], c);
+                    assert(heap.list@[i] == h0.list@[i + 1]);
+                    assert(h0.cached_len(p) == 0);
+                    assert forall|k: int| 0 <= k < NCLASSES implies p != #[trigger] h0.array_hdr(o, k) by {
+                        h0.lemma_nodes_apart(i + 1, 0, c, k);
+                    }
+                    assert(h0.owns_node(h0.list@[i + 1])) by {
+                        h0.lemma_list(h0.list@.len() - (i + 1));
+                        assert(h0.list@[i + 1] == h0.node_from_end(h0.list@.len() - (i + 1)));
+                    }
+                    assert(h1.hdr(p) == h0.hdr(p));
+                }
+                r = r - 1;
+            }
+            o = next;
+        }
         heap.others = ptr::null_mut();
-        if heap.bound {
+        if bound {
             let arena = heap.arena;
             // jemalloc's rule (`tcache_destroy`): the last thread homed on
             // an arena leaves, so nothing will refill its `Empty` slabs
@@ -6715,12 +7157,21 @@ impl Heap {
             if shared.arenas.bound(arena) == 0 && !crate::purge::background::present() {
                 if let Some(a) = shared.arenas.get_existing(arena) {
                     if a.take_exit_purge(now_ns()) {
-                        crate::purge::purge_arena(shared, arena, Tracked::assume_new(), Tracked(&mut *ord));
+                        let tracked mut left = Ghost(crate::purge::Left::none());
+                        crate::purge::purge_arena(shared, arena, Tracked(&mut left), Tracked(&mut *ord));
                     }
                 }
             }
         }
-        shared.meta.free(h as *mut u8, Layout::new::<Heap>(), Tracked::assume_new(), Tracked(ord));
+        // The heap's own block: the permissions to its home headers stand
+        // for it, with the head and the block's claim
+        // ([`axiom_heap_block`], which takes them out of the heap's).
+        let tracked mut blk = (vstd::raw_ptr::PointsToRaw::empty(h@.provenance), crate::meta::MetaClaim::tracked_none());
+        proof {
+            let ghost hv = *heap;
+            blk = axiom_heap_block(h, hv, heap.perms.borrow_mut());
+        }
+        shared.meta.free(h as *mut u8, Layout::new::<Heap>(), Tracked(blk), Tracked(ord));
     }
 }
 

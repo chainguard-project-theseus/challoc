@@ -60,6 +60,26 @@ impl CachePerms {
             self.hdrs.contains_key(p) && Self::in_prefix(self.hdr(p), i) ==> self.zero_at(p, i)
     }
 
+    /// Giving up owned headers, the rest unchanged, keeps
+    /// [`CachePerms::zero_ok`] (`Heap::destroy`, as it frees a node).
+    pub(super) proof fn lemma_zero_remove(old: CachePerms, new: CachePerms)
+        requires
+            old.zero_ok(),
+            new == (CachePerms { hdrs: new.hdrs, ..old }),
+            forall|p: *mut CacheHeader| #[trigger] new.hdrs.contains_key(p) ==> old.hdrs.contains_key(p),
+            forall|p: *mut CacheHeader| #[trigger] new.hdrs.contains_key(p) ==> new.hdrs[p] == old.hdrs[p],
+        ensures
+            new.zero_ok(),
+    {
+        assert forall|p: *mut CacheHeader, i: int|
+            #![trigger new.ent(p, i)]
+            new.hdrs.contains_key(p) && Self::in_prefix(new.hdr(p), i) implies new.zero_at(p, i) by {
+            assert(new.hdr(p) == old.hdr(p));
+            assert(new.ent(p, i) == old.ent(p, i));
+            assert(old.zero_at(p, i));
+        }
+    }
+
     /// An entry of a zero prefix has its token.
     pub(super) proof fn lemma_zero_get(&self, p: *mut CacheHeader, i: int)
         requires

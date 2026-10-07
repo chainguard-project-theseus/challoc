@@ -179,7 +179,8 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
     let tracked tls = TlsSlot::entry();
     proof {
         // The heap is about to be freed: its permission leaves the token
-        // (`Heap::destroy`, trusted, does not take it).
+        // (`Heap::destroy` gives the heap's block back from the heap's own
+        // ghost state, `heap::axiom_heap_block`, not from it).
         let tracked _heap = tls.take_heap();
     }
     crate::sys::tls::set(addr_to_ptr(TLS_EXITED) as *mut c_void, Tracked(tls));
@@ -315,6 +316,12 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(tls): Tra
         // Thread exit could not free the heap, so it goes now and this
         // call is served without one; the next call tries again, as
         // after a failed `Heap::create`.
+        // What creation returned is dropped here, never installed: the
+        // heap is destroyed as `tcaches::heap_at` hands it out, the heap
+        // creation left (its premise), whose ghost state `destroy` frees.
+        proof {
+            let tracked _created = (perms, fresh);
+        }
         // SAFETY: created above and never published.
         unsafe { Heap::destroy(h, shared, Tracked(&mut ord)) };
         crate::sys::tls::set(ptr::null_mut(), Tracked(tls));

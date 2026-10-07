@@ -90,6 +90,37 @@ pub assume_specification<T>[ <*mut T>::add ](p: *mut T, count: usize) -> (r: *mu
     opens_invariants none
 ;
 
+/// `p.sub(count)`: the pointer `count` elements before `p`, with `p`'s
+/// provenance and metadata.
+pub open spec fn ptr_sub<T>(p: *mut T, count: usize) -> *mut T {
+    vstd::raw_ptr::ptr_mut_from_data(
+        vstd::raw_ptr::PtrData::<T> {
+            addr: (p@.addr - count as int * vstd::layout::size_of::<T>()) as usize,
+            provenance: p@.provenance,
+            metadata: p@.metadata,
+        },
+    )
+}
+
+/// `<*mut T>::sub`, with the safety contract of the `core` documentation:
+/// the byte offset `count * size_of::<T>()` fits in an `isize` and is at
+/// most `p`'s address (implied by the next clause unless it is zero),
+/// and, when it is not
+/// zero, the whole range from the result to `p` is inside the allocation
+/// `p` points into ([`in_alloc`] of the result). Trusted: the `core`
+/// documentation of `sub` (an offset of `count * size_of::<T>()` bytes
+/// down, keeping `p`'s provenance and metadata), which Verus does not
+/// model for raw pointers.
+pub assume_specification<T>[ <*mut T>::sub ](p: *mut T, count: usize) -> (r: *mut T)
+    requires
+        count as int * vstd::layout::size_of::<T>() <= isize::MAX,
+        count as int * vstd::layout::size_of::<T>() <= p@.addr,
+        count as int * vstd::layout::size_of::<T>() == 0 || in_alloc(ptr_sub(p, count), count as int * vstd::layout::size_of::<T>()),
+    ensures
+        r == ptr_sub(p, count),
+    opens_invariants none
+;
+
 /// `<*const T>::add`, with the safety contract of `<*mut T>::add`: the
 /// result is [`ptr_add`] of the pointer as a `*mut T`, back as a
 /// `*const T` (`axiom_ptr_add_addr` gives its address).
@@ -198,8 +229,8 @@ verus! {
 /// and joined from there, all inside one mapping (the metadata
 /// region, the only `Unbacked` token's source), so one permission's range
 /// never spans two allocations; `Meta::free` takes back the permissions
-/// its callers hold (with their `MetaClaim`s), except that `Heap::destroy`'s
-/// trusted body mints the ones it gives back.
+/// its callers hold (with their `MetaClaim`s); `Heap::destroy` gives back
+/// the heap's own block from its home headers' (`heap::axiom_heap_block`).
 #[verifier::external_body]
 pub proof fn axiom_raw_valid(tracked raw: &vstd::raw_ptr::PointsToRaw, p: *mut u8, len: int)
     requires
@@ -233,6 +264,44 @@ pub axiom fn axiom_array_elem<T, const N: usize>(tracked a: &'static vstd::raw_p
         r.ptr() == ptr_add(a.ptr() as *mut T, i),
         r.is_init(),
         r.value() == a.value()[i as int],
+;
+
+/// Element `i` of the `[T; N]` at `a`: `size_of::<T>()` bytes apart from
+/// `a`'s address, with its provenance.
+pub open spec fn array_elem_ptr<T, const N: usize>(a: *mut [T; N], i: int) -> *mut T {
+    vstd::raw_ptr::ptr_mut_from_data(
+        vstd::raw_ptr::PtrData::<T> {
+            addr: (a@.addr + i * vstd::layout::size_of::<T>()) as usize,
+            provenance: a@.provenance,
+            metadata: (),
+        },
+    )
+}
+
+/// A shared view of the `[T; N]` at `a` lent by its elements' permissions:
+/// `perms` holds an initialised permission to each element
+/// ([`array_elem_ptr`]), so it holds the array, whose value is theirs, for
+/// as long as they stay borrowed. Trusted: the `core` layout of arrays
+/// (`N` elements `size_of::<T>()` apart from the array's address, aligned
+/// as `T`) and the meaning of a permission (one to an array owns its
+/// elements' bytes), neither of which vstd states (vstd joins no typed
+/// permissions; [`axiom_array_elem`] is the other direction, for frozen
+/// arrays). Shared only: nothing is written through either side while the
+/// borrow lives, and no permission is duplicated that could be written.
+/// The array has an element (element 0's permission gives it the non-null,
+/// `T`-aligned address an array of `T` needs) and does not wrap the
+/// address space (so its elements are the permissions' objects).
+pub axiom fn axiom_array_view<'a, T, const N: usize>(tracked perms: &'a Map<*mut T, vstd::raw_ptr::PointsTo<T>>, a: *mut [T; N]) -> (tracked r: &'a vstd::raw_ptr::PointsTo<[T; N]>)
+    requires
+        0 < N,
+        a@.addr + N * vstd::layout::size_of::<T>() <= usize::MAX,
+        forall|i: int| #![trigger array_elem_ptr(a, i)] 0 <= i < N ==> perms.contains_key(array_elem_ptr(a, i)),
+        forall|i: int| #![trigger array_elem_ptr(a, i)] 0 <= i < N ==> perms[array_elem_ptr(a, i)].ptr() == array_elem_ptr(a, i),
+        forall|i: int| #![trigger array_elem_ptr(a, i)] 0 <= i < N ==> perms[array_elem_ptr(a, i)].is_init(),
+    ensures
+        r.ptr() == a,
+        r.is_init(),
+        forall|i: int| 0 <= i < N ==> #[trigger] r.value()[i] == perms[array_elem_ptr(a, i)].value(),
 ;
 
 /// `ptr::from_ref(v)`: the address of the `T` behind a reference, valid

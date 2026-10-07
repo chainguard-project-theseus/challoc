@@ -450,7 +450,10 @@ Still premises, and why:
   the block, which its callers carry (`CachePerms::claimed`, the huge
   allocator's `dclaims` and its table's `claim`), so a double or
   mismatched free cannot be verified; `Heap::destroy`'s trusted body
-  passes `Tracked::assume_new()` for the claims of what it frees.
+  passed `Tracked::assume_new()` for the claims of what it frees
+  (closed after the audit, package P10: `destroy` is verified, the node
+  blocks' claims kept in the heap's ghost state and the heap block's
+  given back by the trusted `axiom_heap_block`).
   Closed after the audit for S182 (package META): `Meta::commit` is
   verified; it requires the claim to the range (page aligned, inside
   what `reserve` or `reserve_table` handed out, every page uncommitted)

@@ -1,6 +1,6 @@
 # `load_usize_seen` (`vspec/atom.rs`)
 
-Seam S270 of `verus/SEAMS.md`: src/vspec/atom.rs:208. Kind: external_body. Category: atomics primitive.
+Seam S268 of `verus/SEAMS.md`: src/vspec/atom.rs:208. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 coherence rules (part 2), with the ghost
 argument of part 1 for the copy it returns.
 

@@ -1,6 +1,6 @@
 # `swap` (`vspec/count.rs`)
 
-Seam S305 of `verus/SEAMS.md`: src/vspec/count.rs:177. Kind: external_body. Category: atomics primitive.
+Seam S303 of `verus/SEAMS.md`: src/vspec/count.rs:177. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 atomicity rules (part 3).
 
 ## Contract

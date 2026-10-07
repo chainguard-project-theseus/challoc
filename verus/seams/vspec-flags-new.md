@@ -1,6 +1,6 @@
 # `new` (`vspec/flags.rs`)
 
-Seam S312 of `verus/SEAMS.md`: src/vspec/flags.rs:64. Kind: external_body. Category: atomics primitive.
+Seam S310 of `verus/SEAMS.md`: src/vspec/flags.rs:64. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 coherence rules (part 3).
 
 ## Contract

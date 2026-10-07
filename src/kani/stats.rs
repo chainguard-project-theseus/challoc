@@ -8,7 +8,7 @@
 use crate::stats::{ArenaStats, fig_add, fig_add64, fig_mul};
 use crate::vspec::print::stats_allocated;
 
-/// S204 `fig_add`: `a + b <= usize::MAX ==> r == a + b`.
+/// S202 `fig_add`: `a + b <= usize::MAX ==> r == a + b`.
 #[kani::proof]
 fn fig_add_exact() {
     let a: usize = kani::any();
@@ -17,7 +17,7 @@ fn fig_add_exact() {
     assert_eq!(fig_add(a, b) as u128, a as u128 + b as u128);
 }
 
-/// S205 `fig_mul`: `a * b <= usize::MAX ==> r == a * b`.
+/// S203 `fig_mul`: `a * b <= usize::MAX ==> r == a * b`.
 #[kani::proof]
 #[kani::solver(kissat)]
 fn fig_mul_exact() {
@@ -27,7 +27,7 @@ fn fig_mul_exact() {
     assert_eq!(fig_mul(a, b) as u128, a as u128 * b as u128);
 }
 
-/// S206 `fig_add64`: `a + b <= u64::MAX ==> r == a + b`.
+/// S204 `fig_add64`: `a + b <= u64::MAX ==> r == a + b`.
 #[kani::proof]
 fn fig_add64_exact() {
     let a: u64 = kani::any();
@@ -36,7 +36,7 @@ fn fig_add64_exact() {
     assert_eq!(fig_add64(a, b) as u128, a as u128 + b as u128);
 }
 
-/// S358 `stats_allocated`: `small + large <= usize::MAX ==> r == small +
+/// S356 `stats_allocated`: `small + large <= usize::MAX ==> r == small +
 /// large`, for every pair (the fields it reads are arbitrary; the others
 /// are zero, and `ArenaStats::allocated` reads only those two).
 #[kani::proof]

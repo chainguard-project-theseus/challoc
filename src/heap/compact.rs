@@ -545,6 +545,9 @@ impl Heap {
     #[cold]
     #[inline(never)]
     #[verifier::rlimit(50)]
+    // Own prover: the proof went past its rlimit in the module's shared
+    // Z3 context under quantum8 once P10's heap facts joined the crate.
+    #[verifier::spinoff_prover]
     pub(super) unsafe fn rebuild_run(&mut self, cache: *mut CacheHeader, class: usize)
         requires
             crate::sys::may_abort(),

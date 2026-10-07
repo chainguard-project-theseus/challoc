@@ -1,6 +1,6 @@
 # `axiom_zero_entry`
 
-Seam S162 of `verus/SEAMS.md`: src/huge/table.rs:242. Kind: external_body proof. Category: raw pointer (internal).
+Seam S160 of `verus/SEAMS.md`: src/huge/table.rs:242. Kind: external_body proof. Category: raw pointer (internal).
 Discharged by Kani.
 
 ## Contract

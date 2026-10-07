@@ -3779,7 +3779,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S133..S149, S150: each `S_*` is its field's `offset_of!`, and the
+    /// S131..S147, S148: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {
@@ -3950,7 +3950,7 @@ mod kani_guard_word {
         }
     }
 
-    /// S129 `ClassLine::guard_word`, `requires` the padding zero,
+    /// S127 `ClassLine::guard_word`, `requires` the padding zero,
     /// `ensures r == guard_word_of(guard_mask, tz, lg_guard)`: on a line
     /// with every field any value but `_pad` zero, the one 8-byte load
     /// returns `guard_mask | tz << 32 | lg_guard << 40`, through the

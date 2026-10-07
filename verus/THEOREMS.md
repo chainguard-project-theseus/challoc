@@ -199,7 +199,9 @@ the call does not return (theorem 3, which is not voided for it).
   `zero_ok`, `tokened`, `regions_ok()`, `list_ok`.
   Since P7 also `ready()` and that its `shared` field is the process's
   `Shared` at its storage.
-- Assumed by `tcaches::heap_at` (`heap/tcaches.rs:70`,
+- Assumed by `tcaches::heap_at` (`heap/tcaches.rs:70`, with since
+  package P10 its home headers at the pointer, `Heap::home_at`, and its
+  nodes' block permissions and claims, `others::block_ok`;
   `external_body`), and, for the calling thread's heap, by the slot
   token `sys::tls::TlsSlot::entry` (an axiom since P7): a token whose
   slot holds a heap holds the heap's linear permission
@@ -214,8 +216,9 @@ the call does not return (theorem 3, which is not voided for it).
   states what `init_fields`, `mark_bound` and `mark_rehome` stored).
 - Heap creation is verified but for the stores to `bound` and `rehome`
   (`mark_bound`, `mark_rehome`, discharged by RefinedRust; `init_fields`
-  verifies since P6): `Heap::create` (`heap/mod.rs:6430`),
-  `create_detached` (`:6480`). Teardown is trusted: `destroy` (`:6624`).
+  verifies since P6): `Heap::create` (`heap/mod.rs:6683`),
+  `create_detached` (`:6733`). Teardown, `destroy` (`:6978`), is verified
+  since package P10 (its heap block over `heap::axiom_heap_block`).
 - Writers the permissions do not follow, assumed to keep `wf`:
   `others::swap_home` (`heap/others.rs:149`), `Heap::free_caches`
   (`heap/mod.rs:2745`, verified, but it writes the untracked `caches`
@@ -228,8 +231,10 @@ the call does not return (theorem 3, which is not voided for it).
   carves out of the stack's; `stack_mut` itself is verified over it),
   `Heap::cache_ptr` (`heap/cache.rs:302`, on the `malloc` and `free`
   fast paths: the home header for `class` is owned and caches `class`),
-  `cached_recently` (`heap/cache.rs:608`), and the `others` list
-  reader `node_caches` (`heap/others.rs`). The nodes' `arena` and
+  and `cached_recently` (`heap/cache.rs:608`). The `others` list
+  readers `node_caches` and `node_caches_detached` are verified since
+  package P10, over a shared view of the node's headers' permissions
+  as one array (`vspec::ptr::axiom_array_view`). The nodes' `arena` and
   `next` fields go through permissions the heap holds (`Heap::heads`,
   `others::heads_ok`, part of `list_ok`): `node_link`, `node_next`,
   `node_arena` and `node_set_arena` are verified. The list's length
@@ -766,8 +771,10 @@ the assumed `Heap::wf` and the huge lock axiom.
   its caller gives back the `MetaClaim` the allocation handed out, which
   the cache permissions (`CachePerms::claimed`) and the huge allocator
   (`huge::Inner`'s `dclaims`, the descriptor table's `claim`) carry;
-  `Heap::destroy`'s trusted body passes `Tracked::assume_new()` for the
-  claims of what it frees.
+  `Heap::destroy` (verified since package P10) gives back the claims
+  of what it frees from the heap's ghost state (the stacks' from
+  `CachePerms::blocks`, the nodes' from `Heap::heads`) and the heap
+  block's from its home headers' permissions (`heap::axiom_heap_block`).
 - `Shared::put_head` and `put_table` store what they are given
   (common premise); `SlabTable::new` (`class/table.rs:325`) proves
   `meta_ok` from `Lazy::reserve_raw`.
@@ -1422,9 +1429,9 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   `linux::try_reserve` (`layout/regions.rs:1443`), `ThreadKey::create`
   (`heap/shared.rs:255`), `atfork_handlers` (`api/mod.rs:502`),
   `background::spawn` and `pthread_join` (`purge/background.rs:333`,
-  `:229`), `Heap::destroy`
-  (`heap/mod.rs:6669`; `init_fields` verifies since P6, its `tid()` and
-  `now_ns()` checked, and `Meta::commit` since package META), `print::emit` and
+  `:229`; `init_fields` verifies since P6, its `tid()` and `now_ns()`
+  checked, `Meta::commit` since package META and `Heap::destroy` since
+  P10), `print::emit` and
   `jemalloc::call_hook` (the report's call-outs, theorem 16), the
   C++ `call_handler` and `call_handler_caught` (the `nothrow_t` forms'
   call through `cxx_handler.cpp`'s catch),
@@ -1949,7 +1956,7 @@ When a heap's flush of everything returns, no home header and no
 header of a node on its `others` list caches a slot, and the heap's
 released log has gained exactly the `(class, address)` pairs those
 headers cached at entry: no cached slot is lost. Those headers are the
-cache memory `destroy` frees next (`free_caches` over the home array and
+cache memory `destroy` frees next (`free_caches_in` over the home array and
 each node), so the thread-exit destructor (`heap_destructor`,
 `heap/thread.rs:39`, through `Heap::destroy`, `heap/mod.rs:4707`)
 strands no cached block when it runs (claim (a); whether it runs is
@@ -1992,12 +1999,12 @@ the same tokens. The chain that makes an entry of the log a release:
   (`heap/mod.rs:4031`, `:4045`) for the headers' distinctness.
 
 **Premises beyond the common ones.**
-- `Heap::destroy` is `external_body` (its verification shifts LTO
-  inlining of `Meta::free`, `TODO.md`): that it calls `flush_all` first
-  (after giving a counted heap's arena binding back, which touches no
-  cache: since upstream #103, so that a successor thread can be homed
-  on the arena while the flush runs), on a heap that is `Heap::wf` and
-  no longer in use, is read from its body. The heap `heap_destructor`
+- `Heap::destroy` is verified since package P10: it calls `flush_all`
+  first (after giving a counted heap's arena binding back, which touches
+  no cache: since upstream #103, so that a successor thread can be homed
+  on the arena while the flush runs), on the heap `tcaches::heap_at`
+  hands out for its pointer, `Heap::wf` by that function's premise and
+  no longer in use by its caller's contract. The heap `heap_destructor`
   hands it is the TLS slot's heap, whose
   `wf` `heap_at` assumes (common premise). After the flush its
   `free_caches` aborts on a non-empty header (`assert_flushed`); the
@@ -2802,8 +2809,8 @@ it).
   P7: and leaves its thread pointer and heap permission alone; the
   aarch64 `get_tp` returns the token's thread pointer).
 - `Heap::create` makes no call that can allocate (above).
-- `Heap::destroy` (`external_body`, theorem 10), on the heapless path:
-  it takes no slot token and writes no slot (by inspection; the slot
+- `Heap::destroy` (verified since package P10, theorem 10), on the heapless path:
+  it takes no slot token and writes no slot (no call in it does; the slot
   holds `TLS_CREATING` across it, so a nested entry would be benign).
 
 **Where the statement is weaker than the code.**
@@ -4940,8 +4947,8 @@ its heap `wf`), which makes both keys' contracts the callees'.
 - The emptiness is over the home headers and the headers of the nodes
   on the `others` list (`drained`); a header the permissions own that is
   neither is not ruled out (theorem 10's first gap), and the `caches`
-  field, which `destroy`'s `free_caches` reads, is modelled apart from
-  the permissions.
+  field, which only the tests' `free_caches` writes (`destroy` frees
+  through `free_caches_in`), is modelled apart from the permissions.
 - "Strands nothing" is the released log of theorem 10, with its gaps:
   that each token leaving `release_routed`'s bag reaches a bitmap word
   rests on the verified bodies, not on an `ensures`.
@@ -5587,7 +5594,7 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   `may_abort_corrupt()` or its condition, and `arena_at` its condition
   alone.
 - Every trusted body that can abort requires the capability: those that
-  call an abort or a function that requires it (`Heap::destroy`,
+  call an abort or a function that requires it
   `background::spawn`,
   `call_throw_bad_alloc`; `owner_locked` until package OWNER) and those
   that `assert!` or
@@ -5875,11 +5882,11 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
   functions take the caller's token and require it below the lock the
   closure takes, so the premise restates a checked precondition for code
   that runs during the call.
-- *Trusted bodies with honest specs*: `policy::empty_bytes` and
-  `Heap::destroy`: each states the
+- *Trusted bodies with honest specs*: `policy::empty_bytes`:
+  it states the
   lowest rank its body takes (`assign_home`, trusted at this theorem's
   merge, is verified since theorem 34, `Meta::commit` since package
-  META, and so are `Set::ensure` and
+  META, `Heap::destroy` since package P10, and so are `Set::ensure` and
   the call `thread.arena` makes, `Heap::set_arena`; `policy::empty_bytes`
   is verified since it became an index loop over `Arenas::get_existing`);
   `purge::background::state`, which names `STATE`'s rank, verifies over
@@ -5900,7 +5907,7 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
   a token does not know which locks its owner holds (which is why the
   pre-#96 gate premise was by inspection).
 - Code outside `verus!` and trusted bodies are covered by the premises
-  above, not checked: chiefly `Heap::destroy` (class, metadata, huge).
+  above, not checked (`Heap::destroy` is verified since package P10).
 - `fork_release` takes no lock and is not part of the statement; the
   release order is unstated.
 ## 34. Balanced arena assignment (bound counts at their invariants)
@@ -6079,7 +6086,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   `CountPerm` is the counter with its `id` (`count_id`), and `fetch_add`,
   `fetch_sub` (wrapping), `load` and, since the port of upstream #103,
   `compare_exchange` (the strong form: it fails only on a different
-  value, by C++20's semantics; S306, discharged with loom and those,
+  value, by C++20's semantics; S304, discharged with loom and those,
   `verus/seams/vspec-count-compare_exchange.md`) are one atomic operation
   on it, sequentially consistent in the model (the orderings, all
   `Relaxed`, are ignored, as for the bitmap words).
@@ -6142,14 +6149,12 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   with those claims (and, from `FreshHeap::shared`, that its `shared`
   field is the process's `Shared`), and `heap_new` puts it in the
   thread's slot token and borrows the heap from there.
-- `Heap::destroy` (trusted) unbinds a counted heap's home arena with that
-  heap's ticket (its body passes `Tracked::assume_new()`), first, and
-  frees the heap, ticket and all. Since the unbind now comes before the
-  flush, for the rest of `destroy` the dying heap still holds its ghost
-  ticket while another heap may be homed on (and win, through
-  `try_bind_idle`) the same arena: "the tickets out are the counted heaps"
-  is off by that ticket inside the trusted body only (the flush's proof
-  uses no arena invariant).
+- `Heap::destroy` (verified since package P10) unbinds a counted heap's
+  home arena with the ticket the heap holds (`Heap::homed_ok`), first,
+  and clears the heap's `bound` and `rehome` with it, so the dying heap
+  holds no ticket and is not counted for the rest of `destroy` while
+  another heap may be homed on (and win, through `try_bind_idle`) the
+  same arena: "the tickets out are the counted heaps" holds throughout.
 - `homed_ok`'s `rehome ==> bound` (since #103): a new thread heap is
   counted, so it holds whatever `mark_rehome` (S122, RefinedRust:
   `true`, `verus/seams/heap-mark_rehome.md`) stored;
@@ -6189,7 +6194,7 @@ counted.
   metadata block, so the metadata region bounds it in fact), so the
   abort is not proved unreachable outright.
 - The ticket count includes a heap between `assign` and its
-  installation, and `destroy` is trusted to give back exactly the heap's
+  installation, and `destroy` gives back exactly the heap's
   ticket; "number of heaps homed on `i`" is the number of tickets, tied
   to heaps through `homed_ok`, which, like the rest of `Heap::wf`, is
   assumed of every heap handed to verified code rather than carried
@@ -6197,7 +6202,9 @@ counted.
 - With one automatic arena (`spec_auto() == 1`) nothing is read; the
   statement is `r.0 == 0`.
 - `Arenas::bound` and `get_existing` (the exit purge's "last heap left"
-  test in `destroy`) are outside: `destroy` is trusted.
+  test in `destroy`) are outside: they read a count once, unordered with
+  the other threads' binds and unbinds, so the statement says nothing of
+  what the test sees.
 
 ## 35. Utilization and defrag hint are exact (over the values read)
 
@@ -6901,7 +6908,8 @@ How it is proved:
 
 **Covers.** `malloc_trim`; `mallctl` `arena.<i>.purge` (both forms) and
 `arena.<i>.destroy`; the full purge `purge::decay` runs on a cgroup
-`high` rise; the exit purge in `Heap::destroy` (trusted, so only through
+`high` rise; the exit purge in `Heap::destroy` (verified since package
+P10; its call is through
 `purge_arena`'s contract).
 
 **Premises beyond the common ones.**
@@ -7275,7 +7283,7 @@ How it is proved:
 (`purge::decay`, the background thread, the slow path's tick), the
 `high`-rise full purge, every free of a huge run that purges at once
 (above `huge_retain_max` or under `huge_dirty_decay_ms:0`, `Huge::free_run`),
-and the exit purge in `Heap::destroy` (trusted,
+and the exit purge in `Heap::destroy` (verified since package P10,
 so through `purge_arena`'s contract).
 
 **Premises beyond the common ones.**
@@ -8111,12 +8119,12 @@ that no `use` names an abort sink outside `sys/` and `vspec/`.
   creates a heap, and may abort when that fails), come before the calls
   the witnesses make, and are not covered; nor is `mallocx::free`'s
   `invalid_tcache` (a bad `MALLOCX_TCACHE` is "Bad input").
-- `abort_kernel` and `abort_pending` (`sys/abort.rs:189`, `:203`, S211,
-  S212, trusted): the relabels of `abort_fmt`'s capability, as
-  `abort_integrity`'s (S210); their Kani harnesses
+- `abort_kernel` and `abort_pending` (`sys/abort.rs:189`, `:203`, S207,
+  S208, trusted): the relabels of `abort_fmt`'s capability, as
+  `abort_integrity`'s (S206); their Kani harnesses
   (`abort_kernel_reaches_abort_fmt`, `abort_pending_reaches_abort_fmt`,
   `src/kani/abort.rs`) are written as `abort_integrity`'s, not yet run.
-- `Heap::cached_recently` (`heap/cache.rs:722`, S113, trusted, as
+- `Heap::cached_recently` (`heap/cache.rs:721`, S112, trusted, as
   before): its contract now ensures that a hit is one of the `len`
   entries whose address is `e`'s, read off its body (the four compares
   `*top.sub(k) == e`, `k` in `1..=4`, or the iterator over `1..=len`,
@@ -9159,7 +9167,8 @@ alone):
 - I7: theorem 10 (`Heap::flush_all`, lines as in section 10): the flush
   `destroy` runs first empties every home and node header and appends
   exactly what they held to the released log, each slot's token handed
-  to `release_routed` with it. `destroy` itself is trusted, section
+  to `release_routed` with it. `destroy` itself is verified since package
+  P10 (its heap block over `heap::axiom_heap_block`), section
   10's "weaker" list applies, and that every heap gets a destructor is
   not proved (with an invalid thread key none does), hence `p`.
 

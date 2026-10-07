@@ -34,8 +34,10 @@ verus! {
 /// changes one (its fields are private to this module) but the trusted
 /// `mark_bound` and `mark_rehome`, which keep it (their records);
 /// `HeapPerm::assemble` (trusted) reads it. It is valid
-/// while its heap is live: `destroy` (trusted) does not take it, so one
-/// kept past `destroy` would be stale for a later heap in the same block.
+/// while its heap is live, and must be dropped before `destroy`:
+/// `axiom_heap_block` gives `destroy` the whole heap block, head included
+/// (its premise), so one kept past it would be a second permission to
+/// the same bytes.
 /// `create_heap_for_thread` uses it right after `create`, and
 /// `Tcaches::create` drops it.
 #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
@@ -160,8 +162,9 @@ unsafe fn put_head<T>(h: *mut Heap, off: usize, Tracked(raw): Tracked<&mut vstd:
 /// returned with what was stored in `shared`, `arena` and `bound`: the
 /// `shared` stored is the well-formed `&Shared` given, as a pointer, the
 /// one at [`Shared::storage`] ([`shared_ptr`]). `head.1` is
-/// the heap block's claim, which is dropped: `destroy`'s trusted body
-/// gives `Meta::free` its own. It comes along so that the permission
+/// the heap block's claim, which is dropped: `destroy` gets it back with
+/// the head from the home headers (`axiom_heap_block`). It comes along
+/// so that the permission
 /// travels with the same type as `Meta::alloc_raw`'s: every erased
 /// `Tracked(..)` expression is a call to
 /// `Tracked::<T>::assume_new_fallback`, and rustc's MIR inliner gives up

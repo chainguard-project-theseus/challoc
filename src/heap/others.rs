@@ -10,10 +10,11 @@ use crate::layout::NCLASSES;
 use crate::lock::LockOrder;
 #[cfg(verus_only)]
 use crate::lock::rank_meta;
+use crate::meta::MetaClaim;
 
-use super::{CacheHeader, FOREIGN, Heap, Live, Shared};
+use super::{CacheHeader, CachePerms, FOREIGN, Heap, Live, Shared};
 #[cfg(verus_only)]
-use super::{CachePerms, cell_ok, lemma_handed_ok, node_hdr, node_placed};
+use super::{cell_ok, lemma_handed_ok, node_hdr, node_placed};
 use crate::arena::field_at;
 #[cfg(verus_only)]
 use crate::arena::field_ptr;
@@ -94,14 +95,24 @@ pub(super) fn node_block_layout() -> (r: Layout)
     .expect("node block layout")
 }
 
-/// The permissions to the fields of an `others` node's first line that
-/// verified code reads and writes after [`node_link`] stored them: `arena`
-/// (at the node's address) and `next` (8 bytes on, [`next_ptr`]). A heap
-/// holds one per node of its list ([`Heap::heads`], [`heads_ok`]).
+/// The permissions to an `others` node's block that the heap keeps for
+/// it ([`Heap::heads`], [`heads_ok`]): to the fields of the node's first
+/// line that verified code reads and writes after [`node_link`] stored
+/// them, `arena` (at the node's address), `pad` (2 bytes on,
+/// [`pad_ptr`]) and `next` (8 bytes on, [`next_ptr`]); to the rest of the
+/// block outside the node's headers (`rest`, [`rest_dom`]: the lines
+/// before the node, the rest of its first line and the lines after its
+/// headers); and the block's claim (`claim`), as `Meta::alloc_raw`
+/// handed it out with the block (`Heap::other_caches`). The headers'
+/// permissions are the heap's ([`Heap::owns_node`]); `Heap::destroy`
+/// joins all of them and gives the block back with its claim.
 #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
 pub tracked struct NodeHead {
     pub arena: PointsTo<u16>,
     pub next: PointsTo<*mut ArenaCaches>,
+    pub pad: PointsTo<u8>,
+    pub rest: PointsToRaw,
+    pub claim: MetaClaim,
 }
 
 /// The address of node `n`'s `next` field (the `const` assertion below).
@@ -109,9 +120,58 @@ pub open spec fn next_ptr(n: *mut ArenaCaches) -> *mut *mut ArenaCaches {
     field_ptr::<ArenaCaches, *mut ArenaCaches>(n, 8)
 }
 
+/// The address of node `n`'s `pad` field (the `const` assertion below).
+pub open spec fn pad_ptr(n: *mut ArenaCaches) -> *mut u8 {
+    field_ptr::<ArenaCaches, u8>(n, 2)
+}
+
+/// The size of the block an `others` node is carved from
+/// ([`node_block_layout`]).
+pub open spec fn block_size() -> int {
+    size_of::<ArenaCaches>() as int + 64 * 15
+}
+
+/// [`block_size`]'s value: the node's lines and the 15 spare ones.
+pub(super) proof fn lemma_block_size()
+    ensures
+        block_size() == 64 + 64 * NCLASSES + 64 * 15,
+{
+}
+
+/// The block node `n` was carved from, `pad` lines below it
+/// (`Heap::other_caches`), as `Heap::destroy` computes it.
+pub open spec fn node_block(n: *mut ArenaCaches, pad: u8) -> *mut u8 {
+    crate::vspec::ptr::ptr_sub(n as *mut u8, (64 * pad) as usize)
+}
+
+/// The bytes of the block node `n` was carved from, `pad` lines below it,
+/// outside the node's `arena`, `pad` and `next` fields and its headers.
+pub open spec fn rest_dom(n: *mut ArenaCaches, pad: u8) -> Set<int> {
+    let (a, b) = (n@.addr as int, n@.addr - 64 * pad);
+    Set::range(b, b + block_size()).difference(Set::range(a, a + 3)).difference(Set::range(a + 8, a + 16)).difference(
+        Set::range(a + 64, a + 64 + 64 * NCLASSES),
+    )
+}
+
+/// The permissions to node `n`'s block in `nh` other than to its
+/// `arena` and `next` fields: its `pad` field, holding the node's line
+/// offset in the block, the rest of the block outside the node's
+/// headers, and the block's claim from the process's `Meta`.
+pub open spec fn block_ok(nh: NodeHead, n: *mut ArenaCaches) -> bool {
+    let pad = nh.pad.value();
+    &&& nh.pad.ptr() == pad_ptr(n)
+    &&& nh.pad.is_init()
+    &&& pad < 16
+    &&& 64 * pad <= n@.addr
+    &&& nh.rest.dom() == rest_dom(n, pad)
+    &&& nh.rest.provenance() == n@.provenance
+    &&& nh.claim.held(crate::meta::process_live_id(), node_block(n, pad), block_size(), 64)
+}
+
 /// Node `i` of the list `l` with keys `k` has its first-line permissions
 /// in `heads`: its `arena` holds its key and its `next` the node after it,
-/// null after the last.
+/// null after the last; and the rest of its block's
+/// ([`block_ok`]).
 pub open spec fn head_ok(heads: Map<*mut ArenaCaches, NodeHead>, l: Seq<*mut ArenaCaches>, k: Seq<u16>, i: int) -> bool {
     let n = l[i];
     &&& heads.contains_key(n)
@@ -122,6 +182,7 @@ pub open spec fn head_ok(heads: Map<*mut ArenaCaches, NodeHead>, l: Seq<*mut Are
     &&& heads[n].next.is_init()
     &&& i + 1 < l.len() ==> heads[n].next.value() == l[i + 1]
     &&& i + 1 == l.len() ==> heads[n].next.value()@.addr == 0
+    &&& block_ok(heads[n], n)
 }
 
 /// Every node of the list `l` with keys `k` is [`head_ok`] in `heads`
@@ -164,8 +225,10 @@ pub(super) proof fn lemma_field_aligned<T>(p: int, off: int)
 /// The first line of a fresh `others` node: its `arena`, `pad` and `next`
 /// ([`Heap::other_caches`]), stored field by field, `next` read after the
 /// first two stores, through permissions taken out of `head`, the
-/// permission to the line. The ones to `arena` and `next` come back, for
-/// the heap to keep ([`Heap::heads`]); the rest of the line is dropped.
+/// permission to the line. The ones to the three fields come back, with
+/// the one to the rest of the line, for the heap to keep
+/// ([`Heap::heads`]); the block's claim is the caller's to put in
+/// (none here).
 ///
 /// # Safety
 /// `node` is the start of a fresh node in a block this heap holds.
@@ -183,6 +246,11 @@ unsafe fn node_link(node: *mut ArenaCaches, arena: u16, pad: u8, next: &*mut Are
         r@.next.ptr() == next_ptr(node),
         r@.next.is_init(),
         r@.next.value() == *next,
+        r@.pad.ptr() == pad_ptr(node),
+        r@.pad.is_init(),
+        r@.pad.value() == pad,
+        r@.rest.dom() == Set::range(node@.addr + 3, node@.addr + 8) + Set::range(node@.addr + 16, node@.addr + 64),
+        r@.rest.provenance() == node@.provenance,
 {
     broadcast use vstd::layout::layout_of_primitives, vstd::layout::layout_of_references_and_pointers_for_sized_types,
         vstd::raw_ptr::group_raw_ptr_axioms;
@@ -190,13 +258,14 @@ unsafe fn node_link(node: *mut ArenaCaches, arena: u16, pad: u8, next: &*mut Are
     let ghost base = node@.addr as int;
     let tracked (ha, rest) = head.split(Set::range(base, base + 2));
     let tracked (hp, rest) = rest.split(Set::range(base + 2, base + 3));
-    let tracked (hn, _) = rest.split(Set::range(base + 8, base + 16));
+    let tracked (hn, lr) = rest.split(Set::range(base + 8, base + 16));
     proof {
         lemma_field_aligned::<u16>(base, 0);
         lemma_field_aligned::<u8>(base, 2);
         lemma_field_aligned::<*mut ArenaCaches>(base, 8);
         crate::vspec::ptr::axiom_ptr_add_addr(node as *mut u8, 2);
         crate::vspec::ptr::axiom_ptr_add_addr(node as *mut u8, 8);
+        assert(lr.dom() =~= Set::range(base + 3, base + 8) + Set::range(base + 16, base + 64));
     }
     let tracked mut pa = ha.into_typed::<u16>(base as usize);
     let tracked mut pp = hp.into_typed::<u8>((base + 2) as usize);
@@ -213,31 +282,87 @@ unsafe fn node_link(node: *mut ArenaCaches, arena: u16, pad: u8, next: &*mut Are
         ptr_mut_write(field_at::<ArenaCaches, u8>(node, 2), Tracked(&mut pp), pad);
         ptr_mut_write(field_at::<ArenaCaches, *mut ArenaCaches>(node, 8), Tracked(&mut pn), *next);
     }
-    Tracked(NodeHead { arena: pa, next: pn })
+    Tracked(NodeHead { arena: pa, next: pn, pad: pp, rest: lr, claim: MetaClaim::tracked_none() })
+}
+
+/// The address of node `n`'s `caches` array: its second line (the
+/// `const` assertion below).
+pub open spec fn node_arr(n: *mut ArenaCaches) -> *mut [CacheHeader; NCLASSES] {
+    field_ptr::<ArenaCaches, [CacheHeader; NCLASSES]>(n, 64)
+}
+
+/// [`node_arr`], computed as `&(*o).caches` does.
+///
+/// # Safety
+/// `o` is a placed node (the requires).
+#[inline(always)]
+unsafe fn node_caches_ptr(o: *mut ArenaCaches) -> (r: *mut [CacheHeader; NCLASSES])
+    requires
+        node_placed(o),
+    ensures
+        r == node_arr(o),
+{
+    // SAFETY: the node's first line is inside its block.
+    unsafe { field_at::<ArenaCaches, [CacheHeader; NCLASSES]>(o, 64) }
+}
+
+/// The shared view, for as long as `perms` stays borrowed, of the headers
+/// of node `o` of heap `h`, whose cache permissions `perms` are, as the
+/// array they form (`vspec::ptr::axiom_array_view`): `h` owns every one
+/// of them ([`Heap::owns_node`]), initialised ([`cell_ok`]), and header
+/// `c` holds what `h` holds for it.
+proof fn node_view<'a>(o: *mut ArenaCaches, tracked perms: &'a CachePerms, h: Heap) -> (tracked r: &'a PointsTo<[CacheHeader; NCLASSES]>)
+    requires
+        h.wf(),
+        *perms == h.perms@,
+        h.owns_node(o),
+    ensures
+        r.ptr() == node_arr(o),
+        r.is_init(),
+        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] r.value()[c] == h.hdr(node_hdr(o, c)),
+{
+    broadcast use vstd::raw_ptr::group_raw_ptr_axioms;
+
+    super::cache::lemma_header_layout();
+    let a = node_arr(o);
+    crate::vspec::ptr::axiom_ptr_add_addr(o as *mut u8, 64);
+    assert(a@.addr == o@.addr + 64 && a@.provenance == o@.provenance);
+    h.lemma_node_cells(o);
+    assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] crate::vspec::ptr::array_elem_ptr(a, c) == node_hdr(o, c) by {
+        assert(crate::vspec::ptr::array_elem_ptr(a, c)@ == node_hdr(o, c)@);
+    }
+    crate::vspec::ptr::axiom_array_view(&perms.hdrs, a)
 }
 
 /// `&(*o).caches` for node `o`, the `r`-th from the end of heap `h`'s
 /// `others` list, as plain headers, for the walk that folds them while it
-/// holds `h` mutably (`Heap::set_tcache_enabled`): the reference is not
-/// tied to a borrow of `h`. Trusted: a reference through the raw node
-/// pointer; nothing is claimed about the headers. Shared, not `&mut`: the
-/// walk only reads them, and a write through a reference no permission
-/// follows would leave the headers' permissions in `h` stale.
+/// holds `h` mutably (`Heap::set_tcache_enabled`): the reference borrows
+/// `perms`, `h`'s cache permissions, which own the node's headers
+/// ([`Heap::owns_node`]), not the rest of `h` ([`node_view`]). Shared,
+/// not `&mut`: the walk only reads them.
 ///
 /// # Safety
-/// `o` is a live node owned by `h` (the requires), and nothing writes its
-/// headers while the reference lives; that second half is the caller's
-/// to keep, which verification does not check.
+/// `o` is a live node owned by `h` (the requires).
 #[inline(always)]
-#[verifier::external_body]
-pub(super) unsafe fn node_caches_detached<'a>(o: *mut ArenaCaches, Ghost(h): Ghost<Heap>, Ghost(r): Ghost<int>) -> &'a [CacheHeader; NCLASSES]
+pub(super) unsafe fn node_caches_detached<'a>(
+    o: *mut ArenaCaches,
+    Tracked(perms): Tracked<&'a CachePerms>,
+    Ghost(h): Ghost<Heap>,
+    Ghost(r): Ghost<int>,
+) -> (cs: &'a [CacheHeader; NCLASSES])
     requires
         h.wf(),
+        *perms == h.perms@,
         1 <= r <= h.list_len(),
         o == h.node_from_end(r),
+    ensures
+        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] cs[c] == h.hdr(node_hdr(o, c)),
 {
-    // SAFETY: guaranteed by the caller.
-    unsafe { &(*o).caches }
+    proof {
+        h.lemma_list(r);
+    }
+    // SAFETY: the node is placed, and its headers' permissions lend it.
+    unsafe { ptr_ref(node_caches_ptr(o), Tracked(node_view(o, perms, h))) }
 }
 
 /// `(*node).arena = arena`: the last step of `Heap::set_arena`'s
@@ -314,9 +439,9 @@ impl Heap {
     /// which the trusted sources of a heap (`tcaches::heap_at`, and the
     /// slot token `TlsSlot::entry` that `thread::heap_from_slot` borrows
     /// from) assume. The
-    /// unverified readers of `next` ([`Heap::nodes`], for `destroy` and
-    /// `cache_in`) only read it; `destroy`, the one writer that unlinks
-    /// nodes, frees the heap.
+    /// unverified reader of `next` (`Heap::nodes`, for the tests'
+    /// `cache_in`) only reads it; `destroy`, the one walk that unlinks
+    /// nodes, frees each one as it passes it.
     ///
     /// # Safety
     /// `o` is a live node owned by this heap (the requires).
@@ -362,9 +487,33 @@ impl Heap {
         *ptr_ref(o as *mut u16, Tracked(&self.heads.borrow().tracked_borrow(o).arena))
     }
 
+    /// `(*o).pad` for node `o`, the `r`-th from the end of the `others`
+    /// list: the lines between its block and it ([`block_ok`]), read
+    /// through the permission to the field the heap holds
+    /// ([`Heap::heads`]), which [`node_link`] stored.
+    ///
+    /// # Safety
+    /// As for [`Heap::node_next`].
+    #[inline(always)]
+    pub(super) unsafe fn node_pad(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int>) -> (p: u8)
+        requires
+            self.wf(),
+            1 <= r <= self.list_len(),
+            o == self.node_from_end(r),
+        ensures
+            p == self.heads@[o].pad.value(),
+    {
+        proof {
+            self.lemma_head(r);
+            self.lemma_list(r);
+        }
+        // SAFETY: the permission is for the field, inside the node.
+        unsafe { *ptr_ref(field_at::<ArenaCaches, u8>(o, 2), Tracked(&self.heads.borrow().tracked_borrow(o).pad)) }
+    }
+
     /// Node `r` from the end of the `others` list is [`head_ok`]
     /// ([`Heap::list_ok`]).
-    proof fn lemma_head(&self, r: int)
+    pub(super) proof fn lemma_head(&self, r: int)
         requires
             self.wf(),
             1 <= r <= self.list_len(),
@@ -388,22 +537,26 @@ impl Heap {
     }
 
     /// `&(*o).caches` for node `o`, the `r`-th from the end of the
-    /// `others` list, as plain headers (for [`Heap::stats`]). Trusted: a
-    /// reference through the raw node pointer; nothing is claimed about
-    /// the headers.
+    /// `others` list, as plain headers (for [`Heap::stats`]), read through
+    /// the shared view of the headers' permissions the heap holds
+    /// ([`node_view`]): header `c` holds what the heap holds for it.
     ///
     /// # Safety
     /// As for [`Heap::node_next`].
     #[inline(always)]
-    #[verifier::external_body]
-    pub(super) unsafe fn node_caches(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int>) -> &[CacheHeader; NCLASSES]
+    pub(super) unsafe fn node_caches(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int>) -> (cs: &[CacheHeader; NCLASSES])
         requires
             self.wf(),
             1 <= r <= self.list_len(),
             o == self.node_from_end(r),
+        ensures
+            forall|c: int| 0 <= c < NCLASSES ==> #[trigger] cs[c] == self.hdr(node_hdr(o, c)),
     {
-        // SAFETY: guaranteed by the caller.
-        unsafe { &(*o).caches }
+        proof {
+            self.lemma_list(r);
+        }
+        // SAFETY: the node is placed, and its headers' permissions lend it.
+        unsafe { ptr_ref(node_caches_ptr(o), Tracked(node_view(o, self.perms.borrow(), *self))) }
     }
 
     /// Allocation of `class` from another arena than the home one: through
@@ -544,24 +697,26 @@ pub(super) proof fn lemma_distinct_u16s(k: Seq<u16>)
 
 } // verus!
 
-// `node_hdr` and `Heap::node_cache_ptr`: the headers start at the node's
-// second line.
+// `node_hdr`, `node_arr` and `Heap::node_cache_ptr`: the headers start at
+// the node's second line.
 const _: () = assert!(core::mem::offset_of!(ArenaCaches, caches) == 64);
-// `node_link`, `Heap::node_arena` and `Heap::node_next` (`next_ptr`):
-// `arena` at the node's address, `pad` 2 bytes on, `next` 8 bytes on.
+// `node_link`, `Heap::node_arena`, `Heap::node_pad` and `Heap::node_next`
+// (`pad_ptr`, `next_ptr`): `arena` at the node's address, `pad` 2 bytes
+// on, `next` 8 bytes on.
 const _: () = assert!(
     core::mem::offset_of!(ArenaCaches, arena) == 0
         && core::mem::offset_of!(ArenaCaches, pad) == 2
         && core::mem::offset_of!(ArenaCaches, next) == 8
 );
 
+#[cfg(test)]
 impl Heap {
     /// The nodes of an `others` list headed by `head`, in list order, for
-    /// the cold walks Verus does not check (`destroy`, `cache_in`). Each
-    /// node's `next` is read before the node is yielded, so a caller may
-    /// free the node it was handed. The verified walks (statistics, flush,
-    /// GC, `set_tcache_enabled`, the lookup in [`Heap::other_caches`])
-    /// spell the same loop out over [`Heap::node_next`].
+    /// the tests' walks (`cache_in`). Each node's `next` is read before
+    /// the node is yielded, so a caller may free the node it was handed.
+    /// The library's walks (statistics, flush, GC, `set_tcache_enabled`,
+    /// `destroy`, the lookup in [`Heap::other_caches`]) spell the same
+    /// loop out over [`Heap::node_next`].
     pub(super) fn nodes(head: *mut ArenaCaches) -> impl Iterator<Item = *mut ArenaCaches> {
         let mut o = head;
         core::iter::from_fn(move || {
@@ -667,7 +822,7 @@ impl Heap {
             assert(crate::meta::MAX_BINNED == 0x10_0000usize) by (compute_only);
         }
         let (block, Tracked(blk)) = shared.meta.alloc_raw(node_block_layout(), Tracked(ord));
-        let tracked (raw, _) = blk;
+        let tracked (raw, claim) = blk;
         if block.is_null() {
             return ptr::null_mut();
         }
@@ -694,6 +849,9 @@ impl Heap {
         let tracked (head, mut rest) = raw.split(Set::range(base, base + 64));
         proof {
             crate::vspec::ptr::axiom_raw_valid(&head, node as *mut u8, 64);
+            assert(rest.dom() =~= Set::range(block@.addr as int, block@.addr + size).difference(Set::range(base, base + 64)));
+            assert(claim.held(crate::meta::process_live_id(), block, size as int, 64));
+            assert(node@.provenance == block@.provenance);
             assert(Set::range(base + 64, base + 64 + 64 * NCLASSES) <= rest.dom());
             crate::vspec::ptr::axiom_raw_valid(&rest, node_hdr(node, 0) as *mut u8, 64 * NCLASSES);
             assert(node_placed(node));
@@ -718,9 +876,20 @@ impl Heap {
                 nh.next.ptr() == next_ptr(node),
                 nh.next.is_init(),
                 nh.next.value() == others0,
+                nh.pad.ptr() == pad_ptr(node),
+                nh.pad.is_init(),
+                nh.pad.value() == pad as u8,
+                nh.rest.dom() == Set::range(node@.addr + 3, node@.addr + 8) + Set::range(node@.addr + 16, node@.addr + 64),
+                nh.rest.provenance() == node@.provenance,
+                pad < NODE_STAGGER_LINES,
+                claim.held(crate::meta::process_live_id(), block, size as int, 64),
+                node@.provenance == block@.provenance,
                 others0 == old(self).others,
                 rest.provenance() == node@.provenance,
                 rest.contains_range(base + 64 + 64 * c, 64 * (NCLASSES - c)),
+                rest.dom() == Set::range(block@.addr as int, block@.addr + size).difference(Set::range(base, base + 64 + 64 * c)),
+                base == block@.addr + 64 * pad,
+                size == 64 + 64 * NCLASSES + 64 * 15,
                 base == node@.addr,
                 base % 64 == 0,
                 node_placed(node),
@@ -739,6 +908,7 @@ impl Heap {
             let tracked (hraw, rest2) = rest.split(Set::range(a, a + 64));
             proof {
                 rest = rest2;
+                assert(rest.dom() =~= Set::range(block@.addr as int, block@.addr + size).difference(Set::range(base, base + 64 + 64 * (c + 1))));
                 assert(Set::range(a + 64, a + 64 + 64 * (NCLASSES - c - 1)) <= rest.dom());
             }
             let tracked mut hp = hraw.into_typed::<CacheHeader>(a as usize);
@@ -771,6 +941,19 @@ impl Heap {
         proof {
             self.list = Ghost(seq![node] + h0.list@);
             self.keys = Ghost(seq![arena] + h0.keys@);
+            // The node keeps the rest of its block, the part before it and
+            // after its headers with the rest of its first line, and the
+            // block's claim ([`block_ok`]).
+            let tracked NodeHead { arena: na, next: nn, pad: np, rest: nr, claim: _ } = nh;
+            let tracked full = nr.join(rest);
+            assert(full.dom() =~= rest_dom(node, pad as u8));
+            assert(node_block(node, pad as u8) == block) by {
+                broadcast use vstd::raw_ptr::group_raw_ptr_axioms;
+
+                assert(node_block(node, pad as u8)@ == block@);
+            }
+            let tracked nh = NodeHead { arena: na, next: nn, pad: np, rest: full, claim };
+            assert(block_ok(nh, node));
             self.heads.borrow_mut().tracked_insert(node, nh);
             assert forall|i: int| 0 <= i < h0.list@.len() implies h0.list@[i] != node by {
                 h0.lemma_list(h0.list@.len() - i);
@@ -898,7 +1081,7 @@ impl Heap {
 mod kani_aborts {
     use super::assert_not_home;
 
-    /// S125 `assert_not_home`, `requires *arena != *home`: under it the
+    /// S124 `assert_not_home`, `requires *arena != *home`: under it the
     /// call returns, for every pair.
     #[kani::proof]
     fn assert_not_home_returns() {
