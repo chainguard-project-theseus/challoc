@@ -493,9 +493,13 @@ pub struct SlabTable {
     /// Ghost (no bytes): the class bitmap's slot-token authority
     /// (`bitmap.rs`, "Slot tokens"), and the invariant of each bitmap word
     /// ([`WordInv`]), which holds the word's permission and the tokens of
-    /// its clear slots.
+    /// its clear slots. The invariants are frozen (`new`), so that
+    /// [`SlabTable::bits`] hands the views this field as it is: a
+    /// `Tracked(..)` built there is one more distinct `Tracked` type under
+    /// `Heap::flush`, against the MIR inliner's limit of instances of one
+    /// generic item reachable from a root (`mir_callgraph_cyclic`).
     pub(super) slot_auth: Tracked<GhostSetAuth<int>>,
-    pub(super) word_invs: Tracked<Map<int, WordInv>>,
+    pub(super) word_invs: Tracked<&'static Map<int, WordInv>>,
     /// Ghost (no bytes): the authority of the bitmap words' markers
     /// (`bitmap.rs`, "Slot tokens"), which record which slabs `init` has
     /// run on.
@@ -503,9 +507,12 @@ pub struct SlabTable {
     /// Ghost (no bytes): the permissions to every slab's descriptor, every
     /// class bitmap word and every hand-out group's owner word, carved by
     /// `new` from the three reservations ([`SlabTable::perms_ok`]); the
-    /// accessors read through them.
+    /// accessors read through them. The words' permissions are frozen (`new`),
+    /// so that [`SlabTable::bits`] hands [`words_ref`] this field as it is,
+    /// as with `word_invs` (one distinct `Tracked` type fewer under
+    /// `Heap::flush`).
     pub(super) desc_perms: Tracked<Map<int, PointsTo<SlabDesc>>>,
-    pub(super) word_perms: Tracked<Map<int, PointsTo<AtomicU64>>>,
+    pub(super) word_perms: Tracked<&'static Map<int, PointsTo<AtomicU64>>>,
     pub(super) owner_perms: Tracked<Map<int, PointsTo<AtomicU16>>>,
     /// Ghost (no bytes): the watermark's invariant ([`CommittedPred`]),
     /// which holds its permission: it is at most `nslabs`.
@@ -949,10 +956,10 @@ impl SlabTable {
             inner,
             _tail: [0; TABLE_TAIL],
             slot_auth: Tracked(slot_auth),
-            word_invs: Tracked(word_invs),
+            word_invs: Tracked(vstd::modes::tracked_static_ref(word_invs)),
             mark_auth: Tracked(mark_auth),
             desc_perms: Tracked(dmap),
-            word_perms: Tracked(wmap),
+            word_perms: Tracked(vstd::modes::tracked_static_ref(wmap)),
             owner_perms: Tracked(omap),
             committed_inv: Tracked(committed_inv),
         })
@@ -1772,23 +1779,24 @@ axiom fn axiom_init_words(tracked perms: Map<int, PointsTo<AtomicU64>>, n: int) 
 /// `core::slice::from_raw_parts(p, n)` over `n` class bitmap words whose
 /// permissions `perms` holds from key `j0` on, at `p`, `p + 8`, ...
 /// ([`slice_from_perms`](crate::vspec::slice::slice_from_perms) over the
-/// class bitmap words).
+/// class bitmap words). `perms` is passed on as it is: a `Tracked(..)`
+/// built here is one more distinct `Tracked` type under `Heap::flush`.
 #[inline(always)]
-fn words_ref<'a>(p: *const AtomicU64, n: usize, Ghost(j0): Ghost<int>, Tracked(perms): Tracked<&'a Map<int, PointsTo<AtomicU64>>>) -> (r: &'a [AtomicU64])
+fn words_ref<'a>(p: *const AtomicU64, n: usize, Ghost(j0): Ghost<int>, perms: Tracked<&'a Map<int, PointsTo<AtomicU64>>>) -> (r: &'a [AtomicU64])
     requires
         0 < n,
         n * 8 <= isize::MAX,
-        forall|i: int| #![trigger perms.contains_key(j0 + i)] #![trigger perms[j0 + i]] 0 <= i < n ==> perms.contains_key(j0 + i) && perms[j0 + i].is_init()
-            && perms[j0 + i].ptr() == ptr_mut_from_data::<AtomicU64>(
+        forall|i: int| #![trigger perms@.contains_key(j0 + i)] #![trigger perms@[j0 + i]] 0 <= i < n ==> perms@.contains_key(j0 + i) && perms@[j0 + i].is_init()
+            && perms@[j0 + i].ptr() == ptr_mut_from_data::<AtomicU64>(
                 PtrData { addr: (p@.addr + 8 * i) as usize, provenance: p@.provenance, metadata: () }),
     ensures
         r@.len() == n,
-        forall|i: int| 0 <= i < n ==> #[trigger] r@[i] == perms[j0 + i].value(),
+        forall|i: int| 0 <= i < n ==> #[trigger] r@[i] == perms@[j0 + i].value(),
 {
     proof {
         lemma_layouts();
     }
-    crate::vspec::slice::slice_from_perms(p, n, Ghost(j0), Tracked(perms))
+    crate::vspec::slice::slice_from_perms(p, n, Ghost(j0), perms)
 }
 
 /// The ghost side of the view `SlabTable::bits` gives of `slab`: slot 0 is
@@ -1994,7 +2002,7 @@ impl SlabTable {
         &&& self.base == process_regions().class_base[self.class as int]
         &&& crate::layout::base_aligned(self.base as int, self.class as int, process_regions().lg_page)
         &&& self.nslabs as int == process_regions().spec_nslabs(self.class as int)
-        &&& words_wf(self.word_invs@, self.spec_slots(), self.bits_base, self.spec_nwords())
+        &&& words_wf(*self.word_invs@, self.spec_slots(), self.bits_base, self.spec_nwords())
         &&& self.spec_slots().loc == slot_loc(self.class as int)
         &&& self.mark_auth@.id() == mark_loc(self.class as int)
         &&& crate::layout::guard_geom(self.class as int) == (self.lg_slabs_per_page, self.guard_mask)
@@ -2246,7 +2254,7 @@ impl SlabTable {
 
     /// The invariants of the class bitmap's words.
     pub closed spec fn spec_word_invs(&self) -> Map<int, WordInv> {
-        self.word_invs@
+        *self.word_invs@
     }
 
     /// An empty token of the class bitmap's authority: where a claim's
@@ -2790,17 +2798,17 @@ impl SlabTable {
             debug_assert!(first % 64 == 0);
             // The group's words were committed before the watermark moved
             // (the caller's premise).
-            let words = words_ref(word, nbits / 64, Ghost(j0), Tracked(self.word_perms.borrow()));
+            let words = words_ref(word, nbits / 64, Ghost(j0), self.word_perms);
             proof {
-                assert forall|i: int| 0 <= i < words@.len() implies #[trigger] crate::bitmap::word_ok(words@[i], first / 64 + i, sl, self.word_invs@) by {
+                assert forall|i: int| 0 <= i < words@.len() implies #[trigger] crate::bitmap::word_ok(words@[i], first / 64 + i, sl, *self.word_invs@) by {
                     assert(self.word_perms@.contains_key(j0 + i));
                     assert(self.word_invs@.contains_key(j0 + i));
                 }
             }
-            AtomicBitmap::from_words(words, Ghost(first as int), Ghost(sl), Tracked(self.word_invs.borrow()))
+            AtomicBitmap::from_words(words, Ghost(first as int), Ghost(sl), self.word_invs)
         } else {
             // As above, one word.
-            let w = ptr_ref(word, Tracked(self.word_perms.borrow().tracked_borrow(j0)));
+            let w = ptr_ref(word, Tracked((*self.word_perms.borrow()).tracked_borrow(j0)));
             proof {
                 assert(self.word_invs@.contains_key(j0));
                 // A sub-word slab's bits do not cross a word: `slab_bits` is
@@ -2813,7 +2821,7 @@ impl SlabTable {
                 assert(f % 64 + s <= 64) by (bit_vector)
                     requires f % s == 0, s & sub(s, 1) == 0, 0 < s, s < 64;
             }
-            AtomicBitmap::sub_word(w, (first % 64) as u32, nbits, Ghost(first as int), Ghost(sl), Tracked(self.word_invs.borrow()))
+            AtomicBitmap::sub_word(w, (first % 64) as u32, nbits, Ghost(first as int), Ghost(sl), self.word_invs)
         }
     }
 
@@ -2883,8 +2891,8 @@ impl SlabTable {
             assert(self.word_invs@.contains_key(j));
         }
         let word = addr_to_ptr(bits_base + index * 8) as *const AtomicU64;
-        let w = ptr_ref(word, Tracked(self.word_perms.borrow().tracked_borrow(j)));
-        let tracked inv = self.word_invs.borrow().tracked_borrow(j);
+        let w = ptr_ref(word, Tracked((*self.word_perms.borrow()).tracked_borrow(j)));
+        let tracked inv = (*self.word_invs.borrow()).tracked_borrow(j);
         let x;
         vstd::open_atomic_invariant!(inv => pair => {
             let tracked (perm, mut g, u, d) = pair;
@@ -4198,7 +4206,7 @@ impl SlabTable {
             let j = b / 64;
             assert(0 <= j < self.spec_nwords());
             assert(self.word_invs@.contains_key(j));
-            let tracked inv = self.word_invs.borrow().tracked_borrow(j);
+            let tracked inv = (*self.word_invs.borrow()).tracked_borrow(j);
             assert(inv.constant().slots == sl);
             vstd::open_atomic_invariant_in_proof!(credit => inv => pair => {
                 let tracked (perm, toks, mut u, mut d) = pair;

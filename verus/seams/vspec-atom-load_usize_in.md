@@ -1,6 +1,6 @@
 # `load_usize_in` (`vspec/atom.rs`)
 
-Seam S273 of `verus/SEAMS.md`: src/vspec/atom.rs:101. Kind: external_body. Category: atomics primitive.
+Seam S272 of `verus/SEAMS.md`: src/vspec/atom.rs:101. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 coherence rules (part 3).
 
 ## Contract

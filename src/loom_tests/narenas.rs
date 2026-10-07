@@ -92,8 +92,9 @@ impl Arenas {
         }
     }
 
-    /// Entry `i`, loaded `Acquire` (`Arenas::get` and `get_frozen`; the
-    /// plain load of `get_existing` and `iter` is the same operation).
+    /// Entry `i`, loaded `Acquire` (`Arenas::get`, `get_existing` and
+    /// `get_frozen`; the plain load of `assign` and `iter` is the same
+    /// operation).
     fn entry(&self, i: usize) -> *mut u64 {
         entry::load(&self.table[i], Ordering::Acquire, Tracked::assume_new())
     }

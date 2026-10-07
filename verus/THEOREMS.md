@@ -106,8 +106,7 @@ add.
   `put_guard_test` (since upstream #87 `put_line` and `lines_ptr`, the
   class lines'), `arena0_ptr`, `put_registries`, `put_cgroup`,
   `put_policy` (`:536`-`:592`). Arena 0 is built the same way: `put_head`,
-  `put_sets`, `put_class`, `put_tail` (`arena.rs:106`-`:163`) and
-  `arena_at` (`arena.rs:515`).
+  `put_sets`, `put_class` and `put_tail` (`arena.rs:106`-`:163`).
 - `api::shared_storage_ptr`, `features_ptr`, `line_ptr` and
   `layout::classes_ptr` (`external_body`): raw-pointer projections of
   the statics, at `Shared::storage()`, `features_storage()`,
@@ -5563,8 +5562,10 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   the `STATE`
   wrappers (`state_load`, `state_claim`, `state_publish`: one bare
   atomic operation each), `ClassTable::table`, `class_entry`,
-  the watermark's load `vspec::atom::load_usize_in`, the registry reader `arena_at`
-  (`arena.rs:1264`), `Config::get` and `KEYS`, `vspec::ptr::ref_ptr`
+  the watermark's load `vspec::atom::load_usize_in` (the registry reader
+  `arena_at`, `arena.rs:1264`, was retired by package TSLOT:
+  `Arenas::get_existing` reads through the verified `arena_ref`),
+  `Config::get` and `KEYS`, `vspec::ptr::ref_ptr`
   (the address of `copy_prefix`'s value; the accesses to the caller's
   memory verify over `vspec::cbuf` and the `core` specs of
   `vspec::ptr`), the kernel fact `axiom_read_count` (`sys::read`'s
@@ -5968,7 +5969,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   `CountPerm` is the counter with its `id` (`count_id`), and `fetch_add`,
   `fetch_sub` (wrapping), `load` and, since the port of upstream #103,
   `compare_exchange` (the strong form: it fails only on a different
-  value, by C++20's semantics; S308, discharged with loom and those,
+  value, by C++20's semantics; S307, discharged with loom and those,
   `verus/seams/vspec-count-compare_exchange.md`) are one atomic operation
   on it, sequentially consistent in the model (the orderings, all
   `Relaxed`, are ignored, as for the bitmap words).
@@ -6031,7 +6032,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   is off by that ticket inside the trusted body only (the flush's proof
   uses no arena invariant).
 - `homed_ok`'s `rehome ==> bound` (since #103): a new thread heap is
-  counted, so it holds whatever `mark_rehome` (S124, RefinedRust:
+  counted, so it holds whatever `mark_rehome` (S123, RefinedRust:
   `true`, `verus/seams/heap-mark_rehome.md`) stored;
   an explicit cache, assumed `wf` (`heap_at`), rests on `init_fields`
   storing `false` (trusted) and on `create` being the one writer that
@@ -6325,8 +6326,8 @@ holds IDs 0 and 2 and nothing at 1.
    (`collect_arena_with`, `:896`, ensures `r.index ==
    arena.spec_index()`; `arena_at`, `:876`, ensures `a.spec_index() ==
    i` for the table index `i` it was asked for, from
-   `Arenas::get_existing`, `arena.rs:1811`, and the trusted
-   `arena::arena_at`, `arena.rs:1553`), and the loop invariant keeps
+   `Arenas::get_existing`, `arena.rs:1811`, verified since package
+   TSLOT through `arena_ref`), and the loop invariant keeps
    every earlier read's ID below `i`. The `ensures` (and `mallinfo2`'s,
    `api/glibc.rs:94`, from `collect_all`'s) export what a caller can
    name: the IDs of the reads handed out through the ghost `rd` ascend,
@@ -6409,11 +6410,15 @@ below `MAX_ARENAS`.
 - A stable registry during the scan: the `arenas.count()` the scan
   loads is the ledger's `k`, and each entry load in `get_existing` sees
   the entry as published (non-null exactly for the built indices).
-  Verus gives `core` atomic loads any value (common premises), so "every
+  `get_existing`'s `ensures` gives nothing on `None` (a load outside
+  the creation lock may read a stale null), so "every
   built arena is read" is `reads_keyed`'s fourth conjunct, a premise,
   like the quiescence link of the counters. Nothing frees or unpublishes
-  an arena, so an entry, once non-null, stays the same arena (the trusted
-  `arena::arena_at`'s contract, `spec_index() == index`, rests on it).
+  an arena, so an entry, once non-null, stays the same arena. Since
+  package TSLOT `get_existing`'s `spec_index() == index` is proved: it
+  loads the entry inside the registry's invariant (`vspec::entry::load`)
+  and reads the arena through its frozen permission (`arena_ref`); the
+  trusted `arena::arena_at` it rested on is gone.
 - The ledger's `materialise` and `new_arena` steps abstract
   `Arenas::build`'s release store of the entry and `Arenas::create`'s
   `count` store (read from the code, as theorem 22's other steps).

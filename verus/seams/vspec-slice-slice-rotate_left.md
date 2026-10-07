@@ -1,6 +1,6 @@
 # `<[T]>::rotate_left`
 
-Seam S382 of `verus/SEAMS.md`: src/vspec/slice.rs:179. Kind: assume_spec. Category: core library.
+Seam S381 of `verus/SEAMS.md`: src/vspec/slice.rs:179. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

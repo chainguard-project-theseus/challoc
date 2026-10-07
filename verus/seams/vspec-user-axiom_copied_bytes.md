@@ -1,6 +1,6 @@
 # `axiom_copied_bytes`
 
-Seam S414 of `verus/SEAMS.md`: src/vspec/user.rs:244. Kind: axiom. Category: core library.
+Seam S413 of `verus/SEAMS.md`: src/vspec/user.rs:244. Kind: axiom. Category: core library.
 Evidence from Kani: the harness settles the memory half (what
 `copy_nonoverlapping` does to memory); that the ghost byte maps of
 `UserMem` agree with memory before the copy is a premise the harness

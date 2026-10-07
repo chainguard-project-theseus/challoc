@@ -1,6 +1,6 @@
 # `load` (`vspec/entry.rs`)
 
-Seam S310 of `verus/SEAMS.md`: src/vspec/entry.rs:93. Kind: external_body. Category: atomics primitive.
+Seam S309 of `verus/SEAMS.md`: src/vspec/entry.rs:93. Kind: external_body. Category: atomics primitive.
 Discharged by loom and the C11 coherence rules (part 3).
 
 ## Contract
@@ -23,8 +23,10 @@ The body: `a.load(ordering)`. Its call sites, each `Acquire`, each a
 table entry of the arena registry inside its invariant
 (`arena::NarenasPred`): `Arenas::get`, `Arenas::materialise` (under the
 creation lock) and `Arenas::get_frozen` (the fork handlers, under the
-creation lock). `Arenas::get_existing` and `Arenas::assign` keep plain
-`core` loads (see `arena::arena_at`).
+creation lock). `Arenas::assign` keeps a plain `core` load. Package
+TSLOT added `Arenas::get_existing`, outside the creation lock as
+`get` is: the same `Acquire` load, so the same statement covers it,
+and the trusted `arena::arena_at` it read through is gone.
 
 ## Statement
 
@@ -56,14 +58,16 @@ Models: `loom_narenas_create_publishes`, `loom_narenas_relaxed_store_is_unpublis
   `vspec-entry-store.md`); part 1 places the load right after the write
   it reads. Under the creation lock (`materialise`, `get_frozen`) that
   is the last write, every write being made under the lock and ordered
-  by its edge; outside it (`get`) a load may read an older write, which
-  for an entry is null (an entry is written at most once after
-  `Arenas::init`, null to an arena): `get` then takes its slow path
-  (`materialise`), which reloads under the lock for an automatic index
-  and returns `None` for an explicit one, as the plain load before this
-  wrapper did. The SC proof's claim, that a non-null result is the
-  arena the invariant names, is what the callers rely on, and a stale
-  null never yields a wrong arena.
+  by its edge; outside it (`get`, `get_existing`) a load may read an
+  older write, which for an entry is null (an entry is written at most
+  once after `Arenas::init`, null to an arena): `get` then takes its
+  slow path (`materialise`), which reloads under the lock for an
+  automatic index and returns `None` for an explicit one, as the plain
+  load before this wrapper did; `get_existing` returns `None`, as its
+  plain load did, and its `ensures` says nothing of `None`. The SC
+  proof's claim, that a non-null result is the arena the invariant
+  names, is what the callers rely on, and a stale null never yields a
+  wrong arena.
 - **`opens_invariants none`**: read from the source.
 - **Gaps.** Those of `vspec-entry-store.md`.
 

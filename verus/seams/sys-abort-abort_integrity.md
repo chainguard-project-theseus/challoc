@@ -1,6 +1,6 @@
 # `abort_integrity`
 
-Seam S214 of `verus/SEAMS.md`: src/sys/abort.rs:175. Kind: external_body. Category: panic/abort.
+Seam S213 of `verus/SEAMS.md`: src/sys/abort.rs:175. Kind: external_body. Category: panic/abort.
 Discharged by Kani (the body); the capability relabel it makes is theorem
 31's policy (Translation), which Kani cannot check.
 

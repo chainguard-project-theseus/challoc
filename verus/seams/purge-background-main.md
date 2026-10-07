@@ -1,6 +1,6 @@
 # `main` (`purge/background.rs`)
 
-Seam S196 of `verus/SEAMS.md`: src/purge/background.rs:715. Kind: no_decreases. Category: termination.
+Seam S195 of `verus/SEAMS.md`: src/purge/background.rs:715. Kind: no_decreases. Category: termination.
 Discharged by loom (termination after a final `request(false)`, given that each pass and the exit's lock return; part 3).
 
 ## Contract

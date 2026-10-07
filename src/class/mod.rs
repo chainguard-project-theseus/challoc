@@ -2136,10 +2136,11 @@ impl ClassState {
     }
 
     /// Release the slots of `mask` in `word` of `slab`, whose tokens are
-    /// `tok`. The `live` update is separate so a batch can do one per slab.
+    /// `tok` (by reference, left empty, as `AtomicBitmap::release` takes
+    /// them). The `live` update is separate so a batch can do one per slab.
     /// The double-free abort cannot fire: the tokens say every bit is set
     /// (`AtomicBitmap::release`).
-    fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen, Tracked(tok): Tracked<GhostSubset<int>>, Tracked(ord): Tracked<&mut LockOrder>)
+    fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen, Tracked(tok): Tracked<&mut GhostSubset<int>>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
@@ -2147,8 +2148,8 @@ impl ClassState {
             word < words_of(class_table()[self.spec_class() as int].slab_bits as usize),
             subset(mask, slab_mask_of(class_table()[self.spec_class() as int].slab_bits as usize)),
             mask_slots(word as int, mask, class_table()[self.spec_class() as int].nslots as int),
-            tok.id() == self.spec_table().spec_slots().loc,
-            tok@ == word_addrs(self.spec_table(), slab as int, word as int, mask),
+            old(tok).id() == self.spec_table().spec_slots().loc,
+            old(tok)@ == word_addrs(self.spec_table(), slab as int, word as int, mask),
             old(reopen).len <= MAX_PICKS,
             old(reopen).below(self.spec_nslabs()),
             old(ord).allows(rank_class(0, 0)),
@@ -2156,6 +2157,8 @@ impl ClassState {
             final(reopen).len <= MAX_PICKS,
             final(reopen).below(self.spec_nslabs()),
             *final(ord) == *old(ord),
+            final(tok).id() == old(tok).id(),
+            final(tok)@.is_empty(),
     {
         let ghost sb = class_table()[self.spec_class() as int].slab_bits as usize;
         proof {
@@ -2950,7 +2953,8 @@ impl ClassState {
     /// per non-zero word), zero them for the next slab, and take `count`
     /// off the slab's `live`. The words are inside the slab's view of the
     /// class bitmap and hold only bits of it; `toks` holds the tokens of
-    /// exactly their slots, and each word's go back with its release.
+    /// exactly their slots, and each word's go back with its release, so
+    /// `toks` is left empty (by reference, as `AtomicBitmap::release`).
     // The extra arguments are ghost and tracked state.
     #[allow(clippy::too_many_arguments)]
     fn release_slab(
@@ -2961,7 +2965,7 @@ impl ClassState {
         hi: usize,
         count: usize,
         reopen: &mut Reopen,
-        Tracked(toks): Tracked<GhostSubset<int>>,
+        Tracked(toks): Tracked<&mut GhostSubset<int>>,
         Tracked(ord): Tracked<&mut LockOrder>,
     )
         requires
@@ -2973,8 +2977,8 @@ impl ClassState {
             hi < words_of(class_table()[self.spec_class() as int].slab_bits as usize),
             forall|v: int| lo <= v <= hi ==> subset(#[trigger] old(local)@[v], slab_mask_of(class_table()[self.spec_class() as int].slab_bits as usize)),
             forall|v: int| lo <= v <= hi ==> mask_slots(v, #[trigger] old(local)@[v], class_table()[self.spec_class() as int].nslots as int),
-            toks.id() == self.spec_table().spec_slots().loc,
-            toks@ == addrs(self.spec_table().spec_slots(), scratch_bits(self.spec_table().spec_slots(),
+            old(toks).id() == self.spec_table().spec_slots().loc,
+            old(toks)@ == addrs(self.spec_table().spec_slots(), scratch_bits(self.spec_table().spec_slots(),
                 slab * self.spec_table().spec_slots().sb, old(local)@, lo as int, hi as int)),
             old(reopen).len <= MAX_PICKS,
             old(reopen).below(self.spec_nslabs()),
@@ -2985,10 +2989,12 @@ impl ClassState {
             forall|v: int| lo <= v <= hi ==> #[trigger] final(local)@[v] == 0,
             forall|v: int| 0 <= v < old(local)@.len() && !(lo <= v <= hi) ==> #[trigger] final(local)@[v] == old(local)@[v],
             *final(ord) == *old(ord),
+            final(toks).id() == old(toks).id(),
+            final(toks)@.is_empty(),
     {
         let ghost s = self.spec_table().spec_slots();
         let ghost f = slab * s.sb;
-        let tracked mut toks = toks;
+        let tracked mut toks = toks.take();
         proof {
             use_type_invariant(self);
             self.spec_table().lemma_slots_wf();
@@ -3026,10 +3032,10 @@ impl ClassState {
                 assert(a.union(r).difference(a) =~= r);
             }
             let mask = local[w];
-            let tracked tok = toks.split(word_addrs(self.spec_table(), slab as int, w as int, mask));
+            let tracked mut tok = toks.split(word_addrs(self.spec_table(), slab as int, w as int, mask));
             if mask != 0 {
                 local[w] = 0;
-                self.release_word(slab, w, mask, reopen, Tracked(tok), Tracked(ord));
+                self.release_word(slab, w, mask, reopen, Tracked(&mut tok), Tracked(ord));
             }
         }
         self.dec_live(slab, count, Tracked(ord));
@@ -5476,7 +5482,7 @@ impl ClassState {
             if slab != cur_slab {
                 if count != 0 {
                     let ghost pre = local@;
-                    self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(ltoks.take()), Tracked(ord));
+                    self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(&mut ltoks), Tracked(ord));
                     proof {
                         assert forall|v: int| 0 <= v < MAX_SLAB_WORDS implies subset(#[trigger] local@[v], slab_mask_of(sb)) by {
                             let m = slab_mask_of(sb);
@@ -5638,7 +5644,7 @@ impl ClassState {
             i += 1;
         }
         if count != 0 {
-            self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(ltoks.take()), Tracked(ord));
+            self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(&mut ltoks), Tracked(ord));
         }
         self.reopen(&mut reopen, Tracked(ord));
         if end != 0 {

@@ -33,9 +33,9 @@
 //!   goes through [`store`] (`Arenas::put_arena0`, `Arenas::build`),
 //!   inside the registry's invariant once it exists, and `Arenas::init`
 //!   makes each entry with [`new`] before the registry is published.
-//!   Reads outside the invariant (`Arenas::assign`'s built test,
-//!   `Arenas::get_existing`, the test-only `Arenas::iter`) are plain `core`
-//!   loads, whose result Verus takes as any pointer.
+//!   Reads outside the invariant (`Arenas::assign`'s built test and
+//!   the test-only `Arenas::iter`) are plain `core` loads, whose result
+//!   Verus takes as any pointer.
 
 use crate::sync::atomic::{AtomicPtr, Ordering};
 use vstd::prelude::*;

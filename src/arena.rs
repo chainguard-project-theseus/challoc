@@ -2716,36 +2716,6 @@ unsafe fn arena_ref<'a>(p: *mut Arena, perm: Tracked<&'a PointsTo<Arena>>, Ghost
     ptr_ref(p, perm)
 }
 
-/// [`arena_ref`] without the permission, for [`Arenas::get_existing`]
-/// alone. Trusted: Verus has no raw-pointer dereference without a
-/// permission, and `get_existing` cannot take one: it is on the `free`
-/// flush path (`Shared::owner`), where one more distinct `Tracked` type
-/// (the entry's permission for the load, or the arena's for
-/// [`arena_ref`]) changes the machine code of `Heap::flush` and
-/// `group_by_slab` (measured: rustc's MIR inliner gives up at 16
-/// instances of `Tracked::assume_new_fallback` reachable from the root;
-/// brief, "distinct Tracked types per root"). What it assumes is what the
-/// registry's invariant states and the verified readers ([`Arenas::get`],
-/// [`Arenas::get_frozen`]) prove through [`arena_ref`]: a non-null entry
-/// `index` is the address of a built arena at index `index`, frozen
-/// ([`entry_ok`]); `get_existing`'s load is a plain one, outside the
-/// invariant, so the contract states only the address fact every caller
-/// shows, that `p` is not null.
-///
-/// # Safety
-/// `p` is a non-null entry loaded from `Arenas::table[index]`.
-#[verifier::external_body]
-#[inline(always)]
-unsafe fn arena_at<'a>(p: *mut Arena, Ghost(index): Ghost<u16>) -> (r: &'a Arena)
-    requires
-        p@.addr != 0,
-    ensures
-        r.spec_index() == index,
-{
-    // SAFETY: guaranteed by the caller.
-    unsafe { &*p }
-}
-
 /// An arena's bound count went below zero: a heap was unbound twice, or
 /// never bound.
 #[cold]
@@ -3157,7 +3127,13 @@ impl Arenas {
         Some(index as u16)
     }
 
-    /// Arena `index` if it has been built, without building it.
+    /// Arena `index` if it has been built, without building it: the
+    /// entry loaded inside the registry's invariant and the arena read
+    /// through its frozen permission, as [`Arenas::get`]. On the `free`
+    /// flush path (`Shared::owner`), where the entry's and the arena's
+    /// permissions are two of the distinct `Tracked` types under
+    /// `Heap::flush`, which is at 16 of the 17 rustc's MIR inliner
+    /// allows (`mir_callgraph_cyclic`; `verus/TODO.md`, OWNER).
     pub fn get_existing(&self, index: u16) -> (r: Option<&Arena>)
         ensures
             r matches Some(a) ==> a.spec_index() == index,
@@ -3166,9 +3142,24 @@ impl Arenas {
         if i >= MAX_ARENAS {
             return None;
         }
-        let p = self.table[i].load(Ordering::Acquire);
+        proof {
+            use_type_invariant(self);
+        }
+        let p;
+        let tracked mut perm: Option<&'static PointsTo<Arena>> = None;
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
+            proof {
+                assert(entry_ok(self.count_inv@.constant(), v, i as int));
+            }
+            p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked(v.entries.tracked_borrow(i as int)));
+            proof {
+                if p@.addr != 0 {
+                    perm = Some(*v.arenas.tracked_borrow(i as int));
+                }
+            }
+        });
         // SAFETY: a non-null entry of the table.
-        if p.is_null() { None } else { Some(unsafe { arena_at(p, Ghost(index)) }) }
+        if p.is_null() { None } else { Some(unsafe { arena_ref(p, Tracked(perm.tracked_unwrap()), Ghost(index)) }) }
     }
 
     /// [`Arenas::get_existing`] for a holder of the creation lock that

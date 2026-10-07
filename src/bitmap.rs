@@ -1760,16 +1760,23 @@ impl<'a> AtomicBitmap<'a> {
     /// was full). The caller must abort if `prev & mask != mask`: a bit
     /// that was already clear means a slot was released twice. With the
     /// tokens it cannot happen: a clear bit's token is in the word, and
-    /// tokens are unique.
+    /// tokens are unique. The tokens come by reference and `toks` is left
+    /// empty: the `free` flush path (`Heap::flush`) already has a
+    /// `Tracked<&mut GhostSubset<int>>`, and a by-value one is one more
+    /// distinct `Tracked` type there, against the MIR inliner's limit of
+    /// instances of one generic item (`Tracked::assume_new_fallback`)
+    /// reachable from a root (`mir_callgraph_cyclic`).
     #[inline]
-    pub fn release(&self, i: usize, mask: u64, Tracked(toks): Tracked<GhostSubset<int>>) -> (r: (u64, bool))
+    pub fn release(&self, i: usize, mask: u64, Tracked(toks): Tracked<&mut GhostSubset<int>>) -> (r: (u64, bool))
         requires
             i < self.spec_words(),
             subset(mask, self.slab_mask()),
-            toks.id() == self.spec_slots().loc,
-            toks@ == self.slot_addrs(i as int, mask),
+            old(toks).id() == self.spec_slots().loc,
+            old(toks)@ == self.slot_addrs(i as int, mask),
             self.all_real(i as int, mask),
         ensures
+            final(toks).id() == old(toks).id(),
+            final(toks)@.is_empty(),
             subset(r.0, self.slab_mask()),
             r.1 == (r.0 == self.slab_mask()),
             subset(mask, r.0),
@@ -1792,7 +1799,7 @@ impl<'a> AtomicBitmap<'a> {
         let tracked inv = self.invs.borrow().tracked_borrow(j);
         let w = &self.words[i];
         let prev;
-        let tracked mut toks = toks;
+        let tracked mut toks = toks.take();
         vstd::open_atomic_invariant!(inv => pair => {
             let tracked (mut perm, mut g, u, d) = pair;
             prev = crate::vspec::word::fetch_and(w, !m, Ordering::Release, Tracked(&mut perm));
