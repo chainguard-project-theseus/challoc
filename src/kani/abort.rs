@@ -3,7 +3,7 @@
 use super::must_not_return;
 use crate::vspec::check::check;
 
-/// S283 `check`, `ensures c`: on a false `c` the call never returns (it
+/// S282 `check`, `ensures c`: on a false `c` the call never returns (it
 /// panics, and challoc's panics abort), so it returns only if `c`.
 #[kani::proof]
 #[kani::should_panic]
@@ -30,7 +30,7 @@ fn stub_abort_fmt(_args: core::fmt::Arguments<'_>) -> ! {
     panic!("kani: abort_fmt")
 }
 
-/// S215 `abort_integrity`, `requires may_abort_corrupt()`, `-> !`: the
+/// S214 `abort_integrity`, `requires may_abort_corrupt()`, `-> !`: the
 /// call reaches `abort_fmt` with no other failure on the way (its own
 /// `-> !` already rules out a return; it passes `args` on unread).
 #[kani::proof]
@@ -41,7 +41,7 @@ fn abort_integrity_reaches_abort_fmt() {
     crate::sys::abort_integrity(format_args!("kani: integrity {v}"));
 }
 
-/// S216 `abort_kernel`, `requires may_abort_kernel()`, `-> !`: as
+/// S215 `abort_kernel`, `requires may_abort_kernel()`, `-> !`: as
 /// `abort_integrity_reaches_abort_fmt`, for the kernel-failure sink.
 #[kani::proof]
 #[kani::should_panic]
@@ -51,7 +51,7 @@ fn abort_kernel_reaches_abort_fmt() {
     crate::sys::abort_kernel(format_args!("kani: kernel {v}"));
 }
 
-/// S217 `abort_pending`, `requires may_abort_pending()`, `-> !`: as
+/// S216 `abort_pending`, `requires may_abort_pending()`, `-> !`: as
 /// `abort_integrity_reaches_abort_fmt`, for theorem 44's pending checks.
 #[kani::proof]
 #[kani::should_panic]

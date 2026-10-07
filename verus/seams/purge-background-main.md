@@ -1,7 +1,7 @@
 # `main` (`purge/background.rs`)
 
 Seam S196 of `verus/SEAMS.md`: src/purge/background.rs:715. Kind: no_decreases. Category: termination.
-Discharged by loom (termination after a final `request(false)`, given that `detach_from_starter`, each pass and the exit's lock return; part 3).
+Discharged by loom (termination after a final `request(false)`, given that each pass and the exit's lock return; part 3).
 
 ## Contract
 
@@ -41,10 +41,10 @@ Models: `loom_exit_after_withdrawal`, `loom_exit_after_withdrawal_with_waker`, `
 
 - **The claim.** If a `request(false)` is the last write to `REQUESTED`
   in its modification order (no `request(true)` after it), the loop
-  reaches its exit decision and returns, given that `detach_from_starter`
-  (since upstream #111, once before the loop: libc scheduling calls,
-  trusted, S197) returns and that each pass returns:
-  `prctl`, `now_coarse_ns`, `sample` and `decay` (verified; their
+  reaches its exit decision and returns, given that what runs before the
+  loop and each pass return: `prctl`, `detach_from_starter` (since
+  upstream #111, once before the loop: raw scheduling syscalls),
+  `now_coarse_ns`, `sample` and `decay` (verified; their
   callees' termination, such as the cgroup sampler's, are their own
   seams) and a `futex_wait`, which returns at its deadline, on a wake,
   on a changed `SEQ` or on a signal; and that the exit's

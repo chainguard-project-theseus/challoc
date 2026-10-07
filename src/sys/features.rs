@@ -907,14 +907,14 @@ mod kani_fmt {
     use super::{LgSize, SizeSet};
     use crate::kani_proofs::fmt::formats;
 
-    /// S226 `DisplaySpecImpl for SizeSet` (`fmt_req` true): every set.
+    /// S225 `DisplaySpecImpl for SizeSet` (`fmt_req` true): every set.
     #[kani::proof]
     #[kani::unwind(66)]
     fn display_size_set() {
         formats(&SizeSet(kani::any()));
     }
 
-    /// S227 `DisplaySpecImpl for LgSize` (`fmt_req` is `self.0 < 64`):
+    /// S226 `DisplaySpecImpl for LgSize` (`fmt_req` is `self.0 < 64`):
     /// every such size.
     #[kani::proof]
     #[kani::unwind(22)]
@@ -942,7 +942,7 @@ mod kani_features {
         if kani::any() { Ok(()) } else { Err(fmt::Error) }
     }
 
-    /// S229 `DisplaySpecImpl for Features` (`fmt_req` true), through
+    /// S228 `DisplaySpecImpl for Features` (`fmt_req` true), through
     /// `Features::fmt` (verified in Verus): every
     /// `Features` value, under the plain and a padded formatter, whatever
     /// the writer returns. Each `Value` is formatted by the stub above,

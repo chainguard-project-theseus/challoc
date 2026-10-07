@@ -1,6 +1,6 @@
 # `core::str::from_utf8`
 
-Seam S401 of `verus/SEAMS.md`: src/vspec/sys.rs:90. Kind: assume_spec. Category: core library.
+Seam S400 of `verus/SEAMS.md`: src/vspec/sys.rs:90. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

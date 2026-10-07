@@ -1,6 +1,6 @@
 # `<[T]>::is_sorted`
 
-Seam S375 of `verus/SEAMS.md`: src/vspec/slice.rs:99. Kind: assume_spec. Category: core library.
+Seam S374 of `verus/SEAMS.md`: src/vspec/slice.rs:99. Kind: assume_spec. Category: core library.
 Discharged by Kani.
 
 ## Contract

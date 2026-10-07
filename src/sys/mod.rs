@@ -1192,6 +1192,108 @@ mod linux {
         }
     }
 
+    // ---- scheduling ------------------------------------------------------
+
+    const SCHED_OTHER: i32 = 0;
+    const PRIO_PROCESS: i32 = 0;
+
+    /// A CPU mask the size of glibc's `cpu_set_t` (1024 CPUs).
+    pub type CpuSet = [u64; 16];
+
+    /// `sched_setscheduler(0, SCHED_OTHER, &{ sched_priority: 0 })`: put
+    /// the calling thread on the default time-sharing policy.
+    pub fn sched_set_other() -> Result<usize, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
+        // `struct sched_param` is one `int`.
+        let param = [0i32; 1];
+        // SAFETY: `param` is a live `sched_param` for the whole call; the
+        // kernel only reads it.
+        decode(unsafe {
+            raw::syscall3(
+                nr::SCHED_SETSCHEDULER,
+                0,
+                SCHED_OTHER as isize as usize,
+                param.as_ptr() as usize,
+            )
+        })
+    }
+
+    /// `sched_getaffinity(pid)` into `set`. On `Ok(n)` the kernel has
+    /// stored the first `n` bytes of the mask and left the rest of `set`
+    /// as it was (glibc's wrapper zeroes them: start from a zeroed set).
+    pub fn sched_getaffinity(pid: i32, set: &mut CpuSet) -> Result<usize, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
+        let len = 16 * 8;
+        // SAFETY: `set` is writable for `len` bytes and outlives the call.
+        decode(unsafe {
+            raw::syscall3(
+                nr::SCHED_GETAFFINITY,
+                pid as isize as usize,
+                len,
+                set.as_mut_ptr() as usize,
+            )
+        })
+    }
+
+    /// `sched_setaffinity(pid, set)`.
+    pub fn sched_setaffinity(pid: i32, set: &CpuSet) -> Result<usize, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
+        let len = 16 * 8;
+        // SAFETY: `set` is readable for `len` bytes and outlives the call.
+        decode(unsafe {
+            raw::syscall3(
+                nr::SCHED_SETAFFINITY,
+                pid as isize as usize,
+                len,
+                set.as_ptr() as usize,
+            )
+        })
+    }
+
+    /// `getpriority(PRIO_PROCESS, pid)`: the nice value of thread `pid`.
+    /// The raw syscall returns `20 - nice` (1 to 40) on success, so unlike
+    /// glibc's wrapper a failure is not confused with a nice value of -1.
+    /// The conversion is glibc's: the word as an `int`, subtracted from 20.
+    pub fn getpriority(pid: i32) -> Result<i32, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
+        // SAFETY: no pointers.
+        let r = decode(unsafe {
+            raw::syscall2(nr::GETPRIORITY, PRIO_PROCESS as isize as usize, pid as isize as usize)
+        });
+        match r {
+            Ok(v) => {
+                #[cfg_attr(verus_keep_ghost, verifier::truncate)]
+                let v = v as i32;
+                Ok(20i32.wrapping_sub(v))
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    /// `setpriority(PRIO_PROCESS, pid, nice)`.
+    pub fn setpriority(pid: i32, nice: i32) -> Result<usize, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
+        // SAFETY: no pointers.
+        decode(unsafe {
+            raw::syscall3(
+                nr::SETPRIORITY,
+                PRIO_PROCESS as isize as usize,
+                pid as isize as usize,
+                nice as isize as usize,
+            )
+        })
+    }
+
     /// `rt_sigprocmask(SIG_BLOCK, all)`: block every blockable signal on the
     /// calling thread and return the mask that was in force before. The
     /// kernel silently leaves `SIGKILL` and `SIGSTOP` unblocked. `sig` is

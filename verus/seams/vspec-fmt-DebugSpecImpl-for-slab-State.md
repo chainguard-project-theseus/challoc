@@ -1,6 +1,6 @@
 # `DebugSpecImpl for slab::State`
 
-Seam S318 of `verus/SEAMS.md`: src/vspec/fmt.rs:58. Kind: spec_impl. Category: core library.
+Seam S317 of `verus/SEAMS.md`: src/vspec/fmt.rs:58. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract

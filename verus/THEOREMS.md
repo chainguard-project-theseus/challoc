@@ -1386,8 +1386,7 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   `linux::try_reserve` (`layout/regions.rs:1443`), `ThreadKey::create`
   (`heap/shared.rs:255`), `atfork_handlers` (`api/mod.rs:502`),
   `background::spawn` and `pthread_join` (`purge/background.rs:333`,
-  `:229`; since upstream #111 also `background::detach_from_starter`,
-  the new thread's own scheduling calls), `init_fields`, `Heap::destroy`
+  `:229`), `init_fields`, `Heap::destroy`
   (`heap/mod.rs:5158`, `:5382`), `Meta::commit`
   (`meta.rs:2745`), `print::emit` and
   `jemalloc::call_hook` (the report's call-outs, theorem 16), the
@@ -5969,7 +5968,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   `CountPerm` is the counter with its `id` (`count_id`), and `fetch_add`,
   `fetch_sub` (wrapping), `load` and, since the port of upstream #103,
   `compare_exchange` (the strong form: it fails only on a different
-  value, by C++20's semantics; S309, discharged with loom and those,
+  value, by C++20's semantics; S308, discharged with loom and those,
   `verus/seams/vspec-count-compare_exchange.md`) are one atomic operation
   on it, sequentially consistent in the model (the orderings, all
   `Relaxed`, are ignored, as for the bitmap words).
@@ -6864,7 +6863,7 @@ pub open spec fn effective(m: u64) -> u64 { m & !unblockable() }   // less SIGKI
 pub open spec fn all_blocked() -> u64 { effective(!0u64) }
 pub open spec fn wf(self) -> bool { effective(self.mask()) == self.mask() }   // SigMask
 
-// sys/mod.rs:1146, :1172
+// sys/mod.rs:1248, :1274
 pub fn block_all_signals(Tracked(sig): Tracked<&mut SigMask>) -> (r: u64)
     requires ..., old(sig).wf(),
     ensures r == old(sig).mask(), final(sig).mask() == all_blocked(), final(sig).wf(),
