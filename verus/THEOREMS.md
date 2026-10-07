@@ -10,7 +10,9 @@ open work; this file says what the code proves today. Each title and
 first paragraph claims only what is proved: where a theorem holds only
 at a lock invariant, rests on a source test or on the C-boundary
 assumption (`axiom_c_claim`), the title or the first paragraph says so.
-The sections are numbered 1 to 44 in order; "Bad input" (the B column)
+The sections are numbered 1 to 45 in order (45, fast-path cost bounds,
+is a machine-level statement over the release binary that a
+disassembly checker, not Verus, checks); "Bad input" (the B column)
 and the interface contract are not numbered.
 
 Marked **unconfirmed**: facts read from comments, not checked against
@@ -1787,10 +1789,16 @@ identically). The hot set's machine code is upstream's.
 - **Declined fast-path operations.** The scheduled pop (`compact_mask`),
   the full-cache push, the `zero_on_free` push and a scan hit decline to
   the slow path, so they are outside the fast path by construction.
-- **The nine `exec_allows_no_decreases_clause` functions** (common
-  premises) are all off these paths: lock waits, `claim_with`'s retry,
-  `init_slow`, the OOM handler loop, the purge thread, and the kernel
-  retry loops in `sys/`. They need a liveness model.
+- **The eleven `exec_allows_no_decreases_clause` functions** (common
+  premises) are all off these paths: `RawLock::lock_slow`
+  (`lock.rs`), `ClassState::claim_with`'s retry (`class/mod.rs`),
+  `api::init_slow` and `api::line_ready` (`api/mod.rs`), the OOM
+  handler loop `api::cxx::oom`, the purge thread's `main`
+  (`purge/background.rs`), `sys::cgroup::scan_lines` and
+  `Deferred::discover` (`sys/cgroup.rs`), and the kernel retry loops
+  `getrandom_exact`, `read_full` and `write_all` (`sys/mod.rs`). They
+  need a liveness model. Theorem 45 checks the compiled fast paths for
+  back-edges (none).
 
 **Where the statement is weaker than the code.**
 - **Composition.** Verus checks the masked functions, not the entry
@@ -1800,7 +1808,9 @@ identically). The hot set's machine code is upstream's.
   call to it.
 - **Step count.** Termination is proved; the step bound is not, because
   Verus has no cost model. The bound rests on the closure having no loop
-  but `cached_recently`'s.
+  but `cached_recently`'s. Theorem 45 counts the steps of the compiled
+  fast paths of the pinned release build (instructions, loads, stores),
+  at machine level, outside Verus.
 - **Other waits.** The masks prove that no lock acquisition is called,
   not that nothing waits. The fast paths contain no other wait either (no
   atomic read-modify-write, no spin), but that, too, is read off the
@@ -7901,6 +7911,197 @@ of the huge lock guard moved (`usable_size`) or added (`free_run`) for
 the token proof, ghost (`Tracked`) parameters on `classify_free`,
 `check_located`, `check_live`, `is_set_unchecked` and `bit_word_held`,
 and `bit_word` as a call of `bit_word_held` with no token.
+
+## 45. Fast-path cost bounds (machine level, pinned build)
+
+On the pinned x86_64 release build, every path through the fast branch
+of `malloc`, `free`, `free_sized`, `sdallocx` and `challoc_free_usable`
+executes at most the table's instructions, explicit memory loads,
+explicit memory stores and conditional branches, and touches at most the
+table's 64-byte cache lines (P1, P4); no such path has a back-edge (P3);
+and no export's whole body holds an atomic read-modify-write, a fence, a
+call, a system call or an indirect jump (P2). This is a statement about
+one binary, checked by a CFG walker over its disassembly
+(`scripts/perf-budget.rs`), not by Verus; it gives no cycle counts.
+
+**Cost model.** A path is the instruction sequence from the export's
+entry to a `ret`. Its latency is at most `a*I + b*L + c*S`, where `I` is
+the number of instructions executed, `L` the number of explicit memory
+loads, `S` the number of explicit memory stores, `a` bounds one
+instruction's latency with every operand in a register, and `b` and `c`
+bound the extra latency of one load and one store with its line in L1
+and its page in the TLB. An atomic read-modify-write would cost a fourth
+term `R`; P2 makes it zero. Branch mispredictions, cache and TLB misses
+are not in the model (see "Not claimed").
+
+**Statement** (checked by `sh scripts/perf-budget.sh`, which builds the
+library and fails unless every row's maxima equal its `budget` line in
+`verus/perf-budget.txt` and every fast path's counts, sorted, equal its
+`paths` line, so a cost added to a path below the worst one fails too):
+
+- **P1, budget.** For each row of the table, the maximum over the
+  row's fast paths of `I`, `L`, `S` and conditional branches is the
+  row's value, so each path's latency is at most
+  `a*I + b*L + c*S` with the row's `I`, `L`, `S`. A path ends, and is
+  not counted, at an edge into one of the export's exit functions: the
+  `#[cold]` `#[inline(never)]` slow paths (`api::libc::malloc_slow`,
+  `malloc_slow_class`, `free_slow`, `free_sized_slow`,
+  `free_usable_slow`, `api::jemalloc::sdallocx_flags`) and the medium
+  paths (`malloc_medium`, `free_sized_medium`, sizes above
+  `SMALL_MAX`). A path ending at `int3` or `ud2` (an abort) is not
+  counted either; the bodies have none today. An edge anywhere else out
+  of the body fails the check.
+- **P2, no synchronisation or kernel entry.** Over the whole body of
+  each export (fast and slow-entry branches, from the symbol's address
+  to address + size in the dynamic symbol table): no `lock` prefix, no
+  `xchg`, `xadd` or `cmpxchg*`, no `mfence`/`lfence`/`sfence`, no
+  `call`, no `syscall`/`sysenter`/`int N`, no indirect jump. The source
+  atomics on these paths are all `Relaxed` loads, which compile to plain
+  `mov`s: `free`'s watermark copy (`class::load_mirror`), bitmap word
+  (`SlabTable::is_set_unchecked`), `Shared::free_flags`
+  (`heap/shared.rs:2699`) and, routed, the owner word
+  (`class::load_owner`, `class/table.rs:322`). `malloc`, `free_sized` and
+  `sdallocx` read no atomic on x86_64: `push_flags` is a plain `u8`, and
+  `malloc`'s `fast_flags` load is dead off aarch64 (`PUSH_PAC` is never
+  set). Theorems 8 and 9 state the source-level half (no syscall
+  capability, no lock-taking mask); P2 is the machine-level check that
+  the compiled bodies add none.
+- **P3, constant time.** The graph of each row's fast paths, as the
+  walker explores it, has no back-edge: every path is enumerated
+  explicitly and a jump to an address already on the path fails the
+  check. So the counts do not depend on the cache's length, the number
+  of slabs, heaps, threads or arenas: `cached_recently`'s scan
+  (`heap/cache.rs:713`) is unrolled (two 16-byte loads when `len >= 4`,
+  at most three compares otherwise).
+- **P4, cache lines.** The maximum over the row's fast paths of the
+  number of distinct 64-byte lines its explicit accesses touch is the
+  row's `lines`. Accesses with a constant address (`rip`-relative
+  statics: the GOT word holding the TLS offset, the `Shared` tail with
+  `free_flags`, `push_flags`, `region_hi`, `regions.superblock` and
+  `lg_stride`) count their exact lines. Accesses through the same base
+  expression form a group (the cache header through the heap pointer
+  plus `class * 64`; the class line through `SHARED + class * 64`; the
+  slot stack entry; the bitmap word; the owner word; `SMALL_LOOKUP`),
+  and a group counts the most lines its byte range can cover over every
+  base alignment the layout premises allow. Groups are summed, so the
+  count is an upper bound. The layout facts it uses: `CacheHeader` is
+  `repr(C, align(64))` and 64 bytes (`CACHE_HEADER == 64`,
+  `heap/cache.rs:93`, `:124`), so `Heap` is 64-byte aligned and
+  `caches[c]` is `heap + 128 + 64 * c`; `ClassLine` is
+  `repr(C, align(64))` and `CLASS_STRIDE` (64) bytes, at offset 0 of
+  `Shared` (`heap/shared.rs:175`, the `const` asserts after it);
+  `SMALL_LOOKUP`'s entries are multiples of `CLASS_STRIDE`
+  (`small_entry_ok`, `layout/mod.rs:1643`, proved).
+
+**Measured table** (`verus/perf-budget.txt`; rustc 1.95.0, `quantum16`,
+`cargo build --release`, at `4f75a5b7`). `-` is every configuration (no
+cell fixed); `free_flags=8` is `FREE_ROUTE` alone (a second arena
+exists, no push option), the routed free of theorem 26.
+
+| export | configuration | insns | loads | stores | cond. branches | lines | fast paths |
+|---|---|---|---|---|---|---|---|
+| `malloc` | any | 34 | 11 | 5 | 7 | 5 | 5 |
+| `free` | `free_flags == 0` | 51 | 18 | 2 | 7 | 7 | 1 |
+| `free` | `free_flags == FREE_ROUTE` | 62 | 22 | 2 | 9 | 9 | 1 |
+| `free` | any | 85 | 25 | 2 | 20 | 11 | 16 |
+| `free_sized` | `push_flags == 0` | 40 | 13 | 2 | 6 | 7 | 1 |
+| `free_sized` | any | 61 | 16 | 2 | 15 | 9 | 7 |
+| `sdallocx` (flags 0) | `push_flags == 0` | 42 | 13 | 2 | 7 | 7 | 1 |
+| `sdallocx` (flags 0) | any | 63 | 16 | 2 | 16 | 9 | 7 |
+| `challoc_free_usable` | `free_flags == 0` | 56 | 19 | 2 | 8 | 8 | 2 |
+| `challoc_free_usable` | `free_flags == FREE_ROUTE` | 67 | 23 | 2 | 10 | 10 | 2 |
+| `challoc_free_usable` | any | 91 | 26 | 2 | 21 | 12 | 17 |
+
+`malloc`'s five paths differ only in the `low_water`, `run_end` and
+`zeroed` stores (27 to 34 instructions, 2 to 5 stores); its lines are
+the `SMALL_LOOKUP` entry, the GOT word, the TLS slot, the cache header
+and the stack entry. `free`'s seven (`free_flags == 0`) are the GOT
+word, the TLS slot, the `Shared` tail line, the class line, the bitmap
+word, the cache header and the stack entry; `FREE_ROUTE` adds the
+heap's first line (`heap.arena`) and the owner word. The header and the
+stack are separate objects, so two lines, never one. The "any" rows
+include the `double_free_scan` push (`PUSH_SCAN`) and the routed scan.
+`challoc_free_usable`'s second path is `challoc_free_usable(NULL)`
+(four instructions: `test`, `je`, `xor`, `ret`). The table's `paths`
+lines list every fast path's counts; the "fast paths" column above is
+their number. The `quantum8` build (`verus/perf-budget-q8.txt`,
+`sh scripts/perf-budget.sh q8`) has the same counts; only the cells
+move (`free_flags` at `SHARED + 0xe00`, 56 class lines). rustc 1.98.1
+(the dev container's and the package's) gives the same counts at this
+commit too, but the table is pinned to 1.95.0.
+
+**Premises.**
+- **Fast path.** `size <= SMALL_MAX` (1024) for `malloc`, `free_sized`
+  and `sdallocx`; a heap exists (the TLS slot is above `TLS_EXITED`,
+  `cmp ..., 3`); the cache is non-empty (`malloc`) or non-full (the
+  frees); the pop is not a scheduled pop (`allocs + 1` has a bit of
+  `compact_mask`); the pointer passes the free's slot checks (its class
+  region, slot start, committed slab, set bit; for the sized frees, the
+  size hint). Each failing check is an edge to an exit, outside P1.
+- **Configuration.** `free_flags` (`Shared` offset `0xd00`) and
+  `push_flags` (`0xd01`) hold the row's values for the whole call (the
+  walker gives every load of the cell the row's value and follows only
+  the branch arm the flags then select). A row whose cell no fast path
+  reads fails the check, which catches a field that moved away from the
+  table's offset, unless another read lands on the old offset. The "any"
+  rows need no configuration premise.
+- **Machine.** No page fault, preemption or signal during the call;
+  cache and TLB costs inside `b` and `c`; the library loaded at a
+  page-aligned base (so static addresses' lines are exact).
+- **Alignment.** Every explicit access is naturally aligned up to 8
+  bytes (Rust's alignment rule for the `u8`..`u64` and pointer fields
+  read; the scan's 16-byte loads read whole `u64` entries), the heap
+  pointer in the TLS slot is 64-byte aligned (`Heap`'s alignment, on
+  x86_64 without PAC; a path with a second access through `fs` fails the
+  check), and `SMALL_LOOKUP`'s entries are multiples of 64 (the two
+  `align-load` lines of the table). An indexed load from a static is
+  attributed to the static its constant part lies in (the tables are
+  indexed from their start).
+- **Toolchain.** rustc 1.95.0, `quantum16` (default features), `cargo
+  build --release` with the crate's release profile (fat LTO, one
+  codegen unit, `panic = "abort"`), x86_64, disassembled by GNU objdump.
+  Another compiler, feature set or target is another binary: the check
+  then measures it and fails with its counts.
+- **The checker** (`scripts/perf-budget.rs`, trusted): objdump's
+  decoding, the classifier (which mnemonics read, write or
+  read-modify-write a memory operand; which set the flags), and the
+  value tracker (constants through `mov`, `movzx`, `lea`, 64-bit
+  `add`/`sub`/`inc`/`dec`, `shl`/`and` by an immediate, `xor` of a
+  register with itself, `test`, `cmp` and the flags; addresses as
+  linear sums of opaque values, a `rip`-relative one as the load base
+  plus its link-time address). Every mnemonic
+  outside its tables fails the check, so a new instruction in a hot
+  body is classified by hand before it is counted; a path falls through
+  by each instruction's encoded length, so a line the parser skipped is
+  a gap the walk fails on. `scripts/perf-budget.sh` runs a self-test
+  first: five mutations of `malloc`'s disassembly (a register `mov`
+  made a load, a `ret` made a `call`, a `ret` made a jump to the entry,
+  an unknown instruction, a deleted instruction) and three of the table (a maximum above the
+  measured one, a cell at a stale offset, a changed `paths` entry) must
+  each fail the check with the matching message. Isla's x86 footprint
+  (`verus/ISLA.md`) is not used to certify the classification.
+
+**Not claimed.**
+- Cycles, branch mispredictions, cache or TLB misses, store-forwarding
+  stalls, false sharing or contention on the lines in P4 (the class
+  line and the `Shared` tail are read-shared by every thread; the
+  watermark copy and `free_flags` are written on slow paths).
+- The slow and medium paths, the exit edges' prefixes (the work done
+  before a check fails), `calloc` (reads the init state, has a frame and
+  calls `memset` unless the slot is known zero), `realloc` (a jump into
+  the core), `free_aligned_sized`, flagged `sdallocx`, the `je_`-prefixed
+  copies and `operator new`/`delete`.
+- `free(NULL)`: on x86_64 there is no null test; the null pointer fails
+  the class-region check after 10 instructions and goes to `free_slow`.
+- The `ret`'s read of the return address, which is part of the `ret`
+  instruction, not a load in `L`, and its stack line, which is not in
+  P4's count (the caller's `call` wrote it).
+- aarch64: the walker reads x86_64 only (it refuses another
+  architecture); the aarch64 fast paths (PAC, `ldp`, the `shared_base`
+  register hint) are not measured.
+- Anything about the source: Verus does not see this theorem. The
+  link to the source is the codegen rule (`CONTRIBUTING.md`, hot set
+  frozen) and theorems 8, 9 and 26, which name the same paths.
 
 ## Interface contract
 

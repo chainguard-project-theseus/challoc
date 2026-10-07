@@ -5,6 +5,9 @@
 #               baseline; flip vars.CLIPPY_ENFORCED), shellcheck on ci/,
 #               actionlint, zizmor, the loom models (tests/loom)
 #   msrv-build  the shipped cdylib with the rust-version toolchain (1.94)
+#   perf-budget the hot exports' fast-path cost table (verus/THEOREMS.md
+#               theorem 45) on x86_64 release builds (both quanta) with
+#               rustc 1.95.0
 #   linux       `make test` in the Wolfi dev container, {x86_64, aarch64} x
 #               quantum {16, 8}, plus the GLIBC <= 2.44 readelf assertion
 #   privileged  `make test` privileged (seccomp off, host cgroupns, rw
@@ -80,6 +83,23 @@ jobs:
         with:
           toolchain: "1.94"
       - run: cargo build --release
+
+  perf-budget:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: "1.95.0"
+      - name: fast-path cost table, quantum16 (theorem 45)
+        run: sh scripts/perf-budget.sh q16
+      - name: fast-path cost table, quantum8
+        run: sh scripts/perf-budget.sh q8
 
   linux:
     strategy:

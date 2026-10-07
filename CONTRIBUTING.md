@@ -116,6 +116,13 @@ code on or near the hot paths is justified with evidence.
   `sdallocx`, `free_sized` and everything inlined into them. Functions
   that differ only in relocations (`reloc-only`) are fine. Put the
   verdict in the pull request.
+- **Fast-path cost table.** `sh scripts/perf-budget.sh` (CI job
+  `perf-budget`, rustc 1.95.0, x86_64) fails when the instruction, load,
+  store, branch or cache-line count of a fast path of `malloc`, `free`,
+  `free_sized`, `sdallocx` or `challoc_free_usable` changes. A change
+  that moves a count on purpose updates `verus/perf-budget.txt`,
+  `verus/perf-budget-q8.txt` and the table of theorem 45 in
+  `verus/THEOREMS.md` in the same pull request.
 - **Fast-path changes** (`src/heap/`, `src/class/`, `src/slab.rs`,
   `src/api/*.rs`) need two things in the pull request. First, the go/no-go
   verdict (`make quick`: `cb launch quick` on the gate cells,
