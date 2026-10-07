@@ -5,7 +5,8 @@
 #   sh verus/seams.sh --write    regenerate verus/SEAMS.md
 #   sh verus/seams.sh --check    exit 1 if verus/SEAMS.md is stale
 #
-# Scans src/ (test files and `#[cfg(test)]` items skipped) for the items
+# Scans src/ (test files, `#[cfg(test)]` items and the Kani harnesses'
+# `#[cfg(kani)]` items skipped) for the items
 # Verus takes on trust:
 #   external_body        `#[verifier::external_body]` exec fn (body unchecked)
 #   external_body proof  `#[verifier::external_body]` proof fn (an axiom)
@@ -238,6 +239,7 @@ newfile {
         attrs = attrs " " t
         if (t ~ /^#\[cfg\((all\()?test[,)]/) pendtest = 1
         if (t ~ /^#\[cfg\(test\)\]/) pendtest = 1
+        if (t ~ /^#\[cfg\(kani\)\]/) pendtest = 1
         next
     }
 

@@ -708,17 +708,19 @@ impl Heap {
     /// `double_free_scan`'s compare (design 6.3 step 3): whether `e`, the
     /// entry as it would be stored (signed under `pac`), is one of the top
     /// four of the `len` entries in `slots`. Shared by the fast push, which
-    /// declines on a hit, and by [`Heap::free_slow_in`], which aborts on
-    /// one; no call in the body.
+    /// declines on a hit, and by [`Heap::scan_or_abort`] (on the slow free
+    /// paths), which aborts on one; no call in the body.
     ///
     /// # Safety
-    /// `slots` has `len` entries (`perms` owns them, written).
+    /// `slots` has `len` entries (`perms` owns them, written), in one
+    /// allocation (`slot_in`: `slots.add(len)` is in bounds).
     ///
     /// Trusted: the short-cache case is an iterator.
     #[inline(always)]
     #[verifier::external_body]
     pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8, Tracked(perms): Tracked<&Map<*mut *mut u8, PointsTo<*mut u8>>>) -> bool
         requires
+            len == 0 || slot_in(slots, len as int),
             forall|i: int| 0 <= i < len ==> {
                 let q = #[trigger] slot_ptr(slots, i);
                 perms.contains_key(q) && perms[q].ptr() == q && perms[q].is_init()
@@ -952,6 +954,13 @@ impl Heap {
         }
         let ghost h0 = *self;
         proof {
+            // The stack's end is in its allocation too (`stack_ok`'s
+            // `slot_in` at `cap`).
+            crate::vspec::ptr::axiom_raw_valid(&raw, slots, 8 * cap as int);
+            assert(vstd::layout::size_of::<*mut u8>() == 8);
+            assert((slots as *mut *mut u8)@.addr == slots@.addr);
+            assert((slots as *mut *mut u8)@.provenance == slots@.provenance);
+            assert(slot_in(slots as *mut *mut u8, cap as int));
             axiom_fresh_stack(self.perms.borrow_mut(), cache, slots as *mut *mut u8, cap, raw);
             CachePerms::lemma_claimed_frame(h0.perms@, self.perms@);
             // The stack's claim joins the heap's, by the stack's base.
@@ -1022,3 +1031,55 @@ impl Heap {
 }
 
 } // verus!
+
+/// Kani check of `Heap::cached_recently` (record under `verus/seams/`).
+#[cfg(kani)]
+mod kani_cache {
+    use super::Heap;
+    use vstd::prelude::Tracked;
+
+    /// The call on a stack of exactly `N` entries (an array, the one
+    /// allocation the pointers come from), each entry and `e` any
+    /// address: it reads only inside the stack and returns whether `e`
+    /// is one of the top `min(4, N)` entries.
+    fn on<const N: usize>() {
+        let vals: [usize; N] = kani::any();
+        let mut a = vals.map(core::ptr::without_provenance_mut::<u8>);
+        let e = core::ptr::without_provenance_mut::<u8>(kani::any());
+        // SAFETY: the contract's precondition: `a` holds the `N` entries
+        // from its start, written.
+        let r =
+            unsafe { Heap::cached_recently(a.as_mut_ptr(), N as u32, e, Tracked::assume_new()) };
+        let mut hit = false;
+        for i in 1..=N.min(4) {
+            hit |= a[N - i] == e;
+        }
+        assert_eq!(r, hit);
+    }
+
+    /// S111 `Heap::cached_recently`, `requires` the `len` entries from
+    /// `slots` permitted and written and, unless `len` is 0, their bytes
+    /// in one allocation (`slot_in`), no `ensures`: it returns, reading
+    /// only those entries, for every `len` from 0 to 8 (both branches,
+    /// the short stack's iterator and the four compares, and their
+    /// boundary at 4), every entry and every `e`; and with `len == 0`
+    /// (no entry or range required) on any pointer, even null or dangling.
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn cached_recently_reads_the_top_entries() {
+        on::<0>();
+        on::<1>();
+        on::<2>();
+        on::<3>();
+        on::<4>();
+        on::<5>();
+        on::<6>();
+        on::<7>();
+        on::<8>();
+        let p = core::ptr::without_provenance_mut::<*mut u8>(kani::any());
+        let e = core::ptr::without_provenance_mut::<u8>(kani::any());
+        // SAFETY: `len == 0`: the precondition names no entry.
+        let r = unsafe { Heap::cached_recently(p, 0, e, Tracked::assume_new()) };
+        assert!(!r);
+    }
+}

@@ -92,8 +92,8 @@ documentation (kernel, ISA, C standard) its contract follows.
 | tool | short | seams |
 |---|---|---:|
 | Islaris/Isla | Isla | 32 |
-| RefinedRust | RR | 17 |
-| Kani | Kani | 205 |
+| RefinedRust | RR | 16 |
+| Kani | Kani | 206 |
 | loom/GenMC | GenMC | 35 |
 | Verus | Verus | 4 |
 | Miri (evidence only) | Miri | 4 |
@@ -123,8 +123,8 @@ Seams by category and tool:
 | UnsafeCell/volatile/transmute | Kani | 2 |
 | UnsafeCell/volatile/transmute | Verus | 2 |
 | UnsafeCell/volatile/transmute | none (assumption) | 8 |
-| raw pointer (internal) | RefinedRust | 10 |
-| raw pointer (internal) | Kani | 20 |
+| raw pointer (internal) | RefinedRust | 9 |
+| raw pointer (internal) | Kani | 21 |
 | raw pointer (internal) | none (assumption) | 16 |
 | raw pointer from C caller | Miri (evidence only) | 4 |
 | panic/abort | Kani | 9 |
@@ -325,7 +325,7 @@ the full name, the line and the contract.
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
 | S110 | `Heap::home_ptr_at` | body | ptr | RR | trusted |
-| S111 | `Heap::cached_recently` | body | ptr | RR | trusted |
+| S111 | `Heap::cached_recently` | body | ptr | Kani | discharged |
 
 ### src/heap/flush.rs
 
@@ -2542,14 +2542,15 @@ fn home_ptr_at(&mut self, class: usize) -> (r: *mut CacheHeader)
 
 ### S111. `Heap::cached_recently`
 
-src/heap/cache.rs:720. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/heap/cache.rs:721. Kind: external_body. Category: raw pointer (internal).
+Tool: Kani. Status: discharged (verus/seams/heap-cache-Heap-cached_recently.md).
 
 > `double_free_scan`'s compare (design 6.3 step 3): whether `e`, the entry as it would be stored (signed under `pac`), is one of the top four of the `len` entries in `slots`.
 
 ```rust
 pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8, Tracked(perms): Tracked<&Map<*mut *mut u8, PointsTo<*mut u8>>>) -> bool
     requires
+        len == 0 || slot_in(slots, len as int),
         forall|i: int| 0 <= i < len ==> {
             let q = #[trigger] slot_ptr(slots, i);
             perms.contains_key(q) && perms[q].ptr() == q && perms[q].is_init()
@@ -2605,7 +2606,7 @@ axiom fn axiom_hand_out(p: *mut u8, len: int) -> (tracked m: UserMem)
 
 ### S115. `axiom_fresh_stack`
 
-src/heap/mod.rs:1738. Kind: external_body proof. Category: allocator invariant.
+src/heap/mod.rs:1741. Kind: external_body proof. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The `cap` entries of the fresh stack `slots` join `perms`, unwritten, as entries `0..cap` of header `hdr` (`CachePerms::owner`).
@@ -2651,7 +2652,7 @@ proof fn axiom_fresh_stack(
 
 ### S116. `assert_flushed`
 
-src/heap/mod.rs:1881. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:1884. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (verus/seams/heap-assert_flushed.md).
 
 > `assert_eq!(*len, 0, ..)`, the abort of [`Heap::free_caches`] and [`Heap::free_caches_in`] on a cache that still holds slots: `*len == 0` after it returns.
@@ -2666,7 +2667,7 @@ fn assert_flushed(len: &u32)
 
 ### S117. `assert_refill_empty`
 
-src/heap/mod.rs:1897. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:1900. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (verus/seams/heap-assert_refill_empty.md).
 
 > `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap inconsistency: `*len == 0` after it returns, as for `vspec::check`.
@@ -2681,7 +2682,7 @@ fn assert_refill_empty(len: &u32)
 
 ### S118. `assert_rekey_flushed`
 
-src/heap/mod.rs:1911. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:1914. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (verus/seams/heap-assert_rekey_flushed.md).
 
 > `assert_eq!(*len, 0, ..)`, [`CacheHeader::rekey`]'s abort on a cache that still holds slots: `*len == 0` after it returns.
@@ -2696,7 +2697,7 @@ fn assert_rekey_flushed(len: &u32)
 
 ### S119. `arena_volatile`
 
-src/heap/mod.rs:4682. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/heap/mod.rs:4685. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: discharged (verus/seams/heap-Heap-arena_volatile.md).
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::home_owns`]): a plain load is hoisted above the multi-arena test (`FREE_ROUTE`) and touches the heap's header line on every single-arena `free`.
@@ -2710,7 +2711,7 @@ pub(super) fn arena_volatile(&self) -> (r: u16)
 
 ### S120. `FreshHeap`
 
-src/heap/mod.rs:6318. Kind: external_body type. Category: raw pointer (internal).
+src/heap/mod.rs:6321. Kind: external_body type. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The plain fields of the fresh heap at [`FreshHeap::heap`]: the permission to them ([`FreshHeap::head`], the 128 bytes before `caches`, [`heap_head`]), which [`init_fields`] takes and keeps here, and what the trusted writers stored in them, for `thread::HeapPerm::assemble` to read back: the `Shared` and the home arena ([`init_fields`]) and whether the heap is counted ([`mark_bound`]).
@@ -2721,12 +2722,12 @@ pub(super) tracked struct FreshHeap
 
 ### S121. `init_fields`
 
-src/heap/mod.rs:6363. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:6366. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The fields of a fresh heap before its home headers, stored field by field ([`Heap::create_detached`]).
 
-Body mints Tracked at line 6396.
+Body mints Tracked at line 6399.
 
 ```rust
 unsafe fn init_fields(
@@ -2749,7 +2750,7 @@ unsafe fn init_fields(
 
 ### S122. `mark_bound`
 
-src/heap/mod.rs:6441. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:6444. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: discharged (verus/seams/heap-mark_bound.md).
 
 > `(*h).bound = true` for a heap [`Heap::create`] has just made.
@@ -2769,7 +2770,7 @@ unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 
 ### S123. `mark_rehome`
 
-src/heap/mod.rs:6481. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:6484. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: discharged (verus/seams/heap-mark_rehome.md).
 
 > `(*h).rehome = true` for a thread heap [`Heap::create`] has just made and marked bound ([`mark_bound`]): it may still move its home ([`Heap::try_rehome`]).
@@ -2785,12 +2786,12 @@ unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 
 ### S124. `Heap::destroy`
 
-src/heap/mod.rs:6713. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:6716. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Flush every cache, free them and the heap itself back to the metadata allocator.
 
-Body mints Tracked at line 6732; mints Tracked at line 6735; mints Tracked at line 6741; mints Tracked at line 6743; mints Tracked at line 6762; mints Tracked at line 6767.
+Body mints Tracked at line 6735; mints Tracked at line 6738; mints Tracked at line 6744; mints Tracked at line 6746; mints Tracked at line 6765; mints Tracked at line 6770.
 
 ```rust
 pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)

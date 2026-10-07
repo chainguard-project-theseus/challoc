@@ -960,7 +960,9 @@ pub tracked struct CachePerms {
 }
 
 /// The stack of header `h` is owned entry by entry: `cap` entries from
-/// `slots`, the first `len` of them written.
+/// `slots`, the first `len` of them written, each entry inside the
+/// stack's allocation ([`slot_in`]) and, when `cap` is not 0, its end
+/// too (`slots.add(cap)` is in bounds).
 spec fn stack_ok(h: CacheHeader, slots: Map<*mut *mut u8, PointsTo<*mut u8>>) -> bool {
     &&& forall|i: int|
         0 <= i < h.cap ==> {
@@ -970,6 +972,7 @@ spec fn stack_ok(h: CacheHeader, slots: Map<*mut *mut u8, PointsTo<*mut u8>>) ->
             &&& (i < h.len ==> slots[q].is_init())
         }
     &&& forall|i: int| 0 <= i < h.cap ==> #[trigger] slot_in(h.slots, i)
+    &&& h.cap != 0 ==> slot_in(h.slots, h.cap as int)
 }
 
 /// The stack of header `h` comes with its
