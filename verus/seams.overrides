@@ -24,7 +24,6 @@ shared_base	inline asm	Islaris/Isla	evidence (verus/seams/api-shared_base.md)
 axiom_fork_resumed_state	C-program contract	none (assumption)
 axiom_fork_resumed	C-program contract	none (assumption)
 axiom_fork_resumed_sig	C-program contract	none (assumption)
-src/purge/background.rs:state	UnsafeCell/volatile/transmute	RefinedRust
 src/api/print.rs:word	core library	Kani	discharged (verus/seams/api-print-word.md)
 axiom_unlocked	C-program contract	none (assumption)
 Unlocked	C-program contract	none (assumption)
@@ -375,6 +374,7 @@ src/layout/mod.rs:ClassTable::table	UnsafeCell/volatile/transmute	none (assumpti
 # for the `verus!` block after it (as for `Arena::axiom_array_layout`).
 src/layout/mod.rs:ClassTable::classes_ptr	UnsafeCell/volatile/transmute	none (assumption)
 src/purge/background.rs:axiom_state_lock_inv	allocator invariant	none (assumption)
+src/purge/background.rs:axiom_state_lock	allocator invariant	none (assumption)
 src/purge/background.rs:shared_arg	raw pointer (internal)	none (assumption)
 src/purge/background.rs:detach_from_starter	FFI/syscall	none (assumption)
 src/stats.rs:axiom_snapshot_lock_inv	allocator invariant	none (assumption)

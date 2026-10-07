@@ -78,7 +78,7 @@ documentation (kernel, ISA, C standard) its contract follows.
 | inline asm | asm | 31 |
 | FFI/syscall | ffi | 16 |
 | function pointer | fnptr | 22 |
-| UnsafeCell/volatile/transmute | cell | 19 |
+| UnsafeCell/volatile/transmute | cell | 18 |
 | raw pointer (internal) | ptr | 47 |
 | raw pointer from C caller | c-ptr | 4 |
 | panic/abort | abort | 10 |
@@ -87,25 +87,25 @@ documentation (kernel, ISA, C standard) its contract follows.
 | C-program contract | c-contract | 20 |
 | termination | termination | 11 |
 | core library | core | 155 |
-| allocator invariant | invariant | 46 |
+| allocator invariant | invariant | 47 |
 
 | tool | short | seams |
 |---|---|---:|
 | Islaris/Isla | Isla | 32 |
-| RefinedRust | RR | 18 |
+| RefinedRust | RR | 17 |
 | Kani | Kani | 205 |
 | loom/GenMC | GenMC | 35 |
 | Verus | Verus | 4 |
 | Miri (evidence only) | Miri | 4 |
-| none (assumption) | none | 125 |
+| none (assumption) | none | 126 |
 
 | kind | short | seams |
 |---|---|---:|
-| external_body | body | 153 |
+| external_body | body | 152 |
 | external_body proof | proof | 13 |
 | external_body type | type | 8 |
 | external_body const | const | 39 |
-| axiom | axiom | 75 |
+| axiom | axiom | 76 |
 | assume_spec | spec | 87 |
 | ext_type_spec | ext-type | 15 |
 | ext_trait_spec | ext-trait | 1 |
@@ -119,7 +119,7 @@ Seams by category and tool:
 | inline asm | Islaris/Isla | 31 |
 | FFI/syscall | none (assumption) | 16 |
 | function pointer | Kani | 22 |
-| UnsafeCell/volatile/transmute | RefinedRust | 7 |
+| UnsafeCell/volatile/transmute | RefinedRust | 6 |
 | UnsafeCell/volatile/transmute | Kani | 2 |
 | UnsafeCell/volatile/transmute | Verus | 2 |
 | UnsafeCell/volatile/transmute | none (assumption) | 8 |
@@ -143,7 +143,7 @@ Seams by category and tool:
 | allocator invariant | Kani | 1 |
 | allocator invariant | loom/GenMC | 2 |
 | allocator invariant | Verus | 1 |
-| allocator invariant | none (assumption) | 42 |
+| allocator invariant | none (assumption) | 43 |
 
 ## Index
 
@@ -492,7 +492,7 @@ the full name, the line and the contract.
 | S195 | `shared_arg` | body | ptr | none | trusted |
 | S196 | `main` | no-dec | termination | GenMC | discharged |
 | S197 | `detach_from_starter` | body | ffi | none | trusted |
-| S198 | `state` | body | cell | RR | trusted |
+| S198 | `axiom_state_lock` | axiom | invariant | none | trusted |
 
 ### src/rseq.rs
 
@@ -3728,7 +3728,7 @@ broadcast axiom fn axiom_state_lock_inv(v: State)
 
 ### S190. `errno_location`
 
-src/purge/background.rs:229. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:237. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > This thread's `errno` slot.
@@ -3739,7 +3739,7 @@ fn errno_location() -> *mut i32
 
 ### S191. `errno_read`
 
-src/purge/background.rs:241. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:249. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The `errno` at `errno`.
@@ -3750,7 +3750,7 @@ unsafe fn errno_read(errno: *mut i32) -> i32
 
 ### S192. `errno_write`
 
-src/purge/background.rs:252. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:260. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Store `v` at `errno`.
@@ -3761,7 +3761,7 @@ unsafe fn errno_write(errno: *mut i32, v: i32)
 
 ### S193. `pthread_join`
 
-src/purge/background.rs:483. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:491. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_join(t, NULL)`: 0 or an error number.
@@ -3774,7 +3774,7 @@ unsafe fn pthread_join(t: ::libc::pthread_t) -> i32
 
 ### S194. `spawn`
 
-src/purge/background.rs:605. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:613. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_create` on the committed `[base, base + len)`, joinable so a restart can wait for its exit.
@@ -3789,7 +3789,7 @@ fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t>
 
 ### S195. `shared_arg`
 
-src/purge/background.rs:691. Kind: external_body. Category: raw pointer (internal).
+src/purge/background.rs:699. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The `Shared` that [`spawn`] passes as the thread's argument.
@@ -3802,7 +3802,7 @@ fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
 
 ### S196. `main`
 
-src/purge/background.rs:707. Kind: no_decreases. Category: termination.
+src/purge/background.rs:715. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: discharged (verus/seams/purge-background-main.md).
 
 > The thread's body: decay and sample until the request is withdrawn.
@@ -3813,7 +3813,7 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void
 
 ### S197. `detach_from_starter`
 
-src/purge/background.rs:779. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:787. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The thread inherits the scheduling of whichever thread created it, and under the lazy start that is any allocating thread: a worker pinned to one CPU, niced or real-time.
@@ -3824,18 +3824,20 @@ fn detach_from_starter()
         crate::sys::may_syscall(),
 ```
 
-### S198. `state`
+### S198. `axiom_state_lock`
 
-src/purge/background.rs:815. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: RefinedRust. Status: trusted.
+src/purge/background.rs:825. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
 
-> `&STATE`.
+> Assumption: [`state_lock`] is the raw lock of [`STATE`].
 
 ```rust
-fn state() -> (r: &'static Lock<State>)
+axiom fn axiom_state_lock(l: Lock<State>)
+    requires
+        l.rank() == rank_state(),
     ensures
-        r.spec_raw() == state_lock(),
-        r.rank() == rank_state(),
+        l.spec_raw() == state_lock(),
+;
 ```
 
 ### S199. `read_global`

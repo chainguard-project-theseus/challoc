@@ -214,3 +214,18 @@ pub(super) static ADVICE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
     ADVICE_TEST.lock().unwrap_or_else(|e| e.into_inner())
 }
+
+/// `background::axiom_state_lock` names the raw lock of every
+/// `Lock<State>` of rank `rank_state` as `state_lock()`, which is sound
+/// only while `STATE` is the one such lock: the axiom is called once (in
+/// `STATE`'s initialiser), `STATE` is the only `Lock<State>`, and the only
+/// lock created with that rank.
+#[test]
+fn state_lock_axiom_names_the_one_state_lock() {
+    let src = include_str!("background.rs");
+    let code = || src.lines().filter(|l| !l.trim_start().starts_with("//"));
+    let count = |s: &str| code().filter(|l| l.contains(s)).count();
+    assert_eq!(count("axiom_state_lock(l)"), 1);
+    assert_eq!(count("Lock<State>"), 3, "STATE, the axiom and state()");
+    assert_eq!(count("Ghost(rank_state())"), 1);
+}

@@ -67,18 +67,26 @@ broadcast axiom fn axiom_state_lock_inv(v: State)
         #[trigger] lock_inv(v) == (v.stack + STACK_SIZE <= usize::MAX && (v.exited ==> !v.present)),
 ;
 
-exec static STATE: Lock<State> = {
+exec static STATE: Lock<State>
+    ensures
+        STATE.spec_raw() == state_lock(),
+        STATE.rank() == rank_state(),
+{
     proof {
         axiom_state_lock_inv(State { present: false, creating: false, exited: false, stack: 0, thread: None });
     }
-    Lock::new(State {
+    let l = Lock::new(State {
         present: false,
         creating: false,
         exited: false,
         stack: 0,
         thread: None,
-    }, Ghost(rank_state()))
-};
+    }, Ghost(rank_state()));
+    proof {
+        axiom_state_lock(l);
+    }
+    l
+}
 /// Mirror of `STATE.present` for the lock-free check on every tick.
 exec static PRESENT: AtomicBool = AtomicBool::new(false);
 /// `background_thread:true` (or, later, `mallctl("background_thread")`).
@@ -804,13 +812,25 @@ fn detach_from_starter()
 
 /// The state lock, as [`fork_lock`] takes it: [`STATE`]'s raw lock.
 /// Uninterpreted (Verus does not read statics in specifications);
-/// [`state`] pins it.
+/// `STATE`'s postcondition pins it ([`axiom_state_lock`]).
 pub uninterp spec fn state_lock() -> RawLock;
 
-/// `&STATE`. Trusted: names its raw lock [`state_lock`], which holds
-/// because `STATE` is one static, and its rank, the one `STATE` is
-/// created with.
-#[verifier::external_body]
+/// Assumption: [`state_lock`] is the raw lock of [`STATE`]. Called once,
+/// in `STATE`'s initialiser, for the lock it builds: a static is one
+/// object, initialised once (at compile time), so every read of it
+/// returns that lock. Private: in this module `STATE` is the only
+/// `Lock<State>` (`State` is private too) and the only lock of rank
+/// [`rank_state`], which the requirement pins (`purge::tests::
+/// state_lock_axiom_names_the_one_state_lock` checks the three by name).
+axiom fn axiom_state_lock(l: Lock<State>)
+    requires
+        l.rank() == rank_state(),
+    ensures
+        l.spec_raw() == state_lock(),
+;
+
+/// `&STATE`: its raw lock is [`state_lock`] and its rank the one `STATE`
+/// is created with (the static's postcondition).
 #[inline(always)]
 fn state() -> (r: &'static Lock<State>)
     ensures

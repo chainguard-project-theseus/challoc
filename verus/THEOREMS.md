@@ -2327,11 +2327,13 @@ axioms below are the other source.
   second arena scan cover the same arenas as its first scan, given the
   handoff (whose `axiom_fork_resumed` now also restates the cell
   permission as part of the hold, `ForkHeld::wf`).
-- `purge::background::state` (`purge/background.rs:462`,
-  `external_body`): the static `STATE`'s raw lock is `state_lock()`
-  (Verus does not read statics in specifications).
+- `axiom_state_lock` (`purge/background.rs:808`, an axiom, used in
+  `STATE`'s initialiser): the static's raw lock is `state_lock()`
+  (Verus does not read statics in specifications); its rank is proved,
+  and `purge::background::state` verifies over the static's
+  postcondition.
 - The background state's invariant in the child also rests on
-  `axiom_state_lock_inv` (`purge/background.rs:52`) and on
+  `axiom_state_lock_inv` (`purge/background.rs:65`) and on
   `axiom_held`, behind `get_unlocked` (the value a holder left).
 - *Completeness of the list.* That `listed` names every `Lock` in the
   crate is not proved. The test `fork_lock_list_matches_the_source_tree`
@@ -5770,7 +5772,8 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
   merge, is verified since theorem 34, and so are `Set::ensure` and
   the call `thread.arena` makes, `Heap::set_arena`; `policy::empty_bytes`
   is verified since it became an index loop over `Arenas::get_existing`);
-  `purge::background::state` names `STATE`'s rank.
+  `purge::background::state`, which names `STATE`'s rank, verifies over
+  the static's postcondition, which its initialiser proves.
 - *Ranks set in constructors*: none is trusted. `Tcaches::init` is
   verified (one write of the whole value, whose lock it creates with
   the rank the type invariant states), and so is `Arenas::init`
