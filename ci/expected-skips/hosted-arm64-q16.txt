@@ -4,6 +4,7 @@
 # hides unshare(CLONE_NEWUSER) (lazy_bg/unshare), the container's cgroup namespace refuses
 # child cgroups and `test` has no limit for the bands, and
 # THP is inert or advice-gated. Keys: ci/skip-summary.sh.
+a_sealed_range_aborts
 c_cgroup_policy_bands
 c_cgroup_policy_high
 c_lazy_bg

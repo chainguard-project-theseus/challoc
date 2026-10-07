@@ -64,6 +64,38 @@ fn decayer_walks_once_per_step_and_follows_a_shortened_period() {
     assert_eq!(walks()[4], (10_060, Curve::new(0)));
 }
 
+/// A walk that backs the gate off (a failed discard) holds the next walk
+/// off for `DISCARD_RETRY_NS` whatever the period, a zero one included,
+/// and reports the back-off's end as the deadline; after it the walks
+/// run again.
+#[test]
+fn decayer_backs_off_after_a_failed_discard() {
+    let d = Decayer::new();
+    let walks = core::cell::Cell::new(0);
+    let walk = |now: u64, fail: bool| {
+        d.decay(now, 0, |at, _| {
+            walks.set(walks.get() + 1);
+            if fail {
+                d.back_off(at);
+            }
+        })
+    };
+    assert!(d.note_first_empty(1_000));
+    // A zero period walks at every call.
+    assert_eq!(walk(1_000, false), Some(1_000));
+    assert_eq!(walk(1_001, false), Some(1_001));
+    assert_eq!(walks.get(), 2);
+    let retry = 1_002 + DISCARD_RETRY_NS;
+    assert_eq!(walk(1_002, true), Some(retry));
+    assert_eq!(walks.get(), 3);
+    assert_eq!(walk(1_003, false), Some(retry));
+    assert_eq!(walk(retry - 1, false), Some(retry));
+    assert_eq!(walks.get(), 3);
+    assert_eq!(walk(retry, false), Some(retry));
+    assert_eq!(walk(retry + 1, false), Some(retry + 1));
+    assert_eq!(walks.get(), 5);
+}
+
 /// Pages the bookkeeping test may point a batch at: a real mapping, since
 /// the flush really discards.
 fn scratch(pages: usize, page: usize) -> usize {
@@ -93,17 +125,21 @@ fn batch_merges_adjacent_ranges() {
     let page = page_size();
     let base = scratch(8, page);
     let mut b = Batch::new();
-    b.push(base, page);
-    b.push(base + page, page);
-    b.push(base + 2 * page, 2 * page);
+    b.push(base, page, |_, _, done| assert!(done));
+    b.push(base + page, page, |_, _, done| assert!(done));
+    b.push(base + 2 * page, page, |_, _, done| assert!(done));
     assert_eq!(b.len(), 1);
-    assert_eq!(b.ranges[0], (base, 4 * page));
-    // A gap starts a new range; so does a range that is not the next one.
-    b.push(base + 5 * page, page);
+    assert_eq!(b.ranges[0], (base, 3 * page, page));
+    // A range of another length starts a new range, so does a gap, and
+    // so does a range that is not the next one.
+    b.push(base + 3 * page, 2 * page, |_, _, done| assert!(done));
     assert_eq!(b.len(), 2);
-    b.push(base + 4 * page, page);
+    assert_eq!(b.ranges[1], (base + 3 * page, 2 * page, 2 * page));
+    b.push(base + 6 * page, page, |_, _, done| assert!(done));
     assert_eq!(b.len(), 3);
-    b.flush();
+    b.push(base + 5 * page, page, |_, _, done| assert!(done));
+    assert_eq!(b.len(), 4);
+    b.flush(|_, _, done| assert!(done));
     assert!(b.is_empty());
 }
 
@@ -118,16 +154,23 @@ fn batch_fills_and_flushes() {
     // Every other page, so nothing merges.
     for i in 0..MAX_BATCH {
         assert!(!b.is_full());
-        b.push(base + 2 * page * i, page);
+        b.push(base + 2 * page * i, page, |_, _, done| assert!(done));
     }
     assert!(b.is_full());
     assert_eq!(b.len(), MAX_BATCH);
-    // The 65th push flushes the first 64 first.
-    b.push(base + 2 * page * MAX_BATCH, 2 * page);
+    // The 65th push flushes the first 64 first, reporting each.
+    let mut settled = std::vec::Vec::new();
+    b.push(base + 2 * page * MAX_BATCH, 2 * page, |addr, len, done| {
+        settled.push((addr, len, done))
+    });
     assert_eq!(b.len(), 1);
-    b.flush();
+    let want: std::vec::Vec<_> = (0..MAX_BATCH)
+        .map(|i| (base + 2 * page * i, page, true))
+        .collect();
+    assert_eq!(settled, want);
+    b.flush(|_, _, done| assert!(done));
     assert!(b.is_empty());
-    b.flush();
+    b.flush(|_, _, done| assert!(done));
     assert!(b.is_empty());
     // At least the two eager batches of this test were counted (the
     // default advice; other tests flush their own batches concurrently
@@ -139,7 +182,7 @@ fn batch_fills_and_flushes() {
 /// For the advice tests, in a fork child: an explicit purge another
 /// thread had in flight at the fork never ends there (that thread is not
 /// in the child), so its count is dropped; nothing else is reset.
-fn forget_other_threads_explicit_purges() {
+pub(super) fn forget_other_threads_explicit_purges() {
     EXPLICIT.store(0, Ordering::Relaxed);
 }
 

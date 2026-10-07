@@ -842,14 +842,60 @@ shape (`purge.rs`, `purge/curve.rs`, `class/decay.rs`):
   The advice is read at each batch flush from the band as last evaluated.
 - `Purged` memory and zero: `MADV_DONTNEED`ed pages read as zero,
   `MADV_FREE`d pages do not. One process-wide sticky flag
-  (`purge::purged_is_zero`), true until the first lazy batch and false for
-  good after it (published before that batch's discard, under the walk's
-  lock), tells `calloc` whether a reused `Purged` slab or extent needs a
-  `memset`; `Fresh` memory stays known zero.
+  (`purge::purged_is_zero`), true until the first lazy batch is issued
+  and false for good after it, even if the kernel refused that batch
+  (published before its discard, under the class or huge lock), tells
+  `calloc` whether a reused `Purged` slab or extent needs a `memset`;
+  `Fresh` memory stays known zero.
 - Purges are batched (`purge::Batch`): a walk collects up to `MAX_BATCH`
   (64) ranges, merging adjacent ones, and issues a loop of `madvise`.
   Batched `process_madvise` was prototyped and removed: it measured no
   effect (#18, tag `archive/prototype-2026-09-30`).
+- A discard can fail: `madvise` refuses `MADV_DONTNEED` and `MADV_FREE`
+  with `EINVAL` on a range holding `mlock`ed pages (every range under
+  `mlockall(MCL_FUTURE)`). The memory changes state only after its range
+  is discarded, so a refused slab or extent stays `Empty` (dirty, its
+  age kept, never assumed zero), as jemalloc keeps an extent dirty when
+  its purge hook fails. A refused merged range is issued again page
+  group by page group, starting with its two ends: when both are refused
+  too, the middle groups are left dirty without a call, so a merged range
+  under `mlockall` costs 3 calls, not one per group, at the price of a
+  range locked at both ends keeping its unlocked middle dirty. One locked
+  page in an otherwise unlocked run keeps only its own group. A refused
+  call may still have discarded some pages (Linux advises the VMAs before
+  the locked one); they stay `Empty` and their bytes are not counted.
+  Discarded and refused bytes are counted apart (the report's
+  `failed_discards`). Every explicit purge retries; a decay walk that hit
+  a refusal holds its owner's walks off for a second
+  (`purge::DISCARD_RETRY_NS`) whatever the period, so locked memory under
+  a zero period is not retried at every tick. The back-off holds the
+  owner's other `Empty` memory too: a class (or the huge tier) with
+  locked memory left `Empty` walks once a second, not once a step. Only
+  `EINVAL` is a refusal: any other errno is a heap inconsistency and
+  aborts, `ENOMEM` (a range not mapped: a reservation is gone) and
+  `EPERM` (the program sealed free memory of ours) included.
+- A huge extent is one range, refused whole (its unlocked part included).
+  It also grows: a run freed next to it coalesces into it as for any
+  `Empty` neighbour (the survivor is the older `Empty` extent), and from
+  then on the merged extent is refused whole too, so the freed run's
+  dirty pages are not returned either, by decay or by an explicit purge,
+  until the locked pages are unlocked (the next purge then discards the
+  whole extent) or an allocation reuses the extent (the split leaves the
+  parts without locked pages to purge on their own). A run purged at
+  free time (above `huge_retain_max`, or `huge_dirty_decay_ms:0`) is
+  discarded before it coalesces, so only its age and state are lost.
+  This only keeps memory resident: an `Empty` extent is never assumed
+  zero, a reuse clears what `calloc` asks for, and the extent's pages are
+  counted as `Empty`, so the report and `stats.cgroup.empty_bytes` show
+  them. The huge decay walk also spends its allowance on the refused
+  extent: while it is the oldest, each walk (once a second, the
+  back-off) counts its pages against the excess and may skip younger
+  unlocked extents, for at most one decay window, until its weight is
+  zero. Not absorbing neighbours was not done: it would need a
+  "refused" mark per extent, kept through coalescing and splitting and
+  cleared by a discard, and it would break the invariant that adjacent
+  free extents are always coalesced into one; the growth lasts only as
+  long as the lock.
 - Under a cgroup limit the period is scaled and the allowance capped by
   the policy (section 11).
 - Decay is driven from the slow path (6.4) with a per-class deadline at
@@ -1122,7 +1168,9 @@ effective period, `SIZE_MAX` for never), `.retention_cap`, `.empty_bytes`
 (summed by the read) and `.full_purges`, `ENOENT` when nothing is
 tracked; and, readable whether or not a cgroup is tracked,
 `.purge_advice` (1 lazy, 0 eager), `.lazy_purges` and `.eager_purges`
-(batches issued with each). `malloc_stats_print` prints `cgroup:`,
+(the batches with each advice that discarded anything: a batch the
+kernel refused whole is not counted, nor are the bytes a refused call
+discarded before it stopped). `malloc_stats_print` prints `cgroup:`,
 `cgroup policy:` and `purge advice:` lines (section 16).
 
 ## 12. Configuration
@@ -1538,10 +1586,11 @@ are per thread whatever its value.
   effective `decay_ms`, `retention_cap`, `empty_bytes`, `full_purges`,
   whether `thp` was forced to `never`), a `purge advice:` line (the next
   purge's advice and why, batches and bytes per advice, whether `Purged`
-  memory is still known zero) and a `thp:` line (section 17.1: key, mode
-  in force and why, the ranges advised, the host's global mode). The JSON
-  form (`"J"`) has matching `"cgroup"` and `"thp"` objects. The options
-  list marks inert keys "accepted, no effect". The line heads are pinned
+  memory is still known zero, the ranges and bytes whose discard failed)
+  and a `thp:` line (section 17.1: key, mode in force and why, the ranges
+  advised, the host's global mode). The JSON form (`"J"`) has matching
+  `"cgroup"` and `"thp"` objects. The options list marks inert keys
+  "accepted, no effect". The line heads are pinned
   by `print::tests::text_report_line_set_is_pinned` and the JSON shape by
   `json_report_shape_is_pinned`.
 - Mappings are named `challoc:classes`, `challoc:huge` and `challoc:meta`

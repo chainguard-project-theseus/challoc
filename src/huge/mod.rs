@@ -38,7 +38,9 @@
 //! become `Empty` and wait for the decay walk ([`Huge::decay_with`], on arena
 //! 0's period or the huge tier's own `huge_dirty_decay_ms`, design 7) or a
 //! full purge ([`Huge::purge_empty`]). `Empty` extents sit in a FIFO list ordered by
-//! `dirty_at`, so purging is a pop from the head.
+//! `dirty_at`, so purging walks it from the head; an extent whose discard
+//! fails (`mlock`ed pages) stays in its place, `Empty`, as does a run
+//! whose discard at free time fails.
 //!
 //! Everything is under one futex lock: huge operations are rare compared to
 //! slab operations and each already costs at least one syscall.
@@ -266,6 +268,14 @@ fn bad_run_state_byte(v: u8) -> ! {
 #[inline(never)]
 fn huge_count_underflow(state: RunState) -> ! {
     panic!("huge: {state:?} extent count underflow")
+}
+
+/// What a purge walk's flushes settled: extents made `Purged` and whether
+/// a discard failed.
+#[derive(Default)]
+struct Tally {
+    purged: usize,
+    failed: bool,
 }
 
 struct Inner {
@@ -943,11 +953,10 @@ impl Huge {
         }
         let now = now_ns().max(1);
         // Purged at once: above `huge_retain_max`, or under a zero huge
-        // decay period (`huge_dirty_decay_ms:0`).
-        let st = if usable > self.retain_max() || self.purge_on_free() {
-            let mut batch = Batch::new();
-            batch.push(addr, n * page_size);
-            batch.flush();
+        // decay period (`huge_dirty_decay_ms:0`). A run the discard fails
+        // on is kept `Empty` for decay or the next explicit purge.
+        let purge = usable > self.retain_max() || self.purge_on_free();
+        let st = if purge && purge::discard_one(addr, n * page_size) {
             RunState::Purged
         } else {
             RunState::Empty
@@ -959,7 +968,9 @@ impl Huge {
         // Coalesce with free neighbours into one extent `[lo, hi)`. The
         // survivor is the `Empty` participant with the oldest `dirty_at`
         // (it keeps its place in the FIFO list), else `d`; the other
-        // descriptors go back to `meta`.
+        // descriptors go back to `meta`. A neighbour whose discards are
+        // refused (locked pages) absorbs the run all the same, which then
+        // stays dirty with it until the unlock or a reuse (design 8).
         let pred = g.free_before(page);
         let succ = g.free_after(page + n);
         let mut lo = page;
@@ -1058,46 +1069,85 @@ impl Huge {
     }
 
     /// Purge every `Empty` extent whose `dirty_at` is at or before `cutoff`
-    /// (`u64::MAX` for all): `MADV_DONTNEED`, then `Purged`. Returns the
-    /// number purged.
+    /// (`u64::MAX` for all): `MADV_DONTNEED`, then `Purged`; an extent
+    /// whose discard fails stays `Empty` in its place (the next purge
+    /// retries it). Returns the number purged.
     pub fn purge_empty(&self, cutoff: u64) -> usize {
         let mut g = self.inner.lock();
-        let mut n = 0;
+        let mut t = Tally::default();
         let mut batch = Batch::new();
-        loop {
-            let d = g.empty_head;
-            if d.is_null() {
+        let mut d = g.empty_head;
+        while !d.is_null() {
+            // SAFETY: list members are live `Empty` extents; `next` is
+            // read before a flush can unlink `d`.
+            let (dirty_at, next) = unsafe { ((*d).dirty_at, (*d).next) };
+            if dirty_at > cutoff {
                 break;
             }
-            // SAFETY: list members are live `Empty` extents.
-            if unsafe { (*d).dirty_at } > cutoff {
-                break;
-            }
-            self.purge_extent(&mut g, d, &mut batch);
-            n += 1;
+            self.push_extent(&mut g, d, &mut batch, &mut t);
+            d = next;
         }
-        batch.flush();
+        batch.flush(|addr, len, done| self.settle(&mut g, addr, len, done, &mut t));
         self.sync_oldest(&g);
-        n
+        t.purged
     }
 
-    /// Purge `d`, a member of the `Empty` list: `MADV_DONTNEED` through
-    /// `batch`, then `Purged`. Discarded in batches before the lock is
-    /// released, so no allocation can take the extent between the state
-    /// change and the discard. Returns its pages.
-    fn purge_extent(&self, g: &mut Inner, d: *mut HugeDesc, batch: &mut Batch) -> usize {
+    /// Push `d`, a member of the `Empty` list, to `batch`; it stays there,
+    /// `Empty`, until the flush reports it discarded ([`settle`]). The
+    /// batch is flushed before the lock is released, so no allocation can
+    /// take the extent between the discard and the state change. Returns
+    /// its pages.
+    ///
+    /// [`settle`]: Huge::settle
+    fn push_extent(
+        &self,
+        g: &mut Inner,
+        d: *mut HugeDesc,
+        batch: &mut Batch,
+        t: &mut Tally,
+    ) -> usize {
         // SAFETY: list members are live `Empty` extents.
         let (start, pages) = unsafe { ((*d).start(), (*d).pages()) };
-        batch.push(self.addr(start), pages * self.page_size());
-        g.unlink(d);
-        // SAFETY: as above.
-        unsafe {
-            (*d).state = RunState::Purged as u8;
-            (*d).dirty_at = 0;
-        }
-        g.stats.sub(RunState::Empty, pages);
-        g.stats.add(RunState::Purged, pages);
+        batch.push(
+            self.addr(start),
+            pages * self.page_size(),
+            |addr, len, done| self.settle(g, addr, len, done, t),
+        );
         pages
+    }
+
+    /// The flush's report on `[addr, addr + len)`, extents pushed by
+    /// [`push_extent`] (under the huge lock since, so still in the `Empty`
+    /// list): discarded, each leaves the list and becomes `Purged`; not,
+    /// they stay as they are.
+    ///
+    /// [`push_extent`]: Huge::push_extent
+    fn settle(&self, g: &mut Inner, addr: usize, len: usize, done: bool, t: &mut Tally) {
+        if !done {
+            t.failed = true;
+            return;
+        }
+        let mut page = (addr - self.base) >> self.lg_page;
+        let end = page + (len >> self.lg_page);
+        while page < end {
+            let d = g.table.get(page);
+            // SAFETY: table entries are live descriptors.
+            if d.is_null() || unsafe { (*d).start() != page || (*d).state() != RunState::Empty } {
+                panic!("huge: purged range {addr:#x}+{len:#x} is not Empty extents");
+            }
+            // SAFETY: as above.
+            let pages = unsafe { (*d).pages() };
+            g.unlink(d);
+            // SAFETY: as above.
+            unsafe {
+                (*d).state = RunState::Purged as u8;
+                (*d).dirty_at = 0;
+            }
+            g.stats.sub(RunState::Empty, pages);
+            g.stats.add(RunState::Purged, pages);
+            t.purged += 1;
+            page += pages;
+        }
     }
 
     /// Decay walk (design section 8), as `ClassState::purge_curve` in
@@ -1107,7 +1157,9 @@ impl Huge {
     /// only and never below the allowance (an extent larger than the
     /// remaining excess is skipped for younger ones that fit), so a lone
     /// extent lasts until its weight is zero, the end of the window, as
-    /// before. Returns the number of extents purged.
+    /// before. A failed discard leaves its extent `Empty` and backs the
+    /// gate off (`Decayer::back_off`). Returns the number of extents
+    /// purged.
     fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize {
         let mut g = self.inner.lock();
         let mut total = 0usize;
@@ -1133,23 +1185,27 @@ impl Huge {
         // cap for good (measured: 50 freed 8 MiB runs, one 400 MiB
         // extent, nothing purged in 3 s). The curve alone keeps the rule.
         let capped = keep16 < crate::policy::KEEP_ALL;
-        let mut n = 0;
+        let mut t = Tally::default();
         if excess > 0 {
             let mut batch = Batch::new();
             let mut d = g.empty_head;
             while !d.is_null() && excess > 0 {
-                // SAFETY: as above; `next` is read before `d` leaves the list.
+                // SAFETY: as above; `next` is read before a flush can
+                // unlink `d`.
                 let (pages, next) = unsafe { ((*d).pages(), (*d).next) };
                 if pages <= excess || capped {
-                    excess = excess.saturating_sub(self.purge_extent(&mut g, d, &mut batch));
-                    n += 1;
+                    let pushed = self.push_extent(&mut g, d, &mut batch, &mut t);
+                    excess = excess.saturating_sub(pushed);
                 }
                 d = next;
             }
-            batch.flush();
+            batch.flush(|addr, len, done| self.settle(&mut g, addr, len, done, &mut t));
+        }
+        if t.failed {
+            self.gate.back_off(now);
         }
         self.sync_oldest(&g);
-        n
+        t.purged
     }
 
     /// `dirty_at` of the oldest `Empty` extent as the decay driver sees it

@@ -75,7 +75,7 @@ container's root cgroup still refuses the `memory.high` write
 ## Skips
 
 A test that cannot check its claim on this host is a *skip*, never a silent
-pass. There are two sources:
+pass. There are three sources:
 
 - The Rust driver's gate (`Gate::GuardInstall`: the kernel installs guard
   regions). A closed gate prints `SKIP <test> <reason>` on stderr.
@@ -85,8 +85,17 @@ pass. There are two sources:
   `thp/{always,auto}` where the sysfs knobs are missing,
   `thp/never-huge-run` when the kernel had no free huge page,
   `cgroup_policy/{bands,high}` and `cgroup/bg` without a limit or a
-  writable cgroup mount, `guard_slab/fault` and `pagemap_guard` below
-  6.13.
+  writable cgroup mount, `mlock_purge/<mode>` when `mlock` is refused (a
+  `RLIMIT_MEMLOCK` under 1 MiB, 2 MiB for the decay modes) and
+  `mlock_purge/{decay,background}` when the host is too slow to see the
+  back-off (a 400 ms wait taking over 900 ms),
+  `guard_slab/fault` and `pagemap_guard` below 6.13.
+- A unit test that needs `mlock` or `mseal` (`testutil::mlock_or_skip`
+  and `testutil::skip`: the purge tests over locked memory, and
+  `purge::linux_tests::a_sealed_range_aborts` below 6.10 or under
+  seccomp) prints
+  `SKIP <test> <reason>` on stderr when the host refuses, and fails
+  unless `CHALLOC_TEST_ALLOW_SKIP` is set.
 
 `grep '^SKIP ' <log>` lists every claim a run did not check. With
 `CHALLOC_TEST_ALLOW_SKIP` set a skip passes with the note; unset, it fails
@@ -130,7 +139,7 @@ so a broken preload cannot pass.
 | Fork | `fork_alloc.c` (allocation in parent, child and grandchild), `fork_signal.c` (fork from a signal handler while the fork handlers hold every lock) |
 | Abort conditions | `negative.c`: one invalid operation per mode (invalid, double and mis-sized frees, guard faults); the driver checks the signal and the `challoc:` line on stderr |
 | Configuration and report | `conf.c` (every `malloc_conf` source), `tunables.c` (the hardening opt-ins and their controls), `features.c` (`challoc_features()` against the report) |
-| Kernel features, both ways | `guard_slab.c`, `pagemap_guard.c` (guard slabs, by fault and through `PAGEMAP_SCAN`), `mseal.c`, `thp.c`, `decay.c` (decay, purge, the background thread), `setxid.c` (the setuid-family calls glibc broadcasts to every thread, while the background thread starts and stops) |
+| Kernel features, both ways | `guard_slab.c`, `pagemap_guard.c` (guard slabs, by fault and through `PAGEMAP_SCAN`), `mseal.c`, `thp.c`, `decay.c` (decay, purge, the background thread), `setxid.c` (the setuid-family calls glibc broadcasts to every thread, while the background thread starts and stops), `mlock_purge.c` (purges that `madvise` refuses on `mlock`ed memory) |
 | cgroup | `cgroup.c`, `cgroup_policy.c` (the `api::` rows and `test-cgroup-limit`); `cgroup_churn.c`, `cgroup_lazy.c`, `cgroup_oscillate.c` (the memory-limited container runs, `scripts/cgroup-tests.sh`) |
 | Linking | `as_needed.c`, `as_needed_lib.c` (`tests/as-needed.sh`, `make check-needed`) |
 | Unit-test helper | `sysnr.c` (prints the C headers' syscall numbers for the `sys::nr` test) |
