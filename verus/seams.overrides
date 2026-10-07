@@ -282,7 +282,6 @@ src/vspec/print.rs:DisplaySpecImpl for sys::cgroup::Cgroup	core library	Kani	dis
 src/api/libc.rs:axiom_c_out	C-program contract	none (assumption)
 src/api/mallctl.rs:axiom_c_call	C-program contract	none (assumption)
 src/api/print.rs:axiom_c_call	C-program contract	none (assumption)
-src/api/mallctl.rs:shared	allocator invariant	none (assumption)
 # The loom/GenMC triage (verus/WEAKMEM.md, "Seams"): records for what
 # the loom models establish, and the items that need no weak-memory
 # model, reassigned.

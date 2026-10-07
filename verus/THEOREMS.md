@@ -68,8 +68,10 @@ add.
   linear permission to the frozen statics exists once one does). The
   trusted items that hand out a `Shared::wf` or `Heap::wf` they did not
   get from a verified caller assert it too, a widening of what they
-  claim since P7: `sys::tls::TlsSlot::entry`, `tcaches::heap_at`,
-  `purge::background::shared_arg` and `mallctl::shared`. `shared_unchecked` (the fast paths'
+  claim since P7: `sys::tls::TlsSlot::entry`, `tcaches::heap_at`
+  and `purge::background::shared_arg` (`mallctl::shared` was one until
+  package RDE: it requires `ready()` now, which `mallctl::ctl` has from
+  its `shared.wf()` and passes to every reader). `shared_unchecked` (the fast paths'
   accessor; since upstream #77 `shared_deref`, at the pointer
   `shared_base` gives) is verified that way since P7, as are
   `heap::thread::fast_flags` and `heap::paths::shared_of`.
@@ -83,10 +85,11 @@ add.
   `LINE_READY` (the exchange and the state carry no ghost state).
 - One more trusted source of `Shared::wf`:
   `purge::background::shared_arg` (`purge/background.rs:363`, the
-  background thread's argument, `external_body`), besides
-  `api::mallctl::shared`. (`heap::paths::shared_of`, a heap's
-  `&Shared`, was the other until P7; it reads the heap's `shared` field
-  through the frozen permission now.)
+  background thread's argument, `external_body`). (`heap::paths::shared_of`,
+  a heap's `&Shared`, was another until P7; it reads the heap's `shared`
+  field through the frozen permission now. `api::mallctl::shared`, the
+  readers' accessor, was another until package RDE; it requires
+  `api::ready()` and reads through `api::shared_deref` now.)
 - One `Shared`, at its storage (since P7): a well-formed `&Shared` is
   the one at `Shared::storage()`, the only place `Shared::init` builds
   one. Assumed where a reference becomes a pointer:
@@ -5536,10 +5539,17 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   `Shared` is not a proof that init returned (it is well formed inside
   `init`, before `READY` is published); the entry points reach that code
   only after `shared()` returned. Inside the readers the local
-  `mallctl::shared` (`api/mallctl.rs:237`) is now trusted: it claims
-  `super::shared()` returns without aborting, true because readers run
-  only inside `mallctl`/`mallctlbymib`, after their own `super::shared()`
-  returned.
+  `mallctl::shared` was trusted (it claimed `super::shared()` returns
+  without aborting, true because readers run only inside
+  `mallctl`/`mallctlbymib`, after their own `super::shared()`
+  returned). Since package RDE it is verified: it requires
+  `api::ready()`, which `ctl` and the two `mallctl` witnesses have from
+  `shared.wf()` (`Shared::lemma_wf_ready`) and pass to every reader
+  that reads the state (`ctl` through `call`, the witnesses directly),
+  and it reads through `api::shared_deref` (no readiness check, no
+  init path, so no abort).
+  So the witnesses' `shared.wf()` is the theorem's one assumption
+  about init here: the readers add none.
 - The trusted bodies these calls reach do not panic (read from their
   bodies at this commit): the futex wait and wake (`sys/mod.rs`; their
   results are discarded, so `EAGAIN` or `EINTR` loops) under
@@ -5956,7 +5966,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   `CountPerm` is the counter with its `id` (`count_id`), and `fetch_add`,
   `fetch_sub` (wrapping), `load` and, since the port of upstream #103,
   `compare_exchange` (the strong form: it fails only on a different
-  value, by C++20's semantics; S310, discharged with loom and those,
+  value, by C++20's semantics; S309, discharged with loom and those,
   `verus/seams/vspec-count-compare_exchange.md`) are one atomic operation
   on it, sequentially consistent in the model (the orderings, all
   `Relaxed`, are ignored, as for the bitmap words).
@@ -6019,7 +6029,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   is off by that ticket inside the trusted body only (the flush's proof
   uses no arena invariant).
 - `homed_ok`'s `rehome ==> bound` (since #103): a new thread heap is
-  counted, so it holds whatever `mark_rehome` (S125, RefinedRust:
+  counted, so it holds whatever `mark_rehome` (S124, RefinedRust:
   `true`, `verus/seams/heap-mark_rehome.md`) stored;
   an explicit cache, assumed `wf` (`heap_at`), rests on `init_fields`
   storing `false` (trusted) and on `create` being the one writer that

@@ -5,7 +5,7 @@ The aarch64 `get_tp` in `src/sys/tls.rs` (`src/sys/tls.rs:get_tp` in
 seam). Tool: Isla. Status: discharged, with the ELF TLS and loader facts
 as named residual assumptions, and with its `ensures` (the value read is
 the token's) resting on the ghost slot model's premise, which `set`
-(S264, discharged by Isla, sys-tls-set.md) also carries: Isla shows which memory the read
+(S263, discharged by Isla, sys-tls-set.md) also carries: Isla shows which memory the read
 reads, not that the token equals it (part 3).
 
 ## 1. Contract
@@ -126,7 +126,7 @@ fault.
   value is unconstrained but for what `heap::thread::slot_ok` says of
   the ghost state that goes with it, so nothing in the verified code
   ties it to the slot; the premise is that a token stands for the calling
-  thread's slot, that `set` (S264, discharged by Isla) makes the written value the
+  thread's slot, that `set` (S263, discharged by Isla) makes the written value the
   token's, and that no token is read after the slot changed other than
   through it (verus/THEOREMS.md, theorem 15, premises; `src/sys/tls.rs`).
   So the `ensures` is this premise plus `set`'s trusted contract; what
@@ -135,7 +135,7 @@ fault.
 - **`ensures r.1 == slot.tp()`.** Fact 3: `tp`, returned as `r.1`, is
   B, which holds TPIDR_EL0, the calling thread's thread pointer. That
   this is the token's `tp()` is again the ghost model's premise:
-  `TlsSlot::entry` (S261, trusted) makes the calling thread's token,
+  `TlsSlot::entry` (S260, trusted) makes the calling thread's token,
   recording its thread pointer, which the kernel keeps fixed for the
   thread's life (glibc sets TPIDR_EL0 once, at thread creation), and no
   accessor changes it (`set`'s contract keeps `tp()`). Since package
@@ -187,7 +187,7 @@ reviewed again that day by a fresh-context reviewer (a Claude subagent
 with no prior context of this work), told to look for translations that
 overclaim. Its finding on this record is folded in: the `ensures` is
 stated as resting on the ghost slot premise and `set`'s trusted contract
-(S254), both named in the status line, and `TlsSlot::entry`'s
+(S263), both named in the status line, and `TlsSlot::entry`'s
 `arbitrary()` value is described as what it is. Package P7
 (READY+HEAPPERM) added `r.1 == slot.tp()`; its fresh-context review
 read this record with the change. A human review is

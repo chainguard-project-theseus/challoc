@@ -88,7 +88,7 @@ fn spec_to_digit(c: u32, radix: u32) -> Option<u32> {
     if d < radix { Some(d) } else { None }
 }
 
-/// S293 `usize::trailing_zeros`: `r == u64_trailing_zeros(x as u64)`.
+/// S292 `usize::trailing_zeros`: `r == u64_trailing_zeros(x as u64)`.
 #[kani::proof]
 #[kani::unwind(66)]
 fn usize_trailing_zeros() {
@@ -96,7 +96,7 @@ fn usize_trailing_zeros() {
     assert_eq!(x.trailing_zeros(), spec_u64_trailing_zeros(x as u64));
 }
 
-/// S294 `usize::leading_zeros`: `r as int == u64_leading_zeros(x as u64)`.
+/// S293 `usize::leading_zeros`: `r as int == u64_leading_zeros(x as u64)`.
 #[kani::proof]
 #[kani::unwind(66)]
 fn usize_leading_zeros() {
@@ -104,7 +104,7 @@ fn usize_leading_zeros() {
     assert_eq!(x.leading_zeros() as i64, spec_u64_leading_zeros(x as u64));
 }
 
-/// S295 `u64::count_ones`: `r as nat == popcount(x)`.
+/// S294 `u64::count_ones`: `r as nat == popcount(x)`.
 #[kani::proof]
 #[kani::unwind(66)]
 fn u64_count_ones() {
@@ -112,7 +112,7 @@ fn u64_count_ones() {
     assert_eq!(x.count_ones(), spec_popcount(x));
 }
 
-/// S296 `usize::count_ones`: `r as nat == popcount(x as u64)`.
+/// S295 `usize::count_ones`: `r as nat == popcount(x as u64)`.
 #[kani::proof]
 #[kani::unwind(66)]
 fn usize_count_ones() {
@@ -120,7 +120,7 @@ fn usize_count_ones() {
     assert_eq!(x.count_ones(), spec_popcount(x as u64));
 }
 
-/// S297 `usize::is_power_of_two`: `r <==> exists k < 64, x == pow2(k)`.
+/// S296 `usize::is_power_of_two`: `r <==> exists k < 64, x == pow2(k)`.
 #[kani::proof]
 #[kani::unwind(66)]
 fn usize_is_power_of_two() {
@@ -128,7 +128,7 @@ fn usize_is_power_of_two() {
     assert_eq!(x.is_power_of_two(), spec_is_pow2_below(x as u128, 64));
 }
 
-/// S298 `u32::is_power_of_two`: `r <==> exists k < 32, x == pow2(k)`.
+/// S297 `u32::is_power_of_two`: `r <==> exists k < 32, x == pow2(k)`.
 #[kani::proof]
 #[kani::unwind(34)]
 fn u32_is_power_of_two() {
@@ -136,7 +136,7 @@ fn u32_is_power_of_two() {
     assert_eq!(x.is_power_of_two(), spec_is_pow2_below(x as u128, 32));
 }
 
-/// S400 `u64::is_power_of_two`: `r <==> exists k < 64, x == pow2(k)`.
+/// S399 `u64::is_power_of_two`: `r <==> exists k < 64, x == pow2(k)`.
 #[kani::proof]
 #[kani::unwind(66)]
 fn u64_is_power_of_two() {
@@ -144,7 +144,7 @@ fn u64_is_power_of_two() {
     assert_eq!(x.is_power_of_two(), spec_is_pow2_below(x as u128, 64));
 }
 
-/// S299 `usize::next_power_of_two`: under `x <= 2^63`, `r` is a power of
+/// S298 `usize::next_power_of_two`: under `x <= 2^63`, `r` is a power of
 /// two below `2^64`, `x <= r`, `r == 1` for `x <= 1` and `r < 2 * x`
 /// otherwise.
 #[kani::proof]
@@ -162,7 +162,7 @@ fn usize_next_power_of_two() {
     }
 }
 
-/// S301 `u32::rotate_right`: `r == rotr32(x, n)`, for every `n` (also
+/// S300 `u32::rotate_right`: `r == rotr32(x, n)`, for every `n` (also
 /// `n >= 32`).
 #[kani::proof]
 fn u32_rotate_right() {
@@ -171,7 +171,7 @@ fn u32_rotate_right() {
     assert_eq!(x.rotate_right(n), spec_rotr32(x, n));
 }
 
-/// S302 `u64::rotate_right` (since the port of upstream #101): `r ==
+/// S301 `u64::rotate_right` (since the port of upstream #101): `r ==
 /// rotr64(x, n)`, for every `n` (also `n >= 64`); passes (Kani 0.68.0).
 #[kani::proof]
 fn u64_rotate_right() {
@@ -180,7 +180,7 @@ fn u64_rotate_right() {
     assert_eq!(x.rotate_right(n), spec_rotr64(x, n));
 }
 
-/// S291 `i64::wrapping_neg`: `-x`, and `i64::MIN` for `i64::MIN`.
+/// S290 `i64::wrapping_neg`: `-x`, and `i64::MIN` for `i64::MIN`.
 #[kani::proof]
 fn i64_wrapping_neg() {
     let x: i64 = kani::any();
@@ -192,7 +192,7 @@ fn i64_wrapping_neg() {
     }
 }
 
-/// S394 `isize::wrapping_neg`: `-x`, and `isize::MIN` for `isize::MIN`.
+/// S393 `isize::wrapping_neg`: `-x`, and `isize::MIN` for `isize::MIN`.
 #[kani::proof]
 fn isize_wrapping_neg() {
     let x: isize = kani::any();
@@ -204,7 +204,7 @@ fn isize_wrapping_neg() {
     }
 }
 
-/// S292 `usize::ilog2`: under `x > 0`, `r < 64` and
+/// S291 `usize::ilog2`: under `x > 0`, `r < 64` and
 /// `pow2(r) <= x < pow2(r + 1)`.
 #[kani::proof]
 fn usize_ilog2() {
@@ -216,7 +216,7 @@ fn usize_ilog2() {
     assert!((x as u128) < 1u128 << (r + 1));
 }
 
-/// S290 `char::to_digit`: under `2 <= radix <= 36`,
+/// S289 `char::to_digit`: under `2 <= radix <= 36`,
 /// `r == to_digit_spec(c as u32, radix)`, for every `char`.
 #[kani::proof]
 fn char_to_digit() {
@@ -226,14 +226,14 @@ fn char_to_digit() {
     assert_eq!(c.to_digit(radix), spec_to_digit(c as u32, radix));
 }
 
-/// S391 `u8::is_ascii_digit`: `r <==> 48 <= b <= 57`.
+/// S390 `u8::is_ascii_digit`: `r <==> 48 <= b <= 57`.
 #[kani::proof]
 fn u8_is_ascii_digit() {
     let b: u8 = kani::any();
     assert_eq!(b.is_ascii_digit(), 48 <= b && b <= 57);
 }
 
-/// S392 `u8::is_ascii_whitespace`: space, tab, line feed, form feed and
+/// S391 `u8::is_ascii_whitespace`: space, tab, line feed, form feed and
 /// carriage return.
 #[kani::proof]
 fn u8_is_ascii_whitespace() {

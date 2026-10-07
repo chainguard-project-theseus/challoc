@@ -1,6 +1,6 @@
 # `SlabDesc::set_state`
 
-Seam S209 of `verus/SEAMS.md`: src/slab.rs:377. Kind: external_body. Category: atomics primitive.
+Seam S208 of `verus/SEAMS.md`: src/slab.rs:377. Kind: external_body. Category: atomics primitive.
 Discharged by the C11 coherence rules and loom, given the locks'
 happens-before edge that `lock::axiom_acquired` assumes (part 3).
 
@@ -41,7 +41,7 @@ Three facts, the third checked by loom.
    each release to the next acquire that takes the lock, so everything
    one holder did happens before everything the next holder does. The
    Verus proofs already assume this edge for every lock value
-   (`lock::axiom_acquired`, S179, trusted: a named residual assumption
+   (`lock::axiom_acquired`, S181, trusted: a named residual assumption
    of this record too), and the loom models of the real `RawLock`
    check it (`loom_lock_two_threads`, `loom_lock_three_threads`, below;
    `lock-LockGuard-drop.md` for the release, and the superseded

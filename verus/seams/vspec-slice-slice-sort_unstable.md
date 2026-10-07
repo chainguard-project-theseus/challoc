@@ -1,6 +1,6 @@
 # `<[T]>::sort_unstable`
 
-Seam S380 of `verus/SEAMS.md`: src/vspec/slice.rs:139. Kind: assume_spec. Category: core library.
+Seam S379 of `verus/SEAMS.md`: src/vspec/slice.rs:139. Kind: assume_spec. Category: core library.
 Discharged by Kani, for short slices (the gap below).
 
 ## Contract

@@ -1,6 +1,6 @@
 # `mark_bound`
 
-Seam S124 of `verus/SEAMS.md`: src/heap/mod.rs:6441. Kind: external_body. Category: raw pointer (internal).
+Seam S123 of `verus/SEAMS.md`: src/heap/mod.rs:6441. Kind: external_body. Category: raw pointer (internal).
 Discharged by RefinedRust.
 
 ## Contract
@@ -69,7 +69,7 @@ Reproduce: `sh verus/refinedrust/run.sh` (both quanta).
 ## Translation
 
 The contract speaks of the fresh heap through the linear token
-`FreshHeap` (S123, `none (assumption)`): `s.heap()` is the heap,
+`FreshHeap` (S121, `none (assumption)`): `s.heap()` is the heap,
 `s.head()` the permission to its 128 bytes of plain fields, and, by the
 token's trusted meaning ("what the trusted writers stored in them"),
 `s.arena()` and `s.bound()` are what `init_fields` and `mark_bound`
@@ -88,7 +88,7 @@ because nothing else writes the head's first ten fields between
 holder of the head's permission, `create_detached` writes the rest of
 the block through the other permission (`rest`), and `create` calls
 `mark_bound` right after `create_detached` returns. Since the port of
-upstream #103, `create` then calls `mark_rehome` (S126, discharged by
+upstream #103, `create` then calls `mark_rehome` (S124, discharged by
 RefinedRust, `heap-mark_rehome.md`), which stores `true` into `rehome`
 alone: a field after `rng`, at byte 88 under rustc's layout, outside
 `HeapHead` (whose fields end at byte 74, below), so it leaves the bytes
@@ -136,16 +136,16 @@ field before `caches` with its bytes).
 - `ensures final(s).bound()`: `bound` holds `true`.
 - `ensures final(s).shared() == old(s).shared()`: `shared` holds the
   same bytes `sh`, so the same pointer, which is what the token records
-  of it (`init_fields` stored it, trusted, S124).
+  of it (`init_fields` stored it, trusted, S122).
 - Beyond the contract: the other seven head fields hold the same bytes,
   so the body does not change `others`. `thread::HeapPerm::assemble`'s
-  trusted `r.value().others@.addr == 0` (S163, which `tcaches::heap_new`
+  trusted `r.value().others@.addr == 0` (S161, which `tcaches::heap_new`
   now verifies over) needs that, and it rests as well on `init_fields`
   storing null (trusted) and on the premise above.
 - `s` (`Tracked<&mut FreshHeap>`) is zero-sized outside Verus; the
   patched frontend translates it as unit.
 - Gaps:
-  - The token's meaning (S123) and the no-other-writer premise above
+  - The token's meaning (S121) and the no-other-writer premise above
     are what this rests on; the proof shows the body keeps them, not
     that they hold.
   - Verus's permission (`PointsToRaw`: a range and a provenance) is

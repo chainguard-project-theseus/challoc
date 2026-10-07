@@ -280,6 +280,7 @@ impl Reader {
 #[inline(always)]
 fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
         crate::sys::may_abort() || !read.aborts(),
         crate::sys::may_abort_corrupt() || !read.checks(),
@@ -357,18 +358,20 @@ spec fn ctl_checks(n: Node) -> bool {
     n.entry matches Entry::Read(r) && r.checks()
 }
 
-/// The allocator state, initialised. Trusted: [`super::shared`], which
-/// aborts only from init (`init_slow`). The readers run inside `mallctl`
-/// and `mallctlbymib`, after their own `super::shared()` returned, so
-/// init is complete and this call returns at its first test.
-#[verifier::external_body]
+/// The allocator state, for a thread that knows init is done
+/// ([`crate::api::ready`]): the readers run inside `mallctl` and
+/// `mallctlbymib`, after their own `super::shared()` returned a
+/// well-formed state, which carries the fact ([`Shared::wf`]), to [`ctl`]
+/// and through [`call`] to them. So no readiness check:
+/// [`super::shared_deref`] at [`super::shared_ptr`].
 fn shared() -> (r: &'static Shared)
     requires
-        crate::sys::may_syscall(),
+        crate::api::ready(),
     ensures
         r.wf(),
 {
-    super::shared()
+    // SAFETY: `ready()`: init is complete, as `shared_deref` needs.
+    unsafe { super::shared_deref(super::shared_ptr()) }
 }
 
 /// One node of the name tree. A node named [`NUMERIC`] is the only child
@@ -490,6 +493,7 @@ fn bin_slab_size(m: &[usize]) -> Result<Reading, c_int>
 
 fn arenas_narenas(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     Ok(Unsigned(shared().arenas.count() as c_uint))
@@ -511,6 +515,7 @@ fn arenas_nlextents(_m: &[usize]) -> Result<Reading, c_int>
 
 fn arenas_page(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     let s = shared();
@@ -529,6 +534,7 @@ fn arenas_quantum(_m: &[usize]) -> Result<Reading, c_int>
 
 fn bin_curregs(m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     Ok(Size(bin_stats(m)?.curregs))
@@ -536,6 +542,7 @@ fn bin_curregs(m: &[usize]) -> Result<Reading, c_int>
 
 fn bin_curslabs(m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     Ok(Size(bin_stats(m)?.curslabs))
@@ -543,6 +550,7 @@ fn bin_curslabs(m: &[usize]) -> Result<Reading, c_int>
 
 fn bin_nonfull_slabs(m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     Ok(Size(bin_stats(m)?.nonfull_slabs))
@@ -550,6 +558,7 @@ fn bin_nonfull_slabs(m: &[usize]) -> Result<Reading, c_int>
 
 fn small_allocated(m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     Ok(Size(arena_stats(shared(), at(m, 2))?.small_allocated))
@@ -557,6 +566,7 @@ fn small_allocated(m: &[usize]) -> Result<Reading, c_int>
 
 fn small_resident(m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     let a = arena_stats(shared(), at(m, 2))?;
@@ -566,6 +576,7 @@ fn small_resident(m: &[usize]) -> Result<Reading, c_int>
 
 fn large_allocated(m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     Ok(Size(arena_stats(shared(), at(m, 2))?.large_allocated))
@@ -573,6 +584,7 @@ fn large_allocated(m: &[usize]) -> Result<Reading, c_int>
 
 fn arena_pactive(m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     Ok(Size(arena_stats(shared(), at(m, 2))?.pactive))
@@ -580,6 +592,7 @@ fn arena_pactive(m: &[usize]) -> Result<Reading, c_int>
 
 fn arena_pdirty(m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     Ok(Size(arena_stats(shared(), at(m, 2))?.pdirty))
@@ -587,6 +600,7 @@ fn arena_pdirty(m: &[usize]) -> Result<Reading, c_int>
 
 fn arena_pmuzzy(m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     Ok(Size(arena_stats(shared(), at(m, 2))?.pmuzzy))
@@ -594,6 +608,7 @@ fn arena_pmuzzy(m: &[usize]) -> Result<Reading, c_int>
 
 fn arena_resident(m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     Ok(Size(arena_stats(shared(), at(m, 2))?.resident))
@@ -601,6 +616,7 @@ fn arena_resident(m: &[usize]) -> Result<Reading, c_int>
 
 fn arena_mapped(m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     Ok(Size(arena_stats(shared(), at(m, 2))?.mapped))
@@ -608,6 +624,7 @@ fn arena_mapped(m: &[usize]) -> Result<Reading, c_int>
 
 fn arena_retained(m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     Ok(Size(arena_stats(shared(), at(m, 2))?.retained))
@@ -615,6 +632,7 @@ fn arena_retained(m: &[usize]) -> Result<Reading, c_int>
 
 fn cgroup_limit(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
         crate::sys::may_abort_corrupt(),
 {
@@ -623,6 +641,7 @@ fn cgroup_limit(_m: &[usize]) -> Result<Reading, c_int>
 
 fn cgroup_high(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
         crate::sys::may_abort_corrupt(),
 {
@@ -631,6 +650,7 @@ fn cgroup_high(_m: &[usize]) -> Result<Reading, c_int>
 
 fn cgroup_current(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
         crate::sys::may_abort_corrupt(),
 {
@@ -643,6 +663,7 @@ fn cgroup_current(_m: &[usize]) -> Result<Reading, c_int>
 
 fn cgroup_decay_ms(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
         crate::sys::may_abort_corrupt(),
 {
@@ -657,6 +678,7 @@ fn cgroup_decay_ms(_m: &[usize]) -> Result<Reading, c_int>
 
 fn cgroup_retention_cap(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
         crate::sys::may_abort_corrupt(),
 {
@@ -666,6 +688,7 @@ fn cgroup_retention_cap(_m: &[usize]) -> Result<Reading, c_int>
 
 fn cgroup_empty_bytes(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
         crate::sys::may_abort_corrupt(),
 {
@@ -676,6 +699,7 @@ fn cgroup_empty_bytes(_m: &[usize]) -> Result<Reading, c_int>
 
 fn cgroup_full_purges(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
         crate::sys::may_abort_corrupt(),
 {
@@ -755,6 +779,7 @@ fn thp_nohuge_ranges(_m: &[usize]) -> Result<Reading, c_int>
 
 fn stats_allocated(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     // Premise (lock order): called from `mallctl`, which holds no lock.
@@ -763,6 +788,7 @@ fn stats_allocated(_m: &[usize]) -> Result<Reading, c_int>
 
 fn stats_active(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     // Premise (lock order): called from `mallctl`, which holds no lock.
@@ -771,6 +797,7 @@ fn stats_active(_m: &[usize]) -> Result<Reading, c_int>
 
 fn stats_metadata(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     // Premise (lock order): called from `mallctl`, which holds no lock.
@@ -779,6 +806,7 @@ fn stats_metadata(_m: &[usize]) -> Result<Reading, c_int>
 
 fn stats_resident(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     // Premise (lock order): called from `mallctl`, which holds no lock.
@@ -787,6 +815,7 @@ fn stats_resident(_m: &[usize]) -> Result<Reading, c_int>
 
 fn stats_mapped(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     // Premise (lock order): called from `mallctl`, which holds no lock.
@@ -795,6 +824,7 @@ fn stats_mapped(_m: &[usize]) -> Result<Reading, c_int>
 
 fn stats_retained(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     // Premise (lock order): called from `mallctl`, which holds no lock.
@@ -803,6 +833,7 @@ fn stats_retained(_m: &[usize]) -> Result<Reading, c_int>
 
 fn thread_allocated(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
@@ -811,6 +842,7 @@ fn thread_allocated(_m: &[usize]) -> Result<Reading, c_int>
 
 fn thread_allocatedp(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
@@ -819,6 +851,7 @@ fn thread_allocatedp(_m: &[usize]) -> Result<Reading, c_int>
 
 fn thread_deallocated(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
@@ -827,6 +860,7 @@ fn thread_deallocated(_m: &[usize]) -> Result<Reading, c_int>
 
 fn thread_deallocatedp(_m: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
@@ -2544,6 +2578,7 @@ fn at(mib: &[usize], i: usize) -> (r: usize)
 /// `config::Value` variant's.
 fn opt_value(mib: &[usize]) -> Result<Reading, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     let key = KEYS.get(at(mib, 1)).ok_or(ENOENT)?;
@@ -2580,6 +2615,7 @@ fn bin_class(mib: &[usize]) -> (r: Result<crate::layout::Class, c_int>)
 #[allow(clippy::redundant_comparisons)]
 fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int>
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
 {
     let a = arena_stats(shared(), at(mib, 2))?;
@@ -2595,6 +2631,7 @@ fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int>
 /// build option, the name resolves and the read says the facility is off.
 fn tracked() -> (r: Result<&'static crate::sys::cgroup::Cgroup, c_int>)
     requires
+        crate::api::ready(),
         crate::sys::may_syscall(),
         crate::sys::may_abort_corrupt(),
     ensures
@@ -2756,6 +2793,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io, Tracked(cc): Tracke
 {
     proof {
         *fx = Ghost(Change::Unchanged);
+        shared.lemma_wf_ready();
     }
     // Premise (lock order): `mallctl`'s caller holds no allocator lock.
     let tracked mut ord = axiom_entry();
@@ -3277,6 +3315,9 @@ pub(super) fn theorem_mallctl_reads_never_abort(
             newlen: io.newlen,
         }),
 {
+    proof {
+        shared.lemma_wf_ready();
+    }
     let tracked mut cc = cc;
     let tracked mut fx = Ghost(Change::Unchanged);
     // `mallctl` after its `super::shared()`, for a covered key.
@@ -3362,6 +3403,9 @@ pub(super) fn theorem_mallctl_cgroup_reads_check(
             newlen: io.newlen,
         }),
 {
+    proof {
+        shared.lemma_wf_ready();
+    }
     let tracked mut cc = cc;
     let tracked mut fx = Ghost(Change::Unchanged);
     // `mallctl` after its `super::shared()`, for one of the seven keys.
@@ -3617,6 +3661,12 @@ mod tests {
     use crate::heap::mallocx::{MALLOCX_TCACHE_NONE, mallocx_arena, mallocx_tcache};
     use std::ffi::CString;
     use std::vec::Vec;
+
+    // The module's `shared` takes init as done (`api::ready`); a test
+    // may read the state before its first `mallctl` call.
+    fn shared() -> &'static Shared {
+        crate::api::shared()
+    }
 
     // The entry points with their C signatures, each with the call's
     // token as the export wrappers mint it (ghost: nothing at run time).
@@ -5011,7 +5061,7 @@ mod tests {
 mod kani_root {
     use super::{ROOT, root};
 
-    /// S17 `root`, `ensures r@ == root_nodes()`: every call returns
+    /// S16 `root`, `ensures r@ == root_nodes()`: every call returns
     /// `ROOT` itself, an immutable static, so the same nodes each time
     /// (`root_nodes` is uninterpreted: ROOT's contents interpret it).
     #[kani::proof]

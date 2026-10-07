@@ -1,6 +1,6 @@
 # `axiom_copied_bytes`
 
-Seam S416 of `verus/SEAMS.md`: src/vspec/user.rs:244. Kind: axiom. Category: core library.
+Seam S415 of `verus/SEAMS.md`: src/vspec/user.rs:244. Kind: axiom. Category: core library.
 Evidence from Kani: the harness settles the memory half (what
 `copy_nonoverlapping` does to memory); that the ghost byte maps of
 `UserMem` agree with memory before the copy is a premise the harness
@@ -45,7 +45,7 @@ provenances; `copy_user` is called once, by `libc::copy_moved`
 
 Kani 0.68.0 (CBMC 6.11.0, nightly-2026-08-21) proves the harness
 `kani_proofs::ptr::ptr_copy_nonoverlapping` (`src/kani/ptr.rs`), the one
-the record of `core::ptr::copy_nonoverlapping::<T>` (S264,
+the record of `core::ptr::copy_nonoverlapping::<T>` (S266,
 `verus/seams/vspec-addr-ptr-copy_nonoverlapping.md`) cites. Its part
 at `T = u8`, the instance `copy_user` calls,
 `copy_nonoverlapping_on::<u8, 5>`: for every `i` and `j` in `0..=5` and
@@ -122,7 +122,7 @@ element too few into an array of 8-byte elements; the module comment
 of `src/kani/ptr.rs`); `copy_nonoverlapping` is one copy whatever the
 length, so the bound only limits the sizes. The pointers are derived
 from local arrays, which Kani tracks as objects; challoc's are
-integer-to-pointer casts of mapped addresses (the S264 record's
+integer-to-pointer casts of mapped addresses (the S266 record's
 "Provenance" paragraph). Kani lowers the call to its own model of the
 `copy_nonoverlapping` intrinsic; the release build calls `memcpy` (or
 inlines a copy), whose agreement with that model is assumed.
@@ -158,7 +158,7 @@ the axiom, `copy_user` and `UserMem`'s definitions. It found the
 statement, the `requires`/`reads_as` mapping, the premise and the
 evidence status right; its findings (the `frame` conjunct for bytes
 outside the domain, a placeholder, wording, and stale seam numbers in
-the S264 record this one cites) are folded in.
+the S266 record this one cites) are folded in.
 
 ## Tests
 

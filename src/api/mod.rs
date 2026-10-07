@@ -262,11 +262,13 @@ impl Published {
 /// publication itself, or a load of `READY`, [`load_state`]); and the
 /// trusted items whose contracts give a `Shared::wf` or a `Heap::wf` of
 /// a value they did not get from a verified caller assert it too:
-/// `sys::tls::TlsSlot::entry` (a slot holding a heap), `heap::tcaches::heap_at`,
-/// `purge::background::shared_arg` (the background thread, which
-/// `pthread_create` orders after its creator, which had it) and
-/// `mallctl::shared`. Each asserts it of a thread that loaded `READY`, or
-/// runs after one that did, which is what it means.
+/// `sys::tls::TlsSlot::entry` (a slot holding a heap), `heap::tcaches::heap_at`
+/// and `purge::background::shared_arg` (the background thread, which
+/// `pthread_create` orders after its creator, which had it). Each asserts
+/// it of a thread that loaded `READY`, or runs after one that did, which
+/// is what it means. (`mallctl::shared`, the readers' accessor, was one
+/// until package RDE; it requires the fact now, which `mallctl::ctl` has
+/// from its well-formed `&Shared`.)
 pub uninterp spec fn ready() -> bool;
 
 /// Trusted: a thread that holds the frozen permissions ([`Published`],

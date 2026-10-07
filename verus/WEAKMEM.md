@@ -151,8 +151,9 @@ each syscall is a compiler barrier.
   the premise is now that a `ready()` fact reaches a thread only after
   it loaded `READY` (or published it), or after a thread that did (the
   background thread, through `pthread_create`): the same happens-before.
-  Besides `load_state`, the trusted `TlsSlot::entry`, `heap_at`,
-  `shared_arg` and `mallctl::shared` assert it (`api::ready`).
+  Besides `load_state`, the trusted `TlsSlot::entry`, `heap_at`
+  and `shared_arg` assert it (`api::ready`); `mallctl::shared` requires
+  it since package RDE, from `mallctl::ctl`'s well-formed `&Shared`.
 - What to check: every `READY` reader sees the built value, including
   the page geometry, which is a plain write.
 

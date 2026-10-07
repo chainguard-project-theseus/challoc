@@ -2673,7 +2673,7 @@ mod linux {
     mod kani_word {
         use super::{NCLASSES, word};
 
-        /// S177 `word`, `requires i < NCLASSES + 3`, no `ensures`: under
+        /// S176 `word`, `requires i < NCLASSES + 3`, no `ensures`: under
         /// it the call returns, for every byte string and index (and the
         /// word is bytes `8 * i..8 * i + 8` in native order).
         #[kani::proof]

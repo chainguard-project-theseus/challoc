@@ -2211,9 +2211,9 @@ impl Shared {
     /// one `Shared::init` built, from the permission `api::STATE`'s
     /// invariant holds from `READY` on (`api::Published`), and so do
     /// `api::shared_deref`, the free paths' accessor, and
-    /// `heap::paths::shared_of` from the same permissions; the trusted
-    /// readers `purge::background::shared_arg` and `mallctl::shared`
-    /// assume it.
+    /// `heap::paths::shared_of` from the same permissions, and
+    /// `mallctl::shared` from the `ready()` its callers carry; the
+    /// trusted reader `purge::background::shared_arg` assumes it.
     pub closed spec fn wf(&self) -> bool {
         &&& self.built()
         &&& crate::api::ready()
@@ -3685,7 +3685,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S136..S152, S153: each `S_*` is its field's `offset_of!`, and the
+    /// S135..S151, S152: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {
@@ -3736,7 +3736,7 @@ mod kani_layout {
         assert!(size_of::<Shared>() <= isize::MAX as usize);
     }
 
-    /// S49 `Arena::axiom_array_layout` at the two arrays of `Shared`.
+    /// S48 `Arena::axiom_array_layout` at the two arrays of `Shared`.
     #[kani::proof]
     fn shared_array_layout() {
         array_layout::<ClassLine, NCLASSES>();

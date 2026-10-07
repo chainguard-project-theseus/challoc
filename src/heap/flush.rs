@@ -1575,7 +1575,7 @@ fn addr_mix(h: &Heap) -> u64 {
 mod kani_flush {
     use super::Heap;
 
-    /// S114 `addr_mix`: no `ensures`; it returns, the heap's address
+    /// S113 `addr_mix`: no `ensures`; it returns, the heap's address
     /// rotated left by 17 bits (on an all-zero heap: pointers null,
     /// counters zero, ghost fields empty, all valid).
     #[kani::proof]
