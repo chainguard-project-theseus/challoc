@@ -172,8 +172,11 @@ the call does not return (theorem 3, which is not voided for it).
   `node_arena` and `node_set_arena` are verified. The list's length
   bound is proved (`Heap::lemma_list_bound`: its keys are distinct
   `u16`s).
-- `flush::group_by_slab` (`heap/flush.rs:618`, `external_body`): its
-  result is a permutation of the batch (the flush's tokens follow it).
+- `<[T]>::sort_unstable`'s contract (`vspec/slice.rs`: a permutation;
+  a Kani record checks it for slices of up to 12 entries), under the
+  flush's kept-half sort and the fallback of the verified
+  `flush::group_by_slab` (whose result is a permutation of the batch,
+  so the flush's tokens follow it).
 - `thread::fast_flags` (`heap/thread.rs:170`): the `PUSH_PAC` bit read
   through a raw pointer is `pac_mode()`.
 - `Shared::free_flags` (`heap/shared.rs`, `external_body`, since upstream
@@ -1951,9 +1954,8 @@ vstd's multiset lemmas.
   pre-shuffle batch has no name outside the function (exposing it would
   need a ghost return value, a signature change). Callers see only the
   token postconditions, which say nothing about order.
-- The flush's grouping (`flush::group_by_slab`, `external_body`) is a
-  different reordering, assumed to be a permutation (common premises),
-  not covered here.
+- The flush's grouping (`flush::group_by_slab`, verified to permute the
+  batch) is a different reordering, not covered here.
 
 ## 12. Zero-on-free (at release)
 
@@ -5853,7 +5855,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   `CountPerm` is the counter with its `id` (`count_id`), and `fetch_add`,
   `fetch_sub` (wrapping), `load` and, since the port of upstream #103,
   `compare_exchange` (the strong form: it fails only on a different
-  value, by C++20's semantics; S307, discharged with loom and those,
+  value, by C++20's semantics; S306, discharged with loom and those,
   `verus/seams/vspec-count-compare_exchange.md`) are one atomic operation
   on it, sequentially consistent in the model (the orderings, all
   `Relaxed`, are ignored, as for the bitmap words).
@@ -5911,7 +5913,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   is off by that ticket inside the trusted body only (the flush's proof
   uses no arena invariant).
 - `homed_ok`'s `rehome ==> bound` (since #103): a new thread heap is
-  counted, so it holds whatever `mark_rehome` (S125, RefinedRust:
+  counted, so it holds whatever `mark_rehome` (S124, RefinedRust:
   `true`, `verus/seams/heap-mark_rehome.md`) stored;
   an explicit cache, assumed `wf` (`heap_at`), rests on `init_fields`
   storing `false` (trusted) and on `create` being the one writer that

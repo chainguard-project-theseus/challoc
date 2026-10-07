@@ -1,6 +1,6 @@
 # `assert_refill_empty`
 
-Seam S119 of `verus/SEAMS.md`: src/heap/mod.rs:1895. Kind: external_body. Category: panic/abort.
+Seam S118 of `verus/SEAMS.md`: src/heap/mod.rs:1895. Kind: external_body. Category: panic/abort.
 Discharged by Kani.
 
 ## Contract

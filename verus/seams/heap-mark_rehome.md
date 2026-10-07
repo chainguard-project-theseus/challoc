@@ -1,6 +1,6 @@
 # `mark_rehome`
 
-Seam S125 of `verus/SEAMS.md`: src/heap/mod.rs:6434. Kind: external_body. Category: raw pointer (internal).
+Seam S124 of `verus/SEAMS.md`: src/heap/mod.rs:6434. Kind: external_body. Category: raw pointer (internal).
 Discharged by RefinedRust.
 
 ## Contract

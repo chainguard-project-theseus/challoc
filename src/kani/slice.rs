@@ -4,11 +4,13 @@
 //! at `*mut u8`, `usize` and pairs of `usize`, all plain `Copy` words, and
 //! none of these methods looks at the element type beyond moving or
 //! comparing it) for every slice up to `MAX` elements (`SORTED_MAX` for
-//! `is_sorted`) with arbitrary contents. `sort_unstable` and
-//! `select_nth_unstable` have no harness: each switches algorithm with
-//! the length (insertion sort below 21 elements, a small sort to 32,
-//! partitioning above), the proofs use them on slices of thousands, and
-//! Kani reaches only the short branches. `rotate_left` (three rotation
+//! `is_sorted`) with arbitrary contents. `sort_unstable` is checked at
+//! every length to `SORT_MAX` on words below the length (every order
+//! pattern; see [`sort_ranks_on`]), which reaches only its insertion
+//! sort (to 20 elements; a small sort and a quicksort run past that).
+//! `select_nth_unstable` has no harness: it switches algorithm with the
+//! length, the proofs use it on slices of thousands, and Kani reaches
+//! only the short branches. `rotate_left` (three rotation
 //! algorithms) is checked at lengths that reach each of them, on
 //! labelled elements (see [`rotate_on`]).
 
@@ -42,7 +44,7 @@ fn same(a: &[u64], b: &[u64]) -> bool {
     true
 }
 
-/// S370 `<[T]>::swap`: under `a, b < len`, `old.update(a, old[b])
+/// S369 `<[T]>::swap`: under `a, b < len`, `old.update(a, old[b])
 /// .update(b, old[a])`.
 #[kani::proof]
 #[kani::unwind(8)]
@@ -59,7 +61,7 @@ fn slice_swap() {
     assert!(same(&a, &want));
 }
 
-/// S371 `<[T]>::reverse`: `old.reverse()`, element `k` is `old[n - 1 - k]`.
+/// S370 `<[T]>::reverse`: `old.reverse()`, element `k` is `old[n - 1 - k]`.
 #[kani::proof]
 #[kani::unwind(8)]
 fn slice_reverse() {
@@ -72,7 +74,7 @@ fn slice_reverse() {
     assert!(same(&a[n..], &old[n..]));
 }
 
-/// S379 `<[T]>::swap_with_slice`: under equal lengths, the contents trade
+/// S378 `<[T]>::swap_with_slice`: under equal lengths, the contents trade
 /// places.
 #[kani::proof]
 #[kani::unwind(8)]
@@ -94,7 +96,7 @@ fn any_long_words() -> ([u64; SORTED_MAX], usize) {
     (a, n)
 }
 
-/// S372 `<[T]>::is_sorted`: no `requires`, no `ensures`; it returns
+/// S371 `<[T]>::is_sorted`: no `requires`, no `ensures`; it returns
 /// without a panic or undefined behaviour (and, here, says whether each
 /// element is at most the next), for every slice up to `SORTED_MAX`.
 #[kani::proof]
@@ -105,7 +107,7 @@ fn slice_is_sorted() {
     assert_eq!(r, (1..n).all(|k| a[k - 1] <= a[k]));
 }
 
-/// S373 `<[T]>::is_sorted_by_key::<'a, F, K>`: as `is_sorted`, for a key `x ^ c`
+/// S372 `<[T]>::is_sorted_by_key::<'a, F, K>`: as `is_sorted`, for a key `x ^ c`
 /// with an arbitrary `c`.
 #[kani::proof]
 #[kani::unwind(8)]
@@ -117,7 +119,7 @@ fn slice_is_sorted_by_key() {
     assert_eq!(r, (1..n).all(|k| key(&a[k - 1]) <= key(&a[k])));
 }
 
-/// S300 `<[T]>::get_unchecked::<I>`: under the `index` precondition (in
+/// S299 `<[T]>::get_unchecked::<I>`: under the `index` precondition (in
 /// bounds), the element or subslice `index` gives, at the instantiations
 /// the proofs use: `usize` (`heap/flush.rs`, `arena.rs`, `api/libc.rs`),
 /// `RangeTo` and `RangeFrom`. Kani's undefined-behaviour checks cover the
@@ -142,7 +144,7 @@ fn slice_get_unchecked() {
     assert!(core::ptr::eq(hi, &s[k..]));
 }
 
-/// S378 `<[T]>::get_unchecked_mut::<I>`: as `get_unchecked`, and a write
+/// S377 `<[T]>::get_unchecked_mut::<I>`: as `get_unchecked`, and a write
 /// through the result is the write `index_mut` would make.
 #[kani::proof]
 #[kani::unwind(8)]
@@ -171,7 +173,7 @@ fn slice_get_unchecked_mut() {
     assert!(core::ptr::eq(unsafe { s.get_unchecked_mut(k..) }, want_hi));
 }
 
-/// S367 `core::slice::from_ref`: the one-element sequence of `*s`.
+/// S366 `core::slice::from_ref`: the one-element sequence of `*s`.
 #[kani::proof]
 fn slice_from_ref() {
     let x: u64 = kani::any();
@@ -180,7 +182,7 @@ fn slice_from_ref() {
     assert_eq!(r[0], x);
 }
 
-/// S369 `<&'a mut [T] as core::iter::IntoIterator>::into_iter`: the iterator hands out
+/// S368 `<&'a mut [T] as core::iter::IntoIterator>::into_iter`: the iterator hands out
 /// each element once, in order, holding its old value, and what is
 /// written through each reference is the slice's final value there
 /// (`remaining` is the sequence of references; the prophetic laws are
@@ -211,7 +213,7 @@ fn slice_iter_mut() {
     assert!(same(&a[n..], &old[n..]));
 }
 
-/// S382 `<[T; N] as core::iter::IntoIterator>::into_iter` and S363 its `next`: the
+/// S381 `<[T; N] as core::iter::IntoIterator>::into_iter` and S363 its `next`: the
 /// iterator starts with every element in order, `next` hands out the
 /// front one, and returns `None` (and stays empty) once all are out.
 #[kani::proof]
@@ -232,7 +234,7 @@ fn array_into_iter() {
     assert_eq!(it.next(), None);
 }
 
-/// S391 `<[T]>::as_mut_ptr` and S392 `<[T]>::as_ptr`: no `requires`, no
+/// S390 `<[T]>::as_mut_ptr` and S391 `<[T]>::as_ptr`: no `requires`, no
 /// `ensures`; they return without a panic (the address is the first
 /// element's when there is one).
 #[kani::proof]
@@ -309,7 +311,7 @@ fn quint(k: usize) -> [u64; 5] {
     [k, k + 1, k + 2, k + 3, k + 4]
 }
 
-/// S380 `<[T]>::rotate_left`: under `mid <= len`, `final(s)@ ==
+/// S379 `<[T]>::rotate_left`: under `mid <= len`, `final(s)@ ==
 /// old(s)@.subrange(mid, len) + old(s)@.subrange(0, mid)`. `core` picks
 /// one of three algorithms from `min(mid, len - mid)`, `len` and `T`'s
 /// size (`core/src/slice/rotate.rs`): through a 256-byte stack buffer
@@ -348,4 +350,66 @@ fn slice_rotate_left_cycles() {
 fn slice_rotate_left_quads() {
     rotate_on::<[u64; 4], 20>(quad, true);
     rotate_on::<[u64; 4], 26>(quad, true);
+}
+
+/// The longest slice `sort_unstable` is checked on, at every length up to
+/// it: `core` sorts these by insertion alone (up to 20 elements).
+const SORT_MAX: usize = 12;
+
+/// `old` and `new` hold `v` equally often.
+fn same_count<const L: usize>(old: &[u64; L], new: &[u64; L], v: u64) -> bool {
+    let (mut a, mut b) = (0usize, 0usize);
+    for k in 0..L {
+        a += (old[k] == v) as usize;
+        b += (new[k] == v) as usize;
+    }
+    a == b
+}
+
+/// `sort_unstable` on a slice of `L` arbitrary words below `L`: the
+/// length is kept, an arbitrary entry, old or new, occurs as often after
+/// as before (so the multiset is kept), and the words end sorted. Words
+/// below `L` give every order pattern `L` words can have, ties included
+/// (each is its own dense rank), which is all a comparison sort sees;
+/// see the record. `L` is a constant: with a symbolic length CBMC would
+/// also unwind every longer algorithm `core` picks by length.
+fn sort_ranks_on<const L: usize>() {
+    let mut s: [u64; L] = kani::any();
+    for k in 0..L {
+        kani::assume(s[k] < L as u64);
+    }
+    let old = s;
+    let v: &mut [u64] = &mut s;
+    v.sort_unstable();
+    assert!(v.len() == L);
+    let i: usize = kani::any();
+    if i < L {
+        assert!(same_count(&old, &s, old[i]));
+        assert!(same_count(&old, &s, s[i]));
+    }
+    for k in 1..L {
+        assert!(s[k - 1] <= s[k]);
+    }
+}
+
+/// S375 `<[T]>::sort_unstable`: no `requires`; the length and the
+/// multiset are kept (so every element is one of the old ones), for
+/// every slice of up to `SORT_MAX` words.
+#[kani::proof]
+#[kani::unwind(14)]
+fn slice_sort_unstable() {
+    const _: () = assert!(SORT_MAX == 12);
+    sort_ranks_on::<0>();
+    sort_ranks_on::<1>();
+    sort_ranks_on::<2>();
+    sort_ranks_on::<3>();
+    sort_ranks_on::<4>();
+    sort_ranks_on::<5>();
+    sort_ranks_on::<6>();
+    sort_ranks_on::<7>();
+    sort_ranks_on::<8>();
+    sort_ranks_on::<9>();
+    sort_ranks_on::<10>();
+    sort_ranks_on::<11>();
+    sort_ranks_on::<12>();
 }

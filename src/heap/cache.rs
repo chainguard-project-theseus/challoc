@@ -110,11 +110,16 @@ pub(super) proof fn lemma_header_layout()
 impl CacheHeader {
     /// The header invariant: the run lies inside the entries not popped
     /// since the last GC, which lie inside the stack, which lies inside
-    /// its capacity (`run_end <= low_water <= len <= cap`), and the zero
+    /// its capacity (`run_end <= low_water <= len <= cap`), a capacity of at
+    /// most [`MAX_NSLOTS`](crate::config::MAX_NSLOTS) (`Heap::ensure_cache`
+    /// sizes it from the ladder, which `tcache_nslots_small_max` bounds; the
+    /// flush's [`flag_sort`](super::flush::flag_sort) is verified for that
+    /// length), and the zero
     /// prefix lies inside the entries not popped since the last GC
     /// (`zeroed <= low_water`, see [`CacheHeader::zeroed`]).
     pub(super) open spec fn inv(&self) -> bool {
         &&& self.run_end <= self.low_water <= self.len <= self.cap
+        &&& self.cap <= crate::config::MAX_NSLOTS
         &&& self.zeroed <= self.low_water
     }
 }

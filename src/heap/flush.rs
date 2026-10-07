@@ -731,29 +731,71 @@ verus! {
 /// address. Every path is O(n) but the last, a full sort of half the
 /// entries.
 ///
-/// Trusted: the sweep and the fallback sort (`sort_unstable`, which vstd
-/// does not specify); only the batch's order changes (the multiset of
-/// entries is kept, so their slot tokens follow). The body hands
+/// Verus checks the sweep and the dispatch: every key is in `[kmin,
+/// kmax]`, so [`flag_sort`]'s keys are below `span <= GROUP_BUCKETS`,
+/// and only the batch's order changes (the multiset of entries is kept,
+/// so their slot tokens follow). The result is an entry of the batch;
+/// that it is the lowest is not part of the contract (the flush's
+/// straddle check needs it only for its strength, not for any proof).
+/// The fallback `sort_unstable` is the core
+/// library's, under its contract in `vspec/slice.rs` (a permutation),
+/// which a Kani harness checks for short slices. The body hands
 /// [`flag_sort`] batches of up to the cache's capacity, at most
-/// `tcache_nslots_small_max`'s bound `MAX_NSLOTS` (65536), the length
-/// `flag_sort` is verified for since its cursors are `u32` (upstream
-/// #102; with `u16` cursors a flush of a whole 65536-slot cache
-/// overran them, and a debug build aborted at its entry assertion).
-#[verifier::external_body]
-pub(super) fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8]) -> *mut u8
+/// `tcache_nslots_small_max`'s bound `MAX_NSLOTS` (65536,
+/// [`CacheHeader::inv`]), the length `flag_sort` is verified for since
+/// its cursors are `u32` (upstream #102; with `u16` cursors a flush of a
+/// whole 65536-slot cache overran them, and a debug build aborted at its
+/// entry assertion).
+pub(super) fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8]) -> (low: *mut u8)
     requires
         class < NCLASSES,
         old(high)@.len() > 0,
+        old(high)@.len() <= crate::config::MAX_NSLOTS,
     ensures
         final(high)@.len() == old(high)@.len(),
         final(high)@.to_multiset() == old(high)@.to_multiset(),
+        old(high)@.contains(low),
 {
+    let ghost h0 = high@;
     let base = shared.regions.class_base[class];
-    let lg = CLASSES[class].lg_slab as u32;
-    let key = |p: *mut u8| (p as usize).wrapping_sub(base) >> lg;
+    let lg = CLASSES.table()[class].lg_slab as u32;
+    proof {
+        assert(class_table()[class as int].wf());
+    }
+    let key = |p: *mut u8| -> (k: usize)
+        requires
+            1 <= lg < 64,
+        ensures
+            k == slab_key(p, base, lg),
+            k <= 0x7fff_ffff_ffff_ffff,
+    {
+        let a = (p as usize).wrapping_sub(base);
+        proof {
+            assert(a >> lg <= 0x7fff_ffff_ffff_ffff) by (bit_vector)
+                requires
+                    1 <= lg < 64,
+            ;
+        }
+        a >> lg
+    };
     let mut low = high[0];
     let (mut kmin, mut kmax) = (usize::MAX, 0usize);
-    for &p in high.iter() {
+    for &p in it: high.iter()
+        invariant
+            high@ == h0,
+            h0.len() > 0,
+            1 <= lg < 64,
+            forall|p: *mut u8| #[trigger] key.requires((p,)),
+            forall|p: *mut u8, k: usize| #[trigger] key.ensures((p,), k) ==> k == slab_key(p, base, lg),
+            forall|p: *mut u8, k: usize| #[trigger] key.ensures((p,), k) ==> k <= 0x7fff_ffff_ffff_ffff,
+            h0.contains(low),
+            kmax <= 0x7fff_ffff_ffff_ffff,
+            forall|j: int| 0 <= j < it.index() ==> kmin <= #[trigger] slab_key(h0[j], base, lg) <= kmax,
+            it.index() > 0 ==> kmin <= kmax,
+    {
+        proof {
+            assert(*it.seq()[it.index() as int] == h0[it.index() as int]);
+        }
         let k = key(p);
         kmin = kmin.min(k);
         kmax = kmax.max(k);
@@ -766,11 +808,27 @@ pub(super) fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8])
     }
     let span = kmax - kmin + 1;
     if span <= GROUP_BUCKETS {
-        flag_sort(high, span, |p| key(p) - kmin);
+        flag_sort(
+            high,
+            span,
+            |p: *mut u8| -> (k: usize)
+                requires
+                    1 <= lg < 64,
+                    kmin <= slab_key(p, base, lg) <= kmax,
+                ensures
+                    k == slab_key(p, base, lg) - kmin,
+                { key(p) - kmin },
+        );
     } else {
         high.sort_unstable();
     }
     low
+}
+
+/// The slab number [`group_by_slab`] keys `p` by: its offset from the
+/// class's `base`, wrapping, shifted down by the slab size's log.
+spec fn slab_key(p: *mut u8, base: usize, lg: u32) -> usize {
+    vstd::wrapping::usize_specs::wrapping_sub(p@.addr, base) >> lg
 }
 
 } // verus!
@@ -1242,6 +1300,20 @@ proof fn lemma_sorted<F: Fn(*mut u8) -> usize>(key: F, s: Seq<*mut u8>, v0: Seq<
     }
 }
 
+/// An entry of a permutation of `v0` is one of `v0`'s.
+proof fn lemma_in_perm(s: Seq<*mut u8>, v0: Seq<*mut u8>, i: int)
+    requires
+        s.to_multiset() == v0.to_multiset(),
+        0 <= i < s.len(),
+    ensures
+        v0.contains(s[i]),
+{
+    broadcast use vstd::seq_lib::group_to_multiset_ensures;
+    assert(s.contains(s[i]));
+    assert(s.to_multiset().count(s[i]) > 0);
+    assert(v0.to_multiset().count(s[i]) > 0);
+}
+
 /// Swapping two entries keeps the multiset.
 proof fn lemma_swap_multiset(s: Seq<*mut u8>, i: int, j: int)
     requires
@@ -1270,7 +1342,9 @@ proof fn lemma_swap_multiset(s: Seq<*mut u8>, i: int, j: int)
 /// [`MAX_NSLOTS`](crate::config::MAX_NSLOTS) (65536) entries, one more
 /// than `u16` can count.
 ///
-/// Verus checks it for a deterministic `key` below `nb`: every cursor
+/// Verus checks it for a `key` that, on `v`'s entries, may be called, is
+/// deterministic and is below `nb` (it may be partial elsewhere: the
+/// group pass's `slab - lowest` is defined only on its batch): every cursor
 /// stays inside its bucket (no index leaves `v`, no `u32` counter
 /// overflows), every loop ends, and `v` ends up a permutation of what it
 /// held (the same multiset), in ascending bucket order.
@@ -1278,9 +1352,9 @@ pub(super) fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> u
     requires
         nb <= 256,
         old(v).len() <= crate::config::MAX_NSLOTS,
-        forall|p: *mut u8| key.requires((p,)),
-        forall|p: *mut u8, k: usize| key.ensures((p,), k) ==> k < nb,
-        forall|p: *mut u8, k1: usize, k2: usize| key.ensures((p,), k1) && key.ensures((p,), k2) ==> k1 == k2,
+        forall|p: *mut u8| #![trigger key.requires((p,))] old(v)@.contains(p) ==> key.requires((p,)),
+        forall|p: *mut u8, k: usize| #![trigger key.ensures((p,), k)] old(v)@.contains(p) && key.ensures((p,), k) ==> k < nb,
+        forall|p: *mut u8, k1: usize, k2: usize| #![trigger key.ensures((p,), k1), key.ensures((p,), k2)] old(v)@.contains(p) && key.ensures((p,), k1) && key.ensures((p,), k2) ==> k1 == k2,
     ensures
         final(v)@.len() == old(v)@.len(),
         forall|c: int| 0 <= c < nb ==> count(key, final(v)@, c) == count(key, old(v)@, c),
@@ -1296,9 +1370,9 @@ pub(super) fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> u
             v@ == v0,
             nb <= GROUP_BUCKETS,
             v0.len() <= crate::config::MAX_NSLOTS,
-            forall|p: *mut u8| key.requires((p,)),
-            forall|p: *mut u8, k: usize| key.ensures((p,), k) ==> k < nb,
-            forall|p: *mut u8, k1: usize, k2: usize| key.ensures((p,), k1) && key.ensures((p,), k2) ==> k1 == k2,
+            forall|p: *mut u8| #![trigger key.requires((p,))] v0.contains(p) ==> key.requires((p,)),
+            forall|p: *mut u8, k: usize| #![trigger key.ensures((p,), k)] v0.contains(p) && key.ensures((p,), k) ==> k < nb,
+            forall|p: *mut u8, k1: usize, k2: usize| #![trigger key.ensures((p,), k1), key.ensures((p,), k2)] v0.contains(p) && key.ensures((p,), k1) && key.ensures((p,), k2) ==> k1 == k2,
             it.index() <= v0.len(),
             forall|c: int| 0 <= c < GROUP_BUCKETS ==> #[trigger] end[c] == count(key, v0.take(it.index() as int), c),
             forall|j: int| 0 <= j < it.index() ==> 0 <= #[trigger] kf(key, v0[j]) < nb,
@@ -1313,6 +1387,9 @@ pub(super) fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> u
             assert forall|c: int| 0 <= c < GROUP_BUCKETS implies count(key, v0.take(it.index() as int), c) <= it.index() by {
                 lemma_count_le(key, v0.take(it.index() as int), c);
             }
+        }
+        proof {
+            assert(v0.contains(p));
         }
         end[key(p)] += 1;
     }
@@ -1351,9 +1428,9 @@ pub(super) fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> u
             v@.len() == v0.len(),
             nb <= GROUP_BUCKETS,
             v0.len() <= crate::config::MAX_NSLOTS,
-            forall|p: *mut u8| key.requires((p,)),
-            forall|p: *mut u8, k: usize| key.ensures((p,), k) ==> k < nb,
-            forall|p: *mut u8, k1: usize, k2: usize| key.ensures((p,), k1) && key.ensures((p,), k2) ==> k1 == k2,
+            forall|p: *mut u8| #![trigger key.requires((p,))] v0.contains(p) ==> key.requires((p,)),
+            forall|p: *mut u8, k: usize| #![trigger key.ensures((p,), k)] v0.contains(p) && key.ensures((p,), k) ==> k < nb,
+            forall|p: *mut u8, k1: usize, k2: usize| #![trigger key.ensures((p,), k1), key.ensures((p,), k2)] v0.contains(p) && key.ensures((p,), k1) && key.ensures((p,), k2) ==> k1 == k2,
             count_below(key, v0, nb as int) <= v0.len(),
             v@.to_multiset() == v0.to_multiset(),
             inv(key, v@, v0, next@, end@, nb as int),
@@ -1366,9 +1443,9 @@ pub(super) fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> u
                 v@.len() == v0.len(),
                 nb <= GROUP_BUCKETS,
                 v0.len() <= crate::config::MAX_NSLOTS,
-                forall|p: *mut u8| key.requires((p,)),
-                forall|p: *mut u8, k: usize| key.ensures((p,), k) ==> k < nb,
-                forall|p: *mut u8, k1: usize, k2: usize| key.ensures((p,), k1) && key.ensures((p,), k2) ==> k1 == k2,
+                forall|p: *mut u8| #![trigger key.requires((p,))] v0.contains(p) ==> key.requires((p,)),
+                forall|p: *mut u8, k: usize| #![trigger key.ensures((p,), k)] v0.contains(p) && key.ensures((p,), k) ==> k < nb,
+                forall|p: *mut u8, k1: usize, k2: usize| #![trigger key.ensures((p,), k1), key.ensures((p,), k2)] v0.contains(p) && key.ensures((p,), k1) && key.ensures((p,), k2) ==> k1 == k2,
                 count_below(key, v0, nb as int) <= v0.len(),
                 v@.to_multiset() == v0.to_multiset(),
                 inv(key, v@, v0, next@, end@, nb as int),
@@ -1381,6 +1458,9 @@ pub(super) fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> u
                 lemma_count_below_mono(key, v0, b + 1, nb as int);
             }
             let mut p = v[i];
+            proof {
+                lemma_in_perm(v@, v0, i as int);
+            }
             let mut kb = key(p);
             proof {
                 assert(v@.update(i as int, p) =~= v@);
@@ -1391,9 +1471,9 @@ pub(super) fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> u
                     v@.len() == v0.len(),
                     nb <= GROUP_BUCKETS,
                     v0.len() <= crate::config::MAX_NSLOTS,
-                    forall|p: *mut u8| key.requires((p,)),
-                    forall|p: *mut u8, k: usize| key.ensures((p,), k) ==> k < nb,
-                    forall|p: *mut u8, k1: usize, k2: usize| key.ensures((p,), k1) && key.ensures((p,), k2) ==> k1 == k2,
+                    forall|p: *mut u8| #![trigger key.requires((p,))] v0.contains(p) ==> key.requires((p,)),
+                    forall|p: *mut u8, k: usize| #![trigger key.ensures((p,), k)] v0.contains(p) && key.ensures((p,), k) ==> k < nb,
+                    forall|p: *mut u8, k1: usize, k2: usize| #![trigger key.ensures((p,), k1), key.ensures((p,), k2)] v0.contains(p) && key.ensures((p,), k1) && key.ensures((p,), k2) ==> k1 == k2,
                     count_below(key, v0, nb as int) <= v0.len(),
                     i == next@[b as int],
                     i < end@[b as int],
@@ -1415,6 +1495,10 @@ pub(super) fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> u
                 let j = next[kb] as usize;
                 next[kb] += 1;
                 core::mem::swap(&mut p, &mut v[j]);
+                proof {
+                    assert(v1.update(i as int, p1)[j as int] == p);
+                    lemma_in_perm(v1.update(i as int, p1), v0, j as int);
+                }
                 kb = key(p);
                 proof {
                     lemma_step(key, v1, v0, n1, end@, nb as int, b as int, i as int, p1, j as int, next@[kf(key, p1)]);
@@ -1490,7 +1574,7 @@ fn addr_mix(h: &Heap) -> u64 {
 mod kani_flush {
     use super::Heap;
 
-    /// S114 `addr_mix`: no `ensures`; it returns, the heap's address
+    /// S113 `addr_mix`: no `ensures`; it returns, the heap's address
     /// rotated left by 17 bits (on an all-zero heap: pointers null,
     /// counters zero, ghost fields empty, all valid).
     #[kani::proof]
