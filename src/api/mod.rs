@@ -3599,6 +3599,111 @@ mod tests {
         assert!(grants > 0);
     }
 
+    /// Theorem 46's premises on its capability
+    /// (`vspec::user::may_read_user`), read from the source as for theorem
+    /// 8: `grant_user_reads` is called exactly once in each realloc core
+    /// (`libc::realloc_block`, `libc::realloc_usable_stored`,
+    /// `jemalloc::rallocx_zeroed`) and in `purge::check_zero`, and nowhere
+    /// else; `may_read_user` appears in an `ensures` only as
+    /// `purge::check_zero`'s grant on `true` and the grant's own, and
+    /// otherwise only as a `requires` or loop invariant clause that ends
+    /// with it, apart from its definition and the grant's `reveal`.
+    #[test]
+    fn user_reads_only_at_grants() {
+        // Spelled in parts, so that this test's own lines match nothing.
+        let grant = std::format!("{}{}", "grant_", "user_reads");
+        let cap = std::format!("{}{}", "may_", "read_user");
+        let clause = std::format!("crate::vspec::user::{cap}(),");
+        // `vspec/user.rs`: the definition and the grant, whose body alone
+        // names the capability other than as a clause.
+        let decl = [
+            std::format!("pub open spec fn {cap}() -> bool {{"),
+            std::format!("pub proof fn {grant}()"),
+        ];
+        let (short, reveal) = (std::format!("{cap}(),"), std::format!("reveal({cap});"));
+        let sites = [
+            ("api/libc.rs", "pub fn realloc_block("),
+            ("api/libc.rs", "pub fn realloc_usable_stored("),
+            ("api/jemalloc.rs", "pub fn rallocx_zeroed("),
+            ("purge.rs", "pub fn check_zero() -> (r: bool)"),
+        ];
+        let mut seen = [0; 4];
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&src, &mut files);
+        for path in &files {
+            let rel = path.strip_prefix(&src).unwrap().to_str().unwrap();
+            if rel.contains("tests") || rel.starts_with("model/") || rel == "testutil.rs" {
+                continue;
+            }
+            let text = std::fs::read_to_string(path).unwrap();
+            let lines: Vec<&str> = text.lines().map(str::trim).collect();
+            let lines = match lines.iter().position(|t| *t == "mod tests {") {
+                Some(end) => &lines[..end],
+                None => &lines[..],
+            };
+            let (mut sig, mut kw) = ("", "");
+            for (i, &t) in lines.iter().enumerate() {
+                if t.starts_with("//") {
+                    continue;
+                }
+                // Ghost items too (`spec`, `axiom`, `broadcast`, `uninterp`): an
+                // `ensures` of theirs must not count as the previous `fn`'s.
+                let ghost = ["spec ", "axiom ", "broadcast ", "uninterp "]
+                    .iter()
+                    .fold(std::string::String::from(t), |s, q| s.replacen(q, "", 1));
+                if fn_item(t) || fn_item(&ghost) {
+                    (sig, kw) = (t, "");
+                }
+                if t == "{" || t.ends_with(" {") {
+                    kw = "";
+                }
+                if let Some(k) = [
+                    "requires",
+                    "ensures",
+                    "invariant",
+                    "invariant_except_break",
+                    "decreases",
+                ]
+                .iter()
+                .find(|k| t == **k)
+                {
+                    kw = k;
+                }
+                let at = || std::format!("{rel}:{}: `{t}`", i + 1);
+                let user = rel == "vspec/user.rs";
+                if user && decl.iter().any(|a| t == a.as_str()) {
+                    continue;
+                }
+                if user && sig == decl[1] && ((kw == "ensures" && t == short) || t == reveal) {
+                    continue;
+                }
+                if t.contains(grant.as_str()) {
+                    let Some(k) = sites
+                        .iter()
+                        .position(|(f, s)| *f == rel && sig.starts_with(s))
+                    else {
+                        panic!("{}: a user-read grant in `{sig}`", at());
+                    };
+                    seen[k] += 1;
+                } else if t.contains(cap.as_str()) {
+                    let check_zero = rel == "purge.rs"
+                        && sig.starts_with(sites[3].1)
+                        && kw == "ensures"
+                        && t == std::format!("r ==> {clause}");
+                    assert!(
+                        check_zero
+                            || ((t.ends_with(clause.as_str()) || (user && t == short))
+                                && (kw == "requires" || kw.starts_with("invariant"))),
+                        "{}: `{cap}` used other than as a requires or invariant clause",
+                        at()
+                    );
+                }
+            }
+        }
+        assert_eq!(seen, [1; 4], "one grant in each of {sites:?}");
+    }
+
     /// The premises of theorem "Read-only APIs never abort" on its
     /// capabilities, read from the source as for theorem 8:
     /// `grant_aborts` is called only in the body of an `extern "C"`

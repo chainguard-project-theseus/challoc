@@ -1,6 +1,6 @@
 # Whole-allocator theorems: statements and premises
 
-Reference for the forty-four whole-allocator theorems as the code
+Reference for the forty-six whole-allocator theorems as the code
 states them: the Verus statement, the entry points it covers, and every
 trusted premise it rests on, with `file:line`. Read at `b2cad68`
 (branch `verus`); line numbers are the `fn`/`axiom` line at that commit,
@@ -10,7 +10,7 @@ open work; this file says what the code proves today. Each title and
 first paragraph claims only what is proved: where a theorem holds only
 at a lock invariant, rests on a source test or on the C-boundary
 assumption (`axiom_c_claim`), the title or the first paragraph says so.
-The sections are numbered 1 to 45 in order (45, fast-path cost bounds,
+The sections are numbered 1 to 46 in order (45, fast-path cost bounds,
 is a machine-level statement over the release binary that a
 disassembly checker, not Verus, checks); "Bad input" (the B column)
 and the interface contract are not numbered.
@@ -8357,6 +8357,199 @@ commit too, but the table is pinned to 1.95.0.
 - Anything about the source: Verus does not see this theorem. The
   link to the source is the codegen rule (`CONTRIBUTING.md`, hot set
   frozen) and theorems 8, 9 and 26, which name the same paths.
+
+## 46. Allocator decisions never depend on user-memory contents (verified code; trusted bodies read from the code)
+
+No allocator control flow reads a byte of a user block, except
+`realloc`'s copy and the opt-in `check_zero` debug reads. So an overflow
+from one block into a live or freed neighbour, or a write through a
+dangling pointer, cannot steer `malloc` or `free`: what the program
+writes into its blocks reaches the allocator only as the bytes a
+`realloc` copies into the new block (no branch depends on them), and,
+with `check_zero` on, as an abort on a non-zero word. This is the proved
+form of "no free-list pointers in freed blocks" (`docs/hardening.md`):
+challoc keeps no metadata in user blocks, and no decision it makes reads
+one. The proof covers the verified code. The trusted bodies are covered
+only by reading their code (premises below).
+
+Read at the commit that adds this section (on the integration tip
+`d161c911`); the `file:line`s are the `fn` line there unless marked
+as a call.
+
+**Statement** (`vspec/user.rs:34`, `:44`; `purge.rs:194`;
+`api/libc.rs:714`):
+
+```rust
+#[verifier::opaque]
+pub open spec fn may_read_user() -> bool { true }
+
+pub proof fn grant_user_reads()
+    ensures
+        may_read_user(),
+
+pub fn check_zero() -> (r: bool)
+    ensures
+        r ==> crate::vspec::user::may_read_user(),
+
+#[cfg(verus_only)]
+fn theorem_no_user_reads(which: u8, n: usize, m: usize, flags: c_int, p: *mut u8,
+    Tracked(claim): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        claim.block() == Some(p),
+```
+
+(Bodies elided, line breaks added.) `may_read_user()` is a capability,
+as theorem 8's `may_syscall()` is. Every primitive that reads bytes of
+a user block requires it:
+
+- `UserMem::lemma_valid_reads` (`vspec/user.rs:161`), the one way
+  verified code outside `vspec::user` gets a read bound (`valid_reads`)
+  on bytes a `UserMem` covers;
+- `copy_user` (`vspec/user.rs:303`), the `copy_nonoverlapping` out of
+  the old block;
+- and, through them, `class::verify::read_word` (`class/verify.rs:380`,
+  a slot's word), `Huge::read_run_word` (`huge/mod.rs:5776`, a run's
+  word, through the permission the hand-out will mint) and
+  `libc::copy_moved` (`api/libc.rs:1522`, realloc's copy over the two
+  blocks' `Live` tokens). The `check_zero` walks that call the word
+  reads require it too: `ClassState::check_zero` and
+  `check_fresh_slab_is_zero` (`class/verify.rs:71`, `:169`), and
+  `Huge::check_zero` (`huge/mod.rs:5633`).
+
+It is granted in two places:
+
+- the realloc cores `libc::realloc_block` (`api/libc.rs:1557`),
+  `libc::realloc_usable_stored` (`:2097`) and `jemalloc::rallocx_zeroed`
+  (`api/jemalloc.rs:456`), in the proof block just before their
+  `copy_moved`. By then the move is decided: the keep test
+  (`old_size_or_keep`, `realloc_old`) and the new allocation read no
+  byte of `p`.
+- `purge::check_zero()`, whose `true` (the `check_zero` config key is
+  on) grants it. Its callers that read are the class claim's pick loop
+  (`ClassState::finish`, `class/mod.rs:3510`, call at `:3776`, under a
+  loop invariant `check_zero ==> may_read_user()`), the class take's
+  `Fresh`-slab check (`ClassState::take`, `:2674`, call at `:2751`) and
+  the huge allocation (`Huge::alloc_aligned`, `huge/mod.rs:5491`, call
+  at `:5579`, under the `prior` that is `Some` only when `check_zero()`
+  returned `true`). `check_zero`'s body calls the grant unconditionally;
+  only its `ensures` (`r ==>`) passes the capability on, so a caller
+  holds it only after a `true`.
+
+Every other verified function is verified without the capability:
+allocation, free, refill, flush, purge, decay, stats, `mallctl`, the
+fork handlers and the thread destructor. `theorem_no_user_reads`, a
+verification-only function (`cfg(verus_only)`), witnesses this for the
+cores of the allocation and free entry points other than the
+reallocs: `malloc_block`, `calloc_zeroed`, `aligned_alloc_block`,
+`jemalloc::mallocx_zeroed`, `free_block`, `free_sized_with`,
+`free_usable_block`, `jemalloc::dallocx_block`, `sdallocx_block` and
+`malloc_usable_size`, slow paths included. It calls them where
+`may_abort()` and `may_syscall()` hold but `may_read_user()` does not,
+and it verifies. So none of them requires the capability, and below them
+only `check_zero()`'s `true` grants it.
+
+**Why the capability covers every read of a user block.**
+- A read in verified code needs a permission to its bytes. That is
+  either a vstd `PointsTo` (`ptr_ref`, `PointsTo::read`) or, for a raw
+  read (`read_volatile`, `read_unaligned`, `copy_nonoverlapping`:
+  `vspec/ptr.rs`, `vspec/addr.rs`), a `valid_reads` bound. A
+  `valid_reads` bound comes only from `vspec::ptr::axiom_raw_valid` of
+  a `PointsToRaw`, from `vspec::cbuf`'s facts about a C argument, or
+  from `vspec::ptr::ref_ptr` (a Rust reference, which verified code makes
+  only through a permission).
+- The only permissions to a user block's bytes are `UserMem`s. They are
+  minted at hand-out (`heap::live::axiom_hand_out`, `heap/live.rs:1036`),
+  at the C boundary (`axiom_c_claim`, `:995`) and, lent for reads, to a
+  `Fresh` slab's slots (`class::axiom_fresh_slab_mem`,
+  `class/mod.rs:4395`, whose one caller is the `check_zero` branch of
+  `take`). This is theorem 4's premise "no `PointsToRaw` is ever made
+  for the class or huge regions but there". Every other permission
+  verified code holds is to metadata, apart from every block (theorem 4),
+  or to the `Shared` static.
+- A `UserMem`'s `PointsToRaw` is a private field of `vspec::user`, so
+  only that module calls `axiom_raw_valid` on it. It does so in
+  `lemma_valid_reads`, which requires the capability, and in the
+  private `lemma_valid` (`vspec/user.rs:138`). `lemma_valid` gives a
+  write bound, which is a read bound too (`valid_writes` implies
+  `valid_reads`). Its callers are `zero_user`, whose body is one
+  `write_bytes` and reads nothing, and `copy_user`, which requires the
+  capability.
+- `may_read_user` is opaque. A verified function can prove it only
+  from its own `requires` or a loop invariant that carries it in from
+  there, from `grant_user_reads`, or from a `true` that
+  `purge::check_zero()` returned.
+  `api::tests::user_reads_only_at_grants` checks the source. Each of
+  the four grant sites calls `grant_user_reads` exactly once, and nothing
+  else calls it. `may_read_user` appears in an `ensures` only as
+  `check_zero`'s `r ==> may_read_user()` and in the grant's own
+  `ensures`. Otherwise it appears only as a `requires` or loop invariant
+  clause that ends with it, apart from its definition and the grant's
+  `reveal`.
+
+**Premises beyond the common ones.**
+- Theorem 4's: metadata permissions lie apart from every block, and
+  the mints (`axiom_hand_out`, `axiom_c_claim`,
+  `axiom_fresh_slab_mem`) are the only sources of a permission to the
+  class and huge regions.
+- The trusted bodies read no user block. This is read from the code,
+  not proved (a sweep of every `external_body` body and of the code
+  outside `verus!`, at this section's commit). The trusted bodies the
+  allocator runs (`verus/SEAMS.md`) load:
+  - metadata: the cache stacks through `cached_recently`, `others`
+    nodes, `arena_volatile`, `load_owner`, `owner_locked`, descriptor
+    and watermark loads, the load wrappers of `vspec::word`, `count`,
+    `entry` and `atom`, and `slice_from_perms`'s bitmap words;
+  - the statics: `ClassLine::guard_word`, `free_flags`, the class
+    table, the feature line, `malloc_message`, `malloc_conf`;
+  - TLS (`sys::tls::get`, `get_tp`, `errno`);
+  - the rseq area (`rseq::read_cpu_id`) and the loader's rseq globals;
+  - the environment (`config::env_var`).
+  Kernel files are read through verified wrappers over
+  `raw::syscall*`. The C arguments of `mallctl` are read by verified
+  code. `Heap::destroy` (trusted) runs the verified flush and frees,
+  which take slots, not their bytes; the permissions it mints with
+  `Tracked::assume_new()` are to the cache stacks and metadata blocks
+  it frees (theorem 4's premise on it), not to a block.
+- Trusted code calls none of the primitives that require the
+  capability (`copy_user`, `lemma_valid_reads`, `read_word`,
+  `read_run_word`, `copy_moved`): Verus does not hold an `external_body`
+  body or code outside `verus!` to a `requires`. Read from the code:
+  every caller of each is verified.
+- The kernel's reads are not allocator reads. `madvise` and the guard
+  installs on a block's pages change its mapping, not a decision.
+- No new trusted item: the capability, its grant, `check_zero`'s
+  contract and the witness are verified.
+
+**What it does not cover.**
+- Callbacks. `malloc_stats_print`'s `write_cb`, the `malloc_message`
+  hook and the C++ `new_handler` are the program's code. What they read
+  is the program's business.
+- Caller-supplied buffers. `mallctl`'s `name`, `oldp`, `oldlenp`,
+  `newp` and MIB arrays, `malloc_stats_print`'s `opts`, and the
+  out-parameters (`posix_memalign`'s `memptr`, `challoc_*_usable`'s
+  `usable`) are C arguments (`vspec::cbuf`), not user blocks in this
+  theorem's sense. That holds even when the program passes a pointer into
+  one of its own blocks: the decision then depends on what the program
+  passed, as with any argument.
+- Memory serving as a runtime stack or TLS. A thread whose stack or
+  static TLS block the program placed in a `malloc`ed buffer
+  (`pthread_attr_setstack`) has challoc's TLS heap slot, and the
+  allocator's own frames, inside a user block. The allocator reads that
+  slot on every call, and an overflow into it is not excluded. Theorem 4
+  leaves TLS out for the same reason.
+- Machine-level side channels: timing, caches, speculation, and what
+  the hardware lets one block's contents affect. The theorem is about
+  the reads the source makes.
+- Writes. Fills and copies into a block (`zero_user`, `copy_user`'s
+  destination) are theorems 4, 6 and 12. This theorem is about reads.
+- Faults. A fault on a block's page (a guard page, a purged page) is
+  the kernel's, not a read by the allocator.
+- Within the two exceptions: `realloc` copies the bytes without
+  branching on them (`copy_nonoverlapping`'s length is fixed before the
+  copy). The `check_zero` reads decide whether to abort, which is that
+  debug mode's purpose; it is off by default.
 
 ## Interface contract
 

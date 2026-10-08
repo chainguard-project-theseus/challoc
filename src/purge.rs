@@ -185,8 +185,19 @@ pub fn set_check_zero(on: bool) {
 /// they report as zero and abort on a non-zero one. Off by default; the
 /// callers test it only on the paths that already hold a class or huge
 /// lock, so the release fast paths never see it.
+///
+/// Its `true` grants those reads the capability to read user memory
+/// (`vspec::user::may_read_user`, theorem 46): the opt-in debug reads
+/// are one of the two exceptions to "no allocator decision reads a user
+/// block".
 #[inline]
-pub fn check_zero() -> bool {
+pub fn check_zero() -> (r: bool)
+    ensures
+        r ==> crate::vspec::user::may_read_user(),
+{
+    proof {
+        crate::vspec::user::grant_user_reads();
+    }
     CHECK_ZERO.load(Ordering::Relaxed)
 }
 

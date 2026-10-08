@@ -518,6 +518,9 @@ pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Track
         blk.lemma_len_pos();
         out.lemma_len_pos();
         assert(q@.addr != p@.addr);
+        // The copy reads `p`'s bytes: realloc's one read of user memory
+        // (theorem 46).
+        crate::vspec::user::grant_user_reads();
     }
     let ghost k = if old < size { old as int } else { size as int };
     proof {

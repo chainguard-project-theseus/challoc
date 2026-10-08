@@ -697,6 +697,66 @@ fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8, Tracked(
     }
 }
 
+/// Theorem 46 (`verus/THEOREMS.md`), checked: the allocation and free
+/// cores of the C and jemalloc entry points other than the reallocs
+/// (`malloc`, `calloc`, `aligned_alloc`, `mallocx`, `free`, `free_sized`,
+/// `challoc_free_usable`, `dallocx`, `sdallocx` and
+/// `malloc_usable_size`), slow paths included, called where the C entry
+/// points' capabilities hold (a system call, an abort) but
+/// [`crate::vspec::user::may_read_user`] does not. Each call verifies
+/// here, so none of these functions requires it, and every read of a user
+/// block's bytes does: below them only `purge::check_zero()`'s `true`
+/// grants it. `which` picks the call; a free takes the block's token as
+/// the export does, from the call's token for `p` (`claim`).
+///
+/// Verification only (`cfg(verus_only)`): the build has no such function.
+#[cfg(verus_only)]
+fn theorem_no_user_reads(which: u8, n: usize, m: usize, flags: c_int, p: *mut u8, Tracked(claim): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        claim.block() == Some(p),
+{
+    let tracked mut out = Live::empty();
+    match which {
+        0 => {
+            let _ = malloc_block(n, Tracked(&mut out), Tracked(errno));
+        },
+        1 => {
+            let _ = calloc_zeroed(n, m, Tracked(&mut out), Tracked(errno));
+        },
+        2 => {
+            let _ = aligned_alloc_block(n, m, Tracked(&mut out), Tracked(errno));
+        },
+        3 => {
+            let _ = super::jemalloc::mallocx_zeroed(n, flags, Tracked(&mut out));
+        },
+        4 => {
+            let tracked b = heap::live::axiom_c_claim(claim);
+            free_block(p, Tracked(b));
+        },
+        5 => {
+            let tracked b = heap::live::axiom_c_claim(claim);
+            free_sized_with(p, n, Tracked(b));
+        },
+        6 => {
+            let tracked b = heap::live::axiom_c_claim(claim);
+            let _ = free_usable_block(p, Tracked(b));
+        },
+        7 => {
+            let tracked b = heap::live::axiom_c_claim(claim);
+            super::jemalloc::dallocx_block(p, flags, Tracked(b));
+        },
+        8 => {
+            let tracked b = heap::live::axiom_c_claim(claim);
+            super::jemalloc::sdallocx_block(p, n, flags, Tracked(b));
+        },
+        _ => {
+            let _ = malloc_usable_size(p);
+        },
+    }
+}
+
 /// Sized free on the calling thread's heap: `hint` is the class the size
 /// (and alignment) name, `class_for(size, align)`, or `None` for a huge
 /// size. On the fast path the hint replaces the slab descriptor's bit test
@@ -1510,9 +1570,12 @@ pub fn realloc(p: *mut u8, size: usize, Tracked(errno): Tracked<&mut ThreadErrno
 /// `out`'s to write; two permissions held at once share no byte, so the
 /// ranges do not overlap). Afterwards `out`'s byte state reads its first
 /// `n` bytes as `blk`'s ([`Live::copied_from`]); `blk` is unchanged.
+/// It reads `p`'s bytes, so it needs `may_read_user`, which only the
+/// realloc cores grant (theorem 46).
 #[inline(always)]
 pub(super) unsafe fn copy_moved(p: *mut u8, q: *mut u8, n: usize, Tracked(blk): Tracked<&mut Live>, Tracked(out): Tracked<&mut Live>)
     requires
+        crate::vspec::user::may_read_user(),
         heap::regions_ok(),
         old(blk).block(p),
         old(out).block(q),
@@ -1595,6 +1658,9 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         // The new block is apart from `p`'s, so not at `p`: a move.
         blk.lemma_len_pos();
         assert(q@.addr != p@.addr);
+        // The copy reads `p`'s bytes: realloc's one read of user memory
+        // (theorem 46).
+        crate::vspec::user::grant_user_reads();
     }
     // SAFETY: `blk` holds the permission to `p`'s `old` usable bytes and
     // `out` to `q`'s `size` or more; the two share no byte.
@@ -2167,6 +2233,9 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         // The new block is apart from `p`'s, so not at `p`: a move.
         blk.lemma_len_pos();
         assert(q@.addr != p@.addr);
+        // The copy reads `p`'s bytes: realloc's one read of user memory
+        // (theorem 46).
+        crate::vspec::user::grant_user_reads();
     }
     // SAFETY: `blk` holds the permission to `p`'s `old` usable bytes and
     // `out` to `q`'s `size` or more; the two share no byte.

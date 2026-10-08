@@ -71,6 +71,7 @@ impl ClassState {
     pub(super) fn check_zero(&self, slots: &[*mut u8], pick: &Pick, Tracked(toks): Tracked<&mut SlotToks>, Ghost(key): Ghost<int>)
         requires
             crate::sys::may_abort(),
+            crate::vspec::user::may_read_user(),
             slots_in(slots@, self.spec_class() as int, 0, slots@.len() as int),
             old(toks).holds(self.spec_table(), slots@, key, 0, slots@.len() as int),
         ensures
@@ -89,6 +90,7 @@ impl ClassState {
         for &p in it: slots
             invariant
                 crate::sys::may_abort(),
+                crate::vspec::user::may_read_user(),
                 crate::heap::regions_ok(),
                 size >= 8,
                 size == class_table()[self.spec_class() as int].size,
@@ -121,6 +123,7 @@ impl ClassState {
             for &off in o: &[0, size - 8]
                 invariant
                     crate::sys::may_abort(),
+                    crate::vspec::user::may_read_user(),
                     crate::heap::regions_ok(),
                     size >= 8,
                     size == class_table()[self.spec_class() as int].size,
@@ -166,6 +169,7 @@ impl ClassState {
     pub(super) fn check_fresh_slab_is_zero(&self, slab: usize, Tracked(m): Tracked<&UserMem>)
         requires
             crate::sys::may_abort(),
+            crate::vspec::user::may_read_user(),
             slab < self.spec_nslabs(),
             !self.spec_table().spec_is_guard(slab),
             m.covers(
@@ -186,6 +190,7 @@ impl ClassState {
         for slot in 0..cls.nslots()
             invariant
                 crate::sys::may_abort(),
+                crate::vspec::user::may_read_user(),
                 crate::heap::regions_ok(),
                 slab < self.spec_nslabs(),
                 *cls == class_table()[self.spec_class() as int],
@@ -369,10 +374,12 @@ proof fn lemma_slot_size(c: int)
 /// slot's bytes up to the word's end, through `p`'s provenance.
 ///
 /// # Safety
-/// `p + off` is an aligned word that `m` covers.
+/// `p + off` is an aligned word that `m` covers. A read of user memory:
+/// it needs `may_read_user` (theorem 46).
 #[inline(always)]
 unsafe fn read_word(p: *mut u8, off: usize, Ghost(c): Ghost<int>, Tracked(m): Tracked<&UserMem>) -> u64
     requires
+        crate::vspec::user::may_read_user(),
         crate::heap::regions_ok(),
         process_regions().is_slot(c, p@.addr),
         off as int + 8 <= class_table()[c].size,

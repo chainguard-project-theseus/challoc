@@ -5633,6 +5633,7 @@ impl Huge {
     fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>)
         requires
             crate::sys::may_abort(),
+            crate::vspec::user::may_read_user(),
             s + usable_pages <= self.spec_npages(),
             self.spec_base_aligned(),
             self.is_process(),
@@ -5681,6 +5682,7 @@ impl Huge {
         for i in 0..usable_pages
             invariant
                 crate::sys::may_abort(),
+                crate::vspec::user::may_read_user(),
                 page as int == p,
                 p == self.spec_page(),
                 16 <= p,
@@ -5716,6 +5718,7 @@ impl Huge {
             for &off in o: &[0, page - 8]
                 invariant
                     crate::sys::may_abort(),
+                    crate::vspec::user::may_read_user(),
                     page as int == p,
                     p == self.spec_page(),
                     16 <= p,
@@ -5767,10 +5770,12 @@ impl Huge {
     /// about the value.
     ///
     /// # Safety
-    /// `a` is an aligned word that `m` covers.
+    /// `a` is an aligned word that `m` covers. A read of user memory: it
+    /// needs `may_read_user` (theorem 46).
     #[inline(always)]
     unsafe fn read_run_word(&self, a: usize, Tracked(m): Tracked<&crate::vspec::user::UserMem>) -> u64
         requires
+            crate::vspec::user::may_read_user(),
             m.provenance() == crate::vspec::addr::cast_provenance(),
             forall|x: int| a <= x < a + 8 ==> #[trigger] m.dom().contains(x),
             a % 8 == 0,

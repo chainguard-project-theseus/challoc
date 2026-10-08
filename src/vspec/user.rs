@@ -5,6 +5,11 @@
 //! allocation that hands the block out to the free that takes it back;
 //! the fills and copies verified code makes on user memory take it
 //! ([`zero_user`], [`copy_user`]) and record their effect in it.
+//!
+//! Reading a user block's bytes takes a capability too,
+//! [`may_read_user`] (whole-allocator theorem 46 in `verus/THEOREMS.md`):
+//! only realloc's copy and the `check_zero` debug reads have it, so no
+//! other allocator decision depends on what the program wrote.
 
 use crate::vspec::zero::Zeroed;
 use vstd::prelude::*;
@@ -14,6 +19,35 @@ use vstd::raw_ptr::Provenance;
 
 verus! {
 
+/// The caller may read the bytes of a user block (theorem 46 in
+/// `verus/THEOREMS.md`). The read primitives over a [`UserMem`]
+/// ([`UserMem::lemma_valid_reads`] and [`copy_user`], and through them
+/// `class::verify::read_word` and `Huge::read_run_word`) require it, and a
+/// `UserMem` is the only permission verified code can hold to a block's
+/// bytes. So a verified function can read a user block only if its own
+/// `requires` (or its loop's invariant) carries the fact, it calls
+/// [`grant_user_reads`], or it holds a `true` that `purge::check_zero()`
+/// returned (whose `ensures` grants it).
+///
+/// Opaque, with no meaning: a capability, not a claim about the world.
+#[verifier::opaque]
+pub open spec fn may_read_user() -> bool {
+    true
+}
+
+/// Grant [`may_read_user`]. Called only by the realloc cores
+/// (`libc::realloc_block`, `libc::realloc_usable_stored` and
+/// `jemalloc::rallocx_zeroed`, for their copy of the old block into the
+/// new one) and by `purge::check_zero`, whose `true` (the opt-in debug
+/// mode is on) grants it to the `check_zero` reads.
+/// `api::tests::user_reads_only_at_grants` checks the source for that.
+pub proof fn grant_user_reads()
+    ensures
+        may_read_user(),
+{
+    reveal(may_read_user);
+}
+
 /// Ghost permission to user memory: the bytes `dom()` of provenance
 /// `provenance()` (a vstd `PointsToRaw`, so two permissions held at once
 /// share no byte, [`UserMem::lemma_apart`]), and `bytes()`, the value a
@@ -21,7 +55,8 @@ verus! {
 ///
 /// The permission makes its bytes valid for reads and writes
 /// ([`UserMem::lemma_valid`], from `vspec::ptr::axiom_raw_valid`; a
-/// borrowed one only for reads, [`UserMem::lemma_valid_reads`]). The byte
+/// borrowed one only for reads, [`UserMem::lemma_valid_reads`], which
+/// requires [`may_read_user`]). The byte
 /// state is a ghost record, not memory: it is true because every write
 /// verified code makes to user memory takes the permission and updates it
 /// ([`zero_user`], [`copy_user`]), and the program, which writes the bytes
@@ -96,8 +131,11 @@ impl UserMem {
     /// The permission makes the `len` bytes from `p` (of its provenance)
     /// valid for reads and writes (`vspec::ptr::axiom_raw_valid`). Writes
     /// take the permission itself: a borrowed one only reads
-    /// ([`UserMem::lemma_valid_reads`]). Unchanged.
-    pub proof fn lemma_valid(tracked &mut self, p: *mut u8, len: int)
+    /// ([`UserMem::lemma_valid_reads`]). Unchanged. Private: a write bound
+    /// is a read bound too (`valid_writes` implies `valid_reads`), so its
+    /// callers are this module's [`zero_user`], which only writes, and
+    /// [`copy_user`], which requires [`may_read_user`].
+    proof fn lemma_valid(tracked &mut self, p: *mut u8, len: int)
         requires
             0 <= len,
             old(self).provenance() == p@.provenance,
@@ -117,9 +155,12 @@ impl UserMem {
 
     /// The permission makes the `len` bytes from `p` (of its provenance)
     /// valid for reads, inside the allocation `p` is derived from
-    /// (`vspec::ptr::axiom_raw_valid`).
+    /// (`vspec::ptr::axiom_raw_valid`). The one read of user memory open
+    /// to verified code outside this module, so it needs
+    /// [`may_read_user`].
     pub proof fn lemma_valid_reads(tracked &self, p: *mut u8, len: int)
         requires
+            may_read_user(),
             0 <= len,
             self.provenance() == p@.provenance,
             forall|i: int| p@.addr <= i < p@.addr + len ==> #[trigger] self.dom().contains(i),
@@ -256,10 +297,12 @@ axiom fn axiom_copied_bytes(tracked s: &UserMem, tracked d: &mut UserMem, src: i
 /// `s` to the `n` bytes at `src`, `d` to the `n` bytes at `dst`, which
 /// share no byte with them (two permissions held at once never do:
 /// [`UserMem::lemma_apart`]). Afterwards `d`'s byte state reads the `n`
-/// bytes at `dst` as `s`'s at `src` ([`axiom_copied_bytes`]).
+/// bytes at `dst` as `s`'s at `src` ([`axiom_copied_bytes`]). It reads
+/// user memory, so it needs [`may_read_user`].
 #[inline(always)]
 pub unsafe fn copy_user(src: *mut u8, dst: *mut u8, n: usize, Tracked(s): Tracked<&UserMem>, Tracked(d): Tracked<&mut UserMem>)
     requires
+        may_read_user(),
         s.provenance() == src@.provenance,
         old(d).provenance() == dst@.provenance,
         forall|i: int| src@.addr <= i < src@.addr + n ==> #[trigger] s.dom().contains(i),

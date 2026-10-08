@@ -3647,6 +3647,7 @@ impl ClassState {
         loop
             invariant
                 crate::sys::may_abort(),
+                check_zero ==> crate::vspec::user::may_read_user(),
                 0 <= i <= picks@.len(),
                 iter.remaining() == picks@.skip(i).as_ref(),
                 picks_ok(picks@, picks@.len() as int, self.spec_nslabs(), nslots as nat),

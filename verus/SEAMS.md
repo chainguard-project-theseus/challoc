@@ -1098,7 +1098,7 @@ fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(u): Tracked<&Unlocked>)
 
 ### S13. `axiom_c_block`
 
-src/api/jemalloc.rs:1094. Kind: axiom. Category: C-program contract.
+src/api/jemalloc.rs:1097. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The token of a C call that hands over the block at `p` to `rallocx`, `dallocx` or `sdallocx` ([`CCall`], [`CEntry::Frees`]).
@@ -1112,7 +1112,7 @@ axiom fn axiom_c_block(p: *mut c_void) -> (tracked c: CCall)
 
 ### S14. `axiom_c_block`
 
-src/api/libc.rs:2944. Kind: axiom. Category: C-program contract.
+src/api/libc.rs:3013. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of a free or a realloc, `vspec::cbuf`): the token of this call from C, which hands over the block at `p` ([`CCall`], [`CEntry::Frees`]), for `heap::live::axiom_c_claim` to use up.
@@ -1126,7 +1126,7 @@ axiom fn axiom_c_block(p: *mut c_void) -> (tracked c: CCall)
 
 ### S15. `axiom_c_out`
 
-src/api/libc.rs:3040. Kind: axiom. Category: C-program contract.
+src/api/libc.rs:3109. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of an out-pointer argument, `vspec::cbuf`): the token of this call for the C caller's out-pointer `p`, the permission to write the `T` it names: none for a null `p`, and `p` is not null when the contract does not allow null (`nullable` false: `posix_memalign`'s `memptr`).
@@ -2111,7 +2111,7 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
 
 ### S80. `axiom_fresh_slots_zero`
 
-src/class/mod.rs:4387. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:4388. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `vspec::sys::axiom_fresh_anon_zero` (`mmap(2)`: a private anonymous mapping reads as zero until it is first written) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -2140,7 +2140,7 @@ axiom fn axiom_fresh_slots_zero(
 
 ### S81. `axiom_discarded_slots_zero`
 
-src/class/mod.rs:4425. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:4426. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `vspec::sys::axiom_discarded_zero` (`madvise(2)`: after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -2169,7 +2169,7 @@ axiom fn axiom_discarded_slots_zero(
 
 ### S82. `axiom_fresh_slab_mem`
 
-src/class/mod.rs:4478. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:4479. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permission to the bytes of slots `0..nslots` of slab `slab` of table `g.table`, lent for as long as `held`, the slab's descriptor permission in the class lock value `g` (`Inner::dperms`), is borrowed: what `ClassState::check_fresh_slab_is_zero` reads the slab's slots through (the `check_zero` debug mode), before the slab's first claim.
@@ -2368,7 +2368,7 @@ pub(crate) fn word_index(index: usize) -> (r: usize)
 
 ### S93. `DebugSpecImpl for Says`
 
-src/class/verify.rs:306. Kind: spec_impl. Category: core library.
+src/class/verify.rs:311. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/class-verify-DebugSpecImpl-for-Says.md).
 
 ```rust
@@ -3699,7 +3699,7 @@ fn drop(&mut self)
 
 ### S185. `total_bytes`
 
-src/purge.rs:712. Kind: external_body. Category: core library.
+src/purge.rs:723. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/purge-total_bytes.md).
 
 > The sum of the lengths of `ranges`.
@@ -7151,7 +7151,7 @@ pub proof fn into_lazy(tracked self) -> (tracked r: (PointsToRaw, Zeroed))
 
 ### S414. `axiom_zeroed_bytes`
 
-src/vspec/user.rs:174. Kind: external_body proof. Category: allocator invariant.
+src/vspec/user.rs:215. Kind: external_body proof. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The bytes a [`Zeroed`] token covers read as zero, so a permission's byte state for them is zero.
@@ -7167,7 +7167,7 @@ pub proof fn axiom_zeroed_bytes(tracked z: &Zeroed, tracked m: &mut UserMem)
 
 ### S415. `axiom_cast`
 
-src/vspec/user.rs:198. Kind: external_body proof. Category: raw pointer (internal).
+src/vspec/user.rs:239. Kind: external_body proof. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The permission to bytes of challoc's memory, of any provenance, as the permission to them through an integer-to-pointer cast ([`addr_to_ptr`](crate::vspec::addr::addr_to_ptr), of [`cast_provenance`](crate::vspec::addr::cast_provenance)), the bytes and their values unchanged.
@@ -7183,7 +7183,7 @@ pub proof fn axiom_cast(tracked m: &mut UserMem)
 
 ### S416. `axiom_copied_bytes`
 
-src/vspec/user.rs:244. Kind: axiom. Category: core library.
+src/vspec/user.rs:285. Kind: axiom. Category: core library.
 Tool: Kani. Status: evidence (verus/seams/vspec-user-axiom_copied_bytes.md).
 
 > The effect on the byte state of [`copy_user`]'s `copy_nonoverlapping(src, dst, n)`, made with the permissions `s` to the `n` bytes from `src` and `d` to the `n` bytes from `dst`, which share no byte: `d` reads the `n` bytes from `dst` as `s` reads the `n` bytes from `src`, and its other bytes, its domain, its provenance and its well-formedness are kept.
