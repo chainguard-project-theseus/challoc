@@ -1,6 +1,6 @@
 # `load_owner` (`class/table.rs`)
 
-Seam S84 of `verus/SEAMS.md`: src/class/table.rs:322. Kind: external_body. Category: allocator invariant.
+Seam S87 of `verus/SEAMS.md`: src/class/table.rs:322. Kind: external_body. Category: allocator invariant.
 Evidence from loom and the C11 coherence rules (part 3): they settle the
 memory-model half (a load ordered after the owner store reads it); that
 every caller's load is so ordered, the doc comment's premise, is not in

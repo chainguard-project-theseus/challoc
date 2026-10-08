@@ -89,7 +89,6 @@ debug_scheduled	panic/abort	Kani	discharged (verus/seams/heap-paths-debug_schedu
 src/heap/paths.rs:shared_ptr	allocator invariant	none (assumption)
 axiom_process_shared	allocator invariant	none (assumption)
 ThreadKey::create	function pointer	Kani
-Shared::free_flags	allocator invariant	Verus
 S_FREE_FLAGS	core library	Kani	discharged (verus/seams/heap-shared-S_FREE_FLAGS.md)
 S_PUSH_FLAGS	core library	Kani	discharged (verus/seams/heap-shared-S_PUSH_FLAGS.md)
 S_REGION_HI	core library	Kani	discharged (verus/seams/heap-shared-S_REGION_HI.md)
@@ -294,10 +293,13 @@ SlabDesc::dirty_held	atomics primitive	loom/GenMC	discharged (verus/seams/slab-S
 SlabDesc::arena_held	atomics primitive	loom/GenMC	discharged (verus/seams/slab-SlabDesc-arena_held.md)
 SlabDesc::set_state	atomics primitive	loom/GenMC	discharged (verus/seams/slab-SlabDesc-set_state.md)
 SlabDesc::set_dirty_at	atomics primitive	loom/GenMC	discharged (verus/seams/slab-SlabDesc-set_dirty_at.md)
-fetch_or	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-fetch_or.md)
+src/vspec/word.rs:fetch_or	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-fetch_or.md)
 fetch_and	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-fetch_and.md)
 src/vspec/word.rs:store	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-store.md)
 src/vspec/word.rs:load	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-word-load.md)
+src/vspec/flags.rs:new	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-flags-new.md)
+src/vspec/flags.rs:load	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-flags-load.md)
+src/vspec/flags.rs:fetch_or	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-flags-fetch_or.md)
 fetch_add	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-fetch_add.md)
 fetch_sub	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-fetch_sub.md)
 src/vspec/count.rs:load	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-count-load.md)
@@ -305,6 +307,22 @@ StatePerm	atomics primitive	loom/GenMC
 state_load	atomics primitive	loom/GenMC	discharged (verus/seams/api-state_load.md)
 state_claim	atomics primitive	loom/GenMC	discharged (verus/seams/api-state_claim.md)
 state_publish	atomics primitive	loom/GenMC	discharged (verus/seams/api-state_publish.md)
+# The once-cells (ONCECELL): the feature line's state byte (LINE_STATE,
+# api::LinePred), whose wrappers are the same kind of primitive as
+# STATE's, and the deferred cgroup record's phase (vspec/byte.rs,
+# sys::cgroup::PhasePred), whose wrappers are count.rs's for a byte; both
+# run by src/loom_tests/oncecell.rs (the line a copy, the record over the
+# real wrappers). The fork-child resets' permissions, a vanished thread's,
+# rest on fork's one-thread child (with the residue the axioms name).
+LinePerm	atomics primitive	loom/GenMC
+line_load	atomics primitive	loom/GenMC	discharged (verus/seams/api-line_load.md)
+line_compare_exchange	atomics primitive	loom/GenMC	discharged (verus/seams/api-line_compare_exchange.md)
+line_store	atomics primitive	loom/GenMC	discharged (verus/seams/api-line_store.md)
+src/vspec/byte.rs:load	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-byte-load.md)
+src/vspec/byte.rs:store	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-byte-store.md)
+src/vspec/byte.rs:compare_exchange	atomics primitive	loom/GenMC	discharged (verus/seams/vspec-byte-compare_exchange.md)
+axiom_line_orphaned	platform/kernel fact	none (assumption)
+axiom_cell_orphaned	platform/kernel fact	none (assumption)
 # The atomic invariants on named fields (vspec/atom.rs, vspec/count.rs):
 # Arenas::count (NarenasPred), SlabTable::watermark (CommittedPred) and
 # Policy::position (FracPred) are verified, each store writing a value in
@@ -350,7 +368,6 @@ ClassState::claim_with	termination	RefinedRust
 # the tool its category's default would give is replaced here.
 src/api/mod.rs:features_ptr	UnsafeCell/volatile/transmute	none (assumption)
 src/api/mod.rs:line_ptr	UnsafeCell/volatile/transmute	none (assumption)
-src/api/mod.rs:published_line	allocator invariant	none (assumption)
 src/api/mod.rs:shared_storage_ptr	UnsafeCell/volatile/transmute	none (assumption)
 src/class/mod.rs:axiom_class_lock	allocator invariant	none (assumption)
 src/arena.rs:axiom_arenas_lock_inv	allocator invariant	none (assumption)

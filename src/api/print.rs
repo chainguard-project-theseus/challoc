@@ -2349,7 +2349,7 @@ mod tests {
 mod kani_print {
     use super::{Target, file_target, hist_line, stderr_target, word};
 
-    /// S43 `word`, no `requires`, no `ensures`: it returns for every C
+    /// S46 `word`, no `requires`, no `ensures`: it returns for every C
     /// string up to 3 bytes before its NUL, UTF-8 or not (built at run
     /// time: Kani 0.68 has no C string literals).
     #[kani::proof]
@@ -2363,7 +2363,7 @@ mod kani_print {
         assert!(w == "?" || w.as_bytes() == &a[..n]);
     }
 
-    /// S44 `hist_line`, no `ensures`: it returns, for every argument and
+    /// S47 `hist_line`, no `ensures`: it returns, for every argument and
     /// whatever the writer returns (`W` is a writer that may fail any
     /// write; Kani fails the harness on any panic).
     #[kani::proof]
@@ -2381,7 +2381,7 @@ mod kani_print {
         );
     }
 
-    /// S45 `file_target`, no `ensures`: it returns, `Target::File` of the
+    /// S48 `file_target`, no `ensures`: it returns, `Target::File` of the
     /// stream, for any pointer (it is not dereferenced).
     #[kani::proof]
     fn file_target_returns() {
@@ -2389,7 +2389,7 @@ mod kani_print {
         assert!(matches!(file_target(p), Target::File(q) if q == p));
     }
 
-    /// S46 `stderr_target`, no `ensures`: it returns, `Target::Stderr`.
+    /// S49 `stderr_target`, no `ensures`: it returns, `Target::Stderr`.
     #[kani::proof]
     fn stderr_target_returns() {
         assert!(matches!(stderr_target(), Target::Stderr));

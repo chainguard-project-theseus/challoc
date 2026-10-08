@@ -4,7 +4,8 @@
 //! [`ClassLine`] the `free` fast paths read, with the sized path's
 //! check.
 
-use crate::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use crate::sync::atomic::{AtomicUsize, Ordering};
+use crate::vspec::flags::RouteByte;
 use core::ffi::c_void;
 use core::ptr;
 
@@ -104,7 +105,7 @@ pub struct Shared {
     /// (`superblock`, `lg_stride`): after `Regions` it would sit on its own
     /// line, and larson's working set turns every extra line into an L2
     /// hit.
-    pub(crate) free_flags: AtomicU8,
+    pub(crate) free_flags: RouteByte,
     /// The opt-in hardening a push applies, as [`PUSH_SCAN`]
     /// (`double_free_scan`, design 6.3 step 3: every push compares the
     /// slot against the top four cache entries and aborts on a match) and
@@ -1086,7 +1087,7 @@ const S_CGROUP: usize = core::mem::offset_of!(Shared, cgroup);
 axiom fn axiom_shared_layout()
     ensures
         field_fits::<Shared, [ClassLine; NCLASSES]>(S_LINES, S_FREE_FLAGS as int),
-        field_fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS as int),
+        field_fits::<Shared, RouteByte>(S_FREE_FLAGS, S_PUSH_FLAGS as int),
         field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGION_HI as int),
         field_fits::<Shared, usize>(S_REGION_HI, S_REGIONS as int),
         field_fits::<Shared, Regions>(S_REGIONS, S_TABLES as int),
@@ -1113,10 +1114,13 @@ axiom fn axiom_shared_layout()
 
 } // verus!
 
+// `vspec::flags::ROUTE` is the bit `set_multi_arena` sets.
+const _: () = assert!(FREE_ROUTE == crate::vspec::flags::ROUTE);
+
 // `axiom_shared_layout`, checked.
 const _: () = assert!(
     fits::<Shared, [ClassLine; NCLASSES]>(S_LINES, S_FREE_FLAGS)
-        && fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS)
+        && fits::<Shared, RouteByte>(S_FREE_FLAGS, S_PUSH_FLAGS)
         && fits::<Shared, u8>(S_PUSH_FLAGS, S_REGION_HI)
         && fits::<Shared, usize>(S_REGION_HI, S_REGIONS)
         && fits::<Shared, Regions>(S_REGIONS, S_TABLES)
@@ -1157,7 +1161,7 @@ verus! {
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 tracked struct SharedParts {
-    tracked free_flags: PointsTo<AtomicU8>,
+    tracked free_flags: PointsTo<RouteByte>,
     tracked push_flags: PointsTo<u8>,
     tracked region_hi: PointsTo<usize>,
     tracked arena0: Held<Arena>,
@@ -1189,7 +1193,7 @@ impl SharedParts {
     /// ([`shared_ok`]); `arena0` and `arenas` when they are held.
     spec fn at(&self, p: *mut Shared) -> bool {
         &&& shared_ok(p)
-        &&& self.free_flags.ptr() == field_ptr::<Shared, AtomicU8>(p, S_FREE_FLAGS)
+        &&& self.free_flags.ptr() == field_ptr::<Shared, RouteByte>(p, S_FREE_FLAGS)
         &&& self.push_flags.ptr() == field_ptr::<Shared, u8>(p, S_PUSH_FLAGS)
         &&& self.region_hi.ptr() == field_ptr::<Shared, usize>(p, S_REGION_HI)
         &&& (self.arena0.perm matches Some(a) ==> a.ptr() == field_ptr::<Shared, Arena>(p, S_ARENA0))
@@ -1265,6 +1269,7 @@ axiom fn axiom_shared_built(
         arena0.ptr() == field_ptr::<Shared, Arena>(p, S_ARENA0),
         arena0.is_init(),
     ensures
+        shared_at(p).free_flags == parts.free_flags.value(),
         shared_at(p).push_flags == parts.push_flags.value(),
         shared_at(p).region_hi == parts.region_hi.value(),
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] shared_at(p).tables[c] == tables[c].value(),
@@ -1386,7 +1391,7 @@ impl Shared {
         let tracked raw = perm.into_raw();
         axiom_raw_valid(&raw, p as *mut u8, size_of::<Shared>() as int);
         let tracked (lines, raw) = take_field::<Shared, [ClassLine; NCLASSES]>(raw, p, S_LINES, S_FREE_FLAGS as int);
-        let tracked (free_flags, raw) = take_field::<Shared, AtomicU8>(raw, p, S_FREE_FLAGS, S_PUSH_FLAGS as int);
+        let tracked (free_flags, raw) = take_field::<Shared, RouteByte>(raw, p, S_FREE_FLAGS, S_PUSH_FLAGS as int);
         let tracked (push_flags, raw) = take_field::<Shared, u8>(raw, p, S_PUSH_FLAGS, S_REGION_HI as int);
         let tracked (region_hi, raw) = take_field::<Shared, usize>(raw, p, S_REGION_HI, S_REGIONS as int);
         let tracked (regions, raw) = take_field::<Shared, Regions>(raw, p, S_REGIONS, S_TABLES as int);
@@ -1497,14 +1502,14 @@ impl Shared {
         region_hi: usize,
         Tracked(pf): Tracked<&mut PointsTo<u8>>,
         Tracked(ph): Tracked<&mut PointsTo<usize>>,
-        Tracked(pa): Tracked<&mut PointsTo<AtomicU8>>,
+        Tracked(pa): Tracked<&mut PointsTo<RouteByte>>,
         Tracked(pr): Tracked<&'a PointsTo<Regions>>,
     ) -> (r: &'a Regions)
         requires
             shared_ok(this),
             old(pf).ptr() == field_ptr::<Shared, u8>(this, S_PUSH_FLAGS),
             old(ph).ptr() == field_ptr::<Shared, usize>(this, S_REGION_HI),
-            old(pa).ptr() == field_ptr::<Shared, AtomicU8>(this, S_FREE_FLAGS),
+            old(pa).ptr() == field_ptr::<Shared, RouteByte>(this, S_FREE_FLAGS),
             pr.ptr() == field_ptr::<Shared, Regions>(this, S_REGIONS),
             pr.is_init(),
         ensures
@@ -1516,6 +1521,7 @@ impl Shared {
             final(ph).value() == region_hi,
             final(pa).ptr() == old(pa).ptr(),
             final(pa).is_init(),
+            crate::vspec::flags::fixed(&final(pa).value()) == flags & !FREE_ROUTE,
             *r == pr.value(),
     {
         proof {
@@ -1525,7 +1531,7 @@ impl Shared {
         unsafe {
             ptr_mut_write(field_at(this, S_PUSH_FLAGS), Tracked(pf), flags);
             ptr_mut_write(field_at(this, S_REGION_HI), Tracked(ph), region_hi);
-            ptr_mut_write(field_at(this, S_FREE_FLAGS), Tracked(pa), AtomicU8::new(flags));
+            ptr_mut_write(field_at(this, S_FREE_FLAGS), Tracked(pa), crate::vspec::flags::new(flags));
             ptr_ref(field_at(this, S_REGIONS), Tracked(pr))
         }
     }
@@ -2185,6 +2191,7 @@ impl Shared {
         &&& self.huge.spec_page() == (1usize << self.regions.lg_page) as int
         &&& (self.push_flags & PUSH_PAC != 0) == super::pac_mode()
         &&& super::pac_mode() ==> crate::sys::pac::pac_available()
+        &&& crate::vspec::flags::fixed(&self.free_flags) == self.push_flags & !FREE_ROUTE
         &&& self.config.wf()
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].spec_class() == c
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.lines[c].wf(self.tables[c], self.regions, c)
@@ -2719,20 +2726,17 @@ impl Shared {
     /// The `free` fast path's dispatch byte (see the field): `push_flags`,
     /// plus [`FREE_ROUTE`] once a second arena exists.
     ///
-    /// Trusted: the byte without [`FREE_ROUTE`] is `push_flags`. `init`
-    /// stores `push_flags` itself (`put_flags`, which writes both fields
-    /// from one value), and the only other write is
+    /// The byte without [`FREE_ROUTE`] is `push_flags`: `init` makes it
+    /// from `push_flags` (`put_flags`, which writes both fields from one
+    /// value), the only other write is
     /// [`set_multi_arena`](Shared::set_multi_arena)'s `fetch_or` of
-    /// [`FREE_ROUTE`]; `push_flags` is never written after `init`. Verus
-    /// specifies a `core` atomic load as any value, so the invariant that
-    /// ties the two bytes is stated here rather than carried by a ghost
-    /// permission. It is stated of a well-formed `Shared` (the published
-    /// one, or one `init` built); a reader of the published one has
-    /// observed `READY` (its heap exists), so it loads `init`'s store or a
-    /// later `fetch_or`, under any ordering. The ensures is satisfiable
-    /// whatever `push_flags` holds (`push_flags` itself meets it).
+    /// [`FREE_ROUTE`] (`vspec/flags.rs`: the byte's
+    /// [`fixed`](crate::vspec::flags::fixed) bits, which [`Shared::wf`]
+    /// ties to `push_flags`), and `push_flags` is never written after
+    /// `init`. A reader of the published `Shared` has observed `READY`
+    /// (its heap exists), so it loads `init`'s write or a later
+    /// `fetch_or`, under any ordering.
     #[inline(always)]
-    #[verifier::external_body]
     pub fn free_flags(&self) -> (r: u8)
         requires
             self.wf(),
@@ -2740,7 +2744,7 @@ impl Shared {
             r & !FREE_ROUTE == self.flags() & !FREE_ROUTE,
         opens_invariants none
     {
-        self.free_flags.load(Ordering::Relaxed)
+        crate::vspec::flags::load(&self.free_flags, Ordering::Relaxed)
     }
 
     /// What [`Shared::free_flags`]' byte carries over from `push_flags`:
@@ -2807,7 +2811,10 @@ impl Shared {
 
     /// A second arena is being built (`Arenas::build`).
     pub fn set_multi_arena(&self) {
-        self.free_flags.fetch_or(FREE_ROUTE, Ordering::Relaxed);
+        proof {
+            assert(8u8 & !8u8 == 0) by (bit_vector);
+        }
+        crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE, Ordering::Relaxed);
     }
 
     /// The cache GC period the periodic tick uses: `tcache_gc_interval_ms`,
@@ -3685,7 +3692,7 @@ mod kani_layout {
             && off as u128 + size_of::<T>() as u128 <= next as u128
     }
 
-    /// S136..S152, S153: each `S_*` is its field's `offset_of!`, and the
+    /// S137..S153, S154: each `S_*` is its field's `offset_of!`, and the
     /// fields fit as `axiom_shared_layout` says.
     #[kani::proof]
     fn shared_layout() {
@@ -3710,7 +3717,7 @@ mod kani_layout {
             S_LINES,
             S_FREE_FLAGS
         ));
-        assert!(field_fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS));
+        assert!(field_fits::<Shared, RouteByte>(S_FREE_FLAGS, S_PUSH_FLAGS));
         assert!(field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGION_HI));
         assert!(field_fits::<Shared, usize>(S_REGION_HI, S_REGIONS));
         assert!(field_fits::<Shared, Regions>(S_REGIONS, S_TABLES));
@@ -3736,7 +3743,7 @@ mod kani_layout {
         assert!(size_of::<Shared>() <= isize::MAX as usize);
     }
 
-    /// S48 `Arena::axiom_array_layout` at the two arrays of `Shared`.
+    /// S51 `Arena::axiom_array_layout` at the two arrays of `Shared`.
     #[kani::proof]
     fn shared_array_layout() {
         array_layout::<ClassLine, NCLASSES>();
@@ -3856,7 +3863,7 @@ mod kani_guard_word {
         }
     }
 
-    /// S130 `ClassLine::guard_word`, `requires` the padding zero,
+    /// S133 `ClassLine::guard_word`, `requires` the padding zero,
     /// `ensures r == guard_word_of(guard_mask, tz, lg_guard)`: on a line
     /// with every field any value but `_pad` zero, the one 8-byte load
     /// returns `guard_mask | tz << 32 | lg_guard << 40`, through the

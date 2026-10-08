@@ -1,6 +1,6 @@
 # `state_publish`
 
-Seam S24 of `verus/SEAMS.md`: src/api/mod.rs:420. Kind: external_body. Category: atomics primitive.
+Seam S25 of `verus/SEAMS.md`: src/api/mod.rs:527. Kind: external_body. Category: atomics primitive.
 Discharged by the C11 coherence rules and loom (part 3).
 
 ## Contract

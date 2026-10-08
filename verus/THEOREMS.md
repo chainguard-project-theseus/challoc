@@ -77,14 +77,29 @@ add.
   accessor; since upstream #77 `shared_deref`, at the pointer
   `shared_base` gives) is verified that way since P7, as are
   `heap::thread::fast_flags` and `heap::paths::shared_of`.
-  `published_line` assumes
-  the feature line built: since upstream #110 the line is not written
-  by `init` but by `api::build_line` (trusted, the writer of `FEATURES`
-  and `FEATURE_LINE` after `READY`), at its first request
-  (`api::line_ready`, verified, which runs it only on winning
-  `LINE_STATE`'s exchange from `LINE_UNBUILT` and publishes
-  `LINE_READY` after it); its premise is that its caller observed
-  `LINE_READY` (the exchange and the state carry no ghost state).
+  The feature line (since upstream #110 written not by `init` but at
+  its first request) has its own once-cell invariant (`api::LinePred`,
+  ONCECELL): `init` makes it with `LINE_STATE`'s permission
+  (`api::LinePerm`, from `api::axiom_statics`, through the wrappers
+  `line_load`, `line_compare_exchange` and `line_store`) and the
+  permissions to `FEATURES` and `FEATURE_LINE`, and publishes it with
+  `STATE` (`api::Published::line`); a request reaches it through
+  `axiom_published`, from the `ready()` in its `shared()`'s
+  `Shared::wf`. `api::line_ready` (verified) hands the permissions to
+  the winner of `LINE_STATE`'s exchange from `LINE_UNBUILT`, which
+  builds the line through them (`api::build_line`, verified) and
+  freezes them into the invariant at its release store of
+  `LINE_READY`; a request that loads `LINE_READY` gets the frozen
+  permissions and reads the line through them (`api::published_line`,
+  verified). The deferred cgroup record (`sys::cgroup::Deferred`) has
+  the same protocol over its phase (`sys::cgroup::PhasePred`, through
+  `vspec/byte.rs`) and its cell (a vstd `PCell`): `Deferred::get`
+  reads the record through the permission frozen at `DONE`. Each
+  cell's fork-child reset puts back the permission a vanished thread
+  of the parent held (`api::axiom_line_orphaned`,
+  `sys::cgroup::axiom_cell_orphaned`), with a named residue: a signal
+  handler that forks while its own thread builds (discovers) leaves
+  the permission twice in the child.
 - One more trusted source of `Shared::wf`:
   `purge::background::shared_arg` (`purge/background.rs:363`, the
   background thread's argument, `external_body`). (`heap::paths::shared_of`,
@@ -119,16 +134,17 @@ add.
   `state_claim` and `state_publish`), every step's `Once` token while
   `STATE` is `UNINIT`, and from `READY` on the permissions `init` froze
   (`api::Published`: the built `Shared`, from `axiom_shared_built`'s
-  join, and the class table, whose value is `layout::class_table()`
+  join, the class table, whose value is `layout::class_table()`
   since P7, by the definitional `layout::axiom_class_table` on the
-  frozen permission; since upstream #110 not the feature
+  frozen permission, and the line's invariant; since upstream #110 not the feature
   statics, which the feature line's first request completes and
-  writes, `api::build_line`). `api::claim_init`
+  writes through the line's invariant, `api::LinePred`). `api::claim_init`
   (verified) is `init_slow`'s compare-exchange from `UNINIT`, and takes
   the tokens out of the invariant for its winner, which `init` passes
   on: `Step::Statics` to `api::axiom_statics` (the class table and
-  feature statics' storage; `init` writes `FEATURES` through its
-  permission and leaves the line's unused), the rest to `Shared::init`.
+  feature statics' storage and `LINE_STATE`'s permission; `init` writes `FEATURES` through its
+  permission and puts it, with the line's and `LINE_STATE`'s, into the line's
+  invariant), the rest to `Shared::init`.
   `Shared::begin`, `table::axiom_slot_loc`, `table::axiom_fresh_words`
   (one token per class each), `huge::axiom_run_locs` and
   `axiom_statics` each use up their step's token, so Verus checks that
@@ -225,16 +241,21 @@ the call does not return (theorem 3, which is not voided for it).
   through the permission frozen at `READY` at the pointer
   `api::shared_ptr`, `api::shared_base` or `heap::paths::shared_ptr`
   gives, is `pac_mode()`.
-- `Shared::free_flags` (`heap/shared.rs`, `external_body`, since upstream
-  #78; `requires self.wf()`): the `free` fast path's dispatch byte, one
-  `Relaxed` load, is `push_flags` up to the `FREE_ROUTE` bit (`r &
-  !FREE_ROUTE == flags() & !FREE_ROUTE`). `init` writes both bytes from
-  one value (`put_flags`, verified), and the only other write is
-  `set_multi_arena`'s `fetch_or(FREE_ROUTE)`; read off the code, not
-  proved (an atomic invariant on the byte would prove it in Verus). The
-  contract holds of some value whatever `push_flags` is (it does of
-  `push_flags`). With `Shared::wf` the byte's `PUSH_PAC` bit is
-  `pac_mode()` and its `PUSH_ZERO` bit `flags()`'s
+- The `free` fast path's dispatch byte (`vspec/flags.rs`, since package
+  FFLAGS; `Shared::free_flags`, `requires self.wf()`, is verified over
+  it): a `RouteByte`, whose `AtomicU8` is private to `vspec/flags.rs`,
+  so the wrappers `new`, `load` and `fetch_or` (each `external_body`,
+  discharged by loom, `verus/seams/vspec-flags-load.md`) are its only
+  operations; they keep the byte's bits other than `ROUTE`
+  (`FREE_ROUTE`) at the value `new` made (`flags::fixed`), which
+  `Shared::wf` ties to `push_flags`: `init` makes the byte from
+  `push_flags` (`put_flags`), and the only other write is
+  `set_multi_arena`'s `fetch_or(FREE_ROUTE)`, whose `requires` Verus
+  checks. So one `Relaxed` load is `push_flags` up to the `FREE_ROUTE`
+  bit (`r & !FREE_ROUTE == flags() & !FREE_ROUTE`), for a reader that
+  happens after `init` (what the `api::ready()` in `Shared::wf` stands
+  for, under "One process, one `Shared`" above). With `Shared::wf` the byte's `PUSH_PAC` bit
+  is `pac_mode()` and its `PUSH_ZERO` bit `flags()`'s
   (`Shared::lemma_free_flags`), which is what `heap_from_slot` and the
   push need.
 - TLS asm: `sys::tls::get` (`sys/tls.rs:125`), `get_tp` (aarch64,
@@ -362,9 +383,10 @@ permission dropped (`Live::into_run`).
 specifications of `core`.
 
 **Memory model.** Sequential consistency. Atomic loads return any
-value (vstd), except `Shared::free_flags`, whose contract (above), of a
-well-formed `Shared`, covers every value a reader of the published one
-can load once it observed `READY`; the three bitmap word writers
+value (vstd), except the `free` path's dispatch byte (`vspec/flags.rs`,
+above), whose `load` covers every value the one `RouteByte`, the
+published `Shared`'s, holds for a reader that observed `READY`; the
+three bitmap word writers
 (`vspec/word.rs:59`, `:76`, `:92`) are one atomic step each and ignore
 the ordering, as is the one word load that returns its value
 (`vspec::word::load`, theorem 7). See `verus/WEAKMEM.md`.
@@ -1449,7 +1471,8 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   verified `class::load_mirror`), `layout::regions::class_entry`
   (an empty `asm!`), `addr_to_ptr`, `api::shared_ptr` and
   `shared_unchecked`; since upstream #78 also `Shared::free_flags` (a
-  `Relaxed` load) and `sys::opaque` (an empty `asm!` on aarch64), and
+  `Relaxed` load; since package FFLAGS `vspec::flags::load`) and
+  `sys::opaque` (an empty `asm!` on aarch64), and
   since #77 `api::shared_base` and `class::table::word_index` (each an
   empty `asm!` on aarch64; since ASMHINT trusted on aarch64 only, the
   x86_64 items verified, `shared_base` over `api::shared_storage_ptr`,
@@ -1712,7 +1735,8 @@ trusted `load_owner` (theorem 14), which declares the mask. The release
 library's machine code is identical to the previous commit's on x86_64.
 Upstream #78 replaced the `multi_arena` load with the `FREE_ROUTE` bit
 of the `free_flags` byte the push dispatch loads anyway
-(`Shared::free_flags`, trusted, `opens_invariants none`), so the
+(`Shared::free_flags`, `opens_invariants none`; trusted until package
+FFLAGS, now verified over `vspec::flags::load`), so the
 `vspec::atomic::load_bool` wrapper below had no caller left and is
 gone. From upstream #87 until #101 the class line's sized check spelled
 `slot_start(rel).is_some()` as a `match` (vstd's `Option::is_some` has
@@ -1740,7 +1764,8 @@ identically). The hot set's machine code is upstream's.
     `vspec::atom::load_usize_in` (the watermark's load), `class_entry`.
   - `pac::sign` and `auth` (asm; under `cfg(test)` a counter
     increment), `addr_to_ptr`.
-  - Since upstream #78: `Shared::free_flags` (one `Relaxed` load) and
+  - Since upstream #78: `Shared::free_flags` (one `Relaxed` load; since
+    package FFLAGS `vspec::flags::load`) and
     `sys::opaque` (an empty `asm!`, or the identity off aarch64).
   - Since upstream #77, in place of `sys::opaque` and
     `shared_unchecked`: `shared_base` and `word_index` (each an empty
@@ -2141,9 +2166,10 @@ premise below that nothing writes them in between.
   otherwise, so it declines whenever the byte has `PUSH_ZERO`
   (`lemma_free_route_bits`), and `free_fast_slot` ensures
   `zero_on_free(shared) ==> r is None`. That the byte's `PUSH_ZERO` bit
-  is `flags()`'s rests on `Shared::free_flags`' trusted contract (common
-  premises; `Shared::lemma_free_flags`). Since upstream #87
-  `free_fast_tail` makes the same dispatch in place of `free_fast_push`
+  is `flags()`'s rests on the dispatch byte's trusted wrappers
+  (`vspec/flags.rs`, common premises; `Shared::lemma_free_flags`).
+  Since upstream #87 `free_fast_tail` makes the same dispatch in place
+  of `free_fast_push`
   (each arm taking the heap from the slot value) and ensures the same.
 - `realloc`, `rallocx`, `dallocx`, explicit tcaches and the sized paths'
   slow halves all free through `heap::free`, `Heap::free` or (for
@@ -5371,7 +5397,7 @@ premises below say), and only `mallinfo`/`mallinfo2` and, since upstream
 - `challoc_features` (`api/mod.rs:321`) after `shared()`: since
   upstream #110 the feature line's build at the first request
   (`api::line_ready`: the per-size THP probe and `FeatureLine::build`,
-  through the trusted `build_line`, which requires only
+  through `build_line`, verified since ONCECELL, which requires only
   `may_syscall()`) or the wait for another thread's (termination not
   claimed), then the static line; never aborts.
 - `mallctl` and `mallctlbymib` after their `super::shared()`: `cstr`,
@@ -5573,12 +5599,11 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   results are discarded, so `EAGAIN` or `EINTR` loops) under
   `RawLock::lock`/`unlock`, `LockGuard::drop` and `deref`, the static
   projections and `shared_unchecked` (since upstream #77 `shared_base`
-  and `shared_deref`), `published_line`, since upstream #110
-  `build_line` (the per-size THP probe and `FeatureLine::build`, both
-  verified, and the two writes) and `Deferred::cell_ref` and
-  `cell_write` (a reference into, and a write of, the cgroup cell),
-  the `STATE`
+  and `shared_deref`), the `STATE`
   wrappers (`state_load`, `state_claim`, `state_publish`: one bare
+  atomic operation each), the `LINE_STATE` wrappers (`line_load`,
+  `line_compare_exchange`, `line_store`) and the deferred record's
+  phase wrappers (`vspec::byte::load`, `compare_exchange`, `store`: one bare
   atomic operation each), `ClassTable::table`, `class_entry`,
   the watermark's load `vspec::atom::load_usize_in` (the registry reader
   `arena_at`, `arena.rs:1264`, was retired by package TSLOT:
@@ -5987,7 +6012,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   `CountPerm` is the counter with its `id` (`count_id`), and `fetch_add`,
   `fetch_sub` (wrapping), `load` and, since the port of upstream #103,
   `compare_exchange` (the strong form: it fails only on a different
-  value, by C++20's semantics; S304, discharged with loom and those,
+  value, by C++20's semantics; S308, discharged with loom and those,
   `verus/seams/vspec-count-compare_exchange.md`) are one atomic operation
   on it, sequentially consistent in the model (the orderings, all
   `Relaxed`, are ignored, as for the bitmap words).
@@ -6050,7 +6075,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   is off by that ticket inside the trusted body only (the flush's proof
   uses no arena invariant).
 - `homed_ok`'s `rehome ==> bound` (since #103): a new thread heap is
-  counted, so it holds whatever `mark_rehome` (S123, RefinedRust:
+  counted, so it holds whatever `mark_rehome` (S126, RefinedRust:
   `true`, `verus/seams/heap-mark_rehome.md`) stored;
   an explicit cache, assumed `wf` (`heap_at`), rests on `init_fields`
   storing `false` (trusted) and on `create` being the one writer that
@@ -7872,9 +7897,9 @@ that no `use` names an abort sink outside `sys/` and `vspec/`.
   `shared_if_ready` and `free_before_init`, and `heap_for_thread` (which
   creates a heap, and may abort when that fails), come before the calls
   the witnesses make, and are not covered.
-- `abort_kernel` and `abort_pending` (`sys/abort.rs:189`, `:203`, S216,
-  S217, trusted): the relabels of `abort_fmt`'s capability, as
-  `abort_integrity`'s (S215); their Kani harnesses
+- `abort_kernel` and `abort_pending` (`sys/abort.rs:189`, `:203`, S213,
+  S214, trusted): the relabels of `abort_fmt`'s capability, as
+  `abort_integrity`'s (S212); their Kani harnesses
   (`abort_kernel_reaches_abort_fmt`, `abort_pending_reaches_abort_fmt`,
   `src/kani/abort.rs`) are written as `abort_integrity`'s, not yet run.
 - The trusted bodies on these paths abort only as their capability says

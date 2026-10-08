@@ -116,9 +116,7 @@ use crate::vspec::once;
 use crate::vspec::word::WordPerm;
 #[cfg(verus_only)]
 use crate::vspec::word::word_addr;
-#[cfg(verus_only)]
-use vstd::invariant::AtomicInvariant;
-use vstd::invariant::InvariantPredicate;
+use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 #[cfg(verus_only)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Map, Tracked, int, verus};
@@ -179,11 +177,12 @@ exec static FEATURES: Global<Features> = Global::new();
 /// The feature line for `challoc_features()` and `malloc_stats_print`,
 /// built at its first request ([`feature_line_ready`]), not at init.
 exec static FEATURE_LINE: Global<FeatureLine> = Global::new();
-/// [`FEATURE_LINE`]'s state: `LINE_UNBUILT`, `LINE_BUILDING`, `LINE_READY`.
+/// [`FEATURE_LINE`]'s state: `LINE_UNBUILT`, `LINE_BUILDING`, `LINE_READY`
+/// (its invariant: [`LinePred`]).
 exec static LINE_STATE: AtomicU8 = AtomicU8::new(LINE_UNBUILT);
-const LINE_UNBUILT: u8 = 0;
-const LINE_BUILDING: u8 = 1;
-const LINE_READY: u8 = 2;
+pub const LINE_UNBUILT: u8 = 0;
+pub const LINE_BUILDING: u8 = 1;
+pub const LINE_READY: u8 = 2;
 
 } // verus!
 
@@ -221,24 +220,30 @@ fn fork_slot() -> &'static AtomicU64 {
 /// is well formed) and the class table after
 /// [`layout::adopt_page_geometry`] (not the probed features, which the
 /// feature line's first request completes, nor the line, built then:
-/// [`feature_line_ready`]). `STATE`'s
+/// [`feature_line_ready`]); and the feature line's invariant
+/// ([`LinePred`]), which `init` makes with the permissions to those two
+/// statics. `STATE`'s
 /// invariant holds them from `READY` on ([`StatePred`]), so a thread
 /// that loads `READY` gets them ([`load_state`]); being `&'static`, they
 /// are shared by every reader, and nothing writes the statics through
 /// them again (the locks and atomics inside `Shared` change through
-/// `&Shared`, but nothing [`Shared::wf`] reads does).
+/// `&Shared`, but nothing [`Shared::wf`] reads does), except through the
+/// line's invariant, which hands the permissions to [`FEATURES`] and
+/// [`FEATURE_LINE`] to the line's one builder ([`claim_line`]).
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct Published {
     pub tracked shared: &'static PointsTo<Shared>,
     pub tracked classes: &'static PointsTo<[layout::Class; NCLASSES]>,
+    pub tracked line: &'static LineInv,
 }
 
 impl Published {
     /// Each permission is to its static and initialised; the `Shared` is
     /// the one built at its storage, as `Shared::init` built it
     /// ([`Shared::built`]); the class table is well formed
-    /// ([`layout::table_ok`]) and is [`layout::class_table`].
+    /// ([`layout::table_ok`]) and is [`layout::class_table`]; the line's
+    /// invariant is in [`line_ns`].
     pub open spec fn ok(&self) -> bool {
         &&& self.shared.ptr() == Shared::storage()
         &&& self.shared.is_init()
@@ -248,6 +253,7 @@ impl Published {
         &&& self.classes.is_init()
         &&& layout::table_ok(self.classes.value())
         &&& self.classes.value() == layout::class_table()
+        &&& self.line.namespace() == line_ns()
     }
 }
 
@@ -277,7 +283,7 @@ pub uninterp spec fn ready() -> bool;
 /// exists only once `init` has used up the linear permissions to the
 /// statics it covers (`api::axiom_statics` hands them out once, for the
 /// process's one-shot token), so no thread that can state `ready` holds
-/// one of those.
+/// one of those outside the line's invariant ([`Published::line`]).
 pub axiom fn axiom_ready(tracked p: &'static Published)
     requires
         p.ok(),
@@ -286,11 +292,18 @@ pub axiom fn axiom_ready(tracked p: &'static Published)
 ;
 
 /// Trusted: the frozen permissions, for a thread that knows the allocator
-/// is published ([`ready`]): a `&'static Published` like the one `init`
-/// froze. Another reference to frozen permissions is harmless: they only
-/// give shared references to statics nothing writes again ([`Published`]),
+/// is published ([`ready`]): a `&'static` reference to the `Published`
+/// `init` froze, the only one there is. Another reference to it is
+/// harmless: its permissions to `SHARED` and the class table only give
+/// shared references to statics nothing writes again ([`Published`]),
 /// and no linear permission to those statics exists once `ready` can be
-/// stated ([`axiom_ready`]). That the fact reaches a thread only after it,
+/// stated ([`axiom_ready`]). Its line invariant ([`Published::line`])
+/// does hold linear permissions (`LINE_STATE`'s, and the two statics'
+/// while the line is unbuilt), and a second `LineInv` in [`line_ns`]
+/// would duplicate them; none can exist, since a `LineInv` needs a
+/// [`LinePerm`], [`axiom_statics`] mints the only one, and `init` puts
+/// it in the invariant it publishes, so every reference this returns is
+/// to that one invariant. That the fact reaches a thread only after it,
 /// or a thread it happens after, saw `READY` is what [`ready`]'s producers
 /// ensure (see there), carried along in contracts.
 pub axiom fn axiom_published() -> (tracked r: &'static Published)
@@ -313,6 +326,100 @@ impl Seen {
     pub open spec fn ok(&self) -> bool {
         self.published matches Some(p) && p.ok()
     }
+}
+
+/// Ghost permission to `LINE_STATE`: its current
+/// [`value`](LinePerm::value). It is not `Copy`; [`axiom_statics`] mints
+/// the one permission, and `init` puts it in the line's invariant
+/// ([`LinePred`]).
+#[verifier::external_body]
+pub tracked struct LinePerm {
+    _no_copy: (),
+}
+
+impl LinePerm {
+    /// `LINE_STATE`'s value.
+    pub uninterp spec fn value(&self) -> u8;
+}
+
+/// The permissions to the two statics the feature line's build writes:
+/// [`FEATURES`], whose THP size table it completes, and
+/// [`FEATURE_LINE`].
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct LineCell {
+    pub tracked features: PointsTo<Features>,
+    pub tracked line: PointsTo<FeatureLine>,
+}
+
+impl LineCell {
+    /// The permissions are to the two statics, and the features are
+    /// initialised (`init` published them before `READY`): what the build
+    /// starts from.
+    pub open spec fn unbuilt(&self) -> bool {
+        &&& self.features.ptr() == features_storage()
+        &&& self.features.is_init()
+        &&& self.line.ptr() == line_storage()
+    }
+
+    /// ... and the line is built: what readers see.
+    pub open spec fn built(&self) -> bool {
+        &&& self.unbuilt()
+        &&& self.line.is_init()
+    }
+}
+
+/// What the line's invariant holds: `LINE_STATE`'s permission, the
+/// statics' permissions while the line is unbuilt, and those
+/// permissions, frozen, from `LINE_READY` on.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct LineVal {
+    pub tracked perm: LinePerm,
+    pub tracked cell: Option<LineCell>,
+    pub tracked frozen: Option<&'static LineCell>,
+}
+
+/// The feature line's invariant, the once-cell protocol of
+/// `LINE_STATE`: the state is `LINE_UNBUILT`, `LINE_BUILDING` or
+/// `LINE_READY`; while it is `LINE_UNBUILT` the invariant holds the
+/// permissions to [`FEATURES`] and [`FEATURE_LINE`] ([`LineCell::unbuilt`]),
+/// and from `LINE_READY` on those permissions frozen, the line built
+/// ([`LineCell::built`]). `init` makes it at `LINE_UNBUILT`, with the
+/// features published. The exchange from `LINE_UNBUILT` to
+/// `LINE_BUILDING` ([`claim_line`]) hands the permissions to its winner,
+/// the only writer of the two statics; the `LINE_READY` store
+/// ([`publish_line`]) puts them back frozen, after the build, for every
+/// reader ([`load_line`]); and the fork child's reset from
+/// `LINE_BUILDING` to `LINE_UNBUILT` ([`feature_line_fork_child`]) puts
+/// back the permissions [`axiom_line_orphaned`] hands it. Nothing else
+/// writes `LINE_STATE`, so `LINE_READY` is never left.
+// Ghost: named only by proof code.
+#[allow(dead_code)]
+pub struct LinePred;
+
+impl InvariantPredicate<(), LineVal> for LinePred {
+    open spec fn inv(k: (), v: LineVal) -> bool {
+        &&& v.perm.value() == LINE_UNBUILT || v.perm.value() == LINE_BUILDING || v.perm.value() == LINE_READY
+        &&& v.perm.value() == LINE_UNBUILT ==> (v.cell matches Some(c) && c.unbuilt())
+        &&& v.perm.value() == LINE_READY ==> (v.frozen matches Some(c) && c.built())
+    }
+}
+
+/// The namespace of the line's invariant.
+pub open spec fn line_ns() -> int {
+    0x6c69_6e65
+}
+
+/// The feature line's invariant.
+pub type LineInv = AtomicInvariant<(), LineVal, LinePred>;
+
+/// The line's frozen permissions a thread has seen, if any: what
+/// [`load_line`] hands back when it reads `LINE_READY`.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct LineSeen {
+    pub tracked frozen: Option<&'static LineCell>,
 }
 
 /// Ghost permission to `STATE`: its current [`value`](StatePerm::value).
@@ -444,6 +551,138 @@ fn load_state(Tracked(seen): Tracked<&mut Seen>) -> (s: u32)
         }
     });
     s
+}
+
+/// `LINE_STATE.load(ordering)`: the permission's value (it panics for a
+/// `Release` or `AcqRel` ordering). Trusted: a `core` atomic load, one
+/// atomic operation on `LINE_STATE`.
+#[inline(always)]
+#[verifier::external_body]
+#[verifier::atomic]
+fn line_load(ordering: Ordering, Tracked(perm): Tracked<&LinePerm>) -> (r: u8)
+    requires
+        !(ordering is Release),
+        !(ordering is AcqRel),
+    ensures
+        r == perm.value(),
+    opens_invariants none
+    no_unwind
+{
+    LINE_STATE.load(ordering)
+}
+
+/// `LINE_STATE.compare_exchange(current, new, success, failure)`: `Ok`
+/// with the previous value, `current`, when it held it and now holds
+/// `new`; otherwise `Err` with the value it holds, unchanged (the strong
+/// form never fails spuriously). It panics for a `Release` or `AcqRel`
+/// failure ordering. Trusted: a `core` compare-exchange, one atomic
+/// read-modify-write on `LINE_STATE`.
+#[inline(always)]
+#[verifier::external_body]
+#[verifier::atomic]
+fn line_compare_exchange(
+    current: u8,
+    new: u8,
+    success: Ordering,
+    failure: Ordering,
+    Tracked(perm): Tracked<&mut LinePerm>,
+) -> (r: Result<u8, u8>)
+    requires
+        !(failure is Release),
+        !(failure is AcqRel),
+    ensures
+        r matches Ok(prev) ==> prev == current && old(perm).value() == current && final(perm).value() == new,
+        r matches Err(prev) ==> prev == old(perm).value() && prev != current && final(perm).value() == prev,
+    opens_invariants none
+    no_unwind
+{
+    LINE_STATE.compare_exchange(current, new, success, failure)
+}
+
+/// `LINE_STATE.store(v, ordering)` (it panics for an `Acquire` or
+/// `AcqRel` ordering). Trusted: a `core` atomic store, one atomic
+/// operation on `LINE_STATE`.
+#[inline(always)]
+#[verifier::external_body]
+#[verifier::atomic]
+fn line_store(v: u8, ordering: Ordering, Tracked(perm): Tracked<&mut LinePerm>)
+    requires
+        !(ordering is Acquire),
+        !(ordering is AcqRel),
+    ensures
+        final(perm).value() == v,
+    opens_invariants none
+    no_unwind
+{
+    LINE_STATE.store(v, ordering)
+}
+
+/// An acquire load of `LINE_STATE`, with the line's frozen permissions
+/// when it reads `LINE_READY` ([`LinePred`]).
+#[inline(always)]
+fn load_line(Tracked(inv): Tracked<&'static LineInv>, Tracked(seen): Tracked<&mut LineSeen>) -> (s: u8)
+    requires
+        inv.namespace() == line_ns(),
+    ensures
+        s == LINE_READY ==> (final(seen).frozen matches Some(c) && c.built()),
+    opens_invariants [ line_ns() ]
+{
+    let s;
+    vstd::open_atomic_invariant!(inv => v => {
+        s = line_load(Ordering::Acquire, Tracked(&v.perm));
+        proof {
+            if s == LINE_READY {
+                seen.frozen = v.frozen;
+            }
+        }
+    });
+    s
+}
+
+/// `LINE_STATE`'s exchange from `LINE_UNBUILT` to `LINE_BUILDING`: the
+/// winner gets the permissions to the two statics, which the invariant
+/// holds while the line is unbuilt ([`LinePred`]).
+#[inline(always)]
+fn claim_line(Tracked(inv): Tracked<&'static LineInv>) -> (r: (Result<u8, u8>, Tracked<Option<LineCell>>))
+    requires
+        inv.namespace() == line_ns(),
+    ensures
+        r.0 is Ok ==> (r.1@ matches Some(c) && c.unbuilt()),
+    opens_invariants [ line_ns() ]
+{
+    let tracked mut cell = None;
+    let won;
+    vstd::open_atomic_invariant!(inv => v => {
+        won = line_compare_exchange(LINE_UNBUILT, LINE_BUILDING, Ordering::Acquire, Ordering::Acquire, Tracked(&mut v.perm));
+        proof {
+            if won is Ok {
+                cell = Some(v.cell.tracked_take());
+            }
+        }
+    });
+    (won, Tracked(cell))
+}
+
+/// The `LINE_READY` store, `Release`, with the built line's permissions
+/// frozen into the invariant for every reader ([`LinePred`]); the frozen
+/// permissions.
+#[inline(always)]
+fn publish_line(Tracked(inv): Tracked<&'static LineInv>, Tracked(cell): Tracked<LineCell>) -> (r: Tracked<&'static LineCell>)
+    requires
+        inv.namespace() == line_ns(),
+        cell.built(),
+    ensures
+        r@.built(),
+    opens_invariants [ line_ns() ]
+{
+    let tracked frozen = vstd::modes::tracked_static_ref(cell);
+    vstd::open_atomic_invariant!(inv => v => {
+        line_store(LINE_READY, Ordering::Release, Tracked(&mut v.perm));
+        proof {
+            v.frozen = Some(frozen);
+        }
+    });
+    Tracked(frozen)
 }
 
 /// `SHARED` as a reference, through `published`, the permissions frozen
@@ -597,59 +836,39 @@ pub unsafe fn shared_deref(p: *const Shared) -> (r: &'static Shared)
     r
 }
 
-/// The feature line, without the readiness check.
-///
-/// # Safety
-/// The calling thread must itself have observed `LINE_READY` earlier
-/// (its [`feature_line_ready`] returned).
-///
-/// Trusted: that the caller observed `LINE_READY`, so that the line is
-/// initialised: [`build_line`] wrote it before the release store of
-/// `LINE_READY`, and nothing writes it again (a forked child rebuilds a
-/// line only another thread was building, [`feature_line_fork_child`];
-/// if the forking thread itself was building it, from a signal handler
-/// that forked, the child's own build and the interrupted one, resumed
-/// when the handler returns, both write the same bytes, one after the
-/// other on that thread).
-/// Its callers learn it from [`feature_line_ready`], which carries no
-/// ghost state.
-#[verifier::external_body]
+/// The feature line, through `line`, its permissions frozen at
+/// `LINE_READY` ([`feature_line_ready`] hands them to a thread whose
+/// request returned): the line [`build_line`] wrote before the release
+/// store of `LINE_READY`.
 #[inline(always)]
-unsafe fn published_line() -> &'static FeatureLine
+fn published_line(Tracked(line): Tracked<&'static LineCell>) -> &'static FeatureLine
+    requires
+        line.built(),
     opens_invariants none
 {
-    // SAFETY: guaranteed by the caller.
-    unsafe { &*line_ptr() }
+    vstd::raw_ptr::ptr_ref(line_ptr(), Tracked(&line.line))
 }
 
 /// Complete the probed features' THP size table if init skipped it and
 /// build the feature line into [`FEATURE_LINE`] (`feature_line_ready`'s
-/// build).
-///
-/// # Safety
-/// `READY` observed (so [`FEATURES`] is initialised), and the calling
-/// thread won `LINE_STATE`'s exchange from `LINE_UNBUILT`, so it is the
-/// only writer of the two statics, and readers wait for `LINE_READY`.
-///
-/// Trusted: the premise, which no verified caller can show (the
-/// exchange's result carries no ghost state, and `STATE`'s published
-/// permissions stop at the `Shared` and the class table, [`Published`]);
-/// the writes are the probe's result and [`FeatureLine::build`]'s.
-#[verifier::external_body]
+/// build), through `line`, the permissions to the two statics that
+/// `LINE_STATE`'s exchange from `LINE_UNBUILT` handed its winner
+/// ([`claim_line`]): the only writer of the two statics, while readers
+/// wait for `LINE_READY`.
 #[inline(always)]
-unsafe fn build_line()
+fn build_line(Tracked(line): Tracked<&mut LineCell>)
     requires
         crate::sys::may_syscall(),
+        old(line).unbuilt(),
+    ensures
+        final(line).built(),
 {
-    // SAFETY: guaranteed by the caller.
-    unsafe {
-        let f = (*FEATURES.0.get()).assume_init_mut();
-        if !f.thp_sizes {
-            f.thp = crate::sys::thp_host::probe(f.page_size);
-            f.thp_sizes = true;
-        }
-        (*FEATURE_LINE.0.get()).write(FeatureLine::build(f));
+    let f = vstd::raw_ptr::ptr_mut_ref(features_ptr(), Tracked(&mut line.features));
+    if !f.thp_sizes {
+        f.thp = crate::sys::thp_host::probe(f.page_size);
+        f.thp_sizes = true;
     }
+    vstd::raw_ptr::ptr_mut_write(line_ptr(), Tracked(&mut line.line), FeatureLine::build(f));
 }
 
 } // verus!
@@ -673,37 +892,59 @@ verus! {
 /// never reads them (#29). Initialises the allocator if needed. Does not
 /// allocate. Like `malloc`, not async-signal-safe: a signal handler that
 /// asks for the line while its own thread is building it waits forever.
-fn feature_line_ready()
+/// Hands back the line's permissions, frozen at `LINE_READY`
+/// ([`LinePred`]).
+fn feature_line_ready() -> (r: Tracked<&'static LineCell>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+    ensures
+        r@.built(),
 {
-    let _ = shared();
-    line_ready();
+    // Read only by the proof: its `wf` gives `ready()`.
+    let _shared = shared();
+    let tracked published;
+    proof {
+        _shared.lemma_wf_ready();
+        published = axiom_published();
+    }
+    line_ready(Tracked(published))
 }
 
-/// [`feature_line_ready`] after its `shared()`: build the line, or wait
-/// for the thread building it (termination is not claimed: the wait ends
-/// when the other thread's build does).
+/// [`feature_line_ready`] after its `shared()`, whose published
+/// permissions (`published`) have the line's invariant: build the line,
+/// or wait for the thread building it (termination is not claimed: the
+/// wait ends when the other thread's build does). Hands back the line's
+/// permissions, frozen at `LINE_READY`.
 #[inline(always)]
 #[verifier::exec_allows_no_decreases_clause]
-fn line_ready()
+fn line_ready(Tracked(published): Tracked<&'static Published>) -> (r: Tracked<&'static LineCell>)
     requires
         crate::sys::may_syscall(),
+        published.ok(),
+    ensures
+        r@.built(),
 {
-    if LINE_STATE.load(Ordering::Acquire) == LINE_READY {
-        return;
+    let tracked inv = published.line;
+    let tracked mut seen = LineSeen { frozen: None };
+    if load_line(Tracked(inv), Tracked(&mut seen)) == LINE_READY {
+        return Tracked(seen.frozen.tracked_unwrap());
     }
-    if LINE_STATE.compare_exchange(LINE_UNBUILT, LINE_BUILDING, Ordering::Acquire, Ordering::Acquire).is_ok() {
-        // SAFETY: `READY` observed; this thread won the exchange, so it is
-        // the only writer, and readers wait for `LINE_READY`.
-        unsafe { build_line() };
-        LINE_STATE.store(LINE_READY, Ordering::Release);
-        return;
+    let (won, Tracked(cell)) = claim_line(Tracked(inv));
+    if won.is_ok() {
+        // This thread won the exchange, so it holds the permissions to
+        // the two statics, and readers wait for `LINE_READY`.
+        let tracked mut cell = cell.tracked_unwrap();
+        build_line(Tracked(&mut cell));
+        return publish_line(Tracked(inv), Tracked(cell));
     }
-    while LINE_STATE.load(Ordering::Acquire) != LINE_READY {
+    while load_line(Tracked(inv), Tracked(&mut seen)) != LINE_READY
+        invariant
+            inv.namespace() == line_ns(),
+    {
         core::hint::spin_loop();
     }
+    Tracked(seen.frozen.tracked_unwrap())
 }
 
 /// The feature line (`Features`'s `Display`, built at its first request).
@@ -713,9 +954,8 @@ pub fn feature_line() -> &'static str
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
 {
-    feature_line_ready();
-    // SAFETY: `LINE_READY` observed.
-    unsafe { published_line() }.as_str()
+    let line = feature_line_ready();
+    published_line(line).as_str()
 }
 
 /// `challoc_features()`: the feature report as one NUL-terminated line of
@@ -730,9 +970,8 @@ pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
         crate::sys::grant_syscalls();
         crate::sys::grant_aborts();
     }
-    feature_line_ready();
-    // SAFETY: `LINE_READY` observed.
-    unsafe { published_line() }.as_ptr()
+    let line = feature_line_ready();
+    published_line(line).as_ptr()
 }
 
 /// Theorem "Read-only APIs never abort" (`verus/THEOREMS.md`): the
@@ -797,9 +1036,13 @@ fn theorem_read_only_never_aborts(
     let _ = crate::stats::fig_mul(all.pdirty, all.large_runs);
     // `challoc_features` after its `shared()`: the line's build on the
     // first request, or the wait for it.
-    line_ready();
-    // SAFETY: `line_ready` returned, so `LINE_READY` has been observed.
-    let _ = unsafe { published_line() }.as_ptr();
+    let tracked published;
+    proof {
+        shared.lemma_wf_ready();
+        published = axiom_published();
+    }
+    let line = line_ready(Tracked(published));
+    let _ = published_line(line).as_ptr();
     // `experimental.utilization.query` and `batch_query`, whole, and the
     // rest of `mallctl`.
     let _ = mallctl::utilization(shared, p as *const core::ffi::c_void, verbose);
@@ -960,22 +1203,32 @@ fn line_ptr() -> (p: *mut FeatureLine)
 
 /// The permissions to the storage of the statics `init` writes itself,
 /// for `once`, the process's token of this step: [`FEATURES`] and
-/// [`FEATURE_LINE`], uninitialised, and the class table
+/// [`FEATURE_LINE`], uninitialised, the class table
 /// ([`layout::CLASSES`]), holding its initial value,
 /// [`layout::BASE_CLASSES`] (`ClassTable::new`), whose entries are well
-/// formed and sized ([`layout::table_ok`]). Trusted: the statics'
+/// formed and sized ([`layout::table_ok`]), and `LINE_STATE`'s
+/// permission, at `LINE_UNBUILT`. Trusted: the statics'
 /// storage and initial values, which nothing but `init`
 /// ([`publish_features`], [`layout::adopt_page_geometry`]) and, after
-/// `READY`, the feature line's build ([`build_line`], trusted itself:
-/// `FEATURES`' THP table and `FEATURE_LINE`) write (`init` leaves the
-/// `FeatureLine` permission unused), and that
+/// `READY`, the feature line's build ([`build_line`]: `FEATURES`' THP
+/// table and `FEATURE_LINE`, through the permissions the line's
+/// invariant hands it) write, and that
 /// `BASE_CLASSES` meets `table_ok`, which is `build_classes`'s verified
-/// postcondition but which a spec cannot read off the `exec const`; the
-/// token is used up, so the permissions are handed out once.
+/// postcondition but which a spec cannot read off the `exec const`;
+/// `LINE_STATE`'s initial value (the static's initialiser) and that
+/// every write of it is [`line_compare_exchange`]'s or [`line_store`]'s,
+/// inside the line's invariant, which `init` makes with this
+/// permission ([`LinePred`]; `verus/loom/run.sh` checks that
+/// `LINE_STATE` has those two writes), and that verified code learns
+/// its value only from them and [`line_load`]; nothing writes it
+/// before `init` makes that invariant (the line's requests first return
+/// from `shared`, and the fork handlers are registered at `init`'s end);
+/// the token is used up, so the permissions are handed out once.
 axiom fn axiom_statics(tracked once: once::Once) -> (tracked r: (
     PointsTo<Features>,
     PointsTo<FeatureLine>,
     PointsTo<[layout::Class; NCLASSES]>,
+    LinePerm,
 ))
     requires
         once.step() == once::Step::Statics,
@@ -987,6 +1240,7 @@ axiom fn axiom_statics(tracked once: once::Once) -> (tracked r: (
         r.2.ptr() == layout::classes_storage(),
         r.2.is_init(),
         layout::table_ok(r.2.value()),
+        r.3.value() == LINE_UNBUILT,
 ;
 
 /// The published features: `FEATURES`, through the permission to its
@@ -1045,10 +1299,12 @@ fn register_fork_handlers()
 /// `reserve_owning` hands over; `init_slow` runs it once, before it
 /// publishes `READY`, with the one-shot tokens its winning exchange got
 /// ([`claim_init`]): one for the statics it writes here, the class table
-/// and the features ([`axiom_statics`]; the feature line's permission is
-/// unused, the line waits for its first request, [`feature_line_ready`]),
+/// and the features ([`axiom_statics`]; the feature line's permission and
+/// `LINE_STATE`'s go into the line's invariant with the features', the
+/// line waits for its first request, [`feature_line_ready`]),
 /// and the rest for `Shared::init`, which uses them up. It hands back the
-/// permissions to the `Shared` and the class table, frozen
+/// permissions to the `Shared` and the class table, frozen, and the
+/// line's invariant
 /// ([`Published`]).
 fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tracked<&mut Seen>)
     requires
@@ -1066,7 +1322,7 @@ fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tra
             assert(once::holds(steps0, s));
         }
     }
-    let tracked (mut feats, _line, mut classes) = axiom_statics(statics_once);
+    let tracked (mut feats, line, mut classes, line_state) = axiom_statics(statics_once);
     // The slab geometry of the classes whose table slab is below the page
     // (design 3, page-sized slabs): written once here, before any other
     // thread can see the allocator, never again.
@@ -1123,11 +1379,16 @@ fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tra
         }
         publish_features(features, Tracked(&mut feats));
         proof {
+            // The line's invariant, at `LINE_UNBUILT` with the published
+            // features and the line's storage, for its first request.
+            let tracked cell = LineCell { features: feats, line };
+            let tracked line_inv = LineInv::new((), LineVal { perm: line_state, cell: Some(cell), frozen: None }, line_ns());
             let tracked classes = vstd::modes::tracked_static_ref(classes);
             layout::axiom_class_table(classes);
             let tracked p = Published {
                 shared: shared_perm,
                 classes,
+                line: vstd::modes::tracked_static_ref(line_inv),
             };
             seen.published = Some(vstd::modes::tracked_static_ref(p));
         }
@@ -1967,8 +2228,14 @@ extern "C" fn fork_child() {
     }
     let tracked mut state = axiom_fork_resumed_state();
     purge::background::fork_child(Tracked(&mut state));
-    shared().cgroup_fork_child();
-    feature_line_fork_child();
+    let s = shared();
+    s.cgroup_fork_child();
+    let tracked published;
+    proof {
+        s.lemma_wf_ready();
+        published = axiom_published();
+    }
+    feature_line_fork_child(Tracked(published));
     fork_release(Tracked(state));
     // The dirty bytes this child inherited, the lazy start's baseline: read
     // after the release (the sum takes the class and huge locks), while
@@ -1984,13 +2251,71 @@ extern "C" fn fork_child() {
 
 /// The child of a `fork` has only the forking thread: a feature line
 /// another thread was building is not coming, so the child's first
-/// request builds it again rather than waiting forever. (If the forking
-/// thread itself was building it, from a signal handler that forked, it
-/// finishes when the handler returns; a second build in between writes
-/// the same bytes.)
-fn feature_line_fork_child() {
-    let _ = LINE_STATE.compare_exchange(LINE_BUILDING, LINE_UNBUILT, Ordering::Relaxed, Ordering::Relaxed);
+/// request builds it again rather than waiting forever. The reset puts
+/// back the permissions to the two statics, which that thread held
+/// ([`axiom_line_orphaned`]). (If the forking thread itself was building
+/// it, from a signal handler that forked, it finishes when the handler
+/// returns; a second build in between writes the same bytes when the
+/// THP files read the same both times, and can race with it if the child
+/// has started another thread: the residue that axiom states.)
+fn feature_line_fork_child(Tracked(published): Tracked<&'static Published>)
+    requires
+        published.ok(),
+{
+    let tracked inv = published.line;
+    vstd::open_atomic_invariant!(inv => v => {
+        let ghost before = v.perm;
+        let _reset = line_compare_exchange(LINE_BUILDING, LINE_UNBUILT, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut v.perm));
+        proof {
+            if _reset is Ok {
+                v.cell = Some(axiom_line_orphaned(before, &v.perm));
+            }
+        }
+    });
 }
+
+/// Premise (the fork child's orphaned line): in the child of a `fork`,
+/// a line whose state the child's reset found `LINE_BUILDING` (`before`,
+/// `LINE_STATE`'s permission just before the reset, and `perm`, just
+/// after it, at `LINE_UNBUILT`) was being built by a thread of the
+/// parent, which holds the permissions to [`FEATURES`] and
+/// [`FEATURE_LINE`] between its winning exchange and its `LINE_READY`
+/// store ([`claim_line`], [`publish_line`]), and they satisfy
+/// [`LineCell::unbuilt`] throughout (the build writes the features
+/// through `ptr_mut_ref`, which keeps them initialised). The child has
+/// only the forking thread, so when the builder was another thread, no
+/// thread of the child holds those permissions, and the reset takes
+/// them. Called only by [`feature_line_fork_child`], right after its
+/// successful reset, which only the child's fork handler runs
+/// ([`fork_child`]; the test `fork_child_resets_are_child_only` checks
+/// the call sites).
+///
+/// The residue this does not cover: when the builder was the forking
+/// thread itself (a signal handler that forked while its thread was
+/// building the line, api/mod.rs's `line_ready`), the permissions exist
+/// twice in the child, the reset's and the interrupted build's. The
+/// child's own request may then build the line and publish
+/// `LINE_READY`, and the interrupted build, resumed when the handler
+/// returns, completes the features' THP table and writes the line a
+/// second time and stores `LINE_READY` again: a line a reader of the
+/// first `LINE_READY` may hold a reference into is overwritten, with the
+/// same bytes when the THP files read the same both times. The two
+/// builds run one after the other when both are the forking thread's;
+/// if the child has started another thread by then (the handler
+/// allocates and starts the lazy background thread, say) and that thread
+/// requests the line, they can run concurrently, a data race on the two
+/// statics. And the child's copy of `FEATURES` may hold a half-done
+/// update of the THP table (`thp` written, `thp_sizes` not, or the
+/// reverse: plain stores the compiler may reorder), so the child's build
+/// may skip the probe and print a mixed table; that was so before this
+/// axiom, which only names it.
+axiom fn axiom_line_orphaned(before: LinePerm, tracked perm: &LinePerm) -> (tracked c: LineCell)
+    requires
+        before.value() == LINE_BUILDING,
+        perm.value() == LINE_UNBUILT,
+    ensures
+        c.unbuilt(),
+;
 
 } // verus!
 
@@ -2417,6 +2742,90 @@ mod tests {
         assert_eq!(calls(&axiom), 1, "calls of the resume axiom");
         assert_eq!(calls(&resumed), 1, "calls of resume::resumed");
         assert_eq!(calls(&release), 2, "calls of fork_release");
+    }
+
+    /// The once-cells' fork-child resets, which take the permissions a
+    /// thread of the parent held (`axiom_line_orphaned`,
+    /// `sys::cgroup::axiom_cell_orphaned`), run only in the child's fork
+    /// handler: across every non-test source file, each axiom has one
+    /// call, in its reset, each reset one caller, `fork_child` (through
+    /// `Shared::cgroup_fork_child` for the cgroup record), and
+    /// `fork_child` is named only where `pthread_atfork` registers it.
+    #[test]
+    fn fork_child_resets_are_child_only() {
+        use std::string::ToString;
+        /// Every `.rs` file under `dir` but the loom and Kani trees, as
+        /// (path, text before its first `#[cfg(test)]` test module).
+        fn sources(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+            let mut entries: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
+            entries.sort();
+            for path in entries {
+                let name = path.to_str().unwrap().to_string();
+                if path.is_dir() {
+                    if !name.ends_with("loom_tests") && !name.ends_with("kani") {
+                        sources(&path, out);
+                    }
+                } else if name.ends_with(".rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let cut = ["tests", "linux_tests", "pure_tests"]
+                        .iter()
+                        .filter_map(|m| text.find(&std::format!("\n#[cfg(test)]\nmod {m} {{")))
+                        .min()
+                        .unwrap_or(text.len());
+                    out.push((name, text[..cut].to_string()));
+                }
+            }
+        }
+        let mut files = Vec::new();
+        sources(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+            &mut files,
+        );
+        // Calls: lines naming `name` that are neither comments nor the
+        // item's own declaration.
+        let calls = |name: &str| -> Vec<String> {
+            files
+                .iter()
+                .flat_map(|(f, src)| {
+                    src.lines()
+                        .filter(|l| !l.trim_start().starts_with("//"))
+                        .filter(|l| l.contains(name) && !l.contains("fn "))
+                        .map(move |l| std::format!("{f}: {}", l.trim()))
+                })
+                .collect()
+        };
+        let api = include_str!("mod.rs");
+        let child = api
+            .split("extern \"C\" fn fork_child() {")
+            .nth(1)
+            .and_then(|s| s.split("\n}\n").next())
+            .unwrap_or("");
+        let one = |name: &str, file: &str| {
+            let found = calls(name);
+            assert_eq!(found.len(), 1, "calls of {name}: {found:?}");
+            assert!(
+                found[0].contains(file),
+                "{name} called outside {file}: {found:?}"
+            );
+        };
+        one("axiom_line_orphaned(", "src/api/mod.rs");
+        one("axiom_cell_orphaned(", "src/sys/cgroup.rs");
+        one("feature_line_fork_child(", "src/api/mod.rs");
+        one("cgroup_fork_child(", "src/api/mod.rs");
+        one(".fork_child()", "src/heap/shared.rs");
+        assert!(
+            child.contains("feature_line_fork_child(") && child.contains("cgroup_fork_child("),
+            "the resets are fork_child's"
+        );
+        let handler = calls("fork_child)");
+        assert!(
+            handler.len() == 1 && handler[0].contains("pthread_atfork"),
+            "fork_child is named outside its registration: {handler:?}"
+        );
+        assert!(files.len() > 50, "the source tree was not found");
     }
 
     /// The set of locks the handlers cover is exactly the set of locks in

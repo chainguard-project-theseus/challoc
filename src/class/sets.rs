@@ -709,6 +709,9 @@ verus! {
 
 impl Set {
     /// A set over `0..nslabs` on its own table.
+    // Own prover: the proof went past its rlimit in the module's shared
+    // Z3 context under quantum8 once unrelated spec items joined the crate.
+    #[verifier::spinoff_prover]
     pub(crate) fn new(meta: &Meta, page: usize, nslabs: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<Set>)
         requires
             crate::sys::may_syscall(),

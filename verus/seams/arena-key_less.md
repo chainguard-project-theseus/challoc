@@ -1,6 +1,6 @@
 # `key_less`
 
-Seam S59 of `verus/SEAMS.md`: src/arena.rs:1795. Kind: external_body. Category: core library.
+Seam S62 of `verus/SEAMS.md`: src/arena.rs:1795. Kind: external_body. Category: core library.
 Discharged by Kani.
 
 ## Contract

@@ -1,13 +1,16 @@
 # `axiom_shared_layout`
 
-Seam S151 of `verus/SEAMS.md`: src/heap/shared.rs:1086. Kind: axiom. Category: core library.
+Seam S154 of `verus/SEAMS.md`: src/heap/shared.rs:1087. Kind: axiom. Category: core library.
 Discharged by Kani.
 
 ## Contract
 
-As changed by the port of upstream #110 (ecf28b1d: the last field,
-`cgroup`, a `sys::cgroup::Deferred` in place of a `Cgroup`; Kani
-re-run below),
+As changed by package FFLAGS (the `free_flags` field's type, `AtomicU8`,
+wrapped as `vspec::flags::RouteByte`, `#[repr(transparent)]`: the same
+size, alignment and offset; the harness `shared_layout` names the new
+type; Kani re-run below), before that by the port of upstream #110
+(ecf28b1d: the last field, `cgroup`, a `sys::cgroup::Deferred` in place
+of a `Cgroup`; Kani re-run below),
 before that by the port of upstream #101 (`region_hi: usize` between
 `push_flags` and `regions`, at `S_REGION_HI`), before that by the port
 of upstream #87 (a first conjunct for the new
@@ -28,7 +31,7 @@ ae82d5b):
 axiom fn axiom_shared_layout()
     ensures
         field_fits::<Shared, [ClassLine; NCLASSES]>(S_LINES, S_FREE_FLAGS as int),
-        field_fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS as int),
+        field_fits::<Shared, RouteByte>(S_FREE_FLAGS, S_PUSH_FLAGS as int),
         field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGION_HI as int),
         field_fits::<Shared, usize>(S_REGION_HI, S_REGIONS as int),
         field_fits::<Shared, Regions>(S_REGIONS, S_TABLES as int),
@@ -162,6 +165,15 @@ right after the axiom (its `ensures`, its sum in `usize`), and it does
 not restate the offsets; and `Shared`'s own fields are all exec, the
 ghost fields (`Tracked` and `Ghost`) being inside its field types.
 A fresh-context subagent checked the revision against the code.
+
+Ported onto package FFLAGS, 2026-10-07: the contract above is the
+ledger's entry there (`free_flags` a `vspec::flags::RouteByte`), and
+the harness names the type. Re-run on the integration of ONCECELL and
+FFLAGS onto d161c911, 2026-10-07, with Kani 0.68.0 under both quanta:
+`heap::shared::kani_layout::shared_layout` passes (0 of 366 checks
+failed in each), which settles FFLAGS' pending re-run and covers
+ONCECELL's `Deferred` (its cell a vstd `PCell` since then) at
+`S_CGROUP`.
 
 ## Tests
 

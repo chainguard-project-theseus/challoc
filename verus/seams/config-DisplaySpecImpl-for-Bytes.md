@@ -1,6 +1,6 @@
 # `DisplaySpecImpl for Bytes<'_>`
 
-Seam S102 of `verus/SEAMS.md`: src/config.rs:1061. Kind: spec_impl. Category: core library.
+Seam S105 of `verus/SEAMS.md`: src/config.rs:1061. Kind: spec_impl. Category: core library.
 Discharged by Kani.
 
 ## Contract

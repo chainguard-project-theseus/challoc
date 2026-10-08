@@ -110,16 +110,41 @@ done
 #   directly: `store_usize_at`, from class/table.rs, is its one writer;
 #   and only heap/shared.rs (and the loom models) makes such a pointer
 #   (`usize_ptr`, into the never-moving `Shared`'s class lines);
-# - vspec/count.rs builds a `CountPerm` only in `new`, and vspec/atom.rs
-#   a `UsizePerm` only in `new_usize`, with one literal (the fields are
+# - vspec/count.rs builds a `CountPerm` only in `new`, vspec/atom.rs
+#   a `UsizePerm` only in `new_usize`, and vspec/byte.rs a `BytePerm`
+#   only in `new`, with one literal (the fields are
 #   private to those modules, so no other module can): one permission per
 #   atomic, minted with it. Each file names its type only in the struct
 #   and impl lines and that one literal (no `Self { .. }`, alias, rename,
 #   derive, trait impl or child module); and no `const` item initialiser
-#   in src names `count::new`, `new_usize` or `Policy::new` (each use of
+#   in src names `count::new`, `new_usize`, `Policy::new`, `byte::new`,
+#   `Deferred::now` or `Deferred::later` (each use of
 #   such an item would copy one atomic and its permission);
 # - `STATE` has two writes, `state_claim`'s compare-exchange and
-#   `state_publish`'s `READY` store;
+#   `state_publish`'s `READY` store; `LINE_STATE` has two writes outside
+#   api/mod.rs's tests, `line_compare_exchange`'s and `line_store`'s, and
+#   no other file names it (the loom models aside): the LINE_STATE
+#   wrappers' records (verus/seams/api-line_*.md);
+# - non-test sys/cgroup.rs writes a deferred record's phase (`.phase`)
+#   only through vspec/byte.rs's wrappers, and no other file (the loom
+#   models aside) calls them: the vspec/byte.rs wrappers' records;
+# - the `free` path's dispatch byte (`Shared::free_flags`, a
+#   `vspec::flags::RouteByte`, whose `AtomicU8` field is private to
+#   vspec/flags.rs, so rustc confines every atomic operation on it to the
+#   wrappers there): outside the loom models, the vspec/flags.rs wrappers
+#   are called exactly once each (`new`, `load`, `fetch_or`), each in
+#   heap/shared.rs on the line verus/loom/pins.txt pins (verified code,
+#   so `fetch_or` meets its `requires`); the one line that writes
+#   through the field's offset (`S_FREE_FLAGS`) writes the byte
+#   `flags::new` made; and no line names `free_flags` or `RouteByte` with
+#   `addr_of`, `&raw`, `as *mut`, `transmute`, `write_bytes`, `zeroed`,
+#   `MaybeUninit`, `mem::swap`/`replace`/`take` or `ptr::write`/
+#   `replace`/`swap`/`read`, assigns or `&mut`-borrows a `free_flags`
+#   field (the ghost `Tracked(&mut parts.free_flags)` aside), calls the
+#   wrappers by a shorter path or imports from vspec/flags.rs anything
+#   but `RouteByte` (heuristic: a write through a pointer or name these
+#   patterns do not see is caught only by review): the flag-byte
+#   wrappers' records (verus/seams/vspec-flags-*.md);
 # - non-test slab.rs names a descriptor's `state`, `shadow`, `arena` and
 #   `dirty_at` (private fields, so no other module can), on any receiver,
 #   only in a `Relaxed` load, a `DescPerm` spec body, or the eight write
@@ -191,7 +216,7 @@ bad=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t =
         -exec awk '/(new_usize|load_usize_in|store_usize|store_usize_at)\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' {} +
     find src -name '*.rs' ! -path 'src/loom_tests/*' ! -path src/vspec/atom.rs ! -path src/heap/shared.rs \
         -exec awk '/usize_ptr\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' {} +
-    for p in 'src/vspec/count.rs CountPerm new' 'src/vspec/atom.rs UsizePerm new_usize'; do
+    for p in 'src/vspec/count.rs CountPerm new' 'src/vspec/atom.rs UsizePerm new_usize' 'src/vspec/byte.rs BytePerm new'; do
         set -- $p
         awk -v ty="$2" -v fn="$3" 'function bad() { print FILENAME ":" FNR ": " $0 }
         /^[ \t]*\/\// { next }
@@ -211,14 +236,44 @@ bad=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t =
         END { if (n != 1) print FILENAME ": " (n + 0) " " ty " literals in " fn ", not 1" }' "$1"
     done
     find src -name '*.rs' -exec awk '/^[ \t]*(pub(\([a-z]+\))? )?const [A-Z_0-9]+[ \t]*:/ { c = 1 }
-        c && /(count::new|new_usize|Policy::new)\(/ { print FILENAME ":" FNR ": " $0 }
+        c && /(count::new|new_usize|Policy::new|byte::new|Deferred::now|Deferred::later)\(/ { print FILENAME ":" FNR ": " $0 }
         c && /;[ \t]*(\/\/.*)?$/ { c = 0 }' {} +
+    awk '/^#\[cfg\((test|kani)\)\]$/ { t = 1; next } t && /^(impl|mod) / { t = 2 } t == 2 && /^}/ { t = 0; next } t == 2 { next } { t = 0 }
+        /\.phase\.(fetch_[a-z]+|store|swap|compare_exchange|compare_exchange_weak)\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' src/sys/cgroup.rs
+    find src -name '*.rs' ! -path 'src/loom_tests/*' ! -path src/vspec/byte.rs ! -path src/sys/cgroup.rs \
+        -exec awk '/vspec::byte::|byte::(new|load|store|compare_exchange)\(/ && !/^[ \t]*\/\// { print FILENAME ":" FNR ": " $0 }' {} +
+    find src -name '*.rs' ! -path 'src/loom_tests/*' ! -path src/vspec/flags.rs -exec awk '/^[ \t]*\/\// { next }
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        /(free_flags|RouteByte)/ && /(addr_of|&raw |as \*mut|transmute|write_bytes|zeroed|MaybeUninit)/ { print FILENAME ":" FNR ": " $0; next }
+        /(free_flags|RouteByte)/ && /(mem::(swap|replace|take)|ptr::(write|replace|swap|read))/ { print FILENAME ":" FNR ": " $0; next }
+        /free_flags[ \t]*=([^=]|$)/ { print FILENAME ":" FNR ": " $0; next }
+        /&mut [^;]*free_flags/ && !/Tracked\(&mut parts\.free_flags\)/ { print FILENAME ":" FNR ": " $0; next }
+        /(^|[^A-Za-z0-9_:])flags::(new|load|fetch_or)\(/ { print FILENAME ":" FNR ": " $0; next }
+        /use [^;]*vspec::/ && /flags/ && x != "use crate::vspec::flags::RouteByte;" { print FILENAME ":" FNR ": " $0; next }
+        /S_FREE_FLAGS/ && /(write|copy|replace|swap)/ {
+            if (x != "ptr_mut_write(field_at(this, S_FREE_FLAGS), Tracked(pa), crate::vspec::flags::new(flags));") print FILENAME ":" FNR ": " $0
+            else nw++
+        }
+        /vspec::flags::(new|load|fetch_or)\(/ {
+            if (FILENAME != "src/heap/shared.rs") { print FILENAME ":" FNR ": " $0; next }
+            if (x == "ptr_mut_write(field_at(this, S_FREE_FLAGS), Tracked(pa), crate::vspec::flags::new(flags));") nn++
+            else if (x == "crate::vspec::flags::load(&self.free_flags, Ordering::Relaxed)") nl++
+            else if (x == "crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE, Ordering::Relaxed);") nf++
+            else print FILENAME ":" FNR ": " $0
+        }
+        END { if (nw != 1 || nn != 1 || nl != 1 || nf != 1) print "src/heap/shared.rs: flag-byte writes through S_FREE_FLAGS " (nw + 0) ", calls of new " (nn + 0) ", load " (nl + 0) ", fetch_or " (nf + 0) ", not 1 each" }' {} +
     )
 nstate=$(find src -name '*.rs' ! -path 'src/loom_tests/*' -exec grep -hE '(^|[^A-Za-z0-9_])STATE\.(store|swap|compare_exchange|fetch_)' {} + | wc -l | tr -d ' ')
 [ "$nstate" = 2 ] || bad="$bad
 src/api/mod.rs: $nstate writes of STATE, not 2 (records api-state_claim.md, api-state_load.md, api-state_publish.md)"
+nline=$(awk '/^#\[cfg\(test\)\]$/ { t = 1; next } t && /^mod tests/ { exit } { t = 0 }
+    /(^|[^A-Za-z0-9_])LINE_STATE\.(store|swap|compare_exchange|compare_exchange_weak|fetch_[a-z]+)\(/ && !/^[ \t]*\/\// { n++ }
+    END { print n + 0 }' src/api/mod.rs)
+nother=$(find src -name '*.rs' ! -path src/api/mod.rs ! -path 'src/loom_tests/*' -exec grep -lE 'LINE_STATE' {} + | wc -l | tr -d ' ')
+[ "$nline" = 2 ] && [ "$nother" = 0 ] || bad="$bad
+src/api/mod.rs: $nline writes of LINE_STATE outside the tests, not 2, or another file names it ($nother) (records api-line_compare_exchange.md, api-line_store.md)"
 if [ -n "$bad" ]; then
-	echo "loom: an atomic access outside what the records allow (vspec-word-WordPerm.md, the vspec/count.rs and vspec/atom.rs wrappers' records, api-state_*.md, slab-SlabDesc-*.md):" >&2
+	echo "loom: an atomic access outside what the records allow (vspec-word-WordPerm.md, the vspec/count.rs, vspec/atom.rs, vspec/byte.rs and vspec/flags.rs wrappers' records, api-state_*.md, the LINE_STATE wrappers' records, slab-SlabDesc-*.md):" >&2
 	echo "$bad" >&2
 	exit 1
 fi

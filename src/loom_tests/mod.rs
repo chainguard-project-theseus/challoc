@@ -4,18 +4,22 @@
 //! atomics and the crate is cut down to the modules whose real code is
 //! checked here (`lib.rs`): `lock` (P2, the futex replaced by the
 //! stand-in in `futex`), `bitmap` (P1, with `vspec::word`) and the
-//! `vspec::word`/`vspec::count`/`vspec::atom` wrappers that `free.rs`
+//! `vspec::word`/`vspec::count`/`vspec::atom`/`vspec::byte`/`vspec::flags` wrappers that `free.rs`
 //! (P5, with copies of the table steps), `watermark.rs` (the class
 //! table's watermark, with copies of the table steps), `count.rs` and
 //! `narenas.rs` (the arena bound counts and the arena count, with copies
-//! of the `Arenas` steps) and `position.rs` (the policy's position, with
-//! copies of the `Policy` steps) call. The
+//! of the `Arenas` steps), `position.rs` (the policy's position, with
+//! copies of the `Policy` steps), `flags.rs` (the `free` path's dispatch
+//! byte, with copies of the `Shared` steps) and `oncecell.rs` (the deferred cgroup
+//! record, with copies of the `Deferred` steps) call. The
 //! background wake-up (P3), the background thread's exit and its
 //! publication by `start`, the
-//! publication of `Shared` (P4) and the slab descriptors (`slab.rs`,
+//! publication of `Shared` (P4), the feature line (`oncecell.rs`) and the
+//! slab descriptors (`slab.rs`,
 //! whose module needs `layout`) live in statics built in `const` context,
 //! which loom cannot construct, or in modules this build leaves out, so
-//! `background.rs`, `exit.rs`, `publish.rs`, `init.rs` and `slab.rs` check copies that
+//! `background.rs`, `exit.rs`, `publish.rs`, `init.rs`, `oncecell.rs` and
+//! `slab.rs` check copies that
 //! cite the code they mirror.
 //!
 //! ```sh
@@ -46,6 +50,8 @@ mod dpor;
 #[cfg(test)]
 mod exit;
 #[cfg(test)]
+mod flags;
+#[cfg(test)]
 mod free;
 #[cfg(test)]
 pub(crate) mod futex;
@@ -55,6 +61,8 @@ mod init;
 mod lock;
 #[cfg(test)]
 mod narenas;
+#[cfg(test)]
+mod oncecell;
 #[cfg(test)]
 mod position;
 #[cfg(test)]

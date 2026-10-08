@@ -1,6 +1,6 @@
 # `S_PUSH_FLAGS`
 
-Seam S136 of `verus/SEAMS.md`: src/heap/shared.rs:1052. Kind: external_body const. Category: core library.
+Seam S139 of `verus/SEAMS.md`: src/heap/shared.rs:1053. Kind: external_body const. Category: core library.
 Discharged by Kani.
 
 ## Contract

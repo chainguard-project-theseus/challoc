@@ -29,9 +29,14 @@
 //! [`LIMIT_INTERVAL_NS`] so a `docker update --memory` is seen.
 
 use crate::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use core::cell::UnsafeCell;
+use crate::vspec::byte::BytePerm;
+#[cfg(verus_only)]
+use crate::vspec::byte::byte_id;
 use core::fmt;
 use core::mem::MaybeUninit;
+use vstd::cell::CellId;
+use vstd::cell::pcell::{PCell, PointsTo as PCellPerm};
+use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 
 #[cfg(verus_only)]
 use super::{after_line, find_byte, lemma_line_step, line_len, opt_view, parse_decimal_spec};
@@ -1354,44 +1359,170 @@ verus! {
 /// One thread discovers (a compare-exchange from `PENDING`) into the
 /// cell and publishes it with a release store of `DONE`; readers see the
 /// cell only after an acquire load of `DONE`, so the record's plain
-/// fields are never read while they are written.
+/// fields are never read while they are written. The phase's invariant
+/// ([`PhasePred`]) carries that protocol: it holds the cell's permission
+/// while the phase is `PENDING`, hands it to the exchange's winner, and
+/// holds it frozen from the `DONE` store on, for every reader.
 pub struct Deferred {
     phase: AtomicU8,
     /// Coarse-clock time of init.
     born: u64,
     /// Initialised once `phase` is `DONE`.
-    cell: UnsafeCell<MaybeUninit<Cgroup>>,
+    cell: PCell<MaybeUninit<Cgroup>>,
+    /// Ghost (no bytes): the phase's invariant ([`PhasePred`]), which
+    /// holds the phase's permission and the cell's.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    phase_inv: Tracked<PhaseInv>,
 }
 
-const PHASE_DONE: u8 = 0;
-const PHASE_PENDING: u8 = 1;
-const PHASE_RUNNING: u8 = 2;
+pub const PHASE_DONE: u8 = 0;
+pub const PHASE_PENDING: u8 = 1;
+pub const PHASE_RUNNING: u8 = 2;
+
+/// The permission to a [`Deferred`] record's cell.
+pub type CellPerm = PCellPerm<MaybeUninit<Cgroup>>;
+
+/// `p` is the permission to the cell with identity `id`, and the cell
+/// holds a record.
+pub open spec fn cell_done(p: CellPerm, id: CellId) -> bool {
+    &&& p.id() == id
+    &&& p.value().mem_contents() is Init
+}
+
+/// Namespace of the phase invariants ([`PhasePred`]).
+pub open spec fn phase_ns() -> int {
+    0x7068_6173
+}
+
+/// What a phase's invariant holds: the phase's permission, the cell's
+/// permission while the phase is `PENDING`, and the cell's permission,
+/// frozen, from `DONE` on.
+pub type PhaseVal = (BytePerm, Option<CellPerm>, Option<&'static CellPerm>);
+
+/// A phase's invariant, keyed by the phase's identity
+/// (`vspec::byte::byte_id`) and the cell's: the phase is `DONE`,
+/// `PENDING` or `RUNNING`; while it is `PENDING` the invariant holds the
+/// cell's permission, and from `DONE` on the cell's permission frozen,
+/// the cell holding a record. `Deferred::now` makes it at `DONE` with
+/// the record written, `Deferred::later` at `PENDING` with the cell
+/// empty. The exchange from `PENDING` to `RUNNING`
+/// ([`Deferred::claim`]) takes the cell's permission out, the `DONE`
+/// store ([`Deferred::publish`]) puts it back frozen, after the winner's
+/// write, and the fork child's reset from `RUNNING` to `PENDING`
+/// ([`Deferred::fork_child`]) puts back the permission that
+/// [`axiom_cell_orphaned`] hands it: nothing else writes the phase
+/// (`vspec::byte`), so `DONE` is never left.
+pub struct PhasePred;
+
+impl InvariantPredicate<(int, CellId), PhaseVal> for PhasePred {
+    open spec fn inv(k: (int, CellId), v: PhaseVal) -> bool {
+        &&& v.0.id() == k.0
+        &&& v.0.value() == PHASE_DONE || v.0.value() == PHASE_PENDING || v.0.value() == PHASE_RUNNING
+        &&& v.0.value() == PHASE_PENDING ==> (v.1 matches Some(p) && p.id() == k.1)
+        &&& v.0.value() == PHASE_DONE ==> (v.2 matches Some(p) && cell_done(*p, k.1))
+    }
+}
+
+/// The invariant of a deferred record's phase.
+pub type PhaseInv = AtomicInvariant<(int, CellId), PhaseVal, PhasePred>;
+
+/// The cell's frozen permission a thread has seen, if any: what
+/// [`Deferred::load_phase`] hands back when it reads `DONE`.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct CellSeen {
+    pub tracked frozen: Option<&'static CellPerm>,
+}
+
+/// The cell's permission a thread has claimed, if any: what
+/// [`Deferred::claim`] hands its winner.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct CellClaim {
+    pub tracked cell: Option<CellPerm>,
+}
+
+/// Premise (the fork child's orphaned cell): in the child of a `fork`,
+/// a record whose phase the child's reset found `RUNNING` (`before`, the
+/// phase's permission just before the reset, and `perm`, just after it,
+/// at `PENDING`) was being discovered by a thread of the parent, which
+/// holds the cell's permission between its winning exchange and its
+/// `DONE` store ([`Deferred::claim`], [`Deferred::publish`]). The child
+/// has only the forking thread, so when the discoverer was another
+/// thread, no thread of the child holds that permission, and the reset
+/// takes it. Called only by [`Deferred::fork_child`], right after its
+/// successful reset, which only the child's fork handler runs
+/// (`api::fork_child`, through `Shared::cgroup_fork_child`; the test
+/// `fork_child_resets_are_child_only` checks the call sites; this
+/// module's unit tests, unverified, also call it on records of their
+/// own).
+///
+/// The residue this does not cover: when the discoverer was the forking
+/// thread itself (a signal handler that forked while its thread was
+/// discovering), the permission exists twice in the child, the reset's
+/// and the interrupted discovery's. The child may then discover again
+/// and publish `DONE`, and the interrupted discovery, resumed when the
+/// handler returns, writes the cell a second time and stores `DONE`
+/// again: a record a reader of the first `DONE` may hold a reference
+/// into is overwritten with a second discovery of the same cgroup. The
+/// two discoveries run one after the other when both are the forking
+/// thread's; if the child has started another thread by then (the
+/// handler allocates and starts the lazy background thread, whose tick
+/// discovers, say), they can run concurrently, a data race on the cell.
+axiom fn axiom_cell_orphaned(d: &Deferred, before: BytePerm, tracked perm: &BytePerm) -> (tracked p: CellPerm)
+    requires
+        before.id() == byte_id(&d.phase),
+        before.value() == PHASE_RUNNING,
+        perm.id() == before.id(),
+        perm.value() == PHASE_PENDING,
+    ensures
+        p.id() == d.cell.id(),
+;
 
 impl Deferred {
+    /// The phase's invariant is the one over this record's phase and
+    /// cell, in [`phase_ns`].
+    #[verifier::type_invariant]
+    spec fn inv(self) -> bool {
+        &&& self.phase_inv@.constant() == (byte_id(&self.phase), self.cell.id())
+        &&& self.phase_inv@.namespace() == phase_ns()
+    }
+
     /// A record discovered now (`Cgroup::discover`).
     pub fn now(cg: Cgroup) -> Deferred {
+        let (phase, Tracked(pperm)) = crate::vspec::byte::new(PHASE_DONE);
+        let (cell, Tracked(cperm)) = PCell::new(MaybeUninit::new(cg));
+        let tracked frozen = vstd::modes::tracked_static_ref(cperm);
+        let tracked phase_inv = PhaseInv::new((byte_id(&phase), cell.id()), (pperm, None, Some(frozen)), phase_ns());
         Deferred {
-            phase: AtomicU8::new(PHASE_DONE),
+            phase,
             born: 0,
-            cell: UnsafeCell::new(MaybeUninit::new(cg)),
+            cell,
+            phase_inv: Tracked(phase_inv),
         }
     }
 
     /// A record to discover later; `born` is init's coarse-clock time.
     pub const fn later(born: u64) -> Deferred {
+        let (phase, Tracked(pperm)) = crate::vspec::byte::new(PHASE_PENDING);
+        let (cell, Tracked(cperm)) = PCell::new(MaybeUninit::uninit());
+        let tracked phase_inv = PhaseInv::new((byte_id(&phase), cell.id()), (pperm, Some(cperm), None), phase_ns());
         Deferred {
-            phase: AtomicU8::new(PHASE_PENDING),
+            phase,
             born,
-            cell: UnsafeCell::new(MaybeUninit::uninit()),
+            cell,
+            phase_inv: Tracked(phase_inv),
         }
     }
 
     /// The record once discovery has run, `None` before.
     #[inline]
     pub fn get(&self) -> Option<&Cgroup> {
-        if self.phase.load(Ordering::Acquire) == PHASE_DONE {
-            // SAFETY: `DONE` was published after the cell was written.
-            Some(unsafe { self.cell_ref() })
+        let tracked mut seen = CellSeen { frozen: None };
+        if self.load_phase(Tracked(&mut seen)) == PHASE_DONE {
+            // `DONE` was published after the cell was written: its
+            // permission, frozen then.
+            Some(self.cell_ref(Tracked(seen.frozen.tracked_unwrap())))
         } else {
             None
         }
@@ -1418,14 +1549,16 @@ impl Deferred {
             crate::sys::may_syscall(),
             forall|cg: &Cgroup| #[trigger] call_requires(found, (cg,)),
     {
-        match self.phase.compare_exchange(PHASE_PENDING, PHASE_RUNNING, Ordering::Acquire, Ordering::Relaxed) {
+        let tracked mut claimed = CellClaim { cell: None };
+        match self.claim(Tracked(&mut claimed)) {
             Ok(_) => {
+                let tracked mut cell = claimed.cell.tracked_unwrap();
                 let cg = Cgroup::discover(true);
-                // SAFETY: this thread won the exchange; no reader looks at
-                // the cell before `DONE`.
-                let cg = unsafe { self.cell_write(cg) };
+                // This thread won the exchange, so it holds the cell's
+                // permission; no reader looks at the cell before `DONE`.
+                let cg = self.cell_write(cg, Tracked(&mut cell));
                 found(cg);
-                self.phase.store(PHASE_DONE, Ordering::Release);
+                self.publish(Tracked(cell));
                 true
             },
             Err(_) => {
@@ -1439,46 +1572,112 @@ impl Deferred {
 
     /// The child of a `fork` has only the forking thread: a discovery
     /// another thread had under way is not coming, so it starts over.
+    /// The reset puts back the cell's permission, which that thread held
+    /// ([`axiom_cell_orphaned`]).
     pub fn fork_child(&self) {
-        let _ = self.phase.compare_exchange(PHASE_RUNNING, PHASE_PENDING, Ordering::Relaxed, Ordering::Relaxed);
+        proof {
+            use_type_invariant(self);
+        }
+        vstd::open_atomic_invariant!(self.phase_inv.borrow() => v => {
+            let ghost before = v.0;
+            let _reset = crate::vspec::byte::compare_exchange(&self.phase, PHASE_RUNNING, PHASE_PENDING, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut v.0));
+            proof {
+                if _reset is Ok {
+                    v.1 = Some(axiom_cell_orphaned(self, before, &v.0));
+                }
+            }
+        });
     }
 
-    /// The discovered record in the cell.
-    ///
-    /// # Safety
-    /// The caller observed `DONE` with an acquire load.
-    ///
-    /// Trusted: the premise, that the cell was written before `DONE` was
-    /// published (the release store in [`Deferred::discover`], after its
-    /// one write, or [`Deferred::now`]'s initial value) and is not written
-    /// again; the exchange that makes one thread its writer carries no
-    /// ghost state. `Cgroup`'s type invariant, which Verus assumes of the
-    /// result, holds: the cell only ever holds a value the verified
-    /// `Cgroup::discover` built.
-    #[verifier::external_body]
+    /// An acquire load of the phase, with the cell's frozen permission
+    /// when it reads `DONE` ([`PhasePred`]).
     #[inline(always)]
-    unsafe fn cell_ref(&self) -> &Cgroup
-        opens_invariants none
+    fn load_phase(&self, Tracked(seen): Tracked<&mut CellSeen>) -> (r: u8)
+        ensures
+            r == PHASE_DONE ==> (final(seen).frozen matches Some(p) && cell_done(*p, self.cell.id())),
     {
-        // SAFETY: guaranteed by the caller.
-        unsafe { (*self.cell.get()).assume_init_ref() }
+        proof {
+            use_type_invariant(self);
+        }
+        let r;
+        vstd::open_atomic_invariant!(self.phase_inv.borrow() => v => {
+            r = crate::vspec::byte::load(&self.phase, Ordering::Acquire, Tracked(&v.0));
+            proof {
+                if r == PHASE_DONE {
+                    seen.frozen = v.2;
+                }
+            }
+        });
+        r
     }
 
-    /// `cg` written into the cell, which [`Deferred::get`] reads once
-    /// `DONE` is published.
-    ///
-    /// # Safety
-    /// The caller won `phase`'s exchange from `PENDING`, so it is the
-    /// cell's only writer, and no reader looks at the cell before `DONE`.
-    ///
-    /// Trusted: the premise, as for [`Deferred::cell_ref`].
-    #[verifier::external_body]
+    /// The phase's exchange from `PENDING` to `RUNNING`: the winner gets
+    /// the cell's permission (in `claimed`), which the invariant holds
+    /// while the phase is `PENDING` ([`PhasePred`]).
     #[inline(always)]
-    unsafe fn cell_write(&self, cg: Cgroup) -> &Cgroup
+    fn claim(&self, Tracked(claimed): Tracked<&mut CellClaim>) -> (r: Result<u8, u8>)
+        ensures
+            r is Ok ==> (final(claimed).cell matches Some(p) && p.id() == self.cell.id()),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let won;
+        vstd::open_atomic_invariant!(self.phase_inv.borrow() => v => {
+            won = crate::vspec::byte::compare_exchange(&self.phase, PHASE_PENDING, PHASE_RUNNING, Ordering::Acquire, Ordering::Relaxed, Tracked(&mut v.0));
+            proof {
+                if won is Ok {
+                    claimed.cell = Some(v.1.tracked_take());
+                }
+            }
+        });
+        won
+    }
+
+    /// The phase's `DONE` store, `Release`, with the cell's permission
+    /// frozen into the invariant for every reader ([`PhasePred`]).
+    #[inline(always)]
+    fn publish(&self, Tracked(cell): Tracked<CellPerm>)
+        requires
+            cell_done(cell, self.cell.id()),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let tracked frozen = vstd::modes::tracked_static_ref(cell);
+        vstd::open_atomic_invariant!(self.phase_inv.borrow() => v => {
+            crate::vspec::byte::store(&self.phase, PHASE_DONE, Ordering::Release, Tracked(&mut v.0));
+            proof {
+                v.2 = Some(frozen);
+            }
+        });
+    }
+
+    /// The discovered record in the cell, through its permission.
+    #[inline(always)]
+    fn cell_ref<'a>(&'a self, Tracked(p): Tracked<&'a CellPerm>) -> &'a Cgroup
+        requires
+            cell_done(*p, self.cell.id()),
         opens_invariants none
     {
-        // SAFETY: guaranteed by the caller.
-        unsafe { (*self.cell.get()).write(cg) }
+        // SAFETY: the permission says the cell holds a record.
+        unsafe { self.cell.borrow(Tracked(p)).assume_init_ref() }
+    }
+
+    /// `cg` written into the cell, through its permission, which
+    /// [`Deferred::get`] reads once `DONE` is published.
+    #[inline(always)]
+    fn cell_write<'a>(&'a self, cg: Cgroup, Tracked(p): Tracked<&'a mut CellPerm>) -> &'a Cgroup
+        requires
+            old(p).id() == self.cell.id(),
+        ensures
+            cell_done(*final(p), self.cell.id()),
+        opens_invariants none
+    {
+        let m = self.cell.borrow_mut(Tracked(p));
+        *m = MaybeUninit::new(cg);
+        // SAFETY: just written.
+        unsafe { m.assume_init_mut() }
     }
 }
 
@@ -2752,7 +2951,7 @@ mod kani_fmt {
     /// The longest directory checked.
     const DIR_MAX: u16 = 3;
 
-    /// S351 `DisplaySpecImpl for sys::cgroup::Cgroup` (`fmt_req` true):
+    /// S358 `DisplaySpecImpl for sys::cgroup::Cgroup` (`fmt_req` true):
     /// every state, every figure, and every directory of up to `DIR_MAX`
     /// bytes (every byte value) with every mount prefix of it, the type
     /// invariant's `mount_len <= dir_len` (what `mount()` and `path()`

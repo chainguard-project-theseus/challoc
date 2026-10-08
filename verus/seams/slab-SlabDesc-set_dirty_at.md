@@ -1,6 +1,6 @@
 # `SlabDesc::set_dirty_at`
 
-Seam S205 of `verus/SEAMS.md`: src/slab.rs:449. Kind: external_body. Category: atomics primitive.
+Seam S207 of `verus/SEAMS.md`: src/slab.rs:449. Kind: external_body. Category: atomics primitive.
 Discharged by the C11 coherence rules and loom, given the locks'
 happens-before edge that `lock::axiom_acquired` assumes (part 3).
 

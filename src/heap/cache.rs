@@ -1057,7 +1057,7 @@ mod kani_cache {
         assert_eq!(r, hit);
     }
 
-    /// S111 `Heap::cached_recently`, `requires` the `len` entries from
+    /// S114 `Heap::cached_recently`, `requires` the `len` entries from
     /// `slots` permitted and written and, unless `len` is 0, their bytes
     /// in one allocation (`slot_in`), no `ensures`: it returns, reading
     /// only those entries, for every `len` from 0 to 8 (both branches,

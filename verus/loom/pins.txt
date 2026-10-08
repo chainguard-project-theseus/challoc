@@ -1,7 +1,9 @@
 # verus/loom/pins.txt: the lines of the source that the loom models copy
 # (src/loom_tests/init.rs, exit.rs, publish.rs, slab.rs, the class steps of
 # bitmap.rs, the table steps of free.rs and watermark.rs, the arena steps
-# of count.rs and narenas.rs, and the policy step of position.rs),
+# of count.rs and narenas.rs, the policy step of position.rs, and the
+# line and record steps of oncecell.rs, and the flag-byte steps of
+# flags.rs),
 # which verus/loom/run.sh requires to appear, whitespace-trimmed, in this
 # order in each file. A change to a copied ordering or step fails the
 # script until the copy, this list and the records that cite it are
@@ -10,14 +12,28 @@
 #   file<TAB>line
 #
 # api/mod.rs: the STATE wrappers, shared, shared_if_ready, claim_init,
-# publish_ready, init_slow (init.rs).
+# publish_ready, init_slow (init.rs); the LINE_STATE wrappers, load_line,
+# claim_line, publish_line, line_ready and feature_line_fork_child
+# (oncecell.rs), in source order.
 src/api/mod.rs	STATE.load(Ordering::Acquire)
 src/api/mod.rs	STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire)
 src/api/mod.rs	STATE.store(READY, Ordering::Release);
 src/api/mod.rs	s = state_load(Tracked(&v.perm));
+src/api/mod.rs	LINE_STATE.load(ordering)
+src/api/mod.rs	LINE_STATE.compare_exchange(current, new, success, failure)
+src/api/mod.rs	LINE_STATE.store(v, ordering)
+src/api/mod.rs	s = line_load(Ordering::Acquire, Tracked(&v.perm));
+src/api/mod.rs	won = line_compare_exchange(LINE_UNBUILT, LINE_BUILDING, Ordering::Acquire, Ordering::Acquire, Tracked(&mut v.perm));
+src/api/mod.rs	line_store(LINE_READY, Ordering::Release, Tracked(&mut v.perm));
 src/api/mod.rs	if load_state(Tracked(&mut seen)) == READY {
 src/api/mod.rs	init_slow()
 src/api/mod.rs	if load_state(Tracked(&mut seen)) == READY {
+src/api/mod.rs	if load_line(Tracked(inv), Tracked(&mut seen)) == LINE_READY {
+src/api/mod.rs	let (won, Tracked(cell)) = claim_line(Tracked(inv));
+src/api/mod.rs	if won.is_ok() {
+src/api/mod.rs	build_line(Tracked(&mut cell));
+src/api/mod.rs	return publish_line(Tracked(inv), Tracked(cell));
+src/api/mod.rs	while load_line(Tracked(inv), Tracked(&mut seen)) != LINE_READY
 src/api/mod.rs	won = state_claim(Tracked(&mut v.perm));
 src/api/mod.rs	state_publish(Tracked(&mut v.perm));
 src/api/mod.rs	let (won, Tracked(steps)) = claim_init(Tracked(&mut seen));
@@ -30,6 +46,19 @@ src/api/mod.rs	Err(READY) => {}
 src/api/mod.rs	if INIT_TID.load(Ordering::Relaxed) == sys::gettid() as u32 {
 src/api/mod.rs	sys::abort("allocation during initialisation (re-entrant init)");
 src/api/mod.rs	while load_state(Tracked(&mut seen)) != READY {
+src/api/mod.rs	let _reset = line_compare_exchange(LINE_BUILDING, LINE_UNBUILT, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut v.perm));
+# sys/cgroup.rs: Deferred::get, discover, fork_child, load_phase, claim,
+# publish (oncecell.rs, over the real vspec/byte.rs wrappers).
+src/sys/cgroup.rs	if self.load_phase(Tracked(&mut seen)) == PHASE_DONE {
+src/sys/cgroup.rs	match self.claim(Tracked(&mut claimed)) {
+src/sys/cgroup.rs	let cg = self.cell_write(cg, Tracked(&mut cell));
+src/sys/cgroup.rs	found(cg);
+src/sys/cgroup.rs	self.publish(Tracked(cell));
+src/sys/cgroup.rs	while wait && self.phase.load(Ordering::Acquire) != PHASE_DONE {
+src/sys/cgroup.rs	let _reset = crate::vspec::byte::compare_exchange(&self.phase, PHASE_RUNNING, PHASE_PENDING, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut v.0));
+src/sys/cgroup.rs	r = crate::vspec::byte::load(&self.phase, Ordering::Acquire, Tracked(&v.0));
+src/sys/cgroup.rs	won = crate::vspec::byte::compare_exchange(&self.phase, PHASE_PENDING, PHASE_RUNNING, Ordering::Acquire, Ordering::Relaxed, Tracked(&mut v.0));
+src/sys/cgroup.rs	crate::vspec::byte::store(&self.phase, PHASE_DONE, Ordering::Release, Tracked(&mut v.0));
 # purge/background.rs: requested, request, kick, main (exit.rs); start's
 # two holds and its kick, and main's exit (publish.rs).
 src/purge/background.rs	REQUESTED.load(Ordering::Relaxed)
@@ -115,17 +144,23 @@ src/class/table.rs	store_usize(&self.committed_slabs, end, Ordering::Release, Tr
 src/class/table.rs	if !gi.mirror.is_null() {
 src/class/table.rs	unsafe { store_usize_at(gi.mirror, end, Ordering::Release, Tracked(&mut perm)) };
 # heap/shared.rs: ClassLine::set_slab (the x86_64 order: the watermark
-# copy, the bit test) and ClassLine::owner, home_owns (free.rs).
+# copy, the bit test) and ClassLine::owner (free.rs); put_flags,
+# free_flags and set_multi_arena (flags.rs); home_owns (free.rs).
 src/heap/shared.rs	let committed = crate::class::load_mirror(&self.committed, &self.committed_inv);
 src/heap/shared.rs	if slab >= committed {
 src/heap/shared.rs	if (unsafe { table.bit_word(bits_base, index, Ghost(slab), Ghost(slot as usize), Ghost(bit)) } >> (bit % 64)) & 1 == 0 {
 src/heap/shared.rs	unsafe { table.owner_from(self.owners_base, self.lg_group, slab) }
+src/heap/shared.rs	ptr_mut_write(field_at(this, S_PUSH_FLAGS), Tracked(pf), flags);
+src/heap/shared.rs	ptr_mut_write(field_at(this, S_FREE_FLAGS), Tracked(pa), crate::vspec::flags::new(flags));
+src/heap/shared.rs	crate::vspec::flags::load(&self.free_flags, Ordering::Relaxed)
+src/heap/shared.rs	crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE, Ordering::Relaxed);
 src/heap/shared.rs	.owner(slab, crate::vspec::slice::array_get_unchecked(&self.tables, class)) == home
 # heap/paths.rs: free_fast_slot's bit test and free_fast_tail's arena tests (free.rs).
 src/heap/paths.rs	let Some((class, slab)) = shared.set_slot(p) else { return None };
 src/heap/paths.rs	shared.home_owns(class, slab, h) && h.push_fast(class, p, 0, Tracked(&mut tk))
 src/heap/paths.rs	(flags & FREE_ROUTE == 0 || shared.home_owns(class, slab, h))
-# arena.rs: iter (narenas.rs); unbind (count.rs); build, create
+# arena.rs: iter (narenas.rs); unbind (count.rs); build (its
+# set_multi_arena: flags.rs; its entry store: narenas.rs), create
 # (narenas.rs); assign, load_bound, count_in (count.rs); count (narenas.rs);
 # try_bind_idle, bind_if_idle (count.rs).
 src/arena.rs	let n = self.count() as usize;
@@ -134,6 +169,7 @@ src/arena.rs	if p.is_null() {
 src/arena.rs	prev = crate::vspec::count::fetch_sub(&self.bound[index as usize], 1, Ordering::Relaxed, Tracked(&mut perm));
 src/arena.rs	if prev == 0 {
 src/arena.rs	unbind_unbound(index);
+src/arena.rs	shared.set_multi_arena();
 src/arena.rs	crate::vspec::entry::store(&self.table[index as usize], p, Ordering::Release, Tracked(v.entries.tracked_borrow_mut(index as int)));
 src/arena.rs	let mut g = self.lock.lock(Tracked(ord), Tracked(&mut under));
 src/arena.rs	let index = g.n;

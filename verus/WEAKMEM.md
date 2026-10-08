@@ -465,6 +465,20 @@ cut down.
   the exited thread published. The flags are under the state lock, so
   this is about the interleaving, not the orderings; Verus proves the
   lock-value side (`exited ==> !present` in `axiom_state_lock_inv`).
+- The once-cells (ONCECELL; `loom_tests/oncecell.rs`). The feature
+  line, a copy of `line_ready` and its `LINE_STATE` wrappers, the build
+  a write to each of two cells: two requests and a reader (5530
+  executions): the line is built once and every reader that sees
+  `LINE_READY` reads it race-free. The deferred cgroup record, the
+  real `vspec/byte.rs` wrappers driven by copies of `Deferred::get`,
+  `discover` and `fork_child`: a tick, a waiting reader and a sampler
+  (933): one discovery runs and every reader that sees `DONE` reads the
+  record race-free. Controls: a `Relaxed` `LINE_READY` (`DONE`) store
+  lets a reader see it without the write. The fork-child resets run on
+  one thread, as the child has: the next request builds (discovers)
+  rather than waits. Verus proves the hand-off of the cells'
+  permissions (`api::LinePred`, `sys::cgroup::PhasePred`); the models
+  check that the release/acquire pairs give the edges it relies on.
 
 ## Plan
 
@@ -604,3 +618,21 @@ runs); the model covers only
 `create`'s reads. Under stock loom (no DPOR patch) the arena count and
 watermark models explore 36 executions instead of 4482, and their
 `Relaxed`-store controls pass: two more models the patch is needed for.
+
+### The `free` path's dispatch byte (package FFLAGS, 2026-10-07)
+
+`Shared::free_flags` was an `external_body` load whose `ensures` (the
+byte is `push_flags` up to `FREE_ROUTE`) was a writers' invariant read
+off the code. It is now verified over `vspec/flags.rs`: the byte is a
+`RouteByte`, whose `AtomicU8` is private to that module, so its only
+operations are `new` (`init`'s `put_flags`), `fetch_or`
+(`set_multi_arena`, bits within `ROUTE` only) and `load`, whose spec
+names the byte's fixed bits (`flags::fixed`, a ghost function of the
+value), which `Shared::wf` ties to `push_flags`. The model
+(`loom_tests/flags.rs`) runs the real wrappers with copies of `init`'s
+two writes and publication, `build`'s `set_multi_arena` and the free
+path's load.
+
+| Seam | Result | Why |
+|---|---|---|
+| `new`, `load`, `fetch_or` (`vspec/flags.rs`, S314-S316) | discharged | per-location coherence: every write is `new`'s or a `fetch_or` within `ROUTE`, so every value in the modification order keeps the made bits, for any ordering, for a reader that happens after `init` (the premise of the trusted seams that hand out a well-formed `&Shared`); the type confines the atomic operations to the wrappers and `run.sh` checks the calls and raw writes by name (heuristic); flags models (478 and 613414 executions) and two controls (a `Relaxed` `READY` store leaves the reader unordered after `init`'s write; a bit outside `ROUTE` fails the assertions) |
