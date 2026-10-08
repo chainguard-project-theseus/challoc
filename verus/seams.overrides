@@ -414,7 +414,7 @@ src/vspec/meta.rs:axiom_meta_lock_inv	allocator invariant	none (assumption)
 src/vspec/panic.rs:axiom_fmt_req_all_panic_message	panic/abort	none (assumption)
 src/vspec/ptr.rs:ref_ptr	raw pointer (internal)	Kani	discharged (verus/seams/vspec-ptr-ref_ptr.md)
 src/vspec/ptr.rs:<*mut T>::add	raw pointer (internal)	Kani	discharged (verus/seams/vspec-ptr-mut-ptr-add.md)
-src/vspec/ptr.rs:<*mut T>::sub	raw pointer (internal)	Kani
+src/vspec/ptr.rs:<*mut T>::sub	raw pointer (internal)	Kani	discharged (verus/seams/vspec-ptr-mut-ptr-sub.md)
 src/vspec/sys.rs:core::ptr::from_mut	raw pointer (internal)	Kani	discharged (verus/seams/vspec-sys-ptr-from_mut.md)
 src/vspec/sys.rs:core::ptr::from_ref	raw pointer (internal)	Kani	discharged (verus/seams/vspec-sys-ptr-from_ref.md)
 src/vspec/zero.rs:write_zero	raw pointer (internal)	Kani	discharged (verus/seams/vspec-zero-write_zero.md)

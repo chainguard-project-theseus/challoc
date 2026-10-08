@@ -834,7 +834,7 @@ the full name, the line and the contract.
 |---|---|---|---|---|---|
 | S357 | `axiom_ptr_add_addr` | proof | core | Kani | discharged |
 | S358 | `<*mut T>::add` | spec | ptr | Kani | discharged |
-| S359 | `<*mut T>::sub` | spec | ptr | Kani | trusted |
+| S359 | `<*mut T>::sub` | spec | ptr | Kani | discharged |
 | S360 | `<*const T>::add` | spec | ptr | Kani | trusted |
 | S361 | `ptr::read_unaligned::<T>` | spec | ptr | Kani | trusted |
 | S362 | `<*const T>::read_unaligned` | spec | ptr | Kani | trusted |
@@ -6259,7 +6259,7 @@ pub assume_specification<T>[ <*mut T>::add ](p: *mut T, count: usize) -> (r: *mu
 ### S359. `<*mut T>::sub`
 
 src/vspec/ptr.rs:114. Kind: assume_spec. Category: raw pointer (internal).
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/vspec-ptr-mut-ptr-sub.md).
 
 > `<*mut T>::sub`, with the safety contract of the `core` documentation: the byte offset `count * size_of::<T>()` fits in an `isize` and is at most `p`'s address (implied by the next clause unless it is zero), and, when it is not zero, the whole range from the result to `p` is inside the allocation `p` points into ([`in_alloc`] of the result).
 

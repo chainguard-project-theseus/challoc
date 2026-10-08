@@ -3,7 +3,7 @@
 //! trusted wrappers `vspec::zero::write_zero` and
 //! `vspec::slice::array_get_unchecked`, checked against their contracts.
 //!
-//! The memory functions (`add`, `write_bytes`, `copy_nonoverlapping`,
+//! The memory functions (`add`, `sub`, `write_bytes`, `copy_nonoverlapping`,
 //! `write_zero`) are checked on arrays: the contracts' `in_alloc`,
 //! `valid_writes` and `valid_reads` are uninterpreted Verus predicates
 //! ("the range lies in an allocation that may be read or written"),
@@ -161,6 +161,58 @@ fn ptr_add() {
     // SAFETY: a zero-sized `T`: every offset is empty.
     let r = unsafe { p.add(count) };
     assert_eq!(r, p);
+}
+
+/// `<*mut T>::sub` on an array of `N` `T`s: from element `i` (`i <= N`),
+/// every `count <= i` (the range from the result to `p` lies in the
+/// allocation: the contract's `in_alloc` of the result, with the byte
+/// offset below `isize::MAX` and below `p`'s address, as an array's
+/// always is) gives the pointer `count * size_of::<T>()` bytes before
+/// `p`, of `p`'s allocation (a read through it is a read of element
+/// `i - count`, which Kani accepts only through a pointer derived from
+/// the array). And `sub(0)` on any pointer, even null or dangling, gives
+/// the pointer back (the contract's empty-offset case, which needs no
+/// allocation).
+fn ptr_sub_on<T: Copy + PartialEq + kani::Arbitrary, const N: usize>() {
+    let mut a: [T; N] = kani::any();
+    let i: usize = kani::any();
+    let count: usize = kani::any();
+    kani::assume(i <= N && count <= i);
+    // SAFETY: `i <= N`: inside the array or one past it.
+    let p = unsafe { a.as_mut_ptr().add(i) };
+    // SAFETY: the contract's precondition, `count <= i`.
+    let r = unsafe { p.sub(count) };
+    assert_eq!(r as usize, p as usize - count * size_of::<T>());
+    let q = core::ptr::without_provenance_mut::<()>(kani::any());
+    // SAFETY: a zero-sized `T`: an empty offset, allowed on any pointer.
+    assert_eq!(unsafe { q.sub(count) }, q);
+    if i - count < N {
+        // SAFETY: element `i - count` of `a`.
+        assert!(unsafe { *r } == a[i - count]);
+    }
+    let d = core::ptr::without_provenance_mut::<T>(kani::any());
+    // SAFETY: a zero offset, which `core` allows on any pointer.
+    assert_eq!(unsafe { d.sub(0) }, d);
+}
+
+/// S359 `<*mut T>::sub`: `r == ptr_sub(p, count)`, the open spec
+/// function: the address `count * size_of::<T>()` bytes before `p`, with
+/// `p`'s provenance and metadata. At a byte, a word, a padded element
+/// and a zero-sized type (for which every `count` is an empty offset).
+#[kani::proof]
+fn ptr_sub() {
+    ptr_sub_on::<u8, 5>();
+    ptr_sub_on::<u64, 5>();
+    ptr_sub_on::<(u64, u8), 3>();
+    let mut z = [(); 4];
+    let p = z.as_mut_ptr();
+    let count: usize = kani::any();
+    // SAFETY: a zero-sized `T`: every offset is empty.
+    let r = unsafe { p.sub(count) };
+    assert_eq!(r, p);
+    let q = core::ptr::without_provenance_mut::<()>(kani::any());
+    // SAFETY: a zero-sized `T`: an empty offset, allowed on any pointer.
+    assert_eq!(unsafe { q.sub(count) }, q);
 }
 
 /// The bytes of `T`s.
