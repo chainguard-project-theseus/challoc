@@ -143,8 +143,8 @@ axiom_user_va_limit	platform/kernel fact	none (assumption)
 axiom_auth_sign	platform/kernel fact	Islaris/Isla	discharged (verus/seams/sys-pac-axiom_auth_sign.md)
 check	panic/abort	Kani	discharged (verus/seams/vspec-check-check.md)
 abort_integrity	panic/abort	Kani	discharged (verus/seams/sys-abort-abort_integrity.md)
-abort_kernel	panic/abort	Kani
-abort_pending	panic/abort	Kani
+abort_kernel	panic/abort	Kani	discharged (verus/seams/sys-abort-abort_kernel.md)
+abort_pending	panic/abort	Kani	discharged (verus/seams/sys-abort-abort_pending.md)
 axiom_class_table_wf	allocator invariant	Kani
 stats_allocated	core library	Kani	discharged (verus/seams/vspec-print-stats_allocated.md)
 axiom_ptr_add_addr	core library	Kani	discharged (verus/seams/vspec-ptr-axiom_ptr_add_addr.md)

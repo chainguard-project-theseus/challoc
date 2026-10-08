@@ -2,7 +2,7 @@
 
 Seam S206 of `verus/SEAMS.md`: src/sys/abort.rs:175. Kind: external_body. Category: panic/abort.
 Discharged by Kani (the body); the capability relabel it makes is theorem
-31's policy (Translation), which Kani cannot check.
+32's policy (Translation), which Kani cannot check.
 
 ## Contract
 
@@ -39,7 +39,7 @@ Reproduce: `sh verus/kani/run.sh --harness kani_proofs::abort::abort_integrity_r
   requires only `may_abort_corrupt()` (`may_abort() ||
   integrity_aborts()`), so a caller that holds only `integrity_aborts`
   can abort through it. Both are opaque capabilities with no run-time
-  meaning (both are `true`); the relabel is sound for theorem 31
+  meaning (both are `true`); the relabel is sound for theorem 32
   ("Read-only APIs never abort", verus/THEOREMS.md) because that theorem
   excepts exactly the integrity aborts: `api::tests::abort_grants_only_at_roots`
   lists the callers of `abort_integrity`, and THEOREMS.md says what

@@ -8112,10 +8112,14 @@ that no `use` names an abort sink outside `sys/` and `vspec/`.
   the witnesses make, and are not covered; nor is `mallocx::free`'s
   `invalid_tcache` (a bad `MALLOCX_TCACHE` is "Bad input").
 - `abort_kernel` and `abort_pending` (`sys/abort.rs:189`, `:203`, S207,
-  S208, trusted): the relabels of `abort_fmt`'s capability, as
-  `abort_integrity`'s (S206); their Kani harnesses
-  (`abort_kernel_reaches_abort_fmt`, `abort_pending_reaches_abort_fmt`,
-  `src/kani/abort.rs`) are written as `abort_integrity`'s, not yet run.
+  S208, `external_body`, discharged by Kani:
+  `verus/seams/sys-abort-abort_kernel.md`,
+  `verus/seams/sys-abort-abort_pending.md`): the relabels of
+  `abort_fmt`'s capability, as `abort_integrity`'s (S206); their
+  harnesses (`abort_kernel_reaches_abort_fmt`,
+  `abort_pending_reaches_abort_fmt`, `src/kani/abort.rs`) show each
+  body reaches `abort_fmt` with nothing failing on the way, and the
+  relabel itself is this theorem's policy (the records' residual).
 - `Heap::cached_recently` (`heap/cache.rs:721`, S112, trusted, as
   before): its contract now ensures that a hit is one of the `len`
   entries whose address is `e`'s, read off its body (the four compares

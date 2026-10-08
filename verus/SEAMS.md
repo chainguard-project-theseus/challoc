@@ -517,8 +517,8 @@ the full name, the line and the contract.
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
 | S206 | `abort_integrity` | body | abort | Kani | discharged |
-| S207 | `abort_kernel` | body | abort | Kani | trusted |
-| S208 | `abort_pending` | body | abort | Kani | trusted |
+| S207 | `abort_kernel` | body | abort | Kani | discharged |
+| S208 | `abort_pending` | body | abort | Kani | discharged |
 
 ### src/sys/auxv.rs
 
@@ -3994,7 +3994,7 @@ pub fn abort_integrity(args: fmt::Arguments<'_>) -> !
 ### S207. `abort_kernel`
 
 src/sys/abort.rs:189. Kind: external_body. Category: panic/abort.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/sys-abort-abort_kernel.md).
 
 > [`abort_fmt`] at a resource failure: a resource the allocator needs failed it ([`super::kernel_aborts`]).
 
@@ -4007,7 +4007,7 @@ pub fn abort_kernel(args: fmt::Arguments<'_>) -> !
 ### S208. `abort_pending`
 
 src/sys/abort.rs:203. Kind: external_body. Category: panic/abort.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (verus/seams/sys-abort-abort_pending.md).
 
 > [`abort_fmt`] at one of theorem "Valid programs never abort"'s pending checks ([`super::pending_aborts`]).
 
