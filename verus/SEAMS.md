@@ -205,7 +205,7 @@ the full name, the line and the contract.
 | S27 | `line_compare_exchange` | body | atomic | GenMC | discharged |
 | S28 | `line_store` | body | atomic | GenMC | discharged |
 | S29 | `shared_ptr` | body | cell | none | trusted |
-| S30 | `shared_base` | body | asm | Isla | evidence |
+| S30 | `shared_base` | body | asm | Isla | discharged |
 | S31 | `line_ready` | no-dec | termination | GenMC | trusted |
 | S32 | `init_slow` | no-dec | termination | GenMC | discharged |
 | S33 | `shared_storage_ptr` | body | cell | none | trusted |
@@ -292,7 +292,7 @@ the full name, the line and the contract.
 | S89 | `axiom_init_descs` | axiom | ptr | none | trusted |
 | S90 | `axiom_init_owners` | axiom | ptr | none | trusted |
 | S91 | `axiom_init_words` | axiom | ptr | none | trusted |
-| S92 | `word_index` | body | asm | Isla | evidence |
+| S92 | `word_index` | body | asm | Isla | discharged |
 
 ### src/class/verify.rs
 
@@ -372,7 +372,7 @@ the full name, the line and the contract.
 
 | # | item | kind | category | tool | status |
 |---|---|---|---|---|---|
-| S127 | `ClassLine::guard_word` | body | asm | Kani | evidence |
+| S127 | `ClassLine::guard_word` | body | asm | Kani | discharged |
 | S128 | `ThreadKey::create` | body | fnptr | Kani | trusted |
 | S129 | `pthread_setspecific` | body | ffi | none | trusted |
 | S130 | `axiom_process_shared` | axiom | invariant | none | trusted |
@@ -448,7 +448,7 @@ the full name, the line and the contract.
 | S170 | `Reserved::into_unbacked` | proof | platform | none | trusted |
 | S171 | `try_reserve` | body | ffi | none | trusted |
 | S172 | `word` | body | core | Kani | discharged |
-| S173 | `entry_barrier` | body | asm | Isla | evidence |
+| S173 | `entry_barrier` | body | asm | Isla | discharged |
 
 ### src/lock.rs
 
@@ -1357,7 +1357,7 @@ pub fn shared_ptr() -> (r: *const Shared)
 ### S30. `shared_base`
 
 src/api/mod.rs:798. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: evidence (verus/seams/api-shared_base.md).
+Tool: Islaris/Isla. Status: discharged (verus/seams/api-shared_base.md).
 
 > [`shared_base`] on aarch64: [`shared_ptr`] through the empty `asm!`.
 
@@ -2351,7 +2351,7 @@ axiom fn axiom_init_words(tracked perms: Map<int, PointsTo<AtomicU64>>, n: int) 
 ### S92. `word_index`
 
 src/class/table.rs:2280. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: evidence (verus/seams/class-table-word_index.md).
+Tool: Islaris/Isla. Status: discharged (verus/seams/class-table-word_index.md).
 
 > [`word_index`] on aarch64: `index` through the empty `asm!`.
 
@@ -2873,7 +2873,7 @@ fn debug_scheduled(allocs: u64, mask: u32)
 ### S127. `ClassLine::guard_word`
 
 src/heap/shared.rs:520. Kind: external_body. Category: inline asm.
-Tool: Kani. Status: evidence (verus/seams/heap-shared-ClassLine-guard_word.md).
+Tool: Kani. Status: discharged (verus/seams/heap-shared-ClassLine-guard_word.md).
 
 > `guard_mask | tz << 32 | lg_guard << 40` (the padding above is zero), from one 8-byte load.
 
@@ -3512,7 +3512,7 @@ fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
 ### S173. `entry_barrier`
 
 src/layout/regions.rs:2741. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: evidence (verus/seams/layout-regions-entry_barrier.md).
+Tool: Islaris/Isla. Status: discharged (verus/seams/layout-regions-entry_barrier.md).
 
 > [`class_entry`]'s barrier on x86_64: `p`, through an empty `asm!`.
 

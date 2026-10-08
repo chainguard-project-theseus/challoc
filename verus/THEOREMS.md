@@ -287,7 +287,7 @@ the call does not return (theorem 3, which is not voided for it).
   that a frozen permission to one gives one to each element), whose
   value is `class_table()` (`layout::axiom_class_table`, trusted,
   definitional), at the pointer the x86_64 barrier returns unchanged
-  (`entry_barrier`, an empty `asm!`, evidence:
+  (`entry_barrier`, an empty `asm!`, discharged:
   `verus/seams/layout-regions-entry_barrier.md`).
 - `vspec::class::axiom_class_table_wf` (`vspec/class.rs:12`), the same
   fact for proofs; `adopt_page_geometry` (verified) writes the table
@@ -1825,7 +1825,7 @@ identically). The hot set's machine code is upstream's.
   - Since package P7 `shared_deref`, `fast_flags`, `heap_from_slot` and
     `class_entry` are verified (their masks are checked); in their place
     `heap::thread::slot_heap_ref` (a cast) and, on x86_64,
-    `layout::regions::entry_barrier` (an empty `asm!`; evidence record
+    `layout::regions::entry_barrier` (an empty `asm!`; discharged record
     `verus/seams/layout-regions-entry_barrier.md`).
 - **New wrappers.** `vspec::atomic::load_bool` (removed with upstream
   #78, above): the `core`

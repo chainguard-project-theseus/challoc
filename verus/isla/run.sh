@@ -12,7 +12,9 @@
 # describe, finds every instance of each checked template in the
 # compiled code, runs isla-footprint on each distinct instruction (the
 # PAC ones in parallel, one per CPU) and checks each job with isla-check
-# (verus/isla/check.rs). OUT (default: a fresh temporary directory) keeps
+# (verus/isla/check.rs); the blocks with an empty template have no
+# instruction to trace, and verus/emptyasm/run.sh checks they have none
+# in the shipped code. OUT (default: a fresh temporary directory) keeps
 # the traces and the jobs. Exit status 0 when every check holds. About
 # fifteen minutes after the builds on 16 CPUs.
 #
@@ -184,6 +186,17 @@ for name in $irecs; do
 		echo "record $name: $loc (${arch:-both architectures}), contract ok"
 	fi
 done
+
+# 1b. The blocks with an empty template (`/* {0} */`, a register hint;
+# verus/emptyasm/blocks.txt): Isla has no instruction of theirs to
+# trace, so verus/emptyasm/run.sh checks that the shipped code holds
+# none, on both targets (the records of shared_base, word_index,
+# entry_barrier and ClassLine::guard_word rest on it).
+if RUSTUP_TOOLCHAIN=$toolchain EMPTYASM_TARGET_DIR=$out/target sh "$root/verus/emptyasm/run.sh" "$out/emptyasm"; then
+	echo "empty asm blocks: ok"
+else
+	fail "verus/emptyasm/run.sh: an empty-template block is not empty in the code"
+fi
 
 # 2. The aarch64 code: one object with every codegen unit (the x86_64
 # library is built here too, and read from step 9).

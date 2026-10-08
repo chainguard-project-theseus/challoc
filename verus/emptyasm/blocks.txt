@@ -1,0 +1,12 @@
+# verus/emptyasm/blocks.txt: the `asm!` blocks verus/emptyasm/run.sh
+# checks contribute no instruction to the shipped code.
+#
+#   FILE<TAB>FN<TAB>ARCH
+#
+# FILE has exactly one `asm!(` call inside a `fn FN(` (any of the items of
+# that name), compiled for ARCH (x86_64 or aarch64) only; its record under
+# verus/seams/ rests on the check.
+src/api/mod.rs	shared_base	aarch64
+src/class/table.rs	word_index	aarch64
+src/heap/shared.rs	guard_word	x86_64
+src/layout/regions.rs	entry_barrier	x86_64

@@ -1,7 +1,7 @@
 # `ClassLine::guard_word`
 
 Seam S127 of `verus/SEAMS.md`: src/heap/shared.rs:520. Kind: external_body. Category: inline asm.
-Evidence: Kani settles the load (on a pinned copy); the x86_64 `asm!` block, an empty template, is pinned for Isla but has no instruction to trace, so its effect (none) is argued, as for `word_index`'s record (Translation, "Status").
+Discharged: Kani settles the load (on a pinned copy); the x86_64 `asm!` block, an empty template, is pinned for Isla, and `verus/emptyasm/run.sh` checks that it adds no instruction to the shipped code, as for `word_index`'s record.
 
 ## Contract
 
@@ -71,15 +71,32 @@ Two parts, one per half of the body.
    A control (run by hand, not kept): with `_pad` any value instead of
    zero, the harness fails (the returned word has the padding's bits).
 
-2. **The `asm!` block: the template pin.** `verus/isla/run.sh`,
-   section 1: the `asm!` call above is, up to whitespace, an `asm!`
-   call in `fn guard_word` (`verus/isla/templates.txt`, the line added
-   with this record; the extractor now ends a call at its matching
-   parenthesis, since this block, unlike `shared_base`'s and
-   `word_index`'s, has no `;` of its own). Its template is `/* {0} */`:
-   an assembler comment naming the operand, which assembles to no
-   instruction. Nothing else runs; Isla traces instructions and the
-   block has none (on aarch64 it is compiled out).
+2. **The `asm!` block: the template pin and the empty-block check.**
+   `verus/isla/run.sh`, section 1: the `asm!` call above is, up to
+   whitespace, an `asm!` call in `fn guard_word`
+   (`verus/isla/templates.txt`, the line added with this record; the
+   extractor now ends a call at its matching parenthesis, since this
+   block, unlike `shared_base`'s and `word_index`'s, has no `;` of its
+   own). `verus/emptyasm/run.sh` (`verus/emptyasm/blocks.txt`, the line
+   for `guard_word`; described in full in `class-table-word_index.md`,
+   "Statement"), with rustc 1.95.0 (LLVM 22), in its three steps: the
+   object built beside the assembly is the shipped build's
+   (byte-identical); in the assembly, every inline-asm block comes from
+   an `asm!(` line, only listed blocks hold a comment, and every
+   instance of this block's line (`src/heap/shared.rs`, the `asm!` in
+   `fn guard_word`) in the x86_64 code is a comment and nothing else
+   (`#APP`/`#NO_APP` bracket it), with at least one there and none in
+   the aarch64 code (where the `cfg` compiles it out); and the call,
+   compiled alone into an x86_64 object beside the same function
+   without it, adds no byte. At commit 2e78fb21: 6 instances on x86_64
+   (the sized check and the guard test inlined into the free paths),
+   each a comment alone naming the operand's register (`# r9`, ...).
+   The build checked is the default-feature one (quantum16) with rustc
+   1.95.0; the quantum8 build and other compilers are not, unless run
+   with `EMPTYASM_CARGO_FLAGS` and `RUSTUP_TOOLCHAIN`.
+   Reproduce: `sh verus/emptyasm/run.sh`; the negative test
+   `sh verus/emptyasm/run.sh -n` makes the template `nop /* {0} */` on
+   a copy of the tree and must see the check fail for this block.
 
 ## Translation
 
@@ -100,7 +117,8 @@ Two parts, one per half of the body.
   `inout(reg) gw` puts `gw` in one general register on entry and reads
   the same register back as `gw` on exit (the Rust reference, "Inline
   assembly", `inout`), and no instruction runs in between, so the
-  value read back is the value written. `options(pure, nomem, nostack,
+  value read back is the value written (part 2: no instruction is in
+  the block in the shipped code). `options(pure, nomem, nostack,
   preserves_flags)` are promises (no side effect, no memory access, no
   stack use, no flag write) that an empty instruction sequence keeps
   trivially. On aarch64 there is no block.
@@ -113,19 +131,21 @@ Two parts, one per half of the body.
   verbatim, which `run.sh` checks) and on `guard_word_load` being a
   method of `ClassLine` with the same receiver, so `self` names the
   same thing.
-
-**Status: evidence.** The assembler's treatment of `/* */` as a
-comment (GNU as and LLVM's integrated assembler both do, on x86_64),
-and rustc's `inout` operand semantics, are read from their
-documentation, not checked: the residual that keeps
-`class-table-word_index.md` (an empty aarch64 template and nothing
-else) at evidence, and `api-shared_base.md` with it. The load half is
-settled; the record becomes "discharged" with those two if empty
-template pins are accepted as discharging (an open question for the
-maintainers, not settled in this repository). The block's effect on
-register allocation (why it is there: without it LLVM splits the load
-into a byte load per shift count) is the codegen gate's to compare,
-not this record's.
+**Status: discharged.** Both halves are checked: the load by Kani
+(part 1), and the block's emptiness by `verus/emptyasm/run.sh` (part
+2), which replaces the argument this record and `word_index`'s made
+until package EMPTYASM (that GNU as and LLVM's integrated assembler
+read `/* */` as a comment): at each of the block's instances in the
+shipped build's module, LLVM's own assembler parser read the template
+and emitted no instruction or directive (`/* r9 */` reprinted as
+`# r9`), and the same call compiled alone into an object adds no byte.
+The residual is rustc's lowering of `inout(reg)` to one register for
+input and output, read from its documentation, the trust in the
+compiler that every compiled item, verified or not, shares; and the
+build checked is the default-feature one with rustc 1.95.0 (part 2).
+The block's effect on register allocation (why it is there: without
+it LLVM splits the load into a byte load per shift count) is the
+codegen gate's to compare, not this record's.
 
 Common to every Kani record: Kani checks the MIR of a debug build
 (overflow checks and debug assertions on) for x86_64, with CBMC's
@@ -164,15 +184,27 @@ sections (the instruction traces) need the Armv9.4-A snapshot
 (`armv9p4.ir`), which this lane's image lacks, and trace no
 instruction of this block (it has none).
 
+Revised on 2026-10-08 (package EMPTYASM): `verus/emptyasm/run.sh`
+checks the block's emptiness, argued until then, and the status goes
+from evidence to discharged; run then on both targets at commit
+2e78fb21 (it passes; its negative test fails, as it must, on a copy
+whose templates hold a `nop`), and reviewed by a fresh-context
+reviewer with the checker, whose findings are folded in. The Kani
+harness was not rerun (neither the contract, the copy nor the pins
+changed).
+
 ## Tests
 
 `sh verus/kani/run.sh` (`docs/testing.md`, "Kani") checks that the
 contract above is still the ledger's entry for this seam and that the
 pinned lines of the original and the copy are in place
-(`verus/kani/pins.txt`), then runs the harness under both quanta: a
-copy that breaks the contract fails the harness, and a changed
-contract or a changed body (either half) fails those checks until
-this record, the copy and the harness are revisited.
+(`verus/kani/pins.txt`), then runs `verus/emptyasm/run.sh` for x86_64
+and the harness under both quanta: a copy that breaks the contract
+fails the harness, a changed contract or a changed body (either half)
+fails those checks until this record, the copy and the harness are
+revisited, and an instruction in the block, in the shipped x86_64
+code, fails the empty-block check.
 `sh verus/isla/run.sh` fails when the `asm!` call changes (any
-instruction added to the template, or another operand or option).
+instruction added to the template, or another operand or option), and
+runs `verus/emptyasm/run.sh` for both targets.
 The scripts are run by hand; no CI job runs them yet.

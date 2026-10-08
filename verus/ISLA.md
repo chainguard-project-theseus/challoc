@@ -18,28 +18,36 @@ for what is left: other CPUs, the linked code, Islaris and CI. Seam
 numbers and line numbers are from 8635213.
 
 Since the port of upstream #77 two more inline-asm seams are
-discharged, both register-pinning hints with an empty template
-(`/* {0} */`, one `inout(reg)` operand) on aarch64:
-`api::shared_base` ([record](seams/api-shared_base.md), the free paths'
-pointer to `SHARED`) and `class::table::word_index`
+register-pinning hints with an empty template (`/* {0} */`, one
+`inout(reg)` operand) on aarch64: `api::shared_base`
+([record](seams/api-shared_base.md), the free paths' pointer to
+`SHARED`) and `class::table::word_index`
 ([record](seams/class-table-word_index.md), the free bit test's word
 index). An empty template assembles to no instruction, so there is
 nothing for Isla to trace: `run.sh` checks their templates (section 1,
-`templates.txt`), and the records argue the rest (the operand comes
-out of the one register it went in). `sys::opaque`, the hint upstream
-#78 added and #77 replaced with `shared_base`, is gone.
+`templates.txt`), and since package EMPTYASM `verus/emptyasm/run.sh`
+(which `run.sh` runs after section 1) checks that each such block adds
+no instruction to the shipped code: in the assembly LLVM prints beside
+the shipped build's object (from the same module; the object stays
+byte-identical), every instance of the block, found by its `.loc` line,
+holds only the template reprinted as a comment by LLVM's assembler
+parser, and the call compiled alone into an object adds no byte. The
+operand then comes out of the one register it went in (rustc's
+`inout`). Both records are discharged. `sys::opaque`, the hint
+upstream #78 added and #77 replaced with `shared_base`, is gone.
 Both items are split per architecture (`#[cfg(target_arch)]`): the
 x86_64 ones have no `asm!` and verify, so these records are about the
 aarch64 items alone.
 `layout::regions::class_entry`'s x86_64 hint is the same shape; since
 package P7 it is its own item, `layout::regions::entry_barrier`, pinned
-the same way ([record](seams/layout-regions-entry_barrier.md), evidence),
-and `class_entry` around it is verified. `heap::ClassLine::guard_word`'s
-x86_64 hint (upstream #101) is the same shape too: its template is in
-`templates.txt`, and its [record](seams/heap-shared-ClassLine-guard_word.md)
-is evidence, as `word_index`'s is: Kani checks the 8-byte load (on a
-pinned copy, `verus/kani/pins.txt`), and the block has only its
-template pin.
+and checked the same way ([record](seams/layout-regions-entry_barrier.md),
+discharged), and `class_entry` around it is verified.
+`heap::ClassLine::guard_word`'s x86_64 hint (upstream #101) is the same
+shape too: its template is in `templates.txt`, the empty-block check
+covers it, and Kani checks the 8-byte load (on a pinned copy,
+`verus/kani/pins.txt`), so its
+[record](seams/heap-shared-ClassLine-guard_word.md) is discharged
+(tool Kani).
 
 ## Setup
 
@@ -194,7 +202,9 @@ then:
    (or under none, for a title with no architecture: `sys::pac`'s items
    and the mixed seams are one item for both; the `cfg` is the one on
    the top-level item, on the `mod` an indented item sits in, or on the
-   indented item itself; any other `cfg` naming `target_arch` fails);
+   indented item itself; any other `cfg` naming `target_arch` fails),
+   then runs `verus/emptyasm/run.sh` on both targets (the empty
+   templates, above);
 2. disassembles the library (`llvm-objdump -dr`) and finds every site of
    the checked templates: every `svc`/`hvc`/`smc` must be `svc #0`,
    every relocation against `challoc_tls` must sit in the TLS load or

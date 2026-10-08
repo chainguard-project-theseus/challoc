@@ -10,8 +10,11 @@
 # contract fails here until the record and its harness are revisited;
 # so does a change to the source lines a harness copies
 # (verus/kani/pins.txt: Kani cannot run inline assembly, so a harness
-# runs a copy of the body around it).
-# Then runs the harnesses under both quanta, since the layout,
+# runs a copy of the body around it). Then runs verus/emptyasm/run.sh
+# for x86_64: the block such a copy leaves out in
+# `ClassLine::guard_word` is an empty template, and that check shows it
+# adds no instruction to the shipped code.
+# Last it runs the harnesses under both quanta, since the layout,
 # class-table and geometry harnesses depend on `NCLASSES`, and exits
 # non-zero if the check or either run fails.
 # Needs Kani 0.68.0 (`sh verus/kani/setup.sh`). The flags:
@@ -68,6 +71,16 @@ for f in $(awk -F'\t' '!/^#/ && NF == 2 { print $1 }' verus/kani/pins.txt | sort
 	[ -z "$missing" ] || { echo "kani: $f no longer has, as verus/kani/pins.txt lists it: $missing" >&2; exit 1; }
 done
 echo "kani: $(echo "$records" | wc -w) records match the ledger"
+# `ClassLine::guard_word`'s harness runs a copy without its x86_64
+# `asm!` block, an empty template: verus/emptyasm/run.sh checks that
+# the block adds no instruction to the code (two release builds with
+# the codegen gate's toolchain, rustup's 1.95.0 with llvm-tools, in a
+# temporary directory removed afterwards).
+ea=$(mktemp -d "${TMPDIR:-/tmp}/challoc-kani-emptyasm.XXXXXX")
+ea_status=0
+EMPTYASM_TARGETS=x86_64 sh verus/emptyasm/run.sh "$ea" || ea_status=$?
+rm -rf "$ea"
+[ $ea_status -eq 0 ] || { echo "kani: verus/emptyasm/run.sh failed" >&2; exit 1; }
 
 jobs=${KANI_JOBS:-1}
 status=0

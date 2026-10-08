@@ -217,7 +217,9 @@ sh verus/kani/run.sh            # every harness, under both quanta
 sh verus/kani/run.sh --harness slice_swap
 ```
 
-Kani needs its own nightly (the setup installs it) and is not part of
+Kani needs its own nightly (the setup installs it), and before the
+harnesses the script runs `verus/emptyasm/run.sh` for x86_64 ("Empty asm
+blocks" below: rustup's 1.95.0 with llvm-tools). It is not part of
 `make test`. The run takes about an hour per quantum, one harness at a
 time: the formatting harnesses need up to 20 GB each, so `KANI_JOBS=n`
 runs `n` at once only on a machine with that much memory per job. Run
@@ -236,6 +238,40 @@ pair of operands; so the harness of `arena::key_less`, a tuple
 comparison, runs its two `bool`s as literals and compares the expected
 keys as integers). A harness that leans on either would check the model,
 not the code.
+
+## Empty asm blocks
+
+Four seams are `asm!` blocks with an empty template (`/* {0} */`, one
+`inout(reg)` operand), register-allocation hints on the `free` paths:
+`api::shared_base` and `class::table::word_index` on aarch64,
+`layout::regions::entry_barrier` and the block in
+`heap::ClassLine::guard_word` on x86_64 (`verus/emptyasm/blocks.txt`).
+Their records rest on a check that each adds no instruction to the
+code:
+
+```sh
+sh verus/emptyasm/run.sh        # both targets, four release builds
+sh verus/emptyasm/run.sh -n     # negative test: a `nop` in each template must fail it
+```
+
+It builds the library as `cargo build --release` does, with
+`--emit=asm,obj` and with `-C save-temps`, and checks the two objects
+are byte-identical (adding the assembly leaves the shipped object as it
+is). In the assembly, every inline-asm block LLVM printed (between
+`#APP` and `#NO_APP`, `//APP` and `//NO_APP` on aarch64) is attributed
+by its `.loc` to an `asm!(` line, only the listed blocks may hold a
+comment, and each instance of a listed block must hold only a comment
+(the template, reprinted by LLVM's assembler parser). Last it compiles
+each listed `asm!` call alone into an object, beside the same function
+without it, and the two must be the same bytes. The cross target is
+not linked (`-C linker=true`), and its C++ shim is compiled with the
+host `c++` when no cross compiler is found. It needs rustup's 1.95.0
+toolchain (`RUSTUP_TOOLCHAIN` overrides it) with the llvm-tools
+component and both targets' standard libraries; it checks the default
+features (`EMPTYASM_CARGO_FLAGS` adds cargo options, for quantum8).
+`verus/isla/run.sh` runs it for both targets and `verus/kani/run.sh`
+for x86_64. Run it when a change touches one of these blocks or the
+toolchain.
 
 ## RefinedRust
 
