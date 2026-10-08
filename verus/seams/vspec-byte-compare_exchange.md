@@ -1,6 +1,6 @@
 # `compare_exchange` (`vspec/byte.rs`)
 
-Seam S272 of `verus/SEAMS.md`: src/vspec/byte.rs:136. Kind: external_body. Category: atomics primitive.
+Seam S272 of `verus/SEAMS.md`: src/vspec/byte.rs:137. Kind: external_body. Category: atomics primitive.
 Discharged by the C11 atomicity rules and loom (part 2).
 
 ## Contract
@@ -65,7 +65,8 @@ Two parts.
    runs the real wrappers of `vspec/byte.rs` (`load`,
    `compare_exchange`, `store`, compiled over loom's `AtomicU8`) with
    the orderings `sys/cgroup.rs` passes, driven by copies of
-   `Deferred::get`, `Deferred::discover` (without `found`) and
+   `Deferred::get`, `Deferred::discover` (without `found`),
+   `Deferred::published` and
    `Deferred::fork_child` (`sys` is not in the `cfg(loom)` build; the
    copied lines are pinned in `verus/loom/pins.txt`), the cell as one
    loom `UnsafeCell`. Exhaustive (no preemption bound):

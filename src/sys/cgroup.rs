@@ -1358,8 +1358,9 @@ verus! {
 ///
 /// One thread discovers (a compare-exchange from `PENDING`) into the
 /// cell and publishes it with a release store of `DONE`; readers see the
-/// cell only after an acquire load of `DONE`, so the record's plain
-/// fields are never read while they are written. The phase's invariant
+/// cell only after an acquire load of `DONE` (the discoverer, after its
+/// own write), so the record's plain fields are never read while they
+/// are written. The phase's invariant
 /// ([`PhasePred`]) carries that protocol: it holds the cell's permission
 /// while the phase is `PENDING`, hands it to the exchange's winner, and
 /// holds it frozen from the `DONE` store on, for every reader.
@@ -1427,7 +1428,8 @@ impl InvariantPredicate<(int, CellId), PhaseVal> for PhasePred {
 pub type PhaseInv = AtomicInvariant<(int, CellId), PhaseVal, PhasePred>;
 
 /// The cell's frozen permission a thread has seen, if any: what
-/// [`Deferred::load_phase`] hands back when it reads `DONE`.
+/// [`Deferred::load_phase`] hands back when it reads `DONE`, or what
+/// [`Deferred::discover`] keeps from its own `DONE` store.
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct CellSeen {
@@ -1543,11 +1545,17 @@ impl Deferred {
     /// waits for it when `wait` (termination is not claimed: the wait ends
     /// when the other thread's discovery does), and otherwise returns at
     /// once with the record still pending.
+    ///
+    /// `seen` gets the cell's frozen permission whenever `wait`: from this
+    /// call's `DONE` store, or from the acquire load of `DONE` that ended
+    /// its wait. [`Deferred::published`] reads the record through it.
     #[verifier::exec_allows_no_decreases_clause]
-    pub fn discover<F: FnOnce(&Cgroup)>(&self, wait: bool, found: F) -> bool
+    pub fn discover<F: FnOnce(&Cgroup)>(&self, wait: bool, found: F, Tracked(seen): Tracked<&mut CellSeen>) -> bool
         requires
             crate::sys::may_syscall(),
             forall|cg: &Cgroup| #[trigger] call_requires(found, (cg,)),
+        ensures
+            wait ==> self.seen_done(*final(seen)),
     {
         let tracked mut claimed = CellClaim { cell: None };
         match self.claim(Tracked(&mut claimed)) {
@@ -1558,16 +1566,36 @@ impl Deferred {
                 // permission; no reader looks at the cell before `DONE`.
                 let cg = self.cell_write(cg, Tracked(&mut cell));
                 found(cg);
-                self.publish(Tracked(cell));
+                let Tracked(frozen) = self.publish(Tracked(cell));
+                proof {
+                    seen.frozen = Some(frozen);
+                }
                 true
             },
             Err(_) => {
-                while wait && self.phase.load(Ordering::Acquire) != PHASE_DONE {
+                while wait && self.load_phase(Tracked(seen)) != PHASE_DONE {
                     core::hint::spin_loop();
                 }
                 false
             },
         }
+    }
+
+    /// `seen` holds this record's cell's frozen permission, with a record
+    /// in the cell: the record is published.
+    pub closed spec fn seen_done(&self, seen: CellSeen) -> bool {
+        seen.frozen matches Some(p) && cell_done(*p, self.cell.id())
+    }
+
+    /// The published record, read through the cell's frozen permission
+    /// that a waiting [`Deferred::discover`] handed back; no load of the
+    /// phase.
+    #[inline]
+    pub fn published(&self, Tracked(seen): Tracked<CellSeen>) -> &Cgroup
+        requires
+            self.seen_done(seen),
+    {
+        self.cell_ref(Tracked(seen.frozen.tracked_unwrap()))
     }
 
     /// The child of a `fork` has only the forking thread: a discovery
@@ -1635,11 +1663,14 @@ impl Deferred {
     }
 
     /// The phase's `DONE` store, `Release`, with the cell's permission
-    /// frozen into the invariant for every reader ([`PhasePred`]).
+    /// frozen into the invariant for every reader ([`PhasePred`]); the
+    /// frozen permission is handed back to the publisher too.
     #[inline(always)]
-    fn publish(&self, Tracked(cell): Tracked<CellPerm>)
+    fn publish(&self, Tracked(cell): Tracked<CellPerm>) -> (r: Tracked<&'static CellPerm>)
         requires
             cell_done(cell, self.cell.id()),
+        ensures
+            *r@ == cell,
     {
         proof {
             use_type_invariant(self);
@@ -1651,6 +1682,7 @@ impl Deferred {
                 v.2 = Some(frozen);
             }
         });
+        Tracked(frozen)
     }
 
     /// The discovered record in the cell, through its permission.
@@ -2661,13 +2693,20 @@ mod linux_tests {
         assert!(d.due(born + DEFER_NS));
         let mut seen = None;
         assert!(
-            d.discover(false, |cg| seen = Some((cg.state(), d.get().is_none()))),
+            d.discover(
+                false,
+                |cg| seen = Some((cg.state(), d.get().is_none())),
+                Tracked::assume_new()
+            ),
             "the first call discovers"
         );
         let (state, unpublished) = seen.expect("`found` ran");
         assert!(unpublished, "`found` runs before the record is published");
         assert!(d.get().is_some());
-        assert!(!d.discover(true, |_| ()), "and only the first");
+        assert!(
+            !d.discover(true, |_| (), Tracked::assume_new()),
+            "and only the first"
+        );
         assert!(!d.due(u64::MAX));
         let now = Cgroup::discover(true);
         assert_eq!(state, now.state());
@@ -2683,17 +2722,17 @@ mod linux_tests {
         let e = Deferred::later(born);
         e.phase.store(PHASE_RUNNING, Ordering::Relaxed);
         assert!(
-            !e.discover(false, |_| ()),
+            !e.discover(false, |_| (), Tracked::assume_new()),
             "another thread's discovery under way"
         );
         assert!(e.get().is_none());
         e.fork_child();
         assert!(e.due(born + DEFER_NS), "the child starts it over");
-        assert!(e.discover(false, |_| ()));
+        assert!(e.discover(false, |_| (), Tracked::assume_new()));
         assert_eq!(e.get().unwrap().state(), now.state());
         let off = Deferred::now(Cgroup::discover(false));
         assert_eq!(off.get().unwrap().state(), State::Disabled);
-        assert!(!off.due(u64::MAX) && !off.discover(true, |_| ()));
+        assert!(!off.due(u64::MAX) && !off.discover(true, |_| (), Tracked::assume_new()));
     }
 
     fn read_opt(p: &str) -> Option<String> {

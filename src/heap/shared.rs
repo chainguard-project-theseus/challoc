@@ -33,7 +33,7 @@ use crate::policy::Policy;
 use crate::stats::Snapshot;
 #[cfg(verus_only)]
 use crate::stats::axiom_snapshot_lock_inv;
-use crate::sys::cgroup::{Cgroup, Deferred};
+use crate::sys::cgroup::{CellSeen, Cgroup, Deferred};
 #[cfg(verus_only)]
 use crate::vspec::atom::usize_id;
 use crate::vspec::atom::usize_ptr;
@@ -2575,23 +2575,20 @@ impl Shared {
 
     /// The memory cgroup record, discovering it first if that has not
     /// happened: what a reader of the figures (`stats.cgroup.*`, the
-    /// report) uses. After a waiting discovery the record is published,
-    /// so the abort is an integrity check (theorem "Read-only APIs never
-    /// abort": `DONE`, once loaded, is never replaced, which no verified
-    /// invariant of the phase states).
+    /// report) uses. A waiting discovery returns with the record published
+    /// and hands back the cell's frozen permission (`Deferred::discover`),
+    /// through which the record is read: no abort (theorem "Read-only APIs
+    /// never abort").
     pub fn cgroup_now(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: &Cgroup)
         requires
             crate::sys::may_syscall(),
-            crate::sys::may_abort_corrupt(),
             old(ord).allows(rank_class(0, 0)),
         ensures
             *final(ord) == *old(ord),
     {
-        self.discover_cgroup(true, Tracked(ord));
-        match self.cgroup.get() {
-            Some(cg) => cg,
-            None => crate::sys::abort_integrity(format_args!("cgroup: discovery did not publish")),
-        }
+        let tracked mut seen = CellSeen { frozen: None };
+        self.discover_cgroup(true, Tracked(ord), Tracked(&mut seen));
+        self.cgroup.published(Tracked(seen))
     }
 
     /// Discover the cgroup if the deferral has run out at `now` (the
@@ -2604,7 +2601,8 @@ impl Shared {
         ensures
             *final(ord) == *old(ord),
     {
-        self.cgroup.due(now) && self.discover_cgroup(false, Tracked(ord))
+        let tracked mut seen = CellSeen { frozen: None };
+        self.cgroup.due(now) && self.discover_cgroup(false, Tracked(ord), Tracked(&mut seen))
     }
 
     /// Discover the cgroup in `fork`'s prepare handler, so the child
@@ -2618,7 +2616,8 @@ impl Shared {
         ensures
             *final(ord) == *old(ord),
     {
-        self.discover_cgroup(false, Tracked(ord));
+        let tracked mut seen = CellSeen { frozen: None };
+        self.discover_cgroup(false, Tracked(ord), Tracked(&mut seen));
     }
 
     /// Run the deferred discovery (`Deferred::discover`): `true` when this
@@ -2626,17 +2625,23 @@ impl Shared {
     /// baseline, set before the record is published (as at init: a
     /// container that already had `high` events does not start with a
     /// full purge, whichever thread samples first); then the band from
-    /// the first sample.
-    fn discover_cgroup(&self, wait: bool, Tracked(ord): Tracked<&mut LockOrder>) -> bool
+    /// the first sample. When `wait`, `seen` gets the cell's frozen
+    /// permission (the record is published).
+    fn discover_cgroup(&self, wait: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(seen): Tracked<&mut CellSeen>) -> bool
         requires
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
         ensures
             *final(ord) == *old(ord),
+            wait ==> self.cgroup.seen_done(*final(seen)),
     {
-        let ran = self.cgroup.discover(wait, |cg: &Cgroup| {
-            self.policy.rebase_high_rises(cg.rises().0);
-        });
+        let ran = self.cgroup.discover(
+            wait,
+            |cg: &Cgroup| {
+                self.policy.rebase_high_rises(cg.rises().0);
+            },
+            Tracked(seen),
+        );
         if ran {
             crate::policy::evaluate(self, Tracked(ord));
         }

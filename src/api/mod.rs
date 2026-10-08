@@ -3768,7 +3768,6 @@ mod tests {
             ("class/table.rs", "pub fn new("),
             ("bitmap.rs", "pub fn allocated("),
             ("api/print.rs", "fn flush("),
-            ("heap/shared.rs", "pub fn cgroup_now("),
         ];
         // Theorem 44's resource-failure aborts and pending checks.
         let kernel_sites = [

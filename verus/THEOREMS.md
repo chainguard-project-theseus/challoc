@@ -94,7 +94,9 @@ add.
   verified). The deferred cgroup record (`sys::cgroup::Deferred`) has
   the same protocol over its phase (`sys::cgroup::PhasePred`, through
   `vspec/byte.rs`) and its cell (a vstd `PCell`): `Deferred::get`
-  reads the record through the permission frozen at `DONE`. Each
+  reads the record through the permission frozen at `DONE`, and
+  `Deferred::published` (`Shared::cgroup_now`) through the one a
+  waiting `Deferred::discover` hands back. Each
   cell's fork-child reset puts back the permission a vanished thread
   of the parent held (`api::axiom_line_orphaned`,
   `sys::cgroup::axiom_cell_orphaned`), with a named residue: a signal
@@ -5415,25 +5417,6 @@ pub(super) fn theorem_mallctlbymib_reads_never_abort(shared: &Shared, mibp: *con
         crate::sys::may_syscall(),
         shared.wf(),
         cb.fresh(CEntry::ByMib { mib: mibp, miblen, oldp: io.oldp as *mut u8, .. }),
-
-// since upstream #110: the seven `stats.cgroup.*` keys of `Reader::checks`
-#[cfg(verus_only)]
-pub(super) fn theorem_mallctl_cgroup_reads_check(shared: &Shared, name: *const c_char,
-    io: &Io, m: &[usize], Tracked(cc): Tracked<CCall>)
-    requires
-        crate::sys::may_syscall(),
-        crate::sys::integrity_aborts(),
-        shared.wf(),
-        cc.fresh(CEntry::Mallctl { .. }), // as above
-
-#[cfg(verus_only)]
-pub(super) fn theorem_mallctlbymib_cgroup_reads_check(shared: &Shared, mibp: *const usize,
-    miblen: usize, io: &Io, Tracked(cb): Tracked<CCall>)
-    requires
-        crate::sys::may_syscall(),
-        crate::sys::integrity_aborts(),
-        shared.wf(),
-        cb.fresh(CEntry::ByMib { .. }), // as above
 ```
 
 (Bodies elided.) `may_abort()` is a capability, as theorem 8's
@@ -5443,15 +5426,14 @@ functions and of the panic handler. The integrity checks, the aborts
 that test allocator state no verified invariant constrains, accept the
 narrower `may_abort_corrupt()`
 instead: `vspec::check` (`requires may_abort_corrupt() || c`) and
-`sys::abort_integrity` (`sys/abort.rs:175`). The first witness and the
-two `stats.cgroup.*` witnesses hold only `integrity_aborts()`, which
-nothing grants, the other two hold no abort capability at all; all hold
-`may_syscall()` (the read-only paths take locks) and a well-formed
-`Shared`: they make the calls below and verify. So these calls abort at
-most at an integrity check, whatever their arguments (for the
-`mallctl*` pointers, whatever arguments keep the C contract, as the
-premises below say), and only `mallinfo`/`mallinfo2` and, since upstream
-#110, the seven `stats.cgroup.*` reads reach one:
+`sys::abort_integrity` (`sys/abort.rs:175`). The first witness holds
+only `integrity_aborts()`, which nothing grants, the other two hold no
+abort capability at all; all hold `may_syscall()` (the read-only paths
+take locks) and a well-formed `Shared` (which carries the `api::ready()`
+the readers require): they make the calls below and verify. So these
+calls abort at most at an integrity check, whatever their arguments
+(for the `mallctl*` pointers, whatever arguments keep the C contract,
+as the premises below say), and only `mallinfo`/`mallinfo2` reach one:
 
 - `get_defrag_hint(p)` (`api/jemalloc.rs:667`), whole, for every `p`
   and before init. It requires no abort capability at all (only
@@ -5482,21 +5464,22 @@ premises below say), and only `mallinfo`/`mallinfo2` and, since upstream
   formerly closures outside `verus!`), each called by the witness for
   the readers that do not abort; `call`, which runs the reader of the
   node the MIB resolves to, is a verified `match` over the `Reader` enum
-  and requires `may_abort()` or `!read.aborts()`, and
-  `may_abort_corrupt()` or `!read.checks()`. Every such read but the
-  seven below and both utilization queries never abort,
-  `stats.arenas.<i>.*` with `i` = `MALLCTL_ARENAS_ALL`
-  (`stats::arena_stats_all`) included: the witness requires no
-  `integrity_aborts()`. Since upstream #110 the seven `stats.cgroup.*`
+  and requires `may_abort()` or `!read.aborts()`. Every such read but
+  both utilization queries never aborts, `stats.arenas.<i>.*` with `i`
+  = `MALLCTL_ARENAS_ALL` (`stats::arena_stats_all`) included: the
+  witness requires no `integrity_aborts()`. The seven `stats.cgroup.*`
   reads behind `mallctl::tracked` (`limit`, `high`, `current`,
-  `decay_ms`, `retention_cap`, `empty_bytes`, `full_purges`;
-  `Reader::checks`) run the deferred cgroup discovery first
-  (`Shared::cgroup_now`) and abort at most at its integrity check
-  (below): their witnesses, `theorem_mallctl_cgroup_reads_check` and
-  `theorem_mallctlbymib_cgroup_reads_check`, require
-  `integrity_aborts()`, and `ctl` requires `may_abort_corrupt()` or
-  `!ctl_checks(*node)`. (Before #110 they never aborted, not even at
-  an integrity check.)
+  `decay_ms`, `retention_cap`, `empty_bytes`, `full_purges`) run the
+  deferred cgroup discovery first (`Shared::cgroup_now`, since upstream
+  #110) and are among them: a waiting `Deferred::discover` returns the
+  cell's frozen permission (from its own release store of `DONE` when
+  it discovered, else from the acquire load of `DONE` that ended its
+  wait; the phase's invariant `PhasePred` holds that permission from
+  `DONE` on), and `cgroup_now` reads the record through it
+  (`Deferred::published`), with no second load of the phase and no
+  check. (From #110 until this change they had witnesses of
+  their own that required `integrity_aborts()`, for `cgroup_now`'s check
+  that the record was published after the wait.)
 - `mallctlnametomib` (`:2411`) requires no abort capability: it never
   aborts, before init too (it never runs it), for a `name`, `mibp` and
   `miblenp` that keep their C contract.
@@ -5508,18 +5491,9 @@ so the cache fast paths of `malloc`, `free`, `free_sized` and
 fail leave the fast path for the slow one, which requires `may_abort()`.
 
 The integrity checks the covered calls reach (`api::tests::
-abort_grants_only_at_roots`, `api/mod.rs:1868`, lists the callers of
+abort_grants_only_at_roots`, `api/mod.rs:3628`, lists the callers of
 `check` and `abort_integrity` and the trusted bodies that require
 `may_abort_corrupt()` alone):
-- `heap::Shared::cgroup_now` (`heap/shared.rs`, since upstream #110,
-  `abort_integrity` with "cgroup: discovery did not publish"): after a
-  discovery that waited (`Deferred::discover(true)`), the record not
-  published. The phase is an `AtomicU8` that only discovery's release
-  store sets to `DONE` and that nothing moves back from it
-  (`Deferred::fork_child` only resets `RUNNING`), so it fails only if
-  that is broken; no verified invariant states it. Reached by the
-  seven `stats.cgroup.*` reads above, and by `malloc_stats_print`'s
-  reports (`text_general`, `policy_line`, `json_general`).
 - `stats::huge_usable_pages` (`stats.rs:512`, abort in
   `huge_pages_short`, `:533`): an arena's `large` word holding fewer
   pages than its runs' guards. The word is a plain `AtomicU64` that
@@ -5527,6 +5501,20 @@ abort_grants_only_at_roots`, `api/mod.rs:1868`, lists the callers of
   on a corrupt counter. Reached by `mallinfo`/`mallinfo2`
   (`collect_all`), not by any mallctl read (the `stats.*` totals read the
   stored snapshot).
+
+`Shared::cgroup_now`'s integrity check (since upstream #110,
+`abort_integrity` with "cgroup: discovery did not publish": the record
+not published after a waiting discovery, reached by the seven
+`stats.cgroup.*` reads and by `malloc_stats_print`'s `text_general`,
+`policy_line` and `json_general`) is gone: `cgroup_now` reads the record
+through the frozen permission the waiting discovery hands back (a
+waiting `Deferred::discover` ensures it has one), so neither those reads nor
+`policy_line` and `json_general` require `may_abort_corrupt()` any more.
+This is an exec change of `cgroup_now` (and the cold functions it is
+inlined into; its second load of the phase, `Deferred::get`'s, is
+gone) and, in source only, of `discover`'s wait loop, which loads
+through `load_phase` (the same `Acquire` load); the hot set is
+unchanged.
 
 Two integrity sites of the first version of this theorem are gone, both
 over the arena count, which is now an atomic invariant (`NarenasPred`,
@@ -5610,9 +5598,7 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   can prove `may_abort()` only from its own `requires` (or a loop
   invariant that carries it), or from `grant_aborts`, and
   `may_abort_corrupt()` only from those or `integrity_aborts()`, which
-  only `theorem_read_only_never_aborts` and, since upstream #110, the two
-  `stats.cgroup.*` witnesses (`theorem_mallctl_cgroup_reads_check`,
-  `theorem_mallctlbymib_cgroup_reads_check`) require.
+  only `theorem_read_only_never_aborts` requires.
 - `grant_aborts` is called only in `extern "C"` bodies (the
   `verified_export_pair!` macro, `api/mod.rs:68`, and every hand-written
   export: 44 grants) and in the `#[panic_handler]`, which the panic
@@ -5660,9 +5646,9 @@ bound, never fails: `Sink`'s type invariant states the bound, and
   without aborting, true because readers run only inside
   `mallctl`/`mallctlbymib`, after their own `super::shared()`
   returned). Since package RDE it is verified: it requires
-  `api::ready()`, which `ctl` and the two `mallctl` witnesses have from
+  `api::ready()`, which `ctl` and the `mallctl` witness have from
   `shared.wf()` (`Shared::lemma_wf_ready`) and pass to every reader
-  that reads the state (`ctl` through `call`, the witnesses directly),
+  that reads the state (`ctl` through `call`, the witness directly),
   and it reads through `api::shared_deref` (no readiness check, no
   init path, so no abort).
   So the witnesses' `shared.wf()` is the theorem's one assumption
@@ -5729,10 +5715,16 @@ bound, never fails: `Sink`'s type invariant states the bound, and
 - Corrupt state is not excluded for `mallinfo` and `mallinfo2`: the
   `large` word's check may fire; the theorem names it rather than
   proving it unreachable (above: the word has no honest invariant that
-  excludes it). Since upstream #110 the same holds of the seven
-  `stats.cgroup.*` reads: `Shared::cgroup_now`'s check (the record not
-  published after a waited-for discovery) is named, not proved
-  unreachable (the discovery phase has no verified invariant).
+  excludes it). The seven `stats.cgroup.*` reads, which from upstream
+  #110 reached `Shared::cgroup_now`'s check, reach none now: that the
+  record is published after a waiting discovery is proved from the
+  phase's invariant (`sys::cgroup::PhasePred`), over the trusted
+  `vspec::byte` wrappers (discharged by loom records) and the fork
+  child's `axiom_cell_orphaned`. Its residue (a fork from a signal
+  handler on the discovering thread) is outside the theorem: run one
+  after the other, the two discoveries rewrite a published record
+  without an abort, but run concurrently (the child has started another
+  thread) they race on the cell, as that axiom's doc says.
 
 Machine code: the hot set is unchanged (x86_64 disassembly identical to
 the base commit outside the readers). The 43 `stats.*` and `arenas.*`

@@ -590,7 +590,6 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
 fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
     requires
         crate::sys::may_syscall(),
-        crate::sys::may_abort_corrupt(),
         shared.wf(),
 {
     use crate::policy::{Band, FRAC_ONE};
@@ -920,7 +919,6 @@ fn json_general<W: Write>(
 ) -> fmt::Result
     requires
         crate::sys::may_syscall(),
-        crate::sys::may_abort_corrupt(),
         shared.wf(),
 {
     proof {

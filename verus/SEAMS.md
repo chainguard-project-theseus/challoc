@@ -1137,7 +1137,7 @@ axiom fn axiom_c_out<T>(p: *mut T, nullable: bool) -> (tracked o: COut<T>)
 
 ### S16. `root`
 
-src/api/mallctl.rs:1186. Kind: external_body. Category: function pointer.
+src/api/mallctl.rs:1159. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-mallctl-root.md).
 
 > [`ROOT`].
@@ -1150,7 +1150,7 @@ fn root() -> (r: &'static [Node])
 
 ### S17. `axiom_c_call`
 
-src/api/mallctl.rs:3548. Kind: axiom. Category: C-program contract.
+src/api/mallctl.rs:3412. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point (a `mallctl` one: `malloc_stats_print`'s are `api/print.rs`'s, a free's or a realloc's the `axiom_c_block`s of `libc`, `jemalloc` and `cxx`) and with the arguments `e` names: the export wrapper's own parameters, which C passed under the entry point's contract ([`CCall::fresh`]: each pointer argument's [`crate::vspec::cbuf::CArg`] facts, of memory of the program's, and the string argument's view).
@@ -1608,7 +1608,7 @@ fn word(s: &CStr) -> &str
 
 ### S47. `hist_line`
 
-src/api/print.rs:856. Kind: external_body. Category: function pointer.
+src/api/print.rs:855. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-print-hist_line.md).
 
 > One class's line of [`slab_histogram`].
@@ -1627,7 +1627,7 @@ fn hist_line<W: Write>(
 
 ### S48. `file_target`
 
-src/api/print.rs:1367. Kind: external_body. Category: function pointer.
+src/api/print.rs:1365. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-print-file_target.md).
 
 > `Target::File(stream)`.
@@ -1638,7 +1638,7 @@ fn file_target(stream: *mut libc::FILE) -> Target
 
 ### S49. `stderr_target`
 
-src/api/print.rs:1374. Kind: external_body. Category: function pointer.
+src/api/print.rs:1372. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (verus/seams/api-print-stderr_target.md).
 
 > `Target::Stderr`.
@@ -1649,7 +1649,7 @@ fn stderr_target() -> Target
 
 ### S50. `axiom_c_call`
 
-src/api/print.rs:1405. Kind: axiom. Category: C-program contract.
+src/api/print.rs:1403. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names, which C passed under its contract ([`CCall::fresh`]: the string `opts`, of memory of the program's, and its view).
@@ -4096,7 +4096,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for Limit {
 
 ### S214. `axiom_cell_orphaned`
 
-src/sys/cgroup.rs:1472. Kind: axiom. Category: platform/kernel fact.
+src/sys/cgroup.rs:1474. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork child's orphaned cell): in the child of a `fork`, a record whose phase the child's reset found `RUNNING` (`before`, the phase's permission just before the reset, and `perm`, just after it, at `PENDING`) was being discovered by a thread of the parent, which holds the cell's permission between its winning exchange and its `DONE` store ([`Deferred::claim`], [`Deferred::publish`]).
@@ -4115,16 +4115,18 @@ axiom fn axiom_cell_orphaned(d: &Deferred, before: BytePerm, tracked perm: &Byte
 
 ### S215. `Deferred::discover`
 
-src/sys/cgroup.rs:1547. Kind: no_decreases. Category: termination.
+src/sys/cgroup.rs:1553. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > Run discovery if it has not run: `true` when this call ran it, so the caller sets the policy up from the first figures.
 
 ```rust
-pub fn discover<F: FnOnce(&Cgroup)>(&self, wait: bool, found: F) -> bool
+pub fn discover<F: FnOnce(&Cgroup)>(&self, wait: bool, found: F, Tracked(seen): Tracked<&mut CellSeen>) -> bool
     requires
         crate::sys::may_syscall(),
         forall|cg: &Cgroup| #[trigger] call_requires(found, (cg,)),
+    ensures
+        wait ==> self.seen_done(*final(seen)),
 ```
 
 ### S216. `DisplaySpecImpl for SizeSet`
@@ -4953,7 +4955,7 @@ pub(crate) unsafe fn load_u16_at(p: *const AtomicU16, ordering: Ordering, Tracke
 
 ### S270. `load`
 
-src/vspec/byte.rs:96. Kind: external_body. Category: atomics primitive.
+src/vspec/byte.rs:97. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-byte-load.md).
 
 > `b.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
@@ -4972,7 +4974,7 @@ pub fn load(b: &AtomicU8, ordering: Ordering, Tracked(perm): Tracked<&BytePerm>)
 
 ### S271. `store`
 
-src/vspec/byte.rs:114. Kind: external_body. Category: atomics primitive.
+src/vspec/byte.rs:115. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-byte-store.md).
 
 > `b.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
@@ -4992,7 +4994,7 @@ pub fn store(b: &AtomicU8, v: u8, ordering: Ordering, Tracked(perm): Tracked<&mu
 
 ### S272. `compare_exchange`
 
-src/vspec/byte.rs:136. Kind: external_body. Category: atomics primitive.
+src/vspec/byte.rs:137. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: discharged (verus/seams/vspec-byte-compare_exchange.md).
 
 > `b.compare_exchange(current, new, success, failure)`: `Ok` with the previous value, `current`, when the byte held it and now holds `new`; otherwise `Err` with the value it holds, unchanged (the strong form never fails spuriously).

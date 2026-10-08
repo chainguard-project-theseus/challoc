@@ -1,6 +1,6 @@
 # `store` (`vspec/byte.rs`)
 
-Seam S271 of `verus/SEAMS.md`: src/vspec/byte.rs:114. Kind: external_body. Category: atomics primitive.
+Seam S271 of `verus/SEAMS.md`: src/vspec/byte.rs:115. Kind: external_body. Category: atomics primitive.
 Discharged by the C11 release/acquire rules and loom (part 2).
 
 ## Contract
@@ -56,7 +56,8 @@ Two parts.
    runs the real wrappers of `vspec/byte.rs` (`load`,
    `compare_exchange`, `store`, compiled over loom's `AtomicU8`) with
    the orderings `sys/cgroup.rs` passes, driven by copies of
-   `Deferred::get`, `Deferred::discover` (without `found`) and
+   `Deferred::get`, `Deferred::discover` (without `found`),
+   `Deferred::published` and
    `Deferred::fork_child` (`sys` is not in the `cfg(loom)` build; the
    copied lines are pinned in `verus/loom/pins.txt`), the cell as one
    loom `UnsafeCell`. Exhaustive (no preemption bound):
@@ -106,9 +107,12 @@ Models: `loom_oncecell_deferred_discover_races_get`, `loom_oncecell_deferred_rel
   control shows the read racing without it. After `DONE` nothing writes
   the phase (the fork reset only acts on `RUNNING`), so the frozen
   permission stays valid: what the proof's `DONE ==> frozen` invariant
-  states. A waiting `discover` (a plain `Acquire` load until `DONE`)
-  and its caller `Shared::cgroup_now`, which then calls `get`, read the
-  record only through `get`'s own acquire load.
+  states. A waiting `discover` (an `Acquire` `load_phase` until `DONE`)
+  hands back the frozen permission its own load saw, and its caller
+  `Shared::cgroup_now` reads the record through it
+  (`Deferred::published`), with no second load: the read is after that
+  thread's own acquire load of `DONE`, or after its own write when it
+  was the discoverer (the model's waiting reader reads so).
 - **Gaps.** As in `vspec-byte-load.md`. The fork child's double write
   when the forking thread was itself the discoverer is
   `sys::cgroup::axiom_cell_orphaned`'s residue, outside this contract.

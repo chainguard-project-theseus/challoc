@@ -9,10 +9,10 @@
 //! `#[verifier::atomic]` function (so it can run inside an
 //! `open_atomic_invariant!` block) that passes the caller's ordering
 //! through unchanged, and `#[inline(always)]` leaves the machine code of
-//! the bare `core` call. The phase's other loads (`Deferred::due`'s
-//! `Relaxed` one and a waiting `Deferred::discover`'s `Acquire` one) stay
-//! plain `core` loads: vstd specifies their result as any value, which
-//! transfers nothing.
+//! the bare `core` call. The phase's other load (`Deferred::due`'s
+//! `Relaxed` one) stays a plain `core` load: vstd specifies its result
+//! as any value, which transfers nothing; a waiting `Deferred::discover`
+//! loads through `Deferred::load_phase`, as `Deferred::get` does.
 //!
 //! Trusted, all of it:
 //! - each wrapped `core` operation is one atomic operation on the byte (a
@@ -40,8 +40,9 @@
 //! - a permission's value is its byte's: every write of a deferred
 //!   record's phase goes through these wrappers (`Deferred::discover`,
 //!   `Deferred::fork_child`), each inside the phase's invariant
-//!   (`sys::cgroup::PhasePred`), as does `Deferred::get`'s load
-//!   (`verus/loom/run.sh` checks the writes by name).
+//!   (`sys::cgroup::PhasePred`), as do `Deferred::get`'s and a waiting
+//!   `Deferred::discover`'s loads (`Deferred::load_phase`;
+//!   `verus/loom/run.sh` checks the writes by name).
 
 use crate::sync::atomic::{AtomicU8, Ordering};
 use vstd::prelude::*;

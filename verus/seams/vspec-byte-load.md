@@ -1,6 +1,6 @@
 # `load` (`vspec/byte.rs`)
 
-Seam S270 of `verus/SEAMS.md`: src/vspec/byte.rs:96. Kind: external_body. Category: atomics primitive.
+Seam S270 of `verus/SEAMS.md`: src/vspec/byte.rs:97. Kind: external_body. Category: atomics primitive.
 Discharged by the C11 coherence rules and loom (part 2).
 
 ## Contract
@@ -22,10 +22,9 @@ pub fn load(b: &AtomicU8, ordering: Ordering, Tracked(perm): Tracked<&BytePerm>)
 The body: `b.load(ordering)`, the bare `core` call under
 `#[inline(always)]`. Its one caller is `Deferred::load_phase`
 (`Acquire`), inside the phase's invariant (`sys::cgroup::PhasePred`),
-which `Deferred::get` calls. The phase's other load, `Deferred::due`'s
-`Relaxed` one and the waiting `discover`'s `Acquire` one, are plain
-`core` loads that hand out nothing (vstd specifies their result as any
-value).
+which `Deferred::get` and a waiting `Deferred::discover` call. The
+phase's other load, `Deferred::due`'s `Relaxed` one, is a plain `core`
+load that hands out nothing (vstd specifies its result as any value).
 
 ## Statement
 
@@ -57,7 +56,8 @@ Two parts.
    runs the real wrappers of `vspec/byte.rs` (`load`,
    `compare_exchange`, `store`, compiled over loom's `AtomicU8`) with
    the orderings `sys/cgroup.rs` passes, driven by copies of
-   `Deferred::get`, `Deferred::discover` (without `found`) and
+   `Deferred::get`, `Deferred::discover` (without `found`),
+   `Deferred::published` and
    `Deferred::fork_child` (`sys` is not in the `cfg(loom)` build; the
    copied lines are pinned in `verus/loom/pins.txt`), the cell as one
    loom `UnsafeCell`. Exhaustive (no preemption bound):
@@ -101,7 +101,8 @@ Models: `loom_oncecell_deferred_discover_races_get`, `loom_oncecell_deferred_rel
   from the source).
 - **What the SC proof carries across locations.** The phase's invariant
   holds, besides the phase's permission, the cell's: memory, handed
-  between threads. A `get` whose load reads `DONE` gets the cell's
+  between threads. A `get` whose load reads `DONE` (and a waiting
+  `discover`, whose last load does, for `published`) gets the cell's
   permission frozen at the `DONE` store (`Deferred::publish`) and reads
   the record through it (`cell_ref`). Under C11 that read must happen
   after the discoverer's write of the cell: the write is before its

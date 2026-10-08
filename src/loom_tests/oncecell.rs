@@ -27,7 +27,10 @@
 //!   failure (`claim`, `vspec::byte::compare_exchange`), whose winner
 //!   writes the cell (`cell_write`), calls `found` and stores `DONE`
 //!   `Release` (`publish`, `vspec::byte::store`); a loser that waits spins
-//!   on a plain `Acquire` load until `DONE`; [`Deferred::fork_child`] is
+//!   on `load_phase` until `DONE`; [`Deferred::published`] is
+//!   `Deferred::published`, the cell read through the permission a
+//!   waiting `discover` hands back (`Shared::cgroup_now`), with no second
+//!   load; [`Deferred::fork_child`] is
 //!   `Deferred::fork_child`: the `Relaxed` exchange from `RUNNING` back
 //!   to `PENDING`.
 //!
@@ -313,12 +316,23 @@ impl Deferred {
                 true
             }
             Err(_) => {
-                while wait && self.phase.load(Ordering::Acquire) != PHASE_DONE {
+                while wait
+                    && byte::load(&self.phase, Ordering::Acquire, Tracked::assume_new())
+                        != PHASE_DONE
+                {
                     crate::sync::hint::spin_loop();
                 }
                 false
             }
         }
+    }
+
+    /// `Deferred::published`: after a waiting `discover`, the cell read
+    /// with no second load of the phase (`Shared::cgroup_now`).
+    fn published(&self) -> u64 {
+        // SAFETY: `DONE` observed by this thread's `Acquire` load in
+        // `discover`, or written by it (loom reports a race if not).
+        self.cell.with(|p| unsafe { *p })
     }
 
     /// `Deferred::fork_child`.
@@ -342,6 +356,11 @@ fn run_deferred(publish: Ordering) {
         let tick = thread::spawn(move || d.discover(false));
         let reader = thread::spawn(move || {
             let ran = d.discover(true);
+            assert_eq!(
+                d.published(),
+                RECORD,
+                "a waiting reader read another record"
+            );
             (ran, d.get())
         });
         if let Some(r) = d.get() {

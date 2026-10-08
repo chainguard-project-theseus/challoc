@@ -47,14 +47,15 @@ src/api/mod.rs	if INIT_TID.load(Ordering::Relaxed) == sys::gettid() as u32 {
 src/api/mod.rs	sys::abort("allocation during initialisation (re-entrant init)");
 src/api/mod.rs	while load_state(Tracked(&mut seen)) != READY {
 src/api/mod.rs	let _reset = line_compare_exchange(LINE_BUILDING, LINE_UNBUILT, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut v.perm));
-# sys/cgroup.rs: Deferred::get, discover, fork_child, load_phase, claim,
+# sys/cgroup.rs: Deferred::get, discover, published, fork_child, load_phase, claim,
 # publish (oncecell.rs, over the real vspec/byte.rs wrappers).
 src/sys/cgroup.rs	if self.load_phase(Tracked(&mut seen)) == PHASE_DONE {
 src/sys/cgroup.rs	match self.claim(Tracked(&mut claimed)) {
 src/sys/cgroup.rs	let cg = self.cell_write(cg, Tracked(&mut cell));
 src/sys/cgroup.rs	found(cg);
-src/sys/cgroup.rs	self.publish(Tracked(cell));
-src/sys/cgroup.rs	while wait && self.phase.load(Ordering::Acquire) != PHASE_DONE {
+src/sys/cgroup.rs	let Tracked(frozen) = self.publish(Tracked(cell));
+src/sys/cgroup.rs	while wait && self.load_phase(Tracked(seen)) != PHASE_DONE {
+src/sys/cgroup.rs	self.cell_ref(Tracked(seen.frozen.tracked_unwrap()))
 src/sys/cgroup.rs	let _reset = crate::vspec::byte::compare_exchange(&self.phase, PHASE_RUNNING, PHASE_PENDING, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut v.0));
 src/sys/cgroup.rs	r = crate::vspec::byte::load(&self.phase, Ordering::Acquire, Tracked(&v.0));
 src/sys/cgroup.rs	won = crate::vspec::byte::compare_exchange(&self.phase, PHASE_PENDING, PHASE_RUNNING, Ordering::Acquire, Ordering::Relaxed, Tracked(&mut v.0));
