@@ -60,7 +60,7 @@ reason (`api::axiom_fork_resumed_state`): see `invariants.md`,
 | S94 | `desc_ptr_addr` | sound | Empty contract; the Kani record covers it (the harness only shows that the cast returns, which is all the contract needs). |
 | S95 | `read_word` | sound | Nothing claimed about the value. (Its caller's comment "slots are at least 16 bytes" is false under quantum8; harmless, both reads are of word 0.) |
 | S108 | `Heap::home_ptr_at` | sound | True while a heap's ghost `home_hdrs` is where it lives: no verified code moves or swaps a `Heap` (by inspection). |
-| S109 | `Heap::cached_recently` | sound | No `ensures`; reads `0..len` under the permissions. Removable by a `ptr_ref` loop (exec change; proposed). |
+| S109 | `Heap::cached_recently` | sound | Since theorem 44's second tranche one `ensures`: a hit is one of the `len` entries whose address is `e`'s (true of the body: the compares are of addresses); reads `0..len` under the permissions. Removable by a `ptr_ref` loop (exec change; proposed). |
 | S111 | `addr_mix` | sound | No `ensures`. |
 | S114 | `stack_mut` | sound | The slice's lifetime is the permission map's mutable borrow; final values flow back into the permissions. |
 | S119 | `arena_volatile` | sound | No `ensures`. |

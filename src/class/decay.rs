@@ -287,7 +287,7 @@ pub(super) trait EmptyVisitor {
     /// slab visited.
     fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(self).inv(cs, *old(g)),
             old(self).last() < slab,
@@ -337,7 +337,7 @@ impl ClassState {
         spp: usize,
     ) -> (r: bool)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             spp > 1,
             slab + spp <= usize::MAX,
             g.arena@ == self.arena,
@@ -362,7 +362,7 @@ impl ClassState {
         let mut slabs = first..first + spp;
         loop
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 first == slab & !((spp - 1) as usize),
                 first <= slabs.start <= slabs.end,
                 slabs.end == first + spp,
@@ -441,7 +441,7 @@ impl ClassState {
     /// of the set above the last slab visited.
     pub(super) fn walk_empty<V: EmptyVisitor>(&self, g: &mut Inner, v: &mut V)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             walk_ok(self, *old(g)),
             old(v).inv(self, *old(g)),
@@ -460,7 +460,7 @@ impl ClassState {
         }
         while let Some(slab) = next
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 walk_ok(self, *g),
                 v.inv(self, *g),
@@ -481,7 +481,11 @@ impl ClassState {
             }
             let desc = self.desc(slab);
             if !(desc.state() == State::Empty && desc.live() == 0) {
-                crate::sys::abort_fmt(format_args!("class {}: slab {slab} in the empty set is not empty", self.class));
+                // A pending check of theorem "Valid programs never abort" on a
+                // free's tick: the state is read raw from the descriptor, not
+                // through `state_locked`, and no verified invariant relates
+                // the slab's live count to the sets.
+                crate::sys::abort_pending(format_args!("class {}: slab {slab} in the empty set is not empty", self.class));
             }
             let dirty_at = self.dirty_locked(g, desc, Ghost(slab));
             v.visit(self, g, slab, dirty_at);
@@ -581,7 +585,7 @@ impl Purger {
     #[inline(always)]
     fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64, purge: bool)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(self).inv(cs, *old(g)),
             old(self).last@ < slab,
@@ -730,7 +734,7 @@ impl ClassState {
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: usize)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
         ensures
@@ -1010,7 +1014,7 @@ impl ClassState {
     #[allow(clippy::while_let_loop)]
     fn purge_group(&self, g: &mut Inner, slab: usize, spp: usize, batch: &mut Batch) -> (n: usize)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(g).inv(),
             old(g).table@ == self.spec_table(),
@@ -1082,7 +1086,7 @@ impl ClassState {
         let mut slabs = first..first + spp;
         loop
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 g.inv(),
                 g.nbits() == self.spec_nslabs(),
                 g.table@ == self.spec_table(),
@@ -1124,6 +1128,10 @@ impl ClassState {
                 assert(g0.owns(s as nat));
                 assert(g0.slab_ok(s as nat));
                 super::lemma_set_len(g0.purged, g0.nbits(), s as nat);
+                // The empty count is the empty set's size (`Inner::base`),
+                // which holds `s`: the decrement below cannot underflow.
+                assert(g0.empty.map@.contains(s as nat));
+                vstd::set::lemma_set_contains_len(g0.empty.map@, s as nat);
             }
             self.set_state_locked(g, d, Ghost(s), State::Purged);
             self.set_dirty_locked(g, d, Ghost(s), 0);
@@ -1137,7 +1145,10 @@ impl ClassState {
                 .stats
                 .empty
                 .checked_sub(1)
-                .unwrap_or_else(|| slab_count_underflow("empty"));
+                .unwrap_or_else(|| -> (r: usize)
+                    requires
+                        false,
+                    { slab_count_underflow("empty") });
             g.stats.purged += 1;
             n += 1;
             proof {
@@ -1269,7 +1280,7 @@ impl ClassState {
     /// purged.
     fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> usize
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
         ensures
@@ -1340,7 +1351,7 @@ impl ClassState {
     /// slabs on top of the curve's allowance.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u64>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
         ensures

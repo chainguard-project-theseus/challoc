@@ -1064,7 +1064,7 @@ fn arena_count(shared: &Shared) -> (n: usize)
 /// with several slabs per page ([`Left::clean`]).
 pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || crate::sys::valid_aborts(),
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_class(0, 0)),
@@ -1085,7 +1085,7 @@ pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>, Trac
     let count = arena_count(shared);
     for i in 0..count
         invariant
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             shared.wf(),
             ord.allows(rank_class(0, 0)),
@@ -1160,7 +1160,7 @@ pub fn note_decay_changed()
 #[inline(never)]
 pub fn decay(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || crate::sys::valid_aborts(),
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_class(0, 0)),
@@ -1179,7 +1179,7 @@ pub fn decay(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -
     let count = arena_count(shared);
     for i in 0..count
         invariant
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             shared.wf(),
             ord.allows(rank_class(0, 0)),
@@ -1219,7 +1219,7 @@ pub fn decay_arena(shared: &Shared, index: u16, now: u64, Tracked(ord): Tracked<
 /// One arena's walks on its own period, scaled by the policy's band.
 fn decay_one(shared: &Shared, arena: &Arena, now: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || crate::sys::valid_aborts(),
         crate::sys::may_syscall(),
         old(ord).allows(rank_class(0, 0)),
     ensures
@@ -1238,7 +1238,7 @@ fn decay_one(shared: &Shared, arena: &Arena, now: u64, keep16: u32, Tracked(ord)
 /// the policy's band.
 fn decay_huge(shared: &Shared, now: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || crate::sys::valid_aborts(),
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_class(0, 0)),
@@ -1324,7 +1324,7 @@ pub fn purge_arena(
 /// foreground and leaves the start to the next allocation's tick.
 pub fn on_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&mut LockOrder>)
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || (crate::sys::valid_aborts() && !alloc),
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_class(0, 0)),

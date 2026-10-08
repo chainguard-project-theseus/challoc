@@ -10,13 +10,17 @@ package (P3), so that the contract states the bounds condition of the
 body's pointer offsets:
 
 ```rust
-pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8, Tracked(perms): Tracked<&Map<*mut *mut u8, PointsTo<*mut u8>>>) -> bool
+pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8, Tracked(perms): Tracked<&Map<*mut *mut u8, PointsTo<*mut u8>>>) -> (r: bool)
     requires
         len == 0 || slot_in(slots, len as int),
         forall|i: int| 0 <= i < len ==> {
             let q = #[trigger] slot_ptr(slots, i);
             perms.contains_key(q) && perms[q].ptr() == q && perms[q].is_init()
         },
+    ensures
+        // A hit is an entry among the `len` whose address is `e`'s (the
+        // compares are of addresses, as `==` on pointers is).
+        r ==> exists|i: int| 0 <= i < len && perms[#[trigger] slot_ptr(slots, i)].value()@.addr == e@.addr,
     opens_invariants none
 ```
 

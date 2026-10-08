@@ -15,7 +15,7 @@ use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_only)]
 use super::{
     ArenaCaches, axiom_fresh_stack, cell_ok, hand_out, lemma_handed_ok, lemma_plain_stored,
-    lemma_stack_push, lemma_stack_shrink, node_hdr, pac_mode, popped, regions_ok, slot_in,
+    lemma_stack_push, lemma_stack_shrink, node_hdr, pac_mode, plain, popped, regions_ok, slot_in,
     slot_ptr, slot_start, slot_token, stack_ok,
 };
 use super::{CachePerms, FOREIGN, Heap, Live, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
@@ -565,7 +565,7 @@ impl Heap {
     #[inline(always)]
     pub(super) fn push(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(blk): Tracked<Live>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
             blk.slot_block(p, class as int),
@@ -718,13 +718,17 @@ impl Heap {
     /// Trusted: the short-cache case is an iterator.
     #[inline(always)]
     #[verifier::external_body]
-    pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8, Tracked(perms): Tracked<&Map<*mut *mut u8, PointsTo<*mut u8>>>) -> bool
+    pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8, Tracked(perms): Tracked<&Map<*mut *mut u8, PointsTo<*mut u8>>>) -> (r: bool)
         requires
             len == 0 || slot_in(slots, len as int),
             forall|i: int| 0 <= i < len ==> {
                 let q = #[trigger] slot_ptr(slots, i);
                 perms.contains_key(q) && perms[q].ptr() == q && perms[q].is_init()
             },
+        ensures
+            // A hit is an entry among the `len` whose address is `e`'s (the
+            // compares are of addresses, as `==` on pointers is).
+            r ==> exists|i: int| 0 <= i < len && perms[#[trigger] slot_ptr(slots, i)].value()@.addr == e@.addr,
         opens_invariants none
     {
         if len == 0 {
@@ -738,6 +742,43 @@ impl Heap {
             } else {
                 (1..=len as usize).any(|i| *top.sub(i) == e)
             }
+        }
+    }
+
+    /// The address entry `i` of owned header `cache` stands for
+    /// ([`plain`]).
+    pub(super) open spec fn cached_addr(&self, cache: *mut CacheHeader, i: int) -> int {
+        plain(self.perms@.slots[self.perms@.ent(cache, i)].value(), self.hdr(cache).slots) as int
+    }
+
+    /// No cached entry of `cache` (its first `n`) stands for the live slot
+    /// whose token `blk` holds: each holds its own slot's token
+    /// ([`CachePerms::tokened`]), of the same authority, so of another slot
+    /// (`Live::lemma_slot_apart`). What makes `double_free_scan`'s abort
+    /// unreachable for a free with the slot's token
+    /// ([`Heap::scan_or_abort`]).
+    pub(super) proof fn lemma_not_cached(tracked &self, tracked blk: &mut Live, cache: *mut CacheHeader, c: int, n: int)
+        requires
+            self.wf(),
+            self.owns(cache),
+            self.hdr_class(cache) == c,
+            old(blk).slot_of(c),
+            0 <= n <= self.hdr(cache).len,
+        ensures
+            final(blk).slot_of(c),
+            final(blk).addr() == old(blk).addr(),
+            final(blk).len() == old(blk).len(),
+            final(blk).mem() == old(blk).mem(),
+            final(blk).wf() == old(blk).wf(),
+            forall|p: *mut u8| #[trigger] old(blk).claims(p) ==> final(blk).claims(p),
+            forall|i: int| 0 <= i < n ==> #[trigger] self.cached_addr(cache, i) != old(blk).addr() as int,
+        decreases n,
+    {
+        if n > 0 {
+            self.lemma_not_cached(blk, cache, c, n - 1);
+            self.perms@.lemma_tok_get(cache, n - 1);
+            let q = self.perms@.ent(cache, n - 1);
+            blk.lemma_slot_apart(self.perms.borrow().toks.tracked_borrow(q), c);
         }
     }
 
@@ -891,7 +932,7 @@ impl Heap {
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: *mut CacheHeader)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             class < NCLASSES,
             shared.wf(),
@@ -1059,7 +1100,7 @@ mod kani_cache {
 
     /// S114 `Heap::cached_recently`, `requires` the `len` entries from
     /// `slots` permitted and written and, unless `len` is 0, their bytes
-    /// in one allocation (`slot_in`), no `ensures`: it returns, reading
+    /// in one allocation (`slot_in`), `ensures` a hit is an entry among the `len` with `e`'s address (the harness checks more: the result is exactly whether one of the top `min(len, 4)` entries is `e`): it returns, reading
     /// only those entries, for every `len` from 0 to 8 (both branches,
     /// the short stack's iterator and the four compares, and their
     /// boundary at 4), every entry and every `e`; and with `len == 0`

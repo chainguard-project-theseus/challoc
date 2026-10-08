@@ -939,7 +939,7 @@ fn free_before_init(p: *mut u8) -> !
 #[inline(always)]
 pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>) -> (r: usize)
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
         crate::sys::may_syscall(),
         shared.wf(),
     ensures
@@ -960,6 +960,12 @@ pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>) ->
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
+            proof {
+                if blk.block(p) {
+                    // The live slot, whose token `blk` holds.
+                    blk.lemma_block_slot_addr(p, class as int);
+                }
+            }
             shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()));
             proof {
                 // `check_live` returned: not a guard slab.
@@ -981,6 +987,13 @@ pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>) ->
             class_size(class)
         }
         Kind::Huge { page } => {
+            proof {
+                if blk.block(p) {
+                    // The live run at `page`, whose token `blk` holds.
+                    blk.lemma_claims(p);
+                    shared.lemma_run_page(p, page, *blk);
+                }
+            }
             let r = shared.huge.usable_size(page, Tracked(blk.run_ref()));
             proof {
                 shared.lemma_huge_run_usable(p as usize, r);
@@ -992,7 +1005,21 @@ pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>) ->
             }
             r
         },
-        Kind::Invalid => not_an_allocation(p),
+        Kind::Invalid => {
+            proof {
+                if blk.block(p) {
+                    // A slot start or a page start of the huge region,
+                    // which `classify` never calls `Invalid`.
+                    blk.lemma_block_target(p);
+                    if heap::slot_start(p) {
+                        let c = choose|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr);
+                        assert(shared.regions.is_slot_addr(c, p@.addr));
+                    }
+                }
+                assert(!blk.block(p));
+            }
+            not_an_allocation(p)
+        },
     }
 }
 
@@ -1351,7 +1378,7 @@ pub proof fn lemma_keeps_usable(p: *mut u8, n: usize)
 /// `p` is kept.
 pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: usize, align: usize, Tracked(blk): Tracked<&Live>) -> (r: Option<usize>)
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
         crate::sys::may_syscall(),
         shared.wf(),
         is_pow2(align),
@@ -1373,6 +1400,12 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
+            proof {
+                if blk.block(p) {
+                    // The live slot, whose token `blk` holds.
+                    blk.lemma_block_slot_addr(p, class as int);
+                }
+            }
             shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()));
             proof {
                 // `check_live` returned: not a guard slab.
@@ -1400,6 +1433,13 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
             Some(class_size(class))
         }
         Kind::Huge { page } => {
+            proof {
+                if blk.block(p) {
+                    // The live run at `page`, whose token `blk` holds.
+                    blk.lemma_claims(p);
+                    shared.lemma_run_page(p, page, *blk);
+                }
+            }
             let old = shared.huge.usable_size(page, Tracked(blk.run_ref()));
             proof {
                 shared.lemma_run_page(p, page, *blk);
@@ -1423,7 +1463,21 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
             }
             Some(old)
         }
-        Kind::Invalid => crate::sys::abort_fmt(format_args!("{what} of {:#x}: not an allocation", p as usize)),
+        Kind::Invalid => {
+            proof {
+                if blk.block(p) {
+                    // A slot start or a page start of the huge region,
+                    // which `classify` never calls `Invalid`.
+                    blk.lemma_block_target(p);
+                    if heap::slot_start(p) {
+                        let c = choose|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr);
+                        assert(shared.regions.is_slot_addr(c, p@.addr));
+                    }
+                }
+                assert(!blk.block(p));
+            }
+            crate::sys::abort_fmt(format_args!("{what} of {:#x}: not an allocation", p as usize))
+        },
     }
 }
 
@@ -1579,6 +1633,36 @@ fn theorem_realloc_to_usable_size(p: *mut u8, Tracked(blk): Tracked<Live>, Track
     let tracked mut out = Live::empty();
     let q = realloc_block(p, n, Tracked(blk), Tracked(&mut out), Tracked(errno));
     (n, q)
+}
+
+/// Theorem 44 ("Valid programs never abort"), second tranche, checked:
+/// the lookups of a live block that `malloc_usable_size` ([`usable_size`])
+/// and `realloc` ([`old_size_or_keep`]; `challoc_realloc_usable`'s
+/// [`realloc_old`]) make, with the block's token, reach none of their
+/// not-an-allocation, invalid-free or double-free checks: called without
+/// [`crate::sys::may_abort`], only with [`crate::sys::valid_aborts`]' two
+/// capabilities. `realloc`'s free of the old block after a move is
+/// [`heap::Heap::free`]'s (`heap::paths::theorem_valid_cache_free_never_aborts`);
+/// the allocation it makes in between is not covered.
+///
+/// Verification only (`cfg(verus_only)`): the build has no such function.
+#[cfg(verus_only)]
+fn theorem_valid_lookups_never_abort(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&Live>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::kernel_aborts(),
+        crate::sys::pending_aborts(),
+        shared.wf(),
+        blk.block(p),
+{
+    proof {
+        crate::meta::lemma_is_pow2_one();
+        shared.lemma_regions_ok();
+        blk.lemma_claims(p);
+    }
+    let _ = usable_size(shared, p, Tracked(blk));
+    let _ = old_size_or_keep(shared, "realloc", p, size, 1, Tracked(blk));
+    let _ = realloc_old(shared, p, size, Tracked(blk));
 }
 
 /// `reallocarray`: `realloc(p, n * m)` with overflow reported as `ENOMEM`.
@@ -2102,7 +2186,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
 /// `old_size_or_keep`.
 fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&Live>) -> (r: (bool, usize))
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
         crate::sys::may_syscall(),
         shared.wf(),
         blk.claims(p),
@@ -2124,6 +2208,12 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
+            proof {
+                if blk.block(p) {
+                    // The live slot, whose token `blk` holds.
+                    blk.lemma_block_slot_addr(p, class as int);
+                }
+            }
             shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()));
             proof {
                 // `check_live` returned: not a guard slab.
@@ -2145,6 +2235,13 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
             (class_of(size) == Some(class), class_size(class))
         }
         Kind::Huge { page } => {
+            proof {
+                if blk.block(p) {
+                    // The live run at `page`, whose token `blk` holds.
+                    blk.lemma_claims(p);
+                    shared.lemma_run_page(p, page, *blk);
+                }
+            }
             let old = shared.huge.usable_size(page, Tracked(blk.run_ref()));
             proof {
                 crate::meta::lemma_is_pow2_one();
@@ -2167,7 +2264,21 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
             }
             (class_of(size).is_none() && shared.huge.usable_for(size) == Some(old), old)
         }
-        Kind::Invalid => crate::sys::abort_fmt(format_args!("realloc of {:#x}: not an allocation", p as usize)),
+        Kind::Invalid => {
+            proof {
+                if blk.block(p) {
+                    // A slot start or a page start of the huge region,
+                    // which `classify` never calls `Invalid`.
+                    blk.lemma_block_target(p);
+                    if heap::slot_start(p) {
+                        let c = choose|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr);
+                        assert(shared.regions.is_slot_addr(c, p@.addr));
+                    }
+                }
+                assert(!blk.block(p));
+            }
+            crate::sys::abort_fmt(format_args!("realloc of {:#x}: not an allocation", p as usize))
+        },
     }
 }
 

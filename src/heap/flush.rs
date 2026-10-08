@@ -22,9 +22,10 @@ use super::shared::seed;
 use super::{CacheHeader, FOREIGN, Heap, Shared, assert_refill_empty, stack_mut};
 #[cfg(verus_only)]
 use super::{
-    cell_ok, from_all, gather_all_ents, in_entries, lemma_from_refl, lemma_from_slots,
-    lemma_from_sub, lemma_from_trans, lemma_log_same, lemma_plain_stored, lemma_stack_fill,
-    log_adds, move_reversed, pac_mode, plain, scatter_ents, slot_ptr, split_ok, tagged, toks_kept,
+    cell_ok, ents_frame, from_all, gather_all_ents, in_entries, keyed_ents, lemma_from_refl,
+    lemma_from_slots, lemma_from_sub, lemma_from_trans, lemma_log_same, lemma_plain_stored,
+    lemma_stack_fill, log_adds, move_reversed, pac_mode, plain, scatter_ents, slot_ptr, split_ok,
+    tagged, toks_kept,
 };
 #[cfg(verus_only)]
 use crate::class::slot_loc;
@@ -37,6 +38,8 @@ use vstd::modes::tracked_swap;
 use vstd::prelude::*;
 use vstd::prelude::{Tracked, int, verus};
 use vstd::raw_ptr::{ptr_mut_ref, ptr_ref};
+#[cfg(verus_only)]
+use vstd::resource::set::{GhostSingleton, GhostSubset};
 
 verus! {
 
@@ -349,7 +352,7 @@ impl Heap {
     #[verifier::rlimit(500)]
     pub(super) unsafe fn flush(&mut self, shared: &Shared, arena: u16, cache: *mut CacheHeader, class: usize, n: usize, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             class < NCLASSES,
@@ -374,6 +377,9 @@ impl Heap {
         // The flush writes the permissions alone; `lemma_keeps_perms`
         // carries the `others` list across, so its conjuncts stay hidden.
         hide(Heap::list_ok);
+        hide(crate::class::live_slots);
+        // The pairwise facts are proved and used in the lemmas below.
+        hide(crate::class::distinct);
         broadcast use crate::class::lemma_aset;
         if n == 0 {
             proof {
@@ -401,25 +407,13 @@ impl Heap {
             // The cached slots' tokens, gathered by address for the
             // selection and sorts to permute; the kept ones go back under
             // their new entries and the released ones to their bitmap words.
-            let ghost c = old_perms.cls[cache];
             let ghost len = old_h.len as int;
             let ghost aold = Seq::new(old_h.len as nat, |i: int| plain(old_perms.slots[slot_ptr(slots, i)].value(), slots) as int);
             proof {
                 assert(slots == old_h.slots);
-                assert forall|i: int| 0 <= i < len implies {
-                    let q = #[trigger] slot_ptr(slots, i);
-                    &&& perms.toks.contains_key(q)
-                    &&& perms.toks[q].id() == slot_loc(c)
-                    &&& perms.toks[q]@ == aold[i]
-                } by {
-                    old_perms.lemma_tok_get(cache, i);
-                    assert(old_perms.ent(cache, i) == slot_ptr(slots, i));
-                }
-                assert forall|i: int, j: int| 0 <= i < j < len implies slot_ptr(slots, i) != slot_ptr(slots, j) by {
-                    old_perms.lemma_ent_apart(cache, i, cache, j);
-                }
+                assert(forall|m: int| 0 <= m < aold.len() ==> #[trigger] aold[m] == plain(old_perms.slots[slot_ptr(old_perms.hdr(cache).slots, m)].value(), old_perms.hdr(cache).slots) as int) by {}
             }
-            let tracked mut bag = gather_all_ents(&mut perms.toks, slots, aold, slot_loc(c), len);
+            let tracked mut bag = lemma_flush_gather(&mut perms.toks, old_perms, cache, aold);
             let ghost t1 = perms.toks;
             // With signed entries the selection, the sortedness test and
             // the kept sort order by the address bits alone (`!pac::mask()`
@@ -451,6 +445,8 @@ impl Heap {
             }
             let rest_len = all.len() - n;
             let kept_max;
+            // Where `kept_max` sits among the kept entries (the straddle check).
+            let ghost mut km_at: int = 0;
             let sorted = if pac { all.is_sorted_by_key(key) } else { all.is_sorted() };
             if sorted {
                 // Already in address order: the split is direct, the
@@ -459,6 +455,11 @@ impl Heap {
                 // nothing, so nothing can straddle the split.
                 kept_max = if rest_len > 0 { *all.get_unchecked(rest_len - 1) } else { ptr::null_mut() };
                 ptr_mut_ref(cache, Tracked(perms.hdrs.tracked_borrow_mut(cache))).unsorted_flushes = 0;
+                proof {
+                    if rest_len > 0 {
+                        km_at = rest_len - 1;
+                    }
+                }
             } else {
                 kept_max = if rest_len > 0 {
                     // `all[..rest_len - 1] <= all[rest_len - 1] <= all[rest_len..]`.
@@ -481,6 +482,9 @@ impl Heap {
                     assert(all@.to_multiset() == a0.to_multiset());
                 }
                 let ghost a1 = all@;
+                proof {
+                    km_at = rest_len - 1;
+                }
                 if rest_len > 1 && (k < 2 || k % 32 == 0) {
                     if pac {
                         all.get_unchecked_mut(..rest_len).sort_unstable_by_key(key);
@@ -496,6 +500,10 @@ impl Heap {
                         assert(all@ =~= all@.subrange(0, rest_len as int) + s2);
                         vstd::seq_lib::lemma_multiset_commutative(s1, s2);
                         vstd::seq_lib::lemma_multiset_commutative(all@.subrange(0, rest_len as int), s2);
+                        // The kept maximum stays among the kept entries.
+                        if rest_len > 0 {
+                            km_at = lemma_kept_index(a1, all@, rest_len as int, rest_len - 1);
+                        }
                     }
                 }
             }
@@ -505,32 +513,21 @@ impl Heap {
                 // the sort only move them.
                 if rest_len > 0 {
                     assert(from_all(a2, a0, rest_len as int));
+                    // `kept_max` is a kept entry (the straddle check below).
+                    assert(0 <= km_at < rest_len && a2[km_at] == kept_max);
                 }
             }
             // The kept entries' tokens back under their entries.
-            let ghost f = |e: *mut u8| plain(e, slots) as int;
-            let ghost akept = Seq::new(rest_len as nat, |i: int| f(a2[i]));
+            let ghost akept = addrs_of(a2, rest_len as int, slots);
             proof {
                 assert(a2.to_multiset() == a0.to_multiset());
-                assert forall|i: int, j: int| 0 <= i < j < a0.len() implies f(a0[i]) != f(a0[j]) by {
-                    assert(old_perms.slots[slot_ptr(slots, i)].is_init());
-                    assert(old_perms.slots[slot_ptr(slots, j)].is_init());
-                    assert(aold[i] != aold[j]);
+                assert(addrs_of(a0, len, slots) =~= aold) by {
+                    assert forall|i: int| 0 <= i < len implies #[trigger] addrs_of(a0, len, slots)[i] == aold[i] by {
+                        assert(old_perms.slots[slot_ptr(slots, i)].is_init());
+                    }
                 }
-                crate::class::lemma_perm_distinct(a0, a2, f);
-                assert forall|v: int| aset(akept, 0, rest_len as int).contains(v) implies bag@.contains(v) by {
-                    let i = choose|i: int| 0 <= i < rest_len && akept[i] == v;
-                    assert(a0.contains(a2[i]));
-                    let k = choose|k: int| 0 <= k < a0.len() && a0[k] == a2[i];
-                    assert(old_perms.slots[slot_ptr(slots, k)].is_init());
-                    assert(aold[k] == v);
-                }
-                assert(aset(akept, 0, rest_len as int) <= aset(aold, 0, len));
-                assert forall|i: int| 0 <= i < len implies slot_ptr(slots, i) == old_perms.ent(cache, i) by {}
-                assert(distinct(akept, 0, rest_len as int)) by {
-                    reveal(crate::class::injective_on);
-                }
-                scatter_ents(&mut bag, &mut perms.toks, slots, akept, 0, rest_len as int);
+                lemma_flush_perm(slots, aold, a0, a2, rest_len as int);
+                lemma_flush_scatter(&mut bag, &mut perms.toks, old_perms, cache, akept);
             }
             let ghost t2 = perms.toks;
             let high = all.get_unchecked_mut(rest_len..);
@@ -546,30 +543,32 @@ impl Heap {
                 shared.lemma_wf();
                 assert(high@.to_multiset() == h1.to_multiset());
                 // The released entries' addresses are those of their tokens.
-                assert forall|j: int| 0 <= j < h1.len() implies #[trigger] ptr_addrs(h1)[j] == f(a2[rest_len + j]) by {
-                    assert(h0[j] == a2[rest_len + j]);
-                }
-                assert forall|i: int, j: int| 0 <= i < j < h1.len() implies ptr_addrs(h1)[i] != ptr_addrs(h1)[j] by {
-                    reveal(crate::class::injective_on);
-                    assert(f(a2[rest_len + i]) != f(a2[rest_len + j]));
-                }
-                assert forall|v: int| aset(ptr_addrs(h1), 0, h1.len() as int).contains(v) implies bag@.contains(v) by {
-                    let j = choose|j: int| 0 <= j < h1.len() && ptr_addrs(h1)[j] == v;
-                    let i = rest_len + j;
-                    assert(a0.contains(a2[i]));
-                    let k = choose|k: int| 0 <= k < a0.len() && a0[k] == a2[i];
-                    assert(old_perms.slots[slot_ptr(slots, k)].is_init());
-                    assert(aold[k] == v);
-                    if aset(akept, 0, rest_len as int).contains(v) {
-                        let m = choose|m: int| 0 <= m < rest_len && akept[m] == v;
-                        reveal(crate::class::injective_on);
-                        assert(f(a2[m]) != f(a2[i]));
+                assert(ptr_addrs(h1) =~= addrs_of(a2.subrange(rest_len as int, len), len - rest_len, slots)) by {
+                    assert forall|j: int| 0 <= j < h1.len() implies #[trigger] ptr_addrs(h1)[j] == plain(a2[rest_len + j], slots) as int by {
+                        assert(h0[j] == a2[rest_len + j]);
                     }
                 }
                 assert(aset(ptr_addrs(h1), 0, h1.len() as int) <= aset(aold, 0, len) - aset(akept, 0, rest_len as int));
                 crate::class::lemma_perm_addrs(h1, high@);
             }
             let kept_max_plain = if pac && rest_len > 0 { addr_to_ptr(pac::auth(kept_max as usize, slots as usize)) } else { kept_max };
+            proof {
+                // No straddling pair, and a batch of slots of `class`
+                // (`lemma_released`): the compare below fails for every
+                // caller.
+                let km = if rest_len > 0 { plain(kept_max, slots) as int } else { 0 };
+                assert(rest_len > 0 ==> aset(akept, 0, rest_len as int).contains(km)) by {
+                    if rest_len > 0 {
+                        assert(akept[km_at] == plain(kept_max, slots) as int);
+                    }
+                }
+                lemma_released(old_perms, cache, aold, akept, h1, high@, low, km);
+                assert(kept_max_plain@.addr == km) by {}
+                assert(old_perms.cls[cache] == class);
+                assert(process_regions().is_slot(class as int, high@[0]@.addr)) by {
+                    reveal(crate::class::live_slots);
+                }
+            }
             if low == kept_max_plain {
                 straddling_double_free(low, class);
             }
@@ -657,6 +656,213 @@ impl Heap {
             Heap::lemma_flush_accounting(*old(self), *self, cache, g_old, g_kept, g_rel);
         }
     }
+}
+
+/// `a1[j]`, one of `a1`'s first `n` entries, is still among the first `n`
+/// of `a`, a permutation of `a1` that left the rest in place (the flush's
+/// sort of its kept entries): its index there.
+proof fn lemma_kept_index(a1: Seq<*mut u8>, a: Seq<*mut u8>, n: int, j: int) -> (i: int)
+    requires
+        0 <= j < n <= a1.len(),
+        a.to_multiset() == a1.to_multiset(),
+        a.len() == a1.len(),
+        a =~= a.subrange(0, n) + a1.subrange(n, a1.len() as int),
+    ensures
+        0 <= i < n,
+        a[i] == a1[j],
+{
+    let s1 = a1.subrange(0, n);
+    let s2 = a1.subrange(n, a1.len() as int);
+    let s3 = a.subrange(0, n);
+    let x = a1[j];
+    assert(a1 =~= s1 + s2);
+    vstd::seq_lib::lemma_multiset_commutative(s1, s2);
+    vstd::seq_lib::lemma_multiset_commutative(s3, s2);
+    s1.to_multiset_ensures();
+    s3.to_multiset_ensures();
+    assert(s1[j] == x);
+    assert(s1.contains(x));
+    assert(s3.to_multiset().add(s2.to_multiset()).count(x) == s1.to_multiset().add(s2.to_multiset()).count(x));
+    assert(s3.contains(x));
+    let i = choose|i: int| 0 <= i < n && s3[i] == x;
+    assert(s3[i] == a[i]);
+    i
+}
+
+/// The flush's two facts about its released half, out of `flush`'s
+/// query: every released entry `hi[k]` is a cached slot of the header's
+/// class (what `release_routed` needs to release the batch for a valid
+/// program), and the lowest released address `low` is no kept entry's
+/// (`km`: the kept maximum's address, or 0 when nothing is kept). So the
+/// straddle check fails for every caller: the cached entries stand for
+/// distinct slots, since their tokens are distinct.
+proof fn lemma_released(perms: CachePerms, cache: *mut CacheHeader, aold: Seq<int>, akept: Seq<int>, h1: Seq<*mut u8>, hi: Seq<*mut u8>, low: *mut u8, km: int)
+    requires
+        crate::heap::regions_ok(),
+        perms.tracks(),
+        perms.hdrs.contains_key(cache),
+        perms.hdr(cache).len <= perms.hdr(cache).cap,
+        aold.len() == perms.hdr(cache).len,
+        forall|m: int| 0 <= m < aold.len() ==> #[trigger] aold[m] == plain(perms.slots[slot_ptr(perms.hdr(cache).slots, m)].value(), perms.hdr(cache).slots) as int,
+        aset(ptr_addrs(h1), 0, h1.len() as int) <= aset(aold, 0, aold.len() as int) - aset(akept, 0, akept.len() as int),
+        aset(ptr_addrs(hi), 0, hi.len() as int) <= aset(ptr_addrs(h1), 0, h1.len() as int),
+        h1.contains(low),
+        akept.len() > 0 ==> aset(akept, 0, akept.len() as int).contains(km),
+        akept.len() == 0 ==> km == 0,
+    ensures
+        crate::class::live_slots(perms.cls[cache], hi),
+        low@.addr != km,
+{
+    broadcast use crate::class::lemma_aset;
+    let len = aold.len() as int;
+    let c = perms.cls[cache];
+    assert forall|m: int| 0 <= m < len implies #[trigger] process_regions().is_slot(c, aold[m] as usize) by {
+        assert(perms.ent(cache, m) == slot_ptr(perms.hdr(cache).slots, m));
+        assert(perms.holds(c, perms.ent(cache, m), perms.hdr(cache).slots));
+    }
+    assert forall|k: int| 0 <= k < hi.len() implies #[trigger] process_regions().is_slot(c, hi[k]@.addr) by {
+        assert(ptr_addrs(hi)[k] == hi[k]@.addr);
+        assert(aset(ptr_addrs(hi), 0, hi.len() as int).contains(hi[k]@.addr as int));
+        assert(aset(aold, 0, len).contains(hi[k]@.addr as int));
+        let m = choose|m: int| 0 <= m < len && aold[m] == hi[k]@.addr as int;
+        assert(process_regions().is_slot(c, aold[m] as usize));
+    }
+    let j = choose|j: int| 0 <= j < h1.len() && h1[j] == low;
+    assert(ptr_addrs(h1)[j] == low@.addr);
+    assert(aset(ptr_addrs(h1), 0, h1.len() as int).contains(low@.addr as int));
+    assert(aset(aold, 0, len).contains(low@.addr as int));
+    assert(!aset(akept, 0, akept.len() as int).contains(low@.addr as int));
+    let m = choose|m: int| 0 <= m < len && aold[m] == low@.addr as int;
+    assert(aold[m] as usize == low@.addr);
+    assert(process_regions().is_slot(c, aold[m] as usize));
+    process_regions().lemma_block_nonzero(c, low@.addr, 0, 0);
+}
+
+/// The addresses `a[..n]`, entries of the stack at `slots`, stand for.
+spec fn addrs_of(a: Seq<*mut u8>, n: int, slots: *mut *mut u8) -> Seq<int> {
+    Seq::new(n as nat, |i: int| plain(a[i], slots) as int)
+}
+
+/// The flush's gather, out of `flush`'s query (its pairwise facts would
+/// stay in it): the tokens of `cache`'s cached slots, taken from their
+/// entries into one bag by address, for the selection and the sorts to
+/// permute the entries freely.
+#[verifier::spinoff_prover]
+proof fn lemma_flush_gather(tracked toks: &mut Map<*mut *mut u8, GhostSingleton<int>>, perms: CachePerms, cache: *mut CacheHeader, aold: Seq<int>) -> (tracked bag: GhostSubset<int>)
+    requires
+        *old(toks) == perms.toks,
+        perms.wf(),
+        perms.tracks(),
+        perms.tokened(),
+        perms.hdrs.contains_key(cache),
+        cell_ok(cache, perms.hdrs[cache], perms.slots),
+        0 < aold.len() == perms.hdr(cache).len,
+        forall|m: int| 0 <= m < aold.len() ==> #[trigger] aold[m] == plain(perms.slots[slot_ptr(perms.hdr(cache).slots, m)].value(), perms.hdr(cache).slots) as int,
+    ensures
+        bag.id() == slot_loc(perms.cls[cache]),
+        bag@ == aset(aold, 0, aold.len() as int),
+        distinct(aold, 0, aold.len() as int),
+        ents_frame(*final(toks), *old(toks), perms.hdr(cache).slots, 0, aold.len() as int),
+{
+    let slots = perms.hdr(cache).slots;
+    let len = aold.len() as int;
+    let c = perms.cls[cache];
+    assert forall|i: int| 0 <= i < len implies {
+        let q = #[trigger] slot_ptr(slots, i);
+        &&& toks.contains_key(q)
+        &&& toks[q].id() == slot_loc(c)
+        &&& toks[q]@ == aold[i]
+    } by {
+        perms.lemma_tok_get(cache, i);
+        assert(perms.ent(cache, i) == slot_ptr(slots, i));
+    }
+    assert forall|i: int, j: int| 0 <= i < j < len implies slot_ptr(slots, i) != slot_ptr(slots, j) by {
+        perms.lemma_ent_apart(cache, i, cache, j);
+    }
+    gather_all_ents(toks, slots, aold, slot_loc(c), len)
+}
+
+/// The flush's two halves, out of `flush`'s query: `a2`, a permutation of
+/// the cached entries `a0` (whose addresses, `aold`, are distinct), keeps
+/// distinct cached addresses in `a2[..n]`, and its released entries
+/// `a2[n..]` stand for distinct cached addresses that are not kept.
+#[verifier::spinoff_prover]
+proof fn lemma_flush_perm(slots: *mut *mut u8, aold: Seq<int>, a0: Seq<*mut u8>, a2: Seq<*mut u8>, n: int)
+    requires
+        0 <= n <= a0.len(),
+        a2.to_multiset() == a0.to_multiset(),
+        addrs_of(a0, a0.len() as int, slots) == aold,
+        distinct(aold, 0, aold.len() as int),
+    ensures
+        a2.len() == a0.len(),
+        distinct(addrs_of(a2, n, slots), 0, n),
+        aset(addrs_of(a2, n, slots), 0, n) <= aset(aold, 0, aold.len() as int),
+        distinct(addrs_of(a2.subrange(n, a2.len() as int), a2.len() - n, slots), 0, a2.len() - n),
+        aset(addrs_of(a2.subrange(n, a2.len() as int), a2.len() - n, slots), 0, a2.len() - n)
+            <= aset(aold, 0, aold.len() as int) - aset(addrs_of(a2, n, slots), 0, n),
+{
+    broadcast use crate::class::lemma_aset;
+    let f = |e: *mut u8| plain(e, slots) as int;
+    let len = a0.len() as int;
+    let akept = addrs_of(a2, n, slots);
+    let ar = addrs_of(a2.subrange(n, len), len - n, slots);
+    assert forall|i: int, j: int| 0 <= i < j < len implies f(a0[i]) != f(a0[j]) by {
+        assert(aold[i] == addrs_of(a0, len, slots)[i]);
+        assert(aold[j] == addrs_of(a0, len, slots)[j]);
+    }
+    crate::class::lemma_perm_distinct(a0, a2, f);
+    reveal(crate::class::injective_on);
+    assert forall|i: int, j: int| 0 <= i < j < n implies akept[i] != akept[j] by {
+        assert(f(a2[i]) != f(a2[j]));
+    }
+    assert forall|i: int, j: int| 0 <= i < j < len - n implies ar[i] != ar[j] by {
+        assert(f(a2[n + i]) != f(a2[n + j]));
+    }
+    assert forall|v: int| aset(akept, 0, n).contains(v) implies aset(aold, 0, len).contains(v) by {
+        let i = choose|i: int| 0 <= i < n && akept[i] == v;
+        assert(a0.contains(a2[i]));
+        let k = choose|k: int| 0 <= k < len && a0[k] == a2[i];
+        assert(aold[k] == addrs_of(a0, len, slots)[k]);
+    }
+    assert forall|v: int| #![trigger aset(ar, 0, len - n).contains(v)] aset(ar, 0, len - n).contains(v) implies aset(aold, 0, len).contains(v) && !aset(akept, 0, n).contains(v) by {
+        let j = choose|j: int| 0 <= j < len - n && ar[j] == v;
+        let i = n + j;
+        assert(ar[j] == f(a2[i]));
+        assert(a0.contains(a2[i]));
+        let k = choose|k: int| 0 <= k < len && a0[k] == a2[i];
+        assert(aold[k] == addrs_of(a0, len, slots)[k]);
+        if aset(akept, 0, n).contains(v) {
+            let m = choose|m: int| 0 <= m < n && akept[m] == v;
+            assert(f(a2[m]) != f(a2[i]));
+        }
+    }
+}
+
+/// The flush's scatter, out of `flush`'s query: the kept addresses'
+/// tokens from the bag back under the first `akept.len()` entries of
+/// `cache`'s stack.
+#[verifier::spinoff_prover]
+proof fn lemma_flush_scatter(tracked bag: &mut GhostSubset<int>, tracked toks: &mut Map<*mut *mut u8, GhostSingleton<int>>, perms: CachePerms, cache: *mut CacheHeader, akept: Seq<int>)
+    requires
+        perms.wf(),
+        perms.tracks(),
+        perms.hdrs.contains_key(cache),
+        cell_ok(cache, perms.hdrs[cache], perms.slots),
+        akept.len() <= perms.hdr(cache).len,
+        distinct(akept, 0, akept.len() as int),
+        aset(akept, 0, akept.len() as int) <= old(bag)@,
+    ensures
+        final(bag).id() == old(bag).id(),
+        final(bag)@ == old(bag)@ - aset(akept, 0, akept.len() as int),
+        keyed_ents(*final(toks), perms.hdr(cache).slots, akept, old(bag).id(), 0, akept.len() as int),
+        ents_frame(*final(toks), *old(toks), perms.hdr(cache).slots, 0, akept.len() as int),
+{
+    let slots = perms.hdr(cache).slots;
+    let n = akept.len() as int;
+    assert forall|i: int, j: int| 0 <= i < j < n implies slot_ptr(slots, i) != slot_ptr(slots, j) by {
+        perms.lemma_ent_apart(cache, i, cache, j);
+    }
+    scatter_ents(bag, toks, slots, akept, 0, n);
 }
 
 /// Theorem 10's split of one flush: the addresses the cache held (`aold`)

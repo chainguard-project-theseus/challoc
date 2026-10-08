@@ -1112,7 +1112,7 @@ axiom fn axiom_c_block(p: *mut c_void) -> (tracked c: CCall)
 
 ### S14. `axiom_c_block`
 
-src/api/libc.rs:2833. Kind: axiom. Category: C-program contract.
+src/api/libc.rs:2944. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of a free or a realloc, `vspec::cbuf`): the token of this call from C, which hands over the block at `p` ([`CCall`], [`CEntry::Frees`]), for `heap::live::axiom_c_claim` to use up.
@@ -1126,7 +1126,7 @@ axiom fn axiom_c_block(p: *mut c_void) -> (tracked c: CCall)
 
 ### S15. `axiom_c_out`
 
-src/api/libc.rs:2929. Kind: axiom. Category: C-program contract.
+src/api/libc.rs:3040. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of an out-pointer argument, `vspec::cbuf`): the token of this call for the C caller's out-pointer `p`, the permission to write the `T` it names: none for a null `p`, and `p` is not null when the contract does not allow null (`nullable` false: `posix_memalign`'s `memptr`).
@@ -1834,7 +1834,7 @@ axiom fn axiom_arena_assemble(
 
 ### S62. `key_less`
 
-src/arena.rs:1795. Kind: external_body. Category: core library.
+src/arena.rs:1801. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (verus/seams/arena-key_less.md).
 
 > `a < b` on `(u32, bool)`: [`key_lt`].
@@ -1847,7 +1847,7 @@ fn key_less(a: (u32, bool), b: (u32, bool)) -> (r: bool)
 
 ### S63. `AR_TABLE`
 
-src/arena.rs:1829. Kind: external_body const. Category: core library.
+src/arena.rs:1835. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1856,7 +1856,7 @@ const AR_TABLE: usize = core::mem::offset_of!(Arenas, table);
 
 ### S64. `AR_BOUND`
 
-src/arena.rs:1831. Kind: external_body const. Category: core library.
+src/arena.rs:1837. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1865,7 +1865,7 @@ const AR_BOUND: usize = core::mem::offset_of!(Arenas, bound);
 
 ### S65. `AR_LOCK`
 
-src/arena.rs:1833. Kind: external_body const. Category: core library.
+src/arena.rs:1839. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1874,7 +1874,7 @@ const AR_LOCK: usize = core::mem::offset_of!(Arenas, lock);
 
 ### S66. `AR_COUNT`
 
-src/arena.rs:1835. Kind: external_body const. Category: core library.
+src/arena.rs:1841. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1883,7 +1883,7 @@ const AR_COUNT: usize = core::mem::offset_of!(Arenas, count);
 
 ### S67. `AR_AUTO`
 
-src/arena.rs:1837. Kind: external_body const. Category: core library.
+src/arena.rs:1843. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1892,7 +1892,7 @@ const AR_AUTO: usize = core::mem::offset_of!(Arenas, auto);
 
 ### S68. `AR_INVS`
 
-src/arena.rs:1839. Kind: external_body const. Category: core library.
+src/arena.rs:1845. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1901,7 +1901,7 @@ const AR_INVS: usize = core::mem::offset_of!(Arenas, invs);
 
 ### S69. `AR_COUNT_INV`
 
-src/arena.rs:1841. Kind: external_body const. Category: core library.
+src/arena.rs:1847. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1910,7 +1910,7 @@ const AR_COUNT_INV: usize = core::mem::offset_of!(Arenas, count_inv);
 
 ### S70. `AR_SPARE`
 
-src/arena.rs:1843. Kind: external_body const. Category: core library.
+src/arena.rs:1849. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1919,7 +1919,7 @@ const AR_SPARE: usize = core::mem::offset_of!(Arenas, spare);
 
 ### S71. `AR_SPARE_INV`
 
-src/arena.rs:1845. Kind: external_body const. Category: core library.
+src/arena.rs:1851. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -1928,7 +1928,7 @@ const AR_SPARE_INV: usize = core::mem::offset_of!(Arenas, spare_inv);
 
 ### S72. `axiom_arenas_layout`
 
-src/arena.rs:1855. Kind: axiom. Category: core library.
+src/arena.rs:1861. Kind: axiom. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `Arenas`'s layout: each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `spare_inv`, after `invs` and `count_inv`) by the size.
@@ -1957,7 +1957,7 @@ axiom fn axiom_arenas_layout()
 
 ### S73. `axiom_arenas_lock_inv`
 
-src/arena.rs:1918. Kind: axiom. Category: allocator invariant.
+src/arena.rs:1924. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The creation lock's invariant ([`Created::ok`]): `n` is at most [`MAX_ARENAS`], the holder's half of the snapshot has the count `n`, and no published entry at or above it.
@@ -1971,7 +1971,7 @@ pub broadcast axiom fn axiom_arenas_lock_inv(v: Created)
 
 ### S74. `axiom_arenas_lock_frame`
 
-src/arena.rs:1929. Kind: axiom. Category: allocator invariant.
+src/arena.rs:1935. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the creation lock's value keeps the snapshot half's location and never goes below the count it was created with (the automatic count, `Arenas::type_inv`).
@@ -1985,7 +1985,7 @@ broadcast axiom fn axiom_arenas_lock_frame(init: Created, v: Created)
 
 ### S75. `axiom_arenas_assemble`
 
-src/arena.rs:2072. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:2078. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arenas` at `p` (`Arenas::split`'s parts and array elements, every one initialised), as the `Arenas`: the value of each field is what its permission holds.
@@ -2214,7 +2214,7 @@ axiom fn axiom_fresh_slab_mem<'a>(g: Inner, slab: int, tracked held: &'a DescPer
 
 ### S84. `axiom_set_tables_lock_inv`
 
-src/class/sets.rs:815. Kind: axiom. Category: allocator invariant.
+src/class/sets.rs:828. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the commit watermarks behind [`SetTable::tables`] keep no invariant beyond their type's: the bounds `SetTable::ensure` needs are `Lazy`'s type invariant and `SetTable`'s, and `Lazy::ensure` takes any watermark.
@@ -2631,19 +2631,23 @@ Tool: Kani. Status: discharged (verus/seams/heap-cache-Heap-cached_recently.md).
 > `double_free_scan`'s compare (design 6.3 step 3): whether `e`, the entry as it would be stored (signed under `pac`), is one of the top four of the `len` entries in `slots`.
 
 ```rust
-pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8, Tracked(perms): Tracked<&Map<*mut *mut u8, PointsTo<*mut u8>>>) -> bool
+pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8, Tracked(perms): Tracked<&Map<*mut *mut u8, PointsTo<*mut u8>>>) -> (r: bool)
     requires
         len == 0 || slot_in(slots, len as int),
         forall|i: int| 0 <= i < len ==> {
             let q = #[trigger] slot_ptr(slots, i);
             perms.contains_key(q) && perms[q].ptr() == q && perms[q].is_init()
         },
+    ensures
+        // A hit is an entry among the `len` whose address is `e`'s (the
+        // compares are of addresses, as `==` on pointers is).
+        r ==> exists|i: int| 0 <= i < len && perms[#[trigger] slot_ptr(slots, i)].value()@.addr == e@.addr,
     opens_invariants none
 ```
 
 ### S115. `addr_mix`
 
-src/heap/flush.rs:1567. Kind: external_body. Category: raw pointer (internal).
+src/heap/flush.rs:1773. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (verus/seams/heap-flush-addr_mix.md).
 
 > `rng`'s mix of the heap's address into its seed: the address of `h`, rotated left by 17 bits.
@@ -2794,7 +2798,7 @@ pub(super) fn arena_volatile(&self) -> (r: u16)
 
 ### S123. `mark_bound`
 
-src/heap/mod.rs:6350. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:6395. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: discharged (verus/seams/heap-mark_bound.md).
 
 > `(*h).bound = true` for a heap [`Heap::create`] has just made.
@@ -2814,7 +2818,7 @@ unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 
 ### S124. `mark_rehome`
 
-src/heap/mod.rs:6390. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:6435. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: discharged (verus/seams/heap-mark_rehome.md).
 
 > `(*h).rehome = true` for a thread heap [`Heap::create`] has just made and marked bound ([`mark_bound`]): it may still move its home ([`Heap::try_rehome`]).
@@ -2830,12 +2834,12 @@ unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 
 ### S125. `Heap::destroy`
 
-src/heap/mod.rs:6624. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:6669. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Flush every cache, free them and the heap itself back to the metadata allocator.
 
-Body mints Tracked at line 6643; mints Tracked at line 6646; mints Tracked at line 6652; mints Tracked at line 6654; mints Tracked at line 6673; mints Tracked at line 6678.
+Body mints Tracked at line 6688; mints Tracked at line 6691; mints Tracked at line 6697; mints Tracked at line 6699; mints Tracked at line 6718; mints Tracked at line 6723.
 
 ```rust
 pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
@@ -2894,7 +2898,7 @@ pub(super) unsafe fn node_caches(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int
 
 ### S129. `shared_ptr`
 
-src/heap/paths.rs:1186. Kind: external_body. Category: allocator invariant.
+src/heap/paths.rs:1297. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `shared` as the raw pointer [`existing_heap`] takes and `init_fields` stores in a new heap: the process's `Shared`, at its storage.
@@ -2910,7 +2914,7 @@ pub(crate) fn shared_ptr(shared: &Shared) -> (r: *const Shared)
 
 ### S130. `debug_scheduled`
 
-src/heap/paths.rs:1266. Kind: external_body. Category: panic/abort.
+src/heap/paths.rs:1377. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (verus/seams/heap-paths-debug_scheduled.md).
 
 > [`Heap::alloc_slow`]'s `debug_assert!` that a non-empty home cache reached it through a scheduled pop the fast pop declined (design 6.4): `allocs`, the pop's count, has no bit of `mask` set.

@@ -3670,9 +3670,11 @@ mod tests {
             ("purge.rs", "fn discard("),
         ];
         let pending_sites = [
+            ("arena.rs", "fn unbind_unbound("),
             ("class/abort.rs", "fn never_committed("),
             ("class/abort.rs", "fn owner_mismatch("),
             ("class/abort.rs", "fn release_into_fresh_slab("),
+            ("class/decay.rs", "fn walk_empty<"),
             ("class/verify.rs", "fn shadow_written("),
             ("class/verify.rs", "fn release_into_fresh("),
             ("heap/shared.rs", "fn no_such_arena("),

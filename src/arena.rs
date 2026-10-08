@@ -893,7 +893,7 @@ impl Arena {
     #[inline(always)]
     fn alloc_sets(meta: &Meta, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut SetTable, Tracked<(PointsToRaw, MetaClaim)>))
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_meta()),
         ensures
@@ -908,6 +908,12 @@ impl Arena {
         broadcast use vstd::raw_ptr::group_raw_ptr_axioms;
 
         let layout = core::alloc::Layout::new::<SetTable>();
+        proof {
+            // The table fits an object (`global layout SetTable`).
+            assert(crate::meta::MAX_BINNED == 0x10_0000usize) by (compute_only);
+            assert(8 <= crate::meta::MAX_ALIGN) by (compute_only);
+            crate::class::lemma_set_table_layout();
+        }
         crate::vspec::check::check(
             layout.size() <= crate::meta::MAX_BINNED && layout.align() <= crate::meta::MAX_ALIGN,
             "arena: slab set table larger than an object",
@@ -1033,7 +1039,7 @@ impl Arena {
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: bool)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_meta()),
             old(slot).perm matches Some(p) && p.ptr() == this && p.is_uninit(),
@@ -1225,7 +1231,7 @@ impl Arena {
     /// several slabs per page ([`Left::clean`]).
     pub fn purge_all(&self, Tracked(left): Tracked<&mut Ghost<Left>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
         ensures
@@ -1254,7 +1260,7 @@ impl Arena {
         let mut c = 0;
         while c < NCLASSES
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 c <= NCLASSES,
                 ord.allows(rank_class(0, 0)),
@@ -1466,7 +1472,7 @@ impl Arena {
     /// `None` when nothing is `Empty`; `NEVER` does nothing.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
         ensures
@@ -1478,7 +1484,7 @@ impl Arena {
         let mut next: Option<u64> = None;
         for cs in self.classes.iter()
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 ord.allows(rank_class(0, 0)),
                 *ord == *old(ord),
@@ -2717,14 +2723,19 @@ unsafe fn arena_ref<'a>(p: *mut Arena, perm: Tracked<&'a PointsTo<Arena>>, Ghost
 }
 
 /// An arena's bound count went below zero: a heap was unbound twice, or
-/// never bound.
+/// never bound. On a free's move of the home (`Heap::try_rehome`, from
+/// `rehome_on_free`) a pending check of theorem "Valid programs never
+/// abort": the heap holds its arena's ticket, so the count read is the
+/// number of tickets out as a `u32` wraps it, and reads 0 only with a
+/// multiple of 2^32 heaps homed there, which no verified invariant
+/// bounds; its other callers hold `may_abort()`.
 #[cold]
 #[inline(never)]
 fn unbind_unbound(index: u16) -> !
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort_pending(),
 {
-    crate::sys::abort_fmt(format_args!("arena {index}: unbinding a heap that was never bound"))
+    crate::sys::abort_pending(format_args!("arena {index}: unbinding a heap that was never bound"))
 }
 
 /// A fresh ticket for `auth`, all of whose tickets are below `next`:
@@ -2772,7 +2783,7 @@ impl Arenas {
     /// least 1, is a multiple of `2^32`.
     pub fn unbind(&self, index: u16, Tracked(t): Tracked<Homed>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             (index as usize) < MAX_ARENAS,
             self.wf(),
             self.ticket_of(t, index as int),
@@ -2819,7 +2830,7 @@ impl Arenas {
     #[inline]
     pub fn get<'a>(&'a self, shared: &'a Shared, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&'a Arena>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             shared.wf(),
             old(ord).allows(rank_arenas()),
@@ -2861,7 +2872,7 @@ impl Arenas {
     #[inline(never)]
     fn materialise<'a>(&'a self, shared: &'a Shared, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&'a Arena>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             (index as usize) < MAX_ARENAS,
             shared.wf(),
@@ -2938,7 +2949,7 @@ impl Arenas {
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: Option<&'a Arena>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             (index as usize) < MAX_ARENAS,
             shared.wf(),

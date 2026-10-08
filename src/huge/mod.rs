@@ -4203,7 +4203,7 @@ impl Huge {
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: usize)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             self.is_process(),
             old(ord).allows(rank_huge()),
@@ -4242,7 +4242,7 @@ impl Huge {
         let mut batch = Batch::new(Ghost(|b: int| self.purgeable(held, b)));
         loop
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 self.is_process(),
                 g@.wf(),
@@ -4369,7 +4369,7 @@ impl Huge {
     #[verifier::rlimit(40)]
     fn purge_extent(&self, g: &mut Inner, d: *mut HugeDesc, batch: &mut Batch) -> (r: usize)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             self.is_process(),
             old(g).wf(),
@@ -4583,7 +4583,7 @@ impl Huge {
     /// before. Returns the number of extents purged.
     fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> usize
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             self.is_process(),
             old(ord).allows(rank_huge()),
@@ -4694,7 +4694,7 @@ impl Huge {
             }
             while !d.is_null() && excess > 0
                 invariant
-                    crate::sys::may_abort(),
+                    crate::sys::may_abort() || crate::sys::valid_aborts(),
                     crate::sys::may_syscall(),
                     self.is_process(),
                     g@.wf(),
@@ -4796,7 +4796,7 @@ impl Huge {
     /// a walk is due.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u64>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             self.is_process(),
             old(ord).allows(rank_huge()),

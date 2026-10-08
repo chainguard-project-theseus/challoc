@@ -1933,12 +1933,12 @@ fixed elsewhere; the theorem's `ensures` are relative, so this does not
 weaken them), with the batch it hands to `Shared::release_routed` and
 the same tokens. The chain that makes an entry of the log a release:
 
-- `Heap::flush` (`heap/flush.rs:307`) also ensures, for any `n`:
+- `Heap::flush` (`heap/flush.rs:353`) also ensures, for any `n`:
   every other owned header holds what it held, the cache holds a subset
   of what it held, and `log_adds(final.released(), old.released(),
   old.held(cache).to_set() - final.held(cache).to_set())`: the slots
   that left the cache are the log's new entries. `lemma_flush_split`
-  (`heap/flush.rs:612`) proves the split by counting (the cached,
+  (`heap/flush.rs:874`) proves the split by counting (the cached,
   kept and released addresses are distinct, the kept are cached, the
   released are cached and not kept, and their numbers add up), and
   `Heap::lemma_flush_accounting` (`heap/mod.rs:3416`) lifts it to the
@@ -2474,7 +2474,7 @@ through `release_owned`, from one of two places:
 | Path | What is proved |
 |---|---|
 | `Shared::free_direct(arena, class, p)` (`heap/shared.rs:1738`), from `heap::free_direct` (`heap/paths.rs:689`: `MALLOCX_TCACHE_NONE`, a thread without a heap) and `Heap::free_slow_in` (`:451`, no cache for the class) | ensures `self.wf() ==> slot_owner(class, p) == arena`: it releases through `owner(arena).class(class)`, of arena `arena`, and `release_with` aborts (`wrong_arena`) otherwise. Both callers pass the owner: `heap::free_direct` the arena of `classify_free`, which now ensures it is `slot_owner(c, p)` (`heap/shared.rs:1766`, from `check_located`, `class/table.rs:2205`), and `free_slow_in` that of `arena_of_slot` (`heap/shared.rs:1988`); so by their contracts `wrong_arena` cannot fire from them (Verus does not state it at the abort site). |
-| `Shared::release_routed(arena, class, ptrs)` (`heap/shared.rs:2061`), from `Heap::flush` (`heap/flush.rs:509`): every cache, home or `FOREIGN` | each run goes through `owner(a).class(class)` (arena `a`), whose `release_owned` releases only `a`'s slots and stops at the first slot of another arena; the next run starts at `arena_of_slot` of that slot, which ensures `slot_owner` (`:1988`). Termination is now proved (`decreases 2 * left + [next slot not a's]`), which removes `release_routed`'s `exec_allows_no_decreases_clause`: with owners fixed, the `changed arena during a flush` abort is unreachable, which its branch now asserts (`assert(false)` in a proof block). |
+| `Shared::release_routed(arena, class, ptrs)` (`heap/shared.rs:2061`), from `Heap::flush` (`heap/flush.rs:578`): every cache, home or `FOREIGN` | each run goes through `owner(a).class(class)` (arena `a`), whose `release_owned` releases only `a`'s slots and stops at the first slot of another arena; the next run starts at `arena_of_slot` of that slot, which ensures `slot_owner` (`:1988`). Termination is now proved (`decreases 2 * left + [next slot not a's]`), which removes `release_routed`'s `exec_allows_no_decreases_clause`: with owners fixed, the `changed arena during a flush` abort is unreachable, which its branch now asserts (`assert(false)` in a proof block). |
 
 Upstream of those, `Heap::free` (`heap/paths.rs:198`) pushes a slot onto
 the home cache when `classify_free`'s arena, now `slot_owner(c, p)`, is
@@ -5499,7 +5499,9 @@ alone would not do) or a trusted bound on concurrent frees.
 The other integrity checks (`arena::alloc_sets`, `SlabTable::new` and
 `AtomicBitmap::allocated`'s `check`s) are on no covered path. (Theorem
 44's pending checks have their own capability, `pending_aborts()`,
-which no witness of this theorem holds.)
+which no witness of this theorem holds. Since theorem 44's second
+tranche, `alloc_sets`' `check` of the set table's size fails for no
+caller: `global layout SetTable` in `class/sets.rs` gives the size.)
 `print::Sink::flush`'s `check(self.len < 1024)`, the report buffer's
 bound, never fails: `Sink`'s type invariant states the bound, and
 `Sink::write_str` (verified) keeps it.
@@ -5630,7 +5632,7 @@ bound, never fails: `Sink`'s type invariant states the bound, and
 - `malloc_trim` (`api/libc.rs:2424`) requires `may_abort()`, by two
   paths. `Heap::flush_all` returns the thread's cached slots, and the
   release aborts on a double free that sat in the cache
-  (`straddling_double_free`, `heap/flush.rs:1422`; the class release's
+  (`straddling_double_free`, `heap/flush.rs:1749`; the class release's
   `double_free`/`invalid_free`), the program's earlier invalid free
   detected late. `purge::purge_all` (`purge.rs:701`) discards through
   `discard` (`:853`), which aborts when `madvise` fails.
@@ -7703,7 +7705,7 @@ sized frees' slow paths hold no lock), used, not added.
   (no `None` while a page fits), not a run of `alloc_run`.
 - Ghost only, beyond the three ports' exec changes.
 
-## 44. Valid programs never abort (first tranche: a free through no cache or of a huge run, up to resource failures and named pending checks)
+## 44. Valid programs never abort (two tranches: the frees after init, through the caches or none, sized or not, and the lookups of `realloc` and `malloc_usable_size`, up to resource failures and named pending checks)
 
 A free given the token of a live block (what a program that frees only
 what it was given, once, holds by the C contract, `axiom_c_claim`)
@@ -7713,17 +7715,26 @@ resource it needs fails (a system call, or metadata the reservation or
 the kernel cannot supply; two such failures a valid program can reach
 are named below), or at one of the checks named below as pending,
 which fire for a valid program only if allocator state no verified
-invariant constrains is corrupt. Which aborts are resource failures or
+invariant constrains is corrupt (or, for `unbind_unbound`, a count
+exceeds a bound no invariant states). Which aborts are resource failures or
 pending checks, and that the trusted bodies on these paths abort only
 as their capability says, rests on a source test
 (`api::tests::abort_grants_only_at_roots`) and on reading the code
-(below). Covered: the free through no cache (`heap::free_direct`: a
-thread with no heap, `MALLOCX_TCACHE_NONE`), slot and run, and a
-thread's free of a huge run (`Heap::free_huge`, as `Heap::free` reaches
-it). The `file:line`s are the `fn` line at this section's commit.
+(below). Covered, after init (`shared.wf()`; the prefix before it is
+not): the free through no cache (`heap::free_direct`: a thread with no
+heap, `MALLOCX_TCACHE_NONE`), slot and run (first tranche); a free on a
+heap (`Heap::free`: the push onto the home or the `FOREIGN` cache, the
+slow path with its tick, cache GC, decay walks and purges, the arena
+it may build and the cache it may create, the flush and its release,
+the move of a young heap's home), and a sized free (`free_sized`,
+`sdallocx`, `free_aligned_sized`) of a size that names the block, on a
+heap or none (second tranche); and the lookups of the block that
+`malloc_usable_size` and `realloc` make (second tranche). The
+`file:line`s are the `fn` line at this section's commit.
 
 **Statement** (`sys/mod.rs:175`, `:181`, `:195`, `:202`, `:214`;
-`sys/abort.rs:189`, `:203`; `heap/paths.rs:1103`, `:1125`):
+`sys/abort.rs:189`, `:203`; `heap/paths.rs:1141`, `:1163`, `:1203`,
+`:1231`, `:1270`; `api/libc.rs:1650`):
 
 ```rust
 #[verifier::opaque]
@@ -7767,6 +7778,53 @@ fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8
         blk.block(p),
         process_regions().is_huge_block(p@.addr, 1),
 // body: classify_free, then h.free_huge(shared, page, blk)
+
+#[cfg(verus_only)]
+fn theorem_valid_cache_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::kernel_aborts(),
+        crate::sys::pending_aborts(),
+        shared.wf(),
+        old(h).wf(),
+        blk.block(p),
+// body: h.free(shared, p, blk)
+
+#[cfg(verus_only)]
+fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::kernel_aborts(),
+        crate::sys::pending_aborts(),
+        shared.wf(),
+        old(h).wf(),
+        blk.block(p),
+        hint matches Some(c) ==> c < NCLASSES,
+        hint_ok(p, hint),
+        super::huge_hint_ok(blk, p, size),
+// body: free_sized_fast when hinted, then shared.check_size_hint and h.free
+
+#[cfg(verus_only)]
+fn theorem_valid_sized_direct_free_never_aborts(shared: &Shared, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::kernel_aborts(),
+        crate::sys::pending_aborts(),
+        shared.wf(),
+        blk.block(p),
+        hint_ok(p, hint),
+        super::huge_hint_ok(blk, p, size),
+// body: shared.check_size_hint, then free_direct
+
+#[cfg(verus_only)]
+fn theorem_valid_lookups_never_abort(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&Live>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::kernel_aborts(),
+        crate::sys::pending_aborts(),
+        shared.wf(),
+        blk.block(p),
+// body: usable_size, old_size_or_keep (realloc) and realloc_old
 ```
 
 `kernel_aborts()` and `pending_aborts()` are two more capabilities
@@ -7776,87 +7834,147 @@ granted by nothing, each accepted only by its trusted sink
 `may_abort_kernel()` or `may_abort_pending()`, as `abort_integrity` is
 under `may_abort_corrupt()`). The witnesses hold the two, not
 `may_abort()` (nor `integrity_aborts()`: theorem 32's integrity checks
-are on no covered path), and verify. Every function on the covered
-paths requires `may_abort()` or, in its place, one of: `valid_aborts()`
-with what a live block gives it (`may_abort() || (valid_aborts() &&
-blk.block(p))`, and the forms with `holds_slot`, `owned_slots`,
-`live_slots` and `states_ok` below); `valid_aborts()` alone, where the
-token is a parameter the function requires anyway (`free_run`,
+are on no covered path, `alloc_sets`' fails for no caller), and verify.
+Every function on the covered paths requires `may_abort()` or, in its
+place, one of: `valid_aborts()` with what a live block gives it
+(`may_abort() || (valid_aborts() && blk.block(p))`, and the forms with
+`holds_slot`, `owned_slots`, `live_slots`, `states_ok`, a slot
+address, the cache entries apart from `p`, and the sized free's
+contract below); `valid_aborts()` alone, where the token is a
+parameter the function requires anyway (`Heap::free_slow`,
+`free_slow_in`, `push`, `free_other`, `rehome_on_free`, `free_run`,
 `Shared::free_huge`, `Heap::free_huge`, `zero_huge`, `release_slab`,
-`release_word`) or no abort but a pending check or a resource failure
-is left (`dec_live`, `on_live_zero`, `reopen`, `Table::ensure`);
-`may_abort_pending()` or `may_abort_kernel()` alone (`SlabTable::desc`,
-`owner`, `bits`, `SlabDesc::state`; `Batch::push`, `flush`); or
-nothing, for a slot address (`locate`). Every other abort it reaches
-needs `may_abort()`, which the witnesses lack, so each is proved
-unreachable with the token, or it is a resource failure
-(`abort_kernel`) or a pending check (`abort_pending`, or the trusted
-`sub_live`). So for a live block's token, whatever the allocator's
-state that the proofs' invariants allow, these cannot fire:
+`release_word`), where the batch's tokens are the cache's (`flush`,
+`flush_arena`, `gc`, `gc_arena`), or where no abort but a pending
+check or a resource failure is left (`dec_live`, `on_live_zero`,
+`reopen`, `Table::ensure`, `try_rehome`, `ensure_cache`,
+`Shared::arena`, `Arenas::get`, `materialise`, `build`, `Arena::init`,
+`alloc_sets`, `Arenas::unbind`, and the decay and purge walks:
+`purge::decay`, `decay_one`, `decay_huge`, `purge_all`,
+`Arena::decay_with`, `Arena::purge_all`, `ClassState::decay_with`,
+`ClassState::purge_empty`, `purge_curve`, `walk_empty`, `EmptyVisitor::visit`,
+`page_group_is_idle`, `purge_group`, `Huge::decay_with`,
+`Huge::purge_empty`, `purge_curve`, `purge_extent`); `valid_aborts()` on a
+free's tick only (`Heap::tick::<false>`, `purge::on_tick` and
+`background::auto_tick` with `alloc` false: a free's tick never
+starts the background thread); `may_abort_pending()` or
+`may_abort_kernel()` alone (`SlabTable::desc`, `owner`, `bits`,
+`SlabDesc::state`; `Batch::push`, `flush`); or nothing, for a slot
+address (`locate`). Every other abort it reaches needs `may_abort()`,
+which the witnesses lack, so each is proved unreachable with the token,
+or it is a resource failure (`abort_kernel`) or a pending check
+(`abort_pending`, or the trusted `sub_live`). So for a live block's
+token, whatever the allocator's state that the proofs' invariants
+allow, these cannot fire:
 
-- **Not an allocation** (`Shared::classify_free`, `heap/shared.rs:2935`,
-  `invalid_free`): a live block is a slot start or a page start of the
-  huge region (`Live::lemma_block_target`, `heap/live.rs:547`), which
-  `Regions::classify` never calls `Invalid`.
+- **Not an allocation** (`Shared::classify_free`, `heap/shared.rs:2972`,
+  `invalid_free`; `rehome_on_free`'s own `invalid_free` after the move,
+  `heap/mod.rs:5887`; and the lookups' `not_an_allocation` in
+  `usable_size`, `api/libc.rs:940`, and `old_size_or_keep`'s and
+  `realloc_old`'s, `:1379`, `:2187`): a live block is a slot start or a
+  page start of the huge region (`Live::lemma_block_target`,
+  `heap/live.rs:548`), which `Regions::classify` never calls `Invalid`.
 - **Slot not live, guard slab** (`SlabTable::check_live`,
-  `class/table.rs:3293`, `not_live`: `invalid_free` or `guard_free`):
-  the bit test `is_set_unchecked` (`:2907`) reads the word through
-  `bit_word_held` (`:2837`) with the caller's slot token
-  (`Live::slot_ref`, `heap/live.rs:508`; `holds_slot`,
-  `class/table.rs:1593`). Inside the word's invariant, which holds the
+  `class/table.rs:3319`, `not_live`: `invalid_free` or `guard_free`):
+  the bit test `is_set_unchecked` (`:2932`) reads the word through
+  `bit_word_held` (`:2862`) with the caller's slot token
+  (`Live::slot_ref`, `heap/live.rs:509`; `holds_slot`,
+  `class/table.rs:1596`). Inside the word's invariant, which holds the
   tokens of exactly its clear bits (`bitmap::WordPred`), the token is
   disjoint from the word's (`GhostSubset::disjoint_singleton`), so the
-  bit is set. `classify_free` hands `check_located` the token of the
-  live slot at the address `classify` located (`Live::lemma_block_slot_addr`,
-  `heap/live.rs:520`: a live block at a slot address of class `c`, a
-  guard slab's too, is the slot of class `c`, so `is_slot`; for it
-  `vspec::zero::lemma_slot_unique` now takes slot addresses).
+  bit is set. `classify_free`, and now the lookups (`usable_size`,
+  `old_size_or_keep`, `realloc_old`), hand `check_live` the token of the
+  live slot at the address `classify` located
+  (`Live::lemma_block_slot_addr`, `heap/live.rs:521`: a live block at a
+  slot address of class `c`, a guard slab's too, is the slot of class
+  `c`, so `is_slot`; for it `vspec::zero::lemma_slot_unique` takes slot
+  addresses).
 - **Not a slot start, outside the class region** (`SlabTable::locate`,
-  `class/table.rs:3168`, and `ClassState::locate`, `class/mod.rs:2003`,
+  `class/table.rs:3194`, and `ClassState::locate`, `class/mod.rs:2004`,
   `invalid_pointer`): neither fires for a slot address
   (`Regions::lemma_slot_addr_found`); both require `may_abort()` or that
   (with the regions well formed), and need no capability then.
+  `Shared::arena_of_slot` (`heap/shared.rs:3366`) requires `may_abort()`
+  or a slot address with `valid_aborts()`.
 - **Released through another arena** (`ClassState::release_with`,
-  `class/mod.rs:5230`, `wrong_arena`): `free_direct` passes the owner
+  `class/mod.rs:5300`, `wrong_arena`): `free_direct` passes the owner
   `classify_free` read (`slot_owner`), so the batch is `owned_slots`
-  (`class/mod.rs:4697`) and `release_owned` leaves no slot of another
-  arena.
+  (`class/mod.rs:4767`) and `release_owned` leaves no slot of another
+  arena. `release_routed` (`heap/shared.rs:3451`) follows the owner
+  words, and its "changed arena" abort was unreachable already.
 - **Guard slab, double free in the batch** (`release_owned`,
-  `class/mod.rs:5291`: `guard_free`, the scratch bit's `double_free`):
-  a live slot is in no guard slab (`live_slots`, `:4691`; theorem 7),
+  `class/mod.rs:5361`: `guard_free`, the scratch bit's `double_free`):
+  a live slot is in no guard slab (`live_slots`, `:4761`; theorem 7),
   and a set scratch bit is a slot whose token the batch's accumulated
   tokens hold, disjoint from the one split off for this pointer (for
-  every caller: the batch's tokens are distinct).
-- **Double free at the word** (`release_word`, `class/mod.rs:2141`,
+  every caller: the batch's tokens are distinct). A flush's batch is
+  `live_slots`: every cached entry holds a slot of its header's class
+  (`lemma_released`, `heap/flush.rs:699`).
+- **Double free at the word** (`release_word`, `class/mod.rs:2142`,
   `double_free`): `AtomicBitmap::release` ensures the released bits
   were set (their tokens were not in the word), so the check fails for
   no caller.
+- **Double free in the cache** (`Heap::scan_or_abort`,
+  `heap/paths.rs:589`, `cached_twice`, `double_free_scan`'s compare in
+  `free_slow_in` and `rehome_on_free`): no entry of the cache stands for
+  `p` while the free holds `p`'s slot token: each entry holds its own
+  slot's token (`CachePerms::tokened`), of the same authority, so of
+  another slot (`Heap::lemma_not_cached`, `heap/cache.rs:760`, by
+  `Live::lemma_slot_apart`); and a hit of `cached_recently`
+  (`heap/cache.rs:722`, trusted, whose contract now states the hit, by
+  address) is an entry standing for `p` (`lemma_plain_stored`).
+- **A straddling pair at the flush** (`Heap::flush`,
+  `heap/flush.rs:353`, `straddling_double_free`): the lowest released
+  address is a released entry's and `kept_max` a kept entry's
+  (`lemma_kept_index`, `:664`, follows it through the kept sort), and
+  the cache's entries stand for distinct slots (their tokens are
+  distinct), so the compare fails for every caller (`lemma_released`).
+- **A size hint that does not name the block**
+  (`Shared::check_size_hint`, `heap/shared.rs:3287`, `hint_mismatch` and
+  `huge_hint_mismatch`): with the sized free's contract (the premise
+  below) the hint names `p`'s class and `size` rounds to the run's
+  pages.
+- **Re-keying a cache that still holds slots** (`CacheHeader::rekey`,
+  `heap/cache.rs:239`, the trusted `assert_rekey_flushed`,
+  `heap/mod.rs:1911`): `try_rehome` (`heap/mod.rs:6008`) re-keys the
+  home headers after the home flush emptied them and the `FOREIGN`
+  flush kept them.
 - **Not a run, already free** (`Huge::free_run`, `huge/mod.rs:7212`, two
   `not_a_run` and `already_free`; `Huge::usable_size`, `:4028`, which
-  `zero_on_free`'s `Shared::zero_huge`, `heap/shared.rs:3142`,
-  reaches): the run token's extent is in the lock's run authority,
-  which names the `Active` descriptor that starts at `page`, keyed there
-  in the table (as `Huge::lookup` shows it, theorem 43). `free_run`
-  always holds the token, so its three checks fail for no caller
-  (`assert(false)`, as theorem 29's `Inner::extent_at`); `usable_size`
-  holds it when its caller does (`holds_run`, `huge/mod.rs:698`). With
-  that, the abort stand-in `not_a_run_page` is gone (common premises,
-  "Abort stand-in"): its site is unreachable, so Verus checks the
-  build's `not_a_run(self.addr(page))` there itself.
+  `zero_on_free`'s `Shared::zero_huge`, `heap/shared.rs:3179`, and the
+  lookups reach): the run token's extent is in the lock's run
+  authority, which names the `Active` descriptor that starts at `page`,
+  keyed there in the table (as `Huge::lookup` shows it, theorem 43).
+  `free_run` always holds the token, so its three checks fail for no
+  caller (`assert(false)`, as theorem 29's `Inner::extent_at`);
+  `usable_size` holds it when its caller does (`holds_run`,
+  `huge/mod.rs:698`). With that, the abort stand-in `not_a_run_page` is
+  gone (common premises, "Abort stand-in"): its site is unreachable, so
+  Verus checks the build's `not_a_run(self.addr(page))` there itself.
 - **A run state byte that is no state** (`HugeDesc::state` in
   `Inner::free_before`, `free_after`, `retire`, `huge/mod.rs:1722`,
   `:1751`, `:3015`, `bad_run_state_byte`): every live descriptor's byte
   is a state (`desc_ok`; `states_ok`, `:629`).
+- **An empty count below zero on a purge** (`purge_group`,
+  `class/decay.rs:1015`, `slab_count_underflow` in its `unwrap_or_else`
+  closure, now `requires false`): the slab it purges is `Empty`, so in
+  the empty set (`slab_core`), whose size the count is (`Inner::base`).
+- **The set table larger than an object** (`Arena::alloc_sets`,
+  `arena.rs:894`, an integrity `check` on the arena-build path): the
+  table's size and alignment are `global layout SetTable`'s
+  (`class/sets.rs:203`, which Verus checks against the compiler's), so
+  it fails for no caller.
 
 The resource failures the covered paths reach (`abort_kernel`;
 `api::tests::abort_grants_only_at_roots` lists the callers):
 - `Huge::free_run`'s `madvise(MADV_GUARD_REMOVE)` of the run's guard,
   with `guard_install`.
-- `purge::discard` (`purge.rs:1386`), the `madvise` of the run's pages
-  when it is purged at once (above `huge_retain_max`, or under
-  `huge_dirty_decay_ms:0`); `Batch::push` and `Batch::flush` require
-  `may_abort_kernel()` for it. A valid program reaches it: `madvise`
-  fails with `EINVAL` on pages the program locked (`mlock`,
+- `purge::discard` (`purge.rs:1386`), the `madvise` of the purged
+  pages: of a huge run purged at once (above `huge_retain_max`, or under
+  `huge_dirty_decay_ms:0`), and of the slabs and extents the tick's
+  decay walks purge (second tranche); `Batch::push` and `Batch::flush`
+  require `may_abort_kernel()` for it. A valid program reaches it:
+  `madvise` fails with `EINVAL` on pages the program locked (`mlock`,
   `mlockall(MCL_FUTURE)`), and the free aborts.
 - `huge::table::Table::insert`'s "descriptor table full"
   (`huge/table.rs:876`): `free_run`'s `ensure` is best effort, so once
@@ -7864,11 +7982,14 @@ The resource failures the covered paths reach (`abort_kernel`;
   the kernel refusing to commit), frees fill it. A valid program
   reaches it under metadata exhaustion; that it is unreachable after an
   `ensure` that grew the table is not proved.
+Metadata the arena build, the cache stack and the arena's set table
+cannot get is no abort: `Shared::arena` and `ensure_cache` return none,
+and the free goes straight to the slab.
 
 The pending checks the covered paths reach (`abort_pending`, or the
 trusted `sub_live`, which require only `may_abort_pending()`; the
 helpers' other callers require `may_abort()`, as before). Each tests
-state no verified invariant relates to the tokens; each fires on an
+state no verified invariant constrains as the check needs; each fires on an
 invalid free, and on a valid one only if that state is corrupt:
 - `class::abort::never_committed` (`class/abort.rs:18`), through
   `SlabTable::check_live`, `desc`, `owner` and `bits`: the slab at or
@@ -7881,18 +8002,31 @@ invalid free, and on a valid one only if that state is corrupt:
   `dec_live`: the live count would go below zero.
 - `slab::bad_state_byte` (`slab.rs:41`), through `State::from_u8`,
   `SlabDesc::state` and `state_held` (the class lock holder's reads in
-  `reopen` and `on_live_zero`): a slab state byte that is no state.
-- `heap::shared::no_such_arena` (`heap/shared.rs:3592`), through
+  `reopen`, `on_live_zero` and the decay walks): a slab state byte that
+  is no state.
+- `heap::shared::no_such_arena` (`heap/shared.rs:3667`), through
   `Shared::owner`: the owner word names an arena that was never built.
-  (`alloc_huge`'s call, of its caller's arena index, holds `may_abort()`.)
+  (`alloc_huge`'s call, of its caller's arena index, holds `may_abort()`;
+  on the free paths `ensure_cache` reads the home arena's and `try_rehome`
+  the one an owner word names.)
 - `huge_count_underflow` (`huge/mod.rs:425`), through `HugeStats::sub`
   in `drop_extent`: an extent count below zero.
 - The `check_zero` debug mode's `shadow_written` and `release_into_fresh`
-  (`class/verify.rs:217`, `:342`), through `check_shadow` and
+  (`class/verify.rs:281`, `:423`), through `check_shadow` and
   `dec_live`: a descriptor written outside its API, a release into a
   slab that reads `Fresh`.
+- Second tranche: `ClassState::walk_empty`'s "slab in the empty set is
+  not empty" (`class/decay.rs:442`, the tick's decay walk): a slab of
+  the empty set whose descriptor is not `Empty` with no live slot (the
+  walk reads the state byte raw, not through `state_locked`, and no
+  invariant relates the live count to the sets); and
+  `arena::unbind_unbound` (`arena.rs:2764`), through
+  `Arenas::unbind` in `try_rehome`: the heap holds its arena's ticket,
+  so the bound count reads the tickets out as a `u32` wraps it, and
+  reads 0 only with a multiple of `2^32` heaps homed there, which no
+  verified invariant bounds.
 
-`api::tests::abort_grants_only_at_roots` (`api/mod.rs`) now also checks
+`api::tests::abort_grants_only_at_roots` (`api/mod.rs`) also checks
 that `kernel_aborts` and `pending_aborts` appear only in their
 definitions, in `valid_aborts`' and in the witnesses' `requires`; that
 `abort_kernel` and `abort_pending` are called only in the functions
@@ -7906,57 +8040,76 @@ that no `use` names an abort sink outside `sys/` and `vspec/`.
   take the live block's token, `blk.block(p)`, which a free of a block
   the program holds gets from it. Nothing is stated for a free without
   one; an invalid or double free still aborts (theorem 3).
+- The C contract of a sized free: the size names the block (`hint` is
+  the size's class at the alignment, `hint_ok`, the class the token's
+  slot has; for a run, `size` rounds up to the run's usable bytes,
+  `huge_hint_ok`), what C23 `free_sized` and jemalloc's `sdallocx` ask
+  of their callers. A wrong size still aborts ("Bad input").
 - `shared.wf()` stands for init complete, as in theorem 32: `free`'s
   `shared_if_ready` and `free_before_init`, and `heap_for_thread` (which
   creates a heap, and may abort when that fails), come before the calls
-  the witnesses make, and are not covered.
-- `abort_kernel` and `abort_pending` (`sys/abort.rs:189`, `:203`, S213,
-  S214, trusted): the relabels of `abort_fmt`'s capability, as
-  `abort_integrity`'s (S212); their Kani harnesses
+  the witnesses make, and are not covered; nor is `mallocx::free`'s
+  `invalid_tcache` (a bad `MALLOCX_TCACHE` is "Bad input").
+- `abort_kernel` and `abort_pending` (`sys/abort.rs:189`, `:203`, S211,
+  S212, trusted): the relabels of `abort_fmt`'s capability, as
+  `abort_integrity`'s (S210); their Kani harnesses
   (`abort_kernel_reaches_abort_fmt`, `abort_pending_reaches_abort_fmt`,
   `src/kani/abort.rs`) are written as `abort_integrity`'s, not yet run.
+- `Heap::cached_recently` (`heap/cache.rs:722`, S113, trusted, as
+  before): its contract now ensures that a hit is one of the `len`
+  entries whose address is `e`'s, read off its body (the four compares
+  `*top.sub(k) == e`, `k` in `1..=4`, or the iterator over `1..=len`,
+  each an entry below `len`; pointer `==` compares addresses).
 - The trusted bodies on these paths abort only as their capability says
   (the source test above; a trusted body that aborts only through a
   verified function it calls is read off the code: `owner_locked`,
-  through `SlabTable::owner`, now requires `may_abort_pending()`).
+  through `SlabTable::owner`, requires `may_abort_pending()`).
 - The shipped release profile (overflow checks and debug assertions off),
   as in theorem 32.
 
 **What it does not cover (paths that can still abort for a valid
 program).**
-- The thread-cache free: `Heap::free` of a slot (`push`, and its slow
-  path `free_slow_in` with `ensure_cache` and `Shared::arena`, which may
-  build an arena, `tick` (`gc` and `purge::on_tick`), the flush with
-  `release_routed` and `straddling_double_free`, `rehome_on_free` with
-  `try_rehome`, and `scan_or_abort`'s `cached_twice`), `free_other`,
-  the sized frees (`check_size_hint`'s aborts are theorem "Bad input"'s,
-  and the cached `free_sized_fast`), `realloc`, `malloc_usable_size` and
-  the `_usable` frees. Of these, `malloc_usable_size`'s and `realloc`'s
-  bit test (`check_live`) takes the caller's token now, as the free's
-  does.
-- The pending checks above, which need invariants this tranche does not
+- The prefix before init and before a heap: `shared_if_ready`,
+  `free_before_init`, `heap_for_thread` (heap creation).
+- The allocation `realloc` makes between its lookup and its free of the
+  old block (an allocation's checks, `live_above_slots`,
+  `slab_count_underflow` on the claim side, `reservation_unmet`), and
+  the entry points' own wrappers (`free_sized_block` and the rest, which
+  the witnesses replicate after init).
+- The pending checks above, which need invariants this theorem does not
   have: the live counts against the bits, the slab states and the
-  watermark against the tokens, the owner word against the registry,
-  and the huge extent counts against the descriptors (the claim paths'
-  checks, `live_above_slots`, `slab_count_underflow` and
-  `reservation_unmet`, are on no covered path).
+  watermark against the tokens, the live count against the sets, the owner word
+  against the registry, the huge extent counts against the descriptors,
+  and the arena bound counts below `2^32`.
 - Resource failures: they are the statement's exception (above).
 
 **Where the statement is weaker than the code.**
-- The witnesses replicate the calls `free` makes after its
-  `shared_if_ready` on a thread without a heap (`free_direct`), and
-  `Heap::free`'s huge branch, not those functions, as theorem 32's do.
+- The witnesses replicate the calls `free` and the sized frees make
+  after their `shared_if_ready` (`free_direct`; `Heap::free` on the
+  thread's or an explicit cache's heap; `free_sized_fast`,
+  `check_size_hint`, then `Heap::free` or `free_direct`), and
+  `Heap::free`'s huge branch,
+  not those functions, as theorem 32's do.
 - "Never aborts" is about the verified source, as in theorem 32.
 
 Machine code: the x86_64 disassembly of the release library is
-identical to the base commit's (4f75a5b7), function for function. The
-exec changes are the abort sinks (`abort_fmt` to `abort_pending` or
+identical to the base commit's (4f75a5b7 for the first tranche, 9aca3bad
+for the second), function for function. The first tranche's exec
+changes are the abort sinks (`abort_fmt` to `abort_pending` or
 `abort_kernel`, both `#[inline(always)]` calls of `abort_fmt`), the
 match arm of `classify_free`'s `Invalid` made a block, a `&Inner` borrow
 of the huge lock guard moved (`usable_size`) or added (`free_run`) for
 the token proof, ghost (`Tracked`) parameters on `classify_free`,
 `check_located`, `check_live`, `is_set_unchecked` and `bit_word_held`,
-and `bit_word` as a call of `bit_word_held` with no token.
+and `bit_word` as a call of `bit_word_held` with no token. The second
+tranche's: two more sinks relabelled (`walk_empty`, `unbind_unbound`
+to `abort_pending`), the
+`Invalid` arms of `usable_size`, `old_size_or_keep`, `realloc_old` and
+`rehome_on_free`'s `classify_free` made blocks (proof and the same
+call), the `unwrap_or_else` closure in `purge_group` given a return
+type and `requires false`; no exec parameter added (the cache entries' disjointness is a
+precondition `free_slow_in` and `rehome_on_free` prove, not a token
+passed to `scan_or_abort`).
 
 ## 45. Fast-path cost bounds (machine level, pinned build)
 

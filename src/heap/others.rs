@@ -471,7 +471,7 @@ impl Heap {
     #[inline(never)]
     pub(super) fn free_other(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(blk): Tracked<Live>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
             blk.slot_block(p, class as int),

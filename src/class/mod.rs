@@ -124,10 +124,10 @@ use abort::{
 };
 #[cfg(test)]
 pub use sets::SET_GROUPS;
-#[cfg(verus_only)]
-pub(crate) use sets::SETS_PER_CLASS;
 pub(crate) use sets::Set;
 pub use sets::SetTable;
+#[cfg(verus_only)]
+pub(crate) use sets::{SETS_PER_CLASS, lemma_set_table_layout};
 pub use table::CommittedInv;
 pub use table::SlabTable;
 #[cfg(verus_only)]

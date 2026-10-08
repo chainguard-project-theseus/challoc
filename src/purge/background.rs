@@ -349,7 +349,7 @@ pub fn start_requested(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -
 #[inline(never)]
 pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&mut LockOrder>)
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || (crate::sys::valid_aborts() && !alloc),
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_class(0, 0)),

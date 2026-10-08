@@ -198,6 +198,19 @@ pub struct SetTable {
     pub(crate) page: usize,
 }
 
+// Verus checks the size `Arena::alloc_sets`' object check uses (the same
+// in every configuration and on both targets).
+global layout SetTable is size == 688, align == 8;
+
+/// The size and alignment `global layout` gives [`SetTable`], for modules
+/// that do not see the declaration (`Arena::alloc_sets`).
+pub proof fn lemma_set_table_layout()
+    ensures
+        vstd::layout::size_of::<SetTable>() == 688,
+        vstd::layout::align_of::<SetTable>() == 8,
+{
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Group {
     pub(crate) base: usize,

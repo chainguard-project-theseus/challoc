@@ -4822,7 +4822,7 @@ impl Heap {
     /// (whole-allocator theorem 10).
     fn flush_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             shared.wf(),
@@ -4847,7 +4847,7 @@ impl Heap {
         }
         for class in 0..NCLASSES
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 self.tcache_on() == old(self).tcache_on(),
                 crate::sys::may_syscall(),
                 ord.allows(rank_class(0, 0)),
@@ -5167,7 +5167,7 @@ impl Heap {
     /// disjunction; [`Heap::gc_arena`] states the exact case per array).
     pub fn gc(&mut self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             shared.wf(),
@@ -5200,7 +5200,7 @@ impl Heap {
         }
         while !o.is_null()
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 ord.allows(rank_class(0, 0)),
                 *ord == *old(ord),
@@ -5323,7 +5323,7 @@ impl Heap {
     #[allow(clippy::while_let_loop, reason = "the desugared `for`, which Verus needs for `continue`")]
     fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             shared.wf(),
@@ -5346,7 +5346,7 @@ impl Heap {
         let mut iter = 0..NCLASSES;
         loop
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 ord.allows(rank_class(0, 0)),
                 *ord == *old(ord),
@@ -5882,7 +5882,7 @@ impl Heap {
     /// `malloc` pops (which would hand it out twice).
     ///
     /// `blk` is the caller's token for `p`: the push takes it when the
-    /// heap moved, and a false leaves it as it was and the heap as `keeps`
+    /// heap moved, and a false leaves it `p`'s token and the heap as `keeps`
     /// allows (`rehome`, `rehome_from` may change). The `debug_assert!` is
     /// proved: the bit test names `p`'s class, which is `class` (a slot
     /// start has one class), and its slab's owner, which `arena_of_slot`
@@ -5898,7 +5898,7 @@ impl Heap {
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: bool)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             process_regions().is_slot(class as int, p@.addr),
@@ -5911,7 +5911,7 @@ impl Heap {
             *final(ord) == *old(ord),
             final(self).wf(),
             !r ==> final(self).keeps(*old(self)),
-            !r ==> *final(blk) == *old(blk),
+            !r ==> final(blk).slot_block(p, class as int),
         decreases 1int, 0int,
     {
         let to = shared.arena_of_slot(class, p);
@@ -5926,6 +5926,11 @@ impl Heap {
                 unsafe {
                     let cache = Self::node_cache_ptr(foreign, class);
                     if self.hdr_ref(cache).cap != 0 {
+                        proof {
+                            // No entry stands for `p` while `blk` holds it.
+                            assert(self.hdr_class(node_hdr(foreign, class as int)) == class);
+                            self.lemma_not_cached(blk, cache, class as int, self.hdr(cache).len as int);
+                        }
                         self.scan_or_abort(shared, cache, p);
                     }
                 }
@@ -5943,7 +5948,14 @@ impl Heap {
                 }
                 debug_assert!(c == class && a == to)
             },
-            Err(_) => invalid_free(p as usize),
+            Err(_) => {
+                proof {
+                    // A slot start is no page start of the huge region.
+                    shared.lemma_regions_ok();
+                    crate::vspec::zero::lemma_slot_not_huge(class as int, p as usize);
+                }
+                invalid_free(p as usize)
+            },
         }
         let tracked mut own = Live::empty();
         proof {
@@ -6000,7 +6012,7 @@ impl Heap {
     /// `rehome_from` may change).
     fn try_rehome(&mut self, shared: &Shared, to: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: bool)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             shared.wf(),
@@ -6051,6 +6063,21 @@ impl Heap {
         let ghost h2 = *self;
         proof {
             Heap::lemma_same_trans(h0, h1, h2);
+            // The home headers cache nothing (`rekey`'s precondition): the
+            // home flush emptied them and the `FOREIGN` flush kept them.
+            h1.lemma_array_hdr(ptr::null_mut());
+            assert forall|k: int| 0 <= k < NCLASSES implies #[trigger] self.cached_len(self.home_ptr(k)) == 0 by {
+                assert(h0.array_hdr(ptr::null_mut(), k) == h0.home_ptr(k));
+                assert(h1.array_hdr(ptr::null_mut(), k) == h1.home_ptr(k));
+                if foreign@.addr != 0 {
+                    let i = choose|i: int| 0 <= i < h1.list@.len() && h1.list@[i] == foreign;
+                    assert forall|j: int| 0 <= j < NCLASSES implies h1.home_ptr(k) != #[trigger] h1.array_hdr(foreign, j) by {
+                        h1.lemma_home_apart(k, i, j);
+                    }
+                    assert(self.held(h1.home_ptr(k)) == h1.held(h1.home_ptr(k)));
+                    assert(self.held(h1.home_ptr(k)).len() == self.cached_len(h1.home_ptr(k)));
+                }
+            }
         }
         let a = shared.owner(to);
         for class in 0..NCLASSES
@@ -6059,18 +6086,36 @@ impl Heap {
                 self.same_shape(h0),
                 shared.wf(),
                 a.spec_index() == to,
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
+                forall|k: int| class <= k < NCLASSES ==> #[trigger] self.cached_len(self.home_ptr(k)) == 0,
         {
             let c = self.cache_ptr(class);
+            proof {
+                self.lemma_array_hdr(ptr::null_mut());
+                assert(self.array_hdr(ptr::null_mut(), class as int) == self.home_ptr(class as int));
+            }
             if self.hdr_ref(c).cap != 0 {
                 let refilled = a.class(class).refilled() as u32;
                 let ghost hb = *self;
+                proof {
+                    assert(hb.cached_len(hb.home_ptr(class as int)) == 0);
+                }
                 let h = self.hdr_mut(c);
                 h.rekey(to, refilled);
                 proof {
                     Heap::lemma_set(hb, *self, c, *h);
                     assert(self.perms@.hdrs.dom() =~= hb.perms@.hdrs.dom());
                     Heap::lemma_same_trans(h0, hb, *self);
+                    // The other home headers kept their values.
+                    assert forall|k: int| class < k < NCLASSES implies #[trigger] self.cached_len(self.home_ptr(k)) == 0 by {
+                        let q = hb.home_ptr(k);
+                        assert(hb.cached_len(q) == 0);
+                        assert(hb.array_hdr(ptr::null_mut(), k) == hb.home_ptr(k));
+                        assert(hb.hdr_class(hb.home_ptr(k)) == k);
+                        assert(self.home_ptr(k) != c);
+                        assert(self.perms@.hdrs[q] == hb.perms@.hdrs[q]);
+                        assert(self.hdr(self.home_ptr(k)) == hb.hdr(self.home_ptr(k)));
+                    }
                 }
             }
         }
@@ -6102,7 +6147,7 @@ impl Heap {
     /// lock, from `pthread_join`'s TLS teardown).
     fn tick<const ALLOC: bool>(&mut self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && !ALLOC),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             old(self).wf(),

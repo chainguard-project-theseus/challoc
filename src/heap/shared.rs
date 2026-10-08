@@ -2828,7 +2828,7 @@ impl Shared {
     #[inline]
     pub fn arena(&self, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&Arena>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_arenas()),
             self.wf(),
@@ -3293,7 +3293,7 @@ impl Shared {
     #[inline(never)]
     pub fn check_size_hint(&self, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<&super::Live>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p) && crate::heap::hint_ok(p, hint) && crate::heap::huge_hint_ok(*blk, p, size)),
             crate::sys::may_syscall(),
             self.wf(),
         ensures
@@ -3306,6 +3306,13 @@ impl Shared {
         }
         match self.regions.classify(p as usize) {
             Kind::Slab { class, .. } => {
+                proof {
+                    if blk.block(p) {
+                        // The live slot of `class`, which the hint names
+                        // (`hint_ok`).
+                        blk.lemma_block_slot_addr(p, class as int);
+                    }
+                }
                 if hint != Some(class as usize) {
                     hint_mismatch(p, size, class);
                 }
@@ -3315,6 +3322,17 @@ impl Shared {
                 }
             },
             Kind::Huge { page } => {
+                proof {
+                    if blk.block(p) {
+                        // The live run's token, at a page start no slot
+                        // starts at.
+                        blk.lemma_claims(p);
+                        if crate::heap::slot_start(p) {
+                            let c = choose|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr);
+                            crate::vspec::zero::lemma_slot_not_huge(c, p@.addr);
+                        }
+                    }
+                }
                 let ghost claimed = blk.claims(p) && !crate::heap::slot_start(p);
                 proof {
                     if claimed {
@@ -3327,6 +3345,11 @@ impl Shared {
                 let Some(run) = self.huge.lookup(page, Tracked(blk.run_ref()), Tracked(&mut ord)) else {
                     return;
                 };
+                proof {
+                    // The size a valid sized free passes rounds up to the
+                    // run's usable bytes (`huge_hint_ok`).
+                    self.lemma_huge_usable(size);
+                }
                 if run.start == page && run.state == RunState::Active && self.huge.usable_for(size) != Some(run.usable) {
                     huge_hint_mismatch(p, size, run.usable);
                 }
@@ -3349,11 +3372,16 @@ impl Shared {
     /// Aborts for anything that is not a slot start in such a slab.
     pub(super) fn arena_of_slot(&self, class: usize, p: *mut u8) -> (r: u16)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && self.wf() && crate::layout::process_regions().is_slot_addr(class as int, p@.addr)),
             class < NCLASSES,
         ensures
             self.wf() ==> r == crate::class::slot_owner(class as int, p@.addr),
     {
+        proof {
+            if self.wf() {
+                self.lemma_regions_ok();
+            }
+        }
         let t = self.table(class);
         let (slab, _slot) = t.locate(p);
         proof {
@@ -3429,7 +3457,7 @@ impl Shared {
     /// [`slot_owner`]: crate::class::slot_owner
     pub fn release_routed(&self, arena: u16, class: usize, ptrs: &[*mut u8], Tracked(bag): Tracked<&mut GhostSubset<int>>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && crate::class::live_slots(class as int, ptrs@)),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             self.wf(),
@@ -3452,7 +3480,7 @@ impl Shared {
         }
         loop
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || (crate::sys::valid_aborts() && crate::class::live_slots(class as int, ptrs@)),
                 crate::sys::may_syscall(),
                 self.wf(),
                 ord.allows(rank_class(0, 0)),
@@ -3480,6 +3508,11 @@ impl Shared {
                 }
                 crate::class::lemma_aset_shift(pa, ra, d0, 0, rest.len() as int);
                 crate::class::lemma_aset_split(pa, 0, d0, ptrs@.len() as int);
+                if crate::class::live_slots(class as int, ptrs@) {
+                    assert forall|i: int| 0 <= i < rest.len() implies #[trigger] crate::layout::process_regions().is_slot(class as int, rest[i]@.addr) by {
+                        assert(rest[i] == ptrs@[d0 + i]);
+                    }
+                }
             }
             done += self.owner(a).class(class).release_owned(&ptrs[done..], Tracked(&mut *bag), Tracked(ord));
             proof {
@@ -3497,6 +3530,11 @@ impl Shared {
             }
             if done == ptrs.len() {
                 return;
+            }
+            proof {
+                if crate::class::live_slots(class as int, ptrs@) {
+                    assert(crate::layout::process_regions().is_slot(class as int, ptrs@[done as int]@.addr));
+                }
             }
             let next = self.arena_of_slot(class, ptrs[done]);
             if next == a {

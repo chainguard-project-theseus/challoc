@@ -23,7 +23,7 @@ use super::{
 #[cfg(verus_only)]
 use super::{
     CachePerms, PUSH_ZERO, cell_ok, free_target, hand_out, hint_ok, lemma_handed_ok, lemma_hint_ok,
-    pac_mode, regions_ok, slot_start, slot_token,
+    lemma_plain_stored, pac_mode, regions_ok, slot_ptr, slot_start, slot_token,
 };
 #[cfg(verus_only)]
 use crate::class::slot_loc;
@@ -251,7 +251,7 @@ impl Heap {
     #[inline(always)]
     pub fn free(&mut self, shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
             crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
@@ -553,7 +553,7 @@ impl Heap {
     #[inline(never)]
     pub(super) fn free_slow(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(blk): Tracked<Live>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
             blk.slot_block(p, class as int),
@@ -579,13 +579,16 @@ impl Heap {
 
     /// `double_free_scan`'s slow-path compare: abort by name when `p` is
     /// among the top four entries of `cache` (signed as the push signs it).
+    /// For a free with `p`'s slot token (theorem "Valid programs never
+    /// abort") no entry stands for `p` ([`Heap::lemma_not_cached`]), so
+    /// the abort is unreachable.
     ///
     /// # Safety
     /// `cache` is one of this heap's real caches.
     #[inline(always)]
     pub(super) unsafe fn scan_or_abort(&self, shared: &Shared, cache: *mut CacheHeader, p: *mut u8)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && process_regions().is_slot(self.hdr_class(cache), p@.addr) && forall|i: int| 0 <= i < self.hdr(cache).len ==> #[trigger] self.cached_addr(cache, i) != p@.addr as int),
             shared.wf(),
             self.wf(),
             self.owns(cache),
@@ -594,6 +597,16 @@ impl Heap {
         let e = if shared.pac() { addr_to_ptr(pac::sign(p as usize, slots as usize)) } else { p };
         // SAFETY: guaranteed by the caller.
         if unsafe { Self::cached_recently(slots, self.hdr_ref(cache).len, e, Tracked(&self.perms.borrow().slots)) } {
+            proof {
+                // The hit's entry stands for `p` (`e` is `p` as stored).
+                shared.lemma_regions_ok();
+                let i = choose|i: int| 0 <= i < self.hdr(cache).len && self.perms@.slots[#[trigger] slot_ptr(slots, i)].value()@.addr == e@.addr;
+                assert(self.perms@.ent(cache, i) == slot_ptr(slots, i));
+                if process_regions().is_slot(self.hdr_class(cache), p@.addr) {
+                    lemma_plain_stored(e, p, self.hdr_class(cache), slots);
+                    assert(self.cached_addr(cache, i) == p@.addr as int);
+                }
+            }
             cached_twice(p);
         }
     }
@@ -607,7 +620,7 @@ impl Heap {
     /// is cached, exactly as it would be handed out; design 6.3).
     pub(super) fn free_slow_in(&mut self, shared: &Shared, arena: u16, class: usize, p: *mut u8, Tracked(blk): Tracked<Live>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
             blk.slot_block(p, class as int),
@@ -640,12 +653,6 @@ impl Heap {
                 z = t;
             }
         }
-        // The slot's token, for the cache or the bitmap; the permission
-        // to its bytes is dropped with it.
-        proof {
-            blk.lemma_mem();
-        }
-        let tracked tok = blk.take_slot(class as int);
         proof {
             old(self).lemma_wf_regions();
         }
@@ -655,6 +662,16 @@ impl Heap {
         // whose first allocation is huge, or whose home moved, may not
         // have built it).
         let cache = if arena == FOREIGN || shared.arena(arena, Tracked(&mut ord)).is_some() { self.ensure_cache(shared, arena, class, Tracked(&mut ord)) } else { ptr::null_mut() };
+        // The slot's token, for the cache or the bitmap; the permission
+        // to its bytes is dropped with it. No entry of the cache stands
+        // for `p` while `blk` holds it (the scan below).
+        proof {
+            if cache@.addr != 0 {
+                self.lemma_not_cached(&mut blk, cache, class as int, self.hdr(cache).len as int);
+            }
+            blk.lemma_mem();
+        }
+        let tracked tok = blk.take_slot(class as int);
         if cache.is_null() {
             self.tick::<false>(shared, Tracked(&mut ord));
             // No cache for this class here: straight to the slab, through
@@ -1172,6 +1189,100 @@ fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8
             h.free_huge(shared, page, Tracked(blk))
         },
     }
+}
+
+/// Theorem 44, second tranche, checked: a thread's free of a live block
+/// through its caches ([`Heap::free`]: the push onto the home cache or the
+/// `FOREIGN` one, the slow path with its tick (cache GC, decay and purges),
+/// the arena it may build, the cache it may create, the flush and the
+/// release, the move of a young heap's home), with the capabilities of
+/// [`theorem_valid_free_never_aborts`].
+///
+/// Verification only (`cfg(verus_only)`): the build has no such function.
+#[cfg(verus_only)]
+fn theorem_valid_cache_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::kernel_aborts(),
+        crate::sys::pending_aborts(),
+        shared.wf(),
+        old(h).wf(),
+        blk.block(p),
+{
+    proof {
+        shared.lemma_regions_ok();
+        blk.lemma_claims(p);
+    }
+    h.free(shared, p, Tracked(blk));
+}
+
+/// Theorem 44, second tranche, checked: a sized free (`free_sized`,
+/// `sdallocx`, `free_aligned_sized`) of a live block whose size names it
+/// (`hint` is the size's class, `class_for(size, align)`: [`hint_ok`],
+/// and for a run `size` rounds to its pages: [`huge_hint_ok`]; the C
+/// contract of a sized free), on a heap: the hinted fast push
+/// ([`free_sized_fast`]), then `free_sized_slow`'s check of the hint
+/// ([`Shared::check_size_hint`]) and the exact free ([`Heap::free`]), with
+/// the capabilities of [`theorem_valid_free_never_aborts`]. The heap is
+/// any: the thread's, or an explicit cache's (`sdallocx_routed`).
+///
+/// Verification only (`cfg(verus_only)`): the build has no such function.
+#[cfg(verus_only)]
+fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::kernel_aborts(),
+        crate::sys::pending_aborts(),
+        shared.wf(),
+        old(h).wf(),
+        blk.block(p),
+        hint matches Some(c) ==> c < NCLASSES,
+        hint_ok(p, hint),
+        super::huge_hint_ok(blk, p, size),
+{
+    let tracked mut blk = blk;
+    proof {
+        shared.lemma_regions_ok();
+        blk.lemma_block_target(p);
+        blk.lemma_claims(p);
+    }
+    if hint.is_some() {
+        if free_sized_fast(shared, h, p, hint, shared.push_flags(), Tracked(&mut blk)) {
+            return;
+        }
+    }
+    proof {
+        // A declined push leaves a token that claims `p` with the same
+        // usable size: `p`'s block.
+        blk.lemma_claimed_block(p);
+    }
+    shared.check_size_hint(p, size, hint, Tracked(&blk));
+    h.free(shared, p, Tracked(blk));
+}
+
+/// Theorem 44, second tranche, checked: the sized free of
+/// [`theorem_valid_sized_free_never_aborts`] through no cache (a thread
+/// with no heap, `MALLOCX_TCACHE_NONE`): the check of the hint, then
+/// [`free_direct`].
+///
+/// Verification only (`cfg(verus_only)`): the build has no such function.
+#[cfg(verus_only)]
+fn theorem_valid_sized_direct_free_never_aborts(shared: &Shared, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::kernel_aborts(),
+        crate::sys::pending_aborts(),
+        shared.wf(),
+        blk.block(p),
+        hint_ok(p, hint),
+        super::huge_hint_ok(blk, p, size),
+{
+    proof {
+        shared.lemma_regions_ok();
+        blk.lemma_claims(p);
+    }
+    shared.check_size_hint(p, size, hint, Tracked(&blk));
+    free_direct(shared, p, Tracked(blk));
 }
 
 /// `shared` as the raw pointer [`existing_heap`] takes and `init_fields`
