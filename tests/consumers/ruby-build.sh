@@ -16,8 +16,8 @@
 #      patch (contrib/ruby/);
 #   3. autogen, then configure in an out-of-tree build directory with
 #      Wolfi's flags (--enable-shared --disable-rpath --enable-mkmf-verbose
-#      --enable-yjit --with-jemalloc, CFLAGS=-DOPENSSL_NO_ENGINE
-#      -DOPENSSL_NO_DSA -DOPENSSL_NO_DH; the prefix
+#      --enable-yjit --with-jemalloc, CFLAGS=-DOPENSSL_NO_ENGINE but not
+#      Wolfi's -DOPENSSL_NO_DSA -DOPENSSL_NO_DH, which test-all needs; the prefix
 #      is under target/ and docs are off), LDFLAGS pointing -L and -rpath at
 #      the stage (--disable-rpath only drops Ruby's own libdir rpath);
 #   4. make, plus `update-gems extract-gems` as Wolfi does; then checks that
@@ -145,7 +145,11 @@ ruby tool/sync_default_gems.rb openssl > "$LOGS/sync-openssl.log" 2>&1 || { tail
 [ -x configure ] || { step "autogen.sh"; ./autogen.sh > "$LOGS/autogen-$ARCH.log" 2>&1 || { tail -20 "$LOGS/autogen-$ARCH.log"; exit 1; }; }
 mkdir -p "$BUILD"
 cd "$BUILD"
-CFLAGS_WOLFI="-DOPENSSL_NO_ENGINE -DOPENSSL_NO_DSA -DOPENSSL_NO_DH"
+# Wolfi also passes -DOPENSSL_NO_DSA -DOPENSSL_NO_DH, which compile the DH
+# and DSA classes out of the extension; OpenSSL 4.0 still has both, and
+# test-all needs DH (test/net/http/test_https.rb builds one at load time),
+# so this build keeps them.
+CFLAGS_WOLFI="-DOPENSSL_NO_ENGINE"
 if [ "$ALLOC" = challoc ]; then
     ALLOC_FLAGS="--with-jemalloc LDFLAGS=-L$STAGE_LIB -Wl,-rpath,$STAGE_LIB"
 else
