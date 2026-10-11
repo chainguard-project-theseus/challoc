@@ -16,8 +16,8 @@
 #      patch (contrib/ruby/);
 #   3. autogen, then configure in an out-of-tree build directory with
 #      Wolfi's flags (--enable-shared --disable-rpath --enable-mkmf-verbose
-#      --enable-yjit --with-jemalloc, CFLAGS=-DOPENSSL_NO_ENGINE but not
-#      Wolfi's -DOPENSSL_NO_DSA -DOPENSSL_NO_DH, which test-all needs; the prefix
+#      --enable-yjit --with-jemalloc, CFLAGS=-DOPENSSL_NO_ENGINE
+#      -DOPENSSL_NO_DSA -DOPENSSL_NO_DH; the prefix
 #      is under target/ and docs are off), LDFLAGS pointing -L and -rpath at
 #      the stage (--disable-rpath only drops Ruby's own libdir rpath);
 #   4. make, plus `update-gems extract-gems` as Wolfi does; then checks that
@@ -27,7 +27,8 @@
 #      Wolfi's real jemalloc has the same soname in /usr/lib, so a binary
 #      that lost its rpath would silently run under real jemalloc;
 #   5. `make test-all TESTOPTS="-j<jobs> -q --tty=no"` (TESTS selects files)
-#      and prints the summary line and every failure/error header.
+#      without the test files RUBY_TEST_EXCLUDE names, and prints the
+#      summary line and every failure/error header.
 #
 # ALLOC=glibc builds the same source without --with-jemalloc into
 # target/ruby/build-glibc (glibc malloc) so a failing test can be rerun
@@ -43,6 +44,13 @@
 #                v4.0.2); OPENSSL_COMMIT the commit it must resolve to
 #   TESTS        Ruby's TESTS (test files relative to test/; default all)
 #   TESTOPTS     Ruby's TESTOPTS (default "-j$JOBS -q --tty=no")
+#   RUBY_TEST_EXCLUDE
+#                test files test-all skips, space-separated patterns (one
+#                -x each; no shell metacharacters, Ruby's makefile expands
+#                TESTOPTS unquoted); the default is the files that need
+#                finite-field DH or DSA, which Chainguard's OpenSSL 4.0
+#                unregisters from its default provider (and Wolfi's Ruby
+#                compiles out); empty runs all
 #   JOBS         make -j and test workers (default nproc)
 #   RUBY_GEMS_CA a PEM bundle trusted for update-gems' rubygems.org
 #                downloads beside the CAs Ruby's tool/downloader.rb pins
@@ -70,6 +78,8 @@ OPENSSL_TAG=${OPENSSL_TAG:-v4.0.2}
 OPENSSL_COMMIT=${OPENSSL_COMMIT:-6e410b804f4c6a52c146fe651941bafdbb332754}
 JOBS=${JOBS:-$(nproc)}
 TESTOPTS=${TESTOPTS:--j$JOBS -q --tty=no}
+RUBY_TEST_EXCLUDE=${RUBY_TEST_EXCLUDE-net/http/test_https.rb rubygems/test_gem_remote_fetcher_local_ssl_server.rb open-uri/test_ssl.rb}
+for x in $RUBY_TEST_EXCLUDE; do TESTOPTS="$TESTOPTS -x $x"; done
 WORK=$ROOT/target/ruby
 SRC=$WORK/src-$RUBY_TAG
 BUILD=$WORK/build-$ALLOC
@@ -145,11 +155,10 @@ ruby tool/sync_default_gems.rb openssl > "$LOGS/sync-openssl.log" 2>&1 || { tail
 [ -x configure ] || { step "autogen.sh"; ./autogen.sh > "$LOGS/autogen-$ARCH.log" 2>&1 || { tail -20 "$LOGS/autogen-$ARCH.log"; exit 1; }; }
 mkdir -p "$BUILD"
 cd "$BUILD"
-# Wolfi also passes -DOPENSSL_NO_DSA -DOPENSSL_NO_DH, which compile the DH
-# and DSA classes out of the extension; OpenSSL 4.0 still has both, and
-# test-all needs DH (test/net/http/test_https.rb builds one at load time),
-# so this build keeps them.
-CFLAGS_WOLFI="-DOPENSSL_NO_ENGINE"
+# Chainguard's OpenSSL 4.0 has no ENGINE API and unregisters finite-field
+# DH and DSA from its default provider; Wolfi compiles all three out of
+# the extension (RUBY_TEST_EXCLUDE skips the tests that need them).
+CFLAGS_WOLFI="-DOPENSSL_NO_ENGINE -DOPENSSL_NO_DSA -DOPENSSL_NO_DH"
 if [ "$ALLOC" = challoc ]; then
     ALLOC_FLAGS="--with-jemalloc LDFLAGS=-L$STAGE_LIB -Wl,-rpath,$STAGE_LIB"
 else
