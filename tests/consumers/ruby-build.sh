@@ -51,6 +51,9 @@
 #                finite-field DH or DSA, which Chainguard's OpenSSL 4.0
 #                unregisters from its default provider (and Wolfi's Ruby
 #                compiles out); empty runs all
+#   RUBY_TEST_EXCLUDE_EXTRA
+#                more patterns to skip, on top of RUBY_TEST_EXCLUDE (a
+#                shard of test-all: `^ruby/ ^rubygems/` is the rest)
 #   JOBS         make -j and test workers (default nproc)
 #   RUBY_GEMS_CA a PEM bundle trusted for update-gems' rubygems.org
 #                downloads beside the CAs Ruby's tool/downloader.rb pins
@@ -79,7 +82,7 @@ OPENSSL_COMMIT=${OPENSSL_COMMIT:-6e410b804f4c6a52c146fe651941bafdbb332754}
 JOBS=${JOBS:-$(nproc)}
 TESTOPTS=${TESTOPTS:--j$JOBS -q --tty=no}
 RUBY_TEST_EXCLUDE=${RUBY_TEST_EXCLUDE-net/http/test_https.rb rubygems/test_gem_remote_fetcher_local_ssl_server.rb open-uri/test_ssl.rb}
-for x in $RUBY_TEST_EXCLUDE; do TESTOPTS="$TESTOPTS -x $x"; done
+for x in $RUBY_TEST_EXCLUDE ${RUBY_TEST_EXCLUDE_EXTRA:-}; do TESTOPTS="$TESTOPTS -x $x"; done
 WORK=$ROOT/target/ruby
 SRC=$WORK/src-$RUBY_TAG
 BUILD=$WORK/build-$ALLOC

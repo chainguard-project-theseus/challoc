@@ -84,10 +84,18 @@ checks:
     foreach:
       - {name: valkey-amd64, resources: medium-amd64, vars: {TASK: valkey}}
       - {name: valkey-arm64, resources: medium-arm64, vars: {TASK: valkey}}
-      # Ruby's test-all at -j4 outlasts the 50-minute run limit; 16 cores
-      # (JOBS defaults to nproc) bring it well inside.
-      - {name: ruby-amd64, resources: xlarge-amd64, vars: {TASK: ruby}}
-      - {name: ruby-arm64, resources: xlarge-arm64, vars: {TASK: ruby}}
+      # Ruby's test-all outlasts the 50-minute run limit in one guest, so
+      # it runs in three shards (TESTS, or the rest), each building Ruby.
+      - {name: ruby-core-amd64, resources: large-amd64, vars: {TASK: ruby, TESTS: ruby}}
+      - {name: ruby-core-arm64, resources: large-arm64, vars: {TASK: ruby, TESTS: ruby}}
+      - {name: ruby-gems-amd64, resources: large-amd64, vars: {TASK: ruby, TESTS: rubygems}}
+      - {name: ruby-gems-arm64, resources: large-arm64, vars: {TASK: ruby, TESTS: rubygems}}
+      - name: ruby-rest-amd64
+        resources: large-amd64
+        vars: {TASK: ruby, RUBY_TEST_EXCLUDE_EXTRA: "^ruby/ ^rubygems/"}
+      - name: ruby-rest-arm64
+        resources: large-arm64
+        vars: {TASK: ruby, RUBY_TEST_EXCLUDE_EXTRA: "^ruby/ ^rubygems/"}
     timeout: 50m
     network:
       egress:

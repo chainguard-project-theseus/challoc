@@ -24,6 +24,16 @@ if [ -z "${IMAGE:-}" ]; then
   export IMAGE
 fi
 status=0
+# The consumer scripts send each step's output to a log file; print the
+# newest lines of the test logs every two minutes, so a run that hits the
+# time limit shows where it was.
+( while sleep 120; do
+    for f in .ci/target/"$task"/logs/test*.log .ci/target/"$task"/logs/full*.log; do
+      [ -f "$f" ] && echo "--- $(date -u +%H:%M:%S) $f: $(tail -n 2 "$f" | tr '\n' ' ' | cut -c1-300)"
+    done
+  done ) &
+watcher=$!
+trap 'kill "$watcher" 2>/dev/null || true' EXIT
 case $task in
   fuzz)          bash ci/make.sh "$log" fuzz "${fuzz[@]}" || status=$? ;;
   fuzz-hardened) bash ci/make.sh "$log" fuzz "${fuzz[@]}" \

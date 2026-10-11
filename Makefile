@@ -234,7 +234,7 @@ valkey: DOCKER_FLAGS = $(if $(STAGE),-e STAGE=$(STAGE)) $(if $(TEST_FLAGS),-e TE
 valkey: image ## build challoc (quantum8) and Valkey at Wolfi's tag with contrib/valkey/000{1,2}-*.patch, then its tests (STAGE=build|memefficiency|full|all, TEST_FLAGS)
 	$(DOCKER_RUN) sh tests/consumers/valkey-build.sh
 
-RUBY_VARS = STAGE ALLOC TESTS TESTOPTS JOBS RUBY_TAG RUBY_COMMIT RUBY_CHERRY OPENSSL_TAG OPENSSL_COMMIT RUBY_GEMS_CA RUBY_TEST_EXCLUDE
+RUBY_VARS = STAGE ALLOC TESTS TESTOPTS JOBS RUBY_TAG RUBY_COMMIT RUBY_CHERRY OPENSSL_TAG OPENSSL_COMMIT RUBY_GEMS_CA RUBY_TEST_EXCLUDE RUBY_TEST_EXCLUDE_EXTRA
 ruby: DOCKER_FLAGS = $(call env_flags,$(RUBY_VARS))
 ruby: image ## stage libjemalloc.so.2 (quantum16), build Ruby 3.4 --with-jemalloc against it and run test-all (tests/consumers/ruby-build.sh; STAGE=build|test|all, ALLOC=glibc for the baseline build, TESTS, JOBS)
 	$(DOCKER_RUN) sh tests/consumers/ruby-build.sh
