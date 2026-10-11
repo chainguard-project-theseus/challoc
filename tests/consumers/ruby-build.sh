@@ -8,11 +8,16 @@
 #   1. stages libjemalloc.so.2 (scripts/jemalloc-compat.sh, quantum16: Ruby
 #      assumes nothing about the quantum) under target/ruby/jemalloc-compat;
 #   2. clones the Ruby tag Wolfi's ruby-3.4.yaml ships into
-#      target/ruby/src-<tag>, checks the commit, applies Wolfi's cherry-pick
-#      (fetched by hash, idempotent);
+#      target/ruby/src-<tag>, checks the commit, applies a cherry-pick when
+#      RUBY_CHERRY names one (fetched by hash, idempotent), and, as Wolfi
+#      does for OpenSSL 4.0, replaces ext/openssl with the ruby/openssl
+#      release Wolfi pins (cloned into target/ruby/openssl, the path
+#      tool/sync_default_gems.rb reads, commit-checked) carrying Wolfi's
+#      patch (contrib/ruby/);
 #   3. autogen, then configure in an out-of-tree build directory with
 #      Wolfi's flags (--enable-shared --disable-rpath --enable-mkmf-verbose
-#      --enable-yjit --with-jemalloc, CFLAGS=-DOPENSSL_NO_ENGINE; the prefix
+#      --enable-yjit --with-jemalloc, CFLAGS=-DOPENSSL_NO_ENGINE
+#      -DOPENSSL_NO_DSA -DOPENSSL_NO_DH; the prefix
 #      is under target/ and docs are off), LDFLAGS pointing -L and -rpath at
 #      the stage (--disable-rpath only drops Ruby's own libdir rpath);
 #   4. make, plus `update-gems extract-gems` as Wolfi does; then checks that
@@ -31,9 +36,11 @@
 # Environment:
 #   STAGE        build | test | all (default all)
 #   ALLOC        challoc (default) | glibc
-#   RUBY_TAG     tag to build (default v3_4_10); RUBY_COMMIT the commit it
-#                must resolve to (Wolfi's expected-commit); RUBY_CHERRY the
-#                commit Wolfi cherry-picks on top (empty for none)
+#   RUBY_TAG     tag to build (default v3_4_11); RUBY_COMMIT the commit it
+#                must resolve to (Wolfi's expected-commit); RUBY_CHERRY a
+#                commit to cherry-pick on top (default none)
+#   OPENSSL_TAG  the ruby/openssl tag synced into ext/openssl (default
+#                v4.0.2); OPENSSL_COMMIT the commit it must resolve to
 #   TESTS        Ruby's TESTS (test files relative to test/; default all)
 #   TESTOPTS     Ruby's TESTOPTS (default "-j$JOBS -q --tty=no")
 #   JOBS         make -j and test workers (default nproc)
@@ -56,9 +63,11 @@ case "$ALLOC" in
     challoc|glibc) ;;
     *) echo "ruby-build.sh: ALLOC must be challoc or glibc, got '$ALLOC'" >&2; exit 2 ;;
 esac
-RUBY_TAG=${RUBY_TAG:-v3_4_10}
-RUBY_COMMIT=${RUBY_COMMIT:-2b0b7728dc7f0561c35c3d8c4489945c94b783ad}
-RUBY_CHERRY=${RUBY_CHERRY-b92c8c225351f6d61a8aabd54e6f57d5a7503a53}
+RUBY_TAG=${RUBY_TAG:-v3_4_11}
+RUBY_COMMIT=${RUBY_COMMIT:-592f1ffdb36153e8be83603ade3c2e9ab6138a77}
+RUBY_CHERRY=${RUBY_CHERRY-}
+OPENSSL_TAG=${OPENSSL_TAG:-v4.0.2}
+OPENSSL_COMMIT=${OPENSSL_COMMIT:-6e410b804f4c6a52c146fe651941bafdbb332754}
 JOBS=${JOBS:-$(nproc)}
 TESTOPTS=${TESTOPTS:--j$JOBS -q --tty=no}
 WORK=$ROOT/target/ruby
@@ -79,7 +88,7 @@ if [ "$ALLOC" = challoc ]; then
     [ -f "$STAGE_LIB/libjemalloc.so.2" ] || { echo "ruby-build.sh: $STAGE_LIB/libjemalloc.so.2 missing" >&2; exit 1; }
 fi
 
-# 2. Ruby source at the pinned tag, with Wolfi's cherry-pick.
+# 2. Ruby source at the pinned tag, with Wolfi's ext/openssl.
 step "ruby $RUBY_TAG -> $SRC"
 if [ ! -d "$SRC/.git" ]; then
     rm -rf "$SRC"
@@ -107,29 +116,54 @@ if [ -n "$RUBY_CHERRY" ]; then
     fi
     git diff --stat | tail -1
 fi
+# Wolfi builds Ruby 3.4 against OpenSSL 4.0 with the ruby/openssl release
+# synced over ext/openssl (ruby-3.4.yaml); the extension Ruby 3.4 ships
+# does not build against it. sync_default_gems.rb copies from
+# ../../ruby/openssl, which from $SRC is $WORK/openssl.
+OSSL=$WORK/openssl
+step "ruby/openssl $OPENSSL_TAG -> ext/openssl"
+if [ ! -d "$OSSL/.git" ]; then
+    rm -rf "$OSSL"
+    git clone -q --depth 1 --branch "$OPENSSL_TAG" https://github.com/ruby/openssl "$OSSL"
+fi
+head=$(git -C "$OSSL" rev-parse HEAD)
+if [ "$head" != "$OPENSSL_COMMIT" ]; then
+    echo "ruby-build.sh: ruby/openssl $OPENSSL_TAG is $head, expected $OPENSSL_COMMIT" >&2
+    exit 1
+fi
+for p in "$ROOT"/contrib/ruby/*.patch; do
+    if git -C "$OSSL" apply --reverse --check "$p" 2>/dev/null; then
+        echo "$(basename "$p") already applied"
+    else
+        git -C "$OSSL" apply "$p"
+        echo "$(basename "$p") applied"
+    fi
+done
+ruby tool/sync_default_gems.rb openssl > "$LOGS/sync-openssl.log" 2>&1 || { tail -20 "$LOGS/sync-openssl.log"; exit 1; }
 
 # 3. autogen + configure (out of tree, once per flag set).
 [ -x configure ] || { step "autogen.sh"; ./autogen.sh > "$LOGS/autogen-$ARCH.log" 2>&1 || { tail -20 "$LOGS/autogen-$ARCH.log"; exit 1; }; }
 mkdir -p "$BUILD"
 cd "$BUILD"
+CFLAGS_WOLFI="-DOPENSSL_NO_ENGINE -DOPENSSL_NO_DSA -DOPENSSL_NO_DH"
 if [ "$ALLOC" = challoc ]; then
     ALLOC_FLAGS="--with-jemalloc LDFLAGS=-L$STAGE_LIB -Wl,-rpath,$STAGE_LIB"
 else
     ALLOC_FLAGS="--without-jemalloc"
 fi
-ARGS="--prefix=$WORK/install-$ALLOC --enable-shared --disable-rpath --sysconfdir=/etc --enable-mkmf-verbose --enable-yjit --disable-install-doc CFLAGS=-DOPENSSL_NO_ENGINE $ALLOC_FLAGS"
+ARGS="--prefix=$WORK/install-$ALLOC --enable-shared --disable-rpath --sysconfdir=/etc --enable-mkmf-verbose --enable-yjit --disable-install-doc CFLAGS=$CFLAGS_WOLFI $ALLOC_FLAGS"
 if [ ! -f Makefile ] || [ "$(cat .configure-args 2>/dev/null)" != "$ARGS" ]; then
     step "configure ($ALLOC): $ARGS"
     rm -f .configure-args
     # LDFLAGS carries a space, so the argument list is built by hand.
     if [ "$ALLOC" = challoc ]; then
         "$SRC/configure" --prefix="$WORK/install-$ALLOC" --enable-shared --disable-rpath --sysconfdir=/etc \
-            --enable-mkmf-verbose --enable-yjit --disable-install-doc CFLAGS=-DOPENSSL_NO_ENGINE \
+            --enable-mkmf-verbose --enable-yjit --disable-install-doc "CFLAGS=$CFLAGS_WOLFI" \
             --with-jemalloc "LDFLAGS=-L$STAGE_LIB -Wl,-rpath,$STAGE_LIB" \
             > "$LOGS/configure-$ALLOC-$ARCH.log" 2>&1 || { tail -40 "$LOGS/configure-$ALLOC-$ARCH.log"; exit 1; }
     else
         "$SRC/configure" --prefix="$WORK/install-$ALLOC" --enable-shared --disable-rpath --sysconfdir=/etc \
-            --enable-mkmf-verbose --enable-yjit --disable-install-doc CFLAGS=-DOPENSSL_NO_ENGINE \
+            --enable-mkmf-verbose --enable-yjit --disable-install-doc "CFLAGS=$CFLAGS_WOLFI" \
             --without-jemalloc \
             > "$LOGS/configure-$ALLOC-$ARCH.log" 2>&1 || { tail -40 "$LOGS/configure-$ALLOC-$ARCH.log"; exit 1; }
     fi
