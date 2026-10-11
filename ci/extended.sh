@@ -31,7 +31,11 @@ case $task in
   fuzz-q8)       bash ci/make.sh "$log" fuzz "${fuzz[@]}" QUANTUM=8 || status=$? ;;
   oscillate)     bash ci/make.sh "$log" test-cgroup-oscillate OSC_SECS=600 CONTROL=1 CGROUP_WATCHDOG=900 || status=$? ;;
   check-needed)  bash ci/make.sh "$log" check-needed || status=$? ;;
-  valkey|ruby)   bash ci/make.sh "$log" "$task" STAGE=all || status=$? ;;
+  # The guest's egress proxy CA reaches containers in the system bundle
+  # (/etc/ssl/certs/ca-certificates.crt); Ruby's OpenSSL reads cert.pem
+  # unless told otherwise (update-gems downloads from rubygems.org).
+  valkey|ruby)   bash ci/make.sh "$log" "$task" STAGE=all \
+                   EXTRA_DOCKER_FLAGS="-e SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" || status=$? ;;
   *) echo "unknown task $task" >&2; exit 2 ;;
 esac
 # A failed fuzz run is reproduced from its seed.

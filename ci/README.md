@@ -38,11 +38,15 @@ require); each file is a workflow:
   on GCE VMs through `cb launch`; member pull requests and main only.
 
 On request (`ci/run:<check>` on a pull request, or `chainctl checks run .
---request <check>` for any pushed commit), until Checks has a schedule:
+--check <check>` for any pushed commit), until Checks has a schedule:
 
 - `extended.yaml`: `fuzz` (50M operations: default, hardened, q8),
   `oscillate` (the 600 s soak), `check-needed`, `consumers` (the Valkey and
   Ruby builds), each on both arches.
+
+`chainctl checks run` plans a commit without a pull request, so it cannot
+plan the floor checks (their condition reads the pull request); name the
+checks to run with `--check`.
 
 `identities.yaml` holds the trust policy (which pull requests get which
 credentials) and the `challoc-gce` identity; its header says how to tighten

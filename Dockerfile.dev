@@ -43,11 +43,13 @@ RUN apk add --no-cache python-3.13 \
 
 FROM test AS consumers
 
-# Valkey (tests/consumers/valkey-build.sh): tcl for its test suite,
+# Valkey (tests/consumers/valkey-build.sh): tcl for its test suite, held
+# at 9.0 (Valkey's runtest looks for tclsh 8.5 to 9.0; Wolfi's tcl is 9.1),
 # openssl-dev for BUILD_TLS=yes (Ruby's openssl extension uses it too),
 # memtier_benchmark for the soak's second load generator
 # (bench/drivers/valkey-soak.sh).
-RUN apk add --no-cache tcl openssl-dev memtier-benchmark
+RUN apk add --no-cache 'tcl~9.0' openssl-dev memtier-benchmark \
+ && command -v tclsh9.0
 
 # Ruby (tests/consumers/ruby-build.sh): a git checkout of Ruby needs
 # autoconf and a base Ruby; the jemalloc header, yaml, zlib and libffi are
