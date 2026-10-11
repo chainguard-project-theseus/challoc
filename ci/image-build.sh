@@ -1,7 +1,7 @@
 #!/bin/bash
 # ci/image-build.sh STAGE: build one stage of Dockerfile.dev into the
 # check guest's Docker daemon as challoc-ci-<stage>:<arch> and print the
-# key=value lines the cell scripts eval (arch, image). The Makefile
+# key=value lines the cell scripts read (arch, image). The Makefile
 # targets then run with IMAGE=<that tag> and IMAGE_BUILD= (ci/make.sh), so
 # `make` never rebuilds the image itself. A guest starts with an empty
 # daemon, so every check builds its stage once.

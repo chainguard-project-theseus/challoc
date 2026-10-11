@@ -38,7 +38,8 @@ checks:
         # reads to its R2 bucket.
         - cgr.dev
         - 9236a389bd48b984df91adc1bc924620.r2.cloudflarestorage.com
-        - packages.wolfi.dev    # apk add in the Dockerfile.dev stages
+        - apk.cgr.dev           # apk add in the Dockerfile.dev stages (wolfi-base's repository)
+        - packages.wolfi.dev
         - index.crates.io       # cargo fetches libc
         - static.crates.io
     cmd: [bash, ci/cell.sh, linux]

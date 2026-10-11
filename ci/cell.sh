@@ -15,8 +15,9 @@
 set -uo pipefail
 kind=${1:?usage: ci/cell.sh linux|privileged}
 plan=$(bash ci/image-build.sh test) || exit 1
-eval "$plan"
-export IMAGE=$image
+arch=$(sed -n 's/^arch=//p' <<<"$plan")
+IMAGE=$(sed -n 's/^image=//p' <<<"$plan")
+export IMAGE
 log=.ci/test.log
 status=0
 case $kind in

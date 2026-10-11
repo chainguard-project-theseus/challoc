@@ -17,10 +17,11 @@ task=${1:-${TASK:?usage: ci/extended.sh TASK}}
 log=.ci/$task.log
 fuzz=(FUZZ_OPS=50000000 FUZZ_SEED=random)
 if [ -z "${IMAGE:-}" ]; then
-  case $task in valkey|ruby) stage=consumers ;; *) stage=test ;; esac
+  stage="test"
+  case $task in valkey|ruby) stage="consumers" ;; esac
   plan=$(bash ci/image-build.sh "$stage")
-  eval "$plan"
-  export IMAGE=$image
+  IMAGE=$(sed -n 's/^image=//p' <<<"$plan")
+  export IMAGE
 fi
 status=0
 case $task in

@@ -1,7 +1,7 @@
 #!/bin/sh
-# ci/shellcheck.sh: shellcheck over ci/*.sh (the lint check). Wolfi has no
-# shellcheck package, so this fetches the pinned upstream release and
-# checks its SHA-256 (the digests GitHub publishes for the release assets)
+# ci/shellcheck.sh: lint ci/*.sh (the lint check). Wolfi does not package
+# the linter, so this fetches the pinned upstream release and checks its
+# SHA-256 (the digests GitHub publishes for the release assets)
 # before running it.
 set -eu
 version=v0.11.0

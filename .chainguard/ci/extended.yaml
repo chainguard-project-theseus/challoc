@@ -37,6 +37,7 @@ checks:
       egress:
         - cgr.dev
         - 9236a389bd48b984df91adc1bc924620.r2.cloudflarestorage.com
+        - apk.cgr.dev
         - packages.wolfi.dev
         - index.crates.io
         - static.crates.io
@@ -88,6 +89,7 @@ checks:
       egress:
         - cgr.dev
         - 9236a389bd48b984df91adc1bc924620.r2.cloudflarestorage.com
+        - apk.cgr.dev
         - packages.wolfi.dev
         - index.crates.io
         - static.crates.io
