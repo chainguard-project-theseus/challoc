@@ -1,0 +1,40 @@
+# Workload identities and the CI trust policy (mono's
+# ai-cicd/sandbox/docs/identities.md). The trust section is read from the
+# default branch only, so a pull request can never widen it.
+#
+# Rings, decided by who opened the pull request:
+#
+#   0          anyone (a fork from outside chainguard-dev once the repo is
+#              public): hermetic checks only. No identity, no GitHub read
+#              token, no shared cache.
+#   1.member   chainguard-dev members and the bots below: everything placed
+#              at 1.member, which today is every identity.
+#   2          a verified landing on main (postsubmit).
+#
+# Preparing for open source: an identity that must not run on a member's
+# pull request without review moves from `ring: 1.member` to `ring: 2`
+# (once the platform's two-person approval lands, approval releases ring 2
+# to a pull request). Anything an outsider must not trigger at all keeps
+# its identity off ring 0 and its check gated on the head repository (see
+# floor.yaml).
+version: 1
+
+trust:
+  groups:
+    members: {github: {org: chainguard-dev}}
+    # Pinned by the <slug>[bot] account's numeric ID
+    # (gh api '/users/<slug>%5Bbot%5D' --jq .id); the slug is a label.
+    bots:
+      github:
+        app:
+          dependabot: 49699333
+  subrings:
+    member: {authors: [members, bots]}
+  github_token: 1.member
+  # main writes the trunk pool; member pull requests write their own pool
+  # seeded from it. Ring 0 gets no cache.
+  cache:
+    trunk: {rings: [2]}
+    trusted: {rings: [1.member], seed: trunk}
+
+identities: {}

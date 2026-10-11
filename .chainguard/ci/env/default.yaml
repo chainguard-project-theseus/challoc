@@ -1,0 +1,5 @@
+# The default environment. Every check file names its own packages, so
+# this one is empty.
+version: 1
+
+environment: {}

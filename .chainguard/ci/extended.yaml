@@ -1,0 +1,98 @@
+# The checks too long for every pull request (the CI design's section 4):
+# the long fuzz runs, the 600 s cgroup oscillation, the DT_NEEDED check and
+# the consumer builds (Valkey and Ruby with their suites). Each task is
+# ci/extended.sh TASK in the dev container, on both architectures.
+#
+# Checks has no scheduled trigger yet, so these run only on request: the
+# label ci/run:<check> on a pull request, or `chainctl checks run .
+# --request <check>` for any pushed commit (main included). When Checks
+# gains a schedule they go back to nightly.
+#
+# Not here yet (CI-M2): the checked-release .so, Miri on the pure-logic
+# modules, valgrind.
+version: 1
+
+environment:
+  packages: [bash, make, git, build-base, coreutils]
+  services: [docker]
+
+checks:
+  fuzz:
+    when: {requested: true}
+    description: >-
+      fuzz/fuzz.c under LD_PRELOAD for 50M operations with a random seed
+      (printed), three ways: default, hardened (zero_on_free,
+      slot_randomize, double_free_scan) and quantum 8, on x86_64 and
+      aarch64. 25-45 minutes per instance. Worth running on changes to the
+      allocation and free paths, the size classes or the hardening options.
+    foreach:
+      - {name: default-amd64, resources: medium-amd64, vars: {TASK: fuzz}}
+      - {name: default-arm64, resources: medium-arm64, vars: {TASK: fuzz}}
+      - {name: hardened-amd64, resources: medium-amd64, vars: {TASK: fuzz-hardened}}
+      - {name: hardened-arm64, resources: medium-arm64, vars: {TASK: fuzz-hardened}}
+      - {name: q8-amd64, resources: medium-amd64, vars: {TASK: fuzz-q8}}
+      - {name: q8-arm64, resources: medium-arm64, vars: {TASK: fuzz-q8}}
+    timeout: 90m
+    network: &build
+      egress:
+        - cgr.dev
+        - 9236a389bd48b984df91adc1bc924620.r2.cloudflarestorage.com
+        - packages.wolfi.dev
+        - index.crates.io
+        - static.crates.io
+    cmd: [bash, ci/extended.sh]
+
+  oscillate:
+    when: {requested: true}
+    description: >-
+      The 600 s cgroup oscillation soak (200..480 MiB live in a 512 MiB
+      cgroup, with the cgroup:false control run) on x86_64 and aarch64.
+      Worth running on changes to the cgroup policy, purge or decay.
+    foreach:
+      - {name: amd64, resources: medium-amd64}
+      - {name: arm64, resources: medium-arm64}
+    vars: {TASK: oscillate}
+    timeout: 60m
+    network: *build
+    cmd: [bash, ci/extended.sh]
+
+  check-needed:
+    when: {requested: true}
+    description: >-
+      make check-needed: a program linked against the jemalloc-compat
+      library names it in DT_NEEDED, on x86_64 and aarch64. Worth running on
+      changes to build.rs, the soname or the jemalloc-compat staging.
+    foreach:
+      - {name: amd64, resources: medium-amd64}
+      - {name: arm64, resources: medium-arm64}
+    vars: {TASK: check-needed}
+    timeout: 30m
+    network: *build
+    cmd: [bash, ci/extended.sh]
+
+  consumers:
+    when: {requested: true}
+    description: >-
+      The consumer builds with their test suites (make valkey and make ruby,
+      STAGE=all): Valkey at Wolfi's tag with the contrib patches, and Ruby
+      3.4 --with-jemalloc against the jemalloc-compat library, on x86_64 and
+      aarch64. Up to 150 minutes. Worth running on changes to the jemalloc
+      compatibility surface (mallctl, the soname, the exported symbols).
+    foreach:
+      - {name: valkey-amd64, resources: medium-amd64, vars: {TASK: valkey}}
+      - {name: valkey-arm64, resources: medium-arm64, vars: {TASK: valkey}}
+      - {name: ruby-amd64, resources: medium-amd64, vars: {TASK: ruby}}
+      - {name: ruby-arm64, resources: medium-arm64, vars: {TASK: ruby}}
+    timeout: 150m
+    network:
+      egress:
+        - cgr.dev
+        - 9236a389bd48b984df91adc1bc924620.r2.cloudflarestorage.com
+        - packages.wolfi.dev
+        - index.crates.io
+        - static.crates.io
+        - github.com            # the Valkey and Ruby clones
+        - codeload.github.com
+        - rubygems.org          # Ruby's update-gems (bundled gems)
+        - index.rubygems.org
+    cmd: [bash, ci/extended.sh]

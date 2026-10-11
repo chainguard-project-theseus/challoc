@@ -1,6 +1,9 @@
 #!/bin/bash
-# ci/extended.sh TASK: one task of the nightly workflow (extended.yml), a
-# Makefile target run through ci/make.sh with the log in .ci/TASK.log.
+# ci/extended.sh [TASK]: one task of the on-request extended checks
+# (.chainguard/ci/extended.yaml), a Makefile target run through ci/make.sh
+# with the log in .ci/TASK.log. TASK defaults to $TASK. The dev image
+# (Dockerfile.dev's `test` stage, `consumers` for the consumer builds) is
+# built first unless IMAGE names one already.
 #
 #   fuzz            make fuzz, 50M operations, a random seed (printed)
 #   fuzz-hardened   the same under zero_on_free, slot_randomize and
@@ -10,16 +13,28 @@
 #   check-needed    make check-needed (DT_NEEDED names the allocator)
 #   valkey | ruby   the consumer builds and their suites, STAGE=all
 set -euo pipefail
-task=${1:?usage: ci/extended.sh TASK}
+task=${1:-${TASK:?usage: ci/extended.sh TASK}}
 log=.ci/$task.log
 fuzz=(FUZZ_OPS=50000000 FUZZ_SEED=random)
+if [ -z "${IMAGE:-}" ]; then
+  case $task in valkey|ruby) stage=consumers ;; *) stage=test ;; esac
+  plan=$(bash ci/image-build.sh "$stage")
+  eval "$plan"
+  export IMAGE=$image
+fi
+status=0
 case $task in
-  fuzz)          bash ci/make.sh "$log" fuzz "${fuzz[@]}" ;;
+  fuzz)          bash ci/make.sh "$log" fuzz "${fuzz[@]}" || status=$? ;;
   fuzz-hardened) bash ci/make.sh "$log" fuzz "${fuzz[@]}" \
-                   CHALLOC_CONF=zero_on_free:true,slot_randomize:true,double_free_scan:true ;;
-  fuzz-q8)       bash ci/make.sh "$log" fuzz "${fuzz[@]}" QUANTUM=8 ;;
-  oscillate)     bash ci/make.sh "$log" test-cgroup-oscillate OSC_SECS=600 CONTROL=1 CGROUP_WATCHDOG=900 ;;
-  check-needed)  bash ci/make.sh "$log" check-needed ;;
-  valkey|ruby)   bash ci/make.sh "$log" "$task" STAGE=all ;;
+                   CHALLOC_CONF=zero_on_free:true,slot_randomize:true,double_free_scan:true || status=$? ;;
+  fuzz-q8)       bash ci/make.sh "$log" fuzz "${fuzz[@]}" QUANTUM=8 || status=$? ;;
+  oscillate)     bash ci/make.sh "$log" test-cgroup-oscillate OSC_SECS=600 CONTROL=1 CGROUP_WATCHDOG=900 || status=$? ;;
+  check-needed)  bash ci/make.sh "$log" check-needed || status=$? ;;
+  valkey|ruby)   bash ci/make.sh "$log" "$task" STAGE=all || status=$? ;;
   *) echo "unknown task $task" >&2; exit 2 ;;
 esac
+# A failed fuzz run is reproduced from its seed.
+if [ "$status" != 0 ] && [[ $task == fuzz* ]]; then
+  echo "::error::$task failed; seed: $(grep -a -i -m 3 'seed' "$log" | tr '\n' ' ')"
+fi
+exit "$status"
