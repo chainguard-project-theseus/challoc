@@ -8,6 +8,8 @@
 # <check>` for any pushed commit (main included). When Checks gains a
 # schedule they go back to nightly.
 #
+# A Checks run is limited to 50 minutes, so no check here may take longer.
+#
 # Not here yet (CI-M2): the checked-release .so, Miri on the pure-logic
 # modules, valgrind.
 version: 1
@@ -32,7 +34,7 @@ checks:
       - {name: hardened-arm64, resources: medium-arm64, vars: {TASK: fuzz-hardened}}
       - {name: q8-amd64, resources: medium-amd64, vars: {TASK: fuzz-q8}}
       - {name: q8-arm64, resources: medium-arm64, vars: {TASK: fuzz-q8}}
-    timeout: 90m
+    timeout: 50m
     network: &build
       egress:
         - cgr.dev
@@ -53,7 +55,7 @@ checks:
       - {name: amd64, resources: medium-amd64}
       - {name: arm64, resources: medium-arm64}
     vars: {TASK: oscillate}
-    timeout: 60m
+    timeout: 50m
     network: *build
     cmd: [bash, ci/extended.sh]
 
@@ -77,14 +79,16 @@ checks:
       The consumer builds with their test suites (make valkey and make ruby,
       STAGE=all): Valkey at Wolfi's tag with the contrib patches, and Ruby
       3.4 --with-jemalloc against the jemalloc-compat library, on x86_64 and
-      aarch64. Up to 150 minutes. Worth running on changes to the jemalloc
+      aarch64. Worth running on changes to the jemalloc
       compatibility surface (mallctl, the soname, the exported symbols).
     foreach:
       - {name: valkey-amd64, resources: medium-amd64, vars: {TASK: valkey}}
       - {name: valkey-arm64, resources: medium-arm64, vars: {TASK: valkey}}
-      - {name: ruby-amd64, resources: medium-amd64, vars: {TASK: ruby}}
-      - {name: ruby-arm64, resources: medium-arm64, vars: {TASK: ruby}}
-    timeout: 150m
+      # Ruby's test-all at -j4 outlasts the 50-minute run limit; 16 cores
+      # (JOBS defaults to nproc) bring it well inside.
+      - {name: ruby-amd64, resources: xlarge-amd64, vars: {TASK: ruby}}
+      - {name: ruby-arm64, resources: xlarge-arm64, vars: {TASK: ruby}}
+    timeout: 50m
     network:
       egress:
         - cgr.dev

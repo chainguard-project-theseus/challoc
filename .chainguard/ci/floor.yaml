@@ -42,7 +42,7 @@ checks:
         !has(context.github.pull_request) ||
         context.github.pull_request.head_repository == "chainguard-dev/challoc"
     identity: challoc-gce
-    timeout: 100m
+    timeout: 50m
     network: &gce
       egress:
         # STS, Compute and Storage; the egress proxy releases the sealed
@@ -59,6 +59,6 @@ checks:
     trigger: [presubmit, postsubmit]
     when: *member-branch
     identity: challoc-gce
-    timeout: 100m
+    timeout: 50m
     network: *gce
     cmd: [bash, ci/floor.sh, fl-deb11-x86]
