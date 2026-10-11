@@ -43,7 +43,8 @@ identities:
       Launches and deletes the kernel floor VMs (cb launch exp-floor) in the
       bench project: Compute instance admin, the bench bucket, and actAs on
       the VMs' service account. The workload identity pool challoc-checks
-      in that project trusts only this identity's exact subject.
+      in that project trusts only this identity's exact subject
+      (docs/runbooks/checks-gce-identity.md).
     ring: 1.member
     checks:
       - floor.checks.floor

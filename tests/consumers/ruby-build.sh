@@ -37,6 +37,11 @@
 #   TESTS        Ruby's TESTS (test files relative to test/; default all)
 #   TESTOPTS     Ruby's TESTOPTS (default "-j$JOBS -q --tty=no")
 #   JOBS         make -j and test workers (default nproc)
+#   RUBY_GEMS_CA a PEM bundle trusted for update-gems' rubygems.org
+#                downloads beside the CAs Ruby's tool/downloader.rb pins
+#                (lib/rubygems/ssl_certs); for a network whose proxy
+#                re-signs TLS, such as a Chainguard Checks guest (unset:
+#                the pinned CAs only)
 set -eu
 cd "$(dirname "$0")/../.."
 ROOT=$(pwd)
@@ -136,6 +141,10 @@ grep -E 'checking for jemalloc library|checking jemalloc/jemalloc.h|checking for
 step "make -j$JOBS ($ALLOC; log: $LOGS/build-$ALLOC-$ARCH.log)"
 start=$(date +%s)
 make -j"$JOBS" > "$LOGS/build-$ALLOC-$ARCH.log" 2>&1 || { tail -40 "$LOGS/build-$ALLOC-$ARCH.log"; exit 1; }
+if [ -n "${RUBY_GEMS_CA:-}" ]; then
+    mkdir -p "$SRC/lib/rubygems/ssl_certs/ci"
+    cp "$RUBY_GEMS_CA" "$SRC/lib/rubygems/ssl_certs/ci/ca.pem"
+fi
 make -j"$JOBS" update-gems extract-gems >> "$LOGS/build-$ALLOC-$ARCH.log" 2>&1 || { tail -40 "$LOGS/build-$ALLOC-$ARCH.log"; exit 1; }
 echo "built in $(( $(date +%s) - start )) s"
 grep -E 'Failed to configure' "$LOGS/build-$ALLOC-$ARCH.log" || echo "every extension configured"

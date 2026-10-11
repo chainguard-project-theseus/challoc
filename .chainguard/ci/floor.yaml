@@ -29,8 +29,8 @@ environment:
 checks:
   floor:
     # Advisory until the challoc-gce subject is pinned on the GCP side
-    # (the first issuance allocates the repository's ID); delete the line
-    # then.
+    # (the first issuance allocates the repository's ID;
+    # docs/runbooks/checks-gce-identity.md); delete the line then.
     advisory: true
     description: >-
       make test and make fuzz on AlmaLinux 9's 5.14 kernel (the supported
