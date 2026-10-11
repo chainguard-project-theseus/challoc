@@ -1,0 +1,64 @@
+# The kernel floor (owner decisions of 2026-09-30: floor 5.14, with a 5.10
+# tripwire below it). Each check launches GCE VMs on public distribution
+# images through `cb launch exp-floor` (ci/floor.sh, bench/README.md) and
+# runs the floor-test row on this commit: `make test` (the cgroup steps in
+# child cgroups under the privileged container profile) and `make fuzz`.
+#
+#   floor      AlmaLinux 9 (5.14), x86_64 and aarch64, default and
+#              privileged containers
+#   tripwire   Debian 11 (5.10), x86_64: below the floor, informational
+#
+# Both hold the challoc-gce identity (identities.yaml), which can create
+# VMs in the bench project, so they run only where the identity is
+# released: pull requests from a branch of this repository opened by a
+# chainguard-dev member (ring 1.member), and pushes to main. A fork's pull
+# request (an outside contributor, once the repository is public) skips
+# them instead of failing on a withheld credential.
+version: 1
+
+environment:
+  packages:
+    - python-3.13        # bench/cb (3.11+)
+    - google-cloud-sdk
+    - git                # cb bundles the commit with git archive
+    - bash
+    - coreutils
+    - findutils
+    - grep
+
+checks:
+  floor:
+    # Advisory until the challoc-gce subject is pinned on the GCP side
+    # (the first issuance allocates the repository's ID); delete the line
+    # then.
+    advisory: true
+    description: >-
+      make test and make fuzz on AlmaLinux 9's 5.14 kernel (the supported
+      floor), x86_64 and aarch64, in default and privileged containers, on
+      GCE VMs launched by cb. Runs on member pull requests and on main.
+    trigger: [presubmit, postsubmit]
+    when: &member-branch
+      expr: >-
+        !has(context.github.pull_request) ||
+        context.github.pull_request.head_repository == "chainguard-dev/challoc"
+    identity: challoc-gce
+    timeout: 100m
+    network: &gce
+      egress:
+        # STS, Compute and Storage; the egress proxy releases the sealed
+        # identity token only to these.
+        - "*.googleapis.com"
+    cmd: [bash, ci/floor.sh, "fl-alma9-x86,fl-alma9-x86-p,fl-alma9-arm,fl-alma9-arm-p"]
+
+  tripwire:
+    advisory: true
+    description: >-
+      make test and make fuzz on Debian 11's 5.10 kernel, below the
+      supported floor, on a GCE VM launched by cb. Informational: a break
+      here is noticed, not a promise.
+    trigger: [presubmit, postsubmit]
+    when: *member-branch
+    identity: challoc-gce
+    timeout: 100m
+    network: *gce
+    cmd: [bash, ci/floor.sh, fl-deb11-x86]

@@ -10,7 +10,8 @@ fi
 # Guest init binds this path to scratch: Docker's overlay store cannot use
 # the erofs guest root's overlay as its upper filesystem.
 set -- dockerd --host=unix:///var/run/docker.sock \
-  --data-root=/var/lib/chainguard-microvm/docker --storage-driver=overlay2
+  --data-root=/var/lib/chainguard-microvm/docker --storage-driver=overlay2 \
+  --log-level=warn
 # The guest's egress proxy re-signs TLS with a per-guest CA; this runtime
 # puts that CA into every container, so `apk add` and cargo fetches inside
 # a container trust it too.

@@ -37,4 +37,24 @@ trust:
     trunk: {rings: [2]}
     trusted: {rings: [1.member], seed: trunk}
 
-identities: {}
+identities:
+  challoc-gce:
+    description: >-
+      Launches and deletes the kernel floor VMs (cb launch exp-floor) in the
+      bench project: Compute instance admin, the bench bucket, and actAs on
+      the VMs' service account. The workload identity pool challoc-checks
+      in that project trusts only this identity's exact subject.
+    ring: 1.member
+    checks:
+      - floor.checks.floor
+      - floor.checks.tripwire
+    audiences:
+      - https://iam.googleapis.com/projects/505132528589/locations/global/workloadIdentityPools/challoc-checks/providers/workflow
+    gcp:
+      provider: projects/505132528589/locations/global/workloadIdentityPools/challoc-checks/providers/workflow
+      audience: https://iam.googleapis.com/projects/505132528589/locations/global/workloadIdentityPools/challoc-checks/providers/workflow
+    allow:
+      - run: presubmit
+        target_ref: refs/heads/main
+      - run: postsubmit
+        ref: refs/heads/main

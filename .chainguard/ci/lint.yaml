@@ -1,7 +1,8 @@
-# Lint (the CI design's section 1): rustfmt and shellcheck block; clippy
-# reports without blocking until there is a clippy baseline (delete its
-# `advisory: true` then). The toolchain is the one Dockerfile.dev and the
-# Wolfi package build with; it runs in the guest directly, no container.
+# Lint (the CI design's section 1): rustfmt, the loom models and shellcheck
+# block; clippy reports without blocking until there is a clippy baseline
+# (delete its `advisory: true` then). msrv-build builds the shipped cdylib
+# with the rust-version toolchain. The toolchains run in the guest
+# directly, no container.
 version: 1
 
 environment:
@@ -34,6 +35,20 @@ checks:
         cmd: [cargo, clippy, --release, --, -D, warnings]
       - name: clippy (tests)
         cmd: [cargo, clippy, --all-targets, --, -D, warnings]
+
+  loom:
+    description: >-
+      The loom models of the atomics protocol (tests/loom, its own crate):
+      cargo fmt --check, then cargo test --release --locked. Worth a look on
+      any change to the claim, release or purge atomics.
+    resources: medium
+    timeout: 20m
+    network: *crates
+    steps:
+      - name: rustfmt (tests/loom)
+        cmd: [cargo, fmt, --check, --manifest-path, tests/loom/Cargo.toml]
+      - name: loom models
+        cmd: [cargo, test, --release, --locked, --manifest-path, tests/loom/Cargo.toml]
 
   shellcheck:
     description: shellcheck (pinned upstream release) over ci/*.sh.
