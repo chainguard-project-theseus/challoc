@@ -43,4 +43,13 @@ esac
 if [ "$status" != 0 ] && [[ $task == fuzz* ]]; then
   echo "::error::$task failed; seed: $(grep -a -i -m 3 'seed' "$log" | tr '\n' ' ')"
 fi
+# The consumer scripts keep each step's full output under target/<task>/logs,
+# which goes with the guest; print the end of each one here.
+if [ "$status" != 0 ] && [ -d ".ci/target/$task/logs" ]; then
+  for f in ".ci/target/$task/logs"/*.log; do
+    [ -f "$f" ] || continue
+    echo "=== tail of $f"
+    tail -n 80 "$f"
+  done
+fi
 exit "$status"
