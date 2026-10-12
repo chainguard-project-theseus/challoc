@@ -1,0 +1,73 @@
+# Lint (the CI design's section 1): rustfmt, the loom models and shellcheck
+# block; clippy reports without blocking until there is a clippy baseline
+# (delete its `advisory: true` then). msrv-build builds the shipped cdylib
+# with the rust-version toolchain. The toolchains run in the guest
+# directly, no container.
+version: 1
+
+environment:
+  packages:
+    - rust-1.98        # rustc, cargo, rustfmt and clippy; Dockerfile.dev's stream
+    - build-base       # cc and g++ for build.rs (src/api/cxx_handler.cpp)
+    - bash
+    - curl             # ci/shellcheck.sh fetches the pinned release
+    - xz
+
+checks:
+  rustfmt:
+    description: >-
+      cargo fmt --check over the crate. CI requires it; run `cargo fmt`
+      before committing.
+    timeout: 5m
+    cmd: [cargo, fmt, --check]
+
+  clippy:
+    advisory: true
+    description: >-
+      cargo clippy -D warnings over the shipped no_std library (release) and
+      over every target, tests included. Advisory until a clippy baseline.
+    resources: medium
+    timeout: 20m
+    network: &crates
+      egress: [index.crates.io, static.crates.io]
+    steps:
+      - name: clippy (shipped library, no_std)
+        cmd: [cargo, clippy, --release, --, -D, warnings]
+      - name: clippy (tests)
+        cmd: [cargo, clippy, --all-targets, --, -D, warnings]
+
+  loom:
+    description: >-
+      The loom models of the atomics protocol (tests/loom, its own crate):
+      cargo fmt --check, then cargo test --release --locked. Worth a look on
+      any change to the claim, release or purge atomics.
+    resources: medium
+    timeout: 20m
+    network: *crates
+    steps:
+      - name: rustfmt (tests/loom)
+        cmd: [cargo, fmt, --check, --manifest-path, tests/loom/Cargo.toml]
+      - name: loom models
+        cmd: [cargo, test, --release, --locked, --manifest-path, tests/loom/Cargo.toml]
+
+  shellcheck:
+    description: shellcheck (pinned upstream release) over ci/*.sh.
+    timeout: 5m
+    network:
+      egress:
+        - github.com
+        # The release download redirects here.
+        - release-assets.githubusercontent.com
+        - objects.githubusercontent.com
+    cmd: [sh, ci/shellcheck.sh]
+
+  msrv-build:
+    description: >-
+      cargo build --release of the shipped cdylib with the rust-version
+      toolchain (Cargo.toml, 1.94).
+    environment:
+      packages: [rust-1.94, build-base]
+    resources: medium
+    timeout: 15m
+    network: *crates
+    cmd: [cargo, build, --release]

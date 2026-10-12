@@ -1,7 +1,0 @@
-# The kernel.org releases the floor cells boot (ci/vng-cell.sh): series,
-# version, sha256 of linux-<version>.tar.xz (from kernel.org's signed
-# sha256sums.asc). A new point release is a deliberate bump here (and a
-# rebuild of about 21 minutes): `bash ci/vng-cell.sh latest 5.10` prints
-# the newest release of a series.
-5.10 5.10.270 de73d528b04be91f6eb86660aa67a4d53b96bbf20bb5a326e78f802d744debe7
-5.14 5.14.21 f41a259cb2002dd2e3286524b2bb4e803f4f982992d092706ecea613584023b3
