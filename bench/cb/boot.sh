@@ -175,8 +175,20 @@ sysctl -qw 'kernel.core_pattern=|/bin/false' 2>/dev/null
 (
   if [ "$RT" = docker ] && ! command -v docker >/dev/null; then
     export DEBIAN_FRONTEND=noninteractive
-    apt-get -o DPkg::Lock::Timeout=120 install -y -qq --no-install-recommends docker.io >/dev/null 2>&1 \
-      || { apt-get -o DPkg::Lock::Timeout=120 update -qq && apt-get -o DPkg::Lock::Timeout=120 install -y -qq --no-install-recommends docker.io; }
+    apt_docker() { apt-get -o DPkg::Lock::Timeout=120 install -y -qq --no-install-recommends docker.io; }
+    apt_docker >/dev/null 2>&1 \
+      || { apt-get -o DPkg::Lock::Timeout=120 update -qq && apt_docker; } \
+      || {
+        # A Debian release past its end of life (Debian 11, the 5.10
+        # tripwire) leaves deb.debian.org for archive.debian.org, and the
+        # mirror drops pool files its index still lists while it moves.
+        . /etc/os-release
+        [ "$ID" = debian ] \
+          && sed -i -E 's#https?://(deb|security)\.debian\.org/#http://archive.debian.org/#' \
+               /etc/apt/sources.list $(ls /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null) \
+          && echo "cb-boot: apt: $PRETTY_NAME from archive.debian.org" \
+          && apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Check-Valid-Until=false update -qq && apt_docker
+      }
   fi
   if [ "$RT" = docker ]; then
     systemctl start docker && docker version --format '{{.Server.Version}}'

@@ -45,6 +45,6 @@ python3 bench/cb launch exp-floor --cells "$cells" --head HEAD --base HEAD \
   --out .ci/floor || status=$?
 # Each cell's floor-test summary (the `floor:` lines: kernel, steps, SKIPs)
 # from the VM logs cb fetched.
-find .ci/floor -name '*.log' -path '*logs*' -exec grep -H '^floor: ' {} + 2>/dev/null || true
+find .ci/floor -path '*/logs/*' -name '*.out' -exec grep -H '^floor: ' {} + 2>/dev/null || true
 [ ! -f .ci/floor/report.md ] || cat .ci/floor/report.md
 exit "$status"
