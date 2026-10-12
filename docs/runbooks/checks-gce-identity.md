@@ -27,6 +27,12 @@ account impersonation), so the roles go to the principal
 
 ## Bring-up (once, after identities.yaml lands on main)
 
+Done on 2026-10-12: the repository's subject is
+`chainguard:90d0c3d145808bf716af24faab4b19aa:challoc-gce`, the provider
+is pinned to it, the roles below are granted, and `floor` blocks. Repeat
+these steps only for a recreated repository (it gets a new ID) or a new
+identity.
+
 The provider starts with a provisional condition,
 `assertion.sub.startsWith('chainguard:') && assertion.sub.endsWith(':challoc-gce')`,
 and no IAM grant names the principal, so a token that passes it can
