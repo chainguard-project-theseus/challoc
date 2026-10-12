@@ -398,8 +398,9 @@ fn create(
 }
 
 /// `pthread_create` on the committed `[base, base + len)`, joinable so
-/// a restart can wait for its exit. Signals are blocked so the new
-/// thread inherits an empty mask and never runs an application handler.
+/// a restart can wait for its exit. Signals are blocked
+/// ([`sys::block_all_signals`]) so the new thread inherits them blocked
+/// and never runs an application handler.
 fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t> {
     // SAFETY: plain pthread attribute calls on a local; the stack is
     // ours and committed.
