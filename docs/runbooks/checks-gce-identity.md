@@ -21,15 +21,27 @@ how it was brought up.
 - Data-access audit logs for `sts.googleapis.com` on the project, so a
   token exchange records its subject.
 
-The guest's ADC file uses the federated principal directly (no service
-account impersonation), so the roles go to the principal
-`principal://iam.googleapis.com/projects/505132528589/locations/global/workloadIdentityPools/challoc-checks/subject/chainguard:<repository-id>:challoc-gce`.
+- Service account `challoc-floor@dlorenc-dev.iam.gserviceaccount.com`
+  holds the roles `cb launch` needs. The federated principal
+  `principal://iam.googleapis.com/projects/505132528589/locations/global/workloadIdentityPools/challoc-checks/subject/chainguard:<repository-id>:challoc-gce`
+  holds nothing but `roles/iam.workloadIdentityUser` and
+  `roles/iam.serviceAccountTokenCreator` on that account.
+
+Why the service account: the platform's ADC file uses the federated
+principal directly, and the guest holds its token only as a sealed
+stand-in. gcloud introspects a bare external account's token to name the
+account, the stand-in fails that (`{"active": false}`), and a federated
+principal cannot read public images either. So `ci/floor.sh` writes a copy
+of the ADC file with `service_account_impersonation_url` set to
+`FLOOR_SA` (floor.yaml) and gcloud works as that account. The cost: the
+guest holds a plain one-hour token for `challoc-floor`, which can do only
+what the floor needs.
 
 ## Bring-up (once, after identities.yaml lands on main)
 
 Done on 2026-10-12: the repository's subject is
 `chainguard:90d0c3d145808bf716af24faab4b19aa:challoc-gce`, the provider
-is pinned to it, the roles below are granted, and `floor` blocks. Repeat
+is pinned to it, the bindings below exist, and `floor` blocks. Repeat
 these steps only for a recreated repository (it gets a new ID) or a new
 identity.
 
@@ -56,17 +68,23 @@ after the merge fails on a permission error; then:
      --attribute-condition="assertion.sub == '$SUBJECT'"
    ```
 
-3. Grant the principal what `cb launch` needs, and nothing else:
+3. Let the principal impersonate the floor service account, and give the
+   account what `cb launch` needs:
 
    ```sh
    P=principal://iam.googleapis.com/projects/505132528589/locations/global/workloadIdentityPools/challoc-checks/subject/$SUBJECT
-   gcloud projects add-iam-policy-binding dlorenc-dev --member="$P" \
+   SA=challoc-floor@dlorenc-dev.iam.gserviceaccount.com
+   for role in roles/iam.workloadIdentityUser roles/iam.serviceAccountTokenCreator; do
+     gcloud iam service-accounts add-iam-policy-binding $SA --project=dlorenc-dev \
+       --member="$P" --role=$role
+   done
+   gcloud projects add-iam-policy-binding dlorenc-dev --member="serviceAccount:$SA" \
      --role=roles/compute.instanceAdmin.v1 --condition=None
    gcloud iam service-accounts add-iam-policy-binding \
      cb-bench-vm@dlorenc-dev.iam.gserviceaccount.com --project=dlorenc-dev \
-     --member="$P" --role=roles/iam.serviceAccountUser
+     --member="serviceAccount:$SA" --role=roles/iam.serviceAccountUser
    gcloud storage buckets add-iam-policy-binding gs://dlorenc-dev-challoc-bench \
-     --member="$P" --role=roles/storage.objectAdmin
+     --member="serviceAccount:$SA" --role=roles/storage.objectAdmin
    ```
 
 4. Re-run the floor check (GitHub's Re-run on a pull request), and once it
