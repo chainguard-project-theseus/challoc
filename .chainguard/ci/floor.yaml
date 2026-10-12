@@ -28,10 +28,6 @@ environment:
 
 checks:
   floor:
-    # Advisory until the challoc-gce subject is pinned on the GCP side
-    # (the first issuance allocates the repository's ID;
-    # docs/runbooks/checks-gce-identity.md); delete the line then.
-    advisory: true
     description: >-
       make test and make fuzz on AlmaLinux 9's 5.14 kernel (the supported
       floor), x86_64 and aarch64, in default and privileged containers, on
@@ -42,6 +38,10 @@ checks:
         !has(context.github.pull_request) ||
         context.github.pull_request.head_repository == "chainguard-dev/challoc"
     identity: challoc-gce
+    # The service account ci/floor.sh impersonates; the identity's
+    # principal may impersonate it and nothing else.
+    vars: &floor-vars
+      FLOOR_SA: challoc-floor@dlorenc-dev.iam.gserviceaccount.com
     timeout: 50m
     network: &gce
       egress:
@@ -59,6 +59,7 @@ checks:
     trigger: [presubmit, postsubmit]
     when: *member-branch
     identity: challoc-gce
+    vars: *floor-vars
     timeout: 50m
     network: *gce
     cmd: [bash, ci/floor.sh, fl-deb11-x86]
