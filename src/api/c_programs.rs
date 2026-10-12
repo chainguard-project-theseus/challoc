@@ -671,6 +671,15 @@ ctests! {
     c_decay_background_thread => [
         CTest { prog: "decay", args: &["background"], conf: Some("abort_conf:true,background_thread:true,dirty_decay_ms:200"), ..BASE },
     ];
+    /// `tests/c/setxid.c`: the background thread, started in a process
+    /// that already has a second thread, leaves glibc's `SIGCANCEL` and
+    /// `SIGSETXID` unblocked, and `seteuid`, `setegid`, `setresuid` and
+    /// `setresgid` (each broadcast to every thread by glibc) return while
+    /// another thread stops and restarts the background thread, whose start
+    /// must not block `SIGSETXID` around `pthread_create`.
+    c_setxid => [
+        CTest { prog: "setxid", conf: Some("abort_conf:true,background_thread:true"), ..BASE },
+    ];
     /// `tests/c/lazy_bg.c`: the lazy background thread under the default
     /// configuration (design 8.1). A small workload stays single-threaded
     /// and can unshare a user namespace; a burst starts the thread and it
