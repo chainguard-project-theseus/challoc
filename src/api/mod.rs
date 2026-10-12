@@ -1316,8 +1316,9 @@ mod tests {
         assert!(purge::background::thread().is_none());
     }
 
-    /// The handlers block every signal while the locks are held and restore
-    /// the caller's mask (whatever it was) afterwards, on both fork sides.
+    /// The handlers block every signal but glibc's internal two while the
+    /// locks are held and restore the caller's mask (whatever it was)
+    /// afterwards, on both fork sides.
     #[test]
     fn fork_handlers_block_signals_while_locked() {
         fn current_mask() -> u64 {
@@ -1328,9 +1329,11 @@ mod tests {
             // The kernel mask is the first 8 bytes of glibc's 128-byte set.
             unsafe { core::ptr::read_unaligned(&set as *const _ as *const u64) }
         }
+        // glibc's SIGCANCEL (32) and SIGSETXID (33), never blocked.
+        const GLIBC_INTERNAL: u64 = (1 << 31) | (1 << 32);
         fn blockable(mask: u64) -> u64 {
             const KILL_STOP: u64 = (1 << (::libc::SIGKILL - 1)) | (1 << (::libc::SIGSTOP - 1));
-            mask & !KILL_STOP
+            mask & !KILL_STOP & !GLIBC_INTERNAL
         }
         let _serial = crate::testutil::global_state();
         let all = blockable(!0);
@@ -1357,6 +1360,11 @@ mod tests {
             blockable(current_mask()),
             all,
             "prepare did not block every signal"
+        );
+        assert_eq!(
+            current_mask() & GLIBC_INTERNAL,
+            0,
+            "prepare blocked SIGCANCEL or SIGSETXID"
         );
         fork_parent();
         assert_eq!(

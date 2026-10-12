@@ -73,6 +73,20 @@ const SIG_BLOCK: i32 = 0;
 const SIG_UNBLOCK: i32 = 1;
 const SIG_SETMASK: i32 = 2;
 const SIGSET_WORDS_BYTES: usize = 8;
+/// glibc's internal real-time signals: `SIGCANCEL` (32) cancels a thread
+/// and `SIGSETXID` (33) makes every thread apply a `setuid`-family call,
+/// whose caller holds glibc's thread-list lock until each thread has
+/// answered. A thread that keeps `SIGSETXID` blocked (one created under
+/// this mask inherits it) never answers, nor does one that blocks it and
+/// then waits for that lock (`pthread_create` on a user stack takes it),
+/// and the caller hangs. `sigprocmask` and `pthread_sigmask` never block
+/// them; a raw `rt_sigprocmask` must not either. Signal `n` is bit
+/// `n - 1`.
+const SIGCANCEL: u32 = 32;
+const SIGSETXID: u32 = 33;
+/// Every signal but glibc's two internal ones: the set
+/// [`block_all_signals`] blocks.
+const BLOCKABLE_SIGNALS: u64 = !(1 << (SIGCANCEL - 1) | 1 << (SIGSETXID - 1));
 
 pub const STDERR_FILENO: i32 = 2;
 
@@ -100,9 +114,9 @@ pub fn parse_decimal(bytes: &[u8]) -> Option<u64> {
 mod linux {
     use super::errno::{Errno, decode};
     use super::{
-        AT_FDCWD, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, FUTEX_PRIVATE_FLAG, FUTEX_WAIT,
-        FUTEX_WAKE, O_CLOEXEC, PR_SET_VMA, PR_SET_VMA_ANON_NAME, SIG_BLOCK, SIG_SETMASK,
-        SIGSET_WORDS_BYTES, abort_fmt,
+        AT_FDCWD, BLOCKABLE_SIGNALS, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, FUTEX_PRIVATE_FLAG,
+        FUTEX_WAIT, FUTEX_WAKE, O_CLOEXEC, PR_SET_VMA, PR_SET_VMA_ANON_NAME, SIG_BLOCK,
+        SIG_SETMASK, SIGSET_WORDS_BYTES, abort_fmt,
     };
     use super::{nr, raw};
 
@@ -502,11 +516,12 @@ mod linux {
         }
     }
 
-    /// `rt_sigprocmask(SIG_BLOCK, all)`: block every blockable signal on the
-    /// calling thread and return the mask that was in force before. The
-    /// kernel silently leaves `SIGKILL` and `SIGSTOP` unblocked.
+    /// `rt_sigprocmask(SIG_BLOCK, all)`: block every signal on the calling
+    /// thread but glibc's `SIGCANCEL` and `SIGSETXID`, as `pthread_sigmask`
+    /// would, and return the mask that was in force before. The kernel
+    /// silently leaves `SIGKILL` and `SIGSTOP` unblocked.
     pub fn block_all_signals() -> u64 {
-        let all: u64 = !0;
+        let all: u64 = BLOCKABLE_SIGNALS;
         let mut old: u64 = 0;
         // SAFETY: both pointers are live 8-byte sigsets for the whole call.
         let r = unsafe {
@@ -684,6 +699,25 @@ mod tests {
         }
         // SAFETY: we own `addr`.
         unsafe { munmap(addr, PAGE).unwrap() };
+    }
+
+    /// `block_all_signals` blocks every signal but glibc's `SIGCANCEL` (32)
+    /// and `SIGSETXID` (33): a thread with `SIGSETXID` blocked never answers
+    /// the broadcast of a `setuid`-family call, which then waits forever.
+    #[test]
+    fn block_all_signals_leaves_glibc_internal_signals_unblocked() {
+        std::thread::spawn(|| {
+            let before = block_all_signals();
+            let during = block_all_signals();
+            set_signal_mask(before);
+            assert_eq!(during & (1 << 31), 0, "SIGCANCEL blocked: {during:#x}");
+            assert_eq!(during & (1 << 32), 0, "SIGSETXID blocked: {during:#x}");
+            for sig in [1u32, 2, 10, 15, 17, 31, 34, 64] {
+                assert_ne!(during & (1 << (sig - 1)), 0, "signal {sig} not blocked");
+            }
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]
