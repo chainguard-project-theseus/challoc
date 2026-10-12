@@ -92,10 +92,10 @@ checks:
       - {name: ruby-gems-arm64, resources: large-arm64, vars: {TASK: ruby, TESTS: rubygems}}
       - name: ruby-rest-amd64
         resources: large-amd64
-        vars: {TASK: ruby, RUBY_TEST_EXCLUDE_EXTRA: "^ruby/ ^rubygems/"}
+        vars: {TASK: ruby, RUBY_TEST_EXCLUDE_EXTRA: "test/ruby/ test/rubygems/"}
       - name: ruby-rest-arm64
         resources: large-arm64
-        vars: {TASK: ruby, RUBY_TEST_EXCLUDE_EXTRA: "^ruby/ ^rubygems/"}
+        vars: {TASK: ruby, RUBY_TEST_EXCLUDE_EXTRA: "test/ruby/ test/rubygems/"}
     timeout: 50m
     network:
       egress:

@@ -53,7 +53,8 @@
 #                compiles out); empty runs all
 #   RUBY_TEST_EXCLUDE_EXTRA
 #                more patterns to skip, on top of RUBY_TEST_EXCLUDE (a
-#                shard of test-all: `^ruby/ ^rubygems/` is the rest)
+#                shard of test-all: `test/ruby/ test/rubygems/` is the
+#                rest; the patterns match the full path)
 #   JOBS         make -j and test workers (default nproc)
 #   RUBY_GEMS_CA a PEM bundle trusted for update-gems' rubygems.org
 #                downloads beside the CAs Ruby's tool/downloader.rb pins
