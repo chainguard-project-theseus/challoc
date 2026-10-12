@@ -10,14 +10,18 @@
 #
 # The check holds the challoc-gce workload identity
 # (.chainguard/ci/identities.yaml): GOOGLE_APPLICATION_CREDENTIALS is an
-# external-account ADC file, which gcloud takes as a credential file. The
-# guest's egress proxy re-signs TLS, and gcloud keeps its own CA setting.
+# external-account ADC file. gcloud uses it through the credential-file
+# override, not `gcloud auth login`: login introspects the token, and the
+# guest only ever holds a sealed stand-in the egress proxy swaps for the
+# real token in Authorization headers to *.googleapis.com, so STS reports
+# it inactive. The proxy also re-signs TLS, and gcloud keeps its own CA
+# setting.
 set -euo pipefail
 cells=${1:?usage: ci/floor.sh CELLS}
 : "${GOOGLE_APPLICATION_CREDENTIALS:?the check must hold the challoc-gce identity}"
 export CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE=${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}
 export CLOUDSDK_CORE_DISABLE_PROMPTS=1
-gcloud auth login --cred-file="$GOOGLE_APPLICATION_CREDENTIALS" --quiet
+export CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=$GOOGLE_APPLICATION_CREDENTIALS
 # The workspace's .git is a view the platform assembled, owned by another
 # account; cb runs git archive over it.
 git config --global --add safe.directory '*'
