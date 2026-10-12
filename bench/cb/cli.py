@@ -210,7 +210,7 @@ def _dispatch(a: argparse.Namespace) -> int:
         cells = load_cells(a.cells_path or [])
         names = select_cells(a.selector, cells) if a.selector else list(cells)
         if a.resolve:
-            from .gce import resolve_family
+            from .gce import resolve_host
 
             pending = 0
             seen: dict = {}
@@ -218,17 +218,17 @@ def _dispatch(a: argparse.Namespace) -> int:
                 host = cells[n].get("host")
                 if cells[n].provider != "gce" or not isinstance(host, dict):
                     continue
-                key = (host.get("family"), host.get("project"))
+                key = (host.get("image") or host.get("family"), host.get("project"))
                 if key not in seen:
-                    seen[key] = resolve_family(*key)
+                    seen[key] = resolve_host(host)
                 img = seen[key]
                 pending += img is None
-                print(f"{n:<20} {key[1]}/{key[0]}: {img['name'] + ' (' + img.get('creationTimestamp', '')[:10] + ')' if img else 'PENDING (family not found)'}")
+                print(f"{n:<20} {key[1]}/{key[0]}: {img['name'] + ' (' + img.get('creationTimestamp', '')[:10] + ')' if img else 'PENDING (image or family not found)'}")
             return 2 if pending else 0
         for n in names:
             c = cells[n]
             host = c.get("host")
-            hs = f"{host.get('project')}/{host.get('family')}" if isinstance(host, dict) else (host or "-")
+            hs = f"{host.get('project')}/{host.get('image') or host.get('family')}" if isinstance(host, dict) else (host or "-")
             print(f"{n:<20} {c.provider:<5} {str(c.get('machine', '-')):<18} {hs:<45} {','.join(c.tags)}  ({os.path.relpath(c.source, ROOT_DIR)})")
         return 0
     if a.cmd == "build":

@@ -293,6 +293,30 @@ def resolve_family(family: str, project: str) -> dict[str, Any] | None:
     return d if d.get("status", "READY") == "READY" else None
 
 
+def resolve_image(name: str, project: str) -> dict[str, Any] | None:
+    """A pinned image by name (a cell's `host = { image, project }`, for a
+    distribution whose family GCE has removed), or None when it is gone. A
+    deprecated image still boots; an obsolete or deleted one does not."""
+    r = gcloud("compute", "images", "describe", name, f"--project={project}", "--format=json(name,creationTimestamp,status,architecture,deprecated.state)", check=False, timeout=120)
+    if r.returncode != 0:
+        return None
+    try:
+        d = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return None
+    if d.get("status", "READY") != "READY" or (d.get("deprecated") or {}).get("state") in ("OBSOLETE", "DELETED"):
+        return None
+    return d
+
+
+def resolve_host(host: dict[str, Any]) -> dict[str, Any] | None:
+    """A cell's host image: its pinned `image`, else what its `family`
+    points at now."""
+    if host.get("image"):
+        return resolve_image(host["image"], host.get("project"))
+    return resolve_family(host.get("family"), host.get("project"))
+
+
 def parse_container_arg(s: str) -> dict[str, Any]:
     """`default`, `privileged,cpus=4`, `default,cpuset=0-3,memory=8g`."""
     parts = [p.strip() for p in s.split(",") if p.strip()]
@@ -427,8 +451,8 @@ class Launch:
         for n in self.cell_names:
             c = self.cells[n]
             host = c.get("host") or {}
-            if not isinstance(host, dict) or "family" not in host:
-                raise SpecError(f"cell {n}: no host image family")
+            if not isinstance(host, dict) or not (host.get("family") or host.get("image")):
+                raise SpecError(f"cell {n}: no host image family or image")
             container = override or parse_container(c.get("container", "default"), f"cell {n}")
             if c.get("bootstrap", "startup-script") != "startup-script":
                 raise SpecError(f"cell {n}: bootstrap {c.get('bootstrap')!r}: cb launch boots VMs with the startup script only")
@@ -437,7 +461,8 @@ class Launch:
             self.cell_info[n] = {
                 "arch": c.get("arch"),
                 "machine": c.get("machine"),
-                "family": host["family"],
+                "family": host.get("family"),
+                "pinned_image": host.get("image"),
                 "image_project": host.get("project"),
                 "zones": list(c.get("zones") or []),
                 "container": container,
@@ -479,12 +504,14 @@ class Launch:
         meanwhile. A missing family makes the cell PENDING."""
         seen: dict[tuple[str, str], dict[str, Any] | None] = {}
         for n, ci in self.cell_info.items():
-            key = (ci["family"], ci["image_project"])
+            key = (ci["family"], ci["pinned_image"], ci["image_project"])
             if key not in seen:
-                seen[key] = resolve_family(*key) if not self.args.dry_run else {"name": f"{key[0]} (not resolved: dry run)"}
+                host = {"family": key[0], "image": key[1], "project": key[2]}
+                seen[key] = resolve_host(host) if not self.args.dry_run else {"name": f"{key[1] or key[0]} (not resolved: dry run)"}
             img = seen[key]
             if img is None:
-                self.pending_cells[n] = f"image family {ci['family']} ({ci['image_project']}) not found"
+                what = f"image {ci['pinned_image']}" if ci["pinned_image"] else f"image family {ci['family']}"
+                self.pending_cells[n] = f"{what} ({ci['image_project']}) not found"
                 log(f"   {n}: PENDING, {self.pending_cells[n]}")
                 continue
             ci["image"] = img["name"]

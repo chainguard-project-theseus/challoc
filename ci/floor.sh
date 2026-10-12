@@ -10,14 +10,31 @@
 #
 # The check holds the challoc-gce workload identity
 # (.chainguard/ci/identities.yaml): GOOGLE_APPLICATION_CREDENTIALS is an
-# external-account ADC file, which gcloud takes as a credential file. The
-# guest's egress proxy re-signs TLS, and gcloud keeps its own CA setting.
+# external-account ADC file for the federated principal, whose token the
+# guest only holds as a sealed stand-in (the egress proxy swaps in the real
+# one in Authorization headers to *.googleapis.com). gcloud introspects a
+# bare external account's token to name it, which the stand-in fails, so
+# this writes a copy that impersonates the floor service account
+# (FLOOR_SA; the principal may impersonate it and nothing else) and
+# points gcloud at it. The proxy
+# also re-signs TLS, and gcloud keeps its own CA setting.
 set -euo pipefail
 cells=${1:?usage: ci/floor.sh CELLS}
 : "${GOOGLE_APPLICATION_CREDENTIALS:?the check must hold the challoc-gce identity}"
 export CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE=${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}
 export CLOUDSDK_CORE_DISABLE_PROMPTS=1
-gcloud auth login --cred-file="$GOOGLE_APPLICATION_CREDENTIALS" --quiet
+: "${FLOOR_SA:?the check names the floor service account}"
+adc=$(mktemp)
+python3 - "$GOOGLE_APPLICATION_CREDENTIALS" "$FLOOR_SA" "$adc" <<'PY'
+import json, sys
+src, sa, out = sys.argv[1:]
+d = json.load(open(src))
+d["service_account_impersonation_url"] = (
+    "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/"
+    f"{sa}:generateAccessToken")
+json.dump(d, open(out, "w"))
+PY
+export CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=$adc
 # The workspace's .git is a view the platform assembled, owned by another
 # account; cb runs git archive over it.
 git config --global --add safe.directory '*'
@@ -28,6 +45,6 @@ python3 bench/cb launch exp-floor --cells "$cells" --head HEAD --base HEAD \
   --out .ci/floor || status=$?
 # Each cell's floor-test summary (the `floor:` lines: kernel, steps, SKIPs)
 # from the VM logs cb fetched.
-find .ci/floor -name '*.log' -path '*logs*' -exec grep -H '^floor: ' {} + 2>/dev/null || true
+find .ci/floor -path '*/logs/*' -name '*.out' -exec grep -H '^floor: ' {} + 2>/dev/null || true
 [ ! -f .ci/floor/report.md ] || cat .ci/floor/report.md
 exit "$status"

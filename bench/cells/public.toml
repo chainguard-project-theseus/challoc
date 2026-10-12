@@ -9,7 +9,8 @@
 # in this file.
 #
 # Fields: shape (a [shape.*] name), host = { family, project } or "@cell"
-# (the same host image as that cell), runtime (docker | podman |
+# (the same host image as that cell; `image` instead of `family` pins one
+# image by name, for a distribution whose family GCE has removed), runtime (docker | podman |
 # sudo-podman | none), bootstrap (startup-script, the only one cb launch
 # runs; cloud-init marks the COS cells it cannot boot yet), container
 # (default | privileged | perfmon | cpusN), prep (host
@@ -351,9 +352,11 @@ max_run = "90m"
 tags = ["exp-floor"]
 
 # The 5.10 tripwire below the 5.14 floor (the `tripwire` check of
-# .chainguard/ci/floor.yaml): Debian 11's 5.10, default container.
+# .chainguard/ci/floor.yaml): Debian 11's 5.10, default container. Debian
+# 11 is past its end of life and GCE has removed the debian-11 family, so
+# the cell pins the last image (deprecated, still bootable).
 [cell.fl-deb11-x86]
 shape = "floor-amd64"
-host = { family = "debian-11", project = "debian-cloud" }
+host = { image = "debian-11-bullseye-v20260831", project = "debian-cloud" }
 max_run = "90m"
 tags = ["exp-floor-tripwire"]
