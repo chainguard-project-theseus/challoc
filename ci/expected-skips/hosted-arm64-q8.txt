@@ -1,13 +1,12 @@
-# Expected skips of the unprivileged `make test` on a GitHub-hosted runner
-# (6.17-azure; the same list on x86_64 and aarch64, quantum 16 and 8):
-# Docker's seccomp hides mseal and
-# unshare(CLONE_NEWUSER) (lazy_bg/unshare), the container's cgroup namespace refuses
+# Expected skips of the unprivileged `make test` in a Chainguard Checks
+# guest (.chainguard/ci/test.yaml; the same list on x86_64 and aarch64,
+# quantum 16 and 8): the guest's Docker seccomp profile allows mseal but
+# hides unshare(CLONE_NEWUSER) (lazy_bg/unshare), the container's cgroup namespace refuses
 # child cgroups and `test` has no limit for the bands, and
 # THP is inert or advice-gated. Keys: ci/skip-summary.sh.
 c_cgroup_policy_bands
 c_cgroup_policy_high
 c_lazy_bg
-c_mseal
 c_thp_auto
 cgroup_policy/bands
 lazy_bg/unshare

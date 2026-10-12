@@ -349,3 +349,11 @@ expect = { page_size = 65536 }
 container = "privileged"
 max_run = "90m"
 tags = ["exp-floor"]
+
+# The 5.10 tripwire below the 5.14 floor (the `tripwire` check of
+# .chainguard/ci/floor.yaml): Debian 11's 5.10, default container.
+[cell.fl-deb11-x86]
+shape = "floor-amd64"
+host = { family = "debian-11", project = "debian-cloud" }
+max_run = "90m"
+tags = ["exp-floor-tripwire"]
