@@ -83,6 +83,10 @@ JOBS=${JOBS:-$(nproc)}
 TESTOPTS=${TESTOPTS:--j$JOBS -q --tty=no}
 RUBY_TEST_EXCLUDE=${RUBY_TEST_EXCLUDE-net/http/test_https.rb rubygems/test_gem_remote_fetcher_local_ssl_server.rb open-uri/test_ssl.rb}
 for x in $RUBY_TEST_EXCLUDE ${RUBY_TEST_EXCLUDE_EXTRA:-}; do TESTOPTS="$TESTOPTS -x $x"; done
+# Single tests that cannot pass against Chainguard's OpenSSL 4.0, one file
+# per test class (Ruby's exclude-file format; EXCLUDES adds the directory
+# to Ruby's own test/.excludes).
+export EXCLUDES="$ROOT/contrib/ruby/excludes"
 WORK=$ROOT/target/ruby
 SRC=$WORK/src-$RUBY_TAG
 BUILD=$WORK/build-$ALLOC
