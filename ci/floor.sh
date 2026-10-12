@@ -27,6 +27,8 @@ export CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=$GOOGLE_APPLICATION_CREDENTIALS
 git config --global --add safe.directory '*'
 # exp-floor is a smoke suite with the one variant `head`; --base names a
 # commit the workspace has so nothing resolves `main`.
+gcloud config list 2>&1 || true
+gcloud compute images describe-from-family almalinux-9 --project=almalinux-cloud --format='value(name)' || true
 status=0
 python3 bench/cb launch exp-floor --cells "$cells" --head HEAD --base HEAD \
   --out .ci/floor || status=$?
