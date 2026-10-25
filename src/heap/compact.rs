@@ -22,8 +22,9 @@ use core::ptr;
 
 use crate::layout::CLASSES;
 use crate::sys::pac;
+use crate::vspec::addr::addr_to_ptr;
 
-use super::{CacheHeader, Heap, Shared};
+use super::{CacheHeader, Heap, Shared, stack_mut};
 
 /// Cache modes: off (the `FOREIGN` cache), probing the class for
 /// fragmentation every [`PROBE_MASK`] + 1 pops, compacting.
@@ -131,7 +132,7 @@ impl Heap {
         // SAFETY: guaranteed by the caller.
         unsafe {
             let pac = (*self.shared).pac();
-            match (*cache).mode {
+            match self.hdr_ref(cache).mode {
                 MODE_COMPACT => {}
                 MODE_PROBE => {
                     let shared: &Shared = &*self.shared;
@@ -140,10 +141,10 @@ impl Heap {
                     // path, and without it no GC or decay would ever run on
                     // a thread without a background thread.
                     self.tick::<true>(shared);
-                    let mut len = (*cache).len;
+                    let mut len = self.hdr_ref(cache).len;
                     if len == 0 {
                         // The GC emptied the cache.
-                        let Some(a) = shared.arena((*cache).arena) else {
+                        let Some(a) = shared.arena(self.hdr_ref(cache).arena) else {
                             return (ptr::null_mut(), false);
                         };
                         len = self.refill(shared, a, cache, class);
@@ -151,16 +152,22 @@ impl Heap {
                             return (ptr::null_mut(), false);
                         }
                     }
-                    let (refilled, verdict) =
-                        Self::probe_verdict(shared, (*cache).arena, class, (*cache).probe_refilled);
-                    (*cache).probe_refilled = refilled;
+                    let (refilled, verdict) = Self::probe_verdict(
+                        shared,
+                        self.hdr_ref(cache).arena,
+                        class,
+                        self.hdr_ref(cache).probe_refilled,
+                    );
+                    let h = self.hdr_mut(cache);
+                    h.probe_refilled = refilled;
                     match verdict {
                         Verdict::Refilling | Verdict::Dense => {
                             return Self::pop_top(cache, len, pac);
                         }
                         Verdict::Fragmented => {}
                     }
-                    (*cache).set_mode(MODE_COMPACT);
+                    let h = self.hdr_mut(cache);
+                    h.set_mode(MODE_COMPACT);
                     return self.pop_compact_run(cache, class, len);
                 }
                 _ => return Self::pop_top(cache, len, pac),
@@ -183,15 +190,15 @@ impl Heap {
         // SAFETY: guaranteed by the caller.
         unsafe {
             let pac = (*self.shared).pac();
-            match (*cache).mode {
+            match self.hdr_ref(cache).mode {
                 MODE_COMPACT => {}
                 _ => return Self::pop_top(cache, len, pac),
             }
             let mut len = len;
-            if (*cache).run_end == 0 {
+            if self.hdr_ref(cache).run_end == 0 {
                 self.rebuild_run(cache, class);
-                len = (*cache).len;
-                if (*cache).run_end == 0 {
+                len = self.hdr_ref(cache).len;
+                if self.hdr_ref(cache).run_end == 0 {
                     if len == 0 {
                         // The rebuild's tick ran the cache GC, which
                         // flushes every entry of a cache with `low_water
@@ -200,7 +207,7 @@ impl Heap {
                         // the claim came back empty). Refill as the probe
                         // branch does; popping here would wrap `len - 1`.
                         let shared: &Shared = &*self.shared;
-                        let Some(a) = shared.arena((*cache).arena) else {
+                        let Some(a) = shared.arena(self.hdr_ref(cache).arena) else {
                             return (ptr::null_mut(), false);
                         };
                         len = self.refill(shared, a, cache, class);
@@ -211,41 +218,41 @@ impl Heap {
                     return Self::pop_top(cache, len, pac);
                 }
             }
+            let h = self.hdr_mut(cache);
             // The run invariant `run_end <= low_water <= len` is what keeps
             // this pop from serving a stale pointer out of `slots[run_end -
             // 1]`, and `zeroed <= low_water` what keeps the zero prefix
             // inside the stack; a violation is a heap inconsistency and
             // aborts in release.
             assert!(
-                (*cache).run_end <= (*cache).low_water
-                    && (*cache).low_water <= len
-                    && (*cache).zeroed <= (*cache).low_water,
+                h.run_end <= h.low_water && h.low_water <= len && h.zeroed <= h.low_water,
                 "heap: cache run invariant violated (run_end or zeroed > low_water, or low_water > len)"
             );
             let top = len - 1;
-            let at = (*cache).run_end - 1;
-            let slots = (*cache).slots();
+            let at = h.run_end - 1;
+            let slots = h.slots();
             let p = *slots.add(at as usize);
             // Entries move within the stack signed (the modifier is the
             // stack's base, not the entry's position); only the one leaving
             // is authenticated.
             let p = if pac {
-                pac::auth(p as usize, slots as usize) as *mut u8
+                addr_to_ptr(pac::auth(p as usize, slots as usize))
             } else {
                 p
             };
-            *slots.add(at as usize) = *slots.add(top as usize);
-            (*cache).len = top;
-            (*cache).run_end = at;
-            if top < (*cache).low_water {
-                (*cache).low_water = top;
+            let t = *slots.add(top as usize);
+            *slots.add(at as usize) = t;
+            h.len = top;
+            h.run_end = at;
+            if top < h.low_water {
+                h.low_water = top;
             }
             // `at` now holds the old top entry: the prefix keeps `at` only
             // when that entry was in it too, and never reaches past `top`.
-            let zeroed = (*cache).zeroed;
+            let zeroed = h.zeroed;
             let zero = at < zeroed;
             if zero {
-                (*cache).zeroed = if top < zeroed { top } else { at };
+                h.zeroed = if top < zeroed { top } else { at };
             }
             (p, zero)
         }
@@ -309,26 +316,27 @@ impl Heap {
         // SAFETY: guaranteed by the caller; `len <= cap` entries exist and
         // `cap - len` slots of storage follow them.
         unsafe {
-            let arena = (*cache).arena;
+            let arena = self.hdr_ref(cache).arena;
             if !Self::fragmented(shared, arena, class) {
                 shared.owner(arena).class(class).note_compact_mode(false);
-                (*cache).set_mode(MODE_PROBE);
+                let h = self.hdr_mut(cache);
+                h.set_mode(MODE_PROBE);
                 return;
             }
-            let cap = (*cache).cap as usize;
+            let cap = self.hdr_ref(cache).cap as usize;
             let half = (cap / 2).max(1);
             let block = (cap / 4).max(1);
-            let len = (*cache).len as usize;
+            let len = self.hdr_ref(cache).len as usize;
             if len + block > cap && len > half {
                 self.flush(shared, arena, cache, class, len - half);
             }
-            let len = (*cache).len as usize;
+            let len = self.hdr_ref(cache).len as usize;
             let want = block.min(cap - len);
             if want == 0 {
                 return;
             }
-            let slots = (*cache).slots();
-            let out = core::slice::from_raw_parts_mut(slots.add(len), want);
+            let slots = self.hdr_ref(cache).slots;
+            let out = stack_mut(slots, len, want);
             let claim = self.claim(shared, shared.owner(arena).class(class), out);
             let n = claim.n;
             if n == 0 {
@@ -339,7 +347,7 @@ impl Heap {
             if shared.pac() {
                 CacheHeader::sign_all(slots, &mut out[..n]);
             }
-            let all = core::slice::from_raw_parts_mut(slots, len + n);
+            let all = stack_mut(slots, 0, len + n);
             if len >= n {
                 // [old..][block] -> [block][old[n..]][old[..n]]
                 let (bottom, rest) = all.split_at_mut(n);
@@ -348,12 +356,13 @@ impl Heap {
                 // The block is bigger than what was there: rotate it down.
                 all.rotate_left(len);
             }
+            let h = self.hdr_mut(cache);
             let new_len = (len + n) as u32;
-            (*cache).len = new_len;
-            (*cache).moved = (*cache).moved.wrapping_add(n as u64);
-            (*cache).run_end = n as u32;
-            (*cache).low_water = (*cache).low_water.max(n as u32);
-            (*cache).zeroed = if claim.zeroed { n as u32 } else { 0 };
+            h.len = new_len;
+            h.moved = h.moved.wrapping_add(n as u64);
+            h.run_end = n as u32;
+            h.low_water = h.low_water.max(n as u32);
+            h.zeroed = if claim.zeroed { n as u32 } else { 0 };
         }
     }
 }

@@ -8,6 +8,8 @@ use core::ptr;
 
 use crate::layout::NCLASSES;
 
+use crate::arena::field_at;
+
 use super::{CacheHeader, FOREIGN, Heap, Shared};
 
 /// A heap's caches for one arena other than its home arena (design 6.2,
@@ -57,8 +59,73 @@ pub(super) fn node_block_layout() -> Layout {
     .expect("node block layout")
 }
 
+/// The first line of a fresh `others` node: its `arena`, `pad` and `next`
+/// ([`Heap::other_caches`]), stored field by field at their offsets (the
+/// `const` assertion below), `next` read after the first two stores.
+///
+/// # Safety
+/// `node` is the start of a fresh node in a block this heap holds.
+#[inline(always)]
+unsafe fn node_link(node: *mut ArenaCaches, arena: u16, pad: u8, next: &*mut ArenaCaches) {
+    // SAFETY: guaranteed by the caller; each store is to its field.
+    unsafe {
+        ptr::write(node as *mut u16, arena);
+        ptr::write(field_at::<ArenaCaches, u8>(node, 2), pad);
+        ptr::write(field_at::<ArenaCaches, *mut ArenaCaches>(node, 8), *next);
+    }
+}
+
+/// The address of node `o`'s `caches` array, computed as `&(*o).caches`
+/// does: its second line (the `const` assertion below).
+///
+/// # Safety
+/// `o` is a placed node.
+#[inline(always)]
+unsafe fn node_caches_ptr(o: *mut ArenaCaches) -> *mut [CacheHeader; NCLASSES] {
+    // SAFETY: the node's first line is inside its block.
+    unsafe { field_at::<ArenaCaches, [CacheHeader; NCLASSES]>(o, 64) }
+}
+
+/// `&(*o).caches` for node `o` of a heap's `others` list, as plain
+/// headers, for the walk that folds them while it holds the heap mutably
+/// (`Heap::set_tcache_enabled`). Shared, not `&mut`: the walk only reads
+/// them.
+///
+/// # Safety
+/// `o` is a live node owned by the heap, and nothing writes its headers
+/// while the reference lives.
+#[inline(always)]
+pub(super) unsafe fn node_caches_detached<'a>(o: *mut ArenaCaches) -> &'a [CacheHeader; NCLASSES] {
+    // SAFETY: guaranteed by the caller.
+    unsafe { &*node_caches_ptr(o) }
+}
+
+/// `(*node).arena = arena`: the last step of `Heap::set_arena`'s
+/// exchange, once node `node`'s headers and the home headers have traded
+/// places (`Heap::swap_hdrs`), makes the node the cache of `arena`, the
+/// home arena being left.
+///
+/// # Safety
+/// `node` is a live node owned by the heap.
+#[inline(always)]
+pub(super) unsafe fn node_set_arena(node: *mut ArenaCaches, arena: u16) {
+    // SAFETY: guaranteed by the caller; `arena` is at the node's address.
+    unsafe { ptr::write(node as *mut u16, arena) };
+}
+
+/// [`Heap::other_caches`]'s abort on a node for the home arena.
+#[inline(always)]
+#[track_caller]
+fn assert_not_home(arena: &u16, home: &u16) {
+    assert_ne!(
+        *arena, *home,
+        "heap: others node requested for the home arena"
+    );
+}
+
 impl Heap {
-    /// The header for `class` in an `others` node.
+    /// The header for `class` in an `others` node: `class` lines past the
+    /// node's second, where `caches` starts (the `const` assertion below).
     ///
     /// # Safety
     /// `node` is a live node owned by this heap.
@@ -66,7 +133,55 @@ impl Heap {
     pub(super) unsafe fn node_cache_ptr(node: *mut ArenaCaches, class: usize) -> *mut CacheHeader {
         debug_assert!(class < NCLASSES);
         // SAFETY: guaranteed by the caller; `class < NCLASSES`.
-        unsafe { (&raw mut (*node).caches).cast::<CacheHeader>().add(class) }
+        unsafe { ((node as *mut u8).add(64) as *mut CacheHeader).add(class) }
+    }
+
+    /// `(*o).next` for node `o` of the `others` list: the node after it,
+    /// null after the last, read at its offset (the `const` assertion
+    /// below). `destroy`, the one walk that unlinks nodes, frees each one
+    /// after reading its `next`.
+    ///
+    /// # Safety
+    /// `o` is a live node owned by this heap.
+    #[inline(always)]
+    pub(super) unsafe fn node_next(&self, o: *mut ArenaCaches) -> *mut ArenaCaches {
+        // SAFETY: the field is inside the node.
+        unsafe { *field_at::<ArenaCaches, *mut ArenaCaches>(o, 8) }
+    }
+
+    /// `(*o).arena` for node `o` of the `others` list: the arena it
+    /// caches, or [`FOREIGN`]. The two writers store it: [`node_link`] in
+    /// `other_caches` (the new node's key, at the head) and
+    /// [`node_set_arena`] in `set_arena` (the exchanged node's new key).
+    ///
+    /// # Safety
+    /// As for [`Heap::node_next`].
+    #[inline(always)]
+    pub(super) unsafe fn node_arena(&self, o: *mut ArenaCaches) -> u16 {
+        // SAFETY: the field is at the node's address.
+        unsafe { *(o as *mut u16) }
+    }
+
+    /// `(*o).pad` for node `o` of the `others` list: the lines between its
+    /// block and it, which [`node_link`] stored.
+    ///
+    /// # Safety
+    /// As for [`Heap::node_next`].
+    #[inline(always)]
+    pub(super) unsafe fn node_pad(&self, o: *mut ArenaCaches) -> u8 {
+        // SAFETY: the field is inside the node.
+        unsafe { *field_at::<ArenaCaches, u8>(o, 2) }
+    }
+
+    /// `&(*o).caches` for node `o` of the `others` list, as plain headers
+    /// (for [`Heap::stats`]).
+    ///
+    /// # Safety
+    /// As for [`Heap::node_next`].
+    #[inline(always)]
+    pub(super) unsafe fn node_caches(&self, o: *mut ArenaCaches) -> &[CacheHeader; NCLASSES] {
+        // SAFETY: the node is placed and owned by this heap.
+        unsafe { &*node_caches_ptr(o) }
     }
 
     /// Allocation of `class` from another arena than the home one: through
@@ -87,7 +202,7 @@ impl Heap {
             // SAFETY: `node` is a live block owned by this heap.
             let cache = unsafe { Self::node_cache_ptr(node, class) };
             // SAFETY: unused (`len == 0`) or this heap's cache.
-            let len = unsafe { (*cache).len };
+            let len = unsafe { self.hdr_ref(cache) }.len;
             if len != 0 {
                 // SAFETY: a real cache with `len` entries.
                 return unsafe { self.pop(cache, class, len, shared.pac()) };
@@ -120,25 +235,6 @@ impl Heap {
         self.free_slow_in(shared, FOREIGN, class, p)
     }
 
-    /// The nodes of an `others` list headed by `head`, in list order, for
-    /// the cold walks (statistics, flush, GC, `cache_in`, destruction).
-    /// Each node's `next` is read before the node is yielded, so a caller
-    /// may free the node it was handed. The lookup on the cross-arena free
-    /// path ([`Heap::other_caches`]) keeps its own loop.
-    pub(super) fn nodes(head: *mut ArenaCaches) -> impl Iterator<Item = *mut ArenaCaches> {
-        let mut o = head;
-        core::iter::from_fn(move || {
-            if o.is_null() {
-                return None;
-            }
-            let cur = o;
-            // SAFETY: the list is live metadata blocks owned by the heap
-            // whose `others` head this was.
-            o = unsafe { (*cur).next };
-            Some(cur)
-        })
-    }
-
     /// The `others` node for `arena`, created (if `create`) on first use.
     /// Null when there is none (and none could be allocated). Never called
     /// with the home arena: creating a node for it would split the home
@@ -157,20 +253,17 @@ impl Heap {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
             unsafe {
-                if (*o).arena == arena {
+                if self.node_arena(o) == arena {
                     return o;
                 }
-                o = (*o).next;
+                o = self.node_next(o);
             }
             n += 1;
         }
         if !create {
             return ptr::null_mut();
         }
-        assert_ne!(
-            arena, self.arena,
-            "heap: others node requested for the home arena"
-        );
+        assert_not_home(&arena, &self.arena);
         let block = shared.meta.alloc(node_block_layout());
         if block.is_null() {
             return ptr::null_mut();
@@ -182,13 +275,13 @@ impl Heap {
         // stack of every call (this function sits on the cross-arena free
         // path).
         let node = unsafe { block.add(64 * pad) } as *mut ArenaCaches;
-        unsafe {
-            ptr::write(&raw mut (*node).arena, arena);
-            ptr::write(&raw mut (*node).pad, pad as u8);
-            ptr::write(&raw mut (*node).next, self.others);
-            for c in 0..NCLASSES {
-                ptr::write(Self::node_cache_ptr(node, c), CacheHeader::EMPTY);
-            }
+        // SAFETY: as above.
+        unsafe { node_link(node, arena, pad as u8, &self.others) };
+        for c in 0..NCLASSES {
+            // SAFETY: `c < NCLASSES`, inside the block.
+            let cache = unsafe { Self::node_cache_ptr(node, c) };
+            // SAFETY: as above.
+            unsafe { ptr::write(cache, CacheHeader::EMPTY) };
         }
         self.others = node;
         node
@@ -229,5 +322,40 @@ impl Heap {
         } else {
             unsafe { Self::node_cache_ptr(node, class) }
         }
+    }
+}
+
+// `node_caches_ptr` and `Heap::node_cache_ptr`: the headers start at the
+// node's second line.
+const _: () = assert!(core::mem::offset_of!(ArenaCaches, caches) == 64);
+// `node_link`, `node_set_arena`, `Heap::node_arena`, `Heap::node_pad` and
+// `Heap::node_next`: `arena` at the node's address, `pad` 2 bytes on,
+// `next` 8 bytes on.
+const _: () = assert!(
+    core::mem::offset_of!(ArenaCaches, arena) == 0
+        && core::mem::offset_of!(ArenaCaches, pad) == 2
+        && core::mem::offset_of!(ArenaCaches, next) == 8
+);
+
+#[cfg(test)]
+impl Heap {
+    /// The nodes of an `others` list headed by `head`, in list order, for
+    /// the tests' walks (`cache_in`). Each node's `next` is read before
+    /// the node is yielded, so a caller may free the node it was handed.
+    /// The library's walks (statistics, flush, GC, `set_tcache_enabled`,
+    /// `destroy`, the lookup in [`Heap::other_caches`]) spell the same
+    /// loop out over [`Heap::node_next`].
+    pub(super) fn nodes(head: *mut ArenaCaches) -> impl Iterator<Item = *mut ArenaCaches> {
+        let mut o = head;
+        core::iter::from_fn(move || {
+            if o.is_null() {
+                return None;
+            }
+            let cur = o;
+            // SAFETY: the list is live metadata blocks owned by the heap
+            // whose `others` head this was.
+            o = unsafe { (*cur).next };
+            Some(cur)
+        })
     }
 }
