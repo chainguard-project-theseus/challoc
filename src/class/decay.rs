@@ -8,7 +8,7 @@ use crate::layout::class_table;
 use crate::lock::LockOrder;
 #[cfg(verus_only)]
 use crate::lock::{axiom_held_below, rank_class};
-use crate::purge::{Batch, Curve, Left, STEPS};
+use crate::purge::{Batch, Curve, Left, STEPS, Settle};
 use crate::slab::{DescPerm, State};
 use vstd::prelude::*;
 
@@ -203,67 +203,111 @@ pub(super) open spec fn none_above(g: Inner, last: int) -> bool {
     forall|x: nat| #[trigger] g.empty.map@.contains(x) ==> x <= last
 }
 
-/// Every member of `g`'s empty set lies above `last`: a purge walk that
-/// purged every slab it visited.
-#[verifier::opaque]
-spec fn all_above(g: Inner, last: int) -> bool {
-    forall|x: nat| #[trigger] g.empty.map@.contains(x) ==> x > last
+/// The page group of `spp` slabs from slab `f` of `cs`'s class, as a
+/// purge range: what [`ClassState::push_group`] pushes.
+spec fn group_piece(cs: &ClassState, f: int, spp: int) -> (int, int) {
+    (cs.spec_table().base + f * slab_bytes(cs), spp * slab_bytes(cs))
 }
 
-/// A purge of `slab`, the lowest member above `last`, that took it out of
-/// the empty set and added none keeps every member above the walk.
-proof fn lemma_all_above(g0: Inner, g1: Inner, last: int, slab: int)
+/// `x` is a page group a purge walk of `cs` (page groups of `spp` slabs,
+/// pushed below slab `end`) pushed and has not settled, in the lock value
+/// `g`: its first slab `f` is a group boundary, the group ends at or
+/// below `end`, every slab of it is owned and not `Active`, and one is
+/// in the empty set (the slab whose visit pushed it). Opaque, so a
+/// settler's invariant carries it per piece as one fact.
+#[verifier::opaque]
+spec fn pend_ok(cs: &ClassState, g: Inner, spp: int, end: int, x: (int, int)) -> bool {
+    let f = (x.0 - cs.spec_table().base) / slab_bytes(cs);
+    &&& x == group_piece(cs, f, spp)
+    &&& 0 <= f
+    &&& f % spp == 0
+    &&& f + spp <= end
+    &&& forall|s: nat| #![trigger g.owns(s)] #![trigger g.st(s)] f <= s < f + spp ==> g.owns(s) && g.st(s) != State::Active
+    &&& exists|s: nat| f <= s < f + spp && #[trigger] g.empty.map@.contains(s)
+}
+
+/// The page group of `spp` slabs at slab `fy` is a piece of the run of
+/// groups from `f0` (`cnt` slabs) exactly when it lies in the run:
+/// groups start at multiples of `spp`.
+proof fn lemma_group_run(base: int, sz: int, spp: int, f0: int, cnt: int, fy: int)
     requires
-        all_above(g0, last),
-        next_after(g0, last, slab),
-        forall|x: nat| #[trigger] g1.empty.map@.contains(x) ==> g0.empty.map@.contains(x),
-        slab >= 0,
-        !g1.empty.map@.contains(slab as nat),
+        sz > 0,
+        spp > 0,
+        f0 % spp == 0,
+        fy % spp == 0,
     ensures
-        all_above(g1, slab),
+        crate::purge::in_run(base + f0 * sz, cnt * sz, spp * sz, (base + fy * sz, spp * sz)) <==> f0 <= fy < f0
+            + cnt,
 {
-    reveal(all_above);
-    reveal(next_after);
-    assert forall|x: nat| #[trigger] g1.empty.map@.contains(x) implies x > slab by {
-        assert(g0.empty.map@.contains(x));
+    assert(base + f0 * sz <= base + fy * sz <==> f0 <= fy) by (nonlinear_arith)
+        requires sz > 0;
+    assert(base + fy * sz < base + f0 * sz + cnt * sz <==> fy < f0 + cnt) by (nonlinear_arith)
+        requires sz > 0;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(f0, spp);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(fy, spp);
+    let m = fy / spp - f0 / spp;
+    assert(base + fy * sz - (base + f0 * sz) == m * (spp * sz)) by (nonlinear_arith)
+        requires
+            f0 == spp * (f0 / spp),
+            fy == spp * (fy / spp),
+            m == fy / spp - f0 / spp,
+    ;
+    assert(spp * sz > 0) by (nonlinear_arith)
+        requires spp > 0, sz > 0;
+    vstd::arithmetic::div_mod::lemma_mod_multiples_basic(m, spp * sz);
+}
+
+/// Of two multiples of `m`, `a` above `b - m` is at least `b`.
+proof fn lemma_mult_order(a: int, b: int, m: int)
+    requires
+        m > 0,
+        a % m == 0,
+        b % m == 0,
+        a > b - m,
+    ensures
+        a >= b,
+{
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(a, m);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(b, m);
+    let (qa, qb) = (a / m, b / m);
+    assert(qa >= qb) by (nonlinear_arith)
+        requires a == m * qa, b == m * qb, a > b - m, m > 0;
+    assert(a >= b) by (nonlinear_arith)
+        requires a == m * qa, b == m * qb, qa >= qb, m > 0;
+}
+
+/// The first slab of the page group of `spp` slabs that holds slab `s`,
+/// counted from a group boundary `f0`.
+spec fn group_of(f0: int, spp: int, s: int) -> int {
+    f0 + ((s - f0) / spp) * spp
+}
+
+/// [`group_of`] is a group boundary, at or below `s` and within a group of
+/// it.
+proof fn lemma_group_of(f0: int, spp: int, s: int)
+    requires
+        spp > 0,
+        f0 % spp == 0,
+        f0 <= s,
+    ensures
+        group_of(f0, spp, s) % spp == 0,
+        f0 <= group_of(f0, spp, s) <= s < group_of(f0, spp, s) + spp,
+{
+    let d = s - f0;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(d, spp);
+    vstd::arithmetic::div_mod::lemma_mod_bound(d, spp);
+    let q = d / spp;
+    assert(q >= 0) by {
+        vstd::arithmetic::div_mod::lemma_div_pos_is_pos(d, spp);
     }
-}
-
-/// A purge walk's count `n` and its batch `b` agree: it purged a slab iff
-/// it pushed a byte (`sent() + total()`, never negative). Opaque, for
-/// [`Purger::inv`].
-#[verifier::opaque]
-spec fn counted(n: usize, b: Batch) -> bool {
-    &&& b.sent() + b.total() >= 0
-    &&& (n > 0) == (b.sent() + b.total() > 0)
-}
-
-/// A purge of `k >= 1` slabs that pushed `d > 0` bytes keeps [`counted`].
-proof fn lemma_counted_step(n: usize, k: usize, b0: Batch, b1: Batch, d: int)
-    requires
-        counted(n, b0),
-        k >= 1,
-        n + k <= usize::MAX,
-        d > 0,
-        b1.sent() + b1.total() == b0.sent() + b0.total() + d,
-    ensures
-        counted((n + k) as usize, b1),
-{
-    reveal(counted);
-}
-
-/// A walk that ended (`none_above`) with every member above it
-/// (`all_above`) leaves the empty set empty.
-proof fn lemma_walked_empty(g: Inner, last: int)
-    requires
-        none_above(g, last),
-        all_above(g, last),
-    ensures
-        g.empty.map@ == vstd::set::Set::<nat>::empty(),
-{
-    reveal(none_above);
-    reveal(all_above);
-    assert(g.empty.map@ =~= vstd::set::Set::<nat>::empty());
+    assert(q * spp >= 0) by (nonlinear_arith)
+        requires q >= 0, spp > 0;
+    assert(spp * q == q * spp) by (nonlinear_arith);
+    vstd::arithmetic::div_mod::lemma_mod_multiples_basic(q, spp);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(f0, spp);
+    vstd::arithmetic::div_mod::lemma_mod_multiples_basic(f0 / spp + q, spp);
+    assert(f0 + q * spp == (f0 / spp + q) * spp) by (nonlinear_arith)
+        requires f0 == spp * (f0 / spp);
 }
 
 /// A visitor of [`ClassState::walk_empty`]: the state of a walk (a
@@ -498,132 +542,236 @@ impl ClassState {
     }
 }
 
-/// The purge half of both purge walks: the page groups purged, their
-/// discard batch and the oldest stamp among the slabs kept.
-///
-/// The batch bound `purge_group` needs: the walk visits in increasing
-/// order, and a purge takes every member of the empty set in its page
-/// group, so each page group pushed starts at or past the end of the
-/// last one (`end`) and the batch holds at most the bytes of the slabs
-/// below `end`, which is inside the class region, below `2^57`.
-///
-/// The batch may discard the bytes of the slabs idle in `states`, the
-/// ghost states of the lock value the walk started from ([`idle_byte`]);
-/// a purge only moves `Empty` slabs to `Purged`, so those are the slabs
-/// idle in the lock value at every flush.
-struct Purger {
-    spp: usize,
-    n: usize,
-    batch: Batch,
+/// What a purge walk's flushes settled: slabs made `Purged`, the oldest
+/// `dirty_at` among the survivors (`min_nonzero`), and whether a discard
+/// failed. It settles the walk's batch ([`Settle`], through
+/// [`ClassState::settle`]); its ghost half carries the walk's invariant
+/// over the lock value, which the flushes inside the walk's pushes
+/// change.
+// Ghost fields that only the proofs read.
+#[allow(dead_code)]
+struct Tally {
+    purged: usize,
     oldest: u64,
+    failed: bool,
+    /// Ghost: the page group size.
+    spp: Ghost<usize>,
+    /// Ghost: the slab states of the lock value the walk started from.
+    #[allow(dead_code)]
+    states: Ghost<Map<nat, State>>,
     /// Ghost: the end of the last page group pushed (0 before the first).
     end: Ghost<usize>,
     /// Ghost: the last slab visited (-1 before the first).
     last: Ghost<int>,
-    /// Ghost: the slab states of the lock value the walk started from.
+    /// Ghost: no member of the empty set lies above it (the slab count
+    /// until a full walk ends, its last slab after).
+    top: Ghost<int>,
+    /// Ghost: the walk pushes every slab it visits (a full purge with one
+    /// slab per page, [`EmptyVisitor::full`]).
+    full: Ghost<bool>,
+    /// Ghost: the empty count of the lock value the walk started from.
+    e0: Ghost<int>,
+    /// Ghost: the bytes reported discarded.
+    bytes: Ghost<int>,
+    /// Ghost: the slabs `Empty` in a range reported not discarded.
     #[allow(dead_code)]
-    states: Ghost<Map<nat, State>>,
+    refused: Ghost<Set<nat>>,
+}
+
+impl Settle for Tally {
+    type Owner = ClassState;
+
+    type Ctx = Inner;
+
+    /// `(spp, states, end, last, full, e0, top)`.
+    type Conf = (usize, Map<nat, State>, usize, int, bool, int, int);
+
+    /// The walk's invariant over the lock value `c`, the pieces `pend`
+    /// pushed and not settled: the lock value is the class's and agrees
+    /// with the walk's start on ownership and `Active`-ness (a purge only
+    /// moves `Empty` to `Purged`); each piece pending is a page group
+    /// below `end`, idle, with a slab in the empty set ([`pend_ok`]); the
+    /// slabs purged and the empty count sum to the empty count at the
+    /// start; a slab was purged iff a byte was reported discarded; and a
+    /// full walk has every member of the empty set up to `last` pending or
+    /// refused.
+    closed spec fn inv(&self, o: &ClassState, c: Inner, pend: spec_fn((int, int)) -> bool) -> bool {
+        let spp = self.spp@;
+        &&& walk_ok(o, c)
+        &&& spp == o.spec_table().spec_slabs_per_page()
+        &&& spp >= 1
+        &&& spp & sub(spp, 1) == 0
+        &&& o.spec_nslabs() & sub(spp, 1) == 0
+        &&& self.end@ & sub(spp, 1) == 0
+        &&& self.end@ <= o.spec_nslabs()
+        &&& -1 <= self.last@ < o.spec_nslabs()
+        &&& forall|s: nat| #[trigger] c.states@.contains_key(s) == self.states@.contains_key(s)
+        &&& forall|s: nat| #[trigger] c.states@.contains_key(s)
+            ==> (c.st(s) == State::Active) == (self.states@[s] == State::Active)
+        &&& forall|x: (int, int)| #[trigger] pend(x) ==> pend_ok(o, c, spp as int, self.end@ as int, x)
+        &&& forall|x: nat| #[trigger] c.empty.map@.contains(x) ==> x <= self.top@
+        &&& self.purged + c.stats.empty == self.e0@
+        &&& self.e0@ <= o.spec_nslabs()
+        &&& self.bytes@ >= 0
+        &&& (self.purged > 0) == (self.bytes@ > 0)
+        &&& self.full@ ==> spp == 1 && self.end@ == self.last@ + 1
+        &&& self.full@ ==> forall|x: nat| #[trigger] c.empty.map@.contains(x) && x <= self.last@ ==> pend(
+            group_piece(o, x as int, 1),
+        ) || self.refused@.contains(x)
+    }
+
+    closed spec fn bytes(&self) -> int {
+        self.bytes@
+    }
+
+    closed spec fn conf(&self) -> (usize, Map<nat, State>, usize, int, bool, int, int) {
+        (self.spp@, self.states@, self.end@, self.last@, self.full@, self.e0@, self.top@)
+    }
+
+    #[inline(always)]
+    fn settle(
+        &mut self,
+        o: &ClassState,
+        c: &mut Inner,
+        addr: usize,
+        len: usize,
+        done: bool,
+        piece: Ghost<int>,
+        pend: Ghost<spec_fn((int, int)) -> bool>,
+    ) {
+        o.settle(c, addr, len, done, self, piece, pend);
+    }
+}
+
+/// The purge half of both purge walks: the page groups pushed, their
+/// discard batch and its settler, the tally.
+///
+/// The batch may discard the bytes of the slabs idle in the ghost states
+/// of the lock value the walk started from ([`idle_byte`]); a purge only
+/// moves `Empty` slabs to `Purged`, so those are the slabs idle in the
+/// lock value at every flush.
+struct Purger {
+    spp: usize,
+    /// Slabs below `pushed` are in a page group already in the batch.
+    pushed: usize,
+    batch: Batch,
+    t: Tally,
 }
 
 impl Purger {
-    /// Nothing purged yet over page groups of `spp` slabs of table `t`,
-    /// whose arena's lock value records `states`.
+    /// Nothing pushed yet over page groups of `spp` slabs of table `t`,
+    /// whose arena's lock value records `states` and `e0` empty slabs;
+    /// `full` for a walk that pushes every slab it visits.
     #[inline(always)]
-    fn new(spp: usize, Ghost(t): Ghost<SlabTable>, Ghost(states): Ghost<Map<nat, State>>) -> (p: Purger)
+    fn new(
+        spp: usize,
+        Ghost(t): Ghost<SlabTable>,
+        Ghost(states): Ghost<Map<nat, State>>,
+        Ghost(full): Ghost<bool>,
+        Ghost(e0): Ghost<int>,
+        Ghost(top): Ghost<int>,
+    ) -> (p: Purger)
         ensures
             p.spp == spp,
-            p.n == 0,
+            p.pushed == 0,
             p.batch.wf(),
-            p.batch.total() == 0,
-            p.oldest == 0,
-            p.end@ == 0,
-            p.last@ == -1,
-            p.states@ == states,
-            forall|b: int| (p.batch.free())(b) == idle_byte(t, states, b),
+            p.batch.pieces() == crate::purge::none(),
             p.batch.sent() == 0,
-            counted(p.n, p.batch),
+            forall|b: int| (p.batch.free())(b) == idle_byte(t, states, b),
+            p.t.purged == 0,
+            p.t.oldest == 0,
+            p.t.spp@ == spp,
+            p.t.states@ == states,
+            p.t.end@ == 0,
+            p.t.last@ == -1,
+            p.t.full@ == full,
+            p.t.e0@ == e0,
+            p.t.top@ == top,
+            p.t.bytes@ == 0,
     {
-        proof {
-            reveal(counted);
-        }
         Purger {
             spp,
-            n: 0,
+            pushed: 0,
             batch: Batch::new(Ghost(|b: int| idle_byte(t, states, b))),
-            oldest: 0,
-            end: Ghost(0),
-            last: Ghost(-1),
-            states: Ghost(states),
+            t: Tally {
+                purged: 0,
+                oldest: 0,
+                failed: false,
+                spp: Ghost(spp),
+                states: Ghost(states),
+                end: Ghost(0),
+                last: Ghost(-1),
+                full: Ghost(full),
+                e0: Ghost(e0),
+                top: Ghost(top),
+                bytes: Ghost(0),
+                refused: Ghost(Set::empty()),
+            },
         }
     }
 
-    /// `spp` is `cs`'s page group size; see the type for the rest.
+    /// The tally's invariant over the batch's pieces, with the batch's
+    /// predicate and byte count the tally's, and `pushed` its `end`.
     spec fn inv(&self, cs: &ClassState, g: Inner) -> bool {
-        &&& self.spp == cs.spec_table().spec_slabs_per_page()
-        &&& self.spp >= 1
-        &&& self.spp & sub(self.spp, 1) == 0
-        &&& cs.spec_nslabs() & sub(self.spp, 1) == 0
-        &&& self.end@ & sub(self.spp, 1) == 0
-        &&& self.end@ <= cs.spec_nslabs()
-        &&& self.n <= self.end@
+        &&& self.spp == self.t.spp@
+        &&& self.pushed == self.t.end@
         &&& self.batch.wf()
-        &&& self.batch.total() <= self.end@ as int * slab_bytes(cs)
-        &&& -1 <= self.last@ < cs.spec_nslabs()
-        &&& forall|x: nat| #[trigger] g.empty.map@.contains(x) && x > self.last@ ==> x >= self.end@
-        &&& forall|b: int| #[trigger] (self.batch.free())(b) == idle_byte(cs.spec_table(), self.states@, b)
-        &&& forall|s: nat| #[trigger] g.states@.contains_key(s) == self.states@.contains_key(s)
-        &&& forall|s: nat| #[trigger] g.states@.contains_key(s)
-            ==> (g.st(s) == State::Active) == (self.states@[s] == State::Active)
-        &&& counted(self.n, self.batch)
+        &&& forall|b: int| #[trigger] (self.batch.free())(b) == idle_byte(cs.spec_table(), self.t.states@, b)
+        &&& self.batch.sent() == self.t.bytes@
+        &&& self.t.inv(cs, g, self.batch.pieces())
     }
 
-    /// Visit `slab` (stamped `dirty_at`): purge its page group when
-    /// `purge` holds and the group is idle, else keep it and fold its
-    /// stamp into `oldest`. With one slab per page, `purge` always purges
-    /// `slab`: a walk that purged every slab before it still has no
-    /// member of the empty set at or below it.
+    /// `slab` is in a page group already pushed: the walk moves past it.
+    #[inline(always)]
+    #[allow(unused_variables)]
+    fn skip(&mut self, cs: &ClassState, Ghost(g): Ghost<Inner>, Ghost(slab): Ghost<int>)
+        requires
+            old(self).inv(cs, g),
+            old(self).t.last@ < slab < old(self).pushed,
+        ensures
+            final(self).inv(cs, g),
+            final(self).t.last@ == slab,
+            final(self).t.full == old(self).t.full,
+    {
+        self.t.last = Ghost(slab);
+    }
+
+    /// Visit `slab` (stamped `dirty_at`), at or past the page groups
+    /// pushed: push its page group when `purge` holds and the group is
+    /// idle, else keep it and fold its stamp into `oldest`. A full walk
+    /// (`purge` always, one slab per page) pushes `slab` itself.
     #[inline(always)]
     fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64, purge: bool)
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(self).inv(cs, *old(g)),
-            old(self).last@ < slab,
+            old(self).t.last@ < slab,
+            old(self).pushed <= slab,
             walk_ok(cs, *old(g)),
             old(g).empty.map@.contains(slab as nat),
+            next_after(*old(g), old(self).t.last@, slab as int),
             dirty_at != 0,
+            old(self).t.full@ ==> purge,
         ensures
             final(self).inv(cs, *final(g)),
-            final(self).last@ == slab,
+            final(self).t.last@ == slab,
+            final(self).t.full == old(self).t.full,
             walk_ok(cs, *final(g)),
-            old(self).spp == 1 && purge && all_above(*old(g), old(self).last@) && next_after(
-                *old(g),
-                old(self).last@,
-                slab as int,
-            ) ==> all_above(*final(g), slab as int),
     {
         let spp = self.spp;
-        let ghost last0 = self.last@;
-        let ghost first = slab & !sub(spp, 1);
         proof {
             assert(g.slab_ok(slab as nat));
-            lemma_page_group(slab, self.end@, cs.spec_nslabs(), spp);
-            assert(sub(spp, 1) == (spp - 1) as usize);
+            lemma_page_group(slab, self.pushed, cs.spec_nslabs(), spp);
             assert(usize::MAX >> 12 == 0xf_ffff_ffff_ffffusize) by (bit_vector);
             assert(slab + spp <= usize::MAX);
         }
         if purge && (spp == 1 || cs.page_group_is_idle(Ghost(*g), Tracked(g.dperms.borrow()), slab, spp)) {
-            let ghost g0 = *g;
             proof {
+                let first = slab & !sub(spp, 1);
                 if spp == 1 {
-                    assert(first == slab);
-                }
-                use_type_invariant(cs);
-                lemma_run_fits(cs.spec_table(), 0, self.end@);
-                assert(self.end@ as int * slab_bytes(cs) <= 0x200_0000_0000_0000);
-                assert forall|b: int| idle_byte(cs.spec_table(), g.states@, b)
-                    implies #[trigger] (self.batch.free())(b) by {
-                    lemma_idle_same(cs.spec_table(), g.states@, self.states@, b);
+                    assert(first == slab) by (bit_vector)
+                        requires spp == 1usize, first == slab & !sub(spp, 1);
                 }
                 // Every slab of the group is idle: the one slab of a page
                 // is in the empty set, and `page_group_is_idle` says so of
@@ -631,59 +779,31 @@ impl Purger {
                 assert forall|s: nat| #![trigger g.owns(s)] #![trigger g.st(s)] first <= s < first + spp
                     implies g.owns(s) && g.st(s) != State::Active by {
                     if spp == 1 {
-                        assert(first == slab && s == slab && g.slab_ok(slab as nat));
+                        assert(s == slab && g.slab_ok(slab as nat));
                     } else {
                         assert(first == slab & !((spp - 1) as usize));
                         assert(g.owns(s));
                         assert(g.st(s) != State::Active);
                     }
                 }
+                assert(sub(spp, 1) == (spp - 1) as usize);
                 assert(first == slab & !((spp - 1) as usize));
                 // In the callee's terms, by a lemma whose query carries
                 // none of this walk's context.
                 lemma_group_idle(*g, slab, spp, first);
             }
-            let ghost n0 = self.n;
-            let ghost b0 = self.batch;
-            let k = cs.purge_group(g, slab, spp, &mut self.batch);
-            proof {
-                assert(self.end@ as int * slab_bytes(cs) <= first as int * slab_bytes(cs)) by (nonlinear_arith)
-                    requires self.end@ <= first, slab_bytes(cs) >= 0;
-                assert(first as int * slab_bytes(cs) + spp as int * slab_bytes(cs) == (first + spp) as int * slab_bytes(cs))
-                    by (nonlinear_arith);
-                // `slab` is in its own group, and was `Empty`.
-                assert(k >= 1);
-                lemma_slab_bytes_pos(cs.spec_table());
-                assert(slab_bytes(cs) > 0);
-                assert(spp as int * slab_bytes(cs) > 0) by (nonlinear_arith)
-                    requires spp >= 1, slab_bytes(cs) > 0;
-                lemma_counted_step(n0, k, b0, self.batch, spp as int * slab_bytes(cs));
-                if spp == 1 && all_above(g0, last0) && next_after(g0, last0, slab as int) {
-                    assert(!g.empty.map@.contains(slab as nat));
-                    lemma_all_above(g0, *g, last0, slab as int);
-                }
-            }
-            self.n += k;
-            self.end = Ghost((first + spp) as usize);
-            proof {
-                assert forall|x: nat| #[trigger] g.empty.map@.contains(x) && x > slab implies x >= self.end@ by {
-                    assert(g0.empty.map@.contains(x));
-                }
-                assert forall|s: nat| #[trigger] g.states@.contains_key(s)
-                    implies (g.st(s) == State::Active) == (self.states@[s] == State::Active) by {
-                    assert(g0.states@.contains_key(s));
-                }
-            }
+            self.pushed = cs.push_group(g, slab, spp, &mut self.batch, &mut self.t);
         } else {
-            self.oldest = min_nonzero(self.oldest, dirty_at);
+            self.t.oldest = min_nonzero(self.t.oldest, dirty_at);
+            self.t.last = Ghost(slab as int);
         }
-        self.last = Ghost(slab as int);
     }
 }
 
 /// `purge_empty`'s visitor: purge every slab stamped at or before `cutoff`.
-/// With `cutoff == u64::MAX` and one slab per page it purges every slab
-/// it visits, so no member of the empty set is left at or below the last.
+/// With `cutoff == u64::MAX` and one slab per page it pushes every slab
+/// it visits, so every member of the empty set at or below the last is
+/// pending or refused.
 struct PurgeOlder {
     cutoff: u64,
     p: Purger,
@@ -692,11 +812,11 @@ struct PurgeOlder {
 impl EmptyVisitor for PurgeOlder {
     closed spec fn inv(&self, cs: &ClassState, g: Inner) -> bool {
         &&& self.p.inv(cs, g)
-        &&& self.full() ==> all_above(g, self.p.last@)
+        &&& self.p.t.full@ == self.full()
     }
 
     closed spec fn last(&self) -> int {
-        self.p.last@
+        self.p.t.last@
     }
 
     closed spec fn full(&self) -> bool {
@@ -705,6 +825,10 @@ impl EmptyVisitor for PurgeOlder {
 
     #[inline(always)]
     fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64) {
+        if slab < self.p.pushed {
+            self.p.skip(cs, Ghost(*g), Ghost(slab as int));
+            return;
+        }
         let purge = dirty_at <= self.cutoff;
         self.p.visit(cs, g, slab, dirty_at, purge);
     }
@@ -718,15 +842,16 @@ impl ClassState {
     /// Purge every `Empty` slab whose `dirty_at` is at or before `cutoff`
     /// (`u64::MAX` for all of them) and make it `Purged`. The discards go
     /// out in batches of [`purge::MAX_BATCH`] under the class lock, so no
-    /// claim can hand out a slab between its state change and the discard.
-    /// Recomputes `oldest_empty` from the survivors. Returns the number
-    /// purged, at most the slab count: each purged slab is below the end
-    /// of the last page group pushed, inside the class region.
+    /// claim can hand out a slab between the discard and its state change;
+    /// a slab whose discard fails stays `Empty` (the next purge retries
+    /// it). Recomputes `oldest_empty` from the survivors. Returns the
+    /// number purged, at most the slab count: each purged slab left the
+    /// empty set.
     ///
     /// `left` gets the bytes discarded, nonzero iff a slab was purged, and
     /// the slabs `Empty` in the lock value released: with `cutoff ==
-    /// u64::MAX`, none unless the class has several slabs per page
-    /// ([`Left::clean`]).
+    /// u64::MAX`, none unless the class has several slabs per page or
+    /// `madvise` refused the slab's range ([`Left::clean`]).
     pub fn purge_empty(
         &self,
         cutoff: u64,
@@ -750,31 +875,53 @@ impl ClassState {
             final(left)@.extents == ISet::<int>::empty(),
             cutoff == u64::MAX ==> final(left)@.clean(),
     {
-        broadcast use {super::axiom_class_lock, super::axiom_class_lock_inv};
+        broadcast use {super::axiom_class_lock, super::axiom_class_lock_inv, super::lemma_inv_counts};
         proof {
             use_type_invariant(self);
         }
         let spp = self.table().slabs_per_page();
         let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
-        let mut v = PurgeOlder { cutoff, p: Purger::new(spp, Ghost(self.spec_table()), Ghost(g@.states@)) };
+        let ghost full = cutoff == u64::MAX && spp == 1;
+        let mut v = PurgeOlder {
+            cutoff,
+            p: Purger::new(
+                spp,
+                Ghost(self.spec_table()),
+                Ghost(g@.states@),
+                Ghost(full),
+                Ghost(g@.stats.empty as int),
+                Ghost(self.spec_nslabs() as int),
+            ),
+        };
         proof {
             assert(0usize & sub(spp, 1) == 0) by (bit_vector);
-            reveal(all_above);
+            assert forall|x: nat| #[trigger] g@.empty.map@.contains(x) implies x <= self.spec_nslabs() by {
+                assert(g@.slab_ok(x));
+            }
+            reveal(pend_ok);
             assert(v.p.inv(self, g@));
         }
         self.walk_empty(&mut g, &mut v);
-        v.p.batch.flush();
-        self.gate.set_oldest_empty(v.p.oldest);
         proof {
-            reveal(counted);
+            reveal(none_above);
+        }
+        v.p.t.top = Ghost(v.p.t.last@);
+        proof {
+            assert(v.p.inv(self, g@));
+        }
+        v.p.batch.flush(&mut v.p.t, self, &mut g);
+        self.gate.set_oldest_empty(v.p.t.oldest);
+        proof {
             let (a, c) = (self.spec_arena() as int, self.spec_class() as int);
             let lv = g@;
+            let t = v.p.t;
             // The slabs the released value records as owned and `Empty`:
             // by the seam's invariant, its empty set (`Inner::slab_core`).
             let slabs = ISet::new(
-                |t: (int, int, int)|
-                    t.0 == a && t.1 == c && t.2 >= 0 && lv.owns(t.2 as nat) && lv.st(t.2 as nat) == State::Empty,
+                |x: (int, int, int)|
+                    x.0 == a && x.1 == c && x.2 >= 0 && lv.owns(x.2 as nat) && lv.st(x.2 as nat) == State::Empty,
             );
+            let refused = ISet::new(|x: (int, int, int)| x.0 == a && x.1 == c && x.2 >= 0 && t.refused@.contains(x.2 as nat));
             *left = Ghost(
                 Left {
                     bytes: v.p.batch.sent(),
@@ -783,17 +930,25 @@ impl ClassState {
                     slabs,
                     huge: false,
                     extents: ISet::empty(),
+                    refused,
+                    refused_extents: ISet::empty(),
                 },
             );
             if cutoff == u64::MAX {
                 if spp == 1 {
-                    lemma_walked_empty(lv, v.p.last@);
-                    assert forall|t: (int, int, int)| !slabs.contains(t) by {
-                        if t.2 >= 0 {
-                            assert(lv.slab_ok(t.2 as nat));
-                        }
+                    // Every member is at or below the last slab visited,
+                    // and none is pending once the batch is flushed.
+                    reveal(none_above);
+                    assert(t.full@);
+                    assert(t.inv(self, lv, crate::purge::none()));
+                    assert forall|x: (int, int, int)| #[trigger] slabs.contains(x) implies refused.contains(x) by {
+                        let s = x.2 as nat;
+                        assert(lv.slab_ok(s));
+                        assert(lv.empty.map@.contains(s));
+                        assert(s <= t.top@);
+                        assert(!(crate::purge::none())(group_piece(self, s as int, 1)));
+                        assert(t.refused@.contains(s));
                     }
-                    assert(slabs =~= ISet::<(int, int, int)>::empty());
                 } else {
                     let x = crate::layout::guard_geom(c).0;
                     if x == 0 {
@@ -803,7 +958,7 @@ impl ClassState {
                 }
             }
         }
-        v.p.n
+        v.p.t.purged
     }
 }
 
@@ -859,7 +1014,7 @@ proof fn lemma_slab_bytes_pos(t: SlabTable)
 }
 
 /// Every slab of the page group of `slab` (`spp` slabs) is this arena's
-/// and not active: [`ClassState::purge_group`]'s precondition. Opaque, so
+/// and not active: [`ClassState::push_group`]'s precondition. Opaque, so
 /// the walk that establishes it ([`Purger::visit`]) hands it over as one
 /// fact, not as a quantifier the solver must match under that walk's
 /// context.
@@ -996,117 +1151,250 @@ proof fn lemma_group_well_formed(t: SlabTable, slab: usize, spp: usize, first: u
 }
 
 impl ClassState {
-    /// Discard the whole page group of `slab` (one slab when the slab is
-    /// at least a page) and make every `Empty` slab in it `Purged`, a
-    /// younger one included, since nothing in the group is in use. Under
-    /// the class lock. Returns the number of slabs purged; afterwards no
-    /// slab of the group is in the empty set.
+    /// Push the whole page group of `slab` (one slab when the slab is at
+    /// least a page) to `batch`; once it is discarded ([`settle`]) every
+    /// `Empty` slab in it becomes `Purged`, a younger one included, since
+    /// nothing in the group is in use. Under the class lock; the caller
+    /// checked the group is idle. Returns the slab after the group.
     ///
     /// The preconditions are the walks' (`Purger::visit`): the page group
-    /// is this arena's (with one slab per page, `slab` is in this arena's
-    /// empty set; with more, `page_group_is_idle` found every slab of the
-    /// group owned and idle; either way `slab` is in the empty set, so not
-    /// a guard slab, and neither is any slab of its group, which is a
-    /// well-formed purge range, `lemma_group_well_formed`), and the batch
-    /// holds at most the bytes of
-    /// the class region below the group, which ends below `2^57`.
-    // The loop carries a Verus invariant.
-    #[allow(clippy::while_let_loop)]
-    fn purge_group(&self, g: &mut Inner, slab: usize, spp: usize, batch: &mut Batch) -> (n: usize)
+    /// is this arena's and idle, and `slab`, in the empty set, is no guard
+    /// slab, nor is any slab of its group, which is a well-formed purge
+    /// range (`lemma_group_well_formed`); `slab` is past the groups
+    /// already pushed, so the group is apart from the batch's pieces.
+    ///
+    /// [`settle`]: ClassState::settle
+    fn push_group(&self, g: &mut Inner, slab: usize, spp: usize, batch: &mut Batch, t: &mut Tally) -> (r: usize)
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
-            old(g).inv(),
-            old(g).table@ == self.spec_table(),
-            old(g).nbits() == self.spec_nslabs(),
-            spp >= 1,
+            old(t).inv(self, *old(g), old(batch).pieces()),
+            old(batch).wf(),
+            forall|b: int| #[trigger] (old(batch).free())(b) == idle_byte(self.spec_table(), old(t).states@, b),
+            spp == old(t).spp@,
+            old(t).end@ <= slab,
+            old(t).last@ < slab,
             (slab & !((spp - 1) as usize)) + spp <= self.spec_nslabs(),
             group_idle(*old(g), slab, spp),
             old(g).empty.map@.contains(slab as nat),
-            spp == self.spec_table().spec_slabs_per_page(),
-            old(batch).wf(),
-            old(batch).total() <= 0x200_0000_0000_0000,
-            forall|b: int| idle_byte(self.spec_table(), old(g).states@, b) ==> #[trigger] (old(batch).free())(b),
+            next_after(*old(g), old(t).last@, slab as int),
         ensures
-            final(g).inv(),
-            final(g).nbits() == old(g).nbits(),
-            final(g).table == old(g).table,
-            final(g).arena == old(g).arena,
-            forall|x: nat| #[trigger] final(g).empty.map@.contains(x) ==> old(g).empty.map@.contains(x),
-            forall|x: nat| (slab & !((spp - 1) as usize)) <= x < (slab & !((spp - 1) as usize)) + spp
-                ==> !(#[trigger] final(g).empty.map@.contains(x)),
+            final(t).inv(self, *final(g), final(batch).pieces()),
             final(batch).wf(),
-            final(batch).total() <= old(batch).total() + spp as int * slab_bytes(self),
             final(batch).free() == old(batch).free(),
-            final(batch).sent() + final(batch).total() == old(batch).sent() + old(batch).total() + spp as int
-                * slab_bytes(self),
-            forall|s: nat| #[trigger] final(g).states@.contains_key(s) == old(g).states@.contains_key(s),
-            forall|s: nat| #[trigger] old(g).states@.contains_key(s)
-                ==> (final(g).st(s) == State::Active) == (old(g).st(s) == State::Active),
-            n <= spp,
-            old(g).empty.map@.contains(slab as nat) && (slab & !((spp - 1) as usize)) <= slab
-                < (slab & !((spp - 1) as usize)) + spp ==> n >= 1,
+            final(batch).sent() - old(batch).sent() == final(t).bytes() - old(t).bytes(),
+            final(t).spp == old(t).spp,
+            final(t).states == old(t).states,
+            final(t).full == old(t).full,
+            final(t).last@ == slab,
+            final(t).end@ == r,
+            r == (slab & !((spp - 1) as usize)) + spp,
     {
         proof {
             use_type_invariant(self);
             reveal(group_idle);
         }
         let first = slab & !(spp - 1);
-        let ghost sz = (1usize << class_table()[self.spec_class() as int].lg_slab) as int;
+        let ghost sz = slab_bytes(self);
+        let ghost t0 = *t;
+        let ghost new = group_piece(self, first as int, spp as int);
         proof {
-            lemma_run_fits(self.spec_table(), first, spp);
+            let tb = self.spec_table();
+            lemma_page_group(slab, t0.end@, self.spec_nslabs(), spp);
+            assert(sub(spp, 1) == (spp - 1) as usize);
+            lemma_run_fits(tb, first, spp);
+            lemma_slab_bytes_pos(tb);
             assert((first as int + spp as int) * sz == first as int * sz + spp as int * sz) by (nonlinear_arith);
             assert(first as int * sz >= 0 && spp as int * sz >= 0) by (nonlinear_arith)
                 requires sz >= 0;
             assert(sz * spp == spp as int * sz) by (nonlinear_arith);
-            assert(self.spec_table().base as int + first as int * sz + spp as int * sz <= 0x200_0000_0000_0000);
             // Every byte of the group is in one of its slabs, each idle.
-            lemma_slab_bytes_pos(self.spec_table());
-            let t = self.spec_table();
-            assert forall|b: int| t.base + first as int * sz <= b < t.base + first as int * sz + spp as int * sz
+            assert forall|b: int| tb.base + first as int * sz <= b < tb.base + first as int * sz + spp as int * sz
                 implies #[trigger] (batch.free())(b) by {
-                crate::purge::lemma_unit_of(t.base as int, sz, first as int, spp as int, b);
-                let s = (b - t.base) / sz;
-                assert(old(g).owns(s as nat) && old(g).st(s as nat) != State::Active);
-                assert(idle_byte(t, old(g).states@, b));
+                crate::purge::lemma_unit_of(tb.base as int, sz, first as int, spp as int, b);
+                let s = (b - tb.base) / sz;
+                assert(g.owns(s as nat) && g.st(s as nat) != State::Active);
+                assert(idle_byte(tb, g.states@, b));
+                lemma_idle_same(tb, g.states@, t0.states@, b);
             }
             // The group is a well-formed purge range: `slab`, in the
             // empty set, is no guard slab (`Inner::slab_core`).
-            assert(old(g).slab_ok(slab as nat));
-            lemma_group_well_formed(t, slab, spp, first);
+            assert(g.slab_ok(slab as nat));
+            lemma_group_well_formed(tb, slab, spp, first);
+            // Apart from the groups pushed before, all below `end`.
+            reveal(pend_ok);
+            assert forall|x: (int, int)| #[trigger] (batch.pieces())(x) implies x.0 + x.1 <= new.0 || new.0 + new.1
+                <= x.0 by {
+                assert(pend_ok(self, *g, spp as int, t0.end@ as int, x));
+                let f = (x.0 - tb.base) / sz;
+                assert(f + spp <= t0.end@ <= first);
+                assert(x.0 + x.1 == tb.base + (f + spp) * sz) by (nonlinear_arith)
+                    requires x.0 == tb.base + f * sz, x.1 == spp * sz;
+                assert((f + spp) * sz <= first * sz) by (nonlinear_arith)
+                    requires f + spp <= first, sz >= 0;
+            }
+            // The group is a piece the walk may leave pending: its first
+            // slab, and `slab` in the empty set.
+            vstd::arithmetic::div_mod::lemma_div_multiples_vanish(first as int, sz);
+            assert(sz * first == first as int * sz) by (nonlinear_arith);
+            assert(first % spp == 0) by (bit_vector)
+                requires spp >= 1, spp & sub(spp, 1) == 0, first == slab & !sub(spp, 1);
+            assert(pend_ok(self, *g, spp as int, (first + spp) as int, new));
         }
-        batch.push(self.slab_addr(first), self.class().slab_size() * spp);
+        t.end = Ghost((first + spp) as usize);
+        t.last = Ghost(slab as int);
         proof {
-            assert(sz * spp == spp as int * sz) by (nonlinear_arith);
+            reveal(pend_ok);
+            let pend = crate::purge::either(batch.pieces(), crate::purge::one(new));
+            assert forall|x: (int, int)| #[trigger] pend(x) implies pend_ok(self, *g, spp as int, t.end@ as int, x) by {
+                if x != new {
+                    assert(pend_ok(self, *g, spp as int, t0.end@ as int, x));
+                }
+            }
+            if t.full@ {
+                assert(spp == 1);
+                assert(first == slab) by (bit_vector)
+                    requires spp == 1usize, first == slab & !sub(spp, 1);
+                reveal(next_after);
+                assert forall|x: nat| #[trigger] g.empty.map@.contains(x) && x <= t.last@ implies pend(
+                    group_piece(self, x as int, 1),
+                ) || t.refused@.contains(x) by {
+                    if x < slab {
+                        assert(x <= t0.last@);
+                    }
+                }
+            }
+            assert(t.inv(self, *g, pend));
         }
+        batch.push(self.slab_addr(first), self.class().slab_size() * spp, t, self, g);
+        first + spp
+    }
+
+    /// The flush's report on `[addr, addr + len)`, page groups pushed by
+    /// [`push_group`] (under the class lock since): discarded, every
+    /// `Empty` slab in it becomes `Purged`; not, they stay `Empty` and
+    /// count among the survivors for `oldest_empty`.
+    ///
+    /// [`push_group`]: ClassState::push_group
+    // The loop carries a Verus invariant.
+    #[allow(clippy::while_let_loop)]
+    #[verifier::rlimit(40)]
+    fn settle(
+        &self,
+        g: &mut Inner,
+        addr: usize,
+        len: usize,
+        done: bool,
+        t: &mut Tally,
+        Ghost(piece): Ghost<int>,
+        Ghost(pend): Ghost<spec_fn((int, int)) -> bool>,
+    )
+        requires
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
+            old(t).inv(self, *old(g), pend),
+            0 < piece <= len,
+            len as int % piece == 0,
+            addr + len <= usize::MAX,
+            forall|x: (int, int)| #[trigger] crate::purge::in_run(addr as int, len as int, piece, x) ==> pend(x),
+        ensures
+            final(t).inv(self, *final(g), crate::purge::minus(pend, addr as int, len as int, piece)),
+            final(t).conf() == old(t).conf(),
+            final(t).bytes() == old(t).bytes() + if done {
+                len as int
+            } else {
+                0
+            },
+    {
+        let ghost t0 = *t;
         let ghost g1 = *g;
-        let mut n = 0;
-        // `for s in first..first + spp`, spelled out: Verus rejects
-        // `continue` in a `for` loop.
-        let mut slabs = first..first + spp;
+        let ghost tb = self.spec_table();
+        let ghost sz = slab_bytes(self);
+        let ghost spp = t0.spp@ as int;
+        proof {
+            use_type_invariant(self);
+            reveal(pend_ok);
+            lemma_slab_bytes_pos(tb);
+            vstd::arithmetic::div_mod::lemma_small_mod(0, piece as nat);
+            assert(crate::purge::in_run(addr as int, len as int, piece, (addr as int, piece)));
+            assert(pend_ok(self, g1, spp, t0.end@ as int, (addr as int, piece)));
+        }
+        // The run's first group: `addr` is its first slab's, `len` the
+        // run's whole groups.
+        let ghost f0 = (addr - tb.base) / sz;
+        let ghost k = len as int / piece;
+        let ghost cnt = k * spp;
+        proof {
+            assert(addr == tb.base + f0 * sz && piece == spp * sz);
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(len as int, piece);
+            assert(len == piece * k);
+            assert(len == cnt * sz) by (nonlinear_arith)
+                requires len == piece * k, piece == spp * sz, cnt == k * spp;
+            assert(cnt >= spp) by (nonlinear_arith)
+                requires len == piece * k, piece == spp * sz, cnt == k * spp, len >= piece, spp >= 1, sz > 0;
+            vstd::arithmetic::div_mod::lemma_div_multiples_vanish(f0, sz);
+            vstd::arithmetic::div_mod::lemma_div_multiples_vanish(cnt, sz);
+            assert(sz * f0 == f0 * sz && sz * cnt == cnt * sz) by (nonlinear_arith);
+            assert(cnt % spp == 0) by {
+                vstd::arithmetic::div_mod::lemma_mod_multiples_basic(k, spp);
+            }
+            // Every slab of the run is in one of its groups, each pending.
+            assert(f0 % spp == 0);
+            lemma_run_idle(self, g1, t0, pend, addr as int, len as int, piece, f0, cnt, (f0 + cnt - 1) as nat);
+        }
+        proof {
+        }
+        let slab_size = self.class().slab_size();
+        let first = (addr - self.slab_addr(0)) / slab_size;
+        t.failed |= !done;
+        proof {
+            assert(first == f0);
+            assert(len / slab_size == cnt);
+        }
+        // `for s in first..first + len / slab_size`, spelled out: Verus
+        // rejects `continue` in a `for` loop.
+        let mut slabs = first..first + len / slab_size;
         loop
             invariant
                 crate::sys::may_abort() || crate::sys::valid_aborts(),
                 g.inv(),
-                g.nbits() == self.spec_nslabs(),
-                g.table@ == self.spec_table(),
+                g.nbits() == g1.nbits(),
                 g.table == g1.table,
                 g.arena == g1.arena,
-                slabs.end == first + spp,
-
-                first <= slabs.start <= slabs.end,
-                first + spp <= self.spec_nslabs(),
-                n <= slabs.start - first,
-                forall|s: nat| first <= s < first + spp ==> #[trigger] g.owns(s),
+                g.table@ == tb,
+                tb == self.spec_table(),
+                slabs.end == f0 + cnt,
+                f0 <= slabs.start <= slabs.end,
+                f0 + cnt <= self.spec_nslabs(),
+                t0.inv(self, g1, pend),
+                sz > 0,
+                sz == slab_bytes(self),
+                addr == tb.base + f0 * sz,
+                piece == spp * sz,
+                spp == t0.spp@ as int,
+                len == cnt * sz,
+                f0 % spp == 0,
+                forall|x: (int, int)| #[trigger] crate::purge::in_run(addr as int, len as int, piece, x) ==> pend(x),
+                forall|s: nat| #[trigger] g.states@.contains_key(s) == g1.states@.contains_key(s),
+                forall|s: nat| #[trigger] g1.states@.contains_key(s)
+                    ==> (g.st(s) == State::Active) == (g1.st(s) == State::Active),
                 forall|x: nat| #[trigger] g.empty.map@.contains(x) ==> g1.empty.map@.contains(x),
-                forall|x: nat| first <= x < slabs.start ==> !(#[trigger] g.empty.map@.contains(x)),
-                // `slab`, in the empty set, is purged when the loop reaches it.
-                g1.empty.map@.contains(slab as nat) && first <= slab < first + spp && slabs.start <= slab
-                    ==> g.empty.map@.contains(slab as nat),
-                g1.empty.map@.contains(slab as nat) && first <= slab < first + spp && slabs.start > slab ==> n >= 1,
-                forall|x: nat| #[trigger] g.states@.contains_key(x) == g1.states@.contains_key(x),
-                forall|x: nat| #[trigger] g1.states@.contains_key(x)
-                    ==> (g.st(x) == State::Active) == (g1.st(x) == State::Active),
+                forall|x: nat| !(f0 <= x < slabs.start) ==> (#[trigger] g.empty.map@.contains(x) == g1.empty.map@.contains(x)),
+                done ==> forall|x: nat| f0 <= x < slabs.start ==> !(#[trigger] g.empty.map@.contains(x)),
+                !done ==> *g == g1,
+                !done ==> forall|x: nat| f0 <= x < slabs.start && #[trigger] g1.empty.map@.contains(x) ==> t.refused@.contains(x),
+                forall|x: nat| #[trigger] t0.refused@.contains(x) ==> t.refused@.contains(x),
+                t.purged + g.stats.empty == t0.e0@,
+                t.purged >= t0.purged,
+                t0.e0@ <= self.spec_nslabs(),
+                !done ==> t.purged == t0.purged,
+                done && t.purged == t0.purged ==> forall|x: nat| f0 <= x < slabs.start ==> !(#[trigger] g1.empty.map@.contains(x)),
+                t.spp == t0.spp,
+                t.states == t0.states,
+                t.end == t0.end,
+                t.last == t0.last,
+                t.full == t0.full,
+                t.e0 == t0.e0,
+                t.bytes == t0.bytes,
             ensures
                 slabs.start >= slabs.end,
             decreases slabs.end - slabs.start,
@@ -1116,16 +1404,24 @@ impl ClassState {
                 None => break,
             };
             let d = self.desc(s);
+            proof {
+                lemma_run_idle(self, g1, t0, pend, addr as int, len as int, piece, f0, cnt, s as nat);
+                assert(g1.owns(s as nat));
+                assert(g.owns(s as nat));
+                assert(g.slab_ok(s as nat));
+            }
             if self.state_locked(&*g, d, Ghost(s)) != State::Empty {
+                continue;
+            }
+            if !done {
+                t.oldest = min_nonzero(t.oldest, self.dirty_locked(&*g, d, Ghost(s)));
                 proof {
-                    assert(g.owns(s as nat));
-                    assert(g.slab_ok(s as nat));
+                    t.refused@ = t.refused@.insert(s as nat);
                 }
                 continue;
             }
             let ghost g0 = *g;
             proof {
-                assert(g0.owns(s as nat));
                 assert(g0.slab_ok(s as nat));
                 super::lemma_set_len(g0.purged, g0.nbits(), s as nat);
                 // The empty count is the empty set's size (`Inner::base`),
@@ -1150,21 +1446,13 @@ impl ClassState {
                         false,
                     { slab_count_underflow("empty") });
             g.stats.purged += 1;
-            n += 1;
+            t.purged += 1;
             proof {
                 assert forall|x: nat| #[trigger] g.slab_ok(x) by {
                     assert(g0.slab_ok(x));
                 }
-                assert forall|x: nat| first <= x < first + spp implies #[trigger] g.owns(x) by {
-                    assert(g0.owns(x));
-                }
                 assert forall|x: nat| #[trigger] g.empty.map@.contains(x) implies g1.empty.map@.contains(x) by {
                     assert(g0.empty.map@.contains(x));
-                }
-                assert forall|x: nat| first <= x < slabs.start implies !(#[trigger] g.empty.map@.contains(x)) by {
-                    if x != s {
-                        assert(!g0.empty.map@.contains(x));
-                    }
                 }
                 assert forall|x: nat| #[trigger] g1.states@.contains_key(x)
                     implies (g.st(x) == State::Active) == (g1.st(x) == State::Active) by {
@@ -1172,7 +1460,53 @@ impl ClassState {
                 }
             }
         }
-        n
+        if done {
+            t.bytes = Ghost(t.bytes@ + len);
+        }
+        proof {
+            let rest = crate::purge::minus(pend, addr as int, len as int, piece);
+            // A piece left pending is a group outside the run, whose slabs
+            // the loop did not touch.
+            assert forall|y: (int, int)| #[trigger] rest(y) implies pend_ok(self, *g, spp, t.end@ as int, y) by {
+                assert(pend(y));
+                assert(pend_ok(self, g1, spp, t0.end@ as int, y));
+                let fy = (y.0 - tb.base) / sz;
+                lemma_group_run(tb.base as int, sz, spp, f0, cnt, fy);
+                assert(!(f0 <= fy < f0 + cnt));
+                let w = choose|w: nat| fy <= w < fy + spp && #[trigger] g1.empty.map@.contains(w);
+                if f0 <= w < f0 + cnt {
+                    assert(f0 % spp == 0);
+                    if fy < f0 {
+                        lemma_mult_order(fy, f0, spp);
+                    }
+                }
+                assert(g.empty.map@.contains(w));
+                assert forall|s: nat| #![trigger g.owns(s)] #![trigger g.st(s)] fy <= s < fy + spp implies g.owns(s)
+                    && g.st(s) != State::Active by {
+                    assert(g1.owns(s) && g1.st(s) != State::Active);
+                }
+            }
+            if done {
+                // The run's first group had a slab in the empty set: the
+                // loop purged it.
+                let w = choose|w: nat| f0 <= w < f0 + spp && #[trigger] g1.empty.map@.contains(w);
+                assert(f0 <= w < f0 + cnt);
+            }
+            if t.full@ {
+                assert forall|x: nat| #[trigger] g.empty.map@.contains(x) && x <= t.last@ implies rest(
+                    group_piece(self, x as int, 1),
+                ) || t.refused@.contains(x) by {
+                    assert(g1.empty.map@.contains(x));
+                    lemma_group_run(tb.base as int, sz, 1, f0, cnt, x as int);
+                    vstd::arithmetic::div_mod::lemma_mod_multiples_basic(x as int, 1);
+                    vstd::arithmetic::div_mod::lemma_mod_multiples_basic(f0, 1);
+                    if !(f0 <= x < f0 + cnt) {
+                        assert(pend(group_piece(self, x as int, 1)) || t0.refused@.contains(x));
+                    }
+                }
+            }
+            assert(t.inv(self, *g, rest));
+        }
     }
 }
 
@@ -1238,11 +1572,11 @@ struct PurgeCurve<'a> {
 
 impl<'a> EmptyVisitor for PurgeCurve<'a> {
     closed spec fn inv(&self, cs: &ClassState, g: Inner) -> bool {
-        self.p.inv(cs, g)
+        self.p.inv(cs, g) && !self.p.t.full@
     }
 
     closed spec fn last(&self) -> int {
-        self.p.last@
+        self.p.t.last@
     }
 
     closed spec fn full(&self) -> bool {
@@ -1251,6 +1585,10 @@ impl<'a> EmptyVisitor for PurgeCurve<'a> {
 
     #[inline(always)]
     fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64) {
+        if slab < self.p.pushed {
+            self.p.skip(cs, Ghost(*g), Ghost(slab as int));
+            return;
+        }
         let step = self.curve.step(self.now, dirty_at);
         let purge = step > self.cut
             || (step == self.cut && {
@@ -1275,9 +1613,10 @@ impl ClassState {
     /// over the `Empty` slabs of the weight of their age, rounded up. Slabs
     /// are purged oldest step first; within the cut-off step the highest
     /// addresses go, so the lowest, which a claim takes first, stay. The
-    /// discards go out in batches under the class lock, as `purge_empty`.
-    /// Recomputes `oldest_empty` from the survivors. Returns the number
-    /// purged.
+    /// discards go out in batches under the class lock, as `purge_empty`;
+    /// a failed one leaves its slabs `Empty` and backs the gate off
+    /// (`Decayer::back_off`). Recomputes `oldest_empty` from the
+    /// survivors. Returns the number purged.
     fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> usize
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
@@ -1286,7 +1625,7 @@ impl ClassState {
         ensures
             *final(ord) == *old(ord),
     {
-        broadcast use {super::axiom_class_lock, super::axiom_class_lock_inv};
+        broadcast use {super::axiom_class_lock, super::axiom_class_lock_inv, super::lemma_inv_counts};
         proof {
             use_type_invariant(self);
         }
@@ -1325,16 +1664,23 @@ impl ClassState {
             curve,
             cut,
             keep,
-            p: Purger::new(spp, Ghost(self.spec_table()), Ghost(g@.states@)),
+            p: Purger::new(spp, Ghost(self.spec_table()), Ghost(g@.states@), Ghost(false), Ghost(g@.stats.empty as int), Ghost(self.spec_nslabs() as int)),
         };
         proof {
             assert(0usize & sub(spp, 1) == 0) by (bit_vector);
+            assert forall|x: nat| #[trigger] g@.empty.map@.contains(x) implies x <= self.spec_nslabs() by {
+                assert(g@.slab_ok(x));
+            }
+            reveal(pend_ok);
             assert(v.p.inv(self, g@));
         }
         self.walk_empty(&mut g, &mut v);
-        v.p.batch.flush();
-        self.gate.set_oldest_empty(v.p.oldest);
-        v.p.n
+        v.p.batch.flush(&mut v.p.t, self, &mut g);
+        if v.p.t.failed {
+            self.gate.back_off(now);
+        }
+        self.gate.set_oldest_empty(v.p.t.oldest);
+        v.p.t.purged
     }
 
     /// Decay step (design section 8): the gate runs `purge_curve` over
@@ -1357,8 +1703,8 @@ impl ClassState {
         ensures
             *final(ord) == *old(ord),
             r matches Some(t) ==> t >= now,
-            exists|oldest: u64, next: u64, after: u64|
-                r == #[trigger] crate::purge::Decayer::spec_decay(now, decay_ns, oldest, next, after),
+            exists|oldest: u64, retry: u64, next: u64, after: u64, retry2: u64|
+                r == #[trigger] crate::purge::Decayer::spec_decay(now, decay_ns, oldest, retry, next, after, retry2),
     {
         self.gate.decay(now, decay_ns, |now, curve| {
             // Premise (lock order): the closure cannot carry the caller's
@@ -1368,6 +1714,55 @@ impl ClassState {
             self.purge_curve(now, curve, keep16, Tracked(&mut ord));
         })
     }
+}
+
+} // verus!
+
+verus! {
+
+/// Every slab of a run a class settle is handed (`cnt` slabs from `f0`,
+/// whole page groups pending in the tally `t`) is owned, not `Active` and
+/// below the slab count: it lies in one of the run's groups, each a piece
+/// pending ([`pend_ok`]).
+proof fn lemma_run_idle(
+    cs: &ClassState,
+    g: Inner,
+    t: Tally,
+    pend: spec_fn((int, int)) -> bool,
+    addr: int,
+    len: int,
+    piece: int,
+    f0: int,
+    cnt: int,
+    s: nat,
+)
+    requires
+        t.inv(cs, g, pend),
+        f0 <= s < f0 + cnt,
+        slab_bytes(cs) > 0,
+        addr == cs.spec_table().base + f0 * slab_bytes(cs),
+        piece == (t.spp@ as int) * slab_bytes(cs),
+        len == cnt * slab_bytes(cs),
+        f0 % (t.spp@ as int) == 0,
+        forall|x: (int, int)| #[trigger] crate::purge::in_run(addr, len, piece, x) ==> pend(x),
+    ensures
+        g.owns(s),
+        g.st(s) != State::Active,
+        s < cs.spec_nslabs(),
+{
+    reveal(pend_ok);
+    let spp = t.spp@ as int;
+    let sz = slab_bytes(cs);
+    let tb = cs.spec_table();
+        let f = group_of(f0, spp, s as int);
+        lemma_group_of(f0, spp, s as int);
+        lemma_group_run(tb.base as int, sz, spp, f0, cnt, f);
+        let y = group_piece(cs, f, spp);
+        assert(pend(y));
+        assert(pend_ok(cs, g, spp, t.end@ as int, y));
+        vstd::arithmetic::div_mod::lemma_div_multiples_vanish(f, sz);
+        assert(sz * f == f * sz) by (nonlinear_arith);
+        assert((y.0 - tb.base) / sz == f);
 }
 
 } // verus!

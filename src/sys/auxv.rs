@@ -34,11 +34,15 @@ pub const AT_SECURE: usize = 23;
 /// glibc's `getauxval(3)`: some word, 0 when the key is absent. The
 /// kernel's page (`AT_PAGESZ`) is at most 64 KiB: Linux uses 4 KiB pages
 /// on x86_64 and 4, 16 or 64 KiB on aarch64 (the fact
-/// `layout::axiom_process_page_at_most_64k` states of the regions).
+/// `layout::axiom_process_page_at_most_64k` states of the regions). It
+/// is the process regions' page: init reserves them with it
+/// (`Regions::reserve_owning` of `sys::features::page_size()`), and a
+/// process's `AT_PAGESZ` never changes.
 #[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
 pub assume_specification[ getauxval ](kind: usize) -> (r: usize)
     ensures
         kind == AT_PAGESZ ==> r <= 0x1_0000,
+        kind == AT_PAGESZ ==> r == (1usize << crate::layout::process_regions().lg_page),
 ;
 
 /// As above, and on arm64: an `AT_HWCAP` word with `HWCAP_PACA` and
@@ -51,6 +55,7 @@ pub assume_specification[ getauxval ](kind: usize) -> (r: usize)
 pub assume_specification[ getauxval ](kind: usize) -> (r: usize)
     ensures
         kind == AT_PAGESZ ==> r <= 0x1_0000,
+        kind == AT_PAGESZ ==> r == (1usize << crate::layout::process_regions().lg_page),
         kind == AT_HWCAP ==> (r as u64 & crate::sys::pac::HWCAP_PACA != 0 && r as u64 & crate::sys::pac::HWCAP_PACG != 0 ==> crate::sys::pac::pac_available()),
 ;
 

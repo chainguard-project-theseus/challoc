@@ -46,6 +46,12 @@ add.
   `heap::shared::axiom_process_shared` (`heap/shared.rs:390`) defines
   them as the regions and `PUSH_PAC` bit of
   `shared_at(shared_storage())` (`heap/shared.rs:372`, `:378`).
+- The kernel's page, `getauxval(AT_PAGESZ)` (the `getauxval`
+  specifications, `sys/auxv.rs`), is `1 << process_regions().lg_page`:
+  init reserves the regions with `sys::features::page_size()`
+  (`Regions::reserve_owning`), and a process's `AT_PAGESZ` never
+  changes. Added with the upstream 7a12536a port, for the page check in
+  `purge::discard`; it also makes `page_size`'s abort unreachable.
 - `api::shared_ref` (verified) ensures `r.wf()`; `wf`'s
   `regions == process_regions()` conjunct (`heap/shared.rs:820`) ties
   it to the process. It reads the published value through the
@@ -3451,11 +3457,11 @@ The `file:line`s are the `fn` line at this section's commit.
 huge and class purges hand it.
 
 ```rust
-// purge.rs:697: the one place a batch's ranges reach `madvise`.
-fn discard(ranges: &[(usize, usize)], advice: Advice, Ghost(free): Ghost<spec_fn(int) -> bool>)
+// purge.rs: the one place a batch's ranges reach `madvise`; it returns
+// whether `madvise` took the range (`false` on `EINVAL`, `mlock`ed pages).
+fn discard(addr: usize, len: usize, advice: Advice, Ghost(free): Ghost<spec_fn(int) -> bool>) -> bool
     requires
-        ranges.len() <= MAX_BATCH,
-        forall|i: int| 0 <= i < ranges.len() ==> frees(free, ranges[i].0 as int, ranges[i].1 as int),
+        frees(free, addr as int, len as int),
 
 // huge/mod.rs:744
 pub open spec fn free_page_byte(base: int, pg: int, np: int, held: Set<int>, b: int) -> bool {
@@ -3489,23 +3495,33 @@ pub closed spec fn idle_byte(t: SlabTable, states: Map<nat, State>, b: int) -> b
 (Line breaks added.) A `purge::Batch` (`purge.rs:227`) carries a ghost
 predicate `free` that its maker fixes (`Batch::new`, `:328`); `push`
 (`:366`) takes only ranges of bytes `free` admits (`frees`, `:236`),
-`Batch::wf` (`:303`) keeps that of every range held, merged ranges
-included, and `flush` (`:420`) hands `discard` the ranges with `free`.
-So every byte any flush discards, `MADV_DONTNEED` or `MADV_FREE`,
-including the flush inside a `push` to a full batch, satisfies the
-batch's `free`. The makers:
+`Batch::wf` (`:303`) keeps that of every range held (`range_ok`),
+merged ranges included, and `flush` (`:420`) hands `discard` the ranges
+with `free`, and, when `madvise` refuses a merged range (upstream
+7a12536a), its first, last and middle pieces, each inside the range
+(`lemma_piece_ok`). So every byte any flush hands to `madvise`,
+`MADV_DONTNEED` or `MADV_FREE`, including the flush inside a `push` to a
+full batch and the re-issue of a refused range's pieces, satisfies the
+batch's `free`. A range `madvise` refuses is not discarded: its memory
+stays `Empty`, which the statement allows (it bounds what may be
+discarded, not what must be). The makers report each range to a settler
+(`purge::Settle`, the walk's `Tally`), which changes the lock value only
+for ranges reported discarded; a settle only moves `Empty` slabs and
+extents to `Purged`, so the lock value's ownership, `Active`-ness and
+run authority stay those the batch's `free` was made from. The makers:
 
 - **Huge purges** (`Huge::purge_empty`, `purge_curve`, `free_run`,
   `huge/mod.rs:3247`, `:3533`, `:5327`): `free` is
   `free_page_byte(base, page, npages, S, _)`, where `S` is the set of
   the run-page authority the huge lock's value holds when the batch is
   made (`Inner::wf`: the `Active` descriptors' pages, `active_pages`).
-  The walks keep the lock value's authority equal to `S` until the
-  flush (`purge_extent`, `:3349`, ensures it unchanged), and
-  `purge_extent` proves an `Empty` extent's pages are not in it: they
-  are apart from every `Active` extent. `free_run` makes its batch after
-  the freed run's token left the authority (`GhostSetAuth::delete`), so
-  `S` no longer holds the run's pages. `RunToken::theorem_purge_apart`
+  The walks keep the lock value's authority equal to `S` through every
+  push and flush (the huge `Tally::inv`: `c.pgs@@ == held`, kept by
+  `Huge::settle` and `purge_desc`), and `push_extent` proves an `Empty`
+  extent's pages are not in it: they are apart from every `Active`
+  extent. `free_run` hands `purge::discard_one` the freed run's pages
+  after the run's token left the authority (`GhostSetAuth::delete`), so
+  `S` no longer holds them. `RunToken::theorem_purge_apart`
   (`huge/mod.rs:715`): a byte `free_page_byte` admits for the
   authority's set is in no page, guard included, of a run whose token is
   held anywhere (a token's pages are a subset of the authority's set,
@@ -3516,14 +3532,14 @@ batch's `free`. The makers:
   the process regions' under `Shared::wf` (`heap/shared.rs`), so the
   batches' predicate is the theorem's.
 - **Class purges** (`ClassState::purge_empty`, `purge_curve`,
-  `class/decay.rs:518`, `:839`, through `Purger`, `:347`, and
-  `purge_group`, `:605`): `free` is `idle_byte(t, states, _)`, the bytes
+  through `Purger` and `push_group`, with `ClassState::settle` as the
+  settler): `free` is `idle_byte(t, states, _)`, the bytes
   of slabs of the class table that the arena's class lock value, when
   the walk starts, records as owned and not `Active` (`Fresh`, `Empty`
-  or `Purged`). `Purger::inv` (`:389`) keeps the lock value agreeing with
+  or `Purged`). The class `Tally::inv` keeps the lock value agreeing with
   `states` on ownership and `Active`-ness through the walk (a purge only
   moves `Empty` to `Purged`), so at every flush the discarded bytes are
-  those of slabs idle in the current lock value. `purge_group` pushes a
+  those of slabs idle in the current lock value. `push_group` pushes a
   page group whose every slab is idle: with one slab per page, the slab
   is in the empty set (`Inner::slab_core`: `Empty`); with more,
   `page_group_is_idle` says so.
@@ -5067,8 +5083,10 @@ breaking its contract; no path sets such a bit.
 
 A theorem about one decay gate, `purge::Decayer`, over the values its
 lock-free loads see: the deadline it returns is never earlier than
-`now`, and never later than one step of the period it was called with
-past the oldest `Empty` member's stamp or `now`, whichever is later. A
+`now`, and, unless it is a back-off deadline (a failed discard's,
+`Decayer::back_off`), never later than one step of the period it was
+called with past the oldest `Empty` member's stamp or `now`, whichever
+is later. A
 `next_walk` more than one step away (stored under a longer period, since
 shortened) is never returned. The bound is about what the body does with
 what it loaded: callers get only its `t >= now` half (below). That the
@@ -5084,26 +5102,30 @@ The `file:line`s are the `fn` line at this section's commit.
 pub fn decay(&self, now: u64, decay_ns: u64, walk: impl FnOnce(u64, &Curve)) -> (r: Option<u64>)
     ensures
         r matches Some(t) ==> t >= now,
-        exists|oldest: u64, next: u64, after: u64|
-            r == #[trigger] Decayer::spec_decay(now, decay_ns, oldest, next, after),
+        exists|oldest: u64, retry: u64, next: u64, after: u64, retry2: u64|
+            r == #[trigger] Decayer::spec_decay(now, decay_ns, oldest, retry, next, after, retry2),
 
-pub proof fn theorem_decay_deadline(now: u64, decay_ns: u64, oldest: u64, next: u64, after: u64)
+pub proof fn theorem_decay_deadline(now: u64, decay_ns: u64, oldest: u64, retry: u64, next: u64,
+    after: u64, retry2: u64)
     ensures
         ({
-            let r = Decayer::spec_decay(now, decay_ns, oldest, next, after);
+            let r = Decayer::spec_decay(now, decay_ns, oldest, retry, next, after, retry2);
             let step = Decayer::spec_step(decay_ns);
-            &&& r is None <==> oldest == 0 || (Decayer::spec_walks(now, decay_ns, oldest, next)
+            &&& r is None <==> oldest == 0 || (Decayer::spec_walks(now, decay_ns, oldest, retry, next)
                 && after == 0)
-            &&& r matches Some(t) ==> now <= t && t <= (if oldest <= now { now } else { oldest })
-                + step
-            &&& r matches Some(t) ==> (oldest <= now ==> t <= now + step)
-            &&& r matches Some(t) ==> (t == now ==> Decayer::spec_walks(now, decay_ns, oldest, next)
+            &&& r matches Some(t) ==> now <= t
+            &&& r matches Some(t) ==> t == retry || t == retry2
+                || t <= (if oldest <= now { now } else { oldest }) + step
+            &&& r matches Some(t) ==> (oldest <= now ==> t == retry || t == retry2 || t <= now + step)
+            &&& r matches Some(t) ==> (t == now ==> Decayer::spec_walks(now, decay_ns, oldest, retry, next)
                 && (step == 0 || now == u64::MAX))
         }),
 ```
 
-`oldest` is the first `oldest_empty` load, `next` the `next_walk` load
-and `after` the `oldest_empty` load after the walk; a load the call does
+`oldest` is the first `oldest_empty` load, `retry` the `retry_at` load
+before the walk, `next` the `next_walk` load, `after` the
+`oldest_empty` load after the walk and `retry2` the `retry_at` load
+after it (upstream 7a12536a); a load the call does
 not make is a free variable of the existential. `spec_step(d)` is
 `d / STEPS`, `Curve::step_ns`'s exact spec (`purge/curve.rs:313`) for
 `Curve::new(d)`. `spec_walks` (`:597`) is the walk's condition:
@@ -5124,19 +5146,30 @@ oldest member's first (new) step, or walks and returns one new step from
 `MIN_SLEEP_NS`) needs a zero step (`decay_ns < STEPS`) or saturation,
 and only follows a walk.
 
+Since upstream 7a12536a a walk whose discard `madvise` refused (`mlock`ed
+memory) calls `Decayer::back_off(now)`, which stores `now +
+DISCARD_RETRY_NS` (one second) in `retry_at`: no walk runs before it
+(`spec_walks` gains `now >= retry`), a call during it returns it, and a
+walk's deadline is the later of the next step and the back-off. A
+back-off deadline is the one deadline the step bound does not cover:
+the theorem names it (`t == retry || t == retry2`), a value `retry_at`
+held, and nothing bounds it against `now` beyond `now <= t` (it is a
+stamp `back_off` took from the walk's clock, one second ahead).
+
 With theorem 18 (`purge.rs:656`):
 
 ```rust
 pub proof fn theorem_decay_deadline_under_pressure(base: u64, limit: u64, c1: u64, c2: u64,
-    p1: u64, p2: u64, now: u64, oldest: u64, next: u64, after: u64)
+    p1: u64, p2: u64, now: u64, oldest: u64, retry: u64, next: u64, after: u64, retry2: u64)
     requires
         c1 <= c2,
         p1 == spec_effective_decay_ns(base, spec_band(limit, c1)),
         p2 == spec_effective_decay_ns(base, spec_band(limit, c2)),
     ensures
         Decayer::spec_step(p2) <= Decayer::spec_step(p1),
-        Decayer::spec_decay(now, p2, oldest, next, after) matches Some(t)
-            ==> t <= (if oldest <= now { now } else { oldest }) + Decayer::spec_step(p1),
+        Decayer::spec_decay(now, p2, oldest, retry, next, after, retry2) matches Some(t)
+            ==> t == retry || t == retry2
+                || t <= (if oldest <= now { now } else { oldest }) + Decayer::spec_step(p1),
 ```
 
 At one limit and configured period, higher usage never gives a longer
@@ -5217,11 +5250,11 @@ are the `fn`/`spec` line at this section's commit.
 ```rust
 spec fn retain_cap(v0: Inner, v1: Inner, page: int, n: int, usable: int, cap: int,
     pof: bool, now: u64, discarded: bool) -> bool {
-    &&& discarded == (usable > cap || pof)
+    &&& discarded ==> (usable > cap || pof)
     &&& exists|x: *mut HugeDesc| v1.descs@.contains_key(x) && {
         let e = v1.descs@[x].value();
         &&& e.start <= page && page + n <= e.start + e.pages
-        &&& if usable > cap || pof {
+        &&& if discarded {
             (e.state == Purged && e.dirty_at == 0)
                 || (e.state == Empty && empty_nbr_at(v0, page, n, e.dirty_at))
         } else {
@@ -5252,12 +5285,14 @@ free read, bound to a local (`:6376`). `pof` stands for the
 `purge_on_free()` it read: the condition `usable > cap ||
 self.purge_on_free()` reads the flag only at or below the cap, and
 Verus has no name for a value read inside it, so `free_run` defines
-`pof` from the branch taken (`st == Purged && usable <= cap`, `:6404`),
-which is the flag's value whenever it was read and `false` otherwise.
-`now` is its clock reading (`now_ns().max(1)`), and `discarded` a ghost
-flag set in the branch that pushes the run's whole range,
-`[addr, addr + n * page_size)`, into a fresh `purge::Batch` and flushes
-it.
+`pof` from the condition it bound (`purge && usable <= cap`), which is
+the flag's value whenever it was read and `false` otherwise. `now` is
+its clock reading (`now_ns().max(1)`), and `discarded` whether the run
+was discarded: `st == Purged`, which `free_run` sets only when the
+condition holds and `purge::discard_one` of the run's whole range,
+`[addr, addr + n * page_size)`, returns true (upstream 7a12536a: a
+discard `madvise` refuses, on `mlock`ed pages, leaves the run `Empty`
+and dirty instead of aborting).
 
 In words: a huge run freed with more usable bytes than
 `huge_retain_max`, or under `huge_dirty_decay_ms:0` (`purge_on_free`;
@@ -5268,7 +5303,10 @@ returns; its pages then lie in a free extent that is
 `Purged` with no age (`dirty_at == 0`), unless an `Empty` neighbour
 merged in (below). A run at or below the cap is not discarded, and its
 pages lie in an `Empty` extent aged `now`, unless it merged into an
-`Empty` neighbour, whose age the merged extent keeps. This is the
+`Empty` neighbour, whose age the merged extent keeps. A run whose discard
+`madvise` refuses (pages the program `mlock`ed) is kept as one at or
+below the cap is: `Empty`, aged `now` or its neighbour's age, for the
+decay walk or the next explicit purge to retry. This is the
 large-buffer return guarantee `docs/tuning.md` sells for
 `huge_retain_max` ("purged the moment they are freed instead of waiting
 for decay; smaller ones are retained for reuse and decay", section 2's
@@ -5279,16 +5317,15 @@ cap is `DEFAULT_RETAIN_MAX`, 64 MiB (`huge/mod.rs:86`).
 
 What is proved and what is read from code: the extent's state, age and
 place (the second conjunct) are proved from `free_run`'s merge
-(`Merge`, theorem 17), per branch, against the cap read. Since `pof`
-is defined from the branch, `usable > cap || pof` is `discarded` by
-construction: the first conjunct reduces to the `if` condition, and
-that `pof` is the `purge_on_free()` value (so that the
+(`Merge`, theorem 17), per outcome of the discard, against the cap
+read. The first conjunct follows from the condition (`discarded` needs
+`purge`), and that `pof` is the `purge_on_free()` value (so that the
 `huge_dirty_decay_ms:0` half of the statement is about the flag) is
-read from the condition, not proved. That the discarding branch hands
-the run's bytes to `madvise` is `Batch::push` then `Batch::flush` on a
-fresh batch, whose bodies (verified, but not their contracts) put the
-range in the batch and pass every held range to `discard` (premise
-below). Theorem 19 proves those bytes are no live block's.
+read from the condition, not proved. That `discard_one` returns true
+only when `madvise` took the run's range is read from its body (a
+one-range batch whose settler, `purge::One`, records the flush's
+report), not stated in a contract. Theorem 19 proves the bytes it
+hands `madvise` are no live block's.
 
 **Covers.** Every free of a huge run: `free`, `free_sized`,
 `sdallocx`, `dallocx`, the frees of `realloc`/`rallocx` moving a huge
@@ -5313,25 +5350,16 @@ token).
   `purge_on_free` is set only for an explicit `huge_dirty_decay_ms:0`;
   with it unset and `dirty_decay_ms:0`, the flag is false and a run at
   or below the cap waits for the (zero-period) decay walk.
-- The discard step, read from `purge.rs`: `push` adds its range to the
-  batch (merged into the last range or appended; a full batch is
-  flushed first, and a fresh batch is never full), and `flush` calls
-  `discard(&self.ranges[..self.n], ...)` once, then empties the batch.
-  A ghost record of the discarded bytes was tried (a closed
-  `Batch::holds`/`holds_range` with a `push` `ensures`, and a `sent`
-  field set by `flush` with an `ensures`). It verified in `purge` and
-  `huge`, but every form of the new contracts tried made
-  `class::decay`'s `Purger::visit` fail its `purge_group` precondition
-  (the page group's slabs, `slab & !((spp - 1) as usize)`), under
-  `quantum8` even with only the `push` `ensures` added; that proof is
-  sensitive to any change in the `Batch` contracts its module sees.
-  Hardening it comes first. (Since hardened: `Batch::sent`, the bytes
-  handed to `discard`, with exact `sent() + total()` `ensures` on `push`
-  and `flush`, now verifies everywhere; theorem "Explicit purge leaves
-  no empty slabs" uses it. A per-range record for this branch is still
-  open.)
-- `madvise` does what it is asked (the kernel contract, a common
-  premise); a failed `madvise` aborts in `discard`.
+- The discard step, read from `purge.rs`: `discard_one` pushes the run's
+  range into a fresh batch (never full, so nothing is flushed then) and
+  flushes it, which calls `discard` on the range and reports the result
+  to the `One` settler, whose flag `discard_one` returns. The batch
+  contracts (`push`, `flush`, `Settle`) now carry the pieces pending and
+  the bytes reported discarded (`Batch::sent`, the settler's `bytes`),
+  but `One`'s settler does not export its flag as a contract.
+- `madvise` does what it is asked when it succeeds (the kernel
+  contract, a common premise); `EINVAL` leaves the range in place and
+  is reported, any other failure aborts in `discard`.
 - The huge lock axioms (`vspec/huge.rs`), as for theorems 17 and 19.
 
 **Scope and where the statement is weaker than the code.**
@@ -6773,10 +6801,12 @@ are empty.
 Stated per lock release, over a ghost record (`purge::Left`) the purges
 set themselves: when `purge::purge_all` or `purge_arena` returns, no
 class of an arena it visited had an `Empty` slab in the class lock value
-its purge released, except in a class with several slabs per page, and
-the huge allocator had no `Empty` extent in the huge lock value its
-purge released; the count returned is nonzero iff a byte was handed to
-`discard`, so `malloc_trim` returns 1 iff its purge discarded a byte.
+its purge released, except in a class with several slabs per page or in
+a range `madvise` refused during the purge (`mlock`ed memory, upstream
+7a12536a), and the huge allocator had no `Empty` extent in the huge lock
+value its purge released except in such a range; the count returned
+is nonzero iff `madvise` took a byte and a flush reported it discarded,
+so `malloc_trim` returns 1 iff its purge discarded a byte.
 The record's link to the lock values is the two assignments that set it
 (`*left = Ghost(..)` from the guard's value just before it drops, in
 `ClassState::purge_empty` and `Huge::purge_empty`), read from the code:
@@ -6791,12 +6821,14 @@ The `file:line`s are the `fn`/`spec` line at this section's commit.
 ```rust
 // purge.rs:709
 pub ghost struct Left {
-    pub bytes: int,                         // bytes handed to `discard`
+    pub bytes: int,                         // bytes reported discarded
     pub arenas: Set<int>,                   // arenas whose every class was purged
     pub classes: Set<(int, int)>,           // (arena, class) locks taken and released
     pub slabs: ISet<(int, int, int)>,       // (arena, class, slab) `Empty` in a released value
     pub huge: bool,                         // the huge lock was taken and released
     pub extents: ISet<int>,                 // descriptors `Empty` in the released huge value
+    pub refused: ISet<(int, int, int)>,     // slabs of a range `madvise` refused, `Empty` then
+    pub refused_extents: ISet<int>,         // descriptors of an extent `madvise` refused
 }
 
 // purge.rs:730: class `c` has several slabs per page.
@@ -6804,8 +6836,8 @@ pub open spec fn paged(c: int) -> bool { crate::layout::guard_geom(c).0 != 0 }
 
 // purge.rs:763, :770
 pub open spec fn clean(self) -> bool {
-    &&& forall|t: (int, int, int)| #[trigger] self.slabs.contains(t) ==> paged(t.1)
-    &&& self.extents == ISet::<int>::empty()
+    &&& forall|t: (int, int, int)| #[trigger] self.slabs.contains(t) ==> paged(t.1) || self.refused.contains(t)
+    &&& forall|a: int| #[trigger] self.extents.contains(a) ==> self.refused_extents.contains(a)
     &&& self.bytes >= 0
 }
 pub open spec fn covers(self) -> bool {
@@ -6848,10 +6880,12 @@ pub fn malloc_trim(_pad: usize, Tracked(left): Tracked<&mut Ghost<Left>>) -> (r:
 purge in `purge::decay`) visits the arenas in `left.arenas`, all below
 `MAX_ARENAS`, and for each purges every class (`covers`), then the huge
 allocator (`huge`); each class purge leaves no slab `Empty` in the value
-its lock releases unless the class is `paged`, and the huge purge leaves
-no extent `Empty` (`clean`, which also says `bytes >= 0`). `bytes`, the
-sum over every batch of the bytes it handed to `discard`, is positive
-iff the returned count is.
+its lock releases unless the class is `paged` or the slab is in
+`left.refused`, and the huge purge leaves no extent `Empty` outside
+`left.refused_extents` (`clean`, which also says `bytes >= 0`). `bytes`,
+the sum over every batch of the bytes `madvise` took and a flush
+reported discarded (`Batch::sent`), is positive iff the returned count
+(slabs or extents made `Purged`) is.
 
 How it is proved:
 - **The walk ends past every member** (`class/decay.rs`).
@@ -6860,37 +6894,46 @@ How it is proved:
   each visit is handed `next_after(g, last, slab)` (`:196`, opaque):
   `slab` is the lowest member above the last, from `lowest_set` and
   `lowest_set_from`'s contracts.
-- **A full-cutoff purge with one slab per page purges every visit.**
-  `Purger::visit` (`:534`) ensures that with `spp == 1` and `purge`, a walk
-  whose empty set was all above the last slab (`all_above`, `:209`,
-  opaque) still is after `slab` (`lemma_all_above`, `:215`):
-  `purge_group` takes `slab`'s group, here `slab` alone, out of the set
-  and adds nothing. `PurgeOlder` (`:635`) keeps `all_above` as an
-  invariant when it is `full` (`cutoff == u64::MAX`, so `dirty_at <=
-  cutoff` always, and `spp == 1`), a trait-level `EmptyVisitor::full`
-  that every visit and the walk keep; `lemma_walked_empty` (`:257`)
-  closes `none_above` and `all_above` to an empty set. `Inner::slab_core`
-  makes the empty set exactly the owned `Empty` slabs, so
-  `ClassState::purge_empty` (`:678`) sets `left.slabs` to the released
-  value's owned `Empty` slabs, tagged with its arena and class, and
-  proves it empty (by `slab_core`, from the empty set), or, when `spp !=
-  1`, the class `paged` (`slabs_per_page` ensures `spp == 1 <<
+- **A full-cutoff purge with one slab per page pushes every visit, and
+  every pushed slab is settled.** The batch's settler, the class
+  `Tally` (`purge::Settle`), carries the walk's invariant over the lock
+  value and the pieces pending (`Batch::pieces`; each a page group with
+  a slab in the empty set, `pend_ok`). When `full` (`cutoff ==
+  u64::MAX` and `spp == 1`), every member of the empty set at or below
+  the last slab visited is pending or in the tally's `refused`, the
+  slabs `Empty` in a range a flush reported refused; `push_group` keeps
+  it at each visit (`next_after`), and `ClassState::settle` at each
+  report (discarded: the slab leaves the set, `Purged`; refused: it
+  joins `refused`). After the walk, `top`, a bound on every member
+  (kept by every settle, which only removes members), is set to the
+  last slab (`none_above`); after the final flush nothing is pending, so
+  every member is refused. `Inner::slab_core` makes the empty set
+  exactly the owned `Empty` slabs, so `ClassState::purge_empty` sets
+  `left.slabs` to the released value's owned `Empty` slabs and
+  `left.refused` to the tally's `refused`, tagged with its arena and
+  class, and proves the first inside the second, or, when `spp != 1`,
+  the class `paged` (`slabs_per_page` ensures `spp == 1 <<
   guard_geom(c).0`).
-- **The huge purge empties the `Empty` list.** In `Huge::purge_empty`
-  (`huge/mod.rs:3790`) the loop exits at a null head (the list is empty:
-  a non-empty list starts at a live, non-null descriptor) or at a stamp
-  past `cutoff`, impossible at `u64::MAX`; `Inner::wf` puts every `Empty`
-  descriptor on the list, so `left.extents`, the released value's
-  `Empty` descriptors, is empty.
-- **Count iff bytes.** `Batch` has a ghost `sent` (`purge.rs:332`): `push`
-  (`:381`) adds its length to `sent() + total()` exactly and `flush`
-  (`:438`) moves `total()` into `sent()`. `Purger::inv` keeps `counted`
-  (`decay.rs:236`, opaque): `n > 0` iff `sent() + total() > 0`;
-  `purge_group` (`:849`) pushes `spp` slabs' bytes and, now, returns at
-  least 1 when `slab` is in the empty set (`lemma_counted_step`, `:242`).
-  The huge loop keeps the same relation over `purge_extent`
-  (`huge/mod.rs:3959`, at least a page pushed per extent). After each
-  purge's final flush, `sent()` is its `bytes`.
+- **The huge purge visits the whole `Empty` list.** `Huge::purge_empty`
+  walks the list from its head without unlinking (`push_extent`; a
+  flush's `Huge::settle` unlinks only extents reported discarded,
+  `purge_desc`). The huge `Tally` keeps the walk (`walked`): the list
+  ends with the members left to visit, `rest`, and every member before
+  them was visited, each pending or, for a full purge, in `refused` once
+  reported refused. The loop ends at a null `next` (nothing left) or at
+  a stamp past `cutoff`, impossible at `u64::MAX`; `Inner::wf` puts
+  every `Empty` descriptor on the list, so `left.extents` lies in
+  `left.refused_extents` (`Tally::lemma_walked_all`). A merged huge range
+  is one extent: free extents never touch (theorem 17), so a second
+  pending piece would start where the first ends.
+- **Count iff bytes.** Each settle adds the bytes it is reported
+  discarded to its tally's `bytes`, which `Batch::push` and `flush`
+  equate with their change of `Batch::sent`. The tally keeps `purged >
+  0` iff `bytes > 0`: a range reported discarded holds a slab in the
+  empty set (`pend_ok`; the pending groups are disjoint) or is an
+  `Empty` extent, which the settle makes `Purged`. After each purge's
+  final flush, `sent()` is its `bytes` and the tally's `purged` the
+  count returned.
 - **Composition.** `Arena::purge_all` (`arena.rs:1032`) joins its
   classes' records (`Left::join`, `lemma_join`, `purge.rs:785`), with the
   arena invariant giving `classes[c]` class `c` and the arena's index;
@@ -6909,8 +6952,12 @@ P10; its call is through
   `vspec/huge.rs`), as for theorems 17, 19 and 29: the value a lock
   hands over satisfies its invariant, which is what ties the empty set to
   the `Empty` slabs and the `Empty` list to the `Empty` extents.
-- `madvise` does what it is asked (a common premise); `discard` aborts if
-  it fails. `bytes` counts what `discard` is handed.
+- `madvise` does what it is asked when it succeeds (a common premise);
+  `discard` reports `EINVAL` as a refusal and aborts on any other error.
+  `bytes` counts what `discard` reported taken, and `refused` what a
+  flush reported refused: that the report is `discard`'s result is read
+  from `Batch::flush`'s body, not stated in a contract. A refused range
+  stays `Empty`, and the next explicit purge retries it.
 - One slab per page, for the class half: `paged(c)` is false exactly
   when `slabs_per_page` is 1. That holds for every class on every
   supported page size (`layout::lg_slab_at`, `layout/mod.rs:1002`,
@@ -7161,8 +7208,9 @@ page boundary of the process's page, and lies, byte by byte, in the
 huge region or in a class region outside that class's guard slabs; so
 no byte of it is in the metadata region. For every batch: the huge purges
 (`Huge::purge_empty`, `purge_curve`, `free_run`) and the class purges
-(`ClassState::purge_empty`, `purge_curve`, through `purge_group`), each
-flush, including the one inside a `push` to a full batch.
+(`ClassState::purge_empty`, `purge_curve`, through `push_group`), each
+flush, including the one inside a `push` to a full batch and the
+re-issue of a refused range's pieces (upstream 7a12536a).
 The `file:line`s are the `fn`/`spec` line at this section's commit.
 
 **Statement.**
@@ -7189,12 +7237,11 @@ pub open spec fn class_byte(c: int, b: int) -> bool {
     &&& !guard_slab(c, (b - r.class_base[c]) / sz)
 }
 
-// purge.rs:1310: what every call hands `madvise`.
-fn discard(ranges: &[(usize, usize)], advice: Advice, Ghost(free): Ghost<spec_fn(int) -> bool>)
+// purge.rs: what every call hands `madvise`.
+fn discard(addr: usize, len: usize, advice: Advice, Ghost(free): Ghost<spec_fn(int) -> bool>) -> bool
     requires
-        ranges.len() <= MAX_BATCH,
-        forall|i: int| 0 <= i < ranges.len() ==> frees(free, ranges[i].0 as int, ranges[i].1 as int),
-        forall|i: int| 0 <= i < ranges.len() ==> well_formed(ranges[i].0 as int, ranges[i].1 as int),
+        frees(free, addr as int, len as int),
+        well_formed(addr as int, len as int),
 
 // purge.rs:374
 pub proof fn theorem_purge_well_formed(addr: int, len: int, b: int, c: int, s: int)
@@ -7216,26 +7263,30 @@ pub proof fn theorem_purge_well_formed(addr: int, len: int, b: int, c: int, s: i
 
 (Abridged: `crate::` paths, `#![auto]` triggers and `discard`'s
 capability clauses dropped; line breaks added.) In words: `discard`'s
-precondition is the statement, checked at its one call
-(`Batch::flush`, `purge.rs:662`); `theorem_purge_well_formed` reads it
+precondition is the statement, checked at each of its calls in
+`Batch::flush_in` (a range, and, when `madvise` refuses it, its first,
+last and middle pieces); `theorem_purge_well_formed` reads it
 out: the range is non-empty and page-aligned at both ends, and each
 byte is in the huge region or a class region, outside the metadata
 region (`Regions::in_meta`), and in no guard slab `s` of any class `c`
 (for every `c` and `s`, as its arguments). A `Batch` (`purge.rs:235`)
-also records the ranges it handed over, in flush order (a ghost `gone`,
-`Batch::discarded`, `:540`): `flush` appends the ranges it held, `push`
-leaves the record as it was or extended by its own flush, and
+also records the ranges it handed over, in call order (a ghost `gone`,
+`Batch::discarded`): each `discard` call appends its range, `push` and
+`flush` only extend the record, and
 `Batch::lemma_discarded` (`:546`) states each one `well_formed`.
 
 How it is proved:
-- **The batch.** `Batch::wf` (`:504`, closed) keeps `well_formed` of
-  every range it holds and every range in `discarded()`; `push` (`:601`)
+- **The batch.** `Batch::wf` (closed) keeps `well_formed` of every range
+  it holds, of each piece of a merged range (`runs_wf`: a merge only
+  joins ranges of one length, `lemma_run_merge`), and of every range in
+  `discarded()`; a piece of a range is inside it
+  (`lemma_piece_ok`); `push` (`:601`)
   requires it of the pushed range, and its merge with the last range
   (adjacent ranges go out as one) keeps it (`lemma_well_formed_join`,
   `:307`: two adjacent page-aligned ranges of discardable bytes are
   one). `well_formed` is opaque, so the batch's invariant carries one
   fact per range.
-- **Class purges.** `purge_group` (`class/decay.rs:927`) pushes the page
+- **Class purges.** `push_group` (`class/decay.rs:927`) pushes the page
   group of `slab` (`spp` slabs from `first = slab & !(spp - 1)`) and now
   requires `slab` in the empty set and `spp` the table's slabs per page,
   which `Purger::visit` has. `lemma_group_well_formed`
@@ -7254,12 +7305,12 @@ How it is proved:
   allocator's base, page and page count are the process's huge
   region's, its base a page start, and the regions well formed and
   separated. `Shared::lemma_huge_process` (`heap/shared.rs:1626`) proves
-  it from `Shared::wf`; `purge_empty`, `purge_extent`, `purge_curve`,
+  it from `Shared::wf`; `purge_empty`, `push_extent`, `purge_curve`,
   `decay`, `decay_with` and `free_run` require it, and `purge::purge_all`,
   `purge_arena`, `decay` and `decay_arena` now require `shared.wf()` (every caller has
   it). `Huge::lemma_purge_range` (`huge/mod.rs:3357`): pages `start..start
   + pages` (at least one) of the region are a well-formed range, since
-  `npages * page <= huge_len`. `purge_extent` pushes an `Empty` extent
+  `npages * page <= huge_len`. `push_extent` pushes an `Empty` extent
   (at least a page, `desc_ok`) and `free_run` the freed run, guard page
   included.
 - **Never metadata, never a guard slab.** `theorem_purge_well_formed`:
@@ -7288,7 +7339,7 @@ so through `purge_arena`'s contract).
   `Shared` (as every verified function taking a `&Shared`).
 - The guard geometry: a table's guard slabs are the process's
   (`guard_geom`, `class::table::axiom_slot_loc`), as for theorem 7.
-- The class lock axioms (`axiom_class_lock_inv`): the value `purge_group`
+- The class lock axioms (`axiom_class_lock_inv`): the value `push_group`
   holds satisfies the lock invariant, which is what makes an empty-set
   slab `Empty`, so not a guard slab.
 
@@ -7302,9 +7353,13 @@ so through `purge_arena`'s contract).
 - A class range may cover uncommitted slabs (`Fresh` slabs of the page
   group when a page holds several slabs): `madvise` of reserved, never
   touched pages is harmless, and they are inside the class region.
-- Nothing states the ranges of one batch disjoint, nor that each is
-  discarded once; the record `discarded()` is not exported above the
-  batch (`purge::Left`, theorem 38, carries the byte count only).
+- The ranges a batch holds are disjoint (`Batch::wf`: `disjoint_upto`,
+  from `push`'s `apart`), and each piece pushed is reported to the
+  settler once (`Settle`), but a range may reach `madvise` more than
+  once: a refused merged range is re-issued piece by piece, and a range
+  refused in one purge is pushed again by the next. The record
+  `discarded()` is not exported above the batch (`purge::Left`, theorem
+  38, carries the byte count and the refused slabs and extents).
 - Only `purge::Batch` discards are covered; `MADV_GUARD_INSTALL`
   (`class/table.rs`, `huge/mod.rs`) and `MADV_GUARD_REMOVE` drop or keep
   contents of guard pages outside any batch (theorem 7).
@@ -7914,13 +7969,13 @@ check or a resource failure is left (`dec_live`, `on_live_zero`,
 `purge::decay`, `decay_one`, `decay_huge`, `purge_all`,
 `Arena::decay_with`, `Arena::purge_all`, `ClassState::decay_with`,
 `ClassState::purge_empty`, `purge_curve`, `walk_empty`, `EmptyVisitor::visit`,
-`page_group_is_idle`, `purge_group`, `Huge::decay_with`,
-`Huge::purge_empty`, `purge_curve`, `purge_extent`); `valid_aborts()` on a
+`page_group_is_idle`, `push_group`, `ClassState::settle`, `Huge::decay_with`,
+`Huge::purge_empty`, `purge_curve`, `push_extent`, `purge_desc`, `Huge::settle`, the batch's `Batch::push`, `flush`, `flush_in` and `purge::discard_one`); `valid_aborts()` on a
 free's tick only (`Heap::tick::<false>`, `purge::on_tick` and
 `background::auto_tick` with `alloc` false: a free's tick never
 starts the background thread); `may_abort_pending()` or
 `may_abort_kernel()` alone (`SlabTable::desc`, `owner`, `bits`,
-`SlabDesc::state`; `Batch::push`, `flush`); or nothing, for a slot
+`SlabDesc::state`; `purge::discard`); or nothing, for a slot
 address (`locate`). Every other abort it reaches needs `may_abort()`,
 which the witnesses lack, so each is proved unreachable with the token,
 or it is a resource failure (`abort_kernel`) or a pending check
@@ -8016,8 +8071,8 @@ allow, these cannot fire:
   `Inner::free_before`, `free_after`, `retire`, `huge/mod.rs:1722`,
   `:1751`, `:3015`, `bad_run_state_byte`): every live descriptor's byte
   is a state (`desc_ok`; `states_ok`, `:629`).
-- **An empty count below zero on a purge** (`purge_group`,
-  `class/decay.rs:1015`, `slab_count_underflow` in its `unwrap_or_else`
+- **An empty count below zero on a purge** (`ClassState::settle`,
+  `class/decay.rs`, `slab_count_underflow` in its `unwrap_or_else`
   closure, now `requires false`): the slab it purges is `Empty`, so in
   the empty set (`slab_core`), whose size the count is (`Inner::base`).
 - **The set table larger than an object** (`Arena::alloc_sets`,
@@ -8030,13 +8085,26 @@ The resource failures the covered paths reach (`abort_kernel`;
 `api::tests::abort_grants_only_at_roots` lists the callers):
 - `Huge::free_run`'s `madvise(MADV_GUARD_REMOVE)` of the run's guard,
   with `guard_install`.
-- `purge::discard` (`purge.rs:1386`), the `madvise` of the purged
-  pages: of a huge run purged at once (above `huge_retain_max`, or under
+- `purge::discard`, the `madvise` of the purged pages: of a huge run
+  purged at once (above `huge_retain_max`, or under
   `huge_dirty_decay_ms:0`), and of the slabs and extents the tick's
-  decay walks purge (second tranche); `Batch::push` and `Batch::flush`
-  require `may_abort_kernel()` for it. A valid program reaches it:
-  `madvise` fails with `EINVAL` on pages the program locked (`mlock`,
-  `mlockall(MCL_FUTURE)`), and the free aborts.
+  decay walks purge (second tranche); `discard` requires
+  `may_abort_kernel()` for it. Since upstream 7a12536a it aborts only
+  on an errno other than `EINVAL`: `madvise` fails with `EINVAL` on
+  pages the program locked (`mlock`, `mlockall(MCL_FUTURE)`), and the
+  range now stays `Empty` and dirty, to be retried, so a valid program
+  that locks its memory no longer aborts its free here. What is left,
+  `ENOMEM` (part of one of the allocator's reservations unmapped) or
+  `EPERM` (the program sealed the allocator's free memory), is a
+  program that touched memory it does not own; that a valid program
+  reaches neither is read from the errno list, not proved (`madvise`'s
+  errors have no specification). The page-alignment check before the
+  call (upstream's `assert!` with `sys::features::page_size()`) is
+  proved never to fail, from `well_formed` and the premise that
+  `getauxval(AT_PAGESZ)` is the process regions' page (S208/S209, the
+  `getauxval` specification; init reserves the regions with it), which
+  also makes `page_size`'s own abort unreachable, so `page_size` no
+  longer requires `may_abort()`.
 - `huge::table::Table::insert`'s "descriptor table full"
   (`huge/table.rs:876`): `free_run`'s `ensure` is best effort, so once
   the table's growth found no metadata (the reservation exhausted, or
@@ -8171,7 +8239,7 @@ tranche's: two more sinks relabelled (`walk_empty`, `unbind_unbound`
 to `abort_pending`), the
 `Invalid` arms of `usable_size`, `old_size_or_keep`, `realloc_old` and
 `rehome_on_free`'s `classify_free` made blocks (proof and the same
-call), the `unwrap_or_else` closure in `purge_group` given a return
+call), the `unwrap_or_else` closure in `purge_group` (now in `ClassState::settle`) given a return
 type and `requires false`; no exec parameter added (the cache entries' disjointness is a
 precondition `free_slow_in` and `rehome_on_free` prove, not a token
 passed to `scan_or_abort`).

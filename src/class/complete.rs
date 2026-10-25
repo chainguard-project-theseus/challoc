@@ -431,7 +431,7 @@ impl Proto {
         }
     }
 
-    /// `purge_group`, under the class lock: an `Empty` slab is discarded and
+    /// `settle`, under the class lock: an `Empty` slab is discarded and
     /// moves to the purged set.
     ///
     /// Protocol step: `Purge::PurgeLocked`.

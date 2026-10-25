@@ -489,8 +489,8 @@ pub(crate) mod protocol {
         /// `self.inner.lock()`.
         Lock = 0,
         /// Under the lock, one step: `walk_empty` (the state assertion),
-        /// `purge_group` (`Purged`, `empty_take`, `purged_add`), the
-        /// discard (`batch.flush()`), unlock.
+        /// `push_group`, the discard (`batch.flush()`) and its `settle`
+        /// (`Purged`, out of `empty`, into `purged`), unlock.
         PurgeLocked = 1,
     }
 
@@ -932,7 +932,7 @@ proof fn lemma_set_len(s: Set, n: nat, x: nat)
 /// The set/count seam: each of the three sets is one bitmap plus one
 /// `ClassStats` count, and the two are written together, here or at the
 /// two sites that spell the pair out and say why (`next_slab`,
-/// `purge_group`), so `nonfull`, `empty` and `purged` are always the
+/// `settle`), so `nonfull`, `empty` and `purged` are always the
 /// population of their set. `partial` is idempotent (a release batch may
 /// name a slab whose bit a refill set meanwhile); `empty` and `purged`
 /// are exact: a slab enters when its state changes and leaves when a
@@ -1300,7 +1300,7 @@ impl Inner {
     }
 
     /// `slab` out of the empty set. Tests only: a refill and a purge
-    /// spell the pair out (`next_slab`, `purge_group`). The caller closes
+    /// spell the pair out (`next_slab`, `settle`). The caller closes
     /// the link at `slab`.
     #[cfg(test)]
     fn empty_take(&mut self, slab: usize)
@@ -1325,7 +1325,7 @@ impl Inner {
     }
 
     /// `slab` into the purged set. Tests only: a purge spells the pair
-    /// out (`purge_group`). The caller closes the link at `slab`.
+    /// out (`settle`). The caller closes the link at `slab`.
     #[cfg(test)]
     fn purged_add(&mut self, slab: usize)
         requires
@@ -1551,7 +1551,7 @@ broadcast proof fn lemma_same_sets_inv(a: Inner, b: Inner)
 /// Verified holders show it through the postconditions of the `Inner`
 /// methods, the bridges and the `next_slab`/`take` contracts
 /// (`plan`, `take`, `next_slab`, `next_fresh_slab`, `reopen`,
-/// `on_live_zero`, `lowest_partial`, `is_partial`, `purge_group`,
+/// `on_live_zero`, `lowest_partial`, `is_partial`, `push_group`, `settle`,
 /// `walk_empty` and its visitors, `purge_empty`, `purge_curve`,
 /// `bin_stats`, `empty_bytes`); `ClassState::new` proves it of the value
 /// it creates the lock with. The only unverified holders are the tests.

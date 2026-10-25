@@ -1071,6 +1071,57 @@ fn purge_batches_a_whole_region() {
     }
 }
 
+/// A slab whose discard fails (a page `mlock`ed: `EINVAL`) stays `Empty`
+/// with its age and is not counted purged, while its neighbours in the
+/// same merged range, issued again one by one, purge; the decay walk
+/// that hit it backs the gate off for `DISCARD_RETRY_NS`, and once
+/// unlocked it purges.
+#[test]
+fn a_slab_whose_discard_fails_stays_empty() {
+    let env = Env::new();
+    let c = small_class();
+    let cs = env.class(c, 0);
+    assert_eq!(cs.table().slabs_per_page(), 1);
+    let nslots = CLASSES[c].nslots();
+    let (p, _) = env.claim(&cs, nslots * 4);
+    cs.release(&p);
+    let t0 = cs.oldest_empty();
+    for s in 0..4 {
+        cs.desc(s).set_dirty_at(t0, Tracked::assume_new());
+    }
+    let page = crate::sys::features::page_size();
+    let locked = env.regions.slab_addr(c, 1);
+    if !crate::testutil::mlock_or_skip("a_slab_whose_discard_fails_stays_empty", locked, page) {
+        return;
+    }
+    let only_slab_1_empty = || {
+        let st = cs.stats();
+        assert_eq!((st.empty, st.purged), (1, 3), "{st:?}");
+        for s in [0, 2, 3] {
+            assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
+        }
+        assert_eq!(cs.desc(1).state(), State::Empty);
+        assert_eq!(cs.desc(1).dirty_at(), t0);
+        assert_eq!(cs.oldest_empty(), t0);
+    };
+    assert_eq!(
+        cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        3
+    );
+    only_slab_1_empty();
+    // A walk past the window tries it, fails and backs off.
+    const W: u64 = 200_000;
+    let retry = t0 + W + crate::purge::DISCARD_RETRY_NS;
+    assert_eq!(cs.decay(t0 + W, W), Some(retry));
+    only_slab_1_empty();
+    unsafe { libc::munlock(locked as *const _, page) };
+    // No walk until the back-off ends, then the purge.
+    assert_eq!(cs.decay(t0 + 2 * W, W), Some(retry));
+    only_slab_1_empty();
+    assert_eq!(cs.decay(retry, W), None);
+    assert_eq!(cs.stats().purged, 4);
+}
+
 #[test]
 fn claim_spans_slabs_and_reports_shortfall_on_exhaustion() {
     let env = Env::new();

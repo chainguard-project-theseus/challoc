@@ -652,15 +652,16 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
 }
 
 /// The `purge advice:` line (design 8, the two-advice purge): the advice
-/// the next purge issues and why, the batches and bytes issued with each,
-/// and whether `Purged` memory is still known zero. Printed whether or not
-/// a cgroup is tracked.
+/// the next purge issues and why, the batches and bytes discarded with
+/// each, whether `Purged` memory is still known zero, and the ranges and
+/// bytes whose discard failed. Printed whether or not a cgroup is tracked.
 fn advice_line<W: Write>(out: &mut W) -> fmt::Result {
     let (lazy, eager) = purge::batches();
     let (lazy_bytes, eager_bytes) = purge::discarded_bytes();
+    let (failed, failed_bytes) = purge::failed_discards();
     writeln!(
         out,
-        "purge advice: {} {} ({}) lazy_purges {} ({} bytes) eager_purges {} ({} bytes) purged_is_zero {}",
+        "purge advice: {} {} ({}) lazy_purges {} ({} bytes) eager_purges {} ({} bytes) purged_is_zero {} failed_discards {} ({} bytes)",
         purge::advice().name(),
         purge::advice().madv_name(),
         purge::advice_reason(),
@@ -669,6 +670,8 @@ fn advice_line<W: Write>(out: &mut W) -> fmt::Result {
         eager,
         eager_bytes,
         purge::purged_is_zero(),
+        failed,
+        failed_bytes,
     )
 }
 
@@ -990,7 +993,7 @@ fn json_general<W: Write>(
     let empty_bytes = crate::policy::empty_bytes(shared, Tracked(&mut axiom_entry()));
     writeln!(
         out,
-        "\t\t\"cgroup\": {{\"tracked\": {}, \"limit\": {}, \"high\": {}, \"current\": {}, \"decay_ms\": {}, \"retention_cap\": {}, \"empty_bytes\": {}, \"full_purges\": {}, \"thp_forced\": {}, \"purge_advice\": \"{}\", \"lazy_purges\": {}, \"eager_purges\": {}, \"purged_is_zero\": {}}},",
+        "\t\t\"cgroup\": {{\"tracked\": {}, \"limit\": {}, \"high\": {}, \"current\": {}, \"decay_ms\": {}, \"retention_cap\": {}, \"empty_bytes\": {}, \"full_purges\": {}, \"thp_forced\": {}, \"purge_advice\": \"{}\", \"lazy_purges\": {}, \"eager_purges\": {}, \"purged_is_zero\": {}, \"failed_discards\": {}, \"failed_discard_bytes\": {}}},",
         cg.tracked(),
         cg.limit(),
         cg.high(),
@@ -1006,7 +1009,9 @@ fn json_general<W: Write>(
         purge::advice().name(),
         purge::batches().0,
         purge::batches().1,
-        purge::purged_is_zero()
+        purge::purged_is_zero(),
+        purge::failed_discards().0,
+        purge::failed_discards().1
     )?;
     let t = &snap.totals;
     writeln!(
@@ -1770,7 +1775,7 @@ mod tests {
             "\t\t\"arenas\": {\"narenas\": N, \"nbins\": N, \"quantum\": N, \"page\": N},\n",
             "\t\t\"background_thread\": {\"present\": B},\n",
             "\t\t\"thp\": {\"key\": \"S\", \"mode\": \"S\", \"reason\": \"S\", \"class_ranges\": N, \"class_bytes\": N, \"chunks\": N, \"huge_ranges\": N, \"meta_ranges\": N, \"failures\": N, \"nohuge_ranges\": N, \"host\": \"S\"},\n",
-            "\t\t\"cgroup\": {\"tracked\": B, \"limit\": N, \"high\": N, \"current\": N, \"decay_ms\": N, \"retention_cap\": N, \"empty_bytes\": N, \"full_purges\": N, \"thp_forced\": B, \"purge_advice\": \"S\", \"lazy_purges\": N, \"eager_purges\": N, \"purged_is_zero\": B},\n",
+            "\t\t\"cgroup\": {\"tracked\": B, \"limit\": N, \"high\": N, \"current\": N, \"decay_ms\": N, \"retention_cap\": N, \"empty_bytes\": N, \"full_purges\": N, \"thp_forced\": B, \"purge_advice\": \"S\", \"lazy_purges\": N, \"eager_purges\": N, \"purged_is_zero\": B, \"failed_discards\": N, \"failed_discard_bytes\": N},\n",
             "\t\t\"stats\": {\"allocated\": N, \"active\": N, \"metadata\": N, \"resident\": N, \"mapped\": N, \"retained\": N},\n",
             "\t\t\"stats.arenas\": {\n",
         ));

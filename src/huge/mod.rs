@@ -38,7 +38,9 @@
 //! become `Empty` and wait for the decay walk ([`Huge::decay_with`], on arena
 //! 0's period or the huge tier's own `huge_dirty_decay_ms`, design 7) or a
 //! full purge ([`Huge::purge_empty`]). `Empty` extents sit in a FIFO list ordered by
-//! `dirty_at`, so purging is a pop from the head.
+//! `dirty_at`, so purging walks it from the head; an extent whose discard
+//! fails (`mlock`ed pages) stays in its place, `Empty`, as does a run
+//! whose discard at free time fails.
 //!
 //! Everything is under one futex lock: huge operations are rare compared to
 //! slab operations and each already costs at least one syscall.
@@ -57,7 +59,7 @@ use crate::lock::{Lock, LockOrder, RawLock};
 #[cfg(verus_only)]
 use crate::lock::{axiom_entry, axiom_held_below, rank_huge, rank_meta};
 use crate::meta::Meta;
-use crate::purge::{self, Batch, Curve, Decayer, Left};
+use crate::purge::{self, Batch, Curve, Decayer, Left, Settle};
 use crate::sys::{self, Errno};
 #[cfg(verus_only)]
 use crate::vspec::huge::{axiom_huge_lock_frame, axiom_huge_lock_inv};
@@ -3167,6 +3169,271 @@ impl Placement {
     }
 }
 
+/// The range a huge purge pushes for extent `v` of `h`: its pages.
+spec fn piece_of(h: &Huge, v: HugeDesc) -> (int, int) {
+    (h.spec_base() as int + v.start * h.spec_page(), v.pages * h.spec_page())
+}
+
+/// `x` is the range of an `Empty` extent of `g` that a walk visited (in
+/// `vis`): what a huge purge's batch holds pending. Opaque, so a
+/// settler's invariant carries it per piece as one fact.
+#[verifier::opaque]
+spec fn has_piece(h: &Huge, g: Inner, vis: vstd::set::Set<*mut HugeDesc>, x: (int, int)) -> bool {
+    exists|d: *mut HugeDesc|
+        #[trigger] g.descs@.contains_key(d) && g.descs@[d].value().state == RunState::Empty as u8 && vis.contains(d)
+            && piece_of(h, g.descs@[d].value()) == x
+}
+
+/// A walk of the `Empty` list `l` that has visited (`vis`) its members up
+/// to `rest`, the members left: `l` ends with `rest`, every member before
+/// is visited, and none of `rest` is.
+spec fn walked(l: Seq<*mut HugeDesc>, rest: Seq<*mut HugeDesc>, vis: vstd::set::Set<*mut HugeDesc>) -> bool {
+    &&& rest.len() <= l.len()
+    &&& l.subrange(l.len() - rest.len(), l.len() as int) == rest
+    &&& forall|i: int| 0 <= i < l.len() - rest.len() ==> vis.contains(#[trigger] l[i])
+    &&& forall|j: int| 0 <= j < rest.len() ==> !vis.contains(#[trigger] rest[j])
+}
+
+/// A visited member's removal (a settled extent's unlink) keeps the walk.
+proof fn lemma_walked_remove(l: Seq<*mut HugeDesc>, rest: Seq<*mut HugeDesc>, vis: vstd::set::Set<*mut HugeDesc>, i: int)
+    requires
+        walked(l, rest, vis),
+        0 <= i < l.len(),
+        vis.contains(l[i]),
+    ensures
+        walked(l.remove(i), rest, vis),
+        i < l.len() - rest.len(),
+{
+    let k = l.len() - rest.len();
+    if i >= k {
+        assert(l[i] == l.subrange(k, l.len() as int)[i - k]);
+    }
+    let m = l.remove(i);
+    assert(m.subrange(m.len() - rest.len(), m.len() as int) =~= rest) by {
+        assert forall|j: int| 0 <= j < rest.len() implies m.subrange(m.len() - rest.len(), m.len() as int)[j] == rest[j] by {
+            assert(m[k - 1 + j] == l[k + j]);
+            assert(l[k + j] == l.subrange(k, l.len() as int)[j]);
+        }
+    }
+    assert forall|x: int| 0 <= x < m.len() - rest.len() implies vis.contains(#[trigger] m[x]) by {
+        if x < i {
+            assert(m[x] == l[x]);
+        } else {
+            assert(m[x] == l[x + 1]);
+        }
+    }
+}
+
+/// Visiting the first member left keeps the walk.
+proof fn lemma_walked_visit(l: Seq<*mut HugeDesc>, rest: Seq<*mut HugeDesc>, vis: vstd::set::Set<*mut HugeDesc>)
+    requires
+        walked(l, rest, vis),
+        rest.len() > 0,
+        l.no_duplicates(),
+    ensures
+        walked(l, rest.drop_first(), vis.insert(rest[0])),
+        l[l.len() - rest.len()] == rest[0],
+{
+    let k = l.len() - rest.len();
+    let r1 = rest.drop_first();
+    assert(l[k] == l.subrange(k, l.len() as int)[0]);
+    assert(l.subrange(l.len() - r1.len(), l.len() as int) =~= r1) by {
+        assert forall|j: int| 0 <= j < r1.len() implies l.subrange(l.len() - r1.len(), l.len() as int)[j] == r1[j] by {
+            assert(l[k + 1 + j] == l.subrange(k, l.len() as int)[j + 1]);
+        }
+    }
+    assert forall|x: int| 0 <= x < l.len() - r1.len() implies vis.insert(rest[0]).contains(#[trigger] l[x]) by {
+        if x < k {
+            assert(vis.contains(l[x]));
+        }
+    }
+    assert forall|j: int| 0 <= j < r1.len() implies !vis.insert(rest[0]).contains(#[trigger] r1[j]) by {
+        assert(r1[j] == rest[j + 1]);
+        assert(l[k + 1 + j] == l.subrange(k, l.len() as int)[j + 1]);
+        assert(l[k] != l[k + 1 + j]);
+    }
+}
+
+/// What a huge purge walk's flushes settled: extents made `Purged` and
+/// whether a discard failed. It settles the walk's batch ([`Settle`],
+/// through [`Huge::settle`]); its ghost half carries the walk's
+/// invariant over the huge lock value, which the flushes inside the
+/// walk's pushes change.
+// Ghost fields that only the proofs read.
+#[allow(dead_code)]
+struct Tally {
+    purged: usize,
+    failed: bool,
+    /// Ghost: the run-page authority's set when the walk started; no
+    /// purge changes it.
+    held: Ghost<vstd::set::Set<int>>,
+    /// Ghost: the `Empty` extents the walk visited.
+    vis: Ghost<vstd::set::Set<*mut HugeDesc>>,
+    /// Ghost: the members of the `Empty` list left to visit.
+    rest: Ghost<Seq<*mut HugeDesc>>,
+    /// Ghost: the walk pushes every extent it visits (a full purge).
+    full: Ghost<bool>,
+    /// Ghost: the length of the `Empty` list when the walk started.
+    e0: Ghost<int>,
+    /// Ghost: the bytes reported discarded.
+    bytes: Ghost<int>,
+    /// Ghost: the extents of ranges reported not discarded.
+    #[allow(dead_code)]
+    refused: Ghost<vstd::set::Set<*mut HugeDesc>>,
+}
+
+impl Settle for Tally {
+    type Owner = Huge;
+
+    type Ctx = Inner;
+
+    /// `(held, vis, rest, full, e0)`.
+    type Conf = (vstd::set::Set<int>, vstd::set::Set<*mut HugeDesc>, Seq<*mut HugeDesc>, bool, int);
+
+    /// The walk's invariant over the lock value `c`, the pieces `pend`
+    /// pushed and not settled: the lock value is the allocator's, its run
+    /// authority the walk's start's; each piece pending is a visited
+    /// `Empty` extent's range ([`has_piece`]); the walk has visited the
+    /// list up to `rest` ([`walked`]); the extents purged and the list
+    /// sum to the list at the start; an extent was purged iff a byte was
+    /// reported discarded; and a full walk has every visited member of the
+    /// list pending or refused.
+    closed spec fn inv(&self, o: &Huge, c: Inner, pend: spec_fn((int, int)) -> bool) -> bool {
+        &&& o.is_process()
+        &&& c.wf()
+        &&& c.spec_np() == o.npages
+        &&& c.spec_lg() == o.lg_page
+        &&& c.pgs@@ == self.held@
+        &&& forall|x: (int, int)| #[trigger] pend(x) ==> has_piece(o, c, self.vis@, x)
+        &&& walked(c.elist@, self.rest@, self.vis@)
+        &&& self.purged + c.elist@.len() == self.e0@
+        &&& self.e0@ <= u32::MAX
+        &&& self.bytes@ >= 0
+        &&& (self.purged > 0) == (self.bytes@ > 0)
+        &&& self.full@ ==> forall|i: int|
+            0 <= i < c.elist@.len() - self.rest@.len() ==> #[trigger] pend(piece_of(o, c.descs@[c.elist@[i]].value()))
+                || self.refused@.contains(c.elist@[i])
+    }
+
+    closed spec fn bytes(&self) -> int {
+        self.bytes@
+    }
+
+    closed spec fn conf(&self) -> (vstd::set::Set<int>, vstd::set::Set<*mut HugeDesc>, Seq<*mut HugeDesc>, bool, int) {
+        (self.held@, self.vis@, self.rest@, self.full@, self.e0@)
+    }
+
+    #[inline(always)]
+    fn settle(
+        &mut self,
+        o: &Huge,
+        c: &mut Inner,
+        addr: usize,
+        len: usize,
+        done: bool,
+        piece: Ghost<int>,
+        pend: Ghost<spec_fn((int, int)) -> bool>,
+    ) {
+        o.settle(c, addr, len, done, self, piece, pend);
+    }
+}
+
+impl Tally {
+    /// Nothing visited of the list `l`; the run authority's set `held`,
+    /// `full` for a walk that pushes every extent it visits.
+    #[inline(always)]
+    fn new(
+        Ghost(held): Ghost<vstd::set::Set<int>>,
+        Ghost(l): Ghost<Seq<*mut HugeDesc>>,
+        Ghost(full): Ghost<bool>,
+        Ghost(e0): Ghost<int>,
+    ) -> (t: Tally)
+        ensures
+            t.purged == 0,
+            t.held@ == held,
+            t.vis@ == vstd::set::Set::<*mut HugeDesc>::empty(),
+            t.rest@ == l,
+            t.full@ == full,
+            t.e0@ == e0,
+            t.bytes@ == 0,
+            t.refused@ == vstd::set::Set::<*mut HugeDesc>::empty(),
+    {
+        Tally {
+            purged: 0,
+            failed: false,
+            held: Ghost(held),
+            vis: Ghost(vstd::set::Set::empty()),
+            rest: Ghost(l),
+            full: Ghost(full),
+            e0: Ghost(e0),
+            bytes: Ghost(0),
+            refused: Ghost(vstd::set::Set::empty()),
+        }
+    }
+
+    /// The first member left is a live `Empty` extent, at its place in
+    /// the list.
+    proof fn lemma_rest_live(&self, h: &Huge, g: Inner, pend: spec_fn((int, int)) -> bool)
+        requires
+            self.inv(h, g, pend),
+        ensures
+            self.rest@.len() > 0 ==> {
+                let d = self.rest@[0];
+                &&& g.descs@.contains_key(d)
+                &&& d@.addr != 0
+                &&& g.elist@.contains(d)
+                &&& g.elist@[g.elist@.len() - self.rest@.len()] == d
+                &&& g.descs@[d].value().state == RunState::Empty as u8
+                &&& !self.vis@.contains(d)
+                &&& g.descs@[d].value().next == (if self.rest@.len() > 1 {
+                    self.rest@[1]
+                } else {
+                    ptr::null_mut::<HugeDesc>()
+                })
+            },
+            self.purged <= u32::MAX,
+    {
+        if self.rest@.len() > 0 {
+            let l = g.elist@;
+            let k = l.len() - self.rest@.len();
+            assert(l[k] == l.subrange(k, l.len() as int)[0]);
+            if self.rest@.len() > 1 {
+                assert(l[k + 1] == l.subrange(k, l.len() as int)[1]);
+            }
+            assert(enode(l, g.descs@, k));
+            assert(!self.vis@.contains(self.rest@[0]));
+            assert(perms_ok(g.descs@));
+        }
+    }
+
+    /// Once nothing is pending and nothing is left to visit, every
+    /// `Empty` extent of a full walk was refused.
+    proof fn lemma_walked_all(&self, h: &Huge, g: Inner, x: *mut HugeDesc)
+        requires
+            self.inv(h, g, purge::none()),
+            self.full@,
+            self.rest@.len() == 0,
+            g.descs@.contains_key(x),
+            g.descs@[x].value().state == RunState::Empty as u8,
+        ensures
+            self.refused@.contains(x),
+    {
+        assert(g.elist@.contains(x));
+        let i = g.elist@.index_of(x);
+        assert(0 <= i < g.elist@.len() - self.rest@.len());
+        assert(!(purge::none())(piece_of(h, g.descs@[g.elist@[i]].value())));
+    }
+
+    /// The count purged is at most `u32::MAX`.
+    proof fn lemma_counts(&self, h: &Huge, g: Inner)
+        requires
+            self.inv(h, g, purge::none()),
+        ensures
+            self.purged <= u32::MAX,
+    {
+    }
+}
+
 impl Huge {
     /// Create the huge allocator for `regions`, reserving its free-page
     /// bitmap and descriptor table in `meta`. `guard_install` should be the
@@ -4191,12 +4458,14 @@ impl Huge {
     }
 
     /// Purge every `Empty` extent whose `dirty_at` is at or before `cutoff`
-    /// (`u64::MAX` for all): `MADV_DONTNEED`, then `Purged`. Returns the
-    /// number purged, at most the region's pages.
+    /// (`u64::MAX` for all): `MADV_DONTNEED`, then `Purged`; an extent
+    /// whose discard fails stays `Empty` in its place (the next purge
+    /// retries it). Returns the number purged, at most `u32::MAX`.
     ///
     /// `left` gets the bytes discarded, nonzero iff an extent was purged,
     /// and the extents `Empty` in the lock value released: with `cutoff ==
-    /// u64::MAX`, none ([`Left::clean`]).
+    /// u64::MAX`, none but those of ranges `madvise` refused
+    /// ([`Left::clean`]).
     pub fn purge_empty(
         &self,
         cutoff: u64,
@@ -4229,111 +4498,67 @@ impl Huge {
             use_type_invariant(self);
             self.lemma_page();
             g@.lemma_elist();
-            let p = self.spec_page();
-            assert(epages(g@.elist@, g@.descs@) * p <= self.npages * p) by (nonlinear_arith)
-                requires
-                    epages(g@.elist@, g@.descs@) <= self.npages,
-                    p > 0,
-            ;
         }
-        let mut n = 0;
         // The batch may discard pages of no live run: the run authority
         // does not change while the lock is held here.
         let ghost held = g@.pgs@@;
+        let ghost full = cutoff == u64::MAX;
+        let mut t = Tally::new(Ghost(held), Ghost(g@.elist@), Ghost(full), Ghost(g@.elist@.len() as int));
         let mut batch = Batch::new(Ghost(|b: int| self.purgeable(held, b)));
-        loop
+        let mut d = g.empty_head;
+        proof {
+            reveal(has_piece);
+            assert(g@.elist@.subrange(0, g@.elist@.len() as int) =~= g@.elist@);
+            g@.lemma_head();
+            assert(t.inv(self, g@, batch.pieces()));
+            t.lemma_rest_live(self, g@, batch.pieces());
+        }
+        while !d.is_null()
             invariant
                 crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 self.is_process(),
-                g@.wf(),
-                g@.spec_np() == self.npages,
-                g@.spec_lg() == self.lg_page,
-                g@.pgs@@ == held,
-                forall|b: int| #[trigger] (batch.free())(b) == self.purgeable(held, b),
                 batch.wf(),
-                batch.total() + epages(g@.elist@, g@.descs@) * self.spec_page() <= self.npages * self.spec_page(),
-                n as int + g@.elist@.len() <= g@.next_page,
-                batch.sent() + batch.total() >= 0,
-                (n > 0) == (batch.sent() + batch.total() > 0),
+                forall|b: int| #[trigger] (batch.free())(b) == self.purgeable(held, b),
+                batch.sent() == t.bytes@,
+                t.inv(self, g@, batch.pieces()),
+                t.held@ == held,
+                t.full@ == (cutoff == u64::MAX),
+                d == (if t.rest@.len() > 0 { t.rest@[0] } else { ptr::null_mut::<HugeDesc>() }),
+                t.rest@.len() > 0 ==> d@.addr != 0,
             ensures
-                cutoff == u64::MAX ==> g@.elist@.len() == 0,
-            decreases g@.elist@.len(),
+                cutoff == u64::MAX ==> t.rest@.len() == 0,
+            decreases t.rest@.len(),
         {
-            let d = g.empty_head;
-            if d.is_null() {
-                proof {
-                    // A non-empty list starts at a live descriptor, never null.
-                    if g@.elist@.len() > 0 {
-                        assert(enode(g@.elist@, g@.descs@, 0));
-                    }
+            proof {
+                if t.rest@.len() == 0 {
+                    assert(d@.addr == 0);
                 }
+                t.lemma_rest_live(self, g@, batch.pieces());
+            }
+            // SAFETY: list members are live `Empty` extents; `next` is
+            // read before a flush can unlink `d`.
+            let (dirty_at, next) = (g.desc(d).dirty_at, g.desc(d).next);
+            if dirty_at > cutoff {
                 break;
             }
+            self.push_extent(&mut g, d, &mut batch, &mut t);
             proof {
-                g@.lemma_head();
-                g@.lemma_elist();
-                assert(enode(g@.elist@, g@.descs@, 0));
-                lemma_epages_step(g@.elist@, g@.descs@, 0);
-                assert(g@.elist@.subrange(0, g@.elist@.len() as int) =~= g@.elist@);
-                lemma_epages_nonneg(g@.elist@.subrange(1, g@.elist@.len() as int), g@.descs@);
-                use_type_invariant(self);
-                self.lemma_page();
-                let p = self.spec_page();
-                let e = epages(g@.elist@, g@.descs@);
-                let pg = g@.descs@[d].value().pages as int;
-                assert(pg * p <= e * p) by (nonlinear_arith)
-                    requires
-                        pg <= e,
-                        p > 0,
-                ;
+                t.lemma_rest_live(self, g@, batch.pieces());
             }
-            // List members are live `Empty` extents.
-            if g.desc(d).dirty_at > cutoff {
-                break;
-            }
-            let ghost l0 = g@.elist@;
-            let ghost d0 = g@.descs@;
-            let ghost t0 = batch.total();
-            let ghost s0 = batch.sent();
-            proof {
-                assert(l0.index_of(d) == 0) by {
-                    assert(l0.no_duplicates());
-                }
-            }
-            self.purge_extent(&mut g, d, &mut batch);
-            proof {
-                // The extent's pages, at least one, went into the batch.
-                assert(desc_ok(d0[d].value(), g@.next_page));
-                let pp = self.spec_page();
-                let pn = d0[d].value().pages as int;
-                assert(pn * pp > 0) by (nonlinear_arith)
-                    requires pn >= 1, pp > 0;
-                assert(batch.sent() + batch.total() > s0 + t0);
-                let l1 = g@.elist@;
-                lemma_epages_remove(l0, d0, 0);
-                assert forall|i: int| 0 <= i < l1.len() implies #[trigger] g@.descs@[l1[i]].value().pages
-                    == d0[l1[i]].value().pages by {
-                    assert(l1[i] == l0[i + 1]);
-                    assert(enode(l0, d0, i + 1));
-                }
-                lemma_epages_frame(l1, d0, g@.descs@);
-                let p = self.spec_page();
-                let pg = d0[d].value().pages as int;
-                let e0 = epages(l0, d0);
-                assert(t0 + pg * p + (e0 - pg) * p == t0 + e0 * p) by (nonlinear_arith);
-            }
-            n += 1;
+            d = next;
         }
-        batch.flush();
+        batch.flush(&mut t, self, &mut g);
         self.sync_oldest(&g);
         proof {
-            assert(g@.wf());
             let lv = g@;
             let ext = ISet::new(
                 |a: int|
                     exists|x: *mut HugeDesc| #[trigger]
                         lv.descs@.contains_key(x) && x@.addr == a && lv.descs@[x].value().state == RunState::Empty as u8,
+            );
+            let refused = ISet::new(
+                |a: int| exists|x: *mut HugeDesc| #[trigger] t.refused@.contains(x) && x@.addr == a,
             );
             *left = Ghost(
                 Left {
@@ -4343,74 +4568,70 @@ impl Huge {
                     slabs: ISet::empty(),
                     huge: true,
                     extents: ext,
+                    refused: ISet::empty(),
+                    refused_extents: refused,
                 },
             );
+            t.lemma_counts(self, lv);
             if cutoff == u64::MAX {
-                // Every `Empty` extent is on the list, which is empty.
-                assert forall|a: int| !ext.contains(a) by {
-                    if ext.contains(a) {
-                        let x = choose|x: *mut HugeDesc| #[trigger]
-                            lv.descs@.contains_key(x) && x@.addr == a && lv.descs@[x].value().state == RunState::Empty as u8;
-                        assert(lv.elist@.contains(x));
-                    }
+                // Every `Empty` extent is on the list, every member of
+                // which the walk visited; none is pending once the batch
+                // is flushed, so each was refused.
+                assert forall|a: int| #[trigger] ext.contains(a) implies refused.contains(a) by {
+                    let x = choose|x: *mut HugeDesc| #[trigger]
+                        lv.descs@.contains_key(x) && x@.addr == a && lv.descs@[x].value().state == RunState::Empty as u8;
+                    t.lemma_walked_all(self, lv, x);
+                    assert(t.refused@.contains(x));
                 }
-                assert(ext =~= ISet::<int>::empty());
             }
         }
-        n
+        t.purged
     }
 
-    /// Purge `d`, a member of the `Empty` list: `MADV_DONTNEED` through
-    /// `batch`, then `Purged`. Discarded in batches before the lock is
-    /// released, so no allocation can take the extent between the state
-    /// change and the discard. Returns its pages.
+    /// Push `d`, the first member of the `Empty` list a walk has left
+    /// (`t.rest`), to `batch`; it stays there, `Empty`, until the flush
+    /// reports it discarded ([`settle`]). The batch is flushed before the
+    /// lock is released, so no allocation can take the extent between the
+    /// discard and the state change. Returns its pages.
     ///
-    /// The explicit rlimit: the proof ran over the default on aarch64
-    /// once `perms_ok` placed descriptors in the metadata region.
-    #[verifier::rlimit(40)]
-    fn purge_extent(&self, g: &mut Inner, d: *mut HugeDesc, batch: &mut Batch) -> (r: usize)
+    /// [`settle`]: Huge::settle
+    fn push_extent(&self, g: &mut Inner, d: *mut HugeDesc, batch: &mut Batch, t: &mut Tally) -> (r: usize)
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
-            self.is_process(),
-            old(g).wf(),
-            old(g).spec_np() == self.npages,
-            old(g).spec_lg() == self.lg_page,
-            old(g).elist@.contains(d),
+            old(t).inv(self, *old(g), old(batch).pieces()),
             old(batch).wf(),
-            old(batch).total() + old(g).descs@[d].value().pages * self.spec_page() <= self.npages * self.spec_page(),
-            forall|b: int| self.purgeable(old(g).pgs@@, b) ==> #[trigger] (old(batch).free())(b),
+            forall|b: int| #[trigger] (old(batch).free())(b) == self.purgeable(old(t).held@, b),
+            old(t).rest@.len() > 0,
+            d == old(t).rest@[0],
         ensures
-            final(g).wf(),
-            final(g).spec_np() == old(g).spec_np(),
-            final(g).spec_lg() == old(g).spec_lg(),
-            final(g).next_page == old(g).next_page,
-            final(g).pgs == old(g).pgs,
+            final(t).inv(self, *final(g), final(batch).pieces()),
             final(batch).wf(),
             final(batch).free() == old(batch).free(),
+            final(batch).sent() - old(batch).sent() == final(t).bytes() - old(t).bytes(),
+            final(t).held == old(t).held,
+            final(t).vis@ == old(t).vis@.insert(d),
+            final(t).rest@ == old(t).rest@.drop_first(),
+            final(t).full == old(t).full,
             r == old(g).descs@[d].value().pages,
-            final(batch).total() <= old(batch).total() + r * self.spec_page(),
-            final(batch).sent() + final(batch).total() == old(batch).sent() + old(batch).total() + r * self.spec_page(),
-            final(g).elist@ == old(g).elist@.remove(old(g).elist@.index_of(d)),
-            forall|x: *mut HugeDesc| #[trigger] old(g).descs@.contains_key(x) ==> final(g).descs@[x].value().pages
-                == old(g).descs@[x].value().pages,
     {
-        let ghost j = g.elist@.index_of(d);
         let ghost d0 = g.descs@;
         let ghost l0 = g.elist@;
+        let ghost t0 = *t;
         proof {
             use_type_invariant(self);
             self.lemma_page();
-            g.lemma_elist();
-            assert(enode(l0, d0, j));
+            t.lemma_rest_live(self, *g, batch.pieces());
             let v = d0[d].value();
             let p = self.spec_page();
+            assert(desc_ok(v, g.next_page));
             self.lemma_pages((v.start + v.pages) as usize);
             self.lemma_pages(v.start as usize);
             assert((v.start + v.pages) * p == v.start * p + v.pages * p) by (nonlinear_arith);
         }
-        // List members are live `Empty` extents.
+        // SAFETY: list members are live `Empty` extents.
         let (start, pages) = (g.desc(d).start(), g.desc(d).pages());
+        let ghost new = piece_of(self, d0[d].value());
         // The extent's pages are no live run's: the page authority holds
         // the `Active` extents' pages, and those are apart from `d`.
         proof {
@@ -4418,7 +4639,6 @@ impl Huge {
             let p = self.spec_page();
             let base = self.base as int;
             lemma_run_auths(*g);
-            assert(desc_ok(v, g.next_page));
             lemma_active(d0);
             assert forall|b: int| base + v.start * p <= b < base + v.start * p + v.pages * p
                 implies #[trigger] (batch.free())(b) by {
@@ -4433,8 +4653,94 @@ impl Huge {
             }
             // Page-aligned extent pages inside the huge region.
             self.lemma_purge_range(v.start as int, v.pages as int);
+            // Apart from the extents pending, each another visited one.
+            reveal(has_piece);
+            assert forall|x: (int, int)| #[trigger] (batch.pieces())(x) implies x.0 + x.1 <= new.0 || new.0 + new.1
+                <= x.0 by {
+                let y = choose|y: *mut HugeDesc|
+                    #[trigger] g.descs@.contains_key(y) && g.descs@[y].value().state == RunState::Empty as u8
+                        && t0.vis@.contains(y) && piece_of(self, g.descs@[y].value()) == x;
+                assert(y != d);
+                let w = d0[y].value();
+                assert(apart(v, w));
+                if v.start + v.pages <= w.start {
+                    assert(v.start * p + v.pages * p <= w.start * p) by (nonlinear_arith)
+                        requires v.start + v.pages <= w.start, p > 0;
+                } else {
+                    assert(w.start * p + w.pages * p <= v.start * p) by (nonlinear_arith)
+                        requires w.start + w.pages <= v.start, p > 0;
+                }
+            }
+            lemma_walked_visit(l0, t0.rest@, t0.vis@);
+            assert(l0.no_duplicates());
         }
-        batch.push(self.addr(start), pages * self.page_size());
+        t.vis = Ghost(t.vis@.insert(d));
+        t.rest = Ghost(t.rest@.drop_first());
+        proof {
+            reveal(has_piece);
+            let pend = purge::either(batch.pieces(), purge::one(new));
+            assert forall|x: (int, int)| #[trigger] pend(x) implies has_piece(self, *g, t.vis@, x) by {
+                if x == new {
+                    assert(g.descs@.contains_key(d));
+                } else {
+                    let y = choose|y: *mut HugeDesc|
+                        #[trigger] g.descs@.contains_key(y) && g.descs@[y].value().state == RunState::Empty as u8
+                            && t0.vis@.contains(y) && piece_of(self, g.descs@[y].value()) == x;
+                    assert(t.vis@.contains(y));
+                }
+            }
+            if t.full@ {
+                let l = g.elist@;
+                let k = l.len() - t0.rest@.len();
+                assert forall|i: int| 0 <= i < l.len() - t.rest@.len() implies #[trigger] pend(
+                    piece_of(self, g.descs@[l[i]].value()),
+                ) || t.refused@.contains(l[i]) by {
+                    if i == k {
+                        assert(l[i] == d);
+                    }
+                }
+            }
+            assert(t.inv(self, *g, pend));
+        }
+        batch.push(self.addr(start), pages * self.page_size(), t, self, g);
+        pages
+    }
+
+    /// Make `d`, a member of the `Empty` list, `Purged`: out of the list,
+    /// with no age, its pages counted as purged. Returns its pages.
+    ///
+    /// The explicit rlimit: the proof ran over the default on aarch64
+    /// once `perms_ok` placed descriptors in the metadata region.
+    #[verifier::rlimit(40)]
+    #[inline(always)]
+    fn purge_desc(&self, g: &mut Inner, d: *mut HugeDesc) -> (r: usize)
+        requires
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
+            old(g).wf(),
+            old(g).elist@.contains(d),
+        ensures
+            final(g).wf(),
+            final(g).spec_np() == old(g).spec_np(),
+            final(g).spec_lg() == old(g).spec_lg(),
+            final(g).next_page == old(g).next_page,
+            final(g).pgs == old(g).pgs,
+            r == old(g).descs@[d].value().pages,
+            final(g).elist@ == old(g).elist@.remove(old(g).elist@.index_of(d)),
+            final(g).descs@.dom() == old(g).descs@.dom(),
+            forall|x: *mut HugeDesc| #[trigger] old(g).descs@.contains_key(x) ==> final(g).descs@[x].value().pages
+                == old(g).descs@[x].value().pages && final(g).descs@[x].value().start == old(g).descs@[x].value().start
+                && (x != d ==> final(g).descs@[x].value().state == old(g).descs@[x].value().state),
+            final(g).descs@[d].value().state == RunState::Purged as u8,
+    {
+        let ghost j = g.elist@.index_of(d);
+        let ghost d0 = g.descs@;
+        let ghost l0 = g.elist@;
+        proof {
+            g.lemma_elist();
+            assert(enode(l0, d0, j));
+        }
+        // SAFETY: list members are live `Empty` extents.
+        let pages = g.desc(d).pages();
         g.unlink(d);
         let ghost d1 = g.descs@;
         g.desc_mut(d).state = RunState::Purged as u8;
@@ -4571,7 +4877,222 @@ impl Huge {
                 assert(stat(old(g).stats, k) == tally(all, d0, k));
             }
         }
+        proof {
+            assert forall|x: *mut HugeDesc| #[trigger] d0.contains_key(x) implies g.descs@[x].value().pages
+                == d0[x].value().pages && g.descs@[x].value().start == d0[x].value().start && (x != d
+                ==> g.descs@[x].value().state == d0[x].value().state) by {
+                assert(same_but_links(d0[x].value(), d1[x].value()));
+            }
+        }
         pages
+    }
+
+    /// The flush's report on `[addr, addr + len)`, extents pushed by
+    /// [`push_extent`] (under the huge lock since, so still in the `Empty`
+    /// list): discarded, each leaves the list and becomes `Purged`; not,
+    /// they stay as they are. Free extents never touch, so a range is one
+    /// extent: the check that it starts an `Empty` extent never fails.
+    ///
+    /// [`push_extent`]: Huge::push_extent
+    #[verifier::rlimit(40)]
+    fn settle(
+        &self,
+        g: &mut Inner,
+        addr: usize,
+        len: usize,
+        done: bool,
+        t: &mut Tally,
+        Ghost(piece): Ghost<int>,
+        Ghost(pend): Ghost<spec_fn((int, int)) -> bool>,
+    )
+        requires
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
+            old(t).inv(self, *old(g), pend),
+            0 < piece <= len,
+            len as int % piece == 0,
+            addr + len <= usize::MAX,
+            forall|x: (int, int)| #[trigger] purge::in_run(addr as int, len as int, piece, x) ==> pend(x),
+        ensures
+            final(t).inv(self, *final(g), purge::minus(pend, addr as int, len as int, piece)),
+            final(t).conf() == old(t).conf(),
+            final(t).bytes() == old(t).bytes() + if done {
+                len as int
+            } else {
+                0
+            },
+    {
+        let ghost g0 = *g;
+        let ghost t0 = *t;
+        let ghost p = self.spec_page();
+        let ghost base = self.base as int;
+        proof {
+            use_type_invariant(self);
+            self.lemma_page();
+            reveal(has_piece);
+            vstd::arithmetic::div_mod::lemma_small_mod(0, piece as nat);
+            assert(purge::in_run(addr as int, len as int, piece, (addr as int, piece)));
+            assert(pend((addr as int, piece)));
+        }
+        // The extent pushed for the range's first piece.
+        let ghost dd = choose|y: *mut HugeDesc|
+            #[trigger] g0.descs@.contains_key(y) && g0.descs@[y].value().state == RunState::Empty as u8
+                && t0.vis@.contains(y) && piece_of(self, g0.descs@[y].value()) == (addr as int, piece);
+        let ghost v = g0.descs@[dd].value();
+        proof {
+            assert(desc_ok(v, g0.next_page));
+            // One piece: a second would be another `Empty` extent starting
+            // where this one ends, and free extents never touch.
+            if piece < len {
+                vstd::arithmetic::div_mod::lemma_mod_self_0(piece);
+                assert(purge::in_run(addr as int, len as int, piece, (addr + piece, piece)));
+                assert(pend((addr + piece, piece)));
+                let y = choose|y: *mut HugeDesc|
+                    #[trigger] g0.descs@.contains_key(y) && g0.descs@[y].value().state == RunState::Empty as u8
+                        && t0.vis@.contains(y) && piece_of(self, g0.descs@[y].value()) == (addr + piece, piece);
+                let w = g0.descs@[y].value();
+                assert(w.start * p == v.start * p + v.pages * p);
+                assert(w.start == v.start + v.pages) by (nonlinear_arith)
+                    requires w.start * p == v.start * p + v.pages * p, p > 0;
+                g0.theorem_coalesced(dd, y);
+            }
+            assert(len == piece);
+            assert(g0.elist@.contains(dd));
+            assert(keyed(g0.table, v, dd));
+        }
+        if !done {
+            t.failed = true;
+            proof {
+                t.refused@ = t.refused@.insert(dd);
+                let rest = purge::minus(pend, addr as int, len as int, piece);
+                assert forall|x: (int, int)| #[trigger] rest(x) implies has_piece(self, *g, t.vis@, x) by {
+                    assert(pend(x));
+                }
+                if t.full@ {
+                    let l = g.elist@;
+                    assert forall|i: int| 0 <= i < l.len() - t.rest@.len() implies #[trigger] rest(
+                        piece_of(self, g.descs@[l[i]].value()),
+                    ) || t.refused@.contains(l[i]) by {
+                        assert(pend(piece_of(self, g.descs@[l[i]].value())) || t0.refused@.contains(l[i]));
+                        if l[i] != dd && purge::in_run(addr as int, len as int, piece, piece_of(self, g.descs@[l[i]].value())) {
+                            purge::lemma_run_one(addr as int, len as int, piece_of(self, g.descs@[l[i]].value()));
+                            assert(enode(l, g.descs@, i));
+                            let w = g.descs@[l[i]].value();
+                            assert(w.start * p == v.start * p);
+                            assert(w.start == v.start) by (nonlinear_arith)
+                                requires w.start * p == v.start * p, p > 0;
+                            assert(apart(v, w));
+                        }
+                    }
+                }
+                assert(t.inv(self, *g, rest));
+            }
+            return;
+        }
+        let mut page = (addr - self.base) >> self.lg_page;
+        proof {
+            vstd::bits::lemma_usize_shr_is_div((addr - self.base) as usize, self.lg_page as usize);
+            vstd::bits::lemma_usize_shr_is_div(len, self.lg_page as usize);
+            vstd::arithmetic::div_mod::lemma_div_multiples_vanish(v.start as int, p);
+            vstd::arithmetic::div_mod::lemma_div_multiples_vanish(v.pages as int, p);
+            assert(p * v.start == v.start * p && p * v.pages == v.pages * p) by (nonlinear_arith);
+            assert(page == v.start);
+            assert(len >> self.lg_page == v.pages);
+            assert(v.start + v.pages <= g0.next_page <= u32::MAX);
+        }
+        let end = page + (len >> self.lg_page);
+        let ghost mut once = false;
+        while page < end
+            invariant
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
+                end == v.start + v.pages,
+                v == g0.descs@[dd].value(),
+                v.pages >= 1,
+                g0.wf(),
+                g0.descs@.contains_key(dd),
+                g0.elist@.contains(dd),
+                keyed(g0.table, v, dd),
+                v.state == RunState::Empty as u8,
+                t0.purged + g0.elist@.len() == t0.e0@,
+                t0.e0@ <= u32::MAX,
+                !once ==> page == v.start && *g == g0 && *t == t0,
+                once ==> page == end,
+                once ==> {
+                    &&& g.wf()
+                    &&& g.spec_np() == g0.spec_np()
+                    &&& g.spec_lg() == g0.spec_lg()
+                    &&& g.pgs == g0.pgs
+                    &&& g.elist@ == g0.elist@.remove(g0.elist@.index_of(dd))
+                    &&& g.descs@.dom() == g0.descs@.dom()
+                    &&& forall|x: *mut HugeDesc| #[trigger] g0.descs@.contains_key(x) ==> g.descs@[x].value().pages
+                        == g0.descs@[x].value().pages && g.descs@[x].value().start == g0.descs@[x].value().start
+                        && (x != dd ==> g.descs@[x].value().state == g0.descs@[x].value().state)
+                    &&& g.descs@[dd].value().state == RunState::Purged as u8
+                    &&& t.purged == t0.purged + 1
+                    &&& t.conf() == t0.conf()
+                    &&& t.bytes == t0.bytes
+                    &&& t.refused == t0.refused
+                },
+            decreases end - page,
+        {
+            let d = g.table.get(page);
+            // SAFETY: table entries are live descriptors.
+            if d.is_null() || g.desc(d).start() != page || g.desc(d).state() != RunState::Empty {
+                proof {
+                    assert(false);
+                }
+                sys::abort_fmt(format_args!("huge: purged range {addr:#x}+{len:#x} is not Empty extents"));
+            }
+            proof {
+                assert(d == dd);
+                assert(t.purged + g.elist@.len() == t.e0@);
+                g.lemma_elist();
+            }
+            let pages = self.purge_desc(g, d);
+            t.purged += 1;
+            page += pages;
+            proof {
+                once = true;
+            }
+        }
+        t.bytes = Ghost(t.bytes@ + len);
+        proof {
+            assert(once);
+            let l0 = g0.elist@;
+            let i0 = l0.index_of(dd);
+            lemma_walked_remove(l0, t0.rest@, t0.vis@, i0);
+            let rest = purge::minus(pend, addr as int, len as int, piece);
+            assert forall|x: (int, int)| #[trigger] rest(x) implies has_piece(self, *g, t.vis@, x) by {
+                assert(pend(x));
+                let y = choose|y: *mut HugeDesc|
+                    #[trigger] g0.descs@.contains_key(y) && g0.descs@[y].value().state == RunState::Empty as u8
+                        && t0.vis@.contains(y) && piece_of(self, g0.descs@[y].value()) == x;
+                purge::lemma_run_one(addr as int, len as int, x);
+                assert(y != dd);
+                assert(g.descs@.contains_key(y));
+            }
+            if t.full@ {
+                let l = g.elist@;
+                assert forall|i: int| 0 <= i < l.len() - t.rest@.len() implies #[trigger] rest(
+                    piece_of(self, g.descs@[l[i]].value()),
+                ) || t.refused@.contains(l[i]) by {
+                    let i1 = if i < i0 { i } else { i + 1 };
+                    assert(l[i] == l0[i1]);
+                    assert(pend(piece_of(self, g0.descs@[l0[i1]].value())) || t0.refused@.contains(l0[i1]));
+                    assert(l0.no_duplicates());
+                    assert(l[i] != dd);
+                    assert(enode(l0, g0.descs@, i1));
+                    let w = g0.descs@[l[i]].value();
+                    purge::lemma_run_one(addr as int, len as int, piece_of(self, w));
+                    if piece_of(self, w) == (addr as int, len as int) {
+                        assert(w.start * p == v.start * p);
+                        assert(w.start == v.start) by (nonlinear_arith)
+                            requires w.start * p == v.start * p, p > 0;
+                        assert(apart(v, w));
+                    }
+                }
+            }
+            assert(t.inv(self, *g, rest));
+        }
     }
 
     /// Decay walk (design section 8), as `ClassState::purge_curve` in
@@ -4581,7 +5102,9 @@ impl Huge {
     /// only and never below the allowance (an extent larger than the
     /// remaining excess is skipped for younger ones that fit), so a lone
     /// extent lasts until its weight is zero, the end of the window, as
-    /// before. Returns the number of extents purged.
+    /// before. A failed discard leaves its extent `Empty` and backs the
+    /// gate off (`Decayer::back_off`). Returns the number of extents
+    /// purged.
     fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> usize
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
@@ -4675,105 +5198,76 @@ impl Huge {
         // cap for good (measured: 50 freed 8 MiB runs, one 400 MiB
         // extent, nothing purged in 3 s). The curve alone keeps the rule.
         let capped = keep16 < crate::policy::KEEP_ALL;
-        let mut n = 0;
+        // As in `purge_empty`: pages of no live run.
+        let ghost held = g@.pgs@@;
+        let mut t = Tally::new(Ghost(held), Ghost(g@.elist@), Ghost(false), Ghost(g@.elist@.len() as int));
         if excess > 0 {
-            // As in `purge_empty`: pages of no live run.
-            let ghost held = g@.pgs@@;
             let mut batch = Batch::new(Ghost(|b: int| self.purgeable(held, b)));
             let mut d = g.empty_head;
-            let ghost mut k: int = 0;
             proof {
+                reveal(has_piece);
                 g@.lemma_head();
                 g@.lemma_elist();
                 assert(g@.elist@.subrange(0, g@.elist@.len() as int) =~= g@.elist@);
-                let p = self.spec_page();
-                assert(epages(g@.elist@, g@.descs@) * p <= self.npages * p) by (nonlinear_arith)
-                    requires
-                        epages(g@.elist@, g@.descs@) <= self.npages,
-                        p > 0,
-                ;
+                assert(t.inv(self, g@, batch.pieces()));
             }
             while !d.is_null() && excess > 0
                 invariant
                     crate::sys::may_abort() || crate::sys::valid_aborts(),
                     crate::sys::may_syscall(),
                     self.is_process(),
-                    g@.wf(),
-                    g@.spec_np() == self.npages,
-                    g@.spec_lg() == self.lg_page,
-                    g@.pgs@@ == held,
-                    forall|b: int| #[trigger] (batch.free())(b) == self.purgeable(held, b),
                     batch.wf(),
-                    0 <= k <= g@.elist@.len(),
-                    d == (if k < g@.elist@.len() { g@.elist@[k] } else { ptr::null_mut::<HugeDesc>() }),
-                    batch.total() + epages(g@.elist@.subrange(k, g@.elist@.len() as int), g@.descs@) * self.spec_page()
-                        <= self.npages * self.spec_page(),
-                    n as int + g@.elist@.len() <= g@.next_page,
-                decreases g@.elist@.len() - k,
+                    forall|b: int| #[trigger] (batch.free())(b) == self.purgeable(held, b),
+                    t.inv(self, g@, batch.pieces()),
+                    t.held@ == held,
+                    !t.full@,
+                    d == (if t.rest@.len() > 0 { t.rest@[0] } else { ptr::null_mut::<HugeDesc>() }),
+                decreases t.rest@.len(),
             {
-                let ghost l1 = g@.elist@;
-                let ghost n1 = l1.len() as int;
                 proof {
-                    if k >= n1 {
+                    if t.rest@.len() == 0 {
                         assert(d@.addr == 0);
                     }
-                    g@.lemma_elist();
-                    assert(enode(l1, g@.descs@, k));
-                    lemma_epages_step(l1, g@.descs@, k);
-                    lemma_epages_nonneg(l1.subrange(k + 1, n1), g@.descs@);
-                    use_type_invariant(self);
-                    self.lemma_page();
-                    let p = self.spec_page();
-                    let pg = g@.descs@[d].value().pages as int;
-                    let rest = epages(l1.subrange(k + 1, n1), g@.descs@);
-                    assert(pg * p + rest * p == (pg + rest) * p) by (nonlinear_arith);
-                    assert(rest * p >= 0) by (nonlinear_arith)
-                        requires
-                            rest >= 0,
-                            p > 0,
-                    ;
-                    assert(l1.index_of(d) == k) by {
-                        assert(l1.no_duplicates());
-                    }
+                    t.lemma_rest_live(self, g@, batch.pieces());
                 }
-                // As above; `next` is read before `d` leaves the list.
+                // SAFETY: as above; `next` is read before a flush can
+                // unlink `d`.
                 let (pages, next) = (g.desc(d).pages(), g.desc(d).next);
                 if pages <= excess || capped {
-                    let ghost dd = g@.descs@;
-                    excess = excess.saturating_sub(self.purge_extent(&mut g, d, &mut batch));
-                    n += 1;
-                    proof {
-                        let l2 = g@.elist@;
-                        assert(l2.subrange(k, l2.len() as int) =~= l1.subrange(k + 1, n1));
-                        assert forall|i: int| 0 <= i < l2.subrange(k, l2.len() as int).len() implies #[trigger] g@.descs@[l2.subrange(
-                            k,
-                            l2.len() as int,
-                        )[i]].value().pages == dd[l2.subrange(k, l2.len() as int)[i]].value().pages by {
-                            g@.lemma_elist();
-                            assert(l2.subrange(k, l2.len() as int)[i] == l2[k + i]);
-                            assert(l2[k + i] == l1[k + 1 + i]);
-                            assert(enode(l1, dd, k + 1 + i));
-                        }
-                        lemma_epages_frame(l2.subrange(k, l2.len() as int), dd, g@.descs@);
-                        if k < l2.len() {
-                            assert(enode(l1, dd, k + 1));
-                        }
-                    }
+                    let pushed = self.push_extent(&mut g, d, &mut batch, &mut t);
+                    excess = excess.saturating_sub(pushed);
                 } else {
                     proof {
-                        k = k + 1;
+                        reveal(has_piece);
+                        lemma_walked_visit(g@.elist@, t.rest@, t.vis@);
+                        let pend = batch.pieces();
+                        let vis0 = t.vis@;
+                        t.vis@ = t.vis@.insert(d);
+                        t.rest@ = t.rest@.drop_first();
+                        assert forall|x: (int, int)| #[trigger] pend(x) implies has_piece(self, g@, t.vis@, x) by {
+                            assert(has_piece(self, g@, vis0, x));
+                            let y = choose|y: *mut HugeDesc|
+                                #[trigger] g@.descs@.contains_key(y) && g@.descs@[y].value().state == RunState::Empty as u8
+                                    && vis0.contains(y) && piece_of(self, g@.descs@[y].value()) == x;
+                            assert(t.vis@.contains(y));
+                        }
+                        assert(t.inv(self, g@, pend));
                     }
+                }
+                proof {
+                    t.lemma_rest_live(self, g@, batch.pieces());
                 }
                 d = next;
             }
-            batch.flush();
+            batch.flush(&mut t, self, &mut g);
+        }
+        if t.failed {
+            self.gate.back_off(now);
         }
         self.sync_oldest(&g);
-        proof {
-            assert(g@.wf());
-        }
-        n
+        t.purged
     }
+
 
     /// [`decay_with`](Huge::decay_with) keeping everything the curve
     /// allows.
@@ -4804,8 +5298,8 @@ impl Huge {
         ensures
             *final(ord) == *old(ord),
             r matches Some(t) ==> t >= now,
-            exists|oldest: u64, next: u64, after: u64|
-                r == #[trigger] crate::purge::Decayer::spec_decay(now, decay_ns, oldest, next, after),
+            exists|oldest: u64, retry: u64, next: u64, after: u64, retry2: u64|
+                r == #[trigger] crate::purge::Decayer::spec_decay(now, decay_ns, oldest, retry, next, after, retry2),
     {
         self.gate.decay(now, decay_ns, |now, curve| {
             // Premise (lock order): the closure cannot carry the caller's
@@ -7103,16 +7597,16 @@ proof fn lemma_drop(l: Seq<*mut HugeDesc>, y: *mut HugeDesc)
 /// the one it locked, `[page, page + n)` the freed run (guard included),
 /// `usable` its usable bytes, `cap` the `retain_max` it read, `pof` the
 /// `purge_on_free` it read (read only at or below the cap; `free_run`
-/// defines it from the branch taken, false when unread), `now` its clock
-/// reading, and `discarded` whether it took the branch that pushes the
-/// run's pages into a fresh purge batch and flushes it (`Batch::flush`
-/// hands what it holds to `discard`, `madvise`).
+/// defines it from the condition it evaluated, false when unread), `now` its clock
+/// reading, and `discarded` whether `madvise` took the run's pages
+/// (`purge::discard_one`, tried only above the cap or under
+/// `purge_on_free`).
 ///
-/// Above the cap or under `purge_on_free`, the run went to `discard` and
-/// its pages lie in a free extent that is `Purged` with no age, or
-/// `Empty` with the age of an `Empty` neighbour it merged with.
-/// Otherwise it did not, and the extent is `Empty`, aged `now` or an
-/// `Empty` neighbour's age.
+/// Discarded, the run's pages lie in a free extent that is `Purged` with
+/// no age, or `Empty` with the age of an `Empty` neighbour it merged
+/// with. Otherwise (below the cap without `purge_on_free`, or a discard
+/// `madvise` refused, on `mlock`ed pages), the extent is `Empty`, aged
+/// `now` or an `Empty` neighbour's age.
 spec fn retain_cap(
     v0: Inner,
     v1: Inner,
@@ -7124,11 +7618,11 @@ spec fn retain_cap(
     now: u64,
     discarded: bool,
 ) -> bool {
-    &&& discarded == (usable > cap || pof)
+    &&& discarded ==> (usable > cap || pof)
     &&& exists|x: *mut HugeDesc| #[trigger] v1.descs@.contains_key(x) && {
         let e = v1.descs@[x].value();
         &&& e.start <= page && page + n <= e.start + e.pages
-        &&& if usable > cap || pof {
+        &&& if discarded {
             (e.state == RunState::Purged as u8 && e.dirty_at == 0) || (e.state == RunState::Empty as u8 && empty_nbr_at(
                 v0,
                 page,
@@ -7174,7 +7668,7 @@ proof fn lemma_retain_cap(
         v1.descs@.contains_key(x),
         v1.descs@[x].value().start <= page,
         page + n <= v1.descs@[x].value().start + v1.descs@[x].value().pages,
-        discarded == (usable > cap || pof),
+        discarded ==> (usable > cap || pof),
         kept ==> {
             let e = v0.descs@[x].value();
             &&& v0.descs@.contains_key(x)
@@ -7183,9 +7677,9 @@ proof fn lemma_retain_cap(
             &&& e.start + e.pages == page || e.start == page + n
             &&& v1.descs@[x].value().state == RunState::Empty as u8
         },
-        !kept && (usable > cap || pof) ==> v1.descs@[x].value().state == RunState::Purged as u8
+        !kept && discarded ==> v1.descs@[x].value().state == RunState::Purged as u8
             && v1.descs@[x].value().dirty_at == 0,
-        !kept && !(usable > cap || pof) ==> v1.descs@[x].value().state == RunState::Empty as u8
+        !kept && !discarded ==> v1.descs@[x].value().state == RunState::Empty as u8
             && v1.descs@[x].value().dirty_at == now,
     ensures
         retain_cap(v0, v1, page, n, usable, cap, pof, now, discarded),
@@ -7325,38 +7819,35 @@ impl Huge {
         }
         let now = now_ns().max(1);
         // Purged at once: above `huge_retain_max`, or under a zero huge
-        // decay period (`huge_dirty_decay_ms:0`).
+        // decay period (`huge_dirty_decay_ms:0`). A run the discard fails
+        // on is kept `Empty` for decay or the next explicit purge.
         let cap = self.retain_max();
-        // Ghost: whether the run went to `discard` here.
-        let ghost mut discarded = false;
-        let st = if usable > cap || self.purge_on_free() {
-            // The run's pages left the run authority with its token above:
-            // they are no live run's.
-            let ghost held = g@.pgs@@;
-            let mut batch = Batch::new(Ghost(|b: int| self.purgeable(held, b)));
-            proof {
-                let p = self.spec_page();
-                let base = self.base as int;
-                assert(page + n <= g0.next_page <= g0.np@ == self.npages);
-                assert forall|b: int| addr <= b < addr + n * page_size implies #[trigger] (batch.free())(b) by {
-                    crate::purge::lemma_unit_of(base, p, page as int, n as int, b);
-                    assert(tpages.contains((b - base) / p));
-                }
-                // Page-aligned run pages inside the huge region.
-                self.lemma_purge_range(page as int, n as int);
+        let purge = usable > cap || self.purge_on_free();
+        // The run's pages left the run authority with its token above:
+        // they are no live run's.
+        let ghost held = g@.pgs@@;
+        let ghost free = |b: int| self.purgeable(held, b);
+        proof {
+            let p = self.spec_page();
+            let base = self.base as int;
+            assert(page + n <= g0.next_page <= g0.np@ == self.npages);
+            assert forall|b: int| addr <= b < addr + n * page_size implies #[trigger] free(b) by {
+                crate::purge::lemma_unit_of(base, p, page as int, n as int, b);
+                assert(tpages.contains((b - base) / p));
             }
-            batch.push(addr, n * page_size);
-            batch.flush();
-            proof {
-                discarded = true;
-            }
+            // Page-aligned run pages inside the huge region.
+            self.lemma_purge_range(page as int, n as int);
+        }
+        let st = if purge && purge::discard_one(addr, n * page_size, Ghost(free)) {
             RunState::Purged
         } else {
             RunState::Empty
         };
+        // Ghost: whether the run was discarded here.
+        let ghost discarded = st == RunState::Purged;
         // Ghost: the `purge_on_free` flag the condition read, which it
         // reads only at or below the cap.
-        let ghost pof = st == RunState::Purged && usable <= cap;
+        let ghost pof = purge && usable <= cap;
         // Best effort: a fuller table still works, only slower.
         proof {
             g0.lemma_mid();
@@ -7368,7 +7859,9 @@ impl Huge {
         // Coalesce with free neighbours into one extent `[lo, hi)`. The
         // survivor is the `Empty` participant with the oldest `dirty_at`
         // (it keeps its place in the FIFO list), else `d`; the other
-        // descriptors go back to `meta`.
+        // descriptors go back to `meta`. A neighbour whose discards are
+        // refused (locked pages) absorbs the run all the same, which then
+        // stays dirty with it until the unlock or a reuse (design 8).
         let pred = g.free_before(page);
         let succ = g.free_after(page + n);
         let ghost m = Merge {

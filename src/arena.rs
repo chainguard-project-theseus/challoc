@@ -1255,6 +1255,8 @@ impl Arena {
                     slabs: ISet::empty(),
                     huge: false,
                     extents: ISet::empty(),
+                    refused: ISet::empty(),
+                    refused_extents: ISet::empty(),
                 },
             );
         }
@@ -1289,13 +1291,7 @@ impl Arena {
                     assert(l0.classes.contains((a, k)) <==> a == self.spec_index() && 0 <= k < c);
                 }
                 assert(left@.arenas =~= set![self.spec_index() as int]);
-                assert forall|t: (int, int, int)| #[trigger] left@.slabs.contains(t) implies paged(t.1) by {
-                    if l0.slabs.contains(t) {
-                    } else {
-                        assert(lc@.slabs.contains(t));
-                    }
-                }
-                assert(left@.extents =~= ISet::<int>::empty());
+                Left::lemma_join(l0, lc@);
             }
             c += 1;
         }

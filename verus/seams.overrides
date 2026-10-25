@@ -128,7 +128,6 @@ axiom_held	allocator invariant	none (assumption)
 src/lock.rs:Lock::cell_ref	UnsafeCell/volatile/transmute	Verus
 src/lock.rs:Lock::cell_mut	UnsafeCell/volatile/transmute	Verus
 LockGuard::drop	atomics primitive	loom/GenMC	discharged (verus/seams/lock-LockGuard-drop.md)
-total_bytes	core library	Kani	discharged (verus/seams/purge-total_bytes.md)
 pthread_join	FFI/syscall	none (assumption)
 spawn	FFI/syscall	none (assumption)
 read_global	raw pointer (internal)	RefinedRust

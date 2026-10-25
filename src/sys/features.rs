@@ -298,16 +298,28 @@ impl fmt::Write for FeatureLine {
 }
 
 /// The system page size, `getauxval(AT_PAGESZ)`. Without it, abort:
-/// guessing a page size would corrupt every mapping we make.
+/// guessing a page size would corrupt every mapping we make. The abort
+/// is unreachable: the page is the process regions' (the `getauxval`
+/// specification), a power of two of at most 64 KiB
+/// (`layout::axiom_process_page_at_most_64k`).
 pub fn page_size() -> (r: usize)
-    requires
-        crate::sys::may_abort(),
     ensures
         r != 0,
         crate::meta::is_pow2(r),
         r <= 0x1_0000,
+        r == (1usize << crate::layout::process_regions().lg_page),
 {
     let v = getauxval(AT_PAGESZ);
+    proof {
+        crate::layout::axiom_process_page_at_most_64k();
+        let lg = crate::layout::process_regions().lg_page;
+        assert(lg < 64);
+        crate::meta::lemma_is_pow2_shl(lg as usize);
+        assert((1usize << lg) == (1usize << (lg as usize))) by (bit_vector)
+            requires lg <= 16;
+        assert((1usize << lg) != 0) by (bit_vector)
+            requires lg <= 16;
+    }
     if v != 0 && v.is_power_of_two() {
         return v;
     }
