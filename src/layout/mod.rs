@@ -87,12 +87,21 @@ pub const MAX_SLAB: usize = 1 << LG_MAX_SLAB;
 
 /// Number of classes spaced one quantum apart before the four-per-doubling
 /// pattern starts: `Q, 2Q, .., 8Q`.
-const LINEAR_CLASSES: usize = 8;
+pub const LINEAR_CLASSES: usize = 8;
 /// `log2(8 * QUANTUM)`: the size where the doubling pattern begins.
-const LG_LINEAR_MAX: u32 = (LINEAR_CLASSES * QUANTUM).trailing_zeros();
-const LG_MEDIUM_MAX: u32 = MEDIUM_MAX.trailing_zeros();
+#[cfg(feature = "quantum16")]
+pub const LG_LINEAR_MAX: u32 = 7;
+#[cfg(feature = "quantum8")]
+pub const LG_LINEAR_MAX: u32 = 6;
+/// `log2(MEDIUM_MAX)`.
+pub const LG_MEDIUM_MAX: u32 = 18;
 /// Total number of size classes: 52 for `quantum16`, 56 for `quantum8`.
 pub const NCLASSES: usize = LINEAR_CLASSES + 4 * (LG_MEDIUM_MAX - LG_LINEAR_MAX) as usize;
+
+// The literals above, spelled out so the verifier sees their values,
+// checked against their definitions.
+const _: () = assert!(LG_LINEAR_MAX == (LINEAR_CLASSES * QUANTUM).trailing_zeros());
+const _: () = assert!(LG_MEDIUM_MAX == MEDIUM_MAX.trailing_zeros());
 
 /// Largest class reported as a jemalloc *bin* (`arenas.nbins`,
 /// `arenas.bin.<j>.*`, `stats.arenas.<i>.bins.<j>.*`, `small.*`): the
@@ -391,6 +400,7 @@ pub const fn classes_for_page(lg_page: u32) -> [Class; NCLASSES] {
         let size = class_size_at(i);
         let lg_slab = lg_slab_at(size, lg_page);
         let nslots = (1usize << lg_slab) / size;
+        let slab_bits = slab_bits_for(nslots, lg_slab);
         out[i] = Class {
             size: size as u32,
             lg_slab: lg_slab as u8,
@@ -398,14 +408,14 @@ pub const fn classes_for_page(lg_page: u32) -> [Class; NCLASSES] {
             slab_mask: ((1usize << lg_slab) - 1) as u32,
             inv_odd: inverse_of_odd_part(size),
             tz: size.trailing_zeros() as u8,
-            slab_bits: slab_bits_for(nslots, lg_slab) as u16,
+            slab_bits: slab_bits as u16,
         };
         i += 1;
     }
     out
 }
 
-const fn build_classes() -> [Class; NCLASSES] {
+pub(crate) const fn build_classes() -> [Class; NCLASSES] {
     classes_for_page(LG_MIN_SLAB)
 }
 
@@ -429,25 +439,45 @@ pub const BASE_CLASSES: [Class; NCLASSES] = build_classes();
 /// (`Shared`'s `Regions`) does too.
 pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 
+impl ClassTable {
+    const fn new(table: [Class; NCLASSES]) -> ClassTable {
+        ClassTable(UnsafeCell::new(table))
+    }
+
+    /// The table.
+    #[inline(always)]
+    pub fn table(&self) -> &[Class; NCLASSES] {
+        // SAFETY: see the `Sync` impl.
+        unsafe { &*self.0.get() }
+    }
+}
+
 // SAFETY: the table is written only by `adopt_page_geometry`, once, by the
-// initialising thread before the allocator is published (`api::init`), and
-// only the geometry fields are written, which nothing reads before init
-// (`size`, the one field pre-init callers such as `nallocx` read, is never
-// written). After that it is read-only for the life of the process.
+// initialising thread before the allocator is published (`api::init`),
+// through a `&mut` to the whole table, so nothing may read it during that
+// call (`nallocx`, for one, gets the initialised `Shared` before it
+// reads a class size). Only the geometry fields change: `size`,
+// `inv_odd` and `tz` keep their compile-time values. After that it is
+// read-only for the life of the process.
 unsafe impl Sync for ClassTable {}
 
 impl Deref for ClassTable {
     type Target = [Class; NCLASSES];
 
+    /// The table, as [`ClassTable::table`] gives it.
     #[inline(always)]
     fn deref(&self) -> &[Class; NCLASSES] {
-        // SAFETY: see the `Sync` impl; no write can be in flight while a
-        // reference exists.
-        unsafe { &*self.0.get() }
+        self.table()
     }
 }
 
-pub static CLASSES: ClassTable = ClassTable(UnsafeCell::new(BASE_CLASSES));
+pub static CLASSES: ClassTable = ClassTable::new(BASE_CLASSES);
+
+/// The storage of [`CLASSES`]' table, as a raw pointer.
+#[inline(always)]
+fn classes_ptr() -> *mut [Class; NCLASSES] {
+    CLASSES.0.get()
+}
 
 /// Raise the slab of every class whose table slab is smaller than the
 /// kernel page to the page ([`lg_slab_at`]), writing `lg_slab`,
@@ -458,30 +488,23 @@ pub static CLASSES: ClassTable = ClassTable(UnsafeCell::new(BASE_CLASSES));
 /// # Safety
 /// Must be called once, before the allocator is published to any other
 /// thread (`api::init` does, right after the page-size probe), and never
-/// again: nothing may read a geometry field concurrently.
+/// again: nothing may access the table concurrently.
 pub unsafe fn adopt_page_geometry(lg_page: u32) -> usize {
     // SAFETY: the caller guarantees exclusive access during the call.
-    unsafe { apply_page_geometry(CLASSES.0.get(), lg_page) }
+    apply_page_geometry(unsafe { &mut *classes_ptr() }, lg_page)
 }
 
 /// [`adopt_page_geometry`] over any table (the tests run it on a copy).
-///
-/// # Safety
-/// `table` must be valid for writes and unaliased for the call.
-pub(crate) unsafe fn apply_page_geometry(table: *mut [Class; NCLASSES], lg_page: u32) -> usize {
+pub(crate) fn apply_page_geometry(table: &mut [Class; NCLASSES], lg_page: u32) -> usize {
     let want = classes_for_page(lg_page);
     let mut changed = 0;
-    for (c, w) in want.iter().enumerate() {
-        // SAFETY: `c < NCLASSES`; the caller guarantees the table is
-        // writable and unaliased.
-        let cur = unsafe { &raw mut (*table)[c] };
-        if unsafe { (*cur).lg_slab } != w.lg_slab {
-            unsafe {
-                (*cur).lg_slab = w.lg_slab;
-                (*cur).nslots = w.nslots;
-                (*cur).slab_mask = w.slab_mask;
-                (*cur).slab_bits = w.slab_bits;
-            }
+    for c in 0..NCLASSES {
+        let w = &want[c];
+        if table[c].lg_slab != w.lg_slab {
+            table[c].lg_slab = w.lg_slab;
+            table[c].nslots = w.nslots;
+            table[c].slab_mask = w.slab_mask;
+            table[c].slab_bits = w.slab_bits;
             changed += 1;
         }
     }
@@ -492,25 +515,36 @@ pub(crate) unsafe fn apply_page_geometry(table: *mut [Class; NCLASSES], lg_page:
 /// to the page by [`adopt_page_geometry`]), as the inclusive range of
 /// class numbers, or `None` when the geometry is the table's. For the
 /// report (`malloc_stats_print`) and the tests.
+// Verus does not support the closure form.
+#[allow(clippy::manual_map)]
 pub fn page_sized_classes() -> Option<(usize, usize)> {
-    let mut lo = None;
-    let mut hi = 0;
+    let table = CLASSES.table();
+    let mut lo: Option<usize> = None;
+    let mut hi: usize = 0;
     for c in 0..NCLASSES {
-        if CLASSES[c].lg_slab != BASE_CLASSES[c].lg_slab {
+        if table[c].lg_slab != BASE_CLASSES[c].lg_slab {
             if lo.is_none() {
                 lo = Some(c);
             }
             hi = c;
         }
     }
-    lo.map(|lo| (lo, hi))
+    match lo {
+        Some(lo) => Some((lo, hi)),
+        None => None,
+    }
 }
 
 /// Bitmap words one slab occupies at most over all classes (`slab_bits /
 /// 64`, at least 1): the size of the scratch bitmap a release batch
 /// accumulates a slab's clears in (`ClassState::release_owned`), 128 words
-/// (1 KiB) with 8-byte slots in a 64 KiB slab.
-pub const MAX_SLAB_WORDS: usize = max_slab_words();
+/// (1 KiB) with 8-byte slots in a 64 KiB slab. Spelled per quantum so the
+/// verifier sees the value; the assertion below ties it to the table
+/// ([`max_slab_words`]).
+#[cfg(feature = "quantum16")]
+pub const MAX_SLAB_WORDS: usize = 64;
+#[cfg(feature = "quantum8")]
+pub const MAX_SLAB_WORDS: usize = 128;
 
 const fn max_slab_words() -> usize {
     let classes = build_classes();
@@ -531,7 +565,8 @@ const fn max_slab_words() -> usize {
 const fn class_of_slow(n: usize) -> Option<usize> {
     let mut i = 0;
     while i < NCLASSES {
-        if BASE_CLASSES[i].size as usize >= n {
+        // `class_size_at(i)` is `BASE_CLASSES[i].size`.
+        if class_size_at(i) >= n {
             return Some(i);
         }
         i += 1;
@@ -612,6 +647,8 @@ pub fn class_of(n: usize) -> Option<usize> {
 pub fn class_size_of(n: usize) -> Option<usize> {
     class_of(n).map(|c| CLASSES[c].size())
 }
+
+const _: () = assert!(MAX_SLAB_WORDS == max_slab_words());
 
 mod regions;
 
