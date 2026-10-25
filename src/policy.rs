@@ -317,6 +317,13 @@ impl Policy {
         self.high_rises_seen.store(high_rises, Ordering::Relaxed);
     }
 
+    /// The stored position in the scaled band, one more than the position
+    /// (0 outside the band).
+    #[inline(always)]
+    fn position(&self) -> u32 {
+        self.scaled16.load(Ordering::Relaxed)
+    }
+
     /// The band as last evaluated (`Unlimited` when no limit was seen).
     pub fn band(&self) -> Band {
         if self.immediate.load(Ordering::Relaxed) {
@@ -324,7 +331,7 @@ impl Policy {
         } else if !self.limited.load(Ordering::Relaxed) {
             Band::Unlimited
         } else {
-            match self.scaled16.load(Ordering::Relaxed) {
+            match self.position() {
                 0 => Band::Low,
                 f => Band::Scaled(f - 1),
             }
@@ -412,8 +419,9 @@ impl Policy {
             UNLIMITED
         };
         let mut changed = self.limited.swap(limited, Ordering::Relaxed) != limited;
-        changed |= self.scaled16.swap(scaled, Ordering::Relaxed) != scaled;
-        changed |= self.immediate.swap(immediate, Ordering::Relaxed) != immediate;
+        let prev_frac = self.scaled16.swap(scaled, Ordering::Relaxed);
+        changed = (prev_frac != scaled) || changed;
+        changed = (self.immediate.swap(immediate, Ordering::Relaxed) != immediate) || changed;
         self.cap.store(cap, Ordering::Relaxed);
         self.empty_bytes
             .store(if limited { retention } else { 0 }, Ordering::Relaxed);
@@ -448,8 +456,13 @@ impl Policy {
 /// lock-free `oldest_empty` says which), one for the huge allocator.
 pub fn empty_bytes(shared: &Shared) -> u64 {
     let mut total = 0u64;
-    for arena in shared.arenas.iter() {
-        total += arena.empty_bytes() as u64;
+    // `shared.arenas.iter()`, spelled out with an index: Verus does not
+    // specify the iterator.
+    let n = shared.arenas.count() as usize;
+    for i in 0..n {
+        if let Some(arena) = shared.arenas.get_existing(i as u16) {
+            total += arena.empty_bytes() as u64;
+        }
     }
     total + shared.huge.empty_bytes() as u64
 }
