@@ -240,11 +240,15 @@ const fn align_up(x: usize, a: usize) -> usize {
     (x + a - 1) & !(a - 1)
 }
 
+/// `PROT_READ | PROT_WRITE`.
+const PROT_RW: i32 = 3;
+
+const _: () = assert!(PROT_RW == crate::sys::PROT_READ | crate::sys::PROT_WRITE);
+
 fn commit_range(addr: usize, len: usize) -> Result<(), Errno> {
-    use crate::sys::{PROT_READ, PROT_WRITE};
     // SAFETY: the range is inside our own PROT_NONE reservation and nothing
     // is mapped over it; adding permissions cannot invalidate anything.
-    unsafe { crate::sys::mprotect(addr, len, PROT_READ | PROT_WRITE) }
+    unsafe { crate::sys::mprotect(addr, len, PROT_RW) }
 }
 
 impl Inner {
@@ -474,6 +478,36 @@ impl Inner {
         Ok(())
     }
 
+    /// [`Meta::reserve_committed`] under the lock.
+    fn reserve_committed(&mut self, len: usize, align: usize) -> Option<usize> {
+        if self.eager_ok(len) {
+            let (bump, frontier, stats) = (self.bump, self.frontier, self.stats);
+            if let Some(p) = self.reserve_eager(len, align) {
+                if self.flush().is_ok() {
+                    self.stats.committed += align_up(len.max(1), self.page);
+                    return Some(p);
+                }
+                // The kernel refused the commit: undo the carve (nothing
+                // has seen it) and try the reservation side, as when the
+                // object side cannot hold the table.
+                self.bump = bump;
+                self.frontier = frontier;
+                self.stats = stats;
+            }
+        }
+        let old_top = self.top;
+        let old_reserved = self.stats.reserved;
+        let start = self.reserve(len, align)?;
+        if self.commit(start, old_top - start).is_err() {
+            self.top = old_top;
+            self.stats.reserved = old_reserved;
+            return None;
+        }
+        // `commit` made exactly `[start, old_top)` writable: `start` is the
+        // new `top`, so it took the `commit_range` branch.
+        Some(start)
+    }
+
     fn stats(&self) -> MetaStats {
         MetaStats {
             writable: (self.frontier - self.base) + self.top_committed,
@@ -492,8 +526,14 @@ fn eager_policy() -> bool {
     if !crate::thp::is_never() {
         return false;
     }
+    // Spelled as bytes so the verifier sees the NUL `sys::open` requires.
+    const OVERCOMMIT: [u8; 31] = [
+        b'/', b'p', b'r', b'o', b'c', b'/', b's', b'y', b's', b'/', b'v', b'm', b'/', b'o', b'v',
+        b'e', b'r', b'c', b'o', b'm', b'm', b'i', b't', b'_', b'm', b'e', b'm', b'o', b'r', b'y',
+        0,
+    ];
     let mut buf = [0u8; 8];
-    match crate::sys::read_small_file(b"/proc/sys/vm/overcommit_memory\0", &mut buf) {
+    match crate::sys::read_small_file(&OVERCOMMIT, &mut buf) {
         Some(n) if n > 0 => buf[0] != b'2',
         // Unreadable (a sandbox without /proc): the mode cannot be known,
         // so take the safe side.
@@ -604,29 +644,7 @@ impl Meta {
     /// [`reserve_table`](Meta::reserve_table) and commit the whole range.
     /// Zero on return. `None` on either failure, leaving nothing reserved.
     pub fn reserve_committed(&self, len: usize, align: usize) -> Option<usize> {
-        let mut g = self.inner.lock();
-        if g.eager_ok(len) {
-            let (bump, frontier, stats) = (g.bump, g.frontier, g.stats);
-            if let Some(p) = g.reserve_eager(len, align) {
-                if g.flush().is_ok() {
-                    g.stats.committed += align_up(len.max(1), g.page);
-                    return Some(p);
-                }
-                // The kernel refused the commit: undo the carve (nothing
-                // has seen it) and try the reservation side, as when the
-                // object side cannot hold the table.
-                (g.bump, g.frontier, g.stats) = (bump, frontier, stats);
-            }
-        }
-        let old_top = g.top;
-        let old_reserved = g.stats.reserved;
-        let start = g.reserve(len, align)?;
-        if g.commit(start, old_top - start).is_err() {
-            g.top = old_top;
-            g.stats.reserved = old_reserved;
-            return None;
-        }
-        Some(start)
+        self.inner.lock().reserve_committed(len, align)
     }
 
     pub fn stats(&self) -> MetaStats {
