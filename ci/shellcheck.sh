@@ -1,8 +1,8 @@
 #!/bin/sh
-# ci/shellcheck.sh: lint ci/*.sh (the lint check). Wolfi does not package
-# the linter, so this fetches the pinned upstream release and checks its
-# SHA-256 (the digests GitHub publishes for the release assets)
-# before running it.
+# ci/shellcheck.sh: lint ci/*.sh and verus/*.sh (the lint check). Wolfi
+# does not package the linter, so this fetches the pinned upstream release
+# and checks its SHA-256 (the digests GitHub publishes for the release
+# assets) before running it.
 set -eu
 version=v0.11.0
 case $(uname -m) in
@@ -18,4 +18,4 @@ curl -sSfL -o "$tarball" \
 echo "$sum  $tarball" | sha256sum -c -
 tar -xJf "$tarball" -C "$dir"
 "$dir/shellcheck-$version/shellcheck" --version
-"$dir/shellcheck-$version/shellcheck" ci/*.sh
+"$dir/shellcheck-$version/shellcheck" ci/*.sh verus/*.sh
