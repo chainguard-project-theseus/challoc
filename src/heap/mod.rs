@@ -78,6 +78,9 @@ use paths::invalid_free;
 #[cfg(test)]
 use shared::ncpus;
 use shared::{now_ns, tid};
+use vstd::prelude::verus;
+
+verus! {
 
 /// Largest default cache capacity (classes up to 128 bytes). 1024 rather
 /// than jemalloc's 200: every flush or refill writes the descriptor lines of
@@ -90,6 +93,9 @@ use shared::{now_ns, tid};
 pub const MAX_CAP: u32 = 1024;
 /// Smallest cache capacity.
 pub const MIN_CAP: u32 = 8;
+
+} // verus!
+
 /// Slow-path entries between two periodic-work checks (design 6.4).
 pub const PERIODIC_EVERY: u32 = 64;
 /// Slow-path entries ([`Heap::slow_ticks`]) before which a new thread heap

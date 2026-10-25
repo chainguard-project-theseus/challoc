@@ -238,7 +238,10 @@ pub fn start_requested(shared: &Shared) -> bool {
     let g = STATE.lock();
     if !g.creating && !g.present && AUTO.load(Ordering::Relaxed) {
         REQUESTED.store(false, Ordering::Relaxed);
-        let fails = AUTO_FAILS.load(Ordering::Relaxed) + 1;
+        // `+ 1` as the release build computes it (overflow checks are off
+        // there): the count only ever reaches `AUTO_TRIES`, but it is an
+        // atomic, whose loads Verus does not bound.
+        let fails = AUTO_FAILS.load(Ordering::Relaxed).wrapping_add(1);
         AUTO_FAILS.store(fails, Ordering::Relaxed);
         if fails >= AUTO_TRIES {
             AUTO.store(false, Ordering::Relaxed);
@@ -342,6 +345,16 @@ pub fn set_auto(shared: Option<&Shared>) {
     AUTO_FAILS.store(0, Ordering::Relaxed);
 }
 
+/// `pthread_join(t, NULL)`: 0 or an error number.
+///
+/// # Safety
+/// `t` is a joinable thread this module created and never joined.
+#[inline(always)]
+unsafe fn pthread_join(t: ::libc::pthread_t) -> i32 {
+    // SAFETY: guaranteed by the caller.
+    unsafe { ::libc::pthread_join(t, core::ptr::null_mut()) }
+}
+
 /// Create the thread on `stack` (reserving the stack first if there is
 /// none yet), after joining `previous`. Returns the stack (kept even
 /// when creation fails, for the next attempt) and the new thread.
@@ -367,7 +380,7 @@ fn create(
     // has a `previous`: its copy of the stack carries no thread.
     if let Some(t) = previous {
         // SAFETY: a joinable thread this module created and never joined.
-        let rc = unsafe { ::libc::pthread_join(t, core::ptr::null_mut()) };
+        let rc = unsafe { pthread_join(t) };
         if rc != 0 {
             sys::abort_fmt(format_args!(
                 "pthread_join of the background thread failed: {}",
@@ -382,10 +395,18 @@ fn create(
     let stack = if stack != 0 {
         Some(stack)
     } else {
-        shared
-            .meta
-            .reserve(STACK_SIZE, page)
-            .filter(|&s| shared.meta.commit(s + page, STACK_SIZE - page).is_ok())
+        // `.filter(|&s| shared.meta.commit(..).is_ok())`, spelled out:
+        // vstd does not specify `Option::filter`.
+        match shared.meta.reserve(STACK_SIZE, page) {
+            Some(s) => {
+                if shared.meta.commit(s + page, STACK_SIZE - page).is_ok() {
+                    Some(s)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        }
     };
     let thread = match stack {
         Some(stack) => spawn(shared, stack + page, STACK_SIZE - page),
@@ -466,12 +487,24 @@ pub fn thread() -> Option<::libc::pthread_t> {
     STATE.lock().thread
 }
 
-extern "C" fn main(arg: *mut c_void) -> *mut c_void {
+/// The `Shared` that [`spawn`] passes as the thread's argument.
+#[inline(always)]
+fn shared_arg(arg: *mut c_void) -> &'static Shared {
     // SAFETY: `start` passed a `Shared` that lives for the rest of the
-    // process (the process-wide one, or a leaked test fixture); the name
-    // is NUL-terminated.
-    let shared = unsafe { &*(arg as *const Shared) };
-    let _ = unsafe { sys::prctl(PR_SET_NAME, b"challoc-bg\0".as_ptr() as usize, 0, 0, 0) };
+    // process (the process-wide one, or a leaked test fixture).
+    unsafe { &*(arg as *const Shared) }
+}
+
+/// The thread's name for `PR_SET_NAME`, NUL-terminated.
+const THREAD_NAME: [u8; 11] = [
+    b'c', b'h', b'a', b'l', b'l', b'o', b'c', b'-', b'b', b'g', 0,
+];
+
+/// The thread's body: decay and sample until the request is withdrawn.
+extern "C" fn main(arg: *mut c_void) -> *mut c_void {
+    let shared = shared_arg(arg);
+    // SAFETY: the name is NUL-terminated.
+    let _ = unsafe { sys::prctl(PR_SET_NAME, THREAD_NAME.as_ptr() as usize, 0, 0, 0) };
     detach_from_starter();
     loop {
         // Read the sequence before scanning, so a bump that lands
@@ -489,13 +522,17 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
         let now = sys::now_coarse_ns();
         super::sample(shared, now);
         let deadline = super::decay(shared, now);
-        let timeout = deadline.map(|deadline| {
-            let ns = deadline.saturating_sub(now).max(MIN_SLEEP_NS);
-            Timespec {
-                sec: (ns / 1_000_000_000) as i64,
-                nsec: (ns % 1_000_000_000) as i64,
+        // `deadline.map(|deadline| ..)`, spelled as a `match`.
+        let timeout = match deadline {
+            Some(deadline) => {
+                let ns = deadline.saturating_sub(now).max(MIN_SLEEP_NS);
+                Some(Timespec {
+                    sec: (ns / 1_000_000_000) as i64,
+                    nsec: (ns % 1_000_000_000) as i64,
+                })
             }
-        });
+            None => None,
+        };
         #[cfg(test)]
         if timeout.is_none() {
             UNTIMED_WAITS.fetch_add(1, Ordering::SeqCst);

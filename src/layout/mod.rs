@@ -25,6 +25,9 @@
 use crate::QUANTUM;
 use core::cell::UnsafeCell;
 use core::ops::Deref;
+use vstd::prelude::verus;
+
+verus! {
 
 /// Largest small-tier request.
 pub const SMALL_MAX: usize = 1024;
@@ -98,10 +101,14 @@ pub const LG_MEDIUM_MAX: u32 = 18;
 /// Total number of size classes: 52 for `quantum16`, 56 for `quantum8`.
 pub const NCLASSES: usize = LINEAR_CLASSES + 4 * (LG_MEDIUM_MAX - LG_LINEAR_MAX) as usize;
 
+} // verus!
+
 // The literals above, spelled out so the verifier sees their values,
 // checked against their definitions.
 const _: () = assert!(LG_LINEAR_MAX == (LINEAR_CLASSES * QUANTUM).trailing_zeros());
 const _: () = assert!(LG_MEDIUM_MAX == MEDIUM_MAX.trailing_zeros());
+
+verus! {
 
 /// Largest class reported as a jemalloc *bin* (`arenas.nbins`,
 /// `arenas.bin.<j>.*`, `stats.arenas.<i>.bins.<j>.*`, `small.*`): the
@@ -118,6 +125,9 @@ const _: () = assert!(LG_MEDIUM_MAX == MEDIUM_MAX.trailing_zeros());
 /// "fragmentation" that no defragmenter can recover, and one such class
 /// per size step adds up to megabytes on an idle server.
 pub const BIN_MAX: usize = 4096;
+
+} // verus!
+
 /// Number of classes up to [`BIN_MAX`]: 28 for `quantum16`, 32 for `quantum8`.
 pub const NBINS: usize = count_bins();
 
