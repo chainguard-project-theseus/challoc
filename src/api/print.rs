@@ -254,9 +254,9 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
             "Page-sized slabs: classes {}..{} ({}..{} bytes) at {} bytes ({}..{} in the table)",
             lo,
             hi,
-            CLASSES[lo].size(),
-            CLASSES[hi].size(),
-            CLASSES[lo].slab_size(),
+            CLASSES.table()[lo].size(),
+            CLASSES.table()[hi].size(),
+            CLASSES.table()[lo].slab_size(),
             base(usize::min),
             base(usize::max)
         )?;

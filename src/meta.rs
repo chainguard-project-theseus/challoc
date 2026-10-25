@@ -46,6 +46,17 @@ use core::ptr;
 
 use crate::lock::{Lock, RawLock};
 use crate::sys::Errno;
+#[cfg(verus_keep_ghost)]
+use crate::vspec::layout::{layout_align, layout_size};
+#[cfg(verus_keep_ghost)]
+use vstd::arithmetic::power2::pow2;
+#[cfg(verus_keep_ghost)]
+use vstd::bits::lemma_usize_shl_is_mul;
+use vstd::prelude::*;
+#[cfg(verus_keep_ghost)]
+use vstd::std_specs::bits::{axiom_u64_leading_zeros, u64_leading_zeros};
+
+verus! {
 
 /// Alignment of every object; the smallest bin is one quantum of 16.
 pub const MIN_ALIGN: usize = 16;
@@ -54,7 +65,13 @@ pub const MIN_ALIGN: usize = 16;
 /// silicon has 128-byte lines and Intel's adjacent-line prefetcher pairs
 /// 64-byte lines (the same unit as `lock::PAD_ALIGN`).
 pub const CACHE_LINE: usize = 128;
+
+} // verus!
+
 const _: () = assert!(CACHE_LINE == crate::lock::PAD_ALIGN);
+
+verus! {
+
 /// Largest alignment [`Meta::alloc`] accepts. Anything needing more (a
 /// thread stack) is a reservation.
 pub const MAX_ALIGN: usize = CACHE_LINE;
@@ -80,10 +97,151 @@ pub const COMMIT_CHUNK: usize = 64 * 1024;
 /// to under 100 MiB; 16 MiB would take 45 more tables for 450 MiB.
 pub const EAGER_MAX: usize = 8 << 20;
 
-/// Bin sizes, ascending.
-pub static BINS: [u32; NBINS] = build_bins();
+/// Size of bin `b` (the doc of [`NBINS`]): 16, 32, 48, 64, 128, 256, then
+/// `3 << (7 + j)` and `1 << (9 + j)` for `j` in `0..=11`.
+pub open spec fn bin_size(b: int) -> int {
+    if b < 4 {
+        16 * (b + 1)
+    } else if b < 6 {
+        128 * (b - 3)
+    } else if (b - 6) % 2 == 0 {
+        (3usize << ((7 + (b - 6) / 2) as usize)) as int
+    } else {
+        (1usize << ((9 + (b - 6) / 2) as usize)) as int
+    }
+}
 
-const fn build_bins() -> [u32; NBINS] {
+/// [`bin_align`].
+pub open spec fn bin_align_spec(b: int) -> int {
+    if b < 4 { 16 } else { 128 }
+}
+
+/// A bin's size is a multiple of its alignment, between 16 and
+/// `MAX_BINNED`, and above the previous bin's.
+pub open spec fn bin_facts(b: int) -> bool {
+    &&& 16 <= bin_size(b) <= 0x10_0000
+    &&& bin_size(b) % bin_align_spec(b) == 0
+    &&& b > 0 ==> bin_size(b - 1) < bin_size(b)
+}
+
+spec fn bins_ok(n: nat) -> bool
+    decreases n,
+{
+    n == 0 || (bins_ok((n - 1) as nat) && bin_facts(n - 1))
+}
+
+proof fn lemma_bins_ok(n: nat, b: int)
+    requires
+        bins_ok(n),
+        0 <= b < n,
+    ensures
+        bin_facts(b),
+    decreases n,
+{
+    if b < n - 1 {
+        lemma_bins_ok((n - 1) as nat, b);
+    }
+}
+
+pub proof fn lemma_bin(b: int)
+    requires
+        0 <= b < NBINS,
+    ensures
+        bin_facts(b),
+{
+    assert(bins_ok(30)) by (compute_only);
+    lemma_bins_ok(30, b);
+}
+
+/// Bin sizes grow with the bin.
+pub proof fn lemma_bin_mono(a: int, b: int)
+    requires
+        0 <= a <= b < NBINS,
+    ensures
+        bin_size(a) <= bin_size(b),
+    decreases b - a,
+{
+    if a < b {
+        lemma_bin(b);
+        lemma_bin_mono(a, b - 1);
+    }
+}
+
+/// `b` is the smallest bin whose size is at least `size` ([`bin_of`]).
+pub open spec fn is_bin_of(size: int, b: int) -> bool {
+    &&& 0 <= b < NBINS
+    &&& size <= bin_size(b)
+    &&& b == 0 || bin_size(b - 1) < size
+}
+
+/// [`bin_of`] as a function (of a size it serves).
+pub open spec fn bin_of_spec(size: int) -> int {
+    choose|b: int| is_bin_of(size, b)
+}
+
+/// [`bin_for`] as a function (of a layout it serves).
+pub open spec fn bin_for_spec(layout: Layout) -> int {
+    bin_for_sa(layout_size(layout) as int, layout_align(layout) as int)
+}
+
+/// [`bin_for_spec`] of a layout of `size` bytes aligned to `align`.
+pub open spec fn bin_for_sa(size: int, align: int) -> int {
+    let b = bin_of_spec(size);
+    if align > MIN_ALIGN && b < 4 { 4 } else { b }
+}
+
+/// A size has one smallest bin.
+proof fn lemma_bin_of_unique(size: int, b: int)
+    requires
+        is_bin_of(size, b),
+    ensures
+        bin_of_spec(size) == b,
+{
+    let c = bin_of_spec(size);
+    assert(is_bin_of(size, c));
+    lemma_bin(b);
+    lemma_bin(c);
+    if c < b {
+        lemma_bin_mono(c, b - 1);
+    } else if b < c {
+        lemma_bin_mono(b, c - 1);
+    }
+}
+
+/// `x` is a power of two (what `next_power_of_two` returns, `vspec::core_int`).
+pub open spec fn is_pow2(x: usize) -> bool {
+    exists|k: nat| k < 64 && x as nat == #[trigger] pow2(k)
+}
+
+/// `1 << k` is a power of two.
+pub proof fn lemma_is_pow2_shl(k: usize)
+    requires
+        k < 64,
+    ensures
+        is_pow2(1usize << k),
+{
+    vstd::bits::lemma_usize_pow2_no_overflow(k as nat);
+    lemma_usize_shl_is_mul(1, k);
+    assert((1usize << k) as nat == pow2(k as nat));
+}
+
+/// [`align_up`] as a function.
+pub open spec fn align_up_spec(x: usize, a: usize) -> usize {
+    ((x + a - 1) as usize) & !((a - 1) as usize)
+}
+
+/// Bin sizes, ascending.
+pub exec static BINS: [u32; NBINS]
+    ensures
+        forall|i: int| 0 <= i < NBINS ==> BINS[i] as int == #[trigger] bin_size(i),
+{
+    build_bins()
+}
+
+const fn build_bins() -> (r: [u32; NBINS])
+    ensures
+        forall|i: int| 0 <= i < NBINS ==> r[i] as int == #[trigger] bin_size(i),
+{
     let mut b = [0u32; NBINS];
     b[0] = 16;
     b[1] = 32;
@@ -93,7 +251,26 @@ const fn build_bins() -> [u32; NBINS] {
     b[5] = 256;
     let mut i = 6;
     let mut lg = 9;
-    while lg <= LG_MAX_BINNED {
+    while lg <= LG_MAX_BINNED
+        invariant
+            9 <= lg <= LG_MAX_BINNED + 1,
+            i == 6 + 2 * (lg - 9),
+            forall|j: int| 0 <= j < i ==> b[j] as int == #[trigger] bin_size(j),
+        decreases LG_MAX_BINNED + 1 - lg,
+    {
+        proof {
+            let s = (lg - 2) as u32;
+            assert((3u32 << s) as usize == 3usize << (s as usize)) by (bit_vector)
+                requires
+                    s <= 18,
+            ;
+            assert((1u32 << lg) as usize == 1usize << (lg as usize)) by (bit_vector)
+                requires
+                    lg <= 20,
+            ;
+            assert((i as int - 6) / 2 == lg as int - 9);
+            assert((i as int + 1 - 6) / 2 == lg as int - 9);
+        }
         b[i] = 3 << (lg - 2);
         b[i + 1] = 1 << lg;
         i += 2;
@@ -105,7 +282,14 @@ const fn build_bins() -> [u32; NBINS] {
 
 /// Smallest bin whose size is at least `size`; `None` above `MAX_BINNED`.
 #[inline]
-pub const fn bin_of(size: usize) -> Option<usize> {
+pub const fn bin_of(size: usize) -> (r: Option<usize>)
+    ensures
+        r is None <==> size > MAX_BINNED,
+        r matches Some(b) ==> b < NBINS && size <= bin_size(b as int) && (b == 0 || bin_size(b - 1) < size),
+{
+    proof {
+        lemma_consts();
+    }
     if size <= 48 {
         return Some(if size == 0 { 0 } else { (size - 1) / 16 });
     }
@@ -123,31 +307,79 @@ pub const fn bin_of(size: usize) -> Option<usize> {
     }
     // `size` is in `(2^lg, 2^(lg+1)]` with `lg >= 8`; bin `6 + 2 * (lg - 8)`
     // holds `1.5 * 2^lg` and the next holds `2^(lg+1)`.
+    let ghost m = (size - 1) as usize;
+    proof {
+        let mu = m as u64;
+        axiom_u64_leading_zeros(mu);
+        let lz = u64_leading_zeros(mu) as u64;
+        assert(44 <= lz <= 55 && (1u64 << sub(63u64, lz)) <= mu && mu < (1u64 << sub(64u64, lz))) by (bit_vector)
+            requires
+                256 <= mu < 0x10_0000,
+                lz <= 64,
+                lz < 64 ==> (mu >> sub(63u64, lz)) & 1u64 != 0u64,
+                mu >> sub(64u64, lz) == 0,
+        ;
+        let l = sub(63u64, lz) as usize;
+        assert((1usize << l) <= m && m < (1usize << add(l, 1))) by (bit_vector)
+            requires
+                l <= 19,
+                mu == m as u64,
+                l as u64 == sub(63u64, lz),
+                (1u64 << sub(63u64, lz)) <= mu,
+                mu < (1u64 << sub(64u64, lz)),
+                lz <= 55,
+        ;
+    }
     let lg = (usize::BITS - 1 - (size - 1).leading_zeros()) as usize;
     let base = 6 + 2 * (lg - 8);
-    if size <= (3 << (lg - 1)) {
-        Some(base)
-    } else {
-        Some(base + 1)
+    proof {
+        assert((base - 6) / 2 == lg - 8);
+        assert((base + 1 - 6) / 2 == lg - 8);
+        if lg > 8 {
+            assert((base - 1 - 6) / 2 == lg - 9);
+        } else {
+            assert(128 * 2 == 1usize << 8usize) by (compute_only);
+        }
     }
+    if size <= (3 << (lg - 1)) { Some(base) } else { Some(base + 1) }
 }
 
 /// Alignment every object of bin `bin` has: 16 up to the 64-byte bin, a
 /// full line from 128 up.
 #[inline]
-pub const fn bin_align(bin: usize) -> usize {
+pub const fn bin_align(bin: usize) -> (r: usize)
+    ensures
+        r == bin_align_spec(bin as int),
+{
     if bin < 4 { MIN_ALIGN } else { CACHE_LINE }
 }
 
 /// Bin serving a `Layout`: the size's bin, promoted to a cache-line bin when
 /// the alignment asks for more than 16. `None` if the size is too big.
 #[inline]
-pub const fn bin_for(layout: Layout) -> Option<usize> {
-    match bin_of(layout.size()) {
+pub const fn bin_for(layout: Layout) -> (r: Option<usize>)
+    ensures
+        r is None <==> layout_size(layout) > MAX_BINNED,
+        r matches Some(b) ==> {
+            &&& b < NBINS
+            &&& layout_size(layout) <= bin_size(b as int)
+            &&& layout_align(layout) > MIN_ALIGN ==> b >= 4
+        },
+        r matches Some(b) ==> b as int == bin_for_spec(layout),
+{
+    let r0 = bin_of(layout.size());
+    proof {
+        if let Some(b) = r0 {
+            lemma_bin_of_unique(layout_size(layout) as int, b as int);
+        }
+    }
+    match r0 {
         Some(b) if layout.align() > MIN_ALIGN && b < 4 => Some(4),
         other => other,
     }
 }
+
+} // verus!
 
 /// Counters for `stats.metadata` and diagnostics. Identities:
 /// `allocated + eager <= bumped <= writable <= len`, `committed <=
@@ -235,10 +467,86 @@ pub struct Meta {
     inner: Lock<Inner>,
 }
 
+verus! {
+
 #[inline]
-const fn align_up(x: usize, a: usize) -> usize {
+const fn align_up(x: usize, a: usize) -> (r: usize)
+    requires
+        a > 0,
+        a & sub(a, 1) == 0,
+        x + a <= usize::MAX,
+    ensures
+        r == align_up_spec(x, a),
+        x <= r,
+        r - x < a,
+        r % a == 0,
+        x % a == 0 ==> r == x,
+{
+    proof {
+        lemma_align_bits(x, a, (x + a - 1) as usize);
+    }
     (x + a - 1) & !(a - 1)
 }
+
+/// Rounding `y = x + a - 1` down to a multiple of `a` rounds `x` up.
+pub(crate) proof fn lemma_align_bits(x: usize, a: usize, y: usize)
+    requires
+        a > 0,
+        a & sub(a, 1) == 0,
+        y == x + (a - 1),
+    ensures
+        y & !sub(a, 1) <= y,
+        y - (y & !sub(a, 1)) <= a - 1,
+        (y & !sub(a, 1)) % a == 0,
+        x % a == 0 ==> y & !sub(a, 1) == x,
+{
+    assert(y & !sub(a, 1) <= y) by (bit_vector);
+    assert(sub(y, y & !sub(a, 1)) == y & sub(a, 1)) by (bit_vector);
+    assert(y & sub(a, 1) <= sub(a, 1)) by (bit_vector);
+    let r = y & !sub(a, 1);
+    assert(r & sub(a, 1) == 0) by (bit_vector)
+        requires
+            r == y & !sub(a, 1),
+    ;
+    lemma_mod_mask(r, a);
+    if x % a == 0 {
+        lemma_mod_mask(x, a);
+        assert(y & !sub(a, 1) == x) by (bit_vector)
+            requires
+                x & sub(a, 1) == 0,
+                y == add(x, sub(a, 1)),
+                y >= x,
+        ;
+    }
+}
+
+/// For a power of two `a`, `x % a` is the low bits of `x`.
+proof fn lemma_mod_mask(x: usize, a: usize)
+    requires
+        a > 0,
+        a & sub(a, 1) == 0,
+    ensures
+        x % a == x & sub(a, 1),
+{
+    assert(x % a == x & sub(a, 1)) by (bit_vector)
+        requires
+            a > 0,
+            a & sub(a, 1) == 0,
+    ;
+}
+
+/// The constants' values.
+pub(crate) proof fn lemma_consts()
+    ensures
+        MAX_BINNED == 0x10_0000,
+        NBINS == 30,
+        EAGER_MAX == 0x80_0000,
+{
+    assert(MAX_BINNED == 0x10_0000) by (compute_only);
+    assert(EAGER_MAX == 0x80_0000) by (compute_only);
+}
+
+} // verus!
 
 /// `PROT_READ | PROT_WRITE`.
 const PROT_RW: i32 = 3;

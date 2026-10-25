@@ -283,7 +283,7 @@ const GROUP_BUCKETS: usize = 256;
 /// entries.
 pub(super) fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8]) -> *mut u8 {
     let base = shared.regions.class_base[class];
-    let lg = CLASSES[class].lg_slab as u32;
+    let lg = CLASSES.table()[class].lg_slab as u32;
     let key = |p: *mut u8| (p as usize).wrapping_sub(base) >> lg;
     let mut low = high[0];
     let (mut kmin, mut kmax) = (usize::MAX, 0usize);

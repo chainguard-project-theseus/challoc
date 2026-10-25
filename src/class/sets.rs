@@ -174,7 +174,7 @@ impl SetTable {
     /// Group of a class: its slab size.
     #[inline]
     pub fn group_of(class: usize) -> usize {
-        (CLASSES[class].lg_slab as u32 - LG_MIN_SLAB) as usize
+        (CLASSES.table()[class].lg_slab as u32 - LG_MIN_SLAB) as usize
     }
 
     /// Reserve the tables (address space only; rows are committed by
