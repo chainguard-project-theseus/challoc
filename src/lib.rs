@@ -52,9 +52,12 @@ pub(crate) mod sys;
 #[cfg(test)]
 mod testutil;
 pub(crate) mod thp;
-// Specifications of `core` functions vstd lacks (`verus/README.md`); only
-// Verus compiles them.
-#[cfg(verus_keep_ghost)]
+// Specifications of `core` functions vstd lacks, and the trusted wrappers
+// the executable code calls for operations Verus does not model
+// (`verus/README.md`). Ordinary builds compile the wrappers; the
+// specifications are ghost and vanish there, and the expansion of
+// `global` is a braced block.
+#[allow(unused_braces)]
 mod vspec;
 
 /// Panic handler for the `no_std` library. The crate is built with

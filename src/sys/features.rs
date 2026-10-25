@@ -92,15 +92,17 @@ impl fmt::Display for Value {
 
 /// `key=value` pairs separated by single spaces: the shape of the whole
 /// line and of each part that prints on its own (`Thp`).
-pub fn write_words(
-    f: &mut fmt::Formatter<'_>,
-    words: impl Iterator<Item = (&'static str, Value)>,
-) -> fmt::Result {
-    for (i, (key, value)) in words.enumerate() {
+pub fn write_words(f: &mut fmt::Formatter<'_>, words: &[(&'static str, Value)]) -> fmt::Result {
+    // `for (i, (key, value)) in words.iter().enumerate()`, with an index:
+    // Verus does not specify a slice's iterator.
+    let mut i = 0;
+    while i < words.len() {
+        let (key, value) = words[i];
         if i > 0 {
             f.write_str(" ")?;
         }
         write!(f, "{key}={value}")?;
+        i += 1;
     }
     Ok(())
 }
@@ -142,17 +144,22 @@ impl Features {
     /// (`thp=never|madvise|always|none`, `mthp=64K,2M|none`), `rseq_size`
     /// (a byte count).
     /// `tests/c/features.c` lists the same keys.
-    pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> + '_ {
+    pub fn words(&self) -> [(&'static str, Value); 9] {
+        // An array rather than a chain of iterators: Verus does not
+        // specify `Chain`.
+        let thp = self.thp.words();
+        let rseq = self.rseq.words();
         [
             ("page_size", Value::Num(self.page_size as u64)),
             ("guard_install", Value::YesNo(self.guard_install)),
             ("mseal", Value::YesNo(self.mseal)),
             ("anon_name", Value::YesNo(self.anon_name)),
+            thp[0],
+            thp[1],
+            rseq[0],
+            rseq[1],
+            ("pac", Value::YesNo(self.pac)),
         ]
-        .into_iter()
-        .chain(self.thp.words())
-        .chain(self.rseq.words())
-        .chain([("pac", Value::YesNo(self.pac))])
     }
 }
 
@@ -160,7 +167,7 @@ impl fmt::Display for Features {
     /// One line, `key=value` separated by spaces, for `challoc_features()`,
     /// `malloc_stats_print` and abort messages: [`Features::words`].
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_words(f, self.words())
+        write_words(f, &self.words())
     }
 }
 
@@ -203,13 +210,24 @@ impl FeatureLine {
 }
 
 impl fmt::Write for FeatureLine {
+    // `fmt::Error::default()` below: Verus cannot name the constructor of
+    // an external unit struct.
+    #[allow(clippy::default_constructed_unit_structs)]
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        let b = s.as_bytes();
         let room = Self::CAP - 1 - self.len;
-        if s.len() > room {
-            return Err(fmt::Error);
+        if b.len() > room {
+            return Err(fmt::Error::default());
         }
-        self.buf[self.len..self.len + s.len()].copy_from_slice(s.as_bytes());
-        self.len += s.len();
+        // `self.buf[self.len..self.len + s.len()].copy_from_slice(..)`,
+        // spelled out: Verus does not take a `&mut` through a field of a
+        // type with an invariant in a call that may unwind.
+        let mut i = 0;
+        while i < b.len() {
+            self.buf[self.len + i] = b[i];
+            i += 1;
+        }
+        self.len += b.len();
         Ok(())
     }
 }
@@ -272,6 +290,12 @@ pub fn probe_mseal(page: usize) -> bool {
     }
 }
 
+/// The VMA name the anonymous-name probe sets, NUL-terminated (spelled
+/// as bytes so the verifier sees the NUL `set_vma_anon_name` requires).
+const PROBE_NAME: [u8; 14] = [
+    b'c', b'h', b'a', b'l', b'l', b'o', b'c', b':', b'p', b'r', b'o', b'b', b'e', 0,
+];
+
 /// `PR_SET_VMA_ANON_NAME` on a scratch page.
 pub fn probe_anon_name(page: usize) -> bool {
     let Some(addr) = scratch(page, PROT_NONE) else {
@@ -279,7 +303,7 @@ pub fn probe_anon_name(page: usize) -> bool {
     };
     // SAFETY: `addr` is our scratch page; the name is static and
     // NUL-terminated.
-    let ok = unsafe { sys::set_vma_anon_name(addr, page, b"challoc:probe\0") }.is_ok();
+    let ok = unsafe { sys::set_vma_anon_name(addr, page, &PROBE_NAME) }.is_ok();
     release(addr, page);
     ok
 }
@@ -445,6 +469,7 @@ mod tests {
         // by word.
         let by_words: usize = f
             .words()
+            .into_iter()
             .map(|(k, v)| k.len() + 1 + std::format!("{v}").len() + 1)
             .sum::<usize>()
             - 1;
@@ -479,7 +504,7 @@ mod tests {
                 rseq: rseq_probe(33, 192),
                 pac,
             };
-            let keys: std::vec::Vec<&str> = f.words().map(|(k, _)| k).collect();
+            let keys: std::vec::Vec<&str> = f.words().into_iter().map(|(k, _)| k).collect();
             assert_eq!(keys, kernel);
             let mut seen = std::collections::BTreeSet::new();
             for (k, v) in f.words() {
@@ -493,8 +518,11 @@ mod tests {
                     "{k}={v}"
                 );
             }
-            let joined: std::vec::Vec<std::string::String> =
-                f.words().map(|(k, v)| std::format!("{k}={v}")).collect();
+            let joined: std::vec::Vec<std::string::String> = f
+                .words()
+                .into_iter()
+                .map(|(k, v)| std::format!("{k}={v}"))
+                .collect();
             assert_eq!(std::format!("{f}"), joined.join(" "));
             assert_eq!(std::format!("{}", f.thp), joined[4..6].join(" "));
         }

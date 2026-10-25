@@ -55,9 +55,10 @@ A function counts when it sits inside `verus!`, is not
 `assume(...)`, `admit()` or `Tracked::assume_new()`. Everything a verified
 function relies on without proof is a seam: vstd's specifications of
 `core`, the `assume_specification` contracts for `core` functions vstd
-does not specify (`src/vspec.rs`; today one, `u64::div_ceil`, which
-`Curve::allowance` calls), and `external_body` functions (none yet).
-The `global size_of usize == 8` directive in the same file is not a seam:
+does not specify (`src/vspec/`; today one, `u64::div_ceil`, which
+`Curve::allowance` calls), and `external_body` functions (today one,
+`vspec::addr::addr_to_ptr`, the address-to-pointer cast).
+The `global size_of usize == 8` directive in `src/vspec/mod.rs` is not a seam:
 Verus checks it when it compiles the crate.
 The seam ledger lists every seam but vstd's own (Seams, below).
 
@@ -125,7 +126,7 @@ explains the kinds, categories, tools and statuses.
 - A `static` computed by a `const fn` inside `verus!` is an `exec static`.
 - Every loop needs `invariant` and `decreases`. Quantifiers name their
   triggers.
-- A new `core` contract goes in `src/vspec.rs`, checked against the `core`
+- A new `core` contract goes in `src/vspec/`, checked against the `core`
   documentation. Verus rejects a second contract for the same item, so
   check the file first, and drop a contract once vstd states it.
 - Imports of ghost-only items (vstd's lemmas and spec functions) carry
