@@ -100,15 +100,50 @@ pub const fn yn(b: bool) -> &'static str {
 /// The leading decimal digits of `bytes` as a `u64`, whatever follows
 /// them: `42 x` and `2097152\n` read 42 and 2097152 (a `memory.events`
 /// value, a sysfs number with its newline). `None` without a digit or on
-/// overflow.
+/// overflow. (The digit run and its value as `while` loops, not the
+/// `take_while` and `try_fold` iterator chain: Verus does not specify
+/// those adapters.)
+// Verus does not support `?` on `Option` here.
+#[allow(clippy::question_mark)]
 pub fn parse_decimal(bytes: &[u8]) -> Option<u64> {
-    let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+    let mut digits = 0;
+    while digits < bytes.len() && bytes[digits].is_ascii_digit() {
+        digits += 1;
+    }
     if digits == 0 {
         return None;
     }
-    bytes[..digits].iter().try_fold(0u64, |acc, &b| {
-        acc.checked_mul(10)?.checked_add(u64::from(b - b'0'))
-    })
+    let mut acc: u64 = 0;
+    let mut i = 0;
+    while i < digits {
+        let d = (bytes[i] - b'0') as u64;
+        acc = match acc.checked_mul(10) {
+            Some(m) => match m.checked_add(d) {
+                Some(v) => v,
+                None => return None,
+            },
+            None => return None,
+        };
+        i += 1;
+    }
+    Some(acc)
+}
+
+/// `a == b` for byte slices: the comparison the parsers make in place of
+/// `match`ing a byte-string pattern, which Verus does not take.
+pub fn bytes_is(a: &[u8], b: &[u8]) -> bool {
+    a == b
+}
+
+/// The index of the first `b` in `s` at or after `start`, or `s.len()`
+/// (`s[start..].iter().position(..)`, spelled out: Verus does not specify
+/// `Iterator::position`).
+pub fn find_from(s: &[u8], start: usize, b: u8) -> usize {
+    let mut i = start;
+    while i < s.len() && s[i] != b {
+        i += 1;
+    }
+    i
 }
 
 mod linux {
@@ -222,7 +257,7 @@ mod linux {
         len: usize,
         name: &'static [u8],
     ) -> Result<(), Errno> {
-        debug_assert!(name.last() == Some(&0));
+        debug_assert!(!name.is_empty() && name[name.len() - 1] == 0);
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe {
             raw::syscall5(
@@ -273,13 +308,16 @@ mod linux {
     }
 
     /// Fill `buf` completely from `getrandom`, retrying short reads and
-    /// `EINTR`. Fails only if the kernel refuses outright.
-    pub fn getrandom_exact(mut buf: &mut [u8]) -> Result<(), Errno> {
-        while !buf.is_empty() {
-            match getrandom(buf, 0) {
+    /// `EINTR`. Fails only if the kernel refuses outright. (An offset into
+    /// `buf` rather than a reborrowed tail, and `EINTR` as a guard rather
+    /// than a pattern: Verus takes neither of those.)
+    pub fn getrandom_exact(buf: &mut [u8]) -> Result<(), Errno> {
+        let mut filled = 0;
+        while filled < buf.len() {
+            match getrandom(&mut buf[filled..], 0) {
                 Ok(0) => return Err(Errno::EIO),
-                Ok(n) => buf = &mut buf[n..],
-                Err(Errno::EINTR) => {}
+                Ok(n) => filled += n,
+                Err(e) if e.0 == Errno::EINTR.0 => {}
                 Err(e) => return Err(e),
             }
         }
@@ -320,12 +358,15 @@ mod linux {
     /// # Safety
     /// `uaddr` must be a live, 4-byte-aligned `u32`.
     #[inline]
+    // A closure rather than the function item: Verus does not take a
+    // function item where a closure is expected.
+    #[allow(clippy::redundant_closure)]
     pub unsafe fn futex_wait(
         uaddr: *const u32,
         val: u32,
         timeout: Option<&Timespec>,
     ) -> Result<(), Errno> {
-        let ts = timeout.map_or(core::ptr::null(), |t| t as *const Timespec);
+        let ts = timeout.map_or(core::ptr::null(), |t| core::ptr::from_ref(t));
         // SAFETY: forwarded to the caller's contract.
         unsafe {
             futex(
@@ -363,13 +404,13 @@ mod linux {
     /// `clock_gettime(2)`.
     #[inline]
     pub fn clock_gettime(clock: i32) -> Result<Timespec, Errno> {
-        let mut ts = Timespec::default();
+        let mut ts = Timespec { sec: 0, nsec: 0 };
         // SAFETY: `ts` is a live, writable `Timespec` matching the kernel ABI.
         decode(unsafe {
             raw::syscall2(
                 nr::CLOCK_GETTIME,
                 clock as isize as usize,
-                &mut ts as *mut _ as usize,
+                core::ptr::from_mut(&mut ts) as usize,
             )
         })
         .map(|_| ts)
@@ -392,7 +433,7 @@ mod linux {
     /// `openat(AT_FDCWD, path, flags | O_CLOEXEC, 0)`. `path` must be
     /// NUL-terminated.
     pub fn open(path: &[u8], flags: i32) -> Result<i32, Errno> {
-        debug_assert!(path.last() == Some(&0));
+        debug_assert!(!path.is_empty() && path[path.len() - 1] == 0);
         // SAFETY: `path` is a live NUL-terminated byte string.
         decode(unsafe {
             raw::syscall4(
@@ -428,7 +469,7 @@ mod linux {
             match read(fd, &mut buf[filled..]) {
                 Ok(0) => break,
                 Ok(n) => filled += n,
-                Err(Errno::EINTR) => {}
+                Err(e) if e.0 == Errno::EINTR.0 => {}
                 Err(e) => return Err(e),
             }
         }
@@ -462,13 +503,14 @@ mod linux {
 
     /// Write all of `buf`, retrying short writes and `EINTR`. Any other error
     /// is swallowed: this is used on the abort path, where there is nothing
-    /// better to do.
-    pub fn write_all(fd: i32, mut buf: &[u8]) {
-        while !buf.is_empty() {
-            match write(fd, buf) {
+    /// better to do. (An offset into `buf`, as in [`getrandom_exact`].)
+    pub fn write_all(fd: i32, buf: &[u8]) {
+        let mut done = 0;
+        while done < buf.len() {
+            match write(fd, &buf[done..]) {
                 Ok(0) => return,
-                Ok(n) => buf = &buf[n..],
-                Err(Errno::EINTR) => {}
+                Ok(n) => done += n,
+                Err(e) if e.0 == Errno::EINTR.0 => {}
                 Err(_) => return,
             }
         }
@@ -503,13 +545,21 @@ mod linux {
     /// the call fails (a seccomp filter, or a wider mask), never 0.
     pub fn ncpus() -> u32 {
         let mut mask = [0u64; 128];
-        let len = core::mem::size_of_val(&mask);
+        // `size_of_val(&mask)`, which Verus does not specify.
+        let len = 128 * 8;
         // SAFETY: `mask` is writable for `len` bytes and outlives the call.
         let r = unsafe { raw::syscall3(nr::SCHED_GETAFFINITY, 0, len, mask.as_mut_ptr() as usize) };
         match decode(r) {
             Ok(written) => {
                 let words = written.min(len).div_ceil(8);
-                let bits: u32 = mask[..words].iter().map(|w| w.count_ones()).sum();
+                // `mask[..words].iter().map(|w| w.count_ones()).sum()`, spelled
+                // out: Verus does not specify `Map` or `Sum`.
+                let mut bits: u32 = 0;
+                let mut i = 0;
+                while i < words {
+                    bits += mask[i].count_ones();
+                    i += 1;
+                }
                 bits.max(1)
             }
             Err(_) => 1,
@@ -524,17 +574,9 @@ mod linux {
         let all: u64 = BLOCKABLE_SIGNALS;
         let mut old: u64 = 0;
         // SAFETY: both pointers are live 8-byte sigsets for the whole call.
-        let r = unsafe {
-            raw::syscall4(
-                nr::RT_SIGPROCMASK,
-                SIG_BLOCK as usize,
-                &all as *const u64 as usize,
-                &mut old as *mut u64 as usize,
-                SIGSET_WORDS_BYTES,
-            )
-        };
+        let r = unsafe { sigprocmask_block(&all, &mut old) };
         if let Err(e) = decode(r) {
-            abort_fmt(format_args!("rt_sigprocmask(SIG_BLOCK) failed: {}", e));
+            sigprocmask_failed("SIG_BLOCK", e);
         }
         old
     }
@@ -543,18 +585,58 @@ mod linux {
     /// [`block_all_signals`] on the calling thread.
     pub fn set_signal_mask(mask: u64) {
         // SAFETY: `mask` is a live 8-byte sigset; the old-set pointer is null.
-        let r = unsafe {
+        let r = unsafe { sigprocmask_setmask(&mask) };
+        if let Err(e) = decode(r) {
+            sigprocmask_failed("SIG_SETMASK", e);
+        }
+    }
+
+    /// The raw `rt_sigprocmask(SIG_BLOCK, all, before)`, returning the
+    /// syscall's word: a successful call wrote the mask in force before it
+    /// to `*before`. Apart from [`block_all_signals`] so that the raw call,
+    /// whose effect Verus cannot see, is a function of its own.
+    ///
+    /// # Safety
+    /// As `raw::syscall4`; both pointers are live 8-byte sigsets.
+    #[inline(always)]
+    unsafe fn sigprocmask_block(all: &u64, before: &mut u64) -> usize {
+        // SAFETY: guaranteed by the caller.
+        unsafe {
+            raw::syscall4(
+                nr::RT_SIGPROCMASK,
+                SIG_BLOCK as usize,
+                core::ptr::from_ref(all) as usize,
+                core::ptr::from_mut(before) as usize,
+                SIGSET_WORDS_BYTES,
+            )
+        }
+    }
+
+    /// The raw `rt_sigprocmask(SIG_SETMASK, mask, NULL)`, returning the
+    /// syscall's word. Apart from [`set_signal_mask`], as
+    /// [`sigprocmask_block`] is.
+    ///
+    /// # Safety
+    /// As `raw::syscall4`; `mask` is a live 8-byte sigset.
+    #[inline(always)]
+    unsafe fn sigprocmask_setmask(mask: &u64) -> usize {
+        // SAFETY: guaranteed by the caller.
+        unsafe {
             raw::syscall4(
                 nr::RT_SIGPROCMASK,
                 SIG_SETMASK as usize,
-                &mask as *const u64 as usize,
+                core::ptr::from_ref(mask) as usize,
                 0,
                 SIGSET_WORDS_BYTES,
             )
-        };
-        if let Err(e) = decode(r) {
-            abort_fmt(format_args!("rt_sigprocmask(SIG_SETMASK) failed: {}", e));
         }
+    }
+
+    /// Abort on a failed `rt_sigprocmask(how)`.
+    #[cold]
+    #[inline(never)]
+    fn sigprocmask_failed(how: &str, e: Errno) -> ! {
+        abort_fmt(format_args!("rt_sigprocmask({how}) failed: {e}"))
     }
 
     /// `exit_group(2)`: terminate every thread in the process.

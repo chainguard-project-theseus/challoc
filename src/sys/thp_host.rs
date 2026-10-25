@@ -6,7 +6,7 @@
 use core::fmt;
 
 use super::features::{Value, write_words};
-use super::parse_decimal;
+use super::{bytes_is, find_from, parse_decimal};
 
 /// One transparent-huge-page sysfs setting, the bracketed word of
 /// `/sys/kernel/mm/transparent_hugepage/enabled` (`always [madvise] never`)
@@ -35,15 +35,30 @@ impl ThpSetting {
 /// The bracketed word of a THP `enabled` file. `None` for anything that is
 /// not one of the four words in brackets (an empty or foreign file).
 pub fn parse_thp_setting(bytes: &[u8]) -> Option<ThpSetting> {
-    let open = bytes.iter().position(|&b| b == b'[')?;
+    // `bytes.iter().position(|&b| b == b'[')?` and the `]` after it,
+    // spelled out (Verus does not specify `Iterator::position`), and the
+    // `match` on byte-string patterns as comparisons (such patterns crash
+    // Verus).
+    let open = find_from(bytes, 0, b'[');
+    if open == bytes.len() {
+        return None;
+    }
     let rest = &bytes[open + 1..];
-    let close = rest.iter().position(|&b| b == b']')?;
-    match &rest[..close] {
-        b"always" => Some(ThpSetting::Always),
-        b"inherit" => Some(ThpSetting::Inherit),
-        b"madvise" => Some(ThpSetting::Madvise),
-        b"never" => Some(ThpSetting::Never),
-        _ => None,
+    let close = find_from(rest, 0, b']');
+    if close == rest.len() {
+        return None;
+    }
+    let word = &rest[..close];
+    if bytes_is(word, b"always") {
+        Some(ThpSetting::Always)
+    } else if bytes_is(word, b"inherit") {
+        Some(ThpSetting::Inherit)
+    } else if bytes_is(word, b"madvise") {
+        Some(ThpSetting::Madvise)
+    } else if bytes_is(word, b"never") {
+        Some(ThpSetting::Never)
+    } else {
+        None
     }
 }
 
@@ -72,6 +87,21 @@ pub struct Thp {
     pub madvise: u64,
 }
 
+/// `/sys/kernel/mm/transparent_hugepage/`, the directory of every file
+/// [`Thp::from_reader`] reads.
+const THP_DIR: [u8; 36] = *b"/sys/kernel/mm/transparent_hugepage/";
+
+/// `bytes` copied into `out` at `at`; the length after them.
+#[inline(always)]
+fn append(out: &mut [u8; 96], at: usize, bytes: &[u8]) -> usize {
+    let mut i = 0;
+    while i < bytes.len() {
+        out[at + i] = bytes[i];
+        i += 1;
+    }
+    at + bytes.len()
+}
+
 impl Thp {
     /// No THP at all: nothing listed, nothing enabled.
     pub const NONE: Thp = Thp {
@@ -85,11 +115,20 @@ impl Thp {
     /// Compute the table from the files' contents: `read(path, buf)` fills
     /// `buf` with the file at the NUL-terminated `path` and returns the
     /// byte count, 0 when it is missing. Pure over the reader, so the
-    /// tests feed it fixtures.
+    /// tests feed it fixtures. Shifts wrap as they do in release builds, so
+    /// a page size past 2^33 (none exists) yields garbage bits rather than
+    /// a panic; at every real page size nothing wraps and `lg_pmd` is
+    /// below 64.
     pub fn from_reader(page: usize, mut read: impl FnMut(&[u8], &mut [u8]) -> usize) -> Thp {
-        const DIR: &[u8] = b"/sys/kernel/mm/transparent_hugepage/";
         let mut buf = [0u8; 128];
-        let n = read(b"/sys/kernel/mm/transparent_hugepage/enabled\0", &mut buf);
+        // The paths are built in `path` from `THP_DIR` and a NUL rather
+        // than passed as `b"...\0"` literals: Verus does not see a byte
+        // string literal's bytes, and `read` needs the NUL.
+        let mut path = [0u8; 96];
+        let len = append(&mut path, 0, &THP_DIR);
+        let len = append(&mut path, len, b"enabled");
+        path[len] = 0;
+        let n = read(&path[..len + 1], &mut buf);
         let enabled = if n == 0 {
             None
         } else {
@@ -97,10 +136,10 @@ impl Thp {
         };
         let lg_page = page.trailing_zeros() as u8;
         let mut lg_pmd = (2 * lg_page).saturating_sub(3);
-        let n = read(
-            b"/sys/kernel/mm/transparent_hugepage/hpage_pmd_size\0",
-            &mut buf,
-        );
+        let len = append(&mut path, 0, &THP_DIR);
+        let len = append(&mut path, len, b"hpage_pmd_size");
+        path[len] = 0;
+        let n = read(&path[..len + 1], &mut buf);
         if let Some(v) = parse_decimal(&buf[..n]) {
             if v.is_power_of_two() && v.trailing_zeros() as u8 > lg_page {
                 lg_pmd = v.trailing_zeros() as u8;
@@ -115,32 +154,34 @@ impl Thp {
         };
         let Some(top) = enabled else { return Thp::NONE };
         // Every candidate size from two pages to the PMD: hugepages-<n>kB/enabled.
-        let mut path = [0u8; 96];
-        for lg in (lg_page + 1)..=lg_pmd {
-            let mut len = 0;
-            for &b in DIR.iter().chain(b"hugepages-") {
-                path[len] = b;
-                len += 1;
-            }
-            len += write_decimal(&mut path[len..], (1u64 << lg) >> 10);
-            for &b in b"kB/enabled\0" {
-                path[len] = b;
-                len += 1;
-            }
-            let n = read(&path[..len], &mut buf);
+        // `for lg in (lg_page + 1)..=lg_pmd`, spelled out (Verus does not
+        // specify `RangeInclusive`'s iterator), and the paths written with
+        // `append` instead of a loop over `THP_DIR.iter().chain(..)`; the shifts
+        // are `wrapping_shl`, which is what `<<` compiles to in release.
+        let mut lg = lg_page;
+        while lg < lg_pmd {
+            lg += 1;
+            let len = append(&mut path, 0, &THP_DIR);
+            let len = append(&mut path, len, b"hugepages-");
+            let kib = 1u64.wrapping_shl(lg as u32) >> 10;
+            let len = len + write_decimal(&mut path[len..], kib);
+            let len = append(&mut path, len, b"kB/enabled");
+            path[len] = 0;
+            let n = read(&path[..len + 1], &mut buf);
             if n == 0 {
                 continue;
             }
             let Some(setting) = parse_thp_setting(&buf[..n]) else {
                 continue;
             };
-            t.listed |= 1 << lg;
+            let bit = 1u64.wrapping_shl(lg as u32);
+            t.listed |= bit;
             match setting {
-                ThpSetting::Always => t.always |= 1 << lg,
-                ThpSetting::Madvise => t.madvise |= 1 << lg,
+                ThpSetting::Always => t.always |= bit,
+                ThpSetting::Madvise => t.madvise |= bit,
                 ThpSetting::Inherit => match top {
-                    ThpSetting::Always => t.always |= 1 << lg,
-                    ThpSetting::Madvise => t.madvise |= 1 << lg,
+                    ThpSetting::Always => t.always |= bit,
+                    ThpSetting::Madvise => t.madvise |= bit,
                     _ => {}
                 },
                 ThpSetting::Never => {}
@@ -148,10 +189,11 @@ impl Thp {
         }
         if t.listed == 0 {
             // Before 6.8: the PMD size alone, under the top-level setting.
-            t.listed = 1 << lg_pmd;
+            let bit = 1u64.wrapping_shl(lg_pmd as u32);
+            t.listed = bit;
             match top {
-                ThpSetting::Always => t.always = 1 << lg_pmd,
-                ThpSetting::Madvise => t.madvise = 1 << lg_pmd,
+                ThpSetting::Always => t.always = bit,
+                ThpSetting::Madvise => t.madvise = bit,
                 _ => {}
             }
         }
@@ -191,22 +233,28 @@ impl Thp {
 }
 
 impl Thp {
-    /// The two THP keys: `thp=<setting|none> mthp=<sizes|none>`.
-    pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> {
+    /// The two THP keys: `thp=<setting|none> mthp=<sizes|none>`. (An
+    /// array rather than an iterator, as `Features::words` is.)
+    #[inline(always)]
+    pub fn words(&self) -> [(&'static str, Value); 2] {
+        // `self.enabled.map_or("none", ThpSetting::name)`, spelled as a
+        // `match`: Verus does not take a function item as a closure.
         [
             (
                 "thp",
-                Value::Word(self.enabled.map_or("none", ThpSetting::name)),
+                Value::Word(match self.enabled {
+                    Some(s) => s.name(),
+                    None => "none",
+                }),
             ),
             ("mthp", Value::Sizes(self.enabled_sizes())),
         ]
-        .into_iter()
     }
 }
 
 impl fmt::Display for Thp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_words(f, self.words())
+        write_words(f, &self.words())
     }
 }
 
@@ -236,15 +284,36 @@ pub fn probe(page: usize) -> Thp {
     })
 }
 
+/// `/sys/kernel/mm/transparent_hugepage/hugepages-`, the start of every
+/// per-size file's path ([`probe_top`]).
+const SIZE_DIR: [u8; 46] = *b"/sys/kernel/mm/transparent_hugepage/hugepages-";
+
+/// `path` starts with [`SIZE_DIR`]: `path.starts_with(&SIZE_DIR)`, which
+/// Verus does not specify.
+fn in_size_dir(path: &[u8]) -> bool {
+    if path.len() < SIZE_DIR.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < SIZE_DIR.len() {
+        if path[i] != SIZE_DIR[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// The top-level `enabled` and `hpage_pmd_size` only (two reads), the
 /// table a kernel without per-size directories gives: what `thp:never`
 /// needs at init (`Features::probe`).
 pub fn probe_top(page: usize) -> Thp {
     Thp::from_reader(page, |path, buf| {
-        if path.starts_with(b"/sys/kernel/mm/transparent_hugepage/hugepages-") {
-            return 0;
+        if in_size_dir(path) {
+            0
+        } else {
+            super::read_small_file(path, buf).unwrap_or(0)
         }
-        super::read_small_file(path, buf).unwrap_or(0)
     })
 }
 
