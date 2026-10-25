@@ -1,0 +1,113 @@
+# Verifying challoc with Verus
+
+challoc's own source is verified in place: a function inside a
+`verus! { ... }` block is checked by [Verus](https://github.com/verus-lang/verus)
+for every operation it performs (no arithmetic overflow, no division by
+zero, no out-of-bounds index, no reachable panic, termination of every loop
+and recursion) and against the `requires`/`ensures` contract it states.
+Ghost code (`spec`, `proof`, `requires`, `ensures`, invariants) is erased
+from ordinary builds, so the shipped library is unchanged by it.
+
+Today that is the decay curve, `src/purge/curve.rs`: `decay_ns_from_ms`,
+`build_weights` (the `WEIGHTS` table is in `[0, WEIGHT_ONE]`, positive
+before the last step, zero at it, and never rises), and `Curve`'s `new`,
+`step_ns`, `step`, `weight` and `allowance`. Everything else sits outside
+`verus!`, and Verus does not look at it.
+
+## Running
+
+```sh
+make verus     # the proofs, then the coverage floor
+```
+
+`make verus` runs `cargo verus verify` (the default `quantum16` feature),
+then `verus/count --floor ../FLOOR` (Coverage, below). Unlike the other
+targets it runs where it is invoked, not in the dev container. The `verus`
+check (`.chainguard/ci/verus.yaml`) runs it on every pull request, against
+the pull request's base, and `verus-main` on main, against the commit
+before, so a change that breaks a proof or lowers the verified share fails
+CI.
+
+The check gets Verus from the `verus` package, release
+`0.2026.10.18.7d82994`, which matches Cargo.toml's
+`vstd = "=0.0.0-2026-10-18-0147"` and brings the toolchain it runs with
+(the `rust-1.99` stream, 1.99.1) and z3. The check runs on x86_64 only:
+the package has no aarch64 cross target, so `--target
+aarch64-unknown-linux-gnu` cannot be verified from an x86_64 host. The
+package also has an arm64 build, which verifies natively with the same
+results. To run it on this machine instead:
+
+1. Download the release for this machine from
+   <https://github.com/verus-lang/verus/releases/tag/release/0.2026.10.18.7d82994>
+   (the release's Linux build is x86-64 only) and put its directory on `PATH`.
+2. `rustup toolchain install 1.99.1`.
+
+Cargo keeps a verified crate's result: when nothing changed, `make verus`
+prints no results line for it. `cargo clean -p challoc` forces a full run.
+
+Ordinary builds and tests are unchanged (`make build`, `make test`).
+
+## What counts as verified
+
+A function counts when it sits inside `verus!`, is not
+`#[verifier::external_body]` or `#[verifier::external]`, and its body has no
+`assume(...)`, `admit()` or `Tracked::assume_new()`. Everything a verified
+function relies on without proof is a seam: vstd's specifications of
+`core`, the `assume_specification` contracts for `core` functions vstd
+does not specify (`src/vspec.rs`; today one, `u64::div_ceil`, which
+`Curve::allowance` calls), and `external_body` functions (none yet).
+The `global size_of usize == 8` directive in the same file is not a seam:
+Verus checks it when it compiles the crate.
+
+## Coverage
+
+```sh
+cd verus/count && cargo run --release -- ../..          # the crate
+cd verus/count && cargo run --release -- --list ../..   # per function
+```
+
+`verus/count` parses every file under `src/`, `verus!` blocks included,
+with `verus_syn`, and counts executable functions and their lines as
+verified, trusted (inside `verus!` but `external_body`, `external`, or
+calling `assume`, `admit` or `Tracked::assume_new`) or outside `verus!`.
+Ghost functions (`spec`, `proof`) are counted apart, except a proof taken
+on trust (an `axiom fn`, or a `proof fn` that is `external_body` or calls
+`assume`, `admit` or `Tracked::assume_new`), which counts as trusted. Code
+compiled only under `test` (`cfg(test)`, or `test` inside `cfg(all(..))`)
+is left out, and so is a test module's directory. It reads source and does
+not run Verus, so "verified" means "under `verus!` and not trusted";
+`cargo verus verify` is what checks it. Shares are to a tenth of a
+percent, rounded down.
+
+`--floor FILE` holds the crate to [FLOOR](FLOOR): the verified share of
+functions and of lines. The run fails below either figure, and above one
+it names the figure to record. `--base-rev REV` (`make verus
+VERUS_BASE=REV`; the check passes the pull request's base) also reads
+`REV:verus/FLOOR` and fails a figure set below it, unless FLOOR has a
+`lowered FIGURE P REASON` line for that figure and value that REV's copy
+does not have. A REV that does not resolve to a commit fails the run.
+FLOOR rises in its own pull requests between merges, to the figures the
+check names, so parallel pull requests do not conflict on it; the floor is
+lowered only on purpose, with the reason in FLOOR.
+
+The counter comes from pcre3's `verus/count`, cut to challoc's single
+crate.
+
+## Conventions
+
+- Keep the executable code as it is. A rewrite needed only to get through
+  Verus must behave the same, and must leave the release library's machine
+  code for the hot set (`malloc`, `free`, `calloc`, `realloc`, `sdallocx`,
+  `free_sized` and everything inlined into them) unchanged:
+  `scripts/codegen-diff.sh compare` must report `changed 0` there
+  (CONTRIBUTING.md, "Performance rules").
+- A `static` computed by a `const fn` inside `verus!` is an `exec static`.
+- Every loop needs `invariant` and `decreases`. Quantifiers name their
+  triggers.
+- A new `core` contract goes in `src/vspec.rs`, checked against the `core`
+  documentation. Verus rejects a second contract for the same item, so
+  check the file first, and drop a contract once vstd states it.
+- Imports of ghost-only items (vstd's lemmas and spec functions) carry
+  `#[cfg(verus_keep_ghost)]`: ordinary builds do not have them.
+- A specification change gets a mutation check: break the code the way the
+  specification is meant to catch and confirm that Verus rejects it.

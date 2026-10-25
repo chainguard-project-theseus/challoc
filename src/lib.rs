@@ -14,6 +14,10 @@
 #[cfg(test)]
 extern crate std;
 
+// Verus needs its prelude imported at the crate root (`verus/README.md`).
+#[allow(unused_imports)]
+use vstd::prelude::*;
+
 #[cfg(all(feature = "quantum8", feature = "quantum16"))]
 compile_error!("features `quantum8` and `quantum16` are mutually exclusive");
 
@@ -48,6 +52,10 @@ pub(crate) mod sys;
 #[cfg(test)]
 mod testutil;
 pub(crate) mod thp;
+// Specifications of `core` functions vstd lacks (`verus/README.md`); only
+// Verus compiles them.
+#[cfg(verus_keep_ghost)]
+mod vspec;
 
 /// Panic handler for the `no_std` library. The crate is built with
 /// `panic = "abort"`, so this is only reached by an explicit `panic!` or a
