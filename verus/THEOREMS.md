@@ -7008,7 +7008,10 @@ doc of `api`, design section 9); this states that they do, and that
 the thread gets back the mask the slot holds, on both sides of the
 fork.
 
-**Statement.** `fork_prepare` blocks every blockable signal before its
+**Statement.** `fork_prepare` blocks every blockable signal but glibc's
+internal `SIGCANCEL` and `SIGSETXID` (32 and 33; since upstream #133,
+e721a885: a thread holding `SIGSETXID` blocked hangs every
+`setuid`-family call) before its
 first acquisition of a lock of the fork lock list and keeps them
 blocked through its last (since upstream #110 its deferred cgroup
 discovery, `Shared::discover_cgroup_for_fork`, runs first, with the
@@ -7031,7 +7034,7 @@ acquisition or release.
 ```rust
 // sys/mod.rs:180, :185, :223
 pub open spec fn effective(m: u64) -> u64 { m & !unblockable() }   // less SIGKILL, SIGSTOP
-pub open spec fn all_blocked() -> u64 { effective(!0u64) }
+pub open spec fn all_blocked() -> u64 { effective(BLOCKABLE_SIGNALS) }   // every bit but 31 and 32
 pub open spec fn wf(self) -> bool { effective(self.mask()) == self.mask() }   // SigMask
 
 // sys/mod.rs:1248, :1274
@@ -7133,9 +7136,13 @@ handoff premises).
 - *The kernel's `rt_sigprocmask`* (`sigprocmask_block`, `:1202`, and
   `sigprocmask_setmask`, `:1235`, in `sys::linux`, private;
   `external_body`, each the one `raw::syscall4` call its caller made
-  before). A successful `SIG_BLOCK` of the full set wrote the mask in
-  force before it to the old-set buffer and left every blockable signal
-  blocked; a successful `SIG_SETMASK` leaves the requested mask less
+  before). A successful `SIG_BLOCK` of `BLOCKABLE_SIGNALS`, every
+  signal but `SIGCANCEL` and `SIGSETXID`, wrote the mask in force before
+  it to the old-set buffer and left exactly `all_blocked()`: `SIG_BLOCK`
+  adds to the mask in force, and no thread has those two blocked
+  (glibc's `sigprocmask` and `pthread_sigmask` refuse to block them, and
+  challoc's raw calls block only `BLOCKABLE_SIGNALS` and restore masks
+  saved from those; a premise since #133); a successful `SIG_SETMASK` leaves the requested mask less
   `SIGKILL` and `SIGSTOP` (signals 9 and 19, in the 64-bit kernel
   sigset on both architectures). Success is the word `decode` takes for
   success; on failure nothing is said (the callers abort). The value

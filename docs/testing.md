@@ -141,7 +141,7 @@ so a broken preload cannot pass.
 | Fork | `fork_alloc.c` (allocation in parent, child and grandchild), `fork_signal.c` (fork from a signal handler while the fork handlers hold every lock) |
 | Abort conditions | `negative.c`: one invalid operation per mode (invalid, double and mis-sized frees, guard faults); the driver checks the signal and the `challoc:` line on stderr |
 | Configuration and report | `conf.c` (every `malloc_conf` source), `tunables.c` (the hardening opt-ins and their controls), `features.c` (`challoc_features()` against the report) |
-| Kernel features, both ways | `guard_slab.c`, `pagemap_guard.c` (guard slabs, by fault and through `PAGEMAP_SCAN`), `mseal.c`, `thp.c`, `decay.c` (decay, purge, the background thread), `mlock_purge.c` (purges that `madvise` refuses on `mlock`ed memory) |
+| Kernel features, both ways | `guard_slab.c`, `pagemap_guard.c` (guard slabs, by fault and through `PAGEMAP_SCAN`), `mseal.c`, `thp.c`, `decay.c` (decay, purge, the background thread), `setxid.c` (the setuid-family calls glibc broadcasts to every thread, while the background thread starts and stops), `mlock_purge.c` (purges that `madvise` refuses on `mlock`ed memory) |
 | cgroup | `cgroup.c`, `cgroup_policy.c` (the `api::` rows and `test-cgroup-limit`); `cgroup_churn.c`, `cgroup_lazy.c`, `cgroup_oscillate.c` (the memory-limited container runs, `scripts/cgroup-tests.sh`) |
 | Linking | `as_needed.c`, `as_needed_lib.c` (`tests/as-needed.sh`, `make check-needed`) |
 | Unit-test helper | `sysnr.c` (prints the C headers' syscall numbers for the `sys::nr` test) |

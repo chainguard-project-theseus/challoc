@@ -2069,7 +2069,7 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
     let tracked mut sig = axiom_fork_resumed_sig();
     let ghost saved = held.saved()->Some_0;
     proof {
-        crate::sys::lemma_effective_idempotent(!0u64);
+        crate::sys::lemma_effective_idempotent(crate::sys::BLOCKABLE_SIGNALS);
         assert(fork_sig_holds(sig, held, saved));
     }
     // Written by the `fork_prepare` that paired with this release, and
@@ -3371,14 +3371,19 @@ mod tests {
         unsafe { core::ptr::read_unaligned(&set as *const _ as *const u64) }
     }
 
-    /// `mask` without `SIGKILL` and `SIGSTOP`, which the kernel never blocks.
+    /// glibc's SIGCANCEL (32) and SIGSETXID (33), never blocked.
+    const GLIBC_INTERNAL: u64 = (1 << 31) | (1 << 32);
+
+    /// `mask` without `SIGKILL` and `SIGSTOP`, which the kernel never blocks,
+    /// and glibc's internal two, which the handlers leave unblocked.
     fn blockable(mask: u64) -> u64 {
         const KILL_STOP: u64 = (1 << (::libc::SIGKILL - 1)) | (1 << (::libc::SIGSTOP - 1));
-        mask & !KILL_STOP
+        mask & !KILL_STOP & !GLIBC_INTERNAL
     }
 
-    /// The handlers block every signal while the locks are held and restore
-    /// the caller's mask (whatever it was) afterwards, on both fork sides.
+    /// The handlers block every signal but glibc's internal two while the
+    /// locks are held and restore the caller's mask (whatever it was)
+    /// afterwards, on both fork sides.
     #[test]
     fn fork_handlers_block_signals_while_locked() {
         let _serial = crate::testutil::global_state();
@@ -3404,9 +3409,15 @@ mod tests {
         // Each mask is read under the locks and asserted after the release:
         // a panic with every lock held would hang the other tests.
         fork_prepare();
-        let during = blockable(current_mask());
+        let raw = current_mask();
+        let during = blockable(raw);
         fork_parent();
         assert_eq!(during, all, "prepare did not block every signal");
+        assert_eq!(
+            raw & GLIBC_INTERNAL,
+            0,
+            "prepare blocked SIGCANCEL or SIGSETXID"
+        );
         assert_eq!(
             current_mask(),
             start,

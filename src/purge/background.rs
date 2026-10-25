@@ -587,9 +587,9 @@ fn create(
 }
 
 /// `pthread_create` on the committed `[base, base + len)`, joinable so
-/// a restart can wait for its exit. Signals are blocked so the new
-/// thread inherits a mask with every signal blocked and never runs an
-/// application handler.
+/// a restart can wait for its exit. Signals are blocked
+/// ([`sys::block_all_signals`]) so the new thread inherits them blocked
+/// and never runs an application handler.
 ///
 /// Trusted: raw pthread calls, and the thread's entry is a function
 /// pointer. `shared` is well formed: the thread's [`shared_arg`] ensures
