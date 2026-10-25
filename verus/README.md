@@ -17,16 +17,17 @@ before the last step, zero at it, and never rises), and `Curve`'s `new`,
 ## Running
 
 ```sh
-make verus     # the proofs, then the coverage floor
+make verus     # the seam ledger, the proofs, then the coverage floor
 ```
 
-`make verus` runs `cargo verus verify` (the default `quantum16` feature),
-then `verus/count --floor ../FLOOR` (Coverage, below). Unlike the other
-targets it runs where it is invoked, not in the dev container. The `verus`
-check (`.chainguard/ci/verus.yaml`) runs it on every pull request, against
-the pull request's base, and `verus-main` on main, against the commit
-before, so a change that breaks a proof or lowers the verified share fails
-CI.
+`make verus` runs `sh verus/seams.sh --check` (Seams, below), then
+`cargo verus verify` (the default `quantum16` feature), then
+`verus/count --floor ../FLOOR` (Coverage, below). Unlike the other
+targets it runs where it is invoked, not in the dev container. The
+`verus` check (`.chainguard/ci/verus.yaml`) runs it on every pull
+request, against the pull request's base, and `verus-main` on main,
+against the commit before, so a change that leaves the seam ledger
+stale, breaks a proof or lowers the verified share fails CI.
 
 The check gets Verus from the `verus` package, release
 `0.2026.10.18.7d82994`, which matches Cargo.toml's
@@ -58,6 +59,7 @@ does not specify (`src/vspec.rs`; today one, `u64::div_ceil`, which
 `Curve::allowance` calls), and `external_body` functions (none yet).
 The `global size_of usize == 8` directive in the same file is not a seam:
 Verus checks it when it compiles the crate.
+[SEAMS.md](SEAMS.md) lists every seam but vstd's own (Seams, below).
 
 ## Coverage
 
@@ -92,6 +94,21 @@ lowered only on purpose, with the reason in FLOOR.
 
 The counter comes from pcre3's `verus/count`, cut to challoc's single
 crate.
+
+## Seams
+
+```sh
+sh verus/seams.sh --write   # regenerate verus/SEAMS.md
+sh verus/seams.sh --check   # fail when it is stale (`make verus` runs this)
+```
+
+[SEAMS.md](SEAMS.md) is the seam ledger, generated from `src/`: every
+item Verus takes on trust, with its place, the contract Verus assumes, a
+category, a proposed tool to discharge it and a status (all "trusted"
+today). Regenerate it in the change that adds, moves or edits a seam.
+`seams.sh` picks the category and tool from the item's kind, path and
+body; a line in [seams.overrides](seams.overrides) corrects them where
+the guess is wrong, and the run fails on a seam it cannot classify.
 
 ## Conventions
 
