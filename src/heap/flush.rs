@@ -8,9 +8,10 @@ use core::ptr;
 use crate::arena::Arena;
 use crate::layout::CLASSES;
 use crate::sys::pac;
+use crate::vspec::addr::addr_to_ptr;
 
 use super::shared::seed;
-use super::{CacheHeader, FOREIGN, Heap, Shared};
+use super::{CacheHeader, FOREIGN, Heap, Shared, assert_refill_empty, stack_mut};
 
 impl Heap {
     /// The batch claim behind a refill or a run rebuild: `cs.claim`, or
@@ -25,7 +26,7 @@ impl Heap {
         cs: &crate::class::ClassState,
         out: &mut [*mut u8],
     ) -> crate::class::Claim {
-        if shared.config.slot_randomize {
+        if slot_randomize(shared) {
             let rng = self.rng();
             cs.claim_random(&shared.meta, out, rng)
         } else {
@@ -42,7 +43,7 @@ impl Heap {
     pub(super) fn rng(&mut self) -> &mut u64 {
         if self.rng == 0 {
             let mut seed = seed();
-            seed ^= (self as *const Heap as u64).rotate_left(17) ^ ((self.tid as u64) << 32);
+            seed ^= addr_mix(self) ^ ((self.tid as u64) << 32);
             if seed == 0 {
                 seed = 0x9E37_79B9_7F4A_7C15;
             }
@@ -64,8 +65,8 @@ impl Heap {
     /// `cache` is this heap's real cache for `(arena, class)` and is empty:
     /// callers arrive from a fast path that fell through on `len == 0`,
     /// from `ensure_cache` on a fresh header, or after re-reading `len`
-    /// following a `tick`. The `assert_eq!` below is the abort on a heap
-    /// inconsistency, not the contract.
+    /// following a `tick`. The `assert_eq!` ([`assert_refill_empty`]) is
+    /// the abort on a heap inconsistency, not the contract.
     pub(super) unsafe fn refill(
         &mut self,
         shared: &Shared,
@@ -75,20 +76,22 @@ impl Heap {
     ) -> u32 {
         // SAFETY: the cache is empty and has `cap` slots of storage.
         unsafe {
-            assert_eq!((*cache).len, 0, "heap: refill of a cache that is not empty");
-            let want = ((*cache).cap / 2).max(1) as usize;
-            let out = core::slice::from_raw_parts_mut((*cache).slots(), want);
-            let claim = self.claim(shared, arena.class(class), out);
+            assert_refill_empty(&self.hdr_ref(cache).len);
+            let want = (self.hdr_ref(cache).cap / 2).max(1) as usize;
+            let out = stack_mut(self.hdr_ref(cache).slots, 0, want);
+            let cs = arena.class(class);
+            let claim = self.claim(shared, cs, out);
             arena.class(class).note_refill(claim.n);
             out[..claim.n].reverse();
             if shared.pac() {
-                CacheHeader::sign_all((*cache).slots(), &mut out[..claim.n]);
+                CacheHeader::sign_all(self.hdr_ref(cache).slots, &mut out[..claim.n]);
             }
-            (*cache).len = claim.n as u32;
-            (*cache).moved = (*cache).moved.wrapping_add(claim.n as u64);
-            (*cache).low_water = claim.n as u32;
-            (*cache).run_end = claim.n as u32;
-            (*cache).zeroed = if claim.zeroed { claim.n as u32 } else { 0 };
+            let h = self.hdr_mut(cache);
+            h.len = claim.n as u32;
+            h.moved = h.moved.wrapping_add(claim.n as u64);
+            h.low_water = claim.n as u32;
+            h.run_end = claim.n as u32;
+            h.zeroed = if claim.zeroed { claim.n as u32 } else { 0 };
             claim.n as u32
         }
     }
@@ -169,7 +172,7 @@ impl Heap {
         // SAFETY: `n <= len <= cap` entries exist.
         unsafe {
             let pac = shared.pac();
-            let slots = (*cache).slots();
+            let slots = self.hdr_ref(cache).slots;
             // With signed entries the selection, the sortedness test and
             // the kept sort order by the address bits alone (`!pac::mask()`
             // masks the PAC field, one `and` per compare); only the
@@ -188,7 +191,7 @@ impl Heap {
             // PAC instruction may run unless the probe said yes.
             let addr_mask = if pac { !pac::mask() } else { usize::MAX };
             let key = |e: &*mut u8| (*e as usize) & addr_mask;
-            let all = (*cache).entries();
+            let all = stack_mut(slots, 0, self.hdr_ref(cache).len as usize);
             let rest_len = all.len() - n;
             let kept_max;
             let sorted = if pac {
@@ -206,7 +209,7 @@ impl Heap {
                 } else {
                     ptr::null_mut()
                 };
-                (*cache).unsorted_flushes = 0;
+                self.hdr_mut(cache).unsorted_flushes = 0;
             } else {
                 kept_max = if rest_len > 0 {
                     // `all[..rest_len - 1] <= all[rest_len - 1] <= all[rest_len..]`.
@@ -219,8 +222,9 @@ impl Heap {
                 } else {
                     ptr::null_mut()
                 };
-                let k = (*cache).unsorted_flushes;
-                (*cache).unsorted_flushes = k.wrapping_add(1);
+                let h = self.hdr_mut(cache);
+                let k = h.unsorted_flushes;
+                h.unsorted_flushes = k.wrapping_add(1);
                 if rest_len > 1 && (k < 2 || k % 32 == 0) {
                     if pac {
                         all.get_unchecked_mut(..rest_len).sort_unstable_by_key(key);
@@ -241,7 +245,7 @@ impl Heap {
                 group_by_slab(shared, class, high)
             };
             let kept_max_plain = if pac && rest_len > 0 {
-                pac::auth(kept_max as usize, slots as usize) as *mut u8
+                addr_to_ptr(pac::auth(kept_max as usize, slots as usize))
             } else {
                 kept_max
             };
@@ -256,11 +260,12 @@ impl Heap {
                 arena
             };
             shared.release_routed(owner, class, high);
-            (*cache).len = rest_len as u32;
-            (*cache).moved = (*cache).moved.wrapping_sub(n as u64);
-            (*cache).zeroed = 0;
-            (*cache).run_end = 0;
-            (*cache).low_water = (*cache).low_water.min(rest_len as u32);
+            let h = self.hdr_mut(cache);
+            h.len = rest_len as u32;
+            h.moved = h.moved.wrapping_sub(n as u64);
+            h.zeroed = 0;
+            h.run_end = 0;
+            h.low_water = h.low_water.min(rest_len as u32);
         }
     }
 }
@@ -355,4 +360,17 @@ pub(super) fn straddling_double_free(p: *mut u8, class: usize) -> ! {
         "double free of {:#x} (class {class}): both copies cached, one at the flush boundary",
         p as usize
     )
+}
+
+/// `Config::slot_randomize` (design section 4), read on the slow path.
+#[inline(always)]
+fn slot_randomize(shared: &Shared) -> bool {
+    shared.config.slot_randomize
+}
+
+/// `rng`'s mix of the heap's address into its seed: the address of `h`,
+/// rotated left by 17 bits.
+#[inline(always)]
+fn addr_mix(h: &Heap) -> u64 {
+    (h as *const Heap as u64).rotate_left(17)
 }

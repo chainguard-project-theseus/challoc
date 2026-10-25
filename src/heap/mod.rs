@@ -73,7 +73,7 @@ use core::ptr;
 
 use crate::layout::{CLASSES, NCLASSES};
 
-use others::node_block_layout;
+use others::{node_block_layout, node_caches_detached, node_set_arena};
 use paths::invalid_free;
 #[cfg(test)]
 use shared::ncpus;
@@ -208,6 +208,59 @@ pub struct Heap {
 
 const _: () = assert!(core::mem::offset_of!(Heap, caches) == 128);
 
+/// `slots[start..start + len]` as a slice, for the slice operations of
+/// the refill, the flush and the run rebuild (claims, selections, sorts,
+/// reversals).
+///
+/// # Safety
+/// The entries are this heap's stack storage and nothing else reads or
+/// writes them while the slice lives.
+#[inline(always)]
+unsafe fn stack_mut<'a>(slots: *mut *mut u8, start: usize, len: usize) -> &'a mut [*mut u8] {
+    // SAFETY: guaranteed by the caller.
+    unsafe { core::slice::from_raw_parts_mut(slots.add(start), len) }
+}
+
+/// `assert_eq!(*len, 0, ..)`, the abort of [`Heap::free_caches`] and
+/// [`Heap::free_caches_in`] on a cache that still holds slots: `*len == 0`
+/// after it returns.
+#[inline(always)]
+#[track_caller]
+fn assert_flushed(len: &u32) {
+    assert_eq!(*len, 0, "heap: freeing a cache that was not flushed");
+}
+
+/// `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap
+/// inconsistency: `*len == 0` after it returns.
+#[inline(always)]
+#[track_caller]
+fn assert_refill_empty(len: &u32) {
+    assert_eq!(*len, 0, "heap: refill of a cache that is not empty");
+}
+
+/// `(*h).bound = true` for a heap [`Heap::create`] has just made: a field
+/// store through the raw heap pointer.
+///
+/// # Safety
+/// `h` is a fresh heap, exclusively owned.
+#[inline(always)]
+unsafe fn mark_bound(h: *mut Heap) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { (*h).bound = true };
+}
+
+/// `(*h).rehome = true` for a thread heap [`Heap::create`] has just made
+/// and marked bound ([`mark_bound`]): it may still move its home
+/// ([`Heap::try_rehome`]).
+///
+/// # Safety
+/// `h` is a fresh heap, exclusively owned.
+#[inline(always)]
+unsafe fn mark_rehome(h: *mut Heap) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { (*h).rehome = true };
+}
+
 impl Heap {
     /// Create a heap in the metadata region for the calling thread, homed
     /// on the least-loaded automatic arena and counted there
@@ -220,10 +273,9 @@ impl Heap {
             shared.arenas.unbind(arena);
         } else {
             // SAFETY: fresh, exclusively owned.
-            unsafe {
-                (*h).bound = true;
-                (*h).rehome = true;
-            }
+            unsafe { mark_bound(h) };
+            // SAFETY: as above.
+            unsafe { mark_rehome(h) };
         }
         h
     }
@@ -231,7 +283,8 @@ impl Heap {
     /// Create a heap homed on `arena` (an explicit cache, or a thread heap
     /// before it is registered). Null if the region is exhausted.
     pub fn create_detached(shared: &Shared, arena: u16) -> *mut Heap {
-        let h = shared.meta.alloc(Layout::new::<Heap>()) as *mut Heap;
+        let block = shared.meta.alloc(Layout::new::<Heap>());
+        let h = block as *mut Heap;
         if h.is_null() {
             return h;
         }
@@ -255,10 +308,15 @@ impl Heap {
             ptr::write(&raw mut (*h).rng, 0);
             ptr::write(&raw mut (*h).rehome, false);
             ptr::write(&raw mut (*h).rehome_from, FOREIGN);
-            let caches = (&raw mut (*h).caches).cast::<CacheHeader>();
-            for c in 0..NCLASSES {
-                ptr::write(caches.add(c), CacheHeader::EMPTY);
-            }
+        }
+        // SAFETY: as above; `caches` is 128 bytes in (the `const`
+        // assertion after `Heap`).
+        let caches = unsafe { block.add(128) } as *mut CacheHeader;
+        for c in 0..NCLASSES {
+            // SAFETY: `c < NCLASSES`, inside the block.
+            let cache = unsafe { caches.add(c) };
+            // SAFETY: as above.
+            unsafe { ptr::write(cache, CacheHeader::EMPTY) };
         }
         h
     }
@@ -271,28 +329,44 @@ impl Heap {
     /// use by any thread.
     pub unsafe fn destroy(h: *mut Heap, shared: &Shared) {
         // SAFETY: the caller gives us exclusive ownership of the heap.
-        let heap = unsafe { &mut *h };
+        let heap = unsafe { tcaches::heap_at(h) };
         // Unbound before the flush: the arena is idle from here on, so a
         // thread this one just started (larson's successor, which frees
         // what this one allocated) can be homed on it, or move there
-        // ([`Heap::try_rehome`]), while the flush below runs.
-        if heap.bound {
+        // ([`Heap::try_rehome`]), while the flush below runs. The heap is
+        // not counted from then on: `bound` and `rehome` are cleared
+        // (nothing reads them again but this, which keeps the `bound` it
+        // read for the exit purge).
+        let bound = heap.bound;
+        if bound {
             shared.arenas.unbind(heap.arena);
+            heap.bound = false;
+            heap.rehome = false;
         }
         heap.flush_all(shared);
-        Self::free_caches(shared, &mut heap.caches);
-        for o in Self::nodes(heap.others) {
+        // SAFETY: the home array (null).
+        unsafe { heap.free_caches_in(shared, ptr::null_mut()) };
+        // `for o in Self::nodes(heap.others)`, spelled out over
+        // `node_next`: as the iterator does, the node's `next` is read
+        // before the node is freed. Each node leaves the list as it goes
+        // (`others` is its successor).
+        let mut o = heap.others;
+        while !o.is_null() {
             // SAFETY: `others` is a list of live metadata blocks owned by
-            // this heap; the iterator has read `next` already, so the
-            // block can go.
-            unsafe {
-                Self::free_caches(shared, &mut (*o).caches);
-                let block = (o as *mut u8).sub(64 * (*o).pad as usize);
-                shared.meta.free(block, node_block_layout());
-            }
+            // this heap; the node is freed below, after its `next`.
+            let next = unsafe { heap.node_next(o) };
+            // SAFETY: `o` is a live node of this heap's `others` list.
+            unsafe { heap.free_caches_in(shared, o) };
+            // SAFETY: as above.
+            let pad = unsafe { heap.node_pad(o) };
+            // SAFETY: the node lies `pad` lines into its block.
+            let block = unsafe { (o as *mut u8).sub(64 * pad as usize) };
+            shared.meta.free(block, node_block_layout());
+            heap.others = next;
+            o = next;
         }
         heap.others = ptr::null_mut();
-        if heap.bound {
+        if bound {
             let arena = heap.arena;
             // jemalloc's rule (`tcache_destroy`): the last thread homed on
             // an arena leaves, so nothing will refill its `Empty` slabs
@@ -316,17 +390,88 @@ impl Heap {
     }
 
     /// Reset every (flushed) header of one array to [`CacheHeader::EMPTY`]
-    /// and free its stack.
+    /// and free its stack, through a plain reference to the array (the
+    /// tests' teardown of a bare cache array). The heap's own arrays go
+    /// through [`Heap::free_caches_in`].
+    #[cfg(test)]
     fn free_caches(shared: &Shared, caches: &mut [CacheHeader; NCLASSES]) {
         for cache in caches.iter_mut() {
             if cache.cap != 0 {
-                assert_eq!(cache.len, 0, "heap: freeing a cache that was not flushed");
+                assert_flushed(&cache.len);
                 shared
                     .meta
                     .free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap));
             }
             *cache = CacheHeader::EMPTY;
         }
+    }
+
+    /// [`Heap::free_caches`] header by header, for the home array (`node`
+    /// null) or `node`'s: reset every (flushed) header to
+    /// [`CacheHeader::EMPTY`] and free its stack.
+    ///
+    /// Unsafe for its caller's precondition; a later proof PR can make it
+    /// a safe `fn` again once a Verus `requires` carries that precondition.
+    ///
+    /// # Safety
+    /// `node` is null or a live node owned by this heap.
+    unsafe fn free_caches_in(&mut self, shared: &Shared, node: *mut ArenaCaches) {
+        for class in 0..NCLASSES {
+            // SAFETY: `node` is null or a live node owned by this heap.
+            let cache = unsafe { self.header_in(node, class) };
+            // SAFETY: `header_in` returned one of this heap's headers.
+            let h = unsafe { self.hdr_mut(cache) };
+            if h.cap != 0 {
+                assert_flushed(&h.len);
+                shared
+                    .meta
+                    .free(h.slots as *mut u8, CacheHeader::slots_layout(h.cap));
+            }
+            *h = CacheHeader::EMPTY;
+        }
+    }
+
+    /// Trade the values of owned headers `a` and `b` of one class
+    /// (`thread.arena`'s exchange of the home caches with a node's,
+    /// [`Heap::set_arena`]); each stack goes with its header.
+    ///
+    /// Unsafe for its caller's precondition; a later proof PR can make it
+    /// a safe `fn` again once a Verus `requires` carries that precondition.
+    ///
+    /// # Safety
+    /// `a` and `b` are distinct headers this heap owns.
+    unsafe fn swap_hdrs(&mut self, a: *mut CacheHeader, b: *mut CacheHeader) {
+        // SAFETY: guaranteed by the caller.
+        unsafe { ptr::swap(a, b) };
+    }
+
+    /// `&*cache` for an owned header (a `(*cache).field` load).
+    ///
+    /// Unsafe for its caller's precondition; a later proof PR can make it
+    /// a safe `fn` again once a Verus `requires` carries that precondition.
+    ///
+    /// # Safety
+    /// `cache` is a header this heap owns (a home header or one of a live
+    /// `others` node's), and nothing writes it while the reference lives.
+    #[inline(always)]
+    unsafe fn hdr_ref(&self, cache: *mut CacheHeader) -> &CacheHeader {
+        // SAFETY: guaranteed by the caller.
+        unsafe { &*cache }
+    }
+
+    /// `&mut *cache` for an owned header (`(*cache).field` stores).
+    ///
+    /// Unsafe for its caller's precondition; a later proof PR can make it
+    /// a safe `fn` again once a Verus `requires` carries that precondition.
+    ///
+    /// # Safety
+    /// `cache` is a header this heap owns (a home header or one of a live
+    /// `others` node's), and nothing else reads or writes it while the
+    /// reference lives.
+    #[inline(always)]
+    unsafe fn hdr_mut(&mut self, cache: *mut CacheHeader) -> &mut CacheHeader {
+        // SAFETY: guaranteed by the caller.
+        unsafe { &mut *cache }
     }
 
     /// The `Shared` this heap was created on.
@@ -365,11 +510,19 @@ impl Heap {
             // empty and the old home's must go back first.
             self.drop_home_caches(shared);
         } else {
-            // SAFETY: `node` is a live block owned by this heap.
-            unsafe {
-                core::mem::swap(&mut (*node).caches, &mut self.caches);
-                (*node).arena = old;
+            // The node's headers and the home headers trade places, and
+            // the node becomes the cache of `old`, the home arena being
+            // left.
+            for c in 0..NCLASSES {
+                let a = self.cache_ptr(c);
+                // SAFETY: `node` is a live block owned by this heap.
+                let b = unsafe { Self::node_cache_ptr(node, c) };
+                // SAFETY: a home header and a header of the node, both
+                // this heap's, so distinct.
+                unsafe { self.swap_hdrs(a, b) };
             }
+            // SAFETY: as above.
+            unsafe { node_set_arena(node, old) };
         }
         self.arena = arena;
         if self.bound {
@@ -404,8 +557,8 @@ impl Heap {
                 // SAFETY: `foreign` is this heap's live `FOREIGN` node; a
                 // header with `cap != 0` is a real cache.
                 unsafe {
-                    let cache = &raw mut (*foreign).caches[class];
-                    if (*cache).cap != 0 {
+                    let cache = Self::node_cache_ptr(foreign, class);
+                    if self.hdr_ref(cache).cap != 0 {
                         Self::scan_or_abort(shared, cache, p);
                     }
                 }
@@ -485,9 +638,14 @@ impl Heap {
             self.flush_arena(shared, FOREIGN, foreign);
         }
         let a = shared.owner(to);
-        for (class, c) in self.caches.iter_mut().enumerate() {
-            if c.cap != 0 {
-                c.rekey(to, a.class(class).refilled() as u32);
+        for class in 0..NCLASSES {
+            let c = self.cache_ptr(class);
+            // SAFETY: `cache_ptr` is this heap's home header for `class`.
+            if unsafe { self.hdr_ref(c) }.cap != 0 {
+                let refilled = a.class(class).refilled() as u32;
+                // SAFETY: as above.
+                let h = unsafe { self.hdr_mut(c) };
+                h.rekey(to, refilled);
             }
         }
         self.arena = to;
@@ -504,7 +662,8 @@ impl Heap {
         let home = self.arena;
         self.flush_arena(shared, home, ptr::null_mut());
         Self::fold_counters(&mut self.uncached, &self.caches);
-        Self::free_caches(shared, &mut self.caches);
+        // SAFETY: the home array (null).
+        unsafe { self.free_caches_in(shared, ptr::null_mut()) };
     }
 
     /// Add the byte counters a cache array stands for (`allocs` pops and
@@ -512,8 +671,23 @@ impl Heap {
     /// to `into`. [`Heap::stats`] derives the thread counters this way on
     /// every read; a cache that is about to be freed is folded into
     /// `uncached` first so that `thread.allocated` never goes backwards.
+    #[allow(
+        clippy::while_let_loop,
+        reason = "the desugared `for`, which Verus needs for `continue`"
+    )]
     fn fold_counters(into: &mut ThreadStats, caches: &[CacheHeader; NCLASSES]) {
-        for (class, c) in caches.iter().enumerate() {
+        // `for (class, c) in caches.iter().enumerate()`, spelled out: Verus
+        // has no `Enumerate` and rejects `continue` in a `for` loop. The
+        // count is taken and bumped as `Enumerate::next` does.
+        let mut iter = caches.iter();
+        let mut count: usize = 0;
+        loop {
+            let c = match iter.next() {
+                Some(c) => c,
+                None => break,
+            };
+            let class = count;
+            count += 1;
             if c.cap == 0 {
                 continue;
             }
@@ -527,10 +701,16 @@ impl Heap {
     pub fn stats(&self) -> ThreadStats {
         let mut s = self.uncached;
         Self::fold_counters(&mut s, &self.caches);
-        for o in Self::nodes(self.others) {
+        // `for o in Self::nodes(self.others)`, spelled out: Verus has no
+        // `from_fn`.
+        let mut o = self.others;
+        while !o.is_null() {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
-            unsafe { Self::fold_counters(&mut s, &(*o).caches) };
+            let next = unsafe { self.node_next(o) };
+            // SAFETY: as above.
+            unsafe { Self::fold_counters(&mut s, self.node_caches(o)) };
+            o = next;
         }
         s
     }
@@ -563,14 +743,20 @@ impl Heap {
         }
         self.flush_all(shared);
         Self::fold_counters(&mut self.uncached, &self.caches);
-        Self::free_caches(shared, &mut self.caches);
-        for o in Self::nodes(self.others) {
+        // SAFETY: the home array (null).
+        unsafe { self.free_caches_in(shared, ptr::null_mut()) };
+        // The walk of `flush_all`. Folding and freeing a node's headers
+        // leaves the list as it is.
+        let mut o = self.others;
+        while !o.is_null() {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
-            unsafe {
-                Self::fold_counters(&mut self.uncached, &(*o).caches);
-                Self::free_caches(shared, &mut (*o).caches);
-            }
+            let next = unsafe { self.node_next(o) };
+            // SAFETY: as above; the fold only reads the headers.
+            unsafe { Self::fold_counters(&mut self.uncached, node_caches_detached(o)) };
+            // SAFETY: `o` is a live node of this heap's `others` list.
+            unsafe { self.free_caches_in(shared, o) };
+            o = next;
         }
     }
 
@@ -611,7 +797,7 @@ impl Heap {
             // unused header has `len == 0` and is skipped.
             unsafe {
                 let cache = self.header_in(node, class);
-                let len = (*cache).len as usize;
+                let len = self.hdr_ref(cache).len as usize;
                 if len != 0 {
                     self.flush(shared, arena, cache, class, len);
                 }
@@ -624,11 +810,18 @@ impl Heap {
     pub fn flush_all(&mut self, shared: &Shared) {
         let home = self.arena;
         self.flush_arena(shared, home, ptr::null_mut());
-        for o in Self::nodes(self.others) {
+        // `for o in Self::nodes(self.others)`, spelled out: Verus has no
+        // `from_fn`. As the iterator does, the node's `next` is read before
+        // its turn.
+        let mut o = self.others;
+        while !o.is_null() {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
-            let arena = unsafe { (*o).arena };
+            let next = unsafe { self.node_next(o) };
+            // SAFETY: as above.
+            let arena = unsafe { self.node_arena(o) };
             self.flush_arena(shared, arena, o);
+            o = next;
         }
     }
 
@@ -638,33 +831,52 @@ impl Heap {
     pub fn gc(&mut self, shared: &Shared) {
         let home = self.arena;
         self.gc_arena(shared, home, ptr::null_mut());
-        for o in Self::nodes(self.others) {
+        // The walk of `flush_all`.
+        let mut o = self.others;
+        while !o.is_null() {
             // SAFETY: as in `flush_all`.
-            let arena = unsafe { (*o).arena };
+            let next = unsafe { self.node_next(o) };
+            // SAFETY: as above.
+            let arena = unsafe { self.node_arena(o) };
             self.gc_arena(shared, arena, o);
+            o = next;
         }
     }
 
+    /// One GC step over one array (the home array when `node` is null,
+    /// else the node's, whose arena is `arena`).
+    #[allow(
+        clippy::while_let_loop,
+        reason = "the desugared `for`, which Verus needs for `continue`"
+    )]
     fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches) {
-        for class in 0..NCLASSES {
+        // `for class in 0..NCLASSES`, spelled out: Verus rejects `continue`
+        // in a `for` loop.
+        let mut iter = 0..NCLASSES;
+        loop {
+            let class = match iter.next() {
+                Some(c) => c,
+                None => break,
+            };
             // SAFETY: `node` is null or a live node owned by this heap; an
             // unused header (`cap == 0`) is skipped.
             unsafe {
                 let cache = self.header_in(node, class);
-                if (*cache).cap == 0 {
+                if self.hdr_ref(cache).cap == 0 {
                     continue;
                 }
-                let lw = (*cache).low_water as usize;
+                let lw = self.hdr_ref(cache).low_water as usize;
                 if arena == FOREIGN {
                     // Never popped: everything it holds went unused.
-                    let len = (*cache).len as usize;
+                    let len = self.hdr_ref(cache).len as usize;
                     if len > 0 {
                         self.flush(shared, arena, cache, class, len);
                     }
                 } else if lw > 0 {
                     self.flush(shared, arena, cache, class, lw - lw / 4);
                 }
-                (*cache).low_water = (*cache).len;
+                let h = self.hdr_mut(cache);
+                h.low_water = h.len;
             }
         }
     }
