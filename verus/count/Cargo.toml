@@ -1,0 +1,13 @@
+[package]
+name = "verus-count"
+description = "Counts challoc's verified, trusted and unverified functions (verus/README.md)"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+proc-macro2 = { version = "1", features = ["span-locations"] }
+verus_syn = { version = "=0.0.0-2026-09-06-0133", features = ["full", "extra-traits"] }
+
+# Not part of the challoc package: a tool run from verus/count.
+[workspace]
