@@ -35,6 +35,10 @@ pub const TABLE: &[(&str, usize)] = &[
 
 #[cfg(target_arch = "x86_64")]
 mod arch {
+    use vstd::prelude::*;
+
+    verus! {
+
     pub const READ: usize = 0;
     pub const WRITE: usize = 1;
     pub const CLOSE: usize = 3;
@@ -54,10 +58,16 @@ mod arch {
     pub const TGKILL: usize = 234;
     pub const OPENAT: usize = 257;
     pub const GETRANDOM: usize = 318;
+
+    } // verus!
 }
 
 #[cfg(target_arch = "aarch64")]
 mod arch {
+    use vstd::prelude::*;
+
+    verus! {
+
     pub const OPENAT: usize = 56;
     pub const CLOSE: usize = 57;
     pub const READ: usize = 63;
@@ -77,12 +87,20 @@ mod arch {
     pub const MPROTECT: usize = 226;
     pub const MADVISE: usize = 233;
     pub const GETRANDOM: usize = 278;
+
+    } // verus!
 }
+
+use vstd::prelude::*;
 
 pub use arch::*;
 
+verus! {
+
 // Numbers from the unified table (>= 424) are the same on every architecture.
 pub const MSEAL: usize = 462;
+
+} // verus!
 
 #[cfg(test)]
 mod tests {
