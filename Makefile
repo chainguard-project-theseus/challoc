@@ -1,6 +1,6 @@
 # challoc build entry points. The library is Linux-only; every target except
-# `help` and the `clean-*` targets runs inside the Wolfi dev container built
-# from Dockerfile.dev. `make help` lists the targets from the
+# `help`, `verus` and the `clean-*` targets runs inside the Wolfi dev container
+# built from Dockerfile.dev. `make help` lists the targets from the
 # `##` comments below; the benchmark harness (bench/cb, its targets in
 # bench/bench.mk) is described in bench/README.md, the environment (target
 # volumes) in CONTRIBUTING.md.
@@ -89,7 +89,7 @@ env_flags = $(foreach v,$(1),$(if $($(v)),-e $(v)="$($(v))"))
 # expanded variable: `make build` runs no probe).
 HOST_CPU = $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //' | grep . || lscpu 2>/dev/null | grep -m1 'Model name' | sed 's/.*: *//')
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare jemalloc-compat install install-jemalloc-compat fuzz bench-build valkey ruby check-needed clean-volumes help print-docker-run test-all
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare jemalloc-compat install install-jemalloc-compat fuzz bench-build valkey ruby check-needed clean-volumes help print-docker-run test-all verus
 
 help: ## list the targets (this text; the `##` comments in the Makefile)
 	@awk -F' ## ' '/ ## / { n = $$1; if (n ~ /^\$$\(eval/) { sub(/^[^,]*,/, "", n); sub(/,.*/, "", n) } else { sub(/:.*/, "", n) } if (n !~ /^[a-zA-Z0-9_-]+$$/) next; printf "  %-22s %s\n", n, $$2 }' $(MAKEFILE_LIST)
@@ -243,6 +243,15 @@ ruby: image ## stage libjemalloc.so.2 (quantum16), build Ruby 3.4 --with-jemallo
 # references no symbol of it.
 check-needed: image ## DT_NEEDED must name the allocator library (tests/as-needed.sh, scripts/check-needed.sh)
 	$(DOCKER_RUN) sh -c 'cargo build --release $(FEATURES) && sh tests/as-needed.sh'
+
+# verus runs where it is invoked, not in the dev container: it needs the
+# Verus release and the rust toolchain verus/README.md names, which the
+# verus check gets from the `verus` package (.chainguard/ci/verus.yaml).
+# VERUS_BASE=<rev> also fails a verus/FLOOR figure lowered below that
+# revision's without a reason (verus/README.md).
+verus: ## the Verus proofs, then the coverage floor (verus/README.md, verus/FLOOR; VERUS_BASE=<rev>)
+	cargo verus verify --locked
+	cd verus/count && cargo run --locked --release -- --floor ../FLOOR $(if $(VERUS_BASE),--base-rev $(VERUS_BASE)) ../..
 
 clean-volumes: ## remove the target and cargo-registry volumes TARGET_VOLUME and CARGO_VOLUME name
 	docker volume rm -f $(TARGET_VOLUME) $(CARGO_VOLUME)
