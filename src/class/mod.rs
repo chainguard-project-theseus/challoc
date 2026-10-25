@@ -315,13 +315,20 @@ impl Pick {
 
 /// Slabs a release batch must put back in the partial set. Consecutive
 /// duplicates are dropped; a full list is flushed under the lock.
-#[derive(Default)]
 struct Reopen {
     slabs: [u32; MAX_PICKS],
     len: usize,
 }
 
 impl Reopen {
+    #[inline(always)]
+    fn new() -> Reopen {
+        Reopen {
+            slabs: [0; MAX_PICKS],
+            len: 0,
+        }
+    }
+
     /// Record `slab`; `false` if the list is full (and `slab` is not the
     /// last entry), in which case the caller must flush first.
     fn push(&mut self, slab: usize) -> bool {
@@ -528,7 +535,7 @@ impl ClassState {
     ) -> Option<ClassState> {
         let _ = (meta, regions);
         let class = table.class as usize;
-        debug_assert_eq!(table.nslabs, sets.nslabs[SetTable::group_of(class)]);
+        debug_assert!(table.nslabs == sets.nslabs[SetTable::group_of(class)]);
         let partial = Set::in_table(sets, class, 0);
         let empty = Set::in_table(sets, class, 1);
         let purged = Set::in_table(sets, class, 2);
@@ -541,7 +548,13 @@ impl ClassState {
                 partial,
                 empty,
                 purged,
-                stats: ClassStats::default(),
+                stats: ClassStats {
+                    committed: 0,
+                    guards: 0,
+                    empty: 0,
+                    purged: 0,
+                    nonfull: 0,
+                },
                 group_next: 0,
                 group_end: 0,
             })),
@@ -619,6 +632,44 @@ impl ClassState {
     #[inline]
     pub fn locate(&self, p: *mut u8) -> (usize, usize) {
         self.table().locate(p)
+    }
+
+    // The accessors below read and write the owner word and a slab
+    // descriptor under this arena's class lock (`g`, the value the caller
+    // holds). Each compiles to the one access in its body; `g` and `slab`
+    // name what the access is under and of.
+
+    /// The arena that owns `slab` ([`SlabTable::owner`]), read under this
+    /// arena's class lock (`g`).
+    #[allow(unused_variables)]
+    #[inline(always)]
+    fn owner_locked(&self, g: &Inner, slab: usize) -> u16 {
+        self.table().owner(slab)
+    }
+
+    /// The state of slab `slab`'s descriptor `d`, read under this arena's
+    /// class lock (`g`).
+    #[allow(unused_variables)]
+    #[inline(always)]
+    fn state_locked(&self, g: &Inner, d: &SlabDesc, slab: usize) -> State {
+        d.state()
+    }
+
+    /// `SlabDesc::set_state` on slab `slab`'s descriptor `d` under this
+    /// arena's class lock (`g`). Callers never pass `Fresh`: an owned slab
+    /// that left `Fresh` does not return to it.
+    #[allow(unused_variables)]
+    #[inline(always)]
+    fn set_state_locked(&self, g: &mut Inner, d: &SlabDesc, slab: usize, s: State) {
+        d.set_state(s);
+    }
+
+    /// `SlabDesc::set_dirty_at` on slab `slab`'s descriptor `d` under this
+    /// arena's class lock (`g`).
+    #[allow(unused_variables)]
+    #[inline(always)]
+    fn set_dirty_locked(&self, g: &mut Inner, d: &SlabDesc, slab: usize, ns: u64) {
+        d.set_dirty_at(ns);
     }
 
     /// Claim up to `out.len()` slots, lowest address first, writing slot
@@ -702,7 +753,15 @@ impl ClassState {
         let cls = self.class();
         let check_zero = purge::check_zero();
         let mut got = 0;
-        for pick in picks {
+        // `for pick in picks`, spelled out: Verus rejects `continue` in a
+        // `for` loop, and the `continue` below keeps the aarch64 codegen of
+        // the plain loop (an `if`/`else` in its place does not).
+        let mut iter = picks.iter();
+        loop {
+            let pick = match iter.next() {
+                Some(pick) => pick,
+                None => break,
+            };
             let slab = pick.slab as usize;
             let want = pick.n as usize;
             if pick.zero {
@@ -821,17 +880,7 @@ impl ClassState {
     ) {
         let desc = self.desc(slab);
         let live = desc.live();
-        debug_assert_eq!(
-            self.table().owner(slab),
-            self.arena,
-            "take: slab {slab} state {:?} live {live}",
-            desc.state()
-        );
-        debug_assert_eq!(
-            desc.arena(),
-            self.arena,
-            "take: slab {slab} descriptor arena"
-        );
+        self.take_checks(g, desc, slab, live);
         // `live > nslots` would reserve a wrapped count (the release
         // profile does not check overflow; the dev profile does).
         assert!(
@@ -840,7 +889,7 @@ impl ClassState {
         );
         let avail = self.class().nslots() - live;
         let n = avail.min(*remaining);
-        let state = desc.state();
+        let state = self.state_locked(g, desc, slab);
         if purge::check_zero() {
             self.check_shadow(slab, "take");
             if state == State::Fresh {
@@ -857,8 +906,8 @@ impl ClassState {
             }
         }
         if state != State::Active {
-            desc.set_state(State::Active);
-            desc.set_dirty_at(0);
+            self.set_state_locked(g, desc, slab, State::Active);
+            self.set_dirty_locked(g, desc, slab, 0);
         }
         desc.add_live(n);
         // Under the lock (`g`), so a plain load-add-store is exclusive.
@@ -885,6 +934,30 @@ impl ClassState {
         };
         *np += 1;
         *remaining -= n;
+    }
+
+    /// `take`'s debug checks: the slab's owner word and its descriptor's
+    /// arena name this arena. Inlined and `track_caller`, so a failure
+    /// names `take`.
+    #[allow(unused_variables)]
+    #[inline(always)]
+    #[track_caller]
+    fn take_checks(&self, g: &Inner, desc: &SlabDesc, slab: usize, live: usize) {
+        if cfg!(debug_assertions) {
+            let owner = self.table().owner(slab);
+            let arena = desc.arena();
+            debug_assert!(
+                owner == self.arena,
+                "take: slab {slab} state {:?} live {live}: owner {owner}, not arena {}",
+                desc.state(),
+                self.arena
+            );
+            debug_assert!(
+                arena == self.arena,
+                "take: slab {slab} descriptor arena {arena}, not arena {}",
+                self.arena
+            );
+        }
     }
 
     /// The slots of a zero pick, decided under the class lock. A `Fresh`
@@ -935,14 +1008,14 @@ impl ClassState {
                 self.check_shadow(slab, "on_live_zero");
             }
             // A slab of another arena is no business of this arena's sets.
-            if self.table().owner(slab) != self.arena {
+            if self.owner_locked(&g, slab) != self.arena {
                 return;
             }
             let desc = self.desc(slab);
-            if desc.live() == 0 && desc.state() == State::Active {
+            if desc.live() == 0 && self.state_locked(&g, desc, slab) == State::Active {
                 let now = crate::sys::now_coarse_ns().max(1);
-                desc.set_state(State::Empty);
-                desc.set_dirty_at(now);
+                self.set_state_locked(&mut g, desc, slab, State::Empty);
+                self.set_dirty_locked(&mut g, desc, slab, now);
                 g.clear_partial(slab);
                 g.empty_add(slab);
                 if self.gate.note_first_empty(now) {
@@ -1005,9 +1078,10 @@ impl ClassState {
         let mut cur_slab = usize::MAX;
         let (mut lo_w, mut hi_w) = (usize::MAX, 0usize);
         let mut count = 0usize;
-        let mut reopen = Reopen::default();
+        let mut reopen = Reopen::new();
         let mut end = ptrs.len();
-        for (i, &p) in ptrs.iter().enumerate() {
+        let mut i = 0usize;
+        for &p in ptrs.iter() {
             let (slab, slot) = self.locate(p);
             if slab != cur_slab {
                 if count != 0 {
@@ -1058,6 +1132,7 @@ impl ClassState {
             count += 1;
             lo_w = lo_w.min(word);
             hi_w = hi_w.max(word);
+            i += 1;
         }
         if count != 0 {
             self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen);
@@ -1127,7 +1202,9 @@ impl ClassState {
             // Between the word's clear and this lock hold the slab may have
             // gone `Empty` (in `dec_live`); only an `Active` slab of this
             // arena goes back into the partial set.
-            if self.desc(slab).state() == State::Active && self.table().owner(slab) == self.arena {
+            if self.state_locked(&g, self.desc(slab), slab) == State::Active
+                && self.owner_locked(&g, slab) == self.arena
+            {
                 g.set_partial(slab);
             }
         }

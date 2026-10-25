@@ -87,11 +87,19 @@ impl Table {
     }
 
     #[inline]
-    fn slot(&self, i: usize) -> &mut Entry {
+    fn slot(&self, i: usize) -> &Entry {
         debug_assert!(i < self.cap());
         // SAFETY: `i < cap` and the storage is `cap` entries that only this
         // table (behind the huge lock) touches.
-        unsafe { &mut *self.entries.add(i) }
+        unsafe { &*self.entries.add(i) }
+    }
+
+    /// Store `e` in slot `i`.
+    #[inline]
+    fn set_slot(&mut self, i: usize, e: Entry) {
+        debug_assert!(i < self.cap());
+        // SAFETY: as in `slot`.
+        unsafe { self.entries.add(i).write(e) }
     }
 
     /// Slot index holding `key`, if present. Terminates because the table
@@ -130,7 +138,7 @@ impl Table {
         loop {
             let e = self.slot(i);
             if e.desc.is_null() {
-                *e = Entry { key, desc };
+                self.set_slot(i, Entry { key, desc });
                 self.count += 1;
                 return;
             }
@@ -161,14 +169,17 @@ impl Table {
                 i < ideal || ideal <= j
             };
             if !stays {
-                *self.slot(i) = e;
+                self.set_slot(i, e);
                 i = j;
             }
         }
-        *self.slot(i) = Entry {
-            key: 0,
-            desc: ptr::null_mut(),
-        };
+        self.set_slot(
+            i,
+            Entry {
+                key: 0,
+                desc: ptr::null_mut(),
+            },
+        );
         self.count = self
             .count
             .checked_sub(1)

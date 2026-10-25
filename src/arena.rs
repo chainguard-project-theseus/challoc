@@ -90,7 +90,139 @@ unsafe impl Send for Arena {}
 #[cfg(test)]
 pub static FAIL_INIT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
+// Field and element pointers for the in-place builds (`Arena::init`,
+// `Arenas::init`). A field's pointer is the struct's pointer advanced by
+// the field's byte offset (`offset_of!`, which compiles to the same
+// address as `&raw mut (*p).f`), an element's the array's advanced by its
+// index.
+
+/// `p`'s address plus `off` bytes as a `*mut T`, with `p`'s provenance:
+/// the pointer `&raw mut (*p).f` gives for a field `f` of type `T` at
+/// byte offset `off`.
+///
+/// # Safety
+/// `off` is inside the allocation `p` points into. A caller that writes
+/// through the result also needs a `T` at `off` to lie inside that
+/// allocation, aligned for `T`: the `fits` assertions below check it for
+/// every field offset this file uses.
+#[inline(always)]
+pub(crate) unsafe fn field_at<S, T>(p: *mut S, off: usize) -> *mut T {
+    // SAFETY: `off` bytes from `p` stay inside its allocation.
+    unsafe { (p as *mut u8).add(off) as *mut T }
+}
+
+/// Element `i` of the `n` from `base`: `base.add(i)`, the address of the
+/// array index projection.
+///
+/// # Safety
+/// The `n` elements are inside one allocation and `i < n`.
+#[allow(unused_variables)]
+#[inline(always)]
+pub(crate) unsafe fn elem_at<T>(base: *mut T, i: usize, n: usize) -> *mut T {
+    // SAFETY: element `i < n` is inside the allocation.
+    unsafe { base.add(i) }
+}
+
+// Byte offsets of `Arena`'s fields.
+const A_INDEX: usize = core::mem::offset_of!(Arena, index);
+const A_DECAY_NS: usize = core::mem::offset_of!(Arena, decay_ns);
+const A_SETS: usize = core::mem::offset_of!(Arena, sets);
+const A_CLASSES: usize = core::mem::offset_of!(Arena, classes);
+const A_LARGE: usize = core::mem::offset_of!(Arena, large);
+const A_STATS: usize = core::mem::offset_of!(Arena, stats);
+const A_LAST_EXIT_PURGE: usize = core::mem::offset_of!(Arena, last_exit_purge);
+
+/// A field of type `T` at offset `off` of an `S` is aligned for `T`, `S`'s
+/// alignment is a multiple of `T`'s, and the field ends by `next` (the
+/// next field's offset, or the size of `S`). An overflow in the `const`
+/// assertions that evaluate it is a compile error.
+pub(crate) const fn fits<S, T>(off: usize, next: usize) -> bool {
+    off % core::mem::align_of::<T>() == 0
+        && core::mem::align_of::<S>() % core::mem::align_of::<T>() == 0
+        && off + core::mem::size_of::<T>() <= next
+}
+
+// `Arena`'s layout (`repr(C)`): each field at its offset, aligned, and
+// ending by the next one's offset, the last by the size.
+const _: () = assert!(
+    fits::<Arena, u16>(A_INDEX, A_DECAY_NS)
+        && fits::<Arena, AtomicU64>(A_DECAY_NS, A_SETS)
+        && fits::<Arena, *const SetTable>(A_SETS, A_CLASSES)
+        && fits::<Arena, [ClassState; NCLASSES]>(A_CLASSES, A_LARGE)
+        && NCLASSES as u128 * core::mem::size_of::<ClassState>() as u128 <= isize::MAX as u128
+        && fits::<Arena, AtomicU64>(A_LARGE, A_STATS)
+        && fits::<Arena, Lock<ArenaStats>>(A_STATS, A_LAST_EXIT_PURGE)
+        && fits::<Arena, AtomicU64>(A_LAST_EXIT_PURGE, core::mem::size_of::<Arena>())
+        && core::mem::size_of::<Arena>() <= isize::MAX as usize
+);
+
+// An array of `N` `T`s is `N` `T`s back to back, aligned as one, at
+// `Arena`'s class states.
+const _: () = assert!(
+    core::mem::size_of::<[ClassState; NCLASSES]>() == NCLASSES * core::mem::size_of::<ClassState>()
+        && core::mem::align_of::<[ClassState; NCLASSES]>() == core::mem::align_of::<ClassState>()
+);
+
+/// The in-place writes of [`Arena::init`], each to the field it names.
 impl Arena {
+    /// `index` and `decay_ns`.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage.
+    #[inline(always)]
+    unsafe fn put_head(this: *mut Arena, index: u16, decay_ns: u64) {
+        // SAFETY: the fields of `init`'s storage.
+        unsafe {
+            ptr::write(field_at(this, A_INDEX), index);
+            ptr::write(field_at(this, A_DECAY_NS), AtomicU64::new(decay_ns));
+        }
+    }
+
+    /// Storage for the slab set table from `meta`, null when it is full.
+    #[inline(always)]
+    fn alloc_sets(meta: &Meta) -> *mut SetTable {
+        meta.alloc(core::alloc::Layout::new::<SetTable>()) as *mut SetTable
+    }
+
+    /// `sets_ptr` into the field.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage.
+    #[inline(always)]
+    unsafe fn put_sets(this: *mut Arena, sets_ptr: *mut SetTable) {
+        // SAFETY: the field of `init`'s storage.
+        unsafe {
+            ptr::write(field_at(this, A_SETS), sets_ptr as *const SetTable);
+        }
+    }
+
+    /// `cs` into `classes[c]`.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage and `c < NCLASSES`.
+    #[inline(always)]
+    unsafe fn put_class(this: *mut Arena, c: usize, cs: ClassState) {
+        // SAFETY: element `c` of the field.
+        unsafe {
+            let classes: *mut ClassState = field_at(this, A_CLASSES);
+            ptr::write(elem_at(classes, c, NCLASSES), cs);
+        }
+    }
+
+    /// `large`, `stats` and `last_exit_purge`.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage.
+    #[inline(always)]
+    unsafe fn put_tail(this: *mut Arena, index: u16) {
+        // SAFETY: the fields of `init`'s storage.
+        unsafe {
+            ptr::write(field_at(this, A_LARGE), AtomicU64::new(0));
+            ptr::write(field_at(this, A_STATS), Lock::new(ArenaStats::empty(index)));
+            ptr::write(field_at(this, A_LAST_EXIT_PURGE), AtomicU64::new(0));
+        }
+    }
+
     /// Initialise `this` in place as arena `index` over `tables`. Returns
     /// `false` if the metadata region cannot hold the slab sets, leaving
     /// `this` unusable until a later `init` over the same storage
@@ -109,8 +241,7 @@ impl Arena {
     ) -> bool {
         // SAFETY: the caller guarantees `this` is writable and unaliased.
         unsafe {
-            ptr::write(&raw mut (*this).index, index);
-            ptr::write(&raw mut (*this).decay_ns, AtomicU64::new(decay_ns));
+            Arena::put_head(this, index, decay_ns);
             #[cfg(test)]
             if FAIL_INIT
                 .compare_exchange(
@@ -123,28 +254,32 @@ impl Arena {
             {
                 return false;
             }
-            let sets_ptr = meta.alloc(core::alloc::Layout::new::<SetTable>()) as *mut SetTable;
+            let sets_ptr = Arena::alloc_sets(meta);
             if sets_ptr.is_null() {
                 return false;
             }
             match SetTable::new(meta, regions) {
-                Some(sets) => ptr::write(sets_ptr, sets),
+                Some(sets) => {
+                    ptr::write(sets_ptr, sets);
+                    Arena::put_sets(this, sets_ptr);
+                }
                 None => {
                     meta.free(sets_ptr as *mut u8, core::alloc::Layout::new::<SetTable>());
                     return false;
                 }
             }
-            ptr::write(&raw mut (*this).sets, sets_ptr as *const SetTable);
             let sets: &SetTable = &*sets_ptr;
             for c in 0..NCLASSES {
                 match ClassState::new(meta, regions, &tables[c], index, sets) {
-                    Some(cs) => ptr::write(&raw mut (*this).classes[c], cs),
-                    None => return false,
+                    Some(cs) => {
+                        Arena::put_class(this, c, cs);
+                    }
+                    None => {
+                        return false;
+                    }
                 }
             }
-            ptr::write(&raw mut (*this).large, AtomicU64::new(0));
-            ptr::write(&raw mut (*this).stats, Lock::new(ArenaStats::empty(index)));
-            ptr::write(&raw mut (*this).last_exit_purge, AtomicU64::new(0));
+            Arena::put_tail(this, index);
         }
         true
     }
@@ -252,11 +387,16 @@ impl Arena {
     /// `Empty` bytes over every class (one lock hold per class that has
     /// any), for the cgroup policy's retention figure.
     pub fn empty_bytes(&self) -> usize {
-        self.classes
-            .iter()
-            .filter(|cs| cs.oldest_empty() != 0)
-            .map(|cs| cs.empty_bytes())
-            .sum()
+        let mut sum = 0usize;
+        let mut c = 0;
+        while c < NCLASSES {
+            let cs = &self.classes[c];
+            if cs.oldest_empty() != 0 {
+                sum += cs.empty_bytes();
+            }
+            c += 1;
+        }
+        sum
     }
 
     /// The exit purge's gate (design 13.3): the last thread heap homed on
@@ -284,7 +424,14 @@ impl Arena {
     /// Purge every `Empty` slab of every class whatever its age. Returns
     /// how many were purged.
     pub fn purge_all(&self) -> usize {
-        self.classes.iter().map(|cs| cs.purge_empty(u64::MAX)).sum()
+        let mut sum = 0usize;
+        let mut c = 0;
+        while c < NCLASSES {
+            let cs = &self.classes[c];
+            sum += cs.purge_empty(u64::MAX);
+            c += 1;
+        }
+        sum
     }
 }
 
@@ -293,21 +440,141 @@ impl Arena {
 /// ones from init plus every `create` since, published with a release
 /// store once the arena is usable (automatic arenas may still be
 /// unmaterialised, see [`Arenas::get`]).
+///
+/// `repr(C)`: the fields lie in declaration order, so the layout
+/// assertion below holds on every compiler.
+#[repr(C)]
 pub struct Arenas {
-    /// Creation lock; the value is `count` for the writer.
-    lock: Lock<u32>,
-    count: AtomicU32,
-    /// Indices below this are automatic (`narenas`).
-    auto: u32,
+    table: [AtomicPtr<Arena>; MAX_ARENAS],
     /// Thread heaps currently homed on each arena (`assign`/`bind` add,
     /// `unbind` subtracts); explicit caches are not counted.
     bound: [AtomicU32; MAX_ARENAS],
-    table: [AtomicPtr<Arena>; MAX_ARENAS],
+    /// Creation lock; the value is `count` for the writer.
+    lock: Lock<u32>,
     /// The storage of a build whose `Arena::init` failed, for the next
     /// build to reuse: a reservation is never freed, so a retry under
     /// metadata pressure would otherwise strand one per attempt. Null
     /// when there is none; only touched under `lock`.
     spare: AtomicPtr<Arena>,
+    count: AtomicU32,
+    /// Indices below this are automatic (`narenas`).
+    auto: u32,
+}
+
+// Byte offsets of `Arenas`'s fields.
+const AR_TABLE: usize = core::mem::offset_of!(Arenas, table);
+const AR_BOUND: usize = core::mem::offset_of!(Arenas, bound);
+const AR_LOCK: usize = core::mem::offset_of!(Arenas, lock);
+const AR_COUNT: usize = core::mem::offset_of!(Arenas, count);
+const AR_AUTO: usize = core::mem::offset_of!(Arenas, auto);
+const AR_SPARE: usize = core::mem::offset_of!(Arenas, spare);
+
+// `Arenas`'s layout: each field at its offset, aligned, and ending by the
+// next one's offset, the last by the size. `Arenas` is `repr(C)`, which
+// fixes the fields in declaration order (the table, the bound counts,
+// `lock`, `spare`, `count`, `auto`), so this holds on every compiler.
+const _: () = assert!(
+    fits::<Arenas, [AtomicPtr<Arena>; MAX_ARENAS]>(AR_TABLE, AR_BOUND)
+        && MAX_ARENAS as u128 * core::mem::size_of::<AtomicPtr<Arena>>() as u128
+            <= isize::MAX as u128
+        && fits::<Arenas, [AtomicU32; MAX_ARENAS]>(AR_BOUND, AR_LOCK)
+        && MAX_ARENAS as u128 * core::mem::size_of::<AtomicU32>() as u128 <= isize::MAX as u128
+        && fits::<Arenas, Lock<u32>>(AR_LOCK, AR_SPARE)
+        && fits::<Arenas, AtomicPtr<Arena>>(AR_SPARE, AR_COUNT)
+        && fits::<Arenas, AtomicU32>(AR_COUNT, AR_AUTO)
+        && fits::<Arenas, u32>(AR_AUTO, core::mem::size_of::<Arenas>())
+        && core::mem::size_of::<Arenas>() <= isize::MAX as usize
+);
+
+// An array of `N` `T`s is `N` `T`s back to back, aligned as one, at
+// `Arenas`'s two arrays.
+const _: () = assert!(
+    core::mem::size_of::<[AtomicPtr<Arena>; MAX_ARENAS]>()
+        == MAX_ARENAS * core::mem::size_of::<AtomicPtr<Arena>>()
+        && core::mem::align_of::<[AtomicPtr<Arena>; MAX_ARENAS]>()
+            == core::mem::align_of::<AtomicPtr<Arena>>()
+        && core::mem::size_of::<[AtomicU32; MAX_ARENAS]>()
+            == MAX_ARENAS * core::mem::size_of::<AtomicU32>()
+        && core::mem::align_of::<[AtomicU32; MAX_ARENAS]>() == core::mem::align_of::<AtomicU32>()
+);
+
+/// `a < b` on `(u32, bool)`: lexicographic, `false < true`, as `core`
+/// documents tuple and `bool` order.
+#[inline(always)]
+fn key_less(a: (u32, bool), b: (u32, bool)) -> bool {
+    a < b
+}
+
+/// The in-place writes of [`Arenas::init`], each to the field it names.
+impl Arenas {
+    /// `lock`, `count` and `auto`, from the automatic count `auto`.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage.
+    #[inline(always)]
+    unsafe fn put_head(this: *mut Arenas, auto: u32) {
+        // SAFETY: the fields of `init`'s storage.
+        unsafe {
+            ptr::write(field_at(this, AR_LOCK), Lock::new(auto));
+            ptr::write(field_at(this, AR_COUNT), AtomicU32::new(auto));
+            ptr::write(field_at(this, AR_AUTO), auto);
+        }
+    }
+
+    /// Entry `i` of `table`, null, and of `bound`, a count of 0.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage and `i < MAX_ARENAS`.
+    #[inline(always)]
+    unsafe fn put_entry(this: *mut Arenas, i: usize) {
+        // SAFETY: element `i` of each array field.
+        unsafe {
+            let table: *mut AtomicPtr<Arena> = field_at(this, AR_TABLE);
+            let bound: *mut AtomicU32 = field_at(this, AR_BOUND);
+            ptr::write(
+                elem_at(table, i, MAX_ARENAS),
+                AtomicPtr::new(ptr::null_mut()),
+            );
+            ptr::write(elem_at(bound, i, MAX_ARENAS), AtomicU32::new(0));
+        }
+    }
+
+    /// `arena0` into entry 0 of `table`.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage, its entry 0 written.
+    #[inline(always)]
+    unsafe fn put_arena0(this: *mut Arenas, arena0: *mut Arena) {
+        // SAFETY: element 0 of the field, written by `put_entry`.
+        unsafe {
+            let table: *mut AtomicPtr<Arena> = field_at(this, AR_TABLE);
+            (*elem_at(table, 0, MAX_ARENAS)).store(arena0, Ordering::Release);
+        }
+    }
+
+    /// `spare`, null.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage.
+    #[inline(always)]
+    unsafe fn put_spare(this: *mut Arenas) {
+        // SAFETY: the field of `init`'s storage.
+        unsafe {
+            ptr::write(
+                field_at(this, AR_SPARE),
+                AtomicPtr::<Arena>::new(ptr::null_mut()),
+            );
+        }
+    }
+}
+
+/// An arena's bound count went below zero: a heap was unbound twice, or
+/// never bound.
+#[cold]
+#[inline(never)]
+#[track_caller]
+fn unbind_unbound(index: u16) -> ! {
+    panic!("arena {index}: unbinding a heap that was never bound")
 }
 
 impl Arenas {
@@ -321,17 +588,12 @@ impl Arenas {
         let auto = narenas.clamp(1, MAX_ARENAS as u32);
         // SAFETY: the caller guarantees `this` is writable and unaliased.
         unsafe {
-            ptr::write(&raw mut (*this).lock, Lock::new(auto));
-            ptr::write(&raw mut (*this).count, AtomicU32::new(auto));
-            ptr::write(&raw mut (*this).auto, auto);
-            let table = &raw mut (*this).table;
-            let bound = &raw mut (*this).bound;
+            Arenas::put_head(this, auto);
             for i in 0..MAX_ARENAS {
-                ptr::write(&raw mut (*table)[i], AtomicPtr::new(ptr::null_mut()));
-                ptr::write(&raw mut (*bound)[i], AtomicU32::new(0));
+                Arenas::put_entry(this, i);
             }
-            (*table)[0].store(arena0, Ordering::Release);
-            ptr::write(&raw mut (*this).spare, AtomicPtr::new(ptr::null_mut()));
+            Arenas::put_arena0(this, arena0);
+            Arenas::put_spare(this);
         }
     }
 
@@ -358,7 +620,7 @@ impl Arenas {
     /// binding with [`Arenas::unbind`] when the heap is destroyed.
     pub fn assign(&self) -> u16 {
         if self.auto == 1 {
-            self.bound[0].fetch_add(1, Ordering::Relaxed);
+            self.count_in(0);
             return 0;
         }
         let _g = self.lock.lock();
@@ -367,10 +629,10 @@ impl Arenas {
         let mut best_key = (u32::MAX, true);
         for i in 0..self.auto as usize {
             let key = (
-                self.bound[i].load(Ordering::Relaxed),
+                self.load_bound(i),
                 self.table[i].load(Ordering::Relaxed).is_null(),
             );
-            if key < best_key {
+            if key_less(key, best_key) {
                 best = i;
                 best_key = key;
                 if key == (0, false) {
@@ -378,14 +640,26 @@ impl Arenas {
                 }
             }
         }
-        self.bound[best].fetch_add(1, Ordering::Relaxed);
+        self.count_in(best);
         best as u16
+    }
+
+    /// `bound[i]`.
+    #[inline(always)]
+    fn load_bound(&self, i: usize) -> u32 {
+        self.bound[i].load(Ordering::Relaxed)
+    }
+
+    /// `bound[i] += 1`.
+    #[inline(always)]
+    fn count_in(&self, i: usize) {
+        self.bound[i].fetch_add(1, Ordering::Relaxed);
     }
 
     /// Count a thread heap as homed on `index` (`thread.arena` moving a
     /// heap to an arena `assign` did not pick).
     pub fn bind(&self, index: u16) {
-        self.bound[index as usize].fetch_add(1, Ordering::Relaxed);
+        self.count_in(index as usize)
     }
 
     /// Bind a thread heap to `index` only if no heap is homed there now
@@ -396,24 +670,32 @@ impl Arenas {
     /// plain load first: a busy arena (xmalloc's live producers) is
     /// refused without taking its counter's line exclusive.
     pub fn try_bind_idle(&self, index: u16) -> bool {
-        let b = &self.bound[index as usize];
-        b.load(Ordering::Relaxed) == 0
-            && b.compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
+        let i = index as usize;
+        if self.load_bound(i) != 0 {
+            return false;
+        }
+        self.bind_if_idle(i)
+    }
+
+    /// `bound[i]`'s compare-and-swap from 0 to 1.
+    #[inline(always)]
+    fn bind_if_idle(&self, i: usize) -> bool {
+        self.bound[i]
+            .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
     }
 
     /// A thread heap homed on `index` is destroyed or moves away.
     pub fn unbind(&self, index: u16) {
         let prev = self.bound[index as usize].fetch_sub(1, Ordering::Relaxed);
-        assert!(
-            prev != 0,
-            "arena {index}: unbinding a heap that was never bound"
-        );
+        if prev == 0 {
+            unbind_unbound(index);
+        }
     }
 
     /// Thread heaps currently homed on `index`.
     pub fn bound(&self, index: u16) -> u32 {
-        self.bound[index as usize].load(Ordering::Relaxed)
+        self.load_bound(index as usize)
     }
 
     /// Arena `index` if it exists. An automatic index whose arena has not
