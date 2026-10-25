@@ -82,7 +82,7 @@ mod c_programs;
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use crate::config;
 use crate::heap::Shared;
@@ -154,8 +154,15 @@ const LINE_READY: u8 = 2;
 /// the unit tests call them directly) waits on the first class lock before
 /// it can store, and the releaser reads before its first unlock. A handler
 /// cannot nest a fork inside the window because signals are blocked for its
-/// duration.
-static FORK_SIGMASK: Global<u64> = Global::new();
+/// duration. An atomic whose accesses are relaxed (a plain load and
+/// store), ordered by the locks.
+static FORK_SIGMASK: AtomicU64 = AtomicU64::new(0);
+
+/// [`FORK_SIGMASK`], the slot the fork handlers save the mask in.
+#[inline(always)]
+fn fork_slot() -> &'static AtomicU64 {
+    &FORK_SIGMASK
+}
 
 /// The process's allocator state, initialising it on first use.
 #[inline(always)]
@@ -217,7 +224,7 @@ pub fn features() -> &'static Features {
     feature_line_ready();
     // SAFETY: `feature_line_ready` returned, so `READY` and `LINE_READY`
     // have been observed.
-    unsafe { FEATURES.get() }
+    unsafe { &*features_ptr() }
 }
 
 /// Build the feature line on its first request (once, whichever thread
@@ -229,6 +236,13 @@ pub fn features() -> &'static Features {
 /// asks for the line while its own thread is building it waits forever.
 fn feature_line_ready() {
     let _ = shared();
+    line_ready();
+}
+
+/// [`feature_line_ready`] after its `shared()`: build the line, or wait
+/// for the thread building it.
+#[inline(always)]
+fn line_ready() {
     if LINE_STATE.load(Ordering::Acquire) == LINE_READY {
         return;
     }
@@ -243,14 +257,7 @@ fn feature_line_ready() {
     {
         // SAFETY: `READY` observed; this thread won the exchange, so it is
         // the only writer, and readers wait for `LINE_READY`.
-        unsafe {
-            let f = (*FEATURES.0.get()).assume_init_mut();
-            if !f.thp_sizes {
-                f.thp = crate::sys::thp_host::probe(f.page_size);
-                f.thp_sizes = true;
-            }
-            (*FEATURE_LINE.0.get()).write(FeatureLine::build(f));
-        }
+        unsafe { build_line() };
         LINE_STATE.store(LINE_READY, Ordering::Release);
         return;
     }
@@ -259,12 +266,43 @@ fn feature_line_ready() {
     }
 }
 
+/// Complete the probed features' THP size table if init skipped it and
+/// build the feature line into [`FEATURE_LINE`] (`feature_line_ready`'s
+/// build).
+///
+/// # Safety
+/// `READY` observed, and the calling thread won `LINE_STATE`'s exchange
+/// from `LINE_UNBUILT`: it is the only writer of the two statics, while
+/// readers wait for `LINE_READY`.
+#[inline(always)]
+unsafe fn build_line() {
+    // SAFETY: guaranteed by the caller; init wrote the features.
+    let f = unsafe { &mut *features_ptr() };
+    if !f.thp_sizes {
+        f.thp = crate::sys::thp_host::probe(f.page_size);
+        f.thp_sizes = true;
+    }
+    // SAFETY: guaranteed by the caller.
+    unsafe { line_ptr().write(FeatureLine::build(f)) };
+}
+
+/// The feature line [`build_line`] wrote before the release store of
+/// `LINE_READY`.
+///
+/// # Safety
+/// `LINE_READY` observed.
+#[inline(always)]
+unsafe fn published_line() -> &'static FeatureLine {
+    // SAFETY: guaranteed by the caller.
+    unsafe { &*line_ptr() }
+}
+
 /// The feature line (`Features`'s `Display`, built at its first request).
 /// Initialises the allocator if needed.
 pub fn feature_line() -> &'static str {
     feature_line_ready();
     // SAFETY: `LINE_READY` observed.
-    unsafe { FEATURE_LINE.get() }.as_str()
+    unsafe { published_line() }.as_str()
 }
 
 /// `challoc_features()`: the feature report as one NUL-terminated line of
@@ -277,7 +315,7 @@ pub fn feature_line() -> &'static str {
 pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
     feature_line_ready();
     // SAFETY: `LINE_READY` observed.
-    unsafe { FEATURE_LINE.get() }.as_ptr()
+    unsafe { published_line() }.as_ptr()
 }
 
 /// Whether init has completed (for the tests; the entry points use
@@ -323,6 +361,54 @@ pub fn sealed_ranges() -> u32 {
     SEALED.load(Ordering::Relaxed)
 }
 
+/// [`SHARED`]'s storage, where `init` builds the allocator state: the
+/// cell's own pointer, not `as_mut_ptr` through a `&mut`: `init` keeps
+/// pointers derived from it, and writes through the readers' `&Shared`
+/// would invalidate ones derived from a `&mut`.
+#[inline(always)]
+fn shared_storage_ptr() -> *mut Shared {
+    SHARED.0.get().cast::<Shared>()
+}
+
+/// [`FEATURES`]'s storage.
+#[inline(always)]
+fn features_ptr() -> *mut Features {
+    FEATURES.0.get().cast::<Features>()
+}
+
+/// [`FEATURE_LINE`]'s storage.
+#[inline(always)]
+fn line_ptr() -> *mut FeatureLine {
+    FEATURE_LINE.0.get().cast::<FeatureLine>()
+}
+
+/// Write the probed features into [`FEATURES`].
+///
+/// # Safety
+/// Called once, by `init`, before `READY` is published.
+#[inline(always)]
+unsafe fn publish_features(features: Features) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { features_ptr().write(features) };
+}
+
+/// Register the fork handlers with `pthread_atfork`; its return code.
+#[inline(always)]
+fn atfork_handlers() -> i32 {
+    // SAFETY: the three handlers are plain `extern "C"` functions that only
+    // touch allocator locks.
+    unsafe { ::libc::pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) }
+}
+
+/// [`atfork_handlers`], aborting if `pthread_atfork` fails.
+#[inline(always)]
+fn register_fork_handlers() {
+    let rc = atfork_handlers();
+    if rc != 0 {
+        sys::abort_fmt(format_args!("pthread_atfork failed: {}", sys::Errno(rc)));
+    }
+}
+
 /// Design section 10 steps 1 to 8 (step 7, the cgroup discovery, happens
 /// inside `Shared::init`). Configuration (step 2) is read before the
 /// regions are reserved so that nothing it may abort on has been mapped
@@ -342,9 +428,13 @@ fn init() {
     purge::set_check_zero(config.check_zero);
     // The unit-test process shares this allocator between tests that
     // assert on the thread's presence; the lazy start is tested on its own
-    // (`purge::tests`, the C programs).
+    // (`purge::tests`, the C programs). `config.background_thread.or(Some(false))`
+    // is spelled as a `match`.
     purge::background::configure(if cfg!(test) {
-        config.background_thread.or(Some(false))
+        match config.background_thread {
+            Some(b) => Some(b),
+            None => Some(false),
+        }
     } else {
         config.background_thread
     });
@@ -356,11 +446,7 @@ fn init() {
     // published, and `regions` are live reservations this process owns.
     unsafe {
         let ok = Shared::init(
-            // The cell's own pointer, not `as_mut_ptr` through a `&mut`:
-            // `init` keeps pointers derived from it, and writes through
-            // the readers' `&Shared` would invalidate ones derived from a
-            // `&mut`.
-            SHARED.0.get().cast::<Shared>(),
+            shared_storage_ptr(),
             regions,
             config,
             features.guard_install,
@@ -371,18 +457,12 @@ fn init() {
         }
         // Design 11: `Shared::init` forced the stored `thp` to `never`
         // under a cgroup limit below 1 GiB; the advice follows.
-        if (*SHARED.0.get()).assume_init_ref().policy.thp_forced() {
+        if (*shared_storage_ptr()).policy.thp_forced() {
             crate::thp::force_never();
         }
-        (*FEATURES.0.get()).write(features);
+        publish_features(features);
     }
-    // SAFETY: the three handlers are plain `extern "C"` functions that only
-    // touch allocator locks.
-    let rc =
-        unsafe { ::libc::pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) };
-    if rc != 0 {
-        sys::abort_fmt(format_args!("pthread_atfork failed: {}", sys::Errno(rc)));
-    }
+    register_fork_handlers();
 }
 
 /// Block signals, then take every allocator lock so the child inherits a
@@ -415,58 +495,98 @@ extern "C" fn fork_prepare() {
     s.tcaches.raw_lock().lock();
     s.arenas.raw_lock().lock();
     s.stats.raw().lock();
-    for a in s.arenas.iter() {
-        for c in 0..NCLASSES {
-            a.classes[c].raw_lock().lock();
+    // Each `for a in s.arenas.iter()` is spelled as the scan
+    // `Arenas::iter` makes, every index below the count through
+    // `Arenas::get_existing`, and `a.classes[c]` as `Arena::class`, as in
+    // `fork_release`. The creation lock is held, so the count and the
+    // table stay as read here until the release.
+    let n = s.arenas.count() as usize;
+    for i in 0..n {
+        if let Some(a) = s.arenas.get_existing(i as u16) {
+            for c in 0..NCLASSES {
+                a.class(c).raw_lock().lock();
+            }
         }
     }
     for c in 0..NCLASSES {
         s.tables()[c].raw_lock().lock();
     }
-    for a in s.arenas.iter() {
-        a.sets().raw_lock().lock();
+    // `take_group` takes an arena's slab-set lock under a class lock and
+    // that class's slab table lock, so the slab-set locks come after
+    // every slab table lock.
+    for i in 0..n {
+        if let Some(a) = s.arenas.get_existing(i as u16) {
+            a.sets().raw_lock().lock();
+        }
     }
     s.huge.raw_lock().lock();
     s.meta.raw_lock().lock();
-    for a in s.arenas.iter() {
-        a.stats_raw_lock().lock();
+    for i in 0..n {
+        if let Some(a) = s.arenas.get_existing(i as u16) {
+            a.stats_raw_lock().lock();
+        }
     }
     purge::background::fork_lock();
-    // SAFETY: every allocator lock is held, so no other forking thread can
-    // touch the slot until `fork_release` has read it (see `FORK_SIGMASK`).
-    unsafe { (*FORK_SIGMASK.0.get()).write(mask) };
+    // Every allocator lock is held, so no other forking thread can touch
+    // the slot until `fork_release` has read it (see `FORK_SIGMASK`).
+    save_sigmask(mask);
+}
+
+/// Save the forking thread's signal mask in [`FORK_SIGMASK`], under every
+/// allocator lock.
+#[inline(always)]
+fn save_sigmask(mask: u64) {
+    fork_slot().store(mask, Ordering::Relaxed);
+}
+
+/// The signal mask [`save_sigmask`] stored in [`FORK_SIGMASK`].
+#[inline(always)]
+fn saved_sigmask() -> u64 {
+    fork_slot().load(Ordering::Relaxed)
 }
 
 /// Release the locks taken by `fork_prepare`, in reverse order, then let
 /// signals through again.
 fn fork_release() {
     let s = shared();
-    // SAFETY: written by the `fork_prepare` that paired with this release,
-    // and still ours because every lock is held until the unlocks below.
-    let mask = unsafe { (*FORK_SIGMASK.0.get()).assume_init() };
+    // Written by the `fork_prepare` that paired with this release, and
+    // still ours because every lock is held until the unlocks below.
+    let mask = saved_sigmask();
     purge::background::fork_unlock();
     // Arenas cannot appear while the creation lock is held, so this is the
-    // same set `fork_prepare` locked, in reverse.
+    // same set `fork_prepare` locked, in reverse. Each `for i in
+    // (0..n).rev()` is spelled as a countdown, and `a.classes[c]` as
+    // `Arena::class`.
     let n = s.arenas.count() as usize;
-    for i in (0..n).rev() {
+    let mut i = n;
+    while i > 0 {
+        i -= 1;
         if let Some(a) = s.arenas.get_existing(i as u16) {
             a.stats_raw_lock().unlock();
         }
     }
     s.meta.raw_lock().unlock();
     s.huge.raw_lock().unlock();
-    for i in (0..n).rev() {
+    let mut i = n;
+    while i > 0 {
+        i -= 1;
         if let Some(a) = s.arenas.get_existing(i as u16) {
             a.sets().raw_lock().unlock();
         }
     }
-    for c in (0..NCLASSES).rev() {
+    let mut c = NCLASSES;
+    while c > 0 {
+        c -= 1;
         s.tables()[c].raw_lock().unlock();
     }
-    for i in (0..n).rev() {
+    let mut i = n;
+    while i > 0 {
+        i -= 1;
         if let Some(a) = s.arenas.get_existing(i as u16) {
-            for c in (0..NCLASSES).rev() {
-                a.classes[c].raw_lock().unlock();
+            let mut c = NCLASSES;
+            while c > 0 {
+                c -= 1;
+                a.class(c).raw_lock().unlock();
             }
         }
     }

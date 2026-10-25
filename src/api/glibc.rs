@@ -30,7 +30,8 @@
 
 use core::ffi::c_int;
 
-use crate::stats;
+use crate::layout::NCLASSES;
+use crate::stats::{self, fig_add, fig_mul};
 
 /// glibc's `struct mallinfo` (ten `int`s).
 #[repr(C)]
@@ -76,11 +77,17 @@ pub fn mallinfo2() -> MallInfo2 {
     let page = shared.regions.page_size();
     let arena = all.resident.saturating_sub(all.large_allocated);
     let uordblks = all.small_allocated;
-    let free_slots: usize = all
-        .bins
-        .iter()
-        .map(|b| (b.curslabs * b.nregs).saturating_sub(b.curregs))
-        .sum();
+    // The free slots of every class, summed with an index loop and the
+    // figure arithmetic (`stats::fig_add`, `fig_mul`): `+` and `*` as the
+    // build computes them.
+    let mut free_slots: usize = 0;
+    for j in 0..NCLASSES {
+        let b = &all.bins[j];
+        free_slots = fig_add(
+            free_slots,
+            fig_mul(b.curslabs, b.nregs).saturating_sub(b.curregs),
+        );
+    }
     MallInfo2 {
         arena,
         ordblks: free_slots,
@@ -91,7 +98,7 @@ pub fn mallinfo2() -> MallInfo2 {
         fsmblks: 0,
         uordblks,
         fordblks: arena.saturating_sub(uordblks),
-        keepcost: all.pdirty * page,
+        keepcost: fig_mul(all.pdirty, page),
     }
 }
 

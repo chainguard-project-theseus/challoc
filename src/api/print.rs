@@ -26,21 +26,58 @@ use crate::QUANTUM;
 use crate::arena::Arena;
 use crate::config::{INERT_KEYS, KEYS, PercpuArena, Value};
 use crate::heap::Shared;
-use crate::layout::{CLASSES, NBINS};
+use crate::layout::{CLASSES, NBINS, NCLASSES};
 use crate::purge;
-use crate::stats::{self, ArenaStats, Snapshot};
+use crate::stats::{self, ArenaStats, Snapshot, fig_add, fig_mul};
+use crate::sys::bytes_is;
 
 /// `void (*write_cb)(void *cbopaque, const char *s)`.
 pub type WriteCb = Option<unsafe extern "C" fn(*mut c_void, *const c_char)>;
 
+/// The caller's [`WriteCb`], wrapped so that [`Target`] holds no function
+/// pointer type of its own. Transparent, so it has `WriteCb`'s ABI and
+/// the C exports take it as their `write_cb`.
+#[repr(transparent)]
+pub struct WriteCallback(pub WriteCb);
+
 /// Where a report goes.
 enum Target {
     /// The caller's callback, or with `None` the `malloc_message` path.
-    Callback(WriteCb, *mut c_void),
+    Callback(WriteCallback, *mut c_void),
     /// glibc's `malloc_info` stream.
     File(*mut libc::FILE),
     /// `write(2)` to stderr, bypassing any hook (glibc's `malloc_stats`).
     Stderr,
+}
+
+/// Hand `buf[..len]` to `target`: the report's only calls out of the
+/// allocator. Calls the caller's callback (a function pointer), the
+/// `malloc_message` path ([`malloc_write`]: the hook, or `write(2)` to
+/// stderr), `fwrite` or `write(2)`. `len < 1024`: the NUL goes at
+/// `buf[len]` and `len` bytes of `buf` are handed on.
+#[inline(always)]
+fn emit(target: &Target, buf: &mut [u8; 1024], len: usize) {
+    match *target {
+        Target::Callback(WriteCallback(Some(cb)), opaque) => {
+            buf[len] = 0;
+            // SAFETY: the caller's `void (*)(void *, const char *)`; the
+            // chunk is NUL-terminated within the buffer.
+            unsafe { cb(opaque, buf.as_ptr() as *const c_char) };
+        }
+        Target::Callback(WriteCallback(None), _) => malloc_write(&buf[..len]),
+        Target::File(f) => {
+            // SAFETY: `f` is the caller's open stream; `len` bytes are
+            // readable. `fwrite` may itself call `malloc` (glibc allocates
+            // a stream's buffer on its first write), which re-enters this
+            // allocator from inside `malloc_info`: that is safe because no
+            // allocator lock is held while the sink flushes
+            // (`stats::collect_arena` returns its figures before they are
+            // formatted, and the arena scan reads the registry without a
+            // lock) and the report's own state is the sink's stack buffer.
+            unsafe { libc::fwrite(buf.as_ptr() as *const c_void, 1, len, f) };
+        }
+        Target::Stderr => crate::sys::write_all(crate::sys::STDERR_FILENO, &buf[..len]),
+    }
 }
 
 /// A `fmt::Write` that buffers up to 1023 bytes and forwards them,
@@ -60,40 +97,36 @@ impl Sink {
         }
     }
 
+    /// Hand the buffered bytes to the target ([`emit`]) and empty the
+    /// buffer.
     fn flush(&mut self) {
         if self.len == 0 {
             return;
         }
-        match self.target {
-            Target::Callback(Some(cb), opaque) => {
-                self.buf[self.len] = 0;
-                // SAFETY: the caller's `void (*)(void *, const char *)`; the
-                // chunk is NUL-terminated within the buffer.
-                unsafe { cb(opaque, self.buf.as_ptr() as *const c_char) };
-            }
-            Target::Callback(None, _) => malloc_write(&self.buf[..self.len]),
-            Target::File(f) => {
-                // SAFETY: `f` is the caller's open stream; `len` bytes are
-                // readable. `fwrite` may itself call `malloc` (glibc
-                // allocates a stream's buffer on its first write), which
-                // re-enters this allocator from inside `malloc_info`: that
-                // is safe because no allocator lock is held while the sink
-                // flushes (`stats::collect_arena` returns its figures before
-                // they are formatted, and `Arenas::iter` is a lock-free scan
-                // of the table) and the report's own state is this stack
-                // buffer.
-                unsafe { libc::fwrite(self.buf.as_ptr() as *const c_void, 1, self.len, f) };
-            }
-            Target::Stderr => {
-                crate::sys::write_all(crate::sys::STDERR_FILENO, &self.buf[..self.len])
-            }
-        }
+        emit(&self.target, &mut self.buf, self.len);
         self.len = 0;
     }
 }
 
+/// The longest prefix of `s` that fits in `room` bytes and ends on a
+/// character boundary, so slicing `s` there cannot panic. For a non-empty
+/// `s`, 0 only when its first character does not fit: `room >= 4` always
+/// takes one.
+#[inline(always)]
+fn char_cut(s: &str, room: usize) -> usize {
+    let mut n = s.len().min(room);
+    while !s.is_char_boundary(n) {
+        n -= 1;
+    }
+    n
+}
+
+// The cut on a character boundary is `char_cut`; the copy is a byte
+// loop rather than `copy_from_slice`, and the rest of `s` comes from
+// `split_at`.
 impl Write for Sink {
-    fn write_str(&mut self, mut s: &str) -> fmt::Result {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let mut s = s;
         while !s.is_empty() {
             let room = self.buf.len() - 1 - self.len;
             if room == 0 {
@@ -102,24 +135,26 @@ impl Write for Sink {
             }
             // Cut on a character boundary: slicing `s` inside a multi-byte
             // character would panic in the middle of a report.
-            let mut n = s.len().min(room);
-            while !s.is_char_boundary(n) {
-                n -= 1;
-            }
+            let b = s.as_bytes();
+            let n = char_cut(s, room);
             if n == 0 {
                 self.flush();
                 continue;
             }
-            self.buf[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
+            let mut i = 0;
+            while i < n {
+                self.buf[self.len + i] = b[i];
+                i += 1;
+            }
             self.len += n;
-            s = &s[n..];
+            // `s = &s[n..]`.
+            s = s.split_at(n).1;
         }
         Ok(())
     }
 }
 
 /// Parsed `opts`.
-#[derive(Default)]
 struct Opts {
     json: bool,
     no_general: bool,
@@ -127,19 +162,35 @@ struct Opts {
     no_bins: bool,
 }
 
+/// Byte `i` of the caller's option string.
+///
+/// # Safety
+/// `opts + i` is a readable byte of the caller's string.
+#[inline(always)]
+unsafe fn opt_byte(opts: *const c_char, i: usize) -> u8 {
+    // SAFETY: guaranteed by the caller.
+    unsafe { opts.add(i).read() as u8 }
+}
+
 impl Opts {
     /// `opts` is the caller's option string: null, or readable up to and
     /// including its NUL terminator (jemalloc's contract); at most 64
     /// bytes are read, so a longer string is truncated, never overrun.
     fn parse(opts: *const c_char) -> Opts {
-        let mut o = Opts::default();
+        // `Opts::default()`, spelled out.
+        let mut o = Opts {
+            json: false,
+            no_general: false,
+            no_arenas: false,
+            no_bins: false,
+        };
         if opts.is_null() {
             return o;
         }
         for i in 0..64 {
             // SAFETY: the caller's NUL-terminated option string; reads stop
             // at the terminator or after 64 bytes.
-            let b = unsafe { opts.add(i).read() } as u8;
+            let b = unsafe { opt_byte(opts, i) };
             match b {
                 0 => break,
                 b'J' => o.json = true,
@@ -150,14 +201,6 @@ impl Opts {
             }
         }
         o
-    }
-}
-
-/// Every existing arena with its live figures.
-fn for_each_arena(shared: &Shared, mut f: impl FnMut(&Arena, &ArenaStats)) {
-    for arena in shared.arenas.iter() {
-        let s = stats::collect_arena(shared, arena);
-        f(arena, &s);
     }
 }
 
@@ -178,6 +221,8 @@ fn decay_ms(ns: u64) -> i64 {
 // Text report.
 // ---------------------------------------------------------------------------
 
+// The indexed loops stand for `for key in KEYS`.
+#[allow(clippy::needless_range_loop)]
 fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt::Result {
     // jemalloc's banner, not "challoc statistics": consumers key on it (Valkey's
     // `MEMORY MALLOC-STATS` coverage test asserts `*jemalloc*`), just as the
@@ -190,10 +235,15 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     writeln!(out, "  config.stats: true")?;
     writeln!(out, "  config.quantum: {QUANTUM}")?;
     writeln!(out, "Run-time option settings")?;
-    for key in KEYS {
-        let note = if key == &"thp" && shared.policy.thp_forced() {
+    // `for key in KEYS`, with an index.
+    let keys = KEYS;
+    for k in 0..keys.len() {
+        let key = &keys[k];
+        let note = if bytes_is(key.as_bytes(), b"thp") && shared.policy.thp_forced() {
             " (accepted, no effect; forced to never by a cgroup limit under 1 GiB)"
-        } else if key == &"percpu_arena" && shared.config.percpu_arena != PercpuArena::Disabled {
+        } else if bytes_is(key.as_bytes(), b"percpu_arena")
+            && shared.config.percpu_arena != PercpuArena::Disabled
+        {
             " (accepted, no effect; caches are per thread)"
         } else {
             ""
@@ -210,7 +260,9 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     // An inert key (`config::INERT_KEYS`) is parsed and validated but has
     // no field and is read by nothing; say so, so a report never suggests
     // the feature is on.
-    for key in INERT_KEYS {
+    let inert = INERT_KEYS;
+    for k in 0..inert.len() {
+        let key = &inert[k];
         writeln!(out, "  opt.{}: accepted, no effect", key)?;
     }
     writeln!(out, "Kernel and CPU features: {}", super::feature_line())?;
@@ -323,11 +375,17 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
         )?;
     }
     if d.mode != crate::thp::Mode::Off {
-        write!(out, " slab_min {}", 1usize << d.lg_slab_min)?;
-        write!(out, " pmd {}", 1usize << d.lg_pmd)?;
+        // `1usize << lg`, as `wrapping_shl`: what `<<` compiles to in
+        // release, and the thresholds are atomics nothing bounds.
+        write!(
+            out,
+            " slab_min {}",
+            1usize.wrapping_shl(d.lg_slab_min as u32)
+        )?;
+        write!(out, " pmd {}", 1usize.wrapping_shl(d.lg_pmd as u32))?;
         match d.lg_meta {
             crate::thp::NO_SIZE => write!(out, " meta off")?,
-            lg => write!(out, " meta {}", 1usize << lg)?,
+            lg => write!(out, " meta {}", 1usize.wrapping_shl(lg as u32))?,
         }
         write!(out, " huge {}", if d.huge { "on" } else { "off" })?;
     }
@@ -336,11 +394,15 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
         " class_ranges {} ({} bytes, {} chunks) huge_ranges {} meta_ranges {} failures {}",
         s.class_ranges, s.class_bytes, s.chunks, s.huge_ranges, s.meta_ranges, s.failures
     )?;
-    // Design 17: the host's global mode.
+    // Design 17: the host's global mode. `map_or("none",
+    // ThpSetting::name)`, spelled as a `match`.
     writeln!(
         out,
         "; host {}",
-        crate::thp::host_mode().map_or("none", crate::sys::thp_host::ThpSetting::name)
+        match crate::thp::host_mode() {
+            Some(m) => m.name(),
+            None => "none",
+        }
     )
 }
 
@@ -379,11 +441,13 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
         crate::sys::cgroup::UNLIMITED => write!(out, " retention_cap max")?,
         c => write!(out, " retention_cap {c}")?,
     }
+    // Out of the `writeln!`, read before the line is formatted.
+    let empty_bytes = crate::policy::empty_bytes(shared);
     writeln!(
         out,
         " keep {}% empty_bytes {} full_purges {}{} thp {}",
         p.keep16() as u64 * 100 / FRAC_ONE as u64,
-        crate::policy::empty_bytes(shared),
+        empty_bytes,
         p.full_purges(),
         if p.full_purge_pending() {
             " (one pending)"
@@ -444,8 +508,8 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
         "  large:               {:>14} {:>12} {:>12} {:>12}  ({} huge runs)",
         s.large_allocated,
         s.large_active,
-        s.large_dirty + s.huge_dirty,
-        s.large_retained + s.huge_retained,
+        fig_add(s.large_dirty, s.huge_dirty),
+        fig_add(s.large_retained, s.huge_retained),
         s.large_runs
     )?;
     writeln!(
@@ -468,33 +532,35 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
         "  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped"
     )?;
     let mut large_header = false;
-    for (j, b) in s.bins.iter().enumerate() {
-        if b.curslabs + b.empty_slabs + b.purged_slabs == 0 {
-            continue;
+    // `for (j, b) in s.bins.iter().enumerate()` with its `continue`, as an
+    // indexed loop and an `if`.
+    for j in 0..NCLASSES {
+        let b = &s.bins[j];
+        if fig_add(fig_add(b.curslabs, b.empty_slabs), b.purged_slabs) != 0 {
+            if j >= NBINS && !large_header {
+                large_header = true;
+                writeln!(out, "  large classes (slab-allocated, not bins):")?;
+            }
+            writeln!(
+                out,
+                "  {:>13} {:>3} {:>8} {:>10} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10} {:>10} {:>6} {:>6} {:>6} {:>7}",
+                b.size,
+                j,
+                b.nregs,
+                b.slab_size,
+                b.curregs,
+                b.curslabs,
+                b.nonfull_slabs,
+                b.empty_slabs,
+                b.purged_slabs,
+                b.refilled,
+                b.compacted,
+                b.compact_on,
+                b.compact_off,
+                b.gate_refill,
+                b.clamped
+            )?;
         }
-        if j >= NBINS && !large_header {
-            large_header = true;
-            writeln!(out, "  large classes (slab-allocated, not bins):")?;
-        }
-        writeln!(
-            out,
-            "  {:>13} {:>3} {:>8} {:>10} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10} {:>10} {:>6} {:>6} {:>6} {:>7}",
-            b.size,
-            j,
-            b.nregs,
-            b.slab_size,
-            b.curregs,
-            b.curslabs,
-            b.nonfull_slabs,
-            b.empty_slabs,
-            b.purged_slabs,
-            b.refilled,
-            b.compacted,
-            b.compact_on,
-            b.compact_off,
-            b.gate_refill,
-            b.clamped
-        )?;
     }
     slab_histogram(out, arena, s)
 }
@@ -506,9 +572,19 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 /// bitmap's set bits, and the non-full slabs missing from the partial set.
 /// One class lock hold per non-full slab; only classes with non-full slabs
 /// are listed.
+#[allow(clippy::while_let_loop)]
 fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::Result {
     let mut header = false;
-    for (j, b) in s.bins.iter().enumerate() {
+    // `for (j, b) in s.bins.iter().enumerate()` and `for i in
+    // 0..cs.committed_slabs()`, with their `continue`s, spelled out as
+    // `loop`s over the ranges.
+    let mut classes = 0..NCLASSES;
+    loop {
+        let j = match classes.next() {
+            Some(j) => j,
+            None => break,
+        };
+        let b = &s.bins[j];
         if b.nonfull_slabs == 0 {
             continue;
         }
@@ -517,7 +593,12 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
         let nslots = cls.nslots();
         let mut hist = [0usize; 9];
         let (mut mismatched, mut unlisted, mut slabs) = (0usize, 0usize, 0usize);
-        for i in 0..cs.committed_slabs() {
+        let mut committed = 0..cs.committed_slabs();
+        loop {
+            let i = match committed.next() {
+                Some(i) => i,
+                None => break,
+            };
             if cs.is_guard_slab(i) {
                 continue;
             }
@@ -545,13 +626,26 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
                 "  slab occupancy (non-empty slabs per eighth of nslots, last = full):"
             )?;
         }
-        writeln!(
-            out,
-            "  {:>13} {:>3} slabs {:>6}  hist {:?}  live!=bits {}  nonfull not in partial set {}",
-            b.size, j, slabs, hist, mismatched, unlisted
-        )?;
+        hist_line(out, b.size, j, slabs, hist, mismatched, unlisted)?;
     }
     Ok(())
+}
+
+/// One class's line of [`slab_histogram`].
+fn hist_line<W: Write>(
+    out: &mut W,
+    size: usize,
+    j: usize,
+    slabs: usize,
+    hist: [usize; 9],
+    mismatched: usize,
+    unlisted: usize,
+) -> fmt::Result {
+    writeln!(
+        out,
+        "  {:>13} {:>3} slabs {:>6}  hist {:?}  live!=bits {}  nonfull not in partial set {}",
+        size, j, slabs, hist, mismatched, unlisted
+    )
 }
 
 fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result {
@@ -560,13 +654,15 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
         text_general(out, shared, &snap)?;
     }
     if !o.no_arenas {
-        let mut r = Ok(());
-        for_each_arena(shared, |a, s| {
-            if r.is_ok() {
-                r = text_arena(out, a, s, !o.no_bins);
+        // Every arena with its live figures: a scan of every index below
+        // the count (`stats::arena_at`). An error returns at once.
+        let n = shared.arenas.count() as usize;
+        for i in 0..n {
+            if let Some(a) = stats::arena_at(shared, i) {
+                let s = stats::collect_arena(shared, a);
+                text_arena(out, a, &s, !o.no_bins)?;
             }
-        });
-        r?;
+        }
     }
     writeln!(out, "--- End jemalloc statistics ---")
 }
@@ -579,6 +675,8 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
 /// arena/bin geometry, the background thread, the `thp`, `cgroup` and
 /// `stats` objects. `arenas_follow` says whether a `stats.arenas` object
 /// follows (the `stats` line then ends with a comma).
+// As in `text_general`.
+#[allow(clippy::needless_range_loop)]
 fn json_general<W: Write>(
     out: &mut W,
     shared: &Shared,
@@ -591,20 +689,23 @@ fn json_general<W: Write>(
     )?;
     writeln!(out, "\t\t\"opt\": {{")?;
     let mut first = true;
-    for key in KEYS {
-        let Some(v) = shared.config.get(key.as_bytes()) else {
-            continue;
-        };
-        if !first {
-            writeln!(out, ",")?;
-        }
-        first = false;
-        match v {
-            Value::Bool(b) => write!(out, "\t\t\t\"{key}\": {b}")?,
-            Value::Int(i) => write!(out, "\t\t\t\"{key}\": {i}")?,
-            Value::Uint(u) => write!(out, "\t\t\t\"{key}\": {u}")?,
-            Value::Size(n) => write!(out, "\t\t\t\"{key}\": {n}")?,
-            Value::Str(s) => write!(out, "\t\t\t\"{key}\": \"{}\"", word(s))?,
+    // `for key in KEYS` with its `let .. else { continue }`, with an index
+    // and an `if let`.
+    let keys = KEYS;
+    for k in 0..keys.len() {
+        let key = &keys[k];
+        if let Some(v) = shared.config.get(key.as_bytes()) {
+            if !first {
+                writeln!(out, ",")?;
+            }
+            first = false;
+            match v {
+                Value::Bool(b) => write!(out, "\t\t\t\"{key}\": {b}")?,
+                Value::Int(i) => write!(out, "\t\t\t\"{key}\": {i}")?,
+                Value::Uint(u) => write!(out, "\t\t\t\"{key}\": {u}")?,
+                Value::Size(n) => write!(out, "\t\t\t\"{key}\": {n}")?,
+                Value::Str(s) => write!(out, "\t\t\t\"{key}\": \"{}\"", word(s))?,
+            }
         }
     }
     writeln!(out)?;
@@ -635,10 +736,15 @@ fn json_general<W: Write>(
         ts.meta_ranges,
         ts.failures,
         ts.nohuge_ranges,
-        crate::thp::host_mode().map_or("none", crate::sys::thp_host::ThpSetting::name)
+        match crate::thp::host_mode() {
+            Some(m) => m.name(),
+            None => "none",
+        }
     )?;
     let cg = shared.cgroup_now();
     cg.sample(crate::sys::now_coarse_ns());
+    // Out of the `writeln!`, as in `policy_line`.
+    let empty_bytes = crate::policy::empty_bytes(shared);
     writeln!(
         out,
         "\t\t\"cgroup\": {{\"tracked\": {}, \"limit\": {}, \"high\": {}, \"current\": {}, \"decay_ms\": {}, \"retention_cap\": {}, \"empty_bytes\": {}, \"full_purges\": {}, \"thp_forced\": {}, \"purge_advice\": \"{}\", \"lazy_purges\": {}, \"eager_purges\": {}, \"purged_is_zero\": {}, \"failed_discards\": {}, \"failed_discard_bytes\": {}}},",
@@ -651,7 +757,7 @@ fn json_general<W: Write>(
             ns => (ns / 1_000_000) as i64,
         },
         shared.policy.cap(),
-        crate::policy::empty_bytes(shared),
+        empty_bytes,
         shared.policy.full_purges(),
         shared.policy.thp_forced(),
         purge::advice().name(),
@@ -699,8 +805,8 @@ fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
         "\t\t\t\t\"large\": {{\"allocated\": {}, \"active\": {}, \"dirty\": {}, \"retained\": {}, \"runs\": {}}},",
         s.large_allocated,
         s.large_active,
-        s.large_dirty + s.huge_dirty,
-        s.large_retained + s.huge_retained,
+        fig_add(s.large_dirty, s.huge_dirty),
+        fig_add(s.large_retained, s.huge_retained),
         s.large_runs
     )?;
     writeln!(
@@ -714,7 +820,11 @@ fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
     )?;
     if bins {
         writeln!(out, "\t\t\t\t\"bins\": [")?;
-        for (j, b) in s.bins[..NBINS].iter().enumerate() {
+        // `for (j, b) in s.bins[..NBINS].iter().enumerate()`, with an
+        // index.
+        let nbins = nbins();
+        for j in 0..nbins {
+            let b = &s.bins[j];
             writeln!(
                 out,
                 "\t\t\t\t\t{{\"size\": {}, \"nregs\": {}, \"slab_size\": {}, \"curregs\": {}, \"curslabs\": {}, \"nonfull_slabs\": {}, \"empty_slabs\": {}, \"purged_slabs\": {}}}{}",
@@ -748,20 +858,19 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
     }
     if !o.no_arenas {
         writeln!(out, "\t\t\"stats.arenas\": {{")?;
-        let mut r = Ok(());
+        // Every arena, as in `text_report`.
         let mut first = true;
-        for_each_arena(shared, |a, s| {
-            if r.is_ok() {
+        let n = shared.arenas.count() as usize;
+        for i in 0..n {
+            if let Some(a) = stats::arena_at(shared, i) {
+                let s = stats::collect_arena(shared, a);
                 if !first {
-                    r = writeln!(out, ",");
+                    writeln!(out, ",")?;
                 }
                 first = false;
-                if r.is_ok() {
-                    r = json_arena(out, a, s, !o.no_bins);
-                }
+                json_arena(out, a, &s, !o.no_bins)?;
             }
-        });
-        r?;
+        }
         writeln!(out)?;
         writeln!(out, "\t\t}}")?;
     }
@@ -769,17 +878,33 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
     writeln!(out, "}}")
 }
 
-/// `malloc_stats_print(write_cb, cbopaque, opts)`.
-pub fn malloc_stats_print(write_cb: WriteCb, cbopaque: *mut c_void, opts: *const c_char) {
+/// [`NBINS`], which is at most `NCLASSES` (`layout.rs` asserts it at
+/// compile time), as a constant the compiler folds.
+#[inline(always)]
+fn nbins() -> usize {
+    let n = NBINS;
+    if n < NCLASSES { n } else { NCLASSES }
+}
+
+/// [`malloc_stats_print`] into `target`.
+#[inline(always)]
+fn stats_print(target: Target, opts: *const c_char) {
     let shared = super::shared();
     let o = Opts::parse(opts);
-    let mut sink = Sink::new(Target::Callback(write_cb, cbopaque));
+    let mut sink = Sink::new(target);
     let _ = if o.json {
         json_report(&mut sink, shared, &o)
     } else {
         text_report(&mut sink, shared, &o)
     };
     sink.flush();
+}
+
+/// `malloc_stats_print(write_cb, cbopaque, opts)`. The C entry points
+/// take `write_cb` as a [`WriteCallback`] (its ABI is the function
+/// pointer's).
+pub fn malloc_stats_print(write_cb: WriteCallback, cbopaque: *mut c_void, opts: *const c_char) {
+    stats_print(Target::Callback(write_cb, cbopaque), opts)
 }
 
 // ---------------------------------------------------------------------------
@@ -790,19 +915,22 @@ fn xml_heap<W: Write>(out: &mut W, nr: usize, s: &ArenaStats) -> fmt::Result {
     writeln!(out, "<heap nr=\"{nr}\">")?;
     writeln!(out, "<sizes>")?;
     let mut count = 0usize;
-    for b in s.bins[..NBINS].iter() {
-        if b.curregs == 0 {
-            continue;
+    // `for b in s.bins[..NBINS].iter()` with its `continue`, with an index
+    // and an `if`.
+    let nbins = nbins();
+    for j in 0..nbins {
+        let b = &s.bins[j];
+        if b.curregs != 0 {
+            count = fig_add(count, b.curregs);
+            writeln!(
+                out,
+                "<size from=\"{}\" to=\"{}\" total=\"{}\" count=\"{}\"/>",
+                b.size,
+                b.size,
+                fig_mul(b.curregs, b.size),
+                b.curregs
+            )?;
         }
-        count += b.curregs;
-        writeln!(
-            out,
-            "<size from=\"{}\" to=\"{}\" total=\"{}\" count=\"{}\"/>",
-            b.size,
-            b.size,
-            b.curregs * b.size,
-            b.curregs
-        )?;
     }
     writeln!(out, "</sizes>")?;
     writeln!(out, "<total type=\"fast\" count=\"0\" size=\"0\"/>")?;
@@ -820,17 +948,26 @@ fn xml_heap<W: Write>(out: &mut W, nr: usize, s: &ArenaStats) -> fmt::Result {
 
 fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
     writeln!(out, "<malloc version=\"1\">")?;
-    let mut r = Ok(());
-    for_each_arena(shared, |a, s| {
-        if r.is_ok() {
-            r = xml_heap(out, a.index() as usize, s);
+    // Every arena, as in `text_report`.
+    let n = shared.arenas.count() as usize;
+    for i in 0..n {
+        if let Some(a) = stats::arena_at(shared, i) {
+            let s = stats::collect_arena(shared, a);
+            xml_heap(out, a.index() as usize, &s)?;
         }
-    });
-    r?;
+    }
     let all = stats::collect_all(shared);
-    let count: usize = all.bins[..NBINS].iter().map(|b| b.curregs).sum();
-    let large_count: usize =
-        all.large_runs + all.bins[NBINS..].iter().map(|b| b.curregs).sum::<usize>();
+    // The two `iter().map(..).sum()`s over `bins[..NBINS]` and
+    // `bins[NBINS..]`, as one indexed loop.
+    let (mut count, mut large) = (0usize, 0usize);
+    for j in 0..NCLASSES {
+        if j < NBINS {
+            count = fig_add(count, all.bins[j].curregs);
+        } else {
+            large = fig_add(large, all.bins[j].curregs);
+        }
+    }
+    let large_count = fig_add(all.large_runs, large);
     writeln!(out, "<total type=\"fast\" count=\"0\" size=\"0\"/>")?;
     writeln!(
         out,
@@ -870,30 +1007,33 @@ pub fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
 pub fn malloc_stats() {
     let shared = super::shared();
     let mut sink = Sink::new(Target::Stderr);
-    let _ = (|| -> fmt::Result {
-        let mut r = Ok(());
-        for_each_arena(shared, |a, s| {
-            if r.is_ok() {
-                r = (|| {
-                    writeln!(sink, "Arena {}:", a.index())?;
-                    writeln!(
-                        sink,
-                        "system bytes     = {:>10}",
-                        s.resident.saturating_sub(s.large_allocated)
-                    )?;
-                    writeln!(sink, "in use bytes     = {:>10}", s.small_allocated)
-                })();
-            }
-        });
-        r?;
-        let all = stats::collect_all(shared);
-        writeln!(sink, "Total (incl. mmap):")?;
-        writeln!(sink, "system bytes     = {:>10}", all.resident)?;
-        writeln!(sink, "in use bytes     = {:>10}", all.allocated())?;
-        writeln!(sink, "max mmap regions = {:>10}", all.large_runs)?;
-        writeln!(sink, "max mmap bytes   = {:>10}", all.large_allocated)
-    })();
+    let _ = glibc_stats(&mut sink, shared);
     sink.flush();
+}
+
+/// The lines of [`malloc_stats`]: the immediately called closure, as a
+/// function.
+fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result {
+    // Every arena, as in `text_report`.
+    let n = shared.arenas.count() as usize;
+    for i in 0..n {
+        if let Some(a) = stats::arena_at(shared, i) {
+            let s = stats::collect_arena(shared, a);
+            writeln!(sink, "Arena {}:", a.index())?;
+            writeln!(
+                sink,
+                "system bytes     = {:>10}",
+                s.resident.saturating_sub(s.large_allocated)
+            )?;
+            writeln!(sink, "in use bytes     = {:>10}", s.small_allocated)?;
+        }
+    }
+    let all = stats::collect_all(shared);
+    writeln!(sink, "Total (incl. mmap):")?;
+    writeln!(sink, "system bytes     = {:>10}", all.resident)?;
+    writeln!(sink, "in use bytes     = {:>10}", all.allocated())?;
+    writeln!(sink, "max mmap regions = {:>10}", all.large_runs)?;
+    writeln!(sink, "max mmap bytes   = {:>10}", all.large_allocated)
 }
 
 // ---------------------------------------------------------------------------
@@ -905,7 +1045,7 @@ mod exports {
     use core::ffi::{c_char, c_int, c_void};
 
     export_pair! {
-        fn malloc_stats_print / je_malloc_stats_print(write_cb: super::WriteCb, cbopaque: *mut c_void, opts: *const c_char) {
+        fn malloc_stats_print / je_malloc_stats_print(write_cb: super::WriteCallback, cbopaque: *mut c_void, opts: *const c_char) {
             super::malloc_stats_print(write_cb, cbopaque, opts)
         }
     }
@@ -947,7 +1087,7 @@ mod tests {
         CAPTURE.lock().unwrap().clear();
         let c = std::ffi::CString::new(opts).unwrap();
         malloc_stats_print(
-            Some(capture),
+            WriteCallback(Some(capture)),
             0xC0FFEE as *mut c_void,
             if opts.is_empty() {
                 core::ptr::null()
@@ -965,7 +1105,10 @@ mod tests {
     fn sink_splits_a_character_at_the_buffer_end() {
         let _serial = REPORT.lock().unwrap_or_else(|e| e.into_inner());
         CAPTURE.lock().unwrap().clear();
-        let mut sink = Sink::new(Target::Callback(Some(capture), 0xC0FFEE as *mut c_void));
+        let mut sink = Sink::new(Target::Callback(
+            WriteCallback(Some(capture)),
+            0xC0FFEE as *mut c_void,
+        ));
         let head = "x".repeat(1022);
         sink.write_str(&head).unwrap();
         sink.write_str("\u{e9} tail").unwrap();
@@ -1410,9 +1553,17 @@ mod tests {
         };
         let before = counters();
         let _serial = REPORT.lock().unwrap_or_else(|e| e.into_inner());
-        malloc_stats_print(Some(sink), core::ptr::null_mut(), core::ptr::null());
+        malloc_stats_print(
+            WriteCallback(Some(sink)),
+            core::ptr::null_mut(),
+            core::ptr::null(),
+        );
         let json = std::ffi::CString::new("J").unwrap();
-        malloc_stats_print(Some(sink), core::ptr::null_mut(), json.as_ptr());
+        malloc_stats_print(
+            WriteCallback(Some(sink)),
+            core::ptr::null_mut(),
+            json.as_ptr(),
+        );
         assert_eq!(
             counters(),
             before,
@@ -1432,7 +1583,11 @@ mod tests {
                 .extend_from_slice(unsafe { core::ffi::CStr::from_ptr(s) }.to_bytes());
         }
         set_message_hook_for_tests(Some(hook));
-        malloc_stats_print(None, core::ptr::null_mut(), core::ptr::null());
+        malloc_stats_print(
+            WriteCallback(None),
+            core::ptr::null_mut(),
+            core::ptr::null(),
+        );
         set_message_hook_for_tests(None);
         let got = String::from_utf8(HOOKED.lock().unwrap().clone()).unwrap();
         assert!(
