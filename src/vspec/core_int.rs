@@ -1,12 +1,31 @@
-//! `usize` bit and rounding methods, stated through vstd's `u64`
-//! specifications (`usize` is 64 bits wide on every target challoc builds
-//! for; see `mod.rs`).
+//! Integer methods of `core` that vstd does not specify, stated through
+//! vstd's `u64` specifications (`usize` is 64 bits wide on every target
+//! challoc builds for; see `mod.rs`).
 
 use vstd::arithmetic::power2::pow2;
 use vstd::prelude::*;
 use vstd::std_specs::bits::{u64_leading_zeros, u64_trailing_zeros};
 
 verus! {
+
+/// Number of set bits.
+pub open spec fn popcount(x: u64) -> nat
+    decreases x,
+{
+    if x == 0 { 0 } else { (x % 2) as nat + popcount(x / 2) }
+}
+
+/// `u64::count_ones`: the number of set bits.
+pub assume_specification[ u64::count_ones ](x: u64) -> (r: u32)
+    ensures r as nat == popcount(x),
+;
+
+/// `usize::div_ceil`: the quotient rounded up; panics when `d == 0`
+/// (core docs), and cannot overflow otherwise.
+pub assume_specification[ usize::div_ceil ](x: usize, d: usize) -> (r: usize)
+    requires d > 0,
+    ensures r as int == (x as int + d as int - 1) / d as int,
+;
 
 pub assume_specification[ usize::trailing_zeros ](x: usize) -> (r: u32)
     ensures r == u64_trailing_zeros(x as u64),
