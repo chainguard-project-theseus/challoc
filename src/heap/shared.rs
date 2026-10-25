@@ -8,13 +8,16 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
-use crate::arena::{Arena, Arenas};
+use crate::arena::{Arena, Arenas, elem_at, field_at, fits};
 use crate::class::SlabTable;
 use crate::config::Config;
 use crate::huge::{Huge, RunState};
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
+use crate::policy::Policy;
+use crate::stats::Snapshot;
+use crate::sys::cgroup::{Cgroup, Deferred};
 
 use super::heap_destructor;
 use super::tcaches::Tcaches;
@@ -462,7 +465,18 @@ pub(super) fn now_ns() -> u64 {
 pub(super) fn seed() -> u64 {
     let mut b = [0u8; 8];
     match crate::sys::getrandom_exact(&mut b) {
-        Ok(()) => u64::from_ne_bytes(b),
+        // `u64::from_ne_bytes` on the little-endian targets (x86_64,
+        // aarch64), spelled out.
+        Ok(()) => {
+            b[0] as u64
+                | (b[1] as u64) << 8
+                | (b[2] as u64) << 16
+                | (b[3] as u64) << 24
+                | (b[4] as u64) << 32
+                | (b[5] as u64) << 40
+                | (b[6] as u64) << 48
+                | (b[7] as u64) << 56
+        }
         Err(_) => crate::sys::now_coarse_ns(),
     }
 }
@@ -483,6 +497,223 @@ pub(crate) fn guard_interval_for(class: usize, page: usize, interval: u32) -> u3
         interval
     } else {
         interval.saturating_mul((unit / group) as u32)
+    }
+}
+
+// Byte offsets of `Shared`'s fields, for the in-place writes of
+// [`Shared::init`].
+const S_LINES: usize = core::mem::offset_of!(Shared, lines);
+const S_FREE_FLAGS: usize = core::mem::offset_of!(Shared, free_flags);
+const S_PUSH_FLAGS: usize = core::mem::offset_of!(Shared, push_flags);
+const S_REGION_HI: usize = core::mem::offset_of!(Shared, region_hi);
+const S_REGIONS: usize = core::mem::offset_of!(Shared, regions);
+const S_TABLES: usize = core::mem::offset_of!(Shared, tables);
+const S_ARENA0: usize = core::mem::offset_of!(Shared, arena0);
+const S_META: usize = core::mem::offset_of!(Shared, meta);
+const S_HUGE: usize = core::mem::offset_of!(Shared, huge);
+const S_GC_INTERVAL_NS: usize = core::mem::offset_of!(Shared, gc_interval_ns);
+const S_POLICY: usize = core::mem::offset_of!(Shared, policy);
+const S_CONFIG: usize = core::mem::offset_of!(Shared, config);
+const S_KEY: usize = core::mem::offset_of!(Shared, key);
+const S_ARENAS: usize = core::mem::offset_of!(Shared, arenas);
+const S_TCACHES: usize = core::mem::offset_of!(Shared, tcaches);
+const S_STATS: usize = core::mem::offset_of!(Shared, stats);
+const S_CGROUP: usize = core::mem::offset_of!(Shared, cgroup);
+
+// `Shared`'s layout (`repr(C)`): each field at its offset, aligned, and
+// ending by the next one's offset, the last by the size.
+const _: () = assert!(
+    fits::<Shared, [ClassLine; NCLASSES]>(S_LINES, S_FREE_FLAGS)
+        && fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS)
+        && fits::<Shared, u8>(S_PUSH_FLAGS, S_REGION_HI)
+        && fits::<Shared, usize>(S_REGION_HI, S_REGIONS)
+        && fits::<Shared, Regions>(S_REGIONS, S_TABLES)
+        && fits::<Shared, [SlabTable; NCLASSES]>(S_TABLES, S_ARENA0)
+        && NCLASSES as u128 * core::mem::size_of::<ClassLine>() as u128 <= isize::MAX as u128
+        && NCLASSES as u128 * core::mem::size_of::<SlabTable>() as u128 <= isize::MAX as u128
+        && fits::<Shared, Arena>(S_ARENA0, S_META)
+        && fits::<Shared, Meta>(S_META, S_HUGE)
+        && fits::<Shared, Huge>(S_HUGE, S_GC_INTERVAL_NS)
+        && fits::<Shared, u64>(S_GC_INTERVAL_NS, S_POLICY)
+        && fits::<Shared, Policy>(S_POLICY, S_CONFIG)
+        && fits::<Shared, Config>(S_CONFIG, S_KEY)
+        && fits::<Shared, ThreadKey>(S_KEY, S_ARENAS)
+        && fits::<Shared, Arenas>(S_ARENAS, S_TCACHES)
+        && fits::<Shared, Tcaches>(S_TCACHES, S_STATS)
+        && fits::<Shared, Lock<Snapshot>>(S_STATS, S_CGROUP)
+        && fits::<Shared, Deferred>(S_CGROUP, core::mem::size_of::<Shared>())
+        && core::mem::size_of::<Shared>() <= isize::MAX as usize
+);
+
+// An array of `N` `T`s is `N` `T`s back to back, aligned as one, at
+// `Shared`'s two per-class arrays.
+const _: () = assert!(
+    core::mem::size_of::<[ClassLine; NCLASSES]>() == NCLASSES * core::mem::size_of::<ClassLine>()
+        && core::mem::align_of::<[ClassLine; NCLASSES]>() == core::mem::align_of::<ClassLine>()
+        && core::mem::size_of::<[SlabTable; NCLASSES]>()
+            == NCLASSES * core::mem::size_of::<SlabTable>()
+        && core::mem::align_of::<[SlabTable; NCLASSES]>() == core::mem::align_of::<SlabTable>()
+);
+
+/// The in-place writes of [`Shared::init`], each to the field it names.
+impl Shared {
+    /// `meta` and `regions`; the metadata allocator, written.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage.
+    #[inline(always)]
+    unsafe fn put_head<'a>(this: *mut Shared, meta: Meta, regions: Regions) -> &'a Meta {
+        // SAFETY: the fields of `init`'s storage.
+        unsafe {
+            let meta_ptr = field_at(this, S_META);
+            ptr::write(meta_ptr, meta);
+            ptr::write(field_at(this, S_REGIONS), regions);
+            &*meta_ptr
+        }
+    }
+
+    /// `push_flags`, `region_hi` and `free_flags` (the push flags, no
+    /// route bit yet); the regions `put_head` wrote.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage, its regions written.
+    #[inline(always)]
+    unsafe fn put_flags<'a>(this: *mut Shared, flags: u8, region_hi: usize) -> &'a Regions {
+        // SAFETY: the fields of `init`'s storage.
+        unsafe {
+            ptr::write(field_at(this, S_PUSH_FLAGS), flags);
+            ptr::write(field_at(this, S_REGION_HI), region_hi);
+            ptr::write(field_at(this, S_FREE_FLAGS), AtomicU8::new(flags));
+            &*field_at(this, S_REGIONS)
+        }
+    }
+
+    /// `t` into `tables[c]`.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage and `c < NCLASSES`.
+    #[inline(always)]
+    unsafe fn put_table(this: *mut Shared, c: usize, t: SlabTable) {
+        // SAFETY: element `c` of the field.
+        unsafe {
+            let tables: *mut SlabTable = field_at(this, S_TABLES);
+            ptr::write(elem_at(tables, c, NCLASSES), t)
+        }
+    }
+
+    /// The first of `tables`.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage.
+    #[inline(always)]
+    unsafe fn tables_ptr(this: *mut Shared) -> *mut SlabTable {
+        // SAFETY: the field of `init`'s storage.
+        unsafe { field_at(this, S_TABLES) }
+    }
+
+    /// `l` into `lines[c]`.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage and `c < NCLASSES`.
+    #[inline(always)]
+    unsafe fn put_line(this: *mut Shared, c: usize, l: ClassLine) {
+        // SAFETY: element `c` of the field.
+        unsafe {
+            let lines: *mut ClassLine = field_at(this, S_LINES);
+            ptr::write(elem_at(lines, c, NCLASSES), l)
+        }
+    }
+
+    /// The first of `lines`.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage.
+    #[inline(always)]
+    unsafe fn lines_ptr(this: *mut Shared) -> *mut ClassLine {
+        // SAFETY: the field of `init`'s storage.
+        unsafe { field_at(this, S_LINES) }
+    }
+
+    /// `arena0`'s storage.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage.
+    #[inline(always)]
+    unsafe fn arena0_ptr(this: *mut Shared) -> *mut Arena {
+        // SAFETY: the field of `init`'s storage.
+        unsafe { field_at(this, S_ARENA0) }
+    }
+
+    /// `h` into `huge`.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage.
+    #[inline(always)]
+    unsafe fn put_huge(this: *mut Shared, h: Huge) {
+        // SAFETY: the field of `init`'s storage.
+        unsafe { ptr::write(field_at(this, S_HUGE), h) }
+    }
+
+    /// `gc_interval_ns`, then the arena registry over `arena0` and the
+    /// explicit-cache table, each built in place.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage, `arena0` its arena 0, built.
+    #[inline(always)]
+    unsafe fn put_registries(
+        this: *mut Shared,
+        gc_interval_ns: u64,
+        arena0: *mut Arena,
+        narenas: u32,
+    ) {
+        // SAFETY: the fields of `init`'s storage.
+        unsafe {
+            ptr::write(field_at(this, S_GC_INTERVAL_NS), gc_interval_ns);
+            Arenas::init(field_at(this, S_ARENAS), arena0, narenas);
+            Tcaches::init(field_at(this, S_TCACHES));
+        }
+    }
+
+    /// `cgroup` into the field; the record, written.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage.
+    #[inline(always)]
+    unsafe fn put_cgroup<'a>(this: *mut Shared, cgroup: Deferred) -> &'a Deferred {
+        // SAFETY: the field of `init`'s storage.
+        unsafe {
+            let cgroup_ptr = field_at(this, S_CGROUP);
+            ptr::write(cgroup_ptr, cgroup);
+            &*cgroup_ptr
+        }
+    }
+
+    /// `policy` into the field; the policy, written.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage.
+    #[inline(always)]
+    unsafe fn put_policy<'a>(this: *mut Shared, policy: Policy) -> &'a Policy {
+        // SAFETY: the field of `init`'s storage.
+        unsafe {
+            let policy_ptr = field_at(this, S_POLICY);
+            ptr::write(policy_ptr, policy);
+            &*policy_ptr
+        }
+    }
+
+    /// `config`, the thread-exit key and the statistics snapshot.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage.
+    #[inline(always)]
+    unsafe fn put_tail(this: *mut Shared, config: Config) {
+        // SAFETY: the fields of `init`'s storage.
+        unsafe {
+            ptr::write(field_at(this, S_CONFIG), config);
+            ptr::write(field_at(this, S_KEY), ThreadKey::create());
+            ptr::write(field_at(this, S_STATS), Lock::new(Snapshot::EMPTY));
+        }
     }
 }
 
@@ -528,28 +759,25 @@ impl Shared {
         let decay_ns = crate::purge::decay_ns_from_ms(config.dirty_decay_ms);
         // SAFETY: the caller guarantees `this` is writable and unaliased.
         unsafe {
-            let meta = &raw mut (*this).meta;
-            ptr::write(
-                meta,
+            let meta = Shared::put_head(
+                this,
                 Meta::new(regions.meta_base, regions.meta_len, regions.page_size()),
+                regions,
             );
-            ptr::write(&raw mut (*this).regions, regions);
-            let meta = &*meta;
-            let push_flags = (if config.double_free_scan {
-                PUSH_SCAN
-            } else {
-                0
-            }) | (if config.zero_on_free { PUSH_ZERO } else { 0 })
-                | (if pac && config.pac_pointers {
-                    PUSH_PAC
+            let regions = Shared::put_flags(
+                this,
+                (if config.double_free_scan {
+                    PUSH_SCAN
                 } else {
                     0
-                });
-            ptr::write(&raw mut (*this).push_flags, push_flags);
-            ptr::write(&raw mut (*this).region_hi, !(regions.region_len() - 1));
-            ptr::write(&raw mut (*this).free_flags, AtomicU8::new(push_flags));
-            let regions = &*(&raw const (*this).regions);
-            let tables = &raw mut (*this).tables;
+                }) | (if config.zero_on_free { PUSH_ZERO } else { 0 })
+                    | (if pac && config.pac_pointers {
+                        PUSH_PAC
+                    } else {
+                        0
+                    }),
+                !(regions.region_len() - 1),
+            );
             for c in 0..NCLASSES {
                 match SlabTable::new(
                     meta,
@@ -557,21 +785,27 @@ impl Shared {
                     c,
                     guard_interval_for(c, regions.page_size(), guard_interval),
                 ) {
-                    Some(t) => ptr::write(&raw mut (*tables)[c], t),
+                    Some(t) => {
+                        Shared::put_table(this, c, t);
+                    }
                     None => return false,
                 }
             }
-            let lines = &raw mut (*this).lines;
+            let tables = Shared::tables_ptr(this);
+            let lines = Shared::lines_ptr(this);
             for c in 0..NCLASSES {
-                ptr::write(
-                    &raw mut (*lines)[c],
-                    ClassLine::of(regions, &(*tables)[c], c),
-                );
-                // The `Shared` never moves (this function's contract).
-                (*tables)[c].mirror_watermark(&raw const (*lines)[c].committed);
+                let table = &*elem_at(tables, c, NCLASSES);
+                Shared::put_line(this, c, ClassLine::of(regions, table, c));
             }
-            let arena0 = &raw mut (*this).arena0;
-            if !Arena::init(arena0, meta, regions, &*tables, 0, decay_ns) {
+            for c in 0..NCLASSES {
+                let line = &*elem_at(lines, c, NCLASSES);
+                let table = &*elem_at(tables, c, NCLASSES);
+                // The `Shared` never moves (this function's contract).
+                table.mirror_watermark(&raw const line.committed);
+            }
+            let arena0 = Shared::arena0_ptr(this);
+            let all_tables = &*(tables as *const [SlabTable; NCLASSES]);
+            if !Arena::init(arena0, meta, regions, all_tables, 0, decay_ns) {
                 return false;
             }
             match Huge::new(meta, regions, guard_install) {
@@ -580,20 +814,17 @@ impl Shared {
                     // `huge_dirty_decay_ms:0`: a freed run is purged at
                     // once rather than at the next decay pass (design 7).
                     h.set_purge_on_free(config.huge_dirty_decay_ms == Some(0));
-                    ptr::write(&raw mut (*this).huge, h)
+                    Shared::put_huge(this, h)
                 }
                 None => return false,
             }
-            ptr::write(&raw mut (*this).gc_interval_ns, GC_INTERVAL_NS);
-            Arenas::init(&raw mut (*this).arenas, arena0, config.narenas);
-            Tcaches::init(&raw mut (*this).tcaches);
+            Shared::put_registries(this, GC_INTERVAL_NS, arena0, config.narenas);
             // Design 11: discovery waits for the first tick `DEFER_NS` into
             // the process's life (or the first read of the figures), so a
             // short-lived process never reads the files; `thp:always` needs
             // the limit now, and `cgroup:false` reads nothing either way.
-            use crate::sys::cgroup::{Cgroup, Deferred};
-            ptr::write(
-                &raw mut (*this).cgroup,
+            let cgroup = Shared::put_cgroup(
+                this,
                 if config.cgroup && config.thp == crate::config::Thp::Always {
                     Deferred::now(Cgroup::discover(true))
                 } else if config.cgroup {
@@ -607,28 +838,29 @@ impl Shared {
             // (`auto` is left alone; the report says so); the policy's
             // `high` baseline is the count at init. A deferred discovery
             // leaves no limit, no rises and the `Unlimited` band for now.
-            let cgroup = (*(&raw const (*this).cgroup)).get();
-            let limit = cgroup.map_or(crate::sys::cgroup::UNLIMITED, |c| c.limit().min(c.high()));
-            let rises = cgroup.map_or(0, |c| c.rises().0);
-            let band = cgroup.map_or(crate::policy::Band::Unlimited, crate::policy::cgroup_band);
+            let cgroup = cgroup.get();
+            let limit = match cgroup {
+                Some(c) => c.limit().min(c.high()),
+                None => crate::sys::cgroup::UNLIMITED,
+            };
+            let rises = match cgroup {
+                Some(c) => c.rises().0,
+                None => 0,
+            };
+            let band = match cgroup {
+                Some(c) => crate::policy::cgroup_band(c),
+                None => crate::policy::Band::Unlimited,
+            };
             let thp_forced = crate::thp::forced_by_limit(config.thp, limit);
             if thp_forced {
                 config.thp = crate::config::Thp::Never;
             }
-            ptr::write(
-                &raw mut (*this).policy,
-                crate::policy::Policy::new(rises, thp_forced),
-            );
+            let policy = Shared::put_policy(this, Policy::new(rises, thp_forced));
             // Applied once on the discovery sample, so the band and the cap
             // are published before the first 10 ms window closes (nothing
             // is `Empty` yet: retention 0).
-            (*this).policy.apply(band, limit, 0, rises);
-            ptr::write(&raw mut (*this).config, config);
-            ptr::write(&raw mut (*this).key, ThreadKey::create());
-            ptr::write(
-                &raw mut (*this).stats,
-                Lock::new(crate::stats::Snapshot::EMPTY),
-            );
+            policy.apply(band, limit, 0, rises);
+            Shared::put_tail(this, config);
         }
         true
     }
@@ -815,8 +1047,13 @@ impl Shared {
     /// background thread (each arena setter wakes it).
     /// `arena.<i>.dirty_decay_ms` goes through `Arena::set_decay_ms` instead.
     pub fn set_decay_ms(&self, ms: i64) {
-        for a in self.arenas.iter() {
-            a.set_decay_ms(ms);
+        // `for a in self.arenas.iter()`, spelled out: every built arena,
+        // in index order.
+        let n = self.arenas.count() as usize;
+        for i in 0..n {
+            if let Some(a) = self.arenas.get_existing(i as u16) {
+                a.set_decay_ms(ms);
+            }
         }
     }
 
@@ -923,13 +1160,7 @@ impl Shared {
         match self.regions.classify(p as usize) {
             Kind::Slab { class, .. } => {
                 if hint != Some(class as usize) {
-                    panic!(
-                        "sized free of {:#x}: size hint {} does not match the allocation (class {}, {} bytes)",
-                        p as usize,
-                        size,
-                        class,
-                        CLASSES.table()[class as usize].size()
-                    );
+                    hint_mismatch(p, size, class);
                 }
             }
             Kind::Huge { page } => {
@@ -940,10 +1171,7 @@ impl Shared {
                     && run.state == RunState::Active
                     && self.huge.usable_for(size) != Some(run.usable)
                 {
-                    panic!(
-                        "sized free of {:#x}: size hint {} does not match the allocation (huge run, {} bytes)",
-                        p as usize, size, run.usable
-                    );
+                    huge_hint_mismatch(p, size, run.usable);
                 }
             }
             _ => {}
@@ -1126,6 +1354,33 @@ impl Shared {
 #[inline(never)]
 fn no_such_arena(index: u16) -> ! {
     panic!("arena {index} does not exist")
+}
+
+/// [`Shared::check_size_hint`]'s abort on a slab slot whose class is not
+/// the hint's.
+#[cold]
+#[inline(never)]
+#[track_caller]
+fn hint_mismatch(p: *mut u8, size: usize, class: u32) -> ! {
+    panic!(
+        "sized free of {:#x}: size hint {} does not match the allocation (class {}, {} bytes)",
+        p as usize,
+        size,
+        class,
+        CLASSES.table()[class as usize].size()
+    )
+}
+
+/// [`Shared::check_size_hint`]'s abort on a huge run whose usable size is
+/// not the hint's.
+#[cold]
+#[inline(never)]
+#[track_caller]
+fn huge_hint_mismatch(p: *mut u8, size: usize, usable: usize) -> ! {
+    panic!(
+        "sized free of {:#x}: size hint {} does not match the allocation (huge run, {} bytes)",
+        p as usize, size, usable
+    )
 }
 
 /// The inverse modulo `2^64` of the odd part of `size` ([`ClassLine`]'s

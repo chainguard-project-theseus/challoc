@@ -202,15 +202,6 @@ impl CacheHeader {
         self.arena = arena;
         self.set_mode(MODE_PROBE);
     }
-
-    /// Cached pointers, bottom of the stack first (the top is popped next).
-    /// Only for a cache with a stack (`cap != 0`).
-    #[inline]
-    pub(super) fn entries(&mut self) -> &mut [*mut u8] {
-        debug_assert!(self.cap != 0);
-        // SAFETY: `len <= cap` pointers exist at `slots`.
-        unsafe { core::slice::from_raw_parts_mut(self.slots, self.len as usize) }
-    }
 }
 
 impl Heap {
