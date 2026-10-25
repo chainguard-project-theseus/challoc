@@ -8,6 +8,11 @@
 use vstd::prelude::*;
 
 pub(crate) mod addr;
+// Specifications only: Verus alone compiles these.
+#[cfg(verus_keep_ghost)]
+pub(crate) mod core_int;
+#[cfg(verus_keep_ghost)]
+pub(crate) mod layout;
 
 verus! {
 

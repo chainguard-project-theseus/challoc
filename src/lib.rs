@@ -24,12 +24,16 @@ compile_error!("features `quantum8` and `quantum16` are mutually exclusive");
 #[cfg(not(any(feature = "quantum8", feature = "quantum16")))]
 compile_error!("exactly one of the `quantum8` or `quantum16` features must be enabled");
 
+verus! {
+
 /// Quantum (minimum size-class granularity and alignment) in bytes, selected
 /// at build time by the `quantum8` / `quantum16` features.
 #[cfg(feature = "quantum16")]
-pub(crate) const QUANTUM: usize = 16;
+pub const QUANTUM: usize = 16;
 #[cfg(feature = "quantum8")]
-pub(crate) const QUANTUM: usize = 8;
+pub const QUANTUM: usize = 8;
+
+} // verus!
 
 pub(crate) mod api;
 pub(crate) mod arena;

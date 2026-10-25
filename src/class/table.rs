@@ -272,7 +272,7 @@ impl SlabTable {
             guard_interval == 0 || guard_interval.is_power_of_two(),
             "class: guard interval {guard_interval} is not a power of two"
         );
-        let cls = &CLASSES[class];
+        let cls = &CLASSES.table()[class];
         let page = regions.page_size();
         let nslabs = regions.nslabs(class);
         let stagger = desc_stagger(class);
@@ -324,7 +324,7 @@ impl SlabTable {
 
     #[inline]
     pub fn class(&self) -> &'static Class {
-        &CLASSES[self.class as usize]
+        &CLASSES.table()[self.class as usize]
     }
 
     #[inline]

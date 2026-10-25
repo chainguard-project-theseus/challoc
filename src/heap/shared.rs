@@ -167,7 +167,7 @@ const _: () = assert!(core::mem::offset_of!(Shared, lines) == 0);
 
 impl ClassLine {
     fn of(regions: &Regions, table: &SlabTable, class: usize) -> ClassLine {
-        let cls = &CLASSES[class];
+        let cls = &CLASSES.table()[class];
         ClassLine {
             class_base: regions.class_base[class],
             bits_base: table.bits_base(),
@@ -478,7 +478,7 @@ pub(super) fn seed() -> u64 {
 /// needs.
 pub(crate) fn guard_interval_for(class: usize, page: usize, interval: u32) -> u32 {
     let unit = (1usize << crate::layout::LG_GUARD_UNIT).max(page);
-    let group = CLASSES[class].slab_size().max(page);
+    let group = CLASSES.table()[class].slab_size().max(page);
     if group >= unit {
         interval
     } else {
@@ -928,7 +928,7 @@ impl Shared {
                         p as usize,
                         size,
                         class,
-                        CLASSES[class as usize].size()
+                        CLASSES.table()[class as usize].size()
                     );
                 }
             }

@@ -316,7 +316,7 @@ impl Config {
     /// `MALLOCX_ARENA` allocations keep their arena.
     #[inline]
     pub fn shared_class(&self, class: usize) -> bool {
-        crate::layout::CLASSES[class].size() > self.tcache_max
+        crate::layout::CLASSES.table()[class].size() > self.tcache_max
     }
 
     /// The one rule for which classes are cached where: the capacity of
