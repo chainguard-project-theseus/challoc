@@ -58,9 +58,7 @@ use crate::layout::Regions;
 use crate::lock::{Lock, RawLock};
 use crate::meta::Meta;
 use crate::purge::{self, Batch, Curve, Decayer};
-use crate::sys::{
-    self, Errno, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, PROT_NONE, PROT_READ, PROT_WRITE,
-};
+use crate::sys::{self, Errno};
 
 mod table;
 
@@ -137,8 +135,6 @@ pub struct HugeDesc {
 }
 
 impl HugeDesc {
-    const LAYOUT: Layout = Layout::new::<HugeDesc>();
-
     #[inline]
     pub fn start(&self) -> usize {
         self.start as usize
@@ -164,6 +160,11 @@ impl HugeDesc {
     pub fn state(&self) -> RunState {
         RunState::from_u8(self.state)
     }
+}
+
+impl HugeDesc {
+    #[cfg(test)]
+    const LAYOUT: Layout = Layout::new::<HugeDesc>();
 }
 
 /// What [`Huge::alloc_run`] placed: the run's start, whether it reads as
@@ -320,10 +321,24 @@ pub struct Huge {
     inner: Lock<Inner>,
 }
 
+/// `PROT_NONE`, `PROT_READ | PROT_WRITE` and the guard advice of
+/// `sys` (checked against them below).
+const PROT_NONE: i32 = 0;
+const PROT_RW: i32 = 3;
+const MADV_GUARD_INSTALL: i32 = 102;
+const MADV_GUARD_REMOVE: i32 = 103;
+
+const _: () = assert!(
+    PROT_NONE == sys::PROT_NONE
+        && PROT_RW == sys::PROT_READ | sys::PROT_WRITE
+        && MADV_GUARD_INSTALL == sys::MADV_GUARD_INSTALL
+        && MADV_GUARD_REMOVE == sys::MADV_GUARD_REMOVE
+);
+
 fn commit(addr: usize, len: usize) -> Result<(), Errno> {
     // SAFETY: inside our own reservation; adding permissions to pages
     // nobody holds cannot break anything.
-    unsafe { sys::mprotect(addr, len, PROT_READ | PROT_WRITE) }
+    unsafe { sys::mprotect(addr, len, PROT_RW) }
 }
 
 fn protect_none(addr: usize, len: usize) -> Result<(), Errno> {
@@ -345,14 +360,47 @@ fn now_ns() -> u64 {
     sys::now_coarse_ns()
 }
 
+/// A block for a descriptor from `meta`; null when the metadata region is
+/// exhausted. [`free_desc`] gives it back.
+#[inline(always)]
+fn alloc_desc(meta: &Meta) -> *mut HugeDesc {
+    meta.alloc(Layout::new::<HugeDesc>()) as *mut HugeDesc
+}
+
+/// Give the block `d` from [`alloc_desc`] back to `meta`.
+#[inline(always)]
+fn free_desc(meta: &Meta, d: *mut HugeDesc) {
+    meta.free(d as *mut u8, Layout::new::<HugeDesc>());
+}
+
 impl Inner {
+    /// The descriptor at `d`.
+    #[inline(always)]
+    fn desc(&self, d: *mut HugeDesc) -> &HugeDesc {
+        // SAFETY: `d` is a live descriptor of this allocator: in the table,
+        // the `Empty` list, or just written by its holder under the lock.
+        unsafe { &*d }
+    }
+
+    /// The descriptor at `d`, to write.
+    #[inline(always)]
+    fn desc_mut(&mut self, d: *mut HugeDesc) -> &mut HugeDesc {
+        // SAFETY: as `desc`; the huge lock, which `&mut self` stands for,
+        // serialises every access to it.
+        unsafe { &mut *d }
+    }
+
     /// Enter `d`, an initialised descriptor not in the table, into the
     /// table and the counters: a run under its start page, a free extent
     /// under its first and last page so that a free finds both
     /// neighbours. The free bitmap and the `Empty` list are the caller's.
     fn add_extent(&mut self, d: *mut HugeDesc) {
-        // SAFETY: `d` is a live descriptor owned by this allocator.
-        let (start, pages, state) = unsafe { ((*d).start(), (*d).pages(), (*d).state()) };
+        // `d` is a live descriptor owned by this allocator.
+        let (start, pages, state) = (
+            self.desc(d).start(),
+            self.desc(d).pages(),
+            self.desc(d).state(),
+        );
         self.table.insert(start, d);
         if state.is_free() && pages > 1 {
             self.table.insert(start + pages - 1, d);
@@ -365,8 +413,12 @@ impl Inner {
     /// are untouched, so the caller can enter it again with new bounds or
     /// [`retire`](Inner::retire) it.
     fn drop_extent(&mut self, d: *mut HugeDesc) {
-        // SAFETY: as `add_extent`.
-        let (start, pages, state) = unsafe { ((*d).start(), (*d).pages(), (*d).state()) };
+        // As `add_extent`.
+        let (start, pages, state) = (
+            self.desc(d).start(),
+            self.desc(d).pages(),
+            self.desc(d).state(),
+        );
         self.table.remove(start);
         if state.is_free() && pages > 1 {
             self.table.remove(start + pages - 1);
@@ -378,66 +430,61 @@ impl Inner {
     /// first when it is a member (every `Empty` extent is; a freed run's
     /// descriptor still reads `Active` here and is in no list).
     fn retire(&mut self, meta: &Meta, d: *mut HugeDesc) {
-        // SAFETY: `d` is live and about to be discarded.
-        if unsafe { (*d).state() } == RunState::Empty {
+        // `d` is live and about to be discarded.
+        if self.desc(d).state() == RunState::Empty {
             self.unlink(d);
         }
-        meta.free(d as *mut u8, HugeDesc::LAYOUT);
+        free_desc(meta, d);
     }
 
     /// Append to the `Empty` list; `d.dirty_at` must be the newest.
     fn link_tail(&mut self, d: *mut HugeDesc) {
-        // SAFETY: `d` is live and not in the list.
-        unsafe {
-            (*d).prev = self.empty_tail;
-            (*d).next = ptr::null_mut();
-            if self.empty_tail.is_null() {
-                self.empty_head = d;
-            } else {
-                (*self.empty_tail).next = d;
-            }
-            self.empty_tail = d;
+        // `d` is live and not in the list.
+        self.desc_mut(d).prev = self.empty_tail;
+        self.desc_mut(d).next = ptr::null_mut();
+        if self.empty_tail.is_null() {
+            self.empty_head = d;
+        } else {
+            self.desc_mut(self.empty_tail).next = d;
         }
+        self.empty_tail = d;
     }
 
     /// Insert `d` right after `after`, which is in the list.
     fn link_after(&mut self, after: *mut HugeDesc, d: *mut HugeDesc) {
-        // SAFETY: both are live; `after` is linked, `d` is not.
-        unsafe {
-            (*d).prev = after;
-            (*d).next = (*after).next;
-            if (*after).next.is_null() {
-                self.empty_tail = d;
-            } else {
-                (*(*after).next).prev = d;
-            }
-            (*after).next = d;
+        // Both are live; `after` is linked, `d` is not.
+        self.desc_mut(d).prev = after;
+        self.desc_mut(d).next = self.desc(after).next;
+        if self.desc(after).next.is_null() {
+            self.empty_tail = d;
+        } else {
+            self.desc_mut(self.desc(after).next).prev = d;
         }
+        self.desc_mut(after).next = d;
     }
 
+    /// Take `d` out of the `Empty` list.
     fn unlink(&mut self, d: *mut HugeDesc) {
-        // SAFETY: `d` is live and in the list.
-        unsafe {
-            if (*d).prev.is_null() {
-                self.empty_head = (*d).next;
-            } else {
-                (*(*d).prev).next = (*d).next;
-            }
-            if (*d).next.is_null() {
-                self.empty_tail = (*d).prev;
-            } else {
-                (*(*d).next).prev = (*d).prev;
-            }
-            (*d).prev = ptr::null_mut();
-            (*d).next = ptr::null_mut();
+        // `d` is live and in the list.
+        if self.desc(d).prev.is_null() {
+            self.empty_head = self.desc(d).next;
+        } else {
+            self.desc_mut(self.desc(d).prev).next = self.desc(d).next;
         }
+        if self.desc(d).next.is_null() {
+            self.empty_tail = self.desc(d).prev;
+        } else {
+            self.desc_mut(self.desc(d).next).prev = self.desc(d).prev;
+        }
+        self.desc_mut(d).prev = ptr::null_mut();
+        self.desc_mut(d).next = ptr::null_mut();
     }
 
     /// The free extent starting at `page`, which must be a set free bit.
     fn extent_at(&self, page: usize) -> *mut HugeDesc {
         let d = self.table.get(page);
-        // SAFETY: table entries are live descriptors.
-        if d.is_null() || unsafe { (*d).start() != page || !(*d).state().is_free() } {
+        // Table entries are live descriptors.
+        if d.is_null() || self.desc(d).start() != page || !self.desc(d).state().is_free() {
             panic!("huge: free page {page} has no extent");
         }
         d
@@ -449,8 +496,8 @@ impl Inner {
             return ptr::null_mut();
         }
         let d = self.table.get(page - 1);
-        // SAFETY: as `extent_at`.
-        if !d.is_null() && unsafe { (*d).state().is_free() && (*d).end() == page } {
+        // As `extent_at`.
+        if !d.is_null() && self.desc(d).state().is_free() && self.desc(d).end() == page {
             d
         } else {
             ptr::null_mut()
@@ -460,8 +507,8 @@ impl Inner {
     /// Neighbouring free extent starting exactly at `page`, if any.
     fn free_after(&self, page: usize) -> *mut HugeDesc {
         let d = self.table.get(page);
-        // SAFETY: as `extent_at`.
-        if !d.is_null() && unsafe { (*d).state().is_free() && (*d).start() == page } {
+        // As `extent_at`.
+        if !d.is_null() && self.desc(d).state().is_free() && self.desc(d).start() == page {
             d
         } else {
             ptr::null_mut()
@@ -515,7 +562,16 @@ impl Huge {
                 next_page: 0,
                 empty_head: ptr::null_mut(),
                 empty_tail: ptr::null_mut(),
-                stats: HugeStats::default(),
+                stats: HugeStats {
+                    runs: 0,
+                    run_pages: 0,
+                    empty: 0,
+                    empty_pages: 0,
+                    purged: 0,
+                    purged_pages: 0,
+                    next_page: 0,
+                    table_cap: 0,
+                },
             }),
         })
     }
@@ -571,7 +627,8 @@ impl Huge {
     /// Usable bytes `alloc(size, ..)` would give: `nallocx` for huge sizes.
     #[inline]
     pub fn usable_for(&self, size: usize) -> Option<usize> {
-        Some(self.usable_pages(size)? << self.lg_page)
+        let n = self.usable_pages(size);
+        Some(n? << self.lg_page)
     }
 
     /// Pages a run for `size` bytes at `align` takes, its guard included, or
@@ -580,7 +637,8 @@ impl Huge {
     /// larger than the region. [`Huge::alloc_run`] and [`Huge::placeable`]
     /// share these checks.
     fn run_pages(&self, size: usize, align: usize) -> Option<usize> {
-        let need = self.usable_pages(size)?.checked_add(GUARD_PAGES)?;
+        let n = self.usable_pages(size)?;
+        let need = n.checked_add(GUARD_PAGES)?;
         if need > self.npages || align > (self.npages << self.lg_page) {
             return None;
         }
@@ -592,8 +650,15 @@ impl Huge {
     /// fits from the first `align`-aligned page. Aligned starts repeat every
     /// `align` bytes, so if the first one leaves no room, none does.
     pub fn placeable(&self, size: usize, align: usize) -> bool {
-        self.run_pages(size, align)
-            .is_some_and(|need| self.align_page(0, align) + need <= self.npages)
+        // `run_pages(size, align).is_some_and(|need| ...)`, spelled as a
+        // `match`.
+        match self.run_pages(size, align) {
+            Some(need) => {
+                let s = self.align_page(0, align);
+                s + need <= self.npages
+            }
+            None => false,
+        }
     }
 
     /// First page at or after `page` whose address is a multiple of
@@ -622,11 +687,19 @@ impl Huge {
     /// report as `pages`, so the caller's per-arena page count never
     /// drifts from what the free subtracts); [`Placed::NONE`] when the
     /// region, the metadata region or the kernel refuses.
+    #[inline]
     pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> Placed {
         assert!(
             align.is_power_of_two(),
             "huge: alignment not a power of two"
         );
+        self.alloc_aligned(meta, size, align, arena)
+    }
+
+    /// [`Huge::alloc_run`] for an `align` already known to be a power of
+    /// two.
+    #[inline(always)]
+    fn alloc_aligned(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> Placed {
         let Some(need) = self.run_pages(size, align) else {
             return Placed::NONE;
         };
@@ -639,21 +712,21 @@ impl Huge {
         let end = s + need;
 
         // Everything fallible happens before any state changes.
-        let run = meta.alloc(HugeDesc::LAYOUT) as *mut HugeDesc;
+        let run = alloc_desc(meta);
         if run.is_null() {
             return Placed::NONE;
         }
-        let spare = meta.alloc(HugeDesc::LAYOUT) as *mut HugeDesc;
+        let spare = alloc_desc(meta);
         if spare.is_null() {
-            meta.free(run as *mut u8, HugeDesc::LAYOUT);
+            free_desc(meta, run);
             return Placed::NONE;
         }
         let ok = g.table.ensure(meta, page, 3).is_ok()
             && (end <= g.next_page || g.free.ensure(meta, page, end - 1).is_ok())
             && self.prepare(s, usable_pages, g.next_page).is_ok();
         if !ok {
-            meta.free(run as *mut u8, HugeDesc::LAYOUT);
-            meta.free(spare as *mut u8, HugeDesc::LAYOUT);
+            free_desc(meta, run);
+            free_desc(meta, spare);
             return Placed::NONE;
         }
 
@@ -675,14 +748,14 @@ impl Huge {
             spare,
             arena,
         );
-        // SAFETY: `take` wrote the run's descriptor; the lock is still held.
-        let pages = unsafe { (*run).pages() };
+        // `take` wrote the run's descriptor; the lock is still held.
+        let pages = g.desc(run).pages();
         self.sync_oldest(&g);
         if let (true, Some(prior)) = (zeroed, prior) {
             self.check_zero(s, usable_pages, prior, arena);
         }
         Placed {
-            ptr: self.addr(s) as *mut u8,
+            ptr: crate::vspec::addr::addr_to_ptr(self.addr(s)),
             zeroed,
             pages,
         }
@@ -720,11 +793,11 @@ impl Huge {
         let page = self.page_size();
         let base = self.addr(s);
         for i in 0..usable_pages {
-            for off in [0, page - 8] {
+            for &off in &[0, page - 8] {
                 let a = base + i * page + off;
                 // SAFETY: a usable page of the run this call just took;
                 // `prepare` committed it.
-                let word = unsafe { ptr::read_volatile(a as *const u64) };
+                let word = unsafe { self.read_run_word(a) };
                 if word != 0 {
                     dirty_zero_run(base, usable_pages, s, prior, arena, a, word);
                 }
@@ -732,15 +805,27 @@ impl Huge {
         }
     }
 
+    /// The word at `a`, read once, for [`Huge::check_zero`]. Nothing is
+    /// claimed about the value.
+    ///
+    /// # Safety
+    /// `a` is an aligned word of a committed usable page of a run.
+    #[inline(always)]
+    unsafe fn read_run_word(&self, a: usize) -> u64 {
+        let q = crate::vspec::addr::addr_to_ptr(a);
+        // SAFETY: the caller's.
+        unsafe { ptr::read_volatile(q as *const u64) }
+    }
+
     /// Refresh `oldest_empty` from the list head. Returns `true` when the
     /// list went from empty to non-empty, which is when a background
     /// thread sleeping without a deadline needs waking.
     fn sync_oldest(&self, g: &Inner) -> bool {
-        // SAFETY: the head, if any, is a live `Empty` extent.
+        // The head, if any, is a live `Empty` extent.
         let new = if g.empty_head.is_null() {
             0
         } else {
-            unsafe { (*g.empty_head).dirty_at }
+            g.desc(g.empty_head).dirty_at
         };
         self.gate.set_oldest_empty(new)
     }
@@ -753,8 +838,8 @@ impl Huge {
         let mut from = 0;
         while let Some(a) = g.free.map.lowest_set_from(from) {
             let e = g.extent_at(a);
-            // SAFETY: `extent_at` checked `e` is live.
-            let e_end = unsafe { (*e).end() };
+            // `extent_at` checked `e` is live.
+            let e_end = g.desc(e).end();
             let s = self.align_page(a, align);
             if s + need <= e_end {
                 return Some((s, e));
@@ -844,15 +929,13 @@ impl Huge {
                 spare_used = true;
             }
         } else {
-            // SAFETY: `ext` is a live free extent found under this lock.
-            let (a, e_end, st, dirty_at) = unsafe {
-                (
-                    (*ext).start(),
-                    (*ext).end(),
-                    (*ext).state(),
-                    (*ext).dirty_at,
-                )
-            };
+            // `ext` is a live free extent found under this lock.
+            let (a, e_end, st, dirty_at) = (
+                g.desc(ext).start(),
+                g.desc(ext).end(),
+                g.desc(ext).state(),
+                g.desc(ext).dirty_at,
+            );
             // `Purged` pages are zero unless a lazy purge discarded them
             // with `MADV_FREE`; pages at or past the mark are untouched.
             zeroed = (st == RunState::Purged && purge::purged_is_zero()) || s >= e_end;
@@ -879,8 +962,7 @@ impl Huge {
                 if s > e_end {
                     g.free.map.set_range(e_end, s - e_end);
                 }
-                // SAFETY: as above.
-                unsafe { (*ext).pages = (s - a) as u32 };
+                g.desc_mut(ext).pages = (s - a) as u32;
                 g.add_extent(ext);
             } else {
                 g.retire(meta, ext);
@@ -909,7 +991,7 @@ impl Huge {
         g.add_extent(run);
         g.stats.next_page = g.next_page;
         if !spare_used {
-            meta.free(spare as *mut u8, HugeDesc::LAYOUT);
+            free_desc(meta, spare);
         }
         zeroed
     }
@@ -924,6 +1006,8 @@ impl Huge {
     /// unless it is the start of a live run. Returns the run as it was
     /// (`start`, `pages` with the guard, `usable`, `arena`), for the
     /// caller's per-arena counters.
+    // The coalescing loops are spelled out (see below), not `while let`.
+    #[allow(clippy::while_let_loop)]
     pub fn free_run(&self, meta: &Meta, page: usize) -> RunInfo {
         let page_size = self.page_size();
         let mut g = self.inner.lock();
@@ -931,16 +1015,14 @@ impl Huge {
         if d.is_null() {
             not_a_run(self.addr(page));
         }
-        // SAFETY: table entries are live descriptors.
-        let (start, n, state, usable, arena) = unsafe {
-            (
-                (*d).start(),
-                (*d).pages(),
-                (*d).state(),
-                (*d).usable,
-                (*d).arena(),
-            )
-        };
+        // Table entries are live descriptors.
+        let (start, n, state, usable, arena) = (
+            g.desc(d).start(),
+            g.desc(d).pages(),
+            g.desc(d).state(),
+            g.desc(d).usable,
+            g.desc(d).arena(),
+        );
         if state != RunState::Active {
             already_free(self.addr(page));
         }
@@ -960,7 +1042,8 @@ impl Huge {
         // Purged at once: above `huge_retain_max`, or under a zero huge
         // decay period (`huge_dirty_decay_ms:0`). A run the discard fails
         // on is kept `Empty` for decay or the next explicit purge.
-        let purge = usable > self.retain_max() || self.purge_on_free();
+        let cap = self.retain_max();
+        let purge = usable > cap || self.purge_on_free();
         let st = if purge && purge::discard_one(addr, n * page_size) {
             RunState::Purged
         } else {
@@ -982,42 +1065,62 @@ impl Huge {
         let mut hi = page + n;
         let mut merged = st;
         let mut survivor = d;
-        for nb in [pred, succ] {
+        // `for nb in [pred, succ]`, spelled out: Verus rejects `continue`
+        // in a `for` loop, and the spelled-out loop keeps the machine code
+        // of the `for`.
+        let mut iter = [pred, succ].into_iter();
+        loop {
+            let nb = match iter.next() {
+                Some(nb) => nb,
+                None => {
+                    break;
+                }
+            };
             if nb.is_null() {
                 continue;
             }
-            // SAFETY: neighbours are live free extents.
-            let (ns, ne, nst, ndirty) =
-                unsafe { ((*nb).start(), (*nb).end(), (*nb).state(), (*nb).dirty_at) };
+            // Neighbours are live free extents.
+            let (ns, ne, nst, ndirty) = (
+                g.desc(nb).start(),
+                g.desc(nb).end(),
+                g.desc(nb).state(),
+                g.desc(nb).dirty_at,
+            );
             g.drop_extent(nb);
             lo = lo.min(ns);
             hi = hi.max(ne);
             if nst == RunState::Empty {
                 merged = RunState::Empty;
-                // SAFETY: a survivor other than `d` is a live `Empty` neighbour.
-                if survivor == d || ndirty < unsafe { (*survivor).dirty_at } {
+                // A survivor other than `d` is a live `Empty` neighbour.
+                if survivor == d || ndirty < g.desc(survivor).dirty_at {
                     survivor = nb;
                 }
             }
         }
-        for x in [d, pred, succ] {
+        // `for x in [d, pred, succ]`, spelled out as above.
+        let mut iter = [d, pred, succ].into_iter();
+        loop {
+            let x = match iter.next() {
+                Some(x) => x,
+                None => {
+                    break;
+                }
+            };
             if !x.is_null() && x != survivor {
                 g.retire(meta, x);
             }
         }
-        // SAFETY: `survivor` is live: `d` (still the run's descriptor) or
-        // an `Empty` neighbour that keeps its age and list position.
-        unsafe {
-            (*survivor).start = lo as u32;
-            (*survivor).pages = (hi - lo) as u32;
-            (*survivor).state = merged as u8;
-            (*survivor).usable = 0;
-            if merged == RunState::Purged {
-                (*survivor).dirty_at = 0;
-            } else if survivor == d {
-                (*survivor).dirty_at = now;
-                g.link_tail(d);
-            }
+        // `survivor` is live: `d` (still the run's descriptor) or an
+        // `Empty` neighbour that keeps its age and list position.
+        g.desc_mut(survivor).start = lo as u32;
+        g.desc_mut(survivor).pages = (hi - lo) as u32;
+        g.desc_mut(survivor).state = merged as u8;
+        g.desc_mut(survivor).usable = 0;
+        if merged == RunState::Purged {
+            g.desc_mut(survivor).dirty_at = 0;
+        } else if survivor == d {
+            g.desc_mut(survivor).dirty_at = now;
+            g.link_tail(d);
         }
         g.free.map.set_range(page, n);
         g.add_extent(survivor);
@@ -1040,17 +1143,14 @@ impl Huge {
     pub fn usable_size(&self, page: usize) -> usize {
         let g = self.inner.lock();
         let d = g.table.get(page);
-        // SAFETY: table entries are live descriptors.
-        if d.is_null() || unsafe { (*d).start() != page } {
+        // Table entries are live descriptors.
+        if d.is_null() || g.desc(d).start() != page {
             not_a_run(self.addr(page));
         }
-        // SAFETY: as above.
-        unsafe {
-            if (*d).state() != RunState::Active {
-                already_free(self.addr(page));
-            }
-            (*d).usable
+        if g.desc(d).state() != RunState::Active {
+            already_free(self.addr(page));
         }
+        g.desc(d).usable
     }
 
     /// Descriptor of the extent starting or ending at `page`, if any.
@@ -1060,17 +1160,15 @@ impl Huge {
         if d.is_null() {
             return None;
         }
-        // SAFETY: table entries are live descriptors.
-        unsafe {
-            Some(RunInfo {
-                start: (*d).start(),
-                pages: (*d).pages(),
-                usable: (*d).usable,
-                arena: (*d).arena,
-                state: (*d).state(),
-                dirty_at: (*d).dirty_at,
-            })
-        }
+        // Table entries are live descriptors.
+        Some(RunInfo {
+            start: g.desc(d).start(),
+            pages: g.desc(d).pages(),
+            usable: g.desc(d).usable,
+            arena: g.desc(d).arena,
+            state: g.desc(d).state(),
+            dirty_at: g.desc(d).dirty_at,
+        })
     }
 
     /// Purge every `Empty` extent whose `dirty_at` is at or before `cutoff`
@@ -1083,9 +1181,9 @@ impl Huge {
         let mut batch = Batch::new();
         let mut d = g.empty_head;
         while !d.is_null() {
-            // SAFETY: list members are live `Empty` extents; `next` is
-            // read before a flush can unlink `d`.
-            let (dirty_at, next) = unsafe { ((*d).dirty_at, (*d).next) };
+            // List members are live `Empty` extents; `next` is read before
+            // a flush can unlink `d`.
+            let (dirty_at, next) = (g.desc(d).dirty_at, g.desc(d).next);
             if dirty_at > cutoff {
                 break;
             }
@@ -1111,13 +1209,27 @@ impl Huge {
         batch: &mut Batch,
         t: &mut Tally,
     ) -> usize {
-        // SAFETY: list members are live `Empty` extents.
-        let (start, pages) = unsafe { ((*d).start(), (*d).pages()) };
+        // List members are live `Empty` extents.
+        let (start, pages) = (g.desc(d).start(), g.desc(d).pages());
         batch.push(
             self.addr(start),
             pages * self.page_size(),
             |addr, len, done| self.settle(g, addr, len, done, t),
         );
+        pages
+    }
+
+    /// Make `d`, a member of the `Empty` list, `Purged`: out of the list,
+    /// with no age, its pages counted as purged. Returns its pages.
+    #[inline(always)]
+    fn purge_desc(&self, g: &mut Inner, d: *mut HugeDesc) -> usize {
+        // List members are live `Empty` extents.
+        let pages = g.desc(d).pages();
+        g.unlink(d);
+        g.desc_mut(d).state = RunState::Purged as u8;
+        g.desc_mut(d).dirty_at = 0;
+        g.stats.sub(RunState::Empty, pages);
+        g.stats.add(RunState::Purged, pages);
         pages
     }
 
@@ -1136,20 +1248,11 @@ impl Huge {
         let end = page + (len >> self.lg_page);
         while page < end {
             let d = g.table.get(page);
-            // SAFETY: table entries are live descriptors.
-            if d.is_null() || unsafe { (*d).start() != page || (*d).state() != RunState::Empty } {
+            // Table entries are live descriptors.
+            if d.is_null() || g.desc(d).start() != page || g.desc(d).state() != RunState::Empty {
                 panic!("huge: purged range {addr:#x}+{len:#x} is not Empty extents");
             }
-            // SAFETY: as above.
-            let pages = unsafe { (*d).pages() };
-            g.unlink(d);
-            // SAFETY: as above.
-            unsafe {
-                (*d).state = RunState::Purged as u8;
-                (*d).dirty_at = 0;
-            }
-            g.stats.sub(RunState::Empty, pages);
-            g.stats.add(RunState::Purged, pages);
+            let pages = self.purge_desc(g, d);
             t.purged += 1;
             page += pages;
         }
@@ -1171,8 +1274,8 @@ impl Huge {
         let mut weighted = 0u64;
         let mut d = g.empty_head;
         while !d.is_null() {
-            // SAFETY: list members are live `Empty` extents.
-            let (pages, dirty_at, next) = unsafe { ((*d).pages(), (*d).dirty_at, (*d).next) };
+            // List members are live `Empty` extents.
+            let (pages, dirty_at, next) = (g.desc(d).pages(), g.desc(d).dirty_at, g.desc(d).next);
             total += pages;
             weighted += pages as u64 * Curve::weight(curve.step(now, dirty_at));
             d = next;
@@ -1195,9 +1298,8 @@ impl Huge {
             let mut batch = Batch::new();
             let mut d = g.empty_head;
             while !d.is_null() && excess > 0 {
-                // SAFETY: as above; `next` is read before a flush can
-                // unlink `d`.
-                let (pages, next) = unsafe { ((*d).pages(), (*d).next) };
+                // As above; `next` is read before a flush can unlink `d`.
+                let (pages, next) = (g.desc(d).pages(), g.desc(d).next);
                 if pages <= excess || capped {
                     let pushed = self.push_extent(&mut g, d, &mut batch, &mut t);
                     excess = excess.saturating_sub(pushed);
@@ -1241,7 +1343,8 @@ impl Huge {
     /// Bytes in `Empty` extents (one lock hold), for the cgroup policy's
     /// retention figure.
     pub fn empty_bytes(&self) -> usize {
-        self.inner.lock().stats.empty_pages << self.lg_page
+        let g = self.inner.lock();
+        g.stats.empty_pages << self.lg_page
     }
 
     pub fn stats(&self) -> HugeStats {
