@@ -26,6 +26,12 @@ impl Lazy {
         committed: 0,
     };
 
+    /// The table's first byte.
+    #[inline(always)]
+    pub(crate) fn start(&self) -> usize {
+        self.base
+    }
+
     pub(crate) fn reserve(meta: &Meta, len: usize, align: usize) -> Option<Lazy> {
         // With metadata THP on (`thp.rs`) the table starts on a folio
         // boundary, so the rounded commits of `ensure` cover whole aligned
@@ -58,11 +64,11 @@ impl Lazy {
 /// of an arena's [`SetTable`] ([`Set::in_table`]). Shared with `huge/`.
 pub(crate) struct Set {
     pub(crate) map: TwoLevelBitmap,
-    store: Store,
-    l1_words: usize,
+    pub(crate) store: Store,
+    pub(crate) l1_words: usize,
 }
 
-enum Store {
+pub(crate) enum Store {
     Own(Lazy),
     /// The arena's table, which outlives the set (it is a field of the
     /// same `Arena`, or leaked by the tests), and the set's group in it.
@@ -139,16 +145,16 @@ pub const SET_GROUPS: usize = (LG_MAX_SLAB - LG_MIN_SLAB + 1) as usize;
 /// one or two pages per (arena, class), which at 16 arenas puts a small
 /// multi-threaded heap's RSS well above jemalloc's.
 pub struct SetTable {
-    groups: [Group; SET_GROUPS],
+    pub(crate) groups: [Group; SET_GROUPS],
     /// Slab count of each group's classes.
-    pub(super) nslabs: [usize; SET_GROUPS],
+    pub(crate) nslabs: [usize; SET_GROUPS],
     /// Position of each class within its group.
-    pos: [u8; NCLASSES],
+    pub(crate) pos: [u8; NCLASSES],
     /// Commit watermarks; taken by the fork handlers after the arena's
     /// class locks and the slab table locks, which is the order
     /// `take_group` uses.
-    tables: Lock<[Lazy; SET_GROUPS]>,
-    page: usize,
+    pub(crate) tables: Lock<[Lazy; SET_GROUPS]>,
+    pub(crate) page: usize,
 }
 
 // SAFETY: a `SetTable` is shared by the arena's class states; its groups
@@ -158,10 +164,10 @@ unsafe impl Sync for SetTable {}
 unsafe impl Send for SetTable {}
 
 #[derive(Clone, Copy)]
-struct Group {
-    base: usize,
-    stride: usize,
-    count: usize,
+pub(crate) struct Group {
+    pub(crate) base: usize,
+    pub(crate) stride: usize,
+    pub(crate) count: usize,
 }
 
 impl SetTable {
@@ -185,18 +191,36 @@ impl SetTable {
         for c in 0..NCLASSES {
             let g = Self::group_of(c);
             pos[c] = groups[g].count as u8;
-            groups[g].count += 1;
+            let mut grp = groups[g];
+            grp.count += 1;
+            groups[g] = grp;
             nslabs[g] = regions.nslabs(c);
         }
-        let mut tables = [Lazy::EMPTY; SET_GROUPS];
+        // One `Lazy::EMPTY` per group, spelled out for Verus; the type
+        // `Lock::new` takes checks the count against `SET_GROUPS`.
+        let mut tables = [
+            Lazy::EMPTY,
+            Lazy::EMPTY,
+            Lazy::EMPTY,
+            Lazy::EMPTY,
+            Lazy::EMPTY,
+            Lazy::EMPTY,
+            Lazy::EMPTY,
+            Lazy::EMPTY,
+            Lazy::EMPTY,
+            Lazy::EMPTY,
+            Lazy::EMPTY,
+        ];
         for g in 0..SET_GROUPS {
-            if groups[g].count == 0 {
-                continue;
+            if groups[g].count != 0 {
+                let mut grp = groups[g];
+                grp.stride = SETS_PER_CLASS * grp.count;
+                let rows = TwoLevelBitmap::chunked_rows(nslabs[g]);
+                let t = Lazy::reserve(meta, 8 * rows * grp.stride, page)?;
+                grp.base = t.base;
+                tables[g] = t;
+                groups[g] = grp;
             }
-            groups[g].stride = SETS_PER_CLASS * groups[g].count;
-            let rows = TwoLevelBitmap::chunked_rows(nslabs[g]);
-            tables[g] = Lazy::reserve(meta, 8 * rows * groups[g].stride, page)?;
-            groups[g].base = tables[g].base;
         }
         Some(SetTable {
             groups,

@@ -3,6 +3,7 @@
 //! commit lock; groups go to arenas here (`take_group`) and slabs are
 //! committed here (`commit_run`, `commit_slab`).
 
+use super::Inner;
 use super::abort::{guard_free, invalid_free, invalid_pointer, never_committed, owner_mismatch};
 use super::sets::Lazy;
 use crate::bitmap::AtomicBitmap;
@@ -14,22 +15,22 @@ use crate::slab::{DESC_ALIGN, SlabDesc, desc_stride};
 use crate::sys::{self, Errno, MADV_GUARD_INSTALL, PROT_NONE, PROT_READ, PROT_WRITE};
 use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
-struct TableInner {
-    descs: Lazy,
+pub(crate) struct TableInner {
+    pub(super) descs: Lazy,
     /// The class bitmap (see [`SlabTable::bits`]).
-    bits: Lazy,
+    pub(super) bits: Lazy,
     /// The group owner array (see [`SlabTable::owner`]).
-    owners: Lazy,
+    pub(super) owners: Lazy,
     /// Next slab number not yet handed to any arena (`high_water + 1` in
     /// the design, at group granularity).
-    next_slab: usize,
+    pub(super) next_slab: usize,
     /// Guard slabs committed (never handed out).
-    guards: usize,
+    pub(super) guards: usize,
     /// A copy of the watermark the `free` fast path reads from its
     /// per-class line (`heap::ClassLine`), stored right after the
     /// watermark itself, so it is never ahead of it; null until
     /// [`SlabTable::mirror_watermark`].
-    mirror: *const AtomicUsize,
+    pub(super) mirror: *const AtomicUsize,
 }
 
 /// Offset of class `class`'s descriptor array, bitmap and owner array
@@ -73,10 +74,10 @@ pub const fn desc_stagger(class: usize) -> usize {
 pub struct SlabTable {
     /// Start of the class bitmap: bit `slab * slab_bits + slot` is the
     /// allocation bit of `slot` in `slab` (design section 4).
-    bits_base: usize,
+    pub(super) bits_base: usize,
     /// Start of the owner array: one `AtomicU16` per group of
     /// `1 << lg_group` slabs, the arena the group was handed to.
-    owners_base: usize,
+    pub(super) owners_base: usize,
     /// Slabs handed to an arena so far (the hand-out watermark; a multiple
     /// of the group size except at the end of the region). Their
     /// descriptors, bitmap words and owner words exist, readable without
@@ -84,25 +85,25 @@ pub struct SlabTable {
     /// slabs cleanly; a slab below it may still be uncommitted (its arena
     /// has not reached it yet), in which case its bits are clear and its
     /// descriptor is `Fresh`.
-    committed_slabs: AtomicUsize,
+    pub(super) committed_slabs: AtomicUsize,
     /// `Class::slab_bits`, kept here so the fast path reads it with the
     /// table line.
-    slab_bits: u16,
+    pub(super) slab_bits: u16,
     pub(super) class: u16,
     /// `log2(group)`.
     pub(super) lg_group: u8,
     /// `log2(slabs_per_page)`: the guard test on the sized fast path is a
     /// shift, an add and a mask (`is_guard_slab`).
-    lg_slabs_per_page: u8,
-    _pad: [u8; 2],
+    pub(super) lg_slabs_per_page: u8,
+    pub(super) _pad: [u8; 2],
     /// `guard_interval - 1`: every `guard_interval`-th page group is a
     /// guard group and the interval is a power of two, so `(group + 1) &
     /// guard_mask == 0` is the test. With guards off the mask is all ones
     /// and no page group a region can have matches (`u32::MAX` would).
-    guard_mask: u32,
+    pub(super) guard_mask: u32,
     pub(super) lg_page: u32,
     /// `desc_stride(class)`.
-    desc_stride: u32,
+    pub(super) desc_stride: u32,
     /// `max(1, page / slab_size)`, a power of two. Slabs are committed,
     /// guarded and purged in page-sized groups, so on a kernel whose page is
     /// larger than this class's slab a group of `slabs_per_page` consecutive
@@ -115,19 +116,19 @@ pub struct SlabTable {
     /// 79.5 MiB after its delete phase at 64 KiB pages), so this is 1
     /// everywhere but in the tests that fake a page above the slab, which
     /// keep the path working for a page above 64 KiB.
-    slabs_per_page: u32,
+    pub(super) slabs_per_page: u32,
     /// Slabs handed to an arena at a time: `max(slabs_per_line,
     /// slabs_per_page)`, a power of two, so a group is whole bitmap lines
     /// and whole page groups.
     pub(super) group: u32,
     /// Start of this class's region.
-    base: usize,
+    pub(super) base: usize,
     /// Number of slabs in the region.
     pub(super) nslabs: usize,
     /// Start of the descriptor array.
-    desc_base: usize,
-    inner: Padded<Lock<TableInner>>,
-    _tail: [u8; TABLE_TAIL],
+    pub(super) desc_base: usize,
+    pub(crate) inner: Padded<Lock<TableInner>>,
+    pub(super) _tail: [u8; TABLE_TAIL],
 }
 
 /// Padding that keeps the stride of `[SlabTable; NCLASSES]` at 384 bytes,
@@ -167,6 +168,85 @@ fn guard(addr: usize, len: usize) -> Result<(), Errno> {
     unsafe { sys::madvise(addr, len, MADV_GUARD_INSTALL) }
 }
 
+/// `(*w).load(Relaxed)` of the owner word of a handed-out group: the
+/// arena that owns the group's slabs.
+///
+/// # Safety
+/// `w` is the owner word of a group below the watermark: committed and
+/// written before the watermark moved.
+#[inline(always)]
+unsafe fn load_owner(w: *const AtomicU16) -> u16 {
+    // SAFETY: guaranteed by the caller.
+    unsafe { (*w).load(Ordering::Relaxed) }
+}
+
+/// `(*w).store(arena, Relaxed)` of the owner word of the group
+/// [`SlabTable::take_group`] hands out, the only store to an owner word
+/// (the test helper `corrupt_owner_word` aside).
+///
+/// # Safety
+/// `w` is the owner word of the group at the watermark, committed.
+#[inline(always)]
+unsafe fn store_owner(w: *const AtomicU16, arena: u16) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { (*w).store(arena, Ordering::Relaxed) }
+}
+
+/// The hand-out group's geometry, as [`SlabTable::new`] asserts it:
+/// `group` is a power of two that is whole page groups. Inlined and
+/// `track_caller`, so the caller keeps the code, the message and the
+/// location of the `assert!` it had in place.
+#[inline(always)]
+#[track_caller]
+fn group_geometry(group: usize, slabs_per_page: usize) {
+    assert!(group.is_power_of_two() && group % slabs_per_page == 0);
+}
+
+/// `index` itself, for [`SlabTable::is_set_unchecked`]'s word index. On
+/// aarch64 it goes through an empty `asm!` (the next item): left alone,
+/// LLVM rewrites `(bit >> 6) << 3` as `(bit >> 3) & !7`, a shift and a
+/// mask ahead of the load on `free`'s dependent chain, where `bit >> 6`
+/// and a scaled `ldr` is one instruction. x86_64 already scales the index
+/// in the load, and this is the identity.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn word_index(index: usize) -> usize {
+    index
+}
+
+/// [`word_index`] on aarch64: `index` through the empty `asm!`.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn word_index(index: usize) -> usize {
+    let mut index = index;
+    // SAFETY: an empty template; `index` comes out unchanged.
+    unsafe {
+        core::arch::asm!("/* {0} */", inout(reg) index, options(pure, nomem, nostack, preserves_flags));
+    }
+    index
+}
+
+/// [`SlabTable::take_group`]'s check that the watermark is a group
+/// boundary. Inlined and `track_caller`, as [`group_geometry`].
+#[inline(always)]
+#[track_caller]
+fn watermark_aligned(s: usize, lg_group: u8) {
+    debug_assert_eq!(
+        s & ((1 << lg_group) - 1),
+        0,
+        "take_group: the watermark is group-aligned"
+    );
+}
+
+/// [`SlabTable::install_guard`]'s abort: the guard slab of `class` at `s`
+/// could be neither guarded nor re-protected. Inlined and `track_caller`, as
+/// [`group_geometry`], so the panic names the caller's line.
+#[inline(always)]
+#[track_caller]
+fn guard_unprotectable(class: &u16, s: &usize) -> ! {
+    panic!("class {}: cannot re-protect guard slab {}", *class, *s)
+}
+
 impl SlabTable {
     /// Create the table for `class`. Reserves the descriptor array, the
     /// class bitmap and the owner array in `meta`; returns `None` if the
@@ -200,17 +280,29 @@ impl SlabTable {
         let slabs_per_page = (page / cls.slab_size()).max(1);
         assert!(slabs_per_page.is_power_of_two() && nslabs % slabs_per_page == 0);
         let group = cls.slabs_per_line().max(slabs_per_page);
-        assert!(group.is_power_of_two() && group % slabs_per_page == 0);
-        let descs = Lazy::reserve(meta, stagger + nslabs * desc_stride(class), align)?;
+        group_geometry(group, slabs_per_page);
+        let stride = desc_stride(class);
+        let descs = Lazy::reserve(meta, stagger + nslabs * stride, align)?;
         let bits = Lazy::reserve(
             meta,
             stagger + (nslabs * cls.slab_bits()).div_ceil(8),
             align,
         )?;
         let owners = Lazy::reserve(meta, stagger + nslabs.div_ceil(group) * 2, align)?;
+        let bits_base = bits.start() + stagger;
+        let owners_base = owners.start() + stagger;
+        let desc_base = descs.start() + stagger;
+        let inner = Padded(Lock::new(TableInner {
+            descs,
+            bits,
+            owners,
+            next_slab: 0,
+            guards: 0,
+            mirror: core::ptr::null(),
+        }));
         Some(SlabTable {
-            bits_base: bits.base + stagger,
-            owners_base: owners.base + stagger,
+            bits_base,
+            owners_base,
             committed_slabs: AtomicUsize::new(0),
             slab_bits: cls.slab_bits() as u16,
             class: class as u16,
@@ -219,20 +311,13 @@ impl SlabTable {
             _pad: [0; 2],
             guard_mask: guard_interval.wrapping_sub(1),
             lg_page: regions.lg_page,
-            desc_stride: desc_stride(class) as u32,
+            desc_stride: stride as u32,
             slabs_per_page: slabs_per_page as u32,
             group: group as u32,
             base: regions.class_base[class],
             nslabs,
-            desc_base: descs.base + stagger,
-            inner: Padded(Lock::new(TableInner {
-                descs,
-                bits,
-                owners,
-                next_slab: 0,
-                guards: 0,
-                mirror: core::ptr::null(),
-            })),
+            desc_base,
+            inner,
             _tail: [0; TABLE_TAIL],
         })
     }
@@ -301,10 +386,11 @@ impl SlabTable {
     /// `mirror` must stay valid for as long as this table is used.
     pub unsafe fn mirror_watermark(&self, mirror: *const AtomicUsize) {
         let mut g = self.inner.lock();
-        let wm = self.committed_slabs.load(Ordering::Relaxed);
+        let wm = self.watermark(Ordering::Relaxed);
         // SAFETY: guaranteed by the caller.
         unsafe { (*mirror).store(wm, Ordering::Release) };
-        g.mirror = mirror;
+        let gi = &mut *g;
+        gi.mirror = mirror;
     }
 
     /// Start of the class bitmap (for `heap::ClassLine`).
@@ -359,7 +445,17 @@ impl SlabTable {
     /// descriptors, bits and owner words exist (see the field).
     #[inline]
     pub fn committed_slabs(&self) -> usize {
-        self.committed_slabs.load(Ordering::Acquire)
+        self.watermark(Ordering::Acquire)
+    }
+
+    /// `committed_slabs.load(order)`: the hand-out watermark, the one load
+    /// of it outside [`take_group`]'s check, which reads it under the
+    /// commit lock.
+    ///
+    /// [`take_group`]: SlabTable::take_group
+    #[inline(always)]
+    fn watermark(&self, order: Ordering) -> usize {
+        self.committed_slabs.load(order)
     }
 
     /// Guard slabs committed so far.
@@ -392,14 +488,14 @@ impl SlabTable {
     /// smaller watermark (`None`, and the slow path repeats the check with
     /// acquire) or the tables' initial zero words (a clear bit); it can
     /// never see a watermark above what has been handed out, so the pages
-    /// are always mapped. [`is_set_unchecked`] and [`owner_unchecked`]
+    /// are always mapped. [`is_set_unchecked`] and [`owner_at`]
     /// rely on the same argument.
     ///
     /// [`is_set_unchecked`]: SlabTable::is_set_unchecked
-    /// [`owner_unchecked`]: SlabTable::owner_unchecked
+    /// [`owner_at`]: SlabTable::owner_at
     #[inline(always)]
     pub fn desc_if_committed(&self, slab: usize) -> Option<&SlabDesc> {
-        if slab >= self.committed_slabs.load(Ordering::Relaxed) {
+        if slab >= self.watermark(Ordering::Relaxed) {
             return None;
         }
         // SAFETY: `slab` is below a value the watermark actually held.
@@ -413,7 +509,7 @@ impl SlabTable {
     /// [`desc_if_committed`]: SlabTable::desc_if_committed
     #[inline(always)]
     pub fn is_handed_out(&self, slab: usize) -> bool {
-        slab < self.committed_slabs.load(Ordering::Relaxed)
+        slab < self.watermark(Ordering::Relaxed)
     }
 
     /// Descriptor of `slab` without a watermark check.
@@ -469,22 +565,25 @@ impl SlabTable {
     #[inline(always)]
     pub unsafe fn is_set_unchecked(&self, slab: usize, slot: usize) -> bool {
         let bit = slab * self.slab_bits as usize + slot;
-        #[allow(unused_mut)]
-        let mut index = bit / 64;
-        // On aarch64 the word index goes through an empty `asm!`: left
-        // alone, LLVM rewrites `(bit >> 6) << 3` as `(bit >> 3) & !7`, a
-        // shift and a mask ahead of the load on `free`'s dependent chain,
-        // where `bit >> 6` and a scaled `ldr` is one instruction. x86_64
-        // already scales the index in the load.
-        #[cfg(target_arch = "aarch64")]
-        // SAFETY: an empty template; `index` comes out unchanged.
-        unsafe {
-            core::arch::asm!("/* {0} */", inout(reg) index, options(pure, nomem, nostack, preserves_flags))
-        };
-        let word = (self.bits_base + index * 8) as *const AtomicU64;
+        let index = word_index(bit / 64);
         // SAFETY: the caller guarantees the word is inside the handed-out
         // part of the bitmap.
-        (unsafe { (*word).load(Ordering::Relaxed) } >> (bit % 64)) & 1 == 1
+        let x = unsafe { self.bit_word_held(self.bits_base, index) };
+        (x >> (bit % 64)) & 1 == 1
+    }
+
+    /// A relaxed load of word `index` of the class bitmap that starts at
+    /// `bits_base` (this table's): the word [`is_set_unchecked`] tests.
+    ///
+    /// # Safety
+    /// The word is inside the handed-out part of the bitmap.
+    ///
+    /// [`is_set_unchecked`]: SlabTable::is_set_unchecked
+    #[inline(always)]
+    unsafe fn bit_word_held(&self, bits_base: usize, index: usize) -> u64 {
+        let word = (bits_base + index * 8) as *const AtomicU64;
+        // SAFETY: guaranteed by the caller.
+        unsafe { (*word).load(Ordering::Relaxed) }
     }
 
     /// Whether `slot` of `slab` is marked allocated (or cached); `false`
@@ -496,18 +595,21 @@ impl SlabTable {
         self.is_handed_out(slab) && unsafe { self.is_set_unchecked(slab, slot) }
     }
 
-    /// The arena that owns `slab`'s group, without a watermark check.
+    /// The arena that owns `slab`'s group, without a watermark check:
+    /// one relaxed load of its owner word ([`load_owner`]).
     ///
     /// # Safety
     /// `slab` must have been handed out ([`is_handed_out`]).
     ///
     /// [`is_handed_out`]: SlabTable::is_handed_out
     #[inline(always)]
-    pub unsafe fn owner_unchecked(&self, slab: usize) -> u16 {
+    unsafe fn owner_at(&self, slab: usize) -> u16 {
+        // `owners_base` before the shift: in this order the `free` fast
+        // path's owner test schedules its loads as the plain code does.
         let word = (self.owners_base + (slab >> self.lg_group) * 2) as *const AtomicU16;
         // SAFETY: the owner word of a handed-out group was committed and
         // written before the watermark moved.
-        unsafe { (*word).load(Ordering::Relaxed) }
+        unsafe { load_owner(word) }
     }
 
     /// The arena that owns `slab`. Aborts for a slab that was never handed
@@ -518,7 +620,7 @@ impl SlabTable {
             never_committed(self.class as usize, slab);
         }
         // SAFETY: `slab` is below the acquire-loaded watermark.
-        unsafe { self.owner_unchecked(slab) }
+        unsafe { self.owner_at(slab) }
     }
 
     #[inline]
@@ -554,7 +656,7 @@ impl SlabTable {
     pub fn check_located(&self, slab: usize, slot: usize, p: usize) -> u16 {
         self.check_live(slab, slot, p);
         // SAFETY: `check_live` returned, so `slab` is below the watermark.
-        unsafe { self.owner_unchecked(slab) }
+        unsafe { self.owner_at(slab) }
     }
 
     /// The bit test of [`check_located`], without the owner: the exact
@@ -606,20 +708,24 @@ impl SlabTable {
     /// Hand the next group of slabs to `arena` (design section 4):
     /// commit their descriptors, bitmap words and owner word, initialise
     /// the descriptors (`Fresh`, owned by `arena`; guard slabs stay zero)
-    /// and clear their bits, then publish the watermark. `ensure_sets` is
-    /// called under the commit lock with the group's last slab number
-    /// before anything changes, so the arena can commit the set words the
-    /// group needs; if it fails nothing has happened. Returns the group's
-    /// slab range, `None` when the region or the metadata region is
-    /// exhausted. The slabs themselves are committed by the arena as its
-    /// cursor reaches them, a run at a time ([`commit_run`]).
+    /// and clear their bits, then publish the watermark. The set words of
+    /// `sets`, the value behind `arena`'s class lock (which the caller
+    /// holds), are committed under the commit lock up to the group's last
+    /// slab, in `sets_page` units, before anything changes; if that fails
+    /// nothing has happened. Returns the group's slab range, `None` when
+    /// the region or the metadata region is exhausted. The slabs
+    /// themselves are committed by the arena as its cursor reaches them, a
+    /// run at a time ([`commit_run`]).
     ///
     /// [`commit_run`]: SlabTable::commit_run
+    // Verus needs the explicit reborrow and a loop with an invariant.
+    #[allow(clippy::explicit_auto_deref, clippy::while_let_loop)]
     pub(super) fn take_group(
         &self,
         meta: &Meta,
         arena: u16,
-        mut ensure_sets: impl FnMut(usize) -> Result<(), Errno>,
+        sets: &mut Inner,
+        sets_page: usize,
     ) -> Option<(usize, usize)> {
         let cls = self.class();
         let page = 1usize << self.lg_page;
@@ -630,11 +736,7 @@ impl SlabTable {
         if s >= self.nslabs {
             return None;
         }
-        debug_assert_eq!(
-            s & ((1 << self.lg_group) - 1),
-            0,
-            "take_group: the watermark is group-aligned"
-        );
+        watermark_aligned(s, self.lg_group);
         let (_, end) = self.group_range(s >> self.lg_group);
         if purge::check_zero() && s != self.committed_slabs.load(Ordering::Relaxed) {
             panic!(
@@ -651,17 +753,24 @@ impl SlabTable {
         g.owners
             .ensure(meta, page, stagger + ((end - 1) >> self.lg_group) * 2 + 2)
             .ok()?;
-        ensure_sets(end - 1).ok()?;
+        sets.partial.ensure(meta, sets_page, end - 1).ok()?;
+        sets.empty.ensure(meta, sets_page, end - 1).ok()?;
+        sets.purged.ensure(meta, sets_page, end - 1).ok()?;
         // The owner word and the descriptors' arena field record the same
         // fact (design section 4) and are written together only here, so
         // a group about to be handed out must show them agreeing: both
         // zero for never-touched memory. A disagreement is a wild write
         // into one of the two arrays and aborts before the group is used.
         // SAFETY: the owner page for the group was committed above.
-        let owner_word =
-            unsafe { &*((self.owners_base + (s >> self.lg_group) * 2) as *const AtomicU16) };
-        let previous = owner_word.load(Ordering::Relaxed);
-        for slab in s..end {
+        let owner_word = unsafe { self.owner_word(s >> self.lg_group) };
+        // SAFETY: as above.
+        let previous = unsafe { (*owner_word).load(Ordering::Relaxed) };
+        let mut slabs = s..end;
+        loop {
+            let slab = match slabs.next() {
+                Some(slab) => slab,
+                None => break,
+            };
             if self.is_guard_slab(slab) {
                 continue;
             }
@@ -671,7 +780,13 @@ impl SlabTable {
                 owner_mismatch(class, s >> self.lg_group, slab, previous, recorded);
             }
         }
-        for slab in s..end {
+        let gi = &mut *g;
+        let mut slabs = s..end;
+        loop {
+            let slab = match slabs.next() {
+                Some(slab) => slab,
+                None => break,
+            };
             if self.is_guard_slab(slab) {
                 continue;
             }
@@ -684,7 +799,7 @@ impl SlabTable {
                     if sh != 0 || d.live() != 0 || st != 0 {
                         panic!(
                             "check_zero: class {class}: take_group re-hands slab {slab} (group {s}..{end}, arena {arena}): descriptor at {:#x} has state {st} shadow {sh} live {} arena {} dirty_at {}",
-                            d as *const SlabDesc as usize,
+                            super::verify::desc_ptr_addr(d),
                             d.live(),
                             d.arena(),
                             d.dirty_at()
@@ -695,13 +810,14 @@ impl SlabTable {
                 self.bits_unchecked(slab).init(cls.nslots());
             }
         }
-        owner_word.store(arena, Ordering::Relaxed);
-        g.next_slab = end;
+        // SAFETY: the owner page for the group was committed above.
+        unsafe { store_owner(owner_word, arena) };
+        gi.next_slab = end;
         self.committed_slabs.store(end, Ordering::Release);
-        if !g.mirror.is_null() {
+        if !gi.mirror.is_null() {
             // SAFETY: `mirror_watermark`'s caller keeps the copy alive as
             // long as the table.
-            unsafe { (*g.mirror).store(end, Ordering::Release) };
+            unsafe { (*gi.mirror).store(end, Ordering::Release) };
         }
         // `thp:auto` (design 7, 17; `thp.rs`): the group's range, still
         // reserved `PROT_NONE`, is advised once here, so the slabs the
@@ -712,6 +828,17 @@ impl SlabTable {
             crate::thp::advise_class(self.slab_addr(s), (end - s) << cls.lg_slab, true);
         }
         Some((s, end))
+    }
+
+    /// The owner word of hand-out group `group`.
+    ///
+    /// # Safety
+    /// `group` is a group of the region; the word is committed only once
+    /// the group is handed out, or under the commit lock in
+    /// [`take_group`](SlabTable::take_group).
+    #[inline]
+    pub(super) unsafe fn owner_word(&self, group: usize) -> *const AtomicU16 {
+        (self.owners_base + group * 2) as *const AtomicU16
     }
 
     /// The slab range of `group`: `group << lg_group` and the `group`
@@ -906,7 +1033,7 @@ impl SlabTable {
             return;
         }
         if decommit(addr, len).is_err() {
-            panic!("class {}: cannot re-protect guard slab {s}", self.class);
+            guard_unprotectable(&self.class, &s);
         }
     }
 }
