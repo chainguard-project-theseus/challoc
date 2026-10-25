@@ -1,5 +1,5 @@
 # Verus: every proof holds, the verified share of challoc stays at or
-# above verus/FLOOR, and verus/SEAMS.md is current. All three are `make
+# above verus/FLOOR, and verus/ledger/ is current. All three are `make
 # verus` (verus/README.md): `sh verus/seams.sh --check`, then `cargo
 # verus verify`, then verus/count --floor, which also compares
 # verus/FLOOR with the base revision's copy so that lowering it needs a
@@ -21,7 +21,7 @@ environment:
 checks:
   verus:
     description: >-
-      make verus: the seam ledger check (verus/SEAMS.md), cargo verus
+      make verus: the seam ledger check (verus/ledger/), cargo verus
       verify over challoc, then verus/count's tests and its coverage floor
       (verus/FLOOR, against the pull request's base).
     trigger: [presubmit]

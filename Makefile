@@ -248,9 +248,10 @@ check-needed: image ## DT_NEEDED must name the allocator library (tests/as-neede
 # Verus release and the rust toolchain verus/README.md names, which the
 # verus check gets from the `verus` package (.chainguard/ci/verus.yaml).
 # VERUS_BASE=<rev> also fails a verus/FLOOR figure lowered below that
-# revision's without a reason (verus/README.md). verus/SEAMS.md must match
-# what `sh verus/seams.sh --write` generates from the tree.
-verus: ## the seam ledger, the Verus proofs, then the coverage floor (verus/README.md, verus/FLOOR, verus/SEAMS.md; VERUS_BASE=<rev>)
+# revision's without a reason (verus/README.md). The ledger under
+# verus/ledger/ must match what `sh verus/seams.sh --write` generates
+# from the tree.
+verus: ## the seam ledger, the Verus proofs, then the coverage floor (verus/README.md, verus/FLOOR, verus/ledger; VERUS_BASE=<rev>)
 	sh verus/seams.sh --check
 	cargo verus verify --locked
 	cd verus/count && cargo run --locked --release -- --floor ../FLOOR $(if $(VERUS_BASE),--base-rev $(VERUS_BASE)) ../..
