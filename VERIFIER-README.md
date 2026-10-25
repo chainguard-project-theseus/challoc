@@ -92,7 +92,7 @@ The remaining trusted set includes slice constructors (31 lines), `Lock::cell_re
 
 ## How to re-check
 
-Run these commands on Linux with Verus `0.2026.09.20.aef82ed` and `vstd =0.0.0-2026-09-20-0158`, as specified in [`verus/README.md`](verus/README.md#running). Each clean Verus run takes about four minutes on eight cores; with the same source and tool versions, its resource-count result is deterministic.
+Run these commands on Linux with Verus `0.2026.10.18.7d82994` and `vstd =0.0.0-2026-10-18-0147`, as specified in [`verus/README.md`](verus/README.md#running). Each clean Verus run takes about four minutes on eight cores; with the same source and tool versions, its resource-count result is deterministic.
 
 ```sh
 cargo verus verify

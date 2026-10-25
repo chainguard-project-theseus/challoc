@@ -11,7 +11,7 @@ ordinary `cargo build`s, so the shipped library is unchanged.
 ## Running
 
 ```
-# Verus 0.2026.09.20.aef82ed matches vstd =0.0.0-2026-09-20-0158 in Cargo.toml.
+# Verus 0.2026.10.18.7d82994 matches vstd =0.0.0-2026-10-18-0147 in Cargo.toml.
 cargo verus verify                       # quantum16
 cargo verus verify --no-default-features --features quantum8
 cargo verus verify --target aarch64-unknown-linux-gnu

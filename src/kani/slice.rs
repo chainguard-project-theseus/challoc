@@ -61,7 +61,7 @@ fn slice_swap() {
     assert!(same(&a, &want));
 }
 
-/// S375 `<[T]>::reverse`: `old.reverse()`, element `k` is `old[n - 1 - k]`.
+/// vstd's specification of `<[T]>::reverse` (no longer a seam): `old.reverse()`, element `k` is `old[n - 1 - k]`.
 #[kani::proof]
 #[kani::unwind(8)]
 fn slice_reverse() {
@@ -74,7 +74,7 @@ fn slice_reverse() {
     assert!(same(&a[n..], &old[n..]));
 }
 
-/// S383 `<[T]>::swap_with_slice`: under equal lengths, the contents trade
+/// S382 `<[T]>::swap_with_slice`: under equal lengths, the contents trade
 /// places.
 #[kani::proof]
 #[kani::unwind(8)]
@@ -96,7 +96,7 @@ fn any_long_words() -> ([u64; SORTED_MAX], usize) {
     (a, n)
 }
 
-/// S376 `<[T]>::is_sorted`: no `requires`, no `ensures`; it returns
+/// S375 `<[T]>::is_sorted`: no `requires`, no `ensures`; it returns
 /// without a panic or undefined behaviour (and, here, says whether each
 /// element is at most the next), for every slice up to `SORTED_MAX`.
 #[kani::proof]
@@ -107,7 +107,7 @@ fn slice_is_sorted() {
     assert_eq!(r, (1..n).all(|k| a[k - 1] <= a[k]));
 }
 
-/// S377 `<[T]>::is_sorted_by_key::<'a, F, K>`: as `is_sorted`, for a key `x ^ c`
+/// S376 `<[T]>::is_sorted_by_key::<'a, F, K>`: as `is_sorted`, for a key `x ^ c`
 /// with an arbitrary `c`.
 #[kani::proof]
 #[kani::unwind(8)]
@@ -144,7 +144,7 @@ fn slice_get_unchecked() {
     assert!(core::ptr::eq(hi, &s[k..]));
 }
 
-/// S382 `<[T]>::get_unchecked_mut::<I>`: as `get_unchecked`, and a write
+/// S381 `<[T]>::get_unchecked_mut::<I>`: as `get_unchecked`, and a write
 /// through the result is the write `index_mut` would make.
 #[kani::proof]
 #[kani::unwind(8)]
@@ -213,7 +213,7 @@ fn slice_iter_mut() {
     assert!(same(&a[n..], &old[n..]));
 }
 
-/// S386 `<[T; N] as core::iter::IntoIterator>::into_iter` and S387 its `next`: the
+/// S385 `<[T; N] as core::iter::IntoIterator>::into_iter` and S387 its `next`: the
 /// iterator starts with every element in order, `next` hands out the
 /// front one, and returns `None` (and stays empty) once all are out.
 #[kani::proof]
@@ -234,7 +234,7 @@ fn array_into_iter() {
     assert_eq!(it.next(), None);
 }
 
-/// S395 `<[T]>::as_mut_ptr` and S396 `<[T]>::as_ptr`: no `requires`, no
+/// S394 `<[T]>::as_mut_ptr` and S395 `<[T]>::as_ptr`: no `requires`, no
 /// `ensures`; they return without a panic (the address is the first
 /// element's when there is one).
 #[kani::proof]
@@ -311,7 +311,7 @@ fn quint(k: usize) -> [u64; 5] {
     [k, k + 1, k + 2, k + 3, k + 4]
 }
 
-/// S384 `<[T]>::rotate_left`: under `mid <= len`, `final(s)@ ==
+/// S383 `<[T]>::rotate_left`: under `mid <= len`, `final(s)@ ==
 /// old(s)@.subrange(mid, len) + old(s)@.subrange(0, mid)`. `core` picks
 /// one of three algorithms from `min(mid, len - mid)`, `len` and `T`'s
 /// size (`core/src/slice/rotate.rs`): through a 256-byte stack buffer
@@ -392,7 +392,7 @@ fn sort_ranks_on<const L: usize>() {
     }
 }
 
-/// S380 `<[T]>::sort_unstable`: no `requires`; the length and the
+/// S379 `<[T]>::sort_unstable`: no `requires`; the length and the
 /// multiset are kept (so every element is one of the old ones), for
 /// every slice of up to `SORT_MAX` words.
 #[kani::proof]

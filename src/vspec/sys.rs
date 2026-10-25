@@ -104,15 +104,6 @@ pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_ref ](r
 
 pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_mut ](r: &mut T) -> *mut T;
 
-/// `Option::copied`: the referent, copied.
-pub assume_specification<T: Copy>[ Option::<&T>::copied ](o: Option<&T>) -> (r: Option<T>)
-    ensures
-        r == match o {
-            Some(v) => Some(*v),
-            None => None::<T>,
-        },
-;
-
 // The derived `PartialEq` of these enums compares variants (ghost only:
 // ordinary builds have no `std_specs`).
 

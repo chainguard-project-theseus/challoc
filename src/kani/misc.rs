@@ -74,7 +74,7 @@ fn option_map_or() {
     }
 }
 
-/// S397 `Result::<T, E>::map_or`: `default` for `Err` (and `f` not called),
+/// S396 `Result::<T, E>::map_or`: `default` for `Err` (and `f` not called),
 /// `f(v)` for `Ok(v)`.
 #[kani::proof]
 fn result_map_or() {
@@ -99,7 +99,7 @@ fn result_map_or() {
     }
 }
 
-/// S398 `Option::<T>::is_some_and`: `false` for `None` (and `f` not called),
+/// S397 `Option::<T>::is_some_and`: `false` for `None` (and `f` not called),
 /// `f(v)` for `Some(v)`.
 #[kani::proof]
 fn option_is_some_and() {
@@ -123,7 +123,7 @@ fn option_is_some_and() {
     }
 }
 
-/// S399 `Result::<T, E>::unwrap_or`: the `Ok` value, else `default`.
+/// S398 `Result::<T, E>::unwrap_or`: the `Ok` value, else `default`.
 #[kani::proof]
 fn result_unwrap_or() {
     let res = any_result();
@@ -135,7 +135,7 @@ fn result_unwrap_or() {
     }
 }
 
-/// S407 `Option::<&T>::copied`: `Some(*v)` for `Some(v)`, else `None`.
+/// vstd's specification of `Option::<&T>::copied` (no longer a seam): `Some(*v)` for `Some(v)`, else `None`.
 #[kani::proof]
 fn option_copied() {
     let x: u64 = kani::any();
@@ -248,7 +248,7 @@ fn cstr_as_ptr() {
     assert!(core::ptr::eq(s.as_ptr() as *const u8, &a[0]));
 }
 
-/// S402 `core::str::from_utf8`: no `ensures`; it returns without a panic
+/// S401 `core::str::from_utf8`: no `ensures`; it returns without a panic
 /// for every byte string up to 4 bytes (one UTF-8 sequence's longest).
 #[kani::proof]
 #[kani::unwind(6)]
@@ -261,7 +261,7 @@ fn str_from_utf8() {
     }
 }
 
-/// S404 `<core::fmt::Error as core::default::Default>::default`: no `ensures`; it returns.
+/// S403 `<core::fmt::Error as core::default::Default>::default`: no `ensures`; it returns.
 #[kani::proof]
 fn fmt_error_default() {
     let e = <core::fmt::Error as Default>::default();

@@ -148,7 +148,7 @@ fn cgroup_state_index(s: cgroup::State) -> usize {
     }
 }
 
-/// S408 `PartialEqSpecImpl for sys::cgroup::State`.
+/// S406 `PartialEqSpecImpl for sys::cgroup::State`.
 #[kani::proof]
 fn eq_cgroup_state() {
     let v = [
@@ -164,7 +164,7 @@ fn eq_cgroup_state() {
     check_variants(&v);
 }
 
-/// S409 `PartialEqSpecImpl for sys::Errno`: the derived `==` of the one
+/// S407 `PartialEqSpecImpl for sys::Errno`: the derived `==` of the one
 /// field, for every pair of `i32`s.
 #[kani::proof]
 fn eq_errno() {

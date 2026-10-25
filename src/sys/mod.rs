@@ -812,7 +812,7 @@ mod linux {
             match getrandom(&mut buf[filled..], 0) {
                 Ok(0) => return Err(Errno::EIO),
                 Ok(n) => filled += n,
-                Err(Errno::EINTR) => {}
+                Err(e) if e.0 == Errno::EINTR.0 => {}
                 Err(e) => return Err(e),
             }
         }
@@ -1016,7 +1016,7 @@ mod linux {
             match read(fd, &mut buf[filled..]) {
                 Ok(0) => break,
                 Ok(n) => filled += n,
-                Err(Errno::EINTR) => {}
+                Err(e) if e.0 == Errno::EINTR.0 => {}
                 Err(e) => return Err(e),
             }
         }
@@ -1094,7 +1094,7 @@ mod linux {
             match write(fd, &buf[done..]) {
                 Ok(0) => return,
                 Ok(n) => done += n,
-                Err(Errno::EINTR) => {}
+                Err(e) if e.0 == Errno::EINTR.0 => {}
                 Err(_) => return,
             }
         }

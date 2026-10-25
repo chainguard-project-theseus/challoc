@@ -34,23 +34,41 @@ impl Errno {
 
     /// Short symbolic name for diagnostics. Unknown codes print as a number.
     pub const fn name(self) -> &'static str {
-        match self {
-            Errno::EPERM => "EPERM",
-            Errno::ENOENT => "ENOENT",
-            Errno::EINTR => "EINTR",
-            Errno::EIO => "EIO",
-            Errno::EBADF => "EBADF",
-            Errno::EAGAIN => "EAGAIN",
-            Errno::ENOMEM => "ENOMEM",
-            Errno::EACCES => "EACCES",
-            Errno::EFAULT => "EFAULT",
-            Errno::EBUSY => "EBUSY",
-            Errno::EEXIST => "EEXIST",
-            Errno::EINVAL => "EINVAL",
-            Errno::EROFS => "EROFS",
-            Errno::ENOSYS => "ENOSYS",
-            Errno::ETIMEDOUT => "ETIMEDOUT",
-            _ => "",
+        // An `if` chain over the constants: Verus does not match on a
+        // struct constant in a pattern.
+        let c = self.0;
+        if c == Errno::EPERM.0 {
+            "EPERM"
+        } else if c == Errno::ENOENT.0 {
+            "ENOENT"
+        } else if c == Errno::EINTR.0 {
+            "EINTR"
+        } else if c == Errno::EIO.0 {
+            "EIO"
+        } else if c == Errno::EBADF.0 {
+            "EBADF"
+        } else if c == Errno::EAGAIN.0 {
+            "EAGAIN"
+        } else if c == Errno::ENOMEM.0 {
+            "ENOMEM"
+        } else if c == Errno::EACCES.0 {
+            "EACCES"
+        } else if c == Errno::EFAULT.0 {
+            "EFAULT"
+        } else if c == Errno::EBUSY.0 {
+            "EBUSY"
+        } else if c == Errno::EEXIST.0 {
+            "EEXIST"
+        } else if c == Errno::EINVAL.0 {
+            "EINVAL"
+        } else if c == Errno::EROFS.0 {
+            "EROFS"
+        } else if c == Errno::ENOSYS.0 {
+            "ENOSYS"
+        } else if c == Errno::ETIMEDOUT.0 {
+            "ETIMEDOUT"
+        } else {
+            ""
         }
     }
 }

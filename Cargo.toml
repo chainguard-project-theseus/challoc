@@ -30,7 +30,7 @@ jemalloc-soname = []
 libc = { version = "0.2", default-features = false }
 # Verus specs and proofs (`verus/README.md`). Ghost code is erased from
 # ordinary builds; without default features vstd needs neither std nor alloc.
-vstd = { version = "=0.0.0-2026-09-20-0158", default-features = false }
+vstd = { version = "=0.0.0-2026-10-18-0147", default-features = false }
 
 # Model checking of the atomics protocols (`verus/WEAKMEM.md`):
 # `RUSTFLAGS="--cfg loom" cargo test --release loom_`.

@@ -97,7 +97,7 @@ fn ptr_cast() {
     assert_eq!(q.cast::<u8>() as usize, a);
 }
 
-/// S405 `core::ptr::from_ref` and S406 `core::ptr::from_mut`: no
+/// S404 `core::ptr::from_ref` and S405 `core::ptr::from_mut`: no
 /// `ensures`; they return, the referent's address, for sized and
 /// unsized referents.
 #[kani::proof]
@@ -330,7 +330,7 @@ fn copy_nonoverlapping_on<T: Copy + PartialEq + kani::Arbitrary, const N: usize>
 
 /// S256 `core::ptr::copy_nonoverlapping::<T>`: no `ensures`; under its
 /// `requires` it is defined and returns (and copies what `core`
-/// documents, the effect S416 `axiom_copied_bytes` states on the ghost
+/// documents, the effect S414 `axiom_copied_bytes` states on the ghost
 /// byte state), at a byte and a word, and at a zero-sized type with every
 /// count.
 #[kani::proof]
@@ -344,7 +344,7 @@ fn ptr_copy_nonoverlapping() {
     unsafe { core::ptr::copy_nonoverlapping(zp as *const (), zp, kani::any()) };
 }
 
-/// S424 `write_zero`: under `n == 0 || valid_writes(p, n)` (here: the
+/// S422 `write_zero`: under `n == 0 || valid_writes(p, n)` (here: the
 /// `n` bytes from offset `i` lie in an 8-byte buffer, every `i` and `n`,
 /// or `n == 0` and `p` any pointer), it returns, and afterwards the `n`
 /// bytes at `p` read zero and no other byte changed: the fact its
@@ -368,7 +368,7 @@ fn write_zero() {
     let _ = unsafe { crate::vspec::zero::write_zero(core::ptr::without_provenance_mut(m), 0) };
 }
 
-/// S388 `array_get_unchecked`: under `i < N`, a reference to `a[i]`, for
+/// S387 `array_get_unchecked`: under `i < N`, a reference to `a[i]`, for
 /// every array of 1, 2 or 6 words or of 3 padded pairs and every index
 /// in it.
 #[kani::proof]

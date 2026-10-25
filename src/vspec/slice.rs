@@ -71,16 +71,6 @@ pub assume_specification<T>[ <[T]>::swap ](s: &mut [T], a: usize, b: usize)
 
 verus! {
 
-/// `s.reverse()`.
-pub assume_specification<T>[ <[T]>::reverse ](s: &mut [T])
-    ensures
-        final(s)@ == old(s)@.reverse(),
-;
-
-} // verus!
-
-verus! {
-
 // The ordering operations of the cache flush (`heap::Heap::flush`).
 // Only what callers rely on is stated: the length,
 // the panics' conditions and, for the plain and keyed selections and
