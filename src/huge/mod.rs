@@ -65,12 +65,17 @@ use crate::sys::{
 mod table;
 
 use table::Table;
+use vstd::prelude::verus;
+
+verus! {
 
 /// Guard pages after every run.
 pub const GUARD_PAGES: usize = 1;
 /// Runs with more usable bytes than this are purged as soon as they are
 /// freed (`huge_retain_max`).
 pub const DEFAULT_RETAIN_MAX: usize = 64 << 20;
+
+} // verus!
 
 /// State of an extent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

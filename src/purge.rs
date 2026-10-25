@@ -318,30 +318,47 @@ impl Batch {
     pub fn flush(&mut self, mut settle: impl FnMut(usize, usize, bool)) {
         if self.n != 0 {
             let advice = advice();
-            if advice == Advice::Lazy {
+            if let Advice::Lazy = advice {
                 LAZY_EVER.store(true, Ordering::Relaxed);
             }
             let mut bytes = 0u64;
-            for &(addr, len, piece) in &self.ranges[..self.n] {
+            // The ranges by index and each range's pieces by address
+            // (`for` over a slice and a `step_by` range, spelled out:
+            // Verus does not specify those iterators).
+            let mut i = 0;
+            while i < self.n {
+                let (addr, len, piece) = self.ranges[i];
                 if discard(addr, len, advice) {
                     bytes += len as u64;
                     settle(addr, len, true);
+                    i += 1;
                     continue;
                 }
                 // A range of one piece is not issued twice; when its first
                 // and last pieces are refused as well, neither are the
                 // middle ones (the type's doc).
                 let last = addr + len - piece;
-                let first_done = piece < len && discard(addr, piece, advice);
-                let last_done = piece < len && discard(last, piece, advice);
+                let first_done = if piece < len {
+                    discard(addr, piece, advice)
+                } else {
+                    false
+                };
+                let last_done = if piece < len {
+                    discard(last, piece, advice)
+                } else {
+                    false
+                };
                 let middle = first_done || last_done;
-                for at in (addr..addr + len).step_by(piece) {
+                let mut at = addr;
+                while at < addr + len {
                     let done = if at == addr {
                         first_done
                     } else if at == last {
                         last_done
+                    } else if middle {
+                        discard(at, piece, advice)
                     } else {
-                        middle && discard(at, piece, advice)
+                        false
                     };
                     if done {
                         bytes += piece as u64;
@@ -351,7 +368,9 @@ impl Batch {
                         FAILED_BYTES.fetch_add(piece as u64, Ordering::Relaxed);
                         settle(at, piece, false);
                     }
+                    at += piece;
                 }
+                i += 1;
             }
             if bytes != 0 {
                 let (batches, total) = match advice {
@@ -488,6 +507,10 @@ impl Decayer {
 /// nanoseconds) and return the earliest future deadline, `None` when
 /// nothing is `Empty` or decay is off. Lock-free for a class with nothing
 /// due.
+///
+/// Never inlined, so `Heap::tick` (through `on_tick`) and
+/// `background::main` keep a call here rather than a copy of the loop.
+#[inline(never)]
 pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
     // Design 11: a `memory.events` `high` rise owes one full purge, run
     // before the walks so they see the survivors (none, normally).
@@ -497,15 +520,13 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
     }
     let keep16 = policy.keep16();
     let mut next: Option<u64> = None;
-    let mut fold = |d: Option<u64>| {
-        if let Some(d) = d {
-            next = Some(next.map_or(d, |n| n.min(d)));
+    let count = arena_count(shared);
+    for i in 0..count {
+        if let Some(arena) = shared.arenas.get_existing(i as u16) {
+            next = earliest(next, decay_one(shared, arena, now, keep16));
         }
-    };
-    for arena in shared.arenas.iter() {
-        fold(decay_one(shared, arena, now, keep16));
     }
-    fold(decay_huge(shared, now, keep16));
+    next = earliest(next, decay_huge(shared, now, keep16));
     next
 }
 
@@ -543,14 +564,37 @@ fn decay_huge(shared: &Shared, now: u64, keep16: u32) -> Option<u64> {
     shared.huge.decay_with(now, decay_ns, keep16)
 }
 
+/// The earlier of two optional deadlines; either one when the other is
+/// `None`.
+#[inline(always)]
+fn earliest(next: Option<u64>, d: Option<u64>) -> Option<u64> {
+    match d {
+        Some(d) => Some(next.map_or(d, |n| n.min(d))),
+        None => next,
+    }
+}
+
+/// Arena indices to visit: [`crate::arena::Arenas::count`], which never
+/// exceeds the table (`create` stops at [`MAX_ARENAS`]; the clamp is
+/// redundant and keeps the bound visible to the verifier).
+///
+/// [`MAX_ARENAS`]: crate::arena::MAX_ARENAS
+#[inline]
+fn arena_count(shared: &Shared) -> usize {
+    (shared.arenas.count() as usize).min(crate::arena::MAX_ARENAS)
+}
+
 /// Purge every `Empty` slab of every arena and every huge extent
 /// regardless of age, eagerly (`malloc_trim(0)`, the `high`-rise full
 /// purge: the memory is wanted back now). Returns how many were purged.
 pub fn purge_all(shared: &Shared) -> usize {
     let _explicit = Explicit::enter();
-    let mut n = 0;
-    for arena in shared.arenas.iter() {
-        n += arena.purge_all();
+    let mut n: usize = 0;
+    let count = arena_count(shared);
+    for i in 0..count {
+        if let Some(arena) = shared.arenas.get_existing(i as u16) {
+            n += arena.purge_all();
+        }
     }
     n + shared.huge.purge_empty(u64::MAX)
 }
@@ -598,7 +642,13 @@ fn sample(shared: &Shared, now: u64) {
     if shared.discover_cgroup_if_due(now) {
         return;
     }
-    if shared.cgroup().is_some_and(|cg| cg.sample(now)) {
+    // `shared.cgroup().is_some_and(|cg| cg.sample(now))`, spelled out:
+    // Verus does not specify `Option::is_some_and`.
+    let sampled = match shared.cgroup() {
+        Some(cg) => cg.sample(now),
+        None => false,
+    };
+    if sampled {
         crate::policy::evaluate(shared);
     }
 }
