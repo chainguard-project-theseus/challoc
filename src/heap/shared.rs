@@ -373,7 +373,7 @@ impl ClassLine {
     #[inline(always)]
     unsafe fn owner(&self, slab: usize) -> u16 {
         let word = (self.owners_base + (slab >> self.lg_group) * 2) as *const AtomicU16;
-        // SAFETY: as `SlabTable::owner_unchecked`.
+        // SAFETY: as `SlabTable::owner_at`.
         unsafe { (*word).load(Ordering::Relaxed) }
     }
 }

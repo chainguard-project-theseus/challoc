@@ -2393,27 +2393,39 @@ fn walk_empty_visits_the_set_in_address_order_and_skips_what_the_visitor_takes()
     for s in 0..3 {
         assert_eq!(cs.desc(s).state(), State::Empty, "slab {s}");
     }
+    /// Records each visit.
+    struct Seen(Vec<(usize, u64)>);
+    impl decay::EmptyVisitor for Seen {
+        fn visit(&mut self, _: &ClassState, _: &mut Inner, slab: usize, dirty_at: u64) {
+            self.0.push((slab, dirty_at));
+        }
+    }
+    /// Takes slab 1 out of the set on the visit to slab 0.
+    struct TakesOne(Vec<usize>);
+    impl decay::EmptyVisitor for TakesOne {
+        fn visit(&mut self, _: &ClassState, g: &mut Inner, slab: usize, _: u64) {
+            if slab == 0 {
+                g.empty_take(1);
+            }
+            self.0.push(slab);
+        }
+    }
     let mut g = cs.inner.lock();
-    let mut seen = Vec::new();
-    cs.walk_empty(&mut g, |_, slab, dirty_at| seen.push((slab, dirty_at)));
+    let mut seen = Seen(Vec::new());
+    cs.walk_empty(&mut g, &mut seen);
     assert_eq!(
-        seen,
+        seen.0,
         (0..3)
             .map(|s| (s, cs.desc(s).dirty_at()))
             .collect::<Vec<_>>()
     );
     assert!(
-        seen.iter().all(|&(_, t)| t != 0),
+        seen.0.iter().all(|&(_, t)| t != 0),
         "an Empty slab's stamp is never 0"
     );
-    let mut seen = Vec::new();
-    cs.walk_empty(&mut g, |g: &mut Inner, slab, _| {
-        if slab == 0 {
-            g.empty_take(1);
-        }
-        seen.push(slab);
-    });
-    assert_eq!(seen, vec![0, 2]);
+    let mut seen = TakesOne(Vec::new());
+    cs.walk_empty(&mut g, &mut seen);
+    assert_eq!(seen.0, vec![0, 2]);
     g.empty_add(1);
     drop(g);
     assert_eq!(cs.stats().empty, 3);

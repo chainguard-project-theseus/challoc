@@ -57,11 +57,7 @@ impl ClassState {
         let page = 1usize << table.lg_page;
         loop {
             if g.group_next >= g.group_end {
-                let (start, end) = table.take_group(meta, self.arena, |s| {
-                    g.partial.ensure(meta, page, s)?;
-                    g.empty.ensure(meta, page, s)?;
-                    g.purged.ensure(meta, page, s)
-                })?;
+                let (start, end) = table.take_group(meta, self.arena, g, page)?;
                 g.group_next = start;
                 g.group_end = end;
             }
