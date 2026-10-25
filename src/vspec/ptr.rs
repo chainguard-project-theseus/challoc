@@ -48,4 +48,17 @@ pub proof fn axiom_ptr_add_addr<T>(p: *mut T, count: usize)
 {
 }
 
+/// `<*mut T>::add`, with the safety contract of the `core` documentation:
+/// the byte offset `count * size_of::<T>()` fits in an `isize`, and, when
+/// it is not zero, the whole range from `p` to the result is inside the
+/// allocation `p` points into ([`in_alloc`]).
+pub assume_specification<T>[ <*mut T>::add ](p: *mut T, count: usize) -> (r: *mut T)
+    requires
+        count as int * vstd::layout::size_of::<T>() <= isize::MAX,
+        count as int * vstd::layout::size_of::<T>() == 0 || in_alloc(p, count as int * vstd::layout::size_of::<T>()),
+    ensures
+        r == ptr_add(p, count),
+    opens_invariants none
+;
+
 } // verus!
