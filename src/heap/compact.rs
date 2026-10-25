@@ -255,7 +255,7 @@ impl Heap {
     pub(super) fn fragmented(shared: &Shared, arena: u16, class: usize) -> bool {
         let cs = shared.owner(arena).class(class);
         let (holes, capacity) = cs.holes();
-        holes >= COMPACT_MIN_SLABS * CLASSES[class].compact_slots()
+        holes >= COMPACT_MIN_SLABS * CLASSES.table()[class].compact_slots()
             && holes * COMPACT_MIN_RATIO >= capacity
     }
 

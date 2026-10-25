@@ -132,7 +132,7 @@ fn not_an_allocation(what: &str, p: *mut u8) -> ! {
 /// (`Huge::placeable`).
 fn usable_for(shared: &Shared, size: usize, f: &Flags) -> Option<usize> {
     match class_for(size, f.align()) {
-        Some(c) => Some(CLASSES[c].size()),
+        Some(c) => Some(CLASSES.table()[c].size()),
         None if shared.huge.placeable(size, f.align()) => shared.huge.usable_for(size),
         None => None,
     }
@@ -147,7 +147,7 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags) -> *mut u8 {
     let (p, usable, zeroed) = match class_for(size, align) {
         Some(c) => {
             let (p, z) = mallocx::alloc(shared, c, f.arena, f.tcache);
-            (p, CLASSES[c].size(), z)
+            (p, CLASSES.table()[c].size(), z)
         }
         None => {
             let (p, z) = mallocx::alloc_huge(shared, size, align, f.arena, f.tcache);

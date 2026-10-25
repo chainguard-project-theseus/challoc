@@ -518,7 +518,7 @@ impl Heap {
                 continue;
             }
             let frees = (c.len as u64).wrapping_add(c.allocs).wrapping_sub(c.moved);
-            into.add(CLASSES[class].size() as u64, c.allocs, frees);
+            into.add(CLASSES.table()[class].size() as u64, c.allocs, frees);
         }
     }
 

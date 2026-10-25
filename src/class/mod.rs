@@ -579,7 +579,7 @@ impl ClassState {
 
     #[inline]
     pub fn class(&self) -> &'static Class {
-        &CLASSES[self.class as usize]
+        &CLASSES.table()[self.class as usize]
     }
 
     #[inline]
