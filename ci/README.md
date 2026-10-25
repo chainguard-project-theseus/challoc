@@ -15,7 +15,7 @@ Each script also runs by hand on a Linux host with Docker.
 | `skip-summary.sh LOG MANIFEST` | the `SKIP` lines of a run against `expected-skips/<cell>.txt`: a new skip fails, a vanished one is a notice |
 | `features-assert.sh LOG KEY=V...` | the `features:` line of a run must carry each KEY=V (the privileged cells: `mseal=yes`) |
 | `glibc-max.sh SO MAX` | SO needs no `GLIBC_` version above MAX (2.44) |
-| `shellcheck.sh` | shellcheck (the pinned upstream release, SHA-256 checked) over `ci/*.sh` |
+| `shellcheck.sh` | shellcheck (the pinned upstream release, SHA-256 checked) over `ci/*.sh` and `verus/*.sh` |
 | `extended.sh [TASK]` | one task of the on-request extended checks |
 | `floor.sh CELLS` | `cb launch exp-floor` on GCE cells with the check's `challoc-gce` identity |
 

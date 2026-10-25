@@ -51,7 +51,7 @@ checks:
         cmd: [cargo, test, --release, --locked, --manifest-path, tests/loom/Cargo.toml]
 
   shellcheck:
-    description: shellcheck (pinned upstream release) over ci/*.sh.
+    description: shellcheck (pinned upstream release) over ci/*.sh and verus/*.sh.
     timeout: 5m
     network:
       egress:
