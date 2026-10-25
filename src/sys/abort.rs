@@ -47,26 +47,41 @@ impl Default for Stderr {
 }
 
 impl fmt::Write for Stderr {
-    fn write_str(&mut self, mut s: &str) -> fmt::Result {
-        while !s.is_empty() {
+    /// Copies whole characters: a chunk ends on a character boundary, and a
+    /// character that does not fit in what is left of the buffer goes out
+    /// after a flush, so the abort path never slices inside one. (Over the
+    /// bytes, with an index: Verus does not specify `str::is_char_boundary`
+    /// or `copy_from_slice`.)
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let mut b = s.as_bytes();
+        while !b.is_empty() {
             let room = self.buf.len() - self.len;
             if room == 0 {
                 self.flush();
                 continue;
             }
-            // Cut on a character boundary: slicing `s` inside a multi-byte
-            // character would panic in the middle of an abort.
-            let mut n = s.len().min(room);
-            while !s.is_char_boundary(n) {
+            // Cut on a character boundary: a UTF-8 continuation byte
+            // (`0b10xx_xxxx`) is never the first byte of a character.
+            let mut n = b.len().min(room);
+            while n > 0 && n < b.len() && (b[n] & 0xC0) == 0x80 {
                 n -= 1;
             }
             if n == 0 {
-                self.flush();
-                continue;
+                if self.len > 0 {
+                    self.flush();
+                    continue;
+                }
+                // An empty buffer that cannot hold the first character: only
+                // bytes that are not UTF-8 get here, which a `str` never is.
+                n = b.len().min(room);
             }
-            self.buf[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
+            let mut i = 0;
+            while i < n {
+                self.buf[self.len + i] = b[i];
+                i += 1;
+            }
             self.len += n;
-            s = &s[n..];
+            b = &b[n..];
         }
         Ok(())
     }
@@ -107,7 +122,7 @@ fn die() -> ! {
         raw::syscall4(
             nr::RT_SIGPROCMASK,
             SIG_UNBLOCK as usize,
-            &set as *const u64 as usize,
+            core::ptr::from_ref(&set) as usize,
             0,
             SIGSET_WORDS_BYTES,
         );
@@ -122,7 +137,7 @@ fn die() -> ! {
         raw::syscall4(
             nr::RT_SIGACTION,
             SIGABRT as usize,
-            &dfl as *const KernelSigaction as usize,
+            core::ptr::from_ref(&dfl) as usize,
             0,
             SIGSET_WORDS_BYTES,
         );

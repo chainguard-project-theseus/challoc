@@ -33,7 +33,7 @@ use core::fmt;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
-use super::parse_decimal;
+use super::{bytes_is, find_from, parse_decimal};
 
 /// Longest cgroup directory (mount point plus path) that is tracked. Real
 /// paths are a few hundred bytes (Kubernetes' pod and container scopes);
@@ -71,12 +71,12 @@ pub const LEVELS: usize = 16;
 
 // ---------------------------------------------------------------------------
 // Pure parsing (unit tested against captured contents).
+//
+// The scans are `while` loops over indices, and the comparisons are with
+// `bytes_is` against byte arrays: Verus does not specify the slice
+// iterators and adapters (`split`, `position`, `windows`, `find_map`),
+// nor take byte-string literals or patterns.
 // ---------------------------------------------------------------------------
-
-/// Split `bytes` into lines; a final line without a newline counts.
-fn lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
-    bytes.split(|&b| b == b'\n').filter(|l| !l.is_empty())
-}
 
 /// Leading decimal number of `bytes`, ignoring what follows the digits.
 /// `None` without a digit or on overflow (`sys::parse_decimal`).
@@ -85,35 +85,55 @@ fn parse_u64_prefix(bytes: &[u8]) -> Option<u64> {
 }
 
 /// Strip leading and trailing ASCII whitespace.
-fn trim(mut b: &[u8]) -> &[u8] {
-    while let [first, rest @ ..] = b {
-        if !first.is_ascii_whitespace() {
-            break;
-        }
-        b = rest;
+fn trim(b: &[u8]) -> &[u8] {
+    let mut start = 0;
+    while start < b.len() && b[start].is_ascii_whitespace() {
+        start += 1;
     }
-    while let [rest @ .., last] = b {
-        if !last.is_ascii_whitespace() {
-            break;
-        }
-        b = rest;
+    let mut end = b.len();
+    while end > start && b[end - 1].is_ascii_whitespace() {
+        end -= 1;
     }
-    b
+    &b[start..end]
 }
 
 /// The unified-hierarchy path of one `/proc/self/cgroup` line: `0::/a/b`
 /// gives `/a/b`; inside a cgroup namespace the line is `0::/`. `None` for
 /// any other line (a v1 controller's `N:name:/path`).
 pub fn cgroup_path_from_line(line: &[u8]) -> Option<&[u8]> {
-    let rest = line.strip_prefix(b"0::")?;
-    let rest = trim(rest);
-    (rest.first() == Some(&b'/')).then_some(rest)
+    if line.len() < 3 || line[0] != b'0' || line[1] != b':' || line[2] != b':' {
+        return None;
+    }
+    let rest = trim(&line[3..]);
+    if !rest.is_empty() && rest[0] == b'/' {
+        Some(rest)
+    } else {
+        None
+    }
 }
 
 /// The unified-hierarchy path from the whole of `/proc/self/cgroup`, or
-/// `None` when there is no `0::` line (a cgroup v1 only system).
+/// `None` when there is no `0::` line (a cgroup v1 only system). Every
+/// non-empty line is tried in order; a final line without a newline
+/// counts.
+// One test per step of the line scan, not one collapsed `if`.
+#[allow(clippy::collapsible_if)]
 pub fn cgroup_path(contents: &[u8]) -> Option<&[u8]> {
-    lines(contents).find_map(cgroup_path_from_line)
+    let mut start = 0;
+    while start < contents.len() {
+        let end = find_from(contents, start, b'\n');
+        let line = &contents[start..end];
+        if !line.is_empty() {
+            if let Some(p) = cgroup_path_from_line(line) {
+                return Some(p);
+            }
+        }
+        if end == contents.len() {
+            return None;
+        }
+        start = end + 1;
+    }
+    None
 }
 
 /// The mount point of one `/proc/self/mountinfo` line if it mounts a
@@ -122,30 +142,75 @@ pub fn cgroup_path(contents: &[u8]) -> Option<&[u8]> {
 /// the optional fields vary in number, which is what the ` - ` separator is
 /// for. Octal escapes in the mount point (`\040` for a space) are left as
 /// they are: no cgroup2 mount has one.
+// Verus rejects byte-string literals.
+#[allow(clippy::byte_char_slices)]
 pub fn cgroup2_mount_from_line(line: &[u8]) -> Option<&[u8]> {
-    let sep = line.windows(3).position(|w| w == b" - ")?;
-    let (pre, post) = (&line[..sep], &line[sep + 3..]);
-    let fstype = post.split(|&b| b == b' ').next()?;
-    if fstype != b"cgroup2" {
+    let mut sep = 0;
+    while line.len() - sep >= 3
+        && !(line[sep] == b' ' && line[sep + 1] == b'-' && line[sep + 2] == b' ')
+    {
+        sep += 1;
+    }
+    if line.len() - sep < 3 {
         return None;
     }
-    let mount = pre.split(|&b| b == b' ').nth(4)?;
-    (mount.first() == Some(&b'/')).then_some(mount)
+    let pre = &line[..sep];
+    let post = &line[sep + 3..];
+    let fend = find_from(post, 0, b' ');
+    if !bytes_is(&post[..fend], &[b'c', b'g', b'r', b'o', b'u', b'p', b'2']) {
+        return None;
+    }
+    // Field 4 (from 0) of `pre` split at every space.
+    let mut start = 0;
+    let mut n = 0;
+    while n < 4 {
+        let k = find_from(pre, start, b' ');
+        if k == pre.len() {
+            return None;
+        }
+        start = k + 1;
+        n += 1;
+    }
+    let end = find_from(pre, start, b' ');
+    let mount = &pre[start..end];
+    if !mount.is_empty() && mount[0] == b'/' {
+        Some(mount)
+    } else {
+        None
+    }
 }
 
 /// The first cgroup2 mount point in `/proc/self/mountinfo` contents, or
 /// `None` when there is none (no unified hierarchy mounted).
 #[cfg(test)]
+// One test per step of the line scan, not one collapsed `if`.
+#[allow(clippy::collapsible_if)]
 pub fn cgroup2_mount(contents: &[u8]) -> Option<&[u8]> {
-    lines(contents).find_map(cgroup2_mount_from_line)
+    let mut start = 0;
+    while start < contents.len() {
+        let end = find_from(contents, start, b'\n');
+        let line = &contents[start..end];
+        if !line.is_empty() {
+            if let Some(m) = cgroup2_mount_from_line(line) {
+                return Some(m);
+            }
+        }
+        if end == contents.len() {
+            return None;
+        }
+        start = end + 1;
+    }
+    None
 }
 
 /// `memory.max`, `memory.high` or `memory.current`: a decimal byte count,
 /// or `max` meaning [`UNLIMITED`]. `None` for anything else (an absent
 /// file is the caller's `None` before this is reached).
+// Verus rejects byte-string literals.
+#[allow(clippy::byte_char_slices)]
 pub fn parse_limit(contents: &[u8]) -> Option<u64> {
     let t = trim(contents);
-    if t == b"max" {
+    if bytes_is(t, &[b'm', b'a', b'x']) {
         return Some(UNLIMITED);
     }
     parse_u64_prefix(t)
@@ -172,62 +237,128 @@ pub struct Events {
     pub oom_kill: u64,
 }
 
-pub fn parse_events(contents: &[u8]) -> Events {
-    let mut e = Events::default();
-    for line in lines(contents) {
-        let mut it = line.splitn(2, |&b| b == b' ');
-        let (Some(key), Some(val)) = (it.next(), it.next()) else {
-            continue;
-        };
-        let Some(v) = parse_u64_prefix(trim(val)) else {
-            continue;
-        };
-        match key {
-            b"low" => e.low = v,
-            b"high" => e.high = v,
-            b"max" => e.max = v,
-            b"oom" => e.oom = v,
-            b"oom_kill" => e.oom_kill = v,
-            _ => {}
+/// One `key value` line of `memory.events` applied to `e`: a known key
+/// with a number takes it; anything else leaves `e` as it is.
+// Verus rejects byte-string literals.
+#[allow(clippy::byte_char_slices)]
+fn events_note_line(e: Events, line: &[u8]) -> Events {
+    let mut e = e;
+    let k = find_from(line, 0, b' ');
+    if k < line.len() {
+        let key = &line[..k];
+        if let Some(v) = parse_u64_prefix(trim(&line[k + 1..])) {
+            if bytes_is(key, &[b'l', b'o', b'w']) {
+                e.low = v;
+            } else if bytes_is(key, &[b'h', b'i', b'g', b'h']) {
+                e.high = v;
+            } else if bytes_is(key, &[b'm', b'a', b'x']) {
+                e.max = v;
+            } else if bytes_is(key, &[b'o', b'o', b'm']) {
+                e.oom = v;
+            } else if bytes_is(key, &[b'o', b'o', b'm', b'_', b'k', b'i', b'l', b'l']) {
+                e.oom_kill = v;
+            }
         }
     }
     e
 }
 
-/// Walk from the leaf directory `dir` up to the cgroup2 mount (the first
-/// `mount_len` bytes of `dir`, inclusive), calling `visit` with the
-/// level (0 at the leaf) and its directory.
-pub fn walk_levels<F: FnMut(usize, &[u8])>(dir: &[u8], mount_len: usize, mut visit: F) {
-    let mut end = dir.len();
-    let mut level = 0;
-    loop {
-        visit(level, &dir[..end]);
-        if end <= mount_len {
-            break;
+/// `memory.events` read into [`Events`]: every non-empty line applied in
+/// order, so a key seen twice keeps its last value.
+pub fn parse_events(contents: &[u8]) -> Events {
+    let mut e = Events {
+        low: 0,
+        high: 0,
+        max: 0,
+        oom: 0,
+        oom_kill: 0,
+    };
+    let mut start = 0;
+    while start < contents.len() {
+        let end = find_from(contents, start, b'\n');
+        let line = &contents[start..end];
+        if !line.is_empty() {
+            e = events_note_line(e, line);
         }
-        match dir[mount_len..end].iter().rposition(|&b| b == b'/') {
-            Some(i) => end = mount_len + i,
-            None => break,
+        if end == contents.len() {
+            return e;
         }
-        level += 1;
+        start = end + 1;
+    }
+    e
+}
+
+/// The levels of a walk from the leaf directory `dir` up to the cgroup2
+/// mount (the first `mount_len` bytes of `dir`, inclusive), in turn: each
+/// level (0 at the leaf) and its directory. A cursor rather than a
+/// visitor closure: the samplers' reader is a `&mut` such a closure would
+/// capture, and Verus has no closures that capture by mutable reference.
+struct Levels<'a> {
+    dir: &'a [u8],
+    mount_len: usize,
+    end: usize,
+    level: usize,
+    done: bool,
+}
+
+impl<'a> Levels<'a> {
+    /// The walk over `dir`, from its leaf.
+    fn new(dir: &'a [u8], mount_len: usize) -> Levels<'a> {
+        Levels {
+            dir,
+            mount_len,
+            end: dir.len(),
+            level: 0,
+            done: false,
+        }
+    }
+
+    /// The next level and its directory, `None` once the mount has been
+    /// visited.
+    fn next_level(&mut self) -> Option<(usize, &'a [u8])> {
+        if self.done {
+            return None;
+        }
+        let d = &self.dir[..self.end];
+        let level = self.level;
+        if self.end <= self.mount_len {
+            self.done = true;
+            return Some((level, d));
+        }
+        // The last `/` of `dir[mount_len..end]`, which ends the parent.
+        let mut i = self.end;
+        while i > self.mount_len && self.dir[i - 1] != b'/' {
+            i -= 1;
+        }
+        if i == self.mount_len {
+            self.done = true;
+        } else {
+            self.end = i - 1;
+            self.level += 1;
+        }
+        Some((level, d))
     }
 }
 
-/// The minimum of what `read` yields per level of [`walk_levels`];
+/// The minimum of what `read` yields per level of the walk ([`Levels`]);
 /// `read` gets the level and its directory and answers `None` where the
 /// file is absent. [`UNLIMITED`] when no level has a limit. Pure: the
-/// reader is a closure so the tests feed it captured contents.
+/// reader is a closure so the tests feed it captured contents. The
+/// samplers walk [`Levels`] in loops of their own, since their reader is a
+/// `&mut` a closure would capture.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn walk_min<F: FnMut(usize, &[u8]) -> Option<u64>>(
     dir: &[u8],
     mount_len: usize,
     mut read: F,
 ) -> u64 {
     let mut min = UNLIMITED;
-    walk_levels(dir, mount_len, |level, d| {
+    let mut levels = Levels::new(dir, mount_len);
+    while let Some((level, d)) = levels.next_level() {
         if let Some(v) = read(level, d) {
             min = min.min(v);
         }
-    });
+    }
     min
 }
 
@@ -237,11 +368,17 @@ pub fn walk_min<F: FnMut(usize, &[u8]) -> Option<u64>>(
 /// length and the mount's length within it, or `None` when it would not
 /// fit in `out` less [`FILE_ROOM`].
 pub fn join_dir(out: &mut [u8], mount: &[u8], path: &[u8]) -> Option<(usize, usize)> {
-    let mount = mount.strip_suffix(b"/").unwrap_or(mount);
-    let path = if path == b"/" {
-        &b""[..]
+    let mount = if !mount.is_empty() && mount[mount.len() - 1] == b'/' {
+        &mount[..mount.len() - 1]
     } else {
-        path.strip_suffix(b"/").unwrap_or(path)
+        mount
+    };
+    let path = if path.len() == 1 && path[0] == b'/' {
+        &path[..0]
+    } else if !path.is_empty() && path[path.len() - 1] == b'/' {
+        &path[..path.len() - 1]
+    } else {
+        path
     };
     let len = mount.len() + path.len();
     if len + FILE_ROOM > out.len() {
@@ -254,10 +391,11 @@ pub fn join_dir(out: &mut [u8], mount: &[u8], path: &[u8]) -> Option<(usize, usi
 
 /// Feed `buf`-sized chunks from `read` to `on_line` one complete line at a
 /// time (without the newline), carrying a partial line across chunks;
-/// stops early when `on_line` returns `true`. A line longer than `buf` is
-/// dropped. `read` returns the bytes it filled, 0 at end of file, or
+/// stops early when `on_line` returns `true`, and returns where that line
+/// is in `buf` (`None` when no line was taken). A line longer than `buf`
+/// is dropped. `read` returns the bytes it filled, 0 at end of file, or
 /// `None` on error (which ends the scan).
-pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F)
+pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> Option<(usize, usize)>
 where
     R: FnMut(&mut [u8]) -> Option<usize>,
     F: FnMut(&[u8]) -> bool,
@@ -271,13 +409,18 @@ where
         };
         len += n;
         let mut start = 0;
-        while let Some(i) = buf[start..len].iter().position(|&b| b == b'\n') {
-            let line = &buf[start..start + i];
-            start += i + 1;
+        loop {
+            let i = find_from(&buf[..len], start, b'\n');
+            if i == len {
+                break;
+            }
+            let line = &buf[start..i];
+            let lo = start;
+            start = i + 1;
             if dropping {
                 dropping = false;
             } else if on_line(line) {
-                return;
+                return Some((lo, i));
             }
         }
         if start == 0 && len == buf.len() {
@@ -289,9 +432,10 @@ where
             len -= start;
         }
     }
-    if len > 0 && !dropping {
-        on_line(&buf[..len]);
+    if len > 0 && !dropping && on_line(&buf[..len]) {
+        return Some((0, len));
     }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -374,8 +518,45 @@ impl Cgroup {
             limit: AtomicU64::new(UNLIMITED),
             high: AtomicU64::new(UNLIMITED),
             current: AtomicU64::new(0),
-            level_limit: [const { AtomicU64::new(UNLIMITED) }; LEVELS],
-            level_current: [const { AtomicU64::new(0) }; LEVELS],
+            // `[const { AtomicU64::new(UNLIMITED) }; LEVELS]` and
+            // `[const { AtomicU64::new(0) }; LEVELS]`, spelled out: Verus has
+            // no array-fill expression of a type that is not `Copy`.
+            level_limit: [
+                AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED),
+                AtomicU64::new(UNLIMITED),
+            ],
+            level_current: [
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+            ],
             current_stale: AtomicBool::new(false),
             sampled_at: AtomicU64::new(0),
             limits_at: AtomicU64::new(0),
@@ -513,40 +694,64 @@ impl Cgroup {
     }
 }
 
+/// A path shown as text, one `?` per byte that is not printable ASCII, for
+/// the `cgroup:` line. (This type, [`unsafe_char`] and [`Limit`] are items
+/// of the module rather than of `Cgroup::fmt`'s body, where Verus does
+/// not see them.)
+struct PathBytes<'a>(&'a [u8]);
+
+impl fmt::Display for PathBytes<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for &b in self.0 {
+            f.write_str(if b == b' ' || b.is_ascii_graphic() {
+                unsafe_char(b)
+            } else {
+                "?"
+            })?;
+        }
+        Ok(())
+    }
+}
+
+/// The printable ASCII bytes, `' '..='~'`, in order. Computed rather than
+/// written as a byte-string literal, whose bytes Verus does not see.
+const fn printable_ascii() -> [u8; 95] {
+    let mut t = [0u8; 95];
+    let mut i = 0;
+    while i < 95 {
+        t[i] = 0x20 + i as u8;
+        i += 1;
+    }
+    t
+}
+
+/// [`printable_ascii`]'s table, for [`unsafe_char`].
+const PRINTABLE: [u8; 95] = printable_ascii();
+
+/// One printable ASCII byte as a `&'static str`.
+fn unsafe_char(b: u8) -> &'static str {
+    let table: &'static [u8; 95] = &PRINTABLE;
+    let i = (b - b' ') as usize;
+    // SAFETY: `PRINTABLE` is ASCII, so every one-byte window is UTF-8.
+    unsafe { core::str::from_utf8_unchecked(&table[i..i + 1]) }
+}
+
+/// A limit, `max` when unlimited, for the `cgroup:` line.
+struct Limit(u64);
+
+impl fmt::Display for Limit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0 == UNLIMITED {
+            f.write_str("max")
+        } else {
+            write!(f, "{}", self.0)
+        }
+    }
+}
+
 impl fmt::Display for Cgroup {
     /// The `cgroup:` line of `malloc_stats_print`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        struct Bytes<'a>(&'a [u8]);
-        impl fmt::Display for Bytes<'_> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                for &b in self.0 {
-                    f.write_str(if b == b' ' || b.is_ascii_graphic() {
-                        unsafe_char(b)
-                    } else {
-                        "?"
-                    })?;
-                }
-                Ok(())
-            }
-        }
-        /// One printable ASCII byte as a `&'static str`.
-        fn unsafe_char(b: u8) -> &'static str {
-            const TABLE: &[u8; 95] =
-                b" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
-            let i = (b - b' ') as usize;
-            // SAFETY: `TABLE` is ASCII, so every one-byte window is UTF-8.
-            unsafe { core::str::from_utf8_unchecked(&TABLE[i..i + 1]) }
-        }
-        struct Limit(u64);
-        impl fmt::Display for Limit {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                if self.0 == UNLIMITED {
-                    f.write_str("max")
-                } else {
-                    write!(f, "{}", self.0)
-                }
-            }
-        }
         match self.state {
             State::Disabled => return f.write_str("cgroup: not tracked (cgroup:false)"),
             State::NoUnifiedPath => {
@@ -561,9 +766,9 @@ impl fmt::Display for Cgroup {
         write!(
             f,
             "cgroup: {} (mount {}, path {}) limit {} high {} current {}{} events high {} (+{}) max {} (+{})",
-            Bytes(self.dir()),
-            Bytes(self.mount()),
-            Bytes(self.path()),
+            PathBytes(self.dir()),
+            PathBytes(self.mount()),
+            PathBytes(self.path()),
             Limit(self.limit()),
             Limit(self.high()),
             self.current(),
@@ -697,6 +902,19 @@ mod linux {
     use super::*;
     use crate::sys::{self, O_RDONLY, read_small_file};
 
+    /// `/proc/self/cgroup`, NUL-terminated (spelled as bytes so the
+    /// verifier sees the NUL `sys::open` requires).
+    const PROC_SELF_CGROUP: [u8; 18] = [
+        b'/', b'p', b'r', b'o', b'c', b'/', b's', b'e', b'l', b'f', b'/', b'c', b'g', b'r', b'o',
+        b'u', b'p', 0,
+    ];
+
+    /// `/proc/self/mountinfo`, NUL-terminated.
+    const PROC_SELF_MOUNTINFO: [u8; 21] = [
+        b'/', b'p', b'r', b'o', b'c', b'/', b's', b'e', b'l', b'f', b'/', b'm', b'o', b'u', b'n',
+        b't', b'i', b'n', b'f', b'o', 0,
+    ];
+
     /// `dir/name`, NUL-terminated, in `out`.
     fn file_path<'a>(out: &'a mut [u8; PATH_CAP + FILE_ROOM], dir: &[u8], name: &[u8]) -> &'a [u8] {
         let n = dir.len();
@@ -726,6 +944,75 @@ mod linux {
         parse_limit(&buf[..n])
     }
 
+    /// [`read_in`] as the samplers' reader. (A closure over it rather than
+    /// the function item `read_in` itself, whose `call_requires` the
+    /// verifier does not carry into a `&mut` argument.)
+    #[inline(always)]
+    fn reader() -> impl FnMut(&[u8], &[u8], &mut [u8]) -> Option<usize> {
+        |d: &[u8], n: &[u8], b: &mut [u8]| read_in(d, n, b)
+    }
+
+    /// The minimum of the limit file `name` over the levels of the walk of
+    /// `dir`, each level within [`LEVELS`] also lowering its own entry of
+    /// `own`. A loop over [`Levels`] rather than [`walk_min`] with a closure:
+    /// the closure would capture `read` and `own` by mutable reference, which
+    /// Verus does not support.
+    // No let chain (`if level < LEVELS && let Some(v) = v`): Verus does not
+    // take one.
+    #[allow(clippy::collapsible_if)]
+    fn own_min<R: FnMut(&[u8], &[u8], &mut [u8]) -> Option<usize>>(
+        dir: &[u8],
+        mount_len: usize,
+        read: &mut R,
+        own: &mut [u64; LEVELS],
+        name: &[u8],
+    ) -> u64 {
+        let mut min = UNLIMITED;
+        let mut levels = Levels::new(dir, mount_len);
+        while let Some((level, d)) = levels.next_level() {
+            let v = read_limit(read, d, name);
+            if level < LEVELS {
+                if let Some(v) = v {
+                    own[level] = own[level].min(v);
+                }
+            }
+            if let Some(v) = v {
+                min = min.min(v);
+            }
+        }
+        min
+    }
+
+    /// The first cgroup2 mount point in `/proc/self/mountinfo`, copied into
+    /// `mount`, and its length: 0 when there is none or it is longer than
+    /// [`PATH_CAP`]. The scan stops at the first line whose mount fits
+    /// and leaves it in the scan buffer, where it is parsed again for the
+    /// copy (the line closure does not write `mount`: Verus has no
+    /// closures that capture by mutable reference).
+    fn mountinfo_cgroup2(mount: &mut [u8; PATH_CAP]) -> usize {
+        let mut scan = [0u8; SCAN_BUF];
+        let Ok(fd) = sys::open(&PROC_SELF_MOUNTINFO, O_RDONLY) else {
+            return 0;
+        };
+        let found = scan_lines(
+            &mut scan,
+            |b: &mut [u8]| sys::read_full(fd, b).ok(),
+            |line: &[u8]| match cgroup2_mount_from_line(line) {
+                Some(m) => m.len() <= PATH_CAP,
+                None => false,
+            },
+        );
+        let _ = sys::close(fd);
+        let Some((lo, hi)) = found else { return 0 };
+        match cgroup2_mount_from_line(&scan[lo..hi]) {
+            Some(m) if m.len() <= PATH_CAP => {
+                mount[..m.len()].copy_from_slice(m);
+                m.len()
+            }
+            _ => 0,
+        }
+    }
+
     impl Cgroup {
         /// Design 10 step 7: find the cgroup and read its limits once.
         /// With `enabled == false` (`cgroup:false`) nothing is opened.
@@ -735,7 +1022,7 @@ mod linux {
             }
             let mut cg = Cgroup::untracked(State::NoUnifiedPath);
             let mut pathbuf = [0u8; FILE_BUF];
-            let Some(n) = read_small_file(b"/proc/self/cgroup\0", &mut pathbuf) else {
+            let Some(n) = read_small_file(&PROC_SELF_CGROUP, &mut pathbuf) else {
                 return cg;
             };
             let Some(path) = cgroup_path(&pathbuf[..n]) else {
@@ -743,23 +1030,7 @@ mod linux {
             };
 
             let mut mount = [0u8; PATH_CAP];
-            let mut mount_len = 0usize;
-            let mut scan = [0u8; SCAN_BUF];
-            if let Ok(fd) = sys::open(b"/proc/self/mountinfo\0", O_RDONLY) {
-                scan_lines(
-                    &mut scan,
-                    |b| sys::read_full(fd, b).ok(),
-                    |line| match cgroup2_mount_from_line(line) {
-                        Some(m) if m.len() <= PATH_CAP => {
-                            mount[..m.len()].copy_from_slice(m);
-                            mount_len = m.len();
-                            true
-                        }
-                        _ => false,
-                    },
-                );
-                let _ = sys::close(fd);
-            }
+            let mount_len = mountinfo_cgroup2(&mut mount);
             if mount_len == 0 {
                 cg.state = State::NoMount;
                 return cg;
@@ -784,11 +1055,11 @@ mod linux {
         }
 
         fn walk_limits(&self, now: u64) {
-            self.walk_limits_with(now, &mut read_in);
+            self.walk_limits_with(now, &mut reader());
         }
 
         fn sample_now(&self, now: u64) {
-            self.sample_now_with(now, &mut read_in);
+            self.sample_now_with(now, &mut reader());
         }
 
         /// The effective limits: the minimum of `memory.max` and of
@@ -803,23 +1074,20 @@ mod linux {
             self.limits_at.store(now, Ordering::Relaxed);
             let (dir, mlen) = (self.dir(), self.mount_len as usize);
             let mut own = [UNLIMITED; LEVELS];
-            let mut limit_of = |level: usize, d: &[u8], name: &[u8]| {
-                let v = read_limit(read, d, name);
-                if let (Some(o), Some(v)) = (own.get_mut(level), v) {
-                    *o = (*o).min(v);
-                }
-                v
-            };
             self.limit.store(
-                walk_min(dir, mlen, |l, d| limit_of(l, d, b"memory.max")),
+                own_min(dir, mlen, read, &mut own, b"memory.max"),
                 Ordering::Relaxed,
             );
             self.high.store(
-                walk_min(dir, mlen, |l, d| limit_of(l, d, b"memory.high")),
+                own_min(dir, mlen, read, &mut own, b"memory.high"),
                 Ordering::Relaxed,
             );
-            for (slot, v) in self.level_limit.iter().zip(own) {
-                slot.store(v, Ordering::Relaxed);
+            // `for (slot, v) in self.level_limit.iter().zip(own)`, spelled
+            // out: Verus does not specify `Zip`.
+            let mut i = 0;
+            while i < LEVELS {
+                self.level_limit[i].store(own[i], Ordering::Relaxed);
+                i += 1;
             }
         }
 
@@ -829,6 +1097,8 @@ mod linux {
         /// has passed. `read` as in [`Cgroup::walk_limits_with`].
         /// A failed `memory.current` read keeps the last figure and marks it
         /// stale until a read succeeds.
+        // No let chain in the ancestor walk, as in `own_min`.
+        #[allow(clippy::collapsible_if)]
         pub(super) fn sample_now_with<R: FnMut(&[u8], &[u8], &mut [u8]) -> Option<usize>>(
             &self,
             now: u64,
@@ -846,17 +1116,20 @@ mod linux {
                 }
                 self.current_stale.store(v.is_none(), Ordering::Relaxed);
             }
-            walk_levels(self.dir(), self.mount_len as usize, |level, d| {
-                if level == 0 || level >= LEVELS {
-                    return;
+            // The ancestors, a loop over [`Levels`]: a closure would capture
+            // `read` by mutable reference, which Verus does not support.
+            let dir = self.dir();
+            let mut levels = Levels::new(dir, self.mount_len as usize);
+            while let Some((level, d)) = levels.next_level() {
+                if level != 0
+                    && level < LEVELS
+                    && self.level_limit[level].load(Ordering::Relaxed) != UNLIMITED
+                {
+                    if let Some(v) = read_limit(read, d, b"memory.current") {
+                        self.level_current[level].store(v, Ordering::Relaxed);
+                    }
                 }
-                if self.level_limit[level].load(Ordering::Relaxed) == UNLIMITED {
-                    return;
-                }
-                if let Some(v) = read_limit(read, d, b"memory.current") {
-                    self.level_current[level].store(v, Ordering::Relaxed);
-                }
-            });
+            }
             if self.has_events {
                 let mut buf = [0u8; FILE_BUF];
                 if let Some(n) = read(self.dir(), b"memory.events", &mut buf) {

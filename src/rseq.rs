@@ -69,13 +69,15 @@ impl Probe {
     /// take (`0` without one: `GLIBC_TUNABLES=glibc.pthread.rseq=0` or a
     /// kernel without `CONFIG_RSEQ`; 20 on a kernel that reports no feature
     /// size).
-    pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> {
+    /// (An array rather than an iterator: Verus does not specify
+    /// `array::IntoIter`.)
+    #[inline(always)]
+    pub fn words(&self) -> [(&'static str, Value); 2] {
         let registered = self.present && self.registered && self.size >= BASE_SIZE;
         [
             ("rseq", Value::YesNo(registered)),
             ("rseq_size", Value::Num(u64::from(self.size))),
         ]
-        .into_iter()
     }
 }
 
@@ -88,22 +90,16 @@ pub fn probe() -> Probe {
     // SAFETY: non-null addresses of the loader's `__rseq_offset`
     // (`ptrdiff_t`) and `__rseq_size` (`unsigned int`) globals, read
     // once; `__rseq_flags` likewise when present.
-    let (offset, size) = unsafe { (so.read(), ss.read()) };
+    let (offset, size) = unsafe { (read_global(so), read_global(ss)) };
     let flags = if sf.is_null() {
         0
     } else {
-        unsafe { sf.read() }
+        unsafe { read_global(sf) }
     };
     let registered = size >= (CPU_ID_OFFSET as u32 + 4) && {
         // SAFETY: the area is `size` bytes at the thread pointer plus
         // the offset for every thread, and `cpu_id` is inside it.
-        unsafe {
-            area(offset)
-                .add(CPU_ID_OFFSET)
-                .cast::<u32>()
-                .read_volatile()
-                != CPU_ID_UNINITIALIZED
-        }
+        unsafe { read_cpu_id(area(offset)) != CPU_ID_UNINITIALIZED }
     };
     Probe {
         present: true,
@@ -112,6 +108,28 @@ pub fn probe() -> Probe {
         offset,
         registered,
     }
+}
+
+/// One read of a loader global [`symbols`] found: a raw read, in a
+/// function of its own so that Verus can take it on trust.
+///
+/// # Safety
+/// `p` is the non-null address of a live, aligned `T`.
+#[inline(always)]
+unsafe fn read_global<T: Copy>(p: *const T) -> T {
+    // SAFETY: guaranteed by the caller.
+    unsafe { p.read() }
+}
+
+/// A volatile read of the `cpu_id` field of the rseq area at `area`, in a
+/// function of its own as [`read_global`] is.
+///
+/// # Safety
+/// `area` is this thread's rseq area, at least `CPU_ID_OFFSET + 4` bytes.
+#[inline(always)]
+unsafe fn read_cpu_id(area: *mut u8) -> u32 {
+    // SAFETY: guaranteed by the caller.
+    unsafe { area.add(CPU_ID_OFFSET).cast::<u32>().read_volatile() }
 }
 
 /// Addresses of the weak `__rseq_offset`, `__rseq_size` and `__rseq_flags`
@@ -175,7 +193,7 @@ pub fn thread_pointer() -> usize {
 /// (`Probe::offset`).
 #[inline(always)]
 pub fn area(offset: isize) -> *mut u8 {
-    thread_pointer().wrapping_add_signed(offset) as *mut u8
+    crate::vspec::addr::addr_to_ptr(thread_pointer().wrapping_add_signed(offset))
 }
 
 /// The calling thread's `cpu_id` field (diagnostics and tests).
@@ -212,8 +230,11 @@ mod tests {
     #[test]
     fn rseq_words_follow_size_and_registration() {
         let line = |p: &Probe| -> std::string::String {
-            let v: std::vec::Vec<std::string::String> =
-                p.words().map(|(k, v)| std::format!("{k}={v}")).collect();
+            let v: std::vec::Vec<std::string::String> = p
+                .words()
+                .into_iter()
+                .map(|(k, v)| std::format!("{k}={v}"))
+                .collect();
             v.join(" ")
         };
         for off in [192isize, -192, -256] {

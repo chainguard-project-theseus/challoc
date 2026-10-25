@@ -1,9 +1,13 @@
 //! Specifications of the `core` functions the verified code calls that
-//! vstd does not specify (`verus/README.md`, "What counts as verified").
-//! Each is a seam: Verus takes it on trust, so each states only what the
-//! `core` documentation promises. Verus alone compiles this module.
+//! vstd does not specify (`verus/README.md`, "What counts as verified"),
+//! and trusted wrappers for operations Verus does not model. Each is a
+//! seam (`verus/SEAMS.md`): Verus takes it on trust, so each states only
+//! what the `core` documentation promises. Ordinary builds compile the
+//! wrappers; the specifications are ghost and vanish there.
 
 use vstd::prelude::*;
+
+pub(crate) mod addr;
 
 verus! {
 
