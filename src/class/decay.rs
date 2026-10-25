@@ -17,22 +17,44 @@ pub(super) fn min_nonzero(cur: u64, t: u64) -> u64 {
 /// What a purge walk's flushes settled: slabs made `Purged`, the oldest
 /// `dirty_at` among the survivors (`min_nonzero`), and whether a discard
 /// failed.
-#[derive(Default)]
 struct Tally {
     purged: usize,
     oldest: u64,
     failed: bool,
 }
 
+/// The cut-off step of a decay walk that must purge `need` of the slabs
+/// counted in `counts` (the age histogram, older steps at higher
+/// indices): the oldest step such that it and the older ones hold at
+/// least `need`, and how many of that step may stay.
+fn cut_step(counts: &[u32; STEPS], need: usize) -> (usize, usize) {
+    let mut cut = STEPS;
+    let mut acc = 0usize;
+    while acc < need {
+        cut -= 1;
+        acc += counts[cut] as usize;
+    }
+    (cut, acc - need)
+}
+
+/// A visitor of [`ClassState::walk_empty`]: the state of a walk (a
+/// histogram, a count of slabs purged and their batch) as a struct, so
+/// the walk's writes to it are visible to Verus, which does not model a
+/// closure's writes to its captures.
+pub(super) trait EmptyVisitor {
+    /// Visit `slab`, stamped `dirty_at`, under the class lock (`g`).
+    fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64);
+}
+
 impl ClassState {
     /// Walk this arena's empty set in address order under the class lock
-    /// (`g`): `f(g, slab, dirty_at)` for every slab in it, after the
-    /// check that the slab is what the set says (`Empty`, `live == 0`;
-    /// anything else is a heap inconsistency and aborts). `f` may take
-    /// slabs out of the set (a purge's flush settles the page groups
-    /// behind the walk); one ahead of the walk that it took out would
-    /// not be visited.
-    pub(super) fn walk_empty(&self, g: &mut Inner, mut f: impl FnMut(&mut Inner, usize, u64)) {
+    /// (`g`): `v.visit(self, g, slab, dirty_at)` for every slab in it,
+    /// after the check that the slab is what the set says (`Empty`, `live
+    /// == 0`; anything else is a heap inconsistency and aborts). The
+    /// visitor may take slabs out of the set (a purge's flush settles the
+    /// page groups behind the walk); one ahead of the walk that it took
+    /// out would not be visited.
+    pub(super) fn walk_empty<V: EmptyVisitor>(&self, g: &mut Inner, v: &mut V) {
         let mut next = g.empty.map.lowest_set();
         while let Some(slab) = next {
             let desc = self.desc(slab);
@@ -41,7 +63,7 @@ impl ClassState {
                 "class {}: slab {slab} in the empty set is not empty",
                 self.class
             );
-            f(g, slab, desc.dirty_at());
+            v.visit(self, g, slab, desc.dirty_at());
             next = g.empty.map.lowest_set_from(slab + 1);
         }
     }
@@ -56,23 +78,15 @@ impl ClassState {
     pub fn purge_empty(&self, cutoff: u64) -> usize {
         let spp = self.table().slabs_per_page();
         let mut g = self.inner.lock();
-        let mut t = Tally::default();
-        let mut batch = Batch::new();
-        // Slabs below `pushed` are in a page group already in the batch.
-        let mut pushed = 0;
-        self.walk_empty(&mut g, |g, slab, dirty_at| {
-            if slab < pushed {
-                return;
-            }
-            if dirty_at <= cutoff && (spp == 1 || self.page_group_is_idle(slab, spp)) {
-                pushed = self.push_group(g, slab, spp, &mut batch, &mut t);
-            } else {
-                t.oldest = min_nonzero(t.oldest, dirty_at);
-            }
-        });
-        batch.flush(|addr, len, done| self.settle(&mut g, addr, len, done, &mut t));
-        self.gate.set_oldest_empty(t.oldest);
-        t.purged
+        let mut v = PurgeOlder {
+            cutoff,
+            p: Purger::new(spp),
+        };
+        self.walk_empty(&mut g, &mut v);
+        v.p.batch
+            .flush(|addr, len, done| self.settle(&mut g, addr, len, done, &mut v.p.t));
+        self.gate.set_oldest_empty(v.p.t.oldest);
+        v.p.t.purged
     }
 
     /// Push the whole page group of `slab` (one slab when the slab is at
@@ -105,11 +119,18 @@ impl ClassState {
     /// count among the survivors for `oldest_empty`.
     ///
     /// [`push_group`]: ClassState::push_group
+    // Verus needs a loop with an invariant.
+    #[allow(clippy::while_let_loop)]
     fn settle(&self, g: &mut Inner, addr: usize, len: usize, done: bool, t: &mut Tally) {
         let slab_size = self.class().slab_size();
         let first = (addr - self.slab_addr(0)) / slab_size;
         t.failed |= !done;
-        for s in first..first + len / slab_size {
+        let mut slabs = first..first + len / slab_size;
+        loop {
+            let s = match slabs.next() {
+                Some(s) => s,
+                None => break,
+            };
             let d = self.desc(s);
             if d.state() != State::Empty {
                 continue;
@@ -132,7 +153,7 @@ impl ClassState {
                 .stats
                 .empty
                 .checked_sub(1)
-                .unwrap_or_else(|| slab_count_underflow("empty"));
+                .unwrap_or_else(|| -> usize { slab_count_underflow("empty") });
             g.stats.purged += 1;
             t.purged += 1;
         }
@@ -151,68 +172,45 @@ impl ClassState {
         let spp = self.table().slabs_per_page();
         let mut g = self.inner.lock();
         // First pass: the age histogram of the empty set and its allowance.
-        let mut counts = [0u32; STEPS];
-        let mut total = 0usize;
-        let mut weighted = 0u64;
-        let mut oldest = 0u64;
-        self.walk_empty(&mut g, |_, _, dirty_at| {
-            let step = curve.step(now, dirty_at);
-            counts[step] += 1;
-            total += 1;
-            weighted += Curve::weight(step);
-            oldest = min_nonzero(oldest, dirty_at);
-        });
+        let mut h = Histogram {
+            now,
+            curve,
+            counts: [0u32; STEPS],
+            total: 0,
+            weighted: 0,
+            oldest: 0,
+        };
+        self.walk_empty(&mut g, &mut h);
         // The cgroup policy's retention cap (design 11): this walk's share
         // of the process-wide cap, on top of the curve.
-        let mut allow = Curve::allowance(weighted);
+        let mut allow = Curve::allowance(h.weighted);
         if keep16 < crate::policy::KEEP_ALL {
-            allow = allow.min(crate::policy::mul16(total as u64, keep16) as usize);
+            allow = allow.min(crate::policy::mul16(h.total as u64, keep16) as usize);
         }
-        if total <= allow {
-            self.gate.set_oldest_empty(oldest);
+        if h.total <= allow {
+            self.gate.set_oldest_empty(h.oldest);
             return 0;
         }
         // The cut-off step: every slab in an older step goes and all but
         // the first `keep` of this one.
-        let need = total - allow;
-        let mut cut = STEPS;
-        let mut acc = 0usize;
-        while acc < need {
-            cut -= 1;
-            acc += counts[cut] as usize;
-        }
-        let mut keep = acc - need;
+        let need = h.total - allow;
+        let (cut, keep) = cut_step(&h.counts, need);
         // Second pass: purge.
-        let mut t = Tally::default();
-        let mut batch = Batch::new();
-        // Slabs below `pushed` are in a page group already in the batch.
-        let mut pushed = 0;
-        self.walk_empty(&mut g, |g, slab, dirty_at| {
-            if slab < pushed {
-                return;
-            }
-            let step = curve.step(now, dirty_at);
-            let purge = step > cut
-                || (step == cut && {
-                    if keep > 0 {
-                        keep -= 1;
-                        false
-                    } else {
-                        true
-                    }
-                });
-            if purge && (spp == 1 || self.page_group_is_idle(slab, spp)) {
-                pushed = self.push_group(g, slab, spp, &mut batch, &mut t);
-            } else {
-                t.oldest = min_nonzero(t.oldest, dirty_at);
-            }
-        });
-        batch.flush(|addr, len, done| self.settle(&mut g, addr, len, done, &mut t));
-        if t.failed {
+        let mut v = PurgeCurve {
+            now,
+            curve,
+            cut,
+            keep,
+            p: Purger::new(spp),
+        };
+        self.walk_empty(&mut g, &mut v);
+        v.p.batch
+            .flush(|addr, len, done| self.settle(&mut g, addr, len, done, &mut v.p.t));
+        if v.p.t.failed {
             self.gate.back_off(now);
         }
-        self.gate.set_oldest_empty(t.oldest);
-        t.purged
+        self.gate.set_oldest_empty(v.p.t.oldest);
+        v.p.t.purged
     }
 
     /// Whether the page group of `slab` (`spp` slabs, `spp > 1`) can be
@@ -229,17 +227,28 @@ impl ClassState {
     /// slabs_per_page == 0`), so every slab here is under one owner word,
     /// and `transfer_group` rewrites that word and every descriptor's
     /// arena in one hold of both class locks.
+    // Verus needs a loop with an invariant.
+    #[allow(clippy::while_let_loop)]
     fn page_group_is_idle(&self, slab: usize, spp: usize) -> bool {
         let first = slab & !(spp - 1);
         let committed = self.table().committed_slabs();
-        (first..first + spp).all(|s| {
+        let mut slabs = first..first + spp;
+        loop {
+            let s = match slabs.next() {
+                Some(s) => s,
+                None => break,
+            };
             if s >= committed {
                 return false;
             }
             let d = self.desc(s);
-            d.arena() == self.arena
-                && matches!(d.state(), State::Fresh | State::Empty | State::Purged)
-        })
+            if !(d.arena() == self.arena
+                && matches!(d.state(), State::Fresh | State::Empty | State::Purged))
+            {
+                return false;
+            }
+        }
+        true
     }
 
     /// `dirty_at` of the oldest `Empty` slab as the decay driver sees it
@@ -269,5 +278,115 @@ impl ClassState {
     /// Bytes of this arena's `Empty` slabs of the class (one lock hold).
     pub fn empty_bytes(&self) -> usize {
         self.inner.lock().stats.empty * self.class().slab_size()
+    }
+}
+
+/// The purge half of both purge walks: the page groups pushed, their
+/// discard batch and the tally.
+struct Purger {
+    /// Slabs per page group.
+    spp: usize,
+    /// Slabs below `pushed` are in a page group already in the batch.
+    pushed: usize,
+    batch: Batch,
+    t: Tally,
+}
+
+impl Purger {
+    #[inline(always)]
+    fn new(spp: usize) -> Purger {
+        Purger {
+            spp,
+            pushed: 0,
+            batch: Batch::new(),
+            t: Tally {
+                purged: 0,
+                oldest: 0,
+                failed: false,
+            },
+        }
+    }
+
+    /// Visit `slab` (stamped `dirty_at`), at or past the page groups
+    /// pushed: push its page group when `purge` holds and the group is
+    /// idle, else keep it and fold its stamp into `oldest`.
+    #[inline(always)]
+    fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64, purge: bool) {
+        let spp = self.spp;
+        if purge && (spp == 1 || cs.page_group_is_idle(slab, spp)) {
+            self.pushed = cs.push_group(g, slab, spp, &mut self.batch, &mut self.t);
+        } else {
+            self.t.oldest = min_nonzero(self.t.oldest, dirty_at);
+        }
+    }
+}
+
+/// `purge_empty`'s visitor: purge every slab stamped at or before
+/// `cutoff`.
+struct PurgeOlder {
+    cutoff: u64,
+    p: Purger,
+}
+
+impl EmptyVisitor for PurgeOlder {
+    #[inline(always)]
+    fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64) {
+        if slab < self.p.pushed {
+            return;
+        }
+        let purge = dirty_at <= self.cutoff;
+        self.p.visit(cs, g, slab, dirty_at, purge);
+    }
+}
+
+/// `purge_curve`'s first pass: the age histogram of the empty set (steps
+/// of `curve` at `now`), its size, its weighted sum and its oldest stamp.
+struct Histogram<'a> {
+    now: u64,
+    curve: &'a Curve,
+    counts: [u32; STEPS],
+    total: usize,
+    weighted: u64,
+    oldest: u64,
+}
+
+impl EmptyVisitor for Histogram<'_> {
+    #[inline(always)]
+    fn visit(&mut self, _: &ClassState, _: &mut Inner, _: usize, dirty_at: u64) {
+        let step = self.curve.step(self.now, dirty_at);
+        self.counts[step] += 1;
+        self.total += 1;
+        self.weighted += Curve::weight(step);
+        self.oldest = min_nonzero(self.oldest, dirty_at);
+    }
+}
+
+/// `purge_curve`'s second pass: purge every slab in a step older than
+/// `cut`, and all but the first `keep` of step `cut`.
+struct PurgeCurve<'a> {
+    now: u64,
+    curve: &'a Curve,
+    cut: usize,
+    keep: usize,
+    p: Purger,
+}
+
+impl EmptyVisitor for PurgeCurve<'_> {
+    #[inline(always)]
+    fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64) {
+        if slab < self.p.pushed {
+            return;
+        }
+        let step = self.curve.step(self.now, dirty_at);
+        let purge = step > self.cut
+            || (step == self.cut && {
+                if self.keep > 0 {
+                    self.keep -= 1;
+                    false
+                } else {
+                    true
+                }
+            });
+        self.p.visit(cs, g, slab, dirty_at, purge);
     }
 }
