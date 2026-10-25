@@ -22,7 +22,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Keep only the lowest `n` set bits of `m`.
 #[inline]
-pub const fn lowest_n_bits(mut m: u64, n: usize) -> u64 {
+pub const fn lowest_n_bits(m: u64, n: usize) -> u64 {
+    // A local rather than a `mut` parameter, which Verus does not take.
+    let mut m = m;
     if n >= 64 {
         return m;
     }
@@ -105,13 +107,26 @@ impl<'a> AtomicBitmap<'a> {
     /// `nbits` (up to the view's `slab_bits`) so they can never be claimed.
     /// `nbits` must be non-zero and fit the view. Atomic on a shared word,
     /// so a neighbouring slab that is already active is not disturbed.
+    // The loop is the spelled-out `for`, not a `while let`.
+    #[allow(clippy::while_let_loop)]
     pub fn init(&self, nbits: usize) {
         assert!(
             nbits > 0 && nbits <= self.nbits(),
             "bitmap: nbits does not match the view"
         );
         if self.mask == !0 {
-            for (i, w) in self.words.iter().enumerate() {
+            // `for (i, w) in self.words.iter().enumerate()`, spelled out
+            // (Verus has no `Enumerate`); the count is taken and bumped as
+            // `Enumerate::next` does.
+            let mut iter = self.words.iter();
+            let mut count: usize = 0;
+            loop {
+                let w = match iter.next() {
+                    Some(w) => w,
+                    None => break,
+                };
+                let i = count;
+                count += 1;
                 let lo = i * 64;
                 let pad = if nbits >= lo + 64 {
                     0
@@ -123,10 +138,11 @@ impl<'a> AtomicBitmap<'a> {
                 w.store(pad, Ordering::Relaxed);
             }
         } else {
+            let w = &self.words[0];
             let pad = self.mask & !(((1u64 << nbits) - 1) << self.shift);
-            self.words[0].fetch_and(!self.mask, Ordering::Relaxed);
+            w.fetch_and(!self.mask, Ordering::Relaxed);
             if pad != 0 {
-                self.words[0].fetch_or(pad, Ordering::Relaxed);
+                w.fetch_or(pad, Ordering::Relaxed);
             }
         }
     }
@@ -188,7 +204,8 @@ impl<'a> AtomicBitmap<'a> {
     pub fn release(&self, i: usize, mask: u64) -> (u64, bool) {
         let m = mask << self.shift;
         assert!(m & !self.mask == 0, "bitmap: release outside the slab");
-        let prev = self.words[i].fetch_and(!m, Ordering::Release);
+        let w = &self.words[i];
+        let prev = w.fetch_and(!m, Ordering::Release);
         (
             (prev & self.mask) >> self.shift,
             prev & self.mask == self.mask,
@@ -207,15 +224,22 @@ impl<'a> AtomicBitmap<'a> {
     /// The slab's bits in word `i` (slab coordinates, padding included).
     #[inline]
     pub fn load(&self, i: usize) -> u64 {
-        (self.words[i].load(Ordering::Relaxed) & self.mask) >> self.shift
+        let v = self.words[i].load(Ordering::Relaxed);
+        (v & self.mask) >> self.shift
     }
 
     /// Set slot bits, padding excluded: the slab's allocated (or cached)
     /// slots for a class with `nslots` real slots.
     pub fn allocated(&self, nslots: usize) -> usize {
-        let set: usize = (0..self.words.len())
-            .map(|w| self.load(w).count_ones() as usize)
-            .sum();
+        // The `map` and `sum` of the word counts, as a loop: Verus does
+        // not specify those adapters.
+        let mut set: usize = 0;
+        let mut w = 0;
+        while w < self.words.len() {
+            let x = self.load(w);
+            set += x.count_ones() as usize;
+            w += 1;
+        }
         let padding = self.nbits() - nslots;
         // Fewer set bits than padding bits means a padding bit was cleared:
         // a release outside the slab's real slots.

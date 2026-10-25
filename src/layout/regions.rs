@@ -162,7 +162,8 @@ impl Regions {
     /// Slabs that fit in a class region.
     #[inline]
     pub fn nslabs(&self, class: usize) -> usize {
-        self.region_len() >> CLASSES[class].lg_slab
+        let table = CLASSES.table();
+        self.region_len() >> table[class].lg_slab
     }
 
     /// Pages in the huge region.
@@ -173,7 +174,9 @@ impl Regions {
 
     #[inline]
     pub fn slab_addr(&self, class: usize, slab: usize) -> usize {
-        self.class_base[class] + (slab << CLASSES[class].lg_slab)
+        let table = CLASSES.table();
+        let lg = table[class].lg_slab;
+        self.class_base[class] + (slab << lg)
     }
 
     #[inline]
@@ -204,28 +207,31 @@ impl Regions {
     pub fn never_committed(&self) -> ([Mapping; MAX_SEALED], usize) {
         let mut out = [Mapping { addr: 0, len: 0 }; MAX_SEALED];
         let mut n = 0;
-        let mut push = |lo: usize, hi: usize| {
-            if hi > lo {
-                out[n] = Mapping {
-                    addr: lo,
-                    len: hi - lo,
-                };
-                n += 1;
-            }
-        };
         let mut start = self.superblock_map.addr;
         for c in 0..NCLASSES {
-            push(start, self.class_base[c]);
+            push_range(&mut out, &mut n, start, self.class_base[c]);
             start = self.class_base[c] + self.region_len();
         }
-        push(start, self.superblock_map.addr + self.superblock_map.len);
-        for (m, base, len) in [
-            (self.huge_map, self.huge_base, self.huge_len),
-            (self.meta_map, self.meta_base, self.meta_len),
-        ] {
-            push(m.addr, base);
-            push(base + len, m.addr + m.len);
-        }
+        push_range(
+            &mut out,
+            &mut n,
+            start,
+            self.superblock_map.addr + self.superblock_map.len,
+        );
+        push_range(&mut out, &mut n, self.huge_map.addr, self.huge_base);
+        push_range(
+            &mut out,
+            &mut n,
+            self.huge_base + self.huge_len,
+            self.huge_map.addr + self.huge_map.len,
+        );
+        push_range(&mut out, &mut n, self.meta_map.addr, self.meta_base);
+        push_range(
+            &mut out,
+            &mut n,
+            self.meta_base + self.meta_len,
+            self.meta_map.addr + self.meta_map.len,
+        );
         (out, n)
     }
 
@@ -328,6 +334,18 @@ impl Regions {
     }
 }
 
+/// Append `lo..hi` to `out[..*n]` when it is not empty.
+#[inline(always)]
+fn push_range(out: &mut [Mapping; MAX_SEALED], n: &mut usize, lo: usize, hi: usize) {
+    if hi > lo {
+        out[*n] = Mapping {
+            addr: lo,
+            len: hi - lo,
+        };
+        *n += 1;
+    }
+}
+
 mod linux {
     use super::{
         LG_HUGE_MIN, LG_HUGE_PREFERRED, LG_MAX_SLAB, LG_META_MIN, LG_META_PREFERRED, LG_REGION_MIN,
@@ -351,6 +369,16 @@ mod linux {
         }
     }
 
+    /// The abort of [`reserve_shrinking`] when even `2^lg_min` bytes
+    /// cannot be reserved.
+    #[cold]
+    #[inline(never)]
+    fn cannot_reserve(what: &str, lg: u32, e: Errno) -> ! {
+        sys::abort_fmt(format_args!(
+            "cannot reserve {what} region of 2^{lg} bytes: {e}"
+        ))
+    }
+
     /// Reserve `2^lg + extra` bytes, halving `lg` down to `lg_min` on any
     /// failure. Returns the mapping and the `lg` that fit.
     fn reserve_shrinking(what: &str, mut lg: u32, lg_min: u32, extra: usize) -> (Mapping, u32) {
@@ -362,11 +390,19 @@ mod linux {
                     let _ = e;
                     lg -= 1;
                 }
-                Err(e) => sys::abort_fmt(format_args!(
-                    "cannot reserve {what} region of 2^{lg} bytes: {e}"
-                )),
+                Err(e) => cannot_reserve(what, lg, e),
             }
         }
+    }
+
+    /// The abort of [`reserve_superblock`] when even the smallest layout
+    /// cannot be reserved.
+    #[cold]
+    #[inline(never)]
+    fn cannot_reserve_superblock(lg_stride: u32, e: Errno) -> ! {
+        sys::abort_fmt(format_args!(
+            "cannot reserve class superblock of {NCLASSES} x 2^{lg_stride} bytes: {e}"
+        ))
     }
 
     /// Reserve the class superblock: `NCLASSES` strides plus alignment slack.
@@ -385,43 +421,107 @@ mod linux {
                     lg_stride = lg_region + 2;
                 }
                 Err(_) if lg_stride == lg_region + 2 => lg_stride = lg_region + 1,
-                Err(e) => sys::abort_fmt(format_args!(
-                    "cannot reserve class superblock of {NCLASSES} x 2^{lg_stride} bytes: {e}"
-                )),
+                Err(e) => cannot_reserve_superblock(lg_stride, e),
             }
         }
     }
 
     const SLIDE_STEPS: usize = (1usize << LG_SLIDE) >> LG_MAX_SLAB;
 
+    /// The reservations' VMA names, NUL-terminated (spelled as bytes so
+    /// the verifier sees the NUL `set_vma_anon_name` requires).
+    const CLASSES_NAME: [u8; 16] = [
+        b'c', b'h', b'a', b'l', b'l', b'o', b'c', b':', b'c', b'l', b'a', b's', b's', b'e', b's', 0,
+    ];
+    const HUGE_NAME: [u8; 13] = [
+        b'c', b'h', b'a', b'l', b'l', b'o', b'c', b':', b'h', b'u', b'g', b'e', 0,
+    ];
+    const META_NAME: [u8; 13] = [
+        b'c', b'h', b'a', b'l', b'l', b'o', b'c', b':', b'm', b'e', b't', b'a', 0,
+    ];
+
     fn name_mapping(m: Mapping, name: &'static [u8]) {
         // SAFETY: `m` is a live mapping we own; the name is NUL-terminated.
         let _ = unsafe { sys::set_vma_anon_name(m.addr, m.len, name) };
+    }
+
+    /// `addr` rounded up to a multiple of `MAX_SLAB`: `mmap` only promises
+    /// page alignment, so each mapping carries `MAX_SLAB` of slack for it.
+    #[inline(always)]
+    fn align_base(addr: usize) -> usize {
+        (addr + MAX_SLAB - 1) & !(MAX_SLAB - 1)
+    }
+
+    /// A multiple of `MAX_SLAB` below `steps` of them, picked by `w`:
+    /// `w % steps` slabs.
+    #[inline(always)]
+    fn slab_multiple(w: usize, steps: usize) -> usize {
+        (w % steps) << LG_MAX_SLAB
+    }
+
+    /// Word `i` of the random bytes (`8 * i` on, the target's byte order).
+    #[inline(always)]
+    fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64 {
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&rnd[8 * i..8 * i + 8]);
+        u64::from_ne_bytes(b)
+    }
+
+    /// The abort of [`Regions::reserve`] when `getrandom` fails.
+    #[cold]
+    #[inline(never)]
+    fn getrandom_failed(e: Errno) -> ! {
+        sys::abort_fmt(format_args!("getrandom failed: {e}"))
+    }
+
+    /// `thp:never` on a host whose global mode is `always` (`thp.rs`):
+    /// the class and metadata reservations are `MADV_NOHUGEPAGE`d before
+    /// anything in them is committed; the huge region follows the host's
+    /// policy (`thp::Reservation`), so `thp.rs` skips it by kind.
+    #[inline(always)]
+    fn advise_reservations(sb_map: Mapping, huge_map: Mapping, meta_map: Mapping) {
+        use crate::thp::{Reservation, advise_reservation};
+        advise_reservation(Reservation::Classes, sb_map.addr, sb_map.len);
+        advise_reservation(Reservation::Huge, huge_map.addr, huge_map.len);
+        advise_reservation(Reservation::Metadata, meta_map.addr, meta_map.len);
+    }
+
+    /// The abort of [`Regions::reserve`] for a page size that is not a
+    /// power of two from 4 KiB to `MAX_SLAB`, with the message of an
+    /// `assert!`.
+    #[cold]
+    #[inline(never)]
+    fn bad_page_size() -> ! {
+        sys::abort_fmt(format_args!(
+            "assertion failed: page_size.is_power_of_two() && (0x1000..=MAX_SLAB).contains(&page_size)"
+        ))
     }
 
     impl Regions {
         /// Probe and reserve every region (design section 10 step 2). Never
         /// allocates. Aborts if even the minimum layout cannot be reserved.
         /// `anon_name` should be the probed `PR_SET_VMA_ANON_NAME` support.
+        /// The page size must be the kernel's (`api::init` passes the probed
+        /// one): a power of two from 4 KiB, the smallest page of any Linux
+        /// target, to `MAX_SLAB`; anything else aborts.
+        // The index carries a Verus invariant.
+        #[allow(clippy::needless_range_loop)]
         pub fn reserve(page_size: usize, anon_name: bool) -> Regions {
-            assert!(page_size.is_power_of_two() && page_size <= MAX_SLAB);
+            if !(page_size.is_power_of_two() && (0x1000..=MAX_SLAB).contains(&page_size)) {
+                bad_page_size();
+            }
             let lg_page = page_size.trailing_zeros();
 
             // One 64-bit random per class offset, one each for the two
             // slides, one for the reservation order.
             let mut rnd = [0u8; 8 * (NCLASSES + 3)];
             if let Err(e) = sys::getrandom_exact(&mut rnd) {
-                sys::abort_fmt(format_args!("getrandom failed: {e}"));
+                getrandom_failed(e);
             }
-            let word = |i: usize| -> u64 {
-                let mut b = [0u8; 8];
-                b.copy_from_slice(&rnd[8 * i..8 * i + 8]);
-                u64::from_ne_bytes(b)
-            };
 
             // Reserve the three mappings in a random order so their relative
             // placement is not fixed across processes.
-            let order: [u8; 3] = match word(NCLASSES + 2) % 6 {
+            let order: [u8; 3] = match word(&rnd, NCLASSES + 2) % 6 {
                 0 => [0, 1, 2],
                 1 => [0, 2, 1],
                 2 => [1, 0, 2],
@@ -430,11 +530,12 @@ mod linux {
                 _ => [2, 1, 0],
             };
             let slide = 1usize << LG_SLIDE;
-            let mut sb = None;
-            let mut huge = None;
-            let mut meta = None;
-            for role in order {
-                match role {
+            let mut sb: Option<(Mapping, u32, u32)> = None;
+            let mut huge: Option<(Mapping, u32)> = None;
+            let mut meta: Option<(Mapping, u32)> = None;
+            let mut i = 0;
+            while i < 3 {
+                match order[i] {
                     0 => sb = Some(reserve_superblock()),
                     1 => {
                         huge = Some(reserve_shrinking(
@@ -453,51 +554,39 @@ mod linux {
                         ))
                     }
                 }
+                i += 1;
             }
             let (sb_map, lg_region, lg_stride) = sb.unwrap();
             let (huge_map, lg_huge) = huge.unwrap();
             let (meta_map, lg_meta) = meta.unwrap();
 
-            let superblock = (sb_map.addr + MAX_SLAB - 1) & !(MAX_SLAB - 1);
+            let superblock = align_base(sb_map.addr);
             let gap = (1usize << lg_stride) - (1usize << lg_region);
             let mut offsets = [0usize; NCLASSES];
             // `thp:always` commits PMD-sized chunks measured from the
             // region base, so its regions stay `MAX_SLAB`-aligned.
             let coloured = crate::thp::decision().mode != crate::thp::Mode::Chunks;
-            for (c, off) in offsets.iter_mut().enumerate() {
-                *off = (word(c) as usize % (gap >> LG_MAX_SLAB)) << LG_MAX_SLAB;
+            for c in 0..NCLASSES {
+                offsets[c] = slab_multiple(word(&rnd, c) as usize, gap >> LG_MAX_SLAB);
                 if coloured {
-                    let lg_slab = CLASSES[c].lg_slab as u32;
-                    *off += colour(c, lg_slab, lg_page);
-                    assert!(*off & ((1usize << lg_slab) - 1) == 0);
+                    let lg_slab = CLASSES.table()[c].lg_slab as u32;
+                    offsets[c] += colour(c, lg_slab, lg_page);
+                    assert!(offsets[c] & ((1usize << lg_slab) - 1) == 0);
                 }
             }
-            // `mmap` only promises page alignment, so each mapping carries
-            // `MAX_SLAB` of slack and its base is aligned up before the slide.
-            let align_base = |m: Mapping| (m.addr + MAX_SLAB - 1) & !(MAX_SLAB - 1);
-            let huge_base =
-                align_base(huge_map) + ((word(NCLASSES) as usize % SLIDE_STEPS) << LG_MAX_SLAB);
-            let meta_base =
-                align_base(meta_map) + ((word(NCLASSES + 1) as usize % SLIDE_STEPS) << LG_MAX_SLAB);
+            let huge_align = align_base(huge_map.addr);
+            let huge_slide = slab_multiple(word(&rnd, NCLASSES) as usize, SLIDE_STEPS);
+            let meta_align = align_base(meta_map.addr);
+            let meta_slide = slab_multiple(word(&rnd, NCLASSES + 1) as usize, SLIDE_STEPS);
+            let huge_base = huge_align + huge_slide;
+            let meta_base = meta_align + meta_slide;
 
             if anon_name {
-                name_mapping(sb_map, b"challoc:classes\0");
-                name_mapping(huge_map, b"challoc:huge\0");
-                name_mapping(meta_map, b"challoc:meta\0");
+                name_mapping(sb_map, &CLASSES_NAME);
+                name_mapping(huge_map, &HUGE_NAME);
+                name_mapping(meta_map, &META_NAME);
             }
-            // `thp:never` on a host whose global mode is `always` (`thp.rs`):
-            // the class and metadata reservations are `MADV_NOHUGEPAGE`d
-            // before anything in them is committed; the huge region follows
-            // the host's policy (`thp::Reservation`), so `thp.rs` skips it
-            // by kind.
-            use crate::thp::Reservation;
-            for (kind, m) in [
-                (Reservation::Classes, sb_map),
-                (Reservation::Huge, huge_map),
-                (Reservation::Metadata, meta_map),
-            ] {
-                crate::thp::advise_reservation(kind, m.addr, m.len);
-            }
+            advise_reservations(sb_map, huge_map, meta_map);
 
             Regions::from_parts(
                 superblock,
@@ -525,7 +614,7 @@ mod linux {
         /// `malloc_stats_print`.
         pub fn seal(&self) -> u32 {
             let (ranges, n) = self.never_committed();
-            let mut sealed = 0;
+            let mut sealed: u32 = 0;
             for m in &ranges[..n] {
                 // SAFETY: the range is inside a reservation this process
                 // owns and, by construction, is never committed, purged,
@@ -560,30 +649,36 @@ mod linux {
 
 /// `&CLASSES[c]` for the fast paths' classification, `c < NCLASSES`.
 ///
-/// On x86_64 the entry's address goes through an empty `asm!` so that it
-/// is one register: left alone, LLVM keeps the table base and the scaled
-/// index in two registers for the slot test's loads (`(idx, base, 1)`
-/// addressing; the table is RIP-relative, so it cannot be a displacement)
-/// and adds them again for `lg_slab`, and the extra register costs `free`
-/// and `sdallocx` a callee-saved push and pop (2 instructions each per
-/// call, measured). aarch64 folds the address into one shifted add on its
-/// own, and the barrier there costs `free` an instruction.
+/// On x86_64 the entry's address goes through an empty `asm!`
+/// ([`entry_barrier`]) so that it is one register: left alone, LLVM keeps
+/// the table base and the scaled index in two registers for the slot
+/// test's loads (`(idx, base, 1)` addressing; the table is RIP-relative,
+/// so it cannot be a displacement) and adds them again for `lg_slab`, and
+/// the extra register costs `free` and `sdallocx` a callee-saved push and
+/// pop (2 instructions each per call, measured). aarch64 folds the
+/// address into one shifted add on its own, and the barrier there costs
+/// `free` an instruction.
 ///
 /// # Safety
 /// `c < NCLASSES`.
 #[inline(always)]
 unsafe fn class_entry(c: usize) -> &'static super::Class {
     // SAFETY: `c < NCLASSES` (the caller's contract).
-    let p = unsafe { CLASSES.as_ptr().add(c) };
+    let p = unsafe { (super::classes_ptr() as *const super::Class).add(c) };
     #[cfg(target_arch = "x86_64")]
-    let p = {
-        let mut p = p;
-        // SAFETY: an empty instruction sequence; `p` comes out unchanged.
-        unsafe {
-            core::arch::asm!("/* {0} */", inout(reg) p, options(pure, nomem, nostack, preserves_flags))
-        };
-        p
-    };
+    let p = entry_barrier(p);
     // SAFETY: `p` points into the table, which is never written after init.
     unsafe { &*p }
+}
+
+/// [`class_entry`]'s barrier on x86_64: `p`, through an empty `asm!`.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn entry_barrier(p: *const super::Class) -> *const super::Class {
+    let mut p = p;
+    // SAFETY: an empty instruction sequence; `p` comes out unchanged.
+    unsafe {
+        core::arch::asm!("/* {0} */", inout(reg) p, options(pure, nomem, nostack, preserves_flags));
+    }
+    p
 }

@@ -19,7 +19,7 @@
 
 use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
-use crate::layout::{BASE_CLASSES, Class, NCLASSES, classes_for_page};
+use crate::layout::{Class, NCLASSES, build_classes, classes_for_page};
 
 /// Size of the descriptor in bytes.
 pub const HEADER: usize = 16;
@@ -112,7 +112,7 @@ const fn strides_of(classes: &[Class; NCLASSES]) -> [u32; NCLASSES] {
 }
 
 const fn build_strides() -> [u32; NCLASSES] {
-    strides_of(&BASE_CLASSES)
+    strides_of(&build_classes())
 }
 
 /// The stride is compile-time although the slab geometry of the 512..1024
@@ -258,6 +258,7 @@ impl SlabDesc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::BASE_CLASSES;
     use crate::layout::CLASSES;
     use std::vec;
     use std::vec::Vec;
