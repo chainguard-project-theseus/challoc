@@ -59,7 +59,7 @@ does not specify (`src/vspec.rs`; today one, `u64::div_ceil`, which
 `Curve::allowance` calls), and `external_body` functions (none yet).
 The `global size_of usize == 8` directive in the same file is not a seam:
 Verus checks it when it compiles the crate.
-[SEAMS.md](SEAMS.md) lists every seam but vstd's own (Seams, below).
+The seam ledger lists every seam but vstd's own (Seams, below).
 
 ## Coverage
 
@@ -98,17 +98,21 @@ crate.
 ## Seams
 
 ```sh
-sh verus/seams.sh --write   # regenerate verus/SEAMS.md
+sh verus/seams.sh           # print the totals
+sh verus/seams.sh --write   # regenerate the ledger under verus/ledger/
 sh verus/seams.sh --check   # fail when it is stale (`make verus` runs this)
 ```
 
-[SEAMS.md](SEAMS.md) is the seam ledger, generated from `src/`: every
-item Verus takes on trust, with its place, the contract Verus assumes, a
-category, a proposed tool to discharge it and a status (all "trusted"
-today). Regenerate it in the change that adds, moves or edits a seam.
+The seam ledger is generated from `src/`, one file per source file
+(`verus/ledger/src/a/b.rs.md` for `src/a/b.rs`), so changes to different
+source files touch different ledger files. It lists every item Verus
+takes on trust, with its place, the contract Verus assumes, a category, a
+proposed tool to discharge it and a status (all "trusted" today). Regenerate it in the change that adds, moves or edits a seam.
 `seams.sh` picks the category and tool from the item's kind, path and
-body; a line in [seams.overrides](seams.overrides) corrects them where
-the guess is wrong, and the run fails on a seam it cannot classify.
+body; a line in the source file's overrides file
+(`verus/ledger/src/a/b.rs.overrides`) corrects them where the guess is
+wrong, and the run fails on a seam it cannot classify. [SEAMS.md](SEAMS.md)
+explains the kinds, categories, tools and statuses.
 
 ## Conventions
 

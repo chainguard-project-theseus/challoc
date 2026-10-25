@@ -1,9 +1,13 @@
 #!/bin/sh
 # verus/seams.sh: the seam ledger, every trusted item the Verus proofs rest on.
 #
-#   sh verus/seams.sh            print the ledger (verus/SEAMS.md) on stdout
-#   sh verus/seams.sh --write    regenerate verus/SEAMS.md
-#   sh verus/seams.sh --check    exit 1 if verus/SEAMS.md is stale
+#   sh verus/seams.sh            print the totals on stdout
+#   sh verus/seams.sh --write    regenerate the ledger under verus/ledger/
+#   sh verus/seams.sh --check    exit 1 if the ledger under verus/ledger/ is stale
+#
+# The ledger is one file per source file with seams: the seams of
+# src/a/b.rs are in verus/ledger/src/a/b.rs.md. Pull requests that add
+# seams to different source files touch different ledger files.
 #
 # Scans src/ (test files and `#[cfg(test)]` items skipped) for the items
 # Verus takes on trust:
@@ -22,11 +26,11 @@
 # and prints, per item, its place, the contract Verus assumes (the
 # signature with its requires/ensures, verbatim), a category and a
 # proposed discharging tool. Categories and tools come from heuristics on
-# the item's kind, path, name and body; verus/seams.overrides (one
+# the item's kind, path, name and body. The seams of src/a/b.rs may have
+# an overrides file, verus/ledger/src/a/b.rs.overrides (one
 # `name<TAB>category<TAB>tool[<TAB>status]` per line, `#` comments; the
-# name as printed in the ledger, `file:name` for one of several items of
-# that name, or `file:name#N` for the Nth seam of that name in the file, in
-# ledger (source) order, where one file has several) overrides them and
+# name as printed in that file's ledger, or `name#N` for the Nth seam of
+# that name in the file, in source order), which overrides them and
 # carries every status other than "trusted".
 # The output depends only on the tree: files are read in byte order.
 set -eu
@@ -45,6 +49,7 @@ esac
 files=$(find src -name '*.rs' ! -name tests.rs ! -name linux_tests.rs \
   ! -name testutil.rs | sort)
 [ -n "$files" ] || { echo "seams: no sources under src/" >&2; exit 2; }
+ovfiles=$(find verus/ledger -name '*.rs.overrides' 2>/dev/null | sort)
 
 prog=$(cat <<'EOF'
 function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
@@ -301,12 +306,14 @@ EOF
 )
 
 overrides=$(cat <<'EOF'
-FILE == "verus/seams.overrides" {
+FILE ~ /^verus\/ledger\/.*\.rs\.overrides$/ {
     if ($0 ~ /^#/ || $0 ~ /^[ \t]*$/) next
     nf = split($0, f, "\t")
-    if (nf < 3) { print "seams.overrides:" LN ": want name<TAB>category<TAB>tool" > "/dev/stderr"; bad = 1; next }
-    ocat[f[1]] = f[2]; otool[f[1]] = f[3]; ostat[f[1]] = nf >= 4 ? f[4] : ""
-    oseen[f[1]] = 0; nover++; okey[nover] = f[1]
+    if (nf < 3) { print FILE ":" LN ": want name<TAB>category<TAB>tool" > "/dev/stderr"; bad = 1; next }
+    # The key is the source file and the name: src/a/b.rs:name[#N].
+    k = substr(FILE, 14, length(FILE) - 23) ":" f[1]
+    ocat[k] = f[2]; otool[k] = f[3]; ostat[k] = nf >= 4 ? f[4] : ""
+    oseen[k] = 0; nover++; okey[nover] = k; ofile[k] = FILE
     next
 }
 EOF
@@ -375,7 +382,7 @@ END {
     for (e = 1; e <= n; e++) {
         key = efile[e] ":" ename[e]
         keyn = key "#" (++nocc[key])
-        if (keyn in ocat) ok = keyn; else if (key in ocat) ok = key; else if (ename[e] in ocat) ok = ename[e]; else ok = ""
+        if (keyn in ocat) ok = keyn; else if (key in ocat) ok = key; else ok = ""
         if (ok != "") {
             oseen[ok] = 1; ecat[e] = ocat[ok]; etool[e] = otool[ok]
             estat[e] = ostat[ok] == "" ? "trusted" : ostat[ok]
@@ -383,154 +390,138 @@ END {
         } else {
             ecat[e] = guess(e); etool[e] = tool_of(ecat[e]); estat[e] = "trusted"
         }
-        if (!(ecat[e] in catok)) { print "seams: " efile[e] ":" eline[e] ": " ename[e] ": no category (add it to verus/seams.overrides)" > "/dev/stderr"; bad = 1 }
+        if (!(ecat[e] in catok)) { print "seams: " efile[e] ":" eline[e] ": " ename[e] ": no category (add it to verus/ledger/" efile[e] ".overrides)" > "/dev/stderr"; bad = 1 }
         else if (!(etool[e] in toolok)) { print "seams: " efile[e] ":" eline[e] ": " ename[e] ": unknown tool " etool[e] > "/dev/stderr"; bad = 1 }
         ncatn[ecat[e]]++; ntooln[etool[e]]++; nkindn[ekind[e]]++
         ct[ecat[e] SUBSEP etool[e]]++
     }
-    for (i = 1; i <= nover; i++) if (!oseen[okey[i]]) { print "seams: verus/seams.overrides: " okey[i] " matches no seam" > "/dev/stderr"; bad = 1 }
+    for (i = 1; i <= nover; i++) if (!oseen[okey[i]]) { k = okey[i]; sub(/^[^:]*:/, "", k); print "seams: " ofile[okey[i]] ": " k " matches no seam" > "/dev/stderr"; bad = 1 }
 
-    split("asm|ffi|fnptr|cell|ptr|c-ptr|abort|atomic|platform|c-contract|termination|core|invariant", scat, "|")
-    split("Isla|RR|Kani|GenMC|Verus|Miri|none", stool, "|")
-    split("body|proof|type|const|axiom|spec|ext-type|ext-trait|no-dec|assume|assume-ghost", skind, "|")
-    for (i = 1; i <= ncat; i++) cshort[cats[i]] = scat[i]
-    for (j = 1; j <= ntool; j++) tshort[tools[j]] = stool[j]
-    for (i = 1; i <= nkind; i++) kshort[kinds[i]] = skind[i]
-    print "## Totals"
-    print ""
-    print n (n == 1 ? " seam" : " seams") ". The short names are the index's."
-    print ""
-    print "| category | short | seams |"
-    print "|---|---|---:|"
-    for (i = 1; i <= ncat; i++) if (ncatn[cats[i]] > 0) print "| " cats[i] " | " scat[i] " | " ncatn[cats[i]] " |"
-    print ""
-    print "| tool | short | seams |"
-    print "|---|---|---:|"
-    for (j = 1; j <= ntool; j++) if (ntooln[tools[j]] > 0) print "| " tools[j] " | " stool[j] " | " ntooln[tools[j]] " |"
-    print ""
-    print "| kind | short | seams |"
-    print "|---|---|---:|"
-    for (i = 1; i <= nkind; i++) if (nkindn[kinds[i]] > 0) print "| " kinds[i] " | " skind[i] " | " nkindn[kinds[i]] " |"
-    print ""
-    print "Seams by category and tool:"
-    print ""
-    print "| category | tool | seams |"
-    print "|---|---|---:|"
-    for (i = 1; i <= ncat; i++) for (j = 1; j <= ntool; j++)
-        if (ct[cats[i] SUBSEP tools[j]] > 0) print "| " cats[i] " | " tools[j] " | " ct[cats[i] SUBSEP tools[j]] " |"
-    print ""
-    print "## Index"
-    print ""
-    print "Per file, in source order, with the short names above. Item names"
-    print "too long for a row are abbreviated (`...`); the entries below carry"
-    print "the full name, the line and the contract."
-    pf = ""
-    for (e = 1; e <= n; e++) {
-        if (efile[e] != pf) {
-            pf = efile[e]
-            print ""; print "### " pf; print ""
-            print "| # | item | kind | category | tool | status |"
-            print "|---|---|---|---|---|---|"
-        }
-        s = estat[e]; sub(/ .*$/, "", s)
-        tail = " | " kshort[ekind[e]] " | " cshort[ecat[e]] " | " tshort[etool[e]] " | " s " |"
-        head = "| S" e " | `"
-        print head md(short(ename[e], 80 - length(head) - length(tail) - 1)) "`" tail
-    }
-    print ""
-    print "## Entries"
-    for (e = 1; e <= n; e++) {
-        print ""
-        print "### S" e ". `" ename[e] "`"
-        print ""
-        print efile[e] ":" eline[e] ". Kind: " ekind[e] ". Category: " ecat[e] "."
-        print "Tool: " etool[e] ". Status: " estat[e] "."
-        s = edoc[e]; sub(/\. .*$/, ".", s)
-        if (s != "") { print ""; print "> " s }
-        if (enote[e] != "") { s = enote[e]; sub(/; $/, ".", s); print ""; print "Body " s }
-        print ""
-        print "```rust"
-        print econtract[e]
-        print "```"
-    }
     if (bad) exit 1
+    if (mode == "summary") {
+        print n (n == 1 ? " seam" : " seams") ", in " (nf = nfiles_with_seams()) (nf == 1 ? " source file." : " source files.")
+        print ""
+        print "| category | seams |"
+        print "|---|---:|"
+        for (i = 1; i <= ncat; i++) if (ncatn[cats[i]] > 0) print "| " cats[i] " | " ncatn[cats[i]] " |"
+        print ""
+        print "| tool | seams |"
+        print "|---|---:|"
+        for (j = 1; j <= ntool; j++) if (ntooln[tools[j]] > 0) print "| " tools[j] " | " ntooln[tools[j]] " |"
+        print ""
+        print "| kind | seams |"
+        print "|---|---:|"
+        for (i = 1; i <= nkind; i++) if (nkindn[kinds[i]] > 0) print "| " kinds[i] " | " nkindn[kinds[i]] " |"
+        print ""
+        print "| category | tool | seams |"
+        print "|---|---|---:|"
+        for (i = 1; i <= ncat; i++) for (j = 1; j <= ntool; j++)
+            if (ct[cats[i] SUBSEP tools[j]] > 0) print "| " cats[i] " | " tools[j] " | " ct[cats[i] SUBSEP tools[j]] " |"
+        exit 0
+    }
+    # One ledger file per source file; entries are grouped by file, in
+    # source order. A name that several seams of one file share gets #N.
+    for (e = 1; e <= n; e++) {
+        key = efile[e] ":" ename[e]
+        eid[e] = nocc[key] > 1 ? ename[e] "#" (++nid[key]) : ename[e]
+    }
+    for (e = 1; e <= n; e = last + 1) {
+        sf = efile[e]
+        for (last = e; last < n && efile[last + 1] == sf; last++) ;
+        out = outdir "/" sf ".md"
+        d = out; sub(/\/[^\/]*$/, "", d)
+        if (system("mkdir -p '" d "'") != 0) exit 2
+        print "# Seams in `" sf "`" > out
+        print "" > out
+        print "Generated by `sh verus/seams.sh --write`; do not edit it by hand." > out
+        print "[SEAMS.md](" rel(sf) "SEAMS.md) says what a seam, a category and a tool" > out
+        print "are. Set a category, tool or status in `" substr(sf, length(sf) - index(rev(sf), "/") + 2) ".overrides` next to this" > out
+        print "file." > out
+        print "" > out
+        print "| item | kind | category | tool | status |" > out
+        print "|---|---|---|---|---|" > out
+        for (i = e; i <= last; i++) {
+            s = estat[i]; sub(/ .*$/, "", s)
+            tail = " | " ekind[i] " | " ecat[i] " | " etool[i] " | " s " |"
+            print "| `" md(short(eid[i], 80 - length(tail) - 5)) "`" tail > out
+        }
+        for (i = e; i <= last; i++) {
+            print "" > out
+            print "## `" eid[i] "`" > out
+            print "" > out
+            print sf ":" eline[i] ". Kind: " ekind[i] ". Category: " ecat[i] "." > out
+            print "Tool: " etool[i] ". Status: " estat[i] "." > out
+            s = edoc[i]; sub(/\. .*$/, ".", s)
+            if (s != "") { print "" > out; print "> " s > out }
+            if (enote[i] != "") { s = enote[i]; sub(/; $/, ".", s); print "" > out; print "Body " s > out }
+            print "" > out
+            print "```rust" > out
+            print econtract[i] > out
+            print "```" > out
+        }
+        close(out)
+    }
 }
+
+# The path from verus/ledger/<sf>.md back up to verus/.
+function rel(f,    r, i) {
+    r = "../"
+    for (i = 1; i <= length(f); i++) if (substr(f, i, 1) == "/") r = r "../"
+    return r
+}
+
+function rev(s,    r, i) { r = ""; for (i = length(s); i >= 1; i--) r = r substr(s, i, 1); return r }
+
+function nfiles_with_seams(    e, c, p) { c = 0; p = ""; for (e = 1; e <= n; e++) if (efile[e] != p) { c++; p = efile[e] }; return c }
 EOF
 )
-
-header() {
-  cat <<'EOF'
-# Seams: what the Verus proofs take on trust
-
-Generated by `sh verus/seams.sh --write` from `src/` and
-`verus/seams.overrides`; do not edit it by hand. `sh verus/seams.sh
---check` fails when this file is stale.
-
-Every verified function is conditional: Verus checks it against the
-contracts of the items it cannot see into and assumes those contracts
-hold. A *seam* is one such item, the place where a result from another
-tool (or a stated assumption) plugs in:
-
-- an `external_body` function, proof function, type or constant (its body
-  is not checked; its signature, `requires` and `ensures` are assumed);
-- an `axiom fn` or `axiom_*` proof function (its `ensures` is assumed);
-- an `assume_specification`, `external_type_specification` or
-  `external_trait_specification` (a contract for code outside the crate);
-- an `exec_allows_no_decreases_clause` function (termination assumed);
-- a `Tracked::assume_new()` or `Ghost::assume_new()` outside tests and
-  outside `external_body` bodies (an entry notes the ones inside).
-
-Each entry gives the place, the kind, the contract Verus assumes (copied
-verbatim from the source: the signature with its `requires` and
-`ensures`), a category (why Verus cannot check it), a proposed tool and a
-status. The categories are inline asm, FFI/syscall, function pointer,
-UnsafeCell/volatile/transmute, raw pointer (internal), raw pointer from C
-caller, panic/abort, atomics primitive, platform/kernel fact, C-program
-contract and termination, plus two this ledger adds: core library (a
-specification of a `core` function or type, checkable against `core`
-itself) and allocator invariant (a ghost fact about challoc's own
-protocol whose producer is unverified code). The tools are Islaris/Isla,
-RefinedRust, Kani, loom/GenMC, Verus (the fact is provable in Verus
-itself, once its producer states it or a lemma derives it), Miri
-(evidence only) and none (assumption). `seams.sh` picks a category from
-the kind, the path and the body; `verus/seams.overrides` corrects it and
-sets the tool where the category's default does not fit.
-
-The tool is a proposal. A seam's status stays "trusted" until the
-fourth column of `verus/seams.overrides`
-(`name<TAB>category<TAB>tool<TAB>status`) names another status, citing
-the other tool's result.
-EOF
-}
 
 # Busybox awk reads files given by name very slowly from some file
 # systems; the files go through one pipe instead, each behind a marker line.
 stream() {
-  for f in verus/seams.overrides $files; do
+  for f in $ovfiles $files; do
     printf '\001FILE %s\n' "$f"
     cat "$f" || printf '\001FAIL %s\n' "$f"
   done
 }
 
+# gen MODE DIR: the totals on stdout (summary), or the ledger files under DIR.
 gen() {
-  out=$(stream | awk "$marker
+  stream | awk -v mode="$1" -v outdir="$2" "$marker
 $overrides
 $prog
-$render") || return 1
-  header
-  echo
-  printf '%s\n' "$out"
+$render"
 }
 
 case $mode in
-  print) gen ;;
-  write) out=$(gen) && printf '%s\n' "$out" > verus/SEAMS.md ;;
+  print) gen summary '' ;;
+  write)
+    tmp=$(mktemp -d) && trap 'rm -rf "$tmp"' EXIT
+    gen write "$tmp/ledger"
+    mkdir -p verus/ledger
+    find verus/ledger -name '*.rs.md' -exec rm -f {} +
+    if [ -d "$tmp/ledger" ]; then (cd "$tmp/ledger" && find . -name '*.rs.md' -print) | while read -r f; do
+      mkdir -p "verus/ledger/$(dirname "$f")"
+      cp "$tmp/ledger/$f" "verus/ledger/$f"
+    done; fi ;;
   check)
-    out=$(gen) || exit 1
-    if printf '%s\n' "$out" | cmp -s - verus/SEAMS.md; then
-      echo "verus/SEAMS.md is up to date"
+    tmp=$(mktemp -d) && trap 'rm -rf "$tmp"' EXIT
+    gen write "$tmp/ledger"
+    mkdir -p "$tmp/ledger"
+    want=$( (cd "$tmp/ledger" && find . -name '*.rs.md') | sort)
+    have=$( (cd verus/ledger 2>/dev/null && find . -name '*.rs.md') | sort)
+    stale=0
+    [ "$want" = "$have" ] || stale=1
+    for f in $want; do cmp -s "$tmp/ledger/$f" "verus/ledger/$f" || stale=1; done
+    # An overrides file whose source file has no seams is left over.
+    for o in $ovfiles; do
+      md=${o#verus/ledger/}; md=${md%.overrides}.md
+      [ -f "$tmp/ledger/$md" ] || { echo "seams: $o: its source file has no seams" >&2; stale=1; }
+    done
+    if [ $stale = 0 ]; then
+      echo "verus/ledger is up to date"
     else
-      echo "verus/SEAMS.md is stale: run sh verus/seams.sh --write" >&2
+      echo "verus/ledger is stale: run sh verus/seams.sh --write" >&2
       exit 1
     fi ;;
 esac
