@@ -9,4 +9,5 @@
 # below the base revision's fails unless a `lowered FIGURE P REASON` line
 # here, new in that change, names that figure and value.
 functions 0.6
-lines 0.8
+lines 0.7
+lowered lines 0.7 exec PRs (#138) add executable lines before their proofs, so the verified share of lines dips until those proofs land
