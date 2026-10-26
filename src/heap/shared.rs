@@ -829,7 +829,11 @@ impl Shared {
                 let line = &*elem_at(lines, c, NCLASSES);
                 let table = &*elem_at(tables, c, NCLASSES);
                 // The `Shared` never moves (this function's contract).
-                table.mirror_watermark(&raw const line.committed);
+                table.mirror_watermark(
+                    &raw const line.committed,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                );
             }
             let arena0 = Shared::arena0_ptr(this);
             let all_tables = &*(tables as *const [SlabTable; NCLASSES]);

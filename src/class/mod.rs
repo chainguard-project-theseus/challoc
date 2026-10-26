@@ -824,6 +824,26 @@ impl Inner {
 } // verus!
 
 impl Inner {
+    /// Commit the set words that hold every bit up to and including
+    /// `slab` in the three sets ([`Set::ensure`]), for a group the arena
+    /// is about to receive (`take_group`, under the commit lock). The sets
+    /// are views of the shared set table, whose commit leaves them as they
+    /// are. `_ord` is the caller's lock-order token, unused until the
+    /// take_group proof takes it.
+    #[inline(always)]
+    fn ensure_sets(
+        &mut self,
+        meta: &Meta,
+        page: usize,
+        slab: usize,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> Result<(), crate::sys::Errno> {
+        self.partial
+            .ensure(meta, page, slab, Tracked::assume_new())?;
+        self.empty.ensure(meta, page, slab, Tracked::assume_new())?;
+        self.purged.ensure(meta, page, slab, Tracked::assume_new())
+    }
+
     /// `slab` out of the empty set. Tests only: a refill and a purge
     /// spell the pair out (`next_slab`, `settle`).
     #[cfg(test)]
@@ -1386,7 +1406,8 @@ impl ClassState {
             next = g.partial.map.lowest_set_from(s + 1);
         }
         while remaining > 0 && np < MAX_PICKS {
-            let s = match self.next_slab(&mut g, meta) {
+            let s = match self.next_slab(&mut g, meta, Tracked::assume_new(), Tracked::assume_new())
+            {
                 Some(s) => s,
                 None => break,
             };
