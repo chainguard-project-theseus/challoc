@@ -1,6 +1,3 @@
-# Temporary seams: ClassState and its lock value are opaque until
-# class/mod.rs is verified, and Tally::settle trusted until
-# ClassState::settle and the purge walks are (class/decay.rs).
-ClassState	allocator invariant	Verus
-Inner	allocator invariant	Verus
+# Temporary seam: Tally::settle is trusted until ClassState::settle and the
+# purge walks are verified (class/decay.rs).
 Tally::settle	allocator invariant	Verus
