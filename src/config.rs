@@ -197,14 +197,26 @@ impl Config {
     /// `tcache_nslots_small_max` in `[MIN_CAP, MAX_NSLOTS]` and
     /// `lg_tcache_nslots_mul` in its jemalloc range; and the guard slab
     /// interval `SlabTable::new` accepts: 0 or a power of two from 2 to
-    /// [`MAX_GUARD_SLAB_INTERVAL`]. [`Config::DEFAULT`] has them and every
-    /// [`Config::set`] keeps them (the parsers clamp; the interval's also
-    /// lifts 1 to 2 and rounds up to a power of two).
+    /// [`MAX_GUARD_SLAB_INTERVAL`]. [`Config::DEFAULT`] has them
+    /// ([`Config::lemma_default_wf`]) and every [`Config::set`] keeps them
+    /// (the parsers clamp; the interval's also lifts 1 to 2 and rounds up
+    /// to a power of two).
     pub open spec fn wf(&self) -> bool {
         &&& MIN_CAP <= self.tcache_nslots_small_max <= MAX_NSLOTS
         &&& LG_NSLOTS_MUL_MIN <= self.lg_tcache_nslots_mul <= LG_NSLOTS_MUL_MAX
         &&& self.guard_slab_interval == 0 || (2 <= self.guard_slab_interval <= MAX_GUARD_SLAB_INTERVAL
             && crate::meta::is_pow2(self.guard_slab_interval as usize))
+    }
+
+    /// [`Config::DEFAULT`] is well formed.
+    pub proof fn lemma_default_wf()
+        ensures
+            Config::DEFAULT.wf(),
+    {
+        vstd::arithmetic::power2::lemma2_to64();
+        assert(8usize as nat == vstd::arithmetic::power2::pow2(3));
+        assert(crate::meta::is_pow2(8usize));
+        assert(MAX_GUARD_SLAB_INTERVAL == 0x40_0000) by (compute);
     }
 
     /// The compiled defaults (design section 12).
@@ -1512,11 +1524,16 @@ mod linux {
 
     use super::{Config, Issue, position_of};
     use crate::sys;
+    use vstd::prelude::*;
+
+    verus! {
 
     /// Longest conf text read from any one source. Longer inputs are cut
     /// here and the cut is reported ([`Config::parse_source`]); no real
     /// configuration comes close.
     pub const MAX_TEXT: usize = 4096;
+
+    } // verus!
 
     use crate::sys::auxv::{AT_SECURE, getauxval};
 
@@ -1526,8 +1543,13 @@ mod linux {
         static environ: *const *const c_char;
     }
 
+    verus! {
+
     /// [`Config::parse_source`] of `text` from `source`, cut or not,
     /// printing each problem as `challoc: <source>: <issue>` to `out`.
+    /// Trusted: the report is a closure that formats into `out`, a mutable
+    /// capture Verus does not model; the contract is `parse_source`'s.
+    #[verifier::external_body]
     #[inline(always)]
     fn parse_from(
         cfg: &mut Config,
@@ -1535,7 +1557,15 @@ mod linux {
         cut: bool,
         source: &str,
         out: &mut sys::Stderr,
-    ) -> usize {
+    ) -> (issues: usize)
+        requires
+            old(cfg).wf(),
+            text@.len() <= MAX_TEXT,
+        ensures
+            issues <= text.len() + 1,
+            cut ==> issues > 0,
+            final(cfg).wf(),
+    {
         cfg.parse_source(text, cut, |i: Issue<'_>| {
             let _ = writeln!(out, "challoc: {source}: {i}");
         })
@@ -1553,9 +1583,20 @@ mod linux {
     /// `abort_conf` is set by the time all sources are read and anything was
     /// reported, an inert key or a cut source included. Never allocates: the
     /// file goes through a stack buffer and the environment is walked in
-    /// place.
-    pub fn load() -> Config {
+    /// place. The result is well formed: the defaults are
+    /// (`Config::lemma_default_wf`) and every source goes through
+    /// `Config::parse_source`, which keeps it.
+    pub fn load() -> (r: Config)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+        ensures
+            r.wf(),
+    {
         let mut cfg = Config::DEFAULT;
+        proof {
+            Config::lemma_default_wf();
+        }
         let mut issues = 0;
         let mut out = sys::Stderr::new();
         // `for (name, text) in [...]` over the two symbols and the two
@@ -1593,8 +1634,12 @@ mod linux {
     /// interposed by a program's definition) or weak `je_malloc_conf`
     /// (`which == 1`) global points at, and whether it was cut, as
     /// [`cstr`] returns it. `None` when the process defines neither the
-    /// symbol nor a string.
-    pub fn malloc_conf_symbol(which: u32) -> Option<(&'static [u8], bool)> {
+    /// symbol nor a string. The symbol's pointer comes through the GOT and
+    /// the string through `cstr`, which stops at [`MAX_TEXT`] bytes.
+    pub fn malloc_conf_symbol(which: u32) -> (r: Option<(&'static [u8], bool)>)
+        ensures
+            r matches Some((s, cut)) ==> s@.len() <= MAX_TEXT,
+    {
         let slot: *const *const c_char = match which {
             0 => malloc_conf_addr(),
             _ => je_malloc_conf_addr(),
@@ -1608,10 +1653,12 @@ mod linux {
         cstr(unsafe { read_slot(slot) })
     }
 
-    /// The `const char *` the symbol at `slot` holds.
+    /// The `const char *` the symbol at `slot` holds. Trusted: a raw read;
+    /// nothing is claimed about the pointer.
     ///
     /// # Safety
     /// `slot` is a defined `const char *` object.
+    #[verifier::external_body]
     #[inline(always)]
     unsafe fn read_slot(slot: *const *const c_char) -> *const c_char {
         // SAFETY: guaranteed by the caller.
@@ -1622,7 +1669,9 @@ mod linux {
     /// program's own definition when it has one, else the library's null
     /// slot (`api::jemalloc::malloc_conf`). The load goes through the GOT
     /// so the program's definition interposes; a direct reference could be
-    /// bound to the library's own copy at link time.
+    /// bound to the library's own copy at link time. Trusted: inline
+    /// assembly; nothing is claimed about the address.
+    #[verifier::external_body]
     #[inline(never)]
     fn malloc_conf_addr() -> *const c_void {
         let out: *const c_void;
@@ -1646,7 +1695,8 @@ mod linux {
     }
 
     /// Address of the weak `je_malloc_conf` global (Redis and Valkey define
-    /// this one), or null.
+    /// this one), or null. Trusted: as `malloc_conf_addr`.
+    #[verifier::external_body]
     #[inline(never)]
     fn je_malloc_conf_addr() -> *const c_void {
         let out: *const c_void;
@@ -1674,7 +1724,10 @@ mod linux {
     /// A NUL-terminated string as a slice of at most [`MAX_TEXT`] bytes,
     /// and whether the string was cut there (longer than [`MAX_TEXT`]
     /// bytes); `None` for null or empty.
-    pub fn cstr(p: *const c_char) -> Option<(&'static [u8], bool)> {
+    pub fn cstr(p: *const c_char) -> (r: Option<(&'static [u8], bool)>)
+        ensures
+            r matches Some((s, cut)) ==> 0 < s@.len() <= MAX_TEXT && (cut ==> s@.len() == MAX_TEXT),
+    {
         if p.is_null() {
             return None;
         }
@@ -1682,7 +1735,11 @@ mod linux {
         let mut n = 0;
         // SAFETY: the caller hands us a NUL-terminated string; reads stop at
         // the terminator or at the cap.
-        while n < MAX_TEXT && unsafe { byte_at(p, n) } != 0 {
+        while n < MAX_TEXT && unsafe { byte_at(p, n) } != 0
+            invariant
+                n <= MAX_TEXT,
+            decreases MAX_TEXT - n,
+        {
             n += 1;
         }
         if n == 0 {
@@ -1695,22 +1752,29 @@ mod linux {
         Some((unsafe { bytes_at(p, n) }, cut))
     }
 
-    /// The byte at `p + n`.
+    /// The byte at `p + n`. Trusted: a raw read; nothing is claimed about
+    /// the value.
     ///
     /// # Safety
     /// `p + n` is a readable byte of the caller's string.
+    #[verifier::external_body]
     #[inline(always)]
     unsafe fn byte_at(p: *const u8, n: usize) -> u8 {
         // SAFETY: guaranteed by the caller.
         unsafe { p.add(n).read() }
     }
 
-    /// The `n` bytes at `p` as a slice.
+    /// The `n` bytes at `p` as a slice. Trusted: a slice from a raw
+    /// pointer (the `# Safety` contract).
     ///
     /// # Safety
     /// The `n` bytes at `p` are readable and live for the process.
+    #[verifier::external_body]
     #[inline(always)]
-    unsafe fn bytes_at(p: *const u8, n: usize) -> &'static [u8] {
+    unsafe fn bytes_at(p: *const u8, n: usize) -> (r: &'static [u8])
+        ensures
+            r@.len() == n,
+    {
         // SAFETY: guaranteed by the caller.
         unsafe { core::slice::from_raw_parts(p, n) }
     }
@@ -1718,7 +1782,17 @@ mod linux {
     /// The value of environment variable `name` (no `=` in it), read from
     /// `environ` without `getenv`, and whether it was cut, as [`cstr`]
     /// returns it for the value alone. `None` when unset or empty.
-    pub fn env_var(name: &[u8]) -> Option<(&'static [u8], bool)> {
+    ///
+    /// Trusted: walks `environ` through raw pointers; each entry is read
+    /// through `cstr`, and when it sets `name` (`env_sets`) its value is
+    /// read through `cstr` again, which stops at [`MAX_TEXT`] bytes.
+    // Verus has no let-chains, so the `env_sets` test stays nested.
+    #[allow(clippy::collapsible_if)]
+    #[verifier::external_body]
+    pub fn env_var(name: &[u8]) -> (r: Option<(&'static [u8], bool)>)
+        ensures
+            r matches Some((s, cut)) ==> s@.len() <= MAX_TEXT,
+    {
         // SAFETY: `environ` is glibc's NULL-terminated array of NUL-terminated
         // strings; it is null before libc has set it up.
         let mut e = unsafe { environ };
@@ -1731,17 +1805,19 @@ mod linux {
             if entry.is_null() {
                 return None;
             }
-            if let Some((text, _)) = cstr(entry)
-                && env_sets(text, name)
-            {
-                // SAFETY: the value starts after `name=`, inside the
-                // entry just read.
-                return cstr(unsafe { entry.add(name.len() + 1) });
+            if let Some((text, _)) = cstr(entry) {
+                if env_sets(text, name) {
+                    // SAFETY: the value starts after `name=`, inside the
+                    // entry just read.
+                    return cstr(unsafe { entry.add(name.len() + 1) });
+                }
             }
             // SAFETY: not yet at the terminating null.
             e = unsafe { e.add(1) };
         }
     }
+
+    } // verus!
 
     /// Whether the environment entry `text` (`NAME=value`) sets `name`.
     #[inline(always)]
@@ -1749,12 +1825,22 @@ mod linux {
         text.len() > name.len() && &text[..name.len()] == name && text[name.len()] == b'='
     }
 
+    verus! {
+
     /// The first line of the file at NUL-terminated `path`, without its
     /// newline, read with raw syscalls into `buf`, and whether it was cut
     /// (longer than `buf.len() - 1` bytes, so the line is at most
     /// `buf.len() - 1` bytes long). `None` if the file is missing,
     /// unreadable or its first line is empty.
-    pub fn first_line_of<'b>(path: &[u8], buf: &'b mut [u8]) -> Option<(&'b [u8], bool)> {
+    pub fn first_line_of<'b>(path: &[u8], buf: &'b mut [u8]) -> (r: Option<(&'b [u8], bool)>)
+        requires
+            crate::sys::may_syscall(),
+            path@.len() > 0,
+            path@.last() == 0,
+            old(buf)@.len() > 0,
+        ensures
+            r matches Some((line, cut)) ==> line@.len() < old(buf)@.len(),
+    {
         let fd = sys::open(path, sys::O_RDONLY).ok()?;
         let n = sys::read_full(fd, buf);
         let _ = sys::close(fd);
@@ -1767,7 +1853,18 @@ mod linux {
     /// newline in `text`, when the line also loses the last byte, so that a
     /// cut line is shorter than the buffer. `None` when that line is empty.
     #[inline(always)]
-    fn first_line(text: &[u8], full: bool) -> Option<(&[u8], bool)> {
+    fn first_line(text: &[u8], full: bool) -> (r: Option<(&[u8], bool)>)
+        requires
+            full ==> text@.len() > 0,
+        ensures
+            r matches Some((line, cut)) ==> {
+                &&& 0 < line@.len() <= text@.len()
+                &&& full ==> line@.len() < text@.len()
+                &&& line@ == text@.take(line@.len() as int)
+                &&& forall|j: int| 0 <= j < line@.len() ==> line@[j] != b'\n'
+                &&& cut <==> full && forall|j: int| 0 <= j < text@.len() ==> text@[j] != b'\n'
+            },
+    {
         let newline = position_of(text, b'\n');
         let cut = newline.is_none() && full;
         let line = match newline {
@@ -1788,6 +1885,8 @@ mod linux {
             Some((line, cut))
         }
     }
+
+    } // verus!
 }
 
 #[cfg(test)]
