@@ -7,53 +7,32 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `Meta` | ext_type_spec | allocator invariant | Verus | trusted |
 | `Table::storage` | external_body | allocator invariant | Verus | trusted |
-| `Table::release` | external_body | allocator invariant | Verus | trusted |
-
-## `Meta`
-
-src/huge/table.rs:33. Kind: ext_type_spec. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-```rust
-pub struct ExMeta(Meta);
-```
 
 ## `Table::storage`
 
-src/huge/table.rs:333. Kind: external_body. Category: allocator invariant.
+src/huge/table.rs:395. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
-> Zeroed storage for `1 << lg_cap` entries, all empty, with the permission for each entry ([`Own`]).
+> Zeroed storage for `1 << lg_cap` entries, all empty, with what the table holds of it ([`Own`]): the permission for each entry; the block's claim when it is binned; and `meta`'s identity.
 
-Body mints Tracked at line 347; mints Tracked at line 351.
+Body mints Tracked at line 418; mints Tracked at line 422.
 
 ```rust
 fn storage(meta: &Meta, page: usize, lg_cap: u32) -> (r: Option<(*mut Entry, bool, Tracked<Own>)>)
     requires
+        crate::sys::may_syscall(),
+        meta::is_pow2(page),
         lg_cap <= 58,
     ensures
         r matches Some((p, _, own)) ==> covers(p, lg_cap, own@.slots) && forall|i: int|
             0 <= i < cap_of(lg_cap) ==> !occupied(#[trigger] own@.slots[i].value()),
-        r matches Some((p, b, own)) ==> own@.base@ == p && own@.lg@ == lg_cap && own@.binned@ == b,
-```
-
-## `Table::release`
-
-src/huge/table.rs:362. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-> Give the storage back if it was binned, with `own`, the table's permissions to its entries, which the caller (`ensure`) takes out of it first and drops the table afterwards.
-
-Body mints Tracked at line 374.
-
-```rust
-fn release(&self, meta: &Meta, Tracked(own): Tracked<Own>)
-    requires
-        LG_INITIAL_TABLE <= self.lg_cap <= 58,
-        covers(self.entries, self.lg_cap, own.slots),
-        own.base@ == self.entries,
-        own.lg@ == self.lg_cap,
-        own.binned@ == self.binned,
+        r matches Some((p, b, own)) ==> (b ==> (own@.claim matches Some(c) && c.held(
+            meta.live_id(),
+            p as *mut u8,
+            16 * cap_of(lg_cap),
+            16,
+        ))),
+        r matches Some((_, _, own)) ==> own@.mid@ == meta.live_id(),
+        r matches Some((p, _, _)) ==> p@.addr + 16 * cap_of(lg_cap) <= usize::MAX,
 ```

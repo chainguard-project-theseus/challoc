@@ -1,3 +1,6 @@
 # The kernel's `mprotect` and `mmap` contracts: committed bytes of a
 # fresh private anonymous mapping are this process's and read as zero.
 Unbacked::commit	platform/kernel fact	none (assumption)
+# Page protection is not modeled: a lazily committed table's owner reads
+# and writes only the pages it has committed.
+Unbacked::into_lazy	platform/kernel fact	none (assumption)
