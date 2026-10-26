@@ -15,8 +15,9 @@ pub uninterp spec fn ptr_add<T>(p: *mut T, count: usize) -> *mut T;
 /// with provenance `prov` and address `addr` is derived from (negative
 /// when there is none). Uninterpreted: verified code cannot learn it on
 /// its own. The trusted function that produced a pointer states a bound on
-/// it for the offsets its callers use, and verified code carries that
-/// bound from there. Address and provenance survive pointer casts, so the
+/// it for the offsets its callers use, or [`axiom_raw_valid`] derives one
+/// from a permission to the bytes, and verified code carries that bound
+/// from there. Address and provenance survive pointer casts, so the
 /// bound does too.
 pub uninterp spec fn alloc_len(prov: Provenance, addr: usize) -> int;
 
@@ -60,8 +61,9 @@ pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8,
 ;
 
 /// A permission to the `len` bytes from `p`, of `p`'s provenance, makes
-/// them valid for writes through `p`. Trusted: what a `PointsToRaw` stands
-/// for. The permissions verified code holds start as committed memory
+/// them valid for writes through `p` and, when there are some, puts them
+/// inside the allocation `p` is derived from ([`in_alloc`]). Trusted: what a `PointsToRaw`
+/// stands for. The permissions verified code holds start as committed memory
 /// (`vspec::unbacked::Unbacked::commit`) or as a lazily committed table
 /// (`Unbacked::into_lazy`) and are split and joined from there, all inside
 /// one mapping (the metadata region, the only `Unbacked` token's source),
@@ -76,6 +78,7 @@ pub proof fn axiom_raw_valid(tracked raw: &vstd::raw_ptr::PointsToRaw, p: *mut u
         0 <= len,
     ensures
         valid_writes(p, len),
+        len > 0 ==> in_alloc(p, len),
 {
 }
 

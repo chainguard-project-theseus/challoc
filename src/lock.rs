@@ -222,6 +222,12 @@ pub closed spec fn lock_rs_only() -> bool {
     true
 }
 
+/// The slab table lock of class `c` (`class::SlabTable`'s commit lock),
+/// below the slab-set locks.
+pub open spec fn rank_table(c: int) -> int {
+    0x400_0000 + c
+}
+
 /// The slab-set lock of arena `i` (`class::SetTable`), below the
 /// metadata lock.
 pub open spec fn rank_sets(i: int) -> int {

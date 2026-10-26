@@ -1360,7 +1360,7 @@ pub use regions::{
 };
 #[cfg(verus_keep_ghost)]
 pub use regions::{
-    disjoint, guard_of, guard_slab, huge_block, lemma_aligned_down, lemma_mod_lin3,
+    base_aligned, disjoint, guard_of, guard_slab, huge_block, lemma_aligned_down, lemma_mod_lin3,
     lemma_pow2_divides_pow2, process_regions,
 };
 
