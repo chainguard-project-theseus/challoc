@@ -1,6 +1,4 @@
 desc_stride	core library	Kani
-# Temporary seams, provable in Verus: `bad_state_byte` once the abort it
-# makes is specified, `SlabDesc::at` once it reads through a permission to
-# the descriptor.
+# Temporary seam, provable in Verus: `bad_state_byte` once the abort it
+# makes is specified.
 bad_state_byte	panic/abort	Verus
-SlabDesc::at	raw pointer (internal)	Verus
