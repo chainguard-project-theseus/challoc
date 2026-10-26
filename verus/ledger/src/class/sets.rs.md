@@ -13,12 +13,12 @@ file.
 
 ## `Lazy::reserve`
 
-src/class/sets.rs:70. Kind: external_body. Category: allocator invariant.
+src/class/sets.rs:72. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > Reserve a table of `len` bytes aligned to `align` (and, with metadata THP on, to the folio), with the permission to its bytes, its length rounded up to a whole word, which read as zero and which [`Meta::reserve_table`] hands out once.
 
-Body mints Tracked at line 94.
+Body mints Tracked at line 96.
 
 ```rust
 pub(crate) fn reserve(
@@ -43,12 +43,12 @@ pub(crate) fn reserve(
 
 ## `Lazy::ensure`
 
-src/class/sets.rs:103. Kind: external_body. Category: allocator invariant.
+src/class/sets.rs:105. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > Make the first `upto` bytes committed.
 
-Body mints Ghost at line 119; mints Tracked at line 119.
+Body mints Ghost at line 121; mints Tracked at line 121.
 
 ```rust
 pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, upto: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), Errno>)
@@ -64,7 +64,7 @@ pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, upto: usize, Tracked(o
 
 ## `axiom_set_tables_lock_inv`
 
-src/class/sets.rs:729. Kind: axiom. Category: allocator invariant.
+src/class/sets.rs:731. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the commit watermarks behind [`SetTable::tables`] keep no invariant of their own yet.

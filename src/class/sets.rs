@@ -59,11 +59,13 @@ impl Lazy {
     /// of the metadata region, so a pointer at any of its bytes reaches its
     /// end ([`alloc_len`](crate::vspec::ptr::alloc_len)).
     ///
-    /// Trusted until `meta.rs` is verified: `Meta::reserve_table` has no
-    /// specification yet, so neither the permission nor the placement it
-    /// hands out is checked. The permission covers the whole table from
-    /// the reservation on, though only the pages `ensure` has committed may
-    /// be read: nothing here ties a read to a commit.
+    /// Trusted: `Meta::reserve_table`'s contract gives the permission and
+    /// the placement, but not the allocation-length fact above, and the
+    /// claim to the table's pages it hands out has nowhere to live until
+    /// `Lazy` keeps it (which `ensure` then needs). The permission covers
+    /// the whole table from the reservation on, though only the pages
+    /// `ensure` has committed may be read: nothing here ties a read to a
+    /// commit.
     #[verifier::external_body]
     // `raw` is ghost: only the trusted contract fills it.
     #[allow(unused_variables)]
@@ -97,8 +99,8 @@ impl Lazy {
 
     /// Make the first `upto` bytes committed.
     ///
-    /// Trusted until `meta.rs` is verified: `Meta::commit` has no
-    /// specification yet.
+    /// Trusted: `Meta::commit` takes the claim to the pages it commits,
+    /// which `Lazy` does not keep yet.
     #[verifier::external_body]
     pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, upto: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), Errno>)
         requires

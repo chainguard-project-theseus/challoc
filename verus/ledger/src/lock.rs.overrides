@@ -9,3 +9,6 @@ LockGuard::drop	atomics primitive	loom/GenMC
 # specifications.
 wait	FFI/syscall	Verus
 wake	FFI/syscall	Verus
+# Lock-order premise for `Meta`'s acquisitions until its callers pass
+# their own tokens (an exec signature change in about 20 callers).
+axiom_meta_order	allocator invariant	Verus

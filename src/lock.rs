@@ -48,13 +48,16 @@ pub struct RawLock {
 
 impl Default for RawLock {
     fn default() -> Self {
-        Self::new(Ghost(arbitrary()))
+        // A rank below a spare token's, which [`RawLock::new`] requires.
+        Self::new(Ghost(1))
     }
 }
 
 impl RawLock {
     /// A free lock of rank `rank` (ghost).
     pub const fn new(Ghost(rank): Ghost<int>) -> (l: RawLock)
+        requires
+            rank < rank_spare(),
         ensures
             l.rank() == rank,
     {
@@ -230,7 +233,8 @@ pub open spec fn rank_meta() -> int {
     0x700_0000
 }
 
-/// Above every lock's rank: a [`LockOrder::spare`] allows nothing.
+/// Above every lock's rank ([`RawLock::new`] requires it): a
+/// [`LockOrder::spare`] allows nothing.
 pub open spec fn rank_spare() -> int {
     0xB00_0000
 }
@@ -244,7 +248,8 @@ pub open spec fn rank_spare() -> int {
 /// token for the guard's lifetime and hands out another, at the lock's
 /// rank, for the code under the guard; [`RawLock::lock_held`] raises a
 /// root in place. Every function that may take a lock takes its caller's
-/// (`Tracked<&mut LockOrder>`), so the bound follows the call chain. The
+/// (`Tracked<&mut LockOrder>`), so the bound follows the call chain
+/// (`meta::Meta`'s methods are the exception: [`axiom_meta_order`]). The
 /// fields are private to this module.
 ///
 /// The token [`Lock::lock`] hands out has the lifetime `'a` of the
@@ -288,6 +293,17 @@ impl<'a> LockOrder<'a> {
         LockOrder { top: rank_spare(), root: false, life: PhantomData }
     }
 }
+
+/// Premise: the calling thread holds only allocator locks ranked below the
+/// metadata lock ([`rank_meta`]). Stands in for the token `meta::Meta`'s
+/// methods would take from their callers: none of them passes one yet,
+/// which would change the signatures of about 20 of them. Its uses are
+/// the acquisitions in `Meta`'s methods.
+pub axiom fn axiom_meta_order<'a>() -> (tracked o: LockOrder<'a>)
+    ensures
+        o.allows(rank_meta()),
+        !o.root(),
+;
 
 // The futex calls; neither returns anything the callers use. Trusted
 // until the `sys` futex wrappers they call have specifications.
@@ -451,6 +467,7 @@ impl<T> Lock<T> {
     pub const fn new(value: T, Ghost(rank): Ghost<int>) -> (l: Lock<T>)
         requires
             lock_inv(value),
+            rank < rank_spare(),
         ensures
             lock_init(l) == value,
             l.rank() == rank,

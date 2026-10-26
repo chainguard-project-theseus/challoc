@@ -8,8 +8,10 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `Layout` | ext_type_spec | core library | Kani | trusted |
+| `alloc::LayoutError` | ext_type_spec | core library | Kani | trusted |
 | `Layout::size` | assume_spec | core library | Kani | trusted |
 | `Layout::align` | assume_spec | core library | Kani | trusted |
+| `Layout::from_size_align` | assume_spec | core library | Kani | trusted |
 
 ## `Layout`
 
@@ -20,9 +22,18 @@ Tool: Kani. Status: trusted.
 pub struct ExLayout(Layout);
 ```
 
+## `core::alloc::LayoutError`
+
+src/vspec/layout.rs:18. Kind: ext_type_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+pub struct ExLayoutError(core::alloc::LayoutError);
+```
+
 ## `Layout::size`
 
-src/vspec/layout.rs:26. Kind: assume_spec. Category: core library.
+src/vspec/layout.rs:30. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -35,7 +46,7 @@ pub assume_specification[ Layout::size ](l: &Layout) -> (r: usize)
 
 ## `Layout::align`
 
-src/vspec/layout.rs:32. Kind: assume_spec. Category: core library.
+src/vspec/layout.rs:36. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -43,5 +54,23 @@ pub assume_specification[ Layout::align ](l: &Layout) -> (r: usize)
     ensures
         r == layout_align(*l),
         layout_ok(*l),
+;
+```
+
+## `Layout::from_size_align`
+
+src/vspec/layout.rs:44. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `Ok` exactly when `align` is a power of two and `size` rounded up to it does not exceed `isize::MAX`.
+
+```rust
+pub assume_specification[ Layout::from_size_align ](size: usize, align: usize) -> (r: Result<
+    Layout,
+    core::alloc::LayoutError,
+>)
+    ensures
+        r is Ok <==> (align > 0 && align & sub(align, 1) == 0 && size <= isize::MAX - (align - 1)),
+        r matches Ok(l) ==> layout_size(l) == size && layout_align(l) == align,
 ;
 ```

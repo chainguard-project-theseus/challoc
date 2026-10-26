@@ -9,8 +9,9 @@
 //! ends), keys are unique, and every entry is reachable from its ideal
 //! slot without crossing an empty one. `get`, `insert`, `remove` and
 //! `ensure` are proved to act on the map of keys to descriptors that the
-//! slots hold (`Table::lookup`). The storage comes from and goes back to
-//! `Meta` through `storage` and `release`, which Verus takes on trust.
+//! slots hold (`Table::lookup`). The storage comes from `Meta` through
+//! `storage`, which Verus takes on trust, and goes back through
+//! `release`.
 
 // The expansion of Verus' `global` in ordinary builds is a braced block.
 #![cfg_attr(not(verus_keep_ghost), allow(unused_braces))]
@@ -18,19 +19,17 @@
 use core::alloc::Layout;
 use core::ptr;
 
-use crate::meta::{self, Meta};
+use crate::meta::{self, Meta, MetaClaim};
+#[cfg(verus_keep_ghost)]
+use crate::vspec::layout::{layout_align, layout_size};
 use vstd::prelude::*;
+#[cfg(verus_keep_ghost)]
+use vstd::raw_ptr::PointsToRaw;
 use vstd::raw_ptr::{PointsTo, ptr_mut_write, ptr_ref};
 
 use super::HugeDesc;
 
 verus! {
-
-// `Meta`, opaque: the table passes it only to `storage` and `release`.
-#[cfg(verus_keep_ghost)]
-#[verifier::external_type_specification]
-#[verifier::external_body]
-pub struct ExMeta(Meta);
 
 /// `log2` of the initial descriptor table capacity.
 const LG_INITIAL_TABLE: u32 = 10;
@@ -65,16 +64,19 @@ pub(super) struct Table {
 /// is a call to `Tracked::<T>::assume_new_fallback`, and rustc's MIR
 /// inliner gives up on a function from which more than 16 instances of
 /// it, by `T`, are reachable (`mir_callgraph_cyclic`). One type keeps
-/// what the table adds to that count at one.
+/// what the table adds to that count low: the block's claim is a field
+/// here, not a tracked field of its own, and `release` passes `Meta::free`
+/// a `Tracked` of the type `Meta` already hands out.
 #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
 struct Own {
     /// Permission for each slot of the storage.
     slots: Map<int, PointsTo<Entry>>,
-    /// The storage `storage` handed out: its address, its `lg_cap` and
-    /// whether it is binned, which `release` gives back as such.
-    base: Ghost<*mut Entry>,
-    lg: Ghost<u32>,
-    binned: Ghost<bool>,
+    /// The storage's claim when it is binned, which `release` gives back
+    /// with it ([`Table::storage_ok`]).
+    claim: Option<MetaClaim>,
+    /// The live-object records' identity of the `Meta` the storage comes
+    /// from (the one `new` was given, which `ensure` keeps).
+    mid: Ghost<vstd::resource::Loc>,
 }
 
 /// The slot holds a descriptor.
@@ -308,35 +310,104 @@ proof fn lemma_next(i: usize, lg: u32)
     })) by (bit_vector);
 }
 
+/// `slots` holds the permission to entry `i` of the storage at `p`,
+/// which lies inside the storage's allocation ([`join_slots`]).
+spec fn slot_given(slots: Map<int, PointsTo<Entry>>, p: *mut Entry, i: int) -> bool {
+    &&& slots.contains_key(i)
+    &&& slots[i].ptr() == crate::vspec::ptr::ptr_add(p, i as usize)
+    &&& crate::vspec::ptr::in_alloc(p, i * vstd::layout::size_of::<Entry>())
+}
+
+/// The permission to the first `n` entries of the storage at `p` (`16 *
+/// n` bytes), joined from the entries' permissions in `slots` with their
+/// contents dropped: what [`Table::release`] gives `Meta::free`.
+proof fn join_slots(tracked slots: Map<int, PointsTo<Entry>>, p: *mut Entry, n: int) -> (tracked r: PointsToRaw)
+    requires
+        0 <= n,
+        p@.addr + 16 * n <= usize::MAX,
+        forall|i: int| 0 <= i < n ==> #[trigger] slot_given(slots, p, i),
+    ensures
+        r.is_range(p@.addr as int, 16 * n),
+        r.provenance() == p@.provenance,
+    decreases n,
+{
+    if n == 0 {
+        let tracked r = PointsToRaw::empty(p@.provenance);
+        assert(r.dom() =~= Set::range(p@.addr as int, p@.addr as int));
+        r
+    } else {
+        let ghost s0 = slots;
+        assert(slot_given(s0, p, n - 1));
+        let tracked mut rest = slots;
+        let tracked mut e = rest.tracked_remove(n - 1);
+        assert forall|i: int| 0 <= i < n - 1 implies #[trigger] slot_given(rest, p, i) by {
+            assert(slot_given(s0, p, i));
+        }
+        assert(vstd::layout::size_of::<Entry>() == 16);
+        assert(p@.addr + (n - 1) * 16 <= usize::MAX);
+        assert(((n - 1) as usize) as int == n - 1);
+        crate::vspec::ptr::axiom_ptr_add_addr(p, (n - 1) as usize);
+        let tracked r0 = join_slots(rest, p, n - 1);
+        e.leak_contents();
+        let tracked er = e.into_raw();
+        let tracked r = r0.join(er);
+        assert(r.dom() =~= Set::range(p@.addr as int, p@.addr + 16 * n));
+        r
+    }
+}
+
 /// An empty `Own`, to swap a table's out with.
 proof fn own_empty() -> (tracked r: Own) {
-    Own { slots: Map::tracked_empty(), base: Ghost(arbitrary()), lg: Ghost(arbitrary()), binned: Ghost(arbitrary()) }
+    Own { slots: Map::tracked_empty(), claim: None, mid: Ghost(arbitrary()) }
 }
 
 impl Table {
     /// Storage layout of a table of `1 << lg_cap` entries: the one source
     /// for `storage` and `release`, which alone call it.
-    #[verifier::external]
-    const fn layout(lg_cap: u32) -> Layout {
+    const fn layout(lg_cap: u32) -> (r: Layout)
+        requires
+            lg_cap <= 58,
+        ensures
+            layout_size(r) == 16usize << lg_cap,
+            layout_align(r) == 16,
+    {
+        proof {
+            let l = lg_cap as usize;
+            assert(l <= 58 ==> (16usize << l) <= 0x7FFF_FFFF_FFFF_FFF0usize) by (bit_vector);
+            assert(16usize & sub(16usize, 1usize) == 0) by (bit_vector);
+        }
         match Layout::from_size_align(core::mem::size_of::<Entry>() << lg_cap, 16) {
             Ok(l) => l,
             Err(_) => panic!("huge: descriptor table layout"),
         }
     }
 
-    /// Zeroed storage for `1 << lg_cap` entries, all empty, with the
-    /// permission for each entry ([`Own`]). Trusted: `Meta::alloc_zeroed`
-    /// and `Meta::reserve_committed` hand out zeroed memory of the
-    /// layout's size, `16 << lg_cap` bytes, that nothing else uses, and an
-    /// all-zero `Entry` (a `usize` and a raw pointer) is empty.
+    /// Zeroed storage for `1 << lg_cap` entries, all empty, with what the
+    /// table holds of it ([`Own`]): the permission for each entry; the
+    /// block's claim when it is binned; and `meta`'s identity. Trusted:
+    /// `Meta::alloc_zeroed` hands out a binned block's permission, claim
+    /// and zero token (its contract), but `Meta::reserve_committed` hands
+    /// out no permission for a reserved block, so a variant of it that
+    /// does, and an address-to-pointer cast Verus accepts, must land
+    /// before this is verified; and an all-zero `Entry` (a `usize` and a
+    /// raw pointer) is empty.
     #[verifier::external_body]
     fn storage(meta: &Meta, page: usize, lg_cap: u32) -> (r: Option<(*mut Entry, bool, Tracked<Own>)>)
         requires
+            crate::sys::may_syscall(),
+            meta::is_pow2(page),
             lg_cap <= 58,
         ensures
             r matches Some((p, _, own)) ==> covers(p, lg_cap, own@.slots) && forall|i: int|
                 0 <= i < cap_of(lg_cap) ==> !occupied(#[trigger] own@.slots[i].value()),
-            r matches Some((p, b, own)) ==> own@.base@ == p && own@.lg@ == lg_cap && own@.binned@ == b,
+            r matches Some((p, b, own)) ==> (b ==> (own@.claim matches Some(c) && c.held(
+                meta.live_id(),
+                p as *mut u8,
+                16 * cap_of(lg_cap),
+                16,
+            ))),
+            r matches Some((_, _, own)) ==> own@.mid@ == meta.live_id(),
+            r matches Some((p, _, _)) ==> p@.addr + 16 * cap_of(lg_cap) <= usize::MAX,
     {
         let layout = Table::layout(lg_cap);
         if layout.size() <= meta::MAX_BINNED {
@@ -353,25 +424,46 @@ impl Table {
     }
 
     /// Give the storage back if it was binned, with `own`, the table's
-    /// permissions to its entries, which the caller (`ensure`) takes out
-    /// of it first and drops the table afterwards. A reserved table cannot
-    /// be given back; it is leaked (at most the size of the final table in
-    /// total). Trusted: `Meta::free` takes back the block `storage` had
-    /// from `Meta::alloc_zeroed` for this layout.
-    #[verifier::external_body]
+    /// permissions to its entries and the block's claim, which the caller
+    /// (`ensure`) takes out of it first and drops the table afterwards:
+    /// the entries' permissions joined into the block's ([`join_slots`])
+    /// and the claim are what `Meta::free` takes back. A reserved table
+    /// cannot be given back; it is leaked (at most the size of the final
+    /// table in total).
     fn release(&self, meta: &Meta, Tracked(own): Tracked<Own>)
         requires
+            crate::sys::may_syscall(),
             LG_INITIAL_TABLE <= self.lg_cap <= 58,
             covers(self.entries, self.lg_cap, own.slots),
-            own.base@ == self.entries,
-            own.lg@ == self.lg_cap,
-            own.binned@ == self.binned,
+            self.entries@.addr + 16 * cap_of(self.lg_cap) <= usize::MAX,
+            self.binned ==> (own.claim matches Some(c) && c.held(
+                meta.live_id(),
+                self.entries as *mut u8,
+                16 * cap_of(self.lg_cap),
+                16,
+            )),
     {
         if self.binned {
+            let tracked Own { slots, claim, .. } = own;
+            proof {
+                assert forall|i: int| 0 <= i < cap_of(self.lg_cap) implies #[trigger] slot_given(
+                    slots,
+                    self.entries,
+                    i,
+                ) by {
+                    assert(slot_at(self.entries, slots, i));
+                }
+            }
+            let tracked raw = join_slots(slots, self.entries, cap_of(self.lg_cap));
+            let tracked c = claim.tracked_unwrap();
+            proof {
+                let l = self.lg_cap as usize;
+                assert(l <= 58 ==> (16usize << l) == 16 * (1usize << l)) by (bit_vector);
+            }
             meta.free(
                 self.entries as *mut u8,
                 Table::layout(self.lg_cap),
-                Tracked::assume_new(),
+                Tracked((raw, c)),
             );
         }
     }
@@ -396,14 +488,25 @@ impl Table {
         lookup(self.view(), key)
     }
 
-    /// The storage: `2^lg_cap` slots, each with its permission, as
-    /// `storage` handed it out.
+    /// The storage: `2^lg_cap` slots, each with its permission, below the
+    /// top of the address space; binned storage with its claim, from the
+    /// `Meta` the table was made with ([`Table::spec_mid`]).
     pub(super) closed spec fn storage_ok(self) -> bool {
         &&& LG_INITIAL_TABLE <= self.lg_cap <= 58
         &&& covers(self.entries, self.lg_cap, self.own@.slots)
-        &&& self.own@.base@ == self.entries
-        &&& self.own@.lg@ == self.lg_cap
-        &&& self.own@.binned@ == self.binned
+        &&& self.entries@.addr + 16 * cap_of(self.lg_cap) <= usize::MAX
+        &&& self.binned ==> (self.own@.claim matches Some(c) && c.held(
+            self.own@.mid@,
+            self.entries as *mut u8,
+            16 * cap_of(self.lg_cap),
+            16,
+        ))
+    }
+
+    /// The live-object records' identity of the `Meta` the table's storage
+    /// comes from.
+    pub(super) closed spec fn spec_mid(self) -> vstd::resource::Loc {
+        self.own@.mid@
     }
 
     /// The table invariant.
@@ -416,8 +519,12 @@ impl Table {
     }
 
     pub(super) fn new(meta: &Meta, page: usize) -> (r: Option<Table>)
+        requires
+            crate::sys::may_syscall(),
+            meta::is_pow2(page),
         ensures
             r matches Some(t) ==> t.wf() && t.spec_count() == 0 && forall|k: usize| t.lookup(k) is None,
+            r matches Some(t) ==> t.spec_mid() == meta.live_id(),
     {
         let (entries, binned, own) = Table::storage(meta, page, LG_INITIAL_TABLE)?;
         let t = Table { entries, lg_cap: LG_INITIAL_TABLE, count: 0, binned, own };
@@ -486,6 +593,7 @@ impl Table {
             final(self).count == old(self).count,
             final(self).binned == old(self).binned,
             final(self).storage_ok(),
+            final(self).spec_mid() == old(self).spec_mid(),
             final(self).view() == old(self).view().update(i as int, e),
     {
         debug_assert!(i < self.cap());
@@ -599,6 +707,7 @@ impl Table {
         ensures
             final(self).wf(),
             final(self).spec_count() == old(self).spec_count() + 1,
+            final(self).spec_mid() == old(self).spec_mid(),
             final(self).spec_cap() == old(self).spec_cap(),
             forall|k: usize|
                 #[trigger] final(self).lookup(k) == if k == key {
@@ -781,10 +890,14 @@ impl Table {
     /// failure the table is unchanged and still works, only fuller.
     pub(super) fn ensure(&mut self, meta: &Meta, page: usize, extra: usize) -> (r: Result<(), ()>)
         requires
+            crate::sys::may_syscall(),
+            meta::is_pow2(page),
             old(self).wf(),
+            old(self).spec_mid() == meta.live_id(),
             old(self).spec_count() + extra <= 0x0100_0000_0000_0000,
         ensures
             final(self).wf(),
+            final(self).spec_mid() == old(self).spec_mid(),
             final(self).spec_count() == old(self).spec_count(),
             forall|k: usize| #[trigger] final(self).lookup(k) == old(self).lookup(k),
             r is Ok ==> (final(self).spec_count() + extra) * 2 <= final(self).spec_cap(),
@@ -833,6 +946,8 @@ impl Table {
         for i in 0..old.cap()
             invariant
                 old.wf(),
+                old.spec_mid() == meta.live_id(),
+                self.spec_mid() == meta.live_id(),
                 ov == old.view(),
                 ov == view_in,
                 old.count == count_in,

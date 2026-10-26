@@ -7,11 +7,29 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `ZeroRaw...om_new` | external_body proof | allocator invariant | none (assumption) | trusted |
 | `axiom_zero_word` | external_body proof | raw pointer (internal) | none (assumption) | trusted |
+| `axiom_wrote_zero` | external_body proof | raw pointer (internal) | none (assumption) | trusted |
+
+## `ZeroRaw::axiom_new`
+
+src/vspec/zero.rs:120. Kind: external_body proof. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> The bytes of `raw`, which `z` reads as zero.
+
+```rust
+pub proof fn axiom_new(tracked raw: PointsToRaw, tracked z: Zeroed) -> (tracked r: ZeroRaw)
+    requires
+        forall|a: int| #[trigger] raw.dom().contains(a) ==> z.addr() <= a < z.addr() + z.len(),
+    ensures
+        r.dom() == raw.dom(),
+        r.provenance() == raw.provenance(),
+```
 
 ## `axiom_zero_word`
 
-src/vspec/zero.rs:130. Kind: external_body proof. Category: raw pointer (internal).
+src/vspec/zero.rs:164. Kind: external_body proof. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The eight bytes of `z`, which read as zero, as the `u64` at `p` holding 0: `PointsToRaw::into_typed`, initialised with the value the bytes hold.
@@ -27,4 +45,22 @@ pub proof fn axiom_zero_word(tracked z: ZeroRaw, p: *mut u64) -> (tracked w: Poi
         w.ptr() == p,
         w.is_init(),
         w.value() == 0,
+```
+
+## `axiom_wrote_zero`
+
+src/vspec/zero.rs:190. Kind: external_body proof. Category: raw pointer (internal).
+Tool: none (assumption). Status: trusted.
+
+> The token for what `write_bytes(p, 0, n)` just wrote: the `n` bytes at `p` read as zero.
+
+```rust
+pub proof fn axiom_wrote_zero(tracked raw: &PointsToRaw, p: *mut u8, n: usize) -> (tracked z: Zeroed)
+    requires
+        crate::vspec::ptr::wrote_zero(p, n as int),
+        raw.contains_range(p@.addr as int, n as int),
+        raw.provenance() == p@.provenance,
+    ensures
+        z.addr() == p@.addr,
+        z.len() == n,
 ```
