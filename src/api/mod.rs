@@ -1102,7 +1102,7 @@ mod tests {
         // a loaded Docker VM); the loop below is the assertion.
         let mut purged = false;
         for _ in 0..400 {
-            if s.huge.oldest_empty() == 0 && s.huge.stats().empty == 0 {
+            if s.huge.oldest_empty() == 0 && s.huge.stats(Tracked::assume_new()).empty == 0 {
                 purged = true;
                 break;
             }
@@ -1111,7 +1111,7 @@ mod tests {
         assert!(
             purged,
             "background thread did not purge the freed run: {:?}",
-            s.huge.stats()
+            s.huge.stats(Tracked::assume_new())
         );
         s.set_decay_ms((old_ns / 1_000_000) as i64);
 
@@ -1278,7 +1278,7 @@ mod tests {
             purge::background::join_exited();
         }
         purge::background::set_auto(None);
-        s.huge.purge_empty(u64::MAX);
+        s.huge.purge_empty(u64::MAX, Tracked::assume_new());
         s.set_decay_ms((old_ns / 1_000_000) as i64);
 
         assert!(!clean, "nothing dirty started the thread");
@@ -1316,7 +1316,7 @@ mod tests {
         let page = (p as usize - s.regions.huge_base) >> s.regions.lg_page;
         // Nothing else `Empty` in the huge allocator, so the free in the
         // hook is its first.
-        s.huge.purge_empty(u64::MAX);
+        s.huge.purge_empty(u64::MAX, Tracked::assume_new());
         // 0: the hook did not run; 1: the thread never slept without a
         // deadline; 2: the free was not the first `Empty`; 3: ready.
         let hook_state = Arc::new(AtomicU8::new(0));
@@ -1348,7 +1348,7 @@ mod tests {
         let mut purged = false;
         if started && hook_state.load(Ordering::SeqCst) == 3 {
             for _ in 0..400 {
-                if s.huge.oldest_empty() == 0 && s.huge.stats().empty == 0 {
+                if s.huge.oldest_empty() == 0 && s.huge.stats(Tracked::assume_new()).empty == 0 {
                     purged = true;
                     break;
                 }
@@ -1383,7 +1383,7 @@ mod tests {
         assert!(
             purged,
             "background thread slept through a first Empty from its startup: {:?}",
-            s.huge.stats()
+            s.huge.stats(Tracked::assume_new())
         );
         assert!(stopped, "background thread did not stop");
     }

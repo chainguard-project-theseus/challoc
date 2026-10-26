@@ -840,7 +840,13 @@ impl Shared {
             if !Arena::init(arena0, meta, regions, all_tables, 0, decay_ns) {
                 return false;
             }
-            match Huge::new(meta, regions, guard_install) {
+            match Huge::new(
+                meta,
+                regions,
+                guard_install,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            ) {
                 Some(h) => {
                     h.set_retain_max(config.huge_retain_max);
                     // `huge_dirty_decay_ms:0`: a freed run is purged at
@@ -1196,7 +1202,7 @@ impl Shared {
                 }
             }
             Kind::Huge { page } => {
-                let Some(run) = self.huge.lookup(page) else {
+                let Some(run) = self.huge.lookup(page, Tracked::assume_new()) else {
                     return;
                 };
                 if run.start == page
