@@ -9,6 +9,8 @@ file.
 |---|---|---|---|---|
 | `axiom_ptr_add_addr` | external_body proof | core library | Kani | trusted |
 | `<*mut T>::add` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
+| `<*const T>::add` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
+| `axiom_array_elem` | axiom | core library | none (assumption) | trusted |
 
 ## `axiom_ptr_add_addr`
 
@@ -43,5 +45,44 @@ pub assume_specification<T>[ <*mut T>::add ](p: *mut T, count: usize) -> (r: *mu
     ensures
         r == ptr_add(p, count),
     opens_invariants none
+;
+```
+
+## `<*const T>::add`
+
+src/vspec/ptr.rs:67. Kind: assume_spec. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
+
+> `<*const T>::add`, with the safety contract of `<*mut T>::add`: the result is [`ptr_add`] of the pointer as a `*mut T`, back as a `*const T` (`axiom_ptr_add_addr` gives its address).
+
+```rust
+pub assume_specification<T>[ <*const T>::add ](p: *const T, count: usize) -> (r: *const T)
+    requires
+        count as int * vstd::layout::size_of::<T>() <= isize::MAX,
+        count as int * vstd::layout::size_of::<T>() == 0 || in_alloc(p as *mut T, count as int * vstd::layout::size_of::<T>()),
+    ensures
+        r == ptr_add(p as *mut T, count) as *const T,
+    opens_invariants none
+;
+```
+
+## `axiom_array_elem`
+
+src/vspec/ptr.rs:86. Kind: axiom. Category: core library.
+Tool: none (assumption). Status: trusted.
+
+> Element `i` of a frozen array: a `'static` shared permission to a `[T; N]` gives one to each of its elements, holding that element, at [`ptr_add`] of the array's address as a `*mut T`; and the array's first `i` elements lie inside the allocation it is in, in fewer than `isize::MAX` bytes, so `<*mut T>::add(i)` is defined on that pointer.
+
+```rust
+pub axiom fn axiom_array_elem<T, const N: usize>(tracked a: &'static vstd::raw_ptr::PointsTo<[T; N]>, i: usize) -> (tracked r: &'static vstd::raw_ptr::PointsTo<T>)
+    requires
+        i < N,
+        a.is_init(),
+    ensures
+        in_alloc(a.ptr() as *mut T, i as int * vstd::layout::size_of::<T>()),
+        i as int * vstd::layout::size_of::<T>() <= isize::MAX,
+        r.ptr() == ptr_add(a.ptr() as *mut T, i),
+        r.is_init(),
+        r.value() == a.value()[i as int],
 ;
 ```

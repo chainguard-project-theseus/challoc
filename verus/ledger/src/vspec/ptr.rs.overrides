@@ -1,1 +1,2 @@
 axiom_ptr_add_addr	core library	Kani
+axiom_array_elem	core library	none (assumption)

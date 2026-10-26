@@ -1032,13 +1032,22 @@ pub open spec fn table_ok(t: [Class; NCLASSES]) -> bool {
     &&& forall|i: int| 0 <= i < NCLASSES ==> #[trigger] t[i].size == spec_class_size(i)
 }
 
-} // verus!
+/// The storage of [`CLASSES`]' table.
+pub uninterp spec fn classes_storage() -> *mut [Class; NCLASSES];
 
-/// The storage of [`CLASSES`]' table, as a raw pointer.
+/// The storage of [`CLASSES`]' table, as a raw pointer. Trusted: a
+/// raw-pointer projection of the static.
+#[verifier::external_body]
 #[inline(always)]
-fn classes_ptr() -> *mut [Class; NCLASSES] {
+fn classes_ptr() -> (p: *mut [Class; NCLASSES])
+    ensures
+        p == classes_storage(),
+    opens_invariants none
+{
     CLASSES.0.get()
 }
+
+} // verus!
 
 /// Raise the slab of every class whose table slab is smaller than the
 /// kernel page to the page ([`lg_slab_at`]), writing `lg_slab`,
