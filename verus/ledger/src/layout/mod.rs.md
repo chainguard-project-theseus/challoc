@@ -18,6 +18,7 @@ file.
 | `ClassTable` | external_body type | UnsafeCell/volatile/transmute | none (assumption) | trusted |
 | `ClassTable::new` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
 | `ClassTa...:table` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
+| `ClassTa...es_ptr` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
 
 ## `Class::size`
 
@@ -154,4 +155,18 @@ pub fn table(&self) -> (r: &[Class; NCLASSES])
         *r == class_table(),
         forall|i: int| 0 <= i < NCLASSES ==> #[trigger] r[i].wf(),
         forall|i: int| 0 <= i < NCLASSES ==> #[trigger] r[i].size == spec_class_size(i),
+```
+
+## `ClassTable::classes_ptr`
+
+src/layout/mod.rs:1042. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+Tool: RefinedRust. Status: trusted.
+
+> The storage of [`CLASSES`]' table, as a raw pointer.
+
+```rust
+fn classes_ptr() -> (p: *mut [Class; NCLASSES])
+    ensures
+        p == classes_storage(),
+    opens_invariants none
 ```

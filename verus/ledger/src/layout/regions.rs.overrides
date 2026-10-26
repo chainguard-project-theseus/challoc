@@ -1,3 +1,0 @@
-# A temporary seam: its body reads `class_base` through `get_unchecked`;
-# lemma_slot_of and lemma_slot_addr_found prove the contract of it.
-Regions::slab_slot	raw pointer (internal)	Verus

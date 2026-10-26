@@ -313,6 +313,69 @@ impl Regions {
         &&& disjoint(m.addr as int, m.len as int, shared_static_addr(), shared_static_len())
     }
 
+    /// `[a, a + len)` lies inside one of the three reservations.
+    pub open spec fn in_mapping(self, a: int, len: int) -> bool {
+        let (s, h, m) = (self.superblock_map, self.huge_map, self.meta_map);
+        ||| s.addr <= a && a + len <= s.addr + s.len
+        ||| h.addr <= a && a + len <= h.addr + h.len
+        ||| m.addr <= a && a + len <= m.addr + m.len
+    }
+
+    /// A range `seal` may hand `mseal`: non-empty, inside one of challoc's
+    /// reservations ([`Regions::in_mapping`]), and sharing no byte with any
+    /// class region, the huge region, the metadata region or the process's
+    /// `Shared` static. Opaque, so that the quantifier over the classes
+    /// stays out of the queries that only carry it.
+    #[verifier::opaque]
+    pub open spec fn seal_target(self, m: Mapping) -> bool {
+        let region = (1usize << self.lg_region) as int;
+        &&& m.len > 0
+        &&& self.in_mapping(m.addr as int, m.len as int)
+        &&& forall|c: int| 0 <= c < NCLASSES ==>
+            disjoint(#[trigger] self.class_base[c] as int, region, m.addr as int, m.len as int)
+        &&& disjoint(self.huge_base as int, self.huge_len as int, m.addr as int, m.len as int)
+        &&& disjoint(self.meta_base as int, self.meta_len as int, m.addr as int, m.len as int)
+        &&& disjoint(m.addr as int, m.len as int, shared_static_addr(), shared_static_len())
+    }
+
+    /// Class `j`'s region ends at or before class `k`'s starts, for `j <
+    /// k`: each lies inside its own stride.
+    pub proof fn lemma_class_before(self, j: int, k: int)
+        requires
+            self.separated(),
+            0 <= j < k < NCLASSES,
+        ensures
+            self.class_base[j] + (1usize << self.lg_region) <= self.class_base[k],
+    {
+        let stride = (1usize << self.lg_stride) as int;
+        assert(self.superblock + j * stride <= self.class_base[j]);
+        assert(self.superblock + k * stride <= self.class_base[k]);
+        assert((j + 1) * stride <= k * stride) by (nonlinear_arith)
+            requires
+                j + 1 <= k,
+                stride >= 0,
+        ;
+    }
+
+    /// Class `c`'s region lies inside the superblock's strides.
+    pub proof fn lemma_class_in_strides(self, c: int)
+        requires
+            self.separated(),
+            0 <= c < NCLASSES,
+        ensures
+            self.superblock <= self.class_base[c],
+            self.class_base[c] + (1usize << self.lg_region) <= self.superblock + NCLASSES * ((1usize << self.lg_stride) as int),
+    {
+        let stride = (1usize << self.lg_stride) as int;
+        assert(self.superblock + c * stride <= self.class_base[c]);
+        assert(self.class_base[c] + (1usize << self.lg_region) <= self.superblock + (c + 1) * stride);
+        assert(0 <= c * stride && (c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)
+            requires
+                0 <= c < NCLASSES,
+                stride >= 0,
+        ;
+    }
+
     /// Slabs in class `c`'s region ([`Regions::nslabs`]).
     pub open spec fn spec_nslabs(self, c: int) -> int {
         ((1usize << self.lg_region) >> class_table()[c].lg_slab) as int
@@ -682,6 +745,72 @@ impl Regions {
         self.huge_base + (page << self.lg_page)
     }
 
+    /// `lo..hi`, non-empty and inside the superblock's mapping, is a seal
+    /// target when it starts at or after the end of every class region
+    /// below `k` and ends at or before the start of class `k`'s (after
+    /// every class when `k == NCLASSES`).
+    proof fn lemma_superblock_gap(self, lo: usize, hi: usize, k: int)
+        requires
+            self.separated(),
+            self.mapped(),
+            self.superblock_map.addr <= lo < hi,
+            hi <= self.superblock_map.addr + self.superblock_map.len,
+            0 <= k <= NCLASSES,
+            k < NCLASSES ==> hi <= self.class_base[k],
+            forall|j: int| 0 <= j < k ==> #[trigger] self.class_base[j] + (1usize << self.lg_region) <= lo,
+        ensures
+            self.seal_target(Mapping { addr: lo, len: (hi - lo) as usize }),
+    {
+        reveal(Regions::seal_target);
+        let region = (1usize << self.lg_region) as int;
+        assert forall|c: int| 0 <= c < NCLASSES implies
+            disjoint(#[trigger] self.class_base[c] as int, region, lo as int, hi - lo) by {
+            if c > k {
+                self.lemma_class_before(k, c);
+            }
+        }
+    }
+
+    /// `lo..hi`, non-empty and inside the huge region's mapping but outside
+    /// the region, is a seal target.
+    proof fn lemma_huge_slack(self, lo: usize, hi: usize)
+        requires
+            self.separated(),
+            self.mapped(),
+            self.huge_map.addr <= lo < hi,
+            hi <= self.huge_map.addr + self.huge_map.len,
+            hi <= self.huge_base || self.huge_base + self.huge_len <= lo,
+        ensures
+            self.seal_target(Mapping { addr: lo, len: (hi - lo) as usize }),
+    {
+        reveal(Regions::seal_target);
+        let region = (1usize << self.lg_region) as int;
+        assert forall|c: int| 0 <= c < NCLASSES implies
+            disjoint(#[trigger] self.class_base[c] as int, region, lo as int, hi - lo) by {
+            self.lemma_class_in_strides(c);
+        }
+    }
+
+    /// `lo..hi`, non-empty and inside the metadata region's mapping but
+    /// outside the region, is a seal target.
+    proof fn lemma_meta_slack(self, lo: usize, hi: usize)
+        requires
+            self.separated(),
+            self.mapped(),
+            self.meta_map.addr <= lo < hi,
+            hi <= self.meta_map.addr + self.meta_map.len,
+            hi <= self.meta_base || self.meta_base + self.meta_len <= lo,
+        ensures
+            self.seal_target(Mapping { addr: lo, len: (hi - lo) as usize }),
+    {
+        reveal(Regions::seal_target);
+        let region = (1usize << self.lg_region) as int;
+        assert forall|c: int| 0 <= c < NCLASSES implies
+            disjoint(#[trigger] self.class_base[c] as int, region, lo as int, hi - lo) by {
+            self.lemma_class_in_strides(c);
+        }
+    }
+
     /// The parts of the three mappings that no code ever commits, purges
     /// or reprotects, in address order per mapping: the slack before class
     /// 0, the gap between each class region and the next (one contiguous
@@ -695,36 +824,89 @@ impl Regions {
     ///
     /// Returns the ranges and how many are filled in. At most
     /// [`MAX_SEALED`]: `NCLASSES + 1` around the classes and two per side
-    /// mapping.
-    #[verifier::external]
-    pub fn never_committed(&self) -> ([Mapping; MAX_SEALED], usize) {
+    /// mapping. Of separated regions inside their mappings
+    /// ([`Regions::separated`], [`Regions::mapped`]), every range returned
+    /// is a [`Regions::seal_target`]: non-empty, inside a reservation and
+    /// apart from every region and the `Shared` static.
+    pub fn never_committed(&self) -> (r: ([Mapping; MAX_SEALED], usize))
+        requires
+            self.wf(),
+        ensures
+            r.1 <= MAX_SEALED,
+            self.separated() && self.mapped() ==> forall|i: int| 0 <= i < r.1 ==> self.seal_target(#[trigger] r.0[i]),
+    {
+        let ghost ok = self.separated() && self.mapped();
+        let ghost stride = (1usize << self.lg_stride) as int;
         let mut out = [Mapping { addr: 0, len: 0 }; MAX_SEALED];
         let mut n = 0;
         let mut start = self.superblock_map.addr;
-        for c in 0..NCLASSES {
+        for c in 0..NCLASSES
+            invariant
+                self.wf(),
+                n <= c,
+                ok == (self.separated() && self.mapped()),
+                stride == (1usize << self.lg_stride) as int,
+                ok ==> self.superblock_map.addr <= start,
+                ok ==> start <= self.superblock + c * stride,
+                ok ==> forall|j: int| 0 <= j < c ==> #[trigger] self.class_base[j] + (1usize << self.lg_region) <= start,
+                ok ==> forall|i: int| 0 <= i < n ==> self.seal_target(#[trigger] out[i]),
+        {
+            proof {
+                if ok {
+                    assert(self.superblock + c * stride <= self.class_base[c as int]);
+                    if start < self.class_base[c as int] {
+                        self.lemma_class_in_strides(c as int);
+                        self.lemma_superblock_gap(start, self.class_base[c as int], c as int);
+                    }
+                }
+            }
             push_range(&mut out, &mut n, start, self.class_base[c]);
             start = self.class_base[c] + self.region_len();
+            proof {
+                if ok {
+                    let cc = c as int;
+                    assert(self.class_base[cc] + (1usize << self.lg_region) <= self.superblock + (cc + 1) * stride);
+                    assert forall|j: int| 0 <= j < cc + 1 implies #[trigger] self.class_base[j] + (1usize << self.lg_region) <= start by {
+                        if j < cc {
+                            self.lemma_class_before(j, cc);
+                        }
+                    }
+                }
+            }
         }
-        push_range(
-            &mut out,
-            &mut n,
-            start,
-            self.superblock_map.addr + self.superblock_map.len,
-        );
+        proof {
+            if ok {
+                vstd::arithmetic::mul::lemma_mul_nonnegative(NCLASSES as int, stride);
+                if start < self.superblock_map.addr + self.superblock_map.len {
+                    self.lemma_superblock_gap(start, (self.superblock_map.addr + self.superblock_map.len) as usize, NCLASSES as int);
+                }
+            }
+        }
+        push_range(&mut out, &mut n, start, self.superblock_map.addr + self.superblock_map.len);
+        proof {
+            if ok && self.huge_map.addr < self.huge_base {
+                self.lemma_huge_slack(self.huge_map.addr, self.huge_base);
+            }
+        }
         push_range(&mut out, &mut n, self.huge_map.addr, self.huge_base);
-        push_range(
-            &mut out,
-            &mut n,
-            self.huge_base + self.huge_len,
-            self.huge_map.addr + self.huge_map.len,
-        );
+        proof {
+            if ok && self.huge_base + self.huge_len < self.huge_map.addr + self.huge_map.len {
+                self.lemma_huge_slack((self.huge_base + self.huge_len) as usize, (self.huge_map.addr + self.huge_map.len) as usize);
+            }
+        }
+        push_range(&mut out, &mut n, self.huge_base + self.huge_len, self.huge_map.addr + self.huge_map.len);
+        proof {
+            if ok && self.meta_map.addr < self.meta_base {
+                self.lemma_meta_slack(self.meta_map.addr, self.meta_base);
+            }
+        }
         push_range(&mut out, &mut n, self.meta_map.addr, self.meta_base);
-        push_range(
-            &mut out,
-            &mut n,
-            self.meta_base + self.meta_len,
-            self.meta_map.addr + self.meta_map.len,
-        );
+        proof {
+            if ok && self.meta_base + self.meta_len < self.meta_map.addr + self.meta_map.len {
+                self.lemma_meta_slack((self.meta_base + self.meta_len) as usize, (self.meta_map.addr + self.meta_map.len) as usize);
+            }
+        }
+        push_range(&mut out, &mut n, self.meta_base + self.meta_len, self.meta_map.addr + self.meta_map.len);
         (out, n)
     }
 
@@ -737,13 +919,8 @@ impl Regions {
     /// ([`super::Class::slot_of_offset`]). Never aborts: the caller's
     /// slow path decides what `None` means.
     ///
-    /// Trusted for now (`external_body`): its body reads the class entry
-    /// through `class_entry` (a raw pointer into [`CLASSES`]' table, which
-    /// is `class_table()` once the allocator is published), which Verus has
-    /// no specification for.
     /// [`Regions::lemma_slot_of`] and [`Regions::lemma_slot_addr_found`]
-    /// are the two halves of the proof of this contract.
-    #[verifier::external_body]
+    /// are the two halves of its proof.
     #[inline(always)]
     pub fn slab_slot(&self, p: usize) -> (r: Option<(usize, usize, usize)>)
         requires self.wf(), crate::api::ready(),
@@ -766,6 +943,16 @@ impl Regions {
             self.separated() ==> forall|c: int| #[trigger] self.is_slot_addr(c, p) ==> (r matches Some((c2, _, _)) && c2 as int == c),
         opens_invariants none
     {
+        proof {
+            if self.separated() {
+                assert forall|c: int| #[trigger] self.is_slot_addr(c, p) implies {
+                    &&& (p.wrapping_sub(self.superblock) >> self.lg_stride) as int == c
+                    &&& p.wrapping_sub(self.class_base[c]) < (1usize << self.lg_region)
+                } by {
+                    self.lemma_slot_addr_found(c, p);
+                }
+            }
+        }
         let c = p.wrapping_sub(self.superblock) >> self.lg_stride;
         if c >= NCLASSES {
             return None;
@@ -773,15 +960,35 @@ impl Regions {
         // SAFETY: `c < NCLASSES` was just checked; both arrays have
         // `NCLASSES` entries.
         let cls = unsafe { class_entry(c) };
+        proof {
+            assert(cls.wf());
+        }
         let rel = p.wrapping_sub(unsafe { *crate::vspec::slice::array_get_unchecked(&self.class_base, c) });
         if rel >= self.region_len() {
             return None;
         }
         let slab = rel >> cls.lg_slab;
         let offset = rel & cls.slab_mask();
+        proof {
+            let lg = cls.lg_slab;
+            let m = cls.slab_mask as usize;
+            assert(m == ((1usize << lg) - 1) as usize);
+            assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+            assert((rel & m) < (1usize << lg)) by (bit_vector)
+                requires lg <= 22, m == ((1usize << lg) - 1) as usize;
+            assert(self.class_base@[c as int] == self.class_base[c as int]);
+        }
         let (slot, valid) = cls.slot_of_offset(offset);
+        proof {
+            if self.separated() && self.is_slot_addr(c as int, p) {
+                self.lemma_slot_addr_found(c as int, p);
+            }
+        }
         if !valid {
             return None;
+        }
+        proof {
+            self.lemma_slot_of(c as int, p, slot);
         }
         Some((c, slab, slot))
     }
@@ -1622,19 +1829,23 @@ pub proof fn lemma_aligned_down(b: int, big: int, m: int)
     lemma_mod_lin3(0, b / big, big, 0, 0, m);
 }
 
-} // verus!
-
 /// Append `lo..hi` to `out[..*n]` when it is not empty.
 #[inline(always)]
-fn push_range(out: &mut [Mapping; MAX_SEALED], n: &mut usize, lo: usize, hi: usize) {
+fn push_range(out: &mut [Mapping; MAX_SEALED], n: &mut usize, lo: usize, hi: usize)
+    requires
+        *old(n) < MAX_SEALED,
+    ensures
+        *final(n) == if hi > lo { *old(n) + 1 } else { *old(n) as int },
+        hi > lo ==> final(out)[*old(n) as int] == (Mapping { addr: lo, len: (hi - lo) as usize }),
+        forall|i: int| 0 <= i < *old(n) ==> final(out)[i] == old(out)[i],
+{
     if hi > lo {
-        out[*n] = Mapping {
-            addr: lo,
-            len: hi - lo,
-        };
+        out[*n] = Mapping { addr: lo, len: hi - lo };
         *n += 1;
     }
 }
+
+} // verus!
 
 mod linux {
     use super::{
@@ -1937,7 +2148,13 @@ mod linux {
     }
 }
 
-/// `&CLASSES[c]` for the fast paths' classification, `c < NCLASSES`.
+verus! {
+
+/// `&CLASSES[c]` for the fast paths' classification, `c < NCLASSES`,
+/// through the permission to the table frozen at `READY`
+/// (`api::axiom_published`): its entry `c` ([`crate::vspec::ptr::axiom_array_elem`]),
+/// which is `class_table()[c]`, well formed and sized
+/// [`super::spec_class_size`] (`api::Published::ok`, [`super::table_ok`]).
 ///
 /// On x86_64 the entry's address goes through an empty `asm!`
 /// ([`entry_barrier`]) so that it is one register: left alone, LLVM keeps
@@ -1950,21 +2167,40 @@ mod linux {
 /// `free` an instruction.
 ///
 /// # Safety
-/// `c < NCLASSES`.
+/// `c < NCLASSES`, and the allocator is published ([`crate::api::ready`]),
+/// the preconditions.
 #[inline(always)]
-unsafe fn class_entry(c: usize) -> &'static super::Class {
+unsafe fn class_entry(c: usize) -> (r: &'static super::Class)
+    requires
+        c < NCLASSES,
+        crate::api::ready(),
+    ensures
+        *r == class_table()[c as int],
+        r.wf(),
+        r.size == super::spec_class_size(c as int),
+    opens_invariants none
+{
+    let tracked published = crate::api::axiom_published();
+    let tracked entry = crate::vspec::ptr::axiom_array_elem(published.classes, c);
     // SAFETY: `c < NCLASSES` (the caller's contract).
     let p = unsafe { (super::classes_ptr() as *const super::Class).add(c) };
     #[cfg(target_arch = "x86_64")]
     let p = entry_barrier(p);
     // SAFETY: `p` points into the table, which is never written after init.
-    unsafe { &*p }
+    vstd::raw_ptr::ptr_ref(p, Tracked(entry))
 }
 
 /// [`class_entry`]'s barrier on x86_64: `p`, through an empty `asm!`.
+/// Trusted: the template is empty, so the register the operand is in for
+/// input and output comes out unchanged.
 #[cfg(target_arch = "x86_64")]
+#[verifier::external_body]
 #[inline(always)]
-fn entry_barrier(p: *const super::Class) -> *const super::Class {
+fn entry_barrier(p: *const super::Class) -> (r: *const super::Class)
+    ensures
+        r == p,
+    opens_invariants none
+{
     let mut p = p;
     // SAFETY: an empty instruction sequence; `p` comes out unchanged.
     unsafe {
@@ -1972,3 +2208,5 @@ fn entry_barrier(p: *const super::Class) -> *const super::Class {
     }
     p
 }
+
+} // verus!

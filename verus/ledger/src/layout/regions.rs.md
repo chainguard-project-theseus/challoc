@@ -7,34 +7,18 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `Regions...b_slot` | external_body | raw pointer (internal) | Verus | trusted |
+| `entry_barrier` | external_body | inline asm | Islaris/Isla | trusted |
 
-## `Regions::slab_slot`
+## `entry_barrier`
 
-src/layout/regions.rs:748. Kind: external_body. Category: raw pointer (internal).
-Tool: Verus. Status: trusted.
+src/layout/regions.rs:2199. Kind: external_body. Category: inline asm.
+Tool: Islaris/Isla. Status: trusted.
 
-> Slab-slot lookup of design section 2, the whole of the `free` fast path's classification: `Some((class, slab, slot))` when `p` is exactly a slot start inside a class region, `None` for anything else (a gap, a mid-slot address, the huge or metadata region, or outside every reservation).
+> [`class_entry`]'s barrier on x86_64: `p`, through an empty `asm!`.
 
 ```rust
-pub fn slab_slot(&self, p: usize) -> (r: Option<(usize, usize, usize)>)
-    requires self.wf(), crate::api::ready(),
+fn entry_barrier(p: *const super::Class) -> (r: *const super::Class)
     ensures
-        r matches Some((c, slab, slot)) ==> {
-            let cls = class_table()[c as int];
-            let rel = p.wrapping_sub(self.class_base[c as int]);
-            &&& c < NCLASSES
-            &&& cls.wf()
-            &&& rel < (1usize << self.lg_region)
-            &&& slab == rel >> cls.lg_slab
-            &&& slot < cls.nslots
-            &&& rel & (((1usize << cls.lg_slab) - 1) as usize) == slot * cls.size
-            &&& self.is_slot_addr(c as int, p)
-            &&& p as int == self.slot_at(c as int, slab as int, slot as int)
-            &&& (slab as int) < self.spec_nslabs(c as int)
-        },
-        // Exact with separated regions: every slot start is found, in
-        // its class.
-        self.separated() ==> forall|c: int| #[trigger] self.is_slot_addr(c, p) ==> (r matches Some((c2, _, _)) && c2 as int == c),
+        r == p,
     opens_invariants none
 ```
