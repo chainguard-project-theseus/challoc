@@ -617,7 +617,7 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
             if cs.table().bits(i).allocated(nslots) != live {
                 mismatched += 1;
             }
-            if live < nslots && !cs.is_partial(i) {
+            if live < nslots && !cs.is_partial(i, vstd::prelude::Tracked::assume_new()) {
                 unlisted += 1;
             }
         }

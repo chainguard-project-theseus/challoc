@@ -1859,10 +1859,10 @@ fn scheduled_pops_take_the_run_minimum_and_rebuild_from_the_lowest_slab() {
                 // the lowest partial slab may be a full one.)
                 let nslots = CLASSES[c].nslots();
                 assert!(
-                    cs.lowest_partial()
+                    cs.lowest_partial(vstd::prelude::Tracked::assume_new())
                         .is_none_or(|l| l >= top_slab || cs.desc(l).live() == nslots),
                     "block from slab {top_slab} above the lowest partial slab {:?}",
-                    cs.lowest_partial()
+                    cs.lowest_partial(vstd::prelude::Tracked::assume_new())
                 );
             }
         }
