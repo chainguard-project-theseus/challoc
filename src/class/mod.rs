@@ -66,15 +66,19 @@
 //! lock), so a concurrent release either is visible to that check or sets
 //! the bit afterwards.
 
+#[cfg(verus_keep_ghost)]
+use crate::arena::{Published, process_pub_loc};
 use crate::layout::{CLASSES, Class, MAX_SLAB_WORDS, Regions};
 #[cfg(verus_keep_ghost)]
 use crate::layout::{NCLASSES, class_table, process_regions};
 use crate::lock::{Lock, LockOrder, PAD_ALIGN, Padded, RawLock};
 #[cfg(verus_keep_ghost)]
-use crate::lock::{lock_frame, lock_init, lock_inv, rank_class};
+use crate::lock::{lock_frame, lock_init, lock_inv, rank_class, rank_meta, rank_sets};
 use crate::meta::Meta;
 use crate::purge::{self, Decayer};
-use crate::slab::{SlabDesc, State};
+use crate::slab::{DescPerm, SlabDesc, State};
+#[cfg(verus_keep_ghost)]
+use crate::slab::{desc_id, state_byte};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::addr::cast_provenance;
 use crate::vspec::zero::ZeroRaw;
@@ -85,6 +89,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Map, Tracked, int, nat, verus};
 use vstd::raw_ptr::PointsTo;
+#[cfg(verus_keep_ghost)]
+use vstd::resource::Loc;
+use vstd::resource::set::{GhostPersistentSubset, GhostSetAuth};
 
 mod abort;
 mod decay;
@@ -104,6 +111,8 @@ pub use sets::SET_GROUPS;
 pub(crate) use sets::Set;
 pub use sets::SetTable;
 pub use table::SlabTable;
+#[cfg(verus_keep_ghost)]
+use table::{desc_at, guard_marked, slab_marked, slab_owner};
 use verify::{fresh_with_live, release_into_fresh};
 
 verus! {
@@ -388,16 +397,49 @@ struct Inner {
     /// [`ClassState::next_fresh_slab`]).
     group_next: usize,
     group_end: usize,
-    /// Ghost: this arena's slabs of this class, each with the state its
-    /// descriptor holds while this lock is held. The accessors
-    /// that tie it to the descriptors (`state_locked` and the others) are
-    /// unverified.
+    /// Ghost: the slabs this arena owns (their group's owner word names
+    /// this arena, guard slabs included), each with the state its
+    /// descriptor holds while this lock is held. The accessors that tie it
+    /// to the descriptors (`state_locked` and the others) are unverified;
+    /// the descriptor permissions ([`Inner::dperms`]) record it.
     #[allow(dead_code)]
     states: Ghost<Map<nat, State>>,
     /// Ghost: this arena's committed slabs of this class (guards
     /// excluded), the slabs `stats.committed` counts.
     #[allow(dead_code)]
     committed: Ghost<vstd::set::Set<nat>>,
+    /// Ghost: the `dirty_at` stamp each owned slab's descriptor holds
+    /// while this lock is held.
+    #[allow(dead_code)]
+    dirty: Ghost<Map<nat, u64>>,
+    /// Ghost: the arena and the class table this lock value belongs to
+    /// (set by `new`, never changed).
+    #[allow(dead_code)]
+    arena: Ghost<u16>,
+    #[allow(dead_code)]
+    table: Ghost<SlabTable>,
+    /// Ghost: the fresh markers of every slab this arena owns but its
+    /// guards, which `AtomicBitmap::init` returned when `take_group`
+    /// handed the slab's group out: what a claim from the slab needs
+    /// (`AtomicBitmap::inited_by`); and the init markers of its guard
+    /// slabs, which `take_group` took as they were (`guard_marked`).
+    #[allow(dead_code)]
+    inited: Tracked<GhostPersistentSubset<int>>,
+    /// Ghost: the permissions ([`DescPerm`]) of the descriptors of the
+    /// slabs this arena owns, which `take_group` handed over with the
+    /// slabs; each records the state and stamp `states` and `dirty` hold,
+    /// and, but for a guard slab, this arena ([`descs_ok`]).
+    #[allow(dead_code)]
+    dperms: Tracked<Map<nat, DescPerm>>,
+    /// Ghost: the authority of the record of this state's owned slabs,
+    /// whose every element is an owned slab, at a location of this state
+    /// alone (minted by `new`). `take_group` adds a group's slabs as it
+    /// stores the group's owner word, and keeps their persistent part in
+    /// the word's invariant (`table::OwnerPred`), for the owner checks to
+    /// tell that a group whose owner word names this arena is this
+    /// state's.
+    #[allow(dead_code)]
+    oauth: Tracked<GhostSetAuth<int>>,
 }
 
 } // verus!
@@ -622,6 +664,62 @@ spec fn set_wf(s: Set, n: nat) -> bool {
     &&& forall|b: nat| #[trigger] s.map@.contains(b) ==> b < n
 }
 
+/// Owned slab `s`'s descriptor permission in `dperms` is to its
+/// descriptor in `t`, and records the ghost state `st` and stamp `dirty`
+/// and, unless `s` is a guard slab (whose descriptor stays zero), the
+/// arena `arena`.
+spec fn desc_ok(dperms: Map<nat, DescPerm>, t: SlabTable, arena: u16, s: nat, st: State, dirty: u64) -> bool {
+    &&& dperms.contains_key(s)
+    &&& dperms[s].id() == desc_id(&desc_at(t, s as usize))
+    &&& dperms[s].state() == state_byte(st)
+    &&& dperms[s].dirty() == dirty
+    &&& !t.spec_is_guard(s as usize) ==> dperms[s].arena() == arena
+}
+
+/// [`desc_ok`] at every slab `states` owns: the class lock value holds
+/// the permission of every owned slab's descriptor, which agrees with
+/// its ghost. Opaque ([`Inner::lemma_desc`] reads it at one slab); a
+/// function of the fields it reads, so that a write of any other field
+/// keeps it.
+#[verifier::opaque]
+spec fn descs_ok(states: Map<nat, State>, dirty: Map<nat, u64>, dperms: Map<nat, DescPerm>, t: SlabTable, arena: u16) -> bool {
+    forall|s: nat| #[trigger] states.contains_key(s) ==> desc_ok(dperms, t, arena, s, states[s], dirty[s])
+}
+
+/// Every slab the record `rec` ([`Inner::oauth`]) has is one `states`
+/// owns: only which slabs are owned matters, as for [`whole_groups`].
+spec fn owned_rec(rec: vstd::set::Set<int>, states: Map<nat, State>) -> bool {
+    &&& forall|x: int| #[trigger] rec.contains(x) ==> 0 <= x
+    &&& forall|x: int| #[trigger] rec.contains(x) ==> states.contains_key(x as nat)
+}
+
+/// `owned` is whole hand-out groups of `t`: with a slab, every slab of its
+/// group ([`SlabTable::spec_group_range`]). `take_group` hands an arena a
+/// whole group, which `next_fresh_slab` adds to the ghost at once, and no
+/// owned slab leaves. Opaque ([`lemma_whole_group`] reads it at two
+/// slabs); a function of the owned set, so that a write of an owned
+/// slab's state keeps it.
+#[verifier::opaque]
+spec fn whole_groups(owned: vstd::set::Set<nat>, t: SlabTable) -> bool {
+    forall|x: nat, y: nat| #![trigger owned.contains(x), owned.contains(y)]
+        owned.contains(x) && t.spec_group_range((x as usize) >> t.lg_group).0 <= y
+            && y < t.spec_group_range((x as usize) >> t.lg_group).1 ==> owned.contains(y)
+}
+
+/// [`whole_groups`] at `x` and `y`: a slab `y` of the hand-out group of
+/// an owned slab `x` is owned.
+proof fn lemma_whole_group(owned: vstd::set::Set<nat>, t: SlabTable, x: nat, y: nat)
+    requires
+        whole_groups(owned, t),
+        owned.contains(x),
+        t.spec_group_range((x as usize) >> t.lg_group).0 <= y,
+        y < t.spec_group_range((x as usize) >> t.lg_group).1,
+    ensures
+        owned.contains(y),
+{
+    reveal(whole_groups);
+}
+
 /// A set of the class state that lacks slab `x` holds fewer than `n` slabs.
 proof fn lemma_set_len(s: Set, n: nat, x: nat)
     requires
@@ -662,30 +760,76 @@ impl Inner {
         self.states@[s]
     }
 
+    /// The value holds the agreeing permission of every owned slab's
+    /// descriptor ([`descs_ok`]).
+    spec fn descs(&self) -> bool {
+        descs_ok(self.states@, self.dirty@, self.dperms@, self.table@, self.arena@)
+    }
+
+    /// [`descs`](Inner::descs) at owned slab `s`.
+    proof fn lemma_desc(&self, s: nat)
+        requires
+            self.descs(),
+            self.owns(s),
+        ensures
+            desc_ok(self.dperms@, self.table@, self.arena@, s, self.st(s), self.dirty@[s]),
+    {
+        reveal(descs_ok);
+    }
+
     /// The seam's counts and shapes: three well-formed sets over the
-    /// class's slabs, each count the population of its set, the
-    /// committed count the size of the committed set, the owned and
-    /// committed slabs among the class's (at most `2^52` of them), and the
-    /// current group's cursor inside the class.
+    /// class's slabs, each a view of the shared set table over a group of
+    /// the class's slab count ([`Set::shared_over`]) and each count the
+    /// population of its set, the committed count the size of the
+    /// committed set, the owned and committed slabs among the class's (at
+    /// most `2^52` of them), and the current group's cursor inside the
+    /// class and, while slabs are left in it, inside one hand-out group,
+    /// whose end is the current group's end; the slab before the current
+    /// group's end is owned, and each owned slab's markers are held (fresh
+    /// ones from `init`, a guard slab's init markers), which puts both
+    /// below the watermark (`SlabTable::next_slab_locked`); every owned
+    /// slab's owner ([`slab_owner`]) is this arena, the owned slabs being
+    /// whole hand-out groups ([`whole_groups`]); the value holds every
+    /// owned slab's descriptor permission, which agrees with the ghost
+    /// ([`Inner::descs`]); and the owned-slab record has owned slabs only
+    /// ([`owned_rec`]).
     spec fn base(&self) -> bool {
         &&& set_wf(self.partial, self.nbits())
         &&& set_wf(self.empty, self.nbits())
         &&& set_wf(self.purged, self.nbits())
+        &&& self.partial.shared_over(self.nbits())
+        &&& self.empty.shared_over(self.nbits())
+        &&& self.purged.shared_over(self.nbits())
         &&& self.stats.nonfull == self.partial.map@.len()
         &&& self.stats.empty == self.empty.map@.len()
         &&& self.stats.purged == self.purged.map@.len()
         &&& self.stats.committed == self.committed@.len()
         &&& self.group_next <= self.group_end <= self.nbits()
+        &&& self.group_next < self.group_end
+            ==> self.group_end == self.table@.spec_group_range(self.group_next >> self.table@.lg_group).1
         &&& self.nbits() <= usize::MAX >> 12
         &&& forall|s: nat| #[trigger] self.committed@.contains(s) ==> s < self.nbits()
         &&& forall|s: nat| #[trigger] self.states@.contains_key(s) ==> s < self.nbits()
+        &&& self.inited@.id() == self.table@.spec_slots().mloc
+        &&& forall|s: nat| #[trigger] self.states@.contains_key(s) && !self.table@.spec_is_guard(s as usize)
+            ==> slab_marked(self.table@, s as int, self.inited@@)
+        &&& forall|s: nat| #[trigger] self.states@.contains_key(s) && self.table@.spec_is_guard(s as usize)
+            ==> guard_marked(self.table@, s as int, self.inited@@)
+        &&& self.group_end > 0 ==> self.owns((self.group_end - 1) as nat)
+        &&& forall|s: nat| #[trigger] self.states@.contains_key(s)
+            ==> slab_owner(self.table@.spec_class() as int, s as int) == self.arena@
+        &&& whole_groups(self.states@.dom(), self.table@)
+        &&& self.descs()
+        &&& owned_rec(self.oauth@@, self.states@)
     }
 
     /// The ghost link at slab `s`, apart from the current group: the
     /// committed slabs are exactly the owned ones that left `Fresh` (a
     /// slab `next_fresh_slab` commits is made `Active` by `take` in the
-    /// same lock hold); a partial slab is `Active`; and the `empty` and
-    /// `purged` sets are exactly the owned slabs in those states.
+    /// same lock hold); a partial slab is `Active`; the `empty` and
+    /// `purged` sets are exactly the owned slabs in those states; and a
+    /// guard slab is uncommitted and, when owned, `Fresh` (its descriptor
+    /// stays zero).
     spec fn slab_core(&self, s: nat) -> bool {
         &&& self.committed@.contains(s) ==> self.owns(s)
         &&& self.committed@.contains(s) ==> self.st(s) != State::Fresh
@@ -693,6 +837,8 @@ impl Inner {
         &&& self.partial.map@.contains(s) ==> self.owns(s) && self.st(s) == State::Active
         &&& self.empty.map@.contains(s) == (self.owns(s) && self.st(s) == State::Empty)
         &&& self.purged.map@.contains(s) == (self.owns(s) && self.st(s) == State::Purged)
+        &&& self.table@.spec_is_guard(s as usize) ==> !self.committed@.contains(s)
+            && (self.owns(s) ==> self.st(s) == State::Fresh)
     }
 
     /// The ghost link's current-group part at slab `s`: the current
@@ -723,6 +869,74 @@ impl Inner {
         &&& forall|s: nat| s != x ==> #[trigger] self.slab_ok(s)
     }
 
+    /// Slab `s` is ready for `ClassState::take`: owned, committed (so not
+    /// a guard slab), in neither idle set nor the current group's
+    /// uncommitted rest, and the invariant holds elsewhere (a slab
+    /// `next_slab` just took out of an idle set or committed fresh).
+    spec fn ready(&self, s: nat) -> bool {
+        &&& self.inv_but(s as int)
+        &&& s < self.nbits()
+        &&& self.owns(s)
+        &&& self.committed@.contains(s)
+        &&& !self.table@.spec_is_guard(s as usize)
+        &&& !self.empty.map@.contains(s)
+        &&& !self.purged.map@.contains(s)
+        &&& !(self.group_next <= s < self.group_end)
+    }
+
+    /// `self` and `o` agree on everything [`Set::ensure`] keeps of a view
+    /// of the shared set table (only an own store changes), so on the
+    /// invariant too ([`lemma_same_sets_inv`]).
+    spec fn same_sets(&self, o: Inner) -> bool {
+        &&& self.same_sets_but_rec(o)
+        &&& self.oauth@@ == o.oauth@@
+        &&& self.oauth@.id() == o.oauth@.id()
+    }
+
+    /// [`Inner::same_sets`] but for the owned-slab record
+    /// ([`Inner::oauth`]), which `SlabTable::take_group` adds a group to.
+    spec fn same_sets_but_rec(&self, o: Inner) -> bool {
+        &&& self.partial.map == o.partial.map
+        &&& self.empty.map == o.empty.map
+        &&& self.purged.map == o.purged.map
+        &&& self.partial.store == o.partial.store
+        &&& self.empty.store == o.empty.store
+        &&& self.purged.store == o.purged.store
+        &&& self.stats == o.stats
+        &&& self.group_next == o.group_next
+        &&& self.group_end == o.group_end
+        &&& self.states == o.states
+        &&& self.committed == o.committed
+        &&& self.dirty == o.dirty
+        &&& self.arena == o.arena
+        &&& self.table == o.table
+        &&& self.inited == o.inited
+        &&& self.dperms == o.dperms
+    }
+
+    /// Values that agree as [`Inner::same_sets`] says agree on the invariant.
+    proof fn lemma_same_sets(&self, o: Inner)
+        requires
+            self.same_sets(o),
+        ensures
+            self.nbits() == o.nbits(),
+            self.base() == o.base(),
+            forall|s: nat| #[trigger] self.slab_ok(s) == o.slab_ok(s),
+            self.inv() == o.inv(),
+    {
+        assert forall|s: nat| #[trigger] self.slab_ok(s) == o.slab_ok(s) by {}
+        if o.inv() {
+            assert forall|s: nat| #[trigger] self.slab_ok(s) by {
+                assert(o.slab_ok(s));
+            }
+        }
+        if self.inv() {
+            assert forall|s: nat| #[trigger] o.slab_ok(s) by {
+                assert(self.slab_ok(s));
+            }
+        }
+    }
+
     /// `self` and `o` agree on everything but the sets and counts.
     spec fn same_rest(&self, o: &Inner) -> bool {
         &&& self.stats.committed == o.stats.committed
@@ -732,6 +946,36 @@ impl Inner {
         &&& self.nbits() == o.nbits()
         &&& self.states == o.states
         &&& self.committed == o.committed
+        &&& self.dirty == o.dirty
+        &&& self.arena == o.arena
+        &&& self.table == o.table
+        &&& self.inited == o.inited
+        &&& self.dperms == o.dperms
+        &&& self.oauth@@ == o.oauth@@
+        &&& self.oauth@.id() == o.oauth@.id()
+    }
+
+    /// Commit the set words that hold every bit up to and including
+    /// `slab` in the three sets ([`Set::ensure`]), for a group the arena
+    /// is about to receive (`take_group`, under the commit lock). The sets
+    /// are views of the shared set table, whose commit leaves them as they
+    /// are.
+    #[inline(always)]
+    fn ensure_sets(&mut self, meta: &Meta, page: usize, slab: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), crate::sys::Errno>)
+        requires
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_sets(0)),
+            old(ord).allows(rank_meta()),
+            old(self).base(),
+            slab < old(self).nbits(),
+            meta.is_process(),
+        ensures
+            final(self).same_sets(*old(self)),
+            *final(ord) == *old(ord),
+    {
+        self.partial.ensure(meta, page, slab, Tracked(ord))?;
+        self.empty.ensure(meta, page, slab, Tracked(ord))?;
+        self.purged.ensure(meta, page, slab, Tracked(ord))
     }
 
     fn set_partial(&mut self, slab: usize)
@@ -824,26 +1068,6 @@ impl Inner {
 } // verus!
 
 impl Inner {
-    /// Commit the set words that hold every bit up to and including
-    /// `slab` in the three sets ([`Set::ensure`]), for a group the arena
-    /// is about to receive (`take_group`, under the commit lock). The sets
-    /// are views of the shared set table, whose commit leaves them as they
-    /// are. `_ord` is the caller's lock-order token, unused until the
-    /// take_group proof takes it.
-    #[inline(always)]
-    fn ensure_sets(
-        &mut self,
-        meta: &Meta,
-        page: usize,
-        slab: usize,
-        _ord: Tracked<&mut LockOrder>,
-    ) -> Result<(), crate::sys::Errno> {
-        self.partial
-            .ensure(meta, page, slab, Tracked::assume_new())?;
-        self.empty.ensure(meta, page, slab, Tracked::assume_new())?;
-        self.purged.ensure(meta, page, slab, Tracked::assume_new())
-    }
-
     /// `slab` out of the empty set. Tests only: a refill and a purge
     /// spell the pair out (`next_slab`, `settle`).
     #[cfg(test)]
@@ -909,6 +1133,8 @@ impl ClassState {
         &&& table_at(self.table).spec_class() == self.class as usize
         &&& index_of(self.table) == self.class as int
         &&& lock_init(self.inner.0).nbits() == table_at(self.table).spec_nslabs()
+        &&& lock_init(self.inner.0).arena@ == self.arena
+        &&& lock_init(self.inner.0).table@ == table_at(self.table)
         &&& self.inner.0.rank() == rank_class(self.arena as int, self.class as int)
     }
 
@@ -931,21 +1157,55 @@ impl ClassState {
     pub closed spec fn spec_arena(&self) -> u16 {
         self.arena
     }
+
+    /// The location of this state's owned-slab record ([`Inner::oauth`]):
+    /// its class lock value's, made by `new`.
+    pub closed spec fn spec_oloc(&self) -> Loc {
+        lock_init(self.inner.0).oauth@.id()
+    }
+
+    /// `w` names this state as the published state of its class and arena
+    /// index: the class `spec_class` state of the arena the process
+    /// registry published at `spec_arena` ([`Published`]). Only the
+    /// published states take groups (the callers of `take_group` hold such
+    /// a record), and two records of one index agree, so one state per
+    /// (arena index, class) takes groups.
+    pub open spec fn published_by(&self, w: Published) -> bool {
+        &&& w.id() == process_pub_loc()
+        &&& w.key() == self.spec_arena() as int
+        &&& w.value().len() == NCLASSES
+        &&& w.value()[self.spec_class() as int] == self.spec_oloc()
+    }
+}
+
+/// Values that agree as [`Inner::same_sets`] says agree on the invariant
+/// ([`Inner::lemma_same_sets`]), wherever [`Inner::same_sets`] is known.
+broadcast proof fn lemma_same_sets_inv(a: Inner, b: Inner)
+    ensures
+        #[trigger] a.same_sets(b) ==> a.inv() == b.inv() && a.nbits() == b.nbits(),
+{
+    if a.same_sets(b) {
+        a.lemma_same_sets(b);
+    }
 }
 
 /// Assumption (`lock.rs`): the class lock's value keeps the set/count
 /// seam's invariant, ghost link included, while the lock is free.
 /// Verified holders show it through the postconditions of the `Inner`
-/// methods; `ClassState::new` proves it of the value it creates the lock
-/// with, and `lowest_partial` and `is_partial` only read the value. The
-/// unverified holders are the refill and release paths (`plan`, `take`,
-/// `next_slab`, `next_fresh_slab` with `SlabTable::take_group` under it,
-/// `reopen`, `on_live_zero`), the purge and decay walks (`decay.rs`),
-/// `bin_stats`, and the tests, but for those that break the counts on
-/// purpose to reach an abort. None of them updates the ghost `states` and
-/// `committed`, so for them the assumption is the set and count shapes
-/// (`Inner::base`) and the sets' disjointness, which the ghost link
-/// implies. The fork handlers take the raw lock without touching the
+/// methods and of `next_slab` and `next_fresh_slab` (with
+/// `SlabTable::take_group` under it); `ClassState::new` proves it of the
+/// value it creates the lock with, and `lowest_partial` and `is_partial`
+/// only read the value. The unverified holders are the rest of the refill
+/// and release paths (`plan`, `take`, `reopen`, `on_live_zero`), the purge
+/// and decay walks (`decay.rs`), `bin_stats`, and the tests, but for those
+/// that break the counts on purpose to reach an abort. None of them
+/// updates the ghost fields (`states`, `committed`, `dirty`, `inited`,
+/// `dperms`, `oauth`), so for them the assumption is the set and count
+/// shapes (`Inner::base`) and the sets' disjointness, which the ghost link
+/// implies; the descriptor writes they make (`take`, `on_live_zero`, the
+/// walks) do not go through the ghost permissions, so `Inner::descs` ties
+/// the permissions to the ghost states only, not to the descriptors'
+/// bytes. The fork handlers take the raw lock without touching the
 /// value.
 broadcast axiom fn axiom_class_lock_inv(v: Inner)
     ensures
@@ -953,11 +1213,15 @@ broadcast axiom fn axiom_class_lock_inv(v: Inner)
 ;
 
 /// Assumption (`lock.rs`): the sets behind a class lock stay over the
-/// slab count they were created with. Every `Inner` method keeps `nbits`
-/// (`same_rest`), and nothing replaces the sets.
+/// slab count they were created with, and the value's arena, table and
+/// owned-slab record's location are the ones `new` set. Every `Inner`
+/// method keeps `nbits` and those fields (`same_rest`, `same_sets`),
+/// nothing replaces the sets, and no code writes those ghost fields after
+/// `new` (`take_group` adds to the record, at its location).
 broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
     ensures
-        #[trigger] lock_frame(init, v) == (v.nbits() == init.nbits()),
+        #[trigger] lock_frame(init, v) == (v.nbits() == init.nbits() && v.arena == init.arena && v.table == init.table
+            && v.oauth@.id() == init.oauth@.id()),
 ;
 
 impl ClassState {
@@ -1018,6 +1282,9 @@ impl ClassState {
         let partial = Set::in_table(sets_ptr, Tracked(sets_perm), class, 0, Tracked(w0));
         let empty = Set::in_table(sets_ptr, Tracked(sets_perm), class, 1, Tracked(w1));
         let purged = Set::in_table(sets_ptr, Tracked(sets_perm), class, 2, Tracked(w2));
+        let tracked im = table.empty_marks();
+        let tracked dm = Map::<nat, DescPerm>::tracked_empty();
+        let tracked (oa, _) = GhostSetAuth::<int>::new(vstd::set::Set::empty());
         let inner = Inner {
             partial,
             empty,
@@ -1034,6 +1301,12 @@ impl ClassState {
             // No slab owned or committed yet.
             states: Ghost(Map::empty()),
             committed: Ghost(vstd::set::Set::empty()),
+            dirty: Ghost(Map::empty()),
+            arena: Ghost(arena),
+            table: Ghost(*table),
+            inited: Tracked(im),
+            dperms: Tracked(dm),
+            oauth: Tracked(oa),
         };
         proof {
             let n = inner.nbits();
@@ -1041,6 +1314,13 @@ impl ClassState {
             assert(inner.partial.map@.len() == 0 && inner.committed@.len() == 0);
             assert(usize::MAX >> 12 == 0xF_FFFF_FFFF_FFFFusize) by (bit_vector);
             assert(n <= usize::MAX >> 12);
+            assert(inner.descs()) by {
+                reveal(descs_ok);
+            }
+            assert(whole_groups(inner.states@.dom(), inner.table@)) by {
+                reveal(whole_groups);
+            }
+            assert(owned_rec(inner.oauth@@, inner.states@));
             assert(inner.base());
             assert forall|s: nat| #[trigger] inner.slab_ok(s) by {}
         }

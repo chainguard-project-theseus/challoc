@@ -195,6 +195,8 @@ pub fn set_check_zero(on: bool) {
     CHECK_ZERO.store(on, Ordering::Relaxed);
 }
 
+verus! {
+
 /// Whether the `check_zero` debug mode is on: `ClassState::claim` and
 /// `Huge::alloc` then read the first and last word of every slot or page
 /// they report as zero and abort on a non-zero one. Off by default; the
@@ -204,8 +206,6 @@ pub fn set_check_zero(on: bool) {
 pub fn check_zero() -> bool {
     CHECK_ZERO.load(Ordering::Relaxed)
 }
-
-verus! {
 
 /// The advice in force for diagnostics, e.g. `MADV_DONTNEED`; it reads
 /// `MADV_DONTNEED (some lazy batches issued)` once any lazy batch went

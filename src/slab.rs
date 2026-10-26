@@ -130,8 +130,8 @@ pub struct SlabDesc {
 /// holder of the lock that protects them. Not `Copy`, and its fields are
 /// private to this module, which has no constructor: the one source is
 /// the trusted `class::table::axiom_zero_desc`, once per descriptor of a
-/// class table (it uses up the descriptor's zero bytes). The accessors
-/// that take one do not yet require it to be their descriptor's.
+/// class table (it uses up the descriptor's zero bytes). `init` requires
+/// it to be its descriptor's; `set_state` and `set_dirty_at` do not yet.
 // Ghost: for the specifications of the descriptor accessors.
 #[allow(dead_code)]
 pub tracked struct DescPerm {
@@ -292,8 +292,21 @@ impl SlabDesc {
     }
 
     /// Initialise the descriptor of a slab handed to `arena`: `Fresh`, no
-    /// live slots. `_p` is the descriptor's permission (ghost).
-    pub fn init(&self, arena: u16, _p: Tracked<&mut DescPerm>) {
+    /// live slots, through `p`, the descriptor's permission (ghost).
+    /// Trusted: the five relaxed stores (`core`'s) write the fields the
+    /// permission records as it says (`Fresh`, stamp 0, `arena`).
+    // `p` is read only by the specification (ghost).
+    #[allow(unused_variables)]
+    #[verifier::external_body]
+    pub fn init(&self, arena: u16, Tracked(p): Tracked<&mut DescPerm>)
+        requires
+            old(p).id() == desc_id(self),
+        ensures
+            final(p).id() == old(p).id(),
+            final(p).state() == state_byte(State::Fresh),
+            final(p).dirty() == 0,
+            final(p).arena() == arena,
+    {
         self.state.store(State::Fresh as u8, Ordering::Relaxed);
         self.shadow.store(State::Fresh as u8 + 1, Ordering::Relaxed);
         self.arena.store(arena, Ordering::Relaxed);

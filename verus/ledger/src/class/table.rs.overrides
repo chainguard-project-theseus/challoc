@@ -1,5 +1,6 @@
 # The lock contract, as for lock.rs's axiom_acquired and axiom_held.
 axiom_table_lock_inv	allocator invariant	none (assumption)
+axiom_table_lock_frame	allocator invariant	none (assumption)
 # One table per class per process: each uses up its class's one-shot token.
 axiom_slot_loc	allocator invariant	none (assumption)
 axiom_fresh_words	allocator invariant	none (assumption)
