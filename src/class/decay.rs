@@ -4,6 +4,7 @@ use super::abort::slab_count_underflow;
 use super::{ClassState, Inner};
 use crate::purge::{Batch, Curve, STEPS};
 use crate::slab::State;
+use vstd::prelude::Tracked;
 
 /// The older of two `dirty_at` stamps where 0 means "none yet": the fold
 /// of the purge walks over the `Empty` slabs they keep, feeding the gate's `oldest_empty` (0 when no slab is `Empty`).
@@ -77,7 +78,9 @@ impl ClassState {
     /// number purged.
     pub fn purge_empty(&self, cutoff: u64) -> usize {
         let spp = self.table().slabs_per_page();
-        let mut g = self.inner.lock();
+        let mut g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         let mut v = PurgeOlder {
             cutoff,
             p: Purger::new(spp),
@@ -170,7 +173,9 @@ impl ClassState {
     /// survivors. Returns the number purged.
     fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize {
         let spp = self.table().slabs_per_page();
-        let mut g = self.inner.lock();
+        let mut g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         // First pass: the age histogram of the empty set and its allowance.
         let mut h = Histogram {
             now,
@@ -277,7 +282,11 @@ impl ClassState {
 
     /// Bytes of this arena's `Empty` slabs of the class (one lock hold).
     pub fn empty_bytes(&self) -> usize {
-        self.inner.lock().stats.empty * self.class().slab_size()
+        self.inner
+            .lock(Tracked::assume_new(), Tracked::assume_new())
+            .stats
+            .empty
+            * self.class().slab_size()
     }
 }
 

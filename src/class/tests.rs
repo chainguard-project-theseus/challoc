@@ -2191,7 +2191,7 @@ fn a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts() {
     cs.release(&b[..1]);
     assert_eq!(cs.stats().empty, 1);
     // Corrupt the count: the set still holds the slab.
-    cs.inner.lock().stats.empty = 0;
+    cs.inner.lock_t().stats.empty = 0;
     let mut picks = [Pick::EMPTY; MAX_PICKS];
     cs.plan(&env.meta, 1, &mut picks);
 }
@@ -2205,7 +2205,7 @@ fn a_purge_of_an_empty_slab_the_counts_do_not_know_aborts() {
     assert_eq!(claim.n, 1);
     cs.release(&b[..1]);
     assert_eq!(cs.stats().empty, 1);
-    cs.inner.lock().stats.empty = 0;
+    cs.inner.lock_t().stats.empty = 0;
     cs.purge_empty(u64::MAX);
 }
 
@@ -2337,7 +2337,7 @@ fn the_set_helpers_keep_the_counts_in_step_with_the_bits() {
         }
     );
     {
-        let mut g = cs.inner.lock();
+        let mut g = cs.inner.lock_t();
         g.empty_take(0);
         assert!(!g.empty.map.is_set(0));
         assert_eq!((g.stats.empty, g.stats.purged), (1, 0));
@@ -2374,7 +2374,7 @@ fn a_plan_that_takes_a_purged_slab_the_counts_do_not_know_aborts() {
     assert_eq!(cs.purge_empty(u64::MAX), 1);
     assert_eq!(cs.stats().purged, 1);
     // Corrupt the count: the set still holds the slab.
-    cs.inner.lock().stats.purged = 0;
+    cs.inner.lock_t().stats.purged = 0;
     let mut picks = [Pick::EMPTY; MAX_PICKS];
     cs.plan(&env.meta, 1, &mut picks);
 }
@@ -2410,7 +2410,7 @@ fn walk_empty_visits_the_set_in_address_order_and_skips_what_the_visitor_takes()
             self.0.push(slab);
         }
     }
-    let mut g = cs.inner.lock();
+    let mut g = cs.inner.lock_t();
     let mut seen = Seen(Vec::new());
     cs.walk_empty(&mut g, &mut seen);
     assert_eq!(

@@ -48,3 +48,10 @@ pub assume_specification[ usize::next_power_of_two ](x: usize) -> (r: usize)
 ;
 
 } // verus!
+
+verus! {
+
+/// A spin-wait hint to the CPU (`pause`, `isb`); no effect on memory.
+pub assume_specification[ core::hint::spin_loop ]();
+
+} // verus!

@@ -1268,32 +1268,35 @@ impl Huge {
             retain_max: AtomicUsize::new(DEFAULT_RETAIN_MAX),
             purge_on_free: AtomicBool::new(false),
             gate: Decayer::new(),
-            inner: Lock::new(Inner {
-                free,
-                table,
-                next_page: 0,
-                empty_head: ptr::null_mut(),
-                empty_tail: ptr::null_mut(),
-                stats: HugeStats {
-                    runs: 0,
-                    run_pages: 0,
-                    empty: 0,
-                    empty_pages: 0,
-                    purged: 0,
-                    purged_pages: 0,
+            inner: Lock::new(
+                Inner {
+                    free,
+                    table,
                     next_page: 0,
-                    table_cap: 0,
+                    empty_head: ptr::null_mut(),
+                    empty_tail: ptr::null_mut(),
+                    stats: HugeStats {
+                        runs: 0,
+                        run_pages: 0,
+                        empty: 0,
+                        empty_pages: 0,
+                        purged: 0,
+                        purged_pages: 0,
+                        next_page: 0,
+                        table_cap: 0,
+                    },
+                    // The ghost model: `Huge::new` is outside `verus!`, so
+                    // nothing proves `Inner::wf` of it here.
+                    descs: Tracked::assume_new(),
+                    elist: Ghost::assume_new(),
+                    all: Ghost::assume_new(),
+                    np: Ghost::assume_new(),
+                    lg: Ghost::assume_new(),
+                    runs: Tracked::assume_new(),
+                    pgs: Tracked::assume_new(),
                 },
-                // The ghost model: `Huge::new` is outside `verus!`, so
-                // nothing proves `Inner::wf` of it here.
-                descs: Tracked::assume_new(),
-                elist: Ghost::assume_new(),
-                all: Ghost::assume_new(),
-                np: Ghost::assume_new(),
-                lg: Ghost::assume_new(),
-                runs: Tracked::assume_new(),
-                pgs: Tracked::assume_new(),
-            }),
+                Ghost::assume_new(),
+            ),
         })
     }
 
@@ -1426,7 +1429,9 @@ impl Huge {
         };
         let usable_pages = need - GUARD_PAGES;
         let page = self.page_size();
-        let mut g = self.inner.lock();
+        let mut g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         let Some((s, ext)) = self.find(&g, need, align) else {
             return Placed::NONE;
         };
@@ -1731,7 +1736,9 @@ impl Huge {
     #[allow(clippy::while_let_loop)]
     pub fn free_run(&self, meta: &Meta, page: usize) -> RunInfo {
         let page_size = self.page_size();
-        let mut g = self.inner.lock();
+        let mut g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         let d = g.table.get(page);
         if d.is_null() {
             not_a_run(self.addr(page));
@@ -1862,7 +1869,9 @@ impl Huge {
 
     /// Usable bytes of the live run starting at `page`. Aborts otherwise.
     pub fn usable_size(&self, page: usize) -> usize {
-        let g = self.inner.lock();
+        let g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         let d = g.table.get(page);
         // Table entries are live descriptors.
         if d.is_null() || g.desc(d).start() != page {
@@ -1876,7 +1885,9 @@ impl Huge {
 
     /// Descriptor of the extent starting or ending at `page`, if any.
     pub fn lookup(&self, page: usize) -> Option<RunInfo> {
-        let g = self.inner.lock();
+        let g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         let d = g.table.get(page);
         if d.is_null() {
             return None;
@@ -1897,7 +1908,9 @@ impl Huge {
     /// whose discard fails stays `Empty` in its place (the next purge
     /// retries it). Returns the number purged.
     pub fn purge_empty(&self, cutoff: u64) -> usize {
-        let mut g = self.inner.lock();
+        let mut g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         let mut t = Tally::default();
         let mut batch = Batch::new();
         let mut d = g.empty_head;
@@ -1990,7 +2003,9 @@ impl Huge {
     /// gate off (`Decayer::back_off`). Returns the number of extents
     /// purged.
     fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize {
-        let mut g = self.inner.lock();
+        let mut g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         let mut total = 0usize;
         let mut weighted = 0u64;
         let mut d = g.empty_head;
@@ -2064,12 +2079,16 @@ impl Huge {
     /// Bytes in `Empty` extents (one lock hold), for the cgroup policy's
     /// retention figure.
     pub fn empty_bytes(&self) -> usize {
-        let g = self.inner.lock();
+        let g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         g.stats.empty_pages << self.lg_page
     }
 
     pub fn stats(&self) -> HugeStats {
-        let g = self.inner.lock();
+        let g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         HugeStats {
             table_cap: g.table.cap(),
             ..g.stats
@@ -2080,7 +2099,7 @@ impl Huge {
     /// driver reads the copy in [`Huge::oldest_empty`] instead).
     #[cfg(test)]
     pub fn oldest_dirty_at(&self) -> Option<u64> {
-        let g = self.inner.lock();
+        let g = self.inner.lock_t();
         if g.empty_head.is_null() {
             None
         } else {
@@ -2092,7 +2111,7 @@ impl Huge {
     /// Walk every structure and check the invariants; for tests.
     #[cfg(test)]
     fn audit(&self) {
-        let g = self.inner.lock();
+        let g = self.inner.lock_t();
         let st = g.stats;
         assert_eq!(
             st.run_pages + st.empty_pages + st.purged_pages,

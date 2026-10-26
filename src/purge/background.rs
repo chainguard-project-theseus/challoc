@@ -34,13 +34,16 @@ struct State {
     thread: Option<::libc::pthread_t>,
 }
 
-static STATE: Lock<State> = Lock::new(State {
-    present: false,
-    creating: false,
-    exited: false,
-    stack: 0,
-    thread: None,
-});
+static STATE: Lock<State> = Lock::new(
+    State {
+        present: false,
+        creating: false,
+        exited: false,
+        stack: 0,
+        thread: None,
+    },
+    Ghost::assume_new(),
+);
 /// Mirror of `STATE.present` for the lock-free check on every tick.
 static PRESENT: AtomicBool = AtomicBool::new(false);
 /// `background_thread:true` (or, later, `mallctl("background_thread")`).
@@ -133,7 +136,7 @@ pub fn request(on: bool) {
     {
         // Under the state lock, so a failing lazy start (`start_requested`)
         // cannot withdraw this request after it was made.
-        let _g = STATE.lock();
+        let _g = STATE.lock(Tracked::assume_new(), Tracked::assume_new());
         AUTO.store(false, Ordering::Relaxed);
         REQUESTED.store(on, Ordering::Relaxed);
     }
@@ -176,7 +179,7 @@ fn kick() {
 /// `pthread_create` / `pthread_join` may set it on their way.
 pub fn start(shared: &Shared) -> bool {
     let (stack, previous) = {
-        let mut g = STATE.lock();
+        let mut g = STATE.lock(Tracked::assume_new(), Tracked::assume_new());
         if g.present {
             return true;
         }
@@ -202,7 +205,7 @@ pub fn start(shared: &Shared) -> bool {
         }
     }
     let present = {
-        let mut g = STATE.lock();
+        let mut g = STATE.lock(Tracked::assume_new(), Tracked::assume_new());
         g.creating = false;
         g.stack = stack;
         g.thread = thread;
@@ -236,7 +239,7 @@ pub fn start_requested(shared: &Shared) -> bool {
     if start(shared) {
         return true;
     }
-    let g = STATE.lock();
+    let g = STATE.lock(Tracked::assume_new(), Tracked::assume_new());
     if !g.creating && !g.present && AUTO.load(Ordering::Relaxed) {
         REQUESTED.store(false, Ordering::Relaxed);
         // `+ 1` as the release build computes it (overflow checks are off
@@ -295,7 +298,7 @@ pub fn auto_tick(shared: &Shared, now: u64, alloc: bool) {
     }
     {
         // Under the state lock: an explicit `request` in between wins.
-        let _g = STATE.lock();
+        let _g = STATE.lock(Tracked::assume_new(), Tracked::assume_new());
         if !AUTO.load(Ordering::Relaxed) {
             return;
         }
@@ -473,7 +476,7 @@ fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t> 
 #[cfg(test)]
 pub fn join_exited() -> bool {
     let t = {
-        let mut g = STATE.lock();
+        let mut g = STATE.lock_t();
         if g.present || g.creating {
             return false;
         }
@@ -492,13 +495,13 @@ pub fn join_exited() -> bool {
 /// The stack reservation (0 before the first start), for tests.
 #[cfg(test)]
 pub fn stack() -> usize {
-    STATE.lock().stack
+    STATE.lock_t().stack
 }
 
 /// The last thread created and not yet joined, for tests.
 #[cfg(test)]
 pub fn thread() -> Option<::libc::pthread_t> {
-    STATE.lock().thread
+    STATE.lock_t().thread
 }
 
 /// The `Shared` that [`spawn`] passes as the thread's argument.
@@ -525,7 +528,7 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
         // between the scan and the wait makes the wait return at once.
         let seq = SEQ.load(Ordering::SeqCst);
         if !requested() {
-            let mut g = STATE.lock();
+            let mut g = STATE.lock(Tracked::assume_new(), Tracked::assume_new());
             g.present = false;
             g.exited = true;
             PRESENT.store(false, Ordering::Relaxed);
@@ -581,12 +584,12 @@ fn detach_from_starter() {
 
 /// Take the state lock (fork prepare, after the metadata lock).
 pub fn fork_lock() {
-    STATE.raw().lock();
+    STATE.raw().lock_held(Tracked::assume_new());
 }
 
 /// Release the state lock (fork parent and child, before the others).
 pub fn fork_unlock() {
-    STATE.raw().unlock();
+    STATE.raw().unlock_held(Tracked::assume_new());
 }
 
 /// Whether the state lock is held (for the fork handler tests).
@@ -603,7 +606,7 @@ pub fn is_locked() -> bool {
 pub fn fork_child() {
     // SAFETY: the forking thread holds the lock; the child is single
     // threaded.
-    let st = unsafe { STATE.get_unlocked() };
+    let st = unsafe { STATE.get_unlocked(Tracked::assume_new()) };
     st.present = false;
     st.creating = false;
     st.exited = false;

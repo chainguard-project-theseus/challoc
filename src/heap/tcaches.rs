@@ -10,6 +10,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::lock::Lock;
+use vstd::prelude::{Ghost, Tracked};
 
 use super::{Heap, Shared};
 
@@ -61,7 +62,7 @@ impl Tcaches {
             ptr::write(
                 this,
                 Tcaches {
-                    lock: Lock::new(()),
+                    lock: Lock::new((), Ghost::assume_new()),
                     table: EMPTY_TABLE,
                 },
             )
@@ -79,7 +80,7 @@ impl Tcaches {
     /// `tcache.create`: a new explicit cache, home arena `arena`. `None`
     /// when the table or the metadata region is full.
     pub fn create(&self, shared: &Shared, arena: u16) -> Option<u16> {
-        let _g = self.lock.lock();
+        let _g = self.lock.lock(Tracked::assume_new(), Tracked::assume_new());
         // The first null entry, lowest index first.
         let mut slot = 0;
         while !self.table[slot].load(Ordering::Relaxed).is_null() {
@@ -134,7 +135,7 @@ impl Tcaches {
     /// `tcache.destroy`: flush and free `id`. `false` if there is no such
     /// cache.
     pub fn destroy(&self, shared: &Shared, id: u16) -> bool {
-        let _g = self.lock.lock();
+        let _g = self.lock.lock(Tracked::assume_new(), Tracked::assume_new());
         let i = id as usize;
         if i >= MAX_TCACHES {
             return false;

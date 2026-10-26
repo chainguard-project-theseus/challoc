@@ -248,7 +248,7 @@ impl SetTable {
             groups,
             nslabs,
             pos,
-            tables: Lock::new(tables),
+            tables: Lock::new(tables, Ghost::assume_new()),
             page,
         })
     }
@@ -257,13 +257,15 @@ impl SetTable {
     /// so its chunk's level-1 word and every row before).
     fn ensure(&self, meta: &Meta, g: usize, slab: usize) -> Result<(), Errno> {
         let row = TwoLevelBitmap::chunked_l0_row(slab / 64);
-        self.tables.lock()[g].ensure(meta, self.page, 8 * (row + 1) * self.groups[g].stride)
+        self.tables
+            .lock(Tracked::assume_new(), Tracked::assume_new())[g]
+            .ensure(meta, self.page, 8 * (row + 1) * self.groups[g].stride)
     }
 
     /// Tests: committed byte ranges of the groups.
     #[cfg(test)]
     pub fn committed_ranges(&self) -> [(usize, usize); SET_GROUPS] {
-        let t = self.tables.lock();
+        let t = self.tables.lock_t();
         let mut out = [(0usize, 0usize); SET_GROUPS];
         for g in 0..SET_GROUPS {
             out[g] = (t[g].base, t[g].committed);
