@@ -72,11 +72,7 @@ fn skips_allowed() -> bool {
 
 /// Print the one structured skip line and, in the strict mode, fail.
 fn skip_line(test: &str, reason: &str) {
-    std::eprintln!("SKIP {test} {reason}");
-    assert!(
-        skips_allowed(),
-        "SKIP {test} {reason}\n(set CHALLOC_TEST_ALLOW_SKIP=1 to let a test pass with a note on a host without the feature)"
-    );
+    crate::testutil::skip(test, reason);
 }
 
 /// `skip!(test, "reason {}", arg)`: report the skip as `SKIP <test>
@@ -94,7 +90,7 @@ macro_rules! skip {
 fn report_program_skips(test: &str, stdout: &str) {
     let skips: Vec<&str> = stdout.lines().filter(|l| l.starts_with("SKIP ")).collect();
     for s in &skips {
-        std::eprintln!("SKIP {test} {}", &s[5..]);
+        crate::testutil::print_skip(test, &s[5..]);
     }
     assert!(
         skips.is_empty() || skips_allowed(),
