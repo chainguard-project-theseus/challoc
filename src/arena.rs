@@ -137,8 +137,8 @@ const A_LAST_EXIT_PURGE: usize = core::mem::offset_of!(Arena, last_exit_purge);
 /// next field's offset, or the size of `S`). An overflow in the `const`
 /// assertions that evaluate it is a compile error.
 pub(crate) const fn fits<S, T>(off: usize, next: usize) -> bool {
-    off % core::mem::align_of::<T>() == 0
-        && core::mem::align_of::<S>() % core::mem::align_of::<T>() == 0
+    off.is_multiple_of(core::mem::align_of::<T>())
+        && core::mem::align_of::<S>().is_multiple_of(core::mem::align_of::<T>())
         && off + core::mem::size_of::<T>() <= next
 }
 
@@ -269,8 +269,8 @@ impl Arena {
                 }
             }
             let sets: &SetTable = &*sets_ptr;
-            for c in 0..NCLASSES {
-                match ClassState::new(meta, regions, &tables[c], index, sets) {
+            for (c, table) in tables.iter().enumerate() {
+                match ClassState::new(meta, regions, table, index, sets) {
                     Some(cs) => {
                         Arena::put_class(this, c, cs);
                     }

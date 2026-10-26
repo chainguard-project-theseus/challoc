@@ -194,6 +194,8 @@ mod tests {
     use super::*;
 
     #[test]
+    // `..CURRENT`: the current variant with one rule changed.
+    #[allow(clippy::needless_update)]
     fn the_pre_fix_order_has_the_calloc_race_and_the_model_prints_it() {
         let out = run(
             &calloc_race(),
@@ -278,6 +280,8 @@ mod tests {
     }
 
     #[test]
+    // `..CURRENT`: the current variant with one rule changed.
+    #[allow(clippy::needless_update)]
     fn the_pre_fix_order_has_the_race_on_a_purged_slab_too() {
         // The same window after a purge: A's second refill picks the
         // `Purged` slab. Drop the `Fresh` round from the programs so the

@@ -56,7 +56,7 @@ fn never_committed_is_the_complement_of_the_regions() {
     for (lg_region, lg_stride) in [(38, 40), (32, 34), (32, 33)] {
         let r = synthetic(lg_region, lg_stride);
         let (ranges, n) = r.never_committed();
-        assert!(n <= MAX_SEALED && n >= NCLASSES, "{n} ranges");
+        assert!((NCLASSES..=MAX_SEALED).contains(&n), "{n} ranges");
         // Regions, in address order, with the mapping each belongs to.
         let mut regions: Vec<(usize, usize)> = (0..NCLASSES)
             .map(|c| (r.class_base[c], r.class_base[c] + r.region_len()))
@@ -745,6 +745,8 @@ fn minimal_stride_layout_still_classifies() {
 /// 64 KiB units modulo 1 MiB, so their first pages share no second-level
 /// TLB set at 256 sets of 4 KiB.
 #[test]
+// The class number is an argument, not only an index.
+#[allow(clippy::needless_range_loop)]
 fn colours_are_aligned_and_spread_the_classes_over_a_mebibyte() {
     for lg_page in [12u32, 14, 16] {
         for c in 0..NCLASSES {

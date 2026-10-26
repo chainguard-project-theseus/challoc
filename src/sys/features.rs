@@ -430,7 +430,7 @@ mod tests {
         // SAFETY: `as_ptr` names the line's own buffer, which holds `len`
         // bytes of text and the NUL after them.
         let bytes =
-            unsafe { core::slice::from_raw_parts(line.as_ptr() as *const u8, line.len + 1) };
+            unsafe { core::slice::from_raw_parts(line.as_ptr().cast::<u8>(), line.len + 1) };
         assert_eq!(bytes[line.len], 0);
         assert_eq!(&bytes[..line.len], line.as_str().as_bytes());
         assert!(!line.as_str().contains('\n'));
@@ -775,10 +775,9 @@ mod linux_tests {
                     if let Some(kb) = name
                         .strip_prefix("hugepages-")
                         .and_then(|s| s.strip_suffix("kB"))
+                        && dir.join(name).join("enabled").exists()
                     {
-                        if dir.join(name).join("enabled").exists() {
-                            listed |= 1 << (kb.parse::<u64>().unwrap() * 1024).trailing_zeros();
-                        }
+                        listed |= 1 << (kb.parse::<u64>().unwrap() * 1024).trailing_zeros();
                     }
                 }
                 if listed == 0 {

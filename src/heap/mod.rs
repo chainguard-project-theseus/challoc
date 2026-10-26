@@ -651,12 +651,12 @@ impl Heap {
             // purge and refault the same slabs at every exit); and not
             // when another heap has been homed there since the unbind
             // above. Design 13.3.
-            if shared.arenas.bound(arena) == 0 && !crate::purge::background::present() {
-                if let Some(a) = shared.arenas.get_existing(arena) {
-                    if a.take_exit_purge(now_ns()) {
-                        crate::purge::purge_arena(shared, arena);
-                    }
-                }
+            if shared.arenas.bound(arena) == 0
+                && !crate::purge::background::present()
+                && let Some(a) = shared.arenas.get_existing(arena)
+                && a.take_exit_purge(now_ns())
+            {
+                crate::purge::purge_arena(shared, arena);
             }
         }
         shared.meta.free(h as *mut u8, Layout::new::<Heap>());
@@ -1163,6 +1163,8 @@ impl Heap {
     /// (design 8.1), because glibc calls `free` with locks held that
     /// `pthread_create` and `pthread_join` take again (the stack cache
     /// lock, from `pthread_join`'s TLS teardown).
+    // Hot slow-path tick: left as written so its codegen does not move.
+    #[allow(clippy::manual_is_multiple_of)]
     fn tick<const ALLOC: bool>(&mut self, shared: &Shared) {
         self.slow_ticks = self.slow_ticks.wrapping_add(1);
         if self.slow_ticks % PERIODIC_EVERY == 0 {

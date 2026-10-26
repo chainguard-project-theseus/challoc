@@ -158,6 +158,8 @@ impl Heap {
     ///
     /// # Safety
     /// `cache` is this heap's real cache for `(arena, class)` and `n <= len`.
+    // Hot free path: left as written so its codegen does not move.
+    #[allow(clippy::manual_is_multiple_of)]
     pub(super) unsafe fn flush(
         &mut self,
         shared: &Shared,

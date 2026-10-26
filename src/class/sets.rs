@@ -186,6 +186,8 @@ impl SetTable {
 
     /// Reserve the tables (address space only; rows are committed by
     /// `ensure`). `None` if the metadata region cannot hold them.
+    // Indexed loop, spelled out for Verus like the rest of this function.
+    #[allow(clippy::needless_range_loop)]
     pub fn new(meta: &Meta, regions: &Regions) -> Option<SetTable> {
         let page = regions.page_size();
         let mut groups = [Group {

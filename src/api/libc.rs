@@ -379,6 +379,8 @@ pub fn malloc_usable_size(p: *mut u8) -> usize {
 /// `Some(old)`, the usable bytes of `p`, the most a move has to copy.
 /// Aborts, naming `what`, unless `p` is a live slab slot or huge run
 /// start.
+// realloc's path: left as written so its codegen does not move.
+#[allow(clippy::manual_is_multiple_of)]
 pub(super) fn old_size_or_keep(
     shared: &Shared,
     what: &str,
@@ -746,7 +748,7 @@ pub fn aligned_alloc(align: usize, size: usize) -> *mut u8 {
 /// not a multiple of `sizeof(void *)`) or `ENOMEM`; never touches `errno`
 /// on the `EINVAL` path.
 pub fn posix_memalign(out: *mut *mut u8, align: usize, size: usize) -> c_int {
-    if !align.is_power_of_two() || align % core::mem::size_of::<*mut u8>() != 0 {
+    if !align.is_power_of_two() || !align.is_multiple_of(core::mem::size_of::<*mut u8>()) {
         return EINVAL;
     }
     let p = alloc_aligned(align, size);

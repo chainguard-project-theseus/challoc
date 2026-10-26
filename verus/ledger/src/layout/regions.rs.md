@@ -11,7 +11,7 @@ file.
 
 ## `entry_barrier`
 
-src/layout/regions.rs:2199. Kind: external_body. Category: inline asm.
+src/layout/regions.rs:2203. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > [`class_entry`]'s barrier on x86_64: `p`, through an empty `asm!`.

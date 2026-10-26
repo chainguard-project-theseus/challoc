@@ -254,6 +254,8 @@ fn key_registration_failure_is_served_directly() {
 /// `PUSH_PAC` follows the probe and the key,
 /// and the key is off by default (the test builders turn it on).
 #[test]
+// The constant check pins the opt-in default.
+#[allow(clippy::assertions_on_constants)]
 fn pac_flag_follows_the_probe_and_the_key() {
     let s = shared();
     assert_eq!(

@@ -84,7 +84,7 @@ impl Env {
         use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
         let page = 1usize << lg_page;
         assert!(
-            page % crate::sys::features::page_size() == 0,
+            page.is_multiple_of(crate::sys::features::page_size()),
             "fake page must be a real page multiple"
         );
         let reserve = |len: usize| -> usize {
@@ -118,10 +118,9 @@ impl Env {
     /// arena-0 state over it, leaked.
     fn class(&self, c: usize, guard_interval: u32) -> &'static ClassState {
         let table = self.table(c, guard_interval);
-        let cs = std::boxed::Box::leak(std::boxed::Box::new(
+        std::boxed::Box::leak(std::boxed::Box::new(
             ClassState::new(&self.meta, &self.regions, table, 0, self.sets()).expect("class state"),
-        ));
-        cs
+        ))
     }
 
     /// A fresh set table for one arena (leaked: the states point at it).
@@ -141,11 +140,10 @@ impl Env {
     /// [`Env::class`].
     fn class_in_arena(&self, cs: &ClassState, arena: u16) -> &'static ClassState {
         let table = cs.table();
-        let new = std::boxed::Box::leak(std::boxed::Box::new(
+        std::boxed::Box::leak(std::boxed::Box::new(
             ClassState::new(&self.meta, &self.regions, table, arena, self.sets())
                 .expect("class state"),
-        ));
-        new
+        ))
     }
 
     fn claim(&self, cs: &ClassState, n: usize) -> (Vec<*mut u8>, Claim) {
@@ -237,7 +235,7 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     // Fill the first group and the first slab of the second; the
     // second group's page is committed with slab 4, so every slot of
     // slabs 4..8 is writable already (the test touches them in `claim`).
-    let (p, _) = env.claim(&cs, 5 * n);
+    let (p, _) = env.claim(cs, 5 * n);
     assert_eq!(p.len(), 5 * n);
     assert_eq!(
         cs.stats(),
@@ -268,8 +266,8 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     // first usable slab is 128. Arena 0 then reuses its Empty slab 0
     // and commits 5 and 6 (a refill takes Empty slabs before Purged
     // ones and Purged ones before committing).
-    let other = env.class_in_arena(&cs, 1);
-    let (q, _) = env.claim(&other, n);
+    let other = env.class_in_arena(cs, 1);
+    let (q, _) = env.claim(other, n);
     assert_eq!(cs.table().group(), 128);
     assert!(cs.is_guard_slab(124) && !cs.is_guard_slab(128));
     assert_eq!(q[0] as usize, env.regions.slab_addr(c, 128));
@@ -277,7 +275,7 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     assert_eq!(cs.table().owner(5), 0);
     assert_eq!(cs.table().committed_slabs(), 256);
     assert_eq!(cs.table().guards(), 0);
-    let (r, _) = env.claim(&cs, 3 * n);
+    let (r, _) = env.claim(cs, 3 * n);
     assert_eq!(r.len(), 3 * n);
     for s in [0, 5, 6] {
         assert_eq!(in_slab(&r, s).len(), n, "slab {s}");
@@ -345,7 +343,7 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     // Purged neighbours do not block a purge: a claim reuses Purged
     // slab 0 (zero), and releasing it purges it alone inside its
     // Purged group.
-    let (z, claim) = env.claim(&cs, 3);
+    let (z, claim) = env.claim(cs, 3);
     assert_eq!(claim, Claim { n: 3, zeroed: true });
     assert_eq!(z[0] as usize, base);
     cs.release(&z);
@@ -363,7 +361,7 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     // Past the guard group: the Purged slabs go first, then slabs 7
     // and 8..12 are committed, then the next commit skips the guard
     // group 12..16 and lands on slab 16.
-    let (g, _) = env.claim(&cs, 12 * n + 1);
+    let (g, _) = env.claim(cs, 12 * n + 1);
     assert_eq!(g.len(), 12 * n + 1);
     assert_eq!(in_slab(&g, 7).len(), n);
     assert_eq!(in_slab(&g, 11).len(), n);
@@ -408,7 +406,7 @@ fn slabs_are_handed_out_in_line_sized_groups() {
     assert_eq!(t.group(), 128);
     assert_eq!(t.nslabs(), 1024);
     assert_eq!(t.committed_slabs(), 0);
-    let (p, claim) = env.claim(&cs, 4);
+    let (p, claim) = env.claim(cs, 4);
     assert_eq!(claim, Claim { n: 4, zeroed: true });
     assert_eq!(p[0] as usize, env.regions.slab_addr(c, 0));
     assert_eq!(t.committed_slabs(), 128);
@@ -426,8 +424,8 @@ fn slabs_are_handed_out_in_line_sized_groups() {
     }
     assert!(!t.is_allocated(128, 0));
     // The second arena's first slab is the second group's.
-    let cs1 = env.class_in_arena(&cs, 1);
-    let (q, claim) = env.claim(&cs1, 1);
+    let cs1 = env.class_in_arena(cs, 1);
+    let (q, claim) = env.claim(cs1, 1);
     assert_eq!(claim, Claim { n: 1, zeroed: true });
     assert_eq!(q[0] as usize, env.regions.slab_addr(c, 128));
     assert_eq!(t.committed_slabs(), 256);
@@ -438,7 +436,7 @@ fn slabs_are_handed_out_in_line_sized_groups() {
     assert_eq!(t.check(p[0]), 0);
     // Arena 0 keeps filling its own group: slab 1 next, in the same
     // bitmap word as slab 0 (16 slabs of 4 bits per word).
-    let (r, _) = env.claim(&cs, 1);
+    let (r, _) = env.claim(cs, 1);
     assert_eq!(r[0] as usize, env.regions.slab_addr(c, 1));
     assert_eq!(t.bits(1).allocated(4), 1);
     assert!(t.bits(0).is_full());
@@ -456,8 +454,8 @@ fn slabs_are_handed_out_in_line_sized_groups() {
     // Eight groups in the region: arenas 2..8 take the rest, a ninth
     // arena finds nothing to commit and reports the shortfall.
     for a in 2..8u16 {
-        let csa = env.class_in_arena(&cs, a);
-        let (pa, claim) = env.claim(&csa, 1);
+        let csa = env.class_in_arena(cs, a);
+        let (pa, claim) = env.claim(csa, 1);
         assert_eq!(claim.n, 1, "arena {a}");
         assert_eq!(
             pa[0] as usize,
@@ -466,8 +464,8 @@ fn slabs_are_handed_out_in_line_sized_groups() {
         );
     }
     assert_eq!(t.committed_slabs(), 1024);
-    let cs8 = env.class_in_arena(&cs, 8);
-    let (_, claim) = env.claim(&cs8, 1);
+    let cs8 = env.class_in_arena(cs, 8);
+    let (_, claim) = env.claim(cs8, 1);
     assert_eq!(
         claim,
         Claim {
@@ -477,12 +475,12 @@ fn slabs_are_handed_out_in_line_sized_groups() {
     );
     // Arena 0 still has 126 uncommitted slabs of its own group, plus
     // the 2 + 3 free slots of slabs 0 and 1.
-    let (more, claim) = env.claim(&cs, 126 * 4 + 5);
+    let (more, claim) = env.claim(cs, 126 * 4 + 5);
     assert_eq!(claim.n, 126 * 4 + 5);
     assert_eq!(more[0] as usize, env.regions.slot_addr(c, 0, 1));
     assert_eq!(cs.locate(more[more.len() - 1]).0, 127);
     assert_eq!(cs.stats().committed, 128);
-    let (_, claim) = env.claim(&cs, 1);
+    let (_, claim) = env.claim(cs, 1);
     assert_eq!(
         claim,
         Claim {
@@ -500,7 +498,7 @@ fn check_below_the_watermark_in_a_slab_not_yet_committed_aborts() {
     let env = Env::new();
     let c = min_slab_class();
     let cs = env.class(c, 0);
-    env.claim(&cs, 1);
+    env.claim(cs, 1);
     assert_eq!(cs.committed_slabs(), 128);
     cs.check(env.regions.slab_addr(c, 5) as *mut u8);
 }
@@ -519,7 +517,7 @@ fn bitmap_geometry_for_every_class() {
         if t.nslabs() < 2 {
             continue;
         }
-        let (p, _) = env.claim(&cs, n + 1);
+        let (p, _) = env.claim(cs, n + 1);
         assert_eq!(p.len(), n + 1, "class {c}");
         assert!(t.bits(0).is_full(), "class {c}");
         assert_eq!(t.bits(0).allocated(n), n, "class {c}");
@@ -532,7 +530,7 @@ fn bitmap_geometry_for_every_class() {
         );
         let g = t.group();
         assert!(
-            g >= cls.slabs_per_line() && g % cls.slabs_per_line() == 0,
+            g >= cls.slabs_per_line() && g.is_multiple_of(cls.slabs_per_line()),
             "class {c}"
         );
         // Two slabs used: one group unless groups are single slabs.
@@ -554,7 +552,7 @@ fn first_claim_is_lowest_addresses_and_zero() {
     let cs = env.class(c, 0);
     let cls = cs.class();
     assert_eq!(cs.committed_slabs(), 0);
-    let (p, claim) = env.claim(&cs, 10);
+    let (p, claim) = env.claim(cs, 10);
     assert_eq!(
         claim,
         Claim {
@@ -589,7 +587,7 @@ fn first_claim_is_lowest_addresses_and_zero() {
         }
     );
     // A second claim from the same, now Active, slab is not known zero.
-    let (p2, claim2) = env.claim(&cs, 5);
+    let (p2, claim2) = env.claim(cs, 5);
     assert_eq!(
         claim2,
         Claim {
@@ -607,7 +605,7 @@ fn filling_a_slab_moves_on_and_release_reopens_it() {
     let c = small_class();
     let cs = env.class(c, 0);
     let n = cs.class().nslots();
-    let (all, claim) = env.claim(&cs, n);
+    let (all, claim) = env.claim(cs, n);
     assert_eq!(claim.n, n);
     let set: HashSet<usize> = all.iter().map(|&p| p as usize).collect();
     assert_eq!(set.len(), n);
@@ -616,7 +614,7 @@ fn filling_a_slab_moves_on_and_release_reopens_it() {
     // once; nothing in it could be released before the claim finished.
     assert!(!cs.is_partial(0));
     assert_eq!(cs.stats().nonfull, 0);
-    let (next, claim) = env.claim(&cs, 1);
+    let (next, claim) = env.claim(cs, 1);
     assert_eq!(claim, Claim { n: 1, zeroed: true });
     assert_eq!(next[0] as usize, env.regions.slab_addr(c, 1));
     assert!(!cs.is_partial(0));
@@ -631,7 +629,7 @@ fn filling_a_slab_moves_on_and_release_reopens_it() {
     assert_eq!(cs.lowest_partial(), Some(0));
     assert_eq!(cs.desc(0).live(), n - 1);
     assert!(!cs.table().is_allocated(0, n / 2));
-    let (again, claim) = env.claim(&cs, 2);
+    let (again, claim) = env.claim(cs, 2);
     assert_eq!(
         claim,
         Claim {
@@ -651,15 +649,15 @@ fn filling_a_live_slab_leaves_a_stale_bit_until_the_next_plan() {
     let n = cs.class().nslots();
     // Two claims fill slab 0; the second reserved every remaining slot
     // of a slab that already had live slots, so the bit is left stale.
-    let (a, _) = env.claim(&cs, n - 3);
-    let (b, _) = env.claim(&cs, 3);
+    let (a, _) = env.claim(cs, n - 3);
+    let (b, _) = env.claim(cs, 3);
     assert_eq!(a.len() + b.len(), n);
     assert!(cs.table().bits(0).is_full());
     assert!(cs.is_partial(0));
     assert_eq!(cs.stats().nonfull, 1);
     // The next plan notices, clears it and commits slab 1 in the same
     // lock hold.
-    let (q, claim) = env.claim(&cs, 2);
+    let (q, claim) = env.claim(cs, 2);
     assert_eq!(claim, Claim { n: 2, zeroed: true });
     assert_eq!(q[0] as usize, env.regions.slab_addr(c, 1));
     assert!(!cs.is_partial(0));
@@ -675,7 +673,7 @@ fn filling_a_live_slab_leaves_a_stale_bit_until_the_next_plan() {
     // A release into the full slab reopens it and first fit prefers it.
     cs.release(&[a[5]]);
     assert!(cs.is_partial(0));
-    let (r, claim) = env.claim(&cs, 1);
+    let (r, claim) = env.claim(cs, 1);
     assert_eq!(
         claim,
         Claim {
@@ -695,7 +693,7 @@ fn one_plan_spans_many_slabs_and_release_reopens_them_all() {
     // Fill 2 * MAX_PICKS + 1 slabs: the first plan reserves MAX_PICKS
     // whole fresh slabs, the second the rest.
     let slabs = 2 * MAX_PICKS + 1;
-    let (all, claim) = env.claim(&cs, slabs * n);
+    let (all, claim) = env.claim(cs, slabs * n);
     assert_eq!(
         claim,
         Claim {
@@ -727,7 +725,7 @@ fn one_plan_spans_many_slabs_and_release_reopens_them_all() {
     assert_eq!(cs.stats().nonfull, slabs);
     // Refilling takes exactly those slots, lowest slab first, in one
     // plan per MAX_PICKS slabs.
-    let (again, claim) = env.claim(&cs, slabs);
+    let (again, claim) = env.claim(cs, slabs);
     assert_eq!(
         claim,
         Claim {
@@ -765,7 +763,7 @@ fn release_all_makes_empty_then_reuse_then_purge() {
     let env = Env::new();
     let c = small_class();
     let cs = env.class(c, 0);
-    let (p, _) = env.claim(&cs, 100);
+    let (p, _) = env.claim(cs, 100);
     // Release in reverse order to exercise the run grouping.
     let mut rev = p.clone();
     rev.reverse();
@@ -784,7 +782,7 @@ fn release_all_makes_empty_then_reuse_then_purge() {
         }
     );
     // An Empty slab is preferred over committing a new one but is dirty.
-    let (q, claim) = env.claim(&cs, 3);
+    let (q, claim) = env.claim(cs, 3);
     assert_eq!(
         claim,
         Claim {
@@ -820,7 +818,7 @@ fn release_all_makes_empty_then_reuse_then_purge() {
         }
     );
     // A Purged slab is reused before a new commit and is zero.
-    let (r, claim) = env.claim(&cs, 4);
+    let (r, claim) = env.claim(cs, 4);
     assert_eq!(claim, Claim { n: 4, zeroed: true });
     assert_eq!(r[0], p[0]);
     assert_eq!(d.state(), State::Active);
@@ -853,7 +851,7 @@ fn decay_purges_the_oldest_empty_slabs_along_the_curve() {
     // A window of 200_000 ns: steps of 1000.
     const W: u64 = 200_000;
     // One cohort of every slab; the clock reads are made uniform.
-    let (p, _) = env.claim(&cs, nslots * n);
+    let (p, _) = env.claim(cs, nslots * n);
     cs.release(&p);
     assert_eq!(cs.stats().empty, n);
     let t0 = cs.oldest_empty();
@@ -902,7 +900,7 @@ fn decay_purges_the_oldest_empty_slabs_along_the_curve() {
     // Two cohorts: slab 0 at t, slab 1 a half window younger. At the
     // last step of slab 0 only it goes; slab 1, alone, lasts until its
     // own last step.
-    let (q, _) = env.claim(&cs, nslots * 2);
+    let (q, _) = env.claim(cs, nslots * 2);
     cs.release(&q);
     let t = cs.oldest_empty();
     cs.desc(0).set_dirty_at(t);
@@ -920,14 +918,14 @@ fn decay_purges_the_oldest_empty_slabs_along_the_curve() {
     assert_eq!(cs.desc(1).state(), State::Purged);
     // A claim reuses slab 0 (the lowest Empty): the atomic is now stale
     // (too early). The next decay finds nothing and clears it.
-    let (r, _) = env.claim(&cs, nslots);
+    let (r, _) = env.claim(cs, nslots);
     cs.release(&r[..1]);
     assert_eq!(cs.desc(0).state(), State::Active);
     cs.release(&r[1..]);
     assert_eq!(cs.desc(0).state(), State::Empty);
     let t = cs.oldest_empty();
     assert!(t > 0);
-    let (r, _) = env.claim(&cs, 1);
+    let (r, _) = env.claim(cs, 1);
     assert_eq!(r[0], q[0]);
     assert_eq!(cs.oldest_empty(), t);
     assert_eq!(cs.decay(u64::MAX / 2, W), None);
@@ -940,7 +938,7 @@ fn decay_purges_the_oldest_empty_slabs_along_the_curve() {
     assert_eq!(cs.decay(t, 0), None);
     assert_eq!(cs.desc(0).state(), State::Purged);
     // Purging everything at once clears it too.
-    let (r, _) = env.claim(&cs, nslots * 2);
+    let (r, _) = env.claim(cs, nslots * 2);
     cs.release(&r);
     assert!(cs.oldest_empty() > 0);
     assert_eq!(cs.purge_empty(u64::MAX), 2);
@@ -955,7 +953,7 @@ fn decay_walks_at_once_after_the_period_shrinks() {
     let c = small_class();
     let cs = env.class(c, 0);
     let nslots = CLASSES[c].nslots();
-    let (p, _) = env.claim(&cs, nslots * 4);
+    let (p, _) = env.claim(cs, nslots * 4);
     cs.release(&p);
     let t0 = cs.oldest_empty();
     for s in 0..4 {
@@ -980,7 +978,7 @@ fn purge_batches_a_whole_region() {
     let nslots = CLASSES[c].nslots();
     let n = cs.nslabs();
     assert!(n >= crate::purge::MAX_BATCH, "test layout holds {n} slabs");
-    let (p, claim) = env.claim(&cs, nslots * n);
+    let (p, claim) = env.claim(cs, nslots * n);
     assert_eq!(claim.n, nslots * n);
     cs.release(&p);
     assert_eq!(cs.stats().empty, n);
@@ -1004,7 +1002,7 @@ fn a_slab_whose_discard_fails_stays_empty() {
     let cs = env.class(c, 0);
     assert_eq!(cs.table().slabs_per_page(), 1);
     let nslots = CLASSES[c].nslots();
-    let (p, _) = env.claim(&cs, nslots * 4);
+    let (p, _) = env.claim(cs, nslots * 4);
     cs.release(&p);
     let t0 = cs.oldest_empty();
     for s in 0..4 {
@@ -1048,7 +1046,7 @@ fn claim_spans_slabs_and_reports_shortfall_on_exhaustion() {
     let cs = env.class(c, 0);
     assert_eq!(cs.nslabs(), 1);
     assert_eq!(cs.class().nslots(), 16);
-    let (p, claim) = env.claim(&cs, 20);
+    let (p, claim) = env.claim(cs, 20);
     assert_eq!(
         claim,
         Claim {
@@ -1057,7 +1055,7 @@ fn claim_spans_slabs_and_reports_shortfall_on_exhaustion() {
         }
     );
     assert_eq!(p.len(), 16);
-    let (q, claim) = env.claim(&cs, 1);
+    let (q, claim) = env.claim(cs, 1);
     assert_eq!(
         claim,
         Claim {
@@ -1067,7 +1065,7 @@ fn claim_spans_slabs_and_reports_shortfall_on_exhaustion() {
     );
     assert!(q.is_empty());
     cs.release(&p[..8]);
-    let (q, claim) = env.claim(&cs, 20);
+    let (q, claim) = env.claim(cs, 20);
     assert_eq!(
         claim,
         Claim {
@@ -1080,7 +1078,7 @@ fn claim_spans_slabs_and_reports_shortfall_on_exhaustion() {
     let c = small_class();
     let cs = env.class(c, 0);
     let n = cs.class().nslots();
-    let (p, claim) = env.claim(&cs, 2 * n + 5);
+    let (p, claim) = env.claim(cs, 2 * n + 5);
     assert_eq!(
         claim,
         Claim {
@@ -1102,13 +1100,13 @@ fn guard_slabs_are_skipped() {
         assert_eq!(cs.is_guard_slab(s), s % 4 == 3, "slab {s}");
     }
     let n = cs.class().nslots();
-    let (p, claim) = env.claim(&cs, 6 * n);
+    let (p, claim) = env.claim(cs, 6 * n);
     assert_eq!(claim.n, 6 * n);
     let slabs: HashSet<usize> = p.iter().map(|&q| cs.locate(q).0).collect();
     assert_eq!(slabs, [0, 1, 2, 4, 5, 6].into_iter().collect());
     // Slabs 0..=7 are committed: six allocatable and two guards.
     assert_eq!(cs.committed_slabs(), 7);
-    let (q, _) = env.claim(&cs, 1);
+    let (q, _) = env.claim(cs, 1);
     assert_eq!(cs.locate(q[0]).0, 8);
     assert_eq!(cs.committed_slabs(), 9);
     assert_eq!(cs.stats().committed, 7);
@@ -1135,7 +1133,7 @@ fn works_for_every_class() {
         let cs = env.class(c, 0);
         let cls = cs.class();
         let want = cls.nslots().min(70);
-        let (p, claim) = env.claim(&cs, want);
+        let (p, claim) = env.claim(cs, want);
         assert_eq!(
             claim,
             Claim {
@@ -1269,11 +1267,11 @@ fn two_arenas_share_one_region() {
     let env = Env::new();
     let c = small_class();
     let cs0 = env.class(c, 0);
-    let cs1 = env.class_in_arena(&cs0, 1);
+    let cs1 = env.class_in_arena(cs0, 1);
     assert_eq!(cs1.arena(), 1);
     assert!(core::ptr::eq(cs0.table(), cs1.table()));
-    let (p0, _) = env.claim(&cs0, 3);
-    let (p1, _) = env.claim(&cs1, 3);
+    let (p0, _) = env.claim(cs0, 3);
+    let (p1, _) = env.claim(cs1, 3);
     assert_eq!(cs0.committed_slabs(), 2);
     assert_eq!(cs1.committed_slabs(), 2);
     assert_eq!(cs0.desc(0).arena(), 0);
@@ -1285,10 +1283,10 @@ fn two_arenas_share_one_region() {
     assert_eq!(cs0.stats().committed, 1);
     assert_eq!(cs1.stats().committed, 1);
     // Each arena keeps growing past the other's slabs.
-    let (q1, _) = env.claim(&cs1, cs1.class().nslots());
+    let (q1, _) = env.claim(cs1, cs1.class().nslots());
     assert_eq!(cs1.locate(q1[q1.len() - 1]).0, 2);
     assert_eq!(cs0.desc(2).arena(), 1);
-    let (q0, _) = env.claim(&cs0, cs0.class().nslots());
+    let (q0, _) = env.claim(cs0, cs0.class().nslots());
     assert_eq!(cs0.locate(q0[q0.len() - 1]).0, 3);
     assert_eq!(cs0.desc(3).arena(), 0);
     // Releases land in the owner's sets only.
@@ -1306,7 +1304,7 @@ fn two_arenas_share_one_region() {
     assert_eq!(cs0.stats().empty, 2);
     // A purged slab is reused by its own arena before anything new is
     // committed.
-    let (r1, claim) = env.claim(&cs1, 1);
+    let (r1, claim) = env.claim(cs1, 1);
     assert!(claim.zeroed);
     assert_eq!(cs1.locate(r1[0]).0, 1);
     assert_eq!(cs0.committed_slabs(), 4);
@@ -1322,12 +1320,12 @@ fn a_corrupt_owner_word_aborts_the_next_take_group() {
     let env = Env::new();
     let c = small_class();
     let cs = env.class(c, 0);
-    let (_p, _) = env.claim(&cs, 1);
+    let (_p, _) = env.claim(cs, 1);
     assert_eq!(cs.table().committed_slabs(), cs.table().group());
     cs.table().corrupt_owner_word(&env.meta, 1, 7);
     // The second arena's first claim needs a fresh group: the second.
-    let cs1 = env.class_in_arena(&cs, 1);
-    let _ = env.claim(&cs1, 1);
+    let cs1 = env.class_in_arena(cs, 1);
+    let _ = env.claim(cs1, 1);
 }
 
 /// `release_owned` cross-checks the owner word it routes by against the
@@ -1339,7 +1337,7 @@ fn a_corrupt_owner_word_aborts_the_next_take_group() {
 fn a_disagreeing_descriptor_arena_aborts_the_release() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
-    let (p, _) = env.claim(&cs, 1);
+    let (p, _) = env.claim(cs, 1);
     let (slab, _) = cs.locate(p[0]);
     assert_eq!(cs.table().owner(slab), 0);
     cs.desc(slab).set_arena(1);
@@ -1352,9 +1350,9 @@ fn release_through_the_wrong_arena_aborts() {
     let env = Env::new();
     let c = small_class();
     let cs0 = env.class(c, 0);
-    let cs1 = env.class_in_arena(&cs0, 1);
-    let (_p0, _) = env.claim(&cs0, 1);
-    let (p1, _) = env.claim(&cs1, 1);
+    let cs1 = env.class_in_arena(cs0, 1);
+    let (_p0, _) = env.claim(cs0, 1);
+    let (p1, _) = env.claim(cs1, 1);
     cs0.release(&p1);
 }
 
@@ -1364,9 +1362,9 @@ fn check_through_the_wrong_arena_aborts() {
     let env = Env::new();
     let c = small_class();
     let cs0 = env.class(c, 0);
-    let cs1 = env.class_in_arena(&cs0, 1);
-    let (_p0, _) = env.claim(&cs0, 1);
-    let (p1, _) = env.claim(&cs1, 1);
+    let cs1 = env.class_in_arena(cs0, 1);
+    let (_p0, _) = env.claim(cs0, 1);
+    let (p1, _) = env.claim(cs1, 1);
     assert_eq!(cs0.table().check(p1[0]), 1);
     cs0.check(p1[0]);
 }
@@ -1376,7 +1374,7 @@ fn check_through_the_wrong_arena_aborts() {
 fn double_release_aborts() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
-    let (p, _) = env.claim(&cs, 3);
+    let (p, _) = env.claim(cs, 3);
     cs.release(&p[..1]);
     cs.release(&p[..1]);
 }
@@ -1390,7 +1388,7 @@ fn release_takes_slab_groups_in_any_order() {
     let c = small_class();
     let cs = env.class(c, 0);
     let n = CLASSES[c].nslots();
-    let (p, _) = env.claim(&cs, 2 * n + 7);
+    let (p, _) = env.claim(cs, 2 * n + 7);
     assert_eq!(p.len(), 2 * n + 7);
     // Slab 1 reversed, then slab 0's odd slots scrambled, then slab 2.
     let mut batch: Vec<*mut u8> = p[n..2 * n].iter().rev().copied().collect();
@@ -1417,7 +1415,7 @@ fn release_takes_slab_groups_in_any_order() {
 fn duplicate_apart_in_one_slab_group_aborts() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
-    let (p, _) = env.claim(&cs, 80);
+    let (p, _) = env.claim(cs, 80);
     cs.release(&[p[70], p[1], p[5], p[70]]);
 }
 
@@ -1426,7 +1424,7 @@ fn duplicate_apart_in_one_slab_group_aborts() {
 fn duplicate_in_one_batch_aborts() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
-    let (p, _) = env.claim(&cs, 3);
+    let (p, _) = env.claim(cs, 3);
     cs.release(&[p[1], p[1]]);
 }
 
@@ -1435,7 +1433,7 @@ fn duplicate_in_one_batch_aborts() {
 fn release_of_interior_pointer_aborts() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
-    let (p, _) = env.claim(&cs, 1);
+    let (p, _) = env.claim(cs, 1);
     cs.release(&[unsafe { p[0].add(1) }]);
 }
 
@@ -1444,7 +1442,7 @@ fn release_of_interior_pointer_aborts() {
 fn release_outside_region_aborts() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
-    env.claim(&cs, 1);
+    env.claim(cs, 1);
     cs.release(&[env.regions.huge_base as *mut u8]);
 }
 
@@ -1454,7 +1452,7 @@ fn check_above_the_watermark_aborts() {
     let env = Env::new();
     let c = small_class();
     let cs = env.class(c, 0);
-    env.claim(&cs, 1);
+    env.claim(cs, 1);
     cs.check(env.regions.slab_addr(c, 5) as *mut u8);
 }
 
@@ -1469,7 +1467,7 @@ fn check_of_a_guard_slab_slot_aborts() {
     let n = CLASSES[c].nslots();
     // Every second page group is a guard group.
     let cs = env.class(c, 2);
-    env.claim(&cs, 2 * n + 1);
+    env.claim(cs, 2 * n + 1);
     let guard = (0..cs.table().committed_slabs())
         .find(|&s| cs.is_guard_slab(s))
         .expect("a guard slab");
@@ -1488,7 +1486,7 @@ fn release_into_an_uncommitted_slab_of_the_group_aborts() {
     // is several slabs.
     let c = min_slab_class();
     let cs = env.class(c, 0);
-    env.claim(&cs, 1);
+    env.claim(cs, 1);
     // The whole group was handed out; only slab 0 is committed.
     assert!(
         cs.table().committed_slabs() > 1,
@@ -1550,7 +1548,7 @@ fn guard_interval_must_be_a_power_of_two() {
 fn check_of_unclaimed_slot_aborts() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
-    let (p, _) = env.claim(&cs, 2);
+    let (p, _) = env.claim(cs, 2);
     cs.check(unsafe { p[1].add(cs.class().size()) });
 }
 
@@ -1559,7 +1557,7 @@ fn check_of_unclaimed_slot_aborts() {
 fn check_after_release_aborts() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
-    let (p, _) = env.claim(&cs, 2);
+    let (p, _) = env.claim(cs, 2);
     cs.release(&p[..1]);
     cs.check(p[0]);
 }
@@ -1578,7 +1576,7 @@ fn randomised_model_check() {
     let mut set: HashSet<usize> = HashSet::new();
     for _ in 0..4000 {
         let r = xorshift(&mut rng);
-        if r % 2 == 0 && !live.is_empty() {
+        if r.is_multiple_of(2) && !live.is_empty() {
             // Release a random batch; claims and releases are balanced so
             // the live set random-walks well inside the 64-slab region.
             let k = (xorshift(&mut rng) as usize % 70 + 1).min(live.len());
@@ -1589,13 +1587,13 @@ fn randomised_model_check() {
                 assert!(set.remove(&(p as usize)));
                 batch.push(p);
             }
-            if xorshift(&mut rng) % 2 == 0 {
+            if xorshift(&mut rng).is_multiple_of(2) {
                 batch.sort();
             }
             cs.release(&batch);
         } else {
             let k = xorshift(&mut rng) as usize % 70 + 1;
-            let (p, claim) = env.claim(&cs, k);
+            let (p, claim) = env.claim(cs, k);
             assert_eq!(claim.n, k);
             for &q in &p {
                 assert!(set.insert(q as usize), "duplicate pointer {q:p}");
@@ -1650,7 +1648,7 @@ fn randomised_model_check() {
         assert_eq!(cs.desc(s).state(), State::Purged);
     }
     // Everything is reusable afterwards, from slab 0, and zero.
-    let (p, claim) = env.claim(&cs, 3);
+    let (p, claim) = env.claim(cs, 3);
     assert_eq!(claim, Claim { n: 3, zeroed: true });
     assert_eq!(p[0] as usize, env.regions.slab_addr(c, 0));
 }
@@ -1681,7 +1679,7 @@ fn concurrent_claims_are_disjoint() {
                     seen.push(q as usize);
                 }
                 held.extend(p);
-                if xorshift(&mut rng) % 4 != 0 {
+                if !xorshift(&mut rng).is_multiple_of(4) {
                     let keep = xorshift(&mut rng) as usize % (held.len() + 1);
                     let mut batch = held.split_off(keep);
                     batch.sort();
@@ -1789,7 +1787,7 @@ fn purge_zeroes_memory_and_commit_is_visible() {
     let env = Env::new();
     let c = small_class();
     let cs = env.class(c, 0);
-    let (p, claim) = env.claim(&cs, 5);
+    let (p, claim) = env.claim(cs, 5);
     assert!(claim.zeroed);
     for &q in &p {
         unsafe {
@@ -1798,13 +1796,13 @@ fn purge_zeroes_memory_and_commit_is_visible() {
         }
     }
     cs.release(&p);
-    let (q, claim) = env.claim(&cs, 5);
+    let (q, claim) = env.claim(cs, 5);
     assert_eq!(q, p);
     assert!(!claim.zeroed);
     assert_eq!(unsafe { *q[0] }, 0xAB);
     cs.release(&q);
     assert_eq!(cs.purge_empty(u64::MAX), 1);
-    let (r, claim) = env.claim(&cs, 5);
+    let (r, claim) = env.claim(cs, 5);
     assert_eq!(r, p);
     assert!(claim.zeroed);
     for &s in &r {
@@ -1838,14 +1836,14 @@ fn check_zero_passes_fresh_and_purged_slabs() {
     assert!(purge::check_zero());
     let env = Env::new();
     let cs = env.class(small_class(), 0);
-    let (p, claim) = env.claim(&cs, 5);
+    let (p, claim) = env.claim(cs, 5);
     assert!(claim.zeroed);
     for &q in &p {
         unsafe { *q = 0xAB };
     }
     cs.release(&p);
     assert_eq!(cs.purge_empty(u64::MAX), 1);
-    let (q, claim) = env.claim(&cs, 5);
+    let (q, claim) = env.claim(cs, 5);
     assert_eq!(q, p);
     assert!(claim.zeroed);
 }
@@ -1859,13 +1857,13 @@ fn check_zero_aborts_on_a_dirty_purged_slab() {
     purge::set_check_zero(true);
     let env = Env::new();
     let cs = env.class(small_class(), 0);
-    let (p, _) = env.claim(&cs, 2);
+    let (p, _) = env.claim(cs, 2);
     cs.release(&p);
     assert_eq!(cs.purge_empty(u64::MAX), 1);
     // The last word of the second slot: the check reads both ends.
     let size = cs.class().size();
     unsafe { ptr::write_volatile(p[1].add(size - 8) as *mut u64, 0xDEAD_BEEF) };
-    let _ = env.claim(&cs, 2);
+    let _ = env.claim(cs, 2);
 }
 
 /// The calloc race: thread A's
@@ -1906,7 +1904,7 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
         );
         // Thread B: a whole refill of one slot from the same class,
         // the program writes to the slot and frees it.
-        let (b, claim) = env.claim(&cs, 1);
+        let (b, claim) = env.claim(cs, 1);
         assert_eq!(
             claim,
             Claim {
@@ -2114,7 +2112,7 @@ fn guard_slab_faults_when_supported() {
     let c = small_class();
     let cs = env.class(c, 2);
     let n = cs.class().nslots();
-    let (p, _) = env.claim(&cs, n + 1);
+    let (p, _) = env.claim(cs, n + 1);
     assert_eq!(cs.locate(p[n]).0, 2);
     let guard = env.regions.slab_addr(c, 1);
     // The guard slab is inside the same rw mapping as its neighbours.
@@ -2169,7 +2167,7 @@ fn bin_stats_counts_every_curregs_clamp() {
 fn a_plan_over_a_slab_with_live_above_nslots_aborts() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
-    let (b, claim) = env.claim(&cs, 1);
+    let (b, claim) = env.claim(cs, 1);
     assert_eq!(claim.n, 1);
     let slab = cs.lowest_partial().expect("the slab is partial");
     cs.release(&b[..1]);
@@ -2188,7 +2186,7 @@ fn a_plan_over_a_slab_with_live_above_nslots_aborts() {
 fn a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
-    let (b, claim) = env.claim(&cs, 1);
+    let (b, claim) = env.claim(cs, 1);
     assert_eq!(claim.n, 1);
     cs.release(&b[..1]);
     assert_eq!(cs.stats().empty, 1);
@@ -2203,7 +2201,7 @@ fn a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts() {
 fn a_purge_of_an_empty_slab_the_counts_do_not_know_aborts() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
-    let (b, claim) = env.claim(&cs, 1);
+    let (b, claim) = env.claim(cs, 1);
     assert_eq!(claim.n, 1);
     cs.release(&b[..1]);
     assert_eq!(cs.stats().empty, 1);
@@ -2225,7 +2223,7 @@ fn a_fresh_slab_with_a_bit_set_before_its_first_take_aborts() {
     let cs = env.class(c, 0);
     // Slab 0 fills; slab 1 is handed out with the group (its bitmap
     // line is initialised) and not yet committed.
-    let (p, _) = env.claim(&cs, n);
+    let (p, _) = env.claim(cs, n);
     assert_eq!(p.len(), n);
     assert_eq!(cs.desc(1).state(), State::Fresh);
     assert_eq!(
@@ -2236,7 +2234,7 @@ fn a_fresh_slab_with_a_bit_set_before_its_first_take_aborts() {
         "bit 0 of slab 1 set behind the protocol's back"
     );
     // The next refill commits slab 1 and takes it as a zero pick.
-    env.claim(&cs, 1);
+    env.claim(cs, 1);
 }
 
 /// `shuffle` is a permutation (Fisher-Yates over `xorshift`): the
@@ -2328,7 +2326,7 @@ fn the_set_helpers_keep_the_counts_in_step_with_the_bits() {
     let cs = env.class(small_class(), 0);
     let n = cs.class().nslots();
     // Two groups of one slab handed out, both `Empty`.
-    let (p, _) = env.claim(&cs, n + 1);
+    let (p, _) = env.claim(cs, n + 1);
     cs.release(&p);
     assert_eq!(
         cs.stats(),
@@ -2370,7 +2368,7 @@ fn the_set_helpers_keep_the_counts_in_step_with_the_bits() {
 fn a_plan_that_takes_a_purged_slab_the_counts_do_not_know_aborts() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
-    let (b, claim) = env.claim(&cs, 1);
+    let (b, claim) = env.claim(cs, 1);
     assert_eq!(claim.n, 1);
     cs.release(&b);
     assert_eq!(cs.purge_empty(u64::MAX), 1);
@@ -2390,7 +2388,7 @@ fn walk_empty_visits_the_set_in_address_order_and_skips_what_the_visitor_takes()
     let env = Env::new();
     let cs = env.class(small_class(), 0);
     let n = cs.class().nslots();
-    let (p, _) = env.claim(&cs, 3 * n);
+    let (p, _) = env.claim(cs, 3 * n);
     cs.release(&p);
     for s in 0..3 {
         assert_eq!(cs.desc(s).state(), State::Empty, "slab {s}");
@@ -2441,7 +2439,7 @@ fn a_purge_over_an_empty_set_slab_that_is_not_empty_aborts() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
     let n = cs.class().nslots();
-    let (p, _) = env.claim(&cs, 2 * n);
+    let (p, _) = env.claim(cs, 2 * n);
     cs.release(&p);
     assert_eq!(cs.stats().empty, 2);
     // Corrupt the descriptor: the set says `Empty`, the state byte says

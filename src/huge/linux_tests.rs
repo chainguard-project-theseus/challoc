@@ -177,7 +177,7 @@ fn aligned_runs_are_usable_end_to_end() {
         let align = 1usize << lg;
         let size = 3 * page_size() + 100;
         let (p, zero) = env.alloc(&h, size, align);
-        assert!(!p.is_null() && p as usize % align == 0);
+        assert!(!p.is_null() && (p as usize).is_multiple_of(align));
         assert!(zero && all(p, 4 * page_size(), 0));
         fill(p, 4 * page_size(), lg as u8);
         held.push((p, lg as u8));

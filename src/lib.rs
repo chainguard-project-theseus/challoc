@@ -98,6 +98,8 @@ mod tests {
     use super::QUANTUM;
 
     #[test]
+    // The constant checks are the test.
+    #[allow(clippy::assertions_on_constants)]
     fn quantum_is_a_power_of_two() {
         assert!(QUANTUM.is_power_of_two());
         assert!(QUANTUM == 8 || QUANTUM == 16);

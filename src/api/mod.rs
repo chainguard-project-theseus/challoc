@@ -254,6 +254,9 @@ pub fn shared_ptr() -> *const Shared {
 /// x86_64 addresses statics `rip`-relative at no cost, so there the
 /// address stays a constant. Like [`shared_ptr`], no reference is formed.
 #[inline(always)]
+// The empty `asm!` on aarch64 is an optimization barrier on the pointer; it
+// reads no memory, so `nomem` is right.
+#[allow(clippy::pointers_in_nomem_asm_block)]
 pub fn shared_base() -> *const Shared {
     #[allow(unused_mut)]
     let mut p = shared_ptr();
@@ -893,10 +896,10 @@ mod tests {
                 }
                 let is_lock = |ty: &str| ty.contains("Lock<") || ty.contains("RawLock");
                 if let Some(rest) = decl.strip_prefix("static ") {
-                    if let Some((name, ty)) = rest.split_once(':') {
-                        if is_lock(ty) {
-                            out.push(std::format!("{rel}:static.{}", name.trim()));
-                        }
+                    if let Some((name, ty)) = rest.split_once(':')
+                        && is_lock(ty)
+                    {
+                        out.push(std::format!("{rel}:static.{}", name.trim()));
                     }
                     continue;
                 }
@@ -1001,7 +1004,7 @@ mod tests {
         let found = lock_inventory();
         let mut want: Vec<String> = FORK_LOCKS
             .iter()
-            .map(|k| std::string::ToString::to_string(k))
+            .map(std::string::ToString::to_string)
             .collect();
         want.sort();
         assert_eq!(
@@ -1225,6 +1228,8 @@ mod tests {
     /// the start leaves the lazy start armed; an explicit `request`
     /// disarms it.
     #[test]
+    // The constant check pins the test size between the floor and the burst.
+    #[allow(clippy::assertions_on_constants)]
     fn lazy_start_waits_for_dirty_memory() {
         use purge::background::{AUTO_BURST, AUTO_FLOOR, AUTO_HOLD_NS};
         let _serial = crate::testutil::global_state();

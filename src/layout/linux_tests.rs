@@ -242,12 +242,11 @@ fn seal_child(page: usize) -> i32 {
     let mut in_vma = false;
     let mut flagged = false;
     for l in smaps.lines() {
-        if let Some((range, _)) = l.split_once(' ') {
-            if let Some((lo, _)) = range.split_once('-') {
-                if let Ok(lo) = usize::from_str_radix(lo, 16) {
-                    in_vma = lo == biggest.addr;
-                }
-            }
+        if let Some((range, _)) = l.split_once(' ')
+            && let Some((lo, _)) = range.split_once('-')
+            && let Ok(lo) = usize::from_str_radix(lo, 16)
+        {
+            in_vma = lo == biggest.addr;
         }
         if in_vma && l.starts_with("VmFlags:") {
             flagged = l.split_whitespace().any(|f| f == "sl");

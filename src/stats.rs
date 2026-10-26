@@ -643,7 +643,7 @@ mod tests {
         ps.extend((0..10).map(|_| t.alloc(c256)));
         // A class above BIN_MAX: slab-allocated, reported as large.
         let cmed = class_with(32 * 1024);
-        assert!(cmed >= NBINS && cmed < NCLASSES);
+        assert!((NBINS..NCLASSES).contains(&cmed));
         let pm = t.alloc(cmed);
         let med_slab = CLASSES[cmed].slab_size();
         let huge_size = 300 * 1024;
