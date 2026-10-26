@@ -19,6 +19,10 @@
 #   assume_spec          `assume_specification[ path ]`
 #   ext_type_spec        `#[verifier::external_type_specification]`
 #   ext_trait_spec       `#[verifier::external_trait_specification]`
+#   spec_impl            `impl ...SpecImpl for T` (a vstd::std_specs trait):
+#                        every PartialEqSpecImpl, and a fmt-trait one
+#                        (DisplaySpecImpl, ...) unless T's trait impl is
+#                        inside `verus!` in the same file
 #   no_decreases         `#[verifier::exec_allows_no_decreases_clause]`
 #   assume_new           `Tracked::assume_new()`/`Ghost::assume_new()`
 #                        inside `verus!`, outside tests and outside
@@ -123,6 +127,15 @@ function impl_name(t,    s, d, i, ch, k) {
 
 function qual(n) { return nimpl > 0 ? implname[nimpl] "::" n : n }
 
+# Trait and type of a trait impl line, as a key: `impl fmt::Display for T`
+# and `impl vstd::std_specs::fmt::DisplaySpecImpl for crate::m::T` both
+# give Display and T.
+function trait_key(t,    tr) {
+    tr = t; sub(/ for .*$/, "", tr); sub(/^impl(<[^>]*>)? /, "", tr)
+    sub(/^([A-Za-z0-9_]+::)+/, "", tr); sub(/<.*$/, "", tr); sub(/SpecImpl$/, "", tr)
+    return tr SUBSEP impl_name(t)
+}
+
 # The bracketed path of an `assume_specification`.
 function spec_path(s,    i, d, ch, k) {
     k = index(s, "[")
@@ -146,7 +159,7 @@ function begin(kind, name,    ind) {
     n++
     efile[n] = FILE; eline[n] = LN; ekind[n] = kind; ename[n] = name
     eattrs[n] = attrs; edoc[n] = doc; ebody[n] = ""; enote[n] = ""
-    econtract[n] = ""
+    econtract[n] = ""; efmt[n] = ""
     ind = $0; sub(/[^ \t].*$/, "", ind); eind[n] = length(ind)
     return n
 }
@@ -257,6 +270,10 @@ newfile {
     } else if (attrs ~ /external_trait_specification/) {
         kind = "ext_trait_spec"; name = t; sub(/^.*trait /, "", name); sub(/[^A-Za-z0-9_].*$/, "", name)
         wholebody = 1
+    } else if (t ~ /^impl[< ].*SpecImpl(<[^>]*>)? for /) {
+        kind = "spec_impl"; name = t; sub(/^impl(<[^>]*>)? /, "", name); sub(/ *\{$/, "", name)
+        sub(/^([a-z_]+::)+/, "", name); sub(/ for crate::/, " for ", name)
+        wholebody = 1
     } else if (attrs ~ /verifier::external_body/ && t ~ /(^|[ \t])(struct|enum) /) {
         kind = "external_body type"; name = t; sub(/^.*(struct|enum) /, "", name); sub(/[^A-Za-z0-9_].*$/, "", name)
         name = qual(name)
@@ -285,10 +302,12 @@ newfile {
     if (kind != "") {
         cur = begin(kind, name); phase = 1; pd = 0; bd = 0; clauses = 0
         cap = !feed(raw, c)
+        if (kind == "spec_impl" && name ~ /^(Display|Debug|LowerHex|UpperHex|Octal|Binary|LowerExp|UpperExp|Pointer)SpecImpl/) efmt[cur] = trait_key(t)
     }
     attrs = ""; doc = ""
 
     if (t ~ /^(pub(\([a-z]+\))? )?(unsafe )?impl[< ]/) {
+        if (inverus && t ~ / for / && t !~ /SpecImpl/) verified_impl[FILE SUBSEP trait_key(t)] = 1
         if (opens > closes) { nimpl++; implname[nimpl] = impl_name(t); impld[nimpl] = depth }
         else if (opens == 0) pendimpl = impl_name(t)
     } else if (pendimpl != "" && opens > closes) {
@@ -346,7 +365,7 @@ function guess(e,    k, b, nm, f) {
     k = ekind[e]; b = ebody[e]; nm = ename[e]; f = efile[e]
     if (k == "no_decreases") return "termination"
     if (b ~ /asm!/) return "inline asm"
-    if (k == "assume_spec" || k == "ext_type_spec" || k == "ext_trait_spec") {
+    if (k == "assume_spec" || k == "ext_type_spec" || k == "ext_trait_spec" || k == "spec_impl") {
         if (nm ~ /Atomic/) return "atomics primitive"
         if (nm ~ /UnsafeCell|volatile|transmute/) return "UnsafeCell/volatile/transmute"
         if (nm ~ /^(core::)?ptr::|^<\*|::add$|::offset$|from_raw_parts|null/) return "raw pointer (internal)"
@@ -378,9 +397,23 @@ function md(s) { gsub(/\|/, "\\|", s); return s }
 
 END {
     if (bad) exit 2
+    # A fmt-trait spec impl (DisplaySpecImpl, ...) is no seam when its
+    # type's trait impl is inside `verus!` in the same file: vstd makes
+    # that verified `fmt` require `fmt_req`, and every `format_args!` site
+    # prove it. One whose trait impl is in another file stays listed; the
+    # scan does not match impls across files.
+    m = 0
+    for (e = 1; e <= n; e++) {
+        if (efmt[e] != "" && (efile[e] SUBSEP efmt[e]) in verified_impl) continue
+        if (++m == e) continue
+        efile[m] = efile[e]; eline[m] = eline[e]; ekind[m] = ekind[e]; ename[m] = ename[e]
+        eattrs[m] = eattrs[e]; edoc[m] = edoc[e]; ebody[m] = ebody[e]; enote[m] = enote[e]
+        econtract[m] = econtract[e]; eind[m] = eind[e]; efmt[m] = efmt[e]
+    }
+    n = m
     ncat = split("inline asm|FFI/syscall|function pointer|UnsafeCell/volatile/transmute|raw pointer (internal)|raw pointer from C caller|panic/abort|atomics primitive|platform/kernel fact|C-program contract|termination|core library|allocator invariant", cats, "|")
     ntool = split("Islaris/Isla|RefinedRust|Kani|loom/GenMC|Verus|Miri (evidence only)|none (assumption)", tools, "|")
-    nkind = split("external_body|external_body proof|external_body type|external_body const|axiom|assume_spec|ext_type_spec|ext_trait_spec|no_decreases|assume_new|ghost_assume_new", kinds, "|")
+    nkind = split("external_body|external_body proof|external_body type|external_body const|axiom|assume_spec|ext_type_spec|ext_trait_spec|spec_impl|no_decreases|assume_new|ghost_assume_new", kinds, "|")
     for (i = 1; i <= ncat; i++) catok[cats[i]] = 1
     for (i = 1; i <= ntool; i++) toolok[tools[i]] = 1
     for (e = 1; e <= n; e++) {
