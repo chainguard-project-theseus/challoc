@@ -8,6 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `array_get_unchecked` | external_body | core library | Kani | trusted |
+| `slice::from_ref` | assume_spec | core library | Kani | trusted |
 
 ## `array_get_unchecked`
 
@@ -24,4 +25,18 @@ pub unsafe fn array_get_unchecked<T, const N: usize>(a: &[T; N], i: usize) -> (r
         *r == a[i as int],
     opens_invariants none
     no_unwind
+```
+
+## `core::slice::from_ref`
+
+src/vspec/slice.rs:27. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> A one-element slice of `*s`.
+
+```rust
+pub assume_specification<T>[ core::slice::from_ref ](s: &T) -> (r: &[T])
+    ensures
+        r@ == seq![*s],
+;
 ```

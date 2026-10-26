@@ -20,6 +20,9 @@
 use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 use crate::layout::{Class, NCLASSES, build_classes, classes_for_page};
+use vstd::prelude::*;
+
+verus! {
 
 /// Size of the descriptor in bytes.
 pub const HEADER: usize = 16;
@@ -27,8 +30,10 @@ pub const HEADER: usize = 16;
 /// never spans two arenas' slab groups (see [`desc_stride`]).
 pub const DESC_ALIGN: usize = 64;
 
+/// Trusted: Verus does not model the panic's formatted message.
 #[cold]
 #[inline(never)]
+#[verifier::external_body]
 fn bad_state_byte(v: u8) -> ! {
     panic!("slab: state byte {v:#x} is not a slab state")
 }
@@ -54,7 +59,10 @@ impl State {
     /// corrupted byte must not read as `Purged`, which `take` treats as
     /// zero memory for `calloc`.
     #[inline]
-    pub fn from_u8(v: u8) -> State {
+    pub fn from_u8(v: u8) -> (r: State)
+        ensures
+            state_byte(r) == v,
+    {
         match State::try_from_u8(v) {
             Some(s) => s,
             None => bad_state_byte(v),
@@ -63,7 +71,10 @@ impl State {
 
     /// [`from_u8`](State::from_u8) without the abort.
     #[inline]
-    pub const fn try_from_u8(v: u8) -> Option<State> {
+    pub const fn try_from_u8(v: u8) -> (r: Option<State>)
+        ensures
+            r matches Some(s) ==> state_byte(s) == v,
+    {
         match v {
             0 => Some(State::Fresh),
             1 => Some(State::Active),
@@ -75,8 +86,21 @@ impl State {
 
     /// Memory of a slab in this state is known to read as zero.
     #[inline]
-    pub const fn is_zero(self) -> bool {
+    pub const fn is_zero(self) -> (r: bool)
+        ensures
+            r == (self == State::Fresh || self == State::Purged),
+    {
         matches!(self, State::Fresh | State::Purged)
+    }
+}
+
+/// The byte a descriptor's `state` field holds for `s` (`s as u8`).
+pub open spec fn state_byte(s: State) -> u8 {
+    match s {
+        State::Fresh => 0,
+        State::Active => 1,
+        State::Empty => 2,
+        State::Purged => 3,
     }
 }
 
@@ -93,12 +117,21 @@ pub struct SlabDesc {
     dirty_at: AtomicU64,
 }
 
-const _: () = assert!(core::mem::size_of::<SlabDesc>() == HEADER);
-
-const fn strides_of(classes: &[Class; NCLASSES]) -> [u32; NCLASSES] {
+const fn strides_of(classes: &[Class; NCLASSES]) -> (out: [u32; NCLASSES])
+    requires
+        forall|i: int| 0 <= i < NCLASSES ==> #[trigger] classes[i].wf(),
+{
     let mut out = [0u32; NCLASSES];
     let mut c = 0;
-    while c < NCLASSES {
+    while c < NCLASSES
+        invariant
+            0 <= c <= NCLASSES,
+            forall|i: int| 0 <= i < NCLASSES ==> #[trigger] classes[i].wf(),
+        decreases NCLASSES - c,
+    {
+        proof {
+            assert(classes[c as int].wf());
+        }
         // Slabs go to arenas in groups of `slabs_per_line` (class/), so
         // a stride of at least `DESC_ALIGN / slabs_per_line` keeps every
         // descriptor line inside one group: refills and flushes of two
@@ -123,10 +156,18 @@ const fn build_strides() -> [u32; NCLASSES] {
 const fn strides_match_every_page() -> bool {
     let base = build_strides();
     let mut lg_page = crate::layout::LG_MIN_SLAB;
-    while lg_page <= crate::layout::LG_SMALL_SLAB {
+    while lg_page <= crate::layout::LG_SMALL_SLAB
+        invariant
+            lg_page <= crate::layout::LG_SMALL_SLAB + 1,
+        decreases crate::layout::LG_SMALL_SLAB + 1 - lg_page,
+    {
         let s = strides_of(&classes_for_page(lg_page));
         let mut c = 0;
-        while c < NCLASSES {
+        while c < NCLASSES
+            invariant
+                0 <= c <= NCLASSES,
+            decreases NCLASSES - c,
+        {
             if s[c] != base[c] {
                 return false;
             }
@@ -137,30 +178,44 @@ const fn strides_match_every_page() -> bool {
     true
 }
 
-const _: () = assert!(
-    strides_match_every_page(),
-    "a page-sized slab geometry changes a descriptor stride"
-);
-
 /// Per-class descriptor stride in bytes: 64 for classes whose slabs are
 /// handed out singly, 32 for pairs, 16 (the header) from groups of four.
-pub static DESC_STRIDE: [u32; NCLASSES] = build_strides();
+pub exec static DESC_STRIDE: [u32; NCLASSES] = build_strides();
 
-/// Descriptor stride for `class` in bytes.
+/// The stride [`desc_stride`] reads for class `c`.
+pub uninterp spec fn stride_of(c: int) -> usize;
+
+/// Descriptor stride for `class` in bytes. Trusted: `DESC_STRIDE` is an
+/// immutable static, so every read of an entry returns the same value,
+/// which [`stride_of`] names (Verus does not read `exec static`s).
 #[inline]
-pub fn desc_stride(class: usize) -> usize {
+#[verifier::external_body]
+pub fn desc_stride(class: usize) -> (r: usize)
+    requires
+        class < NCLASSES,
+    ensures
+        r <= u32::MAX,
+        r == stride_of(class as int),
+{
     DESC_STRIDE[class] as usize
 }
 
 impl SlabDesc {
     /// Descriptor of slab `slab` in the array for `class` starting at
-    /// `base`.
+    /// `base`. Trusted: Verus does not dereference an address cast to a
+    /// pointer, and the contract states only `desc_stride`'s bound and the
+    /// debug check.
     ///
     /// # Safety
     /// `base` must be the start of a descriptor array for `class` with at
     /// least `slab + 1` committed entries.
     #[inline]
-    pub unsafe fn at<'a>(base: usize, class: usize, slab: usize) -> &'a SlabDesc {
+    #[verifier::external_body]
+    pub unsafe fn at<'a>(base: usize, class: usize, slab: usize) -> &'a SlabDesc
+        requires
+            class < NCLASSES,
+            base % DESC_ALIGN == 0,
+    {
         debug_assert!(base % DESC_ALIGN == 0);
         // SAFETY: the caller guarantees the entry is inside a committed array;
         // descriptors are plain atomics valid for any bit pattern. Valid to
@@ -218,7 +273,10 @@ impl SlabDesc {
     /// sees the smaller count also sees the cleared bits. `class/` relies
     /// on that to treat `nslots - live` as a lower bound on claimable slots.
     #[inline]
-    pub fn live(&self) -> usize {
+    pub fn live(&self) -> (r: usize)
+        ensures
+            r <= u32::MAX,
+    {
         self.live.load(Ordering::Acquire) as usize
     }
 
@@ -230,7 +288,9 @@ impl SlabDesc {
 
     /// Subtract `n` from `live`, returning the previous value. Aborts if
     /// that would go negative: more slots released than were ever claimed.
+    /// Trusted: Verus does not model the panic's formatted message.
     #[inline]
+    #[verifier::external_body]
     pub fn sub_live(&self, n: usize) -> usize {
         let prev = self.live.fetch_sub(n as u32, Ordering::AcqRel) as usize;
         assert!(prev >= n, "slab: live count underflow ({prev} - {n})");
@@ -250,10 +310,21 @@ impl SlabDesc {
     /// Free slots according to `live` (design 13.4 `nfree`). Transiently
     /// under-reports while a claim reservation is in flight.
     #[inline]
-    pub fn nfree(&self, class: &crate::layout::Class) -> usize {
+    pub fn nfree(&self, class: &crate::layout::Class) -> (r: usize)
+        ensures
+            r <= class.nslots,
+    {
         class.nslots().saturating_sub(self.live())
     }
 }
+
+} // verus!
+
+const _: () = assert!(core::mem::size_of::<SlabDesc>() == HEADER);
+const _: () = assert!(
+    strides_match_every_page(),
+    "a page-sized slab geometry changes a descriptor stride"
+);
 
 #[cfg(test)]
 mod tests {

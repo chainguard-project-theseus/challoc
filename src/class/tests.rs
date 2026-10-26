@@ -2229,7 +2229,9 @@ fn a_fresh_slab_with_a_bit_set_before_its_first_take_aborts() {
     assert_eq!(p.len(), n);
     assert_eq!(cs.desc(1).state(), State::Fresh);
     assert_eq!(
-        cs.table().bits(1).claim_word(0, 1),
+        cs.table()
+            .bits(1)
+            .claim_word(0, 1, Tracked::assume_new(), Tracked::assume_new()),
         0b1,
         "bit 0 of slab 1 set behind the protocol's back"
     );
