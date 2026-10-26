@@ -11,10 +11,17 @@ file.
 | `Parse` | ext_type_spec | function pointer | Kani | trusted |
 | `Read` | ext_type_spec | function pointer | Kani | trusted |
 | `TABLE` | external_body const | function pointer | Kani | trusted |
+| `parse_from` | external_body | function pointer | Kani | trusted |
+| `read_slot` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
+| `malloc_conf_addr` | external_body | inline asm | Islaris/Isla | trusted |
+| `je_malloc_conf_addr` | external_body | inline asm | Islaris/Isla | trusted |
+| `byte_at` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
+| `bytes_at` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
+| `env_var` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
 
 ## `Config::set_listed`
 
-src/config.rs:387. Kind: external_body. Category: function pointer.
+src/config.rs:399. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > The [`TABLE`] entry's parser for `key`, `None` when no entry is named `key`.
@@ -29,7 +36,7 @@ fn set_listed<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Option<Resul
 
 ## `Parse`
 
-src/config.rs:532. Kind: ext_type_spec. Category: function pointer.
+src/config.rs:544. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -38,7 +45,7 @@ struct ExParse(Parse);
 
 ## `Read`
 
-src/config.rs:538. Kind: ext_type_spec. Category: function pointer.
+src/config.rs:550. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -47,11 +54,105 @@ struct ExRead(Read);
 
 ## `TABLE`
 
-src/config.rs:824. Kind: external_body const. Category: function pointer.
+src/config.rs:836. Kind: external_body const. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > [`ENTRIES`], the tunables.
 
 ```rust
 pub exec const TABLE: &'static [Key] = ENTRIES;
+```
+
+## `parse_from`
+
+src/config.rs:1554. Kind: external_body. Category: function pointer.
+Tool: Kani. Status: trusted.
+
+> [`Config::parse_source`] of `text` from `source`, cut or not, printing each problem as `challoc: <source>: <issue>` to `out`.
+
+```rust
+fn parse_from(
+    cfg: &mut Config,
+    text: &[u8],
+    cut: bool,
+    source: &str,
+    out: &mut sys::Stderr,
+) -> (issues: usize)
+    requires
+        old(cfg).wf(),
+        text@.len() <= MAX_TEXT,
+    ensures
+        issues <= text.len() + 1,
+        cut ==> issues > 0,
+        final(cfg).wf(),
+```
+
+## `read_slot`
+
+src/config.rs:1663. Kind: external_body. Category: raw pointer from C caller.
+Tool: Miri (evidence only). Status: trusted.
+
+> The `const char *` the symbol at `slot` holds.
+
+```rust
+unsafe fn read_slot(slot: *const *const c_char) -> *const c_char
+```
+
+## `malloc_conf_addr`
+
+src/config.rs:1676. Kind: external_body. Category: inline asm.
+Tool: Islaris/Isla. Status: trusted.
+
+> Address of the `malloc_conf` global the loader resolved: the program's own definition when it has one, else the library's null slot (`api::jemalloc::malloc_conf`).
+
+```rust
+fn malloc_conf_addr() -> *const c_void
+```
+
+## `je_malloc_conf_addr`
+
+src/config.rs:1701. Kind: external_body. Category: inline asm.
+Tool: Islaris/Isla. Status: trusted.
+
+> Address of the weak `je_malloc_conf` global (Redis and Valkey define this one), or null.
+
+```rust
+fn je_malloc_conf_addr() -> *const c_void
+```
+
+## `byte_at`
+
+src/config.rs:1762. Kind: external_body. Category: raw pointer from C caller.
+Tool: Miri (evidence only). Status: trusted.
+
+> The byte at `p + n`.
+
+```rust
+unsafe fn byte_at(p: *const u8, n: usize) -> u8
+```
+
+## `bytes_at`
+
+src/config.rs:1774. Kind: external_body. Category: raw pointer from C caller.
+Tool: Miri (evidence only). Status: trusted.
+
+> The `n` bytes at `p` as a slice.
+
+```rust
+unsafe fn bytes_at(p: *const u8, n: usize) -> (r: &'static [u8])
+    ensures
+        r@.len() == n,
+```
+
+## `env_var`
+
+src/config.rs:1792. Kind: external_body. Category: raw pointer from C caller.
+Tool: Miri (evidence only). Status: trusted.
+
+> The value of environment variable `name` (no `=` in it), read from `environ` without `getenv`, and whether it was cut, as [`cstr`] returns it for the value alone.
+
+```rust
+pub fn env_var(name: &[u8]) -> (r: Option<(&'static [u8], bool)>)
+    ensures
+        r matches Some((s, cut)) ==> s@.len() <= MAX_TEXT,
 ```
