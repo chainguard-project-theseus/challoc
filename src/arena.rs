@@ -40,7 +40,19 @@ use crate::layout::{NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
 use crate::stats::ArenaStats;
-use vstd::prelude::{Ghost, Tracked};
+use vstd::prelude::{Ghost, Seq, Tracked, int, verus};
+use vstd::resource::Loc;
+use vstd::resource::map::GhostPersistentPointsTo;
+
+verus! {
+
+/// Persistent knowledge of one published arena: its index and the
+/// locations of its class states' owned-slab records, by class (the
+/// entry the arena registry publishes for it). What a class state that
+/// takes groups holds (`SlabTable::take_group`'s `pubw`).
+pub type Published = GhostPersistentPointsTo<int, Seq<Loc>>;
+
+} // verus!
 
 /// Arena indices are the 12-bit `MALLOCX_ARENA` field; 4096 itself is
 /// `MALLCTL_ARENAS_ALL`.

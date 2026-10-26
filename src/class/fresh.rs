@@ -3,6 +3,8 @@
 
 use super::abort::slab_count_underflow;
 use super::{ClassState, Inner};
+use crate::arena::Published;
+use crate::lock::LockOrder;
 use crate::meta::Meta;
 use vstd::prelude::Tracked;
 
@@ -14,8 +16,16 @@ impl ClassState {
     /// commits this arena's set words for the whole group first). Guard
     /// slabs inside a group are committed as guards and skipped. The
     /// commit lock nests inside the class lock. `None` when the region,
-    /// the metadata region or a commit is exhausted.
-    pub(super) fn next_slab(&self, g: &mut Inner, meta: &Meta) -> Option<usize> {
+    /// the metadata region or a commit is exhausted. `pubw` (ghost) is the
+    /// registry's record of this state's arena, for `take_group`, and
+    /// `ord` the caller's lock-order token.
+    pub(super) fn next_slab(
+        &self,
+        g: &mut Inner,
+        meta: &Meta,
+        pubw: Tracked<&'static Published>,
+        ord: Tracked<&mut LockOrder>,
+    ) -> Option<usize> {
         // Spelled out, not `empty_take` and `purged_take`: this runs
         // inlined in `claim_with` (through `plan`), whose machine
         // code the helpers reorder (`scripts/codegen-diff.sh`); the
@@ -38,7 +48,7 @@ impl ClassState {
                 .unwrap_or_else(|| slab_count_underflow("purged"));
             return Some(s);
         }
-        self.next_fresh_slab(g, meta)
+        self.next_fresh_slab(g, meta, pubw, ord)
     }
 
     /// The fresh half of [`next_slab`], for an arena whose sets are empty:
@@ -51,14 +61,32 @@ impl ClassState {
     /// it runs once per slab, not once per refill, and inlined it would
     /// double the size of `claim_with`.
     ///
+    /// `pubw` as for [`next_slab`]; `_ord`, the caller's lock-order token,
+    /// is unused until the fresh-slab proof takes it.
+    ///
     /// [`next_slab`]: ClassState::next_slab
     #[inline(never)]
-    pub(super) fn next_fresh_slab(&self, g: &mut Inner, meta: &Meta) -> Option<usize> {
+    pub(super) fn next_fresh_slab(
+        &self,
+        g: &mut Inner,
+        meta: &Meta,
+        pubw: Tracked<&'static Published>,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> Option<usize> {
         let table = self.table();
         let page = 1usize << table.lg_page;
         loop {
             if g.group_next >= g.group_end {
-                let (start, end) = table.take_group(meta, self.arena, g, page)?;
+                let (start, end) = table.take_group(
+                    meta,
+                    self.arena,
+                    g,
+                    page,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                    pubw,
+                    Tracked::assume_new(),
+                )?;
                 g.group_next = start;
                 g.group_end = end;
             }
