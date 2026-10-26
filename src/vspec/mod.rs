@@ -18,6 +18,8 @@ pub(crate) mod layout;
 #[cfg(verus_keep_ghost)]
 pub(crate) mod ptr;
 
+pub(crate) mod slice;
+
 verus! {
 
 // challoc runs on x86_64 and aarch64 only (its TLS, rseq and syscall asm),
