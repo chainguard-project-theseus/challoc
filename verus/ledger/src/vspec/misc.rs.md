@@ -9,10 +9,11 @@ file.
 |---|---|---|---|---|
 | `PartialEqSpec...r config::Thp` | spec_impl | core library | Kani | trusted |
 | `PartialEqSpec...t::ThpSetting` | spec_impl | core library | Kani | trusted |
+| `PartialEqSpec...uge::RunState` | spec_impl | core library | Kani | trusted |
 
 ## `PartialEqSpecImpl for config::Thp`
 
-src/vspec/misc.rs:10. Kind: spec_impl. Category: core library.
+src/vspec/misc.rs:11. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -29,11 +30,28 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::config::Thp {
 
 ## `PartialEqSpecImpl for sys::thp_host::ThpSetting`
 
-src/vspec/misc.rs:20. Kind: spec_impl. Category: core library.
+src/vspec/misc.rs:21. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
 impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::sys::thp_host::ThpSetting {
+    open spec fn obeys_eq_spec() -> bool {
+        true
+    }
+
+    open spec fn eq_spec(&self, other: &Self) -> bool {
+        *self == *other
+    }
+}
+```
+
+## `PartialEqSpecImpl for huge::RunState`
+
+src/vspec/misc.rs:31. Kind: spec_impl. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::huge::RunState {
     open spec fn obeys_eq_spec() -> bool {
         true
     }

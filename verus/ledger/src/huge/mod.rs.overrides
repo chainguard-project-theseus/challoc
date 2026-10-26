@@ -1,8 +1,6 @@
-# Temporary seams: retire until Meta's allocation calls are verified,
-# and extent_at until the free-page set is.
-Inner::retire	allocator invariant	Verus
-Inner::extent_at	allocator invariant	Verus
-# Temporary seams: Huge is opaque, and Tally::settle trusted, until
-# Huge::settle and the purge walks are verified.
-Huge	allocator invariant	Verus
+# One huge allocator per process: the run authorities `Huge::new` makes
+# are the process's, as class::table's axiom_slot_loc for the slot ones.
+axiom_run_locs	allocator invariant	none (assumption)
+# Temporary seam: Tally::settle trusted until Huge::settle and the purge
+# walks are verified.
 Tally::settle	allocator invariant	Verus
