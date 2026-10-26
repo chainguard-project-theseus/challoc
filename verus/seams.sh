@@ -290,7 +290,7 @@ newfile {
 
     if (t ~ /^(pub(\([a-z]+\))? )?(unsafe )?impl[< ]/) {
         if (opens > closes) { nimpl++; implname[nimpl] = impl_name(t); impld[nimpl] = depth }
-        else pendimpl = impl_name(t)
+        else if (opens == 0) pendimpl = impl_name(t)
     } else if (pendimpl != "" && opens > closes) {
         nimpl++; implname[nimpl] = pendimpl; impld[nimpl] = depth; pendimpl = ""
     }
