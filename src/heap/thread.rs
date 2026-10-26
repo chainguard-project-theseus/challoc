@@ -52,6 +52,8 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
 /// `'static` either: the thread-exit destructor frees the heap, so it must
 /// not be stored beyond the call.
 #[inline(always)]
+// The heap is per thread, reached through `Shared`; see the doc above.
+#[allow(clippy::mut_from_ref)]
 pub fn heap_for_thread(shared: &Shared) -> Option<&mut Heap> {
     let (t, tp) = crate::sys::tls::get_tp();
     let t = t as usize;
@@ -79,6 +81,8 @@ fn tls_value_for(shared: &Shared, h: *mut Heap) -> *mut c_void {
 
 #[cold]
 #[inline(never)]
+// As `heap_for_thread`.
+#[allow(clippy::mut_from_ref)]
 fn create_heap_for_thread(shared: &Shared, slot: usize) -> Option<&mut Heap> {
     if slot != 0 {
         return None;

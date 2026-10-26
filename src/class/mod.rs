@@ -430,8 +430,8 @@ const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
 const _: () =
     assert!(core::mem::offset_of!(ClassState, gate) + core::mem::size_of::<Decayer>() <= PAD_ALIGN);
 const _: () = assert!(core::mem::offset_of!(ClassState, claimed) % PAD_ALIGN == 0);
-const _: () = assert!(core::mem::size_of::<ClassState>() % PAD_ALIGN == 0);
-const _: () = assert!(core::mem::size_of::<ClassState>() % 512 != 0);
+const _: () = assert!(core::mem::size_of::<ClassState>().is_multiple_of(PAD_ALIGN));
+const _: () = assert!(!core::mem::size_of::<ClassState>().is_multiple_of(512));
 
 // SAFETY: the only non-`Sync`, non-`Send` field is the table pointer,
 // which targets a `SlabTable` (itself `Sync`) that outlives every
@@ -744,6 +744,8 @@ impl ClassState {
     ///
     /// [`plan`]: ClassState::plan
     /// [`take`]: ClassState::take
+    // The loop is the spelled-out `for` (see the comment in the body).
+    #[allow(clippy::while_let_loop)]
     fn finish(
         &self,
         picks: &[Pick],
@@ -1076,6 +1078,8 @@ impl ClassState {
     /// (the `fetch_and` and the double-free check) and `SubLive`.
     ///
     /// [`release`]: ClassState::release
+    // Hot free path: the counter keeps the codegen as measured.
+    #[allow(clippy::explicit_counter_loop)]
     pub fn release_owned(&self, ptrs: &[*mut u8]) -> usize {
         let mut local = [0u64; MAX_SLAB_WORDS];
         let mut cur_slab = usize::MAX;
@@ -1150,6 +1154,8 @@ impl ClassState {
     /// Clear the bits `local[lo..=hi]` accumulated for `slab` (one atomic
     /// per non-zero word), zero them for the next slab, and take `count`
     /// off the slab's `live`.
+    // Hot free path: indexing keeps the codegen as measured.
+    #[allow(clippy::needless_range_loop)]
     fn release_slab(
         &self,
         slab: usize,

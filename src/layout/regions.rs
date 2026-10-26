@@ -496,6 +496,8 @@ impl Regions {
     /// offset must be aligned to class `c`'s slab and to [`LG_COLOUR_UNIT`]
     /// (a random multiple of `MAX_SLAB` plus a [`colour`]) and below the
     /// gap, and `superblock` must be `MAX_SLAB`-aligned.
+    // One argument per field the regions are assembled from.
+    #[allow(clippy::too_many_arguments)]
     pub const fn from_parts(
         superblock: usize,
         lg_region: u32,
@@ -2196,6 +2198,8 @@ unsafe fn class_entry(c: usize) -> (r: &'static super::Class)
 #[cfg(target_arch = "x86_64")]
 #[verifier::external_body]
 #[inline(always)]
+// An empty `asm!` that only hides `p` from the optimizer; it reads nothing.
+#[allow(clippy::pointers_in_nomem_asm_block)]
 fn entry_barrier(p: *const super::Class) -> (r: *const super::Class)
     ensures
         r == p,

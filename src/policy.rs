@@ -108,7 +108,7 @@ pub fn frac16(mut num: u64, mut den: u64) -> u32 {
 /// `x * f / FRAC_ONE` without overflow for any `x`.
 pub fn mul16(x: u64, f: u32) -> u64 {
     let f = f as u64;
-    (x >> 16) * f + ((x & 0xffff) * f >> 16)
+    (x >> 16) * f + (((x & 0xffff) * f) >> 16)
 }
 
 /// Usage as parts per million of the limit; saturates at 1e6 when
@@ -547,7 +547,7 @@ mod tests {
         assert_eq!(band(L, L * 8 / 10), Band::Scaled(FRAC_ONE / 2));
         // The last byte below 90% is the top of the scaled band.
         match band(L, L * 9 / 10 - 1) {
-            Band::Scaled(f) => assert!(f >= FRAC_ONE - 2 && f < FRAC_ONE, "{f}"),
+            Band::Scaled(f) => assert!((FRAC_ONE - 2..FRAC_ONE).contains(&f), "{f}"),
             b => panic!("{b:?}"),
         }
         assert_eq!(band(L, L * 9 / 10), Band::Immediate);
@@ -570,7 +570,7 @@ mod tests {
         assert_eq!(effective_decay_ns(BASE, band(L, L * 8 / 10)), 5_500 * MS);
         assert_eq!(effective_decay_ns(BASE, Band::Scaled(FRAC_ONE)), FLOOR_NS);
         let top = effective_decay_ns(BASE, band(L, L * 9 / 10 - 1));
-        assert!(top >= FLOOR_NS && top < FLOOR_NS + MS, "{top}");
+        assert!((FLOOR_NS..FLOOR_NS + MS).contains(&top), "{top}");
         // 90% and above: 0.
         assert_eq!(effective_decay_ns(BASE, Band::Immediate), 0);
         // A period at or under the floor is not scaled up or down.
@@ -824,6 +824,8 @@ mod tests {
     /// The forced-`never` rule (`thp::forced_by_limit`): `always` under 1
     /// GiB and nothing else; the test constants sit on either side.
     #[test]
+    // The constant checks pin the test constants to the threshold.
+    #[allow(clippy::assertions_on_constants, clippy::absurd_extreme_comparisons)]
     fn thp_threshold() {
         use crate::config::Thp;
         use crate::thp::forced_by_limit;

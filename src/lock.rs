@@ -196,6 +196,8 @@ impl<T> Lock<T> {
     /// The caller must guarantee no other thread can touch the value: it
     /// holds the raw lock, or the process is single-threaded (a fork child).
     #[inline]
+    // Exclusivity is the caller's promise (`# Safety`).
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn get_unlocked(&self) -> &mut T {
         // SAFETY: exclusivity is the caller's promise.
         unsafe { &mut *self.value.get() }

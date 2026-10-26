@@ -97,11 +97,11 @@ pub enum PercpuArena {
 
 /// The names [`Thp::name`] gives, in variant order: one constant the
 /// verifier can take on trust (it takes no `CStr` literal).
-const THP_NAMES: [&'static CStr; 3] = [c"never", c"auto", c"always"];
+const THP_NAMES: [&CStr; 3] = [c"never", c"auto", c"always"];
 
 /// The names [`PercpuArena::name`] gives, in variant order, as
 /// [`THP_NAMES`].
-const PERCPU_ARENA_NAMES: [&'static CStr; 3] = [c"disabled", c"percpu", c"phycpu"];
+const PERCPU_ARENA_NAMES: [&CStr; 3] = [c"disabled", c"percpu", c"phycpu"];
 
 impl Thp {
     pub const fn name(self) -> &'static CStr {
@@ -389,6 +389,8 @@ pub const MAX_AUTO_ARENAS: u32 = 64;
 /// A key's parser: `(config, key, value)`; the key is passed so the issue
 /// can name it. A newtype, so the verifier, which rejects function
 /// pointer types, can take it as an opaque type.
+// The newtype is the opaque type the verifier needs (above).
+#[allow(clippy::type_complexity)]
 struct Parse(for<'a> fn(&mut Config, &'a [u8], &'a [u8]) -> Result<(), Issue<'a>>);
 
 /// A key's reader, the value [`Config::get`] answers with; opaque, as
@@ -1238,12 +1240,12 @@ mod linux {
             if entry.is_null() {
                 return None;
             }
-            if let Some((text, _)) = cstr(entry) {
-                if env_sets(text, name) {
-                    // SAFETY: the value starts after `name=`, inside the
-                    // entry just read.
-                    return cstr(unsafe { entry.add(name.len() + 1) });
-                }
+            if let Some((text, _)) = cstr(entry)
+                && env_sets(text, name)
+            {
+                // SAFETY: the value starts after `name=`, inside the
+                // entry just read.
+                return cstr(unsafe { entry.add(name.len() + 1) });
             }
             // SAFETY: not yet at the terminating null.
             e = unsafe { e.add(1) };
@@ -2132,7 +2134,7 @@ mod tests {
             let size = CLASSES[c].size();
             let cap = redis.cap_for(0, 0, c);
             assert!(
-                cap >= MIN_CAP && cap <= 1000,
+                (MIN_CAP..=1000).contains(&cap),
                 "class {c} ({size} bytes): {cap}"
             );
             if size <= 512 {
@@ -2285,7 +2287,10 @@ mod tests {
         let text = std::format!("{}", Issue::UnknownKey(&long));
         assert!(text.contains("..."));
         assert!(text.len() < 120, "{text}");
-        assert!(!text.bytes().any(|b| b < 0x20 || b >= 0x7f), "{text:?}");
+        assert!(
+            !text.bytes().any(|b| !(0x20..0x7f).contains(&b)),
+            "{text:?}"
+        );
         assert_eq!(
             std::format!("{}", Issue::Malformed(b"a\tb")),
             "malformed conf pair \"a?b\""

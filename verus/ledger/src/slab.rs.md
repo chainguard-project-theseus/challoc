@@ -41,7 +41,7 @@ pub fn desc_stride(class: usize) -> (r: usize)
 
 ## `SlabDesc::at`
 
-src/slab.rs:214. Kind: external_body. Category: raw pointer (internal).
+src/slab.rs:216. Kind: external_body. Category: raw pointer (internal).
 Tool: Verus. Status: trusted.
 
 > Descriptor of slab `slab` in the array for `class` starting at `base`.
@@ -55,7 +55,7 @@ pub unsafe fn at<'a>(base: usize, class: usize, slab: usize) -> &'a SlabDesc
 
 ## `SlabDesc::sub_live`
 
-src/slab.rs:294. Kind: external_body. Category: atomics primitive.
+src/slab.rs:296. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Subtract `n` from `live`, returning the previous value.

@@ -175,8 +175,7 @@ impl Model<'_> {
                 // finish: one pick at a time.
                 let p = th.picks[th.cur as usize];
                 let s = &mut sh.slabs[p.slab as usize];
-                let desc;
-                if p.zero && self.v.prefix_claim {
+                let desc = if p.zero && self.v.prefix_claim {
                     // `if pick.zero { for k in 0..want { out[got + k] =
                     // self.slot_ptr(slab, k); } ... continue; }`
                     for k in 0..p.n {
@@ -187,10 +186,10 @@ impl Model<'_> {
                         });
                     }
                     th.picks[th.cur as usize].claimed = p.n;
-                    desc = format!(
+                    format!(
                         "finish: zero pick, slots 0..{} of slab {} handed out",
                         p.n, p.slab
-                    );
+                    )
                 } else {
                     // `let Some((w, bits)) = bm.claim_from(word, want - k)`:
                     // `claim_word`: `want = lowest_n_bits(!cur & mask, n)`;
@@ -212,13 +211,13 @@ impl Model<'_> {
                         }
                     }
                     th.picks[th.cur as usize].claimed += popcount(got);
-                    desc = format!(
+                    format!(
                         "finish: fetch_or {got:#06b} on slab {} (bits {prev:#06b} -> {:#06b}){}",
                         p.slab,
                         s.bits,
                         if p.zero { ", pick flagged zero" } else { "" }
-                    );
-                }
+                    )
+                };
                 if th.picks[th.cur as usize].claimed == p.n {
                     th.got += p.n;
                     th.cur += 1;

@@ -842,24 +842,23 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
             // that the quotient is a bin size (jemalloc's slabs are exact
             // multiples of their region size).
             u.size = cls.nslots() * cls.size();
-            if verbose {
-                if let Some(a) = shared.arenas.get_existing(d.arena()) {
-                    let cs = a.class(class);
-                    let (st, curregs) = cs.bin_stats();
-                    u.bin_nregs = st.curslabs() * cls.nslots();
-                    u.bin_nfree = u.bin_nregs.saturating_sub(curregs);
-                    if let Some(s) = cs.lowest_partial() {
-                        u.slabcur_addr = shared.regions.slab_addr(class, s) as *mut c_void;
-                    }
+            if verbose && let Some(a) = shared.arenas.get_existing(d.arena()) {
+                let cs = a.class(class);
+                let (st, curregs) = cs.bin_stats();
+                u.bin_nregs = st.curslabs() * cls.nslots();
+                u.bin_nfree = u.bin_nregs.saturating_sub(curregs);
+                if let Some(s) = cs.lowest_partial() {
+                    u.slabcur_addr = shared.regions.slab_addr(class, s) as *mut c_void;
                 }
             }
         }
         Kind::Huge { page } => {
-            if let Some(r) = shared.huge.lookup(page) {
-                if r.start == page && r.state == RunState::Active {
-                    u.nregs = 1;
-                    u.size = r.usable;
-                }
+            if let Some(r) = shared.huge.lookup(page)
+                && r.start == page
+                && r.state == RunState::Active
+            {
+                u.nregs = 1;
+                u.size = r.usable;
             }
         }
         Kind::Invalid => {}
@@ -932,7 +931,7 @@ fn batch_query(shared: &Shared, io: &Io) -> Result<(), c_int> {
     let n = io.newlen / psz;
     // `checked_mul`: a count whose triples overflow must not wrap onto
     // the caller's `oldlen` and send the loop past both arrays.
-    if n == 0 || io.newlen % psz != 0 || n.checked_mul(tsz) != Some(oldlen) {
+    if n == 0 || !io.newlen.is_multiple_of(psz) || n.checked_mul(tsz) != Some(oldlen) {
         return Err(EINVAL);
     }
     let ptrs = io.newp as *const *const c_void;
@@ -1050,7 +1049,7 @@ fn flush_caller(shared: &Shared) {
 
 /// The calling thread's heap; `EAGAIN` when it has none to give (see
 /// `heap_for_thread`: being created, torn down, or not to be had).
-fn thread_heap<'a>(shared: &'a Shared) -> Result<&'a mut Heap, c_int> {
+fn thread_heap(shared: &Shared) -> Result<&mut Heap, c_int> {
     heap::heap_for_thread(shared).ok_or(EAGAIN)
 }
 
@@ -1103,10 +1102,10 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             Ok(())
         }
         MaxBackgroundThreads => {
-            if let Some(n) = io.write::<usize>()? {
-                if n == 0 {
-                    return Err(EINVAL);
-                }
+            if let Some(n) = io.write::<usize>()?
+                && n == 0
+            {
+                return Err(EINVAL);
             }
             io.read(1usize)
         }
@@ -1157,10 +1156,10 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
         ArenaDirtyDecayMs => {
             let i = at(mib, 1);
             let new = io.write::<isize>()?;
-            if let Some(ms) = new {
-                if ms < -1 {
-                    return Err(EFAULT);
-                }
+            if let Some(ms) = new
+                && ms < -1
+            {
+                return Err(EFAULT);
             }
             // The old period is read before the new one is applied, so a
             // read error changes nothing.
@@ -1195,10 +1194,10 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
         ThreadArena => {
             let h = thread_heap(shared)?;
             let new = io.write::<c_uint>()?;
-            if let Some(a) = new {
-                if a as usize >= MAX_ARENAS || shared.arena(a as u16).is_none() {
-                    return Err(EFAULT);
-                }
+            if let Some(a) = new
+                && (a as usize >= MAX_ARENAS || shared.arena(a as u16).is_none())
+            {
+                return Err(EFAULT);
             }
             io.read(h.arena() as c_uint)?;
             if let Some(a) = new {
@@ -2436,7 +2435,7 @@ mod tests {
             "region bytes, so size / nregs is the class size"
         );
         assert!(u.nfree < u.nregs);
-        assert!(u.bin_nregs >= u.nregs && u.bin_nregs % u.nregs == 0);
+        assert!(u.bin_nregs >= u.nregs && u.bin_nregs.is_multiple_of(u.nregs));
         assert!(u.bin_nfree <= u.bin_nregs);
         assert!(
             u.bin_nregs - u.bin_nfree >= 500,
@@ -2499,7 +2498,7 @@ mod tests {
         let h = mallocx(3 << 20, 0);
         let m = mallocx(100 << 10, 0);
         let cm = crate::layout::class_of(100 << 10).unwrap();
-        assert!(cm >= NBINS && cm < crate::layout::NCLASSES);
+        assert!((NBINS..crate::layout::NCLASSES).contains(&cm));
         let stack = 0u64;
         let four = [
             h as *const c_void,

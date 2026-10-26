@@ -26,6 +26,8 @@ pub(super) fn owner_mismatch(class: usize, group: usize, slab: usize, word: u16,
 /// bounds the set bits, so the bitmap or the descriptor is corrupt.
 #[cold]
 #[inline(never)]
+// The abort message names every field it reports.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn zero_slab_had_bits_set(
     class: usize,
     slab: usize,

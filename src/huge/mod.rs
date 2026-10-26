@@ -1747,13 +1747,13 @@ impl Huge {
             not_a_run(self.addr(page));
         }
         let addr = self.addr(page);
-        if self.guard_install {
-            if let Err(e) = guard_remove(
+        if self.guard_install
+            && let Err(e) = guard_remove(
                 addr + (n - GUARD_PAGES) * page_size,
                 GUARD_PAGES * page_size,
-            ) {
-                panic!("huge: madvise(MADV_GUARD_REMOVE) of {addr:#x} failed: {e}");
-            }
+            )
+        {
+            panic!("huge: madvise(MADV_GUARD_REMOVE) of {addr:#x} failed: {e}");
         }
         let now = now_ns().max(1);
         // Purged at once: above `huge_retain_max`, or under a zero huge

@@ -3686,7 +3686,7 @@ mod tests {
             for b in nbits..words.len() * 64 {
                 assert!(bm.is_set(b), "nbits={nbits} padding bit {b} should be set");
             }
-            assert_eq!(bm.is_full(), false);
+            assert!(!bm.is_full());
         }
     }
 
@@ -3911,7 +3911,7 @@ mod tests {
             let before = word.load(Ordering::Relaxed) & !bm.mask;
             let mut model = vec![false; nslots];
             for _ in 0..5000 {
-                if xorshift(&mut s) % 2 == 0 {
+                if xorshift(&mut s).is_multiple_of(2) {
                     let n = (xorshift(&mut s) % 6) as usize;
                     match bm.claim(n) {
                         Some((0, m)) => {
@@ -3982,7 +3982,7 @@ mod tests {
                     let mut owned: Vec<usize> = Vec::new();
                     let mut claimed = 0u64;
                     for _ in 0..ROUNDS {
-                        if xorshift(&mut s) % 2 == 0 || owned.is_empty() {
+                        if xorshift(&mut s).is_multiple_of(2) || owned.is_empty() {
                             let n = 1 + (xorshift(&mut s) % 40) as usize;
                             let start = (xorshift(&mut s) as usize) % words.len();
                             if let Some((w, mut m)) = bm.claim_from_t(start, n) {
@@ -4118,6 +4118,8 @@ mod tests {
     /// with universes of different sizes, each checked against its own
     /// model and against the dense form.
     #[test]
+    // Indexes the views, the models and the sizes together.
+    #[allow(clippy::needless_range_loop)]
     fn chunked_views_interleave_and_match_model() {
         let sizes = [1usize, 64, 65, 4096, 4097, 10_000, 300_000, 70, 5000];
         let stride = sizes.len();
@@ -4145,7 +4147,7 @@ mod tests {
             let r = xorshift(&mut s);
             let v = (r % stride as u64) as usize;
             let nbits = sizes[v];
-            let bit = if r % 8 == 0 {
+            let bit = if r.is_multiple_of(8) {
                 (xorshift(&mut s) as usize) % nbits
             } else {
                 (xorshift(&mut s) as usize) % nbits.min(700)
@@ -4207,6 +4209,8 @@ mod tests {
     }
 
     #[test]
+    // Compares the bitmap with the model bit by bit.
+    #[allow(clippy::needless_range_loop)]
     fn two_level_matches_model() {
         let mut s = 0x0123_4567_89AB_CDEFu64;
         for &nbits in &[1usize, 64, 65, 4096, 4097, 10_000, 300_000] {
@@ -4217,7 +4221,7 @@ mod tests {
             let ops = if nbits > 100_000 { 20_000 } else { 40_000 };
             for _ in 0..ops {
                 let r = xorshift(&mut s);
-                let bit = if r % 8 == 0 {
+                let bit = if r.is_multiple_of(8) {
                     (xorshift(&mut s) as usize) % nbits
                 } else {
                     (xorshift(&mut s) as usize) % nbits.min(700)
@@ -4262,6 +4266,8 @@ mod tests {
     }
 
     #[test]
+    // Compares the bitmap with the model bit by bit.
+    #[allow(clippy::needless_range_loop)]
     fn two_level_ranges_match_model() {
         let mut s = 0xDEAD_BEEF_CAFE_F00Du64;
         for &nbits in &[1usize, 63, 64, 65, 130, 4096, 4097, 20_000] {
@@ -4271,7 +4277,7 @@ mod tests {
                 let r = xorshift(&mut s);
                 let start = (xorshift(&mut s) as usize) % (nbits + 1);
                 let len = (xorshift(&mut s) as usize) % (nbits - start + 1);
-                if r % 2 == 0 {
+                if r.is_multiple_of(2) {
                     o.bm.set_range(start, len);
                     for b in &mut model[start..start + len] {
                         *b = true;

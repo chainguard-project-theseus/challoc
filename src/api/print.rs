@@ -167,6 +167,8 @@ struct Opts {
 /// # Safety
 /// `opts + i` is a readable byte of the caller's string.
 #[inline(always)]
+// `c_char` is `i8` on x86_64 and `u8` on aarch64: the cast is needed on one.
+#[allow(clippy::unnecessary_cast)]
 unsafe fn opt_byte(opts: *const c_char, i: usize) -> u8 {
     // SAFETY: guaranteed by the caller.
     unsafe { opts.add(i).read() as u8 }

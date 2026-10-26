@@ -383,6 +383,8 @@ mod tests {
     /// the last step, half at mid-window, non-increasing, and symmetric
     /// about the middle.
     #[test]
+    // Pairs each step with its mirror.
+    #[allow(clippy::needless_range_loop)]
     fn weights_are_a_smootherstep_from_one_to_zero() {
         // 1 - smootherstep(1 / 200) = 1 - 1.24e-6 (jemalloc: 0x14 of 2^24).
         assert_eq!(WEIGHTS[0] as u64, WEIGHT_ONE - 21);
