@@ -22,9 +22,12 @@ use crate::sys::cgroup::{Cgroup, Deferred};
 use super::heap_destructor;
 use super::tcaches::Tcaches;
 use super::{FREE_ROUTE, Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
+use vstd::prelude::verus;
 
 /// The cache GC period (design 6.4): 10 s.
 pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
+
+verus! {
 
 /// Process-wide allocator state that every heap works against: the regions,
 /// one [`SlabTable`] per class, arena 0, the metadata allocator, the huge
@@ -37,6 +40,9 @@ pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
 /// then the line-aligned tables and arena 0's class states, so the locks
 /// inside `meta` and `huge` (taken on heap creation and huge allocations)
 /// never share a cache line with them.
+///
+/// Opaque to Verus (`external_body`) until its fields are specified.
+#[verifier::external_body]
 #[repr(C)]
 pub struct Shared {
     /// What the `free` and sized `free` fast paths read per class, one
@@ -110,6 +116,12 @@ pub struct Shared {
     /// fast paths read.
     cgroup: crate::sys::cgroup::Deferred,
 }
+
+/// The address of the process's `Shared` storage (`api`'s `SHARED`).
+/// Uninterpreted.
+pub uninterp spec fn shared_storage() -> *mut Shared;
+
+} // verus!
 
 /// Everything the `free` fast path reads for one class, in one 64-byte
 /// line: the slot geometry (`Regions::class_base[c]` and `CLASSES[c]`'s
