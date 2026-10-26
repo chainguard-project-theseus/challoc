@@ -1,0 +1,5 @@
+# Temporary seams, provable in Verus once thp.rs's mode atomics and its
+# `advise` helper are specified.
+is_never	atomics primitive	Verus
+meta_folio_size	atomics primitive	Verus
+advise_meta	FFI/syscall	Verus

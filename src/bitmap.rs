@@ -2867,6 +2867,9 @@ impl TwoLevelBitmap {
     /// level-1 bit means the word is non-zero, so it has been written; the
     /// lazily committed tables in `class/` and `huge/` rely on this to
     /// keep scans away from words whose page is still `PROT_NONE`.
+    // The proof runs close to the default resource limit under
+    // `quantum8`: unrelated items elsewhere in the crate tip it over.
+    #[verifier::rlimit(20)]
     pub fn lowest_set_from(&self, from: usize) -> (r: Option<usize>)
         requires
             self.wf(),
