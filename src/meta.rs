@@ -225,6 +225,39 @@ pub proof fn lemma_is_pow2_shl(k: usize)
     assert((1usize << k) as nat == pow2(k as nat));
 }
 
+/// `1` is a power of two (`2^0`).
+pub proof fn lemma_is_pow2_one()
+    ensures
+        is_pow2(1),
+{
+    vstd::arithmetic::power2::lemma2_to64();
+    assert(1usize as nat == pow2(0));
+}
+
+/// A power of two has one bit set.
+pub proof fn lemma_pow2_bits(x: usize)
+    requires
+        is_pow2(x),
+    ensures
+        x > 0,
+        x & sub(x, 1) == 0,
+        x <= 0x8000_0000_0000_0000,
+{
+    let k = choose|k: nat| k < 64 && x as nat == #[trigger] pow2(k);
+    vstd::arithmetic::power2::lemma2_to64();
+    vstd::arithmetic::power2::lemma2_to64_rest();
+    if k < 63 {
+        vstd::arithmetic::power2::lemma_pow2_strictly_increases(k, 63);
+    }
+    vstd::bits::lemma_usize_pow2_no_overflow(k);
+    lemma_usize_shl_is_mul(1, k as usize);
+    let kk = k as usize;
+    assert((1usize << kk) > 0 && (1usize << kk) & sub(1usize << kk, 1) == 0) by (bit_vector)
+        requires
+            kk < 64,
+    ;
+}
+
 /// [`align_up`] as a function.
 pub open spec fn align_up_spec(x: usize, a: usize) -> usize {
     ((x + a - 1) as usize) & !((a - 1) as usize)

@@ -27,6 +27,30 @@
 //! The instructions are emitted through `asm!` with `.arch_extension
 //! pauth`, which the integrated assembler applies to that block only.
 
+use vstd::prelude::verus;
+#[cfg(verus_keep_ghost)]
+use vstd::prelude::*;
+
+verus! {
+
+/// The end of the user addresses the kernel hands out to a process that
+/// asks for no more (an `mmap` hint above them): `2^VA_BITS` of the
+/// kernel, capped by its default map window. Left abstract, because
+/// VA_BITS is a kernel build option (39, 42, 47, 48 or 52 on arm64); the
+/// PAC field lies above it.
+pub uninterp spec fn user_va_limit() -> int;
+
+/// Trusted (Linux's default map window): the limit is at most `2^48`.
+/// x86_64 hands out addresses below `2^47` with 4- or 5-level paging, and
+/// arm64 keeps a 48-bit window on 52-bit kernels, except with the debug
+/// option `CONFIG_ARM64_FORCE_52BIT`.
+pub axiom fn axiom_user_va_limit()
+    ensures
+        user_va_limit() <= 0x1_0000_0000_0000,
+;
+
+} // verus!
+
 /// Test-only count of PAC instructions this module has executed
 /// (`pacda`, `autda`, `xpacd`), summed over the process. A test forks a
 /// child, drives a heap built with the probe forced off and asserts the
