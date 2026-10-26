@@ -139,7 +139,14 @@ impl Env {
 
     fn table(&self, c: usize, guard_interval: u32) -> &'static SlabTable {
         std::boxed::Box::leak(std::boxed::Box::new(
-            SlabTable::new(&self.meta, &self.regions, c, guard_interval).expect("slab table"),
+            SlabTable::new(
+                &self.meta,
+                &self.regions,
+                c,
+                guard_interval,
+                Tracked::assume_new(),
+            )
+            .expect("slab table"),
         ))
     }
 
@@ -1196,7 +1203,7 @@ fn metadata_exhaustion_is_reported_not_fatal() {
         (0x2000_0000_0000, 2 * page_size()),
         page_size().trailing_zeros(),
     );
-    assert!(SlabTable::new(&meta, &regions, 0, 0).is_none());
+    assert!(SlabTable::new(&meta, &regions, 0, 0, Tracked::assume_new()).is_none());
 }
 
 /// Two arenas over one class region: slabs are handed out in address

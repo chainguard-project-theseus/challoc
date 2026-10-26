@@ -809,6 +809,7 @@ impl Shared {
                     regions,
                     c,
                     guard_interval_for(c, regions.page_size(), guard_interval),
+                    Tracked::assume_new(),
                 ) {
                     Some(t) => {
                         Shared::put_table(this, c, t);

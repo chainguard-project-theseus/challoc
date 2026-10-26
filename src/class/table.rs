@@ -8,7 +8,7 @@ use super::abort::{guard_free, invalid_free, invalid_pointer, never_committed, o
 use super::sets::Lazy;
 use crate::bitmap::AtomicBitmap;
 use crate::layout::{CLASSES, Class, Regions};
-use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
+use crate::lock::{Lock, LockOrder, PAD_ALIGN, Padded, RawLock};
 use crate::meta::Meta;
 use crate::purge;
 use crate::slab::{DESC_ALIGN, SlabDesc, desc_stride};
@@ -257,12 +257,15 @@ impl SlabTable {
     /// scales by a power of two), so that the sized fast path's test is a
     /// mask; callers must pass 0 when `MADV_GUARD_INSTALL` is unavailable,
     /// since a `PROT_NONE` slab would split the region into one VMA per
-    /// guard (design section 5).
+    /// guard (design section 5). `_ord` is the caller's lock-order token
+    /// (ghost), unused until the slab-table proofs pass it to the
+    /// reservations, which take it for the metadata lock.
     pub fn new(
         meta: &Meta,
         regions: &Regions,
         class: usize,
         guard_interval: u32,
+        _ord: Tracked<&mut LockOrder>,
     ) -> Option<SlabTable> {
         assert!(class < CLASSES.len(), "class: index out of range");
         assert!(
