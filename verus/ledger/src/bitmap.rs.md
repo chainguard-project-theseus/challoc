@@ -8,12 +8,10 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `allocated` | external_body | panic/abort | Verus | trusted |
-| `from_raw` | external_body | raw pointer (internal) | Verus | trusted |
-| `from_raw_chunked` | external_body | raw pointer (internal) | Verus | trusted |
 
 ## `allocated`
 
-src/bitmap.rs:1334. Kind: external_body. Category: panic/abort.
+src/bitmap.rs:1337. Kind: external_body. Category: panic/abort.
 Tool: Verus. Status: trusted.
 
 > Set slot bits, padding excluded: the slab's allocated (or cached) slots for a class with `nslots` real slots.
@@ -22,55 +20,4 @@ Tool: Verus. Status: trusted.
 pub fn allocated(&self, nslots: usize) -> usize
     requires
         nslots <= self.spec_nbits(),
-```
-
-## `from_raw`
-
-src/bitmap.rs:2086. Kind: external_body. Category: raw pointer (internal).
-Tool: Verus. Status: trusted.
-
-> Build a set over `0..nbits` on top of `words_needed(nbits)` words at `ptr`, all zero.
-
-Body mints Tracked at line 2107.
-
-```rust
-pub const unsafe fn from_raw(nbits: usize, ptr: *mut u64) -> (r: TwoLevelBitmap)
-    requires
-        ((((nbits as int) + 63) / 64 + 63) / 64 + ((nbits as int) + 63) / 64) * 8 <= isize::MAX,
-        // `u64`'s alignment (8 on both targets).
-        ptr@.addr as int % 8 == 0,
-        ptr@.addr != 0,
-        ptr@.addr + 8 * ((((nbits as int) + 63) / 64 + 63) / 64 + ((nbits as int) + 63) / 64) <= usize::MAX,
-        crate::vspec::ptr::in_alloc(ptr, 8 * ((((nbits as int) + 63) / 64 + 63) / 64 + ((nbits as int) + 63) / 64)),
-    ensures
-        r.fresh(nbits),
-        r.place() == (ptr@.addr as int, 8 * ((((nbits as int) + 63) / 64 + 63) / 64 + ((nbits as int) + 63) / 64)),
-```
-
-## `from_raw_chunked`
-
-src/bitmap.rs:2128. Kind: external_body. Category: raw pointer (internal).
-Tool: Verus. Status: trusted.
-
-> Build a chunked view over `0..nbits` (struct doc): row `r` of the view is `ptr.add(r * stride)`, rows `0..chunked_rows(nbits)`.
-
-Body mints Tracked at line 2155.
-
-```rust
-pub const unsafe fn from_raw_chunked(
-    nbits: usize,
-    ptr: *mut u64,
-    stride: usize,
-) -> (r: TwoLevelBitmap)
-    requires
-        stride >= 1,
-        65 * ((((nbits as int) + 63) / 64 + 63) / 64) * (stride as int) * 8 <= isize::MAX,
-        // `u64`'s alignment, as `from_raw` requires.
-        ptr@.addr as int % 8 == 0,
-        ptr@.addr != 0,
-        ptr@.addr + 8 * chunked_span((((nbits as int) + 63) / 64 + 63) / 64, stride as int) <= usize::MAX,
-        crate::vspec::ptr::in_alloc(ptr, 8 * chunked_span((((nbits as int) + 63) / 64 + 63) / 64, stride as int)),
-    ensures
-        r.fresh(nbits),
-        r.place() == (ptr@.addr as int, 8 * chunked_span((((nbits as int) + 63) / 64 + 63) / 64, stride as int)),
 ```

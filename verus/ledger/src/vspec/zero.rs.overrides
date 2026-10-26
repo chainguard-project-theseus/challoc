@@ -1,0 +1,2 @@
+# A gap in vstd's memory model (raw permissions carry no byte values).
+axiom_zero_word	raw pointer (internal)	none (assumption)

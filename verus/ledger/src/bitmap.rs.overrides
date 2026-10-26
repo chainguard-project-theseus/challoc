@@ -1,8 +1,3 @@
-# Temporary seams, provable in Verus. The constructors take the zeroed
-# words on the caller's safety contract until a ghost permission to zeroed
-# memory can be passed to them.
-from_raw	raw pointer (internal)	Verus
-from_raw_chunked	raw pointer (internal)	Verus
 # Temporary seam, provable in Verus once the abort its `assert!` makes is
 # specified.
 allocated	panic/abort	Verus
