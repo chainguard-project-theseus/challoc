@@ -1,3 +1,5 @@
 # A temporary seam: opaque until the statistics are specified
 # (the accounting identities `ArenaStats::identities_hold` checks).
 ArenaStats	allocator invariant	Verus
+# A temporary seam, with the opaque type: no figure is claimed.
+ArenaStats::empty	allocator invariant	Verus

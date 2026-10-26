@@ -1,0 +1,2 @@
+# A temporary seam while `ArenaStats` is opaque: true of any value.
+axiom_arena_stats_lock_inv	allocator invariant	Verus
