@@ -17,7 +17,7 @@ pub uninterp spec fn cast_provenance() -> vstd::raw_ptr::Provenance;
 
 /// `addr as *mut u8`: a pointer to `addr` (Verus supports only the other
 /// direction of the cast), [`addr_ptr`], with [`cast_provenance`]. `rseq::area`
-/// is its caller. `#[inline(always)]` leaves the machine code of the bare
+/// and `meta::Inner::alloc` are its callers. `#[inline(always)]` leaves the machine code of the bare
 /// cast.
 #[verifier::external_body]
 #[inline(always)]

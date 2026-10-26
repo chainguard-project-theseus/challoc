@@ -2,7 +2,9 @@
 //! permission to bytes that read as zero, from which a word's permission
 //! holding 0 is made ([`axiom_zero_word`]).
 //! `bitmap::TwoLevelBitmap::from_raw` and `from_raw_chunked` build their
-//! views' word permissions from one.
+//! views' word permissions from one. A [`Zeroed`] token says a range of
+//! bytes reads as zero: `meta::Meta::alloc_zeroed` returns one for the
+//! object it hands out.
 
 use vstd::prelude::*;
 use vstd::raw_ptr::PointsToRaw;
@@ -11,14 +13,26 @@ use vstd::raw_ptr::{PointsTo, Provenance};
 
 verus! {
 
+/// Ghost token: the `len` bytes at address `addr` read as zero. A token
+/// is not a permission to access the bytes, and nothing ties it to the
+/// writes the program or the allocator make: it stays true because the
+/// allocator hands the bytes to no one while it holds the token.
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+pub tracked struct Zeroed {
+    ghost addr: int,
+    ghost len: int,
+}
+
 /// Ghost permission to bytes that read as zero: a raw permission together
 /// with the fact that its bytes read as zero. A bitmap built on such bytes
 /// starts from words that read as zero (`bitmap::TwoLevelBitmap::from_raw`
 /// and `from_raw_chunked`, through [`axiom_zero_word`]). Like a
 /// `PointsToRaw` it splits by byte set ([`ZeroRaw::split`]); it is linear,
 /// so a `ZeroRaw` makes each word's zero permission once. Nothing verified
-/// mints one yet: the unverified callers of the bitmap constructors take
-/// theirs on trust (`Tracked::assume_new()` outside `verus!`).
+/// mints one yet: `meta::Meta::reserve_table` and the unverified callers
+/// of the bitmap constructors take theirs on trust (`Tracked::assume_new()`
+/// outside `verus!`).
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
 pub tracked struct ZeroRaw {

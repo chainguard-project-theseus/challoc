@@ -489,7 +489,7 @@ fn init() {
     } else {
         config.background_thread
     });
-    let regions = Regions::reserve(features.page_size, features.anon_name);
+    let (regions, space) = Regions::reserve_owning(features.page_size, features.anon_name);
     if features.mseal {
         SEALED.store(regions.seal(), Ordering::Relaxed);
     }
@@ -499,6 +499,7 @@ fn init() {
         let ok = Shared::init(
             shared_storage_ptr(),
             regions,
+            space,
             config,
             features.guard_install,
             features.pac,

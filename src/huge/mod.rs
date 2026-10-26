@@ -740,7 +740,11 @@ fn alloc_desc(meta: &Meta) -> *mut HugeDesc {
 /// Give the block `d` from [`alloc_desc`] back to `meta`.
 #[inline(always)]
 fn free_desc(meta: &Meta, d: *mut HugeDesc) {
-    meta.free(d as *mut u8, Layout::new::<HugeDesc>());
+    meta.free(
+        d as *mut u8,
+        Layout::new::<HugeDesc>(),
+        vstd::prelude::Tracked::assume_new(),
+    );
 }
 
 verus! {

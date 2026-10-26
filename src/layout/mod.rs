@@ -1,12 +1,12 @@
 //! Size classes, address-space regions, and pointer classification
 //! (design.md sections 2 and 3).
 //!
-//! Everything in this module except [`Regions::reserve`] is pure arithmetic
-//! over a class table fixed at init ([`CLASSES`]: the compile-time
+//! Everything in this module except [`Regions::reserve_owning`] is pure
+//! arithmetic over a class table fixed at init ([`CLASSES`]: the compile-time
 //! [`BASE_CLASSES`] geometry, with the slabs of the classes below the
 //! kernel page raised to the page by [`adopt_page_geometry`]) and a
-//! handful of runtime bases, and is unit tested exhaustively. `reserve` is
-//! the piece that probes how much address space the process can get and
+//! handful of runtime bases, and is unit tested exhaustively. `reserve_owning`
+//! is the piece that probes how much address space the process can get and
 //! lays the regions out.
 //!
 //! Submodules: [`regions`] holds the address-space parameters, [`Regions`]
