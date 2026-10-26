@@ -262,7 +262,13 @@ impl Arena {
             if sets_ptr.is_null() {
                 return false;
             }
-            match SetTable::new(meta, regions) {
+            match SetTable::new(
+                meta,
+                regions,
+                Ghost::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            ) {
                 Some(sets) => {
                     ptr::write(sets_ptr, sets);
                     Arena::put_sets(this, sets_ptr);
