@@ -282,9 +282,19 @@ impl Arena {
                     return false;
                 }
             }
-            let sets: &SetTable = &*sets_ptr;
             for (c, table) in tables.iter().enumerate() {
-                match ClassState::new(meta, regions, table, index, sets) {
+                match ClassState::new(
+                    meta,
+                    regions,
+                    core::ptr::from_ref(table).cast_mut(),
+                    Tracked::assume_new(),
+                    Ghost::assume_new(),
+                    Ghost::assume_new(),
+                    index,
+                    sets_ptr,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                ) {
                     Some(cs) => {
                         Arena::put_class(this, c, cs);
                     }

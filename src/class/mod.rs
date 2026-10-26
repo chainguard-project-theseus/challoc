@@ -67,12 +67,14 @@
 //! the bit afterwards.
 
 use crate::layout::{CLASSES, Class, MAX_SLAB_WORDS, Regions};
-use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
+use crate::lock::{Lock, LockOrder, PAD_ALIGN, Padded, RawLock};
 use crate::meta::Meta;
 use crate::purge::{self, Decayer};
 use crate::slab::{SlabDesc, State};
+use crate::vspec::zero::ZeroRaw;
 use core::sync::atomic::{AtomicU64, Ordering};
-use vstd::prelude::{Ghost, Tracked};
+use vstd::prelude::{Ghost, Map, Tracked, int, nat};
+use vstd::raw_ptr::PointsTo;
 
 mod abort;
 mod decay;
@@ -356,6 +358,14 @@ struct Inner {
     /// [`ClassState::next_fresh_slab`]).
     group_next: usize,
     group_end: usize,
+    /// Ghost: this arena's slabs of this class, each with the state its
+    /// descriptor holds while this lock is held.
+    #[allow(dead_code)]
+    states: Ghost<Map<nat, State>>,
+    /// Ghost: this arena's committed slabs of this class (guards
+    /// excluded), the slabs `stats.committed` counts.
+    #[allow(dead_code)]
+    committed: Ghost<vstd::set::Set<nat>>,
 }
 
 // SAFETY: `TwoLevelBitmap` holds a raw pointer into the metadata region,
@@ -384,7 +394,7 @@ pub struct ClassState {
     arena: u16,
     /// The class's shared table, which lives as long as the allocator
     /// (inside `Shared`, or leaked by the tests).
-    table: *const SlabTable,
+    table: TablePtr,
     /// The decay step gate (`purge::Decayer`): the oldest `Empty` slab's
     /// `dirty_at`, written under the lock (set when the empty set goes
     /// from none to one, recomputed by every purge walk) and read without
@@ -432,15 +442,72 @@ const _: () =
 const _: () = assert!(core::mem::offset_of!(ClassState, claimed) % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>().is_multiple_of(PAD_ALIGN));
 const _: () = assert!(!core::mem::size_of::<ClassState>().is_multiple_of(512));
+const _: () = assert!(core::mem::size_of::<TablePtr>() == core::mem::size_of::<*const SlabTable>());
 
-// SAFETY: the only non-`Sync`, non-`Send` field is the table pointer,
-// which targets a `SlabTable` (itself `Sync`) that outlives every
-// `ClassState` pointing at it: both live in `Shared` for the life of the
-// process, or are leaked by the tests. Sharing the state across threads
-// (`Sync`) or handing it to another thread (`Send`) therefore hands out
-// nothing but a pointer to a process-lifetime, thread-safe table.
+// SAFETY: the only non-`Sync`, non-`Send` field is the table pointer
+// (`TablePtr`, whose other fields are ghost), which targets a `SlabTable`
+// (itself `Sync`) that outlives every `ClassState` pointing at it: both
+// live in `Shared` for the life of the process, or are leaked by the
+// tests. Sharing the state across threads (`Sync`) or handing it to
+// another thread (`Send`) therefore hands out nothing but a pointer to a
+// process-lifetime, thread-safe table.
 unsafe impl Sync for ClassState {}
 unsafe impl Send for ClassState {}
+
+/// The pointer to its table a [`ClassState`] keeps, in a module of its own
+/// so that [`table_ptr`](tptr::table_ptr) is the only maker of one.
+mod tptr {
+    use super::SlabTable;
+    use vstd::prelude::*;
+    use vstd::raw_ptr::PointsTo;
+
+    /// A pointer to the table of class `c`, with (ghost, no bytes: the
+    /// layout is the pointer's) the frozen permissions to every class's
+    /// table, from `base` on, whose element `c` is the pointer's.
+    pub(super) struct TablePtr {
+        p: *mut SlabTable,
+        #[allow(dead_code)]
+        tables: Tracked<&'static Map<int, PointsTo<SlabTable>>>,
+        /// Element `c` of `tables`, held apart so that [`TablePtr::get`]
+        /// passes it on as it is: a `Tracked(..)` built there is one more
+        /// distinct `Tracked` type under `Heap::flush`, which puts it past
+        /// the MIR inliner's limit of instances of one generic item and
+        /// changes its machine code (x86_64).
+        perm: Tracked<&'static PointsTo<SlabTable>>,
+        #[allow(dead_code)]
+        base: Ghost<*mut SlabTable>,
+        #[allow(dead_code)]
+        c: Ghost<int>,
+    }
+
+    /// The pointer `p` to element `c` of the tables `tables` covers, from
+    /// `base` on, as a [`TablePtr`].
+    #[inline(always)]
+    pub(super) fn table_ptr(
+        p: *mut SlabTable,
+        tables: Tracked<&'static Map<int, PointsTo<SlabTable>>>,
+        base: Ghost<*mut SlabTable>,
+        c: Ghost<int>,
+    ) -> TablePtr {
+        TablePtr {
+            p,
+            tables,
+            perm: Tracked::assume_new(),
+            base,
+            c,
+        }
+    }
+
+    impl TablePtr {
+        /// The table, through its frozen permission.
+        #[inline(always)]
+        pub(super) fn get(&self) -> &SlabTable {
+            vstd::raw_ptr::ptr_ref(self.p, self.perm)
+        }
+    }
+}
+
+use tptr::{TablePtr, table_ptr};
 
 /// The set/count seam: each of the three sets is one bitmap plus one
 /// `ClassStats` count, and the two are written together, here or at the
@@ -522,46 +589,60 @@ impl Inner {
 }
 
 impl ClassState {
-    /// Create the state for `arena` over `table`'s class, with its three
-    /// slab sets as views of the arena's `sets` table (slot `kind * count +
-    /// pos[class]` of the class's set group, `Set::in_table`). `table` and
-    /// `sets` must outlive the state. `meta` and `regions` are unused:
-    /// the sets live in `sets`, the descriptors in `table`.
-    pub fn new(
+    /// Create the state for `arena` over class `c`'s table, at `tp`
+    /// (element `c` of the tables `tables` covers from `base` on), with
+    /// its three slab sets as views of the arena's set table at
+    /// `sets_ptr` (slot `kind * count + pos[class]` of the class's set
+    /// group, `Set::in_table`), all empty, and nothing owned or committed.
+    /// The state keeps the tables' frozen permissions, and the sets
+    /// `sets_perm`, the set table's. The tables and the set table must
+    /// outlive the state. `meta` and `regions` are unused: the sets live
+    /// in the set table, the descriptors in the class's table. The three
+    /// sets take their slots' permissions out of `slots` (`SetTable::new`
+    /// handed them out); all of these permissions are ghost.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
         meta: &Meta,
         regions: &Regions,
-        table: &SlabTable,
+        tp: *mut SlabTable,
+        tables: Tracked<&'static Map<int, PointsTo<SlabTable>>>,
+        base: Ghost<*mut SlabTable>,
+        c: Ghost<int>,
         arena: u16,
-        sets: &SetTable,
+        sets_ptr: *const SetTable,
+        sets_perm: Tracked<&'static PointsTo<SetTable>>,
+        _slots: Tracked<&mut Map<(int, int), ZeroRaw>>,
     ) -> Option<ClassState> {
+        let table = vstd::raw_ptr::ptr_ref(tp, Tracked::assume_new());
         let _ = (meta, regions);
+        let sets = vstd::raw_ptr::ptr_ref(sets_ptr, sets_perm);
         let class = table.class as usize;
         debug_assert!(table.nslabs == sets.nslabs[SetTable::group_of(class)]);
-        let partial = Set::in_table(sets, Tracked::assume_new(), class, 0, Tracked::assume_new());
-        let empty = Set::in_table(sets, Tracked::assume_new(), class, 1, Tracked::assume_new());
-        let purged = Set::in_table(sets, Tracked::assume_new(), class, 2, Tracked::assume_new());
+        let partial = Set::in_table(sets_ptr, sets_perm, class, 0, Tracked::assume_new());
+        let empty = Set::in_table(sets_ptr, sets_perm, class, 1, Tracked::assume_new());
+        let purged = Set::in_table(sets_ptr, sets_perm, class, 2, Tracked::assume_new());
+        let inner = Inner {
+            partial,
+            empty,
+            purged,
+            stats: ClassStats {
+                committed: 0,
+                guards: 0,
+                empty: 0,
+                purged: 0,
+                nonfull: 0,
+            },
+            group_next: 0,
+            group_end: 0,
+            states: Ghost::assume_new(),
+            committed: Ghost::assume_new(),
+        };
         Some(ClassState {
             class: table.class,
             arena,
-            table,
+            table: table_ptr(tp, tables, base, c),
             gate: Decayer::new(),
-            inner: Padded(Lock::new(
-                Inner {
-                    partial,
-                    empty,
-                    purged,
-                    stats: ClassStats {
-                        committed: 0,
-                        guards: 0,
-                        empty: 0,
-                        purged: 0,
-                        nonfull: 0,
-                    },
-                    group_next: 0,
-                    group_end: 0,
-                },
-                Ghost::assume_new(),
-            )),
+            inner: Padded(Lock::new(inner, Ghost::assume_new())),
             claimed: AtomicU64::new(0),
             refilled: AtomicU64::new(0),
             released: AtomicU64::new(0),
@@ -577,8 +658,7 @@ impl ClassState {
     /// The class's shared table.
     #[inline(always)]
     pub fn table(&self) -> &SlabTable {
-        // SAFETY: the table outlives the state (see the field).
-        unsafe { &*self.table }
+        self.table.get()
     }
 
     #[inline]
@@ -1359,7 +1439,8 @@ impl ClassState {
     }
 
     /// Lowest slab in the partial set, if any (for tests and stats).
-    pub fn lowest_partial(&self) -> Option<usize> {
+    /// `_ord` is the caller's lock-order token (ghost) for the class lock.
+    pub fn lowest_partial(&self, _ord: Tracked<&mut LockOrder>) -> Option<usize> {
         self.inner
             .lock(Tracked::assume_new(), Tracked::assume_new())
             .partial
@@ -1380,8 +1461,9 @@ impl ClassState {
     }
 
     /// Whether `slab` is in the partial set (tests and the bins table,
-    /// `api::print`).
-    pub fn is_partial(&self, slab: usize) -> bool {
+    /// `api::print`). `_ord` is the caller's lock-order token (ghost) for the
+    /// class lock.
+    pub fn is_partial(&self, slab: usize, _ord: Tracked<&mut LockOrder>) -> bool {
         self.inner
             .lock(Tracked::assume_new(), Tracked::assume_new())
             .partial

@@ -346,7 +346,7 @@ pub fn get_defrag_hint(p: *const u8) -> c_int {
         return 0;
     };
     let cs = a.class(class);
-    let slabcur = cs.lowest_partial();
+    let slabcur = cs.lowest_partial(vstd::prelude::Tracked::assume_new());
     if slabcur == Some(slab) {
         return 0;
     }
@@ -855,7 +855,7 @@ mod tests {
             assert_eq!(u.nregs, cls.nslots());
             // The reference: jemalloc's rule over the same figures.
             let (slab, _) = t.locate(p);
-            let slabcur = cs.lowest_partial();
+            let slabcur = cs.lowest_partial(vstd::prelude::Tracked::assume_new());
             let mut curslabs = u.bin_nregs / u.nregs;
             let mut curregs = u.bin_nregs - u.bin_nfree;
             if let Some(sc) = slabcur {
@@ -924,7 +924,7 @@ mod tests {
         let lone_hint = get_defrag_hint(*big.last().unwrap());
         assert_eq!(
             lone_hint,
-            (csm.lowest_partial() != Some(lone_slab)) as c_int,
+            (csm.lowest_partial(vstd::prelude::Tracked::assume_new()) != Some(lone_slab)) as c_int,
             "the lone block moves unless its slab is the current one"
         );
         for p in &big[..2 * clm.nslots()] {
