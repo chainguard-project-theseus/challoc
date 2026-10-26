@@ -52,6 +52,14 @@ verus! {
 /// takes groups holds (`SlabTable::take_group`'s `pubw`).
 pub type Published = GhostPersistentPointsTo<int, Seq<Loc>>;
 
+/// The location of the process registry's record of published arenas,
+/// which a [`Published`] of the process is a point of. A placeholder:
+/// uninterpreted, so it asserts nothing, and the class proofs use it only
+/// in equalities (two records of the process's registry are at one
+/// location). Later arena proofs are to define it as the registry's
+/// location.
+pub uninterp spec fn process_pub_loc() -> Loc;
+
 } // verus!
 
 /// Arena indices are the 12-bit `MALLOCX_ARENA` field; 4096 itself is

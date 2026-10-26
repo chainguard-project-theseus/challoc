@@ -86,7 +86,11 @@ impl UsizePerm {
 /// `AtomicUsize::new(v)`, with the one permission to it: the only place a
 /// [`UsizePerm`] is minted, one per atomic, with the atomic it is for.
 #[inline(always)]
-pub fn new_usize(v: usize) -> (r: (AtomicUsize, Tracked<UsizePerm>)) {
+pub fn new_usize(v: usize) -> (r: (AtomicUsize, Tracked<UsizePerm>))
+    ensures
+        r.1@.id() == usize_id(&r.0),
+        r.1@.value() == v,
+{
     let a = AtomicUsize::new(v);
     (a, Tracked(UsizePerm { id: usize_id(&a), value: v }))
 }
