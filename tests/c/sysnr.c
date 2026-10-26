@@ -111,12 +111,33 @@
 #else
 #define PV_sched_getaffinity printf("-")
 #endif
+#ifdef __NR_sched_setaffinity
+#define PV_sched_setaffinity printf("%d", __NR_sched_setaffinity)
+#else
+#define PV_sched_setaffinity printf("-")
+#endif
+#ifdef __NR_sched_setscheduler
+#define PV_sched_setscheduler printf("%d", __NR_sched_setscheduler)
+#else
+#define PV_sched_setscheduler printf("-")
+#endif
+#ifdef __NR_getpriority
+#define PV_getpriority printf("%d", __NR_getpriority)
+#else
+#define PV_getpriority printf("-")
+#endif
+#ifdef __NR_setpriority
+#define PV_setpriority printf("%d", __NR_setpriority)
+#else
+#define PV_setpriority printf("-")
+#endif
 
 int main(void) {
     P(read); P(write); P(close); P(mmap); P(mprotect); P(munmap);
     P(rt_sigaction); P(rt_sigprocmask); P(madvise); P(getpid); P(prctl);
     P(gettid); P(futex); P(clock_gettime); P(exit_group); P(tgkill);
     P(openat); P(getrandom); P(mseal);
-    P(sched_getaffinity);
+    P(sched_getaffinity); P(sched_setaffinity); P(sched_setscheduler);
+    P(getpriority); P(setpriority);
     return 0;
 }
