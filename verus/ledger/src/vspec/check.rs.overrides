@@ -1,0 +1,2 @@
+# An assert! with a message, which Verus does not model.
+check	panic/abort	Kani

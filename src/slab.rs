@@ -20,7 +20,9 @@
 use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 use crate::layout::{Class, NCLASSES, build_classes, classes_for_page};
+use crate::vspec::addr::addr_to_ptr;
 use vstd::prelude::*;
+use vstd::raw_ptr::{PointsTo, ptr_ref};
 
 verus! {
 
@@ -117,6 +119,21 @@ pub struct SlabDesc {
     dirty_at: AtomicU64,
 }
 
+/// Ghost permission to one descriptor (`id`, its address): the `state`,
+/// `dirty_at` and `arena` values it holds, the fields the class locks
+/// protect (`init` and `set_state` also write `shadow`, and `init`
+/// `live`, which it does not track). The slab-table proofs give it to the
+/// holder of the lock that protects them. Not `Copy`, and its fields are
+/// private to this module, which has no constructor.
+// Ghost: for the specifications of the descriptor accessors.
+#[allow(dead_code)]
+pub tracked struct DescPerm {
+    ghost id: usize,
+    ghost state: u8,
+    ghost dirty: u64,
+    ghost arena: u16,
+}
+
 const fn strides_of(classes: &[Class; NCLASSES]) -> (out: [u32; NCLASSES])
     requires
         forall|i: int| 0 <= i < NCLASSES ==> #[trigger] classes[i].wf(),
@@ -202,9 +219,10 @@ pub fn desc_stride(class: usize) -> (r: usize)
 
 impl SlabDesc {
     /// Descriptor of slab `slab` in the array for `class` starting at
-    /// `base`. Trusted: Verus does not dereference an address cast to a
-    /// pointer, and the contract states only `desc_stride`'s bound and the
-    /// debug check.
+    /// `base`. `perm` is the permission to it (ghost), which the body
+    /// passes to `ptr_ref`; trusted: the contract states only
+    /// `desc_stride`'s bound and the debug check, and does not tie `perm`
+    /// to the descriptor yet.
     ///
     /// # Safety
     /// `base` must be the start of a descriptor array for `class` with at
@@ -213,25 +231,30 @@ impl SlabDesc {
     // The debug check mirrors the `requires` clause, `%` and all.
     #[allow(clippy::manual_is_multiple_of)]
     #[verifier::external_body]
-    pub unsafe fn at<'a>(base: usize, class: usize, slab: usize) -> &'a SlabDesc
+    pub unsafe fn at(
+        base: usize,
+        class: usize,
+        slab: usize,
+        perm: Tracked<&PointsTo<SlabDesc>>,
+    ) -> &SlabDesc
         requires
             class < NCLASSES,
             base % DESC_ALIGN == 0,
     {
         debug_assert!(base % DESC_ALIGN == 0);
-        // SAFETY: the caller guarantees the entry is inside a committed array;
+        // The caller guarantees the entry is inside a committed array;
         // descriptors are plain atomics valid for any bit pattern. Valid to
         // read is not the same as meaningful: zero bytes decode as `Fresh`
         // with arena 0 and `live` 0, a state byte above 3 aborts in
         // `from_u8`, and garbage in 1..=3 reads as a plausible state, which
         // is why `take_group` cross-checks the arena against the owner word
         // and `check_zero` exists.
-        unsafe { &*((base + slab * desc_stride(class)) as *const SlabDesc) }
+        ptr_ref(addr_to_ptr(base + slab * desc_stride(class)) as *const SlabDesc, perm)
     }
 
     /// Initialise the descriptor of a slab handed to `arena`: `Fresh`, no
-    /// live slots.
-    pub fn init(&self, arena: u16) {
+    /// live slots. `_p` is the descriptor's permission (ghost).
+    pub fn init(&self, arena: u16, _p: Tracked<&mut DescPerm>) {
         self.state.store(State::Fresh as u8, Ordering::Relaxed);
         self.shadow.store(State::Fresh as u8 + 1, Ordering::Relaxed);
         self.arena.store(arena, Ordering::Relaxed);
@@ -244,9 +267,10 @@ impl SlabDesc {
         State::from_u8(self.state.load(Ordering::Relaxed))
     }
 
-    /// Only ever called with the class lock held.
+    /// Only ever called with the class lock held, which holds `_p`, the
+    /// descriptor's permission (ghost).
     #[inline]
-    pub fn set_state(&self, s: State) {
+    pub fn set_state(&self, s: State, _p: Tracked<&mut DescPerm>) {
         self.state.store(s as u8, Ordering::Relaxed);
         self.shadow.store(s as u8 + 1, Ordering::Relaxed);
     }
@@ -304,8 +328,10 @@ impl SlabDesc {
         self.dirty_at.load(Ordering::Relaxed)
     }
 
+    /// Only ever called with the class lock held, which holds `_p`, as
+    /// [`set_state`](SlabDesc::set_state).
     #[inline]
-    pub fn set_dirty_at(&self, ns: u64) {
+    pub fn set_dirty_at(&self, ns: u64, _p: Tracked<&mut DescPerm>) {
         self.dirty_at.store(ns, Ordering::Relaxed);
     }
 
@@ -357,7 +383,7 @@ mod tests {
 
         fn at(&self, slab: usize) -> &SlabDesc {
             assert!((slab + 1) * desc_stride(self.class) <= self.buf.len() - DESC_ALIGN);
-            unsafe { SlabDesc::at(self.base, self.class, slab) }
+            unsafe { SlabDesc::at(self.base, self.class, slab, Tracked::assume_new()) }
         }
     }
 
@@ -433,10 +459,10 @@ mod tests {
             let d = Descs::new(c, 3);
             for slab in 0..3 {
                 let desc = d.at(slab);
-                desc.set_state(State::Active);
+                desc.set_state(State::Active, Tracked::assume_new());
                 desc.add_live(3);
-                desc.set_dirty_at(9);
-                desc.init(7);
+                desc.set_dirty_at(9, Tracked::assume_new());
+                desc.init(7, Tracked::assume_new());
                 assert_eq!(desc.state(), State::Fresh);
                 assert_eq!(desc.arena(), 7);
                 assert_eq!(desc.live(), 0);
@@ -451,11 +477,12 @@ mod tests {
         for c in [0usize, 12, 15, 19] {
             let d = Descs::new(c, 4);
             for slab in 0..4 {
-                d.at(slab).init(slab as u16);
+                d.at(slab).init(slab as u16, Tracked::assume_new());
             }
             d.at(1).add_live(5);
-            d.at(1).set_state(State::Active);
-            d.at(1).set_dirty_at(0x1111_2222_3333_4444);
+            d.at(1).set_state(State::Active, Tracked::assume_new());
+            d.at(1)
+                .set_dirty_at(0x1111_2222_3333_4444, Tracked::assume_new());
             for other in [0usize, 2, 3] {
                 let desc = d.at(other);
                 assert_eq!(desc.arena(), other as u16, "class {c}");
@@ -471,15 +498,15 @@ mod tests {
         let cls = &CLASSES[3];
         let d = Descs::new(3, 1);
         let desc = d.at(0);
-        desc.init(0);
+        desc.init(0, Tracked::assume_new());
         assert_eq!(desc.add_live(5), 0);
         assert_eq!(desc.add_live(2), 5);
         assert_eq!(desc.live(), 7);
         assert_eq!(desc.nfree(cls), cls.nslots() - 7);
         assert_eq!(desc.sub_live(7), 7);
         assert_eq!(desc.live(), 0);
-        desc.set_state(State::Empty);
-        desc.set_dirty_at(42);
+        desc.set_state(State::Empty, Tracked::assume_new());
+        desc.set_dirty_at(42, Tracked::assume_new());
         assert_eq!(desc.state(), State::Empty);
         assert_eq!(desc.dirty_at(), 42);
     }
@@ -489,7 +516,7 @@ mod tests {
     fn live_underflow_aborts() {
         let d = Descs::new(3, 1);
         let desc = d.at(0);
-        desc.init(0);
+        desc.init(0, Tracked::assume_new());
         desc.add_live(1);
         desc.sub_live(2);
     }

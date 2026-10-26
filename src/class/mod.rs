@@ -665,7 +665,7 @@ impl ClassState {
     #[allow(unused_variables)]
     #[inline(always)]
     fn set_state_locked(&self, g: &mut Inner, d: &SlabDesc, slab: usize, s: State) {
-        d.set_state(s);
+        d.set_state(s, Tracked::assume_new());
     }
 
     /// `SlabDesc::set_dirty_at` on slab `slab`'s descriptor `d` under this
@@ -673,7 +673,7 @@ impl ClassState {
     #[allow(unused_variables)]
     #[inline(always)]
     fn set_dirty_locked(&self, g: &mut Inner, d: &SlabDesc, slab: usize, ns: u64) {
-        d.set_dirty_at(ns);
+        d.set_dirty_at(ns, Tracked::assume_new());
     }
 
     /// Claim up to `out.len()` slots, lowest address first, writing slot
