@@ -1,5 +1,0 @@
-# Temporary seams, as in table.rs.overrides: the claims and the release
-# pass slot tokens made from nothing until the class protocol holds them.
-ClassState::finish	allocator invariant	Verus
-ClassState::claim_prefix	allocator invariant	Verus
-ClassState::release_word	allocator invariant	Verus
