@@ -264,7 +264,11 @@ impl Arena {
                     Arena::put_sets(this, sets_ptr);
                 }
                 None => {
-                    meta.free(sets_ptr as *mut u8, core::alloc::Layout::new::<SetTable>());
+                    meta.free(
+                        sets_ptr as *mut u8,
+                        core::alloc::Layout::new::<SetTable>(),
+                        vstd::prelude::Tracked::assume_new(),
+                    );
                     return false;
                 }
             }

@@ -11,7 +11,7 @@ file.
 
 ## `Shared`
 
-src/heap/shared.rs:47. Kind: external_body type. Category: allocator invariant.
+src/heap/shared.rs:48. Kind: external_body type. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > Process-wide allocator state that every heap works against: the regions, one [`SlabTable`] per class, arena 0, the metadata allocator, the huge allocator, the arena and explicit-cache registries and the thread-exit key.

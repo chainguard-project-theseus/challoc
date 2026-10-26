@@ -1,0 +1,3 @@
+# The kernel's `mmap` contract: a reservation's token stands for a live
+# mapping of its own, which no other token shares.
+Reserved	platform/kernel fact	none (assumption)

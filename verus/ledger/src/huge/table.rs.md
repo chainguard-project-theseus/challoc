@@ -46,6 +46,8 @@ Tool: Verus. Status: trusted.
 
 > Give the storage back if it was binned, with `own`, the table's permissions to its entries, which the caller (`ensure`) takes out of it first and drops the table afterwards.
 
+Body mints Tracked at line 374.
+
 ```rust
 fn release(&self, meta: &Meta, Tracked(own): Tracked<Own>)
     requires

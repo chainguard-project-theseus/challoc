@@ -1,6 +1,6 @@
 //! Address-space parameters (design section 2 table), [`Regions`] (the
 //! reserved regions of one process and pointer classification over them)
-//! and [`Regions::reserve`], the one piece that talks to the kernel.
+//! and [`Regions::reserve_owning`], the one piece that talks to the kernel.
 
 #[cfg(verus_keep_ghost)]
 use super::class_table;
@@ -1856,11 +1856,29 @@ mod linux {
     };
     use crate::layout::CLASSES;
     use crate::sys::{self, Errno, MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
+    use crate::vspec::unbacked::Unbacked;
+    use vstd::prelude::*;
 
-    /// Reserve address space with `PROT_NONE`, `MAP_NORESERVE`.
-    fn try_reserve(len: usize) -> Result<usize, Errno> {
+    verus! {
+
+    /// Ghost ownership of one live reservation that [`try_reserve`]
+    /// obtained from the kernel. Tokens are never duplicated, so two of
+    /// them are two live mappings. The reservations are never unmapped
+    /// (`Regions::release` is test-only), so a token stays true for the
+    /// life of the process.
+    #[verifier::external_body]
+    pub tracked struct Reserved {
+        _no_copy: (),
+    }
+
+    } // verus!
+
+    /// Reserve address space with `PROT_NONE`, `MAP_NORESERVE`: on
+    /// success, the address and the token for the `len` bytes there,
+    /// taken on trust (the kernel's `mmap` contract).
+    fn try_reserve(len: usize) -> Result<(usize, Tracked<Reserved>), Errno> {
         // SAFETY: fresh anonymous private mapping, no fixed address.
-        unsafe {
+        let addr = unsafe {
             sys::mmap(
                 0,
                 len,
@@ -1869,7 +1887,8 @@ mod linux {
                 -1,
                 0,
             )
-        }
+        }?;
+        Ok((addr, Tracked::assume_new()))
     }
 
     /// The abort of [`reserve_shrinking`] when even `2^lg_min` bytes
@@ -1883,12 +1902,18 @@ mod linux {
     }
 
     /// Reserve `2^lg + extra` bytes, halving `lg` down to `lg_min` on any
-    /// failure. Returns the mapping and the `lg` that fit.
-    fn reserve_shrinking(what: &str, mut lg: u32, lg_min: u32, extra: usize) -> (Mapping, u32) {
+    /// failure. Returns the mapping, the `lg` that fit and the
+    /// reservation's token.
+    fn reserve_shrinking(
+        what: &str,
+        mut lg: u32,
+        lg_min: u32,
+        extra: usize,
+    ) -> (Mapping, u32, Tracked<Reserved>) {
         loop {
             let len = (1usize << lg) + extra;
             match try_reserve(len) {
-                Ok(addr) => return (Mapping { addr, len }, lg),
+                Ok((addr, t)) => return (Mapping { addr, len }, lg, t),
                 Err(e) if lg > lg_min => {
                     let _ = e;
                     lg -= 1;
@@ -1912,13 +1937,14 @@ mod linux {
     /// Prefers a stride of 4x the region (gap 3x). Shrinks the region down to
     /// the minimum, then as a last resort drops the stride to 2x the region
     /// (gap 1x, below the design's 1.25x preference but still a full gap).
-    fn reserve_superblock() -> (Mapping, u32, u32) {
+    /// Returns the reservation's token too.
+    fn reserve_superblock() -> (Mapping, u32, u32, Tracked<Reserved>) {
         let mut lg_region = LG_REGION_PREFERRED;
         let mut lg_stride = lg_region + 2;
         loop {
             let len = (NCLASSES << lg_stride) + MAX_SLAB;
             match try_reserve(len) {
-                Ok(addr) => return (Mapping { addr, len }, lg_region, lg_stride),
+                Ok((addr, t)) => return (Mapping { addr, len }, lg_region, lg_stride, t),
                 Err(_) if lg_region > LG_REGION_MIN => {
                     lg_region -= 1;
                     lg_stride = lg_region + 2;
@@ -1970,7 +1996,7 @@ mod linux {
         u64::from_ne_bytes(b)
     }
 
-    /// The abort of [`Regions::reserve`] when `getrandom` fails.
+    /// The abort of [`Regions::reserve_owning`] when `getrandom` fails.
     #[cold]
     #[inline(never)]
     fn getrandom_failed(e: Errno) -> ! {
@@ -1989,7 +2015,7 @@ mod linux {
         advise_reservation(Reservation::Metadata, meta_map.addr, meta_map.len);
     }
 
-    /// The abort of [`Regions::reserve`] for a page size that is not a
+    /// The abort of [`Regions::reserve_owning`] for a page size that is not a
     /// power of two from 4 KiB to `MAX_SLAB`, with the message of an
     /// `assert!`.
     #[cold]
@@ -2001,15 +2027,25 @@ mod linux {
     }
 
     impl Regions {
+        /// [`Regions::reserve_owning`] without the metadata region's address
+        /// space, for the tests.
+        #[cfg(test)]
+        #[inline(always)]
+        pub fn reserve(page_size: usize, anon_name: bool) -> Regions {
+            Regions::reserve_owning(page_size, anon_name).0
+        }
+
         /// Probe and reserve every region (design section 10 step 2). Never
         /// allocates. Aborts if even the minimum layout cannot be reserved.
         /// `anon_name` should be the probed `PR_SET_VMA_ANON_NAME` support.
+        /// Returns the metadata region's uncommitted address space with the
+        /// regions, for `Meta::owning`, which commits it as it hands it out.
         /// The page size must be the kernel's (`api::init` passes the probed
         /// one): a power of two from 4 KiB, the smallest page of any Linux
         /// target, to `MAX_SLAB`; anything else aborts.
         // The index carries a Verus invariant.
         #[allow(clippy::needless_range_loop)]
-        pub fn reserve(page_size: usize, anon_name: bool) -> Regions {
+        pub fn reserve_owning(page_size: usize, anon_name: bool) -> (Regions, Tracked<Unbacked>) {
             if !(page_size.is_power_of_two() && (0x1000..=MAX_SLAB).contains(&page_size)) {
                 bad_page_size();
             }
@@ -2033,9 +2069,9 @@ mod linux {
                 _ => [2, 1, 0],
             };
             let slide = 1usize << LG_SLIDE;
-            let mut sb: Option<(Mapping, u32, u32)> = None;
-            let mut huge: Option<(Mapping, u32)> = None;
-            let mut meta: Option<(Mapping, u32)> = None;
+            let mut sb: Option<(Mapping, u32, u32, Tracked<Reserved>)> = None;
+            let mut huge: Option<(Mapping, u32, Tracked<Reserved>)> = None;
+            let mut meta: Option<(Mapping, u32, Tracked<Reserved>)> = None;
             let mut i = 0;
             while i < 3 {
                 match order[i] {
@@ -2059,9 +2095,9 @@ mod linux {
                 }
                 i += 1;
             }
-            let (sb_map, lg_region, lg_stride) = sb.unwrap();
-            let (huge_map, lg_huge) = huge.unwrap();
-            let (meta_map, lg_meta) = meta.unwrap();
+            let (sb_map, lg_region, lg_stride, _sb_tok) = sb.unwrap();
+            let (huge_map, lg_huge, _huge_tok) = huge.unwrap();
+            let (meta_map, lg_meta, _meta_tok) = meta.unwrap();
 
             let superblock = align_base(sb_map.addr);
             let gap = (1usize << lg_stride) - (1usize << lg_region);
@@ -2091,15 +2127,20 @@ mod linux {
             }
             advise_reservations(sb_map, huge_map, meta_map);
 
-            Regions::from_parts(
-                superblock,
-                lg_region,
-                lg_stride,
-                &offsets,
-                (huge_base, 1usize << lg_huge),
-                (meta_base, 1usize << lg_meta),
-                lg_page,
-                [sb_map, huge_map, meta_map],
+            (
+                Regions::from_parts(
+                    superblock,
+                    lg_region,
+                    lg_stride,
+                    &offsets,
+                    (huge_base, 1usize << lg_huge),
+                    (meta_base, 1usize << lg_meta),
+                    lg_page,
+                    [sb_map, huge_map, meta_map],
+                ),
+                // The metadata region's address space, taken on trust: the
+                // proofs make it from `_meta_tok`.
+                Tracked::assume_new(),
             )
         }
 
