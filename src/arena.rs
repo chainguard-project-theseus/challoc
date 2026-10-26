@@ -802,8 +802,9 @@ impl Arenas {
         self.lock.raw()
     }
 
-    /// Every arena that exists, in index order (for decay, purge, stats
-    /// and the fork handlers).
+    /// Every arena that exists, in index order. Tests only: the library
+    /// scans `0..count()` with `get_existing` instead.
+    #[cfg(test)]
     pub fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Arena> + 'a {
         let n = self.count() as usize;
         (0..n).filter_map(move |i| {
