@@ -4,10 +4,12 @@
 
 use crate::bitmap::TwoLevelBitmap;
 use crate::layout::{CLASSES, LG_MAX_SLAB, LG_MIN_SLAB, NCLASSES, Regions};
-use crate::lock::{Lock, RawLock};
+use crate::lock::{Lock, LockOrder, RawLock};
 use crate::meta::Meta;
 use crate::sys::Errno;
-use vstd::prelude::{Ghost, Tracked};
+use crate::vspec::zero::ZeroRaw;
+use vstd::prelude::{Ghost, Map, Tracked, int};
+use vstd::raw_ptr::PointsTo;
 
 /// A never-freed table in the metadata region, committed page by page as
 /// the high-water mark grows (a table of at most `meta::EAGER_MAX` bytes
@@ -33,7 +35,13 @@ impl Lazy {
         self.base
     }
 
-    pub(crate) fn reserve(meta: &Meta, len: usize, align: usize) -> Option<Lazy> {
+    pub(crate) fn reserve(
+        meta: &Meta,
+        len: usize,
+        align: usize,
+        _raw: Tracked<&mut Option<ZeroRaw>>,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> Option<Lazy> {
         // With metadata THP on (`thp.rs`) the table starts on a folio
         // boundary, so the rounded commits of `ensure` cover whole aligned
         // folios and the kernel can map them as such.
@@ -54,7 +62,13 @@ impl Lazy {
     }
 
     /// Make the first `upto` bytes committed.
-    pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, upto: usize) -> Result<(), Errno> {
+    pub(crate) fn ensure(
+        &mut self,
+        meta: &Meta,
+        page: usize,
+        upto: usize,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> Result<(), Errno> {
         // With metadata THP on (`thp.rs`) the commit is rounded to the
         // folio so the first touch of a table page maps one folio; the
         // table's own end is still the limit.
@@ -85,22 +99,40 @@ pub(crate) struct Set {
 pub(crate) enum Store {
     Own(Lazy),
     /// The arena's table, which outlives the set (it is a field of the
-    /// same `Arena`, or leaked by the tests), and the set's group in it.
-    Shared(*const SetTable, u8),
+    /// same `Arena`, or leaked by the tests), the set's group in it, and
+    /// (ghost) the frozen permission to the table.
+    Shared(*const SetTable, u8, Tracked<&'static PointsTo<SetTable>>),
 }
 
 impl Set {
-    pub(crate) fn new(meta: &Meta, page: usize, nslabs: usize) -> Option<Set> {
+    pub(crate) fn new(
+        meta: &Meta,
+        page: usize,
+        nslabs: usize,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> Option<Set> {
         let l0_words = nslabs.div_ceil(64);
         let l1_words = l0_words.div_ceil(64);
-        let mut table = Lazy::reserve(meta, 8 * TwoLevelBitmap::words_needed(nslabs), page)?;
+        let mut table = Lazy::reserve(
+            meta,
+            8 * TwoLevelBitmap::words_needed(nslabs),
+            page,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )?;
         // Level 1 is small and touched by every operation: commit it now.
-        table.ensure(meta, page, 8 * l1_words).ok()?;
+        table
+            .ensure(meta, page, 8 * l1_words, Tracked::assume_new())
+            .ok()?;
         // SAFETY: the words come from a fresh, zero, never-freed reservation.
         // Their ghost permission, as zero bytes, is trusted on the same
         // grounds.
         let map = unsafe {
-            TwoLevelBitmap::from_raw(nslabs, table.base as *mut u64, Tracked::assume_new())
+            TwoLevelBitmap::from_raw(
+                nslabs,
+                crate::vspec::addr::addr_to_ptr(table.base) as *mut u64,
+                Tracked::assume_new(),
+            )
         };
         Some(Set {
             map,
@@ -109,9 +141,19 @@ impl Set {
         })
     }
 
-    /// Set `kind` (0..`SETS_PER_CLASS`) of `class` in `table`, over the
-    /// class's slab numbers. `table` must outlive the set.
-    pub(crate) fn in_table(table: &SetTable, class: usize, kind: usize) -> Set {
+    /// Set `kind` (0..`SETS_PER_CLASS`) of `class` in the table at `tp`,
+    /// over the class's slab numbers. The table must outlive the set.
+    /// Ghost: `perm`, the frozen permission to the table, which the set
+    /// keeps, and the permission to the slot's words.
+    pub(crate) fn in_table(
+        tp: *const SetTable,
+        perm: Tracked<&'static PointsTo<SetTable>>,
+        class: usize,
+        kind: usize,
+        _w: Tracked<ZeroRaw>,
+    ) -> Set {
+        // SAFETY: the table outlives the set (the caller's contract).
+        let table = unsafe { &*tp };
         debug_assert!(kind < SETS_PER_CLASS);
         let g = SetTable::group_of(class);
         let group = &table.groups[g];
@@ -125,25 +167,38 @@ impl Set {
         let map = unsafe {
             TwoLevelBitmap::from_raw_chunked(
                 nslabs,
-                (group.base + 8 * slot) as *mut u64,
+                crate::vspec::addr::addr_to_ptr(group.base + 8 * slot) as *mut u64,
                 group.stride,
                 Tracked::assume_new(),
             )
         };
         Set {
             map,
-            store: Store::Shared(table, g as u8),
+            store: Store::Shared(tp, g as u8, perm),
             l1_words: TwoLevelBitmap::l1_words(nslabs),
         }
     }
 
     /// Commit the level-0 words that hold every bit up to and including
     /// `slab`.
-    pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, slab: usize) -> Result<(), Errno> {
+    pub(crate) fn ensure(
+        &mut self,
+        meta: &Meta,
+        page: usize,
+        slab: usize,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> Result<(), Errno> {
         match &mut self.store {
-            Store::Own(table) => table.ensure(meta, page, 8 * (self.l1_words + slab / 64 + 1)),
+            Store::Own(table) => table.ensure(
+                meta,
+                page,
+                8 * (self.l1_words + slab / 64 + 1),
+                Tracked::assume_new(),
+            ),
             // SAFETY: the table outlives the set (`Store::Shared`).
-            Store::Shared(table, g) => unsafe { &**table }.ensure(meta, *g as usize, slab),
+            Store::Shared(table, g, _) => {
+                unsafe { &**table }.ensure(meta, *g as usize, slab, Tracked::assume_new())
+            }
         }
     }
 }
@@ -201,7 +256,13 @@ impl SetTable {
     /// `ensure`). `None` if the metadata region cannot hold them.
     // Indexed loop, spelled out for Verus like the rest of this function.
     #[allow(clippy::needless_range_loop)]
-    pub fn new(meta: &Meta, regions: &Regions) -> Option<SetTable> {
+    pub(crate) fn new(
+        meta: &Meta,
+        regions: &Regions,
+        _a: Ghost<u16>,
+        _s: Tracked<&mut Map<(int, int), ZeroRaw>>,
+        _o: Tracked<&mut LockOrder>,
+    ) -> Option<SetTable> {
         let page = regions.page_size();
         let mut groups = [Group {
             base: 0,
@@ -238,7 +299,13 @@ impl SetTable {
                 let mut grp = groups[g];
                 grp.stride = SETS_PER_CLASS * grp.count;
                 let rows = TwoLevelBitmap::chunked_rows(nslabs[g]);
-                let t = Lazy::reserve(meta, 8 * rows * grp.stride, page)?;
+                let t = Lazy::reserve(
+                    meta,
+                    8 * rows * grp.stride,
+                    page,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                )?;
                 grp.base = t.base;
                 tables[g] = t;
                 groups[g] = grp;
@@ -255,11 +322,22 @@ impl SetTable {
 
     /// Commit the rows of group `g` up to the level-0 word of `slab` (and
     /// so its chunk's level-1 word and every row before).
-    fn ensure(&self, meta: &Meta, g: usize, slab: usize) -> Result<(), Errno> {
+    fn ensure(
+        &self,
+        meta: &Meta,
+        g: usize,
+        slab: usize,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> Result<(), Errno> {
         let row = TwoLevelBitmap::chunked_l0_row(slab / 64);
         self.tables
             .lock(Tracked::assume_new(), Tracked::assume_new())[g]
-            .ensure(meta, self.page, 8 * (row + 1) * self.groups[g].stride)
+            .ensure(
+                meta,
+                self.page,
+                8 * (row + 1) * self.groups[g].stride,
+                Tracked::assume_new(),
+            )
     }
 
     /// Tests: committed byte ranges of the groups.

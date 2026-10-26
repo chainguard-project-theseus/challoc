@@ -283,13 +283,27 @@ impl SlabTable {
         let group = cls.slabs_per_line().max(slabs_per_page);
         group_geometry(group, slabs_per_page);
         let stride = desc_stride(class);
-        let descs = Lazy::reserve(meta, stagger + nslabs * stride, align)?;
+        let descs = Lazy::reserve(
+            meta,
+            stagger + nslabs * stride,
+            align,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )?;
         let bits = Lazy::reserve(
             meta,
             stagger + (nslabs * cls.slab_bits()).div_ceil(8),
             align,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
         )?;
-        let owners = Lazy::reserve(meta, stagger + nslabs.div_ceil(group) * 2, align)?;
+        let owners = Lazy::reserve(
+            meta,
+            stagger + nslabs.div_ceil(group) * 2,
+            align,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )?;
         let bits_base = bits.start() + stagger;
         let owners_base = owners.start() + stagger;
         let desc_base = descs.start() + stagger;
@@ -438,7 +452,7 @@ impl SlabTable {
         let stagger = desc_stagger(self.class as usize);
         let mut g = self.inner.lock_t();
         g.owners
-            .ensure(meta, page, stagger + group * 2 + 2)
+            .ensure(meta, page, stagger + group * 2 + 2, Tracked::assume_new())
             .expect("owner page");
         drop(g);
         // SAFETY: the word's page was just committed.
@@ -769,17 +783,38 @@ impl SlabTable {
             );
         }
         g.descs
-            .ensure(meta, page, stagger + end * desc_stride(class))
+            .ensure(
+                meta,
+                page,
+                stagger + end * desc_stride(class),
+                Tracked::assume_new(),
+            )
             .ok()?;
         g.bits
-            .ensure(meta, page, stagger + (end * cls.slab_bits()).div_ceil(8))
+            .ensure(
+                meta,
+                page,
+                stagger + (end * cls.slab_bits()).div_ceil(8),
+                Tracked::assume_new(),
+            )
             .ok()?;
         g.owners
-            .ensure(meta, page, stagger + ((end - 1) >> self.lg_group) * 2 + 2)
+            .ensure(
+                meta,
+                page,
+                stagger + ((end - 1) >> self.lg_group) * 2 + 2,
+                Tracked::assume_new(),
+            )
             .ok()?;
-        sets.partial.ensure(meta, sets_page, end - 1).ok()?;
-        sets.empty.ensure(meta, sets_page, end - 1).ok()?;
-        sets.purged.ensure(meta, sets_page, end - 1).ok()?;
+        sets.partial
+            .ensure(meta, sets_page, end - 1, Tracked::assume_new())
+            .ok()?;
+        sets.empty
+            .ensure(meta, sets_page, end - 1, Tracked::assume_new())
+            .ok()?;
+        sets.purged
+            .ensure(meta, sets_page, end - 1, Tracked::assume_new())
+            .ok()?;
         // The owner word and the descriptors' arena field record the same
         // fact (design section 4) and are written together only here, so
         // a group about to be handed out must show them agreeing: both

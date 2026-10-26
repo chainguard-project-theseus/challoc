@@ -537,9 +537,9 @@ impl ClassState {
         let _ = (meta, regions);
         let class = table.class as usize;
         debug_assert!(table.nslabs == sets.nslabs[SetTable::group_of(class)]);
-        let partial = Set::in_table(sets, class, 0);
-        let empty = Set::in_table(sets, class, 1);
-        let purged = Set::in_table(sets, class, 2);
+        let partial = Set::in_table(sets, Tracked::assume_new(), class, 0, Tracked::assume_new());
+        let empty = Set::in_table(sets, Tracked::assume_new(), class, 1, Tracked::assume_new());
+        let purged = Set::in_table(sets, Tracked::assume_new(), class, 2, Tracked::assume_new());
         Some(ClassState {
             class: table.class,
             arena,
