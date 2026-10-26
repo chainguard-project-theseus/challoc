@@ -555,10 +555,16 @@ pub struct MetaStats {
 }
 
 impl Meta {
-    /// The lock is the metadata lock of the lock order.
+    /// The lock is the metadata lock of the lock order, and the region
+    /// ends below [`va_limit`], with a page that is a power of two of at
+    /// least [`MIN_ALIGN`] bytes (`owning`'s requirements, which no value
+    /// the lock holds changes, `vspec/meta.rs`).
     #[verifier::type_invariant]
-    spec fn rank_ok(self) -> bool {
-        self.inner.rank() == rank_meta()
+    pub open spec fn inv(self) -> bool {
+        &&& self.lock_rank() == rank_meta()
+        &&& self.spec_base() + self.spec_len() <= va_limit()
+        &&& self.page() >= MIN_ALIGN
+        &&& self.page() & sub(self.page(), 1) == 0
     }
 
     /// An allocator over `[base, base + len)`, both page multiples, given
@@ -581,6 +587,9 @@ impl Meta {
             r.page() == page,
     {
         broadcast use axiom_meta_lock_inv;
+        proof {
+            lemma_pow2_bits(page);
+        }
 
         Meta {
             inner: Lock::new(Inner::new(base, len, page, space), Ghost(rank_meta())),
@@ -961,6 +970,11 @@ impl Meta {
             .stats()
     }
 
+    /// The lock's rank in the lock order.
+    pub closed spec fn lock_rank(&self) -> int {
+        self.inner.rank()
+    }
+
     /// The ghost identity of the live-object records ([`Inner::live_id`];
     /// the same in every value the lock holds, `vspec/meta.rs`).
     pub closed spec fn live_id(&self) -> Loc {
@@ -994,6 +1008,34 @@ impl Meta {
         &&& self.spec_base() <= a
         &&& a + len <= self.spec_base() + self.spec_len()
     }
+
+    /// This allocator is the process's: its claims to reserved pages are
+    /// the process's ([`process_pages_id`]), and so is its page
+    /// ([`process_page`]), in which the lazily committed tables commit
+    /// (`class::sets::Lazy`).
+    pub open spec fn is_process(&self) -> bool {
+        &&& self.pages_id() == process_pages_id()
+        &&& self.page() == process_page()
+    }
+}
+
+/// The identity of the unclaimed-byte map of the process's `Meta`, the
+/// one in the `Shared` `api::init` builds: the claims to its reserved
+/// pages that the lazily committed tables carry (`class::sets::Lazy`)
+/// have it. Uninterpreted, as
+/// [`process_regions`](crate::layout::process_regions): the tables state
+/// their claims against it, and [`Meta::is_process`] says a `Meta` has it.
+/// Premise, not checked: the callers of the verified table constructors
+/// (`SlabTable::new`, `SetTable::new`, `Set::new`), all unverified, pass
+/// the process's one `Meta` and its page. The unit tests that build their
+/// own `Meta` are outside it, as they are outside `process_regions`.
+pub uninterp spec fn process_pages_id() -> Loc;
+
+/// The process's page, `2^lg_page` of its regions: the page of its `Meta`
+/// ([`Meta::is_process`]), in which the lazily committed tables commit
+/// (`class::sets::Lazy`).
+pub open spec fn process_page() -> usize {
+    1usize << crate::layout::process_regions().lg_page
 }
 
 impl MetaStats {
@@ -1540,7 +1582,7 @@ proof fn lemma_mod_mask(x: usize, a: usize)
 }
 
 /// Of two powers of two, the larger is a multiple of the smaller.
-proof fn lemma_pow2_divides(a: usize, p: usize)
+pub(crate) proof fn lemma_pow2_divides(a: usize, p: usize)
     requires
         a & sub(a, 1) == 0,
         p > 0,
@@ -1560,7 +1602,7 @@ proof fn lemma_pow2_divides(a: usize, p: usize)
 }
 
 /// Divisibility is transitive.
-proof fn lemma_mod_trans(r: int, s: int, p: int)
+pub(crate) proof fn lemma_mod_trans(r: int, s: int, p: int)
     requires
         r >= 0,
         s > 0,

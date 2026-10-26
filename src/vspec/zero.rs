@@ -92,6 +92,15 @@ impl ZeroRaw {
         self.raw.dom()
     }
 
+    /// The permission, borrowed (for `vspec::ptr::axiom_raw_valid`).
+    pub proof fn raw(tracked &self) -> (tracked r: &PointsToRaw)
+        ensures
+            r.dom() == self.dom(),
+            r.provenance() == self.provenance(),
+    {
+        &self.raw
+    }
+
     /// The provenance of the permission.
     pub closed spec fn provenance(&self) -> Provenance {
         self.raw.provenance()

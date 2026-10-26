@@ -44,6 +44,11 @@ pub assume_specification[ u64::is_power_of_two ](x: u64) -> (r: bool)
     ensures r <==> exists|k: nat| k < 64 && x as nat == #[trigger] pow2(k),
 ;
 
+/// `u32::is_power_of_two`.
+pub assume_specification[ u32::is_power_of_two ](x: u32) -> (r: bool)
+    ensures r <==> exists|k: nat| k < 32 && x as nat == #[trigger] pow2(k),
+;
+
 /// `next_power_of_two` panics (debug) or wraps (release) above `2^63`;
 /// challoc never asks for that.
 pub assume_specification[ usize::next_power_of_two ](x: usize) -> (r: usize)

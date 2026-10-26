@@ -8,13 +8,29 @@ use super::abort::{guard_free, invalid_free, invalid_pointer, never_committed, o
 use super::sets::Lazy;
 use crate::bitmap::AtomicBitmap;
 use crate::layout::{CLASSES, Class, Regions};
+#[cfg(verus_keep_ghost)]
+use crate::layout::{NCLASSES, class_table, process_regions};
 use crate::lock::{Lock, LockOrder, PAD_ALIGN, Padded, RawLock};
+#[cfg(verus_keep_ghost)]
+use crate::lock::{lock_init, lock_inv, rank_meta, rank_table};
 use crate::meta::Meta;
 use crate::purge;
+#[cfg(verus_keep_ghost)]
+use crate::slab::stride_of;
 use crate::slab::{DESC_ALIGN, SlabDesc, desc_stride};
 use crate::sys::{self, Errno, MADV_GUARD_INSTALL, PROT_NONE, PROT_READ, PROT_WRITE};
+#[cfg(verus_keep_ghost)]
+use crate::vspec::addr::cast_provenance;
+#[cfg(verus_keep_ghost)]
+use crate::vspec::zero::ZeroRaw;
 use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
-use vstd::prelude::{Ghost, Tracked};
+#[cfg(verus_keep_ghost)]
+use vstd::arithmetic::power2::pow2;
+use vstd::prelude::*;
+#[cfg(verus_keep_ghost)]
+use vstd::std_specs::bits::u64_trailing_zeros;
+
+verus! {
 
 pub(crate) struct TableInner {
     pub(super) descs: Lazy,
@@ -27,12 +43,65 @@ pub(crate) struct TableInner {
     pub(super) next_slab: usize,
     /// Guard slabs committed (never handed out).
     pub(super) guards: usize,
+    /// Ghost: the table's page, hand-out group and slab count, fixed at
+    /// `new`, for [`TableInner::inv`].
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) page: Ghost<usize>,
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) group: Ghost<usize>,
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) nslabs: Ghost<usize>,
     /// A copy of the watermark the `free` fast path reads from its
     /// per-class line (`heap::ClassLine`), stored right after the
     /// watermark itself, so it is never ahead of it; null until
     /// [`SlabTable::mirror_watermark`].
     pub(super) mirror: *const AtomicUsize,
 }
+
+/// The facts [`Lazy::ensure`] needs of a table committed in `page` units
+/// (its claim to its uncommitted pages among them, [`Lazy::claimed`]),
+/// which it keeps.
+pub(super) open spec fn lazy_ok(l: Lazy, page: usize) -> bool {
+    &&& l.spec_len() <= 0x4000_0000_0000_0000
+    &&& l.spec_committed() <= l.spec_len() + page
+    &&& l.spec_base() + l.spec_len() + page <= usize::MAX
+    &&& l.claimed()
+}
+
+impl TableInner {
+    /// The guard count stays below the slabs handed out, which stay below
+    /// the largest slab count a region can have and are whole hand-out
+    /// groups until the region's end; the three tables are committed in
+    /// the process's page ([`lazy_ok`], what `Lazy::ensure` takes).
+    pub(super) open spec fn inv(self) -> bool {
+        &&& self.guards <= self.next_slab
+        &&& self.next_slab <= usize::MAX >> 12
+        &&& self.group@ >= 1
+        &&& self.next_slab < self.nslabs@ ==> self.next_slab % self.group@ == 0
+        &&& 1 <= self.page@ <= 0x8000_0000_0000_0000
+        &&& self.page@ == crate::meta::process_page()
+        &&& lazy_ok(self.descs, self.page@)
+        &&& lazy_ok(self.bits, self.page@)
+        &&& lazy_ok(self.owners, self.page@)
+    }
+}
+
+/// Assumption (`lock.rs`): the commit lock's value keeps
+/// [`TableInner::inv`] while the lock is free. `new` (verified) builds it
+/// with zero counts and uncommitted tables. The holders are not verified
+/// yet: `take_group` moves `next_slab` to the end of the group it hands
+/// out, a group boundary or the region's end, and commits the tables
+/// through `Lazy::ensure`, which keeps [`lazy_ok`] when its requirements
+/// hold; `commit_run` and `commit_slab` add one guard per guard slab they
+/// commit, which keeps the count at most `next_slab` because every slab
+/// below `next_slab` is reached once by the cursor of the arena its group
+/// went to; `guards` and `mirror_watermark` change no field this reads;
+/// the test helper `corrupt_owner_word` only commits through
+/// `Lazy::ensure`.
+pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
+    ensures
+        #[trigger] lock_inv(v) == v.inv(),
+;
 
 /// Offset of class `class`'s descriptor array, bitmap and owner array
 /// inside their reservations.
@@ -47,7 +116,12 @@ pub(crate) struct TableInner {
 /// all 52 classes land in distinct sets of both caches; a multiple of
 /// [`DESC_ALIGN`] keeps the descriptors aligned.
 #[inline]
-pub const fn desc_stagger(class: usize) -> usize {
+pub const fn desc_stagger(class: usize) -> (r: usize)
+    requires
+        class < NCLASSES,
+    ensures
+        r == class * 3 * PAD_ALIGN,
+{
     class * 3 * PAD_ALIGN
 }
 
@@ -132,6 +206,26 @@ pub struct SlabTable {
     pub(super) _tail: [u8; TABLE_TAIL],
 }
 
+/// A page group of a class table starts and ends on a page boundary: the
+/// region's `base` and the group's bytes (`spp` slabs of `2^lg_slab`) are
+/// multiples of the page `2^lg_page`. What a class purge's ranges need.
+/// Opaque, so the type invariant carries it as one fact.
+#[verifier::opaque]
+pub(super) open spec fn groups_paged(base: usize, spp: u32, lg_slab: u8, lg_page: u32) -> bool {
+    let page = (1usize << lg_page) as int;
+    &&& page > 0
+    &&& (base as int) % page == 0
+    &&& (spp as int * (1usize << lg_slab) as int) % page == 0
+}
+
+/// A guard mask is `2^k - 1` for some `k` (all ones with guards off):
+/// its set bits are the lowest ones.
+pub open spec fn mask_shape(m: u32) -> bool {
+    m & (m >> 1u32) == m >> 1u32
+}
+
+} // verus!
+
 /// Padding that keeps the stride of `[SlabTable; NCLASSES]` at 384 bytes,
 /// three lines, off a multiple of 512 (see
 /// [`ClassState`](super::ClassState)), whatever the commit lock's state
@@ -193,16 +287,6 @@ unsafe fn store_owner(w: *const AtomicU16, arena: u16) {
     unsafe { (*w).store(arena, Ordering::Relaxed) }
 }
 
-/// The hand-out group's geometry, as [`SlabTable::new`] asserts it:
-/// `group` is a power of two that is whole page groups. Inlined and
-/// `track_caller`, so the caller keeps the code, the message and the
-/// location of the `assert!` it had in place.
-#[inline(always)]
-#[track_caller]
-fn group_geometry(group: usize, slabs_per_page: usize) {
-    assert!(group.is_power_of_two() && group.is_multiple_of(slabs_per_page));
-}
-
 /// `index` itself, for [`SlabTable::is_set_unchecked`]'s word index. On
 /// aarch64 it goes through an empty `asm!` (the next item): left alone,
 /// LLVM rewrites `(bit >> 6) << 3` as `(bit >> 3) & !7`, a shift and a
@@ -248,7 +332,73 @@ fn guard_unprotectable(class: &u16, s: &usize) -> ! {
     panic!("class {}: cannot re-protect guard slab {}", *class, *s)
 }
 
+verus! {
+
 impl SlabTable {
+    /// The geometry `new` sets up and never changes: the class, its slab
+    /// bits, the power-of-two page and hand-out groups (a page group no
+    /// larger than a hand-out group, both tiling the region, page groups
+    /// on page boundaries), a region of `nslabs` slabs from `base` that
+    /// ends inside the address space and is class `class`'s region of the
+    /// process's regions ([`process_regions`]), a guard mask of the shape
+    /// `2^k - 1` ([`mask_shape`]), the three arrays inside the address
+    /// space, and the commit lock's rank and fixed ghost geometry. `new`
+    /// proves it from its preconditions, and nothing writes these fields
+    /// afterwards (`committed_slabs` and `inner`'s current value are not
+    /// read here).
+    #[verifier::type_invariant]
+    pub(super) open spec fn inv(self) -> bool {
+        &&& self.class < NCLASSES
+        &&& class_table()[self.class as int].wf()
+        &&& self.slab_bits == class_table()[self.class as int].slab_bits
+        &&& self.slab_bits >= 64 ==> self.slab_bits % 64 == 0
+        &&& self.lg_slabs_per_page <= 26
+        &&& self.lg_group < 64
+        &&& self.lg_page < 64
+        &&& self.slabs_per_page >= 1
+        &&& self.page_groups_ok()
+        &&& self.nslabs <= (usize::MAX - self.base) as usize >> class_table()[self.class as int].lg_slab
+        &&& self.base < 1usize << 57
+        &&& self.nslabs <= ((1usize << 57) - self.base) as usize >> class_table()[self.class as int].lg_slab
+        &&& self.nslabs <= 0x400_0000
+        &&& self.group as usize == 1usize << self.lg_group
+        &&& self.slabs_per_page <= self.group
+        &&& self.base == process_regions().class_base[self.class as int]
+        &&& crate::layout::base_aligned(self.base as int, self.class as int, process_regions().lg_page)
+        &&& self.nslabs as int == process_regions().spec_nslabs(self.class as int)
+        &&& self.lg_page == process_regions().lg_page
+        &&& groups_paged(self.base, self.slabs_per_page, class_table()[self.class as int].lg_slab, self.lg_page)
+        &&& mask_shape(self.guard_mask)
+        &&& self.desc_stride as usize == stride_of(self.class as int)
+        &&& self.desc_base % DESC_ALIGN == 0
+        &&& self.desc_base + self.nslabs * (self.desc_stride as int) <= usize::MAX
+        &&& self.bits_base + (self.nslabs * (self.slab_bits as int) + 7) / 8 <= usize::MAX
+        &&& self.owners_base + (self.nslabs + self.group - 1) / (self.group as int) * 2 <= usize::MAX
+        &&& self.inner.0.rank() == rank_table(self.class as int)
+        &&& lock_init(self.inner.0).page@ == 1usize << self.lg_page
+        &&& lock_init(self.inner.0).group@ == self.group as usize
+        &&& lock_init(self.inner.0).nslabs@ == self.nslabs
+    }
+
+    /// Page groups are `1 << lg_slabs_per_page` slabs and tile the
+    /// region. Opaque, so its bit operations stay out of proofs that do
+    /// not need them; revealed by `new`.
+    #[verifier::opaque]
+    pub(super) open spec fn page_groups_ok(self) -> bool {
+        &&& self.slabs_per_page as usize == 1usize << self.lg_slabs_per_page
+        &&& self.nslabs & sub(self.slabs_per_page as usize, 1) == 0
+    }
+
+    /// The slab count, for other modules' contracts.
+    pub closed spec fn spec_nslabs(&self) -> usize {
+        self.nslabs
+    }
+
+    /// The class, for other modules' contracts.
+    pub closed spec fn spec_class(&self) -> usize {
+        self.class as usize
+    }
+
     /// Create the table for `class`. Reserves the descriptor array, the
     /// class bitmap and the owner array in `meta`; returns `None` if the
     /// metadata region cannot hold them. `guard_interval` of `N > 0` makes
@@ -257,21 +407,59 @@ impl SlabTable {
     /// scales by a power of two), so that the sized fast path's test is a
     /// mask; callers must pass 0 when `MADV_GUARD_INSTALL` is unavailable,
     /// since a `PROT_NONE` slab would split the region into one VMA per
-    /// guard (design section 5). `_ord` is the caller's lock-order token
-    /// (ghost), unused until the slab-table proofs pass it to the
-    /// reservations, which take it for the metadata lock.
+    /// guard (design section 5). `ord` is the caller's lock-order token,
+    /// which the reservations take for the metadata lock.
+    ///
+    /// The asserts on the arguments are preconditions; the caller also
+    /// guarantees well-formed, separated regions (which give a page no
+    /// larger than a class region and a class region that ends at or below
+    /// `2^57`, inside a user-space mapping, `Regions::reserve`) and that
+    /// they and `meta` are the process's
+    /// ([`process_regions`](crate::layout::process_regions),
+    /// [`Meta::is_process`]), which is what the type invariant and the
+    /// tables' claims ([`lazy_ok`]) need.
+    #[verifier::spinoff_prover]
     pub fn new(
         meta: &Meta,
         regions: &Regions,
         class: usize,
         guard_interval: u32,
-        _ord: Tracked<&mut LockOrder>,
-    ) -> Option<SlabTable> {
-        assert!(class < CLASSES.len(), "class: index out of range");
-        assert!(
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: Option<SlabTable>)
+        requires
+            crate::sys::may_syscall(),
+            regions.wf(),
+            regions.separated(),
+            *regions == process_regions(),
+            meta.is_process(),
+            class < NCLASSES,
             guard_interval != 1,
-            "class: a guard interval of 1 leaves no slabs to allocate"
-        );
+            guard_interval == 0 || exists|k: nat| k < 32 && guard_interval as nat == #[trigger] pow2(k),
+            old(ord).allows(rank_meta()),
+        ensures
+            r matches Some(t) ==> {
+                &&& t.spec_class() == class
+                &&& t.spec_nslabs() == (1usize << regions.lg_region) >> class_table()[class as int].lg_slab
+            },
+            *final(ord) == *old(ord),
+    {
+        broadcast use axiom_table_lock_inv;
+        proof {
+            // The page and the region end that the geometry needs, from the
+            // separation of the class regions.
+            let stride = (1usize << regions.lg_stride) as int;
+            let c = class as int;
+            assert(regions.superblock + (c + 1) * stride <= regions.superblock + NCLASSES * stride) by (nonlinear_arith)
+                requires
+                    c < NCLASSES,
+                    stride >= 0;
+            assert(crate::layout::base_aligned(regions.class_base[c] as int, c, regions.lg_page));
+            assert((1usize << 57usize) == 0x200_0000_0000_0000usize) by (bit_vector);
+            assert(regions.class_base[class as int] + (1usize << regions.lg_region) <= 1usize << 57);
+            assert(regions.lg_page <= regions.lg_region);
+        }
+        assert!(class < CLASSES.len(), "class: index out of range");
+        assert!(guard_interval != 1, "class: a guard interval of 1 leaves no slabs to allocate");
         assert!(
             guard_interval == 0 || guard_interval.is_power_of_two(),
             "class: guard interval {guard_interval} is not a power of two"
@@ -282,34 +470,107 @@ impl SlabTable {
         let stagger = desc_stagger(class);
         let align = DESC_ALIGN.max(page);
         let slabs_per_page = (page / cls.slab_size()).max(1);
+        proof {
+            assert(cls.wf());
+            assert(crate::layout::LG_MIN_SLAB == 12 && crate::layout::LG_MAX_SLAB == 22 && regions.lg_region <= 38);
+            let l = cls.lg_slab;
+            assert((1usize << l) == (1usize << (l as u32))) by (bit_vector);
+            lemma_new_geometry(regions.lg_page, l as u32, regions.lg_region, page, 1usize << l, nslabs, slabs_per_page);
+        }
         assert!(slabs_per_page.is_power_of_two() && nslabs.is_multiple_of(slabs_per_page));
         let group = cls.slabs_per_line().max(slabs_per_page);
         group_geometry(group, slabs_per_page);
+        proof {
+            crate::meta::lemma_pow2_bits(group);
+            assert(NCLASSES <= 64 && PAD_ALIGN == 128);
+            let lp = regions.lg_page;
+            assert((1usize << lp) == (1usize << (lp as usize)) && (1usize << 6usize) == 64) by (bit_vector)
+                requires lp < 64;
+            crate::meta::lemma_is_pow2_shl(lp as usize);
+            crate::meta::lemma_is_pow2_shl(6);
+            assert(crate::meta::is_pow2(align));
+            assert forall|d: usize| d <= 0xffff_ffff implies #[trigger] (nslabs as int * d as int) <= 0x400_0000 * 0xffff_ffff by {
+                assert(nslabs as int * d as int <= 0x400_0000 * 0xffff_ffff) by (nonlinear_arith)
+                    requires nslabs <= 0x400_0000, d <= 0xffff_ffff;
+            }
+        }
         let stride = desc_stride(class);
-        let descs = Lazy::reserve(
-            meta,
-            stagger + nslabs * stride,
-            align,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        )?;
+        let tracked mut draw = ZeroRaw::empty(cast_provenance());
+        let tracked mut braw = ZeroRaw::empty(cast_provenance());
+        let tracked mut oraw = ZeroRaw::empty(cast_provenance());
+        let descs = Lazy::reserve(meta, stagger + nslabs * stride, align, Tracked(&mut draw), Tracked(ord))?;
         let bits = Lazy::reserve(
             meta,
             stagger + (nslabs * cls.slab_bits()).div_ceil(8),
             align,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
+            Tracked(&mut braw),
+            Tracked(ord),
         )?;
-        let owners = Lazy::reserve(
-            meta,
-            stagger + nslabs.div_ceil(group) * 2,
-            align,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        )?;
+        let owners = Lazy::reserve(meta, stagger + nslabs.div_ceil(group) * 2, align, Tracked(&mut oraw), Tracked(ord))?;
         let bits_base = bits.start() + stagger;
         let owners_base = owners.start() + stagger;
         let desc_base = descs.start() + stagger;
+        proof {
+            broadcast use vstd::std_specs::bits::axiom_u64_trailing_zeros;
+            assert(u64_trailing_zeros(slabs_per_page as u64) < 64);
+            assert(u64_trailing_zeros(group as u64) < 64);
+            let (b, lr, ls) = (regions.class_base[class as int], regions.lg_region, cls.lg_slab);
+            assert(b < 1usize << 57 && nslabs <= (usize::MAX - b) as usize >> ls && nslabs <= ((1usize << 57) - b) as usize >> ls) by (bit_vector)
+                requires b + (1usize << lr) <= 1usize << 57, nslabs == (1usize << lr) >> ls, lr <= 38, ls <= 22;
+            let k = choose|k: nat| k < 64 && group as nat == #[trigger] pow2(k);
+            vstd::bits::lemma_usize_pow2_no_overflow(k);
+            vstd::bits::lemma_usize_shl_is_mul(1, k as usize);
+            let (ku, k64) = (k as usize, k as u64);
+            assert(group == 1usize << ku);
+            assert(group == 1usize << k64) by (bit_vector) requires group == 1usize << ku, ku as u64 == k64, k64 < 64;
+            lemma_tz_shl(group, k64);
+            let lg = u64_trailing_zeros(group as u64) as u8;
+            assert(group == 1usize << lg) by (bit_vector) requires group == 1usize << k64, lg as u64 == k64;
+            // The page group: `1 << lg_slabs_per_page`, whole in the region.
+            let j = choose|j: nat| j < 64 && slabs_per_page as nat == #[trigger] pow2(j);
+            vstd::bits::lemma_usize_pow2_no_overflow(j);
+            vstd::bits::lemma_usize_shl_is_mul(1, j as usize);
+            let (ju, j64) = (j as usize, j as u64);
+            assert(slabs_per_page == 1usize << ju);
+            assert(slabs_per_page == 1usize << j64) by (bit_vector)
+                requires slabs_per_page == 1usize << ju, ju as u64 == j64, j64 < 64;
+            lemma_tz_shl(slabs_per_page, j64);
+            let lgs = u64_trailing_zeros(slabs_per_page as u64) as u8;
+            assert(slabs_per_page == 1usize << lgs) by (bit_vector)
+                requires slabs_per_page == 1usize << j64, lgs as u64 == j64;
+            assert(lgs <= 26) by (bit_vector)
+                requires slabs_per_page == 1usize << j64, lgs as u64 == j64, j64 < 64, slabs_per_page <= 0x400_0000;
+            assert(nslabs & sub(slabs_per_page, 1) == 0) by (bit_vector)
+                requires nslabs % slabs_per_page == 0, slabs_per_page == 1usize << j64, j64 < 64;
+            let lp = regions.lg_page;
+            assert((1usize << lp) <= 0x8000_0000_0000_0000usize) by (bit_vector) requires lp < 64;
+            reveal(SlabTable::page_groups_ok);
+            // The three tables' claims and bounds (`lazy_ok`), and where
+            // the arrays end.
+            use_type_invariant(meta);
+            assert(stagger <= 63 * 384);
+            assert(nslabs * stride <= 0x400_0000 * 0xffff_ffff);
+            assert(desc_base % DESC_ALIGN == 0) by {
+                crate::meta::lemma_pow2_bits(align);
+                assert((64usize & sub(64usize, 1)) == 0usize) by (bit_vector);
+                crate::meta::lemma_pow2_divides(align, 64);
+                crate::meta::lemma_mod_trans(descs.spec_base() as int, align as int, 64);
+                vstd::arithmetic::div_mod::lemma_mod_multiples_basic(class as int * 6, 64);
+                vstd::arithmetic::div_mod::lemma_add_mod_noop(descs.spec_base() as int, stagger as int, 64);
+            }
+            let ng = (nslabs + group - 1) / (group as int);
+            assert(ng <= nslabs) by {
+                assert(nslabs + group - 1 <= nslabs * group) by (nonlinear_arith)
+                    requires group >= 1, nslabs >= 1;
+                vstd::arithmetic::div_mod::lemma_div_is_ordered(nslabs + group - 1, nslabs * group, group as int);
+                vstd::arithmetic::div_mod::lemma_div_multiples_vanish(nslabs as int, group as int);
+            }
+            lemma_mask_shape(guard_interval);
+            assert(lazy_ok(descs, page));
+            assert(lazy_ok(bits, page));
+            assert(lazy_ok(owners, page));
+            lemma_groups_paged(regions.class_base[class as int], slabs_per_page, cls.lg_slab, regions.lg_page, page);
+        }
         let inner = Padded(Lock::new(
             TableInner {
                 descs,
@@ -317,9 +578,12 @@ impl SlabTable {
                 owners,
                 next_slab: 0,
                 guards: 0,
+                page: Ghost(page),
+                group: Ghost(group),
+                nslabs: Ghost(nslabs),
                 mirror: core::ptr::null(),
             },
-            Ghost::assume_new(),
+            Ghost(rank_table(class as int)),
         ));
         Some(SlabTable {
             bits_base,
@@ -342,7 +606,174 @@ impl SlabTable {
             _tail: [0; TABLE_TAIL],
         })
     }
+}
 
+/// The hand-out group's geometry, as [`SlabTable::new`] asserts it:
+/// `group` is a power of two that is whole page groups. Inlined and
+/// `track_caller`, so the caller keeps the code, the message and the
+/// location of the `assert!` it had in place. Both are powers of two
+/// (`Class::slabs_per_line`, and the `slabs_per_page` check before it), so
+/// the check never fails.
+#[inline(always)]
+#[track_caller]
+fn group_geometry(group: usize, slabs_per_page: usize)
+    requires
+        crate::meta::is_pow2(group),
+        crate::meta::is_pow2(slabs_per_page),
+        slabs_per_page <= group,
+    ensures
+        group % slabs_per_page == 0,
+{
+    proof {
+        let k = choose|k: nat| k < 64 && group as nat == #[trigger] pow2(k);
+        crate::meta::lemma_pow2_bits(slabs_per_page);
+        vstd::arithmetic::div_mod::lemma_mod_self_0(slabs_per_page as int);
+        crate::layout::lemma_pow2_divides_pow2(slabs_per_page, slabs_per_page as int, k);
+    }
+    assert!(group.is_power_of_two() && group.is_multiple_of(slabs_per_page));
+}
+
+/// `1 << k` has `k` trailing zeros.
+proof fn lemma_tz_shl(x: usize, k: u64)
+    requires
+        k < 64,
+        x == 1usize << k,
+    ensures
+        u64_trailing_zeros(x as u64) == k,
+{
+    broadcast use vstd::std_specs::bits::axiom_u64_trailing_zeros;
+    let y = x as u64;
+    let t = u64_trailing_zeros(y) as u64;
+    assert(y == 1u64 << k) by (bit_vector)
+        requires x == 1usize << k, y == x as u64, k < 64;
+    assert(y != 0) by (bit_vector)
+        requires y == 1u64 << k, k < 64;
+    if t < k {
+        assert((y >> t) & 1u64 == 0u64) by (bit_vector)
+            requires y == 1u64 << k, t < k, k < 64;
+    } else if t > k {
+        assert((y >> k) & 1u64 == 1u64) by (bit_vector)
+            requires y == 1u64 << k, k < 64;
+    }
+}
+
+/// The page groups [`SlabTable::new`] computes: `max(page / slab, 1)`
+/// slabs, a power of two dividing the region's slab count, which is at
+/// most `2^26` (a region is at most `2^LG_REGION_PREFERRED` bytes of slabs
+/// of at least `2^12`).
+proof fn lemma_new_geometry(lp: u32, ls: u32, lr: u32, page: usize, ss: usize, nslabs: usize, spp: usize)
+    requires
+        page == 1usize << lp,
+        ss == 1usize << ls,
+        nslabs == (1usize << lr) >> ls,
+        spp == (if page / ss > 1 { page / ss } else { 1 }),
+        12 <= ls <= 22,
+        ls <= lr,
+        lp <= lr <= 38,
+    ensures
+        crate::meta::is_pow2(spp),
+        nslabs % spp == 0,
+        1 <= spp <= nslabs <= 0x400_0000,
+        page > 0,
+        (spp as int * ss as int) % (page as int) == 0,
+{
+    assert(nslabs == 1usize << sub(lr, ls) && nslabs <= 0x400_0000) by (bit_vector)
+        requires nslabs == (1usize << lr) >> ls, 12 <= ls <= lr, lr <= 38;
+    let (lpu, lsu) = (lp as usize, ls as usize);
+    assert(page == 1usize << lpu && ss == 1usize << lsu) by (bit_vector)
+        requires page == 1usize << lp, ss == 1usize << ls, lpu == lp as usize, lsu == ls as usize;
+    vstd::arithmetic::power2::lemma2_to64();
+    vstd::arithmetic::power2::lemma_pow2_strictly_increases(38, 64);
+    if lp < 38 {
+        vstd::arithmetic::power2::lemma_pow2_strictly_increases(lp as nat, 38);
+    }
+    vstd::arithmetic::power2::lemma_pow2_strictly_increases(ls as nat, 38);
+    vstd::bits::lemma_usize_shl_is_mul(1, lpu);
+    vstd::bits::lemma_usize_shl_is_mul(1, lsu);
+    vstd::arithmetic::power2::lemma_pow2_pos(lp as nat);
+    if lp >= ls {
+        let k: u32 = sub(lp, ls);
+        let m: u32 = sub(lr, ls);
+        assert(page / ss == 1usize << k) by (bit_vector)
+            requires page == 1usize << lp, ss == 1usize << ls, k == sub(lp, ls), ls <= lp, lp <= 38;
+        assert((1usize << k) >= 1 && (1usize << m) % (1usize << k) == 0 && (1usize << k) <= (1usize << m)) by (bit_vector)
+            requires k <= m, m <= 38;
+        crate::meta::lemma_is_pow2_shl(k as usize);
+        assert((1usize << k) == (1usize << (k as usize))) by (bit_vector);
+        // `spp == 2^k` and `2^k * 2^ls == 2^lp`.
+        assert(spp == 1usize << k);
+        if k < 38 {
+            vstd::arithmetic::power2::lemma_pow2_strictly_increases(k as nat, 38);
+        }
+        vstd::bits::lemma_usize_shl_is_mul(1, k as usize);
+        vstd::arithmetic::power2::lemma_pow2_adds(k as nat, ls as nat);
+        assert(spp as int * ss as int == page as int);
+        vstd::arithmetic::div_mod::lemma_mod_self_0(page as int);
+    } else {
+        assert(page / ss == 0) by (bit_vector)
+            requires page == 1usize << lp, ss == 1usize << ls, lp < ls, ls <= 22;
+        crate::meta::lemma_is_pow2_one();
+        assert((1usize << sub(lr, ls)) >= 1) by (bit_vector) requires sub(lr, ls) <= 38;
+        // `ss == 2^(ls - lp) * page`.
+        let d: u32 = sub(ls, lp);
+        vstd::arithmetic::power2::lemma_pow2_adds(d as nat, lp as nat);
+        vstd::arithmetic::div_mod::lemma_mod_multiples_basic(pow2(d as nat) as int, pow2(lp as nat) as int);
+    }
+}
+
+/// [`groups_paged`] of a table [`SlabTable::new`] builds: a
+/// page-aligned base, a page of at most `MAX_SLAB`, and page groups
+/// whose bytes are a page multiple ([`lemma_new_geometry`]).
+proof fn lemma_groups_paged(base: usize, spp: usize, ls: u8, lp: u32, page: usize)
+    requires
+        page == 1usize << lp,
+        12 <= lp <= crate::layout::LG_MAX_SLAB,
+        (base as int) % (page as int) == 0,
+        spp <= 0x400_0000,
+        (spp as int * (1usize << ls) as int) % (page as int) == 0,
+    ensures
+        groups_paged(base, spp as u32, ls, lp),
+{
+    reveal(groups_paged);
+    vstd::bits::lemma_usize_pow2_no_overflow(lp as nat);
+    vstd::bits::lemma_usize_shl_is_mul(1, lp as usize);
+    vstd::arithmetic::power2::lemma2_to64();
+    if lp < 22 {
+        vstd::arithmetic::power2::lemma_pow2_strictly_increases(lp as nat, 22);
+    }
+    assert(crate::layout::MAX_SLAB == 0x40_0000) by (bit_vector);
+    crate::meta::lemma_is_pow2_shl(lp as usize);
+    vstd::arithmetic::div_mod::lemma_mod_self_0(page as int);
+    crate::layout::lemma_pow2_divides_pow2(page, page as int, 22);
+    assert((spp as u32) as int == spp as int);
+}
+
+/// `guard_interval - 1` of a guard interval [`SlabTable::new`] accepts
+/// (0 or a power of two below `2^32`) has [`mask_shape`].
+proof fn lemma_mask_shape(gi: u32)
+    requires
+        gi == 0 || exists|k: nat| k < 32 && gi as nat == #[trigger] pow2(k),
+    ensures
+        mask_shape(gi.wrapping_sub(1)),
+{
+    if gi == 0 {
+        assert(gi.wrapping_sub(1) == 0xFFFF_FFFFu32);
+        assert(mask_shape(0xFFFF_FFFFu32)) by (compute);
+    } else {
+        let k = choose|k: nat| k < 32 && gi as nat == #[trigger] pow2(k);
+        let ku = k as u32;
+        vstd::bits::lemma_u32_shl_is_mul(1, ku);
+        vstd::bits::lemma_u32_pow2_no_overflow(k);
+        assert(gi == 1u32 << ku);
+        let m = gi.wrapping_sub(1);
+        assert(m == sub(gi, 1));
+        assert(gi == 1u32 << ku && ku < 32 && m == sub(gi, 1) ==> m & (m >> 1u32) == m >> 1u32) by (bit_vector);
+    }
+}
+
+} // verus!
+
+impl SlabTable {
     #[inline]
     pub fn class(&self) -> &'static Class {
         &CLASSES.table()[self.class as usize]

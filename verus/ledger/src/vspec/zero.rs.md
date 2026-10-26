@@ -13,7 +13,7 @@ file.
 
 ## `ZeroRaw::axiom_new`
 
-src/vspec/zero.rs:120. Kind: external_body proof. Category: allocator invariant.
+src/vspec/zero.rs:129. Kind: external_body proof. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The bytes of `raw`, which `z` reads as zero.
@@ -29,7 +29,7 @@ pub proof fn axiom_new(tracked raw: PointsToRaw, tracked z: Zeroed) -> (tracked 
 
 ## `axiom_zero_word`
 
-src/vspec/zero.rs:164. Kind: external_body proof. Category: raw pointer (internal).
+src/vspec/zero.rs:173. Kind: external_body proof. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The eight bytes of `z`, which read as zero, as the `u64` at `p` holding 0: `PointsToRaw::into_typed`, initialised with the value the bytes hold.
@@ -49,7 +49,7 @@ pub proof fn axiom_zero_word(tracked z: ZeroRaw, p: *mut u64) -> (tracked w: Poi
 
 ## `axiom_wrote_zero`
 
-src/vspec/zero.rs:190. Kind: external_body proof. Category: raw pointer (internal).
+src/vspec/zero.rs:199. Kind: external_body proof. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The token for what `write_bytes(p, 0, n)` just wrote: the `n` bytes at `p` read as zero.
