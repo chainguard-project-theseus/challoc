@@ -1270,7 +1270,7 @@ impl ClassState {
         let mut s = g.stats;
         let claimed = self.claimed.load(Ordering::Relaxed);
         drop(g);
-        s.guards = self.table().guards();
+        s.guards = self.table().guards(Tracked::assume_new());
         let cap = s.curslabs() * self.class().nslots();
         let out = claimed.wrapping_sub(released) as usize;
         let curregs = if out > cap {

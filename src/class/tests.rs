@@ -291,7 +291,7 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     assert_eq!(cs.table().owner(128), 1);
     assert_eq!(cs.table().owner(5), 0);
     assert_eq!(cs.table().committed_slabs(), 256);
-    assert_eq!(cs.table().guards(), 0);
+    assert_eq!(cs.table().guards(Tracked::assume_new()), 0);
     let (r, _) = env.claim(cs, 3 * n);
     assert_eq!(r.len(), 3 * n);
     for s in [0, 5, 6] {
@@ -383,7 +383,7 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     assert_eq!(in_slab(&g, 7).len(), n);
     assert_eq!(in_slab(&g, 11).len(), n);
     assert_eq!(in_slab(&g, 16).len(), 1);
-    assert_eq!(cs.table().guards(), 4);
+    assert_eq!(cs.table().guards(Tracked::assume_new()), 4);
     assert_eq!(cs.stats().committed, 13);
     assert_eq!(cs.table().committed_slabs(), 256);
     for s in 12..16 {
@@ -1134,7 +1134,10 @@ fn guard_slabs_are_skipped() {
     // `commit_slab` of a guard slab (here slab 11, handed out with the
     // group of slab 8 and not yet reached): committed, the guard installed
     // (`install_guard`), counted, never handed out.
-    assert_eq!(cs.table().commit_slab(11), Some(false));
+    assert_eq!(
+        cs.table().commit_slab(11, Tracked::assume_new()),
+        Some(false)
+    );
     assert_eq!(cs.stats().guards, 3);
     assert_eq!(
         cs.committed_slabs(),
@@ -2033,7 +2036,7 @@ fn slabs_are_committed_a_run_at_a_time() {
     assert_eq!(cs.locate(p[0]).0, 0);
     assert!(is_rw(slab(0), run * size), "the first run is committed");
     assert!(!is_rw(slab(run), size), "slab {run} is committed early");
-    assert_eq!(cs.table().guards(), 0);
+    assert_eq!(cs.table().guards(Tracked::assume_new()), 0);
     // Use up the run: the next fresh slab is past it, slab 8.
     for _ in 1..run {
         env.claim(cs, n);
@@ -2043,7 +2046,10 @@ fn slabs_are_committed_a_run_at_a_time() {
     let end = if guards { 15 } else { 16 };
     assert!(is_rw(slab(0), end * size), "the second run is committed");
     assert!(!is_rw(slab(end), size), "slab {end} is committed early");
-    assert_eq!(cs.table().guards(), usize::from(guards));
+    assert_eq!(
+        cs.table().guards(Tracked::assume_new()),
+        usize::from(guards)
+    );
     // Slabs 0..=8 were handed out, less the guard slab 7 with guards on.
     assert_eq!(cs.stats().committed, if guards { 8 } else { 9 });
 }
