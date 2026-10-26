@@ -1,0 +1,6 @@
+# The fork child's orphaned cell: no thread of the child holds the cell
+# a parent thread was discovering into (the forking-thread residue is in
+# the axiom's doc).
+axiom_cell_orphaned	platform/kernel fact	none (assumption)
+# Runs until the reader reports the end or an error.
+scan_lines	termination	none (assumption)
