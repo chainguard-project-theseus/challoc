@@ -69,12 +69,13 @@ use crate::vspec::once::Step;
 
 mod table;
 
+use crate::vspec::zero::Zeroed;
 use table::Table;
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::pow2;
 use vstd::prelude::*;
-use vstd::raw_ptr::{PointsTo, PointsToRaw, ptr_mut_ref, ptr_ref};
-use vstd::resource::set::GhostSetAuth;
+use vstd::raw_ptr::{PointsTo, PointsToRaw, ptr_mut_ref, ptr_mut_write, ptr_ref};
+use vstd::resource::set::{GhostSetAuth, GhostSingleton, GhostSubset};
 
 verus! {
 
@@ -430,7 +431,7 @@ fn huge_count_underflow(state: RunState) -> !
     requires
         false,
 {
-    panic!("huge: {state:?} extent count underflow")
+    sys::abort_pending(format_args!("huge: {state:?} extent count underflow"))
 }
 
 } // verus!
@@ -877,6 +878,18 @@ pub uninterp spec fn run_loc() -> vstd::resource::Loc;
 
 /// The authority of the live runs' pages.
 pub uninterp spec fn page_loc() -> vstd::resource::Loc;
+
+/// Ghost token of a live huge run: its extent `(start, npages)`, the
+/// run's first page and its page count with the guard, as a singleton of
+/// the extents' authority ([`run_loc`]), and its pages as a subset of the
+/// pages' authority ([`page_loc`]). [`Huge::alloc_run`] hands one out with
+/// every run and [`Huge::free_run`] takes it back.
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub tracked struct RunToken {
+    tracked ext: GhostSingleton<(int, int)>,
+    tracked pages: GhostSubset<int>,
+}
 
 /// Byte `b` lies in one of the `np` pages of `pg` bytes of the region at
 /// `base`, and that page is not in `held`, the pages the run authority
@@ -1332,11 +1345,21 @@ fn now_ns() -> u64 {
     sys::now_coarse_ns()
 }
 
-/// A block for a descriptor from `meta`; null when the metadata region is
-/// exhausted. [`free_desc`] gives it back.
+/// A block for a descriptor from `meta`, with the permission to it
+/// (`Meta::alloc_raw`'s, typed) and its claim (`Meta::alloc_raw`'s, which
+/// [`free_desc`] gives back); null, with neither, when the metadata region
+/// is exhausted.
+// The tracked result is part of the signature.
+#[allow(clippy::type_complexity)]
 #[inline(always)]
-fn alloc_desc(meta: &Meta) -> *mut HugeDesc {
-    meta.alloc(Layout::new::<HugeDesc>()) as *mut HugeDesc
+fn alloc_desc(
+    meta: &Meta,
+) -> (
+    *mut HugeDesc,
+    Tracked<Option<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>>,
+) {
+    let (p, _blk) = meta.alloc_raw(Layout::new::<HugeDesc>());
+    (p as *mut HugeDesc, Tracked::assume_new())
 }
 
 verus! {
@@ -1648,7 +1671,7 @@ impl Inner {
     /// and the counters. `d` itself, its list links and the free bitmap
     /// are untouched, so the caller can enter it again with new bounds or
     /// [`retire`](Inner::retire) it.
-    fn drop_extent(&mut self, d: *mut HugeDesc)
+    fn drop_extent(&mut self, d: *mut HugeDesc, Ghost(_others): Ghost<Seq<*mut HugeDesc>>)
         requires
             old(self).table.wf(),
             perms_ok(old(self).descs@),
@@ -2484,7 +2507,16 @@ impl Huge {
     /// [`Huge::alloc_run`] as the pointer and the zero flag alone.
     #[cfg(test)]
     pub fn alloc(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
-        let r = self.alloc_run(meta, size, align, arena);
+        let r = self
+            .alloc_run(
+                meta,
+                size,
+                align,
+                arena,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
+            .0;
         (r.ptr, r.zeroed)
     }
 
@@ -2495,43 +2527,59 @@ impl Huge {
     /// report as `pages`, so the caller's per-arena page count never
     /// drifts from what the free subtracts); [`Placed::NONE`] when the
     /// region, the metadata region or the kernel refuses.
+    /// Ghost: the run's token goes to `tok`, and the second result is the
+    /// token that the run's usable bytes read as zero when `zeroed`.
     // Cold: out of line in `Shared::alloc_huge`, so the ghost arguments that
     // verified code erases cannot change whether it is inlined.
     #[inline(never)]
-    pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> Placed {
+    pub fn alloc_run(
+        &self,
+        meta: &Meta,
+        size: usize,
+        align: usize,
+        arena: u16,
+        tok: Tracked<&mut Map<int, RunToken>>,
+        ord: Tracked<&mut LockOrder>,
+    ) -> (Placed, Tracked<Zeroed>) {
         assert!(
             align.is_power_of_two(),
             "huge: alignment not a power of two"
         );
-        self.alloc_aligned(meta, size, align, arena)
+        self.alloc_aligned(meta, size, align, arena, tok, ord)
     }
 
     /// [`Huge::alloc_run`] for an `align` already known to be a power of
     /// two.
     #[inline(always)]
-    fn alloc_aligned(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> Placed {
+    fn alloc_aligned(
+        &self,
+        meta: &Meta,
+        size: usize,
+        align: usize,
+        arena: u16,
+        tok: Tracked<&mut Map<int, RunToken>>,
+        ord: Tracked<&mut LockOrder>,
+    ) -> (Placed, Tracked<Zeroed>) {
         let Some(need) = self.run_pages(size, align) else {
-            return Placed::NONE;
+            return (Placed::NONE, Tracked::assume_new());
         };
         let usable_pages = need - GUARD_PAGES;
         let page = self.page_size();
-        let mut g = self
-            .inner
-            .lock(Tracked::assume_new(), Tracked::assume_new());
+        let mut g = self.inner.lock(ord, Tracked::assume_new());
         let Some((s, ext)) = self.find(&g, need, align) else {
-            return Placed::NONE;
+            return (Placed::NONE, Tracked::assume_new());
         };
         let end = s + need;
 
         // Everything fallible happens before any state changes.
-        let run = alloc_desc(meta);
+        let (run, _run_perm) = alloc_desc(meta);
         if run.is_null() {
-            return Placed::NONE;
+            return (Placed::NONE, Tracked::assume_new());
         }
-        let spare = alloc_desc(meta);
+        let (spare, _spare_perm) = alloc_desc(meta);
         if spare.is_null() {
             free_desc(meta, run, Tracked::assume_new());
-            return Placed::NONE;
+            return (Placed::NONE, Tracked::assume_new());
         }
         let ok = g.table.ensure(meta, page, 3).is_ok()
             && (end <= g.next_page
@@ -2542,16 +2590,16 @@ impl Huge {
         if !ok {
             free_desc(meta, run, Tracked::assume_new());
             free_desc(meta, spare, Tracked::assume_new());
-            return Placed::NONE;
+            return (Placed::NONE, Tracked::assume_new());
         }
 
         // `check_zero` needs the extent's state before `take` may free it.
         let prior = if purge::check_zero() {
-            Some(self.prior_state(s, ext))
+            Some(self.prior_state(s, ext, Tracked::assume_new()))
         } else {
             None
         };
-        let zeroed = self.take(
+        let (zeroed, z) = self.take(
             &mut g,
             meta,
             Placement {
@@ -2562,6 +2610,9 @@ impl Huge {
             run,
             spare,
             arena,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            tok,
         );
         // `take` wrote the run's descriptor; the lock is still held.
         let pages = g.desc(run).pages();
@@ -2569,24 +2620,33 @@ impl Huge {
         if let (true, Some(prior)) = (zeroed, prior) {
             self.check_zero(s, usable_pages, prior, arena);
         }
-        Placed {
-            ptr: crate::vspec::addr::addr_to_ptr(self.addr(s)),
-            zeroed,
-            pages,
-        }
+        (
+            Placed {
+                ptr: crate::vspec::addr::addr_to_ptr(self.addr(s)),
+                zeroed,
+                pages,
+            },
+            z,
+        )
     }
 
     /// Where the pages of a run at `s` come from, for `check_zero`: the
     /// free extent's state, or "fresh" for never-touched pages at or past
     /// the mark (which is also what an aligned start beyond `ext` gets).
     #[cold]
-    fn prior_state(&self, s: usize, ext: *mut HugeDesc) -> &'static str {
+    fn prior_state(
+        &self,
+        s: usize,
+        ext: *mut HugeDesc,
+        _descs: Tracked<&Map<*mut HugeDesc, PointsTo<HugeDesc>>>,
+    ) -> &'static str {
         if ext.is_null() {
             return "fresh";
         }
-        // SAFETY: `ext` is a live free extent found under the lock the
-        // caller holds.
-        let (st, e_end) = unsafe { ((*ext).state(), (*ext).end()) };
+        // `ext` is a live free extent found under the lock the caller
+        // holds.
+        let e = ptr_ref(ext, Tracked::assume_new());
+        let (st, e_end) = (e.state(), e.end());
         if s >= e_end {
             return "fresh";
         }
@@ -2726,7 +2786,10 @@ impl Huge {
     }
 
     /// Record the run `p` taken from its extent (or fresh pages), splitting
-    /// the extent around it. Infallible. Returns the zero flag.
+    /// the extent around it. Infallible. Returns the zero flag, with the
+    /// token that the run's usable bytes read as zero.
+    // The extra arguments are ghost and tracked state.
+    #[allow(clippy::too_many_arguments)]
     fn take(
         &self,
         g: &mut Inner,
@@ -2735,7 +2798,10 @@ impl Huge {
         run: *mut HugeDesc,
         spare: *mut HugeDesc,
         arena: u16,
-    ) -> bool {
+        _run_desc: Tracked<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>,
+        _spare_desc: Tracked<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>,
+        _tok: Tracked<&mut Map<int, RunToken>>,
+    ) -> (bool, Tracked<Zeroed>) {
         let Placement {
             start: s,
             pages: need,
@@ -2748,7 +2814,14 @@ impl Huge {
         if ext.is_null() {
             if s > old_mark {
                 // Alignment left a hole at the mark: a clean free extent.
-                init_free(spare, old_mark, s - old_mark, RunState::Purged, 0);
+                init_free(
+                    spare,
+                    Tracked::assume_new(),
+                    old_mark,
+                    s - old_mark,
+                    RunState::Purged,
+                    0,
+                );
                 g.free.map.set_range(old_mark, s - old_mark);
                 g.add_extent(spare);
                 spare_used = true;
@@ -2764,7 +2837,7 @@ impl Huge {
             // `Purged` pages are zero unless a lazy purge discarded them
             // with `MADV_FREE`; pages at or past the mark are untouched.
             zeroed = (st == RunState::Purged && purge::purged_is_zero()) || s >= e_end;
-            g.drop_extent(ext);
+            g.drop_extent(ext, Ghost::assume_new());
             let taken_lo = s.max(a);
             let taken_hi = end.min(e_end);
             if taken_lo < taken_hi {
@@ -2774,7 +2847,7 @@ impl Huge {
             if tail > 0 {
                 // The tail inherits the state and age of `ext` and, when
                 // `Empty`, its place in the FIFO (same `dirty_at`).
-                init_free(spare, end, tail, st, dirty_at);
+                init_free(spare, Tracked::assume_new(), end, tail, st, dirty_at);
                 if st == RunState::Empty {
                     g.link_after(ext, spare);
                 }
@@ -2796,35 +2869,35 @@ impl Huge {
         if end > old_mark {
             g.next_page = end;
         }
-        // SAFETY: `run` is a fresh metadata block for a `HugeDesc`.
-        unsafe {
-            ptr::write(
-                run,
-                HugeDesc {
-                    start: s as u32,
-                    pages: need as u32,
-                    arena,
-                    state: RunState::Active as u8,
-                    _pad: 0,
-                    usable: (need - GUARD_PAGES) << self.lg_page,
-                    dirty_at: 0,
-                    prev: ptr::null_mut(),
-                    next: ptr::null_mut(),
-                },
-            );
-        }
+        // `run` is a fresh metadata block for a `HugeDesc`.
+        ptr_mut_write(
+            run,
+            Tracked::assume_new(),
+            HugeDesc {
+                start: s as u32,
+                pages: need as u32,
+                arena,
+                state: RunState::Active as u8,
+                _pad: 0,
+                usable: (need - GUARD_PAGES) << self.lg_page,
+                dirty_at: 0,
+                prev: ptr::null_mut(),
+                next: ptr::null_mut(),
+            },
+        );
         g.add_extent(run);
         g.stats.next_page = g.next_page;
         if !spare_used {
             free_desc(meta, spare, Tracked::assume_new());
         }
-        zeroed
+        (zeroed, Tracked::assume_new())
     }
 
     /// [`Huge::free_run`] returning only the usable bytes released.
     #[cfg(test)]
     pub fn free(&self, meta: &Meta, page: usize) -> usize {
-        self.free_run(meta, page).usable
+        self.free_run(meta, page, Tracked::assume_new(), Tracked::assume_new())
+            .usable
     }
 
     /// Free the run starting at `page` (from `Regions::classify`). Aborts
@@ -2833,11 +2906,15 @@ impl Huge {
     /// caller's per-arena counters.
     // The coalescing loops are spelled out (see below), not `while let`.
     #[allow(clippy::while_let_loop)]
-    pub fn free_run(&self, meta: &Meta, page: usize) -> RunInfo {
+    pub fn free_run(
+        &self,
+        meta: &Meta,
+        page: usize,
+        _tok: Tracked<RunToken>,
+        ord: Tracked<&mut LockOrder>,
+    ) -> RunInfo {
         let page_size = self.page_size();
-        let mut g = self
-            .inner
-            .lock(Tracked::assume_new(), Tracked::assume_new());
+        let mut g = self.inner.lock(ord, Tracked::assume_new());
         let d = g.table.get(page);
         if d.is_null() {
             not_a_run(self.addr(page));
@@ -2857,13 +2934,18 @@ impl Huge {
             not_a_run(self.addr(page));
         }
         let addr = self.addr(page);
-        if self.guard_install
-            && let Err(e) = guard_remove(
+        // Nested, not a `let` chain, so the body can move into `verus!`,
+        // which does not take `let` chains.
+        #[allow(clippy::collapsible_if)]
+        if self.guard_install {
+            if let Err(e) = guard_remove(
                 addr + (n - GUARD_PAGES) * page_size,
                 GUARD_PAGES * page_size,
-            )
-        {
-            panic!("huge: madvise(MADV_GUARD_REMOVE) of {addr:#x} failed: {e}");
+            ) {
+                sys::abort_kernel(format_args!(
+                    "huge: madvise(MADV_GUARD_REMOVE) of {addr:#x} failed: {e}"
+                ));
+            }
         }
         let now = now_ns().max(1);
         // Purged at once: above `huge_retain_max`, or under a zero huge
@@ -2878,7 +2960,7 @@ impl Huge {
         };
         // Best effort: a fuller table still works, only slower.
         let _ = g.table.ensure(meta, page_size, 2);
-        g.drop_extent(d);
+        g.drop_extent(d, Ghost::assume_new());
 
         // Coalesce with free neighbours into one extent `[lo, hi)`. The
         // survivor is the `Empty` participant with the oldest `dirty_at`
@@ -2913,7 +2995,7 @@ impl Huge {
                 g.desc(nb).state(),
                 g.desc(nb).dirty_at,
             );
-            g.drop_extent(nb);
+            g.drop_extent(nb, Ghost::assume_new());
             lo = lo.min(ns);
             hi = hi.max(ne);
             if nst == RunState::Empty {
@@ -2981,7 +3063,7 @@ impl Huge {
     /// Usable bytes of the live run starting at `page`. Aborts otherwise.
     /// The result is the bytes of the run's usable pages, as its descriptor
     /// counts them (`Huge::take` writes `usable` from the pages it commits).
-    pub fn usable_size(&self, page: usize) -> (r: usize)
+    pub fn usable_size(&self, page: usize, Tracked(_tok): Tracked<&Option<RunToken>>) -> (r: usize)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -3037,7 +3119,12 @@ impl Huge {
     }
 
     /// Descriptor of the extent starting or ending at `page`, if any.
-    pub fn lookup(&self, page: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<RunInfo>)
+    pub fn lookup(
+        &self,
+        page: usize,
+        Tracked(_tok): Tracked<&Option<RunToken>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: Option<RunInfo>)
         requires
             crate::sys::may_syscall(),
             old(ord).allows(rank_huge()),
@@ -4034,25 +4121,31 @@ impl Huge {
 }
 
 /// Initialise a metadata block as a free extent.
-fn init_free(d: *mut HugeDesc, start: usize, pages: usize, state: RunState, dirty_at: u64) {
+fn init_free(
+    d: *mut HugeDesc,
+    perm: Tracked<&mut PointsTo<HugeDesc>>,
+    start: usize,
+    pages: usize,
+    state: RunState,
+    dirty_at: u64,
+) {
     debug_assert!(state.is_free());
-    // SAFETY: `d` is a fresh metadata block for a `HugeDesc`.
-    unsafe {
-        ptr::write(
-            d,
-            HugeDesc {
-                start: start as u32,
-                pages: pages as u32,
-                arena: 0,
-                state: state as u8,
-                _pad: 0,
-                usable: 0,
-                dirty_at,
-                prev: ptr::null_mut(),
-                next: ptr::null_mut(),
-            },
-        );
-    }
+    // `d` is a fresh metadata block for a `HugeDesc`.
+    ptr_mut_write(
+        d,
+        perm,
+        HugeDesc {
+            start: start as u32,
+            pages: pages as u32,
+            arena: 0,
+            state: state as u8,
+            _pad: 0,
+            usable: 0,
+            dirty_at,
+            prev: ptr::null_mut(),
+            next: ptr::null_mut(),
+        },
+    )
 }
 
 verus! {
@@ -4090,9 +4183,9 @@ fn dirty_zero_run(
     word: u64,
 ) -> ! {
     let advice = purge::advice_name();
-    panic!(
+    sys::abort_fmt(format_args!(
         "check_zero: huge run {run:#x} ({pages} pages from page {page}, arena {arena}) was handed out as zero from {prior} pages but the word at {at:#x} reads {word:#x} (purge advice {advice})"
-    )
+    ))
 }
 
 #[cfg(test)]

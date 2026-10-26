@@ -11,7 +11,7 @@ file.
 
 ## `axiom_run_locs`
 
-src/huge/mod.rs:900. Kind: axiom. Category: allocator invariant.
+src/huge/mod.rs:913. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: outside tests, [`Huge::new`] runs once per process, for the process's `Shared` (`Shared::init`), so the run authorities it makes are the process's ([`run_loc`], [`page_loc`]), as `class::table::axiom_slot_loc` for the slot authorities.

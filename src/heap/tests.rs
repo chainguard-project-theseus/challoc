@@ -119,7 +119,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     let t0 = free_at(s, p);
     assert_eq!(
         s.huge
-            .lookup(page_of(s, p), Tracked::assume_new())
+            .lookup(page_of(s, p), Tracked::assume_new(), Tracked::assume_new())
             .unwrap()
             .state,
         RunState::Empty,
@@ -145,7 +145,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     );
     assert_eq!(
         s.huge
-            .lookup(page_of(s, p), Tracked::assume_new())
+            .lookup(page_of(s, p), Tracked::assume_new(), Tracked::assume_new())
             .unwrap()
             .state,
         RunState::Purged
@@ -172,7 +172,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     );
     assert_eq!(
         s.huge
-            .lookup(page_of(s, p), Tracked::assume_new())
+            .lookup(page_of(s, p), Tracked::assume_new(), Tracked::assume_new())
             .unwrap()
             .state,
         RunState::Purged
@@ -2318,7 +2318,10 @@ fn huge_runs_go_through_the_heap_without_caches() {
     let (p, zero) = t.alloc_huge(size, 16);
     assert!(!p.is_null() && zero);
     assert_eq!(s.regions.classify(p as usize), Kind::Huge { page: 0 });
-    assert_eq!(s.huge.usable_size(0), s.huge.usable_for(size).unwrap());
+    assert_eq!(
+        s.huge.usable_size(0, Tracked::assume_new()),
+        s.huge.usable_for(size).unwrap()
+    );
     assert_eq!(t.stats().allocated, s.huge.usable_for(size).unwrap() as u64);
     let (q, _) = t.alloc_huge(size, 1 << 20);
     assert_eq!(q as usize % (1 << 20), 0);
@@ -3749,33 +3752,68 @@ fn huge_run_pages_are_counted_from_the_descriptor() {
     assert_eq!(s.arena0.large(), (0, 0));
     let size = 300 * 1024;
     let (p, _) = t.alloc_huge(size, 16);
-    let info = s.huge.lookup(page_of(p), Tracked::assume_new()).unwrap();
+    let info = s
+        .huge
+        .lookup(page_of(p), Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     assert_eq!(info.pages, s.huge.usable_pages(size).unwrap() + GUARD_PAGES);
     assert_eq!(s.arena0.large(), (1, info.pages));
     // An aligned run: the hole alignment leaves in front of it is a free
     // extent, not the run's pages.
     let (q, _) = t.alloc_huge(size, 1 << 20);
-    let qinfo = s.huge.lookup(page_of(q), Tracked::assume_new()).unwrap();
+    let qinfo = s
+        .huge
+        .lookup(page_of(q), Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     assert_eq!(qinfo.pages, info.pages);
     assert_eq!(s.arena0.large(), (2, 2 * info.pages));
     // `alloc_run` reports the descriptor's pages, and the free the same.
-    let r = s.huge.alloc_run(&s.meta, 5 * page_size() + 1, 1, 0);
+    let r = s
+        .huge
+        .alloc_run(
+            &s.meta,
+            5 * page_size() + 1,
+            1,
+            0,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+        .0;
     assert!(!r.ptr.is_null());
     assert_eq!(r.pages, 6 + GUARD_PAGES);
     assert_eq!(
         r.pages,
         s.huge
-            .lookup(page_of(r.ptr), Tracked::assume_new())
+            .lookup(page_of(r.ptr), Tracked::assume_new(), Tracked::assume_new())
             .unwrap()
             .pages
     );
-    assert_eq!(s.huge.free_run(&s.meta, page_of(r.ptr)).pages, r.pages);
+    assert_eq!(
+        s.huge
+            .free_run(
+                &s.meta,
+                page_of(r.ptr),
+                Tracked::assume_new(),
+                Tracked::assume_new()
+            )
+            .pages,
+        r.pages
+    );
     t.free(p);
     assert_eq!(s.arena0.large(), (1, info.pages));
     t.free(q);
     assert_eq!(s.arena0.large(), (0, 0));
     assert_eq!(
-        s.huge.alloc_run(&s.meta, usize::MAX, 1, 0),
+        s.huge
+            .alloc_run(
+                &s.meta,
+                usize::MAX,
+                1,
+                0,
+                Tracked::assume_new(),
+                Tracked::assume_new()
+            )
+            .0,
         crate::huge::Placed::NONE
     );
     t.destroy();
@@ -3834,7 +3872,13 @@ fn a_huge_first_allocation_builds_the_home_arena() {
         .get_existing(2)
         .expect("built by the huge allocation");
     assert_eq!(a2.large().0, 1);
-    assert_eq!(s.huge.lookup(0, Tracked::assume_new()).unwrap().arena, 2);
+    assert_eq!(
+        s.huge
+            .lookup(0, Tracked::assume_new(), Tracked::assume_new())
+            .unwrap()
+            .arena,
+        2
+    );
     h.free(s, p);
     assert_eq!(a2.large(), (0, 0));
     unsafe { Heap::destroy(hp, s) };

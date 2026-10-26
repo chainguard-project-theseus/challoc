@@ -115,7 +115,11 @@ impl Env {
         h.audit();
         if !r.0.is_null() {
             let info = h
-                .lookup(self.page_of(r.0), Tracked::assume_new())
+                .lookup(
+                    self.page_of(r.0),
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                )
                 .expect("run descriptor");
             assert!(info.usable >= size.max(1));
             unsafe {
@@ -131,7 +135,14 @@ impl Env {
             Kind::Huge { page } => page,
             other => panic!("{p:?} classified as {other:?}"),
         };
-        let n = h.free_run(&self.meta, page).usable;
+        let n = h
+            .free_run(
+                &self.meta,
+                page,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
+            .usable;
         h.audit();
         n
     }
@@ -185,7 +196,9 @@ fn first_run_is_at_the_base_and_zero() {
     assert!(zero);
     assert_eq!(env.regions.classify(p as usize), Kind::Huge { page: 0 });
     let pages = (300usize * 1024).div_ceil(page_size());
-    let info = h.lookup(0, Tracked::assume_new()).unwrap();
+    let info = h
+        .lookup(0, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     assert_eq!(
         info,
         RunInfo {
@@ -197,9 +210,9 @@ fn first_run_is_at_the_base_and_zero() {
             dirty_at: 0
         }
     );
-    assert_eq!(h.usable_size(0), pages * page_size());
+    assert_eq!(h.usable_size(0, Tracked::assume_new()), pages * page_size());
     assert_eq!(
-        h.lookup(pages, Tracked::assume_new()),
+        h.lookup(pages, Tracked::assume_new(), Tracked::assume_new()),
         None,
         "guard page is not keyed"
     );
@@ -211,7 +224,10 @@ fn first_run_is_at_the_base_and_zero() {
     let (q, zero) = env.alloc(&h, 1, 1);
     assert!(zero);
     assert_eq!(env.page_of(q), pages + GUARD_PAGES);
-    assert_eq!(h.usable_size(env.page_of(q)), page_size());
+    assert_eq!(
+        h.usable_size(env.page_of(q), Tracked::assume_new()),
+        page_size()
+    );
     assert_eq!(env.free(&h, p), pages * page_size());
     assert_eq!(env.free(&h, q), page_size());
 }
@@ -226,12 +242,16 @@ fn free_and_reuse_prefers_the_lowest_address() {
     assert_eq!(env.page_of(b), 5);
     assert_eq!(env.page_of(c), 10);
     env.free(&h, b);
-    let info = h.lookup(5, Tracked::assume_new()).unwrap();
+    let info = h
+        .lookup(5, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     assert_eq!(info.state, RunState::Empty);
     assert_eq!((info.start, info.pages), (5, 5));
     assert!(info.dirty_at > 0);
     assert_eq!(
-        h.lookup(9, Tracked::assume_new()).unwrap().start,
+        h.lookup(9, Tracked::assume_new(), Tracked::assume_new())
+            .unwrap()
+            .start,
         5,
         "last page keyed"
     );
@@ -240,7 +260,9 @@ fn free_and_reuse_prefers_the_lowest_address() {
     let (d, zero) = env.alloc(&h, 2 * page_size(), 1);
     assert_eq!(env.page_of(d), 5);
     assert!(!zero);
-    let rest = h.lookup(8, Tracked::assume_new()).unwrap();
+    let rest = h
+        .lookup(8, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     assert_eq!(
         (rest.start, rest.pages, rest.state),
         (8, 2, RunState::Empty)
@@ -252,7 +274,9 @@ fn free_and_reuse_prefers_the_lowest_address() {
     // Purge makes the hole zero again.
     assert_eq!(h.purge_empty(u64::MAX, Tracked::assume_new()), 1);
     assert_eq!(
-        h.lookup(8, Tracked::assume_new()).unwrap().state,
+        h.lookup(8, Tracked::assume_new(), Tracked::assume_new())
+            .unwrap()
+            .state,
         RunState::Purged
     );
     let (f, zero) = env.alloc(&h, page_size(), 1);
@@ -283,7 +307,12 @@ fn a_run_can_grow_past_the_mark_from_a_trailing_extent() {
     env.free(&h, c);
     env.free(&h, a);
     assert_eq!(h.stats(Tracked::assume_new()).empty, 1);
-    assert_eq!(h.lookup(0, Tracked::assume_new()).unwrap().pages, 8);
+    assert_eq!(
+        h.lookup(0, Tracked::assume_new(), Tracked::assume_new())
+            .unwrap()
+            .pages,
+        8
+    );
 }
 
 #[test]
@@ -299,14 +328,16 @@ fn alignment_over_allocates_and_frees_head_and_tail() {
         assert_eq!(p as usize % align, 0, "align {align}");
         assert!(zero);
         let page = env.page_of(p);
-        let info = h.lookup(page, Tracked::assume_new()).unwrap();
+        let info = h
+            .lookup(page, Tracked::assume_new(), Tracked::assume_new())
+            .unwrap();
         assert_eq!(
             (info.pages, info.usable, info.state),
             (3 + GUARD_PAGES, 3 * page_size(), RunState::Active)
         );
         // The page before is either an unkeyed guard page or the last
         // page of a clean alignment hole.
-        if let Some(before) = h.lookup(page - 1, Tracked::assume_new()) {
+        if let Some(before) = h.lookup(page - 1, Tracked::assume_new(), Tracked::assume_new()) {
             assert_eq!(before.state, RunState::Purged);
         }
         held.push(p);
@@ -337,7 +368,9 @@ fn alignment_at_the_mark_leaves_a_clean_hole() {
     let (b, zero) = env.alloc(&h, page_size(), 1 << 20);
     assert!(zero);
     assert_eq!(b as usize % (1 << 20), 0);
-    let hole = h.lookup(2, Tracked::assume_new()).unwrap();
+    let hole = h
+        .lookup(2, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     assert_eq!(hole.state, RunState::Purged);
     assert_eq!(hole.end(), env.page_of(b));
     // The hole is reused first, and is zero.
@@ -364,20 +397,41 @@ fn neighbours_coalesce_and_keep_the_oldest_dirty_time() {
     let (c, _) = env.alloc(&h, page_size(), 1);
     let (d, _) = env.alloc(&h, page_size(), 1);
     env.free(&h, a);
-    let ta = h.lookup(0, Tracked::assume_new()).unwrap().dirty_at;
+    let ta = h
+        .lookup(0, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap()
+        .dirty_at;
     env.free(&h, c);
     assert_eq!(h.stats(Tracked::assume_new()).empty, 2);
     env.free(&h, b);
     let st = h.stats(Tracked::assume_new());
     assert_eq!((st.empty, st.empty_pages), (1, 6));
-    let m = h.lookup(0, Tracked::assume_new()).unwrap();
+    let m = h
+        .lookup(0, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     assert_eq!((m.start, m.pages, m.dirty_at), (0, 6, ta));
-    assert_eq!(h.lookup(5, Tracked::assume_new()).unwrap().start, 0);
-    assert_eq!(h.lookup(2, Tracked::assume_new()), None);
-    assert_eq!(h.lookup(4, Tracked::assume_new()), None);
+    assert_eq!(
+        h.lookup(5, Tracked::assume_new(), Tracked::assume_new())
+            .unwrap()
+            .start,
+        0
+    );
+    assert_eq!(
+        h.lookup(2, Tracked::assume_new(), Tracked::assume_new()),
+        None
+    );
+    assert_eq!(
+        h.lookup(4, Tracked::assume_new(), Tracked::assume_new()),
+        None
+    );
     env.free(&h, d);
     assert_eq!(h.stats(Tracked::assume_new()).empty, 1);
-    assert_eq!(h.lookup(0, Tracked::assume_new()).unwrap().pages, 8);
+    assert_eq!(
+        h.lookup(0, Tracked::assume_new(), Tracked::assume_new())
+            .unwrap()
+            .pages,
+        8
+    );
     assert_eq!(h.oldest_dirty_at(), Some(ta));
 }
 
@@ -391,20 +445,31 @@ fn purged_and_empty_merge_to_empty() {
     let (c, _) = env.alloc(&h, page_size(), 1);
     env.free(&h, b);
     assert_eq!(
-        h.lookup(2, Tracked::assume_new()).unwrap().state,
+        h.lookup(2, Tracked::assume_new(), Tracked::assume_new())
+            .unwrap()
+            .state,
         RunState::Purged,
         "above retain_max: purged at once"
     );
     assert_eq!(h.oldest_dirty_at(), None);
     env.free(&h, a);
-    let m = h.lookup(0, Tracked::assume_new()).unwrap();
+    let m = h
+        .lookup(0, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     assert_eq!((m.pages, m.state), (6, RunState::Empty));
     assert_eq!(h.stats(Tracked::assume_new()).purged, 0);
     env.free(&h, c);
-    assert_eq!(h.lookup(0, Tracked::assume_new()).unwrap().pages, 8);
+    assert_eq!(
+        h.lookup(0, Tracked::assume_new(), Tracked::assume_new())
+            .unwrap()
+            .pages,
+        8
+    );
     assert_eq!(h.purge_empty(u64::MAX, Tracked::assume_new()), 1);
     assert_eq!(
-        h.lookup(0, Tracked::assume_new()).unwrap().state,
+        h.lookup(0, Tracked::assume_new(), Tracked::assume_new())
+            .unwrap()
+            .state,
         RunState::Purged
     );
     assert_eq!(h.stats(Tracked::assume_new()).empty, 0);
@@ -434,7 +499,11 @@ fn retain_cap_decides_purged_or_empty_at_free() {
     env.free(&h, at_cap);
     let t1 = now_ns().max(1);
     let e = h
-        .lookup(env.page_of(at_cap), Tracked::assume_new())
+        .lookup(
+            env.page_of(at_cap),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
         .unwrap();
     assert_eq!(e.state, RunState::Empty, "at the cap: retained");
     assert!(t0 <= e.dirty_at && e.dirty_at <= t1, "aged at its free");
@@ -444,7 +513,13 @@ fn retain_cap_decides_purged_or_empty_at_free() {
     // the counters, so this is a lower bound; the state below is the
     // evidence.
     assert!(discarded_total() - d0 >= 4 * page_size() as u64);
-    let e = h.lookup(env.page_of(above), Tracked::assume_new()).unwrap();
+    let e = h
+        .lookup(
+            env.page_of(above),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+        .unwrap();
     assert_eq!(
         (e.state, e.dirty_at),
         (RunState::Purged, 0),
@@ -452,7 +527,13 @@ fn retain_cap_decides_purged_or_empty_at_free() {
     );
     h.set_purge_on_free(true);
     env.free(&h, small);
-    let e = h.lookup(env.page_of(small), Tracked::assume_new()).unwrap();
+    let e = h
+        .lookup(
+            env.page_of(small),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+        .unwrap();
     assert_eq!(
         (e.state, e.dirty_at),
         (RunState::Purged, 0),
@@ -475,16 +556,23 @@ fn a_freed_run_takes_an_empty_neighbours_state_and_age() {
     let (c, _) = env.alloc(&h, 2 * page_size(), 1);
     let (_d, _) = env.alloc(&h, page_size(), 1);
     env.free(&h, a);
-    let ta = h.lookup(0, Tracked::assume_new()).unwrap().dirty_at;
+    let ta = h
+        .lookup(0, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap()
+        .dirty_at;
     wait_past(ta);
     let d0 = discarded_total();
     env.free(&h, b);
     assert!(discarded_total() - d0 >= 4 * page_size() as u64);
-    let m = h.lookup(0, Tracked::assume_new()).unwrap();
+    let m = h
+        .lookup(0, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     assert_eq!((m.pages, m.state, m.dirty_at), (6, RunState::Empty, ta));
     assert_eq!(h.stats(Tracked::assume_new()).purged, 0);
     env.free(&h, c);
-    let m = h.lookup(0, Tracked::assume_new()).unwrap();
+    let m = h
+        .lookup(0, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     assert_eq!((m.pages, m.state, m.dirty_at), (9, RunState::Empty, ta));
 }
 
@@ -602,15 +690,23 @@ fn decay_purges_the_oldest_extents_along_the_curve() {
     );
     assert_eq!(h.stats(Tracked::assume_new()).purged_pages, pages / 2);
     assert_eq!(
-        h.lookup(env.page_of(ps[0]), Tracked::assume_new())
-            .unwrap()
-            .state,
+        h.lookup(
+            env.page_of(ps[0]),
+            Tracked::assume_new(),
+            Tracked::assume_new()
+        )
+        .unwrap()
+        .state,
         RunState::Purged
     );
     assert_eq!(
-        h.lookup(env.page_of(ps[2]), Tracked::assume_new())
-            .unwrap()
-            .state,
+        h.lookup(
+            env.page_of(ps[2]),
+            Tracked::assume_new(),
+            Tracked::assume_new()
+        )
+        .unwrap()
+        .state,
         RunState::Empty
     );
     assert_eq!(h.oldest_empty(), t0);
@@ -654,7 +750,7 @@ fn decay_purges_the_oldest_extents_along_the_curve() {
     assert!(t > 0);
     assert_eq!(h.decay(t, 0, Tracked::assume_new()), None);
     assert_eq!(
-        h.lookup(env.page_of(a), Tracked::assume_new())
+        h.lookup(env.page_of(a), Tracked::assume_new(), Tracked::assume_new())
             .unwrap()
             .state,
         RunState::Purged
@@ -685,7 +781,7 @@ fn purge_respects_the_cutoff_in_fifo_order() {
         std::thread::sleep(core::time::Duration::from_millis(30));
         env.free(&h, p);
         times.push(
-            h.lookup(env.page_of(p), Tracked::assume_new())
+            h.lookup(env.page_of(p), Tracked::assume_new(), Tracked::assume_new())
                 .unwrap()
                 .dirty_at,
         );
@@ -774,13 +870,13 @@ fn a_zero_byte_request_gets_one_page() {
     assert!(!p.is_null() && zero);
     let page = env.page_of(p);
     let info = h
-        .lookup(page, Tracked::assume_new())
+        .lookup(page, Tracked::assume_new(), Tracked::assume_new())
         .expect("run descriptor");
     assert_eq!(
         (info.pages, info.usable, info.state),
         (1 + GUARD_PAGES, page_size(), RunState::Active)
     );
-    assert_eq!(h.usable_size(page), page_size());
+    assert_eq!(h.usable_size(page, Tracked::assume_new()), page_size());
     assert_eq!(env.free(&h, p), page_size());
     assert_eq!(h.stats(Tracked::assume_new()).runs, 0);
 }
@@ -802,7 +898,9 @@ fn table_grows_and_lookups_survive_backward_shift() {
     assert!(st.table_cap >= 8192, "table did not grow: {st:?}");
     for (i, &page) in runs.iter().enumerate() {
         assert_eq!(page, 2 * i);
-        let info = h.lookup(page, Tracked::assume_new()).unwrap();
+        let info = h
+            .lookup(page, Tracked::assume_new(), Tracked::assume_new())
+            .unwrap();
         assert_eq!(
             (info.pages, info.arena, info.state),
             (2, 7, RunState::Active)
@@ -812,22 +910,34 @@ fn table_grows_and_lookups_survive_backward_shift() {
     // remaining key must still resolve.
     for (i, &page) in runs.iter().enumerate() {
         if i % 3 == 0 {
-            h.free_run(&env.meta, page);
+            h.free_run(
+                &env.meta,
+                page,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
         }
     }
     h.audit();
     for (i, &page) in runs.iter().enumerate() {
-        let info = h.lookup(page, Tracked::assume_new()).unwrap();
+        let info = h
+            .lookup(page, Tracked::assume_new(), Tracked::assume_new())
+            .unwrap();
         if i % 3 == 0 {
             assert_eq!(info.state, RunState::Empty);
         } else {
             assert_eq!(info.state, RunState::Active);
-            assert_eq!(h.usable_size(page), page_size());
+            assert_eq!(h.usable_size(page, Tracked::assume_new()), page_size());
         }
     }
     for (i, &page) in runs.iter().enumerate() {
         if i % 3 != 0 {
-            h.free_run(&env.meta, page);
+            h.free_run(
+                &env.meta,
+                page,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
         }
     }
     h.audit();
@@ -921,7 +1031,7 @@ fn randomised_model_check() {
                 assert_eq!(p as usize % align, 0);
                 let page = env.page_of(p);
                 let n = size.div_ceil(page_size());
-                assert_eq!(h.usable_size(page), n * page_size());
+                assert_eq!(h.usable_size(page, Tracked::assume_new()), n * page_size());
                 for &(q, m, _) in &live {
                     assert!(
                         page + n + GUARD_PAGES <= q || q + m + GUARD_PAGES <= page,
@@ -959,7 +1069,12 @@ fn randomised_model_check() {
     }
     assert!(zero_flags > 0);
     for (page, _, _) in live.drain(..) {
-        h.free_run(&env.meta, page);
+        h.free_run(
+            &env.meta,
+            page,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
     }
     h.audit();
     let st = h.stats(Tracked::assume_new());
@@ -1010,7 +1125,9 @@ fn alignment_past_a_trailing_extent_takes_fresh_pages() {
     env.free(&h, runs[3]);
     let (p, _) = env.alloc(&h, page_size(), 8 * page_size());
     assert_eq!(env.page_of(p), 8);
-    let tail = h.lookup(6, Tracked::assume_new()).unwrap();
+    let tail = h
+        .lookup(6, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     assert_eq!(
         (tail.start, tail.pages, tail.state),
         (6, 2, RunState::Empty)
@@ -1104,12 +1221,19 @@ fn runs_have_one_key_and_free_extents_two() {
     let (p, _) = env.alloc(&h, 3 * page_size(), 1);
     let page = env.page_of(p);
     let run = h
-        .lookup(page, Tracked::assume_new())
+        .lookup(page, Tracked::assume_new(), Tracked::assume_new())
         .expect("run keyed by its start");
     assert_eq!((run.pages, run.state), (3 + GUARD_PAGES, RunState::Active));
-    assert_eq!(h.lookup(page + 1, Tracked::assume_new()), None);
     assert_eq!(
-        h.lookup(page + run.pages - 1, Tracked::assume_new()),
+        h.lookup(page + 1, Tracked::assume_new(), Tracked::assume_new()),
+        None
+    );
+    assert_eq!(
+        h.lookup(
+            page + run.pages - 1,
+            Tracked::assume_new(),
+            Tracked::assume_new()
+        ),
         None,
         "a run has no last-page key"
     );
@@ -1120,20 +1244,34 @@ fn runs_have_one_key_and_free_extents_two() {
     );
     env.free(&h, p);
     let ext = h
-        .lookup(page, Tracked::assume_new())
+        .lookup(page, Tracked::assume_new(), Tracked::assume_new())
         .expect("free extent keyed by its first page");
     assert_eq!(
-        h.lookup(page + ext.pages - 1, Tracked::assume_new()),
+        h.lookup(
+            page + ext.pages - 1,
+            Tracked::assume_new(),
+            Tracked::assume_new()
+        ),
         Some(ext),
         "and by its last"
     );
-    assert_eq!(h.lookup(page + 1, Tracked::assume_new()), None);
+    assert_eq!(
+        h.lookup(page + 1, Tracked::assume_new(), Tracked::assume_new()),
+        None
+    );
     let st = h.stats(Tracked::assume_new());
     assert_eq!((st.runs, st.run_pages, st.empty + st.purged), (0, 0, 1));
     // Taking the whole extent drops both keys and counts it out.
     let (q, _) = env.alloc(&h, 3 * page_size(), 1);
     assert_eq!(q, p);
-    assert_eq!(h.lookup(page + ext.pages - 1, Tracked::assume_new()), None);
+    assert_eq!(
+        h.lookup(
+            page + ext.pages - 1,
+            Tracked::assume_new(),
+            Tracked::assume_new()
+        ),
+        None
+    );
     let st = h.stats(Tracked::assume_new());
     assert_eq!((st.runs, st.empty + st.purged), (1, 0));
 }
@@ -1145,24 +1283,27 @@ fn runs_have_one_key_and_free_extents_two() {
 fn prior_state_names_the_source_of_the_pages() {
     let env = Env::new();
     let h = env.huge();
-    assert_eq!(h.prior_state(0, core::ptr::null_mut()), "fresh");
+    assert_eq!(
+        h.prior_state(0, core::ptr::null_mut(), Tracked::assume_new()),
+        "fresh"
+    );
     let (p, _) = env.alloc(&h, page_size(), 1);
     let (q, _) = env.alloc(&h, page_size(), 1);
     env.free(&h, p);
     let ext = h.inner.lock_t().table.get(0);
     assert_eq!(
-        h.lookup(0, Tracked::assume_new())
+        h.lookup(0, Tracked::assume_new(), Tracked::assume_new())
             .map(|i| (i.pages, i.state)),
         Some((1 + GUARD_PAGES, RunState::Empty))
     );
-    assert_eq!(h.prior_state(0, ext), "Empty");
+    assert_eq!(h.prior_state(0, ext, Tracked::assume_new()), "Empty");
     assert_eq!(
-        h.prior_state(1 + GUARD_PAGES, ext),
+        h.prior_state(1 + GUARD_PAGES, ext, Tracked::assume_new()),
         "fresh",
         "pages past the extent's end"
     );
     h.purge_empty(u64::MAX, Tracked::assume_new());
-    assert_eq!(h.prior_state(0, ext), "Purged");
+    assert_eq!(h.prior_state(0, ext, Tracked::assume_new()), "Purged");
     env.free(&h, q);
     h.audit();
 }
@@ -1188,7 +1329,9 @@ fn concurrent_runs_are_disjoint() {
                 if !p.is_null() {
                     let page = env.page_of(p);
                     assert_eq!(
-                        h.lookup(page, Tracked::assume_new()).unwrap().arena,
+                        h.lookup(page, Tracked::assume_new(), Tracked::assume_new())
+                            .unwrap()
+                            .arena,
                         t as u16
                     );
                     held.push((page, size.div_ceil(page_size())));
@@ -1201,7 +1344,12 @@ fn concurrent_runs_are_disjoint() {
                 }
             }
             for (page, _) in held {
-                h.free_run(&env.meta, page);
+                h.free_run(
+                    &env.meta,
+                    page,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                );
             }
             got
         }));
@@ -1271,7 +1419,7 @@ fn usable_size_of_a_bad_pointer_aborts() {
     let env = Env::new();
     let h = env.huge();
     let (p, _) = env.alloc(&h, 4 * page_size(), 1);
-    h.usable_size(env.page_of(p) + 2);
+    h.usable_size(env.page_of(p) + 2, Tracked::assume_new());
 }
 
 #[test]
