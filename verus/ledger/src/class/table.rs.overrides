@@ -1,0 +1,11 @@
+# Temporary seams: unverified callers of the bitmap views pass ghost
+# arguments made from nothing (`assume_new`), until the class table holds
+# the word invariants and slot tokens and passes them.
+SlabTable::bits_unchecked#1	allocator invariant	Verus
+SlabTable::bits_unchecked#2	allocator invariant	Verus
+SlabTable::bits_unchecked#3	allocator invariant	Verus
+SlabTable::bits_unchecked#4	allocator invariant	Verus
+SlabTable::bits_unchecked#5	allocator invariant	Verus
+SlabTable::bits_unchecked#6	allocator invariant	Verus
+SlabTable::take_group#1	allocator invariant	Verus
+SlabTable::take_group#2	allocator invariant	Verus

@@ -1,12 +1,8 @@
 # Temporary seams, provable in Verus. The constructors take the zeroed
 # words on the caller's safety contract until a ghost permission to zeroed
-# memory can be passed to them; the accessors read and write through the
-# word's permission (`vstd::raw_ptr::ptr_ref`, `ptr_mut_ref`) but stay
-# unchecked until the proofs land that the word is in `perms`, that
-# `ptr.add(..)` is its permission's pointer, and the writers' frame.
+# memory can be passed to them.
 from_raw	raw pointer (internal)	Verus
 from_raw_chunked	raw pointer (internal)	Verus
-l1	raw pointer (internal)	Verus
-l0	raw pointer (internal)	Verus
-l1_mut	raw pointer (internal)	Verus
-l0_mut	raw pointer (internal)	Verus
+# Temporary seam, provable in Verus once the abort its `assert!` makes is
+# specified.
+allocated	panic/abort	Verus

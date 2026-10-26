@@ -19,6 +19,7 @@ pub(crate) mod layout;
 pub(crate) mod ptr;
 
 pub(crate) mod slice;
+pub(crate) mod word;
 
 verus! {
 

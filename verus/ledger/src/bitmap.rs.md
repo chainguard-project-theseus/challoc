@@ -7,21 +7,31 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `allocated` | external_body | panic/abort | Verus | trusted |
 | `from_raw` | external_body | raw pointer (internal) | Verus | trusted |
 | `from_raw_chunked` | external_body | raw pointer (internal) | Verus | trusted |
-| `l1` | external_body | raw pointer (internal) | Verus | trusted |
-| `l0` | external_body | raw pointer (internal) | Verus | trusted |
-| `l1_mut` | external_body | raw pointer (internal) | Verus | trusted |
-| `l0_mut` | external_body | raw pointer (internal) | Verus | trusted |
+
+## `allocated`
+
+src/bitmap.rs:1334. Kind: external_body. Category: panic/abort.
+Tool: Verus. Status: trusted.
+
+> Set slot bits, padding excluded: the slab's allocated (or cached) slots for a class with `nslots` real slots.
+
+```rust
+pub fn allocated(&self, nslots: usize) -> usize
+    requires
+        nslots <= self.spec_nbits(),
+```
 
 ## `from_raw`
 
-src/bitmap.rs:1302. Kind: external_body. Category: raw pointer (internal).
+src/bitmap.rs:2086. Kind: external_body. Category: raw pointer (internal).
 Tool: Verus. Status: trusted.
 
 > Build a set over `0..nbits` on top of `words_needed(nbits)` words at `ptr`, all zero.
 
-Body mints Tracked at line 1323.
+Body mints Tracked at line 2107.
 
 ```rust
 pub const unsafe fn from_raw(nbits: usize, ptr: *mut u64) -> (r: TwoLevelBitmap)
@@ -39,12 +49,12 @@ pub const unsafe fn from_raw(nbits: usize, ptr: *mut u64) -> (r: TwoLevelBitmap)
 
 ## `from_raw_chunked`
 
-src/bitmap.rs:1344. Kind: external_body. Category: raw pointer (internal).
+src/bitmap.rs:2128. Kind: external_body. Category: raw pointer (internal).
 Tool: Verus. Status: trusted.
 
 > Build a chunked view over `0..nbits` (struct doc): row `r` of the view is `ptr.add(r * stride)`, rows `0..chunked_rows(nbits)`.
 
-Body mints Tracked at line 1371.
+Body mints Tracked at line 2155.
 
 ```rust
 pub const unsafe fn from_raw_chunked(
@@ -63,82 +73,4 @@ pub const unsafe fn from_raw_chunked(
     ensures
         r.fresh(nbits),
         r.place() == (ptr@.addr as int, 8 * chunked_span((((nbits as int) + 63) / 64 + 63) / 64, stride as int)),
-```
-
-## `l1`
-
-src/bitmap.rs:1459. Kind: external_body. Category: raw pointer (internal).
-Tool: Verus. Status: trusted.
-
-> Level-1 word `i`, read through the word's permission in `perms` (`vstd::raw_ptr::ptr_ref`).
-
-```rust
-fn l1(&self, i: usize) -> (r: u64)
-    requires
-        self.valid(),
-        i < self.l1_words,
-    ensures
-        r == self.l1v(i as int),
-```
-
-## `l0`
-
-src/bitmap.rs:1474. Kind: external_body. Category: raw pointer (internal).
-Tool: Verus. Status: trusted.
-
-> Level-0 word `i`.
-
-```rust
-fn l0(&self, i: usize) -> (r: u64)
-    requires
-        self.valid(),
-        i < self.l0_words,
-    ensures
-        r == self.l0v(i as int),
-```
-
-## `l1_mut`
-
-src/bitmap.rs:1493. Kind: external_body. Category: raw pointer (internal).
-Tool: Verus. Status: trusted.
-
-> Level-1 word `i`, to write, through the word's permission in `perms` (`vstd::raw_ptr::ptr_mut_ref`).
-
-```rust
-fn l1_mut(&mut self, i: usize) -> (r: &mut u64)
-    requires
-        old(self).valid(),
-        i < old(self).l1_words,
-    ensures
-        *r == old(self).l1v(i as int),
-        final(self).frame(old(self)),
-        final(self).l1_used == old(self).l1_used,
-        final(self).perms@ == old(self).perms@.insert(old(self).l1o(i as int), final(self).perms@[old(self).l1o(i as int)]),
-        final(self).perms@[old(self).l1o(i as int)].ptr() == old(self).perms@[old(self).l1o(i as int)].ptr(),
-        final(self).perms@[old(self).l1o(i as int)].is_init(),
-        final(self).perms@[old(self).l1o(i as int)].value() == *final(r),
-        old(self).ok(old(self).l1o(i as int)),
-```
-
-## `l0_mut`
-
-src/bitmap.rs:1517. Kind: external_body. Category: raw pointer (internal).
-Tool: Verus. Status: trusted.
-
-> Level-0 word `i`, to write.
-
-```rust
-fn l0_mut(&mut self, i: usize) -> (r: &mut u64)
-    requires
-        old(self).valid(),
-        i < old(self).l0_words,
-    ensures
-        *r == old(self).l0v(i as int),
-        final(self).frame(old(self)),
-        final(self).l1_used == old(self).l1_used,
-        final(self).perms@ == old(self).perms@.insert(old(self).l0o(i as int), final(self).perms@[old(self).l0o(i as int)]),
-        final(self).perms@[old(self).l0o(i as int)].ptr() == old(self).perms@[old(self).l0o(i as int)].ptr(),
-        final(self).perms@[old(self).l0o(i as int)].is_init(),
-        final(self).perms@[old(self).l0o(i as int)].value() == *final(r),
-        old(self).ok(old(self).l0o(i as int)),
 ```
