@@ -25,6 +25,11 @@
 use core::arch::asm;
 
 use crate::sys::features::Value;
+#[cfg(verus_keep_ghost)]
+use vstd::prelude::*;
+use vstd::prelude::{Ghost, verus};
+
+verus! {
 
 /// Byte offset of `cpu_id` (kernel-owned; `-1` before registration).
 pub const CPU_ID_OFFSET: usize = 4;
@@ -82,7 +87,11 @@ impl Probe {
 }
 
 /// Read the three weak symbols and the calling thread's `cpu_id` field.
-pub fn probe() -> Probe {
+pub fn probe() -> (r: Probe)
+    ensures
+        !r.present ==> r == Probe::NONE,
+        r.registered ==> r.present && r.size as int >= CPU_ID_OFFSET + 4,
+{
     let (so, ss, sf) = symbols();
     if so.is_null() || ss.is_null() {
         return Probe::NONE;
@@ -99,7 +108,7 @@ pub fn probe() -> Probe {
     let registered = size >= (CPU_ID_OFFSET as u32 + 4) && {
         // SAFETY: the area is `size` bytes at the thread pointer plus
         // the offset for every thread, and `cpu_id` is inside it.
-        unsafe { read_cpu_id(area(offset)) != CPU_ID_UNINITIALIZED }
+        unsafe { read_cpu_id(area(offset), Ghost(size)) != CPU_ID_UNINITIALIZED }
     };
     Probe {
         present: true,
@@ -110,24 +119,41 @@ pub fn probe() -> Probe {
     }
 }
 
-/// One read of a loader global [`symbols`] found: a raw read, in a
-/// function of its own so that Verus can take it on trust.
+/// One read of a loader global [`symbols`] found. Trusted: a raw read;
+/// nothing is claimed about the value. The contract states the one
+/// address fact the caller can show, that `p` is not null; that a
+/// non-null weak symbol's address is a live, aligned `T` is the loader's.
 ///
 /// # Safety
 /// `p` is the non-null address of a live, aligned `T`.
+#[verifier::external_body]
 #[inline(always)]
-unsafe fn read_global<T: Copy>(p: *const T) -> T {
+unsafe fn read_global<T: Copy>(p: *const T) -> T
+    requires
+        p@.addr != 0,
+{
     // SAFETY: guaranteed by the caller.
     unsafe { p.read() }
 }
 
-/// A volatile read of the `cpu_id` field of the rseq area at `area`, in a
-/// function of its own as [`read_global`] is.
+/// A volatile read of the `cpu_id` field of the rseq area at `area`.
+/// Trusted: a raw read; nothing is claimed about the value. The contract
+/// states the bounds check the caller makes: `size`, the value it read
+/// from `__rseq_size`, covers the field. The rest is the caller's
+/// unproved obligation, from the loader and the rseq ABI: that `size`
+/// is this area's registered size (nothing ghost ties the two), that
+/// `area` (the thread pointer plus `__rseq_offset`) is this thread's
+/// registered area, and that the field is 4-byte aligned (the area is
+/// 32-byte aligned).
 ///
 /// # Safety
 /// `area` is this thread's rseq area, at least `CPU_ID_OFFSET + 4` bytes.
+#[verifier::external_body]
 #[inline(always)]
-unsafe fn read_cpu_id(area: *mut u8) -> u32 {
+unsafe fn read_cpu_id(area: *mut u8, Ghost(size): Ghost<u32>) -> u32
+    requires
+        size as int >= CPU_ID_OFFSET + 4,
+{
     // SAFETY: guaranteed by the caller.
     unsafe { area.add(CPU_ID_OFFSET).cast::<u32>().read_volatile() }
 }
@@ -135,6 +161,8 @@ unsafe fn read_cpu_id(area: *mut u8) -> u32 {
 /// Addresses of the weak `__rseq_offset`, `__rseq_size` and `__rseq_flags`
 /// (null when they do not resolve). The same `.weak` + GOT form as
 /// `config.rs` uses for `malloc_conf`: stable Rust has no weak statics.
+/// Trusted: inline assembly; nothing is claimed about the addresses.
+#[verifier::external_body]
 #[inline(never)]
 fn symbols() -> (*const isize, *const u32, *const u32) {
     let (so, ss, sf): (*const isize, *const u32, *const u32);
@@ -176,6 +204,8 @@ fn symbols() -> (*const isize, *const u32, *const u32) {
 /// The calling thread's thread pointer: `%fs:0` (the TCB's self pointer)
 /// on x86_64, `tpidr_el0` on aarch64. The rseq area is at
 /// `thread_pointer() + __rseq_offset`.
+/// Trusted: inline assembly; nothing is claimed about the value.
+#[verifier::external_body]
 #[inline(always)]
 pub fn thread_pointer() -> usize {
     let tp: usize;
@@ -195,6 +225,8 @@ pub fn thread_pointer() -> usize {
 pub fn area(offset: isize) -> *mut u8 {
     crate::vspec::addr::addr_to_ptr(thread_pointer().wrapping_add_signed(offset))
 }
+
+} // verus!
 
 /// The calling thread's `cpu_id` field (diagnostics and tests).
 ///

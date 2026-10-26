@@ -39,4 +39,12 @@ pub assume_specification<T: core::marker::PointeeSized>[ <*mut T>::is_null ](p: 
     no_unwind
 ;
 
+/// `<*const T>::is_null`: the address is zero.
+pub assume_specification<T: core::marker::PointeeSized>[ <*const T>::is_null ](p: *const T) -> (r: bool)
+    ensures
+        r == (p@.addr == 0),
+    opens_invariants none
+    no_unwind
+;
+
 } // verus!

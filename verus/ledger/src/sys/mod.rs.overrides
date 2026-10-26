@@ -1,0 +1,6 @@
+axiom_getrandom_count	platform/kernel fact	none (assumption)
+axiom_read_count	platform/kernel fact	none (assumption)
+axiom_write_count	platform/kernel fact	none (assumption)
+getrandom_exact	termination	none (assumption)
+read_full	termination	none (assumption)
+write_all	termination	none (assumption)

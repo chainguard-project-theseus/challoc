@@ -9,6 +9,15 @@ file.
 |---|---|---|---|---|
 | `u8::is_ascii_digit` | assume_spec | core library | Kani | trusted |
 | `isize::wrapping_neg` | assume_spec | core library | Kani | trusted |
+| `<[T]>::as_mut_ptr` | assume_spec | core library | Kani | trusted |
+| `<[T]>::as_ptr` | assume_spec | core library | Kani | trusted |
+| `ptr::from_ref` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
+| `ptr::from_mut` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
+| `Option::<T>::map_or` | assume_spec | core library | Kani | trusted |
+| `Result::<T, E>::map_or` | assume_spec | core library | Kani | trusted |
+| `Result::<T, E>::unwrap_or` | assume_spec | core library | Kani | trusted |
+| `str::Utf8Error` | ext_type_spec | core library | Kani | trusted |
+| `str::from_utf8` | assume_spec | core library | Kani | trusted |
 
 ## `u8::is_ascii_digit`
 
@@ -34,4 +43,126 @@ Tool: Kani. Status: trusted.
 pub assume_specification[ isize::wrapping_neg ](x: isize) -> (r: isize)
     ensures r == if x == isize::MIN { isize::MIN as int } else { -x },
 ;
+```
+
+## `<[T]>::as_mut_ptr`
+
+src/vspec/sys.rs:25. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> The address of a slice's first element, for a syscall argument; the verified code never dereferences it.
+
+```rust
+pub assume_specification<T>[ <[T]>::as_mut_ptr ](s: &mut [T]) -> *mut T
+    ensures
+        final(s)@.len() == old(s)@.len(),
+;
+```
+
+## `<[T]>::as_ptr`
+
+src/vspec/sys.rs:30. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+pub assume_specification<T>[ <[T]>::as_ptr ](s: &[T]) -> *const T;
+```
+
+## `core::ptr::from_ref`
+
+src/vspec/sys.rs:33. Kind: assume_spec. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
+
+> A reference as a raw pointer, for a syscall argument.
+
+```rust
+pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_ref ](r: &T) -> *const T;
+```
+
+## `core::ptr::from_mut`
+
+src/vspec/sys.rs:35. Kind: assume_spec. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
+
+```rust
+pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_mut ](r: &mut T) -> *mut T;
+```
+
+## `Option::<T>::map_or`
+
+src/vspec/sys.rs:38. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `Option::map_or`: `f` of the value, else `default`.
+
+```rust
+pub assume_specification<T, U, F: FnOnce(T) -> U>[ Option::<T>::map_or ](
+    option: Option<T>,
+    default: U,
+    f: F,
+) -> (r: U)
+    requires
+        option matches Some(v) ==> f.requires((v,)),
+    ensures
+        option is None ==> r == default,
+        option matches Some(v) ==> f.ensures((v,), r),
+;
+```
+
+## `Result::<T, E>::map_or`
+
+src/vspec/sys.rs:51. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `Result::map_or`: `f` of the `Ok` value, else `default`.
+
+```rust
+pub assume_specification<T, E, U, F: FnOnce(T) -> U>[ Result::<T, E>::map_or ](
+    result: Result<T, E>,
+    default: U,
+    f: F,
+) -> (r: U)
+    requires
+        result matches Ok(v) ==> f.requires((v,)),
+    ensures
+        result is Err ==> r == default,
+        result matches Ok(v) ==> f.ensures((v,), r),
+;
+```
+
+## `Result::<T, E>::unwrap_or`
+
+src/vspec/sys.rs:64. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `Result::unwrap_or`: the `Ok` value, else `default`.
+
+```rust
+pub assume_specification<T, E>[ Result::<T, E>::unwrap_or ](result: Result<T, E>, default: T) -> (r: T)
+    ensures
+        r == match result {
+            Ok(v) => v,
+            Err(_) => default,
+        },
+;
+```
+
+## `core::str::Utf8Error`
+
+src/vspec/sys.rs:74. Kind: ext_type_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+pub struct ExUtf8Error(core::str::Utf8Error);
+```
+
+## `core::str::from_utf8`
+
+src/vspec/sys.rs:77. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `core::str::from_utf8`: the bytes as a `str` when they are UTF-8.
+
+```rust
+pub assume_specification[ core::str::from_utf8 ](v: &[u8]) -> Result<&str, core::str::Utf8Error>;
 ```
