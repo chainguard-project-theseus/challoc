@@ -47,6 +47,10 @@ impl Settle for Tally {
 
     type Ctx = Inner;
 
+    type Conf = ();
+
+    closed spec fn conf(&self) -> () { () }
+
     closed spec fn inv(&self, o: &ClassState, c: Inner, pend: Pieces) -> bool {
         true
     }

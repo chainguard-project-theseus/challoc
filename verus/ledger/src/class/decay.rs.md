@@ -11,7 +11,7 @@ file.
 
 ## `Tally::settle`
 
-src/class/decay.rs:62. Kind: external_body. Category: allocator invariant.
+src/class/decay.rs:66. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
