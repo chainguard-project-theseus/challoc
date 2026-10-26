@@ -26,13 +26,7 @@ use super::HugeDesc;
 
 verus! {
 
-// `HugeDesc` and `Meta`, opaque: the table stores descriptor pointers
-// without reading them, and passes `Meta` only to `storage` and `release`.
-#[cfg(verus_keep_ghost)]
-#[verifier::external_type_specification]
-#[verifier::external_body]
-pub struct ExHugeDesc(HugeDesc);
-
+// `Meta`, opaque: the table passes it only to `storage` and `release`.
 #[cfg(verus_keep_ghost)]
 #[verifier::external_type_specification]
 #[verifier::external_body]

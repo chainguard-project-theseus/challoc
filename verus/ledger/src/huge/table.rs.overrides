@@ -1,8 +1,6 @@
-# Temporary seams until huge/mod.rs and meta.rs are verified: Verus
-# checks the descriptor type and Meta once they are inside verus!, and
-# storage and release once Meta's allocation calls hand out the
-# permissions they assume.
-HugeDesc	allocator invariant	Verus
+# Temporary seams until meta.rs is verified: Verus checks Meta once it
+# is inside verus!, and storage and release once Meta's allocation calls
+# hand out the permissions they assume.
 Meta	allocator invariant	Verus
 Table::storage	allocator invariant	Verus
 Table::release	allocator invariant	Verus
