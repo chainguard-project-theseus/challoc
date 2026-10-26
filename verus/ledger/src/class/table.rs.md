@@ -8,10 +8,14 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `axiom_t...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
+| `axiom_zero_desc` | axiom | raw pointer (internal) | none (assumption) | trusted |
+| `axiom_zero_owner` | axiom | raw pointer (internal) | none (assumption) | trusted |
+| `axiom_slot_loc` | axiom | allocator invariant | none (assumption) | trusted |
+| `axiom_f..._words` | axiom | allocator invariant | none (assumption) | trusted |
 
 ## `axiom_table_lock_inv`
 
-src/class/table.rs:119. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:155. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the commit lock's value keeps [`TableInner::inv`] while the lock is free.
@@ -21,4 +25,80 @@ pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
     ensures
         #[trigger] lock_inv(v) == v.inv(),
 ;
+```
+
+## `axiom_zero_desc`
+
+src/class/table.rs:1615. Kind: axiom. Category: raw pointer (internal).
+Tool: none (assumption). Status: trusted.
+
+> Trusted: the 16 bytes at `addr`, which read as zero (`z`, a piece of the descriptor array `Meta::reserve_table` returned), are a `SlabDesc`, initialised: plain atomics, valid for every bit pattern (`PointsToRaw::into_typed` with the value the bytes hold; vstd's raw permissions do not track byte values).
+
+```rust
+axiom fn axiom_zero_desc(tracked z: ZeroRaw, addr: int) -> (tracked r: (PointsTo<SlabDesc>, DescPerm))
+    requires
+        z.is_range(addr, 16),
+        z.provenance() == cast_provenance(),
+        0 < addr,
+        addr % 16 == 0,
+        addr + 16 <= usize::MAX,
+    ensures
+        perm_at(r.0, addr),
+        desc_id(&r.0.value()) == addr,
+        desc_fresh(r.1, addr),
+;
+```
+
+## `axiom_zero_owner`
+
+src/class/table.rs:1631. Kind: axiom. Category: raw pointer (internal).
+Tool: none (assumption). Status: trusted.
+
+> Trusted: the two bytes at `addr`, which read as zero (`z`, a piece of the owner array `Meta::reserve_table` returned), are an `AtomicU16`, initialised (valid for every bit pattern), as [`axiom_zero_desc`].
+
+```rust
+axiom fn axiom_zero_owner(tracked z: ZeroRaw, addr: int) -> (tracked r: PointsTo<AtomicU16>)
+    requires
+        z.is_range(addr, 2),
+        z.provenance() == cast_provenance(),
+        0 < addr,
+        addr % 2 == 0,
+        addr + 2 <= usize::MAX,
+    ensures
+        perm_at(r, addr),
+;
+```
+
+## `axiom_slot_loc`
+
+src/class/table.rs:1655. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> Trusted: `SlabTable::new` runs once per class in a process, so the authority it makes is the class's ([`slot_loc`]), and so is its marker authority (`mloc`, [`mark_loc`]).
+
+```rust
+axiom fn axiom_slot_loc(c: int, loc: Loc, mloc: Loc, glg: u8, gmask: u32, tracked once: Once)
+    requires
+        once.step() == Step::SlotLoc(c),
+    ensures
+        slot_loc(c) == loc,
+        mark_loc(c) == mloc,
+        crate::layout::guard_geom(c) == (glg, gmask);
+```
+
+## `axiom_fresh_words`
+
+src/class/table.rs:1673. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> Trusted: the permissions of the `n` words of the class bitmap at `base`, each holding zero: `z`, the bitmap's reservation from `Meta::reserve_table`, reads as zero over them.
+
+```rust
+axiom fn axiom_fresh_words(tracked z: ZeroRaw, base: usize, n: nat, c: int, tracked once: Once) -> (tracked r: Map<int, WordPerm>)
+    requires
+        Set::<int>::range(base as int, base + 8 * n).subset_of(z.dom()),
+        base + 8 * n <= usize::MAX,
+        once.step() == Step::FreshWords(c),
+    ensures
+        forall|j: int| #![trigger r.contains_key(j)] #![trigger r[j]] 0 <= j < n ==> r.contains_key(j) && r[j].addr() == base + 8 * j && r[j].value() == 0;
 ```

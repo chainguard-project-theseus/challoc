@@ -7,7 +7,11 @@ use super::Inner;
 use super::abort::{guard_free, invalid_free, invalid_pointer, never_committed, owner_mismatch};
 use super::sets::Lazy;
 use crate::arena::Published;
-use crate::bitmap::AtomicBitmap;
+#[cfg(verus_keep_ghost)]
+use crate::arena::process_pub_loc;
+use crate::bitmap::{AtomicBitmap, WordInv};
+#[cfg(verus_keep_ghost)]
+use crate::bitmap::{Slots, fresh_marks, init_marks, words_wf};
 use crate::layout::{CLASSES, Class, Regions};
 #[cfg(verus_keep_ghost)]
 use crate::layout::{NCLASSES, class_table, process_regions};
@@ -16,9 +20,9 @@ use crate::lock::{Lock, LockOrder, PAD_ALIGN, Padded, RawLock};
 use crate::lock::{lock_init, lock_inv, rank_meta, rank_table};
 use crate::meta::Meta;
 use crate::purge;
-#[cfg(verus_keep_ghost)]
-use crate::slab::stride_of;
 use crate::slab::{DESC_ALIGN, DescPerm, HEADER, SlabDesc, desc_stride};
+#[cfg(verus_keep_ghost)]
+use crate::slab::{desc_id, stride_of};
 use crate::sys::{self, Errno, MADV_GUARD_INSTALL, PROT_NONE, PROT_READ, PROT_WRITE};
 use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_keep_ghost)]
@@ -26,8 +30,14 @@ use crate::vspec::addr::cast_provenance;
 use crate::vspec::atom::{
     SeenVal, UsizePerm, load_u16_at, load_usize_seen, new_usize, store_usize, store_usize_at,
 };
+#[cfg(verus_keep_ghost)]
+use crate::vspec::atom::{u16_value, usize_id};
 use crate::vspec::check::check;
 use crate::vspec::once::Once;
+#[cfg(verus_keep_ghost)]
+use crate::vspec::once::Step;
+#[cfg(verus_keep_ghost)]
+use crate::vspec::word::WordPerm;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::zero::ZeroRaw;
 use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
@@ -36,8 +46,10 @@ use vstd::arithmetic::power2::pow2;
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::prelude::*;
 use vstd::raw_ptr::PointsTo;
+#[cfg(verus_keep_ghost)]
+use vstd::raw_ptr::{PtrData, ptr_mut_from_data};
 use vstd::resource::Loc;
-use vstd::resource::set::{GhostPersistentSubset, GhostSubset};
+use vstd::resource::set::{GhostPersistentSubset, GhostSetAuth, GhostSubset};
 #[cfg(verus_keep_ghost)]
 use vstd::std_specs::bits::u64_trailing_zeros;
 
@@ -62,6 +74,21 @@ pub(crate) struct TableInner {
     pub(super) group: Ghost<usize>,
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     pub(super) nslabs: Ghost<usize>,
+    /// Ghost, fixed at `new`: the class's bits per slab and the bitmap
+    /// markers' authority (`bitmap.rs`, "Slot tokens"); where the
+    /// descriptor array starts and its stride; and the location of the
+    /// owner words' witness markers ([`OwnerPred`]). The table's type
+    /// invariant ties them to the table's fields.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) sb: Ghost<usize>,
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) mloc: Ghost<Loc>,
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) dbase: Ghost<int>,
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) dstride: Ghost<int>,
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) sloc: Ghost<Loc>,
     /// A copy of the watermark the `free` fast path reads from its
     /// per-class line (`heap::ClassLine`), stored right after the
     /// watermark itself, so it is never ahead of it; null until
@@ -77,6 +104,15 @@ pub(super) open spec fn lazy_ok(l: Lazy, page: usize) -> bool {
     &&& l.spec_committed() <= l.spec_len() + page
     &&& l.spec_base() + l.spec_len() + page <= usize::MAX
     &&& l.claimed()
+}
+
+/// `p` is the permission of the descriptor at `addr` as the reservation
+/// holds it before any write: all zero (`Fresh`, stamp 0, arena 0).
+pub(super) open spec fn desc_fresh(p: DescPerm, addr: int) -> bool {
+    &&& p.id() == addr
+    &&& p.state() == 0
+    &&& p.dirty() == 0
+    &&& p.arena() == 0
 }
 
 impl TableInner {
@@ -241,6 +277,34 @@ pub struct SlabTable {
     pub(super) desc_base: usize,
     pub(crate) inner: Padded<Lock<TableInner>>,
     pub(super) _tail: [u8; TABLE_TAIL],
+    /// Ghost (no bytes): the class bitmap's slot-token authority
+    /// (`bitmap.rs`, "Slot tokens"), and the invariant of each bitmap word
+    /// ([`WordInv`]), which holds the word's permission and the tokens of
+    /// its clear slots, frozen (`new`).
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) slot_auth: Tracked<GhostSetAuth<int>>,
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) word_invs: Tracked<&'static Map<int, WordInv>>,
+    /// Ghost (no bytes): the authority of the bitmap words' markers
+    /// (`bitmap.rs`, "Slot tokens"), which record which slabs `init` has
+    /// run on.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) mark_auth: Tracked<GhostSetAuth<int>>,
+    /// Ghost (no bytes): the permissions to every slab's descriptor,
+    /// made by `new` from the descriptor array's reservation
+    /// ([`SlabTable::perms_ok`]).
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) desc_perms: Tracked<Map<int, PointsTo<SlabDesc>>>,
+    /// Ghost (no bytes): the invariant of every hand-out group's owner
+    /// word ([`OwnerPred`]), which holds the word's permission, frozen
+    /// (`new`).
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) owner_invs: Tracked<&'static Map<int, OwnerInv>>,
+    /// Ghost (no bytes): the watermark's invariant ([`WatermarkPred`]),
+    /// which holds its permission: it is at most `nslabs`, and the owner
+    /// words of the groups below it are stored.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) committed_inv: Tracked<WatermarkInv>,
 }
 
 /// A page group of a class table starts and ends on a page boundary: the
@@ -317,6 +381,126 @@ impl InvariantPredicate<(int, usize, Loc), SeenVal> for WatermarkPred {
 
 /// The invariant of a table's watermark.
 pub type WatermarkInv = AtomicInvariant<(int, usize, Loc), SeenVal, WatermarkPred>;
+
+/// The pointer to the owner word at `addr`, of the provenance an address
+/// cast picks up ([`perm_at`]): what [`SlabTable::owner_word`] returns for
+/// the word of a hand-out group, the one its permission is to.
+pub(super) open spec fn owner_ptr_at(addr: int) -> *mut AtomicU16 {
+    ptr_mut_from_data::<AtomicU16>(PtrData { addr: addr as usize, provenance: cast_provenance(), metadata: () })
+}
+
+/// Namespace of the owner words' invariants ([`OwnerPred`]).
+pub open spec fn owner_ns() -> int {
+    0x6f77_6e72
+}
+
+/// What the invariant of one hand-out group's owner word is about: the
+/// word's pointer, the class, the group's slabs `lo..hi` and the location
+/// of the table's witness markers.
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub ghost struct OwnerKey {
+    pub ptr: *mut AtomicU16,
+    pub class: int,
+    pub lo: int,
+    pub hi: int,
+    pub sloc: Loc,
+}
+
+/// What an owner word's invariant holds: the word's permission; the
+/// witness markers of the group's slabs ([`owner_marks`] at the key's
+/// location), exclusive while the word is not stored and persistent once
+/// it is; and, once it is, the taker's record ([`Taker`]).
+pub type OwnerVal = (PointsTo<AtomicU16>, GhostSubset<int>, GhostPersistentSubset<int>, Option<Taker>);
+
+/// Who took a group, as its owner word's invariant keeps it: the
+/// registry's persistent record of the taking state's arena
+/// ([`Published`], which the taker holds: `take_group`'s `pubw`), and the
+/// group's slabs in the taking state's owned-slab record, persistent.
+pub type Taker = (&'static Published, GhostPersistentSubset<int>);
+
+/// An owner word's invariant: the permission is to the key's word, and
+/// either the exclusive markers hold the group's witness markers (the
+/// word is not stored yet: `new` makes every group's so), or the
+/// persistent ones do and the word holds the group's owner, which took
+/// the group ([`owner_stored`]). `take_group`'s store (`store_owner`)
+/// is the one write, inside it: it persists the markers as it stores,
+/// keeps the persistent ones for the watermark's invariant
+/// ([`WatermarkPred`]), and records the taker. A reader that holds a
+/// persistent marker of a slab of the group rules the first case out (the
+/// exclusive markers are disjoint from every persistent one), so it reads
+/// the owner.
+pub struct OwnerPred;
+
+impl InvariantPredicate<OwnerKey, OwnerVal> for OwnerPred {
+    open spec fn inv(k: OwnerKey, v: OwnerVal) -> bool {
+        &&& v.0.ptr() == k.ptr
+        &&& v.0.is_init()
+        &&& v.1.id() == k.sloc
+        &&& v.2.id() == k.sloc
+        &&& (owner_marks(k.lo, k.hi).subset_of(v.1@) || owner_stored(k, u16_value(v.0.value()), v.2@, v.3))
+    }
+}
+
+/// The owner word of the group of `k` holds `value`, the owner of each of
+/// its slabs, `seen` has the group's witness markers, and the group was
+/// taken by the published state of class `k.class` and arena `value`,
+/// which has the group's slabs in its owned-slab record ([`taken_by`]).
+pub open spec fn owner_stored(k: OwnerKey, value: u16, seen: Set<int>, taker: Option<Taker>) -> bool {
+    &&& owner_marks(k.lo, k.hi).subset_of(seen)
+    &&& forall|x: int| k.lo <= x < k.hi ==> #[trigger] slab_owner(k.class, x) == value
+    &&& taker matches Some(t) && taken_by(k, value, t)
+}
+
+/// `t` is the record of a taker of the group of `k` for arena `value`:
+/// the process registry's record of arena `value`, and the group's slabs
+/// in its class `k.class` state's owned-slab record.
+pub open spec fn taken_by(k: OwnerKey, value: u16, t: Taker) -> bool {
+    &&& t.0.id() == process_pub_loc()
+    &&& t.0.key() == value as int
+    &&& t.1.id() == t.0.value()[k.class]
+    &&& forall|x: int| k.lo <= x < k.hi ==> #[trigger] t.1@.contains(x)
+}
+
+/// The invariant of one owner word.
+pub type OwnerInv = AtomicInvariant<OwnerKey, OwnerVal, OwnerPred>;
+
+/// The arena that owns slab `slab` of class `c`'s region: the index
+/// [`SlabTable::take_group`] stores in the owner word of the slab's
+/// hand-out group as it hands the group out, under the commit lock and
+/// before the watermark passes the group, and fixed for the life of the
+/// process from then on. Uninterpreted: an owner word's invariant
+/// ([`OwnerPred`]) names it once the word is stored; the take_group proof
+/// gives the one store (`store_owner`) its contract, which uses up the
+/// group's owner-store markers ([`owner_marks`], minted once per slab by
+/// the class's table at [`mark_loc`]). Keyed by the class alone, which
+/// rests on there being one table per class per process (the premise
+/// [`axiom_slot_loc`] names; tests that build several tables, or corrupt
+/// an owner word, are outside it).
+pub uninterp spec fn slab_owner(c: int, slab: int) -> u16;
+
+/// The authority of class `c`'s markers: the one its table made
+/// ([`axiom_slot_loc`]). Every slab's owner-store marker is minted once,
+/// by that table's `new`, so a store that uses it up can run at most once
+/// per slab.
+pub uninterp spec fn mark_loc(c: int) -> Loc;
+
+/// The authority of class `c`'s slot tokens (`bitmap.rs`, "Slot tokens"):
+/// the one its table made ([`axiom_slot_loc`]).
+pub uninterp spec fn slot_loc(c: int) -> Loc;
+
+/// `p` is an initialised permission to the `T` at `addr`, through a
+/// pointer of the provenance an address cast picks up
+/// ([`addr_to_ptr`](crate::vspec::addr::addr_to_ptr)).
+pub open spec fn perm_at<T>(p: PointsTo<T>, addr: int) -> bool {
+    &&& p.ptr() == ptr_mut_from_data::<T>(PtrData { addr: addr as usize, provenance: cast_provenance(), metadata: () })
+    &&& p.is_init()
+}
+
+// The sizes [`axiom_zero_desc`] and [`axiom_zero_owner`] make a value of
+// (Verus checks them against the compiler's).
+global layout SlabDesc is size == 16, align == 16;
+global layout AtomicU16 is size == 2, align == 2;
 
 } // verus!
 
@@ -506,6 +690,65 @@ impl SlabTable {
         &&& lock_init(self.inner.0).page@ == 1usize << self.lg_page
         &&& lock_init(self.inner.0).group@ == self.group as usize
         &&& lock_init(self.inner.0).nslabs@ == self.nslabs
+        &&& lock_init(self.inner.0).sb@ == self.slab_bits as usize
+        &&& lock_init(self.inner.0).mloc@ == self.mark_auth@.id()
+        &&& lock_init(self.inner.0).dbase@ == self.desc_base as int
+        &&& lock_init(self.inner.0).dstride@ == self.desc_stride as int
+        &&& words_wf(*self.word_invs@, self.spec_slots(), self.bits_base, self.spec_nwords())
+        &&& self.bits_base + 8 * self.spec_nwords() <= usize::MAX
+        &&& self.spec_slots().loc == slot_loc(self.class as int)
+        &&& self.mark_auth@.id() == mark_loc(self.class as int)
+        &&& crate::layout::guard_geom(self.class as int) == (self.lg_slabs_per_page, self.guard_mask)
+        &&& self.perms_ok()
+        &&& self.committed_inv@.constant() == (usize_id(&self.committed_slabs), self.nslabs, self.spec_sloc())
+        &&& self.committed_inv@.namespace() == committed_ns()
+    }
+
+    /// The location of the owner words' witness markers ([`OwnerPred`]):
+    /// the commit lock's, fixed at `new`.
+    pub closed spec fn spec_sloc(&self) -> Loc {
+        lock_init(self.inner.0).sloc@
+    }
+
+    /// Hand-out groups of the region (owner words).
+    pub(super) closed spec fn spec_ngroups(&self) -> int {
+        (self.nslabs + self.group - 1) / (self.group as int)
+    }
+
+    /// The permissions `new` made from the descriptor and owner
+    /// reservations: to descriptor `s` at `desc_base + s * desc_stride`
+    /// (the descriptor [`desc_id`] names there), and to owner word `g` at
+    /// `owners_base + 2 * g` (held by the word's invariant,
+    /// [`owner_inv_at`]), for every slab and hand-out group of the region.
+    pub(super) closed spec fn perms_ok(&self) -> bool {
+        &&& forall|s: int| 0 <= s < self.nslabs
+            ==> desc_id(&(#[trigger] self.desc_perms@[s]).value()) == self.desc_base + s * (self.desc_stride as int)
+        &&& forall|s: int| #![trigger self.desc_perms@.contains_key(s)] #![trigger self.desc_perms@[s]] 0 <= s < self.nslabs ==> self.desc_perms@.contains_key(s)
+            && perm_at(self.desc_perms@[s], self.desc_base + s * (self.desc_stride as int))
+        &&& forall|g: int| #![trigger self.owner_invs@.contains_key(g)] #![trigger self.owner_invs@[g]] 0 <= g < self.spec_ngroups() ==> self.owner_invs@.contains_key(g)
+            && owner_inv_at(self.owner_invs@[g], self.owners_base as int, self.class as int, self.lg_group, self.group, self.nslabs, self.spec_sloc(), g)
+    }
+
+    /// The class bitmap's slot tokens (`bitmap.rs`, "Slot tokens"): bits of
+    /// `slab_bits` per slab, `nslots` of them slots, `nslabs` slabs.
+    pub closed spec fn spec_slots(&self) -> Slots {
+        Slots {
+            loc: self.slot_auth@.id(),
+            mloc: self.mark_auth@.id(),
+            sb: self.slab_bits as int,
+            nslots: class_table()[self.class as int].nslots as int,
+            nbits: self.nslabs * self.slab_bits,
+            base: self.base as int,
+            slab_size: (1usize << class_table()[self.class as int].lg_slab) as int,
+            size: class_table()[self.class as int].size as int,
+            glg: self.lg_slabs_per_page,
+            gmask: self.guard_mask,
+        }
+    }
+
+    /// Words of the class bitmap.
+    pub closed spec fn spec_nwords(&self) -> int {
+        (self.nslabs * self.slab_bits + 63) / 64
     }
 
     /// Page groups are `1 << lg_slabs_per_page` slabs and tile the
@@ -554,10 +797,14 @@ impl SlabTable {
     /// mask; callers must pass 0 when `MADV_GUARD_INSTALL` is unavailable,
     /// since a `PROT_NONE` slab would split the region into one VMA per
     /// guard (design section 5). `ord` is the caller's lock-order token,
-    /// which the reservations take for the metadata lock. `_slot_once` and
-    /// `_words_once` are the one-shot tokens (ghost, `vspec::once`) of the
-    /// steps that fix the class's slot-token authority and its bitmap
-    /// words' permissions, unused until the slab-table proofs take them.
+    /// which the reservations take for the metadata lock. `slot_once` and
+    /// `words_once` are the one-shot tokens (ghost, `vspec::once`) of the
+    /// steps that fix the class's slot-token authority ([`axiom_slot_loc`])
+    /// and its bitmap words' permissions ([`axiom_fresh_words`]). The table
+    /// keeps the permissions of its descriptors and the invariants of its
+    /// bitmap words, owner words and watermark ([`SlabTable::perms_ok`]);
+    /// the descriptors' [`DescPerm`]s, the bits' init markers and the
+    /// slabs' owner-store markers are made and not kept.
     ///
     /// The asserts on the arguments are preconditions; the caller also
     /// guarantees well-formed, separated regions (which give a page no
@@ -573,8 +820,8 @@ impl SlabTable {
         regions: &Regions,
         class: usize,
         guard_interval: u32,
-        _slot_once: Tracked<Once>,
-        _words_once: Tracked<Once>,
+        Tracked(slot_once): Tracked<Once>,
+        Tracked(words_once): Tracked<Once>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: Option<SlabTable>)
         requires
@@ -588,6 +835,8 @@ impl SlabTable {
             guard_interval != 1,
             guard_interval == 0 || exists|k: nat| k < 32 && guard_interval as nat == #[trigger] pow2(k),
             old(ord).allows(rank_meta()),
+            slot_once.step() == Step::SlotLoc(class as int),
+            words_once.step() == Step::FreshWords(class as int),
         ensures
             r matches Some(t) ==> {
                 &&& t.spec_class() == class
@@ -730,9 +979,128 @@ impl SlabTable {
             lemma_groups_paged(regions.class_base[class as int], slabs_per_page, cls.lg_slab, regions.lg_page, page);
         }
         proof {
-            lemma_first_value(descs, bits, owners, page, group);
+            reveal(SlabTable::page_groups_ok);
         }
-        let (committed_slabs, _cperm) = new_usize(0);
+        // The slot tokens: an authority over the region's slots, and the
+        // invariant of each bitmap word, which starts zero with the tokens
+        // of all its slots.
+        let ghost geo = Slots {
+            loc: vstd::pervasive::arbitrary(),
+            mloc: vstd::pervasive::arbitrary(),
+            sb: cls.slab_bits as int,
+            nslots: cls.nslots as int,
+            nbits: nslabs * cls.slab_bits,
+            base: regions.class_base[class as int] as int,
+            slab_size: (1usize << cls.lg_slab) as int,
+            size: cls.size as int,
+            glg: u64_trailing_zeros(slabs_per_page as u64) as u8,
+            gmask: guard_interval.wrapping_sub(1),
+        };
+        let tracked (slot_auth, all) = GhostSetAuth::<int>::new(crate::bitmap::slot_set(geo));
+        let ghost nwords = (geo.nbits + 63) / 64;
+        // The markers: the fresh ones of every bit for the word
+        // invariants, the init ones and every slab's owner-store one for
+        // the commit lock.
+        let tracked (mark_auth, marks) = GhostSetAuth::<int>::new(
+            fresh_marks(0, 64 * nwords).union(init_marks(0, 64 * nwords)).union(owner_marks(0, nslabs as int)));
+        proof {
+            axiom_slot_loc(class as int, slot_auth.id(), mark_auth.id(), geo.glg, geo.gmask, slot_once);
+        }
+        let ghost slots = Slots {
+            loc: slot_auth.id(),
+            mloc: mark_auth.id(),
+            sb: geo.sb,
+            nslots: geo.nslots,
+            nbits: geo.nbits,
+            base: geo.base,
+            slab_size: geo.slab_size,
+            size: geo.size,
+            glg: geo.glg,
+            gmask: geo.gmask,
+        };
+        proof {
+            broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
+            assert forall|b: int| 0 <= b < 64 * nwords && slots.real(b) implies all@.contains(#[trigger] slots.addr(b)) by {
+                assert(Set::<int>::range(0, geo.nbits).filter(|b: int| geo.real(b)).contains(b));
+                assert(geo.addr(b) == slots.addr(b));
+            }
+            assert forall|m: int| #[trigger] fresh_marks(0, 64 * nwords).contains(m) implies marks@.contains(m) by {
+                crate::bitmap::lemma_marks_elems(0, 64 * nwords, m);
+                crate::bitmap::lemma_marks(0, 64 * nwords, m / 2);
+            }
+            assert(nslabs * cls.slab_bits <= 64 * nwords);
+            crate::bitmap::lemma_marks_sub(0, nslabs * cls.slab_bits, 0, 64 * nwords);
+            // The words end inside the bitmap's reservation, below `2^57`.
+            let (lb, ln, nb) = (bits.spec_base() as int, bits.spec_len() as int, geo.nbits);
+            assert(bits_base + 8 * nwords <= usize::MAX) by (nonlinear_arith)
+                requires
+                    bits_base as int == lb + stagger,
+                    lb + ln <= 0x200_0000_0000_0000,
+                    ln >= stagger + nb / 8,
+                    nwords == (nb + 63) / 64,
+                    0 <= nb,
+                    0 <= lb,
+                    0 <= stagger,
+            ;
+            // The words are inside the bitmap's reservation, rounded up to
+            // whole words, whose zero permission `braw` is.
+            assert(stagger % 8 == 0) by {
+                vstd::arithmetic::div_mod::lemma_mod_multiples_basic(class as int * 48, 8);
+            }
+            lemma_round_words(stagger as int, nb);
+            assert(Set::<int>::range(bits_base as int, bits_base + 8 * nwords).subset_of(braw.dom()));
+        }
+        let tracked perms = axiom_fresh_words(braw, bits_base, nwords as nat, class as int, words_once);
+        let tracked word_invs = crate::bitmap::fresh_word_invs(perms, all, marks, slots, bits_base, nwords as nat);
+        // The permissions to every descriptor and owner word, made from
+        // the two reservations (`SlabTable::perms_ok`).
+        proof {
+            assert(stride == (stride as u32) as usize);
+        }
+        let tracked (dmap, omap, _dps) = table_perms(
+            draw, oraw, descs.spec_base() as int, owners.spec_base() as int,
+            align, stagger as int, stride as int, nslabs as int, group as int, class as int);
+        // The descriptors' `DescPerm`s (`_dps`) are dropped on purpose: the
+        // take_group proof PR keeps them in the commit lock's value, with the
+        // init and owner-store markers left in `marks`.
+        // The owner words' witness markers: exclusive in each word's
+        // invariant until its store (`OwnerPred`), with the word's
+        // permission; and the empty persistent sets of them the commit lock
+        // and the watermark start from.
+        let tracked (_sauth, smarks) = GhostSetAuth::<int>::new(owner_marks(0, nslabs as int));
+        let ghost sloc = smarks.id();
+        let tracked seen1 = smarks.empty().persist();
+        let ghost lgg = u64_trailing_zeros(group as u64) as u8;
+        let ghost ng = (nslabs + group - 1) / (group as int);
+        proof {
+            assert((group as u32) as usize == 1usize << lgg && lgg < 64);
+            let (n, gr) = (nslabs as int, group as int);
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(n + gr - 1, gr);
+            vstd::arithmetic::mul::lemma_mul_is_commutative(ng, gr);
+            vstd::arithmetic::div_mod::lemma_mod_bound(n + gr - 1, gr);
+            assert(ng == (n + gr - 1) / gr);
+            assert(ng * gr + (n + gr - 1) % gr == n + gr - 1);
+            assert(0 <= ng);
+            assert(ng == 0 || (ng - 1) * gr < n) by (nonlinear_arith)
+                requires ng * gr + (n + gr - 1) % gr == n + gr - 1, 0 <= (n + gr - 1) % gr, gr >= 1, ng >= 0;
+            assert(ng * gr >= n) by (nonlinear_arith)
+                requires ng * gr + (n + gr - 1) % gr == n + gr - 1, (n + gr - 1) % gr < gr;
+        }
+        let tracked oinvs = fresh_owner_invs(omap, smarks, owners_base as int, class as int, lgg, group as u32, nslabs, ng as nat);
+        // The commit lock's invariant (`TableInner::inv`) of the value
+        // below, and the descriptors' identities (`perms_ok`).
+        proof {
+            lemma_first_value(descs, bits, owners, page, group);
+            assert(1 <= page <= 0x8000_0000_0000_0000);
+            assert(group >= 1);
+            assert(0usize < nslabs ==> 0usize % group == 0);
+            // Each descriptor is the one at its address (`perms_ok`).
+            assert forall|s: int| 0 <= s < nslabs
+                implies desc_id(&(#[trigger] dmap[s]).value()) == desc_base + s * ((stride as u32) as int) by {
+                assert(dmap.contains_key(s));
+            }
+        }
+        let (committed_slabs, Tracked(cperm)) = new_usize(0);
         let inner = Padded(Lock::new(
             TableInner {
                 descs,
@@ -743,10 +1111,36 @@ impl SlabTable {
                 page: Ghost(page),
                 group: Ghost(group),
                 nslabs: Ghost(nslabs),
+                sb: Ghost(cls.slab_bits as usize),
+                mloc: Ghost(mark_auth.id()),
+                dbase: Ghost(desc_base as int),
+                dstride: Ghost(stride as int),
                 mirror: core::ptr::null(),
+                sloc: Ghost(sloc),
             },
             Ghost(rank_table(class as int)),
         ));
+        proof {
+            assert(lock_init(inner.0).sloc@ == sloc);
+            assert(lock_init(inner.0).page@ == 1usize << regions.lg_page);
+            assert(lock_init(inner.0).group@ == group);
+            assert(lock_init(inner.0).nslabs@ == nslabs);
+            assert(lock_init(inner.0).sb@ == cls.slab_bits as usize);
+            assert(lock_init(inner.0).mloc@ == mark_auth.id());
+            assert(lock_init(inner.0).dbase@ == desc_base as int);
+            assert(lock_init(inner.0).dstride@ == stride as int);
+            assert(inner.0.rank() == rank_table(class as int));
+            assert(crate::bitmap::words_wf(word_invs, slots, bits_base, nwords));
+            assert(slots.loc == slot_loc(class as int));
+            assert(mark_auth.id() == mark_loc(class as int));
+            assert(crate::layout::guard_geom(class as int) == (geo.glg, geo.gmask));
+        }
+        // The watermark, with its invariant (0, at most any slab count).
+        let tracked committed_inv = WatermarkInv::new((usize_id(&committed_slabs), nslabs, sloc), (cperm, seen1), committed_ns());
+        proof {
+            assert(committed_inv.constant() == (usize_id(&committed_slabs), nslabs, sloc));
+            assert(committed_inv.namespace() == committed_ns());
+        }
         Some(SlabTable {
             bits_base,
             owners_base,
@@ -766,6 +1160,12 @@ impl SlabTable {
             desc_base,
             inner,
             _tail: [0; TABLE_TAIL],
+            slot_auth: Tracked(slot_auth),
+            word_invs: Tracked(vstd::modes::tracked_static_ref(word_invs)),
+            mark_auth: Tracked(mark_auth),
+            desc_perms: Tracked(dmap),
+            owner_invs: Tracked(vstd::modes::tracked_static_ref(oinvs)),
+            committed_inv: Tracked(committed_inv),
         })
     }
 }
@@ -994,6 +1394,452 @@ pub(super) broadcast proof fn lemma_spec_class(t: SlabTable)
     ensures
         #[trigger] t.spec_class() == t.class as usize,
 {
+}
+
+} // verus!
+
+verus! {
+
+/// The permissions [`SlabTable::new`] makes from its descriptor and owner
+/// reservations (`draw` and `oraw`, from `Lazy::reserve`, which read as
+/// zero, at `d` and `o`, aligned to `align`, each starting with `stagger`
+/// bytes): to the descriptors of `nslabs` slabs every `stride` bytes, with
+/// their [`DescPerm`]s, and to the owner words of the hand-out groups of
+/// `group` slabs ([`axiom_zero_desc`], [`axiom_zero_owner`]).
+/// [`SlabTable::perms_ok`]'s maps, and the descriptors' permissions.
+#[verifier::spinoff_prover]
+proof fn table_perms(
+    tracked draw: ZeroRaw,
+    tracked oraw: ZeroRaw,
+    d: int,
+    o: int,
+    align: usize,
+    stagger: int,
+    stride: int,
+    nslabs: int,
+    group: int,
+    class: int,
+) -> (tracked r: (Map<int, PointsTo<SlabDesc>>, Map<int, PointsTo<AtomicU16>>, Map<int, DescPerm>))
+    requires
+        crate::meta::is_pow2(align),
+        align >= 64,
+        0 < d,
+        0 < o,
+        d % (align as int) == 0,
+        o % (align as int) == 0,
+        0 <= class,
+        stagger == class * 3 * PAD_ALIGN,
+        16 <= stride <= u32::MAX,
+        stride % 16 == 0,
+        1 <= nslabs,
+        1 <= group,
+        d + stagger + nslabs * stride <= crate::meta::va_limit(),
+        o + stagger + (nslabs + group - 1) / group * 2 <= crate::meta::va_limit(),
+        draw.is_range(d, (stagger + nslabs * stride + 7) / 8 * 8),
+        oraw.is_range(o, (stagger + (nslabs + group - 1) / group * 2 + 7) / 8 * 8),
+        draw.provenance() == cast_provenance(),
+        oraw.provenance() == cast_provenance(),
+    ensures
+        forall|s: int| #![trigger r.0.contains_key(s)] #![trigger r.0[s]] 0 <= s < nslabs ==> r.0.contains_key(s)
+            && perm_at(r.0[s], d + stagger + s * stride)
+            && desc_id(&r.0[s].value()) == d + stagger + s * stride,
+        forall|s: int| #![trigger r.2.contains_key(s)] #![trigger r.2[s]] 0 <= s < nslabs ==> r.2.contains_key(s)
+            && desc_fresh(r.2[s], d + stagger + s * stride),
+        forall|g: int| #![trigger r.1.contains_key(g)] #![trigger r.1[g]] 0 <= g < (nslabs + group - 1) / group ==> r.1.contains_key(g)
+            && perm_at(r.1[g], o + stagger + 2 * g),
+{
+    let ngroups = (nslabs + group - 1) / group;
+    let a = align;
+    assert(a >= 64 && a & sub(a, 1) == 0 ==> a % 64 == 0) by (bit_vector);
+    crate::meta::lemma_pow2_bits(a);
+    crate::meta::lemma_mod_trans(d, align as int, 64);
+    crate::meta::lemma_mod_trans(o, align as int, 64);
+    assert(stagger % 64 == 0) by {
+        vstd::arithmetic::div_mod::lemma_mod_multiples_basic(class * 6, 64);
+    }
+    assert(0 <= ngroups <= nslabs) by {
+        assert(nslabs + group - 1 <= nslabs * group) by (nonlinear_arith)
+            requires group >= 1, nslabs >= 1;
+        vstd::arithmetic::div_mod::lemma_div_is_ordered(nslabs + group - 1, nslabs * group, group);
+        vstd::arithmetic::div_mod::lemma_div_multiples_vanish(nslabs, group);
+    }
+    assert(nslabs * stride >= 0) by (nonlinear_arith)
+        requires stride >= 0, nslabs >= 0;
+    lemma_round_up8(stagger + nslabs * stride);
+    lemma_round_up8(stagger + ngroups * 2);
+    let tracked dz = carve_zero(draw, d + stagger, stride, 16, nslabs);
+    let tracked (dmap, dps) = zero_descs(dz, d + stagger, stride, nslabs);
+    let tracked oz = carve_zero(oraw, o + stagger, 2, 2, ngroups);
+    let tracked omap = zero_owners(oz, o + stagger, ngroups);
+    (dmap, omap, dps)
+}
+
+/// The `n` pieces of `z` of `size` bytes at `base`, `base + stride`, ...,
+/// keys `0..n`, each reading as zero (`ZeroRaw::split`).
+proof fn carve_zero(tracked z: ZeroRaw, base: int, stride: int, size: int, n: int) -> (tracked r: Map<int, ZeroRaw>)
+    requires
+        0 <= n,
+        0 < size <= stride,
+        0 <= base,
+        Set::<int>::range(base, base + n * stride).subset_of(z.dom()),
+    ensures
+        forall|i: int| #![trigger r.contains_key(i)] #![trigger r[i]] 0 <= i < n ==> r.contains_key(i)
+            && r[i].is_range(base + i * stride, size) && r[i].provenance() == z.provenance(),
+    decreases n,
+{
+    broadcast use vstd::set_lib::range_set_properties;
+    if n == 0 {
+        Map::tracked_empty()
+    } else {
+        let m = n - 1;
+        let a = base + m * stride;
+        assert(m * stride + stride == n * stride && 0 <= m * stride) by (nonlinear_arith)
+            requires m == n - 1, 0 < n, stride > 0;
+        assert(Set::<int>::range(a, a + size).subset_of(z.dom()));
+        let tracked (piece, rest) = z.split(Set::<int>::range(a, a + size));
+        assert(Set::<int>::range(base, base + m * stride).subset_of(rest.dom()));
+        let tracked mut r = carve_zero(rest, base, stride, size, m);
+        let ghost before = r;
+        r.tracked_insert(m, piece);
+        assert forall|i: int| #![trigger r.contains_key(i)] #![trigger r[i]] 0 <= i < n implies r.contains_key(i)
+            && r[i].is_range(base + i * stride, size) && r[i].provenance() == z.provenance() by {
+            if i < m {
+                assert(before.contains_key(i));
+            }
+        }
+        r
+    }
+}
+
+/// [`table_perms`]' descriptors: the `n` zero pieces of `z` at `base`,
+/// `base + stride`, ..., each made a descriptor with its permission
+/// ([`axiom_zero_desc`]).
+proof fn zero_descs(tracked z: Map<int, ZeroRaw>, base: int, stride: int, n: int) -> (tracked r: (Map<int, PointsTo<SlabDesc>>, Map<int, DescPerm>))
+    requires
+        0 <= n,
+        16 <= stride,
+        base % 16 == 0,
+        stride % 16 == 0,
+        0 < base,
+        base + n * stride <= usize::MAX,
+        forall|i: int| #![trigger z.contains_key(i)] #![trigger z[i]] 0 <= i < n ==> z.contains_key(i)
+            && z[i].is_range(base + i * stride, 16) && z[i].provenance() == cast_provenance(),
+    ensures
+        forall|s: int| #![trigger r.0.contains_key(s)] #![trigger r.0[s]] 0 <= s < n ==> r.0.contains_key(s)
+            && perm_at(r.0[s], base + s * stride) && desc_id(&r.0[s].value()) == base + s * stride,
+        forall|s: int| #![trigger r.1.contains_key(s)] #![trigger r.1[s]] 0 <= s < n ==> r.1.contains_key(s)
+            && desc_fresh(r.1[s], base + s * stride),
+    decreases n,
+{
+    if n == 0 {
+        (Map::tracked_empty(), Map::tracked_empty())
+    } else {
+        let m = n - 1;
+        let a = base + m * stride;
+        assert(0 <= m * stride && m * stride + stride == n * stride) by (nonlinear_arith)
+            requires m == n - 1, 0 < n, stride > 0;
+        assert(a % 16 == 0) by {
+            vstd::arithmetic::div_mod::lemma_mod_multiples_basic(m * (stride / 16), 16);
+            assert(m * stride == m * (stride / 16) * 16) by (nonlinear_arith)
+                requires stride == (stride / 16) * 16;
+            vstd::arithmetic::div_mod::lemma_add_mod_noop(base, m * stride, 16);
+        }
+        let tracked mut z = z;
+        assert(z.contains_key(m));
+        let tracked piece = z.tracked_remove(m);
+        let tracked (p, dp) = axiom_zero_desc(piece, a);
+        let tracked (mut descs, mut dps) = zero_descs(z, base, stride, m);
+        let ghost (d0, p0) = (descs, dps);
+        descs.tracked_insert(m, p);
+        dps.tracked_insert(m, dp);
+        assert forall|s: int| #![trigger descs.contains_key(s)] #![trigger descs[s]] 0 <= s < n implies descs.contains_key(s)
+            && perm_at(descs[s], base + s * stride) && desc_id(&descs[s].value()) == base + s * stride by {
+            if s < m {
+                assert(d0.contains_key(s));
+            }
+        }
+        assert forall|s: int| #![trigger dps.contains_key(s)] #![trigger dps[s]] 0 <= s < n implies dps.contains_key(s)
+            && desc_fresh(dps[s], base + s * stride) by {
+            if s < m {
+                assert(p0.contains_key(s));
+            }
+        }
+        (descs, dps)
+    }
+}
+
+/// [`table_perms`]' owner words: the `n` zero pieces of `z` at `base`,
+/// `base + 2`, ..., each made an owner word ([`axiom_zero_owner`]).
+proof fn zero_owners(tracked z: Map<int, ZeroRaw>, base: int, n: int) -> (tracked r: Map<int, PointsTo<AtomicU16>>)
+    requires
+        0 <= n,
+        base % 2 == 0,
+        0 < base,
+        base + n * 2 <= usize::MAX,
+        forall|i: int| #![trigger z.contains_key(i)] #![trigger z[i]] 0 <= i < n ==> z.contains_key(i)
+            && z[i].is_range(base + i * 2, 2) && z[i].provenance() == cast_provenance(),
+    ensures
+        forall|g: int| #![trigger r.contains_key(g)] #![trigger r[g]] 0 <= g < n ==> r.contains_key(g) && perm_at(r[g], base + 2 * g),
+    decreases n,
+{
+    if n == 0 {
+        Map::tracked_empty()
+    } else {
+        let m = n - 1;
+        let tracked mut z = z;
+        assert(z.contains_key(m));
+        let tracked piece = z.tracked_remove(m);
+        let tracked w = axiom_zero_owner(piece, base + m * 2);
+        let tracked mut r = zero_owners(z, base, m);
+        let ghost r0 = r;
+        r.tracked_insert(m, w);
+        assert forall|g: int| #![trigger r.contains_key(g)] #![trigger r[g]] 0 <= g < n implies r.contains_key(g) && perm_at(r[g], base + 2 * g) by {
+            if g < m {
+                assert(r0.contains_key(g));
+            }
+        }
+        r
+    }
+}
+
+/// Trusted: the 16 bytes at `addr`, which read as zero (`z`, a piece of
+/// the descriptor array `Meta::reserve_table` returned), are a
+/// `SlabDesc`, initialised: plain atomics, valid for every bit pattern
+/// (`PointsToRaw::into_typed` with the value the bytes hold; vstd's raw
+/// permissions do not track byte values). Also the one [`DescPerm`] of
+/// that descriptor: the descriptor at `addr` is the one [`desc_id`] names
+/// there, and the permission records its zero fields, which nothing has
+/// written yet. One permission per descriptor: `z` is used up, and a
+/// `ZeroRaw` for bytes is minted only where the metadata allocator carves
+/// them, once (`ZeroRaw::axiom_new`).
+axiom fn axiom_zero_desc(tracked z: ZeroRaw, addr: int) -> (tracked r: (PointsTo<SlabDesc>, DescPerm))
+    requires
+        z.is_range(addr, 16),
+        z.provenance() == cast_provenance(),
+        0 < addr,
+        addr % 16 == 0,
+        addr + 16 <= usize::MAX,
+    ensures
+        perm_at(r.0, addr),
+        desc_id(&r.0.value()) == addr,
+        desc_fresh(r.1, addr),
+;
+
+/// Trusted: the two bytes at `addr`, which read as zero (`z`, a piece of
+/// the owner array `Meta::reserve_table` returned), are an `AtomicU16`,
+/// initialised (valid for every bit pattern), as [`axiom_zero_desc`].
+axiom fn axiom_zero_owner(tracked z: ZeroRaw, addr: int) -> (tracked r: PointsTo<AtomicU16>)
+    requires
+        z.is_range(addr, 2),
+        z.provenance() == cast_provenance(),
+        0 < addr,
+        addr % 2 == 0,
+        addr + 2 <= usize::MAX,
+    ensures
+        perm_at(r, addr),
+;
+
+/// Trusted: `SlabTable::new` runs once per class in a process, so the
+/// authority it makes is the class's ([`slot_loc`]), and so is its marker
+/// authority (`mloc`, [`mark_loc`]). Two calls for one class with two
+/// authorities would prove `false`, so each uses up `once`, the token of
+/// class `c`'s step (`vspec::once`). Premise, not checked: one token per
+/// step per process; `Shared::init` (unverified) passes `SlabTable::new`
+/// a token it takes on trust (`Tracked::assume_new()`), and runs once per
+/// process. For the same reason the table's guard geometry (`glg`, its
+/// `lg_slabs_per_page`, and `gmask`, its `guard_mask`) is the class's
+/// ([`guard_geom`](crate::layout::guard_geom)): the guard slabs that
+/// `Regions::is_slot` excludes are this table's.
+// `once` is read only by the requires (ghost).
+#[allow(unused_variables)]
+axiom fn axiom_slot_loc(c: int, loc: Loc, mloc: Loc, glg: u8, gmask: u32, tracked once: Once)
+    requires
+        once.step() == Step::SlotLoc(c),
+    ensures
+        slot_loc(c) == loc,
+        mark_loc(c) == mloc,
+        crate::layout::guard_geom(c) == (glg, gmask);
+
+/// Trusted: the permissions of the `n` words of the class bitmap at
+/// `base`, each holding zero: `z`, the bitmap's reservation from
+/// `Meta::reserve_table`, reads as zero over them. Eight zero bytes are
+/// the word 0 in either byte order; vstd's raw permissions do not track
+/// byte values. One permission per word: `z` is used up, and so is
+/// `once`, the token of class `c`'s step (`vspec::once`; its premises as
+/// for [`axiom_slot_loc`]). The words end in the address space
+/// (required): a permission's `addr` is a `usize`.
+// `z` and `once` are read only by the requires (ghost).
+#[allow(unused_variables)]
+axiom fn axiom_fresh_words(tracked z: ZeroRaw, base: usize, n: nat, c: int, tracked once: Once) -> (tracked r: Map<int, WordPerm>)
+    requires
+        Set::<int>::range(base as int, base + 8 * n).subset_of(z.dom()),
+        base + 8 * n <= usize::MAX,
+        once.step() == Step::FreshWords(c),
+    ensures
+        forall|j: int| #![trigger r.contains_key(j)] #![trigger r[j]] 0 <= j < n ==> r.contains_key(j) && r[j].addr() == base + 8 * j && r[j].value() == 0;
+
+/// The class bitmap's words fit in its reservation rounded up to a whole
+/// word: `st` bytes of stagger (a whole number of words), then the bytes
+/// of `nb` bits.
+proof fn lemma_round_words(st: int, nb: int)
+    requires
+        st >= 0,
+        st % 8 == 0,
+        nb >= 0,
+    ensures
+        st + 8 * ((nb + 63) / 64) <= (st + (nb + 7) / 8 + 7) / 8 * 8,
+{
+    let c = (nb + 7) / 8;
+    let w = (nb + 63) / 64;
+    let d = (c + 7) / 8;
+    let s = st / 8;
+    let e = (st + c + 7) / 8;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(nb + 7, 8);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(c + 7, 8);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(nb + 63, 64);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(st, 8);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(st + c + 7, 8);
+    assert(nb <= 8 * c <= nb + 7);
+    assert(nb <= 64 * w <= nb + 63);
+    assert(c <= 8 * d <= c + 7);
+    assert(st == 8 * s);
+    assert(st + c <= 8 * e <= st + c + 7);
+    assert(w <= d);
+    assert(e == s + d);
+}
+
+/// The slabs of hand-out group `g` of a table with `2^lg` slabs per group
+/// and `nslabs` slabs: from `g << lg`, `group` of them, clipped to the
+/// region ([`SlabTable::group_range`]).
+pub(super) open spec fn group_range_at(lg: u8, group: u32, nslabs: usize, g: usize) -> (usize, usize) {
+    let start = g << lg;
+    (start, if start + group as usize <= nslabs { (start + group as usize) as usize } else { nslabs })
+}
+
+/// [`group_range_at`] in numbers, for a group that starts inside the
+/// region: it starts at `g * group` and ends `group` slabs later or at the
+/// region's end.
+proof fn lemma_range_at(lg: u8, group: u32, nslabs: usize, g: usize)
+    requires
+        lg < 64,
+        group as usize == 1usize << lg,
+        (g as int) * (group as int) < nslabs,
+    ensures
+        group_range_at(lg, group, nslabs, g).0 == (g as int) * (group as int),
+        group_range_at(lg, group, nslabs, g).1 == if (g as int) * (group as int) + group <= nslabs {
+            (g as int) * (group as int) + group
+        } else {
+            nslabs as int
+        },
+{
+    let lgu = lg as usize;
+    vstd::bits::lemma_usize_pow2_no_overflow(lgu as nat);
+    vstd::bits::lemma_usize_shl_is_mul(1, lgu);
+    assert((1usize << lg) == (1usize << lgu) && (g << lg) == (g << lgu)) by (bit_vector)
+        requires lgu == lg as usize;
+    vstd::bits::lemma_usize_shl_is_mul(g, lgu);
+}
+
+/// `i` is the invariant [`OwnerPred`] of the owner word of hand-out group
+/// `g` of class `class`'s table, whose owner array starts at `base`, with
+/// `2^lg` slabs per group, `nslabs` slabs and its witness markers at
+/// `sloc`.
+pub(super) open spec fn owner_inv_at(i: OwnerInv, base: int, class: int, lg: u8, group: u32, nslabs: usize, sloc: Loc, g: int) -> bool {
+    &&& i.constant() == OwnerKey {
+        ptr: owner_ptr_at(base + 2 * g),
+        class,
+        lo: group_range_at(lg, group, nslabs, g as usize).0 as int,
+        hi: group_range_at(lg, group, nslabs, g as usize).1 as int,
+        sloc,
+    }
+    &&& i.namespace() == owner_ns()
+}
+
+/// The invariants ([`OwnerPred`]) of the owner words of hand-out groups
+/// `0..n`, as `new` makes them: not stored, each with its word's
+/// permission, taken from `perms`, and the witness markers of its slabs,
+/// split off `marks`.
+proof fn fresh_owner_invs(
+    tracked perms: Map<int, PointsTo<AtomicU16>>,
+    tracked marks: GhostSubset<int>,
+    base: int,
+    class: int,
+    lg: u8,
+    group: u32,
+    nslabs: usize,
+    n: nat,
+) -> (tracked r: Map<int, OwnerInv>)
+    requires
+        forall|g: int| #![trigger perms.contains_key(g)] #![trigger perms[g]] 0 <= g < n ==> perms.contains_key(g) && perm_at(perms[g], base + 2 * g),
+        lg < 64,
+        group as usize == 1usize << lg,
+        n == 0 || (n - 1) * (group as int) < nslabs,
+        owner_marks(0, if n * (group as int) <= nslabs { n * (group as int) } else { nslabs as int }).subset_of(marks@),
+    ensures
+        forall|g: int| #![trigger r.contains_key(g)] #![trigger r[g]] 0 <= g < n ==> r.contains_key(g)
+            && owner_inv_at(r[g], base, class, lg, group, nslabs, marks.id(), g),
+    decreases n,
+{
+    broadcast use vstd::set_lib::range_set_properties;
+    if n == 0 {
+        Map::tracked_empty()
+    } else {
+        let g = n - 1;
+        let gr = group as int;
+        assert((1usize << lg) >= 1) by (bit_vector)
+            requires lg < 64;
+        assert(0 <= g * gr) by (nonlinear_arith)
+            requires 0 <= g, 0 <= gr;
+        assert(n * gr == g * gr + gr) by (nonlinear_arith)
+            requires g == n - 1;
+        assert(g <= g * gr) by (nonlinear_arith)
+            requires 0 <= g, 1 <= gr;
+        assert((g as usize) as int == g);
+        lemma_range_at(lg, group, nslabs, g as usize);
+        let lo = group_range_at(lg, group, nslabs, g as usize).0 as int;
+        let hi = group_range_at(lg, group, nslabs, g as usize).1 as int;
+        let tracked mut perms = perms;
+        let tracked mut marks = marks;
+        let ghost m0 = marks@;
+        assert(owner_marks(lo, hi).subset_of(marks@));
+        let tracked m = marks.split(owner_marks(lo, hi));
+        assert(owner_marks(0, lo).subset_of(marks@)) by {
+            assert forall|x: int| #[trigger] owner_marks(0, lo).contains(x) implies marks@.contains(x) by {
+                assert(m0.contains(x));
+                assert(!owner_marks(lo, hi).contains(x));
+            }
+        }
+        let tracked e = m.empty().persist();
+        assert(perms.contains_key(g));
+        let tracked p = perms.tracked_remove(g);
+        let k = OwnerKey { ptr: owner_ptr_at(base + 2 * g), class, lo, hi, sloc: marks.id() };
+        let tracked inv = OwnerInv::new(k, (p, m, e, None), owner_ns());
+        if g > 0 {
+            assert((g - 1) * gr < nslabs) by (nonlinear_arith)
+                requires g * gr < nslabs, gr >= 0, g >= 1;
+        }
+        assert(lo == g * gr && g * gr <= nslabs);
+        assert((if (g as nat) * gr <= nslabs { (g as nat) * gr } else { nslabs as int }) == lo);
+        let tracked mut r = fresh_owner_invs(perms, marks, base, class, lg, group, nslabs, g as nat);
+        let ghost r0 = r;
+        r.tracked_insert(g, inv);
+        assert forall|j: int| #![trigger r.contains_key(j)] #![trigger r[j]] 0 <= j < n implies r.contains_key(j) && owner_inv_at(r[j], base, class, lg, group, nslabs, marks.id(), j) by {
+            if j < g {
+                assert(r0.contains_key(j));
+            }
+        }
+        r
+    }
+}
+
+/// A length rounded up to a whole word covers it.
+proof fn lemma_round_up8(y: int)
+    requires
+        y >= 0,
+    ensures
+        y <= (y + 7) / 8 * 8,
+{
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(y + 7, 8);
 }
 
 } // verus!
