@@ -8,7 +8,9 @@
 use vstd::prelude::*;
 
 pub(crate) mod addr;
+pub(crate) mod atom;
 pub(crate) mod byte;
+pub(crate) mod check;
 // Specifications only: Verus alone compiles these.
 #[cfg(verus_keep_ghost)]
 pub(crate) mod class;
@@ -31,6 +33,7 @@ pub(crate) mod ptr;
 #[cfg(verus_keep_ghost)]
 pub(crate) mod sys;
 
+pub(crate) mod once;
 pub(crate) mod slice;
 pub(crate) mod unbacked;
 pub(crate) mod word;

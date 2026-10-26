@@ -17,10 +17,13 @@ use crate::meta::Meta;
 use crate::purge;
 #[cfg(verus_keep_ghost)]
 use crate::slab::stride_of;
-use crate::slab::{DESC_ALIGN, SlabDesc, desc_stride};
+use crate::slab::{DESC_ALIGN, HEADER, SlabDesc, desc_stride};
 use crate::sys::{self, Errno, MADV_GUARD_INSTALL, PROT_NONE, PROT_READ, PROT_WRITE};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::addr::cast_provenance;
+use crate::vspec::atom::new_usize;
+use crate::vspec::check::check;
+use crate::vspec::once::Once;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::zero::ZeroRaw;
 use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
@@ -408,7 +411,10 @@ impl SlabTable {
     /// mask; callers must pass 0 when `MADV_GUARD_INSTALL` is unavailable,
     /// since a `PROT_NONE` slab would split the region into one VMA per
     /// guard (design section 5). `ord` is the caller's lock-order token,
-    /// which the reservations take for the metadata lock.
+    /// which the reservations take for the metadata lock. `_slot_once` and
+    /// `_words_once` are the one-shot tokens (ghost, `vspec::once`) of the
+    /// steps that fix the class's slot-token authority and its bitmap
+    /// words' permissions, unused until the slab-table proofs take them.
     ///
     /// The asserts on the arguments are preconditions; the caller also
     /// guarantees well-formed, separated regions (which give a page no
@@ -424,9 +430,12 @@ impl SlabTable {
         regions: &Regions,
         class: usize,
         guard_interval: u32,
+        _slot_once: Tracked<Once>,
+        _words_once: Tracked<Once>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: Option<SlabTable>)
         requires
+            crate::sys::may_abort_corrupt(),
             crate::sys::may_syscall(),
             regions.wf(),
             regions.separated(),
@@ -498,6 +507,10 @@ impl SlabTable {
         let tracked mut draw = ZeroRaw::empty(cast_provenance());
         let tracked mut braw = ZeroRaw::empty(cast_provenance());
         let tracked mut oraw = ZeroRaw::empty(cast_provenance());
+        // The descriptor permissions need whole, aligned headers per stride
+        // (`slab::strides_of` makes the stride 16, 32 or 64; the table it
+        // fills is not visible to the verifier).
+        check(stride >= HEADER && stride.is_multiple_of(HEADER), "class: descriptor stride is not whole headers");
         let descs = Lazy::reserve(meta, stagger + nslabs * stride, align, Tracked(&mut draw), Tracked(ord))?;
         let bits = Lazy::reserve(
             meta,
@@ -564,6 +577,8 @@ impl SlabTable {
                     requires group >= 1, nslabs >= 1;
                 vstd::arithmetic::div_mod::lemma_div_is_ordered(nslabs + group - 1, nslabs * group, group as int);
                 vstd::arithmetic::div_mod::lemma_div_multiples_vanish(nslabs as int, group as int);
+                assert((nslabs * group) / (group as int) == nslabs);
+                assert((nslabs + group - 1) / (group as int) <= (nslabs * group) / (group as int));
             }
             lemma_mask_shape(guard_interval);
             assert(lazy_ok(descs, page));
@@ -571,6 +586,7 @@ impl SlabTable {
             assert(lazy_ok(owners, page));
             lemma_groups_paged(regions.class_base[class as int], slabs_per_page, cls.lg_slab, regions.lg_page, page);
         }
+        let (committed_slabs, _cperm) = new_usize(0);
         let inner = Padded(Lock::new(
             TableInner {
                 descs,
@@ -588,7 +604,7 @@ impl SlabTable {
         Some(SlabTable {
             bits_base,
             owners_base,
-            committed_slabs: AtomicUsize::new(0),
+            committed_slabs,
             slab_bits: cls.slab_bits() as u16,
             class: class as u16,
             lg_group: group.trailing_zeros() as u8,
@@ -1268,7 +1284,8 @@ impl SlabTable {
                 continue;
             }
             // SAFETY: the descriptor page for `slab` was committed above.
-            let recorded = unsafe { SlabDesc::at(self.desc_base, class, slab).arena() };
+            let recorded =
+                unsafe { SlabDesc::at(self.desc_base, class, slab, Tracked::assume_new()).arena() };
             if recorded != previous {
                 owner_mismatch(class, s >> self.lg_group, slab, previous, recorded);
             }
@@ -1287,7 +1304,7 @@ impl SlabTable {
             // committed above.
             unsafe {
                 if purge::check_zero() {
-                    let d = SlabDesc::at(self.desc_base, class, slab);
+                    let d = SlabDesc::at(self.desc_base, class, slab, Tracked::assume_new());
                     let (st, sh) = d.state_bytes();
                     if sh != 0 || d.live() != 0 || st != 0 {
                         panic!(
@@ -1299,7 +1316,8 @@ impl SlabTable {
                         );
                     }
                 }
-                SlabDesc::at(self.desc_base, class, slab).init(arena);
+                SlabDesc::at(self.desc_base, class, slab, Tracked::assume_new())
+                    .init(arena, Tracked::assume_new());
                 let _ = self.bits_unchecked(slab).init(
                     cls.nslots(),
                     Ghost::assume_new(),
