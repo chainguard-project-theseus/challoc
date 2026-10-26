@@ -1,0 +1,3 @@
+# The kernel's `mprotect` and `mmap` contracts: committed bytes of a
+# fresh private anonymous mapping are this process's and read as zero.
+Unbacked::commit	platform/kernel fact	none (assumption)
