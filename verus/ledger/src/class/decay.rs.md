@@ -7,31 +7,11 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `ClassState` | ext_type_spec | allocator invariant | Verus | trusted |
-| `Inner` | ext_type_spec | allocator invariant | Verus | trusted |
 | `Tally::settle` | external_body | allocator invariant | Verus | trusted |
-
-## `ClassState`
-
-src/class/decay.rs:25. Kind: ext_type_spec. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-```rust
-pub struct ExClassState(ClassState);
-```
-
-## `Inner`
-
-src/class/decay.rs:30. Kind: ext_type_spec. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-```rust
-pub struct ExInner(Inner);
-```
 
 ## `Tally::settle`
 
-src/class/decay.rs:74. Kind: external_body. Category: allocator invariant.
+src/class/decay.rs:62. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust

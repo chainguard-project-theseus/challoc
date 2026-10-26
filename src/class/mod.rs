@@ -67,13 +67,23 @@
 //! the bit afterwards.
 
 use crate::layout::{CLASSES, Class, MAX_SLAB_WORDS, Regions};
+#[cfg(verus_keep_ghost)]
+use crate::layout::{NCLASSES, class_table, process_regions};
 use crate::lock::{Lock, LockOrder, PAD_ALIGN, Padded, RawLock};
+#[cfg(verus_keep_ghost)]
+use crate::lock::{lock_frame, lock_init, lock_inv, rank_class};
 use crate::meta::Meta;
 use crate::purge::{self, Decayer};
 use crate::slab::{SlabDesc, State};
+#[cfg(verus_keep_ghost)]
+use crate::vspec::addr::cast_provenance;
 use crate::vspec::zero::ZeroRaw;
 use core::sync::atomic::{AtomicU64, Ordering};
-use vstd::prelude::{Ghost, Map, Tracked, int, nat};
+// The whole prelude only under Verus, which builds no tests: in a test
+// build it would reach `tests.rs` through `use super::*`.
+#[cfg(verus_keep_ghost)]
+use vstd::prelude::*;
+use vstd::prelude::{Ghost, Map, Tracked, int, nat, verus};
 use vstd::raw_ptr::PointsTo;
 
 mod abort;
@@ -96,6 +106,8 @@ pub use sets::SetTable;
 pub use table::SlabTable;
 use verify::{fresh_with_live, release_into_fresh};
 
+verus! {
+
 /// Counters kept under the class lock. Slab counts only; `curregs` and
 /// the byte totals are derived from them in `stats.rs`.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -111,6 +123,8 @@ pub struct ClassStats {
     /// Slabs in the partial set (jemalloc's `nonfull_slabs`).
     pub nonfull: usize,
 }
+
+} // verus!
 
 impl ClassStats {
     /// Slabs that can hold live slots (neither `Empty` nor `Purged`):
@@ -157,6 +171,8 @@ pub struct Claim {
     pub zeroed: bool,
 }
 
+verus! {
+
 /// Slabs one lock hold of a refill may reserve from (see
 /// [`ClassState::plan`]), and slabs one lock hold of a release batch may
 /// reopen ([`Reopen`]). Sized so that the common refill and flush of every
@@ -164,6 +180,8 @@ pub struct Claim {
 /// classes (`layout::LG_MIN_SLAB`) a 128-slot refill of the 512 class and a
 /// 64-slot one of the 1024 class each span 16 slabs.
 pub(crate) const MAX_PICKS: usize = 16;
+
+} // verus!
 
 /// The atomic steps of the protocol, named in the order the code takes
 /// them, for the model (`model::steps`): each enum is one operation of
@@ -316,6 +334,8 @@ impl Pick {
     };
 }
 
+verus! {
+
 /// Slabs a release batch must put back in the partial set. Consecutive
 /// duplicates are dropped; a full list is flushed under the lock.
 struct Reopen {
@@ -325,7 +345,10 @@ struct Reopen {
 
 impl Reopen {
     #[inline(always)]
-    fn new() -> Reopen {
+    fn new() -> (r: Reopen)
+        ensures
+            r.len == 0,
+    {
         Reopen {
             slabs: [0; MAX_PICKS],
             len: 0,
@@ -334,7 +357,14 @@ impl Reopen {
 
     /// Record `slab`; `false` if the list is full (and `slab` is not the
     /// last entry), in which case the caller must flush first.
-    fn push(&mut self, slab: usize) -> bool {
+    fn push(&mut self, slab: usize) -> (r: bool)
+        requires
+            old(self).len <= MAX_PICKS,
+        ensures
+            final(self).len <= MAX_PICKS,
+            r ==> final(self).len > 0 && final(self).slabs[final(self).len - 1] == slab as u32,
+            !r ==> final(self).len == MAX_PICKS && *final(self) == *old(self),
+    {
         if self.len > 0 && self.slabs[self.len - 1] == slab as u32 {
             return true;
         }
@@ -359,7 +389,9 @@ struct Inner {
     group_next: usize,
     group_end: usize,
     /// Ghost: this arena's slabs of this class, each with the state its
-    /// descriptor holds while this lock is held.
+    /// descriptor holds while this lock is held. The accessors
+    /// that tie it to the descriptors (`state_locked` and the others) are
+    /// unverified.
     #[allow(dead_code)]
     states: Ghost<Map<nat, State>>,
     /// Ghost: this arena's committed slabs of this class (guards
@@ -368,9 +400,13 @@ struct Inner {
     committed: Ghost<vstd::set::Set<nat>>,
 }
 
+} // verus!
+
 // SAFETY: `TwoLevelBitmap` holds a raw pointer into the metadata region,
 // which is process-global and only ever accessed through this lock.
 unsafe impl Send for Inner {}
+
+verus! {
 
 /// State of one `(arena, class)` pair: the three slab sets and their
 /// statistics behind the class lock, plus a pointer to the class's shared
@@ -436,6 +472,8 @@ pub struct ClassState {
     _tail: [u8; PAD_ALIGN - 64],
 }
 
+} // verus!
+
 const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
 const _: () =
     assert!(core::mem::offset_of!(ClassState, gate) + core::mem::size_of::<Decayer>() <= PAD_ALIGN);
@@ -454,16 +492,40 @@ const _: () = assert!(core::mem::size_of::<TablePtr>() == core::mem::size_of::<*
 unsafe impl Sync for ClassState {}
 unsafe impl Send for ClassState {}
 
+verus! {
+
+/// The tables of every class, from `base` on, through the frozen
+/// permissions `m`, one per element: each initialised, at its index's
+/// address, and the table of the class it is the index of. What a
+/// [`ClassState`] keeps of its class's table ([`TablePtr`]).
+pub open spec fn tables_ok(m: Map<int, PointsTo<SlabTable>>, base: *mut SlabTable) -> bool {
+    &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] m.contains_key(c)
+    &&& forall|c: int| 0 <= c < NCLASSES ==> (#[trigger] m[c]).ptr() == crate::vspec::ptr::ptr_add(base, c as usize)
+    &&& forall|c: int| 0 <= c < NCLASSES ==> (#[trigger] m[c]).is_init()
+    &&& forall|c: int| 0 <= c < NCLASSES ==> (#[trigger] m[c]).value().spec_class() == c
+    &&& crate::vspec::ptr::in_alloc(base, NCLASSES as int * vstd::layout::size_of::<SlabTable>())
+    &&& NCLASSES * vstd::layout::size_of::<SlabTable>() <= isize::MAX
+}
+
+} // verus!
+
 /// The pointer to its table a [`ClassState`] keeps, in a module of its own
 /// so that [`table_ptr`](tptr::table_ptr) is the only maker of one.
 mod tptr {
     use super::SlabTable;
+    #[cfg(verus_keep_ghost)]
+    use super::tables_ok;
+    #[cfg(verus_keep_ghost)]
+    use crate::layout::NCLASSES;
     use vstd::prelude::*;
     use vstd::raw_ptr::PointsTo;
 
+    verus! {
+
     /// A pointer to the table of class `c`, with (ghost, no bytes: the
     /// layout is the pointer's) the frozen permissions to every class's
-    /// table, from `base` on, whose element `c` is the pointer's.
+    /// table, from `base` on ([`tables_ok`]), whose element `c` is the
+    /// pointer's.
     pub(super) struct TablePtr {
         p: *mut SlabTable,
         #[allow(dead_code)]
@@ -480,34 +542,100 @@ mod tptr {
         c: Ghost<int>,
     }
 
+    impl TablePtr {
+        /// The pointer is to element `c` of the tables its permissions
+        /// cover (what [`table_ptr`] requires).
+        #[verifier::type_invariant]
+        spec fn inv(self) -> bool {
+            &&& tables_ok(*self.tables@, self.base@)
+            &&& 0 <= self.c@ < NCLASSES
+            &&& self.tables@[self.c@].ptr() == self.p
+            &&& *self.perm@ == self.tables@[self.c@]
+        }
+    }
+
+    /// The table `p` points at.
+    pub(super) closed spec fn table_at(p: TablePtr) -> SlabTable {
+        p.tables@[p.c@].value()
+    }
+
+    /// The class whose table `p` points at.
+    pub(super) closed spec fn index_of(p: TablePtr) -> int {
+        p.c@
+    }
+
     /// The pointer `p` to element `c` of the tables `tables` covers, from
-    /// `base` on, as a [`TablePtr`].
+    /// `base` on, as a [`TablePtr`], which [`table_at`] maps to that
+    /// table.
     #[inline(always)]
     pub(super) fn table_ptr(
         p: *mut SlabTable,
-        tables: Tracked<&'static Map<int, PointsTo<SlabTable>>>,
-        base: Ghost<*mut SlabTable>,
-        c: Ghost<int>,
-    ) -> TablePtr {
+        Tracked(tables): Tracked<&'static Map<int, PointsTo<SlabTable>>>,
+        Ghost(base): Ghost<*mut SlabTable>,
+        Ghost(c): Ghost<int>,
+    ) -> (r: TablePtr)
+        requires
+            tables_ok(*tables, base),
+            0 <= c < NCLASSES,
+            tables[c].ptr() == p,
+        ensures
+            table_at(r) == tables[c].value(),
+            index_of(r) == c,
+    {
         TablePtr {
             p,
-            tables,
-            perm: Tracked::assume_new(),
-            base,
-            c,
+            tables: Tracked(tables),
+            perm: Tracked(tables.tracked_borrow(c)),
+            base: Ghost(base),
+            c: Ghost(c),
         }
     }
 
     impl TablePtr {
         /// The table, through its frozen permission.
         #[inline(always)]
-        pub(super) fn get(&self) -> &SlabTable {
+        pub(super) fn get(&self) -> (r: &SlabTable)
+            ensures
+                *r == table_at(*self),
+        {
+            proof {
+                use_type_invariant(self);
+            }
             vstd::raw_ptr::ptr_ref(self.p, self.perm)
         }
     }
+
+    } // verus!
 }
 
 use tptr::{TablePtr, table_ptr};
+#[cfg(verus_keep_ghost)]
+use tptr::{index_of, table_at};
+
+verus! {
+
+/// A set of the class state: a well-formed bitmap over `n` slabs whose
+/// members are slab numbers below `n`.
+spec fn set_wf(s: Set, n: nat) -> bool {
+    &&& s.map.wf()
+    &&& s.map.spec_nbits() == n
+    &&& forall|b: nat| #[trigger] s.map@.contains(b) ==> b < n
+}
+
+/// A set of the class state that lacks slab `x` holds fewer than `n` slabs.
+proof fn lemma_set_len(s: Set, n: nat, x: nat)
+    requires
+        set_wf(s, n),
+        x < n,
+        !s.map@.contains(x),
+    ensures
+        s.map@.len() < n,
+{
+    broadcast use vstd::set_lib::range_set_properties;
+    let r = vstd::set::Set::<nat>::range(0, n).remove(x);
+    assert(s.map@.subset_of(r));
+    vstd::set_lib::lemma_len_subset(s.map@, r);
+}
 
 /// The set/count seam: each of the three sets is one bitmap plus one
 /// `ClassStats` count, and the two are written together, here or at the
@@ -519,30 +647,183 @@ use tptr::{TablePtr, table_ptr};
 /// refill takes it or a purge moves it, so a count that would go below
 /// zero is a heap inconsistency and aborts (`slab_count_underflow`).
 impl Inner {
-    fn set_partial(&mut self, slab: usize) {
+    /// Slabs of the class (the sets' size).
+    spec fn nbits(&self) -> nat {
+        self.partial.map.spec_nbits()
+    }
+
+    /// Slab `s` belongs to this arena (ghost).
+    spec fn owns(&self, s: nat) -> bool {
+        self.states@.contains_key(s)
+    }
+
+    /// The state of owned slab `s` (ghost).
+    spec fn st(&self, s: nat) -> State {
+        self.states@[s]
+    }
+
+    /// The seam's counts and shapes: three well-formed sets over the
+    /// class's slabs, each count the population of its set, the
+    /// committed count the size of the committed set, the owned and
+    /// committed slabs among the class's (at most `2^52` of them), and the
+    /// current group's cursor inside the class.
+    spec fn base(&self) -> bool {
+        &&& set_wf(self.partial, self.nbits())
+        &&& set_wf(self.empty, self.nbits())
+        &&& set_wf(self.purged, self.nbits())
+        &&& self.stats.nonfull == self.partial.map@.len()
+        &&& self.stats.empty == self.empty.map@.len()
+        &&& self.stats.purged == self.purged.map@.len()
+        &&& self.stats.committed == self.committed@.len()
+        &&& self.group_next <= self.group_end <= self.nbits()
+        &&& self.nbits() <= usize::MAX >> 12
+        &&& forall|s: nat| #[trigger] self.committed@.contains(s) ==> s < self.nbits()
+        &&& forall|s: nat| #[trigger] self.states@.contains_key(s) ==> s < self.nbits()
+    }
+
+    /// The ghost link at slab `s`, apart from the current group: the
+    /// committed slabs are exactly the owned ones that left `Fresh` (a
+    /// slab `next_fresh_slab` commits is made `Active` by `take` in the
+    /// same lock hold); a partial slab is `Active`; and the `empty` and
+    /// `purged` sets are exactly the owned slabs in those states.
+    spec fn slab_core(&self, s: nat) -> bool {
+        &&& self.committed@.contains(s) ==> self.owns(s)
+        &&& self.committed@.contains(s) ==> self.st(s) != State::Fresh
+        &&& self.owns(s) && self.st(s) != State::Fresh ==> self.committed@.contains(s)
+        &&& self.partial.map@.contains(s) ==> self.owns(s) && self.st(s) == State::Active
+        &&& self.empty.map@.contains(s) == (self.owns(s) && self.st(s) == State::Empty)
+        &&& self.purged.map@.contains(s) == (self.owns(s) && self.st(s) == State::Purged)
+    }
+
+    /// The ghost link's current-group part at slab `s`: the current
+    /// group's slabs from the cursor on are owned, `Fresh` and not
+    /// committed.
+    spec fn group_ok(&self, s: nat) -> bool {
+        self.group_next <= s < self.group_end ==> self.owns(s) && self.st(s) == State::Fresh
+            && !self.committed@.contains(s)
+    }
+
+    /// The ghost link at slab `s`.
+    spec fn slab_ok(&self, s: nat) -> bool {
+        &&& self.slab_core(s)
+        &&& self.group_ok(s)
+    }
+
+    /// The seam's invariant, with the ghost link at every slab.
+    spec fn inv(&self) -> bool {
+        &&& self.base()
+        &&& forall|s: nat| #[trigger] self.slab_ok(s)
+    }
+
+    /// The invariant with slab `x` exempt from the ghost link: the state
+    /// between two writes of one transition (a slab's state and its set,
+    /// or a slab taken out of a set and not yet made `Active`).
+    spec fn inv_but(&self, x: int) -> bool {
+        &&& self.base()
+        &&& forall|s: nat| s != x ==> #[trigger] self.slab_ok(s)
+    }
+
+    /// `self` and `o` agree on everything but the sets and counts.
+    spec fn same_rest(&self, o: &Inner) -> bool {
+        &&& self.stats.committed == o.stats.committed
+        &&& self.stats.guards == o.stats.guards
+        &&& self.group_next == o.group_next
+        &&& self.group_end == o.group_end
+        &&& self.nbits() == o.nbits()
+        &&& self.states == o.states
+        &&& self.committed == o.committed
+    }
+
+    fn set_partial(&mut self, slab: usize)
+        requires
+            old(self).inv(),
+            slab < old(self).nbits(),
+            old(self).owns(slab as nat),
+            old(self).st(slab as nat) == State::Active,
+        ensures
+            final(self).inv(),
+            final(self).same_rest(old(self)),
+            final(self).partial.map@ == old(self).partial.map@.insert(slab as nat),
+            final(self).empty == old(self).empty,
+            final(self).purged == old(self).purged,
+    {
         if !self.partial.map.is_set(slab) {
+            proof {
+                lemma_set_len(self.partial, self.nbits(), slab as nat);
+            }
             self.partial.map.set(slab);
             self.stats.nonfull += 1;
+        } else {
+            proof {
+                assert(self.partial.map@.insert(slab as nat) =~= self.partial.map@);
+            }
+        }
+        proof {
+            assert forall|s: nat| #[trigger] self.slab_ok(s) by {
+                assert(old(self).slab_ok(s));
+            }
         }
     }
 
-    fn clear_partial(&mut self, slab: usize) {
+    fn clear_partial(&mut self, slab: usize)
+        requires
+            old(self).base(),
+            slab < old(self).nbits(),
+        ensures
+            final(self).base(),
+            final(self).same_rest(old(self)),
+            final(self).partial.map@ == old(self).partial.map@.remove(slab as nat),
+            final(self).empty == old(self).empty,
+            final(self).purged == old(self).purged,
+            old(self).inv() ==> final(self).inv(),
+            forall|x: int| #[trigger] old(self).inv_but(x) ==> final(self).inv_but(x),
+    {
         if self.partial.map.is_set(slab) {
             self.partial.map.clear(slab);
             self.stats.nonfull -= 1;
+        } else {
+            proof {
+                assert(self.partial.map@.remove(slab as nat) =~= self.partial.map@);
+            }
+        }
+        proof {
+            assert forall|s: nat| old(self).slab_ok(s) implies #[trigger] self.slab_ok(s) by {}
         }
     }
 
-    /// `slab` into the empty set (it went `Empty`).
-    fn empty_add(&mut self, slab: usize) {
+    /// `slab` into the empty set (it went `Empty`). The caller closes the
+    /// link at `slab`.
+    fn empty_add(&mut self, slab: usize)
+        requires
+            old(self).base(),
+            slab < old(self).nbits(),
+            !old(self).empty.map@.contains(slab as nat),
+        ensures
+            final(self).base(),
+            final(self).same_rest(old(self)),
+            final(self).empty.map@ == old(self).empty.map@.insert(slab as nat),
+            final(self).partial == old(self).partial,
+            final(self).purged == old(self).purged,
+            old(self).inv_but(slab as int) ==> final(self).inv_but(slab as int),
+    {
+        proof {
+            lemma_set_len(self.empty, self.nbits(), slab as nat);
+        }
         debug_assert!(
             !self.empty.map.is_set(slab),
             "empty_add: slab {slab} already in the empty set"
         );
         self.empty.map.set(slab);
         self.stats.empty += 1;
+        proof {
+            assert forall|s: nat| s != slab && old(self).slab_ok(s) implies #[trigger] self.slab_ok(s) by {}
+        }
     }
+}
 
+} // verus!
+
+impl Inner {
     /// `slab` out of the empty set. Tests only: a refill and a purge
     /// spell the pair out (`next_slab`, `settle`).
     #[cfg(test)]
@@ -588,6 +869,77 @@ impl Inner {
     }
 }
 
+verus! {
+
+broadcast use {table::lemma_spec_nslabs, table::lemma_spec_class};
+
+impl ClassState {
+    /// `class` is a class number, `table` points at that class's table
+    /// (element `class` of the tables it has the permissions to), the
+    /// sets behind the lock are over its slabs, and the lock ranks as
+    /// this arena's lock of the class. `new` proves it: it takes `class`
+    /// from the table and builds the sets over the set table's count for
+    /// the class's slab size, which equals `table.nslabs` because both
+    /// are the process's regions' count for the class (`SetTable::over`,
+    /// `SlabTable::inv`).
+    #[verifier::type_invariant]
+    spec fn inv(self) -> bool {
+        &&& self.class < NCLASSES
+        &&& table_at(self.table).inv()
+        &&& table_at(self.table).spec_class() == self.class as usize
+        &&& index_of(self.table) == self.class as int
+        &&& lock_init(self.inner.0).nbits() == table_at(self.table).spec_nslabs()
+        &&& self.inner.0.rank() == rank_class(self.arena as int, self.class as int)
+    }
+
+    /// The class's shared table.
+    pub closed spec fn spec_table(&self) -> SlabTable {
+        table_at(self.table)
+    }
+
+    /// Slabs of the class region.
+    pub closed spec fn spec_nslabs(&self) -> usize {
+        table_at(self.table).spec_nslabs()
+    }
+
+    /// The class number.
+    pub closed spec fn spec_class(&self) -> usize {
+        self.class as usize
+    }
+
+    /// The arena this state belongs to.
+    pub closed spec fn spec_arena(&self) -> u16 {
+        self.arena
+    }
+}
+
+/// Assumption (`lock.rs`): the class lock's value keeps the set/count
+/// seam's invariant, ghost link included, while the lock is free.
+/// Verified holders show it through the postconditions of the `Inner`
+/// methods; `ClassState::new` proves it of the value it creates the lock
+/// with, and `lowest_partial` and `is_partial` only read the value. The
+/// unverified holders are the refill and release paths (`plan`, `take`,
+/// `next_slab`, `next_fresh_slab` with `SlabTable::take_group` under it,
+/// `reopen`, `on_live_zero`), the purge and decay walks (`decay.rs`),
+/// `bin_stats`, and the tests, but for those that break the counts on
+/// purpose to reach an abort. None of them updates the ghost `states` and
+/// `committed`, so for them the assumption is the set and count shapes
+/// (`Inner::base`) and the sets' disjointness, which the ghost link
+/// implies. The fork handlers take the raw lock without touching the
+/// value.
+broadcast axiom fn axiom_class_lock_inv(v: Inner)
+    ensures
+        #[trigger] lock_inv(v) == v.inv(),
+;
+
+/// Assumption (`lock.rs`): the sets behind a class lock stay over the
+/// slab count they were created with. Every `Inner` method keeps `nbits`
+/// (`same_rest`), and nothing replaces the sets.
+broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
+    ensures
+        #[trigger] lock_frame(init, v) == (v.nbits() == init.nbits()),
+;
+
 impl ClassState {
     /// Create the state for `arena` over class `c`'s table, at `tp`
     /// (element `c` of the tables `tables` covers from `base` on), with
@@ -605,22 +957,47 @@ impl ClassState {
         meta: &Meta,
         regions: &Regions,
         tp: *mut SlabTable,
-        tables: Tracked<&'static Map<int, PointsTo<SlabTable>>>,
-        base: Ghost<*mut SlabTable>,
-        c: Ghost<int>,
+        Tracked(tables): Tracked<&'static Map<int, PointsTo<SlabTable>>>,
+        Ghost(base): Ghost<*mut SlabTable>,
+        Ghost(c): Ghost<int>,
         arena: u16,
         sets_ptr: *const SetTable,
-        sets_perm: Tracked<&'static PointsTo<SetTable>>,
-        _slots: Tracked<&mut Map<(int, int), ZeroRaw>>,
-    ) -> Option<ClassState> {
-        let table = vstd::raw_ptr::ptr_ref(tp, Tracked::assume_new());
+        Tracked(sets_perm): Tracked<&'static PointsTo<SetTable>>,
+        Tracked(slots): Tracked<&mut Map<(int, int), ZeroRaw>>,
+    ) -> (r: Option<ClassState>)
+        requires
+            tables_ok(*tables, base),
+            0 <= c < NCLASSES,
+            tables[c].ptr() == tp,
+            sets_perm.ptr() == sets_ptr,
+            sets_perm.is_init(),
+            sets_perm.value().over(process_regions()),
+            forall|k: int| 0 <= k < sets::SETS_PER_CLASS ==> #[trigger] sets_perm.value().holds_set(*old(slots), c, k),
+        ensures
+            r matches Some(s) ==> s.spec_class() == c && s.spec_table() == tables[c].value() && s.spec_arena() == arena,
+            *final(slots) == old(slots).remove((c, 0)).remove((c, 1)).remove((c, 2)),
+    {
+        broadcast use axiom_class_lock_inv;
+        let table = vstd::raw_ptr::ptr_ref(tp, Tracked(tables.tracked_borrow(c)));
+        proof {
+            use_type_invariant(table);
+        }
         let _ = (meta, regions);
-        let sets = vstd::raw_ptr::ptr_ref(sets_ptr, sets_perm);
+        let sets = vstd::raw_ptr::ptr_ref(sets_ptr, Tracked(sets_perm));
         let class = table.class as usize;
+        proof {
+            assert(sets.class_ok(process_regions(), class as int));
+            assert(sets.holds_set(*slots, class as int, 0));
+            assert(sets.holds_set(*slots, class as int, 1));
+            assert(sets.holds_set(*slots, class as int, 2));
+        }
         debug_assert!(table.nslabs == sets.nslabs[SetTable::group_of(class)]);
-        let partial = Set::in_table(sets_ptr, sets_perm, class, 0, Tracked::assume_new());
-        let empty = Set::in_table(sets_ptr, sets_perm, class, 1, Tracked::assume_new());
-        let purged = Set::in_table(sets_ptr, sets_perm, class, 2, Tracked::assume_new());
+        let tracked w0 = slots.tracked_remove((class as int, 0));
+        let tracked w1 = slots.tracked_remove((class as int, 1));
+        let tracked w2 = slots.tracked_remove((class as int, 2));
+        let partial = Set::in_table(sets_ptr, Tracked(sets_perm), class, 0, Tracked(w0));
+        let empty = Set::in_table(sets_ptr, Tracked(sets_perm), class, 1, Tracked(w1));
+        let purged = Set::in_table(sets_ptr, Tracked(sets_perm), class, 2, Tracked(w2));
         let inner = Inner {
             partial,
             empty,
@@ -634,15 +1011,25 @@ impl ClassState {
             },
             group_next: 0,
             group_end: 0,
-            states: Ghost::assume_new(),
-            committed: Ghost::assume_new(),
+            // No slab owned or committed yet.
+            states: Ghost(Map::empty()),
+            committed: Ghost(vstd::set::Set::empty()),
         };
+        proof {
+            let n = inner.nbits();
+            assert(set_wf(inner.partial, n) && set_wf(inner.empty, n) && set_wf(inner.purged, n));
+            assert(inner.partial.map@.len() == 0 && inner.committed@.len() == 0);
+            assert(usize::MAX >> 12 == 0xF_FFFF_FFFF_FFFFusize) by (bit_vector);
+            assert(n <= usize::MAX >> 12);
+            assert(inner.base());
+            assert forall|s: nat| #[trigger] inner.slab_ok(s) by {}
+        }
         Some(ClassState {
             class: table.class,
             arena,
-            table: table_ptr(tp, tables, base, c),
+            table: table_ptr(tp, Tracked(tables), Ghost(base), Ghost(c)),
             gate: Decayer::new(),
-            inner: Padded(Lock::new(inner, Ghost::assume_new())),
+            inner: Padded(Lock::new(inner, Ghost(rank_class(arena as int, table.class as int)))),
             claimed: AtomicU64::new(0),
             refilled: AtomicU64::new(0),
             released: AtomicU64::new(0),
@@ -657,12 +1044,27 @@ impl ClassState {
 
     /// The class's shared table.
     #[inline(always)]
-    pub fn table(&self) -> &SlabTable {
+    pub fn table(&self) -> (r: &SlabTable)
+        ensures
+            *r == self.spec_table(),
+            r.spec_class() == self.spec_class(),
+            r.spec_nslabs() == self.spec_nslabs(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
         self.table.get()
     }
 
     #[inline]
-    pub fn class(&self) -> &'static Class {
+    pub fn class(&self) -> (r: &'static Class)
+        ensures
+            *r == class_table()[self.spec_class() as int],
+            r.wf(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
         &CLASSES.table()[self.class as usize]
     }
 
@@ -680,8 +1082,20 @@ impl ClassState {
 
     /// The class lock, for fork handlers.
     #[inline]
-    pub fn raw_lock(&self) -> &RawLock {
+    pub fn raw_lock(&self) -> (r: &RawLock)
+        ensures
+            *r == self.spec_raw_lock(),
+            r.rank() == rank_class(self.spec_arena() as int, self.spec_class() as int),
+    {
+        proof {
+            use_type_invariant(self);
+        }
         self.inner.raw()
+    }
+
+    /// The lock [`Self::raw_lock`] returns.
+    pub closed spec fn spec_raw_lock(&self) -> RawLock {
+        self.inner.0.spec_raw()
     }
 
     /// [`SlabTable::is_guard_slab`].
@@ -689,7 +1103,11 @@ impl ClassState {
     pub fn is_guard_slab(&self, slab: usize) -> bool {
         self.table().is_guard_slab(slab)
     }
+}
 
+} // verus!
+
+impl ClassState {
     /// [`SlabTable::committed_slabs`]: slabs of every arena.
     #[inline]
     pub fn committed_slabs(&self) -> usize {
@@ -701,17 +1119,38 @@ impl ClassState {
     pub fn desc(&self, slab: usize) -> &SlabDesc {
         self.table().desc(slab)
     }
+}
 
+verus! {
+
+impl ClassState {
     #[inline]
-    fn slab_addr(&self, slab: usize) -> usize {
+    fn slab_addr(&self, slab: usize) -> (r: usize)
+        requires
+            slab < self.spec_nslabs(),
+        ensures
+            r == self.spec_table().base + slab * ((1usize << class_table()[self.spec_class() as int].lg_slab) as int),
+            r + (1usize << class_table()[self.spec_class() as int].lg_slab) <= 1usize << 57,
+    {
         self.table().slab_addr(slab)
     }
 
     #[inline]
-    fn slot_ptr(&self, slab: usize, slot: usize) -> *mut u8 {
+    fn slot_ptr(&self, slab: usize, slot: usize) -> (r: *mut u8)
+        requires
+            slab < self.spec_nslabs(),
+            slot < class_table()[self.spec_class() as int].slab_bits,
+        ensures
+            r@.addr == process_regions().slot_at(self.spec_class() as int, slab as int, slot as int),
+            r@.provenance == cast_provenance(),
+    {
         self.table().slot_ptr(slab, slot)
     }
+}
 
+} // verus!
+
+impl ClassState {
     /// [`SlabTable::locate`].
     #[inline]
     pub fn locate(&self, p: *mut u8) -> (usize, usize) {
@@ -1438,16 +1877,6 @@ impl ClassState {
         (capacity.saturating_sub(curregs), capacity)
     }
 
-    /// Lowest slab in the partial set, if any (for tests and stats).
-    /// `_ord` is the caller's lock-order token (ghost) for the class lock.
-    pub fn lowest_partial(&self, _ord: Tracked<&mut LockOrder>) -> Option<usize> {
-        self.inner
-            .lock(Tracked::assume_new(), Tracked::assume_new())
-            .partial
-            .map
-            .lowest_set()
-    }
-
     /// Tests: whether `slab` is in this arena's partial, empty and purged
     /// sets.
     #[cfg(test)]
@@ -1459,15 +1888,53 @@ impl ClassState {
             g.purged.map.is_set(slab),
         )
     }
+}
+
+verus! {
+
+impl ClassState {
+    /// Lowest slab in the partial set, if any (for tests and stats).
+    /// `ord` is the caller's lock-order token (ghost) for the class lock.
+    pub fn lowest_partial(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
+        requires
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            r matches Some(s) ==> s < self.spec_nslabs(),
+            *final(ord) == *old(ord),
+    {
+        broadcast use {axiom_class_lock, axiom_class_lock_inv};
+        proof {
+            use_type_invariant(self);
+        }
+        self.inner
+            .lock(Tracked(ord), Tracked(&mut LockOrder::spare()))
+            .partial
+            .map
+            .lowest_set()
+    }
 
     /// Whether `slab` is in the partial set (tests and the bins table,
-    /// `api::print`). `_ord` is the caller's lock-order token (ghost) for the
+    /// `api::print`). `ord` is the caller's lock-order token (ghost) for the
     /// class lock.
-    pub fn is_partial(&self, slab: usize, _ord: Tracked<&mut LockOrder>) -> bool {
+    pub fn is_partial(&self, slab: usize, Tracked(ord): Tracked<&mut LockOrder>) -> bool
+        requires
+            crate::sys::may_syscall(),
+            slab < self.spec_nslabs(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
+    {
+        broadcast use {axiom_class_lock, axiom_class_lock_inv};
+        proof {
+            use_type_invariant(self);
+        }
         self.inner
-            .lock(Tracked::assume_new(), Tracked::assume_new())
+            .lock(Tracked(ord), Tracked(&mut LockOrder::spare()))
             .partial
             .map
             .is_set(slab)
     }
 }
+
+} // verus!

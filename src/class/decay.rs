@@ -17,18 +17,6 @@ pub(super) fn min_nonzero(cur: u64, t: u64) -> u64 {
 
 verus! {
 
-// `ClassState` and the class lock value, opaque: the purge proofs here do
-// not look inside them.
-#[cfg(verus_keep_ghost)]
-#[verifier::external_type_specification]
-#[verifier::external_body]
-pub struct ExClassState(ClassState);
-
-#[cfg(verus_keep_ghost)]
-#[verifier::external_type_specification]
-#[verifier::external_body]
-pub struct ExInner(Inner);
-
 /// What a purge walk's flushes settled: slabs made `Purged`, the oldest
 /// `dirty_at` among the survivors (`min_nonzero`), and whether a discard
 /// failed. It settles the walk's batch ([`Settle`], through
