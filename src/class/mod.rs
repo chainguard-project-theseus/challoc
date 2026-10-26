@@ -72,6 +72,7 @@ use crate::meta::Meta;
 use crate::purge::{self, Decayer};
 use crate::slab::{SlabDesc, State};
 use core::sync::atomic::{AtomicU64, Ordering};
+use vstd::prelude::Tracked;
 
 mod abort;
 mod decay;
@@ -785,7 +786,9 @@ impl ClassState {
             };
             let mut empty_passes = 0u32;
             while k < want {
-                let Some((w, bits)) = bm.claim_from(word, want - k) else {
+                let Some((w, bits)) =
+                    bm.claim_from(word, want - k, Tracked::assume_new(), Tracked::assume_new())
+                else {
                     // Every word was full when inspected. `plan` reserved
                     // no more than `nslots - live` and set bits never
                     // exceed `live`, so the slots exist: a concurrent
@@ -978,7 +981,7 @@ impl ClassState {
         while k < n {
             let want = (n - k).min(64);
             let expect = if want == 64 { !0 } else { (1u64 << want) - 1 };
-            let got = bm.claim_word(w, want);
+            let got = bm.claim_word(w, want, Tracked::assume_new(), Tracked::assume_new());
             if got != expect {
                 zero_slab_had_bits_set(
                     self.class as usize,
@@ -1169,7 +1172,10 @@ impl ClassState {
     /// Release the slots of `mask` in `word` of `slab`. The `live` update
     /// is separate so a batch can do one per slab.
     fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen) {
-        let (prev, was_full) = self.table().bits(slab).release(word, mask);
+        let (prev, was_full) = self
+            .table()
+            .bits(slab)
+            .release(word, mask, Tracked::assume_new());
         if prev & mask != mask {
             let bad = (mask & !prev).trailing_zeros() as usize;
             let slot = word * 64 + bad;

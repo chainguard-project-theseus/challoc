@@ -14,6 +14,7 @@ use crate::purge;
 use crate::slab::{DESC_ALIGN, SlabDesc, desc_stride};
 use crate::sys::{self, Errno, MADV_GUARD_INSTALL, PROT_NONE, PROT_READ, PROT_WRITE};
 use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use vstd::prelude::{Ghost, Tracked};
 
 pub(crate) struct TableInner {
     pub(super) descs: Lazy,
@@ -546,10 +547,22 @@ impl SlabTable {
             debug_assert!(first % 64 == 0);
             // SAFETY: the reservation holds `nslabs * slab_bits` bits and
             // the group's words were committed before the watermark moved.
-            AtomicBitmap::from_words(unsafe { core::slice::from_raw_parts(word, nbits / 64) })
+            AtomicBitmap::from_words(
+                unsafe { core::slice::from_raw_parts(word, nbits / 64) },
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+                Tracked::assume_new(),
+            )
         } else {
             // SAFETY: as above, one word.
-            AtomicBitmap::sub_word(unsafe { &*word }, (first % 64) as u32, nbits)
+            AtomicBitmap::sub_word(
+                unsafe { &*word },
+                (first % 64) as u32,
+                nbits,
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+                Tracked::assume_new(),
+            )
         }
     }
 
@@ -807,7 +820,11 @@ impl SlabTable {
                     }
                 }
                 SlabDesc::at(self.desc_base, class, slab).init(arena);
-                self.bits_unchecked(slab).init(cls.nslots());
+                let _ = self.bits_unchecked(slab).init(
+                    cls.nslots(),
+                    Ghost::assume_new(),
+                    Tracked::assume_new(),
+                );
             }
         }
         // SAFETY: the owner page for the group was committed above.

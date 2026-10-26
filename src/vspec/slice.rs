@@ -23,4 +23,10 @@ pub unsafe fn array_get_unchecked<T, const N: usize>(a: &[T; N], i: usize) -> (r
     unsafe { a.get_unchecked(i) }
 }
 
+/// A one-element slice of `*s`.
+pub assume_specification<T>[ core::slice::from_ref ](s: &T) -> (r: &[T])
+    ensures
+        r@ == seq![*s],
+;
+
 } // verus!
