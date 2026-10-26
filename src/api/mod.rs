@@ -125,6 +125,41 @@ verus! {
 /// Uninterpreted.
 pub uninterp spec fn ready() -> bool;
 
+/// The permissions `init` freezes when it publishes the allocator: here,
+/// the permission to the class table after [`layout::adopt_page_geometry`].
+/// Shared and `'static`, so nothing writes the table through it again.
+/// No code builds one yet: [`axiom_published`] is the only source.
+// Ghost: read only by proof code.
+#[allow(dead_code)]
+pub tracked struct Published {
+    pub tracked classes: &'static vstd::raw_ptr::PointsTo<[layout::Class; NCLASSES]>,
+}
+
+impl Published {
+    /// The permission is to the table's storage and initialised, and the
+    /// table is well formed ([`layout::table_ok`]) and is
+    /// [`layout::class_table`].
+    pub open spec fn ok(&self) -> bool {
+        &&& self.classes.ptr() == layout::classes_storage()
+        &&& self.classes.is_init()
+        &&& layout::table_ok(self.classes.value())
+        &&& self.classes.value() == layout::class_table()
+    }
+}
+
+/// Trusted: the frozen permissions, for a thread that knows the allocator
+/// is published ([`ready`]): a `&'static` reference to a `Published`.
+/// What it assumes is that nothing writes the class table once [`ready`]
+/// holds (`layout::adopt_page_geometry` runs before `init` publishes), so
+/// any number of these references only give shared references to a
+/// static nothing writes again.
+pub axiom fn axiom_published() -> (tracked r: &'static Published)
+    requires
+        ready(),
+    ensures
+        r.ok(),
+;
+
 } // verus!
 
 /// Storage for a value built in place at init and immutable afterwards.
