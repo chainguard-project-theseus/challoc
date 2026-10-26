@@ -11,8 +11,10 @@ tool (or a stated assumption) plugs in:
 - an `assume_specification`, `external_type_specification` or
   `external_trait_specification` (a contract for code outside the crate);
 - an `exec_allows_no_decreases_clause` function (termination assumed);
-- a `Tracked::assume_new()` or `Ghost::assume_new()` outside tests and
-  outside `external_body` bodies (an entry notes the ones inside).
+- a `Tracked::assume_new()` or `Ghost::assume_new()` inside `verus!`,
+  outside tests and outside `external_body` bodies (an entry notes the
+  ones inside; code outside `verus!` is not verified, so its own are
+  not seams).
 
 ## The ledger
 
