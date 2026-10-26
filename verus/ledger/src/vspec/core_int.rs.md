@@ -13,6 +13,7 @@ file.
 | `usize::leading_zeros` | assume_spec | core library | Kani | trusted |
 | `usize::is_power_of_two` | assume_spec | core library | Kani | trusted |
 | `u64::is_power_of_two` | assume_spec | core library | Kani | trusted |
+| `u32::is_power_of_two` | assume_spec | core library | Kani | trusted |
 | `usize::next_power_of_two` | assume_spec | core library | Kani | trusted |
 | `i64::wrapping_neg` | assume_spec | core library | Kani | trusted |
 | `usize::ilog2` | assume_spec | core library | Kani | trusted |
@@ -90,9 +91,22 @@ pub assume_specification[ u64::is_power_of_two ](x: u64) -> (r: bool)
 ;
 ```
 
+## `u32::is_power_of_two`
+
+src/vspec/core_int.rs:48. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `u32::is_power_of_two`.
+
+```rust
+pub assume_specification[ u32::is_power_of_two ](x: u32) -> (r: bool)
+    ensures r <==> exists|k: nat| k < 32 && x as nat == #[trigger] pow2(k),
+;
+```
+
 ## `usize::next_power_of_two`
 
-src/vspec/core_int.rs:49. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:54. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `next_power_of_two` panics (debug) or wraps (release) above `2^63`; challoc never asks for that.
@@ -110,7 +124,7 @@ pub assume_specification[ usize::next_power_of_two ](x: usize) -> (r: usize)
 
 ## `i64::wrapping_neg`
 
-src/vspec/core_int.rs:59. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:64. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `i64::wrapping_neg`: `-x`, except that `i64::MIN` is its own negation.
@@ -123,7 +137,7 @@ pub assume_specification[ i64::wrapping_neg ](x: i64) -> (r: i64)
 
 ## `usize::ilog2`
 
-src/vspec/core_int.rs:64. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:69. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `usize::ilog2`: the position of the highest set bit; panics for 0.
@@ -137,7 +151,7 @@ pub assume_specification[ usize::ilog2 ](x: usize) -> (r: u32)
 
 ## `core::hint::spin_loop`
 
-src/vspec/core_int.rs:74. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:79. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > A spin-wait hint to the CPU (`pause`, `isb`); no effect on memory.

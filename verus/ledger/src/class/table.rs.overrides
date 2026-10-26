@@ -1,0 +1,2 @@
+# The lock contract, as for lock.rs's axiom_acquired and axiom_held.
+axiom_table_lock_inv	allocator invariant	none (assumption)
