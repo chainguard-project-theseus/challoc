@@ -11,7 +11,7 @@ file.
 
 ## `axiom_zero_word`
 
-src/vspec/zero.rs:69. Kind: external_body proof. Category: raw pointer (internal).
+src/vspec/zero.rs:83. Kind: external_body proof. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The eight bytes of `z`, which read as zero, as the `u64` at `p` holding 0: `PointsToRaw::into_typed`, initialised with the value the bytes hold.

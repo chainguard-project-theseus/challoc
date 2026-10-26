@@ -18,11 +18,12 @@ use crate::meta::Meta;
 use crate::policy::Policy;
 use crate::stats::Snapshot;
 use crate::sys::cgroup::{Cgroup, Deferred};
+use crate::vspec::unbacked::Unbacked;
 
 use super::heap_destructor;
 use super::tcaches::Tcaches;
 use super::{FREE_ROUTE, Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
-use vstd::prelude::verus;
+use vstd::prelude::{Tracked, verus};
 
 /// The cache GC period (design 6.4): 10 s.
 pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
@@ -735,8 +736,10 @@ impl Shared {
     /// per class with `guard_interval` (0 when the kernel has no guard
     /// regions), arena 0, the huge allocator (`guard_install` is the probed
     /// `MADV_GUARD_INSTALL` support), the registries and the thread-exit
-    /// key. Returns `false` if the metadata region cannot hold the tables,
-    /// leaving `this` unusable.
+    /// key. `space` is the metadata region's uncommitted address space
+    /// (`Regions::reserve_owning`), which the metadata allocator commits
+    /// as it hands it out. Returns `false` if the metadata region cannot
+    /// hold the tables, leaving `this` unusable.
     ///
     /// # Safety
     /// `this` must point to writable storage for a `Shared` that nothing
@@ -756,6 +759,7 @@ impl Shared {
     pub unsafe fn init(
         this: *mut Shared,
         regions: Regions,
+        space: Tracked<Unbacked>,
         config: Config,
         guard_install: bool,
         pac: bool,
@@ -773,7 +777,12 @@ impl Shared {
         unsafe {
             let meta = Shared::put_head(
                 this,
-                Meta::new(regions.meta_base, regions.meta_len, regions.page_size()),
+                Meta::owning(
+                    regions.meta_base,
+                    regions.meta_len,
+                    regions.page_size(),
+                    space,
+                ),
                 regions,
             );
             let regions = Shared::put_flags(

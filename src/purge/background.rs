@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 use crate::heap::{Shared, TLS_CREATING, TLS_EXITED};
 use crate::lock::{Lock, Padded};
 use crate::sys::{self, Timespec};
+use vstd::prelude::{Ghost, Tracked};
 
 /// Stack size including the guard page below it.
 pub const STACK_SIZE: usize = 256 * 1024;
@@ -398,10 +399,21 @@ fn create(
         Some(stack)
     } else {
         // `.filter(|&s| shared.meta.commit(..).is_ok())`, spelled out:
-        // vstd does not specify `Option::filter`.
-        match shared.meta.reserve(STACK_SIZE, page) {
+        // vstd does not specify `Option::filter`. The commit takes the
+        // reservation's claim to the pages above the guard, taken on trust
+        // here.
+        match shared.meta.reserve(STACK_SIZE, page, Tracked::assume_new()) {
             Some(s) => {
-                if shared.meta.commit(s + page, STACK_SIZE - page).is_ok() {
+                if shared
+                    .meta
+                    .commit(
+                        s + page,
+                        STACK_SIZE - page,
+                        Ghost::assume_new(),
+                        Tracked::assume_new(),
+                    )
+                    .is_ok()
+                {
                     Some(s)
                 } else {
                     None

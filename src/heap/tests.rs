@@ -2433,7 +2433,11 @@ fn failed_arena_init_frees_its_set_table_object() {
     let arena = align_up(core::mem::size_of::<Arena>(), page_size());
     let gap = s.meta.top() - (s.meta.base() + st.writable);
     s.meta
-        .reserve(gap - arena - page_size(), page_size())
+        .reserve(
+            gap - arena - page_size(),
+            page_size(),
+            vstd::prelude::Tracked::assume_new(),
+        )
         .unwrap();
     let allocated = s.meta.stats().allocated;
     assert!(s.arenas.create(s).is_none());

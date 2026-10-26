@@ -151,7 +151,8 @@ verus! {
 
 /// The process's regions are well formed and separated: a heap exists
 /// only once the `Shared` is published, and [`Regions::from_parts`],
-/// which builds its regions (`Regions::reserve` calls it), ensures both.
+/// which builds its regions (`Regions::reserve_owning` calls it), ensures
+/// both.
 ///
 /// [`Regions::from_parts`]: crate::layout::Regions::from_parts
 pub open spec fn regions_ok() -> bool {
@@ -634,7 +635,11 @@ impl Heap {
             let pad = unsafe { heap.node_pad(o) };
             // SAFETY: the node lies `pad` lines into its block.
             let block = unsafe { (o as *mut u8).sub(64 * pad as usize) };
-            shared.meta.free(block, node_block_layout());
+            shared.meta.free(
+                block,
+                node_block_layout(),
+                vstd::prelude::Tracked::assume_new(),
+            );
             heap.others = next;
             o = next;
         }
@@ -659,7 +664,11 @@ impl Heap {
                 crate::purge::purge_arena(shared, arena);
             }
         }
-        shared.meta.free(h as *mut u8, Layout::new::<Heap>());
+        shared.meta.free(
+            h as *mut u8,
+            Layout::new::<Heap>(),
+            vstd::prelude::Tracked::assume_new(),
+        );
     }
 
     /// Reset every (flushed) header of one array to [`CacheHeader::EMPTY`]
@@ -671,9 +680,11 @@ impl Heap {
         for cache in caches.iter_mut() {
             if cache.cap != 0 {
                 assert_flushed(&cache.len);
-                shared
-                    .meta
-                    .free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap));
+                shared.meta.free(
+                    cache.slots as *mut u8,
+                    CacheHeader::slots_layout(cache.cap),
+                    vstd::prelude::Tracked::assume_new(),
+                );
             }
             *cache = CacheHeader::EMPTY;
         }
@@ -696,9 +707,11 @@ impl Heap {
             let h = unsafe { self.hdr_mut(cache) };
             if h.cap != 0 {
                 assert_flushed(&h.len);
-                shared
-                    .meta
-                    .free(h.slots as *mut u8, CacheHeader::slots_layout(h.cap));
+                shared.meta.free(
+                    h.slots as *mut u8,
+                    CacheHeader::slots_layout(h.cap),
+                    vstd::prelude::Tracked::assume_new(),
+                );
             }
             *h = CacheHeader::EMPTY;
         }

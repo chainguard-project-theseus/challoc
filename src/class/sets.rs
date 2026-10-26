@@ -7,7 +7,7 @@ use crate::layout::{CLASSES, LG_MAX_SLAB, LG_MIN_SLAB, NCLASSES, Regions};
 use crate::lock::{Lock, RawLock};
 use crate::meta::Meta;
 use crate::sys::Errno;
-use vstd::prelude::Tracked;
+use vstd::prelude::{Ghost, Tracked};
 
 /// A never-freed table in the metadata region, committed page by page as
 /// the high-water mark grows (a table of at most `meta::EAGER_MAX` bytes
@@ -37,7 +37,15 @@ impl Lazy {
         // With metadata THP on (`thp.rs`) the table starts on a folio
         // boundary, so the rounded commits of `ensure` cover whole aligned
         // folios and the kernel can map them as such.
-        let base = meta.reserve_table(len, align.max(crate::thp::meta_folio_size()))?;
+        // The claim to the pages and the zero permission are taken on
+        // trust until the table carries them.
+        let base = meta
+            .reserve_table(
+                len,
+                align.max(crate::thp::meta_folio_size()),
+                Tracked::assume_new(),
+            )
+            .0?;
         Some(Lazy {
             base,
             len,
@@ -53,7 +61,12 @@ impl Lazy {
         let unit = crate::thp::meta_folio_size().max(page);
         let want = ((upto + unit - 1) & !(unit - 1)).min((self.len + page - 1) & !(page - 1));
         if want > self.committed {
-            meta.commit(self.base + self.committed, want - self.committed)?;
+            meta.commit(
+                self.base + self.committed,
+                want - self.committed,
+                Ghost::assume_new(),
+                Tracked::assume_new(),
+            )?;
             self.committed = want;
         }
         Ok(())

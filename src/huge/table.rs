@@ -340,7 +340,7 @@ impl Table {
     {
         let layout = Table::layout(lg_cap);
         if layout.size() <= meta::MAX_BINNED {
-            let p = meta.alloc_zeroed(layout);
+            let p = meta.alloc_zeroed(layout).0;
             if p.is_null() {
                 None
             } else {
@@ -368,7 +368,11 @@ impl Table {
             own.binned@ == self.binned,
     {
         if self.binned {
-            meta.free(self.entries as *mut u8, Table::layout(self.lg_cap));
+            meta.free(
+                self.entries as *mut u8,
+                Table::layout(self.lg_cap),
+                Tracked::assume_new(),
+            );
         }
     }
 

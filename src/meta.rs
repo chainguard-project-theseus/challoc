@@ -46,13 +46,18 @@ use core::ptr;
 
 use crate::lock::{Lock, RawLock};
 use crate::sys::Errno;
+use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::layout::{layout_align, layout_size};
+use crate::vspec::unbacked::Unbacked;
+use crate::vspec::zero::{ZeroRaw, Zeroed};
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::pow2;
 #[cfg(verus_keep_ghost)]
 use vstd::bits::lemma_usize_shl_is_mul;
 use vstd::prelude::*;
+use vstd::raw_ptr::{PointsTo, PointsToRaw, ptr_mut_write, ptr_ref};
+use vstd::resource::map::{GhostMapAuth, GhostPointsTo, GhostSubmap};
 #[cfg(verus_keep_ghost)]
 use vstd::std_specs::bits::{axiom_u64_leading_zeros, u64_leading_zeros};
 
@@ -448,9 +453,28 @@ pub struct MetaStats {
     pub eager: usize,
 }
 
-struct FreeNode {
+verus! {
+
+/// The link word at the start of a free block.
+pub(crate) struct FreeNode {
     next: *mut FreeNode,
 }
+
+/// Ghost: what [`Meta::alloc_zeroed`] hands out with an object besides
+/// the permission to its `layout.size()` bytes, and [`Meta::free`] takes
+/// back with that permission: the record the allocation made of the
+/// object in the live-object map (`Inner::live`), and the permission to
+/// the bin's bytes past `layout.size()`. The holder of an object keeps it
+/// with the object; one exists per live object, so an object is freed at
+/// most once.
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+pub tracked struct MetaClaim {
+    tracked claim: Option<GhostPointsTo<*mut FreeNode, nat>>,
+    tracked slack: PointsToRaw,
+}
+
+} // verus!
 
 /// Whether small tables may be carved from the object side (the module
 /// doc): decided on the first table from the kernel's overcommit mode and
@@ -488,6 +512,59 @@ struct Inner {
     /// only while eagerly carved tables wait for their deferred commit
     /// ([`Inner::flush`]); page aligned.
     frontier: usize,
+    // The ghost fields below are zero-sized: they change neither the
+    // offsets above nor the machine code. Unverified code takes them on
+    // trust until the metadata allocator's proofs maintain them.
+    /// Ghost: the blocks on each bin's free list, head first.
+    #[allow(dead_code)]
+    lists: Ghost<Seq<Seq<*mut FreeNode>>>,
+    /// Ghost: the permission to each free block's link word.
+    #[allow(dead_code)]
+    perms: Tracked<Map<*mut FreeNode, PointsTo<FreeNode>>>,
+    /// Ghost: the live objects, address to bin. [`Inner::alloc`] records
+    /// each object it hands out; the claim to one, a `GhostPointsTo` of
+    /// this map, is what [`Inner::free`] takes back.
+    #[allow(dead_code)]
+    live: Tracked<GhostMapAuth<*mut FreeNode, nat>>,
+    /// Ghost: the reserved bytes no commit has claimed yet, `true` on the
+    /// reservation side, `false` in an eager table. [`Inner::reserve`] and
+    /// [`Inner::reserve_eager`] record each reservation they hand out; the
+    /// claim to its bytes, a `GhostSubmap` of this map, is what
+    /// [`Inner::commit`] takes.
+    #[allow(dead_code)]
+    pages: Tracked<GhostMapAuth<int, bool>>,
+    /// Ghost: the permission to the committed bytes above the bump
+    /// pointer, from which [`Inner::alloc`] hands out each fresh object's.
+    #[allow(dead_code)]
+    fresh: Tracked<PointsToRaw>,
+    /// Ghost: the uncommitted address space between the object side and
+    /// the reservations, which grants no access; [`Inner::commit_bump_to`]
+    /// commits its front, [`Inner::reserve_eager`] carves its front for a
+    /// table and [`Inner::reserve`] gives up the back it reserves.
+    #[allow(dead_code)]
+    unbacked: Tracked<Unbacked>,
+    /// Ghost: the permission to each free block's bytes past its link
+    /// word, which [`Inner::alloc`] joins back to the link word's.
+    #[allow(dead_code)]
+    tails: Tracked<Map<*mut FreeNode, PointsToRaw>>,
+    /// Ghost: the permission to the table [`Inner::reserve_committed`]
+    /// committed last, or to the committed bytes [`Inner::reserve_eager`]
+    /// carved last.
+    #[allow(dead_code)]
+    handed: Tracked<PointsToRaw>,
+    /// Ghost: the token that `fresh`'s bytes read as zero.
+    #[allow(dead_code)]
+    fresh_zero: Tracked<Zeroed>,
+    /// Ghost: the zero token of the fresh object [`Inner::alloc`] or the
+    /// table [`Inner::reserve_eager`] or [`Inner::reserve_committed`]
+    /// handed out last.
+    #[allow(dead_code)]
+    handed_zero: Tracked<Zeroed>,
+    /// Ghost: the uncommitted address space [`Inner::reserve_eager`]
+    /// carved last: the part of the table whose commit is deferred
+    /// ([`Inner::flush`]).
+    #[allow(dead_code)]
+    handed_lazy: Tracked<Unbacked>,
 }
 
 // SAFETY: the raw pointers are addresses inside the region, meaningful in
@@ -593,7 +670,9 @@ fn commit_range(addr: usize, len: usize) -> Result<(), Errno> {
 }
 
 impl Inner {
-    const fn new(base: usize, len: usize, page: usize) -> Inner {
+    /// An allocator over `[base, base + len)`, given `space`, the region's
+    /// uncommitted address space.
+    const fn new(base: usize, len: usize, page: usize, space: Tracked<Unbacked>) -> Inner {
         assert!(
             page.is_power_of_two() && page >= MIN_ALIGN,
             "meta: bad page size"
@@ -623,6 +702,17 @@ impl Inner {
             top_committed: 0,
             eager: EAGER_UNPROBED,
             frontier: base,
+            lists: Ghost::assume_new(),
+            perms: Tracked::assume_new(),
+            live: Tracked::assume_new(),
+            pages: Tracked::assume_new(),
+            fresh: Tracked::assume_new(),
+            unbacked: space,
+            tails: Tracked::assume_new(),
+            handed: Tracked::assume_new(),
+            fresh_zero: Tracked::assume_new(),
+            handed_zero: Tracked::assume_new(),
+            handed_lazy: Tracked::assume_new(),
         }
     }
 
@@ -688,7 +778,12 @@ impl Inner {
     ///
     /// [`flush`]: Inner::flush
     /// [`commit`]: Inner::commit
-    fn reserve_eager(&mut self, len: usize, align: usize) -> Option<usize> {
+    fn reserve_eager(
+        &mut self,
+        len: usize,
+        align: usize,
+        _claim: Tracked<&mut GhostSubmap<int, bool>>,
+    ) -> Option<usize> {
         let align = align.max(self.page);
         let len = align_up(len.max(1), self.page);
         let start = align_up(self.bump, align);
@@ -714,36 +809,49 @@ impl Inner {
         Some(start)
     }
 
-    fn alloc(&mut self, bin: usize) -> *mut u8 {
+    /// An object of bin `bin`, null when the region is exhausted or the
+    /// kernel refuses to commit, with the permission to its bytes and the
+    /// claim [`Inner::free`] takes back.
+    #[allow(clippy::type_complexity)]
+    fn alloc(&mut self, bin: usize) -> (*mut u8, Tracked<(PointsToRaw, MetaClaim)>) {
         let size = BINS[bin] as usize;
         let head = self.free[bin];
         if !head.is_null() {
-            // SAFETY: `head` came from `free`, so it is a live block of at
-            // least `size` bytes inside the bump area holding a `FreeNode`.
-            self.free[bin] = unsafe { (*head).next };
+            // `head` came from `free`, so it is a live block of at least
+            // `size` bytes inside the bump area holding a `FreeNode`: the
+            // permission to its link word is the one `free` wrote it with.
+            self.free[bin] = ptr_ref(head, Tracked::assume_new()).next;
             self.stats.allocated += size;
-            return head as *mut u8;
+            return (head as *mut u8, Tracked::assume_new());
         }
         let start = align_up(self.bump, bin_align(bin));
         let Some(end) = start.checked_add(size) else {
-            return ptr::null_mut();
+            return (ptr::null_mut(), Tracked::assume_new());
         };
         if end > self.top {
-            return ptr::null_mut();
+            return (ptr::null_mut(), Tracked::assume_new());
         }
         if end > self.committed {
             match self.commit_bump_to(end) {
                 Ok(delta) => self.stats.committed += delta,
-                Err(_) => return ptr::null_mut(),
+                Err(_) => return (ptr::null_mut(), Tracked::assume_new()),
             }
         }
         self.bump = end;
         self.stats.bumped = end - self.base;
         self.stats.allocated += size;
-        start as *mut u8
+        (addr_to_ptr(start), Tracked::assume_new())
     }
 
-    fn free(&mut self, p: *mut u8, bin: usize) {
+    /// Put `p`, an object of bin `bin`, on its bin's free list, with the
+    /// permission to its bytes and its record in the live-object map.
+    fn free(
+        &mut self,
+        p: *mut u8,
+        bin: usize,
+        _raw: Tracked<PointsToRaw>,
+        _claim: Tracked<GhostPointsTo<*mut FreeNode, nat>>,
+    ) {
         let addr = p as usize;
         let size = BINS[bin] as usize;
         assert!(
@@ -758,14 +866,27 @@ impl Inner {
             self.free[bin] != node,
             "meta: double free of the free list head"
         );
-        // SAFETY: the block is `size >= 16` bytes of committed memory that
-        // the caller has given up, aligned to at least 16.
-        unsafe { (*node).next = self.free[bin] };
+        // The block is `size >= 16` bytes of committed memory that the
+        // caller has given up, aligned to at least 16: the permission to
+        // its link word is the first 8 bytes of the caller's.
+        ptr_mut_write(
+            node,
+            Tracked::assume_new(),
+            FreeNode {
+                next: self.free[bin],
+            },
+        );
         self.free[bin] = node;
         self.stats.allocated -= size;
     }
 
-    fn reserve(&mut self, len: usize, align: usize) -> Option<usize> {
+    fn reserve(
+        &mut self,
+        len: usize,
+        align: usize,
+        _claim: Tracked<&mut GhostSubmap<int, bool>>,
+        _given: Tracked<&mut Unbacked>,
+    ) -> Option<usize> {
         assert!(
             align.is_power_of_two(),
             "meta: reserve alignment not a power of two"
@@ -784,7 +905,13 @@ impl Inner {
         Some(start)
     }
 
-    fn commit(&mut self, addr: usize, len: usize) -> Result<(), Errno> {
+    fn commit(
+        &mut self,
+        addr: usize,
+        len: usize,
+        _top_side: Ghost<bool>,
+        _claim: Tracked<&mut GhostSubmap<int, bool>>,
+    ) -> Result<(), Errno> {
         assert!(
             addr.is_multiple_of(self.page) && len.is_multiple_of(self.page) && len > 0,
             "meta: commit range not page aligned"
@@ -823,7 +950,7 @@ impl Inner {
     fn reserve_committed(&mut self, len: usize, align: usize) -> Option<usize> {
         if self.eager_ok(len) {
             let (bump, frontier, stats) = (self.bump, self.frontier, self.stats);
-            if let Some(p) = self.reserve_eager(len, align) {
+            if let Some(p) = self.reserve_eager(len, align, Tracked::assume_new()) {
                 if self.flush().is_ok() {
                     self.stats.committed += align_up(len.max(1), self.page);
                     return Some(p);
@@ -838,8 +965,16 @@ impl Inner {
         }
         let old_top = self.top;
         let old_reserved = self.stats.reserved;
-        let start = self.reserve(len, align)?;
-        if self.commit(start, old_top - start).is_err() {
+        let start = self.reserve(len, align, Tracked::assume_new(), Tracked::assume_new())?;
+        if self
+            .commit(
+                start,
+                old_top - start,
+                Ghost::assume_new(),
+                Tracked::assume_new(),
+            )
+            .is_err()
+        {
             self.top = old_top;
             self.stats.reserved = old_reserved;
             return None;
@@ -883,11 +1018,19 @@ fn eager_policy() -> bool {
 }
 
 impl Meta {
-    /// An allocator over `[base, base + len)`, both page multiples.
-    pub const fn new(base: usize, len: usize, page: usize) -> Meta {
+    /// An allocator over `[base, base + len)`, both page multiples, given
+    /// `space`, the region's uncommitted address space, which it commits
+    /// as it hands it out.
+    pub const fn owning(base: usize, len: usize, page: usize, space: Tracked<Unbacked>) -> Meta {
         Meta {
-            inner: Lock::new(Inner::new(base, len, page)),
+            inner: Lock::new(Inner::new(base, len, page, space)),
         }
+    }
+
+    /// [`Meta::owning`] for the tests, over a mapping a test owns.
+    #[cfg(test)]
+    pub const fn new(base: usize, len: usize, page: usize) -> Meta {
+        Meta::owning(base, len, page, Tracked::assume_new())
     }
 
     /// The lock, for the fork handlers.
@@ -911,11 +1054,19 @@ impl Meta {
         let Some(bin) = bin_for(layout) else {
             panic!("meta: object too large")
         };
-        self.inner.lock().alloc(bin)
+        self.inner.lock().alloc(bin).0
     }
 
-    /// [`alloc`](Meta::alloc), then zero the object if it was reused.
-    pub fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+    /// [`alloc`](Meta::alloc), then zero the object if it was reused; with
+    /// the permission to the object's bytes and its [`MetaClaim`], which
+    /// [`free`](Meta::free) takes back, and the token that they read as
+    /// zero.
+    // The tracked results are part of the signature.
+    #[allow(clippy::type_complexity)]
+    pub fn alloc_zeroed(
+        &self,
+        layout: Layout,
+    ) -> (*mut u8, Tracked<(PointsToRaw, MetaClaim)>, Tracked<Zeroed>) {
         assert!(
             layout.align() <= MAX_ALIGN,
             "meta: alignment too large for an object"
@@ -925,23 +1076,26 @@ impl Meta {
         };
         let mut g = self.inner.lock();
         let before = g.bump;
-        let p = g.alloc(bin);
+        let (p, blk) = g.alloc(bin);
         if !p.is_null() && (p as usize) < before {
             // Reused: below the old bump pointer. Fresh memory is above it
             // and has never been written.
             // SAFETY: `p` is a live block of `BINS[bin]` bytes we just took.
             unsafe { ptr::write_bytes(p, 0, BINS[bin] as usize) };
         }
-        p
+        (p, blk, Tracked::assume_new())
     }
 
-    /// Return an object allocated with the same `layout`.
-    pub fn free(&self, p: *mut u8, layout: Layout) {
+    /// Return an object allocated with the same `layout`, with the
+    /// permission to its bytes and its [`MetaClaim`].
+    pub fn free(&self, p: *mut u8, layout: Layout, _blk: Tracked<(PointsToRaw, MetaClaim)>) {
         assert!(!p.is_null(), "meta: free of null");
         let Some(bin) = bin_for(layout) else {
             panic!("meta: free with an impossible layout")
         };
-        self.inner.lock().free(p, bin);
+        self.inner
+            .lock()
+            .free(p, bin, Tracked::assume_new(), Tracked::assume_new());
     }
 
     /// Carve `len` bytes (rounded up to pages) aligned to `align` (at least a
@@ -950,9 +1104,17 @@ impl Meta {
     /// when it would collide with the object area. For a table that is
     /// used from its base up, [`reserve_table`](Meta::reserve_table); this
     /// is for a reservation that needs a `PROT_NONE` part (the background
-    /// thread's stack guard).
-    pub fn reserve(&self, len: usize, align: usize) -> Option<usize> {
-        self.inner.lock().reserve(len, align)
+    /// thread's stack guard). On success `claim` is the claim to the
+    /// reserved pages, which `commit` takes.
+    pub fn reserve(
+        &self,
+        len: usize,
+        align: usize,
+        claim: Tracked<&mut GhostSubmap<int, bool>>,
+    ) -> Option<usize> {
+        self.inner
+            .lock()
+            .reserve(len, align, claim, Tracked::assume_new())
     }
 
     /// A never-freed table of `len` bytes aligned to `align` whose owner
@@ -964,22 +1126,42 @@ impl Meta {
     /// when the object side cannot hold it, it is a
     /// [`reserve`](Meta::reserve). Either way the owner calls
     /// [`commit`](Meta::commit) on the pages it uses before touching them.
-    pub fn reserve_table(&self, len: usize, align: usize) -> Option<usize> {
+    /// On success `claim` is the claim to the table's pages, which
+    /// `commit` takes, and the result carries the permission to the
+    /// table's bytes, which read as zero.
+    pub fn reserve_table(
+        &self,
+        len: usize,
+        align: usize,
+        claim: Tracked<&mut GhostSubmap<int, bool>>,
+    ) -> (Option<usize>, Tracked<ZeroRaw>) {
         let mut g = self.inner.lock();
         if g.eager_ok(len)
-            && let Some(p) = g.reserve_eager(len, align)
+            && let Some(p) = g.reserve_eager(len, align, Tracked::assume_new())
         {
-            return Some(p);
+            return (Some(p), Tracked::assume_new());
         }
-        g.reserve(len, align)
+        (
+            g.reserve(len, align, claim, Tracked::assume_new()),
+            Tracked::assume_new(),
+        )
     }
 
     /// Make `[addr, addr + len)`, page aligned and inside a reservation or
     /// an eagerly carved table, readable and writable (accounting only for
-    /// the latter). Each page should be committed once; the
-    /// committed-bytes counter trusts the caller on that.
-    pub fn commit(&self, addr: usize, len: usize) -> Result<(), Errno> {
-        self.inner.lock().commit(addr, len)
+    /// the latter), given `claim`, the claim to its pages that `reserve`
+    /// or `reserve_table` handed out; `side` says which of the two it
+    /// came from (`true` for the reservation side). Each page should be
+    /// committed once; the committed-bytes counter trusts the caller on
+    /// that.
+    pub fn commit(
+        &self,
+        addr: usize,
+        len: usize,
+        side: Ghost<bool>,
+        claim: Tracked<&mut GhostSubmap<int, bool>>,
+    ) -> Result<(), Errno> {
+        self.inner.lock().commit(addr, len, side, claim)
     }
 
     /// [`reserve_table`](Meta::reserve_table) and commit the whole range.
@@ -1035,6 +1217,27 @@ mod tests {
     /// page, so 16 pages under 4 KiB pages and one under 64 KiB pages.
     fn chunk() -> usize {
         align_up(COMMIT_CHUNK, page_size())
+    }
+
+    /// `Meta::free` without the claim (the tests hold none: they free
+    /// what `Meta::alloc` returned, or deliberately bad pointers).
+    fn free(m: &Meta, p: *mut u8, l: Layout) {
+        m.free(p, l, Tracked::assume_new());
+    }
+
+    /// `Meta::reserve` without the claim to the pages.
+    fn reserve(m: &Meta, len: usize, align: usize) -> Option<usize> {
+        m.reserve(len, align, Tracked::assume_new())
+    }
+
+    /// `Meta::reserve_table`'s address, without the claim to the pages.
+    fn reserve_table(m: &Meta, len: usize, align: usize) -> Option<usize> {
+        m.reserve_table(len, align, Tracked::assume_new()).0
+    }
+
+    /// `Meta::commit` without the claim to the pages.
+    fn commit(m: &Meta, addr: usize, len: usize) -> Result<(), Errno> {
+        m.commit(addr, len, Ghost::assume_new(), Tracked::assume_new())
     }
 
     /// A region for tests: a real `PROT_NONE` reservation, so that commit
@@ -1201,31 +1404,31 @@ mod tests {
         let c = m.alloc(l);
         let d = m.alloc(layout(1000, 8));
         let bumped = m.stats().bumped;
-        m.free(a, l);
-        m.free(c, l);
+        free(&m, a, l);
+        free(&m, c, l);
         assert_eq!(m.stats().allocated, 1024);
         // Same bin: last freed comes back first, nothing new is bumped.
         assert_eq!(m.alloc(l), c);
         assert_eq!(m.alloc(l), a);
         assert_eq!(m.stats().bumped, bumped);
         // Different bin: not served from that list.
-        m.free(a, l);
+        free(&m, a, l);
         let e = m.alloc(layout(200, 8));
         assert_ne!(e, a);
         assert!(m.stats().bumped > bumped);
-        m.free(d, layout(1000, 8));
+        free(&m, d, layout(1000, 8));
         assert_eq!(m.alloc(layout(1000, 8)), d);
         // alloc_zeroed scrubs a reused block but leaves fresh ones alone.
         unsafe { core::slice::from_raw_parts_mut(d, 1024) }.fill(0xFF);
-        m.free(d, layout(1000, 8));
-        let z = m.alloc_zeroed(layout(1000, 8));
+        free(&m, d, layout(1000, 8));
+        let z = m.alloc_zeroed(layout(1000, 8)).0;
         assert_eq!(z, d);
         assert!(
             unsafe { core::slice::from_raw_parts(z, 1024) }
                 .iter()
                 .all(|&x| x == 0)
         );
-        let fresh = m.alloc_zeroed(layout(5000, 8));
+        let fresh = m.alloc_zeroed(layout(5000, 8)).0;
         assert!(
             unsafe { core::slice::from_raw_parts(fresh, 5000) }
                 .iter()
@@ -1273,12 +1476,12 @@ mod tests {
         assert_eq!(m.stats().bumped, 16 * page_size());
         assert!(m.alloc(layout(1, 1)).is_null());
         assert_eq!(
-            m.reserve(page_size(), page_size()),
+            reserve(&m, page_size(), page_size()),
             None,
             "no room left for a reservation"
         );
         // Freeing one makes exactly one more available.
-        m.free(got.pop().unwrap(), l);
+        free(&m, got.pop().unwrap(), l);
         assert!(!m.alloc(l).is_null());
         assert!(m.alloc(l).is_null());
         // Distinct pointers throughout.
@@ -1292,11 +1495,11 @@ mod tests {
         let b = Backing::new(64 * page_size());
         let m = b.meta();
         let end = b.base + b.len;
-        let r1 = m.reserve(3 * page_size(), page_size()).unwrap();
+        let r1 = reserve(&m, 3 * page_size(), page_size()).unwrap();
         assert_eq!(r1, end - 3 * page_size());
         assert_eq!(m.top(), r1);
         // Sub-page lengths round up; large alignment rounds the start down.
-        let r2 = m.reserve(10, 8 * page_size()).unwrap();
+        let r2 = reserve(&m, 10, 8 * page_size()).unwrap();
         assert_eq!(r2 % (8 * page_size()), 0);
         assert!(r2 + page_size() <= r1);
         assert_eq!(m.top(), r2);
@@ -1304,7 +1507,7 @@ mod tests {
         assert_eq!(s.reserved, end - r2);
         assert_eq!(s.committed, 0, "reservations are uncommitted");
         // Commit part of r1, write into it.
-        m.commit(r1 + page_size(), page_size()).unwrap();
+        commit(&m, r1 + page_size(), page_size()).unwrap();
         assert_eq!(m.stats().committed, page_size());
         unsafe { core::slice::from_raw_parts_mut((r1 + page_size()) as *mut u8, page_size()) }
             .fill(7);
@@ -1335,8 +1538,8 @@ mod tests {
         }
         assert_eq!(m.stats().bumped, m.top() - b.base);
         assert_eq!(n, (m.top() - b.base) / page_size() - 2);
-        assert_eq!(m.reserve(page_size(), page_size()), None);
-        assert_eq!(m.reserve_table(page_size(), page_size()), None);
+        assert_eq!(reserve(&m, page_size(), page_size()), None);
+        assert_eq!(reserve_table(&m, page_size(), page_size()), None);
         // Object side writable exactly up to the reservation boundary;
         // committed counts r1's page, r3 and the objects' chunks.
         let s = m.stats();
@@ -1352,9 +1555,7 @@ mod tests {
         let b = Backing::new(EAGER_MAX + (EAGER_MAX >> 1) + 64 * page_size());
         let m = b.meta();
         let end = b.base + b.len;
-        let big = m
-            .reserve_table(EAGER_MAX + page_size(), page_size())
-            .unwrap();
+        let big = reserve_table(&m, EAGER_MAX + page_size(), page_size()).unwrap();
         assert_eq!(
             big,
             end - EAGER_MAX - page_size(),
@@ -1362,18 +1563,18 @@ mod tests {
         );
         assert_eq!(m.stats().eager, 0);
         assert_eq!(m.stats().reserved, EAGER_MAX + page_size());
-        m.commit(big, page_size()).unwrap();
+        commit(&m, big, page_size()).unwrap();
         let s = m.stats();
         assert_eq!((s.committed, s.writable), (page_size(), page_size()));
         m.set_eager_for_test(false);
-        let small = m.reserve_table(page_size(), page_size()).unwrap();
+        let small = reserve_table(&m, page_size(), page_size()).unwrap();
         assert_eq!(small, big - page_size(), "eager off: from the top too");
         assert_eq!(m.stats().eager, 0);
         let c = m.reserve_committed(3 * page_size(), page_size()).unwrap();
         assert_eq!(c, small - 3 * page_size());
         assert_eq!(m.stats().committed, 4 * page_size());
         m.set_eager_for_test(true);
-        let e = m.reserve_table(page_size(), page_size()).unwrap();
+        let e = reserve_table(&m, page_size(), page_size()).unwrap();
         assert_eq!(e, b.base, "eager on again: from the base");
         assert_eq!(m.stats().eager, page_size());
     }
@@ -1389,13 +1590,13 @@ mod tests {
         m.set_eager_for_test(true);
         let o1 = m.alloc(layout(200, 8));
         assert_eq!(o1 as usize, b.base);
-        let t1 = m.reserve_table(3 * page_size(), page_size()).unwrap();
+        let t1 = reserve_table(&m, 3 * page_size(), page_size()).unwrap();
         assert_eq!(
             t1,
             b.base + page_size(),
             "page aligned, right after the objects' page"
         );
-        let t2 = m.reserve_table(10, 8 * page_size()).unwrap();
+        let t2 = reserve_table(&m, 10, 8 * page_size()).unwrap();
         assert_eq!(t2 % (8 * page_size()), 0);
         assert!(t2 >= t1 + 3 * page_size());
         let o2 = m.alloc(layout(1000, 8));
@@ -1404,7 +1605,7 @@ mod tests {
             t2 + page_size(),
             "objects resume right after the table"
         );
-        let t3 = m.reserve_table(EAGER_MAX, page_size()).unwrap();
+        let t3 = reserve_table(&m, EAGER_MAX, page_size()).unwrap();
         assert!(t3 >= o2 as usize + 1024);
         let before = m.stats();
         assert_eq!(before.eager, 3 * page_size() + page_size() + EAGER_MAX);
@@ -1412,8 +1613,8 @@ mod tests {
         assert!(before.writable >= before.bumped && before.writable.is_multiple_of(page_size()));
         assert!(before.committed <= before.writable);
         // The owner's commits: writable does not move, committed counts.
-        m.commit(t1, page_size()).unwrap();
-        m.commit(t3 + EAGER_MAX - page_size(), page_size()).unwrap();
+        commit(&m, t1, page_size()).unwrap();
+        commit(&m, t3 + EAGER_MAX - page_size(), page_size()).unwrap();
         let after = m.stats();
         assert_eq!(after.writable, before.writable);
         assert_eq!(after.committed, before.committed + 2 * page_size());
@@ -1439,12 +1640,12 @@ mod tests {
         let b = Backing::new(16 * page_size());
         let m = b.meta();
         m.set_eager_for_test(true);
-        let top = m.reserve(4 * page_size(), page_size()).unwrap();
+        let top = reserve(&m, 4 * page_size(), page_size()).unwrap();
         assert_eq!(top, b.base + 12 * page_size());
         // 10 pages fit on the object side (12 free); the chunk commit
         // stops at the reservations (under 4 KiB pages; a 64 KiB-page
         // chunk is one page, so the frontier stops at the table's end).
-        let t1 = m.reserve_table(10 * page_size(), page_size()).unwrap();
+        let t1 = reserve_table(&m, 10 * page_size(), page_size()).unwrap();
         assert_eq!(t1, b.base);
         assert_eq!(
             m.stats().writable,
@@ -1452,14 +1653,14 @@ mod tests {
         );
         // 3 more do not: not eagerly (past `top`), not as a reservation
         // (the frontier is at `top`).
-        assert_eq!(m.reserve_table(3 * page_size(), page_size()), None);
+        assert_eq!(reserve_table(&m, 3 * page_size(), page_size()), None);
         assert_eq!(m.reserve_committed(3 * page_size(), page_size()), None);
         assert_eq!(m.top(), top, "a failed table reserves nothing");
         // 2 do, eagerly; then nothing, while an object in the free list
         // still does.
-        let t2 = m.reserve_table(2 * page_size(), page_size()).unwrap();
+        let t2 = reserve_table(&m, 2 * page_size(), page_size()).unwrap();
         assert_eq!(t2, b.base + 10 * page_size());
-        assert_eq!(m.reserve_table(page_size(), page_size()), None);
+        assert_eq!(reserve_table(&m, page_size(), page_size()), None);
         let l = layout(16, 8);
         assert!(m.alloc(l).is_null());
         let s = m.stats();
@@ -1473,8 +1674,8 @@ mod tests {
             )
         );
         assert_eq!(s.committed, 0, "nothing asked for yet");
-        m.commit(t1, 10 * page_size()).unwrap();
-        m.commit(t2, 2 * page_size()).unwrap();
+        commit(&m, t1, 10 * page_size()).unwrap();
+        commit(&m, t2, 2 * page_size()).unwrap();
         assert_eq!(m.stats().committed, 12 * page_size());
     }
 
@@ -1495,12 +1696,12 @@ mod tests {
     fn reserve_too_large_fails_cleanly() {
         let b = Backing::new(8 * page_size());
         let m = b.meta();
-        assert_eq!(m.reserve(9 * page_size(), page_size()), None);
-        assert_eq!(m.reserve(usize::MAX, page_size()), None);
-        assert_eq!(m.reserve(page_size(), 1 << 40), None);
+        assert_eq!(reserve(&m, 9 * page_size(), page_size()), None);
+        assert_eq!(reserve(&m, usize::MAX, page_size()), None);
+        assert_eq!(reserve(&m, page_size(), 1 << 40), None);
         assert_eq!(m.stats().reserved, 0);
         assert_eq!(m.top(), b.base + b.len);
-        assert_eq!(m.reserve(8 * page_size(), page_size()), Some(b.base));
+        assert_eq!(reserve(&m, 8 * page_size(), page_size()), Some(b.base));
         assert_eq!(m.alloc(layout(1, 1)), ptr::null_mut());
     }
 
@@ -1511,7 +1712,8 @@ mod tests {
         let m = b.meta();
         let _ = m.alloc(layout(64, 8));
         let mut foreign = [0u8; 128];
-        m.free(
+        free(
+            &m,
             align_up(foreign.as_mut_ptr() as usize, 64) as *mut u8,
             layout(64, 8),
         );
@@ -1523,7 +1725,7 @@ mod tests {
         let b = Backing::new(1 << 16);
         let m = b.meta();
         let p = m.alloc(layout(64, 8));
-        m.free(unsafe { p.add(8) }, layout(64, 8));
+        free(&m, unsafe { p.add(8) }, layout(64, 8));
     }
 
     #[test]
@@ -1532,7 +1734,7 @@ mod tests {
         let b = Backing::new(1 << 16);
         let m = b.meta();
         let p = m.alloc(layout(64, 8));
-        m.free(unsafe { p.add(64) }, layout(64, 8));
+        free(&m, unsafe { p.add(64) }, layout(64, 8));
     }
 
     #[test]
@@ -1557,8 +1759,8 @@ mod tests {
         // Several pages, so the one-page reservation leaves room below it.
         let b = Backing::new(4 * page_size());
         let m = b.meta();
-        let _ = m.reserve(page_size(), page_size());
-        let _ = m.commit(b.base, page_size());
+        let _ = reserve(&m, page_size(), page_size());
+        let _ = commit(&m, b.base, page_size());
     }
 
     /// Random alloc/free against a model: no overlap, alignment, contents
@@ -1603,7 +1805,7 @@ mod tests {
                 let (p, l, fill) = live.swap_remove(i);
                 let slice = unsafe { core::slice::from_raw_parts(p, l.size()) };
                 assert!(slice.iter().all(|&x| x == fill), "contents clobbered");
-                m.free(p, l);
+                free(&m, p, l);
                 expect_allocated -= BINS[bin_for(l).unwrap()] as usize;
             }
             let st = m.stats();
@@ -1614,7 +1816,7 @@ mod tests {
         // Free everything, then the same sequence of layouts reuses memory.
         let layouts: Vec<Layout> = live.iter().map(|(_, l, _)| *l).collect();
         for (p, l, _) in live.drain(..) {
-            m.free(p, l);
+            free(&m, p, l);
         }
         assert_eq!(m.stats().allocated, 0);
         let bumped = m.stats().bumped;
@@ -1653,13 +1855,13 @@ mod tests {
                             let (p, l) = live.swap_remove((xorshift(&mut s) as usize) % (i + 1));
                             let sl = unsafe { core::slice::from_raw_parts(p, l.size()) };
                             assert!(sl.iter().all(|&x| x == fill), "thread {t} block clobbered");
-                            m.free(p, l);
+                            free(m, p, l);
                         }
                     }
                     for (p, l) in live {
                         let sl = unsafe { core::slice::from_raw_parts(p, l.size()) };
                         assert!(sl.iter().all(|&x| x == fill));
-                        m.free(p, l);
+                        free(m, p, l);
                     }
                 });
             }
@@ -1711,14 +1913,14 @@ mod tests {
         let mut tables = Vec::new();
         for i in 0..20usize {
             let len = (1 + i % 5) * page_size() + 100;
-            tables.push((m.reserve_table(len, page_size()).unwrap(), len));
+            tables.push((reserve_table(&m, len, page_size()).unwrap(), len));
         }
         assert_eq!(writable_ranges(b.base, b.len), vec![], "carves alone");
         let s = m.stats();
         let (last, last_len) = tables[19];
         assert_eq!(s.writable, align_up(last + last_len - b.base, chunk()));
         assert_eq!(s.committed, s.writable - s.eager, "the chunk slack only");
-        m.commit(tables[3].0, page_size()).unwrap();
+        commit(&m, tables[3].0, page_size()).unwrap();
         assert_eq!(
             writable_ranges(b.base, b.len),
             vec![(b.base, b.base + s.writable)],
@@ -1730,7 +1932,7 @@ mod tests {
             unsafe { core::ptr::write_volatile((t + len - 1) as *mut u8, 1) };
         }
         // More carves, then an object past them: one commit again.
-        let t = m.reserve_table(EAGER_MAX, page_size()).unwrap();
+        let t = reserve_table(&m, EAGER_MAX, page_size()).unwrap();
         let before = m.stats();
         assert_eq!(writable_ranges(b.base, b.len).len(), 1);
         assert!(writable_ranges(b.base, b.len)[0].1 < t + EAGER_MAX);
@@ -1767,10 +1969,8 @@ mod tests {
             b.base + align_up(10 * 1024, page_size()),
             "page aligned, after the ten 1 KiB objects"
         );
-        let big = m
-            .reserve_table(EAGER_MAX + page_size(), page_size())
-            .unwrap();
-        m.commit(big + page_size(), page_size()).unwrap();
+        let big = reserve_table(&m, EAGER_MAX + page_size(), page_size()).unwrap();
+        commit(&m, big + page_size(), page_size()).unwrap();
         // The object side's frontier: the chunks through the small table's
         // end (one chunk under 4 KiB pages, four pages under 64 KiB pages).
         let front = align_up(small + 3 * page_size() - b.base, chunk());
@@ -1816,8 +2016,8 @@ mod tests {
         let m = b.meta();
         let p = m.alloc(layout(64, 8));
         assert!(!p.is_null());
-        m.free(p, layout(64, 8));
-        m.free(p, layout(64, 8));
+        free(&m, p, layout(64, 8));
+        free(&m, p, layout(64, 8));
     }
 
     #[test]
@@ -1827,8 +2027,8 @@ mod tests {
         let m = b.meta();
         let p = m.alloc(layout(64, 8));
         let q = m.alloc(layout(64, 8));
-        m.free(p, layout(64, 8));
-        m.free(q, layout(64, 8));
+        free(&m, p, layout(64, 8));
+        free(&m, q, layout(64, 8));
         assert_eq!(m.alloc(layout(64, 8)), q);
         assert_eq!(m.alloc(layout(64, 8)), p);
     }
@@ -1845,17 +2045,17 @@ mod tests {
         for i in 0..40usize {
             assert!(!m.alloc(layout(64 + i * 16, 8)).is_null());
             let len = (1 + i % 7) * page_size() + (i % 3) * 100;
-            let t = m
-                .reserve_table(
-                    len,
-                    if i % 4 == 0 {
-                        16 * page_size()
-                    } else {
-                        page_size()
-                    },
-                )
-                .unwrap();
-            m.commit(t, page_size()).unwrap();
+            let t = reserve_table(
+                &m,
+                len,
+                if i % 4 == 0 {
+                    16 * page_size()
+                } else {
+                    page_size()
+                },
+            )
+            .unwrap();
+            commit(&m, t, page_size()).unwrap();
             unsafe { core::ptr::write_volatile(t as *mut u64, i as u64 + 1) };
             tables.push((t, len));
         }

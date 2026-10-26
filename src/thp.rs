@@ -8,7 +8,7 @@
 //! - `never` (the default): [`Mode::Off`], nothing is advised
 //!   `MADV_HUGEPAGE`. On a kernel with THP the class superblock and the
 //!   metadata region are `MADV_NOHUGEPAGE`d at reservation
-//!   ([`advise_reservation`], from `layout::Regions::reserve`), so the slab
+//!   ([`advise_reservation`], from `layout::Regions::reserve_owning`), so the slab
 //!   regions get no huge page even where the host's global mode is
 //!   `always`. The huge region ([`Reservation::Huge`]) follows the host's
 //!   policy, as jemalloc's large extents do: a huge run is a whole
@@ -280,7 +280,7 @@ static NOHUGE_RANGES: AtomicU64 = AtomicU64::new(0);
 static KERNEL_THP: AtomicU8 = AtomicU8::new(0);
 /// The reservations `never` covers, as made so far (`advise_reservation`):
 /// the class superblock and the metadata mapping of
-/// `layout::Regions::reserve` (never the huge one, which follows the host),
+/// `layout::Regions::reserve_owning` (never the huge one, which follows the host),
 /// so [`force_never`] can advise them after the fact. `(addr, len)`, `len`
 /// 0 when unused.
 const MAX_RESERVATIONS: usize = 4;
@@ -365,7 +365,7 @@ pub fn force_never() {
     }
 }
 
-/// Which of `layout::Regions::reserve`'s three mappings a reservation is,
+/// Which of `layout::Regions::reserve_owning`'s three mappings a reservation is,
 /// for [`advise_reservation`]: `never` covers the slab regions (the class
 /// superblock and the metadata region) and leaves the huge region to the
 /// host's policy (the module doc).
@@ -387,7 +387,7 @@ impl Reservation {
     }
 }
 
-/// A reservation challoc made (`layout::Regions::reserve`), before
+/// A reservation challoc made (`layout::Regions::reserve_owning`), before
 /// anything in it is committed. A class or metadata reservation is
 /// recorded for [`force_never`] and, under `thp:never` on a kernel with
 /// THP, `MADV_NOHUGEPAGE`d here (the module doc); the huge reservation is
