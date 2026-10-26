@@ -18,7 +18,7 @@ file.
 | `ClassTable` | external_body type | UnsafeCell/volatile/transmute | none (assumption) | trusted |
 | `ClassTable::new` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
 | `ClassTa...:table` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
-| `ClassTa...es_ptr` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
+| `classes_ptr` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
 
 ## `Class::size`
 
@@ -157,7 +157,7 @@ pub fn table(&self) -> (r: &[Class; NCLASSES])
         forall|i: int| 0 <= i < NCLASSES ==> #[trigger] r[i].size == spec_class_size(i),
 ```
 
-## `ClassTable::classes_ptr`
+## `classes_ptr`
 
 src/layout/mod.rs:1042. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
