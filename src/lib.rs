@@ -24,6 +24,15 @@ compile_error!("features `quantum8` and `quantum16` are mutually exclusive");
 #[cfg(not(any(feature = "quantum8", feature = "quantum16")))]
 compile_error!("exactly one of the `quantum8` or `quantum16` features must be enabled");
 
+// The proofs take `usize` as 8 bytes (`global size_of usize == 8` in
+// `vspec`): x86_64 and aarch64 are 64-bit, and the only targets with the
+// asm the crate needs (TLS, rseq, syscalls).
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("challoc needs a 64-bit target");
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+compile_error!("challoc supports only x86_64 and aarch64");
+
 verus! {
 
 /// Quantum (minimum size-class granularity and alignment) in bytes, selected

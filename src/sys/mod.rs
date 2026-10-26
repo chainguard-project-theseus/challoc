@@ -17,6 +17,7 @@ pub mod pac;
 pub mod thp_host;
 pub mod tls;
 pub use errno::Errno;
+use vstd::prelude::*;
 
 mod abort;
 mod nr;
@@ -28,6 +29,8 @@ pub use linux::*;
 // ---- constants -------------------------------------------------------
 // Values are identical on x86_64 and aarch64 (both use the asm-generic
 // definitions for everything below).
+
+verus! {
 
 pub const PROT_NONE: i32 = 0;
 pub const PROT_READ: i32 = 1;
@@ -86,15 +89,121 @@ const SIGCANCEL: u32 = 32;
 const SIGSETXID: u32 = 33;
 /// Every signal but glibc's two internal ones: the set
 /// [`block_all_signals`] blocks.
-const BLOCKABLE_SIGNALS: u64 = !(1 << (SIGCANCEL - 1) | 1 << (SIGSETXID - 1));
+const BLOCKABLE_SIGNALS: u64 = !((1u64 << (SIGCANCEL - 1)) | (1u64 << (SIGSETXID - 1)));
 
 pub const STDERR_FILENO: i32 = 2;
 
+} // verus!
+
+// ---- which functions may enter the kernel ------------------------------
+
+verus! {
+
+/// The caller may make a system call. The `raw::syscall0`..`syscall6`
+/// seams, which hold every instruction that enters the kernel, require
+/// it, and so must every trusted body that can reach the kernel. So a
+/// verified function can reach the kernel only if its own `requires` (or
+/// its loop's invariant) carries the fact.
+///
+/// Opaque, with no meaning: a capability, not a claim about the world.
+#[verifier::opaque]
+pub open spec fn may_syscall() -> bool {
+    true
+}
+
+} // verus!
+
 // ---- pure helpers shared by the probes and the cgroup parsers ----------
+
+verus! {
 
 /// `yes` or `no`: the value of every boolean key of the feature line.
 pub const fn yn(b: bool) -> &'static str {
     if b { "yes" } else { "no" }
+}
+
+/// An ASCII decimal digit.
+pub open spec fn is_digit(b: u8) -> bool {
+    48 <= b <= 57
+}
+
+/// The number of leading decimal digits of `s`.
+pub open spec fn digit_run(s: Seq<u8>) -> nat
+    decreases s.len(),
+{
+    if s.len() > 0 && is_digit(s[0]) {
+        1 + digit_run(s.drop_first())
+    } else {
+        0
+    }
+}
+
+/// The value of the decimal digits `s`, most significant first.
+pub open spec fn decimal_value(s: Seq<u8>) -> int
+    decreases s.len(),
+{
+    if s.len() == 0 {
+        0
+    } else {
+        decimal_value(s.drop_last()) * 10 + (s.last() - 48)
+    }
+}
+
+/// What [`parse_decimal`] returns: the value of the leading digits of `s`
+/// when there is at least one and it fits a `u64`.
+pub open spec fn parse_decimal_spec(s: Seq<u8>) -> Option<u64> {
+    let k = digit_run(s);
+    if k == 0 {
+        None
+    } else if decimal_value(s.take(k as int)) <= u64::MAX {
+        Some(decimal_value(s.take(k as int)) as u64)
+    } else {
+        None
+    }
+}
+
+/// `k` digits followed by a non-digit or the end: `k` is the digit run.
+pub proof fn lemma_digit_run(s: Seq<u8>, k: int)
+    requires
+        0 <= k <= s.len(),
+        forall|j: int| 0 <= j < k ==> is_digit(#[trigger] s[j]),
+        k == s.len() || !is_digit(s[k]),
+    ensures
+        digit_run(s) == k,
+    decreases k,
+{
+    if k > 0 {
+        lemma_digit_run(s.drop_first(), k - 1);
+    }
+}
+
+/// The value of digits never shrinks as digits are appended.
+pub proof fn lemma_decimal_value_prefix(s: Seq<u8>, i: int, k: int)
+    requires
+        0 <= i <= k <= s.len(),
+        forall|j: int| 0 <= j < s.len() ==> is_digit(#[trigger] s[j]),
+    ensures
+        0 <= decimal_value(s.take(i)) <= decimal_value(s.take(k)),
+    decreases k - i,
+{
+    lemma_decimal_value_nonneg(s.take(i));
+    if i < k {
+        lemma_decimal_value_prefix(s, i + 1, k);
+        assert(s.take(i + 1).drop_last() =~= s.take(i));
+    }
+}
+
+/// The value of digits is never negative.
+pub proof fn lemma_decimal_value_nonneg(s: Seq<u8>)
+    requires
+        forall|j: int| 0 <= j < s.len() ==> is_digit(#[trigger] s[j]),
+    ensures
+        decimal_value(s) >= 0,
+    decreases s.len(),
+{
+    if s.len() > 0 {
+        lemma_decimal_value_nonneg(s.drop_last());
+    }
 }
 
 /// The leading decimal digits of `bytes` as a `u64`, whatever follows
@@ -105,18 +214,49 @@ pub const fn yn(b: bool) -> &'static str {
 /// those adapters.)
 // Verus does not support `?` on `Option` here.
 #[allow(clippy::question_mark)]
-pub fn parse_decimal(bytes: &[u8]) -> Option<u64> {
+pub fn parse_decimal(bytes: &[u8]) -> (r: Option<u64>)
+    ensures
+        r == parse_decimal_spec(bytes@),
+{
     let mut digits = 0;
-    while digits < bytes.len() && bytes[digits].is_ascii_digit() {
+    while digits < bytes.len() && bytes[digits].is_ascii_digit()
+        invariant
+            digits <= bytes@.len(),
+            forall|j: int| 0 <= j < digits ==> is_digit(#[trigger] bytes@[j]),
+        decreases bytes@.len() - digits,
+    {
         digits += 1;
+    }
+    proof {
+        lemma_digit_run(bytes@, digits as int);
     }
     if digits == 0 {
         return None;
     }
+    let ghost s = bytes@.take(digits as int);
     let mut acc: u64 = 0;
     let mut i = 0;
-    while i < digits {
+    while i < digits
+        invariant
+            i <= digits <= bytes@.len(),
+            digits > 0,
+            digit_run(bytes@) == digits,
+            s == bytes@.take(digits as int),
+            forall|j: int| 0 <= j < digits ==> is_digit(#[trigger] bytes@[j]),
+            decimal_value(s.take(i as int)) == acc as int,
+        decreases digits - i,
+    {
+        proof {
+            assert(s.take(i + 1).drop_last() =~= s.take(i as int));
+            assert(s.take(i + 1).last() == bytes@[i as int]);
+            lemma_decimal_value_prefix(s, i + 1, digits as int);
+            assert(s.take(digits as int) =~= s);
+        }
         let d = (bytes[i] - b'0') as u64;
+        proof {
+            assert(decimal_value(s.take(i + 1)) == acc * 10 + d);
+            assert(decimal_value(s.take(i + 1)) <= decimal_value(s));
+        }
         acc = match acc.checked_mul(10) {
             Some(m) => match m.checked_add(d) {
                 Some(v) => v,
@@ -126,25 +266,83 @@ pub fn parse_decimal(bytes: &[u8]) -> Option<u64> {
         };
         i += 1;
     }
+    proof {
+        assert(s.take(digits as int) =~= s);
+    }
     Some(acc)
 }
 
 /// `a == b` for byte slices: the comparison the parsers make in place of
 /// `match`ing a byte-string pattern, which Verus does not take.
-pub fn bytes_is(a: &[u8], b: &[u8]) -> bool {
-    a == b
+pub fn bytes_is(a: &[u8], b: &[u8]) -> (r: bool)
+    ensures
+        r <==> a@ == b@,
+{
+    let r = a == b;
+    proof {
+        if r {
+            assert(a@ =~= b@);
+        }
+    }
+    r
+}
+
+/// The index of the first `b` in `s`, or `s.len()` when there is none.
+pub open spec fn find_byte(s: Seq<u8>, b: u8) -> nat
+    decreases s.len(),
+{
+    if s.len() == 0 || s[0] == b {
+        0
+    } else {
+        1 + find_byte(s.drop_first(), b)
+    }
+}
+
+/// `k` bytes other than `b`, then `b` or the end: `k` is where `b` is.
+pub proof fn lemma_find_byte(s: Seq<u8>, b: u8, k: int)
+    requires
+        0 <= k <= s.len(),
+        forall|j: int| 0 <= j < k ==> #[trigger] s[j] != b,
+        k == s.len() || s[k] == b,
+    ensures
+        find_byte(s, b) == k,
+    decreases k,
+{
+    if k > 0 {
+        lemma_find_byte(s.drop_first(), b, k - 1);
+    }
 }
 
 /// The index of the first `b` in `s` at or after `start`, or `s.len()`
 /// (`s[start..].iter().position(..)`, spelled out: Verus does not specify
 /// `Iterator::position`).
-pub fn find_from(s: &[u8], start: usize, b: u8) -> usize {
+pub fn find_from(s: &[u8], start: usize, b: u8) -> (r: usize)
+    requires
+        start <= s@.len(),
+    ensures
+        start <= r <= s@.len(),
+        r - start == find_byte(s@.skip(start as int), b),
+{
     let mut i = start;
-    while i < s.len() && s[i] != b {
+    while i < s.len() && s[i] != b
+        invariant
+            start <= i <= s@.len(),
+            forall|j: int| start <= j < i ==> #[trigger] s@[j] != b,
+        decreases s@.len() - i,
+    {
         i += 1;
+    }
+    proof {
+        let t = s@.skip(start as int);
+        assert forall|j: int| 0 <= j < i - start implies #[trigger] t[j] != b by {
+            assert(t[j] == s@[start + j]);
+        }
+        lemma_find_byte(t, b, i - start);
     }
     i
 }
+
+} // verus!
 
 mod linux {
     use super::errno::{Errno, decode};
