@@ -609,7 +609,13 @@ mod tests {
         let Err(page) = s.classify_free(h) else {
             panic!("not huge")
         };
-        assert_eq!(s.huge.lookup(page).unwrap().arena, lua);
+        assert_eq!(
+            s.huge
+                .lookup(page, vstd::prelude::Tracked::assume_new())
+                .unwrap()
+                .arena,
+            lua
+        );
         dallocx(h, 0);
         // Nonexistent arena or explicit cache: null, not an abort.
         assert!(mallocx(300, mallocx_arena(4000) as c_int).is_null());
@@ -702,7 +708,13 @@ mod tests {
         let Err(page) = s.classify_free(hp) else {
             panic!("not huge")
         };
-        assert_eq!(s.huge.lookup(page).unwrap().arena, lua);
+        assert_eq!(
+            s.huge
+                .lookup(page, vstd::prelude::Tracked::assume_new())
+                .unwrap()
+                .arena,
+            lua
+        );
         api_libc::free(hp);
 
         // Explicit cache.

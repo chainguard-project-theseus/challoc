@@ -853,7 +853,9 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
             }
         }
         Kind::Huge { page } => {
-            if let Some(r) = shared.huge.lookup(page)
+            if let Some(r) = shared
+                .huge
+                .lookup(page, vstd::prelude::Tracked::assume_new())
                 && r.start == page
                 && r.state == RunState::Active
             {
@@ -879,7 +881,9 @@ pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16> {
             }
         }
         Kind::Huge { page } => {
-            let r = shared.huge.lookup(page)?;
+            let r = shared
+                .huge
+                .lookup(page, vstd::prelude::Tracked::assume_new())?;
             if r.start == page && r.state == RunState::Active {
                 Some(r.arena)
             } else {
@@ -1595,7 +1599,13 @@ mod tests {
                 Kind::Huge { page } => s.free_huge(page),
                 other => panic!("{other:?}"),
             };
-            assert_eq!((s.huge.stats().empty, s.huge.stats().purged), (1, 0));
+            assert_eq!(
+                (
+                    s.huge.stats(vstd::prelude::Tracked::assume_new()).empty,
+                    s.huge.stats(vstd::prelude::Tracked::assume_new()).purged
+                ),
+                (1, 0)
+            );
         };
 
         // `huge_dirty_decay_ms:-1` never purges a huge run by decay, even
@@ -1610,7 +1620,10 @@ mod tests {
         free_huge_run(s);
         decay(s, 0);
         assert_eq!(
-            (s.huge.stats().empty, s.huge.stats().purged),
+            (
+                s.huge.stats(vstd::prelude::Tracked::assume_new()).empty,
+                s.huge.stats(vstd::prelude::Tracked::assume_new()).purged
+            ),
             (1, 0),
             "huge_dirty_decay_ms:-1: retained"
         );
@@ -1633,7 +1646,10 @@ mod tests {
         let a = s.arenas.create(s).unwrap();
         decay(s, a);
         assert_eq!(
-            (s.huge.stats().empty, s.huge.stats().purged),
+            (
+                s.huge.stats(vstd::prelude::Tracked::assume_new()).empty,
+                s.huge.stats(vstd::prelude::Tracked::assume_new()).purged
+            ),
             (1, 0),
             "arena.{a}.decay leaves the huge run"
         );
@@ -1645,7 +1661,10 @@ mod tests {
             "immediate band: the slab is purged"
         );
         assert_eq!(
-            (s.huge.stats().empty, s.huge.stats().purged),
+            (
+                s.huge.stats(vstd::prelude::Tracked::assume_new()).empty,
+                s.huge.stats(vstd::prelude::Tracked::assume_new()).purged
+            ),
             (0, 1),
             "immediate band: the huge run is purged"
         );

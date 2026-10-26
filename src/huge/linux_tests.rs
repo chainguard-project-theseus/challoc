@@ -29,7 +29,7 @@ fn check_zero_passes_fresh_and_purged_runs() {
     assert_eq!(q, p);
     assert!(!zero);
     env.free(&h, q);
-    assert_eq!(h.purge_empty(u64::MAX), 1);
+    assert_eq!(h.purge_empty(u64::MAX, Tracked::assume_new()), 1);
     let (r, zero) = env.alloc(&h, size, 1);
     assert_eq!(r, p);
     assert!(zero && all(r, size, 0));
@@ -47,7 +47,7 @@ fn check_zero_aborts_on_a_dirty_purged_run() {
     let size = 3 * page_size();
     let (p, _) = env.alloc(&h, size, 1);
     env.free(&h, p);
-    assert_eq!(h.purge_empty(u64::MAX), 1);
+    assert_eq!(h.purge_empty(u64::MAX, Tracked::assume_new()), 1);
     unsafe { ptr::write_volatile(p.add(size - 8) as *mut u64, 0xDEAD_BEEF) };
     let _ = env.alloc(&h, size, 1);
 }
@@ -67,7 +67,7 @@ fn memory_is_writable_and_the_zero_flag_is_honest() {
     assert!(!zero);
     assert!(all(q, size, 0xAB));
     env.free(&h, q);
-    assert_eq!(h.purge_empty(u64::MAX), 1);
+    assert_eq!(h.purge_empty(u64::MAX, Tracked::assume_new()), 1);
     let (r, zero) = env.alloc(&h, size, 1);
     assert_eq!(r, p);
     assert!(zero && all(r, size, 0));
@@ -77,7 +77,12 @@ fn memory_is_writable_and_the_zero_flag_is_honest() {
     let (s, _) = env.alloc(&h, size, 1);
     fill(s, size, 0xCD);
     env.free(&h, s);
-    assert_eq!(h.lookup(env.page_of(s)).unwrap().state, RunState::Purged);
+    assert_eq!(
+        h.lookup(env.page_of(s), Tracked::assume_new())
+            .unwrap()
+            .state,
+        RunState::Purged
+    );
     let (t, zero) = env.alloc(&h, size, 1);
     assert!(zero && all(t, size, 0));
     env.free(&h, t);
@@ -96,10 +101,10 @@ fn stale_guards_inside_a_reused_extent_are_writable_and_purgeable() {
     for p in &ps {
         env.free(&h, *p);
     }
-    assert_eq!(h.stats().empty, 1);
+    assert_eq!(h.stats(Tracked::assume_new()).empty, 1);
     // One extent of 16 pages with three old guard positions inside:
     // purging it must succeed whatever their protection is.
-    assert_eq!(h.purge_empty(u64::MAX), 1);
+    assert_eq!(h.purge_empty(u64::MAX, Tracked::assume_new()), 1);
     let (big, zero) = env.alloc(&h, 15 * page_size(), 1);
     assert_eq!(big, ps[0]);
     assert!(zero && all(big, 15 * page_size(), 0));
@@ -188,7 +193,7 @@ fn aligned_runs_are_usable_end_to_end() {
     for (p, _) in held {
         env.free(&h, p);
     }
-    assert_eq!(h.stats().runs, 0);
+    assert_eq!(h.stats(Tracked::assume_new()).runs, 0);
 }
 
 /// Alignment holes: in guard-install mode `prepare` must commit the
@@ -210,7 +215,7 @@ fn alignment_holes_are_committed_and_writable() {
     fill(b, page_size(), 2);
     let b_page = env.page_of(b);
     let hole = h
-        .lookup(env.page_of(a) + 1 + GUARD_PAGES)
+        .lookup(env.page_of(a) + 1 + GUARD_PAGES, Tracked::assume_new())
         .expect("hole extent");
     assert_eq!(
         (hole.state, hole.start + hole.pages),
@@ -237,14 +242,22 @@ fn alignment_holes_are_committed_and_writable() {
     let c_page = env.page_of(c);
     fill(c, 3 * page_size(), 0xC0);
     env.free(&h, c);
-    assert_eq!(h.lookup(c_page).unwrap().state, RunState::Empty);
-    let c_ext = h.lookup(c_page).unwrap();
-    assert_eq!(c_ext.start + c_ext.pages, h.stats().next_page);
+    assert_eq!(
+        h.lookup(c_page, Tracked::assume_new()).unwrap().state,
+        RunState::Empty
+    );
+    let c_ext = h.lookup(c_page, Tracked::assume_new()).unwrap();
+    assert_eq!(
+        c_ext.start + c_ext.pages,
+        h.stats(Tracked::assume_new()).next_page
+    );
     let (d, zero) = env.alloc(&h, page_size(), 2 << 20);
     assert!(zero && all(d, page_size(), 0));
     fill(d, page_size(), 4);
     let d_page = env.page_of(d);
-    let head = h.lookup(c_page).expect("head extent");
+    let head = h
+        .lookup(c_page, Tracked::assume_new())
+        .expect("head extent");
     assert_eq!(
         (head.state, head.start + head.pages),
         (RunState::Empty, d_page),
@@ -273,7 +286,7 @@ fn alignment_holes_are_committed_and_writable() {
     for p in held.into_iter().chain([a, b, d]) {
         env.free(&h, p);
     }
-    assert_eq!(h.stats().runs, 0);
+    assert_eq!(h.stats(Tracked::assume_new()).runs, 0);
 }
 
 #[test]
@@ -319,7 +332,7 @@ fn concurrent_threads_see_their_own_patterns() {
     for hd in handles {
         hd.join().unwrap();
     }
-    assert_eq!(h.stats().runs, 0);
+    assert_eq!(h.stats(Tracked::assume_new()).runs, 0);
 }
 
 /// Extents whose discard fails (`mlock`ed: `EINVAL`) stay `Empty` in
@@ -351,34 +364,39 @@ fn extents_whose_discard_fails_stay_empty() {
     env.free(&h, r);
     h.set_purge_on_free(false);
     let check_empty = || {
-        let st = h.stats();
+        let st = h.stats(Tracked::assume_new());
         assert_eq!((st.empty, st.purged), (2, 0), "{st:?}");
         for x in [p, r] {
-            assert_eq!(h.lookup(env.page_of(x)).unwrap().state, RunState::Empty);
+            assert_eq!(
+                h.lookup(env.page_of(x), Tracked::assume_new())
+                    .unwrap()
+                    .state,
+                RunState::Empty
+            );
             assert!(all(x, size, 0x5A));
         }
     };
     check_empty();
-    assert_eq!(h.purge_empty(u64::MAX), 0);
+    assert_eq!(h.purge_empty(u64::MAX, Tracked::assume_new()), 0);
     check_empty();
     const W: u64 = 200_000;
     let t0 = h.oldest_dirty_at().unwrap();
     let retry = t0 + W + purge::DISCARD_RETRY_NS;
-    assert_eq!(h.decay(t0 + W, W), Some(retry));
+    assert_eq!(h.decay(t0 + W, W, Tracked::assume_new()), Some(retry));
     check_empty();
     unsafe {
         libc::munlock(p as *const _, size);
         libc::munlock(r as *const _, size);
     }
-    assert_eq!(h.decay(t0 + 2 * W, W), Some(retry));
+    assert_eq!(h.decay(t0 + 2 * W, W, Tracked::assume_new()), Some(retry));
     check_empty();
     // The oldest `Empty` extent is reused, dirty.
     let (p2, zero) = env.alloc(&h, size, 1);
     assert_eq!(p2, p);
     assert!(!zero);
     env.free(&h, p2);
-    assert_eq!(h.purge_empty(u64::MAX), 2);
-    assert_eq!(h.stats().empty, 0);
+    assert_eq!(h.purge_empty(u64::MAX, Tracked::assume_new()), 2);
+    assert_eq!(h.stats(Tracked::assume_new()).empty, 0);
     assert!(all(p, size, 0) && all(r, size, 0));
     env.free(&h, q);
 }

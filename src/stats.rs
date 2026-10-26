@@ -494,7 +494,12 @@ pub(crate) fn arena_at(shared: &Shared, i: usize) -> Option<&Arena> {
 
 /// The current figures of `arena`, not stored.
 pub fn collect_arena(shared: &Shared, arena: &Arena) -> ArenaStats {
-    collect_arena_with(shared, arena, &shared.huge.stats(), &shared.meta.stats())
+    collect_arena_with(
+        shared,
+        arena,
+        &shared.huge.stats(Tracked::assume_new()),
+        &shared.meta.stats(),
+    )
 }
 
 /// Read every counter once; store the result per arena and in `Shared`
@@ -511,7 +516,7 @@ fn collect_into(shared: &Shared, store: bool) -> Snapshot {
     let mut g = shared
         .stats
         .lock(Tracked::assume_new(), Tracked::assume_new());
-    let huge = shared.huge.stats();
+    let huge = shared.huge.stats(Tracked::assume_new());
     let meta = shared.meta.stats();
     let mut totals = Totals::EMPTY;
     let mut narenas: u32 = 0;
@@ -589,7 +594,7 @@ pub fn arena_stats_all(shared: &Shared) -> ArenaStats {
 /// Every existing arena's *current* figures summed, not stored (for
 /// `mallinfo` and `malloc_stats`, which glibc defines as live).
 pub fn collect_all(shared: &Shared) -> ArenaStats {
-    let huge = shared.huge.stats();
+    let huge = shared.huge.stats(Tracked::assume_new());
     let meta = shared.meta.stats();
     let mut all = ArenaStats::empty(crate::arena::ARENAS_ALL as u16);
     let n = shared.arenas.count();

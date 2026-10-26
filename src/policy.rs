@@ -866,7 +866,7 @@ pub fn empty_bytes(shared: &Shared) -> u64 {
             total += arena.empty_bytes() as u64;
         }
     }
-    total + shared.huge.empty_bytes() as u64
+    total + shared.huge.empty_bytes(Tracked::assume_new()) as u64
 }
 
 /// Evaluate the table against the cgroup record after a sample. Without a
