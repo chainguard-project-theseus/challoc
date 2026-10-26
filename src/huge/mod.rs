@@ -419,20 +419,53 @@ fn huge_count_underflow(state: RunState) -> !
 
 } // verus!
 
+verus! {
+
+// `Huge`, opaque: the purge proofs here do not look inside it.
+#[cfg(verus_keep_ghost)]
+#[verifier::external_type_specification]
+#[verifier::external_body]
+pub struct ExHuge(Huge);
+
 /// What a purge walk's flushes settled: extents made `Purged` and whether
 /// a discard failed. It settles the walk's batch ([`Settle`], through
 /// [`Huge::settle`]).
-#[derive(Default)]
 struct Tally {
     purged: usize,
     failed: bool,
+    /// Ghost: the bytes reported discarded ([`Settle::bytes`]).
+    #[allow(dead_code)]
+    bytes: Ghost<int>,
 }
 
+impl Tally {
+    /// Nothing settled yet.
+    fn new() -> (t: Tally)
+        ensures
+            t.bytes@ == 0,
+    {
+        Tally { purged: 0, failed: false, bytes: Ghost(0) }
+    }
+}
+
+// Sealed: no invariant over the huge lock value, and `settle` trusted;
+// `Huge::settle` and the walks are outside `verus!`.
 impl Settle for Tally {
     type Owner = Huge;
 
     type Ctx = Inner;
 
+    closed spec fn inv(&self, o: &Huge, c: Inner, pend: Pieces) -> bool {
+        true
+    }
+
+    closed spec fn bytes(&self) -> int {
+        self.bytes@
+    }
+
+    // Trusted: `Huge::settle` is outside `verus!`; the ghost byte count is
+    // the only state its `ensures` constrain.
+    #[verifier::external_body]
     #[inline(always)]
     fn settle(
         &mut self,
@@ -447,6 +480,8 @@ impl Settle for Tally {
         o.settle(c, addr, len, done, self);
     }
 }
+
+} // verus!
 
 verus! {
 
@@ -1932,7 +1967,7 @@ impl Huge {
         let mut g = self
             .inner
             .lock(Tracked::assume_new(), Tracked::assume_new());
-        let mut t = Tally::default();
+        let mut t = Tally::new();
         let mut batch = Batch::new(Ghost::assume_new());
         let mut d = g.empty_head;
         while !d.is_null() {
@@ -2046,7 +2081,7 @@ impl Huge {
         // cap for good (measured: 50 freed 8 MiB runs, one 400 MiB
         // extent, nothing purged in 3 s). The curve alone keeps the rule.
         let capped = keep16 < crate::policy::KEEP_ALL;
-        let mut t = Tally::default();
+        let mut t = Tally::new();
         if excess > 0 {
             let mut batch = Batch::new(Ghost::assume_new());
             let mut d = g.empty_head;
