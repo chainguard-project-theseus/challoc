@@ -10,6 +10,7 @@ file.
 | `ExWrite` | ext_trait_spec | core library | Kani | trusted |
 | `fmt::Formatt...>::write_str` | assume_spec | core library | Kani | trusted |
 | `fmt::Formatt...>::write_fmt` | assume_spec | core library | Kani | trusted |
+| `DisplaySpecIm...or sys::Errno` | spec_impl | core library | Kani | trusted |
 
 ## `ExWrite`
 
@@ -48,4 +49,17 @@ Tool: Kani. Status: trusted.
 
 ```rust
 pub assume_specification<'a>[ core::fmt::Formatter::<'a>::write_fmt ](f: &mut core::fmt::Formatter<'a>, args: core::fmt::Arguments<'_>) -> core::fmt::Result;
+```
+
+## `DisplaySpecImpl for sys::Errno`
+
+src/vspec/fmt.rs:40. Kind: spec_impl. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::Errno {
+    closed spec fn fmt_req(&self, f: &core::fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
 ```

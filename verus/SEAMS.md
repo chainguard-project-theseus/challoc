@@ -10,6 +10,13 @@ tool (or a stated assumption) plugs in:
 - an `axiom fn` or `axiom_*` proof function (its `ensures` is assumed);
 - an `assume_specification`, `external_type_specification` or
   `external_trait_specification` (a contract for code outside the crate);
+- a `PartialEqSpecImpl` impl (its `obeys_eq_spec()` and `eq_spec`, a
+  fact about the `PartialEq` impl that Verus does not check);
+- a `DisplaySpecImpl` or other fmt-trait spec impl whose `Display` impl
+  is outside `verus!` or in another file (its `fmt_req`, unchecked against
+  that `fmt`); one in the same file and inside `verus!` is no seam,
+  since Verus checks that `fmt` under `fmt_req` and every
+  `format_args!` site proves it;
 - an `exec_allows_no_decreases_clause` function (termination assumed);
 - a `Tracked::assume_new()` or `Ghost::assume_new()` inside `verus!`,
   outside tests and outside `external_body` bodies (an entry notes the
