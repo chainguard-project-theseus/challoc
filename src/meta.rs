@@ -1023,7 +1023,7 @@ impl Meta {
     /// as it hands it out.
     pub const fn owning(base: usize, len: usize, page: usize, space: Tracked<Unbacked>) -> Meta {
         Meta {
-            inner: Lock::new(Inner::new(base, len, page, space)),
+            inner: Lock::new(Inner::new(base, len, page, space), Ghost::assume_new()),
         }
     }
 
@@ -1054,7 +1054,10 @@ impl Meta {
         let Some(bin) = bin_for(layout) else {
             panic!("meta: object too large")
         };
-        self.inner.lock().alloc(bin).0
+        self.inner
+            .lock(Tracked::assume_new(), Tracked::assume_new())
+            .alloc(bin)
+            .0
     }
 
     /// [`alloc`](Meta::alloc), then zero the object if it was reused; with
@@ -1074,7 +1077,9 @@ impl Meta {
         let Some(bin) = bin_for(layout) else {
             panic!("meta: object too large")
         };
-        let mut g = self.inner.lock();
+        let mut g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         let before = g.bump;
         let (p, blk) = g.alloc(bin);
         if !p.is_null() && (p as usize) < before {
@@ -1094,7 +1099,7 @@ impl Meta {
             panic!("meta: free with an impossible layout")
         };
         self.inner
-            .lock()
+            .lock(Tracked::assume_new(), Tracked::assume_new())
             .free(p, bin, Tracked::assume_new(), Tracked::assume_new());
     }
 
@@ -1113,7 +1118,7 @@ impl Meta {
         claim: Tracked<&mut GhostSubmap<int, bool>>,
     ) -> Option<usize> {
         self.inner
-            .lock()
+            .lock(Tracked::assume_new(), Tracked::assume_new())
             .reserve(len, align, claim, Tracked::assume_new())
     }
 
@@ -1135,7 +1140,9 @@ impl Meta {
         align: usize,
         claim: Tracked<&mut GhostSubmap<int, bool>>,
     ) -> (Option<usize>, Tracked<ZeroRaw>) {
-        let mut g = self.inner.lock();
+        let mut g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         if g.eager_ok(len)
             && let Some(p) = g.reserve_eager(len, align, Tracked::assume_new())
         {
@@ -1161,42 +1168,48 @@ impl Meta {
         side: Ghost<bool>,
         claim: Tracked<&mut GhostSubmap<int, bool>>,
     ) -> Result<(), Errno> {
-        self.inner.lock().commit(addr, len, side, claim)
+        self.inner
+            .lock(Tracked::assume_new(), Tracked::assume_new())
+            .commit(addr, len, side, claim)
     }
 
     /// [`reserve_table`](Meta::reserve_table) and commit the whole range.
     /// Zero on return. `None` on either failure, leaving nothing reserved.
     pub fn reserve_committed(&self, len: usize, align: usize) -> Option<usize> {
-        self.inner.lock().reserve_committed(len, align)
+        self.inner
+            .lock(Tracked::assume_new(), Tracked::assume_new())
+            .reserve_committed(len, align)
     }
 
     pub fn stats(&self) -> MetaStats {
-        self.inner.lock().stats()
+        self.inner
+            .lock(Tracked::assume_new(), Tracked::assume_new())
+            .stats()
     }
 
     /// Tests: force tables onto the object side (`true`) or the
     /// reservation side (`false`), whatever the host's policy says.
     #[cfg(test)]
     pub fn set_eager_for_test(&self, on: bool) {
-        self.inner.lock().eager = if on { EAGER_ON } else { EAGER_OFF };
+        self.inner.lock_t().eager = if on { EAGER_ON } else { EAGER_OFF };
     }
 
     /// Tests: whether the host's policy allows eager tables.
     #[cfg(test)]
     pub fn eager_allowed(&self) -> bool {
-        self.inner.lock().eager_ok(1)
+        self.inner.lock_t().eager_ok(1)
     }
 
     /// Start of the region.
     #[cfg(test)]
     pub fn base(&self) -> usize {
-        self.inner.lock().base
+        self.inner.lock_t().base
     }
 
     /// Lowest reserved address; the object area may grow up to here.
     #[cfg(test)]
     pub fn top(&self) -> usize {
-        self.inner.lock().top
+        self.inner.lock_t().top
     }
 }
 

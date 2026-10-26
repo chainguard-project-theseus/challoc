@@ -90,7 +90,7 @@ use crate::layout::{self, NCLASSES, Regions};
 use crate::purge;
 use crate::sys;
 use crate::sys::features::{FeatureLine, Features};
-use vstd::prelude::verus;
+use vstd::prelude::{Tracked, verus};
 
 /// The crate version as a NUL-terminated static string (`"0.1.0"`; the
 /// soname's major, design 13.6, follows its major); with `challoc_features`
@@ -544,9 +544,9 @@ extern "C" fn fork_prepare() {
     shared().discover_cgroup_for_fork();
     let mask = sys::block_all_signals();
     let s = shared();
-    s.tcaches.raw_lock().lock();
-    s.arenas.raw_lock().lock();
-    s.stats.raw().lock();
+    s.tcaches.raw_lock().lock_held(Tracked::assume_new());
+    s.arenas.raw_lock().lock_held(Tracked::assume_new());
+    s.stats.raw().lock_held(Tracked::assume_new());
     // Each `for a in s.arenas.iter()` is spelled as the scan
     // `Arenas::iter` makes, every index below the count through
     // `Arenas::get_existing`, and `a.classes[c]` as `Arena::class`, as in
@@ -556,26 +556,26 @@ extern "C" fn fork_prepare() {
     for i in 0..n {
         if let Some(a) = s.arenas.get_existing(i as u16) {
             for c in 0..NCLASSES {
-                a.class(c).raw_lock().lock();
+                a.class(c).raw_lock().lock_held(Tracked::assume_new());
             }
         }
     }
     for c in 0..NCLASSES {
-        s.tables()[c].raw_lock().lock();
+        s.tables()[c].raw_lock().lock_held(Tracked::assume_new());
     }
     // `take_group` takes an arena's slab-set lock under a class lock and
     // that class's slab table lock, so the slab-set locks come after
     // every slab table lock.
     for i in 0..n {
         if let Some(a) = s.arenas.get_existing(i as u16) {
-            a.sets().raw_lock().lock();
+            a.sets().raw_lock().lock_held(Tracked::assume_new());
         }
     }
-    s.huge.raw_lock().lock();
-    s.meta.raw_lock().lock();
+    s.huge.raw_lock().lock_held(Tracked::assume_new());
+    s.meta.raw_lock().lock_held(Tracked::assume_new());
     for i in 0..n {
         if let Some(a) = s.arenas.get_existing(i as u16) {
-            a.stats_raw_lock().lock();
+            a.stats_raw_lock().lock_held(Tracked::assume_new());
         }
     }
     purge::background::fork_lock();
@@ -614,22 +614,22 @@ fn fork_release() {
     while i > 0 {
         i -= 1;
         if let Some(a) = s.arenas.get_existing(i as u16) {
-            a.stats_raw_lock().unlock();
+            a.stats_raw_lock().unlock_held(Tracked::assume_new());
         }
     }
-    s.meta.raw_lock().unlock();
-    s.huge.raw_lock().unlock();
+    s.meta.raw_lock().unlock_held(Tracked::assume_new());
+    s.huge.raw_lock().unlock_held(Tracked::assume_new());
     let mut i = n;
     while i > 0 {
         i -= 1;
         if let Some(a) = s.arenas.get_existing(i as u16) {
-            a.sets().raw_lock().unlock();
+            a.sets().raw_lock().unlock_held(Tracked::assume_new());
         }
     }
     let mut c = NCLASSES;
     while c > 0 {
         c -= 1;
-        s.tables()[c].raw_lock().unlock();
+        s.tables()[c].raw_lock().unlock_held(Tracked::assume_new());
     }
     let mut i = n;
     while i > 0 {
@@ -638,13 +638,13 @@ fn fork_release() {
             let mut c = NCLASSES;
             while c > 0 {
                 c -= 1;
-                a.class(c).raw_lock().unlock();
+                a.class(c).raw_lock().unlock_held(Tracked::assume_new());
             }
         }
     }
-    s.stats.raw().unlock();
-    s.arenas.raw_lock().unlock();
-    s.tcaches.raw_lock().unlock();
+    s.stats.raw().unlock_held(Tracked::assume_new());
+    s.arenas.raw_lock().unlock_held(Tracked::assume_new());
+    s.tcaches.raw_lock().unlock_held(Tracked::assume_new());
     sys::set_signal_mask(mask);
 }
 

@@ -1,0 +1,11 @@
+# The mutex contract: a free lock's invariant owns its cell's permission and
+# the futex mutex hands it to one holder at a time.
+axiom_acquired	allocator invariant	none (assumption)
+axiom_held	allocator invariant	none (assumption)
+cell_ref	UnsafeCell/volatile/transmute	Verus
+cell_mut	UnsafeCell/volatile/transmute	Verus
+LockGuard::drop	atomics primitive	loom/GenMC
+# Temporary: verified once `sys::futex_wait` and `sys::futex_wake` have
+# specifications.
+wait	FFI/syscall	Verus
+wake	FFI/syscall	Verus

@@ -45,6 +45,7 @@ use crate::heap::Shared;
 use crate::huge::{GUARD_PAGES, HugeStats};
 use crate::layout::{NBINS, NCLASSES};
 use crate::meta::MetaStats;
+use vstd::prelude::Tracked;
 
 /// One `(arena, class)` pair (`stats.arenas.<i>.bins.<j>.*` and the
 /// `arenas.bin.<j>.*` geometry).
@@ -507,7 +508,9 @@ pub fn collect_arena(shared: &Shared, arena: &Arena) -> ArenaStats {
 /// stored yet. It nests outside the class, slab table, huge, metadata and
 /// per-arena statistics locks the collection takes (design section 9).
 fn collect_into(shared: &Shared, store: bool) -> Snapshot {
-    let mut g = shared.stats.lock();
+    let mut g = shared
+        .stats
+        .lock(Tracked::assume_new(), Tracked::assume_new());
     let huge = shared.huge.stats();
     let meta = shared.meta.stats();
     let mut totals = Totals::EMPTY;
@@ -554,7 +557,9 @@ pub fn collect(shared: &Shared) -> Snapshot {
 
 /// The snapshot stored by the last [`epoch`] (all zero before the first).
 pub fn snapshot(shared: &Shared) -> Snapshot {
-    *shared.stats.lock()
+    *shared
+        .stats
+        .lock(Tracked::assume_new(), Tracked::assume_new())
 }
 
 /// The [`ArenaStats`] stored by the last [`epoch`] for arena `index`, or
@@ -568,7 +573,9 @@ pub fn arena_stats(shared: &Shared, index: u16) -> Option<ArenaStats> {
 /// stored figures summed, all from one `epoch` (the process statistics
 /// lock keeps one from storing midway). Its `index` is 4096.
 pub fn arena_stats_all(shared: &Shared) -> ArenaStats {
-    let _published = shared.stats.lock();
+    let _published = shared
+        .stats
+        .lock(Tracked::assume_new(), Tracked::assume_new());
     let mut all = ArenaStats::empty(crate::arena::ARENAS_ALL as u16);
     let n = shared.arenas.count();
     for i in 0..n as usize {
