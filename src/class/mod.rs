@@ -72,7 +72,7 @@ use crate::meta::Meta;
 use crate::purge::{self, Decayer};
 use crate::slab::{SlabDesc, State};
 use core::sync::atomic::{AtomicU64, Ordering};
-use vstd::prelude::Tracked;
+use vstd::prelude::{Ghost, Tracked};
 
 mod abort;
 mod decay;
@@ -545,20 +545,23 @@ impl ClassState {
             arena,
             table,
             gate: Decayer::new(),
-            inner: Padded(Lock::new(Inner {
-                partial,
-                empty,
-                purged,
-                stats: ClassStats {
-                    committed: 0,
-                    guards: 0,
-                    empty: 0,
-                    purged: 0,
-                    nonfull: 0,
+            inner: Padded(Lock::new(
+                Inner {
+                    partial,
+                    empty,
+                    purged,
+                    stats: ClassStats {
+                        committed: 0,
+                        guards: 0,
+                        empty: 0,
+                        purged: 0,
+                        nonfull: 0,
+                    },
+                    group_next: 0,
+                    group_end: 0,
                 },
-                group_next: 0,
-                group_end: 0,
-            })),
+                Ghost::assume_new(),
+            )),
             claimed: AtomicU64::new(0),
             refilled: AtomicU64::new(0),
             released: AtomicU64::new(0),
@@ -843,7 +846,9 @@ impl ClassState {
     /// release can race the clear.
     fn plan(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS]) -> usize {
         let cls = self.class();
-        let mut g = self.inner.lock();
+        let mut g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         let mut np = 0;
         let mut remaining = want;
         let mut next = g.partial.map.lowest_set();
@@ -1008,7 +1013,9 @@ impl ClassState {
     fn on_live_zero(&self, slab: usize) {
         let mut first = false;
         {
-            let mut g = self.inner.lock();
+            let mut g = self
+                .inner
+                .lock(Tracked::assume_new(), Tracked::assume_new());
             if purge::check_zero() {
                 self.check_shadow(slab, "on_live_zero");
             }
@@ -1208,7 +1215,9 @@ impl ClassState {
         if reopen.len == 0 {
             return;
         }
-        let mut g = self.inner.lock();
+        let mut g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         for &s in &reopen.slabs[..reopen.len] {
             let slab = s as usize;
             // Between the word's clear and this lock hold the slab may have
@@ -1255,7 +1264,9 @@ impl ClassState {
     /// transient from a bookkeeping bug, the reader of the bins table can.
     pub fn bin_stats(&self) -> (ClassStats, usize) {
         let released = self.released.load(Ordering::Relaxed);
-        let g = self.inner.lock();
+        let g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         let mut s = g.stats;
         let claimed = self.claimed.load(Ordering::Relaxed);
         drop(g);
@@ -1349,14 +1360,18 @@ impl ClassState {
 
     /// Lowest slab in the partial set, if any (for tests and stats).
     pub fn lowest_partial(&self) -> Option<usize> {
-        self.inner.lock().partial.map.lowest_set()
+        self.inner
+            .lock(Tracked::assume_new(), Tracked::assume_new())
+            .partial
+            .map
+            .lowest_set()
     }
 
     /// Tests: whether `slab` is in this arena's partial, empty and purged
     /// sets.
     #[cfg(test)]
     pub(crate) fn set_membership(&self, slab: usize) -> (bool, bool, bool) {
-        let g = self.inner.lock();
+        let g = self.inner.lock_t();
         (
             g.partial.map.is_set(slab),
             g.empty.map.is_set(slab),
@@ -1367,6 +1382,10 @@ impl ClassState {
     /// Whether `slab` is in the partial set (tests and the bins table,
     /// `api::print`).
     pub fn is_partial(&self, slab: usize) -> bool {
-        self.inner.lock().partial.map.is_set(slab)
+        self.inner
+            .lock(Tracked::assume_new(), Tracked::assume_new())
+            .partial
+            .map
+            .is_set(slab)
     }
 }

@@ -19,6 +19,7 @@ use crate::policy::Policy;
 use crate::stats::Snapshot;
 use crate::sys::cgroup::{Cgroup, Deferred};
 use crate::vspec::unbacked::Unbacked;
+use vstd::prelude::Ghost;
 
 use super::heap_destructor;
 use super::tcaches::Tcaches;
@@ -725,7 +726,10 @@ impl Shared {
         unsafe {
             ptr::write(field_at(this, S_CONFIG), config);
             ptr::write(field_at(this, S_KEY), ThreadKey::create());
-            ptr::write(field_at(this, S_STATS), Lock::new(Snapshot::EMPTY));
+            ptr::write(
+                field_at(this, S_STATS),
+                Lock::new(Snapshot::EMPTY, Ghost::assume_new()),
+            );
         }
     }
 }

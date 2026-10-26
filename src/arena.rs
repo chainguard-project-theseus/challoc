@@ -40,6 +40,7 @@ use crate::layout::{NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
 use crate::stats::ArenaStats;
+use vstd::prelude::{Ghost, Tracked};
 
 /// Arena indices are the 12-bit `MALLOCX_ARENA` field; 4096 itself is
 /// `MALLCTL_ARENAS_ALL`.
@@ -218,7 +219,10 @@ impl Arena {
         // SAFETY: the fields of `init`'s storage.
         unsafe {
             ptr::write(field_at(this, A_LARGE), AtomicU64::new(0));
-            ptr::write(field_at(this, A_STATS), Lock::new(ArenaStats::empty(index)));
+            ptr::write(
+                field_at(this, A_STATS),
+                Lock::new(ArenaStats::empty(index), Ghost::assume_new()),
+            );
             ptr::write(field_at(this, A_LAST_EXIT_PURGE), AtomicU64::new(0));
         }
     }
@@ -321,12 +325,16 @@ impl Arena {
 
     /// The statistics stored by the last `epoch`.
     pub fn stats(&self) -> ArenaStats {
-        *self.stats.lock()
+        *self
+            .stats
+            .lock(Tracked::assume_new(), Tracked::assume_new())
     }
 
     /// Store the statistics of an `epoch`.
     pub fn store_stats(&self, s: &ArenaStats) {
-        *self.stats.lock() = *s;
+        *self
+            .stats
+            .lock(Tracked::assume_new(), Tracked::assume_new()) = *s;
     }
 
     /// The statistics lock, for the fork handlers (a leaf: no lock is
@@ -519,7 +527,10 @@ impl Arenas {
     unsafe fn put_head(this: *mut Arenas, auto: u32) {
         // SAFETY: the fields of `init`'s storage.
         unsafe {
-            ptr::write(field_at(this, AR_LOCK), Lock::new(auto));
+            ptr::write(
+                field_at(this, AR_LOCK),
+                Lock::new(auto, Ghost::assume_new()),
+            );
             ptr::write(field_at(this, AR_COUNT), AtomicU32::new(auto));
             ptr::write(field_at(this, AR_AUTO), auto);
         }
@@ -627,7 +638,7 @@ impl Arenas {
             self.count_in(0);
             return 0;
         }
-        let _g = self.lock.lock();
+        let _g = self.lock.lock(Tracked::assume_new(), Tracked::assume_new());
         let mut best = 0usize;
         // (bound heaps, not yet built): the smallest wins.
         let mut best_key = (u32::MAX, true);
@@ -741,7 +752,7 @@ impl Arenas {
         if index as u32 >= self.auto {
             return None;
         }
-        let _g = self.lock.lock();
+        let _g = self.lock.lock(Tracked::assume_new(), Tracked::assume_new());
         let p = self.table[index as usize].load(Ordering::Acquire);
         if !p.is_null() {
             // SAFETY: as in `get`.
@@ -790,7 +801,7 @@ impl Arenas {
     /// `arenas.create`: a new explicit arena. `None` when the table or the
     /// metadata region is full.
     pub fn create(&self, shared: &Shared) -> Option<u16> {
-        let mut g = self.lock.lock();
+        let mut g = self.lock.lock(Tracked::assume_new(), Tracked::assume_new());
         let index = *g;
         if index as usize >= MAX_ARENAS {
             return None;

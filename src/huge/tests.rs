@@ -529,7 +529,7 @@ fn decay_purges_the_oldest_extents_along_the_curve() {
     let t0 = h.oldest_dirty_at().unwrap();
     assert_eq!(h.oldest_empty(), t0);
     {
-        let g = h.inner.lock();
+        let g = h.inner.lock_t();
         let mut d = g.empty_head;
         while !d.is_null() {
             unsafe {
@@ -996,7 +996,7 @@ fn placement_is_the_lowest_fit() {
 fn runs_have_one_key_and_free_extents_two() {
     let env = Env::new();
     let h = env.huge();
-    assert_eq!(h.stats().table_cap, h.inner.lock().table.cap());
+    assert_eq!(h.stats().table_cap, h.inner.lock_t().table.cap());
     let (p, _) = env.alloc(&h, 3 * page_size(), 1);
     let page = env.page_of(p);
     let run = h.lookup(page).expect("run keyed by its start");
@@ -1037,7 +1037,7 @@ fn prior_state_names_the_source_of_the_pages() {
     let (p, _) = env.alloc(&h, page_size(), 1);
     let (q, _) = env.alloc(&h, page_size(), 1);
     env.free(&h, p);
-    let ext = h.inner.lock().table.get(0);
+    let ext = h.inner.lock_t().table.get(0);
     assert_eq!(
         h.lookup(0).map(|i| (i.pages, i.state)),
         Some((1 + GUARD_PAGES, RunState::Empty))

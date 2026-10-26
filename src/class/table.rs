@@ -293,14 +293,17 @@ impl SlabTable {
         let bits_base = bits.start() + stagger;
         let owners_base = owners.start() + stagger;
         let desc_base = descs.start() + stagger;
-        let inner = Padded(Lock::new(TableInner {
-            descs,
-            bits,
-            owners,
-            next_slab: 0,
-            guards: 0,
-            mirror: core::ptr::null(),
-        }));
+        let inner = Padded(Lock::new(
+            TableInner {
+                descs,
+                bits,
+                owners,
+                next_slab: 0,
+                guards: 0,
+                mirror: core::ptr::null(),
+            },
+            Ghost::assume_new(),
+        ));
         Some(SlabTable {
             bits_base,
             owners_base,
@@ -386,7 +389,9 @@ impl SlabTable {
     /// # Safety
     /// `mirror` must stay valid for as long as this table is used.
     pub unsafe fn mirror_watermark(&self, mirror: *const AtomicUsize) {
-        let mut g = self.inner.lock();
+        let mut g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         let wm = self.watermark(Ordering::Relaxed);
         // SAFETY: guaranteed by the caller.
         unsafe { (*mirror).store(wm, Ordering::Release) };
@@ -431,7 +436,7 @@ impl SlabTable {
     pub(crate) fn corrupt_owner_word(&self, meta: &Meta, group: usize, arena: u16) {
         let page = 1usize << self.lg_page;
         let stagger = desc_stagger(self.class as usize);
-        let mut g = self.inner.lock();
+        let mut g = self.inner.lock_t();
         g.owners
             .ensure(meta, page, stagger + group * 2 + 2)
             .expect("owner page");
@@ -461,7 +466,9 @@ impl SlabTable {
 
     /// Guard slabs committed so far.
     pub fn guards(&self) -> usize {
-        self.inner.lock().guards
+        self.inner
+            .lock(Tracked::assume_new(), Tracked::assume_new())
+            .guards
     }
 
     /// Descriptor of a handed-out slab. Aborts for a slab that was never
@@ -746,7 +753,9 @@ impl SlabTable {
         let page = 1usize << self.lg_page;
         let class = self.class as usize;
         let stagger = desc_stagger(class);
-        let mut g = self.inner.lock();
+        let mut g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         let s = g.next_slab;
         if s >= self.nslabs {
             return None;
@@ -941,7 +950,9 @@ impl SlabTable {
         if guard {
             let page = 1usize << self.lg_page;
             self.install_guard(s, self.slab_addr(s), page, cls.slab_size());
-            self.inner.lock().guards += 1;
+            self.inner
+                .lock(Tracked::assume_new(), Tracked::assume_new())
+                .guards += 1;
             return Some(false);
         }
         Some(true)
@@ -986,7 +997,9 @@ impl SlabTable {
     pub(super) fn commit_slab(&self, s: usize) -> Option<bool> {
         let cls = self.class();
         let page = 1usize << self.lg_page;
-        let mut g = self.inner.lock();
+        let mut g = self
+            .inner
+            .lock(Tracked::assume_new(), Tracked::assume_new());
         let addr = self.slab_addr(s);
         // A slab smaller than a page is committed with its whole page
         // group when the group's first slab comes up; a group is whole

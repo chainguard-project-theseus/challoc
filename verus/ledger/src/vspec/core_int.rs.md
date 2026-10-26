@@ -12,6 +12,7 @@ file.
 | `usize::trailing_zeros` | assume_spec | core library | Kani | trusted |
 | `usize::leading_zeros` | assume_spec | core library | Kani | trusted |
 | `usize::next_power_of_two` | assume_spec | core library | Kani | trusted |
+| `hint::spin_loop` | assume_spec | core library | Kani | trusted |
 
 ## `u64::count_ones`
 
@@ -79,4 +80,15 @@ pub assume_specification[ usize::next_power_of_two ](x: usize) -> (r: usize)
         x <= 1 ==> r == 1,
         x > 1 ==> r < 2 * x,
 ;
+```
+
+## `core::hint::spin_loop`
+
+src/vspec/core_int.rs:55. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> A spin-wait hint to the CPU (`pause`, `isb`); no effect on memory.
+
+```rust
+pub assume_specification[ core::hint::spin_loop ]();
 ```
