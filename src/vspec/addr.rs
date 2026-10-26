@@ -1,4 +1,5 @@
-//! Address-to-pointer casts, which Verus does not model.
+//! Address-to-pointer casts, which Verus does not model, and the null
+//! test on a pointer's address.
 
 use vstd::prelude::*;
 
@@ -29,5 +30,13 @@ pub fn addr_to_ptr(addr: usize) -> (p: *mut u8)
 {
     addr as *mut u8
 }
+
+/// `<*mut T>::is_null`: the address is zero.
+pub assume_specification<T: core::marker::PointeeSized>[ <*mut T>::is_null ](p: *mut T) -> (r: bool)
+    ensures
+        r == (p@.addr == 0),
+    opens_invariants none
+    no_unwind
+;
 
 } // verus!

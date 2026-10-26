@@ -8,6 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `axiom_ptr_add_addr` | external_body proof | core library | Kani | trusted |
+| `<*mut T>::add` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
 
 ## `axiom_ptr_add_addr`
 
@@ -25,4 +26,22 @@ pub proof fn axiom_ptr_add_addr<T>(p: *mut T, count: usize)
         ptr_add(p, count)@.addr == p@.addr + count as int * vstd::layout::size_of::<T>(),
         ptr_add(p, count)@.provenance == p@.provenance,
         ptr_add(p, count)@.metadata == p@.metadata,
+```
+
+## `<*mut T>::add`
+
+src/vspec/ptr.rs:55. Kind: assume_spec. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
+
+> `<*mut T>::add`, with the safety contract of the `core` documentation: the byte offset `count * size_of::<T>()` fits in an `isize`, and, when it is not zero, the whole range from `p` to the result is inside the allocation `p` points into ([`in_alloc`]).
+
+```rust
+pub assume_specification<T>[ <*mut T>::add ](p: *mut T, count: usize) -> (r: *mut T)
+    requires
+        count as int * vstd::layout::size_of::<T>() <= isize::MAX,
+        count as int * vstd::layout::size_of::<T>() == 0 || in_alloc(p, count as int * vstd::layout::size_of::<T>()),
+    ensures
+        r == ptr_add(p, count),
+    opens_invariants none
+;
 ```
