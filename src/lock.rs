@@ -219,6 +219,22 @@ pub closed spec fn lock_rs_only() -> bool {
     true
 }
 
+/// The slab-set lock of arena `i` (`class::SetTable`), below the
+/// metadata lock.
+pub open spec fn rank_sets(i: int) -> int {
+    0x500_0000 + i
+}
+
+/// The metadata lock (`meta::Meta`).
+pub open spec fn rank_meta() -> int {
+    0x700_0000
+}
+
+/// Above every lock's rank: a [`LockOrder::spare`] allows nothing.
+pub open spec fn rank_spare() -> int {
+    0xB00_0000
+}
+
 /// Ghost: a bound on the ranks of the allocator locks its owner holds
 /// ([`LockOrder::top`]). Every allocator lock has a rank, fixed when it
 /// is created ([`RawLock::new`]). A blocking acquisition requires a token
@@ -260,6 +276,16 @@ impl<'a> LockOrder<'a> {
     /// The owner may block on a lock of rank `r`.
     pub open spec fn allows(self, r: int) -> bool {
         self.top() < r
+    }
+
+    /// A token that allows nothing, to receive the one [`Lock::lock`]
+    /// hands out.
+    pub proof fn spare() -> (tracked o: LockOrder<'a>)
+        ensures
+            o.top() == rank_spare(),
+            !o.root(),
+    {
+        LockOrder { top: rank_spare(), root: false, life: PhantomData }
     }
 }
 
