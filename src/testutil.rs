@@ -231,14 +231,26 @@ pub(crate) fn mlock_or_skip(test: &str, addr: usize, len: usize) -> bool {
     false
 }
 
+/// Write `SKIP <test> <reason>` to stderr on a line of its own, in one
+/// write. `ci/skip-summary.sh` keys a skip on the word after a `SKIP` that
+/// starts a line, and `make test` merges the container's stdout and
+/// stderr out of order: libtest writes `test <name> ... ` and `ok` as
+/// separate pieces, and so does `eprintln!` with arguments. One write
+/// keeps the key whole, and the leading newline puts `SKIP` at the start
+/// of a line even after a cut libtest line.
+pub(crate) fn print_skip(test: &str, reason: &str) {
+    use std::io::Write;
+    let line = std::format!("\nSKIP {test} {reason}\n");
+    let _ = std::io::stderr().write_all(line.as_bytes());
+}
+
 /// Print `test`'s `SKIP` line with `reason`, the host lacking a feature
 /// the test needs; the skip fails the test unless
 /// `CHALLOC_TEST_ALLOW_SKIP` is set (docs/testing.md, "Skips").
 pub(crate) fn skip(test: &str, reason: &str) {
-    let line = std::format!("SKIP {test} {reason}");
-    std::eprintln!("{line}");
+    print_skip(test, reason);
     assert!(
         std::env::var_os("CHALLOC_TEST_ALLOW_SKIP").is_some(),
-        "{line}\n(set CHALLOC_TEST_ALLOW_SKIP=1 to let a test pass with a note on a host without the feature)"
+        "SKIP {test} {reason}\n(set CHALLOC_TEST_ALLOW_SKIP=1 to let a test pass with a note on a host without the feature)"
     );
 }
