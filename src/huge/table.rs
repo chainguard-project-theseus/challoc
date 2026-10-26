@@ -518,6 +518,15 @@ impl Table {
         &&& probes_reach(self.view(), self.lg_cap)
     }
 
+    /// A well-formed table has its storage.
+    pub(super) proof fn lemma_wf_storage(self)
+        requires
+            self.wf(),
+        ensures
+            self.storage_ok(),
+    {
+    }
+
     pub(super) fn new(meta: &Meta, page: usize) -> (r: Option<Table>)
         requires
             crate::sys::may_syscall(),

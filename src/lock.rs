@@ -240,6 +240,11 @@ pub open spec fn rank_sets(i: int) -> int {
     0x500_0000 + i
 }
 
+/// The huge lock (`huge::Huge`), below the metadata lock.
+pub open spec fn rank_huge() -> int {
+    0x600_0000
+}
+
 /// The metadata lock (`meta::Meta`).
 pub open spec fn rank_meta() -> int {
     0x700_0000
@@ -261,8 +266,9 @@ pub open spec fn rank_spare() -> int {
 /// rank, for the code under the guard; [`RawLock::lock_held`] raises a
 /// root in place. Every function that may take a lock takes its caller's
 /// (`Tracked<&mut LockOrder>`), so the bound follows the call chain
-/// (`meta::Meta`'s methods are the exception: [`axiom_meta_order`]). The
-/// fields are private to this module.
+/// (the exceptions are `meta::Meta`'s methods, [`axiom_meta_order`], and
+/// `huge::Huge::usable_size`, [`axiom_entry`]). The fields are private to
+/// this module.
 ///
 /// The token [`Lock::lock`] hands out has the lifetime `'a` of the
 /// guard's borrow, which also borrows the caller's token: the caller's
@@ -305,6 +311,20 @@ impl<'a> LockOrder<'a> {
         LockOrder { top: rank_spare(), root: false, life: PhantomData }
     }
 }
+
+/// Premise (an entry point): the calling thread holds no allocator lock.
+/// Stands in for the token an entry point would hold for its whole call;
+/// its use is `Huge::usable_size`, whose callers (`api::libc`'s
+/// `usable_size`, its realloc and `free_usable` paths, and
+/// `Shared::zero_huge`) hold no allocator lock. No allocator entry point is
+/// re-entered while a lock is held: allocator code calls nothing that may
+/// allocate with a lock held, and a signal handler that allocates is
+/// outside the C contract (the fork handlers block signals).
+pub(crate) axiom fn axiom_entry<'a>() -> (tracked o: LockOrder<'a>)
+    ensures
+        o.top() == 0,
+        !o.root(),
+;
 
 /// Premise: the calling thread holds only allocator locks ranked below the
 /// metadata lock ([`rank_meta`]). Stands in for the token `meta::Meta`'s

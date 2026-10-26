@@ -12,3 +12,6 @@ wake	FFI/syscall	Verus
 # Lock-order premise for `Meta`'s acquisitions until its callers pass
 # their own tokens (an exec signature change in about 20 callers).
 axiom_meta_order	allocator invariant	Verus
+# Lock-order premise of an entry point that holds no allocator lock
+# (`Huge::usable_size`'s callers).
+axiom_entry	allocator invariant	none (assumption)
