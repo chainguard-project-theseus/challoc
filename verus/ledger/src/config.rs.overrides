@@ -1,3 +1,7 @@
 TABLE	function pointer	Kani
 Parse	function pointer	Kani
 Read	function pointer	Kani
+read_slot	raw pointer from C caller	Miri (evidence only)
+byte_at	raw pointer from C caller	Miri (evidence only)
+bytes_at	raw pointer from C caller	Miri (evidence only)
+env_var	raw pointer from C caller	Miri (evidence only)
