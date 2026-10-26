@@ -847,7 +847,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
                 let (st, curregs) = cs.bin_stats();
                 u.bin_nregs = st.curslabs() * cls.nslots();
                 u.bin_nfree = u.bin_nregs.saturating_sub(curregs);
-                if let Some(s) = cs.lowest_partial() {
+                if let Some(s) = cs.lowest_partial(vstd::prelude::Tracked::assume_new()) {
                     u.slabcur_addr = shared.regions.slab_addr(class, s) as *mut c_void;
                 }
             }

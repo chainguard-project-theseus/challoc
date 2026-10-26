@@ -119,7 +119,19 @@ impl Env {
     fn class(&self, c: usize, guard_interval: u32) -> &'static ClassState {
         let table = self.table(c, guard_interval);
         std::boxed::Box::leak(std::boxed::Box::new(
-            ClassState::new(&self.meta, &self.regions, table, 0, self.sets()).expect("class state"),
+            ClassState::new(
+                &self.meta,
+                &self.regions,
+                core::ptr::from_ref(table).cast_mut(),
+                Tracked::assume_new(),
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+                0,
+                core::ptr::from_ref(self.sets()),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
+            .expect("class state"),
         ))
     }
 
@@ -157,8 +169,19 @@ impl Env {
     fn class_in_arena(&self, cs: &ClassState, arena: u16) -> &'static ClassState {
         let table = cs.table();
         std::boxed::Box::leak(std::boxed::Box::new(
-            ClassState::new(&self.meta, &self.regions, table, arena, self.sets())
-                .expect("class state"),
+            ClassState::new(
+                &self.meta,
+                &self.regions,
+                core::ptr::from_ref(table).cast_mut(),
+                Tracked::assume_new(),
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+                arena,
+                core::ptr::from_ref(self.sets()),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
+            .expect("class state"),
         ))
     }
 
@@ -629,21 +652,21 @@ fn filling_a_slab_moves_on_and_release_reopens_it() {
     assert!(cs.table().bits(0).is_full());
     // A whole fresh slab reserved by one plan leaves the partial set at
     // once; nothing in it could be released before the claim finished.
-    assert!(!cs.is_partial(0));
+    assert!(!cs.is_partial(0, Tracked::assume_new()));
     assert_eq!(cs.stats().nonfull, 0);
     let (next, claim) = env.claim(cs, 1);
     assert_eq!(claim, Claim { n: 1, zeroed: true });
     assert_eq!(next[0] as usize, env.regions.slab_addr(c, 1));
-    assert!(!cs.is_partial(0));
-    assert!(cs.is_partial(1));
+    assert!(!cs.is_partial(0, Tracked::assume_new()));
+    assert!(cs.is_partial(1, Tracked::assume_new()));
     assert_eq!(cs.stats().committed, 2);
     assert_eq!(cs.stats().nonfull, 1);
     // Releasing one slot in slab 0 puts it back, and first fit picks it
     // before slab 1.
     let victim = all[n / 2];
     cs.release(&[victim]);
-    assert!(cs.is_partial(0));
-    assert_eq!(cs.lowest_partial(), Some(0));
+    assert!(cs.is_partial(0, Tracked::assume_new()));
+    assert_eq!(cs.lowest_partial(Tracked::assume_new()), Some(0));
     assert_eq!(cs.desc(0).live(), n - 1);
     assert!(!cs.table().is_allocated(0, n / 2));
     let (again, claim) = env.claim(cs, 2);
@@ -670,15 +693,15 @@ fn filling_a_live_slab_leaves_a_stale_bit_until_the_next_plan() {
     let (b, _) = env.claim(cs, 3);
     assert_eq!(a.len() + b.len(), n);
     assert!(cs.table().bits(0).is_full());
-    assert!(cs.is_partial(0));
+    assert!(cs.is_partial(0, Tracked::assume_new()));
     assert_eq!(cs.stats().nonfull, 1);
     // The next plan notices, clears it and commits slab 1 in the same
     // lock hold.
     let (q, claim) = env.claim(cs, 2);
     assert_eq!(claim, Claim { n: 2, zeroed: true });
     assert_eq!(q[0] as usize, env.regions.slab_addr(c, 1));
-    assert!(!cs.is_partial(0));
-    assert!(cs.is_partial(1));
+    assert!(!cs.is_partial(0, Tracked::assume_new()));
+    assert!(cs.is_partial(1, Tracked::assume_new()));
     assert_eq!(
         cs.stats(),
         ClassStats {
@@ -689,7 +712,7 @@ fn filling_a_live_slab_leaves_a_stale_bit_until_the_next_plan() {
     );
     // A release into the full slab reopens it and first fit prefers it.
     cs.release(&[a[5]]);
-    assert!(cs.is_partial(0));
+    assert!(cs.is_partial(0, Tracked::assume_new()));
     let (r, claim) = env.claim(cs, 1);
     assert_eq!(
         claim,
@@ -721,7 +744,7 @@ fn one_plan_spans_many_slabs_and_release_reopens_them_all() {
     for s in 0..slabs {
         assert_eq!(all[s * n] as usize, env.regions.slab_addr(c, s));
         assert!(cs.table().bits(s).is_full());
-        assert!(!cs.is_partial(s));
+        assert!(!cs.is_partial(s, Tracked::assume_new()));
     }
     assert_eq!(
         cs.stats(),
@@ -736,7 +759,10 @@ fn one_plan_spans_many_slabs_and_release_reopens_them_all() {
     let victims: Vec<*mut u8> = (0..slabs).map(|s| all[s * n + s % n]).collect();
     cs.release(&victims);
     for s in 0..slabs {
-        assert!(cs.is_partial(s), "slab {s} not reopened");
+        assert!(
+            cs.is_partial(s, Tracked::assume_new()),
+            "slab {s} not reopened"
+        );
         assert_eq!(cs.desc(s).live(), n - 1);
     }
     assert_eq!(cs.stats().nonfull, slabs);
@@ -755,14 +781,14 @@ fn one_plan_spans_many_slabs_and_release_reopens_them_all() {
     // being cleared; each later plan cleared the previous plan's full
     // slabs on its way past, leaving only the last one stale.
     assert_eq!(cs.stats().nonfull, 1);
-    assert!(cs.is_partial(slabs - 1));
+    assert!(cs.is_partial(slabs - 1, Tracked::assume_new()));
     // Releasing a whole slab in one batch empties it; the reopen list
     // must not put an Empty slab back into the partial set.
     let mut whole: Vec<*mut u8> = all[3 * n..4 * n].to_vec();
     whole.sort();
     cs.release(&whole);
     assert_eq!(cs.desc(3).state(), State::Empty);
-    assert!(!cs.is_partial(3));
+    assert!(!cs.is_partial(3, Tracked::assume_new()));
     assert_eq!(cs.stats().empty, 1);
     assert_eq!(cs.stats().nonfull, 1);
     // And the same for the slab with the stale bit.
@@ -770,7 +796,7 @@ fn one_plan_spans_many_slabs_and_release_reopens_them_all() {
     whole.sort();
     cs.release(&whole);
     assert_eq!(cs.desc(slabs - 1).state(), State::Empty);
-    assert!(!cs.is_partial(slabs - 1));
+    assert!(!cs.is_partial(slabs - 1, Tracked::assume_new()));
     assert_eq!(cs.stats().empty, 2);
     assert_eq!(cs.stats().nonfull, 0);
 }
@@ -789,7 +815,7 @@ fn release_all_makes_empty_then_reuse_then_purge() {
     assert_eq!(d.state(), State::Empty);
     assert_eq!(d.live(), 0);
     assert!(d.dirty_at() > 0);
-    assert!(!cs.is_partial(0));
+    assert!(!cs.is_partial(0, Tracked::assume_new()));
     assert_eq!(
         cs.stats(),
         ClassStats {
@@ -1248,7 +1274,19 @@ fn set_table_of_many_classes_touches_one_page_per_slab_size() {
     let states: Vec<ClassState> = classes
         .iter()
         .map(|&c| {
-            ClassState::new(&env.meta, &env.regions, env.table(c, 0), 0, sets).expect("class state")
+            ClassState::new(
+                &env.meta,
+                &env.regions,
+                core::ptr::from_ref(env.table(c, 0)).cast_mut(),
+                Tracked::assume_new(),
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+                0,
+                core::ptr::from_ref(sets),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
+            .expect("class state")
         })
         .collect();
     for cs in &states {
@@ -1309,8 +1347,8 @@ fn two_arenas_share_one_region() {
     assert_eq!(cs0.desc(1).arena(), 1);
     assert_eq!(cs0.locate(p0[0]).0, 0);
     assert_eq!(cs1.locate(p1[0]).0, 1);
-    assert!(cs0.is_partial(0) && !cs0.is_partial(1));
-    assert!(cs1.is_partial(1) && !cs1.is_partial(0));
+    assert!(cs0.is_partial(0, Tracked::assume_new()) && !cs0.is_partial(1, Tracked::assume_new()));
+    assert!(cs1.is_partial(1, Tracked::assume_new()) && !cs1.is_partial(0, Tracked::assume_new()));
     assert_eq!(cs0.stats().committed, 1);
     assert_eq!(cs1.stats().committed, 1);
     // Each arena keeps growing past the other's slabs.
@@ -1648,14 +1686,14 @@ fn randomised_model_check() {
             match d.state() {
                 State::Empty => {
                     assert_eq!(d.live(), 0);
-                    assert!(!cs.is_partial(s));
+                    assert!(!cs.is_partial(s, Tracked::assume_new()));
                     empty += 1;
                 }
                 State::Active => {
-                    assert!(d.live() > 0 || cs.is_partial(s));
+                    assert!(d.live() > 0 || cs.is_partial(s, Tracked::assume_new()));
                     if !bm.is_full() {
                         assert!(
-                            cs.is_partial(s),
+                            cs.is_partial(s, Tracked::assume_new()),
                             "slab {s} has free slots but is not partial"
                         );
                     }
@@ -2203,7 +2241,9 @@ fn a_plan_over_a_slab_with_live_above_nslots_aborts() {
     let cs = env.class(small_class(), 0);
     let (b, claim) = env.claim(cs, 1);
     assert_eq!(claim.n, 1);
-    let slab = cs.lowest_partial().expect("the slab is partial");
+    let slab = cs
+        .lowest_partial(Tracked::assume_new())
+        .expect("the slab is partial");
     cs.release(&b[..1]);
     assert_eq!(cs.stats().empty, 1);
     // Corrupt the descriptor of the now `Empty` slab: `live` past the
