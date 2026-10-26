@@ -776,12 +776,19 @@ pub trait Settle {
 
     type Ctx;
 
+    /// The settler's configuration, which settling does not change.
+    type Conf;
+
     /// The settler's invariant over its owner, the caller's state and the
     /// pieces pushed and not yet settled.
     spec fn inv(&self, o: &Self::Owner, c: Self::Ctx, pend: spec_fn((int, int)) -> bool) -> bool;
 
     /// The bytes reported discarded so far.
     spec fn bytes(&self) -> int;
+
+    /// The settler's configuration: fixed by its maker, kept by every
+    /// settle.
+    spec fn conf(&self) -> Self::Conf;
 
     /// The flush's report on `[addr, addr + len)`, made of the pieces
     /// `piece` bytes long pushed and not yet settled: `done`, `madvise`
@@ -807,6 +814,7 @@ pub trait Settle {
             forall|x: (int, int)| #[trigger] in_run(addr as int, len as int, piece@, x) ==> (pend@)(x),
         ensures
             final(self).inv(o, *final(c), minus(pend@, addr as int, len as int, piece@)),
+            final(self).conf() == old(self).conf(),
             final(self).bytes() == old(self).bytes() + if done {
                 len as int
             } else {
@@ -828,12 +836,18 @@ impl Settle for One {
 
     type Ctx = ();
 
+    type Conf = ();
+
     closed spec fn inv(&self, o: &(), c: (), pend: spec_fn((int, int)) -> bool) -> bool {
         true
     }
 
     closed spec fn bytes(&self) -> int {
         self.bytes@
+    }
+
+    closed spec fn conf(&self) -> () {
+        ()
     }
 
     // Only `done` is kept; `len` is read by ghost code alone.
@@ -860,7 +874,7 @@ impl Settle for One {
 /// Every byte of units (slabs, pages) `first..first + k` of a range at
 /// `base` of units of `sz` bytes lies in one of them: its index
 /// `(b - base) / sz`.
-proof fn lemma_unit_of(base: int, sz: int, first: int, k: int, b: int)
+pub(crate) proof fn lemma_unit_of(base: int, sz: int, first: int, k: int, b: int)
     requires
         sz > 0,
         0 <= first,
@@ -1116,6 +1130,7 @@ impl Batch {
             final(self).wf(),
             final(self).free() == old(self).free(),
             final(s).inv(o, *final(c), final(self).pieces()),
+            final(s).conf() == old(s).conf(),
             (final(self).pieces())((addr as int, len as int)),
             forall|x: (int, int)| #[trigger] (final(self).pieces())(x) ==> x == (addr as int, len as int) || (old(
                 self,
@@ -1336,6 +1351,7 @@ impl Batch {
             final(self).count() == 0,
             final(self).free() == old(self).free(),
             final(s).inv(o, *final(c), none()),
+            final(s).conf() == old(s).conf(),
             final(self).pieces() == none(),
             final(self).sent() - old(self).sent() == final(s).bytes() - old(s).bytes(),
             final(self).discarded().len() >= old(self).discarded().len(),
@@ -1371,6 +1387,7 @@ impl Batch {
             final(self).count() == 0,
             final(self).free() == old(self).free(),
             final(s).inv(o, *final(c), keep),
+            final(s).conf() == old(s).conf(),
             final(self).pieces() == none(),
             final(self).sent() - old(self).sent() == final(s).bytes() - old(s).bytes(),
             final(self).discarded().len() >= old(self).discarded().len(),
@@ -1382,6 +1399,7 @@ impl Batch {
         let ghost free = self.free@;
         let ghost sent0 = self.sent@;
         let ghost bytes0 = s.bytes();
+        let ghost conf0 = s.conf();
         let ghost gone0 = self.gone@;
         proof {
             assert forall|k: int| 0 <= k < n implies #[trigger] range_ok(r[k], free) by {
@@ -1431,6 +1449,7 @@ impl Batch {
                     s.inv(o, *c, from(r, i as int, n, keep)),
                     bytes as int == self.sent@ - sent0,
                     s.bytes() - bytes0 == self.sent@ - sent0,
+                    s.conf() == conf0,
                     bytes as int <= lens(r, i as int),
                     lens(r, n) <= usize::MAX,
                     self.gone@.len() >= gone0.len(),
@@ -1516,6 +1535,7 @@ impl Batch {
                         s.inv(o, *c, at_on(at as int, (addr + len) as int, piece as int, rest)),
                         bytes as int == self.sent@ - sent0,
                         s.bytes() - bytes0 == self.sent@ - sent0,
+                        s.conf() == conf0,
                         bytes as int <= lens(r, i as int) + (at - addr),
                         lens(r, i as int) + len <= lens(r, n),
                         lens(r, n) <= usize::MAX,
@@ -2127,12 +2147,18 @@ impl<F: FnMut(usize, usize, bool)> Settle for FnSettle<F> {
 
     type Ctx = ();
 
+    type Conf = ();
+
     closed spec fn inv(&self, o: &(), c: (), pend: spec_fn((int, int)) -> bool) -> bool {
         true
     }
 
     closed spec fn bytes(&self) -> int {
         self.1@
+    }
+
+    closed spec fn conf(&self) -> () {
+        ()
     }
 
     fn settle(

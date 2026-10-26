@@ -1,6 +1,3 @@
 # One huge allocator per process: the run authorities `Huge::new` makes
 # are the process's, as class::table's axiom_slot_loc for the slot ones.
 axiom_run_locs	allocator invariant	none (assumption)
-# Temporary seam: Tally::settle trusted until Huge::settle and the purge
-# walks are verified.
-Tally::settle	allocator invariant	Verus

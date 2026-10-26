@@ -7,30 +7,11 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `Tally::settle` | external_body | allocator invariant | Verus | trusted |
 | `axiom_run_locs` | axiom | allocator invariant | none (assumption) | trusted |
-
-## `Tally::settle`
-
-src/huge/mod.rs:511. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-```rust
-fn settle(
-    &mut self,
-    o: &Huge,
-    c: &mut Inner,
-    addr: usize,
-    len: usize,
-    done: bool,
-    piece: Ghost<int>,
-    pend: Ghost<Pieces>,
-)
-```
 
 ## `axiom_run_locs`
 
-src/huge/mod.rs:653. Kind: axiom. Category: allocator invariant.
+src/huge/mod.rs:900. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: outside tests, [`Huge::new`] runs once per process, for the process's `Shared` (`Shared::init`), so the run authorities it makes are the process's ([`run_loc`], [`page_loc`]), as `class::table::axiom_slot_loc` for the slot authorities.
