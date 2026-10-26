@@ -13,6 +13,8 @@ pub(crate) mod addr;
 pub(crate) mod core_int;
 #[cfg(verus_keep_ghost)]
 pub(crate) mod layout;
+#[cfg(verus_keep_ghost)]
+pub(crate) mod ptr;
 
 verus! {
 

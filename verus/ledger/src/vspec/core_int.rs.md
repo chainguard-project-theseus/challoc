@@ -7,13 +7,42 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `u64::count_ones` | assume_spec | core library | Kani | trusted |
+| `usize::div_ceil` | assume_spec | core library | Kani | trusted |
 | `usize::trailing_zeros` | assume_spec | core library | Kani | trusted |
 | `usize::leading_zeros` | assume_spec | core library | Kani | trusted |
 | `usize::next_power_of_two` | assume_spec | core library | Kani | trusted |
 
+## `u64::count_ones`
+
+src/vspec/core_int.rs:19. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `u64::count_ones`: the number of set bits.
+
+```rust
+pub assume_specification[ u64::count_ones ](x: u64) -> (r: u32)
+    ensures r as nat == popcount(x),
+;
+```
+
+## `usize::div_ceil`
+
+src/vspec/core_int.rs:25. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `usize::div_ceil`: the quotient rounded up; panics when `d == 0` (core docs), and cannot overflow otherwise.
+
+```rust
+pub assume_specification[ usize::div_ceil ](x: usize, d: usize) -> (r: usize)
+    requires d > 0,
+    ensures r as int == (x as int + d as int - 1) / d as int,
+;
+```
+
 ## `usize::trailing_zeros`
 
-src/vspec/core_int.rs:11. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:30. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -24,7 +53,7 @@ pub assume_specification[ usize::trailing_zeros ](x: usize) -> (r: u32)
 
 ## `usize::leading_zeros`
 
-src/vspec/core_int.rs:15. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:34. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -36,7 +65,7 @@ pub assume_specification[ usize::leading_zeros ](x: usize) -> (r: u32)
 
 ## `usize::next_power_of_two`
 
-src/vspec/core_int.rs:22. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:41. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `next_power_of_two` panics (debug) or wraps (release) above `2^63`; challoc never asks for that.
