@@ -34,6 +34,9 @@ use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 use super::{bytes_is, find_from, parse_decimal};
+use vstd::prelude::*;
+
+verus! {
 
 /// Longest cgroup directory (mount point plus path) that is tracked. Real
 /// paths are a few hundred bytes (Kubernetes' pod and container scopes);
@@ -68,6 +71,8 @@ pub const UNLIMITED: u64 = u64::MAX;
 /// its other children too. Levels above these count only toward the
 /// effective limit.
 pub const LEVELS: usize = 16;
+
+} // verus!
 
 // ---------------------------------------------------------------------------
 // Pure parsing (unit tested against captured contents).

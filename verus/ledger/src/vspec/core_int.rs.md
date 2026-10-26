@@ -12,6 +12,8 @@ file.
 | `usize::trailing_zeros` | assume_spec | core library | Kani | trusted |
 | `usize::leading_zeros` | assume_spec | core library | Kani | trusted |
 | `usize::next_power_of_two` | assume_spec | core library | Kani | trusted |
+| `i64::wrapping_neg` | assume_spec | core library | Kani | trusted |
+| `usize::ilog2` | assume_spec | core library | Kani | trusted |
 | `hint::spin_loop` | assume_spec | core library | Kani | trusted |
 
 ## `u64::count_ones`
@@ -82,9 +84,36 @@ pub assume_specification[ usize::next_power_of_two ](x: usize) -> (r: usize)
 ;
 ```
 
+## `i64::wrapping_neg`
+
+src/vspec/core_int.rs:51. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `i64::wrapping_neg`: `-x`, except that `i64::MIN` is its own negation.
+
+```rust
+pub assume_specification[ i64::wrapping_neg ](x: i64) -> (r: i64)
+    ensures r == if x == i64::MIN { i64::MIN as int } else { -x },
+;
+```
+
+## `usize::ilog2`
+
+src/vspec/core_int.rs:56. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `usize::ilog2`: the position of the highest set bit; panics for 0.
+
+```rust
+pub assume_specification[ usize::ilog2 ](x: usize) -> (r: u32)
+    requires x > 0,
+    ensures r < 64, pow2(r as nat) <= x, x < pow2(r as nat + 1),
+;
+```
+
 ## `core::hint::spin_loop`
 
-src/vspec/core_int.rs:55. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:66. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > A spin-wait hint to the CPU (`pause`, `isb`); no effect on memory.
