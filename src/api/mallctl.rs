@@ -63,11 +63,12 @@ use crate::arena::{ARENAS_ALL, MAX_ARENAS};
 use crate::config::{KEYS, Value};
 use crate::heap::{self, Heap, Shared};
 use crate::huge::RunState;
-use crate::layout::{CLASSES, Kind, NBINS};
+use crate::layout::{CLASSES, Kind, NBINS, NCLASSES};
 use crate::purge;
 use crate::stats::{self, ArenaStats, BinStats};
 use crate::sys;
 use crate::sys::Errno;
+use crate::sys::bytes_is;
 use Op::*;
 use Reading::*;
 
@@ -449,52 +450,102 @@ static ROOT: [Node; 12] = [
 // Name and MIB resolution.
 // ---------------------------------------------------------------------------
 
+/// The first component of a dotted name and the rest after its dot, if
+/// there is a dot.
 fn split_component(name: &[u8]) -> (&[u8], Option<&[u8]>) {
-    match name.iter().position(|&b| b == b'.') {
-        Some(i) => (&name[..i], Some(&name[i + 1..])),
-        None => (name, None),
+    // `match name.iter().position(|&b| b == b'.')`, spelled out with an
+    // index.
+    let mut i = 0;
+    while i < name.len() {
+        if name[i] == b'.' {
+            return (&name[..i], Some(&name[i + 1..]));
+        }
+        i += 1;
     }
+    (name, None)
 }
 
-/// A decimal component (jemalloc parses these with `strtoumax(.., 10)`).
+/// A decimal component (jemalloc parses these with `strtoumax(.., 10)`):
+/// its value, or `None` when it is empty, holds a byte that is not a
+/// digit, or does not fit a `size_t`.
+// Verus does not support `?` on `Option` here.
+#[allow(clippy::question_mark)]
 fn parse_index(s: &[u8]) -> Option<usize> {
     if s.is_empty() {
         return None;
     }
     let mut v: usize = 0;
-    for &b in s {
+    // `for &b in s`, spelled out with an index.
+    let mut k = 0;
+    while k < s.len() {
+        let b = s[k];
         if !b.is_ascii_digit() {
             return None;
         }
-        v = v.checked_mul(10)?.checked_add((b - b'0') as usize)?;
+        // `v.checked_mul(10)?.checked_add(..)?`, each `?` spelled out.
+        let Some(t) = v.checked_mul(10) else {
+            return None;
+        };
+        let Some(w) = t.checked_add((b - b'0') as usize) else {
+            return None;
+        };
+        v = w;
+        k += 1;
     }
     Some(v)
 }
 
-fn child(nodes: &'static [Node], comp: &[u8]) -> Option<(usize, &'static Node)> {
-    if let [n] = nodes {
-        if n.name == NUMERIC {
-            return parse_index(comp).map(|i| (i, n));
-        }
-    }
-    nodes
-        .iter()
-        .position(|n| n.name.as_bytes() == comp)
-        .map(|i| (i, &nodes[i]))
+/// `n.name == NUMERIC`.
+#[inline(always)]
+fn is_numeric(n: &Node) -> bool {
+    bytes_is(n.name.as_bytes(), NUMERIC.as_bytes())
 }
 
-fn child_by_index(nodes: &'static [Node], i: usize) -> Option<&'static Node> {
-    match nodes {
-        [n] if n.name == NUMERIC => Some(n),
-        _ => nodes.get(i),
+/// [`ROOT`]: both traversals start from it.
+#[inline(always)]
+fn root() -> &'static [Node] {
+    &ROOT
+}
+
+/// The child of `nodes` that `comp` names, with its MIB entry: the
+/// number itself under a numeric node, else the child's index.
+fn child(nodes: &'static [Node], comp: &[u8]) -> Option<(usize, &'static Node)> {
+    // `if let [n] = nodes` and `nodes.iter().position(..).map(..)`,
+    // spelled out with an index.
+    if nodes.len() == 1 {
+        let n = &nodes[0];
+        if is_numeric(n) {
+            return match parse_index(comp) {
+                Some(i) => Some((i, n)),
+                None => None,
+            };
+        }
     }
+    let mut i = 0;
+    while i < nodes.len() {
+        if bytes_is(nodes[i].name.as_bytes(), comp) {
+            return Some((i, &nodes[i]));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The child of `nodes` at MIB entry `i`.
+fn child_by_index(nodes: &'static [Node], i: usize) -> Option<&'static Node> {
+    // `match nodes { [n] if n.name == NUMERIC => .., _ => .. }`, spelled
+    // out.
+    if nodes.len() == 1 && is_numeric(&nodes[0]) {
+        return Some(&nodes[0]);
+    }
+    nodes.get(i)
 }
 
 /// Resolve a dotted name to its MIB. The node reached may be interior
 /// (`mallctlnametomib("arenas")` is valid in jemalloc); using it as a key
-/// is then `ENOENT`.
+/// is then `ENOENT`. Writes `mib[..len]` only.
 fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> Result<(usize, &'static Node), c_int> {
-    let mut nodes: &'static [Node] = &ROOT;
+    let mut nodes: &'static [Node] = root();
     let mut rest = name;
     let mut len = 0;
     loop {
@@ -520,12 +571,15 @@ fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> Result<(usize, &'stat
 
 /// The node a MIB names; `ENOENT` for a bad index or an empty MIB.
 fn mib_to_node(mib: &[usize]) -> Result<&'static Node, c_int> {
-    let mut nodes: &'static [Node] = &ROOT;
+    let mut nodes: &'static [Node] = root();
     let mut last: Option<&'static Node> = None;
-    for &i in mib {
-        let n = child_by_index(nodes, i).ok_or(ENOENT)?;
+    // `for &i in mib`, spelled out with an index.
+    let mut k = 0;
+    while k < mib.len() {
+        let n = child_by_index(nodes, mib[k]).ok_or(ENOENT)?;
         nodes = n.children();
         last = Some(n);
+        k += 1;
     }
     last.ok_or(ENOENT)
 }
@@ -542,6 +596,27 @@ fn mib_to_key(mib: &[usize]) -> Result<&'static str, c_int> {
     }
 }
 
+/// Byte `n` of the caller's name.
+///
+/// # Safety
+/// `p + n` is a byte of the caller's name, at or before its NUL.
+#[inline(always)]
+unsafe fn name_byte(p: *const u8, n: usize) -> u8 {
+    // SAFETY: guaranteed by the caller.
+    unsafe { p.add(n).read() }
+}
+
+/// The caller's name's first `n` bytes.
+///
+/// # Safety
+/// The `n` bytes at `p` are readable for as long as the caller uses the
+/// slice (the `mallctl` call).
+#[inline(always)]
+unsafe fn name_bytes(p: *const u8, n: usize) -> &'static [u8] {
+    // SAFETY: guaranteed by the caller.
+    unsafe { core::slice::from_raw_parts(p, n) }
+}
+
 /// A C string as bytes, at most [`MAX_NAME`] long. `None` for null or a
 /// string of `MAX_NAME` bytes or more.
 ///
@@ -553,18 +628,21 @@ fn cstr(p: *const c_char) -> Option<&'static [u8]> {
     if p.is_null() {
         return None;
     }
-    let p = p.cast::<u8>();
+    // An `as` cast, not `cast::<u8>()`; both compile to nothing. The
+    // `allow` is for aarch64, where `c_char` is `u8`.
+    #[allow(clippy::unnecessary_cast)]
+    let p = p as *const u8;
     let mut n = 0;
     // SAFETY: the caller passes a NUL-terminated name; reads stop at the
     // terminator or the cap.
-    while n < MAX_NAME && unsafe { p.add(n).read() } != 0 {
+    while n < MAX_NAME && unsafe { name_byte(p, n) } != 0 {
         n += 1;
     }
     if n == MAX_NAME {
         return None;
     }
     // SAFETY: `n` bytes before the terminator were just read.
-    Some(unsafe { core::slice::from_raw_parts(p, n) })
+    Some(unsafe { name_bytes(p, n) })
 }
 
 // ---------------------------------------------------------------------------
@@ -580,6 +658,55 @@ pub struct Io {
     pub newlen: usize,
 }
 
+/// `*oldlenp`.
+///
+/// # Safety
+/// `oldlenp` is the caller's out-pointer per the `mallctl` contract.
+#[inline(always)]
+unsafe fn old_len(oldlenp: *mut usize) -> usize {
+    // SAFETY: guaranteed by the caller.
+    unsafe { *oldlenp }
+}
+
+/// Copy the first `n` bytes of `v` to `oldp`: a raw copy into the
+/// caller's buffer. Nothing is copied if the two overlap, which they
+/// never do for a caller that keeps the `mallctl` contract (its buffer is
+/// the program's memory, `v` a value on challoc's stack); the call fails
+/// with `EINVAL` either way.
+///
+/// # Safety
+/// `oldp` holds at least `n` writable bytes, and `n <= size_of::<T>()`.
+#[inline(always)]
+unsafe fn copy_prefix<T: Copy>(v: &T, oldp: *mut c_void, n: usize) {
+    let src = v as *const T as *const u8;
+    let (s, d) = (src as usize, oldp as usize);
+    if s + n <= d || d + n <= s {
+        // SAFETY: `n` bytes of `v`, readable, into the writable bytes at
+        // `oldp`, apart.
+        unsafe { ptr::copy_nonoverlapping(src, oldp as *mut u8, n) };
+    }
+}
+
+/// Store `v` at `oldp`: an unaligned write of `size_of::<T>()` bytes.
+///
+/// # Safety
+/// `oldp` holds `size_of::<T>()` writable bytes.
+#[inline(always)]
+unsafe fn store<T: Copy>(oldp: *mut c_void, v: T) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { ptr::write_unaligned(oldp as *mut T, v) };
+}
+
+/// The value at `newp`: an unaligned read of `size_of::<T>()` bytes.
+///
+/// # Safety
+/// `newp` holds `size_of::<T>()` readable bytes.
+#[inline(always)]
+unsafe fn load<T: Copy>(newp: *const c_void) -> T {
+    // SAFETY: guaranteed by the caller.
+    unsafe { ptr::read_unaligned(newp as *const T) }
+}
+
 impl Io {
     /// Copy `v` out if the caller asked for it. A wrong `*oldlenp` copies
     /// the common prefix and fails with `EINVAL`.
@@ -591,16 +718,12 @@ impl Io {
         // SAFETY: `oldp`/`oldlenp` are the caller's out-pointers per the
         // `mallctl` contract; `*oldlenp` bytes are writable at `oldp`.
         unsafe {
-            let have = *self.oldlenp;
+            let have = old_len(self.oldlenp);
             if have != want {
-                ptr::copy_nonoverlapping(
-                    &v as *const T as *const u8,
-                    self.oldp as *mut u8,
-                    have.min(want),
-                );
+                copy_prefix(&v, self.oldp, have.min(want));
                 return Err(EINVAL);
             }
-            ptr::write_unaligned(self.oldp as *mut T, v);
+            store(self.oldp, v);
         }
         Ok(())
     }
@@ -614,7 +737,7 @@ impl Io {
             return Err(EINVAL);
         }
         // SAFETY: `newlen == size_of::<T>()` readable bytes at `newp`.
-        Ok(Some(unsafe { ptr::read_unaligned(self.newp as *const T) }))
+        Ok(Some(unsafe { load(self.newp) }))
     }
 
     /// A C `bool`: any non-zero byte is true.
@@ -633,7 +756,7 @@ impl Io {
         }
         // SAFETY: `oldlenp` is the caller's out-pointer per the `mallctl`
         // contract.
-        if unsafe { *self.oldlenp } != size_of::<T>() {
+        if unsafe { old_len(self.oldlenp) } != size_of::<T>() {
             return Err(EINVAL);
         }
         Ok(())
@@ -768,8 +891,36 @@ pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16> {
     }
 }
 
+/// Pointer `i` of the caller's `newp` array: an unaligned read at `ptrs + i`.
+///
+/// # Safety
+/// `ptrs` holds at least `i + 1` readable pointers.
+#[inline(always)]
+unsafe fn query_ptr(ptrs: *const *const c_void, i: usize) -> *const c_void {
+    // SAFETY: guaranteed by the caller.
+    unsafe { ptrs.add(i).read_unaligned() }
+}
+
+/// Store triple `i`, `(nfree, nregs, size)`, into the caller's `oldp`
+/// array: unaligned writes of words `3 * i .. 3 * i + 3`.
+///
+/// # Safety
+/// `out` holds at least `3 * i + 3` writable words.
+#[inline(always)]
+unsafe fn store_triple(out: *mut usize, i: usize, nfree: usize, nregs: usize, size: usize) {
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        out.add(3 * i).write_unaligned(nfree);
+        out.add(3 * i + 1).write_unaligned(nregs);
+        out.add(3 * i + 2).write_unaligned(size);
+    }
+}
+
 /// `experimental.utilization.batch_query`: `newp` is an array of pointers,
 /// `oldp` an array of `(nfree, nregs, size)` triples of the same count.
+/// Only an exact fit is accepted: `newlen` is `n` pointers and `*oldlenp` is
+/// `n` triples of words for some `n > 0`, so every read and write of the loop stays
+/// inside the caller's buffers.
 fn batch_query(shared: &Shared, io: &Io) -> Result<(), c_int> {
     if io.oldp.is_null() || io.oldlenp.is_null() || io.newp.is_null() {
         return Err(EINVAL);
@@ -777,7 +928,7 @@ fn batch_query(shared: &Shared, io: &Io) -> Result<(), c_int> {
     let psz = size_of::<*const c_void>();
     let tsz = 3 * size_of::<usize>();
     // SAFETY: `oldlenp` is the caller's length pointer.
-    let oldlen = unsafe { *io.oldlenp };
+    let oldlen = unsafe { old_len(io.oldlenp) };
     let n = io.newlen / psz;
     // `checked_mul`: a count whose triples overflow must not wrap onto
     // the caller's `oldlen` and send the loop past both arrays.
@@ -790,10 +941,9 @@ fn batch_query(shared: &Shared, io: &Io) -> Result<(), c_int> {
         // SAFETY: `n` pointers are readable at `newp` and `3 * n` words
         // writable at `oldp`, both checked against the caller's lengths.
         unsafe {
-            let u = utilization(shared, ptrs.add(i).read_unaligned(), false);
-            out.add(3 * i).write_unaligned(u.nfree);
-            out.add(3 * i + 1).write_unaligned(u.nregs);
-            out.add(3 * i + 2).write_unaligned(u.size);
+            let q = query_ptr(ptrs, i);
+            let u = utilization(shared, q, false);
+            store_triple(out, i, u.nfree, u.nregs, u.size);
         }
     }
     Ok(())
@@ -826,16 +976,30 @@ fn opt_value(mib: &[usize]) -> Result<Reading, c_int> {
 }
 
 /// `arenas.bin.<j>.*`: the bin's class; `ENOENT` past `arenas.nbins`.
+// `CLASSES[..NBINS].get(j)`, spelled with `CLASSES.table()` and an index
+// check. `j < NCLASSES` is redundant for the compiler (`NBINS <=
+// NCLASSES`), which folds it.
+#[allow(clippy::redundant_comparisons)]
 fn bin_class(mib: &[usize]) -> Result<crate::layout::Class, c_int> {
-    CLASSES[..NBINS].get(at(mib, 2)).copied().ok_or(ENOENT)
+    let j = at(mib, 2);
+    if j < NBINS && j < NCLASSES {
+        Ok(CLASSES.table()[j])
+    } else {
+        Err(ENOENT)
+    }
 }
 
-/// `stats.arenas.<i>.bins.<j>.*`: the stored bin figures.
+/// `stats.arenas.<i>.bins.<j>.*`: the stored bin figures. (`bins[..NBINS]
+/// .get(j)`, spelled out as in `bin_class`.)
+#[allow(clippy::redundant_comparisons)]
 fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int> {
-    arena_stats(shared(), at(mib, 2))?.bins[..NBINS]
-        .get(at(mib, 4))
-        .copied()
-        .ok_or(ENOENT)
+    let a = arena_stats(shared(), at(mib, 2))?;
+    let j = at(mib, 4);
+    if j < NBINS && j < NCLASSES {
+        Ok(a.bins[j])
+    } else {
+        Err(ENOENT)
+    }
 }
 
 /// The tracked cgroup, or `ENOENT`: like jemalloc's keys behind a disabled
@@ -1046,7 +1210,12 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             io.read_only()?;
             // A read that would fail must not leave a tcache behind.
             io.verify_read::<c_uint>()?;
-            let home = heap::existing_heap(shared).map_or(0, |h| h.arena());
+            // `existing_heap(shared).map_or(0, |h| h.arena())`, spelled as
+            // a `match`.
+            let home = match heap::existing_heap(shared) {
+                Some(h) => h.arena(),
+                None => 0,
+            };
             let t = shared.tcaches.create(shared, home).ok_or(EFAULT)?;
             io.read(t as c_uint)
         }
@@ -1107,8 +1276,37 @@ pub fn mallctl(
     ))
 }
 
+/// `*miblenp`.
+///
+/// # Safety
+/// `miblenp` is the caller's non-null capacity pointer.
+#[inline(always)]
+unsafe fn mib_cap(miblenp: *mut usize) -> usize {
+    // SAFETY: guaranteed by the caller.
+    unsafe { *miblenp }
+}
+
+/// Copy `mib[..len]` out to `mibp` and store `len` at `miblenp`: unaligned
+/// writes, one word at a time.
+///
+/// # Safety
+/// `mibp` holds at least `len` writable `size_t`s, `len <= MAX_MIB`, and
+/// `miblenp` is the caller's non-null capacity pointer.
+#[inline(always)]
+unsafe fn mib_out(mib: &[usize; MAX_MIB], mibp: *mut usize, miblenp: *mut usize, len: usize) {
+    let mut i = 0;
+    while i < len {
+        // SAFETY: word `i < len` of the caller's array.
+        unsafe { mibp.add(i).write_unaligned(mib[i]) };
+        i += 1;
+    }
+    // SAFETY: the caller's capacity pointer.
+    unsafe { miblenp.write_unaligned(len) };
+}
+
 /// `mallctlnametomib(name, mibp, miblenp)`: `*miblenp` is the capacity in
-/// and the length out.
+/// and the length out. A failure writes nothing through `mibp` or
+/// `miblenp`.
 pub fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> c_int {
     let Some(name) = cstr(name) else {
         return EINVAL;
@@ -1124,13 +1322,28 @@ pub fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usi
     // SAFETY: the caller's capacity pointer and an array of that many
     // `size_t`.
     unsafe {
-        if *miblenp < len {
+        let cap = mib_cap(miblenp);
+        if cap < len {
             return EINVAL;
         }
-        ptr::copy_nonoverlapping(mib.as_ptr(), mibp, len);
-        *miblenp = len;
+        mib_out(&mib, mibp, miblenp, len);
     }
     0
+}
+
+/// Copy the caller's `miblen` MIB entries into `local`: unaligned reads,
+/// one word at a time.
+///
+/// # Safety
+/// `miblen <= MAX_MIB` entries are readable at `mib`.
+#[inline(always)]
+unsafe fn mib_in(mib: *const usize, local: &mut [usize; MAX_MIB], miblen: usize) {
+    let mut i = 0;
+    while i < miblen {
+        // SAFETY: entry `i < miblen` of the caller's MIB.
+        local[i] = unsafe { mib.add(i).read_unaligned() };
+        i += 1;
+    }
 }
 
 /// `mallctlbymib(mib, miblen, oldp, oldlenp, newp, newlen)`.
@@ -1147,7 +1360,7 @@ pub fn mallctlbymib(
     }
     let mut local = [0usize; MAX_MIB];
     // SAFETY: `miblen` entries are readable at `mib`.
-    unsafe { ptr::copy_nonoverlapping(mib, local.as_mut_ptr(), miblen) };
+    unsafe { mib_in(mib, &mut local, miblen) };
     let node = match mib_to_node(&local[..miblen]) {
         Ok(n) => n,
         Err(e) => return e,
