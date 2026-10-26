@@ -8,16 +8,35 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `Unbacked::commit` | external_body proof | platform/kernel fact | none (assumption) | trusted |
+| `Unbacke...o_lazy` | external_body proof | platform/kernel fact | none (assumption) | trusted |
 
 ## `Unbacked::commit`
 
-src/vspec/unbacked.rs:96. Kind: external_body proof. Category: platform/kernel fact.
+src/vspec/unbacked.rs:92. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > The permission to the bytes, once they are committed, and the token that they read as zero.
 
 ```rust
 pub proof fn commit(tracked self) -> (tracked r: (PointsToRaw, Zeroed))
+    ensures
+        r.0.is_range(self.addr(), self.len()),
+        r.0.provenance() == cast_provenance(),
+        r.1.addr() == self.addr(),
+        r.1.len() == self.len(),
+```
+
+## `Unbacked::into_lazy`
+
+src/vspec/unbacked.rs:122. Kind: external_body proof. Category: platform/kernel fact.
+Tool: none (assumption). Status: trusted.
+
+> The permission to the bytes of a lazily committed table, still uncommitted, and the token that they read as zero.
+
+```rust
+pub proof fn into_lazy(tracked self) -> (tracked r: (PointsToRaw, Zeroed))
+    requires
+        self.addr() > 0,
     ensures
         r.0.is_range(self.addr(), self.len()),
         r.0.provenance() == cast_provenance(),

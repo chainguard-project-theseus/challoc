@@ -8,6 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `RawLock::lock_slow` | no_decreases | termination | loom/GenMC | trusted |
+| `axiom_meta_order` | axiom | allocator invariant | Verus | trusted |
 | `wait` | external_body | FFI/syscall | Verus | trusted |
 | `wake` | external_body | FFI/syscall | Verus | trusted |
 | `axiom_acquired` | axiom | allocator invariant | none (assumption) | trusted |
@@ -18,7 +19,7 @@ file.
 
 ## `RawLock::lock_slow`
 
-src/lock.rs:110. Kind: no_decreases. Category: termination.
+src/lock.rs:113. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > Termination is not claimed: the wait ends when another thread releases the lock.
@@ -29,9 +30,24 @@ fn lock_slow(&self)
         crate::sys::may_syscall(),
 ```
 
+## `axiom_meta_order`
+
+src/lock.rs:302. Kind: axiom. Category: allocator invariant.
+Tool: Verus. Status: trusted.
+
+> Premise: the calling thread holds only allocator locks ranked below the metadata lock ([`rank_meta`]).
+
+```rust
+pub axiom fn axiom_meta_order<'a>() -> (tracked o: LockOrder<'a>)
+    ensures
+        o.allows(rank_meta()),
+        !o.root(),
+;
+```
+
 ## `wait`
 
-src/lock.rs:297. Kind: external_body. Category: FFI/syscall.
+src/lock.rs:313. Kind: external_body. Category: FFI/syscall.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -42,7 +58,7 @@ fn wait(state: &AtomicU32, val: u32)
 
 ## `wake`
 
-src/lock.rs:308. Kind: external_body. Category: FFI/syscall.
+src/lock.rs:324. Kind: external_body. Category: FFI/syscall.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -53,7 +69,7 @@ fn wake(state: &AtomicU32)
 
 ## `axiom_acquired`
 
-src/lock.rs:378. Kind: axiom. Category: allocator invariant.
+src/lock.rs:394. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The lock invariant's assumption where it enters for a guard (the other entry is [`axiom_held`], for a holder of the raw lock): a thread that has just acquired the raw lock of `l` takes the permission of `l`'s cell out of the raw lock's invariant, and the value in the cell satisfies [`lock_inv`] (every earlier holder restored it) and keeps [`lock_frame`] of the value the lock was created with.
@@ -69,7 +85,7 @@ axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
 
 ## `axiom_held`
 
-src/lock.rs:393. Kind: axiom. Category: allocator invariant.
+src/lock.rs:409. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The lock invariant's assumption where it enters for a holder of the raw lock ([`Lock::get_unlocked`]): the holder's [`LockHeld`] token lends the permission of `l`'s cell for as long as the token stays borrowed, and the value satisfies [`lock_inv`] and keeps [`lock_frame`], as at [`axiom_acquired`].
@@ -88,12 +104,12 @@ axiom fn axiom_held<'a, T>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (track
 
 ## `cell_ref`
 
-src/lock.rs:642. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:659. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow`] with the permission `t`.
 
-Body mints Tracked at line 650.
+Body mints Tracked at line 667.
 
 ```rust
 fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
@@ -107,12 +123,12 @@ fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
 
 ## `cell_mut`
 
-src/lock.rs:657. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:674. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow_mut`] with the permission `t`.
 
-Body mints Tracked at line 667.
+Body mints Tracked at line 684.
 
 ```rust
 fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b mut T)
@@ -128,7 +144,7 @@ fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b 
 
 ## `LockGuard::drop`
 
-src/lock.rs:677. Kind: external_body. Category: atomics primitive.
+src/lock.rs:694. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 ```rust

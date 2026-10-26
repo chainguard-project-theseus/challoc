@@ -1,6 +1,4 @@
-# Temporary seams until meta.rs is verified: Verus checks Meta once it
-# is inside verus!, and storage and release once Meta's allocation calls
-# hand out the permissions they assume.
-Meta	allocator invariant	Verus
+# Temporary seam until `Meta` hands out a reserved table's permission (an
+# exec change: a `reserve_committed` that returns it) and the reserved
+# address becomes a pointer Verus accepts.
 Table::storage	allocator invariant	Verus
-Table::release	allocator invariant	Verus

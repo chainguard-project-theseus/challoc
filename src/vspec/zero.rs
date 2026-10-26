@@ -4,7 +4,7 @@
 //! `bitmap::TwoLevelBitmap::from_raw` and `from_raw_chunked` build their
 //! views' word permissions from one. A [`Zeroed`] token says a range of
 //! bytes reads as zero: `meta::Meta::alloc_zeroed` returns one for the
-//! object it hands out.
+//! object it hands out, from [`axiom_wrote_zero`] for a reused one.
 
 use vstd::prelude::*;
 use vstd::raw_ptr::PointsToRaw;
@@ -76,10 +76,10 @@ impl Zeroed {
 /// starts from words that read as zero (`bitmap::TwoLevelBitmap::from_raw`
 /// and `from_raw_chunked`, through [`axiom_zero_word`]). Like a
 /// `PointsToRaw` it splits by byte set ([`ZeroRaw::split`]); it is linear,
-/// so a `ZeroRaw` makes each word's zero permission once. Nothing verified
-/// mints one yet: `meta::Meta::reserve_table` and the unverified callers
-/// of the bitmap constructors take theirs on trust (`Tracked::assume_new()`
-/// outside `verus!`).
+/// so a `ZeroRaw` makes each word's zero permission once. Its one source
+/// is [`ZeroRaw::axiom_new`], in `meta::Meta::reserve_table`; the
+/// unverified callers of the bitmap constructors still take theirs on
+/// trust (`Tracked::assume_new()` outside `verus!`).
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
 pub tracked struct ZeroRaw {
@@ -100,6 +100,40 @@ impl ZeroRaw {
     /// The bytes are exactly `[start, start + len)`.
     pub open spec fn is_range(&self, start: int, len: int) -> bool {
         Set::range(start, start + len) =~= self.dom()
+    }
+
+    /// The bytes of `raw`, which `z` reads as zero. Trusted for one
+    /// premise nothing checks: `z`'s bytes have not been written since
+    /// `z` was made. A `Zeroed` token is not tied to the writes made to
+    /// its bytes (its doc), so pairing a token with a permission to bytes
+    /// written since would make [`axiom_zero_word`] claim 0 for a word
+    /// that holds something else. Its callers, in
+    /// `meta::Meta::reserve_table` (and `meta::reserved_table`, its
+    /// reservation path), pair a table's permission with the token cut
+    /// with it in the lock hold that carved the table: an eager
+    /// table's (the committed part cut from `Inner`'s `fresh` and
+    /// `fresh_zero` together, fresh memory above the bump pointer that
+    /// nothing has written, and the deferred part from one
+    /// `Unbacked::into_lazy`) or a reservation's (both from one
+    /// `Unbacked::into_lazy`).
+    #[verifier::external_body]
+    pub proof fn axiom_new(tracked raw: PointsToRaw, tracked z: Zeroed) -> (tracked r: ZeroRaw)
+        requires
+            forall|a: int| #[trigger] raw.dom().contains(a) ==> z.addr() <= a < z.addr() + z.len(),
+        ensures
+            r.dom() == raw.dom(),
+            r.provenance() == raw.provenance(),
+    {
+        ZeroRaw { raw }
+    }
+
+    /// No bytes.
+    pub proof fn empty(provenance: Provenance) -> (tracked r: ZeroRaw)
+        ensures
+            r.dom() == Set::<int>::empty(),
+            r.provenance() == provenance,
+    {
+        ZeroRaw { raw: PointsToRaw::empty(provenance) }
     }
 
     /// The bytes in `range`, and the rest (`PointsToRaw::split`).
@@ -137,6 +171,30 @@ pub proof fn axiom_zero_word(tracked z: ZeroRaw, p: *mut u64) -> (tracked w: Poi
         w.ptr() == p,
         w.is_init(),
         w.value() == 0,
+{
+    unimplemented!()
+}
+
+/// The token for what `write_bytes(p, 0, n)` just wrote: the `n` bytes at
+/// `p` read as zero. Trusted for the effect of `write_bytes`, which nothing
+/// in vstd states. Its specification (`vspec::ptr`) records the call as
+/// [`wrote_zero`], which ties the token to a call made with the same `p`
+/// and `n`; the caller also shows a raw permission to the bytes, so they
+/// are not held typed (written through a `PointsTo`). The fact has no time
+/// in it, so a caller must take the token right after the call, before
+/// anything else writes the bytes: the one caller is
+/// `meta::Meta::alloc_zeroed`, on the line after its `write_bytes`.
+///
+/// [`wrote_zero`]: crate::vspec::ptr::wrote_zero
+#[verifier::external_body]
+pub proof fn axiom_wrote_zero(tracked raw: &PointsToRaw, p: *mut u8, n: usize) -> (tracked z: Zeroed)
+    requires
+        crate::vspec::ptr::wrote_zero(p, n as int),
+        raw.contains_range(p@.addr as int, n as int),
+        raw.provenance() == p@.provenance,
+    ensures
+        z.addr() == p@.addr,
+        z.len() == n,
 {
     unimplemented!()
 }

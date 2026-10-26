@@ -84,16 +84,44 @@ impl Unbacked {
     /// reads as zero until it is first written, which this range never
     /// was, because an `Unbacked` token stands for bytes that have been
     /// `PROT_NONE` since their reservation mapped them (no permission to
-    /// them exists before this call consumes the token). Call sites:
-    /// `meta::Inner::commit_bump_to` and `meta::Inner::reserve_committed`,
-    /// each after its successful commit of a range holding the token's:
-    /// `commit_bump_to` commits `[committed, want)` and takes the part
-    /// past the deferred tables, and `reserve_committed` takes the
-    /// reservation it just committed or, on its eager path, the deferred
-    /// part of the table it just carved, after `Inner::flush` committed
-    /// `[committed, frontier)`, which holds it.
+    /// them exists before this call consumes the token). Its one call
+    /// site is `meta::Inner::commit_bump_to`, after its successful commit
+    /// of `[committed, want)`, a range holding the token's: it takes the
+    /// part past the deferred tables.
     #[verifier::external_body]
     pub proof fn commit(tracked self) -> (tracked r: (PointsToRaw, Zeroed))
+        ensures
+            r.0.is_range(self.addr(), self.len()),
+            r.0.provenance() == cast_provenance(),
+            r.1.addr() == self.addr(),
+            r.1.len() == self.len(),
+    {
+        unimplemented!()
+    }
+
+    /// The permission to the bytes of a lazily committed table, still
+    /// uncommitted, and the token that they read as zero. Trusted, with a
+    /// premise nothing checks: Verus does not model page protection. The
+    /// bytes stay `PROT_NONE` until the table's owner commits their page
+    /// (`meta::Meta::commit`; `class::sets::Lazy::ensure`), and the holder
+    /// of the permission reads and writes only pages it has committed. Its
+    /// callers, in `meta::Meta::reserve_table` (and `meta::reserved_table`,
+    /// its reservation path), pass the token `Inner::reserve` just carved
+    /// for a reservation, or the deferred part
+    /// `Inner::reserve_eager` just carved of an eager table (its bytes past
+    /// the object side's `committed`), which the owner's first
+    /// `Meta::commit` makes writable with the deferred commit
+    /// (`Inner::flush`) before the table is used, the same premise. Not at
+    /// address 0: a permission there proves `false`
+    /// (`PointsTo::is_nonnull`). The zero token is [`Unbacked::commit`]'s
+    /// `mmap(2)` fact, on the same premise: the bytes have been `PROT_NONE`
+    /// since their reservation mapped them, so each reads as zero once its
+    /// page is committed, before anything writes it, and nothing reads it
+    /// earlier.
+    #[verifier::external_body]
+    pub proof fn into_lazy(tracked self) -> (tracked r: (PointsToRaw, Zeroed))
+        requires
+            self.addr() > 0,
         ensures
             r.0.is_range(self.addr(), self.len()),
             r.0.provenance() == cast_provenance(),
