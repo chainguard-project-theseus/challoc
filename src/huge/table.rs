@@ -725,7 +725,12 @@ impl Table {
                     old(self).lookup(k)
                 },
     {
-        assert!(self.count + 1 < self.cap(), "huge: descriptor table full");
+        if !(self.count + 1 < self.cap()) {
+            proof {
+                assert(false);
+            }
+            crate::sys::abort_kernel(format_args!("huge: descriptor table full"));
+        }
         let ghost cap = self.spec_cap();
         let ghost v = self.view();
         let mask = self.cap() - 1;

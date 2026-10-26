@@ -78,7 +78,7 @@ fn memory_is_writable_and_the_zero_flag_is_honest() {
     fill(s, size, 0xCD);
     env.free(&h, s);
     assert_eq!(
-        h.lookup(env.page_of(s), Tracked::assume_new())
+        h.lookup(env.page_of(s), Tracked::assume_new(), Tracked::assume_new())
             .unwrap()
             .state,
         RunState::Purged
@@ -215,7 +215,11 @@ fn alignment_holes_are_committed_and_writable() {
     fill(b, page_size(), 2);
     let b_page = env.page_of(b);
     let hole = h
-        .lookup(env.page_of(a) + 1 + GUARD_PAGES, Tracked::assume_new())
+        .lookup(
+            env.page_of(a) + 1 + GUARD_PAGES,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
         .expect("hole extent");
     assert_eq!(
         (hole.state, hole.start + hole.pages),
@@ -243,10 +247,14 @@ fn alignment_holes_are_committed_and_writable() {
     fill(c, 3 * page_size(), 0xC0);
     env.free(&h, c);
     assert_eq!(
-        h.lookup(c_page, Tracked::assume_new()).unwrap().state,
+        h.lookup(c_page, Tracked::assume_new(), Tracked::assume_new())
+            .unwrap()
+            .state,
         RunState::Empty
     );
-    let c_ext = h.lookup(c_page, Tracked::assume_new()).unwrap();
+    let c_ext = h
+        .lookup(c_page, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     assert_eq!(
         c_ext.start + c_ext.pages,
         h.stats(Tracked::assume_new()).next_page
@@ -256,7 +264,7 @@ fn alignment_holes_are_committed_and_writable() {
     fill(d, page_size(), 4);
     let d_page = env.page_of(d);
     let head = h
-        .lookup(c_page, Tracked::assume_new())
+        .lookup(c_page, Tracked::assume_new(), Tracked::assume_new())
         .expect("head extent");
     assert_eq!(
         (head.state, head.start + head.pages),
@@ -368,7 +376,7 @@ fn extents_whose_discard_fails_stay_empty() {
         assert_eq!((st.empty, st.purged), (2, 0), "{st:?}");
         for x in [p, r] {
             assert_eq!(
-                h.lookup(env.page_of(x), Tracked::assume_new())
+                h.lookup(env.page_of(x), Tracked::assume_new(), Tracked::assume_new())
                     .unwrap()
                     .state,
                 RunState::Empty

@@ -853,10 +853,11 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
             }
         }
         Kind::Huge { page } => {
-            if let Some(r) = shared
-                .huge
-                .lookup(page, vstd::prelude::Tracked::assume_new())
-                && r.start == page
+            if let Some(r) = shared.huge.lookup(
+                page,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            ) && r.start == page
                 && r.state == RunState::Active
             {
                 u.nregs = 1;
@@ -881,9 +882,11 @@ pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16> {
             }
         }
         Kind::Huge { page } => {
-            let r = shared
-                .huge
-                .lookup(page, vstd::prelude::Tracked::assume_new())?;
+            let r = shared.huge.lookup(
+                page,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )?;
             if r.start == page && r.state == RunState::Active {
                 Some(r.arena)
             } else {
