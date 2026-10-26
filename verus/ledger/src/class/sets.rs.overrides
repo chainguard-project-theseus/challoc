@@ -1,0 +1,8 @@
+# Temporary seams until meta.rs is verified: Lazy's reservation and
+# commits call Meta::reserve_table and Meta::commit, which have no
+# specification yet.
+Lazy::reserve	allocator invariant	Verus
+Lazy::ensure	allocator invariant	Verus
+# The commit watermarks keep no lock invariant until Lazy::ensure is
+# verified and carries the claims to its pages.
+axiom_set_tables_lock_inv	allocator invariant	none (assumption)

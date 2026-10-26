@@ -485,13 +485,6 @@ impl Settle for Tally {
 
 verus! {
 
-// `Set`, opaque: `Inner` holds the free-page set, which the proofs here do
-// not read.
-#[cfg(verus_keep_ghost)]
-#[verifier::external_type_specification]
-#[verifier::external_body]
-pub struct ExSet(Set);
-
 struct Inner {
     /// Free pages below `next_page`.
     free: Set,

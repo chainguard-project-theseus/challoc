@@ -9,7 +9,6 @@ file.
 |---|---|---|---|---|
 | `Huge` | ext_type_spec | allocator invariant | Verus | trusted |
 | `Tally::settle` | external_body | allocator invariant | Verus | trusted |
-| `Set` | ext_type_spec | allocator invariant | Verus | trusted |
 | `Inner::retire` | external_body | allocator invariant | Verus | trusted |
 | `Inner::extent_at` | external_body | allocator invariant | Verus | trusted |
 
@@ -40,18 +39,9 @@ fn settle(
 )
 ```
 
-## `Set`
-
-src/huge/mod.rs:493. Kind: ext_type_spec. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-```rust
-pub struct ExSet(Set);
-```
-
 ## `Inner::retire`
 
-src/huge/mod.rs:1045. Kind: external_body. Category: allocator invariant.
+src/huge/mod.rs:1038. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > Give a dropped descriptor back to `meta`, leaving the `Empty` list first when it is a member (every `Empty` extent is; a freed run's descriptor still reads `Active` here and is in no list).
@@ -62,7 +52,7 @@ fn retire(&mut self, meta: &Meta, d: *mut HugeDesc)
 
 ## `Inner::extent_at`
 
-src/huge/mod.rs:1221. Kind: external_body. Category: allocator invariant.
+src/huge/mod.rs:1214. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > The free extent starting at `page`, which must be a set free bit.
