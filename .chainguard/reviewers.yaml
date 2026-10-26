@@ -1,0 +1,19 @@
+# Checks code reviewers for challoc. Read from the default branch by the
+# Checks code reviewer (mono's ai-cicd/sandbox/cmd/code-reviewer), so a
+# change here takes effect once it merges. The reviewer named here is the
+# advisory `bot:challoc` owner of every path in .github/codeowners.yaml.
+version: 1
+# Per-pass limits (mono's code-reviewer README, "Limits"), at their
+# ceilings: a challoc proof pull request reaches 2,000 to 3,000 changed
+# lines, often in one source file plus its generated ledger file under
+# verus/ledger/, so each file's diff is computed up to the ceiling and each
+# pass may read it and its context.
+limits:
+  diff_lines: 6000
+  read_calls: 60
+  read_kib: 800
+reviewers:
+  - name: challoc
+    trigger:
+      paths: ["**"]
+    prompt_file: review-prompt.md

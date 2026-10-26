@@ -1,0 +1,21 @@
+# codeowners-gate sidecar for chainguard-dev/challoc: the source of truth for
+# .github/CODEOWNERS, which renders it without the bot: owners. Change both
+# with a change request and mono's hack/codeowners-gate/run.sh apply (mono's
+# codeowners skill), run from the root of this repository. GitHub reads the
+# rendering with last match wins.
+#
+# The Checks review gate (mono's ai-cicd/sandbox/internal/codereview) reads
+# this file from the default branch. bot:challoc is the reviewer declared in
+# .chainguard/reviewers.yaml: on a gated entry its approve verdict satisfies
+# a path the way an owner's approval does. The entry below is advisory, so
+# the gate only records its result; Checks submits an approving review as
+# chainguard[bot] only on gated entries, and only once reviewers.yaml sets
+# `approve: true`. A path
+# the reviewers read as their own definitions (this file, reviewers.yaml,
+# the prompt file, AGENTS.md, CLAUDE.md) always needs a person's approval,
+# from someone named here other than the author or a pusher of the head.
+version: 1
+entries:
+  - pattern: '*'
+    owners: [dlorenc, mattmoor, tcnghia, 'bot:challoc']
+    note: 'every path, advisory: the maintainers and the challoc Checks reviewer (bot:challoc, .chainguard/reviewers.yaml) while its verdicts are watched; gate 1 follows once they hold up (mono code-reviewer README, "4. Let its approvals count")'
